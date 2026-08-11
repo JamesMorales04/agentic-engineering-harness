@@ -1,0 +1,6 @@
+id: expo
+validation:
+  commands:
+    - id: expo-typecheck
+      command: pnpm typecheck
+      required: true

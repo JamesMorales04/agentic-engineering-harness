@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+.harness/reports/
+.harness/telemetry/
+.graphify/
+graphify-out/
+*.log
+.DS_Store

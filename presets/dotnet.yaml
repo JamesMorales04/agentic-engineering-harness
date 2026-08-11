@@ -1,0 +1,12 @@
+id: dotnet
+validation:
+  commands:
+    - id: dotnet-build
+      command: dotnet build --no-restore
+      required: true
+    - id: dotnet-test
+      command: dotnet test --no-build
+      required: true
+recommended:
+  acceptance: Reqnroll
+  integration: Testcontainers

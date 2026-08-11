@@ -1,0 +1,46 @@
+version: 1
+
+project:
+  name: change-me
+
+orchestration:
+  provider: paseo
+  required: false
+
+memory:
+  provider: engram
+  required: false
+
+codeIntelligence:
+  provider: graphify
+  required: false
+
+sdd:
+  specsDir: specs
+  contractsDir: .harness/contracts
+  reportsDir: .harness/reports
+
+validation:
+  baseRef: main
+  requireSeal: true
+  frozenPaths:
+    - .harness/contracts/**
+    - .harness/seals/**
+    - tests/acceptance/frozen/**
+  commands: []
+  opa:
+    enabled: false
+    policyDirs:
+      - .harness/policies/core
+
+security:
+  sandbox:
+    provider: podman
+    required: false
+  tools:
+    - opengrep
+    - trivy
+
+telemetry:
+  enabled: true
+  localEventsFile: .harness/telemetry/events.ndjson

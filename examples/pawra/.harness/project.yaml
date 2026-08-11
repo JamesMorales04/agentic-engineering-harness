@@ -1,0 +1,55 @@
+version: 1
+
+project:
+  name: pawra
+
+orchestration:
+  provider: paseo
+  required: true
+
+memory:
+  provider: engram
+  required: false
+
+codeIntelligence:
+  provider: graphify
+  required: false
+
+sdd:
+  specsDir: specs
+  contractsDir: .harness/contracts
+  reportsDir: .harness/reports
+
+validation:
+  baseRef: main
+  requireSeal: true
+  frozenPaths:
+    - .harness/contracts/**
+    - .harness/seals/**
+    - tests/**/Acceptance/Frozen/**
+  commands:
+    - id: backend-build
+      command: dotnet build --no-restore
+      required: true
+    - id: backend-tests
+      command: dotnet test --no-build
+      required: true
+    - id: frontend-typecheck
+      command: pnpm typecheck
+      required: true
+  opa:
+    enabled: true
+    policyDirs:
+      - policies/core
+      - policies/pawra
+
+security:
+  sandbox:
+    provider: podman
+    required: false
+  tools:
+    - opengrep
+    - trivy
+
+telemetry:
+  enabled: true
