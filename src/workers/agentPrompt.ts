@@ -42,9 +42,9 @@ async function executeViaPaseo(root: string, config: HarnessProjectConfig, contr
     "aeh.project": config.project.name,
     "aeh.kind": "worker",
     "aeh.task": contract.task.id,
-    "aeh.role": selection.logicalAgent,
-    "aeh.profile": selection.profile
+    "aeh.role": selection.logicalAgent
   };
+  if (selection.profile) labels["aeh.profile"] = selection.profile;
   const launched = await launchManagedPaseoAgent(root, {
     cwd: root,
     title,
