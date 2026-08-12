@@ -1,11 +1,13 @@
 export type CheckStatus = "PASS" | "FAIL" | "SKIP" | "WARN";
 export type TaskMode = "spec" | "quick";
+export type ReviewSeverity = "critical" | "high" | "medium" | "low" | "note";
 
 export type ValidatorAdapter = "command" | "gherkin" | "graphify" | "opengrep" | "trivy" | "playwright" | "openapi" | "pact" | "mutation" | "property" | string;
 export interface ValidationCommand { id: string; command: string; required?: boolean; timeoutSeconds?: number; workingDirectory?: string; }
 export interface ValidatorSpec { id: string; adapter: ValidatorAdapter; command?: string; required?: boolean; timeoutSeconds?: number; workingDirectory?: string; options?: Record<string, unknown>; }
 export interface UsageMetrics { inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number; }
 export interface RunMetrics { firstPassSuccess: boolean; repairCount: number; humanInterventions: number; durationMs: number; usage: UsageMetrics; }
+export interface ReviewEscalationStage { name: string; action?: "remediate" | "diagnose" | "replan"; agent?: string; model?: string; }
 
 export interface HarnessProjectConfig {
   version: 1;
@@ -13,7 +15,20 @@ export interface HarnessProjectConfig {
   agents?: { configPath?: string; generatedPath?: string; activeProfile?: string; required?: boolean; findingsDir?: string; };
   workflow?: {
     quick?: { maxFiles?: number; disallowedDomains?: string[]; };
-    reviews?: { enabled?: boolean; reviewQuick?: boolean; leadAcceptance?: boolean; leadAcceptanceQuick?: boolean; maxRemediationRounds?: number; blockingSeverities?: Array<"critical" | "high" | "medium" | "low" | "note">; };
+    reviews?: {
+      enabled?: boolean;
+      reviewQuick?: boolean;
+      leadAcceptance?: boolean;
+      leadAcceptanceQuick?: boolean;
+      /** @deprecated Accepted for old project files but ignored by the convergence engine. */
+      maxRemediationRounds?: number;
+      /** @deprecated Accepted for old project files but superseded by finalQualityGate. */
+      blockingSeverities?: ReviewSeverity[];
+      quality?: { severityPoints?: Partial<Record<ReviewSeverity, number>>; };
+      convergence?: { minimumDebtPointImprovement?: number; stagnationWindow?: number; cycleDetection?: boolean; regressionDetection?: boolean; };
+      finalQualityGate?: { maxBySeverity?: Partial<Record<ReviewSeverity, number>>; maxDebtPoints?: number; };
+      escalation?: { stages?: ReviewEscalationStage[]; criticalStartStage?: number; replanResumeStage?: number; };
+    };
   };
   orchestration?: { provider: "paseo" | "podman" | "none" | string; required?: boolean; worker?: { provider?: string; model?: string; maxRepairAttempts?: number; timeoutSeconds?: number; titlePrefix?: string; }; };
   memory?: { provider: "engram" | "none" | string; required?: boolean; benchmark?: { casesDir?: string; resultsDir?: string; providers?: Array<{ name: string; command: string; timeoutSeconds?: number; }>; }; };

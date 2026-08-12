@@ -28,8 +28,47 @@ workflow:
     reviewQuick: false
     leadAcceptance: true
     leadAcceptanceQuick: false
-    maxRemediationRounds: 1
-    blockingSeverities: [critical, high, medium]
+    quality:
+      # Integer DebtPoints: 3 points = DebtScore 1. Therefore 3 notes = 1 low.
+      severityPoints:
+        critical: 300
+        high: 75
+        medium: 24
+        low: 3
+        note: 1
+    convergence:
+      minimumDebtPointImprovement: 3
+      stagnationWindow: 2
+      cycleDetection: true
+      regressionDetection: true
+    finalQualityGate:
+      maxBySeverity:
+        critical: 0
+        high: 0
+        medium: 0
+        low: 3
+      maxDebtPoints: 9
+    escalation:
+      criticalStartStage: 2
+      replanResumeStage: 2
+      stages:
+        - name: normal
+          action: remediate
+        - name: quality
+          action: remediate
+          agent: quality-implementer
+        - name: senior
+          action: remediate
+          agent: senior-implementer
+          model: "@brain"
+        - name: diagnosis
+          action: diagnose
+          agent: oracle
+          model: "@brain"
+        - name: replan
+          action: replan
+          agent: planner
+          model: "@brain"
 
 orchestration:
   provider: paseo

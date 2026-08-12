@@ -34,7 +34,25 @@ Use QUICK only when the Harness returns QUICK.
 3. Ensure stable requirement IDs and validator traceability.
 4. Run `aeh sdd validate <id>`.
 5. Run `aeh run <id>` with the appropriate profile.
-6. The Harness owns delegation, deterministic validation, bounded recovery, automatic reviewer waves, finding dedup/remediation, revalidation and final lead acceptance.
+6. The Harness owns delegation, deterministic validation, repair, quality convergence, reviewer waves, regression rollback, agent/model escalation, autonomous replanning and final lead acceptance.
+
+## Quality convergence
+
+Do not stop or ask the user because a remediation round count has been reached. Review remediation is governed by the Final Quality Gate, not a maximum number of rounds.
+
+Default quality weights use integer DebtPoints: critical=300, high=75, medium=24, low=3, note=1. Therefore three notes equal one low and DebtScore is DebtPoints/3. Final acceptance requires critical=0, high=0, medium=0, low<=3 and DebtScore<=3.
+
+When quality is improving, continue autonomously. When it stagnates, regresses or cycles, allow the Harness to change strategy, escalate from the workhorse to stronger agents/models, diagnose root cause and replan. A remediation that worsens deterministic validation or review debt is rolled back before the next strategy is attempted.
+
+## Human-on-exception
+
+Human intervention is the final exception path, not a routine review step. Request a human decision only when the Harness identifies one of these states:
+
+- `SPEC_CONTRADICTION`: authoritative requirements cannot all be satisfied.
+- `REQUIRES_PRODUCT_DECISION`: the repository/spec cannot determine a required business/product choice.
+- `BLOCKED_EXTERNAL`: a required credential, account permission or external resource is unavailable to the agents.
+
+Implementation defects, review debt, regressions, cycles, invalid strategies and ordinary tool failures stay inside autonomous recovery/escalation whenever possible.
 
 ## Triage escalation rules
 
@@ -44,7 +62,7 @@ If a QUICK implementation later reveals one of these conditions, stop the quick 
 
 ## Mobile/Paseo behavior
 
-When started as a Codex lead inside Paseo, remain the parent session. Use the Harness as the control layer and allow it to spawn routed OpenCode/Codex work through the configured transports. Surface only meaningful status, deterministic failures, permission requests, unresolved reviewer findings and final acceptance to the user.
+When started as a Codex lead inside Paseo, remain the parent session. Use the Harness as the control layer and allow it to spawn routed OpenCode/Codex work through the configured transports. Surface only meaningful status, deterministic failures that cannot self-recover, permission requests, true human-on-exception states and final acceptance to the user. Do not surface every remediation round as a request for approval.
 
 ## Self-modification
 
