@@ -4,6 +4,7 @@ import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
 import { getOriginRemote } from "../core/git.js";
 import { loadTaskContract } from "../core/config.js";
 import { validateSddChange } from "../core/sdd.js";
+import { verifyTaskSeal } from "../core/seal.js";
 import { runProcess } from "../utils/process.js";
 
 export interface DeliveryRecord {
@@ -25,6 +26,11 @@ export async function handoffSdd(root: string, config: HarnessProjectConfig, tas
   const validation = await validateSddChange(root, taskId, config);
   if (!validation.ok) throw new Error(`Cannot hand off ${taskId}: SDD validation failed: ${[...validation.missing, ...validation.issues].join("; ")}`);
   const contract = await loadTaskContract(root, taskId, config);
+  await assertHandoffReady(root, contract);
+  if (config.validation?.requireSeal !== false) {
+    const seal = await verifyTaskSeal(root, contract, true);
+    if (seal.status !== "PASS") throw new Error(`Cannot hand off ${taskId}: ${seal.message}`);
+  }
   const originatingBranch = contract.git?.originatingBranch ?? contract.git?.baseRef ?? config.validation?.baseRef ?? "main";
   let record = await loadDeliveryRecord(root, config, taskId) ?? { version: 1, taskId, status: "initialized", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), originatingBranch };
 
@@ -66,6 +72,17 @@ export async function handoffSdd(root: string, config: HarnessProjectConfig, tas
 
   record.status = "ready"; record.updatedAt = new Date().toISOString(); await saveDeliveryRecord(root, config, record);
   return record;
+}
+
+export async function assertHandoffReady(root: string, contract: TaskContract): Promise<void> {
+  const placeholders: string[] = [];
+  for (const [kind, relative] of Object.entries(contract.source ?? {})) {
+    if (!relative) continue;
+    const content = await fs.readFile(path.resolve(root, relative), "utf8");
+    if (/\bTODO\b|TODO observable|TODO business rule/i.test(content)) placeholders.push(kind);
+  }
+  for (const requirement of contract.requirements ?? []) if (/\bTODO\b/i.test(requirement.description ?? "")) placeholders.push(`requirement:${requirement.id}`);
+  if (placeholders.length) throw new Error(`Cannot hand off ${contract.task.id}: unresolved template placeholders remain in ${[...new Set(placeholders)].join(", ")}.`);
 }
 
 export async function loadDeliveryRecord(root: string, config: HarnessProjectConfig, taskId: string): Promise<DeliveryRecord | undefined> {
