@@ -23,7 +23,11 @@ describe("default agent pack bootstrap", () => {
     const localSource = await fs.readFile(path.join(root, ".harness", "agents.source.jsonc"), "utf8");
     expect(localSource).toContain('"extends": ["aeh:orchestration"]');
     const gitignore = await fs.readFile(path.join(root, ".gitignore"), "utf8");
-    expect(gitignore).toContain(".harness/toolchain.state.json");
+    expect(gitignore).toContain(".harness/*");
+    expect(gitignore).toContain("!.harness/project.yaml");
+    expect(gitignore).toContain("!.harness/toolchain.yaml");
+    expect(gitignore).toContain("!.harness/agents.source.jsonc");
+    expect(gitignore).toContain("!.harness/otel-collector.yaml");
     expect(gitignore).toContain(".config/mise/conf.d/aeh.toml");
     expect(await fs.readFile(path.join(root, "openspec", "config.yaml"), "utf8")).toContain("schema: spec-driven");
 
