@@ -22,7 +22,7 @@ function capabilities() { return { version: "0.6.0", background: true, quiet: tr
 function managed(id: string) { return { id, exitCode: 0, stdout: "", stderr: "", status: "idle", transport: "sdk" as const }; }
 
 describe("Paseo Harness start", () => {
-  it("creates idle SDK leads with exact AEH operation MCP and reuses only with explicit resume", async () => {
+  it("creates idle SDK leads with exact project-locked AEH operation MCP and reuses only with explicit resume", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-paseo-start-"));
     const commands: string[] = [];
     let daemonReady = false; let launchCount = 0;
@@ -56,6 +56,7 @@ describe("Paseo Harness start", () => {
     expect(bootstrap).toContain("/paseo-handoff");
     expect(bootstrap).toContain(aehCommand);
     expect(bootstrap).toContain("aeh-control MCP");
+    expect(bootstrap).toContain("project-locked");
     expect(bootstrap).not.toContain("Delegation policy:");
     expect(bootstrap).not.toContain("environment-manager");
     expect(bootstrap).not.toContain("spec-manager");
@@ -69,7 +70,7 @@ describe("Paseo Harness start", () => {
       labels: expect.objectContaining({ "aeh.kind": "lead", "aeh.role": "lead" }),
       waitForFinish: false,
       mcpServers: {
-        "aeh-control": { type: "stdio", command: "/usr/bin/node", args: ["/pkg/dist/main.js", "operation", "mcp"], alwaysLoad: true }
+        "aeh-control": { type: "stdio", command: "/usr/bin/node", args: ["/pkg/dist/main.js", "operation", "mcp"], env: { AEH_CONTROL_ROOT: root }, alwaysLoad: true }
       },
       toolPolicy: {
         preapproved: [
@@ -113,6 +114,7 @@ describe("Paseo Harness start", () => {
     expect(bootstrap).toContain("OpenSpec");
     expect(bootstrap).toContain("npm-exec-aeh");
     expect(bootstrap).toContain("aeh-control MCP");
+    expect(bootstrap).toContain("project-locked");
     expect(bootstrap).not.toContain("explorer");
     expect(bootstrap).not.toContain("environment-manager");
     expect(bootstrap).not.toContain("spec-manager");
@@ -133,7 +135,7 @@ describe("Paseo Harness start", () => {
     expect(parseCommandVector('"/usr/bin/node" "/pkg/dist/main.js"')).toEqual(["/usr/bin/node", "/pkg/dist/main.js"]);
     expect(parseCommandVector("node /pkg/dist/main.js")).toEqual(["node", "/pkg/dist/main.js"]);
     expect(parseCommandVector("node /pkg/main.js; rm -rf / ")).toBeUndefined();
-    expect(buildAehControlMcp("aeh").mcpServers?.["aeh-control"]).toEqual({ type: "stdio", command: "aeh", args: ["operation", "mcp"], alwaysLoad: true });
+    expect(buildAehControlMcp("aeh", "/repo").mcpServers?.["aeh-control"]).toEqual({ type: "stdio", command: "aeh", args: ["operation", "mcp"], env: { AEH_CONTROL_ROOT: "/repo" }, alwaysLoad: true });
   });
 
   it("resolves lead explicitly, then falls back to an enabled orchestrator", () => {
