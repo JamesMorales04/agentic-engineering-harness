@@ -10,6 +10,7 @@ const memoryBenchmarkProviderSchema = z.object({ name: z.string().min(1), comman
 const severitySchema = z.enum(["critical", "high", "medium", "low", "note"]);
 const severityNumberSchema = z.object({ critical: z.number().int().nonnegative().optional(), high: z.number().int().nonnegative().optional(), medium: z.number().int().nonnegative().optional(), low: z.number().int().nonnegative().optional(), note: z.number().int().nonnegative().optional() });
 const escalationStageSchema = z.object({ name: z.string().min(1), action: z.enum(["remediate", "diagnose", "replan"]).optional(), agent: z.string().min(1).optional(), model: z.string().min(1).optional() });
+const mcpServerSchema = z.object({ description: z.string().optional(), type: z.enum(["local", "remote"]), command: z.array(z.string().min(1)).optional(), url: z.string().url().optional(), environment: z.record(z.string(), z.string()).optional(), headers: z.record(z.string(), z.string()).optional(), oauth: z.boolean().optional(), enabled: z.boolean().optional(), timeoutMs: z.number().int().positive().optional(), codemode: z.boolean().optional() }).superRefine((value, ctx) => { if (value.type === "local" && !value.command?.length) ctx.addIssue({ code: "custom", message: "local MCP servers require command" }); if (value.type === "remote" && !value.url) ctx.addIssue({ code: "custom", message: "remote MCP servers require url" }); });
 const projectSchema = z.object({
   version: z.literal(1), project: z.object({ name: z.string().min(1) }),
   agents: z.object({ configPath: z.string().optional(), generatedPath: z.string().optional(), activeProfile: z.string().optional(), required: z.boolean().optional(), findingsDir: z.string().optional() }).optional(),
@@ -25,6 +26,12 @@ const projectSchema = z.object({
     }).optional()
   }).optional(),
   orchestration: z.object({ provider: z.string(), required: z.boolean().optional(), worker: z.object({ provider: z.string().optional(), model: z.string().optional(), maxRepairAttempts: z.number().int().nonnegative().optional(), timeoutSeconds: z.number().int().positive().optional(), titlePrefix: z.string().optional() }).optional() }).optional(),
+  mcp: z.object({ servers: z.record(z.string(), mcpServerSchema).optional() }).optional(),
+  delivery: z.object({
+    stateDir: z.string().optional(),
+    github: z.object({ enabled: z.boolean().optional(), tokenEnv: z.string().min(1).optional(), repository: z.string().regex(/^[^/]+\/[^/]+$/).optional(), apiBaseUrl: z.string().url().optional(), assignTokenOwner: z.boolean().optional(), labels: z.array(z.string()).optional(), branchPattern: z.string().min(1).optional() }).optional(),
+    paseo: z.object({ enabled: z.boolean().optional(), createWorkspace: z.boolean().optional(), autoUseWorkspace: z.boolean().optional(), worktreeSlugPattern: z.string().min(1).optional() }).optional()
+  }).optional(),
   memory: z.object({ provider: z.string(), required: z.boolean().optional(), benchmark: z.object({ casesDir: z.string().optional(), resultsDir: z.string().optional(), providers: z.array(memoryBenchmarkProviderSchema).optional() }).optional() }).optional(),
   codeIntelligence: z.object({ provider: z.string(), required: z.boolean().optional(), graphPath: z.string().optional(), snapshotDir: z.string().optional(), refreshCommand: z.string().optional() }).optional(),
   sdd: z.object({ specsDir: z.string().optional(), contractsDir: z.string().optional(), reportsDir: z.string().optional(), repairsDir: z.string().optional(), runsDir: z.string().optional() }).optional(),
@@ -39,7 +46,7 @@ const quickMetadataSchema = z.object({ request: z.string().min(1), acceptance: z
 const taskSchema = z.object({
   version: z.literal(1), mode: z.enum(["spec", "quick"]).optional(), task: z.object({ id: z.string().min(1), title: z.string().min(1) }), quick: quickMetadataSchema.optional(),
   source: z.object({ proposal: z.string().optional(), spec: z.string().optional(), design: z.string().optional(), tasks: z.string().optional(), acceptance: z.string().optional() }).optional(),
-  git: z.object({ baseRef: z.string().optional() }).optional(), scope: z.object({ allowed: z.array(z.string()).optional(), forbidden: z.array(z.string()).optional(), frozen: z.array(z.string()).optional() }).optional(),
+  git: z.object({ baseRef: z.string().optional(), originatingBranch: z.string().optional() }).optional(), scope: z.object({ allowed: z.array(z.string()).optional(), forbidden: z.array(z.string()).optional(), frozen: z.array(z.string()).optional() }).optional(),
   routing: z.object({ intent: z.string().optional(), domains: z.array(z.string()).optional(), risk: z.enum(["low", "medium", "high"]).optional(), agent: z.string().optional(), reviewers: z.array(z.string()).optional(), profile: z.string().optional() }).optional(),
   requirements: z.array(requirementSchema).optional(), constraints: z.object({ breakingApiChanges: z.boolean().optional(), newDependencies: z.boolean().optional(), schemaChanges: z.boolean().optional(), maxFilesChanged: z.number().int().positive().optional(), maxLinesAdded: z.number().int().nonnegative().optional(), maxLinesDeleted: z.number().int().nonnegative().optional() }).optional(),
   impact: z.object({ forbiddenEdges: z.array(z.string()).optional(), forbiddenNodes: z.array(z.string()).optional(), allowedCommunities: z.array(z.string()).optional() }).optional(), repair: z.object({ maxAttempts: z.number().int().nonnegative().optional() }).optional(), verification: z.object({ commands: z.array(validationCommandSchema).optional(), validators: z.array(validatorSpecSchema).optional() }).optional()
