@@ -78,22 +78,60 @@
 - [x] declarative `.harness/toolchain.yaml` and JSON Schema
 - [x] automatic capability-based tool closure from agents/orchestration/validators/project stack
 - [x] named toolchain profiles with inheritance
-- [x] mise adapter for Node/Codex/OpenCode/Paseo/Graphify/OPA/OpenGrep/Trivy and project runtimes
+- [x] mise/Aqua provisioning and optional OCI validators
 - [x] explicit `aeh setup`, side-effect-free `--dry-run`, `--update-lock` and `aeh init --setup`
-- [x] `.harness/toolchain.lock.json` for exact logical versions/OCI digests
-- [x] gitignored `.harness/toolchain.state.json` for machine-local bin paths
-- [x] Harness subprocess PATH injection without shell `mise activate`
-- [x] optional local vs OCI validator provisioning with immutable image digests
+- [x] exact logical toolchain lock plus machine-local state/PATH injection
 - [x] automatic frozen project dependency setup for npm/pnpm/yarn/bun/uv/.NET
-- [x] project-pinned Node/.NET/Bun version precedence before lock resolution
-- [x] toolchain-aware `aeh doctor`
-- [x] Harness repository dogfoods its own toolchain source
+- [x] toolchain-aware `aeh doctor` and packaged-consumer smoke validation
 
-## v0.5 — scale and governance
-- [ ] repeated-run eval dashboards/statistical confidence
-- [ ] signed organization policy bundles and inheritance
-- [ ] remote execution queue/distributed workers
-- [ ] richer code-graph task-to-node mapping for parallel scheduling
-- [ ] output-schema-native runtime adapters and structured session resume
-- [ ] MCP benchmark harness for token overhead, latency, stale-data risk and permission surface
-- [ ] optional observability/issue-system/database/cluster MCP packs validated by evals
+## v0.4.17 — Control-Plane Snapshot & Hard Freeze ✅
+- [x] materialized per-run controller snapshot with per-file and composite SHA-256
+- [x] freeze project config, agent topology, toolchain lock, policies, schemas and skills
+- [x] self-hosted AEH runs freeze controller source modules as well
+- [x] selected skill content is injected from the frozen snapshot rather than mutable live files
+- [x] OPA validation resolves policies through the frozen control-plane root
+- [x] live controller drift is recorded but cannot govern the active run
+
+## v0.4.18 — Executable Multi-Worker Planner Waves ✅
+- [x] planner output becomes an executable delegation DAG rather than advisory metadata
+- [x] every requirement must be assigned to at least one implementation task
+- [x] one isolated Git worktree per task with binary patch return
+- [x] dependency-aware/concurrency-bounded waves
+- [x] scope enforcement and all-patch integration checks before wave application
+- [x] deterministic validation barrier between waves
+- [x] local or distributed task execution behind the same patch boundary
+
+## v0.4.19 — Requirement Evidence Graph ✅
+- [x] first-class run/requirement/task/file/check/finding/session/commit/PR evidence nodes
+- [x] requirement-to-task-to-file and requirement-to-validator edges
+- [x] concrete changed-file implementation evidence required
+- [x] PASS validator evidence required for declared validators
+- [x] configurable strict evidence completeness gate
+- [x] final delivery commit/PR captured into the persisted graph
+
+## v0.4.20 — Worker Sandbox Hardening ✅
+- [x] risk-driven sandbox enforcement policy
+- [x] rootless Podman worker isolation for supported OpenCode workloads
+- [x] read-only container root, ephemeral HOME, `cap-drop=ALL`, no-new-privileges and PID limits by default
+- [x] network deny when policy/agent permissions deny network
+- [x] optional CPU/RAM/tmpfs limits and immutable image digest
+- [x] explicit environment/credential allowlists; no implicit host SSH/socket projection
+- [x] legacy Podman worker path uses the same hardened policy
+
+## v0.5 — Scale & Organization Governance ✅
+- [x] repeated-run eval dashboards with variance, confidence intervals and Wilson pass-rate intervals
+- [x] SHA-pinned organization policy bundles, inheritance and optional Cosign signature verification
+- [x] filesystem and HTTP remote execution queues with leases, expiry and worker loops
+- [x] remote workers remain untrusted patch producers; coordinator owns scope checks, integration and deterministic validation
+- [x] richer Graphify node/file mapping, adjacency distance, shared-node and centrality scheduling evidence
+- [x] output-schema-native adapters where supported plus Zod fallback verification
+- [x] Codex/OpenCode/Paseo structured session-resume primitives where runtime semantics allow them
+- [x] MCP benchmark harness for configuration token footprint, probe latency, stale-data risk and permission surface
+- [x] named least-privilege MCP packs; observability pack remains opt-in until project evals justify it
+
+## Next
+- [ ] signed attestations for evidence/controller manifests themselves
+- [ ] remote worker sealed-context bundles for workloads needing full SDD text rather than delegated summaries
+- [ ] queue persistence/HA adapters beyond filesystem/simple HTTP
+- [ ] empirical MCP tool-schema token measurement through runtime-native introspection
+- [ ] statistical sequential testing and automatic model/topology promotion policies
