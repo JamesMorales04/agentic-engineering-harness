@@ -4,8 +4,16 @@ coverage/
 .env
 .env.*
 !.env.example
+.harness/generated/
+.harness/contracts/
+.harness/seals/
 .harness/reports/
+.harness/repairs/
+.harness/runs/
 .harness/telemetry/
+.harness/findings/
+.harness/evals/
+.harness/provenance/
 .graphify/
 graphify-out/
 *.log
