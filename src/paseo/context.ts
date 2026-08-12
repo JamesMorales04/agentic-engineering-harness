@@ -22,6 +22,9 @@ export interface LeadHandoffArtifact {
 export interface ContextGuardResult { state: ContextGuardState; usage: ContextUsage; handoffPath?: string; message: string; }
 
 type Runner = typeof runProcess;
+type InteractiveContextConfig = { pressureThreshold?: number; handoffThreshold?: number; hardHandoffThreshold?: number };
+
+type InteractiveWithContext = NonNullable<HarnessProjectConfig["orchestration"]>["interactive"] & { context?: InteractiveContextConfig };
 
 export async function guardLeadContext(root: string, config: HarnessProjectConfig, agentId: string, options: { brief?: string; run?: Runner } = {}): Promise<ContextGuardResult> {
   const run = options.run ?? runProcess;
@@ -36,10 +39,7 @@ export async function guardLeadContext(root: string, config: HarnessProjectConfi
 }
 
 export async function inspectPaseoContextUsage(root: string, agentId: string, run: Runner = runProcess): Promise<ContextUsage> {
-  const attempts = [
-    `paseo ls -a -g --json`,
-    `paseo logs ${quote(agentId)} --tail 5 --json`
-  ];
+  const attempts = [`paseo ls -a -g --json`, `paseo logs ${quote(agentId)} --tail 5 --json`];
   for (const command of attempts) {
     const result = await run(command, { cwd: root, timeoutMs: 30_000 });
     if (result.exitCode !== 0 || !result.stdout.trim()) continue;
@@ -67,7 +67,7 @@ export function extractContextUsage(value: unknown): ContextUsage {
 }
 
 function contextPolicy(config: HarnessProjectConfig): { pressure: number; handoff: number; hard: number } {
-  const context = config.orchestration?.interactive?.context;
+  const context = (config.orchestration?.interactive as InteractiveWithContext | undefined)?.context;
   const pressure = clamp(context?.pressureThreshold ?? 0.70);
   const handoff = Math.max(pressure, clamp(context?.handoffThreshold ?? 0.80));
   const hard = Math.max(handoff, clamp(context?.hardHandoffThreshold ?? 0.90));
