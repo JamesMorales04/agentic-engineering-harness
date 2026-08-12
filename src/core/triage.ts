@@ -23,6 +23,8 @@ export function triageChange(config: HarnessProjectConfig, input: TriageEvidence
   const disallowed = config.workflow?.quick?.disallowedDomains ?? defaultDisallowedDomains;
 
   if (!files.length) reasons.push("quick mode requires an explicit bounded file scope");
+  const nonConcrete = files.filter((file) => /[*?\[\]{}]/.test(file));
+  if (nonConcrete.length) reasons.push(`quick mode requires concrete file paths, not wildcard scope: ${nonConcrete.join(", ")}`);
   if (files.length > maxFiles) reasons.push(`scope contains ${files.length} files/patterns; quick limit is ${maxFiles}`);
   if (risk !== "low") reasons.push(`risk is ${risk}; quick mode requires low risk`);
   if (flags.length) reasons.push(`explicit escalation flags: ${flags.join(", ")}`);
@@ -34,6 +36,4 @@ export function triageChange(config: HarnessProjectConfig, input: TriageEvidence
   return { mode: quickEligible ? "quick" : "spec", quickEligible, reasons: quickEligible ? ["bounded low-risk change with no SDD escalation signals"] : reasons, evidence: { request: input.request, files, domains, risk, flags } };
 }
 
-export function formatTriageDecision(decision: TriageDecision): string {
-  return `${decision.mode.toUpperCase()} — ${decision.reasons.join("; ")}`;
-}
+export function formatTriageDecision(decision: TriageDecision): string { return `${decision.mode.toUpperCase()} — ${decision.reasons.join("; ")}`; }

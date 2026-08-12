@@ -28,6 +28,7 @@ export interface HarnessProjectConfig {
   agents?: { configPath?: string; generatedPath?: string; activeProfile?: string; required?: boolean; findingsDir?: string; };
   workflow?: {
     quick?: { maxFiles?: number; disallowedDomains?: string[]; };
+    issueIntake?: { enabled?: boolean; snapshotDir?: string; verifyDriftOnRun?: boolean; requireOpen?: boolean; plannerAgent?: string; autoHandoff?: boolean; };
     reviews?: {
       enabled?: boolean;
       reviewQuick?: boolean;
@@ -55,6 +56,8 @@ export interface HarnessProjectConfig {
       assignTokenOwner?: boolean;
       labels?: string[];
       branchPattern?: string;
+      finalizeOnAcceptance?: boolean;
+      pullRequestDraft?: boolean;
     };
     paseo?: {
       enabled?: boolean;
@@ -79,12 +82,24 @@ export interface QuickTaskMetadata {
   acceptance: string[];
   triage: { mode: TaskMode; reasons: string[]; evaluatedAt: string; };
 }
+export interface TaskIssueMetadata {
+  provider: "github";
+  repository: string;
+  number: number;
+  url: string;
+  state: string;
+  fetchedAt: string;
+  updatedAt: string;
+  contentSha256: string;
+  snapshotPath: string;
+}
 export interface TaskContract {
   version: 1;
   mode?: TaskMode;
   task: { id: string; title: string };
   quick?: QuickTaskMetadata;
-  source?: { proposal?: string; spec?: string; design?: string; tasks?: string; acceptance?: string; };
+  source?: { proposal?: string; spec?: string; design?: string; tasks?: string; acceptance?: string; issue?: string; };
+  issue?: TaskIssueMetadata;
   git?: { baseRef?: string; originatingBranch?: string };
   scope?: { allowed?: string[]; forbidden?: string[]; frozen?: string[]; };
   routing?: { intent?: string; domains?: string[]; risk?: "low" | "medium" | "high"; agent?: string; reviewers?: string[]; profile?: string; };

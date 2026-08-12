@@ -16,6 +16,7 @@ const projectSchema = z.object({
   agents: z.object({ configPath: z.string().optional(), generatedPath: z.string().optional(), activeProfile: z.string().optional(), required: z.boolean().optional(), findingsDir: z.string().optional() }).optional(),
   workflow: z.object({
     quick: z.object({ maxFiles: z.number().int().positive().optional(), disallowedDomains: z.array(z.string()).optional() }).optional(),
+    issueIntake: z.object({ enabled: z.boolean().optional(), snapshotDir: z.string().optional(), verifyDriftOnRun: z.boolean().optional(), requireOpen: z.boolean().optional(), plannerAgent: z.string().min(1).optional(), autoHandoff: z.boolean().optional() }).optional(),
     reviews: z.object({
       enabled: z.boolean().optional(), reviewQuick: z.boolean().optional(), leadAcceptance: z.boolean().optional(), leadAcceptanceQuick: z.boolean().optional(),
       maxRemediationRounds: z.number().int().nonnegative().optional(), blockingSeverities: z.array(severitySchema).optional(),
@@ -29,7 +30,7 @@ const projectSchema = z.object({
   mcp: z.object({ servers: z.record(z.string(), mcpServerSchema).optional() }).optional(),
   delivery: z.object({
     stateDir: z.string().optional(),
-    github: z.object({ enabled: z.boolean().optional(), tokenEnv: z.string().min(1).optional(), repository: z.string().regex(/^[^/]+\/[^/]+$/).optional(), apiBaseUrl: z.string().url().optional(), assignTokenOwner: z.boolean().optional(), labels: z.array(z.string()).optional(), branchPattern: z.string().min(1).optional() }).optional(),
+    github: z.object({ enabled: z.boolean().optional(), tokenEnv: z.string().min(1).optional(), repository: z.string().regex(/^[^/]+\/[^/]+$/).optional(), apiBaseUrl: z.string().url().optional(), assignTokenOwner: z.boolean().optional(), labels: z.array(z.string()).optional(), branchPattern: z.string().min(1).optional(), finalizeOnAcceptance: z.boolean().optional(), pullRequestDraft: z.boolean().optional() }).optional(),
     paseo: z.object({ enabled: z.boolean().optional(), createWorkspace: z.boolean().optional(), autoUseWorkspace: z.boolean().optional(), worktreeSlugPattern: z.string().min(1).optional() }).optional()
   }).optional(),
   memory: z.object({ provider: z.string(), required: z.boolean().optional(), benchmark: z.object({ casesDir: z.string().optional(), resultsDir: z.string().optional(), providers: z.array(memoryBenchmarkProviderSchema).optional() }).optional() }).optional(),
@@ -45,7 +46,8 @@ const requirementSchema = z.object({ id: z.string().min(1), description: z.strin
 const quickMetadataSchema = z.object({ request: z.string().min(1), acceptance: z.array(z.string().min(1)).min(1), triage: z.object({ mode: z.enum(["spec", "quick"]), reasons: z.array(z.string()), evaluatedAt: z.string() }) });
 const taskSchema = z.object({
   version: z.literal(1), mode: z.enum(["spec", "quick"]).optional(), task: z.object({ id: z.string().min(1), title: z.string().min(1) }), quick: quickMetadataSchema.optional(),
-  source: z.object({ proposal: z.string().optional(), spec: z.string().optional(), design: z.string().optional(), tasks: z.string().optional(), acceptance: z.string().optional() }).optional(),
+  source: z.object({ proposal: z.string().optional(), spec: z.string().optional(), design: z.string().optional(), tasks: z.string().optional(), acceptance: z.string().optional(), issue: z.string().optional() }).optional(),
+  issue: z.object({ provider: z.literal("github"), repository: z.string().regex(/^[^/]+\/[^/]+$/), number: z.number().int().positive(), url: z.string().url(), state: z.string().min(1), fetchedAt: z.string().min(1), updatedAt: z.string().min(1), contentSha256: z.string().regex(/^[a-f0-9]{64}$/), snapshotPath: z.string().min(1) }).optional(),
   git: z.object({ baseRef: z.string().optional(), originatingBranch: z.string().optional() }).optional(), scope: z.object({ allowed: z.array(z.string()).optional(), forbidden: z.array(z.string()).optional(), frozen: z.array(z.string()).optional() }).optional(),
   routing: z.object({ intent: z.string().optional(), domains: z.array(z.string()).optional(), risk: z.enum(["low", "medium", "high"]).optional(), agent: z.string().optional(), reviewers: z.array(z.string()).optional(), profile: z.string().optional() }).optional(),
   requirements: z.array(requirementSchema).optional(), constraints: z.object({ breakingApiChanges: z.boolean().optional(), newDependencies: z.boolean().optional(), schemaChanges: z.boolean().optional(), maxFilesChanged: z.number().int().positive().optional(), maxLinesAdded: z.number().int().nonnegative().optional(), maxLinesDeleted: z.number().int().nonnegative().optional() }).optional(),

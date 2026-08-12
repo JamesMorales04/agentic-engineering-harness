@@ -3,6 +3,7 @@ import path from "node:path";
 import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
 import { getOriginRemote } from "../core/git.js";
 import { loadTaskContract } from "../core/config.js";
+import { validateQuickTaskContract } from "../core/quick.js";
 import { validateSddChange } from "../core/sdd.js";
 import { verifyTaskSeal } from "../core/seal.js";
 import { runProcess } from "../utils/process.js";
@@ -21,10 +22,15 @@ interface GithubIssue { number: number; html_url: string; }
 interface GithubUser { login: string; }
 interface GithubRef { object: { sha: string } }
 
-export async function handoffSdd(root: string, config: HarnessProjectConfig, taskId: string): Promise<DeliveryRecord> {
-  const validation = await validateSddChange(root, taskId, config);
-  if (!validation.ok) throw new Error(`Cannot hand off ${taskId}: SDD validation failed: ${[...validation.missing, ...validation.issues].join("; ")}`);
+export async function handoffTask(root: string, config: HarnessProjectConfig, taskId: string): Promise<DeliveryRecord> {
   const contract = await loadTaskContract(root, taskId, config);
+  if (contract.mode === "quick") {
+    const validation = validateQuickTaskContract(config, contract);
+    if (!validation.ok) throw new Error(`Cannot hand off ${taskId}: QuickContract validation failed: ${validation.issues.join("; ")}`);
+  } else {
+    const validation = await validateSddChange(root, taskId, config);
+    if (!validation.ok) throw new Error(`Cannot hand off ${taskId}: SDD validation failed: ${[...validation.missing, ...validation.issues].join("; ")}`);
+  }
   await assertHandoffReady(root, contract);
   if (config.validation?.requireSeal !== false) { const seal = await verifyTaskSeal(root, contract, true); if (seal.status !== "PASS") throw new Error(`Cannot hand off ${taskId}: ${seal.message}`); }
   const originatingBranch = contract.git?.originatingBranch ?? contract.git?.baseRef ?? config.validation?.baseRef ?? "main";
@@ -32,7 +38,7 @@ export async function handoffSdd(root: string, config: HarnessProjectConfig, tas
 
   const github = config.delivery?.github;
   if (github?.enabled) {
-    const token = resolveGithubToken(github.tokenEnv); const repository = github.repository ?? await inferGithubRepository(root); const apiBase = (github.apiBaseUrl ?? "https://api.github.com").replace(/\/$/, "");
+    const token = resolveGithubToken(github.tokenEnv); const repository = record.github?.repository ?? github.repository ?? await inferGithubRepository(root); const apiBase = (github.apiBaseUrl ?? "https://api.github.com").replace(/\/$/, "");
     record.github = { repository, ...(record.github ?? {}) }; await saveDeliveryRecord(root, config, record);
     if (!record.github.issueNumber) {
       const body = await renderIssueBody(root, contract, originatingBranch); const assignees: string[] = [];
@@ -41,9 +47,16 @@ export async function handoffSdd(root: string, config: HarnessProjectConfig, tas
       record.github.issueNumber = issue.number; record.github.issueUrl = issue.html_url; record.status = "issue-created"; record.updatedAt = new Date().toISOString(); await saveDeliveryRecord(root, config, record);
     }
     if (!record.github.branch) {
-      const branch = renderPattern(github.branchPattern ?? "feature/gh-{issue}-{slug}", contract, record.github.issueNumber!); const baseRef = await githubRequest<GithubRef>(apiBase, token, `/repos/${repository}/git/ref/heads/${encodeRef(originatingBranch)}`);
-      await githubRequest(apiBase, token, `/repos/${repository}/git/refs`, { method: "POST", body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: baseRef.object.sha }) });
-      record.github.branch = branch; record.github.branchSha = baseRef.object.sha; record.status = "branch-created"; record.updatedAt = new Date().toISOString(); await saveDeliveryRecord(root, config, record);
+      const branch = renderPattern(github.branchPattern ?? "feature/gh-{issue}-{slug}", contract, record.github.issueNumber!);
+      const existing = await githubRequestMaybe<GithubRef>(apiBase, token, `/repos/${repository}/git/ref/heads/${encodeRef(branch)}`);
+      if (existing) {
+        record.github.branch = branch; record.github.branchSha = existing.object.sha;
+      } else {
+        const baseRef = await githubRequest<GithubRef>(apiBase, token, `/repos/${repository}/git/ref/heads/${encodeRef(originatingBranch)}`);
+        await githubRequest(apiBase, token, `/repos/${repository}/git/refs`, { method: "POST", body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: baseRef.object.sha }) });
+        record.github.branch = branch; record.github.branchSha = baseRef.object.sha;
+      }
+      record.status = "branch-created"; record.updatedAt = new Date().toISOString(); await saveDeliveryRecord(root, config, record);
     }
   }
 
@@ -51,8 +64,10 @@ export async function handoffSdd(root: string, config: HarnessProjectConfig, tas
   if (paseo?.enabled && paseo.createWorkspace !== false) {
     if (record.paseo?.worktreePath && !(await exists(record.paseo.worktreePath))) record.paseo = undefined;
     if (!record.paseo?.workspaceId) {
-      const branch = record.github?.branch; const issue = record.github?.issueNumber; const slug = renderPattern(paseo.worktreeSlugPattern ?? "gh-{issue}-{slug}", contract, issue);
-      const workspace = branch ? await createCheckoutWorkspace(root, branch, slug, taskId) : await createBranchOffWorkspace(root, originatingBranch, renderPattern("aeh-{task}-{slug}", contract, issue), slug, taskId);
+      const issue = record.github?.issueNumber; const slug = renderPattern(paseo.worktreeSlugPattern ?? "gh-{issue}-{slug}", contract, issue);
+      const remoteBranch = record.github?.branch;
+      const localIssueBranch = issue ? renderPattern(github?.branchPattern ?? "feature/gh-{issue}-{slug}", contract, issue) : renderPattern("aeh-{task}-{slug}", contract, issue);
+      const workspace = remoteBranch ? await createCheckoutWorkspace(root, remoteBranch, slug, taskId) : await createBranchOffWorkspace(root, originatingBranch, localIssueBranch, slug, taskId);
       if (!workspace.worktreePath) throw new Error("Paseo workspace did not expose a worktree path; task context cannot be materialized safely.");
       await materializeTaskContext(root, workspace.worktreePath, config, contract);
       record.paseo = workspace; record.status = "workspace-created"; record.updatedAt = new Date().toISOString(); await saveDeliveryRecord(root, config, record);
@@ -62,9 +77,26 @@ export async function handoffSdd(root: string, config: HarnessProjectConfig, tas
   record.status = "ready"; record.updatedAt = new Date().toISOString(); await saveDeliveryRecord(root, config, record); return record;
 }
 
+export async function handoffSdd(root: string, config: HarnessProjectConfig, taskId: string): Promise<DeliveryRecord> { return handoffTask(root, config, taskId); }
+
+export async function seedDeliveryRecordFromIssue(root: string, config: HarnessProjectConfig, contract: TaskContract, issue: { repository: string; issueNumber: number; issueUrl: string }): Promise<DeliveryRecord> {
+  const originatingBranch = contract.git?.originatingBranch ?? contract.git?.baseRef ?? config.validation?.baseRef ?? "main";
+  const existing = await loadDeliveryRecord(root, config, contract.task.id);
+  if (existing?.github?.issueNumber && existing.github.issueNumber !== issue.issueNumber) throw new Error(`Delivery record ${contract.task.id} is already bound to GitHub issue #${existing.github.issueNumber}.`);
+  if (existing?.github?.repository && existing.github.repository !== issue.repository) throw new Error(`Delivery record ${contract.task.id} is already bound to ${existing.github.repository}.`);
+  const now = new Date().toISOString();
+  const record: DeliveryRecord = existing ?? { version: 1, taskId: contract.task.id, status: "initialized", createdAt: now, updatedAt: now, originatingBranch };
+  record.github = { repository: issue.repository, issueNumber: issue.issueNumber, issueUrl: issue.issueUrl, ...(record.github ?? {}) };
+  if (record.status === "initialized") record.status = "issue-created";
+  record.updatedAt = now; await saveDeliveryRecord(root, config, record); return record;
+}
+
 export async function assertHandoffReady(root: string, contract: TaskContract): Promise<void> {
   const placeholders: string[] = [];
-  for (const [kind, relative] of Object.entries(contract.source ?? {})) { if (!relative) continue; const content = await fs.readFile(path.resolve(root, relative), "utf8"); if (/\bTODO\b|TODO observable|TODO business rule/i.test(content)) placeholders.push(kind); }
+  for (const kind of ["proposal", "spec", "design", "tasks", "acceptance"] as const) {
+    const relative = contract.source?.[kind]; if (!relative) continue;
+    const content = await fs.readFile(path.resolve(root, relative), "utf8"); if (/\bTODO\b|TODO observable|TODO business rule/i.test(content)) placeholders.push(kind);
+  }
   for (const requirement of contract.requirements ?? []) if (/\bTODO\b/i.test(requirement.description ?? "")) placeholders.push(`requirement:${requirement.id}`);
   if (placeholders.length) throw new Error(`Cannot hand off ${contract.task.id}: unresolved template placeholders remain in ${[...new Set(placeholders)].join(", ")}.`);
 }
@@ -91,9 +123,19 @@ export function parseGithubRepository(remote: string): string | undefined { cons
 export function renderPattern(pattern: string, contract: TaskContract, issue?: number): string { const slug = slugify(contract.task.title); return pattern.replaceAll("{issue}", issue ? String(issue) : "no-issue").replaceAll("{task}", slugify(contract.task.id)).replaceAll("{slug}", slug); }
 export async function renderIssueBody(root: string, contract: TaskContract, originatingBranch: string): Promise<string> { const spec = contract.source?.spec ? await fs.readFile(path.resolve(root, contract.source.spec), "utf8") : ""; const acceptance = contract.source?.acceptance ? await fs.readFile(path.resolve(root, contract.source.acceptance), "utf8") : ""; const requirements = (contract.requirements ?? []).map((item) => `- ${item.id}: ${item.description ?? "see specification"}`).join("\n"); return `**Source: Agentic Engineering Harness SDD**\n\n**Task:** ${contract.task.id}\n\n## Implementation Start Rule\nImplementation is authorized from this issue-linked branch only after the validated SDD handoff completes. The local sealed TaskContract and SDD artifacts remain normative; this issue is a delivery mirror.\n\n## Originating Branch\n${originatingBranch}\n\n## Requirements\n${requirements || "See specification."}\n\n## Specification\n${spec.trim()}\n\n## Acceptance\n\`\`\`gherkin\n${acceptance.trim()}\n\`\`\`\n\n## Harness Sources\n${Object.entries(contract.source ?? {}).map(([name, value]) => `- ${name}: \`${value}\``).join("\n")}\n`; }
 
-async function inferGithubRepository(root: string): Promise<string> { const remote = await getOriginRemote(root); const repository = remote ? parseGithubRepository(remote) : undefined; if (!repository) throw new Error("Cannot infer GitHub repository from origin; set delivery.github.repository as owner/repo."); return repository; }
-function resolveGithubToken(preferred?: string): string { for (const name of [preferred, "GH_TOKEN", "GITHUB_TOKEN", "GITHUB_PAT"].filter((value): value is string => Boolean(value))) { const token = process.env[name]; if (token) return token; } throw new Error(`GitHub delivery is enabled but no token is available. Set ${preferred ?? "GH_TOKEN"} (or GITHUB_TOKEN/GITHUB_PAT).`); }
-async function githubRequest<T = unknown>(base: string, token: string, endpoint: string, init: RequestInit = {}): Promise<T> { const response = await fetch(`${base}${endpoint}`, { ...init, headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${token}`, "X-GitHub-Api-Version": "2022-11-28", "Content-Type": "application/json", ...(init.headers ?? {}) } }); const text = await response.text(); if (!response.ok) throw new Error(`GitHub API ${init.method ?? "GET"} ${endpoint} failed (${response.status}): ${text.slice(0, 1000)}`); return text ? JSON.parse(text) as T : undefined as T; }
+export async function inferGithubRepository(root: string): Promise<string> { const remote = await getOriginRemote(root); const repository = remote ? parseGithubRepository(remote) : undefined; if (!repository) throw new Error("Cannot infer GitHub repository from origin; set delivery.github.repository as owner/repo."); return repository; }
+export function resolveGithubTokenOptional(preferred?: string): string | undefined { for (const name of [preferred, "GH_TOKEN", "GITHUB_TOKEN", "GITHUB_PAT"].filter((value): value is string => Boolean(value))) { const token = process.env[name]; if (token) return token; } return undefined; }
+export function resolveGithubToken(preferred?: string): string { const token = resolveGithubTokenOptional(preferred); if (token) return token; throw new Error(`GitHub delivery is enabled but no token is available. Set ${preferred ?? "GH_TOKEN"} (or GITHUB_TOKEN/GITHUB_PAT).`); }
+export async function githubRequest<T = unknown>(base: string, token: string | undefined, endpoint: string, init: RequestInit = {}): Promise<T> {
+  const headers = new Headers(init.headers);
+  headers.set("Accept", "application/vnd.github+json");
+  headers.set("X-GitHub-Api-Version", "2022-11-28");
+  headers.set("Content-Type", "application/json");
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const response = await fetch(`${base}${endpoint}`, { ...init, headers });
+  const text = await response.text(); if (!response.ok) throw new Error(`GitHub API ${init.method ?? "GET"} ${endpoint} failed (${response.status}): ${text.slice(0, 1000)}`); return text ? JSON.parse(text) as T : undefined as T;
+}
+async function githubRequestMaybe<T>(base: string, token: string | undefined, endpoint: string): Promise<T | undefined> { try { return await githubRequest<T>(base, token, endpoint); } catch (error) { if (/failed \(404\)/.test(String(error))) return undefined; throw error; } }
 async function createCheckoutWorkspace(root: string, branch: string, slug: string, title: string): Promise<{ workspaceId?: string; worktreePath?: string }> { const local = await runProcess(`git show-ref --verify --quiet refs/heads/${quoteRef(branch)}`, { cwd: root }); if (local.exitCode !== 0) { const fetchResult = await runProcess(`git fetch origin ${quote(`refs/heads/${branch}:refs/heads/${branch}`)}`, { cwd: root, timeoutMs: 120_000 }); if (fetchResult.exitCode !== 0) throw new Error(`Failed to fetch issue branch ${branch}: ${fetchResult.stderr || fetchResult.stdout}`); } return runPaseoWorkspace(root, `--mode checkout-branch --branch ${quote(branch)}`, slug, title, branch); }
 async function createBranchOffWorkspace(root: string, base: string, branch: string, slug: string, title: string): Promise<{ workspaceId?: string; worktreePath?: string }> { return runPaseoWorkspace(root, `--mode branch-off --new-branch ${quote(branch)} --base ${quote(base)}`, slug, title, branch); }
 async function runPaseoWorkspace(root: string, mode: string, slug: string, title: string, branch: string): Promise<{ workspaceId?: string; worktreePath?: string }> {

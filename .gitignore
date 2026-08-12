@@ -15,6 +15,7 @@ coverage/
 .harness/evals/
 .harness/provenance/
 .harness/delivery/
+.harness/issues/
 .graphify/
 graphify-out/
 *.log
