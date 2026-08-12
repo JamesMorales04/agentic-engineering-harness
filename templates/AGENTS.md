@@ -14,7 +14,7 @@ Do not use the informational exception for an ad-hoc engineering review. `aeh st
 
 ## Lead agent — thin orchestrator
 
-The lead owns user intent, high-level routing, true ambiguity and final semantic acceptance. It does **not** own routine repository exploration, environment repair, SDD authoring or implementation.
+The lead owns user intent, high-level routing, true ambiguity and final semantic acceptance. It does **not** own routine repository exploration, environment repair, SDD authoring, implementation or a long-running controller shell.
 
 Delegate by default:
 
@@ -24,17 +24,19 @@ Delegate by default:
 - SPEC authoring -> `spec-manager` using OpenSpec;
 - implementation/validation/review -> Harness-selected workers.
 
-Prefer Paseo's injected orchestration tools and `/paseo-handoff` over hand-written shell orchestration when available. Preserve the lead context for decisions rather than raw logs and source dumps.
+Prefer Paseo's injected orchestration tools and `/paseo-handoff` for bounded conversational delegation. Long deterministic AUDIT/RUN workflows use the detached AEH operation controller. The controller is deterministic infrastructure, not an LLM agent; real planner/reviewer/worker sessions appear independently in Paseo and are correlated by AEH operation/task labels.
 
 For engineering work:
 
 1. Check context pressure before broad work. Around 70% stop exploratory work; at 80% hand off proactively to a fresh lead using the deterministic `.harness/paseo/handoffs/` artifact; at 90% handoff is mandatory rather than normal compaction-and-continue.
 2. Classify `INFORMATIONAL | AUDIT | CHANGE` through AEH when not trivially informational.
-3. AUDIT -> `aeh audit`.
+3. Interactive AUDIT -> `aeh operation start audit "<request>"`; use `aeh operation status <id>` and `aeh paseo agents --operation <id>` for progress. Synchronous `aeh audit` remains a non-interactive compatibility path.
 4. CHANGE -> delegate discovery/planning, then obey deterministic QUICK/SPEC.
-5. QUICK -> bounded QuickContract and AEH run.
-6. SPEC -> delegate to `spec-manager`; the lead must not write proposal/spec/design/tasks itself. OpenSpec is the authoring source, then `aeh spec compile` produces the traceable native AEH SDD/TaskContract used for sealing/execution.
+5. QUICK -> bounded QuickContract; interactive execution -> `aeh operation start run <taskId>`.
+6. SPEC -> delegate to `spec-manager`; the lead must not write proposal/spec/design/tasks itself. OpenSpec is the authoring source, then `aeh spec compile` produces the traceable native AEH SDD/TaskContract used for sealing/execution; interactive execution then uses `aeh operation start run <taskId>`.
 7. Environment/tool failures -> delegate bounded recovery to `environment-manager`; do not personally execute long npm/git/Paseo diagnostic sequences.
+
+Operation-local Paseo workspaces are only UI/execution grouping. They do not imply a Git branch/worktree; delivery isolation remains a separate policy. Detached operations and their top-level agents survive lead context rotation.
 
 After workers finish, use actual deterministic reports/evidence and the final semantic gate. Never accept work solely from a worker summary.
 
@@ -55,7 +57,7 @@ If the plan conflicts with reality, report the blocker instead of silently redes
 ## Source-of-truth order
 
 1. Current Git-versioned code and schemas.
-2. Frozen TaskContract and compiled AEH SDD artifacts for CHANGE work; persisted AuditReport for prior AUDIT evidence.
+2. Frozen TaskContract and compiled AEH SDD artifacts for CHANGE work; persisted AuditReport and operation record for prior AUDIT evidence.
 3. OpenSpec source artifacts as pre-freeze authoring provenance.
 4. ADRs and project policy.
 5. Executable acceptance criteria and deterministic validator evidence.
