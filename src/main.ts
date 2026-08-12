@@ -3,6 +3,7 @@ import path from "node:path";
 import process from "node:process";
 import { loadProjectConfig } from "./core/config.js";
 import { cancelOperation, executeOperation, startDetachedOperation, waitForOperation } from "./operations/controller.js";
+import { serveOperationMcp } from "./operations/mcp.js";
 import { loadOperation, type AuditOperationPayload, type RunOperationPayload } from "./operations/state.js";
 import { listManagedPaseoAgents } from "./paseo/runtime.js";
 
@@ -27,7 +28,8 @@ async function runOperationCommand(argv: string[]): Promise<void> {
   if (sub === "status") return runOperationStatus(argv.slice(1));
   if (sub === "wait") return runOperationWait(argv.slice(1));
   if (sub === "cancel") return runOperationCancel(argv.slice(1));
-  throw new Error("aeh operation requires start, status, wait, cancel, or internal execute.");
+  if (sub === "mcp") return serveOperationMcp();
+  throw new Error("aeh operation requires start, status, wait, cancel, mcp, or internal execute.");
 }
 
 async function runOperationStart(argv: string[]): Promise<void> {
