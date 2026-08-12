@@ -198,9 +198,11 @@ function buildCreateOptions(options: PaseoSdkAgentOptions, includePrompt: boolea
   if (options.systemPrompt) config.systemPrompt = options.systemPrompt;
   if (options.mcpServers && Object.keys(options.mcpServers).length) config.mcpServers = options.mcpServers;
   if (options.toolPolicy?.preapproved.length) config.toolPolicy = options.toolPolicy;
-  const createOptions: Record<string, unknown> = { config, title: options.title };
+  // Paseo 0.3.1 resolves AgentSessionConfig from top-level cwd plus config,
+  // and still requires cwd when workspaceId is present. workspaceId controls
+  // placement; cwd remains the provider execution directory.
+  const createOptions: Record<string, unknown> = { config, title: options.title, cwd: options.cwd };
   if (options.workspaceId) createOptions.workspaceId = options.workspaceId;
-  else createOptions.cwd = options.cwd;
   if (includePrompt && options.prompt !== undefined) createOptions.initialPrompt = options.prompt;
   if (includePrompt && options.outputSchema) createOptions.outputSchema = options.outputSchema;
   if (options.labels && Object.keys(options.labels).length) createOptions.labels = options.labels;
