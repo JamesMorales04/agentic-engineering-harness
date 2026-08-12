@@ -29,7 +29,8 @@ describe("toolchain", () => {
   it("resolves active capabilities plus transitive dependencies", async () => {
     const root = await fixture(); const config = await loadToolchainConfig(root, project); const resolved = await resolveToolchain(root, project, config);
     expect(resolved.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["git", "node", "paseo", "uv", "graphify", "opa", "opengrep", "trivy"]));
-    expect(resolved.tools.find((tool) => tool.name === "uv")?.selectedBy).toContain("dependency:graphify");
+    expect(resolved.tools.find((tool) => tool.name === "uv")?.selectedBy).toContain("activation:code-intelligence:graphify");
+    expect(resolved.tools.find((tool) => tool.name === "graphify")?.dependsOn).toContain("uv");
   });
 
   it("expands named profiles deterministically", async () => {
