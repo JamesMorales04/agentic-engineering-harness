@@ -9,15 +9,18 @@ export interface MiseAdapter {
 }
 
 export async function resolveMiseAdapter(root: string, minimumVersion?: string): Promise<MiseAdapter> {
-  const candidates = ["mise", "npm exec --yes -- mise"];
+  const bootstrap = minimumVersion
+    ? `npm exec --yes --package=mise@${shellBare(minimumVersion)} -- mise`
+    : "npm exec --yes --package=mise -- mise";
+  const candidates = ["mise", bootstrap];
   for (const command of candidates) {
-    const result = await runProcess(`${command} --version`, { cwd: root, timeoutMs: 30_000, toolchain: false });
+    const result = await runProcess(`${command} --version`, { cwd: root, timeoutMs: 60_000, toolchain: false });
     if (result.exitCode !== 0) continue;
     const version = parseVersion(result.stdout || result.stderr);
     if (minimumVersion && version && compareVersions(version, minimumVersion) < 0) continue;
     return { command, version };
   }
-  throw new Error(`mise ${minimumVersion ? `>= ${minimumVersion} ` : ""}is required for toolchain setup. Installing AEH through npm includes mise; alternatively install mise from https://mise.run.`);
+  throw new Error(`mise ${minimumVersion ? `>= ${minimumVersion} ` : ""}is required for toolchain setup. AEH attempted the configured/pinned npm bootstrap; install mise explicitly if that bootstrap is unavailable.`);
 }
 
 export async function writeMiseConfig(
@@ -59,5 +62,6 @@ export async function miseBinPaths(root: string, adapter: MiseAdapter): Promise<
 
 function tomlKey(value: string): string { return /^[A-Za-z0-9_-]+$/.test(value) ? value : JSON.stringify(value); }
 function shell(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }
+function shellBare(value: string): string { if (!/^[A-Za-z0-9._-]+$/.test(value)) throw new Error(`Unsafe mise bootstrap version: ${value}`); return value; }
 function parseVersion(value: string): string | undefined { return value.match(/(\d{4}\.\d+(?:\.\d+)?|\d+\.\d+(?:\.\d+)?)/)?.[1]; }
 function compareVersions(left: string, right: string): number { const a = left.split(".").map(Number), b = right.split(".").map(Number); for (let i = 0; i < Math.max(a.length, b.length); i++) { const diff = (a[i] ?? 0) - (b[i] ?? 0); if (diff) return diff; } return 0; }
