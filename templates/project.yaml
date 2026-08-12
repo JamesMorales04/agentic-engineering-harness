@@ -23,6 +23,13 @@ workflow:
       - migration
       - api-contract
       - multi-tenancy
+  issueIntake:
+    enabled: true
+    snapshotDir: .harness/issues
+    verifyDriftOnRun: true
+    requireOpen: true
+    plannerAgent: planner
+    autoHandoff: true
   reviews:
     enabled: true
     reviewQuick: false
@@ -110,7 +117,7 @@ mcp:
       enabled: false
       timeoutMs: 10000
 
-# Explicit opt-in delivery mirror. Tokens are read from environment only and never persisted.
+# GitHub reads can use GH_TOKEN/GITHUB_TOKEN when needed. Delivery writes remain explicit opt-in.
 delivery:
   stateDir: .harness/delivery
   github:
