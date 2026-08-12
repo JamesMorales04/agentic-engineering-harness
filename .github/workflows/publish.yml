@@ -1,34 +1,100 @@
 name: publish-npm
 
 on:
-  release:
-    types: [published]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version strategy when the current package version is already published
+        required: true
+        default: auto
+        type: choice
+        options: [auto, current, patch, minor, major]
 
 permissions:
-  contents: read
+  contents: write
   id-token: write
+
+concurrency:
+  group: publish-npm-main
+  cancel-in-progress: false
 
 jobs:
   publish:
+    if: github.event_name == 'workflow_dispatch' || vars.AEH_AUTO_PUBLISH != 'false'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
       - uses: actions/setup-node@v6
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
+
       - run: npm ci
-      - name: Verify release tag matches package version
+
+      - name: Resolve release version
+        id: version
+        shell: bash
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          REQUESTED_BUMP: ${{ github.event_name == 'workflow_dispatch' && inputs.bump || 'auto' }}
+        run: node scripts/release-version.mjs "$REQUESTED_BUMP" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Synchronize package metadata
+        if: steps.version.outputs.should_publish == 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: npm version "$RELEASE_VERSION" --no-git-tag-version --allow-same-version
+
+      - name: Validate release candidate
+        if: steps.version.outputs.should_publish == 'true'
+        run: npm run release:check
+
+      - name: Commit version and create tag
+        if: steps.version.outputs.should_publish == 'true'
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          node --input-type=module <<'NODE'
-          import p from "./package.json" with { type: "json" };
-          if (process.env.RELEASE_TAG !== `v${p.version}`) {
-            console.error(`Release ${process.env.RELEASE_TAG} does not match package v${p.version}`);
-            process.exit(1);
-          }
-          NODE
-      - run: npm run release:check
-      - run: npm publish
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(release): v${RELEASE_VERSION} [skip ci]"
+            git push origin HEAD:main
+          fi
+          if ! git rev-parse -q --verify "refs/tags/v${RELEASE_VERSION}" >/dev/null; then
+            git tag -a "v${RELEASE_VERSION}" -m "v${RELEASE_VERSION}"
+            git push origin "v${RELEASE_VERSION}"
+          fi
+
+      - name: Publish to npm
+        if: steps.version.outputs.should_publish == 'true'
+        shell: bash
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -n "${NPM_TOKEN:-}" ]; then
+            export NODE_AUTH_TOKEN="$NPM_TOKEN"
+          fi
+          npm publish
+
+      - name: Create GitHub Release
+        if: steps.version.outputs.should_publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release view "v${RELEASE_VERSION}" >/dev/null 2>&1 || \
+            gh release create "v${RELEASE_VERSION}" --verify-tag --generate-notes --title "v${RELEASE_VERSION}"
+
+      - name: Nothing to publish
+        if: steps.version.outputs.should_publish != 'true'
+        run: echo "Current package version is already published and bump=current was requested."
