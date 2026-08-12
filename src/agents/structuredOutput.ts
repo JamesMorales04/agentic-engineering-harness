@@ -1,19 +1,16 @@
 export function extractMarkedJson(stdout: string, stderr = ""): unknown {
-  const direct = parseWholeJson(stdout.trim()); if (direct !== undefined) return direct;
   const candidates: string[] = [];
   collectCandidateStrings(stdout, candidates);
   collectCandidateStrings(stderr, candidates);
-  for (const candidate of candidates.reverse()) {
+  for (const candidate of [...candidates].reverse()) {
     const marker = "AEH_RESULT_JSON=";
     const index = candidate.lastIndexOf(marker);
-    if (index >= 0) {
-      const raw = candidate.slice(index + marker.length).trim();
-      const parsed = parseJsonPrefix(raw);
-      if (parsed !== undefined) return parsed;
-    }
-    const rawObject = parseWholeJson(candidate.trim());
-    if (rawObject && typeof rawObject === "object" && !Array.isArray(rawObject)) return rawObject;
+    if (index < 0) continue;
+    const parsed = parseJsonPrefix(candidate.slice(index + marker.length).trim());
+    if (parsed !== undefined) return parsed;
   }
+  const stdoutJson = parseWholeJson(stdout.trim()); if (stdoutJson !== undefined) return stdoutJson;
+  const stderrJson = parseWholeJson(stderr.trim()); if (stderrJson !== undefined) return stderrJson;
   throw new Error("Agent output did not contain valid native JSON or an AEH_RESULT_JSON=<json> marker.");
 }
 
