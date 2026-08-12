@@ -10,6 +10,27 @@ agents:
   required: true
   findingsDir: .harness/findings
 
+workflow:
+  quick:
+    maxFiles: 5
+    disallowedDomains:
+      - security
+      - authentication
+      - authorization
+      - architecture
+      - database
+      - schema
+      - migration
+      - api-contract
+      - multi-tenancy
+  reviews:
+    enabled: true
+    reviewQuick: false
+    leadAcceptance: true
+    leadAcceptanceQuick: false
+    maxRemediationRounds: 1
+    blockingSeverities: [critical, high, medium]
+
 orchestration:
   provider: paseo
   required: false

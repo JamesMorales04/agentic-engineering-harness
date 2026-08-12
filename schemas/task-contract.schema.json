@@ -5,7 +5,9 @@
   "required": ["version", "task"],
   "properties": {
     "version": { "const": 1 },
+    "mode": { "enum": ["spec", "quick"] },
     "task": { "type": "object", "required": ["id", "title"], "properties": { "id": { "type": "string" }, "title": { "type": "string" } } },
+    "quick": { "type": "object", "properties": { "request": { "type": "string" }, "acceptance": { "type": "array", "items": { "type": "string" } }, "triage": { "type": "object" } } },
     "source": { "type": "object" }, "git": { "type": "object" }, "scope": { "type": "object" },
     "routing": { "type": "object", "properties": { "intent": { "type": "string" }, "domains": { "type": "array", "items": { "type": "string" } }, "risk": { "enum": ["low", "medium", "high"] }, "agent": { "type": "string" }, "reviewers": { "type": "array", "items": { "type": "string" } }, "profile": { "type": "string" } } },
     "requirements": { "type": "array" }, "constraints": { "type": "object" }, "impact": { "type": "object" }, "repair": { "type": "object" }, "verification": { "type": "object" }

@@ -11,7 +11,7 @@
     "workhorse": { "runtime": "opencode", "provider": "opencode-go", "model": "deepseek-v4-flash" }
   },
   "agents": {
-    "lead": { "role": "orchestrator", "execution": { "model": "@brain" }, "permissions": { "read": "allow", "write": "deny", "delegate": "allow", "review": "allow", "validate": "deny" }, "outputContract": "orchestrator" },
+    "lead": { "role": "orchestrator", "execution": { "model": "@brain" }, "skills": ["engineering-workflow", "lead-engineer"], "permissions": { "read": "allow", "write": "deny", "delegate": "allow", "review": "allow", "validate": "deny" }, "outputContract": "orchestrator" },
     "planner": { "role": "planner", "execution": { "model": "@brain" }, "permissions": { "read": "allow", "write": "deny", "delegate": "allow", "validate": "deny" }, "outputContract": "planner" },
     "implementation-worker": { "role": "implementer", "domains": ["*"], "execution": { "model": "@workhorse" }, "permissions": { "read": "allow", "write": "allow", "shell": "allow", "delegate": "deny", "gitWrite": "deny" }, "outputContract": "implementer" },
     // Native OpenCode agents are guaranteed with direct/podman transport because OpenCode exposes `run --agent`.
