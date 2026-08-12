@@ -31,22 +31,22 @@ tools:
   git: { kind: system, command: git, required: true, activateWhen: [always] }
   node: { kind: mise, command: node, source: node, version: "22", required: true, activateWhen: [always] }
   codex: { kind: mise, command: codex, source: "npm:@openai/codex", version: latest, activateWhen: [runtime:codex] }
-  opencode: { kind: mise, command: opencode, source: "github:anomalyco/opencode", version: latest, activateWhen: [runtime:opencode] }
+  opencode: { kind: mise, command: opencode, source: "aqua:anomalyco/opencode", version: latest, activateWhen: [runtime:opencode] }
   paseo: { kind: mise, command: paseo, source: "npm:@getpaseo/cli", version: latest, activateWhen: [orchestration:paseo, delivery:paseo] }
   uv: { kind: mise, command: uv, source: uv, version: latest, activateWhen: [code-intelligence:graphify] }
   graphify: { kind: mise, command: graphify, source: "pipx:graphifyy", version: latest, dependsOn: [uv], activateWhen: [code-intelligence:graphify] }
   opa:
     kind: mise
     command: opa
-    source: "github:open-policy-agent/opa"
+    source: "aqua:open-policy-agent/opa"
     version: latest
     activateWhen: [validation:opa]
     container: { image: docker.io/openpolicyagent/opa:latest-static }
-  opengrep: { kind: mise, command: opengrep, source: "github:opengrep/opengrep", version: latest, activateWhen: [security-tool:opengrep, validator:opengrep] }
+  opengrep: { kind: mise, command: opengrep, source: "aqua:opengrep/opengrep", version: latest, activateWhen: [security-tool:opengrep, validator:opengrep] }
   trivy:
     kind: mise
     command: trivy
-    source: "github:aquasecurity/trivy"
+    source: "aqua:aquasecurity/trivy"
     version: latest
     activateWhen: [security-tool:trivy, validator:trivy]
     container: { image: ghcr.io/aquasecurity/trivy:latest }
