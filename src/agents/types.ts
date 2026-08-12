@@ -1,0 +1,192 @@
+export type AgentRole = "orchestrator" | "planner" | "implementer" | "reviewer" | "validator" | "explorer" | "librarian" | "coordinator" | "escalation" | string;
+export type AgentRisk = "low" | "medium" | "high";
+export type PermissionDecision = "allow" | "ask" | "deny";
+
+export interface RuntimeCapabilities {
+  nativeAgent?: boolean;
+  modelSelection?: boolean;
+  variantSelection?: boolean;
+  sessions?: boolean;
+  structuredOutput?: boolean;
+}
+
+export interface RuntimeDefinition {
+  adapter: "codex" | "opencode" | string;
+  paseoProvider?: string;
+  command?: string;
+  defaultArgs?: string[];
+  capabilities?: RuntimeCapabilities;
+}
+
+export interface ModelDefinition {
+  runtime: string;
+  provider?: string;
+  model: string;
+  variant?: string;
+  temperature?: number;
+  options?: Record<string, unknown>;
+}
+
+export interface AgentPermissions {
+  read?: PermissionDecision;
+  write?: PermissionDecision;
+  shell?: PermissionDecision;
+  network?: PermissionDecision;
+  delegate?: PermissionDecision;
+  review?: PermissionDecision;
+  validate?: PermissionDecision;
+  gitWrite?: PermissionDecision;
+}
+
+export interface AgentExecutionDefinition {
+  model: string;
+  runtime?: string;
+  nativeAgent?: string;
+  variant?: string;
+  args?: string[];
+}
+
+export interface AgentDefinition {
+  role: AgentRole;
+  domains?: string[];
+  description?: string;
+  execution: AgentExecutionDefinition;
+  temperature?: number;
+  skills?: string[];
+  mcps?: string[];
+  promptPath?: string;
+  orchestratorPromptPath?: string;
+  outputContract?: string;
+  permissions?: AgentPermissions;
+  capabilities?: string[];
+  disabled?: boolean;
+}
+
+export interface AgentOverride {
+  role?: AgentRole;
+  domains?: string[];
+  execution?: Partial<AgentExecutionDefinition>;
+  temperature?: number;
+  skills?: string[];
+  mcps?: string[];
+  promptPath?: string;
+  orchestratorPromptPath?: string;
+  outputContract?: string;
+  permissions?: AgentPermissions;
+  capabilities?: string[];
+  disabled?: boolean;
+}
+
+export interface AgentProfile {
+  description?: string;
+  models?: Record<string, Partial<ModelDefinition>>;
+  agents?: Record<string, AgentOverride>;
+}
+
+export interface RoutingCondition {
+  intent?: string | string[];
+  domains?: string[];
+  files?: string[];
+  risk?: AgentRisk | AgentRisk[];
+}
+
+export interface RoutingRule {
+  id: string;
+  priority?: number;
+  when: RoutingCondition;
+  use?: string;
+  reviewers?: string[];
+  validators?: string[];
+}
+
+export type FailureType =
+  | "PATCH_CONTEXT_MISMATCH"
+  | "TOOL_FAILURE"
+  | "MISSING_CONTEXT"
+  | "WRONG_AGENT"
+  | "VALIDATION_FAILURE"
+  | "REVIEW_FAILURE"
+  | "AMBIGUOUS_OUTPUT"
+  | "CONFLICTING_RESULTS";
+
+export interface RecoveryStep {
+  action: "same-agent" | "reroute" | "agent" | "lead" | "stop";
+  agent?: string;
+}
+
+export interface CouncilDefinition {
+  members: Array<{ model: string; agent?: string }>;
+  executionMode?: "parallel" | "sequential";
+}
+
+export interface AgentTopologySource {
+  version: 1;
+  activeProfile?: string;
+  skillRoots?: string[];
+  runtimes: Record<string, RuntimeDefinition>;
+  models: Record<string, ModelDefinition>;
+  agents: Record<string, AgentDefinition>;
+  profiles?: Record<string, AgentProfile>;
+  routing?: RoutingRule[];
+  recovery?: Partial<Record<FailureType, RecoveryStep[]>>;
+  councils?: Record<string, CouncilDefinition>;
+}
+
+export interface ResolvedModelDefinition extends ModelDefinition {
+  alias: string;
+  id: string;
+}
+
+export interface ResolvedAgentDefinition extends Omit<AgentDefinition, "execution"> {
+  name: string;
+  execution: AgentExecutionDefinition;
+  runtime: RuntimeDefinition & { name: string };
+  model: ResolvedModelDefinition;
+}
+
+export interface ResolvedAgentTopology {
+  version: 1;
+  profile?: string;
+  skillRoots: string[];
+  runtimes: Record<string, RuntimeDefinition>;
+  models: Record<string, ResolvedModelDefinition>;
+  agents: Record<string, ResolvedAgentDefinition>;
+  routing: RoutingRule[];
+  recovery: Partial<Record<FailureType, RecoveryStep[]>>;
+  councils: Record<string, CouncilDefinition>;
+}
+
+export interface AgentRouteContext {
+  intent: string;
+  domains?: string[];
+  files?: string[];
+  risk?: AgentRisk;
+}
+
+export interface ResolvedRoute {
+  ruleIds: string[];
+  agent?: string;
+  reviewers: string[];
+  validators: string[];
+  reasons: string[];
+}
+
+export interface AgentExecutionSelection {
+  profile?: string;
+  logicalAgent: string;
+  role: AgentRole;
+  domains: string[];
+  runtimeName: string;
+  runtimeAdapter: string;
+  paseoProvider: string;
+  modelAlias: string;
+  modelId: string;
+  variant?: string;
+  nativeAgent?: string;
+  temperature?: number;
+  skills: string[];
+  mcps: string[];
+  permissions: AgentPermissions;
+  outputContract?: string;
+  args: string[];
+}

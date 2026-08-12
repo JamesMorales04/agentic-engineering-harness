@@ -1,0 +1,110 @@
+{
+  "version": 1,
+  "activeProfile": "balanced",
+  "skillRoots": [".harness/skills", ".opencode/skills"],
+
+  // Runtime = the CLI that actually executes the logical agent.
+  "runtimes": {
+    "codex": {
+      "adapter": "codex",
+      "paseoProvider": "codex",
+      "command": "codex",
+      "capabilities": { "nativeAgent": false, "modelSelection": true, "variantSelection": true, "sessions": true }
+    },
+    "opencode": {
+      "adapter": "opencode",
+      "paseoProvider": "opencode",
+      "command": "opencode",
+      "capabilities": { "nativeAgent": true, "modelSelection": true, "variantSelection": true, "sessions": true, "structuredOutput": true }
+    }
+  },
+
+  // Aliases make model/provider swaps one-line changes.
+  "models": {
+    "brain": {
+      "runtime": "codex",
+      "provider": "openai",
+      "model": "gpt-5.6-luna",
+      "variant": "max"
+    },
+    "workhorse": {
+      "runtime": "opencode",
+      "provider": "opencode-go",
+      "model": "deepseek-v4-flash"
+    }
+  },
+
+  "agents": {
+    "lead": {
+      "role": "orchestrator",
+      "execution": { "model": "@brain" },
+      "permissions": { "read": "allow", "write": "deny", "delegate": "allow", "review": "allow", "validate": "deny" },
+      "outputContract": "orchestrator"
+    },
+    "planner": {
+      "role": "planner",
+      "execution": { "model": "@brain" },
+      "permissions": { "read": "allow", "write": "deny", "delegate": "allow", "validate": "deny" },
+      "outputContract": "planner"
+    },
+    "implementation-worker": {
+      "role": "implementer",
+      "domains": ["*"],
+      "execution": { "model": "@workhorse", "nativeAgent": "build" },
+      "permissions": { "read": "allow", "write": "allow", "shell": "allow", "delegate": "deny", "gitWrite": "deny" },
+      "outputContract": "implementer"
+    },
+    "architecture-reviewer": {
+      "role": "reviewer",
+      "domains": ["architecture"],
+      "execution": { "model": "@brain" },
+      "permissions": { "read": "allow", "write": "deny", "review": "allow" },
+      "outputContract": "reviewer"
+    },
+    "validator": {
+      "role": "validator",
+      "execution": { "model": "@workhorse", "nativeAgent": "plan" },
+      "permissions": { "read": "allow", "write": "deny", "shell": "allow", "validate": "allow" },
+      "outputContract": "validator"
+    }
+  },
+
+  "profiles": {
+    "economy": {
+      "agents": {
+        "*": { "execution": { "model": "@workhorse" } },
+        "lead": { "execution": { "model": "@brain" } }
+      }
+    },
+    "balanced": {
+      "agents": {
+        "*-reviewer": { "execution": { "model": "@workhorse" } },
+        "architecture-reviewer": { "execution": { "model": "@brain" } },
+        "planner": { "execution": { "model": "@brain" } },
+        "lead": { "execution": { "model": "@brain" } }
+      }
+    },
+    "maximum-quality": {
+      "agents": {
+        "*-reviewer": { "execution": { "model": "@brain" } },
+        "planner": { "execution": { "model": "@brain" } },
+        "lead": { "execution": { "model": "@brain" } }
+      }
+    }
+  },
+
+  "routing": [
+    { "id": "default-implementation", "priority": 0, "when": { "intent": "implement" }, "use": "implementation-worker", "reviewers": ["architecture-reviewer"], "validators": ["validator"] }
+  ],
+
+  "recovery": {
+    "PATCH_CONTEXT_MISMATCH": [{ "action": "same-agent" }, { "action": "lead" }],
+    "TOOL_FAILURE": [{ "action": "same-agent" }, { "action": "lead" }],
+    "MISSING_CONTEXT": [{ "action": "same-agent" }, { "action": "lead" }],
+    "WRONG_AGENT": [{ "action": "reroute" }, { "action": "lead" }],
+    "VALIDATION_FAILURE": [{ "action": "same-agent" }, { "action": "lead" }],
+    "REVIEW_FAILURE": [{ "action": "same-agent" }, { "action": "lead" }],
+    "AMBIGUOUS_OUTPUT": [{ "action": "same-agent" }, { "action": "lead" }],
+    "CONFLICTING_RESULTS": [{ "action": "lead" }]
+  }
+}

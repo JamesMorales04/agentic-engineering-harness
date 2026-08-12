@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/agentic-engineering-harness/agent-topology.schema.json",
+  "title": "Agentic Engineering Harness Agent Topology",
+  "type": "object",
+  "required": ["version", "runtimes", "models", "agents"],
+  "properties": {
+    "version": { "const": 1 },
+    "activeProfile": { "type": "string" },
+    "skillRoots": { "type": "array", "items": { "type": "string" } },
+    "runtimes": { "type": "object", "additionalProperties": { "type": "object", "required": ["adapter"] } },
+    "models": { "type": "object", "additionalProperties": { "type": "object", "required": ["runtime", "model"] } },
+    "agents": { "type": "object", "additionalProperties": { "type": "object", "required": ["role", "execution"] } },
+    "profiles": { "type": "object" },
+    "routing": { "type": "array" },
+    "recovery": { "type": "object" },
+    "councils": { "type": "object" }
+  },
+  "additionalProperties": false
+}
