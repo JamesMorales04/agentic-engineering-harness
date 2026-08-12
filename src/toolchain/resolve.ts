@@ -1,3 +1,5 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import type { HarnessProjectConfig } from "../core/types.js";
 import { loadResolvedAgentTopology } from "../agents/config.js";
 import type { ResolvedToolchain, ToolchainConfig, ToolchainToolDefinition } from "./types.js";
@@ -62,7 +64,25 @@ async function activeCapabilities(root: string, project: HarnessProjectConfig): 
   if (project.security?.sandbox?.provider) result.add(`sandbox:${project.security.sandbox.provider}`);
   for (const name of project.security?.tools ?? []) result.add(`security-tool:${name}`);
   for (const validator of project.validation?.validators ?? []) result.add(`validator:${validator.adapter}`);
+  await addProjectCapabilities(root, result);
   return result;
+}
+
+async function addProjectCapabilities(root: string, result: Set<string>): Promise<void> {
+  const files = new Set(await fs.readdir(root).catch(() => [] as string[]));
+  if (files.has("package.json")) result.add("project:node");
+  if (files.has("bun.lock") || files.has("bun.lockb")) result.add("project:bun");
+  if (files.has("pnpm-lock.yaml")) result.add("project:pnpm");
+  if (files.has("yarn.lock")) result.add("project:yarn");
+  if (files.has("uv.lock") || files.has("pyproject.toml")) result.add("project:python");
+  if ([...files].some((name) => name.endsWith(".sln") || name.endsWith(".slnx") || name.endsWith(".csproj")) || files.has("global.json")) result.add("project:dotnet");
+  if (files.has("go.mod")) result.add("project:go");
+  if (files.has("Cargo.toml")) result.add("project:rust");
+  try {
+    const pkg = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8")) as { packageManager?: unknown };
+    const manager = typeof pkg.packageManager === "string" ? pkg.packageManager.split("@")[0] : undefined;
+    if (manager) result.add(`project:${manager}`);
+  } catch { /* package.json is optional */ }
 }
 
 function expandDependencies(toolchain: ToolchainConfig, selected: Map<string, string[]>): void {
