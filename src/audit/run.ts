@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import YAML from "yaml";
 import type { AgentExecutionSelection, ResolvedAgentTopology } from "../agents/types.js";
 import { loadResolvedAgentTopology } from "../agents/config.js";
 import { executionSelectionForAgent, resolveRoute } from "../agents/routing.js";
@@ -10,6 +11,7 @@ import { extractMarkedJson } from "../agents/structuredOutput.js";
 import { calculateQuality, evaluateFinalQualityGate, type QualityGateResult, type SeverityCounts } from "../agents/qualityConvergence.js";
 import { createWorktreeCheckpoint, rollbackWorktreeCheckpoint } from "../agents/gitCheckpoint.js";
 import { createControlPlaneSnapshot } from "../core/controlPlane.js";
+import { sealTask } from "../core/seal.js";
 import type { HarnessProjectConfig, TaskContract, TaskRisk, ValidationCheck, WorkerSession } from "../core/types.js";
 import { runValidationCommand } from "../validators/commands.js";
 import { runConfiguredValidators } from "../validators/registry.js";
@@ -65,6 +67,8 @@ export async function runAudit(root: string, config: HarnessProjectConfig, input
   const dirtyPaths = [...checkpoint.files.keys()].sort();
   const commit = await gitCommit(root);
   const contract = auditContract(auditId, input, baseRef);
+  await materializeAuditContract(root, config, contract);
+  await sealTask(root, config, contract);
   const snapshot = await createControlPlaneSnapshot(root, config, auditId);
   const topology = await loadResolvedAgentTopology(root, config, config.agents?.activeProfile);
   const reviewers = selectAuditReviewers(topology, input);
@@ -133,6 +137,12 @@ export function classifyAuditFailure(check: ValidationCheck): AuditFailureClass 
 
 function auditContract(auditId: string, input: AuditRequest, baseRef: string): TaskContract {
   return { version: 1, task: { id: auditId, title: `Audit: ${input.request.slice(0, 120)}` }, git: { baseRef }, scope: { allowed: input.files ?? [] }, routing: { intent: "audit", domains: input.domains ?? [], risk: input.risk ?? "low", reviewers: input.reviewers ?? [] }, constraints: { breakingApiChanges: false, newDependencies: false, schemaChanges: false } };
+}
+
+async function materializeAuditContract(root: string, config: HarnessProjectConfig, contract: TaskContract): Promise<void> {
+  const contractsDir = path.resolve(root, config.sdd?.contractsDir ?? ".harness/contracts");
+  await fs.mkdir(contractsDir, { recursive: true });
+  await fs.writeFile(path.join(contractsDir, `${contract.task.id}.yaml`), YAML.stringify(contract));
 }
 
 function selectAuditReviewers(topology: ResolvedAgentTopology, input: AuditRequest): string[] {
