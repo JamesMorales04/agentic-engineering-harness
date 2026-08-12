@@ -22,6 +22,7 @@
       } }
     } },
     "orchestration": { "type": "object", "properties": { "provider": { "type": "string" }, "required": { "type": "boolean" }, "worker": { "type": "object", "properties": { "provider": { "type": "string" }, "model": { "type": "string" }, "maxRepairAttempts": { "type": "integer", "minimum": 0 }, "timeoutSeconds": { "type": "integer", "minimum": 1 }, "titlePrefix": { "type": "string" } } } } },
+    "toolchain": { "type": "object", "properties": { "configPath": { "type": "string" }, "lockPath": { "type": "string" }, "statePath": { "type": "string" }, "generatedMisePath": { "type": "string" } } },
     "mcp": { "type": "object", "properties": { "servers": { "type": "object", "additionalProperties": { "type": "object", "required": ["type"], "properties": { "description": { "type": "string" }, "type": { "enum": ["local", "remote"] }, "command": { "type": "array", "items": { "type": "string" }, "minItems": 1 }, "url": { "type": "string", "format": "uri" }, "environment": { "type": "object", "additionalProperties": { "type": "string" } }, "headers": { "type": "object", "additionalProperties": { "type": "string" } }, "oauth": { "type": "boolean" }, "enabled": { "type": "boolean" }, "timeoutMs": { "type": "integer", "minimum": 1 }, "codemode": { "type": "boolean" } } } } } },
     "delivery": { "type": "object", "properties": {
       "stateDir": { "type": "string" },
