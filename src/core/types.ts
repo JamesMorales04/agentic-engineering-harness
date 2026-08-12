@@ -9,6 +9,8 @@ export type ValidatorAdapter =
   | "playwright"
   | "openapi"
   | "pact"
+  | "mutation"
+  | "property"
   | string;
 
 export interface ValidationCommand {
@@ -29,6 +31,21 @@ export interface ValidatorSpec {
   options?: Record<string, unknown>;
 }
 
+export interface UsageMetrics {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  costUsd?: number;
+}
+
+export interface RunMetrics {
+  firstPassSuccess: boolean;
+  repairCount: number;
+  humanInterventions: number;
+  durationMs: number;
+  usage: UsageMetrics;
+}
+
 export interface HarnessProjectConfig {
   version: 1;
   project: { name: string };
@@ -46,6 +63,15 @@ export interface HarnessProjectConfig {
   memory?: {
     provider: "engram" | "none" | string;
     required?: boolean;
+    benchmark?: {
+      casesDir?: string;
+      resultsDir?: string;
+      providers?: Array<{
+        name: string;
+        command: string;
+        timeoutSeconds?: number;
+      }>;
+    };
   };
   codeIntelligence?: {
     provider: "graphify" | "none" | string;
@@ -84,7 +110,22 @@ export interface HarnessProjectConfig {
   };
   telemetry?: {
     enabled?: boolean;
+    required?: boolean;
     localEventsFile?: string;
+    exporter?: "none" | "otlp-http-json" | string;
+    endpoint?: string;
+    headers?: Record<string, string>;
+    serviceName?: string;
+  };
+  evals?: {
+    corpusDir?: string;
+    resultsDir?: string;
+    workspacesDir?: string;
+  };
+  provenance?: {
+    outputDir?: string;
+    buildType?: string;
+    cosignKey?: string;
   };
 }
 
@@ -187,4 +228,5 @@ export interface WorkerSession {
   exitCode: number;
   stdout: string;
   stderr: string;
+  metrics?: UsageMetrics;
 }
