@@ -7,6 +7,7 @@ import { buildOpenCodeRuntimeConfig } from "../agents/permissions.js";
 import { loadFrozenSkillContext } from "../core/controlPlane.js";
 import type { HarnessProjectConfig, TaskContract, WorkerSession } from "../core/types.js";
 import { deliveryWorkspaceId } from "../delivery/handoff.js";
+import { continueManagedPaseoAgent, launchManagedPaseoAgent } from "../paseo/runtime.js";
 import { allowedSandboxEnvironment, hardenedPodmanArgs, sandboxImage } from "../security/sandbox.js";
 import { runProcess } from "../utils/process.js";
 
@@ -28,28 +29,34 @@ export async function resumeAgentPrompt(root: string, config: HarnessProjectConf
 }
 
 async function executeViaPaseo(root: string, config: HarnessProjectConfig, contract: TaskContract, selection: AgentExecutionSelection, prompt: string, options: AgentPromptOptions): Promise<WorkerSession> {
+  const timeout = config.orchestration?.worker?.timeoutSeconds ?? 1800;
   if (options.resumeSessionId) {
-    const send = await runProcess(`paseo send ${quote(options.resumeSessionId)} ${quote(prompt)}`, { cwd: root, timeoutMs: 60_000 });
-    if (send.exitCode !== 0) return { ...session(selection, send.exitCode, send.stdout, send.stderr), id: options.resumeSessionId };
-    const timeout = config.orchestration?.worker?.timeoutSeconds ?? 1800;
-    const wait = await runProcess(`paseo wait ${quote(options.resumeSessionId)} --timeout ${timeout}`, { cwd: root, timeoutMs: (timeout + 30) * 1000 });
-    const logs = await runProcess(`paseo logs ${quote(options.resumeSessionId)} --tail 200`, { cwd: root, timeoutMs: 60_000 });
-    return { ...session(selection, wait.exitCode, logs.stdout || wait.stdout, [wait.stderr, logs.stderr].filter(Boolean).join("\n")), id: options.resumeSessionId };
+    const continued = await continueManagedPaseoAgent(root, options.resumeSessionId, prompt, timeout);
+    return { ...session(selection, continued.exitCode, continued.stdout, continued.stderr), id: options.resumeSessionId };
   }
   const model = selection.runtimeAdapter === "codex" ? selection.modelName : selection.modelId;
   const title = `${config.orchestration?.worker?.titlePrefix ?? "aeh"}-${contract.task.id}-${selection.logicalAgent}`;
   const workspaceId = await deliveryWorkspaceId(root, config, contract.task.id);
   const schema = options.outputContract ? outputJsonSchema(options.outputContract) : undefined;
-  if (schema) {
-    const parts = ["paseo run --quiet", `--title ${quote(title)}`, `--provider ${quote(selection.paseoProvider)}`, `--model ${quote(model)}`, `--output-schema ${quote(JSON.stringify(schema))}`];
-    if (workspaceId) parts.push(`--workspace ${quote(workspaceId)}`); parts.push(quote(prompt));
-    const result = await runProcess(parts.join(" "), { cwd: root, timeoutMs: (config.orchestration?.worker?.timeoutSeconds ?? 1800) * 1000 });
-    return session(selection, result.exitCode, result.stdout, result.stderr);
-  }
-  const parts = ["paseo run --background --quiet", `--title ${quote(title)}`, `--provider ${quote(selection.paseoProvider)}`, `--model ${quote(model)}`]; if (workspaceId) parts.push(`--workspace ${quote(workspaceId)}`); parts.push(quote(prompt));
-  const launch = await runProcess(parts.join(" "), { cwd: root, timeoutMs: 60_000 }); if (launch.exitCode !== 0) return session(selection, launch.exitCode, launch.stdout, launch.stderr);
-  const id = launch.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1); if (!id) return session(selection, 1, launch.stdout, "Paseo returned no agent id.");
-  const timeout = config.orchestration?.worker?.timeoutSeconds ?? 1800; const wait = await runProcess(`paseo wait ${quote(id)} --timeout ${timeout}`, { cwd: root, timeoutMs: (timeout + 30) * 1000 }); const logs = await runProcess(`paseo logs ${quote(id)} --tail 200`, { cwd: root, timeoutMs: 60_000 }); return { ...session(selection, wait.exitCode, logs.stdout || wait.stdout, [wait.stderr, logs.stderr].filter(Boolean).join("\n")), id };
+  const labels: Record<string, string> = {
+    "aeh.project": config.project.name,
+    "aeh.kind": "worker",
+    "aeh.task": contract.task.id,
+    "aeh.role": selection.logicalAgent
+  };
+  if (selection.profile) labels["aeh.profile"] = selection.profile;
+  const launched = await launchManagedPaseoAgent(root, {
+    cwd: root,
+    title,
+    provider: selection.paseoProvider,
+    model,
+    workspaceId,
+    prompt,
+    outputSchema: schema,
+    labels,
+    timeoutSeconds: timeout
+  });
+  return { ...session(selection, launched.exitCode, launched.stdout, launched.stderr), id: launched.id };
 }
 
 async function executeDirect(root: string, config: HarnessProjectConfig, selection: AgentExecutionSelection, prompt: string, options: AgentPromptOptions): Promise<WorkerSession> {

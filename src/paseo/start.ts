@@ -6,16 +6,17 @@ import { executionSelectionForAgent } from "../agents/routing.js";
 import type { HarnessProjectConfig } from "../core/types.js";
 import { setupToolchain } from "../toolchain/setup.js";
 import { clearToolchainEnvCache, commandExists, runProcess, type ProcessResult } from "../utils/process.js";
-import { buildPaseoBackgroundRunCommand, detectPaseoCapabilities, extractPaseoAgentId, isRecoverableDaemonStatus } from "./capabilities.js";
+import { detectPaseoCapabilities, isRecoverableDaemonStatus } from "./capabilities.js";
+import { launchManagedPaseoAgent, probeManagedPaseoAgent } from "./runtime.js";
 
-export const PASEO_BOOTSTRAP_VERSION = 3;
+export const PASEO_BOOTSTRAP_VERSION = 4;
 export type PaseoSessionPolicy = "fresh-on-start" | "reuse-compatible" | "resume-explicit";
 
 export interface PaseoStartOptions { autoSetup?: boolean; webUi?: boolean; forceNew?: boolean; resume?: boolean; leadAgent?: string; title?: string; aehCommand?: string; handoffPath?: string; }
 export interface PaseoLeadState { version: 1; bootstrapVersion: number; projectRoot: string; projectName: string; agentId: string; title: string; leadAgent: string; provider: string; model: string; createdAt: string; generation?: number; handoffPath?: string; }
-export interface PaseoStartResult { daemonStarted: boolean; session: "created" | "reused"; agentId: string; title: string; leadAgent: string; provider: string; model: string; stateFile: string; bootstrapFile: string; paseoVersion?: string; }
-interface PaseoStartDeps { run: typeof runProcess; commandExists: typeof commandExists; setupToolchain: typeof setupToolchain; loadTopology: typeof loadResolvedAgentTopology; detectCapabilities: typeof detectPaseoCapabilities; }
-const DEFAULT_DEPS: PaseoStartDeps = { run: runProcess, commandExists, setupToolchain, loadTopology: loadResolvedAgentTopology, detectCapabilities: detectPaseoCapabilities };
+export interface PaseoStartResult { daemonStarted: boolean; session: "created" | "reused"; agentId: string; title: string; leadAgent: string; provider: string; model: string; stateFile: string; bootstrapFile: string; paseoVersion?: string; transport?: "sdk" | "cli"; }
+interface PaseoStartDeps { run: typeof runProcess; commandExists: typeof commandExists; setupToolchain: typeof setupToolchain; loadTopology: typeof loadResolvedAgentTopology; detectCapabilities: typeof detectPaseoCapabilities; launchAgent: typeof launchManagedPaseoAgent; probeAgent: typeof probeManagedPaseoAgent; }
+const DEFAULT_DEPS: PaseoStartDeps = { run: runProcess, commandExists, setupToolchain, loadTopology: loadResolvedAgentTopology, detectCapabilities: detectPaseoCapabilities, launchAgent: launchManagedPaseoAgent, probeAgent: probeManagedPaseoAgent };
 type InteractiveV6 = NonNullable<NonNullable<HarnessProjectConfig["orchestration"]>["interactive"]>;
 
 export async function startPaseoHarness(root: string, config: HarnessProjectConfig, options: PaseoStartOptions = {}, deps: PaseoStartDeps = DEFAULT_DEPS): Promise<PaseoStartResult> {
@@ -63,57 +64,54 @@ export async function startPaseoHarness(root: string, config: HarnessProjectConf
 
   const previous = await loadState(stateFile);
   if (!options.forceNew && reuseRequested && !options.handoffPath && previous && compatibleState(previous, { projectRoot, leadName, provider, model, title })) {
-    const probe = await deps.run(`paseo logs ${quote(previous.agentId)} --tail 1`, { cwd: projectRoot, timeoutMs: 30_000 });
-    if (probe.exitCode === 0) return { daemonStarted, session: "reused", agentId: previous.agentId, title: previous.title, leadAgent: previous.leadAgent, provider: previous.provider, model: previous.model, stateFile, bootstrapFile, paseoVersion: capabilities.version };
+    if (await deps.probeAgent(projectRoot, previous.agentId)) return { daemonStarted, session: "reused", agentId: previous.agentId, title: previous.title, leadAgent: previous.leadAgent, provider: previous.provider, model: previous.model, stateFile, bootstrapFile, paseoVersion: capabilities.version };
   }
 
-  const launchCommand = buildPaseoBackgroundRunCommand({ title, provider, model, prompt: bootstrap }, capabilities);
-  const launch = await deps.run(launchCommand, { cwd: projectRoot, timeoutMs: 60_000 });
-  if (launch.exitCode !== 0) throw new Error(`Failed to create AEH lead in Paseo${capabilities.version ? ` ${capabilities.version}` : ""}: ${diagnostic(launch)}`);
-  const agentId = extractPaseoAgentId(launch.stdout);
-  if (!agentId) throw new Error(`Paseo created no parseable agent id. Output: ${launch.stdout.trim() || "<empty>"}`);
-  const wait = await deps.run(`paseo wait ${quote(agentId)} --timeout 300`, { cwd: projectRoot, timeoutMs: 330_000 });
-  if (wait.exitCode !== 0) throw new Error(`AEH lead bootstrap did not complete successfully: ${diagnostic(wait)}`);
+  const generation = (previous?.generation ?? 0) + 1;
+  const labels: Record<string, string> = {
+    "aeh.project": config.project.name,
+    "aeh.kind": "lead",
+    "aeh.role": leadName,
+    "aeh.generation": String(generation)
+  };
+  if (options.handoffPath) labels["aeh.handoff"] = options.handoffPath;
+  const launch = await deps.launchAgent(projectRoot, {
+    cwd: projectRoot,
+    title,
+    provider,
+    model,
+    systemPrompt: bootstrap,
+    labels,
+    waitForFinish: false,
+    timeoutSeconds: 300
+  });
+  if (launch.exitCode !== 0 || !launch.id) throw new Error(`Failed to create AEH lead in Paseo${capabilities.version ? ` ${capabilities.version}` : ""}: ${launch.stderr || launch.stdout || `exit code ${launch.exitCode}`}`);
+  const agentId = launch.id;
 
-  const state: PaseoLeadState = { version: 1, bootstrapVersion: PASEO_BOOTSTRAP_VERSION, projectRoot, projectName: config.project.name, agentId, title, leadAgent: leadName, provider, model, createdAt: new Date().toISOString(), generation: (previous?.generation ?? 0) + 1, handoffPath: options.handoffPath };
+  const state: PaseoLeadState = { version: 1, bootstrapVersion: PASEO_BOOTSTRAP_VERSION, projectRoot, projectName: config.project.name, agentId, title, leadAgent: leadName, provider, model, createdAt: new Date().toISOString(), generation, handoffPath: options.handoffPath };
   await fs.writeFile(stateFile, `${JSON.stringify(state, null, 2)}\n`);
-  return { daemonStarted, session: "created", agentId, title, leadAgent: leadName, provider, model, stateFile, bootstrapFile, paseoVersion: capabilities.version };
+  return { daemonStarted, session: "created", agentId, title, leadAgent: leadName, provider, model, stateFile, bootstrapFile, paseoVersion: capabilities.version, transport: launch.transport };
 }
 
 export function buildPaseoLeadBootstrap(projectName: string, projectRoot: string, aehCommand: string, preferPaseoTools = true, handoffPath?: string): string {
-  const handoff = handoffPath ? `\n\nThis lead was created by proactive context rotation. Before handling the next engineering action, read the deterministic handoff artifact ${JSON.stringify(handoffPath)} and every sealed/run/audit/delivery artifact it references. Treat that durable state as authoritative; do not ask the previous lead to replay its conversation. Preserve the same active user goal unless the handoff records a true ambiguity.` : "";
+  const handoff = handoffPath ? `\n\nThis lead was created by proactive context rotation. Before the next engineering action, read the deterministic handoff artifact ${JSON.stringify(handoffPath)} and the sealed/run/audit/delivery artifacts it references. Durable artifacts are authoritative; do not ask the previous lead to replay its conversation.` : "";
   return `AEH thin-lead Paseo bootstrap v${PASEO_BOOTSTRAP_VERSION}.
 
-You are the top-level engineering lead for project ${JSON.stringify(projectName)} at ${JSON.stringify(projectRoot)}. This instruction governs every later user message in this Paseo conversation. This lead is intentionally short-lived: a normal \`aeh start\` creates a fresh lead; explicit resume is opt-in.${handoff}
+You are the top-level engineering lead for project ${JSON.stringify(projectName)} at ${JSON.stringify(projectRoot)}. A normal \`aeh start\` creates a fresh lead; explicit resume is opt-in.${handoff}
 
-Before engineering work, read AGENTS.md and .harness/skills/engineering-workflow/SKILL.md when present. Every engineering operation must enter through AEH, including read-only audits. Only purely informational questions may bypass. Whenever the workflow says \`aeh\`, invoke exactly: \`${aehCommand}\`.
+Before engineering work, read AGENTS.md and .harness/skills/engineering-workflow/SKILL.md when present. Those instructions plus the resolved AEH agent topology are authoritative for available roles, charters, permissions, routing and delegation. Do not maintain or invent a separate role map in conversational context.
 
-You are an ORCHESTRATOR, not the repository operator. Your responsibilities are: preserve user intent, choose/delegate workflow roles, resolve genuine ambiguity, monitor deterministic state, and perform final semantic acceptance. Do not spend your context doing broad repository exploration, package installation, daemon debugging, specification authoring, implementation, or raw log analysis when a bounded agent/Harness operation can own it.
+Every engineering operation must enter through AEH, including read-only audits. Only purely informational questions may bypass. Whenever the workflow says \`aeh\`, invoke exactly: \`${aehCommand}\`.
 
-Delegation policy:
-- repository discovery/evidence -> explorer;
-- toolchain, doctor, agents-check or Paseo daemon/provider recovery -> environment-manager;
-- non-trivial triage/decomposition -> planner;
-- SPEC authoring -> spec-manager using OpenSpec, never write proposal/spec/design/tasks yourself;
-- implementation, validation and reviews -> AEH/Harness-selected workers.
+Remain a thin ORCHESTRATOR: preserve user intent, make semantic/risk decisions, delegate bounded operations through the authoritative topology, monitor deterministic state and perform final semantic acceptance. Follow engineering-workflow end-to-end for intent classification, AUDIT, QUICK/SPEC triage, OpenSpec authoring, sealed execution, recovery, validation and delivery rather than reproducing those procedures here.
 
-${preferPaseoTools ? `Prefer Paseo's injected native/MCP orchestration tools (create_agent, send_agent_prompt, get_agent_status, get_agent_activity, cancel_agent/archive_agent) and load /paseo when exact syntax is needed. Use /paseo-handoff for responsibility transfer. Do not shell out to hand-written paseo run loops from this lead. AEH's CLI adapter is only a compatibility fallback.` : `Use AEH's configured Paseo adapter for delegation; do not hand-write shell orchestration loops.`}
+${preferPaseoTools ? `When running inside Paseo, use the paseo-orchestration skill and injected native/MCP tools for conversational delegation and /paseo-handoff for responsibility transfer. AEH's external controller may create independent top-level Paseo agents for Harness-owned work; AEH run/task labels, not Paseo parentage, define their workflow ownership.` : `Use AEH's configured Paseo adapter for delegation and lifecycle control.`}
 
-For every non-trivial user request:
-1. check context pressure with Paseo status if exposed, or \`${aehCommand} context guard --agent "$PASEO_AGENT_ID"\`. At 70% stop exploratory work. At 80% AEH automatically creates a deterministic handoff artifact and, when possible, rotates the persisted lead to a fresh Paseo agent; if the command reports rotatedAgentId, tell the user to continue in that fresh lead and stop this lead. At 90% no further engineering work is allowed in the old lead. Do not compact-and-continue after HANDOFF_REQUIRED/HARD_HANDOFF;
-2. classify INFORMATIONAL | AUDIT | CHANGE using \`${aehCommand} intent\` when not trivially informational;
-3. for AUDIT, invoke \`${aehCommand} audit\`; do not perform an ad-hoc review;
-4. for CHANGE, delegate discovery to explorer and planning/triage evidence to planner. Feed only their compact structured evidence into deterministic \`${aehCommand} triage\`;
-5. QUICK: create/validate/run the bounded QuickContract. Do not broaden QUICK;
-6. SPEC: delegate to spec-manager. spec-manager owns OpenSpec artifacts and returns a compiled/validated AEH SDD/TaskContract. The lead must not author those files. Then invoke the sealed AEH run;
-7. if execution reports environment/tool failure, delegate recovery to environment-manager and retry the same sealed operation after deterministic readiness. Do not personally run sequences of npm/git/Paseo diagnostic shells;
-8. surface only concise state transitions, true human-on-exception decisions, and final audit/acceptance/delivery state.
+Before non-trivial work, inspect context pressure through Paseo status when exposed or run \`${aehCommand} context guard --agent "$PASEO_AGENT_ID"\`. Honor HANDOFF_REQUIRED/HARD_HANDOFF and stop the old lead when a replacement is created.
 
-Existing GitHub issue requests use the issue-driven AEH path. A later request to fix audit findings must reuse .harness/audits/latest.json as evidence for a new CHANGE. Security, architecture, schema, public API and cross-module changes still escalate to SPEC.
+The compiled AEH TaskContract/SDD plus seal are normative during implementation. OpenSpec is authoring provenance before freeze, not a competing runtime authority. Do not perform broad repository operations directly when a bounded Harness operation or configured agent owns them.
 
-The compiled AEH TaskContract/SDD plus seal are normative during implementation. OpenSpec is an authoring source before freeze, not a competing runtime authority. Harness workers/subagents do not replace this lead unless an explicit context handoff rotates responsibility.
-
-Initialize this role now by reading only the project entry instructions needed to understand these rules. Do not run doctor/setup or inspect the repository broadly during bootstrap. When initialization is complete, respond with exactly: AEH READY`;
+This bootstrap is session configuration, not a user task. Do not emit an initialization handshake or synthetic readiness message; remain idle until the user's first real request.`;
 }
 
 export function resolveLeadAgent(topology: ResolvedAgentTopology, configured?: string): string {
@@ -129,4 +127,3 @@ function paseoModel(selection: AgentExecutionSelection): string { return selecti
 async function loadState(file: string): Promise<PaseoLeadState | undefined> { try { return JSON.parse(await fs.readFile(file, "utf8")) as PaseoLeadState; } catch { return undefined; } }
 function compatibleState(state: PaseoLeadState, expected: { projectRoot: string; leadName: string; provider: string; model: string; title: string }): boolean { return state.version === 1 && state.bootstrapVersion === PASEO_BOOTSTRAP_VERSION && state.projectRoot === expected.projectRoot && state.leadAgent === expected.leadName && state.provider === expected.provider && state.model === expected.model && state.title === expected.title; }
 function diagnostic(result: ProcessResult): string { return [result.stderr.trim(), result.stdout.trim()].filter(Boolean).join("\n") || `exit code ${result.exitCode}`; }
-function quote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }
