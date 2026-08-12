@@ -2,9 +2,9 @@
 
 An **OSS-first, zero-mandatory-SaaS control plane** for agentic software engineering. AEH treats LLM output as untrusted until deterministic validation, evidence and quality gates accept it.
 
-## Status: v0.6.1
+## Status: v0.6.x
 
-v0.6 makes the interactive lead a **thin semantic orchestrator** instead of an interactive shell/CI operator. Repository discovery, environment repair, planning, SPEC authoring, implementation and review are delegated to bounded roles while AEH remains the deterministic authority. v0.6.1 adds managed Harness asset reconciliation and automatic semantic release publication from `main`.
+v0.6 makes the interactive lead a **thin semantic orchestrator** instead of an interactive shell/CI operator. Long Harness workflows are first-class detached operations: AEH remains the deterministic authority while real planners, reviewers, implementers and escalation agents appear as independent Paseo sessions correlated by durable operation/task labels.
 
 ```text
 User / Paseo
@@ -14,7 +14,8 @@ fresh AEH Lead
     |
     +-- INFORMATIONAL -> direct answer
     |
-    +-- AUDIT -> frozen read-only AEH audit
+    +-- AUDIT -> detached AEH operation
+    |               -> visible Paseo reviewers
     |
     `-- CHANGE
           |
@@ -25,6 +26,9 @@ fresh AEH Lead
           `-- SPEC -> spec-manager -> OpenSpec
                                   -> aeh spec compile
                                   -> sealed AEH SDD/TaskContract
+                          |
+                          `-> detached AEH run operation
+                                  -> visible Paseo workers/reviewers
     |
     v
 planner waves -> workers -> deterministic barriers
@@ -32,7 +36,7 @@ planner waves -> workers -> deterministic barriers
     -> final quality gate -> lead acceptance -> delivery
 ```
 
-See [docs/V0.6.md](docs/V0.6.md) for the orchestration/context design and [ROADMAP.md](ROADMAP.md) for completed milestones.
+See [docs/V0.6.md](docs/V0.6.md), [docs/PASEO.md](docs/PASEO.md), and [ROADMAP.md](ROADMAP.md).
 
 ## Installation
 
@@ -46,17 +50,20 @@ npm exec aeh -- doctor
 
 `aeh setup` provisions the project-selected engineering toolchain through mise/Aqua/OCI where configured. There is no mutating npm `postinstall`.
 
-A new project receives:
+A new project receives repository-owned declarative configuration plus generated local state:
 
 ```text
 .harness/project.yaml
 .harness/agents.source.jsonc   -> extends aeh:orchestration
 .harness/toolchain.yaml
+.harness/otel-collector.yaml
 .harness/skills/
-.harness/managed-assets.json   -> versioned hashes for AEH-managed skills/policies
+.harness/managed-assets.json
 openspec/config.yaml
 AGENTS.md
 ```
+
+`.harness` runtime state is ignored by default. Only repository-owned declarative files are explicitly allowlisted in `.gitignore`, so newly introduced generated state cannot be committed accidentally.
 
 Packaged core skills and policies are reconciled by `aeh init`, `aeh setup`, and `aeh start`. Missing assets are restored, untouched managed assets can be upgraded with the installed AEH version, and locally modified copies are preserved as explicit overrides.
 
@@ -74,7 +81,18 @@ A normal start creates a **fresh lead conversation**. Reuse is explicit:
 aeh start --resume
 ```
 
-Before the agent topology is loaded, `aeh start` reconciles the managed `.harness` control-plane assets. The lead is then resolved from the active agent topology. Paseo and the configured lead runtime are reconciled when needed, the daemon is started/recovered, and the lead is bootstrapped with the project engineering workflow.
+Before the agent topology is loaded, `aeh start` reconciles managed `.harness` assets. The lead is resolved from the active agent topology, Paseo and the configured lead runtime are reconciled, the daemon is started/recovered, and the lead is created through the Paseo SDK with its bootstrap as `systemPrompt`.
+
+When `orchestration.interactive.usePaseoTools` is enabled, AEH also injects an exact local `aeh-control` MCP server into the managed lead. The server runs through the same Node executable and packaged `aeh` entrypoint that created the lead and preapproves only these bounded controller tools:
+
+```text
+aeh_operation_start_audit
+aeh_operation_start_run
+aeh_operation_status
+aeh_operation_cancel
+```
+
+This lets the lead control long Harness workflows without sitting inside a blocking shell command. If the MCP cannot be represented safely, the short `aeh operation ...` CLI surface remains available.
 
 ### Lead responsibilities
 
@@ -96,9 +114,61 @@ implementers          -> code changes
 validators/reviewers  -> evidence and quality assessment
 ```
 
-When Paseo injects its orchestration tools, the lead prefers its native/MCP `create_agent`, prompt/status/activity/lifecycle tools and `/paseo-handoff`. AEH retains a capability-aware CLI adapter as a deterministic fallback.
+Paseo native/MCP tools are preferred for bounded conversational delegation and `/paseo-handoff`. Deterministic multi-agent workflows use the AEH operation controller. The controller itself is **not** represented as an LLM agent.
 
-The fallback probes the installed Paseo version/help surface rather than assuming flags such as `--quiet`, and recovers recognized stale/unreachable daemon states before relaunch.
+## Detached operations
+
+Interactive AUDIT/RUN work starts detached:
+
+```bash
+aeh operation start audit "review the repo and validate the code for improvements"
+aeh operation start run TASK-123
+```
+
+The start command returns promptly with a durable operation id. State is persisted under:
+
+```text
+.harness/operations/<operation-id>.json
+```
+
+Observe or control it with:
+
+```bash
+aeh operation status <operation-id>
+aeh operation wait <operation-id> --timeout 1800
+aeh operation cancel <operation-id>
+aeh paseo agents --operation <operation-id>
+aeh paseo agents --operation <operation-id> --phase review
+```
+
+Synchronous `aeh audit` and `aeh run` remain valid non-interactive/compatibility entrypoints.
+
+For each detached operation AEH attempts to create a **local Paseo workspace** pointing at the existing repository. This is UI/execution grouping only; it does not create a Git branch/worktree. A delivery worktree workspace, when configured, remains a separate concern and takes precedence for implementation agents.
+
+## Visible Paseo agent lifecycle
+
+Real Harness LLM participants use a split lifecycle:
+
+```text
+materialize -> dispatch -> wait
+```
+
+This is especially useful for AUDIT. AEH first materializes the selected read-only reviewers so they appear immediately in Paseo, then runs deterministic validators, and only then dispatches the reviewers with the completed validator evidence.
+
+Agents carry durable correlation labels:
+
+```text
+aeh.project=<project>
+aeh.kind=lead|worker
+aeh.role=<logical-agent>
+aeh.task=<task-id>
+aeh.operation=<operation-id>
+aeh.operation.kind=audit|run|quick|...
+aeh.operation.phase=planning|review|implementation|diagnosis|...
+aeh.workspace.kind=orchestration|delivery
+```
+
+Workers remain top-level Paseo agents rather than children owned by one lead conversation, so lead context rotation cannot terminate their workflow ownership.
 
 ## Context lifecycle
 
@@ -123,7 +193,7 @@ When Paseo exposes a usable context ratio, AEH persists:
 .harness/paseo/handoffs/lead-<timestamp>.json
 ```
 
-The artifact carries prior/new lead IDs and durable branch/run/audit/delivery references. Inside a managed Paseo lead, AEH automatically creates the fresh replacement at the handoff threshold. The new lead reads deterministic artifacts rather than relying on normal chat compaction.
+The artifact carries prior/new lead IDs and durable branch/run/audit/operation/delivery references. Detached operations and their independent workers continue across lead rotation.
 
 ## Intent model
 
@@ -148,7 +218,7 @@ Examples:
   -> CHANGE -> QUICK | SPEC
 ```
 
-Repository-wide audits use `aeh audit`; they are not forced into fake QUICK scope.
+Repository-wide audits are not forced into fake QUICK scope.
 
 ## OpenSpec-backed SPEC authoring
 
@@ -160,7 +230,7 @@ aeh spec prepare READABILITY-001 --title "Improve readability"
 aeh spec compile READABILITY-001 --title "Improve readability"
 aeh sdd validate READABILITY-001
 aeh seal READABILITY-001
-aeh run READABILITY-001
+aeh operation start run READABILITY-001
 ```
 
 Authority split:
@@ -183,13 +253,21 @@ OpenSpec is provisioned automatically when `sdd.authoring.provider: openspec` is
 aeh issue inspect 142
 aeh issue import 142
 aeh issue implement 142
-# equivalent
+# synchronous compatibility shortcut
 aeh run --issue 142
 ```
 
-An issue is frozen as input, converted into QUICK/SPEC artifacts, sealed, and then executed through the same worker/validation/review lifecycle. `ISSUE_DRIFT` prevents silent reinterpretation after intake.
+An issue is frozen as input, converted into QUICK/SPEC artifacts, sealed, and executed through the same worker/validation/review lifecycle. `ISSUE_DRIFT` prevents silent reinterpretation after intake. Interactive leads use a detached `operation start run` once the derived task is ready.
 
 ## AUDIT
+
+Interactive:
+
+```bash
+aeh operation start audit "review the repo and validate the code for improvements"
+```
+
+Synchronous compatibility:
 
 ```bash
 aeh audit "review the repo and validate the code for improvements"
@@ -198,9 +276,10 @@ aeh audit "review the repo and validate the code for improvements"
 AUDIT is read-only but Harness-governed:
 
 - frozen control plane;
+- visible read-only Paseo reviewers materialized before validation;
 - deterministic validators;
 - explicit environment/sandbox/assertion/tool failure classification;
-- read-only reviewer wave;
+- reviewer dispatch with validator evidence;
 - finding normalization/deduplication;
 - DebtScore/Quality Gate reporting;
 - worktree rollback preserving pre-existing dirty state.
@@ -237,9 +316,11 @@ Final acceptance requires critical/high/medium = 0, low <= 3 and DebtScore <= 3.
 
 Workers never gain authority to weaken requirements or deterministic gates. Paseo improves orchestration; OpenSpec improves authoring; neither replaces AEH acceptance authority.
 
-## Distribution
+## Build and distribution hygiene
 
-AEH is a development tool, not an application runtime dependency. The npm package contains CLI code, templates, presets, policies, schemas, skills and docs. CI validates `npm ci`, typecheck, tests, build, `npm pack --dry-run`, and installs the generated tarball into an empty consumer project for smoke testing.
+`dist/` is disposable repository state and a required npm artifact. Every `npm run build` deletes `dist` before TypeScript compilation, and npm `prepare` rebuilds it during local `npm ci`/packaging. This prevents stale generated JavaScript from surviving source updates.
+
+AEH is a development tool, not an application runtime dependency. The npm package contains CLI code, templates, presets, policies, schemas, skills and docs. CI validates `npm ci`, typecheck, tests, clean build, `npm pack --dry-run`, the operation MCP surface, and installs the generated tarball into an empty consumer project for smoke testing.
 
 Pushes to `main` can publish automatically through `.github/workflows/publish.yml`. `package.json` is the version source; if its current version has already shipped, Conventional Commit semantics select the next patch/minor/major version before publication. See [docs/PUBLISHING.md](docs/PUBLISHING.md) for authentication, retry and manual-release controls.
 
