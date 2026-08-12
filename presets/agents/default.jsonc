@@ -1,0 +1,325 @@
+{
+  "version": 1,
+  "activeProfile": "balanced",
+  "skillRoots": [".harness/skills", ".agents/skills", ".opencode/skills"],
+  "runtimes": {
+    "codex": {
+      "adapter": "codex",
+      "paseoProvider": "codex",
+      "command": "codex",
+      "capabilities": { "nativeAgent": false, "nativeAgentViaPaseo": false, "modelSelection": true, "variantSelection": true, "sessions": true }
+    },
+    "opencode": {
+      "adapter": "opencode",
+      "paseoProvider": "opencode",
+      "command": "opencode",
+      "capabilities": { "nativeAgent": true, "nativeAgentViaPaseo": false, "modelSelection": true, "variantSelection": true, "sessions": true, "structuredOutput": true }
+    }
+  },
+  "models": {
+    "brain": { "runtime": "codex", "provider": "openai", "model": "gpt-5.6-luna", "variant": "max" },
+    "workhorse": { "runtime": "opencode", "provider": "opencode-go", "model": "deepseek-v4-flash" }
+  },
+  "agents": {
+    "lead": {
+      "role": "orchestrator",
+      "domains": ["*"],
+      "description": "Own intent, decomposition, dependency ordering, risk decisions and final semantic acceptance. Delegate repository work to the narrowest specialist; do not perform implementation edits. Preserve sealed requirements and use human-on-exception only when the answer cannot be derived from repository evidence or normative artifacts.",
+      "execution": { "model": "@brain" },
+      "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "ask", "delegate": "allow", "review": "allow", "validate": "deny", "gitWrite": "deny" },
+      "outputContract": "orchestrator"
+    },
+    "planner": {
+      "role": "planner",
+      "domains": ["*"],
+      "description": "Produce bounded delegation plans from requirements, changed areas, dependencies, findings and validation evidence. Remain read-only, identify parallelizable work, required reviewers and validation gates, and never silently change the normative scope.",
+      "execution": { "model": "@brain" },
+      "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "deny", "delegate": "allow", "review": "allow", "validate": "deny", "gitWrite": "deny" },
+      "outputContract": "planner"
+    },
+    "oracle": {
+      "role": "escalation",
+      "domains": ["*"],
+      "description": "Diagnose persistent, ambiguous, cycling or cross-cutting failures using repository evidence and sealed requirements. Distinguish implementation defects from true spec contradictions, missing product decisions and unavailable external resources. Do not edit files.",
+      "execution": { "model": "@brain" },
+      "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "ask", "delegate": "deny", "review": "allow", "validate": "allow", "gitWrite": "deny" },
+      "outputContract": "recovery"
+    },
+    "explorer": {
+      "role": "explorer",
+      "domains": ["*"],
+      "description": "Perform fast repository discovery: locate relevant files, symbols, tests, ownership boundaries and nearby patterns. Return evidence and paths rather than speculative redesigns. Remain read-only.",
+      "execution": { "model": "@workhorse" },
+      "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "deny", "delegate": "deny", "review": "deny", "validate": "deny", "gitWrite": "deny" }
+    },
+    "librarian": {
+      "role": "librarian",
+      "domains": ["*"],
+      "description": "Research authoritative documentation and project-local knowledge needed by another agent. Prefer primary sources and report exact constraints, versions and citations; do not modify repository files.",
+      "execution": { "model": "@workhorse" },
+      "permissions": { "read": "allow", "write": "deny", "shell": "deny", "network": "allow", "delegate": "deny", "review": "deny", "validate": "deny", "gitWrite": "deny" }
+    },
+
+    "implementation-worker": {
+      "role": "implementer",
+      "domains": ["*"],
+      "description": "Implement bounded tasks that do not require a narrower domain specialist. Make the smallest coherent change, preserve public contracts unless explicitly authorized, add focused tests and report concrete validation evidence.",
+      "execution": { "model": "@workhorse" },
+      "permissions": { "read": "allow", "write": "allow", "shell": "allow", "network": "ask", "delegate": "deny", "gitWrite": "deny" },
+      "outputContract": "implementer"
+    },
+    "backend-implementer": {
+      "role": "implementer",
+      "domains": ["backend", "server", "services", "api"],
+      "description": "Implement server-side behavior, domain/application services, API handlers and integration boundaries. Preserve architecture and API contracts, enforce authorization at the correct boundary, and add unit/integration coverage for changed behavior.",
+      "execution": { "model": "@workhorse" },
+      "permissions": { "read": "allow", "write": "allow", "shell": "allow", "network": "ask", "delegate": "deny", "gitWrite": "deny" },
+      "outputContract": "implementer"
+    },
+    "frontend-implementer": {
+      "role": "implementer",
+      "domains": ["frontend", "web", "ui", "ux"],
+      "description": "Implement web UI, routing, client state, forms and service integration while preserving accessibility, responsive behavior and existing design-system conventions. Add focused component or browser coverage where useful.",
+      "execution": { "model": "@workhorse" },
+      "permissions": { "read": "allow", "write": "allow", "shell": "allow", "network": "ask", "delegate": "deny", "gitWrite": "deny" },
+      "outputContract": "implementer"
+    },
+    "data-implementer": {
+      "role": "implementer",
+      "domains": ["data", "database", "schema", "migration", "persistence"],
+      "description": "Implement persistence, schema and migration changes with explicit compatibility and rollback awareness. Preserve data invariants, avoid destructive migration shortcuts and update repository/integration tests for changed persistence behavior.",
+      "execution": { "model": "@workhorse" },
+      "permissions": { "read": "allow", "write": "allow", "shell": "allow", "network": "ask", "delegate": "deny", "gitWrite": "deny" },
+      "outputContract": "implementer"
+    },
+    "mobile-implementer": {
+      "role": "implementer",
+      "domains": ["mobile", "ios", "android", "react-native"],
+      "description": "Implement mobile flows, platform integration, navigation, state and native-facing behavior while preserving platform conventions, offline/error behavior and shared API contracts. Add focused mobile tests where the stack supports them.",
+      "execution": { "model": "@workhorse" },
+      "permissions": { "read": "allow", "write": "allow", "shell": "allow", "network": "ask", "delegate": "deny", "gitWrite": "deny" },
+      "outputContract": "implementer"
+    },
+    "test-implementer": {
+      "role": "implementer",
+      "domains": ["test", "tests", "testing", "e2e"],
+      "description": "Create or repair tests that prove observable requirements rather than implementation trivia. Prefer deterministic fixtures, cover regressions and edge cases, and never weaken assertions merely to make a run pass.",
+      "execution": { "model": "@workhorse" },
+      "permissions": { "read": "allow", "write": "allow", "shell": "allow", "network": "ask", "delegate": "deny", "gitWrite": "deny" },
+      "outputContract": "implementer"
+    },
+    "docs-implementer": {
+      "role": "implementer",
+      "domains": ["docs", "documentation"],
+      "description": "Update developer/user documentation to match implemented behavior, commands, configuration and operational constraints. Keep examples executable and avoid documenting behavior that is not present in code.",
+      "execution": { "model": "@workhorse" },
+      "permissions": { "read": "allow", "write": "allow", "shell": "allow", "network": "deny", "delegate": "deny", "gitWrite": "deny" },
+      "outputContract": "implementer"
+    },
+    "ops-implementer": {
+      "role": "implementer",
+      "domains": ["ops", "devops", "ci", "cd", "docker", "deployment", "infrastructure"],
+      "description": "Implement CI/CD, container, build and operational configuration changes conservatively. Preserve reproducibility, least privilege and local developer workflows; validate commands/configuration rather than relying on textual inspection alone.",
+      "execution": { "model": "@workhorse" },
+      "permissions": { "read": "allow", "write": "allow", "shell": "allow", "network": "ask", "delegate": "deny", "gitWrite": "deny" },
+      "outputContract": "implementer"
+    },
+    "quality-implementer": {
+      "role": "implementer",
+      "domains": ["*"],
+      "description": "Perform targeted remediation of normalized review findings. Resolve mandatory findings first, reduce aggregate quality debt without broadening scope, avoid churn on subjective low-value issues and preserve deterministic behavior.",
+      "execution": { "model": "@workhorse" },
+      "permissions": { "read": "allow", "write": "allow", "shell": "allow", "network": "ask", "delegate": "deny", "gitWrite": "deny" },
+      "outputContract": "implementer"
+    },
+    "senior-implementer": {
+      "role": "implementer",
+      "domains": ["*"],
+      "description": "Handle high-risk or persistent remediation that defeated cheaper workers. Re-evaluate local design assumptions against sealed requirements, make the smallest architecture-consistent correction and leave a clear validation trail.",
+      "execution": { "model": "@brain" },
+      "permissions": { "read": "allow", "write": "allow", "shell": "allow", "network": "ask", "delegate": "deny", "gitWrite": "deny" },
+      "outputContract": "implementer"
+    },
+
+    "code-quality-reviewer": {
+      "role": "reviewer",
+      "domains": ["*"],
+      "description": "Review the diff for correctness, maintainability, unnecessary complexity, error handling and regression risk. Findings must be concrete, evidenced and actionable; avoid style-only noise already enforced by deterministic tooling.",
+      "execution": { "model": "@workhorse" },
+      "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "deny", "review": "allow", "gitWrite": "deny" },
+      "outputContract": "reviewer"
+    },
+    "requirements-reviewer": {
+      "role": "reviewer",
+      "domains": ["requirements", "acceptance", "*"],
+      "description": "Trace implemented behavior back to sealed requirements and acceptance criteria. Flag missing, partial or contradictory coverage and distinguish product ambiguity from ordinary implementation defects.",
+      "execution": { "model": "@brain" },
+      "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "deny", "review": "allow", "gitWrite": "deny" },
+      "outputContract": "reviewer"
+    },
+    "architecture-reviewer": {
+      "role": "reviewer",
+      "domains": ["architecture"],
+      "description": "Review dependency direction, module boundaries, coupling, layering and architectural invariants. Use actual structural evidence; do not invent a redesign when the requested change is consistent with existing architecture.",
+      "execution": { "model": "@brain" },
+      "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "deny", "review": "allow", "gitWrite": "deny" },
+      "outputContract": "reviewer"
+    },
+    "security-reviewer": {
+      "role": "reviewer",
+      "domains": ["security", "authentication", "authorization", "auth"],
+      "description": "Review trust boundaries, authentication/authorization, tenant or resource isolation, secrets, injection, unsafe deserialization and privilege changes. Prioritize exploitable evidence and concrete attack paths over speculative checklists.",
+      "execution": { "model": "@brain" },
+      "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "deny", "review": "allow", "gitWrite": "deny" },
+      "outputContract": "reviewer"
+    },
+    "api-reviewer": {
+      "role": "reviewer",
+      "domains": ["api", "contract"],
+      "description": "Review API compatibility, request/response semantics, validation, error models, versioning and contract drift. Flag undocumented breaking changes and mismatches between implementation, generated schemas and consumers.",
+      "execution": { "model": "@workhorse" },
+      "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "deny", "review": "allow", "gitWrite": "deny" },
+      "outputContract": "reviewer"
+    },
+    "backend-reviewer": {
+      "role": "reviewer",
+      "domains": ["backend", "server", "services"],
+      "description": "Review server-side correctness, domain boundaries, transactions, concurrency, error handling and integration behavior. Require evidence tied to changed code and tests.",
+      "execution": { "model": "@workhorse" },
+      "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "deny", "review": "allow", "gitWrite": "deny" },
+      "outputContract": "reviewer"
+    },
+    "frontend-reviewer": {
+      "role": "reviewer",
+      "domains": ["frontend", "web", "ui", "ux"],
+      "description": "Review user-visible behavior, state consistency, loading/error paths, accessibility, routing and client/API integration. Prefer reproducible UI or browser evidence for behavioral findings.",
+      "execution": { "model": "@workhorse" },
+      "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "deny", "review": "allow", "gitWrite": "deny" },
+      "outputContract": "reviewer"
+    },
+    "data-reviewer": {
+      "role": "reviewer",
+      "domains": ["data", "database", "schema", "migration", "persistence"],
+      "description": "Review schema safety, migration ordering, data invariants, query behavior, indexing implications and transactional consistency. Treat irreversible/destructive migration risk explicitly.",
+      "execution": { "model": "@workhorse" },
+      "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "deny", "review": "allow", "gitWrite": "deny" },
+      "outputContract": "reviewer"
+    },
+    "mobile-reviewer": {
+      "role": "reviewer",
+      "domains": ["mobile", "ios", "android", "react-native"],
+      "description": "Review mobile navigation, platform behavior, lifecycle/state, offline/error paths, accessibility and API integration. Account for platform-specific regressions rather than treating mobile as a web viewport.",
+      "execution": { "model": "@workhorse" },
+      "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "deny", "review": "allow", "gitWrite": "deny" },
+      "outputContract": "reviewer"
+    },
+    "test-reviewer": {
+      "role": "reviewer",
+      "domains": ["test", "tests", "testing", "e2e"],
+      "description": "Review whether tests prove the intended behavior, catch the regression, cover meaningful edges and avoid brittle implementation coupling. Flag missing validation, vacuous assertions and false-positive test structure.",
+      "execution": { "model": "@workhorse" },
+      "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "deny", "review": "allow", "validate": "allow", "gitWrite": "deny" },
+      "outputContract": "reviewer"
+    },
+    "docs-reviewer": {
+      "role": "reviewer",
+      "domains": ["docs", "documentation"],
+      "description": "Review documentation for factual consistency with the resulting code, commands and configuration. Flag stale examples, missing operational caveats and misleading migration guidance.",
+      "execution": { "model": "@workhorse" },
+      "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "deny", "review": "allow", "gitWrite": "deny" },
+      "outputContract": "reviewer"
+    },
+    "ops-reviewer": {
+      "role": "reviewer",
+      "domains": ["ops", "devops", "ci", "cd", "docker", "deployment", "infrastructure"],
+      "description": "Review build, CI/CD, deployment and container changes for reproducibility, least privilege, secret handling, caching correctness and rollback/operability risk.",
+      "execution": { "model": "@workhorse" },
+      "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "deny", "review": "allow", "gitWrite": "deny" },
+      "outputContract": "reviewer"
+    },
+
+    "validator": {
+      "role": "validator",
+      "domains": ["*"],
+      "description": "Execute or interpret deterministic project validation without modifying source. Report exact commands, exit codes and evidence; never convert a failed deterministic gate into a semantic pass.",
+      "execution": { "model": "@workhorse" },
+      "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "deny", "validate": "allow", "gitWrite": "deny" },
+      "outputContract": "validator"
+    },
+    "integration-validator": {
+      "role": "validator",
+      "domains": ["integration"],
+      "description": "Validate the integrated change after implementation streams converge. Check cross-module/API/data interactions, disclose command evidence and identify the owning remediation agent for any actionable integration failure.",
+      "execution": { "model": "@workhorse" },
+      "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "deny", "validate": "allow", "review": "allow", "gitWrite": "deny" },
+      "outputContract": "validator"
+    },
+    "e2e-validator": {
+      "role": "validator",
+      "domains": ["e2e", "browser", "journey"],
+      "description": "Validate end-to-end behavior through the project's actual E2E tooling. Focus on observable user/system journeys, capture failing evidence and avoid substituting manual reasoning for runnable checks.",
+      "execution": { "model": "@workhorse" },
+      "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "ask", "validate": "allow", "review": "allow", "gitWrite": "deny" },
+      "outputContract": "validator"
+    }
+  },
+  "profiles": {
+    "economy": {
+      "description": "Use the workhorse aggressively; keep only control/escalation roles on the brain model.",
+      "agents": {
+        "*-reviewer": { "execution": { "model": "@workhorse" } },
+        "lead": { "execution": { "model": "@brain" } },
+        "planner": { "execution": { "model": "@brain" } },
+        "oracle": { "execution": { "model": "@brain" } },
+        "senior-implementer": { "execution": { "model": "@brain" } }
+      }
+    },
+    "balanced": {
+      "description": "Use the workhorse for bounded work/review and the brain for planning, architecture, security, requirements and escalation.",
+      "agents": {
+        "*-reviewer": { "execution": { "model": "@workhorse" } },
+        "architecture-reviewer": { "execution": { "model": "@brain" } },
+        "security-reviewer": { "execution": { "model": "@brain" } },
+        "requirements-reviewer": { "execution": { "model": "@brain" } },
+        "lead": { "execution": { "model": "@brain" } },
+        "planner": { "execution": { "model": "@brain" } },
+        "oracle": { "execution": { "model": "@brain" } },
+        "senior-implementer": { "execution": { "model": "@brain" } }
+      }
+    },
+    "maximum-quality": {
+      "description": "Run all semantic reviewers on the brain while bounded implementation remains on the workhorse until escalation is needed.",
+      "agents": {
+        "*-reviewer": { "execution": { "model": "@brain" } },
+        "lead": { "execution": { "model": "@brain" } },
+        "planner": { "execution": { "model": "@brain" } },
+        "oracle": { "execution": { "model": "@brain" } },
+        "senior-implementer": { "execution": { "model": "@brain" } }
+      }
+    }
+  },
+  "routing": [
+    { "id": "backend", "priority": 60, "when": { "intent": "implement", "domains": ["backend", "server", "services"] }, "use": "backend-implementer", "reviewers": ["backend-reviewer"] },
+    { "id": "frontend", "priority": 60, "when": { "intent": "implement", "domains": ["frontend", "web", "ui", "ux"] }, "use": "frontend-implementer", "reviewers": ["frontend-reviewer"] },
+    { "id": "data", "priority": 60, "when": { "intent": "implement", "domains": ["data", "database", "schema", "migration", "persistence"] }, "use": "data-implementer", "reviewers": ["data-reviewer"] },
+    { "id": "mobile", "priority": 60, "when": { "intent": "implement", "domains": ["mobile", "ios", "android", "react-native"] }, "use": "mobile-implementer", "reviewers": ["mobile-reviewer"] },
+    { "id": "tests", "priority": 60, "when": { "intent": "implement", "domains": ["test", "tests", "testing", "e2e"] }, "use": "test-implementer", "reviewers": ["test-reviewer"] },
+    { "id": "docs", "priority": 60, "when": { "intent": "implement", "domains": ["docs", "documentation"] }, "use": "docs-implementer", "reviewers": ["docs-reviewer"] },
+    { "id": "ops", "priority": 60, "when": { "intent": "implement", "domains": ["ops", "devops", "ci", "cd", "docker", "deployment", "infrastructure"] }, "use": "ops-implementer", "reviewers": ["ops-reviewer"] },
+    { "id": "api-review", "priority": 45, "when": { "intent": "implement", "domains": ["api", "contract"] }, "reviewers": ["api-reviewer"] },
+    { "id": "security-review", "priority": 50, "when": { "intent": "implement", "domains": ["security", "authentication", "authorization", "auth"] }, "reviewers": ["security-reviewer"] },
+    { "id": "architecture-review", "priority": 40, "when": { "intent": "implement", "domains": ["architecture"] }, "reviewers": ["architecture-reviewer"] },
+    { "id": "high-risk-review", "priority": 35, "when": { "intent": "implement", "risk": "high" }, "reviewers": ["architecture-reviewer", "requirements-reviewer"] },
+    { "id": "default-implementation", "priority": 0, "when": { "intent": "implement" }, "use": "implementation-worker", "reviewers": ["code-quality-reviewer", "requirements-reviewer"], "validators": ["validator"] }
+  ],
+  "recovery": {
+    "PATCH_CONTEXT_MISMATCH": [{ "action": "same-agent" }, { "action": "agent", "agent": "quality-implementer" }, { "action": "lead" }],
+    "TOOL_FAILURE": [{ "action": "same-agent" }, { "action": "agent", "agent": "quality-implementer" }, { "action": "lead" }],
+    "MISSING_CONTEXT": [{ "action": "same-agent" }, { "action": "lead" }],
+    "WRONG_AGENT": [{ "action": "reroute" }, { "action": "lead" }],
+    "VALIDATION_FAILURE": [{ "action": "same-agent" }, { "action": "agent", "agent": "quality-implementer" }, { "action": "agent", "agent": "senior-implementer" }],
+    "REVIEW_FAILURE": [{ "action": "agent", "agent": "quality-implementer" }, { "action": "agent", "agent": "senior-implementer" }, { "action": "lead" }],
+    "AMBIGUOUS_OUTPUT": [{ "action": "same-agent" }, { "action": "lead" }],
+    "CONFLICTING_RESULTS": [{ "action": "agent", "agent": "oracle" }, { "action": "lead" }]
+  }
+}
