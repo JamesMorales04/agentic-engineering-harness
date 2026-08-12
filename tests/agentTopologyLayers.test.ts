@@ -19,21 +19,14 @@ async function fixture(source: string): Promise<string> {
   return root;
 }
 
-describe("layered agent topology", () => {
+describe("agent topology", () => {
   it("loads the built-in default pack and its useful cross-project roles", async () => {
     const root = await fixture('{"version":1,"extends":["aeh:default"]}');
     const source = await loadAgentTopologySource(root, config);
-    expect(source.agents["implementation-worker"]).toBeDefined();
-    expect(source.agents["backend-implementer"]).toBeDefined();
-    expect(source.agents["frontend-implementer"]).toBeDefined();
-    expect(source.agents["data-implementer"]).toBeDefined();
-    expect(source.agents["test-implementer"]).toBeDefined();
-    expect(source.agents["security-reviewer"]).toBeDefined();
-    expect(source.agents["requirements-reviewer"]).toBeDefined();
-    expect(source.agents["integration-validator"]).toBeDefined();
-    expect(source.agents["oracle"]).toBeDefined();
+    for (const name of ["implementation-worker", "backend-implementer", "frontend-implementer", "data-implementer", "test-implementer", "security-reviewer", "requirements-reviewer", "integration-validator", "oracle", "designer", "github-manager"]) expect(source.agents[name]).toBeDefined();
     expect(source.agents["openspec-manager"]).toBeUndefined();
-    expect(source.agents["github-manager"]).toBeUndefined();
+    expect(source.agents["github-manager"].mcps).toEqual(["github"]);
+    expect(source.agents["designer"].mcps).toEqual(["playwright", "context7"]);
   });
 
   it("supports partial override, addition and wildcard deletion in one project layer", async () => {
