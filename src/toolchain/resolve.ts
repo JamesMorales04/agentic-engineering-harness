@@ -4,6 +4,8 @@ import type { HarnessProjectConfig } from "../core/types.js";
 import { loadResolvedAgentTopology } from "../agents/config.js";
 import type { ResolvedToolchain, ToolchainConfig, ToolchainToolDefinition } from "./types.js";
 
+type SddAuthoringConfig = { authoring?: { provider?: string } };
+
 export async function resolveToolchain(root: string, project: HarnessProjectConfig, toolchain: ToolchainConfig, options: { profile?: string; preferContainers?: boolean; containerAvailable?: boolean } = {}): Promise<ResolvedToolchain> {
   const profile = options.profile ?? "auto"; const selected = new Map<string, string[]>();
   if (profile !== "auto") for (const name of profileTools(toolchain, profile)) select(selected, name, `profile:${profile}`);
@@ -19,6 +21,8 @@ async function activeCapabilities(root: string, project: HarnessProjectConfig): 
   if (project.agents) { try { const topology = await loadResolvedAgentTopology(root, project, project.agents.activeProfile); for (const agent of Object.values(topology.agents)) if (!agent.disabled) result.add(`runtime:${agent.runtime.name}`); } catch { /* doctor/setup surfaces topology independently */ } }
   if (project.orchestration?.provider) result.add(`orchestration:${project.orchestration.provider}`);
   if (project.delivery?.paseo?.enabled) result.add("delivery:paseo"); if (project.delivery?.github?.enabled) result.add("delivery:github");
+  const authoringProvider = (project.sdd as (NonNullable<HarnessProjectConfig["sdd"]> & SddAuthoringConfig) | undefined)?.authoring?.provider ?? "openspec";
+  if (authoringProvider && authoringProvider !== "native") result.add(`spec-authoring:${authoringProvider}`);
   if (project.memory?.provider) result.add(`memory:${project.memory.provider}`); if (project.codeIntelligence?.provider) result.add(`code-intelligence:${project.codeIntelligence.provider}`); if (project.validation?.opa?.enabled) result.add("validation:opa"); if (project.security?.sandbox?.provider) result.add(`sandbox:${project.security.sandbox.provider}`);
   if ((project.organization?.policyBundles?.sources ?? []).some((source) => Boolean(source.signature || source.publicKey))) result.add("organization:signed-policy");
   for (const name of project.security?.tools ?? []) result.add(`security-tool:${name}`); for (const validator of project.validation?.validators ?? []) result.add(`validator:${validator.adapter}`); await addProjectCapabilities(root, result); return result;
