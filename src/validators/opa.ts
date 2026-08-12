@@ -3,12 +3,12 @@ import type { HarnessProjectConfig, TaskContract, ValidationCheck } from "../cor
 import { commandExists, runProcess } from "../utils/process.js";
 import type { PolicyEvidence } from "./evidence.js";
 
-export async function runOpaPolicies(root: string, config: HarnessProjectConfig, contract: TaskContract, changedFiles: string[], frozenChangedFiles: string[], evidence: PolicyEvidence): Promise<ValidationCheck> {
+export async function runOpaPolicies(root: string, config: HarnessProjectConfig, contract: TaskContract, changedFiles: string[], frozenChangedFiles: string[], evidence: PolicyEvidence, policyRoot = root): Promise<ValidationCheck> {
   if (!config.validation?.opa?.enabled) return { id: "policy.opa", category: "policy", status: "SKIP", message: "OPA policy evaluation disabled." };
   if (!(await commandExists("opa", root))) return { id: "policy.opa", category: "policy", status: "WARN", message: "OPA is enabled but the opa executable is not installed." };
   const policyDirs = config.validation.opa.policyDirs ?? [];
   if (!policyDirs.length) return { id: "policy.opa", category: "policy", status: "WARN", message: "OPA is enabled but no policyDirs are configured." };
-  const args = policyDirs.map((dir) => `--data ${quote(path.resolve(root, dir))}`).join(" ");
+  const args = policyDirs.map((dir) => `--data ${quote(path.resolve(policyRoot, dir))}`).join(" ");
   const input = { workerRole: "implementation-worker", changedFiles, frozenChangedFiles, taskContract: contract, ...evidence };
   const command = `printf %s ${quote(JSON.stringify(input))} | opa eval --format=json ${args} --stdin-input data`;
   const result = await runProcess(command, { cwd: root, timeoutMs: 30_000 });

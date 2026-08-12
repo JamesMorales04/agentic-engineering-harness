@@ -26,9 +26,10 @@ import { resolveRoute } from "./agents/routing.js";
 import { validateAgentOutput, plannerOutputSchema } from "./agents/outputContracts.js";
 import { planParallelism } from "./agents/parallelism.js";
 import { dedupeFindings, extractFindings } from "./agents/findings.js";
+import { handoffSdd } from "./delivery/handoff.js";
 
 const program = new Command();
-program.name("engineering-harness").description("Deterministic control layer for spec-driven and bounded quick multi-agent software engineering").version("0.4.12");
+program.name("engineering-harness").description("Deterministic control layer for spec-driven and bounded quick multi-agent software engineering").version("0.4.14");
 
 program.command("init").argument("[directory]", "Project directory", ".").action(async (directory: string) => {
   const root = path.resolve(directory); const created = await initializeProject(root); const config = await loadProjectConfig(root);
@@ -70,6 +71,7 @@ agents.command("dedupe-findings").requiredOption("--input <paths...>").option("-
 const sdd = program.command("sdd").description("Spec-driven development workflow");
 sdd.command("new").argument("<taskId>").requiredOption("--title <title>").argument("[directory]", "Project directory", ".").action(async (taskId: string, directory: string, options: { title: string }) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const dir = await createSddChange(root, taskId, options.title, config); console.log(`Created SDD change at ${dir}`); console.log(`Created TaskContract at ${config.sdd?.contractsDir ?? ".harness/contracts"}/${taskId}.yaml`); });
 sdd.command("validate").argument("<taskId>").argument("[directory]", "Project directory", ".").action(async (taskId: string, directory: string) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const result = await validateSddChange(root, taskId, config); console.log(formatTraceabilityMatrix(result.requirements)); if (result.ok) console.log(`\n✓ ${taskId} SDD traceability is complete.`); else { for (const item of result.missing) console.error(`✗ missing: ${item}`); for (const issue of result.issues) console.error(`✗ ${issue}`); process.exitCode = 1; } });
+sdd.command("handoff").description("Publish a validated/sealed SDD to the optional GitHub issue/branch and Paseo worktree delivery flow").argument("<taskId>").argument("[directory]", "Project directory", ".").action(async (taskId: string, directory: string) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const record = await handoffSdd(root, config, taskId); console.log(JSON.stringify(record, null, 2)); });
 
 program.command("seal").argument("<taskId>").argument("[directory]", "Project directory", ".").action(async (taskId: string, directory: string) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const contract = await loadTaskContract(root, taskId, config); console.log(`Sealed ${taskId}: ${await sealTask(root, config, contract)}`); });
 program.command("verify").argument("<taskId>").argument("[directory]", "Project directory", ".").action(async (taskId: string, directory: string) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const contract = await loadTaskContract(root, taskId, config); const report = await verifyTask(root, config, contract); printChecks(report.checks); console.log(`\n${report.status} — report written to ${(config.sdd?.reportsDir ?? ".harness/reports")}/${taskId}.json`); if (report.status === "FAIL") process.exitCode = 1; });

@@ -29,8 +29,9 @@ export interface ReviewLifecycleResult {
   exception?: ExceptionDecision;
 }
 
-export async function runReviewLifecycle(input: { root: string; config: HarnessProjectConfig; contract: TaskContract; topology: ResolvedAgentTopology; route: ResolvedRoute; implementationSelection: AgentExecutionSelection; report: ValidationReport; revalidate: () => Promise<ValidationReport>; }): Promise<ReviewLifecycleResult> {
+export async function runReviewLifecycle(input: { root: string; stateRoot?: string; config: HarnessProjectConfig; contract: TaskContract; topology: ResolvedAgentTopology; route: ResolvedRoute; implementationSelection: AgentExecutionSelection; report: ValidationReport; revalidate: () => Promise<ValidationReport>; }): Promise<ReviewLifecycleResult> {
   const { root, config, contract, topology, route, implementationSelection } = input;
+  const stateRoot = input.stateRoot ?? root;
   let report = input.report;
   const sessions: WorkerSession[] = [];
   const checks: ValidationCheck[] = [];
@@ -45,10 +46,10 @@ export async function runReviewLifecycle(input: { root: string; config: HarnessP
   let stageIndex = 0;
   let remediationRounds = 0;
   let replanContext: PlannerOutput | undefined;
-  let deduped = reviewerNames.length ? await runReviewRound(root, config, contract, topology, reviewerNames, report, sessions, 0) : emptyFindings();
+  let deduped = reviewerNames.length ? await runReviewRound(root, stateRoot, config, contract, topology, reviewerNames, report, sessions, 0) : emptyFindings();
   let state = analyzeQualityState(deduped.findings, qualityHistory, config);
   qualityHistory.push(state);
-  await persistQualityState(root, config, contract.task.id, state);
+  await persistQualityState(stateRoot, config, contract.task.id, state);
 
   while (true) {
     const exception = detectHumanException(deduped.findings);
@@ -71,7 +72,7 @@ export async function runReviewLifecycle(input: { root: string; config: HarnessP
       deduped = dedupeFindings(leadResult.unresolved.map((item, index) => leadFinding(index, item, implementationSelection.logicalAgent)));
       state = analyzeQualityState(deduped.findings, qualityHistory, config);
       qualityHistory.push(state);
-      await persistQualityState(root, config, contract.task.id, state);
+      await persistQualityState(stateRoot, config, contract.task.id, state);
       stageIndex = Math.max(stageIndex, Math.min(2, Math.max(0, stages.length - 1)));
       continue;
     }
@@ -83,7 +84,7 @@ export async function runReviewLifecycle(input: { root: string; config: HarnessP
     if (stage.action === "diagnose") {
       const diagnosis = await runDiagnosis(root, config, contract, topology, implementationSelection, stage, state, deduped, sessions);
       if (diagnosis?.humanRequired) return humanExceptionResult(diagnosis, remediationRounds, report, deduped, checks, sessions, qualityHistory);
-      await recordEvent(root, config, "harness.quality.diagnosis", { taskId: contract.task.id, round: remediationRounds, stage: stage.name, classification: diagnosis?.type ?? "IMPLEMENTATION_DEFECT" });
+      await recordEvent(stateRoot, config, "harness.quality.diagnosis", { taskId: contract.task.id, round: remediationRounds, stage: stage.name, classification: diagnosis?.type ?? "IMPLEMENTATION_DEFECT" });
       stageIndex = Math.min(stageIndex + 1, Math.max(0, stages.length - 1));
       continue;
     }
@@ -93,9 +94,9 @@ export async function runReviewLifecycle(input: { root: string; config: HarnessP
       if (replanned.exception?.humanRequired) return humanExceptionResult(replanned.exception, remediationRounds, report, deduped, checks, sessions, qualityHistory);
       if (replanned.plan) {
         replanContext = replanned.plan;
-        await persistReplan(root, config, contract.task.id, remediationRounds, replanned.plan);
+        await persistReplan(stateRoot, config, contract.task.id, remediationRounds, replanned.plan);
       }
-      await recordEvent(root, config, "harness.quality.replan", { taskId: contract.task.id, round: remediationRounds, stage: stage.name, tasks: replanned.plan?.tasks.length ?? 0 });
+      await recordEvent(stateRoot, config, "harness.quality.replan", { taskId: contract.task.id, round: remediationRounds, stage: stage.name, tasks: replanned.plan?.tasks.length ?? 0 });
       stageIndex = resumeAfterReplan(config);
       continue;
     }
@@ -113,12 +114,12 @@ export async function runReviewLifecycle(input: { root: string; config: HarnessP
     if (runtimeException?.humanRequired) {
       const restored = await rollbackWorktreeCheckpoint(root, checkpoint);
       report = await input.revalidate();
-      await recordEvent(root, config, "harness.quality.rollback", { taskId: contract.task.id, round: remediationRounds, reason: "external-exception", stage: stage.name, restored });
+      await recordEvent(stateRoot, config, "harness.quality.rollback", { taskId: contract.task.id, round: remediationRounds, reason: "external-exception", stage: stage.name, restored });
       return humanExceptionResult(runtimeException, remediationRounds, report, deduped, checks, sessions, qualityHistory);
     }
     if (remediation.exitCode !== 0) {
       const restored = await rollbackWorktreeCheckpoint(root, checkpoint);
-      await recordEvent(root, config, "harness.quality.rollback", { taskId: contract.task.id, round: remediationRounds, reason: "remediation-runtime-failure", stage: stage.name, restored });
+      await recordEvent(stateRoot, config, "harness.quality.rollback", { taskId: contract.task.id, round: remediationRounds, reason: "remediation-runtime-failure", stage: stage.name, restored });
       stageIndex = Math.min(stageIndex + 1, Math.max(0, stages.length - 1));
       continue;
     }
@@ -127,20 +128,20 @@ export async function runReviewLifecycle(input: { root: string; config: HarnessP
     if (candidateReport.status === "FAIL") {
       const restored = await rollbackWorktreeCheckpoint(root, checkpoint);
       report = await input.revalidate();
-      await recordEvent(root, config, "harness.quality.rollback", { taskId: contract.task.id, round: remediationRounds, reason: "deterministic-regression", stage: stage.name, restored });
+      await recordEvent(stateRoot, config, "harness.quality.rollback", { taskId: contract.task.id, round: remediationRounds, reason: "deterministic-regression", stage: stage.name, restored });
       stageIndex = Math.min(stageIndex + 1, Math.max(0, stages.length - 1));
       continue;
     }
 
-    const candidateFindings = reviewerNames.length ? await runReviewRound(root, config, contract, topology, reviewerNames, candidateReport, sessions, qualityHistory.length) : emptyFindings();
+    const candidateFindings = reviewerNames.length ? await runReviewRound(root, stateRoot, config, contract, topology, reviewerNames, candidateReport, sessions, qualityHistory.length) : emptyFindings();
     const candidateState = analyzeQualityState(candidateFindings.findings, qualityHistory, config);
-    await persistQualityState(root, config, contract.task.id, candidateState);
+    await persistQualityState(stateRoot, config, contract.task.id, candidateState);
 
     if (candidateState.convergence === "REGRESSING") {
       const restored = await rollbackWorktreeCheckpoint(root, checkpoint);
       report = await input.revalidate();
-      await persistRejectedState(root, config, contract.task.id, candidateState, stage.name, restored);
-      await recordEvent(root, config, "harness.quality.rollback", { taskId: contract.task.id, round: remediationRounds, reason: "review-debt-regression", stage: stage.name, beforeDebtPoints: state.debtPoints, candidateDebtPoints: candidateState.debtPoints, restored });
+      await persistRejectedState(stateRoot, config, contract.task.id, candidateState, stage.name, restored);
+      await recordEvent(stateRoot, config, "harness.quality.rollback", { taskId: contract.task.id, round: remediationRounds, reason: "review-debt-regression", stage: stage.name, beforeDebtPoints: state.debtPoints, candidateDebtPoints: candidateState.debtPoints, restored });
       stageIndex = Math.min(stageIndex + 1, Math.max(0, stages.length - 1));
       continue;
     }
@@ -149,16 +150,16 @@ export async function runReviewLifecycle(input: { root: string; config: HarnessP
     deduped = candidateFindings;
     state = candidateState;
     qualityHistory.push(state);
-    await recordEvent(root, config, "harness.review.round", { taskId: contract.task.id, round: remediationRounds, reviewers: reviewerNames, findings: deduped.outputCount, debtPoints: state.debtPoints, debtScore: state.debtScore, convergence: state.convergence, resolved: state.resolved.length, persistent: state.persistent.length, introduced: state.introduced.length, stage: stage.name, agent: remediationSelection.logicalAgent, model: remediationSelection.modelId });
+    await recordEvent(stateRoot, config, "harness.review.round", { taskId: contract.task.id, round: remediationRounds, reviewers: reviewerNames, findings: deduped.outputCount, debtPoints: state.debtPoints, debtScore: state.debtScore, convergence: state.convergence, resolved: state.resolved.length, persistent: state.persistent.length, introduced: state.introduced.length, stage: stage.name, agent: remediationSelection.logicalAgent, model: remediationSelection.modelId });
   }
 }
 
-async function runReviewRound(root: string, config: HarnessProjectConfig, contract: TaskContract, topology: ResolvedAgentTopology, reviewerNames: string[], report: ValidationReport, sessions: WorkerSession[], round: number): Promise<DedupedFindings> {
+async function runReviewRound(root: string, stateRoot: string, config: HarnessProjectConfig, contract: TaskContract, topology: ResolvedAgentTopology, reviewerNames: string[], report: ValidationReport, sessions: WorkerSession[], round: number): Promise<DedupedFindings> {
   const findings: NormalizedFinding[] = [];
   const outputs = await Promise.all(reviewerNames.map(async (name) => runReviewer(root, config, contract, topology, name, report)));
   for (const output of outputs) { sessions.push(output.session); findings.push(...output.findings); }
   const deduped = dedupeFindings(findings);
-  await persistFindings(root, config, contract.task.id, round, deduped);
+  await persistFindings(stateRoot, config, contract.task.id, round, deduped);
   return deduped;
 }
 

@@ -9,6 +9,19 @@ export interface UsageMetrics { inputTokens?: number; outputTokens?: number; tot
 export interface RunMetrics { firstPassSuccess: boolean; repairCount: number; humanInterventions: number; durationMs: number; usage: UsageMetrics; }
 export interface ReviewEscalationStage { name: string; action?: "remediate" | "diagnose" | "replan"; agent?: string; model?: string; }
 
+export interface McpServerConfig {
+  description?: string;
+  type: "local" | "remote";
+  command?: string[];
+  url?: string;
+  environment?: Record<string, string>;
+  headers?: Record<string, string>;
+  oauth?: boolean;
+  enabled?: boolean;
+  timeoutMs?: number;
+  codemode?: boolean;
+}
+
 export interface HarnessProjectConfig {
   version: 1;
   project: { name: string };
@@ -31,6 +44,25 @@ export interface HarnessProjectConfig {
     };
   };
   orchestration?: { provider: "paseo" | "podman" | "none" | string; required?: boolean; worker?: { provider?: string; model?: string; maxRepairAttempts?: number; timeoutSeconds?: number; titlePrefix?: string; }; };
+  mcp?: { servers?: Record<string, McpServerConfig>; };
+  delivery?: {
+    stateDir?: string;
+    github?: {
+      enabled?: boolean;
+      tokenEnv?: string;
+      repository?: string;
+      apiBaseUrl?: string;
+      assignTokenOwner?: boolean;
+      labels?: string[];
+      branchPattern?: string;
+    };
+    paseo?: {
+      enabled?: boolean;
+      createWorkspace?: boolean;
+      autoUseWorkspace?: boolean;
+      worktreeSlugPattern?: string;
+    };
+  };
   memory?: { provider: "engram" | "none" | string; required?: boolean; benchmark?: { casesDir?: string; resultsDir?: string; providers?: Array<{ name: string; command: string; timeoutSeconds?: number; }>; }; };
   codeIntelligence?: { provider: "graphify" | "none" | string; required?: boolean; graphPath?: string; snapshotDir?: string; refreshCommand?: string; };
   sdd?: { specsDir?: string; contractsDir?: string; reportsDir?: string; repairsDir?: string; runsDir?: string; };
@@ -53,7 +85,7 @@ export interface TaskContract {
   task: { id: string; title: string };
   quick?: QuickTaskMetadata;
   source?: { proposal?: string; spec?: string; design?: string; tasks?: string; acceptance?: string; };
-  git?: { baseRef?: string };
+  git?: { baseRef?: string; originatingBranch?: string };
   scope?: { allowed?: string[]; forbidden?: string[]; frozen?: string[]; };
   routing?: { intent?: string; domains?: string[]; risk?: "low" | "medium" | "high"; agent?: string; reviewers?: string[]; profile?: string; };
   requirements?: TaskRequirement[];

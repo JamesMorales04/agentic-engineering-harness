@@ -1,7 +1,7 @@
 version: 1
 
 project:
-  name: change-me
+  name: agentic-engineering-harness
 
 agents:
   configPath: .harness/agents.source.jsonc
@@ -22,14 +22,12 @@ workflow:
       - schema
       - migration
       - api-contract
-      - multi-tenancy
   reviews:
     enabled: true
     reviewQuick: false
     leadAcceptance: true
     leadAcceptanceQuick: false
     quality:
-      # Integer DebtPoints: 3 points = DebtScore 1. Therefore 3 notes = 1 low.
       severityPoints:
         critical: 300
         high: 75
@@ -52,49 +50,35 @@ workflow:
       criticalStartStage: 2
       replanResumeStage: 2
       stages:
-        - name: normal
-          action: remediate
-        - name: quality
-          action: remediate
-          agent: quality-implementer
-        - name: senior
-          action: remediate
-          agent: senior-implementer
-          model: "@brain"
-        - name: diagnosis
-          action: diagnose
-          agent: oracle
-          model: "@brain"
-        - name: replan
-          action: replan
-          agent: planner
-          model: "@brain"
+        - { name: normal, action: remediate }
+        - { name: quality, action: remediate, agent: quality-implementer }
+        - { name: senior, action: remediate, agent: senior-implementer, model: "@brain" }
+        - { name: diagnosis, action: diagnose, agent: oracle, model: "@brain" }
+        - { name: replan, action: replan, agent: planner, model: "@brain" }
 
 orchestration:
   provider: paseo
   required: false
   worker:
     provider: opencode
+    model: deepseek-v4-flash
     maxRepairAttempts: 2
+    timeoutSeconds: 1800
+    titlePrefix: aeh-self
 
-# MCP servers are injected only into agents whose topology explicitly lists them.
-# This keeps large tool schemas out of unrelated agent contexts.
 mcp:
   servers:
     context7:
-      description: Current library/framework documentation lookup.
       type: remote
       url: https://mcp.context7.com/mcp
       oauth: false
       enabled: true
     playwright:
-      description: Browser exploration and stateful UI validation; prefer deterministic Playwright tests when they are sufficient.
       type: local
       command: [npx, -y, "@playwright/mcp@0.0.78"]
       enabled: true
       timeoutMs: 30000
     github:
-      description: Official GitHub MCP server in read-only mode for repository/issue/PR/action triage. Deterministic Harness delivery owns writes.
       type: local
       command: [podman, run, -i, --rm, -e, GITHUB_PERSONAL_ACCESS_TOKEN, -e, GITHUB_TOOLSETS, -e, GITHUB_READ_ONLY, ghcr.io/github/github-mcp-server]
       environment:
@@ -104,13 +88,11 @@ mcp:
       enabled: true
       timeoutMs: 30000
     sentry:
-      description: Optional production-error and trace investigation via Sentry's remote MCP.
       type: remote
       url: https://mcp.sentry.dev/mcp
       enabled: false
       timeoutMs: 10000
 
-# Explicit opt-in delivery mirror. Tokens are read from environment only and never persisted.
 delivery:
   stateDir: .harness/delivery
   github:
@@ -126,18 +108,12 @@ delivery:
     worktreeSlugPattern: gh-{issue}-{slug}
 
 memory:
-  provider: engram
+  provider: none
   required: false
-  benchmark:
-    casesDir: memory-benchmarks
-    resultsDir: .harness/memory-benchmarks
-    providers: []
 
 codeIntelligence:
-  provider: graphify
+  provider: none
   required: false
-  graphPath: graphify-out/graph.json
-  snapshotDir: .harness/graphify
 
 sdd:
   specsDir: specs
@@ -149,31 +125,22 @@ sdd:
 validation:
   baseRef: main
   requireSeal: true
-  frozenPaths:
-    - .harness/contracts/**
-    - .harness/seals/**
-    - tests/acceptance/frozen/**
-  commands: []
-  validators: []
-  opa:
-    enabled: false
-    policyDirs:
-      - .harness/policies/core
+  commands:
+    - id: npm-check
+      command: npm run check
+      required: true
+      timeoutSeconds: 900
 
 security:
   sandbox:
-    provider: podman
+    provider: none
     required: false
-  tools:
-    - opengrep
-    - trivy
+    network: true
 
 telemetry:
-  enabled: true
+  enabled: false
   required: false
-  localEventsFile: .harness/telemetry/events.ndjson
   exporter: none
-  serviceName: engineering-harness-consumer
 
 evals:
   corpusDir: evals/corpus
@@ -182,4 +149,4 @@ evals:
 
 provenance:
   outputDir: .harness/provenance
-  buildType: https://github.com/JamesMorales04/agentic-engineering-harness/v0.4
+  buildType: https://github.com/JamesMorales04/agentic-engineering-harness

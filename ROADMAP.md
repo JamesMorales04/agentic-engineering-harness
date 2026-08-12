@@ -37,9 +37,32 @@
 - [x] human-on-exception only for spec contradiction, missing product decision or external blocker
 - [x] quality trajectory and final state persisted in run telemetry
 
+## v0.4.13 — built-in default agent pack ✅
+- [x] package-owned `aeh:default` cross-project agent topology
+- [x] project topology layers with ordered `extends`
+- [x] partial model/runtime/agent/profile overrides
+- [x] additive project-specific agents and routing rules
+- [x] minimatch removal of inherited agents/models/runtimes/profiles/routing/councils
+- [x] cascading cleanup of removed agent references
+- [x] agent descriptions propagated as executable role charters
+- [x] Harness repository dogfoods its own `.harness/` configuration
+
+## v0.4.14 — selective MCPs + issue/worktree delivery ✅
+- [x] OMO/Pawra agent capability review with `designer` and read-only `github-manager` defaults
+- [x] reusable verification/worktree/routing/recovery/traceability/dedup/drift/simplify/delivery skills
+- [x] per-agent MCP projection into OpenCode runtime configuration
+- [x] default Context7, Playwright and read-only GitHub MCP catalog; disabled Sentry candidate
+- [x] originating-branch capture at SDD creation
+- [x] sealed/non-template `aeh sdd handoff` readiness gate
+- [x] deterministic GitHub issue + issue-linked branch creation with env-only credentials
+- [x] resumable delivery state after each remote write
+- [x] Paseo worktree workspace creation and automatic workspace reuse for implementation/review/repair
+
 ## v0.5 — scale and governance
 - [ ] repeated-run eval dashboards/statistical confidence
 - [ ] signed organization policy bundles and inheritance
 - [ ] remote execution queue/distributed workers
 - [ ] richer code-graph task-to-node mapping for parallel scheduling
 - [ ] output-schema-native runtime adapters and structured session resume
+- [ ] MCP benchmark harness for token overhead, latency, stale-data risk and permission surface
+- [ ] optional observability/issue-system/database/cluster MCP packs validated by evals
