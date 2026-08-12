@@ -71,6 +71,23 @@
 - [x] `ISSUE_DRIFT` preflight before every issue-derived run
 - [x] explicit issue refresh guard once an implementation workspace exists
 - [x] engineering-workflow natural-language routing for `implement issue #X`
+- [x] deterministic accepted commit/push/draft-PR finalization
+
+## v0.4.16 — toolchain and bootstrap ✅
+- [x] npm package remains the AEH distribution boundary with no mutating `postinstall`
+- [x] declarative `.harness/toolchain.yaml` and JSON Schema
+- [x] automatic capability-based tool closure from agents/orchestration/validators/project stack
+- [x] named toolchain profiles with inheritance
+- [x] mise adapter for Node/Codex/OpenCode/Paseo/Graphify/OPA/OpenGrep/Trivy and project runtimes
+- [x] explicit `aeh setup`, side-effect-free `--dry-run`, `--update-lock` and `aeh init --setup`
+- [x] `.harness/toolchain.lock.json` for exact logical versions/OCI digests
+- [x] gitignored `.harness/toolchain.state.json` for machine-local bin paths
+- [x] Harness subprocess PATH injection without shell `mise activate`
+- [x] optional local vs OCI validator provisioning with immutable image digests
+- [x] automatic frozen project dependency setup for npm/pnpm/yarn/bun/uv/.NET
+- [x] project-pinned Node/.NET/Bun version precedence before lock resolution
+- [x] toolchain-aware `aeh doctor`
+- [x] Harness repository dogfoods its own toolchain source
 
 ## v0.5 — scale and governance
 - [ ] repeated-run eval dashboards/statistical confidence
