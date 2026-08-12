@@ -31,7 +31,12 @@ const projectSchema = z.object({
       escalation: z.object({ stages: z.array(escalationStageSchema).optional(), criticalStartStage: z.number().int().nonnegative().optional(), replanResumeStage: z.number().int().nonnegative().optional() }).optional()
     }).optional()
   }).optional(),
-  orchestration: z.object({ provider: z.string(), required: z.boolean().optional(), worker: z.object({ provider: z.string().optional(), model: z.string().optional(), maxRepairAttempts: z.number().int().nonnegative().optional(), timeoutSeconds: z.number().int().positive().optional(), titlePrefix: z.string().optional() }).optional() }).optional(),
+  orchestration: z.object({
+    provider: z.string(),
+    required: z.boolean().optional(),
+    worker: z.object({ provider: z.string().optional(), model: z.string().optional(), maxRepairAttempts: z.number().int().nonnegative().optional(), timeoutSeconds: z.number().int().positive().optional(), titlePrefix: z.string().optional() }).optional(),
+    interactive: z.object({ autoSetup: z.boolean().optional(), webUi: z.boolean().optional(), leadAgent: z.string().min(1).optional(), reuseSession: z.boolean().optional(), stateDir: z.string().min(1).optional(), title: z.string().min(1).optional() }).optional()
+  }).optional(),
   toolchain: z.object({ configPath: z.string().optional(), lockPath: z.string().optional(), statePath: z.string().optional(), generatedMisePath: z.string().optional() }).optional(),
   mcp: z.object({
     servers: z.record(z.string(), mcpServerSchema).optional(),
