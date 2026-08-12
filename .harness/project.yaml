@@ -67,6 +67,13 @@ orchestration:
     maxRepairAttempts: 2
     timeoutSeconds: 1800
     titlePrefix: aeh-self
+  interactive:
+    autoSetup: true
+    webUi: true
+    leadAgent: lead
+    reuseSession: true
+    stateDir: .harness/paseo
+    title: AEH Lead
 
 toolchain:
   configPath: .harness/toolchain.yaml

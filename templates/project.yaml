@@ -94,6 +94,13 @@ orchestration:
   worker:
     provider: opencode
     maxRepairAttempts: 2
+  interactive:
+    autoSetup: true
+    webUi: true
+    leadAgent: lead
+    reuseSession: true
+    stateDir: .harness/paseo
+    title: AEH Lead
 
 toolchain:
   configPath: .harness/toolchain.yaml

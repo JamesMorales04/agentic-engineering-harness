@@ -23,7 +23,12 @@
         "escalation": { "type": "object", "properties": { "criticalStartStage": { "type": "integer", "minimum": 0 }, "replanResumeStage": { "type": "integer", "minimum": 0 }, "stages": { "type": "array", "items": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string", "minLength": 1 }, "action": { "enum": ["remediate", "diagnose", "replan"] }, "agent": { "type": "string", "minLength": 1 }, "model": { "type": "string", "minLength": 1 } } } } } }
       } }
     } },
-    "orchestration": { "type": "object", "properties": { "provider": { "type": "string" }, "required": { "type": "boolean" }, "worker": { "type": "object", "properties": { "provider": { "type": "string" }, "model": { "type": "string" }, "maxRepairAttempts": { "type": "integer", "minimum": 0 }, "timeoutSeconds": { "type": "integer", "minimum": 1 }, "titlePrefix": { "type": "string" } } } } },
+    "orchestration": { "type": "object", "properties": {
+      "provider": { "type": "string" },
+      "required": { "type": "boolean" },
+      "worker": { "type": "object", "properties": { "provider": { "type": "string" }, "model": { "type": "string" }, "maxRepairAttempts": { "type": "integer", "minimum": 0 }, "timeoutSeconds": { "type": "integer", "minimum": 1 }, "titlePrefix": { "type": "string" } } },
+      "interactive": { "type": "object", "properties": { "autoSetup": { "type": "boolean" }, "webUi": { "type": "boolean" }, "leadAgent": { "type": "string", "minLength": 1 }, "reuseSession": { "type": "boolean" }, "stateDir": { "type": "string", "minLength": 1 }, "title": { "type": "string", "minLength": 1 } } }
+    } },
     "toolchain": { "type": "object", "properties": { "configPath": { "type": "string" }, "lockPath": { "type": "string" }, "statePath": { "type": "string" }, "generatedMisePath": { "type": "string" } } },
     "mcp": { "type": "object", "properties": {
       "servers": { "type": "object", "additionalProperties": { "type": "object", "required": ["type"], "properties": { "description": { "type": "string" }, "type": { "enum": ["local", "remote"] }, "command": { "type": "array", "items": { "type": "string" }, "minItems": 1 }, "url": { "type": "string", "format": "uri" }, "environment": { "type": "object", "additionalProperties": { "type": "string" } }, "headers": { "type": "object", "additionalProperties": { "type": "string" } }, "oauth": { "type": "boolean" }, "enabled": { "type": "boolean" }, "timeoutMs": { "type": "integer", "minimum": 1 }, "codemode": { "type": "boolean" } } } },

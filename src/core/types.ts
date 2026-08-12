@@ -57,7 +57,12 @@ export interface HarnessProjectConfig {
       escalation?: { stages?: ReviewEscalationStage[]; criticalStartStage?: number; replanResumeStage?: number; };
     };
   };
-  orchestration?: { provider: "paseo" | "podman" | "none" | string; required?: boolean; worker?: { provider?: string; model?: string; maxRepairAttempts?: number; timeoutSeconds?: number; titlePrefix?: string; }; };
+  orchestration?: {
+    provider: "paseo" | "podman" | "none" | string;
+    required?: boolean;
+    worker?: { provider?: string; model?: string; maxRepairAttempts?: number; timeoutSeconds?: number; titlePrefix?: string; };
+    interactive?: { autoSetup?: boolean; webUi?: boolean; leadAgent?: string; reuseSession?: boolean; stateDir?: string; title?: string; };
+  };
   toolchain?: { configPath?: string; lockPath?: string; statePath?: string; generatedMisePath?: string; };
   mcp?: {
     servers?: Record<string, McpServerConfig>;

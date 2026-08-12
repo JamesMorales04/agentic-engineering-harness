@@ -14,9 +14,9 @@ clone / npm bootstrap
       -> lead acceptance -> deterministic delivery
 ```
 
-## Status: v0.5.0
+## Status: v0.5.1
 
-v0.5.0 closes the original architecture with hard-frozen control planes, executable multi-worker planner waves, requirement evidence graphs, hardened sandboxes, distributed workers and organization governance.
+v0.5.1 adds a zero-friction Paseo entrypoint on top of the v0.5 architecture: start AEH once, then type normal engineering prompts in the persistent Paseo lead and let the Harness choose and execute the complete workflow automatically.
 
 - AEH remains a normal npm development package; it is not an application runtime dependency;
 - `.harness/toolchain.yaml` declares external engineering tools instead of requiring manual one-by-one installation;
@@ -29,7 +29,7 @@ v0.5.0 closes the original architecture with hard-frozen control planes, executa
 - `aeh doctor` verifies the reconciled environment;
 - no npm `postinstall` silently mutates the host.
 
-See [docs/V0.5.md](docs/V0.5.md), [docs/V0.4.16.md](docs/V0.4.16.md) and the earlier v0.4 documentation.
+See [docs/V0.5.1.md](docs/V0.5.1.md), [docs/V0.5.md](docs/V0.5.md) and the earlier version documentation.
 
 ## Architecture close in v0.5
 
@@ -46,6 +46,20 @@ aeh eval dashboard EVAL-001
 aeh mcp benchmark
 ```
 
+## Start AEH + Paseo
+
+The default interactive workflow is now one command:
+
+```bash
+aeh start
+# or
+npm exec aeh -- start
+```
+
+This starts or reuses the Paseo daemon and creates/reuses a persistent **AEH Lead** session. Open that session in Paseo and type a normal request such as `add rate limiting to the auth endpoints`. For every repository-changing prompt, the lead automatically inspects the repository, builds triage evidence, runs QUICK/SPEC classification, materializes and seals the appropriate contract, invokes the Harness, and owns the resulting planner/worker/validation/evidence/review/acceptance flow. You do not need to mention AEH or choose the internal workflow. Read-only questions remain direct and non-mutating.
+
+Use `aeh start --new` to create a fresh lead session. AEH does not rewrite global `~/.paseo/config.json`; project-local session state lives under gitignored `.harness/paseo/`.
+
 ## Recommended installation
 
 AEH should be pinned as a project development dependency:
@@ -59,7 +73,7 @@ npm exec aeh -- doctor
 For an existing clone that does not yet have `node_modules`, bootstrap a pinned AEH package explicitly:
 
 ```bash
-npm exec --yes --package=agentic-engineering-harness@0.5.0 -- aeh setup
+npm exec --yes --package=agentic-engineering-harness@0.5.1 -- aeh setup
 ```
 
 `aeh setup` is the explicit provisioning boundary. Installing the npm package itself does not install Codex, OpenCode, Paseo, scanners or system packages as a side effect.
@@ -122,7 +136,7 @@ Existing project version authority is respected before creating a new lock, incl
 ## Bootstrap without an existing `.harness`
 
 ```bash
-npm exec --yes --package=agentic-engineering-harness@0.5.0 -- aeh init --setup /path/to/repo
+npm exec --yes --package=agentic-engineering-harness@0.5.1 -- aeh init --setup /path/to/repo
 ```
 
 `aeh init` creates the project config, thin agent overlay extending `aeh:default`, reusable skills, policies and toolchain source. `--setup` additionally compiles and reconciles the toolchain.
