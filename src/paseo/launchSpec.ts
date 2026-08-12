@@ -1,4 +1,3 @@
-import process from "node:process";
 import type { AgentExecutionSelection } from "../agents/types.js";
 import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
 import { deliveryWorkspaceId } from "../delivery/handoff.js";
@@ -41,7 +40,7 @@ export async function compilePaseoAgentLaunchSpec(
   const operation = currentOperationContext();
   const operationId = operation.id ?? contract.task.id;
   const operationKind = operation.kind ?? options.kind ?? inferOperationKind(contract);
-  const phase = options.phase ?? "work";
+  const phase = options.phase ?? inferAgentPhase(selection, logicalAgent);
   const deliveryId = await deliveryWorkspaceId(root, config, contract.task.id);
   const workspaceId = deliveryId ?? operation.workspaceId;
   const title = `${options.titlePrefix ?? worker?.titlePrefix ?? "aeh"}-${contract.task.id}-${logicalAgent}`;
@@ -70,6 +69,18 @@ export async function compilePaseoAgentLaunchSpec(
     operationKind,
     phase
   };
+}
+
+export function inferAgentPhase(selection: AgentExecutionSelection | undefined, logicalAgent: string): string {
+  const role = selection?.role?.toLowerCase() ?? "";
+  const name = logicalAgent.toLowerCase();
+  if (role === "planner" || name.includes("planner")) return "planning";
+  if (role === "reviewer" || name.includes("reviewer")) return "review";
+  if (role === "escalation" || name.includes("oracle")) return "diagnosis";
+  if (name.includes("spec-manager")) return "spec-authoring";
+  if (name.includes("environment-manager")) return "environment-recovery";
+  if (role === "implementer" || name.includes("implementer") || name.includes("worker")) return "implementation";
+  return "work";
 }
 
 function inferOperationKind(contract: TaskContract): string {
