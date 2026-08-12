@@ -10,6 +10,7 @@ export interface DistributedDelegationJob {
   repositoryUrl: string;
   baseRef: string;
   controllerSha256?: string;
+  priorPatches: string[];
   task: DelegationTask;
   contract: TaskContract;
   selection: AgentExecutionSelection;
