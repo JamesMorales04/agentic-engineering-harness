@@ -6,20 +6,33 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
       - uses: actions/setup-node@v6
         with:
           node-version: 22
           package-manager-cache: false
       - run: npm install
-      - name: Emit generated lock bootstrap
-        run: printf 'AEH_LOCK_B64=%s\n' "$(base64 -w0 package-lock.json)"
+      - name: Bootstrap package-lock on the PR branch once
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- package-lock.json && git ls-files --error-unmatch package-lock.json >/dev/null 2>&1; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package-lock.json
+          git commit -m "chore(v0.4.16): lock npm dependencies"
+          git push origin "HEAD:${{ github.head_ref }}"
       - run: npm run release:check
       - name: Smoke packaged CLI from consumer install
         shell: bash
