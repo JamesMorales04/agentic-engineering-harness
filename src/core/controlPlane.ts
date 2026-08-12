@@ -29,17 +29,31 @@ export async function detectControlPlaneDrift(root: string, snapshot: ControlPla
   for (const [relative, file] of expected) { if (!currentSet.has(relative)) { missing.push(relative); continue; } const content = await fs.readFile(path.resolve(sourceRoot, relative)); if (sha256(content) !== file.sha256) changed.push(relative); }
   for (const relative of currentFiles) if (!expected.has(relative)) added.push(relative); changed.sort(); missing.sort(); added.sort(); return { changed, missing, added, drifted: changed.length + missing.length + added.length > 0 };
 }
+
+export async function loadFrozenSkillContext(root: string, config: HarnessProjectConfig, taskId: string, skills: string[]): Promise<string | undefined> {
+  if (!skills.length) return undefined;
+  const filesRoot = path.resolve(root, config.controlPlane?.snapshotDir ?? ".harness/controller", taskId, "files");
+  const roots = [".harness/skills", ".agents/skills", ".opencode/skills", "skills"];
+  const chunks: string[] = [];
+  for (const skill of [...new Set(skills)]) {
+    let content: string | undefined;
+    for (const rootName of roots) {
+      for (const suffix of [path.join(skill, "SKILL.md"), `${skill}.md`]) {
+        try { content = await fs.readFile(path.join(filesRoot, rootName, suffix), "utf8"); break; } catch { /* try next frozen root */ }
+      }
+      if (content !== undefined) break;
+    }
+    if (content !== undefined) chunks.push(`## Frozen skill: ${skill}\n${content.trim()}`);
+  }
+  return chunks.length ? chunks.join("\n\n") : undefined;
+}
+
 export function controlPlanePolicyRoot(snapshot: ControlPlaneSnapshot): string { return snapshot.materializedRoot; }
 export async function loadControlPlaneSnapshot(root: string, config: HarnessProjectConfig, taskId: string): Promise<ControlPlaneSnapshot | undefined> { const file = path.resolve(root, config.controlPlane?.snapshotDir ?? ".harness/controller", taskId, "manifest.json"); try { return JSON.parse(await fs.readFile(file, "utf8")) as ControlPlaneSnapshot; } catch { return undefined; } }
-
-async function resolveControlRoots(root: string, config: HarnessProjectConfig): Promise<string[]> {
-  const configured = [config.agents?.configPath, config.agents?.generatedPath, config.toolchain?.configPath, config.toolchain?.lockPath, ...(config.validation?.opa?.policyDirs ?? []), config.organization?.policyBundles?.cacheDir, ...(config.controlPlane?.include ?? [])].filter((value): value is string => Boolean(value));
-  const self = await isHarnessRepository(root) ? SELF_CONTROLLER_ROOTS : []; return [...new Set([...DEFAULT_CONTROL_ROOTS, ...configured, ...self].map(normalizeRelative))].sort();
-}
+async function resolveControlRoots(root: string, config: HarnessProjectConfig): Promise<string[]> { const configured = [config.agents?.configPath, config.agents?.generatedPath, config.toolchain?.configPath, config.toolchain?.lockPath, ...(config.validation?.opa?.policyDirs ?? []), config.organization?.policyBundles?.cacheDir, ...(config.controlPlane?.include ?? [])].filter((value): value is string => Boolean(value)); const self = await isHarnessRepository(root) ? SELF_CONTROLLER_ROOTS : []; return [...new Set([...DEFAULT_CONTROL_ROOTS, ...configured, ...self].map(normalizeRelative))].sort(); }
 async function isHarnessRepository(root: string): Promise<boolean> { try { const value = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8")) as { name?: string }; return value.name === "agentic-engineering-harness"; } catch { return false; } }
 async function enumerateControlFiles(root: string, includeRoots: string[]): Promise<string[]> { const result = new Set<string>(); for (const relative of includeRoots) await collectPath(root, relative, result); return [...result].sort(); }
-async function collectPath(root: string, relative: string, result: Set<string>): Promise<void> { const absolute = path.resolve(root, relative); if (!inside(root, absolute)) throw new Error(`Control-plane snapshot path escapes project root: ${relative}`); let stat; try { stat = await fs.stat(absolute); } catch { return; } if (stat.isFile()) { result.add(normalizeRelative(path.relative(root, absolute))); return; } if (!stat.isDirectory()) return; const entries = await fs.readdir(absolute, { withFileTypes: true }); for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) { if (["node_modules", ".git", "dist"].includes(entry.name)) continue; const child = normalizeRelative(path.relative(root, path.join(absolute, entry.name))); if (child.startsWith(normalizeRelative(path.join(configlessControllerRoot(), "dummy")))) { /* no-op marker for tree-shake-safe helper */ } await collectPath(root, child, result); } }
-function configlessControllerRoot(): string { return ".harness/controller"; }
+async function collectPath(root: string, relative: string, result: Set<string>): Promise<void> { const absolute = path.resolve(root, relative); if (!inside(root, absolute)) throw new Error(`Control-plane snapshot path escapes project root: ${relative}`); let stat; try { stat = await fs.stat(absolute); } catch { return; } if (stat.isFile()) { result.add(normalizeRelative(path.relative(root, absolute))); return; } if (!stat.isDirectory()) return; const entries = await fs.readdir(absolute, { withFileTypes: true }); for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) { if (["node_modules", ".git", "dist"].includes(entry.name)) continue; await collectPath(root, normalizeRelative(path.relative(root, path.join(absolute, entry.name))), result); } }
 function compositeHash(files: ControlPlaneFile[]): string { const hash = crypto.createHash("sha256"); for (const file of [...files].sort((a, b) => a.path.localeCompare(b.path))) hash.update(`${file.path}\0${file.sha256}\0${file.size}\n`); return hash.digest("hex"); }
 async function readPackageVersion(root: string): Promise<string | undefined> { try { return (JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8")) as { version?: string }).version; } catch { return undefined; } }
 async function readGitCommit(root: string): Promise<string | undefined> { const result = await runProcess("git rev-parse HEAD", { cwd: root, timeoutMs: 10_000 }); return result.exitCode === 0 ? result.stdout.trim() || undefined : undefined; }
