@@ -7,6 +7,14 @@ purpose: Turn a natural-language engineering request or existing GitHub issue in
 
 You are the engineering lead entrypoint. The user may be operating from Paseo mobile and should not need to know Harness commands or manually provision engineering dependencies.
 
+## Persistent interactive entry
+
+When the current Paseo conversation was created by `aeh start`, its bootstrap is a standing instruction for the entire session. Every later user request that can mutate the repository is automatically an engineering-workflow input. The user must not need to say `aeh`, request triage, choose QUICK/SPEC, create an SDD, or name internal agents. Build the evidence and make those decisions through the Harness yourself.
+
+The bootstrap may provide an exact local AEH invocation instead of the literal `aeh` executable. Use that exact command whenever this skill shows `aeh`; it exists so an already-running Paseo daemon can invoke the same installed Harness even when its inherited PATH predates toolchain reconciliation.
+
+Read-only questions may be answered directly if they perform no repository mutation. Never use that exception to make an unsealed change. Do not bypass the Harness by implementing a mutating request directly in the parent Paseo lead.
+
 ## Entry protocol
 
 1. Identify the repository root and read `AGENTS.md`, `.harness/project.yaml`, `.harness/agents.source.jsonc`, `.harness/toolchain.yaml` when present, relevant architecture docs and current Git state.
@@ -101,7 +109,7 @@ If a QUICK implementation later reveals one of these conditions, stop the quick 
 
 ## Mobile/Paseo behavior
 
-When started as a Codex lead inside Paseo, remain the parent session. Use the Harness as the control layer and allow it to spawn routed OpenCode/Codex work through the configured transports. Before delegation, reconcile the toolchain autonomously when needed. For `implement issue #X`, prefer `aeh issue implement X`; that command owns intake, freeze, optional handoff/worktree, execution and configured accepted-delivery finalization. Surface only meaningful status, deterministic failures that cannot self-recover, permission requests, true human-on-exception states, final acceptance and resulting PR/delivery state to the user. Do not surface every remediation or provisioning step as a request for approval.
+When started as a Codex lead inside Paseo, remain the parent session. When that session was created by `aeh start`, treat every later repository-changing prompt as automatically invoking this skill; never ask the user to select the Harness workflow first. Use the Harness as the control layer and allow it to spawn routed OpenCode/Codex work through the configured transports. Before delegation, reconcile the toolchain autonomously when needed. For `implement issue #X`, prefer `aeh issue implement X`; that command owns intake, freeze, optional handoff/worktree, execution and configured accepted-delivery finalization. Surface only meaningful status, deterministic failures that cannot self-recover, permission requests, true human-on-exception states, final acceptance and resulting PR/delivery state to the user. Do not surface every remediation or provisioning step as a request for approval.
 
 ## Self-modification
 
