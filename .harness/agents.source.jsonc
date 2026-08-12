@@ -2,6 +2,7 @@
   "version": 1,
   "extends": ["aeh:default"],
   "activeProfile": "balanced",
+  "skillRoots": ["skills"],
 
   "agents": {
     "harness-reviewer": {
@@ -9,6 +10,7 @@
       "domains": ["harness", "agent-topology", "workflow-engine"],
       "description": "Review changes to the Harness control plane itself. Protect the trust hierarchy (deterministic evidence over LLM judgment), sealed normative artifacts, topology composition semantics, backward compatibility and human-on-exception behavior. Require tests for routing/configuration state-machine changes.",
       "execution": { "model": "@brain" },
+      "skills": ["acceptance-traceability", "prompt-drift-audit", "verification-planning"],
       "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "deny", "review": "allow", "gitWrite": "deny" },
       "outputContract": "reviewer"
     }
