@@ -27,7 +27,17 @@
       "provider": { "type": "string" },
       "required": { "type": "boolean" },
       "worker": { "type": "object", "properties": { "provider": { "type": "string" }, "model": { "type": "string" }, "maxRepairAttempts": { "type": "integer", "minimum": 0 }, "timeoutSeconds": { "type": "integer", "minimum": 1 }, "titlePrefix": { "type": "string" } } },
-      "interactive": { "type": "object", "properties": { "autoSetup": { "type": "boolean" }, "webUi": { "type": "boolean" }, "leadAgent": { "type": "string", "minLength": 1 }, "reuseSession": { "type": "boolean" }, "stateDir": { "type": "string", "minLength": 1 }, "title": { "type": "string", "minLength": 1 } } }
+      "interactive": { "type": "object", "properties": {
+        "autoSetup": { "type": "boolean" },
+        "webUi": { "type": "boolean" },
+        "leadAgent": { "type": "string", "minLength": 1 },
+        "reuseSession": { "type": "boolean", "deprecated": true },
+        "sessionPolicy": { "enum": ["fresh-on-start", "reuse-compatible", "resume-explicit"] },
+        "usePaseoTools": { "type": "boolean" },
+        "context": { "type": "object", "properties": { "pressureThreshold": { "type": "number", "minimum": 0, "maximum": 1 }, "handoffThreshold": { "type": "number", "minimum": 0, "maximum": 1 }, "hardHandoffThreshold": { "type": "number", "minimum": 0, "maximum": 1 } } },
+        "stateDir": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 }
+      } }
     } },
     "toolchain": { "type": "object", "properties": { "configPath": { "type": "string" }, "lockPath": { "type": "string" }, "statePath": { "type": "string" }, "generatedMisePath": { "type": "string" } } },
     "mcp": { "type": "object", "properties": {
@@ -41,7 +51,8 @@
     "evidence": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "outputDir": { "type": "string" }, "requireComplete": { "type": "boolean" } } },
     "organization": { "type": "object", "properties": { "policyBundles": { "type": "object", "properties": { "cacheDir": { "type": "string" }, "required": { "type": "boolean" }, "sources": { "type": "array", "items": { "$ref": "#/$defs/policyBundleSource" } } } } } },
     "distributed": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "provider": { "type": "string" }, "queueDir": { "type": "string" }, "endpoint": { "type": "string", "format": "uri" }, "tokenEnv": { "type": "string" }, "pollIntervalMs": { "type": "integer", "minimum": 1 }, "leaseSeconds": { "type": "integer", "minimum": 1 }, "workerId": { "type": "string" } } },
-    "sdd": { "type": "object" }, "validation": { "type": "object" },
+    "sdd": { "type": "object", "properties": { "specsDir": { "type": "string" }, "contractsDir": { "type": "string" }, "reportsDir": { "type": "string" }, "repairsDir": { "type": "string" }, "runsDir": { "type": "string" }, "authoring": { "type": "object", "properties": { "provider": { "type": "string", "minLength": 1 }, "schema": { "type": "string", "minLength": 1 }, "managerAgent": { "type": "string", "minLength": 1 } } } } },
+    "validation": { "type": "object" },
     "security": { "type": "object", "properties": { "sandbox": { "type": "object", "properties": { "provider": { "type": "string" }, "required": { "type": "boolean" }, "image": { "type": "string" }, "imageDigest": { "type": "string" }, "network": { "type": "boolean" }, "extraArgs": { "type": "array", "items": { "type": "string" } }, "readOnlyRoot": { "type": "boolean" }, "ephemeralHome": { "type": "boolean" }, "noNewPrivileges": { "type": "boolean" }, "capDropAll": { "type": "boolean" }, "pidsLimit": { "type": "integer", "minimum": 1 }, "memory": { "type": "string" }, "cpus": { "type": "number", "exclusiveMinimum": 0 }, "tmpfs": { "type": "array", "items": { "type": "string" } }, "forceForRisks": { "type": "array", "items": { "enum": ["low", "medium", "high"] } }, "environmentAllowlist": { "type": "array", "items": { "type": "string" } }, "credentialEnvAllowlist": { "type": "array", "items": { "type": "string" } } } }, "tools": { "type": "array", "items": { "type": "string" } } } },
     "telemetry": { "type": "object" },
     "evals": { "type": "object", "properties": { "corpusDir": { "type": "string" }, "resultsDir": { "type": "string" }, "workspacesDir": { "type": "string" }, "defaultRuns": { "type": "integer", "minimum": 1 }, "confidenceLevel": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 } } },
