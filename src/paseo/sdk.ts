@@ -2,6 +2,18 @@ import process from "node:process";
 import { pathToFileURL } from "node:url";
 import { resolvePaseoSdkFromCli } from "./sdkResolve.js";
 
+export interface PaseoSdkMcpStdioServer {
+  type: "stdio";
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+  alwaysLoad?: boolean;
+}
+
+export interface PaseoSdkToolPolicy {
+  preapproved: Array<{ kind: "mcp"; server: string; tool: string }>;
+}
+
 export interface PaseoSdkAgentOptions {
   cwd: string;
   workspaceId?: string;
@@ -12,6 +24,8 @@ export interface PaseoSdkAgentOptions {
   prompt?: string;
   outputSchema?: Record<string, unknown>;
   labels?: Record<string, string>;
+  mcpServers?: Record<string, PaseoSdkMcpStdioServer>;
+  toolPolicy?: PaseoSdkToolPolicy;
   timeoutMs?: number;
   waitForFinish?: boolean;
 }
@@ -182,6 +196,8 @@ async function loadPaseoSdk(root: string): Promise<PaseoSdkModule> {
 function buildCreateOptions(options: PaseoSdkAgentOptions, includePrompt: boolean): Record<string, unknown> {
   const config: Record<string, unknown> = normalizeProviderModel(options.provider, options.model);
   if (options.systemPrompt) config.systemPrompt = options.systemPrompt;
+  if (options.mcpServers && Object.keys(options.mcpServers).length) config.mcpServers = options.mcpServers;
+  if (options.toolPolicy?.preapproved.length) config.toolPolicy = options.toolPolicy;
   const createOptions: Record<string, unknown> = { config, title: options.title };
   if (options.workspaceId) createOptions.workspaceId = options.workspaceId;
   else createOptions.cwd = options.cwd;
