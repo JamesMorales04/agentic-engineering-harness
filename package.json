@@ -20,6 +20,7 @@
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "npm run clean && tsc -p tsconfig.json",
     "prepare": "npm run build",
+    "aeh": "node ./dist/main.js",
     "dev": "tsx src/main.ts",
     "test": "vitest run",
     "test:watch": "vitest",
