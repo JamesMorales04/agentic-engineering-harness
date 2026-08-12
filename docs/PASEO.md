@@ -4,14 +4,16 @@ Paseo is AEH's default interactive orchestration surface. The integration separa
 
 ## SDK-first control plane
 
-AEH uses the official TypeScript SDK, `@getpaseo/client`, as the primary control surface for agent creation, follow-up turns, status lookup and directory queries. The SDK is resolved directly when available and otherwise from the managed `@getpaseo/cli` installation. Paseo CLI already ships the matching client package, so AEH does not independently pin a second Paseo SDK version.
+AEH uses Paseo's published TypeScript client package, `@getpaseo/client`, as the primary control surface for agent creation, follow-up turns, status lookup and directory queries. Paseo currently documents that package as public but **not yet a stable public SDK**, so AEH deliberately resolves the copy bundled with the active `@getpaseo/cli` installation first instead of independently selecting a client version.
+
+The resolver supports normal PATH installations and mise-managed npm tools. In particular, mise may expose a shim through `command -v`; AEH also asks `mise which paseo` for the real binary and `mise where npm:@getpaseo/cli` for the synthetic npm installation root, then resolves `@getpaseo/client` from that package tree. A direct project-level SDK import is retained only as a compatibility fallback.
 
 The CLI remains responsible for daemon bootstrap/recovery and is retained as a compatibility fallback when the SDK cannot be resolved or connected:
 
 ```text
 AEH
 ├── daemon/bootstrap/recovery -> Paseo CLI
-└── normal agent lifecycle    -> @getpaseo/client
+└── normal agent lifecycle    -> @getpaseo/client bundled with active CLI
 ```
 
 Set `AEH_PASEO_FORCE_CLI=1` only when the compatibility path is deliberately required. `PASEO_DAEMON_URL` overrides the default SDK endpoint `ws://127.0.0.1:6767/ws`; `PASEO_DAEMON_PASSWORD` supplies daemon authentication when configured.
