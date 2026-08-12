@@ -1,0 +1,111 @@
+version: 1
+
+project:
+  name: agentic-engineering-harness
+
+agents:
+  configPath: .harness/agents.source.jsonc
+  generatedPath: .harness/generated/agents.json
+  activeProfile: balanced
+  required: true
+  findingsDir: .harness/findings
+
+workflow:
+  quick:
+    maxFiles: 5
+    disallowedDomains:
+      - security
+      - authentication
+      - authorization
+      - architecture
+      - database
+      - schema
+      - migration
+      - api-contract
+  reviews:
+    enabled: true
+    reviewQuick: false
+    leadAcceptance: true
+    leadAcceptanceQuick: false
+    quality:
+      severityPoints:
+        critical: 300
+        high: 75
+        medium: 24
+        low: 3
+        note: 1
+    convergence:
+      minimumDebtPointImprovement: 3
+      stagnationWindow: 2
+      cycleDetection: true
+      regressionDetection: true
+    finalQualityGate:
+      maxBySeverity:
+        critical: 0
+        high: 0
+        medium: 0
+        low: 3
+      maxDebtPoints: 9
+    escalation:
+      criticalStartStage: 2
+      replanResumeStage: 2
+      stages:
+        - { name: normal, action: remediate }
+        - { name: quality, action: remediate, agent: quality-implementer }
+        - { name: senior, action: remediate, agent: senior-implementer, model: "@brain" }
+        - { name: diagnosis, action: diagnose, agent: oracle, model: "@brain" }
+        - { name: replan, action: replan, agent: planner, model: "@brain" }
+
+orchestration:
+  provider: paseo
+  required: false
+  worker:
+    provider: opencode
+    model: deepseek-v4-flash
+    maxRepairAttempts: 2
+    timeoutSeconds: 1800
+    titlePrefix: aeh-self
+
+memory:
+  provider: none
+  required: false
+
+codeIntelligence:
+  provider: none
+  required: false
+
+sdd:
+  specsDir: specs/changes
+  contractsDir: .harness/contracts
+  reportsDir: .harness/reports
+  repairsDir: .harness/repairs
+  runsDir: .harness/runs
+
+validation:
+  baseRef: main
+  requireSeal: true
+  commands:
+    - id: npm-check
+      command: npm run check
+      required: true
+      timeoutSeconds: 900
+
+security:
+  sandbox:
+    provider: none
+    required: false
+    network: true
+
+telemetry:
+  enabled: false
+  required: false
+  exporter: none
+
+evals:
+  corpusDir: evals/corpus
+  resultsDir: .harness/evals/results
+  workspacesDir: .harness/evals/workspaces
+
+provenance:
+  outputDir: .harness/provenance
+  buildType: https://github.com/JamesMorales04/agentic-engineering-harness
