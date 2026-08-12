@@ -6,6 +6,7 @@ import { runAudit } from "../audit/run.js";
 import { loadProjectConfig, loadTaskContract } from "../core/config.js";
 import { runTask } from "../core/run.js";
 import { listManagedPaseoAgents } from "../paseo/runtime.js";
+import { recordPaseoTrace } from "../paseo/trace.js";
 import { runProcess, type ProcessResult } from "../utils/process.js";
 import {
   loadOperation,
@@ -26,6 +27,7 @@ export interface StartOperationOptions {
 
 export interface OperationControllerDeps {
   run?: typeof runProcess;
+  trace?: typeof recordPaseoTrace;
 }
 
 export async function startDetachedOperation(
@@ -53,100 +55,217 @@ export async function startDetachedOperation(
   const spawnProcess = options.spawnProcess ?? spawn;
   let child: ChildProcess;
   try {
-    child = spawnProcess(options.nodeExecutable, [options.entryFile, "operation", "execute", id, absoluteRoot], {
-      cwd: absoluteRoot,
-      detached: true,
-      stdio: "ignore",
-      env: {
-        ...process.env,
-        AEH_OPERATION_ID: id,
-        AEH_OPERATION_KIND: kind
+    child = spawnProcess(
+      options.nodeExecutable,
+      [options.entryFile, "operation", "execute", id, absoluteRoot],
+      {
+        cwd: absoluteRoot,
+        detached: true,
+        stdio: "ignore",
+        env: {
+          ...process.env,
+          AEH_OPERATION_ID: id,
+          AEH_OPERATION_KIND: kind
+        }
       }
-    });
+    );
   } catch (error) {
-    return patchOperation(absoluteRoot, id, { status: "FAILED", phase: "spawn-failed", error: String(error), finishedAt: new Date().toISOString() });
+    return patchOperation(absoluteRoot, id, {
+      status: "FAILED",
+      phase: "spawn-failed",
+      error: String(error),
+      finishedAt: new Date().toISOString()
+    });
   }
   child.unref();
-  return patchOperation(absoluteRoot, id, { pid: child.pid, phase: "dispatched" });
+  return patchOperation(absoluteRoot, id, {
+    pid: child.pid,
+    phase: "dispatched"
+  });
 }
 
-export async function executeOperation(root: string, operationId: string, deps: OperationControllerDeps = {}): Promise<OperationRecord> {
+export async function executeOperation(
+  root: string,
+  operationId: string,
+  deps: OperationControllerDeps = {}
+): Promise<OperationRecord> {
   const absoluteRoot = path.resolve(root);
+  const trace = deps.trace ?? recordPaseoTrace;
   let record = await loadOperation(absoluteRoot, operationId);
   if (record.status === "CANCELLED") return record;
-  record = await patchOperation(absoluteRoot, operationId, { status: "RUNNING", phase: "preparing", startedAt: new Date().toISOString(), pid: process.pid, error: undefined });
+  record = await patchOperation(absoluteRoot, operationId, {
+    status: "RUNNING",
+    phase: "preparing",
+    startedAt: new Date().toISOString(),
+    pid: process.pid,
+    error: undefined
+  });
 
   process.env.AEH_OPERATION_ID = record.id;
   process.env.AEH_OPERATION_KIND = record.kind;
-  const workspace = await ensureOperationWorkspace(absoluteRoot, record, deps.run ?? runProcess);
+  const workspace = await ensureOperationWorkspace(
+    absoluteRoot,
+    record,
+    deps.run ?? runProcess,
+    trace
+  );
   if (workspace.workspaceId) {
     process.env.AEH_OPERATION_WORKSPACE_ID = workspace.workspaceId;
-    record = await patchOperation(absoluteRoot, operationId, { workspaceId: workspace.workspaceId, workspaceWarning: undefined });
+    record = await patchOperation(absoluteRoot, operationId, {
+      workspaceId: workspace.workspaceId,
+      workspaceWarning: undefined
+    });
   } else if (workspace.warning) {
-    record = await patchOperation(absoluteRoot, operationId, { workspaceWarning: workspace.warning });
+    record = await patchOperation(absoluteRoot, operationId, {
+      workspaceWarning: workspace.warning
+    });
   }
 
   try {
     const config = await loadProjectConfig(absoluteRoot);
     if (record.kind === "audit") {
       const payload = record.payload as AuditOperationPayload;
-      const report = await runAudit(absoluteRoot, config, { ...payload, auditId: record.id });
+      const report = await runAudit(absoluteRoot, config, {
+        ...payload,
+        auditId: record.id
+      });
       const current = await loadOperation(absoluteRoot, operationId);
       if (current.status === "CANCELLED") return current;
       return patchOperation(absoluteRoot, operationId, {
         status: "SUCCEEDED",
         phase: "finished",
         finishedAt: new Date().toISOString(),
-        result: { auditId: report.auditId, status: report.status, productionSafe: report.productionSafe, report: `.harness/audits/${report.auditId}.json` }
+        result: {
+          auditId: report.auditId,
+          status: report.status,
+          productionSafe: report.productionSafe,
+          report: `.harness/audits/${report.auditId}.json`
+        }
       });
     }
 
     const payload = record.payload as RunOperationPayload;
     const contract = await loadTaskContract(absoluteRoot, payload.taskId, config);
-    const result = await runTask(absoluteRoot, config, contract, { profile: payload.profile });
+    const result = await runTask(absoluteRoot, config, contract, {
+      profile: payload.profile
+    });
     const current = await loadOperation(absoluteRoot, operationId);
     if (current.status === "CANCELLED") return current;
     return patchOperation(absoluteRoot, operationId, {
       status: result.status === "PASS" ? "SUCCEEDED" : "FAILED",
       phase: "finished",
       finishedAt: new Date().toISOString(),
-      result: { taskId: result.taskId, status: result.status, attempts: result.attempts }
+      result: {
+        taskId: result.taskId,
+        status: result.status,
+        attempts: result.attempts
+      }
     });
   } catch (error) {
     const current = await loadOperation(absoluteRoot, operationId).catch(() => record);
     if (current.status === "CANCELLED") return current;
-    return patchOperation(absoluteRoot, operationId, { status: "FAILED", phase: "failed", error: error instanceof Error ? error.stack ?? error.message : String(error), finishedAt: new Date().toISOString() });
+    return patchOperation(absoluteRoot, operationId, {
+      status: "FAILED",
+      phase: "failed",
+      error: error instanceof Error ? error.stack ?? error.message : String(error),
+      finishedAt: new Date().toISOString()
+    });
   }
 }
 
-export async function waitForOperation(root: string, operationId: string, timeoutMs = 1_800_000, pollMs = 500): Promise<OperationRecord> {
+export async function waitForOperation(
+  root: string,
+  operationId: string,
+  timeoutMs = 1_800_000,
+  pollMs = 500
+): Promise<OperationRecord> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const record = await loadOperation(root, operationId);
     if (isTerminal(record.status)) return record;
-    if (Date.now() >= deadline) throw new Error(`Timed out waiting for operation ${operationId} after ${timeoutMs}ms.`);
+    if (Date.now() >= deadline) {
+      throw new Error(`Timed out waiting for operation ${operationId} after ${timeoutMs}ms.`);
+    }
     await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
 }
 
-export async function cancelOperation(root: string, operationId: string): Promise<OperationRecord> {
+export async function cancelOperation(
+  root: string,
+  operationId: string,
+  deps: OperationControllerDeps = {}
+): Promise<OperationRecord> {
   const absoluteRoot = path.resolve(root);
+  const trace = deps.trace ?? recordPaseoTrace;
+  const run = deps.run ?? runProcess;
   const record = await loadOperation(absoluteRoot, operationId);
   if (isTerminal(record.status)) return record;
   const cleanupWarnings: string[] = [];
+
   if (record.pid && record.pid !== process.pid) {
-    try { process.kill(record.pid, "SIGTERM"); }
-    catch (error) { if (!/ESRCH/.test(String(error))) cleanupWarnings.push(`controller: ${String(error)}`); }
+    try {
+      process.kill(record.pid, "SIGTERM");
+    } catch (error) {
+      if (!/ESRCH/.test(String(error))) {
+        cleanupWarnings.push(`controller: ${String(error)}`);
+      }
+    }
   }
 
-  try {
-    const agents = await listManagedPaseoAgents(absoluteRoot, { "aeh.operation": operationId });
-    for (const agent of agents) {
-      const stopped = await runProcess(`paseo agent stop ${quote(agent.id)}`, { cwd: absoluteRoot, timeoutMs: 30_000 }).catch((error) => ({ exitCode: 1, stdout: "", stderr: String(error), durationMs: 0 }));
-      if (stopped.exitCode !== 0) cleanupWarnings.push(`agent ${agent.id}: ${stopped.stderr || stopped.stdout || `exit ${stopped.exitCode}`}`);
+  let agentIds = [...new Set((record.agents ?? []).map((agent) => agent.id).filter(Boolean))];
+  if (agentIds.length > 0) {
+    await trace(absoluteRoot, "cleanup.discovery", {
+      operationId,
+      source: "operation-state",
+      agentCount: agentIds.length
+    });
+  } else {
+    try {
+      const discovered = await listManagedPaseoAgents(absoluteRoot, {
+        "aeh.operation": operationId
+      });
+      agentIds = [...new Set(discovered.map((agent) => agent.id))];
+      await trace(absoluteRoot, "cleanup.discovery", {
+        operationId,
+        source: "paseo-list-compatibility",
+        agentCount: agentIds.length,
+        reason: "legacy operation record has no registered agent identities"
+      });
+    } catch (error) {
+      cleanupWarnings.push(`agent discovery: ${String(error)}`);
+      await trace(absoluteRoot, "cleanup.cli.error", {
+        operationId,
+        error: String(error)
+      });
     }
-  } catch (error) {
-    cleanupWarnings.push(`agent discovery: ${String(error)}`);
+  }
+
+  await trace(absoluteRoot, "cleanup.cli.required", {
+    operationId,
+    reason:
+      "Paseo public SDK 0.3.1 lacks cancel/kill parity for external controller cleanup",
+    agentCount: agentIds.length
+  });
+  for (const agentId of agentIds) {
+    const stopped = await run(`paseo stop ${quote(agentId)}`, {
+      cwd: absoluteRoot,
+      timeoutMs: 30_000
+    }).catch((error) => ({
+      exitCode: 1,
+      stdout: "",
+      stderr: String(error),
+      durationMs: 0
+    }));
+    await trace(absoluteRoot, "cleanup.cli.stop", {
+      operationId,
+      agentId,
+      exitCode: stopped.exitCode
+    });
+    if (stopped.exitCode !== 0) {
+      cleanupWarnings.push(
+        `agent ${agentId}: ${stopped.stderr || stopped.stdout || `exit ${stopped.exitCode}`}`
+      );
+    }
   }
 
   return patchOperation(absoluteRoot, operationId, {
@@ -158,39 +277,114 @@ export async function cancelOperation(root: string, operationId: string): Promis
 }
 
 export function createOperationId(kind: OperationKind, seed: string): string {
-  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+  const stamp = new Date()
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d{3}Z$/, "Z");
   const hash = crypto.createHash("sha256").update(seed).digest("hex").slice(0, 8);
   return `${kind.toUpperCase()}-${stamp}-${hash}`;
 }
 
-async function ensureOperationWorkspace(root: string, record: OperationRecord, run: typeof runProcess): Promise<{ workspaceId?: string; warning?: string }> {
+async function ensureOperationWorkspace(
+  root: string,
+  record: OperationRecord,
+  run: typeof runProcess,
+  trace: typeof recordPaseoTrace
+): Promise<{ workspaceId?: string; warning?: string }> {
   const title = `AEH ${record.kind.toUpperCase()} · ${record.id}`;
   const command = `paseo workspace create --isolation local --path ${quote(root)} --title ${quote(title)} --json`;
+  await trace(root, "workspace.cli.required", {
+    operationId: record.id,
+    kind: record.kind,
+    reason: "Paseo SDK 0.3.1 workspace create lacks isolation/title parity",
+    isolation: "local"
+  });
+
   let result: ProcessResult;
-  try { result = await run(command, { cwd: root, timeoutMs: 60_000 }); }
-  catch (error) { return { warning: `Paseo operation workspace could not be created: ${String(error)}` }; }
-  if (result.exitCode !== 0) return { warning: `Paseo operation workspace could not be created: ${result.stderr || result.stdout || `exit ${result.exitCode}`}` };
+  try {
+    result = await run(command, { cwd: root, timeoutMs: 60_000 });
+  } catch (error) {
+    await trace(root, "workspace.cli.error", {
+      operationId: record.id,
+      error: String(error)
+    });
+    return {
+      warning: `Paseo operation workspace could not be created: ${String(error)}`
+    };
+  }
+  if (result.exitCode !== 0) {
+    await trace(root, "workspace.cli.error", {
+      operationId: record.id,
+      exitCode: result.exitCode,
+      error: result.stderr || result.stdout
+    });
+    return {
+      warning: `Paseo operation workspace could not be created: ${result.stderr || result.stdout || `exit ${result.exitCode}`}`
+    };
+  }
   const workspaceId = extractWorkspaceId(result.stdout);
-  return workspaceId ? { workspaceId } : { warning: "Paseo created an operation workspace but AEH could not resolve its id." };
+  if (workspaceId) {
+    await trace(root, "workspace.cli.created", {
+      operationId: record.id,
+      workspaceId,
+      isolation: "local"
+    });
+    return { workspaceId };
+  }
+  await trace(root, "workspace.cli.error", {
+    operationId: record.id,
+    error: "workspace id missing from CLI response"
+  });
+  return {
+    warning: "Paseo created an operation workspace but AEH could not resolve its id."
+  };
 }
 
 export function extractWorkspaceId(text: string): string | undefined {
   if (!text.trim()) return undefined;
-  try { return findWorkspaceId(JSON.parse(text) as unknown); }
-  catch { return text.match(/\b(?:workspace(?:Id)?[=: ]+)?(workspace-[A-Za-z0-9._-]+)\b/i)?.[1]; }
+  try {
+    return findWorkspaceId(JSON.parse(text) as unknown);
+  } catch {
+    return text.match(
+      /\b(?:workspace(?:Id)?[=: ]+)?(workspace-[A-Za-z0-9._-]+)\b/i
+    )?.[1];
+  }
 }
 
 function findWorkspaceId(value: unknown): string | undefined {
   if (!value || typeof value !== "object") return undefined;
-  if (Array.isArray(value)) { for (const item of value) { const id = findWorkspaceId(item); if (id) return id; } return undefined; }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const id = findWorkspaceId(item);
+      if (id) return id;
+    }
+    return undefined;
+  }
   const record = value as Record<string, unknown>;
   for (const key of ["workspaceId", "workspace_id", "id"]) {
     const candidate = record[key];
-    if (typeof candidate === "string" && candidate && (key !== "id" || /workspace/i.test(candidate) || "cwd" in record || "worktreePath" in record || "path" in record)) return candidate;
+    if (
+      typeof candidate === "string" &&
+      candidate &&
+      (key !== "id" ||
+        /workspace/i.test(candidate) ||
+        "cwd" in record ||
+        "worktreePath" in record ||
+        "path" in record)
+    ) {
+      return candidate;
+    }
   }
-  for (const child of Object.values(record)) { const id = findWorkspaceId(child); if (id) return id; }
+  for (const child of Object.values(record)) {
+    const id = findWorkspaceId(child);
+    if (id) return id;
+  }
   return undefined;
 }
 
-function isTerminal(status: OperationRecord["status"]): boolean { return status === "SUCCEEDED" || status === "FAILED" || status === "CANCELLED"; }
-function quote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }
+function isTerminal(status: OperationRecord["status"]): boolean {
+  return status === "SUCCEEDED" || status === "FAILED" || status === "CANCELLED";
+}
+function quote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}

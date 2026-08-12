@@ -20,6 +20,15 @@ export interface RunOperationPayload {
 
 export type OperationPayload = AuditOperationPayload | RunOperationPayload;
 
+export interface OperationAgentRecord {
+  id: string;
+  role?: string;
+  phase?: string;
+  workspaceId?: string;
+  transport?: "sdk" | "cli";
+  registeredAt: string;
+}
+
 export interface OperationRecord {
   version: 1;
   id: string;
@@ -35,6 +44,7 @@ export interface OperationRecord {
   pid?: number;
   workspaceId?: string;
   workspaceWarning?: string;
+  agents?: OperationAgentRecord[];
   cleanupWarnings?: string[];
   result?: Record<string, unknown>;
   error?: string;
@@ -59,19 +69,57 @@ export async function saveOperation(root: string, record: OperationRecord): Prom
   await withOperationLock(file, async () => writeRecord(file, record));
 }
 
-export async function patchOperation(root: string, operationId: string, patch: Partial<OperationRecord>): Promise<OperationRecord> {
-  const file = operationFile(root, operationId);
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  return withOperationLock(file, async () => {
-    const current = JSON.parse(await fs.readFile(file, "utf8")) as OperationRecord;
+export async function patchOperation(
+  root: string,
+  operationId: string,
+  patch: Partial<OperationRecord>
+): Promise<OperationRecord> {
+  return mutateOperation(root, operationId, (current) => {
     const guardedPatch = guardTerminalTransition(current, patch);
-    const next: OperationRecord = { ...current, ...guardedPatch, id: current.id, kind: current.kind, version: 1, updatedAt: new Date().toISOString() };
-    await writeRecord(file, next);
-    return next;
+    return { ...current, ...guardedPatch };
   });
 }
 
-export function currentOperationContext(): { id?: string; kind?: string; workspaceId?: string } {
+export async function registerOperationAgent(
+  root: string,
+  operationId: string,
+  agent: Omit<OperationAgentRecord, "registeredAt">
+): Promise<OperationRecord> {
+  return mutateOperation(root, operationId, (current) => {
+    if (isTerminal(current.status)) return current;
+    const existing = current.agents ?? [];
+    const previous = existing.find((item) => item.id === agent.id);
+    const next: OperationAgentRecord = {
+      ...previous,
+      ...agent,
+      registeredAt: previous?.registeredAt ?? new Date().toISOString()
+    };
+    return {
+      ...current,
+      agents: [...existing.filter((item) => item.id !== agent.id), next]
+    };
+  });
+}
+
+export async function registerCurrentOperationAgent(
+  root: string,
+  agent: Omit<OperationAgentRecord, "registeredAt">
+): Promise<void> {
+  const operationId = currentOperationContext().id;
+  if (!operationId) return;
+  try {
+    await registerOperationAgent(root, operationId, agent);
+  } catch {
+    // Direct/non-controller execution may carry stale environment state. Agent
+    // registration is observability/cleanup metadata, not execution authority.
+  }
+}
+
+export function currentOperationContext(): {
+  id?: string;
+  kind?: string;
+  workspaceId?: string;
+} {
   return {
     id: process.env.AEH_OPERATION_ID?.trim() || undefined,
     kind: process.env.AEH_OPERATION_KIND?.trim() || undefined,
@@ -82,15 +130,43 @@ export function currentOperationContext(): { id?: string; kind?: string; workspa
 export async function updateCurrentOperationPhase(root: string, phase: string): Promise<void> {
   const operationId = currentOperationContext().id;
   if (!operationId) return;
-  try { await patchOperation(root, operationId, { phase }); }
-  catch { /* direct/non-controller execution has no operation state to update */ }
+  try {
+    await patchOperation(root, operationId, { phase });
+  } catch {
+    // Direct/non-controller execution has no operation state to update.
+  }
+}
+
+async function mutateOperation(
+  root: string,
+  operationId: string,
+  mutate: (current: OperationRecord) => OperationRecord
+): Promise<OperationRecord> {
+  const file = operationFile(root, operationId);
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  return withOperationLock(file, async () => {
+    const current = JSON.parse(await fs.readFile(file, "utf8")) as OperationRecord;
+    const candidate = mutate(current);
+    const next: OperationRecord = {
+      ...candidate,
+      id: current.id,
+      kind: current.kind,
+      version: 1,
+      updatedAt: new Date().toISOString()
+    };
+    await writeRecord(file, next);
+    return next;
+  });
 }
 
 async function writeRecord(file: string, record: OperationRecord): Promise<void> {
   const temp = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
   await fs.writeFile(temp, `${JSON.stringify(record, null, 2)}\n`);
-  try { await fs.rename(temp, file); }
-  finally { await fs.rm(temp, { force: true }).catch(() => undefined); }
+  try {
+    await fs.rename(temp, file);
+  } finally {
+    await fs.rm(temp, { force: true }).catch(() => undefined);
+  }
 }
 
 async function withOperationLock<T>(file: string, action: () => Promise<T>): Promise<T> {
@@ -118,7 +194,11 @@ async function withOperationLock<T>(file: string, action: () => Promise<T>): Pro
         await fs.rm(lock, { force: true }).catch(() => undefined);
         continue;
       }
-      if (Date.now() >= deadline) throw new Error(`Timed out acquiring operation state lock for ${path.basename(file)}.`);
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `Timed out acquiring operation state lock for ${path.basename(file)}.`
+        );
+      }
       await delay(LOCK_RETRY_MS);
     }
   }
@@ -126,28 +206,51 @@ async function withOperationLock<T>(file: string, action: () => Promise<T>): Pro
 
 async function canRecoverLock(lock: string): Promise<boolean> {
   try {
-    const [rawPid, stat] = await Promise.all([fs.readFile(lock, "utf8").catch(() => ""), fs.stat(lock)]);
+    const [rawPid, stat] = await Promise.all([
+      fs.readFile(lock, "utf8").catch(() => ""),
+      fs.stat(lock)
+    ]);
     const ownerPid = Number.parseInt(rawPid.trim(), 10);
     if (Number.isInteger(ownerPid) && ownerPid > 0 && !processAlive(ownerPid)) return true;
     return Date.now() - stat.mtimeMs > STALE_LOCK_MS;
-  } catch { return true; }
+  } catch {
+    return true;
+  }
 }
 
 function processAlive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; }
-  catch (error) { return !/ESRCH/.test(String(error)); }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !/ESRCH/.test(String(error));
+  }
 }
 
-function guardTerminalTransition(current: OperationRecord, patch: Partial<OperationRecord>): Partial<OperationRecord> {
+function guardTerminalTransition(
+  current: OperationRecord,
+  patch: Partial<OperationRecord>
+): Partial<OperationRecord> {
   if (!isTerminal(current.status)) return patch;
   const guarded: Partial<OperationRecord> = {};
   if (patch.cleanupWarnings) guarded.cleanupWarnings = patch.cleanupWarnings;
   return guarded;
 }
 
-function isTerminal(status: OperationStatus): boolean { return status === "SUCCEEDED" || status === "FAILED" || status === "CANCELLED"; }
-function isAlreadyExists(error: unknown): boolean { return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "EEXIST"); }
-function delay(ms: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, ms)); }
+function isTerminal(status: OperationStatus): boolean {
+  return status === "SUCCEEDED" || status === "FAILED" || status === "CANCELLED";
+}
+function isAlreadyExists(error: unknown): boolean {
+  return Boolean(
+    error &&
+      typeof error === "object" &&
+      "code" in error &&
+      (error as { code?: unknown }).code === "EEXIST"
+  );
+}
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function safeId(value: string): string {
   if (!/^[A-Za-z0-9._-]+$/.test(value)) throw new Error(`Invalid operation id '${value}'.`);

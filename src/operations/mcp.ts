@@ -1,6 +1,8 @@
 import readline from "node:readline";
 import path from "node:path";
 import process from "node:process";
+import { loadProjectConfig } from "../core/config.js";
+import { statusLeadContext } from "../paseo/context.js";
 import { cancelOperation, startDetachedOperation } from "./controller.js";
 import { loadOperation, type AuditOperationPayload, type RunOperationPayload } from "./state.js";
 
@@ -52,6 +54,15 @@ const tools = [
       required: ["operationId"],
       additionalProperties: false
     }
+  },
+  {
+    name: "aeh_context_status",
+    description: "Read this managed lead's current Paseo AgentSnapshot usage and evaluate AEH context-pressure policy without shell/log parsing. Optionally pass agentId when the host does not expose PASEO_AGENT_ID to the MCP subprocess.",
+    inputSchema: {
+      type: "object",
+      properties: { agentId: { type: "string" } },
+      additionalProperties: false
+    }
   }
 ] as const;
 
@@ -73,7 +84,7 @@ async function handle(request: JsonRpcRequest): Promise<Record<string, unknown>>
     return {
       protocolVersion: typeof request.params?.protocolVersion === "string" ? request.params.protocolVersion : "2025-06-18",
       capabilities: { tools: {} },
-      serverInfo: { name: "aeh-operation-controller", version: "1" }
+      serverInfo: { name: "aeh-operation-controller", version: "2" }
     };
   }
   if (request.method === "ping") return {};
@@ -102,6 +113,12 @@ async function callTool(params: Record<string, unknown>): Promise<Record<string,
   }
   if (name === "aeh_operation_status") return toolResult(await loadOperation(root, string(args.operationId, "operationId")));
   if (name === "aeh_operation_cancel") return toolResult(await cancelOperation(root, string(args.operationId, "operationId")));
+  if (name === "aeh_context_status") {
+    const agentId = optionalString(args.agentId) ?? process.env.PASEO_AGENT_ID?.trim();
+    if (!agentId) throw new Error("aeh_context_status requires agentId because PASEO_AGENT_ID is not available to this MCP subprocess.");
+    const config = await loadProjectConfig(root);
+    return toolResult(await statusLeadContext(root, config, agentId));
+  }
   throw new Error(`Unknown AEH operation tool '${name}'.`);
 }
 

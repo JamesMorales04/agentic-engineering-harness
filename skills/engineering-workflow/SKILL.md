@@ -57,7 +57,9 @@ Do not wait for model compaction as the normal context lifecycle.
 - >=80%: proactive handoff to a fresh lead;
 - >=90%: mandatory handoff before additional engineering work.
 
-Use Paseo's current status/tool data when it exposes context usage, otherwise use `aeh context guard --agent "$PASEO_AGENT_ID"`. When AEH writes a `.harness/paseo/handoffs/*.json` artifact, use `/paseo-handoff` (preferred) or a fresh `create_agent`, point the new lead at that artifact and stop continuing the workflow in the old lead. Deterministic artifacts, not a prose replay of the whole chat, carry state across the handoff. Detached AEH operations and their top-level worker agents survive lead rotation.
+In a managed lead, prefer the injected `aeh_context_status` tool before broad work and again after completed-turn boundaries. It reads the current Paseo AgentSnapshot and applies AEH's thresholds to the canonical `lastUsage.contextWindowUsedTokens/contextWindowMaxTokens` fields. `NO_USAGE_YET` means the provider has not emitted usage yet; `USAGE_UNAVAILABLE` means those canonical fields are unavailable. Never infer pressure from generic input/output token counters.
+
+Use `aeh context guard --agent "$PASEO_AGENT_ID"` only as the non-interactive/compatibility fallback. When AEH writes a `.harness/paseo/handoffs/*.json` artifact, use `/paseo-handoff` (preferred) or a fresh `create_agent`, point the new lead at that artifact and stop continuing the workflow in the old lead. Deterministic artifacts, not a prose replay of the whole chat, carry state across the handoff. Detached AEH operations and their top-level worker agents survive lead rotation.
 
 ## Intent layer
 
@@ -137,6 +139,8 @@ Use durable operation state for progress rather than narrating terminal silence:
 - `aeh operation wait <id>` -> synchronous boundary only when necessary.
 
 Paseo workspaces used for operation grouping are local orchestration containers and do not imply Git branch/worktree delivery. Delivery workspaces remain a separate isolation decision and take precedence for workers when present.
+
+Paseo lifecycle/provider/context integration decisions are recorded under `.harness/telemetry/paseo.ndjson`; normal telemetry/OTLP receives the same events when enabled. Use these traces to distinguish SDK-native paths, negotiated fallbacks and intentional public-SDK parity gaps rather than inferring behavior from terminal output.
 
 ## Quality convergence and recovery
 

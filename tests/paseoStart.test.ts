@@ -50,7 +50,7 @@ describe("Paseo Harness start", () => {
     expect(launchCount).toBe(2); expect(probeAgent).toHaveBeenCalledWith(root, "agent-2");
 
     const state = JSON.parse(await fs.readFile(path.join(root, ".harness/paseo/lead-session.json"), "utf8")) as { version: number; agentId: string; bootstrapVersion: number; aehVersion: string; aehCommand: string; generation: number };
-    expect(state.version).toBe(2); expect(state.agentId).toBe("agent-2"); expect(state.bootstrapVersion).toBe(6); expect(state.aehVersion).toBe(VERSION); expect(state.aehCommand).toBe(aehCommand); expect(state.generation).toBe(2);
+    expect(state.version).toBe(2); expect(state.agentId).toBe("agent-2"); expect(state.bootstrapVersion).toBe(7); expect(state.aehVersion).toBe(VERSION); expect(state.aehCommand).toBe(aehCommand); expect(state.generation).toBe(2);
     const bootstrap = await fs.readFile(path.join(root, ".harness/paseo/lead-bootstrap.md"), "utf8");
     expect(bootstrap).toContain("ORCHESTRATOR");
     expect(bootstrap).toContain("resolved AEH agent topology");
@@ -59,6 +59,7 @@ describe("Paseo Harness start", () => {
     expect(bootstrap).toContain(aehCommand);
     expect(bootstrap).toContain(`AEH runtime v${VERSION}`);
     expect(bootstrap).toContain("aeh-control MCP");
+    expect(bootstrap).toContain("aeh_context_status");
     expect(bootstrap).toContain("project-locked");
     expect(bootstrap).toContain("Never intentionally use synchronous");
     expect(bootstrap).not.toContain("Delegation policy:");
@@ -71,7 +72,7 @@ describe("Paseo Harness start", () => {
       provider: "codex",
       model: "gpt-test",
       systemPrompt: expect.stringContaining("resolved AEH agent topology"),
-      labels: expect.objectContaining({ "aeh.kind": "lead", "aeh.role": "lead", "aeh.version": VERSION, "aeh.bootstrap": "6" }),
+      labels: expect.objectContaining({ "aeh.kind": "lead", "aeh.role": "lead", "aeh.version": VERSION, "aeh.bootstrap": "7" }),
       waitForFinish: false,
       mcpServers: {
         "aeh-control": { type: "stdio", command: "/usr/bin/node", args: ["/pkg/dist/main.js", "operation", "mcp"], env: { AEH_CONTROL_ROOT: root }, alwaysLoad: true }
@@ -81,7 +82,8 @@ describe("Paseo Harness start", () => {
           { kind: "mcp", server: "aeh-control", tool: "aeh_operation_start_audit" },
           { kind: "mcp", server: "aeh-control", tool: "aeh_operation_start_run" },
           { kind: "mcp", server: "aeh-control", tool: "aeh_operation_status" },
-          { kind: "mcp", server: "aeh-control", tool: "aeh_operation_cancel" }
+          { kind: "mcp", server: "aeh-control", tool: "aeh_operation_cancel" },
+          { kind: "mcp", server: "aeh-control", tool: "aeh_context_status" }
         ]
       }
     }));
@@ -139,6 +141,7 @@ describe("Paseo Harness start", () => {
     expect(bootstrap).toContain("npm-exec-aeh");
     expect(bootstrap).toContain(`AEH runtime v${VERSION}`);
     expect(bootstrap).toContain("aeh-control MCP");
+    expect(bootstrap).toContain("aeh_context_status");
     expect(bootstrap).toContain("project-locked");
     expect(bootstrap).not.toContain("explorer");
     expect(bootstrap).not.toContain("environment-manager");

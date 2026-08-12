@@ -7,6 +7,10 @@ purpose: Keep AEH leads thin by delegating through Paseo native/MCP tools and or
 
 Use this skill whenever an AEH lead, planner or coordinator delegates work through Paseo.
 
+## Authority boundary
+
+Paseo is authoritative for agent lifecycle, agent snapshots, provider/model availability, context-window usage and generic orchestration tools. AEH is authoritative for engineering policy, SDD/contracts/seals, deterministic validation, detached operation state, quality convergence and acceptance. Do not reimplement Paseo snapshot/provider semantics by scraping CLI output, and do not move AEH acceptance policy into an LLM agent.
+
 ## Preferred control surface
 
 When Paseo tools are injected into the current agent, prefer them over shell commands for bounded conversational delegation:
@@ -17,24 +21,48 @@ When Paseo tools are injected into the current agent, prefer them over shell com
 - `cancel_agent` / `archive_agent` for lifecycle cleanup;
 - `update_agent` / `set_agent_mode` for supported runtime changes.
 
-When the optional AEH operation MCP server (`aeh operation mcp`) is injected, use its tools for long deterministic Harness workflows:
+When the AEH control MCP server (`aeh operation mcp`) is injected, use its tools for deterministic Harness policy/control:
 
 - `aeh_operation_start_audit`;
 - `aeh_operation_start_run`;
 - `aeh_operation_status`;
-- `aeh_operation_cancel`.
+- `aeh_operation_cancel`;
+- `aeh_context_status`.
 
-These MCP tools call the same persistent detached operation controller as the CLI. They do not create a controller LLM agent. If the AEH MCP server is not injected, `aeh operation start/status/cancel` is the short non-blocking compatibility surface; do not replace it with a long synchronous `aeh audit`/`aeh run` from the conversational lead.
+`aeh_context_status` reads the current Paseo AgentSnapshot and applies AEH context thresholds. It must be preferred over shell/log parsing. `NO_USAGE_YET` means the provider has not emitted a usage snapshot yet; `USAGE_UNAVAILABLE` means the current provider snapshot lacks the canonical context-window fields. Never invent a percentage from input/output token counters.
+
+These MCP tools call the same persistent detached operation controller/policy code as the CLI. They do not create a controller LLM agent. If the AEH MCP server is not injected, `aeh operation start/status/cancel` and `aeh context guard` are short compatibility surfaces; do not replace them with long synchronous `aeh audit`/`aeh run` from the conversational lead.
 
 Load `/paseo` when the exact current Paseo surface is needed. Use `/paseo-handoff` when responsibility, not merely a subtask, should move to a fresh agent. `/paseo-committee` and `/paseo-advisor` are analysis-only escalation tools and must not replace deterministic AEH gates.
 
-The Harness CLI/daemon adapter remains a deterministic compatibility path when native tools/SDK are unavailable. Do not hand-write `paseo run` shell loops from the lead unless AEH explicitly reports that it is using the CLI fallback.
+## SDK-first lifecycle
+
+AEH should use the public `@getpaseo/client` surface first for semantic operations:
+
+- provider/model preflight before creating agents;
+- `agents.ref(id).refetch()` for current snapshots;
+- `AgentSnapshot.lastUsage.contextWindowUsedTokens/contextWindowMaxTokens` for context pressure;
+- agent subscriptions for event-driven completion, with subscribe-before-refetch race closure;
+- provider snapshot/model/diagnostic APIs for early configuration failures.
+
+The CLI remains a compatibility/parity-gap surface, not a parallel source of truth. Two intentional external-controller CLI uses currently remain for Paseo 0.3.1:
+
+1. operation workspace creation requiring `--isolation local` plus user-visible `--title`, which the public SDK create contract does not yet expose with equivalent parity;
+2. external cleanup/stop where the public agent handle does not expose cancel/kill parity required by the deterministic controller.
+
+Do not replace those two bounded uses with internal `DaemonClient` imports. Their use must remain traceable and should disappear when the public SDK reaches parity.
 
 ## Visible execution graph
 
 Real planner/reviewer/implementer/oracle sessions should be top-level Paseo agents labeled with their AEH operation/task/role. The deterministic operation controller remains outside the agent graph. Operation-local Paseo workspaces are grouping containers; delivery worktree workspaces are a separate Git-isolation concern.
 
 Use `aeh paseo agents --operation <id>` (or Paseo's corresponding directory/status tools) to observe real participants without scraping terminal output.
+
+## Observability
+
+AEH persists integration decisions under `.harness/telemetry/paseo.ndjson` even when remote OTLP export is disabled. Relevant events include provider preflight, agent snapshot/context source, lifecycle transport, event-driven wait, SDK-to-CLI fallback, intentional workspace CLI use and cleanup CLI use. When normal Harness telemetry is enabled the same events also flow through the standard telemetry/OTLP path.
+
+A trace should answer: which transport was used, which source supplied state, whether a fallback was intentional or exceptional, why it happened, and which operation/agent/provider/model was affected.
 
 ## Lead discipline
 
@@ -50,4 +78,4 @@ Return compact structured summaries to the lead. Do not paste raw logs or entire
 
 ## Context pressure
 
-Before broad engineering work, inspect the current agent status if Paseo exposes context usage. At the configured handoff threshold, create a deterministic AEH handoff artifact and use `/paseo-handoff` (preferred) or `create_agent` to continue in a fresh lead. Detached operations and their top-level workers remain valid across lead rotation. Do not compact and continue as the normal path when AEH has declared `HANDOFF_REQUIRED` or `HARD_HANDOFF`.
+Before broad engineering work and after completed-turn boundaries, use `aeh_context_status` when injected. At the configured handoff threshold, create a deterministic AEH handoff artifact and use `/paseo-handoff` (preferred) or `create_agent` to continue in a fresh lead. Detached operations and their top-level workers remain valid across lead rotation. Do not compact and continue as the normal path when AEH has declared `HANDOFF_REQUIRED` or `HARD_HANDOFF`.
