@@ -46,7 +46,7 @@ jobs:
           test -d repo/.harness/paseo
           test -d repo/.harness/paseo/handoffs
           test -d repo/.harness/audits
-          grep -q '^\.harness/managed-assets.json$' repo/.gitignore
+          ! grep -q '^\.harness/managed-assets.json$' repo/.gitignore
           grep -q '^\.harness/paseo/$' repo/.gitignore
           grep -q '^\.harness/audits/$' repo/.gitignore
           ./node_modules/.bin/aeh toolchain compile repo
