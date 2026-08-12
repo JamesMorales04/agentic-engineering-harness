@@ -19,7 +19,7 @@ export interface PaseoBackgroundRunOptions {
   prompt: string;
 }
 
-type Runner = (command: string, options?: Parameters<typeof runProcess>[1]) => Promise<ProcessResult>;
+type Runner = typeof runProcess;
 
 export async function detectPaseoCapabilities(root: string, run: Runner = runProcess): Promise<PaseoCapabilities> {
   const [versionResult, runHelp, daemonHelp] = await Promise.all([
