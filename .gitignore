@@ -4,27 +4,15 @@ coverage/
 .env
 .env.*
 !.env.example
-.harness/bin/
-.harness/toolchain.state.json
-.harness/generated/
-.harness/contracts/
-.harness/seals/
-.harness/reports/
-.harness/repairs/
-.harness/runs/
-.harness/telemetry/
-.harness/findings/
-.harness/evals/
-.harness/provenance/
-.harness/delivery/
-.harness/issues/
-.harness/controller/
-.harness/evidence/
-.harness/distributed/
-.harness/policy-bundles/
-.harness/mcp-benchmarks/
-.harness/paseo/
-.harness/audits/
+
+# Harness runtime/generated state is ignored by default. Repository-owned
+# declarative configuration is explicitly allowlisted below.
+.harness/*
+!.harness/project.yaml
+!.harness/toolchain.yaml
+!.harness/agents.source.jsonc
+!.harness/otel-collector.yaml
+
 .config/mise/conf.d/aeh.toml
 .graphify/
 graphify-out/
