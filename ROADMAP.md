@@ -12,54 +12,49 @@
 - [x] reusable lead/worker/SDD/validation/memory skills
 
 ## v0.2.1 — requirement traceability ✅
-
 - [x] canonical requirement IDs across proposal/spec/design/tasks/Gherkin/TaskContract
-- [x] traceability matrix in `aeh sdd validate`
-- [x] missing and orphan requirement detection
+- [x] traceability matrix and orphan detection
 - [x] validator reference resolution
-- [x] `sdd new` generates the initial TaskContract automatically
+- [x] generated TaskContract
 
 ## v0.2.2 — executable Gherkin and validator registry ✅
-
 - [x] adapter-based validator registry
-- [x] automatic Reqnroll project discovery
-- [x] Reqnroll tag filtering by task ID
-- [x] normalized validation results and custom command override
-- [x] built-in OpenAPI backward-compatibility validator
+- [x] Reqnroll discovery and tag filtering
+- [x] normalized results and OpenAPI compatibility
 
 ## v0.2.3 — worker execution ✅
-
-- [x] `aeh run <task>` end-to-end command
-- [x] Paseo executor spawning OpenCode workers
-- [x] provider/model selection through project configuration
-- [x] optional direct Podman/OpenCode worker executor
-- [x] sealed SDD/contract mounts read-only inside Podman
-- [x] Graphify before/after snapshot lifecycle
+- [x] `aeh run <task>`
+- [x] Paseo/OpenCode executor
+- [x] Podman/OpenCode executor
+- [x] sealed read-only normative artifacts
+- [x] Graphify snapshot lifecycle
 
 ## v0.2.4 — finite repair loop ✅
-
-- [x] structured repair packets generated exclusively from deterministic failures
-- [x] configurable finite repair budget
-- [x] same Paseo worker session receives targeted repair prompts
-- [x] run and repair artifacts persisted under `.harness/`
-- [x] deterministic revalidation after every repair
+- [x] deterministic repair packets
+- [x] finite repair budget
+- [x] same-session Paseo repairs
+- [x] persisted run/repair artifacts
 
 ## v0.2.5 — architecture, security, browser and contracts ✅
+- [x] Graphify impact gates
+- [x] Opengrep and Trivy
+- [x] Playwright
+- [x] Pact/custom contracts
+- [x] OpenAPI compatibility
+- [x] real dependency/schema evidence for OPA
 
-- [x] Graphify structural diff, stale-graph detection and impact policy gates
-- [x] Opengrep adapter
-- [x] Trivy adapter
-- [x] Playwright adapter
-- [x] Pact/custom contract command adapter
-- [x] OpenAPI JSON/YAML compatibility checks
-- [x] dependency/schema evidence fed into OPA rather than placeholders
+## v0.3 — measurement and provenance ✅
+- [x] engineering eval runner over frozen historical tasks/base refs
+- [x] first-pass success, repair-count, human-intervention, duration and token/cost metrics
+- [x] OTLP/HTTP JSON export plus OSS collector configuration
+- [x] configurable Engram/Cognee/Graphiti memory-provider benchmark
+- [x] mutation/property-testing adapters
+- [x] CycloneDX SBOM + Cosign bundle + in-toto/SLSA v1 provenance
+- [x] release hardening and gated npm package publishing
 
-## v0.3 — measurement and provenance
-
-- [ ] engineering eval runner over frozen historical tasks
-- [ ] first-pass success, repair-count, human-intervention and token/cost metrics
-- [ ] full OpenTelemetry collector/export configuration
-- [ ] Engram/Cognee/Graphiti memory-provider benchmark
-- [ ] mutation/property-testing adapters
-- [ ] SBOM + Cosign + in-toto/SLSA provenance
-- [ ] release hardening and package publishing
+## v0.4 — scale and governance
+- [ ] eval dashboards and statistical significance across repeated runs
+- [ ] graph-derived safe parallelism scheduler
+- [ ] policy bundles/versioned organization profiles
+- [ ] remote execution queue and distributed workers
+- [ ] signed policy/spec provenance and release verification gates

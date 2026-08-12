@@ -1,0 +1,45 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish package to npm after validation
+        required: false
+        default: false
+        type: boolean
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      - run: npm run check
+      - run: npm pack --dry-run
+
+  publish:
+    needs: verify
+    if: github.event_name == 'release' || inputs.publish == true
+    runs-on: ubuntu-latest
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - run: npm install
+      - name: Ensure npm credentials exist
+        run: test -n "$NODE_AUTH_TOKEN"
+      - run: npm publish --access public --provenance
