@@ -1,7 +1,7 @@
 {
   "name": "agentic-engineering-harness",
-  "version": "0.5.1",
-  "description": "OSS-first engineering harness for deterministic, spec-driven and issue-driven multi-agent software delivery.",
+  "version": "0.5.2",
+  "description": "OSS-first engineering harness for deterministic, spec-driven, issue-driven and audit-governed multi-agent software delivery.",
   "type": "module",
   "bin": { "engineering-harness": "./dist/entry.js", "aeh": "./dist/entry.js" },
   "files": ["dist", "templates", "presets", "policies", "schemas", "skills", "docs"],
@@ -14,5 +14,5 @@
   "bugs": { "url": "https://github.com/JamesMorales04/agentic-engineering-harness/issues" },
   "publishConfig": { "access": "public" },
   "license": "Apache-2.0",
-  "keywords": ["ai-agents", "codex", "opencode", "paseo", "sdd", "github-issues", "issue-driven-development", "quick-contract", "gherkin", "agent-routing", "agent-presets", "mcp", "github-delivery", "worktrees", "multi-model", "multi-worker", "distributed-workers", "quality-convergence", "evidence-graph", "policy-bundles", "sandbox", "toolchain", "mise", "bootstrap", "human-on-exception", "deterministic-validation", "engineering-harness", "slsa", "opentelemetry"]
+  "keywords": ["ai-agents", "codex", "opencode", "paseo", "sdd", "audit", "code-review", "github-issues", "issue-driven-development", "quick-contract", "gherkin", "agent-routing", "agent-presets", "mcp", "github-delivery", "worktrees", "multi-model", "multi-worker", "distributed-workers", "quality-convergence", "evidence-graph", "policy-bundles", "sandbox", "toolchain", "mise", "bootstrap", "human-on-exception", "deterministic-validation", "engineering-harness", "slsa", "opentelemetry"]
 }
