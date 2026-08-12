@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 export function parseVersion(value) {
   const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(value);
@@ -19,7 +21,7 @@ export function incrementVersion(value, bump) {
 
 export function chooseBumpFromMessages(messages) {
   const text = messages.join("\n\n");
-  if (/(^|\n)[a-z]+(?:\([^\n)]+\))?!:/i.test(text) || /(^|\n)BREAKING CHANGE:/i.test(text)) return "major";
+  if (/(^|\n)[a-z]+(?:\([^\n)]+\))?!:/i.test(text) || /(^|\n)BREAKING(?: CHANGE|-CHANGE):/i.test(text)) return "major";
   if (/(^|\n)feat(?:\([^\n)]+\))?:/i.test(text)) return "minor";
   return "patch";
 }
@@ -53,10 +55,9 @@ function latestReleaseTag() {
 }
 
 function commitMessages(tag) {
-  const range = tag ? `${tag}..HEAD` : "-1";
   try {
     const output = tag
-      ? run("git", ["log", range, "--format=%B%x00"])
+      ? run("git", ["log", `${tag}..HEAD`, "--format=%B%x00"])
       : run("git", ["log", "-1", "--format=%B%x00"]);
     return output.split("\0").map((item) => item.trim()).filter(Boolean);
   } catch {
@@ -69,7 +70,8 @@ function appendOutput(name, value) {
   fs.appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${String(value)}\n`);
 }
 
-if (import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+const invokedDirectly = Boolean(process.argv[1]) && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+if (invokedDirectly) {
   const requestedBump = process.argv[2] ?? "auto";
   if (!["auto", "current", "patch", "minor", "major"].includes(requestedBump)) throw new Error(`Invalid bump '${requestedBump}'.`);
   const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
