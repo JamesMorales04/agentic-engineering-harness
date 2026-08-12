@@ -1,13 +1,47 @@
 export type CheckStatus = "PASS" | "FAIL" | "SKIP" | "WARN";
 
+export type ValidatorAdapter =
+  | "command"
+  | "gherkin"
+  | "graphify"
+  | "opengrep"
+  | "trivy"
+  | "playwright"
+  | "openapi"
+  | "pact"
+  | string;
+
+export interface ValidationCommand {
+  id: string;
+  command: string;
+  required?: boolean;
+  timeoutSeconds?: number;
+  workingDirectory?: string;
+}
+
+export interface ValidatorSpec {
+  id: string;
+  adapter: ValidatorAdapter;
+  command?: string;
+  required?: boolean;
+  timeoutSeconds?: number;
+  workingDirectory?: string;
+  options?: Record<string, unknown>;
+}
+
 export interface HarnessProjectConfig {
   version: 1;
-  project: {
-    name: string;
-  };
+  project: { name: string };
   orchestration?: {
-    provider: "paseo" | "none" | string;
+    provider: "paseo" | "podman" | "none" | string;
     required?: boolean;
+    worker?: {
+      provider?: string;
+      model?: string;
+      maxRepairAttempts?: number;
+      timeoutSeconds?: number;
+      titlePrefix?: string;
+    };
   };
   memory?: {
     provider: "engram" | "none" | string;
@@ -16,15 +50,21 @@ export interface HarnessProjectConfig {
   codeIntelligence?: {
     provider: "graphify" | "none" | string;
     required?: boolean;
+    graphPath?: string;
+    snapshotDir?: string;
+    refreshCommand?: string;
   };
   sdd?: {
     specsDir?: string;
     contractsDir?: string;
     reportsDir?: string;
+    repairsDir?: string;
+    runsDir?: string;
   };
   validation?: {
     baseRef?: string;
     commands?: ValidationCommand[];
+    validators?: ValidatorSpec[];
     frozenPaths?: string[];
     requireSeal?: boolean;
     opa?: {
@@ -36,6 +76,9 @@ export interface HarnessProjectConfig {
     sandbox?: {
       provider?: "podman" | "docker" | "none" | string;
       required?: boolean;
+      image?: string;
+      network?: boolean;
+      extraArgs?: string[];
     };
     tools?: string[];
   };
@@ -45,39 +88,31 @@ export interface HarnessProjectConfig {
   };
 }
 
-export interface ValidationCommand {
+export interface TaskRequirement {
   id: string;
-  command: string;
-  required?: boolean;
-  timeoutSeconds?: number;
-  workingDirectory?: string;
+  description?: string;
+  /** Deprecated compatibility field. Prefer validators. */
+  validator?: string;
+  validators?: string[];
 }
 
 export interface TaskContract {
   version: 1;
-  task: {
-    id: string;
-    title: string;
-  };
+  task: { id: string; title: string };
   source?: {
     proposal?: string;
     spec?: string;
     design?: string;
+    tasks?: string;
     acceptance?: string;
   };
-  git?: {
-    baseRef?: string;
-  };
+  git?: { baseRef?: string };
   scope?: {
     allowed?: string[];
     forbidden?: string[];
     frozen?: string[];
   };
-  requirements?: Array<{
-    id: string;
-    description?: string;
-    validator?: string;
-  }>;
+  requirements?: TaskRequirement[];
   constraints?: {
     breakingApiChanges?: boolean;
     newDependencies?: boolean;
@@ -86,8 +121,15 @@ export interface TaskContract {
     maxLinesAdded?: number;
     maxLinesDeleted?: number;
   };
+  impact?: {
+    forbiddenEdges?: string[];
+    forbiddenNodes?: string[];
+    allowedCommunities?: string[];
+  };
+  repair?: { maxAttempts?: number };
   verification?: {
     commands?: ValidationCommand[];
+    validators?: ValidatorSpec[];
   };
 }
 
@@ -112,4 +154,37 @@ export interface ValidationReport {
     project: string;
     baseRef: string;
   };
+}
+
+export interface RequirementTrace {
+  id: string;
+  proposal: boolean;
+  spec: boolean;
+  design: boolean;
+  acceptance: boolean;
+  tasks: boolean;
+  contract: boolean;
+  validators: string[];
+}
+
+export interface RepairPacket {
+  version: 1;
+  taskId: string;
+  attempt: number;
+  createdAt: string;
+  failures: Array<{
+    id: string;
+    category: string;
+    message: string;
+    details?: Record<string, unknown>;
+  }>;
+}
+
+export interface WorkerSession {
+  id?: string;
+  provider: string;
+  model?: string;
+  exitCode: number;
+  stdout: string;
+  stderr: string;
 }
