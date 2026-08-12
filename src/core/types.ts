@@ -2,6 +2,7 @@ export type CheckStatus = "PASS" | "FAIL" | "SKIP" | "WARN";
 export type TaskMode = "spec" | "quick";
 export type ReviewSeverity = "critical" | "high" | "medium" | "low" | "note";
 export type TaskRisk = "low" | "medium" | "high";
+export type PaseoSessionPolicy = "fresh-on-start" | "reuse-compatible" | "resume-explicit";
 
 export type ValidatorAdapter = "command" | "gherkin" | "graphify" | "opengrep" | "trivy" | "playwright" | "openapi" | "pact" | "mutation" | "property" | string;
 export interface ValidationCommand { id: string; command: string; required?: boolean; timeoutSeconds?: number; workingDirectory?: string; }
@@ -61,7 +62,18 @@ export interface HarnessProjectConfig {
     provider: "paseo" | "podman" | "none" | string;
     required?: boolean;
     worker?: { provider?: string; model?: string; maxRepairAttempts?: number; timeoutSeconds?: number; titlePrefix?: string; };
-    interactive?: { autoSetup?: boolean; webUi?: boolean; leadAgent?: string; reuseSession?: boolean; stateDir?: string; title?: string; };
+    interactive?: {
+      autoSetup?: boolean;
+      webUi?: boolean;
+      leadAgent?: string;
+      /** @deprecated Prefer sessionPolicy. */
+      reuseSession?: boolean;
+      sessionPolicy?: PaseoSessionPolicy;
+      usePaseoTools?: boolean;
+      context?: { pressureThreshold?: number; handoffThreshold?: number; hardHandoffThreshold?: number; };
+      stateDir?: string;
+      title?: string;
+    };
   };
   toolchain?: { configPath?: string; lockPath?: string; statePath?: string; generatedMisePath?: string; };
   mcp?: {
@@ -110,7 +122,14 @@ export interface HarnessProjectConfig {
     leaseSeconds?: number;
     workerId?: string;
   };
-  sdd?: { specsDir?: string; contractsDir?: string; reportsDir?: string; repairsDir?: string; runsDir?: string; };
+  sdd?: {
+    specsDir?: string;
+    contractsDir?: string;
+    reportsDir?: string;
+    repairsDir?: string;
+    runsDir?: string;
+    authoring?: { provider?: "openspec" | "native" | string; schema?: string; managerAgent?: string; };
+  };
   validation?: { baseRef?: string; commands?: ValidationCommand[]; validators?: ValidatorSpec[]; frozenPaths?: string[]; requireSeal?: boolean; opa?: { enabled?: boolean; policyDirs?: string[]; }; };
   security?: {
     sandbox?: {
@@ -156,12 +175,14 @@ export interface TaskIssueMetadata {
   contentSha256: string;
   snapshotPath: string;
 }
+export interface TaskAuthoringMetadata { provider: string; change: string; sourceSha256: string; }
 export interface TaskContract {
   version: 1;
   mode?: TaskMode;
   task: { id: string; title: string };
   quick?: QuickTaskMetadata;
   source?: { proposal?: string; spec?: string; design?: string; tasks?: string; acceptance?: string; issue?: string; };
+  authoring?: TaskAuthoringMetadata;
   issue?: TaskIssueMetadata;
   git?: { baseRef?: string; originatingBranch?: string };
   scope?: { allowed?: string[]; forbidden?: string[]; frozen?: string[]; };
