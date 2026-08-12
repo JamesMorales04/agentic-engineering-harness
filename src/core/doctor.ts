@@ -4,7 +4,10 @@ import { EngramMemoryProvider } from "../providers/engram.js";
 import { GraphifyCodeIntelligenceProvider } from "../providers/graphify.js";
 import { PaseoOrchestrationProvider } from "../providers/paseo.js";
 import { createWorkerExecutor } from "../workers/factory.js";
+import { resolveEndpoint } from "../telemetry/otlp.js";
+
 export interface DoctorResult { component: string; required: boolean; ok: boolean; message: string; }
+
 export async function runDoctor(root: string, config: HarnessProjectConfig): Promise<DoctorResult[]> {
   const results: DoctorResult[] = [];
   for (const command of ["git", "node"]) results.push({ component: command, required: true, ok: await commandExists(command, root), message: `${command} executable` });
@@ -15,6 +18,21 @@ export async function runDoctor(root: string, config: HarnessProjectConfig): Pro
   if (config.validation?.opa?.enabled) results.push({ component: "opa", required: false, ok: await commandExists("opa", root), message: "OPA policy engine" });
   for (const tool of config.security?.tools ?? []) results.push({ component: tool, required: false, ok: await commandExists(tool, root), message: `Security tool: ${tool}` });
   for (const validator of config.validation?.validators ?? []) { const tool = validatorTool(validator); if (tool) results.push({ component: `validator:${validator.id}`, required: validator.required ?? false, ok: await commandExists(tool, root), message: `${validator.adapter} validator (${tool})` }); }
+  if (config.telemetry?.exporter === "otlp-http-json") {
+    const endpoint = resolveEndpoint(config);
+    results.push({ component: "otlp-endpoint", required: config.telemetry.required ?? false, ok: Boolean(endpoint), message: endpoint ? `OTLP/HTTP JSON endpoint: ${endpoint}` : "OTLP exporter configured without an endpoint" });
+  }
+  if (config.provenance?.cosignKey) results.push({ component: "cosign", required: false, ok: await commandExists("cosign", root), message: "Cosign provenance signing" });
   return results;
 }
-function validatorTool(spec: ValidatorSpec): string | undefined { if (spec.command) return undefined; switch (spec.adapter) { case "gherkin": return "dotnet"; case "opengrep": return "opengrep"; case "trivy": return "trivy"; case "playwright": return "npx"; default: return undefined; } }
+
+function validatorTool(spec: ValidatorSpec): string | undefined {
+  if (spec.command) return undefined;
+  switch (spec.adapter) {
+    case "gherkin": return "dotnet";
+    case "opengrep": return "opengrep";
+    case "trivy": return "trivy";
+    case "playwright": return "npx";
+    default: return undefined;
+  }
+}

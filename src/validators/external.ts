@@ -11,6 +11,8 @@ export async function runExternalToolValidator(context: ValidationContext): Prom
     trivy: { tool: "trivy", command: "trivy fs --exit-code 1 --severity HIGH,CRITICAL --scanners vuln,misconfig,secret .", category: "security" },
     playwright: { tool: "npx", command: "npx playwright test --grep \"{taskId}\" --reporter=line", category: "e2e" },
     pact: { tool: "", category: "contract" },
+    mutation: { tool: "", category: "test-quality" },
+    property: { tool: "", category: "test-quality" },
     command: { tool: "", category: "custom" }
   };
   const definition = defaults[adapter] ?? { tool: "", category: "custom" };
