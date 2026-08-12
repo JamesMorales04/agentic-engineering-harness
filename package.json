@@ -14,7 +14,8 @@
     "policies",
     "schemas",
     "skills",
-    "docs"
+    "docs",
+    "scripts/link-self-bin.mjs"
   ],
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
