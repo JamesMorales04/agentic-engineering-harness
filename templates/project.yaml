@@ -3,6 +3,13 @@ version: 1
 project:
   name: change-me
 
+agents:
+  configPath: .harness/agents.source.jsonc
+  generatedPath: .harness/generated/agents.json
+  activeProfile: balanced
+  required: true
+  findingsDir: .harness/findings
+
 orchestration:
   provider: paseo
   required: false
@@ -68,4 +75,4 @@ evals:
 
 provenance:
   outputDir: .harness/provenance
-  buildType: https://github.com/JamesMorales04/agentic-engineering-harness/v0.3
+  buildType: https://github.com/JamesMorales04/agentic-engineering-harness/v0.4

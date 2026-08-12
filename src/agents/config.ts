@@ -5,93 +5,26 @@ import { z } from "zod";
 import type { HarnessProjectConfig } from "../core/types.js";
 import { parseJsonc } from "./jsonc.js";
 import type { AgentDefinition, AgentOverride, AgentTopologySource, ModelDefinition, ResolvedAgentDefinition, ResolvedAgentTopology, ResolvedModelDefinition } from "./types.js";
-
 const permissionSchema = z.enum(["allow", "ask", "deny"]);
-const runtimeSchema = z.object({ adapter: z.string().min(1), paseoProvider: z.string().optional(), command: z.string().optional(), defaultArgs: z.array(z.string()).optional(), capabilities: z.object({ nativeAgent: z.boolean().optional(), modelSelection: z.boolean().optional(), variantSelection: z.boolean().optional(), sessions: z.boolean().optional(), structuredOutput: z.boolean().optional() }).optional() });
+const runtimeSchema = z.object({ adapter: z.string().min(1), paseoProvider: z.string().optional(), command: z.string().optional(), defaultArgs: z.array(z.string()).optional(), capabilities: z.object({ nativeAgent: z.boolean().optional(), nativeAgentViaPaseo: z.boolean().optional(), modelSelection: z.boolean().optional(), variantSelection: z.boolean().optional(), sessions: z.boolean().optional(), structuredOutput: z.boolean().optional() }).optional() });
 const modelSchema = z.object({ runtime: z.string().min(1), provider: z.string().optional(), model: z.string().min(1), variant: z.string().optional(), temperature: z.number().optional(), options: z.record(z.string(), z.unknown()).optional() });
-const executionSchema = z.object({ model: z.string().min(1), runtime: z.string().optional(), nativeAgent: z.string().optional(), variant: z.string().optional(), args: z.array(z.string()).optional() });
+const executionSchema = z.object({ model: z.string().min(1), runtime: z.string().optional(), nativeAgent: z.string().optional(), variant: z.string().optional(), args: z.array(z.string()).optional(), transport: z.enum(["inherit", "paseo", "direct", "podman"]).optional() });
 const permissionsSchema = z.object({ read: permissionSchema.optional(), write: permissionSchema.optional(), shell: permissionSchema.optional(), network: permissionSchema.optional(), delegate: permissionSchema.optional(), review: permissionSchema.optional(), validate: permissionSchema.optional(), gitWrite: permissionSchema.optional() }).optional();
 const agentSchema = z.object({ role: z.string().min(1), domains: z.array(z.string()).optional(), description: z.string().optional(), execution: executionSchema, temperature: z.number().optional(), skills: z.array(z.string()).optional(), mcps: z.array(z.string()).optional(), promptPath: z.string().optional(), orchestratorPromptPath: z.string().optional(), outputContract: z.string().optional(), permissions: permissionsSchema, capabilities: z.array(z.string()).optional(), disabled: z.boolean().optional() });
 const agentOverrideSchema = agentSchema.partial().extend({ execution: executionSchema.partial().optional() });
 const routingSchema = z.object({ id: z.string().min(1), priority: z.number().optional(), when: z.object({ intent: z.union([z.string(), z.array(z.string())]).optional(), domains: z.array(z.string()).optional(), files: z.array(z.string()).optional(), risk: z.union([z.enum(["low", "medium", "high"]), z.array(z.enum(["low", "medium", "high"]))]).optional() }), use: z.string().optional(), reviewers: z.array(z.string()).optional(), validators: z.array(z.string()).optional() });
 const recoveryStepSchema = z.object({ action: z.enum(["same-agent", "reroute", "agent", "lead", "stop"]), agent: z.string().optional() });
-const sourceSchema = z.object({
-  version: z.literal(1), activeProfile: z.string().optional(), skillRoots: z.array(z.string()).optional(),
-  runtimes: z.record(z.string(), runtimeSchema), models: z.record(z.string(), modelSchema), agents: z.record(z.string(), agentSchema),
-  profiles: z.record(z.string(), z.object({ description: z.string().optional(), models: z.record(z.string(), modelSchema.partial()).optional(), agents: z.record(z.string(), agentOverrideSchema).optional() })).optional(),
-  routing: z.array(routingSchema).optional(),
-  recovery: z.record(z.string(), z.array(recoveryStepSchema)).optional(),
-  councils: z.record(z.string(), z.object({ members: z.array(z.object({ model: z.string(), agent: z.string().optional() })), executionMode: z.enum(["parallel", "sequential"]).optional() })).optional()
-});
-
-export async function loadAgentTopologySource(root: string, config: HarnessProjectConfig): Promise<AgentTopologySource> {
-  const file = path.resolve(root, config.agents?.configPath ?? ".harness/agents.source.jsonc");
-  const parsed = parseJsonc(await fs.readFile(file, "utf8"));
-  return sourceSchema.parse(parsed) as AgentTopologySource;
-}
-
-export async function loadResolvedAgentTopology(root: string, config: HarnessProjectConfig, profileOverride?: string): Promise<ResolvedAgentTopology> {
-  const source = await loadAgentTopologySource(root, config);
-  return resolveAgentTopology(source, profileOverride ?? config.agents?.activeProfile);
-}
-
+const sourceSchema = z.object({ version: z.literal(1), activeProfile: z.string().optional(), skillRoots: z.array(z.string()).optional(), runtimes: z.record(z.string(), runtimeSchema), models: z.record(z.string(), modelSchema), agents: z.record(z.string(), agentSchema), profiles: z.record(z.string(), z.object({ description: z.string().optional(), models: z.record(z.string(), modelSchema.partial()).optional(), agents: z.record(z.string(), agentOverrideSchema).optional() })).optional(), routing: z.array(routingSchema).optional(), recovery: z.record(z.string(), z.array(recoveryStepSchema)).optional(), councils: z.record(z.string(), z.object({ members: z.array(z.object({ model: z.string(), agent: z.string().optional() })), executionMode: z.enum(["parallel", "sequential"]).optional() })).optional() });
+export async function loadAgentTopologySource(root: string, config: HarnessProjectConfig): Promise<AgentTopologySource> { const file = path.resolve(root, config.agents?.configPath ?? ".harness/agents.source.jsonc"); return sourceSchema.parse(parseJsonc(await fs.readFile(file, "utf8"))) as AgentTopologySource; }
+export async function loadResolvedAgentTopology(root: string, config: HarnessProjectConfig, profileOverride?: string): Promise<ResolvedAgentTopology> { return resolveAgentTopology(await loadAgentTopologySource(root, config), profileOverride ?? config.agents?.activeProfile); }
 export function resolveAgentTopology(source: AgentTopologySource, profileOverride?: string): ResolvedAgentTopology {
-  const profileName = profileOverride ?? source.activeProfile;
-  const profile = profileName ? source.profiles?.[profileName] : undefined;
-  if (profileName && !profile) throw new Error(`Unknown agent profile: ${profileName}`);
-
-  const models = structuredClone(source.models) as Record<string, ModelDefinition>;
-  for (const [alias, override] of Object.entries(profile?.models ?? {})) {
-    if (!models[alias]) throw new Error(`Profile ${profileName} overrides unknown model alias @${alias}`);
-    models[alias] = { ...models[alias], ...override } as ModelDefinition;
-  }
-
-  const agents = structuredClone(source.agents) as Record<string, AgentDefinition>;
-  const overrides = Object.entries(profile?.agents ?? {}).sort(([a], [b]) => wildcardCount(b) - wildcardCount(a));
-  for (const [pattern, override] of overrides) {
-    const matched = Object.keys(agents).filter((name) => minimatch(name, pattern));
-    if (!matched.length && !/[?*\[]/.test(pattern)) throw new Error(`Profile ${profileName} overrides unknown agent ${pattern}`);
-    for (const name of matched) agents[name] = mergeAgent(agents[name], override);
-  }
-
-  const resolvedModels: Record<string, ResolvedModelDefinition> = {};
-  for (const [alias, model] of Object.entries(models)) {
-    if (!source.runtimes[model.runtime]) throw new Error(`Model @${alias} references unknown runtime ${model.runtime}`);
-    const id = model.provider && !model.model.includes("/") ? `${model.provider}/${model.model}` : model.model;
-    resolvedModels[alias] = { ...model, alias, id };
-  }
-
-  const resolvedAgents: Record<string, ResolvedAgentDefinition> = {};
-  for (const [name, agent] of Object.entries(agents)) {
-    const modelRef = agent.execution.model;
-    let model: ResolvedModelDefinition;
-    if (modelRef.startsWith("@")) {
-      const alias = modelRef.slice(1);
-      model = resolvedModels[alias];
-      if (!model) throw new Error(`Agent ${name} references unknown model alias ${modelRef}`);
-    } else {
-      const runtimeName = agent.execution.runtime;
-      if (!runtimeName) throw new Error(`Agent ${name} uses direct model ${modelRef} and must set execution.runtime`);
-      const [provider] = modelRef.includes("/") ? modelRef.split("/", 1) : [undefined];
-      model = { alias: modelRef, id: modelRef, runtime: runtimeName, provider, model: modelRef };
-    }
-    const runtimeName = agent.execution.runtime ?? model.runtime;
-    if (runtimeName !== model.runtime && modelRef.startsWith("@")) throw new Error(`Agent ${name} runtime ${runtimeName} conflicts with ${modelRef} runtime ${model.runtime}`);
-    const runtime = source.runtimes[runtimeName];
-    if (!runtime) throw new Error(`Agent ${name} references unknown runtime ${runtimeName}`);
-    if (agent.execution.nativeAgent && runtime.capabilities?.nativeAgent === false) throw new Error(`Runtime ${runtimeName} does not support nativeAgent but ${name} configures ${agent.execution.nativeAgent}`);
-    resolvedAgents[name] = { ...agent, name, execution: { ...agent.execution, runtime: runtimeName, variant: agent.execution.variant ?? model.variant }, runtime: { ...runtime, name: runtimeName }, model };
-  }
-
+  const profileName = profileOverride ?? source.activeProfile; const profile = profileName ? source.profiles?.[profileName] : undefined; if (profileName && !profile) throw new Error(`Unknown agent profile: ${profileName}`);
+  const models = structuredClone(source.models) as Record<string, ModelDefinition>; for (const [alias, override] of Object.entries(profile?.models ?? {})) { if (!models[alias]) throw new Error(`Profile ${profileName} overrides unknown model alias @${alias}`); models[alias] = { ...models[alias], ...override } as ModelDefinition; }
+  const agents = structuredClone(source.agents) as Record<string, AgentDefinition>; const overrides = Object.entries(profile?.agents ?? {}).sort(([a], [b]) => wildcardCount(b) - wildcardCount(a)); for (const [pattern, override] of overrides) { const matched = Object.keys(agents).filter((name) => minimatch(name, pattern)); if (!matched.length && !/[?*\[]/.test(pattern)) throw new Error(`Profile ${profileName} overrides unknown agent ${pattern}`); for (const name of matched) agents[name] = mergeAgent(agents[name], override); }
+  const resolvedModels: Record<string, ResolvedModelDefinition> = {}; for (const [alias, model] of Object.entries(models)) { if (!source.runtimes[model.runtime]) throw new Error(`Model @${alias} references unknown runtime ${model.runtime}`); const id = model.provider && !model.model.includes("/") ? `${model.provider}/${model.model}` : model.model; resolvedModels[alias] = { ...model, alias, id }; }
+  const resolvedAgents: Record<string, ResolvedAgentDefinition> = {}; for (const [name, agent] of Object.entries(agents)) { const modelRef = agent.execution.model; let model: ResolvedModelDefinition; if (modelRef.startsWith("@")) { const alias = modelRef.slice(1); model = resolvedModels[alias]; if (!model) throw new Error(`Agent ${name} references unknown model alias ${modelRef}`); } else { const runtimeName = agent.execution.runtime; if (!runtimeName) throw new Error(`Agent ${name} uses direct model ${modelRef} and must set execution.runtime`); const provider = modelRef.includes("/") ? modelRef.split("/")[0] : undefined; model = { alias: modelRef, id: modelRef, runtime: runtimeName, provider, model: modelRef }; }
+    const runtimeName = agent.execution.runtime ?? model.runtime; if (runtimeName !== model.runtime && modelRef.startsWith("@")) throw new Error(`Agent ${name} runtime ${runtimeName} conflicts with ${modelRef} runtime ${model.runtime}`); const runtime = source.runtimes[runtimeName]; if (!runtime) throw new Error(`Agent ${name} references unknown runtime ${runtimeName}`); if (agent.execution.nativeAgent && runtime.capabilities?.nativeAgent === false) throw new Error(`Runtime ${runtimeName} does not support nativeAgent but ${name} configures ${agent.execution.nativeAgent}`); resolvedAgents[name] = { ...agent, name, execution: { ...agent.execution, runtime: runtimeName, variant: agent.execution.variant ?? model.variant, transport: agent.execution.transport ?? "inherit" }, runtime: { ...runtime, name: runtimeName }, model }; }
   return { version: 1, profile: profileName, skillRoots: source.skillRoots ?? [".harness/skills"], runtimes: source.runtimes, models: resolvedModels, agents: resolvedAgents, routing: source.routing ?? [], recovery: source.recovery ?? {}, councils: source.councils ?? {} };
 }
-
-function mergeAgent(base: AgentDefinition, override: AgentOverride): AgentDefinition {
-  return {
-    ...base,
-    ...override,
-    execution: { ...base.execution, ...(override.execution ?? {}) },
-    permissions: { ...(base.permissions ?? {}), ...(override.permissions ?? {}) }
-  } as AgentDefinition;
-}
+function mergeAgent(base: AgentDefinition, override: AgentOverride): AgentDefinition { return { ...base, ...override, execution: { ...base.execution, ...(override.execution ?? {}) }, permissions: { ...(base.permissions ?? {}), ...(override.permissions ?? {}) } } as AgentDefinition; }
 function wildcardCount(value: string): number { return [...value].filter((char) => char === "*" || char === "?").length; }
