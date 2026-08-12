@@ -14,6 +14,7 @@ import { benchmarkMcpCatalog } from "./mcp/benchmark.js";
 import { buildEvalDashboard, runRepeatedEval } from "./evals/statistics.js";
 import { startPaseoHarness } from "./paseo/start.js";
 import { guardLeadContext } from "./paseo/context.js";
+import { listManagedPaseoAgents } from "./paseo/runtime.js";
 import { prepareOpenSpecChange, compileOpenSpecChange } from "./spec/openspec.js";
 import { classifyEngineeringIntent, formatEngineeringIntent } from "./audit/intent.js";
 import { runAudit } from "./audit/run.js";
@@ -25,6 +26,7 @@ if (args.length === 1 && ["--version", "-V"].includes(args[0])) { console.log(VE
 
 if (args[0] === "start") { await runStart(args.slice(1)); process.exit(process.exitCode ?? 0); }
 if (args[0] === "context" && args[1] === "guard") { await runContextGuard(args.slice(2)); process.exit(process.exitCode ?? 0); }
+if (args[0] === "paseo" && args[1] === "agents") { await runPaseoAgents(args.slice(2)); process.exit(process.exitCode ?? 0); }
 if (args[0] === "spec" && ["prepare", "compile"].includes(args[1] ?? "")) { await runSpec(args.slice(1)); process.exit(process.exitCode ?? 0); }
 if (args[0] === "intent") { await runIntent(args.slice(1)); process.exit(process.exitCode ?? 0); }
 if (args[0] === "audit") { await runAuditCommand(args.slice(1)); process.exit(process.exitCode ?? 0); }
@@ -78,6 +80,23 @@ async function runContextGuard(argv: string[]): Promise<void> {
   console.log(result.state);
   console.log(result.message);
   console.log(JSON.stringify(result, null, 2));
+}
+
+async function runPaseoAgents(argv: string[]): Promise<void> {
+  const parsed = parseGeneric(argv, new Set(["task", "role", "kind", "status"]), new Set(["json"]));
+  if (parsed.positional.length > 1) throw new Error("aeh paseo agents accepts at most one project directory.");
+  const root = path.resolve(parsed.positional[0] ?? ".");
+  const config = await loadProjectConfig(root);
+  const labels: Record<string, string> = { "aeh.project": config.project.name };
+  if (parsed.value("task")) labels["aeh.task"] = parsed.value("task")!;
+  if (parsed.value("role")) labels["aeh.role"] = parsed.value("role")!;
+  if (parsed.value("kind")) labels["aeh.kind"] = parsed.value("kind")!;
+  const requestedStatus = parsed.value("status");
+  const agents = (await listManagedPaseoAgents(root, labels)).filter((agent) => !requestedStatus || agent.status === requestedStatus);
+  const view = agents.map((agent) => ({ id: agent.id, status: agent.status ?? "unknown", title: agent.title, workspaceId: agent.workspaceId, role: agent.labels?.["aeh.role"], task: agent.labels?.["aeh.task"], kind: agent.labels?.["aeh.kind"], labels: agent.labels }));
+  if (parsed.flag("json")) { console.log(JSON.stringify(view, null, 2)); return; }
+  if (!view.length) { console.log("No matching active AEH Paseo agents."); return; }
+  for (const agent of view) console.log(`${agent.status.padEnd(12)} role=${(agent.role ?? "-").padEnd(24)} task=${(agent.task ?? "-").padEnd(24)} kind=${(agent.kind ?? "-").padEnd(8)} id=${agent.id}${agent.title ? ` title=${agent.title}` : ""}`);
 }
 
 async function runSpec(argv: string[]): Promise<void> {
