@@ -6,9 +6,10 @@ import { runProcess } from "../utils/process.js";
 
 export async function executeAgentPrompt(root: string, config: HarnessProjectConfig, contract: TaskContract, selection: AgentExecutionSelection, prompt: string): Promise<WorkerSession> {
   const transport = selection.transport === "inherit" ? (config.orchestration?.provider ?? "none") : selection.transport;
-  if (transport === "paseo") return executeViaPaseo(root, config, contract, selection, prompt);
-  if (transport === "direct") return executeDirect(root, config, selection, prompt);
-  if (transport === "podman") return executePodman(root, config, contract, selection, prompt);
+  const effectivePrompt = withAgentCharter(selection, prompt);
+  if (transport === "paseo") return executeViaPaseo(root, config, contract, selection, effectivePrompt);
+  if (transport === "direct") return executeDirect(root, config, selection, effectivePrompt);
+  if (transport === "podman") return executePodman(root, config, contract, selection, effectivePrompt);
   throw new Error(`Unsupported agent prompt transport: ${transport}`);
 }
 
@@ -49,6 +50,7 @@ async function executePodman(root: string, config: HarnessProjectConfig, contrac
   const command = `podman run --rm -i --userns=keep-id ${network} -e ${quote(`OPENCODE_CONFIG_CONTENT=${runtimeConfig}`)} ${extra} ${mounts.join(" ")} ${quote(image)} sh -lc ${quote(inner)}`;
   const result = await runProcess(command, { cwd: root, timeoutMs: (config.orchestration?.worker?.timeoutSeconds ?? 1800) * 1000 }); return session(selection, result.exitCode, result.stdout, result.stderr);
 }
+function withAgentCharter(selection: AgentExecutionSelection, prompt: string): string { return selection.description ? `Agent charter for ${selection.logicalAgent}:\n${selection.description}\n\n${prompt}` : prompt; }
 function session(selection: AgentExecutionSelection, exitCode: number, stdout: string, stderr: string): WorkerSession { return { provider: selection.runtimeAdapter, model: selection.modelName, logicalAgent: selection.logicalAgent, nativeAgent: selection.nativeAgent, runtime: selection.runtimeName, profile: selection.profile, exitCode, stdout, stderr }; }
 function sealedArtifacts(config: HarnessProjectConfig, contract: TaskContract): string[] { const dir = config.sdd?.contractsDir ?? ".harness/contracts"; return [...new Set([`${dir}/${contract.task.id}.yaml`, `.harness/seals/${contract.task.id}.json`, ...Object.values(contract.source ?? {}).filter((value): value is string => Boolean(value))])]; }
 function quote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }
