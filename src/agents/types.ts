@@ -16,6 +16,7 @@ export interface RoutingCondition { intent?: string | string[]; domains?: string
 export interface RoutingRule { id: string; priority?: number; when: RoutingCondition; use?: string; reviewers?: string[]; validators?: string[]; }
 export type FailureType = "PATCH_CONTEXT_MISMATCH" | "TOOL_FAILURE" | "MISSING_CONTEXT" | "WRONG_AGENT" | "VALIDATION_FAILURE" | "REVIEW_FAILURE" | "AMBIGUOUS_OUTPUT" | "CONFLICTING_RESULTS";
 export interface RecoveryStep { action: "same-agent" | "reroute" | "agent" | "lead" | "stop"; agent?: string; }
+export type RecoveryMap = Partial<Record<FailureType, RecoveryStep[]>> & Record<string, RecoveryStep[] | undefined>;
 export interface CouncilDefinition { members: Array<{ model: string; agent?: string }>; executionMode?: "parallel" | "sequential"; }
 export interface AgentTopologyRemove { runtimes?: string[]; models?: string[]; agents?: string[]; profiles?: string[]; routing?: string[]; councils?: string[]; }
 export interface AgentTopologyLayer {
@@ -28,14 +29,14 @@ export interface AgentTopologyLayer {
   agents?: Record<string, AgentOverride>;
   profiles?: Record<string, AgentProfile>;
   routing?: RoutingRule[];
-  recovery?: Partial<Record<FailureType, RecoveryStep[]>>;
+  recovery?: RecoveryMap;
   councils?: Record<string, CouncilDefinition>;
   remove?: AgentTopologyRemove;
 }
-export interface AgentTopologySource { version: 1; activeProfile?: string; skillRoots?: string[]; runtimes: Record<string, RuntimeDefinition>; models: Record<string, ModelDefinition>; agents: Record<string, AgentDefinition>; profiles?: Record<string, AgentProfile>; routing?: RoutingRule[]; recovery?: Partial<Record<FailureType, RecoveryStep[]>>; councils?: Record<string, CouncilDefinition>; }
+export interface AgentTopologySource { version: 1; activeProfile?: string; skillRoots?: string[]; runtimes: Record<string, RuntimeDefinition>; models: Record<string, ModelDefinition>; agents: Record<string, AgentDefinition>; profiles?: Record<string, AgentProfile>; routing?: RoutingRule[]; recovery?: RecoveryMap; councils?: Record<string, CouncilDefinition>; }
 export interface ResolvedModelDefinition extends ModelDefinition { alias: string; id: string; }
 export interface ResolvedAgentDefinition extends Omit<AgentDefinition, "execution"> { name: string; execution: AgentExecutionDefinition; runtime: RuntimeDefinition & { name: string }; model: ResolvedModelDefinition; }
-export interface ResolvedAgentTopology { version: 1; profile?: string; skillRoots: string[]; runtimes: Record<string, RuntimeDefinition>; models: Record<string, ResolvedModelDefinition>; agents: Record<string, ResolvedAgentDefinition>; routing: RoutingRule[]; recovery: Partial<Record<FailureType, RecoveryStep[]>>; councils: Record<string, CouncilDefinition>; }
+export interface ResolvedAgentTopology { version: 1; profile?: string; skillRoots: string[]; runtimes: Record<string, RuntimeDefinition>; models: Record<string, ResolvedModelDefinition>; agents: Record<string, ResolvedAgentDefinition>; routing: RoutingRule[]; recovery: RecoveryMap; councils: Record<string, CouncilDefinition>; }
 export interface AgentRouteContext { intent: string; domains?: string[]; files?: string[]; risk?: AgentRisk; }
 export interface ResolvedRoute { ruleIds: string[]; agent?: string; reviewers: string[]; validators: string[]; reasons: string[]; }
 export interface AgentExecutionSelection { profile?: string; logicalAgent: string; role: AgentRole; domains: string[]; description?: string; runtimeName: string; runtimeAdapter: string; paseoProvider: string; modelAlias: string; modelId: string; modelName: string; modelProvider?: string; variant?: string; nativeAgent?: string; transport: AgentTransport; temperature?: number; skills: string[]; mcps: string[]; permissions: AgentPermissions; outputContract?: string; args: string[]; runtimeCapabilities: RuntimeCapabilities; }
