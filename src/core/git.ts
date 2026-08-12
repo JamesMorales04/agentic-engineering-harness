@@ -6,6 +6,18 @@ async function namesFrom(command: string, cwd: string): Promise<string[]> {
   return result.stdout.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
 }
 
+export async function getCurrentBranch(cwd: string): Promise<string | undefined> {
+  const result = await runProcess("git branch --show-current", { cwd });
+  const branch = result.exitCode === 0 ? result.stdout.trim() : "";
+  return branch || undefined;
+}
+
+export async function getOriginRemote(cwd: string): Promise<string | undefined> {
+  const result = await runProcess("git remote get-url origin", { cwd });
+  const remote = result.exitCode === 0 ? result.stdout.trim() : "";
+  return remote || undefined;
+}
+
 export async function getChangedFiles(cwd: string, baseRef: string): Promise<string[]> {
   const sets = await Promise.all([
     namesFrom(`git diff --name-only ${shellQuote(baseRef)}...HEAD`, cwd),
