@@ -27,6 +27,10 @@ jobs:
           set -euo pipefail
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
+          const cli = 'src/cli.ts';
+          let cliText = fs.readFileSync(cli, 'utf8');
+          cliText = cliText.replace('.version("0.5.0")', '.version("0.5.1")');
+          fs.writeFileSync(cli, cliText);
           const file = 'README.md';
           let text = fs.readFileSync(file, 'utf8');
           text = text.replace('## Status: v0.5.0', '## Status: v0.5.1');
@@ -40,13 +44,13 @@ jobs:
           fs.writeFileSync(file, text);
           NODE
           npm install --package-lock-only --ignore-scripts >/dev/null
-          if git diff --quiet -- README.md package-lock.json; then
+          if git diff --quiet -- README.md package-lock.json src/cli.ts; then
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add README.md package-lock.json
-          git commit -m "chore(release): align v0.5.1 metadata and lock"
+          git add README.md package-lock.json src/cli.ts
+          git commit -m "chore(release): finish v0.5.1 metadata alignment"
           git push origin "HEAD:${{ github.head_ref }}"
       - run: npm run release:check
       - name: Smoke packaged CLI from consumer install
