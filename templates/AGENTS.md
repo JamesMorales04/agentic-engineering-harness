@@ -1,5 +1,11 @@
 # Engineering Agent Contract
 
+## Interactive entry
+
+When a user is interacting through Paseo or another conversational coding-agent UI, every natural-language request that could mutate this repository must enter through the `engineering-workflow` Harness path. The user does not need to mention AEH, QUICK, SPEC, SDD, TaskContracts or validators. Build triage evidence automatically, obey the deterministic QUICK/SPEC result and invoke the Harness rather than editing directly as a shortcut. Read-only questions may be answered directly when they do not mutate repository state.
+
+`aeh start` is the preferred Paseo entrypoint. It creates or reuses a persistent top-level Harness lead whose conversation is bootstrapped with this rule.
+
 ## Lead agent
 
 The lead agent owns requirements interpretation, architecture, SDD artifacts, decomposition, review and final semantic acceptance. Prefer Codex for this role.
