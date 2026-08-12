@@ -1,6 +1,6 @@
 {
   "name": "agentic-engineering-harness",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "OSS-first engineering harness for deterministic, spec-driven and issue-driven multi-agent software delivery.",
   "type": "module",
   "bin": { "engineering-harness": "./dist/entry.js", "aeh": "./dist/entry.js" },
