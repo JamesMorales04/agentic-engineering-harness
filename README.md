@@ -1,32 +1,32 @@
 # Agentic Engineering Harness
 
-An **OSS-first, zero-mandatory-SaaS engineering control layer** for using coding agents without treating their output as trusted.
+An **OSS-first, zero-mandatory-SaaS control layer** for spec-driven multi-agent software engineering where LLM output is treated as untrusted until deterministic gates accept it.
 
 ```text
-Human -> Codex/lead -> SDD + Gherkin -> frozen TaskContract
+Human -> Codex/lead -> SDD + Gherkin -> sealed TaskContract
       -> worker (Paseo -> OpenCode, or Podman -> OpenCode)
       -> deterministic validators -> finite repair loop -> lead review
+      -> evals + telemetry + provenance
 ```
 
-The harness separates normative truth (Git/SDD), structural truth (Graphify), historical memory (Engram, advisory) and executable truth (tests/policies/security/contracts).
+## Status: v0.3.0
 
-## Status: v0.2.5
+v0.3 includes the complete v0.2 execution path plus measurement and provenance:
 
-Implemented:
+- requirement traceability across proposal/spec/design/tasks/Gherkin/TaskContract;
+- SHA-256 sealing of normative inputs;
+- Paseo/OpenCode and Podman/OpenCode worker execution;
+- finite deterministic repair loops;
+- Graphify, OPA, Reqnroll, OpenAPI, Opengrep, Trivy, Playwright and contract gates;
+- mutation/property-test adapters;
+- frozen historical engineering evals with variant ranking;
+- first-pass, repair, intervention, duration, token and cost metrics;
+- OTLP/HTTP JSON telemetry export plus local NDJSON audit trail;
+- provider-neutral Engram/Cognee/Graphiti memory benchmarking;
+- CycloneDX SBOM, SLSA v1/in-toto provenance and optional Cosign signing;
+- gated npm release workflow with provenance.
 
-- end-to-end requirement traceability across proposal/spec/design/tasks/Gherkin/TaskContract;
-- automatic TaskContract generation and SHA-256 sealing;
-- adapter-based deterministic validator registry;
-- automatic Reqnroll/Gherkin execution for .NET projects;
-- Paseo -> OpenCode worker execution with configurable provider/model;
-- optional direct Podman/OpenCode executor with sealed artifacts read-only;
-- finite structured repair loop;
-- Graphify before/after snapshots, stale-graph detection and impact gates;
-- Opengrep, Trivy, Playwright, OpenAPI and Pact/custom adapters;
-- OPA supplied with real dependency/schema diff evidence;
-- machine-readable reports, run artifacts and repair packets.
-
-See [docs/V0.2.md](docs/V0.2.md).
+See [docs/V0.2.md](docs/V0.2.md) and [docs/V0.3.md](docs/V0.3.md).
 
 ## Development
 
@@ -44,98 +44,86 @@ cd /path/to/repo
 aeh doctor
 ```
 
-## SDD
+## Core workflow
 
 ```bash
-aeh sdd new CHANGE-142 --title "Location-scoped authorization"
+aeh sdd new CHANGE-142 --title "Add observable behavior"
 aeh sdd validate CHANGE-142
-```
-
-`aeh sdd new` creates the five SDD artifacts plus `.harness/contracts/CHANGE-142.yaml`. `sdd validate` requires every canonical requirement ID to be present in proposal, spec, design, Gherkin, tasks, TaskContract and a known validator mapping.
-
-## Verify only
-
-```bash
-aeh seal CHANGE-142
-aeh verify CHANGE-142
-```
-
-The report is written to `.harness/reports/CHANGE-142.json`.
-
-## Full run
-
-```bash
 aeh run CHANGE-142
 ```
 
-Default orchestration:
+`aeh run` validates traceability, seals the contract/SDD inputs, snapshots structural intelligence when configured, launches the worker, validates the actual diff, emits structured repair packets for deterministic failures and stops after the configured repair budget.
 
-```yaml
-orchestration:
-  provider: paseo
-  worker:
-    provider: opencode
-    model: your-provider/your-workhorse-model
-    maxRepairAttempts: 2
+## Evals
+
+```bash
+aeh eval run EVAL-001 --variant model-a
+aeh eval run EVAL-001 --variant model-b
+aeh eval compare EVAL-001
 ```
 
-The harness launches the worker through Paseo, waits for it, validates the actual diff, converts FAIL checks into a structured repair packet, sends that evidence back to the same worker and stops after the configured repair budget.
+An eval runs from a frozen Git `baseRef` in an ephemeral worktree. It can overlay a fixture and setup commands, then scores deterministic success, first-pass success, repairs, human interventions and cost. This makes prompt/model/memory/SDD changes comparable on the same historical task.
 
-For direct process isolation instead:
+## Memory benchmark
 
-```yaml
-orchestration:
-  provider: podman
-security:
-  sandbox:
-    provider: podman
-    image: your-opencode-worker-image
-```
-
-Podman mounts the repository RW and overlays the TaskContract, seal and SDD sources RO. Credentials/environment are not copied implicitly; pass only what the worker actually needs through deliberate Podman arguments.
-
-## Validators
-
-| Adapter | Purpose |
-|---|---|
-| `gherkin` | Reqnroll/Gherkin acceptance or a custom Gherkin command |
-| `graphify` | structural before/after diff and blast-radius constraints |
-| `opengrep` | local SAST |
-| `trivy` | vulnerability/misconfiguration/secret scanning |
-| `playwright` | browser/E2E command |
-| `openapi` | built-in JSON/YAML backward compatibility checks |
-| `pact` | explicit consumer-contract command |
-| `command` | arbitrary deterministic project command |
+Configure command adapters for any memory backends:
 
 ```yaml
-validation:
-  validators:
-    - id: acceptance
-      adapter: gherkin
-      required: true
-    - id: api-compat
-      adapter: openapi
-      required: true
-      options:
-        baseline: contracts/openapi-baseline.json
-        current: artifacts/openapi-current.json
+memory:
+  benchmark:
+    providers:
+      - name: engram
+        command: engram-search-wrapper {query}
+      - name: cognee
+        command: cognee-search-wrapper {query}
+      - name: graphiti
+        command: graphiti-search-wrapper {query}
 ```
 
-Missing optional external tools yield WARN; required tools that cannot run yield FAIL. If an installed tool reports defects, the result is FAIL regardless of whether its availability was optional.
+Then run:
 
-## Graphify
+```bash
+aeh memory-benchmark
+```
 
-The harness consumes `graphify-out/graph.json`; it does not invent a graph-building terminal command. Refresh the graph through Graphify's assistant skill or configure a valid project-specific `codeIntelligence.refreshCommand`. The harness then seals before/after snapshots and can detect a stale graph when source files changed but the graph hash did not.
+All providers receive the same cases and are ranked on expected-term recall, stale-answer contamination and latency. Memory remains advisory; Git/specs/tests remain authoritative.
+
+## OpenTelemetry
+
+Local telemetry is always available through `.harness/telemetry/events.ndjson` unless disabled. For an OSS Collector:
+
+```yaml
+telemetry:
+  enabled: true
+  exporter: otlp-http-json
+  endpoint: http://localhost:4318
+```
+
+`aeh init` installs `.harness/otel-collector.yaml`. Standard `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, header and service-name environment variables are also honored.
+
+## Provenance
+
+```bash
+npm pack
+aeh provenance generate --artifact agentic-engineering-harness-0.3.0.tgz
+```
+
+This creates a SLSA v1 predicate and in-toto Statement v1 bound to the artifact SHA-256. If Trivy exists, a CycloneDX SBOM is generated. Add `--task CHANGE-142` to bind run/report hashes, and `--sign` to create a Sigstore bundle with `cosign sign-blob`.
+
+## Validator adapters
+
+`gherkin`, `graphify`, `opengrep`, `trivy`, `playwright`, `openapi`, `pact`, `mutation`, `property`, and generic `command` validators all normalize into the same `ValidationCheck` contract.
 
 ## Trust model
 
-- requirements/architecture belong to the lead agent and Git artifacts;
-- TaskContract + SDD inputs are sealed before delegation;
-- frozen files cannot be modified without failing validation;
-- workers do not own the acceptance criteria;
-- deterministic evidence outranks worker summaries;
-- repair prompts are generated from failed checks, not free-form model criticism;
-- final semantic acceptance remains with the lead/human.
+- Human/lead owns product intent and architecture.
+- Git-versioned SDD and TaskContracts define normative truth.
+- Workers cannot redefine frozen acceptance criteria.
+- Deterministic evidence outranks agent summaries.
+- Graphify describes current structure, not desired architecture.
+- Memory informs but never authorizes.
+- Evals measure the harness itself rather than assuming every new component improves it.
+- Provenance binds produced artifacts to source/build evidence.
 
 ## License
 
