@@ -29,12 +29,15 @@ jobs:
           cd "$TMP/consumer"
           npm init -y >/dev/null
           npm install "$GITHUB_WORKSPACE/$TGZ" >/dev/null
-          ./node_modules/.bin/aeh --version | grep -Fx '0.5.0'
+          ./node_modules/.bin/aeh --version | grep -Fx '0.5.1'
           mkdir repo
           ./node_modules/.bin/aeh init repo
           test -f repo/.harness/project.yaml
           test -f repo/.harness/toolchain.yaml
           test -f repo/.harness/agents.source.jsonc
+          grep -q '^  interactive:$' repo/.harness/project.yaml
+          test -d repo/.harness/paseo
+          grep -q '^\.harness/paseo/$' repo/.gitignore
           ./node_modules/.bin/aeh toolchain compile repo
           test -f repo/.config/mise/conf.d/aeh.toml
           ./node_modules/.bin/aeh setup --dry-run repo
