@@ -18,6 +18,7 @@ coverage/
 .harness/provenance/
 .harness/delivery/
 .harness/issues/
+.config/mise/conf.d/aeh.toml
 .graphify/
 graphify-out/
 *.log
