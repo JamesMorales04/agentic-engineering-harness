@@ -2,9 +2,9 @@
 
 An **OSS-first, zero-mandatory-SaaS control plane** for agentic software engineering. AEH treats LLM output as untrusted until deterministic validation, evidence and quality gates accept it.
 
-## Status: v0.6.0
+## Status: v0.6.1
 
-v0.6 makes the interactive lead a **thin semantic orchestrator** instead of an interactive shell/CI operator. Repository discovery, environment repair, planning, SPEC authoring, implementation and review are delegated to bounded roles while AEH remains the deterministic authority.
+v0.6 makes the interactive lead a **thin semantic orchestrator** instead of an interactive shell/CI operator. Repository discovery, environment repair, planning, SPEC authoring, implementation and review are delegated to bounded roles while AEH remains the deterministic authority. v0.6.1 adds managed Harness asset reconciliation and automatic semantic release publication from `main`.
 
 ```text
 User / Paseo
@@ -53,9 +53,12 @@ A new project receives:
 .harness/agents.source.jsonc   -> extends aeh:orchestration
 .harness/toolchain.yaml
 .harness/skills/
+.harness/managed-assets.json   -> versioned hashes for AEH-managed skills/policies
 openspec/config.yaml
 AGENTS.md
 ```
+
+Packaged core skills and policies are reconciled by `aeh init`, `aeh setup`, and `aeh start`. Missing assets are restored, untouched managed assets can be upgraded with the installed AEH version, and locally modified copies are preserved as explicit overrides.
 
 ## Zero-friction Paseo entrypoint
 
@@ -71,7 +74,7 @@ A normal start creates a **fresh lead conversation**. Reuse is explicit:
 aeh start --resume
 ```
 
-The lead is resolved from the active agent topology. Paseo and the configured lead runtime are reconciled when needed, the daemon is started/recovered, and the lead is bootstrapped with the project engineering workflow.
+Before the agent topology is loaded, `aeh start` reconciles the managed `.harness` control-plane assets. The lead is then resolved from the active agent topology. Paseo and the configured lead runtime are reconciled when needed, the daemon is started/recovered, and the lead is bootstrapped with the project engineering workflow.
 
 ### Lead responsibilities
 
@@ -237,6 +240,8 @@ Workers never gain authority to weaken requirements or deterministic gates. Pase
 ## Distribution
 
 AEH is a development tool, not an application runtime dependency. The npm package contains CLI code, templates, presets, policies, schemas, skills and docs. CI validates `npm ci`, typecheck, tests, build, `npm pack --dry-run`, and installs the generated tarball into an empty consumer project for smoke testing.
+
+Pushes to `main` can publish automatically through `.github/workflows/publish.yml`. `package.json` is the version source; if its current version has already shipped, Conventional Commit semantics select the next patch/minor/major version before publication. See [docs/PUBLISHING.md](docs/PUBLISHING.md) for authentication, retry and manual-release controls.
 
 ## License
 
