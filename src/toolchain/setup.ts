@@ -20,6 +20,7 @@ export async function setupToolchain(root: string, project: HarnessProjectConfig
   const installed: string[] = [];
   const containers: string[] = [];
   const lockTools: Record<string, ToolchainLockTool> = {};
+  const projectDependencyCommands = await resolveProjectDependencyCommands(root, toolchain.projectDependencies?.autoDetect !== false, toolchain.projectDependencies?.commands ?? []);
 
   for (const tool of resolved.tools.filter((item) => item.provisioning === "system")) {
     const ok = await rawCommandExists(root, tool.command);
@@ -28,29 +29,32 @@ export async function setupToolchain(root: string, project: HarnessProjectConfig
   }
 
   const miseTools = resolved.tools.filter((item) => item.provisioning === "mise");
+  const containerTools = resolved.tools.filter((item) => item.provisioning === "container");
+  if (options.dryRun) {
+    installed.push(...miseTools.map((tool) => `${tool.name}@${!options.updateLock ? lock?.tools[tool.name]?.resolvedVersion ?? tool.version ?? "latest" : tool.version ?? "latest"}`));
+    containers.push(...containerTools.map((tool) => `${tool.name}:${!options.updateLock ? lock?.tools[tool.name]?.digestRef ?? tool.container!.image : tool.container!.image}`));
+    return { profile: resolved.profile, generatedConfig, lockFile, stateFile, installed, containers, systemMissing, projectDependencyCommands, dryRun: true };
+  }
+
   let adapter: Awaited<ReturnType<typeof resolveMiseAdapter>> | undefined;
   let binPaths: string[] = [];
   if (miseTools.length) {
     adapter = await resolveMiseAdapter(root, toolchain.manager.minimumVersion);
-    if (!options.dryRun) await writeMiseConfig(root, generatedConfig, toolchain, resolved, lock, options.updateLock ?? false);
-    else await writeMiseConfig(root, generatedConfig, toolchain, resolved, lock, options.updateLock ?? false);
-    await installMiseTools(root, adapter, options.dryRun ?? false);
-    if (!options.dryRun) {
-      binPaths = await miseBinPaths(root, adapter);
-      for (const tool of miseTools) {
-        const resolvedVersion = await miseResolvedVersion(root, adapter, tool.command);
-        lockTools[tool.name] = { source: tool.source, requestedVersion: tool.version, resolvedVersion, command: tool.command, provisioning: "mise" };
-        installed.push(`${tool.name}@${resolvedVersion ?? tool.version ?? "unknown"}`);
-      }
+    await writeMiseConfig(root, generatedConfig, toolchain, resolved, lock, options.updateLock ?? false);
+    await installMiseTools(root, adapter, false);
+    binPaths = await miseBinPaths(root, adapter);
+    for (const tool of miseTools) {
+      const resolvedVersion = await miseResolvedVersion(root, adapter, tool.command);
+      lockTools[tool.name] = { source: tool.source, requestedVersion: tool.version, resolvedVersion, command: tool.command, provisioning: "mise" };
+      installed.push(`${tool.name}@${resolvedVersion ?? tool.version ?? "unknown"}`);
     }
   }
 
   const wrappersDir = path.resolve(root, ".harness/bin");
-  for (const tool of resolved.tools.filter((item) => item.provisioning === "container")) {
+  for (const tool of containerTools) {
     const configuredImage = tool.container!.image;
     const lockedRef = !options.updateLock ? lock?.tools[tool.name]?.digestRef : undefined;
     const pullRef = lockedRef ?? configuredImage;
-    if (options.dryRun) { containers.push(`${tool.name}:${pullRef}`); continue; }
     const pull = await runProcess(`${engine} pull ${quote(pullRef)}`, { cwd: root, timeoutMs: 900_000, toolchain: false });
     if (pull.exitCode !== 0) throw new Error(`${engine} pull failed for ${pullRef}: ${pull.stderr || pull.stdout}`);
     const digestRef = lockedRef ?? await inspectDigest(root, engine, configuredImage);
@@ -59,26 +63,23 @@ export async function setupToolchain(root: string, project: HarnessProjectConfig
     containers.push(`${tool.name}:${digestRef}`);
   }
 
-  const projectDependencyCommands = await resolveProjectDependencyCommands(root, toolchain.projectDependencies?.autoDetect !== false, toolchain.projectDependencies?.commands ?? []);
-  if (!options.dryRun && !options.skipProjectDependencies) {
-    const env = binPaths.length ? { PATH: `${[wrappersDir, ...binPaths].join(path.delimiter)}${path.delimiter}${process.env.PATH ?? ""}` } : undefined;
+  if (!options.skipProjectDependencies) {
+    const env = { PATH: `${[wrappersDir, ...binPaths].join(path.delimiter)}${path.delimiter}${process.env.PATH ?? ""}` };
     for (const command of projectDependencyCommands) {
       const result = await runProcess(command, { cwd: root, timeoutMs: 1_800_000, env, toolchain: false });
       if (result.exitCode !== 0) throw new Error(`Project dependency setup failed (${command}): ${result.stderr || result.stdout}`);
     }
   }
 
-  if (!options.dryRun) {
-    const finalLock: ToolchainLock = { version: 1, generatedAt: new Date().toISOString(), profile: resolved.profile, tools: lockTools };
-    await writeJsonFile(path.resolve(root, lockFile), finalLock);
-    const state: ToolchainState = { version: 1, generatedAt: new Date().toISOString(), manager: { provider: toolchain.manager.provider, command: adapter?.command ?? "system", version: adapter?.version }, binPaths: [...new Set([wrappersDir, ...binPaths])], wrappersDir, projectDependencyCommands };
-    await writeJsonFile(path.resolve(root, stateFile), state);
-    clearToolchainEnvCache();
-  }
+  const finalLock: ToolchainLock = { version: 1, generatedAt: new Date().toISOString(), profile: resolved.profile, tools: lockTools };
+  await writeJsonFile(path.resolve(root, lockFile), finalLock);
+  const state: ToolchainState = { version: 1, generatedAt: new Date().toISOString(), manager: { provider: toolchain.manager.provider, command: adapter?.command ?? "system", version: adapter?.version }, binPaths: [...new Set([wrappersDir, ...binPaths])], wrappersDir, projectDependencyCommands };
+  await writeJsonFile(path.resolve(root, stateFile), state);
+  clearToolchainEnvCache();
 
   const requiredMissing = resolved.tools.filter((tool) => tool.provisioning === "system" && tool.required && systemMissing.includes(tool.name));
   if (requiredMissing.length) throw new Error(`Required host tools are missing and are not installed automatically: ${requiredMissing.map((item) => item.command).join(", ")}.`);
-  return { profile: resolved.profile, generatedConfig, lockFile, stateFile, installed, containers, systemMissing, projectDependencyCommands, dryRun: options.dryRun ?? false };
+  return { profile: resolved.profile, generatedConfig, lockFile, stateFile, installed, containers, systemMissing, projectDependencyCommands, dryRun: false };
 }
 
 export async function compileToolchain(root: string, project: HarnessProjectConfig, options: { profile?: string; updateLock?: boolean } = {}): Promise<string> {
@@ -90,17 +91,24 @@ export async function compileToolchain(root: string, project: HarnessProjectConf
 async function resolveProjectDependencyCommands(root: string, autoDetect: boolean, configured: string[]): Promise<string[]> {
   const commands = [...configured]; if (!autoDetect) return unique(commands);
   if (await exists(path.join(root, "package-lock.json"))) commands.push("npm ci");
-  else if (await exists(path.join(root, "pnpm-lock.yaml"))) commands.push("pnpm install --frozen-lockfile");
+  else if (await exists(path.join(root, "pnpm-lock.yaml"))) commands.push("corepack pnpm install --frozen-lockfile");
   else if (await exists(path.join(root, "bun.lock")) || await exists(path.join(root, "bun.lockb"))) commands.push("bun install --frozen-lockfile");
-  else if (await exists(path.join(root, "yarn.lock"))) commands.push("yarn install --frozen-lockfile");
+  else if (await exists(path.join(root, "yarn.lock"))) {
+    const packageManager = await packageManagerDeclaration(root);
+    commands.push(packageManager?.startsWith("yarn@1.") ? "corepack yarn install --frozen-lockfile" : "corepack yarn install --immutable");
+  }
   const entries = await fs.readdir(root).catch(() => [] as string[]);
   if (entries.some((name) => name.endsWith(".sln") || name.endsWith(".slnx") || name.endsWith(".csproj"))) commands.push("dotnet restore");
   return unique(commands);
 }
 
+async function packageManagerDeclaration(root: string): Promise<string | undefined> {
+  try { const pkg = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8")) as { packageManager?: unknown }; return typeof pkg.packageManager === "string" ? pkg.packageManager : undefined; }
+  catch { return undefined; }
+}
 async function writeContainerWrapper(dir: string, command: string, engine: string, image: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true }); const file = path.join(dir, command);
-  const script = `#!/bin/sh\nset -eu\nexec ${engine} run --rm -i -v "$PWD:/workspace:Z" -w /workspace ${shellLiteral(image)} "$@"\n`;
+  const script = `#!/bin/sh\nset -eu\nexec ${engine} run --rm -i -v "$PWD:/workspace" -w /workspace ${shellLiteral(image)} "$@"\n`;
   await fs.writeFile(file, script, { mode: 0o755 }); await fs.chmod(file, 0o755);
 }
 async function inspectDigest(root: string, engine: string, image: string): Promise<string> {
