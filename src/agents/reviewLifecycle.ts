@@ -110,7 +110,12 @@ export async function runReviewLifecycle(input: { root: string; config: HarnessP
     const remediation = await executeAgentPrompt(root, config, contract, remediationSelection, buildRemediationPrompt(contract, stage, state, deduped.findings, replanContext));
     sessions.push(remediation);
     const runtimeException = detectRuntimeExternalException(remediation);
-    if (runtimeException?.humanRequired) return humanExceptionResult(runtimeException, remediationRounds, report, deduped, checks, sessions, qualityHistory);
+    if (runtimeException?.humanRequired) {
+      const restored = await rollbackWorktreeCheckpoint(root, checkpoint);
+      report = await input.revalidate();
+      await recordEvent(root, config, "harness.quality.rollback", { taskId: contract.task.id, round: remediationRounds, reason: "external-exception", stage: stage.name, restored });
+      return humanExceptionResult(runtimeException, remediationRounds, report, deduped, checks, sessions, qualityHistory);
+    }
     if (remediation.exitCode !== 0) {
       const restored = await rollbackWorktreeCheckpoint(root, checkpoint);
       await recordEvent(root, config, "harness.quality.rollback", { taskId: contract.task.id, round: remediationRounds, reason: "remediation-runtime-failure", stage: stage.name, restored });
