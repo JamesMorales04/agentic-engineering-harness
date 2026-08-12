@@ -19,7 +19,7 @@ The reference workflow uses:
 - Deterministic build/test/security/architecture/diff gates.
 - **OpenTelemetry-compatible tracing boundaries** and local engineering evals.
 
-This repository intentionally does **not** hard-code Pawra-specific knowledge. Product-specific policies and requirements stay in each consumer repository.
+Product-specific policies, requirements, examples and domain knowledge belong in each consumer repository rather than in this reusable harness.
 
 ## Status
 
@@ -37,7 +37,6 @@ This repository intentionally does **not** hard-code Pawra-specific knowledge. P
 - command-based validation gates
 - machine-readable validation reports
 - reusable agent skills
-- a Pawra integration example
 
 The integrations are intentionally adapter-based so Engram can later be replaced by Cognee/Graphiti and Graphify can be replaced by another structural intelligence provider without changing the SDD or validation core.
 
@@ -56,22 +55,22 @@ engineering-harness doctor
 Create an SDD change:
 
 ```bash
-engineering-harness sdd new PAWRA-142 --title "Location-scoped membership permissions"
+engineering-harness sdd new CHANGE-142 --title "Location-scoped authorization"
 ```
 
 After the spec/design/tasks and TaskContract exist, cryptographically freeze the normative artifacts before delegation:
 
 ```bash
-engineering-harness seal PAWRA-142
+engineering-harness seal CHANGE-142
 ```
 
 After implementation:
 
 ```bash
-engineering-harness verify PAWRA-142
+engineering-harness verify CHANGE-142
 ```
 
-The report is written to `.harness/reports/PAWRA-142.json`.
+The report is written to `.harness/reports/CHANGE-142.json`.
 
 ## Trust model
 
@@ -104,7 +103,6 @@ presets/      reusable technology presets
 policies/     OPA/Rego policy examples
 skills/       agent instruction packs
 specs/        SDD documentation/templates
-examples/     consumer examples, including Pawra
 evals/        repeatable engineering benchmark corpus
 docs/         architecture and operating model
 ```

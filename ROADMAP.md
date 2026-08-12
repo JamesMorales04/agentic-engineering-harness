@@ -11,7 +11,6 @@
 - [x] Paseo, Engram and Graphify provider abstractions.
 - [x] local lifecycle telemetry and OTel API spans.
 - [x] reusable lead/worker/SDD/validation/memory skills.
-- [x] Pawra consumer example.
 
 ## v0.2 — hard gates and traceability
 
