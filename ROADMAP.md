@@ -47,9 +47,22 @@
 - [x] agent descriptions propagated as executable role charters
 - [x] Harness repository dogfoods its own `.harness/` configuration
 
+## v0.4.14 — selective MCPs + issue/worktree delivery ✅
+- [x] OMO/Pawra agent capability review with `designer` and read-only `github-manager` defaults
+- [x] reusable verification/worktree/routing/recovery/traceability/dedup/drift/simplify/delivery skills
+- [x] per-agent MCP projection into OpenCode runtime configuration
+- [x] default Context7, Playwright and read-only GitHub MCP catalog; disabled Sentry candidate
+- [x] originating-branch capture at SDD creation
+- [x] sealed/non-template `aeh sdd handoff` readiness gate
+- [x] deterministic GitHub issue + issue-linked branch creation with env-only credentials
+- [x] resumable delivery state after each remote write
+- [x] Paseo worktree workspace creation and automatic workspace reuse for implementation/review/repair
+
 ## v0.5 — scale and governance
 - [ ] repeated-run eval dashboards/statistical confidence
 - [ ] signed organization policy bundles and inheritance
 - [ ] remote execution queue/distributed workers
 - [ ] richer code-graph task-to-node mapping for parallel scheduling
 - [ ] output-schema-native runtime adapters and structured session resume
+- [ ] MCP benchmark harness for token overhead, latency, stale-data risk and permission surface
+- [ ] optional observability/issue-system/database/cluster MCP packs validated by evals
