@@ -79,7 +79,7 @@ export async function createPaseoSdkAgent(root: string, options: PaseoSdkAgentOp
 }
 
 export async function createPaseoSdkAgentWithClient(client: PaseoSdkClient, options: PaseoSdkAgentOptions): Promise<PaseoSdkAgentResult> {
-  const config: Record<string, unknown> = { provider: providerModel(options.provider, options.model) };
+  const config: Record<string, unknown> = normalizeProviderModel(options.provider, options.model);
   if (options.systemPrompt) config.systemPrompt = options.systemPrompt;
   const createOptions: Record<string, unknown> = { config, title: options.title };
   if (options.prompt !== undefined) createOptions.prompt = options.prompt;
@@ -187,10 +187,27 @@ async function loadPaseoSdk(root: string): Promise<PaseoSdkModule> {
   );
 }
 
-function providerModel(provider: string, model?: string): string {
-  if (provider.includes("/")) return provider;
-  if (!model) throw new Error(`Paseo SDK requires an explicit model for provider '${provider}'.`);
-  return `${provider}/${model}`;
+function normalizeProviderModel(provider: string, model?: string): Record<string, string> {
+  const normalizedProvider = provider.trim();
+  if (!normalizedProvider) throw new Error("Paseo SDK requires a provider.");
+
+  const separator = normalizedProvider.indexOf("/");
+  if (separator < 0) {
+    if (!model?.trim()) throw new Error(`Paseo SDK requires an explicit model for provider '${normalizedProvider}'.`);
+    return { provider: normalizedProvider, model: model.trim() };
+  }
+
+  const providerId = normalizedProvider.slice(0, separator).trim();
+  const embeddedModel = normalizedProvider.slice(separator + 1).trim();
+  if (!providerId || !embeddedModel) {
+    throw new Error(`Invalid Paseo provider/model value '${provider}'. Expected '<provider>/<model>'.`);
+  }
+
+  const explicitModel = model?.trim();
+  if (explicitModel && explicitModel !== embeddedModel) {
+    throw new Error(`Conflicting Paseo models: provider value '${provider}' embeds '${embeddedModel}' but explicit model is '${explicitModel}'.`);
+  }
+  return { provider: providerId, model: explicitModel || embeddedModel };
 }
 
 function normalizeRecord(raw: Record<string, unknown>): PaseoSdkAgentRecord {
