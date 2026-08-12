@@ -126,8 +126,8 @@ export function classifyAuditFailure(check: ValidationCheck): AuditFailureClass 
   const text = [check.message, String(details.stderr ?? ""), String(details.stdout ?? ""), String(details.error ?? "")].join("\n").toLowerCase();
   if (/\b(eperm|eacces|permission denied|operation not permitted|sandbox|seccomp|denied by policy)\b/.test(text)) return "SANDBOX_DENIAL";
   if (/\b(enoent|command not found|not found:|cannot find module|module not found|missing dependency|no such file or directory)\b/.test(text)) return "MISSING_DEPENDENCY";
-  if (/\b(assert|assertion|expected .* received|expected .* to|test failed|tests? failed)\b/.test(text)) return "ASSERTION_FAILURE";
   if (/\b(timeout|timed out|environment|out of memory|oom|resource temporarily unavailable|network unavailable|dns)\b/.test(text)) return "ENVIRONMENT_FAILURE";
+  if (/\b(assert|assertion|expected .* received|expected .* to)\b/.test(text)) return "ASSERTION_FAILURE";
   return "TOOL_FAILURE";
 }
 
