@@ -9,14 +9,17 @@ Human -> lead/triage -> QUICK or SDD + Gherkin -> sealed contract
       -> lead acceptance -> evals + telemetry + provenance
 ```
 
-## Status: v0.4.12
+## Status: v0.4.13
 
-v0.4 now covers **Agent Topology, QuickContract triage, automatic reviews and autonomous quality convergence** on top of the v0.1–v0.3 validation, execution, measurement and provenance stack.
+v0.4 now covers **Agent Topology, QuickContract triage, automatic reviews, autonomous quality convergence and a composable built-in default agent pack** on top of the v0.1–v0.3 validation, execution, measurement and provenance stack.
 
 - logical agents are independent from runtimes and models;
+- `aeh:default` supplies a portable cross-project agent catalog without requiring every repo to copy it;
+- local JSONC topology layers can use defaults unchanged, add agents, partially override inherited agents/models, or remove them by pattern;
 - model aliases (`@brain`, `@workhorse`) centralize provider/model changes;
 - JSONC profiles switch cost/quality policies without editing prompts;
 - routing selects implementers/reviewers/validators from intent/domain/files/risk;
+- agent descriptions act as executable role charters injected into routed prompts;
 - QUICK changes use sealed bounded QuickContracts; larger/riskier changes use SDD;
 - reviewer output is machine-validated, normalized and deduplicated;
 - the Final Quality Gate requires `critical=0`, `high=0`, `medium=0`, `low<=3`, `DebtScore<=3` by default;
@@ -27,7 +30,7 @@ v0.4 now covers **Agent Topology, QuickContract triage, automatic reviews and au
 - prompt/skill/config/generated-runtime drift and execution capabilities are audited;
 - Graphify can inform conservative parallel scheduling and structural validation.
 
-See [docs/V0.4.12.md](docs/V0.4.12.md).
+See [docs/V0.4.13.md](docs/V0.4.13.md) and [docs/V0.4.12.md](docs/V0.4.12.md).
 
 ## Bootstrap
 
@@ -41,11 +44,101 @@ cd /path/to/repo
 aeh agents check
 ```
 
-`aeh init` creates `.harness/agents.source.jsonc` and compiles `.harness/generated/agents.json`.
+`aeh init` creates a small `.harness/agents.source.jsonc` overlay that extends the package-owned `aeh:default` topology, then compiles the effective topology to `.harness/generated/agents.json`. A project does not need to already contain `.harness/`.
+
+## Built-in default agents
+
+The default pack contains reusable engineering roles rather than project-specific workflow managers.
+
+**Control/discovery:** `lead`, `planner`, `oracle`, `explorer`, `librarian`.
+
+**Implementation:** `implementation-worker`, `backend-implementer`, `frontend-implementer`, `data-implementer`, `mobile-implementer`, `test-implementer`, `docs-implementer`, `ops-implementer`, `quality-implementer`, `senior-implementer`.
+
+**Review:** `code-quality-reviewer`, `requirements-reviewer`, `architecture-reviewer`, `security-reviewer`, `api-reviewer`, `backend-reviewer`, `frontend-reviewer`, `data-reviewer`, `mobile-reviewer`, `test-reviewer`, `docs-reviewer`, `ops-reviewer`.
+
+**Validation:** `validator`, `integration-validator`, `e2e-validator`.
+
+`openspec-manager` is intentionally not a default because the Harness already owns SDD/QuickContract normative truth. `github-manager` is also optional rather than built-in because generic engineering execution should not require a GitHub-specific write surface. Projects can add either normally when their workflow needs them.
+
+Unused agents incur no execution cost; routing only invokes the roles required for the current task.
+
+## Compose, add, override or remove agents
+
+A newly initialized project starts from:
+
+```jsonc
+{
+  "version": 1,
+  "extends": ["aeh:default"],
+  "activeProfile": "balanced",
+  "models": {},
+  "agents": {},
+  "routing": [],
+  "remove": { "agents": [] }
+}
+```
+
+Use the pack unchanged by leaving the overlay empty. Add a project agent by defining a new name:
+
+```jsonc
+{
+  "version": 1,
+  "extends": ["aeh:default"],
+  "agents": {
+    "payments-implementer": {
+      "role": "implementer",
+      "domains": ["payments"],
+      "execution": { "model": "@workhorse" },
+      "permissions": { "read": "allow", "write": "allow", "shell": "allow" },
+      "outputContract": "implementer"
+    }
+  },
+  "routing": [
+    {
+      "id": "payments",
+      "priority": 90,
+      "when": { "intent": "implement", "domains": ["payments"] },
+      "use": "payments-implementer"
+    }
+  ]
+}
+```
+
+Override an inherited agent or model by specifying only the fields that change:
+
+```jsonc
+{
+  "version": 1,
+  "extends": ["aeh:default"],
+  "models": {
+    "workhorse": { "provider": "opencode-go", "model": "deepseek-v4-flash" }
+  },
+  "agents": {
+    "backend-implementer": {
+      "temperature": 0.05,
+      "description": "Project-specific backend charter"
+    }
+  }
+}
+```
+
+Remove inherited roles with minimatch patterns:
+
+```jsonc
+{
+  "version": 1,
+  "extends": ["aeh:default"],
+  "remove": {
+    "agents": ["mobile-*", "ops-reviewer"]
+  }
+}
+```
+
+Agent removal cascades through inherited routing/recovery/council references. Routing rules are keyed by `id`, so a project can replace an inherited rule by defining the same `id`. `extends` is ordered and also supports relative JSONC files, enabling organization or team layers between `aeh:default` and the project overlay. Circular extension chains are rejected.
 
 ## Brain + workhorse configuration
 
-The default template demonstrates the intended separation:
+The built-in pack demonstrates the intended separation:
 
 ```jsonc
 {
@@ -61,35 +154,13 @@ The default template demonstrates the intended separation:
       "provider": "opencode-go",
       "model": "deepseek-v4-flash"
     }
-  },
-  "agents": {
-    "planner": {
-      "role": "planner",
-      "execution": { "model": "@brain" }
-    },
-    "implementation-worker": {
-      "role": "implementer",
-      "execution": { "model": "@workhorse" }
-    },
-    "quality-implementer": {
-      "role": "implementer",
-      "execution": { "model": "@workhorse" }
-    },
-    "senior-implementer": {
-      "role": "implementer",
-      "execution": { "model": "@brain" }
-    },
-    "oracle": {
-      "role": "escalation",
-      "execution": { "model": "@brain" }
-    }
   }
 }
 ```
 
 `runtime` answers **which CLI executes**, `model` answers **which model**, the logical agent answers **which engineering role**, and `nativeAgent` optionally selects an agent inside a runtime such as OpenCode.
 
-OpenCode native-agent selection is guaranteed through `direct`/`podman`, which execute `opencode run --agent`. Paseo remains the preferred cross-provider/session control plane when provider/model selection and visible child sessions are required. A custom Paseo provider can opt into `nativeAgentViaPaseo` if it explicitly supports that mapping.
+OpenCode native-agent selection is guaranteed through `direct`/`podman`, which execute `opencode run --agent`. Native runtime agents are intentionally project-configurable rather than required by the generic default pack. Paseo remains the preferred cross-provider/session control plane when provider/model selection and visible child sessions are required. A custom Paseo provider can opt into `nativeAgentViaPaseo` if it explicitly supports that mapping.
 
 ## Agent topology commands
 
@@ -98,7 +169,7 @@ aeh agents compile
 aeh agents check
 aeh agents list
 aeh agents profiles
-aeh agents show implementation-worker
+aeh agents show backend-implementer
 aeh agents route --intent implement --domain backend security
 aeh agents validate-output architecture-reviewer --file reviewer.json
 aeh agents parallelism CHANGE-142 --plan planner-output.json
@@ -159,6 +230,10 @@ note     =   1 point  = DebtScore 1/3
 
 The review lifecycle continues until the Final Quality Gate passes. `maxRemediationRounds` is accepted only for backward-compatible configuration parsing and is ignored by the convergence engine. Stagnation, regression and repeated quality-state sequences trigger stronger agents/models, diagnosis and autonomous implementation replanning rather than routine human approval.
 
+## Self-hosting
+
+This repository itself contains a versioned `.harness/project.yaml` and `.harness/agents.source.jsonc`. The latter extends `aeh:default` and adds a `harness-reviewer` for control-plane changes. Generated topology, runs, reports, findings, seals and provenance are ignored so dogfooding does not pollute source control.
+
 ## Existing capabilities
 
 The Harness also includes requirement traceability, SHA-256 sealing, Paseo/OpenCode and Podman execution, Reqnroll/Gherkin, Graphify, OPA, OpenAPI, Opengrep, Trivy, Playwright/Pact adapters, bounded pre-review deterministic repair, engineering evals, OTLP telemetry, memory benchmarks and SLSA/in-toto/Cosign provenance.
@@ -168,6 +243,7 @@ The Harness also includes requirement traceability, SHA-256 sealing, Paseo/OpenC
 - Human/lead owns intent and product/architecture decisions that cannot be derived from authoritative artifacts.
 - Git/SDD/TaskContracts/QuickContracts define normative truth.
 - Agent topology defines who may act, through which runtime/model and with which capabilities.
+- Built-in agent defaults are policy inputs, not hidden authority; project layers can replace or remove them explicitly.
 - Workers do not own acceptance criteria.
 - Deterministic evidence outranks agent summaries.
 - The Final Quality Gate outranks reviewer optimism.
