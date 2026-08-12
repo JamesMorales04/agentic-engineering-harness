@@ -22,6 +22,7 @@ import { recordEvent } from "../telemetry/events.js";
 import { extractUsageMetrics } from "../metrics/usage.js";
 import { buildRunMetrics, countHumanInterventions } from "../metrics/runMetrics.js";
 import { deliveryWorkspacePath } from "../delivery/handoff.js";
+import { verifyGithubIssueDrift } from "../issues/intake.js";
 
 export interface TaskRunResult {
   taskId: string;
@@ -40,6 +41,10 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
   const effectiveContract = workspaceRoot === controlRoot ? contract : await loadTaskContract(workspaceRoot, contract.task.id, config);
   const startedMs = Date.now(); const startedAt = new Date(startedMs).toISOString();
 
+  const issueDrift = await verifyGithubIssueDrift(controlRoot, config, effectiveContract);
+  if (!issueDrift.ok) throw new Error(issueDrift.message);
+  if (effectiveContract.issue) await recordEvent(controlRoot, config, "harness.issue.drift-check", { taskId: effectiveContract.task.id, issue: effectiveContract.issue.number, repository: effectiveContract.issue.repository, ok: true, contentSha256: effectiveContract.issue.contentSha256 });
+
   if (effectiveContract.mode === "quick") {
     const quick = validateQuickTaskContract(config, effectiveContract);
     if (!quick.ok) throw new Error(`QuickContract validation failed before delegation:\n${quick.issues.map((item) => `- ${item}`).join("\n")}\nEscalate this change to SDD/spec mode.`);
@@ -48,7 +53,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     if (!trace.ok) throw new Error(`SDD validation failed before delegation:\n${[...trace.missing, ...trace.issues].map((item) => `- ${item}`).join("\n")}`);
   }
 
-  await recordEvent(controlRoot, config, "harness.run.start", { taskId: effectiveContract.task.id, mode: effectiveContract.mode ?? "spec", workspaceRoot: workspaceRoot === controlRoot ? undefined : workspaceRoot });
+  await recordEvent(controlRoot, config, "harness.run.start", { taskId: effectiveContract.task.id, mode: effectiveContract.mode ?? "spec", workspaceRoot: workspaceRoot === controlRoot ? undefined : workspaceRoot, issue: effectiveContract.issue ? { repository: effectiveContract.issue.repository, number: effectiveContract.issue.number } : undefined });
   if (workspaceRoot === controlRoot) await sealTask(controlRoot, config, effectiveContract);
   else {
     const seal = await verifyTaskSeal(workspaceRoot, effectiveContract, config.validation?.requireSeal ?? true);
