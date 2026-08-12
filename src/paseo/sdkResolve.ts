@@ -1,3 +1,4 @@
+import type { Dirent } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -145,7 +146,7 @@ async function resolvePackagePhysically(installRoot: string, diagnostics: string
       return entry;
     }
 
-    let children: Awaited<ReturnType<typeof fs.readdir>>;
+    let children: Dirent[];
     try {
       children = await fs.readdir(next.dir, { withFileTypes: true });
     } catch {
