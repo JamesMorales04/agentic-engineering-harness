@@ -1,115 +1,141 @@
 # Agentic Engineering Harness
 
-An OSS-first, reusable engineering control layer for **spec-driven, multi-agent software delivery with deterministic gates**.
+An **OSS-first, zero-mandatory-SaaS engineering control layer** for using coding agents without treating their output as trusted.
 
-The harness is designed around one principle:
+```text
+Human -> Codex/lead -> SDD + Gherkin -> frozen TaskContract
+      -> worker (Paseo -> OpenCode, or Podman -> OpenCode)
+      -> deterministic validators -> finite repair loop -> lead review
+```
 
-> **LLMs propose and modify. Deterministic systems decide whether the result is acceptable.**
+The harness separates normative truth (Git/SDD), structural truth (Graphify), historical memory (Engram, advisory) and executable truth (tests/policies/security/contracts).
 
-The reference workflow uses:
+## Status: v0.2.5
 
-- **Paseo** as the multi-agent runtime/control plane.
-- **Codex** as lead engineer, planner, reviewer, and semantic authority.
-- **OpenCode** with a lower-cost model as implementation workhorse.
-- **SDD** artifacts to make intent explicit and versioned.
-- **Gherkin/BDD** for executable business acceptance criteria.
-- **Engram** as the initial persistent memory backend, behind an adapter.
-- **Graphify** as structural code intelligence, behind an adapter.
-- **OPA** for policy-as-code.
-- Deterministic build/test/security/architecture/diff gates.
-- **OpenTelemetry-compatible tracing boundaries** and local engineering evals.
+Implemented:
 
-Product-specific policies, requirements, examples and domain knowledge belong in each consumer repository rather than in this reusable harness.
+- end-to-end requirement traceability across proposal/spec/design/tasks/Gherkin/TaskContract;
+- automatic TaskContract generation and SHA-256 sealing;
+- adapter-based deterministic validator registry;
+- automatic Reqnroll/Gherkin execution for .NET projects;
+- Paseo -> OpenCode worker execution with configurable provider/model;
+- optional direct Podman/OpenCode executor with sealed artifacts read-only;
+- finite structured repair loop;
+- Graphify before/after snapshots, stale-graph detection and impact gates;
+- Opengrep, Trivy, Playwright, OpenAPI and Pact/custom adapters;
+- OPA supplied with real dependency/schema diff evidence;
+- machine-readable reports, run artifacts and repair packets.
 
-## Status
+See [docs/V0.2.md](docs/V0.2.md).
 
-`v0.1` is an executable foundation. It provides:
-
-- `engineering-harness init`
-- `engineering-harness doctor`
-- `engineering-harness sdd new`
-- `engineering-harness sdd validate`
-- `engineering-harness verify`
-- project/task schemas
-- reusable policies and presets
-- provider abstractions for Paseo, Engram and Graphify
-- deterministic diff-scope and frozen-file gates
-- command-based validation gates
-- machine-readable validation reports
-- reusable agent skills
-
-The integrations are intentionally adapter-based so Engram can later be replaced by Cognee/Graphiti and Graphify can be replaced by another structural intelligence provider without changing the SDD or validation core.
-
-## Quick start
+## Development
 
 ```bash
 npm install
+npm run check
 npm run build
-npm link
-
-cd /path/to/project
-engineering-harness init
-engineering-harness doctor
 ```
 
-Create an SDD change:
+## Consumer bootstrap
 
 ```bash
-engineering-harness sdd new CHANGE-142 --title "Location-scoped authorization"
+aeh init /path/to/repo
+cd /path/to/repo
+aeh doctor
 ```
 
-After the spec/design/tasks and TaskContract exist, cryptographically freeze the normative artifacts before delegation:
+## SDD
 
 ```bash
-engineering-harness seal CHANGE-142
+aeh sdd new CHANGE-142 --title "Location-scoped authorization"
+aeh sdd validate CHANGE-142
 ```
 
-After implementation:
+`aeh sdd new` creates the five SDD artifacts plus `.harness/contracts/CHANGE-142.yaml`. `sdd validate` requires every canonical requirement ID to be present in proposal, spec, design, Gherkin, tasks, TaskContract and a known validator mapping.
+
+## Verify only
 
 ```bash
-engineering-harness verify CHANGE-142
+aeh seal CHANGE-142
+aeh verify CHANGE-142
 ```
 
 The report is written to `.harness/reports/CHANGE-142.json`.
 
+## Full run
+
+```bash
+aeh run CHANGE-142
+```
+
+Default orchestration:
+
+```yaml
+orchestration:
+  provider: paseo
+  worker:
+    provider: opencode
+    model: your-provider/your-workhorse-model
+    maxRepairAttempts: 2
+```
+
+The harness launches the worker through Paseo, waits for it, validates the actual diff, converts FAIL checks into a structured repair packet, sends that evidence back to the same worker and stops after the configured repair budget.
+
+For direct process isolation instead:
+
+```yaml
+orchestration:
+  provider: podman
+security:
+  sandbox:
+    provider: podman
+    image: your-opencode-worker-image
+```
+
+Podman mounts the repository RW and overlays the TaskContract, seal and SDD sources RO. Credentials/environment are not copied implicitly; pass only what the worker actually needs through deliberate Podman arguments.
+
+## Validators
+
+| Adapter | Purpose |
+|---|---|
+| `gherkin` | Reqnroll/Gherkin acceptance or a custom Gherkin command |
+| `graphify` | structural before/after diff and blast-radius constraints |
+| `opengrep` | local SAST |
+| `trivy` | vulnerability/misconfiguration/secret scanning |
+| `playwright` | browser/E2E command |
+| `openapi` | built-in JSON/YAML backward compatibility checks |
+| `pact` | explicit consumer-contract command |
+| `command` | arbitrary deterministic project command |
+
+```yaml
+validation:
+  validators:
+    - id: acceptance
+      adapter: gherkin
+      required: true
+    - id: api-compat
+      adapter: openapi
+      required: true
+      options:
+        baseline: contracts/openapi-baseline.json
+        current: artifacts/openapi-current.json
+```
+
+Missing optional external tools yield WARN; required tools that cannot run yield FAIL. If an installed tool reports defects, the result is FAIL regardless of whether its availability was optional.
+
+## Graphify
+
+The harness consumes `graphify-out/graph.json`; it does not invent a graph-building terminal command. Refresh the graph through Graphify's assistant skill or configure a valid project-specific `codeIntelligence.refreshCommand`. The harness then seals before/after snapshots and can detect a stale graph when source files changed but the graph hash did not.
+
 ## Trust model
 
-The recommended authority chain is:
-
-```text
-Human
-  ↓
-Codex (semantic / architecture authority)
-  ↓
-Frozen TaskContract
-  ↓
-OpenCode worker(s) (implementation only)
-  ↓
-Deterministic Harness (gate authority)
-  ↓
-Codex final semantic review
-  ↓
-Git / CI / release
-```
-
-Memory informs decisions but is **never authoritative**. Git-versioned specs, ADRs, contracts, executable acceptance criteria and the current codebase are the sources of truth.
-
-## Repository layout
-
-```text
-src/          CLI and core engine
-schemas/      machine-readable contracts
-presets/      reusable technology presets
-policies/     OPA/Rego policy examples
-skills/       agent instruction packs
-specs/        SDD documentation/templates
-evals/        repeatable engineering benchmark corpus
-docs/         architecture and operating model
-```
-
-## OSS-first constraint
-
-The project is designed so a private/commercial repository can use the harness without requiring a mandatory commercial-license dependency. SaaS services are optional. Model inference remains external to this project.
+- requirements/architecture belong to the lead agent and Git artifacts;
+- TaskContract + SDD inputs are sealed before delegation;
+- frozen files cannot be modified without failing validation;
+- workers do not own the acceptance criteria;
+- deterministic evidence outranks worker summaries;
+- repair prompts are generated from failed checks, not free-form model criticism;
+- final semantic acceptance remains with the lead/human.
 
 ## License
 

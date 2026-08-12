@@ -1,13 +1,9 @@
 # Paseo Integration
 
-Paseo is treated as a replaceable orchestration provider, not as part of the harness core.
+Paseo is the default orchestration control plane because an existing lead agent can spawn an OpenCode subagent in the same workspace and keep controlling it remotely.
 
-Recommended ownership model:
+The executor uses the scriptable flow `paseo run --background --quiet`, `paseo wait`, `paseo logs`, and `paseo send` for repairs. When the lead itself is a Paseo agent, Paseo supplies parent/workspace defaults automatically.
 
-```text
-Human → Codex lead → Paseo delegation → OpenCode worker(s) → Harness → Codex review
-```
+The lead remains responsible for architecture and final semantic review. Paseo is an execution/control primitive, not the source of engineering truth.
 
-Use one feature/worktree for tightly coupled work. Parallelize only genuinely independent workstreams. Do not create a swarm merely because multiple workers are available.
-
-Install the harness skills alongside Paseo's own orchestration skills. The lead-agent instructions should explicitly retain task ownership after delegation.
+For a directly container-isolated worker, configure `orchestration.provider: podman`. This trades Paseo child-session visibility for stronger process isolation. Advanced setups can instead configure a Paseo custom provider binary/wrapper around a containerized OpenCode CLI.
