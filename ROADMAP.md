@@ -37,6 +37,16 @@
 - [x] human-on-exception only for spec contradiction, missing product decision or external blocker
 - [x] quality trajectory and final state persisted in run telemetry
 
+## v0.4.13 — built-in default agent pack ✅
+- [x] package-owned `aeh:default` cross-project agent topology
+- [x] project topology layers with ordered `extends`
+- [x] partial model/runtime/agent/profile overrides
+- [x] additive project-specific agents and routing rules
+- [x] minimatch removal of inherited agents/models/runtimes/profiles/routing/councils
+- [x] cascading cleanup of removed agent references
+- [x] agent descriptions propagated as executable role charters
+- [x] Harness repository dogfoods its own `.harness/` configuration
+
 ## v0.5 — scale and governance
 - [ ] repeated-run eval dashboards/statistical confidence
 - [ ] signed organization policy bundles and inheritance
