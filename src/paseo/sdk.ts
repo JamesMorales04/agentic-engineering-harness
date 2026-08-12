@@ -1,9 +1,6 @@
-import fs from "node:fs/promises";
-import path from "node:path";
 import process from "node:process";
-import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import { runProcess } from "../utils/process.js";
+import { resolvePaseoSdkFromCli } from "./sdkResolve.js";
 
 export interface PaseoSdkAgentOptions {
   cwd: string;
@@ -157,6 +154,25 @@ async function withPaseoClient<T>(root: string, action: (client: PaseoSdkClient)
 }
 
 async function loadPaseoSdk(root: string): Promise<PaseoSdkModule> {
+  // Prefer the client bundled with the active Paseo CLI. Paseo currently ships
+  // @getpaseo/client as an exact-version dependency of @getpaseo/cli, while the
+  // client SDK is explicitly not API-stable yet. Loading the co-installed copy
+  // therefore avoids protocol/API drift between an independently resolved SDK
+  // and the daemon that the active CLI starts.
+  const bundled = await resolvePaseoSdkFromCli(root);
+  if (bundled.resolved) {
+    try {
+      const sdk = await import(pathToFileURL(bundled.resolved).href) as unknown as PaseoSdkModule;
+      if (typeof sdk.createPaseoClient === "function") return sdk;
+    } catch (error) {
+      bundled.diagnostics.push(`bundled import: ${String(error)}`);
+    }
+  }
+
+  // Compatibility fallback for installations that intentionally provide the
+  // SDK directly alongside AEH instead of through the Paseo CLI package. Keep
+  // the package specifier non-literal so TypeScript does not require this
+  // optional runtime package to be installed while compiling AEH.
   const packageName = "@getpaseo/client";
   let directError: unknown;
   try {
@@ -164,28 +180,9 @@ async function loadPaseoSdk(root: string): Promise<PaseoSdkModule> {
     if (typeof direct.createPaseoClient === "function") return direct;
   } catch (error) { directError = error; }
 
-  const located = await runProcess("command -v paseo", { cwd: root, timeoutMs: 15_000 });
-  const executable = located.exitCode === 0 ? located.stdout.trim().split(/\r?\n/).filter(Boolean).at(-1) : undefined;
-  if (executable) {
-    const real = await fs.realpath(executable).catch(() => executable);
-    for (const start of [...new Set([path.dirname(real), path.dirname(executable)])]) {
-      let current = start;
-      for (let depth = 0; depth < 10; depth += 1) {
-        try {
-          const resolver = createRequire(path.join(current, "__aeh_paseo_sdk_loader__.cjs"));
-          const resolved = resolver.resolve(packageName);
-          const bundled = await import(pathToFileURL(resolved).href) as unknown as PaseoSdkModule;
-          if (typeof bundled.createPaseoClient === "function") return bundled;
-        } catch { /* walk toward the managed npm installation root */ }
-        const parent = path.dirname(current);
-        if (parent === current) break;
-        current = parent;
-      }
-    }
-  }
-
+  const detail = bundled.diagnostics.length ? ` Resolution diagnostics: ${bundled.diagnostics.join("; ")}.` : "";
   throw new PaseoSdkUnavailableError(
-    `@getpaseo/client could not be resolved directly or from the managed Paseo CLI installation.${directError ? ` Direct import: ${String(directError)}` : ""}`,
+    `@getpaseo/client could not be resolved from the active Paseo CLI installation or directly.${detail}${directError ? ` Direct import: ${String(directError)}` : ""}`,
     { cause: directError }
   );
 }
