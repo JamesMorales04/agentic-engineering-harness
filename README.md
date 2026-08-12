@@ -1,32 +1,35 @@
 # Agentic Engineering Harness
 
-An **OSS-first, zero-mandatory-SaaS control layer** for spec-driven and bounded-quick multi-agent software engineering where LLM output is treated as untrusted until deterministic and quality gates accept it.
+An **OSS-first, zero-mandatory-SaaS control layer** for spec-driven, issue-driven and bounded-quick multi-agent software engineering where LLM output is treated as untrusted until deterministic and quality gates accept it.
 
 ```text
-Human -> lead/triage -> QUICK or SDD + Gherkin -> sealed contract
-      -> optional GitHub issue/branch + Paseo worktree handoff
+Natural-language request / GitHub issue
+      -> lead / issue intake / triage
+      -> QUICK or SDD + Gherkin -> sealed contract
+      -> optional GitHub branch + Paseo worktree handoff
       -> declarative agent routing -> runtime/model/selective MCPs
       -> deterministic validators -> autonomous quality convergence
       -> lead acceptance -> evals + telemetry + provenance
 ```
 
-## Status: v0.4.14
+## Status: v0.4.15
 
-v0.4.14 adds **selective MCP capabilities and opt-in issue/worktree delivery** on top of the built-in agent pack and autonomous quality workflow.
+v0.4.15 adds **existing GitHub issues as a first-class execution source** on top of v0.4.14's default agents, selective MCPs and issue/worktree delivery.
 
-- `aeh:default` supplies a portable cross-project agent topology;
-- projects may add, partially override or remove inherited agents/models/routing;
-- `@brain` / `@workhorse` aliases centralize model changes;
-- logical agents receive only the skills and MCPs they need;
-- Context7, Playwright and a read-only GitHub MCP are represented in the default project catalog; Sentry is available but disabled;
-- GitHub delivery writes are performed by deterministic Harness code, not by an LLM with write-capable MCP access;
-- `aeh sdd handoff` can create an issue, issue-linked branch and Paseo worktree workspace after SDD readiness + seal checks;
-- Paseo implementation/review/repair sessions reuse the task workspace automatically;
-- QUICK changes remain bounded/sealed; larger or riskier changes use SDD;
-- reviewer output is machine-validated, normalized and deduplicated;
-- deterministic evidence and the Final Quality Gate outrank agent optimism.
+- `aeh issue inspect/import/implement <number>` supports issue-native intake;
+- `aeh run --issue <number>` is the one-command execution alias;
+- an issue's title/body are frozen into a local snapshot with SHA-256 before implementation;
+- issue intake deterministically extracts likely scope/domains/risk and uses a read-only planner for non-trivial normalization;
+- the Harness materializes either a QuickContract or complete SDD/TaskContract, validates it and seals it;
+- the **existing issue is reused**, never recreated by issue-driven handoff;
+- issue-linked branches are reused when already present and created otherwise;
+- Paseo worktree delivery is reused automatically when enabled;
+- every issue-derived run verifies `ISSUE_DRIFT` before delegating work;
+- the sealed TaskContract/SDD remain normative during the run; the mutable remote issue remains source provenance;
+- `aeh:default` still supplies portable agents, profiles, skills and selective MCP capabilities;
+- deterministic evidence and the Final Quality Gate continue to outrank agent optimism.
 
-See [docs/V0.4.14.md](docs/V0.4.14.md), [docs/V0.4.13.md](docs/V0.4.13.md) and [docs/V0.4.12.md](docs/V0.4.12.md).
+See [docs/V0.4.15.md](docs/V0.4.15.md), [docs/V0.4.14.md](docs/V0.4.14.md), [docs/V0.4.13.md](docs/V0.4.13.md) and [docs/V0.4.12.md](docs/V0.4.12.md).
 
 ## Bootstrap
 
@@ -41,6 +44,79 @@ aeh agents check
 ```
 
 A project does **not** need to already contain `.harness/`. `aeh init` creates a thin `.harness/agents.source.jsonc` overlay extending the package-owned `aeh:default`, copies reusable skills into `.harness/skills`, creates runtime directories and compiles `.harness/generated/agents.json`.
+
+## Issue-driven workflow
+
+When the repository has an existing issue, you can start from that issue instead of manually creating an SDD first:
+
+```bash
+# Optional inspection only
+aeh issue inspect 142
+
+# Freeze and materialize the issue as QUICK or SPEC
+aeh issue import 142
+
+# Full intake -> optional branch/worktree -> implementation -> validation -> reviews
+aeh issue implement 142
+
+# Equivalent one-command alias
+aeh run --issue 142
+```
+
+A lead using the `engineering-workflow` skill should route natural language such as **“implement issue #142”** directly to `aeh issue implement 142`, including when the lead was started from Paseo mobile.
+
+### Intake semantics
+
+The issue pipeline is:
+
+```text
+GitHub issue #142
+      |
+      v
+fetch + freeze title/body + SHA-256
+      |
+      v
+extract scope/domains/risk/acceptance
+      |
+      +--> bounded low-risk -> QuickContract
+      |
+      `--> non-trivial -> read-only planner normalization -> SDD/TaskContract
+                                            |
+                                            v
+                                    deterministic validation
+                                            |
+                                            v
+                                           seal
+                                            |
+                                            v
+                                bind existing issue to delivery
+                                            |
+                                            v
+                                branch/worktree + aeh run
+```
+
+The planner may derive implementation detail from repository evidence, but it may not invent a product decision. Genuine missing product decisions become `REQUIRES_PRODUCT_DECISION`; contradictory authoritative intent becomes `SPEC_CONTRADICTION`.
+
+The frozen issue snapshot is stored under `.harness/issues/GH-<number>.json` and referenced by the TaskContract. Issue-derived task IDs use `GH-<number>`.
+
+### Issue drift
+
+For issue-derived work, title/body form the normative remote input and are hashed. Labels/comments may help triage but are not part of the content hash.
+
+Before each run, the Harness re-fetches the issue and compares title/body against the frozen SHA-256:
+
+```text
+same hash    -> run normally
+changed hash -> ISSUE_DRIFT
+```
+
+To explicitly accept a changed issue before implementation:
+
+```bash
+aeh issue import 142 --refresh
+```
+
+If a Paseo implementation workspace already exists, refresh is guarded and requires explicit `--force` so revised intent cannot silently replace an active implementation contract.
 
 ## Default agent pack
 
@@ -203,11 +279,20 @@ The default pack can use these package skills:
 
 Framework-specific skills belong in project overlays rather than the universal pack.
 
-## Optional SDD -> GitHub -> Paseo delivery
+## Optional SDD / issue -> GitHub -> Paseo delivery
 
-Remote delivery is **disabled by default**.
+Remote delivery is **disabled by default**, while read-only issue intake is enabled by default.
 
 ```yaml
+workflow:
+  issueIntake:
+    enabled: true
+    snapshotDir: .harness/issues
+    verifyDriftOnRun: true
+    requireOpen: true
+    plannerAgent: planner
+    autoHandoff: true
+
 delivery:
   stateDir: .harness/delivery
   github:
@@ -222,7 +307,7 @@ delivery:
     worktreeSlugPattern: gh-{issue}-{slug}
 ```
 
-Lifecycle:
+For a new local spec:
 
 ```bash
 aeh sdd new CHANGE-142 --title "Add observable behavior"
@@ -234,11 +319,15 @@ aeh sdd handoff CHANGE-142
 aeh run CHANGE-142
 ```
 
-`aeh sdd new` captures the current branch as `git.originatingBranch` when available but performs no remote write.
+For an existing issue:
 
-`aeh sdd handoff` rejects incomplete traceability, unresolved template `TODO`s and invalid/missing seals (when seals are required). With GitHub enabled it reads `GH_TOKEN`/configured token env **without persisting it**, creates one issue, creates `feature/gh-<issue>-<slug>` from the captured originating branch and checkpoints each successful step in `.harness/delivery/<task>.json`.
+```bash
+aeh issue implement 142
+```
 
-With Paseo delivery enabled it creates a managed `worktree` workspace for that branch. Subsequent Paseo implementation, review and repair launches use `--workspace <id>` automatically.
+The issue intake seeds the delivery record with issue #142, so handoff cannot create a duplicate issue. If the configured issue branch already exists, the Harness reuses it; otherwise it creates one from the captured originating branch.
+
+With Paseo delivery enabled it creates a managed `worktree` workspace for that branch. Subsequent implementation, review and repair launches reuse that workspace automatically.
 
 The delivery record is resumable:
 
@@ -246,7 +335,7 @@ The delivery record is resumable:
 initialized -> issue-created -> branch-created -> workspace-created -> ready
 ```
 
-The GitHub issue is a **delivery mirror**. The sealed local SDD/TaskContract remain normative by default.
+The control checkout owns config/reports/telemetry/delivery state; the worktree owns code/diff/build/tests/Graphify/remediation. Sealed task context is materialized into the worktree before execution.
 
 ## Agent topology commands
 
@@ -296,7 +385,8 @@ The lifecycle continues until the Final Quality Gate passes. Stagnation, regress
 ## Trust model
 
 - Human/lead owns intent and product decisions that cannot be derived from authoritative artifacts.
-- Git/SDD/TaskContracts/QuickContracts define normative truth.
+- A GitHub issue can be an input source; its frozen snapshot becomes provenance for a sealed QUICK/SDD contract.
+- Once frozen, the sealed TaskContract/SDD defines normative truth for the active run; remote issue edits trigger `ISSUE_DRIFT` instead of silently changing intent.
 - Agent topology defines who may act, through which runtime/model and with which selected skills/MCPs.
 - Built-in defaults are policy inputs, not hidden authority; project layers can replace/remove them.
 - Workers do not own acceptance criteria.
@@ -304,7 +394,6 @@ The lifecycle continues until the Final Quality Gate passes. Stagnation, regress
 - The Final Quality Gate outranks reviewer optimism.
 - Memory informs but never authorizes.
 - Graphify informs structural impact/parallelism; it does not define desired architecture.
-- GitHub issue state is a delivery mirror unless a project explicitly adopts another source hierarchy.
 - Human interaction remains an exception path, not a remediation cadence.
 
 ## Existing capabilities
