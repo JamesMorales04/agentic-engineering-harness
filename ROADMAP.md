@@ -9,37 +9,23 @@
 ## v0.3 — measurement and provenance ✅
 - [x] engineering evals, run metrics, OTLP, memory benchmarks, mutation/property adapters, SBOM/Cosign/in-toto/SLSA and release hardening
 
-## v0.4.1 — agent registry + model aliases ✅
-- [x] logical agent/runtime/model separation
-- [x] centralized `@brain` / `@workhorse` aliases
+## v0.4.1–v0.4.8 — agent topology and governance ✅
+- [x] agent/model/runtime separation, profiles, routing, output contracts, recovery, drift gates, permissions, Graphify parallelism and finding dedup
 
-## v0.4.2 — profiles + JSONC compiler ✅
-- [x] JSONC source topology
-- [x] profile overrides and deterministic generated runtime
+## v0.4.9 — QuickContract + triage ✅
+- [x] deterministic QUICK/SPEC classification from lead-supplied evidence
+- [x] sealed QuickContracts with bounded scope and non-bypassable safety constraints
 
-## v0.4.3 — routing + output contracts ✅
-- [x] intent/domain/file/risk routing
-- [x] planner/implementer/reviewer/validator/recovery output schemas
+## v0.4.10 — automatic review lifecycle ✅
+- [x] routed reviewer wave after deterministic PASS
+- [x] structured reviewer output, finding dedup and blocking-severity policy
+- [x] bounded remediation + deterministic revalidation
+- [x] final lead semantic acceptance
 
-## v0.4.4 — failure taxonomy + recovery policy ✅
-- [x] canonical failure classification
-- [x] data-driven bounded retry/reroute/escalation
-
-## v0.4.5 — prompt/skill/config drift gates ✅
-- [x] reference and generated-runtime audits
-
-## v0.4.6 — permissions/capabilities ✅
-- [x] permission model
-- [x] runtime capability validation
-- [x] OpenCode native-agent support through direct/Podman transport
-
-## v0.4.7 — Graphify-assisted parallelism ✅
-- [x] dependency/scope scheduling
-- [x] conservative structural-community conflicts
-
-## v0.4.8 — finding normalization/dedup ✅
-- [x] standardized reviewer finding schema
-- [x] deterministic adjacent/overlap dedup with severity preservation
+## v0.4.11 — engineering workflow skill ✅
+- [x] natural-language entry protocol for Codex/Paseo leads
+- [x] QUICK/SPEC workflow selection and mobile-friendly operation
+- [x] self-modification controller freeze rule
 
 ## v0.5 — scale and governance
 - [ ] repeated-run eval dashboards/statistical confidence
