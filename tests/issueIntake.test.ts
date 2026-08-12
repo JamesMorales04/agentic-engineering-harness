@@ -63,6 +63,23 @@ describe("GitHub issue intake", () => {
     await expect(prepareGithubIssueTask(repo, config, 77, { usePlanner: false })).rejects.toThrow(/ISSUE_DRIFT/);
   });
 
+  it("refreshes a changed issue before workspace creation without changing its delivery identity", async () => {
+    const repo = await root();
+    mockIssue({ number: 88, title: "Update copy", labels: ["docs"], body: "## Acceptance Criteria\n- README says Alpha\n\n## Files\n- `README.md`" });
+    const first = await prepareGithubIssueTask(repo, config, 88, { usePlanner: false });
+    const originalHash = first.contract.issue!.contentSha256;
+    const originalRecord = await loadDeliveryRecord(repo, config, "GH-88");
+
+    mockIssue({ number: 88, title: "Update copy", labels: ["docs"], body: "## Acceptance Criteria\n- README says Beta\n\n## Files\n- `README.md`", updated: "2026-08-12T01:00:00Z" });
+    const refreshed = await prepareGithubIssueTask(repo, config, 88, { refresh: true, usePlanner: false });
+    const refreshedRecord = await loadDeliveryRecord(repo, config, "GH-88");
+
+    expect(refreshed.contract.issue!.contentSha256).not.toBe(originalHash);
+    expect(refreshedRecord?.github?.issueNumber).toBe(88);
+    expect(refreshedRecord?.createdAt).toBe(originalRecord?.createdAt);
+    expect((await verifyTaskSeal(repo, refreshed.contract, true)).status).toBe("PASS");
+  });
+
   it("hashes only normative title/body content, not mutable labels", () => {
     expect(issueContentSha256("Title", "Body")).toBe(issueContentSha256("Title", "Body"));
     expect(issueContentSha256("Title", "Body")).not.toBe(issueContentSha256("Title", "Body changed"));
