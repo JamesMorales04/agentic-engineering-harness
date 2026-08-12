@@ -4,7 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { resolveToolchain, profileTools } from "../src/toolchain/resolve.js";
 import { loadToolchainConfig } from "../src/toolchain/config.js";
-import { compileToolchain } from "../src/toolchain/setup.js";
+import { compileToolchain, setupToolchain } from "../src/toolchain/setup.js";
 import { runProcess, clearToolchainEnvCache } from "../src/utils/process.js";
 import type { HarnessProjectConfig } from "../src/core/types.js";
 
@@ -25,6 +25,8 @@ async function fixture(): Promise<string> {
   return root;
 }
 
+async function fileExists(file: string): Promise<boolean> { try { await fs.access(file); return true; } catch { return false; } }
+
 describe("toolchain", () => {
   it("resolves active capabilities plus transitive dependencies", async () => {
     const root = await fixture(); const config = await loadToolchainConfig(root, project); const resolved = await resolveToolchain(root, project, config);
@@ -38,12 +40,27 @@ describe("toolchain", () => {
     expect(profileTools(config, "agents")).toEqual(expect.arrayContaining(["git", "node", "paseo"]));
   });
 
+  it("respects project-pinned runtime versions before locking", async () => {
+    const root = await fixture(); await fs.writeFile(path.join(root, ".node-version"), "22.18.3\n");
+    const config = await loadToolchainConfig(root, project); const resolved = await resolveToolchain(root, project, config);
+    expect(resolved.tools.find((tool) => tool.name === "node")?.version).toBe("22.18.3");
+  });
+
   it("compiles locked exact versions into the generated mise layer", async () => {
     const root = await fixture(); await fs.writeFile(path.join(root, ".harness", "toolchain.lock.json"), JSON.stringify({ version: 1, generatedAt: new Date().toISOString(), profile: "auto", tools: { node: { command: "node", provisioning: "mise", source: "node", requestedVersion: "22", resolvedVersion: "22.99.1" }, paseo: { command: "paseo", provisioning: "mise", source: "npm:@getpaseo/cli", requestedVersion: "latest", resolvedVersion: "9.9.9" } } }));
     await compileToolchain(root, project);
     const generated = await fs.readFile(path.join(root, ".config", "mise", "conf.d", "aeh.toml"), "utf8");
     expect(generated).toContain('node = "22.99.1"');
     expect(generated).toContain('"npm:@getpaseo/cli" = "9.9.9"');
+  });
+
+  it("keeps setup dry-run side-effect free", async () => {
+    const root = await fixture(); const result = await setupToolchain(root, project, { dryRun: true });
+    expect(result.dryRun).toBe(true);
+    expect(result.installed.length).toBeGreaterThan(0);
+    expect(await fileExists(path.join(root, ".config", "mise", "conf.d", "aeh.toml"))).toBe(false);
+    expect(await fileExists(path.join(root, ".harness", "toolchain.lock.json"))).toBe(false);
+    expect(await fileExists(path.join(root, ".harness", "toolchain.state.json"))).toBe(false);
   });
 
   it("injects machine-local toolchain bin paths without shell activation", async () => {
