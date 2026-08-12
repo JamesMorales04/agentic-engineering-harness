@@ -126,6 +126,10 @@ delivery:
     assignTokenOwner: true
     labels: []
     branchPattern: feature/gh-{issue}-{slug}
+    # When GitHub delivery is enabled, accepted issue tasks can be committed/pushed
+    # by deterministic Harness code and linked through a draft PR.
+    finalizeOnAcceptance: true
+    pullRequestDraft: true
   paseo:
     enabled: false
     createWorkspace: true
