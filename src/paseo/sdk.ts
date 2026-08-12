@@ -170,10 +170,13 @@ async function loadPaseoSdk(root: string): Promise<PaseoSdkModule> {
   }
 
   // Compatibility fallback for installations that intentionally provide the
-  // SDK directly alongside AEH instead of through the Paseo CLI package.
+  // SDK directly alongside AEH instead of through the Paseo CLI package. Keep
+  // the package specifier non-literal so TypeScript does not require this
+  // optional runtime package to be installed while compiling AEH.
+  const packageName = "@getpaseo/client";
   let directError: unknown;
   try {
-    const direct = await import("@getpaseo/client") as unknown as PaseoSdkModule;
+    const direct = await import(packageName) as unknown as PaseoSdkModule;
     if (typeof direct.createPaseoClient === "function") return direct;
   } catch (error) { directError = error; }
 
