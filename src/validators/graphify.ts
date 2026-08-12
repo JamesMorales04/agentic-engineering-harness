@@ -5,13 +5,17 @@ import { minimatch } from "minimatch";
 import type { HarnessProjectConfig, ValidationCheck } from "../core/types.js";
 import type { ValidationContext } from "./types.js";
 
+interface GraphEdge { from: string; to: string; relation: string; }
 interface GraphSnapshot {
   createdAt: string;
   source: string;
   sourceHash: string;
   edges: string[];
+  edgePairs: GraphEdge[];
   nodes: string[];
+  nodeFiles: Record<string, string>;
   communities: Record<string, string>;
+  centrality: Record<string, number>;
 }
 
 export async function snapshotGraph(root: string, config: HarnessProjectConfig, taskId: string, phase: "before" | "after"): Promise<string | undefined> {
@@ -53,7 +57,7 @@ export async function runGraphifyValidator(context: ValidationContext): Promise<
   const allowed = context.contract.impact?.allowedCommunities ?? [];
   if (allowed.length) {
     const touched = new Set<string>();
-    for (const edge of addedEdges) for (const node of after.nodes) if (edge.includes(node) && after.communities[node]) touched.add(after.communities[node]);
+    for (const edge of after.edgePairs ?? []) if (!before.edges.includes(`${edge.from} --${edge.relation}--> ${edge.to}`)) { if (after.communities[edge.from]) touched.add(after.communities[edge.from]); if (after.communities[edge.to]) touched.add(after.communities[edge.to]); }
     for (const community of touched) if (!allowed.includes(community)) violations.push(`community:${community}`);
   }
   return { id: context.spec.id, category: "architecture", status: violations.length ? "FAIL" : "PASS", message: violations.length ? `Graphify detected ${violations.length} structural policy violation(s).` : `Graphify structural diff accepted (${addedEdges.length} new edge(s)).`, details: { addedEdges, addedNodes, violations } };
@@ -61,8 +65,10 @@ export async function runGraphifyValidator(context: ValidationContext): Promise<
 
 function normalizeGraph(raw: unknown, source: string, sourceHash: string): GraphSnapshot {
   const labels = new Map<string, string>();
+  const nodeFiles: Record<string, string> = {};
   const communities: Record<string, string> = {};
   const edges = new Set<string>();
+  const edgePairs = new Map<string, GraphEdge>();
   const nodes = new Set<string>();
   const visitNodes = (value: unknown): void => {
     if (!value || typeof value !== "object") return;
@@ -74,6 +80,8 @@ function normalizeGraph(raw: unknown, source: string, sourceHash: string): Graph
     if (label) nodes.add(label);
     const community = scalar(object.community ?? object.community_id ?? object.cluster);
     if (label && community) communities[label] = community;
+    const file = scalar(object.file ?? object.path ?? object.filepath ?? object.file_path ?? object.source_file ?? object.sourcePath);
+    if (label && file && looksLikePath(file)) nodeFiles[label] = normalizePath(file);
     Object.values(object).forEach(visitNodes);
   };
   visitNodes(raw);
@@ -87,11 +95,16 @@ function normalizeGraph(raw: unknown, source: string, sourceHash: string): Graph
       const from = labels.get(sourceId) ?? sourceId;
       const to = labels.get(targetId) ?? targetId;
       const relation = scalar(object.relation ?? object.type ?? object.kind ?? object.label) ?? "relates";
-      nodes.add(from); nodes.add(to); edges.add(`${from} --${relation}--> ${to}`);
+      nodes.add(from); nodes.add(to); const text = `${from} --${relation}--> ${to}`; edges.add(text); edgePairs.set(text, { from, to, relation });
     }
     Object.values(object).forEach(visitEdges);
   };
   visitEdges(raw);
-  return { createdAt: new Date().toISOString(), source, sourceHash, edges: [...edges].sort(), nodes: [...nodes].sort(), communities };
+  const adjacency = new Map<string, Set<string>>(); const add = (from: string, to: string): void => { const set = adjacency.get(from) ?? new Set<string>(); set.add(to); adjacency.set(from, set); };
+  for (const edge of edgePairs.values()) { add(edge.from, edge.to); add(edge.to, edge.from); }
+  const denominator = Math.max(1, nodes.size - 1); const centrality: Record<string, number> = {}; for (const node of nodes) centrality[node] = (adjacency.get(node)?.size ?? 0) / denominator;
+  return { createdAt: new Date().toISOString(), source, sourceHash, edges: [...edges].sort(), edgePairs: [...edgePairs.values()].sort((a, b) => `${a.from}:${a.relation}:${a.to}`.localeCompare(`${b.from}:${b.relation}:${b.to}`)), nodes: [...nodes].sort(), nodeFiles, communities, centrality };
 }
 function scalar(value: unknown): string | undefined { return typeof value === "string" || typeof value === "number" ? String(value) : undefined; }
+function looksLikePath(value: string): boolean { return /[\\/]/.test(value) || /\.[A-Za-z0-9]{1,8}$/.test(value); }
+function normalizePath(value: string): string { return value.replaceAll("\\", "/").replace(/^\.\//, ""); }
