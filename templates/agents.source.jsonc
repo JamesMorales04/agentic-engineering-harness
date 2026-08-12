@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "extends": ["aeh:default"],
+  "extends": ["aeh:orchestration"],
   "activeProfile": "balanced",
 
   // Override a built-in model alias once and every agent using it follows.
