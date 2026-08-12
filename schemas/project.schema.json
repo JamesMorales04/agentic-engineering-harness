@@ -15,70 +15,46 @@
         "reviews": {
           "type": "object",
           "properties": {
-            "enabled": { "type": "boolean" },
-            "reviewQuick": { "type": "boolean" },
-            "leadAcceptance": { "type": "boolean" },
-            "leadAcceptanceQuick": { "type": "boolean" },
+            "enabled": { "type": "boolean" }, "reviewQuick": { "type": "boolean" }, "leadAcceptance": { "type": "boolean" }, "leadAcceptanceQuick": { "type": "boolean" },
             "maxRemediationRounds": { "type": "integer", "minimum": 0, "deprecated": true },
             "blockingSeverities": { "type": "array", "deprecated": true, "items": { "enum": ["critical", "high", "medium", "low", "note"] } },
-            "quality": {
-              "type": "object",
-              "properties": {
-                "severityPoints": {
-                  "type": "object",
-                  "properties": {
-                    "critical": { "type": "integer", "minimum": 0 }, "high": { "type": "integer", "minimum": 0 }, "medium": { "type": "integer", "minimum": 0 }, "low": { "type": "integer", "minimum": 0 }, "note": { "type": "integer", "minimum": 0 }
-                  }
-                }
-              }
-            },
-            "convergence": {
-              "type": "object",
-              "properties": {
-                "minimumDebtPointImprovement": { "type": "integer", "minimum": 0 },
-                "stagnationWindow": { "type": "integer", "minimum": 1 },
-                "cycleDetection": { "type": "boolean" },
-                "regressionDetection": { "type": "boolean" }
-              }
-            },
-            "finalQualityGate": {
-              "type": "object",
-              "properties": {
-                "maxBySeverity": {
-                  "type": "object",
-                  "properties": {
-                    "critical": { "type": "integer", "minimum": 0 }, "high": { "type": "integer", "minimum": 0 }, "medium": { "type": "integer", "minimum": 0 }, "low": { "type": "integer", "minimum": 0 }, "note": { "type": "integer", "minimum": 0 }
-                  }
-                },
-                "maxDebtPoints": { "type": "integer", "minimum": 0 }
-              }
-            },
-            "escalation": {
-              "type": "object",
-              "properties": {
-                "criticalStartStage": { "type": "integer", "minimum": 0 },
-                "replanResumeStage": { "type": "integer", "minimum": 0 },
-                "stages": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "required": ["name"],
-                    "properties": {
-                      "name": { "type": "string", "minLength": 1 },
-                      "action": { "enum": ["remediate", "diagnose", "replan"] },
-                      "agent": { "type": "string", "minLength": 1 },
-                      "model": { "type": "string", "minLength": 1 }
-                    }
-                  }
-                }
-              }
+            "quality": { "type": "object", "properties": { "severityPoints": { "$ref": "#/$defs/severityNumbers" } } },
+            "convergence": { "type": "object", "properties": { "minimumDebtPointImprovement": { "type": "integer", "minimum": 0 }, "stagnationWindow": { "type": "integer", "minimum": 1 }, "cycleDetection": { "type": "boolean" }, "regressionDetection": { "type": "boolean" } } },
+            "finalQualityGate": { "type": "object", "properties": { "maxBySeverity": { "$ref": "#/$defs/severityNumbers" }, "maxDebtPoints": { "type": "integer", "minimum": 0 } } },
+            "escalation": { "type": "object", "properties": { "criticalStartStage": { "type": "integer", "minimum": 0 }, "replanResumeStage": { "type": "integer", "minimum": 0 }, "stages": { "type": "array", "items": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string", "minLength": 1 }, "action": { "enum": ["remediate", "diagnose", "replan"] }, "agent": { "type": "string", "minLength": 1 }, "model": { "type": "string", "minLength": 1 } } } } } }
+          }
+        }
+      }
+    },
+    "orchestration": { "type": "object", "properties": { "provider": { "type": "string" }, "required": { "type": "boolean" }, "worker": { "type": "object", "properties": { "provider": { "type": "string" }, "model": { "type": "string" }, "maxRepairAttempts": { "type": "integer", "minimum": 0 }, "timeoutSeconds": { "type": "integer", "minimum": 1 }, "titlePrefix": { "type": "string" } } } } },
+    "mcp": {
+      "type": "object",
+      "properties": {
+        "servers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["type"],
+            "properties": {
+              "description": { "type": "string" }, "type": { "enum": ["local", "remote"] }, "command": { "type": "array", "items": { "type": "string" }, "minItems": 1 }, "url": { "type": "string", "format": "uri" },
+              "environment": { "type": "object", "additionalProperties": { "type": "string" } }, "headers": { "type": "object", "additionalProperties": { "type": "string" } }, "oauth": { "type": "boolean" }, "enabled": { "type": "boolean" }, "timeoutMs": { "type": "integer", "minimum": 1 }, "codemode": { "type": "boolean" }
             }
           }
         }
       }
     },
-    "orchestration": { "type": "object", "properties": { "provider": { "type": "string" }, "required": { "type": "boolean" }, "worker": { "type": "object", "properties": { "provider": { "type": "string" }, "model": { "type": ["string", "null"] }, "maxRepairAttempts": { "type": "integer", "minimum": 0 }, "timeoutSeconds": { "type": "integer", "minimum": 1 }, "titlePrefix": { "type": "string" } } } } },
+    "delivery": {
+      "type": "object",
+      "properties": {
+        "stateDir": { "type": "string" },
+        "github": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "tokenEnv": { "type": "string", "minLength": 1 }, "repository": { "type": "string", "pattern": "^[^/]+/[^/]+$" }, "apiBaseUrl": { "type": "string", "format": "uri" }, "assignTokenOwner": { "type": "boolean" }, "labels": { "type": "array", "items": { "type": "string" } }, "branchPattern": { "type": "string", "minLength": 1 } } },
+        "paseo": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "createWorkspace": { "type": "boolean" }, "autoUseWorkspace": { "type": "boolean" }, "worktreeSlugPattern": { "type": "string", "minLength": 1 } } }
+      }
+    },
     "memory": { "type": "object" }, "codeIntelligence": { "type": "object" }, "sdd": { "type": "object" }, "validation": { "type": "object" }, "security": { "type": "object" }, "telemetry": { "type": "object" }, "evals": { "type": "object" }, "provenance": { "type": "object" }
+  },
+  "$defs": {
+    "severityNumbers": { "type": "object", "properties": { "critical": { "type": "integer", "minimum": 0 }, "high": { "type": "integer", "minimum": 0 }, "medium": { "type": "integer", "minimum": 0 }, "low": { "type": "integer", "minimum": 0 }, "note": { "type": "integer", "minimum": 0 } } }
   },
   "additionalProperties": false
 }
