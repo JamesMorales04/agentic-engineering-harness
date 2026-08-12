@@ -19,7 +19,7 @@ import { classifyEngineeringIntent, formatEngineeringIntent } from "./audit/inte
 import { runAudit } from "./audit/run.js";
 import type { TaskRisk } from "./core/types.js";
 
-const VERSION = "0.5.2";
+const VERSION = "0.6.0";
 const args = process.argv.slice(2);
 if (args.length === 1 && ["--version", "-V"].includes(args[0])) { console.log(VERSION); process.exit(0); }
 
