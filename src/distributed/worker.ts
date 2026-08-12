@@ -25,7 +25,8 @@ export async function dispatchDistributedDelegation(input: {
   if (!input.config.distributed?.enabled) throw new Error("Distributed execution is not enabled.");
   const remote = await runProcess("git remote get-url origin", { cwd: input.root, timeoutMs: 10_000 }); if (remote.exitCode !== 0 || !remote.stdout.trim()) throw new Error("Distributed execution requires a Git remote named origin.");
   const base = await runProcess("git rev-parse HEAD", { cwd: input.root, timeoutMs: 10_000 }); if (base.exitCode !== 0) throw new Error("Distributed execution could not resolve the workspace HEAD.");
-  const selection = { ...input.selection, transport: input.selection.transport === "podman" ? "podman" as const : "direct" as const };
+  // Remote v1 executes inside the worker node's own isolation boundary. Do not depend on host Podman state or Paseo sessions serialized from the coordinator.
+  const selection: AgentExecutionSelection = { ...input.selection, transport: "direct" };
   const job: DistributedDelegationJob = {
     version: 1,
     id: `${safe(input.contract.task.id)}-${safe(input.task.id)}-${crypto.randomUUID()}`,
@@ -67,6 +68,7 @@ async function executeClaimedJob(job: DistributedDelegationJob, workerId: string
     const clone = await runProcess(`git clone --quiet --no-checkout ${quote(job.repositoryUrl)} ${quote(worktree)}`, { cwd: os.tmpdir(), timeoutMs: 300_000, toolchain: false }); if (clone.exitCode !== 0) return failure(job, workerId, startedAt, session, `clone failed: ${clone.stderr || clone.stdout}`);
     const checkout = await runProcess(`git checkout --quiet --detach ${quote(job.baseRef)}`, { cwd: worktree, timeoutMs: 120_000 }); if (checkout.exitCode !== 0) return failure(job, workerId, startedAt, session, `checkout failed: ${checkout.stderr || checkout.stdout}`);
     const contractDir = job.config.sdd?.contractsDir ?? ".harness/contracts"; const contractFile = path.join(worktree, contractDir, `${job.contract.task.id}.yaml`); await fs.mkdir(path.dirname(contractFile), { recursive: true }); await fs.writeFile(contractFile, YAML.stringify(job.contract));
+    const baseline = await runProcess("git add -A && git -c user.name=aeh -c user.email=aeh@localhost commit --no-gpg-sign --allow-empty -m 'aeh distributed baseline'", { cwd: worktree, timeoutMs: 60_000 }); if (baseline.exitCode !== 0) return failure(job, workerId, startedAt, session, `baseline commit failed: ${baseline.stderr || baseline.stdout}`);
     session = await executeAgentPrompt(worktree, job.config, job.contract, job.selection, job.prompt);
     if (session.exitCode !== 0) return failure(job, workerId, startedAt, session, `agent exited with ${session.exitCode}`);
     const status = await runProcess("git status --porcelain", { cwd: worktree, timeoutMs: 30_000 }); const untracked = status.stdout.split(/\r?\n/).filter((line) => line.startsWith("?? ")).map((line) => line.slice(3).trim()).filter(Boolean); if (untracked.length) await runProcess(`git add -N -- ${untracked.map(quote).join(" ")}`, { cwd: worktree, timeoutMs: 30_000 });
@@ -78,7 +80,7 @@ async function executeClaimedJob(job: DistributedDelegationJob, workerId: string
 }
 
 function failure(job: DistributedDelegationJob, workerId: string, startedAt: string, session: WorkerSession, message: string, changedFiles: string[] = []): DistributedDelegationResult { return { version: 1, jobId: job.id, workerId, startedAt, finishedAt: new Date().toISOString(), status: "FAIL", session: { ...session, exitCode: session.exitCode || 1, stderr: [session.stderr, message].filter(Boolean).join("\n") }, changedFiles, patch: "", message }; }
-function sanitizeRemoteConfig(config: HarnessProjectConfig): HarnessProjectConfig { return { ...config, delivery: { ...config.delivery, github: { ...config.delivery?.github, enabled: false }, paseo: { ...config.delivery?.paseo, enabled: false, autoUseWorkspace: false } }, distributed: { ...config.distributed, enabled: false }, telemetry: { ...config.telemetry, exporter: "none" } }; }
+function sanitizeRemoteConfig(config: HarnessProjectConfig): HarnessProjectConfig { return { ...config, delivery: { ...config.delivery, github: { ...config.delivery?.github, enabled: false }, paseo: { ...config.delivery?.paseo, enabled: false, autoUseWorkspace: false } }, distributed: { ...config.distributed, enabled: false }, telemetry: { ...config.telemetry, exporter: "none" }, security: { ...config.security, sandbox: { ...config.security?.sandbox, required: false, forceForRisks: [] } } }; }
 function matches(file: string, scope: string): boolean { return scope === "**" || minimatch(file, scope, { dot: true }) || file.startsWith(scope.split(/[?*\[]/, 1)[0].replace(/\/+$/, "")); }
 function safe(value: string): string { return value.replace(/[^A-Za-z0-9._-]/g, "-"); }
 function quote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }
