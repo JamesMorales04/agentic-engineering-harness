@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createPaseoSdkAgentWithClient, materializePaseoSdkAgentWithClient } from "../src/paseo/sdk.js";
 
 describe("Paseo SDK adapter", () => {
-  it("creates workspace agents without parentage and places bootstrap in systemPrompt", async () => {
+  it("creates workspace agents without parentage and keeps cwd alongside workspace placement", async () => {
     let received: Record<string, unknown> | undefined;
     const handle = { id: "agent-worker", workspaceId: "workspace-1", status: "idle", refresh: vi.fn(), run: vi.fn(), waitForFinish: vi.fn() };
     const client = {
@@ -24,13 +24,42 @@ describe("Paseo SDK adapter", () => {
     expect(result.id).toBe("agent-worker");
     expect(received).toEqual(expect.objectContaining({
       title: "AEH worker",
+      cwd: "/repo",
       workspaceId: "workspace-1",
       config: { provider: "codex", model: "gpt-test", systemPrompt: "authoritative session instructions" },
       labels: { "aeh.task": "TASK-1", "aeh.role": "backend-implementer" }
     }));
     expect(received).not.toHaveProperty("parent");
     expect(received).not.toHaveProperty("callerAgentId");
-    expect(received).not.toHaveProperty("cwd");
+  });
+
+  it("places exact MCP server and preapproval policy inside AgentSessionConfig", async () => {
+    let received: Record<string, unknown> | undefined;
+    const handle = { id: "lead", workspaceId: null, status: "idle", refresh: vi.fn(), run: vi.fn(), waitForFinish: vi.fn() };
+    const client = {
+      agents: { create: vi.fn(async (options: Record<string, unknown>) => { received = options; return handle; }), ref: vi.fn(), list: vi.fn() },
+      connect: vi.fn(), close: vi.fn()
+    };
+    await createPaseoSdkAgentWithClient(client as never, {
+      cwd: "/repo",
+      provider: "codex",
+      model: "gpt-test",
+      title: "lead",
+      systemPrompt: "bootstrap",
+      mcpServers: { "aeh-control": { type: "stdio", command: "/usr/bin/node", args: ["/pkg/dist/main.js", "operation", "mcp"], alwaysLoad: true } },
+      toolPolicy: { preapproved: [{ kind: "mcp", server: "aeh-control", tool: "aeh_operation_start_audit" }] },
+      waitForFinish: false
+    });
+    expect(received).toEqual(expect.objectContaining({
+      cwd: "/repo",
+      config: {
+        provider: "codex",
+        model: "gpt-test",
+        systemPrompt: "bootstrap",
+        mcpServers: { "aeh-control": { type: "stdio", command: "/usr/bin/node", args: ["/pkg/dist/main.js", "operation", "mcp"], alwaysLoad: true } },
+        toolPolicy: { preapproved: [{ kind: "mcp", server: "aeh-control", tool: "aeh_operation_start_audit" }] }
+      }
+    }));
   });
 
   it("uses initialPrompt and waits for an initial worker prompt", async () => {
@@ -87,7 +116,7 @@ describe("Paseo SDK adapter", () => {
     });
 
     expect(result).toEqual(expect.objectContaining({ id: "agent-idle", status: "idle", workspaceId: "workspace-op" }));
-    expect(received).toEqual(expect.objectContaining({ workspaceId: "workspace-op", config: { provider: "codex", model: "gpt-test" } }));
+    expect(received).toEqual(expect.objectContaining({ cwd: "/repo", workspaceId: "workspace-op", config: { provider: "codex", model: "gpt-test" } }));
     expect(received).not.toHaveProperty("initialPrompt");
   });
 
@@ -99,7 +128,7 @@ describe("Paseo SDK adapter", () => {
       connect: vi.fn(), close: vi.fn()
     };
     await createPaseoSdkAgentWithClient(client as never, { cwd: "/repo", provider: "codex", title: "default" });
-    expect(received).toEqual(expect.objectContaining({ config: { provider: "codex" } }));
+    expect(received).toEqual(expect.objectContaining({ cwd: "/repo", config: { provider: "codex" } }));
   });
 
   it("normalizes a legacy combined provider/model value into Paseo config fields", async () => {
