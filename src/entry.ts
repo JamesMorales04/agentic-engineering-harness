@@ -13,12 +13,17 @@ import { resolveOrganizationPolicyBundles } from "./policy/bundles.js";
 import { benchmarkMcpCatalog } from "./mcp/benchmark.js";
 import { buildEvalDashboard, runRepeatedEval } from "./evals/statistics.js";
 import { startPaseoHarness } from "./paseo/start.js";
+import { classifyEngineeringIntent, formatEngineeringIntent } from "./audit/intent.js";
+import { runAudit } from "./audit/run.js";
+import type { TaskRisk } from "./core/types.js";
 
-const VERSION = "0.5.1";
+const VERSION = "0.5.2";
 const args = process.argv.slice(2);
 if (args.length === 1 && ["--version", "-V"].includes(args[0])) { console.log(VERSION); process.exit(0); }
 
 if (args[0] === "start") { await runStart(args.slice(1)); process.exit(process.exitCode ?? 0); }
+if (args[0] === "intent") { await runIntent(args.slice(1)); process.exit(process.exitCode ?? 0); }
+if (args[0] === "audit") { await runAuditCommand(args.slice(1)); process.exit(process.exitCode ?? 0); }
 if (args[0] === "setup") { await runSetup(args.slice(1)); process.exit(process.exitCode ?? 0); }
 if (args[0] === "toolchain") { await runToolchain(args.slice(1)); process.exit(process.exitCode ?? 0); }
 if (args[0] === "init" && args.includes("--setup")) { await runInitSetup(args.slice(1)); process.exit(process.exitCode ?? 0); }
@@ -52,7 +57,38 @@ async function runStart(argv: string[]): Promise<void> {
   console.log(`model=${result.model}`);
   console.log(`agentId=${result.agentId}`);
   console.log(`title=${result.title}`);
-  console.log(`Open Paseo and continue in '${result.title}'. Repository-changing prompts in that conversation now route through the Harness automatically.`);
+  console.log(`Open Paseo and continue in '${result.title}'. Engineering operations in that conversation now route through the Harness automatically.`);
+}
+
+async function runIntent(argv: string[]): Promise<void> {
+  const parsed = parseGeneric(argv, new Set(["file", "domain", "risk"]), new Set());
+  const request = parsed.positional[0];
+  if (!request) throw new Error("aeh intent requires a natural-language request.");
+  if (parsed.positional.length > 2) throw new Error("aeh intent accepts <request> and at most one project directory.");
+  const root = path.resolve(parsed.positional[1] ?? ".");
+  const config = await loadProjectConfig(root);
+  const decision = classifyEngineeringIntent(config, { request, files: parsed.values("file"), domains: parsed.values("domain"), risk: parseRisk(parsed.value("risk")) });
+  console.log(formatEngineeringIntent(decision));
+  console.log(JSON.stringify(decision, null, 2));
+}
+
+async function runAuditCommand(argv: string[]): Promise<void> {
+  const parsed = parseGeneric(argv, new Set(["file", "domain", "risk", "reviewer"]), new Set());
+  const request = parsed.positional[0];
+  if (!request) throw new Error("aeh audit requires a natural-language audit request.");
+  if (parsed.positional.length > 2) throw new Error("aeh audit accepts <request> and at most one project directory.");
+  const root = path.resolve(parsed.positional[1] ?? ".");
+  const config = await loadProjectConfig(root);
+  const intent = classifyEngineeringIntent(config, { request, files: parsed.values("file"), domains: parsed.values("domain"), risk: parseRisk(parsed.value("risk")), explicitIntent: "audit" });
+  if (intent.intent !== "audit") throw new Error(`Request did not resolve to AUDIT: ${formatEngineeringIntent(intent)}`);
+  const report = await runAudit(root, config, { request, files: parsed.values("file"), domains: parsed.values("domain"), risk: parseRisk(parsed.value("risk")), reviewers: parsed.values("reviewer") });
+  console.log(`AUDIT ${report.status} — ${report.auditId}`);
+  console.log(`productionSafe=${report.productionSafe}`);
+  console.log(`findings critical=${report.counts.critical} high=${report.counts.high} medium=${report.counts.medium} low=${report.counts.low} note=${report.counts.note}`);
+  console.log(`debtScore=${report.debtScore}`);
+  for (const check of report.validationChecks.filter((item) => item.status !== "PASS" && item.status !== "SKIP")) console.log(`validator ${check.status} ${check.id} class=${check.failureClass}: ${check.message}`);
+  for (const finding of report.findings) console.log(`${finding.severity.toUpperCase()} ${finding.id} ${finding.location.file}: ${finding.evidence}`);
+  console.log(`report=.harness/audits/${report.auditId}.json`);
 }
 
 async function runSetup(argv: string[]): Promise<void> {
@@ -74,6 +110,7 @@ async function runPolicySync(argv: string[]): Promise<void> { const parsed = par
 async function runMcpBenchmark(argv: string[]): Promise<void> { const parsed = parseGeneric(argv, new Set(["server"]), new Set()); const root = path.resolve(parsed.positional[0] ?? "."); const config = await loadProjectConfig(root); const servers = parsed.values("server"); console.log(JSON.stringify(await benchmarkMcpCatalog(root, config, servers.length ? servers : undefined), null, 2)); }
 async function runStatisticalEval(argv: string[]): Promise<void> { const sub = argv[0]; const parsed = parseGeneric(argv.slice(1), new Set(["variant", "runs"]), new Set()); const caseId = parsed.positional[0]; if (!caseId) throw new Error(`aeh eval ${sub} requires <caseId>.`); const root = path.resolve(parsed.positional[1] ?? "."); const config = await loadProjectConfig(root); if (sub === "repeat") { const runs = parsed.value("runs") ? Number(parsed.value("runs")) : undefined; console.log(JSON.stringify(await runRepeatedEval(root, config, caseId, parsed.value("variant"), runs), null, 2)); return; } console.log(JSON.stringify(await buildEvalDashboard(root, config, caseId), null, 2)); }
 
+function parseRisk(value?: string): TaskRisk { if (!value) return "low"; if (value === "low" || value === "medium" || value === "high") return value; throw new Error(`Invalid risk '${value}'. Use low, medium or high.`); }
 function parse(argv: string[]): { directory: string; flag(name: string): boolean; value(name: string): string | undefined } { const parsed = parseGeneric(argv, new Set(["profile"]), new Set(["dry-run", "update-lock", "skip-project-deps", "prefer-containers"])); if (parsed.positional.length > 1) throw new Error(`Expected at most one project directory, received: ${parsed.positional.join(", ")}`); return { directory: parsed.positional[0] ?? ".", flag: parsed.flag, value: parsed.value }; }
 function parseGeneric(argv: string[], valueFlags: Set<string>, booleanFlags: Set<string>): { positional: string[]; flag(name: string): boolean; value(name: string): string | undefined; values(name: string): string[] } {
   const flags = new Map<string, Array<string | true>>(); const positional: string[] = [];
