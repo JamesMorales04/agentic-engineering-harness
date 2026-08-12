@@ -9,7 +9,7 @@ export interface ControlPlaneSnapshot { version: 1; taskId: string; createdAt: s
 export interface ControlPlaneDrift { changed: string[]; missing: string[]; added: string[]; drifted: boolean; }
 
 const DEFAULT_CONTROL_ROOTS = [".harness/project.yaml", ".harness/agents.source.jsonc", ".harness/generated/agents.json", ".harness/toolchain.yaml", ".harness/toolchain.lock.json", ".harness/policies", ".harness/skills", ".opencode/skills", ".agents/skills", "policies", "skills", "schemas"];
-const SELF_CONTROLLER_ROOTS = ["package.json", "package-lock.json", "src/agents", "src/core", "src/toolchain", "src/validators", "src/workers"];
+const SELF_CONTROLLER_ROOTS = ["package.json", "package-lock.json", "src/agents", "src/core", "src/delivery", "src/distributed", "src/evals", "src/evidence", "src/issues", "src/mcp", "src/memory", "src/metrics", "src/policy", "src/provenance", "src/providers", "src/security", "src/telemetry", "src/toolchain", "src/utils", "src/validators", "src/workers"];
 
 export async function createControlPlaneSnapshot(root: string, config: HarnessProjectConfig, taskId: string): Promise<ControlPlaneSnapshot> {
   const sourceRoot = path.resolve(root); const includeRoots = await resolveControlRoots(sourceRoot, config); const relativeFiles = await enumerateControlFiles(sourceRoot, includeRoots); const outputDir = path.resolve(sourceRoot, config.controlPlane?.snapshotDir ?? ".harness/controller", taskId); const materializedRoot = path.join(outputDir, "files");
@@ -32,19 +32,8 @@ export async function detectControlPlaneDrift(root: string, snapshot: ControlPla
 
 export async function loadFrozenSkillContext(root: string, config: HarnessProjectConfig, taskId: string, skills: string[]): Promise<string | undefined> {
   if (!skills.length) return undefined;
-  const filesRoot = path.resolve(root, config.controlPlane?.snapshotDir ?? ".harness/controller", taskId, "files");
-  const roots = [".harness/skills", ".agents/skills", ".opencode/skills", "skills"];
-  const chunks: string[] = [];
-  for (const skill of [...new Set(skills)]) {
-    let content: string | undefined;
-    for (const rootName of roots) {
-      for (const suffix of [path.join(skill, "SKILL.md"), `${skill}.md`]) {
-        try { content = await fs.readFile(path.join(filesRoot, rootName, suffix), "utf8"); break; } catch { /* try next frozen root */ }
-      }
-      if (content !== undefined) break;
-    }
-    if (content !== undefined) chunks.push(`## Frozen skill: ${skill}\n${content.trim()}`);
-  }
+  const filesRoot = path.resolve(root, config.controlPlane?.snapshotDir ?? ".harness/controller", taskId, "files"); const roots = [".harness/skills", ".agents/skills", ".opencode/skills", "skills"]; const chunks: string[] = [];
+  for (const skill of [...new Set(skills)]) { let content: string | undefined; for (const rootName of roots) { for (const suffix of [path.join(skill, "SKILL.md"), `${skill}.md`]) { try { content = await fs.readFile(path.join(filesRoot, rootName, suffix), "utf8"); break; } catch { /* try next frozen root */ } } if (content !== undefined) break; } if (content !== undefined) chunks.push(`## Frozen skill: ${skill}\n${content.trim()}`); }
   return chunks.length ? chunks.join("\n\n") : undefined;
 }
 
