@@ -6,102 +6,23 @@ import { initializeProject } from "./core/init.js";
 import { loadProjectConfig, loadTaskContract } from "./core/config.js";
 import { runDoctor } from "./core/doctor.js";
 import { verifyTask } from "./core/verify.js";
-import { createSddChange, validateSddChange } from "./core/sdd.js";
+import { createSddChange, formatTraceabilityMatrix, validateSddChange } from "./core/sdd.js";
 import { GraphifyCodeIntelligenceProvider } from "./providers/graphify.js";
 import { sealTask } from "./core/seal.js";
-
+import { runTask } from "./core/run.js";
+import { snapshotGraph } from "./validators/graphify.js";
+import { runProcess } from "./utils/process.js";
 const program = new Command();
-program
-  .name("engineering-harness")
-  .description("Deterministic, spec-driven control layer for multi-agent software engineering")
-  .version("0.1.0");
-
-program.command("init")
-  .argument("[directory]", "Project directory", ".")
-  .description("Initialize harness files in a consumer repository")
-  .action(async (directory: string) => {
-    const root = path.resolve(directory);
-    const created = await initializeProject(root);
-    console.log(created.length ? `Created: ${created.join(", ")}` : "Harness already initialized.");
-    console.log("Next: edit .harness/project.yaml, then run engineering-harness doctor");
-  });
-
-program.command("doctor")
-  .argument("[directory]", "Project directory", ".")
-  .description("Check required and optional engineering tools")
-  .action(async (directory: string) => {
-    const root = path.resolve(directory);
-    const config = await loadProjectConfig(root);
-    const results = await runDoctor(root, config);
-    let failed = false;
-    for (const result of results) {
-      const marker = result.ok ? "✓" : result.required ? "✗" : "!";
-      console.log(`${marker} ${result.component}: ${result.message}`);
-      if (!result.ok && result.required) failed = true;
-    }
-    if (failed) process.exitCode = 1;
-  });
-
+program.name("engineering-harness").description("Deterministic, spec-driven control layer for multi-agent software engineering").version("0.2.5");
+program.command("init").argument("[directory]", "Project directory", ".").action(async (directory: string) => { const root = path.resolve(directory); const created = await initializeProject(root); console.log(created.length ? `Created: ${created.join(", ")}` : "Harness already initialized."); });
+program.command("doctor").argument("[directory]", "Project directory", ".").action(async (directory: string) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const results = await runDoctor(root, config); let failed = false; for (const result of results) { const marker = result.ok ? "✓" : result.required ? "✗" : "!"; console.log(`${marker} ${result.component}: ${result.message}`); if (!result.ok && result.required) failed = true; } if (failed) process.exitCode = 1; });
 const sdd = program.command("sdd").description("Spec-driven development workflow");
-sdd.command("new")
-  .argument("<taskId>")
-  .requiredOption("--title <title>")
-  .action(async (taskId: string, options: { title: string }) => {
-    const dir = await createSddChange(process.cwd(), taskId, options.title);
-    console.log(`Created SDD change at ${dir}`);
-  });
-
-sdd.command("validate")
-  .argument("<taskId>")
-  .action(async (taskId: string) => {
-    const result = await validateSddChange(process.cwd(), taskId);
-    if (result.ok) console.log(`✓ ${taskId} contains all required SDD artifacts.`);
-    else {
-      console.error(`✗ Missing/empty SDD artifacts: ${result.missing.join(", ")}`);
-      process.exitCode = 1;
-    }
-  });
-
-program.command("seal")
-  .argument("<taskId>")
-  .argument("[directory]", "Project directory", ".")
-  .description("Freeze the TaskContract and referenced SDD artifacts using SHA-256")
-  .action(async (taskId: string, directory: string) => {
-    const root = path.resolve(directory);
-    const config = await loadProjectConfig(root);
-    const contract = await loadTaskContract(root, taskId, config);
-    const output = await sealTask(root, config, contract);
-    console.log(`Sealed ${taskId}: ${output}`);
-  });
-
-program.command("verify")
-  .argument("<taskId>")
-  .argument("[directory]", "Project directory", ".")
-  .description("Run deterministic validation for a frozen TaskContract")
-  .action(async (taskId: string, directory: string) => {
-    const root = path.resolve(directory);
-    const config = await loadProjectConfig(root);
-    const contract = await loadTaskContract(root, taskId, config);
-    const report = await verifyTask(root, config, contract);
-    for (const check of report.checks) console.log(`${check.status.padEnd(4)} ${check.id}: ${check.message}`);
-    console.log(`\n${report.status} — report written to ${(config.sdd?.reportsDir ?? ".harness/reports")}/${taskId}.json`);
-    if (report.status === "FAIL") process.exitCode = 1;
-  });
-
-program.command("graph-update")
-  .argument("[directory]", "Project directory", ".")
-  .description("Update Graphify structural code graph when configured")
-  .action(async (directory: string) => {
-    const root = path.resolve(directory);
-    const provider = new GraphifyCodeIntelligenceProvider();
-    const health = await provider.doctor(root);
-    if (!health.ok) {
-      console.error(health.message);
-      process.exitCode = 1;
-      return;
-    }
-    await provider.update(root);
-    console.log("Graphify graph updated.");
-  });
-
+sdd.command("new").argument("<taskId>").requiredOption("--title <title>").argument("[directory]", "Project directory", ".").action(async (taskId: string, directory: string, options: { title: string }) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const dir = await createSddChange(root, taskId, options.title, config); console.log(`Created SDD change at ${dir}`); console.log(`Created TaskContract at ${config.sdd?.contractsDir ?? ".harness/contracts"}/${taskId}.yaml`); });
+sdd.command("validate").argument("<taskId>").argument("[directory]", "Project directory", ".").action(async (taskId: string, directory: string) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const result = await validateSddChange(root, taskId, config); console.log(formatTraceabilityMatrix(result.requirements)); if (result.ok) console.log(`\n✓ ${taskId} SDD traceability is complete.`); else { for (const item of result.missing) console.error(`✗ missing: ${item}`); for (const issue of result.issues) console.error(`✗ ${issue}`); process.exitCode = 1; } });
+program.command("seal").argument("<taskId>").argument("[directory]", "Project directory", ".").action(async (taskId: string, directory: string) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const contract = await loadTaskContract(root, taskId, config); console.log(`Sealed ${taskId}: ${await sealTask(root, config, contract)}`); });
+program.command("verify").argument("<taskId>").argument("[directory]", "Project directory", ".").action(async (taskId: string, directory: string) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const contract = await loadTaskContract(root, taskId, config); const report = await verifyTask(root, config, contract); printChecks(report.checks); console.log(`\n${report.status} — report written to ${(config.sdd?.reportsDir ?? ".harness/reports")}/${taskId}.json`); if (report.status === "FAIL") process.exitCode = 1; });
+program.command("run").argument("<taskId>").argument("[directory]", "Project directory", ".").description("Execute SDD -> worker -> deterministic validation -> finite repair loop").action(async (taskId: string, directory: string) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const contract = await loadTaskContract(root, taskId, config); const result = await runTask(root, config, contract); printChecks(result.report.checks); console.log(`\n${result.status} — worker=${result.worker.provider}, repairAttempts=${result.attempts}`); if (result.status === "FAIL") process.exitCode = 1; });
+program.command("graph-snapshot").argument("<taskId>").requiredOption("--phase <phase>", "before or after").argument("[directory]", "Project directory", ".").action(async (taskId: string, directory: string, options: { phase: string }) => { if (options.phase !== "before" && options.phase !== "after") throw new Error("--phase must be before or after"); const root = path.resolve(directory); const config = await loadProjectConfig(root); const file = await snapshotGraph(root, config, taskId, options.phase); if (!file) { console.error("Graphify graph not found or unreadable."); process.exitCode = 1; } else console.log(`Graphify ${options.phase} snapshot: ${file}`); });
+program.command("graph-update").argument("[directory]", "Project directory", ".").action(async (directory: string) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const refresh = config.codeIntelligence?.refreshCommand; if (refresh) { const result = await runProcess(refresh, { cwd: root, timeoutMs: 300_000 }); if (result.exitCode !== 0) { console.error(result.stderr || result.stdout || "Graphify refresh command failed."); process.exitCode = 1; return; } console.log("Configured Graphify refresh command completed."); return; } const health = await new GraphifyCodeIntelligenceProvider().doctor(root); console.log(health.message); if (!health.ok) process.exitCode = 1; });
+function printChecks(checks: Array<{ status: string; id: string; message: string }>): void { for (const check of checks) console.log(`${check.status.padEnd(4)} ${check.id}: ${check.message}`); }
 await program.parseAsync(process.argv);

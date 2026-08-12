@@ -12,20 +12,49 @@ const validationCommandSchema = z.object({
   workingDirectory: z.string().optional()
 });
 
+const validatorSpecSchema = z.object({
+  id: z.string().min(1),
+  adapter: z.string().min(1),
+  command: z.string().min(1).optional(),
+  required: z.boolean().optional(),
+  timeoutSeconds: z.number().int().positive().optional(),
+  workingDirectory: z.string().optional(),
+  options: z.record(z.string(), z.unknown()).optional()
+});
+
 const projectSchema = z.object({
   version: z.literal(1),
   project: z.object({ name: z.string().min(1) }),
-  orchestration: z.object({ provider: z.string(), required: z.boolean().optional() }).optional(),
+  orchestration: z.object({
+    provider: z.string(),
+    required: z.boolean().optional(),
+    worker: z.object({
+      provider: z.string().optional(),
+      model: z.string().optional(),
+      maxRepairAttempts: z.number().int().nonnegative().optional(),
+      timeoutSeconds: z.number().int().positive().optional(),
+      titlePrefix: z.string().optional()
+    }).optional()
+  }).optional(),
   memory: z.object({ provider: z.string(), required: z.boolean().optional() }).optional(),
-  codeIntelligence: z.object({ provider: z.string(), required: z.boolean().optional() }).optional(),
+  codeIntelligence: z.object({
+    provider: z.string(),
+    required: z.boolean().optional(),
+    graphPath: z.string().optional(),
+    snapshotDir: z.string().optional(),
+    refreshCommand: z.string().optional()
+  }).optional(),
   sdd: z.object({
     specsDir: z.string().optional(),
     contractsDir: z.string().optional(),
-    reportsDir: z.string().optional()
+    reportsDir: z.string().optional(),
+    repairsDir: z.string().optional(),
+    runsDir: z.string().optional()
   }).optional(),
   validation: z.object({
     baseRef: z.string().optional(),
     commands: z.array(validationCommandSchema).optional(),
+    validators: z.array(validatorSpecSchema).optional(),
     frozenPaths: z.array(z.string()).optional(),
     requireSeal: z.boolean().optional(),
     opa: z.object({
@@ -34,13 +63,26 @@ const projectSchema = z.object({
     }).optional()
   }).optional(),
   security: z.object({
-    sandbox: z.object({ provider: z.string().optional(), required: z.boolean().optional() }).optional(),
+    sandbox: z.object({
+      provider: z.string().optional(),
+      required: z.boolean().optional(),
+      image: z.string().optional(),
+      network: z.boolean().optional(),
+      extraArgs: z.array(z.string()).optional()
+    }).optional(),
     tools: z.array(z.string()).optional()
   }).optional(),
   telemetry: z.object({
     enabled: z.boolean().optional(),
     localEventsFile: z.string().optional()
   }).optional()
+});
+
+const requirementSchema = z.object({
+  id: z.string().min(1),
+  description: z.string().optional(),
+  validator: z.string().optional(),
+  validators: z.array(z.string()).optional()
 });
 
 const taskSchema = z.object({
@@ -50,6 +92,7 @@ const taskSchema = z.object({
     proposal: z.string().optional(),
     spec: z.string().optional(),
     design: z.string().optional(),
+    tasks: z.string().optional(),
     acceptance: z.string().optional()
   }).optional(),
   git: z.object({ baseRef: z.string().optional() }).optional(),
@@ -58,11 +101,7 @@ const taskSchema = z.object({
     forbidden: z.array(z.string()).optional(),
     frozen: z.array(z.string()).optional()
   }).optional(),
-  requirements: z.array(z.object({
-    id: z.string().min(1),
-    description: z.string().optional(),
-    validator: z.string().optional()
-  })).optional(),
+  requirements: z.array(requirementSchema).optional(),
   constraints: z.object({
     breakingApiChanges: z.boolean().optional(),
     newDependencies: z.boolean().optional(),
@@ -71,7 +110,16 @@ const taskSchema = z.object({
     maxLinesAdded: z.number().int().nonnegative().optional(),
     maxLinesDeleted: z.number().int().nonnegative().optional()
   }).optional(),
-  verification: z.object({ commands: z.array(validationCommandSchema).optional() }).optional()
+  impact: z.object({
+    forbiddenEdges: z.array(z.string()).optional(),
+    forbiddenNodes: z.array(z.string()).optional(),
+    allowedCommunities: z.array(z.string()).optional()
+  }).optional(),
+  repair: z.object({ maxAttempts: z.number().int().nonnegative().optional() }).optional(),
+  verification: z.object({
+    commands: z.array(validationCommandSchema).optional(),
+    validators: z.array(validatorSpecSchema).optional()
+  }).optional()
 });
 
 export async function loadProjectConfig(root: string): Promise<HarnessProjectConfig> {

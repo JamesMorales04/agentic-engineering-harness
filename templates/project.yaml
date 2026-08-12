@@ -4,8 +4,16 @@ project:
   name: change-me
 
 orchestration:
+  # paseo keeps workers visible/controlable through the Paseo control plane.
+  # Set provider: podman for a directly sandboxed OpenCode worker instead.
   provider: paseo
   required: false
+  worker:
+    provider: opencode
+    # model: provider/model
+    maxRepairAttempts: 2
+    timeoutSeconds: 1800
+    titlePrefix: aeh
 
 memory:
   provider: engram
@@ -14,11 +22,16 @@ memory:
 codeIntelligence:
   provider: graphify
   required: false
+  graphPath: graphify-out/graph.json
+  snapshotDir: .harness/graph
+  # refreshCommand: your-graph-refresh-command
 
 sdd:
   specsDir: specs
   contractsDir: .harness/contracts
   reportsDir: .harness/reports
+  repairsDir: .harness/repairs
+  runsDir: .harness/runs
 
 validation:
   baseRef: main
@@ -28,6 +41,19 @@ validation:
     - .harness/seals/**
     - tests/acceptance/frozen/**
   commands: []
+  validators:
+    - id: acceptance
+      adapter: gherkin
+      required: false
+    - id: architecture-graph
+      adapter: graphify
+      required: false
+    - id: security-opengrep
+      adapter: opengrep
+      required: false
+    - id: security-trivy
+      adapter: trivy
+      required: false
   opa:
     enabled: false
     policyDirs:
@@ -37,6 +63,9 @@ security:
   sandbox:
     provider: podman
     required: false
+    # image: your-opencode-worker-image
+    network: true
+    extraArgs: []
   tools:
     - opengrep
     - trivy
