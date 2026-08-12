@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ResolvedAgentTopology } from "../src/agents/types.js";
 import type { HarnessProjectConfig } from "../src/core/types.js";
 import { buildAehControlMcp, buildPaseoLeadBootstrap, parseCommandVector, resolveLeadAgent, startPaseoHarness } from "../src/paseo/start.js";
+import { VERSION } from "../src/version.js";
 
 const config = {
   version: 1,
@@ -22,7 +23,7 @@ function capabilities() { return { version: "0.6.0", background: true, quiet: tr
 function managed(id: string) { return { id, exitCode: 0, stdout: "", stderr: "", status: "idle", transport: "sdk" as const }; }
 
 describe("Paseo Harness start", () => {
-  it("creates idle SDK leads with exact project-locked AEH operation MCP and reuses only with explicit resume", async () => {
+  it("creates idle SDK leads with exact project-locked AEH operation MCP and reuses only with explicit compatible runtime identity", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-paseo-start-"));
     const commands: string[] = [];
     let daemonReady = false; let launchCount = 0;
@@ -41,22 +42,25 @@ describe("Paseo Harness start", () => {
 
     const first = await startPaseoHarness(root, config, { aehCommand }, deps);
     expect(first.session).toBe("created"); expect(first.agentId).toBe("agent-1"); expect(first.daemonStarted).toBe(true); expect(first.transport).toBe("sdk");
+    expect(first.aehVersion).toBe(VERSION); expect(first.aehCommand).toBe(aehCommand);
     const second = await startPaseoHarness(root, config, { aehCommand }, deps);
     expect(second.session).toBe("created"); expect(second.agentId).toBe("agent-2");
     const resumed = await startPaseoHarness(root, config, { resume: true, aehCommand }, deps);
     expect(resumed.session).toBe("reused"); expect(resumed.agentId).toBe("agent-2");
     expect(launchCount).toBe(2); expect(probeAgent).toHaveBeenCalledWith(root, "agent-2");
 
-    const state = JSON.parse(await fs.readFile(path.join(root, ".harness/paseo/lead-session.json"), "utf8")) as { agentId: string; bootstrapVersion: number; generation: number };
-    expect(state.agentId).toBe("agent-2"); expect(state.bootstrapVersion).toBe(5); expect(state.generation).toBe(2);
+    const state = JSON.parse(await fs.readFile(path.join(root, ".harness/paseo/lead-session.json"), "utf8")) as { version: number; agentId: string; bootstrapVersion: number; aehVersion: string; aehCommand: string; generation: number };
+    expect(state.version).toBe(2); expect(state.agentId).toBe("agent-2"); expect(state.bootstrapVersion).toBe(6); expect(state.aehVersion).toBe(VERSION); expect(state.aehCommand).toBe(aehCommand); expect(state.generation).toBe(2);
     const bootstrap = await fs.readFile(path.join(root, ".harness/paseo/lead-bootstrap.md"), "utf8");
     expect(bootstrap).toContain("ORCHESTRATOR");
     expect(bootstrap).toContain("resolved AEH agent topology");
     expect(bootstrap).toContain("OpenSpec");
     expect(bootstrap).toContain("/paseo-handoff");
     expect(bootstrap).toContain(aehCommand);
+    expect(bootstrap).toContain(`AEH runtime v${VERSION}`);
     expect(bootstrap).toContain("aeh-control MCP");
     expect(bootstrap).toContain("project-locked");
+    expect(bootstrap).toContain("Never intentionally use synchronous");
     expect(bootstrap).not.toContain("Delegation policy:");
     expect(bootstrap).not.toContain("environment-manager");
     expect(bootstrap).not.toContain("spec-manager");
@@ -67,7 +71,7 @@ describe("Paseo Harness start", () => {
       provider: "codex",
       model: "gpt-test",
       systemPrompt: expect.stringContaining("resolved AEH agent topology"),
-      labels: expect.objectContaining({ "aeh.kind": "lead", "aeh.role": "lead" }),
+      labels: expect.objectContaining({ "aeh.kind": "lead", "aeh.role": "lead", "aeh.version": VERSION, "aeh.bootstrap": "6" }),
       waitForFinish: false,
       mcpServers: {
         "aeh-control": { type: "stdio", command: "/usr/bin/node", args: ["/pkg/dist/main.js", "operation", "mcp"], env: { AEH_CONTROL_ROOT: root }, alwaysLoad: true }
@@ -82,6 +86,26 @@ describe("Paseo Harness start", () => {
       }
     }));
     expect(launchOptions).not.toHaveProperty("prompt");
+  });
+
+  it("does not reuse a lead created by a different AEH invocation", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-paseo-runtime-identity-"));
+    let launchCount = 0;
+    const launchAgent = vi.fn(async () => { launchCount += 1; return managed(`agent-${launchCount}`); });
+    const deps = {
+      run: vi.fn(async (command: string) => command === "paseo daemon status --json" ? processResult(0, "{}") : Promise.reject(new Error(command))) as never,
+      commandExists: vi.fn(async () => true) as never,
+      setupToolchain: vi.fn(async () => ({} as never)) as never,
+      loadTopology: vi.fn(async () => topology()) as never,
+      detectCapabilities: vi.fn(async () => capabilities()) as never,
+      launchAgent: launchAgent as never,
+      probeAgent: vi.fn(async () => true) as never
+    };
+    await startPaseoHarness(root, config, { aehCommand: '"/node" "/pkg-a/dist/main.js"' }, deps);
+    const next = await startPaseoHarness(root, config, { resume: true, aehCommand: '"/node" "/pkg-b/dist/main.js"' }, deps);
+    expect(next.session).toBe("created");
+    expect(next.agentId).toBe("agent-2");
+    expect(launchCount).toBe(2);
   });
 
   it("recovers a stale daemon before starting an SDK lead", async () => {
@@ -113,6 +137,7 @@ describe("Paseo Harness start", () => {
     expect(bootstrap).toContain("/paseo-handoff");
     expect(bootstrap).toContain("OpenSpec");
     expect(bootstrap).toContain("npm-exec-aeh");
+    expect(bootstrap).toContain(`AEH runtime v${VERSION}`);
     expect(bootstrap).toContain("aeh-control MCP");
     expect(bootstrap).toContain("project-locked");
     expect(bootstrap).not.toContain("explorer");

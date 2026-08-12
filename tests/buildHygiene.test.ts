@@ -5,11 +5,13 @@ import { describe, expect, it } from "vitest";
 const root = path.resolve(".");
 
 describe("repository build hygiene", () => {
-  it("cleans dist before every build and rebuilds on npm prepare", async () => {
-    const pkg = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8")) as { bin: Record<string, string>; scripts: Record<string, string> };
+  it("cleans dist before every build and rebuilds/links the repo-local CLI on npm prepare", async () => {
+    const pkg = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8")) as { bin: Record<string, string>; files: string[]; scripts: Record<string, string> };
     expect(pkg.scripts.clean).toContain("rmSync('dist'");
     expect(pkg.scripts.build).toBe("npm run clean && tsc -p tsconfig.json");
-    expect(pkg.scripts.prepare).toBe("npm run build");
+    expect(pkg.scripts.prepare).toBe("npm run build && node scripts/link-self-bin.mjs");
+    expect(pkg.scripts.aeh).toBe("node ./dist/main.js");
+    expect(pkg.files).toContain("scripts/link-self-bin.mjs");
     expect(pkg.bin.aeh).toBe("./dist/main.js");
   });
 

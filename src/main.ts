@@ -1,13 +1,31 @@
 #!/usr/bin/env node
+import { spawn } from "node:child_process";
 import path from "node:path";
 import process from "node:process";
 import { loadProjectConfig } from "./core/config.js";
 import { cancelOperation, executeOperation, startDetachedOperation, waitForOperation } from "./operations/controller.js";
+import { promoteInteractiveOperation } from "./operations/interactive.js";
 import { serveOperationMcp } from "./operations/mcp.js";
 import { loadOperation, type AuditOperationPayload, type RunOperationPayload } from "./operations/state.js";
 import { listManagedPaseoAgents } from "./paseo/runtime.js";
+import { planSelfCheckoutRuntime, resolveStartProjectRoot } from "./runtime/invocation.js";
+import { VERSION } from "./version.js";
 
 const args = process.argv.slice(2);
+
+if (args[0] === "start") {
+  const root = resolveStartProjectRoot(args.slice(1));
+  if (await relaunchSelfCheckoutIfNeeded(root)) process.exit(process.exitCode ?? 0);
+  console.log(`aehRuntime=${VERSION}`);
+  console.log(`aehEntry=${path.resolve(process.argv[1])}`);
+}
+
+const promotion = promoteInteractiveOperation(args);
+if (promotion) {
+  console.log(`interactivePromotion=detached-${promotion.kind}`);
+  await runOperationStart(promotion.operationArgv);
+  process.exit(process.exitCode ?? 0);
+}
 
 if (args[0] === "operation") {
   await runOperationCommand(args.slice(1));
@@ -19,7 +37,41 @@ if (args[0] === "paseo" && args[1] === "agents" && hasOperationFilter(args.slice
   process.exit(process.exitCode ?? 0);
 }
 
+if (args.length === 1 && ["--help", "-h"].includes(args[0])) printControlPlaneHelp();
+
 await import("./entry.js");
+
+async function relaunchSelfCheckoutIfNeeded(root: string): Promise<boolean> {
+  if (process.env.AEH_SELF_REEXEC === "1") return false;
+  const plan = await planSelfCheckoutRuntime(root, process.argv[1]);
+  if (!plan.shouldRelaunch) return false;
+  if (!plan.localEntryReady) {
+    throw new Error(
+      `AEH source checkout detected at ${root}, but ${plan.localEntry} is not built. ` +
+      "Run 'npm ci && npm run build', then start with 'npm run aeh -- start'. " +
+      "Refusing to create a lead from an external/npm-exec runtime because it can be stale."
+    );
+  }
+
+  console.log(`aehRuntimeRedirect=${plan.currentEntry} -> ${plan.localEntry}`);
+  const exitCode = await spawnAndWait(process.execPath, [plan.localEntry, ...args], {
+    cwd: root,
+    env: { ...process.env, AEH_SELF_REEXEC: "1" }
+  });
+  process.exitCode = exitCode;
+  return true;
+}
+
+function spawnAndWait(command: string, argv: string[], options: { cwd: string; env: NodeJS.ProcessEnv }): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, argv, { cwd: options.cwd, env: options.env, stdio: "inherit" });
+    child.once("error", reject);
+    child.once("close", (code, signal) => {
+      if (signal) return resolve(1);
+      resolve(code ?? 1);
+    });
+  });
+}
 
 async function runOperationCommand(argv: string[]): Promise<void> {
   const sub = argv[0];
@@ -138,6 +190,20 @@ function printOperation(record: Awaited<ReturnType<typeof loadOperation>>, json:
   if (record.workspaceWarning) console.log(`workspaceWarning=${record.workspaceWarning}`);
   if (record.error) console.log(`error=${record.error.split("\n", 1)[0]}`);
   if (record.result) console.log(`result=${JSON.stringify(record.result)}`);
+}
+
+function printControlPlaneHelp(): void {
+  console.log("AEH control-plane commands (in addition to the core command tree below):");
+  console.log("  start [directory]                              Start a fresh managed Paseo lead");
+  console.log("  context guard [directory]                     Inspect managed-lead context pressure");
+  console.log("  intent <request> [directory]                  Classify INFORMATIONAL/AUDIT/CHANGE intent");
+  console.log("  audit <request> [directory]                   Synchronous audit compatibility entrypoint");
+  console.log("  operation start audit|run ...                 Start a detached first-class operation");
+  console.log("  operation status|wait|cancel <operationId>    Observe/control a detached operation");
+  console.log("  paseo agents [directory]                      Inspect AEH-managed Paseo agents");
+  console.log("  setup [directory]                             Reconcile the managed engineering toolchain");
+  console.log("  spec prepare|compile ...                      OpenSpec-backed SPEC authoring bridge");
+  console.log("");
 }
 
 function hasOperationFilter(argv: string[]): boolean { return argv.some((value) => value === "--operation" || value === "--operation-kind" || value === "--phase"); }
