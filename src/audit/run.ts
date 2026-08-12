@@ -29,9 +29,7 @@ export interface AuditRequest {
   auditId?: string;
 }
 
-export interface AuditValidationCheck extends ValidationCheck {
-  failureClass: AuditFailureClass;
-}
+export interface AuditValidationCheck extends ValidationCheck { failureClass: AuditFailureClass; }
 
 export interface AuditReport {
   version: 1;
@@ -55,6 +53,8 @@ export interface AuditReport {
   controlPlaneSha256?: string;
 }
 
+const AUDIT_OUTPUT_DIR = ".harness/audits";
+const MAX_AUDIT_REVIEWERS = 4;
 const DEFAULT_AUDIT_REVIEWERS = ["code-quality-reviewer", "architecture-reviewer", "security-reviewer", "test-quality-reviewer", "test-reviewer"];
 
 export async function runAudit(root: string, config: HarnessProjectConfig, input: AuditRequest): Promise<AuditReport> {
@@ -67,26 +67,18 @@ export async function runAudit(root: string, config: HarnessProjectConfig, input
   const contract = auditContract(auditId, input, baseRef);
   const snapshot = await createControlPlaneSnapshot(root, config, auditId);
   const topology = await loadResolvedAgentTopology(root, config, config.agents?.activeProfile);
-  const reviewers = selectAuditReviewers(config, topology, input);
+  const reviewers = selectAuditReviewers(topology, input);
   const sessions: WorkerSession[] = [];
   const validationChecks: AuditValidationCheck[] = [];
   const findings: NormalizedFinding[] = [];
   let restoredPaths: string[] = [];
 
   await recordEvent(root, config, "harness.audit.start", { auditId, request: input.request, reviewers, dirtyPaths, commit });
-
   try {
-    if (config.workflow?.audit?.runValidators !== false) {
-      for (const command of config.validation?.commands ?? []) validationChecks.push(classifyValidationCheck(await runValidationCommand(root, command)));
-      const configured = await runConfiguredValidators(root, config, contract, baseRef, []);
-      validationChecks.push(...configured.map(classifyValidationCheck));
-    }
-
-    const outputs = await Promise.all(reviewers.map(async (name) => runAuditReviewer(root, config, contract, topology, name, input, validationChecks, dirtyPaths)));
-    for (const output of outputs) {
-      sessions.push(output.session);
-      findings.push(...output.findings);
-    }
+    for (const command of config.validation?.commands ?? []) validationChecks.push(classifyValidationCheck(await runValidationCommand(root, command)));
+    validationChecks.push(...(await runConfiguredValidators(root, config, contract, baseRef, [])).map(classifyValidationCheck));
+    const outputs = await Promise.all(reviewers.map((name) => runAuditReviewer(root, config, contract, topology, name, input, validationChecks, dirtyPaths)));
+    for (const output of outputs) { sessions.push(output.session); findings.push(...output.findings); }
   } finally {
     restoredPaths = await rollbackWorktreeCheckpoint(root, checkpoint);
   }
@@ -117,19 +109,16 @@ export async function runAudit(root: string, config: HarnessProjectConfig, input
     restoredPaths,
     controlPlaneSha256: snapshot.compositeSha256
   };
-  await persistAudit(root, config, report);
+  await persistAudit(root, report);
   await recordEvent(root, config, "harness.audit.finish", { auditId, status, findings: report.findings.length, debtPoints: report.debtPoints, productionSafe: report.productionSafe });
   return report;
 }
 
-export async function loadAuditReport(root: string, config: HarnessProjectConfig, auditId: string): Promise<AuditReport> {
-  const file = path.resolve(root, config.workflow?.audit?.outputDir ?? ".harness/audits", `${auditId}.json`);
-  return JSON.parse(await fs.readFile(file, "utf8")) as AuditReport;
+export async function loadAuditReport(root: string, auditId: string): Promise<AuditReport> {
+  return JSON.parse(await fs.readFile(path.resolve(root, AUDIT_OUTPUT_DIR, `${auditId}.json`), "utf8")) as AuditReport;
 }
 
-export function classifyValidationCheck(check: ValidationCheck): AuditValidationCheck {
-  return { ...check, failureClass: classifyAuditFailure(check) };
-}
+export function classifyValidationCheck(check: ValidationCheck): AuditValidationCheck { return { ...check, failureClass: classifyAuditFailure(check) }; }
 
 export function classifyAuditFailure(check: ValidationCheck): AuditFailureClass {
   if (check.status === "PASS" || check.status === "SKIP") return "NONE";
@@ -143,36 +132,18 @@ export function classifyAuditFailure(check: ValidationCheck): AuditFailureClass 
 }
 
 function auditContract(auditId: string, input: AuditRequest, baseRef: string): TaskContract {
-  return {
-    version: 1,
-    task: { id: auditId, title: `Audit: ${input.request.slice(0, 120)}` },
-    git: { baseRef },
-    scope: { allowed: input.files ?? [] },
-    routing: { intent: "audit", domains: input.domains ?? [], risk: input.risk ?? "low", reviewers: input.reviewers ?? [] },
-    constraints: { breakingApiChanges: false, newDependencies: false, schemaChanges: false }
-  };
+  return { version: 1, task: { id: auditId, title: `Audit: ${input.request.slice(0, 120)}` }, git: { baseRef }, scope: { allowed: input.files ?? [] }, routing: { intent: "audit", domains: input.domains ?? [], risk: input.risk ?? "low", reviewers: input.reviewers ?? [] }, constraints: { breakingApiChanges: false, newDependencies: false, schemaChanges: false } };
 }
 
-function selectAuditReviewers(config: HarnessProjectConfig, topology: ResolvedAgentTopology, input: AuditRequest): string[] {
+function selectAuditReviewers(topology: ResolvedAgentTopology, input: AuditRequest): string[] {
   const routed = resolveRoute(topology, { intent: "audit", domains: input.domains ?? [], files: input.files ?? [], risk: input.risk ?? "low" }).reviewers;
-  const configured = config.workflow?.audit?.reviewers ?? [];
-  const explicit = input.reviewers ?? [];
-  const requested = [...new Set([...explicit, ...configured, ...routed, ...DEFAULT_AUDIT_REVIEWERS])];
+  const requested = [...new Set([...(input.reviewers ?? []), ...routed, ...DEFAULT_AUDIT_REVIEWERS])];
   const available = requested.filter((name) => topology.agents[name]?.role === "reviewer" && !topology.agents[name]?.disabled);
-  if (available.length) return available.slice(0, config.workflow?.audit?.maxReviewers ?? 4);
-  return Object.values(topology.agents).filter((agent) => agent.role === "reviewer" && !agent.disabled).map((agent) => agent.name).slice(0, config.workflow?.audit?.maxReviewers ?? 4);
+  if (available.length) return available.slice(0, MAX_AUDIT_REVIEWERS);
+  return Object.values(topology.agents).filter((agent) => agent.role === "reviewer" && !agent.disabled).map((agent) => agent.name).slice(0, MAX_AUDIT_REVIEWERS);
 }
 
-async function runAuditReviewer(
-  root: string,
-  config: HarnessProjectConfig,
-  contract: TaskContract,
-  topology: ResolvedAgentTopology,
-  reviewer: string,
-  input: AuditRequest,
-  checks: AuditValidationCheck[],
-  dirtyPaths: string[]
-): Promise<{ session: WorkerSession; findings: NormalizedFinding[] }> {
+async function runAuditReviewer(root: string, config: HarnessProjectConfig, contract: TaskContract, topology: ResolvedAgentTopology, reviewer: string, input: AuditRequest, checks: AuditValidationCheck[], dirtyPaths: string[]): Promise<{ session: WorkerSession; findings: NormalizedFinding[] }> {
   const base = executionSelectionForAgent(topology, reviewer);
   const selection: AgentExecutionSelection = { ...base, permissions: { ...base.permissions, write: "deny", gitWrite: "deny", delegate: "deny" } };
   const session = await executeAgentPrompt(root, config, contract, selection, buildAuditReviewerPrompt(input, reviewer, checks, dirtyPaths), { outputContract: "reviewer" });
@@ -181,34 +152,18 @@ async function runAuditReviewer(
     const output = reviewerOutputSchema.parse(extractMarkedJson(session.stdout, session.stderr));
     if (output.verdict === "FAIL" && output.findings.length === 0) return { session, findings: [syntheticFinding(reviewer, "Audit reviewer returned FAIL without a structured finding.")] };
     return { session, findings: output.findings };
-  } catch (error) {
-    return { session, findings: [syntheticFinding(reviewer, `Invalid audit reviewer output contract: ${String(error)}`)] };
-  }
+  } catch (error) { return { session, findings: [syntheticFinding(reviewer, `Invalid audit reviewer output contract: ${String(error)}`)] }; }
 }
 
 function buildAuditReviewerPrompt(input: AuditRequest, reviewer: string, checks: AuditValidationCheck[], dirtyPaths: string[]): string {
   return `You are ${reviewer} performing an AEH read-only engineering AUDIT.\n\nRequest:\n${input.request}\n\nScope hints: ${(input.files ?? []).join(", ") || "repository-wide"}\nDomains: ${(input.domains ?? []).join(", ") || "unspecified"}\nRisk: ${input.risk ?? "low"}\n\nThis is analysis only. Do not edit, create, delete, format, stage or commit repository files. Findings must be concrete, evidenced and actionable. Do not report style-only noise already enforced by deterministic tooling. Do not silently dismiss a deterministic failure as environment noise; use the supplied failure classification as evidence and state uncertainty when code correctness cannot be established.\n\nThe worktree had these pre-existing dirty paths when the audit started: ${dirtyPaths.join(", ") || "none"}. Do not treat pre-existing local diffs as committed source truth; inspect HEAD versions when a finding depends on one of those paths.\n\nDeterministic validation evidence:\n${JSON.stringify(checks, null, 2)}\n\nReturn the reviewer output contract as native JSON when supported, otherwise exactly one marker line:\nAEH_RESULT_JSON={"verdict":"PASS|FAIL|PASS_WITH_WARNINGS","findings":[],"finalizationSafety":"SAFE|BLOCKED|RISK_KNOWN","followUp":[]}`;
 }
 
-function syntheticFinding(agent: string, evidence: string): NormalizedFinding {
-  return { id: `AUDIT-${agent}-SYSTEM`, severity: "critical", category: "audit-system", location: { file: ".harness" }, evidence, impact: "The requested audit could not be completed reliably.", recommendedFix: "Repair the reviewer/runtime contract and rerun the audit.", suggestedAgent: agent, exceptionType: "SYSTEM_FAILURE" };
+function syntheticFinding(agent: string, evidence: string): NormalizedFinding { return { id: `AUDIT-${agent}-SYSTEM`, severity: "critical", category: "audit-system", location: { file: ".harness" }, evidence, impact: "The requested audit could not be completed reliably.", recommendedFix: "Repair the reviewer/runtime contract and rerun the audit.", suggestedAgent: agent, exceptionType: "SYSTEM_FAILURE" }; }
+
+async function persistAudit(root: string, report: AuditReport): Promise<void> {
+  const outputDir = path.resolve(root, AUDIT_OUTPUT_DIR); await fs.mkdir(outputDir, { recursive: true }); const file = path.join(outputDir, `${report.auditId}.json`); await fs.writeFile(file, `${JSON.stringify(report, null, 2)}\n`); await fs.writeFile(path.join(outputDir, "latest.json"), `${JSON.stringify({ auditId: report.auditId, report: path.relative(root, file), finishedAt: report.finishedAt }, null, 2)}\n`);
 }
 
-async function persistAudit(root: string, config: HarnessProjectConfig, report: AuditReport): Promise<void> {
-  const outputDir = path.resolve(root, config.workflow?.audit?.outputDir ?? ".harness/audits");
-  await fs.mkdir(outputDir, { recursive: true });
-  const file = path.join(outputDir, `${report.auditId}.json`);
-  await fs.writeFile(file, `${JSON.stringify(report, null, 2)}\n`);
-  await fs.writeFile(path.join(outputDir, "latest.json"), `${JSON.stringify({ auditId: report.auditId, report: path.relative(root, file), finishedAt: report.finishedAt }, null, 2)}\n`);
-}
-
-function createAuditId(request: string): string {
-  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
-  const hash = crypto.createHash("sha256").update(request).digest("hex").slice(0, 8);
-  return `AUDIT-${stamp}-${hash}`;
-}
-
-async function gitCommit(root: string): Promise<string | undefined> {
-  const result = await runProcess("git rev-parse HEAD", { cwd: root, timeoutMs: 10_000 });
-  return result.exitCode === 0 ? result.stdout.trim() || undefined : undefined;
-}
+function createAuditId(request: string): string { const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z"); const hash = crypto.createHash("sha256").update(request).digest("hex").slice(0, 8); return `AUDIT-${stamp}-${hash}`; }
+async function gitCommit(root: string): Promise<string | undefined> { const result = await runProcess("git rev-parse HEAD", { cwd: root, timeoutMs: 10_000 }); return result.exitCode === 0 ? result.stdout.trim() || undefined : undefined; }
