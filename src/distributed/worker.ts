@@ -20,12 +20,12 @@ export async function dispatchDistributedDelegation(input: {
   task: DelegationTask;
   selection: AgentExecutionSelection;
   prompt: string;
+  priorPatches?: string[];
   controller?: ControlPlaneSnapshot;
 }): Promise<DistributedDelegationResult> {
   if (!input.config.distributed?.enabled) throw new Error("Distributed execution is not enabled.");
   const remote = await runProcess("git remote get-url origin", { cwd: input.root, timeoutMs: 10_000 }); if (remote.exitCode !== 0 || !remote.stdout.trim()) throw new Error("Distributed execution requires a Git remote named origin.");
   const base = await runProcess("git rev-parse HEAD", { cwd: input.root, timeoutMs: 10_000 }); if (base.exitCode !== 0) throw new Error("Distributed execution could not resolve the workspace HEAD.");
-  // Remote v1 executes inside the worker node's own isolation boundary. Do not depend on host Podman state or Paseo sessions serialized from the coordinator.
   const selection: AgentExecutionSelection = { ...input.selection, transport: "direct" };
   const job: DistributedDelegationJob = {
     version: 1,
@@ -35,6 +35,7 @@ export async function dispatchDistributedDelegation(input: {
     repositoryUrl: remote.stdout.trim(),
     baseRef: base.stdout.trim(),
     controllerSha256: input.controller?.compositeSha256,
+    priorPatches: input.priorPatches ?? [],
     task: input.task,
     contract: input.contract,
     selection,
@@ -67,6 +68,7 @@ async function executeClaimedJob(job: DistributedDelegationJob, workerId: string
   try {
     const clone = await runProcess(`git clone --quiet --no-checkout ${quote(job.repositoryUrl)} ${quote(worktree)}`, { cwd: os.tmpdir(), timeoutMs: 300_000, toolchain: false }); if (clone.exitCode !== 0) return failure(job, workerId, startedAt, session, `clone failed: ${clone.stderr || clone.stdout}`);
     const checkout = await runProcess(`git checkout --quiet --detach ${quote(job.baseRef)}`, { cwd: worktree, timeoutMs: 120_000 }); if (checkout.exitCode !== 0) return failure(job, workerId, startedAt, session, `checkout failed: ${checkout.stderr || checkout.stdout}`);
+    for (const patch of job.priorPatches ?? []) { const applied = await runProcess("git apply --binary -", { cwd: worktree, timeoutMs: 60_000, stdin: patch }); if (applied.exitCode !== 0) return failure(job, workerId, startedAt, session, `prior wave patch failed: ${applied.stderr || applied.stdout}`); }
     const contractDir = job.config.sdd?.contractsDir ?? ".harness/contracts"; const contractFile = path.join(worktree, contractDir, `${job.contract.task.id}.yaml`); await fs.mkdir(path.dirname(contractFile), { recursive: true }); await fs.writeFile(contractFile, YAML.stringify(job.contract));
     const baseline = await runProcess("git add -A && git -c user.name=aeh -c user.email=aeh@localhost commit --no-gpg-sign --allow-empty -m 'aeh distributed baseline'", { cwd: worktree, timeoutMs: 60_000 }); if (baseline.exitCode !== 0) return failure(job, workerId, startedAt, session, `baseline commit failed: ${baseline.stderr || baseline.stdout}`);
     session = await executeAgentPrompt(worktree, job.config, job.contract, job.selection, job.prompt);
