@@ -22,7 +22,7 @@ profiles:
     tools: [uv, graphify]
   validation:
     extends: [core]
-    tools: [opa, opengrep, trivy]
+    tools: [opa, opengrep, trivy, cosign]
   full:
     extends: [agents, intelligence, validation]
     tools: [podman, dotnet, bun]
@@ -116,6 +116,13 @@ tools:
     activateWhen: [security-tool:trivy, validator:trivy]
     container:
       image: ghcr.io/aquasecurity/trivy:latest
+
+  cosign:
+    kind: mise
+    command: cosign
+    source: "aqua:sigstore/cosign"
+    version: latest
+    activateWhen: [organization:signed-policy]
 
   podman:
     kind: system
