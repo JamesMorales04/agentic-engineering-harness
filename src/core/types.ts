@@ -198,4 +198,25 @@ export interface ValidationCheck { id: string; category: string; status: CheckSt
 export interface ValidationReport { version: 1; taskId: string; status: "PASS" | "FAIL"; startedAt: string; finishedAt: string; checks: ValidationCheck[]; changedFiles: string[]; metadata: { project: string; baseRef: string; }; }
 export interface RequirementTrace { id: string; proposal: boolean; spec: boolean; design: boolean; acceptance: boolean; tasks: boolean; contract: boolean; validators: string[]; }
 export interface RepairPacket { version: 1; taskId: string; attempt: number; createdAt: string; failureType?: string; failedAgent?: string; recoveryAction?: string; failures: Array<{ id: string; category: string; message: string; details?: Record<string, unknown>; }>; }
-export interface WorkerSession { id?: string; provider: string; model?: string; logicalAgent?: string; nativeAgent?: string; runtime?: string; profile?: string; exitCode: number; stdout: string; stderr: string; metrics?: UsageMetrics; }
+export interface WorkerSession {
+  id?: string;
+  provider: string;
+  model?: string;
+  logicalAgent?: string;
+  nativeAgent?: string;
+  runtime?: string;
+  profile?: string;
+  transport?: string;
+  workspaceId?: string;
+  title?: string;
+  operationId?: string;
+  operationKind?: string;
+  phase?: string;
+  status?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  metrics?: UsageMetrics;
+}

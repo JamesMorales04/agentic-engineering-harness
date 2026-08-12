@@ -9,7 +9,7 @@ Use this skill whenever an AEH lead, planner or coordinator delegates work throu
 
 ## Preferred control surface
 
-When Paseo tools are injected into the current agent, prefer them over shell commands:
+When Paseo tools are injected into the current agent, prefer them over shell commands for bounded conversational delegation:
 
 - `create_agent` for a bounded subagent;
 - `send_agent_prompt` for follow-up work;
@@ -17,9 +17,24 @@ When Paseo tools are injected into the current agent, prefer them over shell com
 - `cancel_agent` / `archive_agent` for lifecycle cleanup;
 - `update_agent` / `set_agent_mode` for supported runtime changes.
 
+When the optional AEH operation MCP server (`aeh operation mcp`) is injected, use its tools for long deterministic Harness workflows:
+
+- `aeh_operation_start_audit`;
+- `aeh_operation_start_run`;
+- `aeh_operation_status`;
+- `aeh_operation_cancel`.
+
+These MCP tools call the same persistent detached operation controller as the CLI. They do not create a controller LLM agent. If the AEH MCP server is not injected, `aeh operation start/status/cancel` is the short non-blocking compatibility surface; do not replace it with a long synchronous `aeh audit`/`aeh run` from the conversational lead.
+
 Load `/paseo` when the exact current Paseo surface is needed. Use `/paseo-handoff` when responsibility, not merely a subtask, should move to a fresh agent. `/paseo-committee` and `/paseo-advisor` are analysis-only escalation tools and must not replace deterministic AEH gates.
 
-The Harness CLI/daemon adapter remains a deterministic fallback when native tools are unavailable. Do not hand-write `paseo run` shell loops from the lead unless AEH explicitly reports that it is using the CLI fallback.
+The Harness CLI/daemon adapter remains a deterministic compatibility path when native tools/SDK are unavailable. Do not hand-write `paseo run` shell loops from the lead unless AEH explicitly reports that it is using the CLI fallback.
+
+## Visible execution graph
+
+Real planner/reviewer/implementer/oracle sessions should be top-level Paseo agents labeled with their AEH operation/task/role. The deterministic operation controller remains outside the agent graph. Operation-local Paseo workspaces are grouping containers; delivery worktree workspaces are a separate Git-isolation concern.
+
+Use `aeh paseo agents --operation <id>` (or Paseo's corresponding directory/status tools) to observe real participants without scraping terminal output.
 
 ## Lead discipline
 
@@ -35,4 +50,4 @@ Return compact structured summaries to the lead. Do not paste raw logs or entire
 
 ## Context pressure
 
-Before broad engineering work, inspect the current agent status if Paseo exposes context usage. At the configured handoff threshold, create a deterministic AEH handoff artifact and use `/paseo-handoff` (preferred) or `create_agent` to continue in a fresh lead. Do not compact and continue as the normal path when AEH has declared `HANDOFF_REQUIRED` or `HARD_HANDOFF`.
+Before broad engineering work, inspect the current agent status if Paseo exposes context usage. At the configured handoff threshold, create a deterministic AEH handoff artifact and use `/paseo-handoff` (preferred) or `create_agent` to continue in a fresh lead. Detached operations and their top-level workers remain valid across lead rotation. Do not compact and continue as the normal path when AEH has declared `HANDOFF_REQUIRED` or `HARD_HANDOFF`.

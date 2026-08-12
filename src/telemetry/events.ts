@@ -2,9 +2,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { trace } from "@opentelemetry/api";
 import type { HarnessProjectConfig } from "../core/types.js";
+import { updateCurrentOperationPhase } from "../operations/state.js";
 import { exportEventSpan } from "./otlp.js";
 
 export async function recordEvent(root: string, config: HarnessProjectConfig, name: string, attributes: Record<string, unknown>): Promise<void> {
+  const phase = operationPhaseForEvent(name);
+  if (phase) await updateCurrentOperationPhase(root, phase);
   if (config.telemetry?.enabled === false) return;
   const at = new Date();
   const tracer = trace.getTracer("agentic-engineering-harness");
@@ -24,4 +27,14 @@ export async function recordEvent(root: string, config: HarnessProjectConfig, na
     if (config.telemetry?.required) throw error;
     await fs.appendFile(file, `${JSON.stringify({ at: new Date().toISOString(), name: "harness.telemetry.export.error", attributes: { sourceEvent: name, error: String(error) } })}\n`);
   }
+}
+
+function operationPhaseForEvent(name: string): string | undefined {
+  if (name === "harness.run.start") return "executing";
+  if (name.includes("planner") || name.includes("wave")) return "planning";
+  if (name === "harness.repair.start" || name.includes("remediation")) return "remediation";
+  if (name.includes("review")) return "review";
+  if (name.includes("delivery")) return "delivery";
+  if (name === "harness.audit.start") return "preparing-audit";
+  return undefined;
 }

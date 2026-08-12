@@ -13,9 +13,10 @@ import { createWorktreeCheckpoint, rollbackWorktreeCheckpoint } from "../agents/
 import { createControlPlaneSnapshot } from "../core/controlPlane.js";
 import { sealTask } from "../core/seal.js";
 import type { HarnessProjectConfig, TaskContract, TaskRisk, ValidationCheck, WorkerSession } from "../core/types.js";
+import { updateCurrentOperationPhase } from "../operations/state.js";
 import { runValidationCommand } from "../validators/commands.js";
 import { runConfiguredValidators } from "../validators/registry.js";
-import { executeAgentPrompt } from "../workers/agentPrompt.js";
+import { dispatchMaterializedAgentPrompt, materializeAgentPrompt } from "../workers/agentPrompt.js";
 import { recordEvent } from "../telemetry/events.js";
 import { runProcess } from "../utils/process.js";
 
@@ -55,9 +56,15 @@ export interface AuditReport {
   controlPlaneSha256?: string;
 }
 
+interface PreparedAuditReviewer {
+  reviewer: string;
+  selection: AgentExecutionSelection;
+  materialized?: WorkerSession;
+}
+
 const AUDIT_OUTPUT_DIR = ".harness/audits";
-const MAX_AUDIT_REVIEWERS = 4;
 const DEFAULT_AUDIT_REVIEWERS = ["code-quality-reviewer", "architecture-reviewer", "security-reviewer", "test-quality-reviewer", "test-reviewer"];
+const AUDIT_REVIEWER_BUDGET: Record<TaskRisk, number> = { low: 5, medium: 6, high: 8 };
 
 export async function runAudit(root: string, config: HarnessProjectConfig, input: AuditRequest): Promise<AuditReport> {
   const startedAt = new Date().toISOString();
@@ -79,14 +86,21 @@ export async function runAudit(root: string, config: HarnessProjectConfig, input
 
   await recordEvent(root, config, "harness.audit.start", { auditId, request: input.request, reviewers, dirtyPaths, commit });
   try {
+    await updateCurrentOperationPhase(root, "materializing-reviewers");
+    const prepared = await Promise.all(reviewers.map((reviewer) => prepareAuditReviewer(root, config, contract, topology, reviewer)));
+
+    await updateCurrentOperationPhase(root, "validating");
     for (const command of config.validation?.commands ?? []) validationChecks.push(classifyValidationCheck(await runValidationCommand(root, command)));
     validationChecks.push(...(await runConfiguredValidators(root, config, contract, baseRef, [])).map(classifyValidationCheck));
-    const outputs = await Promise.all(reviewers.map((name) => runAuditReviewer(root, config, contract, topology, name, input, validationChecks, dirtyPaths)));
+
+    await updateCurrentOperationPhase(root, "reviewing");
+    const outputs = await Promise.all(prepared.map((reviewer) => runPreparedAuditReviewer(root, config, contract, reviewer, input, validationChecks, dirtyPaths)));
     for (const output of outputs) { sessions.push(output.session); findings.push(...output.findings); }
   } finally {
     restoredPaths = await rollbackWorktreeCheckpoint(root, checkpoint);
   }
 
+  await updateCurrentOperationPhase(root, "consolidating");
   const deduped = dedupeFindings(findings);
   const quality = calculateQuality(deduped.findings, config);
   const qualityGate = evaluateFinalQualityGate(deduped.findings, config);
@@ -145,24 +159,33 @@ async function materializeAuditContract(root: string, config: HarnessProjectConf
   await fs.writeFile(path.join(contractsDir, `${contract.task.id}.yaml`), YAML.stringify(contract));
 }
 
-function selectAuditReviewers(topology: ResolvedAgentTopology, input: AuditRequest): string[] {
-  const routed = resolveRoute(topology, { intent: "audit", domains: input.domains ?? [], files: input.files ?? [], risk: input.risk ?? "low" }).reviewers;
-  const requested = [...new Set([...(input.reviewers ?? []), ...routed, ...DEFAULT_AUDIT_REVIEWERS])];
-  const available = requested.filter((name) => topology.agents[name]?.role === "reviewer" && !topology.agents[name]?.disabled);
-  if (available.length) return available.slice(0, MAX_AUDIT_REVIEWERS);
-  return Object.values(topology.agents).filter((agent) => agent.role === "reviewer" && !agent.disabled).map((agent) => agent.name).slice(0, MAX_AUDIT_REVIEWERS);
+export function selectAuditReviewers(topology: ResolvedAgentTopology, input: AuditRequest): string[] {
+  const risk = input.risk ?? "low";
+  const routed = resolveRoute(topology, { intent: "audit", domains: input.domains ?? [], files: input.files ?? [], risk }).reviewers;
+  const explicitlyRequested = [...new Set(input.reviewers ?? [])];
+  const ordered = [...new Set([...explicitlyRequested, ...routed, ...DEFAULT_AUDIT_REVIEWERS])];
+  const available = ordered.filter((name) => topology.agents[name]?.role === "reviewer" && !topology.agents[name]?.disabled);
+  const fallback = Object.values(topology.agents).filter((agent) => agent.role === "reviewer" && !agent.disabled).map((agent) => agent.name);
+  const candidates = available.length ? available : fallback;
+  const budget = Math.max(AUDIT_REVIEWER_BUDGET[risk], explicitlyRequested.length);
+  return candidates.slice(0, budget);
 }
 
-async function runAuditReviewer(root: string, config: HarnessProjectConfig, contract: TaskContract, topology: ResolvedAgentTopology, reviewer: string, input: AuditRequest, checks: AuditValidationCheck[], dirtyPaths: string[]): Promise<{ session: WorkerSession; findings: NormalizedFinding[] }> {
+async function prepareAuditReviewer(root: string, config: HarnessProjectConfig, contract: TaskContract, topology: ResolvedAgentTopology, reviewer: string): Promise<PreparedAuditReviewer> {
   const base = executionSelectionForAgent(topology, reviewer);
   const selection: AgentExecutionSelection = { ...base, permissions: { ...base.permissions, write: "deny", gitWrite: "deny", delegate: "deny" } };
-  const session = await executeAgentPrompt(root, config, contract, selection, buildAuditReviewerPrompt(input, reviewer, checks, dirtyPaths), { outputContract: "reviewer" });
-  if (session.exitCode !== 0) return { session, findings: [syntheticFinding(reviewer, `Audit reviewer runtime exited with code ${session.exitCode}.`)] };
+  const materialized = await materializeAgentPrompt(root, config, contract, selection, { outputContract: "reviewer", phase: "review", operationKind: "audit" });
+  return { reviewer, selection, materialized };
+}
+
+async function runPreparedAuditReviewer(root: string, config: HarnessProjectConfig, contract: TaskContract, prepared: PreparedAuditReviewer, input: AuditRequest, checks: AuditValidationCheck[], dirtyPaths: string[]): Promise<{ session: WorkerSession; findings: NormalizedFinding[] }> {
+  const session = await dispatchMaterializedAgentPrompt(root, config, contract, prepared.selection, prepared.materialized, buildAuditReviewerPrompt(input, prepared.reviewer, checks, dirtyPaths), { outputContract: "reviewer", phase: "review", operationKind: "audit" });
+  if (session.exitCode !== 0) return { session, findings: [syntheticFinding(prepared.reviewer, `Audit reviewer runtime exited with code ${session.exitCode}.`)] };
   try {
     const output = reviewerOutputSchema.parse(extractMarkedJson(session.stdout, session.stderr));
-    if (output.verdict === "FAIL" && output.findings.length === 0) return { session, findings: [syntheticFinding(reviewer, "Audit reviewer returned FAIL without a structured finding.")] };
+    if (output.verdict === "FAIL" && output.findings.length === 0) return { session, findings: [syntheticFinding(prepared.reviewer, "Audit reviewer returned FAIL without a structured finding.")] };
     return { session, findings: output.findings };
-  } catch (error) { return { session, findings: [syntheticFinding(reviewer, `Invalid audit reviewer output contract: ${String(error)}`)] }; }
+  } catch (error) { return { session, findings: [syntheticFinding(prepared.reviewer, `Invalid audit reviewer output contract: ${String(error)}`)] }; }
 }
 
 function buildAuditReviewerPrompt(input: AuditRequest, reviewer: string, checks: AuditValidationCheck[], dirtyPaths: string[]): string {
