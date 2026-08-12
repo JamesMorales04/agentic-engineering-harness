@@ -19,9 +19,10 @@ function topology(): ResolvedAgentTopology {
 }
 function processResult(exitCode: number, stdout = "", stderr = "") { return { exitCode, stdout, stderr, durationMs: 1 }; }
 function capabilities() { return { version: "0.6.0", background: true, quiet: true, json: false, outputSchema: true, daemonJson: true, nativeToolsRecommended: true }; }
+function managed(id: string) { return { id, exitCode: 0, stdout: "", stderr: "", status: "idle", transport: "sdk" as const }; }
 
 describe("Paseo Harness start", () => {
-  it("creates a fresh lead on every normal start and reuses only with explicit resume", async () => {
+  it("creates idle SDK leads, keeps bootstrap out of user messages, and reuses only with explicit resume", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-paseo-start-"));
     const commands: string[] = [];
     let daemonReady = false; let launchCount = 0;
@@ -30,46 +31,46 @@ describe("Paseo Harness start", () => {
       if (command === "paseo daemon status --json") return daemonReady ? processResult(0, "{}") : processResult(1, "", "not running");
       if (command === "paseo daemon stop") return processResult(0, "stopped");
       if (command === "paseo daemon start --web-ui") { daemonReady = true; return processResult(0, "started"); }
-      if (command.startsWith("paseo run --background")) { launchCount += 1; return processResult(0, `agent-${launchCount}\n`); }
-      if (/^paseo wait 'agent-\d+' --timeout 300$/.test(command)) return processResult(0, "idle");
-      if (/^paseo logs 'agent-\d+' --tail 1$/.test(command)) return processResult(0, "AEH READY");
       throw new Error(`unexpected command: ${command}`);
     });
     const setup = vi.fn(async () => ({} as never));
-    const deps = { run: run as never, commandExists: vi.fn(async () => true) as never, setupToolchain: setup as never, loadTopology: vi.fn(async () => topology()) as never, detectCapabilities: vi.fn(async () => capabilities()) as never };
+    const launchAgent = vi.fn(async () => { launchCount += 1; return managed(`agent-${launchCount}`); });
+    const probeAgent = vi.fn(async () => true);
+    const deps = { run: run as never, commandExists: vi.fn(async () => true) as never, setupToolchain: setup as never, loadTopology: vi.fn(async () => topology()) as never, detectCapabilities: vi.fn(async () => capabilities()) as never, launchAgent: launchAgent as never, probeAgent: probeAgent as never };
 
     const first = await startPaseoHarness(root, config, { aehCommand: "node /pkg/dist/entry.js" }, deps);
-    expect(first.session).toBe("created"); expect(first.agentId).toBe("agent-1"); expect(first.daemonStarted).toBe(true);
+    expect(first.session).toBe("created"); expect(first.agentId).toBe("agent-1"); expect(first.daemonStarted).toBe(true); expect(first.transport).toBe("sdk");
     const second = await startPaseoHarness(root, config, { aehCommand: "node /pkg/dist/entry.js" }, deps);
     expect(second.session).toBe("created"); expect(second.agentId).toBe("agent-2");
     const resumed = await startPaseoHarness(root, config, { resume: true, aehCommand: "node /pkg/dist/entry.js" }, deps);
     expect(resumed.session).toBe("reused"); expect(resumed.agentId).toBe("agent-2");
-    expect(launchCount).toBe(2);
+    expect(launchCount).toBe(2); expect(probeAgent).toHaveBeenCalledWith(root, "agent-2");
 
     const state = JSON.parse(await fs.readFile(path.join(root, ".harness/paseo/lead-session.json"), "utf8")) as { agentId: string; bootstrapVersion: number; generation: number };
-    expect(state.agentId).toBe("agent-2"); expect(state.bootstrapVersion).toBe(3); expect(state.generation).toBe(2);
+    expect(state.agentId).toBe("agent-2"); expect(state.bootstrapVersion).toBe(4); expect(state.generation).toBe(2);
     const bootstrap = await fs.readFile(path.join(root, ".harness/paseo/lead-bootstrap.md"), "utf8");
     expect(bootstrap).toContain("ORCHESTRATOR");
-    expect(bootstrap).toContain("environment-manager");
-    expect(bootstrap).toContain("spec-manager");
+    expect(bootstrap).toContain("resolved AEH agent topology");
     expect(bootstrap).toContain("OpenSpec");
     expect(bootstrap).toContain("/paseo-handoff");
-    expect(bootstrap).toContain("80%");
     expect(bootstrap).toContain("node /pkg/dist/entry.js");
-    expect(commands.some((command) => command.includes("--provider 'codex'") && command.includes("--model 'gpt-test'"))).toBe(true);
+    expect(bootstrap).not.toContain("Delegation policy:");
+    expect(bootstrap).not.toContain("environment-manager");
+    expect(bootstrap).not.toContain("spec-manager");
+    expect(bootstrap).not.toContain("AEH READY");
+    expect(commands.some((command) => command.startsWith("paseo run"))).toBe(false);
+    expect(launchAgent).toHaveBeenCalledWith(root, expect.objectContaining({ provider: "codex", model: "gpt-test", prompt: undefined, systemPrompt: expect.stringContaining("resolved AEH agent topology"), labels: expect.objectContaining({ "aeh.kind": "lead", "aeh.role": "lead" }), waitForFinish: false }));
   });
 
-  it("recovers a stale daemon before starting it", async () => {
+  it("recovers a stale daemon before starting an SDK lead", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-paseo-stale-")); let calls = 0;
     const run = vi.fn(async (command: string) => {
       if (command === "paseo daemon status --json") { calls += 1; return calls === 1 ? processResult(1, "", "stale_pid/unreachable") : processResult(0, "{}"); }
       if (command === "paseo daemon stop") return processResult(0, "stopped");
       if (command === "paseo daemon start --web-ui") return processResult(0, "started");
-      if (command.startsWith("paseo run --background")) return processResult(0, "agent-stale\n");
-      if (command === "paseo wait 'agent-stale' --timeout 300") return processResult(0, "idle");
       throw new Error(command);
     });
-    const deps = { run: run as never, commandExists: vi.fn(async () => true) as never, setupToolchain: vi.fn(async () => ({} as never)) as never, loadTopology: vi.fn(async () => topology()) as never, detectCapabilities: vi.fn(async () => capabilities()) as never };
+    const deps = { run: run as never, commandExists: vi.fn(async () => true) as never, setupToolchain: vi.fn(async () => ({} as never)) as never, loadTopology: vi.fn(async () => topology()) as never, detectCapabilities: vi.fn(async () => capabilities()) as never, launchAgent: vi.fn(async () => managed("agent-stale")) as never, probeAgent: vi.fn(async () => false) as never };
     const value = await startPaseoHarness(root, config, {}, deps);
     expect(value.daemonStarted).toBe(true);
     expect(run).toHaveBeenCalledWith("paseo daemon stop", expect.anything());
@@ -78,22 +79,22 @@ describe("Paseo Harness start", () => {
   it("auto-runs toolchain setup when Paseo or the lead runtime is missing", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-paseo-setup-")); let reconciled = false;
     const setup = vi.fn(async () => { reconciled = true; return {} as never; });
-    const deps = { run: vi.fn(async (command: string) => { if (command === "paseo daemon status --json") return processResult(0, "{}"); if (command.startsWith("paseo run --background")) return processResult(0, "agent-setup\n"); if (command === "paseo wait 'agent-setup' --timeout 300") return processResult(0, "idle"); throw new Error(`unexpected command: ${command}`); }) as never, commandExists: vi.fn(async () => reconciled) as never, setupToolchain: setup as never, loadTopology: vi.fn(async () => topology()) as never, detectCapabilities: vi.fn(async () => capabilities()) as never };
+    const deps = { run: vi.fn(async (command: string) => { if (command === "paseo daemon status --json") return processResult(0, "{}"); throw new Error(`unexpected command: ${command}`); }) as never, commandExists: vi.fn(async () => reconciled) as never, setupToolchain: setup as never, loadTopology: vi.fn(async () => topology()) as never, detectCapabilities: vi.fn(async () => capabilities()) as never, launchAgent: vi.fn(async () => managed("agent-setup")) as never, probeAgent: vi.fn(async () => false) as never };
     const value = await startPaseoHarness(root, config, {}, deps);
     expect(value.session).toBe("created"); expect(setup).toHaveBeenCalledTimes(1); expect(setup).toHaveBeenCalledWith(root, config, { skipProjectDependencies: true });
   });
 
-  it("builds a bootstrap that routes operations through delegated roles and proactive handoff", () => {
+  it("builds a thin bootstrap that delegates role authority to topology and workflow files", () => {
     const bootstrap = buildPaseoLeadBootstrap("pawra", "/repo/pawra", "npm exec -- aeh");
     expect(bootstrap).toContain("ORCHESTRATOR");
-    expect(bootstrap).toContain("explorer");
-    expect(bootstrap).toContain("environment-manager");
-    expect(bootstrap).toContain("spec-manager");
-    expect(bootstrap).toContain("create_agent");
+    expect(bootstrap).toContain("resolved AEH agent topology");
     expect(bootstrap).toContain("/paseo-handoff");
     expect(bootstrap).toContain("OpenSpec");
-    expect(bootstrap).toContain("80%");
     expect(bootstrap).toContain("npm exec -- aeh");
+    expect(bootstrap).not.toContain("explorer");
+    expect(bootstrap).not.toContain("environment-manager");
+    expect(bootstrap).not.toContain("spec-manager");
+    expect(bootstrap).not.toContain("AEH READY");
   });
 
   it("resolves lead explicitly, then falls back to an enabled orchestrator", () => {
