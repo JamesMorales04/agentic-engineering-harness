@@ -18,6 +18,15 @@ jobs:
           node-version: 22
           package-manager-cache: false
       - run: npm ci
+      - name: Smoke repo-local self CLI resolution
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED_VERSION="$(node -p "require('./package.json').version")"
+          test -x ./node_modules/.bin/aeh
+          ./node_modules/.bin/aeh --version | grep -Fx "$EXPECTED_VERSION"
+          npm exec -- aeh --version | grep -Fx "$EXPECTED_VERSION"
+          npm exec -- aeh --help | grep -q 'operation start audit|run'
       - run: npm run release:check
       - name: Smoke packaged CLI from consumer install
         shell: bash
