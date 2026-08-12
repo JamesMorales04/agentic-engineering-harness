@@ -10,6 +10,11 @@ agents:
   required: true
   findingsDir: .harness/findings
 
+controlPlane:
+  snapshotDir: .harness/controller
+  required: true
+  include: []
+
 workflow:
   quick:
     maxFiles: 5
@@ -30,6 +35,13 @@ workflow:
     requireOpen: true
     plannerAgent: planner
     autoHandoff: true
+  planning:
+    enabled: true
+    plannerAgent: planner
+    worktreeIsolation: true
+    barrierValidation: true
+    maxWaveConcurrency: 4
+    distributed: false
   reviews:
     enabled: true
     reviewQuick: false
@@ -119,6 +131,23 @@ mcp:
       url: https://mcp.sentry.dev/mcp
       enabled: false
       timeoutMs: 10000
+  benchmark:
+    enabled: false
+    resultsDir: .harness/mcp-benchmarks
+    repetitions: 3
+  packs:
+    research:
+      servers: [context7]
+      enabled: true
+    browser:
+      servers: [playwright, context7]
+      enabled: true
+    github-readonly:
+      servers: [github]
+      enabled: true
+    observability:
+      servers: [sentry]
+      enabled: false
 
 delivery:
   stateDir: .harness/delivery
@@ -149,6 +178,29 @@ codeIntelligence:
   required: false
   graphPath: graphify-out/graph.json
   snapshotDir: .harness/graphify
+  scheduling:
+    useEdges: true
+    maxGraphHops: 1
+    maxSharedNodes: 0
+    centralityConflictThreshold: 0.35
+
+evidence:
+  enabled: true
+  outputDir: .harness/evidence
+  requireComplete: true
+
+organization:
+  policyBundles:
+    cacheDir: .harness/policy-bundles
+    required: false
+    sources: []
+
+distributed:
+  enabled: false
+  provider: filesystem
+  queueDir: .harness/distributed
+  pollIntervalMs: 1000
+  leaseSeconds: 1800
 
 sdd:
   specsDir: specs
@@ -175,6 +227,14 @@ security:
   sandbox:
     provider: podman
     required: false
+    readOnlyRoot: true
+    ephemeralHome: true
+    noNewPrivileges: true
+    capDropAll: true
+    pidsLimit: 512
+    forceForRisks: []
+    environmentAllowlist: []
+    credentialEnvAllowlist: []
   tools:
     - opengrep
     - trivy
@@ -190,7 +250,9 @@ evals:
   corpusDir: evals/corpus
   resultsDir: .harness/evals/results
   workspacesDir: .harness/evals/workspaces
+  defaultRuns: 5
+  confidenceLevel: 0.95
 
 provenance:
   outputDir: .harness/provenance
-  buildType: https://github.com/JamesMorales04/agentic-engineering-harness/v0.4
+  buildType: https://github.com/JamesMorales04/agentic-engineering-harness/v0.5
