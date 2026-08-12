@@ -40,7 +40,9 @@ jobs:
           npm init -y >/dev/null
           npm install "$GITHUB_WORKSPACE/$TGZ" >/dev/null
           ./node_modules/.bin/aeh --version | grep -Fx "$EXPECTED_VERSION"
-          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | ./node_modules/.bin/aeh operation mcp | grep -q 'aeh_operation_start_audit'
+          TOOLS="$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | ./node_modules/.bin/aeh operation mcp)"
+          printf '%s\n' "$TOOLS" | grep -q 'aeh_operation_start_audit'
+          printf '%s\n' "$TOOLS" | grep -q 'aeh_context_status'
           mkdir repo
           ./node_modules/.bin/aeh init repo
           test -f repo/.harness/project.yaml
