@@ -100,14 +100,19 @@ async function withOperationLock<T>(file: string, action: () => Promise<T>): Pro
     let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
     try {
       handle = await fs.open(lock, "wx");
-      await handle.writeFile(`${process.pid}\n`);
-      try { return await action(); }
-      finally {
+      try {
+        await handle.writeFile(`${process.pid}\n`);
+        return await action();
+      } finally {
         await handle.close().catch(() => undefined);
         await fs.rm(lock, { force: true }).catch(() => undefined);
       }
     } catch (error) {
-      await handle?.close().catch(() => undefined);
+      if (handle) {
+        await handle.close().catch(() => undefined);
+        await fs.rm(lock, { force: true }).catch(() => undefined);
+        throw error;
+      }
       if (!isAlreadyExists(error)) throw error;
       if (await canRecoverLock(lock)) {
         await fs.rm(lock, { force: true }).catch(() => undefined);
@@ -135,8 +140,8 @@ function processAlive(pid: number): boolean {
 
 function guardTerminalTransition(current: OperationRecord, patch: Partial<OperationRecord>): Partial<OperationRecord> {
   if (!isTerminal(current.status)) return patch;
-  const guarded = { ...patch, status: current.status, finishedAt: current.finishedAt ?? patch.finishedAt };
-  if (patch.status !== current.status) guarded.phase = current.phase;
+  const guarded: Partial<OperationRecord> = {};
+  if (patch.cleanupWarnings) guarded.cleanupWarnings = patch.cleanupWarnings;
   return guarded;
 }
 
