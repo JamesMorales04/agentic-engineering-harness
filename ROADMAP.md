@@ -1,60 +1,49 @@
 # Roadmap
 
 ## v0.1 — foundation ✅
+- [x] portable CLI, TaskContracts, sealing, deterministic gates, OPA, Paseo/Engram/Graphify, telemetry and reusable skills
 
-- [x] portable TypeScript CLI
-- [x] project bootstrap and technology presets
-- [x] TaskContracts and SHA-256 sealing
-- [x] basic deterministic build/test/diff gates
-- [x] OPA policy scaffolding
-- [x] Paseo, Engram and Graphify provider abstractions
-- [x] local lifecycle telemetry and OTel API spans
-- [x] reusable lead/worker/SDD/validation/memory skills
-
-## v0.2.1 — requirement traceability ✅
-- [x] canonical requirement IDs across proposal/spec/design/tasks/Gherkin/TaskContract
-- [x] traceability matrix and orphan detection
-- [x] validator reference resolution
-- [x] generated TaskContract
-
-## v0.2.2 — executable Gherkin and validator registry ✅
-- [x] adapter-based validator registry
-- [x] Reqnroll discovery and tag filtering
-- [x] normalized results and OpenAPI compatibility
-
-## v0.2.3 — worker execution ✅
-- [x] `aeh run <task>`
-- [x] Paseo/OpenCode executor
-- [x] Podman/OpenCode executor
-- [x] sealed read-only normative artifacts
-- [x] Graphify snapshot lifecycle
-
-## v0.2.4 — finite repair loop ✅
-- [x] deterministic repair packets
-- [x] finite repair budget
-- [x] same-session Paseo repairs
-- [x] persisted run/repair artifacts
-
-## v0.2.5 — architecture, security, browser and contracts ✅
-- [x] Graphify impact gates
-- [x] Opengrep and Trivy
-- [x] Playwright
-- [x] Pact/custom contracts
-- [x] OpenAPI compatibility
-- [x] real dependency/schema evidence for OPA
+## v0.2 — executable delivery ✅
+- [x] requirement traceability, executable Gherkin, validator registry, workers, repair loops, architecture/security/browser/API gates
 
 ## v0.3 — measurement and provenance ✅
-- [x] engineering eval runner over frozen historical tasks/base refs
-- [x] first-pass success, repair-count, human-intervention, duration and token/cost metrics
-- [x] OTLP/HTTP JSON export plus OSS collector configuration
-- [x] configurable Engram/Cognee/Graphiti memory-provider benchmark
-- [x] mutation/property-testing adapters
-- [x] CycloneDX SBOM + Cosign bundle + in-toto/SLSA v1 provenance
-- [x] release hardening and gated npm package publishing
+- [x] engineering evals, run metrics, OTLP, memory benchmarks, mutation/property adapters, SBOM/Cosign/in-toto/SLSA and release hardening
 
-## v0.4 — scale and governance
-- [ ] eval dashboards and statistical significance across repeated runs
-- [ ] graph-derived safe parallelism scheduler
-- [ ] policy bundles/versioned organization profiles
-- [ ] remote execution queue and distributed workers
-- [ ] signed policy/spec provenance and release verification gates
+## v0.4.1 — agent registry + model aliases ✅
+- [x] logical agent/runtime/model separation
+- [x] centralized `@brain` / `@workhorse` aliases
+
+## v0.4.2 — profiles + JSONC compiler ✅
+- [x] JSONC source topology
+- [x] profile overrides and deterministic generated runtime
+
+## v0.4.3 — routing + output contracts ✅
+- [x] intent/domain/file/risk routing
+- [x] planner/implementer/reviewer/validator/recovery output schemas
+
+## v0.4.4 — failure taxonomy + recovery policy ✅
+- [x] canonical failure classification
+- [x] data-driven bounded retry/reroute/escalation
+
+## v0.4.5 — prompt/skill/config drift gates ✅
+- [x] reference and generated-runtime audits
+
+## v0.4.6 — permissions/capabilities ✅
+- [x] permission model
+- [x] runtime capability validation
+- [x] OpenCode native-agent support through direct/Podman transport
+
+## v0.4.7 — Graphify-assisted parallelism ✅
+- [x] dependency/scope scheduling
+- [x] conservative structural-community conflicts
+
+## v0.4.8 — finding normalization/dedup ✅
+- [x] standardized reviewer finding schema
+- [x] deterministic adjacent/overlap dedup with severity preservation
+
+## v0.5 — scale and governance
+- [ ] repeated-run eval dashboards/statistical confidence
+- [ ] signed organization policy bundles and inheritance
+- [ ] remote execution queue/distributed workers
+- [ ] richer code-graph task-to-node mapping for parallel scheduling
+- [ ] output-schema-native runtime adapters and structured session resume

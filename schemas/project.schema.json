@@ -7,15 +7,9 @@
   "properties": {
     "version": { "const": 1 },
     "project": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string", "minLength": 1 } } },
+    "agents": { "type": "object", "properties": { "configPath": { "type": "string" }, "generatedPath": { "type": "string" }, "activeProfile": { "type": "string" }, "required": { "type": "boolean" }, "findingsDir": { "type": "string" } } },
     "orchestration": { "type": "object", "properties": { "provider": { "type": "string" }, "required": { "type": "boolean" }, "worker": { "type": "object", "properties": { "provider": { "type": "string" }, "model": { "type": ["string", "null"] }, "maxRepairAttempts": { "type": "integer", "minimum": 0 }, "timeoutSeconds": { "type": "integer", "minimum": 1 }, "titlePrefix": { "type": "string" } } } } },
-    "memory": { "type": "object", "properties": { "provider": { "type": "string" }, "required": { "type": "boolean" }, "benchmark": { "type": "object", "properties": { "casesDir": { "type": "string" }, "resultsDir": { "type": "string" }, "providers": { "type": "array", "items": { "type": "object", "required": ["name", "command"], "properties": { "name": { "type": "string" }, "command": { "type": "string" }, "timeoutSeconds": { "type": "integer", "minimum": 1 } } } } } } } },
-    "codeIntelligence": { "type": "object" },
-    "sdd": { "type": "object" },
-    "validation": { "type": "object" },
-    "security": { "type": "object" },
-    "telemetry": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "required": { "type": "boolean" }, "localEventsFile": { "type": "string" }, "exporter": { "type": "string" }, "endpoint": { "type": "string" }, "headers": { "type": "object", "additionalProperties": { "type": "string" } }, "serviceName": { "type": "string" } } },
-    "evals": { "type": "object", "properties": { "corpusDir": { "type": "string" }, "resultsDir": { "type": "string" }, "workspacesDir": { "type": "string" } } },
-    "provenance": { "type": "object", "properties": { "outputDir": { "type": "string" }, "buildType": { "type": "string" }, "cosignKey": { "type": "string" } } }
+    "memory": { "type": "object" }, "codeIntelligence": { "type": "object" }, "sdd": { "type": "object" }, "validation": { "type": "object" }, "security": { "type": "object" }, "telemetry": { "type": "object" }, "evals": { "type": "object" }, "provenance": { "type": "object" }
   },
   "additionalProperties": false
 }

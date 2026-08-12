@@ -1,1 +1,13 @@
-{"$schema":"https://json-schema.org/draft/2020-12/schema","title":"Agentic Engineering Harness TaskContract","type":"object","required":["version","task"],"properties":{"version":{"const":1},"task":{"type":"object","required":["id","title"],"properties":{"id":{"type":"string"},"title":{"type":"string"}}},"source":{"type":"object","properties":{"proposal":{"type":"string"},"spec":{"type":"string"},"design":{"type":"string"},"tasks":{"type":"string"},"acceptance":{"type":"string"}}},"git":{"type":"object","properties":{"baseRef":{"type":"string"}}},"scope":{"type":"object","properties":{"allowed":{"type":"array","items":{"type":"string"}},"forbidden":{"type":"array","items":{"type":"string"}},"frozen":{"type":"array","items":{"type":"string"}}}},"requirements":{"type":"array","items":{"type":"object","required":["id"],"properties":{"id":{"type":"string"},"description":{"type":"string"},"validator":{"type":"string"},"validators":{"type":"array","items":{"type":"string"}}}}},"constraints":{"type":"object","properties":{"breakingApiChanges":{"type":"boolean"},"newDependencies":{"type":"boolean"},"schemaChanges":{"type":"boolean"},"maxFilesChanged":{"type":"integer","minimum":1},"maxLinesAdded":{"type":"integer","minimum":0},"maxLinesDeleted":{"type":"integer","minimum":0}}},"impact":{"type":"object","properties":{"forbiddenEdges":{"type":"array","items":{"type":"string"}},"forbiddenNodes":{"type":"array","items":{"type":"string"}},"allowedCommunities":{"type":"array","items":{"type":"string"}}},"repair":{"type":"object","properties":{"maxAttempts":{"type":"integer","minimum":0}}},"verification":{"type":"object","properties":{"commands":{"type":"array"},"validators":{"type":"array"}}}}}
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Agentic Engineering Harness TaskContract",
+  "type": "object",
+  "required": ["version", "task"],
+  "properties": {
+    "version": { "const": 1 },
+    "task": { "type": "object", "required": ["id", "title"], "properties": { "id": { "type": "string" }, "title": { "type": "string" } } },
+    "source": { "type": "object" }, "git": { "type": "object" }, "scope": { "type": "object" },
+    "routing": { "type": "object", "properties": { "intent": { "type": "string" }, "domains": { "type": "array", "items": { "type": "string" } }, "risk": { "enum": ["low", "medium", "high"] }, "agent": { "type": "string" }, "reviewers": { "type": "array", "items": { "type": "string" } }, "profile": { "type": "string" } } },
+    "requirements": { "type": "array" }, "constraints": { "type": "object" }, "impact": { "type": "object" }, "repair": { "type": "object" }, "verification": { "type": "object" }
+  }
+}
