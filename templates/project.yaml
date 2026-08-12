@@ -75,7 +75,6 @@ orchestration:
   required: false
   worker:
     provider: opencode
-    model: null
     maxRepairAttempts: 2
 
 memory:
