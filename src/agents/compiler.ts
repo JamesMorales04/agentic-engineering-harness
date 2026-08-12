@@ -64,8 +64,10 @@ async function validateReferences(root: string, topology: ResolvedAgentTopology)
   for (const rule of topology.routing) {
     if (rule.use && !agentNames.has(rule.use)) issues.push(`Routing rule ${rule.id} selects unknown agent ${rule.use}`);
     for (const reviewer of rule.reviewers ?? []) if (!agentNames.has(reviewer)) issues.push(`Routing rule ${rule.id} references unknown reviewer ${reviewer}`);
+    for (const validator of rule.validators ?? []) if (!agentNames.has(validator)) issues.push(`Routing rule ${rule.id} references unknown validator ${validator}`);
   }
   for (const [failure, steps] of Object.entries(topology.recovery)) for (const step of steps ?? []) if (step.action === "agent" && step.agent && !agentNames.has(step.agent)) issues.push(`Recovery ${failure} references unknown agent ${step.agent}`);
+  for (const [name, council] of Object.entries(topology.councils)) for (const member of council.members) if (member.agent && !agentNames.has(member.agent)) issues.push(`Council ${name} references unknown agent ${member.agent}`);
   return [...new Set(issues)];
 }
 function sha(value: string): string { return crypto.createHash("sha256").update(value).digest("hex"); }
