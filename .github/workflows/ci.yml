@@ -46,9 +46,12 @@ jobs:
           test -d repo/.harness/paseo
           test -d repo/.harness/paseo/handoffs
           test -d repo/.harness/audits
-          ! grep -q '^\.harness/managed-assets.json$' repo/.gitignore
-          grep -q '^\.harness/paseo/$' repo/.gitignore
-          grep -q '^\.harness/audits/$' repo/.gitignore
+          test -d repo/.harness/operations
+          grep -q '^\.harness/\*$' repo/.gitignore
+          grep -q '^!\.harness/project.yaml$' repo/.gitignore
+          grep -q '^!\.harness/toolchain.yaml$' repo/.gitignore
+          grep -q '^!\.harness/agents.source.jsonc$' repo/.gitignore
+          grep -q '^!\.harness/otel-collector.yaml$' repo/.gitignore
           ./node_modules/.bin/aeh toolchain compile repo
           test -f repo/.config/mise/conf.d/aeh.toml
           grep -q 'openspec' repo/.config/mise/conf.d/aeh.toml
@@ -57,3 +60,4 @@ jobs:
           test -f repo/.harness/skills/engineering-workflow/SKILL.md
           ./node_modules/.bin/aeh policy sync repo >/dev/null
           ./node_modules/.bin/aeh intent 'review the repo and validate the code for improvements' repo | grep -q '^AUDIT'
+          ./node_modules/.bin/aeh operation status DOES-NOT-EXIST repo >/dev/null 2>&1 && exit 1 || true
