@@ -28,6 +28,9 @@ describe("default agent pack bootstrap", () => {
     expect(await fs.readFile(path.join(root, "openspec", "config.yaml"), "utf8")).toContain("schema: spec-driven");
 
     const config = await loadProjectConfig(root);
+    expect(config.orchestration?.interactive?.sessionPolicy).toBe("fresh-on-start");
+    expect(config.orchestration?.interactive?.context).toEqual(expect.objectContaining({ pressureThreshold: 0.7, handoffThreshold: 0.8, hardHandoffThreshold: 0.9 }));
+    expect(config.sdd?.authoring).toEqual(expect.objectContaining({ provider: "openspec", schema: "spec-driven", managerAgent: "spec-manager" }));
     const source = await loadAgentTopologySource(root, config);
     expect(source.agents["backend-implementer"]).toBeDefined();
     expect(source.agents["security-reviewer"]).toBeDefined();
