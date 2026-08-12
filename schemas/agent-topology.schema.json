@@ -1,20 +1,37 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.invalid/agentic-engineering-harness/agent-topology.schema.json",
-  "title": "Agentic Engineering Harness Agent Topology",
+  "$id": "https://github.com/JamesMorales04/agentic-engineering-harness/schemas/agent-topology.schema.json",
+  "title": "Agentic Engineering Harness Agent Topology Layer",
   "type": "object",
-  "required": ["version", "runtimes", "models", "agents"],
+  "required": ["version"],
+  "anyOf": [
+    { "required": ["extends"] },
+    { "required": ["runtimes", "models", "agents"] }
+  ],
   "properties": {
     "version": { "const": 1 },
+    "extends": { "type": "array", "items": { "type": "string", "minLength": 1 } },
     "activeProfile": { "type": "string" },
     "skillRoots": { "type": "array", "items": { "type": "string" } },
-    "runtimes": { "type": "object", "additionalProperties": { "type": "object", "required": ["adapter"] } },
-    "models": { "type": "object", "additionalProperties": { "type": "object", "required": ["runtime", "model"] } },
-    "agents": { "type": "object", "additionalProperties": { "type": "object", "required": ["role", "execution"] } },
+    "runtimes": { "type": "object", "additionalProperties": { "type": "object" } },
+    "models": { "type": "object", "additionalProperties": { "type": "object" } },
+    "agents": { "type": "object", "additionalProperties": { "type": "object" } },
     "profiles": { "type": "object" },
-    "routing": { "type": "array" },
+    "routing": { "type": "array", "items": { "type": "object", "required": ["id", "when"] } },
     "recovery": { "type": "object" },
-    "councils": { "type": "object" }
+    "councils": { "type": "object" },
+    "remove": {
+      "type": "object",
+      "properties": {
+        "runtimes": { "type": "array", "items": { "type": "string" } },
+        "models": { "type": "array", "items": { "type": "string" } },
+        "agents": { "type": "array", "items": { "type": "string" } },
+        "profiles": { "type": "array", "items": { "type": "string" } },
+        "routing": { "type": "array", "items": { "type": "string" } },
+        "councils": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    }
   },
   "additionalProperties": false
 }
