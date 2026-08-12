@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { reconcileHarnessAssets } from "../core/assets.js";
 import type { HarnessProjectConfig } from "../core/types.js";
 import { runProcess, clearToolchainEnvCache } from "../utils/process.js";
 import { generatedMisePath, loadToolchainConfig, loadToolchainLock, toolchainLockPath, toolchainStatePath, writeJsonFile } from "./config.js";
@@ -8,6 +9,7 @@ import { installMiseTools, miseBinPaths, miseResolvedVersion, resolveMiseAdapter
 import type { ToolchainLock, ToolchainLockTool, ToolchainSetupOptions, ToolchainSetupResult, ToolchainState } from "./types.js";
 
 export async function setupToolchain(root: string, project: HarnessProjectConfig, options: ToolchainSetupOptions = {}): Promise<ToolchainSetupResult> {
+  await reconcileHarnessAssets(root);
   const toolchain = await loadToolchainConfig(root, project);
   const lock = await loadToolchainLock(root, project, toolchain);
   const engine = toolchain.strategy?.containerEngine ?? "podman";
