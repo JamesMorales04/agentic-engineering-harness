@@ -67,6 +67,25 @@ AGENTS.md
 
 Packaged core skills and policies are reconciled by `aeh init`, `aeh setup`, and `aeh start`. Missing assets are restored, untouched managed assets can be upgraded with the installed AEH version, and locally modified copies are preserved as explicit overrides.
 
+### Developing AEH itself
+
+When the target repository is **this AEH source checkout**, do not rely on an unqualified remote `npm exec aeh` as the runtime selector. npm may reuse an `_npx` cache copy that is older than the checked-out source.
+
+Build and use the repository-local entrypoint:
+
+```bash
+npm ci
+npm run build
+npm run aeh -- start
+# equivalent: node dist/main.js start
+```
+
+AEH detects when an external/global/npm-exec runtime tries to start a lead for an `agentic-engineering-harness` checkout and re-enters that checkout's `dist/main.js`. If the local build is missing, startup fails closed with build instructions instead of creating a potentially stale lead.
+
+Every managed start prints the executing `aehRuntime` and `aehEntry`. Lead state also records the exact AEH version/invocation, and `--resume` rejects a lead created by a different runtime identity.
+
+Consumer repositories should continue to pin AEH as a dev dependency and use their project-local `npm exec aeh -- ...` binary normally.
+
 ## Zero-friction Paseo entrypoint
 
 ```bash
@@ -141,7 +160,7 @@ aeh paseo agents --operation <operation-id>
 aeh paseo agents --operation <operation-id> --phase review
 ```
 
-Synchronous `aeh audit` and `aeh run` remain valid non-interactive/compatibility entrypoints.
+Synchronous `aeh audit` and `aeh run` remain valid non-interactive/compatibility entrypoints. Inside a managed Paseo lead, AEH treats accidental synchronous `aeh audit` and standard `aeh run <taskId>` calls as compatibility syntax and **auto-promotes them to detached operations**. Complex synchronous shortcuts fail closed unless `AEH_ALLOW_SYNC_INTERACTIVE=1` is explicitly set for a bounded compatibility/recovery flow.
 
 For each detached operation AEH attempts to create a **local Paseo workspace** pointing at the existing repository. This is UI/execution grouping only; it does not create a Git branch/worktree. A delivery worktree workspace, when configured, remains a separate concern and takes precedence for implementation agents.
 
@@ -167,6 +186,8 @@ aeh.operation.kind=audit|run|quick|...
 aeh.operation.phase=planning|review|implementation|diagnosis|...
 aeh.workspace.kind=orchestration|delivery
 ```
+
+Managed leads additionally carry `aeh.version=<runtime-version>` and `aeh.bootstrap=<bootstrap-version>`, making stale-session/runtime mismatches visible in Paseo metadata.
 
 Workers remain top-level Paseo agents rather than children owned by one lead conversation, so lead context rotation cannot terminate their workflow ownership.
 
