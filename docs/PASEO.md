@@ -2,71 +2,174 @@
 
 Paseo is AEH's default interactive orchestration surface. The integration separates **Paseo communication/session lifecycle** from **AEH deterministic workflow ownership**.
 
+## Visible operation graph
+
+A managed conversational lead does not own a long-running shell process. Long AUDIT/RUN workflows are first-class detached AEH operations:
+
+```bash
+aeh operation start audit "Review the repository architecture and security"
+aeh operation start run TASK-123
+```
+
+`start` returns an operation id promptly. The deterministic controller persists state in `.harness/operations/<id>.json`, then performs the sealed workflow independently of the lead conversation:
+
+```text
+Paseo UI
+   │
+   ▼
+AEH Lead (semantic orchestrator)
+   │ short start/status calls
+   ▼
+AEH Operation Controller (deterministic, not an LLM agent)
+   ├── seals / validators / state machines
+   ├── local orchestration workspace
+   └── Paseo SDK
+          ├── planner/reviewer/worker agent
+          ├── planner/reviewer/worker agent
+          └── ...
+```
+
+The controller is deliberately **not** represented by a fake Paseo agent. Only real LLM participants become Paseo sessions.
+
+Observe or control an operation with:
+
+```bash
+aeh operation status <operation-id>
+aeh operation wait <operation-id> --timeout 1800
+aeh operation cancel <operation-id>
+aeh paseo agents --operation <operation-id>
+aeh paseo agents --operation <operation-id> --phase review
+```
+
+Synchronous `aeh audit` / `aeh run` remain valid compatibility entrypoints for non-interactive automation.
+
 ## SDK-first control plane
 
 AEH uses Paseo's published TypeScript client package, `@getpaseo/client`, as the primary control surface for agent creation, follow-up turns, status lookup and directory queries. Paseo currently documents that package as public but **not yet a stable public SDK**, so AEH deliberately resolves the copy bundled with the active `@getpaseo/cli` installation first instead of independently selecting a client version.
 
-The resolver supports normal PATH installations and mise-managed npm tools. In particular, mise may expose a shim through `command -v`; AEH also asks `mise which paseo` for the real binary and `mise where npm:@getpaseo/cli` for the synthetic npm installation root, then resolves `@getpaseo/client` from that package tree. A direct project-level SDK import is retained only as a compatibility fallback.
+The resolver supports normal PATH installations and mise-managed npm tools, including non-hoisted/store layouts. AEH asks `command -v paseo`, `mise which paseo`, and `mise where npm:@getpaseo/cli`, then resolves or bounded-scans the active installation for its exact `@getpaseo/client` entry. A direct project-level SDK import is retained only as a compatibility fallback.
 
-The CLI remains responsible for daemon bootstrap/recovery and is retained as a compatibility fallback when the SDK cannot be resolved or connected:
+Normal lifecycle is always SDK-first unless `AEH_PASEO_FORCE_CLI=1` is explicitly set:
 
 ```text
 AEH
-├── daemon/bootstrap/recovery -> Paseo CLI
-└── normal agent lifecycle    -> @getpaseo/client bundled with active CLI
+├── daemon/bootstrap/recovery          -> Paseo CLI
+├── normal agent lifecycle             -> active @getpaseo/client
+└── explicit/recoverable compatibility -> Paseo CLI
 ```
 
-Set `AEH_PASEO_FORCE_CLI=1` only when the compatibility path is deliberately required. `PASEO_DAEMON_URL` overrides the default SDK endpoint `ws://127.0.0.1:6767/ws`; `PASEO_DAEMON_PASSWORD` supplies daemon authentication when configured.
+`PASEO_DAEMON_URL` overrides the default SDK endpoint `ws://127.0.0.1:6767/ws`; `PASEO_DAEMON_PASSWORD` supplies daemon authentication when configured.
 
 A system-prompt-only idle agent is an SDK-only invariant. If the SDK is unavailable, AEH refuses to degrade that lead creation into a CLI user turn because doing so would expose the bootstrap as conversational input.
 
+## Agent lifecycle
+
+AEH separates visible agent lifecycle into three phases:
+
+```text
+materialize -> dispatch -> wait
+```
+
+- **materialize** creates an idle top-level Paseo agent so it is visible immediately;
+- **dispatch** sends the bounded prompt when deterministic prerequisites/evidence are ready;
+- **wait** collects completion/result without conflating creation with execution.
+
+For AUDIT, AEH materializes the selected read-only reviewers before running deterministic validators. They remain visible/idle while validation runs, then AEH dispatches them with the completed validator evidence. This preserves deterministic evidence precedence without the earlier “silent terminal” UX.
+
+The SDK adapter supports the current Paseo handle shape (`workspaceId`, `initialPrompt`, `send`, `refetch`, timeline) while retaining compatibility hooks for older client handles where available.
+
 ## Conversational lead
 
-`aeh start` creates the lead as an idle Paseo agent. The AEH bootstrap is passed through the SDK's `systemPrompt`; it is no longer sent as the first user message and there is no synthetic `AEH READY` turn.
+`aeh start` creates the lead as an idle Paseo agent. The AEH bootstrap is passed through the SDK's `systemPrompt`; it is not sent as a user message and there is no synthetic readiness turn.
 
-The bootstrap is intentionally thin. `AGENTS.md`, `.harness/skills/engineering-workflow/SKILL.md`, and the resolved AEH agent topology are authoritative for roles, charters, permissions and delegation. This avoids duplicating a role map inside every Paseo conversation and prevents prompt/configuration drift.
+The bootstrap is intentionally thin. `AGENTS.md`, `.harness/skills/engineering-workflow/SKILL.md`, and the resolved AEH agent topology are authoritative for roles, charters, permissions and delegation.
 
-When the lead is running inside Paseo and Paseo exposes its orchestration tools, it may still use the native/MCP conversational surface and `/paseo-handoff`. Deterministic Harness-owned work, however, is created externally by AEH through the SDK.
+When Paseo exposes native orchestration tools, the lead may use them for bounded conversational delegation and `/paseo-handoff`. Deterministic multi-agent workflows are owned by the detached AEH operation controller, so the lead remains available to the user.
 
 ## Independent AEH agents
 
-AEH-managed workers are created without the Paseo SDK `parent` option. A worker may be placed in a delivery workspace, but workspace placement does not establish parentage. This makes each worker a top-level Paseo agent rather than a child whose lifecycle belongs to the current lead conversation.
+AEH-managed workers are created without Paseo `parent` ownership. Workers are independent top-level sessions so lead context rotation cannot terminate or orphan their lifecycle.
 
-Workflow ownership is represented by labels instead:
+Workflow ownership and visibility use labels:
 
 ```text
 aeh.project=<project>
 aeh.kind=lead|worker
 aeh.role=<logical-agent>
-aeh.task=<task-id>        # workers
+aeh.task=<task-id>
+aeh.operation=<operation-id>
+aeh.operation.kind=audit|run|quick|...
+aeh.operation.phase=queued|review|implementation|...
+aeh.workspace.kind=orchestration|delivery
 aeh.profile=<profile>     # when selected
 aeh.generation=<n>        # leads
 ```
 
-The shared Paseo runtime exposes list/inspect primitives over those labels. This lets AEH determine which logical agent is active for a task without scraping assistant prose or relying on parent/child nesting. The same labels survive lead context rotation, so a fresh lead can correlate existing workers with durable AEH run state.
+The operation/task labels are durable correlation keys; Paseo parent/subagent nesting is not the workflow source of truth.
 
 ### Observe active agents
-
-Use the top-level AEH command to inspect the live Paseo directory. The project label is applied automatically; filters are additive:
 
 ```bash
 aeh paseo agents
 aeh paseo agents --status working
 aeh paseo agents --kind worker --role backend-implementer
 aeh paseo agents --task TASK-123 --json
+aeh paseo agents --operation AUDIT-... --phase review
 ```
 
-The tabular view reports status, logical role, task, kind, stable Paseo agent ID and title. `--json` returns the same normalized fields plus the complete AEH label set. This is the preferred way to answer which AEH agent is currently working without depending on Paseo parent/subagent nesting.
+The operation-aware view reports stable Paseo IDs, role, operation, phase, task, status and title.
+
+## Orchestration workspace vs delivery workspace
+
+Paseo workspaces and Git delivery isolation are separate concepts.
+
+For each detached operation AEH attempts to create a **local Paseo workspace** pointing at the existing repository directory. Its purpose is UI/execution grouping: multiple agents for the same audit/run appear together. It does not create or imply a Git branch/worktree.
+
+When delivery policy creates an issue-linked worktree workspace, that delivery workspace takes precedence for implementation/review agents:
+
+```text
+operation workspace -> local grouping, no Git isolation
+
+delivery workspace  -> branch/worktree isolation and delivery lifecycle
+```
+
+This lets audits and non-delivery operations have coherent Paseo grouping even when `delivery.paseo.enabled` is false.
 
 ## Runtime consolidation
 
-Lead startup, `PaseoWorkerExecutor`, and generic `agentPrompt` execution all use the same managed Paseo runtime. That runtime owns SDK-first create/run/probe/list behavior and the CLI fallback. Individual worker paths should not add new hand-written `paseo run/send/wait/logs` loops.
+`PaseoWorkerExecutor` and generic `agentPrompt` no longer independently reconstruct provider/model/title/workspace/labels. Both consume one launch-spec compiler. This is the single boundary for:
 
-Structured output is passed through the SDK `outputSchema` field. The compatibility CLI path continues to negotiate `--output-schema` and background capabilities dynamically.
+- provider/model selection;
+- title;
+- operation/task labels;
+- orchestration-vs-delivery workspace;
+- timeout.
 
-## Session policy
+This prevents launch-path drift such as the earlier provider/model serialization mismatch.
 
-Default:
+## Operation/session metadata
+
+Worker/reviewer execution records now retain lifecycle metadata in addition to stdout/stderr:
+
+```text
+id
+transport
+workspaceId
+title
+operationId
+operationKind
+phase
+status
+startedAt
+finishedAt
+logicalAgent / runtime / model
+```
+
+Audit/run reports can therefore distinguish a real Paseo SDK session from CLI/direct/Podman execution without inferring it from logs.
+
+## Session policy and context rotation
+
+Default lead policy remains:
 
 ```yaml
 orchestration:
@@ -79,16 +182,10 @@ aeh start          # fresh idle lead
 aeh start --resume # explicit compatible reuse
 ```
 
-Workspaces and durable AEH state remain reusable even though normal conversational context starts clean.
-
-## Context rotation
-
-Default pressure policy is 70/80/90 percent. `aeh context guard` consumes a context ratio only when Paseo exposes a usable field; AEH does not guess.
-
-At the handoff threshold it writes a deterministic `.harness/paseo/handoffs/*.json` artifact. From a managed Paseo lead it also creates the replacement lead automatically and bootstraps it from the handoff artifact and referenced sealed/run/audit/delivery state. Workers remain independent top-level agents associated through AEH labels and durable task/run state rather than lead parentage.
+Default context pressure policy is 70/80/90 percent. At the handoff threshold AEH writes `.harness/paseo/handoffs/*.json` and rotates responsibility to a fresh lead. Detached operations and independent worker agents continue; durable operation/run/audit/delivery state allows the replacement lead to correlate them without replaying the old conversation.
 
 ## Trust boundary
 
-Paseo owns communication, process and session lifecycle. It is not normative engineering truth. AEH TaskContracts, seals, deterministic reports, evidence graphs and quality gates continue to decide acceptance.
+Paseo owns communication, UI grouping, process and session lifecycle. It is not normative engineering truth. AEH TaskContracts, seals, deterministic reports, operation state, evidence graphs and quality gates decide acceptance.
 
 For stronger direct process isolation configure Podman sandboxing where appropriate; Paseo orchestration and worker sandboxing remain separate policy axes.
