@@ -13,6 +13,8 @@ import { resolveOrganizationPolicyBundles } from "./policy/bundles.js";
 import { benchmarkMcpCatalog } from "./mcp/benchmark.js";
 import { buildEvalDashboard, runRepeatedEval } from "./evals/statistics.js";
 import { startPaseoHarness } from "./paseo/start.js";
+import { guardLeadContext } from "./paseo/context.js";
+import { prepareOpenSpecChange, compileOpenSpecChange } from "./spec/openspec.js";
 import { classifyEngineeringIntent, formatEngineeringIntent } from "./audit/intent.js";
 import { runAudit } from "./audit/run.js";
 import type { TaskRisk } from "./core/types.js";
@@ -22,6 +24,8 @@ const args = process.argv.slice(2);
 if (args.length === 1 && ["--version", "-V"].includes(args[0])) { console.log(VERSION); process.exit(0); }
 
 if (args[0] === "start") { await runStart(args.slice(1)); process.exit(process.exitCode ?? 0); }
+if (args[0] === "context" && args[1] === "guard") { await runContextGuard(args.slice(2)); process.exit(process.exitCode ?? 0); }
+if (args[0] === "spec" && ["prepare", "compile"].includes(args[1] ?? "")) { await runSpec(args.slice(1)); process.exit(process.exitCode ?? 0); }
 if (args[0] === "intent") { await runIntent(args.slice(1)); process.exit(process.exitCode ?? 0); }
 if (args[0] === "audit") { await runAuditCommand(args.slice(1)); process.exit(process.exitCode ?? 0); }
 if (args[0] === "setup") { await runSetup(args.slice(1)); process.exit(process.exitCode ?? 0); }
@@ -35,8 +39,9 @@ if (args[0] === "eval" && ["repeat", "dashboard"].includes(args[1] ?? "")) { awa
 await import("./cli.js");
 
 async function runStart(argv: string[]): Promise<void> {
-  const parsed = parseGeneric(argv, new Set(["lead", "title"]), new Set(["new", "no-web-ui", "no-setup"]));
+  const parsed = parseGeneric(argv, new Set(["lead", "title"]), new Set(["new", "resume", "no-web-ui", "no-setup"]));
   if (parsed.positional.length > 1) throw new Error(`aeh start accepts at most one project directory, received: ${parsed.positional.join(", ")}`);
+  if (parsed.flag("new") && parsed.flag("resume")) throw new Error("aeh start cannot combine --new and --resume.");
   const root = path.resolve(parsed.positional[0] ?? ".");
   const config = await loadProjectConfig(root);
   const entry = path.resolve(process.argv[1]);
@@ -45,6 +50,7 @@ async function runStart(argv: string[]): Promise<void> {
     autoSetup: parsed.flag("no-setup") ? false : undefined,
     webUi: parsed.flag("no-web-ui") ? false : undefined,
     forceNew: parsed.flag("new"),
+    resume: parsed.flag("resume"),
     leadAgent: parsed.value("lead"),
     title: parsed.value("title"),
     aehCommand
@@ -55,9 +61,52 @@ async function runStart(argv: string[]): Promise<void> {
   console.log(`lead=${result.leadAgent}`);
   console.log(`provider=${result.provider}`);
   console.log(`model=${result.model}`);
+  if (result.paseoVersion) console.log(`paseo=${result.paseoVersion}`);
   console.log(`agentId=${result.agentId}`);
   console.log(`title=${result.title}`);
-  console.log(`Open Paseo and continue in '${result.title}'. Engineering operations in that conversation now route through the Harness automatically.`);
+  console.log(`Open Paseo and continue in '${result.title}'. Engineering operations route through the Harness; normal aeh start creates a fresh lead, while --resume explicitly reuses a compatible one.`);
+}
+
+async function runContextGuard(argv: string[]): Promise<void> {
+  const parsed = parseGeneric(argv, new Set(["agent", "brief"]), new Set());
+  if (parsed.positional.length > 1) throw new Error("aeh context guard accepts at most one project directory.");
+  const root = path.resolve(parsed.positional[0] ?? ".");
+  const config = await loadProjectConfig(root);
+  const agentId = parsed.value("agent") ?? process.env.PASEO_AGENT_ID;
+  if (!agentId) throw new Error("aeh context guard requires --agent <id> or PASEO_AGENT_ID.");
+  const result = await guardLeadContext(root, config, agentId, { brief: parsed.value("brief") });
+  console.log(result.state);
+  console.log(result.message);
+  console.log(JSON.stringify(result, null, 2));
+}
+
+async function runSpec(argv: string[]): Promise<void> {
+  const sub = argv[0];
+  const parsed = parseGeneric(argv.slice(1), new Set(["title", "change"]), new Set());
+  const taskId = parsed.positional[0];
+  if (!taskId) throw new Error(`aeh spec ${sub} requires <taskId>.`);
+  if (parsed.positional.length > 2) throw new Error(`aeh spec ${sub} accepts <taskId> and at most one project directory.`);
+  const root = path.resolve(parsed.positional[1] ?? ".");
+  const title = parsed.value("title");
+  if (!title) throw new Error(`aeh spec ${sub} requires --title <title>.`);
+  const config = await loadProjectConfig(root);
+  if (sub === "prepare") {
+    const result = await prepareOpenSpecChange(root, config, taskId, title);
+    console.log(`OPENSPEC ${result.created ? "CREATED" : "READY"} ${result.changeName}`);
+    console.log(`manager=${result.managerAgent}`);
+    console.log(`schema=${result.schema}`);
+    console.log(`directory=${path.relative(root, result.directory).replaceAll("\\", "/")}`);
+    return;
+  }
+  if (sub === "compile") {
+    const result = await compileOpenSpecChange(root, config, taskId, title, parsed.value("change"));
+    console.log(`COMPILED ${result.changeName} -> ${taskId}`);
+    console.log(`requirements=${result.requirements.join(",")}`);
+    console.log(`sourceSha256=${result.sourceSha256}`);
+    console.log(`contract=${path.relative(root, result.contractPath).replaceAll("\\", "/")}`);
+    return;
+  }
+  throw new Error(`Unknown spec command '${sub}'. Use prepare or compile.`);
 }
 
 async function runIntent(argv: string[]): Promise<void> {
