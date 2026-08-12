@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "extends": ["aeh:default"],
+  "activeProfile": "balanced",
+
+  "agents": {
+    "harness-reviewer": {
+      "role": "reviewer",
+      "domains": ["harness", "agent-topology", "workflow-engine"],
+      "description": "Review changes to the Harness control plane itself. Protect the trust hierarchy (deterministic evidence over LLM judgment), sealed normative artifacts, topology composition semantics, backward compatibility and human-on-exception behavior. Require tests for routing/configuration state-machine changes.",
+      "execution": { "model": "@brain" },
+      "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "deny", "review": "allow", "gitWrite": "deny" },
+      "outputContract": "reviewer"
+    }
+  },
+
+  "routing": [
+    {
+      "id": "harness-control-plane-review",
+      "priority": 80,
+      "when": { "intent": "implement", "domains": ["harness", "agent-topology", "workflow-engine"] },
+      "reviewers": ["harness-reviewer"]
+    }
+  ],
+
+  "remove": {
+    "agents": [],
+    "models": [],
+    "runtimes": [],
+    "profiles": [],
+    "routing": [],
+    "councils": []
+  }
+}
