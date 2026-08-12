@@ -29,7 +29,7 @@ jobs:
           cd "$TMP/consumer"
           npm init -y >/dev/null
           npm install "$GITHUB_WORKSPACE/$TGZ" >/dev/null
-          ./node_modules/.bin/aeh --version | grep -Fx '0.5.1'
+          ./node_modules/.bin/aeh --version | grep -Fx '0.5.2'
           mkdir repo
           ./node_modules/.bin/aeh init repo
           test -f repo/.harness/project.yaml
@@ -37,8 +37,11 @@ jobs:
           test -f repo/.harness/agents.source.jsonc
           grep -q '^  interactive:$' repo/.harness/project.yaml
           test -d repo/.harness/paseo
+          test -d repo/.harness/audits
           grep -q '^\.harness/paseo/$' repo/.gitignore
+          grep -q '^\.harness/audits/$' repo/.gitignore
           ./node_modules/.bin/aeh toolchain compile repo
           test -f repo/.config/mise/conf.d/aeh.toml
           ./node_modules/.bin/aeh setup --dry-run repo
           ./node_modules/.bin/aeh policy sync repo >/dev/null
+          ./node_modules/.bin/aeh intent 'review the repo and validate the code for improvements' repo | grep -q '^AUDIT'
