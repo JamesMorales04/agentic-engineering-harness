@@ -9,6 +9,10 @@
   "engines": { "node": ">=22" },
   "dependencies": { "@opentelemetry/api": "^1.9.0", "commander": "^14.0.1", "minimatch": "^10.0.3", "yaml": "^2.8.1", "zod": "^4.0.17" },
   "devDependencies": { "@types/node": "^24.2.1", "tsx": "^4.20.3", "typescript": "^5.9.2", "vitest": "^3.2.4" },
+  "repository": { "type": "git", "url": "git+https://github.com/JamesMorales04/agentic-engineering-harness.git" },
+  "homepage": "https://github.com/JamesMorales04/agentic-engineering-harness#readme",
+  "bugs": { "url": "https://github.com/JamesMorales04/agentic-engineering-harness/issues" },
+  "publishConfig": { "access": "public" },
   "license": "Apache-2.0",
   "keywords": ["ai-agents", "codex", "opencode", "paseo", "sdd", "github-issues", "issue-driven-development", "quick-contract", "gherkin", "agent-routing", "agent-presets", "mcp", "github-delivery", "worktrees", "multi-model", "quality-convergence", "toolchain", "mise", "bootstrap", "human-on-exception", "deterministic-validation", "engineering-harness", "slsa", "opentelemetry"]
 }
