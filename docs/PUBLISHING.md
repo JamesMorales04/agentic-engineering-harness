@@ -34,10 +34,12 @@ The workflow performs the following steps:
 5. synchronizes `package.json` and `package-lock.json` with `npm version --no-git-tag-version`;
 6. runs `npm run release:check` on the exact candidate;
 7. commits the version metadata as `chore(release): vX.Y.Z [skip ci]` and creates the matching Git tag;
-8. publishes the package to npm;
+8. publishes the package to npm with provenance;
 9. creates the GitHub Release for the tag.
 
 The release commit/tag is pushed with GitHub's repository token. GitHub does not recursively trigger ordinary push workflows for pushes created with that `GITHUB_TOKEN`, so the version commit does not create an infinite publish loop.
+
+The repository must allow the workflow identity to write the release metadata commit/tag. If branch rules forbid direct writes to `main`, grant the GitHub Actions identity the appropriate bypass/write permission or set `AEH_AUTO_PUBLISH=false` until the repository rule is adjusted. Source validation remains independent of publication.
 
 ## Manual release control
 
@@ -51,7 +53,7 @@ minor
 major
 ```
 
-Manual dispatch is useful for retrying an external npm/OIDC failure or deliberately overriding the automatic bump classification.
+Manual dispatch is useful for retrying an external npm/OIDC failure or deliberately overriding the automatic bump classification. A `current` retry is also able to recreate a missing GitHub Release when the npm version and matching Git tag already exist; it will not fabricate a missing tag for an already-published package.
 
 ## npm authentication
 
@@ -93,7 +95,7 @@ docs/
 
 plus npm-required package metadata such as `package.json`, README and LICENSE.
 
-Packaged `skills/` and core `policies/` are runtime control-plane assets. `aeh init`, `aeh setup`, and `aeh start` reconcile those package assets into the consumer repository's `.harness` directory. `.harness/managed-assets.json` records hashes so missing or untouched files can be restored/upgraded without overwriting project-local modifications.
+Packaged `skills/` and core `policies/` are runtime control-plane assets. `aeh init`, `aeh setup`, and `aeh start` reconcile those package assets into the consumer repository's `.harness` directory. `.harness/managed-assets.json` is versioned project state: it records hashes so missing or untouched files can be restored/upgraded, retired untouched assets can be removed, and project-local modifications remain protected as overrides.
 
 ## Consumer installation
 
@@ -114,4 +116,4 @@ reconciles managed Harness assets before loading the agent topology and starting
 
 ## Failure policy
 
-A registry/OIDC/permission failure is an external delivery failure, not a reason to rewrite validated engineering history. The release workflow is retry-safe: if the version commit/tag exists but npm publication failed, a manual rerun with `current` will attempt the same unpublished version rather than incrementing it again.
+A registry/OIDC/permission failure is an external delivery failure, not a reason to rewrite validated engineering history. The release workflow is retry-safe: if the version commit/tag exists but npm publication failed, a manual rerun with `current` will attempt the same unpublished version rather than incrementing it again. If npm publication succeeded but GitHub Release creation failed, a `current` rerun can repair the release from the existing matching tag.
