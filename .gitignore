@@ -18,6 +18,11 @@ coverage/
 .harness/provenance/
 .harness/delivery/
 .harness/issues/
+.harness/controller/
+.harness/evidence/
+.harness/distributed/
+.harness/policy-bundles/
+.harness/mcp-benchmarks/
 .config/mise/conf.d/aeh.toml
 .graphify/
 graphify-out/

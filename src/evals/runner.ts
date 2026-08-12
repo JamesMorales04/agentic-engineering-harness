@@ -82,9 +82,9 @@ export async function compareEvalCase(root: string, config: HarnessProjectConfig
   const dir = path.resolve(root, config.evals?.resultsDir ?? ".harness/evals/results", safe(caseId));
   const files = await fs.readdir(dir).catch(() => [] as string[]);
   const results: EvalResult[] = [];
-  for (const file of files.filter((name) => name.endsWith(".json"))) {
+  for (const file of files.filter((name) => name.endsWith(".json") && name !== "dashboard.json")) {
     const value = await readJson(path.join(dir, file));
-    if (value?.caseId === caseId) results.push(value as EvalResult);
+    if (value?.caseId === caseId && typeof value.variant === "string" && typeof value.score === "number" && (value.status === "PASS" || value.status === "FAIL")) results.push(value as EvalResult);
   }
   return rankEvalResults(results);
 }

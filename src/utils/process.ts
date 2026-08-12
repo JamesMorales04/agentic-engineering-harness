@@ -14,7 +14,7 @@ export function clearToolchainEnvCache(): void { toolchainPathCache.clear(); }
 
 export async function runProcess(
   command: string,
-  options: { cwd: string; timeoutMs?: number; shell?: boolean; env?: Record<string, string | undefined>; toolchain?: boolean }
+  options: { cwd: string; timeoutMs?: number; shell?: boolean; env?: Record<string, string | undefined>; toolchain?: boolean; stdin?: string | Buffer }
 ): Promise<ProcessResult> {
   const started = Date.now();
   const inherited = { ...process.env, ...(options.env ?? {}) };
@@ -27,13 +27,17 @@ export async function runProcess(
       cwd: options.cwd,
       shell: options.shell ?? true,
       env: inherited,
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: [options.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"]
     });
 
     let stdout = "";
     let stderr = "";
     child.stdout?.on("data", (chunk: { toString(): string }) => { stdout += chunk.toString(); });
     child.stderr?.on("data", (chunk: { toString(): string }) => { stderr += chunk.toString(); });
+    if (options.stdin !== undefined) {
+      child.stdin?.on("error", (error: NodeJS.ErrnoException) => { if (error.code !== "EPIPE") reject(error); });
+      child.stdin?.end(options.stdin);
+    }
 
     const timer = options.timeoutMs
       ? setTimeout(() => child.kill("SIGTERM"), options.timeoutMs)

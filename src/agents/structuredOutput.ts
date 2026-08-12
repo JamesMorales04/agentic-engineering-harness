@@ -2,15 +2,16 @@ export function extractMarkedJson(stdout: string, stderr = ""): unknown {
   const candidates: string[] = [];
   collectCandidateStrings(stdout, candidates);
   collectCandidateStrings(stderr, candidates);
-  for (const candidate of candidates.reverse()) {
+  for (const candidate of [...candidates].reverse()) {
     const marker = "AEH_RESULT_JSON=";
     const index = candidate.lastIndexOf(marker);
     if (index < 0) continue;
-    const raw = candidate.slice(index + marker.length).trim();
-    const parsed = parseJsonPrefix(raw);
+    const parsed = parseJsonPrefix(candidate.slice(index + marker.length).trim());
     if (parsed !== undefined) return parsed;
   }
-  throw new Error("Agent output did not contain a valid AEH_RESULT_JSON=<json> marker.");
+  const stdoutJson = parseWholeJson(stdout.trim()); if (stdoutJson !== undefined) return stdoutJson;
+  const stderrJson = parseWholeJson(stderr.trim()); if (stderrJson !== undefined) return stderrJson;
+  throw new Error("Agent output did not contain valid native JSON or an AEH_RESULT_JSON=<json> marker.");
 }
 
 function collectCandidateStrings(text: string, output: string[]): void {
@@ -30,3 +31,4 @@ function parseJsonPrefix(raw: string): unknown | undefined {
   for (let end = raw.length; end > 1; end -= 1) { try { return JSON.parse(raw.slice(0, end)); } catch { /* keep shrinking */ } }
   return undefined;
 }
+function parseWholeJson(raw: string): unknown | undefined { if (!raw) return undefined; try { return JSON.parse(raw); } catch { return undefined; } }

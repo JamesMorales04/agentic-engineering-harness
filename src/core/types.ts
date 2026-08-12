@@ -1,6 +1,7 @@
 export type CheckStatus = "PASS" | "FAIL" | "SKIP" | "WARN";
 export type TaskMode = "spec" | "quick";
 export type ReviewSeverity = "critical" | "high" | "medium" | "low" | "note";
+export type TaskRisk = "low" | "medium" | "high";
 
 export type ValidatorAdapter = "command" | "gherkin" | "graphify" | "opengrep" | "trivy" | "playwright" | "openapi" | "pact" | "mutation" | "property" | string;
 export interface ValidationCommand { id: string; command: string; required?: boolean; timeoutSeconds?: number; workingDirectory?: string; }
@@ -22,13 +23,25 @@ export interface McpServerConfig {
   codemode?: boolean;
 }
 
+export interface OrganizationPolicySource {
+  name: string;
+  path?: string;
+  url?: string;
+  sha256?: string;
+  required?: boolean;
+  publicKey?: string;
+  signature?: string;
+}
+
 export interface HarnessProjectConfig {
   version: 1;
   project: { name: string };
   agents?: { configPath?: string; generatedPath?: string; activeProfile?: string; required?: boolean; findingsDir?: string; };
+  controlPlane?: { snapshotDir?: string; include?: string[]; required?: boolean; };
   workflow?: {
     quick?: { maxFiles?: number; disallowedDomains?: string[]; };
     issueIntake?: { enabled?: boolean; snapshotDir?: string; verifyDriftOnRun?: boolean; requireOpen?: boolean; plannerAgent?: string; autoHandoff?: boolean; };
+    planning?: { enabled?: boolean; plannerAgent?: string; worktreeIsolation?: boolean; barrierValidation?: boolean; maxWaveConcurrency?: number; distributed?: boolean; };
     reviews?: {
       enabled?: boolean;
       reviewQuick?: boolean;
@@ -46,7 +59,11 @@ export interface HarnessProjectConfig {
   };
   orchestration?: { provider: "paseo" | "podman" | "none" | string; required?: boolean; worker?: { provider?: string; model?: string; maxRepairAttempts?: number; timeoutSeconds?: number; titlePrefix?: string; }; };
   toolchain?: { configPath?: string; lockPath?: string; statePath?: string; generatedMisePath?: string; };
-  mcp?: { servers?: Record<string, McpServerConfig>; };
+  mcp?: {
+    servers?: Record<string, McpServerConfig>;
+    benchmark?: { enabled?: boolean; resultsDir?: string; repetitions?: number; };
+    packs?: Record<string, { servers: string[]; enabled?: boolean }>;
+  };
   delivery?: {
     stateDir?: string;
     github?: {
@@ -68,12 +85,52 @@ export interface HarnessProjectConfig {
     };
   };
   memory?: { provider: "engram" | "none" | string; required?: boolean; benchmark?: { casesDir?: string; resultsDir?: string; providers?: Array<{ name: string; command: string; timeoutSeconds?: number; }>; }; };
-  codeIntelligence?: { provider: "graphify" | "none" | string; required?: boolean; graphPath?: string; snapshotDir?: string; refreshCommand?: string; };
+  codeIntelligence?: {
+    provider: "graphify" | "none" | string;
+    required?: boolean;
+    graphPath?: string;
+    snapshotDir?: string;
+    refreshCommand?: string;
+    scheduling?: { useEdges?: boolean; maxGraphHops?: number; maxSharedNodes?: number; centralityConflictThreshold?: number; };
+  };
+  evidence?: { enabled?: boolean; outputDir?: string; requireComplete?: boolean; };
+  organization?: { policyBundles?: { cacheDir?: string; required?: boolean; sources?: OrganizationPolicySource[]; }; };
+  distributed?: {
+    enabled?: boolean;
+    provider?: "filesystem" | "http" | string;
+    queueDir?: string;
+    endpoint?: string;
+    tokenEnv?: string;
+    pollIntervalMs?: number;
+    leaseSeconds?: number;
+    workerId?: string;
+  };
   sdd?: { specsDir?: string; contractsDir?: string; reportsDir?: string; repairsDir?: string; runsDir?: string; };
   validation?: { baseRef?: string; commands?: ValidationCommand[]; validators?: ValidatorSpec[]; frozenPaths?: string[]; requireSeal?: boolean; opa?: { enabled?: boolean; policyDirs?: string[]; }; };
-  security?: { sandbox?: { provider?: "podman" | "docker" | "none" | string; required?: boolean; image?: string; network?: boolean; extraArgs?: string[]; }; tools?: string[]; };
+  security?: {
+    sandbox?: {
+      provider?: "podman" | "docker" | "none" | string;
+      required?: boolean;
+      image?: string;
+      imageDigest?: string;
+      network?: boolean;
+      extraArgs?: string[];
+      readOnlyRoot?: boolean;
+      ephemeralHome?: boolean;
+      noNewPrivileges?: boolean;
+      capDropAll?: boolean;
+      pidsLimit?: number;
+      memory?: string;
+      cpus?: number;
+      tmpfs?: string[];
+      forceForRisks?: TaskRisk[];
+      environmentAllowlist?: string[];
+      credentialEnvAllowlist?: string[];
+    };
+    tools?: string[];
+  };
   telemetry?: { enabled?: boolean; required?: boolean; localEventsFile?: string; exporter?: "none" | "otlp-http-json" | string; endpoint?: string; headers?: Record<string, string>; serviceName?: string; };
-  evals?: { corpusDir?: string; resultsDir?: string; workspacesDir?: string; };
+  evals?: { corpusDir?: string; resultsDir?: string; workspacesDir?: string; defaultRuns?: number; confidenceLevel?: number; };
   provenance?: { outputDir?: string; buildType?: string; cosignKey?: string; };
 }
 
@@ -103,7 +160,7 @@ export interface TaskContract {
   issue?: TaskIssueMetadata;
   git?: { baseRef?: string; originatingBranch?: string };
   scope?: { allowed?: string[]; forbidden?: string[]; frozen?: string[]; };
-  routing?: { intent?: string; domains?: string[]; risk?: "low" | "medium" | "high"; agent?: string; reviewers?: string[]; profile?: string; };
+  routing?: { intent?: string; domains?: string[]; risk?: TaskRisk; agent?: string; reviewers?: string[]; profile?: string; };
   requirements?: TaskRequirement[];
   constraints?: { breakingApiChanges?: boolean; newDependencies?: boolean; schemaChanges?: boolean; maxFilesChanged?: number; maxLinesAdded?: number; maxLinesDeleted?: number; };
   impact?: { forbiddenEdges?: string[]; forbiddenNodes?: string[]; allowedCommunities?: string[]; };

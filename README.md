@@ -14,9 +14,9 @@ clone / npm bootstrap
       -> lead acceptance -> deterministic delivery
 ```
 
-## Status: v0.4.16
+## Status: v0.5.0
 
-v0.4.16 adds **declarative toolchain provisioning and one-command bootstrap** on top of v0.4.15 issue-driven execution.
+v0.5.0 closes the original architecture with hard-frozen control planes, executable multi-worker planner waves, requirement evidence graphs, hardened sandboxes, distributed workers and organization governance.
 
 - AEH remains a normal npm development package; it is not an application runtime dependency;
 - `.harness/toolchain.yaml` declares external engineering tools instead of requiring manual one-by-one installation;
@@ -29,7 +29,22 @@ v0.4.16 adds **declarative toolchain provisioning and one-command bootstrap** on
 - `aeh doctor` verifies the reconciled environment;
 - no npm `postinstall` silently mutates the host.
 
-See [docs/V0.4.16.md](docs/V0.4.16.md), [docs/V0.4.15.md](docs/V0.4.15.md) and the earlier v0.4 documentation.
+See [docs/V0.5.md](docs/V0.5.md), [docs/V0.4.16.md](docs/V0.4.16.md) and the earlier v0.4 documentation.
+
+## Architecture close in v0.5
+
+SPEC execution can now run a planner-produced DAG as isolated local or distributed worker waves. Every run freezes its controller/config/policies/skills, validates a requirement evidence graph, and keeps remote workers as untrusted patch producers. Organization policy bundles, statistical eval dashboards, deeper Graphify scheduling, native structured-output adapters and MCP benchmarking are available as governance/scale layers.
+
+Useful scale/governance commands:
+
+```bash
+aeh worker serve . --port 8787
+aeh worker run . --worker-id node-01
+aeh policy sync
+aeh eval repeat EVAL-001 --runs 10
+aeh eval dashboard EVAL-001
+aeh mcp benchmark
+```
 
 ## Recommended installation
 
@@ -44,7 +59,7 @@ npm exec aeh -- doctor
 For an existing clone that does not yet have `node_modules`, bootstrap a pinned AEH package explicitly:
 
 ```bash
-npm exec --yes --package=agentic-engineering-harness@0.4.16 -- aeh setup
+npm exec --yes --package=agentic-engineering-harness@0.5.0 -- aeh setup
 ```
 
 `aeh setup` is the explicit provisioning boundary. Installing the npm package itself does not install Codex, OpenCode, Paseo, scanners or system packages as a side effect.
@@ -107,7 +122,7 @@ Existing project version authority is respected before creating a new lock, incl
 ## Bootstrap without an existing `.harness`
 
 ```bash
-npm exec --yes --package=agentic-engineering-harness@0.4.16 -- aeh init --setup /path/to/repo
+npm exec --yes --package=agentic-engineering-harness@0.5.0 -- aeh init --setup /path/to/repo
 ```
 
 `aeh init` creates the project config, thin agent overlay extending `aeh:default`, reusable skills, policies and toolchain source. `--setup` additionally compiles and reconciles the toolchain.
