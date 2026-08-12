@@ -1,4 +1,5 @@
 export type CheckStatus = "PASS" | "FAIL" | "SKIP" | "WARN";
+export type TaskMode = "spec" | "quick";
 
 export type ValidatorAdapter = "command" | "gherkin" | "graphify" | "opengrep" | "trivy" | "playwright" | "openapi" | "pact" | "mutation" | "property" | string;
 export interface ValidationCommand { id: string; command: string; required?: boolean; timeoutSeconds?: number; workingDirectory?: string; }
@@ -10,6 +11,10 @@ export interface HarnessProjectConfig {
   version: 1;
   project: { name: string };
   agents?: { configPath?: string; generatedPath?: string; activeProfile?: string; required?: boolean; findingsDir?: string; };
+  workflow?: {
+    quick?: { maxFiles?: number; disallowedDomains?: string[]; };
+    reviews?: { enabled?: boolean; reviewQuick?: boolean; leadAcceptance?: boolean; leadAcceptanceQuick?: boolean; maxRemediationRounds?: number; blockingSeverities?: Array<"critical" | "high" | "medium" | "low" | "note">; };
+  };
   orchestration?: { provider: "paseo" | "podman" | "none" | string; required?: boolean; worker?: { provider?: string; model?: string; maxRepairAttempts?: number; timeoutSeconds?: number; titlePrefix?: string; }; };
   memory?: { provider: "engram" | "none" | string; required?: boolean; benchmark?: { casesDir?: string; resultsDir?: string; providers?: Array<{ name: string; command: string; timeoutSeconds?: number; }>; }; };
   codeIntelligence?: { provider: "graphify" | "none" | string; required?: boolean; graphPath?: string; snapshotDir?: string; refreshCommand?: string; };
@@ -22,9 +27,16 @@ export interface HarnessProjectConfig {
 }
 
 export interface TaskRequirement { id: string; description?: string; validator?: string; validators?: string[]; }
+export interface QuickTaskMetadata {
+  request: string;
+  acceptance: string[];
+  triage: { mode: TaskMode; reasons: string[]; evaluatedAt: string; };
+}
 export interface TaskContract {
   version: 1;
+  mode?: TaskMode;
   task: { id: string; title: string };
+  quick?: QuickTaskMetadata;
   source?: { proposal?: string; spec?: string; design?: string; tasks?: string; acceptance?: string; };
   git?: { baseRef?: string };
   scope?: { allowed?: string[]; forbidden?: string[]; frozen?: string[]; };
