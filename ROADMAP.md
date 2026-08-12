@@ -137,13 +137,28 @@
 - [x] session bootstrap turns every repository-mutating natural-language prompt into an automatic `engineering-workflow` entry
 - [x] lead automatically builds triage evidence and obeys deterministic QUICK/SPEC classification
 - [x] parent lead cannot use direct implementation as a shortcut around sealing/Harness execution
-- [x] read-only conversational requests remain direct and non-mutating
 - [x] generated `AGENTS.md` provides a second project-level interactive-entry invariant
 - [x] local Paseo session/bootstrap state is gitignored and no global Paseo config is rewritten
 
+## v0.5.2 — Engineering intent + Harness-governed AUDIT ✅
+- [x] top-level `INFORMATIONAL | AUDIT | CHANGE` intent model
+- [x] only pure INFORMATIONAL requests may bypass Harness execution
+- [x] `aeh intent` classifies engineering work before change complexity triage
+- [x] `aeh audit` provides repository-wide read-only engineering review without fake QUICK/SDD scope
+- [x] transient sealed audit TaskContract and hard-frozen control plane
+- [x] configured deterministic validation plus explicit assertion/environment/sandbox/dependency/tool failure classification
+- [x] read-only reviewer sessions with write/gitWrite/delegate denied
+- [x] worktree checkpoint/rollback preserves pre-existing local changes and removes accidental audit mutations
+- [x] normalized/deduplicated findings plus severity DebtScore and Quality Gate assessment
+- [x] machine-readable `.harness/audits/<id>.json` and `latest.json`
+- [x] audit-to-remediation continuity: later fixes become a new CHANGE and re-enter QUICK/SPEC
+- [x] Paseo bootstrap v2 makes engineering reviews use AUDIT instead of the v0.5.1 read-only escape
+- [x] self-hosted hard freeze includes `src/audit` and `src/paseo`
+
 ## Next
-- [ ] signed attestations for evidence/controller manifests themselves
+- [ ] signed attestations for evidence/controller/audit manifests themselves
 - [ ] remote worker sealed-context bundles for workloads needing full SDD text rather than delegated summaries
 - [ ] queue persistence/HA adapters beyond filesystem/simple HTTP
 - [ ] empirical MCP tool-schema token measurement through runtime-native introspection
 - [ ] statistical sequential testing and automatic model/topology promotion policies
+- [ ] configurable organization audit policies and audit report upload/retention adapters
