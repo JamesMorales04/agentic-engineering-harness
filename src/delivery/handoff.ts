@@ -127,8 +127,12 @@ export async function inferGithubRepository(root: string): Promise<string> { con
 export function resolveGithubTokenOptional(preferred?: string): string | undefined { for (const name of [preferred, "GH_TOKEN", "GITHUB_TOKEN", "GITHUB_PAT"].filter((value): value is string => Boolean(value))) { const token = process.env[name]; if (token) return token; } return undefined; }
 export function resolveGithubToken(preferred?: string): string { const token = resolveGithubTokenOptional(preferred); if (token) return token; throw new Error(`GitHub delivery is enabled but no token is available. Set ${preferred ?? "GH_TOKEN"} (or GITHUB_TOKEN/GITHUB_PAT).`); }
 export async function githubRequest<T = unknown>(base: string, token: string | undefined, endpoint: string, init: RequestInit = {}): Promise<T> {
-  const auth = token ? { Authorization: `Bearer ${token}` } : {};
-  const response = await fetch(`${base}${endpoint}`, { ...init, headers: { Accept: "application/vnd.github+json", ...auth, "X-GitHub-Api-Version": "2022-11-28", "Content-Type": "application/json", ...(init.headers ?? {}) } });
+  const headers = new Headers(init.headers);
+  headers.set("Accept", "application/vnd.github+json");
+  headers.set("X-GitHub-Api-Version", "2022-11-28");
+  headers.set("Content-Type", "application/json");
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const response = await fetch(`${base}${endpoint}`, { ...init, headers });
   const text = await response.text(); if (!response.ok) throw new Error(`GitHub API ${init.method ?? "GET"} ${endpoint} failed (${response.status}): ${text.slice(0, 1000)}`); return text ? JSON.parse(text) as T : undefined as T;
 }
 async function githubRequestMaybe<T>(base: string, token: string | undefined, endpoint: string): Promise<T | undefined> { try { return await githubRequest<T>(base, token, endpoint); } catch (error) { if (/failed \(404\)/.test(String(error))) return undefined; throw error; } }
