@@ -56,8 +56,10 @@ workflow:
           action: remediate
         - name: quality
           action: remediate
+          agent: quality-implementer
         - name: senior
           action: remediate
+          agent: senior-implementer
           model: "@brain"
         - name: diagnosis
           action: diagnose
