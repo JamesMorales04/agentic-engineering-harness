@@ -66,6 +66,47 @@ orchestration:
     timeoutSeconds: 1800
     titlePrefix: aeh-self
 
+mcp:
+  servers:
+    context7:
+      type: remote
+      url: https://mcp.context7.com/mcp
+      oauth: false
+      enabled: true
+    playwright:
+      type: local
+      command: [npx, -y, "@playwright/mcp@0.0.78"]
+      enabled: true
+      timeoutMs: 30000
+    github:
+      type: local
+      command: [podman, run, -i, --rm, -e, GITHUB_PERSONAL_ACCESS_TOKEN, -e, GITHUB_TOOLSETS, -e, GITHUB_READ_ONLY, ghcr.io/github/github-mcp-server]
+      environment:
+        GITHUB_PERSONAL_ACCESS_TOKEN: "{env:GITHUB_TOKEN}"
+        GITHUB_TOOLSETS: repos,issues,pull_requests,actions
+        GITHUB_READ_ONLY: "1"
+      enabled: true
+      timeoutMs: 30000
+    sentry:
+      type: remote
+      url: https://mcp.sentry.dev/mcp
+      enabled: false
+      timeoutMs: 10000
+
+delivery:
+  stateDir: .harness/delivery
+  github:
+    enabled: false
+    tokenEnv: GH_TOKEN
+    assignTokenOwner: true
+    labels: []
+    branchPattern: feature/gh-{issue}-{slug}
+  paseo:
+    enabled: false
+    createWorkspace: true
+    autoUseWorkspace: true
+    worktreeSlugPattern: gh-{issue}-{slug}
+
 memory:
   provider: none
   required: false
@@ -75,7 +116,7 @@ codeIntelligence:
   required: false
 
 sdd:
-  specsDir: specs/changes
+  specsDir: specs
   contractsDir: .harness/contracts
   reportsDir: .harness/reports
   repairsDir: .harness/repairs
