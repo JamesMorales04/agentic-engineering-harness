@@ -1,0 +1,5 @@
+import { describe, expect, it } from "vitest";
+import { planParallelism } from "../src/agents/parallelism.js";
+import type { HarnessProjectConfig } from "../src/core/types.js";
+const config: HarnessProjectConfig = { version: 1, project: { name: "test" } };
+describe("parallelism", () => { it("keeps overlapping scopes out of the same wave and honors dependencies", async () => { const result = await planParallelism("/definitely/missing", config, "T", [{ id: "A", summary: "a", agent: "x", scope: ["src/auth/**"], dependencies: [], acceptance: ["REQ-1"], risk: "medium" }, { id: "B", summary: "b", agent: "x", scope: ["src/auth/service.ts"], dependencies: [], acceptance: ["REQ-2"], risk: "medium" }, { id: "C", summary: "c", agent: "x", scope: ["src/ui/**"], dependencies: ["A"], acceptance: ["REQ-3"], risk: "low" }]); expect(result.waves[0]).toEqual(["A"]); expect(result.waves.flat()).toEqual(expect.arrayContaining(["A", "B", "C"])); expect(result.conflicts.some((conflict) => conflict.reasons.includes("scope-overlap"))).toBe(true); }); });
