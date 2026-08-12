@@ -13,8 +13,8 @@ const config = {
   project: { name: "demo" },
   sdd: { specsDir: "specs", contractsDir: ".harness/contracts", authoring: { provider: "openspec", schema: "spec-driven", managerAgent: "spec-manager" } },
   validation: { baseRef: "main", commands: [{ id: "test", command: "npm test", required: true }] },
-  orchestration: { worker: { maxRepairAttempts: 2 } }
-} as unknown as HarnessProjectConfig;
+  orchestration: { provider: "paseo", worker: { maxRepairAttempts: 2 } }
+} as HarnessProjectConfig;
 
 describe("OpenSpec authoring bridge", () => {
   it("compiles approved OpenSpec requirements/scenarios into traceable AEH artifacts", async () => {
@@ -35,7 +35,8 @@ describe("OpenSpec authoring bridge", () => {
     const run = vi.fn(async (command: string) => command.startsWith("openspec validate") ? result(0, '{"valid":true}') : result(1, "", `unexpected ${command}`));
     const compiled = await compileOpenSpecChange(root, config, taskId, "Improve code readability", change, run as never);
     expect(compiled.requirements).toEqual(["READABILITY-1-R1"]);
-    const contract = YAML.parse(await fs.readFile(compiled.contractPath, "utf8")) as TaskContract & { authoring?: { provider: string; change: string } };
+    expect(compiled.validatorId).toBe("test");
+    const contract = YAML.parse(await fs.readFile(compiled.contractPath, "utf8")) as TaskContract;
     expect(contract.authoring).toEqual(expect.objectContaining({ provider: "openspec", change }));
     expect(contract.requirements?.[0].validators).toContain("test");
     const acceptance = await fs.readFile(path.join(compiled.sddDirectory, "acceptance.feature"), "utf8");
@@ -56,5 +57,30 @@ describe("OpenSpec authoring bridge", () => {
     const spec = await fs.readFile(path.join(compiled.sddDirectory, "spec.md"), "utf8");
     expect(spec).toContain("Preserve approved behavior");
     expect(compiled.requirements).toEqual(["CLEANUP-1-R1"]);
+  });
+
+  it("derives an executable project test command instead of emitting a phantom validator", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-openspec-derived-validator-"));
+    await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ scripts: { test: "vitest run" } }));
+    const taskId = "DERIVED-1"; const change = openSpecChangeName(taskId); const dir = path.join(root, "openspec/changes", change);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, "proposal.md"), "# Cleanup\n\n## Desired outcome\nPreserve behavior.\n");
+    await fs.writeFile(path.join(dir, "tasks.md"), "- [ ] Refactor safely\n");
+    const noValidationConfig = { ...config, validation: { baseRef: "main", commands: [], validators: [] } } as HarnessProjectConfig;
+    const compiled = await compileOpenSpecChange(root, noValidationConfig, taskId, "Derived validation", change, vi.fn(async () => result(0, '{"valid":true}')) as never);
+    const contract = YAML.parse(await fs.readFile(compiled.contractPath, "utf8")) as TaskContract;
+    expect(compiled.validatorId).toBe("test");
+    expect(contract.verification?.commands).toEqual([expect.objectContaining({ id: "test", command: "npm test", required: true })]);
+    expect((await validateSddChange(root, taskId, noValidationConfig)).ok).toBe(true);
+  });
+
+  it("fails compilation when no deterministic requirement evidence can be derived", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-openspec-no-validator-"));
+    const taskId = "NO-VALIDATOR-1"; const change = openSpecChangeName(taskId); const dir = path.join(root, "openspec/changes", change);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, "proposal.md"), "# Change\n\n## Desired outcome\nDo something observable.\n");
+    await fs.writeFile(path.join(dir, "tasks.md"), "- [ ] Implement\n");
+    const noValidationConfig = { ...config, validation: { baseRef: "main", commands: [], validators: [] } } as HarnessProjectConfig;
+    await expect(compileOpenSpecChange(root, noValidationConfig, taskId, "No validator", change, vi.fn(async () => result(0, '{"valid":true}')) as never)).rejects.toThrow(/deterministic requirement validation/i);
   });
 });
