@@ -1,0 +1,31 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { describe, expect, it } from "vitest";
+import { initializeProject } from "../src/core/init.js";
+import { loadProjectConfig } from "../src/core/config.js";
+import { compileAgentTopology } from "../src/agents/compiler.js";
+import { loadAgentTopologySource } from "../src/agents/config.js";
+
+
+describe("default agent pack bootstrap", () => {
+  it("initializes and compiles a repository that had no .harness directory", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-init-"));
+
+    const created = await initializeProject(root);
+    expect(created).toContain(".harness/project.yaml");
+    expect(created).toContain(".harness/agents.source.jsonc");
+
+    const localSource = await fs.readFile(path.join(root, ".harness", "agents.source.jsonc"), "utf8");
+    expect(localSource).toContain('"extends": ["aeh:default"]');
+
+    const config = await loadProjectConfig(root);
+    const source = await loadAgentTopologySource(root, config);
+    expect(source.agents["backend-implementer"]).toBeDefined();
+    expect(source.agents["security-reviewer"]).toBeDefined();
+
+    const compiled = await compileAgentTopology(root, config);
+    expect(compiled.ok).toBe(true);
+    expect(await fs.stat(path.join(root, ".harness", "generated", "agents.json"))).toBeDefined();
+  });
+});
