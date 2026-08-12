@@ -18,7 +18,7 @@ Paseo UI
    │
    ▼
 AEH Lead (semantic orchestrator)
-   │ short start/status calls
+   │ operation tools / short status calls
    ▼
 AEH Operation Controller (deterministic, not an LLM agent)
    ├── seals / validators / state machines
@@ -76,7 +76,7 @@ materialize -> dispatch -> wait
 
 For AUDIT, AEH materializes the selected read-only reviewers before running deterministic validators. They remain visible/idle while validation runs, then AEH dispatches them with the completed validator evidence. This preserves deterministic evidence precedence without the earlier “silent terminal” UX.
 
-The SDK adapter supports the current Paseo handle shape (`workspaceId`, `initialPrompt`, `send`, `refetch`, timeline) while retaining compatibility hooks for older client handles where available.
+The adapter follows the Paseo 0.3.1 create contract: `cwd` remains present even when `workspaceId` controls placement, `initialPrompt` is used for the first turn, and provider/model remain separate session-config fields. It supports current handles through `send`, `refetch`, timeline polling and compatible legacy helpers where present.
 
 ## Conversational lead
 
@@ -84,7 +84,38 @@ The SDK adapter supports the current Paseo handle shape (`workspaceId`, `initial
 
 The bootstrap is intentionally thin. `AGENTS.md`, `.harness/skills/engineering-workflow/SKILL.md`, and the resolved AEH agent topology are authoritative for roles, charters, permissions and delegation.
 
-When Paseo exposes native orchestration tools, the lead may use them for bounded conversational delegation and `/paseo-handoff`. Deterministic multi-agent workflows are owned by the detached AEH operation controller, so the lead remains available to the user.
+When `orchestration.interactive.usePaseoTools` is enabled, AEH derives the exact command vector that launched the current package and injects an `aeh-control` stdio MCP server into the lead session. A normal installed launch therefore becomes conceptually:
+
+```text
+mcp server: aeh-control
+command: <exact Node executable>
+args: [<exact dist/main.js>, operation, mcp]
+```
+
+Only four MCP tools are preapproved:
+
+```text
+aeh_operation_start_audit
+aeh_operation_start_run
+aeh_operation_status
+aeh_operation_cancel
+```
+
+Paseo's `toolPolicy.preapproved` is scoped to those exact MCP server/tool identities; native shell/edit tools are not broadened by this configuration. If the AEH invocation cannot be parsed as a safe command vector, MCP injection is skipped rather than evaluating shell syntax, and the short `aeh operation ...` CLI surface remains the fallback.
+
+The lead bootstrap version is incremented when this managed-session contract changes, so explicit resume cannot silently reuse an older lead that lacks the current operation-control surface.
+
+Paseo native orchestration tools remain preferred for bounded conversational delegation and `/paseo-handoff`. Deterministic multi-agent workflows are owned by the detached AEH operation controller, so the lead remains available to the user.
+
+## Operation MCP server
+
+The same control surface can be started directly for any MCP-capable host:
+
+```bash
+aeh operation mcp
+```
+
+It is a stdio JSON-RPC server and calls the same persistent controller used by the CLI. It does not duplicate workflow logic and does not become a normative engineering source.
 
 ## Independent AEH agents
 
@@ -99,7 +130,7 @@ aeh.role=<logical-agent>
 aeh.task=<task-id>
 aeh.operation=<operation-id>
 aeh.operation.kind=audit|run|quick|...
-aeh.operation.phase=queued|review|implementation|...
+aeh.operation.phase=queued|planning|review|implementation|diagnosis|...
 aeh.workspace.kind=orchestration|delivery
 aeh.profile=<profile>     # when selected
 aeh.generation=<n>        # leads
@@ -142,14 +173,15 @@ This lets audits and non-delivery operations have coherent Paseo grouping even w
 - provider/model selection;
 - title;
 - operation/task labels;
+- semantic phase;
 - orchestration-vs-delivery workspace;
 - timeout.
 
-This prevents launch-path drift such as the earlier provider/model serialization mismatch.
+This prevents launch-path drift such as provider/model or cwd/workspace serialization mismatches.
 
 ## Operation/session metadata
 
-Worker/reviewer execution records now retain lifecycle metadata in addition to stdout/stderr:
+Worker/reviewer execution records retain lifecycle metadata in addition to stdout/stderr:
 
 ```text
 id
@@ -166,6 +198,12 @@ logicalAgent / runtime / model
 ```
 
 Audit/run reports can therefore distinguish a real Paseo SDK session from CLI/direct/Podman execution without inferring it from logs.
+
+Operation phase is durable even when optional telemetry export is disabled. Harness lifecycle events update `.harness/operations/<id>.json` through phases such as `validating`, `planning`, `implementation`, `remediation`, `review`, `delivery`, and `finished`.
+
+## Cancellation
+
+`aeh operation cancel <id>` terminates the detached controller and then discovers real Paseo agents by `aeh.operation=<id>`. Each active agent is interrupted through Paseo's supported `paseo agent stop <id>` lifecycle. Cleanup failures are retained as `cleanupWarnings` in operation state rather than silently ignored.
 
 ## Session policy and context rotation
 
