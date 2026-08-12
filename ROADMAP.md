@@ -129,6 +129,18 @@
 - [x] MCP benchmark harness for configuration token footprint, probe latency, stale-data risk and permission surface
 - [x] named least-privilege MCP packs; observability pack remains opt-in until project evals justify it
 
+## v0.5.1 — Zero-friction Paseo entrypoint ✅
+- [x] `aeh start` starts or reuses the Paseo daemon and web UI
+- [x] interactive lead is resolved from the active agent topology rather than hard-coded
+- [x] managed Paseo/lead runtime dependencies reconcile automatically when needed
+- [x] persistent project lead session is created once and reused while compatible
+- [x] session bootstrap turns every repository-mutating natural-language prompt into an automatic `engineering-workflow` entry
+- [x] lead automatically builds triage evidence and obeys deterministic QUICK/SPEC classification
+- [x] parent lead cannot use direct implementation as a shortcut around sealing/Harness execution
+- [x] read-only conversational requests remain direct and non-mutating
+- [x] generated `AGENTS.md` provides a second project-level interactive-entry invariant
+- [x] local Paseo session/bootstrap state is gitignored and no global Paseo config is rewritten
+
 ## Next
 - [ ] signed attestations for evidence/controller manifests themselves
 - [ ] remote worker sealed-context bundles for workloads needing full SDD text rather than delegated summaries
