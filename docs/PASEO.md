@@ -16,6 +16,8 @@ AEH
 
 Set `AEH_PASEO_FORCE_CLI=1` only when the compatibility path is deliberately required. `PASEO_DAEMON_URL` overrides the default SDK endpoint `ws://127.0.0.1:6767/ws`; `PASEO_DAEMON_PASSWORD` supplies daemon authentication when configured.
 
+A system-prompt-only idle agent is an SDK-only invariant. If the SDK is unavailable, AEH refuses to degrade that lead creation into a CLI user turn because doing so would expose the bootstrap as conversational input.
+
 ## Conversational lead
 
 `aeh start` creates the lead as an idle Paseo agent. The AEH bootstrap is passed through the SDK's `systemPrompt`; it is no longer sent as the first user message and there is no synthetic `AEH READY` turn.
@@ -40,6 +42,19 @@ aeh.generation=<n>        # leads
 ```
 
 The shared Paseo runtime exposes list/inspect primitives over those labels. This lets AEH determine which logical agent is active for a task without scraping assistant prose or relying on parent/child nesting. The same labels survive lead context rotation, so a fresh lead can correlate existing workers with durable AEH run state.
+
+### Observe active agents
+
+Use the top-level AEH command to inspect the live Paseo directory. The project label is applied automatically; filters are additive:
+
+```bash
+aeh paseo agents
+aeh paseo agents --status working
+aeh paseo agents --kind worker --role backend-implementer
+aeh paseo agents --task TASK-123 --json
+```
+
+The tabular view reports status, logical role, task, kind, stable Paseo agent ID and title. `--json` returns the same normalized fields plus the complete AEH label set. This is the preferred way to answer which AEH agent is currently working without depending on Paseo parent/subagent nesting.
 
 ## Runtime consolidation
 
