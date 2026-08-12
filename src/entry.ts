@@ -19,8 +19,8 @@ import { prepareOpenSpecChange, compileOpenSpecChange } from "./spec/openspec.js
 import { classifyEngineeringIntent, formatEngineeringIntent } from "./audit/intent.js";
 import { runAudit } from "./audit/run.js";
 import type { TaskRisk } from "./core/types.js";
+import { VERSION } from "./version.js";
 
-const VERSION = "0.6.0";
 const args = process.argv.slice(2);
 if (args.length === 1 && ["--version", "-V"].includes(args[0])) { console.log(VERSION); process.exit(0); }
 
