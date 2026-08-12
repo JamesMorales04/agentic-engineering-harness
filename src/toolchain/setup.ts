@@ -28,6 +28,9 @@ export async function setupToolchain(root: string, project: HarnessProjectConfig
     lockTools[tool.name] = { command: tool.command, provisioning: "system", requestedVersion: tool.version, resolvedVersion: ok ? await commandVersion(root, tool.command) : undefined };
   }
 
+  const requiredMissing = resolved.tools.filter((tool) => tool.provisioning === "system" && tool.required && systemMissing.includes(tool.name));
+  if (requiredMissing.length && !options.dryRun) throw new Error(`Required host tools are missing and are not installed automatically: ${requiredMissing.map((item) => item.command).join(", ")}.`);
+
   const miseTools = resolved.tools.filter((item) => item.provisioning === "mise");
   const containerTools = resolved.tools.filter((item) => item.provisioning === "container");
   if (options.dryRun) {
@@ -76,9 +79,6 @@ export async function setupToolchain(root: string, project: HarnessProjectConfig
   const state: ToolchainState = { version: 1, generatedAt: new Date().toISOString(), manager: { provider: toolchain.manager.provider, command: adapter?.command ?? "system", version: adapter?.version }, binPaths: [...new Set([wrappersDir, ...binPaths])], wrappersDir, projectDependencyCommands };
   await writeJsonFile(path.resolve(root, stateFile), state);
   clearToolchainEnvCache();
-
-  const requiredMissing = resolved.tools.filter((tool) => tool.provisioning === "system" && tool.required && systemMissing.includes(tool.name));
-  if (requiredMissing.length) throw new Error(`Required host tools are missing and are not installed automatically: ${requiredMissing.map((item) => item.command).join(", ")}.`);
   return { profile: resolved.profile, generatedConfig, lockFile, stateFile, installed, containers, systemMissing, projectDependencyCommands, dryRun: false };
 }
 
@@ -97,8 +97,9 @@ async function resolveProjectDependencyCommands(root: string, autoDetect: boolea
     const packageManager = await packageManagerDeclaration(root);
     commands.push(packageManager?.startsWith("yarn@1.") ? "corepack yarn install --frozen-lockfile" : "corepack yarn install --immutable");
   }
+  if (await exists(path.join(root, "uv.lock"))) commands.push("uv sync --frozen");
   const entries = await fs.readdir(root).catch(() => [] as string[]);
-  if (entries.some((name) => name.endsWith(".sln") || name.endsWith(".slnx") || name.endsWith(".csproj"))) commands.push("dotnet restore");
+  if (entries.some((name) => name.endsWith(".sln") || name.endsWith(".slnx") || name.endsWith(".csproj")) || await exists(path.join(root, "global.json"))) commands.push("dotnet restore");
   return unique(commands);
 }
 
