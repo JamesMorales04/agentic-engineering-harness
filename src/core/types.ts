@@ -45,6 +45,7 @@ export interface HarnessProjectConfig {
     };
   };
   orchestration?: { provider: "paseo" | "podman" | "none" | string; required?: boolean; worker?: { provider?: string; model?: string; maxRepairAttempts?: number; timeoutSeconds?: number; titlePrefix?: string; }; };
+  toolchain?: { configPath?: string; lockPath?: string; statePath?: string; generatedMisePath?: string; };
   mcp?: { servers?: Record<string, McpServerConfig>; };
   delivery?: {
     stateDir?: string;

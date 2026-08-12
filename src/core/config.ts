@@ -27,6 +27,7 @@ const projectSchema = z.object({
     }).optional()
   }).optional(),
   orchestration: z.object({ provider: z.string(), required: z.boolean().optional(), worker: z.object({ provider: z.string().optional(), model: z.string().optional(), maxRepairAttempts: z.number().int().nonnegative().optional(), timeoutSeconds: z.number().int().positive().optional(), titlePrefix: z.string().optional() }).optional() }).optional(),
+  toolchain: z.object({ configPath: z.string().optional(), lockPath: z.string().optional(), statePath: z.string().optional(), generatedMisePath: z.string().optional() }).optional(),
   mcp: z.object({ servers: z.record(z.string(), mcpServerSchema).optional() }).optional(),
   delivery: z.object({
     stateDir: z.string().optional(),

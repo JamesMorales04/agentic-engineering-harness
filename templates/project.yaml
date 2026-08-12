@@ -36,7 +36,6 @@ workflow:
     leadAcceptance: true
     leadAcceptanceQuick: false
     quality:
-      # Integer DebtPoints: 3 points = DebtScore 1. Therefore 3 notes = 1 low.
       severityPoints:
         critical: 300
         high: 75
@@ -84,8 +83,12 @@ orchestration:
     provider: opencode
     maxRepairAttempts: 2
 
-# MCP servers are injected only into agents whose topology explicitly lists them.
-# This keeps large tool schemas out of unrelated agent contexts.
+toolchain:
+  configPath: .harness/toolchain.yaml
+  lockPath: .harness/toolchain.lock.json
+  statePath: .harness/toolchain.state.json
+  generatedMisePath: .config/mise/conf.d/aeh.toml
+
 mcp:
   servers:
     context7:
@@ -117,7 +120,6 @@ mcp:
       enabled: false
       timeoutMs: 10000
 
-# GitHub reads can use GH_TOKEN/GITHUB_TOKEN when needed. Delivery writes remain explicit opt-in.
 delivery:
   stateDir: .harness/delivery
   github:
@@ -126,8 +128,6 @@ delivery:
     assignTokenOwner: true
     labels: []
     branchPattern: feature/gh-{issue}-{slug}
-    # When GitHub delivery is enabled, accepted issue tasks can be committed/pushed
-    # by deterministic Harness code and linked through a draft PR.
     finalizeOnAcceptance: true
     pullRequestDraft: true
   paseo:

@@ -4,6 +4,8 @@ coverage/
 .env
 .env.*
 !.env.example
+.harness/bin/
+.harness/toolchain.state.json
 .harness/generated/
 .harness/contracts/
 .harness/seals/
@@ -16,6 +18,7 @@ coverage/
 .harness/provenance/
 .harness/delivery/
 .harness/issues/
+.config/mise/conf.d/aeh.toml
 .graphify/
 graphify-out/
 *.log

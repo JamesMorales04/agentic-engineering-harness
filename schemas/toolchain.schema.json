@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/JamesMorales04/agentic-engineering-harness/schemas/toolchain.schema.json",
+  "title": "Agentic Engineering Harness toolchain",
+  "type": "object",
+  "required": ["version", "manager", "tools"],
+  "properties": {
+    "version": { "const": 1 },
+    "manager": {
+      "type": "object",
+      "required": ["provider"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "generatedConfig": { "type": "string" },
+        "lockFile": { "type": "string" },
+        "stateFile": { "type": "string" },
+        "minimumVersion": { "type": "string" }
+      }
+    },
+    "strategy": {
+      "type": "object",
+      "properties": {
+        "validators": { "enum": ["local", "prefer-container"] },
+        "containerEngine": { "type": "string", "minLength": 1 }
+      }
+    },
+    "profiles": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "extends": { "type": "array", "items": { "type": "string" } },
+          "tools": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "tools": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["kind", "command"],
+        "properties": {
+          "kind": { "enum": ["system", "mise"] },
+          "command": { "type": "string", "minLength": 1 },
+          "source": { "type": "string", "minLength": 1 },
+          "version": { "type": "string", "minLength": 1 },
+          "required": { "type": "boolean" },
+          "dependsOn": { "type": "array", "items": { "type": "string" } },
+          "activateWhen": { "type": "array", "items": { "type": "string" } },
+          "container": {
+            "type": "object",
+            "required": ["image"],
+            "properties": {
+              "image": { "type": "string", "minLength": 1 },
+              "engine": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "projectDependencies": {
+      "type": "object",
+      "properties": {
+        "autoDetect": { "type": "boolean" },
+        "commands": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      }
+    }
+  },
+  "additionalProperties": false
+}

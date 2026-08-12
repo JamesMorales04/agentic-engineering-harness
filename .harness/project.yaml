@@ -73,6 +73,12 @@ orchestration:
     timeoutSeconds: 1800
     titlePrefix: aeh-self
 
+toolchain:
+  configPath: .harness/toolchain.yaml
+  lockPath: .harness/toolchain.lock.json
+  statePath: .harness/toolchain.state.json
+  generatedMisePath: .config/mise/conf.d/aeh.toml
+
 mcp:
   servers:
     context7:

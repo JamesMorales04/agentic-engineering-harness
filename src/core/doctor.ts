@@ -5,12 +5,14 @@ import { GraphifyCodeIntelligenceProvider } from "../providers/graphify.js";
 import { PaseoOrchestrationProvider } from "../providers/paseo.js";
 import { createWorkerExecutor } from "../workers/factory.js";
 import { resolveEndpoint } from "../telemetry/otlp.js";
+import { runToolchainDoctor } from "../toolchain/doctor.js";
 
 export interface DoctorResult { component: string; required: boolean; ok: boolean; message: string; }
 
 export async function runDoctor(root: string, config: HarnessProjectConfig): Promise<DoctorResult[]> {
   const results: DoctorResult[] = [];
   for (const command of ["git", "node"]) results.push({ component: command, required: true, ok: await commandExists(command, root), message: `${command} executable` });
+  if (config.toolchain) results.push(...await runToolchainDoctor(root, config));
   if (config.orchestration?.provider === "paseo") { const r = await new PaseoOrchestrationProvider().doctor(root); results.push({ component: "paseo", required: config.orchestration.required ?? false, ...r }); }
   else if (config.orchestration?.provider === "podman") { const executor = createWorkerExecutor(config); const r = await executor.doctor(root, config); results.push({ component: "podman-worker", required: config.orchestration.required ?? false, ...r }); }
   if (config.memory?.provider === "engram") { const r = await new EngramMemoryProvider().doctor(root); results.push({ component: "engram", required: config.memory.required ?? false, ...r }); }

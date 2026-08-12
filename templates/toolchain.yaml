@@ -1,0 +1,127 @@
+version: 1
+
+manager:
+  provider: mise
+  generatedConfig: .config/mise/conf.d/aeh.toml
+  lockFile: .harness/toolchain.lock.json
+  stateFile: .harness/toolchain.state.json
+  minimumVersion: "2026.7.0"
+
+strategy:
+  validators: local # local | prefer-container
+  containerEngine: podman
+
+profiles:
+  core:
+    tools: [git, node]
+  agents:
+    extends: [core]
+    tools: [codex, opencode, paseo]
+  intelligence:
+    extends: [core]
+    tools: [uv, graphify]
+  validation:
+    extends: [core]
+    tools: [opa, opengrep, trivy]
+  full:
+    extends: [agents, intelligence, validation]
+    tools: [podman, dotnet, bun]
+
+tools:
+  git:
+    kind: system
+    command: git
+    required: true
+    activateWhen: [always]
+
+  node:
+    kind: mise
+    command: node
+    source: node
+    version: "22"
+    required: true
+    activateWhen: [always, project:node, project:pnpm, project:yarn]
+
+  bun:
+    kind: mise
+    command: bun
+    source: bun
+    version: latest
+    activateWhen: [project:bun]
+
+  dotnet:
+    kind: mise
+    command: dotnet
+    source: dotnet
+    version: latest
+    activateWhen: [project:dotnet]
+
+  codex:
+    kind: mise
+    command: codex
+    source: "npm:@openai/codex"
+    version: latest
+    activateWhen: [runtime:codex]
+
+  opencode:
+    kind: mise
+    command: opencode
+    source: "aqua:anomalyco/opencode"
+    version: latest
+    activateWhen: [runtime:opencode]
+
+  paseo:
+    kind: mise
+    command: paseo
+    source: "npm:@getpaseo/cli"
+    version: latest
+    activateWhen: [orchestration:paseo, delivery:paseo]
+
+  uv:
+    kind: mise
+    command: uv
+    source: uv
+    version: latest
+    activateWhen: [code-intelligence:graphify, project:python]
+
+  graphify:
+    kind: mise
+    command: graphify
+    source: "pipx:graphifyy"
+    version: latest
+    dependsOn: [uv]
+    activateWhen: [code-intelligence:graphify]
+
+  opa:
+    kind: mise
+    command: opa
+    source: "aqua:open-policy-agent/opa"
+    version: latest
+    activateWhen: [validation:opa]
+    container:
+      image: docker.io/openpolicyagent/opa:latest-static
+
+  opengrep:
+    kind: mise
+    command: opengrep
+    source: "aqua:opengrep/opengrep"
+    version: latest
+    activateWhen: [security-tool:opengrep, validator:opengrep]
+
+  trivy:
+    kind: mise
+    command: trivy
+    source: "aqua:aquasecurity/trivy"
+    version: latest
+    activateWhen: [security-tool:trivy, validator:trivy]
+    container:
+      image: ghcr.io/aquasecurity/trivy:latest
+
+  podman:
+    kind: system
+    command: podman
+    activateWhen: [orchestration:podman, sandbox:podman]
+
+projectDependencies:
+  autoDetect: true
+  commands: []

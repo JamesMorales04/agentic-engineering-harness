@@ -12,9 +12,29 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
-      - run: npm install
-      - run: npm run check
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm run release:check
+      - name: Smoke packaged CLI from consumer install
+        shell: bash
+        run: |
+          set -euo pipefail
+          TGZ="$(npm pack --silent)"
+          TMP="$(mktemp -d)"
+          mkdir -p "$TMP/consumer"
+          cd "$TMP/consumer"
+          npm init -y >/dev/null
+          npm install "$GITHUB_WORKSPACE/$TGZ" >/dev/null
+          ./node_modules/.bin/aeh --version | grep -Fx '0.4.16'
+          mkdir repo
+          ./node_modules/.bin/aeh init repo
+          test -f repo/.harness/project.yaml
+          test -f repo/.harness/toolchain.yaml
+          test -f repo/.harness/agents.source.jsonc
+          ./node_modules/.bin/aeh toolchain compile repo
+          test -f repo/.config/mise/conf.d/aeh.toml
+          ./node_modules/.bin/aeh setup --dry-run repo
