@@ -6,18 +6,42 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
       - uses: actions/setup-node@v6
         with:
           node-version: 22
           package-manager-cache: false
       - run: npm ci
+      - name: Normalize v0.6.0 metadata once
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          for (const file of ['src/entry.ts', 'src/cli.ts']) {
+            let text = fs.readFileSync(file, 'utf8');
+            text = text.replaceAll('0.5.2', '0.6.0');
+            fs.writeFileSync(file, text);
+          }
+          NODE
+          npm install --package-lock-only --ignore-scripts >/dev/null
+          if git diff --quiet -- package-lock.json src/entry.ts src/cli.ts; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package-lock.json src/entry.ts src/cli.ts
+          git commit -m "chore(release): align v0.6.0 metadata and lock"
+          git push origin "HEAD:${{ github.head_ref }}"
       - run: npm run release:check
       - name: Smoke packaged CLI from consumer install
         shell: bash
@@ -29,19 +53,25 @@ jobs:
           cd "$TMP/consumer"
           npm init -y >/dev/null
           npm install "$GITHUB_WORKSPACE/$TGZ" >/dev/null
-          ./node_modules/.bin/aeh --version | grep -Fx '0.5.2'
+          ./node_modules/.bin/aeh --version | grep -Fx '0.6.0'
           mkdir repo
           ./node_modules/.bin/aeh init repo
           test -f repo/.harness/project.yaml
           test -f repo/.harness/toolchain.yaml
           test -f repo/.harness/agents.source.jsonc
-          grep -q '^  interactive:$' repo/.harness/project.yaml
+          test -f repo/openspec/config.yaml
+          grep -q '"aeh:orchestration"' repo/.harness/agents.source.jsonc
+          grep -q '^    sessionPolicy: fresh-on-start$' repo/.harness/project.yaml
+          grep -q '^    provider: openspec$' repo/.harness/project.yaml
+          grep -q 'npm:@fission-ai/openspec' repo/.harness/toolchain.yaml
           test -d repo/.harness/paseo
+          test -d repo/.harness/paseo/handoffs
           test -d repo/.harness/audits
           grep -q '^\.harness/paseo/$' repo/.gitignore
           grep -q '^\.harness/audits/$' repo/.gitignore
           ./node_modules/.bin/aeh toolchain compile repo
           test -f repo/.config/mise/conf.d/aeh.toml
+          grep -q 'openspec' repo/.config/mise/conf.d/aeh.toml
           ./node_modules/.bin/aeh setup --dry-run repo
           ./node_modules/.bin/aeh policy sync repo >/dev/null
           ./node_modules/.bin/aeh intent 'review the repo and validate the code for improvements' repo | grep -q '^AUDIT'
