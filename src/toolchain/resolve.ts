@@ -25,13 +25,14 @@ export async function resolveToolchain(
   }
 
   expandDependencies(toolchain, selected);
+  const versionOverrides = await projectVersionOverrides(root);
   const preferContainers = options.preferContainers ?? toolchain.strategy?.validators === "prefer-container";
   const tools = [...selected.entries()].map(([name, selectedBy]) => {
     const definition = requireTool(toolchain, name);
     const provisioning = definition.kind === "system" ? "system" as const
       : preferContainers && options.containerAvailable && definition.container ? "container" as const
       : "mise" as const;
-    return { name, ...definition, selectedBy, provisioning };
+    return { name, ...definition, version: versionOverrides[name] ?? definition.version, selectedBy, provisioning };
   });
   tools.sort((a, b) => a.name.localeCompare(b.name));
   return { profile, tools };
@@ -83,6 +84,24 @@ async function addProjectCapabilities(root: string, result: Set<string>): Promis
     const manager = typeof pkg.packageManager === "string" ? pkg.packageManager.split("@")[0] : undefined;
     if (manager) result.add(`project:${manager}`);
   } catch { /* package.json is optional */ }
+}
+
+async function projectVersionOverrides(root: string): Promise<Record<string, string>> {
+  const result: Record<string, string> = {};
+  for (const name of [".node-version", ".nvmrc"]) {
+    try { const value = (await fs.readFile(path.join(root, name), "utf8")).trim().replace(/^v/, ""); if (value) { result.node = value; break; } } catch { /* optional */ }
+  }
+  try {
+    const global = JSON.parse(await fs.readFile(path.join(root, "global.json"), "utf8")) as { sdk?: { version?: unknown } };
+    if (typeof global.sdk?.version === "string" && global.sdk.version.trim()) result.dotnet = global.sdk.version.trim();
+  } catch { /* optional */ }
+  try {
+    const pkg = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8")) as { packageManager?: unknown };
+    if (typeof pkg.packageManager === "string") {
+      const match = pkg.packageManager.match(/^bun@(.+)$/); if (match) result.bun = match[1];
+    }
+  } catch { /* optional */ }
+  return result;
 }
 
 function expandDependencies(toolchain: ToolchainConfig, selected: Map<string, string[]>): void {
