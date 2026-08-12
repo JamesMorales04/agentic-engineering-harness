@@ -8,10 +8,22 @@ const validationCommandSchema = z.object({ id: z.string().min(1), command: z.str
 const validatorSpecSchema = z.object({ id: z.string().min(1), adapter: z.string().min(1), command: z.string().min(1).optional(), required: z.boolean().optional(), timeoutSeconds: z.number().int().positive().optional(), workingDirectory: z.string().optional(), options: z.record(z.string(), z.unknown()).optional() });
 const memoryBenchmarkProviderSchema = z.object({ name: z.string().min(1), command: z.string().min(1), timeoutSeconds: z.number().int().positive().optional() });
 const severitySchema = z.enum(["critical", "high", "medium", "low", "note"]);
+const severityNumberSchema = z.object({ critical: z.number().int().nonnegative().optional(), high: z.number().int().nonnegative().optional(), medium: z.number().int().nonnegative().optional(), low: z.number().int().nonnegative().optional(), note: z.number().int().nonnegative().optional() });
+const escalationStageSchema = z.object({ name: z.string().min(1), action: z.enum(["remediate", "diagnose", "replan"]).optional(), agent: z.string().min(1).optional(), model: z.string().min(1).optional() });
 const projectSchema = z.object({
   version: z.literal(1), project: z.object({ name: z.string().min(1) }),
   agents: z.object({ configPath: z.string().optional(), generatedPath: z.string().optional(), activeProfile: z.string().optional(), required: z.boolean().optional(), findingsDir: z.string().optional() }).optional(),
-  workflow: z.object({ quick: z.object({ maxFiles: z.number().int().positive().optional(), disallowedDomains: z.array(z.string()).optional() }).optional(), reviews: z.object({ enabled: z.boolean().optional(), reviewQuick: z.boolean().optional(), leadAcceptance: z.boolean().optional(), leadAcceptanceQuick: z.boolean().optional(), maxRemediationRounds: z.number().int().nonnegative().optional(), blockingSeverities: z.array(severitySchema).optional() }).optional() }).optional(),
+  workflow: z.object({
+    quick: z.object({ maxFiles: z.number().int().positive().optional(), disallowedDomains: z.array(z.string()).optional() }).optional(),
+    reviews: z.object({
+      enabled: z.boolean().optional(), reviewQuick: z.boolean().optional(), leadAcceptance: z.boolean().optional(), leadAcceptanceQuick: z.boolean().optional(),
+      maxRemediationRounds: z.number().int().nonnegative().optional(), blockingSeverities: z.array(severitySchema).optional(),
+      quality: z.object({ severityPoints: severityNumberSchema.optional() }).optional(),
+      convergence: z.object({ minimumDebtPointImprovement: z.number().int().nonnegative().optional(), stagnationWindow: z.number().int().positive().optional(), cycleDetection: z.boolean().optional(), regressionDetection: z.boolean().optional() }).optional(),
+      finalQualityGate: z.object({ maxBySeverity: severityNumberSchema.optional(), maxDebtPoints: z.number().int().nonnegative().optional() }).optional(),
+      escalation: z.object({ stages: z.array(escalationStageSchema).optional(), criticalStartStage: z.number().int().nonnegative().optional(), replanResumeStage: z.number().int().nonnegative().optional() }).optional()
+    }).optional()
+  }).optional(),
   orchestration: z.object({ provider: z.string(), required: z.boolean().optional(), worker: z.object({ provider: z.string().optional(), model: z.string().optional(), maxRepairAttempts: z.number().int().nonnegative().optional(), timeoutSeconds: z.number().int().positive().optional(), titlePrefix: z.string().optional() }).optional() }).optional(),
   memory: z.object({ provider: z.string(), required: z.boolean().optional(), benchmark: z.object({ casesDir: z.string().optional(), resultsDir: z.string().optional(), providers: z.array(memoryBenchmarkProviderSchema).optional() }).optional() }).optional(),
   codeIntelligence: z.object({ provider: z.string(), required: z.boolean().optional(), graphPath: z.string().optional(), snapshotDir: z.string().optional(), refreshCommand: z.string().optional() }).optional(),
