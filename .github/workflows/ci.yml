@@ -6,52 +6,18 @@ on:
   pull_request:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-        with:
-          ref: ${{ github.head_ref || github.ref_name }}
       - uses: actions/setup-node@v6
         with:
           node-version: 22
           package-manager-cache: false
       - run: npm ci
-      - name: Normalize v0.5 release metadata once
-        if: github.event_name == 'pull_request'
-        shell: bash
-        run: |
-          set -euo pipefail
-          node --input-type=module <<'NODE'
-          import fs from 'node:fs';
-          const cli = 'src/cli.ts';
-          let cliText = fs.readFileSync(cli, 'utf8');
-          cliText = cliText.replace('.version("0.4.16")', '.version("0.5.0")');
-          fs.writeFileSync(cli, cliText);
-          const readme = 'README.md';
-          let text = fs.readFileSync(readme, 'utf8');
-          text = text.replace('## Status: v0.4.16', '## Status: v0.5.0');
-          text = text.replace('v0.4.16 adds **declarative toolchain provisioning and one-command bootstrap** on top of v0.4.15 issue-driven execution.', 'v0.5.0 closes the original architecture with hard-frozen control planes, executable multi-worker planner waves, requirement evidence graphs, hardened sandboxes, distributed workers and organization governance.');
-          text = text.replace('See [docs/V0.4.16.md](docs/V0.4.16.md), [docs/V0.4.15.md](docs/V0.4.15.md) and the earlier v0.4 documentation.', 'See [docs/V0.5.md](docs/V0.5.md), [docs/V0.4.16.md](docs/V0.4.16.md) and the earlier v0.4 documentation.');
-          text = text.replaceAll('agentic-engineering-harness@0.4.16', 'agentic-engineering-harness@0.5.0');
-          const marker = '## Recommended installation';
-          if (!text.includes('## Architecture close in v0.5')) {
-            text = text.replace(marker, `## Architecture close in v0.5\n\nSPEC execution can now run a planner-produced DAG as isolated local or distributed worker waves. Every run freezes its controller/config/policies/skills, validates a requirement evidence graph, and keeps remote workers as untrusted patch producers. Organization policy bundles, statistical eval dashboards, deeper Graphify scheduling, native structured-output adapters and MCP benchmarking are available as governance/scale layers.\n\nUseful scale/governance commands:\n\n\`\`\`bash\naeh worker serve . --port 8787\naeh worker run . --worker-id node-01\naeh policy sync\naeh eval repeat EVAL-001 --runs 10\naeh eval dashboard EVAL-001\naeh mcp benchmark\n\`\`\`\n\n${marker}`);
-          }
-          fs.writeFileSync(readme, text);
-          NODE
-          npm install --package-lock-only --ignore-scripts >/dev/null
-          if git diff --quiet -- src/cli.ts README.md package-lock.json; then
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/cli.ts README.md package-lock.json
-          git commit -m "chore(v0.5): align release metadata and lock"
-          git push origin "HEAD:${{ github.head_ref }}"
       - run: npm run release:check
       - name: Smoke packaged CLI from consumer install
         shell: bash
