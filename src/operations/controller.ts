@@ -5,6 +5,7 @@ import process from "node:process";
 import { runAudit } from "../audit/run.js";
 import { loadProjectConfig, loadTaskContract } from "../core/config.js";
 import { runTask } from "../core/run.js";
+import { listManagedPaseoAgents } from "../paseo/runtime.js";
 import { runProcess, type ProcessResult } from "../utils/process.js";
 import {
   loadOperation,
@@ -129,15 +130,31 @@ export async function waitForOperation(root: string, operationId: string, timeou
 }
 
 export async function cancelOperation(root: string, operationId: string): Promise<OperationRecord> {
-  const record = await loadOperation(root, operationId);
+  const absoluteRoot = path.resolve(root);
+  const record = await loadOperation(absoluteRoot, operationId);
   if (isTerminal(record.status)) return record;
+  const cleanupWarnings: string[] = [];
   if (record.pid && record.pid !== process.pid) {
     try { process.kill(record.pid, "SIGTERM"); }
-    catch (error) {
-      if (!/ESRCH/.test(String(error))) throw error;
-    }
+    catch (error) { if (!/ESRCH/.test(String(error))) cleanupWarnings.push(`controller: ${String(error)}`); }
   }
-  return patchOperation(root, operationId, { status: "CANCELLED", phase: "cancelled", finishedAt: new Date().toISOString() });
+
+  try {
+    const agents = await listManagedPaseoAgents(absoluteRoot, { "aeh.operation": operationId });
+    for (const agent of agents) {
+      const stopped = await runProcess(`paseo agent stop ${quote(agent.id)}`, { cwd: absoluteRoot, timeoutMs: 30_000 }).catch((error) => ({ exitCode: 1, stdout: "", stderr: String(error), durationMs: 0 }));
+      if (stopped.exitCode !== 0) cleanupWarnings.push(`agent ${agent.id}: ${stopped.stderr || stopped.stdout || `exit ${stopped.exitCode}`}`);
+    }
+  } catch (error) {
+    cleanupWarnings.push(`agent discovery: ${String(error)}`);
+  }
+
+  return patchOperation(absoluteRoot, operationId, {
+    status: "CANCELLED",
+    phase: "cancelled",
+    finishedAt: new Date().toISOString(),
+    cleanupWarnings: cleanupWarnings.length ? cleanupWarnings : undefined
+  });
 }
 
 export function createOperationId(kind: OperationKind, seed: string): string {
