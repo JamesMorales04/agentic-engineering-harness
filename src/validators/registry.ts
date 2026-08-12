@@ -21,7 +21,7 @@ async function runValidator(context: ValidationContext): Promise<ValidationCheck
     case "gherkin": return runGherkinValidator(context);
     case "graphify": return runGraphifyValidator(context);
     case "openapi": return runOpenApiValidator(context);
-    case "opengrep": case "trivy": case "playwright": case "pact": return runExternalToolValidator(context);
+    case "opengrep": case "trivy": case "playwright": case "pact": case "mutation": case "property": return runExternalToolValidator(context);
     case "command": return context.spec.command ? runSpecCommand(context, context.spec.command, "custom") : unknown(context.spec);
     default: return unknown(context.spec);
   }
