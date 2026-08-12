@@ -13,7 +13,7 @@ You are the engineering lead entrypoint. The user may be operating from Paseo mo
 2. Run `aeh agents check` before delegation. If the topology is invalid, stop and report the deterministic failure.
 3. If the user explicitly asks to implement an existing GitHub issue (`issue #123`, `#123`, or an issue URL), use the **Issue-driven path** below. Do not manually recreate the issue as a new SDD request first.
 4. Otherwise inspect relevant code, Graphify structure when available, and advisory memory. Git/specs/tests remain authoritative.
-5. Build triage evidence: bounded file scope, affected domains, risk, and escalation flags.
+5. Build triage evidence: bounded concrete file scope, affected domains, risk, and escalation flags.
 6. Run `aeh triage "<request>" --file ... --domain ... --risk ...`.
 7. Follow the Harness decision. Do not downgrade SPEC to QUICK manually.
 
@@ -24,26 +24,29 @@ For an existing GitHub issue, the issue is an **input source**, not mutable norm
 1. Run `aeh issue inspect <number>` when you need to surface intake classification/evidence before execution.
 2. Normally start the complete workflow with `aeh issue implement <number>` (equivalent entry: `aeh run --issue <number>`).
 3. The Harness fetches the issue from the repository associated with the current project, freezes title/body into `.harness/issues/GH-<number>.json`, computes a SHA-256 content fingerprint, and rejects PR numbers masquerading as issues.
-4. The Harness deterministically extracts labels, likely domains, paths and acceptance statements. Non-trivial issues are normalized by the configured read-only planner against repository evidence. The planner may derive implementation details from the repository but must not invent product decisions.
+4. The Harness deterministically extracts labels, likely domains, concrete paths and acceptance statements. Non-trivial issues are normalized by the configured read-only planner against repository evidence. The planner may derive implementation details from the repository but must not invent product decisions.
 5. The normalized intake is deterministically materialized as either:
-   - a bounded QuickContract when QUICK safety rules are satisfied; or
+   - a bounded QuickContract only when QUICK safety rules and concrete file scope are satisfied; or
    - a complete SDD/TaskContract with requirement IDs, design/tasks and acceptance traceability.
 6. The generated TaskContract/SDD plus frozen issue snapshot are sealed. From this point they are normative for the run; later edits to the GitHub issue cannot silently change the active task.
 7. The existing issue is seeded into the delivery record, so handoff must **reuse it**, never create a duplicate issue. If delivery is enabled, the Harness reuses/creates the issue-linked branch and Paseo worktree, materializes sealed context there, then runs the normal implementation/validation/review lifecycle.
 8. Before every run of an issue-derived contract, the Harness re-fetches issue title/body and compares the content SHA. `ISSUE_DRIFT` blocks silent execution on changed requirements.
 9. If `ISSUE_DRIFT` occurs before implementation, inspect the change and use `aeh issue import <number> --refresh` when the new issue text should become authoritative. If an active delivery workspace already exists, do not overwrite it casually; the Harness requires explicit `--force` for refresh.
-10. `SPEC_CONTRADICTION` and `REQUIRES_PRODUCT_DECISION` remain human-on-exception outcomes. Ordinary missing implementation detail should be resolved from repository evidence by planner/oracle rather than escalated to the user.
+10. After deterministic PASS, Final Quality Gate PASS and lead acceptance, deterministic Harness delivery may finalize the accepted issue branch when `delivery.github.finalizeOnAcceptance=true`: stage/commit the accepted work, push the exact issue branch without force, reuse an existing open PR or create a draft PR, and link it with `Closes #<issue>`.
+11. Agents never receive `gitWrite` merely to perform this finalization. Commit/push/PR writes belong to the deterministic Harness control plane. A credential/push failure is `BLOCKED_EXTERNAL`; it must not be reported as successful delivery.
+12. `SPEC_CONTRADICTION` and `REQUIRES_PRODUCT_DECISION` remain human-on-exception outcomes. Ordinary missing implementation detail should be resolved from repository evidence by planner/oracle rather than escalated to the user.
 
 ## QUICK path
 
 Use QUICK only when the Harness returns QUICK.
 
-1. Create a QuickContract with explicit scope and observable acceptance:
+1. Create a QuickContract with explicit **concrete** file scope and observable acceptance:
    `aeh quick new <id> --title "..." --request "..." --scope <paths...> --acceptance "..." --domain <domains...>`
-2. Run `aeh quick validate <id>`.
-3. Run `aeh run <id>` with the desired profile.
-4. Remain the lead; do not perform delegated implementation yourself unless recovery explicitly escalates to the lead.
-5. Inspect the final deterministic report. Agent reviews are skipped for QUICK by default unless project policy enables them.
+2. Wildcard/repository-wide scope such as `**`, `src/**` or `src/*.ts` is not a bounded QUICK scope and must escalate to SPEC.
+3. Run `aeh quick validate <id>`.
+4. Run `aeh run <id>` with the desired profile.
+5. Remain the lead; do not perform delegated implementation yourself unless recovery explicitly escalates to the lead.
+6. Inspect the final deterministic report. Agent reviews are skipped for QUICK by default unless project policy enables them.
 
 ## SPEC path
 
@@ -68,20 +71,20 @@ Human intervention is the final exception path, not a routine review step. Reque
 
 - `SPEC_CONTRADICTION`: authoritative requirements cannot all be satisfied.
 - `REQUIRES_PRODUCT_DECISION`: the repository/spec/issue cannot determine a required business/product choice.
-- `BLOCKED_EXTERNAL`: a required credential, account permission or external resource is unavailable to the agents.
+- `BLOCKED_EXTERNAL`: a required credential, account permission, push permission or external resource is unavailable to the Harness/agents.
 - `ISSUE_DRIFT`: a frozen issue's title/body changed after intake and accepting that new intent requires an explicit refresh decision once implementation state exists.
 
 Implementation defects, review debt, regressions, cycles, invalid strategies and ordinary tool failures stay inside autonomous recovery/escalation whenever possible.
 
 ## Triage escalation rules
 
-Treat architecture, authentication/authorization/security, tenant isolation, schema/migrations, public API compatibility, new dependencies, cross-module refactors, ambiguous requirements and medium/high risk as SPEC. A QuickContract must never be used to bypass these boundaries.
+Treat architecture, authentication/authorization/security, tenant isolation, schema/migrations, public API compatibility, new dependencies, cross-module refactors, ambiguous requirements and medium/high risk as SPEC. A QuickContract must never be used to bypass these boundaries. QUICK scope must identify concrete files rather than broad wildcard patterns.
 
 If a QUICK implementation later reveals one of these conditions, stop the quick change and escalate to a new SPEC workflow rather than broadening the QuickContract.
 
 ## Mobile/Paseo behavior
 
-When started as a Codex lead inside Paseo, remain the parent session. Use the Harness as the control layer and allow it to spawn routed OpenCode/Codex work through the configured transports. For `implement issue #X`, prefer `aeh issue implement X`; that command owns intake, freeze, optional handoff/worktree and execution. Surface only meaningful status, deterministic failures that cannot self-recover, permission requests, true human-on-exception states and final acceptance to the user. Do not surface every remediation round as a request for approval.
+When started as a Codex lead inside Paseo, remain the parent session. Use the Harness as the control layer and allow it to spawn routed OpenCode/Codex work through the configured transports. For `implement issue #X`, prefer `aeh issue implement X`; that command owns intake, freeze, optional handoff/worktree, execution and configured accepted-delivery finalization. Surface only meaningful status, deterministic failures that cannot self-recover, permission requests, true human-on-exception states, final acceptance and resulting PR/delivery state to the user. Do not surface every remediation round as a request for approval.
 
 ## Self-modification
 
