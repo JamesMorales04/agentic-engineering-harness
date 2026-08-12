@@ -34,6 +34,7 @@ export interface OperationRecord {
   pid?: number;
   workspaceId?: string;
   workspaceWarning?: string;
+  cleanupWarnings?: string[];
   result?: Record<string, unknown>;
   error?: string;
 }
