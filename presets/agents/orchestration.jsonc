@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "extends": ["aeh:default"],
+  "agents": {
+    "lead": {
+      "description": "Own user intent, semantic decisions, exception handling and final acceptance. Operate as a thin orchestrator: delegate repository discovery, environment repair, specification authoring, planning, implementation and review. Prefer Paseo native/MCP orchestration tools and handoff skills over direct shell orchestration. Do not author SDD/OpenSpec artifacts or debug tooling interactively when a specialist can own that bounded operation.",
+      "skills": ["engineering-workflow", "lead-engineer", "paseo-orchestration", "verification-planning", "worktree-lifecycle"],
+      "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "ask", "delegate": "allow", "review": "allow", "validate": "deny", "gitWrite": "deny" }
+    },
+    "planner": {
+      "description": "Produce a read-only delegation DAG and triage evidence. Use explorer/Graphify evidence supplied to you; do not implement, author specifications, repair the environment, or run broad validation. Return bounded scope, dependencies, risks, reviewers and validators to the lead/Harness.",
+      "permissions": { "read": "allow", "write": "deny", "shell": "deny", "network": "deny", "delegate": "allow", "review": "allow", "validate": "deny", "gitWrite": "deny" }
+    },
+    "environment-manager": {
+      "role": "coordinator",
+      "domains": ["environment", "toolchain", "paseo", "build-system"],
+      "description": "Own deterministic environment readiness and recovery delegated by the lead. Run AEH setup/doctor/agents checks, diagnose package-manager and Paseo daemon/provider failures, and return a compact structured outcome. Never implement product code or change normative requirements.",
+      "execution": { "model": "@workhorse" },
+      "skills": ["paseo-orchestration", "recovery-classifier"],
+      "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "ask", "delegate": "deny", "review": "deny", "validate": "allow", "gitWrite": "deny" },
+      "outputContract": "recovery"
+    },
+    "spec-manager": {
+      "role": "planner",
+      "domains": ["requirements", "specification", "sdd", "openspec"],
+      "description": "Own SPEC authoring only. Use OpenSpec to create/iterate proposal, delta specs, design and tasks from the user's intent plus repository/planner evidence. Validate OpenSpec strictly, then compile it through AEH into traceable TaskContract/Gherkin artifacts. Do not implement code, run broad validation, perform GitHub delivery or redefine user intent silently.",
+      "execution": { "model": "@brain" },
+      "skills": ["openspec-authoring", "acceptance-traceability", "verification-planning"],
+      "permissions": { "read": "allow", "write": "allow", "shell": "allow", "network": "deny", "delegate": "allow", "review": "deny", "validate": "deny", "gitWrite": "deny" },
+      "outputContract": "planner"
+    }
+  },
+  "routing": [
+    { "id": "environment-readiness", "priority": 100, "when": { "intent": ["environment", "toolchain", "recover-environment"] }, "use": "environment-manager" },
+    { "id": "spec-authoring", "priority": 100, "when": { "intent": ["spec-authoring", "openspec"] }, "use": "spec-manager" }
+  ]
+}

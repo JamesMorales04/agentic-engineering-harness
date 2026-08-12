@@ -29,19 +29,25 @@ jobs:
           cd "$TMP/consumer"
           npm init -y >/dev/null
           npm install "$GITHUB_WORKSPACE/$TGZ" >/dev/null
-          ./node_modules/.bin/aeh --version | grep -Fx '0.5.2'
+          ./node_modules/.bin/aeh --version | grep -Fx '0.6.0'
           mkdir repo
           ./node_modules/.bin/aeh init repo
           test -f repo/.harness/project.yaml
           test -f repo/.harness/toolchain.yaml
           test -f repo/.harness/agents.source.jsonc
-          grep -q '^  interactive:$' repo/.harness/project.yaml
+          test -f repo/openspec/config.yaml
+          grep -q '"aeh:orchestration"' repo/.harness/agents.source.jsonc
+          grep -q '^    sessionPolicy: fresh-on-start$' repo/.harness/project.yaml
+          grep -q '^    provider: openspec$' repo/.harness/project.yaml
+          grep -q 'npm:@fission-ai/openspec' repo/.harness/toolchain.yaml
           test -d repo/.harness/paseo
+          test -d repo/.harness/paseo/handoffs
           test -d repo/.harness/audits
           grep -q '^\.harness/paseo/$' repo/.gitignore
           grep -q '^\.harness/audits/$' repo/.gitignore
           ./node_modules/.bin/aeh toolchain compile repo
           test -f repo/.config/mise/conf.d/aeh.toml
+          grep -q 'openspec' repo/.config/mise/conf.d/aeh.toml
           ./node_modules/.bin/aeh setup --dry-run repo
           ./node_modules/.bin/aeh policy sync repo >/dev/null
           ./node_modules/.bin/aeh intent 'review the repo and validate the code for improvements' repo | grep -q '^AUDIT'

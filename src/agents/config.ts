@@ -45,6 +45,7 @@ async function loadComposedLayer(file: string, stack: Set<string>): Promise<Agen
 
 function resolveExtension(extension: string, fromDirectory: string): string {
   if (extension === "aeh:default") return path.join(packageRoot(), "presets", "agents", "default.jsonc");
+  if (extension === "aeh:orchestration") return path.join(packageRoot(), "presets", "agents", "orchestration.jsonc");
   if (extension.startsWith("aeh:")) throw new Error(`Unknown built-in agent topology preset ${extension}.`);
   return path.isAbsolute(extension) ? extension : path.resolve(fromDirectory, extension);
 }

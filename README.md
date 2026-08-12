@@ -1,128 +1,42 @@
 # Agentic Engineering Harness
 
-An **OSS-first, zero-mandatory-SaaS control layer** for spec-driven, issue-driven, audit-governed and bounded-quick multi-agent software engineering where LLM output is treated as untrusted until deterministic and quality gates accept it.
+An **OSS-first, zero-mandatory-SaaS control plane** for agentic software engineering. AEH treats LLM output as untrusted until deterministic validation, evidence and quality gates accept it.
+
+## Status: v0.6.0
+
+v0.6 makes the interactive lead a **thin semantic orchestrator** instead of an interactive shell/CI operator. Repository discovery, environment repair, planning, SPEC authoring, implementation and review are delegated to bounded roles while AEH remains the deterministic authority.
 
 ```text
-clone / npm bootstrap
-      -> aeh setup -> locked engineering toolchain
-      -> natural-language request / GitHub issue
-      -> INFORMATIONAL | AUDIT | CHANGE
-         -> INFORMATIONAL -> direct answer
-         -> AUDIT -> frozen read-only validators/reviewers -> AuditReport
-         -> CHANGE -> QUICK or SDD + Gherkin -> sealed contract
-      -> optional GitHub branch + Paseo worktree handoff
-      -> declarative agent routing -> runtime/model/selective MCPs
-      -> deterministic validators -> autonomous quality convergence
-      -> lead acceptance -> deterministic delivery
+User / Paseo
+    |
+    v
+fresh AEH Lead
+    |
+    +-- INFORMATIONAL -> direct answer
+    |
+    +-- AUDIT -> frozen read-only AEH audit
+    |
+    `-- CHANGE
+          |
+          +-- explorer -> planner -> deterministic triage
+          |
+          +-- QUICK -> bounded sealed QuickContract
+          |
+          `-- SPEC -> spec-manager -> OpenSpec
+                                  -> aeh spec compile
+                                  -> sealed AEH SDD/TaskContract
+    |
+    v
+planner waves -> workers -> deterministic barriers
+    -> evidence graph -> validators -> reviewer convergence
+    -> final quality gate -> lead acceptance -> delivery
 ```
 
-## Status: v0.5.2
+See [docs/V0.6.md](docs/V0.6.md) for the orchestration/context design and [ROADMAP.md](ROADMAP.md) for completed milestones.
 
-v0.5.2 makes **every engineering operation Harness-governed, even when read-only**. Pure informational questions may remain direct; reviews, validation, bug discovery, architecture/security/performance assessments and similar work now enter a first-class `AUDIT` pipeline rather than bypassing AEH.
+## Installation
 
-- `aeh intent` classifies `INFORMATIONAL | AUDIT | CHANGE`;
-- only `CHANGE` continues to deterministic `QUICK | SPEC` triage;
-- `aeh audit` freezes the control plane, runs deterministic validators and read-only reviewer agents, classifies validation failures, deduplicates findings and persists DebtScore/Quality Gate evidence;
-- audit reviewers are forced read-only and tracked worktree mutations are rolled back while preserving pre-existing dirty state;
-- `.harness/audits/latest.json` allows a later “fix these findings” request to become a new CHANGE without repeating discovery;
-- `aeh start` bootstrap v2 requires engineering reviews to use AUDIT instead of the former broad read-only bypass;
-- AEH remains a normal npm development package; it is not an application runtime dependency;
-- `.harness/toolchain.yaml` declares external engineering tools instead of requiring manual one-by-one installation;
-- `aeh setup` resolves the tools actually required by the current project and provisions them through mise;
-- `.harness/toolchain.lock.json` freezes resolved tool versions and OCI digests;
-- `.harness/toolchain.state.json` stores machine-local bin paths and is not committed;
-- no npm `postinstall` silently mutates the host.
-
-See [docs/V0.5.2.md](docs/V0.5.2.md), [docs/V0.5.1.md](docs/V0.5.1.md), [docs/V0.5.md](docs/V0.5.md) and the earlier version documentation.
-
-## Interactive intent model
-
-The interactive boundary is now based on **engineering intent**, not merely whether files will be written:
-
-```text
-prompt
-  |
-  v
-INFORMATIONAL | AUDIT | CHANGE
-       |          |       |
-       |          |       `-> QUICK | SPEC
-       |          `----------> read-only Harness audit
-       `---------------------> direct answer
-```
-
-Examples:
-
-```bash
-aeh intent "What does src/core/run.ts do?"
-# INFORMATIONAL
-
-aeh intent "review the repo and validate the code for improvements"
-# AUDIT
-
-aeh intent "fix the typo" --file README.md --domain docs --risk low
-# CHANGE/QUICK
-```
-
-A repository-wide review is valid `AUDIT` scope. It is not forced into QUICK, whose concrete bounded scope rules remain unchanged, and it does not need artificial SDD artifacts simply to perform code review.
-
-## Harness-governed AUDIT
-
-```bash
-aeh audit "review the repo and validate the code for improvements"
-```
-
-The audit pipeline performs:
-
-```text
-worktree checkpoint
-      -> transient sealed Audit TaskContract
-      -> hard-frozen control plane
-      -> deterministic validation
-      -> failure classification
-      -> read-only reviewer wave
-      -> finding normalization/dedup
-      -> severity + DebtScore + Quality Gate
-      -> .harness/audits/<auditId>.json
-```
-
-Failed deterministic checks remain failed evidence. AEH classifies them where possible as `ASSERTION_FAILURE`, `ENVIRONMENT_FAILURE`, `SANDBOX_DENIAL`, `MISSING_DEPENDENCY` or `TOOL_FAILURE`; a lead may not silently convert a `spawnSync git EPERM` or timeout into a passing test.
-
-If the user later asks to fix the findings, the persistent lead reuses `.harness/audits/latest.json` as evidence for a **new CHANGE** and runs normal QUICK/SPEC triage. AUDIT itself never auto-edits the repository.
-
-## Architecture close in v0.5
-
-SPEC execution can run a planner-produced DAG as isolated local or distributed worker waves. Every run freezes its controller/config/policies/skills, validates a requirement evidence graph, and keeps remote workers as untrusted patch producers. Organization policy bundles, statistical eval dashboards, deeper Graphify scheduling, native structured-output adapters and MCP benchmarking are available as governance/scale layers.
-
-Useful scale/governance commands:
-
-```bash
-aeh worker serve . --port 8787
-aeh worker run . --worker-id node-01
-aeh policy sync
-aeh eval repeat EVAL-001 --runs 10
-aeh eval dashboard EVAL-001
-aeh mcp benchmark
-```
-
-## Start AEH + Paseo
-
-The default interactive workflow is one command:
-
-```bash
-aeh start
-# or
-npm exec aeh -- start
-```
-
-This starts or reuses the Paseo daemon and creates/reuses a persistent **AEH Lead** session. Every engineering operation in that session is routed automatically through the Harness. Pure informational questions may be answered directly; read-only engineering reviews route to `AUDIT`; repository changes route to `CHANGE -> QUICK | SPEC`. The user does not need to mention AEH or choose the internal workflow.
-
-`aeh start` bootstrap version 2 intentionally does not reuse a stale v0.5.1 session whose standing instruction allowed engineering reviews to bypass AEH as generic read-only work.
-
-Use `aeh start --new` to create a fresh lead session. AEH does not rewrite global `~/.paseo/config.json`; project-local session state lives under gitignored `.harness/paseo/`.
-
-## Recommended installation
-
-AEH should be pinned as a project development dependency:
+Pin AEH as a project development dependency:
 
 ```bash
 npm install --save-dev agentic-engineering-harness
@@ -130,80 +44,137 @@ npm exec aeh -- init --setup
 npm exec aeh -- doctor
 ```
 
-For an existing clone that does not yet have `node_modules`, bootstrap a pinned AEH package explicitly:
+`aeh setup` provisions the project-selected engineering toolchain through mise/Aqua/OCI where configured. There is no mutating npm `postinstall`.
 
-```bash
-npm exec --yes --package=agentic-engineering-harness@0.5.2 -- aeh setup
-```
-
-`aeh setup` is the explicit provisioning boundary. Installing the npm package itself does not install Codex, OpenCode, Paseo, scanners or system packages as a side effect.
-
-## Toolchain bootstrap
-
-Every initialized project receives `.harness/toolchain.yaml`.
-
-Default capabilities cover the common Harness stack:
+A new project receives:
 
 ```text
-host/system:  git, optional podman
-managed:      node, bun, dotnet, codex, opencode, paseo,
-              uv, graphify, opa, opengrep, trivy
-OCI optional: OPA, Trivy
+.harness/project.yaml
+.harness/agents.source.jsonc   -> extends aeh:orchestration
+.harness/toolchain.yaml
+.harness/skills/
+openspec/config.yaml
+AGENTS.md
 ```
 
-Auto mode selects only what the project needs. For example:
-
-```text
-runtime:codex               -> codex
-runtime:opencode            -> opencode
-orchestration:paseo         -> paseo
-code-intelligence:graphify  -> uv + graphify
-validation:opa              -> opa
-security-tool:opengrep      -> opengrep
-validator:trivy             -> trivy
-project:dotnet              -> dotnet
-project:bun                 -> bun
-```
-
-Useful commands:
+## Zero-friction Paseo entrypoint
 
 ```bash
-aeh toolchain show
-aeh setup --dry-run
-aeh setup
-aeh setup --update-lock
-aeh setup --prefer-containers
-aeh setup --profile agents
-aeh setup --profile validation
-aeh setup --profile full
-aeh doctor
+aeh start
+# or
+npm exec aeh -- start
 ```
 
-`--dry-run` is side-effect free. Existing locks are reused by default; `--update-lock` is the deliberate toolchain-upgrade operation.
-
-The source/lock/state split is:
-
-```text
-.harness/toolchain.yaml           desired configuration, committed
-.harness/toolchain.lock.json      resolved versions/digests, committed
-.harness/toolchain.state.json     local absolute bin paths, gitignored
-.config/mise/conf.d/aeh.toml      generated mise layer
-.harness/bin/                     generated OCI command wrappers, gitignored
-```
-
-Existing project version authority is respected before creating a new lock, including `.node-version` / `.nvmrc`, .NET `global.json`, and a pinned Bun `packageManager` declaration.
-
-## Bootstrap without an existing `.harness`
+A normal start creates a **fresh lead conversation**. Reuse is explicit:
 
 ```bash
-npm exec --yes --package=agentic-engineering-harness@0.5.2 -- aeh init --setup /path/to/repo
+aeh start --resume
 ```
 
-`aeh init` creates the project config, thin agent overlay extending `aeh:default`, reusable skills, policies and toolchain source. `--setup` additionally compiles and reconciles the toolchain.
+The lead is resolved from the active agent topology. Paseo and the configured lead runtime are reconciled when needed, the daemon is started/recovered, and the lead is bootstrapped with the project engineering workflow.
 
-## Issue-driven workflow
+### Lead responsibilities
 
-Once the environment is ready, an existing issue can be implemented directly:
+The lead owns:
+
+- user intent and explicit product decisions;
+- high-level routing and true ambiguity;
+- deterministic state transitions;
+- final semantic acceptance.
+
+It delegates:
+
+```text
+explorer              -> repository discovery
+environment-manager   -> doctor/setup/Paseo/toolchain recovery
+planner               -> read-only decomposition and triage evidence
+spec-manager          -> OpenSpec SPEC authoring
+implementers          -> code changes
+validators/reviewers  -> evidence and quality assessment
+```
+
+When Paseo injects its orchestration tools, the lead prefers its native/MCP `create_agent`, prompt/status/activity/lifecycle tools and `/paseo-handoff`. AEH retains a capability-aware CLI adapter as a deterministic fallback.
+
+The fallback probes the installed Paseo version/help surface rather than assuming flags such as `--quiet`, and recovers recognized stale/unreachable daemon states before relaunch.
+
+## Context lifecycle
+
+Default interactive thresholds:
+
+```text
+<70%     normal
+70-80%   pressure mode; stop exploratory work and increase delegation
+>=80%    proactive handoff + fresh lead rotation
+>=90%    mandatory handoff; old lead must not continue engineering work
+```
+
+Public guard:
+
+```bash
+aeh context guard --agent "$PASEO_AGENT_ID"
+```
+
+When Paseo exposes a usable context ratio, AEH persists:
+
+```text
+.harness/paseo/handoffs/lead-<timestamp>.json
+```
+
+The artifact carries prior/new lead IDs and durable branch/run/audit/delivery references. Inside a managed Paseo lead, AEH automatically creates the fresh replacement at the handoff threshold. The new lead reads deterministic artifacts rather than relying on normal chat compaction.
+
+## Intent model
+
+Every engineering request is classified as:
+
+```text
+INFORMATIONAL
+AUDIT
+CHANGE
+```
+
+Examples:
+
+```text
+"What does this class do?"
+  -> INFORMATIONAL
+
+"Review the repo and validate it for improvements"
+  -> AUDIT
+
+"Improve the code readability"
+  -> CHANGE -> QUICK | SPEC
+```
+
+Repository-wide audits use `aeh audit`; they are not forced into fake QUICK scope.
+
+## OpenSpec-backed SPEC authoring
+
+For SPEC work the lead does **not** write proposal/spec/design/tasks itself. It delegates to `spec-manager`.
+
+```bash
+aeh spec prepare READABILITY-001 --title "Improve readability"
+# spec-manager authors/validates OpenSpec artifacts
+aeh spec compile READABILITY-001 --title "Improve readability"
+aeh sdd validate READABILITY-001
+aeh seal READABILITY-001
+aeh run READABILITY-001
+```
+
+Authority split:
+
+```text
+OpenSpec
+  = authoring source before freeze
+
+compiled AEH SDD + TaskContract + seal
+  = normative execution truth
+```
+
+The compiler maps OpenSpec requirements/scenarios/tasks into stable AEH requirement IDs, Gherkin and TaskContract traceability. It records OpenSpec SHA-256 provenance and refuses to emit a requirement backed only by a nonexistent validator. Configured validators are preferred; standard project test/typecheck/build commands are derived when safe.
+
+OpenSpec is provisioned automatically when `sdd.authoring.provider: openspec` is active.
+
+## Issue-driven execution
 
 ```bash
 aeh issue inspect 142
@@ -213,151 +184,59 @@ aeh issue implement 142
 aeh run --issue 142
 ```
 
-A lead using the `engineering-workflow` skill routes natural language such as **“implement issue #142”** directly through this workflow, including when started from Paseo mobile.
+An issue is frozen as input, converted into QUICK/SPEC artifacts, sealed, and then executed through the same worker/validation/review lifecycle. `ISSUE_DRIFT` prevents silent reinterpretation after intake.
 
-The issue pipeline is:
-
-```text
-GitHub issue #142
-      -> fetch + freeze title/body + SHA-256
-      -> scope/domains/risk/acceptance
-      -> bounded low-risk -> QuickContract
-         OR non-trivial -> read-only planner -> SDD/TaskContract
-      -> deterministic validation + seal
-      -> reuse existing issue + branch/worktree
-      -> implementation + validation + review convergence
-      -> lead acceptance
-      -> optional deterministic commit/push/draft PR
-```
-
-Before every issue-derived run, title/body are re-fetched. A changed fingerprint produces `ISSUE_DRIFT`; the active sealed contract is never silently reinterpreted.
-
-## Default agent pack
-
-**Control/discovery:** `lead`, `planner`, `oracle`, `explorer`, `librarian`.
-
-**Coordination/design:** `github-manager`, `designer`.
-
-**Implementation:** `implementation-worker`, `backend-implementer`, `frontend-implementer`, `data-implementer`, `mobile-implementer`, `test-implementer`, `docs-implementer`, `ops-implementer`, `quality-implementer`, `senior-implementer`.
-
-**Review:** `code-quality-reviewer`, `requirements-reviewer`, `architecture-reviewer`, `security-reviewer`, `api-reviewer`, plus backend/frontend/data/mobile/test/docs/ops reviewers.
-
-**Validation:** `validator`, `integration-validator`, `e2e-validator`.
-
-Unused agents incur no execution cost. AUDIT selects available reviewers from this same topology and clamps their mutation/delegation permissions for the audit session.
-
-## Compose, add, override or remove agents
-
-```jsonc
-{
-  "version": 1,
-  "extends": ["aeh:default"],
-  "agents": {
-    "payments-implementer": {
-      "role": "implementer",
-      "domains": ["payments"],
-      "execution": { "model": "@workhorse" },
-      "permissions": { "read": "allow", "write": "allow", "shell": "allow" },
-      "outputContract": "implementer"
-    }
-  },
-  "remove": { "agents": ["mobile-*"] }
-}
-```
-
-Local agent/model/runtime/profile definitions partially override inherited definitions. Routing rules are keyed by `id`; inherited agents may be removed with minimatch patterns and stale routing/recovery/council references are cleaned automatically.
-
-## Brain + workhorse
-
-```jsonc
-{
-  "models": {
-    "brain": {
-      "runtime": "codex",
-      "provider": "openai",
-      "model": "gpt-5.6-luna",
-      "variant": "max"
-    },
-    "workhorse": {
-      "runtime": "opencode",
-      "provider": "opencode-go",
-      "model": "deepseek-v4-flash"
-    }
-  }
-}
-```
-
-Logical agent, runtime, model and transport remain separate concepts.
-
-## Selective MCPs
-
-Project MCPs live in `.harness/project.yaml`; each logical agent lists only the MCP names it needs. The default catalog includes Context7, Playwright, a read-only GitHub MCP and disabled Sentry integration.
-
-For OpenCode direct/Podman sessions, AEH materializes only the selected MCP definitions into the runtime configuration and suppresses unrelated MCP tool namespaces. GitHub delivery writes remain deterministic Harness operations rather than write-capable LLM MCP access.
-
-## Reusable skills
-
-The default pack includes `engineering-workflow`, `lead-engineer`, `implementation-worker`, `deterministic-validation`, `memory-hygiene`, `sdd`, `verification-planning`, `worktree-lifecycle`, `routing-normalizer`, `recovery-classifier`, `acceptance-traceability`, `finding-dedup`, `prompt-drift-audit`, `simplify` and `github-delivery-lifecycle`.
-
-Framework-specific skills belong in project overlays.
-
-## Optional GitHub -> Paseo delivery
-
-Remote delivery is disabled by default while read-only issue intake is enabled.
-
-```yaml
-delivery:
-  github:
-    enabled: true
-    tokenEnv: GH_TOKEN
-    branchPattern: feature/gh-{issue}-{slug}
-    finalizeOnAcceptance: true
-    pullRequestDraft: true
-  paseo:
-    enabled: true
-    createWorkspace: true
-    autoUseWorkspace: true
-```
-
-The control checkout owns configuration, sealed artifacts, telemetry and delivery state. The Paseo worktree owns code, Git diff, builds, tests, Graphify, remediation and reviews. Accepted issue work may be committed/pushed and linked to a draft PR only after the configured deterministic/quality/lead gates pass.
-
-## QUICK workflow
+## AUDIT
 
 ```bash
-aeh triage "Change button padding" --file src/Button.tsx --domain frontend --risk low
-aeh quick new QUICK-001 --title "Adjust padding" --request "Change button padding" --scope src/Button.tsx --acceptance "Button uses 16px padding" --domain frontend
-aeh quick validate QUICK-001
-aeh run QUICK-001
+aeh audit "review the repo and validate the code for improvements"
 ```
 
-QUICK requires concrete bounded file paths; wildcard/repository-wide scope cannot bypass SDD. AUDIT is separate and may intentionally inspect repository-wide scope without changing code.
+AUDIT is read-only but Harness-governed:
 
-## Quality convergence
+- frozen control plane;
+- deterministic validators;
+- explicit environment/sandbox/assertion/tool failure classification;
+- read-only reviewer wave;
+- finding normalization/deduplication;
+- DebtScore/Quality Gate reporting;
+- worktree rollback preserving pre-existing dirty state.
+
+Reports live under `.harness/audits/`. A later `fix these` request becomes a new CHANGE using the AuditReport as evidence.
+
+## QUICK and SPEC
+
+QUICK is only for concrete bounded low-risk file scope. Wildcard/repository-wide, security, architecture, auth, schema/migration, public API, dependency, cross-module or medium/high-risk changes escalate to SPEC.
+
+For SPEC, OpenSpec authors the intent and AEH compiles/seals the executable contract. AEH then executes the planner-produced multi-worker DAG with isolated worktrees, deterministic wave barriers, requirement evidence, validators, review convergence and final lead acceptance.
+
+## Quality authority
+
+Default DebtPoints:
 
 ```text
-critical = 300 DebtPoints = DebtScore 100
-high     =  75 DebtPoints = DebtScore 25
-medium   =  24 DebtPoints = DebtScore 8
-low      =   3 DebtPoints = DebtScore 1
-note     =   1 DebtPoint  = DebtScore 1/3
+critical = 300 = DebtScore 100
+high     =  75 = DebtScore 25
+medium   =  24 = DebtScore 8
+low      =   3 = DebtScore 1
+note     =   1 = DebtScore 1/3
 ```
 
-Final change acceptance requires critical/high/medium = 0, low <= 3 and DebtScore <= 3. Review remediation has no arbitrary round limit; stagnation, regression and cycles trigger rollback, stronger agents/models, diagnosis and autonomous replanning. AUDIT reuses the same debt model for assessment but does not itself remediate or accept code.
+Final acceptance requires critical/high/medium = 0, low <= 3 and DebtScore <= 3. Remediation has no arbitrary maximum round count; stagnation/regression/cycles trigger rollback, stronger agents/models, diagnosis and replanning.
 
 ## Trust model
 
-- Human/lead owns intent and genuinely non-derivable product decisions.
-- INFORMATIONAL is the only engineering-entry bypass and must remain non-mutating/non-assessing.
-- AUDIT is read-only but Harness-governed; its AuditReport is evidence, not acceptance authority.
-- Git/SDD/TaskContract/QuickContract define normative truth for CHANGE.
-- The frozen issue snapshot is provenance; remote issue drift cannot silently change an active run.
-- `toolchain.yaml` defines desired engineering capabilities; its lock defines resolved executable versions.
-- Agent topology defines who may act and with which model/skills/MCPs.
-- Workers do not own acceptance criteria or Git delivery authority.
-- Deterministic evidence outranks agent summaries.
-- The Final Quality Gate outranks reviewer optimism.
-- Memory and Graphify inform; neither authorizes desired behavior.
-- Human interaction remains an exception path rather than a remediation cadence.
+1. User intent and genuine product decisions.
+2. Frozen TaskContract / compiled AEH SDD / issue snapshot as applicable.
+3. Deterministic validator and evidence output.
+4. Quality/review gates.
+5. LLM summaries, memory and structural/research tooling as advisory information.
+
+Workers never gain authority to weaken requirements or deterministic gates. Paseo improves orchestration; OpenSpec improves authoring; neither replaces AEH acceptance authority.
+
+## Distribution
+
+AEH is a development tool, not an application runtime dependency. The npm package contains CLI code, templates, presets, policies, schemas, skills and docs. CI validates `npm ci`, typecheck, tests, build, `npm pack --dry-run`, and installs the generated tarball into an empty consumer project for smoke testing.
 
 ## License
 

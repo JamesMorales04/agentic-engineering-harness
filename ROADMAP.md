@@ -155,10 +155,27 @@
 - [x] Paseo bootstrap v2 makes engineering reviews use AUDIT instead of the v0.5.1 read-only escape
 - [x] self-hosted hard freeze includes `src/audit` and `src/paseo`
 
+## v0.6 — Orchestration & Context Architecture ✅
+- [x] thin lead becomes semantic orchestrator instead of interactive environment/SDD/operator process
+- [x] bounded `environment-manager` and `spec-manager` agents plus read-only planner discipline
+- [x] `aeh:orchestration` built-in preset becomes the new project default while retaining `aeh:default` composition
+- [x] Paseo-native/MCP orchestration and `/paseo-handoff` preferred from conversational agents; CLI remains deterministic fallback
+- [x] Paseo CLI capability negotiation removes hard dependency on `--quiet`/fixed output shape and recovers stale daemons
+- [x] `aeh start` creates a fresh lead by default; `--resume` explicitly reuses a compatible session
+- [x] 70/80/90 context-pressure policy with durable `.harness/paseo/handoffs/` state
+- [x] managed context guard automatically rotates to a fresh lead at the handoff threshold instead of normal compaction
+- [x] OpenSpec becomes the SPEC authoring backend through `spec-manager`
+- [x] `aeh spec prepare/compile` compiles OpenSpec requirements/scenarios/tasks into native AEH SDD, TaskContract and Gherkin
+- [x] OpenSpec authoring provenance is SHA-256 recorded while compiled/sealed AEH artifacts remain runtime truth
+- [x] OpenSpec is provisioned declaratively through the existing toolchain
+- [x] OpenSpec compilation refuses phantom validators and derives executable project test/typecheck/build evidence when safe
+- [x] consumer and self-hosted instructions/configuration dogfood the orchestration-first design
+
 ## Next
-- [ ] signed attestations for evidence/controller/audit manifests themselves
+- [ ] signed attestations for evidence/controller/audit/handoff manifests themselves
 - [ ] remote worker sealed-context bundles for workloads needing full SDD text rather than delegated summaries
 - [ ] queue persistence/HA adapters beyond filesystem/simple HTTP
 - [ ] empirical MCP tool-schema token measurement through runtime-native introspection
 - [ ] statistical sequential testing and automatic model/topology promotion policies
 - [ ] configurable organization audit policies and audit report upload/retention adapters
+- [ ] runtime-native context telemetry contract once Paseo exposes a stable cross-provider percentage field

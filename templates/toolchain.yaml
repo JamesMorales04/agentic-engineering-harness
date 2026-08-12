@@ -17,6 +17,9 @@ profiles:
   agents:
     extends: [core]
     tools: [codex, opencode, paseo]
+  spec:
+    extends: [core]
+    tools: [openspec]
   intelligence:
     extends: [core]
     tools: [uv, graphify]
@@ -24,7 +27,7 @@ profiles:
     extends: [core]
     tools: [opa, opengrep, trivy, cosign]
   full:
-    extends: [agents, intelligence, validation]
+    extends: [agents, spec, intelligence, validation]
     tools: [podman, dotnet, bun]
 
 tools:
@@ -76,6 +79,13 @@ tools:
     source: "npm:@getpaseo/cli"
     version: latest
     activateWhen: [orchestration:paseo, delivery:paseo]
+
+  openspec:
+    kind: mise
+    command: openspec
+    source: "npm:@fission-ai/openspec"
+    version: latest
+    activateWhen: [spec-authoring:openspec]
 
   uv:
     kind: mise
