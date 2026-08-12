@@ -34,7 +34,7 @@ describe("Paseo Harness start", () => {
       throw new Error(`unexpected command: ${command}`);
     });
     const setup = vi.fn(async () => ({} as never));
-    const launchAgent = vi.fn(async () => { launchCount += 1; return managed(`agent-${launchCount}`); });
+    const launchAgent = vi.fn(async (_root: string, _options: Record<string, unknown>) => { launchCount += 1; return managed(`agent-${launchCount}`); });
     const probeAgent = vi.fn(async () => true);
     const deps = { run: run as never, commandExists: vi.fn(async () => true) as never, setupToolchain: setup as never, loadTopology: vi.fn(async () => topology()) as never, detectCapabilities: vi.fn(async () => capabilities()) as never, launchAgent: launchAgent as never, probeAgent: probeAgent as never };
 
@@ -59,7 +59,9 @@ describe("Paseo Harness start", () => {
     expect(bootstrap).not.toContain("spec-manager");
     expect(bootstrap).not.toContain("AEH READY");
     expect(commands.some((command) => command.startsWith("paseo run"))).toBe(false);
-    expect(launchAgent).toHaveBeenCalledWith(root, expect.objectContaining({ provider: "codex", model: "gpt-test", prompt: undefined, systemPrompt: expect.stringContaining("resolved AEH agent topology"), labels: expect.objectContaining({ "aeh.kind": "lead", "aeh.role": "lead" }), waitForFinish: false }));
+    const launchOptions = launchAgent.mock.calls[0][1];
+    expect(launchOptions).toEqual(expect.objectContaining({ provider: "codex", model: "gpt-test", systemPrompt: expect.stringContaining("resolved AEH agent topology"), labels: expect.objectContaining({ "aeh.kind": "lead", "aeh.role": "lead" }), waitForFinish: false }));
+    expect(launchOptions).not.toHaveProperty("prompt");
   });
 
   it("recovers a stale daemon before starting an SDK lead", async () => {
