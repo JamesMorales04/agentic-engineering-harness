@@ -46,11 +46,23 @@ async function runInitSetup(argv: string[]): Promise<void> {
 }
 
 function parse(argv: string[]): { directory: string; flag(name: string): boolean; value(name: string): string | undefined } {
-  const flags = new Map<string, string | true>(); let directory = ".";
+  const valueFlags = new Set(["profile"]);
+  const booleanFlags = new Set(["dry-run", "update-lock", "skip-project-deps", "prefer-containers"]);
+  const flags = new Map<string, string | true>(); const positional: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const value = argv[i];
-    if (value.startsWith("--")) { const name = value.slice(2); const next = argv[i + 1]; if (next && !next.startsWith("--")) { flags.set(name, next); i++; } else flags.set(name, true); }
-    else directory = value;
+    if (!value.startsWith("--")) { positional.push(value); continue; }
+    const name = value.slice(2);
+    if (valueFlags.has(name)) {
+      const next = argv[++i];
+      if (!next || next.startsWith("--")) throw new Error(`--${name} requires a value.`);
+      flags.set(name, next);
+      continue;
+    }
+    if (!booleanFlags.has(name)) throw new Error(`Unknown toolchain option --${name}.`);
+    flags.set(name, true);
   }
+  if (positional.length > 1) throw new Error(`Expected at most one project directory, received: ${positional.join(", ")}`);
+  const directory = positional[0] ?? ".";
   return { directory, flag: (name) => flags.get(name) === true, value: (name) => typeof flags.get(name) === "string" ? flags.get(name) as string : undefined };
 }
