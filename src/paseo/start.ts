@@ -79,7 +79,7 @@ export async function startPaseoHarness(root: string, config: HarnessProjectConf
     "aeh.generation": String(generation)
   };
   if (options.handoffPath) labels["aeh.handoff"] = options.handoffPath;
-  const operationControl = preferPaseoTools ? buildAehControlMcp(aehCommand) : {};
+  const operationControl = preferPaseoTools ? buildAehControlMcp(aehCommand, projectRoot) : {};
   const launch = await deps.launchAgent(projectRoot, {
     cwd: projectRoot,
     title,
@@ -99,7 +99,7 @@ export async function startPaseoHarness(root: string, config: HarnessProjectConf
   return { daemonStarted, session: "created", agentId, title, leadAgent: leadName, provider, model, stateFile, bootstrapFile, paseoVersion: capabilities.version, transport: launch.transport };
 }
 
-export function buildAehControlMcp(aehCommand: string): Pick<PaseoSdkAgentOptions, "mcpServers" | "toolPolicy"> {
+export function buildAehControlMcp(aehCommand: string, projectRoot: string): Pick<PaseoSdkAgentOptions, "mcpServers" | "toolPolicy"> {
   const argv = parseCommandVector(aehCommand);
   if (!argv?.length) return {};
   const [command, ...baseArgs] = argv;
@@ -111,6 +111,7 @@ export function buildAehControlMcp(aehCommand: string): Pick<PaseoSdkAgentOption
         type: "stdio",
         command,
         args: [...baseArgs, "operation", "mcp"],
+        env: { AEH_CONTROL_ROOT: path.resolve(projectRoot) },
         alwaysLoad: true
       }
     },
@@ -145,7 +146,7 @@ Every engineering operation must enter through AEH, including read-only audits. 
 
 Remain a thin ORCHESTRATOR: preserve user intent, make semantic/risk decisions, delegate bounded operations through the authoritative topology, monitor deterministic state and perform final semantic acceptance. Follow engineering-workflow end-to-end for intent classification, AUDIT, QUICK/SPEC triage, OpenSpec authoring, sealed execution, recovery, validation and delivery rather than reproducing those procedures here.
 
-${preferPaseoTools ? `When running inside Paseo, use the paseo-orchestration skill and injected native/MCP tools for conversational delegation and /paseo-handoff for responsibility transfer. The managed lead receives the exact aeh-control MCP when its AEH invocation can be represented safely; prefer those detached operation tools for long AUDIT/RUN workflows, then use short \`${aehCommand} operation ...\` commands only as fallback. AEH's external controller may create independent top-level Paseo agents for Harness-owned work; AEH operation/run/task labels, not Paseo parentage, define workflow ownership.` : `Use AEH's configured Paseo adapter for delegation and lifecycle control.`}
+${preferPaseoTools ? `When running inside Paseo, use the paseo-orchestration skill and injected native/MCP tools for conversational delegation and /paseo-handoff for responsibility transfer. The managed lead receives the exact project-locked aeh-control MCP when its AEH invocation can be represented safely; prefer those detached operation tools for long AUDIT/RUN workflows, then use short \`${aehCommand} operation ...\` commands only as fallback. AEH's external controller may create independent top-level Paseo agents for Harness-owned work; AEH operation/run/task labels, not Paseo parentage, define workflow ownership.` : `Use AEH's configured Paseo adapter for delegation and lifecycle control.`}
 
 Before non-trivial work, inspect context pressure through Paseo status when exposed or run \`${aehCommand} context guard --agent "$PASEO_AGENT_ID"\`. Honor HANDOFF_REQUIRED/HARD_HANDOFF and stop the old lead when a replacement is created.
 
