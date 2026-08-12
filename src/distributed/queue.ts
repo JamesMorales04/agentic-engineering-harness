@@ -47,14 +47,14 @@ export async function serveDistributedQueue(root: string, config: HarnessProject
   const token = config.distributed?.tokenEnv ? process.env[config.distributed.tokenEnv] : undefined;
   const server = http.createServer(async (request, response) => {
     try {
-      if (token && request.headers.authorization !== `Bearer ${token}`) return json(response, 401, { error: "unauthorized" });
+      if (token && request.headers.authorization !== `Bearer ${token}`) { json(response, 401, { error: "unauthorized" }); return; }
       const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
-      if (request.method === "POST" && url.pathname === "/v1/jobs") { const job = await readJsonBody<DistributedDelegationJob>(request); await submitDistributedJob(root, config, job); return json(response, 202, { id: job.id }); }
-      if (request.method === "POST" && url.pathname === "/v1/claim") { const body = await readJsonBody<{ workerId: string }>(request); const claimed = await claimDistributedJob(root, config, body.workerId); return claimed ? json(response, 200, claimed) : json(response, 204, undefined); }
-      const complete = url.pathname.match(/^\/v1\/leases\/([^/]+)\/complete$/); if (request.method === "POST" && complete) { const result = await readJsonBody<DistributedDelegationResult>(request); await completeDistributedJob(root, config, decodeURIComponent(complete[1]), result); return json(response, 200, { ok: true }); }
-      const resultMatch = url.pathname.match(/^\/v1\/jobs\/([^/]+)$/); if (request.method === "GET" && resultMatch) { const result = await getFilesystemResult(root, config, decodeURIComponent(resultMatch[1])); return result ? json(response, 200, result) : json(response, 404, { error: "not-ready" }); }
-      return json(response, 404, { error: "not-found" });
-    } catch (error) { return json(response, 500, { error: String(error) }); }
+      if (request.method === "POST" && url.pathname === "/v1/jobs") { const job = await readJsonBody<DistributedDelegationJob>(request); await submitDistributedJob(root, config, job); json(response, 202, { id: job.id }); return; }
+      if (request.method === "POST" && url.pathname === "/v1/claim") { const body = await readJsonBody<{ workerId: string }>(request); const claimed = await claimDistributedJob(root, config, body.workerId); json(response, claimed ? 200 : 204, claimed); return; }
+      const complete = url.pathname.match(/^\/v1\/leases\/([^/]+)\/complete$/); if (request.method === "POST" && complete) { const result = await readJsonBody<DistributedDelegationResult>(request); await completeDistributedJob(root, config, decodeURIComponent(complete[1]), result); json(response, 200, { ok: true }); return; }
+      const resultMatch = url.pathname.match(/^\/v1\/jobs\/([^/]+)$/); if (request.method === "GET" && resultMatch) { const result = await getFilesystemResult(root, config, decodeURIComponent(resultMatch[1])); json(response, result ? 200 : 404, result ?? { error: "not-ready" }); return; }
+      json(response, 404, { error: "not-found" });
+    } catch (error) { json(response, 500, { error: String(error) }); }
   });
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(options.port, options.host ?? "127.0.0.1", () => resolve()); }); return server;
 }
@@ -69,5 +69,5 @@ async function completeHttp(config: HarnessProjectConfig, leaseId: string, resul
 async function getHttpResult(config: HarnessProjectConfig, jobId: string): Promise<DistributedDelegationResult | undefined> { const response = await request(config, `/v1/jobs/${encodeURIComponent(jobId)}`); if (response.status === 404) return undefined; if (!response.ok) throw new Error(`Distributed queue result lookup failed: HTTP ${response.status}`); return await response.json() as DistributedDelegationResult; }
 async function request(config: HarnessProjectConfig, pathname: string, init: RequestInit = {}): Promise<Response> { const endpoint = config.distributed?.endpoint; if (!endpoint) throw new Error("distributed.endpoint is required for HTTP distributed queues."); const headers = new Headers(init.headers); const token = config.distributed?.tokenEnv ? process.env[config.distributed.tokenEnv] : undefined; if (token) headers.set("authorization", `Bearer ${token}`); return fetch(new URL(pathname, endpoint).toString(), { ...init, headers }); }
 async function readJsonBody<T>(request: http.IncomingMessage): Promise<T> { const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); return JSON.parse(Buffer.concat(chunks).toString("utf8")) as T; }
-function json(response: http.ServerResponse, status: number, value: unknown): void { response.statusCode = status; if (value === undefined) return response.end(); response.setHeader("content-type", "application/json"); response.end(JSON.stringify(value)); }
+function json(response: http.ServerResponse, status: number, value: unknown): void { response.statusCode = status; if (value === undefined) { response.end(); return; } response.setHeader("content-type", "application/json"); response.end(JSON.stringify(value)); }
 function safe(value: string): string { return value.replace(/[^A-Za-z0-9._-]/g, "-"); }
