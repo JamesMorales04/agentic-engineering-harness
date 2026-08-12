@@ -71,9 +71,14 @@ orchestration:
     autoSetup: true
     webUi: true
     leadAgent: lead
-    reuseSession: true
+    sessionPolicy: fresh-on-start
+    usePaseoTools: true
     stateDir: .harness/paseo
     title: AEH Lead
+    context:
+      pressureThreshold: 0.70
+      handoffThreshold: 0.80
+      hardHandoffThreshold: 0.90
 
 toolchain:
   configPath: .harness/toolchain.yaml
@@ -158,6 +163,10 @@ sdd:
   reportsDir: .harness/reports
   repairsDir: .harness/repairs
   runsDir: .harness/runs
+  authoring:
+    provider: openspec
+    schema: spec-driven
+    managerAgent: spec-manager
 
 validation:
   baseRef: main
@@ -196,4 +205,4 @@ evals:
 
 provenance:
   outputDir: .harness/provenance
-  buildType: https://github.com/JamesMorales04/agentic-engineering-harness/v0.5
+  buildType: https://github.com/JamesMorales04/agentic-engineering-harness/v0.6
