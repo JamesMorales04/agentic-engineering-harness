@@ -2,13 +2,13 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import YAML from "yaml";
-import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
+import type { HarnessProjectConfig, TaskContract, ValidationCommand } from "../core/types.js";
 import { getCurrentBranch } from "../core/git.js";
 import { runProcess } from "../utils/process.js";
 
 export interface OpenSpecAuthoringConfig { provider?: "openspec" | "native" | string; schema?: string; managerAgent?: string; }
 export interface OpenSpecPreparedChange { taskId: string; changeName: string; directory: string; created: boolean; schema: string; managerAgent: string; }
-export interface OpenSpecCompileResult { taskId: string; changeName: string; sddDirectory: string; contractPath: string; requirements: string[]; sourceSha256: string; }
+export interface OpenSpecCompileResult { taskId: string; changeName: string; sddDirectory: string; contractPath: string; requirements: string[]; sourceSha256: string; validatorId: string; }
 
 type SddWithAuthoring = NonNullable<HarnessProjectConfig["sdd"]> & { authoring?: OpenSpecAuthoringConfig };
 
@@ -54,7 +54,7 @@ export async function compileOpenSpecChange(root: string, config: HarnessProject
   const parsed = parseRequirements(specDocuments);
   const requirementSources = parsed.length ? parsed : [{ title: "Preserve approved behavior", body: approvedOutcome(proposal), scenarios: [{ title: "Approved change preserves observable behavior", given: "the current behavior is covered by deterministic validation", when: "the approved OpenSpec change is implemented", then: "observable behavior remains compatible except where the proposal explicitly requires change" }] }];
   const ids = requirementSources.map((_, index) => `${taskId}-R${index + 1}`);
-  const validator = chooseRequirementValidator(config);
+  const requirementValidation = await resolveRequirementValidation(root, config);
   const specsDir = config.sdd?.specsDir ?? "specs";
   const sddDir = path.join(root, specsDir, "changes", taskId); await fs.mkdir(sddDir, { recursive: true });
 
@@ -75,7 +75,7 @@ export async function compileOpenSpecChange(root: string, config: HarnessProject
   const contractsDir = path.join(root, config.sdd?.contractsDir ?? ".harness/contracts"); await fs.mkdir(contractsDir, { recursive: true });
   const contractPath = path.join(contractsDir, `${taskId}.yaml`);
   const sourceSha256 = await hashOpenSpecChange(changeDir);
-  const contract: TaskContract & { authoring?: { provider: string; change: string; sourceSha256: string } } = {
+  const contract: TaskContract = {
     version: 1,
     task: { id: taskId, title },
     source: { proposal: relative(root, path.join(sddDir, "proposal.md")), spec: relative(root, path.join(sddDir, "spec.md")), design: relative(root, path.join(sddDir, "design.md")), tasks: relative(root, path.join(sddDir, "tasks.yaml")), acceptance: relative(root, path.join(sddDir, "acceptance.feature")) },
@@ -83,12 +83,13 @@ export async function compileOpenSpecChange(root: string, config: HarnessProject
     git: { baseRef: config.validation?.baseRef ?? "main", ...(originatingBranch ? { originatingBranch } : {}) },
     scope: { allowed: ["**"], forbidden: [], frozen: [] },
     routing: { intent: "implement", domains: [], risk: "medium" },
-    requirements: ids.map((id, index) => ({ id, description: requirementSources[index].title, validators: [validator] })),
+    requirements: ids.map((id, index) => ({ id, description: requirementSources[index].title, validators: [requirementValidation.id] })),
     constraints: { breakingApiChanges: false, newDependencies: false, schemaChanges: false },
-    repair: { maxAttempts: config.orchestration?.worker?.maxRepairAttempts ?? 2 }
+    repair: { maxAttempts: config.orchestration?.worker?.maxRepairAttempts ?? 2 },
+    ...(requirementValidation.command ? { verification: { commands: [requirementValidation.command] } } : {})
   };
   await fs.writeFile(contractPath, YAML.stringify(contract));
-  return { taskId, changeName, sddDirectory: sddDir, contractPath, requirements: ids, sourceSha256 };
+  return { taskId, changeName, sddDirectory: sddDir, contractPath, requirements: ids, sourceSha256, validatorId: requirementValidation.id };
 }
 
 interface ParsedRequirement { title: string; body: string; scenarios: Array<{ title: string; given?: string; when?: string; then?: string }> }
@@ -122,7 +123,31 @@ function buildAcceptanceFeature(taskId: string, title: string, ids: string[], re
   });
   return `${lines.join("\n")}\n`;
 }
-function chooseRequirementValidator(config: HarnessProjectConfig): string { const preferred = ["test", "typecheck", "build"]; for (const id of preferred) if ((config.validation?.commands ?? []).some((item) => item.id === id)) return id; const validator = config.validation?.validators?.find((item) => item.required !== false); if (validator) return validator.id; const command = config.validation?.commands?.find((item) => item.required !== false); return command?.id ?? "test"; }
+
+async function resolveRequirementValidation(root: string, config: HarnessProjectConfig): Promise<{ id: string; command?: ValidationCommand }> {
+  const preferredIds = ["test", "typecheck", "build"];
+  for (const id of preferredIds) {
+    const command = (config.validation?.commands ?? []).find((item) => item.id === id && item.required !== false);
+    if (command) return { id };
+    const validator = (config.validation?.validators ?? []).find((item) => item.id === id && item.required !== false);
+    if (validator) return { id };
+  }
+  const validator = config.validation?.validators?.find((item) => item.required !== false);
+  if (validator) return { id: validator.id };
+  const command = config.validation?.commands?.find((item) => item.required !== false);
+  if (command) return { id: command.id };
+
+  const packageJson = await readPackageJson(root);
+  const scripts = packageJson?.scripts ?? {};
+  for (const id of preferredIds) {
+    if (typeof scripts[id] === "string" && scripts[id].trim()) return { id, command: { id, command: id === "test" ? "npm test" : `npm run ${id}`, required: true, timeoutSeconds: 900 } };
+  }
+  const rootFiles = await fs.readdir(root).catch(() => [] as string[]);
+  if (rootFiles.some((name) => name.endsWith(".sln") || name.endsWith(".slnx") || name.endsWith(".csproj")) || rootFiles.includes("global.json")) return { id: "test", command: { id: "test", command: "dotnet test", required: true, timeoutSeconds: 1200 } };
+  throw new Error("OpenSpec compilation requires deterministic requirement validation. Configure validation.commands/validators or provide a project test/typecheck/build script (or a .NET solution/project) before compiling the SPEC.");
+}
+
+async function readPackageJson(root: string): Promise<{ scripts?: Record<string, unknown> } | undefined> { try { return JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8")) as { scripts?: Record<string, unknown> }; } catch { return undefined; } }
 function approvedOutcome(proposal: string): string { const outcome = proposal.match(/##\s+(?:Desired outcome|Why|What Changes)\s*\n([\s\S]*?)(?=\n##\s|$)/i)?.[1]?.trim(); return outcome || proposal.trim(); }
 async function collectMarkdown(dir: string): Promise<string[]> { const result: string[] = []; async function visit(current: string): Promise<void> { const entries = await fs.readdir(current, { withFileTypes: true }).catch(() => []); for (const entry of entries) { const full = path.join(current, entry.name); if (entry.isDirectory()) await visit(full); else if (entry.isFile() && entry.name.endsWith(".md")) result.push(full); } } await visit(dir); return result.sort(); }
 async function hashOpenSpecChange(dir: string): Promise<string> { const hash = crypto.createHash("sha256"); for (const file of await collectAllFiles(dir)) { hash.update(relative(dir, file)); hash.update(await fs.readFile(file)); } return hash.digest("hex"); }
