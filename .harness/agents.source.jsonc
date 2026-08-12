@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "extends": ["aeh:default"],
+  "extends": ["aeh:orchestration"],
   "activeProfile": "balanced",
   "skillRoots": ["skills"],
 
