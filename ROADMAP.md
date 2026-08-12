@@ -58,6 +58,20 @@
 - [x] resumable delivery state after each remote write
 - [x] Paseo worktree workspace creation and automatic workspace reuse for implementation/review/repair
 
+## v0.4.15 — issue-driven execution ✅
+- [x] `aeh issue inspect/import/implement <number>` and `aeh run --issue <number>`
+- [x] deterministic existing-issue fetch, open-state validation and PR-number rejection
+- [x] frozen title/body snapshot with SHA-256 provenance
+- [x] deterministic scope/domain/risk/acceptance extraction with read-only planner normalization for non-trivial issues
+- [x] automatic issue-derived QuickContract or complete SDD/TaskContract/Gherkin materialization
+- [x] stable `GH-<issue>-R<n>` traceability and sealing
+- [x] bind/reuse the existing issue rather than creating a duplicate delivery issue
+- [x] exact issue-linked branch reuse before branch creation
+- [x] reuse v0.4.14 Paseo worktree/control-root delivery lifecycle
+- [x] `ISSUE_DRIFT` preflight before every issue-derived run
+- [x] explicit issue refresh guard once an implementation workspace exists
+- [x] engineering-workflow natural-language routing for `implement issue #X`
+
 ## v0.5 — scale and governance
 - [ ] repeated-run eval dashboards/statistical confidence
 - [ ] signed organization policy bundles and inheritance
