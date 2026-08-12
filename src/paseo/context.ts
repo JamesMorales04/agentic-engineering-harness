@@ -1,7 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import process from "node:process";
 import type { HarnessProjectConfig } from "../core/types.js";
 import { runProcess } from "../utils/process.js";
+import { startPaseoHarness } from "./start.js";
 
 export type ContextGuardState = "OK" | "PRESSURE" | "HANDOFF_REQUIRED" | "HARD_HANDOFF" | "UNKNOWN";
 export interface ContextUsage { used?: number; limit?: number; ratio?: number; source: string; }
@@ -11,6 +13,7 @@ export interface LeadHandoffArtifact {
   reason: "CONTEXT_PRESSURE";
   project: string;
   previousAgentId: string;
+  rotatedAgentId?: string;
   context: ContextUsage;
   branch?: string;
   activeRun?: string;
@@ -19,23 +22,37 @@ export interface LeadHandoffArtifact {
   semanticBrief?: string;
   nextInstruction: string;
 }
-export interface ContextGuardResult { state: ContextGuardState; usage: ContextUsage; handoffPath?: string; message: string; }
+export interface ContextGuardResult { state: ContextGuardState; usage: ContextUsage; handoffPath?: string; rotatedAgentId?: string; message: string; }
 
 type Runner = typeof runProcess;
-type InteractiveContextConfig = { pressureThreshold?: number; handoffThreshold?: number; hardHandoffThreshold?: number };
+type Starter = typeof startPaseoHarness;
+export interface ContextGuardOptions { brief?: string; run?: Runner; autoRotate?: boolean; aehCommand?: string; start?: Starter; }
 
-type InteractiveWithContext = NonNullable<HarnessProjectConfig["orchestration"]>["interactive"] & { context?: InteractiveContextConfig };
-
-export async function guardLeadContext(root: string, config: HarnessProjectConfig, agentId: string, options: { brief?: string; run?: Runner } = {}): Promise<ContextGuardResult> {
+export async function guardLeadContext(root: string, config: HarnessProjectConfig, agentId: string, options: ContextGuardOptions = {}): Promise<ContextGuardResult> {
   const run = options.run ?? runProcess;
   const policy = contextPolicy(config);
   const usage = await inspectPaseoContextUsage(root, agentId, run);
   if (usage.ratio === undefined) return { state: "UNKNOWN", usage, message: "Paseo did not expose a stable context-usage ratio; continue with delegation-first behavior and prefer a fresh lead on the next aeh start." };
   if (usage.ratio < policy.pressure) return { state: "OK", usage, message: `Lead context ${(usage.ratio * 100).toFixed(1)}% is below the pressure threshold.` };
   if (usage.ratio < policy.handoff) return { state: "PRESSURE", usage, message: `Lead context ${(usage.ratio * 100).toFixed(1)}% is under pressure. Stop exploratory shell work and delegate all non-semantic operations.` };
-  const artifact = await writeHandoffArtifact(root, config, agentId, usage, options.brief, run);
+
+  const artifactPath = await writeHandoffArtifact(root, config, agentId, usage, options.brief, run);
   const state: ContextGuardState = usage.ratio >= policy.hard ? "HARD_HANDOFF" : "HANDOFF_REQUIRED";
-  return { state, usage, handoffPath: artifact, message: `${state}: context ${(usage.ratio * 100).toFixed(1)}%. Create a fresh lead with /paseo-handoff (preferred) or the Paseo create_agent tool and use ${path.relative(root, artifact).replaceAll("\\", "/")} as the deterministic briefing source. Do not compact and continue the engineering workflow in the old lead.` };
+  const autoRotate = options.autoRotate ?? Boolean(process.env.PASEO_AGENT_ID);
+  if (!autoRotate) return { state, usage, handoffPath: artifactPath, message: `${state}: context ${(usage.ratio * 100).toFixed(1)}%. Handoff artifact created at ${relative(root, artifactPath)}. Create a fresh lead with /paseo-handoff (preferred), Paseo create_agent, or rerun the guard from the managed lead to rotate automatically. Do not compact and continue the engineering workflow in the old lead.` };
+
+  const starter = options.start ?? startPaseoHarness;
+  const aehCommand = options.aehCommand ?? exactAehCommand();
+  const relativeHandoff = relative(root, artifactPath);
+  const fresh = await starter(root, config, { forceNew: true, resume: false, handoffPath: relativeHandoff, aehCommand });
+  await recordRotatedLead(artifactPath, fresh.agentId);
+  return {
+    state,
+    usage,
+    handoffPath: artifactPath,
+    rotatedAgentId: fresh.agentId,
+    message: `${state}: context ${(usage.ratio * 100).toFixed(1)}%. AEH rotated responsibility to fresh lead ${fresh.agentId} using ${relativeHandoff}. Stop engineering work in ${agentId}; do not compact-and-continue. The fresh lead bootstraps from deterministic artifacts.`
+  };
 }
 
 export async function inspectPaseoContextUsage(root: string, agentId: string, run: Runner = runProcess): Promise<ContextUsage> {
@@ -67,7 +84,7 @@ export function extractContextUsage(value: unknown): ContextUsage {
 }
 
 function contextPolicy(config: HarnessProjectConfig): { pressure: number; handoff: number; hard: number } {
-  const context = (config.orchestration?.interactive as InteractiveWithContext | undefined)?.context;
+  const context = config.orchestration?.interactive?.context;
   const pressure = clamp(context?.pressureThreshold ?? 0.70);
   const handoff = Math.max(pressure, clamp(context?.handoffThreshold ?? 0.80));
   const hard = Math.max(handoff, clamp(context?.hardHandoffThreshold ?? 0.90));
@@ -98,6 +115,12 @@ async function writeHandoffArtifact(root: string, config: HarnessProjectConfig, 
   return file;
 }
 
+async function recordRotatedLead(file: string, agentId: string): Promise<void> {
+  const artifact = JSON.parse(await fs.readFile(file, "utf8")) as LeadHandoffArtifact;
+  artifact.rotatedAgentId = agentId;
+  await fs.writeFile(file, `${JSON.stringify(artifact, null, 2)}\n`);
+}
+
 async function latestJsonPath(root: string, relativeDir: string): Promise<string | undefined> {
   const dir = path.resolve(root, relativeDir);
   const names = await fs.readdir(dir).catch(() => [] as string[]);
@@ -105,11 +128,13 @@ async function latestJsonPath(root: string, relativeDir: string): Promise<string
   if (!json.length) return undefined;
   const values = await Promise.all(json.map(async (name) => ({ name, stat: await fs.stat(path.join(dir, name)) })));
   values.sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
-  return path.relative(root, path.join(dir, values[0].name)).replaceAll("\\", "/");
+  return relative(root, path.join(dir, values[0].name));
 }
-async function existingRelative(root: string, relative: string): Promise<string | undefined> { try { await fs.access(path.resolve(root, relative)); return relative.replaceAll("\\", "/"); } catch { return undefined; } }
+async function existingRelative(root: string, relativePath: string): Promise<string | undefined> { try { await fs.access(path.resolve(root, relativePath)); return relativePath.replaceAll("\\", "/"); } catch { return undefined; } }
+function exactAehCommand(): string { const entry = path.resolve(process.argv[1]); return `${JSON.stringify(process.execPath)} ${JSON.stringify(entry)}`; }
 function findAgent(value: unknown, id: string): unknown { if (Array.isArray(value)) { for (const child of value) { const found = findAgent(child, id); if (found) return found; } return undefined; } if (!value || typeof value !== "object") return undefined; const record = value as Record<string, unknown>; if ([record.id, record.agentId, record.agent_id].some((item) => item === id)) return record; for (const child of Object.values(record)) { const found = findAgent(child, id); if (found) return found; } return undefined; }
 function collectNumericFields(value: unknown, out = new Map<string, number>()): Map<string, number> { if (Array.isArray(value)) { for (const child of value) collectNumericFields(child, out); return out; } if (!value || typeof value !== "object") return out; for (const [key, child] of Object.entries(value as Record<string, unknown>)) { const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, ""); if (typeof child === "number" && Number.isFinite(child) && !out.has(normalized)) out.set(normalized, child); else collectNumericFields(child, out); } return out; }
 function first(values: Map<string, number>, keys: string[]): number | undefined { for (const key of keys) { const value = values.get(key); if (value !== undefined) return value; } return undefined; }
 function clamp(value: number): number { return Math.max(0, Math.min(1, value)); }
+function relative(root: string, file: string): string { return path.relative(root, file).replaceAll("\\", "/"); }
 function quote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }
