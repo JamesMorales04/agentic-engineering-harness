@@ -25,7 +25,7 @@ profiles:
     tools: [opa, opengrep, trivy]
   full:
     extends: [agents, intelligence, validation]
-    tools: [podman]
+    tools: [podman, dotnet, bun]
 
 tools:
   git:
@@ -40,7 +40,21 @@ tools:
     source: node
     version: "22"
     required: true
-    activateWhen: [always]
+    activateWhen: [always, project:node, project:pnpm, project:yarn]
+
+  bun:
+    kind: mise
+    command: bun
+    source: bun
+    version: latest
+    activateWhen: [project:bun]
+
+  dotnet:
+    kind: mise
+    command: dotnet
+    source: dotnet
+    version: latest
+    activateWhen: [project:dotnet]
 
   codex:
     kind: mise
@@ -68,7 +82,7 @@ tools:
     command: uv
     source: uv
     version: latest
-    activateWhen: [code-intelligence:graphify]
+    activateWhen: [code-intelligence:graphify, project:python]
 
   graphify:
     kind: mise
