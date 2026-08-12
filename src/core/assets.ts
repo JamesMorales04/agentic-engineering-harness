@@ -21,6 +21,7 @@ export interface HarnessAssetReconcileResult {
   manifestPath: string;
   created: string[];
   updated: string[];
+  removed: string[];
   preservedOverrides: string[];
   unchanged: string[];
 }
@@ -41,7 +42,7 @@ export async function reconcileHarnessAssets(root: string, options: HarnessAsset
   const manifestFile = path.join(projectRoot, MANIFEST_PATH);
   const previous = await loadManifest(manifestFile);
   const next: ManagedAssetManifest = { version: 1, aehVersion: options.aehVersion ?? VERSION, assets: {} };
-  const result: HarnessAssetReconcileResult = { manifestPath: MANIFEST_PATH, created: [], updated: [], preservedOverrides: [], unchanged: [] };
+  const result: HarnessAssetReconcileResult = { manifestPath: MANIFEST_PATH, created: [], updated: [], removed: [], preservedOverrides: [], unchanged: [] };
 
   for (const managedRoot of MANAGED_ROOTS) {
     const packageRoot = path.join(sourceRoot, managedRoot.source);
@@ -84,6 +85,21 @@ export async function reconcileHarnessAssets(root: string, options: HarnessAsset
       };
       result.preservedOverrides.push(destinationRelative);
     }
+  }
+
+  for (const [destinationRelative, prior] of Object.entries(previous?.assets ?? {})) {
+    if (next.assets[destinationRelative]) continue;
+    const destinationFile = path.join(projectRoot, destinationRelative);
+    const destinationBytes = await fs.readFile(destinationFile).catch(() => undefined);
+    if (!destinationBytes) continue;
+    const destinationSha256 = sha256(destinationBytes);
+    if (prior.managedSha256 && destinationSha256 === prior.managedSha256 && !prior.overridden) {
+      await fs.rm(destinationFile, { force: true });
+      result.removed.push(destinationRelative);
+      continue;
+    }
+    next.assets[destinationRelative] = { ...prior, overridden: true };
+    result.preservedOverrides.push(destinationRelative);
   }
 
   await fs.mkdir(path.dirname(manifestFile), { recursive: true });
