@@ -2,41 +2,60 @@
 
 The package name is `agentic-engineering-harness` and the public CLI commands are `aeh` and `engineering-harness`.
 
-The repository is prepared for npm Trusted Publishing through GitHub Actions OIDC. No long-lived npm publish token is stored in the repository workflow.
+`package.json` is the single source of truth for the AEH version. Runtime CLI version output imports that package metadata; source files and CI must not maintain separate hard-coded version strings.
 
 ## Preflight
 
-Before any publication:
+Every release candidate must pass:
 
 ```bash
 npm run release:check
 ```
 
-This must pass typecheck, tests, build and `npm pack --dry-run`.
+This runs typecheck, the complete test suite, build and `npm pack --dry-run`.
 
-Check whether the desired package name already exists:
+## Automatic releases from `main`
 
-```bash
-npm view agentic-engineering-harness version
+`.github/workflows/publish.yml` is the single npm publishing workflow. A push to `main` starts an idempotent release pipeline unless the repository variable below is set:
+
+```text
+AEH_AUTO_PUBLISH=false
 ```
 
-An npm `E404` means the name is not currently published. If another owner controls the name, choose a scoped package name before publishing rather than changing package identity after adoption.
+The workflow performs the following steps:
 
-## One-time first publication
+1. installs dependencies with `npm ci`;
+2. checks whether the current `package.json` version is already present on npm;
+3. if the current version is unpublished, it publishes that exact version first;
+4. otherwise it derives the next semantic version from commits since the latest `v*` tag:
+   - a breaking Conventional Commit (`type!:` or `BREAKING CHANGE:`) -> major;
+   - `feat:` -> minor;
+   - every other change -> patch;
+5. synchronizes `package.json` and `package-lock.json` with `npm version --no-git-tag-version`;
+6. runs `npm run release:check` on the exact candidate;
+7. commits the version metadata as `chore(release): vX.Y.Z [skip ci]` and creates the matching Git tag;
+8. publishes the package to npm;
+9. creates the GitHub Release for the tag.
 
-npm Trusted Publisher configuration requires an npm package to exist first. The first release therefore needs one deliberate maintainer-authenticated publish.
+The release commit/tag is pushed with GitHub's repository token. GitHub does not recursively trigger ordinary push workflows for pushes created with that `GITHUB_TOKEN`, so the version commit does not create an infinite publish loop.
 
-From a clean checkout of the exact release commit:
+## Manual release control
 
-```bash
-npm login
-npm run release:check
-npm publish --access public
+`publish-npm` also supports `workflow_dispatch`. The `bump` input can be:
+
+```text
+auto     # Conventional Commit-derived bump
+current  # publish current version only if it is not already published
+patch
+minor
+major
 ```
 
-Complete the npm account's required 2FA/interactive authentication. Do not create a persistent automation token solely for this bootstrap.
+Manual dispatch is useful for retrying an external npm/OIDC failure or deliberately overriding the automatic bump classification.
 
-After the first package exists, open the package settings on npmjs.com and configure a Trusted Publisher with:
+## npm authentication
+
+The preferred steady-state path is npm Trusted Publishing with GitHub Actions OIDC. Configure the npm package Trusted Publisher with:
 
 ```text
 Provider: GitHub Actions
@@ -46,39 +65,21 @@ Workflow filename: publish.yml
 Allowed action: npm publish
 ```
 
-The workflow file lives at `.github/workflows/publish.yml`; npm expects only the filename in the Trusted Publisher configuration.
+The workflow grants `id-token: write`, which is required for OIDC. Modern npm clients can exchange the GitHub OIDC identity for short-lived publish authorization, avoiding a long-lived npm write token.
 
-For the strongest steady-state posture, after the OIDC flow has been proven once, disallow traditional publish tokens for the package and retain 2FA on the maintainer account.
+For bootstrap or compatibility, the workflow also accepts an optional GitHub Actions secret named `NPM_TOKEN`. If present, it is exported only for the `npm publish` step. Once Trusted Publishing is verified, prefer removing the long-lived token.
 
-## Steady-state release
+If the package has never been published and npm does not permit Trusted Publisher configuration before first publication, perform one maintainer-authenticated bootstrap publish, then configure the Trusted Publisher above. The automatic workflow will subsequently see that version as published and continue normal semantic versioning.
 
-1. Change `package.json` to the intended semantic version.
-2. Ensure the CLI dispatcher reports the same version.
-3. Merge only after CI `release:check` passes.
-4. Create/publish a GitHub Release tagged exactly:
+## Version policy
 
-```text
-v<package.json version>
-```
+The repository currently starts this release line at `0.6.1`. After that, normal merges do not require a human to edit the version manually. The release workflow owns the release metadata bump.
 
-For example:
-
-```text
-v0.4.16
-```
-
-5. The `publish-npm` workflow will:
-   - check out the release commit;
-   - use Node 24 on a GitHub-hosted runner;
-   - verify that the release tag exactly matches `package.json`;
-   - run `npm run release:check` again;
-   - execute `npm publish` using npm Trusted Publishing/OIDC.
-
-If the tag/version check fails, no publish is attempted.
+If a PR intentionally changes the package version to a version that is not yet on npm, that repository version wins: the next `main` publication ships it before any further automatic increment. This makes explicit release corrections and recovery deterministic.
 
 ## What enters the npm tarball
 
-The `files` allowlist in `package.json` publishes only:
+The `files` allowlist in `package.json` publishes:
 
 ```text
 dist/
@@ -92,7 +93,7 @@ docs/
 
 plus npm-required package metadata such as `package.json`, README and LICENSE.
 
-This is why CI runs `npm pack --dry-run`: bootstrap templates, default agents, skills and toolchain schemas are runtime assets for `aeh init`, not merely repository documentation.
+Packaged `skills/` and core `policies/` are runtime control-plane assets. `aeh init`, `aeh setup`, and `aeh start` reconcile those package assets into the consumer repository's `.harness` directory. `.harness/managed-assets.json` records hashes so missing or untouched files can be restored/upgraded without overwriting project-local modifications.
 
 ## Consumer installation
 
@@ -103,8 +104,14 @@ npm install --save-dev agentic-engineering-harness
 npm exec aeh -- init --setup
 ```
 
-AEH should not be imported into the product runtime merely to use the engineering workflow.
+After the repository has been initialized, a normal:
+
+```bash
+npm exec aeh -- start
+```
+
+reconciles managed Harness assets before loading the agent topology and starting Paseo.
 
 ## Failure policy
 
-Publication is a delivery operation, not an engineering-quality gate. A registry/OIDC/permission failure must not cause the source commit to be rewritten or force-pushed. Fix the external publishing configuration and re-run/recreate the release process as appropriate while preserving the already-validated source commit.
+A registry/OIDC/permission failure is an external delivery failure, not a reason to rewrite validated engineering history. The release workflow is retry-safe: if the version commit/tag exists but npm publication failed, a manual rerun with `current` will attempt the same unpublished version rather than incrementing it again.
