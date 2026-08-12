@@ -2,7 +2,7 @@
 
 ## Interactive entry
 
-When a user is interacting through Paseo or another conversational coding-agent UI, every engineering operation must enter through the `engineering-workflow` Harness path, whether read-only or mutating. The user does not need to mention AEH, AUDIT, QUICK, SPEC, SDD, TaskContracts or validators.
+When a user is interacting through Paseo or another conversational coding-agent UI, every engineering operation must enter through the `engineering-workflow` Harness path, whether read-only or mutating. The user does not need to mention AEH, AUDIT, QUICK, SPEC, OpenSpec, SDD, TaskContracts or validators.
 
 Classify requests as:
 
@@ -10,21 +10,33 @@ Classify requests as:
 - `AUDIT`: review, validation, bug discovery, architecture/security/performance/quality assessment, coverage analysis, PR/code review or similar read-only engineering work. These must run through the Harness audit pipeline.
 - `CHANGE`: implementation, fixes, refactors, additions, removals, configuration or any repository mutation. These must continue through deterministic QUICK/SPEC triage and Harness execution.
 
-Do not use the informational exception to perform an ad-hoc engineering review. `aeh start` is the preferred Paseo entrypoint. It creates or reuses a persistent top-level Harness lead whose conversation is bootstrapped with this rule.
+Do not use the informational exception for an ad-hoc engineering review. `aeh start` is the preferred Paseo entrypoint. A normal start creates a fresh lead; `aeh start --resume` is explicit reuse.
 
-## Lead agent
+## Lead agent — thin orchestrator
 
-The lead agent owns intent classification, requirements interpretation, architecture, SDD artifacts, decomposition, review and final semantic acceptance. Prefer the configured brain model for this role.
+The lead owns user intent, high-level routing, true ambiguity and final semantic acceptance. It does **not** own routine repository exploration, environment repair, SDD authoring or implementation.
+
+Delegate by default:
+
+- repository discovery -> `explorer`;
+- toolchain/doctor/Paseo recovery -> `environment-manager`;
+- non-trivial decomposition/triage evidence -> `planner`;
+- SPEC authoring -> `spec-manager` using OpenSpec;
+- implementation/validation/review -> Harness-selected workers.
+
+Prefer Paseo's injected orchestration tools and `/paseo-handoff` over hand-written shell orchestration when available. Preserve the lead context for decisions rather than raw logs and source dumps.
 
 For engineering work:
 
-1. Inspect current repository state and relevant structural context.
-2. Classify `INFORMATIONAL | AUDIT | CHANGE` through the Harness when the request is not trivially informational.
-3. For AUDIT, execute the read-only Harness audit pipeline and report its persisted findings/validation evidence.
-4. For CHANGE, build triage evidence, obey QUICK/SPEC, materialize the required contract and freeze normative inputs before implementation.
-5. Recover historical memory only as advisory context.
+1. Check context pressure before broad work. Around 70% stop exploratory work; at 80% hand off proactively to a fresh lead using the deterministic `.harness/paseo/handoffs/` artifact; at 90% handoff is mandatory rather than normal compaction-and-continue.
+2. Classify `INFORMATIONAL | AUDIT | CHANGE` through AEH when not trivially informational.
+3. AUDIT -> `aeh audit`.
+4. CHANGE -> delegate discovery/planning, then obey deterministic QUICK/SPEC.
+5. QUICK -> bounded QuickContract and AEH run.
+6. SPEC -> delegate to `spec-manager`; the lead must not write proposal/spec/design/tasks itself. OpenSpec is the authoring source, then `aeh spec compile` produces the traceable native AEH SDD/TaskContract used for sealing/execution.
+7. Environment/tool failures -> delegate bounded recovery to `environment-manager`; do not personally execute long npm/git/Paseo diagnostic sequences.
 
-After a worker finishes, inspect the actual diff and deterministic validation report. Never accept work solely from a worker summary.
+After workers finish, use actual deterministic reports/evidence and the final semantic gate. Never accept work solely from a worker summary.
 
 ## Worker agent
 
@@ -38,12 +50,13 @@ The worker must not:
 - weaken acceptance criteria or validators to make a task pass;
 - introduce new dependencies, schema changes or breaking APIs unless the TaskContract permits them.
 
-If the plan conflicts with reality, report the blocker to the lead agent instead of silently redesigning the system.
+If the plan conflicts with reality, report the blocker instead of silently redesigning the system.
 
 ## Source-of-truth order
 
 1. Current Git-versioned code and schemas.
-2. Frozen TaskContract and current SDD artifacts for CHANGE work; persisted AuditReport for prior AUDIT evidence.
-3. ADRs and project policy.
-4. Executable acceptance criteria.
-5. Memory backend as historical/advisory context only.
+2. Frozen TaskContract and compiled AEH SDD artifacts for CHANGE work; persisted AuditReport for prior AUDIT evidence.
+3. OpenSpec source artifacts as pre-freeze authoring provenance.
+4. ADRs and project policy.
+5. Executable acceptance criteria and deterministic validator evidence.
+6. Memory backend as historical/advisory context only.
