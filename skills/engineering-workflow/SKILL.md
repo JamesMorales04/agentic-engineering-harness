@@ -5,17 +5,34 @@ purpose: Turn a natural-language engineering request or existing GitHub issue in
 
 # Engineering Workflow
 
-You are the engineering lead entrypoint. The user may be operating from Paseo mobile and should not need to know Harness commands.
+You are the engineering lead entrypoint. The user may be operating from Paseo mobile and should not need to know Harness commands or manually provision engineering dependencies.
 
 ## Entry protocol
 
-1. Identify the repository root and read `AGENTS.md`, `.harness/project.yaml`, `.harness/agents.source.jsonc`, relevant architecture docs and current Git state.
-2. Run `aeh agents check` before delegation. If the topology is invalid, stop and report the deterministic failure.
-3. If the user explicitly asks to implement an existing GitHub issue (`issue #123`, `#123`, or an issue URL), use the **Issue-driven path** below. Do not manually recreate the issue as a new SDD request first.
-4. Otherwise inspect relevant code, Graphify structure when available, and advisory memory. Git/specs/tests remain authoritative.
-5. Build triage evidence: bounded concrete file scope, affected domains, risk, and escalation flags.
-6. Run `aeh triage "<request>" --file ... --domain ... --risk ...`.
-7. Follow the Harness decision. Do not downgrade SPEC to QUICK manually.
+1. Identify the repository root and read `AGENTS.md`, `.harness/project.yaml`, `.harness/agents.source.jsonc`, `.harness/toolchain.yaml` when present, relevant architecture docs and current Git state.
+2. Establish environment readiness before delegation:
+   - run `aeh doctor` when the project has already been initialized;
+   - if doctor reports a reconciliable toolchain failure (missing/out-of-lock Codex, OpenCode, Paseo, Graphify, validator or managed project runtime), run `aeh setup` autonomously and then run `aeh doctor` again;
+   - do not ask the user to install each managed dependency manually;
+   - do not invoke sudo or silently install required host/system prerequisites. A truly unavailable host prerequisite or external credential becomes `BLOCKED_EXTERNAL`.
+3. Run `aeh agents check` before delegation. If the topology remains invalid after normal generated-config reconciliation, report the deterministic failure.
+4. If the user explicitly asks to implement an existing GitHub issue (`issue #123`, `#123`, or an issue URL), use the **Issue-driven path** below. Do not manually recreate the issue as a new SDD request first.
+5. Otherwise inspect relevant code, Graphify structure when available, and advisory memory. Git/specs/tests remain authoritative.
+6. Build triage evidence: bounded concrete file scope, affected domains, risk, and escalation flags.
+7. Run `aeh triage "<request>" --file ... --domain ... --risk ...`.
+8. Follow the Harness decision. Do not downgrade SPEC to QUICK manually.
+
+## Toolchain policy
+
+Treat `.harness/toolchain.yaml` as desired engineering capability configuration and `.harness/toolchain.lock.json` as its resolved executable state.
+
+- `aeh setup --dry-run` is inspection only and must not mutate the repository/environment.
+- ordinary `aeh setup` reuses the existing lock and installs only missing/selected capabilities;
+- use `aeh setup --update-lock` only for an intentional toolchain upgrade, not as generic recovery;
+- project version authority such as `.node-version`, `.nvmrc`, .NET `global.json` and explicit project tool overrides must be respected;
+- `.harness/toolchain.state.json` and generated wrappers are machine-local and must not be treated as normative Git content;
+- do not run package-manager installs with unfrozen semantics when a lockfile/frozen mode is available;
+- use OCI validator alternatives only when configured/preferred and the container engine is available; absence of Podman should fall back to managed local tooling when the tool definition permits it.
 
 ## Issue-driven path
 
@@ -71,10 +88,10 @@ Human intervention is the final exception path, not a routine review step. Reque
 
 - `SPEC_CONTRADICTION`: authoritative requirements cannot all be satisfied.
 - `REQUIRES_PRODUCT_DECISION`: the repository/spec/issue cannot determine a required business/product choice.
-- `BLOCKED_EXTERNAL`: a required credential, account permission, push permission or external resource is unavailable to the Harness/agents.
+- `BLOCKED_EXTERNAL`: a required host prerequisite, credential, account permission, push permission or external resource is unavailable to the Harness/agents.
 - `ISSUE_DRIFT`: a frozen issue's title/body changed after intake and accepting that new intent requires an explicit refresh decision once implementation state exists.
 
-Implementation defects, review debt, regressions, cycles, invalid strategies and ordinary tool failures stay inside autonomous recovery/escalation whenever possible.
+Missing managed toolchain components are not by themselves human exceptions: attempt `aeh setup` first. Implementation defects, review debt, regressions, cycles, invalid strategies and ordinary tool failures stay inside autonomous recovery/escalation whenever possible.
 
 ## Triage escalation rules
 
@@ -84,8 +101,8 @@ If a QUICK implementation later reveals one of these conditions, stop the quick 
 
 ## Mobile/Paseo behavior
 
-When started as a Codex lead inside Paseo, remain the parent session. Use the Harness as the control layer and allow it to spawn routed OpenCode/Codex work through the configured transports. For `implement issue #X`, prefer `aeh issue implement X`; that command owns intake, freeze, optional handoff/worktree, execution and configured accepted-delivery finalization. Surface only meaningful status, deterministic failures that cannot self-recover, permission requests, true human-on-exception states, final acceptance and resulting PR/delivery state to the user. Do not surface every remediation round as a request for approval.
+When started as a Codex lead inside Paseo, remain the parent session. Use the Harness as the control layer and allow it to spawn routed OpenCode/Codex work through the configured transports. Before delegation, reconcile the toolchain autonomously when needed. For `implement issue #X`, prefer `aeh issue implement X`; that command owns intake, freeze, optional handoff/worktree, execution and configured accepted-delivery finalization. Surface only meaningful status, deterministic failures that cannot self-recover, permission requests, true human-on-exception states, final acceptance and resulting PR/delivery state to the user. Do not surface every remediation or provisioning step as a request for approval.
 
 ## Self-modification
 
-If the repository being modified is the Harness itself or the task changes `.harness/agents.source.jsonc`, skills, policies, validators or orchestration rules, the run is governed by the controller/topology that existed at run start. New control-plane rules become active only on a subsequent run after validation/merge.
+If the repository being modified is the Harness itself or the task changes `.harness/agents.source.jsonc`, `.harness/toolchain.yaml`, skills, policies, validators or orchestration rules, the run is governed by the controller/topology/toolchain state that existed at run start. New control-plane rules become active only on a subsequent run after validation/merge.
