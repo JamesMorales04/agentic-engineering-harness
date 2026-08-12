@@ -25,20 +25,26 @@ export interface HarnessAssetReconcileResult {
   unchanged: string[];
 }
 
+export interface HarnessAssetReconcileOptions {
+  packageRoot?: string;
+  aehVersion?: string;
+}
+
 const MANAGED_ROOTS = [
   { source: "skills", destination: ".harness/skills" },
   { source: "policies/core", destination: ".harness/policies/core" }
 ] as const;
 
-export async function reconcileHarnessAssets(root: string): Promise<HarnessAssetReconcileResult> {
+export async function reconcileHarnessAssets(root: string, options: HarnessAssetReconcileOptions = {}): Promise<HarnessAssetReconcileResult> {
   const projectRoot = path.resolve(root);
+  const sourceRoot = options.packageRoot ?? PACKAGE_ROOT;
   const manifestFile = path.join(projectRoot, MANIFEST_PATH);
   const previous = await loadManifest(manifestFile);
-  const next: ManagedAssetManifest = { version: 1, aehVersion: VERSION, assets: {} };
+  const next: ManagedAssetManifest = { version: 1, aehVersion: options.aehVersion ?? VERSION, assets: {} };
   const result: HarnessAssetReconcileResult = { manifestPath: MANIFEST_PATH, created: [], updated: [], preservedOverrides: [], unchanged: [] };
 
   for (const managedRoot of MANAGED_ROOTS) {
-    const packageRoot = path.join(PACKAGE_ROOT, managedRoot.source);
+    const packageRoot = path.join(sourceRoot, managedRoot.source);
     if (!(await exists(packageRoot))) continue;
     const files = await listFiles(packageRoot);
     for (const sourceFile of files) {
