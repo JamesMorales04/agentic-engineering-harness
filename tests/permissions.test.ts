@@ -27,7 +27,6 @@ describe("OpenCode permission projection", () => {
     };
     const config = buildOpenCodeRuntimeConfig(selection(["context7"]), project) as { mcp: Record<string, unknown>; tools: Record<string, boolean> };
     expect(Object.keys(config.mcp)).toEqual(["context7"]);
-    expect(config.tools.context7_*).toBeUndefined();
     expect(config.tools["context7_*"]).toBe(true);
     expect(config.tools["github_*"]).toBe(false);
     expect(config.tools["sentry_*"]).toBe(false);
