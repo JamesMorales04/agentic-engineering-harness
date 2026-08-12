@@ -23,6 +23,7 @@ coverage/
 .harness/distributed/
 .harness/policy-bundles/
 .harness/mcp-benchmarks/
+.harness/paseo/
 .config/mise/conf.d/aeh.toml
 .graphify/
 graphify-out/
