@@ -5,8 +5,8 @@ import type { QualityState } from "./qualityConvergence.js";
 
 export const DEFAULT_ESCALATION_STAGES: ReviewEscalationStage[] = [
   { name: "normal", action: "remediate" },
-  { name: "quality", action: "remediate" },
-  { name: "senior", action: "remediate", model: "@brain" },
+  { name: "quality", action: "remediate", agent: "quality-implementer" },
+  { name: "senior", action: "remediate", agent: "senior-implementer", model: "@brain" },
   { name: "diagnosis", action: "diagnose", agent: "oracle", model: "@brain" },
   { name: "replan", action: "replan", agent: "planner", model: "@brain" }
 ];
@@ -27,7 +27,8 @@ export function nextEscalationIndex(state: QualityState, current: number, config
 
 export function resumeAfterReplan(config: HarnessProjectConfig): number {
   const stages = escalationStages(config);
-  return Math.min(config.workflow?.reviews?.escalation?.replanResumeStage ?? 2, Math.max(0, stages.length - 1));
+  const desired = Math.min(config.workflow?.reviews?.escalation?.replanResumeStage ?? 2, Math.max(0, stages.length - 1));
+  return Math.max(0, desired - 1);
 }
 
 export function selectionForStage(topology: ResolvedAgentTopology, fallback: AgentExecutionSelection, stage: ReviewEscalationStage): AgentExecutionSelection {
