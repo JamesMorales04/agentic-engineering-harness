@@ -96,9 +96,12 @@ export async function listManagedPaseoAgents(root: string, labels: Record<string
 }
 
 async function launchCli(root: string, options: ManagedPaseoAgentOptions, deps: PaseoRuntimeDeps, fallbackReason: string): Promise<ManagedPaseoAgentResult> {
+  if (options.prompt === undefined && options.systemPrompt !== undefined) {
+    throw new PaseoSdkUnavailableError(`Paseo SDK is required to create an idle systemPrompt-only agent. Refusing CLI fallback because it would expose session instructions as a user turn. ${fallbackReason}`);
+  }
   const capabilities = await deps.detectCapabilities(root, deps.run);
-  const prompt = options.prompt ?? options.systemPrompt;
-  if (prompt === undefined) throw new Error("Paseo CLI fallback requires a prompt; the SDK is required for creating a truly idle lead session.");
+  const prompt = options.prompt;
+  if (prompt === undefined) throw new Error("Paseo CLI fallback requires a prompt.");
   const timeout = options.timeoutSeconds ?? Math.max(1, Math.ceil((options.timeoutMs ?? 1_800_000) / 1000));
 
   if (options.outputSchema) {
