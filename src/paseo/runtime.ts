@@ -3,10 +3,13 @@ import { buildPaseoBackgroundRunCommand, detectPaseoCapabilities, extractPaseoAg
 import {
   PaseoSdkUnavailableError,
   createPaseoSdkAgent,
+  dispatchPaseoSdkAgent,
   inspectPaseoSdkAgent,
   listPaseoSdkAgents,
+  materializePaseoSdkAgent,
   probePaseoSdkAgent,
   runPaseoSdkAgent,
+  waitPaseoSdkAgent,
   type PaseoSdkAgentOptions,
   type PaseoSdkAgentRecord,
   type PaseoSdkAgentResult
@@ -23,6 +26,7 @@ export interface ManagedPaseoAgentResult {
   stdout: string;
   stderr: string;
   status?: string;
+  workspaceId?: string;
   transport: "sdk" | "cli";
 }
 
@@ -31,6 +35,9 @@ interface PaseoRuntimeDeps {
   detectCapabilities: typeof detectPaseoCapabilities;
   sdk: {
     create: typeof createPaseoSdkAgent;
+    materialize: typeof materializePaseoSdkAgent;
+    dispatch: typeof dispatchPaseoSdkAgent;
+    wait: typeof waitPaseoSdkAgent;
     run: typeof runPaseoSdkAgent;
     probe: typeof probePaseoSdkAgent;
     inspect: typeof inspectPaseoSdkAgent;
@@ -41,20 +48,57 @@ interface PaseoRuntimeDeps {
 const DEFAULT_DEPS: PaseoRuntimeDeps = {
   run: runProcess,
   detectCapabilities: detectPaseoCapabilities,
-  sdk: { create: createPaseoSdkAgent, run: runPaseoSdkAgent, probe: probePaseoSdkAgent, inspect: inspectPaseoSdkAgent, list: listPaseoSdkAgents }
+  sdk: {
+    create: createPaseoSdkAgent,
+    materialize: materializePaseoSdkAgent,
+    dispatch: dispatchPaseoSdkAgent,
+    wait: waitPaseoSdkAgent,
+    run: runPaseoSdkAgent,
+    probe: probePaseoSdkAgent,
+    inspect: inspectPaseoSdkAgent,
+    list: listPaseoSdkAgents
+  }
 };
 
 export async function launchManagedPaseoAgent(root: string, options: ManagedPaseoAgentOptions, deps: PaseoRuntimeDeps = DEFAULT_DEPS): Promise<ManagedPaseoAgentResult> {
-  if (preferSdk(options)) {
+  if (!forceCli()) {
     try {
-      const result = await deps.sdk.create(root, { ...options, timeoutMs: options.timeoutMs ?? timeoutMs(options.timeoutSeconds) });
-      return fromSdk(result);
+      return fromSdk(await deps.sdk.create(root, { ...options, timeoutMs: options.timeoutMs ?? timeoutMs(options.timeoutSeconds) }));
     } catch (error) {
       if (!sdkCanFallback(error)) throw error;
       return launchCli(root, options, deps, `SDK unavailable: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  return launchCli(root, options, deps, "SDK skipped because no explicit provider/model was available or AEH_PASEO_FORCE_CLI=1.");
+  return launchCli(root, options, deps, "AEH_PASEO_FORCE_CLI=1 forced the compatibility lifecycle.");
+}
+
+export async function materializeManagedPaseoAgent(root: string, options: ManagedPaseoAgentOptions, deps: PaseoRuntimeDeps = DEFAULT_DEPS): Promise<ManagedPaseoAgentResult> {
+  if (forceCli()) throw new PaseoSdkUnavailableError("Idle agent materialization is SDK-only; AEH_PASEO_FORCE_CLI=1 is active.");
+  try { return fromSdk(await deps.sdk.materialize(root, { ...options, prompt: undefined, waitForFinish: false })); }
+  catch (error) {
+    if (sdkCanFallback(error)) throw new PaseoSdkUnavailableError(`Paseo SDK is required to materialize an idle visible agent. ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+    throw error;
+  }
+}
+
+export async function dispatchManagedPaseoAgent(root: string, agentId: string, prompt: string, timeoutSeconds?: number, deps: PaseoRuntimeDeps = DEFAULT_DEPS): Promise<ManagedPaseoAgentResult> {
+  if (!forceCli()) {
+    try { return fromSdk(await deps.sdk.dispatch(root, agentId, prompt, timeoutMs(timeoutSeconds))); }
+    catch (error) { if (!sdkCanFallback(error)) throw error; }
+  }
+  const send = await deps.run(`paseo send ${quote(agentId)} --no-wait ${quote(prompt)}`, { cwd: root, timeoutMs: 60_000 });
+  return { id: agentId, exitCode: send.exitCode, stdout: send.stdout, stderr: send.stderr, status: send.exitCode === 0 ? "working" : "failed", transport: "cli" };
+}
+
+export async function waitManagedPaseoAgent(root: string, agentId: string, timeoutSeconds?: number, deps: PaseoRuntimeDeps = DEFAULT_DEPS): Promise<ManagedPaseoAgentResult> {
+  if (!forceCli()) {
+    try { return fromSdk(await deps.sdk.wait(root, agentId, timeoutMs(timeoutSeconds))); }
+    catch (error) { if (!sdkCanFallback(error)) throw error; }
+  }
+  const timeout = timeoutSeconds ?? 1800;
+  const wait = await deps.run(`paseo wait ${quote(agentId)} --timeout ${timeout}`, { cwd: root, timeoutMs: (timeout + 30) * 1000 });
+  const logs = await deps.run(`paseo logs ${quote(agentId)} --tail 200`, { cwd: root, timeoutMs: 60_000 });
+  return { id: agentId, exitCode: wait.exitCode, stdout: logs.stdout || wait.stdout, stderr: [wait.stderr, logs.stderr].filter(Boolean).join("\n"), status: wait.exitCode === 0 ? "idle" : "failed", transport: "cli" };
 }
 
 export async function continueManagedPaseoAgent(root: string, agentId: string, prompt: string, timeoutSeconds?: number, deps: PaseoRuntimeDeps = DEFAULT_DEPS): Promise<ManagedPaseoAgentResult> {
@@ -62,12 +106,9 @@ export async function continueManagedPaseoAgent(root: string, agentId: string, p
     try { return fromSdk(await deps.sdk.run(root, agentId, prompt, timeoutMs(timeoutSeconds))); }
     catch (error) { if (!sdkCanFallback(error)) throw error; }
   }
-  const timeout = timeoutSeconds ?? 1800;
-  const send = await deps.run(`paseo send ${quote(agentId)} --no-wait ${quote(prompt)}`, { cwd: root, timeoutMs: 60_000 });
-  if (send.exitCode !== 0) return { id: agentId, exitCode: send.exitCode, stdout: send.stdout, stderr: send.stderr, transport: "cli" };
-  const wait = await deps.run(`paseo wait ${quote(agentId)} --timeout ${timeout}`, { cwd: root, timeoutMs: (timeout + 30) * 1000 });
-  const logs = await deps.run(`paseo logs ${quote(agentId)} --tail 200`, { cwd: root, timeoutMs: 60_000 });
-  return { id: agentId, exitCode: wait.exitCode, stdout: logs.stdout || wait.stdout, stderr: [send.stderr, wait.stderr, logs.stderr].filter(Boolean).join("\n"), transport: "cli" };
+  const sent = await dispatchManagedPaseoAgent(root, agentId, prompt, timeoutSeconds, deps);
+  if (sent.exitCode !== 0) return sent;
+  return waitManagedPaseoAgent(root, agentId, timeoutSeconds, deps);
 }
 
 export async function probeManagedPaseoAgent(root: string, agentId: string, deps: PaseoRuntimeDeps = DEFAULT_DEPS): Promise<boolean> {
@@ -111,17 +152,16 @@ async function launchCli(root: string, options: ManagedPaseoAgentOptions, deps: 
     if (options.model) parts.push(`--model ${quote(options.model)}`);
     parts.push(`--output-schema ${quote(JSON.stringify(options.outputSchema))}`, quote(prompt));
     const result = await deps.run(parts.join(" "), { cwd: root, timeoutMs: timeout * 1000 });
-    return { exitCode: result.exitCode, stdout: result.stdout, stderr: [fallbackReason, result.stderr].filter(Boolean).join("\n"), transport: "cli" };
+    return { exitCode: result.exitCode, stdout: result.stdout, stderr: [fallbackReason, result.stderr].filter(Boolean).join("\n"), status: result.exitCode === 0 ? "idle" : "failed", transport: "cli" };
   }
 
   const command = buildPaseoBackgroundRunCommand({ title: options.title, provider: options.provider, model: options.model, workspaceId: options.workspaceId, prompt }, capabilities);
   const launch = await deps.run(command, { cwd: root, timeoutMs: 60_000 });
-  if (launch.exitCode !== 0) return { exitCode: launch.exitCode, stdout: launch.stdout, stderr: [fallbackReason, launch.stderr].filter(Boolean).join("\n"), transport: "cli" };
+  if (launch.exitCode !== 0) return { exitCode: launch.exitCode, stdout: launch.stdout, stderr: [fallbackReason, launch.stderr].filter(Boolean).join("\n"), status: "failed", transport: "cli" };
   const id = extractPaseoAgentId(launch.stdout);
-  if (!id) return { exitCode: 1, stdout: launch.stdout, stderr: [fallbackReason, "Paseo returned no parseable agent id."].join("\n"), transport: "cli" };
-  const wait = await deps.run(`paseo wait ${quote(id)} --timeout ${timeout}`, { cwd: root, timeoutMs: (timeout + 30) * 1000 });
-  const logs = await deps.run(`paseo logs ${quote(id)} --tail 200`, { cwd: root, timeoutMs: 60_000 });
-  return { id, exitCode: wait.exitCode, stdout: logs.stdout || wait.stdout || launch.stdout, stderr: [fallbackReason, launch.stderr, wait.stderr, logs.stderr].filter(Boolean).join("\n"), transport: "cli" };
+  if (!id) return { exitCode: 1, stdout: launch.stdout, stderr: [fallbackReason, "Paseo returned no parseable agent id."].join("\n"), status: "failed", transport: "cli" };
+  const waited = await waitManagedPaseoAgent(root, id, timeout, { ...deps, sdk: deps.sdk });
+  return { ...waited, stderr: [fallbackReason, launch.stderr, waited.stderr].filter(Boolean).join("\n") };
 }
 
 async function listCliAgents(root: string, deps: PaseoRuntimeDeps): Promise<PaseoSdkAgentRecord[]> {
@@ -145,12 +185,11 @@ function collectCliAgents(value: unknown, out: Map<string, PaseoSdkAgentRecord>)
   for (const child of Object.values(record)) collectCliAgents(child, out);
 }
 
-function preferSdk(options: ManagedPaseoAgentOptions): boolean { return !forceCli() && (Boolean(options.model) || options.provider.includes("/")); }
 function forceCli(): boolean { return process.env.AEH_PASEO_FORCE_CLI === "1"; }
 function sdkCanFallback(error: unknown): boolean { return error instanceof PaseoSdkUnavailableError || (error instanceof Error && error.name === "PaseoSdkUnavailableError"); }
 function timeoutMs(seconds?: number): number { return (seconds ?? 1800) * 1000; }
-function fromSdk(result: PaseoSdkAgentResult): ManagedPaseoAgentResult { return { id: result.id, exitCode: sdkExitCode(result.status, result.error), stdout: result.lastMessage ?? "", stderr: result.error ?? "", status: result.status, transport: "sdk" }; }
-function sdkExitCode(status?: string, error?: string): number { if (error) return 1; return !status || status === "idle" ? 0 : status === "timeout" ? 124 : 1; }
+function fromSdk(result: PaseoSdkAgentResult): ManagedPaseoAgentResult { return { id: result.id, exitCode: sdkExitCode(result.status, result.error), stdout: result.lastMessage ?? "", stderr: result.error ?? "", status: result.status, workspaceId: result.workspaceId, transport: "sdk" }; }
+function sdkExitCode(status?: string, error?: string): number { if (error) return 1; if (status === "timeout") return 124; if (status === "failed" || status === "error" || status === "cancelled") return 1; return 0; }
 function firstString(record: Record<string, unknown>, keys: string[]): string | undefined { for (const key of keys) if (typeof record[key] === "string" && record[key]) return record[key] as string; return undefined; }
 function stringRecord(value: unknown): Record<string, string> | undefined { if (!value || typeof value !== "object" || Array.isArray(value)) return undefined; const result: Record<string, string> = {}; for (const [key, item] of Object.entries(value as Record<string, unknown>)) if (typeof item === "string") result[key] = item; return Object.keys(result).length ? result : undefined; }
 function statusText(value: unknown): string | undefined { if (typeof value === "string") return value; if (value && typeof value === "object" && typeof (value as Record<string, unknown>).status === "string") return (value as Record<string, unknown>).status as string; return undefined; }
