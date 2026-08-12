@@ -8,7 +8,75 @@
     "version": { "const": 1 },
     "project": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string", "minLength": 1 } } },
     "agents": { "type": "object", "properties": { "configPath": { "type": "string" }, "generatedPath": { "type": "string" }, "activeProfile": { "type": "string" }, "required": { "type": "boolean" }, "findingsDir": { "type": "string" } } },
-    "workflow": { "type": "object", "properties": { "quick": { "type": "object", "properties": { "maxFiles": { "type": "integer", "minimum": 1 }, "disallowedDomains": { "type": "array", "items": { "type": "string" } } } }, "reviews": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "reviewQuick": { "type": "boolean" }, "leadAcceptance": { "type": "boolean" }, "leadAcceptanceQuick": { "type": "boolean" }, "maxRemediationRounds": { "type": "integer", "minimum": 0 }, "blockingSeverities": { "type": "array", "items": { "enum": ["critical", "high", "medium", "low", "note"] } } } } } },
+    "workflow": {
+      "type": "object",
+      "properties": {
+        "quick": { "type": "object", "properties": { "maxFiles": { "type": "integer", "minimum": 1 }, "disallowedDomains": { "type": "array", "items": { "type": "string" } } } },
+        "reviews": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "reviewQuick": { "type": "boolean" },
+            "leadAcceptance": { "type": "boolean" },
+            "leadAcceptanceQuick": { "type": "boolean" },
+            "maxRemediationRounds": { "type": "integer", "minimum": 0, "deprecated": true },
+            "blockingSeverities": { "type": "array", "deprecated": true, "items": { "enum": ["critical", "high", "medium", "low", "note"] } },
+            "quality": {
+              "type": "object",
+              "properties": {
+                "severityPoints": {
+                  "type": "object",
+                  "properties": {
+                    "critical": { "type": "integer", "minimum": 0 }, "high": { "type": "integer", "minimum": 0 }, "medium": { "type": "integer", "minimum": 0 }, "low": { "type": "integer", "minimum": 0 }, "note": { "type": "integer", "minimum": 0 }
+                  }
+                }
+              }
+            },
+            "convergence": {
+              "type": "object",
+              "properties": {
+                "minimumDebtPointImprovement": { "type": "integer", "minimum": 0 },
+                "stagnationWindow": { "type": "integer", "minimum": 1 },
+                "cycleDetection": { "type": "boolean" },
+                "regressionDetection": { "type": "boolean" }
+              }
+            },
+            "finalQualityGate": {
+              "type": "object",
+              "properties": {
+                "maxBySeverity": {
+                  "type": "object",
+                  "properties": {
+                    "critical": { "type": "integer", "minimum": 0 }, "high": { "type": "integer", "minimum": 0 }, "medium": { "type": "integer", "minimum": 0 }, "low": { "type": "integer", "minimum": 0 }, "note": { "type": "integer", "minimum": 0 }
+                  }
+                },
+                "maxDebtPoints": { "type": "integer", "minimum": 0 }
+              }
+            },
+            "escalation": {
+              "type": "object",
+              "properties": {
+                "criticalStartStage": { "type": "integer", "minimum": 0 },
+                "replanResumeStage": { "type": "integer", "minimum": 0 },
+                "stages": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["name"],
+                    "properties": {
+                      "name": { "type": "string", "minLength": 1 },
+                      "action": { "enum": ["remediate", "diagnose", "replan"] },
+                      "agent": { "type": "string", "minLength": 1 },
+                      "model": { "type": "string", "minLength": 1 }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "orchestration": { "type": "object", "properties": { "provider": { "type": "string" }, "required": { "type": "boolean" }, "worker": { "type": "object", "properties": { "provider": { "type": "string" }, "model": { "type": ["string", "null"] }, "maxRepairAttempts": { "type": "integer", "minimum": 0 }, "timeoutSeconds": { "type": "integer", "minimum": 1 }, "titlePrefix": { "type": "string" } } } } },
     "memory": { "type": "object" }, "codeIntelligence": { "type": "object" }, "sdd": { "type": "object" }, "validation": { "type": "object" }, "security": { "type": "object" }, "telemetry": { "type": "object" }, "evals": { "type": "object" }, "provenance": { "type": "object" }
   },
