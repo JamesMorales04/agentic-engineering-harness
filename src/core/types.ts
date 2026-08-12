@@ -56,6 +56,8 @@ export interface HarnessProjectConfig {
       assignTokenOwner?: boolean;
       labels?: string[];
       branchPattern?: string;
+      finalizeOnAcceptance?: boolean;
+      pullRequestDraft?: boolean;
     };
     paseo?: {
       enabled?: boolean;
