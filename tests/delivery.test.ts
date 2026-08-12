@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { createSddChange } from "../src/core/sdd.js";
 import { loadTaskContract } from "../src/core/config.js";
 import { sealTask } from "../src/core/seal.js";
-import { assertHandoffReady, handoffSdd, parseGithubRepository, renderIssueBody, renderPattern } from "../src/delivery/handoff.js";
+import { assertHandoffReady, deliveryWorkspacePath, handoffSdd, materializeTaskContext, parseGithubRepository, renderIssueBody, renderPattern } from "../src/delivery/handoff.js";
 import type { HarnessProjectConfig } from "../src/core/types.js";
 
 const config: HarnessProjectConfig = {
@@ -52,5 +52,23 @@ describe("delivery handoff", () => {
     const body = await renderIssueBody(root, contract, "develop");
     expect(body).toContain("## Originating Branch\ndevelop");
     expect(body).toContain("delivery mirror");
+  });
+
+  it("materializes sealed task context into a worktree without forcing workspace use when delivery is disabled", async () => {
+    const root = await makeRoot(); const workspace = await makeRoot();
+    await createSddChange(root, "CHANGE-3", "Workspace Context", config); await resolveTemplateTodos(root, "CHANGE-3");
+    const contract = await loadTaskContract(root, "CHANGE-3", config); await sealTask(root, config, contract);
+    await materializeTaskContext(root, workspace, config, contract);
+
+    expect(await fs.readFile(path.join(workspace, contract.source!.spec!), "utf8")).toBe(await fs.readFile(path.join(root, contract.source!.spec!), "utf8"));
+    await expect(fs.stat(path.join(workspace, ".harness", "contracts", "CHANGE-3.yaml"))).resolves.toBeDefined();
+    await expect(fs.stat(path.join(workspace, ".harness", "seals", "CHANGE-3.json"))).resolves.toBeDefined();
+
+    await fs.mkdir(path.join(root, ".harness", "delivery"), { recursive: true });
+    await fs.writeFile(path.join(root, ".harness", "delivery", "CHANGE-3.json"), JSON.stringify({ version: 1, taskId: "CHANGE-3", status: "ready", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), originatingBranch: "main", paseo: { workspaceId: "ws-1", worktreePath: workspace } }));
+    expect(await deliveryWorkspacePath(root, config, "CHANGE-3")).toBeUndefined();
+
+    const enabled: HarnessProjectConfig = { ...config, delivery: { ...config.delivery, paseo: { enabled: true, autoUseWorkspace: true } } };
+    expect(await deliveryWorkspacePath(root, enabled, "CHANGE-3")).toBe(workspace);
   });
 });
