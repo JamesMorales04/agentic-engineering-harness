@@ -66,7 +66,7 @@ tools:
   opencode:
     kind: mise
     command: opencode
-    source: "github:anomalyco/opencode"
+    source: "aqua:anomalyco/opencode"
     version: latest
     activateWhen: [runtime:opencode]
 
@@ -95,7 +95,7 @@ tools:
   opa:
     kind: mise
     command: opa
-    source: "github:open-policy-agent/opa"
+    source: "aqua:open-policy-agent/opa"
     version: latest
     activateWhen: [validation:opa]
     container:
@@ -104,14 +104,14 @@ tools:
   opengrep:
     kind: mise
     command: opengrep
-    source: "github:opengrep/opengrep"
+    source: "aqua:opengrep/opengrep"
     version: latest
     activateWhen: [security-tool:opengrep, validator:opengrep]
 
   trivy:
     kind: mise
     command: trivy
-    source: "github:aquasecurity/trivy"
+    source: "aqua:aquasecurity/trivy"
     version: latest
     activateWhen: [security-tool:trivy, validator:trivy]
     container:
