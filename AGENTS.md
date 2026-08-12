@@ -12,9 +12,15 @@ This repository is infrastructure for agentic engineering workflows.
 
 ## Interactive entry invariant
 
-When a user is interacting through Paseo or another conversational coding-agent UI, every natural-language request that could mutate this repository must enter through the `engineering-workflow` Harness path. The user does not need to mention AEH, QUICK, SPEC, SDD, TaskContracts or validators. The lead must build triage evidence automatically, obey deterministic QUICK/SPEC classification and invoke the Harness instead of editing directly as a shortcut. Read-only questions may be answered directly when no repository mutation occurs.
+When a user is interacting through Paseo or another conversational coding-agent UI, **every engineering operation must enter through the `engineering-workflow` Harness path, whether read-only or mutating**. The user does not need to mention AEH, AUDIT, QUICK, SPEC, SDD, TaskContracts or validators.
 
-`aeh start` is the preferred Paseo entrypoint because it creates or reuses a persistent top-level Harness lead whose conversation is bootstrapped with this invariant.
+Classify requests as:
+
+- `INFORMATIONAL`: explanation or lookup only, with no engineering assessment and no repository mutation. These may be answered directly.
+- `AUDIT`: review, validation, bug discovery, architecture/security/performance/quality assessment, coverage analysis, PR/code review or similar read-only engineering work. These must run through `aeh audit`.
+- `CHANGE`: implementation, fixes, refactors, additions, removals, configuration or any other repository mutation. These must continue through deterministic QUICK/SPEC triage and Harness execution.
+
+Do not use the informational exception to perform an ad-hoc engineering review. Do not bypass the Harness by editing directly. `aeh start` is the preferred Paseo entrypoint because it creates or reuses a persistent top-level Harness lead whose conversation is bootstrapped with this invariant.
 
 ## Invariants
 
