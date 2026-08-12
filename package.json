@@ -1,6 +1,6 @@
 {
   "name": "agentic-engineering-harness",
-  "version": "0.6.4",
+  "version": "0.6.5",
   "description": "OSS-first engineering harness for deterministic, spec-driven, issue-driven, audit-governed and orchestration-first multi-agent software delivery.",
   "type": "module",
   "bin": {
