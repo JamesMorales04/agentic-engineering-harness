@@ -77,6 +77,53 @@ orchestration:
     provider: opencode
     maxRepairAttempts: 2
 
+# MCP servers are injected only into agents whose topology explicitly lists them.
+# This keeps large tool schemas out of unrelated agent contexts.
+mcp:
+  servers:
+    context7:
+      description: Current library/framework documentation lookup.
+      type: remote
+      url: https://mcp.context7.com/mcp
+      oauth: false
+      enabled: true
+    playwright:
+      description: Browser exploration and stateful UI validation; prefer deterministic Playwright tests when they are sufficient.
+      type: local
+      command: [npx, -y, "@playwright/mcp@0.0.78"]
+      enabled: true
+      timeoutMs: 30000
+    github:
+      description: Official GitHub MCP server, scoped to repository/issue/PR/action workflows. Requires GITHUB_TOKEN and Podman.
+      type: local
+      command: [podman, run, -i, --rm, -e, GITHUB_PERSONAL_ACCESS_TOKEN, -e, GITHUB_TOOLSETS, ghcr.io/github/github-mcp-server]
+      environment:
+        GITHUB_PERSONAL_ACCESS_TOKEN: "{env:GITHUB_TOKEN}"
+        GITHUB_TOOLSETS: repos,issues,pull_requests,actions
+      enabled: true
+      timeoutMs: 30000
+    sentry:
+      description: Optional production-error and trace investigation via Sentry's remote MCP.
+      type: remote
+      url: https://mcp.sentry.dev/mcp
+      enabled: false
+      timeoutMs: 10000
+
+# Explicit opt-in delivery mirror. Tokens are read from environment only and never persisted.
+delivery:
+  stateDir: .harness/delivery
+  github:
+    enabled: false
+    tokenEnv: GH_TOKEN
+    assignTokenOwner: true
+    labels: []
+    branchPattern: feature/gh-{issue}-{slug}
+  paseo:
+    enabled: false
+    createWorkspace: true
+    autoUseWorkspace: true
+    worktreeSlugPattern: gh-{issue}-{slug}
+
 memory:
   provider: engram
   required: false
