@@ -7,6 +7,7 @@ import { classifyFailure, formatRecoveryAction, resolveRecoveryStep } from "../a
 import { executionSelectionForAgent, selectExecutionForTask, selectFallbackExecution } from "../agents/routing.js";
 import { validateExecutionCapabilities } from "../agents/permissions.js";
 import { runReviewLifecycle } from "../agents/reviewLifecycle.js";
+import type { SeverityCounts } from "../agents/qualityConvergence.js";
 import type { HarnessProjectConfig, RunMetrics, TaskContract, ValidationCheck, ValidationReport, WorkerSession } from "./types.js";
 import { validateSddChange } from "./sdd.js";
 import { validateQuickTaskContract } from "./quick.js";
@@ -28,7 +29,7 @@ export interface TaskRunResult {
   report: ValidationReport;
   metrics: RunMetrics;
   routing?: { profile?: string; ruleIds: string[]; agent: string; runtime: string; model: string; nativeAgent?: string; reviewers: string[]; validators: string[]; };
-  review?: { status: "PASS" | "FAIL"; finalState: string; humanRequired: boolean; rounds: number; findings: number; debtScore: number; debtPoints: number; counts: Record<string, number>; convergence: string; leadAccepted?: boolean; reviewerSessions: number; };
+  review?: { status: "PASS" | "FAIL"; finalState: string; humanRequired: boolean; rounds: number; findings: number; debtScore: number; debtPoints: number; counts: SeverityCounts; convergence: string; leadAccepted?: boolean; reviewerSessions: number; };
 }
 
 export async function runTask(root: string, config: HarnessProjectConfig, contract: TaskContract, options?: { profile?: string }): Promise<TaskRunResult> {
@@ -62,4 +63,4 @@ async function resolveTopology(root: string, config: HarnessProjectConfig, contr
 function withWorkerExecutionCheck(report: ValidationReport, worker: WorkerSession): ValidationReport { const checks = report.checks.filter((check) => check.id !== "agent.execution"); checks.unshift({ id: "agent.execution", category: "agent-runtime", status: worker.exitCode === 0 ? "PASS" : "FAIL", message: worker.exitCode === 0 ? `Agent ${worker.logicalAgent ?? worker.provider} completed successfully.` : `Agent runtime exited with code ${worker.exitCode}.`, details: worker.exitCode === 0 ? undefined : { stderr: worker.stderr.slice(-4000), stdout: worker.stdout.slice(-4000), logicalAgent: worker.logicalAgent, runtime: worker.runtime, model: worker.model } }); return { ...report, checks, status: checks.some((check) => check.status === "FAIL") ? "FAIL" : "PASS" }; }
 function mergeChecks(report: ValidationReport, extra: ValidationCheck[]): ValidationReport { const byId = new Map(report.checks.map((check) => [check.id, check])); for (const check of extra) byId.set(check.id, check); const checks = [...byId.values()]; return { ...report, checks, status: checks.some((check) => check.status === "FAIL") ? "FAIL" : "PASS" }; }
 async function verifyAfterWorker(root: string, config: HarnessProjectConfig, contract: TaskContract): Promise<ValidationReport> { await refreshGraphIfConfigured(root, config); const afterSnapshot = await snapshotGraph(root, config, contract.task.id, "after"); if (!afterSnapshot && config.codeIntelligence?.required) throw new Error("Code intelligence is required but the Graphify after snapshot could not be created."); return verifyTask(root, config, contract); }
-async function refreshGraphIfConfigured(root: string, config: HarnessProjectConfig): Promise<void> { const command = config.codeIntelligence?.refreshCommand; if (!command) return; const result = await runProcess(command, { cwd: root, timeoutMs: 300_000 }); if (result.exitCode !== 0 && config.codeIntelligence?.required) throw new Error(`Code intelligence refresh failed: ${result.stderr || result.stdout}`); }
+async function refreshGraphIfConfigured(root: string, config: HarnessProjectConfig, contract: TaskContract): Promise<void> { const command = config.codeIntelligence?.refreshCommand; if (!command) return; const result = await runProcess(command, { cwd: root, timeoutMs: 300_000 }); if (result.exitCode !== 0 && config.codeIntelligence?.required) throw new Error(`Code intelligence refresh failed: ${result.stderr || result.stdout}`); }
