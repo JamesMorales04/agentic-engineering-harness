@@ -21,6 +21,9 @@ describe("default agent pack bootstrap", () => {
 
     const localSource = await fs.readFile(path.join(root, ".harness", "agents.source.jsonc"), "utf8");
     expect(localSource).toContain('"extends": ["aeh:default"]');
+    const gitignore = await fs.readFile(path.join(root, ".gitignore"), "utf8");
+    expect(gitignore).toContain(".harness/toolchain.state.json");
+    expect(gitignore).toContain(".config/mise/conf.d/aeh.toml");
 
     const config = await loadProjectConfig(root);
     const source = await loadAgentTopologySource(root, config);
