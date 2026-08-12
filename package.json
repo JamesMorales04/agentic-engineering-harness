@@ -1,14 +1,14 @@
 {
   "name": "agentic-engineering-harness",
-  "version": "0.4.15",
+  "version": "0.4.16",
   "description": "OSS-first engineering harness for deterministic, spec-driven and issue-driven multi-agent software delivery.",
   "type": "module",
-  "bin": { "engineering-harness": "./dist/cli.js", "aeh": "./dist/cli.js" },
+  "bin": { "engineering-harness": "./dist/entry.js", "aeh": "./dist/entry.js" },
   "files": ["dist", "templates", "presets", "policies", "schemas", "skills", "docs"],
-  "scripts": { "build": "tsc -p tsconfig.json", "dev": "tsx src/cli.ts", "test": "vitest run", "test:watch": "vitest", "typecheck": "tsc -p tsconfig.json --noEmit", "check": "npm run typecheck && npm test && npm run build", "release:check": "npm run check && npm pack --dry-run" },
+  "scripts": { "build": "tsc -p tsconfig.json", "dev": "tsx src/entry.ts", "test": "vitest run", "test:watch": "vitest", "typecheck": "tsc -p tsconfig.json --noEmit", "check": "npm run typecheck && npm test && npm run build", "release:check": "npm run check && npm pack --dry-run" },
   "engines": { "node": ">=22" },
   "dependencies": { "@opentelemetry/api": "^1.9.0", "commander": "^14.0.1", "minimatch": "^10.0.3", "yaml": "^2.8.1", "zod": "^4.0.17" },
   "devDependencies": { "@types/node": "^24.2.1", "tsx": "^4.20.3", "typescript": "^5.9.2", "vitest": "^3.2.4" },
   "license": "Apache-2.0",
-  "keywords": ["ai-agents", "codex", "opencode", "paseo", "sdd", "github-issues", "issue-driven-development", "quick-contract", "gherkin", "agent-routing", "agent-presets", "mcp", "github-delivery", "worktrees", "multi-model", "quality-convergence", "human-on-exception", "deterministic-validation", "engineering-harness", "slsa", "opentelemetry"]
+  "keywords": ["ai-agents", "codex", "opencode", "paseo", "sdd", "github-issues", "issue-driven-development", "quick-contract", "gherkin", "agent-routing", "agent-presets", "mcp", "github-delivery", "worktrees", "multi-model", "quality-convergence", "toolchain", "mise", "bootstrap", "human-on-exception", "deterministic-validation", "engineering-harness", "slsa", "opentelemetry"]
 }
