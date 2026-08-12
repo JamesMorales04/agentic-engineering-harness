@@ -10,6 +10,6 @@ export async function initializeProject(root: string): Promise<string[]> {
   const mappings: Array<[string, string]> = [["templates/project.yaml", ".harness/project.yaml"], ["templates/agents.source.jsonc", ".harness/agents.source.jsonc"], ["templates/AGENTS.md", "AGENTS.md"], ["templates/otel-collector.yaml", ".harness/otel-collector.yaml"]];
   for (const [src, dst] of mappings) { const target = path.join(root, dst); if (!(await exists(target))) { await copyFileIfMissing(path.join(pkg, src), target); created.push(dst); } }
   await copyTree(path.join(pkg, "policies", "core"), path.join(root, ".harness", "policies", "core")); await copyTree(path.join(pkg, "skills"), path.join(root, ".harness", "skills"));
-  for (const dir of [".harness/contracts", ".harness/seals", ".harness/reports", ".harness/repairs", ".harness/runs", ".harness/telemetry", ".harness/evals/results", ".harness/evals/workspaces", ".harness/provenance", ".harness/generated", ".harness/findings", "specs/changes", "docs/decisions", "evals/corpus", "memory-benchmarks"]) await fs.mkdir(path.join(root, dir), { recursive: true });
+  for (const dir of [".harness/contracts", ".harness/seals", ".harness/reports", ".harness/repairs", ".harness/runs", ".harness/telemetry", ".harness/evals/results", ".harness/evals/workspaces", ".harness/provenance", ".harness/generated", ".harness/findings", ".harness/delivery", "specs/changes", "docs/decisions", "evals/corpus", "memory-benchmarks"]) await fs.mkdir(path.join(root, dir), { recursive: true });
   return created;
 }
