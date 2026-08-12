@@ -4,6 +4,8 @@ coverage/
 .env
 .env.*
 !.env.example
+.harness/bin/
+.harness/toolchain.state.json
 .harness/generated/
 .harness/contracts/
 .harness/seals/
