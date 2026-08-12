@@ -18,14 +18,24 @@
 
 ## v0.4.10 — automatic review lifecycle ✅
 - [x] routed reviewer wave after deterministic PASS
-- [x] structured reviewer output, finding dedup and blocking-severity policy
-- [x] bounded remediation + deterministic revalidation
+- [x] structured reviewer output and finding dedup
+- [x] deterministic revalidation after remediation
 - [x] final lead semantic acceptance
 
 ## v0.4.11 — engineering workflow skill ✅
 - [x] natural-language entry protocol for Codex/Paseo leads
 - [x] QUICK/SPEC workflow selection and mobile-friendly operation
 - [x] self-modification controller freeze rule
+
+## v0.4.12 — autonomous quality convergence ✅
+- [x] strict residual Quality Gate with integer DebtPoints and 3 notes = 1 low
+- [x] no fixed review-remediation round limit
+- [x] improvement/stagnation/regression/cycle detection
+- [x] safe remediation checkpoint and regression rollback
+- [x] automatic workhorse/quality/senior model-agent escalation
+- [x] oracle exception diagnosis and autonomous replanning
+- [x] human-on-exception only for spec contradiction, missing product decision or external blocker
+- [x] quality trajectory and final state persisted in run telemetry
 
 ## v0.5 — scale and governance
 - [ ] repeated-run eval dashboards/statistical confidence
