@@ -94,12 +94,13 @@ mcp:
       enabled: true
       timeoutMs: 30000
     github:
-      description: Official GitHub MCP server, scoped to repository/issue/PR/action workflows. Requires GITHUB_TOKEN and Podman.
+      description: Official GitHub MCP server in read-only mode for repository/issue/PR/action triage. Deterministic Harness delivery owns writes.
       type: local
-      command: [podman, run, -i, --rm, -e, GITHUB_PERSONAL_ACCESS_TOKEN, -e, GITHUB_TOOLSETS, ghcr.io/github/github-mcp-server]
+      command: [podman, run, -i, --rm, -e, GITHUB_PERSONAL_ACCESS_TOKEN, -e, GITHUB_TOOLSETS, -e, GITHUB_READ_ONLY, ghcr.io/github/github-mcp-server]
       environment:
         GITHUB_PERSONAL_ACCESS_TOKEN: "{env:GITHUB_TOKEN}"
         GITHUB_TOOLSETS: repos,issues,pull_requests,actions
+        GITHUB_READ_ONLY: "1"
       enabled: true
       timeoutMs: 30000
     sentry:
