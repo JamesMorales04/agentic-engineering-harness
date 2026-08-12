@@ -12,11 +12,13 @@ import { serveDistributedQueue } from "./distributed/queue.js";
 import { resolveOrganizationPolicyBundles } from "./policy/bundles.js";
 import { benchmarkMcpCatalog } from "./mcp/benchmark.js";
 import { buildEvalDashboard, runRepeatedEval } from "./evals/statistics.js";
+import { startPaseoHarness } from "./paseo/start.js";
 
-const VERSION = "0.5.0";
+const VERSION = "0.5.1";
 const args = process.argv.slice(2);
 if (args.length === 1 && ["--version", "-V"].includes(args[0])) { console.log(VERSION); process.exit(0); }
 
+if (args[0] === "start") { await runStart(args.slice(1)); process.exit(process.exitCode ?? 0); }
 if (args[0] === "setup") { await runSetup(args.slice(1)); process.exit(process.exitCode ?? 0); }
 if (args[0] === "toolchain") { await runToolchain(args.slice(1)); process.exit(process.exitCode ?? 0); }
 if (args[0] === "init" && args.includes("--setup")) { await runInitSetup(args.slice(1)); process.exit(process.exitCode ?? 0); }
@@ -26,6 +28,32 @@ if (args[0] === "mcp" && args[1] === "benchmark") { await runMcpBenchmark(args.s
 if (args[0] === "eval" && ["repeat", "dashboard"].includes(args[1] ?? "")) { await runStatisticalEval(args.slice(1)); process.exit(process.exitCode ?? 0); }
 
 await import("./cli.js");
+
+async function runStart(argv: string[]): Promise<void> {
+  const parsed = parseGeneric(argv, new Set(["lead", "title"]), new Set(["new", "no-web-ui", "no-setup"]));
+  if (parsed.positional.length > 1) throw new Error(`aeh start accepts at most one project directory, received: ${parsed.positional.join(", ")}`);
+  const root = path.resolve(parsed.positional[0] ?? ".");
+  const config = await loadProjectConfig(root);
+  const entry = path.resolve(process.argv[1]);
+  const aehCommand = `${JSON.stringify(process.execPath)} ${JSON.stringify(entry)}`;
+  const result = await startPaseoHarness(root, config, {
+    autoSetup: parsed.flag("no-setup") ? false : undefined,
+    webUi: parsed.flag("no-web-ui") ? false : undefined,
+    forceNew: parsed.flag("new"),
+    leadAgent: parsed.value("lead"),
+    title: parsed.value("title"),
+    aehCommand
+  });
+  console.log(`AEH Paseo ready for ${config.project.name}.`);
+  console.log(`daemon=${result.daemonStarted ? "started" : "reused"}`);
+  console.log(`session=${result.session}`);
+  console.log(`lead=${result.leadAgent}`);
+  console.log(`provider=${result.provider}`);
+  console.log(`model=${result.model}`);
+  console.log(`agentId=${result.agentId}`);
+  console.log(`title=${result.title}`);
+  console.log(`Open Paseo and continue in '${result.title}'. Repository-changing prompts in that conversation now route through the Harness automatically.`);
+}
 
 async function runSetup(argv: string[]): Promise<void> {
   const parsed = parse(argv); const root = path.resolve(parsed.directory); const config = await loadProjectConfig(root);
