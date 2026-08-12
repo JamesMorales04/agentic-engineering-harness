@@ -28,7 +28,7 @@ import { planParallelism } from "./agents/parallelism.js";
 import { dedupeFindings, extractFindings } from "./agents/findings.js";
 
 const program = new Command();
-program.name("engineering-harness").description("Deterministic control layer for spec-driven and bounded quick multi-agent software engineering").version("0.4.12");
+program.name("engineering-harness").description("Deterministic control layer for spec-driven and bounded quick multi-agent software engineering").version("0.4.13");
 
 program.command("init").argument("[directory]", "Project directory", ".").action(async (directory: string) => {
   const root = path.resolve(directory); const created = await initializeProject(root); const config = await loadProjectConfig(root);
