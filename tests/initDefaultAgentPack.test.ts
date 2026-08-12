@@ -18,18 +18,24 @@ describe("default agent pack bootstrap", () => {
     expect(created).toContain(".harness/project.yaml");
     expect(created).toContain(".harness/agents.source.jsonc");
     expect(created).toContain(".harness/toolchain.yaml");
+    expect(created).toContain("openspec/config.yaml");
 
     const localSource = await fs.readFile(path.join(root, ".harness", "agents.source.jsonc"), "utf8");
-    expect(localSource).toContain('"extends": ["aeh:default"]');
+    expect(localSource).toContain('"extends": ["aeh:orchestration"]');
     const gitignore = await fs.readFile(path.join(root, ".gitignore"), "utf8");
     expect(gitignore).toContain(".harness/toolchain.state.json");
     expect(gitignore).toContain(".config/mise/conf.d/aeh.toml");
+    expect(await fs.readFile(path.join(root, "openspec", "config.yaml"), "utf8")).toContain("schema: spec-driven");
 
     const config = await loadProjectConfig(root);
     const source = await loadAgentTopologySource(root, config);
     expect(source.agents["backend-implementer"]).toBeDefined();
     expect(source.agents["security-reviewer"]).toBeDefined();
-    expect((await loadToolchainConfig(root, config)).tools.codex.source).toBe("npm:@openai/codex");
+    expect(source.agents["environment-manager"]).toBeDefined();
+    expect(source.agents["spec-manager"]).toBeDefined();
+    const toolchain = await loadToolchainConfig(root, config);
+    expect(toolchain.tools.codex.source).toBe("npm:@openai/codex");
+    expect(toolchain.tools.openspec.source).toBe("npm:@fission-ai/openspec");
 
     const compiled = await compileAgentTopology(root, config);
     expect(compiled.ok).toBe(true);
