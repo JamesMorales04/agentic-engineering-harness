@@ -53,4 +53,22 @@ describe("managed Paseo runtime", () => {
     expect(launched.stderr).toContain("SDK unavailable");
     expect(commands[0]).toContain("paseo run --background");
   });
+
+  it("refuses to turn a systemPrompt-only idle lead into a CLI user turn", async () => {
+    const run = vi.fn(async () => { throw new Error("CLI must not receive bootstrap text"); });
+    const sdk = {
+      create: vi.fn(async () => { throw new PaseoSdkUnavailableError("not installed"); }),
+      run: vi.fn(), probe: vi.fn(), inspect: vi.fn(), list: vi.fn()
+    };
+
+    await expect(launchManagedPaseoAgent("/repo", {
+      cwd: "/repo",
+      provider: "codex",
+      model: "gpt-test",
+      title: "lead",
+      systemPrompt: "secret session bootstrap",
+      waitForFinish: false
+    }, { run: run as never, detectCapabilities: vi.fn(async () => capabilities()) as never, sdk: sdk as never } as never)).rejects.toThrow("Refusing CLI fallback");
+    expect(run).not.toHaveBeenCalled();
+  });
 });
