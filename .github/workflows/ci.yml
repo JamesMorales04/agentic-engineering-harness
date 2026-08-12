@@ -23,18 +23,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          EXPECTED_VERSION="$(node -p "require('./package.json').version")"
           TGZ="$(npm pack --silent)"
           TMP="$(mktemp -d)"
           mkdir -p "$TMP/consumer"
           cd "$TMP/consumer"
           npm init -y >/dev/null
           npm install "$GITHUB_WORKSPACE/$TGZ" >/dev/null
-          ./node_modules/.bin/aeh --version | grep -Fx '0.6.0'
+          ./node_modules/.bin/aeh --version | grep -Fx "$EXPECTED_VERSION"
           mkdir repo
           ./node_modules/.bin/aeh init repo
           test -f repo/.harness/project.yaml
           test -f repo/.harness/toolchain.yaml
           test -f repo/.harness/agents.source.jsonc
+          test -f repo/.harness/skills/engineering-workflow/SKILL.md
+          test -f repo/.harness/managed-assets.json
           test -f repo/openspec/config.yaml
           grep -q '"aeh:orchestration"' repo/.harness/agents.source.jsonc
           grep -q '^    sessionPolicy: fresh-on-start$' repo/.harness/project.yaml
@@ -43,11 +46,14 @@ jobs:
           test -d repo/.harness/paseo
           test -d repo/.harness/paseo/handoffs
           test -d repo/.harness/audits
+          ! grep -q '^\.harness/managed-assets.json$' repo/.gitignore
           grep -q '^\.harness/paseo/$' repo/.gitignore
           grep -q '^\.harness/audits/$' repo/.gitignore
           ./node_modules/.bin/aeh toolchain compile repo
           test -f repo/.config/mise/conf.d/aeh.toml
           grep -q 'openspec' repo/.config/mise/conf.d/aeh.toml
+          rm repo/.harness/skills/engineering-workflow/SKILL.md
           ./node_modules/.bin/aeh setup --dry-run repo
+          test -f repo/.harness/skills/engineering-workflow/SKILL.md
           ./node_modules/.bin/aeh policy sync repo >/dev/null
           ./node_modules/.bin/aeh intent 'review the repo and validate the code for improvements' repo | grep -q '^AUDIT'

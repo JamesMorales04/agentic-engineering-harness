@@ -3,6 +3,7 @@ import path from "node:path";
 import type { AgentExecutionSelection, ResolvedAgentTopology } from "../agents/types.js";
 import { loadResolvedAgentTopology } from "../agents/config.js";
 import { executionSelectionForAgent } from "../agents/routing.js";
+import { reconcileHarnessAssets } from "../core/assets.js";
 import type { HarnessProjectConfig } from "../core/types.js";
 import { setupToolchain } from "../toolchain/setup.js";
 import { clearToolchainEnvCache, commandExists, runProcess, type ProcessResult } from "../utils/process.js";
@@ -15,12 +16,13 @@ export type PaseoSessionPolicy = "fresh-on-start" | "reuse-compatible" | "resume
 export interface PaseoStartOptions { autoSetup?: boolean; webUi?: boolean; forceNew?: boolean; resume?: boolean; leadAgent?: string; title?: string; aehCommand?: string; handoffPath?: string; }
 export interface PaseoLeadState { version: 1; bootstrapVersion: number; projectRoot: string; projectName: string; agentId: string; title: string; leadAgent: string; provider: string; model: string; createdAt: string; generation?: number; handoffPath?: string; }
 export interface PaseoStartResult { daemonStarted: boolean; session: "created" | "reused"; agentId: string; title: string; leadAgent: string; provider: string; model: string; stateFile: string; bootstrapFile: string; paseoVersion?: string; transport?: "sdk" | "cli"; }
-interface PaseoStartDeps { run: typeof runProcess; commandExists: typeof commandExists; setupToolchain: typeof setupToolchain; loadTopology: typeof loadResolvedAgentTopology; detectCapabilities: typeof detectPaseoCapabilities; launchAgent: typeof launchManagedPaseoAgent; probeAgent: typeof probeManagedPaseoAgent; }
-const DEFAULT_DEPS: PaseoStartDeps = { run: runProcess, commandExists, setupToolchain, loadTopology: loadResolvedAgentTopology, detectCapabilities: detectPaseoCapabilities, launchAgent: launchManagedPaseoAgent, probeAgent: probeManagedPaseoAgent };
+interface PaseoStartDeps { run: typeof runProcess; commandExists: typeof commandExists; setupToolchain: typeof setupToolchain; loadTopology: typeof loadResolvedAgentTopology; detectCapabilities: typeof detectPaseoCapabilities; launchAgent: typeof launchManagedPaseoAgent; probeAgent: typeof probeManagedPaseoAgent; reconcileAssets?: typeof reconcileHarnessAssets; }
+const DEFAULT_DEPS: PaseoStartDeps = { run: runProcess, commandExists, setupToolchain, loadTopology: loadResolvedAgentTopology, detectCapabilities: detectPaseoCapabilities, launchAgent: launchManagedPaseoAgent, probeAgent: probeManagedPaseoAgent, reconcileAssets: reconcileHarnessAssets };
 type InteractiveV6 = NonNullable<NonNullable<HarnessProjectConfig["orchestration"]>["interactive"]>;
 
 export async function startPaseoHarness(root: string, config: HarnessProjectConfig, options: PaseoStartOptions = {}, deps: PaseoStartDeps = DEFAULT_DEPS): Promise<PaseoStartResult> {
   const projectRoot = path.resolve(root);
+  await (deps.reconcileAssets ?? reconcileHarnessAssets)(projectRoot);
   const settings = config.orchestration?.interactive as InteractiveV6 | undefined;
   const autoSetup = options.autoSetup ?? settings?.autoSetup ?? true;
   const webUi = options.webUi ?? settings?.webUi ?? true;
