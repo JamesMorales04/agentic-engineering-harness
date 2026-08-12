@@ -4,27 +4,26 @@ project:
   name: change-me
 
 orchestration:
-  # paseo keeps workers visible/controlable through the Paseo control plane.
-  # Set provider: podman for a directly sandboxed OpenCode worker instead.
   provider: paseo
   required: false
   worker:
     provider: opencode
-    # model: provider/model
+    model: null
     maxRepairAttempts: 2
-    timeoutSeconds: 1800
-    titlePrefix: aeh
 
 memory:
   provider: engram
   required: false
+  benchmark:
+    casesDir: memory-benchmarks
+    resultsDir: .harness/memory-benchmarks
+    providers: []
 
 codeIntelligence:
   provider: graphify
   required: false
   graphPath: graphify-out/graph.json
-  snapshotDir: .harness/graph
-  # refreshCommand: your-graph-refresh-command
+  snapshotDir: .harness/graphify
 
 sdd:
   specsDir: specs
@@ -41,19 +40,7 @@ validation:
     - .harness/seals/**
     - tests/acceptance/frozen/**
   commands: []
-  validators:
-    - id: acceptance
-      adapter: gherkin
-      required: false
-    - id: architecture-graph
-      adapter: graphify
-      required: false
-    - id: security-opengrep
-      adapter: opengrep
-      required: false
-    - id: security-trivy
-      adapter: trivy
-      required: false
+  validators: []
   opa:
     enabled: false
     policyDirs:
@@ -63,13 +50,22 @@ security:
   sandbox:
     provider: podman
     required: false
-    # image: your-opencode-worker-image
-    network: true
-    extraArgs: []
   tools:
     - opengrep
     - trivy
 
 telemetry:
   enabled: true
+  required: false
   localEventsFile: .harness/telemetry/events.ndjson
+  exporter: none
+  serviceName: engineering-harness-consumer
+
+evals:
+  corpusDir: evals/corpus
+  resultsDir: .harness/evals/results
+  workspacesDir: .harness/evals/workspaces
+
+provenance:
+  outputDir: .harness/provenance
+  buildType: https://github.com/JamesMorales04/agentic-engineering-harness/v0.3
