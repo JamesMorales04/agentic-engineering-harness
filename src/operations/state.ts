@@ -2,8 +2,11 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-export type OperationKind = "audit" | "run";
+export type OperationKind = "audit" | "run" | "change";
 export type OperationStatus = "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
+export type OperationStageStatus = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "BLOCKED" | "SKIPPED";
+export type OperationParticipantStatus = "REGISTERED" | "IDLE" | "RUNNING" | "COMPLETED" | "FAILED" | "BLOCKED" | "CANCELLED";
+export type SupervisorGenerationStatus = "ACTIVE" | "DRAINING" | "ARCHIVED" | "FAILED";
 
 export interface AuditOperationPayload {
   request: string;
@@ -18,7 +21,19 @@ export interface RunOperationPayload {
   profile?: string;
 }
 
-export type OperationPayload = AuditOperationPayload | RunOperationPayload;
+export interface ChangeOperationPayload {
+  request: string;
+  title?: string;
+  taskId?: string;
+  files?: string[];
+  domains?: string[];
+  acceptance?: string[];
+  risk?: "low" | "medium" | "high";
+  profile?: string;
+  priority?: number;
+}
+
+export type OperationPayload = AuditOperationPayload | RunOperationPayload | ChangeOperationPayload;
 
 export interface OperationAgentRecord {
   id: string;
@@ -29,14 +44,98 @@ export interface OperationAgentRecord {
   registeredAt: string;
 }
 
-export interface OperationRecord {
+export interface OperationLeadBinding {
+  agentId: string;
+  source?: string;
+  generation: number;
+  boundAt: string;
+  acknowledgedRevision: number;
+  acknowledgedAt?: string;
+}
+
+export interface OperationSupervisorGeneration {
+  generation: number;
+  agentId?: string;
+  status: SupervisorGenerationStatus;
+  createdAt: string;
+  activatedAt?: string;
+  drainingAt?: string;
+  archivedAt?: string;
+  checkpointArtifact?: string;
+  contextRatio?: number;
+}
+
+export interface OperationSupervisionState {
+  required: boolean;
+  materialized: boolean;
+  activeGeneration?: number;
+  generations: OperationSupervisorGeneration[];
+  latestConsolidationRevision?: number;
+  latestConsolidationArtifact?: string;
+}
+
+export interface OperationStageRecord {
+  name: string;
+  status: OperationStageStatus;
+  revision: number;
+  startedAt?: string;
+  finishedAt?: string;
+  message?: string;
+  artifact?: string;
+}
+
+export interface OperationParticipantRecord {
+  id: string;
+  logicalAgent?: string;
+  role?: string;
+  stage?: string;
+  phase?: string;
+  parentSupervisorGeneration?: number;
+  parentAgentId?: string;
+  workspaceId?: string;
+  transport?: string;
+  status: OperationParticipantStatus;
+  registeredAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  resultArtifact?: string;
+  error?: string;
+}
+
+export interface OperationProgress {
+  expected: number;
+  registered: number;
+  running: number;
+  completed: number;
+  failed: number;
+  blocked: number;
+}
+
+export interface OperationNotificationState {
+  lastLeadWakeRevision: number;
+  lastLeadWakeAt?: string;
+  lastLeadWakeReason?: string;
+  terminalDelivered: boolean;
+  attempts: number;
+  lastError?: string;
+}
+
+export interface OperationIntentState {
+  request?: string;
+  classification?: "AUDIT" | "CHANGE" | "RUN";
+  mode?: "quick" | "spec";
+  risk?: "low" | "medium" | "high";
+  priority?: number;
+}
+
+export interface OperationRecordV1 {
   version: 1;
   id: string;
-  kind: OperationKind;
+  kind: "audit" | "run";
   status: OperationStatus;
   phase: string;
   root: string;
-  payload: OperationPayload;
+  payload: AuditOperationPayload | RunOperationPayload;
   createdAt: string;
   updatedAt: string;
   startedAt?: string;
@@ -50,9 +149,54 @@ export interface OperationRecord {
   error?: string;
 }
 
+export interface OperationRecordV2 {
+  version: 2;
+  id: string;
+  kind: OperationKind;
+  status: OperationStatus;
+  phase: string;
+  root: string;
+  payload: OperationPayload;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+  lastProgressAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  pid?: number;
+  workspaceId?: string;
+  workspaceWarning?: string;
+  intent?: OperationIntentState;
+  lead?: OperationLeadBinding;
+  supervision: OperationSupervisionState;
+  stages: Record<string, OperationStageRecord>;
+  participants: Record<string, OperationParticipantRecord>;
+  progress: OperationProgress;
+  notification: OperationNotificationState;
+  /** Compatibility list retained for cancellation/older tooling. */
+  agents?: OperationAgentRecord[];
+  cleanupWarnings?: string[];
+  result?: Record<string, unknown>;
+  error?: string;
+}
+
+export type OperationRecord = OperationRecordV1 | OperationRecordV2;
+
 export interface TerminalOperationTransition {
-  record: OperationRecord;
+  record: OperationRecordV2;
   transitioned: boolean;
+}
+
+export interface OperationEvent {
+  version: 1;
+  operationId: string;
+  revision: number;
+  at: string;
+  type: string;
+  status: OperationStatus;
+  phase: string;
+  changed?: string[];
+  details?: Record<string, unknown>;
 }
 
 const OPERATIONS_DIR = ".harness/operations";
@@ -64,97 +208,329 @@ export function operationFile(root: string, operationId: string): string {
   return path.resolve(root, OPERATIONS_DIR, `${safeId(operationId)}.json`);
 }
 
-export async function loadOperation(root: string, operationId: string): Promise<OperationRecord> {
-  return JSON.parse(await fs.readFile(operationFile(root, operationId), "utf8")) as OperationRecord;
+export function operationArtifactDir(root: string, operationId: string): string {
+  return path.resolve(root, OPERATIONS_DIR, safeId(operationId));
+}
+
+export function operationEventsFile(root: string, operationId: string): string {
+  return path.join(operationArtifactDir(root, operationId), "events.ndjson");
+}
+
+export async function loadOperation(root: string, operationId: string): Promise<OperationRecordV2> {
+  const raw = JSON.parse(await fs.readFile(operationFile(root, operationId), "utf8")) as OperationRecord;
+  return normalizeOperationRecord(raw);
 }
 
 export async function saveOperation(root: string, record: OperationRecord): Promise<void> {
-  const file = operationFile(root, record.id);
+  const normalized = normalizeOperationRecord(record);
+  const file = operationFile(root, normalized.id);
   await fs.mkdir(path.dirname(file), { recursive: true });
-  await withOperationLock(file, async () => writeRecord(file, record));
+  await withOperationLock(file, async () => {
+    await writeRecord(file, normalized);
+    await appendOperationEvent(root, normalized, "operation.created", ["status", "phase"]);
+  });
 }
 
 export async function patchOperation(
   root: string,
   operationId: string,
-  patch: Partial<OperationRecord>
-): Promise<OperationRecord> {
-  return mutateOperation(root, operationId, (current) => {
-    const guardedPatch = guardTerminalTransition(current, patch);
-    return { ...current, ...guardedPatch };
-  });
+  patch: Partial<OperationRecordV2>
+): Promise<OperationRecordV2> {
+  return mutateOperation(root, operationId, patch, true, "operation.updated");
+}
+
+export async function patchOperationMetadata(
+  root: string,
+  operationId: string,
+  patch: Partial<OperationRecordV2>
+): Promise<OperationRecordV2> {
+  return mutateOperation(root, operationId, patch, false, "operation.metadata");
 }
 
 /**
  * Atomically grants exactly one controller path ownership of a non-terminal ->
- * terminal transition. Callers must perform one-shot terminal side effects
- * (for example the managed-lead completion callback) only when transitioned is
- * true. A concurrent cancel/execute path receives the already-terminal record
- * without becoming a second side-effect owner.
+ * terminal transition. One-shot side effects must only run when transitioned=true.
  */
 export async function transitionOperationToTerminal(
   root: string,
   operationId: string,
-  patch: Partial<OperationRecord> & { status: "SUCCEEDED" | "FAILED" | "CANCELLED" }
+  patch: Partial<OperationRecordV2> & { status: "SUCCEEDED" | "FAILED" | "CANCELLED" }
 ): Promise<TerminalOperationTransition> {
   const file = operationFile(root, operationId);
   await fs.mkdir(path.dirname(file), { recursive: true });
   return withOperationLock(file, async () => {
-    const current = JSON.parse(await fs.readFile(file, "utf8")) as OperationRecord;
+    const current = normalizeOperationRecord(JSON.parse(await fs.readFile(file, "utf8")) as OperationRecord);
     if (isTerminal(current.status)) return { record: current, transitioned: false };
-    const next: OperationRecord = {
+    const now = new Date().toISOString();
+    const next = normalizeOperationRecord({
       ...current,
       ...patch,
+      version: 2,
       id: current.id,
       kind: current.kind,
-      version: 1,
-      updatedAt: new Date().toISOString()
-    };
+      revision: current.revision + 1,
+      updatedAt: now,
+      lastProgressAt: now,
+      stages: {
+        ...current.stages,
+        finished: {
+          name: "finished",
+          status: patch.status === "SUCCEEDED" ? "COMPLETED" : patch.status === "CANCELLED" ? "SKIPPED" : "FAILED",
+          revision: current.revision + 1,
+          startedAt: now,
+          finishedAt: now
+        }
+      }
+    } as OperationRecordV2);
     await writeRecord(file, next);
+    await appendOperationEvent(root, next, "operation.terminal", ["status", "phase"]);
     return { record: next, transitioned: true };
   });
+}
+
+export async function bindOperationLead(
+  root: string,
+  operationId: string,
+  agentId: string,
+  source?: string
+): Promise<OperationRecordV2> {
+  return mutateOperation(root, operationId, {}, true, "operation.lead.bound", (current, revision, now) => ({
+    ...current,
+    revision,
+    updatedAt: now,
+    lastProgressAt: now,
+    lead: {
+      agentId: requiredId(agentId),
+      source,
+      generation: (current.lead?.generation ?? 0) + 1,
+      boundAt: now,
+      acknowledgedRevision: revision
+    }
+  }));
+}
+
+export async function acknowledgeOperationLead(
+  root: string,
+  operationId: string,
+  revision: number,
+  reason?: string
+): Promise<OperationRecordV2> {
+  const now = new Date().toISOString();
+  return patchOperationMetadata(root, operationId, {
+    notification: {
+      ...(await loadOperation(root, operationId)).notification,
+      lastLeadWakeRevision: revision,
+      lastLeadWakeAt: now,
+      lastLeadWakeReason: reason,
+      terminalDelivered: false,
+      attempts: (await loadOperation(root, operationId)).notification.attempts
+    },
+    lead: undefined
+  }).then(async (record) => {
+    if (!record.lead) return record;
+    return patchOperationMetadata(root, operationId, {
+      lead: { ...record.lead, acknowledgedRevision: Math.max(record.lead.acknowledgedRevision, revision), acknowledgedAt: now }
+    });
+  });
+}
+
+export async function markTerminalDelivered(
+  root: string,
+  operationId: string,
+  attempts: number,
+  error?: string
+): Promise<OperationRecordV2> {
+  const current = await loadOperation(root, operationId);
+  return patchOperationMetadata(root, operationId, {
+    notification: {
+      ...current.notification,
+      lastLeadWakeRevision: current.revision,
+      lastLeadWakeAt: new Date().toISOString(),
+      lastLeadWakeReason: "terminal",
+      terminalDelivered: !error,
+      attempts,
+      lastError: error
+    }
+  });
+}
+
+export async function setOperationStage(
+  root: string,
+  operationId: string,
+  name: string,
+  status: OperationStageStatus,
+  options: { message?: string; artifact?: string } = {}
+): Promise<OperationRecordV2> {
+  return mutateOperation(root, operationId, {}, true, "operation.stage", (current, revision, now) => {
+    const previous = current.stages[name];
+    const stage: OperationStageRecord = {
+      name,
+      status,
+      revision,
+      startedAt: previous?.startedAt ?? (status === "RUNNING" ? now : undefined),
+      finishedAt: ["COMPLETED", "FAILED", "BLOCKED", "SKIPPED"].includes(status) ? now : undefined,
+      message: options.message ?? previous?.message,
+      artifact: options.artifact ?? previous?.artifact
+    };
+    return {
+      ...current,
+      revision,
+      updatedAt: now,
+      lastProgressAt: now,
+      phase: name,
+      stages: { ...current.stages, [name]: stage }
+    };
+  });
+}
+
+export async function registerSupervisorGeneration(
+  root: string,
+  operationId: string,
+  input: { agentId?: string; materialized: boolean; checkpointArtifact?: string }
+): Promise<OperationRecordV2> {
+  return mutateOperation(root, operationId, {}, true, "operation.supervisor.registered", (current, revision, now) => {
+    const generations = current.supervision.generations.map((item) =>
+      item.status === "ACTIVE" ? { ...item, status: "DRAINING" as const, drainingAt: now } : item
+    );
+    const generation = Math.max(0, ...generations.map((item) => item.generation)) + 1;
+    generations.push({
+      generation,
+      agentId: input.agentId,
+      status: "ACTIVE",
+      createdAt: now,
+      activatedAt: now,
+      checkpointArtifact: input.checkpointArtifact
+    });
+    return {
+      ...current,
+      revision,
+      updatedAt: now,
+      lastProgressAt: now,
+      supervision: {
+        ...current.supervision,
+        materialized: current.supervision.materialized || input.materialized,
+        activeGeneration: generation,
+        generations
+      }
+    };
+  });
+}
+
+export async function updateSupervisorGeneration(
+  root: string,
+  operationId: string,
+  generation: number,
+  patch: Partial<OperationSupervisorGeneration>
+): Promise<OperationRecordV2> {
+  return mutateOperation(root, operationId, {}, true, "operation.supervisor.updated", (current, revision, now) => ({
+    ...current,
+    revision,
+    updatedAt: now,
+    lastProgressAt: now,
+    supervision: {
+      ...current.supervision,
+      activeGeneration: patch.status === "ARCHIVED" && current.supervision.activeGeneration === generation ? undefined : current.supervision.activeGeneration,
+      generations: current.supervision.generations.map((item) => item.generation === generation ? { ...item, ...patch } : item)
+    }
+  }));
+}
+
+export function activeOperationSupervisor(record: OperationRecordV2): OperationSupervisorGeneration | undefined {
+  const generation = record.supervision.activeGeneration;
+  return generation === undefined ? undefined : record.supervision.generations.find((item) => item.generation === generation && item.status === "ACTIVE");
 }
 
 export async function registerOperationAgent(
   root: string,
   operationId: string,
-  agent: Omit<OperationAgentRecord, "registeredAt">
-): Promise<OperationRecord> {
-  return mutateOperation(root, operationId, (current) => {
-    if (isTerminal(current.status)) return current;
-    const existing = current.agents ?? [];
-    const previous = existing.find((item) => item.id === agent.id);
-    const next: OperationAgentRecord = {
-      ...previous,
-      ...agent,
-      registeredAt: previous?.registeredAt ?? new Date().toISOString()
+  agent: Omit<OperationAgentRecord, "registeredAt"> & { logicalAgent?: string; parentAgentId?: string; parentSupervisorGeneration?: number }
+): Promise<OperationRecordV2> {
+  return mutateOperation(root, operationId, {}, true, "operation.participant.registered", (current, revision, now) => {
+    const existingAgents = current.agents ?? [];
+    const previousAgent = existingAgents.find((item) => item.id === agent.id);
+    const compatibility: OperationAgentRecord = {
+      ...previousAgent,
+      id: agent.id,
+      role: agent.role ?? previousAgent?.role,
+      phase: agent.phase ?? previousAgent?.phase,
+      workspaceId: agent.workspaceId ?? previousAgent?.workspaceId,
+      transport: agent.transport ?? previousAgent?.transport,
+      registeredAt: previousAgent?.registeredAt ?? now
     };
+    const previous = current.participants[agent.id];
+    const participant: OperationParticipantRecord = {
+      ...previous,
+      id: agent.id,
+      logicalAgent: agent.logicalAgent ?? previous?.logicalAgent ?? agent.role,
+      role: agent.role ?? previous?.role,
+      stage: agent.phase ?? previous?.stage,
+      phase: agent.phase ?? previous?.phase,
+      parentSupervisorGeneration: agent.parentSupervisorGeneration ?? previous?.parentSupervisorGeneration ?? current.supervision.activeGeneration,
+      parentAgentId: agent.parentAgentId ?? previous?.parentAgentId ?? activeOperationSupervisor(current)?.agentId,
+      workspaceId: agent.workspaceId ?? previous?.workspaceId,
+      transport: agent.transport ?? previous?.transport,
+      status: previous?.status ?? "REGISTERED",
+      registeredAt: previous?.registeredAt ?? now
+    };
+    const participants = { ...current.participants, [agent.id]: participant };
     return {
       ...current,
-      agents: [...existing.filter((item) => item.id !== agent.id), next]
+      revision,
+      updatedAt: now,
+      lastProgressAt: now,
+      agents: [...existingAgents.filter((item) => item.id !== agent.id), compatibility],
+      participants,
+      progress: deriveProgress(participants)
+    };
+  });
+}
+
+export async function updateOperationParticipant(
+  root: string,
+  operationId: string,
+  agentId: string,
+  patch: Partial<Omit<OperationParticipantRecord, "id" | "registeredAt">>
+): Promise<OperationRecordV2> {
+  return mutateOperation(root, operationId, {}, true, "operation.participant.updated", (current, revision, now) => {
+    const previous = current.participants[agentId] ?? {
+      id: agentId,
+      status: "REGISTERED" as const,
+      registeredAt: now
+    };
+    const next: OperationParticipantRecord = {
+      ...previous,
+      ...patch,
+      id: agentId,
+      registeredAt: previous.registeredAt,
+      startedAt: patch.status === "RUNNING" ? previous.startedAt ?? now : patch.startedAt ?? previous.startedAt,
+      finishedAt: ["COMPLETED", "FAILED", "CANCELLED"].includes(patch.status ?? "") ? patch.finishedAt ?? now : patch.finishedAt ?? previous.finishedAt
+    };
+    const participants = { ...current.participants, [agentId]: next };
+    return {
+      ...current,
+      revision,
+      updatedAt: now,
+      lastProgressAt: now,
+      participants,
+      progress: deriveProgress(participants)
     };
   });
 }
 
 export async function registerCurrentOperationAgent(
   root: string,
-  agent: Omit<OperationAgentRecord, "registeredAt">
+  agent: Omit<OperationAgentRecord, "registeredAt"> & { logicalAgent?: string; parentAgentId?: string; parentSupervisorGeneration?: number }
 ): Promise<void> {
   const operationId = currentOperationContext().id;
   if (!operationId) return;
   try {
     await registerOperationAgent(root, operationId, agent);
   } catch {
-    // Direct/non-controller execution may carry stale environment state. Agent
-    // registration is observability/cleanup metadata, not execution authority.
+    // Direct/non-controller execution may carry stale environment state. Agent registration is observability metadata.
   }
 }
 
-export function currentOperationContext(): {
-  id?: string;
-  kind?: string;
-  workspaceId?: string;
-} {
+export function currentOperationContext(): { id?: string; kind?: string; workspaceId?: string } {
   return {
     id: process.env.AEH_OPERATION_ID?.trim() || undefined,
     kind: process.env.AEH_OPERATION_KIND?.trim() || undefined,
@@ -166,35 +542,117 @@ export async function updateCurrentOperationPhase(root: string, phase: string): 
   const operationId = currentOperationContext().id;
   if (!operationId) return;
   try {
-    await patchOperation(root, operationId, { phase });
+    await setOperationStage(root, operationId, phase, "RUNNING");
   } catch {
     // Direct/non-controller execution has no operation state to update.
   }
 }
 
+export function normalizeOperationRecord(record: OperationRecord): OperationRecordV2 {
+  if (record.version === 2) {
+    const participants = record.participants ?? {};
+    return {
+      ...record,
+      version: 2,
+      revision: Math.max(1, record.revision || 1),
+      lastProgressAt: record.lastProgressAt || record.updatedAt,
+      supervision: record.supervision ?? defaultSupervision(record.kind),
+      stages: record.stages ?? {},
+      participants,
+      progress: record.progress ?? deriveProgress(participants),
+      notification: record.notification ?? defaultNotification()
+    };
+  }
+  const participants: Record<string, OperationParticipantRecord> = {};
+  for (const agent of record.agents ?? []) {
+    participants[agent.id] = {
+      id: agent.id,
+      logicalAgent: agent.role,
+      role: agent.role,
+      stage: agent.phase,
+      phase: agent.phase,
+      workspaceId: agent.workspaceId,
+      transport: agent.transport,
+      status: "REGISTERED",
+      registeredAt: agent.registeredAt
+    };
+  }
+  return {
+    ...record,
+    version: 2,
+    kind: record.kind,
+    payload: record.payload,
+    revision: 1,
+    lastProgressAt: record.updatedAt,
+    intent: inferIntent(record.kind, record.payload),
+    supervision: defaultSupervision(record.kind),
+    stages: record.phase ? {
+      [record.phase]: { name: record.phase, status: isTerminal(record.status) ? terminalStageStatus(record.status) : "RUNNING", revision: 1, startedAt: record.startedAt, finishedAt: record.finishedAt }
+    } : {},
+    participants,
+    progress: deriveProgress(participants),
+    notification: defaultNotification()
+  };
+}
+
 async function mutateOperation(
   root: string,
   operationId: string,
-  mutate: (current: OperationRecord) => OperationRecord
-): Promise<OperationRecord> {
+  patch: Partial<OperationRecordV2>,
+  touchRevision: boolean,
+  eventType: string,
+  custom?: (current: OperationRecordV2, revision: number, now: string) => OperationRecordV2
+): Promise<OperationRecordV2> {
   const file = operationFile(root, operationId);
   await fs.mkdir(path.dirname(file), { recursive: true });
   return withOperationLock(file, async () => {
-    const current = JSON.parse(await fs.readFile(file, "utf8")) as OperationRecord;
-    const candidate = mutate(current);
-    const next: OperationRecord = {
-      ...candidate,
-      id: current.id,
-      kind: current.kind,
-      version: 1,
-      updatedAt: new Date().toISOString()
-    };
+    const current = normalizeOperationRecord(JSON.parse(await fs.readFile(file, "utf8")) as OperationRecord);
+    const guardedPatch = guardTerminalTransition(current, patch);
+    const now = new Date().toISOString();
+    const revision = touchRevision ? current.revision + 1 : current.revision;
+    const candidate = custom
+      ? custom(current, revision, now)
+      : ({
+          ...current,
+          ...guardedPatch,
+          version: 2,
+          id: current.id,
+          kind: current.kind,
+          revision,
+          updatedAt: now,
+          lastProgressAt: touchRevision ? now : current.lastProgressAt
+        } as OperationRecordV2);
+    const next = normalizeOperationRecord(candidate);
     await writeRecord(file, next);
+    await appendOperationEvent(root, next, eventType, Object.keys(patch));
     return next;
   });
 }
 
-async function writeRecord(file: string, record: OperationRecord): Promise<void> {
+async function appendOperationEvent(
+  root: string,
+  record: OperationRecordV2,
+  type: string,
+  changed?: string[],
+  details?: Record<string, unknown>
+): Promise<void> {
+  const file = operationEventsFile(root, record.id);
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const event: OperationEvent = {
+    version: 1,
+    operationId: record.id,
+    revision: record.revision,
+    at: new Date().toISOString(),
+    type,
+    status: record.status,
+    phase: record.phase,
+    changed,
+    details
+  };
+  await fs.appendFile(file, `${JSON.stringify(event)}\n`);
+}
+
+async function writeRecord(file: string, record: OperationRecordV2): Promise<void> {
   const temp = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
   await fs.writeFile(temp, `${JSON.stringify(record, null, 2)}\n`);
   try {
@@ -229,11 +687,7 @@ async function withOperationLock<T>(file: string, action: () => Promise<T>): Pro
         await fs.rm(lock, { force: true }).catch(() => undefined);
         continue;
       }
-      if (Date.now() >= deadline) {
-        throw new Error(
-          `Timed out acquiring operation state lock for ${path.basename(file)}.`
-        );
-      }
+      if (Date.now() >= deadline) throw new Error(`Timed out acquiring operation state lock for ${path.basename(file)}.`);
       await delay(LOCK_RETRY_MS);
     }
   }
@@ -241,10 +695,7 @@ async function withOperationLock<T>(file: string, action: () => Promise<T>): Pro
 
 async function canRecoverLock(lock: string): Promise<boolean> {
   try {
-    const [rawPid, stat] = await Promise.all([
-      fs.readFile(lock, "utf8").catch(() => ""),
-      fs.stat(lock)
-    ]);
+    const [rawPid, stat] = await Promise.all([fs.readFile(lock, "utf8").catch(() => ""), fs.stat(lock)]);
     const ownerPid = Number.parseInt(rawPid.trim(), 10);
     if (Number.isInteger(ownerPid) && ownerPid > 0 && !processAlive(ownerPid)) return true;
     return Date.now() - stat.mtimeMs > STALE_LOCK_MS;
@@ -254,40 +705,48 @@ async function canRecoverLock(lock: string): Promise<boolean> {
 }
 
 function processAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return !/ESRCH/.test(String(error));
-  }
+  try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
-function guardTerminalTransition(
-  current: OperationRecord,
-  patch: Partial<OperationRecord>
-): Partial<OperationRecord> {
+function guardTerminalTransition(current: OperationRecordV2, patch: Partial<OperationRecordV2>): Partial<OperationRecordV2> {
   if (!isTerminal(current.status)) return patch;
-  const guarded: Partial<OperationRecord> = {};
-  if (patch.cleanupWarnings) guarded.cleanupWarnings = patch.cleanupWarnings;
-  return guarded;
+  const requested = patch.status;
+  if (!requested || requested === current.status) return patch;
+  const { status: _ignored, ...rest } = patch;
+  return rest;
 }
 
-function isTerminal(status: OperationStatus): boolean {
-  return status === "SUCCEEDED" || status === "FAILED" || status === "CANCELLED";
-}
-function isAlreadyExists(error: unknown): boolean {
-  return Boolean(
-    error &&
-      typeof error === "object" &&
-      "code" in error &&
-      (error as { code?: unknown }).code === "EEXIST"
-  );
-}
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function deriveProgress(participants: Record<string, OperationParticipantRecord>): OperationProgress {
+  const values = Object.values(participants);
+  return {
+    expected: values.length,
+    registered: values.filter((item) => item.status === "REGISTERED" || item.status === "IDLE").length,
+    running: values.filter((item) => item.status === "RUNNING").length,
+    completed: values.filter((item) => item.status === "COMPLETED").length,
+    failed: values.filter((item) => item.status === "FAILED" || item.status === "CANCELLED").length,
+    blocked: values.filter((item) => item.status === "BLOCKED").length
+  };
 }
 
-function safeId(value: string): string {
-  if (!/^[A-Za-z0-9._-]+$/.test(value)) throw new Error(`Invalid operation id '${value}'.`);
-  return value;
+function defaultSupervision(kind: OperationKind): OperationSupervisionState {
+  return { required: kind === "audit" || kind === "change", materialized: false, generations: [] };
 }
+function defaultNotification(): OperationNotificationState {
+  return { lastLeadWakeRevision: 0, terminalDelivered: false, attempts: 0 };
+}
+function inferIntent(kind: OperationKind, payload: OperationPayload): OperationIntentState {
+  if (kind === "audit") return { request: (payload as AuditOperationPayload).request, classification: "AUDIT", risk: (payload as AuditOperationPayload).risk };
+  if (kind === "change") {
+    const change = payload as ChangeOperationPayload;
+    return { request: change.request, classification: "CHANGE", risk: change.risk, priority: change.priority };
+  }
+  return { classification: "RUN" };
+}
+function terminalStageStatus(status: OperationStatus): OperationStageStatus {
+  return status === "SUCCEEDED" ? "COMPLETED" : status === "CANCELLED" ? "SKIPPED" : "FAILED";
+}
+function isTerminal(status: OperationStatus): boolean { return status === "SUCCEEDED" || status === "FAILED" || status === "CANCELLED"; }
+function requiredId(value: string): string { const trimmed = value.trim(); if (!trimmed) throw new Error("agent id is required"); return trimmed; }
+function safeId(value: string): string { if (!/^[A-Za-z0-9._-]+$/.test(value)) throw new Error(`Invalid operation id '${value}'.`); return value; }
+function isAlreadyExists(error: unknown): boolean { return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "EEXIST"); }
+function delay(ms: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, ms)); }
