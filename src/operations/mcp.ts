@@ -11,7 +11,7 @@ import { cancelOperation, startDetachedOperation } from "./controller.js";
 import { rebindActiveOperationsToLead } from "./leadBinding.js";
 import { spawnOperationMonitor } from "./monitorProcess.js";
 import { loadOperationPortfolio } from "./portfolio.js";
-import { loadOperation, type AuditOperationPayload, type ChangeOperationPayload, type OperationKind, type OperationPayload, type RunOperationPayload } from "./state.js";
+import { acknowledgeOperationLead, loadOperation, type AuditOperationPayload, type ChangeOperationPayload, type OperationKind, type OperationPayload, type RunOperationPayload } from "./state.js";
 
 interface JsonRpcRequest { jsonrpc?: string; id?: string | number | null; method?: string; params?: Record<string, unknown>; }
 export type ContextAgentIdentitySource = "argument" | "environment" | "lead-state";
@@ -54,7 +54,7 @@ const tools = [
   },
   {
     name: "aeh_operation_status",
-    description: "Read the authoritative durable OperationRecord including revision, stages, participant progress, supervisor generations and result. Use for diagnostics/recovery; normal liveness is event/watchdog driven.",
+    description: "Read the authoritative durable OperationRecord including revision, stages, participant progress, supervisor generations and result. When called by the currently bound lead, this consumes and acknowledges the exact revision returned. Use for diagnostics/recovery; normal liveness is event/watchdog driven.",
     inputSchema: { type: "object", properties: { operationId: { type: "string" } }, required: ["operationId"], additionalProperties: false }
   },
   {
@@ -124,7 +124,7 @@ async function callTool(params: Record<string, unknown>): Promise<Record<string,
     };
     return toolResult(await startManagedOperation(root, "change", payload));
   }
-  if (name === "aeh_operation_status") return toolResult(await loadOperation(root, string(args.operationId, "operationId")));
+  if (name === "aeh_operation_status") return toolResult(await readOperationStatus(root, string(args.operationId, "operationId")));
   if (name === "aeh_operation_portfolio") {
     const config = await loadProjectConfig(root);
     return toolResult(await loadOperationPortfolio(root, config.project.name));
@@ -138,6 +138,15 @@ async function callTool(params: Record<string, unknown>): Promise<Record<string,
     return toolResult(await statusLeadContext(root, config, identity.agentId));
   }
   throw new Error(`Unknown AEH operation tool '${name}'.`);
+}
+
+export async function readOperationStatus(root: string, operationId: string, env: NodeJS.ProcessEnv = process.env) {
+  const operation = await loadOperation(root, operationId);
+  const identity = await resolveContextAgentIdentity(root, undefined, env).catch(() => undefined);
+  if (!identity || !operation.lead || identity.agentId !== operation.lead.agentId) return operation;
+  const boundedAgent = env.AEH_MANAGED_AGENT === "1" && env.AEH_INTERACTIVE_LEAD !== "1";
+  if (boundedAgent) return operation;
+  return acknowledgeOperationLead(root, operationId, operation.revision, "operation-status");
 }
 
 async function startManagedOperation(root: string, kind: OperationKind, payload: OperationPayload) {
