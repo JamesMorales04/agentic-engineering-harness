@@ -13,7 +13,7 @@ afterEach(() => {
 });
 
 describe("Paseo launch spec", () => {
-  it("uses operation-local workspace and labels even when delivery Paseo is disabled", async () => {
+  it("uses operation-local workspace and explicit bounded identity even for Codex reviewers", async () => {
     process.env.AEH_OPERATION_ID = "AUDIT-1";
     process.env.AEH_OPERATION_KIND = "audit";
     process.env.AEH_OPERATION_WORKSPACE_ID = "workspace-op";
@@ -33,6 +33,7 @@ describe("Paseo launch spec", () => {
     } as never;
     const selection = {
       logicalAgent: "security-reviewer",
+      role: "reviewer",
       paseoProvider: "codex",
       runtimeAdapter: "codex",
       modelName: "gpt-test",
@@ -56,7 +57,16 @@ describe("Paseo launch spec", () => {
       })
     );
     expect(spec.modeId).toBeUndefined();
-    expect(spec.env).toBeUndefined();
+    expect(spec.env).toEqual(expect.objectContaining({
+      AEH_MANAGED_AGENT: "1",
+      AEH_LOGICAL_AGENT: "security-reviewer",
+      AEH_AGENT_ROLE: "reviewer",
+      AEH_INTERACTIVE_LEAD: "0",
+      AEH_ORCHESTRATION_ALLOWED: "0",
+      AEH_PARENT_OPERATION_ID: "AUDIT-1",
+      AEH_PARENT_OPERATION_KIND: "audit",
+      AEH_AGENT_PHASE: "review"
+    }));
     expect(spec.labels).toEqual(
       expect.objectContaining({
         "aeh.project": "demo",
@@ -123,6 +133,14 @@ describe("Paseo launch spec", () => {
     );
     expect(spec.modeId).toBeUndefined();
     expect(spec.modeSource).toBeUndefined();
+    expect(spec.env).toEqual(expect.objectContaining({
+      AEH_LOGICAL_AGENT: "code-quality-reviewer",
+      AEH_AGENT_ROLE: "reviewer",
+      AEH_INTERACTIVE_LEAD: "0",
+      AEH_ORCHESTRATION_ALLOWED: "0",
+      AEH_PARENT_OPERATION_ID: "AUDIT-2",
+      AEH_AGENT_PHASE: "review"
+    }));
     expect(inline.default_agent).toBe("aeh-code-quality-reviewer");
     expect(inline.agent["aeh-code-quality-reviewer"]).toEqual(
       expect.objectContaining({
@@ -138,7 +156,7 @@ describe("Paseo launch spec", () => {
     );
   });
 
-  it("preserves an explicitly configured OpenCode nativeAgent as the Paseo mode", async () => {
+  it("preserves an explicitly configured OpenCode nativeAgent as the Paseo mode while retaining bounded identity", async () => {
     const config = {
       version: 1,
       project: { name: "demo" },
@@ -171,6 +189,13 @@ describe("Paseo launch spec", () => {
     expect(spec.modeId).toBe("company-backend-agent");
     expect(spec.modeSource).toBe("explicit");
     expect(spec.nativeAgentId).toBe("company-backend-agent");
+    expect(spec.env).toEqual(expect.objectContaining({
+      AEH_MANAGED_AGENT: "1",
+      AEH_LOGICAL_AGENT: "backend-implementer",
+      AEH_AGENT_ROLE: "implementer",
+      AEH_INTERACTIVE_LEAD: "0",
+      AEH_ORCHESTRATION_ALLOWED: "0"
+    }));
     expect(inline).not.toHaveProperty("agent");
     expect(inline).not.toHaveProperty("default_agent");
   });
