@@ -19,6 +19,9 @@ async function fixture() {
   await registerSupervisorGeneration(root, record.id, { agentId: "supervisor-1", materialized: true });
   await registerOperationAgent(root, record.id, { id: "reviewer-1", role: "reviewer", logicalAgent: "test-reviewer", phase: "reviewing" });
   await updateOperationParticipant(root, record.id, "reviewer-1", { status: "RUNNING" });
+  const skill = path.join(root, ".harness/controller/AUDIT-WATCH/files/skills/recovery-classifier/SKILL.md");
+  await fs.mkdir(path.dirname(skill), { recursive: true });
+  await fs.writeFile(skill, "# Recovery Classifier\nRECOVERY_SKILL_SENTINEL\n");
   return { root, now: Date.now() + 300_000 };
 }
 
@@ -31,7 +34,7 @@ it("keeps an active child stall controller-only", async () => {
   expect(dispatch).not.toHaveBeenCalled();
 });
 
-it("wakes only an idle supervisor with an authoritative snapshot", async () => {
+it("loads recovery-classifier only when an idle supervisor actually receives a watchdog wake", async () => {
   const { root, now } = await fixture();
   const dispatch = vi.fn(async (_root: string, id: string) => ({ id, exitCode: 0, stdout: "", stderr: "", status: "working", transport: "sdk" as const }));
   await runOperationLivenessCheck(root, config, "AUDIT-WATCH", { dispatch: dispatch as never, inspect: vi.fn(async (_root: string, id: string) => ({ id, status: "idle" })) as never, trace: vi.fn(async () => undefined) as never, sleep: vi.fn(async () => undefined), now: () => now });
@@ -41,4 +44,5 @@ it("wakes only an idle supervisor with an authoritative snapshot", async () => {
   expect(prompt).toContain("Deterministic watchdog snapshot");
   expect(prompt).toContain('"logicalAgent":"test-reviewer"');
   expect(prompt).toContain("Do not run shell commands");
+  expect(prompt).toContain("RECOVERY_SKILL_SENTINEL");
 });
