@@ -26,13 +26,12 @@ export function validateExecutionCapabilities(
       `Runtime ${selection.runtimeName} cannot select native agent ${selection.nativeAgent}.`
     );
   }
-  if (
-    selection.nativeAgent &&
-    transport === "paseo" &&
-    selection.runtimeCapabilities.nativeAgentViaPaseo !== true
-  ) {
+  const nativeAgentViaPaseo =
+    selection.runtimeCapabilities.nativeAgentViaPaseo === true ||
+    (selection.runtimeAdapter === "opencode" && selection.paseoProvider === "opencode");
+  if (selection.nativeAgent && transport === "paseo" && !nativeAgentViaPaseo) {
     issues.push(
-      `Agent ${selection.logicalAgent} requires nativeAgent=${selection.nativeAgent}, but runtime ${selection.runtimeName} does not declare nativeAgentViaPaseo. Use transport=direct/podman or configure a Paseo provider that exposes this native agent.`
+      `Agent ${selection.logicalAgent} requires nativeAgent=${selection.nativeAgent}, but runtime ${selection.runtimeName} does not support that native agent through Paseo.`
     );
   }
   if (selection.variant && selection.runtimeCapabilities.variantSelection === false) {
@@ -181,10 +180,11 @@ function buildOpenCodePermission(
 function managedOpenCodeAgentId(logicalAgent: string): string {
   const original = logicalAgent.trim();
   if (!original) throw new Error("AEH logical agent name is required for OpenCode identity.");
-  const slug = original
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "") || "agent";
+  const slug =
+    original
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "agent";
   const normalizedOriginal = original.toLowerCase();
   if (slug === normalizedOriginal) return `aeh-${slug}`;
   const digest = createHash("sha256").update(original).digest("hex").slice(0, 8);
