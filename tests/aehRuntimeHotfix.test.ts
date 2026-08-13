@@ -97,7 +97,6 @@ describe("AEH runtime hotfix", () => {
       materialized: true
     });
     current = await patchOperationMetadata(root, "AUDIT-HOTFIX", {
-      lastProgressAt: new Date(Date.now() - 300_000).toISOString(),
       notification: {
         ...current.notification,
         lastLeadWakeRevision: current.revision,
@@ -105,7 +104,7 @@ describe("AEH runtime hotfix", () => {
       }
     });
     const policy = operationLivenessPolicy(config);
-    const now = Date.now();
+    const now = Date.parse(current.lastProgressAt) + 300_000;
 
     let budget = await loadOperationWakeBudget(root, "AUDIT-HOTFIX", current.revision);
     expect(evaluateOperationWake(current, policy, now, budget.supervisorAccepted, budget.leadAccepted, budget.terminalLeadAccepted).target).toBe("supervisor");
