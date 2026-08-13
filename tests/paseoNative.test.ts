@@ -123,4 +123,56 @@ describe("Paseo native observability", () => {
     expect(handle.refetch).toHaveBeenCalled();
     expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
+
+  it("does not treat metadata-only updates plus stale assistant output as turn completion", async () => {
+    let status = "idle";
+    let message = "previous turn";
+    let subscriber: (() => void) | undefined;
+    const unsubscribe = vi.fn();
+    const handle = {
+      id: "agent-reused",
+      subscribe: vi.fn((handler: () => void) => {
+        subscriber = handler;
+        return unsubscribe;
+      }),
+      refetch: vi.fn(async () => ({
+        agent: { id: "agent-reused", status, workspaceId: "workspace-1" }
+      })),
+      timeline: {
+        refetch: vi.fn(async () => ({
+          entries: [{ type: "assistant_message", text: message }]
+        }))
+      }
+    };
+
+    let settled = false;
+    const waiting = waitForPaseoAgentHandle(handle, 2_000, {
+      lastAssistantMessage: "previous turn"
+    }).then((result) => {
+      settled = true;
+      return result;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // A metadata-only notification while the agent remains idle must not satisfy
+    // the turn barrier, even though the timeline contains an older assistant reply.
+    subscriber?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(false);
+
+    status = "working";
+    subscriber?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    status = "idle";
+    message = "new turn";
+    subscriber?.();
+
+    const result = await waiting;
+    expect(result).toEqual(expect.objectContaining({
+      id: "agent-reused",
+      status: "idle",
+      lastMessage: "new turn"
+    }));
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
 });

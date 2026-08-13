@@ -12,7 +12,7 @@ import { detectPaseoDaemonCapabilities, isRecoverableDaemonStatus } from "./capa
 import { launchManagedPaseoAgent, probeManagedPaseoAgent } from "./runtime.js";
 import type { PaseoSdkAgentOptions } from "./sdk.js";
 
-export const PASEO_BOOTSTRAP_VERSION = 7;
+export const PASEO_BOOTSTRAP_VERSION = 8;
 export type PaseoSessionPolicy = "fresh-on-start" | "reuse-compatible" | "resume-explicit";
 
 export interface PaseoStartOptions {
@@ -76,7 +76,7 @@ const DEFAULT_DEPS: PaseoStartDeps = {
   probeAgent: probeManagedPaseoAgent,
   reconcileAssets: reconcileHarnessAssets
 };
-type InteractiveV7 = NonNullable<
+type InteractiveV8 = NonNullable<
   NonNullable<HarnessProjectConfig["orchestration"]>["interactive"]
 >;
 
@@ -88,7 +88,7 @@ export async function startPaseoHarness(
 ): Promise<PaseoStartResult> {
   const projectRoot = path.resolve(root);
   await (deps.reconcileAssets ?? reconcileHarnessAssets)(projectRoot);
-  const settings = config.orchestration?.interactive as InteractiveV7 | undefined;
+  const settings = config.orchestration?.interactive as InteractiveV8 | undefined;
   const autoSetup = options.autoSetup ?? settings?.autoSetup ?? true;
   const webUi = options.webUi ?? settings?.webUi ?? true;
   const stateDir = path.resolve(projectRoot, settings?.stateDir ?? ".harness/paseo");
@@ -335,7 +335,9 @@ Every engineering operation must enter through AEH, including read-only audits. 
 
 Remain a thin ORCHESTRATOR: preserve user intent, make semantic/risk decisions, delegate bounded operations through the authoritative topology, monitor deterministic state and perform final semantic acceptance. Follow engineering-workflow end-to-end for intent classification, AUDIT, QUICK/SPEC triage, OpenSpec authoring, sealed execution, recovery, validation and delivery rather than reproducing those procedures here.
 
-${preferPaseoTools ? `When running inside Paseo, use the paseo-orchestration skill and injected native/MCP tools for conversational delegation and /paseo-handoff for responsibility transfer. The managed lead receives the exact project-locked aeh-control MCP when its AEH invocation can be represented safely; prefer those detached operation tools for long AUDIT/RUN workflows, then use short \`${aehCommand} operation ...\` commands only as fallback. Never intentionally use synchronous \`${aehCommand} audit\` or \`${aehCommand} run\` for long managed-lead work; AEH will auto-promote standard forms to detached operations as a deterministic safety net. AEH's external controller may create independent top-level Paseo agents for Harness-owned work; AEH operation/run/task labels, not Paseo parentage, define workflow ownership.` : `Use AEH's configured Paseo adapter for delegation and lifecycle control.`}
+${preferPaseoTools ? `When running inside Paseo, use the paseo-orchestration skill and injected native/MCP tools for conversational delegation and /paseo-handoff for responsibility transfer. The managed lead receives the exact project-locked aeh-control MCP when its AEH invocation can be represented safely; prefer those detached operation tools for long AUDIT/RUN workflows, then use short \`${aehCommand} operation ...\` commands only as fallback. Never intentionally use synchronous \`${aehCommand} audit\` or \`${aehCommand} run\` for long managed-lead work; AEH will auto-promote standard forms to detached operations as a deterministic safety net. AEH's external controller may create independent top-level Paseo agents for Harness-owned work; AEH operation/run/task labels, not Paseo parentage, define workflow ownership.
+
+After starting a detached AUDIT/RUN, do not busy-poll \`aeh_operation_status\` in the normal conversational path. The controller durably registers this lead and will send an \`[AEH_OPERATION_COMPLETED]\` follow-up when the operation reaches SUCCEEDED, FAILED or CANCELLED. You may end the current turn after acknowledging that the operation was started. When the completion callback arrives, treat it as an internal continuation event for the still-pending user request, not as a new task: do not create a duplicate operation; inspect the cited durable operation/report artifacts and finish the original user-facing answer. Use \`aeh_operation_status\` only for explicit diagnostics, manual inspection or recovery if a callback is known to have failed.` : `Use AEH's configured Paseo adapter for delegation and lifecycle control.`}
 
 Before non-trivial work and again at completed-turn boundaries, inspect context pressure. Prefer the injected \`aeh_context_status\` tool, which reads the current Paseo AgentSnapshot and applies AEH's deterministic thresholds without shell/log parsing. Use \`${aehCommand} context guard --agent "$PASEO_AGENT_ID"\` only as a non-interactive/compatibility fallback. Honor HANDOFF_REQUIRED/HARD_HANDOFF and stop the old lead when a replacement is created. NO_USAGE_YET is normal before the provider emits usage; USAGE_UNAVAILABLE means pressure cannot be measured and should increase delegation rather than inventing a ratio.
 

@@ -18,7 +18,7 @@ export interface ContextAgentIdentity { agentId: string; source: ContextAgentIde
 const tools = [
   {
     name: "aeh_operation_start_audit",
-    description: "Start a detached Harness AUDIT for this lead's fixed project root and return its durable operation record immediately.",
+    description: "Start a detached Harness AUDIT for this lead's fixed project root and return its durable operation record immediately. AEH registers this managed lead as the completion target and will send a controller callback when the operation becomes terminal; do not busy-poll status in the normal path.",
     inputSchema: {
       type: "object",
       properties: {
@@ -34,7 +34,7 @@ const tools = [
   },
   {
     name: "aeh_operation_start_run",
-    description: "Start detached execution of an already prepared/sealed AEH task in this lead's fixed project root and return its operation record immediately.",
+    description: "Start detached execution of an already prepared/sealed AEH task in this lead's fixed project root and return its operation record immediately. AEH registers this managed lead as the completion target and will send a controller callback when the operation becomes terminal; do not busy-poll status in the normal path.",
     inputSchema: {
       type: "object",
       properties: { taskId: { type: "string" }, profile: { type: "string" } },
@@ -44,7 +44,7 @@ const tools = [
   },
   {
     name: "aeh_operation_status",
-    description: "Read durable status/phase/result for an AEH operation in this lead's fixed project root without blocking the caller.",
+    description: "Read durable status/phase/result for an AEH operation in this lead's fixed project root. Use for explicit diagnostics/manual inspection; normal managed-lead completion is callback-driven.",
     inputSchema: {
       type: "object",
       properties: { operationId: { type: "string" } },
@@ -54,7 +54,7 @@ const tools = [
   },
   {
     name: "aeh_operation_cancel",
-    description: "Cancel a running AEH operation in this lead's fixed project root and persist CANCELLED state.",
+    description: "Cancel a running AEH operation in this lead's fixed project root and persist CANCELLED state. A registered initiating lead is notified after cancellation completes.",
     inputSchema: {
       type: "object",
       properties: { operationId: { type: "string" } },
@@ -91,7 +91,7 @@ async function handle(request: JsonRpcRequest): Promise<Record<string, unknown>>
     return {
       protocolVersion: typeof request.params?.protocolVersion === "string" ? request.params.protocolVersion : "2025-06-18",
       capabilities: { tools: {} },
-      serverInfo: { name: "aeh-operation-controller", version: "2" }
+      serverInfo: { name: "aeh-operation-controller", version: "3" }
     };
   }
   if (request.method === "ping") return {};
@@ -105,6 +105,7 @@ async function callTool(params: Record<string, unknown>): Promise<Record<string,
   const args = object(params.arguments);
   const root = controlRoot();
   if (name === "aeh_operation_start_audit") {
+    const identity = await resolveContextAgentIdentity(root);
     const payload: AuditOperationPayload = {
       request: string(args.request, "request"),
       files: stringArray(args.files),
@@ -112,11 +113,24 @@ async function callTool(params: Record<string, unknown>): Promise<Record<string,
       risk: risk(args.risk),
       reviewers: stringArray(args.reviewers)
     };
-    return toolResult(await startDetachedOperation(root, "audit", payload, { nodeExecutable: process.execPath, entryFile: path.resolve(process.argv[1]) }));
+    await recordPaseoTrace(root, "operation.callback.target", { kind: "audit", agentId: identity.agentId, source: identity.source });
+    return toolResult(await startDetachedOperation(root, "audit", payload, {
+      nodeExecutable: process.execPath,
+      entryFile: path.resolve(process.argv[1]),
+      completionAgentId: identity.agentId,
+      completionSource: identity.source
+    }));
   }
   if (name === "aeh_operation_start_run") {
+    const identity = await resolveContextAgentIdentity(root);
     const payload: RunOperationPayload = { taskId: string(args.taskId, "taskId"), profile: optionalString(args.profile) };
-    return toolResult(await startDetachedOperation(root, "run", payload, { nodeExecutable: process.execPath, entryFile: path.resolve(process.argv[1]) }));
+    await recordPaseoTrace(root, "operation.callback.target", { kind: "run", agentId: identity.agentId, source: identity.source });
+    return toolResult(await startDetachedOperation(root, "run", payload, {
+      nodeExecutable: process.execPath,
+      entryFile: path.resolve(process.argv[1]),
+      completionAgentId: identity.agentId,
+      completionSource: identity.source
+    }));
   }
   if (name === "aeh_operation_status") return toolResult(await loadOperation(root, string(args.operationId, "operationId")));
   if (name === "aeh_operation_cancel") return toolResult(await cancelOperation(root, string(args.operationId, "operationId")));
@@ -152,7 +166,7 @@ export async function resolveContextAgentIdentity(
     value = JSON.parse(await fs.readFile(stateFile, "utf8"));
   } catch (error) {
     throw new Error(
-      `aeh_context_status could not resolve the current lead agent: neither an explicit agentId nor PASEO_AGENT_ID is available, and ${stateFile} could not be read as durable lead state. Start a fresh managed lead with aeh start or pass agentId explicitly. (${error instanceof Error ? error.message : String(error)})`
+      `AEH could not resolve the current managed lead agent: neither an explicit agentId nor PASEO_AGENT_ID is available, and ${stateFile} could not be read as durable lead state. Start a fresh managed lead with aeh start or pass agentId explicitly for diagnostics. (${error instanceof Error ? error.message : String(error)})`
     );
   }
 
@@ -173,7 +187,7 @@ export async function resolveContextAgentIdentity(
 
   if (mismatches.length) {
     throw new Error(
-      `aeh_context_status refused incompatible durable lead state at ${stateFile}: ${mismatches.join("; ")}. Start a fresh managed lead with aeh start or pass agentId explicitly for diagnostics.`
+      `AEH refused incompatible durable lead state at ${stateFile}: ${mismatches.join("; ")}. Start a fresh managed lead with aeh start or pass agentId explicitly for diagnostics.`
     );
   }
   return { agentId: agentId!, source: "lead-state" };

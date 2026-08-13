@@ -54,6 +54,10 @@ export interface PaseoNativeWaitResult {
   updatesObserved: number;
 }
 
+export interface PaseoTurnBaseline {
+  lastAssistantMessage?: string;
+}
+
 export interface NativeAgentHandle {
   readonly id: string;
   latest?(): Record<string, unknown> | null;
@@ -142,6 +146,27 @@ export function contextUsageFromPaseoSnapshot(
     source: "paseo-agent-snapshot",
     availability: "available"
   };
+}
+
+export async function capturePaseoAgentTurnBaseline(
+  root: string,
+  agentId: string
+): Promise<PaseoTurnBaseline> {
+  return withNativeClient(root, async (client) => {
+    const handle = client.agents.ref(agentId);
+    const raw = await refetchAgent(handle);
+    const timeline =
+      handle.timeline && typeof handle.timeline.refetch === "function"
+        ? await handle.timeline
+            .refetch({ direction: "backward", limit: 50 })
+            .catch(() => undefined)
+        : undefined;
+    return {
+      lastAssistantMessage:
+        (raw ? stringField(raw, ["lastMessage", "last_message"]) : undefined) ??
+        extractLastAssistantText(timeline)
+    };
+  });
 }
 
 export async function preflightPaseoProviderModel(
@@ -274,7 +299,8 @@ export async function preflightPaseoProviderModel(
 export async function waitForPaseoAgentNative(
   root: string,
   agentId: string,
-  timeoutMs = 1_800_000
+  timeoutMs = 1_800_000,
+  baseline?: PaseoTurnBaseline
 ): Promise<PaseoNativeWaitResult> {
   return withNativeClient(root, async (client) => {
     const handle = client.agents.ref(agentId);
@@ -284,12 +310,13 @@ export async function waitForPaseoAgentNative(
       );
     }
     const startedAt = Date.now();
-    const result = await waitForPaseoAgentHandle(handle, timeoutMs);
+    const result = await waitForPaseoAgentHandle(handle, timeoutMs, baseline);
     await recordPaseoTrace(root, "agent.wait", {
       agentId,
       source: result.source,
       status: result.status ?? "unknown",
       updatesObserved: result.updatesObserved,
+      baselineAssistant: baseline?.lastAssistantMessage ? "present" : "absent",
       durationMs: Date.now() - startedAt
     });
     return result;
@@ -298,7 +325,8 @@ export async function waitForPaseoAgentNative(
 
 export async function waitForPaseoAgentHandle(
   handle: NativeAgentHandle,
-  timeoutMs = 1_800_000
+  timeoutMs = 1_800_000,
+  baseline?: PaseoTurnBaseline
 ): Promise<PaseoNativeWaitResult> {
   let updatesObserved = 0;
   let sawActivity = false;
@@ -328,7 +356,7 @@ export async function waitForPaseoAgentHandle(
       if (!raw || settled) return;
       const status = statusText(raw.status);
       if (fromUpdate) updatesObserved += 1;
-      if (fromUpdate || isActiveStatus(status) || Boolean(raw.activeTurn)) sawActivity = true;
+      if (isActiveStatus(status) || Boolean(raw.activeTurn)) sawActivity = true;
       if (!isTerminalStatus(status)) return;
 
       const timeline =
@@ -339,11 +367,15 @@ export async function waitForPaseoAgentHandle(
           : undefined;
       const lastMessage =
         stringField(raw, ["lastMessage", "last_message"]) ?? extractLastAssistantText(timeline);
+      const newAssistantEvidence = Boolean(
+        lastMessage && lastMessage !== baseline?.lastAssistantMessage
+      );
 
-      // A wait starts after dispatch. If the turn completed before subscription,
-      // the fresh timeline proves completion. If the snapshot is merely a stale
-      // pre-turn idle, wait until an update/activity signal arrives instead.
-      if (status === "idle" && !sawActivity && !lastMessage) return;
+      // Subscription updates can be metadata-only. An idle snapshot is accepted
+      // only when AEH observed a real active-turn state or assistant output that
+      // differs from the pre-dispatch baseline. Fresh agents have no baseline,
+      // so completion-before-subscribe remains detectable from their first reply.
+      if (status === "idle" && !sawActivity && !newAssistantEvidence) return;
 
       finish({
         id: handle.id,
@@ -365,8 +397,6 @@ export async function waitForPaseoAgentHandle(
       return;
     }
 
-    // Subscribe first, then refetch. A transition between these operations is
-    // therefore either captured by the listener or represented by the refetch.
     chain = chain.then(() => inspect(false)).catch(fail);
     timer = setTimeout(
       () =>

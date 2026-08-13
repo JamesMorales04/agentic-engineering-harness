@@ -9,6 +9,11 @@ import { listManagedPaseoAgents } from "../paseo/runtime.js";
 import { recordPaseoTrace } from "../paseo/trace.js";
 import { runProcess, type ProcessResult } from "../utils/process.js";
 import {
+  disableOperationCompletionTarget,
+  notifyOperationCompletion,
+  registerOperationCompletionTarget
+} from "./completion.js";
+import {
   loadOperation,
   patchOperation,
   saveOperation,
@@ -23,11 +28,14 @@ export interface StartOperationOptions {
   nodeExecutable: string;
   entryFile: string;
   spawnProcess?: typeof spawn;
+  completionAgentId?: string;
+  completionSource?: string;
 }
 
 export interface OperationControllerDeps {
   run?: typeof runProcess;
   trace?: typeof recordPaseoTrace;
+  notifyCompletion?: (root: string, operation: OperationRecord) => Promise<unknown>;
 }
 
 export async function startDetachedOperation(
@@ -52,6 +60,17 @@ export async function startDetachedOperation(
   };
   await saveOperation(absoluteRoot, record);
 
+  const completionAgentId =
+    options.completionAgentId?.trim() || process.env.PASEO_AGENT_ID?.trim() || undefined;
+  if (completionAgentId) {
+    await registerOperationCompletionTarget(
+      absoluteRoot,
+      id,
+      completionAgentId,
+      options.completionSource ?? (options.completionAgentId ? "explicit" : "environment")
+    );
+  }
+
   const spawnProcess = options.spawnProcess ?? spawn;
   let child: ChildProcess;
   try {
@@ -70,6 +89,13 @@ export async function startDetachedOperation(
       }
     );
   } catch (error) {
+    if (completionAgentId) {
+      await disableOperationCompletionTarget(
+        absoluteRoot,
+        id,
+        `Detached controller spawn failed before the initiating tool returned: ${String(error)}`
+      ).catch(() => undefined);
+    }
     return patchOperation(absoluteRoot, id, {
       status: "FAILED",
       phase: "spawn-failed",
@@ -131,17 +157,22 @@ export async function executeOperation(
       });
       const current = await loadOperation(absoluteRoot, operationId);
       if (current.status === "CANCELLED") return current;
-      return patchOperation(absoluteRoot, operationId, {
-        status: "SUCCEEDED",
-        phase: "finished",
-        finishedAt: new Date().toISOString(),
-        result: {
-          auditId: report.auditId,
-          status: report.status,
-          productionSafe: report.productionSafe,
-          report: `.harness/audits/${report.auditId}.json`
-        }
-      });
+      return terminalizeOperation(
+        absoluteRoot,
+        operationId,
+        {
+          status: "SUCCEEDED",
+          phase: "finished",
+          finishedAt: new Date().toISOString(),
+          result: {
+            auditId: report.auditId,
+            status: report.status,
+            productionSafe: report.productionSafe,
+            report: `.harness/audits/${report.auditId}.json`
+          }
+        },
+        deps
+      );
     }
 
     const payload = record.payload as RunOperationPayload;
@@ -151,25 +182,35 @@ export async function executeOperation(
     });
     const current = await loadOperation(absoluteRoot, operationId);
     if (current.status === "CANCELLED") return current;
-    return patchOperation(absoluteRoot, operationId, {
-      status: result.status === "PASS" ? "SUCCEEDED" : "FAILED",
-      phase: "finished",
-      finishedAt: new Date().toISOString(),
-      result: {
-        taskId: result.taskId,
-        status: result.status,
-        attempts: result.attempts
-      }
-    });
+    return terminalizeOperation(
+      absoluteRoot,
+      operationId,
+      {
+        status: result.status === "PASS" ? "SUCCEEDED" : "FAILED",
+        phase: "finished",
+        finishedAt: new Date().toISOString(),
+        result: {
+          taskId: result.taskId,
+          status: result.status,
+          attempts: result.attempts
+        }
+      },
+      deps
+    );
   } catch (error) {
     const current = await loadOperation(absoluteRoot, operationId).catch(() => record);
     if (current.status === "CANCELLED") return current;
-    return patchOperation(absoluteRoot, operationId, {
-      status: "FAILED",
-      phase: "failed",
-      error: error instanceof Error ? error.stack ?? error.message : String(error),
-      finishedAt: new Date().toISOString()
-    });
+    return terminalizeOperation(
+      absoluteRoot,
+      operationId,
+      {
+        status: "FAILED",
+        phase: "failed",
+        error: error instanceof Error ? error.stack ?? error.message : String(error),
+        finishedAt: new Date().toISOString()
+      },
+      deps
+    );
   }
 }
 
@@ -268,12 +309,17 @@ export async function cancelOperation(
     }
   }
 
-  return patchOperation(absoluteRoot, operationId, {
-    status: "CANCELLED",
-    phase: "cancelled",
-    finishedAt: new Date().toISOString(),
-    cleanupWarnings: cleanupWarnings.length ? cleanupWarnings : undefined
-  });
+  return terminalizeOperation(
+    absoluteRoot,
+    operationId,
+    {
+      status: "CANCELLED",
+      phase: "cancelled",
+      finishedAt: new Date().toISOString(),
+      cleanupWarnings: cleanupWarnings.length ? cleanupWarnings : undefined
+    },
+    deps
+  );
 }
 
 export function createOperationId(kind: OperationKind, seed: string): string {
@@ -283,6 +329,28 @@ export function createOperationId(kind: OperationKind, seed: string): string {
     .replace(/\.\d{3}Z$/, "Z");
   const hash = crypto.createHash("sha256").update(seed).digest("hex").slice(0, 8);
   return `${kind.toUpperCase()}-${stamp}-${hash}`;
+}
+
+async function terminalizeOperation(
+  root: string,
+  operationId: string,
+  patch: Partial<OperationRecord>,
+  deps: OperationControllerDeps
+): Promise<OperationRecord> {
+  const terminal = await patchOperation(root, operationId, patch);
+  const trace = deps.trace ?? recordPaseoTrace;
+  try {
+    if (deps.notifyCompletion) await deps.notifyCompletion(root, terminal);
+    else await notifyOperationCompletion(root, terminal, { trace });
+  } catch (error) {
+    await trace(root, "operation.callback.failed", {
+      operationId,
+      operationStatus: terminal.status,
+      error: error instanceof Error ? error.message : String(error),
+      boundary: "controller"
+    }).catch(() => undefined);
+  }
+  return terminal;
 }
 
 async function ensureOperationWorkspace(
