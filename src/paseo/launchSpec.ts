@@ -65,6 +65,8 @@ export async function compilePaseoAgentLaunchSpec(
     selection?.runtimeAdapter === "opencode" && provider === "opencode"
       ? compileOpenCodeRuntimeProjection(selection, config)
       : undefined;
+  const explicitOpenCodeMode =
+    openCode && !openCode.binding.managed ? openCode.binding.agentId : undefined;
 
   const labels: Record<string, string> = {
     "aeh.project": config.project.name,
@@ -90,8 +92,15 @@ export async function compilePaseoAgentLaunchSpec(
     title,
     provider,
     model,
-    modeId: openCode?.binding.agentId,
-    modeSource: openCode?.binding.source,
+    // Paseo validates an explicit mode against the provider catalog before it
+    // launches the per-session OpenCode process. AEH-managed agents exist only
+    // in OPENCODE_CONFIG_CONTENT for that process, so exposing their generated
+    // id as modeId makes Paseo reject them before OpenCode can load the config.
+    // Leave modeId unset for managed identities: Paseo then omits the OpenCode
+    // prompt `agent` field and the injected default_agent selects the managed
+    // primary deterministically inside the session.
+    modeId: explicitOpenCodeMode,
+    modeSource: explicitOpenCodeMode ? openCode?.binding.source : undefined,
     thinkingOptionId: openCode ? selection?.variant : undefined,
     env: openCode?.env,
     nativeAgentId: openCode?.binding.agentId,
