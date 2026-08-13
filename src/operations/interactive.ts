@@ -1,3 +1,8 @@
+import {
+  isManagedInteractiveLead,
+  isSideEffectFreeMetaInvocation
+} from "./executionContext.js";
+
 export interface InteractiveOperationPromotion {
   kind: "audit" | "run";
   operationArgv: string[];
@@ -7,7 +12,14 @@ export function promoteInteractiveOperation(
   argv: string[],
   env: NodeJS.ProcessEnv = process.env
 ): InteractiveOperationPromotion | undefined {
-  if (!env.PASEO_AGENT_ID?.trim() || env.AEH_ALLOW_SYNC_INTERACTIVE === "1") return undefined;
+  if (
+    !env.PASEO_AGENT_ID?.trim() ||
+    !isManagedInteractiveLead(env) ||
+    env.AEH_ALLOW_SYNC_INTERACTIVE === "1" ||
+    isSideEffectFreeMetaInvocation(argv)
+  ) {
+    return undefined;
+  }
 
   if (argv[0] === "audit") {
     return { kind: "audit", operationArgv: ["audit", ...argv.slice(1)] };
