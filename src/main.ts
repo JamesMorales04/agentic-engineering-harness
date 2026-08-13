@@ -4,6 +4,10 @@ import path from "node:path";
 import process from "node:process";
 import { loadProjectConfig } from "./core/config.js";
 import { cancelOperation, executeOperation, startDetachedOperation, waitForOperation } from "./operations/controller.js";
+import {
+  assertHarnessWorkflowEntryAllowed,
+  isSideEffectFreeMetaInvocation
+} from "./operations/executionContext.js";
 import { promoteInteractiveOperation } from "./operations/interactive.js";
 import { serveOperationMcp } from "./operations/mcp.js";
 import { loadOperation, type AuditOperationPayload, type RunOperationPayload } from "./operations/state.js";
@@ -13,7 +17,12 @@ import { VERSION } from "./version.js";
 
 const args = process.argv.slice(2);
 
-if (args[0] === "start") {
+// A Paseo session id identifies a session, not Harness orchestration authority.
+// Bounded reviewers/workers are already inside an AEH workflow and must never
+// recursively re-enter it. Meta invocations remain side-effect free.
+assertHarnessWorkflowEntryAllowed(args);
+
+if (args[0] === "start" && !isSideEffectFreeMetaInvocation(args)) {
   const root = resolveStartProjectRoot(args.slice(1));
   if (await relaunchSelfCheckoutIfNeeded(root)) process.exit(process.exitCode ?? 0);
   console.log(`aehRuntime=${VERSION}`);
