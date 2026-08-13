@@ -17,6 +17,7 @@ import {
   loadOperation,
   patchOperation,
   saveOperation,
+  transitionOperationToTerminal,
   type AuditOperationPayload,
   type OperationKind,
   type OperationPayload,
@@ -334,10 +335,16 @@ export function createOperationId(kind: OperationKind, seed: string): string {
 async function terminalizeOperation(
   root: string,
   operationId: string,
-  patch: Partial<OperationRecord>,
+  patch: Partial<OperationRecord> & { status: "SUCCEEDED" | "FAILED" | "CANCELLED" },
   deps: OperationControllerDeps
 ): Promise<OperationRecord> {
-  const terminal = await patchOperation(root, operationId, patch);
+  const { record: terminal, transitioned } = await transitionOperationToTerminal(
+    root,
+    operationId,
+    patch
+  );
+  if (!transitioned) return terminal;
+
   const trace = deps.trace ?? recordPaseoTrace;
   try {
     if (deps.notifyCompletion) await deps.notifyCompletion(root, terminal);
