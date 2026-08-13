@@ -4,6 +4,10 @@ import path from "node:path";
 import process from "node:process";
 import { loadProjectConfig } from "./core/config.js";
 import { cancelOperation, executeOperation, startDetachedOperation, waitForOperation } from "./operations/controller.js";
+import {
+  assertHarnessWorkflowEntryAllowed,
+  isSideEffectFreeMetaInvocation
+} from "./operations/executionContext.js";
 import { promoteInteractiveOperation } from "./operations/interactive.js";
 import { serveOperationMcp } from "./operations/mcp.js";
 import { loadOperation, type AuditOperationPayload, type RunOperationPayload } from "./operations/state.js";
@@ -13,7 +17,16 @@ import { VERSION } from "./version.js";
 
 const args = process.argv.slice(2);
 
-if (args[0] === "start") {
+// A Paseo session id identifies a session, not Harness orchestration authority.
+// Bounded reviewers/workers are already inside an AEH workflow and must never
+// recursively re-enter it. Meta invocations remain side-effect free.
+assertHarnessWorkflowEntryAllowed(args);
+
+if (printControlPlaneMetaHelp(args)) {
+  process.exit(process.exitCode ?? 0);
+}
+
+if (args[0] === "start" && !isSideEffectFreeMetaInvocation(args)) {
   const root = resolveStartProjectRoot(args.slice(1));
   if (await relaunchSelfCheckoutIfNeeded(root)) process.exit(process.exitCode ?? 0);
   console.log(`aehRuntime=${VERSION}`);
@@ -190,6 +203,27 @@ function printOperation(record: Awaited<ReturnType<typeof loadOperation>>, json:
   if (record.workspaceWarning) console.log(`workspaceWarning=${record.workspaceWarning}`);
   if (record.error) console.log(`error=${record.error.split("\n", 1)[0]}`);
   if (record.result) console.log(`result=${JSON.stringify(record.result)}`);
+}
+
+function printControlPlaneMetaHelp(argv: string[]): boolean {
+  if (!isSideEffectFreeMetaInvocation(argv)) return false;
+  const command = argv[0];
+  if (command === "audit") {
+    console.log("Usage: aeh audit <request> [directory] [--file <path>] [--domain <name>] [--risk low|medium|high] [--reviewer <agent>]");
+    console.log("Run a read-only engineering audit. Managed interactive leads normally use detached operation start; bounded agents may inspect this help without entering another workflow.");
+    return true;
+  }
+  if (command === "start") {
+    console.log("Usage: aeh start [directory] [--lead <agent>] [--title <title>] [--new|--resume] [--no-web-ui] [--no-setup]");
+    console.log("Start a managed Paseo lead. A normal start creates a fresh lead; --resume explicitly reuses a compatible one.");
+    return true;
+  }
+  if (command === "operation") {
+    console.log("Usage: aeh operation start|status|wait|cancel ...");
+    console.log("Detached operation control. Bounded agents may inspect help/status but may not recursively start, execute, wait for, or cancel parent workflows unless recovery is explicitly delegated.");
+    return true;
+  }
+  return false;
 }
 
 function printControlPlaneHelp(): void {

@@ -5,6 +5,7 @@ import {
 import type { AgentExecutionSelection } from "../agents/types.js";
 import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
 import { deliveryWorkspaceId } from "../delivery/handoff.js";
+import { buildManagedAgentEnvironment } from "../operations/executionContext.js";
 import { currentOperationContext } from "../operations/state.js";
 
 export interface PaseoLaunchSpecOptions {
@@ -67,6 +68,15 @@ export async function compilePaseoAgentLaunchSpec(
       : undefined;
   const explicitOpenCodeMode =
     openCode && !openCode.binding.managed ? openCode.binding.agentId : undefined;
+  const executionEnv = buildManagedAgentEnvironment({
+    logicalAgent,
+    role: selection?.role ?? "worker",
+    operationId,
+    operationKind,
+    phase,
+    interactiveLead: false,
+    orchestrationAllowed: false
+  });
 
   const labels: Record<string, string> = {
     "aeh.project": config.project.name,
@@ -102,7 +112,10 @@ export async function compilePaseoAgentLaunchSpec(
     modeId: explicitOpenCodeMode,
     modeSource: explicitOpenCodeMode ? openCode?.binding.source : undefined,
     thinkingOptionId: openCode ? selection?.variant : undefined,
-    env: openCode?.env,
+    env: {
+      ...(openCode?.env ?? {}),
+      ...executionEnv
+    },
     nativeAgentId: openCode?.binding.agentId,
     workspaceId,
     labels,

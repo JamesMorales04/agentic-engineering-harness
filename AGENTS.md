@@ -23,6 +23,14 @@ Classify requests as:
 
 Do not use the informational exception for an ad-hoc engineering review. Do not bypass the Harness by editing directly.
 
+### Harness-spawned bounded-agent exception
+
+The interactive-entry invariant applies at the **top-level user-facing lead boundary**. A planner, reviewer, implementer, explorer, oracle, spec-manager or other bounded agent spawned by an existing AEH operation has **already entered the Harness** and must execute its assigned role directly.
+
+A Harness-spawned bounded agent must not recursively invoke `aeh start`, `aeh audit`, `aeh run`, `aeh operation start/execute/wait/cancel`, QUICK/SPEC authoring or another Harness workflow merely because the assigned work itself is an audit/change/review. It should inspect or modify the repository only within its granted permissions and return its declared output contract. Controller recovery is allowed only when the assignment explicitly delegates that responsibility.
+
+`PASEO_AGENT_ID` identifies a Paseo session; it does **not** prove that the session is the interactive AEH lead. AEH runtime identity (`AEH_INTERACTIVE_LEAD`, `AEH_ORCHESTRATION_ALLOWED`, logical role/operation metadata) is authoritative for that distinction. `--help`, `-h`, `--version` and read-only status inspection must remain side-effect free.
+
 ## Thin lead invariant
 
 The lead is an orchestrator, not an interactive CI/operator process. It must delegate:

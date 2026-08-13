@@ -12,6 +12,14 @@ Classify requests as:
 
 Do not use the informational exception for an ad-hoc engineering review. `aeh start` is the preferred Paseo entrypoint. A normal start creates a fresh lead; `aeh start --resume` is explicit reuse.
 
+### Harness-spawned bounded-agent exception
+
+The interactive-entry rule applies to the top-level user-facing lead. A planner, reviewer, implementer, explorer, oracle, spec-manager or other bounded agent spawned by an existing AEH operation is already executing **inside** the Harness and must perform its assigned role directly.
+
+Harness-spawned bounded agents must not recursively invoke `aeh start`, `aeh audit`, `aeh run`, `aeh operation start/execute/wait/cancel`, QUICK/SPEC authoring or another Harness workflow merely because their assignment is itself engineering work. Use repository/runtime tools within the granted permissions and return the assigned output contract. Controller recovery is allowed only when explicitly delegated.
+
+`PASEO_AGENT_ID` identifies a Paseo session and does not grant lead authority. AEH's explicit runtime identity (`AEH_INTERACTIVE_LEAD`, `AEH_ORCHESTRATION_ALLOWED`, logical role/operation metadata) determines whether workflow orchestration is allowed. `--help`, `-h`, `--version` and read-only status inspection must remain side-effect free.
+
 ## Lead agent — thin orchestrator
 
 The lead owns user intent, high-level routing, true ambiguity and final semantic acceptance. It does **not** own routine repository exploration, environment repair, SDD authoring, implementation or a long-running controller shell.

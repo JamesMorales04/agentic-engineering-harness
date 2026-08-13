@@ -5,6 +5,7 @@ import { loadResolvedAgentTopology } from "../agents/config.js";
 import { executionSelectionForAgent } from "../agents/routing.js";
 import { reconcileHarnessAssets } from "../core/assets.js";
 import type { HarnessProjectConfig } from "../core/types.js";
+import { buildManagedAgentEnvironment } from "../operations/executionContext.js";
 import { setupToolchain } from "../toolchain/setup.js";
 import { clearToolchainEnvCache, commandExists, runProcess, type ProcessResult } from "../utils/process.js";
 import { VERSION } from "../version.js";
@@ -12,7 +13,7 @@ import { detectPaseoDaemonCapabilities, isRecoverableDaemonStatus } from "./capa
 import { launchManagedPaseoAgent, probeManagedPaseoAgent } from "./runtime.js";
 import type { PaseoSdkAgentOptions } from "./sdk.js";
 
-export const PASEO_BOOTSTRAP_VERSION = 8;
+export const PASEO_BOOTSTRAP_VERSION = 9;
 export type PaseoSessionPolicy = "fresh-on-start" | "reuse-compatible" | "resume-explicit";
 
 export interface PaseoStartOptions {
@@ -76,7 +77,7 @@ const DEFAULT_DEPS: PaseoStartDeps = {
   probeAgent: probeManagedPaseoAgent,
   reconcileAssets: reconcileHarnessAssets
 };
-type InteractiveV8 = NonNullable<
+type InteractiveV9 = NonNullable<
   NonNullable<HarnessProjectConfig["orchestration"]>["interactive"]
 >;
 
@@ -88,7 +89,7 @@ export async function startPaseoHarness(
 ): Promise<PaseoStartResult> {
   const projectRoot = path.resolve(root);
   await (deps.reconcileAssets ?? reconcileHarnessAssets)(projectRoot);
-  const settings = config.orchestration?.interactive as InteractiveV8 | undefined;
+  const settings = config.orchestration?.interactive as InteractiveV9 | undefined;
   const autoSetup = options.autoSetup ?? settings?.autoSetup ?? true;
   const webUi = options.webUi ?? settings?.webUi ?? true;
   const stateDir = path.resolve(projectRoot, settings?.stateDir ?? ".harness/paseo");
@@ -218,6 +219,12 @@ export async function startPaseoHarness(
     provider,
     model,
     systemPrompt: bootstrap,
+    env: buildManagedAgentEnvironment({
+      logicalAgent: leadName,
+      role: selection.role ?? "orchestrator",
+      interactiveLead: true,
+      orchestrationAllowed: true
+    }),
     labels,
     waitForFinish: false,
     timeoutSeconds: 300,
@@ -326,6 +333,8 @@ export function buildPaseoLeadBootstrap(
   return `AEH thin-lead Paseo bootstrap v${PASEO_BOOTSTRAP_VERSION}; AEH runtime v${VERSION}.
 
 You are the top-level engineering lead for project ${JSON.stringify(projectName)} at ${JSON.stringify(projectRoot)}. A normal \`aeh start\` creates a fresh lead; explicit resume is opt-in.${handoff}
+
+This session carries explicit AEH lead identity (\`AEH_INTERACTIVE_LEAD=1\`). Paseo session identity alone does not grant orchestration authority. Harness-spawned reviewers/workers/planners are already inside the workflow and must not recursively invoke AEH entrypoints.
 
 Your exact AEH runtime invocation is \`${aehCommand}\`. This invocation and runtime version are part of the durable lead identity. Do not replace it with another global, cached, npx or guessed AEH executable.
 
