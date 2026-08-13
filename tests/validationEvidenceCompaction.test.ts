@@ -13,7 +13,21 @@ describe("validation evidence compaction", () => {
     });
     expect(check.status).toBe("PASS");
     expect(check.details).not.toHaveProperty("stdout");
-    expect(check.details).toEqual(expect.objectContaining({ exitCode: 0, summary: expect.objectContaining({ testFilesPassed: 83, testsPassed: 260, typecheck: "PASS", build: "PASS" }) }));
+    expect(check.details).toEqual(expect.objectContaining({
+      exitCode: 0,
+      summary: expect.objectContaining({ testFilesPassed: 83, testsPassed: 260, typecheck: "PASS", build: "PASS" })
+    }));
     expect(Number(check.details?.stdoutBytes)).toBeGreaterThan(0);
+  });
+
+  it("preserves bounded failure diagnostics because they are semantic evidence", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-validation-evidence-"));
+    const check = await runValidationCommand(root, {
+      id: "diagnostic-fail",
+      command: "printf 'expected one received two\\n' >&2; exit 1"
+    });
+    expect(check.status).toBe("FAIL");
+    expect(check.details).toEqual(expect.objectContaining({ exitCode: 1 }));
+    expect(String(check.details?.stderr)).toContain("expected one received two");
   });
 });
