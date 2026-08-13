@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const workers = vi.hoisted(() => ({
   materializeAgentPrompt: vi.fn(),
@@ -14,9 +14,10 @@ import { ensureOperationSupervisor, operationSupervisorInitializationTimeoutSeco
 import { activeOperationSupervisor, initializingOperationSupervisor, loadOperation, saveOperation, type OperationRecordV2 } from "../src/operations/state.js";
 
 let root = "";
+const originalEnv = snapshotEnv(["AEH_OPERATION_ID", "AEH_CONTROL_ROOT", "AEH_PARENT_OPERATION_ID"]);
+beforeEach(() => clearEnv(Object.keys(originalEnv)));
 afterEach(async () => {
-  delete process.env.AEH_OPERATION_ID;
-  delete process.env.AEH_CONTROL_ROOT;
+  restoreEnv(originalEnv);
   workers.materializeAgentPrompt.mockReset();
   workers.dispatchMaterializedAgentPrompt.mockReset();
   workers.executeAgentPrompt.mockReset();
@@ -95,3 +96,16 @@ describe("supervisor bootstrap regression", () => {
     } as never)).toBe(25);
   });
 });
+
+function snapshotEnv(names: string[]): Record<string, string | undefined> {
+  return Object.fromEntries(names.map((name) => [name, process.env[name]]));
+}
+function clearEnv(names: string[]): void {
+  for (const name of names) delete process.env[name];
+}
+function restoreEnv(snapshot: Record<string, string | undefined>): void {
+  for (const [name, value] of Object.entries(snapshot)) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+}
