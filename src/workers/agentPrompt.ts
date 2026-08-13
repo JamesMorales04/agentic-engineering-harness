@@ -2,8 +2,9 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AgentExecutionSelection } from "../agents/types.js";
-import { outputJsonSchema } from "../agents/outputContracts.js";
+import { outputJsonSchema, validateAgentOutput } from "../agents/outputContracts.js";
 import { compileOpenCodeRuntimeProjection } from "../agents/permissions.js";
+import { extractMarkedJson, StructuredOutputError } from "../agents/structuredOutput.js";
 import { loadFrozenSkillContext } from "../core/controlPlane.js";
 import type { HarnessProjectConfig, TaskContract, WorkerSession } from "../core/types.js";
 import {
@@ -35,6 +36,11 @@ export interface AgentPromptOptions {
   operationKind?: string;
   parentAgentId?: string;
   supervisorAgent?: boolean;
+}
+
+export interface CapturedContractValidation {
+  ok: boolean;
+  failure?: string;
 }
 
 export async function executeAgentPrompt(
@@ -151,7 +157,45 @@ export async function dispatchMaterializedAgentPrompt(
     phase: options.phase ?? materialized.phase,
     finishedAt: new Date().toISOString()
   };
-  return finalizeOperationSession(root, selection, result, options);
+  const finalized = await finalizeOperationSession(root, selection, result, options);
+
+  if (options.outputContract !== "reviewer" || result.exitCode !== 0 || options.supervisorAgent) {
+    return finalized;
+  }
+  const delivery = validateCapturedAgentContract(options.outputContract, result.stdout, result.stderr);
+  if (delivery.ok) return finalized;
+
+  const repairPhase = `${options.phase ?? materialized.phase ?? "work"}-contract-repair`;
+  const repairOptions: AgentPromptOptions = { ...options, phase: repairPhase };
+  const repairPrompt = await buildEffectivePrompt(
+    root,
+    config,
+    contract,
+    selection,
+    serializationRepairPrompt(options.outputContract, delivery.failure),
+    repairOptions
+  );
+  await markOperationSessionRunning(root, materialized.id).catch(() => undefined);
+  const repaired = await continueManagedPaseoAgent(
+    root,
+    materialized.id,
+    repairPrompt,
+    timeout,
+    undefined,
+    schema
+  );
+  const repairedResult: WorkerSession = {
+    ...materialized,
+    exitCode: repaired.exitCode,
+    stdout: repaired.stdout,
+    stderr: repaired.stderr,
+    transport: `paseo-${repaired.transport}`,
+    workspaceId: repaired.workspaceId ?? materialized.workspaceId,
+    status: repaired.status,
+    phase: repairPhase,
+    finishedAt: new Date().toISOString()
+  };
+  return finalizeOperationSession(root, selection, repairedResult, repairOptions);
 }
 
 export async function resumeAgentPrompt(
@@ -165,6 +209,35 @@ export async function resumeAgentPrompt(
 ): Promise<WorkerSession> {
   if (!previous.id) return executeAgentPrompt(root, config, contract, selection, prompt, options);
   return executeAgentPrompt(root, config, contract, selection, prompt, { ...options, resumeSessionId: previous.id });
+}
+
+export function validateCapturedAgentContract(
+  contractName: string,
+  stdout: string,
+  stderr = ""
+): CapturedContractValidation {
+  try {
+    const parsed = extractMarkedJson(stdout, stderr);
+    const validation = validateAgentOutput(contractName, parsed);
+    return validation.ok
+      ? { ok: true }
+      : { ok: false, failure: `SCHEMA_VALIDATION_FAILED: ${validation.issues.join("; ")}` };
+  } catch (error) {
+    if (error instanceof StructuredOutputError) {
+      return { ok: false, failure: `${error.reason}: ${error.message}` };
+    }
+    return { ok: false, failure: `OUTPUT_CONTRACT_UNKNOWN: ${String(error)}` };
+  }
+}
+
+function serializationRepairPrompt(contractName: string, failure?: string): string {
+  return [
+    `Your previous task is complete. Only repair delivery for the '${contractName}' output contract.`,
+    "Do not inspect files, run tools, repeat the task, add new findings, or change conclusions.",
+    `The prior delivery failed structured serialization: ${failure ?? "unknown contract failure"}.`,
+    "Serialize only the result already present in this session into the requested contract.",
+    "Return native JSON only, using ordinary ASCII JSON double quotes and no prose outside the object."
+  ].join("\n");
 }
 
 async function executeViaPaseo(
@@ -359,11 +432,15 @@ async function finalizeOperationSession(
   const operationId = result.operationId ?? currentOperationContext().id;
   if (!operationId || options.supervisorAgent) return result;
   const turnStamp = (result.finishedAt ?? new Date().toISOString()).replace(/[^0-9A-Za-z]+/g, "-");
+  const contractDelivery = options.outputContract
+    ? validateCapturedAgentContract(options.outputContract, result.stdout, result.stderr)
+    : undefined;
   const artifact = await persistOperationAgentArtifact(root, operationId, `${selection.logicalAgent}-${result.id ?? "no-session"}-${turnStamp}`, {
     logicalAgent: selection.logicalAgent,
     role: selection.role,
     phase: result.phase ?? options.phase,
     outputContract: options.outputContract,
+    contractDelivery,
     session: result
   }).catch(() => undefined);
   if (!result.id) return result;
