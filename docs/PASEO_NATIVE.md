@@ -12,6 +12,7 @@ AEH treats Paseo as the authority for agent runtime state and generic agent orch
 | Provider/model availability | Paseo | provider snapshot/listModels/diagnostic |
 | Generic create/send/status/activity tools | Paseo | injected native/MCP Paseo tools |
 | AUDIT/RUN operation state | AEH | `aeh-control` / operation state |
+| Detached operation completion wake-up | AEH + Paseo dispatch | durable completion target + follow-up to existing lead |
 | Context thresholds and handoff policy | AEH | `aeh_context_status` / `context guard` |
 | SDD, contracts, seals, validation | AEH | deterministic Harness core |
 | Quality convergence/acceptance | AEH | deterministic Harness core |
@@ -55,7 +56,7 @@ Managed leads receive the preapproved `aeh_context_status` tool. A normal manage
 
 `aeh context guard --agent ...` remains the CLI compatibility/non-interactive surface and owns handoff-artifact/rotation side effects.
 
-## Event-driven completion
+## Event-driven agent completion
 
 Agent waiting is:
 
@@ -66,10 +67,17 @@ subscribe(agent_update)
         |
         +--> updates trigger refetch
         |
-        `--> terminal state -> read recent timeline -> complete
+        `--> terminal state + turn evidence -> read recent timeline -> complete
 ```
 
-Subscription is installed **before** the first refetch so a transition cannot fall between the snapshot and listener setup. A freshly observed `idle` state is not treated as completion until the wait has observed activity/update evidence, avoiding a send/wait race.
+Subscription is installed **before** the first refetch so a transition cannot fall between the snapshot and listener setup.
+
+For a newly created agent, an assistant response in the fresh timeline can prove that a very fast turn completed before the subscription was installed. For a continued/reused agent, AEH captures the last assistant response **before dispatch** and uses it as a baseline. An `idle` snapshot is accepted only when at least one of these is true:
+
+- AEH observed an active-turn status (`working`, `running`, `streaming`, `starting`) or `activeTurn` before returning to terminal state;
+- the latest assistant response differs from the pre-dispatch baseline.
+
+A subscription notification by itself is **not** turn activity. This prevents metadata-only updates plus stale timeline output from making AEH conclude that a reviewer finished before its current turn actually did.
 
 Fallback order:
 
@@ -82,6 +90,38 @@ Paseo CLI wait/log compatibility
 ```
 
 The selected path is emitted in Paseo integration traces.
+
+## Detached operation completion wake-up
+
+A detached AUDIT/RUN deliberately outlives the conversational turn that starts it. The initiating lead is therefore not required to remain active or poll until all reviewers/workers finish.
+
+For a managed-lead MCP start, AEH resolves the current lead identity and persists a completion target beside the operation:
+
+```text
+.harness/operations/<operation-id>.completion.json
+```
+
+The completion target has an independent lifecycle:
+
+```text
+PENDING -> SENT
+        -> FAILED
+        -> DISABLED
+```
+
+When the engineering operation becomes `SUCCEEDED`, `FAILED`, or `CANCELLED`, the controller first persists that terminal engineering state, then sends a non-blocking follow-up to the existing Paseo lead. The message starts with:
+
+```text
+[AEH_OPERATION_COMPLETED]
+```
+
+and includes the operation id/status plus the durable result/report path when available. The callback tells the lead to continue the original pending user request, read the existing operation/report, and **not** start a duplicate operation.
+
+This solves the case where the lead's original turn ends while reviewers are still running. The reviewers remain independent top-level Paseo agents; the completion callback reactivates the lead only after the controller's full completion barrier has resolved and the operation is terminal.
+
+Callback delivery does not participate in engineering acceptance. If the follow-up cannot be delivered, the callback sidecar becomes `FAILED` and the failure is traced, but a successful AUDIT/RUN remains successful. `aeh_operation_status` is therefore a recovery/diagnostic surface, not the normal mechanism for keeping a conversational turn alive.
+
+Cancellation uses the same terminal callback path after worker cleanup. A synchronous controller spawn failure disables a callback that could otherwise arrive as a confusing continuation after the start tool itself already failed.
 
 ## Provider/model preflight
 
@@ -152,12 +192,19 @@ harness.paseo.agent.launch
 harness.paseo.agent.materialize
 harness.paseo.agent.dispatch
 harness.paseo.agent.snapshot
+harness.paseo.agent.turn.baseline
+harness.paseo.agent.turn.baseline.skipped
 harness.paseo.agent.wait
 harness.paseo.agent.wait.completed
 harness.paseo.agent.wait.fallback
 harness.paseo.context.identity
 harness.paseo.context.status
 harness.paseo.context.handoff
+harness.paseo.operation.callback.target
+harness.paseo.operation.callback.registered
+harness.paseo.operation.callback.sent
+harness.paseo.operation.callback.failed
+harness.paseo.operation.callback.disabled
 harness.paseo.fallback.cli
 harness.paseo.workspace.cli.*
 harness.paseo.cleanup.cli.*
@@ -168,6 +215,8 @@ A useful trace answers:
 - which transport was selected (`sdk` or `cli`);
 - which observation source was used (`subscription`, snapshot, sdk-wait, cli-wait);
 - how the managed lead identity was resolved (`argument`, `environment`, `lead-state`);
+- whether an `idle` completion had real turn evidence rather than a metadata-only update;
+- whether a detached completion callback was registered and delivered;
 - whether a fallback was exceptional or an intentional SDK parity gap;
 - why the fallback occurred;
 - the associated agent/operation/provider/model/workspace;
