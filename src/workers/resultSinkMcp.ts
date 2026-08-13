@@ -2,7 +2,8 @@ import readline from "node:readline";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 import { outputJsonSchema } from "../agents/outputContracts.js";
-import { acceptStructuredResult, loadStructuredResultChannel } from "./resultGateway.js";
+import { loadStructuredResultChannel } from "./resultGateway.js";
+import { commitStructuredResult } from "./resultCommit.js";
 
 interface JsonRpcRequest { jsonrpc?: string; id?: string | number | null; method?: string; params?: Record<string, unknown>; }
 
@@ -45,7 +46,7 @@ export async function handleResultSinkRequest(request: JsonRpcRequest): Promise<
     const params = request.params ?? {};
     if (params.name !== "aeh_submit_result") throw new Error(`Unknown result sink tool '${String(params.name ?? "")}'.`);
     const payload = object(params.arguments);
-    const accepted = await acceptStructuredResult(root, operationId, channelId, payload, "mcp");
+    const accepted = await commitStructuredResult(root, operationId, channelId, payload, "mcp");
     return {
       content: [{ type: "text", text: `Accepted ${channel.contract} result ${accepted.sha256.slice(0, 12)} for the active AEH turn.` }],
       structuredContent: {
