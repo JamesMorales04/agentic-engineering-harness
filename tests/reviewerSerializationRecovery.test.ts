@@ -48,7 +48,7 @@ const materialized = { id: "reviewer-1", provider: "opencode", model: "reviewer-
 
 const validReviewer = { verdict: "PASS", findings: [], finalizationSafety: "SAFE", followUp: [] };
 const validReviewerJson = JSON.stringify(validReviewer);
-const validSupervisor = { summary: "Consolidated", consolidatedFindings: [], sourceFindingIds: [], conflicts: [], missingEvidence: [], unresolved: [], finalizationSafety: "SAFE" };
+const validSupervisor = { summary: "Consolidated", consolidatedFindings: [], sourceFindingIds: [], conflicts: [], missingEvidence: [], unresolved: [], roadmap: [], finalizationSafety: "SAFE" };
 const validSupervisorJson = JSON.stringify(validSupervisor);
 
 beforeEach(() => {
@@ -94,6 +94,22 @@ describe("structured delivery recovery", () => {
     expect(result.phase).toBe("review");
     expect(artifacts.persistOperationAgentArtifact).toHaveBeenCalledTimes(1);
     expect(artifacts.persistOperationAgentArtifact.mock.calls[0]?.[3]).toEqual(expect.objectContaining({ contractDelivery: { ok: true }, structuredResultArtifact: "results/reviewer.json" }));
+  });
+
+  it("treats an accepted durable sink result as authoritative even when captured stdout is empty", async () => {
+    runtime.continueManagedPaseoAgent.mockResolvedValueOnce({ id: "reviewer-1", exitCode: 0, stdout: "", stderr: "", status: "idle", transport: "sdk" });
+    results.reconcileStructuredResult.mockResolvedValueOnce({
+      ok: true,
+      accepted: { artifact: "results/reviewer.json", sha256: "sink123", payload: validReviewer, source: "mcp", turnId: "turn-sink", channelId: "channel-sink" }
+    });
+    artifacts.persistOperationAgentArtifact.mockResolvedValue("transcript.json");
+
+    const result = await dispatchMaterializedAgentPrompt("/repo", config, contract, selection, materialized, "perform the audit", { outputContract: "reviewer", phase: "review", operationKind: "audit" });
+
+    expect(runtime.continueManagedPaseoAgent).toHaveBeenCalledTimes(1);
+    expect(result.stdout).toBe(validReviewerJson);
+    expect(artifacts.persistOperationAgentArtifact.mock.calls[0]?.[3]).toEqual(expect.objectContaining({ contractDelivery: { ok: true }, structuredResultArtifact: "results/reviewer.json" }));
+    expect(state.updateOperationParticipant.mock.calls.at(-1)?.[3]).toEqual(expect.objectContaining({ status: "COMPLETED", resultArtifact: "results/reviewer.json" }));
   });
 
   it("repairs an empty captured structured turn exactly once and accepts the repaired result", async () => {
