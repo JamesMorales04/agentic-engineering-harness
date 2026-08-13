@@ -494,7 +494,7 @@ async function finalizeOperationSession(
     transport: result.transport,
     status: failed ? "FAILED" : "COMPLETED",
     resultArtifact: artifact,
-    error: failed ? contractFailure ?? result.stderr || `agent exited with ${result.exitCode}` : undefined
+    error: failed ? ((contractFailure ?? result.stderr) || `agent exited with ${result.exitCode}`) : undefined
   }).catch(() => undefined);
   return result;
 }
