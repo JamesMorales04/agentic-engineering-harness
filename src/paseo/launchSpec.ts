@@ -1,3 +1,7 @@
+import {
+  compileOpenCodeRuntimeProjection,
+  type OpenCodeAgentBindingSource
+} from "../agents/permissions.js";
 import type { AgentExecutionSelection } from "../agents/types.js";
 import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
 import { deliveryWorkspaceId } from "../delivery/handoff.js";
@@ -18,6 +22,11 @@ export interface PaseoAgentLaunchSpec {
   title: string;
   provider: string;
   model?: string;
+  modeId?: string;
+  modeSource?: OpenCodeAgentBindingSource;
+  thinkingOptionId?: string;
+  env?: Record<string, string>;
+  nativeAgentId?: string;
   workspaceId?: string;
   labels: Record<string, string>;
   timeoutSeconds: number;
@@ -35,8 +44,15 @@ export async function compilePaseoAgentLaunchSpec(
   const selection = options.selection;
   const worker = config.orchestration?.worker;
   const logicalAgent = options.logicalAgent ?? selection?.logicalAgent ?? "worker";
-  const provider = options.provider ?? selection?.paseoProvider ?? worker?.provider ?? "opencode";
-  const model = options.model ?? (selection ? (selection.runtimeAdapter === "codex" ? selection.modelName : selection.modelId) : worker?.model);
+  const provider =
+    options.provider ?? selection?.paseoProvider ?? worker?.provider ?? "opencode";
+  const model =
+    options.model ??
+    (selection
+      ? selection.runtimeAdapter === "codex"
+        ? selection.modelName
+        : selection.modelId
+      : worker?.model);
   const operation = currentOperationContext();
   const operationId = operation.id ?? contract.task.id;
   const operationKind = operation.kind ?? options.kind ?? inferOperationKind(contract);
@@ -44,6 +60,12 @@ export async function compilePaseoAgentLaunchSpec(
   const deliveryId = await deliveryWorkspaceId(root, config, contract.task.id);
   const workspaceId = deliveryId ?? operation.workspaceId;
   const title = `${options.titlePrefix ?? worker?.titlePrefix ?? "aeh"}-${contract.task.id}-${logicalAgent}`;
+
+  const openCode =
+    selection?.runtimeAdapter === "opencode" && provider === "opencode"
+      ? compileOpenCodeRuntimeProjection(selection, config)
+      : undefined;
+
   const labels: Record<string, string> = {
     "aeh.project": config.project.name,
     "aeh.kind": "worker",
@@ -54,7 +76,13 @@ export async function compilePaseoAgentLaunchSpec(
     "aeh.operation.phase": phase
   };
   if (selection?.profile) labels["aeh.profile"] = selection.profile;
-  if (workspaceId && workspaceId === operation.workspaceId && !deliveryId) labels["aeh.workspace.kind"] = "orchestration";
+  if (openCode) {
+    labels["aeh.native-agent"] = openCode.binding.agentId;
+    labels["aeh.native-agent.source"] = openCode.binding.source;
+  }
+  if (workspaceId && workspaceId === operation.workspaceId && !deliveryId) {
+    labels["aeh.workspace.kind"] = "orchestration";
+  }
   if (workspaceId && deliveryId) labels["aeh.workspace.kind"] = "delivery";
 
   return {
@@ -62,6 +90,11 @@ export async function compilePaseoAgentLaunchSpec(
     title,
     provider,
     model,
+    modeId: openCode?.binding.agentId,
+    modeSource: openCode?.binding.source,
+    thinkingOptionId: openCode ? selection?.variant : undefined,
+    env: openCode?.env,
+    nativeAgentId: openCode?.binding.agentId,
     workspaceId,
     labels,
     timeoutSeconds: worker?.timeoutSeconds ?? 1800,
@@ -71,7 +104,10 @@ export async function compilePaseoAgentLaunchSpec(
   };
 }
 
-export function inferAgentPhase(selection: AgentExecutionSelection | undefined, logicalAgent: string): string {
+export function inferAgentPhase(
+  selection: AgentExecutionSelection | undefined,
+  logicalAgent: string
+): string {
   const role = selection?.role?.toLowerCase() ?? "";
   const name = logicalAgent.toLowerCase();
   if (role === "planner" || name.includes("planner")) return "planning";
@@ -79,7 +115,13 @@ export function inferAgentPhase(selection: AgentExecutionSelection | undefined, 
   if (role === "escalation" || name.includes("oracle")) return "diagnosis";
   if (name.includes("spec-manager")) return "spec-authoring";
   if (name.includes("environment-manager")) return "environment-recovery";
-  if (role === "implementer" || name.includes("implementer") || name.includes("worker")) return "implementation";
+  if (
+    role === "implementer" ||
+    name.includes("implementer") ||
+    name.includes("worker")
+  ) {
+    return "implementation";
+  }
   return "work";
 }
 

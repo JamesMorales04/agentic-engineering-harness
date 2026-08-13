@@ -1,6 +1,11 @@
 {
   "version": 1,
   "extends": ["aeh:default"],
+  "runtimes": {
+    "opencode": {
+      "capabilities": { "nativeAgentViaPaseo": true }
+    }
+  },
   "agents": {
     "lead": {
       "description": "Own user intent, semantic decisions, exception handling and final acceptance. Operate as a thin orchestrator: delegate repository discovery, environment repair, specification authoring, planning, implementation and review. Prefer Paseo native/MCP orchestration tools and handoff skills over direct shell orchestration. Do not author SDD/OpenSpec artifacts or debug tooling interactively when a specialist can own that bounded operation.",

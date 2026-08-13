@@ -19,6 +19,9 @@ export interface PaseoSdkAgentOptions {
   workspaceId?: string;
   provider: string;
   model?: string;
+  modeId?: string;
+  thinkingOptionId?: string;
+  env?: Record<string, string>;
   title: string;
   systemPrompt?: string;
   prompt?: string;
@@ -58,8 +61,12 @@ interface PaseoSdkAgentHandle {
   readonly workspaceId?: string | null;
   readonly status?: unknown;
   latest?(): Record<string, unknown> | null;
-  refresh?(requestId?: string): Promise<{ agent: Record<string, unknown>; project: unknown } | null>;
-  refetch?(requestId?: string): Promise<{ agent: Record<string, unknown>; project: unknown } | null>;
+  refresh?(
+    requestId?: string
+  ): Promise<{ agent: Record<string, unknown>; project: unknown } | null>;
+  refetch?(
+    requestId?: string
+  ): Promise<{ agent: Record<string, unknown>; project: unknown } | null>;
   send?(text: string, options?: Record<string, unknown>): Promise<void>;
   run?(text: string, options?: { timeoutMs?: number }): Promise<PaseoSdkTurnResult>;
   waitForFinish?(timeoutMs?: number): Promise<PaseoSdkTurnResult>;
@@ -70,14 +77,20 @@ interface PaseoSdkClient {
   readonly agents: {
     create(options: Record<string, unknown>): Promise<PaseoSdkAgentHandle>;
     ref(agentId: string): PaseoSdkAgentHandle;
-    list(options?: Record<string, unknown>): Promise<{ entries: Array<{ agent: Record<string, unknown> }> }>;
+    list(options?: Record<string, unknown>): Promise<{
+      entries: Array<{ agent: Record<string, unknown> }>;
+    }>;
   };
   connect(): Promise<void>;
   close(): Promise<void>;
 }
 
 interface PaseoSdkModule {
-  createPaseoClient(config: { url: string; clientId?: string; password?: string }): PaseoSdkClient;
+  createPaseoClient(config: {
+    url: string;
+    clientId?: string;
+    password?: string;
+  }): PaseoSdkClient;
 }
 
 export class PaseoSdkUnavailableError extends Error {
@@ -87,72 +100,137 @@ export class PaseoSdkUnavailableError extends Error {
   }
 }
 
-export async function createPaseoSdkAgent(root: string, options: PaseoSdkAgentOptions): Promise<PaseoSdkAgentResult> {
-  return withPaseoClient(root, async (client) => createPaseoSdkAgentWithClient(client, options));
+export async function createPaseoSdkAgent(
+  root: string,
+  options: PaseoSdkAgentOptions
+): Promise<PaseoSdkAgentResult> {
+  return withPaseoClient(root, async (client) =>
+    createPaseoSdkAgentWithClient(client, options)
+  );
 }
 
-export async function materializePaseoSdkAgent(root: string, options: PaseoSdkAgentOptions): Promise<PaseoSdkAgentResult> {
-  return withPaseoClient(root, async (client) => materializePaseoSdkAgentWithClient(client, options));
+export async function materializePaseoSdkAgent(
+  root: string,
+  options: PaseoSdkAgentOptions
+): Promise<PaseoSdkAgentResult> {
+  return withPaseoClient(root, async (client) =>
+    materializePaseoSdkAgentWithClient(client, options)
+  );
 }
 
-export async function materializePaseoSdkAgentWithClient(client: PaseoSdkClient, options: PaseoSdkAgentOptions): Promise<PaseoSdkAgentResult> {
+export async function materializePaseoSdkAgentWithClient(
+  client: PaseoSdkClient,
+  options: PaseoSdkAgentOptions
+): Promise<PaseoSdkAgentResult> {
   const handle = await client.agents.create(buildCreateOptions(options, false));
   return handleResult(handle);
 }
 
-export async function createPaseoSdkAgentWithClient(client: PaseoSdkClient, options: PaseoSdkAgentOptions): Promise<PaseoSdkAgentResult> {
-  const handle = await client.agents.create(buildCreateOptions(options, options.prompt !== undefined));
-  if (options.prompt !== undefined && options.waitForFinish !== false) return waitForHandle(handle, options.timeoutMs);
+export async function createPaseoSdkAgentWithClient(
+  client: PaseoSdkClient,
+  options: PaseoSdkAgentOptions
+): Promise<PaseoSdkAgentResult> {
+  const handle = await client.agents.create(
+    buildCreateOptions(options, options.prompt !== undefined)
+  );
+  if (options.prompt !== undefined && options.waitForFinish !== false) {
+    return waitForHandle(handle, options.timeoutMs);
+  }
   return handleResult(handle);
 }
 
-export async function dispatchPaseoSdkAgent(root: string, agentId: string, prompt: string, timeoutMs?: number): Promise<PaseoSdkAgentResult> {
+export async function dispatchPaseoSdkAgent(
+  root: string,
+  agentId: string,
+  prompt: string,
+  timeoutMs?: number
+): Promise<PaseoSdkAgentResult> {
   return withPaseoClient(root, async (client) => {
     const handle = client.agents.ref(agentId);
     if (typeof handle.send === "function") {
       await handle.send(prompt);
-      return { ...handleResult(handle), status: statusText(handle.status) ?? "working" };
+      return {
+        ...handleResult(handle),
+        status: statusText(handle.status) ?? "working"
+      };
     }
     if (typeof handle.run === "function") {
       const turn = await handle.run(prompt, { timeoutMs });
-      return { id: agentId, workspaceId: handle.workspaceId ?? undefined, status: turn.status, lastMessage: turn.lastMessage, error: turn.error };
+      return {
+        id: agentId,
+        workspaceId: handle.workspaceId ?? undefined,
+        status: turn.status,
+        lastMessage: turn.lastMessage,
+        error: turn.error
+      };
     }
-    throw new PaseoSdkUnavailableError("The active @getpaseo/client agent handle exposes neither send() nor run(); cannot dispatch a turn through the SDK.");
+    throw new PaseoSdkUnavailableError(
+      "The active @getpaseo/client agent handle exposes neither send() nor run(); cannot dispatch a turn through the SDK."
+    );
   });
 }
 
-export async function waitPaseoSdkAgent(root: string, agentId: string, timeoutMs?: number): Promise<PaseoSdkAgentResult> {
-  return withPaseoClient(root, async (client) => waitForHandle(client.agents.ref(agentId), timeoutMs));
+export async function waitPaseoSdkAgent(
+  root: string,
+  agentId: string,
+  timeoutMs?: number
+): Promise<PaseoSdkAgentResult> {
+  return withPaseoClient(root, async (client) =>
+    waitForHandle(client.agents.ref(agentId), timeoutMs)
+  );
 }
 
-export async function runPaseoSdkAgent(root: string, agentId: string, prompt: string, timeoutMs?: number): Promise<PaseoSdkAgentResult> {
+export async function runPaseoSdkAgent(
+  root: string,
+  agentId: string,
+  prompt: string,
+  timeoutMs?: number
+): Promise<PaseoSdkAgentResult> {
   const dispatched = await dispatchPaseoSdkAgent(root, agentId, prompt, timeoutMs);
   if (isTerminalStatus(dispatched.status)) return dispatched;
   return waitPaseoSdkAgent(root, agentId, timeoutMs);
 }
 
-export async function inspectPaseoSdkAgent(root: string, agentId: string): Promise<PaseoSdkAgentRecord | undefined> {
+export async function inspectPaseoSdkAgent(
+  root: string,
+  agentId: string
+): Promise<PaseoSdkAgentRecord | undefined> {
   return withPaseoClient(root, async (client) => {
     const raw = await refreshHandle(client.agents.ref(agentId));
     return raw ? normalizeRecord(raw) : undefined;
   });
 }
 
-export async function probePaseoSdkAgent(root: string, agentId: string): Promise<boolean> {
+export async function probePaseoSdkAgent(
+  root: string,
+  agentId: string
+): Promise<boolean> {
   return Boolean(await inspectPaseoSdkAgent(root, agentId));
 }
 
-export async function listPaseoSdkAgents(root: string, labels: Record<string, string> = {}): Promise<PaseoSdkAgentRecord[]> {
+export async function listPaseoSdkAgents(
+  root: string,
+  labels: Record<string, string> = {}
+): Promise<PaseoSdkAgentRecord[]> {
   return withPaseoClient(root, async (client) => {
     const filter: Record<string, unknown> = { includeArchived: false };
     if (Object.keys(labels).length) filter.labels = labels;
-    if (typeof client.agents.list !== "function") throw new PaseoSdkUnavailableError("The active @getpaseo/client does not expose agents.list().");
+    if (typeof client.agents.list !== "function") {
+      throw new PaseoSdkUnavailableError(
+        "The active @getpaseo/client does not expose agents.list()."
+      );
+    }
     const page = await client.agents.list({ filter });
-    return page.entries.map((entry) => normalizeRecord(entry.agent)).filter((agent) => labelsMatch(agent.labels, labels));
+    return page.entries
+      .map((entry) => normalizeRecord(entry.agent))
+      .filter((agent) => labelsMatch(agent.labels, labels));
   });
 }
 
-async function withPaseoClient<T>(root: string, action: (client: PaseoSdkClient) => Promise<T>): Promise<T> {
+async function withPaseoClient<T>(
+  root: string,
+  action: (client: PaseoSdkClient) => Promise<T>
+): Promise<T> {
   const sdk = await loadPaseoSdk(root);
   const client = sdk.createPaseoClient({
     url: process.env.PASEO_DAEMON_URL?.trim() || "ws://127.0.0.1:6767/ws",
@@ -160,8 +238,14 @@ async function withPaseoClient<T>(root: string, action: (client: PaseoSdkClient)
     password: process.env.PASEO_DAEMON_PASSWORD?.trim() || undefined
   });
   try {
-    try { await client.connect(); }
-    catch (error) { throw new PaseoSdkUnavailableError(`Unable to connect to the Paseo daemon through @getpaseo/client: ${String(error)}`, { cause: error }); }
+    try {
+      await client.connect();
+    } catch (error) {
+      throw new PaseoSdkUnavailableError(
+        `Unable to connect to the Paseo daemon through @getpaseo/client: ${String(error)}`,
+        { cause: error }
+      );
+    }
     return await action(client);
   } finally {
     await client.close().catch(() => undefined);
@@ -172,7 +256,9 @@ async function loadPaseoSdk(root: string): Promise<PaseoSdkModule> {
   const bundled = await resolvePaseoSdkFromCli(root);
   if (bundled.resolved) {
     try {
-      const sdk = await import(pathToFileURL(bundled.resolved).href) as unknown as PaseoSdkModule;
+      const sdk = (await import(
+        pathToFileURL(bundled.resolved).href
+      )) as unknown as PaseoSdkModule;
       if (typeof sdk.createPaseoClient === "function") return sdk;
     } catch (error) {
       bundled.diagnostics.push(`bundled import: ${String(error)}`);
@@ -182,60 +268,112 @@ async function loadPaseoSdk(root: string): Promise<PaseoSdkModule> {
   const packageName = "@getpaseo/client";
   let directError: unknown;
   try {
-    const direct = await import(packageName) as unknown as PaseoSdkModule;
+    const direct = (await import(packageName)) as unknown as PaseoSdkModule;
     if (typeof direct.createPaseoClient === "function") return direct;
-  } catch (error) { directError = error; }
+  } catch (error) {
+    directError = error;
+  }
 
-  const detail = bundled.diagnostics.length ? ` Resolution diagnostics: ${bundled.diagnostics.join("; ")}.` : "";
+  const detail = bundled.diagnostics.length
+    ? ` Resolution diagnostics: ${bundled.diagnostics.join("; ")}.`
+    : "";
   throw new PaseoSdkUnavailableError(
-    `@getpaseo/client could not be resolved from the active Paseo CLI installation or directly.${detail}${directError ? ` Direct import: ${String(directError)}` : ""}`,
+    `@getpaseo/client could not be resolved from the active Paseo CLI installation or directly.${detail}${
+      directError ? ` Direct import: ${String(directError)}` : ""
+    }`,
     { cause: directError }
   );
 }
 
-function buildCreateOptions(options: PaseoSdkAgentOptions, includePrompt: boolean): Record<string, unknown> {
-  const config: Record<string, unknown> = normalizeProviderModel(options.provider, options.model);
+function buildCreateOptions(
+  options: PaseoSdkAgentOptions,
+  includePrompt: boolean
+): Record<string, unknown> {
+  const config: Record<string, unknown> = normalizeProviderModel(
+    options.provider,
+    options.model
+  );
+  if (options.modeId) config.modeId = options.modeId;
+  if (options.thinkingOptionId) config.thinkingOptionId = options.thinkingOptionId;
   if (options.systemPrompt) config.systemPrompt = options.systemPrompt;
-  if (options.mcpServers && Object.keys(options.mcpServers).length) config.mcpServers = options.mcpServers;
+  if (options.mcpServers && Object.keys(options.mcpServers).length) {
+    config.mcpServers = options.mcpServers;
+  }
   if (options.toolPolicy?.preapproved.length) config.toolPolicy = options.toolPolicy;
-  // Paseo 0.3.1 resolves AgentSessionConfig from top-level cwd plus config,
-  // and still requires cwd when workspaceId is present. workspaceId controls
-  // placement; cwd remains the provider execution directory.
-  const createOptions: Record<string, unknown> = { config, title: options.title, cwd: options.cwd };
+
+  // Paseo v0.3.1 resolves AgentSessionConfig from top-level cwd plus config.
+  // modeId is provider-specific (OpenCode maps it to its native `agent` field)
+  // while top-level env is forwarded as the provider launch environment.
+  const createOptions: Record<string, unknown> = {
+    config,
+    title: options.title,
+    cwd: options.cwd
+  };
+  if (options.env && Object.keys(options.env).length) createOptions.env = options.env;
   if (options.workspaceId) createOptions.workspaceId = options.workspaceId;
-  if (includePrompt && options.prompt !== undefined) createOptions.initialPrompt = options.prompt;
-  if (includePrompt && options.outputSchema) createOptions.outputSchema = options.outputSchema;
-  if (options.labels && Object.keys(options.labels).length) createOptions.labels = options.labels;
+  if (includePrompt && options.prompt !== undefined) {
+    createOptions.initialPrompt = options.prompt;
+  }
+  if (includePrompt && options.outputSchema) {
+    createOptions.outputSchema = options.outputSchema;
+  }
+  if (options.labels && Object.keys(options.labels).length) {
+    createOptions.labels = options.labels;
+  }
   return createOptions;
 }
 
-async function waitForHandle(handle: PaseoSdkAgentHandle, timeoutMs = 1_800_000): Promise<PaseoSdkAgentResult> {
+async function waitForHandle(
+  handle: PaseoSdkAgentHandle,
+  timeoutMs = 1_800_000
+): Promise<PaseoSdkAgentResult> {
   if (typeof handle.waitForFinish === "function") {
     const turn = await handle.waitForFinish(timeoutMs);
-    return { id: handle.id, workspaceId: handle.workspaceId ?? undefined, status: turn.status, lastMessage: turn.lastMessage, error: turn.error };
+    return {
+      id: handle.id,
+      workspaceId: handle.workspaceId ?? undefined,
+      status: turn.status,
+      lastMessage: turn.lastMessage,
+      error: turn.error
+    };
   }
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const raw = await refreshHandle(handle);
     const status = statusText(raw?.status ?? handle.status);
     if (isTerminalStatus(status)) {
-      const timeline = handle.timeline && typeof handle.timeline.refetch === "function"
-        ? await handle.timeline.refetch({ direction: "backward", limit: 50 }).catch(() => undefined)
-        : undefined;
+      const timeline =
+        handle.timeline && typeof handle.timeline.refetch === "function"
+          ? await handle.timeline
+              .refetch({ direction: "backward", limit: 50 })
+              .catch(() => undefined)
+          : undefined;
       return {
         id: handle.id,
-        workspaceId: handle.workspaceId ?? stringField(raw ?? {}, ["workspaceId", "workspace_id"]),
+        workspaceId:
+          handle.workspaceId ?? stringField(raw ?? {}, ["workspaceId", "workspace_id"]),
         status,
-        lastMessage: stringField(raw ?? {}, ["lastMessage", "last_message"]) ?? extractLastAssistantText(timeline),
+        lastMessage:
+          stringField(raw ?? {}, ["lastMessage", "last_message"]) ??
+          extractLastAssistantText(timeline),
         error: stringField(raw ?? {}, ["error", "lastError", "last_error"])
       };
     }
-    if (Date.now() >= deadline) return { id: handle.id, workspaceId: handle.workspaceId ?? undefined, status: "timeout", error: `Timed out after ${timeoutMs}ms.` };
+    if (Date.now() >= deadline) {
+      return {
+        id: handle.id,
+        workspaceId: handle.workspaceId ?? undefined,
+        status: "timeout",
+        error: `Timed out after ${timeoutMs}ms.`
+      };
+    }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
 }
 
-async function refreshHandle(handle: PaseoSdkAgentHandle): Promise<Record<string, unknown> | undefined> {
+async function refreshHandle(
+  handle: PaseoSdkAgentHandle
+): Promise<Record<string, unknown> | undefined> {
   if (typeof handle.refetch === "function") return (await handle.refetch())?.agent;
   if (typeof handle.refresh === "function") return (await handle.refresh())?.agent;
   return handle.latest?.() ?? undefined;
@@ -243,22 +381,40 @@ async function refreshHandle(handle: PaseoSdkAgentHandle): Promise<Record<string
 
 function handleResult(handle: PaseoSdkAgentHandle): PaseoSdkAgentResult {
   const raw = handle.latest?.() ?? undefined;
-  return { id: handle.id, workspaceId: handle.workspaceId ?? stringField(raw ?? {}, ["workspaceId", "workspace_id"]), status: statusText(raw?.status ?? handle.status) };
+  return {
+    id: handle.id,
+    workspaceId:
+      handle.workspaceId ?? stringField(raw ?? {}, ["workspaceId", "workspace_id"]),
+    status: statusText(raw?.status ?? handle.status)
+  };
 }
 
-function normalizeProviderModel(provider: string, model?: string): Record<string, string> {
+function normalizeProviderModel(
+  provider: string,
+  model?: string
+): Record<string, string> {
   const normalizedProvider = provider.trim();
   if (!normalizedProvider) throw new Error("Paseo SDK requires a provider.");
   const separator = normalizedProvider.indexOf("/");
   if (separator < 0) {
     const explicitModel = model?.trim();
-    return explicitModel ? { provider: normalizedProvider, model: explicitModel } : { provider: normalizedProvider };
+    return explicitModel
+      ? { provider: normalizedProvider, model: explicitModel }
+      : { provider: normalizedProvider };
   }
   const providerId = normalizedProvider.slice(0, separator).trim();
   const embeddedModel = normalizedProvider.slice(separator + 1).trim();
-  if (!providerId || !embeddedModel) throw new Error(`Invalid Paseo provider/model value '${provider}'. Expected '<provider>/<model>'.`);
+  if (!providerId || !embeddedModel) {
+    throw new Error(
+      `Invalid Paseo provider/model value '${provider}'. Expected '<provider>/<model>'.`
+    );
+  }
   const explicitModel = model?.trim();
-  if (explicitModel && explicitModel !== embeddedModel) throw new Error(`Conflicting Paseo models: provider value '${provider}' embeds '${embeddedModel}' but explicit model is '${explicitModel}'.`);
+  if (explicitModel && explicitModel !== embeddedModel) {
+    throw new Error(
+      `Conflicting Paseo models: provider value '${provider}' embeds '${embeddedModel}' but explicit model is '${explicitModel}'.`
+    );
+  }
   return { provider: providerId, model: explicitModel || embeddedModel };
 }
 
@@ -282,17 +438,65 @@ function extractLastAssistantText(value: unknown): string | undefined {
 }
 
 function visit(value: unknown, assistantContext: boolean, out: string[]): void {
-  if (Array.isArray(value)) { for (const item of value) visit(item, assistantContext, out); return; }
+  if (Array.isArray(value)) {
+    for (const item of value) visit(item, assistantContext, out);
+    return;
+  }
   if (!value || typeof value !== "object") return;
   const record = value as Record<string, unknown>;
-  const role = String(record.role ?? record.author ?? record.kind ?? record.type ?? "").toLowerCase();
+  const role = String(
+    record.role ?? record.author ?? record.kind ?? record.type ?? ""
+  ).toLowerCase();
   const assistant = assistantContext || role.includes("assistant");
-  if (assistant) for (const key of ["text", "content", "message", "lastMessage"]) if (typeof record[key] === "string" && record[key]) out.push(record[key] as string);
+  if (assistant) {
+    for (const key of ["text", "content", "message", "lastMessage"]) {
+      if (typeof record[key] === "string" && record[key]) {
+        out.push(record[key] as string);
+      }
+    }
+  }
   for (const child of Object.values(record)) visit(child, assistant, out);
 }
 
-function labelsMatch(actual: Record<string, string> | undefined, expected: Record<string, string>): boolean { return Object.entries(expected).every(([key, value]) => actual?.[key] === value); }
-function isTerminalStatus(value?: string): boolean { return value === "idle" || value === "finished" || value === "completed" || value === "failed" || value === "error" || value === "timeout" || value === "cancelled"; }
-function stringField(record: Record<string, unknown>, keys: string[]): string | undefined { for (const key of keys) if (typeof record[key] === "string" && record[key]) return record[key] as string; return undefined; }
-function recordOfStrings(value: unknown): Record<string, string> | undefined { if (!value || typeof value !== "object" || Array.isArray(value)) return undefined; const result: Record<string, string> = {}; for (const [key, item] of Object.entries(value as Record<string, unknown>)) if (typeof item === "string") result[key] = item; return Object.keys(result).length ? result : undefined; }
-function statusText(value: unknown): string | undefined { if (typeof value === "string") return value; if (value && typeof value === "object") { const nested = (value as Record<string, unknown>).status; if (typeof nested === "string") return nested; } return undefined; }
+function labelsMatch(
+  actual: Record<string, string> | undefined,
+  expected: Record<string, string>
+): boolean {
+  return Object.entries(expected).every(([key, value]) => actual?.[key] === value);
+}
+function isTerminalStatus(value?: string): boolean {
+  return (
+    value === "idle" ||
+    value === "finished" ||
+    value === "completed" ||
+    value === "failed" ||
+    value === "error" ||
+    value === "timeout" ||
+    value === "cancelled"
+  );
+}
+function stringField(
+  record: Record<string, unknown>,
+  keys: string[]
+): string | undefined {
+  for (const key of keys) {
+    if (typeof record[key] === "string" && record[key]) return record[key] as string;
+  }
+  return undefined;
+}
+function recordOfStrings(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const result: Record<string, string> = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof item === "string") result[key] = item;
+  }
+  return Object.keys(result).length ? result : undefined;
+}
+function statusText(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object") {
+    const nested = (value as Record<string, unknown>).status;
+    if (typeof nested === "string") return nested;
+  }
+  return undefined;
+}
