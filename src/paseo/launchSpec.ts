@@ -94,7 +94,7 @@ export async function compilePaseoAgentLaunchSpec(root: string, config: HarnessP
     model,
     modeId: explicitOpenCodeMode,
     modeSource: explicitOpenCodeMode ? openCode?.binding.source : undefined,
-    thinkingOptionId: openCode ? selection?.variant : undefined,
+    thinkingOptionId: selection?.runtimeCapabilities.variantSelection === false ? undefined : selection?.variant,
     env: { ...(openCode?.env ?? {}), ...executionEnv },
     nativeAgentId: openCode?.binding.agentId,
     workspaceId,
