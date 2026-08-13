@@ -6,6 +6,11 @@ import { outputJsonSchema } from "../agents/outputContracts.js";
 import { compileOpenCodeRuntimeProjection } from "../agents/permissions.js";
 import { loadFrozenSkillContext } from "../core/controlPlane.js";
 import type { HarnessProjectConfig, TaskContract, WorkerSession } from "../core/types.js";
+import {
+  buildManagedAgentEnvironment,
+  managedBoundedAgentPromptContext,
+  type ManagedAgentExecutionIdentity
+} from "../operations/executionContext.js";
 import { currentOperationContext } from "../operations/state.js";
 import { compilePaseoAgentLaunchSpec } from "../paseo/launchSpec.js";
 import {
@@ -45,7 +50,8 @@ export async function executeAgentPrompt(
     config,
     contract,
     selection,
-    prompt
+    prompt,
+    options
   );
   if (transport === "paseo") {
     return executeViaPaseo(root, config, contract, selection, effectivePrompt, options);
@@ -132,7 +138,8 @@ export async function dispatchMaterializedAgentPrompt(
     config,
     contract,
     selection,
-    prompt
+    prompt,
+    options
   );
   const timeout = config.orchestration?.worker?.timeoutSeconds ?? 1800;
   const continued = await continueManagedPaseoAgent(
@@ -248,6 +255,7 @@ async function executeDirect(
   options: AgentPromptOptions
 ): Promise<WorkerSession> {
   const startedAt = new Date().toISOString();
+  const executionEnv = boundedExecutionEnvironment(selection, options);
   if (selection.runtimeAdapter === "opencode") {
     const projection = compileOpenCodeRuntimeProjection(selection, config);
     const args = [
@@ -266,7 +274,7 @@ async function executeDirect(
     const result = await runProcess(args.map(quote).join(" "), {
       cwd: root,
       timeoutMs: (config.orchestration?.worker?.timeoutSeconds ?? 1800) * 1000,
-      env: projection.env
+      env: { ...projection.env, ...executionEnv }
     });
     return session(selection, result.exitCode, result.stdout, result.stderr, {
       id: options.resumeSessionId ?? extractSessionId(result.stdout),
@@ -275,7 +283,7 @@ async function executeDirect(
     });
   }
   if (selection.runtimeAdapter === "codex") {
-    return executeCodex(root, config, selection, prompt, options, startedAt);
+    return executeCodex(root, config, selection, prompt, options, startedAt, executionEnv);
   }
   throw new Error(`No direct runtime adapter for ${selection.runtimeAdapter}`);
 }
@@ -286,7 +294,8 @@ async function executeCodex(
   selection: AgentExecutionSelection,
   prompt: string,
   options: AgentPromptOptions,
-  startedAt: string
+  startedAt: string,
+  executionEnv: Record<string, string>
 ): Promise<WorkerSession> {
   const schema = options.outputContract
     ? outputJsonSchema(options.outputContract)
@@ -317,7 +326,8 @@ async function executeCodex(
     args.push(...selection.args, prompt);
     const result = await runProcess(args.map(quote).join(" "), {
       cwd: root,
-      timeoutMs: (config.orchestration?.worker?.timeoutSeconds ?? 1800) * 1000
+      timeoutMs: (config.orchestration?.worker?.timeoutSeconds ?? 1800) * 1000,
+      env: executionEnv
     });
     let stdout = result.stdout;
     if (outputFile) {
@@ -373,6 +383,9 @@ async function executePodman(
   }
   const projection = compileOpenCodeRuntimeProjection(selection, config);
   args.push("-e", `OPENCODE_CONFIG_CONTENT=${projection.env.OPENCODE_CONFIG_CONTENT}`);
+  for (const [name, value] of Object.entries(boundedExecutionEnvironment(selection, options))) {
+    args.push("-e", `${name}=${value}`);
+  }
   for (const [name, value] of Object.entries(allowedSandboxEnvironment(config))) {
     args.push("-e", `${name}=${value}`);
   }
@@ -405,7 +418,8 @@ async function buildEffectivePrompt(
   config: HarnessProjectConfig,
   contract: TaskContract,
   selection: AgentExecutionSelection,
-  prompt: string
+  prompt: string,
+  options: AgentPromptOptions
 ): Promise<string> {
   const frozenSkills = await loadFrozenSkillContext(
     root,
@@ -413,7 +427,38 @@ async function buildEffectivePrompt(
     contract.task.id,
     selection.skills ?? []
   );
-  return withAgentCharter(selection, prompt, frozenSkills);
+  const operation = currentOperationContext();
+  const identity: ManagedAgentExecutionIdentity = {
+    logicalAgent: selection.logicalAgent,
+    role: selection.role,
+    operationId: operation.id ?? contract.task.id,
+    operationKind: operation.kind ?? options.operationKind ?? contract.routing?.intent,
+    phase: options.phase ?? "work",
+    interactiveLead: false,
+    orchestrationAllowed: false
+  };
+  return withAgentCharter(
+    selection,
+    prompt,
+    frozenSkills,
+    managedBoundedAgentPromptContext(identity)
+  );
+}
+
+function boundedExecutionEnvironment(
+  selection: AgentExecutionSelection,
+  options: AgentPromptOptions
+): Record<string, string> {
+  const operation = currentOperationContext();
+  return buildManagedAgentEnvironment({
+    logicalAgent: selection.logicalAgent,
+    role: selection.role,
+    operationId: operation.id,
+    operationKind: operation.kind ?? options.operationKind,
+    phase: options.phase ?? "work",
+    interactiveLead: false,
+    orchestrationAllowed: false
+  });
 }
 
 function directMetadata(
@@ -457,12 +502,14 @@ function session(
 function withAgentCharter(
   selection: AgentExecutionSelection,
   prompt: string,
-  frozenSkills?: string
+  frozenSkills?: string,
+  executionContext?: string
 ): string {
   const sections = [
     selection.description
       ? `Agent charter for ${selection.logicalAgent}:\n${selection.description}`
       : undefined,
+    executionContext,
     frozenSkills
       ? `Frozen control-plane skill context (authoritative for this run):\n${frozenSkills}`
       : undefined,
