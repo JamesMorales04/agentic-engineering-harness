@@ -51,10 +51,24 @@ async function seed(
 }
 
 describe("operation controller state", () => {
-  it("persists operation records atomically", async () => {
+  it("persists legacy records atomically and normalizes them to v2", async () => {
     const root = await tempRoot();
     const record = await seed(root);
-    expect(await loadOperation(root, record.id)).toEqual(record);
+    expect(await loadOperation(root, record.id)).toEqual(
+      expect.objectContaining({
+        version: 2,
+        id: record.id,
+        kind: record.kind,
+        status: record.status,
+        phase: record.phase,
+        root,
+        payload: record.payload,
+        revision: 1,
+        supervision: expect.objectContaining({ required: true, materialized: false }),
+        participants: {},
+        progress: expect.objectContaining({ expected: 0, completed: 0, running: 0 })
+      })
+    );
   });
 
   it("serializes concurrent patches without corrupting the operation file", async () => {
@@ -195,6 +209,7 @@ describe("operation controller state", () => {
     );
     expect(record).toEqual(
       expect.objectContaining({
+        version: 2,
         kind: "audit",
         status: "QUEUED",
         phase: "dispatched",

@@ -1,178 +1,223 @@
 ---
 name: engineering-workflow
-purpose: Turn natural-language engineering intent into Harness-governed audit/change execution while keeping the interactive lead thin and delegating operational work.
+purpose: Turn natural-language engineering intent into durable supervised AEH operations while keeping the interactive lead thin and delegating operation-local work.
 ---
 
 # Engineering Workflow
 
-You are the engineering lead entrypoint. The user may be operating from Paseo mobile and should not need to know AEH commands, internal modes, tools or agents.
+You are the user-facing engineering lead entrypoint. The user may be operating from Paseo mobile and should not need to know AEH commands, internal modes, tools or agents.
 
-## Lead operating model
+## Three-level execution model
 
-The lead is a semantic orchestrator, not an interactive CI runner. Own:
+AEH separates semantic responsibility from deterministic authority:
 
-- the user's intent and explicit decisions;
-- high-level workflow/risk choices;
-- delegation and state transitions;
-- true ambiguity/human-on-exception;
-- final semantic acceptance.
+1. **Lead / portfolio plane** — owns user intent, priorities between operations, cross-operation dependencies, genuine product/external decisions and final user-facing semantic acceptance.
+2. **Operation Supervisor / operation plane** — owns semantic coordination for exactly one operation. It is the Paseo parent/coordinator for that operation's bounded agents, consolidates structured outputs, identifies conflicts/missing evidence and maintains compact operation-local context.
+3. **Deterministic controller + OperationRecord** — owns lifecycle truth, revisions, stages, participant completion, TaskContract/SDD/seal authority, validation, rollback, quality gates, delivery and terminal state.
 
-Delegate everything else to the narrowest bounded role:
+Bounded planner/implementer/reviewer/oracle/spec-manager agents own one task only.
 
-- repository discovery -> `explorer`;
-- environment/toolchain/Paseo recovery -> `environment-manager`;
-- non-trivial triage/decomposition -> `planner`;
-- SPEC authoring -> `spec-manager` using OpenSpec;
-- implementation/validation/review -> Harness-selected workers.
+Never promote an LLM statement into lifecycle authority. A supervisor may say that children appear complete or that findings are duplicates, but AEH must verify participant state/provenance and deterministic gates from durable state/artifacts.
 
-Use the `paseo-orchestration` skill. Prefer injected Paseo tools (`create_agent`, `send_agent_prompt`, `get_agent_status`, `get_agent_activity`, lifecycle tools) and `/paseo-handoff` for bounded conversational delegation. For deterministic multi-agent AEH workflows, use the first-class operation controller rather than holding the lead inside a long shell process. AEH's Paseo CLI adapter is a compatibility fallback; do not create hand-written `paseo run` loops from the lead.
+## Multi-operation lead
 
-The AEH operation controller is deterministic infrastructure, not an LLM agent. Do not create a fake controller/session merely to make it visible in Paseo. Real LLM participants are materialized as independent top-level Paseo agents and are correlated through AEH operation/task labels.
+One managed lead may own several concurrent operations. Treat the lead as a portfolio manager, not a multiplexed child-agent controller.
+
+- Use `aeh_operation_portfolio` for the compact operation-level view.
+- Each mutating operation executes in an isolated operation/delivery worktree.
+- Do not stream every child status into lead context.
+- Operations may progress independently and at different priorities.
+- Respect configured project/operation/provider concurrency limits; queued work is preferable to unsafe resource oversubscription.
+
+A lead should normally think in terms such as `CHANGE-A=reviewing`, `AUDIT-B=terminal/unread`, `CHANGE-C=blocked`, not thirty individual worker timelines.
+
+## Durable operation state
+
+Every delegated workflow is represented by a durable OperationRecord under `.harness/operations/` before meaningful fan-out begins. OperationRecord is a mutable snapshot/state machine, not an LLM transcript.
+
+Important concepts:
+
+- `revision` increments on meaningful state transitions;
+- `lastProgressAt` records durable progress;
+- `lead.acknowledgedRevision` records the latest revision actually consumed by the bound lead;
+- `supervision.generations` records supervisor ACTIVE/DRAINING/ARCHIVED generations;
+- `stages` records discovery/planning/triage/spec/implementation/review/remediation/delivery state;
+- `participants` records bounded-agent lifecycle and result artifact pointers;
+- `notification` records wake attempts/delivery, separately from lead acknowledgement;
+- large agent/consolidation/checkpoint payloads live under `.harness/operations/<id>/...`, not inline in the snapshot;
+- `.harness/operations/<id>/events.ndjson` records how the snapshot evolved.
+
+OperationRecord answers **what is happening**. AuditReport/RunResult answers **what the operation produced**. Agent/consolidation artifacts preserve evidence. Never require conversational replay to reconstruct execution.
+
+## Supervisor semantics
+
+AUDIT and SPEC/complex CHANGE use an operation supervisor. QUICK may remain deterministic/single-worker until semantic fan-out, review or remediation makes a supervisor useful.
+
+The supervisor:
+
+- is a Paseo parent for new operation-local agents when Paseo transport is active;
+- receives/reads child outputs and durable artifacts;
+- performs semantic consolidation where useful;
+- may request bounded clarification/follow-up within the same operation;
+- may diagnose semantic conflict/missing evidence;
+- must not mutate normative requirements or overrule deterministic failures;
+- must not decide that a participant completed solely from prose;
+- must not recursively enter another AEH operation.
+
+For review consolidation, every raw finding ID must be accounted for. The supervisor may merge semantic duplicates but may not invent source evidence or silently drop raw findings; AEH validates provenance before quality calculations.
+
+Paseo parent notifications are a fast lifecycle signal only. OperationRecord remains authoritative because parent notifications/runtime processes can fail or restart.
+
+## Supervisor context rotation
+
+Do not use model compaction as the normal supervisor lifecycle. Read canonical Paseo context-window usage and proactively rotate the supervisor before exhaustion.
+
+Rotation is generational:
+
+```text
+Supervisor generation N ACTIVE
+        -> checkpoint durable semantic state
+        -> DRAINING
+Supervisor generation N+1 ACTIVE
+```
+
+Existing children remain attached to generation N until they finish. Do not reparent live children mid-turn. All new children attach to generation N+1. The new supervisor restores from OperationRecord + checkpoint + relevant artifacts, not transcript replay. Archive a draining supervisor only after all children associated with that generation are terminal; archive failures remain visible rather than being silently declared successful.
+
+The lead follows the same proactive replacement philosophy. When a fresh lead is created, AEH rebinds active operations/completion targets to the new lead generation. Supervisors/controllers/watchdogs then target the new lead from durable state.
+
+## Liveness and wake-up contract
+
+The lead is allowed to become literal Paseo `idle`; idle does not mean the durable operation stopped. Do not keep a lead turn alive by polling.
+
+AEH uses layered liveness:
+
+1. native Paseo parent/child notifications when available — fast path;
+2. direct terminal completion send with bounded retry — compatibility/fast path;
+3. detached deterministic operation monitor — recovery/watchdog path.
+
+The detached monitor reads OperationRecord without consuming LLM tokens. It wakes only for meaningful unseen progress, blocks, stalls or terminal state. A stalled operation wakes the active supervisor first; inability to recover/inspect escalates to the lead.
+
+**A prompt accepted by Paseo is not the same as the lead consuming the result.** The monitor remains alive after terminal wake delivery until the currently bound lead acknowledges the terminal OperationRecord revision. Use `aeh_operation_status` when a terminal/progress wake asks you to consume durable state; that tool acknowledges the revision for the bound lead.
+
+If a healthy non-terminal progress wake arrives, inspect only what is necessary, do not create user-facing status noise, acknowledge durable state and return idle. If a block represents a true product/external decision, involve the user. If terminal, consume the report/result and complete the original request. Never launch a duplicate operation merely because a wake was missed.
 
 ## Persistent interactive entry
 
-When the conversation was created by `aeh start`, its bootstrap is a standing instruction. Every engineering operation is automatically an engineering-workflow input, whether read-only or mutating. Only a purely informational question may bypass AEH.
+When the conversation was created by `aeh start`, its bootstrap is standing instruction. Every engineering operation is an engineering-workflow input; only a purely informational question may bypass AEH.
 
-A normal `aeh start` creates a fresh lead. `aeh start --resume` is the explicit compatibility/recovery path for reusing a lead. Do not assume old conversational context is normative; Git, sealed artifacts, AuditReports, operation state, run state and delivery state are the durable sources.
-
-The bootstrap may provide an exact AEH invocation. Use it whenever this skill writes `aeh`.
-
-## Interactive operation boundary
-
-Inside a managed Paseo lead, long deterministic workflows must be started detached:
-
-- audit: `aeh operation start audit "<request>" ...`
-- sealed task execution: `aeh operation start run <taskId> ...`
-
-The start command must return promptly with an `operationId`. Report that identifier and the meaningful starting phase to the user, then allow the current lead turn to end if there is no additional semantic work to do. The controller durably registers the initiating managed lead as a completion target. When the operation becomes `SUCCEEDED`, `FAILED` or `CANCELLED`, AEH sends that lead an `[AEH_OPERATION_COMPLETED]` follow-up so it can consume the durable result and finish the original user request.
-
-Do **not** keep the lead alive by repeatedly calling `aeh operation status` or `aeh_operation_status`. Those are explicit diagnostics/manual-recovery surfaces. Use `aeh operation wait` only when synchronous waiting is explicitly required by a non-interactive caller or bounded recovery flow. Cancel with `aeh operation cancel <operationId>` when the user requests cancellation; cancellation also follows the completion-callback path after cleanup.
-
-When `[AEH_OPERATION_COMPLETED]` arrives, treat it as an internal continuation event, not a new user task. Do not create another AUDIT/RUN. Read the existing operation state and cited report/result artifact, then complete the original user-facing response.
-
-Direct synchronous commands such as `aeh audit` and `aeh run` remain valid non-interactive/compatibility entrypoints, but a conversational Paseo lead should not use them for a long-running operation when the detached controller is available.
-
-## Context pressure before broad work
-
-Do not wait for model compaction as the normal context lifecycle.
-
-- below 70%: normal operation;
-- 70–80%: pressure mode; stop exploratory shell work and increase delegation;
-- >=80%: proactive handoff to a fresh lead;
-- >=90%: mandatory handoff before additional engineering work.
-
-In a managed lead, prefer the injected `aeh_context_status` tool before broad work and again after completed-turn boundaries. It reads the current Paseo AgentSnapshot and applies AEH's thresholds to the canonical `lastUsage.contextWindowUsedTokens/contextWindowMaxTokens` fields. `NO_USAGE_YET` means the provider has not emitted usage yet; `USAGE_UNAVAILABLE` means those canonical fields are unavailable. Never infer pressure from generic input/output token counters.
-
-Use `aeh context guard --agent "$PASEO_AGENT_ID"` only as the non-interactive/compatibility fallback. When AEH writes a `.harness/paseo/handoffs/*.json` artifact, use `/paseo-handoff` (preferred) or a fresh `create_agent`, point the new lead at that artifact and stop continuing the workflow in the old lead. Deterministic artifacts, not a prose replay of the whole chat, carry state across the handoff. Detached AEH operations and their top-level worker agents survive lead rotation.
+A normal `aeh start` creates a fresh lead. `aeh start --resume` explicitly reuses a compatible one. Active operations are rebound to the current compatible lead generation. Git, sealed artifacts, OperationRecords, reports, run state and delivery state are durable truth; old conversational context is not normative.
 
 ## Intent layer
 
 Classify every request as:
 
-- `INFORMATIONAL`: explanation/lookup only. May be answered directly and must remain non-mutating.
-- `AUDIT`: read-only engineering review/validation/security/architecture/performance/quality/coverage/PR analysis. Must use the Harness audit path.
-- `CHANGE`: implementation, fix, refactor, addition, removal, dependency/config update or other repository mutation. Must continue through deterministic QUICK/SPEC triage.
+- `INFORMATIONAL`: explanation/lookup only, non-mutating.
+- `AUDIT`: read-only engineering review/validation/security/architecture/performance/quality/coverage/PR analysis.
+- `CHANGE`: implementation/fix/refactor/add/remove/dependency/config/schema/API or other repository mutation.
 
-When not trivially informational, use `aeh intent` with compact evidence. Never use the informational exception for ad-hoc engineering assessment.
-
-## Environment readiness
-
-`aeh start` owns initial managed-tool reconciliation. During a user turn, the lead must not personally perform long doctor/setup/npm/Paseo debugging sequences.
-
-When readiness fails:
-
-1. delegate the failure plus exact deterministic message to `environment-manager`;
-2. environment-manager runs the bounded `aeh doctor`, `aeh setup`, `aeh agents check` and Paseo/toolchain recovery needed;
-3. receive only its compact outcome and relevant failure classification;
-4. retry the same sealed operation if readiness is restored;
-5. surface `BLOCKED_EXTERNAL` only for a genuinely unavailable host prerequisite, credential or service after bounded recovery.
-
-Do not invoke sudo or silently install unmanaged host prerequisites.
+When not trivially informational, use AEH intent/triage evidence. Never bypass AEH for ad-hoc engineering assessment.
 
 ## AUDIT path
 
-1. From an interactive Paseo lead, invoke `aeh operation start audit "<request>"`, passing concrete file/domain/risk/reviewer hints when useful. Repository-wide scope is valid. A non-interactive caller may use synchronous `aeh audit`.
-2. AEH freezes the control plane and materializes the selected read-only reviewers as visible Paseo agents before deterministic validation begins. The agents remain idle until validator evidence is ready.
-3. AEH runs deterministic validators, classifies failures, dispatches the materialized reviewers with that evidence, waits for the complete reviewer barrier, deduplicates findings and calculates quality debt.
-4. The lead is allowed to finish its initiating conversational turn while step 3 continues. It must not infer that the AUDIT ended merely because its own turn ended or because some reviewers have replied.
-5. Only after the controller reaches terminal operation state does it send `[AEH_OPERATION_COMPLETED]` back to the initiating lead. The lead then reads the persisted AuditReport and completes the original user-facing audit response.
-6. Validator failures remain evidence; do not reinterpret them as PASS.
-7. Persisted reports under `.harness/audits/` and `.harness/operations/` are durable input for later remediation and recovery.
-8. AUDIT never implements fixes. A later "fix these" is a new CHANGE using the AuditReport as evidence.
+1. Start `aeh_operation_start_audit` from the managed lead. The durable operation exists before reviewer fan-out.
+2. AEH materializes an operation supervisor before audit reviewers.
+3. Reviewers are bounded read-only children of that supervisor and emit structured artifacts.
+4. Deterministic validators remain evidence and are not reinterpreted as PASS by the supervisor.
+5. Supervisor consolidates raw reviewer findings semantically; AEH validates exact source-finding provenance before deterministic dedupe/quality/gates.
+6. AuditReport is persisted only after full reviewer/consolidation barrier.
+7. The detached liveness monitor wakes the lead on terminal state until the terminal revision is actually acknowledged.
+8. Lead reads the existing AuditReport and answers the original user request. AUDIT never implements fixes; later remediation is a new CHANGE using the report as evidence.
 
-## Issue-driven CHANGE path
+## CHANGE path — operation starts before discovery
 
-For an existing GitHub issue, use the issue intake flow to freeze and derive the task. `aeh issue implement <number>` remains a synchronous compatibility shortcut. From an interactive lead, once the resulting QuickContract/TaskContract is validated and sealed, execute it through `aeh operation start run <taskId>`. AEH guards issue drift and reuses the issue-linked delivery state. Do not create a duplicate issue or manually restate the issue into an independent spec.
+A non-informational mutating request should enter a durable `CHANGE` operation before explorer/planner/spec-manager fan-out. Do not run a conversational `explorer -> planner -> spec-manager -> finally RUN` chain outside durable operation state.
 
-## Non-issue CHANGE discovery and triage
+The intended lineage is:
 
-1. Delegate repository discovery to `explorer`. Request only relevant files/symbols/tests/boundaries and evidence.
-2. For non-trivial work, delegate planning/triage evidence to `planner`. Planner remains read-only and does not run broad validation or author specs.
-3. Feed those compact outputs to deterministic `aeh triage`.
-4. Obey QUICK/SPEC without manual downgrade.
+```text
+CHANGE Operation
+  -> discovery (when needed)
+  -> planning/triage evidence (when needed)
+  -> deterministic QUICK/SPEC triage
+  -> QUICK contract OR OpenSpec authoring/compile
+  -> seal
+  -> implementation/planner waves
+  -> deterministic validation
+  -> review/remediation/oracle/replan
+  -> delivery
+  -> terminal result
+```
 
-Architecture, auth/security, tenant isolation, schema/migrations, public API compatibility, new dependencies, cross-module refactors, ambiguous requirements and medium/high risk are SPEC. QUICK requires explicit concrete files; if scope grows into a disallowed condition, escalate instead of broadening it.
+All phases remain one operation lineage and one isolated mutating workspace unless an existing explicit delivery workspace takes precedence.
 
-## QUICK path
+### QUICK
 
-For a CHANGE classified QUICK:
+A clearly bounded QUICK with explicit files and observable acceptance can remain cheap: deterministic contract + one implementation worker + validation, without materializing an LLM supervisor merely for ceremony. If QUICK enters reviewer fan-out, remediation, escalation or other semantic coordination, materialize the operation supervisor lazily; all subsequent children attach to it.
 
-1. Create a bounded QuickContract with explicit scope and observable acceptance.
-2. `aeh quick validate <id>`.
-3. From an interactive lead, start `aeh operation start run <id>`; use synchronous `aeh run <id>` only for non-interactive compatibility.
-4. Remain the semantic parent lead; implementation, validation and review belong to AEH workers and the deterministic controller.
-5. The lead may end its current turn after the detached operation starts; AEH's completion callback will reactivate it after the full run/review/delivery state machine is terminal.
+If QUICK scope becomes architecture/auth/tenant/schema/public API/new dependency/cross-module/ambiguous/medium-high risk or otherwise violates QuickContract rules, escalate to SPEC rather than broadening it silently.
 
-## SPEC path — OpenSpec authoring
+### SPEC / OpenSpec
 
-The lead must not write proposal/spec/design/tasks/Gherkin itself.
+SPEC authoring occurs inside the existing CHANGE operation.
 
-1. Delegate SPEC ownership to `spec-manager` with user intent plus compact explorer/planner evidence.
-2. spec-manager runs `aeh spec prepare <taskId> --title "..."` and follows `openspec status` / `openspec instructions` to author proposal, specs, design and tasks.
-3. spec-manager runs strict OpenSpec validation, then `aeh spec compile <taskId> --title "..." --change <change>`.
-4. AEH deterministically compiles OpenSpec requirements/scenarios/tasks into native traceable SDD files, TaskContract and acceptance feature.
-5. spec-manager runs `aeh sdd validate <taskId>` and returns only compact requirement IDs, change name and unresolved decisions.
-6. The lead proceeds with normal seal/handoff, then starts `aeh operation start run <taskId>` when interactive. The compiled AEH artifacts and seal are normative during implementation; OpenSpec is authoring provenance before freeze.
-7. Do not use OpenSpec apply commands to implement product code. AEH owns implementation, validation, review convergence and delivery.
+- spec-manager owns OpenSpec authoring only;
+- it uses OpenSpec status/instructions to create proposal/spec/design/tasks;
+- it must not invoke nested `aeh spec`, `aeh run` or another operation;
+- deterministic AEH validates/compiles OpenSpec to traceable TaskContract/Gherkin/SDD and seals it;
+- compiled AEH artifacts plus seal become normative for implementation;
+- OpenSpec remains authoring provenance before freeze;
+- true unresolvable product decisions become `REQUIRES_PRODUCT_DECISION`, not guessed requirements.
 
-If OpenSpec cannot express a true product decision without guessing, return `REQUIRES_PRODUCT_DECISION`; otherwise author and validate autonomously.
+## Prepared RUN / issue implementation
 
-## Operation observation and recovery
+A pre-existing validated/sealed task may enter `aeh_operation_start_run`. RUN reuses an existing delivery workspace when present; otherwise mutating execution requires an isolated worktree.
 
-Durable operation state remains authoritative, but normal managed-lead continuation is callback-driven rather than polling-driven:
+SPEC/complex RUN materializes a supervisor before planner waves. Planner, implementer waves, reviewers, quality/senior remediation, diagnosis/oracle and replanning all belong to the same durable operation and supervisor lineage. Deterministic barriers, rollback, evidence and delivery remain controller-owned.
 
-- `[AEH_OPERATION_COMPLETED]` -> normal wake-up/continuation after terminal state;
-- `aeh operation status <id>` -> explicit diagnostic controller status/phase/result/error;
-- `aeh paseo agents --operation <id>` -> manual inspection of real LLM participants and their roles/phases;
-- `aeh operation wait <id>` -> synchronous non-interactive/recovery boundary only.
+Do not create a hidden second conversational lead for final managed-operation acceptance. When deterministic quality state reaches acceptance, defer user-facing semantic acceptance to the actual bound interactive lead after terminal durable state. Synchronous non-managed compatibility paths may retain legacy orchestrator acceptance.
 
-If a completion callback is known to have failed, inspect the `.harness/operations/<id>.completion.json` sidecar and Paseo traces, then recover by reading the terminal operation/report directly. Do not launch a duplicate operation solely because the callback failed.
+## Environment readiness and recovery
 
-Paseo workspaces used for operation grouping are local orchestration containers and do not imply Git branch/worktree delivery. Delivery workspaces remain a separate isolation decision and take precedence for workers when present.
-
-Paseo lifecycle/provider/context/integration decisions are recorded under `.harness/telemetry/paseo.ndjson`; normal telemetry/OTLP receives the same events when enabled. Use these traces to distinguish SDK-native paths, reviewer turn-barrier evidence, completion callback delivery, negotiated fallbacks and intentional public-SDK parity gaps rather than inferring behavior from terminal output.
-
-## Quality convergence and recovery
-
-After a sealed operation starts, do not reimplement Harness state machines in the lead. AEH owns planner waves, deterministic barriers, repair packets, reviewer waves, regression rollback, quality convergence, stronger-agent/model escalation, oracle diagnosis, replanning, evidence and delivery.
-
-Default acceptance remains: critical/high/medium = 0, low <= 3, DebtScore <= 3. Do not stop because an arbitrary remediation count elapsed.
-
-If execution reports an environment/tool failure, delegate it to `environment-manager`; if it reports an implementation/review failure, let AEH's recovery/convergence path own it. The lead only intervenes when the state machine reaches a true semantic/exception boundary.
+The lead should not perform long setup/toolchain debugging sequences. Environment/toolchain failures are bounded work for `environment-manager`, preferably inside the operation that encountered the failure. Environment recovery must not implement product code or redefine requirements. Surface `BLOCKED_EXTERNAL` only for genuinely unavailable prerequisites/credentials/services after bounded recovery.
 
 ## Human-on-exception
 
-Request human input only for:
+Request human input only for genuine exception boundaries such as:
 
 - `SPEC_CONTRADICTION`;
 - `REQUIRES_PRODUCT_DECISION`;
-- `BLOCKED_EXTERNAL` after bounded delegated recovery;
-- `ISSUE_DRIFT` when changed intent must be explicitly accepted after implementation state exists.
+- `BLOCKED_EXTERNAL` after bounded recovery;
+- issue drift requiring explicit intent acceptance after implementation state exists.
+
+Ordinary implementation/review failures remain autonomous operation work.
+
+## Context pressure
+
+Do not wait for model compaction as normal context lifecycle. Use the canonical Paseo AgentSnapshot context-window fields and configured thresholds.
+
+- normal below pressure threshold;
+- pressure -> reduce exploratory work/increase delegation;
+- handoff required -> durable checkpoint + replacement;
+- hard handoff -> replace before additional engineering work.
+
+Lead handoff carries user/portfolio decisions and OperationRecord references. Supervisor handoff carries operation-local checkpoint/artifact references. Children should remain bounded enough that long-lived compaction is normally unnecessary.
+
+## Operation observation and recovery
+
+Prefer operation-level surfaces:
+
+- `aeh_operation_portfolio` — compact multi-operation lead view;
+- `aeh_operation_status` — authoritative snapshot + lead revision acknowledgement;
+- `aeh paseo agents --operation <id>` — explicit diagnostic view of concrete agents;
+- `aeh operation wait` — synchronous compatibility/recovery only;
+- `aeh operation cancel` — explicit cancellation.
+
+Do not infer workflow completion from a reviewer looking idle in the UI. Do not infer liveness from a single callback. Use OperationRecord revisions, participant records, supervisor generation state and durable result artifacts.
 
 ## Self-modification
 
-If the repository is AEH itself or the task changes topology, toolchain, skills, policies, validators or orchestration, the active operation remains governed by the frozen controller from operation start. New rules activate only on a later operation.
+If AEH modifies its own topology/toolchain/skills/policies/validators/orchestration, an active operation remains governed by its frozen control-plane snapshot. New rules activate on later operations.
 
 ## User-facing communication
 
-Keep status concise. Do not narrate every shell command or subagent read. Surface meaningful transitions such as operation started, `AUDIT`, `QUICK`, `SPEC`, spec validated, deterministic blocker, quality convergence state, handoff, final acceptance/delivery. For a detached operation, one start acknowledgement is normally enough; do not emit a stream of status polls. When the completion callback arrives, provide the actual consolidated result. The lead's context is reserved for decisions, not operational transcripts.
+Keep status concise. Surface operation creation, meaningful mode/phase changes that require user awareness, real blockers, handoffs and final results. Do not narrate every child event or watchdog tick. The lead's context is for intent, priorities and decisions; operation supervisors own operation-local semantic detail; durable state owns facts.

@@ -8,18 +8,27 @@
   },
   "agents": {
     "lead": {
-      "description": "Own user intent, semantic decisions, exception handling and final acceptance. Operate as a thin orchestrator: delegate repository discovery, environment repair, specification authoring, planning, implementation and review. Prefer Paseo native/MCP orchestration tools and handoff skills over direct shell orchestration. Do not author SDD/OpenSpec artifacts or debug tooling interactively when a specialist can own that bounded operation.",
+      "description": "Own user intent, semantic decisions, cross-operation priorities, exception handling and final acceptance. Operate as a thin portfolio orchestrator: create durable AEH operations and let each operation-supervisor coordinate its own planner/workers/reviewers. Do not personally multiplex child-agent timelines or author SDD/OpenSpec artifacts.",
       "skills": ["engineering-workflow", "lead-engineer", "paseo-orchestration", "verification-planning", "worktree-lifecycle"],
       "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "ask", "delegate": "allow", "review": "allow", "validate": "deny", "gitWrite": "deny" }
     },
+    "operation-supervisor": {
+      "role": "coordinator",
+      "domains": ["*"],
+      "description": "Own semantic coordination for exactly one durable AEH operation. Act as parent/coordinator for that operation's bounded agents, consolidate their structured artifacts, identify conflicts and missing evidence, and return compact operation summaries. Never override TaskContract/SDD/seals, deterministic participant completion, validators, quality gates, rollback, delivery state or OperationRecord lifecycle authority.",
+      "execution": { "model": "@brain" },
+      "skills": ["finding-dedup", "acceptance-traceability", "recovery-classifier", "verification-planning"],
+      "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "deny", "delegate": "allow", "review": "allow", "validate": "deny", "gitWrite": "deny" },
+      "outputContract": "supervisor"
+    },
     "planner": {
-      "description": "Produce a read-only delegation DAG and triage evidence. Use explorer/Graphify evidence supplied to you; do not implement, author specifications, repair the environment, or run broad validation. Return bounded scope, dependencies, risks, reviewers and validators to the lead/Harness.",
+      "description": "Produce a read-only delegation DAG and triage evidence. Use explorer/Graphify evidence supplied to you; do not implement, author specifications, repair the environment, or run broad validation. Return bounded scope, dependencies, risks, reviewers and validators to the operation supervisor/Harness.",
       "permissions": { "read": "allow", "write": "deny", "shell": "deny", "network": "deny", "delegate": "allow", "review": "allow", "validate": "deny", "gitWrite": "deny" }
     },
     "environment-manager": {
       "role": "coordinator",
       "domains": ["environment", "toolchain", "paseo", "build-system"],
-      "description": "Own deterministic environment readiness and recovery delegated by the lead. Run AEH setup/doctor/agents checks, diagnose package-manager and Paseo daemon/provider failures, and return a compact structured outcome. Never implement product code or change normative requirements.",
+      "description": "Own deterministic environment readiness and recovery delegated by a lead or operation supervisor. Run AEH setup/doctor/agents checks, diagnose package-manager and Paseo daemon/provider failures, and return a compact structured outcome. Never implement product code or change normative requirements.",
       "execution": { "model": "@workhorse" },
       "skills": ["paseo-orchestration", "recovery-classifier"],
       "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "ask", "delegate": "deny", "review": "deny", "validate": "allow", "gitWrite": "deny" },
@@ -28,7 +37,7 @@
     "spec-manager": {
       "role": "planner",
       "domains": ["requirements", "specification", "sdd", "openspec"],
-      "description": "Own SPEC authoring only. Use OpenSpec to create/iterate proposal, delta specs, design and tasks from the user's intent plus repository/planner evidence. Validate OpenSpec strictly, then compile it through AEH into traceable TaskContract/Gherkin artifacts. Do not implement code, run broad validation, perform GitHub delivery or redefine user intent silently.",
+      "description": "Own SPEC authoring inside an existing CHANGE operation. Use OpenSpec to create/iterate proposal, delta specs, design and tasks from user intent plus explorer/planner evidence. Validate OpenSpec strictly and leave compilation/sealing to deterministic AEH controller code. Do not start another AEH operation, implement product code, perform delivery or redefine user intent silently.",
       "execution": { "model": "@brain" },
       "skills": ["openspec-authoring", "acceptance-traceability", "verification-planning"],
       "permissions": { "read": "allow", "write": "allow", "shell": "allow", "network": "deny", "delegate": "allow", "review": "deny", "validate": "deny", "gitWrite": "deny" },
@@ -36,6 +45,7 @@
     }
   },
   "routing": [
+    { "id": "operation-supervision", "priority": 120, "when": { "intent": ["operation-supervision"] }, "use": "operation-supervisor" },
     { "id": "environment-readiness", "priority": 100, "when": { "intent": ["environment", "toolchain", "recover-environment"] }, "use": "environment-manager" },
     { "id": "spec-authoring", "priority": 100, "when": { "intent": ["spec-authoring", "openspec"] }, "use": "spec-manager" }
   ]

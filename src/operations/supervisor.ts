@@ -1,0 +1,237 @@
+import type { AgentExecutionSelection, ResolvedAgentTopology } from "../agents/types.js";
+import {
+  supervisorOutputSchema,
+  type NormalizedFinding,
+  type SupervisorOutput
+} from "../agents/outputContracts.js";
+import { extractMarkedJson } from "../agents/structuredOutput.js";
+import { executionSelectionForAgent } from "../agents/routing.js";
+import type { HarnessProjectConfig, TaskContract, WorkerSession } from "../core/types.js";
+import { statusLeadContext } from "../paseo/context.js";
+import { archivePaseoSdkAgent } from "../paseo/sdk.js";
+import { recordPaseoTrace } from "../paseo/trace.js";
+import { executeAgentPrompt } from "../workers/agentPrompt.js";
+import { persistOperationConsolidation, persistSupervisorCheckpoint } from "./artifacts.js";
+import {
+  activeOperationSupervisor,
+  currentOperationContext,
+  loadOperation,
+  patchOperation,
+  registerSupervisorGeneration,
+  resolveOperationStateRoot,
+  updateSupervisorGeneration,
+  type OperationRecordV2
+} from "./state.js";
+
+export interface EnsureSupervisorOptions { required?: boolean; forceMaterialize?: boolean; }
+export interface OperationSupervisorHandle {
+  operationId: string; generation: number; agentId?: string; materialized: boolean;
+  selection: AgentExecutionSelection; session?: WorkerSession;
+}
+export interface SupervisorConsolidationInput {
+  key: string; purpose: string; findings: NormalizedFinding[]; sourceArtifacts?: string[]; deterministicEvidence?: unknown;
+}
+export interface SupervisorConsolidationResult { output: SupervisorOutput; artifact: string; session: WorkerSession; }
+interface SupervisorContextPolicy { handoffThreshold: number; hardHandoffThreshold: number; }
+interface SupervisionConfigExtension { operations?: { supervision?: { context?: { handoffThreshold?: number; hardHandoffThreshold?: number; }; }; }; }
+
+export function operationSupervisorContextPolicy(config: HarnessProjectConfig): SupervisorContextPolicy {
+  const orchestration = config.orchestration as (HarnessProjectConfig["orchestration"] & SupervisionConfigExtension) | undefined;
+  const configured = orchestration?.operations?.supervision?.context;
+  const handoffThreshold = ratio(configured?.handoffThreshold, 0.75);
+  const hardHandoffThreshold = Math.max(handoffThreshold, ratio(configured?.hardHandoffThreshold, 0.85));
+  return { handoffThreshold, hardHandoffThreshold };
+}
+
+export async function ensureOperationSupervisor(
+  root: string,
+  config: HarnessProjectConfig,
+  contract: TaskContract,
+  topology: ResolvedAgentTopology,
+  options: EnsureSupervisorOptions = {}
+): Promise<OperationSupervisorHandle | undefined> {
+  const operationId = currentOperationContext().id;
+  if (!operationId) return undefined;
+  const stateRoot = resolveOperationStateRoot(root);
+  let operation = await loadOperation(stateRoot, operationId);
+  const required = options.required ?? operation.supervision.required;
+  if (!required && !options.forceMaterialize) return undefined;
+  const configured = topology.agents["operation-supervisor"];
+  if (!configured || configured.disabled) {
+    if (required) throw new Error("AEH_OPERATION_SUPERVISOR_REQUIRED: topology has no enabled operation-supervisor agent.");
+    return undefined;
+  }
+  const selection = executionSelectionForAgent(topology, "operation-supervisor");
+  const active = activeOperationSupervisor(operation);
+  if (active?.agentId) {
+    return { operationId, generation: active.generation, agentId: active.agentId, materialized: true, selection };
+  }
+
+  // Initialize the provider session before it can receive native child finish
+  // notifications. This seeds the supervisor charter and durable operation state
+  // into its own context, then leaves it idle/resident for asynchronous children.
+  const session = await executeAgentPrompt(root, config, contract, selection, supervisorInitializationPrompt(operation), {
+    phase: "supervision",
+    operationKind: operation.kind,
+    parentAgentId: operation.lead?.agentId,
+    supervisorAgent: true
+  });
+  if (session.exitCode !== 0 || !session.id) {
+    throw new Error(`AEH_OPERATION_SUPERVISOR_UNAVAILABLE: initialization failed: ${session.stderr || session.stdout || `exit ${session.exitCode}`}`);
+  }
+  operation = await registerSupervisorGeneration(stateRoot, operationId, { agentId: session.id, materialized: true });
+  const generation = operation.supervision.activeGeneration!;
+  await recordPaseoTrace(stateRoot, "operation.supervisor.initialized", { operationId, generation, agentId: session.id, revision: operation.revision });
+  return { operationId, generation, agentId: session.id, materialized: true, selection, session };
+}
+
+export async function consolidateWithOperationSupervisor(
+  root: string,
+  config: HarnessProjectConfig,
+  contract: TaskContract,
+  topology: ResolvedAgentTopology,
+  input: SupervisorConsolidationInput
+): Promise<SupervisorConsolidationResult> {
+  const stateRoot = resolveOperationStateRoot(root);
+  const supervisor = await ensureOperationSupervisor(root, config, contract, topology, { required: true, forceMaterialize: true });
+  if (!supervisor?.agentId) throw new Error("AEH_OPERATION_SUPERVISOR_UNAVAILABLE: semantic consolidation requires a materialized supervisor session.");
+  const rawIds = [...new Set(input.findings.map((finding) => finding.id))].sort();
+  const operation = await loadOperation(stateRoot, supervisor.operationId);
+  const generation = activeOperationSupervisor(operation);
+  const prompt = [
+    `Consolidate ${input.purpose} for operation ${supervisor.operationId}.`,
+    "You are the semantic operation supervisor, not the deterministic lifecycle authority.",
+    `Durable operation state: ${JSON.stringify(supervisorDurableSnapshot(operation))}`,
+    `Generation checkpoint artifact: ${generation?.checkpointArtifact ?? "none"}. When present, use it plus OperationRecord as continuity authority instead of transcript replay.`,
+    "Every raw finding below must be accounted for in sourceFindingIds at set level. You may merge semantic duplicates, but never invent source evidence or silently drop a source finding.",
+    "Do not change deterministic validation outcomes. Surface conflicts and missing evidence explicitly.",
+    `Source artifacts: ${JSON.stringify(input.sourceArtifacts ?? [])}`,
+    `Deterministic evidence: ${JSON.stringify(input.deterministicEvidence ?? null)}`,
+    `Raw findings: ${JSON.stringify(input.findings)}`,
+    "Return the supervisor output contract."
+  ].join("\n\n");
+  const session = await executeAgentPrompt(root, config, contract, supervisor.selection, prompt, {
+    outputContract: "supervisor", resumeSessionId: supervisor.agentId, phase: "consolidating", operationKind: operation.kind, supervisorAgent: true
+  });
+  if (session.exitCode !== 0) throw new Error(`AEH_OPERATION_SUPERVISOR_FAILED: supervisor exited with ${session.exitCode}: ${session.stderr || session.stdout}`);
+  let output: SupervisorOutput;
+  try { output = supervisorOutputSchema.parse(extractMarkedJson(session.stdout, session.stderr)); }
+  catch (error) { throw new Error(`AEH_OPERATION_SUPERVISOR_CONTRACT: ${String(error)}`); }
+  const sourceIds = [...new Set(output.sourceFindingIds)].sort();
+  if (sourceIds.length !== rawIds.length || sourceIds.some((id, index) => id !== rawIds[index])) {
+    throw new Error(`AEH_OPERATION_SUPERVISOR_PROVENANCE: consolidation did not account for the exact raw finding set. expected=${rawIds.join(",")} received=${sourceIds.join(",")}`);
+  }
+  const artifact = await persistOperationConsolidation(stateRoot, supervisor.operationId, input.key, {
+    generation: supervisor.generation, sourceArtifacts: input.sourceArtifacts ?? [], rawFindingIds: rawIds, output
+  });
+  const current = await loadOperation(stateRoot, supervisor.operationId);
+  await patchOperation(stateRoot, supervisor.operationId, {
+    supervision: { ...current.supervision, latestConsolidationRevision: current.revision + 1, latestConsolidationArtifact: artifact }
+  });
+  return { output, artifact, session };
+}
+
+export async function maybeRotateOperationSupervisor(
+  root: string,
+  config: HarnessProjectConfig,
+  contract: TaskContract,
+  topology: ResolvedAgentTopology
+): Promise<OperationSupervisorHandle | undefined> {
+  const operationId = currentOperationContext().id;
+  if (!operationId) return undefined;
+  const stateRoot = resolveOperationStateRoot(root);
+  const operation = await loadOperation(stateRoot, operationId);
+  const active = activeOperationSupervisor(operation);
+  if (!active?.agentId) return ensureOperationSupervisor(root, config, contract, topology, { required: operation.supervision.required });
+
+  const context = await statusLeadContext(root, config, active.agentId);
+  const policy = operationSupervisorContextPolicy(config);
+  const usageRatio = context.usage.ratio;
+  const rotate = usageRatio !== undefined
+    ? usageRatio >= policy.handoffThreshold
+    : context.state === "HANDOFF_REQUIRED" || context.state === "HARD_HANDOFF";
+  if (!rotate) {
+    if (usageRatio !== undefined) await updateSupervisorGeneration(stateRoot, operationId, active.generation, { contextRatio: usageRatio, error: undefined });
+    return { operationId, generation: active.generation, agentId: active.agentId, materialized: true, selection: executionSelectionForAgent(topology, "operation-supervisor") };
+  }
+
+  const checkpointArtifact = await persistSupervisorCheckpoint(stateRoot, operationId, active.generation, buildSupervisorCheckpoint(operation, usageRatio));
+  await updateSupervisorGeneration(stateRoot, operationId, active.generation, {
+    status: "DRAINING", drainingAt: new Date().toISOString(), checkpointArtifact, contextRatio: usageRatio, error: undefined
+  });
+
+  const selection = executionSelectionForAgent(topology, "operation-supervisor");
+  const latest = await loadOperation(stateRoot, operationId);
+  const session = await executeAgentPrompt(root, config, contract, selection, supervisorInitializationPrompt(latest, checkpointArtifact), {
+    phase: "supervision", operationKind: operation.kind, parentAgentId: operation.lead?.agentId, supervisorAgent: true
+  });
+  if (session.exitCode !== 0 || !session.id) {
+    await updateSupervisorGeneration(stateRoot, operationId, active.generation, {
+      status: "ACTIVE", drainingAt: undefined, error: `replacement initialization failed: ${session.stderr || session.stdout || `exit ${session.exitCode}`}`
+    });
+    throw new Error(`AEH_OPERATION_SUPERVISOR_ROTATION_FAILED: ${session.stderr || session.stdout || `exit ${session.exitCode}`}`);
+  }
+  const next = await registerSupervisorGeneration(stateRoot, operationId, { agentId: session.id, materialized: true, checkpointArtifact });
+  await recordPaseoTrace(stateRoot, "operation.supervisor.rotated", {
+    operationId, fromGeneration: active.generation, fromAgentId: active.agentId,
+    toGeneration: next.supervision.activeGeneration ?? 0, toAgentId: session.id,
+    contextRatio: usageRatio ?? -1, handoffThreshold: policy.handoffThreshold,
+    hardHandoffThreshold: policy.hardHandoffThreshold, checkpointArtifact
+  });
+  return { operationId, generation: next.supervision.activeGeneration!, agentId: session.id, materialized: true, selection, session };
+}
+
+export async function settleDrainingSupervisorGenerations(root: string, operationId: string): Promise<OperationRecordV2> {
+  const stateRoot = resolveOperationStateRoot(root);
+  let record = await loadOperation(stateRoot, operationId);
+  for (const generation of record.supervision.generations.filter((item) => item.status === "DRAINING")) {
+    const unsettled = Object.values(record.participants).some((participant) =>
+      participant.parentSupervisorGeneration === generation.generation && !["COMPLETED", "FAILED", "CANCELLED"].includes(participant.status)
+    );
+    if (unsettled) continue;
+    if (generation.agentId) {
+      try {
+        await archivePaseoSdkAgent(root, generation.agentId);
+        await recordPaseoTrace(stateRoot, "operation.supervisor.archived", { operationId, generation: generation.generation, agentId: generation.agentId });
+      } catch (error) {
+        record = await updateSupervisorGeneration(stateRoot, operationId, generation.generation, { error: error instanceof Error ? error.message : String(error) });
+        await recordPaseoTrace(stateRoot, "operation.supervisor.archive-failed", { operationId, generation: generation.generation, agentId: generation.agentId, error: error instanceof Error ? error.message : String(error) });
+        continue;
+      }
+    }
+    record = await updateSupervisorGeneration(stateRoot, operationId, generation.generation, { status: "ARCHIVED", archivedAt: new Date().toISOString(), error: undefined });
+  }
+  return record;
+}
+
+function supervisorInitializationPrompt(operation: OperationRecordV2, checkpointArtifact?: string): string {
+  return [
+    "Initialize this AEH Operation Supervisor generation from durable state.",
+    `OperationRecord snapshot: ${JSON.stringify(supervisorDurableSnapshot(operation))}`,
+    `Continuity checkpoint: ${checkpointArtifact ?? "none"}`,
+    "Own operation-local semantic coordination and consolidation only. The deterministic controller/OperationRecord owns lifecycle, participant completion, validation, rollback, gates and terminal status.",
+    "Child notifications are wake signals; reason from OperationRecord/artifacts rather than treating notification text as authoritative.",
+    "Do not start another AEH operation or contact the user directly. True product/external decisions belong to the bound lead.",
+    "This is an internal initialization turn. Acknowledge compactly and become idle; do not create children yet."
+  ].join("\n\n");
+}
+
+function supervisorDurableSnapshot(operation: OperationRecordV2): Record<string, unknown> {
+  return {
+    operationId: operation.id, kind: operation.kind, revision: operation.revision, phase: operation.phase, status: operation.status,
+    intent: operation.intent,
+    lead: operation.lead ? { generation: operation.lead.generation, acknowledgedRevision: operation.lead.acknowledgedRevision } : undefined,
+    stages: operation.stages, progress: operation.progress,
+    latestConsolidationArtifact: operation.supervision.latestConsolidationArtifact,
+    activeSupervisorGeneration: operation.supervision.activeGeneration,
+    unresolvedParticipants: Object.values(operation.participants)
+      .filter((participant) => !["COMPLETED", "FAILED", "CANCELLED"].includes(participant.status))
+      .map((participant) => ({ id: participant.id, logicalAgent: participant.logicalAgent, role: participant.role, stage: participant.stage, status: participant.status, parentSupervisorGeneration: participant.parentSupervisorGeneration, resultArtifact: participant.resultArtifact }))
+  };
+}
+function buildSupervisorCheckpoint(operation: OperationRecordV2, contextRatio?: number): Record<string, unknown> {
+  return { ...supervisorDurableSnapshot(operation), contextRatio, instruction: "Resume semantic supervision from this durable checkpoint and OperationRecord. Do not request transcript replay from the draining supervisor." };
+}
+function ratio(value: number | undefined, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= 1 ? value : fallback;
+}
