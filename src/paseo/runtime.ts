@@ -179,16 +179,33 @@ export async function waitManagedPaseoAgent(root: string, agentId: string, timeo
   return result;
 }
 
-export async function continueManagedPaseoAgent(root: string, agentId: string, prompt: string, timeoutSeconds?: number, deps: PaseoRuntimeDeps = DEFAULT_DEPS): Promise<ManagedPaseoAgentResult> {
+export async function continueManagedPaseoAgent(
+  root: string,
+  agentId: string,
+  prompt: string,
+  timeoutSeconds?: number,
+  deps: PaseoRuntimeDeps = DEFAULT_DEPS,
+  outputSchema?: Record<string, unknown>
+): Promise<ManagedPaseoAgentResult> {
   const trace = deps.trace ?? DEFAULT_DEPS.trace!;
   if (!forceCli()) {
     try {
-      const result = { ...fromSdk(await deps.sdk.run(root, agentId, prompt, timeoutMs(timeoutSeconds))), observation: "sdk-run" as const };
-      await trace(root, "agent.turn.completed", { transport: "sdk", observation: "sdk-run", agentId, status: result.status ?? "unknown" });
+      const result = {
+        ...fromSdk(await deps.sdk.run(root, agentId, prompt, timeoutMs(timeoutSeconds), outputSchema)),
+        observation: "sdk-run" as const
+      };
+      await trace(root, "agent.turn.completed", {
+        transport: "sdk",
+        observation: "sdk-run",
+        agentId,
+        status: result.status ?? "unknown",
+        structured: Boolean(outputSchema),
+        payloadCaptured: Boolean(result.stdout)
+      });
       return result;
     } catch (error) {
       if (!sdkCanFallback(error)) throw error;
-      await trace(root, "agent.turn.fallback", { agentId, from: "sdk-run", to: "subscription", reason: errorMessage(error) });
+      await trace(root, "agent.turn.fallback", { agentId, from: "sdk-run", to: "subscription", reason: errorMessage(error), structured: Boolean(outputSchema) });
     }
   }
   let baseline: PaseoTurnBaseline | undefined;
@@ -292,7 +309,9 @@ async function launchCli(root: string, options: ManagedPaseoAgentOptions, deps: 
 
 async function registerManagedAgent(root: string, options: ManagedPaseoAgentOptions, result: ManagedPaseoAgentResult): Promise<void> {
   if (!result.id) return;
-  await registerCurrentOperationAgent(root, { id: result.id, role: options.labels?.["aeh.role"], phase: options.labels?.["aeh.operation.phase"], workspaceId: result.workspaceId ?? options.workspaceId, transport: result.transport });
+  const role = options.labels?.["aeh.role"];
+  if (!role) return;
+  await registerCurrentOperationAgent(root, { id: result.id, role, phase: options.labels?.["aeh.operation.phase"], workspaceId: result.workspaceId ?? options.workspaceId, transport: result.transport });
 }
 
 async function listCliAgents(root: string, deps: PaseoRuntimeDeps): Promise<PaseoSdkAgentRecord[]> {

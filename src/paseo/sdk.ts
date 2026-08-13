@@ -65,7 +65,7 @@ interface PaseoSdkAgentHandle {
   refresh?(requestId?: string): Promise<{ agent: Record<string, unknown>; project: unknown } | null>;
   refetch?(requestId?: string): Promise<{ agent: Record<string, unknown>; project: unknown } | null>;
   send?(text: string, options?: Record<string, unknown>): Promise<void>;
-  run?(text: string, options?: { timeoutMs?: number }): Promise<PaseoSdkTurnResult>;
+  run?(text: string, options?: { timeoutMs?: number; outputSchema?: Record<string, unknown> }): Promise<PaseoSdkTurnResult>;
   waitForFinish?(timeoutMs?: number): Promise<PaseoSdkTurnResult>;
   archive?(): Promise<{ archivedAt: string }>;
   timeline?: { refetch(options?: Record<string, unknown>): Promise<unknown> };
@@ -120,7 +120,7 @@ export async function dispatchPaseoSdkAgent(root: string, agentId: string, promp
     }
     if (typeof handle.run === "function") {
       const turn = await handle.run(prompt, { timeoutMs });
-      return { id: agentId, workspaceId: handle.workspaceId ?? undefined, status: turn.status, lastMessage: turn.lastMessage, error: turn.error };
+      return turnResult(handle, turn);
     }
     throw new PaseoSdkUnavailableError("The active @getpaseo/client agent handle exposes neither send() nor run(); cannot dispatch a turn through the SDK.");
   });
@@ -133,25 +133,35 @@ export async function waitPaseoSdkAgent(root: string, agentId: string, timeoutMs
 /** Execute one resumed turn on one concrete SDK handle. Prefer the SDK's atomic
  * run() primitive so dispatch and completion observation cannot be separated by
  * an idle->running->idle race. Older SDKs fall back to send()+waitForFinish()
- * on the same handle/client. */
-export async function runPaseoSdkAgent(root: string, agentId: string, prompt: string, timeoutMs?: number): Promise<PaseoSdkAgentResult> {
-  return withPaseoClient(root, async (client) => runPaseoSdkAgentWithClient(client, agentId, prompt, timeoutMs));
+ * on the same handle/client. Structured output constraints accompany the turn
+ * when provided, and the final payload is reconciled from the agent timeline if
+ * the SDK turn result omits lastMessage. */
+export async function runPaseoSdkAgent(
+  root: string,
+  agentId: string,
+  prompt: string,
+  timeoutMs?: number,
+  outputSchema?: Record<string, unknown>
+): Promise<PaseoSdkAgentResult> {
+  return withPaseoClient(root, async (client) =>
+    runPaseoSdkAgentWithClient(client, agentId, prompt, timeoutMs, outputSchema)
+  );
 }
 
-export async function runPaseoSdkAgentWithClient(client: PaseoSdkClient, agentId: string, prompt: string, timeoutMs?: number): Promise<PaseoSdkAgentResult> {
+export async function runPaseoSdkAgentWithClient(
+  client: PaseoSdkClient,
+  agentId: string,
+  prompt: string,
+  timeoutMs?: number,
+  outputSchema?: Record<string, unknown>
+): Promise<PaseoSdkAgentResult> {
   const handle = client.agents.ref(agentId);
   if (typeof handle.run === "function") {
-    const turn = await handle.run(prompt, { timeoutMs });
-    return {
-      id: agentId,
-      workspaceId: handle.workspaceId ?? undefined,
-      status: turn.status,
-      lastMessage: turn.lastMessage,
-      error: turn.error
-    };
+    const turn = await handle.run(prompt, { timeoutMs, ...(outputSchema ? { outputSchema } : {}) });
+    return turnResult(handle, turn);
   }
   if (typeof handle.send === "function") {
-    await handle.send(prompt);
+    await handle.send(prompt, outputSchema ? { outputSchema } : undefined);
     return waitForHandle(handle, timeoutMs);
   }
   throw new PaseoSdkUnavailableError("The active @getpaseo/client agent handle exposes neither run() nor send(); cannot execute an atomic resumed turn through the SDK.");
@@ -235,7 +245,7 @@ function buildCreateOptions(options: PaseoSdkAgentOptions, includePrompt: boolea
   if (options.workspaceId) createOptions.workspaceId = options.workspaceId;
   if (options.parentAgentId) createOptions.parent = options.parentAgentId;
   if (includePrompt && options.prompt !== undefined) createOptions.initialPrompt = options.prompt;
-  if (includePrompt && options.outputSchema) createOptions.outputSchema = options.outputSchema;
+  if (options.outputSchema) createOptions.outputSchema = options.outputSchema;
   if (options.labels && Object.keys(options.labels).length) createOptions.labels = options.labels;
   return createOptions;
 }
@@ -243,7 +253,7 @@ function buildCreateOptions(options: PaseoSdkAgentOptions, includePrompt: boolea
 async function waitForHandle(handle: PaseoSdkAgentHandle, timeoutMs = 1_800_000): Promise<PaseoSdkAgentResult> {
   if (typeof handle.waitForFinish === "function") {
     const turn = await handle.waitForFinish(timeoutMs);
-    return { id: handle.id, workspaceId: handle.workspaceId ?? undefined, status: turn.status, lastMessage: turn.lastMessage, error: turn.error };
+    return turnResult(handle, turn);
   }
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -264,6 +274,31 @@ async function waitForHandle(handle: PaseoSdkAgentHandle, timeoutMs = 1_800_000)
     if (Date.now() >= deadline) return { id: handle.id, workspaceId: handle.workspaceId ?? undefined, status: "timeout", error: `Timed out after ${timeoutMs}ms.` };
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
+}
+
+async function turnResult(handle: PaseoSdkAgentHandle, turn: PaseoSdkTurnResult): Promise<PaseoSdkAgentResult> {
+  if (turn.lastMessage) {
+    return {
+      id: handle.id,
+      workspaceId: handle.workspaceId ?? undefined,
+      status: turn.status,
+      lastMessage: turn.lastMessage,
+      error: turn.error
+    };
+  }
+  const raw = await refreshHandle(handle).catch(() => undefined);
+  const timeline = handle.timeline && typeof handle.timeline.refetch === "function"
+    ? await handle.timeline.refetch({ direction: "backward", limit: 50 }).catch(() => undefined)
+    : undefined;
+  return {
+    id: handle.id,
+    workspaceId: handle.workspaceId ?? stringField(raw ?? {}, ["workspaceId", "workspace_id"]),
+    status: turn.status || statusText(raw?.status ?? handle.status),
+    lastMessage:
+      stringField(raw ?? {}, ["lastMessage", "last_message"]) ??
+      extractLastAssistantText(timeline),
+    error: turn.error ?? stringField(raw ?? {}, ["error", "lastError", "last_error"])
+  };
 }
 
 async function refreshHandle(handle: PaseoSdkAgentHandle): Promise<Record<string, unknown> | undefined> {
