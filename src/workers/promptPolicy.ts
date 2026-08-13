@@ -19,13 +19,15 @@ export function compileAgentPromptPolicy(
   contract: TaskContract,
   options: AgentPromptPolicyOptions
 ): AgentPromptPolicy {
-  const skills = new Set((selection.skills ?? []).filter((skill) => skill !== "structured-output-delivery"));
+  const inheritedSkills = selection.skills ?? [];
+  let skills = new Set(inheritedSkills.filter((skill) => skill !== "structured-output-delivery"));
   const contractRepair = options.phase?.endsWith("-contract-repair") ?? false;
 
   if (options.operationKind === "audit" && selection.role === "reviewer") {
-    skills.add("audit-review-protocol");
-    skills.delete("verification-planning");
-    if (!hasTraceableAcceptance(contract)) skills.delete("acceptance-traceability");
+    skills = new Set(["audit-review-protocol"]);
+    if (hasTraceableAcceptance(contract) && inheritedSkills.includes("acceptance-traceability")) {
+      skills.add("acceptance-traceability");
+    }
   }
 
   if (contractRepair && selection.logicalAgent === "operation-supervisor") skills.clear();

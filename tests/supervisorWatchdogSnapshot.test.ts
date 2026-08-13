@@ -1,12 +1,27 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { runOperationLivenessCheck } from "../src/operations/liveness.js";
 import { bindOperationLead, registerOperationAgent, registerSupervisorGeneration, saveOperation, updateOperationParticipant, type OperationRecordV2 } from "../src/operations/state.js";
 
 const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true }))));
+const originalOperationId = process.env.AEH_OPERATION_ID;
+const originalControlRoot = process.env.AEH_CONTROL_ROOT;
+
+beforeEach(() => {
+  delete process.env.AEH_OPERATION_ID;
+  delete process.env.AEH_CONTROL_ROOT;
+});
+
+afterEach(async () => {
+  if (originalOperationId === undefined) delete process.env.AEH_OPERATION_ID;
+  else process.env.AEH_OPERATION_ID = originalOperationId;
+  if (originalControlRoot === undefined) delete process.env.AEH_CONTROL_ROOT;
+  else process.env.AEH_CONTROL_ROOT = originalControlRoot;
+  await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
+});
+
 const config = { version: 1, project: { name: "watchdog-test" }, orchestration: { provider: "paseo" } } as never;
 
 async function fixture() {

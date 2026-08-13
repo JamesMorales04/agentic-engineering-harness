@@ -5,7 +5,7 @@ const reviewer = {
   logicalAgent: "test-reviewer",
   role: "reviewer",
   runtimeAdapter: "opencode",
-  skills: ["verification-planning", "acceptance-traceability", "structured-output-delivery"]
+  skills: ["finding-dedup", "simplify", "verification-planning", "acceptance-traceability", "structured-output-delivery"]
 } as never;
 const supervisor = {
   logicalAgent: "operation-supervisor",
@@ -21,17 +21,14 @@ const auditContract = {
 } as never;
 
 describe("deterministic prompt policy", () => {
-  it("uses the audit protocol and removes inapplicable planning/delivery skills from normal audit reviews", () => {
+  it("uses only audit review semantics on normal audit reviewer turns", () => {
     const policy = compileAgentPromptPolicy(reviewer, auditContract, {
       outputContract: "reviewer",
       phase: "review",
       operationKind: "audit",
       transport: "paseo"
     });
-    expect(policy.skills).toContain("audit-review-protocol");
-    expect(policy.skills).not.toContain("verification-planning");
-    expect(policy.skills).not.toContain("acceptance-traceability");
-    expect(policy.skills).not.toContain("structured-output-delivery");
+    expect(policy.skills).toEqual(["audit-review-protocol"]);
     expect(policy.outputContractContext).toContain("supplied out-of-band");
     expect(policy.outputContractContext).not.toContain("properties");
   });
@@ -42,7 +39,7 @@ describe("deterministic prompt policy", () => {
       operationKind: "audit",
       transport: "paseo"
     });
-    expect(policy.skills).toContain("acceptance-traceability");
+    expect(policy.skills).toEqual(["audit-review-protocol", "acceptance-traceability"]);
   });
 
   it("loads structured-output-delivery only for the bounded contract repair turn", () => {
@@ -52,7 +49,7 @@ describe("deterministic prompt policy", () => {
       operationKind: "audit",
       transport: "paseo"
     });
-    expect(policy.skills).toContain("structured-output-delivery");
+    expect(policy.skills).toEqual(["audit-review-protocol", "structured-output-delivery"]);
     expect(policy.outputContractContext).toContain("serialization-repair");
   });
 
