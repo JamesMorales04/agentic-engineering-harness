@@ -60,6 +60,16 @@ function native(overrides: Record<string, unknown> = {}) {
       source: "paseo-provider-models",
       message: "ok"
     })),
+    preflightMode: vi.fn(
+      async (_root: string, provider: string, modeId: string) => ({
+        ok: true,
+        provider,
+        modeId,
+        availableModes: [modeId],
+        source: "paseo-provider-modes",
+        message: "ok"
+      })
+    ),
     wait: vi.fn(async (_root: string, agentId: string) => ({
       id: agentId,
       status: "idle",
@@ -71,13 +81,18 @@ function native(overrides: Record<string, unknown> = {}) {
     ...overrides
   };
 }
-function deps(run: ReturnType<typeof vi.fn>, sdkDeps = sdk(), nativeDeps = native()) {
+function deps(
+  run: ReturnType<typeof vi.fn>,
+  sdkDeps = sdk(),
+  nativeDeps = native(),
+  trace = vi.fn(async () => undefined)
+) {
   return {
     run: run as never,
     detectCapabilities: vi.fn(async () => capabilities()) as never,
     sdk: sdkDeps as never,
     native: nativeDeps as never,
-    trace: vi.fn(async () => undefined) as never
+    trace: trace as never
   } as never;
 }
 
@@ -122,12 +137,112 @@ describe("managed Paseo runtime", () => {
       "gpt-test",
       "/repo"
     );
+    expect(nativeDeps.preflightMode).not.toHaveBeenCalled();
     expect(sdkDeps.create).toHaveBeenCalledWith(
       "/repo",
       expect.objectContaining({ waitForFinish: false })
     );
-    expect(nativeDeps.wait).toHaveBeenCalledWith("/repo", "sdk-agent", 1_800_000, undefined);
+    expect(nativeDeps.wait).toHaveBeenCalledWith(
+      "/repo",
+      "sdk-agent",
+      1_800_000,
+      undefined
+    );
     expect(run).not.toHaveBeenCalled();
+  });
+
+  it("trusts an AEH-managed inline OpenCode primary instead of querying ambient modes", async () => {
+    const run = vi.fn(async () => {
+      throw new Error("CLI should not be used");
+    });
+    const sdkDeps = sdk();
+    const nativeDeps = native();
+    const trace = vi.fn(async () => undefined);
+    const launched = await launchManagedPaseoAgent(
+      "/repo",
+      {
+        cwd: "/repo",
+        provider: "opencode",
+        model: "opencode-go/deepseek-v4-flash",
+        modeId: "aeh-code-quality-reviewer",
+        modeSource: "aeh-managed",
+        env: { OPENCODE_CONFIG_CONTENT: "{\"default_agent\":\"aeh-code-quality-reviewer\"}" },
+        title: "reviewer",
+        prompt: "review"
+      },
+      deps(run, sdkDeps, nativeDeps, trace)
+    );
+
+    expect(launched.transport).toBe("sdk");
+    expect(nativeDeps.preflightMode).not.toHaveBeenCalled();
+    expect(sdkDeps.create).toHaveBeenCalledWith(
+      "/repo",
+      expect.objectContaining({
+        modeId: "aeh-code-quality-reviewer",
+        modeSource: "aeh-managed",
+        env: expect.objectContaining({ OPENCODE_CONFIG_CONTENT: expect.any(String) })
+      })
+    );
+    expect(trace).toHaveBeenCalledWith(
+      "/repo",
+      "provider.mode.preflight",
+      expect.objectContaining({
+        ok: true,
+        modeId: "aeh-code-quality-reviewer",
+        source: "aeh-inline-config"
+      })
+    );
+    expect(trace).toHaveBeenCalledWith(
+      "/repo",
+      "agent.identity",
+      expect.objectContaining({
+        provider: "opencode",
+        modeId: "aeh-code-quality-reviewer",
+        source: "aeh-managed",
+        sessionScopedEnv: true
+      })
+    );
+  });
+
+  it("preflights an explicit native OpenCode agent and fails before create when it is unavailable", async () => {
+    const run = vi.fn();
+    const sdkDeps = sdk();
+    const nativeDeps = native({
+      preflightMode: vi.fn(async () => ({
+        ok: false,
+        provider: "opencode",
+        modeId: "company-reviewer",
+        availableModes: ["build", "plan"],
+        source: "paseo-provider-modes",
+        message: "requested mode missing"
+      }))
+    });
+
+    await expect(
+      launchManagedPaseoAgent(
+        "/repo",
+        {
+          cwd: "/repo",
+          provider: "opencode",
+          model: "opencode-go/deepseek-v4-flash",
+          modeId: "company-reviewer",
+          modeSource: "explicit",
+          env: { OPENCODE_CONFIG_CONTENT: "{}" },
+          title: "reviewer",
+          prompt: "review"
+        },
+        deps(run, sdkDeps, nativeDeps)
+      )
+    ).rejects.toThrow(
+      "Paseo mode preflight failed: requested mode missing Available modes: build, plan."
+    );
+    expect(nativeDeps.preflightMode).toHaveBeenCalledWith(
+      "/repo",
+      "opencode",
+      "company-reviewer",
+      "/repo"
+    );
+    expect(sdkDeps.create).not.toHaveBeenCalled();
   });
 
   it("returns immediately when caller explicitly requests no wait", async () => {
@@ -183,7 +298,7 @@ describe("managed Paseo runtime", () => {
     expect(sdkDeps.create).not.toHaveBeenCalled();
   });
 
-  it("continues to creation when preflight SDK capability is unavailable", async () => {
+  it("continues to creation when provider preflight SDK capability is unavailable", async () => {
     const run = vi.fn(async () => {
       throw new Error("CLI should not be used");
     });
@@ -284,7 +399,7 @@ describe("managed Paseo runtime", () => {
     expect(sdkDeps.wait).toHaveBeenCalledTimes(1);
   });
 
-  it("falls back to negotiated CLI lifecycle when the SDK is unavailable", async () => {
+  it("falls back to negotiated CLI lifecycle when the SDK is unavailable for a config that needs no launch env", async () => {
     const commands: string[] = [];
     const run = vi.fn(async (command: string) => {
       commands.push(command);
@@ -332,6 +447,37 @@ describe("managed Paseo runtime", () => {
     );
     expect(launched.stderr).toContain("SDK unavailable");
     expect(commands[0]).toContain("paseo run --background");
+  });
+
+  it("refuses CLI fallback when dropping OpenCode session env would reintroduce ambient-agent selection", async () => {
+    const run = vi.fn();
+    const sdkDeps = sdk({
+      create: vi.fn(async () => {
+        throw new PaseoSdkUnavailableError("not installed");
+      })
+    });
+    const nativeDeps = native({
+      preflight: vi.fn(async () => {
+        throw new PaseoSdkUnavailableError("not installed");
+      })
+    });
+
+    await expect(
+      launchManagedPaseoAgent(
+        "/repo",
+        {
+          cwd: "/repo",
+          provider: "opencode",
+          modeId: "aeh-reviewer",
+          modeSource: "aeh-managed",
+          env: { OPENCODE_CONFIG_CONTENT: "{}" },
+          title: "reviewer",
+          prompt: "review"
+        },
+        deps(run, sdkDeps, nativeDeps)
+      )
+    ).rejects.toThrow("Refusing CLI fallback because dropping that environment");
+    expect(run).not.toHaveBeenCalled();
   });
 
   it("refuses to turn a systemPrompt-only idle lead into a CLI user turn", async () => {
