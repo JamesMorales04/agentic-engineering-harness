@@ -6,11 +6,7 @@ import type { AgentExecutionSelection } from "../agents/types.js";
 import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
 import { deliveryWorkspaceId } from "../delivery/handoff.js";
 import { buildManagedAgentEnvironment } from "../operations/executionContext.js";
-import {
-  activeOperationSupervisor,
-  currentOperationContext,
-  loadOperation
-} from "../operations/state.js";
+import { activeOperationSupervisor, currentOperationContext, loadOperation } from "../operations/state.js";
 
 export interface PaseoLaunchSpecOptions {
   selection?: AgentExecutionSelection;
@@ -23,7 +19,6 @@ export interface PaseoLaunchSpecOptions {
   parentAgentId?: string;
   supervisorAgent?: boolean;
 }
-
 export interface PaseoAgentLaunchSpec {
   cwd: string;
   title: string;
@@ -44,12 +39,7 @@ export interface PaseoAgentLaunchSpec {
   phase: string;
 }
 
-export async function compilePaseoAgentLaunchSpec(
-  root: string,
-  config: HarnessProjectConfig,
-  contract: TaskContract,
-  options: PaseoLaunchSpecOptions = {}
-): Promise<PaseoAgentLaunchSpec> {
+export async function compilePaseoAgentLaunchSpec(root: string, config: HarnessProjectConfig, contract: TaskContract, options: PaseoLaunchSpecOptions = {}): Promise<PaseoAgentLaunchSpec> {
   const selection = options.selection;
   const worker = config.orchestration?.worker;
   const logicalAgent = options.logicalAgent ?? selection?.logicalAgent ?? "worker";
@@ -62,29 +52,20 @@ export async function compilePaseoAgentLaunchSpec(
   const deliveryId = await deliveryWorkspaceId(root, config, contract.task.id);
   const workspaceId = deliveryId ?? operation.workspaceId;
   const title = `${options.titlePrefix ?? worker?.titlePrefix ?? "aeh"}-${contract.task.id}-${logicalAgent}`;
-
-  const durable = operation.id ? await loadOperation(root, operation.id).catch(() => undefined) : undefined;
+  const controlRoot = process.env.AEH_CONTROL_ROOT?.trim() || root;
+  const durable = operation.id ? await loadOperation(controlRoot, operation.id).catch(() => undefined) : undefined;
   const activeSupervisor = durable ? activeOperationSupervisor(durable) : undefined;
   const supervisorAgent = options.supervisorAgent === true || logicalAgent === "operation-supervisor";
   const parentAgentId = options.parentAgentId ?? (supervisorAgent ? durable?.lead?.agentId : activeSupervisor?.agentId);
   const supervisorGeneration = supervisorAgent ? undefined : activeSupervisor?.generation;
 
-  const openCode = selection?.runtimeAdapter === "opencode" && provider === "opencode"
-    ? compileOpenCodeRuntimeProjection(selection, config)
-    : undefined;
+  const openCode = selection?.runtimeAdapter === "opencode" && provider === "opencode" ? compileOpenCodeRuntimeProjection(selection, config) : undefined;
   const explicitOpenCodeMode = openCode && !openCode.binding.managed ? openCode.binding.agentId : undefined;
-  const executionEnv = buildManagedAgentEnvironment({
-    logicalAgent,
-    role: selection?.role ?? "worker",
-    operationId,
-    operationKind,
-    phase,
-    interactiveLead: false,
-    orchestrationAllowed: false
-  });
+  const executionEnv = buildManagedAgentEnvironment({ logicalAgent, role: selection?.role ?? "worker", operationId, operationKind, phase, interactiveLead: false, orchestrationAllowed: false });
   if (parentAgentId) executionEnv.AEH_PARENT_AGENT_ID = parentAgentId;
   if (supervisorGeneration !== undefined) executionEnv.AEH_SUPERVISOR_GENERATION = String(supervisorGeneration);
   if (supervisorAgent) executionEnv.AEH_OPERATION_SUPERVISOR = "1";
+  executionEnv.AEH_CONTROL_ROOT = controlRoot;
 
   const labels: Record<string, string> = {
     "aeh.project": config.project.name,
@@ -139,7 +120,6 @@ export function inferAgentPhase(selection: AgentExecutionSelection | undefined, 
   if (role === "implementer" || name.includes("implementer") || name.includes("worker")) return "implementation";
   return "work";
 }
-
 function inferOperationKind(contract: TaskContract): string {
   const intent = contract.routing?.intent?.trim();
   if (intent === "audit") return "audit";
