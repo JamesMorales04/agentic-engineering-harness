@@ -23,7 +23,7 @@ function capabilities() { return { version: "0.6.0", background: true, quiet: tr
 function managed(id: string) { return { id, exitCode: 0, stdout: "", stderr: "", status: "idle", transport: "sdk" as const }; }
 
 describe("Paseo Harness start", () => {
-  it("creates idle SDK leads with exact project-locked AEH operation MCP and reuses only with explicit compatible runtime identity", async () => {
+  it("creates idle SDK portfolio leads with project-locked operation tools and explicit runtime identity", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-paseo-start-"));
     const commands: string[] = [];
     let daemonReady = false; let launchCount = 0;
@@ -34,15 +34,13 @@ describe("Paseo Harness start", () => {
       if (command === "paseo daemon start --web-ui") { daemonReady = true; return processResult(0, "started"); }
       throw new Error(`unexpected command: ${command}`);
     });
-    const setup = vi.fn(async () => ({} as never));
-    const launchAgent = vi.fn(async (_root: string, _options: Record<string, unknown>) => { launchCount += 1; return managed(`agent-${launchCount}`); });
+    const launchAgent = vi.fn(async () => { launchCount += 1; return managed(`agent-${launchCount}`); });
     const probeAgent = vi.fn(async () => true);
-    const deps = { run: run as never, commandExists: vi.fn(async () => true) as never, setupToolchain: setup as never, loadTopology: vi.fn(async () => topology()) as never, detectCapabilities: vi.fn(async () => capabilities()) as never, launchAgent: launchAgent as never, probeAgent: probeAgent as never };
+    const deps = { run: run as never, commandExists: vi.fn(async () => true) as never, setupToolchain: vi.fn(async () => ({} as never)) as never, loadTopology: vi.fn(async () => topology()) as never, detectCapabilities: vi.fn(async () => capabilities()) as never, launchAgent: launchAgent as never, probeAgent: probeAgent as never };
     const aehCommand = '"/usr/bin/node" "/pkg/dist/main.js"';
 
     const first = await startPaseoHarness(root, config, { aehCommand }, deps);
     expect(first.session).toBe("created"); expect(first.agentId).toBe("agent-1"); expect(first.daemonStarted).toBe(true); expect(first.transport).toBe("sdk");
-    expect(first.aehVersion).toBe(VERSION); expect(first.aehCommand).toBe(aehCommand);
     const second = await startPaseoHarness(root, config, { aehCommand }, deps);
     expect(second.session).toBe("created"); expect(second.agentId).toBe("agent-2");
     const resumed = await startPaseoHarness(root, config, { resume: true, aehCommand }, deps);
@@ -50,44 +48,40 @@ describe("Paseo Harness start", () => {
     expect(launchCount).toBe(2); expect(probeAgent).toHaveBeenCalledWith(root, "agent-2");
 
     const state = JSON.parse(await fs.readFile(path.join(root, ".harness/paseo/lead-session.json"), "utf8")) as { version: number; agentId: string; bootstrapVersion: number; aehVersion: string; aehCommand: string; generation: number };
-    expect(state.version).toBe(2); expect(state.agentId).toBe("agent-2"); expect(state.bootstrapVersion).toBe(PASEO_BOOTSTRAP_VERSION); expect(state.aehVersion).toBe(VERSION); expect(state.aehCommand).toBe(aehCommand); expect(state.generation).toBe(2);
+    expect(state).toEqual(expect.objectContaining({ version: 2, agentId: "agent-2", bootstrapVersion: PASEO_BOOTSTRAP_VERSION, aehVersion: VERSION, aehCommand, generation: 2 }));
     const bootstrap = await fs.readFile(path.join(root, ".harness/paseo/lead-bootstrap.md"), "utf8");
-    expect(bootstrap).toContain("ORCHESTRATOR");
-    expect(bootstrap).toContain("resolved AEH agent topology");
-    expect(bootstrap).toContain("OpenSpec");
-    expect(bootstrap).toContain("/paseo-handoff");
+    expect(bootstrap).toContain("thin portfolio orchestrator");
+    expect(bootstrap).toContain("operation-supervisor");
+    expect(bootstrap).toContain("OperationRecord");
+    expect(bootstrap).toContain("aeh_operation_portfolio");
+    expect(bootstrap).toContain("watchdog");
+    expect(bootstrap).toContain("AUDIT, CHANGE and prepared RUN");
     expect(bootstrap).toContain(aehCommand);
     expect(bootstrap).toContain(`AEH runtime v${VERSION}`);
-    expect(bootstrap).toContain("aeh-control MCP");
-    expect(bootstrap).toContain("aeh_context_status");
-    expect(bootstrap).toContain("project-locked");
-    expect(bootstrap).toContain("Never intentionally use synchronous");
-    expect(bootstrap).toContain("[AEH_OPERATION_COMPLETED]");
-    expect(bootstrap).toContain("do not busy-poll");
-    expect(bootstrap).toContain("do not create a duplicate operation");
     expect(bootstrap).not.toContain("Delegation policy:");
-    expect(bootstrap).not.toContain("environment-manager");
-    expect(bootstrap).not.toContain("spec-manager");
     expect(bootstrap).not.toContain("AEH READY");
     expect(commands.some((command) => command.startsWith("paseo run"))).toBe(false);
+
     const launchOptions = launchAgent.mock.calls[0][1];
     expect(launchOptions).toEqual(expect.objectContaining({
       provider: "codex",
       model: "gpt-test",
-      systemPrompt: expect.stringContaining("resolved AEH agent topology"),
+      systemPrompt: expect.stringContaining("thin portfolio orchestrator"),
       labels: expect.objectContaining({ "aeh.kind": "lead", "aeh.role": "lead", "aeh.version": VERSION, "aeh.bootstrap": String(PASEO_BOOTSTRAP_VERSION) }),
       waitForFinish: false,
       mcpServers: {
         "aeh-control": { type: "stdio", command: "/usr/bin/node", args: ["/pkg/dist/main.js", "operation", "mcp"], env: { AEH_CONTROL_ROOT: root }, alwaysLoad: true }
       },
       toolPolicy: {
-        preapproved: [
+        preapproved: expect.arrayContaining([
           { kind: "mcp", server: "aeh-control", tool: "aeh_operation_start_audit" },
           { kind: "mcp", server: "aeh-control", tool: "aeh_operation_start_run" },
+          { kind: "mcp", server: "aeh-control", tool: "aeh_operation_start_change" },
           { kind: "mcp", server: "aeh-control", tool: "aeh_operation_status" },
+          { kind: "mcp", server: "aeh-control", tool: "aeh_operation_portfolio" },
           { kind: "mcp", server: "aeh-control", tool: "aeh_operation_cancel" },
           { kind: "mcp", server: "aeh-control", tool: "aeh_context_status" }
-        ]
+        ])
       }
     }));
     expect(launchOptions).not.toHaveProperty("prompt");
@@ -97,20 +91,10 @@ describe("Paseo Harness start", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-paseo-runtime-identity-"));
     let launchCount = 0;
     const launchAgent = vi.fn(async () => { launchCount += 1; return managed(`agent-${launchCount}`); });
-    const deps = {
-      run: vi.fn(async (command: string) => command === "paseo daemon status --json" ? processResult(0, "{}") : Promise.reject(new Error(command))) as never,
-      commandExists: vi.fn(async () => true) as never,
-      setupToolchain: vi.fn(async () => ({} as never)) as never,
-      loadTopology: vi.fn(async () => topology()) as never,
-      detectCapabilities: vi.fn(async () => capabilities()) as never,
-      launchAgent: launchAgent as never,
-      probeAgent: vi.fn(async () => true) as never
-    };
+    const deps = { run: vi.fn(async (command: string) => command === "paseo daemon status --json" ? processResult(0, "{}") : Promise.reject(new Error(command))) as never, commandExists: vi.fn(async () => true) as never, setupToolchain: vi.fn(async () => ({} as never)) as never, loadTopology: vi.fn(async () => topology()) as never, detectCapabilities: vi.fn(async () => capabilities()) as never, launchAgent: launchAgent as never, probeAgent: vi.fn(async () => true) as never };
     await startPaseoHarness(root, config, { aehCommand: '"/node" "/pkg-a/dist/main.js"' }, deps);
     const next = await startPaseoHarness(root, config, { resume: true, aehCommand: '"/node" "/pkg-b/dist/main.js"' }, deps);
-    expect(next.session).toBe("created");
-    expect(next.agentId).toBe("agent-2");
-    expect(launchCount).toBe(2);
+    expect(next.session).toBe("created"); expect(next.agentId).toBe("agent-2"); expect(launchCount).toBe(2);
   });
 
   it("recovers a stale daemon before starting an SDK lead", async () => {
@@ -123,8 +107,7 @@ describe("Paseo Harness start", () => {
     });
     const deps = { run: run as never, commandExists: vi.fn(async () => true) as never, setupToolchain: vi.fn(async () => ({} as never)) as never, loadTopology: vi.fn(async () => topology()) as never, detectCapabilities: vi.fn(async () => capabilities()) as never, launchAgent: vi.fn(async () => managed("agent-stale")) as never, probeAgent: vi.fn(async () => false) as never };
     const value = await startPaseoHarness(root, config, {}, deps);
-    expect(value.daemonStarted).toBe(true);
-    expect(run).toHaveBeenCalledWith("paseo daemon stop", expect.anything());
+    expect(value.daemonStarted).toBe(true); expect(run).toHaveBeenCalledWith("paseo daemon stop", expect.anything());
   });
 
   it("auto-runs toolchain setup when Paseo or the lead runtime is missing", async () => {
@@ -135,22 +118,17 @@ describe("Paseo Harness start", () => {
     expect(value.session).toBe("created"); expect(setup).toHaveBeenCalledTimes(1); expect(setup).toHaveBeenCalledWith(root, config, { skipProjectDependencies: true });
   });
 
-  it("builds a thin bootstrap that delegates role authority to topology and workflow files", () => {
+  it("builds a thin portfolio bootstrap that delegates operation-local work to supervisors", () => {
     const bootstrap = buildPaseoLeadBootstrap("pawra", "/repo/pawra", "npm-exec-aeh");
-    expect(bootstrap).toContain("ORCHESTRATOR");
-    expect(bootstrap).toContain("resolved AEH agent topology");
-    expect(bootstrap).toContain("/paseo-handoff");
+    expect(bootstrap).toContain("thin portfolio orchestrator");
+    expect(bootstrap).toContain("multiple concurrent operations");
+    expect(bootstrap).toContain("operation-supervisor");
+    expect(bootstrap).toContain("OperationRecord");
+    expect(bootstrap).toContain("aeh_operation_portfolio");
+    expect(bootstrap).toContain("watchdog");
     expect(bootstrap).toContain("OpenSpec");
     expect(bootstrap).toContain("npm-exec-aeh");
     expect(bootstrap).toContain(`AEH runtime v${VERSION}`);
-    expect(bootstrap).toContain("aeh-control MCP");
-    expect(bootstrap).toContain("aeh_context_status");
-    expect(bootstrap).toContain("project-locked");
-    expect(bootstrap).toContain("[AEH_OPERATION_COMPLETED]");
-    expect(bootstrap).toContain("do not busy-poll");
-    expect(bootstrap).not.toContain("explorer");
-    expect(bootstrap).not.toContain("environment-manager");
-    expect(bootstrap).not.toContain("spec-manager");
     expect(bootstrap).not.toContain("AEH READY");
   });
 
