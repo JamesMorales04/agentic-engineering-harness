@@ -110,16 +110,18 @@ export async function notifyOperationCompletion(
 
 export function completionPrompt(operation: OperationRecord): string {
   const artifact = resultPath(operation);
-  const result = operation.result ? JSON.stringify(operation.result) : "{}";
+  const resultKeys = Object.keys(operation.result ?? {}).sort();
+  const revision = operation.version === 2 ? operation.revision : undefined;
   return [
     "[AEH_OPERATION_COMPLETED]",
-    `Detached AEH operation ${operation.id} (${operation.kind}) reached terminal state ${operation.status}.`,
-    "This is an internal AEH operation continuation event, not a new user task.",
-    "Do not start a duplicate operation or restart the completed operation.",
-    `Read OperationRecord ${operation.id} and its durable result artifacts.${artifact ? ` Authoritative result artifact: ${artifact}.` : ""}`,
+    `Detached AEH operation ${operation.id} (${operation.kind}) reached terminal state ${operation.status}${revision ? ` at revision ${revision}` : ""}.`,
+    "This is an internal AEH operation continuation event, not a new user task. Do not start a duplicate operation or restart the completed operation.",
+    artifact ? `Authoritative result artifact: ${artifact}.` : `Durable result keys: ${resultKeys.length ? resultKeys.join(", ") : "none"}.`,
+    "Use aeh_operation_digest for compact terminal state. Use aeh_operation_status with detail=full at most once only if the result cannot be consumed from the referenced artifact/digest.",
+    revision ? `After consuming this terminal revision, call aeh_operation_ack for operation ${operation.id} and exactly revision ${revision}.` : undefined,
     "Continue the original pending user-facing request using durable operation state as the source of truth.",
-    operation.error ? `Operation error: ${operation.error.split("\n", 1)[0]}` : `Operation result: ${result}`
-  ].join("\n");
+    operation.error ? `Operation error: ${operation.error.split("\n", 1)[0]}` : undefined
+  ].filter(Boolean).join("\n");
 }
 
 function resultPath(operation: OperationRecord): string | undefined {

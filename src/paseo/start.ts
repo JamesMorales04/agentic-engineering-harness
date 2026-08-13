@@ -14,7 +14,7 @@ import { detectPaseoDaemonCapabilities, isRecoverableDaemonStatus } from "./capa
 import { launchManagedPaseoAgent, probeManagedPaseoAgent } from "./runtime.js";
 import type { PaseoSdkAgentOptions } from "./sdk.js";
 
-export const PASEO_BOOTSTRAP_VERSION = 10;
+export const PASEO_BOOTSTRAP_VERSION = 11;
 export type PaseoSessionPolicy = "fresh-on-start" | "reuse-compatible" | "resume-explicit";
 
 export interface PaseoStartOptions {
@@ -234,7 +234,9 @@ export function buildAehControlMcp(aehCommand: string, projectRoot: string): Pic
     "aeh_operation_start_audit",
     "aeh_operation_start_run",
     "aeh_operation_start_change",
+    "aeh_operation_digest",
     "aeh_operation_status",
+    "aeh_operation_ack",
     "aeh_operation_portfolio",
     "aeh_operation_cancel",
     "aeh_context_status"
@@ -274,7 +276,7 @@ export function buildPaseoLeadBootstrap(
   handoffPath?: string
 ): string {
   const handoff = handoffPath
-    ? `\n\nThis lead was created by proactive context rotation. Read the deterministic handoff artifact ${JSON.stringify(handoffPath)} plus the active operation portfolio/OperationRecords before making a new engineering decision. Active operations are rebound to this lead generation automatically; do not ask the previous lead to replay child-agent transcripts.`
+    ? `\n\nThis lead was created by proactive context rotation. Read the deterministic handoff artifact ${JSON.stringify(handoffPath)} plus the active operation portfolio/compact digests before making a new engineering decision. Active operations are rebound to this lead generation automatically; do not ask the previous lead to replay child-agent transcripts.`
     : "";
   return `AEH thin-lead Paseo bootstrap v${PASEO_BOOTSTRAP_VERSION}; AEH runtime v${VERSION}.
 
@@ -286,11 +288,13 @@ Your exact AEH runtime invocation is \`${aehCommand}\`. This invocation and runt
 
 Before engineering work, read AGENTS.md and .harness/skills/engineering-workflow/SKILL.md when present. Those instructions plus resolved AEH topology are authoritative. Every engineering operation must enter through AEH; only purely informational questions may bypass.
 
-Operate as a thin portfolio orchestrator. You may own multiple concurrent operations in isolated workspaces. Manage user intent, priorities, cross-operation dependencies, true exception decisions and final user-facing semantic acceptance. Do not directly multiplex planner/worker/reviewer timelines. Each non-trivial operation has an operation-supervisor responsible for operation-local semantic coordination/consolidation, while deterministic controller + OperationRecord remain lifecycle/gate authority.
+Operate as a thin portfolio orchestrator with interrupt-driven semantics. You may own multiple concurrent operations; use \`aeh_operation_portfolio\` only for portfolio-level decisions, never as a healthy-progress poll. Manage user intent, priorities, cross-operation dependencies, true exception decisions and final user-facing semantic acceptance. Do not directly multiplex planner/worker/reviewer timelines. Each non-trivial operation has an operation-supervisor responsible for operation-local semantic coordination/consolidation, while deterministic controller + OperationRecord remain lifecycle/gate authority.
 
-${preferPaseoTools ? `Use the injected aeh-control tools for detached AUDIT, CHANGE and prepared RUN operations. \`aeh_operation_portfolio\` gives a compact operation-level view; do not poll every child agent. After an operation starts, its detached liveness monitor observes durable OperationRecord revisions, stalls, blocks and terminal state. Native parent notifications and direct completion sends are fast paths only; the watchdog is the recovery path, so a single lost callback must not strand the operation.
+${preferPaseoTools ? `Use the injected aeh-control tools for detached AUDIT, CHANGE and prepared RUN operations. Start tools return a compact operation digest. Once an operation starts successfully, return idle: do not poll \`aeh_operation_status\`, \`aeh_operation_digest\`, child agents, or the portfolio merely to watch healthy progress. Healthy revisions are controller-owned and intentionally do not wake the lead.
 
-Progress wake-ups are internal continuation events. For healthy non-terminal progress, do not create user-facing status noise; acknowledge the durable operation state and return idle. For blocked/product/external decisions, inspect the OperationRecord and involve the user only when required. For terminal state, read the durable result/report and complete the original pending user request. Never start a duplicate operation merely because a previous notification was lost.` : `Use AEH's configured Paseo adapter for delegation and lifecycle control.`}
+Use \`aeh_operation_digest\` only when a user explicitly asks for current operation status or after a blocked/stalled/terminal continuation event. \`aeh_operation_status\` defaults to the same compact view; request \`detail=full\` only for exceptional diagnostics or at most once when a terminal result cannot be consumed from the digest/result artifact. Reading status never acknowledges a revision. \`aeh_operation_ack\` is the separate exact-revision acknowledgement primitive.
+
+The detached liveness watchdog may inspect durable state every few seconds without LLM tokens. It wakes the operation-supervisor first for stalls and wakes this lead only for bounded unresolved stalls, blocked decisions, or terminal completion. Never manufacture periodic progress commentary. On a terminal continuation, consume the referenced durable result, complete the pending user request, then acknowledge exactly that revision with \`aeh_operation_ack\`. Never start a duplicate operation merely because a callback was lost.` : `Use AEH's configured Paseo adapter for delegation and lifecycle control.`}
 
 Before non-trivial work and at completed-turn boundaries, inspect context pressure with \`aeh_context_status\`. Honor HANDOFF_REQUIRED/HARD_HANDOFF and stop the old lead when replacement is created. Lead rotation automatically rebinds active OperationRecords and completion targets to the new lead generation; durable artifacts, not conversational replay, carry continuity.
 
