@@ -10,7 +10,11 @@ import type { HarnessProjectConfig, TaskContract, WorkerSession } from "../core/
 import { statusLeadContext } from "../paseo/context.js";
 import { archivePaseoSdkAgent } from "../paseo/sdk.js";
 import { recordPaseoTrace } from "../paseo/trace.js";
-import { executeAgentPrompt } from "../workers/agentPrompt.js";
+import {
+  dispatchMaterializedAgentPrompt,
+  executeAgentPrompt,
+  materializeAgentPrompt
+} from "../workers/agentPrompt.js";
 import { persistOperationConsolidation, persistSupervisorCheckpoint } from "./artifacts.js";
 import {
   activeOperationSupervisor,
@@ -34,6 +38,8 @@ export interface SupervisorConsolidationInput {
 export interface SupervisorConsolidationResult { output: SupervisorOutput; artifact: string; session: WorkerSession; }
 interface SupervisorContextPolicy { handoffThreshold: number; hardHandoffThreshold: number; }
 interface SupervisionConfigExtension { operations?: { supervision?: { context?: { handoffThreshold?: number; hardHandoffThreshold?: number; }; }; }; }
+
+const SUPERVISOR_INITIALIZATION_ATTEMPTS = 2;
 
 export function operationSupervisorContextPolicy(config: HarnessProjectConfig): SupervisorContextPolicy {
   const orchestration = config.orchestration as (HarnessProjectConfig["orchestration"] & SupervisionConfigExtension) | undefined;
@@ -67,22 +73,68 @@ export async function ensureOperationSupervisor(
     return { operationId, generation: active.generation, agentId: active.agentId, materialized: true, selection };
   }
 
-  // Initialize the provider session before it can receive native child finish
-  // notifications. This seeds the supervisor charter and durable operation state
-  // into its own context, then leaves it idle/resident for asynchronous children.
-  const session = await executeAgentPrompt(root, config, contract, selection, supervisorInitializationPrompt(operation), {
-    phase: "supervision",
-    operationKind: operation.kind,
-    parentAgentId: operation.lead?.agentId,
-    supervisorAgent: true
-  });
-  if (session.exitCode !== 0 || !session.id) {
-    throw new Error(`AEH_OPERATION_SUPERVISOR_UNAVAILABLE: initialization failed: ${session.stderr || session.stdout || `exit ${session.exitCode}`}`);
+  let lastError: string | undefined;
+  for (let attempt = 1; attempt <= SUPERVISOR_INITIALIZATION_ATTEMPTS; attempt += 1) {
+    operation = await loadOperation(stateRoot, operationId);
+    const materialized = await materializeAgentPrompt(root, config, contract, selection, {
+      phase: "supervision",
+      operationKind: operation.kind,
+      parentAgentId: operation.lead?.agentId,
+      supervisorAgent: true
+    });
+    if (!materialized?.id) {
+      lastError = "Paseo SDK did not materialize a persistent supervisor session";
+      break;
+    }
+
+    // Critical ordering invariant: persist the concrete provider session before
+    // sending any LLM turn. Watchdog/recovery can now always identify the
+    // supervisor even if initialization completion detection fails or times out.
+    operation = await registerSupervisorGeneration(stateRoot, operationId, {
+      agentId: materialized.id,
+      materialized: true
+    });
+    const generation = operation.supervision.activeGeneration!;
+    await recordPaseoTrace(stateRoot, "operation.supervisor.materialized", {
+      operationId, generation, agentId: materialized.id, revision: operation.revision, attempt
+    });
+
+    try {
+      const session = await dispatchMaterializedAgentPrompt(
+        root,
+        config,
+        contract,
+        selection,
+        materialized,
+        supervisorInitializationPrompt(operation),
+        {
+          phase: "supervision",
+          operationKind: operation.kind,
+          parentAgentId: operation.lead?.agentId,
+          supervisorAgent: true
+        }
+      );
+      if (session.exitCode !== 0 || !session.id) {
+        throw new Error(session.stderr || session.stdout || `exit ${session.exitCode}`);
+      }
+      await recordPaseoTrace(stateRoot, "operation.supervisor.initialized", {
+        operationId, generation, agentId: session.id, revision: operation.revision, attempt
+      });
+      return { operationId, generation, agentId: session.id, materialized: true, selection, session };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+      await updateSupervisorGeneration(stateRoot, operationId, generation, {
+        status: "FAILED",
+        error: `initialization failed: ${lastError}`
+      }).catch(() => undefined);
+      await archivePaseoSdkAgent(root, materialized.id).catch(() => undefined);
+      await recordPaseoTrace(stateRoot, "operation.supervisor.initialization-failed", {
+        operationId, generation, agentId: materialized.id, attempt, error: lastError
+      }).catch(() => undefined);
+    }
   }
-  operation = await registerSupervisorGeneration(stateRoot, operationId, { agentId: session.id, materialized: true });
-  const generation = operation.supervision.activeGeneration!;
-  await recordPaseoTrace(stateRoot, "operation.supervisor.initialized", { operationId, generation, agentId: session.id, revision: operation.revision });
-  return { operationId, generation, agentId: session.id, materialized: true, selection, session };
+
+  throw new Error(`AEH_OPERATION_SUPERVISOR_UNAVAILABLE: initialization failed after ${SUPERVISOR_INITIALIZATION_ATTEMPTS} bounded attempt(s): ${lastError ?? "unknown error"}`);
 }
 
 export async function consolidateWithOperationSupervisor(
@@ -162,23 +214,39 @@ export async function maybeRotateOperationSupervisor(
 
   const selection = executionSelectionForAgent(topology, "operation-supervisor");
   const latest = await loadOperation(stateRoot, operationId);
-  const session = await executeAgentPrompt(root, config, contract, selection, supervisorInitializationPrompt(latest, checkpointArtifact), {
+  const materialized = await materializeAgentPrompt(root, config, contract, selection, {
     phase: "supervision", operationKind: operation.kind, parentAgentId: operation.lead?.agentId, supervisorAgent: true
   });
-  if (session.exitCode !== 0 || !session.id) {
-    await updateSupervisorGeneration(stateRoot, operationId, active.generation, {
-      status: "ACTIVE", drainingAt: undefined, error: `replacement initialization failed: ${session.stderr || session.stdout || `exit ${session.exitCode}`}`
-    });
-    throw new Error(`AEH_OPERATION_SUPERVISOR_ROTATION_FAILED: ${session.stderr || session.stdout || `exit ${session.exitCode}`}`);
+  if (!materialized?.id) {
+    await updateSupervisorGeneration(stateRoot, operationId, active.generation, { status: "ACTIVE", drainingAt: undefined, error: "replacement materialization failed" });
+    throw new Error("AEH_OPERATION_SUPERVISOR_ROTATION_FAILED: Paseo SDK did not materialize the replacement supervisor.");
   }
-  const next = await registerSupervisorGeneration(stateRoot, operationId, { agentId: session.id, materialized: true, checkpointArtifact });
-  await recordPaseoTrace(stateRoot, "operation.supervisor.rotated", {
-    operationId, fromGeneration: active.generation, fromAgentId: active.agentId,
-    toGeneration: next.supervision.activeGeneration ?? 0, toAgentId: session.id,
-    contextRatio: usageRatio ?? -1, handoffThreshold: policy.handoffThreshold,
-    hardHandoffThreshold: policy.hardHandoffThreshold, checkpointArtifact
+
+  const registered = await registerSupervisorGeneration(stateRoot, operationId, { agentId: materialized.id, materialized: true, checkpointArtifact });
+  const replacementGeneration = registered.supervision.activeGeneration!;
+  await recordPaseoTrace(stateRoot, "operation.supervisor.materialized", {
+    operationId, generation: replacementGeneration, agentId: materialized.id, revision: registered.revision, replacementFor: active.generation
   });
-  return { operationId, generation: next.supervision.activeGeneration!, agentId: session.id, materialized: true, selection, session };
+
+  try {
+    const session = await dispatchMaterializedAgentPrompt(root, config, contract, selection, materialized, supervisorInitializationPrompt(latest, checkpointArtifact), {
+      phase: "supervision", operationKind: operation.kind, parentAgentId: operation.lead?.agentId, supervisorAgent: true
+    });
+    if (session.exitCode !== 0 || !session.id) throw new Error(session.stderr || session.stdout || `exit ${session.exitCode}`);
+    await recordPaseoTrace(stateRoot, "operation.supervisor.rotated", {
+      operationId, fromGeneration: active.generation, fromAgentId: active.agentId,
+      toGeneration: replacementGeneration, toAgentId: session.id,
+      contextRatio: usageRatio ?? -1, handoffThreshold: policy.handoffThreshold,
+      hardHandoffThreshold: policy.hardHandoffThreshold, checkpointArtifact
+    });
+    return { operationId, generation: replacementGeneration, agentId: session.id, materialized: true, selection, session };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await updateSupervisorGeneration(stateRoot, operationId, replacementGeneration, { status: "FAILED", error: `replacement initialization failed: ${message}` }).catch(() => undefined);
+    await archivePaseoSdkAgent(root, materialized.id).catch(() => undefined);
+    await updateSupervisorGeneration(stateRoot, operationId, active.generation, { status: "ACTIVE", drainingAt: undefined, error: `replacement initialization failed: ${message}` });
+    throw new Error(`AEH_OPERATION_SUPERVISOR_ROTATION_FAILED: ${message}`);
+  }
 }
 
 export async function settleDrainingSupervisorGenerations(root: string, operationId: string): Promise<OperationRecordV2> {
