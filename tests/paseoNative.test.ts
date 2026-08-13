@@ -78,6 +78,40 @@ describe("Paseo native observability", () => {
     expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 
+  it("accepts a completed structured turn from changed lastUserMessageAt even without assistant text", async () => {
+    const unsubscribe = vi.fn();
+    const handle = {
+      id: "agent-structured-fast",
+      subscribe: vi.fn(() => unsubscribe),
+      refetch: vi.fn(async () => ({
+        agent: {
+          id: "agent-structured-fast",
+          status: "idle",
+          workspaceId: "workspace-1",
+          lastUserMessageAt: "2026-08-13T01:31:15.000Z"
+        }
+      })),
+      timeline: {
+        refetch: vi.fn(async () => ({ entries: [] }))
+      }
+    };
+
+    const result = await waitForPaseoAgentHandle(handle, 2_000, {
+      lastUserMessageAt: "2026-08-13T01:31:10.000Z"
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        id: "agent-structured-fast",
+        status: "idle",
+        workspaceId: "workspace-1",
+        updatesObserved: 0
+      })
+    );
+    expect(result.lastMessage).toBeUndefined();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
   it("waits on subscription updates when the initial idle snapshot has no completed turn", async () => {
     let status = "idle";
     let completed = false;
@@ -136,7 +170,12 @@ describe("Paseo native observability", () => {
         return unsubscribe;
       }),
       refetch: vi.fn(async () => ({
-        agent: { id: "agent-reused", status, workspaceId: "workspace-1" }
+        agent: {
+          id: "agent-reused",
+          status,
+          workspaceId: "workspace-1",
+          lastUserMessageAt: "2026-08-13T01:00:00.000Z"
+        }
       })),
       timeline: {
         refetch: vi.fn(async () => ({
@@ -147,7 +186,8 @@ describe("Paseo native observability", () => {
 
     let settled = false;
     const waiting = waitForPaseoAgentHandle(handle, 2_000, {
-      lastAssistantMessage: "previous turn"
+      lastAssistantMessage: "previous turn",
+      lastUserMessageAt: "2026-08-13T01:00:00.000Z"
     }).then((result) => {
       settled = true;
       return result;
@@ -155,7 +195,7 @@ describe("Paseo native observability", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     // A metadata-only notification while the agent remains idle must not satisfy
-    // the turn barrier, even though the timeline contains an older assistant reply.
+    // the turn barrier when both assistant text and user-turn identity are stale.
     subscriber?.();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(settled).toBe(false);
