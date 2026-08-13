@@ -130,10 +130,31 @@ export async function waitPaseoSdkAgent(root: string, agentId: string, timeoutMs
   return withPaseoClient(root, async (client) => waitForHandle(client.agents.ref(agentId), timeoutMs));
 }
 
+/** Execute one resumed turn on one concrete SDK handle. Prefer the SDK's atomic
+ * run() primitive so dispatch and completion observation cannot be separated by
+ * an idle->running->idle race. Older SDKs fall back to send()+waitForFinish()
+ * on the same handle/client. */
 export async function runPaseoSdkAgent(root: string, agentId: string, prompt: string, timeoutMs?: number): Promise<PaseoSdkAgentResult> {
-  const dispatched = await dispatchPaseoSdkAgent(root, agentId, prompt, timeoutMs);
-  if (isTerminalStatus(dispatched.status)) return dispatched;
-  return waitPaseoSdkAgent(root, agentId, timeoutMs);
+  return withPaseoClient(root, async (client) => runPaseoSdkAgentWithClient(client, agentId, prompt, timeoutMs));
+}
+
+export async function runPaseoSdkAgentWithClient(client: PaseoSdkClient, agentId: string, prompt: string, timeoutMs?: number): Promise<PaseoSdkAgentResult> {
+  const handle = client.agents.ref(agentId);
+  if (typeof handle.run === "function") {
+    const turn = await handle.run(prompt, { timeoutMs });
+    return {
+      id: agentId,
+      workspaceId: handle.workspaceId ?? undefined,
+      status: turn.status,
+      lastMessage: turn.lastMessage,
+      error: turn.error
+    };
+  }
+  if (typeof handle.send === "function") {
+    await handle.send(prompt);
+    return waitForHandle(handle, timeoutMs);
+  }
+  throw new PaseoSdkUnavailableError("The active @getpaseo/client agent handle exposes neither run() nor send(); cannot execute an atomic resumed turn through the SDK.");
 }
 
 export async function archivePaseoSdkAgent(root: string, agentId: string): Promise<void> {

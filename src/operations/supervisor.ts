@@ -19,6 +19,7 @@ import { persistOperationConsolidation, persistSupervisorCheckpoint } from "./ar
 import {
   activeOperationSupervisor,
   currentOperationContext,
+  initializingOperationSupervisor,
   loadOperation,
   patchOperation,
   registerSupervisorGeneration,
@@ -37,9 +38,10 @@ export interface SupervisorConsolidationInput {
 }
 export interface SupervisorConsolidationResult { output: SupervisorOutput; artifact: string; session: WorkerSession; }
 interface SupervisorContextPolicy { handoffThreshold: number; hardHandoffThreshold: number; }
-interface SupervisionConfigExtension { operations?: { supervision?: { context?: { handoffThreshold?: number; hardHandoffThreshold?: number; }; }; }; }
+interface SupervisionConfigExtension { operations?: { supervision?: { initializationTimeoutSeconds?: number; context?: { handoffThreshold?: number; hardHandoffThreshold?: number; }; }; }; }
 
 const SUPERVISOR_INITIALIZATION_ATTEMPTS = 2;
+const DEFAULT_SUPERVISOR_INITIALIZATION_TIMEOUT_SECONDS = 60;
 
 export function operationSupervisorContextPolicy(config: HarnessProjectConfig): SupervisorContextPolicy {
   const orchestration = config.orchestration as (HarnessProjectConfig["orchestration"] & SupervisionConfigExtension) | undefined;
@@ -47,6 +49,28 @@ export function operationSupervisorContextPolicy(config: HarnessProjectConfig): 
   const handoffThreshold = ratio(configured?.handoffThreshold, 0.75);
   const hardHandoffThreshold = Math.max(handoffThreshold, ratio(configured?.hardHandoffThreshold, 0.85));
   return { handoffThreshold, hardHandoffThreshold };
+}
+
+export function operationSupervisorInitializationTimeoutSeconds(config: HarnessProjectConfig): number {
+  const orchestration = config.orchestration as (HarnessProjectConfig["orchestration"] & SupervisionConfigExtension) | undefined;
+  const value = orchestration?.operations?.supervision?.initializationTimeoutSeconds;
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : DEFAULT_SUPERVISOR_INITIALIZATION_TIMEOUT_SECONDS;
+}
+
+function supervisorInitializationConfig(config: HarnessProjectConfig): HarnessProjectConfig {
+  if (!config.orchestration) return config;
+  return {
+    ...config,
+    orchestration: {
+      ...config.orchestration,
+      worker: {
+        ...config.orchestration.worker,
+        timeoutSeconds: operationSupervisorInitializationTimeoutSeconds(config)
+      }
+    }
+  };
 }
 
 export async function ensureOperationSupervisor(
@@ -69,9 +93,7 @@ export async function ensureOperationSupervisor(
   }
   const selection = executionSelectionForAgent(topology, "operation-supervisor");
   const active = activeOperationSupervisor(operation);
-  if (active?.agentId) {
-    return { operationId, generation: active.generation, agentId: active.agentId, materialized: true, selection };
-  }
+  if (active?.agentId) return { operationId, generation: active.generation, agentId: active.agentId, materialized: true, selection };
 
   let lastError: string | undefined;
   for (let attempt = 1; attempt <= SUPERVISOR_INITIALIZATION_ATTEMPTS; attempt += 1) {
@@ -87,22 +109,26 @@ export async function ensureOperationSupervisor(
       break;
     }
 
-    // Critical ordering invariant: persist the concrete provider session before
-    // sending any LLM turn. Watchdog/recovery can now always identify the
-    // supervisor even if initialization completion detection fails or times out.
     operation = await registerSupervisorGeneration(stateRoot, operationId, {
       agentId: materialized.id,
-      materialized: true
+      materialized: true,
+      status: "INITIALIZING",
+      initializationAttempt: attempt
     });
-    const generation = operation.supervision.activeGeneration!;
+    const generation = [...operation.supervision.generations].reverse().find((item) => item.agentId === materialized.id && item.status === "INITIALIZING")?.generation;
+    if (!generation) throw new Error("AEH_OPERATION_SUPERVISOR_STATE: materialized supervisor generation was not durably registered as INITIALIZING.");
     await recordPaseoTrace(stateRoot, "operation.supervisor.materialized", {
-      operationId, generation, agentId: materialized.id, revision: operation.revision, attempt
+      operationId, generation, agentId: materialized.id, revision: operation.revision, attempt, status: "INITIALIZING"
     });
 
     try {
+      operation = await updateSupervisorGeneration(stateRoot, operationId, generation, {
+        initializationDispatchedAt: new Date().toISOString(),
+        error: undefined
+      });
       const session = await dispatchMaterializedAgentPrompt(
         root,
-        config,
+        supervisorInitializationConfig(config),
         contract,
         selection,
         materialized,
@@ -114,11 +140,20 @@ export async function ensureOperationSupervisor(
           supervisorAgent: true
         }
       );
-      if (session.exitCode !== 0 || !session.id) {
-        throw new Error(session.stderr || session.stdout || `exit ${session.exitCode}`);
-      }
+      if (session.exitCode !== 0 || !session.id) throw new Error(session.stderr || session.stdout || `exit ${session.exitCode}`);
+      const completedAt = new Date().toISOString();
+      const activated = await updateSupervisorGeneration(stateRoot, operationId, generation, {
+        status: "ACTIVE",
+        activatedAt: completedAt,
+        initializationCompletedAt: completedAt,
+        initializationEvidence: session.transport?.includes("paseo") ? "paseo-sdk-turn-barrier" : "turn-barrier",
+        error: undefined
+      });
+      if (activated.supervision.activeGeneration !== generation) throw new Error("AEH_OPERATION_SUPERVISOR_STATE: initialized supervisor did not become the active generation.");
       await recordPaseoTrace(stateRoot, "operation.supervisor.initialized", {
-        operationId, generation, agentId: session.id, revision: operation.revision, attempt
+        operationId, generation, agentId: session.id, revision: activated.revision, attempt,
+        timeoutSeconds: operationSupervisorInitializationTimeoutSeconds(config),
+        evidence: "turn-barrier"
       });
       return { operationId, generation, agentId: session.id, materialized: true, selection, session };
     } catch (error) {
@@ -129,7 +164,8 @@ export async function ensureOperationSupervisor(
       }).catch(() => undefined);
       await archivePaseoSdkAgent(root, materialized.id).catch(() => undefined);
       await recordPaseoTrace(stateRoot, "operation.supervisor.initialization-failed", {
-        operationId, generation, agentId: materialized.id, attempt, error: lastError
+        operationId, generation, agentId: materialized.id, attempt, error: lastError,
+        timeoutSeconds: operationSupervisorInitializationTimeoutSeconds(config)
       }).catch(() => undefined);
     }
   }
@@ -170,75 +206,52 @@ export async function consolidateWithOperationSupervisor(
   try { output = supervisorOutputSchema.parse(extractMarkedJson(session.stdout, session.stderr)); }
   catch (error) { throw new Error(`AEH_OPERATION_SUPERVISOR_CONTRACT: ${String(error)}`); }
   const sourceIds = [...new Set(output.sourceFindingIds)].sort();
-  if (sourceIds.length !== rawIds.length || sourceIds.some((id, index) => id !== rawIds[index])) {
-    throw new Error(`AEH_OPERATION_SUPERVISOR_PROVENANCE: consolidation did not account for the exact raw finding set. expected=${rawIds.join(",")} received=${sourceIds.join(",")}`);
-  }
-  const artifact = await persistOperationConsolidation(stateRoot, supervisor.operationId, input.key, {
-    generation: supervisor.generation, sourceArtifacts: input.sourceArtifacts ?? [], rawFindingIds: rawIds, output
-  });
+  if (sourceIds.length !== rawIds.length || sourceIds.some((id, index) => id !== rawIds[index])) throw new Error(`AEH_OPERATION_SUPERVISOR_PROVENANCE: consolidation did not account for the exact raw finding set. expected=${rawIds.join(",")} received=${sourceIds.join(",")}`);
+  const artifact = await persistOperationConsolidation(stateRoot, supervisor.operationId, input.key, { generation: supervisor.generation, sourceArtifacts: input.sourceArtifacts ?? [], rawFindingIds: rawIds, output });
   const current = await loadOperation(stateRoot, supervisor.operationId);
-  await patchOperation(stateRoot, supervisor.operationId, {
-    supervision: { ...current.supervision, latestConsolidationRevision: current.revision + 1, latestConsolidationArtifact: artifact }
-  });
+  await patchOperation(stateRoot, supervisor.operationId, { supervision: { ...current.supervision, latestConsolidationRevision: current.revision + 1, latestConsolidationArtifact: artifact } });
   return { output, artifact, session };
 }
 
-export async function maybeRotateOperationSupervisor(
-  root: string,
-  config: HarnessProjectConfig,
-  contract: TaskContract,
-  topology: ResolvedAgentTopology
-): Promise<OperationSupervisorHandle | undefined> {
+export async function maybeRotateOperationSupervisor(root: string, config: HarnessProjectConfig, contract: TaskContract, topology: ResolvedAgentTopology): Promise<OperationSupervisorHandle | undefined> {
   const operationId = currentOperationContext().id;
   if (!operationId) return undefined;
   const stateRoot = resolveOperationStateRoot(root);
   const operation = await loadOperation(stateRoot, operationId);
   const active = activeOperationSupervisor(operation);
   if (!active?.agentId) return ensureOperationSupervisor(root, config, contract, topology, { required: operation.supervision.required });
-
   const context = await statusLeadContext(root, config, active.agentId);
   const policy = operationSupervisorContextPolicy(config);
   const usageRatio = context.usage.ratio;
-  const rotate = usageRatio !== undefined
-    ? usageRatio >= policy.handoffThreshold
-    : context.state === "HANDOFF_REQUIRED" || context.state === "HARD_HANDOFF";
+  const rotate = usageRatio !== undefined ? usageRatio >= policy.handoffThreshold : context.state === "HANDOFF_REQUIRED" || context.state === "HARD_HANDOFF";
   if (!rotate) {
     if (usageRatio !== undefined) await updateSupervisorGeneration(stateRoot, operationId, active.generation, { contextRatio: usageRatio, error: undefined });
     return { operationId, generation: active.generation, agentId: active.agentId, materialized: true, selection: executionSelectionForAgent(topology, "operation-supervisor") };
   }
 
   const checkpointArtifact = await persistSupervisorCheckpoint(stateRoot, operationId, active.generation, buildSupervisorCheckpoint(operation, usageRatio));
-  await updateSupervisorGeneration(stateRoot, operationId, active.generation, {
-    status: "DRAINING", drainingAt: new Date().toISOString(), checkpointArtifact, contextRatio: usageRatio, error: undefined
-  });
-
+  await updateSupervisorGeneration(stateRoot, operationId, active.generation, { status: "DRAINING", drainingAt: new Date().toISOString(), checkpointArtifact, contextRatio: usageRatio, error: undefined });
   const selection = executionSelectionForAgent(topology, "operation-supervisor");
   const latest = await loadOperation(stateRoot, operationId);
-  const materialized = await materializeAgentPrompt(root, config, contract, selection, {
-    phase: "supervision", operationKind: operation.kind, parentAgentId: operation.lead?.agentId, supervisorAgent: true
-  });
+  const materialized = await materializeAgentPrompt(root, config, contract, selection, { phase: "supervision", operationKind: operation.kind, parentAgentId: operation.lead?.agentId, supervisorAgent: true });
   if (!materialized?.id) {
     await updateSupervisorGeneration(stateRoot, operationId, active.generation, { status: "ACTIVE", drainingAt: undefined, error: "replacement materialization failed" });
     throw new Error("AEH_OPERATION_SUPERVISOR_ROTATION_FAILED: Paseo SDK did not materialize the replacement supervisor.");
   }
 
-  const registered = await registerSupervisorGeneration(stateRoot, operationId, { agentId: materialized.id, materialized: true, checkpointArtifact });
-  const replacementGeneration = registered.supervision.activeGeneration!;
-  await recordPaseoTrace(stateRoot, "operation.supervisor.materialized", {
-    operationId, generation: replacementGeneration, agentId: materialized.id, revision: registered.revision, replacementFor: active.generation
-  });
+  const registered = await registerSupervisorGeneration(stateRoot, operationId, { agentId: materialized.id, materialized: true, checkpointArtifact, status: "INITIALIZING", initializationAttempt: 1 });
+  const replacementGeneration = [...registered.supervision.generations].reverse().find((item) => item.agentId === materialized.id && item.status === "INITIALIZING")?.generation;
+  if (!replacementGeneration) throw new Error("AEH_OPERATION_SUPERVISOR_ROTATION_FAILED: replacement generation was not durably registered as INITIALIZING.");
+  await recordPaseoTrace(stateRoot, "operation.supervisor.materialized", { operationId, generation: replacementGeneration, agentId: materialized.id, revision: registered.revision, replacementFor: active.generation, status: "INITIALIZING" });
 
   try {
-    const session = await dispatchMaterializedAgentPrompt(root, config, contract, selection, materialized, supervisorInitializationPrompt(latest, checkpointArtifact), {
-      phase: "supervision", operationKind: operation.kind, parentAgentId: operation.lead?.agentId, supervisorAgent: true
-    });
+    await updateSupervisorGeneration(stateRoot, operationId, replacementGeneration, { initializationDispatchedAt: new Date().toISOString(), error: undefined });
+    const session = await dispatchMaterializedAgentPrompt(root, supervisorInitializationConfig(config), contract, selection, materialized, supervisorInitializationPrompt(latest, checkpointArtifact), { phase: "supervision", operationKind: operation.kind, parentAgentId: operation.lead?.agentId, supervisorAgent: true });
     if (session.exitCode !== 0 || !session.id) throw new Error(session.stderr || session.stdout || `exit ${session.exitCode}`);
-    await recordPaseoTrace(stateRoot, "operation.supervisor.rotated", {
-      operationId, fromGeneration: active.generation, fromAgentId: active.agentId,
-      toGeneration: replacementGeneration, toAgentId: session.id,
-      contextRatio: usageRatio ?? -1, handoffThreshold: policy.handoffThreshold,
-      hardHandoffThreshold: policy.hardHandoffThreshold, checkpointArtifact
-    });
+    const completedAt = new Date().toISOString();
+    const activated = await updateSupervisorGeneration(stateRoot, operationId, replacementGeneration, { status: "ACTIVE", activatedAt: completedAt, initializationCompletedAt: completedAt, initializationEvidence: "paseo-sdk-turn-barrier", error: undefined });
+    if (activated.supervision.activeGeneration !== replacementGeneration) throw new Error("replacement supervisor did not become active after initialization");
+    await recordPaseoTrace(stateRoot, "operation.supervisor.rotated", { operationId, fromGeneration: active.generation, fromAgentId: active.agentId, toGeneration: replacementGeneration, toAgentId: session.id, contextRatio: usageRatio ?? -1, handoffThreshold: policy.handoffThreshold, hardHandoffThreshold: policy.hardHandoffThreshold, checkpointArtifact });
     return { operationId, generation: replacementGeneration, agentId: session.id, materialized: true, selection, session };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -253,19 +266,11 @@ export async function settleDrainingSupervisorGenerations(root: string, operatio
   const stateRoot = resolveOperationStateRoot(root);
   let record = await loadOperation(stateRoot, operationId);
   for (const generation of record.supervision.generations.filter((item) => item.status === "DRAINING")) {
-    const unsettled = Object.values(record.participants).some((participant) =>
-      participant.parentSupervisorGeneration === generation.generation && !["COMPLETED", "FAILED", "CANCELLED"].includes(participant.status)
-    );
+    const unsettled = Object.values(record.participants).some((participant) => participant.parentSupervisorGeneration === generation.generation && !["COMPLETED", "FAILED", "CANCELLED"].includes(participant.status));
     if (unsettled) continue;
     if (generation.agentId) {
-      try {
-        await archivePaseoSdkAgent(root, generation.agentId);
-        await recordPaseoTrace(stateRoot, "operation.supervisor.archived", { operationId, generation: generation.generation, agentId: generation.agentId });
-      } catch (error) {
-        record = await updateSupervisorGeneration(stateRoot, operationId, generation.generation, { error: error instanceof Error ? error.message : String(error) });
-        await recordPaseoTrace(stateRoot, "operation.supervisor.archive-failed", { operationId, generation: generation.generation, agentId: generation.agentId, error: error instanceof Error ? error.message : String(error) });
-        continue;
-      }
+      try { await archivePaseoSdkAgent(root, generation.agentId); await recordPaseoTrace(stateRoot, "operation.supervisor.archived", { operationId, generation: generation.generation, agentId: generation.agentId }); }
+      catch (error) { record = await updateSupervisorGeneration(stateRoot, operationId, generation.generation, { error: error instanceof Error ? error.message : String(error) }); await recordPaseoTrace(stateRoot, "operation.supervisor.archive-failed", { operationId, generation: generation.generation, agentId: generation.agentId, error: error instanceof Error ? error.message : String(error) }); continue; }
     }
     record = await updateSupervisorGeneration(stateRoot, operationId, generation.generation, { status: "ARCHIVED", archivedAt: new Date().toISOString(), error: undefined });
   }
@@ -292,14 +297,11 @@ function supervisorDurableSnapshot(operation: OperationRecordV2): Record<string,
     stages: operation.stages, progress: operation.progress,
     latestConsolidationArtifact: operation.supervision.latestConsolidationArtifact,
     activeSupervisorGeneration: operation.supervision.activeGeneration,
+    initializingSupervisorGeneration: initializingOperationSupervisor(operation)?.generation,
     unresolvedParticipants: Object.values(operation.participants)
       .filter((participant) => !["COMPLETED", "FAILED", "CANCELLED"].includes(participant.status))
       .map((participant) => ({ id: participant.id, logicalAgent: participant.logicalAgent, role: participant.role, stage: participant.stage, status: participant.status, parentSupervisorGeneration: participant.parentSupervisorGeneration, resultArtifact: participant.resultArtifact }))
   };
 }
-function buildSupervisorCheckpoint(operation: OperationRecordV2, contextRatio?: number): Record<string, unknown> {
-  return { ...supervisorDurableSnapshot(operation), contextRatio, instruction: "Resume semantic supervision from this durable checkpoint and OperationRecord. Do not request transcript replay from the draining supervisor." };
-}
-function ratio(value: number | undefined, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= 1 ? value : fallback;
-}
+function buildSupervisorCheckpoint(operation: OperationRecordV2, contextRatio?: number): Record<string, unknown> { return { ...supervisorDurableSnapshot(operation), contextRatio, instruction: "Resume semantic supervision from this durable checkpoint and OperationRecord. Do not request transcript replay from the draining supervisor." }; }
+function ratio(value: number | undefined, fallback: number): number { return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= 1 ? value : fallback; }

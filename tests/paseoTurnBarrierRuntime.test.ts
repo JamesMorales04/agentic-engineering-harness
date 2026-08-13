@@ -1,81 +1,67 @@
 import { describe, expect, it, vi } from "vitest";
 import { continueManagedPaseoAgent } from "../src/paseo/runtime.js";
+import { PaseoSdkUnavailableError } from "../src/paseo/sdk.js";
 
-function capabilities() {
+function runtimeDeps() {
   return {
-    version: "0.3.1",
-    background: true,
-    quiet: true,
-    json: false,
-    outputSchema: true,
-    daemonJson: true,
-    nativeToolsRecommended: true
+    run: vi.fn(),
+    detectCapabilities: vi.fn(),
+    trace: vi.fn(async () => undefined),
+    native: {
+      capture: vi.fn(async () => ({ lastAssistantMessage: "old answer" })),
+      wait: vi.fn(async () => ({
+        id: "agent-1",
+        status: "idle",
+        lastMessage: "fallback answer",
+        source: "paseo-agent-subscription" as const,
+        updatesObserved: 1
+      })),
+      preflight: vi.fn(),
+      preflightMode: vi.fn()
+    },
+    sdk: {
+      create: vi.fn(),
+      materialize: vi.fn(),
+      dispatch: vi.fn(async () => ({ id: "agent-1", status: "working", workspaceId: "workspace-1" })),
+      wait: vi.fn(),
+      run: vi.fn(async () => ({ id: "agent-1", status: "idle", lastMessage: "new answer", workspaceId: "workspace-1" })),
+      probe: vi.fn(),
+      inspect: vi.fn(),
+      list: vi.fn()
+    }
   };
 }
 
 describe("Paseo resumed-turn barrier", () => {
-  it("captures assistant baseline before dispatch and passes it to subscription wait", async () => {
-    const capture = vi.fn(async () => ({ lastAssistantMessage: "old answer" }));
-    const wait = vi.fn(async (_root: string, _agentId: string, _timeout: number, baseline: unknown) => ({
+  it("uses one SDK run turn as the primary completion barrier", async () => {
+    const runtime = runtimeDeps();
+    const result = await continueManagedPaseoAgent("/repo", "agent-1", "continue", 120, runtime as never);
+
+    expect(result).toEqual(expect.objectContaining({
       id: "agent-1",
       status: "idle",
-      lastMessage: "new answer",
-      source: "paseo-agent-subscription" as const,
-      updatesObserved: 2,
-      baseline
+      stdout: "new answer",
+      observation: "sdk-run"
     }));
-    const dispatch = vi.fn(async () => ({
-      id: "agent-1",
-      status: "working",
-      workspaceId: "workspace-1"
-    }));
-    const trace = vi.fn(async () => undefined);
-    const deps = {
-      run: vi.fn(),
-      detectCapabilities: vi.fn(async () => capabilities()),
-      trace,
-      native: {
-        capture,
-        wait,
-        preflight: vi.fn(async () => ({
-          ok: true,
-          provider: "codex",
-          source: "paseo-provider-unchecked",
-          message: "ok"
-        }))
-      },
-      sdk: {
-        create: vi.fn(),
-        materialize: vi.fn(),
-        dispatch,
-        wait: vi.fn(),
-        run: vi.fn(),
-        probe: vi.fn(),
-        inspect: vi.fn(),
-        list: vi.fn()
-      }
-    };
+    expect(runtime.sdk.run).toHaveBeenCalledWith("/repo", "agent-1", "continue", 120_000);
+    expect(runtime.native.capture).not.toHaveBeenCalled();
+    expect(runtime.sdk.dispatch).not.toHaveBeenCalled();
+    expect(runtime.native.wait).not.toHaveBeenCalled();
+  });
 
-    const result = await continueManagedPaseoAgent(
-      "/repo",
-      "agent-1",
-      "continue",
-      120,
-      deps as never
-    );
+  it("keeps baseline and subscription as a compatibility fallback", async () => {
+    const runtime = runtimeDeps();
+    runtime.sdk.run.mockRejectedValue(new PaseoSdkUnavailableError("run unavailable"));
 
-    expect(result.stdout).toBe("new answer");
-    expect(capture).toHaveBeenCalledBefore(dispatch);
-    expect(wait).toHaveBeenCalledWith(
+    const result = await continueManagedPaseoAgent("/repo", "agent-1", "continue", 120, runtime as never);
+
+    expect(result.stdout).toBe("fallback answer");
+    expect(runtime.native.capture).toHaveBeenCalledBefore(runtime.sdk.dispatch);
+    expect(runtime.native.wait).toHaveBeenCalledWith(
       "/repo",
       "agent-1",
       120_000,
       { lastAssistantMessage: "old answer" }
-    );
-    expect(trace).toHaveBeenCalledWith(
-      "/repo",
-      "agent.turn.baseline",
-      expect.objectContaining({ agentId: "agent-1", assistantMessage: "present" })
     );
   });
 });
