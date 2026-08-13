@@ -34,6 +34,17 @@ export interface OperationConcurrencyPolicy {
   maxProviderAgents: Record<string, number>;
 }
 
+interface OperationConfigExtension {
+  operations?: {
+    concurrency?: {
+      maxActiveOperations?: number;
+      maxActiveAgents?: number;
+      maxAgentsPerOperation?: number;
+      maxProviderAgents?: Record<string, number>;
+    };
+  };
+}
+
 const DEFAULT_POLICY: OperationConcurrencyPolicy = {
   maxActiveOperations: 5,
   maxActiveAgents: 16,
@@ -109,7 +120,8 @@ export async function bindPortfolioLead(
 }
 
 export function operationConcurrencyPolicy(config: HarnessProjectConfig): OperationConcurrencyPolicy {
-  const configured = config.orchestration?.operations?.concurrency;
+  const orchestration = config.orchestration as (HarnessProjectConfig["orchestration"] & OperationConfigExtension) | undefined;
+  const configured = orchestration?.operations?.concurrency;
   return {
     maxActiveOperations: positive(configured?.maxActiveOperations, DEFAULT_POLICY.maxActiveOperations),
     maxActiveAgents: positive(configured?.maxActiveAgents, DEFAULT_POLICY.maxActiveAgents),
