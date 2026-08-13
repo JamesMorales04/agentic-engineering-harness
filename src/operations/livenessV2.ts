@@ -118,11 +118,8 @@ export function evaluateOperationWake(
     };
   }
 
-  const lastWakeMs = operation.notification.lastLeadWakeAt ? Date.parse(operation.notification.lastLeadWakeAt) : 0;
-  const unseen = operation.revision > operation.notification.lastLeadWakeRevision;
-  if (unseen && nowMs - lastWakeMs >= policy.progressWakeIntervalMs) {
-    if (leadWakeCount >= policy.leadWakeLimit) return { target: "none", revision: operation.revision, message: "progress revision lead wake budget exhausted" };
-    return { reason: "progress", target: "lead", revision: operation.revision, message: "operation has unseen durable progress" };
+  if (operation.revision > operation.notification.lastLeadWakeRevision) {
+    return { target: "none", revision: operation.revision, message: "healthy durable progress is controller-owned; lead wake suppressed" };
   }
   return { target: "none", revision: operation.revision, message: "no liveness action required" };
 }
@@ -328,22 +325,21 @@ function leadWakePrompt(operation: OperationRecordV2, decision: OperationWakeDec
     return [
       "[AEH_OPERATION_COMPLETED_UNACKNOWLEDGED]",
       `Operation ${operation.id} (${operation.kind}) is terminal at revision ${operation.revision}: status=${operation.status}, phase=${operation.phase}.`,
+      `Progress: completed=${operation.progress.completed}/${operation.progress.expected}, failed=${operation.progress.failed}, blocked=${operation.progress.blocked}.`,
       decision.message,
       "This is bounded internal recovery, not a new user task. Do not repeat a user-facing status if this exact terminal revision was already handled.",
-      "Do not start a duplicate operation. Call aeh_operation_status once so AEH can acknowledge the exact revision, read the existing result/report artifact, then complete the original pending request if it is still pending."
+      `Do not start a duplicate operation. Use aeh_operation_digest for compact state. Use aeh_operation_status with detail=full at most once if the terminal result requires it, then call aeh_operation_ack for exactly revision ${operation.revision}.`
     ].join("\n");
   }
   const instruction = decision.reason === "blocked"
     ? "Inspect the durable block/exception and involve the user only if the state requires a product/external decision."
-    : decision.reason === "stalled"
-      ? "The operation-local supervisor did not restore durable progress within its bounded watchdog budget. Inspect the OperationRecord/supervisor generation and recover or escalate without starting a duplicate operation."
-      : "If the operation is healthy and non-terminal, do not create user-facing status noise; acknowledge the durable revision internally and return idle.";
+    : "The operation-local supervisor did not restore durable progress within its bounded watchdog budget. Inspect compact state first and recover or escalate without starting a duplicate operation.";
   return [
     `[AEH_OPERATION_${decision.reason?.toUpperCase()}]`,
     `Operation ${operation.id} (${operation.kind}) revision ${operation.revision}: status=${operation.status}, phase=${operation.phase}.`,
-    `Progress: completed=${operation.progress.completed}, running=${operation.progress.running}, failed=${operation.progress.failed}, blocked=${operation.progress.blocked}.`,
+    `Progress: completed=${operation.progress.completed}/${operation.progress.expected}, running=${operation.progress.running}, failed=${operation.progress.failed}, blocked=${operation.progress.blocked}.`,
     decision.message,
-    "Do not start a duplicate operation. Read the existing OperationRecord/artifacts if more detail is required.",
+    "Do not start a duplicate operation. Use aeh_operation_digest first; request a full OperationRecord only if the compact state is insufficient.",
     instruction
   ].join("\n");
 }
