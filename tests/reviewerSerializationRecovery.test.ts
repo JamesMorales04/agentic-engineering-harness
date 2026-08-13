@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const runtime = vi.hoisted(() => ({
   continueManagedPaseoAgent: vi.fn(),
@@ -12,12 +12,19 @@ const state = vi.hoisted(() => ({
   registerOperationAgent: vi.fn(async () => undefined),
   updateOperationParticipant: vi.fn(async () => undefined)
 }));
+const results = vi.hoisted(() => ({
+  activateStructuredResultTurnForAgent: vi.fn(async () => undefined),
+  reconcileStructuredResult: vi.fn()
+}));
 
 vi.mock("../src/paseo/runtime.js", () => runtime);
 vi.mock("../src/operations/artifacts.js", () => artifacts);
 vi.mock("../src/operations/state.js", () => state);
+vi.mock("../src/workers/resultGateway.js", () => results);
 vi.mock("../src/core/controlPlane.js", () => ({ loadFrozenSkillContext: vi.fn(async () => undefined) }));
 
+import { validateAgentOutput } from "../src/agents/outputContracts.js";
+import { extractMarkedJson, StructuredOutputError } from "../src/agents/structuredOutput.js";
 import { dispatchMaterializedAgentPrompt } from "../src/workers/agentPrompt.js";
 
 const selection = {
@@ -39,8 +46,34 @@ const config = { version: 1, project: { name: "demo" }, orchestration: { provide
 const contract = { version: 1, task: { id: "AUDIT-1", title: "Audit" } } as never;
 const materialized = { id: "reviewer-1", provider: "opencode", model: "reviewer-model", logicalAgent: "code-quality-reviewer", exitCode: 0, stdout: "", stderr: "", transport: "paseo-sdk", operationId: "AUDIT-1", operationKind: "audit", phase: "review", status: "idle", startedAt: new Date(0).toISOString() } as never;
 
-const validReviewerJson = JSON.stringify({ verdict: "PASS", findings: [], finalizationSafety: "SAFE", followUp: [] });
-const validSupervisorJson = JSON.stringify({ summary: "Consolidated", consolidatedFindings: [], sourceFindingIds: [], conflicts: [], missingEvidence: [], unresolved: [], finalizationSafety: "SAFE" });
+const validReviewer = { verdict: "PASS", findings: [], finalizationSafety: "SAFE", followUp: [] };
+const validReviewerJson = JSON.stringify(validReviewer);
+const validSupervisor = { summary: "Consolidated", consolidatedFindings: [], sourceFindingIds: [], conflicts: [], missingEvidence: [], unresolved: [], finalizationSafety: "SAFE" };
+const validSupervisorJson = JSON.stringify(validSupervisor);
+
+beforeEach(() => {
+  results.reconcileStructuredResult.mockImplementation(async (_root: string, input: { contract: string; stdout: string; stderr?: string }) => {
+    try {
+      const payload = extractMarkedJson(input.stdout, input.stderr ?? "");
+      const validation = validateAgentOutput(input.contract, payload);
+      if (!validation.ok) return { ok: false, failure: `SCHEMA_VALIDATION_FAILED: ${validation.issues.join("; ")}` };
+      return {
+        ok: true,
+        accepted: {
+          artifact: `results/${input.contract}.json`,
+          sha256: "abc123",
+          payload: validation.value,
+          source: "captured",
+          turnId: "turn-1",
+          channelId: "channel-1"
+        }
+      };
+    } catch (error) {
+      if (error instanceof StructuredOutputError) return { ok: false, failure: `${error.reason}: ${error.message}` };
+      return { ok: false, failure: String(error) };
+    }
+  });
+});
 
 afterEach(() => { vi.clearAllMocks(); });
 
@@ -55,14 +88,15 @@ describe("structured delivery recovery", () => {
     const prompt = String(runtime.continueManagedPaseoAgent.mock.calls[0]?.[2]);
     expect(prompt).toContain("AEH output contract: reviewer.");
     expect(prompt).toContain("supplied out-of-band");
-    expect(prompt).not.toContain("Exact JSON Schema");
+    expect(prompt).toContain("aeh_submit_result");
     expect(runtime.continueManagedPaseoAgent.mock.calls[0]?.[5]).toEqual(expect.objectContaining({ type: "object" }));
+    expect(result.stdout).toBe(validReviewerJson);
     expect(result.phase).toBe("review");
     expect(artifacts.persistOperationAgentArtifact).toHaveBeenCalledTimes(1);
-    expect(artifacts.persistOperationAgentArtifact.mock.calls[0]?.[3]).toEqual(expect.objectContaining({ contractDelivery: { ok: true } }));
+    expect(artifacts.persistOperationAgentArtifact.mock.calls[0]?.[3]).toEqual(expect.objectContaining({ contractDelivery: { ok: true }, structuredResultArtifact: "results/reviewer.json" }));
   });
 
-  it("repairs an empty captured structured turn exactly once using a plain marker without outputSchema", async () => {
+  it("repairs an empty captured structured turn exactly once and accepts the repaired result", async () => {
     runtime.continueManagedPaseoAgent
       .mockResolvedValueOnce({ id: "reviewer-1", exitCode: 0, stdout: "", stderr: "", status: "idle", transport: "sdk" })
       .mockResolvedValueOnce({ id: "reviewer-1", exitCode: 0, stdout: `AEH_RESULT_JSON=${validReviewerJson}`, stderr: "", status: "idle", transport: "sdk" });
@@ -72,9 +106,9 @@ describe("structured delivery recovery", () => {
 
     expect(runtime.continueManagedPaseoAgent).toHaveBeenCalledTimes(2);
     expect(runtime.continueManagedPaseoAgent.mock.calls[1]?.[2]).toContain("Only repair delivery for the 'reviewer' output contract");
-    expect(runtime.continueManagedPaseoAgent.mock.calls[1]?.[2]).toContain("Return exactly one plain-text marker line");
+    expect(runtime.continueManagedPaseoAgent.mock.calls[1]?.[2]).toContain("aeh_submit_result");
     expect(runtime.continueManagedPaseoAgent.mock.calls[1]?.[5]).toBeUndefined();
-    expect(result.stdout).toBe(`AEH_RESULT_JSON=${validReviewerJson}`);
+    expect(result.stdout).toBe(validReviewerJson);
     expect(result.phase).toBe("review-contract-repair");
     expect(artifacts.persistOperationAgentArtifact.mock.calls[0]?.[3]).toEqual(expect.objectContaining({ contractDelivery: expect.objectContaining({ ok: false, failure: expect.stringContaining("EMPTY_OUTPUT") }) }));
     expect(artifacts.persistOperationAgentArtifact.mock.calls[1]?.[3]).toEqual(expect.objectContaining({ contractDelivery: { ok: true } }));
@@ -113,7 +147,7 @@ describe("structured delivery recovery", () => {
     expect(runtime.continueManagedPaseoAgent).toHaveBeenCalledTimes(2);
     expect(runtime.continueManagedPaseoAgent.mock.calls[0]?.[2]).toContain("AEH output contract: supervisor.");
     expect(runtime.continueManagedPaseoAgent.mock.calls[1]?.[5]).toBeUndefined();
-    expect(result.stdout).toBe(`AEH_RESULT_JSON=${validSupervisorJson}`);
+    expect(result.stdout).toBe(validSupervisorJson);
     expect(result.phase).toBe("consolidating-contract-repair");
   });
 });
