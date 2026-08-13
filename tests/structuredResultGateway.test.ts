@@ -3,13 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  acceptStructuredResult,
   activateStructuredResultTurn,
   bindStructuredResultChannel,
   loadStructuredResultChannel,
   provisionStructuredResultChannel,
   reconcileStructuredResult
 } from "../src/workers/resultGateway.js";
+import { commitStructuredResult } from "../src/workers/resultCommit.js";
 import { handleResultSinkRequest } from "../src/workers/resultSinkMcp.js";
 
 const roots: string[] = [];
@@ -53,8 +53,8 @@ async function fixture() {
 describe("StructuredResultGateway", () => {
   it("persists one schema-valid immutable result and accepts identical retries idempotently", async () => {
     const { root, operationId, channelId } = await fixture();
-    const first = await acceptStructuredResult(root, operationId, channelId, reviewerPayload(), "mcp");
-    const second = await acceptStructuredResult(root, operationId, channelId, reviewerPayload(), "mcp");
+    const first = await commitStructuredResult(root, operationId, channelId, reviewerPayload(), "mcp");
+    const second = await commitStructuredResult(root, operationId, channelId, reviewerPayload(), "mcp");
 
     expect(second.artifact).toBe(first.artifact);
     expect(second.sha256).toBe(first.sha256);
@@ -63,18 +63,19 @@ describe("StructuredResultGateway", () => {
     expect(envelope.payload).toEqual(reviewerPayload());
   });
 
-  it("rejects a different valid payload after a turn was accepted", async () => {
+  it("keeps the first accepted result authoritative when a later valid payload differs", async () => {
     const { root, operationId, channelId } = await fixture();
-    await acceptStructuredResult(root, operationId, channelId, reviewerPayload("PASS"), "mcp");
-    await expect(acceptStructuredResult(root, operationId, channelId, reviewerPayload("FAIL"), "mcp")).rejects.toThrow("CONFLICTING_RESULT");
-    expect((await loadStructuredResultChannel(root, operationId, channelId)).activeTurn?.status).toBe("CONFLICT");
+    const first = await commitStructuredResult(root, operationId, channelId, reviewerPayload("PASS"), "mcp");
+    await expect(commitStructuredResult(root, operationId, channelId, reviewerPayload("FAIL"), "mcp")).rejects.toThrow("CONFLICTING_RESULT");
+    const channel = await loadStructuredResultChannel(root, operationId, channelId);
+    expect(channel.activeTurn).toEqual(expect.objectContaining({ status: "ACCEPTED", artifact: first.artifact, sha256: first.sha256 }));
   });
 
   it("rejects schema-invalid submissions without losing the active turn", async () => {
     const { root, operationId, channelId } = await fixture();
-    await expect(acceptStructuredResult(root, operationId, channelId, { verdict: "MAYBE" }, "mcp")).rejects.toThrow("SCHEMA_VALIDATION_FAILED");
+    await expect(commitStructuredResult(root, operationId, channelId, { verdict: "MAYBE" }, "mcp")).rejects.toThrow("SCHEMA_VALIDATION_FAILED");
     expect((await loadStructuredResultChannel(root, operationId, channelId)).activeTurn?.status).toBe("REJECTED");
-    const accepted = await acceptStructuredResult(root, operationId, channelId, reviewerPayload(), "mcp");
+    const accepted = await commitStructuredResult(root, operationId, channelId, reviewerPayload(), "mcp");
     expect(accepted.payload).toEqual(reviewerPayload());
   });
 
