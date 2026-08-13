@@ -1,9 +1,11 @@
 import type { HarnessProjectConfig } from "../core/types.js";
 import { dispatchManagedPaseoAgent, inspectManagedPaseoAgent } from "../paseo/runtime.js";
 import { recordPaseoTrace } from "../paseo/trace.js";
-import { notifyOperationCompletion } from "./completion.js";
+import { loadOperationCompletionTarget, notifyOperationCompletion } from "./completion.js";
+import { syncOperationPortfolio } from "./portfolio.js";
 import {
   activeOperationSupervisor,
+  isTerminalOperation,
   loadOperation,
   patchOperationMetadata,
   type OperationRecordV2
@@ -60,9 +62,16 @@ export function evaluateOperationWake(
   policy: OperationLivenessPolicy,
   nowMs = Date.now()
 ): OperationWakeDecision {
-  const terminal = operation.status === "SUCCEEDED" || operation.status === "FAILED" || operation.status === "CANCELLED";
+  const terminal = isTerminalOperation(operation.status);
   if (terminal && !operation.notification.terminalDelivered) {
-    return { reason: "terminal", target: "lead", revision: operation.revision, message: "terminal operation has not been delivered to the lead" };
+    return {
+      reason: "terminal",
+      target: operation.lead?.agentId ? "lead" : "none",
+      revision: operation.revision,
+      message: operation.lead?.agentId
+        ? "terminal operation has not been delivered to the lead"
+        : "terminal operation has no bound lead"
+    };
   }
   if (terminal) return { target: "none", revision: operation.revision, message: "terminal state already delivered" };
 
@@ -98,6 +107,7 @@ export async function runOperationLivenessCheck(
   deps: OperationLivenessDeps = {}
 ): Promise<OperationWakeDecision> {
   const operation = await loadOperation(root, operationId);
+  await syncOperationPortfolio(root, config.project.name, operation).catch(() => undefined);
   const policy = operationLivenessPolicy(config);
   const decision = evaluateOperationWake(operation, policy, (deps.now ?? Date.now)());
   if (!decision.reason || decision.target === "none") return decision;
@@ -110,46 +120,162 @@ export async function runOperationLivenessCheck(
       retryDelaysMs: policy.retryDelaysMs,
       sleep: deps.sleep
     });
+    const latest = await loadOperation(root, operationId);
+    await syncOperationPortfolio(root, config.project.name, latest).catch(() => undefined);
     return decision;
   }
 
   if (decision.target === "supervisor") {
     const supervisor = activeOperationSupervisor(operation);
     if (supervisor?.agentId && !(await isBusy(root, supervisor.agentId, deps.inspect))) {
-      const result = await retryDispatch(root, supervisor.agentId, supervisorWatchdogPrompt(operation, decision), policy.retryDelaysMs, deps);
-      await trace(root, "operation.watchdog.supervisor", { operationId, revision: operation.revision, supervisorAgentId: supervisor.agentId, success: result.success, attempts: result.attempts, error: result.error ?? "" });
+      const result = await retryDispatch(
+        root,
+        supervisor.agentId,
+        supervisorWatchdogPrompt(operation, decision),
+        policy.retryDelaysMs,
+        deps
+      );
+      await trace(root, "operation.watchdog.supervisor", {
+        operationId,
+        revision: operation.revision,
+        supervisorAgentId: supervisor.agentId,
+        success: result.success,
+        attempts: result.attempts,
+        error: result.error ?? ""
+      });
       if (result.success) return decision;
     }
-    // A missing/busy/unreachable supervisor escalates to the lead rather than
-    // allowing a stalled operation to remain invisible.
+    // Missing/busy/unreachable supervisor escalates to the lead.
   }
 
   const leadId = operation.lead?.agentId;
   if (!leadId) {
-    await trace(root, "operation.watchdog.no-lead", { operationId, revision: operation.revision, reason: decision.reason });
+    await trace(root, "operation.watchdog.no-lead", {
+      operationId,
+      revision: operation.revision,
+      reason: decision.reason
+    });
     return decision;
   }
   if (await isBusy(root, leadId, deps.inspect)) {
-    await trace(root, "operation.watchdog.lead-busy", { operationId, revision: operation.revision, leadAgentId: leadId, reason: decision.reason });
+    await trace(root, "operation.watchdog.lead-busy", {
+      operationId,
+      revision: operation.revision,
+      leadAgentId: leadId,
+      reason: decision.reason
+    });
     return decision;
   }
-  const result = await retryDispatch(root, leadId, leadWakePrompt(operation, decision), policy.retryDelaysMs, deps);
+
+  const result = await retryDispatch(
+    root,
+    leadId,
+    leadWakePrompt(operation, decision),
+    policy.retryDelaysMs,
+    deps
+  );
   const latest = await loadOperation(root, operationId);
-  await patchOperationMetadata(root, operationId, {
+  const updated = await patchOperationMetadata(root, operationId, {
     notification: {
       ...latest.notification,
       lastLeadWakeRevision: result.success ? operation.revision : latest.notification.lastLeadWakeRevision,
-      lastLeadWakeAt: result.success ? new Date((deps.now ?? Date.now)()).toISOString() : latest.notification.lastLeadWakeAt,
+      lastLeadWakeAt: result.success
+        ? new Date((deps.now ?? Date.now)()).toISOString()
+        : latest.notification.lastLeadWakeAt,
       lastLeadWakeReason: result.success ? decision.reason : latest.notification.lastLeadWakeReason,
       terminalDelivered: latest.notification.terminalDelivered,
       attempts: latest.notification.attempts + result.attempts,
       lastError: result.error
     }
   });
-  await trace(root, "operation.watchdog.lead", { operationId, revision: operation.revision, leadAgentId: leadId, reason: decision.reason, success: result.success, attempts: result.attempts, error: result.error ?? "" });
+  await syncOperationPortfolio(root, config.project.name, updated).catch(() => undefined);
+  await trace(root, "operation.watchdog.lead", {
+    operationId,
+    revision: operation.revision,
+    leadAgentId: leadId,
+    reason: decision.reason,
+    success: result.success,
+    attempts: result.attempts,
+    error: result.error ?? ""
+  });
   return decision;
 }
 
+/**
+ * Durable detached liveness owner. This loop deliberately lives outside the
+ * operation controller process, so a controller that exits after terminalizing
+ * cannot strand the lead when the first completion send fails.
+ */
+export async function monitorOperationLiveness(
+  root: string,
+  config: HarnessProjectConfig,
+  operationId: string,
+  deps: OperationLivenessDeps = {}
+): Promise<void> {
+  const policy = operationLivenessPolicy(config);
+  const sleep = deps.sleep ?? delay;
+  const trace = deps.trace ?? recordPaseoTrace;
+  let lastStallRevision: number | undefined;
+
+  await trace(root, "operation.watchdog.started", {
+    operationId,
+    pollIntervalMs: policy.pollIntervalMs,
+    progressWakeIntervalMs: policy.progressWakeIntervalMs,
+    stallThresholdMs: policy.stallThresholdMs
+  });
+
+  for (;;) {
+    const operation = await loadOperation(root, operationId);
+    await syncOperationPortfolio(root, config.project.name, operation).catch(() => undefined);
+
+    if (isTerminalOperation(operation.status)) {
+      if (!operation.lead?.agentId) {
+        await trace(root, "operation.watchdog.stopped", {
+          operationId,
+          reason: "terminal-without-lead"
+        });
+        return;
+      }
+      if (operation.notification.terminalDelivered) {
+        await trace(root, "operation.watchdog.stopped", {
+          operationId,
+          reason: "terminal-delivered"
+        });
+        return;
+      }
+      const target = await loadOperationCompletionTarget(root, operationId).catch(() => undefined);
+      if (target?.status === "DISABLED") {
+        await trace(root, "operation.watchdog.stopped", {
+          operationId,
+          reason: "completion-disabled"
+        });
+        return;
+      }
+    }
+
+    const decision = evaluateOperationWake(operation, policy, (deps.now ?? Date.now)());
+    if (decision.reason === "stalled" && lastStallRevision === operation.revision) {
+      await sleep(policy.pollIntervalMs);
+      continue;
+    }
+
+    try {
+      await runOperationLivenessCheck(root, config, operationId, deps);
+      if (decision.reason === "stalled") lastStallRevision = operation.revision;
+      if (decision.reason && decision.reason !== "stalled") lastStallRevision = undefined;
+    } catch (error) {
+      await trace(root, "operation.watchdog.error", {
+        operationId,
+        error: error instanceof Error ? error.message : String(error)
+      }).catch(() => undefined);
+    }
+
+    await sleep(policy.pollIntervalMs);
+  }
+}
+
+/** Compatibility/in-process helper retained for tests and embedders. Detached
+ * operations should use monitorOperationLiveness in a separate process. */
 export function startOperationWatchdog(
   root: string,
   config: HarnessProjectConfig,
@@ -164,25 +290,33 @@ export function startOperationWatchdog(
     running = true;
     void runOperationLivenessCheck(root, config, operationId, deps)
       .catch(async (error) => {
-        await (deps.trace ?? recordPaseoTrace)(root, "operation.watchdog.error", { operationId, error: error instanceof Error ? error.message : String(error) }).catch(() => undefined);
+        await (deps.trace ?? recordPaseoTrace)(root, "operation.watchdog.error", {
+          operationId,
+          error: error instanceof Error ? error.message : String(error)
+        }).catch(() => undefined);
       })
-      .finally(() => { running = false; });
+      .finally(() => {
+        running = false;
+      });
   }, policy.pollIntervalMs);
   timer.unref?.();
-  return () => { stopped = true; clearInterval(timer); };
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
 }
 
 function leadWakePrompt(operation: OperationRecordV2, decision: OperationWakeDecision): string {
-  const terminalInstruction = decision.reason === "blocked"
+  const instruction = decision.reason === "blocked"
     ? "Inspect the durable block/exception and involve the user only if the state requires a product/external decision."
-    : "If the operation is still healthy and non-terminal, do not create user-facing status noise; acknowledge the durable revision internally and return idle.";
+    : "If the operation is healthy and non-terminal, do not create user-facing status noise; acknowledge the durable revision internally and return idle.";
   return [
     `[AEH_OPERATION_${decision.reason?.toUpperCase()}]`,
     `Operation ${operation.id} (${operation.kind}) revision ${operation.revision}: status=${operation.status}, phase=${operation.phase}.`,
     `Progress: completed=${operation.progress.completed}, running=${operation.progress.running}, failed=${operation.progress.failed}, blocked=${operation.progress.blocked}.`,
     decision.message,
     "Do not start a duplicate operation. Read the existing OperationRecord/artifacts if more detail is required.",
-    terminalInstruction
+    instruction
   ].join("\n");
 }
 
@@ -220,13 +354,21 @@ async function retryDispatch(
   return { success: false, attempts, error };
 }
 
-async function isBusy(root: string, agentId: string, inspect: OperationLivenessDeps["inspect"]): Promise<boolean> {
+async function isBusy(
+  root: string,
+  agentId: string,
+  inspect: OperationLivenessDeps["inspect"]
+): Promise<boolean> {
   const snapshot = await (inspect ?? inspectManagedPaseoAgent)(root, agentId).catch(() => undefined);
   const status = snapshot?.status?.toLowerCase();
   return status === "running" || status === "working" || status === "streaming" || status === "initializing";
 }
 
 function positive(value: number | undefined, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : fallback;
 }
-function delay(ms: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, ms)); }
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
