@@ -50,19 +50,25 @@ export function nativeSchemaEnforced(selection: AgentExecutionSelection, transpo
 
 export function outputContractContext(contractName: string, nativeSchema: boolean, repair = false): string {
   if (repair) {
-    return `AEH output contract: ${contractName}. This is a serialization-repair turn; structured-output-delivery governs the exact marker format.`;
+    return [
+      `AEH output contract: ${contractName}. This is a serialization-repair turn.`,
+      "If the capability-scoped aeh_submit_result tool is available, submit the already-established contract payload through it; a successful durable submission is authoritative.",
+      "Do not redo semantic work. If the result tool is unavailable, structured-output-delivery governs the compatibility marker fallback."
+    ].join("\n");
   }
   if (nativeSchema) {
     return [
       `AEH output contract: ${contractName}.`,
       "The exact JSON Schema is supplied out-of-band and validated deterministically by the runtime.",
-      "Return only the contract result; do not add prose or Markdown around it."
+      "If aeh_submit_result is available, submit exactly the final contract payload through it before completing; that durable result is lifecycle-authoritative.",
+      "A provider-required native structured final may repeat the same payload for transport compatibility, but must not represent a different semantic result."
     ].join("\n");
   }
   const schema = outputJsonSchema(contractName);
   return [
     `AEH output contract: ${contractName}. Runtime validation is authoritative.`,
-    "This transport cannot enforce the schema out-of-band, so match the compact schema below exactly and return no prose.",
+    "If aeh_submit_result is available, submit exactly the final contract payload through it; the durable result is authoritative.",
+    "Otherwise this transport cannot enforce the schema out-of-band, so match the compact schema below exactly and return no prose.",
     schema ? `Schema: ${JSON.stringify(schema)}` : undefined
   ].filter(Boolean).join("\n");
 }
