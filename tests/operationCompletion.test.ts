@@ -8,7 +8,7 @@ import {
   registerOperationCompletionTarget
 } from "../src/operations/completion.js";
 import { cancelOperation, startDetachedOperation } from "../src/operations/controller.js";
-import { saveOperation, type OperationRecord } from "../src/operations/state.js";
+import { loadOperation, saveOperation, type OperationRecord } from "../src/operations/state.js";
 
 const roots: string[] = [];
 const originalAgentId = process.env.PASEO_AGENT_ID;
@@ -58,14 +58,17 @@ describe("operation completion callbacks", () => {
 
     const first = await notifyOperationCompletion(root, terminal(root), {
       dispatch: dispatch as never,
-      trace: trace as never
+      trace: trace as never,
+      retryDelaysMs: [0]
     });
     const second = await notifyOperationCompletion(root, terminal(root), {
       dispatch: dispatch as never,
-      trace: trace as never
+      trace: trace as never,
+      retryDelaysMs: [0]
     });
 
     expect(first?.status).toBe("SENT");
+    expect(first?.attempts).toBe(1);
     expect(second?.status).toBe("SENT");
     expect(dispatch).toHaveBeenCalledTimes(1);
     expect(dispatch.mock.calls[0][1]).toBe("lead-1");
@@ -75,12 +78,47 @@ describe("operation completion callbacks", () => {
     expect(trace).toHaveBeenCalledWith(
       root,
       "operation.callback.sent",
-      expect.objectContaining({ operationId: "AUDIT-1", agentId: "lead-1" })
+      expect.objectContaining({ operationId: "AUDIT-1", agentId: "lead-1", attempts: 1 })
     );
   });
 
-  it("persists callback delivery failure without changing the operation result", async () => {
+  it("retries a transient callback failure and persists the eventual success", async () => {
     const root = await tempRoot();
+    await registerOperationCompletionTarget(root, "AUDIT-1", "lead-1", "lead-state", vi.fn(async () => undefined));
+    let invocation = 0;
+    const dispatch = vi.fn(async () => {
+      invocation += 1;
+      return invocation === 1
+        ? { id: "lead-1", exitCode: 1, stdout: "", stderr: "daemon temporarily unavailable", status: "failed", transport: "sdk" as const }
+        : { id: "lead-1", exitCode: 0, stdout: "", stderr: "", status: "working", transport: "sdk" as const };
+    });
+    const sleep = vi.fn(async () => undefined);
+
+    const completion = await notifyOperationCompletion(root, terminal(root), {
+      dispatch: dispatch as never,
+      trace: vi.fn(async () => undefined) as never,
+      retryDelaysMs: [0, 500, 1_500],
+      sleep
+    });
+
+    expect(completion).toEqual(expect.objectContaining({
+      status: "SENT",
+      agentId: "lead-1",
+      attempts: 2,
+      error: undefined
+    }));
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(sleep).toHaveBeenCalledWith(500);
+    expect(await loadOperationCompletionTarget(root, "AUDIT-1")).toEqual(
+      expect.objectContaining({ status: "SENT", attempts: 2 })
+    );
+  });
+
+  it("persists permanent callback failure and surfaces it in terminal operation metadata", async () => {
+    const root = await tempRoot();
+    const operation = terminal(root);
+    await saveOperation(root, operation);
     await registerOperationCompletionTarget(root, "AUDIT-1", "lead-1", "lead-state", vi.fn(async () => undefined));
     const dispatch = vi.fn(async () => ({
       id: "lead-1",
@@ -91,17 +129,25 @@ describe("operation completion callbacks", () => {
       transport: "sdk" as const
     }));
 
-    const completion = await notifyOperationCompletion(root, terminal(root), {
+    const completion = await notifyOperationCompletion(root, operation, {
       dispatch: dispatch as never,
-      trace: vi.fn(async () => undefined) as never
+      trace: vi.fn(async () => undefined) as never,
+      retryDelaysMs: [0, 0, 0],
+      sleep: vi.fn(async () => undefined)
     });
 
     expect(completion).toEqual(expect.objectContaining({
       status: "FAILED",
       agentId: "lead-1",
+      attempts: 3,
       error: "daemon unavailable"
     }));
-    expect(terminal(root).status).toBe("SUCCEEDED");
+    expect(dispatch).toHaveBeenCalledTimes(3);
+    const durableOperation = await loadOperation(root, "AUDIT-1");
+    expect(durableOperation.status).toBe("SUCCEEDED");
+    expect(durableOperation.cleanupWarnings).toEqual([
+      expect.stringContaining("completion callback: failed to reactivate lead-1 after 3 attempt(s): daemon unavailable")
+    ]);
   });
 
   it("keeps detached CLI operations valid when no managed lead identity exists", async () => {
