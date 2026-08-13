@@ -28,6 +28,7 @@ export function compileAgentPromptPolicy(
     if (!hasTraceableAcceptance(contract)) skills.delete("acceptance-traceability");
   }
 
+  if (contractRepair && selection.logicalAgent === "operation-supervisor") skills.clear();
   if (contractRepair) skills.add("structured-output-delivery");
 
   return {

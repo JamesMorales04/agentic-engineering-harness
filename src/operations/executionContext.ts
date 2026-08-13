@@ -100,7 +100,7 @@ export function managedBoundedAgentPromptContext(
     "AEH execution envelope (controller-enforced):",
     `- ${coordinates}`,
     "- bounded=true orchestration=false; nested AEH workflow entry is denied by runtime guards.",
-    "- runtime permissions and the supplied output contract are authoritative; OperationRecord lifecycle remains controller-owned."
+    "- runtime permissions are controller-enforced; OperationRecord lifecycle remains controller-owned."
   ].join("\n");
 }
 
