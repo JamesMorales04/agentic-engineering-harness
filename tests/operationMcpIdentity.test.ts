@@ -99,6 +99,6 @@ describe("aeh_context_status identity", () => {
 
   it("fails closed when neither environment nor compatible durable state exists", async () => {
     const root = await project();
-    await expect(resolveContextAgentIdentity(root, undefined, {})).rejects.toThrow("could not resolve the current lead agent");
+    await expect(resolveContextAgentIdentity(root, undefined, {})).rejects.toThrow("could not resolve the current managed lead agent");
   });
 });

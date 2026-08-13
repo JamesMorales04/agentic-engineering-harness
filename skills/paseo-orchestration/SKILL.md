@@ -33,6 +33,21 @@ When the AEH control MCP server (`aeh operation mcp`) is injected, use its tools
 
 These MCP tools call the same persistent detached operation controller/policy code as the CLI. They do not create a controller LLM agent. If the AEH MCP server is not injected, `aeh operation start/status/cancel` and `aeh context guard` are short compatibility surfaces; do not replace them with long synchronous `aeh audit`/`aeh run` from the conversational lead.
 
+## Detached operation completion
+
+Managed AUDIT/RUN operations are callback-driven. When `aeh_operation_start_audit` or `aeh_operation_start_run` succeeds, the deterministic controller durably records the initiating managed lead as the completion target. The lead may end its current conversational turn while reviewers/workers continue independently.
+
+Do **not** repeatedly poll `aeh_operation_status` in the normal path. When the operation reaches `SUCCEEDED`, `FAILED` or `CANCELLED`, AEH sends an `[AEH_OPERATION_COMPLETED]` follow-up to the same lead. Treat that message as an internal continuation of the still-pending user request:
+
+- do not start a duplicate AUDIT/RUN;
+- inspect the existing operation record and the durable report/result artifact named by the callback;
+- finish the original user-facing request from those durable results;
+- use `aeh_operation_status` only for explicit diagnostics, manual inspection, or recovery when callback delivery is known to have failed.
+
+Callback delivery state is persisted separately from the engineering result. A failed callback must never rewrite a successful engineering operation as failed. Relevant integration traces are `harness.paseo.operation.callback.registered`, `.target`, `.sent`, `.failed`, and `.disabled`.
+
+This wake-up mechanism is intentionally independent of Paseo parent/child ownership. AEH reviewers/workers remain top-level agents so a lead rotation does not terminate them.
+
 Load `/paseo` when the exact current Paseo surface is needed. Use `/paseo-handoff` when responsibility, not merely a subtask, should move to a fresh agent. `/paseo-committee` and `/paseo-advisor` are analysis-only escalation tools and must not replace deterministic AEH gates.
 
 ## SDK-first lifecycle
@@ -44,6 +59,8 @@ AEH should use the public `@getpaseo/client` surface first for semantic operatio
 - `AgentSnapshot.lastUsage.contextWindowUsedTokens/contextWindowMaxTokens` for context pressure;
 - agent subscriptions for event-driven completion, with subscribe-before-refetch race closure;
 - provider snapshot/model/diagnostic APIs for early configuration failures.
+
+For a continued/reused agent turn, capture the last assistant response **before** dispatch. An `idle` snapshot is not sufficient proof that the new turn finished: accept it only after a real active-turn transition or assistant output that differs from the pre-dispatch baseline. Metadata-only subscription updates are not turn activity.
 
 The CLI remains a compatibility/parity-gap surface, not a parallel source of truth. Two intentional external-controller CLI uses currently remain for Paseo 0.3.1:
 
@@ -60,9 +77,9 @@ Use `aeh paseo agents --operation <id>` (or Paseo's corresponding directory/stat
 
 ## Observability
 
-AEH persists integration decisions under `.harness/telemetry/paseo.ndjson` even when remote OTLP export is disabled. Relevant events include provider preflight, agent snapshot/context source, lifecycle transport, event-driven wait, SDK-to-CLI fallback, intentional workspace CLI use and cleanup CLI use. When normal Harness telemetry is enabled the same events also flow through the standard telemetry/OTLP path.
+AEH persists integration decisions under `.harness/telemetry/paseo.ndjson` even when remote OTLP export is disabled. Relevant events include provider preflight, agent snapshot/context source, lifecycle transport, event-driven wait, resumed-turn baseline, detached-operation callback delivery, SDK-to-CLI fallback, intentional workspace CLI use and cleanup CLI use. When normal Harness telemetry is enabled the same events also flow through the standard telemetry/OTLP path.
 
-A trace should answer: which transport was used, which source supplied state, whether a fallback was intentional or exceptional, why it happened, and which operation/agent/provider/model was affected.
+A trace should answer: which transport was used, which source supplied state, whether a fallback was intentional or exceptional, why it happened, which operation/agent/provider/model was affected, and whether completion notification reached the initiating lead.
 
 ## Lead discipline
 

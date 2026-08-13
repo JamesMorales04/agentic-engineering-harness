@@ -50,6 +50,11 @@ export interface OperationRecord {
   error?: string;
 }
 
+export interface TerminalOperationTransition {
+  record: OperationRecord;
+  transitioned: boolean;
+}
+
 const OPERATIONS_DIR = ".harness/operations";
 const LOCK_RETRY_MS = 20;
 const LOCK_TIMEOUT_MS = 10_000;
@@ -77,6 +82,36 @@ export async function patchOperation(
   return mutateOperation(root, operationId, (current) => {
     const guardedPatch = guardTerminalTransition(current, patch);
     return { ...current, ...guardedPatch };
+  });
+}
+
+/**
+ * Atomically grants exactly one controller path ownership of a non-terminal ->
+ * terminal transition. Callers must perform one-shot terminal side effects
+ * (for example the managed-lead completion callback) only when transitioned is
+ * true. A concurrent cancel/execute path receives the already-terminal record
+ * without becoming a second side-effect owner.
+ */
+export async function transitionOperationToTerminal(
+  root: string,
+  operationId: string,
+  patch: Partial<OperationRecord> & { status: "SUCCEEDED" | "FAILED" | "CANCELLED" }
+): Promise<TerminalOperationTransition> {
+  const file = operationFile(root, operationId);
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  return withOperationLock(file, async () => {
+    const current = JSON.parse(await fs.readFile(file, "utf8")) as OperationRecord;
+    if (isTerminal(current.status)) return { record: current, transitioned: false };
+    const next: OperationRecord = {
+      ...current,
+      ...patch,
+      id: current.id,
+      kind: current.kind,
+      version: 1,
+      updatedAt: new Date().toISOString()
+    };
+    await writeRecord(file, next);
+    return { record: next, transitioned: true };
   });
 }
 

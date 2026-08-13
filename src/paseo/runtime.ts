@@ -7,9 +7,11 @@ import {
   extractPaseoAgentId
 } from "./capabilities.js";
 import {
+  capturePaseoAgentTurnBaseline,
   preflightPaseoProviderModel,
   waitForPaseoAgentNative,
-  type PaseoNativeWaitResult
+  type PaseoNativeWaitResult,
+  type PaseoTurnBaseline
 } from "./native.js";
 import {
   PaseoSdkUnavailableError,
@@ -49,6 +51,7 @@ interface PaseoRuntimeDeps {
   native?: {
     preflight: typeof preflightPaseoProviderModel;
     wait: typeof waitForPaseoAgentNative;
+    capture?: typeof capturePaseoAgentTurnBaseline;
   };
   sdk: {
     create: typeof createPaseoSdkAgent;
@@ -68,7 +71,8 @@ const DEFAULT_DEPS: PaseoRuntimeDeps = {
   trace: recordPaseoTrace,
   native: {
     preflight: preflightPaseoProviderModel,
-    wait: waitForPaseoAgentNative
+    wait: waitForPaseoAgentNative,
+    capture: capturePaseoAgentTurnBaseline
   },
   sdk: {
     create: createPaseoSdkAgent,
@@ -92,9 +96,6 @@ export async function launchManagedPaseoAgent(
   if (!forceCli()) {
     await ensurePreflight(root, options, deps);
     try {
-      // Force create() to return as soon as Paseo accepts the agent/initial turn.
-      // AEH can then persist the concrete agent id before waiting, which makes
-      // cancellation/recovery independent from a still-running launch promise.
       const created = fromSdk(
         await deps.sdk.create(root, { ...options, waitForFinish: false })
       );
@@ -233,7 +234,8 @@ export async function waitManagedPaseoAgent(
   root: string,
   agentId: string,
   timeoutSeconds?: number,
-  deps: PaseoRuntimeDeps = DEFAULT_DEPS
+  deps: PaseoRuntimeDeps = DEFAULT_DEPS,
+  baseline?: PaseoTurnBaseline
 ): Promise<ManagedPaseoAgentResult> {
   const timeout = timeoutMs(timeoutSeconds);
   const trace = deps.trace ?? DEFAULT_DEPS.trace!;
@@ -241,7 +243,7 @@ export async function waitManagedPaseoAgent(
   if (!forceCli()) {
     const native = deps.native ?? DEFAULT_DEPS.native!;
     try {
-      const result = fromNativeWait(await native.wait(root, agentId, timeout));
+      const result = fromNativeWait(await native.wait(root, agentId, timeout, baseline));
       await trace(root, "agent.wait.completed", {
         transport: "sdk",
         observation: "subscription",
@@ -314,9 +316,29 @@ export async function continueManagedPaseoAgent(
   timeoutSeconds?: number,
   deps: PaseoRuntimeDeps = DEFAULT_DEPS
 ): Promise<ManagedPaseoAgentResult> {
+  let baseline: PaseoTurnBaseline | undefined;
+  if (!forceCli()) {
+    const native = deps.native ?? DEFAULT_DEPS.native!;
+    if (typeof native.capture === "function") {
+      try {
+        baseline = await native.capture(root, agentId);
+        await (deps.trace ?? DEFAULT_DEPS.trace!)(root, "agent.turn.baseline", {
+          agentId,
+          assistantMessage: baseline.lastAssistantMessage ? "present" : "absent"
+        });
+      } catch (error) {
+        if (!sdkCanFallback(error)) throw error;
+        await (deps.trace ?? DEFAULT_DEPS.trace!)(root, "agent.turn.baseline.skipped", {
+          agentId,
+          reason: errorMessage(error)
+        });
+      }
+    }
+  }
+
   const sent = await dispatchManagedPaseoAgent(root, agentId, prompt, timeoutSeconds, deps);
   if (sent.exitCode !== 0) return sent;
-  return waitManagedPaseoAgent(root, agentId, timeoutSeconds, deps);
+  return waitManagedPaseoAgent(root, agentId, timeoutSeconds, deps, baseline);
 }
 
 export async function probeManagedPaseoAgent(

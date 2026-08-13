@@ -44,7 +44,11 @@ Inside a managed Paseo lead, long deterministic workflows must be started detach
 - audit: `aeh operation start audit "<request>" ...`
 - sealed task execution: `aeh operation start run <taskId> ...`
 
-The start command must return promptly with an `operationId`. Report that identifier and the meaningful phase to the user instead of waiting in an interactive shell. Observe with `aeh operation status <operationId>` and, when useful, `aeh paseo agents --operation <operationId>`. Use `aeh operation wait` only when synchronous waiting is explicitly required by a non-interactive caller or bounded recovery flow. Cancel with `aeh operation cancel <operationId>` when the user requests cancellation.
+The start command must return promptly with an `operationId`. Report that identifier and the meaningful starting phase to the user, then allow the current lead turn to end if there is no additional semantic work to do. The controller durably registers the initiating managed lead as a completion target. When the operation becomes `SUCCEEDED`, `FAILED` or `CANCELLED`, AEH sends that lead an `[AEH_OPERATION_COMPLETED]` follow-up so it can consume the durable result and finish the original user request.
+
+Do **not** keep the lead alive by repeatedly calling `aeh operation status` or `aeh_operation_status`. Those are explicit diagnostics/manual-recovery surfaces. Use `aeh operation wait` only when synchronous waiting is explicitly required by a non-interactive caller or bounded recovery flow. Cancel with `aeh operation cancel <operationId>` when the user requests cancellation; cancellation also follows the completion-callback path after cleanup.
+
+When `[AEH_OPERATION_COMPLETED]` arrives, treat it as an internal continuation event, not a new user task. Do not create another AUDIT/RUN. Read the existing operation state and cited report/result artifact, then complete the original user-facing response.
 
 Direct synchronous commands such as `aeh audit` and `aeh run` remain valid non-interactive/compatibility entrypoints, but a conversational Paseo lead should not use them for a long-running operation when the detached controller is available.
 
@@ -89,10 +93,12 @@ Do not invoke sudo or silently install unmanaged host prerequisites.
 
 1. From an interactive Paseo lead, invoke `aeh operation start audit "<request>"`, passing concrete file/domain/risk/reviewer hints when useful. Repository-wide scope is valid. A non-interactive caller may use synchronous `aeh audit`.
 2. AEH freezes the control plane and materializes the selected read-only reviewers as visible Paseo agents before deterministic validation begins. The agents remain idle until validator evidence is ready.
-3. AEH runs deterministic validators, classifies failures, dispatches the materialized reviewers with that evidence, deduplicates findings and calculates quality debt.
-4. Validator failures remain evidence; do not reinterpret them as PASS.
-5. Persisted reports under `.harness/audits/` and `.harness/operations/` are durable input for later remediation and recovery.
-6. AUDIT never implements fixes. A later "fix these" is a new CHANGE using the AuditReport as evidence.
+3. AEH runs deterministic validators, classifies failures, dispatches the materialized reviewers with that evidence, waits for the complete reviewer barrier, deduplicates findings and calculates quality debt.
+4. The lead is allowed to finish its initiating conversational turn while step 3 continues. It must not infer that the AUDIT ended merely because its own turn ended or because some reviewers have replied.
+5. Only after the controller reaches terminal operation state does it send `[AEH_OPERATION_COMPLETED]` back to the initiating lead. The lead then reads the persisted AuditReport and completes the original user-facing audit response.
+6. Validator failures remain evidence; do not reinterpret them as PASS.
+7. Persisted reports under `.harness/audits/` and `.harness/operations/` are durable input for later remediation and recovery.
+8. AUDIT never implements fixes. A later "fix these" is a new CHANGE using the AuditReport as evidence.
 
 ## Issue-driven CHANGE path
 
@@ -115,6 +121,7 @@ For a CHANGE classified QUICK:
 2. `aeh quick validate <id>`.
 3. From an interactive lead, start `aeh operation start run <id>`; use synchronous `aeh run <id>` only for non-interactive compatibility.
 4. Remain the semantic parent lead; implementation, validation and review belong to AEH workers and the deterministic controller.
+5. The lead may end its current turn after the detached operation starts; AEH's completion callback will reactivate it after the full run/review/delivery state machine is terminal.
 
 ## SPEC path — OpenSpec authoring
 
@@ -130,17 +137,20 @@ The lead must not write proposal/spec/design/tasks/Gherkin itself.
 
 If OpenSpec cannot express a true product decision without guessing, return `REQUIRES_PRODUCT_DECISION`; otherwise author and validate autonomously.
 
-## Operation observation
+## Operation observation and recovery
 
-Use durable operation state for progress rather than narrating terminal silence:
+Durable operation state remains authoritative, but normal managed-lead continuation is callback-driven rather than polling-driven:
 
-- `aeh operation status <id>` -> controller status/phase/result/error;
-- `aeh paseo agents --operation <id>` -> real LLM participants and their roles/phases;
-- `aeh operation wait <id>` -> synchronous boundary only when necessary.
+- `[AEH_OPERATION_COMPLETED]` -> normal wake-up/continuation after terminal state;
+- `aeh operation status <id>` -> explicit diagnostic controller status/phase/result/error;
+- `aeh paseo agents --operation <id>` -> manual inspection of real LLM participants and their roles/phases;
+- `aeh operation wait <id>` -> synchronous non-interactive/recovery boundary only.
+
+If a completion callback is known to have failed, inspect the `.harness/operations/<id>.completion.json` sidecar and Paseo traces, then recover by reading the terminal operation/report directly. Do not launch a duplicate operation solely because the callback failed.
 
 Paseo workspaces used for operation grouping are local orchestration containers and do not imply Git branch/worktree delivery. Delivery workspaces remain a separate isolation decision and take precedence for workers when present.
 
-Paseo lifecycle/provider/context integration decisions are recorded under `.harness/telemetry/paseo.ndjson`; normal telemetry/OTLP receives the same events when enabled. Use these traces to distinguish SDK-native paths, negotiated fallbacks and intentional public-SDK parity gaps rather than inferring behavior from terminal output.
+Paseo lifecycle/provider/context/integration decisions are recorded under `.harness/telemetry/paseo.ndjson`; normal telemetry/OTLP receives the same events when enabled. Use these traces to distinguish SDK-native paths, reviewer turn-barrier evidence, completion callback delivery, negotiated fallbacks and intentional public-SDK parity gaps rather than inferring behavior from terminal output.
 
 ## Quality convergence and recovery
 
@@ -165,4 +175,4 @@ If the repository is AEH itself or the task changes topology, toolchain, skills,
 
 ## User-facing communication
 
-Keep status concise. Do not narrate every shell command or subagent read. Surface meaningful transitions such as operation started, `AUDIT`, `QUICK`, `SPEC`, spec validated, deterministic blocker, quality convergence state, handoff, final acceptance/delivery. A useful update names the operation id and phase and, when relevant, the visible worker roles. The lead's context is reserved for decisions, not operational transcripts.
+Keep status concise. Do not narrate every shell command or subagent read. Surface meaningful transitions such as operation started, `AUDIT`, `QUICK`, `SPEC`, spec validated, deterministic blocker, quality convergence state, handoff, final acceptance/delivery. For a detached operation, one start acknowledgement is normally enough; do not emit a stream of status polls. When the completion callback arrives, provide the actual consolidated result. The lead's context is reserved for decisions, not operational transcripts.
