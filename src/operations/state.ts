@@ -19,6 +19,7 @@ export interface AuditOperationPayload {
 export interface RunOperationPayload {
   taskId: string;
   profile?: string;
+  priority?: number;
 }
 
 export interface ChangeOperationPayload {
@@ -35,12 +36,13 @@ export interface ChangeOperationPayload {
 
 export type OperationPayload = AuditOperationPayload | RunOperationPayload | ChangeOperationPayload;
 
+/** Compatibility registry used by legacy cleanup/status surfaces. */
 export interface OperationAgentRecord {
   id: string;
   role?: string;
   phase?: string;
   workspaceId?: string;
-  transport?: "sdk" | "cli";
+  transport?: string;
   registeredAt: string;
 }
 
@@ -63,6 +65,7 @@ export interface OperationSupervisorGeneration {
   archivedAt?: string;
   checkpointArtifact?: string;
   contextRatio?: number;
+  error?: string;
 }
 
 export interface OperationSupervisionState {
@@ -155,7 +158,10 @@ export interface OperationRecordV2 {
   kind: OperationKind;
   status: OperationStatus;
   phase: string;
+  /** Repository control root that owns durable AEH state. */
   root: string;
+  /** Isolated execution/worktree root when different from root. */
+  workspaceRoot?: string;
   payload: OperationPayload;
   revision: number;
   createdAt: string;
@@ -204,12 +210,24 @@ const LOCK_RETRY_MS = 20;
 const LOCK_TIMEOUT_MS = 10_000;
 const STALE_LOCK_MS = 30_000;
 
+/**
+ * Agent processes may execute from isolated operation/delivery worktrees. While
+ * an operation is active, AEH_CONTROL_ROOT pins all durable operation state to
+ * the original repository root so every participant observes one state machine.
+ */
+export function resolveOperationStateRoot(root: string): string {
+  const configured = process.env.AEH_OPERATION_ID?.trim()
+    ? process.env.AEH_CONTROL_ROOT?.trim()
+    : undefined;
+  return path.resolve(configured || root);
+}
+
 export function operationFile(root: string, operationId: string): string {
-  return path.resolve(root, OPERATIONS_DIR, `${safeId(operationId)}.json`);
+  return path.resolve(resolveOperationStateRoot(root), OPERATIONS_DIR, `${safeId(operationId)}.json`);
 }
 
 export function operationArtifactDir(root: string, operationId: string): string {
-  return path.resolve(root, OPERATIONS_DIR, safeId(operationId));
+  return path.resolve(resolveOperationStateRoot(root), OPERATIONS_DIR, safeId(operationId));
 }
 
 export function operationEventsFile(root: string, operationId: string): string {
@@ -223,11 +241,12 @@ export async function loadOperation(root: string, operationId: string): Promise<
 
 export async function saveOperation(root: string, record: OperationRecord): Promise<void> {
   const normalized = normalizeOperationRecord(record);
-  const file = operationFile(root, normalized.id);
+  const stateRoot = resolveOperationStateRoot(root);
+  const file = operationFile(stateRoot, normalized.id);
   await fs.mkdir(path.dirname(file), { recursive: true });
   await withOperationLock(file, async () => {
     await writeRecord(file, normalized);
-    await appendOperationEvent(root, normalized, "operation.created", ["status", "phase"]);
+    await appendOperationEvent(stateRoot, normalized, "operation.created", ["status", "phase"]);
   });
 }
 
@@ -247,43 +266,41 @@ export async function patchOperationMetadata(
   return mutateOperation(root, operationId, patch, false, "operation.metadata");
 }
 
-/**
- * Atomically grants exactly one controller path ownership of a non-terminal ->
- * terminal transition. One-shot side effects must only run when transitioned=true.
- */
 export async function transitionOperationToTerminal(
   root: string,
   operationId: string,
   patch: Partial<OperationRecordV2> & { status: "SUCCEEDED" | "FAILED" | "CANCELLED" }
 ): Promise<TerminalOperationTransition> {
-  const file = operationFile(root, operationId);
+  const stateRoot = resolveOperationStateRoot(root);
+  const file = operationFile(stateRoot, operationId);
   await fs.mkdir(path.dirname(file), { recursive: true });
   return withOperationLock(file, async () => {
     const current = normalizeOperationRecord(JSON.parse(await fs.readFile(file, "utf8")) as OperationRecord);
     if (isTerminal(current.status)) return { record: current, transitioned: false };
     const now = new Date().toISOString();
+    const revision = current.revision + 1;
     const next = normalizeOperationRecord({
       ...current,
       ...patch,
       version: 2,
       id: current.id,
       kind: current.kind,
-      revision: current.revision + 1,
+      revision,
       updatedAt: now,
       lastProgressAt: now,
       stages: {
         ...current.stages,
         finished: {
           name: "finished",
-          status: patch.status === "SUCCEEDED" ? "COMPLETED" : patch.status === "CANCELLED" ? "SKIPPED" : "FAILED",
-          revision: current.revision + 1,
+          status: terminalStageStatus(patch.status),
+          revision,
           startedAt: now,
           finishedAt: now
         }
       }
     } as OperationRecordV2);
     await writeRecord(file, next);
-    await appendOperationEvent(root, next, "operation.terminal", ["status", "phase"]);
+    await appendOperationEvent(stateRoot, next, "operation.terminal", ["status", "phase"]);
     return { record: next, transitioned: true };
   });
 }
@@ -304,7 +321,16 @@ export async function bindOperationLead(
       source,
       generation: (current.lead?.generation ?? 0) + 1,
       boundAt: now,
-      acknowledgedRevision: revision
+      acknowledgedRevision: revision,
+      acknowledgedAt: now
+    },
+    notification: {
+      ...current.notification,
+      // The initiating lead just observed operation creation, so the initial
+      // revision is acknowledged and must not trigger an immediate watchdog wake.
+      lastLeadWakeRevision: revision,
+      lastLeadWakeAt: now,
+      lastLeadWakeReason: "operation-started"
     }
   }));
 }
@@ -315,22 +341,22 @@ export async function acknowledgeOperationLead(
   revision: number,
   reason?: string
 ): Promise<OperationRecordV2> {
+  const current = await loadOperation(root, operationId);
   const now = new Date().toISOString();
   return patchOperationMetadata(root, operationId, {
+    lead: current.lead
+      ? {
+          ...current.lead,
+          acknowledgedRevision: Math.max(current.lead.acknowledgedRevision, revision),
+          acknowledgedAt: now
+        }
+      : undefined,
     notification: {
-      ...(await loadOperation(root, operationId)).notification,
-      lastLeadWakeRevision: revision,
+      ...current.notification,
+      lastLeadWakeRevision: Math.max(current.notification.lastLeadWakeRevision, revision),
       lastLeadWakeAt: now,
-      lastLeadWakeReason: reason,
-      terminalDelivered: false,
-      attempts: (await loadOperation(root, operationId)).notification.attempts
-    },
-    lead: undefined
-  }).then(async (record) => {
-    if (!record.lead) return record;
-    return patchOperationMetadata(root, operationId, {
-      lead: { ...record.lead, acknowledgedRevision: Math.max(record.lead.acknowledgedRevision, revision), acknowledgedAt: now }
-    });
+      lastLeadWakeReason: reason ?? current.notification.lastLeadWakeReason
+    }
   });
 }
 
@@ -344,9 +370,9 @@ export async function markTerminalDelivered(
   return patchOperationMetadata(root, operationId, {
     notification: {
       ...current.notification,
-      lastLeadWakeRevision: current.revision,
-      lastLeadWakeAt: new Date().toISOString(),
-      lastLeadWakeReason: "terminal",
+      lastLeadWakeRevision: error ? current.notification.lastLeadWakeRevision : current.revision,
+      lastLeadWakeAt: error ? current.notification.lastLeadWakeAt : new Date().toISOString(),
+      lastLeadWakeReason: error ? current.notification.lastLeadWakeReason : "terminal",
       terminalDelivered: !error,
       attempts,
       lastError: error
@@ -363,12 +389,13 @@ export async function setOperationStage(
 ): Promise<OperationRecordV2> {
   return mutateOperation(root, operationId, {}, true, "operation.stage", (current, revision, now) => {
     const previous = current.stages[name];
+    const terminal = ["COMPLETED", "FAILED", "BLOCKED", "SKIPPED"].includes(status);
     const stage: OperationStageRecord = {
       name,
       status,
       revision,
-      startedAt: previous?.startedAt ?? (status === "RUNNING" ? now : undefined),
-      finishedAt: ["COMPLETED", "FAILED", "BLOCKED", "SKIPPED"].includes(status) ? now : undefined,
+      startedAt: previous?.startedAt ?? (status === "RUNNING" ? now : previous?.startedAt),
+      finishedAt: terminal ? now : undefined,
       message: options.message ?? previous?.message,
       artifact: options.artifact ?? previous?.artifact
     };
@@ -390,7 +417,7 @@ export async function registerSupervisorGeneration(
 ): Promise<OperationRecordV2> {
   return mutateOperation(root, operationId, {}, true, "operation.supervisor.registered", (current, revision, now) => {
     const generations = current.supervision.generations.map((item) =>
-      item.status === "ACTIVE" ? { ...item, status: "DRAINING" as const, drainingAt: now } : item
+      item.status === "ACTIVE" ? { ...item, status: "DRAINING" as const, drainingAt: item.drainingAt ?? now } : item
     );
     const generation = Math.max(0, ...generations.map((item) => item.generation)) + 1;
     generations.push({
@@ -408,6 +435,7 @@ export async function registerSupervisorGeneration(
       lastProgressAt: now,
       supervision: {
         ...current.supervision,
+        required: true,
         materialized: current.supervision.materialized || input.materialized,
         activeGeneration: generation,
         generations
@@ -422,28 +450,38 @@ export async function updateSupervisorGeneration(
   generation: number,
   patch: Partial<OperationSupervisorGeneration>
 ): Promise<OperationRecordV2> {
-  return mutateOperation(root, operationId, {}, true, "operation.supervisor.updated", (current, revision, now) => ({
-    ...current,
-    revision,
-    updatedAt: now,
-    lastProgressAt: now,
-    supervision: {
-      ...current.supervision,
-      activeGeneration: patch.status === "ARCHIVED" && current.supervision.activeGeneration === generation ? undefined : current.supervision.activeGeneration,
-      generations: current.supervision.generations.map((item) => item.generation === generation ? { ...item, ...patch } : item)
-    }
-  }));
+  return mutateOperation(root, operationId, {}, true, "operation.supervisor.updated", (current, revision, now) => {
+    const generations = current.supervision.generations.map((item) => item.generation === generation ? { ...item, ...patch } : item);
+    const stillActive = generations.find((item) => item.status === "ACTIVE");
+    return {
+      ...current,
+      revision,
+      updatedAt: now,
+      lastProgressAt: now,
+      supervision: {
+        ...current.supervision,
+        activeGeneration: stillActive?.generation,
+        generations
+      }
+    };
+  });
 }
 
 export function activeOperationSupervisor(record: OperationRecordV2): OperationSupervisorGeneration | undefined {
   const generation = record.supervision.activeGeneration;
-  return generation === undefined ? undefined : record.supervision.generations.find((item) => item.generation === generation && item.status === "ACTIVE");
+  return generation === undefined
+    ? undefined
+    : record.supervision.generations.find((item) => item.generation === generation && item.status === "ACTIVE");
 }
 
 export async function registerOperationAgent(
   root: string,
   operationId: string,
-  agent: Omit<OperationAgentRecord, "registeredAt"> & { logicalAgent?: string; parentAgentId?: string; parentSupervisorGeneration?: number }
+  agent: Omit<OperationAgentRecord, "registeredAt"> & {
+    logicalAgent?: string;
+    parentAgentId?: string;
+    parentSupervisorGeneration?: number;
+  }
 ): Promise<OperationRecordV2> {
   return mutateOperation(root, operationId, {}, true, "operation.participant.registered", (current, revision, now) => {
     const existingAgents = current.agents ?? [];
@@ -457,16 +495,33 @@ export async function registerOperationAgent(
       transport: agent.transport ?? previousAgent?.transport,
       registeredAt: previousAgent?.registeredAt ?? now
     };
+    const agents = [...existingAgents.filter((item) => item.id !== agent.id), compatibility];
+    const logicalAgent = agent.logicalAgent ?? agent.role;
+    if (logicalAgent === "operation-supervisor") {
+      // Supervisors are represented exclusively in supervision.generations.
+      // Keeping them out of participants prevents them from corrupting worker
+      // completion barriers/progress while preserving compatibility cleanup IDs.
+      return {
+        ...current,
+        revision,
+        updatedAt: now,
+        lastProgressAt: now,
+        agents
+      };
+    }
+
     const previous = current.participants[agent.id];
     const participant: OperationParticipantRecord = {
       ...previous,
       id: agent.id,
-      logicalAgent: agent.logicalAgent ?? previous?.logicalAgent ?? agent.role,
+      logicalAgent: logicalAgent ?? previous?.logicalAgent,
       role: agent.role ?? previous?.role,
       stage: agent.phase ?? previous?.stage,
       phase: agent.phase ?? previous?.phase,
-      parentSupervisorGeneration: agent.parentSupervisorGeneration ?? previous?.parentSupervisorGeneration ?? current.supervision.activeGeneration,
-      parentAgentId: agent.parentAgentId ?? previous?.parentAgentId ?? activeOperationSupervisor(current)?.agentId,
+      parentSupervisorGeneration:
+        agent.parentSupervisorGeneration ?? previous?.parentSupervisorGeneration ?? current.supervision.activeGeneration,
+      parentAgentId:
+        agent.parentAgentId ?? previous?.parentAgentId ?? activeOperationSupervisor(current)?.agentId,
       workspaceId: agent.workspaceId ?? previous?.workspaceId,
       transport: agent.transport ?? previous?.transport,
       status: previous?.status ?? "REGISTERED",
@@ -478,7 +533,7 @@ export async function registerOperationAgent(
       revision,
       updatedAt: now,
       lastProgressAt: now,
-      agents: [...existingAgents.filter((item) => item.id !== agent.id), compatibility],
+      agents,
       participants,
       progress: deriveProgress(participants)
     };
@@ -503,7 +558,9 @@ export async function updateOperationParticipant(
       id: agentId,
       registeredAt: previous.registeredAt,
       startedAt: patch.status === "RUNNING" ? previous.startedAt ?? now : patch.startedAt ?? previous.startedAt,
-      finishedAt: ["COMPLETED", "FAILED", "CANCELLED"].includes(patch.status ?? "") ? patch.finishedAt ?? now : patch.finishedAt ?? previous.finishedAt
+      finishedAt: ["COMPLETED", "FAILED", "CANCELLED"].includes(patch.status ?? "")
+        ? patch.finishedAt ?? now
+        : patch.finishedAt ?? previous.finishedAt
     };
     const participants = { ...current.participants, [agentId]: next };
     return {
@@ -519,22 +576,28 @@ export async function updateOperationParticipant(
 
 export async function registerCurrentOperationAgent(
   root: string,
-  agent: Omit<OperationAgentRecord, "registeredAt"> & { logicalAgent?: string; parentAgentId?: string; parentSupervisorGeneration?: number }
+  agent: Omit<OperationAgentRecord, "registeredAt"> & {
+    logicalAgent?: string;
+    parentAgentId?: string;
+    parentSupervisorGeneration?: number;
+  }
 ): Promise<void> {
   const operationId = currentOperationContext().id;
   if (!operationId) return;
   try {
-    await registerOperationAgent(root, operationId, agent);
+    await registerOperationAgent(resolveOperationStateRoot(root), operationId, agent);
   } catch {
-    // Direct/non-controller execution may carry stale environment state. Agent registration is observability metadata.
+    // Direct/non-controller execution may carry stale environment state. Agent
+    // registration is observability/cleanup metadata, not execution authority.
   }
 }
 
-export function currentOperationContext(): { id?: string; kind?: string; workspaceId?: string } {
+export function currentOperationContext(): { id?: string; kind?: string; workspaceId?: string; controlRoot?: string } {
   return {
     id: process.env.AEH_OPERATION_ID?.trim() || undefined,
     kind: process.env.AEH_OPERATION_KIND?.trim() || undefined,
-    workspaceId: process.env.AEH_OPERATION_WORKSPACE_ID?.trim() || undefined
+    workspaceId: process.env.AEH_OPERATION_WORKSPACE_ID?.trim() || undefined,
+    controlRoot: process.env.AEH_CONTROL_ROOT?.trim() || undefined
   };
 }
 
@@ -542,7 +605,7 @@ export async function updateCurrentOperationPhase(root: string, phase: string): 
   const operationId = currentOperationContext().id;
   if (!operationId) return;
   try {
-    await setOperationStage(root, operationId, phase, "RUNNING");
+    await setOperationStage(resolveOperationStateRoot(root), operationId, phase, "RUNNING");
   } catch {
     // Direct/non-controller execution has no operation state to update.
   }
@@ -565,6 +628,7 @@ export function normalizeOperationRecord(record: OperationRecord): OperationReco
   }
   const participants: Record<string, OperationParticipantRecord> = {};
   for (const agent of record.agents ?? []) {
+    if (agent.role === "operation-supervisor") continue;
     participants[agent.id] = {
       id: agent.id,
       logicalAgent: agent.role,
@@ -586,9 +650,17 @@ export function normalizeOperationRecord(record: OperationRecord): OperationReco
     lastProgressAt: record.updatedAt,
     intent: inferIntent(record.kind, record.payload),
     supervision: defaultSupervision(record.kind),
-    stages: record.phase ? {
-      [record.phase]: { name: record.phase, status: isTerminal(record.status) ? terminalStageStatus(record.status) : "RUNNING", revision: 1, startedAt: record.startedAt, finishedAt: record.finishedAt }
-    } : {},
+    stages: record.phase
+      ? {
+          [record.phase]: {
+            name: record.phase,
+            status: isTerminal(record.status) ? terminalStageStatus(record.status) : "RUNNING",
+            revision: 1,
+            startedAt: record.startedAt,
+            finishedAt: record.finishedAt
+          }
+        }
+      : {},
     participants,
     progress: deriveProgress(participants),
     notification: defaultNotification()
@@ -603,7 +675,8 @@ async function mutateOperation(
   eventType: string,
   custom?: (current: OperationRecordV2, revision: number, now: string) => OperationRecordV2
 ): Promise<OperationRecordV2> {
-  const file = operationFile(root, operationId);
+  const stateRoot = resolveOperationStateRoot(root);
+  const file = operationFile(stateRoot, operationId);
   await fs.mkdir(path.dirname(file), { recursive: true });
   return withOperationLock(file, async () => {
     const current = normalizeOperationRecord(JSON.parse(await fs.readFile(file, "utf8")) as OperationRecord);
@@ -624,7 +697,7 @@ async function mutateOperation(
         } as OperationRecordV2);
     const next = normalizeOperationRecord(candidate);
     await writeRecord(file, next);
-    await appendOperationEvent(root, next, eventType, Object.keys(patch));
+    await appendOperationEvent(stateRoot, next, eventType, Object.keys(patch));
     return next;
   });
 }
@@ -687,7 +760,9 @@ async function withOperationLock<T>(file: string, action: () => Promise<T>): Pro
         await fs.rm(lock, { force: true }).catch(() => undefined);
         continue;
       }
-      if (Date.now() >= deadline) throw new Error(`Timed out acquiring operation state lock for ${path.basename(file)}.`);
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out acquiring operation state lock for ${path.basename(file)}.`);
+      }
       await delay(LOCK_RETRY_MS);
     }
   }
@@ -695,7 +770,10 @@ async function withOperationLock<T>(file: string, action: () => Promise<T>): Pro
 
 async function canRecoverLock(lock: string): Promise<boolean> {
   try {
-    const [rawPid, stat] = await Promise.all([fs.readFile(lock, "utf8").catch(() => ""), fs.stat(lock)]);
+    const [rawPid, stat] = await Promise.all([
+      fs.readFile(lock, "utf8").catch(() => ""),
+      fs.stat(lock)
+    ]);
     const ownerPid = Number.parseInt(rawPid.trim(), 10);
     if (Number.isInteger(ownerPid) && ownerPid > 0 && !processAlive(ownerPid)) return true;
     return Date.now() - stat.mtimeMs > STALE_LOCK_MS;
@@ -705,10 +783,18 @@ async function canRecoverLock(lock: string): Promise<boolean> {
 }
 
 function processAlive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch { return false; }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-function guardTerminalTransition(current: OperationRecordV2, patch: Partial<OperationRecordV2>): Partial<OperationRecordV2> {
+function guardTerminalTransition(
+  current: OperationRecordV2,
+  patch: Partial<OperationRecordV2>
+): Partial<OperationRecordV2> {
   if (!isTerminal(current.status)) return patch;
   const requested = patch.status;
   if (!requested || requested === current.status) return patch;
@@ -729,24 +815,67 @@ function deriveProgress(participants: Record<string, OperationParticipantRecord>
 }
 
 function defaultSupervision(kind: OperationKind): OperationSupervisionState {
-  return { required: kind === "audit" || kind === "change", materialized: false, generations: [] };
+  return {
+    required: kind === "audit" || kind === "change",
+    materialized: false,
+    generations: []
+  };
 }
+
 function defaultNotification(): OperationNotificationState {
   return { lastLeadWakeRevision: 0, terminalDelivered: false, attempts: 0 };
 }
+
 function inferIntent(kind: OperationKind, payload: OperationPayload): OperationIntentState {
-  if (kind === "audit") return { request: (payload as AuditOperationPayload).request, classification: "AUDIT", risk: (payload as AuditOperationPayload).risk };
+  if (kind === "audit") {
+    const audit = payload as AuditOperationPayload;
+    return { request: audit.request, classification: "AUDIT", risk: audit.risk };
+  }
   if (kind === "change") {
     const change = payload as ChangeOperationPayload;
-    return { request: change.request, classification: "CHANGE", risk: change.risk, priority: change.priority };
+    return {
+      request: change.request,
+      classification: "CHANGE",
+      risk: change.risk,
+      priority: change.priority
+    };
   }
-  return { classification: "RUN" };
+  const run = payload as RunOperationPayload;
+  return { classification: "RUN", priority: run.priority };
 }
+
 function terminalStageStatus(status: OperationStatus): OperationStageStatus {
   return status === "SUCCEEDED" ? "COMPLETED" : status === "CANCELLED" ? "SKIPPED" : "FAILED";
 }
-function isTerminal(status: OperationStatus): boolean { return status === "SUCCEEDED" || status === "FAILED" || status === "CANCELLED"; }
-function requiredId(value: string): string { const trimmed = value.trim(); if (!trimmed) throw new Error("agent id is required"); return trimmed; }
-function safeId(value: string): string { if (!/^[A-Za-z0-9._-]+$/.test(value)) throw new Error(`Invalid operation id '${value}'.`); return value; }
-function isAlreadyExists(error: unknown): boolean { return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "EEXIST"); }
-function delay(ms: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+export function isTerminalOperation(status: OperationStatus): boolean {
+  return isTerminal(status);
+}
+
+function isTerminal(status: OperationStatus): boolean {
+  return status === "SUCCEEDED" || status === "FAILED" || status === "CANCELLED";
+}
+
+function requiredId(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) throw new Error("agent id is required");
+  return trimmed;
+}
+
+function safeId(value: string): string {
+  if (!/^[A-Za-z0-9._-]+$/.test(value)) throw new Error(`Invalid operation id '${value}'.`);
+  return value;
+}
+
+function isAlreadyExists(error: unknown): boolean {
+  return Boolean(
+    error &&
+      typeof error === "object" &&
+      "code" in error &&
+      (error as { code?: unknown }).code === "EEXIST"
+  );
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
