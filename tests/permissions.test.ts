@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   buildOpenCodeRuntimeConfig,
   compileOpenCodeRuntimeProjection,
-  resolveOpenCodeAgentBinding
+  resolveOpenCodeAgentBinding,
+  validateExecutionCapabilities
 } from "../src/agents/permissions.js";
 import type { HarnessProjectConfig } from "../src/core/types.js";
 import type { AgentExecutionSelection } from "../src/agents/types.js";
@@ -139,6 +140,19 @@ describe("OpenCode permission projection", () => {
     });
     expect(projection.config).not.toHaveProperty("agent");
     expect(projection.config).not.toHaveProperty("default_agent");
+  });
+
+  it("recognizes OpenCode native-agent selection through the implemented Paseo mode bridge", () => {
+    const selected = selection([], {
+      nativeAgent: "project-explorer",
+      transport: "paseo",
+      runtimeCapabilities: {
+        nativeAgent: true,
+        nativeAgentViaPaseo: false,
+        modelSelection: true
+      }
+    });
+    expect(validateExecutionCapabilities(selected, "paseo")).toEqual([]);
   });
 
   it("puts the exact managed config into OPENCODE_CONFIG_CONTENT", () => {
