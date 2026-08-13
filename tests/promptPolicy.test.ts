@@ -7,6 +7,12 @@ const reviewer = {
   runtimeAdapter: "opencode",
   skills: ["verification-planning", "acceptance-traceability", "structured-output-delivery"]
 } as never;
+const supervisor = {
+  logicalAgent: "operation-supervisor",
+  role: "coordinator",
+  runtimeAdapter: "codex",
+  skills: ["finding-dedup", "acceptance-traceability", "recovery-classifier", "verification-planning"]
+} as never;
 
 const auditContract = {
   version: 1,
@@ -48,6 +54,16 @@ describe("deterministic prompt policy", () => {
     });
     expect(policy.skills).toContain("structured-output-delivery");
     expect(policy.outputContractContext).toContain("serialization-repair");
+  });
+
+  it("strips supervisor semantic skills during serialization repair", () => {
+    const policy = compileAgentPromptPolicy(supervisor, auditContract, {
+      outputContract: "supervisor",
+      phase: "consolidating-contract-repair",
+      operationKind: "audit",
+      transport: "paseo"
+    });
+    expect(policy.skills).toEqual(["structured-output-delivery"]);
   });
 
   it("keeps an explicit schema in prompts only for transports without native schema enforcement", () => {
