@@ -13,6 +13,7 @@ import {
   patchOperation,
   registerOperationAgent,
   saveOperation,
+  transitionOperationToTerminal,
   type OperationRecord
 } from "../src/operations/state.js";
 
@@ -91,6 +92,30 @@ describe("operation controller state", () => {
       "reviewer-1",
       "reviewer-2"
     ]);
+  });
+
+  it("grants exactly one concurrent caller ownership of the terminal transition", async () => {
+    const root = await tempRoot();
+    const record = await seed(root, { status: "RUNNING", phase: "reviewing" });
+    const [success, cancellation] = await Promise.all([
+      transitionOperationToTerminal(root, record.id, {
+        status: "SUCCEEDED",
+        phase: "finished",
+        finishedAt: "2026-08-13T00:00:00.000Z",
+        result: { status: "PASS" }
+      }),
+      transitionOperationToTerminal(root, record.id, {
+        status: "CANCELLED",
+        phase: "cancelled",
+        finishedAt: "2026-08-13T00:00:01.000Z"
+      })
+    ]);
+
+    expect([success.transitioned, cancellation.transitioned].sort()).toEqual([false, true]);
+    const current = await loadOperation(root, record.id);
+    expect(["SUCCEEDED", "CANCELLED"]).toContain(current.status);
+    expect(success.record.status).toBe(current.status);
+    expect(cancellation.record.status).toBe(current.status);
   });
 
   it("does not let late phase/final patches resurrect a cancelled operation", async () => {
