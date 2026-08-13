@@ -51,7 +51,9 @@ HARD_HANDOFF
   ratio >= hardHandoffThreshold (default 90%)
 ```
 
-Managed leads receive the preapproved `aeh_context_status` tool. `aeh context guard --agent ...` remains the CLI compatibility/non-interactive surface and owns handoff-artifact/rotation side effects.
+Managed leads receive the preapproved `aeh_context_status` tool. A normal managed lead calls it without an `agentId`. AEH resolves the context target in strict order: explicit diagnostic `agentId`, host-provided `PASEO_AGENT_ID`, then the compatible project-local `lead-session.json` written by `aeh start`. The durable fallback respects configured `orchestration.interactive.stateDir` and validates the lead-state schema version, current bootstrap/runtime version, project root, project name and agent id before use. It fails closed on stale or mismatched state and never guesses by listing agents. The selected identity source is traced as `harness.paseo.context.identity`.
+
+`aeh context guard --agent ...` remains the CLI compatibility/non-interactive surface and owns handoff-artifact/rotation side effects.
 
 ## Event-driven completion
 
@@ -153,6 +155,7 @@ harness.paseo.agent.snapshot
 harness.paseo.agent.wait
 harness.paseo.agent.wait.completed
 harness.paseo.agent.wait.fallback
+harness.paseo.context.identity
 harness.paseo.context.status
 harness.paseo.context.handoff
 harness.paseo.fallback.cli
@@ -164,6 +167,7 @@ A useful trace answers:
 
 - which transport was selected (`sdk` or `cli`);
 - which observation source was used (`subscription`, snapshot, sdk-wait, cli-wait);
+- how the managed lead identity was resolved (`argument`, `environment`, `lead-state`);
 - whether a fallback was exceptional or an intentional SDK parity gap;
 - why the fallback occurred;
 - the associated agent/operation/provider/model/workspace;

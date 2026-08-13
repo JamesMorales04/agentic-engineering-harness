@@ -1,12 +1,19 @@
+import fs from "node:fs/promises";
 import readline from "node:readline";
 import path from "node:path";
 import process from "node:process";
 import { loadProjectConfig } from "../core/config.js";
 import { statusLeadContext } from "../paseo/context.js";
+import { PASEO_BOOTSTRAP_VERSION } from "../paseo/start.js";
+import { recordPaseoTrace } from "../paseo/trace.js";
+import { VERSION } from "../version.js";
 import { cancelOperation, startDetachedOperation } from "./controller.js";
 import { loadOperation, type AuditOperationPayload, type RunOperationPayload } from "./state.js";
 
 interface JsonRpcRequest { jsonrpc?: string; id?: string | number | null; method?: string; params?: Record<string, unknown>; }
+
+export type ContextAgentIdentitySource = "argument" | "environment" | "lead-state";
+export interface ContextAgentIdentity { agentId: string; source: ContextAgentIdentitySource; }
 
 const tools = [
   {
@@ -57,7 +64,7 @@ const tools = [
   },
   {
     name: "aeh_context_status",
-    description: "Read this managed lead's current Paseo AgentSnapshot usage and evaluate AEH context-pressure policy without shell/log parsing. Optionally pass agentId when the host does not expose PASEO_AGENT_ID to the MCP subprocess.",
+    description: "Read the managed lead's current Paseo AgentSnapshot usage and evaluate AEH context-pressure policy without shell/log parsing. No agentId is required for a normal managed lead: AEH resolves its durable lead-session identity when the MCP host does not propagate PASEO_AGENT_ID. Pass agentId only for explicit diagnostics/non-lead callers.",
     inputSchema: {
       type: "object",
       properties: { agentId: { type: "string" } },
@@ -114,12 +121,62 @@ async function callTool(params: Record<string, unknown>): Promise<Record<string,
   if (name === "aeh_operation_status") return toolResult(await loadOperation(root, string(args.operationId, "operationId")));
   if (name === "aeh_operation_cancel") return toolResult(await cancelOperation(root, string(args.operationId, "operationId")));
   if (name === "aeh_context_status") {
-    const agentId = optionalString(args.agentId) ?? process.env.PASEO_AGENT_ID?.trim();
-    if (!agentId) throw new Error("aeh_context_status requires agentId because PASEO_AGENT_ID is not available to this MCP subprocess.");
+    const identity = await resolveContextAgentIdentity(root, optionalString(args.agentId));
+    await recordPaseoTrace(root, "context.identity", { agentId: identity.agentId, source: identity.source });
     const config = await loadProjectConfig(root);
-    return toolResult(await statusLeadContext(root, config, agentId));
+    return toolResult(await statusLeadContext(root, config, identity.agentId));
   }
   throw new Error(`Unknown AEH operation tool '${name}'.`);
+}
+
+export async function resolveContextAgentIdentity(
+  root: string,
+  explicitAgentId?: string,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<ContextAgentIdentity> {
+  const explicit = optionalString(explicitAgentId);
+  if (explicit) return { agentId: explicit, source: "argument" };
+
+  const environment = optionalString(env.PASEO_AGENT_ID);
+  if (environment) return { agentId: environment, source: "environment" };
+
+  const absoluteRoot = path.resolve(root);
+  const config = await loadProjectConfig(absoluteRoot);
+  const stateDir = path.resolve(
+    absoluteRoot,
+    config.orchestration?.interactive?.stateDir ?? ".harness/paseo"
+  );
+  const stateFile = path.join(stateDir, "lead-session.json");
+  let value: unknown;
+  try {
+    value = JSON.parse(await fs.readFile(stateFile, "utf8"));
+  } catch (error) {
+    throw new Error(
+      `aeh_context_status could not resolve the current lead agent: neither an explicit agentId nor PASEO_AGENT_ID is available, and ${stateFile} could not be read as durable lead state. Start a fresh managed lead with aeh start or pass agentId explicitly. (${error instanceof Error ? error.message : String(error)})`
+    );
+  }
+
+  const state = object(value);
+  const agentId = optionalString(state.agentId);
+  const projectRoot = optionalString(state.projectRoot);
+  const projectName = optionalString(state.projectName);
+  const aehVersion = optionalString(state.aehVersion);
+  const version = typeof state.version === "number" ? state.version : undefined;
+  const bootstrapVersion = typeof state.bootstrapVersion === "number" ? state.bootstrapVersion : undefined;
+  const mismatches: string[] = [];
+  if (version !== 2) mismatches.push(`state version ${String(version ?? "missing")} != 2`);
+  if (bootstrapVersion !== PASEO_BOOTSTRAP_VERSION) mismatches.push(`bootstrap ${String(bootstrapVersion ?? "missing")} != ${PASEO_BOOTSTRAP_VERSION}`);
+  if (aehVersion !== VERSION) mismatches.push(`AEH ${aehVersion ?? "missing"} != ${VERSION}`);
+  if (!projectRoot || path.resolve(projectRoot) !== absoluteRoot) mismatches.push("project root does not match AEH_CONTROL_ROOT");
+  if (projectName !== config.project.name) mismatches.push(`project ${projectName ?? "missing"} != ${config.project.name}`);
+  if (!agentId) mismatches.push("agentId is missing");
+
+  if (mismatches.length) {
+    throw new Error(
+      `aeh_context_status refused incompatible durable lead state at ${stateFile}: ${mismatches.join("; ")}. Start a fresh managed lead with aeh start or pass agentId explicitly for diagnostics.`
+    );
+  }
+  return { agentId: agentId!, source: "lead-state" };
 }
 
 function controlRoot(): string { return path.resolve(process.env.AEH_CONTROL_ROOT?.trim() || process.cwd()); }
