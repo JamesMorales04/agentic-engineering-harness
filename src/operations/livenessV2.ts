@@ -22,6 +22,25 @@ export interface OperationWakeDecision {
   revision: number;
   message: string;
 }
+export interface SupervisorWatchdogParticipantSnapshot {
+  id: string;
+  logicalAgent?: string;
+  role?: string;
+  phase?: string;
+  durableStatus: string;
+  runtimeStatus: string;
+  resultArtifact?: string;
+  error?: string;
+}
+export interface SupervisorWatchdogSnapshot {
+  operationId: string;
+  revision: number;
+  phase: string;
+  stallSeconds: number;
+  progress: OperationRecordV2["progress"];
+  activeRuntimeParticipants: number;
+  participants: SupervisorWatchdogParticipantSnapshot[];
+}
 interface LivenessConfigExtension {
   operations?: {
     liveness?: {
@@ -124,6 +143,38 @@ export function evaluateOperationWake(
   return { target: "none", revision: operation.revision, message: "no liveness action required" };
 }
 
+export async function buildSupervisorWatchdogSnapshot(
+  root: string,
+  operation: OperationRecordV2,
+  nowMs = Date.now(),
+  inspect: OperationLivenessDeps["inspect"] = inspectManagedPaseoAgent
+): Promise<SupervisorWatchdogSnapshot> {
+  const unresolved = Object.values(operation.participants).filter((participant) => !isParticipantTerminal(participant.status));
+  const participants = await Promise.all(unresolved.map(async (participant) => {
+    const runtime = await inspect(root, participant.id).catch(() => undefined);
+    return {
+      id: participant.id,
+      logicalAgent: participant.logicalAgent,
+      role: participant.role,
+      phase: participant.phase,
+      durableStatus: participant.status,
+      runtimeStatus: runtime?.status?.toLowerCase() || "unknown",
+      resultArtifact: participant.resultArtifact,
+      error: participant.error
+    } satisfies SupervisorWatchdogParticipantSnapshot;
+  }));
+  const progressAt = Date.parse(operation.lastProgressAt);
+  return {
+    operationId: operation.id,
+    revision: operation.revision,
+    phase: operation.phase,
+    stallSeconds: Number.isFinite(progressAt) ? Math.max(0, Math.round((nowMs - progressAt) / 1000)) : 0,
+    progress: { ...operation.progress },
+    activeRuntimeParticipants: participants.filter((participant) => isRuntimeBusyStatus(participant.runtimeStatus)).length,
+    participants
+  };
+}
+
 export async function runOperationLivenessCheck(root: string, config: HarnessProjectConfig, operationId: string, deps: OperationLivenessDeps = {}): Promise<OperationWakeDecision> {
   const operation = await loadOperation(root, operationId);
   await syncOperationPortfolio(root, config.project.name, operation).catch(() => undefined);
@@ -149,8 +200,26 @@ export async function runOperationLivenessCheck(root: string, config: HarnessPro
 
   if (decision.target === "supervisor") {
     const supervisor = activeOperationSupervisor(operation);
-    if (supervisor?.agentId && !(await isBusy(root, supervisor.agentId, deps.inspect))) {
-      const result = await retryDispatch(root, supervisor.agentId, supervisorWatchdogPrompt(operation, decision), policy.retryDelaysMs, deps);
+    const snapshot = await buildSupervisorWatchdogSnapshot(root, operation, now, deps.inspect ?? inspectManagedPaseoAgent);
+    if (snapshot.activeRuntimeParticipants > 0) {
+      await trace(root, "operation.watchdog.supervisor-suppressed-active-children", {
+        operationId,
+        revision: operation.revision,
+        activeRuntimeParticipants: snapshot.activeRuntimeParticipants,
+        unresolvedParticipants: snapshot.participants.length
+      });
+      return {
+        target: "none",
+        revision: operation.revision,
+        message: `${snapshot.activeRuntimeParticipants} child runtime(s) are still active; deterministic watchdog will continue observing without an LLM wake`
+      };
+    }
+    if (supervisor?.agentId && await isBusy(root, supervisor.agentId, deps.inspect)) {
+      await trace(root, "operation.watchdog.supervisor-busy", { operationId, revision: operation.revision, supervisorAgentId: supervisor.agentId });
+      return { target: "none", revision: operation.revision, message: "supervisor is already active; duplicate watchdog wake suppressed" };
+    }
+    if (supervisor?.agentId) {
+      const result = await retryDispatch(root, supervisor.agentId, supervisorWatchdogPrompt(operation, decision, snapshot), policy.retryDelaysMs, deps);
       if (result.success) await recordOperationWakeAccepted(root, operationId, operation.revision, "supervisor", decision.reason);
       await trace(root, "operation.watchdog.supervisor", {
         operationId,
@@ -159,6 +228,7 @@ export async function runOperationLivenessCheck(root: string, config: HarnessPro
         success: result.success,
         attempts: result.attempts,
         acceptedWakeCount: supervisorWakeCount + (result.success ? 1 : 0),
+        unresolvedParticipants: snapshot.participants.length,
         error: result.error ?? ""
       });
       if (result.success) return decision;
@@ -343,12 +413,14 @@ function leadWakePrompt(operation: OperationRecordV2, decision: OperationWakeDec
     instruction
   ].join("\n");
 }
-function supervisorWatchdogPrompt(operation: OperationRecordV2, decision: OperationWakeDecision): string {
+function supervisorWatchdogPrompt(operation: OperationRecordV2, decision: OperationWakeDecision, snapshot: SupervisorWatchdogSnapshot): string {
   return [
     "[AEH_OPERATION_WATCHDOG]",
     `Your operation ${operation.id} has stalled at revision ${operation.revision}, phase=${operation.phase}.`,
     decision.message,
-    "Inspect only your existing children and durable OperationRecord/artifacts. Do not start another AEH operation. Produce a bounded diagnosis/follow-up that causes durable progress when possible. If no semantic action is required, say so explicitly; repeated no-progress watchdog wakes are strictly bounded and then escalate once to the lead."
+    `Deterministic watchdog snapshot (authoritative for this wake): ${JSON.stringify(snapshot)}`,
+    "Do not run shell commands, filesystem discovery, process inspection, Paseo CLI/daemon commands, or any other tools to rediscover operation state. The controller already performed runtime inspection.",
+    "Reason only from this snapshot and your existing semantic context. Return a compact assessment: whether semantic intervention is required, which existing participant is implicated if any, and whether the controller should wait or escalate. Do not start another AEH operation or create new children from a watchdog wake."
   ].join("\n");
 }
 async function retryDispatch(root: string, agentId: string, prompt: string, delays: number[], deps: OperationLivenessDeps): Promise<{ success: boolean; attempts: number; error?: string }> {
@@ -371,8 +443,13 @@ async function retryDispatch(root: string, agentId: string, prompt: string, dela
 }
 async function isBusy(root: string, agentId: string, inspect: OperationLivenessDeps["inspect"]): Promise<boolean> {
   const snapshot = await (inspect ?? inspectManagedPaseoAgent)(root, agentId).catch(() => undefined);
-  const status = snapshot?.status?.toLowerCase();
+  return isRuntimeBusyStatus(snapshot?.status?.toLowerCase());
+}
+function isRuntimeBusyStatus(status?: string): boolean {
   return status === "running" || status === "working" || status === "streaming" || status === "initializing";
+}
+function isParticipantTerminal(status: string): boolean {
+  return status === "COMPLETED" || status === "FAILED" || status === "BLOCKED" || status === "CANCELLED";
 }
 function positive(value: number | undefined, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
