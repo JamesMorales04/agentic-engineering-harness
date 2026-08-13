@@ -112,23 +112,22 @@ describe("operation liveness", () => {
 
   it("routes a stalled operation to the supervisor first and escalates to the lead if supervisor wake fails", async () => {
     const root = await tempRoot();
-    const stale = new Date(Date.now() - 300_000).toISOString();
-    await saveOperation(root, { ...base(root), lastProgressAt: stale });
+    await saveOperation(root, base(root));
     let current = await bindOperationLead(root, "AUDIT-LIVE", "lead-1", "test");
     current = await registerSupervisorGeneration(root, "AUDIT-LIVE", {
       agentId: "supervisor-1",
       materialized: true
     });
     current = await patchOperationMetadata(root, "AUDIT-LIVE", {
-      lastProgressAt: stale,
       notification: {
         ...current.notification,
         lastLeadWakeRevision: current.revision,
         lastLeadWakeAt: new Date().toISOString()
       }
     });
+    const stalledNow = Date.parse(current.lastProgressAt) + 300_000;
 
-    const decision = evaluateOperationWake(current, operationLivenessPolicy(config), Date.now());
+    const decision = evaluateOperationWake(current, operationLivenessPolicy(config), stalledNow);
     expect(decision).toEqual(expect.objectContaining({ reason: "stalled", target: "supervisor" }));
 
     const dispatch = vi.fn(async (_root: string, agentId: string) => {
@@ -146,7 +145,8 @@ describe("operation liveness", () => {
       dispatch: dispatch as never,
       inspect: vi.fn(async (_root: string, agentId: string) => ({ id: agentId, status: "idle" })) as never,
       trace: vi.fn(async () => undefined) as never,
-      sleep: vi.fn(async () => undefined)
+      sleep: vi.fn(async () => undefined),
+      now: () => stalledNow
     });
 
     expect(dispatch.mock.calls.map((call) => call[1])).toEqual([
