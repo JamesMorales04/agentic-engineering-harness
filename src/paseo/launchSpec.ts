@@ -77,6 +77,7 @@ export async function compilePaseoAgentLaunchSpec(root: string, config: HarnessP
     "aeh.operation.phase": phase
   };
   if (selection?.profile) labels["aeh.profile"] = selection.profile;
+  if (selection?.outputContract) labels["aeh.output.contract"] = selection.outputContract;
   if (parentAgentId) labels["aeh.parent-agent"] = parentAgentId;
   if (supervisorGeneration !== undefined) labels["aeh.supervisor.generation"] = String(supervisorGeneration);
   if (supervisorAgent) labels["aeh.supervisor"] = "true";
