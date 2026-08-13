@@ -10,6 +10,7 @@ AEH treats Paseo as the authority for agent runtime state and generic agent orch
 | Agent current state | Paseo | `agents.ref(id).refetch()` |
 | Agent context-window usage | Paseo/provider | `AgentSnapshot.lastUsage` |
 | Provider/model availability | Paseo | provider snapshot/listModels/diagnostic |
+| OpenCode native execution identity | AEH topology + Paseo mode bridge | AEH runtime projection -> `modeId` |
 | Generic create/send/status/activity tools | Paseo | injected native/MCP Paseo tools |
 | AUDIT/RUN operation state | AEH | `aeh-control` / operation state |
 | Detached operation completion wake-up | AEH + Paseo dispatch | durable completion target + follow-up to existing lead |
@@ -137,6 +138,42 @@ Before creating or materializing an agent, AEH attempts a public-SDK preflight:
 
 AEH does not force provider refreshes on every launch. Paseo owns snapshot caching and explicit refresh semantics.
 
+## Deterministic OpenCode native identity
+
+AEH must not resolve a logical agent and then allow OpenCode to choose a different execution identity from ambient machine configuration. For every AEH-selected OpenCode agent, the Harness compiles a concrete native binding.
+
+When `execution.nativeAgent` is absent, AEH synthesizes a deterministic session-local primary agent such as:
+
+```text
+AEH logical agent: code-quality-reviewer
+OpenCode agent:    aeh-code-quality-reviewer
+```
+
+The generated OpenCode configuration contains the concrete model, projected permissions, primary mode, AEH identity prompt and `default_agent`. It is supplied only to that provider process through:
+
+```text
+OPENCODE_CONFIG_CONTENT=<compiled JSON>
+```
+
+For Paseo execution AEH also passes the same ID as `AgentSessionConfig.modeId`. Paseo therefore dispatches the turn to the same native OpenCode agent that AEH compiled. The launch environment is passed as top-level create-agent `env`, not embedded in `AgentSessionConfig`.
+
+If `execution.nativeAgent` is explicitly configured, AEH preserves that exact external identity instead of synthesizing a replacement. Before dispatch, AEH uses Paseo provider mode discovery to verify that the requested native agent is selectable for the target cwd. Missing explicit agents fail before a user prompt is sent; AEH does not silently fall back to OpenCode's default agent.
+
+The same compiled binding is used by direct and Podman OpenCode execution. Transport therefore does not change native identity.
+
+A session-scoped OpenCode launch environment is an SDK-required semantic boundary. If the Paseo SDK becomes unavailable, AEH refuses CLI launch fallback for that session rather than dropping `OPENCODE_CONFIG_CONTENT` and reintroducing ambient `default_agent` behavior.
+
+Relevant labels/traces include:
+
+```text
+aeh.native-agent
+aeh.native-agent.source
+harness.paseo.agent.identity
+harness.paseo.provider.mode.preflight
+```
+
+`aeh.native-agent.source` is `aeh-managed` for compiled identities and `explicit` for externally configured native agents.
+
 ## Intentional CLI parity gaps (P2)
 
 CLI usage is not forbidden when the public SDK lacks required semantics. It must be narrow and traced.
@@ -188,6 +225,8 @@ Representative events:
 ```text
 harness.paseo.provider.preflight
 harness.paseo.provider.preflight.skipped
+harness.paseo.provider.mode.preflight
+harness.paseo.agent.identity
 harness.paseo.agent.launch
 harness.paseo.agent.materialize
 harness.paseo.agent.dispatch
@@ -215,6 +254,7 @@ A useful trace answers:
 - which transport was selected (`sdk` or `cli`);
 - which observation source was used (`subscription`, snapshot, sdk-wait, cli-wait);
 - how the managed lead identity was resolved (`argument`, `environment`, `lead-state`);
+- which AEH logical agent/native OpenCode identity was selected and whether it was generated or explicit;
 - whether an `idle` completion had real turn evidence rather than a metadata-only update;
 - whether a detached completion callback was registered and delivered;
 - whether a fallback was exceptional or an intentional SDK parity gap;
