@@ -1,5 +1,6 @@
 import readline from "node:readline";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 import { outputJsonSchema } from "../agents/outputContracts.js";
 import { acceptStructuredResult, loadStructuredResultChannel } from "./resultGateway.js";
 
@@ -70,6 +71,6 @@ function object(value: unknown): Record<string, unknown> {
 }
 function write(value: unknown): void { process.stdout.write(`${JSON.stringify(value)}\n`); }
 
-if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   serveResultSinkMcp().catch((error) => { process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`); process.exitCode = 1; });
 }
