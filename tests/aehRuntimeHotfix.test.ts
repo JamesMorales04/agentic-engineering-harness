@@ -7,7 +7,7 @@ import {
   operationLivenessPolicy,
   runOperationLivenessCheck
 } from "../src/operations/liveness.js";
-import { readOperationStatus } from "../src/operations/mcp.js";
+import { acknowledgeOperationRevision, readOperationStatus } from "../src/operations/mcp.js";
 import {
   bindOperationLead,
   loadOperation,
@@ -63,7 +63,7 @@ const config = {
 } as never;
 
 describe("AEH runtime hotfix", () => {
-  it("acknowledges the exact status revision only for the bound interactive lead", async () => {
+  it("keeps status reads read-only and acknowledges only through the explicit exact-revision lead primitive", async () => {
     const root = await tempRoot();
     await saveOperation(root, operation(root));
     let current = await bindOperationLead(root, "AUDIT-HOTFIX", "lead-1", "test");
@@ -72,20 +72,24 @@ describe("AEH runtime hotfix", () => {
     expect(current.revision).toBeGreaterThan(boundRevision);
     expect(current.lead?.acknowledgedRevision).toBe(boundRevision);
 
-    const workerRead = await readOperationStatus(root, "AUDIT-HOTFIX", {
+    const compactRead = await readOperationStatus(root, "AUDIT-HOTFIX");
+    expect(compactRead).toEqual(expect.objectContaining({ operationId: "AUDIT-HOTFIX", revision: current.revision }));
+    expect((await loadOperation(root, "AUDIT-HOTFIX")).lead?.acknowledgedRevision).toBe(boundRevision);
+
+    await expect(acknowledgeOperationRevision(root, "AUDIT-HOTFIX", current.revision, {
       PASEO_AGENT_ID: "worker-1",
       AEH_MANAGED_AGENT: "1",
       AEH_INTERACTIVE_LEAD: "0"
-    });
-    expect(workerRead.lead?.acknowledgedRevision).toBe(boundRevision);
+    })).rejects.toThrow("bound interactive lead");
 
-    const leadRead = await readOperationStatus(root, "AUDIT-HOTFIX", {
+    const acknowledged = await acknowledgeOperationRevision(root, "AUDIT-HOTFIX", current.revision, {
       PASEO_AGENT_ID: "lead-1",
       AEH_MANAGED_AGENT: "1",
       AEH_INTERACTIVE_LEAD: "1",
       AEH_ORCHESTRATION_ALLOWED: "1"
     });
-    expect(leadRead.lead?.acknowledgedRevision).toBe(leadRead.revision);
+    expect(acknowledged.acknowledgedRevision).toBe(current.revision);
+    expect((await loadOperation(root, "AUDIT-HOTFIX")).lead?.acknowledgedRevision).toBe(current.revision);
   });
 
   it("persists a bounded stalled-revision wake budget across monitor reloads", async () => {
