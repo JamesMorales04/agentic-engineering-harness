@@ -89,18 +89,19 @@ export function assertHarnessWorkflowEntryAllowed(
 export function managedBoundedAgentPromptContext(
   identity: ManagedAgentExecutionIdentity
 ): string {
-  const lines = [
-    "AEH bounded execution context (deterministic):",
-    `- Logical agent: ${identity.logicalAgent}`,
-    `- Role: ${identity.role ?? "worker"}`,
-    identity.operationId ? `- Parent operation: ${identity.operationId}` : undefined,
-    identity.operationKind ? `- Operation kind: ${identity.operationKind}` : undefined,
-    identity.phase ? `- Phase: ${identity.phase}` : undefined,
-    "- The top-level user request has already entered AEH. You are executing inside that existing Harness workflow.",
-    "- Do not invoke or re-enter `aeh start`, `aeh audit`, `aeh run`, `aeh operation start/execute/wait/cancel`, QUICK/SPEC authoring, or another Harness workflow from this assignment.",
-    "- Use only the repository/runtime tools needed for your bounded role and return the requested output contract. Do not recover or orchestrate the parent operation unless this assignment explicitly delegates controller recovery."
-  ].filter((line): line is string => Boolean(line));
-  return lines.join("\n");
+  const coordinates = [
+    `agent=${identity.logicalAgent}`,
+    `role=${identity.role ?? "worker"}`,
+    identity.operationId ? `operation=${identity.operationId}` : undefined,
+    identity.operationKind ? `kind=${identity.operationKind}` : undefined,
+    identity.phase ? `phase=${identity.phase}` : undefined
+  ].filter(Boolean).join(" ");
+  return [
+    "AEH execution envelope (controller-enforced):",
+    `- ${coordinates}`,
+    "- bounded=true orchestration=false; nested AEH workflow entry is denied by runtime guards.",
+    "- runtime permissions and the supplied output contract are authoritative; OperationRecord lifecycle remains controller-owned."
+  ].join("\n");
 }
 
 function isRecursiveWorkflowEntry(argv: string[]): boolean {

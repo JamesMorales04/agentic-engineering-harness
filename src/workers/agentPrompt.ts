@@ -28,6 +28,7 @@ import {
 import { PaseoSdkUnavailableError } from "../paseo/sdk.js";
 import { allowedSandboxEnvironment, hardenedPodmanArgs, sandboxImage } from "../security/sandbox.js";
 import { runProcess } from "../utils/process.js";
+import { compileAgentPromptPolicy } from "./promptPolicy.js";
 
 export interface AgentPromptOptions {
   outputContract?: string;
@@ -174,10 +175,6 @@ export async function dispatchMaterializedAgentPrompt(
     repairOptions
   );
   if (!options.supervisorAgent) await markOperationSessionRunning(root, materialized.id).catch(() => undefined);
-  // The repair turn intentionally avoids the provider-native outputSchema. Some
-  // Paseo/provider combinations can complete a structured generation while
-  // exposing an empty lastMessage. A one-line textual marker gives AEH a
-  // deterministic, parseable fallback instead of repeating the same failure.
   const repaired = await continueManagedPaseoAgent(
     root,
     materialized.id,
@@ -390,41 +387,36 @@ async function buildEffectivePrompt(
   prompt: string,
   options: AgentPromptOptions
 ): Promise<string> {
-  const frozenSkills = await loadFrozenSkillContext(root, config, contract.task.id, selection.skills ?? []);
+  const transport = selection.transport === "inherit" ? (config.orchestration?.provider ?? "none") : selection.transport;
   const operation = currentOperationContext();
+  const operationKind = operation.kind ?? options.operationKind ?? contract.routing?.intent;
+  const policy = compileAgentPromptPolicy(selection, contract, {
+    outputContract: options.outputContract,
+    phase: options.phase ?? "work",
+    operationKind,
+    transport
+  });
+  const frozenSkills = await loadFrozenSkillContext(root, config, contract.task.id, policy.skills);
   const identity: ManagedAgentExecutionIdentity = {
     logicalAgent: selection.logicalAgent,
     role: selection.role,
     operationId: operation.id ?? contract.task.id,
-    operationKind: operation.kind ?? options.operationKind ?? contract.routing?.intent,
+    operationKind,
     phase: options.phase ?? "work",
     interactiveLead: false,
     orchestrationAllowed: false
   };
   const hierarchy = [
-    options.supervisorAgent ? "You are the Operation Supervisor for this durable AEH operation. Coordinate semantically, but do not replace deterministic controller authority." : undefined,
-    options.parentAgentId ? `Paseo parent agent: ${options.parentAgentId}. Parent notifications are advisory; OperationRecord is authoritative.` : undefined
+    options.supervisorAgent ? "Operation Supervisor: semantic coordination only; deterministic controller authority remains authoritative." : undefined,
+    options.parentAgentId ? `Paseo parent=${options.parentAgentId}; OperationRecord remains lifecycle authority.` : undefined
   ].filter(Boolean).join("\n");
-  const contractContext = options.outputContract ? outputContractPrompt(options.outputContract) : undefined;
   return withAgentCharter(
     selection,
     prompt,
     frozenSkills,
     [managedBoundedAgentPromptContext(identity), hierarchy].filter(Boolean).join("\n"),
-    contractContext
+    policy.outputContractContext
   );
-}
-
-function outputContractPrompt(contractName: string): string {
-  const schema = outputJsonSchema(contractName);
-  return [
-    `AEH machine output contract '${contractName}' (authoritative for delivery):`,
-    "Your final result is parsed by deterministic code. Prefer native structured JSON when the runtime supports it.",
-    "Return exactly one JSON object matching the supplied schema. Use ASCII U+0022 double quotes; never use typographic quotes.",
-    "Do not wrap the final JSON in Markdown or add prose outside it.",
-    "If native structured delivery is unavailable and the task explicitly requests the marker fallback, return exactly AEH_RESULT_JSON=<valid compact JSON> on one line.",
-    schema ? `Exact JSON Schema: ${JSON.stringify(schema)}` : `Contract name: ${contractName}`
-  ].join("\n");
 }
 
 function boundedExecutionEnvironment(selection: AgentExecutionSelection, options: AgentPromptOptions): Record<string, string> {
@@ -511,9 +503,9 @@ function withAgentCharter(
   outputContractContext?: string
 ): string {
   return [
-    selection.description ? `Agent charter for ${selection.logicalAgent}:\n${selection.description}` : undefined,
     executionContext,
-    frozenSkills ? `Frozen control-plane skill context (authoritative for this run):\n${frozenSkills}` : undefined,
+    frozenSkills ? `Frozen semantic skill context (authoritative for this run):\n${frozenSkills}` : undefined,
+    selection.description ? `Agent charter for ${selection.logicalAgent}:\n${selection.description}` : undefined,
     outputContractContext,
     prompt
   ].filter(Boolean).join("\n\n");

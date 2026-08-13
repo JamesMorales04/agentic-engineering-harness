@@ -8,21 +8,28 @@ export async function runValidationCommand(root: string, command: ValidationComm
     cwd,
     timeoutMs: (command.timeoutSeconds ?? 900) * 1000
   });
-
+  const passed = result.exitCode === 0;
   return {
     id: `command.${command.id}`,
     category: "command",
-    status: result.exitCode === 0 ? "PASS" : (command.required === false ? "WARN" : "FAIL"),
-    message: result.exitCode === 0 ? `${command.id} passed.` : `${command.id} failed with exit code ${result.exitCode}.`,
+    status: passed ? "PASS" : (command.required === false ? "WARN" : "FAIL"),
+    message: passed ? `${command.id} passed.` : `${command.id} failed with exit code ${result.exitCode}.`,
     durationMs: result.durationMs,
-    details: {
-      command: command.command,
-      cwd,
-      exitCode: result.exitCode,
-      stdout: trimOutput(result.stdout),
-      stderr: trimOutput(result.stderr)
-    }
+    details: passed
+      ? { command: command.command, cwd, exitCode: result.exitCode, summary: summarizePassingOutput(result.stdout), stdoutBytes: Buffer.byteLength(result.stdout), stderrBytes: Buffer.byteLength(result.stderr) }
+      : { command: command.command, cwd, exitCode: result.exitCode, stdout: trimOutput(result.stdout), stderr: trimOutput(result.stderr) }
   };
+}
+
+function summarizePassingOutput(stdout: string): Record<string, unknown> {
+  const summary: Record<string, unknown> = {};
+  const files = stdout.match(/Test Files\s+(\d+) passed/i);
+  const tests = stdout.match(/Tests\s+(\d+) passed/i);
+  if (files) summary.testFilesPassed = Number(files[1]);
+  if (tests) summary.testsPassed = Number(tests[1]);
+  if (stdout.includes("typecheck") || stdout.includes("tsc -p")) summary.typecheck = "PASS";
+  if (stdout.includes("build") && stdout.includes("tsc -p")) summary.build = "PASS";
+  return summary;
 }
 
 function trimOutput(value: string): string {
