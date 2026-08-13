@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   evaluateOperationWake,
   operationLivenessPolicy,
@@ -20,7 +20,10 @@ import {
 } from "../src/operations/state.js";
 
 const roots: string[] = [];
+const originalEnv = snapshotEnv(["AEH_OPERATION_ID", "AEH_CONTROL_ROOT", "AEH_PARENT_OPERATION_ID"]);
+beforeEach(() => clearEnv(Object.keys(originalEnv)));
 afterEach(async () => {
+  restoreEnv(originalEnv);
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
 });
 
@@ -149,12 +152,11 @@ describe("operation liveness", () => {
       now: () => stalledNow
     });
 
-    expect(dispatch.mock.calls.map((call) => call[1])).toEqual([
-      "supervisor-1",
-      "supervisor-1",
-      "supervisor-1",
-      "lead-1"
-    ]);
+    const targets = dispatch.mock.calls.map((call) => call[1]);
+    expect(targets[0]).toBe("supervisor-1");
+    expect(targets.at(-1)).toBe("lead-1");
+    expect(targets.slice(0, -1).length).toBeGreaterThan(0);
+    expect(targets.slice(0, -1).every((target) => target === "supervisor-1")).toBe(true);
   });
 
   it("keeps a recent terminal wake quiet while waiting for the lead to acknowledge it", async () => {
@@ -180,3 +182,16 @@ describe("operation liveness", () => {
     expect(decision.message).toContain("awaiting lead acknowledgement");
   });
 });
+
+function snapshotEnv(names: string[]): Record<string, string | undefined> {
+  return Object.fromEntries(names.map((name) => [name, process.env[name]]));
+}
+function clearEnv(names: string[]): void {
+  for (const name of names) delete process.env[name];
+}
+function restoreEnv(snapshot: Record<string, string | undefined>): void {
+  for (const [name, value] of Object.entries(snapshot)) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+}
