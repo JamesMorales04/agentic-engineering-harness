@@ -13,14 +13,13 @@ describe("captured reviewer contract delivery", () => {
     expect(validateCapturedAgentContract("reviewer", payload)).toEqual({ ok: true });
   });
 
-  it("keeps invalid smart-quote markers strict so the bounded repair path can handle them", () => {
+  it("normalizes typographic JSON quotes before schema validation", () => {
     const result = validateCapturedAgentContract(
       "reviewer",
-      'AEH_RESULT_JSON={“verdict”:“PASS”,“findings”:[],“finalizationSafety”:“SAFE”,“followUp”:[]}'
+      'AEH_RESULT_JSON={\u201cverdict\u201d:\u201cPASS\u201d,\u201cfindings\u201d:[],\u201cfinalizationSafety\u201d:\u201cSAFE\u201d,\u201cfollowUp\u201d:[]}'
     );
 
-    expect(result.ok).toBe(false);
-    expect(result.failure).toContain("MARKER_INVALID_JSON");
+    expect(result).toEqual({ ok: true });
   });
 
   it("distinguishes schema validation from transport parsing", () => {

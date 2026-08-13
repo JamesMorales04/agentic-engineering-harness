@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   evaluateOperationWake,
   operationLivenessPolicy,
@@ -24,7 +24,10 @@ import {
 } from "../src/operations/wakeBudget.js";
 
 const roots: string[] = [];
+const originalEnv = snapshotEnv(["AEH_OPERATION_ID", "AEH_CONTROL_ROOT", "AEH_PARENT_OPERATION_ID"]);
+beforeEach(() => clearEnv(Object.keys(originalEnv)));
 afterEach(async () => {
+  restoreEnv(originalEnv);
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
 });
 
@@ -180,3 +183,16 @@ describe("AEH runtime hotfix", () => {
     expect((await loadOperation(root, "AUDIT-HOTFIX")).lead?.acknowledgedRevision).toBeLessThan(current.revision);
   });
 });
+
+function snapshotEnv(names: string[]): Record<string, string | undefined> {
+  return Object.fromEntries(names.map((name) => [name, process.env[name]]));
+}
+function clearEnv(names: string[]): void {
+  for (const name of names) delete process.env[name];
+}
+function restoreEnv(snapshot: Record<string, string | undefined>): void {
+  for (const [name, value] of Object.entries(snapshot)) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+}
