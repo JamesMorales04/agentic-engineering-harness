@@ -1,4 +1,5 @@
 import process from "node:process";
+import type { OpenCodeAgentBindingSource } from "../agents/permissions.js";
 import { registerCurrentOperationAgent } from "../operations/state.js";
 import { runProcess } from "../utils/process.js";
 import {
@@ -6,6 +7,7 @@ import {
   detectPaseoCapabilities,
   extractPaseoAgentId
 } from "./capabilities.js";
+import { preflightPaseoProviderMode } from "./modePreflight.js";
 import {
   capturePaseoAgentTurnBaseline,
   preflightPaseoProviderModel,
@@ -31,6 +33,7 @@ import { recordPaseoTrace } from "./trace.js";
 
 export interface ManagedPaseoAgentOptions extends PaseoSdkAgentOptions {
   timeoutSeconds?: number;
+  modeSource?: OpenCodeAgentBindingSource;
 }
 
 export interface ManagedPaseoAgentResult {
@@ -50,6 +53,7 @@ interface PaseoRuntimeDeps {
   trace?: typeof recordPaseoTrace;
   native?: {
     preflight: typeof preflightPaseoProviderModel;
+    preflightMode: typeof preflightPaseoProviderMode;
     wait: typeof waitForPaseoAgentNative;
     capture?: typeof capturePaseoAgentTurnBaseline;
   };
@@ -71,6 +75,7 @@ const DEFAULT_DEPS: PaseoRuntimeDeps = {
   trace: recordPaseoTrace,
   native: {
     preflight: preflightPaseoProviderModel,
+    preflightMode: preflightPaseoProviderMode,
     wait: waitForPaseoAgentNative,
     capture: capturePaseoAgentTurnBaseline
   },
@@ -95,6 +100,7 @@ export async function launchManagedPaseoAgent(
 
   if (!forceCli()) {
     await ensurePreflight(root, options, deps);
+    await traceResolvedIdentity(root, options, trace);
     try {
       const created = fromSdk(
         await deps.sdk.create(root, { ...options, waitForFinish: false })
@@ -105,6 +111,8 @@ export async function launchManagedPaseoAgent(
         agentId: created.id ?? "",
         provider: options.provider,
         model: options.model ?? "",
+        modeId: options.modeId ?? "",
+        modeSource: options.modeSource ?? "",
         status: created.status ?? "unknown"
       });
 
@@ -123,6 +131,7 @@ export async function launchManagedPaseoAgent(
         operation: "launch",
         provider: options.provider,
         model: options.model ?? "",
+        modeId: options.modeId ?? "",
         reason: errorMessage(error)
       });
       return launchCli(root, options, deps, `SDK unavailable: ${errorMessage(error)}`);
@@ -133,6 +142,7 @@ export async function launchManagedPaseoAgent(
     operation: "launch",
     provider: options.provider,
     model: options.model ?? "",
+    modeId: options.modeId ?? "",
     reason: "AEH_PASEO_FORCE_CLI=1"
   });
   return launchCli(
@@ -154,6 +164,8 @@ export async function materializeManagedPaseoAgent(
     );
   }
   await ensurePreflight(root, options, deps);
+  const trace = deps.trace ?? DEFAULT_DEPS.trace!;
+  await traceResolvedIdentity(root, options, trace);
   try {
     const result = fromSdk(
       await deps.sdk.materialize(root, {
@@ -163,11 +175,13 @@ export async function materializeManagedPaseoAgent(
       })
     );
     await registerManagedAgent(root, options, result);
-    await (deps.trace ?? DEFAULT_DEPS.trace!)(root, "agent.materialize", {
+    await trace(root, "agent.materialize", {
       transport: "sdk",
       agentId: result.id ?? "",
       provider: options.provider,
       model: options.model ?? "",
+      modeId: options.modeId ?? "",
+      modeSource: options.modeSource ?? "",
       workspaceId: result.workspaceId ?? ""
     });
     return result;
@@ -419,10 +433,47 @@ async function ensurePreflight(
         model: options.model ?? "",
         reason: errorMessage(error)
       });
-      return;
+    } else {
+      throw error;
     }
-    throw error;
   }
+
+  if (!options.modeId) return;
+
+  if (options.modeSource === "aeh-managed") {
+    await trace(root, "provider.mode.preflight", {
+      ok: true,
+      provider: options.provider,
+      modeId: options.modeId,
+      source: "aeh-inline-config",
+      message:
+        "AEH injects this primary OpenCode agent through the session launch environment; ambient provider mode discovery is not authoritative for the dedicated helper."
+    });
+    return;
+  }
+
+  const mode = await native.preflightMode(root, options.provider, options.modeId, options.cwd);
+  if (!mode.ok) {
+    const available = mode.availableModes.length
+      ? ` Available modes: ${mode.availableModes.join(", ")}.`
+      : "";
+    throw new Error(`Paseo mode preflight failed: ${mode.message}${available}`);
+  }
+}
+
+async function traceResolvedIdentity(
+  root: string,
+  options: ManagedPaseoAgentOptions,
+  trace: typeof recordPaseoTrace
+): Promise<void> {
+  if (!options.modeId) return;
+  await trace(root, "agent.identity", {
+    provider: options.provider,
+    model: options.model ?? "",
+    modeId: options.modeId,
+    source: options.modeSource ?? "provider-mode",
+    sessionScopedEnv: options.env?.OPENCODE_CONFIG_CONTENT ? true : false
+  });
 }
 
 async function launchCli(
@@ -434,6 +485,13 @@ async function launchCli(
   if (options.prompt === undefined && options.systemPrompt !== undefined) {
     throw new PaseoSdkUnavailableError(
       `Paseo SDK is required to create an idle systemPrompt-only agent. Refusing CLI fallback because it would expose session instructions as a user turn. ${fallbackReason}`
+    );
+  }
+  if (options.env && Object.keys(options.env).length) {
+    throw new PaseoSdkUnavailableError(
+      `Paseo SDK is required for session-scoped launch environment used by provider ${options.provider}${
+        options.modeId ? ` mode ${options.modeId}` : ""
+      }. Refusing CLI fallback because dropping that environment could change the native execution identity or permissions. ${fallbackReason}`
     );
   }
   const capabilities = await deps.detectCapabilities(root, deps.run);
