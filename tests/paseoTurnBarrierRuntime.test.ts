@@ -43,7 +43,13 @@ describe("Paseo resumed-turn barrier", () => {
       stdout: "new answer",
       observation: "sdk-run"
     }));
-    expect(runtime.sdk.run).toHaveBeenCalledWith("/repo", "agent-1", "continue", 120_000);
+    expect(runtime.sdk.run).toHaveBeenCalledWith(
+      "/repo",
+      "agent-1",
+      "continue",
+      120_000,
+      undefined
+    );
     expect(runtime.native.capture).not.toHaveBeenCalled();
     expect(runtime.sdk.dispatch).not.toHaveBeenCalled();
     expect(runtime.native.wait).not.toHaveBeenCalled();
