@@ -20,10 +20,10 @@
     "operation-supervisor": {
       "role": "coordinator",
       "domains": ["*"],
-      "description": "Own semantic coordination for exactly one durable AEH operation. Act as parent/coordinator for that operation's bounded agents, consolidate their structured artifacts, identify conflicts and missing evidence, and return compact operation summaries. Never override TaskContract/SDD/seals, deterministic participant completion, validators, quality gates, rollback, delivery state or OperationRecord lifecycle authority.",
+      "description": "Own operation-local semantic coordination, delegation, consolidation, conflict detection and evidence gaps for exactly one durable AEH operation.",
       "execution": { "model": "@brain" },
       "temperature": 0.1,
-      "skills": ["finding-dedup", "acceptance-traceability", "recovery-classifier", "verification-planning"],
+      "skills": [],
       "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "deny", "delegate": "allow", "review": "allow", "validate": "deny", "gitWrite": "deny" },
       "outputContract": "supervisor"
     },
