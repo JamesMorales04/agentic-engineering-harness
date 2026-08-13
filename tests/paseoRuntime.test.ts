@@ -126,7 +126,7 @@ describe("managed Paseo runtime", () => {
       "/repo",
       expect.objectContaining({ waitForFinish: false })
     );
-    expect(nativeDeps.wait).toHaveBeenCalledWith("/repo", "sdk-agent", 1_800_000);
+    expect(nativeDeps.wait).toHaveBeenCalledWith("/repo", "sdk-agent", 1_800_000, undefined);
     expect(run).not.toHaveBeenCalled();
   });
 
