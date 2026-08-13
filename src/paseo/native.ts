@@ -56,6 +56,7 @@ export interface PaseoNativeWaitResult {
 
 export interface PaseoTurnBaseline {
   lastAssistantMessage?: string;
+  lastUserMessageAt?: string;
 }
 
 export interface NativeAgentHandle {
@@ -164,7 +165,10 @@ export async function capturePaseoAgentTurnBaseline(
     return {
       lastAssistantMessage:
         (raw ? stringField(raw, ["lastMessage", "last_message"]) : undefined) ??
-        extractLastAssistantText(timeline)
+        extractLastAssistantText(timeline),
+      lastUserMessageAt: raw
+        ? stringField(raw, ["lastUserMessageAt", "last_user_message_at"])
+        : undefined
     };
   });
 }
@@ -317,6 +321,7 @@ export async function waitForPaseoAgentNative(
       status: result.status ?? "unknown",
       updatesObserved: result.updatesObserved,
       baselineAssistant: baseline?.lastAssistantMessage ? "present" : "absent",
+      baselineUserMessageAt: baseline?.lastUserMessageAt ?? "absent",
       durationMs: Date.now() - startedAt
     });
     return result;
@@ -367,15 +372,30 @@ export async function waitForPaseoAgentHandle(
           : undefined;
       const lastMessage =
         stringField(raw, ["lastMessage", "last_message"]) ?? extractLastAssistantText(timeline);
+      const lastUserMessageAt = stringField(raw, ["lastUserMessageAt", "last_user_message_at"]);
       const newAssistantEvidence = Boolean(
         lastMessage && lastMessage !== baseline?.lastAssistantMessage
       );
+      const newUserTurnEvidence = Boolean(
+        baseline &&
+          lastUserMessageAt &&
+          lastUserMessageAt !== baseline.lastUserMessageAt
+      );
 
       // Subscription updates can be metadata-only. An idle snapshot is accepted
-      // only when AEH observed a real active-turn state or assistant output that
-      // differs from the pre-dispatch baseline. Fresh agents have no baseline,
-      // so completion-before-subscribe remains detectable from their first reply.
-      if (status === "idle" && !sawActivity && !newAssistantEvidence) return;
+      // only when AEH observed a real active-turn state, a new assistant reply,
+      // or Paseo's canonical lastUserMessageAt proves that the prompt dispatched
+      // after the captured baseline was accepted as a distinct turn. The latter
+      // closes the fast structured-output race where idle->running->idle happens
+      // before AEH subscribes and no normal assistant text is present.
+      if (
+        status === "idle" &&
+        !sawActivity &&
+        !newAssistantEvidence &&
+        !newUserTurnEvidence
+      ) {
+        return;
+      }
 
       finish({
         id: handle.id,

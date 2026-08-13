@@ -71,14 +71,15 @@ subscribe(agent_update)
         `--> terminal state + turn evidence -> read recent timeline -> complete
 ```
 
-Subscription is installed **before** the first refetch so a transition cannot fall between the snapshot and listener setup.
+Subscription is installed **before** the first refetch so a transition cannot fall between the snapshot and listener setup. For a continued/materialized turn, however, dispatch necessarily occurs before this observation client is installed. AEH therefore captures durable turn evidence before dispatch as well as observing lifecycle events afterwards.
 
-For a newly created agent, an assistant response in the fresh timeline can prove that a very fast turn completed before the subscription was installed. For a continued/reused agent, AEH captures the last assistant response **before dispatch** and uses it as a baseline. An `idle` snapshot is accepted only when at least one of these is true:
+For a newly created agent, an assistant response in the fresh timeline can prove that a very fast turn completed before the subscription was installed. For a continued/reused agent, AEH captures both the latest assistant response and Paseo's canonical `lastUserMessageAt` **before dispatch**. An `idle` snapshot is accepted only when at least one of these is true:
 
 - AEH observed an active-turn status (`working`, `running`, `streaming`, `starting`) or `activeTurn` before returning to terminal state;
-- the latest assistant response differs from the pre-dispatch baseline.
+- the latest assistant response differs from the pre-dispatch baseline;
+- `lastUserMessageAt` differs from the pre-dispatch baseline, proving that Paseo accepted a distinct new user turn even when native/structured output does not surface as ordinary assistant text.
 
-A subscription notification by itself is **not** turn activity. This prevents metadata-only updates plus stale timeline output from making AEH conclude that a reviewer finished before its current turn actually did.
+A subscription notification by itself is **not** turn activity. Metadata-only updates with unchanged assistant output and unchanged `lastUserMessageAt` remain insufficient. This closes the fast structured-output race (`idle -> running -> idle` before subscription) without weakening the barrier to accept arbitrary idle snapshots.
 
 Fallback order:
 
