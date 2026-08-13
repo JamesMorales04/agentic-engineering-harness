@@ -9,11 +9,21 @@ export const reviewerOutputSchema = z.object({ verdict: z.enum(["PASS", "FAIL", 
 export const validatorOutputSchema = z.object({ verdict: z.enum(["PASS", "FAIL", "WARN"]), checks: z.array(z.object({ id: z.string(), status: z.enum(["PASS", "FAIL", "WARN", "SKIP"]), evidence: z.string().optional() })) });
 export const recoveryOutputSchema = z.object({ failureType: z.enum(["PATCH_CONTEXT_MISMATCH", "TOOL_FAILURE", "MISSING_CONTEXT", "WRONG_AGENT", "VALIDATION_FAILURE", "REVIEW_FAILURE", "AMBIGUOUS_OUTPUT", "CONFLICTING_RESULTS"]), rationale: z.string(), nextAction: z.string() });
 export const orchestratorOutputSchema = z.object({ summary: z.string(), delegatedAgents: z.array(z.string()).default([]), validationStatus: z.string().optional(), unresolved: z.array(z.string()).default([]), finalizationSafe: z.boolean().optional() });
+export const supervisorOutputSchema = z.object({
+  summary: z.string().min(1),
+  consolidatedFindings: z.array(findingSchema).default([]),
+  sourceFindingIds: z.array(z.string()).default([]),
+  conflicts: z.array(z.object({ summary: z.string().min(1), sources: z.array(z.string()).min(1) })).default([]),
+  missingEvidence: z.array(z.string()).default([]),
+  unresolved: z.array(z.string()).default([]),
+  finalizationSafety: z.enum(["SAFE", "BLOCKED", "RISK_KNOWN"])
+});
 export type DelegationTask = z.infer<typeof delegationTaskSchema>;
 export type PlannerOutput = z.infer<typeof plannerOutputSchema>;
 export type NormalizedFinding = z.infer<typeof findingSchema>;
 export type ReviewerOutput = z.infer<typeof reviewerOutputSchema>;
-const schemas: Record<string, z.ZodType> = { planner: plannerOutputSchema, implementer: implementerOutputSchema, reviewer: reviewerOutputSchema, validator: validatorOutputSchema, recovery: recoveryOutputSchema, orchestrator: orchestratorOutputSchema };
+export type SupervisorOutput = z.infer<typeof supervisorOutputSchema>;
+const schemas: Record<string, z.ZodType> = { planner: plannerOutputSchema, implementer: implementerOutputSchema, reviewer: reviewerOutputSchema, validator: validatorOutputSchema, recovery: recoveryOutputSchema, orchestrator: orchestratorOutputSchema, supervisor: supervisorOutputSchema };
 
 const stringArray = { type: "array", items: { type: "string" } } as const;
 const delegationTaskJson = { type: "object", additionalProperties: false, required: ["id", "summary", "agent", "scope", "dependencies", "acceptance", "risk"], properties: { id: { type: "string" }, summary: { type: "string" }, agent: { type: "string" }, scope: stringArray, dependencies: stringArray, acceptance: stringArray, risk: { enum: ["low", "medium", "high"] } } } as const;
@@ -24,7 +34,8 @@ const jsonSchemas: Record<string, Record<string, unknown>> = {
   reviewer: { type: "object", additionalProperties: false, required: ["verdict", "findings", "finalizationSafety", "followUp"], properties: { verdict: { enum: ["PASS", "FAIL", "PASS_WITH_WARNINGS"] }, findings: { type: "array", items: findingJson }, finalizationSafety: { enum: ["SAFE", "BLOCKED", "RISK_KNOWN"] }, confidence: { type: "string" }, followUp: stringArray } },
   validator: { type: "object", additionalProperties: false, required: ["verdict", "checks"], properties: { verdict: { enum: ["PASS", "FAIL", "WARN"] }, checks: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "status"], properties: { id: { type: "string" }, status: { enum: ["PASS", "FAIL", "WARN", "SKIP"] }, evidence: { type: "string" } } } } } },
   recovery: { type: "object", additionalProperties: false, required: ["failureType", "rationale", "nextAction"], properties: { failureType: { enum: ["PATCH_CONTEXT_MISMATCH", "TOOL_FAILURE", "MISSING_CONTEXT", "WRONG_AGENT", "VALIDATION_FAILURE", "REVIEW_FAILURE", "AMBIGUOUS_OUTPUT", "CONFLICTING_RESULTS"] }, rationale: { type: "string" }, nextAction: { type: "string" } } },
-  orchestrator: { type: "object", additionalProperties: false, required: ["summary", "delegatedAgents", "unresolved"], properties: { summary: { type: "string" }, delegatedAgents: stringArray, validationStatus: { type: "string" }, unresolved: stringArray, finalizationSafe: { type: "boolean" } } }
+  orchestrator: { type: "object", additionalProperties: false, required: ["summary", "delegatedAgents", "unresolved"], properties: { summary: { type: "string" }, delegatedAgents: stringArray, validationStatus: { type: "string" }, unresolved: stringArray, finalizationSafe: { type: "boolean" } } },
+  supervisor: { type: "object", additionalProperties: false, required: ["summary", "consolidatedFindings", "sourceFindingIds", "conflicts", "missingEvidence", "unresolved", "finalizationSafety"], properties: { summary: { type: "string" }, consolidatedFindings: { type: "array", items: findingJson }, sourceFindingIds: stringArray, conflicts: { type: "array", items: { type: "object", additionalProperties: false, required: ["summary", "sources"], properties: { summary: { type: "string" }, sources: stringArray } } }, missingEvidence: stringArray, unresolved: stringArray, finalizationSafety: { enum: ["SAFE", "BLOCKED", "RISK_KNOWN"] } } }
 };
 
 export function validateAgentOutput(contractName: string, value: unknown): { ok: boolean; value?: unknown; issues: string[] } { const schema = schemas[contractName]; if (!schema) return { ok: false, issues: [`Unknown agent output contract: ${contractName}`] }; const parsed = schema.safeParse(value); return parsed.success ? { ok: true, value: parsed.data, issues: [] } : { ok: false, issues: parsed.error.issues.map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`) }; }
