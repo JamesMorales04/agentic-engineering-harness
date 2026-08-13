@@ -94,6 +94,15 @@
       "outputContract": "planner"
     }
   },
+  "profiles": {
+    "balanced": {
+      "agents": {
+        "architecture-reviewer": { "execution": { "model": "@brain" } },
+        "security-reviewer": { "execution": { "model": "@workhorse" } },
+        "requirements-reviewer": { "execution": { "model": "@workhorse" } }
+      }
+    }
+  },
   "routing": [
     { "id": "operation-supervision", "priority": 120, "when": { "intent": ["operation-supervision"] }, "use": "operation-supervisor" },
     { "id": "environment-readiness", "priority": 100, "when": { "intent": ["environment", "toolchain", "recover-environment"] }, "use": "environment-manager" },
