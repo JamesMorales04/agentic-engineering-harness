@@ -70,7 +70,7 @@ describe("Paseo launch spec", () => {
     );
   });
 
-  it("compiles an AEH-managed OpenCode primary agent into modeId and session env", async () => {
+  it("compiles an AEH-managed OpenCode primary into session env without exposing it as a Paseo mode", async () => {
     process.env.AEH_OPERATION_ID = "AUDIT-2";
     process.env.AEH_OPERATION_KIND = "audit";
     process.env.AEH_OPERATION_WORKSPACE_ID = "workspace-op";
@@ -117,12 +117,12 @@ describe("Paseo launch spec", () => {
       expect.objectContaining({
         provider: "opencode",
         model: "opencode-go/deepseek-v4-flash",
-        modeId: "aeh-code-quality-reviewer",
-        modeSource: "aeh-managed",
         nativeAgentId: "aeh-code-quality-reviewer",
         thinkingOptionId: "high"
       })
     );
+    expect(spec.modeId).toBeUndefined();
+    expect(spec.modeSource).toBeUndefined();
     expect(inline.default_agent).toBe("aeh-code-quality-reviewer");
     expect(inline.agent["aeh-code-quality-reviewer"]).toEqual(
       expect.objectContaining({
