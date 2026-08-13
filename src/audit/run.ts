@@ -44,6 +44,7 @@ import {
 } from "../workers/agentPrompt.js";
 import { recordEvent } from "../telemetry/events.js";
 import { runProcess } from "../utils/process.js";
+import { compileAuditReviewerPrompt } from "./reviewerPrompt.js";
 
 export type AuditFailureClass =
   | "NONE"
@@ -195,8 +196,6 @@ export async function runAudit(
     );
     for (const output of outputs) {
       sessions.push(output.session);
-      // Reviewer-local finding IDs are not guaranteed globally unique. Prefix
-      // them before supervisor consolidation so provenance is deterministic.
       rawFindings.push(
         ...output.findings.map((finding) => ({
           ...finding,
@@ -307,10 +306,10 @@ export function classifyAuditFailure(check: ValidationCheck): AuditFailureClass 
   ]
     .join("\n")
     .toLowerCase();
+  if (/\b(assert|assertion|expected .* received|expected .* to)\b/.test(text)) return "ASSERTION_FAILURE";
   if (/\b(eperm|eacces|permission denied|operation not permitted|sandbox|seccomp|denied by policy)\b/.test(text)) return "SANDBOX_DENIAL";
   if (/\b(enoent|command not found|not found:|cannot find module|module not found|missing dependency|no such file or directory)\b/.test(text)) return "MISSING_DEPENDENCY";
-  if (/\b(timeout|timed out|environment|out of memory|oom|resource temporarily unavailable|network unavailable|dns)\b/.test(text)) return "ENVIRONMENT_FAILURE";
-  if (/\b(assert|assertion|expected .* received|expected .* to)\b/.test(text)) return "ASSERTION_FAILURE";
+  if (/\b(timeout|timed out|environment failure|environment error|out of memory|oom|resource temporarily unavailable|network unavailable|dns failure|dns error)\b/.test(text)) return "ENVIRONMENT_FAILURE";
   return "TOOL_FAILURE";
 }
 
@@ -405,7 +404,7 @@ async function runPreparedAuditReviewer(
     contract,
     prepared.selection,
     prepared.materialized,
-    buildAuditReviewerPrompt(input, prepared.reviewer, checks, dirtyPaths),
+    compileAuditReviewerPrompt({ input, reviewer: prepared.reviewer, checks, dirtyPaths }),
     { outputContract: "reviewer", phase: "review", operationKind: "audit" }
   );
   if (session.exitCode !== 0) {
@@ -447,15 +446,6 @@ async function runPreparedAuditReviewer(
       ]
     };
   }
-}
-
-function buildAuditReviewerPrompt(
-  input: AuditRequest,
-  reviewer: string,
-  checks: AuditValidationCheck[],
-  dirtyPaths: string[]
-): string {
-  return `You are ${reviewer} performing an AEH read-only engineering AUDIT.\n\nRequest:\n${input.request}\n\nScope hints: ${(input.files ?? []).join(", ") || "repository-wide"}\nDomains: ${(input.domains ?? []).join(", ") || "unspecified"}\nRisk: ${input.risk ?? "low"}\n\nThis is analysis only. Do not edit, create, delete, format, stage or commit repository files. Findings must be concrete, evidenced and actionable. Do not report style-only noise already enforced by deterministic tooling. Do not silently dismiss a deterministic failure as environment noise; use the supplied failure classification as evidence and state uncertainty when code correctness cannot be established.\n\nThe worktree had these pre-existing dirty paths when the audit started: ${dirtyPaths.join(", ") || "none"}. Do not treat pre-existing local diffs as committed source truth; inspect HEAD versions when a finding depends on one of those paths.\n\nDeterministic validation evidence:\n${JSON.stringify(checks, null, 2)}\n\nReturn the reviewer output contract as native JSON when supported, otherwise exactly one marker line:\nAEH_RESULT_JSON={"verdict":"PASS|FAIL|PASS_WITH_WARNINGS","findings":[],"finalizationSafety":"SAFE|BLOCKED|RISK_KNOWN","followUp":[]}`;
 }
 
 function syntheticFinding(agent: string, evidence: string): NormalizedFinding {
