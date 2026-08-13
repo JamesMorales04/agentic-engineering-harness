@@ -28,6 +28,11 @@ import {
 import { PaseoSdkUnavailableError } from "../paseo/sdk.js";
 import { allowedSandboxEnvironment, hardenedPodmanArgs, sandboxImage } from "../security/sandbox.js";
 import { runProcess } from "../utils/process.js";
+import {
+  activateStructuredResultTurnForAgent,
+  reconcileStructuredResult,
+  type AcceptedStructuredResult
+} from "./resultGateway.js";
 import { compileAgentPromptPolicy } from "./promptPolicy.js";
 
 export interface AgentPromptOptions {
@@ -57,12 +62,15 @@ export async function executeAgentPrompt(
   if (options.resumeSessionId && !options.supervisorAgent) {
     await markOperationSessionRunning(root, options.resumeSessionId).catch(() => undefined);
   }
+  if (options.outputContract && options.resumeSessionId && transport !== "paseo") {
+    await activateStructuredResultTurnForAgent(root, options.resumeSessionId, options.phase).catch(() => undefined);
+  }
   let result: WorkerSession;
   if (transport === "paseo") result = await executeViaPaseo(root, config, contract, selection, effectivePrompt, options);
   else if (transport === "direct") result = await executeDirect(root, config, selection, effectivePrompt, options);
   else if (transport === "podman") result = await executePodman(root, config, contract, selection, effectivePrompt, options);
   else throw new Error(`Unsupported agent prompt transport: ${transport}`);
-  return finalizeOperationSession(root, selection, result, options);
+  return finalizeOperationSession(root, contract, selection, result, options);
 }
 
 export async function materializeAgentPrompt(
@@ -158,10 +166,10 @@ export async function dispatchMaterializedAgentPrompt(
     phase: options.phase ?? materialized.phase,
     finishedAt: new Date().toISOString()
   };
-  const finalized = await finalizeOperationSession(root, selection, result, options);
+  const finalized = await finalizeOperationSession(root, contract, selection, result, options);
 
-  if (!options.outputContract || result.exitCode !== 0) return finalized;
-  const delivery = validateCapturedAgentContract(options.outputContract, result.stdout, result.stderr);
+  if (!options.outputContract || finalized.exitCode !== 0) return finalized;
+  const delivery = validateCapturedAgentContract(options.outputContract, finalized.stdout, finalized.stderr);
   if (delivery.ok) return finalized;
 
   const repairPhase = `${options.phase ?? materialized.phase ?? "work"}-contract-repair`;
@@ -194,7 +202,7 @@ export async function dispatchMaterializedAgentPrompt(
     phase: repairPhase,
     finishedAt: new Date().toISOString()
   };
-  return finalizeOperationSession(root, selection, repairedResult, repairOptions);
+  return finalizeOperationSession(root, contract, selection, repairedResult, repairOptions);
 }
 
 export async function resumeAgentPrompt(
@@ -235,9 +243,10 @@ function serializationRepairPrompt(contractName: string, failure?: string): stri
     "Do not inspect files, run tools, repeat the task, add new findings, or change conclusions.",
     `The prior delivery failed structured serialization: ${failure ?? "unknown contract failure"}.`,
     "Serialize only the result already present in this session into the requested contract.",
-    "Return exactly one plain-text marker line and nothing else:",
+    "If aeh_submit_result is available, submit the contract object through that tool; a successful durable submission is authoritative and no marker is required.",
+    "Only if the result tool is unavailable, return exactly one plain-text marker line and nothing else:",
     "AEH_RESULT_JSON=<valid compact JSON>",
-    "Use ordinary ASCII JSON double quotes (U+0022). Do not use Markdown fences or typographic quotes."
+    "For the marker fallback use ordinary ASCII JSON double quotes (U+0022); do not use Markdown fences or typographic quotes."
   ].join("\n");
 }
 
@@ -440,53 +449,76 @@ async function markOperationSessionRunning(root: string, agentId: string): Promi
 
 async function finalizeOperationSession(
   root: string,
+  contract: TaskContract,
   selection: AgentExecutionSelection,
-  result: WorkerSession,
+  observed: WorkerSession,
   options: AgentPromptOptions
 ): Promise<WorkerSession> {
-  const operationId = result.operationId ?? currentOperationContext().id;
-  if (!operationId || options.supervisorAgent) return result;
-  const turnStamp = (result.finishedAt ?? new Date().toISOString()).replace(/[^0-9A-Za-z]+/g, "-");
-  const contractDelivery = options.outputContract
-    ? validateCapturedAgentContract(options.outputContract, result.stdout, result.stderr)
-    : undefined;
-  const artifact = await persistOperationAgentArtifact(root, operationId, `${selection.logicalAgent}-${result.id ?? "no-session"}-${turnStamp}`, {
-    logicalAgent: selection.logicalAgent,
-    role: selection.role,
-    phase: result.phase ?? options.phase,
-    outputContract: options.outputContract,
-    contractDelivery,
-    session: result
-  }).catch(() => undefined);
-  if (!result.id) return result;
-  let operation = await loadOperation(root, operationId).catch(() => undefined);
-  if (operation && !operation.participants[result.id]) {
-    await registerOperationAgent(root, operationId, {
-      id: result.id,
+  const operationId = observed.operationId ?? currentOperationContext().id ?? contract.task.id;
+  let result = observed;
+  let accepted: AcceptedStructuredResult | undefined;
+  let contractDelivery: CapturedContractValidation | undefined;
+
+  if (options.outputContract && observed.exitCode === 0) {
+    const resolution = await reconcileStructuredResult(root, {
+      operationId,
+      agentId: observed.id,
       logicalAgent: selection.logicalAgent,
       role: selection.role,
-      phase: result.phase ?? options.phase,
-      workspaceId: result.workspaceId,
-      transport: result.transport?.includes("cli") ? "cli" : "sdk"
+      contract: options.outputContract,
+      phase: observed.phase ?? options.phase,
+      stdout: observed.stdout,
+      stderr: observed.stderr
+    });
+    contractDelivery = resolution.ok
+      ? { ok: true }
+      : { ok: false, failure: resolution.failure ?? `invalid ${options.outputContract} output contract` };
+    if (resolution.accepted) {
+      accepted = resolution.accepted;
+      result = { ...observed, stdout: JSON.stringify(resolution.accepted.payload) };
+    }
+  }
+
+  if (options.supervisorAgent) return result;
+  const turnStamp = (observed.finishedAt ?? new Date().toISOString()).replace(/[^0-9A-Za-z]+/g, "-");
+  const transcriptArtifact = await persistOperationAgentArtifact(root, operationId, `${selection.logicalAgent}-${observed.id ?? "no-session"}-${turnStamp}`, {
+    logicalAgent: selection.logicalAgent,
+    role: selection.role,
+    phase: observed.phase ?? options.phase,
+    outputContract: options.outputContract,
+    contractDelivery,
+    structuredResultArtifact: accepted?.artifact,
+    session: observed
+  }).catch(() => undefined);
+  if (!observed.id) return result;
+  let operation = await loadOperation(root, operationId).catch(() => undefined);
+  if (operation && !operation.participants[observed.id]) {
+    await registerOperationAgent(root, operationId, {
+      id: observed.id,
+      logicalAgent: selection.logicalAgent,
+      role: selection.role,
+      phase: observed.phase ?? options.phase,
+      workspaceId: observed.workspaceId,
+      transport: observed.transport?.includes("cli") ? "cli" : "sdk"
     }).catch(() => undefined);
     operation = await loadOperation(root, operationId).catch(() => undefined);
   }
   const contractFailure = contractDelivery && !contractDelivery.ok
     ? contractDelivery.failure ?? `invalid ${options.outputContract ?? "agent"} output contract`
     : undefined;
-  const failed = result.exitCode !== 0 || Boolean(contractFailure);
-  await updateOperationParticipant(root, operationId, result.id, {
+  const failed = observed.exitCode !== 0 || Boolean(contractFailure);
+  await updateOperationParticipant(root, operationId, observed.id, {
     logicalAgent: selection.logicalAgent,
     role: selection.role,
-    stage: result.phase ?? options.phase,
-    phase: result.phase ?? options.phase,
-    parentAgentId: options.parentAgentId ?? operation?.participants[result.id]?.parentAgentId,
-    parentSupervisorGeneration: operation?.participants[result.id]?.parentSupervisorGeneration,
-    workspaceId: result.workspaceId,
-    transport: result.transport,
+    stage: observed.phase ?? options.phase,
+    phase: observed.phase ?? options.phase,
+    parentAgentId: options.parentAgentId ?? operation?.participants[observed.id]?.parentAgentId,
+    parentSupervisorGeneration: operation?.participants[observed.id]?.parentSupervisorGeneration,
+    workspaceId: observed.workspaceId,
+    transport: observed.transport,
     status: failed ? "FAILED" : "COMPLETED",
-    resultArtifact: artifact,
-    error: failed ? ((contractFailure ?? result.stderr) || `agent exited with ${result.exitCode}`) : undefined
+    resultArtifact: accepted?.artifact ?? transcriptArtifact,
+    error: failed ? ((contractFailure ?? observed.stderr) || `agent exited with ${observed.exitCode}`) : undefined
   }).catch(() => undefined);
   return result;
 }

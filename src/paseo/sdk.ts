@@ -1,5 +1,13 @@
 import process from "node:process";
 import { pathToFileURL } from "node:url";
+import {
+  acceptedStructuredResultForAgent,
+  activateStructuredResultTurn,
+  activateStructuredResultTurnForAgent,
+  bindStructuredResultChannel,
+  provisionStructuredResultChannel,
+  resultSinkMcpServerDefinition
+} from "../workers/resultGateway.js";
 import { resolvePaseoSdkFromCli } from "./sdkResolve.js";
 
 export interface PaseoSdkMcpStdioServer {
@@ -93,11 +101,17 @@ export class PaseoSdkUnavailableError extends Error {
 }
 
 export async function createPaseoSdkAgent(root: string, options: PaseoSdkAgentOptions): Promise<PaseoSdkAgentResult> {
-  return withPaseoClient(root, async (client) => createPaseoSdkAgentWithClient(client, options));
+  const effective = await withStructuredResultSink(root, options, Boolean(options.prompt !== undefined && options.outputSchema));
+  const result = await withPaseoClient(root, async (client) => createPaseoSdkAgentWithClient(client, effective));
+  await bindStructuredResultFromOptions(root, effective, result.id);
+  return projectAcceptedPaseoResult(root, result);
 }
 
 export async function materializePaseoSdkAgent(root: string, options: PaseoSdkAgentOptions): Promise<PaseoSdkAgentResult> {
-  return withPaseoClient(root, async (client) => materializePaseoSdkAgentWithClient(client, options));
+  const effective = await withStructuredResultSink(root, options, false);
+  const result = await withPaseoClient(root, async (client) => materializePaseoSdkAgentWithClient(client, effective));
+  await bindStructuredResultFromOptions(root, effective, result.id);
+  return result;
 }
 
 export async function materializePaseoSdkAgentWithClient(client: PaseoSdkClient, options: PaseoSdkAgentOptions): Promise<PaseoSdkAgentResult> {
@@ -127,15 +141,17 @@ export async function dispatchPaseoSdkAgent(root: string, agentId: string, promp
 }
 
 export async function waitPaseoSdkAgent(root: string, agentId: string, timeoutMs?: number): Promise<PaseoSdkAgentResult> {
-  return withPaseoClient(root, async (client) => waitForHandle(client.agents.ref(agentId), timeoutMs));
+  const result = await withPaseoClient(root, async (client) => waitForHandle(client.agents.ref(agentId), timeoutMs));
+  return projectAcceptedPaseoResult(root, result);
 }
 
 /** Execute one resumed turn on one concrete SDK handle. Prefer the SDK's atomic
  * run() primitive so dispatch and completion observation cannot be separated by
  * an idle->running->idle race. Older SDKs fall back to send()+waitForFinish()
  * on the same handle/client. Structured output constraints accompany the turn
- * when provided, and the final payload is reconciled from the agent timeline if
- * the SDK turn result omits lastMessage. */
+ * when provided. When the session has an AEH structured-result capability, the
+ * accepted durable result artifact is projected back into lastMessage so legacy
+ * consumers remain compatible without making transcript text lifecycle authority. */
 export async function runPaseoSdkAgent(
   root: string,
   agentId: string,
@@ -143,9 +159,11 @@ export async function runPaseoSdkAgent(
   timeoutMs?: number,
   outputSchema?: Record<string, unknown>
 ): Promise<PaseoSdkAgentResult> {
-  return withPaseoClient(root, async (client) =>
+  if (outputSchema) await activateStructuredResultTurnForAgent(root, agentId).catch(() => undefined);
+  const result = await withPaseoClient(root, async (client) =>
     runPaseoSdkAgentWithClient(client, agentId, prompt, timeoutMs, outputSchema)
   );
+  return projectAcceptedPaseoResult(root, result);
 }
 
 export async function runPaseoSdkAgentWithClient(
@@ -194,6 +212,38 @@ export async function listPaseoSdkAgents(root: string, labels: Record<string, st
     const page = await client.agents.list({ filter });
     return page.entries.map((entry) => normalizeRecord(entry.agent)).filter((agent) => labelsMatch(agent.labels, labels));
   });
+}
+
+async function withStructuredResultSink(root: string, options: PaseoSdkAgentOptions, activateInitialTurn: boolean): Promise<PaseoSdkAgentOptions> {
+  const contract = options.labels?.["aeh.output.contract"]?.trim();
+  const operationId = options.labels?.["aeh.operation"]?.trim();
+  const logicalAgent = options.labels?.["aeh.role"]?.trim();
+  if (!contract || !operationId || !logicalAgent) return options;
+  const channel = await provisionStructuredResultChannel(root, { operationId, logicalAgent, role: logicalAgent, contract });
+  if (activateInitialTurn) await activateStructuredResultTurn(root, operationId, channel.channelId, options.labels?.["aeh.operation.phase"]);
+  const server = "aeh-result";
+  const preapproved = [
+    ...(options.toolPolicy?.preapproved ?? []).filter((item) => !(item.kind === "mcp" && item.server === server && item.tool === "aeh_submit_result")),
+    { kind: "mcp" as const, server, tool: "aeh_submit_result" }
+  ];
+  return {
+    ...options,
+    labels: { ...options.labels, "aeh.result.channel": channel.channelId },
+    mcpServers: { ...(options.mcpServers ?? {}), [server]: resultSinkMcpServerDefinition(root, operationId, channel.channelId) },
+    toolPolicy: { preapproved }
+  };
+}
+
+async function bindStructuredResultFromOptions(root: string, options: PaseoSdkAgentOptions, agentId: string): Promise<void> {
+  const operationId = options.labels?.["aeh.operation"]?.trim();
+  const channelId = options.labels?.["aeh.result.channel"]?.trim();
+  if (!operationId || !channelId) return;
+  await bindStructuredResultChannel(root, operationId, channelId, agentId);
+}
+
+async function projectAcceptedPaseoResult(root: string, result: PaseoSdkAgentResult): Promise<PaseoSdkAgentResult> {
+  const accepted = await acceptedStructuredResultForAgent(root, result.id).catch(() => undefined);
+  return accepted ? { ...result, lastMessage: JSON.stringify(accepted.payload) } : result;
 }
 
 async function withPaseoClient<T>(root: string, action: (client: PaseoSdkClient) => Promise<T>): Promise<T> {
