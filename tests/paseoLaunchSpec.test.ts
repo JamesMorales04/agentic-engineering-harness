@@ -13,7 +13,7 @@ afterEach(() => {
 });
 
 describe("Paseo launch spec", () => {
-  it("uses operation-local workspace and explicit bounded identity even for Codex reviewers", async () => {
+  it("uses operation-local workspace, bounded identity and Codex thinking variant", async () => {
     process.env.AEH_OPERATION_ID = "AUDIT-1";
     process.env.AEH_OPERATION_KIND = "audit";
     process.env.AEH_OPERATION_WORKSPACE_ID = "workspace-op";
@@ -32,12 +32,14 @@ describe("Paseo launch spec", () => {
       routing: { intent: "audit" }
     } as never;
     const selection = {
-      logicalAgent: "security-reviewer",
+      logicalAgent: "architecture-reviewer",
       role: "reviewer",
       paseoProvider: "codex",
       runtimeAdapter: "codex",
       modelName: "gpt-test",
       modelId: "openai/gpt-test",
+      variant: "max",
+      runtimeCapabilities: { variantSelection: true },
       profile: "balanced"
     } as never;
 
@@ -49,6 +51,7 @@ describe("Paseo launch spec", () => {
       expect.objectContaining({
         provider: "codex",
         model: "gpt-test",
+        thinkingOptionId: "max",
         workspaceId: "workspace-op",
         operationId: "AUDIT-1",
         operationKind: "audit",
@@ -59,7 +62,7 @@ describe("Paseo launch spec", () => {
     expect(spec.modeId).toBeUndefined();
     expect(spec.env).toEqual(expect.objectContaining({
       AEH_MANAGED_AGENT: "1",
-      AEH_LOGICAL_AGENT: "security-reviewer",
+      AEH_LOGICAL_AGENT: "architecture-reviewer",
       AEH_AGENT_ROLE: "reviewer",
       AEH_INTERACTIVE_LEAD: "0",
       AEH_ORCHESTRATION_ALLOWED: "0",
@@ -71,7 +74,7 @@ describe("Paseo launch spec", () => {
       expect.objectContaining({
         "aeh.project": "demo",
         "aeh.task": "AUDIT-1",
-        "aeh.role": "security-reviewer",
+        "aeh.role": "architecture-reviewer",
         "aeh.operation": "AUDIT-1",
         "aeh.operation.kind": "audit",
         "aeh.operation.phase": "review",
