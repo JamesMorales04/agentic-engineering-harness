@@ -6,6 +6,9 @@
       "capabilities": { "nativeAgentViaPaseo": true }
     }
   },
+  "models": {
+    "workhorse": { "runtime": "opencode", "provider": "opencode-go", "model": "deepseek-v4-flash", "variant": "max" }
+  },
   "agents": {
     "lead": {
       "description": "Own user intent, semantic decisions, cross-operation priorities, exception handling and final acceptance. Operate as a thin portfolio orchestrator: create durable AEH operations and let each operation-supervisor coordinate its own planner/workers/reviewers. Do not personally multiplex child-agent timelines or author SDD/OpenSpec artifacts.",
