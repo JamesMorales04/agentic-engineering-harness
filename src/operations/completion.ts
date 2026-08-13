@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { dispatchManagedPaseoAgent } from "../paseo/runtime.js";
 import { recordPaseoTrace } from "../paseo/trace.js";
-import type { OperationRecord } from "./state.js";
+import { loadOperation, patchOperation, type OperationRecord } from "./state.js";
 
 export type OperationCompletionStatus = "PENDING" | "SENT" | "FAILED" | "DISABLED";
 
@@ -14,6 +14,7 @@ export interface OperationCompletionTarget {
   status: OperationCompletionStatus;
   registeredAt: string;
   attemptedAt?: string;
+  attempts?: number;
   sentAt?: string;
   failedAt?: string;
   error?: string;
@@ -22,7 +23,12 @@ export interface OperationCompletionTarget {
 export interface OperationCompletionDeps {
   dispatch?: typeof dispatchManagedPaseoAgent;
   trace?: typeof recordPaseoTrace;
+  retryDelaysMs?: number[];
+  sleep?: (ms: number) => Promise<void>;
 }
+
+const DEFAULT_RETRY_DELAYS_MS = [0, 500, 1_500];
+const COMPLETION_WARNING_PREFIX = "completion callback:";
 
 export function operationCompletionFile(root: string, operationId: string): string {
   return path.resolve(root, ".harness/operations", `${safeId(operationId)}.completion.json`);
@@ -102,52 +108,83 @@ export async function notifyOperationCompletion(
   operation: OperationRecord,
   deps: OperationCompletionDeps = {}
 ): Promise<OperationCompletionTarget | undefined> {
-  const target = await loadOperationCompletionTarget(root, operation.id);
+  let target = await loadOperationCompletionTarget(root, operation.id);
   if (!target || target.status === "SENT" || target.status === "DISABLED") return target;
 
   const dispatch = deps.dispatch ?? dispatchManagedPaseoAgent;
   const trace = deps.trace ?? recordPaseoTrace;
-  const attemptedAt = new Date().toISOString();
-  try {
-    const result = await dispatch(root, target.agentId, completionPrompt(operation), 60);
-    if (result.exitCode !== 0) {
-      throw new Error(
-        result.stderr || result.stdout || `Paseo dispatch exited with code ${result.exitCode}`
-      );
+  const retryDelaysMs = normalizeRetryDelays(deps.retryDelaysMs);
+  const sleep = deps.sleep ?? delay;
+
+  for (let index = 0; index < retryDelaysMs.length; index += 1) {
+    const retryDelayMs = retryDelaysMs[index];
+    if (retryDelayMs > 0) await sleep(retryDelayMs);
+
+    const attemptedAt = new Date().toISOString();
+    const attempts = (target.attempts ?? 0) + 1;
+    await trace(root, "operation.callback.attempt", {
+      operationId: operation.id,
+      operationStatus: operation.status,
+      agentId: target.agentId,
+      attempt: attempts,
+      invocationAttempt: index + 1,
+      maxInvocationAttempts: retryDelaysMs.length,
+      retryDelayMs
+    });
+
+    try {
+      const result = await dispatch(root, target.agentId, completionPrompt(operation), 60);
+      if (result.exitCode !== 0) {
+        throw new Error(
+          result.stderr || result.stdout || `Paseo dispatch exited with code ${result.exitCode}`
+        );
+      }
+      const sent: OperationCompletionTarget = {
+        ...target,
+        status: "SENT",
+        attemptedAt,
+        attempts,
+        sentAt: new Date().toISOString(),
+        failedAt: undefined,
+        error: undefined
+      };
+      await persist(root, sent);
+      await clearCompletionWarning(root, operation.id);
+      await trace(root, "operation.callback.sent", {
+        operationId: operation.id,
+        operationStatus: operation.status,
+        agentId: target.agentId,
+        transport: result.transport,
+        attempts,
+        resultPath: resultPath(operation) ?? ""
+      });
+      return sent;
+    } catch (error) {
+      const failed: OperationCompletionTarget = {
+        ...target,
+        status: "FAILED",
+        attemptedAt,
+        attempts,
+        failedAt: new Date().toISOString(),
+        error: error instanceof Error ? error.message : String(error)
+      };
+      await persist(root, failed);
+      target = failed;
+      await trace(root, "operation.callback.failed", {
+        operationId: operation.id,
+        operationStatus: operation.status,
+        agentId: target.agentId,
+        attempt: attempts,
+        invocationAttempt: index + 1,
+        maxInvocationAttempts: retryDelaysMs.length,
+        willRetry: index + 1 < retryDelaysMs.length,
+        error: failed.error ?? "unknown"
+      });
     }
-    const sent: OperationCompletionTarget = {
-      ...target,
-      status: "SENT",
-      attemptedAt,
-      sentAt: new Date().toISOString(),
-      error: undefined
-    };
-    await persist(root, sent);
-    await trace(root, "operation.callback.sent", {
-      operationId: operation.id,
-      operationStatus: operation.status,
-      agentId: target.agentId,
-      transport: result.transport,
-      resultPath: resultPath(operation) ?? ""
-    });
-    return sent;
-  } catch (error) {
-    const failed: OperationCompletionTarget = {
-      ...target,
-      status: "FAILED",
-      attemptedAt,
-      failedAt: new Date().toISOString(),
-      error: error instanceof Error ? error.message : String(error)
-    };
-    await persist(root, failed);
-    await trace(root, "operation.callback.failed", {
-      operationId: operation.id,
-      operationStatus: operation.status,
-      agentId: target.agentId,
-      error: failed.error ?? "unknown"
-    });
-    return failed;
   }
+
+  await surfaceCompletionFailure(root, operation.id, target);
+  return target;
 }
 
 export function completionPrompt(operation: OperationRecord): string {
@@ -169,6 +206,42 @@ function resultPath(operation: OperationRecord): string | undefined {
   return typeof report === "string" && report.trim() ? report.trim() : undefined;
 }
 
+async function surfaceCompletionFailure(
+  root: string,
+  operationId: string,
+  target: OperationCompletionTarget
+): Promise<void> {
+  try {
+    const operation = await loadOperation(root, operationId);
+    const warning = `${COMPLETION_WARNING_PREFIX} failed to reactivate ${target.agentId} after ${target.attempts ?? 0} attempt(s): ${target.error ?? "unknown error"}`;
+    const existing = (operation.cleanupWarnings ?? []).filter(
+      (item) => !item.startsWith(COMPLETION_WARNING_PREFIX)
+    );
+    await patchOperation(root, operationId, {
+      cleanupWarnings: [...existing, warning]
+    });
+  } catch {
+    // The dedicated completion record remains authoritative even when the
+    // operation record cannot be annotated (for example in isolated unit tests).
+  }
+}
+
+async function clearCompletionWarning(root: string, operationId: string): Promise<void> {
+  try {
+    const operation = await loadOperation(root, operationId);
+    const warnings = (operation.cleanupWarnings ?? []).filter(
+      (item) => !item.startsWith(COMPLETION_WARNING_PREFIX)
+    );
+    if (warnings.length === (operation.cleanupWarnings ?? []).length) return;
+    await patchOperation(root, operationId, {
+      cleanupWarnings: warnings.length ? warnings : undefined
+    });
+  } catch {
+    // Callback success is already durable in the completion target. Warning
+    // cleanup is secondary observability metadata.
+  }
+}
+
 async function persist(root: string, target: OperationCompletionTarget): Promise<void> {
   const file = operationCompletionFile(root, target.operationId);
   await fs.mkdir(path.dirname(file), { recursive: true });
@@ -179,6 +252,14 @@ async function persist(root: string, target: OperationCompletionTarget): Promise
   } finally {
     await fs.rm(temp, { force: true }).catch(() => undefined);
   }
+}
+
+function normalizeRetryDelays(value?: number[]): number[] {
+  const candidate = value?.length ? value : DEFAULT_RETRY_DELAYS_MS;
+  const normalized = candidate.filter(
+    (item) => Number.isFinite(item) && item >= 0
+  );
+  return normalized.length ? normalized : [0];
 }
 
 function requiredId(value: string, name: string): string {
@@ -199,4 +280,8 @@ function isMissing(error: unknown): boolean {
       "code" in error &&
       (error as { code?: unknown }).code === "ENOENT"
   );
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
