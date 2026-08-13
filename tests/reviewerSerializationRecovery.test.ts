@@ -75,18 +75,58 @@ const validReviewerJson = JSON.stringify({
   finalizationSafety: "SAFE",
   followUp: []
 });
+const validSupervisorJson = JSON.stringify({
+  summary: "Consolidated",
+  consolidatedFindings: [],
+  sourceFindingIds: [],
+  conflicts: [],
+  missingEvidence: [],
+  unresolved: [],
+  finalizationSafety: "SAFE"
+});
 
 afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe("reviewer structured delivery recovery", () => {
-  it("persists the invalid raw turn then performs exactly one serialization-only retry", async () => {
+describe("structured delivery recovery", () => {
+  it("normalizes typographic JSON quotes without spending a repair turn", async () => {
+    runtime.continueManagedPaseoAgent.mockResolvedValueOnce({
+      id: "reviewer-1",
+      exitCode: 0,
+      stdout: 'AEH_RESULT_JSON={\u201cverdict\u201d:\u201cPASS\u201d,\u201cfindings\u201d:[],\u201cfinalizationSafety\u201d:\u201cSAFE\u201d,\u201cfollowUp\u201d:[]}',
+      stderr: "",
+      status: "idle",
+      transport: "sdk"
+    });
+    artifacts.persistOperationAgentArtifact.mockResolvedValue("first.json");
+
+    const result = await dispatchMaterializedAgentPrompt(
+      "/repo",
+      config,
+      contract,
+      selection,
+      materialized,
+      "perform the audit",
+      { outputContract: "reviewer", phase: "review", operationKind: "audit" }
+    );
+
+    expect(runtime.continueManagedPaseoAgent).toHaveBeenCalledTimes(1);
+    expect(runtime.continueManagedPaseoAgent.mock.calls[0]?.[2]).toContain("AEH machine output contract 'reviewer'");
+    expect(runtime.continueManagedPaseoAgent.mock.calls[0]?.[5]).toEqual(expect.objectContaining({ type: "object" }));
+    expect(result.phase).toBe("review");
+    expect(artifacts.persistOperationAgentArtifact).toHaveBeenCalledTimes(1);
+    expect(artifacts.persistOperationAgentArtifact.mock.calls[0]?.[3]).toEqual(
+      expect.objectContaining({ contractDelivery: { ok: true } })
+    );
+  });
+
+  it("repairs an empty captured structured turn exactly once using a plain marker without outputSchema", async () => {
     runtime.continueManagedPaseoAgent
       .mockResolvedValueOnce({
         id: "reviewer-1",
         exitCode: 0,
-        stdout: 'AEH_RESULT_JSON={“verdict”:“PASS”,“findings”:[],“finalizationSafety”:“SAFE”,“followUp”:[]}',
+        stdout: "",
         stderr: "",
         status: "idle",
         transport: "sdk"
@@ -94,7 +134,7 @@ describe("reviewer structured delivery recovery", () => {
       .mockResolvedValueOnce({
         id: "reviewer-1",
         exitCode: 0,
-        stdout: validReviewerJson,
+        stdout: `AEH_RESULT_JSON=${validReviewerJson}`,
         stderr: "",
         status: "idle",
         transport: "sdk"
@@ -114,21 +154,14 @@ describe("reviewer structured delivery recovery", () => {
     );
 
     expect(runtime.continueManagedPaseoAgent).toHaveBeenCalledTimes(2);
-    expect(runtime.continueManagedPaseoAgent.mock.calls[1]?.[2]).toContain(
-      "Only repair delivery for the 'reviewer' output contract"
-    );
-    expect(runtime.continueManagedPaseoAgent.mock.calls[1]?.[2]).toContain(
-      "Do not inspect files, run tools, repeat the task, add new findings, or change conclusions."
-    );
-    expect(result.stdout).toBe(validReviewerJson);
+    expect(runtime.continueManagedPaseoAgent.mock.calls[1]?.[2]).toContain("Only repair delivery for the 'reviewer' output contract");
+    expect(runtime.continueManagedPaseoAgent.mock.calls[1]?.[2]).toContain("Return exactly one plain-text marker line");
+    expect(runtime.continueManagedPaseoAgent.mock.calls[1]?.[5]).toBeUndefined();
+    expect(result.stdout).toBe(`AEH_RESULT_JSON=${validReviewerJson}`);
     expect(result.phase).toBe("review-contract-repair");
-    expect(artifacts.persistOperationAgentArtifact).toHaveBeenCalledTimes(2);
     expect(artifacts.persistOperationAgentArtifact.mock.calls[0]?.[3]).toEqual(
       expect.objectContaining({
-        contractDelivery: expect.objectContaining({
-          ok: false,
-          failure: expect.stringContaining("MARKER_INVALID_JSON")
-        })
+        contractDelivery: expect.objectContaining({ ok: false, failure: expect.stringContaining("EMPTY_OUTPUT") })
       })
     );
     expect(artifacts.persistOperationAgentArtifact.mock.calls[1]?.[3]).toEqual(
@@ -136,24 +169,10 @@ describe("reviewer structured delivery recovery", () => {
     );
   });
 
-  it("does not recurse when the serialization retry is still invalid", async () => {
+  it("does not recurse when the serialization retry is still invalid and leaves the participant failed", async () => {
     runtime.continueManagedPaseoAgent
-      .mockResolvedValueOnce({
-        id: "reviewer-1",
-        exitCode: 0,
-        stdout: "not-json",
-        stderr: "",
-        status: "idle",
-        transport: "sdk"
-      })
-      .mockResolvedValueOnce({
-        id: "reviewer-1",
-        exitCode: 0,
-        stdout: "still-not-json",
-        stderr: "",
-        status: "idle",
-        transport: "sdk"
-      });
+      .mockResolvedValueOnce({ id: "reviewer-1", exitCode: 0, stdout: "not-json", stderr: "", status: "idle", transport: "sdk" })
+      .mockResolvedValueOnce({ id: "reviewer-1", exitCode: 0, stdout: "still-not-json", stderr: "", status: "idle", transport: "sdk" });
     artifacts.persistOperationAgentArtifact.mockResolvedValue("artifact.json");
 
     const result = await dispatchMaterializedAgentPrompt(
@@ -169,5 +188,29 @@ describe("reviewer structured delivery recovery", () => {
     expect(runtime.continueManagedPaseoAgent).toHaveBeenCalledTimes(2);
     expect(result.stdout).toBe("still-not-json");
     expect(result.phase).toBe("review-contract-repair");
+    const lastUpdate = state.updateOperationParticipant.mock.calls.at(-1)?.[3] as { status?: string; error?: string } | undefined;
+    expect(lastUpdate).toEqual(expect.objectContaining({ status: "FAILED", error: expect.stringContaining("NO_MARKER") }));
+  });
+
+  it("applies the same bounded serialization repair to supervisor contracts", async () => {
+    runtime.continueManagedPaseoAgent
+      .mockResolvedValueOnce({ id: "supervisor-1", exitCode: 0, stdout: "", stderr: "", status: "idle", transport: "sdk" })
+      .mockResolvedValueOnce({ id: "supervisor-1", exitCode: 0, stdout: `AEH_RESULT_JSON=${validSupervisorJson}`, stderr: "", status: "idle", transport: "sdk" });
+
+    const result = await dispatchMaterializedAgentPrompt(
+      "/repo",
+      config,
+      contract,
+      { ...selection, logicalAgent: "operation-supervisor", role: "coordinator" } as never,
+      { ...materialized, id: "supervisor-1", logicalAgent: "operation-supervisor", phase: "consolidating" } as never,
+      "consolidate findings",
+      { outputContract: "supervisor", phase: "consolidating", operationKind: "audit", supervisorAgent: true }
+    );
+
+    expect(runtime.continueManagedPaseoAgent).toHaveBeenCalledTimes(2);
+    expect(runtime.continueManagedPaseoAgent.mock.calls[0]?.[2]).toContain("AEH machine output contract 'supervisor'");
+    expect(runtime.continueManagedPaseoAgent.mock.calls[1]?.[5]).toBeUndefined();
+    expect(result.stdout).toBe(`AEH_RESULT_JSON=${validSupervisorJson}`);
+    expect(result.phase).toBe("consolidating-contract-repair");
   });
 });

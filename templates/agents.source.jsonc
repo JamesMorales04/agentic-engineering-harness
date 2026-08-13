@@ -5,7 +5,7 @@
 
   // Override a built-in model alias once and every agent using it follows.
   // "models": {
-  //   "workhorse": { "provider": "opencode-go", "model": "deepseek-v4-flash" },
+  //   "workhorse": { "provider": "opencode-go", "model": "deepseek-v4-flash", "variant": "max" },
   //   "brain": { "provider": "openai", "model": "gpt-5.6-luna", "variant": "max" }
   // },
   "models": {},

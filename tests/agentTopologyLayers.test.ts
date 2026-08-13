@@ -76,4 +76,15 @@ describe("agent topology", () => {
     expect(selection.modelAlias).toBe("brain");
     expect(selection.description).toContain("trust boundaries");
   });
+
+  it("gives OpenCode DeepSeek V4 Flash the max thinking variant in the orchestration preset", async () => {
+    const root = await fixture('{"version":1,"extends":["aeh:orchestration"]}');
+    const topology = resolveAgentTopology(await loadAgentTopologySource(root, config), "balanced");
+    const selection = executionSelectionForAgent(topology, "code-quality-reviewer");
+    expect(selection.runtimeAdapter).toBe("opencode");
+    expect(selection.modelAlias).toBe("workhorse");
+    expect(selection.modelName).toBe("deepseek-v4-flash");
+    expect(selection.variant).toBe("max");
+    expect(selection.runtimeCapabilities.variantSelection).toBe(true);
+  });
 });

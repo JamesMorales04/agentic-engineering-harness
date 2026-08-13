@@ -6,9 +6,14 @@
       "capabilities": { "nativeAgentViaPaseo": true }
     }
   },
+  "models": {
+    "workhorse": { "runtime": "opencode", "provider": "opencode-go", "model": "deepseek-v4-flash", "variant": "max" }
+  },
   "agents": {
     "lead": {
       "description": "Own user intent, semantic decisions, cross-operation priorities, exception handling and final acceptance. Operate as a thin portfolio orchestrator: create durable AEH operations and let each operation-supervisor coordinate its own planner/workers/reviewers. Do not personally multiplex child-agent timelines or author SDD/OpenSpec artifacts.",
+      "execution": { "model": "@brain" },
+      "temperature": 0.1,
       "skills": ["engineering-workflow", "lead-engineer", "paseo-orchestration", "verification-planning", "worktree-lifecycle"],
       "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "ask", "delegate": "allow", "review": "allow", "validate": "deny", "gitWrite": "deny" }
     },
@@ -17,19 +22,63 @@
       "domains": ["*"],
       "description": "Own semantic coordination for exactly one durable AEH operation. Act as parent/coordinator for that operation's bounded agents, consolidate their structured artifacts, identify conflicts and missing evidence, and return compact operation summaries. Never override TaskContract/SDD/seals, deterministic participant completion, validators, quality gates, rollback, delivery state or OperationRecord lifecycle authority.",
       "execution": { "model": "@brain" },
+      "temperature": 0.1,
       "skills": ["finding-dedup", "acceptance-traceability", "recovery-classifier", "verification-planning"],
       "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "deny", "delegate": "allow", "review": "allow", "validate": "deny", "gitWrite": "deny" },
       "outputContract": "supervisor"
     },
     "planner": {
       "description": "Produce a read-only delegation DAG and triage evidence. Use explorer/Graphify evidence supplied to you; do not implement, author specifications, repair the environment, or run broad validation. Return bounded scope, dependencies, risks, reviewers and validators to the operation supervisor/Harness.",
+      "execution": { "model": "@brain" },
+      "temperature": 0.05,
       "permissions": { "read": "allow", "write": "deny", "shell": "deny", "network": "deny", "delegate": "allow", "review": "allow", "validate": "deny", "gitWrite": "deny" }
     },
+    "designer": {
+      "execution": { "model": "@brain" },
+      "temperature": 0.2
+    },
+    "architecture-reviewer": {
+      "execution": { "model": "@brain" },
+      "temperature": 0.1
+    },
+    "security-reviewer": {
+      "execution": { "model": "@workhorse" },
+      "temperature": 0.1
+    },
+    "requirements-reviewer": {
+      "execution": { "model": "@workhorse" },
+      "temperature": 0.05
+    },
+    "backend-reviewer": {
+      "execution": { "model": "@workhorse" },
+      "temperature": 0.08
+    },
+    "code-quality-reviewer": { "temperature": 0.1 },
+    "api-reviewer": { "temperature": 0.1 },
+    "frontend-reviewer": { "temperature": 0.1 },
+    "data-reviewer": { "temperature": 0.1 },
+    "test-reviewer": { "temperature": 0.1 },
+    "docs-reviewer": { "temperature": 0.1 },
+    "ops-reviewer": { "temperature": 0.1 },
+    "backend-implementer": { "temperature": 0.05 },
+    "data-implementer": { "temperature": 0.05 },
+    "implementation-worker": { "temperature": 0.1 },
+    "quality-implementer": { "temperature": 0.1 },
+    "frontend-implementer": { "temperature": 0.1 },
+    "mobile-implementer": { "temperature": 0.1 },
+    "test-implementer": { "temperature": 0.1 },
+    "docs-implementer": { "temperature": 0.1 },
+    "ops-implementer": { "temperature": 0.1 },
+    "github-manager": { "temperature": 0.05 },
+    "validator": { "temperature": 0.1 },
+    "integration-validator": { "temperature": 0.1 },
+    "e2e-validator": { "temperature": 0.1 },
     "environment-manager": {
       "role": "coordinator",
       "domains": ["environment", "toolchain", "paseo", "build-system"],
       "description": "Own deterministic environment readiness and recovery delegated by a lead or operation supervisor. Run AEH setup/doctor/agents checks, diagnose package-manager and Paseo daemon/provider failures, and return a compact structured outcome. Never implement product code or change normative requirements.",
       "execution": { "model": "@workhorse" },
+      "temperature": 0.1,
       "skills": ["paseo-orchestration", "recovery-classifier"],
       "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "ask", "delegate": "deny", "review": "deny", "validate": "allow", "gitWrite": "deny" },
       "outputContract": "recovery"
@@ -39,6 +88,7 @@
       "domains": ["requirements", "specification", "sdd", "openspec"],
       "description": "Own SPEC authoring inside an existing CHANGE operation. Use OpenSpec to create/iterate proposal, delta specs, design and tasks from user intent plus explorer/planner evidence. Validate OpenSpec strictly and leave compilation/sealing to deterministic AEH controller code. Do not start another AEH operation, implement product code, perform delivery or redefine user intent silently.",
       "execution": { "model": "@brain" },
+      "temperature": 0.1,
       "skills": ["openspec-authoring", "acceptance-traceability", "verification-planning"],
       "permissions": { "read": "allow", "write": "allow", "shell": "allow", "network": "deny", "delegate": "allow", "review": "deny", "validate": "deny", "gitWrite": "deny" },
       "outputContract": "planner"

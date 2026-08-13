@@ -26,14 +26,12 @@ describe("extractMarkedJson", () => {
     }
   });
 
-  it("classifies a marker with smart quotes as invalid JSON without repairing it", () => {
-    try {
-      extractMarkedJson('AEH_RESULT_JSON={“verdict”:“PASS”}');
-      throw new Error("expected extractMarkedJson to fail");
-    } catch (error) {
-      expect(error).toBeInstanceOf(StructuredOutputError);
-      expect((error as StructuredOutputError).reason).toBe("MARKER_INVALID_JSON");
-    }
+  it("normalizes typographic JSON quotes deterministically", () => {
+    expect(extractMarkedJson('AEH_RESULT_JSON={\u201cverdict\u201d:\u201cPASS\u201d}')).toEqual({ verdict: "PASS" });
+  });
+
+  it("accepts a fenced native JSON object as a bounded transport normalization", () => {
+    expect(extractMarkedJson('```json\n{"verdict":"PASS"}\n```')).toEqual({ verdict: "PASS" });
   });
 
   it("classifies malformed native JSON separately from missing markers", () => {

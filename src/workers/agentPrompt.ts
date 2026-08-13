@@ -159,9 +159,7 @@ export async function dispatchMaterializedAgentPrompt(
   };
   const finalized = await finalizeOperationSession(root, selection, result, options);
 
-  if (options.outputContract !== "reviewer" || result.exitCode !== 0 || options.supervisorAgent) {
-    return finalized;
-  }
+  if (!options.outputContract || result.exitCode !== 0) return finalized;
   const delivery = validateCapturedAgentContract(options.outputContract, result.stdout, result.stderr);
   if (delivery.ok) return finalized;
 
@@ -175,14 +173,18 @@ export async function dispatchMaterializedAgentPrompt(
     serializationRepairPrompt(options.outputContract, delivery.failure),
     repairOptions
   );
-  await markOperationSessionRunning(root, materialized.id).catch(() => undefined);
+  if (!options.supervisorAgent) await markOperationSessionRunning(root, materialized.id).catch(() => undefined);
+  // The repair turn intentionally avoids the provider-native outputSchema. Some
+  // Paseo/provider combinations can complete a structured generation while
+  // exposing an empty lastMessage. A one-line textual marker gives AEH a
+  // deterministic, parseable fallback instead of repeating the same failure.
   const repaired = await continueManagedPaseoAgent(
     root,
     materialized.id,
     repairPrompt,
     timeout,
     undefined,
-    schema
+    undefined
   );
   const repairedResult: WorkerSession = {
     ...materialized,
@@ -236,7 +238,9 @@ function serializationRepairPrompt(contractName: string, failure?: string): stri
     "Do not inspect files, run tools, repeat the task, add new findings, or change conclusions.",
     `The prior delivery failed structured serialization: ${failure ?? "unknown contract failure"}.`,
     "Serialize only the result already present in this session into the requested contract.",
-    "Return native JSON only, using ordinary ASCII JSON double quotes and no prose outside the object."
+    "Return exactly one plain-text marker line and nothing else:",
+    "AEH_RESULT_JSON=<valid compact JSON>",
+    "Use ordinary ASCII JSON double quotes (U+0022). Do not use Markdown fences or typographic quotes."
   ].join("\n");
 }
 
@@ -401,7 +405,26 @@ async function buildEffectivePrompt(
     options.supervisorAgent ? "You are the Operation Supervisor for this durable AEH operation. Coordinate semantically, but do not replace deterministic controller authority." : undefined,
     options.parentAgentId ? `Paseo parent agent: ${options.parentAgentId}. Parent notifications are advisory; OperationRecord is authoritative.` : undefined
   ].filter(Boolean).join("\n");
-  return withAgentCharter(selection, prompt, frozenSkills, [managedBoundedAgentPromptContext(identity), hierarchy].filter(Boolean).join("\n"));
+  const contractContext = options.outputContract ? outputContractPrompt(options.outputContract) : undefined;
+  return withAgentCharter(
+    selection,
+    prompt,
+    frozenSkills,
+    [managedBoundedAgentPromptContext(identity), hierarchy].filter(Boolean).join("\n"),
+    contractContext
+  );
+}
+
+function outputContractPrompt(contractName: string): string {
+  const schema = outputJsonSchema(contractName);
+  return [
+    `AEH machine output contract '${contractName}' (authoritative for delivery):`,
+    "Your final result is parsed by deterministic code. Prefer native structured JSON when the runtime supports it.",
+    "Return exactly one JSON object matching the supplied schema. Use ASCII U+0022 double quotes; never use typographic quotes.",
+    "Do not wrap the final JSON in Markdown or add prose outside it.",
+    "If native structured delivery is unavailable and the task explicitly requests the marker fallback, return exactly AEH_RESULT_JSON=<valid compact JSON> on one line.",
+    schema ? `Exact JSON Schema: ${JSON.stringify(schema)}` : `Contract name: ${contractName}`
+  ].join("\n");
 }
 
 function boundedExecutionEnvironment(selection: AgentExecutionSelection, options: AgentPromptOptions): Record<string, string> {
@@ -456,6 +479,10 @@ async function finalizeOperationSession(
     }).catch(() => undefined);
     operation = await loadOperation(root, operationId).catch(() => undefined);
   }
+  const contractFailure = contractDelivery && !contractDelivery.ok
+    ? contractDelivery.failure ?? `invalid ${options.outputContract ?? "agent"} output contract`
+    : undefined;
+  const failed = result.exitCode !== 0 || Boolean(contractFailure);
   await updateOperationParticipant(root, operationId, result.id, {
     logicalAgent: selection.logicalAgent,
     role: selection.role,
@@ -465,9 +492,9 @@ async function finalizeOperationSession(
     parentSupervisorGeneration: operation?.participants[result.id]?.parentSupervisorGeneration,
     workspaceId: result.workspaceId,
     transport: result.transport,
-    status: result.exitCode === 0 ? "COMPLETED" : "FAILED",
+    status: failed ? "FAILED" : "COMPLETED",
     resultArtifact: artifact,
-    error: result.exitCode === 0 ? undefined : result.stderr || `agent exited with ${result.exitCode}`
+    error: failed ? ((contractFailure ?? result.stderr) || `agent exited with ${result.exitCode}`) : undefined
   }).catch(() => undefined);
   return result;
 }
@@ -476,8 +503,20 @@ function session(selection: AgentExecutionSelection, exitCode: number, stdout: s
   return { provider: selection.runtimeAdapter, model: selection.modelName, logicalAgent: selection.logicalAgent, nativeAgent: selection.nativeAgent, runtime: selection.runtimeName, profile: selection.profile, exitCode, stdout, stderr, ...metadata };
 }
 
-function withAgentCharter(selection: AgentExecutionSelection, prompt: string, frozenSkills?: string, executionContext?: string): string {
-  return [selection.description ? `Agent charter for ${selection.logicalAgent}:\n${selection.description}` : undefined, executionContext, frozenSkills ? `Frozen control-plane skill context (authoritative for this run):\n${frozenSkills}` : undefined, prompt].filter(Boolean).join("\n\n");
+function withAgentCharter(
+  selection: AgentExecutionSelection,
+  prompt: string,
+  frozenSkills?: string,
+  executionContext?: string,
+  outputContractContext?: string
+): string {
+  return [
+    selection.description ? `Agent charter for ${selection.logicalAgent}:\n${selection.description}` : undefined,
+    executionContext,
+    frozenSkills ? `Frozen control-plane skill context (authoritative for this run):\n${frozenSkills}` : undefined,
+    outputContractContext,
+    prompt
+  ].filter(Boolean).join("\n\n");
 }
 
 function sealedArtifacts(config: HarnessProjectConfig, contract: TaskContract): string[] {
