@@ -75,6 +75,7 @@ export async function materializeAgentPrompt(
     supervisorAgent: options.supervisorAgent
   });
   const startedAt = new Date().toISOString();
+  const schema = options.outputContract ? outputJsonSchema(options.outputContract) : undefined;
   try {
     const materialized = await materializeManagedPaseoAgent(root, {
       cwd: spec.cwd,
@@ -87,6 +88,7 @@ export async function materializeAgentPrompt(
       env: spec.env,
       workspaceId: spec.workspaceId,
       parentAgentId: spec.parentAgentId,
+      outputSchema: schema,
       labels: spec.labels,
       waitForFinish: false,
       timeoutSeconds: spec.timeoutSeconds
@@ -136,7 +138,8 @@ export async function dispatchMaterializedAgentPrompt(
   const effectivePrompt = await buildEffectivePrompt(root, config, contract, selection, prompt, options);
   if (!options.supervisorAgent) await markOperationSessionRunning(root, materialized.id).catch(() => undefined);
   const timeout = config.orchestration?.worker?.timeoutSeconds ?? 1800;
-  const continued = await continueManagedPaseoAgent(root, materialized.id, effectivePrompt, timeout);
+  const schema = options.outputContract ? outputJsonSchema(options.outputContract) : undefined;
+  const continued = await continueManagedPaseoAgent(root, materialized.id, effectivePrompt, timeout, undefined, schema);
   const result: WorkerSession = {
     ...materialized,
     exitCode: continued.exitCode,
@@ -180,8 +183,9 @@ async function executeViaPaseo(
     supervisorAgent: options.supervisorAgent
   });
   const startedAt = new Date().toISOString();
+  const schema = options.outputContract ? outputJsonSchema(options.outputContract) : undefined;
   if (options.resumeSessionId) {
-    const continued = await continueManagedPaseoAgent(root, options.resumeSessionId, prompt, spec.timeoutSeconds);
+    const continued = await continueManagedPaseoAgent(root, options.resumeSessionId, prompt, spec.timeoutSeconds, undefined, schema);
     return session(selection, continued.exitCode, continued.stdout, continued.stderr, {
       id: options.resumeSessionId,
       nativeAgent: spec.nativeAgentId ?? selection.nativeAgent,
@@ -196,7 +200,6 @@ async function executeViaPaseo(
       finishedAt: new Date().toISOString()
     });
   }
-  const schema = options.outputContract ? outputJsonSchema(options.outputContract) : undefined;
   const launched = await launchManagedPaseoAgent(root, {
     cwd: spec.cwd,
     title: spec.title,
@@ -355,10 +358,12 @@ async function finalizeOperationSession(
 ): Promise<WorkerSession> {
   const operationId = result.operationId ?? currentOperationContext().id;
   if (!operationId || options.supervisorAgent) return result;
-  const artifact = await persistOperationAgentArtifact(root, operationId, `${selection.logicalAgent}-${result.id ?? Date.now()}`, {
+  const turnStamp = (result.finishedAt ?? new Date().toISOString()).replace(/[^0-9A-Za-z]+/g, "-");
+  const artifact = await persistOperationAgentArtifact(root, operationId, `${selection.logicalAgent}-${result.id ?? "no-session"}-${turnStamp}`, {
     logicalAgent: selection.logicalAgent,
     role: selection.role,
     phase: result.phase ?? options.phase,
+    outputContract: options.outputContract,
     session: result
   }).catch(() => undefined);
   if (!result.id) return result;
