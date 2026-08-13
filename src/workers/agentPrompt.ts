@@ -11,7 +11,13 @@ import {
   managedBoundedAgentPromptContext,
   type ManagedAgentExecutionIdentity
 } from "../operations/executionContext.js";
-import { currentOperationContext } from "../operations/state.js";
+import { persistOperationAgentArtifact } from "../operations/artifacts.js";
+import {
+  currentOperationContext,
+  loadOperation,
+  registerOperationAgent,
+  updateOperationParticipant
+} from "../operations/state.js";
 import { compilePaseoAgentLaunchSpec } from "../paseo/launchSpec.js";
 import {
   continueManagedPaseoAgent,
@@ -19,11 +25,7 @@ import {
   materializeManagedPaseoAgent
 } from "../paseo/runtime.js";
 import { PaseoSdkUnavailableError } from "../paseo/sdk.js";
-import {
-  allowedSandboxEnvironment,
-  hardenedPodmanArgs,
-  sandboxImage
-} from "../security/sandbox.js";
+import { allowedSandboxEnvironment, hardenedPodmanArgs, sandboxImage } from "../security/sandbox.js";
 import { runProcess } from "../utils/process.js";
 
 export interface AgentPromptOptions {
@@ -31,6 +33,8 @@ export interface AgentPromptOptions {
   resumeSessionId?: string;
   phase?: string;
   operationKind?: string;
+  parentAgentId?: string;
+  supervisorAgent?: boolean;
 }
 
 export async function executeAgentPrompt(
@@ -41,28 +45,17 @@ export async function executeAgentPrompt(
   prompt: string,
   options: AgentPromptOptions = {}
 ): Promise<WorkerSession> {
-  const transport =
-    selection.transport === "inherit"
-      ? (config.orchestration?.provider ?? "none")
-      : selection.transport;
-  const effectivePrompt = await buildEffectivePrompt(
-    root,
-    config,
-    contract,
-    selection,
-    prompt,
-    options
-  );
-  if (transport === "paseo") {
-    return executeViaPaseo(root, config, contract, selection, effectivePrompt, options);
+  const transport = selection.transport === "inherit" ? (config.orchestration?.provider ?? "none") : selection.transport;
+  const effectivePrompt = await buildEffectivePrompt(root, config, contract, selection, prompt, options);
+  if (options.resumeSessionId && !options.supervisorAgent) {
+    await markOperationSessionRunning(root, options.resumeSessionId).catch(() => undefined);
   }
-  if (transport === "direct") {
-    return executeDirect(root, config, selection, effectivePrompt, options);
-  }
-  if (transport === "podman") {
-    return executePodman(root, config, contract, selection, effectivePrompt, options);
-  }
-  throw new Error(`Unsupported agent prompt transport: ${transport}`);
+  let result: WorkerSession;
+  if (transport === "paseo") result = await executeViaPaseo(root, config, contract, selection, effectivePrompt, options);
+  else if (transport === "direct") result = await executeDirect(root, config, selection, effectivePrompt, options);
+  else if (transport === "podman") result = await executePodman(root, config, contract, selection, effectivePrompt, options);
+  else throw new Error(`Unsupported agent prompt transport: ${transport}`);
+  return finalizeOperationSession(root, selection, result, options);
 }
 
 export async function materializeAgentPrompt(
@@ -72,15 +65,14 @@ export async function materializeAgentPrompt(
   selection: AgentExecutionSelection,
   options: AgentPromptOptions = {}
 ): Promise<WorkerSession | undefined> {
-  const transport =
-    selection.transport === "inherit"
-      ? (config.orchestration?.provider ?? "none")
-      : selection.transport;
+  const transport = selection.transport === "inherit" ? (config.orchestration?.provider ?? "none") : selection.transport;
   if (transport !== "paseo" || options.resumeSessionId) return undefined;
   const spec = await compilePaseoAgentLaunchSpec(root, config, contract, {
     selection,
     phase: options.phase ?? "queued",
-    kind: options.operationKind
+    kind: options.operationKind,
+    parentAgentId: options.parentAgentId,
+    supervisorAgent: options.supervisorAgent
   });
   const startedAt = new Date().toISOString();
   try {
@@ -94,11 +86,12 @@ export async function materializeAgentPrompt(
       thinkingOptionId: spec.thinkingOptionId,
       env: spec.env,
       workspaceId: spec.workspaceId,
+      parentAgentId: spec.parentAgentId,
       labels: spec.labels,
       waitForFinish: false,
       timeoutSeconds: spec.timeoutSeconds
     });
-    return session(selection, materialized.exitCode, materialized.stdout, materialized.stderr, {
+    const result = session(selection, materialized.exitCode, materialized.stdout, materialized.stderr, {
       id: materialized.id,
       nativeAgent: spec.nativeAgentId ?? selection.nativeAgent,
       transport: `paseo-${materialized.transport}`,
@@ -110,13 +103,22 @@ export async function materializeAgentPrompt(
       status: materialized.status ?? "idle",
       startedAt
     });
-  } catch (error) {
-    if (
-      error instanceof PaseoSdkUnavailableError ||
-      (error instanceof Error && error.name === "PaseoSdkUnavailableError")
-    ) {
-      return undefined;
+    if (result.id && !options.supervisorAgent) {
+      await updateOperationParticipant(root, spec.operationId, result.id, {
+        logicalAgent: selection.logicalAgent,
+        role: selection.role,
+        stage: spec.phase,
+        phase: spec.phase,
+        parentSupervisorGeneration: spec.supervisorGeneration,
+        parentAgentId: spec.parentAgentId,
+        workspaceId: result.workspaceId,
+        transport: result.transport,
+        status: "IDLE"
+      }).catch(() => undefined);
     }
+    return result;
+  } catch (error) {
+    if (error instanceof PaseoSdkUnavailableError || (error instanceof Error && error.name === "PaseoSdkUnavailableError")) return undefined;
     throw error;
   }
 }
@@ -130,25 +132,12 @@ export async function dispatchMaterializedAgentPrompt(
   prompt: string,
   options: AgentPromptOptions = {}
 ): Promise<WorkerSession> {
-  if (!materialized?.id) {
-    return executeAgentPrompt(root, config, contract, selection, prompt, options);
-  }
-  const effectivePrompt = await buildEffectivePrompt(
-    root,
-    config,
-    contract,
-    selection,
-    prompt,
-    options
-  );
+  if (!materialized?.id) return executeAgentPrompt(root, config, contract, selection, prompt, options);
+  const effectivePrompt = await buildEffectivePrompt(root, config, contract, selection, prompt, options);
+  if (!options.supervisorAgent) await markOperationSessionRunning(root, materialized.id).catch(() => undefined);
   const timeout = config.orchestration?.worker?.timeoutSeconds ?? 1800;
-  const continued = await continueManagedPaseoAgent(
-    root,
-    materialized.id,
-    effectivePrompt,
-    timeout
-  );
-  return {
+  const continued = await continueManagedPaseoAgent(root, materialized.id, effectivePrompt, timeout);
+  const result: WorkerSession = {
     ...materialized,
     exitCode: continued.exitCode,
     stdout: continued.stdout || materialized.stdout,
@@ -159,6 +148,7 @@ export async function dispatchMaterializedAgentPrompt(
     phase: options.phase ?? materialized.phase,
     finishedAt: new Date().toISOString()
   };
+  return finalizeOperationSession(root, selection, result, options);
 }
 
 export async function resumeAgentPrompt(
@@ -170,13 +160,8 @@ export async function resumeAgentPrompt(
   prompt: string,
   options: Omit<AgentPromptOptions, "resumeSessionId"> = {}
 ): Promise<WorkerSession> {
-  if (!previous.id) {
-    return executeAgentPrompt(root, config, contract, selection, prompt, options);
-  }
-  return executeAgentPrompt(root, config, contract, selection, prompt, {
-    ...options,
-    resumeSessionId: previous.id
-  });
+  if (!previous.id) return executeAgentPrompt(root, config, contract, selection, prompt, options);
+  return executeAgentPrompt(root, config, contract, selection, prompt, { ...options, resumeSessionId: previous.id });
 }
 
 async function executeViaPaseo(
@@ -190,16 +175,13 @@ async function executeViaPaseo(
   const spec = await compilePaseoAgentLaunchSpec(root, config, contract, {
     selection,
     phase: options.phase ?? "work",
-    kind: options.operationKind
+    kind: options.operationKind,
+    parentAgentId: options.parentAgentId,
+    supervisorAgent: options.supervisorAgent
   });
   const startedAt = new Date().toISOString();
   if (options.resumeSessionId) {
-    const continued = await continueManagedPaseoAgent(
-      root,
-      options.resumeSessionId,
-      prompt,
-      spec.timeoutSeconds
-    );
+    const continued = await continueManagedPaseoAgent(root, options.resumeSessionId, prompt, spec.timeoutSeconds);
     return session(selection, continued.exitCode, continued.stdout, continued.stderr, {
       id: options.resumeSessionId,
       nativeAgent: spec.nativeAgentId ?? selection.nativeAgent,
@@ -214,9 +196,7 @@ async function executeViaPaseo(
       finishedAt: new Date().toISOString()
     });
   }
-  const schema = options.outputContract
-    ? outputJsonSchema(options.outputContract)
-    : undefined;
+  const schema = options.outputContract ? outputJsonSchema(options.outputContract) : undefined;
   const launched = await launchManagedPaseoAgent(root, {
     cwd: spec.cwd,
     title: spec.title,
@@ -227,6 +207,7 @@ async function executeViaPaseo(
     thinkingOptionId: spec.thinkingOptionId,
     env: spec.env,
     workspaceId: spec.workspaceId,
+    parentAgentId: spec.parentAgentId,
     prompt,
     outputSchema: schema,
     labels: spec.labels,
@@ -247,44 +228,19 @@ async function executeViaPaseo(
   });
 }
 
-async function executeDirect(
-  root: string,
-  config: HarnessProjectConfig,
-  selection: AgentExecutionSelection,
-  prompt: string,
-  options: AgentPromptOptions
-): Promise<WorkerSession> {
+async function executeDirect(root: string, config: HarnessProjectConfig, selection: AgentExecutionSelection, prompt: string, options: AgentPromptOptions): Promise<WorkerSession> {
   const startedAt = new Date().toISOString();
   const executionEnv = boundedExecutionEnvironment(selection, options);
   if (selection.runtimeAdapter === "opencode") {
     const projection = compileOpenCodeRuntimeProjection(selection, config);
-    const args = [
-      "opencode",
-      "run",
-      "--auto",
-      "--format",
-      "json",
-      "--model",
-      selection.modelId
-    ];
+    const args = ["opencode", "run", "--auto", "--format", "json", "--model", selection.modelId];
     if (options.resumeSessionId) args.push("--session", options.resumeSessionId);
     if (selection.variant) args.push("--variant", selection.variant);
-    args.push("--agent", projection.binding.agentId);
-    args.push(...selection.args, prompt);
-    const result = await runProcess(args.map(quote).join(" "), {
-      cwd: root,
-      timeoutMs: (config.orchestration?.worker?.timeoutSeconds ?? 1800) * 1000,
-      env: { ...projection.env, ...executionEnv }
-    });
-    return session(selection, result.exitCode, result.stdout, result.stderr, {
-      id: options.resumeSessionId ?? extractSessionId(result.stdout),
-      nativeAgent: projection.binding.agentId,
-      ...directMetadata(options, startedAt)
-    });
+    args.push("--agent", projection.binding.agentId, ...selection.args, prompt);
+    const result = await runProcess(args.map(quote).join(" "), { cwd: root, timeoutMs: (config.orchestration?.worker?.timeoutSeconds ?? 1800) * 1000, env: { ...projection.env, ...executionEnv } });
+    return session(selection, result.exitCode, result.stdout, result.stderr, { id: options.resumeSessionId ?? extractSessionId(result.stdout), nativeAgent: projection.binding.agentId, ...directMetadata(options, startedAt) });
   }
-  if (selection.runtimeAdapter === "codex") {
-    return executeCodex(root, config, selection, prompt, options, startedAt, executionEnv);
-  }
+  if (selection.runtimeAdapter === "codex") return executeCodex(root, config, selection, prompt, options, startedAt, executionEnv);
   throw new Error(`No direct runtime adapter for ${selection.runtimeAdapter}`);
 }
 
@@ -297,54 +253,22 @@ async function executeCodex(
   startedAt: string,
   executionEnv: Record<string, string>
 ): Promise<WorkerSession> {
-  const schema = options.outputContract
-    ? outputJsonSchema(options.outputContract)
-    : undefined;
-  const temp = schema
-    ? await fs.mkdtemp(path.join(os.tmpdir(), "aeh-codex-schema-"))
-    : undefined;
+  const schema = options.outputContract ? outputJsonSchema(options.outputContract) : undefined;
+  const temp = schema ? await fs.mkdtemp(path.join(os.tmpdir(), "aeh-codex-schema-")) : undefined;
   try {
     const schemaFile = temp ? path.join(temp, "schema.json") : undefined;
     const outputFile = temp ? path.join(temp, "output.json") : undefined;
-    if (schemaFile) {
-      await fs.writeFile(schemaFile, `${JSON.stringify(schema, null, 2)}\n`);
-    }
+    if (schemaFile) await fs.writeFile(schemaFile, `${JSON.stringify(schema, null, 2)}\n`);
     const args = options.resumeSessionId
-      ? [
-          "codex",
-          "exec",
-          "resume",
-          options.resumeSessionId,
-          "--json",
-          "--model",
-          selection.modelName
-        ]
+      ? ["codex", "exec", "resume", options.resumeSessionId, "--json", "--model", selection.modelName]
       : ["codex", "exec", "--json", "--model", selection.modelName];
-    if (schemaFile && outputFile) {
-      args.push("--output-schema", schemaFile, "-o", outputFile);
-    }
+    if (schemaFile && outputFile) args.push("--output-schema", schemaFile, "-o", outputFile);
     args.push(...selection.args, prompt);
-    const result = await runProcess(args.map(quote).join(" "), {
-      cwd: root,
-      timeoutMs: (config.orchestration?.worker?.timeoutSeconds ?? 1800) * 1000,
-      env: executionEnv
-    });
+    const result = await runProcess(args.map(quote).join(" "), { cwd: root, timeoutMs: (config.orchestration?.worker?.timeoutSeconds ?? 1800) * 1000, env: executionEnv });
     let stdout = result.stdout;
-    if (outputFile) {
-      try {
-        stdout = await fs.readFile(outputFile, "utf8");
-      } catch {
-        // event stream remains diagnostic fallback
-      }
-    }
+    if (outputFile) { try { stdout = await fs.readFile(outputFile, "utf8"); } catch { /* event stream fallback */ } }
     const id = options.resumeSessionId ?? extractSessionId(result.stdout);
-    return session(selection, result.exitCode, stdout, [
-      result.stderr,
-      outputFile ? `CODEX_EVENT_STREAM:\n${result.stdout}` : ""
-    ].filter(Boolean).join("\n"), {
-      id,
-      ...directMetadata(options, startedAt)
-    });
+    return session(selection, result.exitCode, stdout, [result.stderr, outputFile ? `CODEX_EVENT_STREAM:\n${result.stdout}` : ""].filter(Boolean).join("\n"), { id, ...directMetadata(options, startedAt) });
   } finally {
     if (temp) await fs.rm(temp, { recursive: true, force: true });
   }
@@ -358,59 +282,24 @@ async function executePodman(
   prompt: string,
   options: AgentPromptOptions
 ): Promise<WorkerSession> {
-  if (selection.runtimeAdapter !== "opencode") {
-    throw new Error(
-      `Podman prompt execution currently supports OpenCode; selected ${selection.runtimeAdapter}.`
-    );
-  }
-  if (options.resumeSessionId) {
-    throw new Error(
-      "Ephemeral hardened Podman sessions cannot resume a host agent session without an explicit persisted session volume."
-    );
-  }
+  if (selection.runtimeAdapter !== "opencode") throw new Error(`Podman prompt execution currently supports OpenCode; selected ${selection.runtimeAdapter}.`);
+  if (options.resumeSessionId) throw new Error("Ephemeral hardened Podman sessions cannot resume a host agent session without an explicit persisted session volume.");
   const startedAt = new Date().toISOString();
   const writable = selection.permissions.write === "allow";
-  const args: string[] = [
-    "podman",
-    "run",
-    ...hardenedPodmanArgs(config, selection, writable)
-  ];
+  const args: string[] = ["podman", "run", ...hardenedPodmanArgs(config, selection, writable)];
   args.push("-v", `${root}:/workspace:${writable ? "rw" : "ro"}`);
-  if (writable) {
-    for (const relative of sealedArtifacts(config, contract)) {
-      args.push("-v", `${path.resolve(root, relative)}:/workspace/${relative}:ro`);
-    }
-  }
+  if (writable) for (const relative of sealedArtifacts(config, contract)) args.push("-v", `${path.resolve(root, relative)}:/workspace/${relative}:ro`);
   const projection = compileOpenCodeRuntimeProjection(selection, config);
   args.push("-e", `OPENCODE_CONFIG_CONTENT=${projection.env.OPENCODE_CONFIG_CONTENT}`);
-  for (const [name, value] of Object.entries(boundedExecutionEnvironment(selection, options))) {
-    args.push("-e", `${name}=${value}`);
-  }
-  for (const [name, value] of Object.entries(allowedSandboxEnvironment(config))) {
-    args.push("-e", `${name}=${value}`);
-  }
+  for (const [name, value] of Object.entries(boundedExecutionEnvironment(selection, options))) args.push("-e", `${name}=${value}`);
+  for (const [name, value] of Object.entries(allowedSandboxEnvironment(config))) args.push("-e", `${name}=${value}`);
   args.push(sandboxImage(config), "sh", "-lc");
-  const runtimeArgs = [
-    "opencode",
-    "run",
-    "--auto",
-    "--format",
-    "json",
-    "--model",
-    selection.modelId
-  ];
+  const runtimeArgs = ["opencode", "run", "--auto", "--format", "json", "--model", selection.modelId];
   if (selection.variant) runtimeArgs.push("--variant", selection.variant);
-  runtimeArgs.push("--agent", projection.binding.agentId);
-  runtimeArgs.push(...selection.args, prompt);
+  runtimeArgs.push("--agent", projection.binding.agentId, ...selection.args, prompt);
   args.push(`cd /workspace && ${runtimeArgs.map(quote).join(" ")}`);
-  const result = await runProcess(args.map(quote).join(" "), {
-    cwd: root,
-    timeoutMs: (config.orchestration?.worker?.timeoutSeconds ?? 1800) * 1000
-  });
-  return session(selection, result.exitCode, result.stdout, result.stderr, {
-    nativeAgent: projection.binding.agentId,
-    ...directMetadata(options, startedAt, "podman")
-  });
+  const result = await runProcess(args.map(quote).join(" "), { cwd: root, timeoutMs: (config.orchestration?.worker?.timeoutSeconds ?? 1800) * 1000 });
+  return session(selection, result.exitCode, result.stdout, result.stderr, { nativeAgent: projection.binding.agentId, ...directMetadata(options, startedAt, "podman") });
 }
 
 async function buildEffectivePrompt(
@@ -421,12 +310,7 @@ async function buildEffectivePrompt(
   prompt: string,
   options: AgentPromptOptions
 ): Promise<string> {
-  const frozenSkills = await loadFrozenSkillContext(
-    root,
-    config,
-    contract.task.id,
-    selection.skills ?? []
-  );
+  const frozenSkills = await loadFrozenSkillContext(root, config, contract.task.id, selection.skills ?? []);
   const operation = currentOperationContext();
   const identity: ManagedAgentExecutionIdentity = {
     logicalAgent: selection.logicalAgent,
@@ -437,111 +321,92 @@ async function buildEffectivePrompt(
     interactiveLead: false,
     orchestrationAllowed: false
   };
-  return withAgentCharter(
-    selection,
-    prompt,
-    frozenSkills,
-    managedBoundedAgentPromptContext(identity)
-  );
+  const hierarchy = [
+    options.supervisorAgent ? "You are the Operation Supervisor for this durable AEH operation. Coordinate semantically, but do not replace deterministic controller authority." : undefined,
+    options.parentAgentId ? `Paseo parent agent: ${options.parentAgentId}. Parent notifications are advisory; OperationRecord is authoritative.` : undefined
+  ].filter(Boolean).join("\n");
+  return withAgentCharter(selection, prompt, frozenSkills, [managedBoundedAgentPromptContext(identity), hierarchy].filter(Boolean).join("\n"));
 }
 
-function boundedExecutionEnvironment(
-  selection: AgentExecutionSelection,
-  options: AgentPromptOptions
-): Record<string, string> {
+function boundedExecutionEnvironment(selection: AgentExecutionSelection, options: AgentPromptOptions): Record<string, string> {
   const operation = currentOperationContext();
-  return buildManagedAgentEnvironment({
+  const env = buildManagedAgentEnvironment({ logicalAgent: selection.logicalAgent, role: selection.role, operationId: operation.id, operationKind: operation.kind ?? options.operationKind, phase: options.phase ?? "work", interactiveLead: false, orchestrationAllowed: false });
+  if (options.parentAgentId) env.AEH_PARENT_AGENT_ID = options.parentAgentId;
+  if (options.supervisorAgent) env.AEH_OPERATION_SUPERVISOR = "1";
+  return env;
+}
+
+function directMetadata(options: AgentPromptOptions, startedAt: string, transport = "direct"): Partial<WorkerSession> {
+  const operation = currentOperationContext();
+  return { transport, operationId: operation.id, operationKind: operation.kind ?? options.operationKind, phase: options.phase ?? "work", status: "finished", startedAt, finishedAt: new Date().toISOString() };
+}
+
+async function markOperationSessionRunning(root: string, agentId: string): Promise<void> {
+  const operationId = currentOperationContext().id;
+  if (!operationId) return;
+  await updateOperationParticipant(root, operationId, agentId, { status: "RUNNING" });
+}
+
+async function finalizeOperationSession(
+  root: string,
+  selection: AgentExecutionSelection,
+  result: WorkerSession,
+  options: AgentPromptOptions
+): Promise<WorkerSession> {
+  const operationId = result.operationId ?? currentOperationContext().id;
+  if (!operationId || options.supervisorAgent) return result;
+  const artifact = await persistOperationAgentArtifact(root, operationId, `${selection.logicalAgent}-${result.id ?? Date.now()}`, {
     logicalAgent: selection.logicalAgent,
     role: selection.role,
-    operationId: operation.id,
-    operationKind: operation.kind ?? options.operationKind,
-    phase: options.phase ?? "work",
-    interactiveLead: false,
-    orchestrationAllowed: false
-  });
-}
-
-function directMetadata(
-  options: AgentPromptOptions,
-  startedAt: string,
-  transport = "direct"
-): Partial<WorkerSession> {
-  const operation = currentOperationContext();
-  return {
-    transport,
-    operationId: operation.id,
-    operationKind: operation.kind ?? options.operationKind,
-    phase: options.phase ?? "work",
-    status: "finished",
-    startedAt,
-    finishedAt: new Date().toISOString()
-  };
-}
-
-function session(
-  selection: AgentExecutionSelection,
-  exitCode: number,
-  stdout: string,
-  stderr: string,
-  metadata: Partial<WorkerSession> = {}
-): WorkerSession {
-  return {
-    provider: selection.runtimeAdapter,
-    model: selection.modelName,
+    phase: result.phase ?? options.phase,
+    session: result
+  }).catch(() => undefined);
+  if (!result.id) return result;
+  let operation = await loadOperation(root, operationId).catch(() => undefined);
+  if (operation && !operation.participants[result.id]) {
+    await registerOperationAgent(root, operationId, {
+      id: result.id,
+      logicalAgent: selection.logicalAgent,
+      role: selection.role,
+      phase: result.phase ?? options.phase,
+      workspaceId: result.workspaceId,
+      transport: result.transport?.includes("cli") ? "cli" : "sdk"
+    }).catch(() => undefined);
+    operation = await loadOperation(root, operationId).catch(() => undefined);
+  }
+  await updateOperationParticipant(root, operationId, result.id, {
     logicalAgent: selection.logicalAgent,
-    nativeAgent: selection.nativeAgent,
-    runtime: selection.runtimeName,
-    profile: selection.profile,
-    exitCode,
-    stdout,
-    stderr,
-    ...metadata
-  };
+    role: selection.role,
+    stage: result.phase ?? options.phase,
+    phase: result.phase ?? options.phase,
+    parentAgentId: options.parentAgentId ?? operation?.participants[result.id]?.parentAgentId,
+    parentSupervisorGeneration: operation?.participants[result.id]?.parentSupervisorGeneration,
+    workspaceId: result.workspaceId,
+    transport: result.transport,
+    status: result.exitCode === 0 ? "COMPLETED" : "FAILED",
+    resultArtifact: artifact,
+    error: result.exitCode === 0 ? undefined : result.stderr || `agent exited with ${result.exitCode}`
+  }).catch(() => undefined);
+  return result;
 }
 
-function withAgentCharter(
-  selection: AgentExecutionSelection,
-  prompt: string,
-  frozenSkills?: string,
-  executionContext?: string
-): string {
-  const sections = [
-    selection.description
-      ? `Agent charter for ${selection.logicalAgent}:\n${selection.description}`
-      : undefined,
-    executionContext,
-    frozenSkills
-      ? `Frozen control-plane skill context (authoritative for this run):\n${frozenSkills}`
-      : undefined,
-    prompt
-  ].filter(Boolean);
-  return sections.join("\n\n");
+function session(selection: AgentExecutionSelection, exitCode: number, stdout: string, stderr: string, metadata: Partial<WorkerSession> = {}): WorkerSession {
+  return { provider: selection.runtimeAdapter, model: selection.modelName, logicalAgent: selection.logicalAgent, nativeAgent: selection.nativeAgent, runtime: selection.runtimeName, profile: selection.profile, exitCode, stdout, stderr, ...metadata };
 }
 
-function sealedArtifacts(
-  config: HarnessProjectConfig,
-  contract: TaskContract
-): string[] {
+function withAgentCharter(selection: AgentExecutionSelection, prompt: string, frozenSkills?: string, executionContext?: string): string {
+  return [selection.description ? `Agent charter for ${selection.logicalAgent}:\n${selection.description}` : undefined, executionContext, frozenSkills ? `Frozen control-plane skill context (authoritative for this run):\n${frozenSkills}` : undefined, prompt].filter(Boolean).join("\n\n");
+}
+
+function sealedArtifacts(config: HarnessProjectConfig, contract: TaskContract): string[] {
   const dir = config.sdd?.contractsDir ?? ".harness/contracts";
-  return [
-    ...new Set([
-      `${dir}/${contract.task.id}.yaml`,
-      `.harness/seals/${contract.task.id}.json`,
-      ...Object.values(contract.source ?? {}).filter(
-        (value): value is string => Boolean(value)
-      )
-    ])
-  ];
+  return [...new Set([`${dir}/${contract.task.id}.yaml`, `.harness/seals/${contract.task.id}.json`, ...Object.values(contract.source ?? {}).filter((value): value is string => Boolean(value))])];
 }
 
 function extractSessionId(text: string): string | undefined {
   for (const line of text.split(/\r?\n/)) {
     let value: unknown;
-    try {
-      value = JSON.parse(line);
-    } catch {
-      continue;
-    }
+    try { value = JSON.parse(line); } catch { continue; }
     const found = findSessionId(value);
     if (found) return found;
   }
@@ -551,36 +416,15 @@ function extractSessionId(text: string): string | undefined {
 function findSessionId(value: unknown): string | undefined {
   if (!value || typeof value !== "object") return undefined;
   if (Array.isArray(value)) {
-    for (const item of value) {
-      const found = findSessionId(item);
-      if (found) return found;
-    }
+    for (const item of value) { const found = findSessionId(item); if (found) return found; }
     return undefined;
   }
   const object = value as Record<string, unknown>;
-  for (const key of [
-    "thread_id",
-    "session_id",
-    "sessionID",
-    "sessionId",
-    "threadId"
-  ]) {
-    if (typeof object[key] === "string") return object[key] as string;
-  }
+  for (const key of ["thread_id", "session_id", "sessionID", "sessionId", "threadId"]) if (typeof object[key] === "string") return object[key] as string;
   const kind = String(object.type ?? object.event ?? "").toLowerCase();
-  if (
-    (kind.includes("thread") || kind.includes("session")) &&
-    typeof object.id === "string"
-  ) {
-    return object.id;
-  }
-  for (const child of Object.values(object)) {
-    const found = findSessionId(child);
-    if (found) return found;
-  }
+  if ((kind.includes("thread") || kind.includes("session")) && typeof object.id === "string") return object.id;
+  for (const child of Object.values(object)) { const found = findSessionId(child); if (found) return found; }
   return undefined;
 }
 
-function quote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
+function quote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }
