@@ -6,6 +6,7 @@ import { executionSelectionForAgent } from "../agents/routing.js";
 import { reconcileHarnessAssets } from "../core/assets.js";
 import type { HarnessProjectConfig } from "../core/types.js";
 import { buildManagedAgentEnvironment } from "../operations/executionContext.js";
+import { rebindActiveOperationsToLead } from "../operations/leadBinding.js";
 import { setupToolchain } from "../toolchain/setup.js";
 import { clearToolchainEnvCache, commandExists, runProcess, type ProcessResult } from "../utils/process.js";
 import { VERSION } from "../version.js";
@@ -13,7 +14,7 @@ import { detectPaseoDaemonCapabilities, isRecoverableDaemonStatus } from "./capa
 import { launchManagedPaseoAgent, probeManagedPaseoAgent } from "./runtime.js";
 import type { PaseoSdkAgentOptions } from "./sdk.js";
 
-export const PASEO_BOOTSTRAP_VERSION = 9;
+export const PASEO_BOOTSTRAP_VERSION = 10;
 export type PaseoSessionPolicy = "fresh-on-start" | "reuse-compatible" | "resume-explicit";
 
 export interface PaseoStartOptions {
@@ -77,9 +78,7 @@ const DEFAULT_DEPS: PaseoStartDeps = {
   probeAgent: probeManagedPaseoAgent,
   reconcileAssets: reconcileHarnessAssets
 };
-type InteractiveV9 = NonNullable<
-  NonNullable<HarnessProjectConfig["orchestration"]>["interactive"]
->;
+type InteractiveV10 = NonNullable<NonNullable<HarnessProjectConfig["orchestration"]>["interactive"]>;
 
 export async function startPaseoHarness(
   root: string,
@@ -89,16 +88,14 @@ export async function startPaseoHarness(
 ): Promise<PaseoStartResult> {
   const projectRoot = path.resolve(root);
   await (deps.reconcileAssets ?? reconcileHarnessAssets)(projectRoot);
-  const settings = config.orchestration?.interactive as InteractiveV9 | undefined;
+  const settings = config.orchestration?.interactive as InteractiveV10 | undefined;
   const autoSetup = options.autoSetup ?? settings?.autoSetup ?? true;
   const webUi = options.webUi ?? settings?.webUi ?? true;
   const stateDir = path.resolve(projectRoot, settings?.stateDir ?? ".harness/paseo");
   const stateFile = path.join(stateDir, "lead-session.json");
   const bootstrapFile = path.join(stateDir, "lead-bootstrap.md");
   const sessionPolicy = settings?.sessionPolicy ?? "fresh-on-start";
-  const reuseRequested =
-    options.resume === true ||
-    (sessionPolicy === "reuse-compatible" && options.forceNew !== true);
+  const reuseRequested = options.resume === true || (sessionPolicy === "reuse-compatible" && options.forceNew !== true);
 
   const topology = await deps.loadTopology(projectRoot, config, config.agents?.activeProfile);
   const leadName = resolveLeadAgent(topology, options.leadAgent ?? settings?.leadAgent);
@@ -112,44 +109,23 @@ export async function startPaseoHarness(
   }
   const missingAfter = await missingCommands(projectRoot, ["paseo", runtimeCommand], deps);
   if (missingAfter.length) {
-    throw new Error(
-      `aeh start cannot launch Paseo because these managed commands are unavailable: ${missingAfter.join(", ")}. Run aeh setup or provide the required host prerequisite/credential.`
-    );
+    throw new Error(`aeh start cannot launch Paseo because these managed commands are unavailable: ${missingAfter.join(", ")}. Run aeh setup or provide the required host prerequisite/credential.`);
   }
 
   const capabilities = await deps.detectCapabilities(projectRoot, deps.run);
   let daemonStarted = false;
-  const daemonStatusCommand = capabilities.daemonJson
-    ? "paseo daemon status --json"
-    : "paseo daemon status";
-  let daemonStatus = await deps.run(daemonStatusCommand, {
-    cwd: projectRoot,
-    timeoutMs: 30_000
-  });
+  const daemonStatusCommand = capabilities.daemonJson ? "paseo daemon status --json" : "paseo daemon status";
+  let daemonStatus = await deps.run(daemonStatusCommand, { cwd: projectRoot, timeoutMs: 30_000 });
   if (daemonStatus.exitCode !== 0) {
     if (isRecoverableDaemonStatus(daemonStatus)) {
-      await deps
-        .run("paseo daemon stop", { cwd: projectRoot, timeoutMs: 30_000 })
-        .catch(() => undefined);
+      await deps.run("paseo daemon stop", { cwd: projectRoot, timeoutMs: 30_000 }).catch(() => undefined);
     }
     const startCommand = webUi ? "paseo daemon start --web-ui" : "paseo daemon start";
-    const daemonStart = await deps.run(startCommand, {
-      cwd: projectRoot,
-      timeoutMs: 60_000
-    });
-    if (daemonStart.exitCode !== 0) {
-      throw new Error(`Failed to start Paseo daemon: ${diagnostic(daemonStart)}`);
-    }
+    const daemonStart = await deps.run(startCommand, { cwd: projectRoot, timeoutMs: 60_000 });
+    if (daemonStart.exitCode !== 0) throw new Error(`Failed to start Paseo daemon: ${diagnostic(daemonStart)}`);
     daemonStarted = true;
-    daemonStatus = await deps.run(daemonStatusCommand, {
-      cwd: projectRoot,
-      timeoutMs: 30_000
-    });
-    if (daemonStatus.exitCode !== 0) {
-      throw new Error(
-        `Paseo daemon did not become ready after startup: ${diagnostic(daemonStatus)}`
-      );
-    }
+    daemonStatus = await deps.run(daemonStatusCommand, { cwd: projectRoot, timeoutMs: 30_000 });
+    if (daemonStatus.exitCode !== 0) throw new Error(`Paseo daemon did not become ready after startup: ${diagnostic(daemonStatus)}`);
   }
 
   const provider = selection.paseoProvider;
@@ -157,32 +133,14 @@ export async function startPaseoHarness(
   const title = options.title ?? settings?.title ?? `AEH Lead · ${config.project.name}`;
   const aehCommand = options.aehCommand ?? "aeh";
   const preferPaseoTools = settings?.usePaseoTools !== false;
-  const bootstrap = buildPaseoLeadBootstrap(
-    config.project.name,
-    projectRoot,
-    aehCommand,
-    preferPaseoTools,
-    options.handoffPath
-  );
+  const bootstrap = buildPaseoLeadBootstrap(config.project.name, projectRoot, aehCommand, preferPaseoTools, options.handoffPath);
   await fs.mkdir(stateDir, { recursive: true });
   await fs.writeFile(bootstrapFile, `${bootstrap}\n`);
 
   const previous = await loadState(stateFile);
-  if (
-    !options.forceNew &&
-    reuseRequested &&
-    !options.handoffPath &&
-    previous &&
-    compatibleState(previous, {
-      projectRoot,
-      leadName,
-      provider,
-      model,
-      title,
-      aehCommand
-    })
-  ) {
+  if (!options.forceNew && reuseRequested && !options.handoffPath && previous && compatibleState(previous, { projectRoot, leadName, provider, model, title, aehCommand })) {
     if (await deps.probeAgent(projectRoot, previous.agentId)) {
+      await rebindActiveOperationsToLead(projectRoot, config, previous.agentId, "lead-resume");
       return {
         daemonStarted,
         session: "reused",
@@ -210,9 +168,7 @@ export async function startPaseoHarness(
     "aeh.bootstrap": String(PASEO_BOOTSTRAP_VERSION)
   };
   if (options.handoffPath) labels["aeh.handoff"] = options.handoffPath;
-  const operationControl = preferPaseoTools
-    ? buildAehControlMcp(aehCommand, projectRoot)
-    : {};
+  const operationControl = preferPaseoTools ? buildAehControlMcp(aehCommand, projectRoot) : {};
   const launch = await deps.launchAgent(projectRoot, {
     cwd: projectRoot,
     title,
@@ -231,12 +187,9 @@ export async function startPaseoHarness(
     ...operationControl
   });
   if (launch.exitCode !== 0 || !launch.id) {
-    throw new Error(
-      `Failed to create AEH lead in Paseo${capabilities.version ? ` ${capabilities.version}` : ""}: ${launch.stderr || launch.stdout || `exit code ${launch.exitCode}`}`
-    );
+    throw new Error(`Failed to create AEH lead in Paseo${capabilities.version ? ` ${capabilities.version}` : ""}: ${launch.stderr || launch.stdout || `exit code ${launch.exitCode}`}`);
   }
   const agentId = launch.id;
-
   const state: PaseoLeadState = {
     version: 2,
     bootstrapVersion: PASEO_BOOTSTRAP_VERSION,
@@ -254,6 +207,7 @@ export async function startPaseoHarness(
     handoffPath: options.handoffPath
   };
   await fs.writeFile(stateFile, `${JSON.stringify(state, null, 2)}\n`);
+  await rebindActiveOperationsToLead(projectRoot, config, agentId, options.handoffPath ? "lead-handoff" : "lead-start");
   return {
     daemonStarted,
     session: "created",
@@ -271,10 +225,7 @@ export async function startPaseoHarness(
   };
 }
 
-export function buildAehControlMcp(
-  aehCommand: string,
-  projectRoot: string
-): Pick<PaseoSdkAgentOptions, "mcpServers" | "toolPolicy"> {
+export function buildAehControlMcp(aehCommand: string, projectRoot: string): Pick<PaseoSdkAgentOptions, "mcpServers" | "toolPolicy"> {
   const argv = parseCommandVector(aehCommand);
   if (!argv?.length) return {};
   const [command, ...baseArgs] = argv;
@@ -282,7 +233,9 @@ export function buildAehControlMcp(
   const tools = [
     "aeh_operation_start_audit",
     "aeh_operation_start_run",
+    "aeh_operation_start_change",
     "aeh_operation_status",
+    "aeh_operation_portfolio",
     "aeh_operation_cancel",
     "aeh_context_status"
   ];
@@ -296,9 +249,7 @@ export function buildAehControlMcp(
         alwaysLoad: true
       }
     },
-    toolPolicy: {
-      preapproved: tools.map((tool) => ({ kind: "mcp" as const, server, tool }))
-    }
+    toolPolicy: { preapproved: tools.map((tool) => ({ kind: "mcp" as const, server, tool })) }
   };
 }
 
@@ -308,15 +259,10 @@ export function parseCommandVector(value: string): string[] | undefined {
   if (trimmed.startsWith('"')) {
     const matches = trimmed.match(/"(?:\\.|[^"\\])*"/g);
     if (!matches?.length || matches.join(" ") !== trimmed) return undefined;
-    try {
-      return matches.map((item) => JSON.parse(item) as string).filter(Boolean);
-    } catch {
-      return undefined;
-    }
+    try { return matches.map((item) => JSON.parse(item) as string).filter(Boolean); }
+    catch { return undefined; }
   }
-  if (!/^[A-Za-z0-9_./:@+-]+(?:\s+[A-Za-z0-9_./:@+-]+)*$/.test(trimmed)) {
-    return undefined;
-  }
+  if (!/^[A-Za-z0-9_./:@+-]+(?:\s+[A-Za-z0-9_./:@+-]+)*$/.test(trimmed)) return undefined;
   return trimmed.split(/\s+/);
 }
 
@@ -328,51 +274,38 @@ export function buildPaseoLeadBootstrap(
   handoffPath?: string
 ): string {
   const handoff = handoffPath
-    ? `\n\nThis lead was created by proactive context rotation. Before the next engineering action, read the deterministic handoff artifact ${JSON.stringify(handoffPath)} and the sealed/run/audit/operation/delivery artifacts it references. Durable artifacts are authoritative; do not ask the previous lead to replay its conversation.`
+    ? `\n\nThis lead was created by proactive context rotation. Read the deterministic handoff artifact ${JSON.stringify(handoffPath)} plus the active operation portfolio/OperationRecords before making a new engineering decision. Active operations are rebound to this lead generation automatically; do not ask the previous lead to replay child-agent transcripts.`
     : "";
   return `AEH thin-lead Paseo bootstrap v${PASEO_BOOTSTRAP_VERSION}; AEH runtime v${VERSION}.
 
-You are the top-level engineering lead for project ${JSON.stringify(projectName)} at ${JSON.stringify(projectRoot)}. A normal \`aeh start\` creates a fresh lead; explicit resume is opt-in.${handoff}
+You are the top-level engineering lead for project ${JSON.stringify(projectName)} at ${JSON.stringify(projectRoot)}. Your role is the user/portfolio plane, not the worker plane.${handoff}
 
-This session carries explicit AEH lead identity (\`AEH_INTERACTIVE_LEAD=1\`). Paseo session identity alone does not grant orchestration authority. Harness-spawned reviewers/workers/planners are already inside the workflow and must not recursively invoke AEH entrypoints.
+This session carries explicit AEH lead identity (\`AEH_INTERACTIVE_LEAD=1\`). Paseo session identity alone does not grant orchestration authority. Harness-spawned operation supervisors/reviewers/workers/planners are already inside an AEH workflow and must not recursively invoke AEH entrypoints.
 
 Your exact AEH runtime invocation is \`${aehCommand}\`. This invocation and runtime version are part of the durable lead identity. Do not replace it with another global, cached, npx or guessed AEH executable.
 
-Before engineering work, read AGENTS.md and .harness/skills/engineering-workflow/SKILL.md when present. Those instructions plus the resolved AEH agent topology are authoritative for available roles, charters, permissions, routing and delegation. Do not maintain or invent a separate role map in conversational context.
+Before engineering work, read AGENTS.md and .harness/skills/engineering-workflow/SKILL.md when present. Those instructions plus resolved AEH topology are authoritative. Every engineering operation must enter through AEH; only purely informational questions may bypass.
 
-Every engineering operation must enter through AEH, including read-only audits. Only purely informational questions may bypass. Whenever the workflow says \`aeh\`, invoke exactly: \`${aehCommand}\`.
+Operate as a thin portfolio orchestrator. You may own multiple concurrent operations in isolated workspaces. Manage user intent, priorities, cross-operation dependencies, true exception decisions and final user-facing semantic acceptance. Do not directly multiplex planner/worker/reviewer timelines. Each non-trivial operation has an operation-supervisor responsible for operation-local semantic coordination/consolidation, while deterministic controller + OperationRecord remain lifecycle/gate authority.
 
-Remain a thin ORCHESTRATOR: preserve user intent, make semantic/risk decisions, delegate bounded operations through the authoritative topology, monitor deterministic state and perform final semantic acceptance. Follow engineering-workflow end-to-end for intent classification, AUDIT, QUICK/SPEC triage, OpenSpec authoring, sealed execution, recovery, validation and delivery rather than reproducing those procedures here.
+${preferPaseoTools ? `Use the injected aeh-control tools for detached AUDIT, CHANGE and prepared RUN operations. \`aeh_operation_portfolio\` gives a compact operation-level view; do not poll every child agent. After an operation starts, its detached liveness monitor observes durable OperationRecord revisions, stalls, blocks and terminal state. Native parent notifications and direct completion sends are fast paths only; the watchdog is the recovery path, so a single lost callback must not strand the operation.
 
-${preferPaseoTools ? `When running inside Paseo, use the paseo-orchestration skill and injected native/MCP tools for conversational delegation and /paseo-handoff for responsibility transfer. The managed lead receives the exact project-locked aeh-control MCP when its AEH invocation can be represented safely; prefer those detached operation tools for long AUDIT/RUN workflows, then use short \`${aehCommand} operation ...\` commands only as fallback. Never intentionally use synchronous \`${aehCommand} audit\` or \`${aehCommand} run\` for long managed-lead work; AEH will auto-promote standard forms to detached operations as a deterministic safety net. AEH's external controller may create independent top-level Paseo agents for Harness-owned work; AEH operation/run/task labels, not Paseo parentage, define workflow ownership.
+Progress wake-ups are internal continuation events. For healthy non-terminal progress, do not create user-facing status noise; acknowledge the durable operation state and return idle. For blocked/product/external decisions, inspect the OperationRecord and involve the user only when required. For terminal state, read the durable result/report and complete the original pending user request. Never start a duplicate operation merely because a previous notification was lost.` : `Use AEH's configured Paseo adapter for delegation and lifecycle control.`}
 
-After starting a detached AUDIT/RUN, do not busy-poll \`aeh_operation_status\` in the normal conversational path. The controller durably registers this lead and will send an \`[AEH_OPERATION_COMPLETED]\` follow-up when the operation reaches SUCCEEDED, FAILED or CANCELLED. You may end the current turn after acknowledging that the operation was started. When the completion callback arrives, treat it as an internal continuation event for the still-pending user request, not as a new task: do not create a duplicate operation; inspect the cited durable operation/report artifacts and finish the original user-facing answer. Use \`aeh_operation_status\` only for explicit diagnostics, manual inspection or recovery if a callback is known to have failed.` : `Use AEH's configured Paseo adapter for delegation and lifecycle control.`}
+Before non-trivial work and at completed-turn boundaries, inspect context pressure with \`aeh_context_status\`. Honor HANDOFF_REQUIRED/HARD_HANDOFF and stop the old lead when replacement is created. Lead rotation automatically rebinds active OperationRecords and completion targets to the new lead generation; durable artifacts, not conversational replay, carry continuity.
 
-Before non-trivial work and again at completed-turn boundaries, inspect context pressure. Prefer the injected \`aeh_context_status\` tool, which reads the current Paseo AgentSnapshot and applies AEH's deterministic thresholds without shell/log parsing. Use \`${aehCommand} context guard --agent "$PASEO_AGENT_ID"\` only as a non-interactive/compatibility fallback. Honor HANDOFF_REQUIRED/HARD_HANDOFF and stop the old lead when a replacement is created. NO_USAGE_YET is normal before the provider emits usage; USAGE_UNAVAILABLE means pressure cannot be measured and should increase delegation rather than inventing a ratio.
-
-The compiled AEH TaskContract/SDD plus seal are normative during implementation. OpenSpec is authoring provenance before freeze, not a competing runtime authority. Do not perform broad repository operations directly when a bounded Harness operation or configured agent owns them.
-
-This bootstrap is session configuration, not a user task. Do not emit an initialization handshake or synthetic readiness message; remain idle until the user's first real request.`;
+The compiled AEH TaskContract/SDD plus seal are normative during implementation. OpenSpec is authoring provenance before freeze, not a competing runtime authority. This bootstrap is session configuration, not a user task. Do not emit an initialization handshake; remain idle until the user's first real request.`;
 }
 
-export function resolveLeadAgent(
-  topology: ResolvedAgentTopology,
-  configured?: string
-): string {
+export function resolveLeadAgent(topology: ResolvedAgentTopology, configured?: string): string {
   if (configured) {
     const selected = topology.agents[configured];
-    if (!selected || selected.disabled) {
-      throw new Error(`Configured interactive lead agent '${configured}' is unavailable.`);
-    }
+    if (!selected || selected.disabled) throw new Error(`Configured interactive lead agent '${configured}' is unavailable.`);
     return configured;
   }
   if (topology.agents.lead && !topology.agents.lead.disabled) return "lead";
-  const orchestrator = Object.values(topology.agents).find(
-    (agent) => agent.role === "orchestrator" && !agent.disabled
-  );
-  if (!orchestrator) {
-    throw new Error("aeh start requires an enabled orchestrator/lead agent in the resolved topology.");
-  }
+  const orchestrator = Object.values(topology.agents).find((agent) => agent.role === "orchestrator" && !agent.disabled);
+  if (!orchestrator) throw new Error("aeh start requires an enabled orchestrator/lead agent in the resolved topology.");
   return orchestrator.name;
 }
 
@@ -380,51 +313,14 @@ function runtimeExecutable(topology: ResolvedAgentTopology, leadName: string): s
   const runtime = topology.agents[leadName].runtime;
   return runtime.command?.trim().split(/\s+/, 1)[0] || runtime.adapter;
 }
-async function missingCommands(
-  root: string,
-  commands: string[],
-  deps: PaseoStartDeps
-): Promise<string[]> {
+async function missingCommands(root: string, commands: string[], deps: PaseoStartDeps): Promise<string[]> {
   const result: string[] = [];
-  for (const command of [...new Set(commands.filter(Boolean))]) {
-    if (!(await deps.commandExists(command, root))) result.push(command);
-  }
+  for (const command of [...new Set(commands.filter(Boolean))]) if (!(await deps.commandExists(command, root))) result.push(command);
   return result;
 }
-function paseoModel(selection: AgentExecutionSelection): string {
-  return selection.runtimeAdapter === "codex" ? selection.modelName : selection.modelId;
+function paseoModel(selection: AgentExecutionSelection): string { return selection.runtimeAdapter === "codex" ? selection.modelName : selection.modelId; }
+async function loadState(file: string): Promise<PaseoLeadState | undefined> { try { return JSON.parse(await fs.readFile(file, "utf8")) as PaseoLeadState; } catch { return undefined; } }
+function compatibleState(state: PaseoLeadState, expected: { projectRoot: string; leadName: string; provider: string; model: string; title: string; aehCommand: string }): boolean {
+  return state.version === 2 && state.bootstrapVersion === PASEO_BOOTSTRAP_VERSION && state.aehVersion === VERSION && state.aehCommand === expected.aehCommand && state.projectRoot === expected.projectRoot && state.leadAgent === expected.leadName && state.provider === expected.provider && state.model === expected.model && state.title === expected.title;
 }
-async function loadState(file: string): Promise<PaseoLeadState | undefined> {
-  try {
-    return JSON.parse(await fs.readFile(file, "utf8")) as PaseoLeadState;
-  } catch {
-    return undefined;
-  }
-}
-function compatibleState(
-  state: PaseoLeadState,
-  expected: {
-    projectRoot: string;
-    leadName: string;
-    provider: string;
-    model: string;
-    title: string;
-    aehCommand: string;
-  }
-): boolean {
-  return (
-    state.version === 2 &&
-    state.bootstrapVersion === PASEO_BOOTSTRAP_VERSION &&
-    state.aehVersion === VERSION &&
-    state.aehCommand === expected.aehCommand &&
-    state.projectRoot === expected.projectRoot &&
-    state.leadAgent === expected.leadName &&
-    state.provider === expected.provider &&
-    state.model === expected.model &&
-    state.title === expected.title
-  );
-}
-function diagnostic(result: ProcessResult): string {
-  return [result.stderr.trim(), result.stdout.trim()].filter(Boolean).join("\n") ||
-    `exit code ${result.exitCode}`;
-}
+function diagnostic(result: ProcessResult): string { return [result.stderr.trim(), result.stdout.trim()].filter(Boolean).join("\n") || `exit code ${result.exitCode}`; }
