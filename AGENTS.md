@@ -62,3 +62,7 @@ After compilation/sealing, the compiled AEH artifacts and seal are normative dur
 5. Consumer-specific rules belong in the consumer repository, not in the Harness core.
 6. Do not introduce mandatory commercial-license dependencies for private repositories.
 7. Self-modification is governed by the control-plane snapshot taken at operation/run start; changes to these rules take effect only on a later operation.
+
+## Rules
+
+- If the user implicitly specify not to use AEH, the AEH flow will not be used.

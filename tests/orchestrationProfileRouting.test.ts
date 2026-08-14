@@ -17,5 +17,5 @@ it("resolves balanced orchestration reviewers to the intended models", async () 
     expect([selection.runtimeAdapter, selection.modelName, selection.variant]).toEqual(["opencode", "deepseek-v4-flash", "max"]);
   }
   const architecture = executionSelectionForAgent(topology, "architecture-reviewer");
-  expect([architecture.runtimeAdapter, architecture.modelName, architecture.variant]).toEqual(["codex", "gpt-5.6-luna", "max"]);
+  expect([architecture.runtimeAdapter, architecture.modelName, architecture.variant]).toEqual(["opencode", "deepseek-v4-flash", "max"]);
 });

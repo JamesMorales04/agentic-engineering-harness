@@ -41,7 +41,7 @@
       "temperature": 0.2
     },
     "architecture-reviewer": {
-      "execution": { "model": "@brain" },
+      "execution": { "model": "@workhorse" },
       "temperature": 0.1
     },
     "security-reviewer": {
@@ -100,7 +100,7 @@
   "profiles": {
     "balanced": {
       "agents": {
-        "architecture-reviewer": { "execution": { "model": "@brain" } },
+        "architecture-reviewer": { "execution": { "model": "@workhorse" } },
         "security-reviewer": { "execution": { "model": "@workhorse" } },
         "requirements-reviewer": { "execution": { "model": "@workhorse" } }
       }
