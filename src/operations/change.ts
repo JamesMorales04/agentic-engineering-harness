@@ -9,7 +9,7 @@ import { validateSddChange } from "../core/sdd.js";
 import { sealTask } from "../core/seal.js";
 import { triageChange } from "../core/triage.js";
 import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
-import { compileOpenSpecChange, preflightOpenSpec, prepareOpenSpecChange, type OpenSpecPreparedChange } from "../spec/openspec.js";
+import { compileOpenSpecChange, preflightOpenSpec, prepareOpenSpecChange, type OpenSpecPreflightResult } from "../spec/openspec.js";
 import { recordEvent } from "../telemetry/events.js";
 import { executeAgentPrompt } from "../workers/agentPrompt.js";
 import { requireDurableChangeHandoff, type DurableAgentEvidence } from "./changeHandoff.js";
@@ -58,22 +58,22 @@ export async function runChangeOperation(
   await patchOperation(controlRoot, operation.id, { intent: { ...current.intent, request: payload.request, classification: "CHANGE", mode, risk: payload.risk ?? "low", priority: payload.priority ?? current.intent?.priority } });
   await setOperationStage(controlRoot, operation.id, "triage", "COMPLETED", { message: `${mode.toUpperCase()}: ${triageReasons.join("; ")}` });
 
-  let preparedSpec: OpenSpecPreparedChange | undefined;
-  let specChange: string | undefined;
+  let specPreflight: OpenSpecPreflightResult | undefined;
   if (mode === "spec") {
     await setOperationStage(controlRoot, operation.id, "environment-preflight", "RUNNING");
-    const preflight = await preflightOpenSpec(root, config);
-    preparedSpec = await prepareOpenSpecChange(root, config, taskId, title);
-    specChange = preparedSpec.changeName;
+    specPreflight = await preflightOpenSpec(root, config);
     await setOperationStage(controlRoot, operation.id, "environment-preflight", "COMPLETED", {
-      artifact: `openspec/changes/${preparedSpec.changeName}`,
-      message: `OpenSpec ${preflight.version}; schema=${preflight.schema}; manager=${preflight.managerAgent}`
+      message: `OpenSpec ${specPreflight.version}; schema=${specPreflight.schema}; manager=${specPreflight.managerAgent}`
     });
   } else {
     await setOperationStage(controlRoot, operation.id, "environment-preflight", "SKIPPED", { message: "QUICK mode does not require OpenSpec." });
   }
 
   const topology = await loadResolvedAgentTopology(root, config, payload.profile ?? config.agents?.activeProfile);
+  if (specPreflight) {
+    const manager = topology.agents[specPreflight.managerAgent];
+    if (!manager || manager.disabled) throw new Error(`SPEC_MANAGER_UNAVAILABLE: ${specPreflight.managerAgent}`);
+  }
   await ensureOperationSupervisor(root, config, bootstrapContract, topology, { required: true, forceMaterialize: true });
 
   await setOperationStage(controlRoot, operation.id, "discovery", "RUNNING");
@@ -92,6 +92,7 @@ export async function runChangeOperation(
   });
 
   let contract: TaskContract;
+  let specChange: string | undefined;
   if (mode === "quick") {
     await setOperationStage(controlRoot, operation.id, "contract-authoring", "RUNNING");
     const quick = await createQuickContract(root, config, taskId, {
@@ -107,10 +108,11 @@ export async function runChangeOperation(
     await sealTask(root, config, contract);
     await setOperationStage(controlRoot, operation.id, "contract-authoring", "COMPLETED", { artifact: relativeContract(config, taskId) });
   } else {
-    if (!preparedSpec) throw new Error("SPEC_PREFLIGHT_STATE: SPEC mode reached authoring without a prepared OpenSpec change.");
+    if (!specPreflight) throw new Error("SPEC_PREFLIGHT_STATE: SPEC mode reached authoring without a completed OpenSpec preflight.");
     await setOperationStage(controlRoot, operation.id, "spec-authoring", "RUNNING");
-    const manager = topology.agents[preparedSpec.managerAgent];
-    if (!manager || manager.disabled) throw new Error(`SPEC_MANAGER_UNAVAILABLE: ${preparedSpec.managerAgent}`);
+    const preparedSpec = await prepareOpenSpecChange(root, config, taskId, title);
+    specChange = preparedSpec.changeName;
+    if (preparedSpec.managerAgent !== specPreflight.managerAgent) throw new Error(`SPEC_MANAGER_PREFLIGHT_DRIFT: preflight=${specPreflight.managerAgent} prepared=${preparedSpec.managerAgent}`);
     const selection = executionSelectionForAgent(topology, preparedSpec.managerAgent);
     const specSession = await executeAgentPrompt(
       root,
