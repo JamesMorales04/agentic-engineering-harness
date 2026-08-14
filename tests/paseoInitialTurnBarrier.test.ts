@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { launchManagedPaseoAgent } from "../src/paseo/runtime.js";
 
+const managedLabels = {
+  "aeh.operation": "CHANGE-TEST",
+  "aeh.role": "explorer",
+  "aeh.operation.phase": "discovery"
+};
+
 function deps() {
   return {
     run: vi.fn(), detectCapabilities: vi.fn(), trace: vi.fn(async () => undefined),
@@ -20,10 +26,10 @@ function deps() {
 }
 
 describe("Paseo initial-turn barrier", () => {
-  it("materializes before the atomic first turn", async () => {
+  it("materializes a managed participant before the atomic first turn", async () => {
     const runtime = deps();
     const result = await launchManagedPaseoAgent("/repo", {
-      cwd: "/repo", title: "explorer", provider: "opencode", prompt: "discover", timeoutSeconds: 30
+      cwd: "/repo", title: "explorer", provider: "opencode", prompt: "discover", timeoutSeconds: 30, labels: managedLabels
     }, runtime as never);
     expect(result).toEqual(expect.objectContaining({ id: "fast-agent", stdout: "done", observation: "sdk-run" }));
     expect(runtime.sdk.materialize).toHaveBeenCalledBefore(runtime.sdk.run);
@@ -33,31 +39,31 @@ describe("Paseo initial-turn barrier", () => {
     expect(runtime.native.wait).not.toHaveBeenCalled();
   });
 
-  it("forwards an output schema through the atomic first turn", async () => {
+  it("forwards an output schema through the managed atomic first turn", async () => {
     const runtime = deps();
     const schema = { type: "object", required: ["verdict"] };
     await launchManagedPaseoAgent("/repo", {
-      cwd: "/repo", title: "typed", provider: "opencode", prompt: "work", outputSchema: schema, timeoutSeconds: 45
+      cwd: "/repo", title: "typed", provider: "opencode", prompt: "work", outputSchema: schema, timeoutSeconds: 45, labels: managedLabels
     }, runtime as never);
     expect(runtime.sdk.run).toHaveBeenCalledWith("/repo", "fast-agent", "work", 45_000, schema);
     expect(runtime.sdk.create).not.toHaveBeenCalled();
   });
 
-  it("preserves detached launch semantics", async () => {
+  it("preserves explicitly detached managed launch semantics", async () => {
     const runtime = deps();
     await launchManagedPaseoAgent("/repo", {
-      cwd: "/repo", title: "detached", provider: "opencode", prompt: "work", waitForFinish: false
+      cwd: "/repo", title: "detached", provider: "opencode", prompt: "work", waitForFinish: false, labels: managedLabels
     }, runtime as never);
     expect(runtime.sdk.create).toHaveBeenCalledTimes(1);
     expect(runtime.sdk.materialize).not.toHaveBeenCalled();
     expect(runtime.sdk.run).not.toHaveBeenCalled();
   });
 
-  it("never creates a second agent after a materialized turn has started", async () => {
+  it("never creates a second agent after a managed materialized turn has started", async () => {
     const runtime = deps();
     runtime.sdk.run.mockRejectedValue(new Error("turn failed"));
     await expect(launchManagedPaseoAgent("/repo", {
-      cwd: "/repo", title: "single-run", provider: "opencode", prompt: "work"
+      cwd: "/repo", title: "single-run", provider: "opencode", prompt: "work", labels: managedLabels
     }, runtime as never)).rejects.toThrow("turn failed");
     expect(runtime.sdk.materialize).toHaveBeenCalledTimes(1);
     expect(runtime.sdk.create).not.toHaveBeenCalled();
