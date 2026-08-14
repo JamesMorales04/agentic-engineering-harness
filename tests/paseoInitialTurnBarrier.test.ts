@@ -33,6 +33,16 @@ describe("Paseo initial-turn barrier", () => {
     expect(runtime.native.wait).not.toHaveBeenCalled();
   });
 
+  it("forwards an output schema through the atomic first turn", async () => {
+    const runtime = deps();
+    const schema = { type: "object", required: ["verdict"] };
+    await launchManagedPaseoAgent("/repo", {
+      cwd: "/repo", title: "typed", provider: "opencode", prompt: "work", outputSchema: schema, timeoutSeconds: 45
+    }, runtime as never);
+    expect(runtime.sdk.run).toHaveBeenCalledWith("/repo", "fast-agent", "work", 45_000, schema);
+    expect(runtime.sdk.create).not.toHaveBeenCalled();
+  });
+
   it("preserves detached launch semantics", async () => {
     const runtime = deps();
     await launchManagedPaseoAgent("/repo", {
@@ -41,5 +51,15 @@ describe("Paseo initial-turn barrier", () => {
     expect(runtime.sdk.create).toHaveBeenCalledTimes(1);
     expect(runtime.sdk.materialize).not.toHaveBeenCalled();
     expect(runtime.sdk.run).not.toHaveBeenCalled();
+  });
+
+  it("never creates a second agent after a materialized turn has started", async () => {
+    const runtime = deps();
+    runtime.sdk.run.mockRejectedValue(new Error("turn failed"));
+    await expect(launchManagedPaseoAgent("/repo", {
+      cwd: "/repo", title: "single-run", provider: "opencode", prompt: "work"
+    }, runtime as never)).rejects.toThrow("turn failed");
+    expect(runtime.sdk.materialize).toHaveBeenCalledTimes(1);
+    expect(runtime.sdk.create).not.toHaveBeenCalled();
   });
 });
