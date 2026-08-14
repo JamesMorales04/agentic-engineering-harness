@@ -1,7 +1,6 @@
 import { loadResolvedAgentTopology } from "../agents/config.js";
+import { explorerOutputSchema, plannerOutputSchema, specAuthoringOutputSchema, type ExplorerOutput, type PlannerOutput, type SpecAuthoringOutput } from "../agents/outputContracts.js";
 import { executionSelectionForAgent } from "../agents/routing.js";
-import { plannerOutputSchema } from "../agents/outputContracts.js";
-import { extractMarkedJson } from "../agents/structuredOutput.js";
 import { createControlPlaneSnapshot } from "../core/controlPlane.js";
 import { loadTaskContract } from "../core/config.js";
 import { createQuickContract } from "../core/quick.js";
@@ -9,11 +8,12 @@ import { runTask, type TaskRunResult } from "../core/run.js";
 import { validateSddChange } from "../core/sdd.js";
 import { sealTask } from "../core/seal.js";
 import { triageChange } from "../core/triage.js";
-import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
-import { prepareOpenSpecChange, compileOpenSpecChange } from "../spec/openspec.js";
-import { executeAgentPrompt } from "../workers/agentPrompt.js";
+import type { HarnessProjectConfig, TaskContract, WorkerSession } from "../core/types.js";
+import { compileOpenSpecChange, preflightOpenSpec, prepareOpenSpecChange, type OpenSpecPreparedChange } from "../spec/openspec.js";
 import { recordEvent } from "../telemetry/events.js";
-import { ensureOperationSupervisor, maybeRotateOperationSupervisor } from "./supervisor.js";
+import { executeAgentPrompt } from "../workers/agentPrompt.js";
+import { acceptedStructuredResultForAgent } from "../workers/resultGateway.js";
+import { changeInputsPrompt, resolveChangeInputs, type ChangeInputReference } from "./changeInputs.js";
 import {
   loadOperation,
   patchOperation,
@@ -21,6 +21,7 @@ import {
   type ChangeOperationPayload,
   type OperationRecordV2
 } from "./state.js";
+import { ensureOperationSupervisor, maybeRotateOperationSupervisor } from "./supervisor.js";
 
 export interface ChangeOperationResult {
   taskId: string;
@@ -28,6 +29,11 @@ export interface ChangeOperationResult {
   triageReasons: string[];
   run: TaskRunResult;
   specChange?: string;
+}
+
+interface DurableAgentEvidence<T> {
+  payload: T;
+  artifact: string;
 }
 
 export async function runChangeOperation(
@@ -39,30 +45,58 @@ export async function runChangeOperation(
 ): Promise<ChangeOperationResult> {
   const taskId = payload.taskId?.trim() || operation.id;
   const title = payload.title?.trim() || payload.request.slice(0, 120) || `Change ${taskId}`;
-  const topology = await loadResolvedAgentTopology(root, config, payload.profile ?? config.agents?.activeProfile);
   const bootstrapContract = operationBootstrapContract(taskId, title, payload);
   await createControlPlaneSnapshot(root, config, taskId);
-  await setOperationStage(controlRoot, operation.id, "discovery", "RUNNING");
-  await ensureOperationSupervisor(root, config, bootstrapContract, topology, { required: true, forceMaterialize: true });
 
-  const explorerEvidence = await runDiscovery(root, config, bootstrapContract, topology, payload);
-  await setOperationStage(controlRoot, operation.id, "discovery", "COMPLETED");
-  await maybeRotateOperationSupervisor(root, config, bootstrapContract, topology);
-
-  await setOperationStage(controlRoot, operation.id, "planning", "RUNNING");
-  const plannerEvidence = await runPlanning(root, config, bootstrapContract, topology, payload, explorerEvidence);
-  await setOperationStage(controlRoot, operation.id, "planning", "COMPLETED");
+  await setOperationStage(controlRoot, operation.id, "input-resolution", "RUNNING");
+  const inputs = await resolveChangeInputs(controlRoot, operation.id, payload.request);
+  await setOperationStage(controlRoot, operation.id, "input-resolution", "COMPLETED", {
+    artifact: inputs[0]?.artifact,
+    message: inputs.length ? `${inputs.length} durable input artifact(s) frozen.` : "No external durable inputs referenced."
+  });
 
   await setOperationStage(controlRoot, operation.id, "triage", "RUNNING");
   const triage = triageChange(config, { request: payload.request, files: payload.files, domains: payload.domains, risk: payload.risk });
   const mode: "quick" | "spec" = triage.quickEligible && (payload.acceptance?.length ?? 0) > 0 ? "quick" : "spec";
-  const triageReasons = mode === "quick" ? triage.reasons : [...triage.reasons, ...(payload.acceptance?.length ? [] : ["SPEC selected because no explicit observable QUICK acceptance was supplied"] )];
+  const triageReasons = mode === "quick" ? triage.reasons : [...triage.reasons, ...(payload.acceptance?.length ? [] : ["SPEC selected because no explicit observable QUICK acceptance was supplied"])];
   const current = await loadOperation(controlRoot, operation.id);
   await patchOperation(controlRoot, operation.id, { intent: { ...current.intent, request: payload.request, classification: "CHANGE", mode, risk: payload.risk ?? "low", priority: payload.priority ?? current.intent?.priority } });
   await setOperationStage(controlRoot, operation.id, "triage", "COMPLETED", { message: `${mode.toUpperCase()}: ${triageReasons.join("; ")}` });
 
-  let contract: TaskContract;
+  let preparedSpec: OpenSpecPreparedChange | undefined;
   let specChange: string | undefined;
+  if (mode === "spec") {
+    await setOperationStage(controlRoot, operation.id, "environment-preflight", "RUNNING");
+    const preflight = await preflightOpenSpec(root, config);
+    preparedSpec = await prepareOpenSpecChange(root, config, taskId, title);
+    specChange = preparedSpec.changeName;
+    await setOperationStage(controlRoot, operation.id, "environment-preflight", "COMPLETED", {
+      artifact: `openspec/changes/${preparedSpec.changeName}`,
+      message: `OpenSpec ${preflight.version}; schema=${preflight.schema}; manager=${preflight.managerAgent}`
+    });
+  } else {
+    await setOperationStage(controlRoot, operation.id, "environment-preflight", "SKIPPED", { message: "QUICK mode does not require OpenSpec." });
+  }
+
+  const topology = await loadResolvedAgentTopology(root, config, payload.profile ?? config.agents?.activeProfile);
+  await ensureOperationSupervisor(root, config, bootstrapContract, topology, { required: true, forceMaterialize: true });
+
+  await setOperationStage(controlRoot, operation.id, "discovery", "RUNNING");
+  const explorerEvidence = await runDiscovery(root, config, bootstrapContract, topology, operation.id, payload, inputs);
+  await setOperationStage(controlRoot, operation.id, "discovery", "COMPLETED", {
+    artifact: explorerEvidence?.artifact,
+    message: explorerEvidence ? "Explorer durable result accepted." : "Explorer disabled or unavailable by topology."
+  });
+  await maybeRotateOperationSupervisor(root, config, bootstrapContract, topology);
+
+  await setOperationStage(controlRoot, operation.id, "planning", "RUNNING");
+  const plannerEvidence = await runPlanning(root, config, bootstrapContract, topology, operation.id, payload, explorerEvidence, inputs);
+  await setOperationStage(controlRoot, operation.id, "planning", "COMPLETED", {
+    artifact: plannerEvidence?.artifact,
+    message: plannerEvidence ? "Planner durable result accepted." : "Planner disabled or unavailable by topology."
+  });
+
+  let contract: TaskContract;
   if (mode === "quick") {
     await setOperationStage(controlRoot, operation.id, "contract-authoring", "RUNNING");
     const quick = await createQuickContract(root, config, taskId, {
@@ -78,36 +112,37 @@ export async function runChangeOperation(
     await sealTask(root, config, contract);
     await setOperationStage(controlRoot, operation.id, "contract-authoring", "COMPLETED", { artifact: relativeContract(config, taskId) });
   } else {
+    if (!preparedSpec) throw new Error("SPEC_PREFLIGHT_STATE: SPEC mode reached authoring without a prepared OpenSpec change.");
     await setOperationStage(controlRoot, operation.id, "spec-authoring", "RUNNING");
-    const prepared = await prepareOpenSpecChange(root, config, taskId, title);
-    specChange = prepared.changeName;
-    const manager = topology.agents[prepared.managerAgent];
-    if (!manager || manager.disabled) throw new Error(`SPEC_MANAGER_UNAVAILABLE: ${prepared.managerAgent}`);
-    const selection = executionSelectionForAgent(topology, prepared.managerAgent);
+    const manager = topology.agents[preparedSpec.managerAgent];
+    if (!manager || manager.disabled) throw new Error(`SPEC_MANAGER_UNAVAILABLE: ${preparedSpec.managerAgent}`);
+    const selection = executionSelectionForAgent(topology, preparedSpec.managerAgent);
     const specSession = await executeAgentPrompt(
       root,
       config,
       bootstrapContract,
       selection,
-      buildSpecManagerPrompt(payload, prepared.changeName, explorerEvidence, plannerEvidence),
-      { outputContract: selection.outputContract ?? "planner", phase: "spec-authoring", operationKind: "change" }
+      buildSpecManagerPrompt(payload, preparedSpec.changeName, explorerEvidence, plannerEvidence, inputs),
+      { outputContract: "spec-authoring", phase: "spec-authoring", operationKind: "change" }
     );
-    if (specSession.exitCode !== 0) throw new Error(`SPEC_MANAGER_FAILED: ${specSession.stderr || specSession.stdout}`);
+    const specEvidence = await requireDurableResult(root, "SPEC_MANAGER", specSession, specAuthoringOutputSchema);
+    validateSpecAuthoringResult(preparedSpec.changeName, specEvidence.payload);
+    await setOperationStage(controlRoot, operation.id, "spec-authoring", "COMPLETED", { artifact: specEvidence.artifact });
     await maybeRotateOperationSupervisor(root, config, bootstrapContract, topology);
+
     await setOperationStage(controlRoot, operation.id, "spec-compilation", "RUNNING");
-    await compileOpenSpecChange(root, config, taskId, title, prepared.changeName);
+    await compileOpenSpecChange(root, config, taskId, title, preparedSpec.changeName);
     const validation = await validateSddChange(root, taskId, config);
     if (!validation.ok) throw new Error(`SDD validation failed after OpenSpec compilation: ${[...validation.missing, ...validation.issues].join("; ")}`);
     contract = await loadTaskContract(root, taskId, config);
     await sealTask(root, config, contract);
-    await setOperationStage(controlRoot, operation.id, "spec-authoring", "COMPLETED", { artifact: `openspec/changes/${prepared.changeName}` });
     await setOperationStage(controlRoot, operation.id, "spec-compilation", "COMPLETED", { artifact: relativeContract(config, taskId) });
   }
 
   await setOperationStage(controlRoot, operation.id, "implementation", "RUNNING");
   const run = await runTask(root, config, contract, { profile: payload.profile });
   await setOperationStage(controlRoot, operation.id, "implementation", run.status === "PASS" ? "COMPLETED" : "FAILED");
-  await recordEvent(controlRoot, config, "harness.change.finish", { operationId: operation.id, taskId, mode, status: run.status, triageReasons, specChange });
+  await recordEvent(controlRoot, config, "harness.change.finish", { operationId: operation.id, taskId, mode, status: run.status, triageReasons, specChange, inputArtifacts: inputs.map((item) => item.artifact) });
   return { taskId, mode, triageReasons, run, specChange };
 }
 
@@ -116,19 +151,22 @@ async function runDiscovery(
   config: HarnessProjectConfig,
   contract: TaskContract,
   topology: Awaited<ReturnType<typeof loadResolvedAgentTopology>>,
-  payload: ChangeOperationPayload
-): Promise<string> {
+  operationId: string,
+  payload: ChangeOperationPayload,
+  inputs: ChangeInputReference[]
+): Promise<DurableAgentEvidence<ExplorerOutput> | undefined> {
   const explorer = topology.agents.explorer;
-  if (!explorer || explorer.disabled) return "Explorer unavailable; deterministic triage will use explicit user evidence only.";
+  if (!explorer || explorer.disabled) return undefined;
   const session = await executeAgentPrompt(root, config, contract, executionSelectionForAgent(topology, "explorer"), [
     "Perform bounded repository discovery for this CHANGE operation.",
+    `Operation: ${operationId}`,
     `Request: ${payload.request}`,
     `Explicit files: ${(payload.files ?? []).join(", ") || "none"}`,
     `Domains: ${(payload.domains ?? []).join(", ") || "unspecified"}`,
-    "Return only relevant files/symbols/tests/module boundaries and concrete evidence. Do not implement, author specs or start another AEH workflow."
-  ].join("\n"), { phase: "discovery", operationKind: "change" });
-  if (session.exitCode !== 0) throw new Error(`EXPLORER_FAILED: ${session.stderr || session.stdout}`);
-  return compact(session.stdout || session.stderr, 12_000);
+    changeInputsPrompt(inputs),
+    "Return the explorer output contract with only relevant files/symbols/tests/module boundaries, verified finding status and concrete evidence. Do not implement, author specs or start another AEH workflow."
+  ].join("\n\n"), { outputContract: "explorer", phase: "discovery", operationKind: "change" });
+  return requireDurableResult(root, "EXPLORER", session, explorerOutputSchema);
 }
 
 async function runPlanning(
@@ -136,24 +174,51 @@ async function runPlanning(
   config: HarnessProjectConfig,
   contract: TaskContract,
   topology: Awaited<ReturnType<typeof loadResolvedAgentTopology>>,
+  operationId: string,
   payload: ChangeOperationPayload,
-  explorerEvidence: string
-): Promise<string> {
+  explorerEvidence: DurableAgentEvidence<ExplorerOutput> | undefined,
+  inputs: ChangeInputReference[]
+): Promise<DurableAgentEvidence<PlannerOutput> | undefined> {
   const planner = topology.agents.planner;
-  if (!planner || planner.disabled) return "Planner unavailable; deterministic triage will use explicit user evidence only.";
+  if (!planner || planner.disabled) return undefined;
   const selection = executionSelectionForAgent(topology, "planner");
+  const explorerContext = explorerEvidence
+    ? [`Explorer durable result artifact: ${explorerEvidence.artifact}`, `Explorer evidence projection:\n${compactJson(explorerEvidence.payload, 12_000)}`].join("\n")
+    : "Explorer is disabled/unavailable by topology; no explorer result was expected.";
   const session = await executeAgentPrompt(root, config, contract, selection, [
     "Produce planning/triage evidence only for this CHANGE operation. Do not implement or author the specification.",
+    `Operation: ${operationId}`,
     `Request: ${payload.request}`,
-    `Explorer evidence:\n${explorerEvidence}`,
-    "Identify affected areas, dependencies, likely implementer boundaries, reviewers and validation gates. Keep normative requirements unchanged."
+    changeInputsPrompt(inputs),
+    explorerContext,
+    "Identify affected areas, dependencies, bounded implementer ownership, reviewers and deterministic validation gates. Keep normative requirements unchanged."
   ].join("\n\n"), { outputContract: "planner", phase: "planning", operationKind: "change" });
-  if (session.exitCode !== 0) throw new Error(`PLANNER_FAILED: ${session.stderr || session.stdout}`);
-  try {
-    const parsed = plannerOutputSchema.parse(extractMarkedJson(session.stdout, session.stderr));
-    return JSON.stringify(parsed);
-  } catch {
-    return compact(session.stdout || session.stderr, 12_000);
+  return requireDurableResult(root, "PLANNER", session, plannerOutputSchema);
+}
+
+async function requireDurableResult<T>(
+  root: string,
+  label: string,
+  session: WorkerSession,
+  schema: { parse(value: unknown): T }
+): Promise<DurableAgentEvidence<T>> {
+  if (session.exitCode !== 0) throw new Error(`${label}_FAILED: ${session.stderr || session.stdout}`);
+  if (!session.id) throw new Error(`${label}_RESULT_ID_MISSING: structured handoff requires a durable agent session id.`);
+  const accepted = await acceptedStructuredResultForAgent<T>(root, session.id);
+  if (!accepted) throw new Error(`${label}_RESULT_ARTIFACT_MISSING: agent completed without an accepted structured result artifact.`);
+  let payload: T;
+  try { payload = schema.parse(accepted.payload); }
+  catch (error) { throw new Error(`${label}_RESULT_INVALID: ${String(error)}`); }
+  return { payload, artifact: accepted.artifact };
+}
+
+function validateSpecAuthoringResult(expectedChange: string, result: SpecAuthoringOutput): void {
+  if (result.change !== expectedChange) throw new Error(`SPEC_MANAGER_CHANGE_MISMATCH: expected '${expectedChange}', received '${result.change}'.`);
+  if (result.status === "BLOCKED" || !result.validationReady) {
+    throw new Error(`SPEC_MANAGER_BLOCKED: ${result.unresolvedDecisions.join("; ") || "spec authoring did not reach validation-ready state"}`);
+  }
+  if (!result.artifacts.proposal?.trim() || !result.artifacts.tasks?.trim()) {
+    throw new Error("SPEC_MANAGER_INCOMPLETE_RESULT: READY spec authoring must identify proposal.md and tasks.md artifacts.");
   }
 }
 
@@ -167,20 +232,30 @@ function operationBootstrapContract(taskId: string, title: string, payload: Chan
   };
 }
 
-function buildSpecManagerPrompt(payload: ChangeOperationPayload, changeName: string, explorerEvidence: string, plannerEvidence: string): string {
+function buildSpecManagerPrompt(
+  payload: ChangeOperationPayload,
+  changeName: string,
+  explorerEvidence: DurableAgentEvidence<ExplorerOutput> | undefined,
+  plannerEvidence: DurableAgentEvidence<PlannerOutput> | undefined,
+  inputs: ChangeInputReference[]
+): string {
   return [
     `Author OpenSpec change '${changeName}' for the existing durable CHANGE operation.`,
     `User request: ${payload.request}`,
     `Explicit acceptance: ${JSON.stringify(payload.acceptance ?? [])}`,
-    `Explorer evidence:\n${explorerEvidence}`,
-    `Planner evidence:\n${plannerEvidence}`,
+    changeInputsPrompt(inputs),
+    explorerEvidence ? `Explorer durable result: ${explorerEvidence.artifact}\n${compactJson(explorerEvidence.payload, 10_000)}` : "Explorer result: not expected by topology.",
+    plannerEvidence ? `Planner durable result: ${plannerEvidence.artifact}\n${compactJson(plannerEvidence.payload, 12_000)}` : "Planner result: not expected by topology.",
     "Use `openspec status`, `openspec instructions` and the OpenSpec authoring workflow to complete proposal.md, specs, design.md when needed and tasks.md.",
-    "Do not invoke `aeh spec`, `aeh run`, `aeh operation ...` or another Harness workflow. The deterministic controller will validate, compile, seal and execute after your authoring turn.",
-    "Do not invent a product decision. If a true requirement decision is impossible to derive, make that unresolved state explicit in your final structured output."
+    "Return the spec-authoring output contract. Mark status=BLOCKED and enumerate unresolvedDecisions if a true product decision cannot be derived; otherwise identify the authored artifacts and set validationReady=true.",
+    "Do not invoke `aeh spec`, `aeh run`, `aeh operation ...` or another Harness workflow. The deterministic controller will validate, compile, seal and execute after your authoring turn."
   ].join("\n\n");
 }
 
 function relativeContract(config: HarnessProjectConfig, taskId: string): string {
   return `${config.sdd?.contractsDir ?? ".harness/contracts"}/${taskId}.yaml`;
 }
-function compact(value: string, max: number): string { return value.length <= max ? value : `${value.slice(0, max)}\n[truncated ${value.length - max} chars]`; }
+function compactJson(value: unknown, max: number): string {
+  const serialized = JSON.stringify(value, null, 2);
+  return serialized.length <= max ? serialized : `${serialized.slice(0, max)}\n[truncated ${serialized.length - max} chars; durable artifact remains authoritative]`;
+}
