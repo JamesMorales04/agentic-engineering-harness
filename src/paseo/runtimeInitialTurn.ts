@@ -25,26 +25,30 @@ export async function launchManagedPaseoAgent(
     return launchLegacyManagedPaseoAgent(root, options, deps);
   }
 
+  let materialized: ManagedPaseoAgentResult;
   try {
-    const materialized = await materializeManagedPaseoAgent(
+    materialized = await materializeManagedPaseoAgent(
       root,
       { ...options, prompt: undefined, waitForFinish: false },
       deps
     );
-    if (!materialized.id) return materialized;
-
-    return continueManagedPaseoAgent(
-      root,
-      materialized.id,
-      options.prompt,
-      options.timeoutSeconds ?? secondsFromMs(options.timeoutMs),
-      deps,
-      options.outputSchema
-    );
   } catch (error) {
+    // CLI compatibility is safe only before a semantic turn has started. Once
+    // materialization succeeds, never create a second agent as a fallback for
+    // a failed/uncertain turn because that could execute the task twice.
     if (!isSdkUnavailable(error)) throw error;
     return launchLegacyManagedPaseoAgent(root, options, deps);
   }
+
+  if (!materialized.id) return materialized;
+  return continueManagedPaseoAgent(
+    root,
+    materialized.id,
+    options.prompt,
+    options.timeoutSeconds ?? secondsFromMs(options.timeoutMs),
+    deps,
+    options.outputSchema
+  );
 }
 
 function isSdkUnavailable(error: unknown): boolean {
