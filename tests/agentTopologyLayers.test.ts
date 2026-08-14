@@ -77,7 +77,7 @@ describe("agent topology", () => {
     expect(selection.description).toContain("trust boundaries");
   });
 
-  it("gives OpenCode DeepSeek V4 Flash the max thinking variant in the orchestration preset", async () => {
+  it("gives OpenCode DeepSeek V4 Flash the max thinking variant and durable CHANGE contracts in the orchestration preset", async () => {
     const root = await fixture('{"version":1,"extends":["aeh:orchestration"]}');
     const topology = resolveAgentTopology(await loadAgentTopologySource(root, config), "balanced");
     const selection = executionSelectionForAgent(topology, "code-quality-reviewer");
@@ -86,5 +86,7 @@ describe("agent topology", () => {
     expect(selection.modelName).toBe("deepseek-v4-flash");
     expect(selection.variant).toBe("max");
     expect(selection.runtimeCapabilities.variantSelection).toBe(true);
+    expect(executionSelectionForAgent(topology, "explorer").outputContract).toBe("explorer");
+    expect(executionSelectionForAgent(topology, "spec-manager").outputContract).toBe("spec-authoring");
   });
 });
