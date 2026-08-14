@@ -27,6 +27,9 @@
       "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "deny", "delegate": "allow", "review": "allow", "validate": "deny", "gitWrite": "deny" },
       "outputContract": "supervisor"
     },
+    "explorer": {
+      "outputContract": "explorer"
+    },
     "planner": {
       "description": "Produce a read-only delegation DAG and triage evidence. Use explorer/Graphify evidence supplied to you; do not implement, author specifications, repair the environment, or run broad validation. Return bounded scope, dependencies, risks, reviewers and validators to the operation supervisor/Harness.",
       "execution": { "model": "@brain" },
@@ -91,7 +94,7 @@
       "temperature": 0.1,
       "skills": ["openspec-authoring", "acceptance-traceability", "verification-planning"],
       "permissions": { "read": "allow", "write": "allow", "shell": "allow", "network": "deny", "delegate": "allow", "review": "deny", "validate": "deny", "gitWrite": "deny" },
-      "outputContract": "planner"
+      "outputContract": "spec-authoring"
     }
   },
   "profiles": {
