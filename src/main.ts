@@ -284,6 +284,7 @@ function printControlPlaneHelp(): void {
   console.log("AEH control-plane commands (in addition to the core command tree below):");
   console.log("  start [directory]                              Start a fresh managed Paseo lead");
   console.log("  context guard [directory]                     Inspect managed-lead context pressure");
+  console.log("  context retrieve <operationId> --fragment <id> Retrieve an authorized raw context artifact");
   console.log("  intent <request> [directory]                  Classify INFORMATIONAL/AUDIT/CHANGE intent");
   console.log("  audit <request> [directory]                   Synchronous audit compatibility entrypoint");
   console.log("  operation start audit|run|change ...          Start a detached supervised operation");

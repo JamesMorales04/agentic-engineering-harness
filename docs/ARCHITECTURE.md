@@ -34,6 +34,20 @@ Engram is the first memory adapter. The interface is deliberately replaceable by
 
 The deterministic harness evaluates build/type/lint/tests, scope, immutable files, API/schema policies, architecture, security and other machine-verifiable constraints.
 
+### 7a. Context-efficiency authority
+
+`ContextBudgetGateway` is the single controller-owned path for bounded agent context. It retrieves, classifies, selects, deterministically projects, budgets, selectively compresses and delivers a versioned `ContextEnvelope`. Required `VERBATIM` content is never lossy-compressed or character-truncated. Raw evidence remains in an AEH artifact and is available only through an operation/agent-authorized retrieval gateway.
+
+```text
+Graphify  -> macro structural topology and advisory dependency/community signals
+Serena    -> micro semantic repository retrieval (symbol, overview, references)
+Engram    -> historical memory authority
+Headroom  -> local compression of AEH-marked COMPRESSIBLE fragments only
+Paseo     -> agent process/session/workspace lifecycle
+```
+
+Serena editing is disabled by default. Headroom does not own TaskContracts, OpenSpec/SDD, structured results, control-plane files, OperationRecords or validation.
+
 ### 8. Policy
 
 OPA/Rego centralizes reusable allow/deny decisions instead of spreading policy across shell scripts.

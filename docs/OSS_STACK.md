@@ -1,6 +1,6 @@
 # OSS-first Technology Map
 
-The default policy is **zero mandatory SaaS and zero mandatory commercial-license dependency for private repositories**.
+The default policy is **zero mandatory SaaS and zero mandatory paid-license dependency for private repositories**. A free, locally executable OSS dependency may be mandatory when AEH needs its capability and its license, version lock and supply chain are reviewed.
 
 Reference components:
 
@@ -11,6 +11,8 @@ Reference components:
 | Worker | OpenCode | Routine implementation using the configured workhorse model |
 | Persistent memory | Engram | Advisory historical memory; adapter is replaceable |
 | Code topology | Graphify | Structural graph and future architecture/blast-radius gates |
+| Semantic code retrieval | Serena 1.5.3 | Mandatory local OSS symbol lookup, references and targeted repository navigation; not memory authority |
+| Context compression | Headroom 0.27.0 | Mandatory local OSS selective compression after AEH projection; no hosted Headroom service required |
 | Specification | SDD + Git | Versioned normative intent |
 | Acceptance | Gherkin + Reqnroll | Executable business behavior for .NET consumers |
 | Policy | OPA/Rego | Centralized allow/deny decisions |
@@ -24,4 +26,4 @@ Reference components:
 | Provenance | Cosign + in-toto | Artifact signing and attestations |
 | Harness quality | Engineering eval corpus | Reproducible comparison of system variants |
 
-Do not add a mandatory SaaS because it is convenient. Any hosted integration must be optional behind an interface and have a documented local/OSS path.
+Do not add a mandatory SaaS or paid-license dependency because it is convenient. Any hosted integration must be optional behind an interface and have a documented local/OSS path. Serena and Headroom are AEH-managed local tools, pinned through the project toolchain; Headroom's agent-wrapping lifecycle is deliberately not used.

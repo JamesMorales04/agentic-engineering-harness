@@ -22,6 +22,7 @@ import {
   type OperationRecordV2
 } from "./state.js";
 import { ensureOperationSupervisor, maybeRotateOperationSupervisor } from "./supervisor.js";
+import { assertContextReadiness } from "../context/preflight.js";
 
 export interface ChangeOperationResult {
   taskId: string;
@@ -38,6 +39,7 @@ export async function runChangeOperation(
   operation: OperationRecordV2,
   payload: ChangeOperationPayload
 ): Promise<ChangeOperationResult> {
+  await assertContextReadiness(root, config);
   const taskId = payload.taskId?.trim() || operation.id;
   const title = payload.title?.trim() || payload.request.slice(0, 120) || `Change ${taskId}`;
   const bootstrapContract = operationBootstrapContract(taskId, title, payload);

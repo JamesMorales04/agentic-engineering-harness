@@ -22,7 +22,7 @@ profiles:
     tools: [openspec]
   intelligence:
     extends: [core]
-    tools: [uv, graphify]
+    tools: [python, uv, graphify, serena, headroom]
   validation:
     extends: [core]
     tools: [opa, opengrep, trivy, cosign]
@@ -94,6 +94,14 @@ tools:
     version: latest
     activateWhen: [code-intelligence:graphify, project:python]
 
+  python:
+    kind: mise
+    command: python
+    source: python
+    version: "3.13"
+    required: true
+    activateWhen: [semantic-retrieval:serena, compression:headroom, project:python]
+
   graphify:
     kind: mise
     command: graphify
@@ -101,6 +109,24 @@ tools:
     version: latest
     dependsOn: [uv]
     activateWhen: [code-intelligence:graphify]
+
+  serena:
+    kind: mise
+    command: serena
+    source: "pipx:serena"
+    version: "1.5.3"
+    required: true
+    dependsOn: [uv, python]
+    activateWhen: [semantic-retrieval:serena]
+
+  headroom:
+    kind: mise
+    command: headroom
+    source: "pipx:headroom-ai[all]"
+    version: "0.27.0"
+    required: true
+    dependsOn: [uv, python]
+    activateWhen: [compression:headroom]
 
   opa:
     kind: mise

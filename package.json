@@ -42,7 +42,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.2.1",
-    "agentic-engineering-harness": "^0.6.26",
+    "agentic-engineering-harness": "^0.6.27",
     "tsx": "^4.20.3",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"

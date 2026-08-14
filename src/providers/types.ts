@@ -30,6 +30,17 @@ export interface CodeIntelligenceProvider {
   impact?(root: string, diffRef?: string): Promise<CodeImpactReport>;
 }
 
+export interface SemanticRepositoryProvider {
+  readonly name: string;
+  doctor(root: string): Promise<{ ok: boolean; message: string; version?: string }>;
+  mcpServer?(root: string): unknown;
+}
+
+export interface ContextCompressionProvider {
+  readonly name: string;
+  doctor(root: string): Promise<{ ok: boolean; message: string; version?: string }>;
+}
+
 export interface OrchestrationProvider {
   readonly name: string;
   doctor(root: string): Promise<{ ok: boolean; message: string }>;

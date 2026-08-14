@@ -196,6 +196,44 @@ codeIntelligence:
     maxSharedNodes: 0
     centralityConflictThreshold: 0.35
 
+context:
+  mode: enforce
+  budgets:
+    default:
+      inputTokens: 16000
+    agents:
+      explorer:
+        inputTokens: 12000
+      planner:
+        inputTokens: 10000
+      spec-manager:
+        inputTokens: 18000
+      implementer:
+        inputTokens: 24000
+      reviewer:
+        inputTokens: 14000
+      operation-supervisor:
+        inputTokens: 1500
+  repositoryMap:
+    enabled: true
+    tokenBudget: 2000
+    maxGraphHops: 2
+  semanticRetrieval:
+    provider: serena
+    required: true
+    editing: false
+  compression:
+    provider: headroom
+    required: true
+    minTokens: 2000
+    reversible: true
+  retrieval:
+    maxRequestsPerTurn: 8
+    maxTokensPerRequest: 6000
+    maxTotalTokensPerTurn: 20000
+  outputPolicy:
+    enabled: true
+
 evidence:
   enabled: true
   outputDir: .harness/evidence

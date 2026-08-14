@@ -10,6 +10,8 @@ export async function resolveToolchain(root: string, project: HarnessProjectConf
   const profile = options.profile ?? "auto"; const selected = new Map<string, string[]>();
   if (profile !== "auto") for (const name of profileTools(toolchain, profile)) select(selected, name, `profile:${profile}`);
   else { const capabilities = await activeCapabilities(root, project); for (const [name, definition] of Object.entries(toolchain.tools)) { const rules = definition.activateWhen ?? []; if (rules.includes("always")) select(selected, name, "activation:always"); for (const rule of rules) if (capabilities.has(rule)) select(selected, name, `activation:${rule}`); } }
+  if (project.context?.semanticRetrieval?.provider === "serena") select(selected, "serena", "mandatory:context-semantic-retrieval");
+  if (project.context?.compression?.provider === "headroom") select(selected, "headroom", "mandatory:context-compression");
   expandDependencies(toolchain, selected); const versionOverrides = await projectVersionOverrides(root); const preferContainers = options.preferContainers ?? toolchain.strategy?.validators === "prefer-container";
   const tools = [...selected.entries()].map(([name, selectedBy]) => { const definition = requireTool(toolchain, name); const provisioning = definition.kind === "system" ? "system" as const : preferContainers && options.containerAvailable && definition.container ? "container" as const : "mise" as const; return { name, ...definition, version: versionOverrides[name] ?? definition.version, selectedBy, provisioning }; }); tools.sort((a, b) => a.name.localeCompare(b.name)); return { profile, tools };
 }
@@ -24,6 +26,8 @@ async function activeCapabilities(root: string, project: HarnessProjectConfig): 
   const authoringProvider = (project.sdd as (NonNullable<HarnessProjectConfig["sdd"]> & SddAuthoringConfig) | undefined)?.authoring?.provider ?? "openspec";
   if (authoringProvider && authoringProvider !== "native") result.add(`spec-authoring:${authoringProvider}`);
   if (project.memory?.provider) result.add(`memory:${project.memory.provider}`); if (project.codeIntelligence?.provider) result.add(`code-intelligence:${project.codeIntelligence.provider}`); if (project.validation?.opa?.enabled) result.add("validation:opa"); if (project.security?.sandbox?.provider) result.add(`sandbox:${project.security.sandbox.provider}`);
+  if (project.context?.semanticRetrieval?.provider === "serena") result.add("semantic-retrieval:serena");
+  if (project.context?.compression?.provider === "headroom") result.add("compression:headroom");
   if ((project.organization?.policyBundles?.sources ?? []).some((source) => Boolean(source.signature || source.publicKey))) result.add("organization:signed-policy");
   for (const name of project.security?.tools ?? []) result.add(`security-tool:${name}`); for (const validator of project.validation?.validators ?? []) result.add(`validator:${validator.adapter}`); await addProjectCapabilities(root, result); return result;
 }

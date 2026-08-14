@@ -1,6 +1,6 @@
 # Agentic Engineering Harness
 
-An **OSS-first, zero-mandatory-SaaS control plane** for agentic software engineering. AEH treats LLM output as untrusted until deterministic validation, evidence and quality gates accept it.
+An **OSS-first, zero-mandatory-SaaS control plane** for agentic software engineering. AEH treats LLM output as untrusted until deterministic validation, evidence and quality gates accept it. Free, locally executable OSS capabilities may be mandatory; paid licenses and paid hosted services are not.
 
 ## Status: v0.6.x
 
@@ -36,7 +36,7 @@ planner waves -> workers -> deterministic barriers
     -> final quality gate -> lead acceptance -> delivery
 ```
 
-See [docs/V0.6.md](docs/V0.6.md), [docs/PASEO.md](docs/PASEO.md), and [ROADMAP.md](ROADMAP.md).
+See [docs/V0.6.md](docs/V0.6.md), [docs/PASEO.md](docs/PASEO.md), [docs/CONTEXT_EFFICIENCY.md](docs/CONTEXT_EFFICIENCY.md), and [ROADMAP.md](ROADMAP.md).
 
 ## Installation
 
@@ -48,7 +48,7 @@ npm exec aeh -- init --setup
 npm exec aeh -- doctor
 ```
 
-`aeh setup` provisions the project-selected engineering toolchain through mise/Aqua/OCI where configured. There is no mutating npm `postinstall`.
+`aeh setup` provisions the project-selected engineering toolchain through mise/Aqua/OCI where configured. New projects provision the mandatory local Serena semantic provider and Headroom compression provider through the pinned Python/uv toolchain. There is no mutating npm `postinstall`.
 
 A new project receives repository-owned declarative configuration plus generated local state:
 

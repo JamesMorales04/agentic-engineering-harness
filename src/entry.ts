@@ -20,12 +20,16 @@ import { classifyEngineeringIntent, formatEngineeringIntent } from "./audit/inte
 import { runAudit } from "./audit/run.js";
 import type { TaskRisk } from "./core/types.js";
 import { VERSION } from "./version.js";
+import { retrievePersistedContext } from "./context/retrieval/persisted.js";
+import { serveContextRetrievalMcp } from "./context/retrieval/server.js";
 
 const args = process.argv.slice(2);
 if (args.length === 1 && ["--version", "-V"].includes(args[0])) { console.log(VERSION); process.exit(0); }
 
 if (args[0] === "start") { await runStart(args.slice(1)); process.exit(process.exitCode ?? 0); }
 if (args[0] === "context" && args[1] === "guard") { await runContextGuard(args.slice(2)); process.exit(process.exitCode ?? 0); }
+if (args[0] === "context" && args[1] === "retrieve") { await runContextRetrieve(args.slice(2)); process.exit(process.exitCode ?? 0); }
+if (args[0] === "context" && args[1] === "mcp") { await serveContextRetrievalMcp(); process.exit(process.exitCode ?? 0); }
 if (args[0] === "paseo" && args[1] === "agents") { await runPaseoAgents(args.slice(2)); process.exit(process.exitCode ?? 0); }
 if (args[0] === "spec" && ["prepare", "compile"].includes(args[1] ?? "")) { await runSpec(args.slice(1)); process.exit(process.exitCode ?? 0); }
 if (args[0] === "intent") { await runIntent(args.slice(1)); process.exit(process.exitCode ?? 0); }
@@ -80,6 +84,16 @@ async function runContextGuard(argv: string[]): Promise<void> {
   console.log(result.state);
   console.log(result.message);
   console.log(JSON.stringify(result, null, 2));
+}
+
+async function runContextRetrieve(argv: string[]): Promise<void> {
+  const parsed = parseGeneric(argv, new Set(["fragment", "agent", "max-tokens"]), new Set());
+  if (parsed.positional.length > 2) throw new Error("aeh context retrieve accepts <operationId> and at most one project directory.");
+  const operationId = parsed.positional[0]; if (!operationId) throw new Error("aeh context retrieve requires <operationId>.");
+  const root = path.resolve(parsed.positional[1] ?? "."); const fragmentId = parsed.value("fragment"); if (!fragmentId) throw new Error("aeh context retrieve requires --fragment <id>.");
+  const logicalAgent = parsed.value("agent") ?? process.env.AEH_LOGICAL_AGENT; if (!logicalAgent) throw new Error("aeh context retrieve requires --agent <logical-agent> or AEH_LOGICAL_AGENT.");
+  const maxTokens = parsed.value("max-tokens") ? Number(parsed.value("max-tokens")) : undefined; if (maxTokens !== undefined && (!Number.isInteger(maxTokens) || maxTokens <= 0)) throw new Error("--max-tokens must be a positive integer.");
+  const config = await loadProjectConfig(root); console.log(JSON.stringify(await retrievePersistedContext(root, config, operationId, logicalAgent, { fragmentId, maxTokens }), null, 2));
 }
 
 async function runPaseoAgents(argv: string[]): Promise<void> {

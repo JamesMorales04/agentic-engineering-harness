@@ -60,7 +60,7 @@ After compilation/sealing, the compiled AEH artifacts and seal are normative dur
 3. Prefer provider interfaces over direct coupling to Paseo, Engram, Graphify, OPA, container runtimes, or telemetry backends.
 4. Validation reports must remain machine-readable and reproducible.
 5. Consumer-specific rules belong in the consumer repository, not in the Harness core.
-6. Do not introduce mandatory commercial-license dependencies for private repositories.
+6. Do not introduce mandatory paid-license or paid-hosted-service dependencies for private repositories. Free, locally executable OSS dependencies may be mandatory when their license and supply chain are reviewed.
 7. Self-modification is governed by the control-plane snapshot taken at operation/run start; changes to these rules take effect only on a later operation.
 
 ## Rules

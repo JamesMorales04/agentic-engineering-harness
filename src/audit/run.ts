@@ -45,6 +45,7 @@ import {
 import { recordEvent } from "../telemetry/events.js";
 import { runProcess } from "../utils/process.js";
 import { compileAuditReviewerPrompt } from "./reviewerPrompt.js";
+import { assertContextReadiness } from "../context/preflight.js";
 
 export type AuditFailureClass =
   | "NONE"
@@ -124,6 +125,7 @@ export async function runAudit(
   config: HarnessProjectConfig,
   input: AuditRequest
 ): Promise<AuditReport> {
+  await assertContextReadiness(root, config);
   const startedAt = new Date().toISOString();
   const auditId = input.auditId ?? createAuditId(input.request);
   const baseRef = config.validation?.baseRef ?? "HEAD";

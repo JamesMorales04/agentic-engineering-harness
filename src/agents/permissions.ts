@@ -108,6 +108,16 @@ export function buildOpenCodeRuntimeConfig(
   for (const name of selection.mcps) {
     if (!configured[name]) tools[`${name}_*`] = true;
   }
+  const semanticRequired = config?.context?.semanticRetrieval?.provider !== "none" && config?.context?.semanticRetrieval?.required === true && selection.role !== "orchestrator" && selection.logicalAgent !== "operation-supervisor";
+  if (semanticRequired && !mcp.serena) {
+    mcp.serena = { type: "local", command: ["serena", "start-mcp-server", "--context", "ide-assistant", "--project", "."], enabled: true, timeout: 30_000 };
+    tools["serena_*"] = true;
+  }
+  const compressionRequired = config?.context?.compression?.provider !== "none" && config?.context?.compression?.required === true && selection.role !== "orchestrator" && selection.logicalAgent !== "operation-supervisor";
+  if (compressionRequired && !mcp.headroom) {
+    mcp.headroom = { type: "local", command: [config?.context?.compression?.command ?? "headroom", "mcp", "serve"], enabled: true };
+    tools["headroom_*"] = true;
+  }
 
   const managedAgent = binding.managed
     ? {

@@ -7,6 +7,7 @@ import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
 import { deliveryWorkspaceId } from "../delivery/handoff.js";
 import { buildManagedAgentEnvironment } from "../operations/executionContext.js";
 import { activeOperationSupervisor, currentOperationContext, loadOperation } from "../operations/state.js";
+import type { PaseoSdkMcpStdioServer, PaseoSdkToolPolicy } from "./sdk.js";
 
 export interface PaseoLaunchSpecOptions {
   selection?: AgentExecutionSelection;
@@ -37,6 +38,8 @@ export interface PaseoAgentLaunchSpec {
   operationId: string;
   operationKind: string;
   phase: string;
+  mcpServers?: Record<string, PaseoSdkMcpStdioServer>;
+  toolPolicy?: PaseoSdkToolPolicy;
 }
 
 export async function compilePaseoAgentLaunchSpec(root: string, config: HarnessProjectConfig, contract: TaskContract, options: PaseoLaunchSpecOptions = {}): Promise<PaseoAgentLaunchSpec> {
@@ -62,6 +65,8 @@ export async function compilePaseoAgentLaunchSpec(root: string, config: HarnessP
   const openCode = selection?.runtimeAdapter === "opencode" && provider === "opencode" ? compileOpenCodeRuntimeProjection(selection, config) : undefined;
   const explicitOpenCodeMode = openCode && !openCode.binding.managed ? openCode.binding.agentId : undefined;
   const executionEnv = buildManagedAgentEnvironment({ logicalAgent, role: selection?.role ?? "worker", operationId, operationKind, phase, interactiveLead: false, orchestrationAllowed: false });
+  const mcpServers = contextMcpServers(root, config, selection, logicalAgent, operationId);
+  const toolPolicy = mcpServers?.["aeh-context"] ? { preapproved: [{ kind: "mcp" as const, server: "aeh-context", tool: "aeh_context_retrieve" }] } : undefined;
   if (parentAgentId) executionEnv.AEH_PARENT_AGENT_ID = parentAgentId;
   if (supervisorGeneration !== undefined) executionEnv.AEH_SUPERVISOR_GENERATION = String(supervisorGeneration);
   if (supervisorAgent) executionEnv.AEH_OPERATION_SUPERVISOR = "1";
@@ -103,10 +108,22 @@ export async function compilePaseoAgentLaunchSpec(root: string, config: HarnessP
     supervisorGeneration,
     labels,
     timeoutSeconds: worker?.timeoutSeconds ?? 1800,
+    ...(mcpServers ? { mcpServers } : {}),
+    ...(toolPolicy ? { toolPolicy } : {}),
     operationId,
     operationKind,
     phase
   };
+}
+
+function contextMcpServers(root: string, config: HarnessProjectConfig, selection: AgentExecutionSelection | undefined, logicalAgent: string, operationId: string): Record<string, PaseoSdkMcpStdioServer> | undefined {
+  if (!config.context || logicalAgent === "operation-supervisor" || selection?.role === "orchestrator") return undefined;
+  const servers: Record<string, PaseoSdkMcpStdioServer> = {};
+  const entry = process.env.AEH_ENTRY_FILE?.trim() || process.argv[1];
+  if (entry) servers["aeh-context"] = { type: "stdio", command: process.execPath, args: [entry, "context", "mcp"], env: { AEH_CONTEXT_ROOT: root, AEH_CONTEXT_OPERATION_ID: operationId, AEH_LOGICAL_AGENT: logicalAgent }, alwaysLoad: true };
+  if (config.context.semanticRetrieval?.provider !== "none") servers.serena = { type: "stdio", command: "serena", args: ["start-mcp-server", "--context", "ide-assistant", "--project", root], alwaysLoad: true };
+  if (config.context.compression?.provider !== "none") servers.headroom = { type: "stdio", command: config.context.compression?.command ?? "headroom", args: ["mcp", "serve"], alwaysLoad: false };
+  return Object.keys(servers).length ? servers : undefined;
 }
 
 export function inferAgentPhase(selection: AgentExecutionSelection | undefined, logicalAgent: string): string {

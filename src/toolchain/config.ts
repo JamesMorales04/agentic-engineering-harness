@@ -34,7 +34,17 @@ export function generatedMisePath(config: HarnessProjectConfig, toolchain: Toolc
 
 export async function loadToolchainConfig(root: string, config: HarnessProjectConfig): Promise<ToolchainConfig> {
   const file = path.resolve(root, toolchainConfigPath(config));
-  return schema.parse(YAML.parse(await fs.readFile(file, "utf8"))) as ToolchainConfig;
+  const parsed = schema.parse(YAML.parse(await fs.readFile(file, "utf8"))) as ToolchainConfig;
+  return config.context ? addMandatoryContextTools(parsed) : parsed;
+}
+
+function addMandatoryContextTools(config: ToolchainConfig): ToolchainConfig {
+  const tools = { ...config.tools };
+  tools.python ??= { kind: "mise", command: "python", source: "python", version: "3.13", required: true, activateWhen: ["semantic-retrieval:serena", "compression:headroom"] };
+  tools.uv ??= { kind: "mise", command: "uv", source: "uv", version: "latest", activateWhen: ["semantic-retrieval:serena", "compression:headroom"] };
+  tools.serena ??= { kind: "mise", command: "serena", source: "pipx:serena", version: "1.5.3", required: true, dependsOn: ["uv", "python"], activateWhen: ["semantic-retrieval:serena"] };
+  tools.headroom ??= { kind: "mise", command: "headroom", source: "pipx:headroom-ai[all]", version: "0.27.0", required: true, dependsOn: ["uv", "python"], activateWhen: ["compression:headroom"] };
+  return { ...config, tools };
 }
 
 export async function loadToolchainLock(root: string, config: HarnessProjectConfig, toolchain: ToolchainConfig): Promise<ToolchainLock | undefined> {

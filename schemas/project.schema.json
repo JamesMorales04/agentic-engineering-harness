@@ -48,6 +48,19 @@
     "delivery": { "type": "object", "properties": { "stateDir": { "type": "string" }, "github": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "tokenEnv": { "type": "string", "minLength": 1 }, "repository": { "type": "string", "pattern": "^[^/]+/[^/]+$" }, "apiBaseUrl": { "type": "string", "format": "uri" }, "assignTokenOwner": { "type": "boolean" }, "labels": { "type": "array", "items": { "type": "string" } }, "branchPattern": { "type": "string", "minLength": 1 }, "finalizeOnAcceptance": { "type": "boolean" }, "pullRequestDraft": { "type": "boolean" } } }, "paseo": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "createWorkspace": { "type": "boolean" }, "autoUseWorkspace": { "type": "boolean" }, "worktreeSlugPattern": { "type": "string", "minLength": 1 } } } } },
     "memory": { "type": "object" },
     "codeIntelligence": { "type": "object", "properties": { "provider": { "type": "string" }, "required": { "type": "boolean" }, "graphPath": { "type": "string" }, "snapshotDir": { "type": "string" }, "refreshCommand": { "type": "string" }, "scheduling": { "type": "object", "properties": { "useEdges": { "type": "boolean" }, "maxGraphHops": { "type": "integer", "minimum": 1 }, "maxSharedNodes": { "type": "integer", "minimum": 0 }, "centralityConflictThreshold": { "type": "number", "minimum": 0 } } } } },
+    "context": { "type": "object", "properties": {
+      "mode": { "enum": ["observe", "enforce"] },
+      "budgets": { "type": "object", "properties": {
+        "default": { "$ref": "#/$defs/contextBudget" },
+        "agents": { "type": "object", "additionalProperties": { "$ref": "#/$defs/contextBudget" } },
+        "phases": { "type": "object", "additionalProperties": { "$ref": "#/$defs/contextBudget" } }
+      } },
+      "repositoryMap": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "tokenBudget": { "type": "integer", "minimum": 1 }, "maxGraphHops": { "type": "integer", "minimum": 1 } } },
+      "semanticRetrieval": { "type": "object", "properties": { "provider": { "type": "string", "const": "serena" }, "required": { "const": true }, "editing": { "type": "boolean" } } },
+      "compression": { "type": "object", "properties": { "provider": { "type": "string", "const": "headroom" }, "required": { "const": true }, "minTokens": { "type": "integer", "minimum": 1 }, "reversible": { "type": "boolean" }, "command": { "type": "string", "minLength": 1 } } },
+      "retrieval": { "type": "object", "properties": { "maxRequestsPerTurn": { "type": "integer", "minimum": 1 }, "maxTokensPerRequest": { "type": "integer", "minimum": 1 }, "maxTotalTokensPerTurn": { "type": "integer", "minimum": 1 } } },
+      "outputPolicy": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "modes": { "type": "object", "additionalProperties": { "enum": ["terse", "compact", "normal"] } } } }
+    } },
     "evidence": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "outputDir": { "type": "string" }, "requireComplete": { "type": "boolean" } } },
     "organization": { "type": "object", "properties": { "policyBundles": { "type": "object", "properties": { "cacheDir": { "type": "string" }, "required": { "type": "boolean" }, "sources": { "type": "array", "items": { "$ref": "#/$defs/policyBundleSource" } } } } } },
     "distributed": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "provider": { "type": "string" }, "queueDir": { "type": "string" }, "endpoint": { "type": "string", "format": "uri" }, "tokenEnv": { "type": "string" }, "pollIntervalMs": { "type": "integer", "minimum": 1 }, "leaseSeconds": { "type": "integer", "minimum": 1 }, "workerId": { "type": "string" } } },
@@ -60,6 +73,7 @@
   },
   "$defs": {
     "severityNumbers": { "type": "object", "properties": { "critical": { "type": "integer", "minimum": 0 }, "high": { "type": "integer", "minimum": 0 }, "medium": { "type": "integer", "minimum": 0 }, "low": { "type": "integer", "minimum": 0 }, "note": { "type": "integer", "minimum": 0 } } },
+    "contextBudget": { "type": "object", "properties": { "inputTokens": { "type": "integer", "minimum": 1 }, "maxTokens": { "type": "integer", "minimum": 1 }, "reserved": { "type": "object", "properties": { "instructions": { "type": "integer", "minimum": 0 }, "normative": { "type": "integer", "minimum": 0 }, "evidence": { "type": "integer", "minimum": 0 }, "response": { "type": "integer", "minimum": 0 } } } } },
     "policyBundleSource": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string", "minLength": 1 }, "path": { "type": "string" }, "url": { "type": "string", "format": "uri" }, "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }, "required": { "type": "boolean" }, "publicKey": { "type": "string" }, "signature": { "type": "string" } } }
   },
   "additionalProperties": false

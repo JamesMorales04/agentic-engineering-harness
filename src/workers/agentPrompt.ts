@@ -34,6 +34,10 @@ import {
   type AcceptedStructuredResult
 } from "./resultGateway.js";
 import { compileAgentPromptPolicy } from "./promptPolicy.js";
+import { prepareContext } from "../context/gateway.js";
+import { semanticFirstInstruction } from "../context/repository/serena.js";
+import { sha256 } from "../context/provenance.js";
+import { outputPolicyInstruction, resolveContextPolicy } from "../context/policy.js";
 
 export interface AgentPromptOptions {
   outputContract?: string;
@@ -101,6 +105,8 @@ export async function materializeAgentPrompt(
       modeSource: spec.modeSource,
       thinkingOptionId: spec.thinkingOptionId,
       env: spec.env,
+      mcpServers: spec.mcpServers,
+      toolPolicy: spec.toolPolicy,
       workspaceId: spec.workspaceId,
       parentAgentId: spec.parentAgentId,
       outputSchema: schema,
@@ -292,6 +298,8 @@ async function executeViaPaseo(
     modeSource: spec.modeSource,
     thinkingOptionId: spec.thinkingOptionId,
     env: spec.env,
+    mcpServers: spec.mcpServers,
+    toolPolicy: spec.toolPolicy,
     workspaceId: spec.workspaceId,
     parentAgentId: spec.parentAgentId,
     prompt,
@@ -419,13 +427,23 @@ async function buildEffectivePrompt(
     options.supervisorAgent ? "Operation Supervisor: semantic coordination only; deterministic controller authority remains authoritative." : undefined,
     options.parentAgentId ? `Paseo parent=${options.parentAgentId}; OperationRecord remains lifecycle authority.` : undefined
   ].filter(Boolean).join("\n");
-  return withAgentCharter(
+  const contextOutputPolicy = config.context ? outputPolicyInstruction(resolveContextPolicy(config), selection.role) : undefined;
+  const charter = withAgentCharter(
     selection,
-    prompt,
+    [selection.role === "orchestrator" || selection.logicalAgent === "operation-supervisor" ? undefined : semanticFirstInstruction(), contextOutputPolicy, prompt].filter(Boolean).join("\n\n"),
     frozenSkills,
     [managedBoundedAgentPromptContext(identity), hierarchy].filter(Boolean).join("\n"),
     policy.outputContractContext
   );
+  if (!config.context) return charter;
+  const prepared = await prepareContext(root, config, {
+    operationId: identity.operationId ?? contract.task.id,
+    logicalAgent: selection.logicalAgent,
+    role: selection.role ?? "worker",
+    phase: identity.phase ?? "work",
+    fragments: [{ id: `prompt-${sha256(charter).slice(0, 16)}`, kind: "instruction", preservation: "VERBATIM", priority: 100, content: charter }]
+  });
+  return prepared.rendered;
 }
 
 function boundedExecutionEnvironment(selection: AgentExecutionSelection, options: AgentPromptOptions): Record<string, string> {

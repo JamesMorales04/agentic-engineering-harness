@@ -8,6 +8,18 @@ export type ValidatorAdapter = "command" | "gherkin" | "graphify" | "opengrep" |
 export interface ValidationCommand { id: string; command: string; required?: boolean; timeoutSeconds?: number; workingDirectory?: string; }
 export interface ValidatorSpec { id: string; adapter: ValidatorAdapter; command?: string; required?: boolean; timeoutSeconds?: number; workingDirectory?: string; options?: Record<string, unknown>; }
 export interface UsageMetrics { inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number; }
+export type ContextMode = "observe" | "enforce";
+export type ContextRole = "explorer" | "planner" | "spec-manager" | "implementer" | "reviewer" | "operation-supervisor" | string;
+export interface ContextBudgetConfig { inputTokens?: number; maxTokens?: number; reserved?: { instructions?: number; normative?: number; evidence?: number; response?: number }; }
+export interface ContextConfiguration {
+  mode?: ContextMode;
+  budgets?: { default?: ContextBudgetConfig; agents?: Record<string, ContextBudgetConfig>; phases?: Record<string, ContextBudgetConfig> };
+  repositoryMap?: { enabled?: boolean; tokenBudget?: number; maxGraphHops?: number };
+  semanticRetrieval?: { provider?: "serena" | string; required?: boolean; editing?: boolean };
+  compression?: { provider?: "headroom" | string; required?: boolean; minTokens?: number; reversible?: boolean; command?: string };
+  retrieval?: { maxRequestsPerTurn?: number; maxTokensPerRequest?: number; maxTotalTokensPerTurn?: number };
+  outputPolicy?: { enabled?: boolean; modes?: Record<string, "terse" | "compact" | "normal"> };
+}
 export interface RunMetrics { firstPassSuccess: boolean; repairCount: number; humanInterventions: number; durationMs: number; usage: UsageMetrics; }
 export interface ReviewEscalationStage { name: string; action?: "remediate" | "diagnose" | "replan"; agent?: string; model?: string; }
 
@@ -110,6 +122,7 @@ export interface HarnessProjectConfig {
     refreshCommand?: string;
     scheduling?: { useEdges?: boolean; maxGraphHops?: number; maxSharedNodes?: number; centralityConflictThreshold?: number; };
   };
+  context?: ContextConfiguration;
   evidence?: { enabled?: boolean; outputDir?: string; requireComplete?: boolean; };
   organization?: { policyBundles?: { cacheDir?: string; required?: boolean; sources?: OrganizationPolicySource[]; }; };
   distributed?: {
