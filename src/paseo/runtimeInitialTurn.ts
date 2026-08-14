@@ -10,18 +10,19 @@ import {
 type RuntimeDeps = Parameters<typeof launchLegacyManagedPaseoAgent>[2];
 
 /**
- * Execute foreground initial Paseo turns with the same atomic turn primitive
- * used by resumed sessions. The concrete agent is materialized and registered
- * first, then the prompt is dispatched through run(), so a fast
- * idle -> running -> idle cycle cannot finish before AEH starts observing it.
- * Explicit detached launches preserve the legacy background lifecycle.
+ * Managed AEH operation agents execute foreground initial Paseo turns through
+ * the same atomic turn primitive used by resumed sessions. The concrete agent
+ * is materialized and registered first, then run() executes the prompt, so a
+ * fast idle -> running -> idle cycle cannot finish before AEH observes it.
+ * Standalone runtime callers and explicit detached launches retain the legacy
+ * lifecycle for compatibility.
  */
 export async function launchManagedPaseoAgent(
   root: string,
   options: ManagedPaseoAgentOptions,
   deps?: RuntimeDeps
 ): Promise<ManagedPaseoAgentResult> {
-  if (options.prompt === undefined || options.waitForFinish === false) {
+  if (!isManagedForegroundTurn(options)) {
     return launchLegacyManagedPaseoAgent(root, options, deps);
   }
 
@@ -33,9 +34,8 @@ export async function launchManagedPaseoAgent(
       deps
     );
   } catch (error) {
-    // CLI compatibility is safe only before a semantic turn has started. Once
-    // materialization succeeds, never create a second agent as a fallback for
-    // a failed/uncertain turn because that could execute the task twice.
+    // Compatibility fallback is safe only before a semantic turn starts. Once
+    // materialization succeeds, never create a second agent for the same turn.
     if (!isSdkUnavailable(error)) throw error;
     return launchLegacyManagedPaseoAgent(root, options, deps);
   }
@@ -44,11 +44,18 @@ export async function launchManagedPaseoAgent(
   return continueManagedPaseoAgent(
     root,
     materialized.id,
-    options.prompt,
+    options.prompt!,
     options.timeoutSeconds ?? secondsFromMs(options.timeoutMs),
     deps,
     options.outputSchema
   );
+}
+
+function isManagedForegroundTurn(options: ManagedPaseoAgentOptions): boolean {
+  return options.prompt !== undefined &&
+    options.waitForFinish !== false &&
+    Boolean(options.labels?.["aeh.operation"]?.trim()) &&
+    Boolean(options.labels?.["aeh.role"]?.trim());
 }
 
 function isSdkUnavailable(error: unknown): boolean {
