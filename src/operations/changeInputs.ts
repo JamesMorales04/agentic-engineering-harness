@@ -23,8 +23,17 @@ interface ChangeInputEnvelope {
 
 const AUDIT_ID = /\bAUDIT-\d{8}T\d{6}Z-[A-Za-z0-9._-]+\b/g;
 
+/**
+ * Canonical audit id: strips a trailing .json extension so references written
+ * with or without the suffix resolve to the same `.harness/audits/<id>.json`
+ * artifact without duplicating the extension.
+ */
+function canonicalAuditId(raw: string): string {
+  return raw.replace(/\.json$/i, "");
+}
+
 export async function resolveChangeInputs(controlRoot: string, operationId: string, request: string): Promise<ChangeInputReference[]> {
-  const ids = [...new Set(request.match(AUDIT_ID) ?? [])];
+  const ids = [...new Set((request.match(AUDIT_ID) ?? []).map(canonicalAuditId))];
   const result: ChangeInputReference[] = [];
   for (const id of ids) result.push(await freezeAuditInput(controlRoot, operationId, id));
   return result;
