@@ -2,7 +2,7 @@ import { z } from "zod";
 
 export const contextPreservationValues = ["VERBATIM", "PROJECTABLE", "COMPRESSIBLE", "RETRIEVABLE", "DISCARDABLE"] as const;
 export type ContextPreservation = (typeof contextPreservationValues)[number];
-export const contextKindValues = ["instruction", "normative", "source", "diff", "validation", "audit", "operation", "tool-output", "memory", "repository-map"] as const;
+export const contextKindValues = ["instruction", "execution-envelope", "agent-charter", "skill", "normative", "source", "diff", "validation", "audit", "operation", "handoff", "tool-output", "memory", "repository-map", "raw-evidence", "delivery"] as const;
 export type ContextFragmentKind = (typeof contextKindValues)[number];
 
 export interface ContextSource {
@@ -71,6 +71,12 @@ export interface ContextPreparationRequest {
   role?: string;
   phase: string;
   fragments: ContextFragment[];
+  capabilities?: {
+    /** The transport exposes an authorized raw-fragment retrieval mechanism. */
+    authorizedRetrieval?: boolean;
+    /** The transport exposes the configured semantic repository provider. */
+    semanticRetrieval?: boolean;
+  };
 }
 
 export interface ContextPreparationResult {

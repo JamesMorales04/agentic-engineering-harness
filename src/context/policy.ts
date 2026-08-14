@@ -31,7 +31,7 @@ export function outputMode(policy: ContextPolicy, role: string | undefined): "te
 }
 
 export function isCompressionConfigured(policy: ContextPolicy): boolean {
-  return policy.compression.provider === "headroom" && policy.compression.required;
+  return policy.compression.provider === "headroom";
 }
 
 export function outputPolicyInstruction(policy: ContextPolicy, role: string | undefined): string | undefined {

@@ -5,6 +5,8 @@ export interface MemoryRecord {
   title: string;
   content: string;
   source?: string;
+  sourceSha256?: string;
+  createdAt?: string;
   supersedes?: string;
   tags?: string[];
 }
@@ -12,8 +14,8 @@ export interface MemoryRecord {
 export interface MemoryProvider {
   readonly name: string;
   doctor(root: string): Promise<{ ok: boolean; message: string }>;
-  remember?(record: MemoryRecord): Promise<string | undefined>;
-  recall?(project: string, query: string): Promise<MemoryRecord[]>;
+  remember(record: MemoryRecord): Promise<string | undefined>;
+  recall(project: string, query: string): Promise<MemoryRecord[]>;
 }
 
 export interface CodeImpactReport {
@@ -26,7 +28,11 @@ export interface CodeImpactReport {
 export interface CodeIntelligenceProvider {
   readonly name: string;
   doctor(root: string): Promise<{ ok: boolean; message: string }>;
+  build?(root: string): Promise<void>;
+  refresh?(root: string): Promise<void>;
   update?(root: string): Promise<void>;
+  load?(root: string): Promise<unknown | undefined>;
+  isFresh?(root: string): Promise<boolean>;
   impact?(root: string, diffRef?: string): Promise<CodeImpactReport>;
 }
 

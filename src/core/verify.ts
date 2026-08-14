@@ -8,12 +8,12 @@ import { validateDiffScope } from "../validators/diffScope.js";
 import { validateDiffBudget } from "../validators/constraints.js";
 import { runValidationCommand } from "../validators/commands.js";
 import { recordEvent } from "../telemetry/events.js";
-import { runOpaPolicies } from "../validators/opa.js";
+import { runOpaPolicies, type OpaExecutionIdentity } from "../validators/opa.js";
 import { verifyTaskSeal } from "./seal.js";
 import { runConfiguredValidators } from "../validators/registry.js";
 import { collectPolicyEvidence } from "../validators/evidence.js";
 
-export interface VerifyTaskOptions { stateRoot?: string; policyRoot?: string; }
+export interface VerifyTaskOptions { stateRoot?: string; policyRoot?: string; executionIdentity?: OpaExecutionIdentity; }
 
 export async function verifyTask(root: string, config: HarnessProjectConfig, contract: TaskContract, options: VerifyTaskOptions = {}): Promise<ValidationReport> {
   const executionRoot = path.resolve(root);
@@ -33,7 +33,7 @@ export async function verifyTask(root: string, config: HarnessProjectConfig, con
   const scopeChecks = validateDiffScope(changedFiles, contract, config.validation?.frozenPaths ?? []); checks.push(...scopeChecks); checks.push(...validateDiffBudget(contract, stats));
   const frozenChanged = (scopeChecks.find((c) => c.id === "diff.frozen-paths")?.details?.frozenChanged ?? []) as string[];
   const evidence = collectPolicyEvidence(changedFiles);
-  checks.push(await runOpaPolicies(executionRoot, config, contract, changedFiles, frozenChanged, evidence, policyRoot));
+  checks.push(await runOpaPolicies(executionRoot, config, contract, changedFiles, frozenChanged, evidence, policyRoot, options.executionIdentity));
   const commands = [...(config.validation?.commands ?? []), ...(contract.verification?.commands ?? [])]; for (const command of commands) checks.push(await runValidationCommand(executionRoot, command));
   checks.push(...await runConfiguredValidators(executionRoot, config, contract, baseRef, changedFiles));
   const status = checks.some((check) => check.status === "FAIL") ? "FAIL" : "PASS";

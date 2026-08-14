@@ -7,10 +7,16 @@ export interface ContextReadiness { ok: boolean; checks: Array<{ component: stri
 export async function checkContextReadiness(root: string, config: HarnessProjectConfig): Promise<ContextReadiness> {
   if (!config.context) return { ok: true, checks: [] };
   const checks: ContextReadiness["checks"] = [];
-  const semantic = await new SerenaSemanticProvider().doctor(root);
-  checks.push({ component: "serena", required: config.context.semanticRetrieval?.required ?? true, ...semantic });
-  const compression = await new HeadroomCompressionProvider({ command: config.context.compression?.command }).doctor(root);
-  checks.push({ component: "headroom", required: config.context.compression?.required ?? true, ...compression });
+  const semanticProvider = config.context.semanticRetrieval?.provider ?? "serena";
+  if (semanticProvider !== "none") {
+    const semantic = await new SerenaSemanticProvider().doctor(root);
+    checks.push({ component: "serena", required: config.context.semanticRetrieval?.required ?? true, ...semantic });
+  }
+  const compressionProvider = config.context.compression?.provider ?? "headroom";
+  if (compressionProvider !== "none") {
+    const compression = await new HeadroomCompressionProvider({ command: config.context.compression?.command }).doctor(root);
+    checks.push({ component: "headroom", required: config.context.compression?.required ?? true, ...compression });
+  }
   return { ok: checks.every((check) => !check.required || check.ok), checks };
 }
 

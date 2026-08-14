@@ -35,9 +35,12 @@ import {
 } from "./resultGateway.js";
 import { compileAgentPromptPolicy } from "./promptPolicy.js";
 import { prepareContext } from "../context/gateway.js";
-import { semanticFirstInstruction } from "../context/repository/serena.js";
+import { semanticFirstInstruction, SerenaSemanticProvider } from "../context/repository/serena.js";
 import { sha256 } from "../context/provenance.js";
 import { outputPolicyInstruction, resolveContextPolicy } from "../context/policy.js";
+import { buildRepositoryContextMap } from "../context/repository/map.js";
+import { createMemoryProvider } from "../providers/memory.js";
+import type { ContextFragment } from "../context/types.js";
 
 export interface AgentPromptOptions {
   outputContract?: string;
@@ -262,7 +265,7 @@ async function executeViaPaseo(
   contract: TaskContract,
   selection: AgentExecutionSelection,
   prompt: string,
-  options: AgentPromptOptions
+  options: AgentPromptOptions = {}
 ): Promise<WorkerSession> {
   const spec = await compilePaseoAgentLaunchSpec(root, config, contract, {
     selection,
@@ -374,7 +377,7 @@ async function executePodman(
   contract: TaskContract,
   selection: AgentExecutionSelection,
   prompt: string,
-  options: AgentPromptOptions
+  options: AgentPromptOptions = {}
 ): Promise<WorkerSession> {
   if (selection.runtimeAdapter !== "opencode") throw new Error(`Podman prompt execution currently supports OpenCode; selected ${selection.runtimeAdapter}.`);
   if (options.resumeSessionId) throw new Error("Ephemeral hardened Podman sessions cannot resume a host agent session without an explicit persisted session volume.");
@@ -396,14 +399,14 @@ async function executePodman(
   return session(selection, result.exitCode, result.stdout, result.stderr, { nativeAgent: projection.binding.agentId, ...directMetadata(options, startedAt, "podman") });
 }
 
-async function buildEffectivePrompt(
+export async function buildAgentContextFragments(
   root: string,
   config: HarnessProjectConfig,
   contract: TaskContract,
   selection: AgentExecutionSelection,
   prompt: string,
-  options: AgentPromptOptions
-): Promise<string> {
+  options: AgentPromptOptions = {}
+): Promise<{ fragments: ContextFragment[]; capabilities: { authorizedRetrieval: boolean; semanticRetrieval: boolean } }> {
   const transport = selection.transport === "inherit" ? (config.orchestration?.provider ?? "none") : selection.transport;
   const operation = currentOperationContext();
   const operationKind = operation.kind ?? options.operationKind ?? contract.routing?.intent;
@@ -428,22 +431,111 @@ async function buildEffectivePrompt(
     options.parentAgentId ? `Paseo parent=${options.parentAgentId}; OperationRecord remains lifecycle authority.` : undefined
   ].filter(Boolean).join("\n");
   const contextOutputPolicy = config.context ? outputPolicyInstruction(resolveContextPolicy(config), selection.role) : undefined;
-  const charter = withAgentCharter(
-    selection,
-    [selection.role === "orchestrator" || selection.logicalAgent === "operation-supervisor" ? undefined : semanticFirstInstruction(), contextOutputPolicy, prompt].filter(Boolean).join("\n\n"),
-    frozenSkills,
-    [managedBoundedAgentPromptContext(identity), hierarchy].filter(Boolean).join("\n"),
-    policy.outputContractContext
-  );
-  if (!config.context) return charter;
+  let semanticRetrieval = Boolean(config.context) && config.context?.semanticRetrieval?.provider !== "none" && (transport === "paseo" || (selection.runtimeAdapter === "opencode" && (transport === "direct" || transport === "podman")));
+  if (semanticRetrieval) {
+    const health = await new SerenaSemanticProvider().doctor(root);
+    if (!health.ok) {
+      if (config.context?.semanticRetrieval?.required !== false) throw new Error(`Semantic retrieval provider unavailable: ${health.message}`);
+      semanticRetrieval = false;
+    }
+  }
+  const authorizedRetrieval = transport === "paseo" || (selection.runtimeAdapter === "opencode" && transport === "direct");
+  const fragments: ContextFragment[] = [];
+  const add = (id: string, kind: ContextFragment["kind"], preservation: ContextFragment["preservation"], priority: number, content: string | undefined, metadata?: Record<string, unknown>): void => {
+    if (content?.trim()) fragments.push({ id, kind, preservation, priority, content, metadata });
+  };
+  add("execution-envelope", "execution-envelope", "VERBATIM", 120, [managedBoundedAgentPromptContext(identity), hierarchy].filter(Boolean).join("\n"));
+  add("agent-charter", "agent-charter", "VERBATIM", 115, selection.description);
+  if (semanticRetrieval && selection.role !== "orchestrator" && selection.logicalAgent !== "operation-supervisor") add("semantic-retrieval-policy", "skill", "VERBATIM", 110, semanticFirstInstruction(), { provider: "serena" });
+  add("frozen-skills", "skill", "VERBATIM", 108, frozenSkills);
+  add("output-delivery-policy", "delivery", "VERBATIM", 105, [contextOutputPolicy, policy.outputContractContext].filter(Boolean).join("\n"));
+
+  for (const artifact of await normativeArtifacts(root, config, contract)) {
+    add(artifact.id, "normative", "VERBATIM", 125, artifact.content, { authoritative: true, artifact: artifact.path });
+    const fragment = fragments.at(-1);
+    if (fragment) fragment.source = { artifact: artifact.path, sha256: sha256(artifact.content) };
+  }
+  add("task-assignment", "instruction", "VERBATIM", 100, prompt);
+  const operationRoot = process.env.AEH_CONTROL_ROOT?.trim() || root;
+  const stateOperation = identity.operationId ? await loadOperation(operationRoot, identity.operationId).catch(() => undefined) : undefined;
+  if (stateOperation) add("operation-state", "operation", "PROJECTABLE", 80, JSON.stringify(stateOperation), { authoritative: "deterministic-controller" });
+  if (options.parentAgentId) add("structured-handoff-input", "handoff", "PROJECTABLE", 78, JSON.stringify({ parentAgentId: options.parentAgentId, operationId: identity.operationId, phase: identity.phase }), { authoritative: "operation-record" });
+  const validationArtifact = await readOptionalText(root, path.posix.join(config.sdd?.reportsDir ?? ".harness/reports", `${contract.task.id}.json`));
+  if (validationArtifact) add("validation-evidence", "validation", "PROJECTABLE", 75, validationArtifact, { artifact: path.posix.join(config.sdd?.reportsDir ?? ".harness/reports", `${contract.task.id}.json`) });
+  const auditArtifact = await latestJsonArtifact(root, ".harness/audits");
+  if (auditArtifact) add("audit-evidence", "audit", "PROJECTABLE", 72, auditArtifact.content, { artifact: auditArtifact.path });
+  const hasGit = await fs.access(path.join(root, ".git")).then(() => true).catch(() => false);
+  const diff = hasGit ? await runProcess("git diff --stat", { cwd: root, timeoutMs: 15_000 }).catch(() => undefined) : undefined;
+  if (diff?.exitCode === 0 && diff.stdout.trim()) add("diff-projection", "diff", "PROJECTABLE", 70, diff.stdout.trim(), { authoritative: "current-git" });
+
+  const contextPolicy = config.context ? resolveContextPolicy(config) : undefined;
+  if (contextPolicy?.repositoryMap.enabled) {
+    const rendered = await buildRepositoryContextMap(root, config, { allowedPaths: contract.scope?.allowed, explicitPaths: contract.scope?.allowed, maxGraphHops: contextPolicy.repositoryMap.maxGraphHops });
+    add("repository-map", "repository-map", "PROJECTABLE", 90, rendered.content, { provider: rendered.map.provider, selected: rendered.selected, omitted: rendered.omitted });
+  }
+  const memory = await createMemoryProvider(root, config).catch((error) => {
+    if (config.memory?.required) throw error;
+    return undefined;
+  });
+  if (memory) {
+    const recalled = await memory.recall(config.project.name, prompt).catch((error) => {
+      if (config.memory?.required) throw error;
+      return [];
+    });
+    if (recalled.length) add("advisory-memory", "memory", "PROJECTABLE", 45, JSON.stringify({ advisory: true, records: recalled.slice(0, 8) }), { advisory: true, authoritative: false });
+  }
+  add("raw-evidence-references", "raw-evidence", "RETRIEVABLE", 35, JSON.stringify({ operationId: identity.operationId, note: "Raw evidence remains in durable AEH artifacts; retrieve only through transport-authorized fragment IDs." }));
+  return { fragments, capabilities: { authorizedRetrieval, semanticRetrieval } };
+}
+
+export async function buildEffectivePrompt(
+  root: string,
+  config: HarnessProjectConfig,
+  contract: TaskContract,
+  selection: AgentExecutionSelection,
+  prompt: string,
+  options: AgentPromptOptions = {}
+): Promise<string> {
+  const transport = selection.transport === "inherit" ? (config.orchestration?.provider ?? "none") : selection.transport;
+  const preparedFragments = await buildAgentContextFragments(root, config, contract, selection, prompt, options);
+  if (!config.context) return preparedFragments.fragments.map((fragment) => fragment.content).filter(Boolean).join("\n\n");
+  const identity = currentOperationContext();
   const prepared = await prepareContext(root, config, {
-    operationId: identity.operationId ?? contract.task.id,
+    operationId: identity.id ?? contract.task.id,
     logicalAgent: selection.logicalAgent,
     role: selection.role ?? "worker",
-    phase: identity.phase ?? "work",
-    fragments: [{ id: `prompt-${sha256(charter).slice(0, 16)}`, kind: "instruction", preservation: "VERBATIM", priority: 100, content: charter }]
+    phase: options.phase ?? "work",
+    fragments: preparedFragments.fragments,
+    capabilities: preparedFragments.capabilities
   });
   return prepared.rendered;
+}
+
+async function normativeArtifacts(root: string, config: HarnessProjectConfig, contract: TaskContract): Promise<Array<{ id: string; path: string; content: string }>> {
+  const candidates = [
+    { id: "task-contract", path: path.posix.join(config.sdd?.contractsDir ?? ".harness/contracts", `${contract.task.id}.yaml`) },
+    { id: "sealed-acceptance", path: path.posix.join(".harness/seals", `${contract.task.id}.json`) },
+    ...Object.entries(contract.source ?? {}).map(([name, value]) => ({ id: `normative-${name}`, path: value }))
+  ];
+  const result: Array<{ id: string; path: string; content: string }> = [];
+  for (const candidate of candidates) {
+    if (!candidate.path || candidate.path.includes("..") || path.isAbsolute(candidate.path)) continue;
+    try { result.push({ ...candidate, path: candidate.path.replaceAll(path.sep, "/"), content: await fs.readFile(path.resolve(root, candidate.path), "utf8") }); } catch { /* optional source artifacts */ }
+  }
+  return result;
+}
+
+async function readOptionalText(root: string, relative: string): Promise<string | undefined> {
+  try { return await fs.readFile(path.resolve(root, relative), "utf8"); } catch { return undefined; }
+}
+
+async function latestJsonArtifact(root: string, relativeDirectory: string): Promise<{ path: string; content: string } | undefined> {
+  const directory = path.resolve(root, relativeDirectory);
+  try {
+    const names = (await fs.readdir(directory)).filter((name) => name.endsWith(".json")).sort();
+    const name = names.at(-1); if (!name) return undefined;
+    return { path: path.posix.join(relativeDirectory, name), content: await fs.readFile(path.join(directory, name), "utf8") };
+  } catch { return undefined; }
 }
 
 function boundedExecutionEnvironment(selection: AgentExecutionSelection, options: AgentPromptOptions): Record<string, string> {

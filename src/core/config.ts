@@ -25,9 +25,8 @@ const contextSchema = z.object({
   outputPolicy: z.object({ enabled: z.boolean().optional(), modes: z.record(z.string(), z.enum(["terse", "compact", "normal"])).optional() }).optional()
 }).superRefine((value, ctx) => {
   if (value.semanticRetrieval?.provider && value.semanticRetrieval.provider !== "serena") ctx.addIssue({ code: "custom", path: ["semanticRetrieval", "provider"], message: "Serena is the mandatory semantic retrieval provider." });
-  if (value.semanticRetrieval?.required === false) ctx.addIssue({ code: "custom", path: ["semanticRetrieval", "required"], message: "Semantic retrieval cannot be disabled after context migration." });
-  if (value.compression?.provider && value.compression.provider !== "headroom") ctx.addIssue({ code: "custom", path: ["compression", "provider"], message: "Headroom is the mandatory context compression provider." });
-  if (value.compression?.required === false) ctx.addIssue({ code: "custom", path: ["compression", "required"], message: "Context compression cannot be disabled after context migration." });
+  if (value.semanticRetrieval?.provider === "none" && value.semanticRetrieval.required === true) ctx.addIssue({ code: "custom", path: ["semanticRetrieval", "required"], message: "A disabled semantic provider cannot be required." });
+  if (value.compression?.provider === "none" && value.compression.required === true) ctx.addIssue({ code: "custom", path: ["compression", "required"], message: "A disabled compression provider cannot be required." });
 });
 
 const projectSchema = z.object({
@@ -74,7 +73,7 @@ const projectSchema = z.object({
   validation: z.object({ baseRef: z.string().optional(), commands: z.array(validationCommandSchema).optional(), validators: z.array(validatorSpecSchema).optional(), frozenPaths: z.array(z.string()).optional(), requireSeal: z.boolean().optional(), opa: z.object({ enabled: z.boolean().optional(), policyDirs: z.array(z.string()).optional() }).optional() }).optional(),
   security: z.object({ sandbox: z.object({ provider: z.string().optional(), required: z.boolean().optional(), image: z.string().optional(), imageDigest: z.string().optional(), network: z.boolean().optional(), extraArgs: z.array(z.string()).optional(), readOnlyRoot: z.boolean().optional(), ephemeralHome: z.boolean().optional(), noNewPrivileges: z.boolean().optional(), capDropAll: z.boolean().optional(), pidsLimit: z.number().int().positive().optional(), memory: z.string().optional(), cpus: z.number().positive().optional(), tmpfs: z.array(z.string()).optional(), forceForRisks: z.array(riskSchema).optional(), environmentAllowlist: z.array(z.string()).optional(), credentialEnvAllowlist: z.array(z.string()).optional() }).optional(), tools: z.array(z.string()).optional() }).optional(),
   telemetry: z.object({ enabled: z.boolean().optional(), required: z.boolean().optional(), localEventsFile: z.string().optional(), exporter: z.string().optional(), endpoint: z.string().optional(), headers: z.record(z.string(), z.string()).optional(), serviceName: z.string().optional() }).optional(),
-  evals: z.object({ corpusDir: z.string().optional(), resultsDir: z.string().optional(), workspacesDir: z.string().optional(), defaultRuns: z.number().int().positive().optional(), confidenceLevel: z.number().gt(0).lt(1).optional() }).optional(),
+  evals: z.object({ corpusDir: z.string().optional(), resultsDir: z.string().optional(), workspacesDir: z.string().optional(), defaultRuns: z.number().int().positive().optional(), confidenceLevel: z.number().gt(0).lt(1).optional(), fullStack: z.object({ enabled: z.boolean().optional(), required: z.boolean().optional(), strictSupplyChain: z.boolean().optional() }).optional() }).optional(),
   provenance: z.object({ outputDir: z.string().optional(), buildType: z.string().optional(), cosignKey: z.string().optional() }).optional()
 });
 const requirementSchema = z.object({ id: z.string().min(1), description: z.string().optional(), validator: z.string().optional(), validators: z.array(z.string()).optional() });

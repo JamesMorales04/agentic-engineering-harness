@@ -1,7 +1,9 @@
 import crypto from "node:crypto";
 import type { HarnessProjectConfig } from "../core/types.js";
 
-export async function exportEventSpan(config: HarnessProjectConfig, name: string, attributes: Record<string, unknown>, at = new Date()): Promise<void> {
+export interface TraceContext { traceId: string; parentSpanId?: string; spanId: string; }
+
+export async function exportEventSpan(config: HarnessProjectConfig, name: string, attributes: Record<string, unknown>, at = new Date(), context?: TraceContext): Promise<void> {
   if (config.telemetry?.exporter !== "otlp-http-json") return;
   const endpoint = resolveEndpoint(config);
   if (!endpoint) throw new Error("OTLP exporter is enabled but no endpoint is configured.");
@@ -12,7 +14,7 @@ export async function exportEventSpan(config: HarnessProjectConfig, name: string
       scopeSpans: [{
         scope: { name: "agentic-engineering-harness", version: "0.3.0" },
         spans: [{
-          traceId: crypto.randomBytes(16).toString("hex"), spanId: crypto.randomBytes(8).toString("hex"), name, kind: 1,
+          traceId: context?.traceId ?? crypto.randomBytes(16).toString("hex"), spanId: context?.spanId ?? crypto.randomBytes(8).toString("hex"), ...(context?.parentSpanId ? { parentSpanId: context.parentSpanId } : {}), name, kind: 1,
           startTimeUnixNano: nanos, endTimeUnixNano: nanos,
           attributes: Object.entries(attributes).flatMap(([key, value]) => value === undefined || value === null ? [] : [attribute(key, value)]),
           status: { code: 1 }

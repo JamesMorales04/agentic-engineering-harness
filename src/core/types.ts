@@ -167,7 +167,7 @@ export interface HarnessProjectConfig {
     tools?: string[];
   };
   telemetry?: { enabled?: boolean; required?: boolean; localEventsFile?: string; exporter?: "none" | "otlp-http-json" | string; endpoint?: string; headers?: Record<string, string>; serviceName?: string; };
-  evals?: { corpusDir?: string; resultsDir?: string; workspacesDir?: string; defaultRuns?: number; confidenceLevel?: number; };
+  evals?: { corpusDir?: string; resultsDir?: string; workspacesDir?: string; defaultRuns?: number; confidenceLevel?: number; fullStack?: { enabled?: boolean; required?: boolean; strictSupplyChain?: boolean } };
   provenance?: { outputDir?: string; buildType?: string; cosignKey?: string; };
 }
 

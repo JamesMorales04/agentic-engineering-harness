@@ -219,6 +219,10 @@ evals:
   workspacesDir: .harness/evals/workspaces
   defaultRuns: 5
   confidenceLevel: 0.95
+  fullStack:
+    enabled: false
+    required: false
+    strictSupplyChain: false
 
 provenance:
   outputDir: .harness/provenance

@@ -3,6 +3,7 @@ import { estimateTokens } from "../estimator.js";
 import { runProcess, commandExists } from "../../utils/process.js";
 
 export interface HeadroomOptions { command?: string; version?: string; executor?: typeof runProcess; }
+export const HEADROOM_VERSION = "0.28.0";
 
 /** AEH-owned adapter. It talks to a local Headroom executable and never starts an agent process. */
 export class HeadroomCompressionProvider implements ContextCompressionProvider {
@@ -13,7 +14,7 @@ export class HeadroomCompressionProvider implements ContextCompressionProvider {
 
   constructor(options: HeadroomOptions = {}) {
     this.command = options.command ?? "headroom";
-    this.expectedVersion = options.version;
+    this.expectedVersion = options.version ?? HEADROOM_VERSION;
     this.executor = options.executor ?? runProcess;
   }
 

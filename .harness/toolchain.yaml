@@ -40,8 +40,9 @@ tools:
   python: { kind: mise, command: python, source: python, version: "3.13", required: true, activateWhen: [semantic-retrieval:serena, compression:headroom] }
   uv: { kind: mise, command: uv, source: uv, version: latest, activateWhen: [code-intelligence:graphify, semantic-retrieval:serena, compression:headroom] }
   graphify: { kind: mise, command: graphify, source: "pipx:graphifyy", version: latest, dependsOn: [uv], activateWhen: [code-intelligence:graphify] }
-  serena: { kind: mise, command: serena, source: "pipx:serena", version: "1.5.3", required: true, dependsOn: [uv, python], activateWhen: [semantic-retrieval:serena] }
-  headroom: { kind: mise, command: headroom, source: "pipx:headroom-ai[all]", version: "0.27.0", required: true, dependsOn: [uv, python], activateWhen: [compression:headroom] }
+  serena: { kind: mise, command: serena, source: "pipx:serena-agent", version: "1.6.1", required: true, dependsOn: [uv, python], activateWhen: [semantic-retrieval:serena] }
+  headroom: { kind: mise, command: headroom, source: "pipx:headroom-ai[all]", version: "0.28.0", required: true, dependsOn: [uv, python], activateWhen: [compression:headroom] }
+  engram: { kind: mise, command: engram, source: "npm:@engram-ai-memory/cli", version: latest, activateWhen: [memory:engram] }
   opa:
     kind: mise
     command: opa

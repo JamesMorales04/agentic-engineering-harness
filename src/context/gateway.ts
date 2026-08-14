@@ -19,12 +19,13 @@ import type { ContextEnvelope, ContextFragment, ContextFragmentProjection, Conte
 export interface ContextBudgetGatewayOptions { compressor?: ContextCompressionProvider; persist?: boolean; telemetry?: boolean; }
 
 export class ContextBudgetGateway {
-  private readonly compressor: ContextCompressionProvider;
+  private readonly compressor?: ContextCompressionProvider;
   private readonly persist: boolean;
   private readonly telemetry: boolean;
 
   constructor(private readonly root: string, private readonly config: HarnessProjectConfig, options: ContextBudgetGatewayOptions = {}) {
-    this.compressor = options.compressor ?? new HeadroomCompressionProvider(config.context?.compression?.command ? { command: config.context.compression.command } : {});
+    const provider = config.context?.compression?.provider ?? "headroom";
+    this.compressor = options.compressor ?? (provider === "headroom" ? new HeadroomCompressionProvider(config.context?.compression?.command ? { command: config.context.compression.command } : {}) : undefined);
     this.persist = options.persist ?? true;
     this.telemetry = options.telemetry ?? true;
   }
@@ -39,7 +40,7 @@ export class ContextBudgetGateway {
 
     for (const fragment of durable) {
       classifyFragment(fragment);
-      const optimized = await this.optimizeFragment(fragment, request.operationId, policy.compression.minTokens);
+      const optimized = await this.optimizeFragment(fragment, request.operationId, policy.compression.minTokens, request.capabilities?.authorizedRetrieval !== false);
       candidates.push({ raw: fragment, optimized });
     }
 
@@ -47,24 +48,29 @@ export class ContextBudgetGateway {
     const delivered = enforced ? selectWithinBudget(candidates.map((candidate) => candidate.optimized), budget.maxTokens - budget.reserved.response) : durable.map(projectSource);
     const deliveredIds = new Set(delivered.map((fragment) => fragment.id));
     const discarded = durable.filter((fragment) => !deliveredIds.has(fragment.id));
-    const envelope = buildContextEnvelope({ version: 1, operationId: request.operationId, logicalAgent: request.logicalAgent, phase: request.phase, budget: { maximum: budget.maxTokens, estimatedDelivered: delivered.reduce((sum, fragment) => sum + fragment.estimatedTokens, 0) }, fragments: delivered, retrieval: { available: delivered.length > 0, allowedFragmentIds: delivered.map((fragment) => fragment.id) } });
+    const retrievalAvailable = request.capabilities?.authorizedRetrieval !== false;
+    const envelope = buildContextEnvelope({ version: 1, operationId: request.operationId, logicalAgent: request.logicalAgent, phase: request.phase, budget: { maximum: budget.maxTokens, estimatedDelivered: delivered.reduce((sum, fragment) => sum + fragment.estimatedTokens, 0) }, fragments: delivered, retrieval: { available: retrievalAvailable, allowedFragmentIds: retrievalAvailable ? delivered.map((fragment) => fragment.id) : [] } });
     if (this.persist) await this.persistEnvelope(request.operationId, envelope);
     const rendered = renderContextEnvelope(envelope);
     const metrics = metricsFor(durable, candidates.map((candidate) => candidate.optimized), delivered, discarded);
-    const retrieval = new ContextRetrievalGateway(authorizeRetrieval({ root: this.root, operationId: request.operationId, logicalAgent: request.logicalAgent, allowedFragmentIds: delivered.map((fragment) => fragment.id), fragments: durable }), policy.retrieval);
+    const retrieval = new ContextRetrievalGateway(authorizeRetrieval({ root: this.root, operationId: request.operationId, logicalAgent: request.logicalAgent, allowedFragmentIds: retrievalAvailable ? delivered.map((fragment) => fragment.id) : [], fragments: durable }), policy.retrieval);
 
     if (this.telemetry && this.config.telemetry?.enabled !== false) await this.emitTelemetry(request, metrics, envelope);
     return { envelope, rendered, metrics, retrieval: { root: this.root, operationId: request.operationId, logicalAgent: request.logicalAgent, allowedFragmentIds: [...envelope.retrieval.allowedFragmentIds] } };
   }
 
-  private async optimizeFragment(fragment: ContextFragment, operationId: string, minCompressionTokens: number): Promise<ContextFragmentProjection> {
+  private async optimizeFragment(fragment: ContextFragment, operationId: string, minCompressionTokens: number, authorizedRetrieval: boolean): Promise<ContextFragmentProjection> {
     const originalTokens = estimateTokens(fragment.content);
     if (isRequiredFragment(fragment)) return projectSource(fragment);
     if (fragment.preservation === "DISCARDABLE") return { ...fragment, content: "", estimatedTokens: 0, originalTokens, projected: true };
-    if (fragment.preservation === "RETRIEVABLE") {
+    if (fragment.preservation === "RETRIEVABLE" && authorizedRetrieval) {
       const content = `[Retrievable ${fragment.kind} '${fragment.id}' (${originalTokens} tokens); use aeh_context_retrieve for the authorized raw artifact.]`;
       return { ...fragment, content, estimatedTokens: estimateTokens(content), originalTokens, projected: true };
     }
+    // Direct Codex and hardened Podman do not necessarily expose the AEH MCP
+    // retrieval server. Deliver an equivalent bounded projection instead of
+    // advertising a tool the transport cannot call.
+    if (fragment.preservation === "RETRIEVABLE") return genericProjection(fragment);
     let projected: ContextFragmentProjection;
     switch (fragment.kind) {
       case "validation": projected = projectValidation(fragment); break;
@@ -76,12 +82,23 @@ export class ContextBudgetGateway {
       case "tool-output": projected = genericProjection(fragment); break;
       case "memory": projected = genericProjection(fragment); break;
       case "instruction":
+      case "execution-envelope":
+      case "agent-charter":
+      case "skill":
+      case "handoff":
+      case "delivery":
       case "normative": projected = projectSource(fragment); break;
+      case "raw-evidence": projected = genericProjection(fragment); break;
       default: projected = projectSource(fragment);
     }
-    if (canLossyCompress(fragment) && originalTokens >= minCompressionTokens) {
-      const compression = await this.compressor.compress(this.root, { operationId, fragment, maxTokens: Math.max(1, Math.floor(originalTokens * 0.7)), sourceSha256: fragment.source?.sha256 ?? sha256(fragment.content) });
-      if (compression.compressedTokens < projected.estimatedTokens) return { ...projected, content: compression.content, estimatedTokens: compression.compressedTokens, compressed: true, compression: { provider: compression.provider, providerVersion: compression.providerVersion, reversible: compression.reversible, handle: compression.handle } };
+    if (this.compressor && canLossyCompress(fragment) && originalTokens >= minCompressionTokens) {
+      try {
+        const compression = await this.compressor.compress(this.root, { operationId, fragment, maxTokens: Math.max(1, Math.floor(originalTokens * 0.7)), sourceSha256: fragment.source?.sha256 ?? sha256(fragment.content) });
+        if (compression.compressedTokens < projected.estimatedTokens) return { ...projected, content: compression.content, estimatedTokens: compression.compressedTokens, compressed: true, compression: { provider: compression.provider, providerVersion: compression.providerVersion, reversible: compression.reversible, handle: compression.handle } };
+      } catch (error) {
+        if (this.config.context?.compression?.required !== false) throw error;
+        // Optional compression failure falls back to deterministic projection.
+      }
     }
     return projected;
   }

@@ -108,15 +108,17 @@ export function buildOpenCodeRuntimeConfig(
   for (const name of selection.mcps) {
     if (!configured[name]) tools[`${name}_*`] = true;
   }
-  const semanticRequired = config?.context?.semanticRetrieval?.provider !== "none" && config?.context?.semanticRetrieval?.required === true && selection.role !== "orchestrator" && selection.logicalAgent !== "operation-supervisor";
-  if (semanticRequired && !mcp.serena) {
+  const semanticConfigured = Boolean(config?.context) && config?.context?.semanticRetrieval?.provider !== "none" && selection.role !== "orchestrator" && selection.logicalAgent !== "operation-supervisor";
+  if (semanticConfigured && !mcp.serena) {
     mcp.serena = { type: "local", command: ["serena", "start-mcp-server", "--context", "ide-assistant", "--project", "."], enabled: true, timeout: 30_000 };
     tools["serena_*"] = true;
   }
-  const compressionRequired = config?.context?.compression?.provider !== "none" && config?.context?.compression?.required === true && selection.role !== "orchestrator" && selection.logicalAgent !== "operation-supervisor";
-  if (compressionRequired && !mcp.headroom) {
-    mcp.headroom = { type: "local", command: [config?.context?.compression?.command ?? "headroom", "mcp", "serve"], enabled: true };
-    tools["headroom_*"] = true;
+  // Headroom is controller-side compression. Its MCP schema is intentionally
+  // not exposed to runtime agents. Direct OpenCode receives the same
+  // authorized raw-fragment gateway as Paseo when the local entry is known.
+  if (config?.context && selection.transport !== "podman" && config.orchestration?.provider !== "podman" && !mcp["aeh-context"] && process.argv[1]) {
+    mcp["aeh-context"] = { type: "local", command: [process.execPath, process.env.AEH_ENTRY_FILE?.trim() || process.argv[1], "context", "mcp"], environment: { AEH_CONTEXT_ROOT: "." }, enabled: true };
+    tools["aeh-context_*"] = true;
   }
 
   const managedAgent = binding.managed

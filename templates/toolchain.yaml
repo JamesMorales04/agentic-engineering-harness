@@ -113,8 +113,8 @@ tools:
   serena:
     kind: mise
     command: serena
-    source: "pipx:serena"
-    version: "1.5.3"
+    source: "pipx:serena-agent"
+    version: "1.6.1"
     required: true
     dependsOn: [uv, python]
     activateWhen: [semantic-retrieval:serena]
@@ -123,10 +123,17 @@ tools:
     kind: mise
     command: headroom
     source: "pipx:headroom-ai[all]"
-    version: "0.27.0"
+    version: "0.28.0"
     required: true
     dependsOn: [uv, python]
     activateWhen: [compression:headroom]
+
+  engram:
+    kind: mise
+    command: engram
+    source: "npm:@engram-ai-memory/cli"
+    version: latest
+    activateWhen: [memory:engram]
 
   opa:
     kind: mise

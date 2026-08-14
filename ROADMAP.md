@@ -1,5 +1,10 @@
 # Roadmap
 
+Roadmap checkboxes indicate that a capability exists in the current revision;
+they do not by themselves claim production maturity. See
+[`docs/COMPONENT_MATURITY.md`](docs/COMPONENT_MATURITY.md) for the current
+classification and remaining hardening work for each component.
+
 ## v0.1 — foundation ✅
 - [x] portable CLI, TaskContracts, sealing, deterministic gates, OPA, Paseo/Engram/Graphify, telemetry and reusable skills
 

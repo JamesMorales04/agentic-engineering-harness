@@ -19,5 +19,5 @@ export function renderContextEnvelope(envelope: ContextEnvelope): string {
     const mode = fragment.compressed ? "compressed" : fragment.projected ? "projected" : fragment.preservation.toLowerCase();
     return `### ${fragment.kind}:${fragment.id} [${mode}, ${fragment.estimatedTokens} tokens]${source}\n${fragment.content}`;
   });
-  return [`AEH ContextEnvelope v${envelope.version} operation=${envelope.operationId} agent=${envelope.logicalAgent} phase=${envelope.phase}`, ...sections, "AEH raw context is retrievable only through authorized fragment IDs."].join("\n\n");
+  return [`AEH ContextEnvelope v${envelope.version} operation=${envelope.operationId} agent=${envelope.logicalAgent} phase=${envelope.phase}`, ...sections, envelope.retrieval.available ? "AEH raw context is retrievable only through authorized fragment IDs." : "Raw context retrieval is not exposed by this transport; use the delivered bounded projections."].join("\n\n");
 }

@@ -24,7 +24,12 @@ Git-versioned specs, ADRs, TaskContracts and executable acceptance criteria defi
 
 ### 5. Structural truth
 
-Graphify is the first code-intelligence adapter. Extracted graph relationships may support deterministic gates; inferred/ambiguous relationships should default to warnings until explicitly promoted.
+Graphify is the first code-intelligence adapter. A canonical AEH graph model
+feeds context selection, scheduling, blast-radius evidence and architecture
+validation. The provider owns doctor/build/refresh/load/freshness/impact
+lifecycle; consumers do not construct Graphify CLI commands. Extracted graph
+relationships may support deterministic gates; inferred/ambiguous
+relationships should default to warnings until explicitly promoted.
 
 ### 6. Historical memory
 

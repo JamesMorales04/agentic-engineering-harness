@@ -19,7 +19,6 @@ import { verifyTask } from "./verify.js";
 import { createRepairPacket, writeRepairPacket } from "./repair.js";
 import { createWorkerExecutor } from "../workers/factory.js";
 import { snapshotGraph } from "../validators/graphify.js";
-import { runProcess } from "../utils/process.js";
 import { recordEvent } from "../telemetry/events.js";
 import { extractUsageMetrics } from "../metrics/usage.js";
 import { buildRunMetrics, countHumanInterventions } from "../metrics/runMetrics.js";
@@ -33,6 +32,7 @@ import { enforceSandboxPolicy } from "../security/sandbox.js";
 import { currentOperationContext, resolveOperationStateRoot, setOperationStage } from "../operations/state.js";
 import { ensureOperationSupervisor, maybeRotateOperationSupervisor, settleDrainingSupervisorGenerations } from "../operations/supervisor.js";
 import { assertContextReadiness } from "../context/preflight.js";
+import { createMemoryProvider } from "../providers/memory.js";
 
 export interface TaskRunResult {
   taskId: string;
@@ -112,7 +112,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
   const planningEnabled = topology && route && selection && effectiveConfig.workflow?.planning?.enabled !== false && effectiveContract.mode !== "quick";
   if (planningEnabled) {
     if (operationId) await runStage(operationStateRoot, operationId, "planning", "RUNNING");
-    waveResult = await executePlannerWaves({ root: workspaceRoot, stateRoot: controlRoot, config: effectiveConfig, contract: effectiveContract, topology, implementationSelection: selection, controller, revalidate: async () => verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller) });
+    waveResult = await executePlannerWaves({ root: workspaceRoot, stateRoot: controlRoot, config: effectiveConfig, contract: effectiveContract, topology, implementationSelection: selection, controller, revalidate: async () => verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, selection) });
     executionSessions = [...waveResult.sessions];
     if (operationId) {
       await runStage(operationStateRoot, operationId, "planning", waveResult.aggregateSession?.exitCode === 0 || !waveResult.aggregateSession ? "COMPLETED" : "FAILED");
@@ -123,14 +123,14 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
   if (operationId) await runStage(operationStateRoot, operationId, "implementation", "RUNNING");
   if (waveResult?.used && waveResult.aggregateSession) {
     worker = waveResult.aggregateSession;
-    report = withWorkerExecutionCheck(waveResult.report ?? await verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller), worker);
+    report = withWorkerExecutionCheck(waveResult.report ?? await verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, selection), worker);
   } else {
     const executor = createWorkerExecutor(effectiveConfig, selection);
     const health = await executor.doctor(workspaceRoot, effectiveConfig, selection);
     if (!health.ok) throw new Error(`${executor.name} executor unavailable: ${health.message}`);
     worker = await executor.start(workspaceRoot, effectiveConfig, effectiveContract, selection);
     executionSessions.push(worker);
-    report = withWorkerExecutionCheck(await verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller), worker);
+    report = withWorkerExecutionCheck(await verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, selection), worker);
   }
   if (operationId) await runStage(operationStateRoot, operationId, "implementation", report.status === "PASS" ? "COMPLETED" : "FAILED");
 
@@ -176,7 +176,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     if (!recoveryHealth.ok) throw new Error(`${executor.name} recovery executor unavailable: ${recoveryHealth.message}`);
     worker = await executor.repair(workspaceRoot, effectiveConfig, effectiveContract, worker, packet, selection);
     executionSessions.push(worker);
-    report = withWorkerExecutionCheck(await verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller), worker);
+    report = withWorkerExecutionCheck(await verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, selection), worker);
     report = await attachEvidence(report);
     await recordEvent(controlRoot, effectiveConfig, "harness.repair.finish", { taskId: effectiveContract.task.id, attempt: attempts, status: report.status, agent: selection?.logicalAgent });
     if (operationId && topology) await maybeRotateOperationSupervisor(workspaceRoot, effectiveConfig, effectiveContract, topology);
@@ -192,7 +192,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
       await ensureOperationSupervisor(workspaceRoot, effectiveConfig, effectiveContract, topology, { required: true, forceMaterialize: true });
       await runStage(operationStateRoot, operationId, "review", "RUNNING");
     }
-    const review = await runReviewLifecycle({ root: workspaceRoot, stateRoot: controlRoot, config: effectiveConfig, contract: effectiveContract, topology, route, implementationSelection: selection, report, revalidate: async () => verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller) });
+    const review = await runReviewLifecycle({ root: workspaceRoot, stateRoot: controlRoot, config: effectiveConfig, contract: effectiveContract, topology, route, implementationSelection: selection, report, revalidate: async () => verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, selection) });
     report = mergeChecks(withWorkerExecutionCheck(review.report, worker), review.checks);
     reviewFindings = review.findings.findings;
     reviewSessions = review.sessions;
@@ -240,7 +240,17 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
   const result: TaskRunResult = { taskId: effectiveContract.task.id, status: report.status, attempts, worker, report, metrics, routing, planning: waveResult ? { used: waveResult.used, tasks: waveResult.plan?.tasks.length ?? 0, waves: waveResult.schedule?.waves.length ?? 0, distributed: effectiveConfig.workflow?.planning?.distributed === true && effectiveConfig.distributed?.enabled === true, graphUsed: waveResult.schedule?.graphUsed } : undefined, controlPlane: controller ? { sha256: controller.compositeSha256, gitCommit: controller.gitCommit, drifted: drift.drifted, changed: drift.changed, missing: drift.missing, added: drift.added } : undefined, evidence: evidenceGraph ? { sha256: evidenceGraph.sha256, complete: evidenceGraph.complete, requirements: evidenceGraph.requirements.length, reasons: evidenceGraph.reasons } : undefined, review: reviewSummary, delivery: deliverySummary };
   const runsDir = path.resolve(controlRoot, effectiveConfig.sdd?.runsDir ?? ".harness/runs");
   await fs.mkdir(runsDir, { recursive: true });
-  await fs.writeFile(path.join(runsDir, `${effectiveContract.task.id}.json`), `${JSON.stringify(result, null, 2)}\n`);
+  const runFile = path.join(runsDir, `${effectiveContract.task.id}.json`);
+  await fs.writeFile(runFile, `${JSON.stringify(result, null, 2)}\n`);
+  if (result.status === "PASS" && effectiveConfig.memory?.provider && effectiveConfig.memory.provider !== "none") {
+    try {
+      const memory = await createMemoryProvider(controlRoot, effectiveConfig);
+      if (memory) await memory.remember({ project: effectiveConfig.project.name, type: "summary", title: `Accepted operation ${effectiveContract.task.id}`, content: `Accepted task ${effectiveContract.task.id}: ${effectiveContract.task.title}. Validation=${result.report.status}; attempts=${result.attempts}; review=${result.review?.status ?? "not-run"}.`, source: path.relative(controlRoot, runFile).replaceAll("\\", "/"), tags: ["aeh", "accepted", effectiveContract.mode ?? "spec"] });
+    } catch (error) {
+      await recordEvent(controlRoot, effectiveConfig, "harness.memory.persist-failed", { taskId: effectiveContract.task.id, error: String(error) });
+      if (effectiveConfig.memory.required) throw error;
+    }
+  }
   await recordEvent(controlRoot, effectiveConfig, "harness.run.finish", { taskId: effectiveContract.task.id, status: result.status, attempts, mode: effectiveContract.mode ?? "spec", workspaceRoot: workspaceRoot === controlRoot ? undefined : workspaceRoot, agent: selection?.logicalAgent, runtime: selection?.runtimeName, model: selection?.modelId, profile: selection?.profile, waves: result.planning?.waves, controllerSha256: result.controlPlane?.sha256, controllerDrifted: result.controlPlane?.drifted, evidenceComplete: result.evidence?.complete, evidenceSha256: result.evidence?.sha256, reviewStatus: reviewSummary?.status, reviewFinalState: reviewSummary?.finalState, humanRequired: reviewSummary?.humanRequired ?? deliverySummary?.humanRequired, debtScore: reviewSummary?.debtScore, deliveryStatus: deliverySummary?.status, pullRequest: deliverySummary?.pullRequest, durationMs: metrics.durationMs, totalTokens: metrics.usage.totalTokens ?? 0, costUsd: metrics.usage.costUsd ?? 0 });
   return result;
 }
@@ -279,18 +289,19 @@ function mergeChecks(report: ValidationReport, extra: ValidationCheck[]): Valida
   return { ...report, checks, status: checks.some((check) => check.status === "FAIL") ? "FAIL" : "PASS" };
 }
 
-async function verifyAfterWorker(workspaceRoot: string, controlRoot: string, config: HarnessProjectConfig, contract: TaskContract, controller?: ControlPlaneSnapshot): Promise<ValidationReport> {
+async function verifyAfterWorker(workspaceRoot: string, controlRoot: string, config: HarnessProjectConfig, contract: TaskContract, controller?: ControlPlaneSnapshot, selection?: AgentExecutionSelection): Promise<ValidationReport> {
   await refreshGraphIfConfigured(workspaceRoot, config);
   const afterSnapshot = await snapshotGraph(workspaceRoot, config, contract.task.id, "after");
   if (!afterSnapshot && config.codeIntelligence?.required) throw new Error("Code intelligence is required but the Graphify after snapshot could not be created.");
-  return verifyTask(workspaceRoot, config, contract, { stateRoot: controlRoot, policyRoot: controller?.materializedRoot ?? controlRoot });
+  const operation = currentOperationContext();
+  return verifyTask(workspaceRoot, config, contract, { stateRoot: controlRoot, policyRoot: controller?.materializedRoot ?? controlRoot, executionIdentity: selection ? { operationId: operation.id, operationKind: operation.kind, logicalAgent: selection.logicalAgent, role: selection.role, profile: selection.profile, domains: selection.domains, runtime: selection.runtimeName, modelAlias: selection.modelAlias, permissions: selection.permissions, risk: contract.routing?.risk } : undefined });
 }
 
 async function refreshGraphIfConfigured(root: string, config: HarnessProjectConfig): Promise<void> {
-  const command = config.codeIntelligence?.refreshCommand;
-  if (!command) return;
-  const result = await runProcess(command, { cwd: root, timeoutMs: 300_000 });
-  if (result.exitCode !== 0 && config.codeIntelligence?.required) throw new Error(`Code intelligence refresh failed: ${result.stderr || result.stdout}`);
+  if (config.codeIntelligence?.provider !== "graphify") return;
+  const provider = new (await import("../providers/graphify.js")).GraphifyCodeIntelligenceProvider(config);
+  try { await provider.refresh(root); }
+  catch (error) { if (config.codeIntelligence.required) throw error; await recordEvent(root, config, "harness.graphify.refresh-failed", { error: String(error) }); }
 }
 
 async function runStage(

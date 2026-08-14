@@ -6,6 +6,15 @@ Memory informs; it does not authorize.
 
 The provider abstraction starts with Engram but must remain replaceable.
 
+The Engram adapter now implements bounded `remember`/`recall` through the
+upstream CLI contract (`store` and `recall`) and keeps a small project-scoped
+AEH ledger for deterministic deduplication and provenance. Records are tagged
+with their source artifact where available; superseded or stale records are
+excluded from recall. If Engram is configured as optional and its health check
+fails, the Harness omits advisory memory. A required provider fails closed.
+The provider is activated only by `memory:engram`; `memory: none` creates no
+memory provider.
+
 ## Store
 
 - architectural decisions and rationale;

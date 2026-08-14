@@ -1,0 +1,101 @@
+import crypto from "node:crypto";
+
+export interface NormalizedFinding {
+  fingerprint: string;
+  tool: string;
+  kind: string;
+  rule?: string;
+  severity?: string;
+  file?: string;
+  line?: number;
+  endLine?: number;
+  column?: number;
+  endColumn?: number;
+  message?: string;
+  category?: string;
+  cwe?: string[];
+  package?: string;
+  installedVersion?: string;
+  fixedVersion?: string;
+  target?: string;
+  artifact?: string;
+  durationMs?: number;
+  status?: string;
+  details?: Record<string, unknown>;
+}
+
+export function normalizeOpengrepOutput(value: unknown): NormalizedFinding[] {
+  const results = record(value).results;
+  if (!Array.isArray(results)) return [];
+  return results.flatMap((item) => {
+    const result = record(item); const extra = record(result.extra); const start = record(result.start); const end = record(result.end); const metadata = record(extra.metadata);
+    const finding: Omit<NormalizedFinding, "fingerprint"> = { tool: "opengrep", kind: "finding", rule: stringValue(result.check_id), severity: stringValue(metadata.severity ?? extra.severity), file: stringValue(result.path), line: numberValue(start.line), endLine: numberValue(end.line), column: numberValue(start.col), endColumn: numberValue(end.col), message: stringValue(extra.message), category: stringValue(metadata.category), cwe: listValue(metadata.cwe) };
+    return [{ ...finding, fingerprint: findingFingerprint(finding) }];
+  });
+}
+
+export function normalizeTrivyOutput(value: unknown): NormalizedFinding[] {
+  const results = record(value).Results;
+  if (!Array.isArray(results)) return [];
+  return results.flatMap((item) => {
+    const result = record(item); const target = stringValue(result.Target); const findings: NormalizedFinding[] = [];
+    for (const [key, kind] of [["Vulnerabilities", "vulnerability"], ["Misconfigurations", "misconfiguration"], ["Secrets", "secret"]] as const) {
+      for (const item of Array.isArray(result[key]) ? result[key] : []) {
+        const value = record(item); const finding: Omit<NormalizedFinding, "fingerprint"> = { tool: "trivy", kind, rule: stringValue(value.VulnerabilityID ?? value.ID ?? value.RuleID), severity: stringValue(value.Severity), package: stringValue(value.PkgName ?? value.Resource), installedVersion: stringValue(value.InstalledVersion), fixedVersion: stringValue(value.FixedVersion), target, file: stringValue(value.PrimaryURL ?? value.Target ?? target), message: stringValue(value.Title ?? value.Message), category: stringValue(result.Class) };
+        findings.push({ ...finding, fingerprint: findingFingerprint(finding) });
+      }
+    }
+    return findings;
+  });
+}
+
+export function normalizePlaywrightOutput(value: unknown): NormalizedFinding[] {
+  const findings: NormalizedFinding[] = [];
+  const visitSuite = (suite: unknown, project?: string): void => {
+    const recordSuite = record(suite); const specs = Array.isArray(recordSuite.specs) ? recordSuite.specs : [];
+    for (const spec of specs) {
+      const specRecord = record(spec); const tests = Array.isArray(specRecord.tests) ? specRecord.tests : [];
+      for (const test of tests) {
+        const testRecord = record(test); const results = Array.isArray(testRecord.results) ? testRecord.results : [];
+        for (const result of results) {
+          const resultRecord = record(result); const status = stringValue(resultRecord.status);
+          if (status && ["passed", "expected", "skipped"].includes(status)) continue;
+          const error = record(resultRecord.error); const finding: Omit<NormalizedFinding, "fingerprint"> = { tool: "playwright", kind: "failed-test", rule: stringValue(specRecord.title), message: stringValue(error.message ?? resultRecord.error) ?? "Playwright test failed.", durationMs: numberValue(resultRecord.duration), status, details: { project: project ?? stringValue(testRecord.projectName), attachments: resultRecord.attachments } };
+          findings.push({ ...finding, fingerprint: findingFingerprint(finding) });
+        }
+      }
+    }
+    for (const child of Array.isArray(recordSuite.suites) ? recordSuite.suites : []) visitSuite(child, project ?? stringValue(recordSuite.title));
+  };
+  for (const suite of Array.isArray(record(value).suites) ? record(value).suites : []) visitSuite(suite);
+  return findings;
+}
+
+export function normalizePactOutput(value: unknown): NormalizedFinding[] {
+  const root = record(value); const candidates = [...(Array.isArray(root.interactions) ? root.interactions : []), ...(Array.isArray(root.tests) ? root.tests : []), ...(Array.isArray(root.failures) ? root.failures : [])];
+  return candidates.flatMap((item) => {
+    const result = record(item); const status = stringValue(result.status ?? result.result); const message = stringValue(result.error ?? result.message ?? result.failure); if ((!status && !message) || (status && ["passed", "success", "verified"].includes(status.toLocaleLowerCase()))) return [];
+    const finding: Omit<NormalizedFinding, "fingerprint"> = { tool: "pact", kind: "contract-failure", rule: stringValue(result.description ?? result.id ?? result.name), message, status, details: { consumer: result.consumer, provider: result.provider, pact: result.pact } };
+    return [{ ...finding, fingerprint: findingFingerprint(finding) }];
+  });
+}
+
+export function parseToolEvidence(adapter: string, stdout: string): NormalizedFinding[] {
+  let value: unknown;
+  try { value = JSON.parse(stdout); } catch { return []; }
+  if (adapter === "opengrep") return normalizeOpengrepOutput(value);
+  if (adapter === "trivy") return normalizeTrivyOutput(value);
+  if (adapter === "playwright") return normalizePlaywrightOutput(value);
+  if (adapter === "pact") return normalizePactOutput(value);
+  return [];
+}
+
+export function findingFingerprint(finding: Omit<NormalizedFinding, "fingerprint"> | NormalizedFinding): string {
+  const value = { tool: finding.tool, kind: finding.kind, rule: finding.rule, severity: finding.severity, file: finding.file, line: finding.line, endLine: finding.endLine, package: finding.package, target: finding.target, message: finding.message };
+  return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function record(value: unknown): Record<string, any> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : {}; }
+function stringValue(value: unknown): string | undefined { return typeof value === "string" || typeof value === "number" ? String(value) : undefined; }
+function numberValue(value: unknown): number | undefined { return typeof value === "number" && Number.isFinite(value) ? value : undefined; }
+function listValue(value: unknown): string[] | undefined { if (Array.isArray(value)) return value.map(String); if (typeof value === "string") return [value]; return undefined; }

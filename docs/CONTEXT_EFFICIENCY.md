@@ -8,6 +8,15 @@ RETRIEVE -> SELECT -> PROJECT -> BUDGET -> COMPRESS -> DELIVER -> RETRIEVE ORIGI
 
 The `ContextBudgetGateway` is the preparation authority at the controller-to-agent boundary. It is transport-independent and runs before Paseo, direct or Podman dispatch. `StructuredResultGateway` remains the separate authority for accepted structured output leaving an agent.
 
+The production prompt path creates typed fragments before rendering: execution
+envelope, agent charter, frozen skills, normative contract/seal/source,
+assignment, operation projection, RepoMap, advisory memory and evidence
+references. Normative fragments remain byte-for-byte `VERBATIM`; the charter is
+not used as a single catch-all fragment. RepoMap construction is skipped when
+`context.repositoryMap.enabled` is false. Transport capabilities are carried
+into preparation so a direct Codex or hardened Podman turn never advertises a
+retrieval tool it cannot expose.
+
 ## Preservation classes
 
 - `VERBATIM`: exact normative requirements, contracts, schemas, hashes, anchors and critical diagnostics. It cannot be lossy-compressed.
@@ -20,11 +29,11 @@ Unknown classes fail validation; they do not default to lossy compression.
 
 ## Providers and authority
 
-Serena is the mandatory local semantic repository provider. It is used for symbol lookup, overviews, references and targeted retrieval. Graphify remains the macro topology provider, and Engram remains historical memory authority. Serena memory features and editing are not used as AEH authority.
+Serena is the configured local semantic repository provider when enabled. It is used for symbol lookup, overviews, references and targeted retrieval. Graphify remains the macro topology provider, and Engram remains historical memory authority. Serena memory features and editing are not used as AEH authority.
 
 Headroom is the mandatory local compression provider. AEH starts and configures it where runtime integration is needed, but Paseo continues to own bounded agent lifecycle. AEH never uses `headroom wrap` as a second process manager. Headroom cannot mutate control-plane files, learn rules, rewrite structured JSON or compress normative fragments.
 
-Both tools are free/local OSS dependencies pinned in `templates/toolchain.yaml`: Serena `1.5.3` and Headroom `0.27.0`, using the managed Python/uv toolchain. No paid hosted service is required.
+Both tools are free/local OSS dependencies pinned in `templates/toolchain.yaml`: Serena `1.6.1` (`serena-agent`) and Headroom `0.28.0`, using the managed Python/uv toolchain. Serena's documented `start-mcp-server` command is used; no paid hosted service is required.
 
 ## Budgets and retrieval
 
