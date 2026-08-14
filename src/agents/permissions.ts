@@ -108,7 +108,7 @@ export function buildOpenCodeRuntimeConfig(
   for (const name of selection.mcps) {
     if (!configured[name]) tools[`${name}_*`] = true;
   }
-  const semanticConfigured = Boolean(config?.context) && config?.context?.semanticRetrieval?.provider !== "none" && selection.role !== "orchestrator" && selection.logicalAgent !== "operation-supervisor";
+  const semanticConfigured = Boolean(config?.context) && config?.context?.semanticRetrieval?.provider !== "none" && selection.role !== "orchestrator" && selection.logicalAgent !== "operation-supervisor" && selection.transport !== "podman" && config?.orchestration?.provider !== "podman" && (selection.transport === "paseo" || selection.transport === "direct" || selection.transport === "inherit");
   if (semanticConfigured && !mcp.serena) {
     mcp.serena = { type: "local", command: ["serena", "start-mcp-server", "--context", "ide-assistant", "--project", "."], enabled: true, timeout: 30_000 };
     tools["serena_*"] = true;

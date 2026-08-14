@@ -33,6 +33,7 @@ import { currentOperationContext, resolveOperationStateRoot, setOperationStage }
 import { ensureOperationSupervisor, maybeRotateOperationSupervisor, settleDrainingSupervisorGenerations } from "../operations/supervisor.js";
 import { assertContextReadiness } from "../context/preflight.js";
 import { createMemoryProvider } from "../providers/memory.js";
+import { buildAcceptedOperationCandidates } from "../memory/candidates.js";
 
 export interface TaskRunResult {
   taskId: string;
@@ -245,7 +246,10 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
   if (result.status === "PASS" && effectiveConfig.memory?.provider && effectiveConfig.memory.provider !== "none") {
     try {
       const memory = await createMemoryProvider(controlRoot, effectiveConfig);
-      if (memory) await memory.remember({ project: effectiveConfig.project.name, type: "summary", title: `Accepted operation ${effectiveContract.task.id}`, content: `Accepted task ${effectiveContract.task.id}: ${effectiveContract.task.title}. Validation=${result.report.status}; attempts=${result.attempts}; review=${result.review?.status ?? "not-run"}.`, source: path.relative(controlRoot, runFile).replaceAll("\\", "/"), tags: ["aeh", "accepted", effectiveContract.mode ?? "spec"] });
+      if (memory) {
+        const candidates = await buildAcceptedOperationCandidates({ root: controlRoot, project: effectiveConfig.project.name, operationId, contract: effectiveContract, result, runFile, reportFile: path.resolve(controlRoot, effectiveConfig.sdd?.reportsDir ?? ".harness/reports", `${effectiveContract.task.id}.json`), evidenceFile: path.resolve(controlRoot, effectiveConfig.evidence?.outputDir ?? ".harness/evidence", `${effectiveContract.task.id}.json`) });
+        for (const candidate of candidates) await memory.remember(candidate);
+      }
     } catch (error) {
       await recordEvent(controlRoot, effectiveConfig, "harness.memory.persist-failed", { taskId: effectiveContract.task.id, error: String(error) });
       if (effectiveConfig.memory.required) throw error;

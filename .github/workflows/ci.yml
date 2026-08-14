@@ -73,3 +73,80 @@ jobs:
           ./node_modules/.bin/aeh policy sync repo >/dev/null
           ./node_modules/.bin/aeh intent 'review the repo and validate the code for improvements' repo | grep -q '^AUDIT'
           ./node_modules/.bin/aeh operation status DOES-NOT-EXIST repo >/dev/null 2>&1 && exit 1 || true
+
+  full-stack-contract:
+    name: full-stack-contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - uses: astral-sh/setup-uv@v6
+      - run: npm ci
+      - name: Install pinned full-stack providers
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv tool install 'headroom-ai==0.28.0'
+          uv tool install 'graphifyy==0.9.43'
+          uv tool install 'serena-agent==1.6.1'
+          npm install --global '@engram-ai-memory/cli@0.4.1'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Start Engram local server
+        shell: bash
+        run: |
+          set -euo pipefail
+          engram setup --no-mcp --non-interactive
+          engram start
+      - run: npx vitest run tests/architectureClosureIntegration.test.ts
+
+  provider-contracts:
+    name: provider-contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - uses: astral-sh/setup-uv@v6
+      - run: npm ci
+      - name: Install pinned local provider contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv tool install 'headroom-ai==0.28.0'
+          uv tool install 'graphifyy==0.9.43'
+          uv tool install 'serena-agent==1.6.1'
+          npm install --global '@engram-ai-memory/cli@0.4.1'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Start Engram local server
+        shell: bash
+        run: |
+          set -euo pipefail
+          engram setup --no-mcp --non-interactive
+          engram start
+      - name: Install Trivy
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          version: v0.70.0
+          cache: true
+      - name: Run real provider contracts
+        env:
+          AEH_RUN_REAL_PROVIDERS: "1"
+        run: npx vitest run tests/providerContracts.test.ts
+
+  supply-chain:
+    name: supply-chain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm run build
+      - run: npx vitest run tests/provenance.test.ts

@@ -37,7 +37,8 @@ export async function verifyTask(root: string, config: HarnessProjectConfig, con
   const commands = [...(config.validation?.commands ?? []), ...(contract.verification?.commands ?? [])]; for (const command of commands) checks.push(await runValidationCommand(executionRoot, command));
   checks.push(...await runConfiguredValidators(executionRoot, config, contract, baseRef, changedFiles));
   const status = checks.some((check) => check.status === "FAIL") ? "FAIL" : "PASS";
-  const report: ValidationReport = { version: 1, taskId: contract.task.id, status, startedAt, finishedAt: new Date().toISOString(), checks, changedFiles, metadata: { project: config.project.name, baseRef } };
+  const findings = checks.flatMap((check) => Array.isArray(check.details?.findings) ? check.details.findings : []).filter((item): item is import("../core/types.js").ValidationFinding => Boolean(item && typeof item === "object" && typeof (item as Record<string, unknown>).fingerprint === "string"));
+  const report: ValidationReport = { version: 1, taskId: contract.task.id, status, startedAt, finishedAt: new Date().toISOString(), checks, changedFiles, findings, metadata: { project: config.project.name, baseRef } };
   const reportsDir = config.sdd?.reportsDir ?? ".harness/reports"; const output = path.join(stateRoot, reportsDir, `${contract.task.id}.json`); await fs.mkdir(path.dirname(output), { recursive: true }); await fs.writeFile(output, `${JSON.stringify(report, null, 2)}\n`);
   await recordEvent(stateRoot, config, "harness.verify.finish", { taskId: contract.task.id, status, checks: checks.length }); return report;
 }

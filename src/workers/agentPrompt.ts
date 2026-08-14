@@ -36,6 +36,7 @@ import {
 import { compileAgentPromptPolicy } from "./promptPolicy.js";
 import { prepareContext } from "../context/gateway.js";
 import { semanticFirstInstruction, SerenaSemanticProvider } from "../context/repository/serena.js";
+import { resolveContextTransportCapabilities } from "../context/transport.js";
 import { sha256 } from "../context/provenance.js";
 import { outputPolicyInstruction, resolveContextPolicy } from "../context/policy.js";
 import { buildRepositoryContextMap } from "../context/repository/map.js";
@@ -431,7 +432,8 @@ export async function buildAgentContextFragments(
     options.parentAgentId ? `Paseo parent=${options.parentAgentId}; OperationRecord remains lifecycle authority.` : undefined
   ].filter(Boolean).join("\n");
   const contextOutputPolicy = config.context ? outputPolicyInstruction(resolveContextPolicy(config), selection.role) : undefined;
-  let semanticRetrieval = Boolean(config.context) && config.context?.semanticRetrieval?.provider !== "none" && (transport === "paseo" || (selection.runtimeAdapter === "opencode" && (transport === "direct" || transport === "podman")));
+  const transportCapabilities = await resolveContextTransportCapabilities(root, config, selection);
+  let semanticRetrieval = transportCapabilities.semanticRetrieval;
   if (semanticRetrieval) {
     const health = await new SerenaSemanticProvider().doctor(root);
     if (!health.ok) {
@@ -439,7 +441,7 @@ export async function buildAgentContextFragments(
       semanticRetrieval = false;
     }
   }
-  const authorizedRetrieval = transport === "paseo" || (selection.runtimeAdapter === "opencode" && transport === "direct");
+  const authorizedRetrieval = transportCapabilities.authorizedRetrieval;
   const fragments: ContextFragment[] = [];
   const add = (id: string, kind: ContextFragment["kind"], preservation: ContextFragment["preservation"], priority: number, content: string | undefined, metadata?: Record<string, unknown>): void => {
     if (content?.trim()) fragments.push({ id, kind, preservation, priority, content, metadata });

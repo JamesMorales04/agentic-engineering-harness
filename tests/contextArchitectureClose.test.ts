@@ -67,9 +67,9 @@ describe("architecture closure contracts", () => {
   it("loads Graphify through the provider's canonical model", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-graphify-"));
     try {
-      await fs.mkdir(path.join(root, "graphify-out"), { recursive: true }); await fs.writeFile(path.join(root, "graphify-out", "graph.json"), JSON.stringify({ nodes: [{ id: "a", file: "src/a.ts" }], edges: [] }));
-      const provider = new GraphifyCodeIntelligenceProvider({ version: 1, project: { name: "p" }, codeIntelligence: { provider: "graphify", required: true } });
-      expect((await provider.load(root))).toBeTruthy(); await provider.refresh(root); expect(await provider.isFresh(root)).toBe(false);
+      await fs.mkdir(path.join(root, "graphify-out"), { recursive: true }); await fs.writeFile(path.join(root, "graphify-out", "graph.json"), JSON.stringify({ nodes: [{ id: "a", file: "src/a.ts" }], edges: [] })); await fs.writeFile(path.join(root, "src.txt"), "source\n");
+      const provider = new GraphifyCodeIntelligenceProvider({ version: 1, project: { name: "p" }, codeIntelligence: { provider: "graphify", required: true, refreshCommand: "fixture-graphify" } }, async () => ({ exitCode: 0, stdout: "", stderr: "", durationMs: 0 }));
+      expect((await provider.load(root))).toBeTruthy(); await provider.refresh(root); expect(await provider.isFresh(root)).toBe(true); await fs.appendFile(path.join(root, "src.txt"), "changed\n"); expect(await provider.isFresh(root)).toBe(false);
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 });

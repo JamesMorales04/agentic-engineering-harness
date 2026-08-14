@@ -18,7 +18,7 @@ import { compareEvalCase, runEvalCase } from "./evals/runner.js";
 import { recordEvent } from "./telemetry/events.js";
 import { runMemoryBenchmark } from "./memory/benchmark.js";
 import { runFullStackDogfood } from "./evals/fullStack.js";
-import { generateProvenance } from "./provenance/generate.js";
+import { generateProvenance, verifyProvenanceManifest } from "./provenance/generate.js";
 import { compileAgentTopology } from "./agents/compiler.js";
 import { auditAgentTopology } from "./agents/audit.js";
 import { loadAgentTopologySource, loadResolvedAgentTopology } from "./agents/config.js";
@@ -108,6 +108,7 @@ program.command("memory-benchmark").argument("[directory]", "Project directory",
 program.command("telemetry-test").argument("[directory]", "Project directory", ".").action(async (directory: string) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); await recordEvent(root, config, "harness.telemetry.test", { project: config.project.name, ok: true }); console.log(`Telemetry test event recorded; exporter=${config.telemetry?.exporter ?? "none"}.`); });
 const provenance = program.command("provenance").description("Generate SLSA/in-toto provenance and optional SBOM/signature");
 provenance.command("generate").requiredOption("--artifact <path>").option("--task <id>").option("--no-sbom").option("--sign").argument("[directory]", "Project directory", ".").action(async (directory: string, options: { artifact: string; task?: string; sbom: boolean; sign?: boolean }) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const result = await generateProvenance(root, config, { artifact: options.artifact, taskId: options.task, sbom: options.sbom, sign: options.sign }); console.log(`statement=${result.statementFile}`); console.log(`predicate=${result.predicateFile}`); console.log(`manifest=${result.manifestFile}`); if (result.sbomFile) console.log(`sbom=${result.sbomFile}`); if (result.bundleFile) console.log(`sigstoreBundle=${result.bundleFile}`); });
+provenance.command("verify").option("--manifest <file>").option("--task <id>").argument("[directory]", "Project directory", ".").action(async (directory: string, options: { manifest?: string; task?: string }) => { const root = path.resolve(directory); const manifest = options.manifest ?? (options.task ? await findProvenanceManifest(root, options.task) : undefined); if (!manifest) throw new Error("provenance verify requires --manifest <file> or --task <taskId>"); const result = await verifyProvenanceManifest(root, manifest); if (result.ok) console.log(`PASS provenance manifest=${manifest}`); else { for (const failure of result.failures) console.error(`FAIL ${failure}`); process.exitCode = 1; } });
 program.command("graph-snapshot").argument("<taskId>").requiredOption("--phase <phase>").argument("[directory]", "Project directory", ".").action(async (taskId: string, directory: string, options: { phase: string }) => { if (options.phase !== "before" && options.phase !== "after") throw new Error("--phase must be before or after"); const root = path.resolve(directory); const config = await loadProjectConfig(root); const file = await snapshotGraph(root, config, taskId, options.phase); if (!file) { console.error("Graphify graph not found or unreadable."); process.exitCode = 1; } else console.log(`Graphify ${options.phase} snapshot: ${file}`); });
 program.command("graph-update").argument("[directory]", "Project directory", ".").action(async (directory: string) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); try { await new GraphifyCodeIntelligenceProvider(config).refresh(root); console.log("Graphify graph refreshed through the configured provider."); } catch (error) { console.error(String(error)); process.exitCode = 1; } });
 
@@ -123,3 +124,12 @@ function parseIssueNumber(value: string): number { const parsed = Number(value.r
 function printRunResult(result: TaskRunResult, mode: string): void { printChecks(result.report.checks); console.log(`\n${result.status} — mode=${mode}, agent=${result.routing?.agent ?? result.worker.provider}, runtime=${result.routing?.runtime ?? result.worker.provider}, model=${result.routing?.model ?? result.worker.model ?? "default"}, profile=${result.routing?.profile ?? "legacy"}, repairs=${result.metrics.repairCount}, review=${result.review?.status ?? "skipped"}, finalState=${result.review?.finalState ?? "n/a"}, qualityRounds=${result.review?.rounds ?? 0}, debtScore=${result.review?.debtScore ?? "n/a"}, convergence=${result.review?.convergence ?? "n/a"}, humanRequired=${result.review?.humanRequired ?? false}, firstPass=${result.metrics.firstPassSuccess}, tokens=${result.metrics.usage.totalTokens ?? "n/a"}, costUsd=${result.metrics.usage.costUsd ?? "n/a"}`); if (result.status === "FAIL") process.exitCode = 1; }
 function printChecks(checks: Array<{ status: string; id: string; message: string }>): void { for (const check of checks) console.log(`${check.status.padEnd(4)} ${check.id}: ${check.message}`); }
 await program.parseAsync(process.argv);
+
+async function findProvenanceManifest(root: string, taskId: string): Promise<string | undefined> {
+  const directory = path.resolve(root, ".harness/provenance");
+  for (const entry of await fs.readdir(directory, { withFileTypes: true }).catch(() => [] as import("node:fs").Dirent[])) {
+    if (!entry.isFile() || !entry.name.endsWith(".manifest.json")) continue;
+    try { const value = JSON.parse(await fs.readFile(path.join(directory, entry.name), "utf8")) as { taskId?: string }; if (value.taskId === taskId) return path.relative(root, path.join(directory, entry.name)).replaceAll("\\", "/"); } catch { /* try the next manifest */ }
+  }
+  return undefined;
+}

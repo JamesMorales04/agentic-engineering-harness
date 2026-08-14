@@ -38,7 +38,7 @@ export class EngramMemoryProvider implements MemoryProvider {
     if (duplicate) return duplicate.id;
     const id = normalized.id ?? fingerprint(normalized).slice(0, 24); const stored = { ...normalized, id };
     const payload = JSON.stringify({ ...stored, advisory: true, provenance: stored.source });
-    const result = await this.executor(`${quote(this.command)} store ${quote(payload)} --type semantic --importance 0.5`, { cwd: this.root, timeoutMs: 30_000, env: { ENGRAM_NAMESPACE_MODE: "isolated", ENGRAM_NAMESPACE: normalized.project } });
+    const result = await this.executor(`${quote(this.command)} store ${quote(payload)} --type semantic --importance 0.5 --namespace ${quote(normalized.project)} --source aeh`, { cwd: this.root, timeoutMs: 30_000, env: { ENGRAM_NAMESPACE_MODE: "isolated", ENGRAM_NAMESPACE: normalized.project } });
     if (result.exitCode !== 0) throw new Error(`Engram remember failed: ${result.stderr || result.stdout}`);
     await fs.mkdir(path.dirname(this.storagePath), { recursive: true }); await fs.appendFile(this.storagePath, `${JSON.stringify(stored)}\n`, "utf8");
     return id;
@@ -48,7 +48,7 @@ export class EngramMemoryProvider implements MemoryProvider {
     if (!project.trim() || !query.trim()) return [];
     const all = await this.readLedger();
     const local = (await filterStaleRecords(this.root, all)).filter((record) => record.project === project && !all.some((candidate) => candidate.supersedes === record.id && candidate.project === project) && matches(record, query)).slice(-this.maxRecall).reverse();
-    const result = await this.executor(`${quote(this.command)} recall ${quote(query)} --raw`, { cwd: this.root, timeoutMs: 30_000, env: { ENGRAM_NAMESPACE_MODE: "isolated", ENGRAM_NAMESPACE: project } });
+    const result = await this.executor(`${quote(this.command)} recall ${quote(query)} --json`, { cwd: this.root, timeoutMs: 30_000, env: { ENGRAM_NAMESPACE_MODE: "isolated", ENGRAM_NAMESPACE: project } });
     if (result.exitCode !== 0) throw new Error(`Engram recall failed: ${result.stderr || result.stdout}`);
     return dedupe([...local, ...parseRecords(result.stdout, project)]).slice(0, this.maxRecall);
   }
@@ -81,6 +81,27 @@ export async function filterStaleRecords(root: string, records: MemoryRecord[]):
 function normalizeRecord(record: MemoryRecord): MemoryRecord { if (!record.project?.trim() || !record.title?.trim() || !record.content?.trim()) throw new Error("Memory records require project, title and content."); return { ...record, project: record.project.trim(), title: record.title.trim(), content: record.content.trim(), tags: [...new Set(record.tags ?? [])].sort() }; }
 function fingerprint(record: MemoryRecord): string { return crypto.createHash("sha256").update(JSON.stringify({ project: record.project, type: record.type, title: record.title, content: record.content, tags: record.tags ?? [] })).digest("hex"); }
 function matches(record: MemoryRecord, query: string): boolean { const haystack = `${record.title} ${record.content} ${(record.tags ?? []).join(" ")}`.toLocaleLowerCase(); return query.toLocaleLowerCase().split(/\s+/).filter(Boolean).some((term) => haystack.includes(term)); }
-function parseRecords(stdout: string, project: string): MemoryRecord[] { return stdout.split(/\r?\n/).filter(Boolean).flatMap((line) => { try { const value = JSON.parse(line) as Partial<MemoryRecord>; return typeof value.content === "string" && typeof value.title === "string" ? [normalizeRecord({ project, type: value.type ?? "discovery", title: value.title, content: value.content, id: value.id, source: value.source, tags: value.tags })] : []; } catch { return []; } }); }
+function parseRecords(stdout: string, project: string): MemoryRecord[] {
+  try {
+    const parsed = JSON.parse(stdout) as unknown;
+    const values: unknown[] = Array.isArray(parsed) ? parsed : parsed && typeof parsed === "object" && Array.isArray((parsed as Record<string, unknown>).memories) ? (parsed as Record<string, unknown>).memories as unknown[] : [parsed];
+    return values.flatMap((item) => parseRecord(item, project));
+  } catch {
+    return stdout.split(/\r?\n/).filter(Boolean).flatMap((line) => { try { return parseRecord(JSON.parse(line), project); } catch { return []; } });
+  }
+}
+function parseRecord(item: unknown, project: string): MemoryRecord[] {
+  if (!item || typeof item !== "object") return [];
+  const value = item as Record<string, unknown>;
+  if (typeof value.content !== "string") return [];
+  let embedded: Record<string, unknown> | undefined;
+  try { const parsed = JSON.parse(value.content) as unknown; if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) embedded = parsed as Record<string, unknown>; } catch { /* ordinary Engram content */ }
+  if (typeof value.project === "string" && value.project !== project) return [];
+  if (embedded?.project && embedded.project !== project) return [];
+  const source = embedded ?? value;
+  const title = typeof source.title === "string" ? source.title : typeof value.title === "string" ? value.title : "Engram recalled memory";
+  const content = typeof embedded?.content === "string" ? embedded.content : value.content;
+  return [normalizeRecord({ project, type: typeof source.type === "string" ? source.type : "discovery", title, content, id: typeof source.id === "string" ? source.id : typeof value.id === "string" ? value.id : undefined, source: typeof source.source === "string" ? source.source : typeof value.source === "string" ? value.source : undefined, sourceSha256: typeof source.sourceSha256 === "string" ? source.sourceSha256 : undefined, tags: Array.isArray(source.tags) ? source.tags.filter((tag): tag is string => typeof tag === "string") : undefined })];
+}
 function dedupe(records: MemoryRecord[]): MemoryRecord[] { const seen = new Set<string>(); return records.filter((record) => { const key = fingerprint(record); if (seen.has(key)) return false; seen.add(key); return true; }); }
 function quote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }
