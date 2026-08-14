@@ -9,8 +9,10 @@ import { runProcess } from "../utils/process.js";
 export interface OpenSpecAuthoringConfig { provider?: "openspec" | "native" | string; schema?: string; managerAgent?: string; }
 export interface OpenSpecPreparedChange { taskId: string; changeName: string; directory: string; created: boolean; schema: string; managerAgent: string; }
 export interface OpenSpecCompileResult { taskId: string; changeName: string; sddDirectory: string; contractPath: string; requirements: string[]; sourceSha256: string; validatorId: string; }
+export interface OpenSpecPreflightResult { version: string; schema: string; managerAgent: string; }
 
 type SddWithAuthoring = NonNullable<HarnessProjectConfig["sdd"]> & { authoring?: OpenSpecAuthoringConfig };
+const OPENSPEC_ENV = { OPENSPEC_NO_ANIMATION: "1", OPENSPEC_NO_UPDATE_CHECK: "1" };
 
 export function openSpecAuthoringConfig(config: HarnessProjectConfig): Required<Pick<OpenSpecAuthoringConfig, "provider" | "schema" | "managerAgent">> {
   const authoring = (config.sdd as SddWithAuthoring | undefined)?.authoring;
@@ -23,6 +25,24 @@ export function openSpecChangeName(taskId: string): string {
   return normalized;
 }
 
+export async function preflightOpenSpec(root: string, config: HarnessProjectConfig, run = runProcess): Promise<OpenSpecPreflightResult> {
+  const settings = openSpecAuthoringConfig(config);
+  if (settings.provider !== "openspec") throw new Error(`Configured SDD authoring provider is '${settings.provider}', not openspec.`);
+  const options = { cwd: root, timeoutMs: 30_000, env: OPENSPEC_ENV };
+  const version = await run("openspec --version", options);
+  if (version.exitCode !== 0) throw new Error(`OPENSPEC_UNAVAILABLE: ${version.stderr || version.stdout || "openspec --version failed"}`);
+  const createHelp = await run("openspec new change --help", options);
+  if (createHelp.exitCode !== 0) throw new Error(`OPENSPEC_CAPABILITY_UNAVAILABLE: 'openspec new change' is unavailable: ${createHelp.stderr || createHelp.stdout}`);
+  const createText = `${createHelp.stdout}\n${createHelp.stderr}`;
+  for (const flag of ["--schema", "--description"]) {
+    if (!createText.includes(flag)) throw new Error(`OPENSPEC_CAPABILITY_UNAVAILABLE: 'openspec new change' does not advertise required option ${flag}.`);
+  }
+  const validateHelp = await run("openspec validate --help", options);
+  if (validateHelp.exitCode !== 0) throw new Error(`OPENSPEC_CAPABILITY_UNAVAILABLE: 'openspec validate' is unavailable: ${validateHelp.stderr || validateHelp.stdout}`);
+  if (!`${validateHelp.stdout}\n${validateHelp.stderr}`.includes("--strict")) throw new Error("OPENSPEC_CAPABILITY_UNAVAILABLE: 'openspec validate' does not advertise required option --strict.");
+  return { version: firstLine(version.stdout || version.stderr) || "unknown", schema: settings.schema, managerAgent: settings.managerAgent };
+}
+
 export async function prepareOpenSpecChange(root: string, config: HarnessProjectConfig, taskId: string, title: string, run = runProcess): Promise<OpenSpecPreparedChange> {
   const settings = openSpecAuthoringConfig(config);
   if (settings.provider !== "openspec") throw new Error(`Configured SDD authoring provider is '${settings.provider}', not openspec.`);
@@ -31,8 +51,8 @@ export async function prepareOpenSpecChange(root: string, config: HarnessProject
   let created = false;
   try { await fs.access(directory); }
   catch {
-    const command = `openspec new change ${quote(changeName)} --schema ${quote(settings.schema)} --description ${quote(title)} --json`;
-    const result = await run(command, { cwd: root, timeoutMs: 60_000, env: { OPENSPEC_NO_ANIMATION: "1", OPENSPEC_NO_UPDATE_CHECK: "1" } });
+    const command = `openspec new change ${quote(changeName)} --schema ${quote(settings.schema)} --description ${quote(title)}`;
+    const result = await run(command, { cwd: root, timeoutMs: 60_000, env: OPENSPEC_ENV });
     if (result.exitCode !== 0) throw new Error(`OpenSpec failed to create change '${changeName}': ${result.stderr || result.stdout}`);
     created = true;
   }
@@ -41,7 +61,7 @@ export async function prepareOpenSpecChange(root: string, config: HarnessProject
 
 export async function compileOpenSpecChange(root: string, config: HarnessProjectConfig, taskId: string, title: string, changeName = openSpecChangeName(taskId), run = runProcess): Promise<OpenSpecCompileResult> {
   const changeDir = path.join(root, "openspec", "changes", changeName);
-  const validation = await run(`openspec validate ${quote(changeName)} --strict --json`, { cwd: root, timeoutMs: 60_000, env: { OPENSPEC_NO_ANIMATION: "1", OPENSPEC_NO_UPDATE_CHECK: "1" } });
+  const validation = await run(`openspec validate ${quote(changeName)} --strict`, { cwd: root, timeoutMs: 60_000, env: OPENSPEC_ENV });
   if (validation.exitCode !== 0) throw new Error(`OpenSpec change '${changeName}' is not valid and cannot be compiled into AEH normative artifacts: ${validation.stderr || validation.stdout}`);
 
   const proposal = await readOptional(path.join(changeDir, "proposal.md"));
@@ -153,5 +173,6 @@ async function collectMarkdown(dir: string): Promise<string[]> { const result: s
 async function hashOpenSpecChange(dir: string): Promise<string> { const hash = crypto.createHash("sha256"); for (const file of await collectAllFiles(dir)) { hash.update(relative(dir, file)); hash.update(await fs.readFile(file)); } return hash.digest("hex"); }
 async function collectAllFiles(dir: string): Promise<string[]> { const result: string[] = []; async function visit(current: string): Promise<void> { const entries = await fs.readdir(current, { withFileTypes: true }).catch(() => []); for (const entry of entries) { const full = path.join(current, entry.name); if (entry.isDirectory()) await visit(full); else if (entry.isFile()) result.push(full); } } await visit(dir); return result.sort(); }
 async function readOptional(file: string): Promise<string> { return fs.readFile(file, "utf8").catch(() => ""); }
+function firstLine(value: string): string { return value.split(/\r?\n/).map((item) => item.trim()).find(Boolean) ?? ""; }
 function relative(root: string, file: string): string { return path.relative(root, file).replaceAll("\\", "/"); }
 function quote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }
