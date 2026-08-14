@@ -8,11 +8,11 @@ import { runTask, type TaskRunResult } from "../core/run.js";
 import { validateSddChange } from "../core/sdd.js";
 import { sealTask } from "../core/seal.js";
 import { triageChange } from "../core/triage.js";
-import type { HarnessProjectConfig, TaskContract, WorkerSession } from "../core/types.js";
+import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
 import { compileOpenSpecChange, preflightOpenSpec, prepareOpenSpecChange, type OpenSpecPreparedChange } from "../spec/openspec.js";
 import { recordEvent } from "../telemetry/events.js";
 import { executeAgentPrompt } from "../workers/agentPrompt.js";
-import { acceptedStructuredResultForAgent } from "../workers/resultGateway.js";
+import { requireDurableChangeHandoff, type DurableAgentEvidence } from "./changeHandoff.js";
 import { changeInputsPrompt, resolveChangeInputs, type ChangeInputReference } from "./changeInputs.js";
 import {
   loadOperation,
@@ -29,11 +29,6 @@ export interface ChangeOperationResult {
   triageReasons: string[];
   run: TaskRunResult;
   specChange?: string;
-}
-
-interface DurableAgentEvidence<T> {
-  payload: T;
-  artifact: string;
 }
 
 export async function runChangeOperation(
@@ -125,7 +120,7 @@ export async function runChangeOperation(
       buildSpecManagerPrompt(payload, preparedSpec.changeName, explorerEvidence, plannerEvidence, inputs),
       { outputContract: "spec-authoring", phase: "spec-authoring", operationKind: "change" }
     );
-    const specEvidence = await requireDurableResult(root, "SPEC_MANAGER", specSession, specAuthoringOutputSchema);
+    const specEvidence = await requireDurableChangeHandoff(root, "SPEC_MANAGER", specSession, specAuthoringOutputSchema);
     validateSpecAuthoringResult(preparedSpec.changeName, specEvidence.payload);
     await setOperationStage(controlRoot, operation.id, "spec-authoring", "COMPLETED", { artifact: specEvidence.artifact });
     await maybeRotateOperationSupervisor(root, config, bootstrapContract, topology);
@@ -166,7 +161,7 @@ async function runDiscovery(
     changeInputsPrompt(inputs),
     "Return the explorer output contract with only relevant files/symbols/tests/module boundaries, verified finding status and concrete evidence. Do not implement, author specs or start another AEH workflow."
   ].join("\n\n"), { outputContract: "explorer", phase: "discovery", operationKind: "change" });
-  return requireDurableResult(root, "EXPLORER", session, explorerOutputSchema);
+  return requireDurableChangeHandoff(root, "EXPLORER", session, explorerOutputSchema);
 }
 
 async function runPlanning(
@@ -193,23 +188,7 @@ async function runPlanning(
     explorerContext,
     "Identify affected areas, dependencies, bounded implementer ownership, reviewers and deterministic validation gates. Keep normative requirements unchanged."
   ].join("\n\n"), { outputContract: "planner", phase: "planning", operationKind: "change" });
-  return requireDurableResult(root, "PLANNER", session, plannerOutputSchema);
-}
-
-async function requireDurableResult<T>(
-  root: string,
-  label: string,
-  session: WorkerSession,
-  schema: { parse(value: unknown): T }
-): Promise<DurableAgentEvidence<T>> {
-  if (session.exitCode !== 0) throw new Error(`${label}_FAILED: ${session.stderr || session.stdout}`);
-  if (!session.id) throw new Error(`${label}_RESULT_ID_MISSING: structured handoff requires a durable agent session id.`);
-  const accepted = await acceptedStructuredResultForAgent<T>(root, session.id);
-  if (!accepted) throw new Error(`${label}_RESULT_ARTIFACT_MISSING: agent completed without an accepted structured result artifact.`);
-  let payload: T;
-  try { payload = schema.parse(accepted.payload); }
-  catch (error) { throw new Error(`${label}_RESULT_INVALID: ${String(error)}`); }
-  return { payload, artifact: accepted.artifact };
+  return requireDurableChangeHandoff(root, "PLANNER", session, plannerOutputSchema);
 }
 
 function validateSpecAuthoringResult(expectedChange: string, result: SpecAuthoringOutput): void {
