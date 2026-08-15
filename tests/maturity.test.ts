@@ -6,8 +6,10 @@ describe("component maturity inventory", () => {
   it("classifies every original architecture component without treating roadmap checks as maturity", async () => {
     const root = path.resolve(process.cwd());
     const document = await fs.readFile(path.join(root, "docs/COMPONENT_MATURITY.md"), "utf8");
-    const components = ["Paseo", "Codex CLI", "OpenCode", "Engram", "Graphify", "OpenSpec", "AEH SDD", "TaskContracts", "Gherkin", "Reqnroll", ".NET/xUnit integration", "Testcontainers capability", "Playwright", "Pact", "OPA", "Opengrep", "Trivy", "Podman", "OpenTelemetry", "Engineering Evals", "SBOM", "Cosign", "in-toto/SLSA", "ContextBudgetGateway", "Serena", "Headroom", "Repository Context Map", "aeh_context_retrieve"];
+    const components = ["Paseo", "Codex CLI", "OpenCode", "Engram", "Graphify", "OpenSpec", "AEH SDD", "TaskContracts", "Project-Native Test Execution", "BDD Execution", "Integration Environment", "Contract Testing / Pact", "Gherkin", "Playwright", "OPA", "Opengrep", "Trivy", "Podman", "OpenTelemetry", "Engineering Evals", "SBOM", "Cosign", "in-toto/SLSA", "ContextBudgetGateway", "Serena", "Headroom", "Repository Context Map", "aeh_context_retrieve"];
     for (const component of components) expect(document).toContain(component === "aeh_context_retrieve" ? "| `aeh_context_retrieve` |" : `| ${component} |`);
+    const compatibility = await fs.readFile(path.join(root, "docs/VALIDATION_COMPATIBILITY.md"), "utf8");
+    expect(compatibility).toContain("Reqnroll"); expect(compatibility).toContain("xUnit"); expect(compatibility).toContain("Testcontainers");
     expect(document).toContain("A roadmap checkbox means that a capability exists");
   });
 });

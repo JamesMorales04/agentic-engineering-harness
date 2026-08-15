@@ -72,9 +72,9 @@ export function normalizePlaywrightOutput(value: unknown): NormalizedFinding[] {
 }
 
 export function normalizePactOutput(value: unknown): NormalizedFinding[] {
-  const root = record(value); const candidates = [...(Array.isArray(root.interactions) ? root.interactions : []), ...(Array.isArray(root.tests) ? root.tests : []), ...(Array.isArray(root.failures) ? root.failures : [])];
+  const root = record(value); const candidates = [...(Array.isArray(root.interactions) ? root.interactions : []), ...(Array.isArray(root.interactionResults) ? root.interactionResults : []), ...(Array.isArray(root.tests) ? root.tests : []), ...(Array.isArray(root.failures) ? root.failures : []), ...(Array.isArray(root.errors) ? root.errors : [])];
   return candidates.flatMap((item) => {
-    const result = record(item); const status = stringValue(result.status ?? result.result); const message = stringValue(result.error ?? result.message ?? result.failure); if ((!status && !message) || (status && ["passed", "success", "verified"].includes(status.toLocaleLowerCase()))) return [];
+    const result = record(item); const status = stringValue(result.status ?? result.result); const message = stringValue(result.error ?? result.message ?? result.failure); if ((!status && !message) || (status && ["ok", "passed", "success", "verified", "true"].includes(status.toLocaleLowerCase()))) return [];
     const finding: Omit<NormalizedFinding, "fingerprint"> = { tool: "pact", kind: "contract-failure", rule: stringValue(result.description ?? result.id ?? result.name), message, status, details: { consumer: result.consumer, provider: result.provider, pact: result.pact } };
     return [{ ...finding, fingerprint: findingFingerprint(finding) }];
   });

@@ -272,6 +272,7 @@ validation:
     - tests/acceptance/frozen/**
   commands: []
   validators: []
+  providers: []
   opa:
     enabled: false
     policyDirs:

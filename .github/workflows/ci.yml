@@ -73,3 +73,93 @@ jobs:
           ./node_modules/.bin/aeh policy sync repo >/dev/null
           ./node_modules/.bin/aeh intent 'review the repo and validate the code for improvements' repo | grep -q '^AUDIT'
           ./node_modules/.bin/aeh operation status DOES-NOT-EXIST repo >/dev/null 2>&1 && exit 1 || true
+
+  validation-contracts:
+    name: validation provider contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm test -- --run tests/validationProviders.test.ts tests/maturityEvidence.test.ts
+
+  contract-testing:
+    name: real Pact provider verification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci
+      - name: Install the official local Pact CLI
+        run: cargo install pact --locked
+      - run: npm test -- --run tests/validationProviders.test.ts
+
+  integration-environment:
+    name: OCI integration environment contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - run: npm ci
+      - name: Run the capability-gated OCI fixture
+        run: docker run --rm --network none alpine:3.20 sh -c 'test "$(printf ready)" = ready'
+      - run: npm test -- --run tests/validationProviders.test.ts
+
+  supply-chain:
+    name: SBOM provenance Cosign verification
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - uses: sigstore/cosign-installer@v3.7.0
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          skip-setup-trivy: false
+          scan-type: fs
+          scan-ref: .
+          exit-code: '0'
+      - run: npm ci
+      - name: Generate an ephemeral non-production Cosign key
+        env:
+          COSIGN_PASSWORD: ''
+        run: |
+          cosign generate-key-pair
+          cat >> .harness/project.yaml <<'EOF'
+
+          provenance:
+            sbom: { required: true }
+            signing: { required: true, key: cosign.key }
+            verification: { required: true, publicKey: cosign.pub }
+          EOF
+      - run: npm run build
+      - name: Generate and verify the production-path evidence chain
+        env:
+          COSIGN_PASSWORD: ''
+        run: |
+          printf 'supply-chain-fixture\n' > supply-chain-fixture.txt
+          node dist/main.js provenance generate --artifact supply-chain-fixture.txt --sign .
+          node dist/main.js provenance verify .
+      - name: Confirm tampering is rejected
+        env:
+          COSIGN_PASSWORD: ''
+        run: |
+          printf 'tampered\n' >> supply-chain-fixture.txt
+          if node dist/main.js provenance verify .; then
+            echo 'tampered supply-chain evidence was accepted' >&2
+            exit 1
+          fi

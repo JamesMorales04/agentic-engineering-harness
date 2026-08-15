@@ -25,11 +25,13 @@ export async function generateProvenance(root: string, config: HarnessProjectCon
   const statementFile = path.join(outputDir, `${base}.intoto.json`);
 
   let sbomFile: string | undefined;
+  const sbomRequired = config.provenance?.required === true || config.provenance?.sbom?.required === true;
   if (options.sbom !== false && await commandExists("trivy", root)) {
     sbomFile = path.join(outputDir, `${base}.cyclonedx.json`);
-    const sbom = await runProcess(`trivy fs --format cyclonedx --output ${quote(sbomFile)} ${quote(root)}`, { cwd: root, timeoutMs: 600_000 });
+    const sbomCommand = config.provenance?.sbom?.command ?? `trivy fs --format cyclonedx --output ${quote(sbomFile)} ${quote(root)}`;
+    const sbom = await runProcess(sbomCommand, { cwd: root, timeoutMs: 600_000 });
     if (sbom.exitCode !== 0) throw new Error(`Trivy SBOM generation failed: ${sbom.stderr || sbom.stdout}`);
-  }
+  } else if (sbomRequired) throw new Error("Supply-chain policy requires a CycloneDX SBOM, but Trivy is unavailable or SBOM generation was disabled.");
   const manifest = await buildProvenanceManifest(root, config, options.taskId, artifact, sbomFile);
   const manifestFile = path.join(outputDir, `${base}.manifest.json`);
   await fs.writeFile(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
@@ -45,6 +47,7 @@ export async function generateProvenance(root: string, config: HarnessProjectCon
     runDigest,
     reportDigest,
     artifactManifestSha256: manifestDigest,
+    sbomSha256: sbomFile ? await sha256File(sbomFile) : undefined,
     buildType: config.provenance?.buildType ?? "https://github.com/JamesMorales04/agentic-engineering-harness/v0.3",
     invocationId: crypto.randomUUID(),
     startedOn: new Date().toISOString(),
@@ -55,24 +58,26 @@ export async function generateProvenance(root: string, config: HarnessProjectCon
   await fs.writeFile(statementFile, `${JSON.stringify(statement, null, 2)}\n`);
 
   let bundleFile: string | undefined;
-  if (options.sign) {
+  if (options.sign || config.provenance?.signing?.required === true) {
     if (!(await commandExists("cosign", root))) throw new Error("--sign requested but cosign is not installed.");
     bundleFile = path.join(outputDir, `${base}.sigstore.json`);
-    const key = config.provenance?.cosignKey ? ` --key ${quote(config.provenance.cosignKey)}` : "";
-    const signed = await runProcess(`cosign sign-blob ${quote(statementFile)} --bundle ${quote(bundleFile)}${key}`, { cwd: root, timeoutMs: 300_000, env: { COSIGN_YES: "true" } });
+    const keyPath = config.provenance?.signing?.key ?? config.provenance?.cosignKey;
+    const key = keyPath ? ` --key ${quote(keyPath)}` : "";
+    const signed = await runProcess(`cosign sign-blob --yes --tlog-upload=false ${quote(statementFile)} --bundle ${quote(bundleFile)}${key}`, { cwd: root, timeoutMs: 300_000, env: { COSIGN_YES: "true", COSIGN_PASSWORD: process.env.COSIGN_PASSWORD ?? "" } });
     if (signed.exitCode !== 0) throw new Error(`Cosign signing failed: ${signed.stderr || signed.stdout}`);
-    if (!(await verifyCosignBundle(root, statementFile, bundleFile, config.provenance?.cosignKey))) throw new Error("Cosign produced a bundle that could not be verified.");
+    if (!(await verifyCosignBundle(root, statementFile, bundleFile, keyPath))) throw new Error("Cosign produced a bundle that could not be verified.");
   }
 
   return { artifact: path.relative(root, artifact).replaceAll("\\", "/"), sha256: digest, statementFile: relative(root, statementFile), predicateFile: relative(root, predicateFile), manifestFile: relative(root, manifestFile), sbomFile: sbomFile && relative(root, sbomFile), bundleFile: bundleFile && relative(root, bundleFile) };
 }
 
-export function buildSlsaPredicate(input: { project: string; artifact: string; taskId?: string; commit: string; remote: string; runDigest?: string; reportDigest?: string; artifactManifestSha256?: string; buildType: string; invocationId: string; startedOn: string; finishedOn: string }): Record<string, unknown> {
+export function buildSlsaPredicate(input: { project: string; artifact: string; taskId?: string; commit: string; remote: string; runDigest?: string; reportDigest?: string; artifactManifestSha256?: string; sbomSha256?: string; buildType: string; invocationId: string; startedOn: string; finishedOn: string }): Record<string, unknown> {
   const internalParameters: Record<string, unknown> = {};
   if (input.taskId) internalParameters.taskId = input.taskId;
   if (input.runDigest) internalParameters.runReportSha256 = input.runDigest;
   if (input.reportDigest) internalParameters.validationReportSha256 = input.reportDigest;
   if (input.artifactManifestSha256) internalParameters.artifactManifestSha256 = input.artifactManifestSha256;
+  if (input.sbomSha256) internalParameters.sbomSha256 = input.sbomSha256;
   return {
     buildDefinition: {
       buildType: input.buildType,
@@ -142,6 +147,44 @@ export async function verifyCosignBundle(root: string, statementFile: string, bu
   const keyArg = key ? ` --key ${quote(path.resolve(root, key))}` : "";
   const result = await runProcess(`cosign verify-blob --bundle ${quote(path.resolve(root, bundleFile))}${keyArg} ${quote(path.resolve(root, statementFile))}`, { cwd: root, timeoutMs: 60_000 });
   return result.exitCode === 0;
+}
+
+export interface SupplyChainGateResult { ok: boolean; failures: string[]; manifestFile?: string; statementFile?: string; bundleFile?: string; sbomFile?: string; }
+
+/** Deterministic delivery gate. It is inert unless one of the strict policy flags is enabled. */
+export async function verifySupplyChainGate(root: string, config: HarnessProjectConfig): Promise<SupplyChainGateResult> {
+  const policy = config.provenance; const strict = policy?.required === true || policy?.sbom?.required === true || policy?.signing?.required === true || policy?.verification?.required === true;
+  if (!strict) return { ok: true, failures: [] };
+  const outputDir = path.resolve(root, policy?.outputDir ?? ".harness/provenance"); const failures: string[] = [];
+  const files = await fs.readdir(outputDir).catch(() => [] as string[]); const manifestName = files.filter((file) => file.endsWith(".manifest.json")).sort().at(-1);
+  if (!manifestName) return { ok: false, failures: ["strict supply-chain policy requires a provenance manifest"] };
+  const manifestFile = path.join(outputDir, manifestName); const manifestVerification = await verifyProvenanceManifest(root, path.relative(root, manifestFile)); if (!manifestVerification.ok) failures.push(...manifestVerification.failures.map((failure) => `manifest: ${failure}`));
+  let manifest: ProvenanceManifest | undefined; try { manifest = JSON.parse(await fs.readFile(manifestFile, "utf8")) as ProvenanceManifest; } catch { failures.push("provenance manifest is unreadable"); }
+  const artifact = manifest?.entries.find((entry) => entry.kind === "final-artifact"); const sbom = manifest?.entries.find((entry) => entry.kind === "sbom");
+  if (!artifact) failures.push("provenance manifest does not reference the final artifact");
+  if (policy?.required === true && !manifest?.entries.some((entry) => entry.kind === "task-contract" || entry.kind === "validation-report")) failures.push("provenance manifest does not reference accepted operation evidence");
+  if (policy?.sbom?.required === true && !sbom) failures.push("strict supply-chain policy requires an SBOM entry");
+  const statementName = files.filter((file) => file.endsWith(".intoto.json")).sort().at(-1); const statementFile = statementName ? path.join(outputDir, statementName) : undefined;
+  if (policy?.required === true && !statementFile) failures.push("strict supply-chain policy requires an in-toto statement");
+  if (statementFile && artifact) {
+    try {
+      const statement = JSON.parse(await fs.readFile(statementFile, "utf8")) as { subject?: Array<{ name?: string; digest?: { sha256?: string } }>; predicate?: { buildDefinition?: { internalParameters?: { artifactManifestSha256?: string; sbomSha256?: string } } } };
+      const subject = statement.subject?.[0]; if (subject?.digest?.sha256 !== artifact.sha256) failures.push("in-toto subject digest does not match the final artifact");
+      if (subject?.name !== path.basename(artifact.path)) failures.push("in-toto subject does not identify the manifest final artifact");
+      if (statement.predicate?.buildDefinition?.internalParameters?.artifactManifestSha256 !== await sha256File(manifestFile)) failures.push("in-toto statement does not reference the manifest hash");
+      if (sbom && statement.predicate?.buildDefinition?.internalParameters?.sbomSha256 !== await sha256File(path.resolve(root, sbom.path))) failures.push("in-toto statement does not reference the SBOM hash");
+    } catch { failures.push("in-toto statement is unreadable"); }
+  }
+  let bundleFile: string | undefined; const signingRequired = policy?.signing?.required === true || policy?.verification?.required === true;
+  if (signingRequired) {
+    const bundleName = files.filter((file) => file.endsWith(".sigstore.json")).sort().at(-1); bundleFile = bundleName ? path.join(outputDir, bundleName) : undefined;
+    if (!bundleFile) failures.push("strict supply-chain policy requires a Cosign bundle");
+    else if (!statementFile) failures.push("Cosign bundle cannot be verified without an in-toto statement");
+    else if (policy.verification?.required === true || policy.signing?.required === true) {
+      const key = policy.verification?.publicKey ?? policy.signing?.key ?? policy.cosignKey; if (!(await verifyCosignBundle(root, path.relative(root, statementFile), path.relative(root, bundleFile), key))) failures.push("Cosign bundle verification failed");
+    }
+  }
+  return { ok: failures.length === 0, failures, manifestFile: manifestFile && path.relative(root, manifestFile), statementFile: statementFile && path.relative(root, statementFile), bundleFile: bundleFile && path.relative(root, bundleFile), sbomFile: sbom?.path };
 }
 
 export async function sha256File(file: string): Promise<string> {

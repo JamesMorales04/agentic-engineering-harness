@@ -103,7 +103,7 @@ export async function compileOpenSpecChange(root: string, config: HarnessProject
     git: { baseRef: config.validation?.baseRef ?? "main", ...(originatingBranch ? { originatingBranch } : {}) },
     scope: { allowed: ["**"], forbidden: [], frozen: [] },
     routing: { intent: "implement", domains: [], risk: "medium" },
-    requirements: ids.map((id, index) => ({ id, description: requirementSources[index].title, validators: [requirementValidation.id] })),
+    requirements: ids.map((id, index) => ({ id, description: requirementSources[index].title, validators: [requirementValidation.id], ...(requirementValidation.capability ? { capabilities: [requirementValidation.capability] } : {}) })),
     constraints: { breakingApiChanges: false, newDependencies: false, schemaChanges: false },
     repair: { maxAttempts: config.orchestration?.worker?.maxRepairAttempts ?? 2 },
     ...(requirementValidation.command ? { verification: { commands: [requirementValidation.command] } } : {})
@@ -144,16 +144,18 @@ function buildAcceptanceFeature(taskId: string, title: string, ids: string[], re
   return `${lines.join("\n")}\n`;
 }
 
-async function resolveRequirementValidation(root: string, config: HarnessProjectConfig): Promise<{ id: string; command?: ValidationCommand }> {
+async function resolveRequirementValidation(root: string, config: HarnessProjectConfig): Promise<{ id: string; command?: ValidationCommand; capability?: string }> {
   const preferredIds = ["test", "typecheck", "build"];
   for (const id of preferredIds) {
     const command = (config.validation?.commands ?? []).find((item) => item.id === id && item.required !== false);
     if (command) return { id };
     const validator = (config.validation?.validators ?? []).find((item) => item.id === id && item.required !== false);
-    if (validator) return { id };
+    if (validator) return { id, capability: capabilityForAdapter(validator.adapter) };
   }
   const validator = config.validation?.validators?.find((item) => item.required !== false);
-  if (validator) return { id: validator.id };
+  if (validator) return { id: validator.id, capability: capabilityForAdapter(validator.adapter) };
+  const provider = config.validation?.providers?.find((item) => item.required !== false);
+  if (provider) return { id: provider.id, capability: provider.capability };
   const command = config.validation?.commands?.find((item) => item.required !== false);
   if (command) return { id: command.id };
 
@@ -162,12 +164,11 @@ async function resolveRequirementValidation(root: string, config: HarnessProject
   for (const id of preferredIds) {
     if (typeof scripts[id] === "string" && scripts[id].trim()) return { id, command: { id, command: id === "test" ? "npm test" : `npm run ${id}`, required: true, timeoutSeconds: 900 } };
   }
-  const rootFiles = await fs.readdir(root).catch(() => [] as string[]);
-  if (rootFiles.some((name) => name.endsWith(".sln") || name.endsWith(".slnx") || name.endsWith(".csproj")) || rootFiles.includes("global.json")) return { id: "test", command: { id: "test", command: "dotnet test", required: true, timeoutSeconds: 1200 } };
-  throw new Error("OpenSpec compilation requires deterministic requirement validation. Configure validation.commands/validators or provide a project test/typecheck/build script (or a .NET solution/project) before compiling the SPEC.");
+  throw new Error("OpenSpec compilation requires deterministic requirement validation. Configure validation.commands/validators/providers or provide a project test/typecheck/build script before compiling the SPEC.");
 }
 
 async function readPackageJson(root: string): Promise<{ scripts?: Record<string, unknown> } | undefined> { try { return JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8")) as { scripts?: Record<string, unknown> }; } catch { return undefined; } }
+function capabilityForAdapter(adapter: string): string | undefined { if (["gherkin", "bdd"].includes(adapter)) return "bdd"; if (["test-execution", "unit-test"].includes(adapter)) return "unit-test"; if (["integration-test", "integration-environment"].includes(adapter)) return "integration-test"; if (["pact", "contract-test"].includes(adapter)) return "contract-test"; return undefined; }
 function approvedOutcome(proposal: string): string { const outcome = proposal.match(/##\s+(?:Desired outcome|Why|What Changes)\s*\n([\s\S]*?)(?=\n##\s|$)/i)?.[1]?.trim(); return outcome || proposal.trim(); }
 async function collectMarkdown(dir: string): Promise<string[]> { const result: string[] = []; async function visit(current: string): Promise<void> { const entries = await fs.readdir(current, { withFileTypes: true }).catch(() => []); for (const entry of entries) { const full = path.join(current, entry.name); if (entry.isDirectory()) await visit(full); else if (entry.isFile() && entry.name.endsWith(".md")) result.push(full); } } await visit(dir); return result.sort(); }
 async function hashOpenSpecChange(dir: string): Promise<string> { const hash = crypto.createHash("sha256"); for (const file of await collectAllFiles(dir)) { hash.update(relative(dir, file)); hash.update(await fs.readFile(file)); } return hash.digest("hex"); }

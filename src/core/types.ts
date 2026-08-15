@@ -4,9 +4,11 @@ export type ReviewSeverity = "critical" | "high" | "medium" | "low" | "note";
 export type TaskRisk = "low" | "medium" | "high";
 export type PaseoSessionPolicy = "fresh-on-start" | "reuse-compatible" | "resume-explicit";
 
-export type ValidatorAdapter = "command" | "gherkin" | "graphify" | "opengrep" | "trivy" | "playwright" | "openapi" | "pact" | "mutation" | "property" | string;
+export type ValidatorAdapter = "command" | "gherkin" | "bdd" | "test-execution" | "integration-environment" | "contract-test" | "graphify" | "opengrep" | "trivy" | "playwright" | "openapi" | "pact" | "mutation" | "property" | string;
 export interface ValidationCommand { id: string; command: string; required?: boolean; timeoutSeconds?: number; workingDirectory?: string; }
 export interface ValidatorSpec { id: string; adapter: ValidatorAdapter; command?: string; required?: boolean; timeoutSeconds?: number; workingDirectory?: string; options?: Record<string, unknown>; }
+export type ValidationCapability = "unit-test" | "integration-test" | "bdd" | "contract-test" | "browser-test" | "static-security" | "dependency-security" | "architecture" | "policy" | string;
+export interface ValidationProviderSpec { id: string; capability: ValidationCapability; provider: string; command?: string; required?: boolean; timeoutSeconds?: number; workingDirectory?: string; options?: Record<string, unknown>; }
 export interface UsageMetrics { inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number; }
 export type ContextMode = "observe" | "enforce";
 export type ContextRole = "explorer" | "planner" | "spec-manager" | "implementer" | "reviewer" | "operation-supervisor" | string;
@@ -143,7 +145,7 @@ export interface HarnessProjectConfig {
     runsDir?: string;
     authoring?: { provider?: "openspec" | "native" | string; schema?: string; managerAgent?: string; };
   };
-  validation?: { baseRef?: string; commands?: ValidationCommand[]; validators?: ValidatorSpec[]; frozenPaths?: string[]; requireSeal?: boolean; opa?: { enabled?: boolean; policyDirs?: string[]; }; };
+  validation?: { baseRef?: string; commands?: ValidationCommand[]; validators?: ValidatorSpec[]; providers?: ValidationProviderSpec[]; frozenPaths?: string[]; requireSeal?: boolean; opa?: { enabled?: boolean; policyDirs?: string[]; }; };
   security?: {
     sandbox?: {
       provider?: "podman" | "docker" | "none" | string;
@@ -168,10 +170,10 @@ export interface HarnessProjectConfig {
   };
   telemetry?: { enabled?: boolean; required?: boolean; localEventsFile?: string; exporter?: "none" | "otlp-http-json" | string; endpoint?: string; headers?: Record<string, string>; serviceName?: string; };
   evals?: { corpusDir?: string; resultsDir?: string; workspacesDir?: string; defaultRuns?: number; confidenceLevel?: number; fullStack?: { enabled?: boolean; required?: boolean; strictSupplyChain?: boolean } };
-  provenance?: { outputDir?: string; buildType?: string; cosignKey?: string; };
+  provenance?: { outputDir?: string; buildType?: string; cosignKey?: string; required?: boolean; sbom?: { required?: boolean; command?: string }; signing?: { required?: boolean; key?: string }; verification?: { required?: boolean; publicKey?: string } };
 }
 
-export interface TaskRequirement { id: string; description?: string; validator?: string; validators?: string[]; }
+export interface TaskRequirement { id: string; description?: string; validator?: string; validators?: string[]; capabilities?: ValidationCapability[]; }
 export interface QuickTaskMetadata {
   request: string;
   acceptance: string[];
@@ -204,7 +206,7 @@ export interface TaskContract {
   constraints?: { breakingApiChanges?: boolean; newDependencies?: boolean; schemaChanges?: boolean; maxFilesChanged?: number; maxLinesAdded?: number; maxLinesDeleted?: number; };
   impact?: { forbiddenEdges?: string[]; forbiddenNodes?: string[]; allowedCommunities?: string[]; };
   repair?: { maxAttempts?: number };
-  verification?: { commands?: ValidationCommand[]; validators?: ValidatorSpec[]; };
+  verification?: { commands?: ValidationCommand[]; validators?: ValidatorSpec[]; capabilities?: ValidationCapability[]; };
 }
 
 export interface ValidationCheck { id: string; category: string; status: CheckStatus; message: string; durationMs?: number; details?: Record<string, unknown>; }

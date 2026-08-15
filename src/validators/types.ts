@@ -1,10 +1,11 @@
-import type { HarnessProjectConfig, TaskContract, ValidationCheck, ValidatorSpec } from "../core/types.js";
+import type { HarnessProjectConfig, TaskContract, ValidationCheck, ValidationProviderSpec, ValidatorSpec } from "../core/types.js";
 
 export interface ValidationContext {
   root: string;
   config: HarnessProjectConfig;
   contract: TaskContract;
   spec: ValidatorSpec;
+  providerSpec?: ValidationProviderSpec;
   baseRef: string;
   changedFiles: string[];
 }
