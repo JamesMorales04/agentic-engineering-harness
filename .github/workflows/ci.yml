@@ -109,7 +109,7 @@ jobs:
           uv tool install "graphifyy==$GRAPHIFY_VERSION"
           uv tool install "serena-agent==$SERENA_VERSION"
           npm install --global "@engram-ai-memory/cli@$ENGRAM_VERSION"
-          test "$(pnpm --version)" = "$PNPM_VERSION"
+          test "$(cd "$RUNNER_TEMP/aeh-provider-tools" && mise exec -- pnpm --version)" = "$PNPM_VERSION"
           (cd "$RUNNER_TEMP/aeh-provider-tools" && mise exec -- trivy --version) | grep -F "Version: $TRIVY_VERSION"
       - name: Start Engram local server
         shell: bash
@@ -157,7 +157,7 @@ jobs:
           uv tool install "graphifyy==$GRAPHIFY_VERSION"
           uv tool install "serena-agent==$SERENA_VERSION"
           npm install --global "@engram-ai-memory/cli@$ENGRAM_VERSION"
-          test "$(pnpm --version)" = "$PNPM_VERSION"
+          test "$(cd "$RUNNER_TEMP/aeh-provider-tools" && mise exec -- pnpm --version)" = "$PNPM_VERSION"
           (cd "$RUNNER_TEMP/aeh-provider-tools" && mise exec -- trivy --version) | grep -F "Version: $TRIVY_VERSION"
           (cd "$RUNNER_TEMP/aeh-provider-tools" && mise exec -- opengrep --version) | grep -F "$OPENGREP_VERSION"
           npx playwright install --with-deps chromium
