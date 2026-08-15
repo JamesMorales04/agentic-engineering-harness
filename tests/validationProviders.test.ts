@@ -54,6 +54,9 @@ describe("technology-neutral validation providers", () => {
       await new Promise<void>((resolve, reject) => { const timer = setTimeout(() => reject(new Error("fixture provider did not start")), 10_000); provider.stdout.on("data", (chunk) => { if (String(chunk).includes("ready:")) { clearTimeout(timer); resolve(); } }); provider.on("error", reject); });
       const spec: ValidatorSpec = { id: "pact-real", adapter: "contract-test", options: { pactFile: path.relative(root, path.join(root, "tests/fixtures/pact/pact.json")), hostname: "127.0.0.1", port } }; const execution = await runPactVerification(context("contract-test", spec));
       expect(execution.result.status).toBe("PASS"); expect(execution.result.summary.total).toBeGreaterThan(0); expect(execution.result.rawArtifact).toContain("pact-real");
+      const check = resultCheck("pact-real", "contract", execution.result, true);
+      const graph = await buildRequirementEvidenceGraph({ root, config: { ...config, evidence: { ...config.evidence, requireComplete: true } }, contract: { ...contract, requirements: [{ id: "REQ-PACT", capabilities: ["contract-test"] }] }, report: { version: 1, taskId: contract.task.id, status: "PASS", startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), checks: [check], changedFiles: ["src/provider.ts"], metadata: { project: "provider-fixtures", baseRef: "main" } } });
+      expect(graph.complete).toBe(true); expect(graph.requirements[0].passingValidators).toContain("pact-real"); expect(graph.nodes.find((node) => node.id === "check:pact-real")?.data?.details).toMatchObject({ capability: "contract-test" });
     } finally { provider.kill("SIGTERM"); }
   });
 });
