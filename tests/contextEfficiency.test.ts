@@ -105,6 +105,32 @@ describe("context efficiency subsystem", () => {
     await expect(unsafe.retrieve({ fragmentId: "escape" })).rejects.toThrow("PATH_REJECTED");
   });
 
+  it("rejects a mismatched declared source hash before creating a new artifact", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-context-hash-"));
+    try {
+      const fragment = { id: "hash", kind: "tool-output" as const, preservation: "PROJECTABLE" as const, priority: 1, content: "authoritative content", source: { artifact: ".harness/context/OP-HASH/hash.raw", sha256: "0".repeat(64) } };
+      await expect(new ContextBudgetGateway(root, config(), { telemetry: false }).prepare({ operationId: "OP-HASH", logicalAgent: "reviewer", phase: "review", fragments: [fragment] })).rejects.toThrow("Context source hash mismatch");
+      await expect(fs.access(path.join(root, fragment.source.artifact))).rejects.toThrow();
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it("rejects symlink escapes for both context persistence and retrieval", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-context-symlink-"));
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-context-outside-"));
+    try {
+      await fs.symlink(outside, path.join(root, "linked"), "dir");
+      const fragment = { id: "escape", kind: "tool-output" as const, preservation: "PROJECTABLE" as const, priority: 1, content: "must stay inside", source: { artifact: "linked/raw.txt" } };
+      await expect(new ContextBudgetGateway(root, config(), { telemetry: false }).prepare({ operationId: "OP-SYMLINK", logicalAgent: "reviewer", phase: "review", fragments: [fragment] })).rejects.toThrow("symbolic link");
+
+      await fs.writeFile(path.join(outside, "raw.txt"), "outside");
+      const gateway = new ContextRetrievalGateway(authorizeRetrieval({ root, operationId: "OP-SYMLINK", logicalAgent: "reviewer", allowedFragmentIds: ["escape"], fragments: [fragment] }), { maxRequestsPerTurn: 1, maxTokensPerRequest: 20, maxTotalTokensPerTurn: 20 });
+      await expect(gateway.retrieve({ fragmentId: "escape" })).rejects.toThrow("symbolic link");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
   it("ranks explicit, changed and central repository nodes deterministically", () => {
     const ranked = rankRepositoryNodes({ provider: "graphify", nodes: [{ id: "a", file: "src/app.ts", centrality: 0.1 }, { id: "b", file: "src/other.ts", centrality: 0.9 }], edges: [] }, { explicitPaths: ["src/app.ts"], changedFiles: ["src/app.ts"] });
     expect(ranked[0]?.id).toBe("a");

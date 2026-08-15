@@ -8,6 +8,23 @@ export type OperationStageStatus = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED
 export type OperationParticipantStatus = "REGISTERED" | "IDLE" | "RUNNING" | "COMPLETED" | "FAILED" | "BLOCKED" | "CANCELLED";
 export type SupervisorGenerationStatus = "INITIALIZING" | "ACTIVE" | "DRAINING" | "ARCHIVED" | "FAILED";
 
+export const OPERATION_KIND_VALUES = ["audit", "run", "change"] as const satisfies readonly OperationKind[];
+export const OPERATION_STATUS_VALUES = ["QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"] as const satisfies readonly OperationStatus[];
+export const OPERATION_TERMINAL_STATUS_VALUES = ["SUCCEEDED", "FAILED", "CANCELLED"] as const satisfies readonly Extract<OperationStatus, "SUCCEEDED" | "FAILED" | "CANCELLED">[];
+
+/**
+ * The controller may move work from queued to running or to a terminal state
+ * when a complete operation result is already available. Direct metadata
+ * patches still cannot claim queued work succeeded; terminal records are
+ * otherwise immutable and idempotent.
+ */
+export function isAllowedOperationStatusTransition(from: OperationStatus, to: OperationStatus): boolean {
+  if (from === to) return true;
+  if (isTerminal(from)) return false;
+  if (from === "QUEUED") return to === "RUNNING" || to === "SUCCEEDED" || to === "FAILED" || to === "CANCELLED";
+  return to === "SUCCEEDED" || to === "FAILED" || to === "CANCELLED";
+}
+
 export interface AuditOperationPayload { request: string; files?: string[]; domains?: string[]; risk?: "low" | "medium" | "high"; reviewers?: string[]; }
 export interface RunOperationPayload { taskId: string; profile?: string; priority?: number; }
 export interface ChangeOperationPayload { request: string; title?: string; taskId?: string; files?: string[]; domains?: string[]; acceptance?: string[]; risk?: "low" | "medium" | "high"; profile?: string; priority?: number; }
@@ -71,7 +88,7 @@ export async function patchOperationMetadata(root: string, operationId: string, 
 
 export async function transitionOperationToTerminal(root: string, operationId: string, patch: Partial<OperationRecordV2> & { status: "SUCCEEDED" | "FAILED" | "CANCELLED" }): Promise<TerminalOperationTransition> {
   const stateRoot = resolveOperationStateRoot(root); const file = operationFile(stateRoot, operationId); await fs.mkdir(path.dirname(file), { recursive: true });
-  return withOperationLock(file, async () => { const current = normalizeOperationRecord(JSON.parse(await fs.readFile(file, "utf8")) as OperationRecord); if (isTerminal(current.status)) return { record: current, transitioned: false }; const now = new Date().toISOString(); const revision = current.revision + 1; const next = normalizeOperationRecord({ ...current, ...patch, version: 2, id: current.id, kind: current.kind, revision, updatedAt: now, lastProgressAt: now, stages: { ...current.stages, finished: { name: "finished", status: terminalStageStatus(patch.status), revision, startedAt: now, finishedAt: now } } } as OperationRecordV2); await writeRecord(file, next); await appendOperationEvent(stateRoot, next, "operation.terminal", ["status", "phase"]); return { record: next, transitioned: true }; });
+  return withOperationLock(file, async () => { const current = normalizeOperationRecord(JSON.parse(await fs.readFile(file, "utf8")) as OperationRecord); if (isTerminal(current.status)) return { record: current, transitioned: false }; if (!isAllowedOperationStatusTransition(current.status, patch.status)) throw new Error(`Invalid operation status transition ${current.status} -> ${patch.status}.`); const now = new Date().toISOString(); const revision = current.revision + 1; const next = normalizeOperationRecord({ ...current, ...patch, version: 2, id: current.id, kind: current.kind, revision, updatedAt: now, lastProgressAt: now, finishedAt: patch.finishedAt ?? now, stages: { ...current.stages, finished: { name: "finished", status: terminalStageStatus(patch.status), revision, startedAt: now, finishedAt: now } } } as OperationRecordV2); await writeRecord(file, next); await appendOperationEvent(stateRoot, next, "operation.terminal", ["status", "phase"]); return { record: next, transitioned: true }; });
 }
 
 export async function bindOperationLead(root: string, operationId: string, agentId: string, source?: string): Promise<OperationRecordV2> { return mutateOperation(root, operationId, {}, true, "operation.lead.bound", (current, revision, now) => ({ ...current, revision, updatedAt: now, lastProgressAt: now, lead: { agentId: requiredId(agentId), source, generation: (current.lead?.generation ?? 0) + 1, boundAt: now, acknowledgedRevision: revision, acknowledgedAt: now }, notification: { ...current.notification, lastLeadWakeRevision: revision, lastLeadWakeAt: now, lastLeadWakeReason: "operation-started" } })); }
@@ -114,7 +131,7 @@ export function normalizeOperationRecord(record: OperationRecord): OperationReco
 
 async function mutateOperation(root: string, operationId: string, patch: Partial<OperationRecordV2>, touchRevision: boolean, eventType: string, custom?: (current: OperationRecordV2, revision: number, now: string) => OperationRecordV2): Promise<OperationRecordV2> {
   const stateRoot = resolveOperationStateRoot(root); const file = operationFile(stateRoot, operationId); await fs.mkdir(path.dirname(file), { recursive: true });
-  return withOperationLock(file, async () => { const current = normalizeOperationRecord(JSON.parse(await fs.readFile(file, "utf8")) as OperationRecord); const guardedPatch = guardTerminalTransition(current, patch); const now = new Date().toISOString(); const revision = touchRevision ? current.revision + 1 : current.revision; const candidate = custom ? custom(current, revision, now) : ({ ...current, ...guardedPatch, version: 2, id: current.id, kind: current.kind, revision, updatedAt: now, lastProgressAt: touchRevision ? now : current.lastProgressAt } as OperationRecordV2); const next = normalizeOperationRecord(candidate); await writeRecord(file, next); await appendOperationEvent(stateRoot, next, eventType, Object.keys(patch)); return next; });
+  return withOperationLock(file, async () => { const current = normalizeOperationRecord(JSON.parse(await fs.readFile(file, "utf8")) as OperationRecord); if (patch.status && current.status === "QUEUED" && patch.status === "SUCCEEDED") throw new Error("Invalid operation status transition QUEUED -> SUCCEEDED."); if (patch.status && !isTerminal(current.status) && !isAllowedOperationStatusTransition(current.status, patch.status)) throw new Error(`Invalid operation status transition ${current.status} -> ${patch.status}.`); if (isTerminal(current.status) && custom) return current; const guardedPatch = guardTerminalTransition(current, patch); const now = new Date().toISOString(); const revision = touchRevision ? current.revision + 1 : current.revision; const candidate = custom ? custom(current, revision, now) : ({ ...current, ...guardedPatch, version: 2, id: current.id, kind: current.kind, revision, updatedAt: now, lastProgressAt: touchRevision ? now : current.lastProgressAt } as OperationRecordV2); const next = normalizeOperationRecord(candidate); await writeRecord(file, next); await appendOperationEvent(stateRoot, next, eventType, Object.keys(patch)); return next; });
 }
 async function appendOperationEvent(root: string, record: OperationRecordV2, type: string, changed?: string[], details?: Record<string, unknown>): Promise<void> { const file = operationEventsFile(root, record.id); await fs.mkdir(path.dirname(file), { recursive: true }); const event: OperationEvent = { version: 1, operationId: record.id, revision: record.revision, at: new Date().toISOString(), type, status: record.status, phase: record.phase, changed, details }; await fs.appendFile(file, `${JSON.stringify(event)}\n`); }
 async function writeRecord(file: string, record: OperationRecordV2): Promise<void> { const temp = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`; await fs.writeFile(temp, `${JSON.stringify(record, null, 2)}\n`); try { await fs.rename(temp, file); } finally { await fs.rm(temp, { force: true }).catch(() => undefined); } }

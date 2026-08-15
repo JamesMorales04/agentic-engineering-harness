@@ -27,6 +27,10 @@
     "dev": "tsx src/main.ts",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:scenario": "npm run build && vitest run tests/system/aehScenarioMatrix.test.ts",
+    "test:adversarial": "npm run build && vitest run tests/system/aehAdversarialE2E.test.ts",
+    "test:human-e2e": "npm run build && vitest run tests/system/aehHumanBlackBox.test.ts",
+    "test:system-all": "npm run build && vitest run tests/system",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "check": "npm run typecheck && npm test && npm run build",
     "release:check": "npm run check && npm pack --dry-run",
@@ -49,7 +53,7 @@
   "devDependencies": {
     "@playwright/test": "1.62.1",
     "@types/node": "^24.2.1",
-    "agentic-engineering-harness": "^0.6.27",
+    "agentic-engineering-harness": "^0.6.29",
     "tsx": "^4.20.3",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"

@@ -118,6 +118,23 @@ describe("operation completion callbacks", () => {
     expect(await loadOperationCompletionTarget(root, record.id)).toBeUndefined();
   });
 
+  it("serializes concurrent terminal callbacks so only one dispatch is accepted", async () => {
+    const root = await tempRoot();
+    const operation = terminal(root, { id: "AUDIT-CONCURRENT" });
+    const trace = vi.fn(async () => undefined);
+    await registerOperationCompletionTarget(root, operation.id, "lead-1", "test", trace);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const dispatch = vi.fn(async () => { await gate; return { exitCode: 0, stdout: "accepted", stderr: "", durationMs: 1, transport: "sdk" as const }; });
+    const first = notifyOperationCompletion(root, operation, { dispatch: dispatch as never, trace, retryDelaysMs: [0], sleep: async () => undefined });
+    await vi.waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1));
+    const second = notifyOperationCompletion(root, operation, { dispatch: dispatch as never, trace, retryDelaysMs: [0], sleep: async () => undefined });
+    release();
+    await Promise.all([first, second]);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect((await loadOperationCompletionTarget(root, operation.id))?.status).toBe("SENT");
+  });
+
   it("disables a registered callback when detached controller spawn fails synchronously", async () => {
     const root = await tempRoot();
     const record = await startDetachedOperation(root, "audit", { request: "review" }, {

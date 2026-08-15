@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "generatedAt": "2026-08-15",
+  "suite": "aeh-reliability-hardening",
+  "findings": [
+    {
+      "scenario": "SCN-LIFECYCLE-TERMINAL-LATE-CUSTOM-MUTATION",
+      "classification": "lifecycle",
+      "status": "FIXED",
+      "rootCause": "custom state mutators bypassed the terminal transition guard",
+      "productionFix": "terminal records now return unchanged from custom lifecycle mutators",
+      "regressionTest": "tests/operations.test.ts"
+    },
+    {
+      "scenario": "SCN-CONTEXT-SOURCE-HASH-MISSING-ARTIFACT",
+      "classification": "context",
+      "status": "FIXED",
+      "rootCause": "a declared source hash was ignored when the raw artifact did not yet exist",
+      "productionFix": "new artifacts verify supplied content against the declared SHA-256 before writing",
+      "regressionTest": "tests/contextEfficiency.test.ts"
+    },
+    {
+      "scenario": "SCN-CONTEXT-SYMLINK-ESCAPE",
+      "classification": "security",
+      "status": "FIXED",
+      "rootCause": "lexical path checks allowed context artifacts to traverse symlinked directories",
+      "productionFix": "context persistence and retrieval reject symlink traversal",
+      "regressionTest": "tests/contextEfficiency.test.ts"
+    },
+    {
+      "scenario": "SCN-COMPLETION-CONCURRENT-DISPATCH",
+      "classification": "concurrency",
+      "status": "FIXED",
+      "rootCause": "concurrent completion callers could both observe a pending sidecar before either persisted SENT",
+      "productionFix": "completion notification dispatch is serialized by an operation-scoped lock",
+      "regressionTest": "tests/operationCompletion.test.ts"
+    },
+    {
+      "scenario": "SCN-VALIDATOR-MALFORMED-STRUCTURED-OUTPUT",
+      "classification": "validation",
+      "status": "FIXED",
+      "rootCause": "known structured validator adapters treated malformed stdout as an empty finding set",
+      "productionFix": "OpenGrep, Trivy, Playwright, and Pact evidence shape is validated before PASS",
+      "regressionTest": "tests/system/aehAdversarialE2E.test.ts"
+    },
+    {
+      "scenario": "SCN-HARNESS-SEED-OVERRIDE-REPRODUCTION",
+      "classification": "test-infrastructure",
+      "status": "FIXED",
+      "rootCause": "the scenario inventory assertion ignored an explicitly configured reproduction seed",
+      "suiteFix": "scenario assertions now accept the documented AEH_SCENARIO_SEED override",
+      "regressionTest": "tests/system/aehScenarioMatrix.test.ts"
+    }
+  ],
+  "knownLimitations": [
+    "Real Paseo/model-backed start success cannot be exercised in the current environment because managed Paseo is unavailable.",
+    "Opt-in real provider contracts remain environment-gated by AEH_RUN_REAL_PROVIDERS=1.",
+    "Podman-heavy, mutation, and signed Cosign lanes require their external tools and are not claimed as executed here."
+  ]
+}

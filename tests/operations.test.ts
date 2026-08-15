@@ -13,7 +13,9 @@ import {
   patchOperation,
   registerOperationAgent,
   saveOperation,
+  setOperationStage,
   transitionOperationToTerminal,
+  updateOperationParticipant,
   type OperationRecord
 } from "../src/operations/state.js";
 
@@ -149,6 +151,24 @@ describe("operation controller state", () => {
     expect(current.status).toBe("CANCELLED");
     expect(current.phase).toBe("cancelled");
     expect(current.finishedAt).toBe("2026-08-12T21:00:00.000Z");
+  });
+
+  it("rejects an impossible active-state transition without corrupting the record", async () => {
+    const root = await tempRoot();
+    const record = await seed(root, { status: "QUEUED", phase: "queued" });
+    await expect(patchOperation(root, record.id, { status: "SUCCEEDED", phase: "finished" })).rejects.toThrow("Invalid operation status transition QUEUED -> SUCCEEDED");
+    expect(await loadOperation(root, record.id)).toMatchObject({ status: "QUEUED", phase: "queued", revision: 1 });
+  });
+
+  it("does not let custom lifecycle mutations change a terminal operation", async () => {
+    const root = await tempRoot();
+    const record = await seed(root, { status: "CANCELLED", phase: "cancelled", finishedAt: "2026-08-12T21:00:00.000Z" });
+    const before = await loadOperation(root, record.id);
+    await setOperationStage(root, record.id, "late-worker", "RUNNING");
+    await registerOperationAgent(root, record.id, { id: "late-worker", role: "implementer" });
+    await updateOperationParticipant(root, record.id, "late-worker", { status: "COMPLETED", resultArtifact: "late.json" });
+    const current = await loadOperation(root, record.id);
+    expect(current).toEqual(before);
   });
 
   it("cancels registered agents without requiring a Paseo list discovery", async () => {
