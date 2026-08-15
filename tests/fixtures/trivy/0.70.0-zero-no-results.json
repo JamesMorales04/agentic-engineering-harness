@@ -1,0 +1,6 @@
+{
+  "SchemaVersion": 2,
+  "Trivy": { "Version": "0.70.0" },
+  "ArtifactName": ".",
+  "ArtifactType": "filesystem"
+}

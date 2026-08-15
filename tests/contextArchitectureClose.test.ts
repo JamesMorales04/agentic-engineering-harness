@@ -6,7 +6,7 @@ import { buildAgentContextFragments } from "../src/workers/agentPrompt.js";
 import { ContextBudgetGateway } from "../src/context/gateway.js";
 import { EngramMemoryProvider } from "../src/providers/engram.js";
 import { GraphifyCodeIntelligenceProvider } from "../src/providers/graphify.js";
-import { normalizeOpengrepOutput, normalizeTrivyOutput, normalizePlaywrightOutput } from "../src/validators/toolEvidence.js";
+import { normalizeOpengrepOutput, normalizeTrivyOutput, normalizePlaywrightOutput, parseToolEvidenceResult } from "../src/validators/toolEvidence.js";
 import type { AgentExecutionSelection } from "../src/agents/types.js";
 import type { HarnessProjectConfig, TaskContract } from "../src/core/types.js";
 
@@ -62,6 +62,18 @@ describe("architecture closure contracts", () => {
     expect(trivy[0]).toMatchObject({ rule: "CVE-1", package: "x", installedVersion: "1", fixedVersion: "2" });
     expect(playwright[0]).toMatchObject({ kind: "failed-test", durationMs: 12 });
     expect(new Set([opengrep[0].fingerprint, trivy[0].fingerprint, playwright[0].fingerprint]).size).toBe(3);
+  });
+
+  it("accepts every pinned Trivy zero/findings report shape but rejects malformed reports", async () => {
+    const fixtureDir = path.resolve("tests/fixtures/trivy");
+    const zeroWithoutResults = parseToolEvidenceResult("trivy", await fs.readFile(path.join(fixtureDir, "0.70.0-zero-no-results.json"), "utf8"));
+    const zeroWithNullResults = parseToolEvidenceResult("trivy", await fs.readFile(path.join(fixtureDir, "0.70.0-zero-null-results.json"), "utf8"));
+    const findings = parseToolEvidenceResult("trivy", await fs.readFile(path.join(fixtureDir, "0.70.0-findings.json"), "utf8"));
+    const zeroWithEmptyResults = parseToolEvidenceResult("trivy", JSON.stringify({ SchemaVersion: 2, Trivy: { Version: "0.70.0" }, ArtifactName: ".", ArtifactType: "filesystem", Results: [] }));
+    const malformed = parseToolEvidenceResult("trivy", JSON.stringify({ SchemaVersion: 2, Trivy: { Version: "0.70.0" }, ArtifactName: ".", ArtifactType: "filesystem", Results: [{ Target: 42 }] }));
+    for (const result of [zeroWithoutResults, zeroWithNullResults, zeroWithEmptyResults]) expect(result).toEqual({ valid: true, findings: [] });
+    expect(findings).toMatchObject({ valid: true, findings: [expect.objectContaining({ rule: "CVE-1" })] });
+    expect(malformed).toEqual({ valid: false, findings: [] });
   });
 
   it("loads Graphify through the provider's canonical model", async () => {

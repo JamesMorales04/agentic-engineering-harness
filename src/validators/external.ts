@@ -4,7 +4,7 @@ import type { ValidationCheck } from "../core/types.js";
 import { commandExists, runProcess } from "../utils/process.js";
 import type { ValidationContext } from "./types.js";
 import { missingTool } from "./toolCommand.js";
-import { parseToolEvidence } from "./toolEvidence.js";
+import { parseToolEvidenceResult } from "./toolEvidence.js";
 
 export async function runExternalToolValidator(context: ValidationContext): Promise<ValidationCheck> {
   const adapter = context.spec.adapter;
@@ -27,17 +27,20 @@ export async function runExternalToolValidator(context: ValidationContext): Prom
   const result = await runProcess(rendered, { cwd, timeoutMs: (context.spec.timeoutSeconds ?? 900) * 1000 });
   const evidenceFile = typeof context.spec.options?.evidenceFile === "string" ? path.resolve(cwd, context.spec.options.evidenceFile) : undefined;
   const evidenceText = evidenceFile ? await fs.readFile(evidenceFile, "utf8").catch(() => result.stdout) : result.stdout;
-  const findings = parseToolEvidence(adapter, evidenceText);
+  const parsedEvidence = parseToolEvidenceResult(adapter, evidenceText);
+  const findings = parsedEvidence.findings;
   const rawPath = path.resolve(context.root, context.config.evidence?.outputDir ?? ".harness/evidence", `${context.spec.id.replace(/[^A-Za-z0-9._-]/g, "-")}.raw`);
   await fs.mkdir(path.dirname(rawPath), { recursive: true });
   await fs.writeFile(rawPath, `${result.stdout}${result.stderr ? `\n--- stderr ---\n${result.stderr}` : ""}`, "utf8");
   const failedByEvidence = findings.length > 0 && ["opengrep", "trivy", "playwright", "pact"].includes(adapter);
-  const failed = result.exitCode !== 0 || failedByEvidence;
+  const malformedEvidence = ["opengrep", "trivy", "playwright", "pact"].includes(adapter) && !parsedEvidence.valid;
+  const failed = result.exitCode !== 0 || failedByEvidence || malformedEvidence;
+  const status = failed ? context.spec.required === false ? "WARN" : "FAIL" : "PASS";
   return {
     id: context.spec.id,
     category: definition.category,
-    status: failed ? "FAIL" : "PASS",
-    message: failed ? `${adapter} validator failed${findings.length ? ` with ${findings.length} normalized finding(s)` : ` with exit code ${result.exitCode}`}.` : `${adapter} validator passed.`,
+    status,
+    message: failed ? `${adapter} validator ${status === "WARN" ? "degraded" : "failed"}${malformedEvidence ? " with malformed evidence" : findings.length ? ` with ${findings.length} normalized finding(s)` : ` with exit code ${result.exitCode}`}.` : `${adapter} validator passed.`,
     durationMs: result.durationMs,
     details: { command: rendered, rawArtifact: path.relative(context.root, rawPath).replaceAll("\\", "/"), evidenceFormat: evidenceFile ? context.spec.options?.evidenceFormat ?? "json-or-junit" : "stdout-json", findings, findingCount: findings.length }
   };

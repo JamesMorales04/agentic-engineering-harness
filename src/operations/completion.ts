@@ -76,6 +76,14 @@ export async function notifyOperationCompletion(
   operation: OperationRecord,
   deps: OperationCompletionDeps = {}
 ): Promise<OperationCompletionTarget | undefined> {
+  return withCompletionLock(root, operation.id, () => notifyOperationCompletionUnlocked(root, operation, deps));
+}
+
+async function notifyOperationCompletionUnlocked(
+  root: string,
+  operation: OperationRecord,
+  deps: OperationCompletionDeps
+): Promise<OperationCompletionTarget | undefined> {
   let target = await loadOperationCompletionTarget(root, operation.id);
   if (!target || target.status === "SENT" || target.status === "DISABLED") return target;
   const dispatch = deps.dispatch ?? dispatchManagedPaseoAgent;
@@ -159,8 +167,35 @@ async function persist(root: string, target: OperationCompletionTarget): Promise
   try { await fs.rename(temp, file); }
   finally { await fs.rm(temp, { force: true }).catch(() => undefined); }
 }
+async function withCompletionLock<T>(root: string, operationId: string, action: () => Promise<T>): Promise<T> {
+  const lock = `${operationCompletionFile(root, operationId)}.lock`;
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+    try {
+      handle = await fs.open(lock, "wx");
+      try { await handle.writeFile(`${process.pid}\n`); return await action(); }
+      finally { await handle.close().catch(() => undefined); await fs.rm(lock, { force: true }).catch(() => undefined); }
+    } catch (error) {
+      if (handle) { await handle.close().catch(() => undefined); await fs.rm(lock, { force: true }).catch(() => undefined); throw error; }
+      if (!isAlreadyExists(error)) throw error;
+      if (await recoverableLock(lock)) { await fs.rm(lock, { force: true }).catch(() => undefined); continue; }
+      if (Date.now() >= deadline) throw new Error(`Timed out acquiring completion callback lock for ${operationId}.`);
+      await delay(20);
+    }
+  }
+}
+async function recoverableLock(lock: string): Promise<boolean> {
+  try {
+    const [rawPid, stat] = await Promise.all([fs.readFile(lock, "utf8").catch(() => ""), fs.stat(lock)]);
+    const ownerPid = Number.parseInt(rawPid.trim(), 10);
+    if (Number.isInteger(ownerPid) && ownerPid > 0) { try { process.kill(ownerPid, 0); return false; } catch { return true; } }
+    return Date.now() - stat.mtimeMs > 30_000;
+  } catch { return true; }
+}
 function normalizeRetryDelays(value?: number[]): number[] { const candidate = value?.length ? value : DEFAULT_RETRY_DELAYS_MS; const normalized = candidate.filter((item) => Number.isFinite(item) && item >= 0); return normalized.length ? normalized : [0]; }
 function requiredId(value: string, name: string): string { const trimmed = value.trim(); if (!trimmed) throw new Error(`${name} is required.`); return trimmed; }
 function safeId(value: string): string { if (!/^[A-Za-z0-9._-]+$/.test(value)) throw new Error(`Invalid operation id '${value}'.`); return value; }
 function isMissing(error: unknown): boolean { return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "ENOENT"); }
 function delay(ms: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, ms)); }
+function isAlreadyExists(error: unknown): boolean { return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "EEXIST"); }

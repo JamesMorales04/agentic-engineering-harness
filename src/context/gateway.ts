@@ -116,6 +116,9 @@ export class ContextBudgetGateway {
     if (!this.persist) return { ...fragment, source: { ...fragment.source, sha256: fragment.source?.sha256 ?? sha256(fragment.content) } };
     const relative = fragment.source?.artifact ?? path.posix.join(".harness", "context", safeSegment(operationId), `${safeSegment(fragment.id)}.raw`);
     const absolute = safePath(this.root, relative);
+    await assertNoSymlinkEscape(this.root, absolute);
+    const contentSha256 = sha256(fragment.content);
+    if (fragment.source?.sha256 && fragment.source.sha256 !== contentSha256) throw new Error(`Context source hash mismatch for '${relative}'.`);
     await fs.mkdir(path.dirname(absolute), { recursive: true });
     let actual: string;
     try {
@@ -176,6 +179,20 @@ function metricsFor(raw: ContextFragment[], optimized: ContextFragmentProjection
 
 function safeSegment(value: string): string { const sanitized = value.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, ""); return sanitized || "fragment"; }
 function safePath(root: string, relative: string): string { if (path.isAbsolute(relative)) throw new Error("Context artifact paths must be relative to the project root."); const absoluteRoot = path.resolve(root); const absolute = path.resolve(absoluteRoot, relative); if (absolute !== absoluteRoot && !absolute.startsWith(`${absoluteRoot}${path.sep}`)) throw new Error("Context artifact path escapes the project root."); return absolute; }
+async function assertNoSymlinkEscape(root: string, absolute: string): Promise<void> {
+  const absoluteRoot = path.resolve(root);
+  let cursor = absolute;
+  while (cursor !== absoluteRoot && cursor.startsWith(`${absoluteRoot}${path.sep}`)) {
+    try {
+      if ((await fs.lstat(cursor)).isSymbolicLink()) throw new Error("Context artifact path cannot traverse a symbolic link.");
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("cannot traverse")) throw error;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    cursor = path.dirname(cursor);
+  }
+  if (cursor !== absoluteRoot) throw new Error("Context artifact path escapes the project root.");
+}
 function isRequiredProjection(fragment: ContextFragmentProjection): boolean { return fragment.preservation === "VERBATIM" || fragment.kind === "normative"; }
 
 export function recoveryHandle(operationId: string, fragmentId: string, sourceSha256: string): string {

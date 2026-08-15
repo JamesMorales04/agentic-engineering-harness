@@ -25,7 +25,7 @@ export class ContextRetrievalGateway {
     if (!fragment) throw new Error(`CONTEXT_RETRIEVAL_NOT_FOUND: fragment '${request.fragmentId}'.`);
     const artifact = fragment.source?.artifact;
     if (!artifact) throw new Error(`CONTEXT_RETRIEVAL_NO_ARTIFACT: fragment '${request.fragmentId}' has no durable raw artifact.`);
-    const absolute = safeArtifactPath(this.authorization.root, artifact);
+    const absolute = await safeArtifactPath(this.authorization.root, artifact);
     const raw = await fs.readFile(absolute, "utf8");
     const expected = fragment.source?.sha256;
     const actual = sha256(raw);
@@ -43,10 +43,21 @@ export class ContextRetrievalGateway {
   }
 }
 
-function safeArtifactPath(root: string, artifact: string): string {
+async function safeArtifactPath(root: string, artifact: string): Promise<string> {
   if (path.isAbsolute(artifact)) throw new Error("CONTEXT_RETRIEVAL_PATH_REJECTED: artifact paths must be relative to the operation root.");
   const absoluteRoot = path.resolve(root); const absolute = path.resolve(absoluteRoot, artifact);
   if (absolute !== absoluteRoot && !absolute.startsWith(`${absoluteRoot}${path.sep}`)) throw new Error("CONTEXT_RETRIEVAL_PATH_REJECTED: artifact escapes the operation root.");
+  let cursor = absolute;
+  while (cursor !== absoluteRoot && cursor.startsWith(`${absoluteRoot}${path.sep}`)) {
+    try {
+      if ((await fs.lstat(cursor)).isSymbolicLink()) throw new Error("CONTEXT_RETRIEVAL_PATH_REJECTED: artifact paths cannot traverse symbolic links.");
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("cannot traverse")) throw error;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    cursor = path.dirname(cursor);
+  }
+  if (cursor !== absoluteRoot) throw new Error("CONTEXT_RETRIEVAL_PATH_REJECTED: artifact escapes the operation root.");
   return absolute;
 }
 

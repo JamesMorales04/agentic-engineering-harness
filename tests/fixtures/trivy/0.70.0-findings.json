@@ -1,0 +1,17 @@
+{
+  "SchemaVersion": 2,
+  "Trivy": { "Version": "0.70.0" },
+  "ArtifactName": ".",
+  "ArtifactType": "filesystem",
+  "Results": [
+    {
+      "Target": "package-lock.json",
+      "Class": "lang-pkgs",
+      "Type": "npm",
+      "Packages": [],
+      "Vulnerabilities": [
+        { "VulnerabilityID": "CVE-1", "PkgName": "x", "Severity": "HIGH" }
+      ]
+    }
+  ]
+}
