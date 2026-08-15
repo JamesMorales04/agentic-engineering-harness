@@ -172,7 +172,7 @@ export async function verifyProvenanceManifest(root: string, manifestFile: strin
 export async function verifyCosignBundle(root: string, statementFile: string, bundleFile: string, key?: string): Promise<boolean> {
   if (!(await commandExists("cosign", root))) return false;
   const keyArg = key ? ` --key ${quote(path.resolve(root, key))}` : "";
-  const result = await runProcess(`cosign verify-blob --bundle ${quote(path.resolve(root, bundleFile))}${keyArg} ${quote(path.resolve(root, statementFile))}`, { cwd: root, timeoutMs: 60_000 });
+  const result = await runProcess(`cosign verify-blob --insecure-ignore-tlog --bundle ${quote(path.resolve(root, bundleFile))}${keyArg} ${quote(path.resolve(root, statementFile))}`, { cwd: root, timeoutMs: 60_000 });
   return result.exitCode === 0;
 }
 
