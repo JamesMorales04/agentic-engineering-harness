@@ -1,0 +1,12 @@
+{
+  "consumer": { "name": "aeh-fixture-consumer" },
+  "provider": { "name": "aeh-fixture-provider" },
+  "interactions": [
+    {
+      "description": "a greeting is returned",
+      "request": { "method": "GET", "path": "/hello" },
+      "response": { "status": 200, "headers": { "Content-Type": "application/json" }, "body": { "message": "hello" } }
+    }
+  ],
+  "metadata": { "pactSpecification": { "version": "3.0.0" } }
+}

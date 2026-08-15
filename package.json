@@ -13,6 +13,7 @@
     "presets",
     "policies",
     "schemas",
+    "maturity",
     "skills",
     "docs",
     "scripts/headroom-bridge.py",

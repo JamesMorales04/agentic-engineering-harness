@@ -3,7 +3,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildProvenanceManifest, verifyProvenanceManifest } from "../src/provenance/generate.js";
+import { buildProvenanceManifest, verifyProvenanceManifest, verifySupplyChainGate } from "../src/provenance/generate.js";
 import { buildOpaInput } from "../src/validators/opa.js";
 import { exportEventSpan, type TraceContext } from "../src/telemetry/otlp.js";
 import type { HarnessProjectConfig, TaskContract } from "../src/core/types.js";
@@ -28,6 +28,13 @@ describe("end-to-end architecture boundaries", () => {
     const input = buildOpaInput(contract, ["src/a.ts"], [".harness/contracts/T.yaml"], { newDependencies: [], schemaChanged: false, schemaFiles: [] }, { operationId: "OP", operationKind: "change", logicalAgent: "reviewer-2", role: "reviewer", profile: "strict", domains: ["security"], runtime: "opencode", modelAlias: "brain", permissions: { write: "deny", network: "deny" } });
     expect(input.identity).toMatchObject({ logicalAgent: "reviewer-2", role: "reviewer", profile: "strict", risk: "high", runtime: "opencode", modelAlias: "brain" });
     expect(input).not.toHaveProperty("workerRole");
+  });
+
+  it("blocks delivery when strict supply-chain evidence is absent", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-supply-chain-gate-"));
+    const config: HarnessProjectConfig = { version: 1, project: { name: "strict" }, provenance: { signing: { required: true }, verification: { required: true } } };
+    const result = await verifySupplyChainGate(root, config);
+    expect(result.ok).toBe(false); expect(result.failures.join("\n")).toMatch(/manifest|supply-chain/i);
   });
 
   it("uses one trace id with parent span linkage for operation events", async () => {

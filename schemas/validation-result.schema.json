@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/JamesMorales04/agentic-engineering-harness/schemas/validation-result.schema.json",
+  "title": "AEH normalized validation result",
+  "oneOf": [
+    {
+      "title": "TestExecutionResult",
+      "type": "object",
+      "required": ["version", "provider", "capability", "command", "status", "summary", "failures", "requirements", "rawArtifact"],
+      "properties": {
+        "version": { "const": 1 },
+        "provider": { "type": "string" },
+        "capability": { "enum": ["unit-test", "integration-test", "bdd", "contract-test"] },
+        "command": { "type": "string" },
+        "runtime": { "type": "string" },
+        "status": { "enum": ["PASS", "FAIL", "SKIP"] },
+        "summary": { "$ref": "#/$defs/testSummary" },
+        "failures": { "type": "array", "items": { "$ref": "#/$defs/failure" } },
+        "requirements": { "type": "array", "items": { "type": "string" } },
+        "rawArtifact": { "type": "string" }
+      }
+    },
+    {
+      "title": "BddExecutionResult",
+      "type": "object",
+      "required": ["version", "provider", "capability", "command", "status", "scenarios", "summary", "rawArtifact"],
+      "properties": {
+        "version": { "const": 1 },
+        "provider": { "type": "string" },
+        "capability": { "const": "bdd" },
+        "command": { "type": "string" },
+        "runtime": { "type": "string" },
+        "status": { "enum": ["PASS", "FAIL", "SKIP"] },
+        "scenarios": { "type": "array" },
+        "summary": { "$ref": "#/$defs/testSummary" },
+        "rawArtifact": { "type": "string" }
+      }
+    },
+    {
+      "title": "IntegrationEnvironmentResult",
+      "type": "object",
+      "required": ["version", "provider", "capability", "status", "requirements", "lifecycle", "rawArtifact"],
+      "properties": {
+        "version": { "const": 1 },
+        "provider": { "type": "string" },
+        "capability": { "const": "integration-test" },
+        "status": { "enum": ["PASS", "FAIL", "SKIP"] },
+        "requirements": { "type": "array" },
+        "lifecycle": { "type": "object", "required": ["provisioned", "ready", "tested", "cleaned", "durationMs"] },
+        "rawArtifact": { "type": "string" }
+      }
+    },
+    {
+      "title": "ContractVerificationResult",
+      "type": "object",
+      "required": ["version", "provider", "capability", "status", "verifierCommand", "summary", "failures", "requirements", "rawArtifact"],
+      "properties": {
+        "version": { "const": 1 },
+        "provider": { "type": "string" },
+        "capability": { "const": "contract-test" },
+        "status": { "enum": ["PASS", "FAIL", "SKIP"] },
+        "verifierCommand": { "type": "string" },
+        "pactFile": { "type": "string" },
+        "providerUrl": { "type": "string" },
+        "summary": { "type": "object", "required": ["total", "passed", "failed", "durationMs"] },
+        "failures": { "type": "array", "items": { "$ref": "#/$defs/failure" } },
+        "requirements": { "type": "array", "items": { "type": "string" } },
+        "rawArtifact": { "type": "string" }
+      }
+    }
+  ],
+  "$defs": {
+    "testSummary": {
+      "type": "object",
+      "required": ["total", "passed", "failed", "skipped", "durationMs"],
+      "properties": { "total": { "type": "integer", "minimum": 0 }, "passed": { "type": "integer", "minimum": 0 }, "failed": { "type": "integer", "minimum": 0 }, "skipped": { "type": "integer", "minimum": 0 }, "durationMs": { "type": "number", "minimum": 0 } }
+    },
+    "failure": {
+      "type": "object",
+      "required": ["message"],
+      "properties": { "id": { "type": "string" }, "message": { "type": "string" }, "source": { "type": "object" } }
+    }
+  }
+}

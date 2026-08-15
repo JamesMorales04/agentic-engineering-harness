@@ -1,12 +1,12 @@
 # Component maturity at current `main`
 
 This matrix records the highest level supported by executable code and tests at
-the current revision. The machine-readable source is
-[`component-maturity.json`](component-maturity.json). A roadmap checkbox means
-that a capability exists; it is not evidence that the capability is
-production-grade.
-
-A roadmap checkbox means that a capability exists; it is not evidence that the capability is production-grade.
+the current revision. The machine-readable architecture inventory is
+[`component-maturity.json`](component-maturity.json); the validation-plane
+inventory is [`maturity/components.yaml`](../maturity/components.yaml) and is
+bounded by `src/maturity/inventory.ts`. Arbitrary evidence strings cannot
+promote a component. A roadmap checkbox means that a capability exists; it is
+not evidence that the capability is production-grade.
 
 Levels are cumulative: `DECLARED`, `ADAPTER`, `EXECUTABLE`,
 `WORKFLOW_INTEGRATED`, `DOGFOODED`, `EVAL_VALIDATED`, `PRODUCTION_GRADE`.
@@ -21,12 +21,12 @@ Levels are cumulative: `DECLARED`, `ADAPTER`, `EXECUTABLE`,
 | OpenSpec | WORKFLOW_INTEGRATED | `src/spec`, OpenSpec bridge tests |
 | AEH SDD | WORKFLOW_INTEGRATED | `src/core/sdd.ts`, SDD tests |
 | TaskContracts | WORKFLOW_INTEGRATED | contract/seal and run tests |
-| Gherkin | EXECUTABLE | `.NET` command adapter and validator tests |
-| Reqnroll | DECLARED | consumer-project capability; no AEH runtime dependency |
-| .NET/xUnit integration | EXECUTABLE | Gherkin/project validation path |
-| Testcontainers capability | DECLARED | consumer test capability; detected through project validation |
+| Project-Native Test Execution | WORKFLOW_INTEGRATED | Node/Python provider contract and normalized evidence |
+| BDD Execution | WORKFLOW_INTEGRATED | two independent Gherkin runners normalize scenarios |
+| Integration Environment | EXECUTABLE | explicit lifecycle provider contract; OCI lane is capability-gated |
+| Contract Testing / Pact | EXECUTABLE | actual local Pact verifier and normalized evidence graph |
+| Gherkin | WORKFLOW_INTEGRATED | runner-neutral BDD provider and scenario evidence |
 | Playwright | WORKFLOW_INTEGRATED | pinned Chromium JSON-reporter contract and normalized browser evidence adapter |
-| Pact | ADAPTER | normalized contract evidence adapter; consumer runtime remains external |
 | OPA | WORKFLOW_INTEGRATED | typed execution identity and Rego policy path |
 | Opengrep | WORKFLOW_INTEGRATED | pinned CLI JSON contract and normalized security findings |
 | Trivy | WORKFLOW_INTEGRATED | pinned CLI JSON contract, strict full-stack validation, normalized vulnerability/secret/misconfiguration findings and SBOM |

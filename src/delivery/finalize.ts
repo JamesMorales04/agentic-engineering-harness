@@ -2,8 +2,9 @@ import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
 import { getCurrentBranch } from "../core/git.js";
 import { githubRequest, loadDeliveryRecord, resolveGithubToken } from "./handoff.js";
 import { runProcess } from "../utils/process.js";
+import { verifySupplyChainGate } from "../provenance/generate.js";
 
-export type DeliveryFinalizationStatus = "SKIPPED" | "NO_CHANGES" | "FINALIZED" | "BLOCKED_EXTERNAL" | "SYSTEM_FAILURE";
+export type DeliveryFinalizationStatus = "SKIPPED" | "NO_CHANGES" | "FINALIZED" | "BLOCKED_EXTERNAL" | "BLOCKED_SUPPLY_CHAIN" | "SYSTEM_FAILURE";
 export interface DeliveryFinalizationResult {
   status: DeliveryFinalizationStatus;
   humanRequired: boolean;
@@ -19,6 +20,9 @@ export async function finalizeAcceptedIssue(root: string, config: HarnessProject
   const github = config.delivery?.github;
   if (!contract.issue || contract.issue.provider !== "github") return skipped("Task is not issue-derived.");
   if (!github?.enabled || github.finalizeOnAcceptance !== true) return skipped("GitHub finalization is not enabled.");
+
+  const supplyChain = await verifySupplyChainGate(root, config);
+  if (!supplyChain.ok) throw new Error(`SUPPLY_CHAIN_BLOCKED: ${supplyChain.failures.join("; ")}`);
 
   const record = await loadDeliveryRecord(root, config, contract.task.id);
   const branch = record?.github?.branch;
@@ -68,7 +72,8 @@ export async function finalizeAcceptedIssue(root: string, config: HarnessProject
 export function deliveryFinalizationFailure(error: unknown): DeliveryFinalizationResult {
   const message = error instanceof Error ? error.message : String(error);
   const external = /^BLOCKED_EXTERNAL:/.test(message);
-  return { status: external ? "BLOCKED_EXTERNAL" : "SYSTEM_FAILURE", humanRequired: external, committed: false, pushed: false, message };
+  const supplyChain = /^SUPPLY_CHAIN_BLOCKED:/.test(message);
+  return { status: external ? "BLOCKED_EXTERNAL" : supplyChain ? "BLOCKED_SUPPLY_CHAIN" : "SYSTEM_FAILURE", humanRequired: external, committed: false, pushed: false, message };
 }
 function buildPullRequestBody(contract: TaskContract): string { const issue = contract.issue!; return `## Harness delivery\n\nTask: \`${contract.task.id}\`\nSource: ${issue.repository}#${issue.number}\nFrozen issue SHA-256: \`${issue.contentSha256}\`\n\nThe implementation passed the configured deterministic validation, quality convergence and lead-acceptance workflow before this PR was created.\n\nCloses #${issue.number}\n`; }
 function skipped(message: string): DeliveryFinalizationResult { return { status: "SKIPPED", humanRequired: false, committed: false, pushed: false, message }; }

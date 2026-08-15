@@ -1,0 +1,59 @@
+version: 1
+levels:
+  - DECLARED
+  - ADAPTER
+  - EXECUTABLE
+  - WORKFLOW_INTEGRATED
+  - DOGFOODED
+  - EVAL_VALIDATED
+  - PRODUCTION_GRADE
+components:
+  - component: Project-Native Test Execution
+    claimed: WORKFLOW_INTEGRATED
+    evidence:
+      - { type: adapter-source, id: provider:test-execution, path: src/providers/validation/testExecution.ts }
+      - { type: unit-contract, id: contract:test-execution, path: tests/validationProviders.test.ts }
+      - { type: provider-contract, id: provider-contract:test-execution, path: tests/validationProviders.test.ts }
+      - { type: workflow-test, id: workflow:test-execution, path: tests/validationProviders.test.ts }
+  - component: BDD Execution
+    claimed: WORKFLOW_INTEGRATED
+    evidence:
+      - { type: adapter-source, id: provider:bdd, path: src/providers/validation/bddExecution.ts }
+      - { type: unit-contract, id: contract:bdd, path: tests/validationProviders.test.ts }
+      - { type: provider-contract, id: provider-contract:bdd, path: tests/validationProviders.test.ts }
+      - { type: workflow-test, id: workflow:bdd, path: tests/validationProviders.test.ts }
+  - component: Integration Environment
+    claimed: EXECUTABLE
+    evidence:
+      - { type: adapter-source, id: provider:integration-environment, path: src/providers/validation/integrationEnvironment.ts }
+      - { type: unit-contract, id: contract:integration-environment, path: tests/validationProviders.test.ts }
+      - { type: provider-contract, id: provider-contract:integration-environment, path: tests/validationProviders.test.ts }
+  - component: Contract Testing / Pact
+    claimed: EXECUTABLE
+    evidence:
+      - { type: adapter-source, id: provider:pact, path: src/providers/validation/pact.ts }
+      - { type: unit-contract, id: contract:pact, path: tests/validationProviders.test.ts }
+      - { type: provider-contract, id: provider-contract:pact, path: tests/fixtures/pact/pact.json }
+  - component: Gherkin
+    claimed: WORKFLOW_INTEGRATED
+    evidence:
+      - { type: documentation, id: docs:gherkin, path: docs/VALIDATION.md }
+      - { type: design, id: design:gherkin, path: docs/ARCHITECTURE.md }
+      - { type: adapter-source, id: provider:gherkin, path: src/validators/gherkin.ts }
+      - { type: unit-contract, id: contract:gherkin, path: tests/validationProviders.test.ts }
+      - { type: provider-contract, id: provider-contract:gherkin, path: tests/validationProviders.test.ts }
+      - { type: workflow-test, id: workflow:gherkin, path: tests/validationProviders.test.ts }
+  - component: Pact
+    claimed: EXECUTABLE
+    evidence:
+      - { type: adapter-source, id: adapter:pact, path: src/providers/validation/pact.ts }
+      - { type: unit-contract, id: contract:pact-normalization, path: tests/validationProviders.test.ts }
+      - { type: provider-contract, id: provider-contract:pact-verifier, path: tests/fixtures/pact/pact.json }
+  - component: Trivy SBOM
+    claimed: EXECUTABLE
+    evidence:
+      - { type: documentation, id: docs:sbom, path: docs/SECURITY.md }
+      - { type: design, id: design:sbom, path: docs/ARCHITECTURE.md }
+      - { type: adapter-source, id: provenance:sbom, path: src/provenance/generate.ts }
+      - { type: unit-contract, id: contract:sbom, path: tests/provenance.test.ts }
+      - { type: provider-contract, id: provider-contract:sbom, path: tests/provenance.test.ts }
