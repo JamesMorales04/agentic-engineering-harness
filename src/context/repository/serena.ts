@@ -1,8 +1,9 @@
 import type { McpServerConfig } from "../../core/types.js";
 import { commandExists, runProcess } from "../../utils/process.js";
 import type { ProviderHealth } from "../compression/types.js";
+import { providerVersions } from "../../providers/versions.js";
 
-export const SERENA_VERSION = "1.6.1";
+export const SERENA_VERSION = providerVersions.serena;
 
 export class SerenaSemanticProvider {
   readonly name = "serena";

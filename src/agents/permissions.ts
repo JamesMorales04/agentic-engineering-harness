@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { HarnessProjectConfig, McpServerConfig } from "../core/types.js";
 import type { AgentExecutionSelection, PermissionDecision } from "./types.js";
+import { staticContextCapabilities } from "../context/transport.js";
 
 export type OpenCodeAgentBindingSource = "aeh-managed" | "explicit";
 
@@ -108,15 +109,15 @@ export function buildOpenCodeRuntimeConfig(
   for (const name of selection.mcps) {
     if (!configured[name]) tools[`${name}_*`] = true;
   }
-  const semanticConfigured = Boolean(config?.context) && config?.context?.semanticRetrieval?.provider !== "none" && selection.role !== "orchestrator" && selection.logicalAgent !== "operation-supervisor";
-  if (semanticConfigured && !mcp.serena) {
+  const capabilities = config ? staticContextCapabilities(config, selection) : undefined;
+  if (capabilities?.mcpServers.serena && !mcp.serena) {
     mcp.serena = { type: "local", command: ["serena", "start-mcp-server", "--context", "ide-assistant", "--project", "."], enabled: true, timeout: 30_000 };
     tools["serena_*"] = true;
   }
   // Headroom is controller-side compression. Its MCP schema is intentionally
   // not exposed to runtime agents. Direct OpenCode receives the same
   // authorized raw-fragment gateway as Paseo when the local entry is known.
-  if (config?.context && selection.transport !== "podman" && config.orchestration?.provider !== "podman" && !mcp["aeh-context"] && process.argv[1]) {
+  if (capabilities?.mcpServers.context && !mcp["aeh-context"] && process.argv[1]) {
     mcp["aeh-context"] = { type: "local", command: [process.execPath, process.env.AEH_ENTRY_FILE?.trim() || process.argv[1], "context", "mcp"], environment: { AEH_CONTEXT_ROOT: "." }, enabled: true };
     tools["aeh-context_*"] = true;
   }

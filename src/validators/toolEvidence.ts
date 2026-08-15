@@ -1,28 +1,7 @@
 import crypto from "node:crypto";
+import type { ValidationFinding } from "../core/types.js";
 
-export interface NormalizedFinding {
-  fingerprint: string;
-  tool: string;
-  kind: string;
-  rule?: string;
-  severity?: string;
-  file?: string;
-  line?: number;
-  endLine?: number;
-  column?: number;
-  endColumn?: number;
-  message?: string;
-  category?: string;
-  cwe?: string[];
-  package?: string;
-  installedVersion?: string;
-  fixedVersion?: string;
-  target?: string;
-  artifact?: string;
-  durationMs?: number;
-  status?: string;
-  details?: Record<string, unknown>;
-}
+export interface NormalizedFinding extends ValidationFinding {}
 
 export function normalizeOpengrepOutput(value: unknown): NormalizedFinding[] {
   const results = record(value).results;
@@ -41,7 +20,7 @@ export function normalizeTrivyOutput(value: unknown): NormalizedFinding[] {
     const result = record(item); const target = stringValue(result.Target); const findings: NormalizedFinding[] = [];
     for (const [key, kind] of [["Vulnerabilities", "vulnerability"], ["Misconfigurations", "misconfiguration"], ["Secrets", "secret"]] as const) {
       for (const item of Array.isArray(result[key]) ? result[key] : []) {
-        const value = record(item); const finding: Omit<NormalizedFinding, "fingerprint"> = { tool: "trivy", kind, rule: stringValue(value.VulnerabilityID ?? value.ID ?? value.RuleID), severity: stringValue(value.Severity), package: stringValue(value.PkgName ?? value.Resource), installedVersion: stringValue(value.InstalledVersion), fixedVersion: stringValue(value.FixedVersion), target, file: stringValue(value.PrimaryURL ?? value.Target ?? target), message: stringValue(value.Title ?? value.Message), category: stringValue(result.Class) };
+        const value = record(item); const finding: Omit<NormalizedFinding, "fingerprint"> = { tool: "trivy", kind, rule: stringValue(value.VulnerabilityID ?? value.ID ?? value.RuleID), severity: stringValue(value.Severity), package: stringValue(value.PkgName ?? value.Resource), installedVersion: stringValue(value.InstalledVersion), fixedVersion: stringValue(value.FixedVersion), target, file: stringValue(value.Target ?? target), message: stringValue(value.Title ?? value.Message), category: stringValue(result.Class) };
         findings.push({ ...finding, fingerprint: findingFingerprint(finding) });
       }
     }
@@ -60,7 +39,7 @@ export function normalizePlaywrightOutput(value: unknown): NormalizedFinding[] {
         for (const result of results) {
           const resultRecord = record(result); const status = stringValue(resultRecord.status);
           if (status && ["passed", "expected", "skipped"].includes(status)) continue;
-          const error = record(resultRecord.error); const finding: Omit<NormalizedFinding, "fingerprint"> = { tool: "playwright", kind: "failed-test", rule: stringValue(specRecord.title), message: stringValue(error.message ?? resultRecord.error) ?? "Playwright test failed.", durationMs: numberValue(resultRecord.duration), status, details: { project: project ?? stringValue(testRecord.projectName), attachments: resultRecord.attachments } };
+          const error = record(resultRecord.error); const finding: Omit<NormalizedFinding, "fingerprint"> = { tool: "playwright", kind: "failed-test", rule: stringValue(specRecord.title), message: stringValue(error.message ?? resultRecord.error) ?? "Playwright test failed.", durationMs: numberValue(resultRecord.duration), status, details: { project: project ?? stringValue(testRecord.projectName), attachments: normalizeAttachments(resultRecord.attachments) } };
           findings.push({ ...finding, fingerprint: findingFingerprint(finding) });
         }
       }
@@ -82,13 +61,41 @@ export function normalizePactOutput(value: unknown): NormalizedFinding[] {
 
 export function parseToolEvidence(adapter: string, stdout: string): NormalizedFinding[] {
   let value: unknown;
-  try { value = JSON.parse(stdout); } catch { return []; }
+  try { value = JSON.parse(stdout); } catch { return adapter === "pact" ? normalizePactJunit(stdout) : []; }
   if (adapter === "opengrep") return normalizeOpengrepOutput(value);
   if (adapter === "trivy") return normalizeTrivyOutput(value);
   if (adapter === "playwright") return normalizePlaywrightOutput(value);
   if (adapter === "pact") return normalizePactOutput(value);
   return [];
 }
+
+function normalizePactJunit(xml: string): NormalizedFinding[] {
+  if (!/<testsuite\b|<testcase\b/i.test(xml)) return [];
+  const findings: NormalizedFinding[] = [];
+  for (const testcase of xml.matchAll(/<testcase\b([^>]*)>([\s\S]*?)<\/testcase>/gi)) {
+    const attrs = attributes(testcase[1] ?? ""); const body = testcase[2] ?? "";
+    const failure = body.match(/<(?:failure|error)\b([^>]*)>([\s\S]*?)<\/(?:failure|error)>/i);
+    if (!failure) continue;
+    const failureAttrs = attributes(failure[1] ?? "");
+    const finding: Omit<NormalizedFinding, "fingerprint"> = { tool: "pact", kind: "contract-failure", rule: attrs.name, message: stripXml(failure[2] ?? "") || failureAttrs.message, status: "failed", durationMs: attrs.time ? Number(attrs.time) * 1000 : undefined, details: { classname: attrs.classname } };
+    findings.push({ ...finding, fingerprint: findingFingerprint(finding) });
+  }
+  return findings;
+}
+
+function normalizeAttachments(value: unknown): Array<Record<string, string>> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const record = item as Record<string, unknown>;
+    const result: Record<string, string> = {};
+    for (const key of ["name", "path", "contentType", "sha1"]) if (typeof record[key] === "string") result[key] = record[key] as string;
+    return Object.keys(result).length ? [result] : [];
+  });
+}
+
+function attributes(value: string): Record<string, string> { const result: Record<string, string> = {}; for (const match of value.matchAll(/([A-Za-z_:][\w:.-]*)\s*=\s*["']([^"']*)["']/g)) result[match[1]] = match[2]; return result; }
+function stripXml(value: string): string { return value.replace(/<[^>]+>/g, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&").trim(); }
 
 export function findingFingerprint(finding: Omit<NormalizedFinding, "fingerprint"> | NormalizedFinding): string {
   const value = { tool: finding.tool, kind: finding.kind, rule: finding.rule, severity: finding.severity, file: finding.file, line: finding.line, endLine: finding.endLine, package: finding.package, target: finding.target, message: finding.message };

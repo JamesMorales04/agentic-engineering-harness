@@ -8,6 +8,7 @@ import { verifyContextEnvelope } from "../src/context/envelope.js";
 import { rankRepositoryNodes } from "../src/context/repository/rank.js";
 import { ContextRetrievalGateway } from "../src/context/retrieval/gateway.js";
 import { authorizeRetrieval } from "../src/context/retrieval/authorization.js";
+import { recoveryHandle } from "../src/context/gateway.js";
 import type { ContextCompressionProvider } from "../src/context/compression/types.js";
 import type { HarnessProjectConfig } from "../src/core/types.js";
 
@@ -67,6 +68,29 @@ describe("context efficiency subsystem", () => {
     const result = await new ContextBudgetGateway("/tmp", config(), { persist: false, telemetry: false, compressor: provider }).prepare({ operationId: "OP-3", logicalAgent: "implementer", role: "implementer", phase: "implementation", fragments: [{ id: "normative", kind: "normative", preservation: "VERBATIM", priority: 100, content: "do not change this" }, { id: "logs", kind: "tool-output", preservation: "COMPRESSIBLE", priority: 10, content: "x".repeat(100) }] });
     expect(result.envelope.fragments.find((fragment) => fragment.id === "normative")?.content).toBe("do not change this");
     expect(result.envelope.fragments.find((fragment) => fragment.id === "logs")?.compressed).toBe(true);
+  });
+
+  it("makes compression reversibility depend on authorization and verifies byte-exact recovery", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-context-reversible-"));
+    const fragment = { id: "logs", kind: "tool-output" as const, preservation: "COMPRESSIBLE" as const, priority: 10, content: "raw evidence ".repeat(100) };
+    try {
+      const required = new ContextBudgetGateway(root, config(), { telemetry: false, compressor: fakeCompression });
+      await expect(required.prepare({ operationId: "OP-REQUIRED", logicalAgent: "implementer", phase: "implementation", fragments: [fragment], capabilities: { authorizedRetrieval: false } })).rejects.toThrow("REVERSIBILITY_UNAVAILABLE");
+
+      const optionalConfig = { ...config(), context: { ...config().context, compression: { ...config().context?.compression, required: false, reversible: true } } } satisfies HarnessProjectConfig;
+      const optional = await new ContextBudgetGateway(root, optionalConfig, { persist: false, telemetry: false, compressor: fakeCompression }).prepare({ operationId: "OP-OPTIONAL", logicalAgent: "implementer", phase: "implementation", fragments: [fragment], capabilities: { authorizedRetrieval: false } });
+      expect(optional.envelope.fragments[0]?.compressed).not.toBe(true);
+
+      const exact = await new ContextBudgetGateway(root, config(), { telemetry: false, compressor: fakeCompression }).prepare({ operationId: "OP-EXACT", logicalAgent: "implementer", phase: "implementation", fragments: [fragment] });
+      const projected = exact.envelope.fragments[0]!;
+      expect(projected.compressed).toBe(true);
+      expect(projected.compression?.reversible).toBe(true);
+      expect(projected.compression?.handle).toBe(recoveryHandle("OP-EXACT", "logs", projected.source?.sha256 ?? ""));
+      const gateway = new ContextRetrievalGateway(authorizeRetrieval({ root, operationId: "OP-EXACT", logicalAgent: "implementer", allowedFragmentIds: ["logs"], fragments: exact.envelope.fragments }), { maxRequestsPerTurn: 1, maxTokensPerRequest: 10_000, maxTotalTokensPerTurn: 10_000 });
+      const recovered = await gateway.retrieve({ fragmentId: "logs" });
+      expect(recovered.content).toBe(fragment.content);
+      expect(recovered.sha256).toBe(projected.source?.sha256);
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 
   it("rejects cross-operation retrieval and path traversal", async () => {

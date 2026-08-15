@@ -47,6 +47,7 @@ jobs:
           ./node_modules/.bin/aeh init repo
           test -f repo/.harness/project.yaml
           test -f repo/.harness/toolchain.yaml
+          test -f repo/.harness/provider-versions.json
           test -f repo/.harness/agents.source.jsonc
           test -f repo/.harness/skills/engineering-workflow/SKILL.md
           test -f repo/.harness/managed-assets.json
@@ -73,3 +74,113 @@ jobs:
           ./node_modules/.bin/aeh policy sync repo >/dev/null
           ./node_modules/.bin/aeh intent 'review the repo and validate the code for improvements' repo | grep -q '^AUDIT'
           ./node_modules/.bin/aeh operation status DOES-NOT-EXIST repo >/dev/null 2>&1 && exit 1 || true
+
+  full-stack-contract:
+    name: full-stack-contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: jdx/mise-action@v4
+        with:
+          version: 2026.7.0
+          install: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - uses: astral-sh/setup-uv@v6
+      - run: npm ci
+      - name: Install pinned full-stack providers
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSIONS=templates/provider-versions.json
+          HEADROOM_VERSION="$(node -p "require('./$VERSIONS').headroom")"
+          GRAPHIFY_VERSION="$(node -p "require('./$VERSIONS').graphify")"
+          SERENA_VERSION="$(node -p "require('./$VERSIONS').serena")"
+          ENGRAM_VERSION="$(node -p "require('./$VERSIONS').engram")"
+          TRIVY_VERSION="$(node -p "require('./$VERSIONS').trivy")"
+          PNPM_VERSION="$(node -p "require('./$VERSIONS').pnpm")"
+          mkdir -p "$RUNNER_TEMP/aeh-provider-tools"
+          (cd "$RUNNER_TEMP/aeh-provider-tools" && mise use --yes "npm:pnpm@$PNPM_VERSION" "aqua:aquasecurity/trivy@$TRIVY_VERSION")
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          (cd "$RUNNER_TEMP/aeh-provider-tools" && mise bin-paths) >> "$GITHUB_PATH"
+          uv tool install "headroom-ai[all]==$HEADROOM_VERSION"
+          uv tool install "graphifyy==$GRAPHIFY_VERSION"
+          uv tool install "serena-agent==$SERENA_VERSION"
+          npm install --global "@engram-ai-memory/cli@$ENGRAM_VERSION"
+          test "$(cd "$RUNNER_TEMP/aeh-provider-tools" && mise exec -- pnpm --version)" = "$PNPM_VERSION"
+          (cd "$RUNNER_TEMP/aeh-provider-tools" && mise exec -- trivy --version) | grep -F "Version: $TRIVY_VERSION"
+      - name: Start Engram local server
+        shell: bash
+        run: |
+          set -euo pipefail
+          engram setup --no-mcp --non-interactive
+          engram start
+      - name: Run strict full-stack production contract
+        env:
+          AEH_STRICT_FULL_STACK: "1"
+        run: npx vitest run tests/architectureClosureIntegration.test.ts
+
+  provider-contracts:
+    name: provider-contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: jdx/mise-action@v4
+        with:
+          version: 2026.7.0
+          install: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - uses: astral-sh/setup-uv@v6
+      - run: npm ci
+      - name: Install pinned local provider contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSIONS=templates/provider-versions.json
+          HEADROOM_VERSION="$(node -p "require('./$VERSIONS').headroom")"
+          GRAPHIFY_VERSION="$(node -p "require('./$VERSIONS').graphify")"
+          SERENA_VERSION="$(node -p "require('./$VERSIONS').serena")"
+          ENGRAM_VERSION="$(node -p "require('./$VERSIONS').engram")"
+          TRIVY_VERSION="$(node -p "require('./$VERSIONS').trivy")"
+          OPENGREP_VERSION="$(node -p "require('./$VERSIONS').opengrep")"
+          PNPM_VERSION="$(node -p "require('./$VERSIONS').pnpm")"
+          mkdir -p "$RUNNER_TEMP/aeh-provider-tools"
+          (cd "$RUNNER_TEMP/aeh-provider-tools" && mise use --yes "npm:pnpm@$PNPM_VERSION" "aqua:aquasecurity/trivy@$TRIVY_VERSION" "aqua:opengrep/opengrep@$OPENGREP_VERSION")
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          (cd "$RUNNER_TEMP/aeh-provider-tools" && mise bin-paths) >> "$GITHUB_PATH"
+          uv tool install "headroom-ai[all]==$HEADROOM_VERSION"
+          uv tool install "graphifyy==$GRAPHIFY_VERSION"
+          uv tool install "serena-agent==$SERENA_VERSION"
+          npm install --global "@engram-ai-memory/cli@$ENGRAM_VERSION"
+          test "$(cd "$RUNNER_TEMP/aeh-provider-tools" && mise exec -- pnpm --version)" = "$PNPM_VERSION"
+          (cd "$RUNNER_TEMP/aeh-provider-tools" && mise exec -- trivy --version) | grep -F "Version: $TRIVY_VERSION"
+          (cd "$RUNNER_TEMP/aeh-provider-tools" && mise exec -- opengrep --version) | grep -F "$OPENGREP_VERSION"
+          npx playwright install --with-deps chromium
+      - name: Start Engram local server
+        shell: bash
+        run: |
+          set -euo pipefail
+          engram setup --no-mcp --non-interactive
+          engram start
+      - name: Run real provider contracts
+        env:
+          AEH_RUN_REAL_PROVIDERS: "1"
+        run: npx vitest run tests/providerContracts.test.ts
+
+  supply-chain:
+    name: supply-chain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm run build
+      - run: npx vitest run tests/provenance.test.ts

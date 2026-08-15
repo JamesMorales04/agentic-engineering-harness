@@ -4,7 +4,7 @@ import path from "node:path";
 import { minimatch } from "minimatch";
 import type { NormalizedFinding, PlannerOutput } from "../agents/outputContracts.js";
 import type { DeliveryFinalizationResult } from "../delivery/finalize.js";
-import type { HarnessProjectConfig, TaskContract, ValidationCheck, ValidationReport, WorkerSession } from "../core/types.js";
+import type { HarnessProjectConfig, TaskContract, ValidationCheck, ValidationFinding, ValidationReport, WorkerSession } from "../core/types.js";
 
 export type EvidenceNodeType = "run" | "requirement" | "task" | "file" | "check" | "finding" | "agent-session" | "commit" | "pull-request";
 export interface EvidenceNode { id: string; type: EvidenceNodeType; label: string; data?: Record<string, unknown>; }
@@ -21,7 +21,18 @@ export async function buildRequirementEvidenceGraph(input: { root: string; state
   for (const task of planTasks) { const id = `task:${task.id}`; addNode(nodes, { id, type: "task", label: task.summary, data: { agent: task.agent, scope: task.scope, dependencies: task.dependencies } }); addEdge(edges, runId, id, "contains"); for (const req of task.acceptance) if (requirements.some((item) => item.id === req)) addEdge(edges, `req:${req}`, id, "implemented-by"); }
   for (const file of input.report.changedFiles) { const id = `file:${file}`; addNode(nodes, { id, type: "file", label: file }); addEdge(edges, runId, id, "contains"); for (const task of planTasks) if (task.scope.some((scope) => matches(file, scope))) addEdge(edges, `task:${task.id}`, id, "changed"); }
   for (const check of input.report.checks) { const id = `check:${check.id}`; addNode(nodes, { id, type: "check", label: check.id, data: { category: check.category, status: check.status, message: check.message } }); addEdge(edges, runId, id, "contains"); for (const requirement of requirements) if (requirement.validators.includes(check.id)) addEdge(edges, `req:${requirement.id}`, id, "validated-by"); }
-  for (const [index, finding] of (input.findings ?? []).entries()) { const id = `finding:${finding.id || index}`; addNode(nodes, { id, type: "finding", label: finding.id, data: { severity: finding.severity, category: finding.category, evidence: finding.evidence } }); addEdge(edges, runId, id, "contains"); const fileId = `file:${finding.location.file}`; if (!nodes.has(fileId)) addNode(nodes, { id: fileId, type: "file", label: finding.location.file }); addEdge(edges, id, fileId, "located-in"); }
+  const evidenceFindings: Array<NormalizedFinding | ValidationFinding> = [...(input.report.findings ?? []), ...(input.findings ?? [])];
+  for (const [index, finding] of dedupeFindings(evidenceFindings).entries()) {
+    const id = `finding:${findingKey(finding, index)}`;
+    const location = "location" in finding ? finding.location : finding.file ? { file: finding.file, line: finding.line } : undefined;
+    addNode(nodes, { id, type: "finding", label: findingLabel(finding), data: findingData(finding) });
+    addEdge(edges, runId, id, "contains");
+    if (location?.file) {
+      const fileId = `file:${location.file}`;
+      if (!nodes.has(fileId)) addNode(nodes, { id: fileId, type: "file", label: location.file });
+      addEdge(edges, id, fileId, "located-in");
+    }
+  }
   for (const [index, session] of (input.sessions ?? []).entries()) { const id = `session:${session.id ?? `${session.logicalAgent ?? session.provider}-${index}`}`; addNode(nodes, { id, type: "agent-session", label: session.logicalAgent ?? session.provider, data: { runtime: session.runtime, model: session.model, exitCode: session.exitCode } }); addEdge(edges, runId, id, "produced"); }
   if (input.delivery?.commitSha) { const id = `commit:${input.delivery.commitSha}`; addNode(nodes, { id, type: "commit", label: input.delivery.commitSha }); addEdge(edges, runId, id, "finalized-as"); }
   if (input.delivery?.pullRequest?.number) { const id = `pr:${input.delivery.pullRequest.number}`; addNode(nodes, { id, type: "pull-request", label: `PR #${input.delivery.pullRequest.number}`, data: { url: input.delivery.pullRequest.url } }); addEdge(edges, runId, id, "delivered-by"); if (input.delivery.commitSha) addEdge(edges, `commit:${input.delivery.commitSha}`, id, "delivered-by"); }
@@ -39,3 +50,14 @@ function addEdge(edges: EvidenceEdge[], from: string, to: string, type: Evidence
 function uniqueEdges(edges: EvidenceEdge[]): EvidenceEdge[] { const seen = new Set<string>(); return edges.filter((edge) => { const key = `${edge.from}\0${edge.type}\0${edge.to}`; if (seen.has(key)) return false; seen.add(key); return true; }).sort((a, b) => `${a.from}:${a.type}:${a.to}`.localeCompare(`${b.from}:${b.type}:${b.to}`)); }
 function matches(file: string, scope: string): boolean { return scope === "**" || minimatch(file, scope, { dot: true }) || (Boolean(scope.split(/[?*\[]/, 1)[0]) && file.startsWith(scope.split(/[?*\[]/, 1)[0].replace(/\/+$/, ""))); }
 function digest(value: unknown): string { return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
+
+function dedupeFindings(findings: Array<NormalizedFinding | ValidationFinding>): Array<NormalizedFinding | ValidationFinding> {
+  const seen = new Set<string>();
+  return findings.filter((finding) => { const key = "fingerprint" in finding ? finding.fingerprint : finding.id; if (!key || seen.has(key)) return false; seen.add(key); return true; });
+}
+function findingKey(finding: NormalizedFinding | ValidationFinding, index: number): string { return ("fingerprint" in finding ? finding.fingerprint : finding.id) || String(index); }
+function findingLabel(finding: NormalizedFinding | ValidationFinding): string { if ("id" in finding) return finding.id; return [finding.tool, finding.kind, finding.rule, finding.message].filter(Boolean).join(": ") || finding.fingerprint; }
+function findingData(finding: NormalizedFinding | ValidationFinding): Record<string, unknown> {
+  if ("id" in finding) return { severity: finding.severity, category: finding.category, evidence: finding.evidence };
+  return { fingerprint: finding.fingerprint, tool: finding.tool, kind: finding.kind, rule: finding.rule, severity: finding.severity, category: finding.category, file: finding.file, line: finding.line, message: finding.message, artifact: finding.artifact, target: finding.target, details: finding.details };
+}

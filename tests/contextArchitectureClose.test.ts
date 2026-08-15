@@ -67,9 +67,21 @@ describe("architecture closure contracts", () => {
   it("loads Graphify through the provider's canonical model", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-graphify-"));
     try {
-      await fs.mkdir(path.join(root, "graphify-out"), { recursive: true }); await fs.writeFile(path.join(root, "graphify-out", "graph.json"), JSON.stringify({ nodes: [{ id: "a", file: "src/a.ts" }], edges: [] }));
-      const provider = new GraphifyCodeIntelligenceProvider({ version: 1, project: { name: "p" }, codeIntelligence: { provider: "graphify", required: true } });
-      expect((await provider.load(root))).toBeTruthy(); await provider.refresh(root); expect(await provider.isFresh(root)).toBe(false);
+      await fs.mkdir(path.join(root, "graphify-out"), { recursive: true }); await fs.writeFile(path.join(root, "graphify-out", "graph.json"), JSON.stringify({ nodes: [{ id: "a", file: "src/a.ts" }], edges: [] })); await fs.writeFile(path.join(root, "src.txt"), "source\n");
+      const provider = new GraphifyCodeIntelligenceProvider({ version: 1, project: { name: "p" }, codeIntelligence: { provider: "graphify", required: true, refreshCommand: "fixture-graphify" } }, async () => ({ exitCode: 0, stdout: "", stderr: "", durationMs: 0 }));
+      expect((await provider.load(root))).toBeTruthy(); await provider.refresh(root); expect(await provider.isFresh(root)).toBe(true); await fs.appendFile(path.join(root, "src.txt"), "changed\n"); expect(await provider.isFresh(root)).toBe(false);
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it("respects a Graphify custom output produced by the configured refresh command", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-graphify-custom-"));
+    try {
+      const graph = JSON.stringify({ nodes: [{ id: "custom", file: "src/custom.ts" }], edges: [] });
+      const config: HarnessProjectConfig = { version: 1, project: { name: "p" }, codeIntelligence: { provider: "graphify", required: true, refreshCommand: "fixture-graphify", graphPath: "custom/graph.json" } };
+      const provider = new GraphifyCodeIntelligenceProvider(config, async () => { await fs.mkdir(path.join(root, "custom"), { recursive: true }); await fs.writeFile(path.join(root, "custom", "graph.json"), graph); return { exitCode: 0, stdout: "", stderr: "", durationMs: 0 }; });
+      await provider.refresh(root);
+      expect(await provider.load(root)).toMatchObject({ source: "custom/graph.json", nodes: ["src/custom.ts"], edges: [], nodeFiles: { "src/custom.ts": "src/custom.ts" } });
+      expect(await fs.readFile(path.join(root, "custom", "graph.json"), "utf8")).toBe(graph);
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 });
