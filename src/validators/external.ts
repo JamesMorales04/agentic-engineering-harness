@@ -11,8 +11,8 @@ export async function runExternalToolValidator(context: ValidationContext): Prom
   const configured = context.spec.command?.trim();
   const defaults: Record<string, { tool: string; command?: string; category: string }> = {
     opengrep: { tool: "opengrep", command: "opengrep scan --json --error .", category: "security" },
-    trivy: { tool: "trivy", command: "trivy fs --exit-code 1 --severity HIGH,CRITICAL --scanners vuln,misconfig,secret .", category: "security" },
-    playwright: { tool: "npx", command: "npx playwright test --grep \"{taskId}\" --reporter=line", category: "e2e" },
+    trivy: { tool: "trivy", command: "trivy fs --format json --exit-code 1 --severity HIGH,CRITICAL --scanners vuln,misconfig,secret .", category: "security" },
+    playwright: { tool: "npx", command: "npx playwright test --grep \"{taskId}\" --reporter=json", category: "e2e" },
     pact: { tool: "", category: "contract" },
     mutation: { tool: "", category: "test-quality" },
     property: { tool: "", category: "test-quality" },
@@ -25,7 +25,9 @@ export async function runExternalToolValidator(context: ValidationContext): Prom
   const rendered = command.replaceAll("{taskId}", context.contract.task.id).replaceAll("{baseRef}", context.baseRef).replaceAll("{acceptance}", context.contract.source?.acceptance ?? "");
   const cwd = path.resolve(context.root, context.spec.workingDirectory ?? ".");
   const result = await runProcess(rendered, { cwd, timeoutMs: (context.spec.timeoutSeconds ?? 900) * 1000 });
-  const findings = parseToolEvidence(adapter, result.stdout);
+  const evidenceFile = typeof context.spec.options?.evidenceFile === "string" ? path.resolve(cwd, context.spec.options.evidenceFile) : undefined;
+  const evidenceText = evidenceFile ? await fs.readFile(evidenceFile, "utf8").catch(() => result.stdout) : result.stdout;
+  const findings = parseToolEvidence(adapter, evidenceText);
   const rawPath = path.resolve(context.root, context.config.evidence?.outputDir ?? ".harness/evidence", `${context.spec.id.replace(/[^A-Za-z0-9._-]/g, "-")}.raw`);
   await fs.mkdir(path.dirname(rawPath), { recursive: true });
   await fs.writeFile(rawPath, `${result.stdout}${result.stderr ? `\n--- stderr ---\n${result.stderr}` : ""}`, "utf8");
@@ -37,8 +39,6 @@ export async function runExternalToolValidator(context: ValidationContext): Prom
     status: failed ? "FAIL" : "PASS",
     message: failed ? `${adapter} validator failed${findings.length ? ` with ${findings.length} normalized finding(s)` : ` with exit code ${result.exitCode}`}.` : `${adapter} validator passed.`,
     durationMs: result.durationMs,
-    details: { command: rendered, rawArtifact: path.relative(context.root, rawPath).replaceAll("\\", "/"), findings, findingCount: findings.length, stdout: truncate(result.stdout), stderr: truncate(result.stderr) }
+    details: { command: rendered, rawArtifact: path.relative(context.root, rawPath).replaceAll("\\", "/"), evidenceFormat: evidenceFile ? context.spec.options?.evidenceFormat ?? "json-or-junit" : "stdout-json", findings, findingCount: findings.length }
   };
 }
-
-function truncate(value: string, max = 20_000): string { return value.length <= max ? value : `${value.slice(0, max)}\n… truncated …`; }

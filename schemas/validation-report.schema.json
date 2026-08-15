@@ -9,7 +9,8 @@
     "taskId": { "type": "string" },
     "status": { "enum": ["PASS", "FAIL"] },
     "checks": { "type": "array" },
-    "changedFiles": { "type": "array", "items": { "type": "string" } }
+    "changedFiles": { "type": "array", "items": { "type": "string" } },
+    "findings": { "type": "array", "items": { "type": "object", "required": ["fingerprint", "tool", "kind"], "properties": { "fingerprint": { "type": "string", "pattern": "^[a-f0-9]{64}$" }, "tool": { "type": "string" }, "kind": { "type": "string" }, "rule": { "type": "string" }, "severity": { "type": "string" }, "file": { "type": "string" }, "line": { "type": "integer", "minimum": 1 }, "message": { "type": "string" }, "artifact": { "type": "string" } }, "additionalProperties": true } }
   },
   "additionalProperties": true
 }

@@ -121,6 +121,7 @@ export interface HarnessProjectConfig {
     required?: boolean;
     graphPath?: string;
     snapshotDir?: string;
+    codeOnly?: boolean;
     refreshCommand?: string;
     scheduling?: { useEdges?: boolean; maxGraphHops?: number; maxSharedNodes?: number; centralityConflictThreshold?: number; };
   };
@@ -210,7 +211,8 @@ export interface TaskContract {
 }
 
 export interface ValidationCheck { id: string; category: string; status: CheckStatus; message: string; durationMs?: number; details?: Record<string, unknown>; }
-export interface ValidationReport { version: 1; taskId: string; status: "PASS" | "FAIL"; startedAt: string; finishedAt: string; checks: ValidationCheck[]; changedFiles: string[]; metadata: { project: string; baseRef: string; }; }
+export interface ValidationFinding { fingerprint: string; tool: string; kind: string; rule?: string; severity?: string; file?: string; line?: number; endLine?: number; column?: number; endColumn?: number; message?: string; category?: string; cwe?: string[]; package?: string; installedVersion?: string; fixedVersion?: string; target?: string; artifact?: string; durationMs?: number; status?: string; details?: Record<string, unknown>; }
+export interface ValidationReport { version: 1; taskId: string; status: "PASS" | "FAIL"; startedAt: string; finishedAt: string; checks: ValidationCheck[]; changedFiles: string[]; findings?: ValidationFinding[]; metadata: { project: string; baseRef: string; }; }
 export interface RequirementTrace { id: string; proposal: boolean; spec: boolean; design: boolean; acceptance: boolean; tasks: boolean; contract: boolean; validators: string[]; }
 export interface RepairPacket { version: 1; taskId: string; attempt: number; createdAt: string; failureType?: string; failedAgent?: string; recoveryAction?: string; failures: Array<{ id: string; category: string; message: string; details?: Record<string, unknown>; }>; }
 export interface WorkerSession {

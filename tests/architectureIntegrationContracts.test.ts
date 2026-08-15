@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -37,19 +38,20 @@ describe("end-to-end architecture boundaries", () => {
   });
 
   it("uses one trace id with parent span linkage for operation events", async () => {
-    const previous = globalThis.fetch;
     const payloads: any[] = [];
-    globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => { payloads.push(JSON.parse(String(init?.body))); return new Response("", { status: 200 }); }) as typeof fetch;
+    const server = http.createServer((request, response) => { let body = ""; request.on("data", (chunk) => { body += chunk.toString(); }); request.on("end", () => { payloads.push(JSON.parse(body)); response.writeHead(200); response.end(); }); });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const address = server.address(); if (!address || typeof address === "string") throw new Error("trace test server did not bind");
     try {
       const config: HarnessProjectConfig = { version: 1, project: { name: "trace", telemetry: undefined } };
       const rootContext: TraceContext = { traceId: "0123456789abcdef0123456789abcdef", spanId: "1111111111111111" };
       const childContext: TraceContext = { traceId: rootContext.traceId, parentSpanId: rootContext.spanId, spanId: "2222222222222222" };
-      const otelConfig = { ...config, telemetry: { exporter: "otlp-http-json" as const, endpoint: "http://collector" } };
+      const otelConfig = { ...config, telemetry: { exporter: "otlp-http-json" as const, endpoint: `http://127.0.0.1:${address.port}` } };
       await exportEventSpan(otelConfig, "operation.root", { operationId: "OP" }, new Date(), rootContext);
       await exportEventSpan(otelConfig, "operation.child", { operationId: "OP" }, new Date(), childContext);
       expect(payloads[0].resourceSpans[0].scopeSpans[0].spans[0].traceId).toBe(rootContext.traceId);
       expect(payloads[1].resourceSpans[0].scopeSpans[0].spans[0].traceId).toBe(rootContext.traceId);
       expect(payloads[1].resourceSpans[0].scopeSpans[0].spans[0].parentSpanId).toBe(rootContext.spanId);
-    } finally { globalThis.fetch = previous; }
+    } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
   });
 });

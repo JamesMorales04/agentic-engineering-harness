@@ -8,6 +8,7 @@ import { deliveryWorkspaceId } from "../delivery/handoff.js";
 import { buildManagedAgentEnvironment } from "../operations/executionContext.js";
 import { activeOperationSupervisor, currentOperationContext, loadOperation } from "../operations/state.js";
 import type { PaseoSdkMcpStdioServer, PaseoSdkToolPolicy } from "./sdk.js";
+import { staticContextCapabilities } from "../context/transport.js";
 
 export interface PaseoLaunchSpecOptions {
   selection?: AgentExecutionSelection;
@@ -118,11 +119,11 @@ export async function compilePaseoAgentLaunchSpec(root: string, config: HarnessP
 
 function contextMcpServers(root: string, config: HarnessProjectConfig, selection: AgentExecutionSelection | undefined, logicalAgent: string, operationId: string): Record<string, PaseoSdkMcpStdioServer> | undefined {
   if (!config.context || logicalAgent === "operation-supervisor" || selection?.role === "orchestrator") return undefined;
+  const capabilities = selection ? staticContextCapabilities(config, selection) : undefined;
   const servers: Record<string, PaseoSdkMcpStdioServer> = {};
   const entry = process.env.AEH_ENTRY_FILE?.trim() || process.argv[1];
-  if (entry) servers["aeh-context"] = { type: "stdio", command: process.execPath, args: [entry, "context", "mcp"], env: { AEH_CONTEXT_ROOT: root, AEH_CONTEXT_OPERATION_ID: operationId, AEH_LOGICAL_AGENT: logicalAgent }, alwaysLoad: true };
-  if (config.context.semanticRetrieval?.provider !== "none") servers.serena = { type: "stdio", command: "serena", args: ["start-mcp-server", "--context", "ide-assistant", "--project", root], alwaysLoad: true };
-  if (config.context.compression?.provider !== "none") servers.headroom = { type: "stdio", command: config.context.compression?.command ?? "headroom", args: ["mcp", "serve"], alwaysLoad: false };
+  if (entry && capabilities?.mcpServers.context) servers["aeh-context"] = { type: "stdio", command: process.execPath, args: [entry, "context", "mcp"], env: { AEH_CONTEXT_ROOT: root, AEH_CONTEXT_OPERATION_ID: operationId, AEH_LOGICAL_AGENT: logicalAgent }, alwaysLoad: true };
+  if (capabilities?.mcpServers.serena) servers.serena = { type: "stdio", command: "serena", args: ["start-mcp-server", "--context", "ide-assistant", "--project", root], alwaysLoad: true };
   return Object.keys(servers).length ? servers : undefined;
 }
 

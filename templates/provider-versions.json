@@ -1,0 +1,10 @@
+{
+  "headroom": "0.28.0",
+  "graphify": "0.9.43",
+  "engram": "0.4.1",
+  "serena": "1.6.1",
+  "trivy": "0.70.0",
+  "opengrep": "1.22.0",
+  "playwright": "1.62.1",
+  "pnpm": "10.15.0"
+}

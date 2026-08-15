@@ -106,7 +106,7 @@ tools:
     kind: mise
     command: graphify
     source: "pipx:graphifyy"
-    version: latest
+    version: "0.9.43"
     dependsOn: [uv]
     activateWhen: [code-intelligence:graphify]
 
@@ -132,7 +132,8 @@ tools:
     kind: mise
     command: engram
     source: "npm:@engram-ai-memory/cli"
-    version: latest
+    version: "0.4.1"
+    dependsOn: [pnpm]
     activateWhen: [memory:engram]
 
   opa:
@@ -148,14 +149,14 @@ tools:
     kind: mise
     command: opengrep
     source: "aqua:opengrep/opengrep"
-    version: latest
+    version: "1.22.0"
     activateWhen: [security-tool:opengrep, validator:opengrep]
 
   trivy:
     kind: mise
     command: trivy
     source: "aqua:aquasecurity/trivy"
-    version: latest
+    version: "0.70.0"
     activateWhen: [security-tool:trivy, validator:trivy]
     container:
       image: ghcr.io/aquasecurity/trivy:latest
@@ -171,6 +172,13 @@ tools:
     kind: system
     command: podman
     activateWhen: [orchestration:podman, sandbox:podman]
+
+  pnpm:
+    kind: mise
+    command: pnpm
+    source: "npm:pnpm"
+    version: "10.15.0"
+    activateWhen: [memory:engram, project:pnpm]
 
 projectDependencies:
   autoDetect: true
