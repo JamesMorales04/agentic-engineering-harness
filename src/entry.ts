@@ -13,6 +13,7 @@ import { resolveOrganizationPolicyBundles } from "./policy/bundles.js";
 import { benchmarkMcpCatalog } from "./mcp/benchmark.js";
 import { buildEvalDashboard, runRepeatedEval } from "./evals/statistics.js";
 import { startPaseoHarness } from "./paseo/start.js";
+import { runDeterministicPaseoTurn, startDeterministicPaseoHarness } from "./paseo/deterministicSession.js";
 import { guardLeadContext } from "./paseo/context.js";
 import { listManagedPaseoAgents } from "./paseo/runtime.js";
 import { prepareOpenSpecChange, compileOpenSpecChange } from "./spec/openspec.js";
@@ -27,6 +28,7 @@ const args = process.argv.slice(2);
 if (args.length === 1 && ["--version", "-V"].includes(args[0])) { console.log(VERSION); process.exit(0); }
 
 if (args[0] === "start") { await runStart(args.slice(1)); process.exit(process.exitCode ?? 0); }
+if (args[0] === "paseo" && args[1] === "turn") { await runPaseoTurn(args.slice(2)); process.exit(process.exitCode ?? 0); }
 if (args[0] === "context" && args[1] === "guard") { await runContextGuard(args.slice(2)); process.exit(process.exitCode ?? 0); }
 if (args[0] === "context" && args[1] === "retrieve") { await runContextRetrieve(args.slice(2)); process.exit(process.exitCode ?? 0); }
 if (args[0] === "context" && args[1] === "mcp") { await serveContextRetrievalMcp(); process.exit(process.exitCode ?? 0); }
@@ -45,14 +47,15 @@ if (args[0] === "eval" && ["repeat", "dashboard"].includes(args[1] ?? "")) { awa
 await import("./cli.js");
 
 async function runStart(argv: string[]): Promise<void> {
-  const parsed = parseGeneric(argv, new Set(["lead", "title"]), new Set(["new", "resume", "no-web-ui", "no-setup"]));
+  const parsed = parseGeneric(argv, new Set(["lead", "title"]), new Set(["new", "resume", "no-web-ui", "no-setup", "deterministic"]));
   if (parsed.positional.length > 1) throw new Error(`aeh start accepts at most one project directory, received: ${parsed.positional.join(", ")}`);
   if (parsed.flag("new") && parsed.flag("resume")) throw new Error("aeh start cannot combine --new and --resume.");
   const root = path.resolve(parsed.positional[0] ?? ".");
   const config = await loadProjectConfig(root);
   const entry = path.resolve(process.argv[1]);
   const aehCommand = `${JSON.stringify(process.execPath)} ${JSON.stringify(entry)}`;
-  const result = await startPaseoHarness(root, config, {
+  const start = parsed.flag("deterministic") || process.env.AEH_DETERMINISTIC_PASEO === "1" ? startDeterministicPaseoHarness : startPaseoHarness;
+  const result = await start(root, config, {
     autoSetup: parsed.flag("no-setup") ? false : undefined,
     webUi: parsed.flag("no-web-ui") ? false : undefined,
     forceNew: parsed.flag("new"),
@@ -70,7 +73,16 @@ async function runStart(argv: string[]): Promise<void> {
   if (result.paseoVersion) console.log(`paseo=${result.paseoVersion}`);
   console.log(`agentId=${result.agentId}`);
   console.log(`title=${result.title}`);
+  if (parsed.flag("deterministic") || process.env.AEH_DETERMINISTIC_PASEO === "1") console.log("sessionBoundary=deterministic-fake-paseo-sdk");
   console.log(`Open Paseo and continue in '${result.title}'. Engineering operations route through the Harness; normal aeh start creates a fresh lead, while --resume explicitly reuses a compatible one.`);
+}
+
+async function runPaseoTurn(argv: string[]): Promise<void> {
+  const parsed = parseGeneric(argv, new Set(), new Set(["json"]));
+  if (parsed.positional.length < 1 || parsed.positional.length > 2) throw new Error("aeh paseo turn accepts <simulated-user-prompt> and at most one project directory.");
+  const result = await runDeterministicPaseoTurn(path.resolve(parsed.positional[1] ?? "."), await loadProjectConfig(path.resolve(parsed.positional[1] ?? ".")), parsed.positional[0]);
+  if (parsed.flag("json")) console.log(JSON.stringify(result, null, 2));
+  else console.log(result.human);
 }
 
 async function runContextGuard(argv: string[]): Promise<void> {

@@ -86,6 +86,13 @@ jobs:
           package-manager-cache: false
       - run: npm ci
       - run: npm run test:scenario
+      - name: Upload generated scenario evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenario-matrix-evidence
+          path: .aeh-test-results/
+          if-no-files-found: ignore
 
   adversarial-system:
     name: adversarial-system
@@ -98,6 +105,13 @@ jobs:
           package-manager-cache: false
       - run: npm ci
       - run: npm run test:adversarial
+      - name: Upload generated adversarial evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: adversarial-system-evidence
+          path: .aeh-test-results/
+          if-no-files-found: ignore
 
   human-e2e:
     name: human-e2e
@@ -110,6 +124,33 @@ jobs:
           package-manager-cache: false
       - run: npm ci
       - run: npm run test:human-e2e
+      - name: Upload generated human journey evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: human-e2e-evidence
+          path: .aeh-test-results/
+          if-no-files-found: ignore
+
+  system-reliability:
+    name: system reliability campaign
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - run: npm ci
+      - name: Run complete deterministic reliability campaign
+        run: npm run test:system-all
+      - name: Upload complete reliability report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: complete-reliability-report
+          path: .aeh-test-results/
+          if-no-files-found: ignore
 
   full-stack-contract:
     name: full-stack-contract

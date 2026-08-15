@@ -52,6 +52,9 @@ export interface OperationControllerDeps {
   trace?: typeof recordPaseoTrace;
   notifyCompletion?: (root: string, operation: OperationRecord) => Promise<unknown>;
   startWatchdog?: typeof startOperationWatchdog;
+  runAudit?: typeof runAudit;
+  runTask?: typeof runTask;
+  runChange?: typeof runChangeOperation;
 }
 
 interface OperationWorkspace {
@@ -200,7 +203,7 @@ export async function executeOperation(
 
     if (record.kind === "audit") {
       const payload = record.payload as AuditOperationPayload;
-      const report = await runAudit(executionRoot, config, { ...payload, auditId: record.id });
+      const report = await (deps.runAudit ?? runAudit)(executionRoot, config, { ...payload, auditId: record.id });
       const current = await loadOperation(absoluteRoot, operationId);
       if (current.status === "CANCELLED") return current;
       return terminalizeOperation(
@@ -223,7 +226,7 @@ export async function executeOperation(
     }
 
     if (record.kind === "change") {
-      const result = await runChangeOperation(
+      const result = await (deps.runChange ?? runChangeOperation)(
         executionRoot,
         absoluteRoot,
         config,
@@ -258,7 +261,7 @@ export async function executeOperation(
     if (executionRoot !== absoluteRoot) {
       await materializeTaskContext(absoluteRoot, executionRoot, config, contract);
     }
-    const result = await runTask(executionRoot, config, contract, { profile: payload.profile });
+    const result = await (deps.runTask ?? runTask)(executionRoot, config, contract, { profile: payload.profile });
     const current = await loadOperation(absoluteRoot, operationId);
     if (current.status === "CANCELLED") return current;
     return terminalizeOperation(

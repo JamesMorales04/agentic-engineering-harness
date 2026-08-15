@@ -64,13 +64,13 @@ describe("architecture closure contracts", () => {
     expect(new Set([opengrep[0].fingerprint, trivy[0].fingerprint, playwright[0].fingerprint]).size).toBe(3);
   });
 
-  it("accepts every pinned Trivy zero/findings report shape but rejects malformed reports", () => {
-    const metadata = { SchemaVersion: 2, Trivy: { Version: "0.70.0" }, ArtifactName: ".", ArtifactType: "filesystem" };
-    const zeroWithoutResults = parseToolEvidenceResult("trivy", JSON.stringify(metadata));
-    const zeroWithNullResults = parseToolEvidenceResult("trivy", JSON.stringify({ ...metadata, Results: null }));
-    const zeroWithEmptyResults = parseToolEvidenceResult("trivy", JSON.stringify({ ...metadata, Results: [] }));
-    const findings = parseToolEvidenceResult("trivy", JSON.stringify({ ...metadata, Results: [{ Target: "package-lock.json", Class: "lang-pkgs", Type: "npm", Packages: [], Vulnerabilities: [{ VulnerabilityID: "CVE-1", PkgName: "x", Severity: "HIGH" }] }] }));
-    const malformed = parseToolEvidenceResult("trivy", JSON.stringify({ ...metadata, Results: [{ Target: 42 }] }));
+  it("accepts every pinned Trivy zero/findings report shape but rejects malformed reports", async () => {
+    const fixtureDir = path.resolve("tests/fixtures/trivy");
+    const zeroWithoutResults = parseToolEvidenceResult("trivy", await fs.readFile(path.join(fixtureDir, "0.70.0-zero-no-results.json"), "utf8"));
+    const zeroWithNullResults = parseToolEvidenceResult("trivy", await fs.readFile(path.join(fixtureDir, "0.70.0-zero-null-results.json"), "utf8"));
+    const findings = parseToolEvidenceResult("trivy", await fs.readFile(path.join(fixtureDir, "0.70.0-findings.json"), "utf8"));
+    const zeroWithEmptyResults = parseToolEvidenceResult("trivy", JSON.stringify({ SchemaVersion: 2, Trivy: { Version: "0.70.0" }, ArtifactName: ".", ArtifactType: "filesystem", Results: [] }));
+    const malformed = parseToolEvidenceResult("trivy", JSON.stringify({ SchemaVersion: 2, Trivy: { Version: "0.70.0" }, ArtifactName: ".", ArtifactType: "filesystem", Results: [{ Target: 42 }] }));
     for (const result of [zeroWithoutResults, zeroWithNullResults, zeroWithEmptyResults]) expect(result).toEqual({ valid: true, findings: [] });
     expect(findings).toMatchObject({ valid: true, findings: [expect.objectContaining({ rule: "CVE-1" })] });
     expect(malformed).toEqual({ valid: false, findings: [] });
