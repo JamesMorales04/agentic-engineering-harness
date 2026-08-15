@@ -4,6 +4,24 @@ import type { ValidationFinding } from "../core/types.js";
 export interface NormalizedFinding extends ValidationFinding {}
 export interface ToolEvidenceParseResult { findings: NormalizedFinding[]; valid: boolean; }
 
+interface TrivyReport {
+  SchemaVersion: number;
+  Trivy: { Version: string };
+  ArtifactName: string;
+  ArtifactType: string;
+  Results?: TrivyResult[] | null;
+}
+
+interface TrivyResult {
+  Target?: string;
+  Class?: string;
+  Type?: string;
+  Packages?: unknown[] | null;
+  Vulnerabilities?: unknown[] | null;
+  Misconfigurations?: unknown[] | null;
+  Secrets?: unknown[] | null;
+}
+
 export function normalizeOpengrepOutput(value: unknown): NormalizedFinding[] {
   const results = record(value).results;
   if (!Array.isArray(results)) return [];
@@ -72,7 +90,7 @@ export function parseToolEvidenceResult(adapter: string, stdout: string): ToolEv
     return { findings, valid: adapter === "pact" && /<testsuite\b|<testcase\b/i.test(stdout) };
   }
   if (adapter === "opengrep") return { findings: normalizeOpengrepOutput(value), valid: hasArrayField(value, "results") };
-  if (adapter === "trivy") return { findings: normalizeTrivyOutput(value), valid: hasArrayField(value, "Results") };
+  if (adapter === "trivy") return parseTrivyEvidence(value);
   if (adapter === "playwright") return { findings: normalizePlaywrightOutput(value), valid: hasArrayField(value, "suites") };
   if (adapter === "pact") return { findings: normalizePactOutput(value), valid: hasAnyArrayField(value, ["interactions", "interactionResults", "tests", "failures", "errors"]) };
   return { findings: [], valid: true };
@@ -114,6 +132,22 @@ export function findingFingerprint(finding: Omit<NormalizedFinding, "fingerprint
 function record(value: unknown): Record<string, any> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : {}; }
 function hasArrayField(value: unknown, field: string): boolean { return Array.isArray(record(value)[field]); }
 function hasAnyArrayField(value: unknown, fields: string[]): boolean { return fields.some((field) => hasArrayField(value, field)); }
+function parseTrivyEvidence(value: unknown): ToolEvidenceParseResult {
+  return isTrivyReport(value) ? { findings: normalizeTrivyOutput(value), valid: true } : { findings: [], valid: false };
+}
+function isTrivyReport(value: unknown): value is TrivyReport {
+  const root = record(value); const metadata = record(root.Trivy);
+  if (root.SchemaVersion !== 2 || typeof metadata.Version !== "string" || typeof root.ArtifactName !== "string" || typeof root.ArtifactType !== "string") return false;
+  if (!("Results" in root) || root.Results === null) return true;
+  return Array.isArray(root.Results) && root.Results.every(isTrivyResult);
+}
+function isTrivyResult(value: unknown): value is TrivyResult {
+  const result = record(value);
+  if (!("Target" in result || "Class" in result || "Type" in result)) return false;
+  for (const field of ["Target", "Class", "Type"] as const) if (field in result && typeof result[field] !== "string") return false;
+  for (const field of ["Packages", "Vulnerabilities", "Misconfigurations", "Secrets"] as const) if (field in result && result[field] !== null && !Array.isArray(result[field])) return false;
+  return true;
+}
 function stringValue(value: unknown): string | undefined { return typeof value === "string" || typeof value === "number" ? String(value) : undefined; }
 function numberValue(value: unknown): number | undefined { return typeof value === "number" && Number.isFinite(value) ? value : undefined; }
 function listValue(value: unknown): string[] | undefined { if (Array.isArray(value)) return value.map(String); if (typeof value === "string") return [value]; return undefined; }
