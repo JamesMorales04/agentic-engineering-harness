@@ -35,8 +35,8 @@ import {
 } from "./resultGateway.js";
 import { compileAgentPromptPolicy } from "./promptPolicy.js";
 import { prepareContext } from "../context/gateway.js";
-import { semanticFirstInstruction, SerenaSemanticProvider } from "../context/repository/serena.js";
-import { resolveContextTransportCapabilities } from "../context/transport.js";
+import { semanticFirstInstruction } from "../context/repository/serena.js";
+import { resolveContextTransportCapabilities, type EffectiveContextCapabilities } from "../context/transport.js";
 import { sha256 } from "../context/provenance.js";
 import { outputPolicyInstruction, resolveContextPolicy } from "../context/policy.js";
 import { buildRepositoryContextMap } from "../context/repository/map.js";
@@ -50,6 +50,7 @@ export interface AgentPromptOptions {
   operationKind?: string;
   parentAgentId?: string;
   supervisorAgent?: boolean;
+  contextCapabilities?: EffectiveContextCapabilities;
 }
 
 export interface CapturedContractValidation {
@@ -90,12 +91,14 @@ export async function materializeAgentPrompt(
 ): Promise<WorkerSession | undefined> {
   const transport = selection.transport === "inherit" ? (config.orchestration?.provider ?? "none") : selection.transport;
   if (transport !== "paseo" || options.resumeSessionId) return undefined;
+  const contextCapabilities = await resolveContextTransportCapabilities(root, config, selection, { mode: "live" });
   const spec = await compilePaseoAgentLaunchSpec(root, config, contract, {
     selection,
     phase: options.phase ?? "queued",
     kind: options.operationKind,
     parentAgentId: options.parentAgentId,
-    supervisorAgent: options.supervisorAgent
+    supervisorAgent: options.supervisorAgent,
+    contextCapabilities
   });
   const startedAt = new Date().toISOString();
   const schema = options.outputContract ? outputJsonSchema(options.outputContract) : undefined;
@@ -432,15 +435,8 @@ export async function buildAgentContextFragments(
     options.parentAgentId ? `Paseo parent=${options.parentAgentId}; OperationRecord remains lifecycle authority.` : undefined
   ].filter(Boolean).join("\n");
   const contextOutputPolicy = config.context ? outputPolicyInstruction(resolveContextPolicy(config), selection.role) : undefined;
-  const transportCapabilities = await resolveContextTransportCapabilities(root, config, selection);
-  let semanticRetrieval = transportCapabilities.semanticRetrieval;
-  if (semanticRetrieval) {
-    const health = await new SerenaSemanticProvider().doctor(root);
-    if (!health.ok) {
-      if (config.context?.semanticRetrieval?.required !== false) throw new Error(`Semantic retrieval provider unavailable: ${health.message}`);
-      semanticRetrieval = false;
-    }
-  }
+  const transportCapabilities = options.contextCapabilities ?? await resolveContextTransportCapabilities(root, config, selection, { mode: "live" });
+  const semanticRetrieval = transportCapabilities.semanticRetrieval;
   const authorizedRetrieval = transportCapabilities.authorizedRetrieval;
   const fragments: ContextFragment[] = [];
   const add = (id: string, kind: ContextFragment["kind"], preservation: ContextFragment["preservation"], priority: number, content: string | undefined, metadata?: Record<string, unknown>): void => {
@@ -448,7 +444,8 @@ export async function buildAgentContextFragments(
   };
   add("execution-envelope", "execution-envelope", "VERBATIM", 120, [managedBoundedAgentPromptContext(identity), hierarchy].filter(Boolean).join("\n"));
   add("agent-charter", "agent-charter", "VERBATIM", 115, selection.description);
-  if (semanticRetrieval && selection.role !== "orchestrator" && selection.logicalAgent !== "operation-supervisor") add("semantic-retrieval-policy", "skill", "VERBATIM", 110, semanticFirstInstruction(), { provider: "serena" });
+  if (semanticRetrieval) add("semantic-retrieval-policy", "skill", "VERBATIM", 110, semanticFirstInstruction(), { provider: "serena" });
+  for (const degradation of transportCapabilities.degradations) add("context-capability-degradation", "handoff", "VERBATIM", 109, `Context capability degradation (explicit, non-authoritative fallback): ${degradation}`, { authoritative: false, source: "context-capability-resolver" });
   add("frozen-skills", "skill", "VERBATIM", 108, frozenSkills);
   add("output-delivery-policy", "delivery", "VERBATIM", 105, [contextOutputPolicy, policy.outputContractContext].filter(Boolean).join("\n"));
 
@@ -471,7 +468,7 @@ export async function buildAgentContextFragments(
   if (diff?.exitCode === 0 && diff.stdout.trim()) add("diff-projection", "diff", "PROJECTABLE", 70, diff.stdout.trim(), { authoritative: "current-git" });
 
   const contextPolicy = config.context ? resolveContextPolicy(config) : undefined;
-  if (contextPolicy?.repositoryMap.enabled) {
+  if (contextPolicy?.repositoryMap.enabled && transportCapabilities.repositoryMap) {
     const rendered = await buildRepositoryContextMap(root, config, { allowedPaths: contract.scope?.allowed, explicitPaths: contract.scope?.allowed, maxGraphHops: contextPolicy.repositoryMap.maxGraphHops });
     add("repository-map", "repository-map", "PROJECTABLE", 90, rendered.content, { provider: rendered.map.provider, selected: rendered.selected, omitted: rendered.omitted });
   }
@@ -486,7 +483,9 @@ export async function buildAgentContextFragments(
     });
     if (recalled.length) add("advisory-memory", "memory", "PROJECTABLE", 45, JSON.stringify({ advisory: true, records: recalled.slice(0, 8) }), { advisory: true, authoritative: false });
   }
-  add("raw-evidence-references", "raw-evidence", "RETRIEVABLE", 35, JSON.stringify({ operationId: identity.operationId, note: "Raw evidence remains in durable AEH artifacts; retrieve only through transport-authorized fragment IDs." }));
+  if (transportCapabilities.requirements.rawRetrieval !== "FORBIDDEN") {
+    add("raw-evidence-references", "raw-evidence", "RETRIEVABLE", 35, JSON.stringify({ operationId: identity.operationId, note: "Raw evidence remains in durable AEH artifacts; retrieve only through transport-authorized fragment IDs." }));
+  }
   return { fragments, capabilities: { authorizedRetrieval, semanticRetrieval } };
 }
 

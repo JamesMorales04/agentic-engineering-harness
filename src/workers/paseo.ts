@@ -14,6 +14,8 @@ import {
 } from "../paseo/runtime.js";
 import { commandExists } from "../utils/process.js";
 import { buildRepairPrompt, buildWorkerPrompt } from "./prompt.js";
+import { resolveContextTransportCapabilities } from "../context/transport.js";
+import { buildEffectivePrompt } from "./agentPrompt.js";
 import type { WorkerExecutor } from "./types.js";
 
 export class PaseoWorkerExecutor implements WorkerExecutor {
@@ -53,7 +55,9 @@ export class PaseoWorkerExecutor implements WorkerExecutor {
     contract: TaskContract,
     selection?: AgentExecutionSelection
   ): Promise<WorkerSession> {
-    return this.launch(root, config, contract, buildWorkerPrompt(contract, selection), selection);
+    const contextCapabilities = selection ? await resolveContextTransportCapabilities(root, config, selection, { mode: "live" }) : undefined;
+    const prompt = selection ? await buildEffectivePrompt(root, config, contract, selection, buildWorkerPrompt(contract, selection), { phase: "implementation", contextCapabilities }) : buildWorkerPrompt(contract, selection);
+    return this.launch(root, config, contract, prompt, selection, contextCapabilities);
   }
 
   async repair(
@@ -81,12 +85,15 @@ export class PaseoWorkerExecutor implements WorkerExecutor {
         finishedAt: new Date().toISOString()
       };
     }
+    const contextCapabilities = selection ? await resolveContextTransportCapabilities(root, config, selection, { mode: "live" }) : undefined;
+    const prompt = selection ? await buildEffectivePrompt(root, config, contract, selection, `${buildWorkerPrompt(contract, selection)}\n\n${buildRepairPrompt(packet)}`, { phase: "implementation", contextCapabilities }) : `${buildWorkerPrompt(contract, selection)}\n\n${buildRepairPrompt(packet)}`;
     return this.launch(
       root,
       config,
       contract,
-      `${buildWorkerPrompt(contract, selection)}\n\n${buildRepairPrompt(packet)}`,
-      selection
+      prompt,
+      selection,
+      contextCapabilities
     );
   }
 
@@ -95,11 +102,13 @@ export class PaseoWorkerExecutor implements WorkerExecutor {
     config: HarnessProjectConfig,
     contract: TaskContract,
     prompt: string,
-    selection?: AgentExecutionSelection
+    selection?: AgentExecutionSelection,
+    contextCapabilities?: Awaited<ReturnType<typeof resolveContextTransportCapabilities>>
   ): Promise<WorkerSession> {
     const spec = await compilePaseoAgentLaunchSpec(root, config, contract, {
       selection,
-      phase: "implementation"
+      phase: "implementation",
+      contextCapabilities
     });
     const startedAt = new Date().toISOString();
     const launched = await launchManagedPaseoAgent(root, {
@@ -111,6 +120,8 @@ export class PaseoWorkerExecutor implements WorkerExecutor {
       modeSource: spec.modeSource,
       thinkingOptionId: spec.thinkingOptionId,
       env: spec.env,
+      mcpServers: spec.mcpServers,
+      toolPolicy: spec.toolPolicy,
       workspaceId: spec.workspaceId,
       prompt,
       labels: spec.labels,

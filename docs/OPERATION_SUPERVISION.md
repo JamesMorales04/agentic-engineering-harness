@@ -27,6 +27,14 @@ The lead owns user intent, priorities, cross-operation dependencies, true except
 
 The operation supervisor owns semantic coordination and consolidation for one operation. It may merge semantically duplicate findings, identify conflicts and request bounded follow-up, but it cannot overrule deterministic state, validation or normative artifacts.
 
+The supervisor charter is coordination-only. Its execution contract forbids
+repository-map, Serena semantic retrieval and raw artifact retrieval, even when
+the project globally configures semantic retrieval as required. Reviewers and
+workers receive those capabilities only when their own runtime/transport
+contract resolves them as available. A capability failure is rejected before
+the candidate agent is materialized; optional capabilities produce an explicit
+degradation rather than an unmarked policy change.
+
 The controller owns lifecycle, stage transitions, participant state, seals, validators, rollback, quality gates, delivery and terminalization. `OperationRecord` is the durable source of lifecycle truth.
 
 ## OperationRecord v2
@@ -93,6 +101,12 @@ The monitor wakes on:
 A stall targets the operation supervisor first. Missing/busy/unreachable supervisor recovery escalates to the lead.
 
 Healthy non-terminal progress wakes are internal. They should not generate chat noise.
+
+The conversational lead also has a bounded informational path. A request such
+as “explain how validation works” is answered from a small read-only repository
+context and creates no OperationRecord, TaskContract, reviewer, report or
+delivery artifact. A request to find defects, assess safety/correctness or
+report problems remains an AUDIT and follows the supervised lifecycle.
 
 ## Supervisor context generations
 

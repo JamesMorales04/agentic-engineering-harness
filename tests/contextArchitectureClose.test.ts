@@ -43,6 +43,21 @@ describe("architecture closure contracts", () => {
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 
+  it("keeps coordinator context forbidden while optional workers receive an explicit fallback", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-context-capability-contract-"));
+    const contract: TaskContract = { version: 1, task: { id: "T-CAP", title: "capabilities" } };
+    const config: HarnessProjectConfig = { version: 1, project: { name: "capability-contract" }, context: { semanticRetrieval: { provider: "serena", required: true }, repositoryMap: { enabled: true } } };
+    const supervisor = { ...selection, logicalAgent: "operation-supervisor", role: "coordinator", runtimeAdapter: "codex", transport: "paseo" as const };
+    const optionalWorker = { ...selection, logicalAgent: "optional-worker", runtimeAdapter: "codex", transport: "direct" as const, contextRequirements: { semanticRetrieval: "OPTIONAL" as const } };
+    try {
+      const supervisorFragments = await buildAgentContextFragments(root, config, contract, supervisor, "Coordinate the operation", { phase: "supervision", supervisorAgent: true });
+      expect(supervisorFragments.fragments.map((item) => item.id)).not.toEqual(expect.arrayContaining(["semantic-retrieval-policy", "repository-map", "raw-evidence-references"]));
+      const workerFragments = await buildAgentContextFragments(root, { ...config, context: { ...config.context, semanticRetrieval: { provider: "serena", required: false } } }, contract, optionalWorker, "Explain the bounded fallback", { phase: "review" });
+      expect(workerFragments.fragments.find((item) => item.id === "context-capability-degradation")?.content).toContain("fallback");
+      expect(workerFragments.capabilities.semanticRetrieval).toBe(false);
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
   it("provides bounded, scoped memory with deduplication and supersession", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-memory-"));
     const execute = async (command: string): Promise<{ exitCode: number; stdout: string; stderr: string; durationMs: number }> => ({ exitCode: 0, stdout: command.includes("recall") ? "" : "stored", stderr: "", durationMs: 1 });

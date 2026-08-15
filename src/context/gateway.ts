@@ -114,26 +114,46 @@ export class ContextBudgetGateway {
 
   private async persistRawFragment(operationId: string, fragment: ContextFragment): Promise<ContextFragment> {
     if (!this.persist) return { ...fragment, source: { ...fragment.source, sha256: fragment.source?.sha256 ?? sha256(fragment.content) } };
-    const relative = fragment.source?.artifact ?? path.posix.join(".harness", "context", safeSegment(operationId), `${safeSegment(fragment.id)}.raw`);
-    const absolute = safePath(this.root, relative);
-    await assertNoSymlinkEscape(this.root, absolute);
+    const requested = fragment.source?.artifact ?? path.posix.join(".harness", "context", safeSegment(operationId), `${safeSegment(fragment.id)}.raw`);
     const contentSha256 = sha256(fragment.content);
-    if (fragment.source?.sha256 && fragment.source.sha256 !== contentSha256) throw new Error(`Context source hash mismatch for '${relative}'.`);
+    if (fragment.source?.sha256 && fragment.source.sha256 !== contentSha256) throw new Error(`Context source hash mismatch for '${requested}'.`);
+
+    let relative = requested;
+    let absolute = safePath(this.root, relative);
+    await assertNoSymlinkEscape(this.root, absolute);
     await fs.mkdir(path.dirname(absolute), { recursive: true });
-    let actual: string;
-    try {
-      const existing = await fs.readFile(absolute);
-      actual = sha256(existing);
+    const existing = await readArtifact(absolute);
+    if (existing) {
+      const actual = sha256(existing);
       if (fragment.source?.sha256 && fragment.source.sha256 !== actual) throw new Error(`Context source hash mismatch for '${relative}'.`);
-      if (!fragment.source?.sha256 && existing.toString("utf8") !== fragment.content) throw new Error(`Context source artifact '${relative}' does not match the supplied content.`);
-    } catch (error) {
-      if (error instanceof Error && error.message.includes("Context source")) throw error;
-      await fs.writeFile(absolute, fragment.content, { encoding: "utf8", flag: "wx" }).catch(async (writeError: unknown) => {
-        if ((writeError as NodeJS.ErrnoException).code !== "EEXIST") throw writeError;
-      });
-      actual = sha256(fragment.content);
+      if (actual !== contentSha256) {
+        // Fragment IDs are stable semantic labels, but their content is agent- and
+        // phase-specific. Keep the legacy path for the first writer and derive a
+        // deterministic content-addressed sibling for later implicit collisions.
+        if (fragment.source?.sha256) throw new Error(`Context source hash mismatch for '${relative}'.`);
+        relative = disambiguatedArtifactPath(requested, contentSha256);
+        absolute = safePath(this.root, relative);
+        await assertNoSymlinkEscape(this.root, absolute);
+        await fs.mkdir(path.dirname(absolute), { recursive: true });
+        const sibling = await readArtifact(absolute);
+        if (sibling && sha256(sibling) !== contentSha256) throw new Error(`Context source artifact collision for '${relative}'.`);
+        if (!sibling && !(await writeArtifactIfAbsent(absolute, fragment.content))) throw new Error(`Context source artifact collision for '${relative}'.`);
+      }
+    } else if (!(await writeArtifactIfAbsent(absolute, fragment.content))) {
+      // Another writer won the legacy path between read and write. Re-read it and
+      // use the same deterministic sibling path if its bytes differ.
+      const winner = await readArtifact(absolute);
+      if (winner && sha256(winner) === contentSha256) return { ...fragment, source: { ...fragment.source, artifact: relative, sha256: contentSha256 } };
+      if (fragment.source?.sha256) throw new Error(`Context source hash mismatch for '${relative}'.`);
+      relative = disambiguatedArtifactPath(requested, contentSha256);
+      absolute = safePath(this.root, relative);
+      await assertNoSymlinkEscape(this.root, absolute);
+      await fs.mkdir(path.dirname(absolute), { recursive: true });
+      const sibling = await readArtifact(absolute);
+      if (sibling && sha256(sibling) !== contentSha256) throw new Error(`Context source artifact collision for '${relative}'.`);
+      if (!sibling && !(await writeArtifactIfAbsent(absolute, fragment.content))) throw new Error(`Context source artifact collision for '${relative}'.`);
     }
-    return { ...fragment, source: { ...fragment.source, artifact: relative, sha256: actual } };
+    return { ...fragment, source: { ...fragment.source, artifact: relative, sha256: contentSha256 } };
   }
 
   private async persistEnvelope(operationId: string, envelope: ContextEnvelope): Promise<void> {
@@ -178,6 +198,26 @@ function metricsFor(raw: ContextFragment[], optimized: ContextFragmentProjection
 }
 
 function safeSegment(value: string): string { const sanitized = value.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, ""); return sanitized || "fragment"; }
+function disambiguatedArtifactPath(relative: string, contentSha256: string): string {
+  const extension = path.posix.extname(relative);
+  const stem = extension ? relative.slice(0, -extension.length) : relative;
+  return `${stem}.${contentSha256.slice(0, 16)}${extension}`;
+}
+async function readArtifact(absolute: string): Promise<Buffer | undefined> {
+  try { return await fs.readFile(absolute); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+}
+async function writeArtifactIfAbsent(absolute: string, content: string): Promise<boolean> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try { await fs.writeFile(absolute, content, { encoding: "utf8", flag: "wx" }); return true; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const winner = await readArtifact(absolute);
+      if (winner) return sha256(winner) === sha256(content);
+    }
+  }
+  throw new Error(`Context source artifact could not be established at '${absolute}'.`);
+}
 function safePath(root: string, relative: string): string { if (path.isAbsolute(relative)) throw new Error("Context artifact paths must be relative to the project root."); const absoluteRoot = path.resolve(root); const absolute = path.resolve(absoluteRoot, relative); if (absolute !== absoluteRoot && !absolute.startsWith(`${absoluteRoot}${path.sep}`)) throw new Error("Context artifact path escapes the project root."); return absolute; }
 async function assertNoSymlinkEscape(root: string, absolute: string): Promise<void> {
   const absoluteRoot = path.resolve(root);

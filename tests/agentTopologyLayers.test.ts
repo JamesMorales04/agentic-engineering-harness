@@ -75,6 +75,9 @@ describe("agent topology", () => {
     const selection = executionSelectionForAgent(topology, "security-reviewer");
     expect(selection.modelAlias).toBe("brain");
     expect(selection.description).toContain("trust boundaries");
+    const lead = executionSelectionForAgent(topology, "lead");
+    expect(lead.contextRequirements).toEqual(expect.objectContaining({ repositoryMap: "FORBIDDEN", semanticRetrieval: "FORBIDDEN", rawRetrieval: "FORBIDDEN" }));
+    expect(lead.runtimeCapabilities.mcp).toBe(true);
   });
 
   it("gives OpenCode DeepSeek V4 Flash the max thinking variant and durable CHANGE contracts in the orchestration preset", async () => {

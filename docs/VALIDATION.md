@@ -2,6 +2,14 @@
 
 LLM output is an untrusted proposal. Acceptance is based on executable evidence.
 
+## User-facing evidence discipline
+
+Operation completion messages distinguish durable operation results, audit or
+validation reports, control-plane context and inference. A failed or blocked
+operation with no result artifact, AuditReport or findings is not evidence that
+the repository was inspected. The lead must state the blocker and keep any
+pre-existing context separate from operation-produced claims.
+
 ## Capability registry
 
 The normative unit of validation is a capability. TaskContracts should prefer:

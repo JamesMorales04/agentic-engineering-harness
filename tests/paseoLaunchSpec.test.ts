@@ -13,6 +13,21 @@ afterEach(() => {
 });
 
 describe("Paseo launch spec", () => {
+  it("keeps the coordinator context-isolated while projecting Serena to a semantic worker", async () => {
+    const config = {
+      version: 1,
+      project: { name: "context-launch" },
+      context: { semanticRetrieval: { provider: "serena", required: true } },
+      orchestration: { provider: "paseo", worker: {} }
+    } as never;
+    const contract = { version: 1, task: { id: "AUDIT-CAP", title: "capability" }, routing: { intent: "audit" } } as never;
+    const base = { paseoProvider: "codex", runtimeAdapter: "codex", runtimeName: "codex", modelName: "gpt-test", modelId: "gpt-test", runtimeCapabilities: {}, skills: [], mcps: [], permissions: { read: "allow", write: "deny" } } as never;
+    const supervisor = await compilePaseoAgentLaunchSpec("/repo", config, contract, { selection: { ...base, logicalAgent: "operation-supervisor", role: "coordinator" }, phase: "supervision", supervisorAgent: true });
+    const worker = await compilePaseoAgentLaunchSpec("/repo", config, contract, { selection: { ...base, logicalAgent: "explorer", role: "explorer" }, phase: "review" });
+    expect(supervisor.mcpServers).toBeUndefined();
+    expect(worker.mcpServers?.serena).toEqual(expect.objectContaining({ type: "stdio", command: "serena" }));
+  });
+
   it("uses operation-local workspace, bounded identity and Codex thinking variant", async () => {
     process.env.AEH_OPERATION_ID = "AUDIT-1";
     process.env.AEH_OPERATION_KIND = "audit";

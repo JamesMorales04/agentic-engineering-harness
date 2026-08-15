@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { HarnessProjectConfig, McpServerConfig } from "../core/types.js";
 import type { AgentExecutionSelection, PermissionDecision } from "./types.js";
-import { staticContextCapabilities } from "../context/transport.js";
+import { staticContextCapabilities, type EffectiveContextCapabilities } from "../context/transport.js";
 
 export type OpenCodeAgentBindingSource = "aeh-managed" | "explicit";
 
@@ -94,7 +94,8 @@ export function resolveOpenCodeAgentBinding(
 export function buildOpenCodeRuntimeConfig(
   selection: AgentExecutionSelection,
   config?: HarnessProjectConfig,
-  binding: OpenCodeAgentBinding = resolveOpenCodeAgentBinding(selection)
+  binding: OpenCodeAgentBinding = resolveOpenCodeAgentBinding(selection),
+  resolvedContextCapabilities?: EffectiveContextCapabilities
 ): Record<string, unknown> {
   const permission = buildOpenCodePermission(selection);
   const mcp: Record<string, unknown> = {};
@@ -109,7 +110,7 @@ export function buildOpenCodeRuntimeConfig(
   for (const name of selection.mcps) {
     if (!configured[name]) tools[`${name}_*`] = true;
   }
-  const capabilities = config ? staticContextCapabilities(config, selection) : undefined;
+  const capabilities = resolvedContextCapabilities ?? (config ? staticContextCapabilities(config, selection) : undefined);
   if (capabilities?.mcpServers.serena && !mcp.serena) {
     mcp.serena = { type: "local", command: ["serena", "start-mcp-server", "--context", "ide-assistant", "--project", "."], enabled: true, timeout: 30_000 };
     tools["serena_*"] = true;
@@ -154,10 +155,11 @@ export function buildOpenCodeRuntimeConfig(
 
 export function compileOpenCodeRuntimeProjection(
   selection: AgentExecutionSelection,
-  config?: HarnessProjectConfig
+  config?: HarnessProjectConfig,
+  resolvedContextCapabilities?: EffectiveContextCapabilities
 ): OpenCodeRuntimeProjection {
   const binding = resolveOpenCodeAgentBinding(selection);
-  const runtimeConfig = buildOpenCodeRuntimeConfig(selection, config, binding);
+  const runtimeConfig = buildOpenCodeRuntimeConfig(selection, config, binding, resolvedContextCapabilities);
   return {
     binding,
     config: runtimeConfig,

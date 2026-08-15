@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { probePodmanSerena, resolveContextTransportCapabilities, staticContextCapabilities } from "../src/context/transport.js";
+import { probePodmanSerena, resolveContextCapabilityRequirements, resolveContextTransportCapabilities, staticContextCapabilities } from "../src/context/transport.js";
 import { buildRequirementEvidenceGraph } from "../src/evidence/graph.js";
 import { runFullStackDogfood } from "../src/evals/fullStack.js";
 import { recordEvent } from "../src/telemetry/events.js";
@@ -22,7 +22,29 @@ describe("architecture closure integration", () => {
       await expect(resolveContextTransportCapabilities(root, config, selection("opencode", "direct"))).resolves.toMatchObject({ semanticRetrieval: true, authorizedRetrieval: true });
       await expect(resolveContextTransportCapabilities(root, { ...config, context: { ...config.context, semanticRetrieval: { provider: "serena", required: true } } }, selection("codex", "direct"))).rejects.toThrow("UNSUPPORTED_CAPABILITY");
       await expect(resolveContextTransportCapabilities(root, { ...config, security: { sandbox: { image: "missing-image" } } }, selection("opencode", "podman"))).resolves.toMatchObject({ semanticRetrieval: false, authorizedRetrieval: false });
+      const supervisor = { ...selection("codex", "paseo"), logicalAgent: "operation-supervisor", role: "coordinator" };
+      await expect(resolveContextTransportCapabilities(root, { ...config, context: { ...config.context, semanticRetrieval: { provider: "serena", required: true } } }, supervisor)).resolves.toMatchObject({ semanticRetrieval: false, authorizedRetrieval: false, mcpServers: { serena: false, context: false }, requirements: { semanticRetrieval: "FORBIDDEN", rawRetrieval: "FORBIDDEN" } });
+      expect(staticContextCapabilities({ ...config, context: { ...config.context, semanticRetrieval: { provider: "serena", required: true } } }, { ...selection("codex", "paseo"), logicalAgent: "semantic-worker" })).toMatchObject({ semanticRetrieval: true, mcpServers: { serena: true } });
+      expect(resolveContextCapabilityRequirements(config, supervisor)).toMatchObject({ repositoryMap: "FORBIDDEN", semanticRetrieval: "FORBIDDEN", rawRetrieval: "FORBIDDEN" });
     } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it("uses runtime and transport capability declarations instead of runtime-name policy", () => {
+    const config: HarnessProjectConfig = { version: 1, project: { name: "capabilities" }, context: { semanticRetrieval: { provider: "serena", required: true } } };
+    const codexPaseo = staticContextCapabilities(config, { ...selection("codex", "paseo"), runtimeCapabilities: {} });
+    const opencodeDirect = staticContextCapabilities(config, { ...selection("opencode", "direct"), runtimeCapabilities: {} });
+    const codexDirect = staticContextCapabilities(config, { ...selection("codex", "direct"), runtimeCapabilities: {} });
+    expect(codexPaseo.semanticRetrieval).toBe(true);
+    expect(opencodeDirect.semanticRetrieval).toBe(true);
+    expect(codexDirect.semanticRetrieval).toBe(false);
+    expect(codexDirect.transportCapabilities.reasons.join(" ")).toContain("direct runtime adapter");
+  });
+
+  it("degrades explicitly when optional Serena is unavailable", () => {
+    const config: HarnessProjectConfig = { version: 1, project: { name: "optional" }, context: { semanticRetrieval: { provider: "serena", required: false } } };
+    const capabilities = staticContextCapabilities(config, { ...selection("codex", "direct"), runtimeCapabilities: {} });
+    expect(capabilities.semanticRetrieval).toBe(false);
+    expect(capabilities.degradations.join(" ")).toContain("fallback");
   });
 
   it("keeps static capability resolution pure and bounds the explicit Podman probe", async () => {

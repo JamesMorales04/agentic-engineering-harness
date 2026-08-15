@@ -15,6 +15,8 @@ export const PROVIDER_CONTRACT_IDS = ["headroom", "graphify", "serena", "engram"
 export const REQUIRED_COVERAGE_FLOORS = { scenarios: 100, adversarial: 20, human: 12, multiTurn: 5, concurrency: 8 } as const;
 
 export const FIXED_FINDINGS = [
+  { scenario: "SCN-HUMAN-H01-INFORMATIONAL-ROUTING", classification: "intent-routing", status: "FIXED", productionFix: "pure repository explanations use the bounded informational path without detached operations, supervisors or mutation", regressionTest: "tests/system/aehHumanBlackBox.test.ts" },
+  { scenario: "SCN-HUMAN-H02-AUDIT-PRECEDENCE", classification: "intent-routing", status: "FIXED", productionFix: "repository defect discovery and mixed evaluative prompts remain on the supervised AUDIT path", regressionTest: "tests/auditIntent.test.ts; tests/system/aehHumanBlackBox.test.ts" },
   { scenario: "SCN-LIFECYCLE-TERMINAL-LATE-CUSTOM-MUTATION", classification: "lifecycle", status: "FIXED", productionFix: "terminal records now return unchanged from custom lifecycle mutators", regressionTest: "tests/operations.test.ts" },
   { scenario: "SCN-CONTEXT-SOURCE-HASH-MISSING-ARTIFACT", classification: "context", status: "FIXED", productionFix: "new artifacts verify supplied content against the declared SHA-256 before writing", regressionTest: "tests/contextEfficiency.test.ts" },
   { scenario: "SCN-CONTEXT-SYMLINK-ESCAPE", classification: "security", status: "FIXED", productionFix: "context persistence and retrieval reject symlink traversal", regressionTest: "tests/contextEfficiency.test.ts" },

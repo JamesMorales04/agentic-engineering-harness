@@ -74,6 +74,7 @@ describe("Paseo Harness start", () => {
       },
       toolPolicy: {
         preapproved: expect.arrayContaining([
+          { kind: "mcp", server: "aeh-control", tool: "aeh_informational_context" },
           { kind: "mcp", server: "aeh-control", tool: "aeh_operation_start_audit" },
           { kind: "mcp", server: "aeh-control", tool: "aeh_operation_start_run" },
           { kind: "mcp", server: "aeh-control", tool: "aeh_operation_start_change" },

@@ -16,6 +16,7 @@ import { listManagedPaseoAgents } from "../paseo/runtime.js";
 import { recordPaseoTrace } from "../paseo/trace.js";
 import { runProcess, type ProcessResult } from "../utils/process.js";
 import { runChangeOperation } from "./change.js";
+import { assertIntentDecisionForRoute } from "../audit/intentDecision.js";
 import {
   disableOperationCompletionTarget,
   notifyOperationCompletion,
@@ -73,6 +74,8 @@ export async function startDetachedOperation(
   const absoluteRoot = path.resolve(root);
   const config = await loadProjectConfigIfPresent(absoluteRoot);
   if (config) await assertOperationCapacity(absoluteRoot, config, operationPriority(payload));
+  const suppliedDecision = "intentDecision" in payload ? payload.intentDecision : undefined;
+  if (suppliedDecision) assertIntentDecisionForRoute(suppliedDecision, kind === "audit" ? "audit" : kind === "change" ? "change" : "run");
 
   const now = new Date().toISOString();
   const id = createOperationId(kind, JSON.stringify(payload));
@@ -558,13 +561,13 @@ async function loadProjectConfigIfPresent(root: string): Promise<HarnessProjectC
 function initialIntent(kind: OperationKind, payload: OperationPayload): OperationRecordV2["intent"] {
   if (kind === "audit") {
     const audit = payload as AuditOperationPayload;
-    return { request: audit.request, classification: "AUDIT", risk: audit.risk, priority: 50 };
+    return { request: audit.request, classification: "AUDIT", risk: audit.risk, priority: 50, semanticDecision: audit.intentDecision };
   }
   if (kind === "change") {
     const change = payload as ChangeOperationPayload;
-    return { request: change.request, classification: "CHANGE", risk: change.risk, priority: change.priority ?? 50 };
+    return { request: change.request, classification: "CHANGE", risk: change.risk, priority: change.priority ?? 50, semanticDecision: change.intentDecision };
   }
-  return { classification: "RUN", priority: (payload as RunOperationPayload).priority ?? 50 };
+  return { classification: "RUN", priority: (payload as RunOperationPayload).priority ?? 50, semanticDecision: (payload as RunOperationPayload).intentDecision };
 }
 
 function operationPriority(payload: OperationPayload): number {

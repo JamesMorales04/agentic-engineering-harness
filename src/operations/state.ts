@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import type { IntentDecisionV1 } from "../audit/intentDecision.js";
 
 export type OperationKind = "audit" | "run" | "change";
 export type OperationStatus = "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
@@ -25,9 +26,9 @@ export function isAllowedOperationStatusTransition(from: OperationStatus, to: Op
   return to === "SUCCEEDED" || to === "FAILED" || to === "CANCELLED";
 }
 
-export interface AuditOperationPayload { request: string; files?: string[]; domains?: string[]; risk?: "low" | "medium" | "high"; reviewers?: string[]; }
-export interface RunOperationPayload { taskId: string; profile?: string; priority?: number; }
-export interface ChangeOperationPayload { request: string; title?: string; taskId?: string; files?: string[]; domains?: string[]; acceptance?: string[]; risk?: "low" | "medium" | "high"; profile?: string; priority?: number; }
+export interface AuditOperationPayload { request: string; files?: string[]; domains?: string[]; risk?: "low" | "medium" | "high"; reviewers?: string[]; intentDecision?: IntentDecisionV1; }
+export interface RunOperationPayload { taskId: string; profile?: string; priority?: number; intentDecision?: IntentDecisionV1; }
+export interface ChangeOperationPayload { request: string; title?: string; taskId?: string; files?: string[]; domains?: string[]; acceptance?: string[]; risk?: "low" | "medium" | "high"; profile?: string; priority?: number; intentDecision?: IntentDecisionV1; }
 export type OperationPayload = AuditOperationPayload | RunOperationPayload | ChangeOperationPayload;
 
 export interface OperationAgentRecord { id: string; role?: string; phase?: string; workspaceId?: string; transport?: string; registeredAt: string; }
@@ -53,7 +54,7 @@ export interface OperationStageRecord { name: string; status: OperationStageStat
 export interface OperationParticipantRecord { id: string; logicalAgent?: string; role?: string; stage?: string; phase?: string; parentSupervisorGeneration?: number; parentAgentId?: string; workspaceId?: string; transport?: string; status: OperationParticipantStatus; registeredAt: string; startedAt?: string; finishedAt?: string; resultArtifact?: string; error?: string; }
 export interface OperationProgress { expected: number; registered: number; running: number; completed: number; failed: number; blocked: number; }
 export interface OperationNotificationState { lastLeadWakeRevision: number; lastLeadWakeAt?: string; lastLeadWakeReason?: string; terminalDelivered: boolean; attempts: number; lastError?: string; }
-export interface OperationIntentState { request?: string; classification?: "AUDIT" | "CHANGE" | "RUN"; mode?: "quick" | "spec"; risk?: "low" | "medium" | "high"; priority?: number; }
+export interface OperationIntentState { request?: string; classification?: "AUDIT" | "CHANGE" | "RUN"; mode?: "quick" | "spec"; risk?: "low" | "medium" | "high"; priority?: number; semanticDecision?: IntentDecisionV1; }
 
 export interface OperationRecordV1 {
   version: 1; id: string; kind: "audit" | "run"; status: OperationStatus; phase: string; root: string;

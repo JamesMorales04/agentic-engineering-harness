@@ -8,6 +8,8 @@ import type {
 } from "../core/types.js";
 import { commandExists, runProcess } from "../utils/process.js";
 import { buildRepairPrompt, buildWorkerPrompt } from "./prompt.js";
+import { buildEffectivePrompt } from "./agentPrompt.js";
+import { resolveContextTransportCapabilities, type EffectiveContextCapabilities } from "../context/transport.js";
 import type { WorkerExecutor } from "./types.js";
 
 export class DirectWorkerExecutor implements WorkerExecutor {
@@ -43,7 +45,9 @@ export class DirectWorkerExecutor implements WorkerExecutor {
     selection?: AgentExecutionSelection
   ): Promise<WorkerSession> {
     if (!selection) throw new Error("Direct execution requires a resolved agent selection.");
-    return this.run(root, config, contract, buildWorkerPrompt(contract, selection), selection);
+    const contextCapabilities = await resolveContextTransportCapabilities(root, config, selection, { mode: "live" });
+    const prompt = await buildEffectivePrompt(root, config, contract, selection, buildWorkerPrompt(contract, selection), { phase: "implementation", contextCapabilities });
+    return this.run(root, config, contract, prompt, selection, contextCapabilities);
   }
 
   async repair(
@@ -55,12 +59,15 @@ export class DirectWorkerExecutor implements WorkerExecutor {
     selection?: AgentExecutionSelection
   ): Promise<WorkerSession> {
     if (!selection) throw new Error("Direct repair requires a resolved agent selection.");
+    const contextCapabilities = await resolveContextTransportCapabilities(root, config, selection, { mode: "live" });
+    const prompt = await buildEffectivePrompt(root, config, contract, selection, `${buildWorkerPrompt(contract, selection)}\n\n${buildRepairPrompt(packet)}`, { phase: "implementation", contextCapabilities });
     return this.run(
       root,
       config,
       contract,
-      `${buildWorkerPrompt(contract, selection)}\n\n${buildRepairPrompt(packet)}`,
-      selection
+      prompt,
+      selection,
+      contextCapabilities
     );
   }
 
@@ -69,14 +76,15 @@ export class DirectWorkerExecutor implements WorkerExecutor {
     config: HarnessProjectConfig,
     _contract: TaskContract,
     prompt: string,
-    selection: AgentExecutionSelection
+    selection: AgentExecutionSelection,
+    contextCapabilities?: EffectiveContextCapabilities
   ): Promise<WorkerSession> {
     let command: string;
     let env: Record<string, string | undefined> | undefined;
     let nativeAgent = selection.nativeAgent;
 
     if (selection.runtimeAdapter === "opencode") {
-      const projection = compileOpenCodeRuntimeProjection(selection, config);
+      const projection = compileOpenCodeRuntimeProjection(selection, config, contextCapabilities);
       nativeAgent = projection.binding.agentId;
       const args = [
         "opencode",

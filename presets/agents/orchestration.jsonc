@@ -22,6 +22,7 @@
       "domains": ["*"],
       "description": "Own operation-local semantic coordination, delegation, consolidation, conflict detection and evidence gaps for exactly one durable AEH operation.",
       "execution": { "model": "@brain" },
+      "contextRequirements": { "repositoryMap": "FORBIDDEN", "semanticRetrieval": "FORBIDDEN", "rawRetrieval": "FORBIDDEN", "compression": "OPTIONAL" },
       "temperature": 0.1,
       "skills": [],
       "permissions": { "read": "allow", "write": "deny", "shell": "allow", "network": "deny", "delegate": "allow", "review": "allow", "validate": "deny", "gitWrite": "deny" },

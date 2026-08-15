@@ -14,6 +14,8 @@ import {
 } from "../security/sandbox.js";
 import { commandExists, runProcess } from "../utils/process.js";
 import { buildRepairPrompt, buildWorkerPrompt } from "./prompt.js";
+import { buildEffectivePrompt } from "./agentPrompt.js";
+import { resolveContextTransportCapabilities, type EffectiveContextCapabilities } from "../context/transport.js";
 import type { WorkerExecutor } from "./types.js";
 
 export class PodmanWorkerExecutor implements WorkerExecutor {
@@ -40,7 +42,9 @@ export class PodmanWorkerExecutor implements WorkerExecutor {
     contract: TaskContract,
     selection?: AgentExecutionSelection
   ): Promise<WorkerSession> {
-    return this.run(root, config, contract, buildWorkerPrompt(contract, selection), selection);
+    const contextCapabilities = selection ? await resolveContextTransportCapabilities(root, config, selection, { mode: "live" }) : undefined;
+    const prompt = selection ? await buildEffectivePrompt(root, config, contract, selection, buildWorkerPrompt(contract, selection), { phase: "implementation", contextCapabilities }) : buildWorkerPrompt(contract, selection);
+    return this.run(root, config, contract, prompt, selection, contextCapabilities);
   }
 
   async repair(
@@ -51,12 +55,15 @@ export class PodmanWorkerExecutor implements WorkerExecutor {
     packet: RepairPacket,
     selection?: AgentExecutionSelection
   ): Promise<WorkerSession> {
+    const contextCapabilities = selection ? await resolveContextTransportCapabilities(root, config, selection, { mode: "live" }) : undefined;
+    const prompt = selection ? await buildEffectivePrompt(root, config, contract, selection, `${buildWorkerPrompt(contract, selection)}\n\n${buildRepairPrompt(packet)}`, { phase: "implementation", contextCapabilities }) : `${buildWorkerPrompt(contract, selection)}\n\n${buildRepairPrompt(packet)}`;
     return this.run(
       root,
       config,
       contract,
-      `${buildWorkerPrompt(contract, selection)}\n\n${buildRepairPrompt(packet)}`,
-      selection
+      prompt,
+      selection,
+      contextCapabilities
     );
   }
 
@@ -65,7 +72,8 @@ export class PodmanWorkerExecutor implements WorkerExecutor {
     config: HarnessProjectConfig,
     contract: TaskContract,
     prompt: string,
-    selection?: AgentExecutionSelection
+    selection?: AgentExecutionSelection,
+    contextCapabilities?: EffectiveContextCapabilities
   ): Promise<WorkerSession> {
     const runtime = selection?.runtimeAdapter ?? "opencode";
     if (runtime !== "opencode") {
@@ -74,7 +82,7 @@ export class PodmanWorkerExecutor implements WorkerExecutor {
 
     const model = selection?.modelId ?? config.orchestration?.worker?.model;
     const fallback = selection ?? legacySelection(model);
-    const projection = compileOpenCodeRuntimeProjection(fallback, config);
+    const projection = compileOpenCodeRuntimeProjection(fallback, config, contextCapabilities);
     const podmanArgs = hardenedPodmanArgs(config, fallback, true);
     const args = [
       "podman",
