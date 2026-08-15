@@ -3,8 +3,10 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { MemoryProvider, MemoryRecord } from "./types.js";
 import { commandExists, runProcess } from "../utils/process.js";
+import { providerVersions } from "./versions.js";
 
 export interface EngramOptions { command?: string; storagePath?: string; maxRecall?: number; executor?: typeof runProcess; }
+export const ENGRAM_VERSION = providerVersions.engram;
 
 export class EngramMemoryProvider implements MemoryProvider {
   readonly name = "engram";

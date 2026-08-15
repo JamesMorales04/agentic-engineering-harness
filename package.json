@@ -46,6 +46,7 @@
     "zod": "^4.0.17"
   },
   "devDependencies": {
+    "@playwright/test": "1.62.1",
     "@types/node": "^24.2.1",
     "agentic-engineering-harness": "^0.6.27",
     "tsx": "^4.20.3",

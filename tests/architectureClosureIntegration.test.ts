@@ -2,10 +2,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { resolveContextTransportCapabilities } from "../src/context/transport.js";
+import { probePodmanSerena, resolveContextTransportCapabilities, staticContextCapabilities } from "../src/context/transport.js";
 import { buildRequirementEvidenceGraph } from "../src/evidence/graph.js";
 import { runFullStackDogfood } from "../src/evals/fullStack.js";
 import { recordEvent } from "../src/telemetry/events.js";
+import { resetTracing, safeAttributes } from "../src/telemetry/tracing.js";
 import { buildAcceptedOperationCandidates } from "../src/memory/candidates.js";
 import type { AgentExecutionSelection } from "../src/agents/types.js";
 import type { HarnessProjectConfig, TaskContract, ValidationReport } from "../src/core/types.js";
@@ -24,6 +25,26 @@ describe("architecture closure integration", () => {
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 
+  it("keeps static capability resolution pure and bounds the explicit Podman probe", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-podman-probe-"));
+    try {
+      const config: HarnessProjectConfig = { version: 1, project: { name: "podman" }, context: { semanticRetrieval: { provider: "serena", required: false } }, security: { sandbox: { image: "preloaded-image" } } };
+      const podman = selection("opencode", "podman");
+      expect(staticContextCapabilities(config, podman).mcpServers).toEqual({ serena: false, context: false, headroom: false });
+      const commands: string[] = [];
+      const result = await probePodmanSerena(root, "preloaded-image", {
+        commandExists: async () => true,
+        run: async (command, options) => {
+          commands.push(command);
+          expect(options?.timeoutMs).toBeLessThanOrEqual(30_000);
+          return command.includes("image exists") ? { exitCode: 0, stdout: "", stderr: "", durationMs: 1 } : { exitCode: 0, stdout: "/usr/local/bin/serena\n", stderr: "", durationMs: 1 };
+        }
+      });
+      expect(result).toMatchObject({ available: true, imagePresent: true, exposesSerena: true });
+      expect(commands).toEqual(["podman image exists 'preloaded-image'", "podman run --pull=never --network=none --rm 'preloaded-image' sh -lc 'command -v serena'"]);
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
   it("carries normalized validator findings into the requirement evidence graph", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-evidence-flow-"));
     try {
@@ -38,7 +59,7 @@ describe("architecture closure integration", () => {
 
   it("runs the deterministic full-stack production-path fixture", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-full-stack-report-"));
-    try { const report = await runFullStackDogfood(root, { version: 1, project: { name: "dogfood" }, evals: { resultsDir: ".harness/evals/results" } }); expect(report.status).toBe("PASS"); expect(report.checks.map((item) => item.id)).toEqual(expect.arrayContaining(["context.budget-gateway", "validation.report", "evidence.graph", "provenance.chain"])); } finally { await fs.rm(root, { recursive: true, force: true }); }
+    try { const report = await runFullStackDogfood(root, { version: 1, project: { name: "dogfood" }, evals: { resultsDir: ".harness/evals/results" } }); expect(report.status).toBe("PASS"); expect(report.checks.map((item) => item.id)).toEqual(expect.arrayContaining(["context.production-assembly", "validation.report", "evidence.graph", "provenance.chain"])); } finally { await fs.rm(root, { recursive: true, force: true }); }
   }, 120_000);
 
   it("builds source-hash-verified accepted-operation memory candidates", async () => {
@@ -55,11 +76,26 @@ describe("architecture closure integration", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-otel-local-"));
     try {
       const config: HarnessProjectConfig = { version: 1, project: { name: "otel" }, telemetry: { enabled: true, exporter: "none" } };
-      await recordEvent(root, config, "harness.run.start", { operationId: "OTEL-1", status: "RUNNING" }); await recordEvent(root, config, "harness.plan.ready", { operationId: "OTEL-1", status: "PASS" }); await recordEvent(root, config, "harness.verify.finish", { operationId: "OTEL-1", status: "PASS" });
-      await recordEvent(root, config, "harness.validation.error", { operationId: "OTEL-ERR", status: "FAIL", error: "bounded failure" }); await recordEvent(root, config, "harness.run.finish", { operationId: "OTEL-ERR", status: "FAIL" });
+      await recordEvent(root, config, "harness.run.start", { operationId: "OTEL-1", status: "RUNNING", inputTokens: 12, apiToken: "must-not-leak" });
+      await recordEvent(root, config, "harness.plan.ready", { operationId: "OTEL-1", status: "PASS" });
+      await recordEvent(root, config, "harness.verify.finish", { operationId: "OTEL-1", status: "PASS" });
+      await recordEvent(root, config, "harness.review.start", { operationId: "OTEL-1", status: "RUNNING" });
+      await recordEvent(root, config, "harness.review.finish", { operationId: "OTEL-1", status: "PASS" });
+      await recordEvent(root, config, "harness.delivery.finalize", { operationId: "OTEL-1", status: "PASS" });
+      await recordEvent(root, config, "harness.run.finish", { operationId: "OTEL-1", status: "PASS" });
+      await recordEvent(root, config, "harness.validation.error", { operationId: "OTEL-ERR", status: "FAIL", error: "bounded failure" });
+      await recordEvent(root, config, "harness.run.finish", { operationId: "OTEL-ERR", status: "FAIL" });
       const lines = (await fs.readFile(path.join(root, ".harness/telemetry/events.ndjson"), "utf8")).trim().split(/\r?\n/).map((line) => JSON.parse(line) as { name: string; traceId: string; spanId: string; parentSpanId?: string; status?: string; attributes?: Record<string, unknown> });
-      const events = lines.filter((line) => line.attributes?.["aeh.recorded"] === true);
-      expect(events).toHaveLength(5); expect(new Set(lines.filter((line) => line.attributes?.["operationId"] === "OTEL-1").map((line) => line.traceId)).size).toBe(1); expect(events[1].parentSpanId).not.toBe(events[0].spanId); expect(lines.find((line) => line.name === "harness.validation.error" && line.attributes?.["aeh.recorded"] !== true)?.status).toBe("ERROR");
-    } finally { await fs.rm(root, { recursive: true, force: true }); }
+      expect(lines.map((line) => line.name)).toEqual(["harness.run.start", "harness.plan.ready", "harness.verify.finish", "harness.review.start", "harness.review.finish", "harness.delivery.finalize", "harness.run.finish", "harness.validation.error", "harness.run.finish"]);
+      const operationEvents = lines.filter((line) => line.attributes?.["operationId"] === "OTEL-1");
+      expect(new Set(operationEvents.map((line) => line.traceId)).size).toBe(1);
+      expect(operationEvents.every((line) => line.attributes?.["aeh.recorded"] === undefined)).toBe(true);
+      expect(operationEvents[1]?.parentSpanId).not.toBe(operationEvents[0]?.spanId);
+      expect(operationEvents[2]?.traceId).toBe(operationEvents[0]?.traceId);
+      expect(lines.find((line) => line.name === "harness.validation.error")?.status).toBe("ERROR");
+      expect(operationEvents[0]?.attributes?.inputTokens).toBe(12);
+      expect(operationEvents[0]?.attributes?.apiToken).toBeUndefined();
+      expect(safeAttributes({ inputTokens: 4, totalTokens: 8, accessToken: "denied", bearerToken: "denied", arbitraryToken: "denied" })).toEqual({ inputTokens: 4, totalTokens: 8 });
+    } finally { resetTracing(); await fs.rm(root, { recursive: true, force: true }); }
   });
 });

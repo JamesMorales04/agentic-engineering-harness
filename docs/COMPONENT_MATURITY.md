@@ -25,11 +25,11 @@ Levels are cumulative: `DECLARED`, `ADAPTER`, `EXECUTABLE`,
 | Reqnroll | DECLARED | consumer-project capability; no AEH runtime dependency |
 | .NET/xUnit integration | EXECUTABLE | Gherkin/project validation path |
 | Testcontainers capability | DECLARED | consumer test capability; detected through project validation |
-| Playwright | WORKFLOW_INTEGRATED | normalized browser evidence adapter |
+| Playwright | WORKFLOW_INTEGRATED | pinned Chromium JSON-reporter contract and normalized browser evidence adapter |
 | Pact | ADAPTER | normalized contract evidence adapter; consumer runtime remains external |
 | OPA | WORKFLOW_INTEGRATED | typed execution identity and Rego policy path |
-| Opengrep | WORKFLOW_INTEGRATED | normalized security findings |
-| Trivy | WORKFLOW_INTEGRATED | normalized vulnerability/secret/misconfiguration findings and SBOM |
+| Opengrep | WORKFLOW_INTEGRATED | pinned CLI JSON contract and normalized security findings |
+| Trivy | WORKFLOW_INTEGRATED | pinned CLI JSON contract, strict full-stack validation, normalized vulnerability/secret/misconfiguration findings and SBOM |
 | Podman | WORKFLOW_INTEGRATED | hardened worker executor and sandbox tests |
 | OpenTelemetry | WORKFLOW_INTEGRATED | official SDK provider/context propagation plus local NDJSON |
 | Engineering Evals | DOGFOODED | deterministic production-path fixture in `src/evals/fullStack.ts` |
@@ -37,7 +37,7 @@ Levels are cumulative: `DECLARED`, `ADAPTER`, `EXECUTABLE`,
 | Cosign | EXECUTABLE | optional signing plus verification path |
 | in-toto/SLSA | EXECUTABLE | statement/predicate and manifest-chain generation |
 | ContextBudgetGateway | WORKFLOW_INTEGRATED | typed fragments in the actual agent prompt path |
-| Serena | ADAPTER | provider doctor/MCP projection; local installation is external |
+| Serena | WORKFLOW_INTEGRATED | pinned MCP initialize/tools/list/call contract and transport projection; local installation is external |
 | Headroom | EXECUTABLE | controller-side SDK bridge, real compression contract and full-stack fixture |
 | Repository Context Map | WORKFLOW_INTEGRATED | Graphify/filesystem map consumed by prompt preparation |
 | `aeh_context_retrieve` | WORKFLOW_INTEGRATED | authorization, path and SHA-256 checks |

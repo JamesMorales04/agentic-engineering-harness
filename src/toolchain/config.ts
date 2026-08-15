@@ -4,6 +4,7 @@ import YAML from "yaml";
 import { z } from "zod";
 import type { HarnessProjectConfig } from "../core/types.js";
 import type { ToolchainConfig, ToolchainLock, ToolchainState } from "./types.js";
+import { providerVersions } from "../providers/versions.js";
 
 const toolSchema = z.object({
   kind: z.enum(["system", "mise"]),
@@ -42,8 +43,8 @@ function addMandatoryContextTools(config: ToolchainConfig): ToolchainConfig {
   const tools = { ...config.tools };
   tools.python ??= { kind: "mise", command: "python", source: "python", version: "3.13", required: true, activateWhen: ["semantic-retrieval:serena", "compression:headroom"] };
   tools.uv ??= { kind: "mise", command: "uv", source: "uv", version: "latest", activateWhen: ["semantic-retrieval:serena", "compression:headroom"] };
-  tools.serena ??= { kind: "mise", command: "serena", source: "pipx:serena", version: "1.5.3", required: true, dependsOn: ["uv", "python"], activateWhen: ["semantic-retrieval:serena"] };
-  tools.headroom ??= { kind: "mise", command: "headroom", source: "pipx:headroom-ai[all]", version: "0.27.0", required: true, dependsOn: ["uv", "python"], activateWhen: ["compression:headroom"] };
+  tools.serena ??= { kind: "mise", command: "serena", source: "pipx:serena-agent", version: providerVersions.serena, required: true, dependsOn: ["uv", "python"], activateWhen: ["semantic-retrieval:serena"] };
+  tools.headroom ??= { kind: "mise", command: "headroom", source: "pipx:headroom-ai[all]", version: providerVersions.headroom, required: true, dependsOn: ["uv", "python"], activateWhen: ["compression:headroom"] };
   return { ...config, tools };
 }
 

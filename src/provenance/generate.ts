@@ -81,22 +81,42 @@ export async function buildProvenanceManifest(root: string, config: HarnessProje
   const required: string[] = [];
   const members: string[] = [];
   if (taskId) {
-    addCandidate(root, candidates, path.resolve(root, config.sdd?.runsDir ?? ".harness/runs", `${taskId}.json`), "operation-result");
-    addCandidate(root, candidates, path.resolve(root, config.sdd?.reportsDir ?? ".harness/reports", `${taskId}.json`), "validation-report");
-    addCandidate(root, candidates, path.resolve(root, config.evidence?.outputDir ?? ".harness/evidence", `${taskId}.json`), "requirement-evidence-graph");
-    addCandidate(root, candidates, path.resolve(root, config.sdd?.contractsDir ?? ".harness/contracts", `${taskId}.yaml`), "task-contract");
-    addCandidate(root, candidates, path.resolve(root, ".harness/seals", `${taskId}.json`), "task-contract-seal");
-    addCandidate(root, candidates, path.resolve(root, config.controlPlane?.snapshotDir ?? ".harness/controller", taskId, "manifest.json"), "control-plane-snapshot");
+    const runFile = path.resolve(root, config.sdd?.runsDir ?? ".harness/runs", taskId + ".json");
+    const reportFile = path.resolve(root, config.sdd?.reportsDir ?? ".harness/reports", taskId + ".json");
+    const evidenceFile = path.resolve(root, config.evidence?.outputDir ?? ".harness/evidence", taskId + ".json");
+    const contractFile = path.resolve(root, config.sdd?.contractsDir ?? ".harness/contracts", taskId + ".yaml");
+    const sealFile = path.resolve(root, ".harness/seals", taskId + ".json");
+    const controlPlaneFile = path.resolve(root, config.controlPlane?.snapshotDir ?? ".harness/controller", taskId, "manifest.json");
+    addCandidate(root, candidates, runFile, "operation-result");
+    addCandidate(root, candidates, reportFile, "validation-report");
+    addCandidate(root, candidates, evidenceFile, "requirement-evidence-graph");
+    addCandidate(root, candidates, contractFile, "task-contract");
+    addCandidate(root, candidates, sealFile, "task-contract-seal");
+    addCandidate(root, candidates, controlPlaneFile, "control-plane-snapshot");
     const contract = await loadTaskContract(root, taskId, config).catch(() => undefined);
     for (const source of Object.values(contract?.source ?? {})) if (source) addCandidate(root, candidates, path.resolve(root, source), "normative-spec-source");
-    const operation = await selectOperation(root, taskId);
+    const runRecord = await readJson(root, relative(root, runFile), []);
+    const authoritativeOperationId = typeof runRecord?.operationId === "string" ? runRecord.operationId : typeof runRecord?.result?.operationId === "string" ? runRecord.result.operationId : undefined;
+    const operation = await selectOperation(root, taskId, authoritativeOperationId);
+    if (authoritativeOperationId && !operation) throw new Error("PROVENANCE_REQUIRED_ARTIFACT_MISSING: " + path.posix.join(".harness/operations", safeId(authoritativeOperationId) + ".json"));
     if (operation) {
       operationId = operation.id;
-      const operationFile = path.resolve(root, ".harness/operations", `${safeId(operation.id)}.json`);
-      addCandidate(root, candidates, operationFile, "operation-record"); required.push(relative(root, operationFile)); members.push(relative(root, operationFile));
+      const operationFile = path.resolve(root, ".harness/operations", safeId(operation.id) + ".json");
+      await requireArtifact(root, candidates, required, operationFile, "operation-record");
+      members.push(relative(root, operationFile));
+      await requireArtifact(root, candidates, required, contractFile, "task-contract");
+      if (config.validation?.requireSeal !== false) await requireArtifact(root, candidates, required, sealFile, "task-contract-seal");
+      await requireArtifact(root, candidates, required, runFile, "operation-result");
+      await requireArtifact(root, candidates, required, reportFile, "validation-report");
+      if (config.evidence?.enabled || config.evidence?.requireComplete) await requireArtifact(root, candidates, required, evidenceFile, "requirement-evidence-graph");
+      if (config.controlPlane?.required) await requireArtifact(root, candidates, required, controlPlaneFile, "control-plane-snapshot");
       const eventFile = path.resolve(root, ".harness/operations", safeId(operation.id), "events.ndjson");
       addCandidate(root, candidates, eventFile, "operation-events");
-      for (const ref of referencedPaths(operation)) { const absolute = path.resolve(root, ref); addCandidate(root, candidates, absolute, "lineage-artifact"); members.push(relative(root, absolute)); }
+      for (const ref of referencedPaths(operation)) {
+        const absolute = path.resolve(root, ref);
+        addCandidate(root, candidates, absolute, "lineage-artifact");
+        if (await exists(absolute)) members.push(relative(root, absolute));
+      }
     }
   }
   const entries: ProvenanceManifestEntry[] = [];
@@ -152,8 +172,9 @@ export async function verifyCosignBundle(root: string, statementFile: string, bu
 
 export async function sha256File(file: string): Promise<string> { return await new Promise((resolve, reject) => { const hash = crypto.createHash("sha256"); const stream = createReadStream(file); stream.on("data", (chunk) => hash.update(chunk)); stream.on("error", reject); stream.on("end", () => resolve(hash.digest("hex"))); }); }
 
-async function selectOperation(root: string, taskId: string): Promise<Record<string, any> | undefined> {
+async function selectOperation(root: string, taskId: string, authoritativeOperationId?: string): Promise<Record<string, any> | undefined> {
   const directory = path.resolve(root, ".harness/operations");
+  if (authoritativeOperationId) return readJson(root, path.posix.join(".harness/operations", safeId(authoritativeOperationId) + ".json"), []);
   const files = await fs.readdir(directory, { withFileTypes: true }).catch(() => [] as import("node:fs").Dirent[]);
   const records: Record<string, any>[] = [];
   for (const entry of files) if (entry.isFile() && entry.name.endsWith(".json") && !entry.name.endsWith(".wake.json") && !entry.name.endsWith(".completion.json")) { const record = await readJson(root, path.relative(root, path.join(directory, entry.name)), []); if (record && operationMatches(record, taskId)) records.push(record); }
@@ -162,6 +183,13 @@ async function selectOperation(root: string, taskId: string): Promise<Record<str
 function operationMatches(value: Record<string, any>, taskId: string): boolean { return value.payload?.taskId === taskId || value.result?.taskId === taskId || value.result?.contract?.task?.id === taskId; }
 function referencedPaths(operation: Record<string, any>): string[] { const result: string[] = []; const visit = (value: unknown, key = ""): void => { if (typeof value === "string" && /(artifact|report|handoff|evidence|result|checkpoint|statement|predicate|seal|contract|spec)/i.test(key) && value.length < 500 && !value.includes("\n")) result.push(value); else if (Array.isArray(value)) value.forEach((item) => visit(item, key)); else if (value && typeof value === "object") Object.entries(value).forEach(([name, item]) => visit(item, name)); }; visit(operation.result, "result"); visit(operation.stages, "stage"); visit(operation.participants, "participant"); visit(operation.supervision, "supervision"); return [...new Set(result)].filter((item) => !item.startsWith("http://") && !item.startsWith("https://")); }
 function addCandidate(root: string, candidates: Map<string, string>, absolute: string, kind: string): void { const relativePath = relative(root, absolute); if (relativePath === ".." || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) return; candidates.set(relativePath, kind); }
+async function requireArtifact(root: string, candidates: Map<string, string>, required: string[], absolute: string, kind: string): Promise<void> {
+  const relativePath = relative(root, absolute);
+  if (!isSafeRelative(relativePath) || !(await exists(absolute))) throw new Error("PROVENANCE_REQUIRED_ARTIFACT_MISSING: " + relativePath);
+  candidates.set(relativePath, kind);
+  required.push(relativePath);
+}
+async function exists(file: string): Promise<boolean> { try { await fs.stat(file); return true; } catch { return false; } }
 function isSafeRelative(value: string): boolean { return typeof value === "string" && value.length > 0 && !path.isAbsolute(value) && !value.split(/[\\/]/).includes(".."); }
 async function readJson(root: string, relativePath: string, failures: string[]): Promise<Record<string, any> | undefined> { try { const value = JSON.parse(await fs.readFile(path.resolve(root, relativePath), "utf8")); return value && typeof value === "object" ? value : undefined; } catch (error) { failures.push(`${relativePath}: ${String(error)}`); return undefined; } }
 async function optionalDigest(file: string): Promise<string | undefined> { try { return await sha256File(file); } catch { return undefined; } }

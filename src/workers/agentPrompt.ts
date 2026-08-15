@@ -463,7 +463,7 @@ export async function buildAgentContextFragments(
   if (stateOperation) add("operation-state", "operation", "PROJECTABLE", 80, JSON.stringify(stateOperation), { authoritative: "deterministic-controller" });
   if (options.parentAgentId) add("structured-handoff-input", "handoff", "PROJECTABLE", 78, JSON.stringify({ parentAgentId: options.parentAgentId, operationId: identity.operationId, phase: identity.phase }), { authoritative: "operation-record" });
   const validationArtifact = await readOptionalText(root, path.posix.join(config.sdd?.reportsDir ?? ".harness/reports", `${contract.task.id}.json`));
-  if (validationArtifact) add("validation-evidence", "validation", "PROJECTABLE", 75, validationArtifact, { artifact: path.posix.join(config.sdd?.reportsDir ?? ".harness/reports", `${contract.task.id}.json`) });
+  if (validationArtifact) add("validation-evidence", "validation", "COMPRESSIBLE", 75, validationArtifact, { artifact: path.posix.join(config.sdd?.reportsDir ?? ".harness/reports", `${contract.task.id}.json`) });
   const auditArtifact = await latestJsonArtifact(root, ".harness/audits");
   if (auditArtifact) add("audit-evidence", "audit", "PROJECTABLE", 72, auditArtifact.content, { artifact: auditArtifact.path });
   const hasGit = await fs.access(path.join(root, ".git")).then(() => true).catch(() => false);

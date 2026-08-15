@@ -7,6 +7,7 @@ export interface ContextCompressionRequest {
   fragment: ContextFragment;
   maxTokens?: number;
   sourceSha256: string;
+  reversible?: boolean;
 }
 
 export interface ContextCompressionResult {

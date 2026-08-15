@@ -4,9 +4,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { estimateTokens } from "../estimator.js";
 import { runProcess, commandExists } from "../../utils/process.js";
+import { providerVersions } from "../../providers/versions.js";
 
 export interface HeadroomOptions { command?: string; version?: string; python?: string; bridge?: string; executor?: typeof runProcess; }
-export const HEADROOM_VERSION = "0.28.0";
+export const HEADROOM_VERSION = providerVersions.headroom;
 
 /** AEH-owned adapter. It talks to a local Headroom executable and never starts an agent process. */
 export class HeadroomCompressionProvider implements ContextCompressionProvider {
@@ -47,7 +48,7 @@ export class HeadroomCompressionProvider implements ContextCompressionProvider {
     const result = await this.executor(bridge, {
       cwd: root,
       timeoutMs: 120_000,
-      stdin: JSON.stringify({ version: 1, operation: "compress", content: request.fragment.content, maxTokens: request.maxTokens ?? estimateTokens(request.fragment.content), reversible: false, sourceSha256: request.sourceSha256 })
+      stdin: JSON.stringify({ version: 1, operation: "compress", content: request.fragment.content, maxTokens: request.maxTokens ?? estimateTokens(request.fragment.content), reversible: request.reversible === true, sourceSha256: request.sourceSha256 })
     });
     if (result.exitCode !== 0) throw new Error(`HEADROOM_RUNTIME_FAILURE: ${result.stderr || result.stdout}`);
     const parsed = parseBridgeResponse(result.stdout);

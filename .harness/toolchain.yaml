@@ -39,10 +39,10 @@ tools:
   openspec: { kind: mise, command: openspec, source: "npm:@fission-ai/openspec", version: latest, activateWhen: [spec-authoring:openspec] }
   python: { kind: mise, command: python, source: python, version: "3.13", required: true, activateWhen: [semantic-retrieval:serena, compression:headroom] }
   uv: { kind: mise, command: uv, source: uv, version: latest, activateWhen: [code-intelligence:graphify, semantic-retrieval:serena, compression:headroom] }
-  graphify: { kind: mise, command: graphify, source: "pipx:graphifyy", version: latest, dependsOn: [uv], activateWhen: [code-intelligence:graphify] }
+  graphify: { kind: mise, command: graphify, source: "pipx:graphifyy", version: "0.9.43", dependsOn: [uv], activateWhen: [code-intelligence:graphify] }
   serena: { kind: mise, command: serena, source: "pipx:serena-agent", version: "1.6.1", required: true, dependsOn: [uv, python], activateWhen: [semantic-retrieval:serena] }
   headroom: { kind: mise, command: headroom, source: "pipx:headroom-ai[all]", version: "0.28.0", required: true, dependsOn: [uv, python], activateWhen: [compression:headroom] }
-  engram: { kind: mise, command: engram, source: "npm:@engram-ai-memory/cli", version: latest, activateWhen: [memory:engram] }
+  engram: { kind: mise, command: engram, source: "npm:@engram-ai-memory/cli", version: "0.4.1", dependsOn: [pnpm], activateWhen: [memory:engram] }
   opa:
     kind: mise
     command: opa
@@ -50,16 +50,17 @@ tools:
     version: latest
     activateWhen: [validation:opa]
     container: { image: docker.io/openpolicyagent/opa:latest-static }
-  opengrep: { kind: mise, command: opengrep, source: "aqua:opengrep/opengrep", version: latest, activateWhen: [security-tool:opengrep, validator:opengrep] }
+  opengrep: { kind: mise, command: opengrep, source: "aqua:opengrep/opengrep", version: "1.22.0", activateWhen: [security-tool:opengrep, validator:opengrep] }
   trivy:
     kind: mise
     command: trivy
     source: "aqua:aquasecurity/trivy"
-    version: latest
+    version: "0.70.0"
     activateWhen: [security-tool:trivy, validator:trivy]
     container: { image: ghcr.io/aquasecurity/trivy:latest }
   cosign: { kind: mise, command: cosign, source: "aqua:sigstore/cosign", version: latest, activateWhen: [organization:signed-policy] }
   podman: { kind: system, command: podman, activateWhen: [orchestration:podman, sandbox:podman] }
+  pnpm: { kind: mise, command: pnpm, source: "npm:pnpm", version: "10.15.0", activateWhen: [memory:engram, project:pnpm] }
 
 projectDependencies:
   autoDetect: true

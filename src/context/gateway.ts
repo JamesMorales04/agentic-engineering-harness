@@ -40,7 +40,7 @@ export class ContextBudgetGateway {
 
     for (const fragment of durable) {
       classifyFragment(fragment);
-      const optimized = await this.optimizeFragment(fragment, request.operationId, policy.compression.minTokens, request.capabilities?.authorizedRetrieval !== false);
+      const optimized = await this.optimizeFragment(fragment, request.operationId, policy.compression.minTokens, request.capabilities?.authorizedRetrieval !== false, policy.compression.reversible, policy.compression.required);
       candidates.push({ raw: fragment, optimized });
     }
 
@@ -59,7 +59,7 @@ export class ContextBudgetGateway {
     return { envelope, rendered, metrics, retrieval: { root: this.root, operationId: request.operationId, logicalAgent: request.logicalAgent, allowedFragmentIds: [...envelope.retrieval.allowedFragmentIds] } };
   }
 
-  private async optimizeFragment(fragment: ContextFragment, operationId: string, minCompressionTokens: number, authorizedRetrieval: boolean): Promise<ContextFragmentProjection> {
+  private async optimizeFragment(fragment: ContextFragment, operationId: string, minCompressionTokens: number, authorizedRetrieval: boolean, reversibleRequired: boolean, compressionRequired: boolean): Promise<ContextFragmentProjection> {
     const originalTokens = estimateTokens(fragment.content);
     if (isRequiredFragment(fragment)) return projectSource(fragment);
     if (fragment.preservation === "DISCARDABLE") return { ...fragment, content: "", estimatedTokens: 0, originalTokens, projected: true };
@@ -72,7 +72,8 @@ export class ContextBudgetGateway {
     // advertising a tool the transport cannot call.
     if (fragment.preservation === "RETRIEVABLE") return genericProjection(fragment);
     let projected: ContextFragmentProjection;
-    switch (fragment.kind) {
+    if (fragment.preservation === "COMPRESSIBLE") projected = genericProjection(fragment);
+    else switch (fragment.kind) {
       case "validation": projected = projectValidation(fragment); break;
       case "audit": projected = projectAudit(fragment); break;
       case "operation": projected = projectOperation(fragment); break;
@@ -92,9 +93,17 @@ export class ContextBudgetGateway {
       default: projected = projectSource(fragment);
     }
     if (this.compressor && canLossyCompress(fragment) && originalTokens >= minCompressionTokens) {
+      if (reversibleRequired && !authorizedRetrieval) {
+        if (compressionRequired) throw new Error(`CONTEXT_COMPRESSION_REVERSIBILITY_UNAVAILABLE: fragment '${fragment.id}' cannot be compressed without an authorized AEH recovery surface.`);
+        return projected;
+      }
       try {
-        const compression = await this.compressor.compress(this.root, { operationId, fragment, maxTokens: Math.max(1, Math.floor(originalTokens * 0.7)), sourceSha256: fragment.source?.sha256 ?? sha256(fragment.content) });
-        if (compression.compressedTokens < projected.estimatedTokens) return { ...projected, content: compression.content, estimatedTokens: compression.compressedTokens, compressed: true, compression: { provider: compression.provider, providerVersion: compression.providerVersion, reversible: compression.reversible, handle: compression.handle } };
+        const sourceSha256 = fragment.source?.sha256 ?? sha256(fragment.content);
+        const compression = await this.compressor.compress(this.root, { operationId, fragment, maxTokens: Math.max(1, Math.floor(originalTokens * 0.7)), sourceSha256, reversible: reversibleRequired });
+        if (compression.compressedTokens < projected.estimatedTokens) {
+          const handle = reversibleRequired ? recoveryHandle(operationId, fragment.id, sourceSha256) : undefined;
+          return { ...projected, content: compression.content, estimatedTokens: compression.compressedTokens, compressed: true, compression: { provider: compression.provider, providerVersion: compression.providerVersion, reversible: Boolean(handle), handle } };
+        }
       } catch (error) {
         if (this.config.context?.compression?.required !== false) throw error;
         // Optional compression failure falls back to deterministic projection.
@@ -168,3 +177,7 @@ function metricsFor(raw: ContextFragment[], optimized: ContextFragmentProjection
 function safeSegment(value: string): string { const sanitized = value.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, ""); return sanitized || "fragment"; }
 function safePath(root: string, relative: string): string { if (path.isAbsolute(relative)) throw new Error("Context artifact paths must be relative to the project root."); const absoluteRoot = path.resolve(root); const absolute = path.resolve(absoluteRoot, relative); if (absolute !== absoluteRoot && !absolute.startsWith(`${absoluteRoot}${path.sep}`)) throw new Error("Context artifact path escapes the project root."); return absolute; }
 function isRequiredProjection(fragment: ContextFragmentProjection): boolean { return fragment.preservation === "VERBATIM" || fragment.kind === "normative"; }
+
+export function recoveryHandle(operationId: string, fragmentId: string, sourceSha256: string): string {
+  return `aeh-context://${encodeURIComponent(operationId)}/${encodeURIComponent(fragmentId)}/${sourceSha256}`;
+}

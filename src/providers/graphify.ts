@@ -5,6 +5,7 @@ import type { HarnessProjectConfig } from "../core/types.js";
 import type { CodeIntelligenceProvider, CodeImpactReport } from "./types.js";
 import { commandExists, runProcess } from "../utils/process.js";
 import { loadCanonicalGraph } from "./graphifyModel.js";
+import { providerVersions } from "./versions.js";
 
 export interface GraphifyGenerationMetadata {
   version: 1;
@@ -17,6 +18,7 @@ export interface GraphifyGenerationMetadata {
 }
 
 const GRAPHIFY_COMMAND = "graphify";
+export const GRAPHIFY_VERSION = providerVersions.graphify;
 
 /** Graphify owns generation/freshness; all consumers use graphifyModel.ts. */
 export class GraphifyCodeIntelligenceProvider implements CodeIntelligenceProvider {
@@ -74,6 +76,7 @@ export class GraphifyCodeIntelligenceProvider implements CodeIntelligenceProvide
   }
 
   private async targetConfiguredGraph(root: string): Promise<void> {
+    if (this.config?.codeIntelligence?.refreshCommand?.trim()) return;
     const target = path.resolve(root, this.graphPath());
     if (target === path.resolve(root, "graphify-out/graph.json")) return;
     const generated = await fs.readFile(path.resolve(root, "graphify-out/graph.json"), "utf8").catch(() => undefined);

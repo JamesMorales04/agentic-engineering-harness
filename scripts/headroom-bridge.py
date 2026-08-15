@@ -49,16 +49,19 @@ def main() -> int:
             fail("maxTokens must be a positive integer", "INVALID_REQUEST")
             return 2
 
-        # UniversalCompressor is the documented local SDK entry point.  CCR is
-        # disabled: AEH persists and authorizes the original fragment itself.
+        # UniversalCompressor is the documented local SDK entry point.  Keep
+        # Kompress enabled: AEH provisions headroom-ai[all] and this contract
+        # must exercise the intended compression stack, not the fallback-only
+        # path. CCR remains disabled because AEH persists and authorizes the
+        # original fragment itself.
         from headroom.compression import UniversalCompressor, UniversalCompressorConfig
 
         original_tokens = max(1, len(content) // 4)
         target_ratio = min(1.0, max_tokens / original_tokens)
         compressor = UniversalCompressor(
             UniversalCompressorConfig(
-                use_magika=False,
-                use_kompress=False,
+                use_magika=True,
+                use_kompress=True,
                 ccr_enabled=False,
                 compression_ratio_target=target_ratio,
             )
