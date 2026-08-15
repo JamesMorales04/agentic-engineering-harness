@@ -13,9 +13,18 @@ envelope, agent charter, frozen skills, normative contract/seal/source,
 assignment, operation projection, RepoMap, advisory memory and evidence
 references. Normative fragments remain byte-for-byte `VERBATIM`; the charter is
 not used as a single catch-all fragment. RepoMap construction is skipped when
-`context.repositoryMap.enabled` is false. Transport capabilities are carried
+the selected execution contract forbids it. Transport capabilities are carried
 into preparation so a direct Codex or hardened Podman turn never advertises a
 retrieval tool it cannot expose.
+
+Context requirements are explicit per agent: `REQUIRED`, `OPTIONAL` or
+`FORBIDDEN` for repository-map, semantic retrieval, raw retrieval and
+compression. Project-level `semanticRetrieval.required: true` is therefore
+scoped by the routed execution contract. Coordinators/supervisors default to
+`FORBIDDEN` for repository and raw semantic context; reviewers and workers may
+require Serena when their runtime/transport can actually project it. The same
+resolved capability result controls readiness, MCP injection, prompt policy
+and degradation diagnostics.
 
 ## Preservation classes
 
@@ -43,6 +52,13 @@ Envelopes carry operation, agent, phase, budget, fragment projections, allowed r
 
 ## Runtime and troubleshooting
 
-Run `aeh doctor` after `aeh init --setup`. Context readiness reports the gateway, estimator, retrieval gateway, Serena and Headroom independently. A missing mandatory provider is a deterministic readiness failure; AEH does not silently fall back to bulk repository reads or unoptimized compression. Fix it with `aeh setup --update-lock` and rerun doctor. `--help`, `--version` and status inspection do not install tools.
+Run `aeh doctor` after `aeh init --setup`. Doctor reports the gateway,
+estimator, retrieval gateway, Serena and Headroom independently. Operation
+readiness is evaluated again after routing, against the concrete runtime and
+transport; a project-level required provider does not block a role whose
+contract forbids or does not require that capability. A required capability
+for a selected worker/reviewer fails closed before materialization; an
+optional capability records an explicit bounded fallback. `--help`,
+`--version` and status inspection do not install tools.
 
 Context telemetry emits numeric/hash-only events including `harness.context.prepare`, `project`, `compress`, `deliver` and `operation_summary`. It intentionally does not emit prompt bodies. Evaluation should compare baseline/observe and optimized/enforce with the same task, repository, model and provider, and report cost per successful operation rather than tokens removed alone.

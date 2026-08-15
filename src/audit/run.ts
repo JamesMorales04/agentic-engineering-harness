@@ -45,7 +45,7 @@ import {
 import { recordEvent } from "../telemetry/events.js";
 import { runProcess } from "../utils/process.js";
 import { compileAuditReviewerPrompt } from "./reviewerPrompt.js";
-import { assertContextReadiness } from "../context/preflight.js";
+import type { IntentDecisionV1 } from "./intentDecision.js";
 
 export type AuditFailureClass =
   | "NONE"
@@ -63,6 +63,7 @@ export interface AuditRequest {
   risk?: TaskRisk;
   reviewers?: string[];
   auditId?: string;
+  intentDecision?: IntentDecisionV1;
 }
 
 export interface AuditValidationCheck extends ValidationCheck {
@@ -73,6 +74,7 @@ export interface AuditReport {
   version: 1;
   auditId: string;
   intent: "audit";
+  intentDecision?: IntentDecisionV1;
   request: string;
   status: AuditStatus;
   startedAt: string;
@@ -125,7 +127,6 @@ export async function runAudit(
   config: HarnessProjectConfig,
   input: AuditRequest
 ): Promise<AuditReport> {
-  await assertContextReadiness(root, config);
   const startedAt = new Date().toISOString();
   const auditId = input.auditId ?? createAuditId(input.request);
   const baseRef = config.validation?.baseRef ?? "HEAD";
@@ -248,6 +249,7 @@ export async function runAudit(
     version: 1,
     auditId,
     intent: "audit",
+    intentDecision: input.intentDecision,
     request: input.request,
     status,
     startedAt,

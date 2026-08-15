@@ -122,6 +122,14 @@ The lead owns:
 - deterministic state transitions;
 - final semantic acceptance.
 
+For managed conversational turns, routing is emitted as a typed,
+versioned `IntentDecisionV1`. The lead owns the meaning of the human request;
+AEH validates the decision's structure and effects, then enforces the
+TaskContract, permissions, capabilities, validators, lifecycle, provenance and
+delivery gates. AEH does not run a second regex/keyword interpretation of the
+original sentence. The heuristic intent classifier remains available only for
+the explicit diagnostic/evaluation command and configured legacy fallback.
+
 It delegates:
 
 ```text

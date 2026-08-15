@@ -9,22 +9,29 @@ import { runExternalToolValidator } from "../validators/external.js";
 import type { AuditReport, AuditRequest } from "../audit/run.js";
 import { startPaseoHarness, type PaseoStartOptions, type PaseoStartResult } from "./start.js";
 import { loadResolvedAgentTopology } from "../agents/config.js";
+import { intentDecisionFromHeuristic, type EngineeringIntent } from "../audit/intent.js";
+import { assertIntentDecisionForRoute, parseIntentDecision, type IntentDecisionV1 } from "../audit/intentDecision.js";
+import { answerInformationalRequest, type InformationalAnswer } from "../informational/answer.js";
 
 export interface DeterministicPaseoTurnResult {
   version: 1;
+  intent: EngineeringIntent;
   session: { agentId: string; state: "idle" | "received-completion"; turnCount: number };
-  userTurn: { prompt: string; accepted: boolean };
-  operation: { id: string; kind: "audit"; status: string; phase: string; revision: number; result?: Record<string, unknown> };
+  userTurn: { id: string; prompt: string; accepted: boolean };
+  decision: IntentDecisionV1;
+  operation?: { id: string; kind: "audit"; status: string; phase: string; revision: number; result?: Record<string, unknown> };
   validation: { status: string; checks: Array<{ id: string; status: string; message: string }> };
   completion: { status: string; agentId: string; attempts: number };
   lead: { wakeReceived: boolean; message: string };
+  supervisorSpawned: boolean;
+  answer?: InformationalAnswer;
   human: string;
 }
 
 interface DeterministicSessionState {
   version: 1;
   agentId: string;
-  turns: Array<{ prompt: string; role: "user" | "system"; content: string; at: string }>;
+  turns: Array<{ id?: string; prompt: string; role: "user" | "system"; content: string; at: string; decision?: IntentDecisionV1 }>;
 }
 
 const SESSION_FILE = ".harness/paseo/deterministic-session.json";
@@ -51,16 +58,44 @@ export async function startDeterministicPaseoHarness(root: string, config: Harne
   return { ...result, transport: "sdk" };
 }
 
-export async function runDeterministicPaseoTurn(root: string, config: HarnessProjectConfig, prompt: string): Promise<DeterministicPaseoTurnResult> {
+export async function runDeterministicPaseoTurn(root: string, config: HarnessProjectConfig, prompt: string, scriptedDecision?: IntentDecisionV1): Promise<DeterministicPaseoTurnResult> {
   const normalizedPrompt = prompt.trim();
   if (!normalizedPrompt) throw new Error("aeh paseo turn requires a non-empty simulated user prompt.");
   const sessionFile = path.resolve(root, SESSION_FILE);
   const session = await readSession(sessionFile);
   if (!session) throw new Error(`No deterministic Paseo lead session exists at ${sessionFile}. Run aeh start --deterministic first.`);
-  session.turns.push({ prompt: normalizedPrompt, role: "user", content: normalizedPrompt, at: new Date().toISOString() });
-  await writeSession(sessionFile, session);
+  const userTurnId = `${session.agentId}:turn-${session.turns.filter((turn) => turn.role === "user").length + 1}`;
 
-  const operation = await startDetachedOperation(root, "audit", { request: normalizedPrompt, risk: "low" }, {
+  // Deterministic journeys must normally receive a scripted lead decision. The
+  // lexical fallback is retained only for old compatibility callers and is
+  // explicitly marked non-authoritative in the resulting durable decision.
+  const semanticDecision = parseIntentDecision(scriptedDecision ?? intentDecisionFromHeuristic(config, { request: normalizedPrompt }, userTurnId));
+  const decision = semanticDecision.userTurnId ? semanticDecision : parseIntentDecision({ ...semanticDecision, userTurnId });
+  session.turns.push({ id: userTurnId, prompt: normalizedPrompt, role: "user", content: normalizedPrompt, decision, at: new Date().toISOString() });
+  await writeSession(sessionFile, session);
+  if (decision.intent === "informational") {
+    assertIntentDecisionForRoute(decision, "informational");
+    const answer = await answerInformationalRequest(root, config, normalizedPrompt);
+    session.turns.push({ prompt: normalizedPrompt, role: "system", content: answer.human, at: new Date().toISOString() });
+    await writeSession(sessionFile, session);
+    return {
+      version: 1,
+      intent: "informational",
+      session: { agentId: session.agentId, state: "idle", turnCount: session.turns.filter((turn) => turn.role === "user").length },
+      userTurn: { id: userTurnId, prompt: normalizedPrompt, accepted: true },
+      decision,
+      validation: { status: "NOT_APPLICABLE", checks: [] },
+      completion: { status: "NOT_APPLICABLE", agentId: session.agentId, attempts: 0 },
+      lead: { wakeReceived: false, message: answer.human },
+      supervisorSpawned: false,
+      answer,
+      human: answer.human
+    };
+  }
+
+  if (decision.intent !== "audit") throw new Error(`DETERMINISTIC_SEMANTIC_ROUTE_UNSUPPORTED: ${decision.intent}`);
+  assertIntentDecisionForRoute(decision, "audit");
+  const operation = await startDetachedOperation(root, "audit", { request: normalizedPrompt, risk: "low", intentDecision: decision }, {
     nodeExecutable: process.execPath,
     entryFile: process.argv[1] ?? "aeh",
     completionAgentId: session.agentId,
@@ -90,12 +125,15 @@ export async function runDeterministicPaseoTurn(root: string, config: HarnessPro
   const validationStatus = checks.some((check) => check.status === "FAIL") ? "FAIL" : "PASS";
   const result: DeterministicPaseoTurnResult = {
     version: 1,
+    intent: "audit",
     session: { agentId: session.agentId, state: wakeMessage ? "received-completion" : "idle", turnCount: session.turns.filter((turn) => turn.role === "user").length },
-    userTurn: { prompt: normalizedPrompt, accepted: true },
+    userTurn: { id: userTurnId, prompt: normalizedPrompt, accepted: true },
+    decision,
     operation: { id: current.id, kind: "audit", status: current.status, phase: current.phase, revision: current.revision, result: current.result },
     validation: { status: validationStatus, checks },
     completion,
     lead: { wakeReceived: Boolean(wakeMessage), message: wakeMessage },
+    supervisorSpawned: false,
     human: `DETERMINISTIC PASEO: user turn accepted; operation ${current.id} ${current.status}; validation ${validationStatus}; completion ${completion.status}; lead ${wakeMessage ? "received terminal wake" : "not woken"}.`
   };
   return result;
@@ -109,7 +147,7 @@ async function deterministicAudit(root: string, config: HarnessProjectConfig, in
   const qualityGate = evaluateFinalQualityGate([], config);
   const now = new Date().toISOString();
   const report: AuditReport = {
-    version: 1, auditId: input.auditId ?? "DETERMINISTIC-AUDIT", intent: "audit", request: input.request, status: check.status === "PASS" ? "CLEAN" : "DEGRADED", startedAt: now, finishedAt: now,
+    version: 1, auditId: input.auditId ?? "DETERMINISTIC-AUDIT", intent: "audit", intentDecision: input.intentDecision, request: input.request, status: check.status === "PASS" ? "CLEAN" : "DEGRADED", startedAt: now, finishedAt: now,
     repository: { root, baseRef: config.validation?.baseRef ?? "HEAD", dirtyPaths: [] }, reviewers: ["deterministic-reviewer"], validationChecks, findings: [], counts: qualityGate.counts, debtPoints: qualityGate.debtPoints, debtScore: qualityGate.debtScore, qualityGate, productionSafe: check.status === "PASS", sessions: [{ id: "deterministic-reviewer", provider: "fake-paseo-sdk", model: "deterministic", logicalAgent: "reviewer", runtime: "fake", transport: "sdk", status: "completed", exitCode: 0, stdout: "{}", stderr: "" } satisfies WorkerSession], restoredPaths: []
   };
   const file = path.resolve(root, ".harness", "audits", `${report.auditId}.json`);

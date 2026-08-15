@@ -2,15 +2,34 @@ export type AgentRole = "orchestrator" | "planner" | "implementer" | "reviewer" 
 export type AgentRisk = "low" | "medium" | "high";
 export type PermissionDecision = "allow" | "ask" | "deny";
 export type AgentTransport = "inherit" | "paseo" | "direct" | "podman";
-export interface RuntimeCapabilities { nativeAgent?: boolean; nativeAgentViaPaseo?: boolean; modelSelection?: boolean; variantSelection?: boolean; sessions?: boolean; structuredOutput?: boolean; }
+export type ContextCapabilityRequirement = "REQUIRED" | "OPTIONAL" | "FORBIDDEN";
+export interface ContextCapabilityRequirements {
+  repositoryMap?: ContextCapabilityRequirement;
+  semanticRetrieval?: ContextCapabilityRequirement;
+  rawRetrieval?: ContextCapabilityRequirement;
+  compression?: ContextCapabilityRequirement;
+}
+export interface RuntimeCapabilities {
+  nativeAgent?: boolean;
+  nativeAgentViaPaseo?: boolean;
+  modelSelection?: boolean;
+  variantSelection?: boolean;
+  sessions?: boolean;
+  structuredOutput?: boolean;
+  mcp?: boolean;
+  stdioMcp?: boolean;
+  runtimeConfigInjection?: boolean;
+  nativeToolProjection?: boolean;
+  localMcp?: boolean;
+}
 export interface RuntimeDefinition { adapter: "codex" | "opencode" | string; paseoProvider?: string; command?: string; defaultArgs?: string[]; capabilities?: RuntimeCapabilities; }
 export interface RuntimeOverride extends Partial<Omit<RuntimeDefinition, "capabilities">> { capabilities?: Partial<RuntimeCapabilities>; }
 export interface ModelDefinition { runtime: string; provider?: string; model: string; variant?: string; temperature?: number; options?: Record<string, unknown>; }
 export interface ModelOverride extends Partial<Omit<ModelDefinition, "options">> { options?: Record<string, unknown>; }
 export interface AgentPermissions { read?: PermissionDecision; write?: PermissionDecision; shell?: PermissionDecision; network?: PermissionDecision; delegate?: PermissionDecision; review?: PermissionDecision; validate?: PermissionDecision; gitWrite?: PermissionDecision; }
 export interface AgentExecutionDefinition { model: string; runtime?: string; nativeAgent?: string; variant?: string; args?: string[]; transport?: AgentTransport; }
-export interface AgentDefinition { role: AgentRole; domains?: string[]; description?: string; execution: AgentExecutionDefinition; temperature?: number; skills?: string[]; mcps?: string[]; promptPath?: string; orchestratorPromptPath?: string; outputContract?: string; permissions?: AgentPermissions; capabilities?: string[]; disabled?: boolean; }
-export interface AgentOverride { role?: AgentRole; domains?: string[]; execution?: Partial<AgentExecutionDefinition>; temperature?: number; skills?: string[]; mcps?: string[]; promptPath?: string; orchestratorPromptPath?: string; outputContract?: string; permissions?: AgentPermissions; capabilities?: string[]; disabled?: boolean; description?: string; }
+export interface AgentDefinition { role: AgentRole; domains?: string[]; description?: string; execution: AgentExecutionDefinition; temperature?: number; skills?: string[]; mcps?: string[]; promptPath?: string; orchestratorPromptPath?: string; outputContract?: string; permissions?: AgentPermissions; capabilities?: string[]; contextRequirements?: ContextCapabilityRequirements; disabled?: boolean; }
+export interface AgentOverride { role?: AgentRole; domains?: string[]; execution?: Partial<AgentExecutionDefinition>; temperature?: number; skills?: string[]; mcps?: string[]; promptPath?: string; orchestratorPromptPath?: string; outputContract?: string; permissions?: AgentPermissions; capabilities?: string[]; contextRequirements?: Partial<ContextCapabilityRequirements>; disabled?: boolean; description?: string; }
 export interface AgentProfile { description?: string; models?: Record<string, ModelOverride>; agents?: Record<string, AgentOverride>; }
 export interface RoutingCondition { intent?: string | string[]; domains?: string[]; files?: string[]; risk?: AgentRisk | AgentRisk[]; }
 export interface RoutingRule { id: string; priority?: number; when: RoutingCondition; use?: string; reviewers?: string[]; validators?: string[]; }
@@ -39,4 +58,4 @@ export interface ResolvedAgentDefinition extends Omit<AgentDefinition, "executio
 export interface ResolvedAgentTopology { version: 1; profile?: string; skillRoots: string[]; runtimes: Record<string, RuntimeDefinition>; models: Record<string, ResolvedModelDefinition>; agents: Record<string, ResolvedAgentDefinition>; routing: RoutingRule[]; recovery: RecoveryMap; councils: Record<string, CouncilDefinition>; }
 export interface AgentRouteContext { intent: string; domains?: string[]; files?: string[]; risk?: AgentRisk; }
 export interface ResolvedRoute { ruleIds: string[]; agent?: string; reviewers: string[]; validators: string[]; reasons: string[]; }
-export interface AgentExecutionSelection { profile?: string; logicalAgent: string; role: AgentRole; domains: string[]; description?: string; runtimeName: string; runtimeAdapter: string; paseoProvider: string; modelAlias: string; modelId: string; modelName: string; modelProvider?: string; variant?: string; nativeAgent?: string; transport: AgentTransport; temperature?: number; skills: string[]; mcps: string[]; permissions: AgentPermissions; outputContract?: string; args: string[]; runtimeCapabilities: RuntimeCapabilities; }
+export interface AgentExecutionSelection { profile?: string; logicalAgent: string; role: AgentRole; domains: string[]; description?: string; contextRequirements?: ContextCapabilityRequirements; runtimeName: string; runtimeAdapter: string; paseoProvider: string; modelAlias: string; modelId: string; modelName: string; modelProvider?: string; variant?: string; nativeAgent?: string; transport: AgentTransport; temperature?: number; skills: string[]; mcps: string[]; permissions: AgentPermissions; outputContract?: string; args: string[]; runtimeCapabilities: RuntimeCapabilities; }

@@ -14,7 +14,7 @@ import { detectPaseoDaemonCapabilities, isRecoverableDaemonStatus } from "./capa
 import { launchManagedPaseoAgent, probeManagedPaseoAgent } from "./runtime.js";
 import type { PaseoSdkAgentOptions } from "./sdk.js";
 
-export const PASEO_BOOTSTRAP_VERSION = 11;
+export const PASEO_BOOTSTRAP_VERSION = 12;
 export type PaseoSessionPolicy = "fresh-on-start" | "reuse-compatible" | "resume-explicit";
 
 export interface PaseoStartOptions {
@@ -231,6 +231,7 @@ export function buildAehControlMcp(aehCommand: string, projectRoot: string): Pic
   const [command, ...baseArgs] = argv;
   const server = "aeh-control";
   const tools = [
+    "aeh_informational_context",
     "aeh_operation_start_audit",
     "aeh_operation_start_run",
     "aeh_operation_start_change",
@@ -288,6 +289,8 @@ Your exact AEH runtime invocation is \`${aehCommand}\`. This invocation and runt
 
 Before engineering work, read AGENTS.md and .harness/skills/engineering-workflow/SKILL.md when present. Those instructions plus resolved AEH topology are authoritative. Every engineering operation must enter through AEH; only purely informational questions may bypass.
 
+Translate each human turn by its primary requested outcome and conversational context. Resolve negation, references to prior findings or operations, constraints, and follow-up language semantically; do not use a keyword dictionary. Choose the corresponding AEH route (INFORMATIONAL, AUDIT, CHANGE, RUN, STATUS, or CANCEL) and call it with a versioned structured IntentDecisionV1 containing a compact requestedOutcome, effects, and userTurnId when available. The decision is descriptive of what the human means, not a permission grant. The controller validates that typed decision and then enforces its own TaskContract, scope, capabilities, permissions, validators, provenance, lifecycle, and delivery gates. Never place chain-of-thought in the decision. INFORMATIONAL uses \`aeh_informational_context\` for bounded read-only grounding and creates no operation, TaskContract, reviewer, validator, report, or delivery artifact. AUDIT remains read-only; CHANGE and RUN remain subject to their deterministic contracts. If a mutating referent is unresolved, return a clarification/unresolved decision rather than guessing a target.
+
 Operate as a thin portfolio orchestrator with interrupt-driven semantics. You may own multiple concurrent operations; use \`aeh_operation_portfolio\` only for portfolio-level decisions, never as a healthy-progress poll. Manage user intent, priorities, cross-operation dependencies, true exception decisions and final user-facing semantic acceptance. Do not directly multiplex planner/worker/reviewer timelines. Each non-trivial operation has an operation-supervisor responsible for operation-local semantic coordination/consolidation, while deterministic controller + OperationRecord remain lifecycle/gate authority.
 
 ${preferPaseoTools ? `Use the injected aeh-control tools for detached AUDIT, CHANGE and prepared RUN operations. Start tools return a compact operation digest. Once an operation starts successfully, return idle: do not poll \`aeh_operation_status\`, \`aeh_operation_digest\`, child agents, or the portfolio merely to watch healthy progress. Healthy revisions are controller-owned and intentionally do not wake the lead.
@@ -297,6 +300,8 @@ Use \`aeh_operation_digest\` only when a user explicitly asks for current operat
 The detached liveness watchdog may inspect durable state every few seconds without LLM tokens. It wakes the operation-supervisor first for stalls and wakes this lead only for bounded unresolved stalls, blocked decisions, or terminal completion. Never manufacture periodic progress commentary. On a terminal continuation, consume the referenced durable result, complete the pending user request, then acknowledge exactly that revision with \`aeh_operation_ack\`. Never start a duplicate operation merely because a callback was lost.` : `Use AEH's configured Paseo adapter for delegation and lifecycle control.`}
 
 Before non-trivial work and at completed-turn boundaries, inspect context pressure with \`aeh_context_status\`. Honor HANDOFF_REQUIRED/HARD_HANDOFF and stop the old lead when replacement is created. Lead rotation automatically rebinds active OperationRecords and completion targets to the new lead generation; durable artifacts, not conversational replay, carry continuity.
+
+Evidence discipline is mandatory in user-facing answers. Label claims as (1) verified from durable operation evidence, (2) known from authoritative bootstrap/control-plane context, or (3) inferred/not yet verified. A failed or blocked operation with no result artifact, AuditReport or findings never verifies repository inspection or architectural claims. State the blocker and keep any pre-existing control-plane knowledge explicitly separate from operation-produced evidence.
 
 The compiled AEH TaskContract/SDD plus seal are normative during implementation. OpenSpec is authoring provenance before freeze, not a competing runtime authority. This bootstrap is session configuration, not a user task. Do not emit an initialization handshake; remain idle until the user's first real request.`;
 }

@@ -3,10 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  completionPrompt,
   loadOperationCompletionTarget,
   notifyOperationCompletion,
   registerOperationCompletionTarget
 } from "../src/operations/completion.js";
+import { claimFromOperation, evidenceDisciplineInstruction } from "../src/operations/evidence.js";
 import { cancelOperation, startDetachedOperation } from "../src/operations/controller.js";
 import { saveOperation, type OperationRecord } from "../src/operations/state.js";
 
@@ -43,6 +45,22 @@ function terminal(root: string, overrides: Partial<OperationRecord> = {}): Opera
 }
 
 describe("operation completion callbacks", () => {
+  it("does not turn a failed pre-inspection operation into a repository claim", () => {
+    const operation = {
+      version: 2,
+      id: "AUDIT-NO-EVIDENCE",
+      kind: "audit",
+      status: "FAILED",
+      phase: "finished",
+      result: undefined,
+      stages: { supervision: { name: "supervision", status: "FAILED" } }
+    } as never;
+    expect(evidenceDisciplineInstruction(operation)).toContain("no durable result artifact");
+    expect(evidenceDisciplineInstruction(operation)).toContain("not-started");
+    expect(completionPrompt(operation)).toContain("Do not claim that this operation verified repository behavior");
+    expect(claimFromOperation("The repository was inspected.", operation).verified).toBe(false);
+  });
+
   it("sends exactly one continuation callback to the registered lead", async () => {
     const root = await tempRoot();
     await registerOperationCompletionTarget(root, "AUDIT-1", "lead-1", "lead-state", vi.fn(async () => undefined));

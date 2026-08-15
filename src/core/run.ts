@@ -31,7 +31,6 @@ import { buildRequirementEvidenceGraph, evidenceValidationCheck, type Requiremen
 import { enforceSandboxPolicy } from "../security/sandbox.js";
 import { currentOperationContext, resolveOperationStateRoot, setOperationStage } from "../operations/state.js";
 import { ensureOperationSupervisor, maybeRotateOperationSupervisor, settleDrainingSupervisorGenerations } from "../operations/supervisor.js";
-import { assertContextReadiness } from "../context/preflight.js";
 import { createMemoryProvider } from "../providers/memory.js";
 import { buildAcceptedOperationCandidates } from "../memory/candidates.js";
 
@@ -58,7 +57,6 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
   const effectiveConfig = withOrganizationPolicies(config, policyResolution);
   const workspaceRoot = path.resolve(await deliveryWorkspacePath(controlRoot, effectiveConfig, contract.task.id) ?? controlRoot);
   const effectiveContract = workspaceRoot === controlRoot ? contract : await loadTaskContract(workspaceRoot, contract.task.id, effectiveConfig);
-  await assertContextReadiness(workspaceRoot, effectiveConfig);
   const startedMs = Date.now();
   const startedAt = new Date(startedMs).toISOString();
 

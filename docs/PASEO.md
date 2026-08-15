@@ -43,6 +43,28 @@ aeh paseo agents --operation <operation-id> --phase review
 
 Synchronous `aeh audit` / `aeh run` remain valid compatibility entrypoints for non-interactive automation.
 
+The conversational lead is the semantic authority for translating each human
+turn into a typed, versioned `IntentDecisionV1`. It resolves the requested
+outcome, negation, referents, constraints and follow-ups, then selects the
+corresponding route. AEH does not re-interpret the original sentence after
+that decision. The deterministic controller validates only the structured
+decision and remains authoritative for contracts, capabilities, permissions,
+validators, evidence, lifecycle, provenance and delivery.
+
+Each decision is bound to the originating `userTurnId` when available and is
+stored with the operation's durable intent state (or the deterministic
+session's compact turn record). This lets lead rotation recover operation and
+finding references without replaying the old model conversation. An unresolved
+mutating referent is rejected by the route contract until the lead resolves it;
+the controller never guesses a target from the human text.
+
+Explanations and orientation use the bounded `aeh_informational_context` tool
+and do not create an operation. Defect discovery, correctness/safety judgments
+and formal review use the AUDIT start tool; mixed requests preserve the lead's
+explicit semantic decision. A heuristic classifier remains available for the
+`aeh intent` diagnostic/evaluation surface and explicitly marked compatibility
+fallbacks only; disagreement cannot veto a lead decision.
+
 ## SDK-first control plane
 
 AEH uses Paseo's published TypeScript client package, `@getpaseo/client`, as the primary control surface for agent creation, follow-up turns, status lookup and directory queries. Paseo currently documents that package as public but **not yet a stable public SDK**, so AEH deliberately resolves the copy bundled with the active `@getpaseo/cli` installation first instead of independently selecting a client version.
@@ -92,14 +114,26 @@ command: <exact Node executable>
 args: [<exact dist/main.js>, operation, mcp]
 ```
 
-Only four MCP tools are preapproved:
+The control MCP is preapproved only for these bounded tools:
 
 ```text
+aeh_informational_context
 aeh_operation_start_audit
 aeh_operation_start_run
+aeh_operation_start_change
+aeh_operation_digest
 aeh_operation_status
+aeh_operation_ack
+aeh_operation_portfolio
 aeh_operation_cancel
+aeh_context_status
 ```
+
+`aeh_informational_context` is read-only and accepts a lead-produced
+`IntentDecisionV1` whose route is INFORMATIONAL. AEH validates the decision's
+effects without scanning the human request. The lead is never given Serena through this control surface;
+Serena is projected only to a routed worker/reviewer whose resolved capability
+contract permits it.
 
 Paseo's `toolPolicy.preapproved` is scoped to those exact MCP server/tool identities; native shell/edit tools are not broadened by this configuration. If the AEH invocation cannot be parsed as a safe command vector, MCP injection is skipped rather than evaluating shell syntax, and the short `aeh operation ...` CLI surface remains the fallback.
 

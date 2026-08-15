@@ -17,12 +17,13 @@ import { runDeterministicPaseoTurn, startDeterministicPaseoHarness } from "./pas
 import { guardLeadContext } from "./paseo/context.js";
 import { listManagedPaseoAgents } from "./paseo/runtime.js";
 import { prepareOpenSpecChange, compileOpenSpecChange } from "./spec/openspec.js";
-import { classifyEngineeringIntent, formatEngineeringIntent } from "./audit/intent.js";
+import { classifyEngineeringIntentHeuristic, formatEngineeringIntent } from "./audit/intent.js";
 import { runAudit } from "./audit/run.js";
 import type { TaskRisk } from "./core/types.js";
 import { VERSION } from "./version.js";
 import { retrievePersistedContext } from "./context/retrieval/persisted.js";
 import { serveContextRetrievalMcp } from "./context/retrieval/server.js";
+import { createIntentDecision, type IntentDecisionV1 } from "./audit/intentDecision.js";
 
 const args = process.argv.slice(2);
 if (args.length === 1 && ["--version", "-V"].includes(args[0])) { console.log(VERSION); process.exit(0); }
@@ -78,9 +79,14 @@ async function runStart(argv: string[]): Promise<void> {
 }
 
 async function runPaseoTurn(argv: string[]): Promise<void> {
-  const parsed = parseGeneric(argv, new Set(), new Set(["json"]));
+  const parsed = parseGeneric(argv, new Set(["decision"]), new Set(["json"]));
   if (parsed.positional.length < 1 || parsed.positional.length > 2) throw new Error("aeh paseo turn accepts <simulated-user-prompt> and at most one project directory.");
-  const result = await runDeterministicPaseoTurn(path.resolve(parsed.positional[1] ?? "."), await loadProjectConfig(path.resolve(parsed.positional[1] ?? ".")), parsed.positional[0]);
+  let decision: unknown;
+  if (parsed.value("decision")) {
+    try { decision = JSON.parse(parsed.value("decision")!); }
+    catch (error) { throw new Error(`--decision must contain valid JSON: ${String(error)}`); }
+  }
+  const result = await runDeterministicPaseoTurn(path.resolve(parsed.positional[1] ?? "."), await loadProjectConfig(path.resolve(parsed.positional[1] ?? ".")), parsed.positional[0], decision as IntentDecisionV1 | undefined);
   if (parsed.flag("json")) console.log(JSON.stringify(result, null, 2));
   else console.log(result.human);
 }
@@ -161,7 +167,7 @@ async function runIntent(argv: string[]): Promise<void> {
   if (parsed.positional.length > 2) throw new Error("aeh intent accepts <request> and at most one project directory.");
   const root = path.resolve(parsed.positional[1] ?? ".");
   const config = await loadProjectConfig(root);
-  const decision = classifyEngineeringIntent(config, { request, files: parsed.values("file"), domains: parsed.values("domain"), risk: parseRisk(parsed.value("risk")) });
+  const decision = classifyEngineeringIntentHeuristic(config, { request, files: parsed.values("file"), domains: parsed.values("domain"), risk: parseRisk(parsed.value("risk")) });
   console.log(formatEngineeringIntent(decision));
   console.log(JSON.stringify(decision, null, 2));
 }
@@ -173,9 +179,7 @@ async function runAuditCommand(argv: string[]): Promise<void> {
   if (parsed.positional.length > 2) throw new Error("aeh audit accepts <request> and at most one project directory.");
   const root = path.resolve(parsed.positional[1] ?? ".");
   const config = await loadProjectConfig(root);
-  const intent = classifyEngineeringIntent(config, { request, files: parsed.values("file"), domains: parsed.values("domain"), risk: parseRisk(parsed.value("risk")), explicitIntent: "audit" });
-  if (intent.intent !== "audit") throw new Error(`Request did not resolve to AUDIT: ${formatEngineeringIntent(intent)}`);
-  const report = await runAudit(root, config, { request, files: parsed.values("file"), domains: parsed.values("domain"), risk: parseRisk(parsed.value("risk")), reviewers: parsed.values("reviewer") });
+  const report = await runAudit(root, config, { request, intentDecision: createIntentDecision("audit", request, "explicit-cli"), files: parsed.values("file"), domains: parsed.values("domain"), risk: parseRisk(parsed.value("risk")), reviewers: parsed.values("reviewer") });
   console.log(`AUDIT ${report.status} — ${report.auditId}`);
   console.log(`productionSafe=${report.productionSafe}`);
   console.log(`findings critical=${report.counts.critical} high=${report.counts.high} medium=${report.counts.medium} low=${report.counts.low} note=${report.counts.note}`);

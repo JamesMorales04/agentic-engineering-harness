@@ -14,6 +14,7 @@ import { loadOperation, type AuditOperationPayload, type ChangeOperationPayload,
 import { listManagedPaseoAgents } from "./paseo/runtime.js";
 import { planSelfCheckoutRuntime, resolveStartProjectRoot } from "./runtime/invocation.js";
 import { VERSION } from "./version.js";
+import { createIntentDecision } from "./audit/intentDecision.js";
 
 const args = process.argv.slice(2);
 assertHarnessWorkflowEntryAllowed(args);
@@ -112,16 +113,18 @@ async function runOperationStart(argv: string[]): Promise<void> {
   if (kind === "audit") {
     payload = {
       request: subject,
+      intentDecision: createIntentDecision("audit", subject, "explicit-cli"),
       files: parsed.values("file"),
       domains: parsed.values("domain"),
       risk: parseRisk(parsed.value("risk")),
       reviewers: parsed.values("reviewer")
     };
   } else if (kind === "run") {
-    payload = { taskId: subject, profile: parsed.value("profile"), priority };
+    payload = { taskId: subject, intentDecision: createIntentDecision("run", `execute prepared task ${subject}`, "explicit-cli"), profile: parsed.value("profile"), priority };
   } else {
     payload = {
       request: subject,
+      intentDecision: createIntentDecision("change", subject, "explicit-cli"),
       title: parsed.value("title"),
       taskId: parsed.value("task"),
       files: parsed.values("file"),

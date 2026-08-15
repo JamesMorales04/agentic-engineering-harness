@@ -47,6 +47,37 @@ describe("context efficiency subsystem", () => {
     expect(verifyContextEnvelope(result.envelope)).toBe(true);
   });
 
+  it("disambiguates implicit artifacts when stable fragment IDs carry different agent context", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-context-collision-"));
+    try {
+      const gateway = new ContextBudgetGateway(root, config(), { telemetry: false });
+      const first = await gateway.prepare({ operationId: "OP-COLLISION", logicalAgent: "operation-supervisor", phase: "supervision", fragments: [{ id: "execution-envelope", kind: "execution-envelope", preservation: "VERBATIM", priority: 100, content: "supervisor context" }] });
+      const second = await gateway.prepare({ operationId: "OP-COLLISION", logicalAgent: "explorer", phase: "discovery", fragments: [{ id: "execution-envelope", kind: "execution-envelope", preservation: "VERBATIM", priority: 100, content: "explorer context" }] });
+      const firstArtifact = first.envelope.fragments[0]?.source?.artifact;
+      const secondArtifact = second.envelope.fragments[0]?.source?.artifact;
+      expect(firstArtifact).toBe(".harness/context/OP-COLLISION/execution-envelope.raw");
+      expect(secondArtifact).toMatch(/\.harness\/context\/OP-COLLISION\/execution-envelope\.[a-f0-9]{16}\.raw/);
+      expect(await fs.readFile(path.join(root, firstArtifact!), "utf8")).toBe("supervisor context");
+      expect(await fs.readFile(path.join(root, secondArtifact!), "utf8")).toBe("explorer context");
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it("keeps concurrent implicit artifact writers byte-exact", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-context-concurrent-"));
+    try {
+      const gateway = new ContextBudgetGateway(root, config(), { telemetry: false });
+      const [first, second] = await Promise.all([
+        gateway.prepare({ operationId: "OP-CONCURRENT", logicalAgent: "operation-supervisor", phase: "supervision", fragments: [{ id: "shared", kind: "execution-envelope", preservation: "VERBATIM", priority: 100, content: "supervisor bytes" }] }),
+        gateway.prepare({ operationId: "OP-CONCURRENT", logicalAgent: "explorer", phase: "discovery", fragments: [{ id: "shared", kind: "execution-envelope", preservation: "VERBATIM", priority: 100, content: "explorer bytes" }] })
+      ]);
+      for (const result of [first, second]) {
+        const artifact = result.envelope.fragments[0]?.source?.artifact;
+        expect(await fs.readFile(path.join(root, artifact!), "utf8")).toBe(result.envelope.fragments[0]?.content);
+      }
+      expect(first.envelope.fragments[0]?.source?.artifact).not.toBe(second.envelope.fragments[0]?.source?.artifact);
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
   it("projects validation evidence while retaining an authorized raw artifact", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-context-validation-"));
     const report = { version: 1, taskId: "TASK-1", status: "FAIL", startedAt: "now", finishedAt: "now", checks: [{ id: "test", category: "test", status: "FAIL", message: "expected one received two", details: { exact: true } }], changedFiles: ["src/app.ts"], metadata: { project: "context-test", baseRef: "main" } } as const;

@@ -14,6 +14,37 @@ Paseo is the reference adapter. It owns process/session/worktree/mobile control,
 
 A lead agent (reference: Codex) owns requirement interpretation, architecture, SDD and review.
 
+Conversational intent is a separate routing boundary. For a managed
+conversation, the lead is the only natural-language semantic authority. It
+translates each human turn, including negation, referents and follow-ups, into
+a compact, versioned `IntentDecisionV1`; the controller never reclassifies the
+original sentence after that decision.
+
+```text
+human turn -> Paseo lead -> IntentDecisionV1 -> selected AEH route
+                                  |                  |
+                                  |                  +-> informational / audit / change / run / status / cancel
+                                  v
+                    durable userTurnId, outcome, referents, constraints
+```
+
+The decision is descriptive, not a permission grant. Its contract contains
+`version`, `source` (`lead-semantic`, `explicit-cli` or
+`heuristic-fallback`), optional `userTurnId`, `intent`, compact
+`requestedOutcome`, effect booleans, optional continuation references,
+constraints, confidence and resolution state. AEH validates only this typed
+contract and its internal effect invariants. Unknown policy claims such as
+`skipValidation`, `allowNetwork`, `gitWrite` or `bypassProvenance` are rejected
+by strict schema validation.
+
+Explanatory repository questions use a bounded read-only context answer and do
+not create lifecycle state. Audit, change and run routes enter their existing
+deterministic contracts. The controller remains the authority for TaskContract,
+SDD/seal, scope, capabilities, permissions, validators, evidence, lifecycle,
+provenance and delivery. The retained `classifyEngineeringIntentHeuristic`
+surface is diagnostic/evaluation/fallback infrastructure only; it cannot veto a
+lead-selected route.
+
 ### 3. Implementation workers
 
 Workers (reference: OpenCode + cost-efficient model) implement frozen, scoped tasks. They have no authority to redefine acceptance.
@@ -79,6 +110,15 @@ The deterministic harness evaluates build/type/lint/tests, scope, immutable file
 ### 7b. Context-efficiency authority
 
 `ContextBudgetGateway` is the single controller-owned path for bounded agent context. It retrieves, classifies, selects, deterministically projects, budgets, selectively compresses and delivers a versioned `ContextEnvelope`. Required `VERBATIM` content is never lossy-compressed or character-truncated. Raw evidence remains in an AEH artifact and is available only through an operation/agent-authorized retrieval gateway.
+
+Context capability requirements are scoped to the selected execution contract:
+each capability is `REQUIRED`, `OPTIONAL` or `FORBIDDEN`. Runtime and transport
+registries describe actual MCP projection surfaces independently of runtime
+names. The resolved capability object is reused for pre-materialization
+readiness, MCP injection, prompt policy and diagnostics. The coordinator and
+operation supervisor forbid repository/semantic/raw context by default, so a
+global project requirement cannot leak Serena or raw retrieval into the
+supervisory control plane.
 
 ```text
 Graphify  -> macro structural topology and advisory dependency/community signals

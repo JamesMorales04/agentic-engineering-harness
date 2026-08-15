@@ -3,6 +3,7 @@ import path from "node:path";
 import { dispatchManagedPaseoAgent } from "../paseo/runtime.js";
 import { recordPaseoTrace } from "../paseo/trace.js";
 import { loadOperation, patchOperationMetadata, type OperationRecord } from "./state.js";
+import { evidenceDisciplineInstruction } from "./evidence.js";
 
 export type OperationCompletionStatus = "PENDING" | "SENT" | "FAILED" | "DISABLED";
 
@@ -128,6 +129,7 @@ export function completionPrompt(operation: OperationRecord): string {
     "Use aeh_operation_digest for compact terminal state. Use aeh_operation_status with detail=full at most once only if the result cannot be consumed from the referenced artifact/digest.",
     revision ? `After consuming this terminal revision, call aeh_operation_ack for operation ${operation.id} and exactly revision ${revision}.` : undefined,
     "Continue the original pending user-facing request using durable operation state as the source of truth.",
+    operation.version === 2 ? evidenceDisciplineInstruction(operation) : "Evidence discipline: do not attribute claims to an operation unless its durable result artifact contains them.",
     operation.error ? `Operation error: ${operation.error.split("\n", 1)[0]}` : undefined
   ].filter(Boolean).join("\n");
 }
