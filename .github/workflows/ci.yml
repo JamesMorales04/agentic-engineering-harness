@@ -204,13 +204,19 @@ jobs:
           COSIGN_PASSWORD: ''
         run: |
           cosign generate-key-pair
-          cat >> .harness/project.yaml <<'EOF'
-
-          provenance:
-            sbom: { required: true }
-            signing: { required: true, key: cosign.key }
-            verification: { required: true, publicKey: cosign.pub }
-          EOF
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import { parse, stringify } from 'yaml';
+          const file = '.harness/project.yaml';
+          const document = parse(fs.readFileSync(file, 'utf8'));
+          document.provenance = {
+            ...(document.provenance ?? {}),
+            sbom: { ...(document.provenance?.sbom ?? {}), required: true },
+            signing: { ...(document.provenance?.signing ?? {}), required: true, key: 'cosign.key' },
+            verification: { ...(document.provenance?.verification ?? {}), required: true, publicKey: 'cosign.pub' }
+          };
+          fs.writeFileSync(file, stringify(document));
+          NODE
       - name: Generate and verify the production-path evidence chain
         env:
           COSIGN_PASSWORD: ''
