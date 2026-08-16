@@ -5,6 +5,7 @@ import process from "node:process";
 import { loadProjectConfig } from "../core/config.js";
 import { assertIntentDecisionForRoute, InvalidIntentDecisionError, parseIntentDecision } from "../audit/intentDecision.js";
 import { answerInformationalRequest } from "../informational/answer.js";
+import { retrieveInformationalEvidence } from "../informational/evidence.js";
 import { statusLeadContext } from "../paseo/context.js";
 import { PASEO_BOOTSTRAP_VERSION } from "../paseo/start.js";
 import { recordPaseoTrace } from "../paseo/trace.js";
@@ -86,6 +87,15 @@ const tools = [
       type: "object",
       properties: { request: { type: "string" }, intentDecision: intentDecisionSchema },
       required: ["request", "intentDecision"], additionalProperties: false
+    }
+  },
+  {
+    name: "aeh_informational_evidence",
+    description: "Retrieve one explicitly referenced repository evidence range for an informational answer. New refs carry file identity and may add &read=<start>-<end> for a later bounded range. This is lazy, read-only, and operation-free; the compact informational context must be used first.",
+    inputSchema: {
+      type: "object",
+      properties: { evidenceRef: { type: "string", pattern: "^repo://.+#sha256=[a-f0-9]{64}(?:&file-sha256=[a-f0-9]{64})?(?:&range=\\d+-\\d+)?(?:&read=\\d+-\\d+)?$" }, maxTokens: { type: "integer", minimum: 1 } },
+      required: ["evidenceRef"], additionalProperties: false
     }
   },
   {
@@ -184,6 +194,12 @@ async function callTool(params: Record<string, unknown>): Promise<Record<string,
     assertManagedLeadDecision(args.intentDecision, "informational");
     const answer = await answerInformationalRequest(root, config, request);
     return operationToolResult(answer, "Bounded repository-grounded informational answer available in structuredContent.");
+  }
+  if (name === "aeh_informational_evidence") {
+    const result = await retrieveInformationalEvidence(root, string(args.evidenceRef, "evidenceRef"), args.maxTokens === undefined ? undefined : integer(args.maxTokens, "maxTokens"));
+    // The raw excerpt belongs in MCP text only when explicitly requested. The
+    // structured side carries metadata and never repeats the excerpt.
+    return { content: [{ type: "text", text: result.content }], structuredContent: { status: "OK", ref: result.ref, path: result.path, sha256: result.sha256, ...(result.fileSha256 ? { fileSha256: result.fileSha256 } : {}), estimatedTokens: result.estimatedTokens, truncated: result.truncated, ...(result.range ? { range: result.range } : {}), ...(result.selectedRange ? { selectedRange: result.selectedRange } : {}) } };
   }
   if (name === "aeh_operation_digest") {
     const digest = await readOperationDigest(root, string(args.operationId, "operationId"));

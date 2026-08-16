@@ -42,6 +42,12 @@ export async function runExternalToolValidator(context: ValidationContext): Prom
     status,
     message: failed ? `${adapter} validator ${status === "WARN" ? "degraded" : "failed"}${malformedEvidence ? " with malformed evidence" : findings.length ? ` with ${findings.length} normalized finding(s)` : ` with exit code ${result.exitCode}`}.` : `${adapter} validator passed.`,
     durationMs: result.durationMs,
-    details: { command: rendered, rawArtifact: path.relative(context.root, rawPath).replaceAll("\\", "/"), evidenceFormat: evidenceFile ? context.spec.options?.evidenceFormat ?? "json-or-junit" : "stdout-json", findings, findingCount: findings.length }
+    details: { command: rendered, rawArtifact: path.relative(context.root, rawPath).replaceAll("\\", "/"), evidenceFormat: evidenceFile ? context.spec.options?.evidenceFormat ?? "json-or-junit" : "stdout-json", exitCode: result.exitCode, stderr: boundedDiagnostic(result.stderr), findings, findingCount: findings.length }
   };
+}
+
+function boundedDiagnostic(value: string): string | undefined {
+  const normalized = value.trim();
+  if (!normalized) return undefined;
+  return normalized.length <= 2_000 ? normalized : `${normalized.slice(0, 1_997)}...`;
 }

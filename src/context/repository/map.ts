@@ -12,7 +12,7 @@ export async function buildRepositoryContextMap(root: string, config: HarnessPro
 }
 
 async function filesystemContextMap(root: string): Promise<RepositoryContextMap> {
-  const ignored = new Set([".git", "node_modules", "dist", ".harness", ".config"]); const files: string[] = [];
+  const ignored = new Set([".git", "node_modules", "dist", ".harness", ".config", ".aeh-test-results", "coverage", ".vitest", ".cache"]); const files: string[] = [];
   async function visit(directory: string): Promise<void> {
     if (files.length >= 5_000) return;
     for (const entry of await fs.readdir(directory, { withFileTypes: true }).catch(() => [] as import("node:fs").Dirent[])) {

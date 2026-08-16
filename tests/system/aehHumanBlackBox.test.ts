@@ -55,6 +55,9 @@ describe.sequential("AEH human-instruction black-box entry", () => {
       for (const directory of ["operations", "contracts", "audits", "seals", "delivery", "reports", "runs"]) {
         expect(await fs.readdir(path.join(root, ".harness", directory))).toEqual([]);
       }
+      await expect(fs.readdir(path.join(root, ".harness", "informational"))).rejects.toThrow();
+      const telemetry = await fs.readFile(path.join(root, ".harness", "telemetry", "events.ndjson"), "utf8").catch(() => "");
+      expect(telemetry).not.toContain("harness.context.informational");
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 

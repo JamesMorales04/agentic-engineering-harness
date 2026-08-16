@@ -50,6 +50,36 @@ Budgets are role- and phase-aware. New projects default to `enforce`; `observe` 
 
 Envelopes carry operation, agent, phase, budget, fragment projections, allowed retrieval IDs and a provenance hash. Large bodies are persisted as `.harness/context/<operation>/...raw`; envelopes contain references and compact content, not lifecycle authority.
 
+### Informational fast path
+
+Repository-grounded explanations use the same separation without creating an
+engineering operation. `aeh_informational_context` selects a bounded set of
+repository files and returns claims, summaries, direct repository-relative
+source refs, provenance and payload estimates. It does not write evidence,
+telemetry, operations, contracts or other `.harness` artifacts. Source bodies
+are not placed in `structuredContent` or replayed in `human`. The lead can call
+`aeh_informational_evidence` for one explicit
+`repo://...#sha256=<chunk>&file-sha256=<file>&range=<start>-<end>` reference
+when a summary is insufficient. A later bounded range can be requested by
+adding `&read=<start>-<end>` while retaining the original selected chunk and
+file identity. Retrieval verifies the whole file with a streaming hash and
+the selected chunk, retains only bounded returned bytes, and carries the
+requested excerpt once while structured metadata remains compact. Stale,
+forged, traversal and repository-escape references fail explicitly. Legacy
+range-only refs remain readable but cannot authorize a later range.
+
+Informational defaults are centralized at an 8K target, 12K soft limit and 15K
+exceptional limit, with eight source candidates, a 4KB per-source initial read
+limit and a 20KB total initial read limit. Projection and deduplication run
+before injection. Telemetry names the quantities it can actually measure:
+`rawEvidenceTokens`, `legacyPayloadTokens`, `projectedPayloadTokens`,
+`informationalPayloadTokens` and `duplicatePayloadTokensAvoided`. These are
+deterministic estimates of repository evidence and serialized payloads; they
+are not claims about actual lead-provider token usage. Source-code strings such
+as PASS/FAIL/WARN/security/uncertainty are summarized as implementation text,
+not promoted to verified runtime findings. Typed validation artifacts retain
+their separate authoritative evidence path.
+
 ## Runtime and troubleshooting
 
 Run `aeh doctor` after `aeh init --setup`. Doctor reports the gateway,
