@@ -232,6 +232,7 @@ export function buildAehControlMcp(aehCommand: string, projectRoot: string): Pic
   const server = "aeh-control";
   const tools = [
     "aeh_informational_context",
+    "aeh_informational_evidence",
     "aeh_operation_start_audit",
     "aeh_operation_start_run",
     "aeh_operation_start_change",

@@ -50,6 +50,26 @@ Budgets are role- and phase-aware. New projects default to `enforce`; `observe` 
 
 Envelopes carry operation, agent, phase, budget, fragment projections, allowed retrieval IDs and a provenance hash. Large bodies are persisted as `.harness/context/<operation>/...raw`; envelopes contain references and compact content, not lifecycle authority.
 
+### Informational fast path
+
+Repository-grounded explanations use the same separation without creating an
+engineering operation. `aeh_informational_context` selects a bounded set of
+repository files, persists content-addressed raw evidence under
+`.harness/informational/evidence/<sha256>.raw`, and returns claims, summaries,
+source refs, provenance and token telemetry. Source bodies are not placed in
+`structuredContent` or replayed in `human`. The lead can call
+`aeh_informational_evidence` for one explicit `repo://...#sha256=...` reference
+when a summary is insufficient; the MCP text carries that requested excerpt
+once while structured metadata remains compact.
+
+Informational defaults are centralized at an 8K target, 12K soft limit and 15K
+exceptional limit, with eight source candidates and short deterministic source
+summaries. Projection and deduplication run before injection and telemetry
+records raw, legacy-estimated, projected, injected and duplicate-avoided token
+counts. The path remains bounded, read-only and operation-free; provenance is
+still `repository-context`, and critical PASS/FAIL/WARN/security/uncertainty
+signals are retained as verified claims with evidence refs.
+
 ## Runtime and troubleshooting
 
 Run `aeh doctor` after `aeh init --setup`. Doctor reports the gateway,

@@ -16,6 +16,13 @@ export interface ContextBudgetConfig { inputTokens?: number; maxTokens?: number;
 export interface ContextConfiguration {
   mode?: ContextMode;
   budgets?: { default?: ContextBudgetConfig; agents?: Record<string, ContextBudgetConfig>; phases?: Record<string, ContextBudgetConfig> };
+  informational?: {
+    targetTokens?: number;
+    softLimitTokens?: number;
+    exceptionalTokens?: number;
+    maxSources?: number;
+    sourceSummaryTokens?: number;
+  };
   repositoryMap?: { enabled?: boolean; tokenBudget?: number; maxGraphHops?: number };
   semanticRetrieval?: { provider?: "serena" | string; required?: boolean; editing?: boolean };
   compression?: { provider?: "headroom" | string; required?: boolean; minTokens?: number; reversible?: boolean; command?: string };

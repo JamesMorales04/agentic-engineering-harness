@@ -18,6 +18,13 @@ const contextBudgetSchema = z.object({ inputTokens: z.number().int().positive().
 const contextSchema = z.object({
   mode: z.enum(["observe", "enforce"]).optional(),
   budgets: z.object({ default: contextBudgetSchema.optional(), agents: z.record(z.string(), contextBudgetSchema).optional(), phases: z.record(z.string(), contextBudgetSchema).optional() }).optional(),
+  informational: z.object({ targetTokens: z.number().int().positive().optional(), softLimitTokens: z.number().int().positive().optional(), exceptionalTokens: z.number().int().positive().optional(), maxSources: z.number().int().positive().optional(), sourceSummaryTokens: z.number().int().positive().optional() }).optional().superRefine((value, ctx) => {
+    const target = value?.targetTokens ?? 8_000;
+    const soft = value?.softLimitTokens ?? 12_000;
+    const exceptional = value?.exceptionalTokens ?? 15_000;
+    if (soft < target) ctx.addIssue({ code: "custom", path: ["softLimitTokens"], message: "informational softLimitTokens must be >= targetTokens" });
+    if (exceptional < soft) ctx.addIssue({ code: "custom", path: ["exceptionalTokens"], message: "informational exceptionalTokens must be >= softLimitTokens" });
+  }),
   repositoryMap: z.object({ enabled: z.boolean().optional(), tokenBudget: z.number().int().positive().optional(), maxGraphHops: z.number().int().positive().optional() }).optional(),
   semanticRetrieval: z.object({ provider: z.string().min(1).optional(), required: z.boolean().optional(), editing: z.boolean().optional() }).optional(),
   compression: z.object({ provider: z.string().min(1).optional(), required: z.boolean().optional(), minTokens: z.number().int().positive().optional(), reversible: z.boolean().optional(), command: z.string().min(1).optional() }).optional(),
