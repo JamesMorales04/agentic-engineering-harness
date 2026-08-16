@@ -202,6 +202,8 @@ context:
     default:
       inputTokens: 16000
     agents:
+      lead:
+        inputTokens: 12000
       explorer:
         inputTokens: 12000
       planner:
@@ -214,6 +216,12 @@ context:
         inputTokens: 14000
       operation-supervisor:
         inputTokens: 1500
+  informational:
+    targetTokens: 8000
+    softLimitTokens: 12000
+    exceptionalTokens: 15000
+    maxSources: 8
+    sourceSummaryTokens: 96
   repositoryMap:
     enabled: true
     tokenBudget: 2000

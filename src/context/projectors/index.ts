@@ -1,6 +1,7 @@
 export * from "./audit.js";
 export * from "./diff.js";
 export * from "./explorer.js";
+export * from "./informational.js";
 export * from "./operation.js";
 export * from "./planner.js";
 export * from "./source.js";
