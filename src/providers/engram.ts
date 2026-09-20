@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type { MemoryProvider, MemoryRecord } from "./types.js";
 import { commandExists, runProcess } from "../utils/process.js";
@@ -24,7 +25,11 @@ export class EngramMemoryProvider implements MemoryProvider {
 
   async doctor(root: string): Promise<{ ok: boolean; message: string; version?: string }> {
     if (!(await commandExists(this.command, root))) return { ok: false, message: `Engram executable '${this.command}' was not found in the reconciled toolchain PATH.` };
-    const result = await this.executor(`${quote(this.command)} doctor`, { cwd: root, timeoutMs: 20_000 });
+    // Engram's doctor validates the checkout from which it is invoked. The
+    // consumer project is often a fixture or a different repository, so run
+    // the check from Engram's own installed checkout while keeping all memory
+    // operations scoped to this provider's project root.
+    const result = await this.executor(`${quote(this.command)} doctor`, { cwd: await resolveDoctorRoot(root), timeoutMs: 20_000 });
     if (result.exitCode !== 0) return { ok: false, message: `Engram health check failed: ${result.stderr || result.stdout}` };
     const version = (result.stdout || result.stderr).match(/v?\d+\.\d+(?:\.\d+)?/)?.[0];
     return {
@@ -59,6 +64,18 @@ export class EngramMemoryProvider implements MemoryProvider {
     try { return (await fs.readFile(this.storagePath, "utf8")).split(/\r?\n/).filter(Boolean).flatMap((line) => { try { return [normalizeRecord(JSON.parse(line) as MemoryRecord)]; } catch { return []; } }); }
     catch { return []; }
   }
+}
+
+async function resolveDoctorRoot(fallback: string): Promise<string> {
+  const configuredRepo = process.env.ENGRAM_REPO?.trim();
+  const stateRoot = process.env.ENGRAM_HOME?.trim() || path.join(os.homedir(), ".engram");
+  const candidates = [configuredRepo, path.join(stateRoot, "repo")].filter((candidate): candidate is string => Boolean(candidate));
+  for (const candidate of candidates) {
+    try {
+      if ((await fs.stat(candidate)).isDirectory()) return candidate;
+    } catch { /* use the consumer root when no installed checkout is available */ }
+  }
+  return fallback;
 }
 
 export async function createMemoryProvider(root: string, config: { memory?: { provider?: string; required?: boolean } }): Promise<MemoryProvider | undefined> {

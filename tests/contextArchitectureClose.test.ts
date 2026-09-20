@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { buildAgentContextFragments } from "../src/workers/agentPrompt.js";
 import { ContextBudgetGateway } from "../src/context/gateway.js";
 import { EngramMemoryProvider } from "../src/providers/engram.js";
@@ -67,6 +67,25 @@ describe("architecture closure contracts", () => {
       const id = await provider.remember(first); expect(id).toBeTruthy(); expect(await provider.remember(first)).toBe(id);
       const records = await provider.recall("p", "topology"); expect(records).toHaveLength(1); expect(records[0].content).toContain("topology");
     } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it("runs Engram health checks from the installed provider checkout", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-engram-doctor-project-"));
+    const engramRepo = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-engram-doctor-repo-"));
+    const execute = async (_command: string, options: { cwd?: string }): Promise<{ exitCode: number; stdout: string; stderr: string; durationMs: number }> => {
+      expect(options.cwd).toBe(engramRepo);
+      return { exitCode: 0, stdout: "Engram v0.4.1", stderr: "", durationMs: 1 };
+    };
+    vi.stubEnv("ENGRAM_REPO", engramRepo);
+    try {
+      const health = await new EngramMemoryProvider(root, { command: "node", executor: execute }).doctor(root);
+      expect(health.ok).toBe(true);
+      expect(health.version).toBe("v0.4.1");
+    } finally {
+      vi.unstubAllEnvs();
+      await fs.rm(root, { recursive: true, force: true });
+      await fs.rm(engramRepo, { recursive: true, force: true });
+    }
   });
 
   it("normalizes security and browser findings with stable fingerprints", () => {
