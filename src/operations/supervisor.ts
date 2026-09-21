@@ -11,7 +11,7 @@ import { hasTraceableAcceptance } from "../workers/promptPolicy.js";
 import { persistOperationConsolidation, persistSupervisorCheckpoint } from "./artifacts.js";
 import { supervisorEventSkills, type SupervisorSemanticEvent } from "./supervisorEventPolicy.js";
 import { compactDeterministicEvidence, supervisorCheckpointProjection, supervisorConsolidationProjection, supervisorHandoffProjection, supervisorInitializationProjection } from "./supervisorPrompt.js";
-import { activeOperationSupervisor, currentOperationContext, loadOperation, patchOperation, registerSupervisorGeneration, resolveOperationStateRoot, updateSupervisorGeneration, type OperationRecordV2 } from "./state.js";
+import { activeOperationSupervisor, currentOperationContext, loadOperation, patchOperation, registerSupervisorGeneration, resolveOperationStateRoot, updateSupervisorGeneration, withOperationCoordinationLock, type OperationRecordV2 } from "./state.js";
 
 export interface EnsureSupervisorOptions { required?: boolean; forceMaterialize?: boolean; }
 export interface OperationSupervisorHandle { operationId: string; generation: number; agentId?: string; materialized: boolean; selection: AgentExecutionSelection; session?: WorkerSession; }
@@ -39,6 +39,10 @@ function supervisorInitializationConfig(config: HarnessProjectConfig): HarnessPr
 export async function ensureOperationSupervisor(root: string, config: HarnessProjectConfig, contract: TaskContract, topology: ResolvedAgentTopology, options: EnsureSupervisorOptions = {}): Promise<OperationSupervisorHandle | undefined> {
   const operationId = currentOperationContext().id;
   if (!operationId) return undefined;
+  return withOperationCoordinationLock(root, operationId, () => ensureOperationSupervisorUnlocked(root, config, contract, topology, operationId, options));
+}
+
+async function ensureOperationSupervisorUnlocked(root: string, config: HarnessProjectConfig, contract: TaskContract, topology: ResolvedAgentTopology, operationId: string, options: EnsureSupervisorOptions): Promise<OperationSupervisorHandle | undefined> {
   const stateRoot = resolveOperationStateRoot(root);
   let operation = await loadOperation(stateRoot, operationId);
   const required = options.required ?? operation.supervision.required;
@@ -104,10 +108,14 @@ export async function consolidateWithOperationSupervisor(root: string, config: H
 export async function maybeRotateOperationSupervisor(root: string, config: HarnessProjectConfig, contract: TaskContract, topology: ResolvedAgentTopology): Promise<OperationSupervisorHandle | undefined> {
   const operationId = currentOperationContext().id;
   if (!operationId) return undefined;
+  return withOperationCoordinationLock(root, operationId, () => maybeRotateOperationSupervisorUnlocked(root, config, contract, topology, operationId));
+}
+
+async function maybeRotateOperationSupervisorUnlocked(root: string, config: HarnessProjectConfig, contract: TaskContract, topology: ResolvedAgentTopology, operationId: string): Promise<OperationSupervisorHandle | undefined> {
   const stateRoot = resolveOperationStateRoot(root);
   const operation = await loadOperation(stateRoot, operationId);
   const active = activeOperationSupervisor(operation);
-  if (!active?.agentId) return ensureOperationSupervisor(root, config, contract, topology, { required: operation.supervision.required });
+  if (!active?.agentId) return ensureOperationSupervisorUnlocked(root, config, contract, topology, operationId, { required: operation.supervision.required });
   const context = await statusLeadContext(root, config, active.agentId);
   const policy = operationSupervisorContextPolicy(config);
   const usageRatio = context.usage.ratio;
@@ -149,6 +157,10 @@ export async function maybeRotateOperationSupervisor(root: string, config: Harne
 }
 
 export async function settleDrainingSupervisorGenerations(root: string, operationId: string): Promise<OperationRecordV2> {
+  return withOperationCoordinationLock(root, operationId, () => settleDrainingSupervisorGenerationsUnlocked(root, operationId));
+}
+
+async function settleDrainingSupervisorGenerationsUnlocked(root: string, operationId: string): Promise<OperationRecordV2> {
   const stateRoot = resolveOperationStateRoot(root);
   let record = await loadOperation(stateRoot, operationId);
   for (const generation of record.supervision.generations.filter((item) => item.status === "DRAINING")) {

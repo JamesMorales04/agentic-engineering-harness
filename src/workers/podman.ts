@@ -17,6 +17,7 @@ import { buildRepairPrompt, buildWorkerPrompt } from "./prompt.js";
 import { buildEffectivePrompt } from "./agentPrompt.js";
 import { resolveContextTransportCapabilities, type EffectiveContextCapabilities } from "../context/transport.js";
 import type { WorkerExecutor } from "./types.js";
+import { repositoryPath } from "../utils/repositoryPath.js";
 
 export class PodmanWorkerExecutor implements WorkerExecutor {
   readonly name = "podman";
@@ -92,7 +93,7 @@ export class PodmanWorkerExecutor implements WorkerExecutor {
       `${root}:/workspace:rw`
     ];
     for (const relative of sealedArtifacts(config, contract)) {
-      args.push("-v", `${path.resolve(root, relative)}:/workspace/${relative}:ro`);
+      args.push("-v", `${repositoryPath(root, relative)}:/workspace/${relative}:ro`);
     }
     args.push(
       "-e",

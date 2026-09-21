@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { HarnessProjectConfig, TaskContract, ValidationCheck } from "./types.js";
+import { existingRepositoryPath } from "../utils/repositoryPath.js";
 
 interface SealFile {
   version: 1;
@@ -20,7 +21,7 @@ export async function sealTask(root: string, config: HarnessProjectConfig, contr
   };
 
   for (const relative of artifacts) {
-    const content = await fs.readFile(path.resolve(root, relative));
+    const content = await fs.readFile(await existingRepositoryPath(root, relative));
     seal.artifacts.push({ path: relative, sha256: sha256(content) });
   }
 
@@ -47,7 +48,7 @@ export async function verifyTaskSeal(root: string, contract: TaskContract, requi
   const mismatches: Array<{ path: string; expected: string; actual?: string }> = [];
   for (const artifact of seal.artifacts) {
     try {
-      const current = await fs.readFile(path.resolve(root, artifact.path));
+      const current = await fs.readFile(await existingRepositoryPath(root, artifact.path));
       const actual = sha256(current);
       if (actual !== artifact.sha256) mismatches.push({ path: artifact.path, expected: artifact.sha256, actual });
     } catch {
@@ -73,7 +74,7 @@ async function artifactPaths(root: string, config: HarnessProjectConfig, contrac
 
   const unique = [...new Set(paths)];
   for (const relative of unique) {
-    await fs.access(path.resolve(root, relative));
+    await existingRepositoryPath(root, relative);
   }
   return unique;
 }

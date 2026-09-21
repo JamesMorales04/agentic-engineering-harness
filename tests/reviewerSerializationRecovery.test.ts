@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const runtime = vi.hoisted(() => ({
   continueManagedPaseoAgent: vi.fn(),
   launchManagedPaseoAgent: vi.fn(),
-  materializeManagedPaseoAgent: vi.fn()
+  materializeManagedPaseoAgent: vi.fn(),
+  stopManagedPaseoAgent: vi.fn(async () => ({ exitCode: 0, stderr: "" }))
 }));
 const artifacts = vi.hoisted(() => ({ persistOperationAgentArtifact: vi.fn() }));
 const state = vi.hoisted(() => ({
@@ -14,6 +15,7 @@ const state = vi.hoisted(() => ({
 }));
 const results = vi.hoisted(() => ({
   activateStructuredResultTurnForAgent: vi.fn(async () => undefined),
+  acceptedStructuredResultForAgent: vi.fn(async () => undefined),
   reconcileStructuredResult: vi.fn()
 }));
 
@@ -52,6 +54,9 @@ const validSupervisor = { summary: "Consolidated", consolidatedFindings: [], sou
 const validSupervisorJson = JSON.stringify(validSupervisor);
 
 beforeEach(() => {
+  runtime.continueManagedPaseoAgent.mockReset();
+  runtime.stopManagedPaseoAgent.mockReset().mockResolvedValue({ exitCode: 0, stderr: "" });
+  results.acceptedStructuredResultForAgent.mockReset().mockResolvedValue(undefined);
   results.reconcileStructuredResult.mockImplementation(async (_root: string, input: { contract: string; stdout: string; stderr?: string }) => {
     try {
       const payload = extractMarkedJson(input.stdout, input.stderr ?? "");
@@ -78,6 +83,28 @@ beforeEach(() => {
 afterEach(() => { vi.clearAllMocks(); });
 
 describe("structured delivery recovery", () => {
+  it("reconciles a valid durable result when Paseo never returns its terminal event", async () => {
+    runtime.continueManagedPaseoAgent.mockImplementation(() => new Promise(() => undefined));
+    results.acceptedStructuredResultForAgent
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValue({
+        artifact: "results/reviewer.json",
+        sha256: "sink123",
+        payload: validReviewer,
+        source: "mcp",
+        turnId: "turn-sink",
+        channelId: "channel-sink"
+      });
+    artifacts.persistOperationAgentArtifact.mockResolvedValue("transcript.json");
+
+    const result = await dispatchMaterializedAgentPrompt("/repo", config, contract, selection, materialized, "perform the audit", { outputContract: "reviewer", phase: "review", operationKind: "audit" });
+
+    expect(result.stdout).toBe(validReviewerJson);
+    expect(runtime.stopManagedPaseoAgent).toHaveBeenCalledWith("/repo", "reviewer-1");
+    expect(state.updateOperationParticipant.mock.calls.at(-1)?.[3]).toEqual(expect.objectContaining({ status: "COMPLETED", resultArtifact: "results/reviewer.json" }));
+    expect(results.reconcileStructuredResult).not.toHaveBeenCalled();
+  });
+
   it("normalizes typographic JSON quotes without spending a repair turn", async () => {
     runtime.continueManagedPaseoAgent.mockResolvedValueOnce({ id: "reviewer-1", exitCode: 0, stdout: 'AEH_RESULT_JSON={\u201cverdict\u201d:\u201cPASS\u201d,\u201cfindings\u201d:[],\u201cfinalizationSafety\u201d:\u201cSAFE\u201d,\u201cfollowUp\u201d:[]}', stderr: "", status: "idle", transport: "sdk" });
     artifacts.persistOperationAgentArtifact.mockResolvedValue("first.json");

@@ -2,7 +2,9 @@ import type { UsageMetrics } from "../core/types.js";
 
 const aliases = {
   inputTokens: ["input_tokens", "inputTokens", "prompt_tokens", "promptTokens"],
+  cachedInputTokens: ["cached_input_tokens", "cachedInputTokens"],
   outputTokens: ["output_tokens", "outputTokens", "completion_tokens", "completionTokens"],
+  reasoningOutputTokens: ["reasoning_output_tokens", "reasoningOutputTokens"],
   totalTokens: ["total_tokens", "totalTokens"],
   costUsd: ["cost_usd", "costUsd", "total_cost_usd", "totalCostUsd"]
 } as const;
@@ -10,7 +12,9 @@ const aliases = {
 export function extractUsageMetrics(text: string): UsageMetrics {
   const result: UsageMetrics = {};
   result.inputTokens = integerMetric(text, aliases.inputTokens);
+  result.cachedInputTokens = integerMetric(text, aliases.cachedInputTokens);
   result.outputTokens = integerMetric(text, aliases.outputTokens);
+  result.reasoningOutputTokens = integerMetric(text, aliases.reasoningOutputTokens);
   result.totalTokens = integerMetric(text, aliases.totalTokens);
   result.costUsd = decimalMetric(text, aliases.costUsd);
   if (result.totalTokens === undefined && (result.inputTokens !== undefined || result.outputTokens !== undefined)) {
@@ -23,7 +27,9 @@ export function mergeUsageMetrics(...items: UsageMetrics[]): UsageMetrics {
   const totals: UsageMetrics = {};
   for (const item of items) {
     if (item.inputTokens !== undefined) totals.inputTokens = (totals.inputTokens ?? 0) + item.inputTokens;
+    if (item.cachedInputTokens !== undefined) totals.cachedInputTokens = (totals.cachedInputTokens ?? 0) + item.cachedInputTokens;
     if (item.outputTokens !== undefined) totals.outputTokens = (totals.outputTokens ?? 0) + item.outputTokens;
+    if (item.reasoningOutputTokens !== undefined) totals.reasoningOutputTokens = (totals.reasoningOutputTokens ?? 0) + item.reasoningOutputTokens;
     if (item.totalTokens !== undefined) totals.totalTokens = (totals.totalTokens ?? 0) + item.totalTokens;
     if (item.costUsd !== undefined) totals.costUsd = round((totals.costUsd ?? 0) + item.costUsd);
   }

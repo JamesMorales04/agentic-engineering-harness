@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { HarnessProjectConfig, TaskContract, ValidationCheck, ValidationReport } from "./types.js";
 import { loadTaskContract } from "./config.js";
-import { getChangedFiles, getDiffStats } from "./git.js";
+import { generatedArtifactPaths, getChangedFiles, getDiffStats } from "./git.js";
 import { deliveryWorkspacePath } from "../delivery/handoff.js";
 import { validateDiffScope } from "../validators/diffScope.js";
 import { validateDiffBudget } from "../validators/constraints.js";
@@ -12,6 +12,7 @@ import { runOpaPolicies, type OpaExecutionIdentity } from "../validators/opa.js"
 import { verifyTaskSeal } from "./seal.js";
 import { runConfiguredValidators } from "../validators/registry.js";
 import { collectPolicyEvidence } from "../validators/evidence.js";
+import { validateQuickAcceptance } from "../validators/quickAcceptance.js";
 
 export interface VerifyTaskOptions { stateRoot?: string; policyRoot?: string; executionIdentity?: OpaExecutionIdentity; }
 
@@ -28,9 +29,11 @@ export async function verifyTask(root: string, config: HarnessProjectConfig, con
   const policyRoot = path.resolve(options.policyRoot ?? stateRoot);
   const startedAt = new Date().toISOString(); const baseRef = contract.git?.baseRef ?? config.validation?.baseRef ?? "HEAD";
   await recordEvent(stateRoot, config, "harness.verify.start", { taskId: contract.task.id, baseRef, workspaceRoot: executionRoot === stateRoot ? undefined : executionRoot });
-  const changedFiles = await getChangedFiles(executionRoot, baseRef); const stats = await getDiffStats(executionRoot, baseRef); const checks: ValidationCheck[] = [];
+  const gitOptions = { ignoredPaths: generatedArtifactPaths(config) };
+  const changedFiles = await getChangedFiles(executionRoot, baseRef, gitOptions); const stats = await getDiffStats(executionRoot, baseRef, gitOptions); const checks: ValidationCheck[] = [];
   checks.push(await verifyTaskSeal(executionRoot, contract, config.validation?.requireSeal ?? true));
   const scopeChecks = validateDiffScope(changedFiles, contract, config.validation?.frozenPaths ?? []); checks.push(...scopeChecks); checks.push(...validateDiffBudget(contract, stats));
+  if (contract.mode === "quick") checks.push(...await validateQuickAcceptance(executionRoot, contract, changedFiles, scopeChecks));
   const frozenChanged = (scopeChecks.find((c) => c.id === "diff.frozen-paths")?.details?.frozenChanged ?? []) as string[];
   const evidence = collectPolicyEvidence(changedFiles);
   checks.push(await runOpaPolicies(executionRoot, config, contract, changedFiles, frozenChanged, evidence, policyRoot, options.executionIdentity));

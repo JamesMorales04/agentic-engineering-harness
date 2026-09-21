@@ -5,6 +5,7 @@ import path from "node:path";
 import process from "node:process";
 import { runAudit } from "../audit/run.js";
 import { loadProjectConfig, loadTaskContract } from "../core/config.js";
+import { createControlPlaneSnapshot, materializeControlPlaneRuntimeSurface, materializeControlPlaneSnapshot } from "../core/controlPlane.js";
 import { runTask } from "../core/run.js";
 import type { HarnessProjectConfig } from "../core/types.js";
 import {
@@ -14,8 +15,15 @@ import {
 } from "../delivery/handoff.js";
 import { listManagedPaseoAgents } from "../paseo/runtime.js";
 import { recordPaseoTrace } from "../paseo/trace.js";
-import { runProcess, type ProcessResult } from "../utils/process.js";
+import {
+  clearManagedProcessHandles,
+  listManagedProcessHandles,
+  runProcess,
+  terminateManagedProcessGroup,
+  type ProcessResult
+} from "../utils/process.js";
 import { runChangeOperation } from "./change.js";
+import { resolveBaseRef } from "../core/git.js";
 import { assertIntentDecisionForRoute } from "../audit/intentDecision.js";
 import {
   disableOperationCompletionTarget,
@@ -133,7 +141,8 @@ export async function startDetachedOperation(
           ...process.env,
           AEH_CONTROL_ROOT: absoluteRoot,
           AEH_OPERATION_ID: id,
-          AEH_OPERATION_KIND: kind
+          AEH_OPERATION_KIND: kind,
+          AEH_OPERATION_STATE_REDIRECT: "1"
         }
       }
     );
@@ -154,6 +163,26 @@ export async function startDetachedOperation(
     if (config) await syncOperationPortfolio(absoluteRoot, config.project.name, record);
     return record;
   }
+  if (typeof child.once === "function") child.once("error", (error) => {
+    void (async () => {
+      const current = await loadOperation(absoluteRoot, id).catch(() => record);
+      if (isTerminalOperation(current.status)) return;
+      if (completionAgentId) {
+        await disableOperationCompletionTarget(
+          absoluteRoot,
+          id,
+          `Detached controller spawn failed asynchronously before execution started: ${String(error)}`
+        ).catch(() => undefined);
+      }
+      const failed = await patchOperation(absoluteRoot, id, {
+        status: "FAILED",
+        phase: "spawn-failed",
+        error: String(error),
+        finishedAt: new Date().toISOString()
+      });
+      if (config) await syncOperationPortfolio(absoluteRoot, config.project.name, failed).catch(() => undefined);
+    })().catch(() => undefined);
+  });
   child.unref();
   record = await patchOperation(absoluteRoot, id, {
     pid: child.pid,
@@ -168,11 +197,36 @@ export async function executeOperation(
   operationId: string,
   deps: OperationControllerDeps = {}
 ): Promise<OperationRecordV2> {
+  const environmentKeys = [
+    "AEH_CONTROL_ROOT",
+    "AEH_OPERATION_ID",
+    "AEH_OPERATION_KIND",
+    "AEH_OPERATION_STATE_REDIRECT",
+    "AEH_OPERATION_WORKSPACE_ID"
+  ] as const;
+  const previous = Object.fromEntries(environmentKeys.map((key) => [key, process.env[key]])) as Record<string, string | undefined>;
+  try {
+    return await executeOperationWithEnvironment(root, operationId, deps);
+  } finally {
+    for (const key of environmentKeys) {
+      const value = previous[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+async function executeOperationWithEnvironment(
+  root: string,
+  operationId: string,
+  deps: OperationControllerDeps = {}
+): Promise<OperationRecordV2> {
   const absoluteRoot = path.resolve(root);
   process.env.AEH_CONTROL_ROOT = absoluteRoot;
+  process.env.AEH_OPERATION_ID = operationId;
   const trace = deps.trace ?? recordPaseoTrace;
   let record = await loadOperation(absoluteRoot, operationId);
-  if (record.status === "CANCELLED") return record;
+  if (isTerminalOperation(record.status)) return record;
   record = await patchOperation(absoluteRoot, operationId, {
     status: "RUNNING",
     phase: "preparing",
@@ -182,21 +236,35 @@ export async function executeOperation(
   });
   process.env.AEH_OPERATION_ID = record.id;
   process.env.AEH_OPERATION_KIND = record.kind;
+  process.env.AEH_OPERATION_STATE_REDIRECT = "1";
 
-  const config = await loadProjectConfig(absoluteRoot);
+  let config = await loadProjectConfig(absoluteRoot);
+  if (record.kind !== "audit") {
+    const configured = config.validation?.baseRef ?? "HEAD";
+    const resolved = await resolveBaseRef(absoluteRoot, configured);
+    if (resolved.ref !== configured) {
+      config = { ...config, validation: { ...config.validation, baseRef: resolved.ref } };
+      await trace(absoluteRoot, "operation.base-ref.fallback", { operationId, configured, resolved: resolved.ref, reason: "configured base ref is not resolvable" });
+    }
+  }
   await syncOperationPortfolio(absoluteRoot, config.project.name, record);
   let stopWatchdog: (() => void) | undefined;
   try {
-    const workspace = await ensureOperationWorkspace(
+  const workspace = await ensureOperationWorkspace(
       absoluteRoot,
       record,
       config,
       deps.run ?? runProcess,
       trace
-    );
-    if (workspace.workspaceId) process.env.AEH_OPERATION_WORKSPACE_ID = workspace.workspaceId;
-    const executionRoot = path.resolve(workspace.workspaceRoot ?? absoluteRoot);
-    record = await patchOperation(absoluteRoot, operationId, {
+  );
+  if (workspace.workspaceId) process.env.AEH_OPERATION_WORKSPACE_ID = workspace.workspaceId;
+  const executionRoot = path.resolve(workspace.workspaceRoot ?? absoluteRoot);
+  if (executionRoot !== absoluteRoot) {
+    const controllerSnapshot = await createControlPlaneSnapshot(absoluteRoot, config, `operation-${operationId}`);
+    await materializeControlPlaneSnapshot(controllerSnapshot, executionRoot, config);
+    await materializeControlPlaneRuntimeSurface(controllerSnapshot, executionRoot);
+  }
+  record = await patchOperation(absoluteRoot, operationId, {
       workspaceId: workspace.workspaceId,
       workspaceRoot: executionRoot,
       workspaceWarning: workspace.warning
@@ -330,12 +398,25 @@ export async function cancelOperation(
   if (isTerminalOperation(record.status)) return record;
   const cleanupWarnings: string[] = [];
 
-  if (record.pid && record.pid !== process.pid) {
-    try { process.kill(record.pid, "SIGTERM"); }
-    catch (error) { if (!/ESRCH/.test(String(error))) cleanupWarnings.push(`controller: ${String(error)}`); }
-  }
+  const processHandles = await listManagedProcessHandles(absoluteRoot, operationId);
+  const descendantPids = record.pid ? await findDescendantProcessIds(record.pid, absoluteRoot) : [];
+  const processGroups = [...new Set(([
+    ...processHandles.map((handle) => handle.processGroupId),
+    ...processHandles.map((handle) => handle.pid),
+    ...descendantPids,
+    record.pid
+  ] as Array<number | undefined>).filter((pid): pid is number => typeof pid === "number" && Number.isInteger(pid) && pid > 0 && pid !== process.pid))];
+  await Promise.all(processGroups.map(async (pid) => {
+    try { await terminateManagedProcessGroup(pid); }
+    catch (error) { cleanupWarnings.push(`process group ${pid}: ${String(error)}`); }
+  }));
+  await clearManagedProcessHandles(absoluteRoot, operationId);
 
-  let agentIds = [...new Set((record.agents ?? []).map((agent) => agent.id).filter(Boolean))];
+  let agentIds = [...new Set([
+    ...(record.agents ?? []).map((agent) => agent.id),
+    ...Object.keys(record.participants),
+    ...record.supervision.generations.map((generation) => generation.agentId)
+  ].filter((agentId): agentId is string => Boolean(agentId)))];
   if (agentIds.length > 0) {
     await trace(absoluteRoot, "cleanup.discovery", { operationId, source: "operation-state", agentCount: agentIds.length });
   } else {
@@ -577,4 +658,51 @@ function operationPriority(payload: OperationPayload): number {
 
 function quote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+async function findDescendantProcessIds(rootPid: number, operationRoot: string): Promise<number[]> {
+  if (process.platform !== "linux" || !Number.isInteger(rootPid) || rootPid <= 0 || rootPid === process.pid) return [];
+  try { process.kill(rootPid, 0); }
+  catch { return []; }
+
+  let entries: string[];
+  try { entries = await fs.readdir("/proc"); }
+  catch { return []; }
+
+  const children = new Map<number, number[]>();
+  await Promise.all(entries.filter((entry) => /^\d+$/.test(entry)).map(async (entry) => {
+    const pid = Number(entry);
+    try {
+      const stat = await fs.readFile(`/proc/${pid}/stat`, "utf8");
+      const closingParen = stat.lastIndexOf(")");
+      if (closingParen < 0) return;
+      const fields = stat.slice(closingParen + 2).trim().split(/\s+/);
+      const parentPid = Number(fields[1]);
+      if (!Number.isInteger(parentPid) || parentPid <= 0) return;
+      const siblings = children.get(parentPid) ?? [];
+      siblings.push(pid);
+      children.set(parentPid, siblings);
+    } catch { /* process exited while the snapshot was being collected */ }
+  }));
+
+  const descendants: number[] = [];
+  const queue = [rootPid];
+  while (queue.length > 0) {
+    const parentPid = queue.shift();
+    if (parentPid === undefined) break;
+    for (const childPid of children.get(parentPid) ?? []) {
+      if (descendants.includes(childPid)) continue;
+      descendants.push(childPid);
+      queue.push(childPid);
+    }
+  }
+  const related = await Promise.all(entries.filter((entry) => /^\d+$/.test(entry)).map(async (entry) => {
+    const pid = Number(entry);
+    if (pid === process.pid || pid === rootPid || descendants.includes(pid)) return undefined;
+    try {
+      const cwd = await fs.realpath(`/proc/${pid}/cwd`);
+      return cwd === operationRoot ? pid : undefined;
+    } catch { return undefined; }
+  }));
+  return [...new Set([...descendants, ...related.filter((pid): pid is number => pid !== undefined)])];
 }

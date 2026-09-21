@@ -116,7 +116,7 @@ export async function startPaseoHarness(
   let daemonStarted = false;
   const daemonStatusCommand = capabilities.daemonJson ? "paseo daemon status --json" : "paseo daemon status";
   let daemonStatus = await deps.run(daemonStatusCommand, { cwd: projectRoot, timeoutMs: 30_000 });
-  if (daemonStatus.exitCode !== 0) {
+  if (daemonStatus.exitCode !== 0 || isRecoverableDaemonStatus(daemonStatus)) {
     if (isRecoverableDaemonStatus(daemonStatus)) {
       await deps.run("paseo daemon stop", { cwd: projectRoot, timeoutMs: 30_000 }).catch(() => undefined);
     }
@@ -125,7 +125,7 @@ export async function startPaseoHarness(
     if (daemonStart.exitCode !== 0) throw new Error(`Failed to start Paseo daemon: ${diagnostic(daemonStart)}`);
     daemonStarted = true;
     daemonStatus = await deps.run(daemonStatusCommand, { cwd: projectRoot, timeoutMs: 30_000 });
-    if (daemonStatus.exitCode !== 0) throw new Error(`Paseo daemon did not become ready after startup: ${diagnostic(daemonStatus)}`);
+    if (daemonStatus.exitCode !== 0 || isRecoverableDaemonStatus(daemonStatus)) throw new Error(`Paseo daemon did not become ready after startup: ${diagnostic(daemonStatus)}`);
   }
 
   const provider = selection.paseoProvider;

@@ -3,6 +3,7 @@ export {
   materializeManagedPaseoAgent,
   dispatchManagedPaseoAgent,
   waitManagedPaseoAgent,
+  stopManagedPaseoAgent,
   continueManagedPaseoAgent,
   probeManagedPaseoAgent,
   inspectManagedPaseoAgent,

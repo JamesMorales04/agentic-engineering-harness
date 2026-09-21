@@ -4,6 +4,8 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   activateStructuredResultTurn,
+  activateStructuredResultTurnForAgent,
+  acceptedStructuredResultForAgent,
   bindStructuredResultChannel,
   loadStructuredResultChannel,
   provisionStructuredResultChannel,
@@ -71,6 +73,33 @@ describe("StructuredResultGateway", () => {
     expect(channel.activeTurn).toEqual(expect.objectContaining({ status: "ACCEPTED", artifact: first.artifact, sha256: first.sha256 }));
   });
 
+  it("rejects an accepted artifact whose payload or identity was tampered with", async () => {
+    const { root, operationId, channelId } = await fixture();
+    const accepted = await commitStructuredResult(root, operationId, channelId, reviewerPayload(), "mcp");
+    const artifactPath = path.join(root, accepted.artifact);
+    const artifact = JSON.parse(await fs.readFile(artifactPath, "utf8")) as Record<string, unknown>;
+    artifact.payload = reviewerPayload("FAIL");
+    await fs.writeFile(artifactPath, `${JSON.stringify(artifact)}\n`);
+    await expect(acceptedStructuredResultForAgent(root, "agent-1")).rejects.toThrow(/AEH_RESULT_INTEGRITY/);
+  });
+
+  it("rejects a valid result from a different operation revision or supervisor generation", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-result-provenance-"));
+    roots.push(root);
+    const channel = await provisionStructuredResultChannel(root, { operationId: "AUDIT-PROVENANCE", logicalAgent: "security-reviewer", role: "reviewer", contract: "reviewer", operationRevision: 7, supervisorGeneration: 3 });
+    await bindStructuredResultChannel(root, "AUDIT-PROVENANCE", channel.channelId, "agent-provenance");
+    await activateStructuredResultTurn(root, "AUDIT-PROVENANCE", channel.channelId, "review");
+    await commitStructuredResult(root, "AUDIT-PROVENANCE", channel.channelId, reviewerPayload(), "mcp");
+    await expect(acceptedStructuredResultForAgent(root, "agent-provenance", { operationRevision: 8 })).rejects.toThrow(/operation revision/);
+    await expect(acceptedStructuredResultForAgent(root, "agent-provenance", { supervisorGeneration: 4 })).rejects.toThrow(/supervisor generation/);
+    await expect(acceptedStructuredResultForAgent(root, "agent-provenance", { operationRevision: 7, supervisorGeneration: 3 })).resolves.toBeTruthy();
+  });
+
+  it("fails closed when a resumed turn has no bound result channel", async () => {
+    const { root } = await fixture();
+    await expect(activateStructuredResultTurnForAgent(root, "unbound-agent")).rejects.toThrow(/no structured result channel is bound/);
+  });
+
   it("rejects schema-invalid submissions without losing the active turn", async () => {
     const { root, operationId, channelId } = await fixture();
     await expect(commitStructuredResult(root, operationId, channelId, { verdict: "MAYBE" }, "mcp")).rejects.toThrow("SCHEMA_VALIDATION_FAILED");
@@ -94,6 +123,34 @@ describe("StructuredResultGateway", () => {
     expect(resolved.ok).toBe(true);
     expect(resolved.accepted?.source).toBe("captured");
     expect(resolved.accepted?.artifact).toContain("/results/architecture-reviewer/");
+  });
+
+  it("does not reuse an accepted result from a prior captured turn", async () => {
+    const { root, operationId } = await fixture();
+    const first = await reconcileStructuredResult(root, {
+      operationId,
+      agentId: "agent-1",
+      logicalAgent: "security-reviewer",
+      role: "reviewer",
+      contract: "reviewer",
+      phase: "review",
+      stdout: JSON.stringify(reviewerPayload("PASS")),
+      stderr: ""
+    });
+    const second = await reconcileStructuredResult(root, {
+      operationId,
+      agentId: "agent-1",
+      logicalAgent: "security-reviewer",
+      role: "reviewer",
+      contract: "reviewer",
+      phase: "review",
+      stdout: JSON.stringify(reviewerPayload("FAIL")),
+      stderr: ""
+    });
+
+    expect(first.accepted?.payload).toEqual(reviewerPayload("PASS"));
+    expect(second.accepted?.payload).toEqual(reviewerPayload("FAIL"));
+    expect(second.accepted?.turnId).not.toBe(first.accepted?.turnId);
   });
 
   it("exposes exactly one capability-scoped MCP tool with the active contract schema", async () => {

@@ -3,12 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { resolveContextBudget } from "../src/context/budget.js";
-import { ContextBudgetGateway } from "../src/context/gateway.js";
+import { ContextBudgetGateway, contextEnvelopePath } from "../src/context/gateway.js";
 import { verifyContextEnvelope } from "../src/context/envelope.js";
 import { rankRepositoryNodes } from "../src/context/repository/rank.js";
 import { ContextRetrievalGateway } from "../src/context/retrieval/gateway.js";
 import { authorizeRetrieval } from "../src/context/retrieval/authorization.js";
 import { recoveryHandle } from "../src/context/gateway.js";
+import { createPersistedContextGateway, retrievePersistedContext } from "../src/context/retrieval/persisted.js";
 import type { ContextCompressionProvider } from "../src/context/compression/types.js";
 import type { HarnessProjectConfig } from "../src/core/types.js";
 
@@ -75,6 +76,46 @@ describe("context efficiency subsystem", () => {
         expect(await fs.readFile(path.join(root, artifact!), "utf8")).toBe(result.envelope.fragments[0]?.content);
       }
       expect(first.envelope.fragments[0]?.source?.artifact).not.toBe(second.envelope.fragments[0]?.source?.artifact);
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it("keeps concurrent persisted envelopes isolated by logical agent", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-context-envelope-isolation-"));
+    try {
+      const gateway = new ContextBudgetGateway(root, config(), { telemetry: false });
+      await Promise.all([
+        gateway.prepare({ operationId: "OP-ISOLATED", logicalAgent: "reviewer-a", phase: "review", fragments: [{ id: "raw", kind: "tool-output", preservation: "RETRIEVABLE", priority: 10, content: "reviewer A evidence" }] }),
+        gateway.prepare({ operationId: "OP-ISOLATED", logicalAgent: "reviewer-b", phase: "review", fragments: [{ id: "raw", kind: "tool-output", preservation: "RETRIEVABLE", priority: 10, content: "reviewer B evidence" }] })
+      ]);
+      await expect(fs.access(contextEnvelopePath(root, "OP-ISOLATED", "reviewer-a", "review"))).resolves.toBeUndefined();
+      await expect(fs.access(contextEnvelopePath(root, "OP-ISOLATED", "reviewer-b", "review"))).resolves.toBeUndefined();
+      const result = await retrievePersistedContext(root, config(), "OP-ISOLATED", "reviewer-a", { fragmentId: "raw" }, "review");
+      expect(result.content).toBe("reviewer A evidence");
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it("rejects a tampered persisted context envelope before authorization", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-context-envelope-integrity-"));
+    try {
+      const gateway = new ContextBudgetGateway(root, config(), { telemetry: false });
+      await gateway.prepare({ operationId: "OP-INTEGRITY", logicalAgent: "reviewer", phase: "review", fragments: [{ id: "raw", kind: "tool-output", preservation: "RETRIEVABLE", priority: 10, content: "authorized evidence" }] });
+      const envelopeFile = contextEnvelopePath(root, "OP-INTEGRITY", "reviewer", "review");
+      const envelope = JSON.parse(await fs.readFile(envelopeFile, "utf8")) as { fragments: Array<{ source?: { artifact?: string } }> };
+      envelope.fragments[0]!.source = { artifact: "secret.txt" };
+      await fs.writeFile(envelopeFile, `${JSON.stringify(envelope)}\n`);
+      await expect(createPersistedContextGateway(root, config(), "OP-INTEGRITY", "reviewer", "review")).rejects.toThrow("CONTEXT_RETRIEVAL_PROVENANCE_MISMATCH");
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it("preserves persisted MCP retrieval budgets across calls in one session", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-context-persisted-budget-"));
+    try {
+      const gateway = new ContextBudgetGateway(root, { ...config(), context: { ...config().context, retrieval: { maxRequestsPerTurn: 1, maxTokensPerRequest: 30, maxTotalTokensPerTurn: 30 } } }, { telemetry: false });
+      await gateway.prepare({ operationId: "OP-BUDGET", logicalAgent: "reviewer", phase: "review", fragments: [{ id: "raw", kind: "tool-output", preservation: "RETRIEVABLE", priority: 10, content: "bounded evidence" }] });
+      const constrained = { ...config(), context: { ...config().context, retrieval: { maxRequestsPerTurn: 1, maxTokensPerRequest: 30, maxTotalTokensPerTurn: 30 } } };
+      const persisted = await createPersistedContextGateway(root, constrained, "OP-BUDGET", "reviewer", "review");
+      await retrievePersistedContext(root, constrained, "OP-BUDGET", "reviewer", { fragmentId: "raw" }, "review", persisted);
+      await expect(retrievePersistedContext(root, constrained, "OP-BUDGET", "reviewer", { fragmentId: "raw" }, "review", persisted)).rejects.toThrow("CONTEXT_RETRIEVAL_BUDGET_EXCEEDED");
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 

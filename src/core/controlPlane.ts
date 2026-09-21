@@ -24,6 +24,18 @@ export async function materializeControlPlaneSnapshot(snapshot: ControlPlaneSnap
   const destinationDir = path.resolve(targetRoot, config.controlPlane?.snapshotDir ?? ".harness/controller", snapshot.taskId); const destinationFiles = path.join(destinationDir, "files"); await fs.rm(destinationDir, { recursive: true, force: true }); await fs.mkdir(path.dirname(destinationDir), { recursive: true }); await fs.cp(path.dirname(snapshot.materializedRoot), destinationDir, { recursive: true, force: true }); const materialized: ControlPlaneSnapshot = { ...snapshot, materializedRoot: destinationFiles }; await fs.writeFile(path.join(destinationDir, "manifest.json"), `${JSON.stringify(materialized, null, 2)}\n`); return materialized;
 }
 
+export async function materializeControlPlaneRuntimeSurface(snapshot: ControlPlaneSnapshot, targetRoot: string): Promise<void> {
+  const destinationRoot = path.resolve(targetRoot);
+  for (const file of snapshot.files) {
+    const source = path.resolve(snapshot.materializedRoot, file.path);
+    const destination = path.resolve(destinationRoot, file.path);
+    const relative = path.relative(destinationRoot, destination);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error(`Control-plane runtime path escapes workspace: ${file.path}`);
+    await fs.mkdir(path.dirname(destination), { recursive: true });
+    await fs.copyFile(source, destination);
+  }
+}
+
 export async function detectControlPlaneDrift(root: string, snapshot: ControlPlaneSnapshot): Promise<ControlPlaneDrift> {
   const sourceRoot = path.resolve(root); const currentFiles = await enumerateControlFiles(sourceRoot, snapshot.includeRoots); const expected = new Map(snapshot.files.map((file) => [file.path, file])); const currentSet = new Set(currentFiles); const changed: string[] = []; const missing: string[] = []; const added: string[] = [];
   for (const [relative, file] of expected) { if (!currentSet.has(relative)) { missing.push(relative); continue; } const content = await fs.readFile(path.resolve(sourceRoot, relative)); if (sha256(content) !== file.sha256) changed.push(relative); }

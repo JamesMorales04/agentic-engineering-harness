@@ -269,6 +269,22 @@ describe("managed Paseo runtime", () => {
     expect(nativeDeps.wait).not.toHaveBeenCalled();
   });
 
+  it("stops a Paseo agent before returning a native wait timeout", async () => {
+    const run = vi.fn(async (command: string) => command === "paseo stop 'agent-timeout'" ? result(0, "stopped") : result(1, "", `unexpected ${command}`));
+    const nativeDeps = native({
+      wait: vi.fn(async () => ({
+        id: "agent-timeout",
+        status: "timeout",
+        error: "Timed out",
+        source: "paseo-agent-subscription" as const,
+        updatesObserved: 0
+      }))
+    });
+    const waited = await waitManagedPaseoAgent("/repo", "agent-timeout", 1, deps(run, sdk(), nativeDeps));
+    expect(waited).toEqual(expect.objectContaining({ id: "agent-timeout", status: "timeout", exitCode: 124 }));
+    expect(run).toHaveBeenCalledWith("paseo stop 'agent-timeout'", expect.objectContaining({ timeoutMs: 30_000 }));
+  });
+
   it("fails before create when provider/model preflight is authoritative and negative", async () => {
     const run = vi.fn();
     const sdkDeps = sdk();

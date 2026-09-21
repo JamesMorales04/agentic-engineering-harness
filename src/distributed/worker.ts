@@ -12,6 +12,7 @@ import { executeAgentPrompt } from "../workers/agentPrompt.js";
 import { runProcess } from "../utils/process.js";
 import { claimDistributedJob, completeDistributedJob, submitDistributedJob, waitForDistributedResult } from "./queue.js";
 import type { DistributedDelegationJob, DistributedDelegationResult } from "./types.js";
+import { enforceSandboxPolicy, sandboxPolicyDigest } from "../security/sandbox.js";
 
 export async function dispatchDistributedDelegation(input: {
   root: string;
@@ -26,7 +27,8 @@ export async function dispatchDistributedDelegation(input: {
   if (!input.config.distributed?.enabled) throw new Error("Distributed execution is not enabled.");
   const remote = await runProcess("git remote get-url origin", { cwd: input.root, timeoutMs: 10_000 }); if (remote.exitCode !== 0 || !remote.stdout.trim()) throw new Error("Distributed execution requires a Git remote named origin.");
   const base = await runProcess("git rev-parse HEAD", { cwd: input.root, timeoutMs: 10_000 }); if (base.exitCode !== 0) throw new Error("Distributed execution could not resolve the workspace HEAD.");
-  const selection: AgentExecutionSelection = { ...input.selection, transport: "direct" };
+  const decision = enforceSandboxPolicy(input.selection, input.config, input.task.risk);
+  const selection: AgentExecutionSelection = { ...decision.selection };
   const job: DistributedDelegationJob = {
     version: 1,
     id: `${safe(input.contract.task.id)}-${safe(input.task.id)}-${crypto.randomUUID()}`,
@@ -39,6 +41,7 @@ export async function dispatchDistributedDelegation(input: {
     task: input.task,
     contract: input.contract,
     selection,
+    sandboxPolicySha256: sandboxPolicyDigest(input.config, selection, input.task.risk),
     config: sanitizeRemoteConfig(input.config),
     prompt: input.prompt
   };
@@ -48,7 +51,7 @@ export async function dispatchDistributedDelegation(input: {
 
 export async function runDistributedWorkerOnce(root: string, config: HarnessProjectConfig, workerId = config.distributed?.workerId ?? `worker-${process.pid}`): Promise<DistributedDelegationResult | undefined> {
   const claimed = await claimDistributedJob(root, config, workerId); if (!claimed) return undefined;
-  const result = await executeClaimedJob(claimed.job, workerId);
+  const result = await executeClaimedJob(claimed.job, workerId, config);
   await completeDistributedJob(root, config, claimed.leaseId, result);
   return result;
 }
@@ -63,15 +66,34 @@ export async function runDistributedWorkerLoop(root: string, config: HarnessProj
   } while (!options.signal?.aborted);
 }
 
-async function executeClaimedJob(job: DistributedDelegationJob, workerId: string): Promise<DistributedDelegationResult> {
+export interface DistributedSandboxValidation {
+  selection: AgentExecutionSelection;
+  config: HarnessProjectConfig;
+}
+
+export function validateDistributedSandboxPolicy(job: DistributedDelegationJob, workerConfig: HarnessProjectConfig): DistributedSandboxValidation {
+  const expectedDigest = sandboxPolicyDigest(job.config, job.selection, job.task.risk);
+  if (job.sandboxPolicySha256 !== expectedDigest) throw new Error("DISTRIBUTED_SANDBOX_POLICY_TAMPERED: job sandbox policy digest does not match its selection/configuration.");
+  const originating = enforceSandboxPolicy(job.selection, job.config, job.task.risk);
+  if (originating.selection.transport !== job.selection.transport) throw new Error("DISTRIBUTED_SANDBOX_POLICY_WEAKENED: job selection does not satisfy the originating sandbox policy.");
+  const local = enforceSandboxPolicy(job.selection, workerConfig, job.task.risk);
+  if (local.selection.transport !== job.selection.transport) throw new Error("DISTRIBUTED_SANDBOX_POLICY_WEAKENED: job selection does not satisfy the worker sandbox policy.");
+  return {
+    selection: job.selection,
+    config: local.required ? { ...job.config, security: { ...job.config.security, sandbox: workerConfig.security?.sandbox } } : job.config
+  };
+}
+
+async function executeClaimedJob(job: DistributedDelegationJob, workerId: string, workerConfig: HarnessProjectConfig): Promise<DistributedDelegationResult> {
   const startedAt = new Date().toISOString(); const worktree = await fs.mkdtemp(path.join(os.tmpdir(), `aeh-remote-${safe(job.id)}-`)); let session: WorkerSession = { provider: job.selection.runtimeAdapter, model: job.selection.modelName, logicalAgent: job.selection.logicalAgent, runtime: job.selection.runtimeName, exitCode: 1, stdout: "", stderr: "remote worker did not start" };
   try {
+    const sandbox = validateDistributedSandboxPolicy(job, workerConfig);
     const clone = await runProcess(`git clone --quiet --no-checkout ${quote(job.repositoryUrl)} ${quote(worktree)}`, { cwd: os.tmpdir(), timeoutMs: 300_000, toolchain: false }); if (clone.exitCode !== 0) return failure(job, workerId, startedAt, session, `clone failed: ${clone.stderr || clone.stdout}`);
     const checkout = await runProcess(`git checkout --quiet --detach ${quote(job.baseRef)}`, { cwd: worktree, timeoutMs: 120_000 }); if (checkout.exitCode !== 0) return failure(job, workerId, startedAt, session, `checkout failed: ${checkout.stderr || checkout.stdout}`);
     for (const patch of job.priorPatches ?? []) { const applied = await runProcess("git apply --binary -", { cwd: worktree, timeoutMs: 60_000, stdin: patch }); if (applied.exitCode !== 0) return failure(job, workerId, startedAt, session, `prior wave patch failed: ${applied.stderr || applied.stdout}`); }
     const contractDir = job.config.sdd?.contractsDir ?? ".harness/contracts"; const contractFile = path.join(worktree, contractDir, `${job.contract.task.id}.yaml`); await fs.mkdir(path.dirname(contractFile), { recursive: true }); await fs.writeFile(contractFile, YAML.stringify(job.contract));
     const baseline = await runProcess("git add -A && git -c user.name=aeh -c user.email=aeh@localhost commit --no-gpg-sign --allow-empty -m 'aeh distributed baseline'", { cwd: worktree, timeoutMs: 60_000 }); if (baseline.exitCode !== 0) return failure(job, workerId, startedAt, session, `baseline commit failed: ${baseline.stderr || baseline.stdout}`);
-    session = await executeAgentPrompt(worktree, job.config, job.contract, job.selection, job.prompt);
+    session = await executeAgentPrompt(worktree, sandbox.config, job.contract, sandbox.selection, job.prompt);
     if (session.exitCode !== 0) return failure(job, workerId, startedAt, session, `agent exited with ${session.exitCode}`);
     const status = await runProcess("git status --porcelain", { cwd: worktree, timeoutMs: 30_000 }); const untracked = status.stdout.split(/\r?\n/).filter((line) => line.startsWith("?? ")).map((line) => line.slice(3).trim()).filter(Boolean); if (untracked.length) await runProcess(`git add -N -- ${untracked.map(quote).join(" ")}`, { cwd: worktree, timeoutMs: 30_000 });
     const names = await runProcess("git diff --name-only HEAD", { cwd: worktree, timeoutMs: 30_000 }); const changedFiles = names.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean); const escaped = changedFiles.filter((file) => !job.task.scope.some((scope) => matches(file, scope))); if (escaped.length) return failure(job, workerId, startedAt, session, `remote task escaped scope: ${escaped.join(", ")}`, changedFiles);
@@ -82,7 +104,7 @@ async function executeClaimedJob(job: DistributedDelegationJob, workerId: string
 }
 
 function failure(job: DistributedDelegationJob, workerId: string, startedAt: string, session: WorkerSession, message: string, changedFiles: string[] = []): DistributedDelegationResult { return { version: 1, jobId: job.id, workerId, startedAt, finishedAt: new Date().toISOString(), status: "FAIL", session: { ...session, exitCode: session.exitCode || 1, stderr: [session.stderr, message].filter(Boolean).join("\n") }, changedFiles, patch: "", message }; }
-function sanitizeRemoteConfig(config: HarnessProjectConfig): HarnessProjectConfig { return { ...config, delivery: { ...config.delivery, github: { ...config.delivery?.github, enabled: false }, paseo: { ...config.delivery?.paseo, enabled: false, autoUseWorkspace: false } }, distributed: { ...config.distributed, enabled: false }, telemetry: { ...config.telemetry, exporter: "none" }, security: { ...config.security, sandbox: { ...config.security?.sandbox, required: false, forceForRisks: [] } } }; }
-function matches(file: string, scope: string): boolean { return scope === "**" || minimatch(file, scope, { dot: true }) || file.startsWith(scope.split(/[?*\[]/, 1)[0].replace(/\/+$/, "")); }
+function sanitizeRemoteConfig(config: HarnessProjectConfig): HarnessProjectConfig { return { ...config, delivery: { ...config.delivery, github: { ...config.delivery?.github, enabled: false }, paseo: { ...config.delivery?.paseo, enabled: false, autoUseWorkspace: false } }, distributed: { ...config.distributed, enabled: false }, telemetry: { ...config.telemetry, exporter: "none" } }; }
+function matches(file: string, scope: string): boolean { const prefix = scope.split(/[?*\[]/, 1)[0].replace(/\/+$/, ""); return scope === "**" || minimatch(file, scope, { dot: true }) || (Boolean(prefix) && (file === prefix || file.startsWith(`${prefix}/`))); }
 function safe(value: string): string { return value.replace(/[^A-Za-z0-9._-]/g, "-"); }
 function quote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }

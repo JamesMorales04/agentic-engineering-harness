@@ -119,7 +119,7 @@ export function buildOpenCodeRuntimeConfig(
   // not exposed to runtime agents. Direct OpenCode receives the same
   // authorized raw-fragment gateway as Paseo when the local entry is known.
   if (capabilities?.mcpServers.context && !mcp["aeh-context"] && process.argv[1]) {
-    mcp["aeh-context"] = { type: "local", command: [process.execPath, process.env.AEH_ENTRY_FILE?.trim() || process.argv[1], "context", "mcp"], environment: { AEH_CONTEXT_ROOT: "." }, enabled: true };
+    mcp["aeh-context"] = { type: "local", command: [process.execPath, process.env.AEH_ENTRY_FILE?.trim() || process.argv[1], "context", "mcp"], environment: { AEH_CONTEXT_ROOT: ".", AEH_CONTEXT_OPERATION_ID: process.env.AEH_PARENT_OPERATION_ID ?? "", AEH_LOGICAL_AGENT: selection.logicalAgent, AEH_CONTEXT_PHASE: process.env.AEH_AGENT_PHASE ?? "work" }, enabled: true };
     tools["aeh-context_*"] = true;
   }
 

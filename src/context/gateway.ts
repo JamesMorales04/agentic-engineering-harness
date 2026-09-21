@@ -50,7 +50,7 @@ export class ContextBudgetGateway {
     const discarded = durable.filter((fragment) => !deliveredIds.has(fragment.id));
     const retrievalAvailable = request.capabilities?.authorizedRetrieval !== false;
     const envelope = buildContextEnvelope({ version: 1, operationId: request.operationId, logicalAgent: request.logicalAgent, phase: request.phase, budget: { maximum: budget.maxTokens, estimatedDelivered: delivered.reduce((sum, fragment) => sum + fragment.estimatedTokens, 0) }, fragments: delivered, retrieval: { available: retrievalAvailable, allowedFragmentIds: retrievalAvailable ? delivered.map((fragment) => fragment.id) : [] } });
-    if (this.persist) await this.persistEnvelope(request.operationId, envelope);
+    if (this.persist) await this.persistEnvelope(request.operationId, request.logicalAgent, request.phase, envelope);
     const rendered = renderContextEnvelope(envelope);
     const metrics = metricsFor(durable, candidates.map((candidate) => candidate.optimized), delivered, discarded);
     const retrieval = new ContextRetrievalGateway(authorizeRetrieval({ root: this.root, operationId: request.operationId, logicalAgent: request.logicalAgent, allowedFragmentIds: retrievalAvailable ? delivered.map((fragment) => fragment.id) : [], fragments: durable }), policy.retrieval);
@@ -156,10 +156,15 @@ export class ContextBudgetGateway {
     return { ...fragment, source: { ...fragment.source, artifact: relative, sha256: contentSha256 } };
   }
 
-  private async persistEnvelope(operationId: string, envelope: ContextEnvelope): Promise<void> {
-    const file = safePath(this.root, path.posix.join(".harness", "context", safeSegment(operationId), "envelope.json"));
-    await fs.mkdir(path.dirname(file), { recursive: true });
-    await fs.writeFile(file, `${JSON.stringify(envelope, null, 2)}\n`, "utf8");
+  private async persistEnvelope(operationId: string, logicalAgent: string, phase: string, envelope: ContextEnvelope): Promise<void> {
+    const scoped = contextEnvelopePath(this.root, operationId, logicalAgent, phase);
+    await fs.mkdir(path.dirname(scoped), { recursive: true });
+    await fs.writeFile(scoped, `${JSON.stringify(envelope, null, 2)}\n`, "utf8");
+    // Keep the historical path for offline consumers. Runtime retrieval is always
+    // scoped by logical agent and phase through contextEnvelopePath.
+    const legacy = safePath(this.root, path.posix.join(".harness", "context", safeSegment(operationId), "envelope.json"));
+    await fs.mkdir(path.dirname(legacy), { recursive: true });
+    await fs.writeFile(legacy, `${JSON.stringify(envelope, null, 2)}\n`, "utf8");
   }
 
   private async emitTelemetry(request: ContextPreparationRequest, metrics: ContextMetrics, envelope: ContextEnvelope): Promise<void> {
@@ -237,4 +242,8 @@ function isRequiredProjection(fragment: ContextFragmentProjection): boolean { re
 
 export function recoveryHandle(operationId: string, fragmentId: string, sourceSha256: string): string {
   return `aeh-context://${encodeURIComponent(operationId)}/${encodeURIComponent(fragmentId)}/${sourceSha256}`;
+}
+
+export function contextEnvelopePath(root: string, operationId: string, logicalAgent: string, phase: string): string {
+  return safePath(root, path.posix.join(".harness", "context", safeSegment(operationId), safeSegment(logicalAgent), safeSegment(phase), "envelope.json"));
 }

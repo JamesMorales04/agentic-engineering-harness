@@ -118,7 +118,6 @@ export function extractPaseoAgentId(stdout: string): string | undefined {
 }
 
 export function isRecoverableDaemonStatus(result: ProcessResult): boolean {
-  if (result.exitCode === 0) return false;
   return /stale[_ -]?pid|unreachable|connection refused|daemon.*not.*running|not running/i.test(
     `${result.stderr}\n${result.stdout}`
   );

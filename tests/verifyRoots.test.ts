@@ -42,4 +42,17 @@ describe("verification roots", () => {
     expect(report.changedFiles).toContain("src.txt");
     await expect(fs.stat(path.join(controlRoot, ".harness", "reports", "CHANGE-ROOT.json"))).resolves.toBeDefined();
   });
+
+  it("does not classify Graphify-owned cache output as product scope", async () => {
+    const controlRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-control-"));
+    const workspaceRoot = await repoWithChange();
+    await fs.mkdir(path.join(workspaceRoot, "graphify-out", "cache"), { recursive: true });
+    await fs.writeFile(path.join(workspaceRoot, "graphify-out", "cache", "stat-index.json"), "{\"generated\":true}\n");
+    await fs.mkdir(path.join(workspaceRoot, ".serena"), { recursive: true });
+    await fs.writeFile(path.join(workspaceRoot, ".serena", "project.yml"), "generated: true\n");
+    const task = { ...contract(), scope: { allowed: ["src.txt"], forbidden: [], frozen: [] } };
+    const report = await verifyTask(workspaceRoot, { ...baseConfig(), codeIntelligence: { provider: "graphify" }, context: { semanticRetrieval: { provider: "serena" } } }, task, { stateRoot: controlRoot, policyRoot: controlRoot });
+    expect(report.changedFiles).toEqual(["src.txt"]);
+    expect(report.checks.find((check) => check.id === "diff.allowed-scope")?.status).toBe("PASS");
+  });
 });

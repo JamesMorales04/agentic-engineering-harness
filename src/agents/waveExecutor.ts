@@ -16,21 +16,27 @@ import { dispatchDistributedDelegation } from "../distributed/worker.js";
 import { enforceSandboxPolicy } from "../security/sandbox.js";
 import { runProcess } from "../utils/process.js";
 import { recordEvent } from "../telemetry/events.js";
+import { existingRepositoryPath, repositoryPath } from "../utils/repositoryPath.js";
 
 export interface DelegationExecutionResult { task: DelegationTask; session: WorkerSession; changedFiles: string[]; patch: string; status: "PASS" | "FAIL"; message?: string; distributed?: boolean; }
 export interface WaveExecutionSummary { wave: number; taskIds: string[]; status: "PASS" | "FAIL"; results: DelegationExecutionResult[]; barrier?: ValidationReport; }
 export interface PlannerWaveResult { used: boolean; plan?: PlannerOutput; schedule?: ParallelismPlan; waves: WaveExecutionSummary[]; sessions: WorkerSession[]; aggregateSession?: WorkerSession; report?: ValidationReport; }
 
-export async function executePlannerWaves(input: { root: string; stateRoot: string; config: HarnessProjectConfig; contract: TaskContract; topology: ResolvedAgentTopology; implementationSelection: AgentExecutionSelection; controller?: ControlPlaneSnapshot; revalidate: () => Promise<ValidationReport>; }): Promise<PlannerWaveResult> {
+export async function executePlannerWaves(input: { root: string; stateRoot: string; config: HarnessProjectConfig; contract: TaskContract; topology: ResolvedAgentTopology; implementationSelection: AgentExecutionSelection; controller?: ControlPlaneSnapshot; precomputedPlan?: PlannerOutput; revalidate: () => Promise<ValidationReport>; }): Promise<PlannerWaveResult> {
   const planning = input.config.workflow?.planning;
   if (planning?.enabled === false || input.contract.mode === "quick") return { used: false, waves: [], sessions: [] };
   const planner = findPlanner(input.topology, planning?.plannerAgent); if (!planner) return { used: false, waves: [], sessions: [] };
-  const plannerSelection = executionSelectionForAgent(input.topology, planner);
-  const plannerSession = await executeAgentPrompt(input.root, input.config, input.contract, plannerSelection, buildPlannerPrompt(input.contract), { outputContract: "planner" });
-  const sessions: WorkerSession[] = [plannerSession];
-  if (plannerSession.exitCode !== 0) return { used: true, waves: [], sessions, aggregateSession: aggregate(sessions, 1, "Planner runtime failed.") };
+  const sessions: WorkerSession[] = [];
   let plan: PlannerOutput;
-  try { plan = plannerOutputSchema.parse(extractMarkedJson(plannerSession.stdout, plannerSession.stderr)); } catch (error) { return { used: true, waves: [], sessions, aggregateSession: aggregate(sessions, 1, `Invalid planner output: ${String(error)}`) }; }
+  if (input.precomputedPlan) {
+    plan = plannerOutputSchema.parse(input.precomputedPlan);
+  } else {
+    const plannerSelection = executionSelectionForAgent(input.topology, planner);
+    const plannerSession = await executeAgentPrompt(input.root, input.config, input.contract, plannerSelection, buildPlannerPrompt(input.contract), { outputContract: "planner" });
+    sessions.push(plannerSession);
+    if (plannerSession.exitCode !== 0) return { used: true, waves: [], sessions, aggregateSession: aggregate(sessions, 1, "Planner runtime failed.") };
+    try { plan = plannerOutputSchema.parse(extractMarkedJson(plannerSession.stdout, plannerSession.stderr)); } catch (error) { return { used: true, waves: [], sessions, aggregateSession: aggregate(sessions, 1, `Invalid planner output: ${String(error)}`) }; }
+  }
   const planIssues = validatePlannerWavePlan(input.contract, input.topology, plan);
   if (planIssues.length) return { used: true, plan, waves: [], sessions, aggregateSession: aggregate(sessions, 1, `Planner contract rejected: ${planIssues.join("; ")}`) };
   if (!plan.tasks.length) return { used: false, plan, waves: [], sessions };
@@ -76,10 +82,10 @@ export function validatePlannerWavePlan(contract: TaskContract, topology: Resolv
 function findPlanner(topology: ResolvedAgentTopology, configured?: string): string | undefined { if (configured && topology.agents[configured] && !topology.agents[configured].disabled) return configured; return Object.values(topology.agents).find((agent) => agent.role === "planner" && !agent.disabled)?.name; }
 function buildPlannerPrompt(contract: TaskContract): string { const requirements = (contract.requirements ?? []).map((item) => `- ${item.id}: ${item.description ?? ""}`).join("\n") || "- none"; return `Create the implementation delegation plan for ${contract.task.id}: ${contract.task.title}.\nThe TaskContract and sealed sources are immutable. Produce the smallest dependency-aware tasks, assign each to a configured logical implementer, give concrete path scopes, and map every requirement ID to at least one task. Do not create product requirements.\nRequirements:\n${requirements}\nAllowed scope: ${(contract.scope?.allowed ?? ["**"]).join(", ")}\nReturn output matching the planner contract; when native structured output is unavailable, use one final AEH_RESULT_JSON=<json> line.`; }
 function buildDelegationPrompt(contract: TaskContract, task: DelegationTask): string { return `Implement only delegated task ${task.id} for parent ${contract.task.id}.\nSummary: ${task.summary}\nAllowed task scope: ${task.scope.join(", ")}\nDependencies already integrated: ${task.dependencies.join(", ") || "none"}\nAcceptance requirement IDs: ${task.acceptance.join(", ")}\nRisk: ${task.risk}.\nThe parent TaskContract, SDD and control-plane snapshot are frozen. Do not edit outside the delegated scope, do not commit, push, rebase or change requirements. Run focused tests when practical and leave the worktree with only the implementation diff.`; }
-async function copyTaskContext(root: string, target: string, config: HarnessProjectConfig, contract: TaskContract): Promise<void> { const relative = [`${config.sdd?.contractsDir ?? ".harness/contracts"}/${contract.task.id}.yaml`, `.harness/seals/${contract.task.id}.json`, ...Object.values(contract.source ?? {}).filter((value): value is string => Boolean(value)), contract.issue?.snapshotPath].filter((value): value is string => Boolean(value)); for (const item of [...new Set(relative)]) { const source = path.resolve(root, item); const destination = path.resolve(target, item); try { await fs.mkdir(path.dirname(destination), { recursive: true }); await fs.copyFile(source, destination); } catch { /* deterministic validation owns required context failures */ } } }
-function withinContractScope(candidate: string, allowed: string[]): boolean { return allowed.some((pattern) => pattern === "**" || minimatch(candidate, pattern, { dot: true }) || nonEmptyPrefix(staticPrefix(candidate), staticPrefix(pattern))); }
-function nonEmptyPrefix(left: string, right: string): boolean { return Boolean(left && right) && (left.startsWith(right) || right.startsWith(left)); }
-function matchesAny(file: string, patterns: string[]): boolean { return patterns.some((pattern) => pattern === "**" || minimatch(file, pattern, { dot: true }) || (Boolean(staticPrefix(pattern)) && file.startsWith(staticPrefix(pattern)))); }
+async function copyTaskContext(root: string, target: string, config: HarnessProjectConfig, contract: TaskContract): Promise<void> { const relative = [`${config.sdd?.contractsDir ?? ".harness/contracts"}/${contract.task.id}.yaml`, `.harness/seals/${contract.task.id}.json`, ...Object.values(contract.source ?? {}).filter((value): value is string => Boolean(value)), contract.issue?.snapshotPath].filter((value): value is string => Boolean(value)); for (const item of [...new Set(relative)]) { try { const source = await existingRepositoryPath(root, item); const destination = repositoryPath(target, item); await fs.mkdir(path.dirname(destination), { recursive: true }); await fs.copyFile(source, destination); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; } } }
+function withinContractScope(candidate: string, allowed: string[]): boolean { return allowed.some((pattern) => pattern === "**" || minimatch(candidate, pattern, { dot: true }) || pathWithin(staticPrefix(candidate), staticPrefix(pattern))); }
+function pathWithin(candidate: string, parent: string): boolean { return Boolean(candidate && parent) && (candidate === parent || candidate.startsWith(`${parent}/`)); }
+function matchesAny(file: string, patterns: string[]): boolean { return patterns.some((pattern) => pattern === "**" || minimatch(file, pattern, { dot: true }) || pathWithin(file, staticPrefix(pattern))); }
 function staticPrefix(pattern: string): string { return pattern.split(/[?*\[]/, 1)[0].replace(/\/+$/, ""); }
 function failed(task: DelegationTask, selection: AgentExecutionSelection, message: string, distributed = false): DelegationExecutionResult { return { task, session: { provider: selection.runtimeAdapter, model: selection.modelName, logicalAgent: selection.logicalAgent, runtime: selection.runtimeName, profile: selection.profile, exitCode: 1, stdout: "", stderr: message }, changedFiles: [], patch: "", status: "FAIL", message, distributed }; }
 function aggregate(sessions: WorkerSession[], exitCode: number, message: string): WorkerSession { return { provider: "multi-worker", logicalAgent: "planner-waves", exitCode, stdout: message, stderr: exitCode ? sessions.filter((session) => session.exitCode !== 0).map((session) => session.stderr).filter(Boolean).join("\n") : "" }; }

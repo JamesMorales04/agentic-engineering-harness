@@ -58,7 +58,8 @@ function conflictReasons(a: DelegationTask, b: DelegationTask, graph: GraphSnaps
 }
 
 function scopesOverlap(a: string[], b: string[]): boolean { return a.some((left) => b.some((right) => left === right || minimatch(left, right, { dot: true }) || minimatch(right, left, { dot: true }) || nonEmptyPrefixOverlap(staticPrefix(left), staticPrefix(right)))); }
-function nonEmptyPrefixOverlap(left: string, right: string): boolean { return Boolean(left && right) && (left.startsWith(right) || right.startsWith(left)); }
+function nonEmptyPrefixOverlap(left: string, right: string): boolean { return Boolean(left && right) && (pathWithin(left, right) || pathWithin(right, left)); }
+function pathWithin(candidate: string, parent: string): boolean { return candidate === parent || candidate.startsWith(`${parent}/`); }
 function staticPrefix(pattern: string): string { return pattern.split(/[?*\[]/, 1)[0].replace(/\/+$/, ""); }
 
 function nodesForScopes(scopes: string[], graph: GraphSnapshot): Set<string> {
@@ -70,7 +71,7 @@ function nodesForScopes(scopes: string[], graph: GraphSnapshot): Set<string> {
   }
   return result;
 }
-function pathMatches(file: string, scope: string): boolean { return minimatch(file, scope, { dot: true }) || file.startsWith(staticPrefix(scope)); }
+function pathMatches(file: string, scope: string): boolean { const prefix = staticPrefix(scope); return minimatch(file, scope, { dot: true }) || (Boolean(prefix) && (file === prefix || file.startsWith(`${prefix}/`))); }
 function shareCommunity(a: Set<string>, b: Set<string>, graph: GraphSnapshot): boolean { const communities = graph.communities ?? {}; const left = new Set([...a].map((node) => communities[node]).filter(Boolean)); return [...b].some((node) => Boolean(communities[node] && left.has(communities[node]))); }
 function adjacency(graph: GraphSnapshot): Map<string, Set<string>> {
   const map = new Map<string, Set<string>>();

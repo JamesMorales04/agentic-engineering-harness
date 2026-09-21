@@ -3,7 +3,7 @@ import { dispatchManagedPaseoAgent, inspectManagedPaseoAgent } from "../paseo/ru
 import { recordPaseoTrace } from "../paseo/trace.js";
 import { loadOperationCompletionTarget, notifyOperationCompletion } from "./completion.js";
 import { syncOperationPortfolio } from "./portfolio.js";
-import { activeOperationSupervisor, isTerminalOperation, loadOperation, patchOperationMetadata, type OperationRecordV2 } from "./state.js";
+import { activeOperationSupervisor, isTerminalOperation, loadOperation, updateOperationMetadata, type OperationRecordV2 } from "./state.js";
 import { loadOperationWakeBudget, recordOperationWakeAccepted } from "./wakeBudget.js";
 
 export type OperationWakeReason = "progress" | "blocked" | "stalled" | "terminal";
@@ -254,17 +254,19 @@ export async function runOperationLivenessCheck(root: string, config: HarnessPro
   }
   const result = await retryDispatch(root, leadId, leadWakePrompt(operation, decision), policy.retryDelaysMs, deps);
   if (result.success) await recordOperationWakeAccepted(root, operationId, operation.revision, "lead", decision.reason);
-  const latest = await loadOperation(root, operationId);
-  const updated = await patchOperationMetadata(root, operationId, {
-    notification: {
-      ...latest.notification,
-      lastLeadWakeRevision: result.success ? operation.revision : latest.notification.lastLeadWakeRevision,
-      lastLeadWakeAt: result.success ? new Date(now).toISOString() : latest.notification.lastLeadWakeAt,
-      lastLeadWakeReason: result.success ? decision.reason : latest.notification.lastLeadWakeReason,
-      terminalDelivered: latest.notification.terminalDelivered || (decision.reason === "terminal" && result.success),
-      attempts: latest.notification.attempts + result.attempts,
-      lastError: result.error
-    }
+  const updated = await updateOperationMetadata(root, operationId, (current) => {
+    const sameRevision = current.revision === operation.revision;
+    return {
+      notification: {
+        ...current.notification,
+        lastLeadWakeRevision: result.success && sameRevision ? operation.revision : current.notification.lastLeadWakeRevision,
+        lastLeadWakeAt: result.success && sameRevision ? new Date(now).toISOString() : current.notification.lastLeadWakeAt,
+        lastLeadWakeReason: result.success && sameRevision ? decision.reason : current.notification.lastLeadWakeReason,
+        terminalDelivered: current.notification.terminalDelivered || (decision.reason === "terminal" && result.success && sameRevision),
+        attempts: current.notification.attempts + result.attempts,
+        lastError: result.error
+      }
+    };
   });
   await syncOperationPortfolio(root, config.project.name, updated).catch(() => undefined);
   await trace(root, "operation.watchdog.lead", {

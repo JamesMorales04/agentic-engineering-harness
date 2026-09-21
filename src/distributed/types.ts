@@ -14,6 +14,7 @@ export interface DistributedDelegationJob {
   task: DelegationTask;
   contract: TaskContract;
   selection: AgentExecutionSelection;
+  sandboxPolicySha256: string;
   config: HarnessProjectConfig;
   prompt: string;
 }

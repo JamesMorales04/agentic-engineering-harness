@@ -23,9 +23,9 @@ export function buildOpaInput(contract: TaskContract, changedFiles: string[], fr
 
 export async function runOpaPolicies(root: string, config: HarnessProjectConfig, contract: TaskContract, changedFiles: string[], frozenChangedFiles: string[], evidence: PolicyEvidence, policyRoot = root, executionIdentity: OpaExecutionIdentity = {}): Promise<ValidationCheck> {
   if (!config.validation?.opa?.enabled) return { id: "policy.opa", category: "policy", status: "SKIP", message: "OPA policy evaluation disabled." };
-  if (!(await commandExists("opa", root))) return { id: "policy.opa", category: "policy", status: "WARN", message: "OPA is enabled but the opa executable is not installed." };
+  if (!(await commandExists("opa", root))) return { id: "policy.opa", category: "policy", status: "FAIL", message: "OPA is enabled but the opa executable is not installed." };
   const policyDirs = config.validation.opa.policyDirs ?? [];
-  if (!policyDirs.length) return { id: "policy.opa", category: "policy", status: "WARN", message: "OPA is enabled but no policyDirs are configured." };
+  if (!policyDirs.length) return { id: "policy.opa", category: "policy", status: "FAIL", message: "OPA is enabled but no policyDirs are configured." };
   const args = policyDirs.map((dir) => `--data ${quote(path.resolve(policyRoot, dir))}`).join(" ");
   const input = buildOpaInput(contract, changedFiles, frozenChangedFiles, evidence, executionIdentity);
   const command = `printf %s ${quote(JSON.stringify(input))} | opa eval --format=json ${args} --stdin-input data`;

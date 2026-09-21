@@ -9,7 +9,7 @@ export interface ValidationCommand { id: string; command: string; required?: boo
 export interface ValidatorSpec { id: string; adapter: ValidatorAdapter; command?: string; required?: boolean; timeoutSeconds?: number; workingDirectory?: string; options?: Record<string, unknown>; }
 export type ValidationCapability = "unit-test" | "integration-test" | "bdd" | "contract-test" | "browser-test" | "static-security" | "dependency-security" | "architecture" | "policy" | string;
 export interface ValidationProviderSpec { id: string; capability: ValidationCapability; provider: string; command?: string; required?: boolean; timeoutSeconds?: number; workingDirectory?: string; options?: Record<string, unknown>; }
-export interface UsageMetrics { inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number; }
+export interface UsageMetrics { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number; reasoningOutputTokens?: number; totalTokens?: number; costUsd?: number; }
 export type ContextMode = "observe" | "enforce";
 export type ContextRole = "explorer" | "planner" | "spec-manager" | "implementer" | "reviewer" | "operation-supervisor" | string;
 export interface ContextBudgetConfig { inputTokens?: number; maxTokens?: number; reserved?: { instructions?: number; normative?: number; evidence?: number; response?: number }; }
@@ -180,6 +180,7 @@ export interface HarnessProjectConfig {
   };
   telemetry?: { enabled?: boolean; required?: boolean; localEventsFile?: string; exporter?: "none" | "otlp-http-json" | string; endpoint?: string; headers?: Record<string, string>; serviceName?: string; };
   evals?: { corpusDir?: string; resultsDir?: string; workspacesDir?: string; defaultRuns?: number; confidenceLevel?: number; fullStack?: { enabled?: boolean; required?: boolean; strictSupplyChain?: boolean } };
+  certification?: { enabled?: boolean; policyPath?: string; provider?: string; fixtureRoot?: string; requireSandbox?: boolean; maxAttempts?: number; maxDurationMs?: number; maxCostUsd?: number; maxTotalTokens?: number };
   provenance?: { outputDir?: string; buildType?: string; cosignKey?: string; required?: boolean; sbom?: { required?: boolean; command?: string }; signing?: { required?: boolean; key?: string }; verification?: { required?: boolean; publicKey?: string } };
 }
 
@@ -237,6 +238,8 @@ export interface WorkerSession {
   title?: string;
   operationId?: string;
   operationKind?: string;
+  operationRevision?: number;
+  supervisorGeneration?: number;
   phase?: string;
   status?: string;
   startedAt?: string;

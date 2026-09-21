@@ -49,7 +49,7 @@ export interface TaskRunResult {
   delivery?: DeliveryFinalizationResult;
 }
 
-export async function runTask(root: string, config: HarnessProjectConfig, contract: TaskContract, options?: { profile?: string }): Promise<TaskRunResult> {
+export async function runTask(root: string, config: HarnessProjectConfig, contract: TaskContract, options?: { profile?: string; planning?: PlannerOutput }): Promise<TaskRunResult> {
   const controlRoot = path.resolve(root);
   const operationStateRoot = resolveOperationStateRoot(root);
   const operationId = currentOperationContext().id;
@@ -109,9 +109,10 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
   let executionSessions: WorkerSession[] = [];
   let report: ValidationReport;
   const planningEnabled = topology && route && selection && effectiveConfig.workflow?.planning?.enabled !== false && effectiveContract.mode !== "quick";
-  if (planningEnabled) {
+  if (planningEnabled && topology && route && selection) {
+    const planningSelection = selection;
     if (operationId) await runStage(operationStateRoot, operationId, "planning", "RUNNING");
-    waveResult = await executePlannerWaves({ root: workspaceRoot, stateRoot: controlRoot, config: effectiveConfig, contract: effectiveContract, topology, implementationSelection: selection, controller, revalidate: async () => verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, selection) });
+    waveResult = await executePlannerWaves({ root: workspaceRoot, stateRoot: controlRoot, config: effectiveConfig, contract: effectiveContract, topology, implementationSelection: planningSelection, controller, precomputedPlan: options?.planning, revalidate: async () => verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, planningSelection) });
     executionSessions = [...waveResult.sessions];
     if (operationId) {
       await runStage(operationStateRoot, operationId, "planning", waveResult.aggregateSession?.exitCode === 0 || !waveResult.aggregateSession ? "COMPLETED" : "FAILED");

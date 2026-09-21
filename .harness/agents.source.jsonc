@@ -1,8 +1,17 @@
 {
   "version": 1,
   "extends": ["aeh:orchestration"],
-  "activeProfile": "balanced",
+  "activeProfile": "certification",
   "skillRoots": ["skills"],
+
+  "profiles": {
+    "certification": {
+      "description": "Use the real GPT-5.6 Luna model for every semantic reviewer in certification journeys.",
+      "agents": {
+        "*-reviewer": { "execution": { "model": "@brain" } }
+      }
+    }
+  },
 
   "agents": {
     "harness-reviewer": {

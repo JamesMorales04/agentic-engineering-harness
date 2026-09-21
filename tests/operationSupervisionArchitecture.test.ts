@@ -22,6 +22,7 @@ const roots: string[] = [];
 afterEach(async () => {
   delete process.env.AEH_OPERATION_ID;
   delete process.env.AEH_CONTROL_ROOT;
+  delete process.env.AEH_OPERATION_STATE_REDIRECT;
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
 });
 
@@ -160,10 +161,24 @@ describe("OperationRecord v2 supervision", () => {
     await saveOperation(repositoryRoot, operation(repositoryRoot));
     process.env.AEH_OPERATION_ID = "CHANGE-STATE";
     process.env.AEH_CONTROL_ROOT = repositoryRoot;
+    process.env.AEH_OPERATION_STATE_REDIRECT = "1";
 
     await setOperationStage(worktree, "CHANGE-STATE", "implementation", "RUNNING");
     const current = await loadOperation(repositoryRoot, "CHANGE-STATE");
     expect(current.phase).toBe("implementation");
     await expect(fs.access(path.join(worktree, ".harness/operations/CHANGE-STATE.json"))).rejects.toThrow();
+  });
+
+  it("honors an explicit state root unless controller redirection is opted in", async () => {
+    const repositoryRoot = await root();
+    const isolatedRoot = await root();
+    const isolatedOperation = operation(isolatedRoot);
+    await saveOperation(repositoryRoot, operation(repositoryRoot));
+    process.env.AEH_OPERATION_ID = "CHANGE-STATE";
+    process.env.AEH_CONTROL_ROOT = repositoryRoot;
+
+    await saveOperation(isolatedRoot, isolatedOperation);
+    await expect(loadOperation(isolatedRoot, isolatedOperation.id)).resolves.toMatchObject({ root: isolatedRoot });
+    await expect(fs.access(path.join(isolatedRoot, ".harness/operations/CHANGE-STATE.json"))).resolves.toBeUndefined();
   });
 });

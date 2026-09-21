@@ -31,6 +31,7 @@ describe("Paseo capability negotiation", () => {
 
   it("recognizes stale/unreachable daemons as recoverable startup state", () => {
     expect(isRecoverableDaemonStatus(result(1, "", "stale_pid / unreachable"))).toBe(true);
+    expect(isRecoverableDaemonStatus(result(0, JSON.stringify({ localDaemon: "stale_pid", connectedDaemon: "unreachable" })))).toBe(true);
     expect(isRecoverableDaemonStatus(result(1, "", "permission denied"))).toBe(false);
   });
 });

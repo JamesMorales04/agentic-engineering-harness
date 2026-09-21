@@ -17,6 +17,7 @@ import {
 } from "./native.js";
 import {
   PaseoSdkUnavailableError,
+  PaseoSdkTimeoutError,
   createPaseoSdkAgent,
   dispatchPaseoSdkAgent,
   inspectPaseoSdkAgent,
@@ -140,6 +141,10 @@ export async function dispatchManagedPaseoAgent(root: string, agentId: string, p
       await trace(root, "agent.dispatch", { transport: "sdk", agentId, status: result.status ?? "unknown" });
       return result;
     } catch (error) {
+      if (error instanceof PaseoSdkTimeoutError || (error instanceof Error && error.name === "PaseoSdkTimeoutError")) {
+        const stopped = await stopManagedPaseoAgent(root, agentId, deps);
+        return { id: agentId, exitCode: 124, stdout: "", stderr: [errorMessage(error), stopped.stderr].filter(Boolean).join("\n"), status: "timeout", transport: "sdk" };
+      }
       if (!sdkCanFallback(error)) throw error;
       await trace(root, "fallback.cli", { operation: "dispatch", agentId, reason: errorMessage(error) });
     }
@@ -156,6 +161,10 @@ export async function waitManagedPaseoAgent(root: string, agentId: string, timeo
     const native = deps.native ?? DEFAULT_DEPS.native!;
     try {
       const result = fromNativeWait(await native.wait(root, agentId, timeout, baseline));
+      if (result.status === "timeout") {
+        const stopped = await stopManagedPaseoAgent(root, agentId, deps);
+        result.stderr = [result.stderr, stopped.stderr].filter(Boolean).join("\n");
+      }
       await trace(root, "agent.wait.completed", { transport: "sdk", observation: "subscription", agentId, status: result.status ?? "unknown" });
       return result;
     } catch (error) {
@@ -163,6 +172,10 @@ export async function waitManagedPaseoAgent(root: string, agentId: string, timeo
       await trace(root, "agent.wait.fallback", { agentId, from: "subscription", to: "sdk-wait", reason: errorMessage(error) });
       try {
         const result = { ...fromSdk(await deps.sdk.wait(root, agentId, timeout)), observation: "sdk-wait" as const };
+        if (result.status === "timeout") {
+          const stopped = await stopManagedPaseoAgent(root, agentId, deps);
+          result.stderr = [result.stderr, stopped.stderr].filter(Boolean).join("\n");
+        }
         await trace(root, "agent.wait.completed", { transport: "sdk", observation: "sdk-wait", agentId, status: result.status ?? "unknown" });
         return result;
       } catch (sdkError) {
@@ -173,10 +186,23 @@ export async function waitManagedPaseoAgent(root: string, agentId: string, timeo
   }
   const timeoutSec = timeoutSeconds ?? 1800;
   const wait = await deps.run(`paseo wait ${quote(agentId)} --timeout ${timeoutSec}`, { cwd: root, timeoutMs: (timeoutSec + 30) * 1000 });
+  let cleanupStderr = "";
+  if (wait.timedOut || wait.exitCode !== 0) {
+    cleanupStderr = (await stopManagedPaseoAgent(root, agentId, deps)).stderr;
+  }
   const logs = await deps.run(`paseo logs ${quote(agentId)} --tail 200`, { cwd: root, timeoutMs: 60_000 });
-  const result: ManagedPaseoAgentResult = { id: agentId, exitCode: wait.exitCode, stdout: logs.stdout || wait.stdout, stderr: [wait.stderr, logs.stderr].filter(Boolean).join("\n"), status: wait.exitCode === 0 ? "idle" : "failed", transport: "cli", observation: "cli-wait" };
+  const result: ManagedPaseoAgentResult = { id: agentId, exitCode: wait.exitCode, stdout: logs.stdout || wait.stdout, stderr: [wait.stderr, cleanupStderr, logs.stderr].filter(Boolean).join("\n"), status: wait.exitCode === 0 ? "idle" : "failed", transport: "cli", observation: "cli-wait" };
   await trace(root, "agent.wait.completed", { transport: "cli", observation: "cli-wait", agentId, status: result.status ?? "unknown" });
   return result;
+}
+
+export async function stopManagedPaseoAgent(root: string, agentId: string, deps: PaseoRuntimeDeps = DEFAULT_DEPS): Promise<{ exitCode: number; stderr: string }> {
+  try {
+    const result = await deps.run(`paseo stop ${quote(agentId)}`, { cwd: root, timeoutMs: 30_000 });
+    return { exitCode: result.exitCode, stderr: result.exitCode === 0 ? "" : result.stderr || result.stdout || `paseo stop exited ${result.exitCode}` };
+  } catch (error) {
+    return { exitCode: 1, stderr: errorMessage(error) };
+  }
 }
 
 export async function continueManagedPaseoAgent(

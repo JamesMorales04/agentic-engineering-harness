@@ -52,8 +52,8 @@ export async function runChangeOperation(
 
   await setOperationStage(controlRoot, operation.id, "triage", "RUNNING");
   const triage = triageChange(config, { request: payload.request, files: payload.files, domains: payload.domains, risk: payload.risk });
-  const mode: "quick" | "spec" = triage.quickEligible && (payload.acceptance?.length ?? 0) > 0 ? "quick" : "spec";
-  const triageReasons = mode === "quick" ? triage.reasons : [...triage.reasons, ...(payload.acceptance?.length ? [] : ["SPEC selected because no explicit observable QUICK acceptance was supplied"])];
+  let mode: "quick" | "spec" = triage.quickEligible && (payload.acceptance?.length ?? 0) > 0 ? "quick" : "spec";
+  let triageReasons = mode === "quick" ? triage.reasons : [...triage.reasons, ...(payload.acceptance?.length ? [] : ["SPEC selected because no explicit observable QUICK acceptance was supplied"])] ;
   const current = await loadOperation(controlRoot, operation.id);
   await patchOperation(controlRoot, operation.id, { intent: { ...current.intent, request: payload.request, classification: "CHANGE", mode, risk: payload.risk ?? "low", priority: payload.priority ?? current.intent?.priority } });
   await setOperationStage(controlRoot, operation.id, "triage", "COMPLETED", { message: `${mode.toUpperCase()}: ${triageReasons.join("; ")}` });
@@ -69,7 +69,7 @@ export async function runChangeOperation(
     await setOperationStage(controlRoot, operation.id, "environment-preflight", "SKIPPED", { message: "QUICK mode does not require OpenSpec." });
   }
 
-  const topology = await loadResolvedAgentTopology(root, config, payload.profile ?? config.agents?.activeProfile);
+  const topology = await loadResolvedAgentTopology(root, config, normalizeAgentProfile(payload.profile) ?? config.agents?.activeProfile);
   if (specPreflight) {
     const manager = topology.agents[specPreflight.managerAgent];
     if (!manager || manager.disabled) throw new Error(`SPEC_MANAGER_UNAVAILABLE: ${specPreflight.managerAgent}`);
@@ -77,7 +77,7 @@ export async function runChangeOperation(
   await ensureOperationSupervisor(root, config, bootstrapContract, topology, { required: true, forceMaterialize: true });
 
   await setOperationStage(controlRoot, operation.id, "discovery", "RUNNING");
-  const explorerEvidence = await runDiscovery(root, config, bootstrapContract, topology, operation.id, payload, inputs);
+  const explorerEvidence = await runDiscovery(root, controlRoot, config, bootstrapContract, topology, operation.id, payload, inputs);
   await setOperationStage(controlRoot, operation.id, "discovery", "COMPLETED", {
     artifact: explorerEvidence?.artifact,
     message: explorerEvidence ? "Explorer durable result accepted." : "Explorer disabled or unavailable by topology."
@@ -85,11 +85,23 @@ export async function runChangeOperation(
   await maybeRotateOperationSupervisor(root, config, bootstrapContract, topology);
 
   await setOperationStage(controlRoot, operation.id, "planning", "RUNNING");
-  const plannerEvidence = await runPlanning(root, config, bootstrapContract, topology, operation.id, payload, explorerEvidence, inputs);
+  const plannerEvidence = await runPlanning(root, controlRoot, config, bootstrapContract, topology, operation.id, payload, explorerEvidence, inputs);
   await setOperationStage(controlRoot, operation.id, "planning", "COMPLETED", {
     artifact: plannerEvidence?.artifact,
     message: plannerEvidence ? "Planner durable result accepted." : "Planner disabled or unavailable by topology."
   });
+
+  if (mode === "quick" && requiresSpecEscalation(explorerEvidence, plannerEvidence)) {
+    mode = "spec";
+    triageReasons = [...triageReasons, "SPEC escalation came from durable explorer/planner evidence."];
+    await patchOperation(controlRoot, operation.id, { intent: { ...(await loadOperation(controlRoot, operation.id)).intent, mode } });
+    await recordEvent(controlRoot, config, "harness.change.triage-escalated", { operationId: operation.id, reason: triageReasons.at(-1), explorerArtifact: explorerEvidence?.artifact, plannerArtifact: plannerEvidence?.artifact });
+    await setOperationStage(controlRoot, operation.id, "environment-preflight", "RUNNING");
+    specPreflight = await preflightOpenSpec(root, config);
+    await setOperationStage(controlRoot, operation.id, "environment-preflight", "COMPLETED", { message: `OpenSpec ${specPreflight.version}; schema=${specPreflight.schema}; manager=${specPreflight.managerAgent}` });
+    const manager = topology.agents[specPreflight.managerAgent];
+    if (!manager || manager.disabled) throw new Error(`SPEC_MANAGER_UNAVAILABLE: ${specPreflight.managerAgent}`);
+  }
 
   let contract: TaskContract;
   let specChange: string | undefined;
@@ -122,7 +134,7 @@ export async function runChangeOperation(
       buildSpecManagerPrompt(payload, preparedSpec.changeName, explorerEvidence, plannerEvidence, inputs),
       { outputContract: "spec-authoring", phase: "spec-authoring", operationKind: "change" }
     );
-    const specEvidence = await requireDurableChangeHandoff(root, "SPEC_MANAGER", specSession, specAuthoringOutputSchema);
+    const specEvidence = await requireDurableChangeHandoff(root, "SPEC_MANAGER", specSession, specAuthoringOutputSchema, controlRoot, { operationId: operation.id, contract: "spec-authoring", phase: "spec-authoring" });
     validateSpecAuthoringResult(preparedSpec.changeName, specEvidence.payload);
     await setOperationStage(controlRoot, operation.id, "spec-authoring", "COMPLETED", { artifact: specEvidence.artifact });
     await maybeRotateOperationSupervisor(root, config, bootstrapContract, topology);
@@ -137,14 +149,27 @@ export async function runChangeOperation(
   }
 
   await setOperationStage(controlRoot, operation.id, "implementation", "RUNNING");
-  const run = await runTask(root, config, contract, { profile: payload.profile });
+  const run = await runTask(root, config, contract, { profile: payload.profile, planning: plannerEvidence?.payload });
   await setOperationStage(controlRoot, operation.id, "implementation", run.status === "PASS" ? "COMPLETED" : "FAILED");
   await recordEvent(controlRoot, config, "harness.change.finish", { operationId: operation.id, taskId, mode, status: run.status, triageReasons, specChange, inputArtifacts: inputs.map((item) => item.artifact) });
   return { taskId, mode, triageReasons, run, specChange };
 }
 
+export function requiresSpecEscalation(explorerEvidence?: DurableAgentEvidence<ExplorerOutput>, plannerEvidence?: DurableAgentEvidence<PlannerOutput>): boolean {
+  const explorerEscalates = explorerEvidence?.payload.findings.some((finding) => (finding.status === "BLOCKED" || finding.status === "PARTIAL") && finding.evidence.length > 0) ?? false;
+  const plannerEscalates = plannerEvidence?.payload.fallbackRouting.some((route) => /\b(?:spec(?:ification)?|sdd)\b/i.test(route) || /\b(?:requires?|needs?)\s+(?:a\s+)?(?:product|architectural)\s+decision\b/i.test(route)) ?? false;
+  return explorerEscalates || plannerEscalates;
+}
+
+export function normalizeAgentProfile(profile?: string): string | undefined {
+  const value = profile?.trim();
+  if (!value || /^(quick|spec|change|audit|run)$/i.test(value)) return undefined;
+  return value;
+}
+
 async function runDiscovery(
   root: string,
+  controlRoot: string,
   config: HarnessProjectConfig,
   contract: TaskContract,
   topology: Awaited<ReturnType<typeof loadResolvedAgentTopology>>,
@@ -163,11 +188,12 @@ async function runDiscovery(
     changeInputsPrompt(inputs),
     "Return the explorer output contract with only relevant files/symbols/tests/module boundaries, verified finding status and concrete evidence. Do not implement, author specs or start another AEH workflow."
   ].join("\n\n"), { outputContract: "explorer", phase: "discovery", operationKind: "change" });
-  return requireDurableChangeHandoff(root, "EXPLORER", session, explorerOutputSchema);
+  return requireDurableChangeHandoff(root, "EXPLORER", session, explorerOutputSchema, controlRoot, { operationId: operationId, contract: "explorer", phase: "discovery" });
 }
 
 async function runPlanning(
   root: string,
+  controlRoot: string,
   config: HarnessProjectConfig,
   contract: TaskContract,
   topology: Awaited<ReturnType<typeof loadResolvedAgentTopology>>,
@@ -190,7 +216,7 @@ async function runPlanning(
     explorerContext,
     "Identify affected areas, dependencies, bounded implementer ownership, reviewers and deterministic validation gates. Keep normative requirements unchanged."
   ].join("\n\n"), { outputContract: "planner", phase: "planning", operationKind: "change" });
-  return requireDurableChangeHandoff(root, "PLANNER", session, plannerOutputSchema);
+  return requireDurableChangeHandoff(root, "PLANNER", session, plannerOutputSchema, controlRoot, { operationId, contract: "planner", phase: "planning" });
 }
 
 function validateSpecAuthoringResult(expectedChange: string, result: SpecAuthoringOutput): void {

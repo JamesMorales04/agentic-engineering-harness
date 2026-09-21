@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { dispatchManagedPaseoAgent } from "../paseo/runtime.js";
 import { recordPaseoTrace } from "../paseo/trace.js";
-import { loadOperation, patchOperationMetadata, type OperationRecord } from "./state.js";
+import { loadOperation, updateOperationMetadata, type OperationRecord } from "./state.js";
 import { evidenceDisciplineInstruction } from "./evidence.js";
 
 export type OperationCompletionStatus = "PENDING" | "SENT" | "FAILED" | "DISABLED";
@@ -43,9 +43,11 @@ export async function registerOperationCompletionTarget(
   trace: typeof recordPaseoTrace = recordPaseoTrace
 ): Promise<OperationCompletionTarget> {
   const target: OperationCompletionTarget = { version: 1, operationId, agentId: requiredId(agentId, "agent id"), source, status: "PENDING", registeredAt: new Date().toISOString() };
-  await persist(root, target);
-  await trace(root, "operation.callback.registered", { operationId, agentId: target.agentId, source: source ?? "unknown" });
-  return target;
+  return withCompletionLock(root, operationId, async () => {
+    await persist(root, target);
+    await trace(root, "operation.callback.registered", { operationId, agentId: target.agentId, source: source ?? "unknown" });
+    return target;
+  });
 }
 
 export async function disableOperationCompletionTarget(
@@ -54,11 +56,13 @@ export async function disableOperationCompletionTarget(
   reason: string,
   trace: typeof recordPaseoTrace = recordPaseoTrace
 ): Promise<void> {
-  const target = await loadOperationCompletionTarget(root, operationId);
-  if (!target || target.status === "SENT") return;
-  const disabled: OperationCompletionTarget = { ...target, status: "DISABLED", attemptedAt: new Date().toISOString(), error: reason };
-  await persist(root, disabled);
-  await trace(root, "operation.callback.disabled", { operationId, agentId: target.agentId, reason });
+  await withCompletionLock(root, operationId, async () => {
+    const target = await loadOperationCompletionTarget(root, operationId);
+    if (!target || target.status === "SENT") return;
+    const disabled: OperationCompletionTarget = { ...target, status: "DISABLED", attemptedAt: new Date().toISOString(), error: reason };
+    await persist(root, disabled);
+    await trace(root, "operation.callback.disabled", { operationId, agentId: target.agentId, reason });
+  });
 }
 
 export async function loadOperationCompletionTarget(root: string, operationId: string): Promise<OperationCompletionTarget | undefined> {
@@ -86,7 +90,11 @@ async function notifyOperationCompletionUnlocked(
   deps: OperationCompletionDeps
 ): Promise<OperationCompletionTarget | undefined> {
   let target = await loadOperationCompletionTarget(root, operation.id);
-  if (!target || target.status === "SENT" || target.status === "DISABLED") return target;
+  if (!target || target.status === "DISABLED") return target;
+  if (target.status === "SENT") {
+    await reflectCompletionState(root, operation.id, target.attempts ?? 0);
+    return target;
+  }
   const dispatch = deps.dispatch ?? dispatchManagedPaseoAgent;
   const trace = deps.trace ?? recordPaseoTrace;
   const retryDelaysMs = normalizeRetryDelays(deps.retryDelaysMs);
@@ -141,20 +149,21 @@ function resultPath(operation: OperationRecord): string | undefined {
 
 async function reflectCompletionState(root: string, operationId: string, attempts: number, error?: string): Promise<void> {
   try {
-    const operation = await loadOperation(root, operationId);
-    const warnings = (operation.cleanupWarnings ?? []).filter((item) => !item.startsWith(COMPLETION_WARNING_PREFIX));
-    if (error) warnings.push(`${COMPLETION_WARNING_PREFIX} failed to reactivate ${operation.lead?.agentId ?? "lead"} after ${attempts} attempt(s): ${error}`);
-    await patchOperationMetadata(root, operationId, {
-      cleanupWarnings: warnings.length ? warnings : undefined,
-      notification: {
-        ...operation.notification,
-        lastLeadWakeRevision: operation.revision,
-        lastLeadWakeAt: new Date().toISOString(),
-        lastLeadWakeReason: "terminal",
-        terminalDelivered: !error,
-        attempts,
-        lastError: error
-      }
+    await updateOperationMetadata(root, operationId, (operation, now) => {
+      const warnings = (operation.cleanupWarnings ?? []).filter((item) => !item.startsWith(COMPLETION_WARNING_PREFIX));
+      if (error) warnings.push(`${COMPLETION_WARNING_PREFIX} failed to reactivate ${operation.lead?.agentId ?? "lead"} after ${attempts} attempt(s): ${error}`);
+      return {
+        cleanupWarnings: warnings.length ? warnings : undefined,
+        notification: {
+          ...operation.notification,
+          lastLeadWakeRevision: operation.revision,
+          lastLeadWakeAt: now,
+          lastLeadWakeReason: "terminal",
+          terminalDelivered: !error,
+          attempts,
+          lastError: error
+        }
+      };
     });
   } catch {
     // completion sidecar remains an independent recovery record
@@ -170,7 +179,9 @@ async function persist(root: string, target: OperationCompletionTarget): Promise
   finally { await fs.rm(temp, { force: true }).catch(() => undefined); }
 }
 async function withCompletionLock<T>(root: string, operationId: string, action: () => Promise<T>): Promise<T> {
-  const lock = `${operationCompletionFile(root, operationId)}.lock`;
+  const file = operationCompletionFile(root, operationId);
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const lock = `${file}.lock`;
   const deadline = Date.now() + 10_000;
   for (;;) {
     let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
