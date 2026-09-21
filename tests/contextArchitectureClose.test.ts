@@ -69,6 +69,21 @@ describe("architecture closure contracts", () => {
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 
+  it("checks the live Engram API instead of optional installation diagnostics", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-engram-health-"));
+    const execute = async (_command: string, options: { cwd?: string }): Promise<{ exitCode: number; stdout: string; stderr: string; durationMs: number }> => {
+      expect(_command).toContain("stats --json");
+      expect(options.cwd).toBe(root);
+      return { exitCode: 0, stdout: '{"total":0}', stderr: "", durationMs: 1 };
+    };
+    try {
+      const health = await new EngramMemoryProvider(root, { command: "node", executor: execute }).doctor(root);
+      expect(health.ok).toBe(true);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("normalizes security and browser findings with stable fingerprints", () => {
     const opengrep = normalizeOpengrepOutput({ results: [{ check_id: "xss", path: "src/a.ts", start: { line: 4, col: 2 }, extra: { message: "unsafe", metadata: { severity: "HIGH", cwe: ["CWE-79"] } } }] });
     const trivy = normalizeTrivyOutput({ Results: [{ Target: "package-lock.json", Vulnerabilities: [{ VulnerabilityID: "CVE-1", PkgName: "x", InstalledVersion: "1", FixedVersion: "2", Severity: "HIGH" }] }] });

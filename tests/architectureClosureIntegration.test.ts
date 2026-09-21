@@ -81,7 +81,7 @@ describe("architecture closure integration", () => {
 
   it("runs the deterministic full-stack production-path fixture", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-full-stack-report-"));
-    try { const report = await runFullStackDogfood(root, { version: 1, project: { name: "dogfood" }, evals: { resultsDir: ".harness/evals/results" } }); expect(report.status).toBe("PASS"); expect(report.checks.map((item) => item.id)).toEqual(expect.arrayContaining(["context.production-assembly", "validation.report", "evidence.graph", "provenance.chain"])); } finally { await fs.rm(root, { recursive: true, force: true }); }
+    try { const report = await runFullStackDogfood(root, { version: 1, project: { name: "dogfood" }, evals: { resultsDir: ".harness/evals/results" } }); expect(report.status, JSON.stringify(report.checks.filter((item) => item.status === "FAIL"), null, 2)).toBe("PASS"); expect(report.checks.map((item) => item.id)).toEqual(expect.arrayContaining(["context.production-assembly", "validation.report", "evidence.graph", "provenance.chain"])); } finally { await fs.rm(root, { recursive: true, force: true }); }
   }, 120_000);
 
   it("builds source-hash-verified accepted-operation memory candidates", async () => {

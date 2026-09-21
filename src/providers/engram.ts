@@ -24,9 +24,13 @@ export class EngramMemoryProvider implements MemoryProvider {
 
   async doctor(root: string): Promise<{ ok: boolean; message: string; version?: string }> {
     if (!(await commandExists(this.command, root))) return { ok: false, message: `Engram executable '${this.command}' was not found in the reconciled toolchain PATH.` };
-    const result = await this.executor(`${quote(this.command)} doctor`, { cwd: root, timeoutMs: 20_000 });
-    if (result.exitCode !== 0) return { ok: false, message: `Engram health check failed: ${result.stderr || result.stdout}` };
-    const version = (result.stdout || result.stderr).match(/v?\d+\.\d+(?:\.\d+)?/)?.[0];
+    // `engram doctor` also checks installation bookkeeping and optional MCP
+    // registration. Those checks are unrelated to AEH's provider contract and
+    // can fail in CI even while the local API is healthy. Stats is a live API
+    // request, so it verifies the service used by remember/recall directly.
+    const result = await this.executor(`${quote(this.command)} stats --json`, { cwd: root, timeoutMs: 20_000 });
+    if (result.exitCode !== 0) return { ok: false, message: `Engram API health check failed: ${result.stderr || result.stdout}` };
+    const version = (result.stderr || "").match(/v?\d+\.\d+(?:\.\d+)?/)?.[0];
     return {
       ok: true,
       version,

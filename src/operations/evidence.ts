@@ -14,6 +14,8 @@ export interface UserFacingClaim {
   source: UserFacingClaimSource;
   verified: boolean;
   artifact?: string;
+  evidenceRefs?: string[];
+  priority?: number;
 }
 
 export interface OperationEvidenceSummary {

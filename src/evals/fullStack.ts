@@ -65,7 +65,7 @@ export async function runFullStackDogfood(root: string, config: HarnessProjectCo
 
     const report = await verifyTask(fixture, fixtureConfig, contract);
     const failedChecks = report.checks.filter((item) => item.status === "FAIL").map((item) => item.id);
-    check("validation.report", "validation", report.status === "PASS" ? "PASS" : "FAIL", report.status === "PASS" ? "Deterministic validation produced " + (report.findings?.length ?? 0) + " normalized finding(s)." : "Deterministic validation failed: " + failedChecks.join("; "), true, { findings: report.findings?.length ?? 0, failedChecks });
+    check("validation.report", "validation", report.status === "PASS" ? "PASS" : "FAIL", report.status === "PASS" ? "Deterministic validation produced " + (report.findings?.length ?? 0) + " normalized finding(s)." : "Deterministic validation failed: " + failedChecks.join("; "), true, { findings: report.findings?.length ?? 0, failedChecks, failedMessages: report.checks.filter((item) => item.status === "FAIL").map((item) => ({ id: item.id, message: item.message, details: item.details })) });
     const graph = await buildRequirementEvidenceGraph({ root: fixture, config: fixtureConfig, contract, report });
     check("evidence.graph", "evidence", graph.complete ? "PASS" : "FAIL", "RequirementEvidenceGraph built with " + graph.nodes.length + " nodes and sha256 " + graph.sha256 + (graph.complete ? "." : " " + graph.reasons.join("; ")), true, { complete: graph.complete, sha256: graph.sha256 });
     const runFile = path.join(fixture, ".harness", "runs", "FS-1.json");
@@ -105,7 +105,11 @@ function fixtureConfiguration(base: HarnessProjectConfig, strict: boolean): Harn
     project: { name: base.project.name + "-full-stack-fixture" },
     memory: { provider: "engram", required: strict },
     sdd: { contractsDir: ".harness/contracts", reportsDir: ".harness/reports", runsDir: ".harness/runs" },
-    validation: { baseRef: "HEAD", requireSeal: true, commands: [{ id: "smoke", command: "node -e \"process.exit(0)\"", required: true }], validators: [{ id: "trivy-evidence", adapter: "trivy", required: strict }] },
+    // The fixture contract is about validating changed source, not scanning
+    // generated control-plane state (.git/.harness/.serena). Keeping the
+    // target explicit makes this production-path check deterministic while
+    // the real validator remains unchanged for consumer repositories.
+    validation: { baseRef: "HEAD", requireSeal: true, commands: [{ id: "smoke", command: "node -e \"process.exit(0)\"", required: true }], validators: [{ id: "trivy-evidence", adapter: "trivy", required: strict, command: "trivy fs --format json --exit-code 1 --severity HIGH,CRITICAL --scanners vuln,misconfig,secret src" }] },
     evidence: { enabled: true, outputDir: ".harness/evidence", requireComplete: true },
     codeIntelligence: { provider: "graphify", required: strict, codeOnly: true },
     context: { repositoryMap: { enabled: true, tokenBudget: 1_000 }, semanticRetrieval: { provider: strict ? "serena" : "none", required: strict }, compression: { provider: "headroom", required: strict, minTokens: 2, reversible: true }, budgets: { default: { inputTokens: 16_000 } } },
