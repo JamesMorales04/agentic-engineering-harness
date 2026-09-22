@@ -23,6 +23,23 @@ describe("SDD traceability", () => {
     expect(result.requirements[0]).toMatchObject({ id: "T-1-R1", proposal: true, spec: true, design: true, acceptance: true, tasks: true, contract: true });
   });
 
+it("recognizes generated requirement IDs for mixed-case task IDs", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-"));
+    await createSddChange(root, "Fix-Sdd-Extractor", "Test change", config);
+    const result = await validateSddChange(root, "Fix-Sdd-Extractor", config);
+    expect(result.ok).toBe(true);
+    expect(result.requirements).toHaveLength(1);
+    expect(result.requirements[0]).toMatchObject({ id: "Fix-Sdd-Extractor-R1", proposal: true, spec: true, design: true, acceptance: true, tasks: true, contract: true });
+  });
+
+  it("recognizes generated requirement IDs for lowercase task IDs", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-"));
+    await createSddChange(root, "fix-sdd-extractor", "Test change", config);
+    const result = await validateSddChange(root, "fix-sdd-extractor", config);
+    expect(result.ok).toBe(true);
+    expect(result.requirements[0]).toMatchObject({ id: "fix-sdd-extractor-R1", proposal: true, spec: true, design: true, acceptance: true, tasks: true, contract: true });
+  });
+
   it("fails when a requirement loses its Gherkin trace", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-"));
     await createSddChange(root, "T-2", "Test change", config);
