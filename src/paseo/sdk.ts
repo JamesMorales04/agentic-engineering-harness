@@ -75,6 +75,10 @@ interface PaseoSdkAgentHandle {
   send?(text: string, options?: Record<string, unknown>): Promise<void>;
   run?(text: string, options?: { timeoutMs?: number; outputSchema?: Record<string, unknown> }): Promise<PaseoSdkTurnResult>;
   waitForFinish?(timeoutMs?: number): Promise<PaseoSdkTurnResult>;
+  cancel?(): Promise<void>;
+  stop?(): Promise<void>;
+  kill?(): Promise<void>;
+  abort?(): Promise<void>;
   archive?(): Promise<{ archivedAt: string }>;
   timeline?: { refetch(options?: Record<string, unknown>): Promise<unknown> };
 }
@@ -100,6 +104,13 @@ export class PaseoSdkUnavailableError extends Error {
   }
 }
 
+export class PaseoSdkTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PaseoSdkTimeoutError";
+  }
+}
+
 export async function createPaseoSdkAgent(root: string, options: PaseoSdkAgentOptions): Promise<PaseoSdkAgentResult> {
   const effective = await withStructuredResultSink(root, options, Boolean(options.prompt !== undefined && options.outputSchema));
   const result = await withPaseoClient(root, async (client) => createPaseoSdkAgentWithClient(client, effective));
@@ -121,27 +132,44 @@ export async function materializePaseoSdkAgentWithClient(client: PaseoSdkClient,
 
 export async function createPaseoSdkAgentWithClient(client: PaseoSdkClient, options: PaseoSdkAgentOptions): Promise<PaseoSdkAgentResult> {
   const handle = await client.agents.create(buildCreateOptions(options, options.prompt !== undefined));
-  if (options.prompt !== undefined && options.waitForFinish !== false) return waitForHandle(handle, options.timeoutMs);
+  if (options.prompt !== undefined && options.waitForFinish !== false) {
+    const result = await waitForHandle(handle, options.timeoutMs);
+    if (result.status === "timeout") await stopPaseoSdkAgentHandle(handle);
+    return result;
+  }
   return handleResult(handle);
 }
 
 export async function dispatchPaseoSdkAgent(root: string, agentId: string, prompt: string, timeoutMs?: number): Promise<PaseoSdkAgentResult> {
-  return withPaseoClient(root, async (client) => {
-    const handle = client.agents.ref(agentId);
-    if (typeof handle.send === "function") {
-      await handle.send(prompt);
-      return { ...handleResult(handle), status: statusText(handle.status) ?? "working" };
+  return withPaseoClient(root, (client) => dispatchPaseoSdkAgentWithClient(client, agentId, prompt, timeoutMs));
+}
+
+export async function dispatchPaseoSdkAgentWithClient(client: PaseoSdkClient, agentId: string, prompt: string, timeoutMs?: number): Promise<PaseoSdkAgentResult> {
+  const handle = client.agents.ref(agentId);
+  if (typeof handle.send === "function") {
+    try {
+      await withTimeout(handle.send(prompt), timeoutMs, `Paseo agent ${agentId} dispatch timed out after ${timeoutMs ?? 1_800_000}ms.`);
+    } catch (error) {
+      if (error instanceof PaseoSdkTimeoutError) await stopPaseoSdkAgentHandle(handle);
+      throw error;
     }
-    if (typeof handle.run === "function") {
-      const turn = await handle.run(prompt, { timeoutMs });
-      return turnResult(handle, turn);
-    }
-    throw new PaseoSdkUnavailableError("The active @getpaseo/client agent handle exposes neither send() nor run(); cannot dispatch a turn through the SDK.");
-  });
+    return { ...handleResult(handle), status: statusText(handle.status) ?? "working" };
+  }
+  if (typeof handle.run === "function") {
+    const turn = await handle.run(prompt, { timeoutMs });
+    if (turn.status === "timeout") await stopPaseoSdkAgentHandle(handle);
+    return turnResult(handle, turn);
+  }
+  throw new PaseoSdkUnavailableError("The active @getpaseo/client agent handle exposes neither send() nor run(); cannot dispatch a turn through the SDK.");
 }
 
 export async function waitPaseoSdkAgent(root: string, agentId: string, timeoutMs?: number): Promise<PaseoSdkAgentResult> {
-  const result = await withPaseoClient(root, async (client) => waitForHandle(client.agents.ref(agentId), timeoutMs));
+  const result = await withPaseoClient(root, async (client) => {
+    const handle = client.agents.ref(agentId);
+    const result = await waitForHandle(handle, timeoutMs);
+    if (result.status === "timeout") await stopPaseoSdkAgentHandle(handle);
+    return result;
+  });
   return projectAcceptedPaseoResult(root, result);
 }
 
@@ -159,7 +187,7 @@ export async function runPaseoSdkAgent(
   timeoutMs?: number,
   outputSchema?: Record<string, unknown>
 ): Promise<PaseoSdkAgentResult> {
-  if (outputSchema) await activateStructuredResultTurnForAgent(root, agentId).catch(() => undefined);
+  if (outputSchema) await activateStructuredResultTurnForAgent(root, agentId);
   const result = await withPaseoClient(root, async (client) =>
     runPaseoSdkAgentWithClient(client, agentId, prompt, timeoutMs, outputSchema)
   );
@@ -176,11 +204,17 @@ export async function runPaseoSdkAgentWithClient(
   const handle = client.agents.ref(agentId);
   if (typeof handle.run === "function") {
     const turn = await handle.run(prompt, { timeoutMs, ...(outputSchema ? { outputSchema } : {}) });
+    if (turn.status === "timeout") await stopPaseoSdkAgentHandle(handle);
     return turnResult(handle, turn);
   }
   if (typeof handle.send === "function") {
-    await handle.send(prompt, outputSchema ? { outputSchema } : undefined);
-    return waitForHandle(handle, timeoutMs);
+    await withTimeout(handle.send(prompt, outputSchema ? { outputSchema } : undefined), timeoutMs, `Paseo agent ${agentId} turn dispatch timed out after ${timeoutMs ?? 1_800_000}ms.`).catch(async (error) => {
+      if (error instanceof PaseoSdkTimeoutError) await stopPaseoSdkAgentHandle(handle);
+      throw error;
+    });
+    const result = await waitForHandle(handle, timeoutMs);
+    if (result.status === "timeout") await stopPaseoSdkAgentHandle(handle);
+    return result;
   }
   throw new PaseoSdkUnavailableError("The active @getpaseo/client agent handle exposes neither run() nor send(); cannot execute an atomic resumed turn through the SDK.");
 }
@@ -219,7 +253,16 @@ async function withStructuredResultSink(root: string, options: PaseoSdkAgentOpti
   const operationId = options.labels?.["aeh.operation"]?.trim();
   const logicalAgent = options.labels?.["aeh.role"]?.trim();
   if (!contract || !operationId || !logicalAgent) return options;
-  const channel = await provisionStructuredResultChannel(root, { operationId, logicalAgent, role: logicalAgent, contract });
+  const operationRevision = Number(options.labels?.["aeh.operation.revision"]);
+  const supervisorGeneration = Number(options.labels?.["aeh.supervisor.generation"]);
+  const channel = await provisionStructuredResultChannel(root, {
+    operationId,
+    logicalAgent,
+    role: logicalAgent,
+    contract,
+    operationRevision: Number.isInteger(operationRevision) ? operationRevision : undefined,
+    supervisorGeneration: Number.isInteger(supervisorGeneration) ? supervisorGeneration : undefined
+  });
   if (activateInitialTurn) await activateStructuredResultTurn(root, operationId, channel.channelId, options.labels?.["aeh.operation.phase"]);
   const server = "aeh-result";
   const preapproved = [
@@ -323,6 +366,29 @@ async function waitForHandle(handle: PaseoSdkAgentHandle, timeoutMs = 1_800_000)
     }
     if (Date.now() >= deadline) return { id: handle.id, workspaceId: handle.workspaceId ?? undefined, status: "timeout", error: `Timed out after ${timeoutMs}ms.` };
     await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+}
+
+async function stopPaseoSdkAgentHandle(handle: PaseoSdkAgentHandle): Promise<void> {
+  for (const method of [handle.cancel, handle.stop, handle.kill, handle.abort]) {
+    if (typeof method !== "function") continue;
+    await method.call(handle);
+    return;
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs = 1_800_000, message: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new PaseoSdkTimeoutError(message)), timeoutMs);
+        timer.unref();
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

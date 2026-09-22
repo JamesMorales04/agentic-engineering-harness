@@ -40,6 +40,29 @@ describe("CHANGE durable handoff", () => {
     expect(handoff.payload.summary).toBe("Discovery completed");
   });
 
+  it("consumes the handoff from the explicit control root when execution is isolated", async () => {
+    const executionRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-change-handoff-worktree-"));
+    const controlRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-change-handoff-control-"));
+    const operationId = "CHANGE-CONTROL-ROOT";
+    const agentId = "explorer-control-root";
+    const channel = await provisionStructuredResultChannel(controlRoot, { operationId, logicalAgent: "explorer", role: "explorer", contract: "explorer" });
+    await bindStructuredResultChannel(controlRoot, operationId, channel.channelId, agentId);
+    await activateStructuredResultTurn(controlRoot, operationId, channel.channelId, "discovery");
+    await acceptStructuredResult(controlRoot, operationId, channel.channelId, {
+      summary: "Control-root discovery",
+      relevantFiles: [],
+      findings: [],
+      moduleBoundaries: [],
+      tests: [],
+      dependencies: [],
+      risks: [],
+      openQuestions: []
+    }, "mcp");
+
+    const handoff = await requireDurableChangeHandoff(executionRoot, "EXPLORER", session(agentId), explorerOutputSchema, controlRoot);
+    expect(handoff.payload.summary).toBe("Control-root discovery");
+  });
+
   it("fails closed when an expected structured handoff is missing", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-change-handoff-missing-"));
     await expect(requireDurableChangeHandoff(root, "EXPLORER", session("missing-agent"), explorerOutputSchema)).rejects.toThrow(/RESULT_ARTIFACT_MISSING/);

@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import type { AgentExecutionSelection } from "../agents/types.js";
 import type { HarnessProjectConfig, TaskRisk } from "../core/types.js";
 
@@ -6,6 +7,17 @@ export interface SandboxDecision {
   provider: string;
   reasons: string[];
   selection: AgentExecutionSelection;
+}
+
+export function sandboxPolicyDigest(config: HarnessProjectConfig, selection: AgentExecutionSelection, risk: TaskRisk = "low"): string {
+  const policy = {
+    risk,
+    sandbox: config.security?.sandbox ?? null,
+    runtimeAdapter: selection.runtimeAdapter,
+    transport: selection.transport,
+    permissions: selection.permissions
+  };
+  return crypto.createHash("sha256").update(stableJson(policy)).digest("hex");
 }
 
 export function enforceSandboxPolicy(selection: AgentExecutionSelection, config: HarnessProjectConfig, risk: TaskRisk = "low"): SandboxDecision {
@@ -37,7 +49,7 @@ export function hardenedPodmanArgs(config: HarnessProjectConfig, selection: Agen
     args.push("--env=HOME=/home/aeh");
   }
   if (!writable) args.push("--env=AEH_WORKSPACE_READ_ONLY=1");
-  for (const extra of sandbox?.extraArgs ?? []) args.push(extra);
+  if (sandbox?.extraArgs?.length) throw new Error("security.sandbox.extraArgs is disabled because arbitrary Podman flags can weaken the hardened boundary.");
   return args;
 }
 
@@ -56,4 +68,11 @@ export function allowedSandboxEnvironment(config: HarnessProjectConfig, source: 
   const result: Record<string, string> = {};
   for (const name of [...allowed, ...credentials]) if (source[name] !== undefined) result[name] = source[name]!;
   return result;
+}
+
+function stableJson(value: unknown): string {
+  return JSON.stringify(value, (_key, nested) => {
+    if (!nested || typeof nested !== "object" || Array.isArray(nested)) return nested;
+    return Object.fromEntries(Object.entries(nested as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)));
+  });
 }

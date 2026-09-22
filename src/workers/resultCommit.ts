@@ -28,7 +28,7 @@ export async function commitStructuredResult<T = unknown>(
       const normalized = validation.value as T;
       const sha256 = crypto.createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
       if (sha256 !== turn.sha256) throw new Error("CONFLICTING_RESULT: the active turn already has a different accepted payload.");
-      return { artifact: turn.artifact, sha256, payload: normalized, source: turn.source ?? source, turnId: turn.id, channelId };
+      return acceptStructuredResult<T>(root, operationId, channelId, normalized, source);
     }
     return acceptStructuredResult<T>(root, operationId, channelId, payload, source);
   });

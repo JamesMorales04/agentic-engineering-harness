@@ -67,4 +67,9 @@ describe("architecture close", () => {
     expect(args).toContain("--security-opt=no-new-privileges");
     expect(args).toContain("--network=none");
   });
+
+  it("rejects arbitrary Podman flags that could weaken the boundary", () => {
+    const config: HarnessProjectConfig = { version: 1, project: { name: "test" }, security: { sandbox: { image: "example/aeh-worker:1", extraArgs: ["--privileged"] } } };
+    expect(() => hardenedPodmanArgs(config, selection, true)).toThrow("extraArgs is disabled");
+  });
 });

@@ -6,7 +6,7 @@ project:
 agents:
   configPath: .harness/agents.source.jsonc
   generatedPath: .harness/generated/agents.json
-  activeProfile: balanced
+  activeProfile: certification
   required: true
   findingsDir: .harness/findings
 

@@ -7,6 +7,7 @@ import {
 } from "../src/agents/permissions.js";
 import type { HarnessProjectConfig } from "../src/core/types.js";
 import type { AgentExecutionSelection } from "../src/agents/types.js";
+import { runDirectWorkerProcess } from "../src/workers/directProcess.js";
 
 function selection(
   mcps: string[] = [],
@@ -40,6 +41,25 @@ function selection(
 }
 
 describe("OpenCode permission projection", () => {
+  it("runs direct workers with only safe and explicitly allowlisted environment", async () => {
+    const previousSecret = process.env.AEH_DIRECT_TEST_SECRET;
+    const previousAllowed = process.env.AEH_DIRECT_TEST_ALLOWED;
+    process.env.AEH_DIRECT_TEST_SECRET = "ambient-secret";
+    process.env.AEH_DIRECT_TEST_ALLOWED = "explicit-value";
+    try {
+      const config: HarnessProjectConfig = { version: 1, project: { name: "env-test" }, security: { sandbox: { environmentAllowlist: ["AEH_DIRECT_TEST_ALLOWED"] } } };
+      const result = await runDirectWorkerProcess(process.execPath, ["-e", "process.stdout.write(JSON.stringify({secret:process.env.AEH_DIRECT_TEST_SECRET, allowed:process.env.AEH_DIRECT_TEST_ALLOWED, home:process.env.HOME}))"], config, { cwd: process.cwd(), timeoutMs: 1000, maxOutputBytes: 4096 });
+      expect(result.exitCode).toBe(0);
+      const childEnvironment = JSON.parse(result.stdout) as { secret?: string; allowed?: string; home?: string };
+      expect(childEnvironment.secret).toBeUndefined();
+      expect(childEnvironment.allowed).toBe("explicit-value");
+      expect(result.stdout).toContain("home");
+    } finally {
+      if (previousSecret === undefined) delete process.env.AEH_DIRECT_TEST_SECRET; else process.env.AEH_DIRECT_TEST_SECRET = previousSecret;
+      if (previousAllowed === undefined) delete process.env.AEH_DIRECT_TEST_ALLOWED; else process.env.AEH_DIRECT_TEST_ALLOWED = previousAllowed;
+    }
+  });
+
   it("projects Harness deny/allow decisions into runtime permission config", () => {
     const config = buildOpenCodeRuntimeConfig(selection()) as {
       permission: Record<string, unknown>;

@@ -12,6 +12,7 @@ export type StructuredResultTurnStatus = "PENDING" | "ACCEPTED" | "REJECTED" | "
 export interface StructuredResultTurn {
   id: string;
   sequence: number;
+  revision: number;
   contract: string;
   phase?: string;
   status: StructuredResultTurnStatus;
@@ -30,6 +31,9 @@ export interface StructuredResultChannel {
   channelId: string;
   logicalAgent: string;
   role?: string;
+  taskId?: string;
+  operationRevision?: number;
+  supervisorGeneration?: number;
   contract: string;
   agentId?: string;
   createdAt: string;
@@ -45,8 +49,13 @@ export interface StructuredResultArtifact<T = unknown> {
   channelId: string;
   turnId: string;
   sequence: number;
+  revision: number;
+  attempt: number;
   logicalAgent: string;
   role?: string;
+  taskId?: string;
+  operationRevision?: number;
+  supervisorGeneration?: number;
   agentId?: string;
   contract: string;
   source: StructuredResultSource;
@@ -70,6 +79,20 @@ export interface StructuredResultResolution<T = unknown> {
   failure?: string;
 }
 
+export interface StructuredResultExpectation {
+  operationId?: string;
+  logicalAgent?: string;
+  role?: string;
+  contract?: string;
+  phase?: string;
+  participantId?: string;
+  taskId?: string;
+  attempt?: number;
+  revision?: number;
+  operationRevision?: number;
+  supervisorGeneration?: number;
+}
+
 const CHANNELS_DIR = "result-channels";
 const RESULTS_DIR = "results";
 const GLOBAL_INDEX_DIR = path.join(".harness", "result-channels", "agents");
@@ -78,7 +101,7 @@ const LOCK_TIMEOUT_MS = 5_000;
 
 export async function provisionStructuredResultChannel(
   root: string,
-  input: { operationId: string; logicalAgent: string; role?: string; contract: string; channelId?: string }
+  input: { operationId: string; logicalAgent: string; role?: string; taskId?: string; operationRevision?: number; supervisorGeneration?: number; contract: string; channelId?: string }
 ): Promise<StructuredResultChannel> {
   const stateRoot = resolveOperationStateRoot(root);
   const channelId = input.channelId ?? crypto.randomUUID();
@@ -93,6 +116,9 @@ export async function provisionStructuredResultChannel(
       channelId,
       logicalAgent: input.logicalAgent,
       role: input.role,
+      taskId: input.taskId,
+      operationRevision: input.operationRevision,
+      supervisorGeneration: input.supervisorGeneration,
       contract: input.contract,
       createdAt: now,
       updatedAt: now,
@@ -137,6 +163,7 @@ export async function activateStructuredResultTurn(
       activeTurn: {
         id: `${String(sequence).padStart(4, "0")}-${crypto.randomUUID()}`,
         sequence,
+        revision: sequence,
         contract: current.contract,
         phase,
         status: "PENDING",
@@ -153,9 +180,9 @@ export async function activateStructuredResultTurnForAgent(
   root: string,
   agentId: string,
   phase?: string
-): Promise<StructuredResultTurn | undefined> {
+): Promise<StructuredResultTurn> {
   const binding = await loadAgentChannelBinding(root, agentId);
-  if (!binding) return undefined;
+  if (!binding) throw new Error(`AEH_RESULT_CHANNEL_STATE: no structured result channel is bound to agent '${agentId}'.`);
   return activateStructuredResultTurn(root, binding.operationId, binding.channelId, phase);
 }
 
@@ -191,7 +218,7 @@ export async function acceptStructuredResult<T = unknown>(
         throw new Error("CONFLICTING_RESULT: a different valid payload was submitted for an already accepted turn.");
       }
       if (!turn.artifact) throw new Error("AEH_RESULT_CHANNEL_STATE: accepted turn is missing its artifact reference.");
-      return { artifact: turn.artifact, sha256, payload: normalized, source: turn.source ?? source, turnId: turn.id, channelId };
+      return readVerifiedAcceptedArtifact<T>(stateRoot, channel, turn);
     }
 
     const artifactEnvelope: StructuredResultArtifact<T> = {
@@ -201,8 +228,13 @@ export async function acceptStructuredResult<T = unknown>(
       channelId,
       turnId: turn.id,
       sequence: turn.sequence,
+      revision: turn.revision,
+      attempt: turn.attempts + 1,
       logicalAgent: channel.logicalAgent,
       role: channel.role,
+      taskId: channel.taskId,
+      operationRevision: channel.operationRevision,
+      supervisorGeneration: channel.supervisorGeneration,
       agentId: channel.agentId,
       contract: turn.contract,
       source,
@@ -233,16 +265,17 @@ export async function acceptStructuredResult<T = unknown>(
 
 export async function acceptedStructuredResultForAgent<T = unknown>(
   root: string,
-  agentId: string
+  agentId: string,
+  expected: StructuredResultExpectation = {}
 ): Promise<AcceptedStructuredResult<T> | undefined> {
   const binding = await loadAgentChannelBinding(root, agentId);
   if (!binding) return undefined;
   const stateRoot = resolveOperationStateRoot(root);
+  if (expected.operationId && binding.operationId !== expected.operationId) throw new Error("AEH_RESULT_PROVENANCE: result binding belongs to a different operation.");
   const channel = await readJson<StructuredResultChannel>(channelFile(stateRoot, binding.operationId, binding.channelId)).catch(() => undefined);
   const turn = channel?.activeTurn;
   if (!channel || !turn || turn.status !== "ACCEPTED" || !turn.artifact || !turn.sha256) return undefined;
-  const envelope = await readJson<StructuredResultArtifact<T>>(path.resolve(stateRoot, turn.artifact));
-  return { artifact: turn.artifact, sha256: turn.sha256, payload: envelope.payload, source: turn.source ?? envelope.source, turnId: turn.id, channelId: channel.channelId };
+  return readVerifiedAcceptedArtifact(stateRoot, channel, turn, agentId, expected);
 }
 
 export async function reconcileStructuredResult<T = unknown>(
@@ -258,11 +291,6 @@ export async function reconcileStructuredResult<T = unknown>(
     stderr?: string;
   }
 ): Promise<StructuredResultResolution<T>> {
-  if (input.agentId) {
-    const accepted = await acceptedStructuredResultForAgent<T>(root, input.agentId).catch(() => undefined);
-    if (accepted) return { ok: true, accepted };
-  }
-
   let payload: unknown;
   try {
     payload = extractMarkedJson(input.stdout, input.stderr ?? "");
@@ -286,7 +314,7 @@ export async function reconcileStructuredResult<T = unknown>(
 }
 
 export async function projectAcceptedStructuredResult<T extends { stdout: string }>(root: string, agentId: string, result: T): Promise<T> {
-  const accepted = await acceptedStructuredResultForAgent(root, agentId).catch(() => undefined);
+  const accepted = await acceptedStructuredResultForAgent(root, agentId);
   return accepted ? { ...result, stdout: JSON.stringify(accepted.payload) } : result;
 }
 
@@ -347,6 +375,42 @@ function channelFile(root: string, operationId: string, channelId: string): stri
 }
 function agentIndexFile(root: string, agentId: string): string { return path.resolve(root, GLOBAL_INDEX_DIR, `${safe(agentId)}.json`); }
 function safe(value: string): string { return value.trim().replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "result"; }
+function isWithin(parent: string, child: string): boolean { const relative = path.relative(path.resolve(parent), path.resolve(child)); return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative)); }
+
+async function readVerifiedAcceptedArtifact<T>(
+  stateRoot: string,
+  channel: StructuredResultChannel,
+  turn: StructuredResultTurn,
+  expectedAgentId?: string,
+  expected: StructuredResultExpectation = {}
+): Promise<AcceptedStructuredResult<T>> {
+  if (channel.operationId !== expected.operationId && expected.operationId) throw new Error("AEH_RESULT_PROVENANCE: result channel belongs to a different operation.");
+  if (channel.operationId.length === 0 || !channel.channelId || !channel.logicalAgent || !channel.contract) throw new Error("AEH_RESULT_PROVENANCE: result channel identity is incomplete.");
+  if (expectedAgentId !== undefined && channel.agentId !== expectedAgentId) throw new Error("AEH_RESULT_PROVENANCE: result channel participant does not match the requested agent.");
+  if (expected.participantId && channel.agentId !== expected.participantId) throw new Error("AEH_RESULT_PROVENANCE: result channel participant does not match the requested agent.");
+  if (expected.logicalAgent && channel.logicalAgent !== expected.logicalAgent) throw new Error("AEH_RESULT_PROVENANCE: result logical agent does not match the requested participant.");
+  if (expected.role && channel.role !== expected.role) throw new Error("AEH_RESULT_PROVENANCE: result role does not match the requested participant.");
+  if (expected.contract && channel.contract !== expected.contract) throw new Error("AEH_RESULT_PROVENANCE: result contract does not match the requested handoff.");
+  if (expected.taskId && channel.taskId !== expected.taskId) throw new Error("AEH_RESULT_PROVENANCE: result task does not match the requested task.");
+  if (expected.operationRevision !== undefined && channel.operationRevision !== expected.operationRevision) throw new Error("AEH_RESULT_PROVENANCE: result operation revision does not match the requested revision.");
+  if (expected.supervisorGeneration !== undefined && channel.supervisorGeneration !== expected.supervisorGeneration) throw new Error("AEH_RESULT_PROVENANCE: result supervisor generation does not match the requested participant.");
+  if (!Number.isInteger(turn.revision) || turn.revision !== turn.sequence || turn.contract !== channel.contract || (expected.phase && turn.phase !== expected.phase)) throw new Error("AEH_RESULT_PROVENANCE: result turn revision or contract does not match the active channel.");
+  if (expected.attempt !== undefined && turn.attempts !== expected.attempt) throw new Error("AEH_RESULT_PROVENANCE: result attempt does not match the requested attempt.");
+  if (expected.revision !== undefined && turn.revision !== expected.revision) throw new Error("AEH_RESULT_PROVENANCE: result revision does not match the requested revision.");
+  if (!turn.artifact || !turn.sha256 || !turn.source || turn.attempts < 1) throw new Error("AEH_RESULT_PROVENANCE: accepted result turn provenance is incomplete.");
+  if (path.isAbsolute(turn.artifact)) throw new Error("AEH_RESULT_PROVENANCE: result artifact reference must be relative.");
+  const artifactPath = path.resolve(stateRoot, turn.artifact);
+  if (!isWithin(stateRoot, artifactPath)) throw new Error("AEH_RESULT_PROVENANCE: result artifact escapes the control root.");
+  const envelope = await readJson<StructuredResultArtifact<T>>(artifactPath);
+  const identityMatches = envelope.version === 1 && envelope.kind === "agent-result" && envelope.operationId === channel.operationId && envelope.channelId === channel.channelId && envelope.turnId === turn.id && envelope.sequence === turn.sequence && envelope.revision === turn.revision && envelope.attempt === turn.attempts && envelope.logicalAgent === channel.logicalAgent && envelope.role === channel.role && envelope.agentId === channel.agentId && envelope.contract === channel.contract && envelope.source === turn.source && envelope.taskId === channel.taskId && envelope.operationRevision === channel.operationRevision && envelope.supervisorGeneration === channel.supervisorGeneration;
+  if (!identityMatches) throw new Error("AEH_RESULT_PROVENANCE: result artifact identity does not match the active channel turn.");
+  const canonical = JSON.stringify(envelope.payload);
+  const payloadSha256 = crypto.createHash("sha256").update(canonical).digest("hex");
+  if (payloadSha256 !== envelope.payloadSha256 || payloadSha256 !== turn.sha256) throw new Error("AEH_RESULT_INTEGRITY: accepted result artifact payload digest mismatch.");
+  const validation = validateAgentOutput(envelope.contract, envelope.payload);
+  if (!validation.ok) throw new Error(`AEH_RESULT_INTEGRITY: accepted result no longer satisfies its contract: ${validation.issues.join("; ")}`);
+  return { artifact: turn.artifact, sha256: turn.sha256, payload: envelope.payload, source: envelope.source, turnId: turn.id, channelId: channel.channelId };
+}
 
 async function mutateChannel(
   root: string,

@@ -6,11 +6,12 @@ import type {
   TaskContract,
   WorkerSession
 } from "../core/types.js";
-import { commandExists, runProcess } from "../utils/process.js";
+import { commandExists } from "../utils/process.js";
 import { buildRepairPrompt, buildWorkerPrompt } from "./prompt.js";
 import { buildEffectivePrompt } from "./agentPrompt.js";
 import { resolveContextTransportCapabilities, type EffectiveContextCapabilities } from "../context/transport.js";
 import type { WorkerExecutor } from "./types.js";
+import { runDirectWorkerProcess } from "./directProcess.js";
 
 export class DirectWorkerExecutor implements WorkerExecutor {
   readonly name = "direct";
@@ -80,13 +81,14 @@ export class DirectWorkerExecutor implements WorkerExecutor {
     contextCapabilities?: EffectiveContextCapabilities
   ): Promise<WorkerSession> {
     let command: string;
+    let args: string[];
     let env: Record<string, string | undefined> | undefined;
     let nativeAgent = selection.nativeAgent;
 
     if (selection.runtimeAdapter === "opencode") {
       const projection = compileOpenCodeRuntimeProjection(selection, config, contextCapabilities);
       nativeAgent = projection.binding.agentId;
-      const args = [
+      args = [
         "opencode",
         "run",
         "--auto",
@@ -98,10 +100,10 @@ export class DirectWorkerExecutor implements WorkerExecutor {
       if (selection.variant) args.push("--variant", selection.variant);
       args.push("--agent", projection.binding.agentId);
       args.push(...selection.args, prompt);
-      command = args.map(quote).join(" ");
+      command = args.shift()!;
       env = projection.env;
     } else if (selection.runtimeAdapter === "codex") {
-      const args = [
+      args = [
         "codex",
         "exec",
         "--json",
@@ -110,16 +112,16 @@ export class DirectWorkerExecutor implements WorkerExecutor {
         ...selection.args,
         prompt
       ];
-      command = args.map(quote).join(" ");
+      command = args.shift()!;
     } else {
       throw new Error(`No direct runtime adapter for ${selection.runtimeAdapter}`);
     }
 
     const timeout = config.orchestration?.worker?.timeoutSeconds ?? 1800;
-    const result = await runProcess(command, {
+    const result = await runDirectWorkerProcess(command, args, config, {
       cwd: root,
       timeoutMs: timeout * 1000,
-      env
+      environment: env
     });
     return {
       provider: selection.runtimeAdapter,
@@ -133,8 +135,4 @@ export class DirectWorkerExecutor implements WorkerExecutor {
       stderr: result.stderr
     };
   }
-}
-
-function quote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
 }

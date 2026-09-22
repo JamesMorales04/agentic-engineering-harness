@@ -23,13 +23,15 @@ import { compilePaseoAgentLaunchSpec } from "../paseo/launchSpec.js";
 import {
   continueManagedPaseoAgent,
   launchManagedPaseoAgent,
-  materializeManagedPaseoAgent
+  materializeManagedPaseoAgent,
+  stopManagedPaseoAgent
 } from "../paseo/runtime.js";
 import { PaseoSdkUnavailableError } from "../paseo/sdk.js";
 import { allowedSandboxEnvironment, hardenedPodmanArgs, sandboxImage } from "../security/sandbox.js";
 import { runProcess } from "../utils/process.js";
 import {
   activateStructuredResultTurnForAgent,
+  acceptedStructuredResultForAgent,
   reconcileStructuredResult,
   type AcceptedStructuredResult
 } from "./resultGateway.js";
@@ -42,6 +44,9 @@ import { outputPolicyInstruction, resolveContextPolicy } from "../context/policy
 import { buildRepositoryContextMap } from "../context/repository/map.js";
 import { createMemoryProvider } from "../providers/memory.js";
 import type { ContextFragment } from "../context/types.js";
+import { repositoryPath } from "../utils/repositoryPath.js";
+import { runDirectWorkerProcess } from "./directProcess.js";
+import { recordEvent } from "../telemetry/events.js";
 
 export interface AgentPromptOptions {
   outputContract?: string;
@@ -58,6 +63,17 @@ export interface CapturedContractValidation {
   failure?: string;
 }
 
+async function recordAgentLifecycle(
+  root: string,
+  config: HarnessProjectConfig,
+  name: string,
+  attributes: Record<string, unknown>
+): Promise<void> {
+  // Lifecycle evidence must never turn an otherwise valid agent result into a
+  // runtime failure. The event itself is durable when telemetry is enabled.
+  await recordEvent(root, config, `harness.agent.${name}`, attributes).catch(() => undefined);
+}
+
 export async function executeAgentPrompt(
   root: string,
   config: HarnessProjectConfig,
@@ -67,19 +83,22 @@ export async function executeAgentPrompt(
   options: AgentPromptOptions = {}
 ): Promise<WorkerSession> {
   const transport = selection.transport === "inherit" ? (config.orchestration?.provider ?? "none") : selection.transport;
-  const effectivePrompt = await buildEffectivePrompt(root, config, contract, selection, prompt, options);
-  if (options.resumeSessionId && !options.supervisorAgent) {
-    await markOperationSessionRunning(root, options.resumeSessionId).catch(() => undefined);
+  const effectiveOptions = options.contextCapabilities
+    ? options
+    : { ...options, contextCapabilities: await resolveContextTransportCapabilities(root, config, selection, { mode: "live" }) };
+  const effectivePrompt = await buildEffectivePrompt(root, config, contract, selection, prompt, effectiveOptions);
+  if (effectiveOptions.resumeSessionId && !effectiveOptions.supervisorAgent) {
+    await markOperationSessionRunning(root, effectiveOptions.resumeSessionId).catch(() => undefined);
   }
-  if (options.outputContract && options.resumeSessionId && transport !== "paseo") {
-    await activateStructuredResultTurnForAgent(root, options.resumeSessionId, options.phase).catch(() => undefined);
+  if (effectiveOptions.outputContract && effectiveOptions.resumeSessionId && transport !== "paseo") {
+    await activateStructuredResultTurnForAgent(root, effectiveOptions.resumeSessionId, effectiveOptions.phase);
   }
   let result: WorkerSession;
-  if (transport === "paseo") result = await executeViaPaseo(root, config, contract, selection, effectivePrompt, options);
-  else if (transport === "direct") result = await executeDirect(root, config, selection, effectivePrompt, options);
-  else if (transport === "podman") result = await executePodman(root, config, contract, selection, effectivePrompt, options);
+  if (transport === "paseo") result = await executeViaPaseo(root, config, contract, selection, effectivePrompt, effectiveOptions);
+  else if (transport === "direct") result = await executeDirect(root, config, selection, effectivePrompt, effectiveOptions);
+  else if (transport === "podman") result = await executePodman(root, config, contract, selection, effectivePrompt, effectiveOptions);
   else throw new Error(`Unsupported agent prompt transport: ${transport}`);
-  return finalizeOperationSession(root, contract, selection, result, options);
+  return finalizeOperationSession(root, config, contract, selection, result, effectiveOptions);
 }
 
 export async function materializeAgentPrompt(
@@ -91,7 +110,7 @@ export async function materializeAgentPrompt(
 ): Promise<WorkerSession | undefined> {
   const transport = selection.transport === "inherit" ? (config.orchestration?.provider ?? "none") : selection.transport;
   if (transport !== "paseo" || options.resumeSessionId) return undefined;
-  const contextCapabilities = await resolveContextTransportCapabilities(root, config, selection, { mode: "live" });
+  const contextCapabilities = options.contextCapabilities ?? await resolveContextTransportCapabilities(root, config, selection, { mode: "live" });
   const spec = await compilePaseoAgentLaunchSpec(root, config, contract, {
     selection,
     phase: options.phase ?? "queued",
@@ -129,6 +148,8 @@ export async function materializeAgentPrompt(
       title: spec.title,
       operationId: spec.operationId,
       operationKind: spec.operationKind,
+      operationRevision: Number.isInteger(Number(spec.labels["aeh.operation.revision"])) ? Number(spec.labels["aeh.operation.revision"]) : undefined,
+      supervisorGeneration: spec.supervisorGeneration,
       phase: spec.phase,
       status: materialized.status ?? "idle",
       startedAt
@@ -145,6 +166,24 @@ export async function materializeAgentPrompt(
         transport: result.transport,
         status: "IDLE"
       }).catch(() => undefined);
+      await recordAgentLifecycle(root, config, "participant.created", {
+        operationId: spec.operationId,
+        participantId: result.id,
+        logicalAgent: selection.logicalAgent,
+        role: selection.role,
+        phase: spec.phase,
+        attempt: 1,
+        revision: 1,
+        status: "IDLE"
+      });
+      await recordAgentLifecycle(root, config, "session.created", {
+        operationId: spec.operationId,
+        participantId: result.id,
+        logicalAgent: selection.logicalAgent,
+        transport: result.transport,
+        workspaceId: result.workspaceId,
+        status: result.status
+      });
     }
     return result;
   } catch (error) {
@@ -165,9 +204,28 @@ export async function dispatchMaterializedAgentPrompt(
   if (!materialized?.id) return executeAgentPrompt(root, config, contract, selection, prompt, options);
   const effectivePrompt = await buildEffectivePrompt(root, config, contract, selection, prompt, options);
   if (!options.supervisorAgent) await markOperationSessionRunning(root, materialized.id).catch(() => undefined);
+  await recordAgentLifecycle(root, config, "participant.started", {
+    operationId: materialized.operationId ?? currentOperationContext().id ?? contract.task.id,
+    participantId: materialized.id,
+    logicalAgent: selection.logicalAgent,
+    role: selection.role,
+    phase: options.phase ?? materialized.phase,
+    attempt: 1,
+    revision: 1,
+    status: "RUNNING"
+  });
+  await recordAgentLifecycle(root, config, "model.requested", {
+    operationId: materialized.operationId ?? currentOperationContext().id ?? contract.task.id,
+    participantId: materialized.id,
+    logicalAgent: selection.logicalAgent,
+    transport: materialized.transport,
+    phase: options.phase ?? materialized.phase
+  });
   const timeout = config.orchestration?.worker?.timeoutSeconds ?? 1800;
   const schema = options.outputContract ? outputJsonSchema(options.outputContract) : undefined;
-  const continued = await continueManagedPaseoAgent(root, materialized.id, effectivePrompt, timeout, undefined, schema);
+  const continued = schema
+    ? await continueWithDurableResultReconciliation(root, config, materialized, selection, effectivePrompt, timeout, schema, options)
+    : await continueManagedPaseoAgent(root, materialized.id, effectivePrompt, timeout, undefined, schema);
   const result: WorkerSession = {
     ...materialized,
     exitCode: continued.exitCode,
@@ -179,7 +237,24 @@ export async function dispatchMaterializedAgentPrompt(
     phase: options.phase ?? materialized.phase,
     finishedAt: new Date().toISOString()
   };
-  const finalized = await finalizeOperationSession(root, contract, selection, result, options);
+  await recordAgentLifecycle(root, config, "runtime.terminal.observed", {
+    operationId: result.operationId ?? currentOperationContext().id ?? contract.task.id,
+    participantId: materialized.id,
+    logicalAgent: selection.logicalAgent,
+    transport: result.transport,
+    status: result.status,
+    exitCode: result.exitCode,
+    stdoutBytes: Buffer.byteLength(result.stdout),
+    stderrBytes: Buffer.byteLength(result.stderr)
+  });
+  await recordAgentLifecycle(root, config, "model.output.received", {
+    operationId: result.operationId ?? currentOperationContext().id ?? contract.task.id,
+    participantId: materialized.id,
+    logicalAgent: selection.logicalAgent,
+    outputBytes: Buffer.byteLength(result.stdout),
+    outputPresent: Boolean(result.stdout.trim())
+  });
+  const finalized = await finalizeOperationSession(root, config, contract, selection, result, options);
 
   if (!options.outputContract || finalized.exitCode !== 0) return finalized;
   const delivery = validateCapturedAgentContract(options.outputContract, finalized.stdout, finalized.stderr);
@@ -215,7 +290,7 @@ export async function dispatchMaterializedAgentPrompt(
     phase: repairPhase,
     finishedAt: new Date().toISOString()
   };
-  return finalizeOperationSession(root, contract, selection, repairedResult, repairOptions);
+  return finalizeOperationSession(root, config, contract, selection, repairedResult, repairOptions);
 }
 
 export async function resumeAgentPrompt(
@@ -276,7 +351,8 @@ async function executeViaPaseo(
     phase: options.phase ?? "work",
     kind: options.operationKind,
     parentAgentId: options.parentAgentId,
-    supervisorAgent: options.supervisorAgent
+    supervisorAgent: options.supervisorAgent,
+    contextCapabilities: options.contextCapabilities
   });
   const startedAt = new Date().toISOString();
   const schema = options.outputContract ? outputJsonSchema(options.outputContract) : undefined;
@@ -290,6 +366,8 @@ async function executeViaPaseo(
       title: spec.title,
       operationId: spec.operationId,
       operationKind: spec.operationKind,
+      operationRevision: Number.isInteger(Number(spec.labels["aeh.operation.revision"])) ? Number(spec.labels["aeh.operation.revision"]) : undefined,
+      supervisorGeneration: spec.supervisorGeneration,
       phase: spec.phase,
       status: continued.status,
       startedAt,
@@ -314,6 +392,7 @@ async function executeViaPaseo(
     labels: spec.labels,
     timeoutSeconds: spec.timeoutSeconds
   });
+  if (launched.id && !options.supervisorAgent) await markOperationSessionRunning(root, launched.id).catch(() => undefined);
   return session(selection, launched.exitCode, launched.stdout, launched.stderr, {
     id: launched.id,
     nativeAgent: spec.nativeAgentId ?? selection.nativeAgent,
@@ -333,12 +412,12 @@ async function executeDirect(root: string, config: HarnessProjectConfig, selecti
   const startedAt = new Date().toISOString();
   const executionEnv = boundedExecutionEnvironment(selection, options);
   if (selection.runtimeAdapter === "opencode") {
-    const projection = compileOpenCodeRuntimeProjection(selection, config);
+    const projection = compileOpenCodeRuntimeProjection(selection, config, options.contextCapabilities);
     const args = ["opencode", "run", "--auto", "--format", "json", "--model", selection.modelId];
     if (options.resumeSessionId) args.push("--session", options.resumeSessionId);
     if (selection.variant) args.push("--variant", selection.variant);
     args.push("--agent", projection.binding.agentId, ...selection.args, prompt);
-    const result = await runProcess(args.map(quote).join(" "), { cwd: root, timeoutMs: (config.orchestration?.worker?.timeoutSeconds ?? 1800) * 1000, env: { ...projection.env, ...executionEnv } });
+    const result = await runDirectWorkerProcess("opencode", args.slice(1), config, { cwd: root, timeoutMs: (config.orchestration?.worker?.timeoutSeconds ?? 1800) * 1000, environment: { ...withDirectContextIdentity(projection.env, root, selection, options), ...executionEnv } });
     return session(selection, result.exitCode, result.stdout, result.stderr, { id: options.resumeSessionId ?? extractSessionId(result.stdout), nativeAgent: projection.binding.agentId, ...directMetadata(options, startedAt) });
   }
   if (selection.runtimeAdapter === "codex") return executeCodex(root, config, selection, prompt, options, startedAt, executionEnv);
@@ -364,14 +443,37 @@ async function executeCodex(
       ? ["codex", "exec", "resume", options.resumeSessionId, "--json", "--model", selection.modelName]
       : ["codex", "exec", "--json", "--model", selection.modelName];
     if (schemaFile && outputFile) args.push("--output-schema", schemaFile, "-o", outputFile);
-    args.push(...selection.args, prompt);
-    const result = await runProcess(args.map(quote).join(" "), { cwd: root, timeoutMs: (config.orchestration?.worker?.timeoutSeconds ?? 1800) * 1000, env: executionEnv });
+    args.push(...selection.args, ...codexPermissionArgs(selection), prompt);
+    const result = await runDirectWorkerProcess(args[0]!, args.slice(1), config, { cwd: root, timeoutMs: (config.orchestration?.worker?.timeoutSeconds ?? 1800) * 1000, environment: executionEnv });
     let stdout = result.stdout;
     if (outputFile) { try { stdout = await fs.readFile(outputFile, "utf8"); } catch { /* event stream fallback */ } }
     const id = options.resumeSessionId ?? extractSessionId(result.stdout);
     return session(selection, result.exitCode, stdout, [result.stderr, outputFile ? `CODEX_EVENT_STREAM:\n${result.stdout}` : ""].filter(Boolean).join("\n"), { id, ...directMetadata(options, startedAt) });
   } finally {
     if (temp) await fs.rm(temp, { recursive: true, force: true });
+  }
+}
+
+function codexPermissionArgs(selection: AgentExecutionSelection): string[] {
+  const args: string[] = [];
+  if (selection.permissions.write === "deny") args.push("--sandbox", "read-only");
+  else if (selection.permissions.write === "allow") args.push("--sandbox", "workspace-write");
+  if (selection.permissions.shell === "deny") args.push("--ask-for-approval", "never");
+  if (selection.permissions.network === "deny") args.push("-c", "sandbox_workspace_write.network_access=false");
+  return args;
+}
+
+function withDirectContextIdentity(environment: Record<string, string>, root: string, selection: AgentExecutionSelection, options: AgentPromptOptions): Record<string, string> {
+  const serialized = environment.OPENCODE_CONFIG_CONTENT;
+  if (!serialized) return environment;
+  try {
+    const config = JSON.parse(serialized) as { mcp?: Record<string, { environment?: Record<string, string> }> };
+    const context = config.mcp?.["aeh-context"];
+    if (!context) return environment;
+    context.environment = { ...(context.environment ?? {}), AEH_CONTEXT_ROOT: root, AEH_CONTEXT_OPERATION_ID: currentOperationContext().id ?? "", AEH_LOGICAL_AGENT: selection.logicalAgent, AEH_CONTEXT_PHASE: options.phase ?? "work" };
+    return { ...environment, OPENCODE_CONFIG_CONTENT: JSON.stringify(config) };
+  } catch {
+    return environment;
   }
 }
 
@@ -389,8 +491,8 @@ async function executePodman(
   const writable = selection.permissions.write === "allow";
   const args: string[] = ["podman", "run", ...hardenedPodmanArgs(config, selection, writable)];
   args.push("-v", `${root}:/workspace:${writable ? "rw" : "ro"}`);
-  if (writable) for (const relative of sealedArtifacts(config, contract)) args.push("-v", `${path.resolve(root, relative)}:/workspace/${relative}:ro`);
-  const projection = compileOpenCodeRuntimeProjection(selection, config);
+  if (writable) for (const relative of sealedArtifacts(config, contract)) args.push("-v", `${repositoryPath(root, relative)}:/workspace/${relative}:ro`);
+  const projection = compileOpenCodeRuntimeProjection(selection, config, options.contextCapabilities);
   args.push("-e", `OPENCODE_CONFIG_CONTENT=${projection.env.OPENCODE_CONFIG_CONTENT}`);
   for (const [name, value] of Object.entries(boundedExecutionEnvironment(selection, options))) args.push("-e", `${name}=${value}`);
   for (const [name, value] of Object.entries(allowedSandboxEnvironment(config))) args.push("-e", `${name}=${value}`);
@@ -558,8 +660,78 @@ async function markOperationSessionRunning(root: string, agentId: string): Promi
   await updateOperationParticipant(root, operationId, agentId, { status: "RUNNING" });
 }
 
+async function continueWithDurableResultReconciliation(
+  root: string,
+  config: HarnessProjectConfig,
+  materialized: WorkerSession,
+  selection: AgentExecutionSelection,
+  prompt: string,
+  timeoutSeconds: number,
+  outputSchema: Record<string, unknown>,
+  options: AgentPromptOptions
+): Promise<Awaited<ReturnType<typeof continueManagedPaseoAgent>>> {
+  const operationId = materialized.operationId ?? currentOperationContext().id;
+  if (!operationId || !materialized.id || !options.outputContract) {
+    return continueManagedPaseoAgent(root, materialized.id!, prompt, timeoutSeconds, undefined, outputSchema);
+  }
+
+  const normal = continueManagedPaseoAgent(root, materialized.id, prompt, timeoutSeconds, undefined, outputSchema);
+  const reconciled = waitForAcceptedResult(root, materialized.id, {
+    operationId,
+    participantId: materialized.id,
+    logicalAgent: selection.logicalAgent,
+    role: selection.role,
+    contract: options.outputContract,
+    phase: options.phase ?? materialized.phase,
+    operationRevision: materialized.operationRevision,
+    supervisorGeneration: materialized.supervisorGeneration
+  }, Math.max(1, timeoutSeconds) * 1000, async (accepted) => {
+    await stopManagedPaseoAgent(root, materialized.id!).catch(() => undefined);
+    await recordAgentLifecycle(root, config, "runtime.terminal.reconciled", {
+      operationId,
+      participantId: materialized.id,
+      logicalAgent: selection.logicalAgent,
+      artifact: accepted.artifact,
+      turnId: accepted.turnId,
+      channelId: accepted.channelId,
+      source: accepted.source,
+      reason: "durable-result-without-runtime-terminal-event"
+    });
+  });
+  const winner = await Promise.race([normal, reconciled]);
+  return winner ?? normal;
+}
+
+async function waitForAcceptedResult(
+  root: string,
+  agentId: string,
+  expected: Parameters<typeof acceptedStructuredResultForAgent>[2],
+  timeoutMs: number,
+  onAccepted: (accepted: AcceptedStructuredResult) => Promise<void>
+): Promise<Awaited<ReturnType<typeof continueManagedPaseoAgent>> | undefined> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const accepted = await acceptedStructuredResultForAgent(root, agentId, expected).catch(() => undefined);
+    if (accepted) {
+      await onAccepted(accepted);
+      return {
+        id: agentId,
+        exitCode: 0,
+        stdout: JSON.stringify(accepted.payload),
+        stderr: "",
+        status: "idle",
+        transport: "sdk",
+        observation: "sdk-run"
+      };
+    }
+    if (Date.now() >= deadline) return undefined;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+}
+
 async function finalizeOperationSession(
   root: string,
+  config: HarnessProjectConfig,
   contract: TaskContract,
   selection: AgentExecutionSelection,
   observed: WorkerSession,
@@ -571,22 +743,61 @@ async function finalizeOperationSession(
   let contractDelivery: CapturedContractValidation | undefined;
 
   if (options.outputContract && observed.exitCode === 0) {
-    const resolution = await reconcileStructuredResult(root, {
-      operationId,
-      agentId: observed.id,
-      logicalAgent: selection.logicalAgent,
-      role: selection.role,
-      contract: options.outputContract,
-      phase: observed.phase ?? options.phase,
-      stdout: observed.stdout,
-      stderr: observed.stderr
-    });
+    const durable = observed.id
+      ? await acceptedStructuredResultForAgent(root, observed.id, {
+        operationId,
+        participantId: observed.id,
+        logicalAgent: selection.logicalAgent,
+        role: selection.role,
+        contract: options.outputContract,
+        phase: observed.phase ?? options.phase,
+        operationRevision: Number.isInteger(observed.operationRevision) ? observed.operationRevision : undefined,
+        supervisorGeneration: observed.supervisorGeneration
+      }).catch(() => undefined)
+      : undefined;
+    const resolution = durable
+      ? { ok: true as const, accepted: durable }
+      : await reconcileStructuredResult(root, {
+        operationId,
+        agentId: observed.id,
+        logicalAgent: selection.logicalAgent,
+        role: selection.role,
+        contract: options.outputContract,
+        phase: observed.phase ?? options.phase,
+        stdout: observed.stdout,
+        stderr: observed.stderr
+      });
     contractDelivery = resolution.ok
       ? { ok: true }
       : { ok: false, failure: resolution.failure ?? `invalid ${options.outputContract} output contract` };
+    await recordAgentLifecycle(root, config, "output.parsed", {
+      operationId,
+      participantId: observed.id,
+      logicalAgent: selection.logicalAgent,
+      phase: observed.phase ?? options.phase,
+      parsed: contractDelivery.ok,
+      failure: contractDelivery.failure
+    });
     if (resolution.accepted) {
       accepted = resolution.accepted;
       result = { ...observed, stdout: JSON.stringify(resolution.accepted.payload) };
+      await recordAgentLifecycle(root, config, "result.persisted", {
+        operationId,
+        participantId: observed.id,
+        logicalAgent: selection.logicalAgent,
+        artifact: accepted.artifact,
+        turnId: accepted.turnId,
+        channelId: accepted.channelId,
+        source: accepted.source
+      });
+      await recordAgentLifecycle(root, config, "result.acknowledged", {
+        operationId,
+        participantId: observed.id,
+        logicalAgent: selection.logicalAgent,
+        artifact: accepted.artifact,
+        turnId: accepted.turnId,
+        turnRevision: accepted.turnId
+      });
     }
   }
 
@@ -601,6 +812,13 @@ async function finalizeOperationSession(
     structuredResultArtifact: accepted?.artifact,
     session: observed
   }).catch(() => undefined);
+  await recordAgentLifecycle(root, config, "artifact.persisted", {
+    operationId,
+    participantId: observed.id,
+    logicalAgent: selection.logicalAgent,
+    artifact: transcriptArtifact,
+    structuredResultArtifact: accepted?.artifact
+  });
   if (!observed.id) return result;
   let operation = await loadOperation(root, operationId).catch(() => undefined);
   if (operation && !operation.participants[observed.id]) {
@@ -631,6 +849,23 @@ async function finalizeOperationSession(
     resultArtifact: accepted?.artifact ?? transcriptArtifact,
     error: failed ? ((contractFailure ?? observed.stderr) || `agent exited with ${observed.exitCode}`) : undefined
   }).catch(() => undefined);
+  await recordAgentLifecycle(root, config, "participant.marked_terminal", {
+    operationId,
+    participantId: observed.id,
+    logicalAgent: selection.logicalAgent,
+    status: failed ? "FAILED" : "COMPLETED",
+    artifact: accepted?.artifact ?? transcriptArtifact,
+    contractValid: !contractFailure
+  });
+  const settled = await loadOperation(root, operationId).catch(() => undefined);
+  await recordAgentLifecycle(root, config, "participant.settled", {
+    operationId,
+    participantId: observed.id,
+    logicalAgent: selection.logicalAgent,
+    participantStatus: settled?.participants[observed.id]?.status,
+    operationStatus: settled?.status,
+    operationRevision: settled?.revision
+  });
   return result;
 }
 

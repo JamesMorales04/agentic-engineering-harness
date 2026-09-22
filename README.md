@@ -38,6 +38,8 @@ planner waves -> workers -> deterministic barriers
 
 See [docs/V0.6.md](docs/V0.6.md), [docs/PASEO.md](docs/PASEO.md), [docs/CONTEXT_EFFICIENCY.md](docs/CONTEXT_EFFICIENCY.md), and [ROADMAP.md](ROADMAP.md).
 
+The runtime-agnostic certification boundary is documented in [docs/CERTIFICATION.md](docs/CERTIFICATION.md). Its external self-dogfood lane is an isolated bootstrap path; Codex is only an adapter/provider, never certification authority.
+
 ## Installation
 
 Pin AEH as a project development dependency:

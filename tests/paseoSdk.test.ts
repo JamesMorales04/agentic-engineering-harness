@@ -1,10 +1,38 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createPaseoSdkAgentWithClient,
+  dispatchPaseoSdkAgentWithClient,
   materializePaseoSdkAgentWithClient
 } from "../src/paseo/sdk.js";
 
 describe("Paseo SDK adapter", () => {
+  it("enforces a timeout for send-based dispatch and stops the agent", async () => {
+    const stop = vi.fn(async () => undefined);
+    const handle = { id: "agent-hung", status: "working", send: vi.fn(async () => await new Promise<void>(() => undefined)), stop };
+    const client = {
+      agents: { create: vi.fn(), ref: vi.fn(() => handle), list: vi.fn() },
+      connect: vi.fn(),
+      close: vi.fn()
+    };
+
+    await expect(dispatchPaseoSdkAgentWithClient(client as never, "agent-hung", "work", 10)).rejects.toThrow("dispatch timed out");
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops an agent when SDK waitForFinish reports a timeout", async () => {
+    const stop = vi.fn(async () => undefined);
+    const handle = { id: "agent-timeout", status: "working", waitForFinish: vi.fn(async () => ({ status: "timeout" })), stop };
+    const client = {
+      agents: { create: vi.fn(async () => handle), ref: vi.fn(), list: vi.fn() },
+      connect: vi.fn(),
+      close: vi.fn()
+    };
+
+    const result = await createPaseoSdkAgentWithClient(client as never, { cwd: "/repo", provider: "opencode", title: "worker", prompt: "work", timeoutMs: 10 });
+    expect(result.status).toBe("timeout");
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
   it("creates workspace agents without parentage and keeps cwd alongside workspace placement", async () => {
     let received: Record<string, unknown> | undefined;
     const handle = {

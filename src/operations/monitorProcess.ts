@@ -29,10 +29,20 @@ export async function spawnOperationMonitor(
           ...process.env,
           AEH_CONTROL_ROOT: absoluteRoot,
           AEH_OPERATION_ID: operation.id,
-          AEH_OPERATION_KIND: operation.kind
+          AEH_OPERATION_KIND: operation.kind,
+          AEH_OPERATION_STATE_REDIRECT: "1"
         }
       }
     );
+    child.once("error", (error) => {
+      void (async () => {
+        const current = await loadOperation(absoluteRoot, operation.id).catch(() => operation);
+        const warning = `liveness monitor: ${error instanceof Error ? error.message : String(error)}`;
+        await patchOperationMetadata(absoluteRoot, operation.id, {
+          cleanupWarnings: [...new Set([...(current.cleanupWarnings ?? []), warning])]
+        }).catch(() => undefined);
+      })().catch(() => undefined);
+    });
     child.unref();
     return child.pid;
   } catch (error) {

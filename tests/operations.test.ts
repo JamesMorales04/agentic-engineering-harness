@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +11,7 @@ import {
 } from "../src/operations/controller.js";
 import {
   loadOperation,
+  acknowledgeOperationLead,
   patchOperation,
   registerOperationAgent,
   saveOperation,
@@ -18,6 +20,8 @@ import {
   updateOperationParticipant,
   type OperationRecord
 } from "../src/operations/state.js";
+import { runProcess } from "../src/utils/process.js";
+import { resolveBaseRef } from "../src/core/git.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -171,6 +175,17 @@ describe("operation controller state", () => {
     expect(current).toEqual(before);
   });
 
+  it("rejects an acknowledgement for a stale revision inside the durable mutation boundary", async () => {
+    const root = await tempRoot();
+    const record = await seed(root, { status: "RUNNING", phase: "planning" });
+    await saveOperation(root, record);
+    const bound = await (await import("../src/operations/state.js")).bindOperationLead(root, record.id, "lead-1", "test");
+    const staleRevision = bound.revision;
+    const current = await setOperationStage(root, record.id, "review", "RUNNING");
+    await expect(acknowledgeOperationLead(root, record.id, staleRevision, "stale-read")).rejects.toThrow("AEH_OPERATION_ACK_REVISION_MISMATCH");
+    expect((await loadOperation(root, record.id)).lead?.acknowledgedRevision).toBeLessThan(current.revision);
+  });
+
   it("cancels registered agents without requiring a Paseo list discovery", async () => {
     const root = await tempRoot();
     const record = await seed(root, {
@@ -245,6 +260,110 @@ describe("operation controller state", () => {
     expect((await loadOperation(root, record.id)).pid).toBe(4242);
   });
 
+  it("terminalizes an asynchronously failed detached controller spawn", async () => {
+    const root = await tempRoot();
+    let onError: ((error: Error) => void) | undefined;
+    const child = {
+      pid: 4243,
+      unref: vi.fn(),
+      once: vi.fn((event: string, handler: (error: Error) => void) => {
+        if (event === "error") onError = handler;
+        return child;
+      })
+    };
+    const record = await startDetachedOperation(root, "audit", { request: "review" }, {
+      nodeExecutable: "/usr/bin/node",
+      entryFile: "/pkg/dist/main.js",
+      spawnProcess: vi.fn(() => child) as never
+    });
+
+    onError?.(new Error("spawn EACCES"));
+    await vi.waitFor(async () => expect((await loadOperation(root, record.id)).status).toBe("FAILED"));
+    expect((await loadOperation(root, record.id)).phase).toBe("spawn-failed");
+  });
+
+  it("cancels a detached direct-process handle registered by runProcess", async () => {
+    if (process.platform === "win32") return;
+    const root = await tempRoot();
+    const record = await seed(root, {
+      status: "RUNNING",
+      phase: "executing",
+      agents: [{ id: "reviewer-1", role: "reviewer", registeredAt: new Date().toISOString() }]
+    });
+    const previous = {
+      id: process.env.AEH_OPERATION_ID,
+      kind: process.env.AEH_OPERATION_KIND,
+      root: process.env.AEH_CONTROL_ROOT,
+      redirect: process.env.AEH_OPERATION_STATE_REDIRECT
+    };
+    process.env.AEH_OPERATION_ID = record.id;
+    process.env.AEH_OPERATION_KIND = "audit";
+    process.env.AEH_CONTROL_ROOT = root;
+    process.env.AEH_OPERATION_STATE_REDIRECT = "1";
+    const running = runProcess(`${shellQuote(process.execPath)} -e ${shellQuote("setTimeout(()=>{},60000)")}`, { cwd: root, timeoutMs: 60_000 });
+    const handles = path.join(root, ".harness", "operations", `${record.id}.processes`);
+    try {
+      await vi.waitFor(async () => expect((await fs.readdir(handles)).length).toBeGreaterThan(0));
+      const cancelled = await cancelOperation(root, record.id, {
+        run: vi.fn(async () => ({ exitCode: 0, stdout: "stopped", stderr: "", durationMs: 1 })) as never,
+        trace: vi.fn(async () => undefined) as never
+      });
+      const result = await running;
+      expect(cancelled.status).toBe("CANCELLED");
+      expect(result.exitCode).not.toBe(0);
+    } finally {
+      restoreEnv("AEH_OPERATION_ID", previous.id);
+      restoreEnv("AEH_OPERATION_KIND", previous.kind);
+      restoreEnv("AEH_CONTROL_ROOT", previous.root);
+      restoreEnv("AEH_OPERATION_STATE_REDIRECT", previous.redirect);
+    }
+  }, 10_000);
+
+  it("cancels detached descendants that are outside the controller process group", async () => {
+    if (process.platform !== "linux") return;
+    const root = await tempRoot();
+    const descendantFile = path.join(root, "descendant.pid");
+    const script = [
+      "const fs = require('node:fs');",
+      "const { spawn } = require('node:child_process');",
+      "const descendant = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { detached: true, stdio: 'ignore' });",
+      "fs.writeFileSync(process.argv[1], String(descendant.pid));",
+      "setInterval(() => {}, 60000);"
+    ].join(" ");
+    const controller = spawn(process.execPath, ["-e", script, descendantFile], {
+      cwd: root,
+      detached: true,
+      stdio: "ignore"
+    });
+    const record = await seed(root, {
+      status: "RUNNING",
+      phase: "executing",
+      pid: controller.pid
+    });
+    let descendantPid: number | undefined;
+    try {
+      await vi.waitFor(async () => {
+        descendantPid = Number(await fs.readFile(descendantFile, "utf8"));
+        expect(descendantPid).toBeGreaterThan(0);
+      });
+      const cancelled = await cancelOperation(root, record.id, {
+        run: vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "", durationMs: 1 })) as never,
+        trace: vi.fn(async () => undefined) as never
+      });
+      expect(cancelled.status).toBe("CANCELLED");
+      await vi.waitFor(async () => {
+        expect(await isLiveLinuxProcess(descendantPid!)).toBe(false);
+      }, { timeout: 3_000, interval: 50 });
+    } finally {
+      if (controller.pid) {
+        try { process.kill(-controller.pid, "SIGKILL"); } catch { /* already stopped */ }
+      }
+      if (descendantPid) {
+        try { process.kill(-descendantPid, "SIGKILL"); } catch { /* already stopped */ }
+      }
+    }
+  }, 10_000);
+
   it("extracts workspace ids from nested Paseo JSON", () => {
     expect(
       extractWorkspaceId(
@@ -261,4 +380,29 @@ describe("operation controller state", () => {
       /^AUDIT-\d{8}T\d{6}Z-[a-f0-9]{8}$/
     );
   });
+
+  it("falls back from an unavailable configured base ref to the current branch", async () => {
+    const root = await tempRoot();
+    await runProcess("git init -q && git config user.email aeh@example.invalid && git config user.name aeh && git commit --allow-empty -qm baseline && git branch -M fixture-base", { cwd: root, timeoutMs: 30_000 });
+    const resolved = await resolveBaseRef(root, "main");
+    expect(resolved.ref).toBe("fixture-base");
+    expect(resolved.fallbackFrom).toBe("main");
+  });
 });
+
+function shellQuote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
+
+async function isLiveLinuxProcess(pid: number): Promise<boolean> {
+  try {
+    const stat = await fs.readFile(`/proc/${pid}/stat`, "utf8");
+    const closingParen = stat.lastIndexOf(")");
+    return closingParen >= 0 && stat.slice(closingParen + 2).trim().split(/\s+/)[0] !== "Z";
+  } catch {
+    return false;
+  }
+}
