@@ -38,6 +38,21 @@ function providerResult(request: AgentProviderRequest, status: AgentProviderResu
   return { version: 1, provider: "test-provider", requestId: request.requestId, role: request.role, status, exitCode: status === "COMPLETED" ? 0 : 1, stdout: "{\"type\":\"result\"}\n", stderr: "", events: [], structuredOutput: { type: "result" }, usage: { totalTokens: 3 }, usageKnown: true, durationMs: 1, outputTruncated: false };
 }
 
+/** Resolve the Codex CLI executable from CODEX_BIN or PATH so the capability test is portable across developer and CI environments. */
+async function resolveCodexBinary(): Promise<string | undefined> {
+  const explicit = process.env.CODEX_BIN?.trim();
+  if (explicit) return explicit;
+  const names = process.platform === "win32" ? ["codex.cmd", "codex.exe", "codex"] : ["codex"];
+  for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
+    if (!dir) continue;
+    for (const name of names) {
+      const candidate = path.join(dir, name);
+      try { await fs.access(candidate, fs.constants.X_OK); return candidate; } catch { /* keep searching */ }
+    }
+  }
+  return undefined;
+}
+
 describe("CertificationCore", () => {
   it("accepts only deterministic oracle evidence and does not need a provider", async () => {
     const fixture = await candidate();
@@ -169,8 +184,10 @@ describe("CertificationCore", () => {
 });
 
 describe("certification provider boundary", () => {
-  it("resolves installed Codex capabilities and uses supported reasoning configuration", async () => {
-    const capabilities = await resolveCodexCapabilities("/home/james/.vscode/extensions/openai.chatgpt-26.908.40401-linux-x64/bin/linux-x86_64/codex", process.cwd());
+  it("resolves installed Codex capabilities and uses supported reasoning configuration", async (context) => {
+    const codex = await resolveCodexBinary();
+    if (!codex) { context.skip(); return; }
+    const capabilities = await resolveCodexCapabilities(codex, process.cwd());
     expect(capabilities.supportsJson).toBe(true);
     expect(capabilities.supportsConfigOverride).toBe(true);
     expect(capabilities.supportsReasoningFlag).toBe(false);
