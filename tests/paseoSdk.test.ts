@@ -1,11 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  connectPaseoClient,
   createPaseoSdkAgentWithClient,
   dispatchPaseoSdkAgentWithClient,
   materializePaseoSdkAgentWithClient
 } from "../src/paseo/sdk.js";
 
 describe("Paseo SDK adapter", () => {
+  it("returns a clear SDK-unavailable error when daemon connection never settles", async () => {
+    const client = { connect: vi.fn(async () => await new Promise<void>(() => undefined)) };
+    await expect(connectPaseoClient(client, 5)).rejects.toThrow(
+      "Unable to connect to the Paseo daemon through @getpaseo/client: Connecting to the Paseo daemon timed out after 5ms."
+    );
+  });
+
   it("enforces a timeout for send-based dispatch and stops the agent", async () => {
     const stop = vi.fn(async () => undefined);
     const handle = { id: "agent-hung", status: "working", send: vi.fn(async () => await new Promise<void>(() => undefined)), stop };
@@ -188,7 +196,7 @@ describe("Paseo SDK adapter", () => {
       cwd: "/repo",
       workspaceId: "workspace-op",
       provider: "opencode",
-      model: "opencode-go/deepseek-v4-flash",
+      model: "opencode-go/MiMo-V2.6-Flash",
       modeId: "aeh-code-quality-reviewer",
       thinkingOptionId: "high",
       env: { OPENCODE_CONFIG_CONTENT: inline },
@@ -203,7 +211,7 @@ describe("Paseo SDK adapter", () => {
         env: { OPENCODE_CONFIG_CONTENT: inline },
         config: {
           provider: "opencode",
-          model: "opencode-go/deepseek-v4-flash",
+          model: "opencode-go/MiMo-V2.6-Flash",
           modeId: "aeh-code-quality-reviewer",
           thinkingOptionId: "high"
         }
@@ -238,7 +246,7 @@ describe("Paseo SDK adapter", () => {
     const result = await createPaseoSdkAgentWithClient(client as never, {
       cwd: "/repo",
       provider: "opencode",
-      model: "deepseek-v4-flash",
+      model: "MiMo-V2.6-Flash",
       title: "worker",
       prompt: "Implement the bounded task",
       outputSchema: { type: "object" },
@@ -250,7 +258,7 @@ describe("Paseo SDK adapter", () => {
         cwd: "/repo",
         initialPrompt: "Implement the bounded task",
         outputSchema: { type: "object" },
-        config: { provider: "opencode", model: "deepseek-v4-flash" }
+        config: { provider: "opencode", model: "MiMo-V2.6-Flash" }
       })
     );
     expect(received).not.toHaveProperty("prompt");
@@ -284,6 +292,7 @@ describe("Paseo SDK adapter", () => {
     };
 
     const result = await materializePaseoSdkAgentWithClient(client as never, {
+      agentId: "agent-idle",
       cwd: "/repo",
       workspaceId: "workspace-op",
       provider: "codex",
@@ -301,6 +310,7 @@ describe("Paseo SDK adapter", () => {
     );
     expect(received).toEqual(
       expect.objectContaining({
+        agentId: "agent-idle",
         cwd: "/repo",
         workspaceId: "workspace-op",
         config: { provider: "codex", model: "gpt-test" }
@@ -366,13 +376,13 @@ describe("Paseo SDK adapter", () => {
 
     await createPaseoSdkAgentWithClient(client as never, {
       cwd: "/repo",
-      provider: "codex/gpt-5.6-luna",
+      provider: "codex/gpt-6-luna",
       title: "legacy"
     });
 
     expect(received).toEqual(
       expect.objectContaining({
-        config: { provider: "codex", model: "gpt-5.6-luna" }
+        config: { provider: "codex", model: "gpt-6-luna" }
       })
     );
   });

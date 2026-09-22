@@ -4,12 +4,14 @@ import { createReadStream } from "node:fs";
 import path from "node:path";
 import type { HarnessProjectConfig } from "../core/types.js";
 import { loadTaskContract } from "../core/config.js";
-import { commandExists, runProcess } from "../utils/process.js";
+import { commandExists, runExecutable, runShell } from "../utils/process.js";
+import { getBuildIdentity, isBuildIdentityV1, type BuildIdentityV1 } from "../build/identity.js";
 
 export interface ProvenanceOptions { artifact: string; taskId?: string; sbom?: boolean; sign?: boolean; }
 export interface ProvenanceManifestEntry { path: string; sha256: string; kind: string; }
 export interface ProvenanceManifest {
   version: 1;
+  buildIdentity: BuildIdentityV1;
   generatedAt: string;
   taskId?: string;
   subject?: { path: string; sha256: string };
@@ -23,8 +25,8 @@ export async function generateProvenance(root: string, config: HarnessProjectCon
   const artifact = path.resolve(root, options.artifact);
   if (!(await fs.stat(artifact)).isFile()) throw new Error("Provenance currently requires --artifact to point to a file.");
   const digest = await sha256File(artifact);
-  const commit = await gitValue(root, "git rev-parse HEAD");
-  const remote = await gitValue(root, "git remote get-url origin");
+  const commit = await gitValue(root, ["rev-parse", "HEAD"]);
+  const remote = await gitValue(root, ["remote", "get-url", "origin"]);
   const outputDir = path.resolve(root, config.provenance?.outputDir ?? ".harness/provenance");
   await fs.mkdir(outputDir, { recursive: true });
   const base = sanitize(path.basename(artifact));
@@ -36,10 +38,13 @@ export async function generateProvenance(root: string, config: HarnessProjectCon
   const sbomRequired = config.provenance?.required === true || config.provenance?.sbom?.required === true;
   if (options.sbom !== false && await commandExists("trivy", root)) {
     sbomFile = path.join(outputDir, `${base}.cyclonedx.json`);
-    const sbomCommand = config.provenance?.sbom?.command ?? `trivy fs --format cyclonedx --output ${quote(sbomFile)} ${quote(root)}`;
-    const sbom = await runProcess(sbomCommand, { cwd: root, timeoutMs: 600_000 });
+    const configuredCommand = config.provenance?.sbom?.command;
+    const sbom = configuredCommand
+      ? await runShell(configuredCommand, { cwd: root, timeoutMs: 600_000 })
+      : await runExecutable("trivy", ["fs", "--format", "cyclonedx", "--output", sbomFile, root], { cwd: root, timeoutMs: 600_000 });
     if (sbom.exitCode !== 0) throw new Error(`Trivy SBOM generation failed: ${sbom.stderr || sbom.stdout}`);
   } else if (sbomRequired) throw new Error("Supply-chain policy requires a CycloneDX SBOM, but Trivy is unavailable or SBOM generation was disabled.");
+  const buildIdentity = getBuildIdentity();
   const manifest = await buildProvenanceManifest(root, config, options.taskId, artifact, sbomFile);
   manifest.subject = { path: relative(root, artifact), sha256: digest };
   const signingRequired = options.sign || config.provenance?.signing?.required === true || config.provenance?.verification?.required === true;
@@ -49,7 +54,7 @@ export async function generateProvenance(root: string, config: HarnessProjectCon
   const manifestDigest = await sha256File(manifestFile);
   const runDigest = options.taskId ? await optionalDigest(path.resolve(root, config.sdd?.runsDir ?? ".harness/runs", `${options.taskId}.json`)) : undefined;
   const reportDigest = options.taskId ? await optionalDigest(path.resolve(root, config.sdd?.reportsDir ?? ".harness/reports", `${options.taskId}.json`)) : undefined;
-  const predicate = buildSlsaPredicate({ project: config.project.name, artifact: path.basename(artifact), taskId: options.taskId, commit, remote, runDigest, reportDigest, artifactManifestSha256: manifestDigest, sbomSha256: sbomFile ? await sha256File(sbomFile) : undefined, buildType: config.provenance?.buildType ?? "https://github.com/JamesMorales04/agentic-engineering-harness/v0.3", invocationId: crypto.randomUUID(), startedOn: new Date().toISOString(), finishedOn: new Date().toISOString() });
+  const predicate = buildSlsaPredicate({ project: config.project.name, artifact: path.basename(artifact), taskId: options.taskId, commit, remote, runDigest, reportDigest, artifactManifestSha256: manifestDigest, sbomSha256: sbomFile ? await sha256File(sbomFile) : undefined, buildIdentity, buildType: config.provenance?.buildType ?? "https://github.com/JamesMorales04/agentic-engineering-harness/v0.3", invocationId: crypto.randomUUID(), startedOn: new Date().toISOString(), finishedOn: new Date().toISOString() });
   const statement = { _type: "https://in-toto.io/Statement/v1", subject: [{ name: path.basename(artifact), digest: { sha256: digest } }], predicateType: "https://slsa.dev/provenance/v1", predicate };
   await fs.writeFile(predicateFile, `${JSON.stringify(predicate, null, 2)}\n`);
   await fs.writeFile(statementFile, `${JSON.stringify(statement, null, 2)}\n`);
@@ -60,8 +65,8 @@ export async function generateProvenance(root: string, config: HarnessProjectCon
     if (!plannedBundle) throw new Error("Signing bundle path could not be resolved.");
     bundleFile = plannedBundle;
     const keyPath = config.provenance?.signing?.key ?? config.provenance?.cosignKey;
-    const key = keyPath ? ` --key ${quote(keyPath)}` : "";
-    const signed = await runProcess(`cosign sign-blob --yes --tlog-upload=false ${quote(statementFile)} --bundle ${quote(bundleFile)}${key}`, { cwd: root, timeoutMs: 300_000, env: { COSIGN_YES: "true", COSIGN_PASSWORD: process.env.COSIGN_PASSWORD ?? "" } });
+    const args = ["sign-blob", "--yes", "--tlog-upload=false", statementFile, "--bundle", bundleFile, ...(keyPath ? ["--key", keyPath] : [])];
+    const signed = await runExecutable("cosign", args, { cwd: root, timeoutMs: 300_000, env: { COSIGN_YES: "true", COSIGN_PASSWORD: process.env.COSIGN_PASSWORD ?? "" } });
     if (signed.exitCode !== 0) throw new Error(`Cosign signing failed: ${signed.stderr || signed.stdout}`);
     const verificationKey = config.provenance?.verification?.publicKey ?? keyPath;
     if (!(await verifyCosignBundle(root, statementFile, bundleFile, verificationKey))) throw new Error("Cosign produced a bundle that could not be verified.");
@@ -69,13 +74,14 @@ export async function generateProvenance(root: string, config: HarnessProjectCon
   return { artifact: relative(root, artifact), sha256: digest, statementFile: relative(root, statementFile), predicateFile: relative(root, predicateFile), manifestFile: relative(root, manifestFile), sbomFile: sbomFile && relative(root, sbomFile), bundleFile: bundleFile && relative(root, bundleFile) };
 }
 
-export function buildSlsaPredicate(input: { project: string; artifact: string; taskId?: string; commit: string; remote: string; runDigest?: string; reportDigest?: string; artifactManifestSha256?: string; sbomSha256?: string; buildType: string; invocationId: string; startedOn: string; finishedOn: string }): Record<string, unknown> {
+export function buildSlsaPredicate(input: { project: string; artifact: string; taskId?: string; commit: string; remote: string; runDigest?: string; reportDigest?: string; artifactManifestSha256?: string; sbomSha256?: string; buildIdentity?: BuildIdentityV1; buildType: string; invocationId: string; startedOn: string; finishedOn: string }): Record<string, unknown> {
   const internalParameters: Record<string, unknown> = {};
   if (input.taskId) internalParameters.taskId = input.taskId;
   if (input.runDigest) internalParameters.runReportSha256 = input.runDigest;
   if (input.reportDigest) internalParameters.validationReportSha256 = input.reportDigest;
   if (input.artifactManifestSha256) internalParameters.artifactManifestSha256 = input.artifactManifestSha256;
   if (input.sbomSha256) internalParameters.sbomSha256 = input.sbomSha256;
+  if (input.buildIdentity) internalParameters.aehBuildIdentity = input.buildIdentity;
   return { buildDefinition: { buildType: input.buildType, externalParameters: { project: input.project, artifact: input.artifact }, internalParameters, resolvedDependencies: input.commit ? [{ uri: input.remote ? `git+${input.remote}` : "git:local", digest: { gitCommit: input.commit } }] : [] }, runDetails: { builder: { id: "https://github.com/JamesMorales04/agentic-engineering-harness" }, metadata: { invocationId: input.invocationId, startedOn: input.startedOn, finishedOn: input.finishedOn } } };
 }
 
@@ -128,8 +134,8 @@ export async function buildProvenanceManifest(root: string, config: HarnessProje
   const entries: ProvenanceManifestEntry[] = [];
   for (const [relativePath, kind] of candidates) { try { entries.push({ path: relativePath, kind, sha256: await sha256File(path.resolve(root, relativePath)) }); } catch { /* optional artifacts are omitted */ } }
   entries.sort((a, b) => a.path.localeCompare(b.path));
-  const lineage = operationId ? { operationId, gitCommit: await gitValue(root, "git rev-parse HEAD"), required, members: [...new Set(members)] } : undefined;
-  return { version: 1, generatedAt: new Date().toISOString(), taskId, entries, ...(lineage ? { lineage } : {}) };
+  const lineage = operationId ? { operationId, gitCommit: await gitValue(root, ["rev-parse", "HEAD"]), required, members: [...new Set(members)] } : undefined;
+  return { version: 1, buildIdentity: getBuildIdentity(), generatedAt: new Date().toISOString(), taskId, entries, ...(lineage ? { lineage } : {}) };
 }
 
 export async function verifyProvenanceManifest(root: string, manifestFile: string, cosignKey?: string): Promise<{ ok: boolean; failures: string[] }> {
@@ -138,6 +144,7 @@ export async function verifyProvenanceManifest(root: string, manifestFile: strin
   try { manifest = JSON.parse(await fs.readFile(file, "utf8")) as ProvenanceManifest; } catch (error) { return { ok: false, failures: [`manifest unreadable: ${String(error)}`] }; }
   const failures: string[] = [];
   if (manifest.version !== 1 || !Array.isArray(manifest.entries)) failures.push("manifest structure is invalid");
+  if (!isBuildIdentityV1(manifest.buildIdentity)) failures.push("manifest BuildIdentity is invalid");
   const paths = new Set<string>();
   for (const entry of manifest.entries ?? []) {
     if (!entry?.path || paths.has(entry.path) || !isSafeRelative(entry.path) || !/^[a-f0-9]{64}$/.test(entry.sha256)) { failures.push(`invalid manifest entry: ${JSON.stringify(entry)}`); continue; }
@@ -171,8 +178,8 @@ export async function verifyProvenanceManifest(root: string, manifestFile: strin
 
 export async function verifyCosignBundle(root: string, statementFile: string, bundleFile: string, key?: string): Promise<boolean> {
   if (!(await commandExists("cosign", root))) return false;
-  const keyArg = key ? ` --key ${quote(path.resolve(root, key))}` : "";
-  const result = await runProcess(`cosign verify-blob --insecure-ignore-tlog --bundle ${quote(path.resolve(root, bundleFile))}${keyArg} ${quote(path.resolve(root, statementFile))}`, { cwd: root, timeoutMs: 60_000 });
+  const args = ["verify-blob", "--insecure-ignore-tlog", "--bundle", path.resolve(root, bundleFile), ...(key ? ["--key", path.resolve(root, key)] : []), path.resolve(root, statementFile)];
+  const result = await runExecutable("cosign", args, { cwd: root, timeoutMs: 60_000 });
   return result.exitCode === 0;
 }
 
@@ -247,8 +254,7 @@ async function exists(file: string): Promise<boolean> { try { await fs.stat(file
 function isSafeRelative(value: string): boolean { return typeof value === "string" && value.length > 0 && !path.isAbsolute(value) && !value.split(/[\\/]/).includes(".."); }
 async function readJson(root: string, relativePath: string, failures: string[]): Promise<Record<string, any> | undefined> { try { const value = JSON.parse(await fs.readFile(path.resolve(root, relativePath), "utf8")); return value && typeof value === "object" ? value : undefined; } catch (error) { failures.push(`${relativePath}: ${String(error)}`); return undefined; } }
 async function optionalDigest(file: string): Promise<string | undefined> { try { return await sha256File(file); } catch { return undefined; } }
-async function gitValue(root: string, command: string): Promise<string> { const result = await runProcess(command, { cwd: root, timeoutMs: 30_000 }); return result.exitCode === 0 ? result.stdout.trim() : ""; }
+async function gitValue(root: string, args: readonly string[]): Promise<string> { const result = await runExecutable("git", args, { cwd: root, timeoutMs: 30_000 }); return result.exitCode === 0 ? result.stdout.trim() : ""; }
 function relative(root: string, file: string): string { return path.relative(root, file).replaceAll("\\", "/"); }
 function sanitize(value: string): string { return value.replace(/[^A-Za-z0-9._-]/g, "-"); }
 function safeId(value: string): string { return value.replace(/[^A-Za-z0-9._-]/g, "-"); }
-function quote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }

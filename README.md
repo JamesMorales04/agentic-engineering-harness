@@ -2,9 +2,9 @@
 
 An **OSS-first, zero-mandatory-SaaS control plane** for agentic software engineering. AEH treats LLM output as untrusted until deterministic validation, evidence and quality gates accept it. Free, locally executable OSS capabilities may be mandatory; paid licenses and paid hosted services are not.
 
-## Status: v0.6.x
+## Status: v0.8.4 — Core Architecture v2 in progress
 
-v0.6 makes the interactive lead a **thin semantic orchestrator** instead of an interactive shell/CI operator. Long Harness workflows are first-class detached operations: AEH remains the deterministic authority while real planners, reviewers, implementers and escalation agents appear as independent Paseo sessions correlated by durable operation/task labels.
+The current release retains the v0.6 detached-operation model while adding the Core Architecture v2 foundation: explicit `NO_AGENT | DIRECT | DELEGATED | FORMAL_SDD` implementation routing, independent assurance levels, candidate/receipt lifecycle gates, project identity and runtime ownership contracts, context shards/continuations, and a loopback Project Control Center/Home surface. The campaign ledger is maintained in [docs/ENGINEERING_LEDGER.md](docs/ENGINEERING_LEDGER.md).
 
 ```text
 User / Paseo
@@ -21,9 +21,11 @@ fresh AEH Lead
           |
           +-- explorer -> planner -> deterministic triage
           |
-          +-- QUICK -> bounded sealed QuickContract
+          +-- NO_AGENT | DIRECT | DELEGATED | FORMAL_SDD
           |
-          `-- SPEC -> spec-manager -> OpenSpec
+          `-- assurance NONE | STANDARD | ELEVATED | CRITICAL
+                  -> contract/candidate lifecycle
+                  -> spec-manager -> OpenSpec when FORMAL_SDD
                                   -> aeh spec compile
                                   -> sealed AEH SDD/TaskContract
                           |
@@ -37,6 +39,8 @@ planner waves -> workers -> deterministic barriers
 ```
 
 See [docs/V0.6.md](docs/V0.6.md), [docs/PASEO.md](docs/PASEO.md), [docs/CONTEXT_EFFICIENCY.md](docs/CONTEXT_EFFICIENCY.md), and [ROADMAP.md](ROADMAP.md).
+
+The superseded binary execution surface has been removed; current routing evidence is carried in the v2 route and assurance fields. See [docs/CORE_ARCHITECTURE_V2.md](docs/CORE_ARCHITECTURE_V2.md) for the current contract and runtime boundaries.
 
 The runtime-agnostic certification boundary is documented in [docs/CERTIFICATION.md](docs/CERTIFICATION.md). Its external self-dogfood lane is an isolated bootstrap path; Codex is only an adapter/provider, never certification authority.
 
@@ -130,18 +134,23 @@ AEH validates the decision's structure and effects, then enforces the
 TaskContract, permissions, capabilities, validators, lifecycle, provenance and
 delivery gates. AEH does not run a second regex/keyword interpretation of the
 original sentence. The heuristic intent classifier remains available only for
-the explicit diagnostic/evaluation command and configured legacy fallback.
+the explicit diagnostic/evaluation command only.
 
 It delegates:
 
 ```text
-explorer              -> repository discovery
-environment-manager   -> doctor/setup/Paseo/toolchain recovery
-planner               -> read-only decomposition and triage evidence
-spec-manager          -> OpenSpec SPEC authoring
-implementers          -> code changes
-validators/reviewers  -> evidence and quality assessment
+Explorer                 -> repository discovery when needed
+Librarian                -> versioned knowledge gaps when needed
+Planner                  -> read-only decomposition and triage evidence
+Spec Manager             -> OpenSpec FORMAL_SDD authoring
+compiled Implementer     -> assigned code changes
+compiled Reviewer        -> independent evidence and quality assessment
+compiled Repairer        -> bounded remediation after a failed gate
 ```
+
+Toolchain setup, environment recovery and deterministic validation remain
+Harness infrastructure. Domain technology is a specialization of a canonical
+role, never a permanent named agent class.
 
 Paseo native/MCP tools are preferred for bounded conversational delegation and `/paseo-handoff`. Deterministic multi-agent workflows use the AEH operation controller. The controller itself is **not** represented as an LLM agent.
 
@@ -192,7 +201,7 @@ aeh.kind=lead|worker
 aeh.role=<logical-agent>
 aeh.task=<task-id>
 aeh.operation=<operation-id>
-aeh.operation.kind=audit|run|quick|...
+aeh.operation.kind=audit|run|change
 aeh.operation.phase=planning|review|implementation|diagnosis|...
 aeh.workspace.kind=orchestration|delivery
 ```
@@ -246,14 +255,14 @@ Examples:
   -> AUDIT
 
 "Improve the code readability"
-  -> CHANGE -> QUICK | SPEC
+  -> CHANGE -> NO_AGENT | DIRECT | DELEGATED | FORMAL_SDD
 ```
 
-Repository-wide audits are not forced into fake QUICK scope.
+Repository-wide audits remain AUDIT operations; change routing is not inferred from a legacy workflow mode.
 
-## OpenSpec-backed SPEC authoring
+## OpenSpec-backed formal SDD authoring
 
-For SPEC work the lead does **not** write proposal/spec/design/tasks itself. It delegates to `spec-manager`.
+For FORMAL_SDD work the lead does **not** write proposal/spec/design/tasks itself. It delegates to `spec-manager`.
 
 ```bash
 aeh spec prepare READABILITY-001 --title "Improve readability"
@@ -288,7 +297,7 @@ aeh issue implement 142
 aeh run --issue 142
 ```
 
-An issue is frozen as input, converted into QUICK/SPEC artifacts, sealed, and executed through the same worker/validation/review lifecycle. `ISSUE_DRIFT` prevents silent reinterpretation after intake. Interactive leads use a detached `operation start run` once the derived task is ready.
+An issue is frozen as input, converted into routed contract/formal SDD artifacts, sealed, and executed through the same worker/validation/review lifecycle. `ISSUE_DRIFT` prevents silent reinterpretation after intake. Interactive leads use a detached `operation start run` once the derived task is ready.
 
 ## AUDIT
 
@@ -317,11 +326,11 @@ AUDIT is read-only but Harness-governed:
 
 Reports live under `.harness/audits/`. A later `fix these` request becomes a new CHANGE using the AuditReport as evidence.
 
-## QUICK and SPEC
+## Implementation routes and formal SDD
 
-QUICK is only for concrete bounded low-risk file scope. Wildcard/repository-wide, security, architecture, auth, schema/migration, public API, dependency, cross-module or medium/high-risk changes escalate to SPEC.
+`DIRECT` is for concrete bounded implementation. `DELEGATED` is for coordinated specialist work. `FORMAL_SDD` is required when durable requirements/design/traceability must be authored before implementation. `NO_AGENT` answers or records work without an implementation participant. Assurance is independent of route.
 
-For SPEC, OpenSpec authors the intent and AEH compiles/seals the executable contract. AEH then executes the planner-produced multi-worker DAG with isolated worktrees, deterministic wave barriers, requirement evidence, validators, review convergence and final lead acceptance.
+For `FORMAL_SDD`, OpenSpec authors the intent and AEH compiles/seals the executable contract. AEH then executes the planner-produced multi-worker DAG with isolated worktrees, deterministic wave barriers, requirement evidence, validators, review convergence and final lead acceptance.
 
 ## Quality authority
 

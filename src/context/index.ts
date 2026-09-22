@@ -13,3 +13,4 @@ export * from "./repository/index.js";
 export * from "./retrieval/index.js";
 export * from "./telemetry.js";
 export * from "./types.js";
+export * from "./runtimeV2.js";

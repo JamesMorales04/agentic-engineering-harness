@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { HarnessProjectConfig, TaskContract, ValidationCheck } from "../core/types.js";
-import { commandExists, runProcess } from "../utils/process.js";
+import { commandExists, runShell } from "../utils/process.js";
 import type { PolicyEvidence } from "./evidence.js";
 
 export interface OpaExecutionIdentity {
@@ -17,7 +17,7 @@ export interface OpaExecutionIdentity {
 }
 
 export function buildOpaInput(contract: TaskContract, changedFiles: string[], frozenChangedFiles: string[], evidence: PolicyEvidence, executionIdentity: OpaExecutionIdentity = {}): Record<string, unknown> {
-  const identity = { operationId: executionIdentity.operationId, operationKind: executionIdentity.operationKind, logicalAgent: executionIdentity.logicalAgent ?? contract.routing?.agent, role: executionIdentity.role, profile: executionIdentity.profile ?? contract.routing?.profile, domains: executionIdentity.domains ?? contract.routing?.domains ?? [], risk: executionIdentity.risk ?? contract.routing?.risk ?? "low", runtime: executionIdentity.runtime, modelAlias: executionIdentity.modelAlias, permissions: executionIdentity.permissions ?? {} };
+  const identity = { operationId: executionIdentity.operationId, operationKind: executionIdentity.operationKind, logicalAgent: executionIdentity.logicalAgent, role: executionIdentity.role, profile: executionIdentity.profile ?? contract.routing?.profile, domains: executionIdentity.domains ?? contract.routing?.domains ?? [], risk: executionIdentity.risk ?? contract.routing?.risk ?? "low", runtime: executionIdentity.runtime, modelAlias: executionIdentity.modelAlias, permissions: executionIdentity.permissions ?? {} };
   return { operationId: identity.operationId, operationKind: identity.operationKind, identity, changedFiles, frozenChangedFiles, taskContract: contract, deterministicEvidence: evidence, ...evidence };
 }
 
@@ -29,7 +29,7 @@ export async function runOpaPolicies(root: string, config: HarnessProjectConfig,
   const args = policyDirs.map((dir) => `--data ${quote(path.resolve(policyRoot, dir))}`).join(" ");
   const input = buildOpaInput(contract, changedFiles, frozenChangedFiles, evidence, executionIdentity);
   const command = `printf %s ${quote(JSON.stringify(input))} | opa eval --format=json ${args} --stdin-input data`;
-  const result = await runProcess(command, { cwd: root, timeoutMs: 30_000 });
+  const result = await runShell(command, { cwd: root, timeoutMs: 30_000 });
   if (result.exitCode !== 0) return { id: "policy.opa", category: "policy", status: "FAIL", message: "OPA policy evaluation failed to execute.", details: { stderr: result.stderr, stdout: result.stdout } };
   try {
     const parsed = JSON.parse(result.stdout) as { result?: Array<{ expressions?: Array<{ value?: unknown }> }> };

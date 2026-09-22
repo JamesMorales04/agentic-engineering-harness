@@ -1,19 +1,22 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { AgentExecutionSelection, ResolvedAgentTopology, ResolvedRoute } from "./types.js";
-import { executionSelectionForAgent } from "./routing.js";
+import type { AgentExecutionSelection, ResolvedRoute } from "./types.js";
 import { validateExecutionCapabilities } from "./permissions.js";
 import { dedupeFindings, type DedupedFindings } from "./findings.js";
 import { orchestratorOutputSchema, plannerOutputSchema, reviewerOutputSchema, type NormalizedFinding, type PlannerOutput } from "./outputContracts.js";
 import { extractMarkedJson } from "./structuredOutput.js";
 import { analyzeQualityState, evaluateFinalQualityGate, formatDebtScore, type QualityState } from "./qualityConvergence.js";
-import { escalationStages, nextEscalationIndex, resumeAfterReplan, selectionForStage } from "./escalation.js";
+import { escalationStages, nextEscalationIndex, resumeAfterReplan } from "./escalation.js";
 import { detectHumanException, detectRuntimeExternalException, diagnosisToException, exceptionDiagnosisSchema, type ExceptionDecision } from "./exceptionDetection.js";
-import { createWorktreeCheckpoint, rollbackWorktreeCheckpoint } from "./gitCheckpoint.js";
 import type { HarnessProjectConfig, ReviewEscalationStage, TaskContract, ValidationCheck, ValidationReport, WorkerSession } from "../core/types.js";
 import { executeAgentPrompt } from "../workers/agentPrompt.js";
+import { executeRepairerCandidateMutation, rejectRepairCandidateChangeSet } from "../candidates/repair.js";
+import { executeIsolatedCandidateMutation } from "../candidates/direct.js";
+import { assertWorkspaceMatchesCandidate, type CandidateWorkspaceIdentityEvidenceV1 } from "../candidates/identity.js";
+import type { ExecutionCatalogV1 } from "../architecture/executionCatalog.js";
 import { recordEvent } from "../telemetry/events.js";
 import { currentOperationContext, loadOperation, resolveOperationStateRoot } from "../operations/state.js";
+import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import { consolidateWithOperationSupervisor, maybeRotateOperationSupervisor } from "../operations/supervisor.js";
 
 export type ReviewFinalState = "ACCEPTED" | "SPEC_CONTRADICTION" | "REQUIRES_PRODUCT_DECISION" | "BLOCKED_EXTERNAL" | "SYSTEM_FAILURE";
@@ -31,8 +34,8 @@ export interface ReviewLifecycleResult {
   exception?: ExceptionDecision;
 }
 
-export async function runReviewLifecycle(input: { root: string; stateRoot?: string; config: HarnessProjectConfig; contract: TaskContract; topology: ResolvedAgentTopology; route: ResolvedRoute; implementationSelection: AgentExecutionSelection; report: ValidationReport; revalidate: () => Promise<ValidationReport>; }): Promise<ReviewLifecycleResult> {
-  const { root, config, contract, topology, route, implementationSelection } = input;
+export async function runReviewLifecycle(input: { root: string; stateRoot?: string; config: HarnessProjectConfig; contract: TaskContract; route: ResolvedRoute; reviewerSelections: Readonly<Record<string, AgentExecutionSelection>>; leadSelection?: AgentExecutionSelection; repairerSelection?: AgentExecutionSelection; executionCatalog?: ExecutionCatalogV1; prepareRepairWorkspace?: (isolatedRoot: string) => Promise<void>; stageSelections?: Readonly<Record<string, AgentExecutionSelection | undefined>>; supervisorSelection?: AgentExecutionSelection; implementationSelection: AgentExecutionSelection; report: ValidationReport; revalidate: () => Promise<ValidationReport>; }): Promise<ReviewLifecycleResult> {
+  const { root, config, contract, route, reviewerSelections, leadSelection, repairerSelection, executionCatalog, prepareRepairWorkspace, stageSelections, supervisorSelection, implementationSelection } = input;
   const stateRoot = input.stateRoot ?? root;
   let report = input.report;
   const sessions: WorkerSession[] = [];
@@ -41,15 +44,18 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
   const policy = config.workflow?.reviews;
   if (policy?.enabled === false) return emptyResult(report, checks, sessions);
 
-  const isQuick = contract.mode === "quick";
-  const runReviewers = !isQuick || policy?.reviewQuick === true;
+  if (!report.candidate) throw new Error("CANDIDATE_BINDING_REQUIRED: review requires a candidate-bound validation report.");
+  checks.push(candidateIdentityCheck("candidate.workspace-identity.review-entry", await assertCurrentReviewCandidate(root, report.candidate)));
+
+  const isDirect = contract.routing?.route === "DIRECT";
+  const runReviewers = !isDirect || policy?.directReview === true;
   const reviewerNames = runReviewers ? route.reviewers : [];
   const stages = escalationStages(config);
   let stageIndex = 0;
   let remediationRounds = 0;
   let replanContext: PlannerOutput | undefined;
-  let deduped = reviewerNames.length ? await runReviewRound(root, stateRoot, config, contract, topology, reviewerNames, report, sessions, 0) : emptyFindings();
-  let state = analyzeQualityState(deduped.findings, qualityHistory, config);
+  let deduped = reviewerNames.length ? await runReviewRound(root, stateRoot, config, contract, reviewerSelections, implementationSelection, supervisorSelection, reviewerNames, report, sessions, 0, checks, prepareRepairWorkspace) : emptyFindings();
+  let state = analyzeQualityState(deduped.findings, qualityHistory, config, report.candidate?.identityDigest);
   qualityHistory.push(state);
   await persistQualityState(stateRoot, config, contract.task.id, state);
 
@@ -59,7 +65,7 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
 
     if (state.gate.pass) {
       checks.push({ id: "agent.final-quality-gate", category: "agent-review", status: "PASS", message: `Final Quality Gate passed: critical=${state.counts.critical}, high=${state.counts.high}, medium=${state.counts.medium}, low=${state.counts.low}, note=${state.counts.note}, DebtScore=${formatDebtScore(state.debtScore)}.`, details: { state } });
-      const shouldLeadAccept = policy?.leadAcceptance !== false && (!isQuick || policy?.leadAcceptanceQuick === true);
+      const shouldLeadAccept = policy?.leadAcceptance !== false && (!isDirect || policy?.leadAcceptanceDirect === true);
       if (!shouldLeadAccept) return successResult(remediationRounds, report, deduped, checks, sessions, qualityHistory);
 
       if (currentOperationContext().id) {
@@ -77,7 +83,7 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
       }
 
       // Synchronous/non-controller compatibility path.
-      const leadResult = await runLeadAcceptance(root, config, contract, topology, report, deduped, sessions);
+      const leadResult = await runLeadAcceptance(root, config, contract, leadSelection, report, deduped, sessions);
       if (leadResult.accepted) {
         checks.push({ id: "agent.lead-acceptance", category: "agent-review", status: "PASS", message: `Lead ${leadResult.agent} accepted finalization.`, details: { summary: leadResult.summary } });
         return successResult(remediationRounds, report, deduped, checks, sessions, qualityHistory, true);
@@ -88,7 +94,7 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
         return { status: "FAIL", finalState: "SYSTEM_FAILURE", humanRequired: false, rounds: remediationRounds, report, findings: deduped, checks, sessions, qualityHistory, leadAccepted: false };
       }
       deduped = dedupeFindings(leadResult.unresolved.map((item, index) => leadFinding(index, item, implementationSelection.logicalAgent)));
-      state = analyzeQualityState(deduped.findings, qualityHistory, config);
+      state = analyzeQualityState(deduped.findings, qualityHistory, config, report.candidate?.identityDigest);
       qualityHistory.push(state);
       await persistQualityState(stateRoot, config, contract.task.id, state);
       stageIndex = Math.max(stageIndex, Math.min(2, Math.max(0, stages.length - 1)));
@@ -100,7 +106,7 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
     const stage = stages[stageIndex] ?? { name: "normal", action: "remediate" };
 
     if (stage.action === "diagnose") {
-      const diagnosis = await runDiagnosis(root, config, contract, topology, implementationSelection, stage, state, deduped, sessions);
+      const diagnosis = await runDiagnosis(root, config, contract, stageSelections?.[stage.name] ?? implementationSelection, state, deduped, sessions);
       if (diagnosis?.humanRequired) return humanExceptionResult(diagnosis, remediationRounds, report, deduped, checks, sessions, qualityHistory);
       await recordEvent(stateRoot, config, "harness.quality.diagnosis", { taskId: contract.task.id, round: remediationRounds, stage: stage.name, classification: diagnosis?.type ?? "IMPLEMENTATION_DEFECT" });
       stageIndex = Math.min(stageIndex + 1, Math.max(0, stages.length - 1));
@@ -108,58 +114,97 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
     }
 
     if (stage.action === "replan") {
-      const replanned = await runAutonomousReplan(root, config, contract, topology, implementationSelection, stage, state, deduped, sessions);
+      const replanned = await runAutonomousReplan(root, config, contract, stageSelections?.[stage.name] ?? implementationSelection, state, deduped, sessions);
       if (replanned.exception?.humanRequired) return humanExceptionResult(replanned.exception, remediationRounds, report, deduped, checks, sessions, qualityHistory);
       if (replanned.plan) {
         replanContext = replanned.plan;
         await persistReplan(stateRoot, config, contract.task.id, remediationRounds, replanned.plan);
       }
-      await recordEvent(stateRoot, config, "harness.quality.replan", { taskId: contract.task.id, round: remediationRounds, stage: stage.name, tasks: replanned.plan?.tasks.length ?? 0 });
+      await recordEvent(stateRoot, config, "harness.quality.replan", { taskId: contract.task.id, round: remediationRounds, stage: stage.name, workUnits: replanned.plan?.workUnits.length ?? 0 });
       stageIndex = resumeAfterReplan(config);
       continue;
     }
 
-    const remediationSelection = selectionForStage(topology, implementationSelection, stage);
+    const remediationSelection = repairerSelection;
+    if (!remediationSelection || !executionCatalog) throw new Error("REPAIR_AUTHORITY_REQUIRED: review remediation requires a frozen Repairer selection and compiled role binding.");
     const transport = remediationSelection.transport === "inherit" ? (config.orchestration?.provider ?? "none") : remediationSelection.transport;
     const capabilityIssues = validateExecutionCapabilities(remediationSelection, transport);
-    if (capabilityIssues.length) throw new Error(`Quality remediation agent ${remediationSelection.logicalAgent} is not executable: ${capabilityIssues.join("; ")}`);
+    if (remediationSelection.role !== "Repairer") throw new Error("REPAIR_AUTHORITY_REQUIRED: quality remediation may only be performed by the canonical Repairer role.");
+    if (capabilityIssues.length) throw new Error(`Quality Repairer ${remediationSelection.logicalAgent} is not executable: ${capabilityIssues.join("; ")}`);
 
-    const checkpoint = await createWorktreeCheckpoint(root);
     remediationRounds += 1;
-    const remediation = await executeAgentPrompt(root, config, contract, remediationSelection, buildRemediationPrompt(contract, stage, state, deduped.findings, replanContext), { phase: "remediation", operationKind: currentOperationContext().kind });
+    const operationId = currentOperationContext().id;
+    if (!operationId) throw new Error("REPAIR_AUTHORITY_REQUIRED: quality remediation requires a managed operation.");
+    const repairPrompt = `${buildRemediationPrompt(contract, stage, state, deduped.findings, replanContext)}\n\nYou are the canonical Repairer. Change implementation only within the frozen task scope. Do not change requirements, acceptance, validators, policy, or review outcomes. You cannot approve or accept the candidate.`;
+    const mutation = await executeRepairerCandidateMutation({
+      root,
+      stateRoot,
+      operationId,
+      taskId: contract.task.id,
+      workUnitId: `quality-repair:${contract.task.id}:${remediationRounds}`,
+      phase: "review-remediation",
+      config,
+      contract,
+      selection: remediationSelection,
+      executionCatalog,
+      allowedScope: contract.scope?.allowed ?? ["**"],
+      forbiddenScope: [...(contract.scope?.forbidden ?? []), ...(contract.scope?.frozen ?? []), ...(config.validation?.frozenPaths ?? [])],
+      prompt: repairPrompt,
+      prepareWorkspace: prepareRepairWorkspace,
+      execute: (isolatedRoot, participantId) => executeAgentPrompt(isolatedRoot, config, contract, remediationSelection, repairPrompt, { phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true })
+    });
+    const remediation = mutation.session;
     sessions.push(remediation);
+    const rejectMutation = async (reason: string): Promise<void> => {
+      if (mutation.changeSet) {
+        await rejectRepairCandidateChangeSet({
+          root,
+          stateRoot,
+          operationId,
+          taskId: contract.task.id,
+          workUnitId: `quality-repair:${contract.task.id}:${remediationRounds}:reject`,
+          config,
+          contract,
+          rejectedChangeSet: mutation.changeSet,
+          allowedScope: contract.scope?.allowed ?? ["**"],
+          forbiddenScope: [...(contract.scope?.forbidden ?? []), ...(contract.scope?.frozen ?? []), ...(config.validation?.frozenPaths ?? [])],
+          prepareWorkspace: prepareRepairWorkspace
+        });
+      }
+      report = await input.revalidate();
+      await recordEvent(stateRoot, config, "harness.quality.candidate-rejected", { taskId: contract.task.id, round: remediationRounds, reason, candidateRevision: report.candidate?.revision, candidateDigest: report.candidate?.sourceDigest });
+    };
     const runtimeException = detectRuntimeExternalException(remediation);
     if (runtimeException?.humanRequired) {
-      const restored = await rollbackWorktreeCheckpoint(root, checkpoint);
-      report = await input.revalidate();
-      await recordEvent(stateRoot, config, "harness.quality.rollback", { taskId: contract.task.id, round: remediationRounds, reason: "external-exception", stage: stage.name, restored });
+      await rejectMutation("external-exception");
       return humanExceptionResult(runtimeException, remediationRounds, report, deduped, checks, sessions, qualityHistory);
     }
     if (remediation.exitCode !== 0) {
-      const restored = await rollbackWorktreeCheckpoint(root, checkpoint);
-      await recordEvent(stateRoot, config, "harness.quality.rollback", { taskId: contract.task.id, round: remediationRounds, reason: "remediation-runtime-failure", stage: stage.name, restored });
+      await rejectMutation("repairer-runtime-failure");
       stageIndex = Math.min(stageIndex + 1, Math.max(0, stages.length - 1));
       continue;
     }
 
     const candidateReport = await input.revalidate();
+    const expectedCandidate = mutation.candidate?.identityDigest ?? report.candidate?.identityDigest;
+    const observedCandidate = candidateReport.candidate?.identityDigest;
+    if (expectedCandidate !== observedCandidate && (expectedCandidate !== undefined || observedCandidate !== undefined)) {
+      throw new Error(`V2_CANDIDATE_BINDING_REJECTED: Repairer candidate identity drifted during review remediation (expected ${expectedCandidate}, observed ${observedCandidate}).`);
+    }
     if (candidateReport.status === "FAIL") {
-      const restored = await rollbackWorktreeCheckpoint(root, checkpoint);
-      report = await input.revalidate();
-      await recordEvent(stateRoot, config, "harness.quality.rollback", { taskId: contract.task.id, round: remediationRounds, reason: "deterministic-regression", stage: stage.name, restored });
+      await rejectMutation("deterministic-regression");
       stageIndex = Math.min(stageIndex + 1, Math.max(0, stages.length - 1));
       continue;
     }
 
-    const candidateFindings = reviewerNames.length ? await runReviewRound(root, stateRoot, config, contract, topology, reviewerNames, candidateReport, sessions, qualityHistory.length) : emptyFindings();
-    const candidateState = analyzeQualityState(candidateFindings.findings, qualityHistory, config);
+    const candidateFindings = reviewerNames.length ? await runReviewRound(root, stateRoot, config, contract, reviewerSelections, implementationSelection, supervisorSelection, reviewerNames, candidateReport, sessions, qualityHistory.length, checks, prepareRepairWorkspace) : emptyFindings();
+    const candidateState = analyzeQualityState(candidateFindings.findings, qualityHistory, config, candidateReport.candidate?.identityDigest);
     await persistQualityState(stateRoot, config, contract.task.id, candidateState);
 
     if (candidateState.convergence === "REGRESSING") {
-      const restored = await rollbackWorktreeCheckpoint(root, checkpoint);
-      report = await input.revalidate();
-      await persistRejectedState(stateRoot, config, contract.task.id, candidateState, stage.name, restored);
-      await recordEvent(stateRoot, config, "harness.quality.rollback", { taskId: contract.task.id, round: remediationRounds, reason: "review-debt-regression", stage: stage.name, beforeDebtPoints: state.debtPoints, candidateDebtPoints: candidateState.debtPoints, restored });
+      await rejectMutation("review-debt-regression");
+      await persistRejectedState(stateRoot, config, contract.task.id, candidateState, stage.name, [report.candidate ? `candidate-r${report.candidate.revision}` : "candidate-unknown"]);
+      await recordEvent(stateRoot, config, "harness.quality.candidate-rejected", { taskId: contract.task.id, round: remediationRounds, reason: "review-debt-regression", stage: stage.name, beforeDebtPoints: state.debtPoints, candidateDebtPoints: candidateState.debtPoints, candidateRevision: report.candidate?.revision });
       stageIndex = Math.min(stageIndex + 1, Math.max(0, stages.length - 1));
       continue;
     }
@@ -172,8 +217,22 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
   }
 }
 
-async function runReviewRound(root: string, stateRoot: string, config: HarnessProjectConfig, contract: TaskContract, topology: ResolvedAgentTopology, reviewerNames: string[], report: ValidationReport, sessions: WorkerSession[], round: number): Promise<DedupedFindings> {
-  const outputs = await Promise.all(reviewerNames.map(async (name) => runReviewer(root, config, contract, topology, name, report)));
+async function runReviewRound(root: string, stateRoot: string, config: HarnessProjectConfig, contract: TaskContract, reviewerSelections: Readonly<Record<string, AgentExecutionSelection>>, implementationSelection: AgentExecutionSelection, supervisorSelection: AgentExecutionSelection | undefined, reviewerNames: string[], report: ValidationReport, sessions: WorkerSession[], round: number, checks: ValidationCheck[], prepareReviewWorkspace?: (isolatedRoot: string) => Promise<void>): Promise<DedupedFindings> {
+  if (!report.candidate) throw new Error("CANDIDATE_BINDING_REQUIRED: reviewer invocation requires a candidate-bound report.");
+  const outputs = await Promise.all(reviewerNames.map(async (name) => {
+    const selection = reviewerSelections[name];
+    if (!selection || selection.role !== "Reviewer") throw new Error(`REVIEW_AUTHORITY_REQUIRED: '${name}' is not a frozen canonical Reviewer selection.`);
+    if (selection.logicalAgent === implementationSelection.logicalAgent) throw new Error("REVIEW_INDEPENDENCE_REQUIRED: the Implementer cannot review its own candidate.");
+    if (selection.permissions.write === "allow") throw new Error(`REVIEW_AUTHORITY_REQUIRED: Reviewer '${name}' cannot receive source-write authority.`);
+    const transport = selection.transport === "inherit" ? (config.orchestration?.provider ?? "none") : selection.transport;
+    const capabilityIssues = validateExecutionCapabilities(selection, transport);
+    if (capabilityIssues.length) throw new Error(`REVIEW_EXECUTION_INVALID: Reviewer '${name}' is not executable: ${capabilityIssues.join("; ")}`);
+    const identityEvidence = await assertCurrentReviewCandidate(root, report.candidate!);
+    checks.push(candidateIdentityCheck(`candidate.workspace-identity.reviewer-${round}-${name}`, identityEvidence));
+    return runReviewer(root, config, contract, selection, name, report, prepareReviewWorkspace);
+  }));
+  const afterReviewerIdentity = await assertCurrentReviewCandidate(root, report.candidate);
+  checks.push(candidateIdentityCheck(`candidate.workspace-identity.after-review-${round}`, afterReviewerIdentity));
   const rawFindings: NormalizedFinding[] = [];
   for (const output of outputs) {
     sessions.push(output.session);
@@ -185,7 +244,7 @@ async function runReviewRound(root: string, stateRoot: string, config: HarnessPr
   if (operationId) {
     const operation = await loadOperation(resolveOperationStateRoot(root), operationId);
     const sourceArtifacts = outputs.map((output) => output.session.id ? operation.participants[output.session.id]?.resultArtifact : undefined).filter((value): value is string => Boolean(value));
-    const consolidation = await consolidateWithOperationSupervisor(root, config, contract, topology, {
+    const consolidation = await consolidateWithOperationSupervisor(root, config, contract, supervisorSelection, {
       key: `review-round-${round}`,
       purpose: `quality review round ${round}`,
       findings: rawFindings,
@@ -194,17 +253,42 @@ async function runReviewRound(root: string, stateRoot: string, config: HarnessPr
     });
     sessions.push(consolidation.session);
     deduped = dedupeFindings(consolidation.output.consolidatedFindings);
-    await maybeRotateOperationSupervisor(root, config, contract, topology);
+    await maybeRotateOperationSupervisor(root, config, contract, supervisorSelection);
   } else {
     deduped = dedupeFindings(rawFindings);
   }
+  const afterConsolidationIdentity = await assertCurrentReviewCandidate(root, report.candidate);
+  checks.push(candidateIdentityCheck(`candidate.workspace-identity.after-review-consolidation-${round}`, afterConsolidationIdentity));
   await persistFindings(stateRoot, config, contract.task.id, round, deduped);
   return deduped;
 }
 
-async function runReviewer(root: string, config: HarnessProjectConfig, contract: TaskContract, topology: ResolvedAgentTopology, name: string, report: ValidationReport): Promise<{ reviewer: string; session: WorkerSession; findings: NormalizedFinding[] }> {
-  const selection = executionSelectionForAgent(topology, name);
-  const session = await executeAgentPrompt(root, config, contract, selection, buildReviewerPrompt(contract, name, report), { outputContract: "reviewer", phase: "review", operationKind: currentOperationContext().kind });
+async function assertCurrentReviewCandidate(root: string, candidate: CandidateRevisionV1): Promise<CandidateWorkspaceIdentityEvidenceV1> {
+  const operationId = currentOperationContext().id;
+  if (!operationId) return assertWorkspaceMatchesCandidate(root, candidate);
+  const operation = await loadOperation(resolveOperationStateRoot(root), operationId);
+  return assertWorkspaceMatchesCandidate(root, candidate, operation.candidateRevision ?? null);
+}
+
+async function runReviewer(root: string, config: HarnessProjectConfig, contract: TaskContract, selection: AgentExecutionSelection | undefined, name: string, report: ValidationReport, prepareReviewWorkspace?: (isolatedRoot: string) => Promise<void>): Promise<{ reviewer: string; session: WorkerSession; findings: NormalizedFinding[] }> {
+  if (!selection) throw new Error(`REVIEW_EXECUTION_INVALID: no frozen selection exists for reviewer '${name}'.`);
+  const candidate = report.candidate;
+  if (!candidate) throw new Error("CANDIDATE_BINDING_REQUIRED: reviewer invocation requires a candidate-bound report.");
+  const isolated = await executeIsolatedCandidateMutation({
+    root,
+    operationId: candidate.operationId,
+    taskId: contract.task.id,
+    workUnitId: `review:${contract.task.id}:${name}:${candidate.revision}`,
+    candidate,
+    config,
+    contract,
+    prepareWorkspace: prepareReviewWorkspace,
+    execute: (isolatedRoot) => executeAgentPrompt(isolatedRoot, config, contract, selection, buildReviewerPrompt(contract, name, report), { outputContract: "reviewer", phase: "review", operationKind: currentOperationContext().kind, requireExecutionAuthority: true })
+  });
+  const session = isolated.session;
+  if (isolated.changeSet) {
+    return { reviewer: name, session, findings: [syntheticFinding(name, "Reviewer attempted to modify its isolated candidate snapshot; the output was rejected.")] };
+  }
   if (session.exitCode !== 0) return { reviewer: name, session, findings: [syntheticFinding(name, `Reviewer runtime exited with code ${session.exitCode}.`)] };
   try {
     const output = reviewerOutputSchema.parse(extractMarkedJson(session.stdout, session.stderr));
@@ -215,9 +299,18 @@ async function runReviewer(root: string, config: HarnessProjectConfig, contract:
   }
 }
 
-async function runDiagnosis(root: string, config: HarnessProjectConfig, contract: TaskContract, topology: ResolvedAgentTopology, fallback: AgentExecutionSelection, stage: ReviewEscalationStage, state: QualityState, findings: DedupedFindings, sessions: WorkerSession[]): Promise<ExceptionDecision | undefined> {
-  const selection = selectionForStage(topology, fallback, stage);
-  const session = await executeAgentPrompt(root, config, contract, selection, buildDiagnosisPrompt(contract, state, findings), { phase: "diagnosis", operationKind: currentOperationContext().kind });
+function candidateIdentityCheck(id: string, evidence: CandidateWorkspaceIdentityEvidenceV1): ValidationCheck {
+  return {
+    id,
+    category: "candidate-identity",
+    status: "PASS",
+    message: `Workspace digest matches CandidateRevision ${evidence.candidateId} r${evidence.candidateRevision}.`,
+    details: { ...evidence }
+  };
+}
+
+async function runDiagnosis(root: string, config: HarnessProjectConfig, contract: TaskContract, selection: AgentExecutionSelection, state: QualityState, findings: DedupedFindings, sessions: WorkerSession[]): Promise<ExceptionDecision | undefined> {
+  const session = await executeAgentPrompt(root, config, contract, selection, buildDiagnosisPrompt(contract, state, findings), { phase: "diagnosis", operationKind: currentOperationContext().kind, requireExecutionAuthority: true });
   sessions.push(session);
   const external = detectRuntimeExternalException(session);
   if (external) return external;
@@ -226,9 +319,8 @@ async function runDiagnosis(root: string, config: HarnessProjectConfig, contract
   catch { return undefined; }
 }
 
-async function runAutonomousReplan(root: string, config: HarnessProjectConfig, contract: TaskContract, topology: ResolvedAgentTopology, fallback: AgentExecutionSelection, stage: ReviewEscalationStage, state: QualityState, findings: DedupedFindings, sessions: WorkerSession[]): Promise<{ plan?: PlannerOutput; exception?: ExceptionDecision }> {
-  const selection = selectionForStage(topology, fallback, stage);
-  const session = await executeAgentPrompt(root, config, contract, selection, buildReplanPrompt(contract, state, findings), { outputContract: "planner", phase: "replanning", operationKind: currentOperationContext().kind });
+async function runAutonomousReplan(root: string, config: HarnessProjectConfig, contract: TaskContract, selection: AgentExecutionSelection, state: QualityState, findings: DedupedFindings, sessions: WorkerSession[]): Promise<{ plan?: PlannerOutput; exception?: ExceptionDecision }> {
+  const session = await executeAgentPrompt(root, config, contract, selection, buildReplanPrompt(contract, state, findings), { outputContract: "planner", phase: "replanning", operationKind: currentOperationContext().kind, requireExecutionAuthority: true });
   sessions.push(session);
   const external = detectRuntimeExternalException(session);
   if (external) return { exception: external };
@@ -237,25 +329,23 @@ async function runAutonomousReplan(root: string, config: HarnessProjectConfig, c
   catch { return {}; }
 }
 
-async function runLeadAcceptance(root: string, config: HarnessProjectConfig, contract: TaskContract, topology: ResolvedAgentTopology, report: ValidationReport, findings: DedupedFindings, sessions: WorkerSession[]): Promise<{ accepted: boolean; agent: string; summary?: string; unresolved: string[]; contractFailure?: string; externalException?: ExceptionDecision }> {
-  const lead = Object.values(topology.agents).find((agent) => agent.role === "orchestrator" && !agent.disabled);
-  if (!lead) return { accepted: false, agent: "<missing>", unresolved: [], contractFailure: "Lead acceptance is enabled but no orchestrator agent is available." };
-  const selection = executionSelectionForAgent(topology, lead.name);
-  const session = await executeAgentPrompt(root, config, contract, selection, buildLeadPrompt(contract, report, findings));
+async function runLeadAcceptance(root: string, config: HarnessProjectConfig, contract: TaskContract, selection: AgentExecutionSelection | undefined, report: ValidationReport, findings: DedupedFindings, sessions: WorkerSession[]): Promise<{ accepted: boolean; agent: string; summary?: string; unresolved: string[]; contractFailure?: string; externalException?: ExceptionDecision }> {
+  if (!selection) return { accepted: false, agent: "<missing>", unresolved: [], contractFailure: "Lead acceptance is enabled but no frozen Lead/Director selection is available." };
+  const session = await executeAgentPrompt(root, config, contract, selection, buildLeadPrompt(contract, report, findings), { phase: "lead-acceptance", requireExecutionAuthority: true });
   sessions.push(session);
   const externalException = detectRuntimeExternalException(session);
-  if (externalException) return { accepted: false, agent: lead.name, unresolved: [], externalException };
+  if (externalException) return { accepted: false, agent: selection.logicalAgent, unresolved: [], externalException };
   try {
     const parsed = orchestratorOutputSchema.parse(extractMarkedJson(session.stdout, session.stderr));
     const accepted = session.exitCode === 0 && parsed.finalizationSafe === true && parsed.unresolved.length === 0;
-    return { accepted, agent: lead.name, summary: parsed.summary, unresolved: parsed.unresolved.length ? parsed.unresolved : accepted ? [] : [parsed.summary || "Lead did not declare finalization safe."] };
+    return { accepted, agent: selection.logicalAgent, summary: parsed.summary, unresolved: parsed.unresolved.length ? parsed.unresolved : accepted ? [] : [parsed.summary || "Lead did not declare finalization safe."] };
   } catch (error) {
-    return { accepted: false, agent: lead.name, unresolved: [], contractFailure: `Lead output contract was invalid: ${String(error)}` };
+    return { accepted: false, agent: selection.logicalAgent, unresolved: [], contractFailure: `Lead output contract was invalid: ${String(error)}` };
   }
 }
 
 function buildReviewerPrompt(contract: TaskContract, reviewer: string, report: ValidationReport): string {
-  return `You are reviewer ${reviewer} for ${contract.task.id}. Inspect the actual git diff from ${contract.git?.baseRef ?? "main"}, relevant source/tests, and the sealed task contract. Do not modify files. Deterministic validation currently reports ${report.status}. Return {"verdict":"PASS|FAIL|PASS_WITH_WARNINGS","findings":[{"id":"...","severity":"critical|high|medium|low|note","category":"...","location":{"file":"...","startLine":1,"endLine":1},"evidence":"...","impact":"...","recommendedFix":"...","suggestedAgent":"...","exceptionType":"IMPLEMENTATION_DEFECT|SPEC_CONTRADICTION|REQUIRES_PRODUCT_DECISION|BLOCKED_EXTERNAL|SYSTEM_FAILURE (optional)"}],"finalizationSafety":"SAFE|BLOCKED|RISK_KNOWN","followUp":[]}. Use exceptionType only when the issue cannot be resolved from the sealed requirements/repository without an external human decision or resource. Your final output MUST contain exactly one line beginning AEH_RESULT_JSON= followed by the JSON object.`;
+  return `You are reviewer ${reviewer} for ${contract.task.id}. Inspect the actual git diff from ${contract.git?.baseRef ?? "main"}, relevant source/tests, and the sealed task contract. Do not modify files. Deterministic validation currently reports ${report.status}. Return findings with requiredCompetencies and reviewDimensions; never select a concrete agent or reviewer. Use exceptionType only when the issue cannot be resolved from the sealed requirements/repository without an external human decision or resource. Your final output MUST contain exactly one line beginning AEH_RESULT_JSON= followed by the JSON object.`;
 }
 function buildRemediationPrompt(contract: TaskContract, stage: ReviewEscalationStage, state: QualityState, findings: NormalizedFinding[], replan?: PlannerOutput): string {
   return `Autonomously remediate review debt for ${contract.task.id}. Stage=${stage.name}. Current DebtScore=${formatDebtScore(state.debtScore)}; final gate requires critical=0, high=0, medium=0, low<=3 and DebtScore<=3. Three notes equal one low. Do not change sealed contracts/specs/acceptance. Critical/high/medium findings are mandatory. Resolve low/note findings as needed to reach the final debt budget without broadening scope or creating regressions. ${replan ? `A stronger planner produced this advisory remediation plan (it does not override the sealed contract):\n${JSON.stringify(replan, null, 2)}\n` : ""}Findings:\n${JSON.stringify(findings, null, 2)}\nMake the smallest coherent changes and run focused checks. Do not ask the user unless a sealed requirement is contradictory, a product decision is genuinely missing, or an external credential/permission is required.`;
@@ -264,17 +354,17 @@ function buildDiagnosisPrompt(contract: TaskContract, state: QualityState, findi
   return `Diagnose why quality remediation for ${contract.task.id} is not converging. Current convergence=${state.convergence}, DebtScore=${formatDebtScore(state.debtScore)}. Inspect the sealed contract/spec, actual diff, tests and findings. Classify ONLY as IMPLEMENTATION_DEFECT, SPEC_CONTRADICTION, REQUIRES_PRODUCT_DECISION, BLOCKED_EXTERNAL, or SYSTEM_FAILURE. Prefer IMPLEMENTATION_DEFECT when the repository/spec already determines the answer. Human intervention is justified only for true contradictions, missing product decisions, or unavailable external credentials/permissions. Return {"classification":"...","rationale":"...","recommendedAction":"..."}. Final line: AEH_RESULT_JSON=<json>. Findings=${JSON.stringify(findings.findings)}`;
 }
 function buildReplanPrompt(contract: TaskContract, state: QualityState, findings: DedupedFindings): string {
-  return `Create a new implementation strategy for ${contract.task.id} because remediation is ${state.convergence}. The sealed TaskContract/spec is immutable and authoritative; replan implementation only. Current DebtScore=${formatDebtScore(state.debtScore)}. Return the normal planner output contract with tasks[{id,summary,agent,scope,dependencies,acceptance,risk}], affectedAreas, requiredReviewers, validationGates, fallbackRouting and outOfScopeImprovements. Final line: AEH_RESULT_JSON=<json>. Findings=${JSON.stringify(findings.findings)}`;
+  return `Create a new implementation WorkGraph for ${contract.task.id} because remediation is ${state.convergence}. The sealed TaskContract/spec is immutable and authoritative; replan implementation only. Current DebtScore=${formatDebtScore(state.debtScore)}. Return workUnits[{id,objective,scope,dependencies,requirementRefs,acceptanceRefs,competencies,riskTags,changeKinds,risk}], reviewDimensions, typed validationRequirements and outOfScopeImprovements. Never select a concrete agent, reviewer, validator, tool or command. Final line: AEH_RESULT_JSON=<json>. Findings=${JSON.stringify(findings.findings)}`;
 }
 function buildLeadPrompt(contract: TaskContract, report: ValidationReport, findings: DedupedFindings): string {
-  return `You are the lead engineer performing final semantic acceptance for ${contract.task.id}. The deterministic report and Final Quality Gate have passed. Inspect the actual final diff, sealed requirements/QuickContract and reviewer evidence. Do not modify files. Deterministic status=${report.status}. Remaining findings=${JSON.stringify(findings.findings)}. Return {"summary":"...","delegatedAgents":[],"validationStatus":"${report.status}","unresolved":[],"finalizationSafe":true|false}. If something is unresolved, state it concretely; the Harness will attempt autonomous replanning/remediation rather than immediately asking the user. Final line: AEH_RESULT_JSON=<json>.`;
+  return `You are the lead engineer performing final semantic acceptance for ${contract.task.id}. The deterministic report and Final Quality Gate have passed. Inspect the actual final diff, sealed requirements and reviewer evidence. Do not modify files. Deterministic status=${report.status}. Remaining findings=${JSON.stringify(findings.findings)}. Return {"summary":"...","delegatedAgents":[],"validationStatus":"${report.status}","unresolved":[],"finalizationSafe":true|false}. If something is unresolved, state it concretely; the Harness will attempt autonomous replanning/remediation rather than immediately asking the user. Final line: AEH_RESULT_JSON=<json>.`;
 }
 
 function syntheticFinding(agent: string, evidence: string): NormalizedFinding {
-  return { id: `REVIEW-${agent}-${Date.now()}`, severity: "critical", category: "review-contract", location: { file: "<review-output>" }, evidence, impact: "The review cannot be trusted as valid evidence.", recommendedFix: "Repair or rerun the reviewer output contract.", suggestedAgent: agent, exceptionType: "SYSTEM_FAILURE" };
+  return { id: `REVIEW-${agent}-${Date.now()}`, severity: "critical", category: "review-contract", location: { file: "<review-output>" }, evidence, impact: "The review cannot be trusted as valid evidence.", recommendedFix: "Repair or rerun the reviewer output contract.", requiredCompetencies: ["review-contract"], reviewDimensions: ["evidence-integrity"], exceptionType: "SYSTEM_FAILURE" };
 }
 function leadFinding(index: number, text: string, agent: string): NormalizedFinding {
-  return { id: `LEAD-${index + 1}`, severity: "medium", category: "lead-unresolved", location: { file: "<lead-acceptance>" }, evidence: text, impact: "Lead semantic acceptance is not yet safe.", recommendedFix: "Replan and remediate the unresolved semantic concern without changing sealed requirements.", suggestedAgent: agent, exceptionType: "IMPLEMENTATION_DEFECT" };
+  return { id: `LEAD-${index + 1}`, severity: "medium", category: "lead-unresolved", location: { file: "<lead-acceptance>" }, evidence: text, impact: "Lead semantic acceptance is not yet safe.", recommendedFix: "Replan and remediate the unresolved semantic concern without changing sealed requirements.", requiredCompetencies: ["semantic-acceptance"], reviewDimensions: ["requirements"], exceptionType: "IMPLEMENTATION_DEFECT" };
 }
 function emptyFindings(): DedupedFindings { return { inputCount: 0, outputCount: 0, findings: [], merges: [] }; }
 async function persistFindings(root: string, config: HarnessProjectConfig, taskId: string, round: number, findings: DedupedFindings): Promise<void> { const dir = path.resolve(root, config.agents?.findingsDir ?? ".harness/findings"); await fs.mkdir(dir, { recursive: true }); await fs.writeFile(path.join(dir, `${taskId}-round-${round}.json`), `${JSON.stringify(findings, null, 2)}\n`); }

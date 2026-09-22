@@ -1,23 +1,25 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { AgentExecutionSelection, ResolvedAgentTopology, ResolvedRoute } from "../agents/types.js";
+import type { AgentExecutionSelection, RecoveryMap, ResolvedRoute } from "../agents/types.js";
 import { auditAgentTopology } from "../agents/audit.js";
 import { loadResolvedAgentTopology } from "../agents/config.js";
-import { classifyFailure, formatRecoveryAction, resolveRecoveryStep } from "../agents/recovery.js";
-import { executionSelectionForAgent, selectExecutionForTask, selectFallbackExecution } from "../agents/routing.js";
+import { classifyFailureDecision, classifyFailureWithSemanticAssessment, formatRecoveryAction, resolveRecoveryStep } from "../agents/recovery.js";
+import { executionSelectionForAgent, selectExecutionForTask, selectAgentNames, selectionWithModelOverride } from "../agents/routing.js";
 import { validateExecutionCapabilities } from "../agents/permissions.js";
 import { runReviewLifecycle } from "../agents/reviewLifecycle.js";
 import type { SeverityCounts } from "../agents/qualityConvergence.js";
 import { executePlannerWaves, type PlannerWaveResult } from "../agents/waveExecutor.js";
+import { escalationStages, selectionForStage } from "../agents/escalation.js";
 import type { PlannerOutput } from "../agents/outputContracts.js";
 import type { HarnessProjectConfig, RunMetrics, TaskContract, ValidationCheck, ValidationReport, WorkerSession } from "./types.js";
 import { loadTaskContract } from "./config.js";
 import { validateSddChange } from "./sdd.js";
-import { validateQuickTaskContract } from "./quick.js";
 import { sealTask, verifyTaskSeal } from "./seal.js";
 import { verifyTask } from "./verify.js";
 import { createRepairPacket, writeRepairPacket } from "./repair.js";
 import { createWorkerExecutor } from "../workers/factory.js";
+import { executeAgentPrompt } from "../workers/agentPrompt.js";
+import { buildRepairPrompt } from "../workers/prompt.js";
 import { snapshotGraph } from "../validators/graphify.js";
 import { recordEvent } from "../telemetry/events.js";
 import { extractUsageMetrics } from "../metrics/usage.js";
@@ -29,10 +31,17 @@ import { createControlPlaneSnapshot, detectControlPlaneDrift, materializeControl
 import { resolveOrganizationPolicyBundles, withOrganizationPolicies } from "../policy/bundles.js";
 import { buildRequirementEvidenceGraph, evidenceValidationCheck, type RequirementEvidenceGraph } from "../evidence/graph.js";
 import { enforceSandboxPolicy } from "../security/sandbox.js";
-import { currentOperationContext, resolveOperationStateRoot, setOperationStage } from "../operations/state.js";
+import { bindOperationCandidate, currentOperationContext, loadOperation, resolveOperationStateRoot, setOperationStage } from "../operations/state.js";
 import { ensureOperationSupervisor, maybeRotateOperationSupervisor, settleDrainingSupervisorGenerations } from "../operations/supervisor.js";
 import { createMemoryProvider } from "../providers/memory.js";
 import { buildAcceptedOperationCandidates } from "../memory/candidates.js";
+import { compileExecutionCatalog, type ExecutionCatalogV1 } from "../architecture/executionCatalog.js";
+import { assembleCandidateChangeSet, type CandidateImpactAssessmentRuntimeV1 } from "../candidates/assembler.js";
+import { executeIsolatedCandidateMutation } from "../candidates/direct.js";
+import { executeRepairerCandidateMutation } from "../candidates/repair.js";
+import { bindAssembledCandidate } from "../candidates/binding.js";
+import { createSemanticAssessmentRuntimeV1, createSemanticRepositoryBindingV1, type SemanticAssessmentRuntimeV1 } from "../semantic/runtime.js";
+import { discoverProjectStackProfile, type ProjectStackProfileV1 } from "../participants/stack.js";
 
 export interface TaskRunResult {
   taskId: string;
@@ -41,15 +50,29 @@ export interface TaskRunResult {
   worker: WorkerSession;
   report: ValidationReport;
   metrics: RunMetrics;
-  routing?: { profile?: string; ruleIds: string[]; agent: string; runtime: string; model: string; nativeAgent?: string; reviewers: string[]; validators: string[]; };
-  planning?: { used: boolean; tasks: number; waves: number; distributed: boolean; graphUsed?: boolean; };
+  routing?: { profile?: string; ruleIds: string[]; agent: string; runtime: string; model: string; nativeAgent?: string; reviewers: string[]; implementationRoute?: string; assurance?: string; };
+  planning?: { used: boolean; workUnits: number; waves: number; distributed: boolean; graphUsed?: boolean; compilerDigest?: string; };
   controlPlane?: { sha256: string; gitCommit?: string; drifted: boolean; changed: string[]; missing: string[]; added: string[]; };
   evidence?: { sha256: string; complete: boolean; requirements: number; reasons: string[]; };
   review?: { status: "PASS" | "FAIL"; finalState: string; humanRequired: boolean; rounds: number; findings: number; debtScore: number; debtPoints: number; counts: SeverityCounts; convergence: string; leadAccepted?: boolean; reviewerSessions: number; };
   delivery?: DeliveryFinalizationResult;
 }
 
-export async function runTask(root: string, config: HarnessProjectConfig, contract: TaskContract, options?: { profile?: string; planning?: PlannerOutput }): Promise<TaskRunResult> {
+interface FrozenExecutionBoundaryV1 {
+  route?: ResolvedRoute;
+  selection?: AgentExecutionSelection;
+  plannerSelection?: AgentExecutionSelection;
+  librarianSelection?: AgentExecutionSelection;
+  supervisorSelection?: AgentExecutionSelection;
+  repairerSelection?: AgentExecutionSelection;
+  reviewerSelections?: Record<string, AgentExecutionSelection>;
+  leadSelection?: AgentExecutionSelection;
+  stageSelections?: Record<string, AgentExecutionSelection | undefined>;
+  executionCatalog?: ExecutionCatalogV1;
+  recovery?: RecoveryMap;
+}
+
+export async function runTask(root: string, config: HarnessProjectConfig, contract: TaskContract, options?: { profile?: string; planning?: PlannerOutput; semanticRuntime?: SemanticAssessmentRuntimeV1 }): Promise<TaskRunResult> {
   const controlRoot = path.resolve(root);
   const operationStateRoot = resolveOperationStateRoot(root);
   const operationId = currentOperationContext().id;
@@ -57,16 +80,27 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
   const effectiveConfig = withOrganizationPolicies(config, policyResolution);
   const workspaceRoot = path.resolve(await deliveryWorkspacePath(controlRoot, effectiveConfig, contract.task.id) ?? controlRoot);
   const effectiveContract = workspaceRoot === controlRoot ? contract : await loadTaskContract(workspaceRoot, contract.task.id, effectiveConfig);
+  const semanticRuntime = options?.semanticRuntime ?? (operationId ? await createSemanticAssessmentRuntimeV1(workspaceRoot, effectiveConfig, { profile: options?.profile }) : undefined);
+  let projectStack: ProjectStackProfileV1 | undefined;
+  if (operationId && semanticRuntime) {
+    const operation = await loadOperation(operationStateRoot, operationId);
+    const binding = await createSemanticRepositoryBindingV1(workspaceRoot, effectiveConfig, { operationId, candidate: operation.candidateRevision });
+    projectStack = await discoverProjectStackProfile(workspaceRoot, { semanticAssessment: { service: semanticRuntime.service, binding } });
+    await recordEvent(controlRoot, effectiveConfig, "harness.semantic.stack-assessed", { taskId: effectiveContract.task.id, inputDigest: projectStack.inputDigest, assessmentDigest: projectStack.assessmentDigest, bindingDigest: projectStack.bindingDigest, policyRevision: projectStack.policyRevision, unknowns: projectStack.unknowns });
+  }
+  const impactAssessmentRuntime: CandidateImpactAssessmentRuntimeV1 | undefined = operationId && semanticRuntime
+    ? { service: semanticRuntime.service, policyRevision: semanticRuntime.policyRevision, repositoryBinding: await createSemanticRepositoryBindingV1(workspaceRoot, effectiveConfig, { operationId }) }
+    : undefined;
+  const implementationRoute = effectiveContract.routing?.route ?? "DIRECT";
+  const assurance = effectiveContract.routing?.assurance ?? "STANDARD";
+  if (implementationRoute === "NO_AGENT") throw new Error(`NO_AGENT_ROUTE: task ${effectiveContract.task.id} is explicitly non-mutating and cannot enter implementation execution.`);
   const startedMs = Date.now();
   const startedAt = new Date(startedMs).toISOString();
 
   const issueDrift = await verifyGithubIssueDrift(controlRoot, effectiveConfig, effectiveContract);
   if (!issueDrift.ok) throw new Error(issueDrift.message);
   if (effectiveContract.issue) await recordEvent(controlRoot, effectiveConfig, "harness.issue.drift-check", { taskId: effectiveContract.task.id, issue: effectiveContract.issue.number, repository: effectiveContract.issue.repository, ok: true, contentSha256: effectiveContract.issue.contentSha256 });
-  if (effectiveContract.mode === "quick") {
-    const quick = validateQuickTaskContract(effectiveConfig, effectiveContract);
-    if (!quick.ok) throw new Error(`QuickContract validation failed before delegation:\n${quick.issues.map((item) => `- ${item}`).join("\n")}\nEscalate this change to SDD/spec mode.`);
-  } else {
+  if (implementationRoute === "FORMAL_SDD") {
     const trace = await validateSddChange(workspaceRoot, effectiveContract.task.id, effectiveConfig);
     if (!trace.ok) throw new Error(`SDD validation failed before delegation:\n${[...trace.missing, ...trace.issues].map((item) => `- ${item}`).join("\n")}`);
   }
@@ -76,18 +110,18 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     if (seal.status === "FAIL") throw new Error(`Delivery workspace trust check failed before delegation: ${seal.message}`);
   }
 
-  const topologyState = await resolveTopology(controlRoot, effectiveConfig, effectiveContract, options?.profile);
-  const topology = topologyState.topology;
-  const route = topologyState.route;
-  let selection = topologyState.selection;
+  const executionBoundary = await resolveExecutionBoundary(controlRoot, effectiveConfig, effectiveContract, options?.profile);
+  const route = executionBoundary.route;
+  let selection = executionBoundary.selection;
+  const plannerSelection = executionBoundary.plannerSelection;
+  const librarianSelection = executionBoundary.librarianSelection;
+  const supervisorSelection = executionBoundary.supervisorSelection;
   if (selection) selection = enforceSandboxPolicy(selection, effectiveConfig, effectiveContract.routing?.risk ?? "low").selection;
 
-  // SPEC/RUN is multi-phase by construction. QUICK remains cheap for a single
-  // worker and materializes its LLM supervisor only if review/remediation is needed.
-  const quickReviewEnabled = effectiveContract.mode === "quick" && effectiveConfig.workflow?.reviews?.reviewQuick === true && Boolean(route?.reviewers.length);
-  if (operationId && topology && (effectiveContract.mode !== "quick" || quickReviewEnabled)) {
+  const directReviewEnabled = implementationRoute === "DIRECT" && effectiveConfig.workflow?.reviews?.directReview === true && Boolean(route?.reviewers.length);
+  if (operationId && supervisorSelection && (implementationRoute !== "DIRECT" || directReviewEnabled)) {
     await runStage(operationStateRoot, operationId, "supervision", "RUNNING");
-    await ensureOperationSupervisor(workspaceRoot, effectiveConfig, effectiveContract, topology, { required: true, forceMaterialize: true });
+    await ensureOperationSupervisor(workspaceRoot, effectiveConfig, effectiveContract, supervisorSelection, { required: true, forceMaterialize: true });
     await runStage(operationStateRoot, operationId, "supervision", "COMPLETED");
   }
 
@@ -98,7 +132,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     await recordEvent(controlRoot, effectiveConfig, "harness.control.snapshot-failed", { taskId: effectiveContract.task.id, error: String(error) });
   }
   if (controller && workspaceRoot !== controlRoot) await materializeControlPlaneSnapshot(controller, workspaceRoot, effectiveConfig);
-  await recordEvent(controlRoot, effectiveConfig, "harness.run.start", { taskId: effectiveContract.task.id, mode: effectiveContract.mode ?? "spec", workspaceRoot: workspaceRoot === controlRoot ? undefined : workspaceRoot, issue: effectiveContract.issue ? { repository: effectiveContract.issue.repository, number: effectiveContract.issue.number } : undefined, controllerSha256: controller?.compositeSha256, policyBundles: policyResolution.bundles.map((bundle) => bundle.name) });
+  await recordEvent(controlRoot, effectiveConfig, "harness.run.start", { taskId: effectiveContract.task.id, route: implementationRoute, workspaceRoot: workspaceRoot === controlRoot ? undefined : workspaceRoot, issue: effectiveContract.issue ? { repository: effectiveContract.issue.repository, number: effectiveContract.issue.number } : undefined, controllerSha256: controller?.compositeSha256, policyBundles: policyResolution.bundles.map((bundle) => bundle.name) });
 
   await refreshGraphIfConfigured(workspaceRoot, effectiveConfig);
   const beforeSnapshot = await snapshotGraph(workspaceRoot, effectiveConfig, effectiveContract.task.id, "before");
@@ -108,15 +142,16 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
   let waveResult: PlannerWaveResult | undefined;
   let executionSessions: WorkerSession[] = [];
   let report: ValidationReport;
-  const planningEnabled = topology && route && selection && effectiveConfig.workflow?.planning?.enabled !== false && effectiveContract.mode !== "quick";
-  if (planningEnabled && topology && route && selection) {
+  const executionCatalog = executionBoundary.executionCatalog;
+  const planningEnabled = (implementationRoute === "DELEGATED" || implementationRoute === "FORMAL_SDD") && route && selection && executionCatalog && effectiveConfig.workflow?.planning?.enabled !== false;
+  if (planningEnabled && route && selection && executionCatalog) {
     const planningSelection = selection;
     if (operationId) await runStage(operationStateRoot, operationId, "planning", "RUNNING");
-    waveResult = await executePlannerWaves({ root: workspaceRoot, stateRoot: controlRoot, config: effectiveConfig, contract: effectiveContract, topology, implementationSelection: planningSelection, controller, precomputedPlan: options?.planning, revalidate: async () => verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, planningSelection) });
+    waveResult = await executePlannerWaves({ root: workspaceRoot, stateRoot: controlRoot, config: effectiveConfig, contract: effectiveContract, plannerSelection, librarianSelection, implementationSelection: planningSelection, executionCatalog, controller, precomputedPlan: options?.planning, projectStack, semanticAssessment: impactAssessmentRuntime, revalidate: async () => verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, planningSelection) });
     executionSessions = [...waveResult.sessions];
     if (operationId) {
       await runStage(operationStateRoot, operationId, "planning", waveResult.aggregateSession?.exitCode === 0 || !waveResult.aggregateSession ? "COMPLETED" : "FAILED");
-      await maybeRotateOperationSupervisor(workspaceRoot, effectiveConfig, effectiveContract, topology);
+      await maybeRotateOperationSupervisor(workspaceRoot, effectiveConfig, effectiveContract, supervisorSelection);
     }
   }
 
@@ -128,8 +163,49 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     const executor = createWorkerExecutor(effectiveConfig, selection);
     const health = await executor.doctor(workspaceRoot, effectiveConfig, selection);
     if (!health.ok) throw new Error(`${executor.name} executor unavailable: ${health.message}`);
-    worker = await executor.start(workspaceRoot, effectiveConfig, effectiveContract, selection);
+    if (!operationId) throw new Error("CANDIDATE_BINDING_REQUIRED: DIRECT implementation requires a managed operation candidate.");
+    const operation = await loadOperation(operationStateRoot, operationId);
+    const currentCandidate = operation.candidateRevision;
+    if (!currentCandidate) throw new Error(`CANDIDATE_BINDING_REQUIRED: operation ${operationId} has no current candidate revision.`);
+    const isolated = await executeIsolatedCandidateMutation({
+      root: workspaceRoot,
+      operationId,
+      taskId: effectiveContract.task.id,
+      workUnitId: `direct:${effectiveContract.task.id}`,
+      candidate: currentCandidate,
+      config: effectiveConfig,
+      contract: effectiveContract,
+      execute: (isolatedRoot) => executor.start(isolatedRoot, effectiveConfig, effectiveContract, selection),
+      prepareWorkspace: controller ? async (isolatedRoot) => { await materializeControlPlaneSnapshot(controller!, isolatedRoot, effectiveConfig); } : undefined
+    });
+    worker = isolated.session;
     executionSessions.push(worker);
+    if (isolated.changeSet) {
+      const assembled = await assembleCandidateChangeSet({
+        root: workspaceRoot,
+        operationId,
+        projectId: currentCandidate.projectId,
+        taskId: effectiveContract.task.id,
+        currentCandidate,
+        changeSet: isolated.changeSet,
+        allowedScope: effectiveContract.scope?.allowed ?? ["**"],
+        forbiddenScope: effectiveContract.scope?.forbidden ?? [],
+        candidateId: `candidate:${operationId}:r${currentCandidate.revision + 1}`,
+        workspace: currentCandidate.workspace,
+        worktree: workspaceRoot,
+        semanticAssessment: impactAssessmentRuntime
+      });
+      const boundCandidate = await bindAssembledCandidate({ root: workspaceRoot, stateRoot: controlRoot, operationId, baseCandidate: currentCandidate, candidate: assembled.candidate, changeSet: isolated.changeSet });
+      await recordEvent(controlRoot, effectiveConfig, "harness.candidate.assembled", {
+        taskId: effectiveContract.task.id,
+        workUnitId: isolated.changeSet.workUnitId,
+        participantId: isolated.changeSet.participantId,
+        candidateRevision: boundCandidate.revision,
+        candidateDigest: boundCandidate.sourceDigest,
+        impactDigest: assembled.impact.digest,
+        requiresIndependentReview: assembled.impact.requiresIndependentReview
+      });
+    }
     report = withWorkerExecutionCheck(await verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, selection), worker);
   }
   if (operationId) await runStage(operationStateRoot, operationId, "implementation", report.status === "PASS" ? "COMPLETED" : "FAILED");
@@ -144,55 +220,76 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
   const firstPassSuccess = report.status === "PASS";
   const maxRepairs = effectiveContract.repair?.maxAttempts ?? effectiveConfig.orchestration?.worker?.maxRepairAttempts ?? 2;
   let attempts = 0;
-  let executor = createWorkerExecutor(effectiveConfig, selection);
   while (report.status === "FAIL" && attempts < maxRepairs) {
-    if (operationId && topology) {
-      await ensureOperationSupervisor(workspaceRoot, effectiveConfig, effectiveContract, topology, { required: true, forceMaterialize: true });
+    if (operationId && supervisorSelection) {
+      await ensureOperationSupervisor(workspaceRoot, effectiveConfig, effectiveContract, supervisorSelection, { required: true, forceMaterialize: true });
       await runStage(operationStateRoot, operationId, "remediation", "RUNNING");
     }
     attempts += 1;
-    const failureType = classifyFailure({ report, worker });
-    const recovery = topology ? resolveRecoveryStep(topology, failureType, attempts) : { action: "same-agent" as const };
+    const failureEvidence = { report, worker };
+    const currentOperation = operationId ? await loadOperation(operationStateRoot, operationId) : undefined;
+    const failureDecision = semanticRuntime && currentOperation?.candidateRevision
+      ? await classifyFailureWithSemanticAssessment(failureEvidence, {
+          service: semanticRuntime.service,
+          policyRevision: semanticRuntime.policyRevision,
+          binding: await createSemanticRepositoryBindingV1(workspaceRoot, effectiveConfig, { operationId, candidate: currentOperation.candidateRevision })
+        })
+      : classifyFailureDecision(failureEvidence);
+    const failureType = failureDecision.classification;
+    const recovery = executionBoundary.recovery ? resolveRecoveryStep(executionBoundary.recovery, failureType, attempts) : { action: "same-agent" as const };
     const recoveryAction = formatRecoveryAction(recovery, selection?.logicalAgent ?? "legacy-worker");
     const packet = createRepairPacket(report, attempts, { failureType, failedAgent: selection?.logicalAgent, recoveryAction });
     if (!packet.failures.length) break;
     await writeRepairPacket(controlRoot, effectiveConfig, packet);
-    await recordEvent(controlRoot, effectiveConfig, "harness.repair.start", { taskId: effectiveContract.task.id, attempt: attempts, failureType, recoveryAction, failures: packet.failures.length });
+    await recordEvent(controlRoot, effectiveConfig, "harness.repair.start", { taskId: effectiveContract.task.id, attempt: attempts, failureType, failureMechanism: failureDecision.mechanism, failureAssessmentDigest: failureDecision.assessmentDigest, failureUnknowns: failureDecision.unknowns, recoveryAction, failures: packet.failures.length });
     if (recovery.action === "lead" || recovery.action === "stop") break;
-    if (topology && recovery.action === "agent" && recovery.agent) selection = executionSelectionForAgent(topology, recovery.agent);
-    else if (topology && recovery.action === "reroute") {
-      const fallback = selectFallbackExecution(topology, effectiveContract, selection?.logicalAgent ?? "");
-      if (!fallback) break;
-      selection = fallback;
+    const repairerSelection = executionBoundary.repairerSelection;
+    const activeOperationId = currentOperationContext().id;
+    if (!activeOperationId) throw new Error("REPAIR_AUTHORITY_REQUIRED: candidate repair requires a managed operation.");
+    if (!repairerSelection || !executionBoundary.executionCatalog) {
+      throw new Error("REPAIR_AUTHORITY_REQUIRED: a frozen Repairer selection and compiled role binding are required for candidate repair.");
     }
-    if (selection) {
-      selection = enforceSandboxPolicy(selection, effectiveConfig, effectiveContract.routing?.risk ?? "low").selection;
-      const transport = selection.transport === "inherit" ? (effectiveConfig.orchestration?.provider ?? "none") : selection.transport;
-      const issues = validateExecutionCapabilities(selection, transport);
-      if (issues.length) throw new Error(`Recovery agent ${selection.logicalAgent} is not executable: ${issues.join("; ")}`);
-    }
-    executor = createWorkerExecutor(effectiveConfig, selection);
-    const recoveryHealth = await executor.doctor(workspaceRoot, effectiveConfig, selection);
-    if (!recoveryHealth.ok) throw new Error(`${executor.name} recovery executor unavailable: ${recoveryHealth.message}`);
-    worker = await executor.repair(workspaceRoot, effectiveConfig, effectiveContract, worker, packet, selection);
+    const repairerTransport = repairerSelection.transport === "inherit" ? (effectiveConfig.orchestration?.provider ?? "none") : repairerSelection.transport;
+    const repairerIssues = validateExecutionCapabilities(repairerSelection, repairerTransport);
+    if (repairerIssues.length) throw new Error(`Repairer ${repairerSelection.logicalAgent} is not executable: ${repairerIssues.join("; ")}`);
+    const repairPrompt = `${buildRepairPrompt(packet)}\n\nYou are the canonical Repairer for this operation. Repair only the implementation within the frozen task scope. Do not change requirements, acceptance assertions, validators, policy, or this repair packet. You cannot approve or accept the candidate.`;
+    const repair = await executeRepairerCandidateMutation({
+      root: workspaceRoot,
+      stateRoot: controlRoot,
+      operationId: activeOperationId,
+      taskId: effectiveContract.task.id,
+      workUnitId: `repair:${effectiveContract.task.id}:${attempts}`,
+      phase: "validation-repair",
+      config: effectiveConfig,
+      contract: effectiveContract,
+      selection: repairerSelection,
+      executionCatalog: executionBoundary.executionCatalog,
+      allowedScope: effectiveContract.scope?.allowed ?? ["**"],
+      forbiddenScope: [...(effectiveContract.scope?.forbidden ?? []), ...(effectiveContract.scope?.frozen ?? []), ...(effectiveConfig.validation?.frozenPaths ?? [])],
+      prompt: repairPrompt,
+      prepareWorkspace: controller ? async (isolatedRoot) => { await materializeControlPlaneSnapshot(controller!, isolatedRoot, effectiveConfig); } : undefined,
+      execute: (isolatedRoot, participantId) => executeAgentPrompt(isolatedRoot, effectiveConfig, effectiveContract, repairerSelection, repairPrompt, { phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true }),
+      semanticAssessment: impactAssessmentRuntime
+    });
+    worker = repair.session;
     executionSessions.push(worker);
     report = withWorkerExecutionCheck(await verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, selection), worker);
     report = await attachEvidence(report);
     await recordEvent(controlRoot, effectiveConfig, "harness.repair.finish", { taskId: effectiveContract.task.id, attempt: attempts, status: report.status, agent: selection?.logicalAgent });
-    if (operationId && topology) await maybeRotateOperationSupervisor(workspaceRoot, effectiveConfig, effectiveContract, topology);
+    if (operationId && supervisorSelection) await maybeRotateOperationSupervisor(workspaceRoot, effectiveConfig, effectiveContract, supervisorSelection);
   }
   if (operationId && attempts > 0) await runStage(operationStateRoot, operationId, "remediation", report.status === "PASS" ? "COMPLETED" : "FAILED");
 
   let reviewSummary: TaskRunResult["review"];
   let reviewFindings: import("../agents/outputContracts.js").NormalizedFinding[] = [];
   let reviewSessions: WorkerSession[] = [];
-  if (report.status === "PASS" && topology && route && selection) {
-    const willRunReviewers = effectiveContract.mode !== "quick" || effectiveConfig.workflow?.reviews?.reviewQuick === true;
+  if (report.status === "PASS" && route && selection) {
+    const willRunReviewers = implementationRoute !== "DIRECT" || effectiveConfig.workflow?.reviews?.directReview === true;
     if (operationId && willRunReviewers && route.reviewers.length) {
-      await ensureOperationSupervisor(workspaceRoot, effectiveConfig, effectiveContract, topology, { required: true, forceMaterialize: true });
+      await ensureOperationSupervisor(workspaceRoot, effectiveConfig, effectiveContract, supervisorSelection, { required: true, forceMaterialize: true });
       await runStage(operationStateRoot, operationId, "review", "RUNNING");
     }
-    const review = await runReviewLifecycle({ root: workspaceRoot, stateRoot: controlRoot, config: effectiveConfig, contract: effectiveContract, topology, route, implementationSelection: selection, report, revalidate: async () => verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, selection) });
+    const review = await runReviewLifecycle({ root: workspaceRoot, stateRoot: controlRoot, config: effectiveConfig, contract: effectiveContract, route, reviewerSelections: executionBoundary.reviewerSelections ?? {}, leadSelection: executionBoundary.leadSelection, repairerSelection: executionBoundary.repairerSelection, executionCatalog: executionBoundary.executionCatalog, prepareRepairWorkspace: controller ? async (isolatedRoot) => { await materializeControlPlaneSnapshot(controller!, isolatedRoot, effectiveConfig); } : undefined, stageSelections: executionBoundary.stageSelections, supervisorSelection, implementationSelection: selection, report, revalidate: async () => verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, selection) });
     report = mergeChecks(withWorkerExecutionCheck(review.report, worker), review.checks);
     reviewFindings = review.findings.findings;
     reviewSessions = review.sessions;
@@ -201,7 +298,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     await recordEvent(controlRoot, effectiveConfig, "harness.review.finish", { taskId: effectiveContract.task.id, status: review.status, finalState: review.finalState, humanRequired: review.humanRequired, rounds: review.rounds, findings: review.findings.outputCount, debtScore: quality.debtScore, convergence: quality.convergence, leadAccepted: review.leadAccepted, sessions: review.sessions.length });
     if (operationId && willRunReviewers && route.reviewers.length) {
       await runStage(operationStateRoot, operationId, "review", review.status === "PASS" ? "COMPLETED" : review.humanRequired ? "BLOCKED" : "FAILED");
-      await maybeRotateOperationSupervisor(workspaceRoot, effectiveConfig, effectiveContract, topology);
+      await maybeRotateOperationSupervisor(workspaceRoot, effectiveConfig, effectiveContract, supervisorSelection);
     }
     if (report.status === "PASS" && effectiveConfig.evidence?.enabled === true) {
       evidenceGraph = await buildRequirementEvidenceGraph({ root: workspaceRoot, stateRoot: controlRoot, config: effectiveConfig, contract: effectiveContract, report, plan: waveResult?.plan, findings: reviewFindings, sessions: [...executionSessions, ...reviewSessions] });
@@ -213,11 +310,11 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
   if (report.status === "PASS") {
     if (operationId) await runStage(operationStateRoot, operationId, "delivery", "RUNNING");
     try {
-      deliverySummary = await finalizeAcceptedIssue(workspaceRoot, effectiveConfig, effectiveContract);
+      deliverySummary = await finalizeAcceptedIssue(workspaceRoot, effectiveConfig, effectiveContract, { candidate: report.candidate });
       if (deliverySummary.status !== "SKIPPED") await recordEvent(controlRoot, effectiveConfig, "harness.delivery.finalize", { taskId: effectiveContract.task.id, status: deliverySummary.status, commitSha: deliverySummary.commitSha, pullRequest: deliverySummary.pullRequest });
       if (operationId) await runStage(operationStateRoot, operationId, "delivery", "COMPLETED");
     } catch (error) {
-      deliverySummary = deliveryFinalizationFailure(error);
+      deliverySummary = { ...deliveryFinalizationFailure(error), candidate: report.candidate };
       report = mergeChecks(report, [{ id: "delivery.finalization", category: "delivery", status: "FAIL", message: deliverySummary.message, details: { status: deliverySummary.status, humanRequired: deliverySummary.humanRequired } }]);
       if (reviewSummary && deliverySummary.humanRequired) reviewSummary = { ...reviewSummary, status: "FAIL", finalState: "BLOCKED_EXTERNAL", humanRequired: true };
       await recordEvent(controlRoot, effectiveConfig, "harness.delivery.finalize", { taskId: effectiveContract.task.id, status: deliverySummary.status, humanRequired: deliverySummary.humanRequired, message: deliverySummary.message });
@@ -232,12 +329,12 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
   const drift = controller ? await detectControlPlaneDrift(controlRoot, controller) : { changed: [], missing: [], added: [], drifted: false };
   if (controller) report = mergeChecks(report, [{ id: "trust.control-plane-freeze", category: "trust-boundary", status: "PASS", message: drift.drifted ? "Control-plane files changed during the run, but the run remained governed by its frozen controller snapshot; changes activate next run." : "Control-plane snapshot remained unchanged during the run.", details: { controllerSha256: controller.compositeSha256, gitCommit: controller.gitCommit, drift } }]);
 
-  if (operationId && topology) await settleDrainingSupervisorGenerations(workspaceRoot, operationId);
+  if (operationId && supervisorSelection) await settleDrainingSupervisorGenerations(workspaceRoot, operationId);
   const usageText = [...executionSessions, ...reviewSessions].map((session) => `${session.stdout}\n${session.stderr}`).join("\n");
   worker.metrics = extractUsageMetrics(usageText || `${worker.stdout}\n${worker.stderr}`);
   const metrics = buildRunMetrics({ firstPassSuccess, repairCount: attempts, humanInterventions: await countHumanInterventions(controlRoot, effectiveConfig, effectiveContract.task.id, startedAt), durationMs: Date.now() - startedMs, usage: worker.metrics });
-  const routing = selection ? { profile: selection.profile, ruleIds: route?.ruleIds ?? [], agent: selection.logicalAgent, runtime: selection.runtimeName, model: selection.modelId, nativeAgent: selection.nativeAgent, reviewers: route?.reviewers ?? [], validators: route?.validators ?? [] } : undefined;
-  const result: TaskRunResult = { taskId: effectiveContract.task.id, status: report.status, attempts, worker, report, metrics, routing, planning: waveResult ? { used: waveResult.used, tasks: waveResult.plan?.tasks.length ?? 0, waves: waveResult.schedule?.waves.length ?? 0, distributed: effectiveConfig.workflow?.planning?.distributed === true && effectiveConfig.distributed?.enabled === true, graphUsed: waveResult.schedule?.graphUsed } : undefined, controlPlane: controller ? { sha256: controller.compositeSha256, gitCommit: controller.gitCommit, drifted: drift.drifted, changed: drift.changed, missing: drift.missing, added: drift.added } : undefined, evidence: evidenceGraph ? { sha256: evidenceGraph.sha256, complete: evidenceGraph.complete, requirements: evidenceGraph.requirements.length, reasons: evidenceGraph.reasons } : undefined, review: reviewSummary, delivery: deliverySummary };
+  const routing = selection ? { profile: selection.profile, ruleIds: route?.ruleIds ?? [], agent: selection.logicalAgent, runtime: selection.runtimeName, model: selection.modelId, nativeAgent: selection.nativeAgent, reviewers: route?.reviewers ?? [], implementationRoute: route?.implementationRoute, assurance: route?.assurance } : undefined;
+  const result: TaskRunResult = { taskId: effectiveContract.task.id, status: report.status, attempts, worker, report, metrics, routing, planning: waveResult ? { used: waveResult.used, workUnits: waveResult.plan?.workUnits.length ?? 0, waves: waveResult.schedule?.waves.length ?? 0, distributed: effectiveConfig.workflow?.planning?.distributed === true && effectiveConfig.distributed?.enabled === true, graphUsed: waveResult.schedule?.graphUsed, compilerDigest: waveResult.blueprint?.plan.compilerDigest } : undefined, controlPlane: controller ? { sha256: controller.compositeSha256, gitCommit: controller.gitCommit, drifted: drift.drifted, changed: drift.changed, missing: drift.missing, added: drift.added } : undefined, evidence: evidenceGraph ? { sha256: evidenceGraph.sha256, complete: evidenceGraph.complete, requirements: evidenceGraph.requirements.length, reasons: evidenceGraph.reasons } : undefined, review: reviewSummary, delivery: deliverySummary };
   const runsDir = path.resolve(controlRoot, effectiveConfig.sdd?.runsDir ?? ".harness/runs");
   await fs.mkdir(runsDir, { recursive: true });
   const runFile = path.join(runsDir, `${effectiveContract.task.id}.json`);
@@ -254,11 +351,11 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
       if (effectiveConfig.memory.required) throw error;
     }
   }
-  await recordEvent(controlRoot, effectiveConfig, "harness.run.finish", { taskId: effectiveContract.task.id, status: result.status, attempts, mode: effectiveContract.mode ?? "spec", workspaceRoot: workspaceRoot === controlRoot ? undefined : workspaceRoot, agent: selection?.logicalAgent, runtime: selection?.runtimeName, model: selection?.modelId, profile: selection?.profile, waves: result.planning?.waves, controllerSha256: result.controlPlane?.sha256, controllerDrifted: result.controlPlane?.drifted, evidenceComplete: result.evidence?.complete, evidenceSha256: result.evidence?.sha256, reviewStatus: reviewSummary?.status, reviewFinalState: reviewSummary?.finalState, humanRequired: reviewSummary?.humanRequired ?? deliverySummary?.humanRequired, debtScore: reviewSummary?.debtScore, deliveryStatus: deliverySummary?.status, pullRequest: deliverySummary?.pullRequest, durationMs: metrics.durationMs, totalTokens: metrics.usage.totalTokens ?? 0, costUsd: metrics.usage.costUsd ?? 0 });
+  await recordEvent(controlRoot, effectiveConfig, "harness.run.finish", { taskId: effectiveContract.task.id, status: result.status, attempts, route: implementationRoute, assurance, workspaceRoot: workspaceRoot === controlRoot ? undefined : workspaceRoot, agent: selection?.logicalAgent, runtime: selection?.runtimeName, model: selection?.modelId, profile: selection?.profile, waves: result.planning?.waves, controllerSha256: result.controlPlane?.sha256, controllerDrifted: result.controlPlane?.drifted, evidenceComplete: result.evidence?.complete, evidenceSha256: result.evidence?.sha256, reviewStatus: reviewSummary?.status, reviewFinalState: reviewSummary?.finalState, humanRequired: reviewSummary?.humanRequired ?? deliverySummary?.humanRequired, debtScore: reviewSummary?.debtScore, deliveryStatus: deliverySummary?.status, pullRequest: deliverySummary?.pullRequest, durationMs: metrics.durationMs, totalTokens: metrics.usage.totalTokens ?? 0, costUsd: metrics.usage.costUsd ?? 0 });
   return result;
 }
 
-async function resolveTopology(root: string, config: HarnessProjectConfig, contract: TaskContract, profileOverride?: string): Promise<{ topology?: ResolvedAgentTopology; route?: ResolvedRoute; selection?: AgentExecutionSelection }> {
+async function resolveExecutionBoundary(root: string, config: HarnessProjectConfig, contract: TaskContract, profileOverride?: string): Promise<FrozenExecutionBoundaryV1> {
   if (!config.agents) return {};
   const explicitProfile = profileOverride ?? contract.routing?.profile;
   const profile = explicitProfile ?? config.agents.activeProfile;
@@ -270,13 +367,55 @@ async function resolveTopology(root: string, config: HarnessProjectConfig, contr
     const transport = selection.transport === "inherit" ? (config.orchestration?.provider ?? "none") : selection.transport;
     const issues = validateExecutionCapabilities(selection, transport);
     if (issues.length) throw new Error(`Selected agent ${selection.logicalAgent} is not executable: ${issues.join("; ")}`);
-    await recordEvent(root, config, "harness.agent.route", { taskId: contract.task.id, profile, agent: selection.logicalAgent, runtime: selection.runtimeName, model: selection.modelId, nativeAgent: selection.nativeAgent, transport, ruleIds: route.ruleIds, reviewers: route.reviewers });
-    return { topology, route, selection };
+    await recordEvent(root, config, "harness.agent.route", { taskId: contract.task.id, profile, agent: selection.logicalAgent, runtime: selection.runtimeName, model: selection.modelId, nativeAgent: selection.nativeAgent, transport, ruleIds: route.ruleIds, reviewers: route.reviewers, implementationRoute: route.implementationRoute, assurance: route.assurance });
+    const configuredPlanner = config.workflow?.planning?.plannerAgent;
+    const plannerAgent = configuredPlanner && topology.agents[configuredPlanner] && !topology.agents[configuredPlanner].disabled
+      ? configuredPlanner
+      : Object.values(topology.agents).find((agent) => agent.role === "Planner" && !agent.disabled)?.name;
+    const plannerSelection = plannerAgent ? executionSelectionForAgent(topology, plannerAgent) : undefined;
+    const librarianAgent = Object.values(topology.agents).find((agent) => agent.role === "Librarian" && !agent.disabled);
+    const librarianSelection = librarianAgent ? executionSelectionForAgent(topology, librarianAgent.name) : undefined;
+    const supervisorAgent = topology.agents["operation-supervisor"];
+    const supervisorSelection = supervisorAgent && !supervisorAgent.disabled ? executionSelectionForAgent(topology, "operation-supervisor") : undefined;
+    const reviewerSelections = Object.fromEntries(route.reviewers.map((name) => [name, executionSelectionForAgent(topology, name)]));
+    const leadAgent = Object.values(topology.agents).find((agent) => agent.role === "Lead/Director" && !agent.disabled);
+    const leadSelection = leadAgent ? executionSelectionForAgent(topology, leadAgent.name) : undefined;
+    const repairerAgent = selectAgentNames(topology, { role: "Repairer" }, 1)[0];
+    const repairerSelection = repairerAgent ? executionSelectionForAgent(topology, repairerAgent) : undefined;
+    const stageSelections = Object.fromEntries(escalationStages(config).map((stage) => {
+      try {
+        const roleSelection = stage.role ? selectAgentNames(topology, { role: stage.role }, 1)[0] : undefined;
+        const roleExecution = roleSelection ? executionSelectionForAgent(topology, roleSelection) : undefined;
+        const modelExecution = stage.model ? selectionWithModelOverride(topology, roleExecution ?? selection, stage.model) : undefined;
+        return [stage.name, selectionForStage(selection, stage, roleExecution, modelExecution)];
+      }
+      catch { return [stage.name, undefined]; }
+    }));
+    const roleBindings = {
+      Implementer: bindingForSelection(selection),
+      ...(repairerSelection ? { Repairer: bindingForSelection(repairerSelection) } : {})
+    };
+    const executionCatalog = compileExecutionCatalog({ runtimes: topology.runtimes, models: topology.models, routeRuleIds: topology.routing.map((rule) => rule.id), roleBindings, policy: { maxConcurrent: config.workflow?.planning?.maxWaveConcurrency } });
+    return { route, selection, plannerSelection, librarianSelection, supervisorSelection, reviewerSelections, leadSelection, repairerSelection, stageSelections, executionCatalog, recovery: topology.recovery };
   } catch (error) {
-    if (config.agents.required) throw error;
+    if (config.agents.required || contract.routing?.route === "DELEGATED" || contract.routing?.route === "FORMAL_SDD" || contract.routing?.assurance === "CRITICAL") throw error;
     await recordEvent(root, config, "harness.agent.topology-fallback", { taskId: contract.task.id, error: String(error) });
     return {};
   }
+}
+
+function bindingForSelection(selection: AgentExecutionSelection) {
+  return {
+    runtimeId: selection.runtimeName,
+    modelAlias: selection.modelAlias,
+    transport: selection.transport,
+    profile: selection.profile,
+    variant: selection.variant,
+    nativeAgent: selection.nativeAgent,
+    temperature: selection.temperature,
+    outputContract: selection.outputContract,
+    args: [...selection.args]
+  };
 }
 
 function withWorkerExecutionCheck(report: ValidationReport, worker: WorkerSession): ValidationReport {

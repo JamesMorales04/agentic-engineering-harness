@@ -8,11 +8,12 @@ import type { HarnessProjectConfig } from "../core/types.js";
 import { buildManagedAgentEnvironment } from "../operations/executionContext.js";
 import { rebindActiveOperationsToLead } from "../operations/leadBinding.js";
 import { setupToolchain } from "../toolchain/setup.js";
-import { clearToolchainEnvCache, commandExists, runProcess, type ProcessResult } from "../utils/process.js";
+import { clearToolchainEnvCache, commandExists, runShell, type ProcessResult } from "../utils/process.js";
 import { VERSION } from "../version.js";
 import { detectPaseoDaemonCapabilities, isRecoverableDaemonStatus } from "./capabilities.js";
 import { launchManagedPaseoAgent, probeManagedPaseoAgent } from "./runtime.js";
 import type { PaseoSdkAgentOptions } from "./sdk.js";
+import { createManagedRuntime, runtimeProjectId, type ManagedRuntimeSupervisorV1 } from "../runtime/index.js";
 
 export const PASEO_BOOTSTRAP_VERSION = 12;
 export type PaseoSessionPolicy = "fresh-on-start" | "reuse-compatible" | "resume-explicit";
@@ -59,7 +60,7 @@ export interface PaseoStartResult {
   transport?: "sdk" | "cli";
 }
 interface PaseoStartDeps {
-  run: typeof runProcess;
+  run: typeof runShell;
   commandExists: typeof commandExists;
   setupToolchain: typeof setupToolchain;
   loadTopology: typeof loadResolvedAgentTopology;
@@ -69,7 +70,7 @@ interface PaseoStartDeps {
   reconcileAssets?: typeof reconcileHarnessAssets;
 }
 const DEFAULT_DEPS: PaseoStartDeps = {
-  run: runProcess,
+  run: runShell,
   commandExists,
   setupToolchain,
   loadTopology: loadResolvedAgentTopology,
@@ -87,6 +88,10 @@ export async function startPaseoHarness(
   deps: PaseoStartDeps = DEFAULT_DEPS
 ): Promise<PaseoStartResult> {
   const projectRoot = path.resolve(root);
+  const runtime = await createManagedRuntime({ root: projectRoot, projectId: runtimeProjectId(projectRoot) });
+  const paseoServiceId = `paseo:${runtime.projectId}`;
+  await runtime.registerService({ serviceId: paseoServiceId, kind: "paseo", status: "STARTING", pid: process.pid, metadata: { aehVersion: VERSION } });
+  const markRuntimeFailed = async (error: unknown) => { await runtime.updateService(paseoServiceId, { status: "FAILED", metadata: { error: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500) } }).catch(() => undefined); };
   await (deps.reconcileAssets ?? reconcileHarnessAssets)(projectRoot);
   const settings = config.orchestration?.interactive as InteractiveV10 | undefined;
   const autoSetup = options.autoSetup ?? settings?.autoSetup ?? true;
@@ -108,9 +113,7 @@ export async function startPaseoHarness(
     clearToolchainEnvCache();
   }
   const missingAfter = await missingCommands(projectRoot, ["paseo", runtimeCommand], deps);
-  if (missingAfter.length) {
-    throw new Error(`aeh start cannot launch Paseo because these managed commands are unavailable: ${missingAfter.join(", ")}. Run aeh setup or provide the required host prerequisite/credential.`);
-  }
+  if (missingAfter.length) { const error = new Error(`aeh start cannot launch Paseo because these managed commands are unavailable: ${missingAfter.join(", ")}. Run aeh setup or provide the required host prerequisite/credential.`); await markRuntimeFailed(error); throw error; }
 
   const capabilities = await deps.detectCapabilities(projectRoot, deps.run);
   let daemonStarted = false;
@@ -122,11 +125,12 @@ export async function startPaseoHarness(
     }
     const startCommand = webUi ? "paseo daemon start --web-ui" : "paseo daemon start";
     const daemonStart = await deps.run(startCommand, { cwd: projectRoot, timeoutMs: 60_000 });
-    if (daemonStart.exitCode !== 0) throw new Error(`Failed to start Paseo daemon: ${diagnostic(daemonStart)}`);
+    if (daemonStart.exitCode !== 0) { const error = new Error(`Failed to start Paseo daemon: ${diagnostic(daemonStart)}`); await markRuntimeFailed(error); throw error; }
     daemonStarted = true;
     daemonStatus = await deps.run(daemonStatusCommand, { cwd: projectRoot, timeoutMs: 30_000 });
-    if (daemonStatus.exitCode !== 0 || isRecoverableDaemonStatus(daemonStatus)) throw new Error(`Paseo daemon did not become ready after startup: ${diagnostic(daemonStatus)}`);
+    if (daemonStatus.exitCode !== 0 || isRecoverableDaemonStatus(daemonStatus)) { const error = new Error(`Paseo daemon did not become ready after startup: ${diagnostic(daemonStatus)}`); await markRuntimeFailed(error); throw error; }
   }
+  await runtime.updateService(paseoServiceId, { status: "READY", metadata: { aehVersion: VERSION, paseoVersion: capabilities.version ?? "unknown" } });
 
   const provider = selection.paseoProvider;
   const model = paseoModel(selection);
@@ -177,7 +181,7 @@ export async function startPaseoHarness(
     systemPrompt: bootstrap,
     env: buildManagedAgentEnvironment({
       logicalAgent: leadName,
-      role: selection.role ?? "orchestrator",
+      role: selection.role ?? "Lead/Director",
       interactiveLead: true,
       orchestrationAllowed: true
     }),
@@ -314,8 +318,8 @@ export function resolveLeadAgent(topology: ResolvedAgentTopology, configured?: s
     return configured;
   }
   if (topology.agents.lead && !topology.agents.lead.disabled) return "lead";
-  const orchestrator = Object.values(topology.agents).find((agent) => agent.role === "orchestrator" && !agent.disabled);
-  if (!orchestrator) throw new Error("aeh start requires an enabled orchestrator/lead agent in the resolved topology.");
+  const orchestrator = Object.values(topology.agents).find((agent) => agent.role === "Lead/Director" && !agent.disabled);
+  if (!orchestrator) throw new Error("aeh start requires an enabled Lead/Director participant in the resolved topology.");
   return orchestrator.name;
 }
 

@@ -4,7 +4,7 @@ import type { NormalizedFinding } from "../src/agents/outputContracts.js";
 import type { HarnessProjectConfig } from "../src/core/types.js";
 
 const config: HarnessProjectConfig = { version: 1, project: { name: "test" } };
-function finding(severity: NormalizedFinding["severity"], id: string): NormalizedFinding { return { id, severity, category: `category-${id}`, location: { file: `${id}.ts`, startLine: 1 }, evidence: `evidence ${id}`, impact: "impact", recommendedFix: "fix", suggestedAgent: "implementation-worker" }; }
+function finding(severity: NormalizedFinding["severity"], id: string): NormalizedFinding { return { id, severity, category: `category-${id}`, location: { file: `${id}.ts`, startLine: 1 }, evidence: `evidence ${id}`, impact: "impact", recommendedFix: "fix", requiredCompetencies: ["testing"], reviewDimensions: ["correctness"] }; }
 function many(severity: NormalizedFinding["severity"], count: number, prefix = severity): NormalizedFinding[] { return Array.from({ length: count }, (_, index) => finding(severity, `${prefix}-${index}`)); }
 
 describe("quality convergence scoring", () => {

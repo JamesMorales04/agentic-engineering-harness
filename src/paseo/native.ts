@@ -1,6 +1,6 @@
 import process from "node:process";
 import { pathToFileURL } from "node:url";
-import { PaseoSdkUnavailableError } from "./sdk.js";
+import { connectPaseoClient, PaseoSdkUnavailableError } from "./sdk.js";
 import { resolvePaseoSdkFromCli } from "./sdkResolve.js";
 import { recordPaseoTrace } from "./trace.js";
 
@@ -443,7 +443,7 @@ async function withNativeClient<T>(
     password: process.env.PASEO_DAEMON_PASSWORD?.trim() || undefined
   });
   try {
-    await client.connect();
+    await connectPaseoClient(client);
     return await action(client);
   } finally {
     await client.close().catch(() => undefined);

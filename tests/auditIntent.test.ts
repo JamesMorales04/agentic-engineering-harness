@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { HarnessProjectConfig, ValidationCheck } from "../src/core/types.js";
-import { classifyEngineeringIntentHeuristic } from "../src/audit/intent.js";
+import { classifyEngineeringIntentHeuristic, classifyEngineeringIntentWithSemanticAssessment } from "../src/audit/intent.js";
 import { classifyAuditFailure } from "../src/audit/run.js";
+import { semanticCapabilityPolicyRevisionV1, type SemanticAssessmentRequestV1 } from "../src/semantic/assessment.js";
+import { semanticPayload, semanticTestService } from "./semanticAssessmentSupport.js";
 
 const config: HarnessProjectConfig = { version: 1, project: { name: "demo" }, orchestration: { provider: "none" } };
 
@@ -12,7 +14,7 @@ describe("engineering intent classification", () => {
     expect(result.changeTriage).toBeUndefined();
   });
 
-  it("classifies repository reviews as AUDIT rather than direct or QUICK", () => {
+  it("classifies repository reviews as AUDIT rather than a mutating route", () => {
     const result = classifyEngineeringIntentHeuristic(config, { request: "review the repo and validate the code for improvements" });
     expect(result.intent).toBe("audit");
     expect(result.changeTriage).toBeUndefined();
@@ -23,19 +25,67 @@ describe("engineering intent classification", () => {
     expect(classifyEngineeringIntentHeuristic(config, { request: "audit the authentication security model" }).intent).toBe("audit");
   });
 
-  it("classifies mutation requests as CHANGE and then QUICK/SPEC", () => {
-    const quick = classifyEngineeringIntentHeuristic(config, { request: "fix the typo", files: ["README.md"], domains: ["docs"], risk: "low" });
-    expect(quick.intent).toBe("change");
-    expect(quick.changeTriage?.mode).toBe("quick");
+  it("classifies mutation requests as CHANGE and selects canonical routes", () => {
+    const direct = classifyEngineeringIntentHeuristic(config, { request: "fix the typo", files: ["README.md"], domains: ["docs"], risk: "low" });
+    expect(direct.intent).toBe("change");
+    expect(direct.changeTriage?.route).toBe("DIRECT");
 
-    const spec = classifyEngineeringIntentHeuristic(config, { request: "fix authentication authorization boundaries", files: ["src/auth.ts"], domains: ["auth"], risk: "high" });
-    expect(spec.intent).toBe("change");
-    expect(spec.changeTriage?.mode).toBe("spec");
+    const security = classifyEngineeringIntentHeuristic(config, { request: "fix authentication authorization boundaries", files: ["src/auth.ts"], domains: ["auth"], risk: "high" });
+    expect(security.intent).toBe("change");
+    expect(security.changeTriage).toMatchObject({ route: "DIRECT", assurance: "CRITICAL", mechanism: "DETERMINISTIC" });
   });
 
   it("prefers CHANGE when a request asks to review and fix", () => {
     const result = classifyEngineeringIntentHeuristic(config, { request: "review this module and fix every bug you find", files: ["src/x.ts"] });
     expect(result.intent).toBe("change");
+  });
+
+  it("uses typed semantic intent for a natural-language mixed request and deterministic routing for CHANGE", async () => {
+    const service = semanticTestService({});
+    const decision = await classifyEngineeringIntentWithSemanticAssessment(config, { request: "Look over this file and correct the broken label", files: ["src/label.ts"], risk: "low" }, {
+      service, binding: { projectId: "demo", repositoryDigest: "repo-digest" }, policyRevision: semanticCapabilityPolicyRevisionV1
+    });
+    expect(decision).toMatchObject({ intent: "change", mechanism: "HYBRID", changeTriage: { route: "DIRECT", mechanism: "HYBRID" } });
+    expect(decision.assessmentDigests).toHaveLength(2);
+  });
+
+  it("completes a HIGH-risk typed INTENT assessment within its existing policy bounds and retains the deterministic CRITICAL assurance floor", async () => {
+    const requests: SemanticAssessmentRequestV1[] = [];
+    const service = semanticTestService({ payload: (request) => { requests.push(request); return semanticPayload(request); } });
+    const decision = await classifyEngineeringIntentWithSemanticAssessment(config, { request: "fix authentication authorization boundaries", files: ["src/auth.ts"], domains: ["auth"], risk: "high" }, {
+      service, binding: { projectId: "demo", repositoryDigest: "repo-digest" }, policyRevision: semanticCapabilityPolicyRevisionV1
+    });
+    const intentRequest = requests.find((request) => request.assessmentType === "INTENT");
+    expect(intentRequest).toBeDefined();
+    expect(intentRequest!.reasoningRequirement).toEqual({
+      reasoningClass: "LIGHT",
+      structuredOutputRequired: true,
+      independenceRequired: false,
+      externalKnowledgeRequired: false,
+      maxContextClass: "SMALL",
+      riskClass: "HIGH"
+    });
+    expect(intentRequest!.budget).toEqual({ maxInputTokens: 2_000, maxOutputTokens: 300, deadlineMs: 10_000 });
+    expect(decision).toMatchObject({ intent: "change", mechanism: "HYBRID", changeTriage: { route: "DIRECT", assurance: "CRITICAL", mechanism: "HYBRID" } });
+    expect(decision.assessmentDigests).toHaveLength(2);
+  });
+
+  it("preserves the deterministic delegation floor for a HIGH-risk semantic change request without a concrete scope", async () => {
+    const service = semanticTestService({});
+    const decision = await classifyEngineeringIntentWithSemanticAssessment(config, { request: "fix authentication authorization boundaries", risk: "high" }, {
+      service, binding: { projectId: "demo", repositoryDigest: "repo-digest" }, policyRevision: semanticCapabilityPolicyRevisionV1
+    });
+    expect(decision).toMatchObject({ intent: "change", mechanism: "HYBRID", changeTriage: { route: "DELEGATED", mechanism: "HYBRID" } });
+  });
+
+  it("keeps explicit user-provided intent deterministic and does not call the model", async () => {
+    let calls = 0;
+    const service = semanticTestService({ runner: { assess: async () => { calls += 1; throw new Error("must not execute"); } } });
+    const decision = await classifyEngineeringIntentWithSemanticAssessment(config, { request: "inspect this repository", explicitIntent: "audit" }, {
+      service, binding: { projectId: "demo", repositoryDigest: "repo-digest" }, policyRevision: semanticCapabilityPolicyRevisionV1
+    });
+    expect(decision).toMatchObject({ intent: "audit", mechanism: "DETERMINISTIC" });
+    expect(calls).toBe(0);
   });
 
   it.each([

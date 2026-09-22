@@ -12,7 +12,6 @@ const REENTRY_TOP_LEVEL = new Set([
   "start",
   "audit",
   "run",
-  "quick",
   "issue",
   "spec",
   "sdd",

@@ -16,18 +16,6 @@ controlPlane:
   include: []
 
 workflow:
-  quick:
-    maxFiles: 5
-    disallowedDomains:
-      - security
-      - authentication
-      - authorization
-      - architecture
-      - database
-      - schema
-      - migration
-      - api-contract
-      - multi-tenancy
   issueIntake:
     enabled: true
     snapshotDir: .harness/issues
@@ -44,9 +32,7 @@ workflow:
     distributed: false
   reviews:
     enabled: true
-    reviewQuick: false
     leadAcceptance: true
-    leadAcceptanceQuick: false
     quality:
       severityPoints:
         critical: 300
@@ -74,18 +60,18 @@ workflow:
           action: remediate
         - name: quality
           action: remediate
-          agent: quality-implementer
+          role: Implementer
         - name: senior
           action: remediate
-          agent: senior-implementer
+          role: Implementer
           model: "@brain"
         - name: diagnosis
           action: diagnose
-          agent: oracle
+          role: Reviewer
           model: "@brain"
         - name: replan
           action: replan
-          agent: planner
+          role: Planner
           model: "@brain"
 
 orchestration:

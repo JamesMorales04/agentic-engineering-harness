@@ -36,9 +36,9 @@ describe("default agent pack bootstrap", () => {
     expect(config.orchestration?.interactive?.context).toEqual(expect.objectContaining({ pressureThreshold: 0.7, handoffThreshold: 0.8, hardHandoffThreshold: 0.9 }));
     expect(config.sdd?.authoring).toEqual(expect.objectContaining({ provider: "openspec", schema: "spec-driven", managerAgent: "spec-manager" }));
     const source = await loadAgentTopologySource(root, config);
-    expect(source.agents["backend-implementer"]).toBeDefined();
-    expect(source.agents["security-reviewer"]).toBeDefined();
-    expect(source.agents["environment-manager"]).toBeDefined();
+    expect(source.agents["implementer"]).toBeDefined();
+    expect(source.agents["reviewer"]).toBeDefined();
+    expect(source.agents["repairer"]).toBeDefined();
     expect(source.agents["spec-manager"]).toBeDefined();
     const toolchain = await loadToolchainConfig(root, config);
     expect(toolchain.tools.codex.source).toBe("npm:@openai/codex");

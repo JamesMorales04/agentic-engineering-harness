@@ -12,6 +12,12 @@ export interface DirectWorkerProcessOptions {
   timeoutMs: number;
   environment?: Record<string, string | undefined>;
   maxOutputBytes?: number;
+  /** A shared isolated home used to prepare a real provider session before its first turn. */
+  homeDirectory?: string;
+}
+
+export interface DirectWorkerHome {
+  directory: string;
 }
 
 export interface DirectWorkerProcessResult {
@@ -31,7 +37,8 @@ export async function runDirectWorkerProcess(
   config: HarnessProjectConfig,
   options: DirectWorkerProcessOptions
 ): Promise<DirectWorkerProcessResult> {
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-direct-home-"));
+  const ownedHome = options.homeDirectory ? undefined : await fs.mkdtemp(path.join(os.tmpdir(), "aeh-direct-home-"));
+  const home = options.homeDirectory ?? ownedHome!;
   const environment = buildDirectWorkerEnvironment(config, options.environment, home);
   const started = Date.now();
 
@@ -126,8 +133,16 @@ export async function runDirectWorkerProcess(
       }
     });
   } finally {
-    await fs.rm(home, { recursive: true, force: true });
+    if (ownedHome) await fs.rm(ownedHome, { recursive: true, force: true });
   }
+}
+
+export async function createDirectWorkerHome(): Promise<DirectWorkerHome> {
+  return { directory: await fs.mkdtemp(path.join(os.tmpdir(), "aeh-direct-home-")) };
+}
+
+export async function removeDirectWorkerHome(home: DirectWorkerHome | undefined): Promise<void> {
+  if (home) await fs.rm(home.directory, { recursive: true, force: true });
 }
 
 export function buildDirectWorkerEnvironment(

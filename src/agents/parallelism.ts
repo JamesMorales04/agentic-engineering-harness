@@ -1,8 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { minimatch } from "minimatch";
+import { resourceClaimConflicts, resourceClaimOrderingViolations } from "../architecture/workGraph.js";
 import type { HarnessProjectConfig } from "../core/types.js";
-import type { DelegationTask } from "./outputContracts.js";
+import type { WorkUnitOutput } from "./outputContracts.js";
 
 interface GraphEdge { from: string; to: string; relation?: string; }
 interface GraphSnapshot {
@@ -16,7 +17,7 @@ interface GraphSnapshot {
 export interface TaskConflict { a: string; b: string; reasons: string[]; }
 export interface ParallelismPlan { taskId: string; waves: string[][]; conflicts: TaskConflict[]; graphUsed: boolean; taskNodes?: Record<string, string[]>; }
 
-export async function planParallelism(root: string, config: HarnessProjectConfig, taskId: string, tasks: DelegationTask[]): Promise<ParallelismPlan> {
+export async function planParallelism(root: string, config: HarnessProjectConfig, taskId: string, tasks: WorkUnitOutput[]): Promise<ParallelismPlan> {
   const graph = await loadBeforeGraph(root, config, taskId); const conflicts: TaskConflict[] = []; const taskNodes: Record<string, string[]> = {};
   if (graph) for (const task of tasks) taskNodes[task.id] = [...nodesForScopes(task.scope, graph)].sort();
   for (let i = 0; i < tasks.length; i += 1) for (let j = i + 1; j < tasks.length; j += 1) {
@@ -24,10 +25,25 @@ export async function planParallelism(root: string, config: HarnessProjectConfig
     if (reasons.length) conflicts.push({ a: tasks[i].id, b: tasks[j].id, reasons });
   }
   const waves: string[][] = []; const remaining = new Map(tasks.map((task) => [task.id, task])); const completed = new Set<string>();
+  const orderingViolations = resourceClaimOrderingViolations(tasks.map((task) => ({ id: task.id, resourceClaims: task.resourceClaims ?? [] })));
+  if (orderingViolations.length) throw new Error(`Cannot schedule delegation plan: ${orderingViolations.join(", ")}`);
+  const orderedClaims = new Map<string, Array<{ resource: string; order?: number }>>(tasks.map((task) => [task.id, (task.resourceClaims ?? []).filter((claim) => claim.mode === "ORDERED_SEQUENCE").map((claim) => ({ resource: claim.resource, order: claim.order }))]));
+  const orderedReadinessSatisfied = (task: WorkUnitOutput): boolean => {
+    for (const claim of orderedClaims.get(task.id) ?? []) {
+      const order = claim.order;
+      if (order === undefined) continue;
+      for (const [otherId, otherClaims] of orderedClaims) {
+        if (otherId === task.id || completed.has(otherId)) continue;
+        if (otherClaims.some((other) => other.resource === claim.resource && other.order !== undefined && other.order < order)) return false;
+      }
+    }
+    return true;
+  };
   while (remaining.size) {
-    const wave: DelegationTask[] = [];
+    const wave: WorkUnitOutput[] = [];
     for (const task of remaining.values()) {
       if (!task.dependencies.every((dep) => completed.has(dep))) continue;
+      if (!orderedReadinessSatisfied(task)) continue;
       if (wave.some((other) => conflicts.some((conflict) => ((conflict.a === task.id && conflict.b === other.id) || (conflict.b === task.id && conflict.a === other.id))))) continue;
       wave.push(task);
     }
@@ -37,10 +53,11 @@ export async function planParallelism(root: string, config: HarnessProjectConfig
   return { taskId, waves, conflicts, graphUsed: Boolean(graph), taskNodes: graph ? taskNodes : undefined };
 }
 
-function conflictReasons(a: DelegationTask, b: DelegationTask, graph: GraphSnapshot | undefined, taskNodes: Record<string, string[]>, config: HarnessProjectConfig): string[] {
+function conflictReasons(a: WorkUnitOutput, b: WorkUnitOutput, graph: GraphSnapshot | undefined, taskNodes: Record<string, string[]>, config: HarnessProjectConfig): string[] {
   const reasons: string[] = [];
   if (a.dependencies.includes(b.id) || b.dependencies.includes(a.id)) reasons.push("dependency");
   if (scopesOverlap(a.scope, b.scope)) reasons.push("scope-overlap");
+  for (const conflict of resourceClaimConflicts(a.resourceClaims ?? [], b.resourceClaims ?? [])) reasons.push(`resource-claim:${conflict}`);
   if (!graph) return reasons;
   if (shareCommunity(new Set(taskNodes[a.id] ?? []), new Set(taskNodes[b.id] ?? []), graph)) reasons.push("graphify-community-overlap");
   const scheduling = config.codeIntelligence?.scheduling;

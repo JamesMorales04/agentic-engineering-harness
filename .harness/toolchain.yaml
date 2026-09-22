@@ -33,7 +33,7 @@ profiles:
 tools:
   git: { kind: system, command: git, required: true, activateWhen: [always] }
   node: { kind: mise, command: node, source: node, version: "22", required: true, activateWhen: [always] }
-  codex: { kind: mise, command: codex, source: "npm:@openai/codex", version: latest, activateWhen: [runtime:codex] }
+  codex: { kind: mise, command: codex, source: "npm:@openai/codex", version: "0.156.1", activateWhen: [runtime:codex] }
   opencode: { kind: mise, command: opencode, source: "aqua:anomalyco/opencode", version: latest, activateWhen: [runtime:opencode] }
   paseo: { kind: mise, command: paseo, source: "npm:@getpaseo/cli", version: latest, activateWhen: [orchestration:paseo, delivery:paseo] }
   openspec: { kind: mise, command: openspec, source: "npm:@fission-ai/openspec", version: latest, activateWhen: [spec-authoring:openspec] }

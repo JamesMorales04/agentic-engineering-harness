@@ -1,0 +1,221 @@
+# Core Architecture v2 Status
+
+**Role:** Living roadmap and current-state evidence map. The normative target is [Core Architecture v2](CORE_ARCHITECTURE_V2.md). Conformance lane boundaries are in [Core Architecture v2 Conformance](CORE_ARCHITECTURE_V2_CONFORMANCE.md); historical incidents and findings remain in the [Engineering Ledger](ENGINEERING_LEDGER.md).
+
+## Evidence and verification boundary
+
+The baseline current-state evidence came from the read-only architecture audit at commit f1518caf405f44851227cf73ea37b79267b1a098. S1 deterministic verification was run on 2026-09-24 and is recorded in the affected rows below and in [Core Architecture v2 Conformance](CORE_ARCHITECTURE_V2_CONFORMANCE.md). S0 documentation work did not rerun implementation checks; the new S1 evidence does not certify provider runtime behavior.
+
+EVIDENCE LANE names the kind of evidence cited in the audit, not a claim that a test or provider was rerun during S0. REAL_PROVIDER, BROWSER, ADVERSARIAL, and PACKED_E2E evidence remain separate from CONTRACT, UNIT, and INTEGRATION evidence. Historic test counts are checkpoint records, not current certification.
+
+## Stable subsystem roadmap
+
+| Subsystem | TARGET | CURRENT | STATUS | GAP | DEPENDENCIES | NEXT GATE | EVIDENCE | EVIDENCE LANE | LAST VERIFIED |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Candidate truth and assembly | Immutable CandidateRevisions; controller-owned assembly; truthful bases and lineage. | Assembly, wave lineage, repair, and workspace identity checks are wired. S1 candidate assembly invalidates bindings and structured results for the previous candidate. | DETERMINISTICALLY_CERTIFIED | Downstream impact and assurance consumers remain open. | Controller fencing; execution identity. | Keep deterministic certification scoped to candidate truth; every accepted mutation remains a ChangeSet. | src/candidates/; src/operations/state.ts; tests/candidateIdentity.test.ts, candidateWaveLineage.test.ts, candidateRepairProtection.test.ts, tests/operations.test.ts, tests/structuredResultGateway.test.ts. | CONTRACT; UNIT | 2026-09-24 S1 remediation deterministic verification |
+| Authority kernel | Frozen policy, role ceilings, leases, epoch fencing, gated actions, and consumed scoped HumanDecisions. | Epoch/token, leases, and action gates exist; S1 takeover invalidates old-epoch execution bindings and leases. Operation state snapshots participant IDs and complete canonical ExecutionBinding bodies before callbacks, comparing the pre/post ID union, alongside the complete canonical ResolvedOperationPolicy snapshot. Only `operation.policy.bound` may create/rebind an unchanged validated policy; participant bind may create/replace exactly one validated binding; candidate assembly and controller takeover may invalidate identities; a changed, previously bound semantics owner event may invalidate its policy and bindings. HumanDecision has no production consumer; OPA role casing mismatch; cancellation may lack epoch proof. S1 now snapshots executionSemanticsDigest and operationExecutionRevision presence/value before callbacks. Generic patch/update paths reject digest add, replace, clear, and alias mutation, and cannot synthesize an absent revision; a changed previously bound digest advances the revision once and clears policy and participant bindings. | PARTIAL | Human and cancellation boundaries remain incomplete; authority consumption is not complete across every action path. | Candidate identity; S1 execution identity. | All mutations, decisions, and cancellation prove current epoch, candidate, and policy. | src/security/; src/operations/state.ts; tests/security/controllerFencing.test.ts, tests/operations.test.ts, humanDecision.test.ts. | CONTRACT; UNIT; ADVERSARIAL evidence is tracked separately in Conformance | 2026-09-24 S1 execution-semantics/revision deterministic verification |
+| Intent, route, assurance, and ResolvedOperationPolicy | Semantic intent and route constrained by deterministic policy; independent assurance minimum; frozen policy digest. | S1 persists the immutable ResolvedOperationPolicy before participant binding. Non-explicit intent uses typed INTENT assessment; route uses typed ROUTE assessment through the AgentTopology-resolved Semantic Assessor and Paseo runtime. Explicit user intent remains DETERMINISTIC. INTENT admits HIGH-risk requests within its existing assessment ceilings; deterministic high-risk routing and CRITICAL assurance floors remain unchanged. Change/issue routes bind into the frozen policy. S3 authority consumption remains future work. | IMPLEMENTED | Broader S3 authority consumption is not part of S2; REAL_PROVIDER execution is not established by deterministic fakes. | S1 identity; AgentTopology and semantic capability policy; Paseo runtime; S3 authority kernel. | Keep S1 policy identity and deterministic floors unchanged; certify actual provider behavior in the separately governed lane. | src/entry.ts, src/audit/intent.ts, src/core/triage.ts, src/cli.ts, src/operations/change.ts, src/core/contract.ts, src/semantic/assessment.ts; tests/auditIntent.test.ts, tests/triage.test.ts, tests/semanticAssessment.test.ts. | CONTRACT; UNIT; REAL_PROVIDER pending | 2026-09-24 S2 INTENT risk remediation deterministic verification |
+| Semantic decision runtime | Production semantic decisions use bounded evidence-bound model assessment with deterministic post-checks. | SemanticAssessmentServiceV1 resolves one AEH Semantic Assessor from AgentTopology and semantic capability policy, executes the configured agent through Paseo, validates typed output, policy, binding, receipt, cache, and actual session provenance, and stores SemanticAssessmentV1. INTENT, ROUTE, STACK, ISSUE, FAILURE, CANDIDATE_IMPACT, and VALIDATION_NEED are supported. Semantic Assessor is an AEH Agent and is rejected from WorkGraph Participant invocation. STACK additionally requires canonical-root and repository-content binding; its generic inventory is aligned with the Git digest file set and currentness is checked before/after capture and after assessment. | IMPLEMENTED | Deterministic Paseo fakes verify contracts but do not establish REAL_PROVIDER behavior. | Accepted S1 identity interfaces; AgentTopology; Paseo; deterministic semantic capability policy. | Keep provider certification separate; reject stale topology, session, evidence, policy, and cache provenance. | src/semantic/assessment.ts, src/semantic/runtime.ts, src/agents/permissions.ts, src/agents/outputContracts.ts, src/workers/agentPrompt.ts; tests/semanticAssessment.test.ts, tests/semanticAssessmentRuntime.test.ts, tests/semanticAssessorTopology.test.ts, tests/participantsStackDiscovery.test.ts. | CONTRACT; UNIT; REAL_PROVIDER pending | 2026-09-24 S2 boundary remediation deterministic verification |
+| Stack discovery and semantic stack profile | HYBRID: model interprets bounded repository/candidate evidence; deterministic code verifies identity, read boundary, receipts, profile schema, provenance, policy, and cache freshness. | runTask supplies current bound repository/candidate evidence to discoverProjectStackProfile; profile output is MODEL-only, preserves unknowns, and is passed to delegated participant planning and validation script resolution. STACK requires `repositoryRootDigest` for the canonical realpath and matches `repositoryDigest` before scan, after evidence capture, after the assessor returns, and before profile return. Evidence paths come from the Git-tracked and non-ignored untracked inventory used by the digest, or a stricter generic subset; ignored `.env` and `.harness` runtime/cache paths are absent. Model-proposed projectSkillRoots are preserved only after normalized relative-path, existence, and canonical-root containment checks and grant no skills/capabilities. Technology-specific deterministic recognition and detector APIs are removed. | IMPLEMENTED | Repository evidence limits may produce explicit unknowns. Real model interpretation is not certified by fixture tests. | Semantic decision runtime; candidate identity; authorized repository boundary. | Keep the generic non-ignored read inventory, root/content checks, and stale-result rejection; actual provider evidence remains a separate lane. | src/participants/stack.ts, src/participants/index.ts, src/core/run.ts, src/core/git.ts, src/semantic/runtime.ts, src/agents/waveExecutor.ts, src/architecture/validationRequirements.ts; tests/participantsStackDiscovery.test.ts, tests/participantsCanonical.test.ts, tests/semanticAssessmentRuntime.test.ts. | CONTRACT; UNIT; REAL_PROVIDER pending | 2026-09-24 S2 repository evidence/path remediation deterministic verification |
+| Issue intake | HYBRID: typed ISSUE interpretation plus canonical Planner authoring and deterministic source/scope/policy checks. | Public import/implement paths preserve the raw issue snapshot, assess it through Semantic Assessor, require the canonical Planner, preserve explicit requirements and unknowns, then run typed ROUTE assessment with deterministic routing/assurance floors. The no-Planner bypass was removed. | IMPLEMENTED | GitHub/Paseo live-provider issue journeys are not certified by deterministic fixtures. | Semantic decision runtime; immutable issue snapshot; canonical Planner; route policy. | Preserve issue source identity and planner requirement checks; provider-backed issue journey remains separate evidence. | src/issues/intake.ts, src/cli.ts, src/semantic/assessment.ts; tests/issueIntake.test.ts, tests/issueDeliveryIdentity.test.ts. | CONTRACT; UNIT; REAL_PROVIDER pending | 2026-09-24 S2 deterministic verification |
+| WorkGraph, scheduling, and resource claims | Model proposes decomposition; deterministic validation/scheduler enforces dependencies, scope, claims, and isolation. | WorkGraph, claims, topological waves, parallelism, and scope checks remain deterministic. Typed semantic ROUTE and issue-route decisions feed contract routing and therefore the bounded Planner/WorkGraph path; stack profile is supplied to ParticipantPlan compilation and validation resolution. | IMPLEMENTED | Full operation-policy and assurance integration remains beyond S2; S3 authority consumption and S4 impact-driven assurance recompilation remain future slices. | Route/policy; candidate truth; semantic decision runtime. | Prove every executable wave has validated claims and current candidate bases; keep S3/S4 concerns outside S2. | src/architecture/workGraph.ts, src/agents/parallelism.ts, src/agents/waveExecutor.ts, src/core/triage.ts, src/issues/intake.ts; tests/architectureWorkGraph.test.ts, tests/parallelism.test.ts, tests/triage.test.ts. | CONTRACT; UNIT; INTEGRATION | 2026-09-24 S2 deterministic verification |
+| Participant and role compiler | Deterministically compile minimal ParticipantPlan, canonical roles, specializations, skills, ToolPacks, scope, and output contracts. | S1 role ceilings and per-participant bindings remain unchanged. Semantic Assessor is included only in the Agent role space and cannot be selected as a Participant; stack profile specializes bounded planner assignments without granting new tools or authority. | PARTIAL | Repairer selection and complete catalog/tool-policy consumption remain open. | WorkGraph; policy; KnowledgeGate; Semantic Assessor remains outside Participant plans. | Retain deterministic S1 role ceilings and Agent/Participant distinction. | src/architecture/participantPlan.ts, src/participants/types.ts, src/agents/types.ts, src/agents/config.ts, src/workers/agentPrompt.ts; tests/semanticAssessorTopology.test.ts, tests/architectureWorkGraph.test.ts. | CONTRACT; UNIT | 2026-09-24 S2 deterministic verification |
+| Knowledge, Librarian, and skill trust | Version-aware knowledge resolution; read-only Librarian; deterministic trust; operation-local skill procedures delivered and identity-bound. | S1 retains accepted ephemeral procedure text and per-step claim/source grounding in a scoped SkillManifest, projects it verbatim only to the authorized assignee, and binds its digest through launch and result provenance. The procedure-text mutation rejection and trust-decision-digest mutation rejection both remain asserted. | PARTIAL | Provider-backed Librarian evidence and full freshness/source-policy lifecycle remain unverified; no real-provider claim is made. | Participant compiler; S1 SkillManifest identity; S5 context runtime. | Keep trust deterministic and preserve the exact S1 manifest/projection boundary; provider evidence remains a separate lane. | src/knowledge/index.ts, src/architecture/executionIdentity.ts, src/workers/agentPrompt.ts; tests/knowledgeGate.test.ts, tests/agentPromptStructuredResultProvenance.test.ts, tests/distributedExecutionIdentity.test.ts. | CONTRACT; UNIT; REAL_PROVIDER pending | 2026-09-24 S1 remediation deterministic verification |
+| Context Runtime and progressive exposure | JIT, authorized, budgeted, source-provenanced ContextManifest; verbatim normative fragments; exact prompt digest. | S1 computes actual rendered ContextManifest and PromptManifest digests at the active prompt boundary and binds them to each ExecutionBinding; prepared prompts are rehashed and ephemeral procedure bytes are checked verbatim. Full runtimeV2 retrieval, authorization, continuation, and budgeting are not wired. | PARTIAL | S5 owns the full progressive Context Runtime; this S1 work closes only truthful launch identity and projection. | S1 identity and frozen controller-issued context-authorization interface; S3 defines authority semantics and may proceed in parallel. | Keep active launch manifests exact; implement retrieval/continuation only in its assigned slice. | src/workers/agentPrompt.ts, src/context/runtimeV2.ts; tests/agentPromptStructuredResultProvenance.test.ts, tests/distributedExecutionIdentity.test.ts. | CONTRACT; UNIT; REAL_PROVIDER pending | 2026-09-24 S1 remediation deterministic verification |
+| ExecutionBlueprint and RoleInvocation identity | Complete static blueprint and per-launch binding without granting authority. | Versioned ExecutionBlueprint V2 binds operation execution revision, candidate, epoch, frozen policy, WorkGraph, ParticipantPlan/catalog, role/specialization, ToolPack, claims, validation resolution, output contract, and SkillManifest digests. The compiler deep-freezes the exact expanded return value. Per-participant ExecutionBinding V2 adds generation, approved runtime/model and actual durable session identity, actual prompt/context digests, and lease references without granting authority. Operation state snapshots participant IDs and full canonical binding bodies before callbacks, compares the pre-callback ID set ∪ post-callback participant IDs, and compares the complete canonical policy snapshot; only validated bind and owning clear-only invalidation lifecycles may change those identities. The operation transition guard snapshots complete policy/binding bodies and digest/revision state before callbacks. First and identical digest binds preserve execution revision; replacing bound semantics advances exactly once and clears policy/all participant bindings. Generic mutation cannot synthesize a missing revision. | DETERMINISTICALLY_VERIFIED (S1 contract lane) | REAL_PROVIDER execution and full S5 session/context lifecycle are not claimed. | Policy; ParticipantPlan; SkillManifest. | Preserve lifecycle-owned binding transitions; provider execution and full S5 session/context lifecycle remain separate evidence gates. | src/architecture/executionIdentity.ts, src/architecture/participantPlan.ts, src/operations/state.ts, src/workers/runtimeSessions.ts; tests/executionIdentity.test.ts, tests/architectureWorkGraph.test.ts, tests/runtimeSessions.test.ts, tests/operations.test.ts, tests/security/controllerFencing.test.ts. | CONTRACT; UNIT | 2026-09-24 S1 execution-semantics/revision deterministic verification |
+| StructuredResult provenance | Every result binds current candidate, operation execution revision, generation, epoch, blueprint, policy, context/prompt, skills, runtime, and contract. | Gateway requires full versioned binding and checks it against current durable candidate, policy, generation, epoch, output contract, runtime, and manifest digests. Direct, Podman, Paseo, and distributed production adapters propagate the binding and require the returned actual runtime session id to equal it; candidate assembly and takeover invalidate old bindings. Operation state snapshots participant IDs and complete canonical binding bodies before callbacks, compares the pre/post ID union, and retains the complete canonical policy snapshot; only explicit validated bind and owning clear-only invalidations may change those identities. Generic patch/update paths cannot preempt the semantics digest or upgrade an absent operation execution revision, so an owning bind cannot be bypassed by a generic future digest. Missing legacy revisions remain unsupported at execution boundaries. | DETERMINISTICALLY_VERIFIED (adapter-boundary evidence) | Tests capture deterministic transport adapters; they do not certify real providers, containers, or Paseo service behavior. | S1 execution identity; S3 controller fencing. | Preserve full provenance and current-candidate checks; real transport/provider behavior remains a separate evidence gate. | src/workers/resultGateway.ts, src/workers/agentPrompt.ts, src/workers/runtimeSessions.ts, src/distributed/worker.ts, src/operations/state.ts; tests/structuredResultGateway.test.ts, tests/agentPromptStructuredResultProvenance.test.ts, tests/runtimeSessions.test.ts, tests/distributedExecutionIdentity.test.ts, tests/paseoPendingExecutionIdentity.test.ts, tests/workerExecutionAuthority.test.ts, tests/operations.test.ts. | CONTRACT; UNIT; REAL_PROVIDER pending | 2026-09-24 S1 execution-semantics/revision deterministic verification |
+| Paseo session identity | Reuse requires exact durable operation/participant/candidate/blueprint/policy/context binding. | S1 Paseo launches carry the complete versioned execution binding and bind the structured-result channel to the actual returned Paseo agent ID. Fresh structured launches keep the result channel inert while pending, then finalize channel provenance and attach full-binding labels before continuing that same agent; resumed structured turns require the persisted binding digest. The separate PaseoSessionBindingV1 reuse contract remains unconsumed by general session reuse. | PARTIAL | Full durable reuse/rotation identity, including all S5 context semantics, remains outside this S1 closure. | S1 ExecutionBinding; S5 context manifests; S9 supervision. | Consume the frozen S1 binding in the future session-reuse lifecycle and rotate on every identity mismatch. | src/paseo/launchSpec.ts, src/paseo/sdk.ts, src/paseo/runtimeCore.ts, src/workers/agentPrompt.ts, src/workers/resultGateway.ts, src/paseo/sessionBinding.ts; tests/agentPromptStructuredResultProvenance.test.ts, tests/paseoPendingExecutionIdentity.test.ts, tests/paseoInitialTurnBarrier.test.ts, tests/paseo/sessionBinding.test.ts. | CONTRACT; UNIT; REAL_PROVIDER pending | 2026-09-24 S1 remediation deterministic verification |
+| CandidateImpact | Assess the assembled candidate semantically and deterministically with typed impact dimensions. | Every production CandidateAssembler path in runTask, wave integration, and repair receives the semantic runtime, assesses bounded post-assembly file/patch receipts bound to the new CandidateRevision, validates paths/provenance/policy/digests, and reverses an unbound patch on invalid assessment. Unbound precomputed impact inputs are removed; without a runtime the projection is BLOCKED and retains independent review. The projected impact preserves unknowns and semantic assessment digest. | IMPLEMENTED | S4 downstream assurance/reviewer/validation/acceptance recompilation is explicitly future scope; deterministic tests do not certify provider interpretation. | Candidate truth; semantic decision runtime. | S4 consumes impact later; S2 does not recompile downstream assurance. | src/candidates/assembler.ts, src/candidates/wave.ts, src/candidates/repair.ts, src/core/run.ts; tests/candidateAssembler.test.ts, tests/candidateWaveLineage.test.ts, tests/runRepairCandidateLifecycle.test.ts, tests/candidateRepairProtection.test.ts, tests/semanticAssessment.test.ts. | CONTRACT; UNIT; REAL_PROVIDER pending | 2026-09-24 S2 deterministic verification |
+| Review and assurance recompilation | Impact and policy compile required reviewers, dimensions, and independent evidence. | Review lifecycle, independent participants, repair, and convergence exist; impact flags are not consumed to compile required reviewers/dimensions. | PARTIAL | Review requirements are not recompiled from actual impact. | CandidateImpact; ParticipantPlan; acceptance. | A required impact dimension blocks progression without independent evidence. | src/agents/reviewLifecycle.ts; tests/reviewLifecycle.test.ts, reviewRepairCandidateLifecycle.test.ts. | UNIT; INTEGRATION | 2026-09-23 audit snapshot; not rerun |
+| Validation | Resolve required properties to approved validators; produce machine-verifiable current-candidate facts. | Stack semantic profile is passed into project-script resolution; deterministic validator/provider matching and current-candidate evidence checks remain. VALIDATION_NEED is supported by SemanticAssessmentV1 but is not wired to an unrelated validation redesign because no additional S2 caller is required. | PARTIAL | Provider mapping/coverage, assurance recompilation, and managed acceptance remain outside S2. | WorkGraph; CandidateImpact; provider contracts; semantic stack profile. | Prove required resolutions run or block, separately from acceptance; later validation redesign remains future scope. | src/core/verify.ts, src/architecture/validationRequirements.ts, src/agents/waveExecutor.ts, src/participants/stack.ts; tests/validationProviders.test.ts, tests/participantsStackDiscovery.test.ts. | CONTRACT; UNIT; INTEGRATION; REAL_PROVIDER and BROWSER pending where required | 2026-09-24 S2 deterministic verification |
+| AcceptanceOracle | Assertions, verification requirements, deterministic resolver, provenance evidence, independent acceptance oracle, required certification. | Quality gate and synchronous Lead acceptance exist; managed Lead acceptance is deferred; no complete production oracle path exists. | PARTIAL | Managed operation lacks candidate-bound acceptance before delivery. | Identity; impact; validation; review; human decisions. | Persist AcceptanceOracle disposition; validation PASS alone cannot accept. | src/agents/reviewLifecycle.ts, src/certification/; tests/reviewLifecycle.test.ts, certification.test.ts. | UNIT; PACKED_E2E and REAL_PROVIDER acceptance journeys pending | 2026-09-23 audit snapshot; not rerun |
+| Repair, recovery, and convergence | Typed diagnosis and bounded repair/replan; every repair creates a new candidate. | Production runTask preserves mechanically certain failure facts as DETERMINISTIC and sends ambiguous bounded failure evidence to the candidate-bound Semantic Assessor. Failure unknowns/provenance are retained in the recovery decision/event. Repair candidate assembly receives the same candidate-impact semantic path and fails closed with rollback on invalid assessment. | PARTIAL | Full recovery/quality state integration, S4 impact-driven assurance recompilation, and later convergence/runtime concerns remain future dependencies. | Candidate truth; execution identity; review; semantic decision runtime. | Keep retries, budgets, and transitions deterministic; S4 consumes impact without entering this slice. | src/agents/recovery.ts, src/core/run.ts, src/candidates/repair.ts, src/semantic/assessment.ts; tests/recovery.test.ts, tests/candidateRepairProtection.test.ts, tests/candidateAssembler.test.ts. | CONTRACT; UNIT; INTEGRATION; REAL_PROVIDER pending | 2026-09-24 S2 deterministic verification |
+| Supply-chain provenance | Packed candidate receives verified SBOM, SLSA/in-toto provenance, BuildIdentity, and policy-required Cosign evidence. | Trivy/SBOM, provenance, build identity, verification, and optional Cosign flows exist; they are not mandatory on the normal accepted path. | PARTIAL | Delivery does not require a complete artifact-bound chain. | Candidate identity; delivery policy. | Tampered, missing, or wrong-builder evidence blocks accepted delivery where policy requires it. | src/provenance/; tests/provenance.test.ts, buildHygiene.test.ts. | UNIT; REAL_PROVIDER/provider-backed signing lane pending | 2026-09-23 audit snapshot; not rerun |
+| Delivery and reconciliation | Acceptance-gated exact effects with durable intent, receipt, and safe reconciliation. | Gated commit/push/PR and reconciliation exist; runTask can deliver after PASS before managed Lead acceptance. | PARTIAL | Delivery ordering and controller-owned handoff/reconciliation are incomplete. | Acceptance; authority; supply chain. | Block every effect until current AcceptanceOracle disposition and required gates. | src/delivery/finalize.ts, src/security/gatedAction.ts; tests/security/actionReconciliation.test.ts, deliveryFinalize.test.ts. | INTEGRATION; PACKED_E2E and external-effect certification pending | 2026-09-23 audit snapshot; not rerun |
+| Runtime supervision | Controller owns process/provider leases, renewal, takeover, release, and cleanup. | Operation supervisor, durable epochs/outbox, managed runtime, and Serena pool exist; provider lease/release paths are incomplete. | PARTIAL | Full lifecycle and cancellation epoch fencing are not wired. | Authority; Paseo/session identity. | Prove single writer, takeover invalidation, drain, release, and cleanup. | src/operations/supervisor.ts, src/runtime/; tests/runtimeSupervisorV2.test.ts, operationStateDurability.test.ts. | UNIT; INTEGRATION; REAL_PROVIDER lifecycle lane pending | 2026-09-23 audit snapshot; not rerun |
+| Product, Control Center, and human interaction | Semantic projection, usable typed decisions, visible blockers, and safe control commands. | Loopback/auth/CSRF server and recording endpoint exist; decision UI contract mismatch/no callsite; ledger unused. | PARTIAL | User decisions do not resume or authorize the relevant operation; operation states are too coarse. | Authority; runtime; operation state model. | Align API/UI; consume current scoped decisions; reject stale decisions and unfenced cancellation. | src/control-center/, src/security/humanDecision.ts; tests/controlCenter.test.ts, controlCenterApiContracts.test.ts. | UNIT; BROWSER pending | 2026-09-23 audit snapshot; not rerun |
+| Observability and Engineering Evals | Candidate/execution-bound traces and metrics plus versioned reproducible advisory evals. | NDJSON and OTel spans exist; runner exists; no shipped eval corpus, metric instruments, or verified OTLP lane. | PARTIAL | No complete reproducible evidence/export path. | Execution identity; certification. | Ship corpus and verify local trace/metric export; keep evals advisory. | src/telemetry/, src/evals/; tests/metrics.test.ts, evals.test.ts. | UNIT; INTEGRATION; REAL_PROVIDER/OTLP lane pending | 2026-09-23 audit snapshot; not rerun |
+| Security policy, isolation, sandbox, and SAST | OPA, role ceilings, tool gates, rootless isolation, network/scope controls, validator isolation, and candidate-bound SAST evidence. | OPA/action gates/Podman restrictions exist; canonical role casing mismatch; rootless/network isolation and validator command isolation are unproven; SAST is not wired. | PARTIAL | Policy and sandbox checks do not prove end-to-end enforcement. | S3 authority; execution identity; providers. | Deny prohibited role actions and certify isolation; bind SAST evidence to candidate. | src/security/, src/workers/podman.ts; security tests. | UNIT; provider sandbox evidence and ADVERSARIAL lane separate/pending | 2026-09-23 audit snapshot; not rerun |
+| Contract and integration validation | Pact/OpenAPI/BDD and isolated service environments produce current candidate-bound reports and clean up. | Pact/OpenAPI and generic OCI integration environment exist; verifier may skip; lifecycle/coverage are incomplete. | PARTIAL | Required tool/provider absence and real lifecycle are not consistently blocking. | Validation requirements; S10 isolation/sandbox. | Prove contract diffs, service readiness/cleanup, and fail-closed missing tools. | src/providers/validation/; tests/openapi.test.ts, validationProviders.test.ts. | UNIT; INTEGRATION; PACKED_E2E pending | 2026-09-23 audit snapshot; not rerun |
+| Browser and visual validation | Browser/visual evidence is candidate-bound and traceable to packed UI behavior. | External validator adapter exists; requirement mapping exists, but no browser provider/candidate journey certification. | PARTIAL | Browser evidence and Control Center journeys are not produced end-to-end. | Validation resolver; Control Center; packed candidate. | Run required browser assertions and persist candidate-bound trace/screenshot. | src/validators/external.ts, toolEvidence.ts; provider contract tests. | CONTRACT; BROWSER pending; PACKED_E2E pending | 2026-09-23 audit snapshot; not rerun |
+| Real-provider certification matrix | Deterministic and real-provider lanes remain distinct; claimed capabilities have complete fresh packed-candidate evidence. | CertificationCore, 22-capability matrix, packed bootstrap, and Codex adapter exist; provider matrix/journeys are incomplete. | PARTIAL | No full real-provider/Paseo/Podman/browser campaign. | All claimed capability paths; acceptance and evidence gates. | Certify each claimed provider with receipts and independent oracle. | src/certification/; tests/certification.test.ts, certificationMatrix.test.ts. | CONTRACT; UNIT; REAL_PROVIDER pending; PACKED_E2E incomplete | 2026-09-23 audit snapshot; not rerun |
+| Learning and feedback | Versioned post-run candidates; independent evaluation and governed adoption; no implicit authority mutation. | Memory recall, telemetry, evals, and within-run repair exist; no cross-run learning pipeline. | DEFERRED | Learning and persistent skill promotion are explicitly post-v2. | Observability; human-governed policy. | Reopen only with versioned candidate and explicit adoption gate. | src/memory/, src/evals/; advisory use only. | UNIT for advisory contracts; adoption lane deferred | 2026-09-23 audit snapshot; not rerun |
+| Self-hosting readiness | Deterministic composite gate plus disposable self-modification fixture. | Packed bootstrap and some system campaigns exist; no complete composite or fixture proof. | BLOCKED | Identity, acceptance, recovery, provider, adversarial, and isolation evidence remain incomplete. | Every required certified row, especially security, delivery, and certification. | Pass the composite gate and prove the source checkout remains untouched through a disposable fixture campaign. | src/certification/bootstrap.ts; current conformance/ledger evidence is insufficient. | PACKED_E2E incomplete; REAL_PROVIDER pending; ADVERSARIAL pending | 2026-09-23 audit snapshot; not rerun |
+
+## Approved dependency DAG
+
+The DAG reflects the reconciled S1-S14 ownership. Existing candidate truth and controller-fencing foundations are prerequisites. S2, S3, and S5 can proceed in parallel after S1 interfaces are frozen. S7 may progress alongside S4-S6; S9 may proceed alongside S6-S8 after authority and context identity contracts are fixed. S10 is the security isolation slice. S11 adapters may be developed earlier, but their certification evidence waits for stable acceptance and policy interfaces.
+
+~~~mermaid
+flowchart TD
+  F[Existing candidate truth and controller-fencing foundation] --> S1[S1 Frozen Execution and Skill Identity]
+  S1 --> S2[S2 Production Semantic Decision Runtime]
+  S1 --> S3[S3 Authority Kernel and Human Control]
+  S1 --> S5[S5 Progressive Context and Paseo Session Identity]
+  S2 --> S4[S4 CandidateImpact and Assurance Recompilation]
+  S3 --> S4
+  S5 --> S4
+  S3 --> S6[S6 AcceptanceOracle and Objective Completion]
+  S4 --> S6
+  S1 --> S7[S7 Supply-Chain Provenance Gate]
+  S6 --> S8[S8 Controller-Owned Delivery and Reconciliation]
+  S7 --> S8
+  S3 --> S8
+  S3 --> S9[S9 Runtime Supervision and Control Center]
+  S5 --> S9
+  S3 --> S10[S10 Security Isolation, Sandbox and SAST]
+  S1 --> S10
+  S6 --> S11[S11 Contract, Integration, Browser and Visual Validation]
+  S9 --> S11
+  S10 --> S11
+  S1 --> S12[S12 Observability and Engineering Evals]
+  S6 --> S13[S13 Real-Provider Certification Matrix]
+  S7 --> S13
+  S8 --> S13
+  S9 --> S13
+  S10 --> S13
+  S11 --> S13
+  S12 --> S13
+  S13 --> S14[S14 Self-Hosting Composite Gate]
+~~~
+
+The cross-slice dependency summary is:
+
+- S1 → S2, S3, S5; it also establishes identity inputs for S7, S10, and S12.
+- S2 + S3 + S5 → S4.
+- S3 + S4 → S6.
+- S7 can progress alongside S4-S6 after candidate/build identity is available; S6 + S7 + S3 → S8.
+- S3 + S5 → S9, which can proceed alongside S6-S8.
+- S3 + S1 → S10; S6 + S9 + S10 → S11.
+- S12 proceeds in parallel after S1.
+- S13 requires the implemented and gated paths for each capability being claimed, including relevant S6-S12 evidence.
+- S14 requires all required capability certifications and the disposable self-modification campaign.
+
+## S1-S14 implementation slices
+
+### S1 — Frozen Execution & Skill Identity
+
+**Objective:** establish truthful, immutable policy, role, skill, blueprint, binding, context/prompt, and structured-result identity at launch and result boundaries.
+
+**Dependencies:** existing candidate truth and controller-fencing foundation.
+
+**Definition of Done:**
+
+1. A deterministic compiler produces immutable ResolvedOperationPolicy and per-role RoleInvocationPolicy; model output cannot choose, weaken, or widen either.
+2. A versioned ExecutionBlueprint binds project, operation execution revision, candidate revision/digest, controller epoch, policy, WorkGraph/ParticipantPlan/catalog, participant role/specialization, ToolPack, resource claims, validation resolution, output contract, and SkillManifest digests.
+3. Per-participant ExecutionBinding binds generation, approved runtime/model/session, actual ContextManifest and PromptManifest digests, and applicable controller-issued lease identity.
+4. Accepted ephemeral procedure content is retained in SkillManifest, projected verbatim only to its assigned authorized participant, and included in the prompt/binding digest. An ID-only assignment fails.
+5. Every production structured-result launch path propagates the full versioned binding. The gateway rejects missing, stale, replayed, wrong-candidate, wrong-generation, wrong-epoch, wrong-policy, wrong-blueprint, wrong-skill/context/prompt, wrong-output-contract, and wrong-runtime results.
+6. Candidate assembly invalidates all execution bindings and results for the previous candidate. Controller takeover invalidates old-epoch writers and leases.
+7. Obsolete identity versions fail with explicit unsupported-version/migration errors; no dual-read compatibility path is added.
+8. Deterministic tests cover valid propagation and each rejection case across direct, Podman, Paseo, and distributed transports. These tests do not claim real-provider certification.
+
+recordRevision remains the append-only event/order revision. operationExecutionRevision changes only when execution semantics change, so routine stage events do not stale active bindings.
+
+**Gate:** all eight Definition of Done items hold across production launch/result paths; focused deterministic evidence is complete. No real-provider certification is implied.
+
+### S2 — Production Semantic Decision Runtime
+
+**Objective:** wire bounded semantic assessment into public intent, route, stack, issue, failure, and impact paths, with typed evidence and deterministic post-checks.
+
+**Dependencies:** S1 identity interfaces and the approved model/provider interface.
+
+**Gate:** each public semantic path has an explicit DETERMINISTIC, MODEL, or HYBRID mechanism, preserves unknowns and provenance, and cannot grant authority or bypass policy.
+
+### S3 — Authority Kernel & Human Control
+
+**Objective:** consume scoped HumanDecisions; enforce controller/current-epoch ownership and cancellation fencing; correct OPA canonical-role matching; and make action and policy authority semantics consistent across mutations and effects.
+
+**Dependencies:** S1 execution identity and existing candidate truth.
+
+**Gate:** each decision, mutation, cancellation, and sensitive action is checked against current operation, candidate, policy, actor, scope, lease, and epoch; product choice remains distinct from action authorization.
+
+**Ownership boundary:** security-policy facts required for role ceilings and action authority belong here. Rootless sandbox, network isolation, validator isolation, provider sandbox certification, and SAST closure belong to S10.
+
+### S4 — CandidateImpact & Assurance Recompilation
+
+**Objective:** bind actual post-assembly impact to the current candidate and recompile assurance, reviewers, validation, acceptance assertions, and evidence strength from that impact and policy.
+
+**Dependencies:** S2 semantic runtime, S3 authority/policy, S5 context/session identity, and candidate truth.
+
+**Gate:** no impact result can weaken a policy floor; required dimensions produce required independent evidence; missing or unresolved high-risk impact blocks acceptance.
+
+### S5 — Progressive Context & Paseo Session Identity
+
+**Objective:** wire full progressive Context Runtime v2, JIT/addressable references, continuation semantics, retrieval lifecycle, broader progressive projection, and create/reuse/rotation of PaseoSessionBinding.
+
+**Dependencies:** S1 execution identity and a frozen controller-issued context-authorization interface. S5 can proceed alongside S3 after the shared interface is fixed; S3 owns authority semantics.
+
+**Gate:** each launch/result binds the actual authorized context and prompt; continuation and retrieval remain candidate/session-bound; any session binding mismatch rotates or rejects reuse.
+
+### S6 — AcceptanceOracle & Objective Completion
+
+**Objective:** complete AcceptanceAssertion, VerificationRequirement, OracleResolver, EvidenceBundle, and AcceptanceOracle disposition; enforce objective Definition of Done and managed Lead acceptance ordering before delivery.
+
+**Dependencies:** S3 authority/human controls and S4 impact-driven assurance.
+
+**Gate:** every required assertion has sufficient current candidate-bound evidence; validation PASS or reviewer opinion alone cannot accept; completion evaluates the complete objective evidence set.
+
+### S7 — Supply-Chain Provenance Gate
+
+**Objective:** bind packed-candidate SBOM, provenance, BuildIdentity, and policy-required signing evidence to the artifact and make required provenance a deterministic gate.
+
+**Dependencies:** candidate/build identity. This slice may progress alongside S4-S6.
+
+**Gate:** missing, tampered, stale, or wrong-builder evidence blocks the delivery path wherever policy requires it. Deterministic fixtures remain distinct from provider-backed signing evidence.
+
+### S8 — Controller-Owned Delivery & Reconciliation
+
+**Objective:** route every requested external effect through controller-owned ActionIntent, ToolActionGate, ActionReceipt, and safe reconciliation.
+
+**Dependencies:** S3 authority, S6 acceptance, and S7 provenance where required.
+
+**Gate:** no effect occurs before current acceptance and required policy gates; uncertain non-idempotent outcomes are inspected and reconciled before retry or completion.
+
+### S9 — Runtime Supervision & Control Center
+
+**Objective:** complete controller-owned process/provider lifecycle, leases, renewal/release, takeover, drain/cleanup, semantic operation and participant state projections, and usable typed Control Center decisions/controls.
+
+**Dependencies:** S3 authority and S5 session/context identity. This slice may proceed alongside S6-S8.
+
+**Gate:** single-writer ownership, current-epoch fencing, safe cancellation/resume, accurate projections, and scoped decisions are evidenced end to end.
+
+### S10 — Security Isolation, Sandbox & SAST
+
+**Objective:** prove rootless sandbox and network/scope isolation, validator-command isolation, and candidate-bound SAST evidence under the authority policy.
+
+**Dependencies:** S1 execution identity and S3 role/action policy.
+
+**Gate:** prohibited actions and out-of-scope access are denied; sandbox/provider evidence and SAST reports are candidate-bound. This provider/isolation certification belongs to S10 even when policy semantics are prerequisites in S3.
+
+### S11 — Contract / Integration / Browser / Visual Validation
+
+**Objective:** produce candidate-bound Pact/OpenAPI/BDD, isolated-service integration, browser, and visual evidence, with required-tool absence failing closed and environments cleaning up.
+
+**Dependencies:** S6 acceptance/evidence contracts, S9 Control Center/runtime, and S10 isolation. Adapters may be developed earlier; certification waits for stable interfaces.
+
+**Gate:** required contract and UI assertions resolve to approved providers and current-candidate evidence; missing providers block; browser and visual journeys are reproducible and traceable.
+
+### S12 — Observability & Engineering Evals
+
+**Objective:** complete candidate/execution-bound traces and metrics plus a versioned, reproducible advisory eval corpus and export path.
+
+**Dependencies:** S1 execution identity. This slice may progress in parallel with S2-S11.
+
+**Gate:** telemetry identity is verifiable, local export is reproducible, and evals remain advisory rather than policy or authority.
+
+### S13 — Real-Provider Certification Matrix
+
+**Objective:** certify each claimed capability through freshly packed candidates, real provider startup/execution receipts, deterministic oracle checks, and required independent review.
+
+**Dependencies:** each claimed capability's implementation path and relevant S6-S12 evidence.
+
+**Gate:** each claimed row has fresh candidate/build-bound REAL_PROVIDER evidence; deterministic fixtures never substitute for provider execution; BROWSER and ADVERSARIAL lanes remain separately reported.
+
+### S14 — Self-Hosting Composite Gate
+
+**Objective:** aggregate required versioned certification evidence and prove a disposable self-modification campaign leaves the source checkout untouched.
+
+**Dependencies:** all required prior slice gates, especially S10-S13.
+
+**Gate:** deterministic composite gate passes; packed candidate mutations and effects remain inside the disposable fixture; reconciliation and cleanup succeed; no model declares readiness.

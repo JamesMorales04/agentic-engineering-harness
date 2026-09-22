@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { HarnessProjectConfig, OrganizationPolicySource } from "../core/types.js";
-import { commandExists, runProcess } from "../utils/process.js";
+import { commandExists, runExecutable } from "../utils/process.js";
 
 export interface PolicyBundleFile { path: string; sha256: string; }
 export interface OrganizationPolicyBundleManifest {
@@ -99,9 +99,8 @@ async function readRemoteBundleFile(manifestUrl: string, relative: string): Prom
 async function verifySignature(root: string, manifestFile: string, signature: string, publicKey: string): Promise<boolean> {
   if (!(await commandExists("cosign", root))) throw new Error("cosign is required to verify the configured organization policy bundle signature.");
   const signaturePath = path.resolve(root, signature); const keyPath = path.resolve(root, publicKey);
-  const result = await runProcess(`cosign verify-blob --key ${quote(keyPath)} --signature ${quote(signaturePath)} ${quote(manifestFile)}`, { cwd: root, timeoutMs: 60_000 });
+  const result = await runExecutable("cosign", ["verify-blob", "--key", keyPath, "--signature", signaturePath, manifestFile], { cwd: root, timeoutMs: 60_000 });
   return result.exitCode === 0;
 }
 function sha256(value: Buffer | string): string { return crypto.createHash("sha256").update(value).digest("hex"); }
 function safe(value: string): string { return value.replace(/[^A-Za-z0-9._-]/g, "-"); }
-function quote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }

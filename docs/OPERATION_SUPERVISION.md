@@ -13,7 +13,7 @@ AEH Lead                         user / portfolio plane
   |      +-- planner
   |      +-- implementers
   |      +-- reviewers
-  |      `-- oracle / remediation
+  |      `-- Repairer / bounded replanning
   |
   +-- Operation B Supervisor
   |      `-- ...
@@ -159,38 +159,38 @@ Operation created
   -> lead acknowledgement
 ```
 
-### CHANGE / SPEC
+### CHANGE / FORMAL_SDD
 
 CHANGE begins before discovery so explorer/planner/spec-manager cannot become orphan conversational branches.
 
 ```text
 CHANGE Operation
   -> discovery/planning evidence when required
-  -> deterministic QUICK/SPEC triage
-  -> QuickContract OR OpenSpec authoring + deterministic compile
+  -> deterministic route/assurance triage
+  -> routed contract OR OpenSpec authoring + deterministic compile
   -> seal
   -> implementation
   -> validation
-  -> review/remediation/oracle/replan
+  -> review/remediation/repair/replan
   -> delivery
   -> terminal state
 ```
 
-SPEC manager authors OpenSpec inside the existing operation and must not start another AEH workflow. Deterministic AEH compilation/sealing remains normative.
+FORMAL_SDD manager authors OpenSpec inside the existing operation and must not start another AEH workflow. Deterministic AEH compilation/sealing remains normative.
 
-### QUICK
+### DIRECT
 
-A single-worker QUICK can remain cheap and deterministic. A supervisor is materialized lazily when reviewer fan-out, semantic consolidation, remediation/escalation or another operation-local coordination requirement appears.
+A single-worker DIRECT route can remain cheap and deterministic. A supervisor is materialized lazily when reviewer fan-out, semantic consolidation, remediation/escalation or another operation-local coordination requirement appears.
 
 ### Prepared RUN
 
-A prepared task enters the same supervised state machine. SPEC/complex RUN materializes supervision before planner waves. QUICK follows the lazy policy above.
+A prepared task enters the same supervised state machine. FORMAL_SDD/complex RUN materializes supervision before planner waves. DIRECT follows the lazy policy above.
 
 ## Managed-operation final acceptance
 
 The review lifecycle must not create a hidden second orchestrator and treat it as the user-facing lead. After deterministic quality acceptance in a managed operation, terminal durable state returns to the actual lead bound in OperationRecord. That lead performs final user-facing semantic acceptance.
 
-Synchronous compatibility execution outside a managed operation may retain the legacy orchestrator-acceptance path.
+Execution outside a managed operation does not receive managed participant authority; production worker launches therefore fail closed before spawning.
 
 ## Concurrency policy
 

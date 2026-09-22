@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import readline from "node:readline";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { SERENA_HEADLESS_ARGS } from "../context/repository/serena.js";
 
 export interface SerenaMcpContractResult {
   initialized: boolean;
@@ -10,7 +11,7 @@ export interface SerenaMcpContractResult {
 }
 
 export async function runSerenaMcpContract(root: string, command = "serena"): Promise<SerenaMcpContractResult> {
-  const child = spawn(command, ["start-mcp-server", "--context", "ide-assistant", "--project", root], { cwd: root, stdio: ["pipe", "pipe", "pipe"] });
+  const child = spawn(command, ["start-mcp-server", "--context", "ide-assistant", "--project", root, ...SERENA_HEADLESS_ARGS], { cwd: root, stdio: ["pipe", "pipe", "pipe"] });
   const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
   let nextId = 1;
   const lineReader = readline.createInterface({ input: child.stdout });

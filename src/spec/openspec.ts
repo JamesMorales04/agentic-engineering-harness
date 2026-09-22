@@ -4,7 +4,7 @@ import path from "node:path";
 import YAML from "yaml";
 import type { HarnessProjectConfig, TaskContract, ValidationCommand } from "../core/types.js";
 import { getCurrentBranch } from "../core/git.js";
-import { runProcess } from "../utils/process.js";
+import { runShell } from "../utils/process.js";
 
 export interface OpenSpecAuthoringConfig { provider?: "openspec" | "native" | string; schema?: string; managerAgent?: string; }
 export interface OpenSpecPreparedChange { taskId: string; changeName: string; directory: string; created: boolean; schema: string; managerAgent: string; }
@@ -25,7 +25,7 @@ export function openSpecChangeName(taskId: string): string {
   return normalized;
 }
 
-export async function preflightOpenSpec(root: string, config: HarnessProjectConfig, run = runProcess): Promise<OpenSpecPreflightResult> {
+export async function preflightOpenSpec(root: string, config: HarnessProjectConfig, run = runShell): Promise<OpenSpecPreflightResult> {
   const settings = openSpecAuthoringConfig(config);
   if (settings.provider !== "openspec") throw new Error(`Configured SDD authoring provider is '${settings.provider}', not openspec.`);
   const options = { cwd: root, timeoutMs: 30_000, env: OPENSPEC_ENV };
@@ -43,7 +43,7 @@ export async function preflightOpenSpec(root: string, config: HarnessProjectConf
   return { version: firstLine(version.stdout || version.stderr) || "unknown", schema: settings.schema, managerAgent: settings.managerAgent };
 }
 
-export async function prepareOpenSpecChange(root: string, config: HarnessProjectConfig, taskId: string, title: string, run = runProcess): Promise<OpenSpecPreparedChange> {
+export async function prepareOpenSpecChange(root: string, config: HarnessProjectConfig, taskId: string, title: string, run = runShell): Promise<OpenSpecPreparedChange> {
   const settings = openSpecAuthoringConfig(config);
   if (settings.provider !== "openspec") throw new Error(`Configured SDD authoring provider is '${settings.provider}', not openspec.`);
   const changeName = openSpecChangeName(taskId);
@@ -59,7 +59,7 @@ export async function prepareOpenSpecChange(root: string, config: HarnessProject
   return { taskId, changeName, directory, created, schema: settings.schema, managerAgent: settings.managerAgent };
 }
 
-export async function compileOpenSpecChange(root: string, config: HarnessProjectConfig, taskId: string, title: string, changeName = openSpecChangeName(taskId), run = runProcess): Promise<OpenSpecCompileResult> {
+export async function compileOpenSpecChange(root: string, config: HarnessProjectConfig, taskId: string, title: string, changeName = openSpecChangeName(taskId), run = runShell): Promise<OpenSpecCompileResult> {
   const changeDir = path.join(root, "openspec", "changes", changeName);
   const validation = await run(`openspec validate ${quote(changeName)} --strict`, { cwd: root, timeoutMs: 60_000, env: OPENSPEC_ENV });
   if (validation.exitCode !== 0) throw new Error(`OpenSpec change '${changeName}' is not valid and cannot be compiled into AEH normative artifacts: ${validation.stderr || validation.stdout}`);

@@ -9,6 +9,7 @@ import { defaultCertificationPolicy } from "./policy.js";
 import { createCertificationOracleResult } from "./oracle.js";
 import { writeCertificationReport } from "./artifacts.js";
 import type { AgentProviderRequest, CandidateRevision, CertificationCheck, CertificationOracle, CertificationPolicy, CertificationReport } from "./types.js";
+import { computeWorktreeDigest } from "../core/git.js";
 
 export interface BootstrapFixture {
   sourceDir: string;
@@ -99,7 +100,8 @@ export async function runExternalSelfDogfood(input: ExternalSelfDogfoodRequest):
     if (install.status !== "COMPLETED" || install.exitCode !== 0) throw new Error(`Fixture installation failed: ${install.stderr || install.stdout}`);
     const candidateArtifact = path.join(fixtureRoot, ".aeh-candidate.tgz");
     await fs.copyFile(artifactPath, candidateArtifact);
-    const candidate: CandidateRevision = { version: 1, id: path.basename(artifactName, ".tgz"), root: fixtureRoot, artifactPath: candidateArtifact, baseRef: "packed-checkout", sourceDigest: await sha256File(candidateArtifact), metadata: { artifactDigest: await sha256File(candidateArtifact), packaging: "npm-pack-ignore-scripts", ...(await sourceIdentity(root)) } };
+    const artifactDigest = await sha256File(candidateArtifact);
+    const candidate: CandidateRevision = { version: 1, id: path.basename(artifactName, ".tgz"), root: fixtureRoot, artifactPath: candidateArtifact, baseRef: "packed-checkout", sourceDigest: artifactDigest, packedArtifactDigest: artifactDigest, treeDigest: await computeWorktreeDigest(fixtureRoot), metadata: { artifactDigest, packaging: "npm-pack-ignore-scripts", ...(await sourceIdentity(root)) } };
     const report = await new CertificationCore(input.oracle, input.provider).certify({ candidate, policy: input.policy ?? defaultCertificationPolicy(), actor: input.actor?.(fixtureRoot), capability: input.capability, requireModelE2E: input.requireModelE2E, requireModelEvidence: input.requireModelE2E });
     if (input.persistRoot) {
       const directory = input.persistDirectory ?? ".aeh-test-results/certification";

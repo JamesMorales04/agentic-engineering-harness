@@ -17,6 +17,7 @@ export interface QualityState {
   introduced: string[];
   convergence: ConvergenceStatus;
   gate: QualityGateResult;
+  candidateDigest?: string;
 }
 export interface QualityGateResult { pass: boolean; reasons: string[]; counts: SeverityCounts; debtPoints: number; debtScore: number; }
 
@@ -48,7 +49,7 @@ export function evaluateFinalQualityGate(findings: NormalizedFinding[], config: 
   return { pass: reasons.length === 0, reasons, counts, debtPoints, debtScore };
 }
 
-export function analyzeQualityState(findings: NormalizedFinding[], history: QualityState[], config: HarnessProjectConfig): QualityState {
+export function analyzeQualityState(findings: NormalizedFinding[], history: QualityState[], config: HarnessProjectConfig, candidateDigest?: string): QualityState {
   const round = history.length;
   const findingFingerprints = findings.map(findingFingerprint).sort();
   const fingerprint = crypto.createHash("sha256").update(findingFingerprints.join("\n")).digest("hex");
@@ -61,7 +62,7 @@ export function analyzeQualityState(findings: NormalizedFinding[], history: Qual
   const persistent = [...currentSet].filter((item) => previousSet.has(item));
   const introduced = [...currentSet].filter((item) => !previousSet.has(item));
   const convergence = classifyConvergence({ fingerprint, debtPoints: current.debtPoints, gatePass: gate.pass, history, config });
-  return { round, ...current, fingerprint, findingFingerprints, resolved, persistent, introduced, convergence, gate };
+  return { round, ...current, fingerprint, findingFingerprints, resolved, persistent, introduced, convergence, gate, candidateDigest };
 }
 
 export function remediationRequired(state: QualityState): boolean { return !state.gate.pass; }

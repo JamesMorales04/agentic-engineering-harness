@@ -2,12 +2,12 @@ import type { ContextConfiguration, HarnessProjectConfig } from "../core/types.j
 import type { ContextPolicy } from "./types.js";
 
 const defaultModes: Record<string, "terse" | "compact" | "normal"> = {
-  explorer: "terse",
-  planner: "compact",
-  "spec-manager": "compact",
-  implementer: "compact",
-  reviewer: "compact",
-  "operation-supervisor": "terse"
+  Explorer: "terse",
+  Planner: "compact",
+  "Spec Manager": "compact",
+  Implementer: "compact",
+  Reviewer: "compact",
+  "Operation Supervisor": "terse"
 };
 
 export function resolveContextPolicy(config: HarnessProjectConfig | ContextConfiguration | undefined): ContextPolicy {

@@ -12,10 +12,10 @@ it("resolves balanced orchestration reviewers to the intended models", async () 
   await fs.mkdir(path.join(root, ".harness"), { recursive: true });
   await fs.writeFile(path.join(root, ".harness", "agents.source.jsonc"), '{"version":1,"extends":["aeh:orchestration"]}');
   const topology = resolveAgentTopology(await loadAgentTopologySource(root, config), "balanced");
-  for (const name of ["code-quality-reviewer", "security-reviewer", "requirements-reviewer"]) {
+  for (const name of ["reviewer", "implementer"]) {
     const selection = executionSelectionForAgent(topology, name);
-    expect([selection.runtimeAdapter, selection.modelName, selection.variant]).toEqual(["opencode", "deepseek-v4-flash", "max"]);
+    expect([selection.runtimeAdapter, selection.modelName, selection.variant]).toEqual(["opencode", "MiMo-V2.6-Flash", "max"]);
   }
-  const architecture = executionSelectionForAgent(topology, "architecture-reviewer");
-  expect([architecture.runtimeAdapter, architecture.modelName, architecture.variant]).toEqual(["opencode", "deepseek-v4-flash", "max"]);
+  const architecture = executionSelectionForAgent(topology, "repairer");
+  expect([architecture.runtimeAdapter, architecture.modelName, architecture.variant]).toEqual(["codex", "gpt-6-luna", "xhigh"]);
 });

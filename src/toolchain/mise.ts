@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { ResolvedToolchain, ToolchainConfig, ToolchainLock } from "./types.js";
-import { runProcess } from "../utils/process.js";
+import { runShell } from "../utils/process.js";
 
 export interface MiseAdapter {
   command: string;
@@ -14,7 +14,7 @@ export async function resolveMiseAdapter(root: string, minimumVersion?: string):
     : "npm exec --yes --package=mise -- mise";
   const candidates = ["mise", bootstrap];
   for (const command of candidates) {
-    const result = await runProcess(`${command} --version`, { cwd: root, timeoutMs: 60_000, toolchain: false });
+    const result = await runShell(`${command} --version`, { cwd: root, timeoutMs: 60_000, toolchain: false });
     if (result.exitCode !== 0) continue;
     const version = parseVersion(result.stdout || result.stderr);
     if (minimumVersion && version && compareVersions(version, minimumVersion) < 0) continue;
@@ -41,21 +41,33 @@ export async function writeMiseConfig(
   const target = path.resolve(root, file); await fs.mkdir(path.dirname(target), { recursive: true }); await fs.writeFile(target, `${lines.join("\n")}\n`);
 }
 
-export async function installMiseTools(root: string, adapter: MiseAdapter, dryRun = false): Promise<void> {
-  const trust = await runProcess(`${adapter.command} trust`, { cwd: root, timeoutMs: 30_000, toolchain: false });
+export async function installMiseTools(root: string, adapter: MiseAdapter, tools: string[], dryRun = false, updateLock = false): Promise<void> {
+  const trust = await runShell(`${adapter.command} trust`, { cwd: root, timeoutMs: 30_000, toolchain: false });
   if (trust.exitCode !== 0 && !/already trusted/i.test(`${trust.stdout}\n${trust.stderr}`)) throw new Error(`mise trust failed: ${trust.stderr || trust.stdout}`);
+  if (updateLock) {
+    const targets = tools.map(shell).join(" ");
+    // Python CLI transitive graphs are wheel-only in mise.lock; keep pipx on
+    // version-only locking so source-only dependencies can use normal installs.
+    const bump = await runShell(`${adapter.command} lock --bump ${targets}`, {
+      cwd: root,
+      timeoutMs: 1_800_000,
+      env: { MISE_PIPX_UVX: "false", MISE_PYPI_UVX: "false" },
+      toolchain: false
+    });
+    if (bump.exitCode !== 0) throw new Error(`mise lock --bump failed: ${bump.stderr || bump.stdout}`);
+  }
   const command = `${adapter.command} -y install${dryRun ? " --dry-run" : ""}`;
-  const result = await runProcess(command, { cwd: root, timeoutMs: 1_800_000, toolchain: false });
+  const result = await runShell(command, { cwd: root, timeoutMs: 1_800_000, toolchain: false });
   if (result.exitCode !== 0) throw new Error(`mise install failed: ${result.stderr || result.stdout}`);
 }
 
 export async function miseResolvedVersion(root: string, adapter: MiseAdapter, command: string): Promise<string | undefined> {
-  const result = await runProcess(`${adapter.command} which ${shell(command)} --version`, { cwd: root, timeoutMs: 30_000, toolchain: false });
+  const result = await runShell(`${adapter.command} which ${shell(command)} --version`, { cwd: root, timeoutMs: 30_000, toolchain: false });
   return result.exitCode === 0 ? result.stdout.trim() || undefined : undefined;
 }
 
 export async function miseBinPaths(root: string, adapter: MiseAdapter): Promise<string[]> {
-  const result = await runProcess(`${adapter.command} bin-paths`, { cwd: root, timeoutMs: 30_000, toolchain: false });
+  const result = await runShell(`${adapter.command} bin-paths`, { cwd: root, timeoutMs: 30_000, toolchain: false });
   if (result.exitCode !== 0) throw new Error(`mise bin-paths failed: ${result.stderr || result.stdout}`);
   return [...new Set(result.stdout.split(/\r?\n/).map((value) => value.trim()).filter(Boolean))];
 }

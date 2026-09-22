@@ -1,5 +1,5 @@
-import crypto from "node:crypto";
 import type { ValidationFinding } from "../core/types.js";
+import { sha256Canonical } from "../core/digest.js";
 
 export interface NormalizedFinding extends ValidationFinding {}
 export interface ToolEvidenceParseResult { findings: NormalizedFinding[]; valid: boolean; }
@@ -126,7 +126,7 @@ function stripXml(value: string): string { return value.replace(/<[^>]+>/g, "").
 
 export function findingFingerprint(finding: Omit<NormalizedFinding, "fingerprint"> | NormalizedFinding): string {
   const value = { tool: finding.tool, kind: finding.kind, rule: finding.rule, severity: finding.severity, file: finding.file, line: finding.line, endLine: finding.endLine, package: finding.package, target: finding.target, message: finding.message };
-  return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
+  return sha256Canonical(value);
 }
 
 function record(value: unknown): Record<string, any> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : {}; }

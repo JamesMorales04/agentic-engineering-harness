@@ -25,8 +25,8 @@ describe("AEH-managed OpenCode identity through Paseo", () => {
       paseoProvider: "opencode",
       runtimeAdapter: "opencode",
       runtimeName: "opencode",
-      modelName: "deepseek-v4-flash",
-      modelId: "opencode-go/deepseek-v4-flash",
+      modelName: "MiMo-V2.6-Flash",
+      modelId: "opencode-go/MiMo-V2.6-Flash",
       profile: "balanced",
       skills: [],
       mcps: [],
@@ -99,7 +99,7 @@ describe("AEH-managed OpenCode identity through Paseo", () => {
         }),
         config: expect.objectContaining({
           provider: "opencode",
-          model: "opencode-go/deepseek-v4-flash"
+          model: "opencode-go/MiMo-V2.6-Flash"
         })
       })
     );
@@ -124,8 +124,8 @@ describe("AEH-managed OpenCode identity through Paseo", () => {
       paseoProvider: "opencode",
       runtimeAdapter: "opencode",
       runtimeName: "opencode",
-      modelName: "deepseek-v4-flash",
-      modelId: "opencode-go/deepseek-v4-flash",
+      modelName: "MiMo-V2.6-Flash",
+      modelId: "opencode-go/MiMo-V2.6-Flash",
       nativeAgent: "company-backend-agent",
       skills: [],
       mcps: [],

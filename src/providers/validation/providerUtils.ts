@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { commandExists, runProcess } from "../../utils/process.js";
+import { commandExists, runShell } from "../../utils/process.js";
 import type { ProviderExecution, ProviderPlan, ValidationProviderContext } from "./types.js";
 
 export async function fileExists(file: string): Promise<boolean> {
@@ -26,7 +26,7 @@ export async function doctorForCommand(command: string | undefined, cwd: string,
 }
 
 export async function executePlan(plan: ProviderPlan): Promise<ProviderExecution> {
-  const result = await runProcess(plan.command, { cwd: plan.cwd, timeoutMs: Number(plan.options?.timeoutMs ?? 900_000), env: plan.env });
+  const result = await runShell(plan.command, { cwd: plan.cwd, timeoutMs: Number(plan.options?.timeoutMs ?? 900_000), env: plan.env });
   return { plan, ...result, rawArtifact: "" };
 }
 

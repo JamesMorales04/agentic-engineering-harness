@@ -3,13 +3,13 @@ import { compileAgentPromptPolicy, outputContractContext } from "../src/workers/
 
 const reviewer = {
   logicalAgent: "test-reviewer",
-  role: "reviewer",
+  role: "Reviewer",
   runtimeAdapter: "opencode",
   skills: ["finding-dedup", "simplify", "verification-planning", "acceptance-traceability", "structured-output-delivery"]
 } as never;
 const supervisor = {
   logicalAgent: "operation-supervisor",
-  role: "coordinator",
+  role: "Operation Supervisor",
   runtimeAdapter: "codex",
   skills: ["finding-dedup", "acceptance-traceability", "recovery-classifier", "verification-planning"]
 } as never;

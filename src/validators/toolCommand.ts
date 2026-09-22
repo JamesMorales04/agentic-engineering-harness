@@ -1,12 +1,12 @@
 import path from "node:path";
 import type { ValidationCheck, ValidatorSpec } from "../core/types.js";
-import { runProcess } from "../utils/process.js";
+import { runShell } from "../utils/process.js";
 import type { ValidationContext } from "./types.js";
 
 export async function runSpecCommand(context: ValidationContext, command: string, category: string, details: Record<string, unknown> = {}): Promise<ValidationCheck> {
   const rendered = renderTokens(command, context);
   const cwd = path.resolve(context.root, context.spec.workingDirectory ?? ".");
-  const result = await runProcess(rendered, { cwd, timeoutMs: (context.spec.timeoutSeconds ?? 900) * 1000 });
+  const result = await runShell(rendered, { cwd, timeoutMs: (context.spec.timeoutSeconds ?? 900) * 1000 });
   return {
     id: context.spec.id,
     category,

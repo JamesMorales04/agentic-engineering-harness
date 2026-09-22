@@ -1,6 +1,6 @@
 import process from "node:process";
 import { pathToFileURL } from "node:url";
-import { PaseoSdkUnavailableError } from "./sdk.js";
+import { connectPaseoClient, PaseoSdkUnavailableError } from "./sdk.js";
 import { resolvePaseoSdkFromCli } from "./sdkResolve.js";
 import { recordPaseoTrace } from "./trace.js";
 
@@ -59,7 +59,7 @@ export async function preflightPaseoProviderMode(
   });
 
   try {
-    await client.connect();
+    await connectPaseoClient(client);
     if (typeof client.providers?.listModes !== "function") {
       throw new Error(
         "The active Paseo SDK does not expose providers.listModes(), which AEH requires to validate an explicit native OpenCode agent before dispatch."

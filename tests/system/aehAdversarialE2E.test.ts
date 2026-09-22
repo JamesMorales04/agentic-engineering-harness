@@ -27,8 +27,8 @@ function operation(root: string, id: string, status: "QUEUED" | "RUNNING" | "SUC
 
 function contextConfig(): HarnessProjectConfig { return { version: 1, project: { name: "adversarial-system" }, telemetry: { enabled: false }, evidence: { outputDir: ".harness/evidence" }, context: { mode: "enforce", retrieval: { maxRequestsPerTurn: 2, maxTokensPerRequest: 100, maxTotalTokensPerTurn: 200 } } }; }
 
-function selection(role: "implementer" | "reviewer" = "reviewer", overrides: Partial<AgentExecutionSelection> = {}): AgentExecutionSelection {
-  return { logicalAgent: `${role}-adversarial`, role, domains: [], runtimeName: "opencode", runtimeAdapter: "opencode", paseoProvider: "opencode", modelAlias: "test", modelId: "test/model", modelName: "model", transport: "direct", skills: [], mcps: [], permissions: { read: "allow", write: role === "reviewer" ? "deny" : "allow", shell: "deny", network: "deny", delegate: "deny", gitWrite: "deny" }, args: [], runtimeCapabilities: { nativeAgent: true }, ...overrides };
+function selection(role: "Implementer" | "Reviewer" = "Reviewer", overrides: Partial<AgentExecutionSelection> = {}): AgentExecutionSelection {
+  return { logicalAgent: `${role}-adversarial`, role, domains: [], runtimeName: "opencode", runtimeAdapter: "opencode", paseoProvider: "opencode", modelAlias: "test", modelId: "test/model", modelName: "model", transport: "direct", skills: [], mcps: [], permissions: { read: "allow", write: role === "Reviewer" ? "deny" : "allow", shell: "deny", network: "deny", delegate: "deny", gitWrite: "deny" }, args: [], runtimeCapabilities: { nativeAgent: true }, ...overrides };
 }
 
 describe("AEH deterministic adversarial system paths", () => {
@@ -190,22 +190,22 @@ describe("AEH deterministic adversarial system paths", () => {
   });
 
   it("rejects an implementer whose effective write permission is denied", () => {
-    const invalid = selection("implementer", { permissions: { read: "allow", write: "deny", shell: "deny", network: "deny", delegate: "deny", gitWrite: "deny" } });
+    const invalid = selection("Implementer", { permissions: { read: "allow", write: "deny", shell: "deny", network: "deny", delegate: "deny", gitWrite: "deny" } });
     expect(validateExecutionCapabilities(invalid, "direct").join(" ")).toContain("denies write permission");
   });
 
   it("rejects a reviewer projection that grants write permission", () => {
-    const invalid = selection("reviewer", { permissions: { read: "allow", write: "allow", shell: "deny", network: "deny", delegate: "deny", gitWrite: "deny" } });
+    const invalid = selection("Reviewer", { permissions: { read: "allow", write: "allow", shell: "deny", network: "deny", delegate: "deny", gitWrite: "deny" } });
     expect(validateExecutionCapabilities(invalid, "direct").join(" ")).toContain("explicitly allows writes");
   });
 
   it("rejects a native agent that the selected runtime cannot support", () => {
-    const invalid = selection("reviewer", { nativeAgent: "native-reviewer", runtimeCapabilities: { nativeAgent: false } });
+    const invalid = selection("Reviewer", { nativeAgent: "native-reviewer", runtimeCapabilities: { nativeAgent: false } });
     expect(validateExecutionCapabilities(invalid, "direct").join(" ")).toContain("cannot select native agent");
   });
 
   it("preserves deny policy in the concrete runtime projection", () => {
-    const projected = buildOpenCodeRuntimeConfig(selection("reviewer"));
+    const projected = buildOpenCodeRuntimeConfig(selection("Reviewer"));
     expect(projected.permission).toMatchObject({ edit: "deny", webfetch: "deny", websearch: "deny", task: "deny" });
     expect(JSON.stringify(projected.permission)).toContain("deny");
   });

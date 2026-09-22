@@ -1,8 +1,8 @@
-import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { ValidationCheck } from "../../core/types.js";
 import type { BddExecutionResult, ContractVerificationResult, IntegrationEnvironmentResult, TestExecutionResult } from "./types.js";
+import { sha256Canonical } from "../../core/digest.js";
 
 export type NormalizedValidationResult = TestExecutionResult | BddExecutionResult | IntegrationEnvironmentResult | ContractVerificationResult;
 
@@ -33,5 +33,5 @@ export function parseJson(value: string): unknown {
 }
 
 export function stableFingerprint(value: unknown): string {
-  return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
+  return sha256Canonical(value);
 }

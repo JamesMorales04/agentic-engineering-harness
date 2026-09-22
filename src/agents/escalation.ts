@@ -1,14 +1,13 @@
 import type { HarnessProjectConfig, ReviewEscalationStage } from "../core/types.js";
-import { executionSelectionForAgent } from "./routing.js";
-import type { AgentExecutionSelection, ResolvedAgentTopology } from "./types.js";
+import type { AgentExecutionSelection } from "./types.js";
 import type { QualityState } from "./qualityConvergence.js";
 
 export const DEFAULT_ESCALATION_STAGES: ReviewEscalationStage[] = [
   { name: "normal", action: "remediate" },
-  { name: "quality", action: "remediate", agent: "quality-implementer" },
-  { name: "senior", action: "remediate", agent: "senior-implementer", model: "@brain" },
-  { name: "diagnosis", action: "diagnose", agent: "oracle", model: "@brain" },
-  { name: "replan", action: "replan", agent: "planner", model: "@brain" }
+  { name: "quality", action: "remediate", role: "Implementer" },
+  { name: "senior", action: "remediate", role: "Implementer", model: "@brain" },
+  { name: "diagnosis", action: "diagnose", role: "Reviewer", model: "@brain" },
+  { name: "replan", action: "replan", role: "Planner", model: "@brain" }
 ];
 
 export function escalationStages(config: HarnessProjectConfig): ReviewEscalationStage[] {
@@ -31,42 +30,7 @@ export function resumeAfterReplan(config: HarnessProjectConfig): number {
   return Math.max(0, desired - 1);
 }
 
-export function selectionForStage(topology: ResolvedAgentTopology, fallback: AgentExecutionSelection, stage: ReviewEscalationStage): AgentExecutionSelection {
-  let selection = fallback;
-  if (stage.agent) {
-    if (topology.agents[stage.agent] && !topology.agents[stage.agent].disabled) selection = executionSelectionForAgent(topology, stage.agent);
-    else if (stage.action === "diagnose") {
-      const diagnostic = Object.values(topology.agents).find((agent) => !agent.disabled && (agent.role === "escalation" || agent.role === "orchestrator"));
-      if (diagnostic) selection = executionSelectionForAgent(topology, diagnostic.name);
-    } else if (stage.action === "replan") {
-      const planner = Object.values(topology.agents).find((agent) => !agent.disabled && agent.role === "planner");
-      if (planner) selection = executionSelectionForAgent(topology, planner.name);
-    }
-  }
-  return stage.model ? overrideSelectionModel(topology, selection, stage.model) : selection;
-}
-
-export function overrideSelectionModel(topology: ResolvedAgentTopology, selection: AgentExecutionSelection, modelRef: string): AgentExecutionSelection {
-  if (!modelRef.startsWith("@")) throw new Error(`Escalation model override must use an alias such as @brain; received ${modelRef}.`);
-  const alias = modelRef.slice(1);
-  const model = topology.models[alias];
-  if (!model) throw new Error(`Escalation references unknown model alias ${modelRef}.`);
-  const runtime = topology.runtimes[model.runtime];
-  if (!runtime) throw new Error(`Escalation model ${modelRef} references unavailable runtime ${model.runtime}.`);
-  const agent = topology.agents[selection.logicalAgent];
-  const runtimeChanged = selection.runtimeName !== model.runtime;
-  return {
-    ...selection,
-    runtimeName: model.runtime,
-    runtimeAdapter: runtime.adapter,
-    paseoProvider: runtime.paseoProvider ?? runtime.adapter,
-    modelAlias: alias,
-    modelId: model.id,
-    modelName: model.model,
-    modelProvider: model.provider,
-    variant: model.variant,
-    nativeAgent: runtimeChanged ? undefined : selection.nativeAgent,
-    args: [...(runtime.defaultArgs ?? []), ...(agent?.execution.args ?? [])],
-    runtimeCapabilities: runtime.capabilities ?? {}
-  };
+/** Apply already-resolved outer-boundary selections without reopening topology. */
+export function selectionForStage(fallback: AgentExecutionSelection, stage: ReviewEscalationStage, roleSelection?: AgentExecutionSelection, modelSelection?: AgentExecutionSelection): AgentExecutionSelection {
+  return modelSelection ?? roleSelection ?? fallback;
 }

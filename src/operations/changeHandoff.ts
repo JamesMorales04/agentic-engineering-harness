@@ -16,7 +16,11 @@ export async function requireDurableChangeHandoff<T>(
 ): Promise<DurableAgentEvidence<T>> {
   if (session.exitCode !== 0) throw new Error(`${label}_FAILED: ${session.stderr || session.stdout}`);
   if (!session.id) throw new Error(`${label}_RESULT_ID_MISSING: structured handoff requires a durable agent session id.`);
-  const accepted = await acceptedStructuredResultForAgent<T>(controlRoot, session.id, expected);
+  const accepted = await acceptedStructuredResultForAgent<T>(controlRoot, session.id, {
+    ...expected,
+    requireBoundProvenance: true,
+    verifyCurrentCandidate: true
+  });
   if (!accepted) throw new Error(`${label}_RESULT_ARTIFACT_MISSING: agent completed without an accepted structured result artifact.`);
   let payload: T;
   try { payload = schema.parse(accepted.payload); }

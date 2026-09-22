@@ -1,7 +1,6 @@
-import type { AgentExecutionSelection, ResolvedAgentTopology } from "../agents/types.js";
+import type { AgentExecutionSelection } from "../agents/types.js";
 import { supervisorOutputSchema, type NormalizedFinding, type SupervisorOutput } from "../agents/outputContracts.js";
 import { extractMarkedJson } from "../agents/structuredOutput.js";
-import { executionSelectionForAgent } from "../agents/routing.js";
 import type { HarnessProjectConfig, TaskContract, WorkerSession } from "../core/types.js";
 import { statusLeadContext } from "../paseo/context.js";
 import { archivePaseoSdkAgent } from "../paseo/sdk.js";
@@ -36,23 +35,21 @@ function supervisorInitializationConfig(config: HarnessProjectConfig): HarnessPr
   return { ...config, orchestration: { ...config.orchestration, worker: { ...config.orchestration.worker, timeoutSeconds: operationSupervisorInitializationTimeoutSeconds(config) } } };
 }
 
-export async function ensureOperationSupervisor(root: string, config: HarnessProjectConfig, contract: TaskContract, topology: ResolvedAgentTopology, options: EnsureSupervisorOptions = {}): Promise<OperationSupervisorHandle | undefined> {
+export async function ensureOperationSupervisor(root: string, config: HarnessProjectConfig, contract: TaskContract, selection: AgentExecutionSelection | undefined, options: EnsureSupervisorOptions = {}): Promise<OperationSupervisorHandle | undefined> {
   const operationId = currentOperationContext().id;
   if (!operationId) return undefined;
-  return withOperationCoordinationLock(root, operationId, () => ensureOperationSupervisorUnlocked(root, config, contract, topology, operationId, options));
+  return withOperationCoordinationLock(root, operationId, () => ensureOperationSupervisorUnlocked(root, config, contract, selection, operationId, options));
 }
 
-async function ensureOperationSupervisorUnlocked(root: string, config: HarnessProjectConfig, contract: TaskContract, topology: ResolvedAgentTopology, operationId: string, options: EnsureSupervisorOptions): Promise<OperationSupervisorHandle | undefined> {
+async function ensureOperationSupervisorUnlocked(root: string, config: HarnessProjectConfig, contract: TaskContract, selection: AgentExecutionSelection | undefined, operationId: string, options: EnsureSupervisorOptions): Promise<OperationSupervisorHandle | undefined> {
   const stateRoot = resolveOperationStateRoot(root);
   let operation = await loadOperation(stateRoot, operationId);
   const required = options.required ?? operation.supervision.required;
   if (!required && !options.forceMaterialize) return undefined;
-  const configured = topology.agents["operation-supervisor"];
-  if (!configured || configured.disabled) {
-    if (required) throw new Error("AEH_OPERATION_SUPERVISOR_REQUIRED: topology has no enabled operation-supervisor agent.");
+  if (!selection) {
+    if (required) throw new Error("AEH_OPERATION_SUPERVISOR_REQUIRED: no frozen operation-supervisor execution selection is available.");
     return undefined;
   }
-  const selection = executionSelectionForAgent(topology, "operation-supervisor");
   const active = activeOperationSupervisor(operation);
   if (active?.agentId) return { operationId, generation: active.generation, agentId: active.agentId, materialized: true, selection };
 
@@ -85,15 +82,15 @@ async function ensureOperationSupervisorUnlocked(root: string, config: HarnessPr
   throw new Error(`AEH_OPERATION_SUPERVISOR_UNAVAILABLE: initialization failed after ${SUPERVISOR_INITIALIZATION_ATTEMPTS} bounded attempt(s): ${lastError ?? "unknown error"}`);
 }
 
-export async function consolidateWithOperationSupervisor(root: string, config: HarnessProjectConfig, contract: TaskContract, topology: ResolvedAgentTopology, input: SupervisorConsolidationInput): Promise<SupervisorConsolidationResult> {
+export async function consolidateWithOperationSupervisor(root: string, config: HarnessProjectConfig, contract: TaskContract, supervisorSelection: AgentExecutionSelection | undefined, input: SupervisorConsolidationInput): Promise<SupervisorConsolidationResult> {
   const stateRoot = resolveOperationStateRoot(root);
-  const supervisor = await ensureOperationSupervisor(root, config, contract, topology, { required: true, forceMaterialize: true });
+  const supervisor = await ensureOperationSupervisor(root, config, contract, supervisorSelection, { required: true, forceMaterialize: true });
   if (!supervisor?.agentId) throw new Error("AEH_OPERATION_SUPERVISOR_UNAVAILABLE: semantic consolidation requires a materialized supervisor session.");
   const rawIds = [...new Set(input.findings.map((finding) => finding.id))].sort();
   const operation = await loadOperation(stateRoot, supervisor.operationId);
   const generation = activeOperationSupervisor(operation);
   const selection = eventSelection(supervisor.selection, contract, "consolidate", operation.kind);
-  const session = await executeAgentPrompt(root, config, contract, selection, consolidationPrompt(operation, input, generation?.checkpointArtifact), { outputContract: "supervisor", resumeSessionId: supervisor.agentId, phase: "consolidating", operationKind: operation.kind, supervisorAgent: true });
+  const session = await executeAgentPrompt(root, config, contract, selection, consolidationPrompt(operation, input, generation?.checkpointArtifact), { outputContract: "supervisor", resumeSessionId: supervisor.agentId, phase: "consolidating", operationKind: operation.kind, supervisorAgent: true, requireExecutionAuthority: true });
   if (session.exitCode !== 0) throw new Error(`AEH_OPERATION_SUPERVISOR_FAILED: supervisor exited with ${session.exitCode}: ${session.stderr || session.stdout}`);
   let output: SupervisorOutput;
   try { output = supervisorOutputSchema.parse(extractMarkedJson(session.stdout, session.stderr)); } catch (error) { throw new Error(`AEH_OPERATION_SUPERVISOR_CONTRACT: ${String(error)}`); }
@@ -105,28 +102,31 @@ export async function consolidateWithOperationSupervisor(root: string, config: H
   return { output, artifact, session };
 }
 
-export async function maybeRotateOperationSupervisor(root: string, config: HarnessProjectConfig, contract: TaskContract, topology: ResolvedAgentTopology): Promise<OperationSupervisorHandle | undefined> {
+export async function maybeRotateOperationSupervisor(root: string, config: HarnessProjectConfig, contract: TaskContract, selection: AgentExecutionSelection | undefined): Promise<OperationSupervisorHandle | undefined> {
   const operationId = currentOperationContext().id;
   if (!operationId) return undefined;
-  return withOperationCoordinationLock(root, operationId, () => maybeRotateOperationSupervisorUnlocked(root, config, contract, topology, operationId));
+  return withOperationCoordinationLock(root, operationId, () => maybeRotateOperationSupervisorUnlocked(root, config, contract, selection, operationId));
 }
 
-async function maybeRotateOperationSupervisorUnlocked(root: string, config: HarnessProjectConfig, contract: TaskContract, topology: ResolvedAgentTopology, operationId: string): Promise<OperationSupervisorHandle | undefined> {
+async function maybeRotateOperationSupervisorUnlocked(root: string, config: HarnessProjectConfig, contract: TaskContract, selection: AgentExecutionSelection | undefined, operationId: string): Promise<OperationSupervisorHandle | undefined> {
   const stateRoot = resolveOperationStateRoot(root);
   const operation = await loadOperation(stateRoot, operationId);
   const active = activeOperationSupervisor(operation);
-  if (!active?.agentId) return ensureOperationSupervisorUnlocked(root, config, contract, topology, operationId, { required: operation.supervision.required });
+  if (!active?.agentId) return ensureOperationSupervisorUnlocked(root, config, contract, selection, operationId, { required: operation.supervision.required });
+  if (!selection) {
+    if (operation.supervision.required) throw new Error("AEH_OPERATION_SUPERVISOR_REQUIRED: no frozen operation-supervisor execution selection is available.");
+    return undefined;
+  }
   const context = await statusLeadContext(root, config, active.agentId);
   const policy = operationSupervisorContextPolicy(config);
   const usageRatio = context.usage.ratio;
   const rotate = usageRatio !== undefined ? usageRatio >= policy.handoffThreshold : context.state === "HANDOFF_REQUIRED" || context.state === "HARD_HANDOFF";
   if (!rotate) {
     if (usageRatio !== undefined) await updateSupervisorGeneration(stateRoot, operationId, active.generation, { contextRatio: usageRatio, error: undefined });
-    return { operationId, generation: active.generation, agentId: active.agentId, materialized: true, selection: executionSelectionForAgent(topology, "operation-supervisor") };
+    return { operationId, generation: active.generation, agentId: active.agentId, materialized: true, selection };
   }
   const checkpointArtifact = await persistSupervisorCheckpoint(stateRoot, operationId, active.generation, buildSupervisorCheckpoint(operation, usageRatio));
   await updateSupervisorGeneration(stateRoot, operationId, active.generation, { status: "DRAINING", drainingAt: new Date().toISOString(), checkpointArtifact, contextRatio: usageRatio, error: undefined });
-  const selection = executionSelectionForAgent(topology, "operation-supervisor");
   const handoffSelection = eventSelection(selection, contract, "handoff", operation.kind);
   const latest = await loadOperation(stateRoot, operationId);
   const materialized = await materializeAgentPrompt(root, config, contract, handoffSelection, { phase: "supervision", operationKind: operation.kind, parentAgentId: operation.lead?.agentId, supervisorAgent: true });

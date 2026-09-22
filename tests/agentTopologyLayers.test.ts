@@ -23,10 +23,9 @@ describe("agent topology", () => {
   it("loads the built-in default pack and its useful cross-project roles", async () => {
     const root = await fixture('{"version":1,"extends":["aeh:default"]}');
     const source = await loadAgentTopologySource(root, config);
-    for (const name of ["implementation-worker", "backend-implementer", "frontend-implementer", "data-implementer", "test-implementer", "security-reviewer", "requirements-reviewer", "integration-validator", "oracle", "designer", "github-manager"]) expect(source.agents[name]).toBeDefined();
-    expect(source.agents["openspec-manager"]).toBeUndefined();
-    expect(source.agents["github-manager"].mcps).toEqual(["github"]);
-    expect(source.agents["designer"].mcps).toEqual(["playwright", "context7"]);
+    for (const name of ["lead", "operation-supervisor", "explorer", "librarian", "planner", "spec-manager", "implementer", "reviewer", "repairer"]) expect(source.agents[name]).toBeDefined();
+    expect(source.agents["oracle"]).toBeUndefined();
+    expect(source.agents["environment-manager"]).toBeUndefined();
   });
 
   it("supports partial override, addition and wildcard deletion in one project layer", async () => {
@@ -34,9 +33,9 @@ describe("agent topology", () => {
       "version": 1,
       "extends": ["aeh:default"],
       "agents": {
-        "backend-implementer": { "temperature": 0.05, "description": "Project backend charter" },
+        "implementer": { "temperature": 0.05, "description": "Project implementation charter" },
         "domain-specialist": {
-          "role": "implementer",
+          "role": "Implementer",
           "domains": ["billing"],
           "execution": { "model": "@workhorse" },
           "permissions": { "read": "allow", "write": "allow", "shell": "allow" },
@@ -44,37 +43,39 @@ describe("agent topology", () => {
         }
       },
       "routing": [
-        { "id": "billing", "priority": 90, "when": { "intent": "implement", "domains": ["billing"] }, "use": "domain-specialist" }
+        { "id": "billing", "priority": 90, "when": { "intent": "implement", "domains": ["billing"] }, "select": { "role": "Implementer", "domains": ["billing"] } }
       ],
       "remove": { "agents": ["mobile-*"], "routing": [] }
     }`);
     const source = await loadAgentTopologySource(root, config);
-    expect(source.agents["backend-implementer"].role).toBe("implementer");
-    expect(source.agents["backend-implementer"].execution.model).toBe("@workhorse");
-    expect(source.agents["backend-implementer"].temperature).toBe(0.05);
-    expect(source.agents["backend-implementer"].description).toBe("Project backend charter");
+    expect(source.agents["implementer"].role).toBe("Implementer");
+    expect(source.agents["implementer"].execution.model).toBe("@workhorse");
+    expect(source.agents["implementer"].temperature).toBe(0.05);
+    expect(source.agents["implementer"].description).toBe("Project implementation charter");
     expect(source.agents["domain-specialist"].domains).toEqual(["billing"]);
-    expect(source.agents["mobile-implementer"]).toBeUndefined();
-    expect(source.agents["mobile-reviewer"]).toBeUndefined();
-    expect(source.routing?.find((rule) => rule.id === "mobile")).toBeUndefined();
-    expect(source.routing?.find((rule) => rule.id === "billing")?.use).toBe("domain-specialist");
+    expect(source.routing?.find((rule) => rule.id === "billing")?.select).toEqual({ role: "Implementer", domains: ["billing"] });
   });
 
-  it("cascades deleted reviewer references without damaging the remaining default route", async () => {
-    const root = await fixture('{"version":1,"extends":["aeh:default"],"remove":{"agents":["requirements-reviewer"]}}');
+  it("keeps role selectors independent of runtime participant identities", async () => {
+    const root = await fixture('{"version":1,"extends":["aeh:default"]}');
     const source = await loadAgentTopologySource(root, config);
     const generic = source.routing?.find((rule) => rule.id === "default-implementation");
-    expect(generic?.reviewers).toContain("code-quality-reviewer");
-    expect(generic?.reviewers).not.toContain("requirements-reviewer");
-    expect(source.agents["requirements-reviewer"]).toBeUndefined();
+    expect(generic?.review).toEqual([{ role: "Reviewer", domains: ["*"] }]);
+  });
+
+  it("rejects superseded lowercase roles and concrete routing fields instead of translating them", async () => {
+    const roleRoot = await fixture('{"version":1,"extends":["aeh:default"],"agents":{"stale":{"role":"implementer","execution":{"model":"@workhorse"}}}}');
+    await expect(loadAgentTopologySource(roleRoot, config)).rejects.toThrow();
+    const routeRoot = await fixture('{"version":1,"extends":["aeh:default"],"routing":[{"id":"stale","when":{"intent":"implement"},"use":"implementer"}]}');
+    await expect(loadAgentTopologySource(routeRoot, config)).rejects.toThrow();
   });
 
   it("makes inherited agent charters available to runtime execution selections", async () => {
     const root = await fixture('{"version":1,"extends":["aeh:default"]}');
     const topology = resolveAgentTopology(await loadAgentTopologySource(root, config), "balanced");
-    const selection = executionSelectionForAgent(topology, "security-reviewer");
-    expect(selection.modelAlias).toBe("brain");
-    expect(selection.description).toContain("trust boundaries");
+    const selection = executionSelectionForAgent(topology, "reviewer");
+    expect(selection.modelAlias).toBe("workhorse");
+    expect(selection.description).toContain("scope");
     const lead = executionSelectionForAgent(topology, "lead");
     expect(lead.contextRequirements).toEqual(expect.objectContaining({ repositoryMap: "FORBIDDEN", semanticRetrieval: "FORBIDDEN", rawRetrieval: "FORBIDDEN" }));
     expect(lead.runtimeCapabilities.mcp).toBe(true);
@@ -83,13 +84,14 @@ describe("agent topology", () => {
   it("gives OpenCode DeepSeek V4 Flash the max thinking variant and durable CHANGE contracts in the orchestration preset", async () => {
     const root = await fixture('{"version":1,"extends":["aeh:orchestration"]}');
     const topology = resolveAgentTopology(await loadAgentTopologySource(root, config), "balanced");
-    const selection = executionSelectionForAgent(topology, "code-quality-reviewer");
+    const selection = executionSelectionForAgent(topology, "reviewer");
     expect(selection.runtimeAdapter).toBe("opencode");
     expect(selection.modelAlias).toBe("workhorse");
-    expect(selection.modelName).toBe("deepseek-v4-flash");
+    expect(selection.modelName).toBe("MiMo-V2.6-Flash");
     expect(selection.variant).toBe("max");
     expect(selection.runtimeCapabilities.variantSelection).toBe(true);
     expect(executionSelectionForAgent(topology, "explorer").outputContract).toBe("explorer");
+    expect(executionSelectionForAgent(topology, "librarian").outputContract).toBe("knowledge-pack");
     expect(executionSelectionForAgent(topology, "spec-manager").outputContract).toBe("spec-authoring");
   });
 });

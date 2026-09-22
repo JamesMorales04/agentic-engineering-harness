@@ -8,14 +8,15 @@
     "certification": {
       "description": "Use the real GPT-5.6 Luna model for every semantic reviewer in certification journeys.",
       "agents": {
-        "*-reviewer": { "execution": { "model": "@brain" } }
+        "reviewer": { "execution": { "model": "@brain" } },
+        "harness-reviewer": { "execution": { "model": "@brain" } }
       }
     }
   },
 
   "agents": {
     "harness-reviewer": {
-      "role": "reviewer",
+      "role": "Reviewer",
       "domains": ["harness", "agent-topology", "workflow-engine"],
       "description": "Review changes to the Harness control plane itself. Protect the trust hierarchy (deterministic evidence over LLM judgment), sealed normative artifacts, topology composition semantics, backward compatibility and human-on-exception behavior. Require tests for routing/configuration state-machine changes.",
       "execution": { "model": "@brain" },
@@ -30,7 +31,7 @@
       "id": "harness-control-plane-review",
       "priority": 80,
       "when": { "intent": "implement", "domains": ["harness", "agent-topology", "workflow-engine"] },
-      "reviewers": ["harness-reviewer"]
+      "review": [{ "role": "Reviewer", "domains": ["harness", "agent-topology", "workflow-engine"] }]
     }
   ],
 

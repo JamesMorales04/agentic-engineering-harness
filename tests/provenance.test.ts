@@ -30,6 +30,10 @@ describe("provenance", () => {
       const manifest = await buildProvenanceManifest(root, config, "T-1", path.join(root, "artifact.txt")); const file = path.join(root, "manifest.json"); await fs.writeFile(file, `${JSON.stringify(manifest)}\n`);
       expect(manifest.entries.some((entry) => entry.path.includes("UNRELATED"))).toBe(false); expect(manifest.lineage?.operationId).toBe("OP-1"); expect((await verifyProvenanceManifest(root, "manifest.json")).ok).toBe(true);
       await fs.writeFile(path.join(root, ".harness/contracts", "T-1.yaml"), "tampered\n"); expect((await verifyProvenanceManifest(root, "manifest.json")).ok).toBe(false);
+      await fs.writeFile(path.join(root, ".harness/contracts", "T-1.yaml"), "contract\n");
+      const alteredManifest = { ...manifest, buildIdentity: { ...manifest.buildIdentity, buildDigest: "invalid" } };
+      await fs.writeFile(file, `${JSON.stringify(alteredManifest)}\n`);
+      expect((await verifyProvenanceManifest(root, "manifest.json")).failures).toContain("manifest BuildIdentity is invalid");
       await fs.writeFile(path.join(root, ".harness/runs", "T-1.json"), JSON.stringify({ taskId: "T-1", operationId: "MISSING" }) + "\n");
       await expect(buildProvenanceManifest(root, config, "T-1", path.join(root, "artifact.txt"))).rejects.toThrow("PROVENANCE_REQUIRED_ARTIFACT_MISSING");
     } finally { await fs.rm(root, { recursive: true, force: true }); }

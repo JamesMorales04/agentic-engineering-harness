@@ -16,7 +16,7 @@ const config = {
 
 function topology(): ResolvedAgentTopology {
   const model = { alias: "brain", id: "openai/gpt-test", runtime: "codex", provider: "openai", model: "gpt-test" };
-  return { version: 1, profile: "balanced", skillRoots: [], runtimes: { codex: { adapter: "codex", paseoProvider: "codex", capabilities: { sessions: true } } }, models: { brain: model }, agents: { lead: { name: "lead", role: "orchestrator", domains: ["*"], description: "Own the engineering workflow.", execution: { model: "@brain" }, runtime: { name: "codex", adapter: "codex", paseoProvider: "codex", capabilities: { sessions: true } }, model, skills: ["engineering-workflow"], permissions: { read: "allow", write: "deny", delegate: "allow", review: "allow" } } }, routing: [], recovery: {}, councils: {} };
+  return { version: 1, profile: "balanced", skillRoots: [], runtimes: { codex: { adapter: "codex", paseoProvider: "codex", capabilities: { sessions: true } } }, models: { brain: model }, agents: { lead: { name: "lead", role: "Lead/Director", domains: ["*"], description: "Own the engineering workflow.", execution: { model: "@brain" }, runtime: { name: "codex", adapter: "codex", paseoProvider: "codex", capabilities: { sessions: true } }, model, skills: ["engineering-workflow"], permissions: { read: "allow", write: "deny", delegate: "allow", review: "allow" } } }, routing: [], recovery: {}, councils: {} };
 }
 function processResult(exitCode: number, stdout = "", stderr = "") { return { exitCode, stdout, stderr, durationMs: 1 }; }
 function capabilities() { return { version: "0.6.0", background: true, quiet: true, json: false, outputSchema: true, daemonJson: true, nativeToolsRecommended: true }; }
@@ -111,6 +111,25 @@ describe("Paseo Harness start", () => {
     expect(value.daemonStarted).toBe(true); expect(run).toHaveBeenCalledWith("paseo daemon stop", expect.anything());
   });
 
+  it("starts a daemon when Paseo returns a successful JSON status that says stopped", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-paseo-stopped-daemon-")); let calls = 0;
+    const run = vi.fn(async (command: string) => {
+      if (command === "paseo daemon status --json") {
+        calls += 1;
+        return calls === 1
+          ? processResult(0, JSON.stringify({ localDaemon: "stopped", connectedDaemon: "not_probed" }))
+          : processResult(0, JSON.stringify({ localDaemon: "running", connectedDaemon: "not_probed" }));
+      }
+      if (command === "paseo daemon stop") return processResult(0, "stopped");
+      if (command === "paseo daemon start --web-ui") return processResult(0, "started");
+      throw new Error(command);
+    });
+    const deps = { run: run as never, commandExists: vi.fn(async () => true) as never, setupToolchain: vi.fn(async () => ({} as never)) as never, loadTopology: vi.fn(async () => topology()) as never, detectCapabilities: vi.fn(async () => capabilities()) as never, launchAgent: vi.fn(async () => managed("agent-running")) as never, probeAgent: vi.fn(async () => false) as never };
+    const value = await startPaseoHarness(root, config, {}, deps);
+    expect(value.daemonStarted).toBe(true);
+    expect(run).toHaveBeenCalledWith("paseo daemon start --web-ui", expect.anything());
+  });
+
   it("auto-runs toolchain setup when Paseo or the lead runtime is missing", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-paseo-setup-")); let reconciled = false;
     const setup = vi.fn(async () => { reconciled = true; return {} as never; });
@@ -150,9 +169,9 @@ describe("Paseo Harness start", () => {
     expect(buildAehControlMcp("aeh", "/repo").mcpServers?.["aeh-control"]).toEqual({ type: "stdio", command: "aeh", args: ["operation", "mcp"], env: { AEH_CONTROL_ROOT: "/repo" }, alwaysLoad: true });
   });
 
-  it("resolves lead explicitly, then falls back to an enabled orchestrator", () => {
+  it("resolves lead explicitly, then falls back to an enabled Lead/Director", () => {
     const value = topology(); expect(resolveLeadAgent(value, "lead")).toBe("lead");
-    const alternate = { ...value, agents: { ...value.agents, lead: { ...value.agents.lead, disabled: true }, coordinator: { ...value.agents.lead, name: "coordinator", disabled: false } } };
-    expect(resolveLeadAgent(alternate)).toBe("coordinator");
+    const alternate = { ...value, agents: { ...value.agents, lead: { ...value.agents.lead, disabled: true }, director: { ...value.agents.lead, name: "director", disabled: false } } };
+    expect(resolveLeadAgent(alternate)).toBe("director");
   });
 });

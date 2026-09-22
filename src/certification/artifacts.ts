@@ -1,7 +1,7 @@
-import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { CertificationReport } from "./types.js";
+import { sha256Canonical } from "../core/digest.js";
 
 export async function writeCertificationReport(root: string, report: CertificationReport, directory = ".harness/certifications"): Promise<string> {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(report.certificationId)) throw new Error("Unsafe certification id.");
@@ -15,5 +15,4 @@ export async function writeCertificationReport(root: string, report: Certificati
   return file;
 }
 
-export function certificationReportDigest(report: CertificationReport): string { return crypto.createHash("sha256").update(JSON.stringify(report)).digest("hex"); }
-
+export function certificationReportDigest(report: CertificationReport): string { return sha256Canonical(report); }

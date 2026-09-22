@@ -18,13 +18,17 @@ import { recordPaseoTrace } from "../paseo/trace.js";
 import {
   clearManagedProcessHandles,
   listManagedProcessHandles,
-  runProcess,
+  runShell,
   terminateManagedProcessGroup,
   type ProcessResult
 } from "../utils/process.js";
 import { runChangeOperation } from "./change.js";
-import { resolveBaseRef } from "../core/git.js";
+import { computeWorktreeDigest, resolveBaseRef } from "../core/git.js";
+import { sha256Utf8 } from "../core/digest.js";
 import { assertIntentDecisionForRoute } from "../audit/intentDecision.js";
+import { executeGatedAction } from "../security/gatedAction.js";
+import { reconcileToolAction } from "../security/actionReconciliation.js";
+import { controllerActorId, type ToolActionAuthorityEvidenceV1 } from "../security/toolActionGate.js";
 import {
   disableOperationCompletionTarget,
   notifyOperationCompletion,
@@ -34,6 +38,11 @@ import { startOperationWatchdog } from "./liveness.js";
 import { assertOperationCapacity, syncOperationPortfolio } from "./portfolio.js";
 import {
   bindOperationLead,
+  bindOperationCandidate,
+  claimControllerEpoch,
+  controllerEpochFromEnvironment,
+  controllerTokenFromEnvironment,
+  currentControllerEpoch,
   isTerminalOperation,
   loadOperation,
   patchOperation,
@@ -47,6 +56,8 @@ import {
   type OperationRecordV2,
   type RunOperationPayload
 } from "./state.js";
+import { createCandidateRevisionV1 } from "./v2Contracts.js";
+import { assertWorkspaceMatchesCandidate } from "../candidates/identity.js";
 
 export interface StartOperationOptions {
   nodeExecutable: string;
@@ -57,7 +68,7 @@ export interface StartOperationOptions {
 }
 
 export interface OperationControllerDeps {
-  run?: typeof runProcess;
+  run?: typeof runShell;
   trace?: typeof recordPaseoTrace;
   notifyCompletion?: (root: string, operation: OperationRecord) => Promise<unknown>;
   startWatchdog?: typeof startOperationWatchdog;
@@ -96,6 +107,7 @@ export async function startDetachedOperation(
     root: absoluteRoot,
     payload,
     revision: 1,
+    operationExecutionRevision: 1,
     createdAt: now,
     updatedAt: now,
     lastProgressAt: now,
@@ -128,6 +140,9 @@ export async function startDetachedOperation(
   if (config) await syncOperationPortfolio(absoluteRoot, config.project.name, record);
 
   const spawnProcess = options.spawnProcess ?? spawn;
+  record = await claimControllerEpoch(absoluteRoot, id, `controller:${process.pid}`, { pid: process.pid });
+  const controllerEpoch = currentControllerEpoch(record);
+  const controllerToken = controllerTokenFromEnvironment() ?? "";
   let child: ChildProcess;
   try {
     child = spawnProcess(
@@ -142,7 +157,9 @@ export async function startDetachedOperation(
           AEH_CONTROL_ROOT: absoluteRoot,
           AEH_OPERATION_ID: id,
           AEH_OPERATION_KIND: kind,
-          AEH_OPERATION_STATE_REDIRECT: "1"
+          AEH_OPERATION_STATE_REDIRECT: "1",
+          AEH_CONTROLLER_EPOCH: String(controllerEpoch),
+          AEH_CONTROLLER_TOKEN: controllerToken
         }
       }
     );
@@ -202,7 +219,9 @@ export async function executeOperation(
     "AEH_OPERATION_ID",
     "AEH_OPERATION_KIND",
     "AEH_OPERATION_STATE_REDIRECT",
-    "AEH_OPERATION_WORKSPACE_ID"
+    "AEH_OPERATION_WORKSPACE_ID",
+    "AEH_CONTROLLER_EPOCH",
+    "AEH_CONTROLLER_TOKEN"
   ] as const;
   const previous = Object.fromEntries(environmentKeys.map((key) => [key, process.env[key]])) as Record<string, string | undefined>;
   try {
@@ -237,6 +256,14 @@ async function executeOperationWithEnvironment(
   process.env.AEH_OPERATION_ID = record.id;
   process.env.AEH_OPERATION_KIND = record.kind;
   process.env.AEH_OPERATION_STATE_REDIRECT = "1";
+  const inheritedEpoch = controllerEpochFromEnvironment();
+  const inheritedToken = controllerTokenFromEnvironment();
+  const epochMatches = inheritedEpoch !== undefined && inheritedEpoch === currentControllerEpoch(record);
+  const tokenMatches = inheritedToken !== undefined && record.controller?.tokenDigest === sha256Utf8(inheritedToken);
+  if (!epochMatches || !tokenMatches) {
+    record = await claimControllerEpoch(absoluteRoot, operationId, `controller:${process.pid}`, { pid: process.pid });
+  }
+  process.env.AEH_CONTROLLER_EPOCH = String(currentControllerEpoch(record));
 
   let config = await loadProjectConfig(absoluteRoot);
   if (record.kind !== "audit") {
@@ -254,7 +281,7 @@ async function executeOperationWithEnvironment(
       absoluteRoot,
       record,
       config,
-      deps.run ?? runProcess,
+      deps.run ?? runShell,
       trace
   );
   if (workspace.workspaceId) process.env.AEH_OPERATION_WORKSPACE_ID = workspace.workspaceId;
@@ -269,6 +296,24 @@ async function executeOperationWithEnvironment(
       workspaceRoot: executionRoot,
       workspaceWarning: workspace.warning
     });
+    if (!record.candidateRevision) {
+      throw new Error(`CANDIDATE_BINDING_REQUIRED: operation ${operationId} did not bind its initial workspace candidate.`);
+    }
+    const priorCandidate = record.candidateRevision;
+    if (path.resolve(priorCandidate.worktree ?? absoluteRoot) !== executionRoot) {
+      record = await bindOperationCandidate(absoluteRoot, operationId, createCandidateRevisionV1({
+        operationId,
+        candidateId: `candidate:${operationId}:r${priorCandidate.revision + 1}`,
+        projectId: priorCandidate.projectId,
+        taskId: priorCandidate.taskId,
+        revision: priorCandidate.revision + 1,
+        parentCandidateId: priorCandidate.candidateId,
+        sourceDigest: await computeWorktreeDigest(executionRoot),
+        workspace: workspace.workspaceId,
+        worktree: executionRoot,
+        createdAt: new Date().toISOString()
+      }));
+    } else await assertWorkspaceMatchesCandidate(executionRoot, priorCandidate);
     await syncOperationPortfolio(absoluteRoot, config.project.name, record);
     stopWatchdog = (deps.startWatchdog ?? startOperationWatchdog)(absoluteRoot, config, operationId);
 
@@ -315,7 +360,7 @@ async function executeOperationWithEnvironment(
           finishedAt: new Date().toISOString(),
           result: {
             taskId: result.taskId,
-            mode: result.mode,
+            route: result.route,
             status: result.run.status,
             attempts: result.run.attempts,
             specChange: result.specChange,
@@ -393,10 +438,11 @@ export async function cancelOperation(
 ): Promise<OperationRecordV2> {
   const absoluteRoot = path.resolve(root);
   const trace = deps.trace ?? recordPaseoTrace;
-  const run = deps.run ?? runProcess;
+  const run = deps.run ?? runShell;
   const record = await loadOperation(absoluteRoot, operationId);
   if (isTerminalOperation(record.status)) return record;
   const cleanupWarnings: string[] = [];
+  const config = await loadProjectConfigIfPresent(absoluteRoot);
 
   const processHandles = await listManagedProcessHandles(absoluteRoot, operationId);
   const descendantPids = record.pid ? await findDescendantProcessIds(record.pid, absoluteRoot) : [];
@@ -419,7 +465,7 @@ export async function cancelOperation(
   ].filter((agentId): agentId is string => Boolean(agentId)))];
   if (agentIds.length > 0) {
     await trace(absoluteRoot, "cleanup.discovery", { operationId, source: "operation-state", agentCount: agentIds.length });
-  } else {
+  } else if (config?.orchestration?.provider === "paseo") {
     try {
       const discovered = await listManagedPaseoAgents(absoluteRoot, { "aeh.operation": operationId });
       agentIds = [...new Set(discovered.map((agent) => agent.id))];
@@ -441,7 +487,6 @@ export async function cancelOperation(
     if (stopped.exitCode !== 0) cleanupWarnings.push(`agent ${agentId}: ${stopped.stderr || stopped.stdout || `exit ${stopped.exitCode}`}`);
   }
 
-  const config = await loadProjectConfigIfPresent(absoluteRoot);
   return terminalizeOperation(
     absoluteRoot,
     operationId,
@@ -491,7 +536,7 @@ async function ensureOperationWorkspace(
   root: string,
   record: OperationRecordV2,
   config: HarnessProjectConfig,
-  run: typeof runProcess,
+  run: typeof runShell,
   trace: typeof recordPaseoTrace
 ): Promise<OperationWorkspace> {
   if (record.kind === "run") {
@@ -514,7 +559,14 @@ async function ensureOperationWorkspace(
   if (record.kind === "audit") {
     const command = `paseo workspace create --isolation local --path ${quote(root)} --title ${quote(title)} --json`;
     await trace(root, "workspace.cli.required", { operationId: record.id, kind: record.kind, reason: "Paseo public SDK workspace create lacks isolation/title parity", isolation: "local" });
-    const result = await safeRun(run, command, root, 60_000);
+    let result: ProcessResult;
+    try {
+      result = await gatedWorkspaceCreate({ root, record, run, command, timeoutMs: 60_000, payload: { isolation: "local", path: root, title } });
+    } catch (error) {
+      const warning = `Paseo audit workspace could not be created: ${String(error)}`;
+      await trace(root, "workspace.cli.error", { operationId: record.id, error: warning });
+      return { workspaceRoot: root, warning };
+    }
     if (result.exitCode !== 0) {
       const warning = `Paseo audit workspace could not be created: ${result.stderr || result.stdout || `exit ${result.exitCode}`}`;
       await trace(root, "workspace.cli.error", { operationId: record.id, error: warning });
@@ -540,7 +592,7 @@ async function ensureOperationWorkspace(
     "--json"
   ].join(" ");
   await trace(root, "workspace.cli.required", { operationId: record.id, kind: record.kind, reason: "mutating operations require isolated worktree execution", isolation: "worktree", branch, base });
-  const result = await safeRun(run, command, root, 180_000);
+  const result = await gatedWorkspaceCreate({ root, record, run, command, timeoutMs: 180_000, payload: { isolation: "worktree", path: root, title, branch, base, slug } });
   if (result.exitCode !== 0) {
     throw new Error(`AEH_OPERATION_WORKTREE_REQUIRED: unable to create isolated worktree for ${record.id}: ${result.stderr || result.stdout || `exit ${result.exitCode}`}`);
   }
@@ -558,6 +610,34 @@ async function ensureOperationWorkspace(
   }
   await trace(root, "workspace.cli.created", { operationId: record.id, workspaceId: workspaceId ?? "", workspaceRoot, isolation: "worktree", branch });
   return { workspaceId, workspaceRoot };
+}
+
+async function gatedWorkspaceCreate(input: {
+  root: string;
+  record: OperationRecordV2;
+  run: typeof runShell;
+  command: string;
+  timeoutMs: number;
+  payload: Record<string, unknown>;
+}): Promise<ProcessResult> {
+  const candidate = input.record.candidateRevision;
+  if (!candidate) throw new Error("AEH_OPERATION_WORKTREE_REQUIRED: workspace creation requires a bound CandidateRevision.");
+  const controllerEpoch = controllerEpochFromEnvironment();
+  if (controllerEpoch === undefined) throw new Error("DELIVERY_AUTHORITY_REQUIRED: workspace creation requires a fenced controller epoch.");
+  const authority: ToolActionAuthorityEvidenceV1 = { kind: "controller-authority", operationId: input.record.id, controllerEpoch };
+  let observed: ProcessResult | undefined;
+  const gate = await executeGatedAction({
+    root: input.root,
+    request: { root: input.root, operationId: input.record.id, participantId: controllerActorId(input.record.id), candidate, actionKey: `workspace:${input.record.id}:create`, action: "paseo.workspace.create", payload: input.payload, authority },
+    execute: async () => {
+      observed = await safeRun(input.run, input.command, input.root, input.timeoutMs);
+      return { outcome: observed.exitCode === 0 ? "SUCCEEDED" as const : "FAILED" as const, evidence: { exitCode: observed.exitCode, stderr: (observed.stderr ?? "").slice(-2000), stdout: (observed.stdout ?? "").slice(-2000) } };
+    },
+    reconcile: (intent) => reconcileToolAction(input.root, intent, input.payload)
+  });
+  if (gate.status === "HUMAN_REQUIRED" || gate.status === "RECONCILIATION_REQUIRED") throw new Error(`AEH_OPERATION_WORKTREE_REQUIRED: workspace creation requires human reconciliation: ${gate.detail}`);
+  if (!observed) throw new Error(`AEH_OPERATION_WORKTREE_REQUIRED: workspace creation did not run: ${gate.detail}`);
+  return observed;
 }
 
 export function extractWorkspaceId(text: string): string | undefined {
@@ -628,7 +708,7 @@ function findBranchWorkspace(value: unknown, branch: string): { workspaceId?: st
   return undefined;
 }
 
-async function safeRun(run: typeof runProcess, command: string, cwd: string, timeoutMs: number): Promise<ProcessResult> {
+async function safeRun(run: typeof runShell, command: string, cwd: string, timeoutMs: number): Promise<ProcessResult> {
   try { return await run(command, { cwd, timeoutMs }); }
   catch (error) { return { exitCode: 1, stdout: "", stderr: String(error), durationMs: 0 }; }
 }

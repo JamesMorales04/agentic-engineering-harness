@@ -3,6 +3,9 @@
   "version": "0.8.4",
   "description": "OSS-first engineering harness for deterministic, spec-driven, issue-driven, audit-governed and orchestration-first multi-agent software delivery.",
   "type": "module",
+  "workspaces": [
+    "ui/control-center"
+  ],
   "bin": {
     "engineering-harness": "./dist/main.js",
     "aeh": "./dist/main.js"
@@ -21,10 +24,11 @@
   ],
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "npm run clean && tsc -p tsconfig.json",
+    "build": "node scripts/build.mjs",
     "prepare": "npm run build && node scripts/link-self-bin.mjs",
     "aeh": "node ./dist/main.js",
     "dev": "tsx src/main.ts",
+    "ui:build": "npm run build --workspace=@aeh/control-center",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:scenario": "npm run build && vitest run tests/system/aehScenarioMatrix.test.ts && AEH_RELIABILITY_SUITES=scenario tsx scripts/generate-reliability-report.ts",
@@ -55,7 +59,6 @@
   "devDependencies": {
     "@playwright/test": "1.62.1",
     "@types/node": "^24.2.1",
-    "agentic-engineering-harness": "^0.6.29",
     "tsx": "^4.20.3",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"

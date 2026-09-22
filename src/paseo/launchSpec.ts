@@ -9,6 +9,11 @@ import { buildManagedAgentEnvironment } from "../operations/executionContext.js"
 import { activeOperationSupervisor, currentOperationContext, loadOperation } from "../operations/state.js";
 import type { PaseoSdkMcpStdioServer, PaseoSdkToolPolicy } from "./sdk.js";
 import { staticContextCapabilities, type EffectiveContextCapabilities } from "../context/transport.js";
+import { managedSerenaPool } from "../runtime/serenaPool.js";
+import { SERENA_VERSION } from "../context/repository/serena.js";
+import { createHash } from "node:crypto";
+import type { CapabilityLeaseV1 } from "../security/authorityV2.js";
+import { assertExecutionBindingV2, type ExecutionBindingV2 } from "../architecture/executionIdentity.js";
 
 export interface PaseoLaunchSpecOptions {
   selection?: AgentExecutionSelection;
@@ -21,6 +26,15 @@ export interface PaseoLaunchSpecOptions {
   parentAgentId?: string;
   supervisorAgent?: boolean;
   contextCapabilities?: EffectiveContextCapabilities;
+  participantId?: string;
+  candidateDigest?: string;
+  capabilityLeases?: CapabilityLeaseV1[];
+  executionBinding?: ExecutionBindingV2;
+  executionBlueprintDigest?: string;
+  roleInvocationPolicyDigest?: string;
+  skillManifestDigest?: string;
+  contextManifestDigest?: string;
+  promptManifestDigest?: string;
 }
 export interface PaseoAgentLaunchSpec {
   cwd: string;
@@ -73,6 +87,18 @@ export async function compilePaseoAgentLaunchSpec(root: string, config: HarnessP
   if (parentAgentId) executionEnv.AEH_PARENT_AGENT_ID = parentAgentId;
   if (supervisorGeneration !== undefined) executionEnv.AEH_SUPERVISOR_GENERATION = String(supervisorGeneration);
   if (supervisorAgent) executionEnv.AEH_OPERATION_SUPERVISOR = "1";
+  if (options.participantId) executionEnv.AEH_PARTICIPANT_ID = options.participantId;
+  const candidateDigest = options.candidateDigest ?? options.capabilityLeases?.[0]?.candidate.identityDigest;
+  if (candidateDigest) executionEnv.AEH_CANDIDATE_DIGEST = candidateDigest;
+  if (options.capabilityLeases?.length) executionEnv.AEH_CAPABILITY_LEASES = JSON.stringify(options.capabilityLeases);
+  if (options.executionBinding) {
+    assertExecutionBindingV2(options.executionBinding);
+    if (options.executionBinding.operationId !== operationId || options.executionBinding.participantId !== options.participantId || options.executionBinding.candidateDigest !== candidateDigest || options.executionBinding.runtime.runtimeId !== selection?.runtimeName || options.executionBinding.runtime.modelId !== selection?.modelId) throw new Error("EXECUTION_BINDING_MISMATCH: Paseo launch spec does not match the frozen participant binding.");
+    executionEnv.AEH_EXECUTION_BINDING = JSON.stringify(options.executionBinding);
+    executionEnv.AEH_CONTEXT_MANIFEST_DIGEST = options.executionBinding.contextManifestDigest;
+    executionEnv.AEH_PROMPT_MANIFEST_DIGEST = options.executionBinding.promptManifestDigest;
+    executionEnv.AEH_SKILL_MANIFEST_DIGEST = options.executionBinding.skillManifestDigest;
+  }
   executionEnv.AEH_CONTROL_ROOT = controlRoot;
 
   const labels: Record<string, string> = {
@@ -90,6 +116,21 @@ export async function compilePaseoAgentLaunchSpec(root: string, config: HarnessP
   if (parentAgentId) labels["aeh.parent-agent"] = parentAgentId;
   if (supervisorGeneration !== undefined) labels["aeh.supervisor.generation"] = String(supervisorGeneration);
   if (supervisorAgent) labels["aeh.supervisor"] = "true";
+  if (options.participantId) labels["aeh.participant"] = options.participantId;
+  if (candidateDigest) labels["aeh.candidate"] = candidateDigest;
+  if (options.executionBlueprintDigest) labels["aeh.execution.blueprint.digest"] = options.executionBlueprintDigest;
+  if (options.roleInvocationPolicyDigest) labels["aeh.role.invocation.policy.digest"] = options.roleInvocationPolicyDigest;
+  if (options.skillManifestDigest) labels["aeh.skill.manifest.digest"] = options.skillManifestDigest;
+  if (options.contextManifestDigest) labels["aeh.context.manifest.digest"] = options.contextManifestDigest;
+  if (options.promptManifestDigest) labels["aeh.prompt.manifest.digest"] = options.promptManifestDigest;
+  if (options.executionBinding) {
+    labels["aeh.execution.binding"] = JSON.stringify(options.executionBinding);
+    labels["aeh.execution.binding.digest"] = options.executionBinding.digest;
+    labels["aeh.execution.binding.phase"] = "BOUND";
+    labels["aeh.context.manifest.digest"] = options.executionBinding.contextManifestDigest;
+    labels["aeh.prompt.manifest.digest"] = options.executionBinding.promptManifestDigest;
+    labels["aeh.skill.manifest.digest"] = options.executionBinding.skillManifestDigest;
+  }
   if (openCode) {
     labels["aeh.native-agent"] = openCode.binding.agentId;
     labels["aeh.native-agent.source"] = openCode.binding.source;
@@ -125,25 +166,31 @@ function contextMcpServers(root: string, config: HarnessProjectConfig, selection
   const servers: Record<string, PaseoSdkMcpStdioServer> = {};
   const entry = process.env.AEH_ENTRY_FILE?.trim() || process.argv[1];
   if (entry && capabilities?.mcpServers.context) servers["aeh-context"] = { type: "stdio", command: process.execPath, args: [entry, "context", "mcp"], env: { AEH_CONTEXT_ROOT: root, AEH_CONTEXT_OPERATION_ID: operationId, AEH_LOGICAL_AGENT: logicalAgent, AEH_CONTEXT_PHASE: phase }, alwaysLoad: true };
-  if (capabilities?.mcpServers.serena) servers.serena = { type: "stdio", command: "serena", args: ["start-mcp-server", "--context", "ide-assistant", "--project", root], alwaysLoad: true };
+  if (capabilities?.mcpServers.serena) {
+    const canEdit = selection?.permissions.write === "allow" && (selection.role === "Implementer" || selection.role === "Repairer");
+    const projectId = `project:${createHash("sha256").update(root).digest("hex").slice(0, 24)}`;
+    const workspaceId = process.env.AEH_OPERATION_WORKSPACE_ID?.trim() || operationId;
+    const session = managedSerenaPool.acquire({ projectId, canonicalRoot: root, workspaceId, serenaVersion: SERENA_VERSION, ownerId: `${operationId}:${logicalAgent}`, access: canEdit ? "write" : "read", editingEnabled: canEdit });
+    const pooled = session.mcpServer;
+    servers.serena = { type: "stdio", command: pooled.command?.[0] ?? process.execPath, args: pooled.command?.slice(1), env: pooled.environment, alwaysLoad: true, toolPolicy: session.editingEnabled ? { allow: ["*"], deny: [] } : { allow: session.allowedTools, deny: session.deniedTools } };
+  }
   return Object.keys(servers).length ? servers : undefined;
 }
 
 export function inferAgentPhase(selection: AgentExecutionSelection | undefined, logicalAgent: string): string {
-  const role = selection?.role?.toLowerCase() ?? "";
+  const role = selection?.role ?? "";
   const name = logicalAgent.toLowerCase();
-  if (name.includes("operation-supervisor")) return "supervision";
-  if (role === "planner" || name.includes("planner")) return "planning";
-  if (role === "reviewer" || name.includes("reviewer")) return "review";
-  if (role === "escalation" || name.includes("oracle")) return "diagnosis";
-  if (name.includes("spec-manager")) return "spec-authoring";
-  if (name.includes("environment-manager")) return "environment-recovery";
-  if (role === "implementer" || name.includes("implementer") || name.includes("worker")) return "implementation";
+  if (role === "Operation Supervisor" || name.includes("operation-supervisor")) return "supervision";
+  if (role === "Planner") return "planning";
+  if (role === "Reviewer") return "review";
+  if (role === "Repairer") return "diagnosis";
+  if (role === "Spec Manager") return "spec-authoring";
+  if (role === "Implementer") return "implementation";
   return "work";
 }
 function inferOperationKind(contract: TaskContract): string {
   const intent = contract.routing?.intent?.trim();
   if (intent === "audit") return "audit";
   if (intent) return intent;
-  return contract.mode === "quick" ? "quick" : "run";
+  return contract.routing?.route === "DIRECT" ? "direct" : contract.routing?.route === "DELEGATED" ? "delegated" : contract.routing?.route === "FORMAL_SDD" ? "formal-sdd" : "run";
 }

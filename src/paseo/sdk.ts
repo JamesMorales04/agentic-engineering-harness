@@ -5,8 +5,11 @@ import {
   activateStructuredResultTurn,
   activateStructuredResultTurnForAgent,
   bindStructuredResultChannel,
+  loadStructuredResultChannel,
   provisionStructuredResultChannel,
-  resultSinkMcpServerDefinition
+  resultSinkMcpServerDefinition,
+  type StructuredResultExpectation,
+  type StructuredResultProvenanceV1
 } from "../workers/resultGateway.js";
 import { resolvePaseoSdkFromCli } from "./sdkResolve.js";
 
@@ -16,6 +19,8 @@ export interface PaseoSdkMcpStdioServer {
   args?: string[];
   env?: Record<string, string>;
   alwaysLoad?: boolean;
+  /** Metadata consumed by AEH-managed MCP proxies; native Paseo ignores it. */
+  toolPolicy?: { allow?: string[]; deny?: string[] };
 }
 
 export interface PaseoSdkToolPolicy {
@@ -23,6 +28,8 @@ export interface PaseoSdkToolPolicy {
 }
 
 export interface PaseoSdkAgentOptions {
+  /** Provider resource id requested for a frozen pre-prompt execution binding. */
+  agentId?: string;
   cwd: string;
   workspaceId?: string;
   parentAgentId?: string;
@@ -111,11 +118,34 @@ export class PaseoSdkTimeoutError extends Error {
   }
 }
 
+export async function connectPaseoClient(
+  client: { connect(): Promise<void> },
+  timeoutMs = 15_000
+): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      client.connect(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new PaseoSdkTimeoutError(`Connecting to the Paseo daemon timed out after ${timeoutMs}ms.`)),
+          timeoutMs
+        );
+      })
+    ]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new PaseoSdkUnavailableError(`Unable to connect to the Paseo daemon through @getpaseo/client: ${message}`, { cause: error });
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function createPaseoSdkAgent(root: string, options: PaseoSdkAgentOptions): Promise<PaseoSdkAgentResult> {
   const effective = await withStructuredResultSink(root, options, Boolean(options.prompt !== undefined && options.outputSchema));
   const result = await withPaseoClient(root, async (client) => createPaseoSdkAgentWithClient(client, effective));
   await bindStructuredResultFromOptions(root, effective, result.id);
-  return projectAcceptedPaseoResult(root, result);
+  return projectAcceptedPaseoResult(root, result, structuredResultExpectation(effective.labels));
 }
 
 export async function materializePaseoSdkAgent(root: string, options: PaseoSdkAgentOptions): Promise<PaseoSdkAgentResult> {
@@ -170,7 +200,7 @@ export async function waitPaseoSdkAgent(root: string, agentId: string, timeoutMs
     if (result.status === "timeout") await stopPaseoSdkAgentHandle(handle);
     return result;
   });
-  return projectAcceptedPaseoResult(root, result);
+  return projectAcceptedPaseoResult(root, result, { requireBoundProvenance: true, verifyCurrentCandidate: true });
 }
 
 /** Execute one resumed turn on one concrete SDK handle. Prefer the SDK's atomic
@@ -191,7 +221,7 @@ export async function runPaseoSdkAgent(
   const result = await withPaseoClient(root, async (client) =>
     runPaseoSdkAgentWithClient(client, agentId, prompt, timeoutMs, outputSchema)
   );
-  return projectAcceptedPaseoResult(root, result);
+  return projectAcceptedPaseoResult(root, result, { requireBoundProvenance: true, verifyCurrentCandidate: true });
 }
 
 export async function runPaseoSdkAgentWithClient(
@@ -234,6 +264,15 @@ export async function inspectPaseoSdkAgent(root: string, agentId: string): Promi
   });
 }
 
+export async function inspectPaseoSdkAgentTimeline(root: string, agentId: string): Promise<unknown[] | undefined> {
+  return withPaseoClient(root, async (client) => {
+    const handle = client.agents.ref(agentId);
+    if (!handle.timeline || typeof handle.timeline.refetch !== "function") return undefined;
+    const result = await handle.timeline.refetch({ direction: "backward", limit: 100 });
+    return extractTimelineEntries(result);
+  });
+}
+
 export async function probePaseoSdkAgent(root: string, agentId: string): Promise<boolean> {
   return Boolean(await inspectPaseoSdkAgent(root, agentId));
 }
@@ -255,13 +294,37 @@ async function withStructuredResultSink(root: string, options: PaseoSdkAgentOpti
   if (!contract || !operationId || !logicalAgent) return options;
   const operationRevision = Number(options.labels?.["aeh.operation.revision"]);
   const supervisorGeneration = Number(options.labels?.["aeh.supervisor.generation"]);
+  const taskId = options.labels?.["aeh.task"]?.trim();
+  const role = options.labels?.["aeh.canonical.role"]?.trim();
+  const rawBinding = options.labels?.["aeh.execution.binding"];
+  if (!rawBinding) {
+    const pendingChannelId = options.labels?.["aeh.result.channel"]?.trim();
+    if (options.labels?.["aeh.execution.binding.phase"] !== "PENDING_SESSION" || !pendingChannelId) {
+      throw new Error("EXECUTION_BINDING_REQUIRED: Paseo structured-result launch must carry a complete versioned binding or an inert pending-session channel.");
+    }
+    const pending = await loadStructuredResultChannel(root, operationId, pendingChannelId);
+    if (pending.operationId !== operationId || pending.logicalAgent !== logicalAgent || pending.role !== role || pending.taskId !== taskId || pending.contract !== contract || pending.provenance.status !== "UNSUPPORTED" || pending.agentId || pending.activeTurn || !options.mcpServers?.["aeh-result"] || !options.toolPolicy?.preapproved.some((item) => item.kind === "mcp" && item.server === "aeh-result" && item.tool === "aeh_submit_result")) {
+      throw new Error("AEH_RESULT_PROVENANCE: pending Paseo result channel is not inert or does not match the launch contract.");
+    }
+    return options;
+  }
+  const provenance = parseStructuredResultProvenance(options.labels?.["aeh.result.provenance"], {
+    operationId,
+    logicalAgent,
+    role,
+    taskId,
+    contract
+  });
+  if (!rawBinding || !provenance.executionBinding || rawBinding !== JSON.stringify(provenance.executionBinding) || options.labels?.["aeh.execution.binding.digest"] !== provenance.executionBinding.digest) throw new Error("EXECUTION_BINDING_REQUIRED: Paseo structured-result launch must carry the complete versioned binding in its launch labels.");
   const channel = await provisionStructuredResultChannel(root, {
     operationId,
     logicalAgent,
-    role: logicalAgent,
+    role,
+    taskId,
     contract,
     operationRevision: Number.isInteger(operationRevision) ? operationRevision : undefined,
-    supervisorGeneration: Number.isInteger(supervisorGeneration) ? supervisorGeneration : undefined
+    supervisorGeneration: Number.isInteger(supervisorGeneration) ? supervisorGeneration : undefined,
+    provenance
   });
   if (activateInitialTurn) await activateStructuredResultTurn(root, operationId, channel.channelId, options.labels?.["aeh.operation.phase"]);
   const server = "aeh-result";
@@ -284,9 +347,43 @@ async function bindStructuredResultFromOptions(root: string, options: PaseoSdkAg
   await bindStructuredResultChannel(root, operationId, channelId, agentId);
 }
 
-async function projectAcceptedPaseoResult(root: string, result: PaseoSdkAgentResult): Promise<PaseoSdkAgentResult> {
-  const accepted = await acceptedStructuredResultForAgent(root, result.id).catch(() => undefined);
+async function projectAcceptedPaseoResult(root: string, result: PaseoSdkAgentResult, expected: StructuredResultExpectation = { requireBoundProvenance: true, verifyCurrentCandidate: true }): Promise<PaseoSdkAgentResult> {
+  const accepted = await acceptedStructuredResultForAgent(root, result.id, expected).catch(() => undefined);
   return accepted ? { ...result, lastMessage: JSON.stringify(accepted.payload) } : result;
+}
+
+function parseStructuredResultProvenance(
+  raw: string | undefined,
+  identity: { operationId: string; logicalAgent: string; role?: string; taskId?: string; contract: string }
+): StructuredResultProvenanceV1 {
+  if (raw) {
+    let value: unknown;
+    try { value = JSON.parse(raw); }
+    catch { throw new Error("AEH_RESULT_PROVENANCE: Paseo launch provenance label is not valid JSON."); }
+    const provenance = value as StructuredResultProvenanceV1;
+    if (!provenance || provenance.version !== 1 || provenance.operationId !== identity.operationId || provenance.logicalAgent !== identity.logicalAgent || provenance.role !== identity.role || provenance.taskId !== identity.taskId || provenance.outputContract !== identity.contract) {
+      throw new Error("AEH_RESULT_PROVENANCE: Paseo launch provenance label does not match operation/participant/task/contract labels.");
+    }
+    return provenance;
+  }
+  throw new Error("EXECUTION_BINDING_REQUIRED: Paseo structured-result launches must propagate a complete versioned StructuredResultProvenance before session creation.");
+}
+
+function structuredResultExpectation(labels: Record<string, string> | undefined): StructuredResultExpectation {
+  const operationId = labels?.["aeh.operation"];
+  const logicalAgent = labels?.["aeh.role"];
+  const raw = labels?.["aeh.result.provenance"];
+  if (!operationId || !logicalAgent || !raw) return { requireBoundProvenance: true, verifyCurrentCandidate: true };
+  return {
+    operationId,
+    logicalAgent,
+    role: labels?.["aeh.canonical.role"],
+    taskId: labels?.["aeh.task"],
+    contract: labels?.["aeh.output.contract"],
+    provenance: parseStructuredResultProvenance(raw, { operationId, logicalAgent, role: labels?.["aeh.canonical.role"], taskId: labels?.["aeh.task"], contract: labels?.["aeh.output.contract"] ?? "" }),
+    requireBoundProvenance: true,
+    verifyCurrentCandidate: true
+  };
 }
 
 async function withPaseoClient<T>(root: string, action: (client: PaseoSdkClient) => Promise<T>): Promise<T> {
@@ -297,10 +394,7 @@ async function withPaseoClient<T>(root: string, action: (client: PaseoSdkClient)
     password: process.env.PASEO_DAEMON_PASSWORD?.trim() || undefined
   });
   try {
-    try { await client.connect(); }
-    catch (error) {
-      throw new PaseoSdkUnavailableError(`Unable to connect to the Paseo daemon through @getpaseo/client: ${String(error)}`, { cause: error });
-    }
+    await connectPaseoClient(client);
     return await action(client);
   } finally {
     await client.close().catch(() => undefined);
@@ -334,6 +428,7 @@ function buildCreateOptions(options: PaseoSdkAgentOptions, includePrompt: boolea
   if (options.toolPolicy?.preapproved.length) config.toolPolicy = options.toolPolicy;
 
   const createOptions: Record<string, unknown> = { config, title: options.title, cwd: options.cwd };
+  if (options.agentId) createOptions.agentId = options.agentId;
   if (options.env && Object.keys(options.env).length) createOptions.env = options.env;
   if (options.workspaceId) createOptions.workspaceId = options.workspaceId;
   if (options.parentAgentId) createOptions.parent = options.parentAgentId;
@@ -495,4 +590,12 @@ function statusText(value: unknown): string | undefined {
     if (typeof nested === "string") return nested;
   }
   return undefined;
+}
+
+function extractTimelineEntries(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== "object") return [];
+  const record = value as Record<string, unknown>;
+  for (const key of ["entries", "items", "events", "messages"]) if (Array.isArray(record[key])) return record[key] as unknown[];
+  return [];
 }

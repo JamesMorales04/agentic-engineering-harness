@@ -12,6 +12,7 @@ vi.mock("../src/workers/agentPrompt.js", () => workers);
 
 import { ensureOperationSupervisor, operationSupervisorInitializationTimeoutSeconds } from "../src/operations/supervisor.js";
 import { activeOperationSupervisor, bindOperationLead, initializingOperationSupervisor, loadOperation, saveOperation, type OperationRecordV2 } from "../src/operations/state.js";
+import type { AgentExecutionSelection } from "../src/agents/types.js";
 
 let root = "";
 const originalEnv = snapshotEnv(["AEH_OPERATION_ID", "AEH_CONTROL_ROOT", "AEH_PARENT_OPERATION_ID"]);
@@ -27,22 +28,23 @@ afterEach(async () => {
 
 const config = { version: 1, project: { name: "demo" }, orchestration: { provider: "paseo" } } as never;
 const contract = { task: { id: "AUDIT-BOOT" }, routing: { intent: "audit" } } as never;
-const topology = {
-  profile: "test",
-  routing: [],
-  agents: {
-    "operation-supervisor": {
-      name: "operation-supervisor",
-      role: "supervisor",
-      runtime: { name: "opencode", adapter: "opencode", paseoProvider: "opencode", defaultArgs: [], capabilities: {} },
-      model: { alias: "test", id: "test/supervisor", model: "supervisor", provider: "test" },
-      execution: { transport: "paseo" },
-      permissions: {},
-      skills: ["finding-dedup", "acceptance-traceability", "recovery-classifier", "verification-planning"],
-      mcps: []
-    }
-  }
-} as never;
+const supervisorSelection: AgentExecutionSelection = {
+  logicalAgent: "operation-supervisor",
+  role: "Operation Supervisor",
+  domains: ["operations"],
+  runtimeName: "opencode",
+  runtimeAdapter: "opencode",
+  paseoProvider: "opencode",
+  modelAlias: "test",
+  modelId: "test/supervisor",
+  modelName: "supervisor",
+  transport: "paseo",
+  skills: ["finding-dedup", "acceptance-traceability", "recovery-classifier", "verification-planning"],
+  mcps: [],
+  permissions: {},
+  args: [],
+  runtimeCapabilities: {}
+};
 
 describe("supervisor bootstrap regression", () => {
   it("persists INITIALIZING before a compact skill-free turn barrier and activates only afterwards", async () => {
@@ -84,7 +86,7 @@ describe("supervisor bootstrap regression", () => {
       return { id: "supervisor-1", exitCode: 0, stdout: "initialized", stderr: "", status: "idle", transport: "paseo-sdk" };
     });
 
-    const handle = await ensureOperationSupervisor(root, config, contract, topology, { required: true, forceMaterialize: true });
+    const handle = await ensureOperationSupervisor(root, config, contract, supervisorSelection, { required: true, forceMaterialize: true });
     expect(handle?.agentId).toBe("supervisor-1");
     expect(workers.materializeAgentPrompt.mock.calls[0]?.[4]).toEqual(expect.objectContaining({ parentAgentId: "lead-1" }));
     const durable = await loadOperation(root, "AUDIT-BOOT");

@@ -18,9 +18,37 @@ export interface ManagedProcessHandle {
 const toolchainPathCache = new Map<string, string | undefined>();
 export function clearToolchainEnvCache(): void { toolchainPathCache.clear(); }
 
-export async function runProcess(
+export interface ProcessOptions {
+  cwd: string;
+  timeoutMs?: number;
+  env?: Record<string, string | undefined>;
+  toolchain?: boolean;
+  stdin?: string | Buffer;
+  signal?: AbortSignal;
+}
+
+/** Execute one program with literal argv boundaries and no shell parsing. */
+export async function runExecutable(
+  executable: string,
+  args: readonly string[],
+  options: ProcessOptions
+): Promise<ProcessResult> {
+  return runChild(executable, [...args], false, options);
+}
+
+/** Execute an explicit shell program. Use only when shell syntax is required. */
+export async function runShell(
   command: string,
-  options: { cwd: string; timeoutMs?: number; shell?: boolean; env?: Record<string, string | undefined>; toolchain?: boolean; stdin?: string | Buffer; signal?: AbortSignal }
+  options: ProcessOptions
+): Promise<ProcessResult> {
+  return runChild(command, [], true, options);
+}
+
+async function runChild(
+  command: string,
+  args: string[],
+  shell: boolean,
+  options: ProcessOptions
 ): Promise<ProcessResult> {
   const started = Date.now();
   const inherited = { ...process.env, ...(options.env ?? {}) };
@@ -42,9 +70,9 @@ export async function runProcess(
     if (prefix) inherited.PATH = `${prefix}${path.delimiter}${inherited.PATH ?? ""}`;
   }
   return await new Promise((resolve, reject) => {
-    const child = spawn(command, {
+    const child = spawn(command, args, {
       cwd: options.cwd,
-      shell: options.shell ?? true,
+      shell,
       env: inherited,
       detached: process.platform !== "win32",
       stdio: [options.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"]
@@ -196,8 +224,24 @@ function managedProcessDirectory(root: string, operationId: string): string {
 }
 
 export async function commandExists(command: string, cwd: string): Promise<boolean> {
-  const result = await runProcess(`command -v ${shell(command)}`, { cwd });
-  return result.exitCode === 0;
+  if (!command.trim()) return false;
+  const directPath = path.isAbsolute(command) || command.includes(path.sep) || (path.sep === "/" && command.includes("\\"));
+  const prefix = await toolchainPathPrefix(cwd);
+  const searchPath = [prefix, process.env.PATH].filter(Boolean).join(path.delimiter);
+  const directories = directPath ? [path.dirname(path.resolve(cwd, command))] : searchPath.split(path.delimiter).filter(Boolean);
+  const baseName = directPath ? path.basename(command) : command;
+  const extensions = process.platform === "win32"
+    ? ["", ...(process.env.PATHEXT ?? ".EXE;.CMD;.BAT").split(";").filter(Boolean)]
+    : [""];
+  for (const directory of directories) {
+    for (const extension of extensions) {
+      try {
+        await fs.access(path.join(directory, baseName + extension), process.platform === "win32" ? undefined : fs.constants.X_OK);
+        return true;
+      } catch { /* try the next executable path */ }
+    }
+  }
+  return false;
 }
 
 async function toolchainPathPrefix(cwd: string): Promise<string | undefined> {
@@ -233,4 +277,3 @@ async function candidateRoots(start: string): Promise<string[]> {
   }
   return [...new Set(roots)];
 }
-function shell(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }

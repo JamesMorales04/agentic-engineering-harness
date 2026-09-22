@@ -22,10 +22,11 @@ describe("Paseo launch spec", () => {
     } as never;
     const contract = { version: 1, task: { id: "AUDIT-CAP", title: "capability" }, routing: { intent: "audit" } } as never;
     const base = { paseoProvider: "codex", runtimeAdapter: "codex", runtimeName: "codex", modelName: "gpt-test", modelId: "gpt-test", runtimeCapabilities: {}, skills: [], mcps: [], permissions: { read: "allow", write: "deny" } } as never;
-    const supervisor = await compilePaseoAgentLaunchSpec("/repo", config, contract, { selection: { ...base, logicalAgent: "operation-supervisor", role: "coordinator" }, phase: "supervision", supervisorAgent: true });
-    const worker = await compilePaseoAgentLaunchSpec("/repo", config, contract, { selection: { ...base, logicalAgent: "explorer", role: "explorer" }, phase: "review" });
+    const supervisor = await compilePaseoAgentLaunchSpec("/repo", config, contract, { selection: { ...base, logicalAgent: "operation-supervisor", role: "Operation Supervisor" }, phase: "supervision", supervisorAgent: true });
+    const worker = await compilePaseoAgentLaunchSpec("/repo", config, contract, { selection: { ...base, logicalAgent: "explorer", role: "Explorer" }, phase: "review" });
     expect(supervisor.mcpServers).toBeUndefined();
-    expect(worker.mcpServers?.serena).toEqual(expect.objectContaining({ type: "stdio", command: "serena" }));
+    expect(worker.mcpServers?.serena).toEqual(expect.objectContaining({ type: "stdio", command: process.execPath, args: expect.arrayContaining(["provider", "serena-proxy"]) }));
+    expect(worker.mcpServers?.serena?.env).toMatchObject({ AEH_SERENA_ACCESS: "read", AEH_SERENA_ROOT: "/repo" });
   });
 
   it("uses operation-local workspace, bounded identity and Codex thinking variant", async () => {
@@ -123,8 +124,8 @@ describe("Paseo launch spec", () => {
       paseoProvider: "opencode",
       runtimeAdapter: "opencode",
       runtimeName: "opencode",
-      modelName: "deepseek-v4-flash",
-      modelId: "opencode-go/deepseek-v4-flash",
+      modelName: "MiMo-V2.6-Flash",
+      modelId: "opencode-go/MiMo-V2.6-Flash",
       profile: "balanced",
       variant: "high",
       skills: [],
@@ -144,7 +145,7 @@ describe("Paseo launch spec", () => {
     expect(spec).toEqual(
       expect.objectContaining({
         provider: "opencode",
-        model: "opencode-go/deepseek-v4-flash",
+        model: "opencode-go/MiMo-V2.6-Flash",
         nativeAgentId: "aeh-code-quality-reviewer",
         thinkingOptionId: "high"
       })
@@ -163,7 +164,7 @@ describe("Paseo launch spec", () => {
     expect(inline.agent["aeh-code-quality-reviewer"]).toEqual(
       expect.objectContaining({
         mode: "primary",
-        model: "opencode-go/deepseek-v4-flash"
+        model: "opencode-go/MiMo-V2.6-Flash"
       })
     );
     expect(spec.labels).toEqual(
@@ -192,8 +193,8 @@ describe("Paseo launch spec", () => {
       paseoProvider: "opencode",
       runtimeAdapter: "opencode",
       runtimeName: "opencode",
-      modelName: "deepseek-v4-flash",
-      modelId: "opencode-go/deepseek-v4-flash",
+      modelName: "MiMo-V2.6-Flash",
+      modelId: "opencode-go/MiMo-V2.6-Flash",
       nativeAgent: "company-backend-agent",
       skills: [],
       mcps: [],

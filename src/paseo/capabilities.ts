@@ -1,5 +1,5 @@
 import type { ProcessResult } from "../utils/process.js";
-import { runProcess } from "../utils/process.js";
+import { runShell } from "../utils/process.js";
 
 export interface PaseoDaemonCapabilities {
   version?: string;
@@ -22,7 +22,7 @@ export interface PaseoBackgroundRunOptions {
   prompt: string;
 }
 
-type Runner = typeof runProcess;
+type Runner = typeof runShell;
 
 /**
  * Minimal CLI discovery needed by daemon bootstrap. This deliberately does not
@@ -31,7 +31,7 @@ type Runner = typeof runProcess;
  */
 export async function detectPaseoDaemonCapabilities(
   root: string,
-  run: Runner = runProcess
+  run: Runner = runShell
 ): Promise<PaseoDaemonCapabilities> {
   const [versionResult, daemonHelp] = await Promise.all([
     run("paseo --version", { cwd: root, timeoutMs: 15_000 }),
@@ -51,7 +51,7 @@ export async function detectPaseoDaemonCapabilities(
  */
 export async function detectPaseoCapabilities(
   root: string,
-  run: Runner = runProcess
+  run: Runner = runShell
 ): Promise<PaseoCapabilities> {
   const [daemon, runHelp] = await Promise.all([
     detectPaseoDaemonCapabilities(root, run),
@@ -118,9 +118,44 @@ export function extractPaseoAgentId(stdout: string): string | undefined {
 }
 
 export function isRecoverableDaemonStatus(result: ProcessResult): boolean {
-  return /stale[_ -]?pid|unreachable|connection refused|daemon.*not.*running|not running/i.test(
-    `${result.stderr}\n${result.stdout}`
-  );
+  const raw = `${result.stderr}\n${result.stdout}`;
+  const parsed = parseDaemonStatusJson(result.stdout) ?? parseDaemonStatusJson(result.stderr);
+  if (parsed) {
+    const localDaemon = statusValue(parsed.localDaemon);
+    const connectedDaemon = statusValue(parsed.connectedDaemon);
+    if (connectedDaemon && isHealthyDaemonStatus(connectedDaemon)) return false;
+    if ([localDaemon, connectedDaemon].some((status) => status && isStoppedDaemonStatus(status))) return true;
+  }
+  return /stale[_ -]?pid|unreachable|connection refused|daemon.*not.*running|not running/i.test(raw);
+}
+
+function parseDaemonStatusJson(value: string): Record<string, unknown> | undefined {
+  try {
+    const parsed: unknown = JSON.parse(value.trim());
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function statusValue(value: unknown): string | undefined {
+  if (typeof value === "string") return value.trim().toLowerCase().replace(/[ -]+/g, "_");
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  for (const key of ["status", "state", "lifecycle"]) {
+    if (typeof record[key] === "string") return statusValue(record[key]);
+  }
+  return undefined;
+}
+
+function isStoppedDaemonStatus(status: string): boolean {
+  return ["stopped", "not_running", "unreachable", "stale_pid", "error", "failed"].includes(status);
+}
+
+function isHealthyDaemonStatus(status: string): boolean {
+  return ["connected", "reachable", "ready", "running", "healthy"].includes(status);
 }
 
 function findId(value: unknown): string | undefined {

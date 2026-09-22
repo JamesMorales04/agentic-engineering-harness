@@ -195,7 +195,7 @@ describe("AEH generated scenario matrix", () => {
       expect(sourceSha256).not.toBe("0".repeat(64));
 
       const manifestPath = path.join(root, "manifest.json");
-      await fs.writeFile(manifestPath, JSON.stringify({ version: 1, entries: [{ path: "task-contract.yaml", kind: "task-contract", sha256: sourceSha256 }] }));
+      await fs.writeFile(manifestPath, JSON.stringify({ version: 1, buildIdentity: { version: 1, packageVersion: "0.0.0-test", gitSha: "unknown", releaseId: "release-test", buildDigest: "a".repeat(64), dirty: false }, entries: [{ path: "task-contract.yaml", kind: "task-contract", sha256: sourceSha256 }] }));
       expect((await verifyProvenanceManifest(root, "manifest.json")).ok).toBe(true);
       await fs.writeFile(source, "task: tampered\n");
       expect((await verifyProvenanceManifest(root, "manifest.json")).ok).toBe(false); // P10 lineage/source tampering breaks provenance.

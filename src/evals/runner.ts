@@ -3,7 +3,7 @@ import path from "node:path";
 import YAML from "yaml";
 import { z } from "zod";
 import type { HarnessProjectConfig } from "../core/types.js";
-import { runProcess } from "../utils/process.js";
+import { runExecutable, runShell } from "../utils/process.js";
 import { rankEvalResults, scoreEvalResult } from "./scoring.js";
 import type { EvalCase, EvalResult, EvalVariant } from "./types.js";
 
@@ -34,7 +34,9 @@ export async function runEvalCase(root: string, config: HarnessProjectConfig, ca
   const workspace = path.resolve(root, config.evals?.workspacesDir ?? ".harness/evals/workspaces", `${safe(caseId)}-${Date.now()}`);
   await fs.mkdir(path.dirname(workspace), { recursive: true });
 
-  const add = await runProcess(`git worktree add --detach ${quote(workspace)} ${quote(evalCase.baseRef)}`, { cwd: root, timeoutMs: 120_000 });
+  const base = await runExecutable("git", ["rev-parse", "--verify", "--end-of-options", `${evalCase.baseRef}^{commit}`], { cwd: root, timeoutMs: 30_000 });
+  if (base.exitCode !== 0 || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(base.stdout.trim())) throw new Error(`Eval base ref does not resolve to a full commit ID: ${evalCase.baseRef}`);
+  const add = await runExecutable("git", ["worktree", "add", "--detach", workspace, base.stdout.trim()], { cwd: root, timeoutMs: 120_000 });
   if (add.exitCode !== 0) throw new Error(`Unable to create eval worktree: ${add.stderr || add.stdout}`);
 
   try {
@@ -43,12 +45,12 @@ export async function runEvalCase(root: string, config: HarnessProjectConfig, ca
       await fs.cp(fixture, workspace, { recursive: true, force: true });
     }
     for (const setup of evalCase.setupCommands ?? []) {
-      const result = await runProcess(template(setup, evalCase, workspace), { cwd: workspace, timeoutMs: 600_000, env: variant.env });
+      const result = await runShell(template(setup, evalCase, workspace), { cwd: workspace, timeoutMs: 600_000, env: variant.env });
       if (result.exitCode !== 0) throw new Error(`Eval setup failed: ${result.stderr || result.stdout}`);
     }
 
     const command = template(variant.command ?? evalCase.runCommand ?? `aeh run ${quote(evalCase.taskId)}`, evalCase, workspace);
-    const execution = await runProcess(command, { cwd: workspace, timeoutMs: 3_600_000, env: variant.env });
+    const execution = await runShell(command, { cwd: workspace, timeoutMs: 3_600_000, env: variant.env });
     const run = await readJson(path.join(workspace, ".harness", "runs", `${evalCase.taskId}.json`));
     const report = await readJson(path.join(workspace, ".harness", "reports", `${evalCase.taskId}.json`));
     const status = (run?.status ?? report?.status ?? (execution.exitCode === 0 ? "PASS" : "FAIL")) as "PASS" | "FAIL";
@@ -74,7 +76,7 @@ export async function runEvalCase(root: string, config: HarnessProjectConfig, ca
     await fs.writeFile(file, `${JSON.stringify(output, null, 2)}\n`);
     return output;
   } finally {
-    await runProcess(`git worktree remove --force ${quote(workspace)}`, { cwd: root, timeoutMs: 120_000 });
+    await runExecutable("git", ["worktree", "remove", "--force", workspace], { cwd: root, timeoutMs: 120_000 });
   }
 }
 

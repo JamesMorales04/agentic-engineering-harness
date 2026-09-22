@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { HarnessProjectConfig } from "./types.js";
-import { runProcess } from "../utils/process.js";
+import { runExecutable } from "../utils/process.js";
 
 export interface ControlPlaneFile { path: string; sha256: string; size: number; }
 export interface ControlPlaneSnapshot { version: 1; taskId: string; createdAt: string; aehVersion?: string; gitCommit?: string; sourceRoot: string; materializedRoot: string; includeRoots: string[]; files: ControlPlaneFile[]; compositeSha256: string; }
@@ -57,7 +57,7 @@ async function enumerateControlFiles(root: string, includeRoots: string[]): Prom
 async function collectPath(root: string, relative: string, result: Set<string>): Promise<void> { const absolute = path.resolve(root, relative); if (!inside(root, absolute)) throw new Error(`Control-plane snapshot path escapes project root: ${relative}`); let stat; try { stat = await fs.stat(absolute); } catch { return; } if (stat.isFile()) { result.add(normalizeRelative(path.relative(root, absolute))); return; } if (!stat.isDirectory()) return; const entries = await fs.readdir(absolute, { withFileTypes: true }); for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) { if (["node_modules", ".git", "dist"].includes(entry.name)) continue; await collectPath(root, normalizeRelative(path.relative(root, path.join(absolute, entry.name))), result); } }
 function compositeHash(files: ControlPlaneFile[]): string { const hash = crypto.createHash("sha256"); for (const file of [...files].sort((a, b) => a.path.localeCompare(b.path))) hash.update(`${file.path}\0${file.sha256}\0${file.size}\n`); return hash.digest("hex"); }
 async function readPackageVersion(root: string): Promise<string | undefined> { try { return (JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8")) as { version?: string }).version; } catch { return undefined; } }
-async function readGitCommit(root: string): Promise<string | undefined> { const result = await runProcess("git rev-parse HEAD", { cwd: root, timeoutMs: 10_000 }); return result.exitCode === 0 ? result.stdout.trim() || undefined : undefined; }
+async function readGitCommit(root: string): Promise<string | undefined> { const result = await runExecutable("git", ["rev-parse", "HEAD"], { cwd: root, timeoutMs: 10_000 }); return result.exitCode === 0 ? result.stdout.trim() || undefined : undefined; }
 function normalizeRelative(value: string): string { return value.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/$/, ""); }
 function inside(root: string, target: string): boolean { const relative = path.relative(path.resolve(root), target); return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative)); }
 function sha256(value: Buffer | string): string { return crypto.createHash("sha256").update(value).digest("hex"); }

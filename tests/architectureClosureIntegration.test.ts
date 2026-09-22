@@ -11,7 +11,7 @@ import { buildAcceptedOperationCandidates } from "../src/memory/candidates.js";
 import type { AgentExecutionSelection } from "../src/agents/types.js";
 import type { HarnessProjectConfig, TaskContract, ValidationReport } from "../src/core/types.js";
 
-const selection = (runtimeAdapter: string, transport: AgentExecutionSelection["transport"]): AgentExecutionSelection => ({ logicalAgent: "worker", role: "implementer", domains: [], runtimeName: runtimeAdapter, runtimeAdapter, paseoProvider: "none", modelAlias: "test", modelId: "test", modelName: "test", transport, skills: [], mcps: [], permissions: { read: "allow", write: "allow" }, args: [], runtimeCapabilities: {} });
+const selection = (runtimeAdapter: string, transport: AgentExecutionSelection["transport"]): AgentExecutionSelection => ({ logicalAgent: "worker", role: "Implementer", domains: [], runtimeName: runtimeAdapter, runtimeAdapter, paseoProvider: "none", modelAlias: "test", modelId: "test", modelName: "test", transport, skills: [], mcps: [], permissions: { read: "allow", write: "allow" }, args: [], runtimeCapabilities: {} });
 
 describe("architecture closure integration", () => {
   it("resolves Serena and raw retrieval by effective transport", async () => {
@@ -22,7 +22,7 @@ describe("architecture closure integration", () => {
       await expect(resolveContextTransportCapabilities(root, config, selection("opencode", "direct"))).resolves.toMatchObject({ semanticRetrieval: true, authorizedRetrieval: true });
       await expect(resolveContextTransportCapabilities(root, { ...config, context: { ...config.context, semanticRetrieval: { provider: "serena", required: true } } }, selection("codex", "direct"))).rejects.toThrow("UNSUPPORTED_CAPABILITY");
       await expect(resolveContextTransportCapabilities(root, { ...config, security: { sandbox: { image: "missing-image" } } }, selection("opencode", "podman"))).resolves.toMatchObject({ semanticRetrieval: false, authorizedRetrieval: false });
-      const supervisor = { ...selection("codex", "paseo"), logicalAgent: "operation-supervisor", role: "coordinator" };
+      const supervisor = { ...selection("codex", "paseo"), logicalAgent: "operation-supervisor", role: "Operation Supervisor" };
       await expect(resolveContextTransportCapabilities(root, { ...config, context: { ...config.context, semanticRetrieval: { provider: "serena", required: true } } }, supervisor)).resolves.toMatchObject({ semanticRetrieval: false, authorizedRetrieval: false, mcpServers: { serena: false, context: false }, requirements: { semanticRetrieval: "FORBIDDEN", rawRetrieval: "FORBIDDEN" } });
       expect(staticContextCapabilities({ ...config, context: { ...config.context, semanticRetrieval: { provider: "serena", required: true } } }, { ...selection("codex", "paseo"), logicalAgent: "semantic-worker" })).toMatchObject({ semanticRetrieval: true, mcpServers: { serena: true } });
       expect(resolveContextCapabilityRequirements(config, supervisor)).toMatchObject({ repositoryMap: "FORBIDDEN", semanticRetrieval: "FORBIDDEN", rawRetrieval: "FORBIDDEN" });

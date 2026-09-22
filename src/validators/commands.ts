@@ -1,10 +1,10 @@
 import path from "node:path";
 import type { ValidationCheck, ValidationCommand } from "../core/types.js";
-import { runProcess } from "../utils/process.js";
+import { runShell } from "../utils/process.js";
 
 export async function runValidationCommand(root: string, command: ValidationCommand): Promise<ValidationCheck> {
   const cwd = path.resolve(root, command.workingDirectory ?? ".");
-  const result = await runProcess(command.command, {
+  const result = await runShell(command.command, {
     cwd,
     timeoutMs: (command.timeoutSeconds ?? 900) * 1000
   });

@@ -2,13 +2,13 @@ import type { Dirent } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { runProcess, type ProcessResult } from "../utils/process.js";
+import { runShell, type ProcessResult } from "../utils/process.js";
 
 const PASEO_CLIENT_PACKAGE = "@getpaseo/client";
 const MAX_PHYSICAL_SCAN_DEPTH = 8;
 const MAX_PHYSICAL_SCAN_DIRS = 10_000;
 
-type ProcessRunner = (command: string, options: Parameters<typeof runProcess>[1]) => Promise<ProcessResult>;
+type ProcessRunner = (command: string, options: Parameters<typeof runShell>[1]) => Promise<ProcessResult>;
 
 export interface PaseoSdkResolution {
   resolved?: string;
@@ -24,7 +24,7 @@ export interface PaseoSdkResolution {
  * scan only the bounded Paseo installation prefixes and load the exact
  * @getpaseo/client package physically present there.
  */
-export async function resolvePaseoSdkFromCli(root: string, runner: ProcessRunner = runProcess): Promise<PaseoSdkResolution> {
+export async function resolvePaseoSdkFromCli(root: string, runner: ProcessRunner = runShell): Promise<PaseoSdkResolution> {
   const diagnostics: string[] = [];
   const starts = new Set<string>();
   const installRoots = new Set<string>();

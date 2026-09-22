@@ -2,10 +2,11 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { MemoryProvider, MemoryRecord } from "./types.js";
-import { commandExists, runProcess } from "../utils/process.js";
+import { commandExists, runShell } from "../utils/process.js";
 import { providerVersions } from "./versions.js";
+import { sha256Canonical } from "../core/digest.js";
 
-export interface EngramOptions { command?: string; storagePath?: string; maxRecall?: number; executor?: typeof runProcess; }
+export interface EngramOptions { command?: string; storagePath?: string; maxRecall?: number; executor?: typeof runShell; }
 export const ENGRAM_VERSION = providerVersions.engram;
 
 export class EngramMemoryProvider implements MemoryProvider {
@@ -13,13 +14,13 @@ export class EngramMemoryProvider implements MemoryProvider {
   private readonly command: string;
   private readonly storagePath: string;
   private readonly maxRecall: number;
-  private readonly executor: typeof runProcess;
+  private readonly executor: typeof runShell;
 
   constructor(private readonly root: string, options: EngramOptions = {}) {
     this.command = options.command ?? "engram";
     this.storagePath = path.resolve(root, options.storagePath ?? ".harness/memory/engram.ndjson");
     this.maxRecall = options.maxRecall ?? 8;
-    this.executor = options.executor ?? runProcess;
+    this.executor = options.executor ?? runShell;
   }
 
   async doctor(root: string): Promise<{ ok: boolean; message: string; version?: string }> {
@@ -85,7 +86,7 @@ export async function filterStaleRecords(root: string, records: MemoryRecord[]):
   return result;
 }
 function normalizeRecord(record: MemoryRecord): MemoryRecord { if (!record.project?.trim() || !record.title?.trim() || !record.content?.trim()) throw new Error("Memory records require project, title and content."); return { ...record, project: record.project.trim(), title: record.title.trim(), content: record.content.trim(), tags: [...new Set(record.tags ?? [])].sort() }; }
-function fingerprint(record: MemoryRecord): string { return crypto.createHash("sha256").update(JSON.stringify({ project: record.project, type: record.type, title: record.title, content: record.content, tags: record.tags ?? [] })).digest("hex"); }
+function fingerprint(record: MemoryRecord): string { return sha256Canonical({ project: record.project, type: record.type, title: record.title, content: record.content, tags: record.tags ?? [] }); }
 function matches(record: MemoryRecord, query: string): boolean { const haystack = `${record.title} ${record.content} ${(record.tags ?? []).join(" ")}`.toLocaleLowerCase(); return query.toLocaleLowerCase().split(/\s+/).filter(Boolean).some((term) => haystack.includes(term)); }
 function parseRecords(stdout: string, project: string): MemoryRecord[] {
   try {

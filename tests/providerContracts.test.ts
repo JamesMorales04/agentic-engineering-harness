@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { commandExists, runProcess } from "../src/utils/process.js";
+import { commandExists, runShell } from "../src/utils/process.js";
 import { HeadroomCompressionProvider } from "../src/context/compression/headroom.js";
 import { GraphifyCodeIntelligenceProvider } from "../src/providers/graphify.js";
 import { EngramMemoryProvider } from "../src/providers/engram.js";
@@ -33,7 +33,7 @@ describeReal("real local provider contracts", () => {
   it("generates and reloads a canonical Graphify graph without refreshCommand", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-graphify-contract-"));
     try {
-      await fs.mkdir(path.join(root, "src"), { recursive: true }); await fs.writeFile(path.join(root, "src", "a.ts"), "export const a = 1;\n"); await runProcess("git init -q && git config user.email aeh@example.invalid && git config user.name AEH && git add . && git commit -qm base", { cwd: root, timeoutMs: 30_000 });
+      await fs.mkdir(path.join(root, "src"), { recursive: true }); await fs.writeFile(path.join(root, "src", "a.ts"), "export const a = 1;\n"); await runShell("git init -q && git config user.email aeh@example.invalid && git config user.name AEH && git add . && git commit -qm base", { cwd: root, timeoutMs: 30_000 });
       const provider = new GraphifyCodeIntelligenceProvider(config); await provider.refresh(root); expect(await provider.load(root)).toBeTruthy(); expect(await provider.isFresh(root)).toBe(true); await fs.appendFile(path.join(root, "src", "a.ts"), "export const b = 2;\n"); expect(await provider.isFresh(root)).toBe(false);
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   }, 120_000);

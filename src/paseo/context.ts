@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import type { HarnessProjectConfig } from "../core/types.js";
-import { runProcess } from "../utils/process.js";
+import { runShell } from "../utils/process.js";
 import { startPaseoHarness } from "./start.js";
 import {
   contextUsageFromPaseoSnapshot,
@@ -52,7 +52,7 @@ export interface ContextGuardResult {
   message: string;
 }
 
-type Runner = typeof runProcess;
+type Runner = typeof runShell;
 type Starter = typeof startPaseoHarness;
 type Inspector = typeof inspectPaseoNativeAgent;
 type Trace = typeof recordPaseoTrace;
@@ -150,7 +150,7 @@ export async function guardLeadContext(
   const status = await statusLeadContext(root, config, agentId, options);
   if (status.state !== "HANDOFF_REQUIRED" && status.state !== "HARD_HANDOFF") return status;
 
-  const run = options.run ?? runProcess;
+  const run = options.run ?? runShell;
   const trace = options.trace ?? recordPaseoTrace;
   const artifactPath = await writeHandoffArtifact(root, config, agentId, status.usage, options.brief, run);
   const autoRotate = options.autoRotate ?? Boolean(process.env.PASEO_AGENT_ID);

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import path from "node:path";
+import fs from "node:fs/promises";
+import { spawn } from "node:child_process";
 import process from "node:process";
 import { initializeProject } from "./core/init.js";
 import { loadProjectConfig } from "./core/config.js";
@@ -16,14 +18,25 @@ import { startPaseoHarness } from "./paseo/start.js";
 import { runDeterministicPaseoTurn, startDeterministicPaseoHarness } from "./paseo/deterministicSession.js";
 import { guardLeadContext } from "./paseo/context.js";
 import { listManagedPaseoAgents } from "./paseo/runtime.js";
+import { PaseoGatewayV1 } from "./paseo/gateway.js";
 import { prepareOpenSpecChange, compileOpenSpecChange } from "./spec/openspec.js";
-import { classifyEngineeringIntentHeuristic, formatEngineeringIntent } from "./audit/intent.js";
+import { classifyEngineeringIntentWithSemanticAssessment, formatEngineeringIntent } from "./audit/intent.js";
+import { createSemanticAssessmentRuntimeV1, createSemanticRepositoryBindingV1 } from "./semantic/runtime.js";
 import { runAudit } from "./audit/run.js";
 import type { TaskRisk } from "./core/types.js";
 import { VERSION } from "./version.js";
 import { retrievePersistedContext } from "./context/retrieval/persisted.js";
 import { serveContextRetrievalMcp } from "./context/retrieval/server.js";
 import { createIntentDecision, type IntentDecisionV1 } from "./audit/intentDecision.js";
+import { LocalControlCenterV1, createProjectHome } from "./control-center/index.js";
+import { createProjectRegistry } from "./projects/index.js";
+import { cancelOperation } from "./operations/controller.js";
+import { loadOperationPortfolio } from "./operations/portfolio.js";
+import { HumanDecisionLedgerV1 } from "./security/humanDecision.js";
+import { createManagedRuntime, readManagedRuntimeSnapshot, runtimeProjectId } from "./runtime/index.js";
+import { serveSerenaMcpProxy, serveSerenaPoolServer } from "./providers/serenaProxy.js";
+import { recordControlCenterDecision } from "./control-center/decision.js";
+import { controlCenterResourceId, type ControlCenterActionResultV1 } from "./control-center/contracts.js";
 
 const args = process.argv.slice(2);
 if (args.length === 1 && ["--version", "-V"].includes(args[0])) { console.log(VERSION); process.exit(0); }
@@ -33,6 +46,11 @@ if (args[0] === "paseo" && args[1] === "turn") { await runPaseoTurn(args.slice(2
 if (args[0] === "context" && args[1] === "guard") { await runContextGuard(args.slice(2)); process.exit(process.exitCode ?? 0); }
 if (args[0] === "context" && args[1] === "retrieve") { await runContextRetrieve(args.slice(2)); process.exit(process.exitCode ?? 0); }
 if (args[0] === "context" && args[1] === "mcp") { await serveContextRetrievalMcp(); process.exit(process.exitCode ?? 0); }
+if (args[0] === "provider" && args[1] === "serena-proxy") { await serveSerenaMcpProxy(); process.exit(process.exitCode ?? 0); }
+if (args[0] === "provider" && args[1] === "serena-pool") { await serveSerenaPoolServer(); process.exit(process.exitCode ?? 0); }
+if (args[0] === "home") { await runHome(args.slice(1)); process.exit(process.exitCode ?? 0); }
+if (args[0] === "control-center") { await runControlCenter(args.slice(1)); process.exit(process.exitCode ?? 0); }
+if (args[0] === "project") { await runProject(args.slice(1)); process.exit(process.exitCode ?? 0); }
 if (args[0] === "paseo" && args[1] === "agents") { await runPaseoAgents(args.slice(2)); process.exit(process.exitCode ?? 0); }
 if (args[0] === "spec" && ["prepare", "compile"].includes(args[1] ?? "")) { await runSpec(args.slice(1)); process.exit(process.exitCode ?? 0); }
 if (args[0] === "intent") { await runIntent(args.slice(1)); process.exit(process.exitCode ?? 0); }
@@ -48,7 +66,7 @@ if (args[0] === "eval" && ["repeat", "dashboard"].includes(args[1] ?? "")) { awa
 await import("./cli.js");
 
 async function runStart(argv: string[]): Promise<void> {
-  const parsed = parseGeneric(argv, new Set(["lead", "title"]), new Set(["new", "resume", "no-web-ui", "no-setup", "deterministic"]));
+  const parsed = parseGeneric(argv, new Set(["lead", "title"]), new Set(["new", "resume", "no-web-ui", "no-open", "no-setup", "deterministic"]));
   if (parsed.positional.length > 1) throw new Error(`aeh start accepts at most one project directory, received: ${parsed.positional.join(", ")}`);
   if (parsed.flag("new") && parsed.flag("resume")) throw new Error("aeh start cannot combine --new and --resume.");
   const root = path.resolve(parsed.positional[0] ?? ".");
@@ -74,8 +92,150 @@ async function runStart(argv: string[]): Promise<void> {
   if (result.paseoVersion) console.log(`paseo=${result.paseoVersion}`);
   console.log(`agentId=${result.agentId}`);
   console.log(`title=${result.title}`);
-  if (parsed.flag("deterministic") || process.env.AEH_DETERMINISTIC_PASEO === "1") console.log("sessionBoundary=deterministic-fake-paseo-sdk");
+  const deterministic = parsed.flag("deterministic") || process.env.AEH_DETERMINISTIC_PASEO === "1";
+  const controlCenter = !deterministic && !parsed.flag("no-web-ui") ? await launchDetachedControlCenter(root, process.argv[1], parsed.flag("no-open")) : undefined;
+  if (controlCenter) {
+    console.log(`controlCenter=${controlCenter.url}`);
+    console.log(`controlCenterPairing=${controlCenter.pairingUrl}`);
+  }
+  if (deterministic) console.log("sessionBoundary=deterministic-fake-paseo-sdk");
   console.log(`Open Paseo and continue in '${result.title}'. Engineering operations route through the Harness; normal aeh start creates a fresh lead, while --resume explicitly reuses a compatible one.`);
+}
+
+async function runHome(argv: string[]): Promise<void> {
+  const parsed = parseGeneric(argv, new Set(["port", "registry"]), new Set(["once", "no-open"]));
+  if (parsed.positional.length > 1) throw new Error("aeh home accepts at most one registry directory.");
+  const registry = createProjectRegistry({ statePath: parsed.value("registry") ?? parsed.positional[0] });
+  const center = await createProjectHome({ registry, port: parsed.value("port") ? Number(parsed.value("port")) : 0 });
+  const started = await center.start();
+  console.log(`AEH Home ready at ${started.url}`);
+  console.log(`controlCenterPairing=${started.pairingUrl}`);
+  if (parsed.flag("once")) { await center.close(); return; }
+  await new Promise<void>((resolve) => {
+    const shutdown = () => { void center.close().finally(resolve); };
+    process.once("SIGINT", shutdown);
+    process.once("SIGTERM", shutdown);
+  });
+}
+
+async function runControlCenter(argv: string[]): Promise<void> {
+  const parsed = parseGeneric(argv, new Set(["port", "ready-file"]), new Set(["once", "no-open"]));
+  if (parsed.positional.length > 1) throw new Error("aeh control-center accepts at most one project directory.");
+  const root = parsed.positional[0] ? path.resolve(parsed.positional[0]) : undefined;
+  const config = root ? await loadProjectConfig(root) : undefined;
+  const initialPortfolio = root && config ? await loadOperationPortfolio(root, config.project.name) : undefined;
+  const runtime = root ? await createManagedRuntime({ root, projectId: runtimeProjectId(root), ownerId: `control-center:${process.pid}` }) : undefined;
+  const decisionLedger = root ? new HumanDecisionLedgerV1(path.join(root, ".harness", "security", "human-decisions.json")) : undefined;
+  const center = new LocalControlCenterV1({
+    port: parsed.value("port") ? Number(parsed.value("port")) : 0,
+    operationRoots: () => root ? [root] : [],
+    snapshot: async () => {
+      if (!root || !config) return {};
+      const portfolio = await loadOperationPortfolio(root, config.project.name);
+      return {
+        operations: Object.values(portfolio.operations).map((item) => ({
+          version: 1 as const,
+          operationId: controlCenterResourceId("operation", item.operationId),
+          kind: item.kind === "audit" || item.kind === "run" || item.kind === "change" ? item.kind : "run",
+          status: item.status,
+          phase: item.phase,
+          revision: item.revision,
+          participantCount: 0,
+          runningParticipantCount: 0,
+          completedParticipantCount: 0,
+          failedParticipantCount: 0,
+          createdAt: item.updatedAt,
+          updatedAt: item.updatedAt,
+          payloadSummary: `${item.kind} operation ${item.operationId}`,
+          participants: []
+        })),
+        services: await readManagedRuntimeSnapshot(root),
+        quality: { activeOperations: Object.values(portfolio.operations).filter((item) => item.status === "RUNNING" || item.status === "QUEUED").length }
+      };
+    },
+    ...(root ? { paseoGateway: new PaseoGatewayV1(), paseo: { root, leadId: initialPortfolio?.leadAgentId } } : {}),
+    onDecision: root && decisionLedger ? async (value): Promise<ControlCenterActionResultV1> => {
+      const result = await recordControlCenterDecision(root, decisionLedger, value);
+      return {
+        accepted: result.accepted === true,
+        ...(typeof result.decisionId === "string" ? { decisionId: result.decisionId } : {}),
+        ...(typeof result.operationId === "string" ? { operationId: result.operationId } : {}),
+        ...(typeof result.candidateRevision === "number" ? { candidateRevision: result.candidateRevision } : {})
+      };
+    } : undefined,
+    onCancelOperation: root ? async (operationId): Promise<ControlCenterActionResultV1> => {
+      const result = await cancelOperation(root, operationId);
+      return { accepted: true, operationId: result.id, status: result.status, phase: result.phase, revision: result.revision };
+    } : undefined
+  });
+  const started = await center.start();
+  if (runtime) await runtime.registerService({ serviceId: `control-center:${runtime.projectId}`, kind: "control-center", status: "READY", pid: process.pid, healthUrl: started.url, metadata: { aehVersion: VERSION } });
+  const readyFile = parsed.value("ready-file");
+  if (readyFile) await fs.writeFile(path.resolve(readyFile), `${JSON.stringify({ version: 1, url: started.url, pairingUrl: started.pairingUrl, pid: process.pid })}\n`, { encoding: "utf8", mode: 0o600 });
+  console.log(`AEH Project Control Center ready at ${started.url}`);
+  console.log(`controlCenterPairing=${started.pairingUrl}`);
+  try {
+    if (parsed.flag("once")) { await center.close(); return; }
+    await new Promise<void>((resolve) => {
+      const shutdown = () => { void center.close().finally(resolve); };
+      process.once("SIGINT", shutdown);
+      process.once("SIGTERM", shutdown);
+    });
+  } finally {
+    if (runtime) await runtime.updateService(`control-center:${runtime.projectId}`, { status: "STOPPED" }).catch(() => undefined);
+  }
+}
+
+interface DetachedControlCenterV1 { url: string; pairingUrl: string; }
+
+async function launchDetachedControlCenter(root: string, entry: string | undefined, noOpen: boolean): Promise<DetachedControlCenterV1 | undefined> {
+  if (!entry) return undefined;
+  const readyFile = path.join(root, ".harness", "runtime", "control-center.json");
+  await fs.rm(readyFile, { force: true });
+  const child = spawn(process.execPath, [entry, "control-center", root, "--ready-file", readyFile], { cwd: root, detached: true, stdio: "ignore", env: { ...process.env, AEH_CONTROL_CENTER_PARENT: String(process.pid) } });
+  child.unref();
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    try {
+      const value = JSON.parse(await fs.readFile(readyFile, "utf8")) as Partial<DetachedControlCenterV1>;
+      if (typeof value.url === "string" && typeof value.pairingUrl === "string") {
+        await fs.rm(readyFile, { force: true });
+        if (!noOpen) openControlCenter(value.pairingUrl);
+        return { url: value.url, pairingUrl: value.pairingUrl };
+      }
+    } catch { /* wait for actual listener readiness */ }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return undefined;
+}
+
+function openControlCenter(url: string): void {
+  const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
+  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+  const child = spawn(command, args, { detached: true, stdio: "ignore" });
+  child.unref();
+}
+
+async function runProject(argv: string[]): Promise<void> {
+  const subcommand = argv[0] ?? "list";
+  const parsed = parseGeneric(argv.slice(1), new Set(["repository", "display-name", "registry"]), new Set());
+  const registry = createProjectRegistry({ statePath: parsed.value("registry") });
+  if (subcommand === "list") {
+    if (parsed.positional.length > 1) throw new Error("aeh project list accepts at most one registry directory.");
+    console.log(JSON.stringify(await registry.list(), null, 2));
+    return;
+  }
+  if (subcommand === "register") {
+    if (parsed.positional.length > 1) throw new Error("aeh project register accepts one project directory.");
+    const root = path.resolve(parsed.positional[0] ?? ".");
+    const repository = parsed.value("repository");
+    if (!repository) throw new Error("aeh project register requires --repository <canonical-repository-identity>.");
+    const config = await loadProjectConfig(root);
+    const project = await registry.register({ rootPath: root, repositoryIdentity: repository, displayName: parsed.value("display-name"), config });
+    console.log(JSON.stringify(project, null, 2));
+    return;
+  }
+  throw new Error(`Unknown project command '${subcommand}'. Use list or register.`);
 }
 
 async function runPaseoTurn(argv: string[]): Promise<void> {
@@ -167,7 +327,9 @@ async function runIntent(argv: string[]): Promise<void> {
   if (parsed.positional.length > 2) throw new Error("aeh intent accepts <request> and at most one project directory.");
   const root = path.resolve(parsed.positional[1] ?? ".");
   const config = await loadProjectConfig(root);
-  const decision = classifyEngineeringIntentHeuristic(config, { request, files: parsed.values("file"), domains: parsed.values("domain"), risk: parseRisk(parsed.value("risk")) });
+  const runtime = await createSemanticAssessmentRuntimeV1(root, config);
+  const binding = await createSemanticRepositoryBindingV1(root, config);
+  const decision = await classifyEngineeringIntentWithSemanticAssessment(config, { request, files: parsed.values("file"), domains: parsed.values("domain"), risk: parseRisk(parsed.value("risk")) }, { service: runtime.service, binding, policyRevision: runtime.policyRevision });
   console.log(formatEngineeringIntent(decision));
   console.log(JSON.stringify(decision, null, 2));
 }

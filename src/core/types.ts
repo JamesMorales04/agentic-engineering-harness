@@ -1,5 +1,8 @@
+import type { AssuranceLevel, ImplementationRoute, RouteEvidence } from "../architecture/contracts.js";
+import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
+import type { CandidateWorkspaceIdentityEvidenceV1 } from "../candidates/identity.js";
+
 export type CheckStatus = "PASS" | "FAIL" | "SKIP" | "WARN";
-export type TaskMode = "spec" | "quick";
 export type ReviewSeverity = "critical" | "high" | "medium" | "low" | "note";
 export type TaskRisk = "low" | "medium" | "high";
 export type PaseoSessionPolicy = "fresh-on-start" | "reuse-compatible" | "resume-explicit";
@@ -32,7 +35,7 @@ export interface ContextConfiguration {
   outputPolicy?: { enabled?: boolean; modes?: Record<string, "terse" | "compact" | "normal"> };
 }
 export interface RunMetrics { firstPassSuccess: boolean; repairCount: number; humanInterventions: number; durationMs: number; usage: UsageMetrics; }
-export interface ReviewEscalationStage { name: string; action?: "remediate" | "diagnose" | "replan"; agent?: string; model?: string; }
+export interface ReviewEscalationStage { name: string; action?: "remediate" | "diagnose" | "replan"; role?: import("../participants/index.js").CanonicalRole; model?: string; }
 
 export interface McpServerConfig {
   description?: string;
@@ -45,6 +48,8 @@ export interface McpServerConfig {
   enabled?: boolean;
   timeoutMs?: number;
   codemode?: boolean;
+  /** AEH-enforced projection for servers that support a narrower tool surface. */
+  toolPolicy?: { allow?: string[]; deny?: string[] };
 }
 
 export interface OrganizationPolicySource {
@@ -63,14 +68,13 @@ export interface HarnessProjectConfig {
   agents?: { configPath?: string; generatedPath?: string; activeProfile?: string; required?: boolean; findingsDir?: string; };
   controlPlane?: { snapshotDir?: string; include?: string[]; required?: boolean; };
   workflow?: {
-    quick?: { maxFiles?: number; disallowedDomains?: string[]; };
     issueIntake?: { enabled?: boolean; snapshotDir?: string; verifyDriftOnRun?: boolean; requireOpen?: boolean; plannerAgent?: string; autoHandoff?: boolean; };
     planning?: { enabled?: boolean; plannerAgent?: string; worktreeIsolation?: boolean; barrierValidation?: boolean; maxWaveConcurrency?: number; distributed?: boolean; };
     reviews?: {
       enabled?: boolean;
-      reviewQuick?: boolean;
+      directReview?: boolean;
       leadAcceptance?: boolean;
-      leadAcceptanceQuick?: boolean;
+      leadAcceptanceDirect?: boolean;
       /** @deprecated Accepted for old project files but ignored by the convergence engine. */
       maxRemediationRounds?: number;
       /** @deprecated Accepted for old project files but superseded by finalQualityGate. */
@@ -185,11 +189,6 @@ export interface HarnessProjectConfig {
 }
 
 export interface TaskRequirement { id: string; description?: string; validator?: string; validators?: string[]; capabilities?: ValidationCapability[]; }
-export interface QuickTaskMetadata {
-  request: string;
-  acceptance: string[];
-  triage: { mode: TaskMode; reasons: string[]; evaluatedAt: string; };
-}
 export interface TaskIssueMetadata {
   provider: "github";
   repository: string;
@@ -204,15 +203,21 @@ export interface TaskIssueMetadata {
 export interface TaskAuthoringMetadata { provider: string; change: string; sourceSha256: string; }
 export interface TaskContract {
   version: 1;
-  mode?: TaskMode;
   task: { id: string; title: string };
-  quick?: QuickTaskMetadata;
   source?: { proposal?: string; spec?: string; design?: string; tasks?: string; acceptance?: string; issue?: string; };
   authoring?: TaskAuthoringMetadata;
   issue?: TaskIssueMetadata;
   git?: { baseRef?: string; originatingBranch?: string };
   scope?: { allowed?: string[]; forbidden?: string[]; frozen?: string[]; };
-  routing?: { intent?: string; domains?: string[]; risk?: TaskRisk; agent?: string; reviewers?: string[]; profile?: string; };
+  routing?: {
+    intent?: string;
+    domains?: string[];
+    risk?: TaskRisk;
+    profile?: string;
+    route?: ImplementationRoute;
+    assurance?: AssuranceLevel;
+    routeEvidence?: RouteEvidence[];
+  };
   requirements?: TaskRequirement[];
   constraints?: { breakingApiChanges?: boolean; newDependencies?: boolean; schemaChanges?: boolean; maxFilesChanged?: number; maxLinesAdded?: number; maxLinesDeleted?: number; };
   impact?: { forbiddenEdges?: string[]; forbiddenNodes?: string[]; allowedCommunities?: string[]; };
@@ -222,7 +227,7 @@ export interface TaskContract {
 
 export interface ValidationCheck { id: string; category: string; status: CheckStatus; message: string; durationMs?: number; details?: Record<string, unknown>; }
 export interface ValidationFinding { fingerprint: string; tool: string; kind: string; rule?: string; severity?: string; file?: string; line?: number; endLine?: number; column?: number; endColumn?: number; message?: string; category?: string; cwe?: string[]; package?: string; installedVersion?: string; fixedVersion?: string; target?: string; artifact?: string; durationMs?: number; status?: string; details?: Record<string, unknown>; }
-export interface ValidationReport { version: 1; taskId: string; status: "PASS" | "FAIL"; startedAt: string; finishedAt: string; checks: ValidationCheck[]; changedFiles: string[]; findings?: ValidationFinding[]; metadata: { project: string; baseRef: string; }; }
+export interface ValidationReport { version: 1; taskId: string; status: "PASS" | "FAIL"; startedAt: string; finishedAt: string; checks: ValidationCheck[]; changedFiles: string[]; findings?: ValidationFinding[]; candidate?: CandidateRevisionV1; candidateWorkspaceIdentity?: CandidateWorkspaceIdentityEvidenceV1; metadata: { project: string; baseRef: string; }; }
 export interface RequirementTrace { id: string; proposal: boolean; spec: boolean; design: boolean; acceptance: boolean; tasks: boolean; contract: boolean; validators: string[]; }
 export interface RepairPacket { version: 1; taskId: string; attempt: number; createdAt: string; failureType?: string; failedAgent?: string; recoveryAction?: string; failures: Array<{ id: string; category: string; message: string; details?: Record<string, unknown>; }>; }
 export interface WorkerSession {
@@ -248,4 +253,9 @@ export interface WorkerSession {
   stdout: string;
   stderr: string;
   metrics?: UsageMetrics;
+  participantId?: string;
+  capabilityLeases?: import("../security/authorityV2.js").CapabilityLeaseV1[];
+  executionBinding?: import("../architecture/executionIdentity.js").ExecutionBindingV2;
+  /** Inert Paseo structured-result channel installed before its actual session is bound. */
+  structuredResultChannelId?: string;
 }

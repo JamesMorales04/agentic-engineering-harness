@@ -30,7 +30,7 @@ describe("managed AEH agent execution identity", () => {
   });
 
   it("denies nested Harness workflow entry from a bounded reviewer", () => {
-    for (const argv of [["audit", "review the repo"], ["run", "TASK-1"], ["start"], ["operation", "start", "audit"], ["operation", "execute", "AUDIT-1"], ["operation", "wait", "AUDIT-1"], ["operation", "cancel", "AUDIT-1"], ["quick", "create"], ["spec", "prepare", "TASK-1"]]) {
+    for (const argv of [["audit", "review the repo"], ["run", "TASK-1"], ["start"], ["operation", "start", "audit"], ["operation", "execute", "AUDIT-1"], ["operation", "wait", "AUDIT-1"], ["operation", "cancel", "AUDIT-1"], ["spec", "prepare", "TASK-1"]]) {
       expect(() => assertHarnessWorkflowEntryAllowed(argv, reviewerEnv)).toThrow("AEH_RECURSIVE_OPERATION_DENIED");
     }
   });

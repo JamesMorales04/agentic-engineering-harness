@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { runProcess, commandExists } from "../utils/process.js";
+import YAML from "yaml";
+import { runShell, commandExists } from "../utils/process.js";
 import type { AgentExecutionSelection } from "../agents/types.js";
 import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
 import { sealTask } from "../core/seal.js";
@@ -25,7 +26,7 @@ export async function runFullStackDogfood(root: string, config: HarnessProjectCo
   const checks: FullStackCheck[] = [];
   const check = (id: string, stage: string, status: FullStackCheck["status"], message: string, required = false, details?: Record<string, unknown>): void => { checks.push({ id, stage, status, required, message, details }); };
   try {
-    await createFixture(fixture);
+    await createFixture(fixture, strict);
     const fixtureConfig = fixtureConfiguration(config, strict);
     const contract = fixtureContract(strict);
     await sealTask(fixture, fixtureConfig, contract);
@@ -120,10 +121,10 @@ function fixtureConfiguration(base: HarnessProjectConfig, strict: boolean): Harn
 }
 
 function productionSelection(): AgentExecutionSelection {
-  return { logicalAgent: "full-stack-contract", role: "implementer", description: "Deterministic full-stack contract worker.", domains: ["validation"], runtimeName: "opencode", runtimeAdapter: "opencode", paseoProvider: "opencode", modelAlias: "contract", modelId: "contract", modelName: "contract", transport: "direct", skills: [], mcps: [], permissions: { read: "allow", write: "allow", shell: "allow", network: "deny" }, args: [], runtimeCapabilities: {} };
+  return { logicalAgent: "full-stack-contract", role: "Implementer", description: "Deterministic full-stack contract worker.", domains: ["validation"], runtimeName: "opencode", runtimeAdapter: "opencode", paseoProvider: "opencode", modelAlias: "contract", modelId: "contract", modelName: "contract", transport: "direct", skills: [], mcps: [], permissions: { read: "allow", write: "allow", shell: "allow", network: "deny" }, args: [], runtimeCapabilities: {} };
 }
 
-function fixtureContract(strict: boolean): TaskContract { return { version: 1, mode: "spec", task: { id: "FS-1", title: "deterministic full-stack fixture" }, source: { spec: "specs/FS-1.md" }, scope: { allowed: ["src/**", "specs/**", ".harness/**", ".serena/**", "graphify-out/**"] }, requirements: [{ id: "REQ-1", description: "changed fixture is validated", validators: ["command.smoke", ...(strict ? ["trivy-evidence"] : [])] }] }; }
-async function createFixture(root: string): Promise<void> { await fs.mkdir(path.join(root, "src"), { recursive: true }); await fs.mkdir(path.join(root, "specs"), { recursive: true }); await fs.mkdir(path.join(root, ".harness", "contracts"), { recursive: true }); await fs.writeFile(path.join(root, "src", "feature.ts"), "export const accepted = false;\n"); await fs.writeFile(path.join(root, "src", "serena-fixture.ts"), "export function SerenaFixtureSymbol(): boolean { return true; }\n"); await fs.writeFile(path.join(root, "specs", "FS-1.md"), "# FS-1\n\nThe fixture must validate a changed source file.\n"); await fs.writeFile(path.join(root, ".harness", "contracts", "FS-1.yaml"), "version: 1\nmode: spec\ntask:\n  id: FS-1\n  title: deterministic full-stack fixture\n"); const init = await runProcess("git init -q && git config user.email aeh@example.invalid && git config user.name AEH && git add . && git commit -qm base", { cwd: root, timeoutMs: 30_000 }); if (init.exitCode !== 0) throw new Error("Fixture git setup failed: " + init.stderr); }
+function fixtureContract(strict: boolean): TaskContract { return { version: 1, task: { id: "FS-1", title: "deterministic full-stack fixture" }, source: { spec: "specs/FS-1.md" }, scope: { allowed: ["src/**", "specs/**", ".harness/**", ".serena/**", "graphify-out/**"] }, routing: { intent: "implement", route: "FORMAL_SDD", assurance: strict ? "CRITICAL" : "ELEVATED", routeEvidence: [{ route: "FORMAL_SDD", source: "full-stack-fixture", statement: "The full-stack fixture is formalized before execution." }] }, requirements: [{ id: "REQ-1", description: "changed fixture is validated", validators: ["command.smoke", ...(strict ? ["trivy-evidence"] : [])] }] }; }
+async function createFixture(root: string, strict: boolean): Promise<void> { await fs.mkdir(path.join(root, "src"), { recursive: true }); await fs.mkdir(path.join(root, "specs"), { recursive: true }); await fs.mkdir(path.join(root, ".harness", "contracts"), { recursive: true }); await fs.writeFile(path.join(root, "src", "feature.ts"), "export const accepted = false;\n"); await fs.writeFile(path.join(root, "src", "serena-fixture.ts"), "export function SerenaFixtureSymbol(): boolean { return true; }\n"); await fs.writeFile(path.join(root, "specs", "FS-1.md"), "# FS-1\n\nThe fixture must validate a changed source file.\n"); await fs.writeFile(path.join(root, ".harness", "contracts", "FS-1.yaml"), YAML.stringify(fixtureContract(strict))); const init = await runShell("git init -q && git config user.email aeh@example.invalid && git config user.name AEH && git add . && git commit -qm base", { cwd: root, timeoutMs: 30_000 }); if (init.exitCode !== 0) throw new Error("Fixture git setup failed: " + init.stderr); }
 async function digest(file: string): Promise<string> { const crypto = await import("node:crypto"); return crypto.createHash("sha256").update(await fs.readFile(file)).digest("hex"); }
 function configuredSurface(config: HarnessProjectConfig): string[] { const result = ["git", "node", "ContextBudgetGateway", "buildEffectivePrompt", "EvidenceGraph", "provenance"]; if (config.memory?.provider && config.memory.provider !== "none") result.push("memory:" + config.memory.provider); if (config.codeIntelligence?.provider && config.codeIntelligence.provider !== "none") result.push("code-intelligence:" + config.codeIntelligence.provider); return result; }

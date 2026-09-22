@@ -3,6 +3,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { TaskContract, ValidationReport } from "../core/types.js";
 import type { MemoryRecord } from "../providers/types.js";
+import { assertWorkspaceMatchesCandidate } from "../candidates/identity.js";
+import { loadOperation } from "../operations/state.js";
 
 export interface AcceptedOperationArtifacts {
   root: string;
@@ -18,6 +20,11 @@ export interface AcceptedOperationArtifacts {
 /** Build bounded, artifact-backed memory. No prompt or chain-of-thought is read. */
 export async function buildAcceptedOperationCandidates(input: AcceptedOperationArtifacts): Promise<MemoryRecord[]> {
   if (input.result.status !== "PASS") return [];
+  const candidate = input.result.report.candidate;
+  if (candidate) {
+    const operation = input.operationId ? await loadOperation(input.root, input.operationId) : undefined;
+    await assertWorkspaceMatchesCandidate(candidate.worktree ?? operation?.workspaceRoot ?? input.root, candidate, input.operationId ? operation?.candidateRevision ?? null : undefined);
+  }
   const candidates: MemoryRecord[] = [];
   const add = async (type: MemoryRecord["type"], title: string, content: string, source: string, tags: string[]): Promise<void> => {
     const relative = path.relative(input.root, source).replaceAll("\\", "/");
@@ -26,7 +33,7 @@ export async function buildAcceptedOperationCandidates(input: AcceptedOperationA
     candidates.push({ project: input.project, type, title, content: content.slice(0, 3_000), source: relative, sourceSha256, createdAt: new Date().toISOString(), tags: [...new Set(["aeh", "accepted", ...tags])] });
   };
   const task = input.contract.task;
-  await add("summary", `Accepted operation ${task.id}`, `Accepted task ${task.id}: ${task.title}. Validation=${input.result.report.status}; attempts=${input.result.attempts}; review=${input.result.review?.status ?? "not-run"}; evidence=${input.result.evidence?.complete === true ? "complete" : "not-configured"}.`, input.runFile, [input.contract.mode ?? "spec"]);
+  await add("summary", `Accepted operation ${task.id}`, `Accepted task ${task.id}: ${task.title}. Validation=${input.result.report.status}; attempts=${input.result.attempts}; review=${input.result.review?.status ?? "not-run"}; evidence=${input.result.evidence?.complete === true ? "complete" : "not-configured"}.`, input.runFile, [input.contract.routing?.route ?? "DIRECT"]);
   const reportFile = input.reportFile ?? path.resolve(input.root, ".harness/reports", `${task.id}.json`);
   const report = input.result.report;
   if ((report.findings?.length ?? 0) > 0 || report.checks.some((check) => check.status === "WARN")) {

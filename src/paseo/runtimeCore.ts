@@ -1,7 +1,7 @@
 import process from "node:process";
 import type { OpenCodeAgentBindingSource } from "../agents/permissions.js";
 import { registerCurrentOperationAgent } from "../operations/state.js";
-import { runProcess } from "../utils/process.js";
+import { runExecutable, runShell } from "../utils/process.js";
 import {
   buildPaseoBackgroundRunCommand,
   detectPaseoCapabilities,
@@ -49,7 +49,8 @@ export interface ManagedPaseoAgentResult {
 }
 
 interface PaseoRuntimeDeps {
-  run: typeof runProcess;
+  run: typeof runShell;
+  updateLabels?: (root: string, agentId: string, labels: Record<string, string>) => Promise<void>;
   detectCapabilities: typeof detectPaseoCapabilities;
   trace?: typeof recordPaseoTrace;
   native?: {
@@ -71,7 +72,8 @@ interface PaseoRuntimeDeps {
 }
 
 const DEFAULT_DEPS: PaseoRuntimeDeps = {
-  run: runProcess,
+  run: runShell,
+  updateLabels: updatePaseoExecutionLabels,
   detectCapabilities: detectPaseoCapabilities,
   trace: recordPaseoTrace,
   native: {
@@ -211,9 +213,14 @@ export async function continueManagedPaseoAgent(
   prompt: string,
   timeoutSeconds?: number,
   deps: PaseoRuntimeDeps = DEFAULT_DEPS,
-  outputSchema?: Record<string, unknown>
+  outputSchema?: Record<string, unknown>,
+  executionIdentityLabels?: Record<string, string>
 ): Promise<ManagedPaseoAgentResult> {
   const trace = deps.trace ?? DEFAULT_DEPS.trace!;
+  if (executionIdentityLabels?.["aeh.execution.binding"]) {
+    const updateLabels = deps.updateLabels ?? DEFAULT_DEPS.updateLabels!;
+    await updateLabels(root, agentId, executionIdentityLabels);
+  }
   if (!forceCli()) {
     try {
       const result = {
@@ -250,6 +257,26 @@ export async function continueManagedPaseoAgent(
   const sent = await dispatchManagedPaseoAgent(root, agentId, prompt, timeoutSeconds, deps);
   if (sent.exitCode !== 0) return sent;
   return waitManagedPaseoAgent(root, agentId, timeoutSeconds, deps, baseline);
+}
+
+async function updatePaseoExecutionLabels(root: string, agentId: string, labels: Record<string, string>): Promise<void> {
+  const encoded = { ...labels };
+  for (const key of ["aeh.execution.binding", "aeh.result.provenance"] as const) {
+    const value = encoded[key];
+    if (value === undefined) continue;
+    try { JSON.parse(value); }
+    catch { throw new Error(`PASEO_EXECUTION_IDENTITY_INVALID: ${key} is not valid JSON before metadata binding.`); }
+    encoded[key] = Buffer.from(value, "utf8").toString("base64url");
+    encoded[`${key}.encoding`] = "base64url";
+  }
+  const args = ["agent", "update", agentId, ...Object.entries(encoded).flatMap(([key, value]) => ["--label", `${key}=${value}`])];
+  const updated = await runExecutable("paseo", args, { cwd: root, timeoutMs: 60_000 });
+  if (updated.exitCode !== 0) throw new Error(`PASEO_EXECUTION_IDENTITY_UPDATE_FAILED: ${updated.stderr || updated.stdout || `paseo agent update exited ${updated.exitCode}`}`);
+  const observed = await inspectPaseoSdkAgent(root, agentId);
+  if (!observed) throw new Error("PASEO_EXECUTION_IDENTITY_UPDATE_UNVERIFIED: Paseo could not read back the materialized agent labels before first-turn dispatch.");
+  for (const [key, value] of Object.entries(encoded)) {
+    if (observed.labels?.[key] !== value) throw new Error(`PASEO_EXECUTION_IDENTITY_UPDATE_UNVERIFIED: Paseo did not persist label '${key}' before first-turn dispatch.`);
+  }
 }
 
 export async function probeManagedPaseoAgent(root: string, agentId: string, deps: PaseoRuntimeDeps = DEFAULT_DEPS): Promise<boolean> {

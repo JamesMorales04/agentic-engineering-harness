@@ -10,17 +10,29 @@ import {
   startDetachedOperation
 } from "../src/operations/controller.js";
 import {
+  bindOperationCandidate,
+  bindOperationExecutionSemantics,
+  bindOperationParticipantExecution,
+  bindResolvedOperationPolicy,
+  claimControllerEpoch,
+  currentControllerEpoch,
   loadOperation,
+  operationEventsFile,
   acknowledgeOperationLead,
   patchOperation,
+  patchOperationMetadata,
   registerOperationAgent,
   saveOperation,
   setOperationStage,
   transitionOperationToTerminal,
+  updateOperationMetadata,
   updateOperationParticipant,
   type OperationRecord
 } from "../src/operations/state.js";
-import { runProcess } from "../src/utils/process.js";
+import { createCandidateRevisionV1 } from "../src/operations/v2Contracts.js";
+import { compileExecutionBinding, compileResolvedOperationPolicy, type ResolvedOperationPolicyV1 } from "../src/architecture/executionIdentity.js";
+import { sha256Canonical } from "../src/core/digest.js";
+import { runShell } from "../src/utils/process.js";
 import { resolveBaseRef } from "../src/core/git.js";
 
 const roots: string[] = [];
@@ -56,6 +68,104 @@ async function seed(
   return record;
 }
 
+async function seedBoundExecution(
+  root: string,
+  operationId: string,
+  participantId: string
+): Promise<{ binding: ReturnType<typeof compileExecutionBinding> }> {
+  await seed(root, { id: operationId, status: "RUNNING", phase: "implementation" });
+  await registerOperationAgent(root, operationId, {
+    id: participantId,
+    logicalAgent: "implementer",
+    role: "Implementer",
+    phase: "implementation"
+  });
+  const current = await loadOperation(root, operationId);
+  const candidate = current.candidateRevision!;
+  const policy = compileResolvedOperationPolicy({
+    projectId: candidate.projectId!,
+    operationId,
+    operationExecutionRevision: current.operationExecutionRevision!,
+    candidateRevision: candidate.revision,
+    candidateDigest: candidate.identityDigest,
+    controllerEpoch: currentControllerEpoch(current),
+    intent: "generic participant update guard",
+    route: "DIRECT",
+    minimumAssurance: "STANDARD",
+    policyVersions: { resolvedOperationPolicy: "1" },
+    policyDigests: {},
+    validationPolicy: {},
+    reviewPolicy: {},
+    deliveryPolicy: {},
+    knowledgePolicy: {},
+    contextPolicy: {},
+    allowedExternalEffects: [],
+    humanDecisionRequirements: []
+  });
+  const bound = await bindResolvedOperationPolicy(root, operationId, policy);
+  const binding = compileExecutionBinding({
+    operationId,
+    operationExecutionRevision: bound.operationExecutionRevision!,
+    candidateRevision: candidate.revision,
+    candidateDigest: candidate.identityDigest,
+    controllerEpoch: currentControllerEpoch(bound),
+    executionBlueprintDigest: sha256Canonical({ blueprint: participantId }),
+    operationPolicyDigest: policy.digest,
+    participantId,
+    participantGeneration: "generation-1",
+    roleInvocationPolicyDigest: sha256Canonical({ role: participantId }),
+    skillManifestDigest: sha256Canonical({ skill: participantId }),
+    runtime: { runtimeId: "codex", provider: "openai", modelId: "test-model", model: "test-model", sessionId: `session-${participantId}` },
+    contextManifestDigest: sha256Canonical({ context: participantId }),
+    promptManifestDigest: sha256Canonical({ prompt: participantId }),
+    outputContract: "implementer",
+    leaseIdentities: []
+  });
+  await bindOperationParticipantExecution(root, operationId, { participantId, logicalAgent: "implementer", role: "Implementer", binding });
+  return { binding };
+}
+
+async function compilePolicyForCurrentIdentity(
+  root: string,
+  operationId: string,
+  overrides: {
+    intent?: string;
+    operationExecutionRevision?: number;
+    candidateRevision?: number;
+    controllerEpoch?: number;
+    reviewPolicy?: unknown;
+  } = {}
+): Promise<ResolvedOperationPolicyV1> {
+  const current = await loadOperation(root, operationId);
+  const candidate = current.candidateRevision!;
+  return compileResolvedOperationPolicy({
+    projectId: candidate.projectId!,
+    operationId,
+    operationExecutionRevision: overrides.operationExecutionRevision ?? current.operationExecutionRevision!,
+    candidateRevision: overrides.candidateRevision ?? candidate.revision,
+    candidateDigest: candidate.identityDigest,
+    controllerEpoch: overrides.controllerEpoch ?? currentControllerEpoch(current),
+    intent: overrides.intent ?? "focused policy lifecycle",
+    route: "DIRECT",
+    minimumAssurance: "STANDARD",
+    policyVersions: { resolvedOperationPolicy: "1" },
+    policyDigests: {},
+    validationPolicy: {},
+    reviewPolicy: overrides.reviewPolicy ?? {},
+    deliveryPolicy: {},
+    knowledgePolicy: {},
+    contextPolicy: {},
+    allowedExternalEffects: [],
+    humanDecisionRequirements: []
+  });
+}
+
+type ParticipantPatch = Parameters<typeof updateOperationParticipant>[3];
+
+function hostileParticipantPatch(patch: Record<string, unknown>): ParticipantPatch {
+  return patch as unknown as ParticipantPatch;
+}
+
 describe("operation controller state", () => {
   it("persists legacy records atomically and normalizes them to v2", async () => {
     const root = await tempRoot();
@@ -70,11 +180,28 @@ describe("operation controller state", () => {
         root,
         payload: record.payload,
         revision: 1,
+        operationExecutionRevision: 1,
         supervision: expect.objectContaining({ required: true, materialized: false }),
         participants: {},
         progress: expect.objectContaining({ expected: 0, completed: 0, running: 0 })
       })
     );
+  });
+
+  it("does not infer an execution revision when an existing durable operation lacks one", async () => {
+    const root = await tempRoot();
+    const record = await seed(root, { status: "RUNNING" });
+    const file = path.join(root, ".harness", "operations", `${record.id}.json`);
+    const stored = JSON.parse(await fs.readFile(file, "utf8")) as Record<string, unknown>;
+    delete stored.operationExecutionRevision;
+    await fs.writeFile(file, `${JSON.stringify(stored, null, 2)}\n`);
+    const current = await loadOperation(root, record.id);
+    expect(current.operationExecutionRevision).toBeUndefined();
+    const candidate = current.candidateRevision!;
+    await expect(bindOperationCandidate(root, record.id, createCandidateRevisionV1({
+      operationId: record.id, candidateId: `candidate:${record.id}:r2`, projectId: candidate.projectId, taskId: candidate.taskId,
+      revision: candidate.revision + 1, parentCandidateId: candidate.candidateId, sourceDigest: candidate.sourceDigest, worktree: root
+    }))).rejects.toThrow("UNSUPPORTED_OPERATION_EXECUTION_REVISION");
   });
 
   it("serializes concurrent patches without corrupting the operation file", async () => {
@@ -175,10 +302,510 @@ describe("operation controller state", () => {
     expect(current).toEqual(before);
   });
 
+  it("rejects a generic participant update that introduces a fresh participant carrying an execution binding", async () => {
+    const root = await tempRoot();
+    const operationId = "RUN-BINDING-FRESH";
+    const { binding } = await seedBoundExecution(root, operationId, "implementer-1");
+    const before = await loadOperation(root, operationId);
+
+    await expect(
+      updateOperationParticipant(root, operationId, "fresh-participant", hostileParticipantPatch({ role: "Implementer", executionBinding: binding }))
+    ).rejects.toThrow("EXECUTION_BINDING_IMMUTABLE");
+
+    const after = await loadOperation(root, operationId);
+    expect(after).toEqual(before);
+    expect(after.participants["fresh-participant"]).toBeUndefined();
+    expect(after.revision).toBe(before.revision);
+  });
+
+  it("rejects generic participant updates that clear or replace an existing execution binding", async () => {
+    const root = await tempRoot();
+    const operationId = "RUN-BINDING-IMMUTABLE";
+    const participantId = "implementer-1";
+    const { binding } = await seedBoundExecution(root, operationId, participantId);
+    const bound = await loadOperation(root, operationId);
+    expect(bound.participants[participantId]?.executionBinding?.digest).toBe(binding.digest);
+
+    const invalidBinding = { ...binding, runtime: { ...binding.runtime, sessionId: "session-mutated-under-stale-digest" } };
+    await expect(
+      bindOperationParticipantExecution(root, operationId, { participantId, logicalAgent: "implementer", role: "Implementer", binding: invalidBinding })
+    ).rejects.toThrow("EXECUTION_BINDING_INVALID");
+
+    const { version: _version, digest: _digest, ...bindingBody } = binding;
+    const replacement = compileExecutionBinding({ ...bindingBody, participantGeneration: "generation-2" });
+    await expect(
+      updateOperationParticipant(root, operationId, participantId, hostileParticipantPatch({ executionBinding: replacement }))
+    ).rejects.toThrow("EXECUTION_BINDING_IMMUTABLE");
+    await expect(
+      updateOperationParticipant(root, operationId, participantId, hostileParticipantPatch({ executionBinding: undefined }))
+    ).rejects.toThrow("EXECUTION_BINDING_IMMUTABLE");
+    const sameDeclaredDigestMutation = { ...binding, runtime: { ...binding.runtime, sessionId: "session-mutated-under-stale-digest" } };
+    expect(sameDeclaredDigestMutation.digest).toBe(binding.digest);
+    await expect(
+      updateOperationParticipant(root, operationId, participantId, hostileParticipantPatch({ executionBinding: sameDeclaredDigestMutation }))
+    ).rejects.toThrow("EXECUTION_BINDING_IMMUTABLE");
+
+    const after = await loadOperation(root, operationId);
+    expect(after).toEqual(bound);
+    expect(after.participants[participantId]?.executionBinding?.digest).toBe(binding.digest);
+
+    const progressed = await updateOperationParticipant(root, operationId, participantId, { status: "RUNNING", stage: "implementation" });
+    expect(progressed.participants[participantId]).toEqual(expect.objectContaining({ status: "RUNNING", stage: "implementation", executionBinding: binding }));
+  });
+
+  it("rejects an in-place execution binding session mutation performed by an updateOperationMetadata callback", async () => {
+    const root = await tempRoot();
+    const operationId = "RUN-BINDING-CALLBACK-IN-PLACE";
+    const participantId = "implementer-1";
+    const { binding } = await seedBoundExecution(root, operationId, participantId);
+    const before = await loadOperation(root, operationId);
+    expect(before.participants[participantId]?.executionBinding?.digest).toBe(binding.digest);
+    const file = path.join(root, ".harness", "operations", `${operationId}.json`);
+    const recordBytes = await fs.readFile(file);
+
+    const mutatedUnderStaleDigest = { ...binding, runtime: { ...binding.runtime, sessionId: "session-mutated-under-stale-digest" } };
+    expect(mutatedUnderStaleDigest.digest).toBe(binding.digest);
+    expect(sha256Canonical(mutatedUnderStaleDigest)).not.toBe(sha256Canonical(binding));
+
+    await expect(
+      updateOperationMetadata(root, operationId, (current) => {
+        current.participants[participantId]!.executionBinding!.runtime.sessionId = "session-mutated-under-stale-digest";
+        return {};
+      })
+    ).rejects.toThrow("EXECUTION_BINDING_IMMUTABLE");
+
+    expect(await fs.readFile(file)).toEqual(recordBytes);
+    const after = await loadOperation(root, operationId);
+    expect(after).toEqual(before);
+    expect(after.participants[participantId]?.executionBinding).toEqual(binding);
+    expect(after.revision).toBe(before.revision);
+  });
+
+  it("rejects re-keying a participant to hide an in-place execution binding mutation from the pre-callback participant set", async () => {
+    const root = await tempRoot();
+    const operationId = "RUN-BINDING-CALLBACK-REKEY";
+    const participantId = "implementer-1";
+    const aliasId = "implementer-1-alias";
+    const { binding } = await seedBoundExecution(root, operationId, participantId);
+    const before = await loadOperation(root, operationId);
+    expect(before.participants[participantId]?.executionBinding?.digest).toBe(binding.digest);
+    expect(before.participants[aliasId]).toBeUndefined();
+    const file = path.join(root, ".harness", "operations", `${operationId}.json`);
+    const recordBytes = await fs.readFile(file);
+
+    await expect(
+      updateOperationMetadata(root, operationId, (current) => {
+        const participant = current.participants[participantId]!;
+        participant.executionBinding!.runtime.sessionId = "session-mutated-under-stale-digest";
+        delete current.participants[participantId];
+        current.participants[aliasId] = participant;
+        return {};
+      })
+    ).rejects.toThrow("EXECUTION_BINDING_IMMUTABLE");
+
+    expect(await fs.readFile(file)).toEqual(recordBytes);
+    const after = await loadOperation(root, operationId);
+    expect(after).toEqual(before);
+    expect(after.participants[aliasId]).toBeUndefined();
+    expect(after.participants[participantId]?.executionBinding).toEqual(binding);
+    expect(after.revision).toBe(before.revision);
+  });
+
+  it("rejects every generic operation path that tries to add or clear a frozen ResolvedOperationPolicy", async () => {
+    const root = await tempRoot();
+    const operationId = "RUN-POLICY-GENERIC";
+    await seed(root, { id: operationId, status: "RUNNING", phase: "implementation" });
+    const policy = await compilePolicyForCurrentIdentity(root, operationId);
+    const before = await loadOperation(root, operationId);
+
+    await expect(patchOperation(root, operationId, { resolvedOperationPolicy: policy })).rejects.toThrow("EXECUTION_POLICY_IMMUTABLE");
+    await expect(patchOperationMetadata(root, operationId, { resolvedOperationPolicy: policy })).rejects.toThrow("EXECUTION_POLICY_IMMUTABLE");
+    await expect(updateOperationMetadata(root, operationId, () => ({ resolvedOperationPolicy: policy }))).rejects.toThrow("EXECUTION_POLICY_IMMUTABLE");
+    const afterAddAttempts = await loadOperation(root, operationId);
+    expect(afterAddAttempts).toEqual(before);
+    expect(afterAddAttempts.resolvedOperationPolicy).toBeUndefined();
+
+    const bound = await bindResolvedOperationPolicy(root, operationId, policy);
+    expect(bound.resolvedOperationPolicy).toEqual(policy);
+
+    await expect(patchOperation(root, operationId, { resolvedOperationPolicy: undefined })).rejects.toThrow("EXECUTION_POLICY_IMMUTABLE");
+    await expect(patchOperationMetadata(root, operationId, { resolvedOperationPolicy: undefined })).rejects.toThrow("EXECUTION_POLICY_IMMUTABLE");
+    await expect(updateOperationMetadata(root, operationId, () => ({ resolvedOperationPolicy: undefined }))).rejects.toThrow("EXECUTION_POLICY_IMMUTABLE");
+    const afterClearAttempts = await loadOperation(root, operationId);
+    expect(afterClearAttempts).toEqual(bound);
+    expect(afterClearAttempts.resolvedOperationPolicy).toEqual(policy);
+  });
+
+  it("rejects a same-declared-digest policy body mutation and leaves the durable record byte-for-byte unchanged", async () => {
+    const root = await tempRoot();
+    const operationId = "RUN-POLICY-SAME-DIGEST";
+    await seed(root, { id: operationId, status: "RUNNING", phase: "implementation" });
+    const policy = await compilePolicyForCurrentIdentity(root, operationId);
+    const bound = await bindResolvedOperationPolicy(root, operationId, policy);
+    const file = path.join(root, ".harness", "operations", `${operationId}.json`);
+    const recordBytes = await fs.readFile(file);
+
+    const tampered: ResolvedOperationPolicyV1 = { ...policy, intent: "tampered-under-retained-digest" };
+    const replacement = await compilePolicyForCurrentIdentity(root, operationId, { intent: "replacement" });
+    expect(tampered.digest).toBe(policy.digest);
+    expect(sha256Canonical(tampered)).not.toBe(sha256Canonical(policy));
+    expect(replacement.digest).not.toBe(policy.digest);
+
+    await expect(patchOperation(root, operationId, { resolvedOperationPolicy: tampered })).rejects.toThrow("EXECUTION_POLICY_IMMUTABLE");
+    await expect(patchOperationMetadata(root, operationId, { resolvedOperationPolicy: tampered })).rejects.toThrow("EXECUTION_POLICY_IMMUTABLE");
+    await expect(updateOperationMetadata(root, operationId, () => ({ resolvedOperationPolicy: tampered }))).rejects.toThrow("EXECUTION_POLICY_IMMUTABLE");
+    await expect(patchOperation(root, operationId, { resolvedOperationPolicy: replacement })).rejects.toThrow("EXECUTION_POLICY_IMMUTABLE");
+    await expect(updateOperationMetadata(root, operationId, () => ({ resolvedOperationPolicy: replacement }))).rejects.toThrow("EXECUTION_POLICY_IMMUTABLE");
+
+    expect(await fs.readFile(file)).toEqual(recordBytes);
+    const after = await loadOperation(root, operationId);
+    expect(after).toEqual(bound);
+    expect(after.revision).toBe(bound.revision);
+    expect(after.operationExecutionRevision).toBe(bound.operationExecutionRevision);
+    expect(after.resolvedOperationPolicy).toEqual(policy);
+
+    const progressed = await patchOperation(root, operationId, { phase: "review" });
+    expect(progressed.phase).toBe("review");
+    expect(progressed.resolvedOperationPolicy).toEqual(policy);
+  });
+
+  it("rejects an in-place policy mutation performed by an updateOperationMetadata callback", async () => {
+    const root = await tempRoot();
+    const operationId = "RUN-POLICY-CALLBACK-IN-PLACE";
+    await seed(root, { id: operationId, status: "RUNNING", phase: "implementation" });
+    const policy = await compilePolicyForCurrentIdentity(root, operationId);
+    const bound = await bindResolvedOperationPolicy(root, operationId, policy);
+    const file = path.join(root, ".harness", "operations", `${operationId}.json`);
+    const recordBytes = await fs.readFile(file);
+
+    await expect(updateOperationMetadata(root, operationId, (current) => {
+      current.resolvedOperationPolicy!.intent = "in-place-tampered-under-retained-digest";
+      return {};
+    })).rejects.toThrow("EXECUTION_POLICY_IMMUTABLE");
+
+    expect(await fs.readFile(file)).toEqual(recordBytes);
+    const after = await loadOperation(root, operationId);
+    expect(after).toEqual(bound);
+    expect(after.resolvedOperationPolicy).toEqual(policy);
+    expect(after.resolvedOperationPolicy!.intent).toBe(policy.intent);
+  });
+
+  it("validates the explicit policy binding lifecycle and refuses in-place policy replacement", async () => {
+    const root = await tempRoot();
+    const operationId = "RUN-POLICY-BINDING";
+    await seed(root, { id: operationId, status: "RUNNING", phase: "implementation" });
+    const current = await loadOperation(root, operationId);
+
+    const valid = await compilePolicyForCurrentIdentity(root, operationId);
+    const invalid: ResolvedOperationPolicyV1 = { ...valid, digest: "0".repeat(64) };
+    await expect(bindResolvedOperationPolicy(root, operationId, invalid)).rejects.toThrow("RESOLVED_OPERATION_POLICY_INVALID");
+    await expect(bindResolvedOperationPolicy(root, operationId, await compilePolicyForCurrentIdentity(root, operationId, { operationExecutionRevision: current.operationExecutionRevision! + 1 }))).rejects.toThrow("EXECUTION_POLICY_STALE");
+    await expect(bindResolvedOperationPolicy(root, operationId, await compilePolicyForCurrentIdentity(root, operationId, { candidateRevision: current.candidateRevision!.revision + 1 }))).rejects.toThrow("EXECUTION_POLICY_STALE");
+    await expect(bindResolvedOperationPolicy(root, operationId, await compilePolicyForCurrentIdentity(root, operationId, { controllerEpoch: currentControllerEpoch(current) + 1 }))).rejects.toThrow("EXECUTION_POLICY_STALE");
+    expect((await loadOperation(root, operationId)).resolvedOperationPolicy).toBeUndefined();
+
+    const policy = await compilePolicyForCurrentIdentity(root, operationId, { intent: "initial" });
+    const bound = await bindResolvedOperationPolicy(root, operationId, policy);
+    expect(bound.resolvedOperationPolicy).toEqual(policy);
+    expect(bound.operationExecutionRevision).toBe(current.operationExecutionRevision);
+
+    const replacement = await compilePolicyForCurrentIdentity(root, operationId, { intent: "replacement", reviewPolicy: { independentReviewRequired: true } });
+    expect(replacement.digest).not.toBe(policy.digest);
+    await expect(bindResolvedOperationPolicy(root, operationId, replacement)).rejects.toThrow("EXECUTION_POLICY_RECOMPILE_REQUIRED");
+
+    const equivalent = await compilePolicyForCurrentIdentity(root, operationId, { intent: "initial" });
+    expect(sha256Canonical(equivalent)).toBe(sha256Canonical(policy));
+    const rebound = await bindResolvedOperationPolicy(root, operationId, equivalent);
+    expect(rebound.resolvedOperationPolicy).toEqual(policy);
+    expect(rebound.revision).toBe(bound.revision + 1);
+    expect(rebound.operationExecutionRevision).toBe(bound.operationExecutionRevision);
+  });
+
+  it("clears the frozen policy and execution bindings only through candidate assembly", async () => {
+    const root = await tempRoot();
+    const operationId = "RUN-POLICY-CANDIDATE";
+    const participantId = "implementer-1";
+    const { binding } = await seedBoundExecution(root, operationId, participantId);
+    const bound = await loadOperation(root, operationId);
+    const candidate = bound.candidateRevision!;
+    const policy = bound.resolvedOperationPolicy!;
+    expect(policy).toBeDefined();
+    expect(bound.participants[participantId]?.executionBinding?.digest).toBe(binding.digest);
+
+    const advanced = createCandidateRevisionV1({
+      operationId,
+      candidateId: `candidate:${operationId}:r${candidate.revision + 1}`,
+      projectId: candidate.projectId,
+      taskId: candidate.taskId,
+      revision: candidate.revision + 1,
+      parentCandidateId: candidate.candidateId,
+      sourceDigest: candidate.sourceDigest,
+      worktree: root
+    });
+    const afterCandidate = await bindOperationCandidate(root, operationId, advanced);
+    expect(afterCandidate.resolvedOperationPolicy).toBeUndefined();
+    expect(afterCandidate.participants[participantId]?.executionBinding).toBeUndefined();
+    expect(afterCandidate.operationExecutionRevision).toBe(bound.operationExecutionRevision! + 1);
+
+    await expect(patchOperation(root, operationId, { resolvedOperationPolicy: policy })).rejects.toThrow("EXECUTION_POLICY_IMMUTABLE");
+    await expect(bindResolvedOperationPolicy(root, operationId, policy)).rejects.toThrow("EXECUTION_POLICY_STALE");
+    expect((await loadOperation(root, operationId)).resolvedOperationPolicy).toBeUndefined();
+  });
+
+  it("clears the frozen policy and execution bindings only through controller takeover", async () => {
+    const root = await tempRoot();
+    const operationId = "RUN-POLICY-TAKEOVER";
+    const participantId = "implementer-1";
+    await seedBoundExecution(root, operationId, participantId);
+    const bound = await loadOperation(root, operationId);
+    const policy = bound.resolvedOperationPolicy!;
+    const savedToken = process.env.AEH_CONTROLLER_TOKEN;
+    let claimed: Awaited<ReturnType<typeof claimControllerEpoch>>;
+    try {
+      claimed = await claimControllerEpoch(root, operationId, "controller:takeover");
+    } finally {
+      restoreEnv("AEH_CONTROLLER_TOKEN", savedToken);
+    }
+    expect(claimed.controller?.epoch).toBe(currentControllerEpoch(bound) + 1);
+    expect(claimed.resolvedOperationPolicy).toBeUndefined();
+    expect(claimed.participants[participantId]?.executionBinding).toBeUndefined();
+
+    await expect(patchOperation(root, operationId, { resolvedOperationPolicy: policy })).rejects.toThrow("EXECUTION_POLICY_IMMUTABLE");
+    await expect(bindResolvedOperationPolicy(root, operationId, policy)).rejects.toThrow("EXECUTION_POLICY_STALE");
+    expect((await loadOperation(root, operationId)).resolvedOperationPolicy).toBeUndefined();
+  });
+
+  it("clears the frozen policy only when execution semantics actually change", async () => {
+    const root = await tempRoot();
+    const operationId = "RUN-POLICY-SEMANTICS";
+    await seed(root, { id: operationId, status: "RUNNING", phase: "implementation" });
+    const policy = await compilePolicyForCurrentIdentity(root, operationId);
+    const seeded = await bindResolvedOperationPolicy(root, operationId, policy);
+
+    const initial = await bindOperationExecutionSemantics(root, operationId, sha256Canonical({ semantics: "r1" }));
+    expect(initial.resolvedOperationPolicy).toEqual(policy);
+    expect(initial.operationExecutionRevision).toBe(seeded.operationExecutionRevision);
+
+    const changed = await bindOperationExecutionSemantics(root, operationId, sha256Canonical({ semantics: "r2" }));
+    expect(changed.resolvedOperationPolicy).toBeUndefined();
+    expect(changed.operationExecutionRevision).toBe(seeded.operationExecutionRevision! + 1);
+
+    await expect(patchOperation(root, operationId, { resolvedOperationPolicy: policy })).rejects.toThrow("EXECUTION_POLICY_IMMUTABLE");
+    await expect(bindResolvedOperationPolicy(root, operationId, policy)).rejects.toThrow("EXECUTION_POLICY_STALE");
+  });
+
+  it("rejects every generic operation path that tries to add, replace, or clear executionSemanticsDigest", async () => {
+    const root = await tempRoot();
+    const operationId = "RUN-SEMANTICS-GENERIC";
+    await seed(root, { id: operationId, status: "RUNNING", phase: "implementation" });
+    const before = await loadOperation(root, operationId);
+    const file = path.join(root, ".harness", "operations", `${operationId}.json`);
+    const recordBytes = await fs.readFile(file);
+    const d1 = sha256Canonical({ semantics: "generic-d1" });
+    const d2 = sha256Canonical({ semantics: "generic-d2" });
+
+    await expect(patchOperation(root, operationId, { executionSemanticsDigest: d1 })).rejects.toThrow();
+    await expect(patchOperationMetadata(root, operationId, { executionSemanticsDigest: d1 })).rejects.toThrow();
+    await expect(updateOperationMetadata(root, operationId, () => ({ executionSemanticsDigest: d1 }))).rejects.toThrow();
+    await expect(updateOperationMetadata(root, operationId, (current) => {
+      current.executionSemanticsDigest = d1;
+      return { ...current };
+    })).rejects.toThrow();
+
+    expect(await fs.readFile(file)).toEqual(recordBytes);
+    const afterAddAttempts = await loadOperation(root, operationId);
+    expect(afterAddAttempts).toEqual(before);
+    expect(afterAddAttempts.executionSemanticsDigest).toBeUndefined();
+    expect(afterAddAttempts.operationExecutionRevision).toBe(before.operationExecutionRevision);
+
+    const bound = await bindOperationExecutionSemantics(root, operationId, d1);
+    expect(bound.executionSemanticsDigest).toBe(d1);
+    expect(bound.operationExecutionRevision).toBe(before.operationExecutionRevision);
+    const boundBytes = await fs.readFile(file);
+
+    await expect(patchOperation(root, operationId, { executionSemanticsDigest: d2 })).rejects.toThrow();
+    await expect(patchOperationMetadata(root, operationId, { executionSemanticsDigest: d2 })).rejects.toThrow();
+    await expect(updateOperationMetadata(root, operationId, () => ({ executionSemanticsDigest: d2 }))).rejects.toThrow();
+    await expect(patchOperation(root, operationId, { executionSemanticsDigest: undefined })).rejects.toThrow();
+    await expect(patchOperationMetadata(root, operationId, { executionSemanticsDigest: undefined })).rejects.toThrow();
+    await expect(updateOperationMetadata(root, operationId, () => ({ executionSemanticsDigest: undefined }))).rejects.toThrow();
+    await expect(updateOperationMetadata(root, operationId, (current) => {
+      current.executionSemanticsDigest = d2;
+      return { ...current };
+    })).rejects.toThrow();
+    await expect(updateOperationMetadata(root, operationId, (current) => {
+      current.executionSemanticsDigest = undefined;
+      return { ...current };
+    })).rejects.toThrow();
+
+    expect(await fs.readFile(file)).toEqual(boundBytes);
+    const afterMutationAttempts = await loadOperation(root, operationId);
+    expect(afterMutationAttempts).toEqual(bound);
+    expect(afterMutationAttempts.executionSemanticsDigest).toBe(d1);
+    expect(afterMutationAttempts.operationExecutionRevision).toBe(bound.operationExecutionRevision);
+
+    const progressed = await patchOperation(root, operationId, { phase: "review" });
+    expect(progressed.phase).toBe("review");
+    expect(progressed.executionSemanticsDigest).toBe(d1);
+  });
+
+  it("rejects generic alias mutation of an existing operationExecutionRevision", async () => {
+    const root = await tempRoot();
+    const operationId = "RUN-REVISION-PRESENT-GENERIC";
+    await seed(root, { id: operationId, status: "RUNNING", phase: "implementation" });
+    const before = await loadOperation(root, operationId);
+    expect(before.operationExecutionRevision).toBe(1);
+    const file = path.join(root, ".harness", "operations", `${operationId}.json`);
+    const recordBytes = await fs.readFile(file);
+
+    await expect(patchOperation(root, operationId, { operationExecutionRevision: 2 })).rejects.toThrow(/OPERATION_EXECUTION_REVISION/);
+    await expect(patchOperationMetadata(root, operationId, { operationExecutionRevision: 2 })).rejects.toThrow(/OPERATION_EXECUTION_REVISION/);
+    await expect(updateOperationMetadata(root, operationId, () => ({ operationExecutionRevision: 2 }))).rejects.toThrow(/OPERATION_EXECUTION_REVISION/);
+    await expect(updateOperationMetadata(root, operationId, (current) => {
+      current.operationExecutionRevision = 2;
+      return { ...current };
+    })).rejects.toThrow(/OPERATION_EXECUTION_REVISION/);
+    await expect(updateOperationMetadata(root, operationId, (current) => {
+      current.operationExecutionRevision = undefined;
+      return { ...current };
+    })).rejects.toThrow(/OPERATION_EXECUTION_REVISION/);
+
+    expect(await fs.readFile(file)).toEqual(recordBytes);
+    const after = await loadOperation(root, operationId);
+    expect(after).toEqual(before);
+    expect(after.operationExecutionRevision).toBe(1);
+  });
+
+  it("rejects generic synthesis of a missing operationExecutionRevision and preserves unsupported execution boundaries", async () => {
+    const root = await tempRoot();
+    const operationId = "RUN-REVISION-ABSENT-GENERIC";
+    const record = await seed(root, { id: operationId, status: "RUNNING", phase: "implementation" });
+    const file = path.join(root, ".harness", "operations", `${record.id}.json`);
+    const stored = JSON.parse(await fs.readFile(file, "utf8")) as Record<string, unknown>;
+    delete stored.operationExecutionRevision;
+    await fs.writeFile(file, `${JSON.stringify(stored, null, 2)}\n`);
+    const before = await loadOperation(root, operationId);
+    expect(before.operationExecutionRevision).toBeUndefined();
+    const recordBytes = await fs.readFile(file);
+
+    // The Director reproduced this exact legacy upgrade: absent -> revision 1.
+    await expect(patchOperation(root, operationId, { operationExecutionRevision: 1 })).rejects.toThrow(/OPERATION_EXECUTION_REVISION/);
+    await expect(patchOperation(root, operationId, { operationExecutionRevision: 9 })).rejects.toThrow(/OPERATION_EXECUTION_REVISION/);
+    await expect(patchOperationMetadata(root, operationId, { operationExecutionRevision: 9 })).rejects.toThrow(/OPERATION_EXECUTION_REVISION/);
+    await expect(updateOperationMetadata(root, operationId, () => ({ operationExecutionRevision: 9 }))).rejects.toThrow(/OPERATION_EXECUTION_REVISION/);
+    await expect(updateOperationMetadata(root, operationId, (current) => {
+      current.operationExecutionRevision = 9;
+      return { ...current };
+    })).rejects.toThrow(/OPERATION_EXECUTION_REVISION/);
+
+    expect(await fs.readFile(file)).toEqual(recordBytes);
+    const after = await loadOperation(root, operationId);
+    expect(after).toEqual(before);
+    expect(after.operationExecutionRevision).toBeUndefined();
+
+    const candidate = after.candidateRevision!;
+    await expect(bindOperationCandidate(root, operationId, createCandidateRevisionV1({
+      operationId, candidateId: `candidate:${operationId}:r2`, projectId: candidate.projectId, taskId: candidate.taskId,
+      revision: candidate.revision + 1, parentCandidateId: candidate.candidateId, sourceDigest: candidate.sourceDigest, worktree: root
+    }))).rejects.toThrow("UNSUPPORTED_OPERATION_EXECUTION_REVISION");
+    await expect(bindOperationExecutionSemantics(root, operationId, sha256Canonical({ semantics: "absent-revision" }))).rejects.toThrow("UNSUPPORTED_OPERATION_EXECUTION_REVISION");
+    expect(await fs.readFile(file)).toEqual(recordBytes);
+  });
+
+  it("binds a first semantics digest without advancing execution identity and keeps same-digest binds append-only", async () => {
+    const root = await tempRoot();
+    const operationId = "RUN-SEMANTICS-IDENTITY";
+    await seed(root, { id: operationId, status: "RUNNING", phase: "implementation" });
+    const policy = await compilePolicyForCurrentIdentity(root, operationId);
+    const withPolicy = await bindResolvedOperationPolicy(root, operationId, policy);
+    const d1 = sha256Canonical({ semantics: "identity-r1" });
+
+    const first = await bindOperationExecutionSemantics(root, operationId, d1);
+    expect(first.executionSemanticsDigest).toBe(d1);
+    expect(first.operationExecutionRevision).toBe(withPolicy.operationExecutionRevision);
+    expect(first.resolvedOperationPolicy).toEqual(policy);
+    expect(first.revision).toBe(withPolicy.revision + 1);
+
+    const same = await bindOperationExecutionSemantics(root, operationId, d1);
+    expect(same.executionSemanticsDigest).toBe(d1);
+    expect(same.operationExecutionRevision).toBe(withPolicy.operationExecutionRevision);
+    expect(same.resolvedOperationPolicy).toEqual(policy);
+    expect(same.revision).toBe(first.revision + 1);
+
+    const events = (await fs.readFile(operationEventsFile(root, operationId), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { type: string; revision: number });
+    const semanticsEvents = events.filter((event) => event.type === "operation.execution-semantics.bound");
+    expect(semanticsEvents.map((event) => event.revision)).toEqual([first.revision, same.revision]);
+  });
+
+  it("rejects a generic future semantics digest and replaces the bound digest through its owner exactly once", async () => {
+    const root = await tempRoot();
+    const operationId = "RUN-SEMANTICS-PREEMPT";
+    const participantId = "implementer-1";
+    const { binding } = await seedBoundExecution(root, operationId, participantId);
+    const bound = await loadOperation(root, operationId);
+    const policy = bound.resolvedOperationPolicy!;
+    expect(policy).toBeDefined();
+    expect(bound.participants[participantId]?.executionBinding?.digest).toBe(binding.digest);
+
+    const { version: _version, digest: _digest, ...bindingBody } = binding;
+    await registerOperationAgent(root, operationId, { id: "implementer-2", logicalAgent: "implementer", role: "Implementer", phase: "implementation" });
+    await bindOperationParticipantExecution(root, operationId, {
+      participantId: "implementer-2",
+      logicalAgent: "implementer",
+      role: "Implementer",
+      binding: compileExecutionBinding({
+        ...bindingBody,
+        participantId: "implementer-2",
+        participantGeneration: "generation-2",
+        runtime: { ...bindingBody.runtime, sessionId: "session-implementer-2" }
+      })
+    });
+    const withBindings = await loadOperation(root, operationId);
+    expect(withBindings.participants[participantId]?.executionBinding).toBeDefined();
+    expect(withBindings.participants["implementer-2"]?.executionBinding).toBeDefined();
+    expect(withBindings.resolvedOperationPolicy).toEqual(policy);
+
+    const d1 = sha256Canonical({ semantics: "owner-r1" });
+    const d2 = sha256Canonical({ semantics: "owner-r2" });
+    const first = await bindOperationExecutionSemantics(root, operationId, d1);
+    expect(first.executionSemanticsDigest).toBe(d1);
+    expect(first.operationExecutionRevision).toBe(withBindings.operationExecutionRevision);
+    expect(first.resolvedOperationPolicy).toEqual(policy);
+    expect(first.participants[participantId]?.executionBinding?.digest).toBe(binding.digest);
+
+    const file = path.join(root, ".harness", "operations", `${operationId}.json`);
+    const preemptedBytes = await fs.readFile(file);
+    await expect(patchOperation(root, operationId, { executionSemanticsDigest: d2 })).rejects.toThrow();
+    await expect(patchOperationMetadata(root, operationId, { executionSemanticsDigest: d2 })).rejects.toThrow();
+    await expect(updateOperationMetadata(root, operationId, () => ({ executionSemanticsDigest: d2 }))).rejects.toThrow();
+    await expect(updateOperationMetadata(root, operationId, (current) => {
+      current.executionSemanticsDigest = d2;
+      return { ...current };
+    })).rejects.toThrow();
+    expect(await fs.readFile(file)).toEqual(preemptedBytes);
+    const afterPreemption = await loadOperation(root, operationId);
+    expect(afterPreemption).toEqual(first);
+    expect(afterPreemption.executionSemanticsDigest).toBe(d1);
+
+    const changed = await bindOperationExecutionSemantics(root, operationId, d2);
+    expect(changed.executionSemanticsDigest).toBe(d2);
+    expect(changed.operationExecutionRevision).toBe(first.operationExecutionRevision! + 1);
+    expect(changed.resolvedOperationPolicy).toBeUndefined();
+    expect(changed.participants[participantId]?.executionBinding).toBeUndefined();
+    expect(changed.participants["implementer-2"]?.executionBinding).toBeUndefined();
+    expect(changed.revision).toBe(first.revision + 1);
+
+    const reloaded = await loadOperation(root, operationId);
+    expect(reloaded.operationExecutionRevision).toBe(first.operationExecutionRevision! + 1);
+    expect(reloaded.executionSemanticsDigest).toBe(d2);
+  });
+
   it("rejects an acknowledgement for a stale revision inside the durable mutation boundary", async () => {
     const root = await tempRoot();
     const record = await seed(root, { status: "RUNNING", phase: "planning" });
-    await saveOperation(root, record);
     const bound = await (await import("../src/operations/state.js")).bindOperationLead(root, record.id, "lead-1", "test");
     const staleRevision = bound.revision;
     const current = await setOperationStage(root, record.id, "review", "RUNNING");
@@ -282,7 +909,7 @@ describe("operation controller state", () => {
     expect((await loadOperation(root, record.id)).phase).toBe("spawn-failed");
   });
 
-  it("cancels a detached direct-process handle registered by runProcess", async () => {
+  it("cancels a detached direct-process handle registered by runShell", async () => {
     if (process.platform === "win32") return;
     const root = await tempRoot();
     const record = await seed(root, {
@@ -300,7 +927,7 @@ describe("operation controller state", () => {
     process.env.AEH_OPERATION_KIND = "audit";
     process.env.AEH_CONTROL_ROOT = root;
     process.env.AEH_OPERATION_STATE_REDIRECT = "1";
-    const running = runProcess(`${shellQuote(process.execPath)} -e ${shellQuote("setTimeout(()=>{},60000)")}`, { cwd: root, timeoutMs: 60_000 });
+    const running = runShell(`${shellQuote(process.execPath)} -e ${shellQuote("setTimeout(()=>{},60000)")}`, { cwd: root, timeoutMs: 60_000 });
     const handles = path.join(root, ".harness", "operations", `${record.id}.processes`);
     try {
       await vi.waitFor(async () => expect((await fs.readdir(handles)).length).toBeGreaterThan(0));
@@ -383,7 +1010,7 @@ describe("operation controller state", () => {
 
   it("falls back from an unavailable configured base ref to the current branch", async () => {
     const root = await tempRoot();
-    await runProcess("git init -q && git config user.email aeh@example.invalid && git config user.name aeh && git commit --allow-empty -qm baseline && git branch -M fixture-base", { cwd: root, timeoutMs: 30_000 });
+    await runShell("git init -q && git config user.email aeh@example.invalid && git config user.name aeh && git commit --allow-empty -qm baseline && git branch -M fixture-base", { cwd: root, timeoutMs: 30_000 });
     const resolved = await resolveBaseRef(root, "main");
     expect(resolved.ref).toBe("fixture-base");
     expect(resolved.fallbackFrom).toBe("main");

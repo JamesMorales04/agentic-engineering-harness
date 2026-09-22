@@ -1,7 +1,7 @@
-import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { RepositoryContextMap, RepositoryEdge, RepositoryNode } from "../context/repository/types.js";
+import { sha256Canonical, sha256Utf8 } from "../core/digest.js";
 
 /** Canonical, lossless-enough structural representation consumed by all AEH Graphify users. */
 export interface CanonicalGraphEdge { from: string; to: string; relation: string; }
@@ -22,14 +22,14 @@ export async function loadCanonicalGraph(root: string, graphPath = "graphify-out
   const source = path.resolve(root, graphPath);
   try {
     const content = await fs.readFile(source, "utf8");
-    return normalizeGraphDocument(JSON.parse(content) as unknown, graphPath, crypto.createHash("sha256").update(content).digest("hex"));
+    return normalizeGraphDocument(JSON.parse(content) as unknown, graphPath, sha256Utf8(content));
   } catch {
     return undefined;
   }
 }
 
 /** One parser for Graphify variants; callers must not normalize provider output independently. */
-export function normalizeGraphDocument(raw: unknown, source = "graphify", sourceHash = crypto.createHash("sha256").update(JSON.stringify(raw)).digest("hex")): CanonicalGraph {
+export function normalizeGraphDocument(raw: unknown, source = "graphify", sourceHash = sha256Canonical(raw)): CanonicalGraph {
   const labels = new Map<string, string>();
   const nodeFiles: Record<string, string> = {};
   const communities: Record<string, string> = {};

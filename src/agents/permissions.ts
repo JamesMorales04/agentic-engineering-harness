@@ -2,6 +2,9 @@ import { createHash } from "node:crypto";
 import type { HarnessProjectConfig, McpServerConfig } from "../core/types.js";
 import type { AgentExecutionSelection, PermissionDecision } from "./types.js";
 import { staticContextCapabilities, type EffectiveContextCapabilities } from "../context/transport.js";
+import { SERENA_VERSION } from "../context/repository/serena.js";
+import { managedSerenaPool } from "../runtime/serenaPool.js";
+import path from "node:path";
 
 export type OpenCodeAgentBindingSource = "aeh-managed" | "explicit";
 
@@ -38,19 +41,27 @@ export function validateExecutionCapabilities(
   if (selection.variant && selection.runtimeCapabilities.variantSelection === false) {
     issues.push(`Runtime ${selection.runtimeName} cannot select variant ${selection.variant}.`);
   }
-  if (selection.role === "implementer" && selection.permissions.write === "deny") {
+  if (selection.role === "Implementer" && selection.permissions.write === "deny") {
     issues.push(`Implementer ${selection.logicalAgent} denies write permission.`);
   }
   if (
-    (selection.role === "reviewer" || selection.role === "validator") &&
+    selection.role === "Reviewer" &&
     selection.permissions.write === "allow"
   ) {
     issues.push(
       `${selection.role} ${selection.logicalAgent} explicitly allows writes; read-only roles should use write=deny unless intentionally mutating.`
     );
   }
-  if (selection.role === "orchestrator" && selection.permissions.delegate === "deny") {
-    issues.push(`Orchestrator ${selection.logicalAgent} denies delegation.`);
+  if (selection.role === "Semantic Assessor") {
+    const denied = ["read", "write", "shell", "network", "delegate", "review", "validate", "gitWrite"] as const;
+    const opened = denied.filter((key) => selection.permissions[key] !== "deny");
+    if (opened.length) issues.push(`Semantic Assessor ${selection.logicalAgent} must explicitly deny ${opened.join(", ")}.`);
+    if (transport !== "paseo" || selection.runtimeAdapter !== "opencode" || selection.paseoProvider !== "opencode") issues.push(`Semantic Assessor ${selection.logicalAgent} requires the AEH-managed OpenCode runtime through Paseo.`);
+    if (selection.runtimeCapabilities.runtimeConfigInjection !== true || selection.runtimeCapabilities.structuredOutput !== true || selection.runtimeCapabilities.modelSelection !== true) issues.push(`Semantic Assessor ${selection.logicalAgent} runtime must support AEH permission projection, topology model selection, and structured output.`);
+    if (selection.nativeAgent || selection.skills.length || selection.mcps.length || selection.args.length) issues.push(`Semantic Assessor ${selection.logicalAgent} cannot select native agents, skills, MCP servers, or runtime arguments.`);
+  }
+  if ((selection.role === "Lead/Director" || selection.role === "Operation Supervisor") && selection.permissions.delegate === "deny") {
+    issues.push(`${selection.role} ${selection.logicalAgent} denies delegation.`);
   }
   return issues;
 }
@@ -105,14 +116,14 @@ export function buildOpenCodeRuntimeConfig(
   for (const [name, server] of Object.entries(configured)) {
     const selected = selection.mcps.includes(name) && server.enabled !== false;
     tools[`${name}_*`] = selected;
-    if (selected) mcp[name] = toOpenCodeMcp(server);
+    if (selected) mcp[name] = name === "serena" ? toManagedSerenaMcp(server, selection) : toOpenCodeMcp(server);
   }
   for (const name of selection.mcps) {
     if (!configured[name]) tools[`${name}_*`] = true;
   }
   const capabilities = resolvedContextCapabilities ?? (config ? staticContextCapabilities(config, selection) : undefined);
   if (capabilities?.mcpServers.serena && !mcp.serena) {
-    mcp.serena = { type: "local", command: ["serena", "start-mcp-server", "--context", "ide-assistant", "--project", "."], enabled: true, timeout: 30_000 };
+    mcp.serena = toManagedSerenaMcp({ type: "local", command: ["serena", "start-mcp-server", "--context", "ide-assistant", "--project", "."], enabled: true, timeoutMs: 30_000 }, selection);
     tools["serena_*"] = true;
   }
   // Headroom is controller-side compression. Its MCP schema is intentionally
@@ -174,6 +185,7 @@ function buildOpenCodePermission(
 ): Record<string, unknown> {
   const permission: Record<string, unknown> = {};
   const p = selection.permissions;
+  if (selection.role === "Semantic Assessor") permission["*"] = "deny";
   if (p.read) permission.read = p.read;
   if (p.write) permission.edit = p.write;
   if (p.network) {
@@ -189,6 +201,7 @@ function buildOpenCodePermission(
       ...selection.skills.map((skill) => [skill, "allow"])
     ]);
   }
+  if (selection.role === "Semantic Assessor") permission.skill = "deny";
   return permission;
 }
 
@@ -223,6 +236,30 @@ function toOpenCodeMcp(server: McpServerConfig): Record<string, unknown> {
     ...(server.headers ? { headers: server.headers } : {}),
     ...(server.oauth !== undefined ? { oauth: server.oauth } : {}),
     ...(server.timeoutMs ? { timeout: server.timeoutMs } : {})
+  };
+}
+
+function toManagedSerenaMcp(server: McpServerConfig, selection: AgentExecutionSelection): Record<string, unknown> {
+  const canEdit = selection.permissions.write === "allow" && (selection.role === "Implementer" || selection.role === "Repairer");
+  const original = server.command?.[0] ?? "serena";
+  const rootIndex = server.command?.indexOf("--project") ?? -1;
+  const root = rootIndex >= 0 ? server.command?.[rootIndex + 1] ?? "." : ".";
+  const canonicalRoot = path.resolve(root);
+  const projectId = `project:${createHash("sha256").update(canonicalRoot).digest("hex").slice(0, 24)}`;
+  const workspaceId = process.env.AEH_OPERATION_WORKSPACE_ID?.trim() || "project";
+  const session = managedSerenaPool.acquire({ projectId, canonicalRoot, workspaceId, serenaVersion: SERENA_VERSION, ownerId: `${process.env.AEH_PARENT_OPERATION_ID?.trim() || "direct"}:${selection.logicalAgent}`, access: canEdit ? "write" : "read", editingEnabled: canEdit });
+  const pooled = session.mcpServer;
+  return {
+    type: "local",
+    command: pooled.command,
+    enabled: true,
+    environment: {
+      ...(server.environment ?? {}),
+      ...(pooled.environment ?? {}),
+      AEH_SERENA_COMMAND: original
+    },
+    timeout: server.timeoutMs ?? 30_000,
+    toolPolicy: session.editingEnabled ? { allow: ["*"], deny: [] } : { allow: session.allowedTools, deny: session.deniedTools }
   };
 }
 

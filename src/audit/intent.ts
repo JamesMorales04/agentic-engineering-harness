@@ -1,6 +1,9 @@
 import type { HarnessProjectConfig, TaskRisk } from "../core/types.js";
-import { triageChange, type TriageDecision, type TriageEvidence } from "../core/triage.js";
+import { sha256Canonical } from "../core/digest.js";
+import { AehError } from "../core/errors.js";
+import { triageChange, triageChangeWithSemanticAssessment, type TriageDecision, type TriageEvidence } from "../core/triage.js";
 import { createIntentDecision, type IntentDecisionV1, type IntentDecisionSource, type SemanticIntent } from "./intentDecision.js";
+import { createSemanticEvidenceReceiptV1, SemanticAssessmentServiceV1, type DecisionMechanismV1, type SemanticAssessmentBindingV1 } from "../semantic/assessment.js";
 
 export { assertIntentDecisionForRoute, createIntentDecision, defaultEffects, intentDecisionV1Schema, InvalidIntentDecisionError, parseIntentDecision, semanticIntentValues, validateIntentDecision } from "./intentDecision.js";
 export type { IntentDecisionRoute, IntentDecisionResolution, IntentDecisionSource, IntentDecisionV1, SemanticIntent } from "./intentDecision.js";
@@ -13,7 +16,10 @@ export interface EngineeringIntentEvidence extends TriageEvidence {
 
 export interface EngineeringIntentDecision {
   intent: EngineeringIntent;
+  mechanism: DecisionMechanismV1;
   reasons: string[];
+  unknowns?: string[];
+  assessmentDigests?: string[];
   evidence: {
     request: string;
     files: string[];
@@ -72,10 +78,52 @@ export function classifyEngineeringIntentHeuristic(config: HarnessProjectConfig,
   const negatesEvaluation = NEGATED_EVALUATION.test(normalizedRequest);
   const auditReasons = EVALUATION_PATTERNS.filter(([pattern]) => pattern.test(normalizedRequest)).map(([, reason]) => reason);
   const informationalReasons = INFORMATIONAL_PATTERNS.filter(([pattern]) => pattern.test(normalizedRequest)).map(([, reason]) => reason);
-  if (auditReasons.length && !negatesEvaluation) return { intent: "audit", reasons: [...new Set(auditReasons)], evidence };
+  if (auditReasons.length && !negatesEvaluation) return { intent: "audit", mechanism: "DETERMINISTIC", reasons: [...new Set(auditReasons)], evidence };
   if (negatesEvaluation) informationalReasons.push("request explicitly excludes evaluation, so explanatory language remains informational");
 
-  return { intent: "informational", reasons: [...new Set([...informationalReasons, "request asks for information without requesting an engineering judgment or repository mutation"])], evidence };
+  return { intent: "informational", mechanism: "DETERMINISTIC", reasons: [...new Set([...informationalReasons, "request asks for information without requesting an engineering judgment or repository mutation"])], evidence };
+}
+
+export async function classifyEngineeringIntentWithSemanticAssessment(
+  config: HarnessProjectConfig,
+  input: EngineeringIntentEvidence,
+  options: { service: SemanticAssessmentServiceV1; binding: SemanticAssessmentBindingV1; policyRevision: string }
+): Promise<EngineeringIntentDecision> {
+  if (input.explicitIntent) return classifyEngineeringIntentHeuristic(config, input);
+  const request = input.request.trim();
+  const files = [...new Set(input.files ?? [])];
+  const domains = [...new Set(input.domains ?? [])];
+  const risk = input.risk ?? "low";
+  const flags = [...new Set(input.flags ?? [])];
+  const compactEvidence = [
+    { ref: "request", content: request },
+    { ref: "scope", content: files.length ? files.join("\n") : "No concrete file scope was supplied." },
+    { ref: "domains", content: domains.length ? domains.join(", ") : "No domain labels were supplied." },
+    { ref: "risk", content: risk },
+    { ref: "flags", content: flags.length ? flags.join(", ") : "No escalation flags were supplied." }
+  ];
+  const binding = { ...options.binding, intentDigest: options.binding.intentDigest ?? sha256Canonical({ request, files, domains, risk, flags }) };
+  const assessment = await options.service.assess({
+    version: 1,
+    assessmentType: "INTENT",
+    evidenceRefs: compactEvidence.map((item) => item.ref),
+    compactEvidence,
+    evidenceReceipts: compactEvidence.map((item) => createSemanticEvidenceReceiptV1({ binding, ref: item.ref, content: item.content, kind: "REQUEST" })),
+    requiredOutputSchema: "semantic-assessment-v1",
+    reasoningRequirement: { reasoningClass: "LIGHT", structuredOutputRequired: true, independenceRequired: false, externalKnowledgeRequired: false, maxContextClass: "SMALL", riskClass: risk === "high" ? "HIGH" : risk === "medium" ? "STANDARD" : "LOW" },
+    binding,
+    budget: { maxInputTokens: 2_000, maxOutputTokens: 300, deadlineMs: 10_000 },
+    policyRevision: options.policyRevision
+  });
+  if (assessment.judgment?.type !== "INTENT") throw new AehError("SEMANTIC_ASSESSMENT_INVALID", "INTENT assessment did not contain a typed intent judgment.");
+  const intent = assessment.judgment.intent;
+  const evidence = { request, files, domains, risk, flags };
+  if (intent !== "change") return { intent, mechanism: "MODEL", reasons: [`typed semantic intent assessment selected ${intent}`], unknowns: [...assessment.unknowns], assessmentDigests: [assessment.assessmentDigest], evidence };
+  const changeTriage = await triageChangeWithSemanticAssessment(config, evidence, {
+    ...options,
+    binding: { ...options.binding, intentDigest: assessment.assessmentDigest }
+  });
+  return { intent, mechanism: "HYBRID", reasons: ["typed semantic intent assessment selected change", ...changeTriage.reasons], unknowns: [...new Set([...assessment.unknowns, ...(changeTriage.unknowns ?? [])])].sort(), assessmentDigests: [assessment.assessmentDigest, ...(changeTriage.assessmentDigest ? [changeTriage.assessmentDigest] : [])], evidence, changeTriage };
 }
 
 /** @deprecated Use classifyEngineeringIntentHeuristic outside the conversational route. */
@@ -97,12 +145,12 @@ function withChangeTriage(
   reasons: string[],
   evidence: EngineeringIntentDecision["evidence"]
 ): EngineeringIntentDecision {
-  if (intent !== "change") return { intent, reasons, evidence };
+  if (intent !== "change") return { intent, mechanism: "DETERMINISTIC", reasons, evidence };
   const changeTriage = triageChange(config, evidence);
-  return { intent, reasons, evidence, changeTriage };
+  return { intent, mechanism: "DETERMINISTIC", reasons, evidence, changeTriage };
 }
 
 export function formatEngineeringIntent(decision: EngineeringIntentDecision): string {
   if (decision.intent !== "change") return `${decision.intent.toUpperCase()} — ${decision.reasons.join("; ")}`;
-  return `CHANGE/${decision.changeTriage?.mode.toUpperCase() ?? "UNKNOWN"} — ${[...decision.reasons, ...(decision.changeTriage?.reasons ?? [])].join("; ")}`;
+  return `CHANGE/${decision.changeTriage?.route ?? "UNKNOWN"} — ${[...decision.reasons, ...(decision.changeTriage?.reasons ?? [])].join("; ")}`;
 }

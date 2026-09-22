@@ -3,10 +3,15 @@ import path from "node:path";
 import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
 import { getOriginRemote } from "../core/git.js";
 import { loadTaskContract } from "../core/config.js";
-import { validateQuickTaskContract } from "../core/quick.js";
 import { validateSddChange } from "../core/sdd.js";
 import { verifyTaskSeal } from "../core/seal.js";
-import { runProcess } from "../utils/process.js";
+import { runExecutable } from "../utils/process.js";
+import { assertWorkspaceMatchesCandidate } from "../candidates/identity.js";
+import { currentOperationContext, controllerEpochFromEnvironment, loadOperation, resolveOperationStateRoot } from "../operations/state.js";
+import { controllerActorId, type ToolActionAuthorityEvidenceV1 } from "../security/toolActionGate.js";
+import { executeGatedAction } from "../security/gatedAction.js";
+import { reconcileToolAction } from "../security/actionReconciliation.js";
+import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
 
 export interface DeliveryRecord {
   version: 1;
@@ -18,16 +23,13 @@ export interface DeliveryRecord {
   github?: { repository: string; issueNumber?: number; issueUrl?: string; branch?: string; branchSha?: string; };
   paseo?: { workspaceId?: string; worktreePath?: string; };
 }
-interface GithubIssue { number: number; html_url: string; }
+interface GithubIssue { number: number; html_url: string; body?: string; }
 interface GithubUser { login: string; }
 interface GithubRef { object: { sha: string } }
 
 export async function handoffTask(root: string, config: HarnessProjectConfig, taskId: string): Promise<DeliveryRecord> {
   const contract = await loadTaskContract(root, taskId, config);
-  if (contract.mode === "quick") {
-    const validation = validateQuickTaskContract(config, contract);
-    if (!validation.ok) throw new Error(`Cannot hand off ${taskId}: QuickContract validation failed: ${validation.issues.join("; ")}`);
-  } else {
+  if (contract.routing?.route === "FORMAL_SDD") {
     const validation = await validateSddChange(root, taskId, config);
     if (!validation.ok) throw new Error(`Cannot hand off ${taskId}: SDD validation failed: ${[...validation.missing, ...validation.issues].join("; ")}`);
   }
@@ -37,13 +39,30 @@ export async function handoffTask(root: string, config: HarnessProjectConfig, ta
   let record = await loadDeliveryRecord(root, config, taskId) ?? { version: 1, taskId, status: "initialized", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), originatingBranch };
 
   const github = config.delivery?.github;
+  const paseo = config.delivery?.paseo;
+  if (record.paseo?.worktreePath && !(await exists(record.paseo.worktreePath))) record.paseo = undefined;
+  const needsIssue = github?.enabled === true && !record.github?.issueNumber;
+  const needsBranch = github?.enabled === true && !record.github?.branch;
+  const needsWorkspace = paseo?.enabled === true && paseo.createWorkspace !== false && !record.paseo?.workspaceId;
+  const handoffAuthority = needsIssue || needsBranch || needsWorkspace ? await requireHandoffAuthority(root, taskId) : undefined;
   if (github?.enabled) {
     const token = resolveGithubToken(github.tokenEnv); const repository = record.github?.repository ?? github.repository ?? await inferGithubRepository(root); const apiBase = (github.apiBaseUrl ?? "https://api.github.com").replace(/\/$/, "");
     record.github = { repository, ...(record.github ?? {}) }; await saveDeliveryRecord(root, config, record);
     if (!record.github.issueNumber) {
-      const body = await renderIssueBody(root, contract, originatingBranch); const assignees: string[] = [];
+      const marker = handoffIssueMarker(handoffAuthority!.operationId, taskId);
+      const body = `${await renderIssueBody(root, contract, originatingBranch)}\n\n${marker}`; const assignees: string[] = [];
       if (github.assignTokenOwner !== false) assignees.push((await githubRequest<GithubUser>(apiBase, token, "/user")).login);
-      const issue = await githubRequest<GithubIssue>(apiBase, token, `/repos/${repository}/issues`, { method: "POST", body: JSON.stringify({ title: `${contract.task.id}: ${contract.task.title}`, body, labels: github.labels ?? [], assignees }) });
+      const issuePayload = { repository, marker, apiBase, title: `${contract.task.id}: ${contract.task.title}`, body, labels: github.labels ?? [], assignees };
+      let issue: GithubIssue | undefined;
+      const gate = await executeGatedAction({
+        root,
+        request: handoffActionRequest(root, handoffAuthority!, `handoff:${taskId}:github-issue`, "github.issue.create", issuePayload),
+        execute: async () => { issue = await githubRequest<GithubIssue>(apiBase, token, `/repos/${repository}/issues`, { method: "POST", body: JSON.stringify({ title: issuePayload.title, body, labels: issuePayload.labels, assignees }) }); return { outcome: "SUCCEEDED" as const, evidence: { issueNumber: issue.number, issueUrl: issue.html_url, marker } }; },
+        reconcile: (intent) => reconcileToolAction(root, intent, issuePayload, { token })
+      });
+      assertHandoffActionSucceeded(gate, "github.issue.create");
+      issue ??= await findGithubIssueByMarker(apiBase, token, repository, marker);
+      if (!issue) throw new Error(`HANDOFF_RECONCILIATION_REQUIRED: issue receipt for ${taskId} is durable, but the issue identity could not be recovered from marker ${marker}.`);
       record.github.issueNumber = issue.number; record.github.issueUrl = issue.html_url; record.status = "issue-created"; record.updatedAt = new Date().toISOString(); await saveDeliveryRecord(root, config, record);
     }
     if (!record.github.branch) {
@@ -53,22 +72,40 @@ export async function handoffTask(root: string, config: HarnessProjectConfig, ta
         record.github.branch = branch; record.github.branchSha = existing.object.sha;
       } else {
         const baseRef = await githubRequest<GithubRef>(apiBase, token, `/repos/${repository}/git/ref/heads/${encodeRef(originatingBranch)}`);
-        await githubRequest(apiBase, token, `/repos/${repository}/git/refs`, { method: "POST", body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: baseRef.object.sha }) });
+        const branchPayload = { repository, branch, sha: baseRef.object.sha, apiBase };
+        const gate = await executeGatedAction({
+          root,
+          request: handoffActionRequest(root, handoffAuthority!, `handoff:${taskId}:github-branch`, "github.branch.create", branchPayload),
+          execute: async () => { await githubRequest(apiBase, token, `/repos/${repository}/git/refs`, { method: "POST", body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: baseRef.object.sha }) }); return { outcome: "SUCCEEDED" as const, evidence: { repository, branch, sha: baseRef.object.sha } }; },
+          reconcile: (intent) => reconcileToolAction(root, intent, branchPayload, { token })
+        });
+        assertHandoffActionSucceeded(gate, "github.branch.create");
         record.github.branch = branch; record.github.branchSha = baseRef.object.sha;
       }
       record.status = "branch-created"; record.updatedAt = new Date().toISOString(); await saveDeliveryRecord(root, config, record);
     }
   }
 
-  const paseo = config.delivery?.paseo;
   if (paseo?.enabled && paseo.createWorkspace !== false) {
-    if (record.paseo?.worktreePath && !(await exists(record.paseo.worktreePath))) record.paseo = undefined;
     if (!record.paseo?.workspaceId) {
       const issue = record.github?.issueNumber; const slug = renderPattern(paseo.worktreeSlugPattern ?? "gh-{issue}-{slug}", contract, issue);
       const remoteBranch = record.github?.branch;
       const localIssueBranch = issue ? renderPattern(github?.branchPattern ?? "feature/gh-{issue}-{slug}", contract, issue) : renderPattern("aeh-{task}-{slug}", contract, issue);
-      const workspace = remoteBranch ? await createCheckoutWorkspace(root, remoteBranch, slug, taskId) : await createBranchOffWorkspace(root, originatingBranch, localIssueBranch, slug, taskId);
-      if (!workspace.worktreePath) throw new Error("Paseo workspace did not expose a worktree path; task context cannot be materialized safely.");
+      const workspacePayload = { path: root, isolation: "worktree", mode: remoteBranch ? "checkout-branch" : "branch-off", branch: remoteBranch ?? localIssueBranch, base: remoteBranch ? undefined : originatingBranch, slug, title: taskId };
+      let workspace: { workspaceId?: string; worktreePath?: string } | undefined;
+      const gate = await executeGatedAction({
+        root,
+        request: handoffActionRequest(root, handoffAuthority!, `handoff:${taskId}:paseo-workspace`, "paseo.workspace.create", workspacePayload),
+        execute: async () => {
+          workspace = remoteBranch
+            ? await createCheckoutWorkspace(root, remoteBranch, slug, taskId, handoffAuthority!, record.github?.branchSha)
+            : await createBranchOffWorkspace(root, originatingBranch, localIssueBranch, slug, taskId);
+          return { outcome: "SUCCEEDED" as const, evidence: { workspaceId: workspace.workspaceId, worktreePath: workspace.worktreePath, branch: workspacePayload.branch } };
+        },
+        reconcile: (intent) => reconcileToolAction(root, intent, { ...workspacePayload, ...(record.paseo?.workspaceId ? { workspaceId: record.paseo.workspaceId } : {}) })
+      });
+      assertHandoffActionSucceeded(gate, "paseo.workspace.create");
+      if (!workspace?.worktreePath) throw new Error("HANDOFF_RECONCILIATION_REQUIRED: workspace action has a receipt but its path is not durably recoverable; human inspection is required.");
       await materializeTaskContext(root, workspace.worktreePath, config, contract);
       record.paseo = workspace; record.status = "workspace-created"; record.updatedAt = new Date().toISOString(); await saveDeliveryRecord(root, config, record);
     } else if (record.paseo.worktreePath) await materializeTaskContext(root, record.paseo.worktreePath, config, contract);
@@ -136,22 +173,92 @@ export async function githubRequest<T = unknown>(base: string, token: string | u
   const text = await response.text(); if (!response.ok) throw new Error(`GitHub API ${init.method ?? "GET"} ${endpoint} failed (${response.status}): ${text.slice(0, 1000)}`); return text ? JSON.parse(text) as T : undefined as T;
 }
 async function githubRequestMaybe<T>(base: string, token: string | undefined, endpoint: string): Promise<T | undefined> { try { return await githubRequest<T>(base, token, endpoint); } catch (error) { if (/failed \(404\)/.test(String(error))) return undefined; throw error; } }
-async function createCheckoutWorkspace(root: string, branch: string, slug: string, title: string): Promise<{ workspaceId?: string; worktreePath?: string }> { const local = await runProcess(`git show-ref --verify --quiet refs/heads/${quoteRef(branch)}`, { cwd: root }); if (local.exitCode !== 0) { const fetchResult = await runProcess(`git fetch origin ${quote(`refs/heads/${branch}:refs/heads/${branch}`)}`, { cwd: root, timeoutMs: 120_000 }); if (fetchResult.exitCode !== 0) throw new Error(`Failed to fetch issue branch ${branch}: ${fetchResult.stderr || fetchResult.stdout}`); } return runPaseoWorkspace(root, `--mode checkout-branch --branch ${quote(branch)}`, slug, title, branch); }
-async function createBranchOffWorkspace(root: string, base: string, branch: string, slug: string, title: string): Promise<{ workspaceId?: string; worktreePath?: string }> { return runPaseoWorkspace(root, `--mode branch-off --new-branch ${quote(branch)} --base ${quote(base)}`, slug, title, branch); }
-async function runPaseoWorkspace(root: string, mode: string, slug: string, title: string, branch: string): Promise<{ workspaceId?: string; worktreePath?: string }> {
-  const create = await runProcess(`paseo workspace create --isolation worktree --path ${quote(root)} ${mode} --worktree-slug ${quote(slug)} --title ${quote(title)} --json`, { cwd: root, timeoutMs: 180_000 }); if (create.exitCode !== 0) throw new Error(`Paseo workspace creation failed: ${create.stderr || create.stdout}`);
+async function createCheckoutWorkspace(root: string, branch: string, slug: string, title: string, authority: HandoffAuthority, expectedCommit?: string): Promise<{ workspaceId?: string; worktreePath?: string }> {
+  assertGitBranchName(branch);
+  if (!expectedCommit || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(expectedCommit)) throw new Error(`HANDOFF_CANDIDATE_REQUIRED: GitHub branch ${branch} is missing an exact observed commit SHA.`);
+  const local = await runExecutable("git", ["show-ref", "--verify", "--hash", `refs/heads/${branch}`], { cwd: root });
+  if (local.exitCode === 0) {
+    if (local.stdout.trim().toLowerCase() !== expectedCommit.toLowerCase()) throw new Error(`HANDOFF_BRANCH_CONFLICT: local branch ${branch} does not match the observed GitHub branch commit.`);
+  } else if (local.exitCode === 1) {
+    const payload = { branch, expectedCommit };
+    const gate = await executeGatedAction({
+      root,
+      request: handoffActionRequest(root, authority, `handoff:${authority.candidate.taskId}:local-branch`, "git.branch.create", payload),
+      execute: async () => {
+        const refspec = `refs/heads/${branch}:refs/heads/${branch}`;
+        const fetchResult = await runExecutable("git", ["fetch", "origin", refspec], { cwd: root, timeoutMs: 120_000 });
+        if (fetchResult.exitCode !== 0) return { outcome: "FAILED" as const, evidence: { branch, expectedCommit, exitCode: fetchResult.exitCode, stderr: fetchResult.stderr.slice(-2000) } };
+        const observed = await runExecutable("git", ["show-ref", "--verify", "--hash", `refs/heads/${branch}`], { cwd: root });
+        const observedCommit = observed.stdout.trim().toLowerCase();
+        const outcome = observed.exitCode === 0 && observedCommit === expectedCommit.toLowerCase() ? "SUCCEEDED" as const : "FAILED" as const;
+        return { outcome, evidence: { branch, expectedCommit: expectedCommit.toLowerCase(), observedCommit: observedCommit || undefined, exitCode: observed.exitCode } };
+      },
+      reconcile: (intent) => reconcileToolAction(root, intent, payload)
+    });
+    assertHandoffActionSucceeded(gate, "git.branch.create");
+    const verified = await runExecutable("git", ["show-ref", "--verify", "--hash", `refs/heads/${branch}`], { cwd: root });
+    if (verified.exitCode !== 0 || verified.stdout.trim().toLowerCase() !== expectedCommit.toLowerCase()) throw new Error(`HANDOFF_BRANCH_RECONCILIATION_REQUIRED: gated branch creation for ${branch} has no matching local ref.`);
+  } else {
+    throw new Error(`HANDOFF_BRANCH_INSPECTION_FAILED: could not inspect local branch ${branch}: ${local.stderr || local.stdout}`);
+  }
+  return runPaseoWorkspace(root, ["--mode", "checkout-branch", "--branch", branch], slug, title, branch);
+}
+async function createBranchOffWorkspace(root: string, base: string, branch: string, slug: string, title: string): Promise<{ workspaceId?: string; worktreePath?: string }> {
+  assertGitBranchName(branch);
+  assertGitBranchName(base);
+  return runPaseoWorkspace(root, ["--mode", "branch-off", "--new-branch", branch, "--base", base], slug, title, branch);
+}
+
+interface HandoffAuthority {
+  operationId: string;
+  controllerEpoch: number;
+  candidate: CandidateRevisionV1;
+  evidence: ToolActionAuthorityEvidenceV1;
+}
+
+async function requireHandoffAuthority(root: string, taskId: string): Promise<HandoffAuthority> {
+  const context = currentOperationContext();
+  const controllerEpoch = controllerEpochFromEnvironment();
+  if (!context.id || controllerEpoch === undefined) throw new Error("HANDOFF_AUTHORITY_REQUIRED: delivery handoff mutations require a managed operation and fenced controller.");
+  const operation = await loadOperation(resolveOperationStateRoot(root), context.id);
+  const candidate = operation.candidateRevision;
+  if (!candidate || candidate.taskId !== taskId) throw new Error("HANDOFF_AUTHORITY_REQUIRED: delivery handoff requires the operation's current CandidateRevision for this task.");
+  await assertWorkspaceMatchesCandidate(root, candidate, operation.candidateRevision);
+  return { operationId: context.id, controllerEpoch, candidate, evidence: { kind: "controller-authority", operationId: context.id, controllerEpoch } };
+}
+
+function handoffActionRequest(root: string, authority: HandoffAuthority, actionKey: string, action: "git.branch.create" | "github.issue.create" | "github.branch.create" | "paseo.workspace.create", payload: unknown) {
+  return { root, operationId: authority.operationId, participantId: controllerActorId(authority.operationId), candidate: authority.candidate, actionKey, action, payload, authority: authority.evidence };
+}
+
+function assertHandoffActionSucceeded(gate: Awaited<ReturnType<typeof executeGatedAction>>, action: string): void {
+  if (["HUMAN_REQUIRED", "RECONCILIATION_REQUIRED"].includes(gate.status)) throw new Error(`HANDOFF_RECONCILIATION_REQUIRED: ${action} requires resolution before retry: ${gate.detail}`);
+  if (gate.receipt?.outcome !== "SUCCEEDED") throw new Error(`HANDOFF_ACTION_FAILED: ${action} did not complete: ${gate.detail}`);
+}
+
+function handoffIssueMarker(operationId: string, taskId: string): string { return `<!-- aeh-handoff:${operationId}:${taskId} -->`; }
+
+async function findGithubIssueByMarker(apiBase: string, token: string, repository: string, marker: string): Promise<GithubIssue | undefined> {
+  const issues = await githubRequest<Array<GithubIssue>>(`${apiBase}`, token, `/repos/${repository}/issues?state=all&per_page=100`);
+  return issues.find((issue) => issue.body?.includes(marker));
+}
+async function runPaseoWorkspace(root: string, mode: string[], slug: string, title: string, branch: string): Promise<{ workspaceId?: string; worktreePath?: string }> {
+  const create = await runExecutable("paseo", ["workspace", "create", "--isolation", "worktree", "--path", root, ...mode, "--worktree-slug", slug, "--title", title, "--json"], { cwd: root, timeoutMs: 180_000 }); if (create.exitCode !== 0) throw new Error(`Paseo workspace creation failed: ${create.stderr || create.stdout}`);
   const direct = parseWorkspace(create.stdout, branch); if (direct.workspaceId && direct.worktreePath) return direct;
-  const list = await runProcess("paseo workspace ls --json", { cwd: root, timeoutMs: 60_000 }); if (list.exitCode === 0) { const found = parseWorkspace(list.stdout, branch); if (found.workspaceId && found.worktreePath) return found; }
+  const list = await runExecutable("paseo", ["workspace", "ls", "--json"], { cwd: root, timeoutMs: 60_000 }); if (list.exitCode === 0) { const found = parseWorkspace(list.stdout, branch); if (found.workspaceId && found.worktreePath) return found; }
   throw new Error(`Paseo created the workspace but its ID/path could not be resolved. Output: ${create.stdout}`);
 }
 function parseWorkspace(raw: string, branch: string): { workspaceId?: string; worktreePath?: string } { try { const value = JSON.parse(raw) as unknown; const candidates = flattenObjects(value); const found = candidates.find((item) => [item.branch, item.branchName, item.gitBranch].some((candidate) => candidate === branch)) ?? candidates.find((item) => typeof item.id === "string" || typeof item.workspaceId === "string"); return found ? { workspaceId: stringValue(found.workspaceId) ?? stringValue(found.id), worktreePath: stringValue(found.worktreePath) ?? stringValue(found.path) ?? stringValue(found.root) } : {}; } catch { return {}; } }
 function flattenObjects(value: unknown): Array<Record<string, unknown>> { if (Array.isArray(value)) return value.flatMap(flattenObjects); if (!value || typeof value !== "object") return []; const record = value as Record<string, unknown>; return [record, ...Object.values(record).flatMap(flattenObjects)]; }
 function stringValue(value: unknown): string | undefined { return typeof value === "string" && value ? value : undefined; }
 async function saveDeliveryRecord(root: string, config: HarnessProjectConfig, record: DeliveryRecord): Promise<void> { const file = deliveryFile(root, config, record.taskId); await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, `${JSON.stringify(record, null, 2)}\n`); }
-async function deliveryControlRoots(root: string): Promise<string[]> { const roots = [path.resolve(root)]; const common = await runProcess("git rev-parse --path-format=absolute --git-common-dir", { cwd: root, timeoutMs: 10_000 }); if (common.exitCode === 0) { const gitDir = common.stdout.trim(); if (path.basename(gitDir) === ".git") roots.push(path.dirname(gitDir)); } return [...new Set(roots)]; }
+async function deliveryControlRoots(root: string): Promise<string[]> { const roots = [path.resolve(root)]; const common = await runExecutable("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root, timeoutMs: 10_000 }); if (common.exitCode === 0) { const gitDir = common.stdout.trim(); if (path.basename(gitDir) === ".git") roots.push(path.dirname(gitDir)); } return [...new Set(roots)]; }
 function deliveryFile(root: string, config: HarnessProjectConfig, taskId: string): string { return path.join(root, config.delivery?.stateDir ?? ".harness/delivery", `${taskId}.json`); }
 function encodeRef(value: string): string { return value.split("/").map(encodeURIComponent).join("/"); }
 function slugify(value: string): string { return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "change"; }
-function quote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }
-function quoteRef(value: string): string { return value.replace(/[^A-Za-z0-9._\/-]/g, ""); }
+function assertGitBranchName(value: string): void {
+  if (!value || value.startsWith("-") || value.startsWith("/") || value.endsWith("/") || value.includes("..") || value.includes("@{") || /[\x00-\x20~^:?*\\[]/.test(value) || value.includes("\\")) {
+    throw new Error(`Invalid Git branch name: ${value}`);
+  }
+}
 async function exists(file: string): Promise<boolean> { try { await fs.access(file); return true; } catch { return false; } }

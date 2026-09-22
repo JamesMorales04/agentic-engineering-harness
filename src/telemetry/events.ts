@@ -49,5 +49,5 @@ function isPhaseTerminal(name: string, phase: string | undefined): boolean {
 }
 
 function isOperationTerminal(name: string): boolean {
-  return new Set(["harness.run.finish", "harness.audit.finish", "harness.change.finish", "harness.quick.finish", "operation.finish", "operation.completed", "operation.failed"]).has(name);
+  return new Set(["harness.run.finish", "harness.audit.finish", "harness.change.finish", "operation.finish", "operation.completed", "operation.failed"]).has(name);
 }

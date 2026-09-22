@@ -4,7 +4,7 @@ import path from "node:path";
 import YAML from "yaml";
 import type { AgentExecutionSelection, ResolvedAgentTopology } from "../agents/types.js";
 import { loadResolvedAgentTopology } from "../agents/config.js";
-import { executionSelectionForAgent, resolveRoute } from "../agents/routing.js";
+import { executionSelectionForAgent, resolveRoute, selectAgentNames } from "../agents/routing.js";
 import { dedupeFindings } from "../agents/findings.js";
 import { reviewerOutputSchema, type NormalizedFinding } from "../agents/outputContracts.js";
 import { extractMarkedJson } from "../agents/structuredOutput.js";
@@ -43,7 +43,7 @@ import {
   materializeAgentPrompt
 } from "../workers/agentPrompt.js";
 import { recordEvent } from "../telemetry/events.js";
-import { runProcess } from "../utils/process.js";
+import { runExecutable } from "../utils/process.js";
 import { compileAuditReviewerPrompt } from "./reviewerPrompt.js";
 import type { IntentDecisionV1 } from "./intentDecision.js";
 
@@ -113,13 +113,7 @@ interface AuditReviewerResult {
 }
 
 const AUDIT_OUTPUT_DIR = ".harness/audits";
-const DEFAULT_AUDIT_REVIEWERS = [
-  "code-quality-reviewer",
-  "architecture-reviewer",
-  "security-reviewer",
-  "test-quality-reviewer",
-  "test-reviewer"
-];
+const DEFAULT_AUDIT_REVIEWER = { role: "Reviewer" as const, domains: ["*"] };
 const AUDIT_REVIEWER_BUDGET: Record<TaskRisk, number> = { low: 5, medium: 6, high: 8 };
 
 export async function runAudit(
@@ -138,7 +132,10 @@ export async function runAudit(
   await sealTask(root, config, contract);
   const snapshot = await createControlPlaneSnapshot(root, config, auditId);
   const topology = await loadResolvedAgentTopology(root, config, config.agents?.activeProfile);
+  const supervisorAgent = topology.agents["operation-supervisor"];
+  const supervisorSelection = supervisorAgent && !supervisorAgent.disabled ? executionSelectionForAgent(topology, "operation-supervisor") : undefined;
   const reviewers = selectAuditReviewers(topology, input);
+  const reviewerSelections = Object.fromEntries(reviewers.map((reviewer) => [reviewer, executionSelectionForAgent(topology, reviewer)]));
   const sessions: WorkerSession[] = [];
   const validationChecks: AuditValidationCheck[] = [];
   const rawFindings: NormalizedFinding[] = [];
@@ -153,7 +150,7 @@ export async function runAudit(
   });
 
   await operationStage(root, "supervision", "RUNNING");
-  const supervisor = await ensureOperationSupervisor(root, config, contract, topology, {
+  const supervisor = await ensureOperationSupervisor(root, config, contract, supervisorSelection, {
     required: true,
     forceMaterialize: true
   });
@@ -168,7 +165,7 @@ export async function runAudit(
   try {
     await operationStage(root, "materializing-reviewers", "RUNNING");
     const prepared = await Promise.all(
-      reviewers.map((reviewer) => prepareAuditReviewer(root, config, contract, topology, reviewer))
+      reviewers.map((reviewer) => prepareAuditReviewer(root, config, contract, reviewerSelections[reviewer], reviewer))
     );
     await operationStage(root, "materializing-reviewers", "COMPLETED");
 
@@ -217,7 +214,7 @@ export async function runAudit(
     root,
     config,
     contract,
-    topology,
+    supervisorSelection,
     {
       key: "audit-reviewers",
       purpose: "AUDIT reviewer findings",
@@ -231,7 +228,7 @@ export async function runAudit(
   await operationStage(root, "consolidating", "COMPLETED", {
     artifact: consolidation.artifact
   });
-  await maybeRotateOperationSupervisor(root, config, contract, topology);
+  await maybeRotateOperationSupervisor(root, config, contract, supervisorSelection);
   const operationId = currentOperationContext().id;
   if (operationId) await settleDrainingSupervisorGenerations(root, operationId);
 
@@ -327,7 +324,9 @@ function auditContract(auditId: string, input: AuditRequest, baseRef: string): T
       intent: "audit",
       domains: input.domains ?? [],
       risk: input.risk ?? "low",
-      reviewers: input.reviewers ?? []
+      route: "DELEGATED",
+      assurance: input.risk === "high" ? "CRITICAL" : "STANDARD",
+      routeEvidence: [{ route: "DELEGATED", source: "audit-entry", statement: "Audits use the delegated read-only review route." }]
     },
     constraints: {
       breakingApiChanges: false,
@@ -357,16 +356,14 @@ export function selectAuditReviewers(
     domains: input.domains ?? [],
     files: input.files ?? [],
     risk
-  }).reviewers;
+  }).review.flatMap((selector) => selectAgentNames(topology, selector));
   const explicitlyRequested = [...new Set(input.reviewers ?? [])];
-  const ordered = [
-    ...new Set([...explicitlyRequested, ...routed, ...DEFAULT_AUDIT_REVIEWERS])
-  ];
+  const ordered = [...new Set([...explicitlyRequested, ...routed, ...selectAgentNames(topology, DEFAULT_AUDIT_REVIEWER)])];
   const available = ordered.filter(
-    (name) => topology.agents[name]?.role === "reviewer" && !topology.agents[name]?.disabled
+    (name) => topology.agents[name]?.role === "Reviewer" && !topology.agents[name]?.disabled
   );
   const fallback = Object.values(topology.agents)
-    .filter((agent) => agent.role === "reviewer" && !agent.disabled)
+    .filter((agent) => agent.role === "Reviewer" && !agent.disabled)
     .map((agent) => agent.name);
   const candidates = available.length ? available : fallback;
   const budget = Math.max(AUDIT_REVIEWER_BUDGET[risk], explicitlyRequested.length);
@@ -377,10 +374,10 @@ async function prepareAuditReviewer(
   root: string,
   config: HarnessProjectConfig,
   contract: TaskContract,
-  topology: ResolvedAgentTopology,
+  base: AgentExecutionSelection | undefined,
   reviewer: string
 ): Promise<PreparedAuditReviewer> {
-  const base = executionSelectionForAgent(topology, reviewer);
+  if (!base) throw new Error(`AUDIT_REVIEW_EXECUTION_INVALID: no frozen selection exists for reviewer '${reviewer}'.`);
   const selection: AgentExecutionSelection = {
     ...base,
     permissions: { ...base.permissions, write: "deny", gitWrite: "deny", delegate: "deny" }
@@ -461,7 +458,8 @@ function syntheticFinding(agent: string, evidence: string): NormalizedFinding {
     evidence,
     impact: "The requested audit could not be completed reliably.",
     recommendedFix: "Repair the reviewer/runtime contract and rerun the audit.",
-    suggestedAgent: agent,
+    requiredCompetencies: ["audit-review"],
+    reviewDimensions: ["audit-evidence"],
     exceptionType: "SYSTEM_FAILURE"
   };
 }
@@ -516,6 +514,6 @@ function createAuditId(request: string): string {
 }
 
 async function gitCommit(root: string): Promise<string | undefined> {
-  const result = await runProcess("git rev-parse HEAD", { cwd: root, timeoutMs: 10_000 });
+  const result = await runExecutable("git", ["rev-parse", "HEAD"], { cwd: root, timeoutMs: 10_000 });
   return result.exitCode === 0 ? result.stdout.trim() || undefined : undefined;
 }

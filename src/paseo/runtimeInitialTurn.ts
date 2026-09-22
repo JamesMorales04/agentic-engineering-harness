@@ -3,6 +3,7 @@ import {
   continueManagedPaseoAgent,
   launchManagedPaseoAgent as launchLegacyManagedPaseoAgent,
   materializeManagedPaseoAgent,
+  stopManagedPaseoAgent,
   type ManagedPaseoAgentOptions,
   type ManagedPaseoAgentResult
 } from "./runtimeCore.js";
@@ -37,10 +38,17 @@ export async function launchManagedPaseoAgent(
     // Compatibility fallback is safe only before a semantic turn starts. Once
     // materialization succeeds, never create a second agent for the same turn.
     if (!isSdkUnavailable(error)) throw error;
+    if (options.agentId || options.labels?.["aeh.execution.binding.digest"]) {
+      throw new Error(`PASEO_EXECUTION_SESSION_PREPARATION_REQUIRED: a launch carrying frozen execution identity requires SDK materialization before its first prompt. ${String(error)}`);
+    }
     return launchLegacyManagedPaseoAgent(root, options, deps);
   }
 
   if (!materialized.id) return materialized;
+  if (options.agentId && materialized.id !== options.agentId) {
+    await stopManagedPaseoAgent(root, materialized.id, deps).catch(() => undefined);
+    throw new Error("EXECUTION_BINDING_RUNTIME_SESSION_MISMATCH: Paseo materialized a different provider agent id than the frozen binding.");
+  }
   return continueManagedPaseoAgent(
     root,
     materialized.id,

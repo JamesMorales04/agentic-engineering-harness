@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { launchManagedPaseoAgent } from "../src/paseo/runtime.js";
+import { continueManagedPaseoAgent, launchManagedPaseoAgent } from "../src/paseo/runtime.js";
 
 const managedLabels = {
   "aeh.operation": "CHANGE-TEST",
@@ -10,6 +10,7 @@ const managedLabels = {
 function deps() {
   return {
     run: vi.fn(), detectCapabilities: vi.fn(), trace: vi.fn(async () => undefined),
+    updateLabels: vi.fn(async () => undefined),
     native: {
       capture: vi.fn(), wait: vi.fn(),
       preflight: vi.fn(async () => ({ ok: true, message: "ok", availableModels: [] })),
@@ -46,6 +47,45 @@ describe("Paseo initial-turn barrier", () => {
       cwd: "/repo", title: "typed", provider: "opencode", prompt: "work", outputSchema: schema, timeoutSeconds: 45, labels: managedLabels
     }, runtime as never);
     expect(runtime.sdk.run).toHaveBeenCalledWith("/repo", "fast-agent", "work", 45_000, schema);
+    expect(runtime.sdk.create).not.toHaveBeenCalled();
+  });
+
+  it("materializes the provider-assigned id frozen in ExecutionBinding before the first prompt", async () => {
+    const runtime = deps();
+    runtime.sdk.materialize.mockResolvedValue({ id: "binding-session-id", status: "idle" });
+    await launchManagedPaseoAgent("/repo", {
+      cwd: "/repo", title: "bound", provider: "opencode", prompt: "work", agentId: "binding-session-id", labels: { ...managedLabels, "aeh.execution.binding.digest": "a".repeat(64) }
+    }, runtime as never);
+    expect(runtime.sdk.materialize).toHaveBeenCalledWith("/repo", expect.objectContaining({ agentId: "binding-session-id", waitForFinish: false }));
+    expect(runtime.sdk.materialize).toHaveBeenCalledBefore(runtime.sdk.run);
+    expect(runtime.sdk.run).toHaveBeenCalledWith("/repo", "binding-session-id", "work", 1_800_000, undefined);
+    expect(runtime.sdk.create).not.toHaveBeenCalled();
+  });
+
+  it("updates and verifies full Paseo binding labels before continuing a materialized session", async () => {
+    const runtime = deps();
+    const labels = { "aeh.execution.binding": JSON.stringify({ version: 2, digest: "b".repeat(64) }), "aeh.execution.binding.digest": "b".repeat(64) };
+    await continueManagedPaseoAgent("/repo", "actual-session", "work", 30, runtime as never, { type: "object" }, labels);
+    expect(runtime.updateLabels).toHaveBeenCalledWith("/repo", "actual-session", labels);
+    expect(runtime.updateLabels).toHaveBeenCalledBefore(runtime.sdk.run);
+    expect(runtime.sdk.run).toHaveBeenCalledWith("/repo", "actual-session", "work", 30_000, { type: "object" });
+  });
+
+  it("fails closed before a Paseo turn when binding-label persistence fails", async () => {
+    const runtime = deps();
+    runtime.updateLabels.mockRejectedValue(new Error("label update unavailable"));
+    await expect(continueManagedPaseoAgent("/repo", "actual-session", "work", 30, runtime as never, undefined, { "aeh.execution.binding": "{}" }))
+      .rejects.toThrow("label update unavailable");
+    expect(runtime.sdk.run).not.toHaveBeenCalled();
+  });
+
+  it("fails closed before sending the prompt when Paseo returns a different provider id", async () => {
+    const runtime = deps();
+    runtime.sdk.materialize.mockResolvedValue({ id: "other-provider-id", status: "idle" });
+    await expect(launchManagedPaseoAgent("/repo", {
+      cwd: "/repo", title: "bound", provider: "opencode", prompt: "work", agentId: "binding-session-id", labels: { ...managedLabels, "aeh.execution.binding.digest": "a".repeat(64) }
+    }, runtime as never)).rejects.toThrow("EXECUTION_BINDING_RUNTIME_SESSION_MISMATCH");
+    expect(runtime.sdk.run).not.toHaveBeenCalled();
     expect(runtime.sdk.create).not.toHaveBeenCalled();
   });
 

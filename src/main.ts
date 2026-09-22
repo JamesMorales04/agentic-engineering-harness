@@ -280,6 +280,11 @@ function printControlPlaneMetaHelp(argv: string[]): boolean {
     console.log("Detached operation control. Internal execute/monitor processes own workflow execution and durable liveness.");
     return true;
   }
+  if (command === "home" || command === "control-center" || command === "project") {
+    console.log(`Usage: aeh ${command} ...`);
+    console.log(command === "project" ? "Manage the durable multi-project registry." : "Start the local loopback Control Center/Home surface.");
+    return true;
+  }
   return false;
 }
 
@@ -294,6 +299,9 @@ function printControlPlaneHelp(): void {
   console.log("  operation portfolio [directory]               Inspect the lead's operation portfolio");
   console.log("  operation status|wait|cancel <operationId>    Observe/control a detached operation");
   console.log("  paseo agents [directory]                      Inspect AEH-managed Paseo agents");
+  console.log("  home [--once]                                 Start the multi-project local Home surface");
+  console.log("  control-center [directory]                    Start the local project Control Center");
+  console.log("  project list|register ...                      Manage the durable project registry");
   console.log("  setup [directory]                             Reconcile the managed engineering toolchain");
   console.log("  spec prepare|compile ...                      OpenSpec-backed SPEC authoring bridge");
   console.log("");

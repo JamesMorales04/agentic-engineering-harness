@@ -29,7 +29,7 @@ describe("Paseo operation parenting", () => {
       workspaceId: "workspace-op",
       parentAgentId: "supervisor-1",
       provider: "opencode",
-      model: "opencode-go/deepseek-v4-flash",
+      model: "opencode-go/MiMo-V2.6-Flash",
       title: "aeh-reviewer",
       labels: {
         "aeh.operation": "AUDIT-1",
@@ -44,7 +44,7 @@ describe("Paseo operation parenting", () => {
       parent: "supervisor-1",
       config: expect.objectContaining({
         provider: "opencode",
-        model: "opencode-go/deepseek-v4-flash"
+        model: "opencode-go/MiMo-V2.6-Flash"
       })
     }));
     expect(received?.config).not.toHaveProperty("parent");
