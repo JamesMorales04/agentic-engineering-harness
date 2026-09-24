@@ -6,10 +6,11 @@ import { describe, expect, it } from "vitest";
 import { LocalControlCenterV1, createProjectHome } from "../src/control-center/index.js";
 import { recordControlCenterDecision } from "../src/control-center/decision.js";
 import { ProjectRegistryV1 } from "../src/projects/index.js";
-import { HumanDecisionLedgerV1 } from "../src/security/humanDecision.js";
-import { patchOperation, saveOperation } from "../src/operations/state.js";
+import { HumanDecisionLedgerV2 } from "../src/security/humanDecision.js";
+import { bindResolvedOperationPolicy, claimControllerEpoch, loadOperation, patchOperation, saveOperation, suspendOperationForProductChoice } from "../src/operations/state.js";
 import { pairControlCenter } from "./helpers/controlCenterSession.js";
 import { getBuildIdentity } from "../src/build/identity.js";
+import { compileResolvedOperationPolicy } from "../src/architecture/executionIdentity.js";
 
 describe("LocalControlCenterV1", () => {
   it("serves the separately built frontend with a strict static boundary", async () => {
@@ -102,32 +103,110 @@ describe("LocalControlCenterV1", () => {
 
   it("requires a session CSRF token and same-origin checks for decision writes", async () => {
     let received: unknown;
-    const center = new LocalControlCenterV1({ onDecision: (value) => { received = value; return { accepted: true }; } });
+    let receivedActor = "";
+    const center = new LocalControlCenterV1({ onDecision: (value, actorId) => { received = value; receivedActor = actorId; return { accepted: true }; } });
     const started = await center.start();
     try {
       const session = await pairControlCenter(started);
       const missingCsrf = await fetch(`${started.url}api/v1/decisions`, { method: "POST", headers: { Cookie: session.cookie, Origin: session.origin, "content-type": "application/json" }, body: "{}" });
       expect(missingCsrf.status).toBe(403);
-      const noOrigin = await fetch(`${started.url}api/v1/decisions`, { method: "POST", headers: { Cookie: session.cookie, "content-type": "application/json", "x-aeh-csrf": session.csrfToken }, body: JSON.stringify({ decision: "approve" }) });
+      const noOrigin = await fetch(`${started.url}api/v1/decisions`, { method: "POST", headers: { Cookie: session.cookie, "content-type": "application/json", "x-aeh-csrf": session.csrfToken }, body: JSON.stringify({ operationId: "OP", requestId: "request:x", choiceId: "x" }) });
       expect(noOrigin.status).toBe(403);
-      const response = await fetch(`${started.url}api/v1/decisions`, { method: "POST", headers: { ...session.headers(true), "content-type": "application/json" }, body: JSON.stringify({ decision: "approve" }) });
+      const response = await fetch(`${started.url}api/v1/decisions`, { method: "POST", headers: { ...session.headers(true), "content-type": "application/json" }, body: JSON.stringify({ operationId: "OP", requestId: "request:x", choiceId: "x", reason: "picked option" }) });
       expect(response.status).toBe(200);
-      expect(received).toEqual({ decision: "approve" });
+      expect(received).toEqual({ operationId: "OP", requestId: "request:x", choiceId: "x", reason: "picked option" });
+      expect(receivedActor).toMatch(/^human:control-center:[a-f0-9]{32}$/);
+      expect(receivedActor).not.toBe("human:forged");
     } finally {
       await center.close();
     }
   });
 
-  it("records a human decision through the current candidate binding", async () => {
+  it("passes only the paired human actor to operation cancellation", async () => {
+    const received: Array<{ operationId: string; actorId: string }> = [];
+    const center = new LocalControlCenterV1({ onCancelOperation: (operationId, actorId) => { received.push({ operationId, actorId }); return { accepted: true }; } });
+    const started = await center.start();
+    try {
+      const session = await pairControlCenter(started);
+      const response = await fetch(`${started.url}api/v1/operations/OP-CANCEL/cancel`, { method: "POST", headers: session.headers(true) });
+      expect(response.status).toBe(200);
+      expect(received).toHaveLength(1);
+      expect(received[0]).toMatchObject({ operationId: "OP-CANCEL" });
+      expect(received[0]?.actorId).toMatch(/^human:control-center:[a-f0-9]{32}$/);
+    } finally {
+      await center.close();
+    }
+  });
+
+  it("records one paired product choice against the current request, policy and controller epoch", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-control-decision-"));
     try {
       const now = new Date().toISOString();
       await saveOperation(root, { version: 1, id: "OP-DECISION", kind: "audit", status: "RUNNING", phase: "review", root, payload: { request: "review" }, createdAt: now, updatedAt: now });
-      const ledger = new HumanDecisionLedgerV1(path.join(root, "decisions.json"));
-      const result = await recordControlCenterDecision(root, ledger, { operationId: "OP-DECISION", kind: "APPROVE", actorId: "human:james", reason: "reviewed the bounded evidence" });
-      expect(result).toMatchObject({ accepted: true, operationId: "OP-DECISION", candidateRevision: 1 });
+      const initial = await loadOperation(root, "OP-DECISION");
+      const owned = await claimControllerEpoch(root, "OP-DECISION", "controller:test", { pid: process.pid });
+      const policy = compileResolvedOperationPolicy({ projectId: initial.candidateRevision!.projectId!, operationId: initial.id, operationExecutionRevision: initial.operationExecutionRevision!, candidateRevision: initial.candidateRevision!.revision, candidateDigest: initial.candidateRevision!.identityDigest, controllerEpoch: owned.controller!.epoch, intent: "decision fixture", route: "NO_AGENT", minimumAssurance: "NONE", policyVersions: {}, policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {}, allowedExternalEffects: [], humanDecisionRequirements: [] });
+      await bindResolvedOperationPolicy(root, initial.id, policy);
+      await suspendOperationForProductChoice(root, initial.id, {
+        issue: "Choose the product requirement behavior.",
+        authoritativeEvidence: [{ artifact: ".harness/results/spec-manager.json", sha256: "a".repeat(64), description: "Accepted Spec Manager result." }],
+        whatTried: ["Reviewed the current requirement and existing behavior."],
+        whyUnresolvable: "The user-facing behavior has two valid product interpretations.",
+        choices: [{ choiceId: "strict", label: "Strict behavior", description: "Require explicit confirmation.", consequences: ["Adds a confirmation requirement."] }],
+        workThatCanContinue: []
+      }, { version: 1, resumeTarget: "SPEC_AUTHORING", taskId: "OP-DECISION" });
+      const waiting = await loadOperation(root, "OP-DECISION");
+      const ledger = new HumanDecisionLedgerV2(path.join(root, "decisions"));
+      const input = { operationId: "OP-DECISION", requestId: waiting.decisionRequest!.requestId, choiceId: "strict", reason: "reviewed the bounded evidence" };
+      await expect(recordControlCenterDecision(root, ledger, { ...input, actorId: "human:forged" }, "human:control-center:test")).rejects.toThrow("unsupported fields");
+      const result = await recordControlCenterDecision(root, ledger, input, "human:control-center:test");
+      expect(result).toMatchObject({ version: 1, accepted: true, operationId: "OP-DECISION", candidateRevision: 1, requestId: input.requestId, choiceId: "strict" });
       expect(await ledger.list()).toHaveLength(1);
+      expect((await ledger.list())[0]).toMatchObject({ actorId: "human:control-center:test", kind: "CHOOSE", purpose: { kind: "PRODUCT_CHOICE", requestId: input.requestId, choiceId: "strict" } });
+      await expect(recordControlCenterDecision(root, ledger, input, "human:control-center:test")).rejects.toThrow("already been submitted");
     } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts one product choice through the paired HTTP boundary and rejects replay", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-control-product-choice-http-"));
+    let center: LocalControlCenterV1 | undefined;
+    try {
+      const now = new Date().toISOString();
+      await saveOperation(root, { version: 1, id: "OP-PRODUCT-HTTP", kind: "audit", status: "RUNNING", phase: "spec-authoring", root, payload: { request: "review" }, createdAt: now, updatedAt: now });
+      const initial = await loadOperation(root, "OP-PRODUCT-HTTP");
+      const owned = await claimControllerEpoch(root, initial.id, "controller:test", { pid: process.pid });
+      const policy = compileResolvedOperationPolicy({ projectId: initial.candidateRevision!.projectId!, operationId: initial.id, operationExecutionRevision: initial.operationExecutionRevision!, candidateRevision: initial.candidateRevision!.revision, candidateDigest: initial.candidateRevision!.identityDigest, controllerEpoch: owned.controller!.epoch, intent: "product-choice HTTP fixture", route: "NO_AGENT", minimumAssurance: "NONE", policyVersions: {}, policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {}, allowedExternalEffects: [], humanDecisionRequirements: [] });
+      await bindResolvedOperationPolicy(root, initial.id, policy);
+      const waiting = await suspendOperationForProductChoice(root, initial.id, {
+        issue: "Choose how this product behavior should work.",
+        authoritativeEvidence: [{ artifact: ".harness/results/spec-manager.json", sha256: "c".repeat(64), description: "Accepted Spec Manager output." }],
+        whatTried: ["Compared both valid requirement interpretations."],
+        whyUnresolvable: "The request does not prefer one option.",
+        choices: [{ choiceId: "opt-in", label: "Opt in", description: "Require an explicit user action.", consequences: ["Adds a confirmation requirement."] }],
+        workThatCanContinue: []
+      }, { version: 1, taskId: initial.id, resumeTarget: "SPEC_AUTHORING" });
+      const ledger = new HumanDecisionLedgerV2(path.join(root, ".harness", "security", "human-decisions.json"));
+      center = new LocalControlCenterV1({ onDecision: async (value, actorId) => {
+        const result = await recordControlCenterDecision(root, ledger, value, actorId);
+        return { accepted: result.accepted === true, decisionId: result.decisionId as string, operationId: result.operationId as string, requestId: result.requestId as string, choiceId: result.choiceId as string };
+      } });
+      const started = await center.start();
+      const session = await pairControlCenter(started);
+      const input = { operationId: initial.id, requestId: waiting.decisionRequest!.requestId, choiceId: "opt-in" };
+      const forgedActor = await fetch(`${started.url}api/v1/decisions`, { method: "POST", headers: { ...session.headers(true), "content-type": "application/json" }, body: JSON.stringify({ ...input, actorId: "human:forged" }) });
+      expect(forgedActor.status).toBe(400);
+      const accepted = await fetch(`${started.url}api/v1/decisions`, { method: "POST", headers: { ...session.headers(true), "content-type": "application/json" }, body: JSON.stringify(input) });
+      expect(accepted.status).toBe(200);
+      const response = await accepted.json() as Record<string, unknown>;
+      expect(response).toMatchObject({ version: 1, accepted: true, operationId: initial.id, requestId: input.requestId, choiceId: input.choiceId });
+      const decision = (await ledger.list())[0];
+      expect(decision).toMatchObject({ kind: "CHOOSE", actorId: expect.stringMatching(/^human:control-center:[a-f0-9]{32}$/), purpose: { kind: "PRODUCT_CHOICE", requestId: input.requestId, choiceId: input.choiceId } });
+      const replay = await fetch(`${started.url}api/v1/decisions`, { method: "POST", headers: { ...session.headers(true), "content-type": "application/json" }, body: JSON.stringify(input) });
+      expect(replay.status).toBe(409);
+    } finally {
+      await center?.close();
       await fs.rm(root, { recursive: true, force: true });
     }
   });
@@ -135,7 +214,12 @@ describe("LocalControlCenterV1", () => {
   it("replays durable operation events across Control Center restart using the SSE cursor", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-control-events-"));
     const now = new Date().toISOString();
+    const previous = { id: process.env.AEH_OPERATION_ID, control: process.env.AEH_CONTROL_ROOT, redirect: process.env.AEH_OPERATION_STATE_REDIRECT };
+    process.env.AEH_OPERATION_ID = "OP-EVENTS";
+    process.env.AEH_CONTROL_ROOT = root;
+    process.env.AEH_OPERATION_STATE_REDIRECT = "1";
     await saveOperation(root, { version: 1, id: "OP-EVENTS", kind: "audit", status: "RUNNING", phase: "planning", root, payload: { request: "review event replay" }, createdAt: now, updatedAt: now });
+    await claimControllerEpoch(root, "OP-EVENTS", "controller:test", { pid: process.pid });
     let center = new LocalControlCenterV1({ operationRoots: () => [root] });
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     try {
@@ -159,18 +243,21 @@ describe("LocalControlCenterV1", () => {
       const restarted = await center.start();
       const newSession = await pairControlCenter(restarted);
       const history = await fetch(`${restarted.url}api/v1/events/history`, { headers: newSession.headers() }).then((response) => response.json()) as { items: Array<{ type: string }> };
-      expect(history.items.map((event) => event.type)).toEqual(["operation.created", "operation.updated"]);
+      expect(history.items.map((event) => event.type)).toEqual(["operation.created", "operation.controller.claimed", "operation.updated"]);
 
       const replay = await fetch(`${restarted.url}api/v1/events`, { headers: { ...newSession.headers(), "Last-Event-ID": first.id } });
       expect(replay.status).toBe(200);
       const replayReader = replay.body!.getReader();
       const replayed = parseSseFrame(await readSseEventFrame(replayReader));
-      expect(replayed.event).toMatchObject({ type: "operation.updated", data: { phase: "review" } });
+      expect(replayed.event).toMatchObject({ type: "operation.controller.claimed", data: { operationId: "OP-EVENTS" } });
       await replayReader.cancel();
     } finally {
       await reader?.cancel().catch(() => undefined);
       await center.close();
       await fs.rm(root, { recursive: true, force: true });
+      restoreEnv("AEH_OPERATION_ID", previous.id);
+      restoreEnv("AEH_CONTROL_ROOT", previous.control);
+      restoreEnv("AEH_OPERATION_STATE_REDIRECT", previous.redirect);
     }
   });
 
@@ -296,3 +383,5 @@ function parseSseFrame(frame: string): { id: string; event: Record<string, unkno
   if (!id || !data) throw new Error("SSE event did not include its durable cursor and event payload.");
   return { id, event: JSON.parse(data) as Record<string, unknown> };
 }
+
+function restoreEnv(name: string, value: string | undefined): void { if (value === undefined) delete process.env[name]; else process.env[name] = value; }

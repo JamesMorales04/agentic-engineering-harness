@@ -4,9 +4,11 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HarnessProjectConfig, TaskContract } from "../src/core/types.js";
 import { computeWorktreeDigest } from "../src/core/git.js";
-import { sha256Utf8 } from "../src/core/digest.js";
-import { claimControllerEpoch, loadOperation, saveOperation } from "../src/operations/state.js";
+import { sha256Canonical, sha256Utf8 } from "../src/core/digest.js";
+import { bindResolvedOperationPolicy, claimControllerEpoch, currentControllerEpoch, loadOperation, saveOperation } from "../src/operations/state.js";
 import { createCandidateRevisionV1, type CandidateRevisionV1 } from "../src/operations/v2Contracts.js";
+import { compileResolvedOperationPolicy } from "../src/architecture/executionIdentity.js";
+import { HumanDecisionLedgerV2 } from "../src/security/humanDecision.js";
 import { deliveryFinalizationFailure, finalizeAcceptedIssue } from "../src/delivery/finalize.js";
 import { runExecutable } from "../src/utils/process.js";
 
@@ -26,8 +28,13 @@ afterEach(async () => {
 describe("accepted issue delivery finalization", () => {
   it("commits accepted work, pushes the exact issue branch and creates a draft PR through the tool action gate", async () => {
     const context = await createFinalizeFixture();
+    await expect(finalizeAcceptedIssue(context.repo, context.config, context.contract, { candidate: context.candidate }))
+      .rejects.toThrow("TOOL_ACTION_HUMAN_DECISION_REQUIRED");
+    const commitSha = await git(context.repo, "rev-parse", "HEAD");
+    await recordActionAuthorization(context, "git.push", { remote: "origin", ref: "feature/gh-5-update-readme", expectedCommit: commitSha });
+    await recordActionAuthorization(context, "github.pull-request.create", { repository: "owner/repo", head: "feature/gh-5-update-readme", base: "main", apiBase: "https://api.github.com" });
     const result = await finalizeAcceptedIssue(context.repo, context.config, context.contract, { candidate: context.candidate });
-    expect(result).toMatchObject({ status: "FINALIZED", committed: true, pushed: true, humanRequired: false, pullRequest: { number: 9, draft: true } });
+    expect(result).toMatchObject({ status: "FINALIZED", committed: false, pushed: true, humanRequired: false, pullRequest: { number: 9, draft: true } });
     expect(await git(context.repo, "status", "--porcelain")).toBe("");
     expect(await git(context.repo, "log", "-1", "--pretty=%s")).toBe("GH-5: Update README");
     expect(await git(context.remote, "rev-parse", "refs/heads/feature/gh-5-update-readme")).toBe(await git(context.repo, "rev-parse", "HEAD"));
@@ -41,13 +48,20 @@ describe("accepted issue delivery finalization", () => {
 
   it("reconciles a lost push receipt instead of retrying the side effect", async () => {
     const context = await createFinalizeFixture();
+    await expect(finalizeAcceptedIssue(context.repo, context.config, context.contract, { candidate: context.candidate }))
+      .rejects.toThrow("TOOL_ACTION_HUMAN_DECISION_REQUIRED");
+    const commitSha = await git(context.repo, "rev-parse", "HEAD");
+    await recordActionAuthorization(context, "git.push", { remote: "origin", ref: "feature/gh-5-update-readme", expectedCommit: commitSha });
+    await recordActionAuthorization(context, "github.pull-request.create", { repository: "owner/repo", head: "feature/gh-5-update-readme", base: "main", apiBase: "https://api.github.com" });
     await finalizeAcceptedIssue(context.repo, context.config, context.contract, { candidate: context.candidate });
     const pushedSha = await git(context.remote, "rev-parse", "refs/heads/feature/gh-5-update-readme");
 
     // Simulate a crash after the external push but before the receipt persisted.
     const directory = actionDirectory(context.repo, context.operationId);
     const receipts = (await fs.readdir(directory)).filter((file) => file.endsWith(".receipt.json"));
-    for (const receipt of receipts) await fs.rm(path.join(directory, receipt));
+    const pushReceipt = receipts.find((file) => file.includes(sha256Canonical({ operationId: context.operationId, actionKey: "delivery:GH-5:push" })));
+    expect(pushReceipt).toBeTruthy();
+    await fs.rm(path.join(directory, pushReceipt!));
 
     const result = await finalizeAcceptedIssue(context.repo, context.config, context.contract, { candidate: context.candidate });
     expect(result.status).toBe("FINALIZED");
@@ -56,7 +70,7 @@ describe("accepted issue delivery finalization", () => {
     // The commit was already durable and is not re-executed; push and pull-request
     // receipts are recovered through external reconciliation.
     const recovered = (await fs.readdir(directory)).filter((file) => file.endsWith(".receipt.json"));
-    expect(recovered).toHaveLength(2);
+    expect(recovered).toHaveLength(3);
     const recoveredReceipts = await Promise.all(recovered.map(async (file) => JSON.parse(await fs.readFile(path.join(directory, file), "utf8")) as { action: string; outcome: string }));
     expect(recoveredReceipts.find((receipt) => receipt.action === "git.push")).toMatchObject({ outcome: "SUCCEEDED" });
   });
@@ -141,6 +155,12 @@ async function createFinalizeFixture(options: { managed?: boolean } = {}): Promi
     process.env.AEH_CONTROL_ROOT = repo;
     process.env.AEH_OPERATION_STATE_REDIRECT = "1";
     process.env.AEH_CONTROLLER_EPOCH = "1";
+    const operation = await loadOperation(repo, operationId);
+    const allowedExternalEffects = ["paseo.workspace.create", "github.issue.create", "github.branch.create", "git.push", "github.pull-request.create"];
+    const humanDecisionRequirements = ["git.push", "github.issue.create", "github.pull-request.create"].map((action) => ({ kind: "ACTION_AUTHORIZATION" as const, action }));
+    const deliveryPolicy = { githubEnabled: true, allowedExternalEffects };
+    const policy = compileResolvedOperationPolicy({ projectId: candidate.projectId!, operationId, operationExecutionRevision: operation.operationExecutionRevision!, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch: currentControllerEpoch(operation), intent: "delivery finalization test", route: "DIRECT", minimumAssurance: "STANDARD", policyVersions: {}, policyDigests: { delivery: sha256Canonical({ ...deliveryPolicy, humanDecisionRequirements }) }, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy, knowledgePolicy: {}, contextPolicy: {}, allowedExternalEffects, humanDecisionRequirements });
+    await bindResolvedOperationPolicy(repo, operationId, policy);
   } else {
     candidate = createCandidateRevisionV1({ operationId, candidateId: `candidate:${operationId}:r1`, projectId: "project-finalize", taskId: "GH-5", revision: 1, sourceDigest: await computeWorktreeDigest(repo), createdAt: "2026-08-11T00:00:00Z" });
     delete process.env.AEH_OPERATION_ID;
@@ -157,6 +177,23 @@ async function createFinalizeFixture(options: { managed?: boolean } = {}): Promi
     return new Response("{}", { status: 200 });
   }));
   return { repo, remote, config, contract, candidate, operationId, requests };
+}
+
+async function recordActionAuthorization(context: FinalizeFixture, action: "git.push" | "github.issue.create" | "github.pull-request.create", payload: unknown): Promise<void> {
+  const operation = await loadOperation(context.repo, context.operationId);
+  const ledger = new HumanDecisionLedgerV2(path.resolve(context.repo, ".harness", "security", "human-decisions.json"));
+  await ledger.record({
+    operationId: operation.id,
+    candidate: operation.candidateRevision!,
+    operationExecutionRevision: operation.operationExecutionRevision!,
+    policyDigest: operation.resolvedOperationPolicy!.digest,
+    controllerEpoch: currentControllerEpoch(operation),
+    purpose: { kind: "ACTION_AUTHORIZATION", action, effectDigest: sha256Canonical(payload) },
+    kind: "APPROVE",
+    actorId: "human:test:delivery-approval",
+    reason: `approved exact ${action} effect`,
+    createdAt: new Date()
+  });
 }
 
 function actionDirectory(root: string, operationId: string): string {

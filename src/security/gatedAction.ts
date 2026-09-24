@@ -1,6 +1,6 @@
 import type { ActionReconciliationResultV1 } from "./actionReconciliation.js";
 import { reconciliationReceiptOutcome } from "./actionReconciliation.js";
-import { authorizeToolAction, loadActionIntent, recordToolActionReceipt, type ActionIntentV1, type ActionReceiptV1, type ToolActionRequestV1 } from "./toolActionGate.js";
+import { authorizeToolAction, loadActionIntent, recordReconciledToolActionReceipt, recordToolActionReceipt, type ActionIntentV1, type ActionReceiptV1, type ToolActionRequestV1 } from "./toolActionGate.js";
 
 /**
  * Deterministic orchestration of one gated side effect:
@@ -44,7 +44,7 @@ export async function executeGatedAction(input: {
         detail: reconciliation.detail
       };
     }
-    const receipt = await recordToolActionReceipt(input.root, intent, outcome, reconciliation.evidence, input.now);
+    const receipt = await recordReconciledToolActionReceipt(input.root, intent, outcome, reconciliation.evidence, input.now);
     return { status: "RECONCILED", intent, receipt, reconciliation, detail: reconciliation.detail };
   }
 

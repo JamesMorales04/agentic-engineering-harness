@@ -6,11 +6,12 @@ import type { AgentExecutionSelection } from "../../src/agents/types.js";
 import { compileExecutionBlueprint } from "../../src/architecture/participantPlan.js";
 import { compileExecutionCatalog } from "../../src/architecture/executionCatalog.js";
 import { createWorkGraph } from "../../src/architecture/workGraph.js";
-import { bindOperationCandidate, bindOperationParticipantExecution, bindResolvedOperationPolicy, claimControllerEpoch, loadOperation, patchOperationMetadata, registerOperationAgent, saveOperation, transitionOperationToTerminal } from "../../src/operations/state.js";
+import { bindOperationCandidate, bindOperationParticipantExecution, bindResolvedOperationPolicy, claimControllerEpoch, currentControllerEpoch, loadOperation, patchOperationMetadata, registerOperationAgent, saveOperation, transitionOperationToTerminal } from "../../src/operations/state.js";
 import { createCandidateRevisionV1 } from "../../src/operations/v2Contracts.js";
 import { compileExecutionBinding, compileResolvedOperationPolicy, compileRoleInvocationPolicy, compileSkillManifest, createExecutionBlueprintV2 } from "../../src/architecture/executionIdentity.js";
 import { prepareExecutionAuthority, type ExecutionAuthorityV1 } from "../../src/security/executionLease.js";
-import { authorizeToolAction, controllerActorId, recordToolActionReceipt, type ToolActionRequestV1 } from "../../src/security/toolActionGate.js";
+import { HumanDecisionLedgerV2 } from "../../src/security/humanDecision.js";
+import { authorizeToolAction, controllerActorId, recordReconciledToolActionReceipt, recordToolActionReceipt, type ToolActionRequestV1 } from "../../src/security/toolActionGate.js";
 
 const roots: string[] = [];
 const previousEnv = { id: process.env.AEH_OPERATION_ID, control: process.env.AEH_CONTROL_ROOT, redirect: process.env.AEH_OPERATION_STATE_REDIRECT, epoch: process.env.AEH_CONTROLLER_EPOCH, token: process.env.AEH_CONTROLLER_TOKEN };
@@ -76,6 +77,7 @@ describe("durable controller fencing", () => {
     // The current controller can still authorize with authority compiled under epoch 2.
     process.env.AEH_CONTROLLER_EPOCH = "2";
     const currentAuthority = await makeAuthority(context, implementerSelection);
+    await bindCurrentPolicy(context);
     const allowed = await authorizeToolAction(makeRequest(context, currentAuthority, "git.commit", "delivery:commit"));
     expect(allowed.decision).toBe("EXECUTE_ONCE");
     expect(allowed.intent.controllerEpoch).toBe(2);
@@ -95,8 +97,10 @@ describe("durable controller fencing", () => {
       .rejects.toThrow("V2_CONTROLLER_FENCED");
 
     process.env.AEH_CONTROLLER_EPOCH = "2";
-    const receipt = await recordToolActionReceipt(context.root, authorized.intent, "SUCCEEDED", { commit: "abc" }, new Date(NOW));
-    expect(receipt.controllerEpoch).toBe(2);
+    await bindCurrentPolicy(context);
+    const receipt = await recordReconciledToolActionReceipt(context.root, authorized.intent, "SUCCEEDED", { observedCommit: "abc" }, new Date(NOW));
+    expect(receipt.controllerEpoch).toBe(1);
+    expect(receipt.reconciledUnderEpoch).toBe(2);
     expect(receipt.outcome).toBe("SUCCEEDED");
   });
 
@@ -124,7 +128,7 @@ describe("durable controller fencing", () => {
   });
 
   it("invalidates participant execution bindings and frozen policy on controller takeover", async () => {
-    const context = await createContext("RUN-FENCE-BINDING", "Implementer");
+    const context = await createContext("RUN-FENCE-BINDING", "Implementer", false);
     const operation = await loadOperation(context.root, context.operationId);
     const policy = compileResolvedOperationPolicy({ projectId: context.candidate.projectId!, operationId: context.operationId,
       operationExecutionRevision: operation.operationExecutionRevision!, candidateRevision: context.candidate.revision, candidateDigest: context.candidate.identityDigest,
@@ -206,24 +210,53 @@ const implementerSelection: AgentExecutionSelection = {
   skills: [], mcps: [], args: [], runtimeCapabilities: {}
 };
 
-async function createContext(operationId: string, role: ToolActionRequestV1["role"] = "Implementer"): Promise<{ root: string; operationId: string; participantId: string; candidate: ReturnType<typeof createCandidateRevisionV1> }> {
+async function createContext(operationId: string, role: ToolActionRequestV1["role"] = "Implementer", withPolicy = true): Promise<{ root: string; operationId: string; participantId: string; candidate: ReturnType<typeof createCandidateRevisionV1> }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-controller-fence-"));
   roots.push(root);
   const participantId = `participant:${operationId.toLowerCase()}`;
-  await saveOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "implementation", root, payload: { taskId: "T-1" }, createdAt: NOW, updatedAt: NOW, operationExecutionRevision: 1 } as never);
-  const initial = (await loadOperation(root, operationId)).candidateRevision!;
-  await registerOperationAgent(root, operationId, { id: participantId, role, logicalAgent: role, phase: "implementation" });
-  await claimControllerEpoch(root, operationId, "controller:one");
   process.env.AEH_OPERATION_ID = operationId;
   process.env.AEH_CONTROL_ROOT = root;
+  process.env.AEH_OPERATION_STATE_REDIRECT = "1";
+  await saveOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "implementation", root, payload: { taskId: "T-1" }, createdAt: NOW, updatedAt: NOW, operationExecutionRevision: 1 } as never);
+  const initial = (await loadOperation(root, operationId)).candidateRevision!;
+  await claimControllerEpoch(root, operationId, "controller:one", { pid: process.pid });
+  await registerOperationAgent(root, operationId, { id: participantId, role, logicalAgent: role, phase: "implementation" });
+  if (withPolicy) await bindCurrentPolicy({ root, operationId, candidate: initial });
   return { root, operationId, participantId, candidate: initial };
 }
 
 async function takeOver(context: { root: string; operationId: string }): Promise<void> {
+  let operation = await loadOperation(context.root, context.operationId);
+  if (!operation.resolvedOperationPolicy) {
+    await bindCurrentPolicy(context);
+    operation = await loadOperation(context.root, context.operationId);
+  }
+  const policy = operation.resolvedOperationPolicy!;
+  const ledger = new HumanDecisionLedgerV2(path.resolve(context.root, ".harness", "security", "human-decisions.json"));
+  const createdAt = new Date();
+  await ledger.record({
+    operationId: context.operationId,
+    candidate: operation.candidateRevision!,
+    operationExecutionRevision: operation.operationExecutionRevision!,
+    policyDigest: policy.digest,
+    controllerEpoch: currentControllerEpoch(operation),
+    purpose: { kind: "OPERATION_CONTROL", command: "CANCEL" },
+    kind: "CANCEL",
+    actorId: "human:control-center:fencing-test",
+    reason: "explicitly authorize controller takeover for fencing evidence",
+    createdAt,
+    expiresAt: new Date(createdAt.getTime() + 60 * 60_000)
+  });
   const zombieEpoch = process.env.AEH_CONTROLLER_EPOCH;
-  delete process.env.AEH_CONTROLLER_EPOCH;
-  await claimControllerEpoch(context.root, context.operationId, "controller:two");
+  await claimControllerEpoch(context.root, context.operationId, "controller:two", { pid: process.pid, cause: "cancellation" });
   restoreEnv("AEH_CONTROLLER_EPOCH", zombieEpoch);
+}
+
+async function bindCurrentPolicy(context: { root: string; operationId: string; candidate: ReturnType<typeof createCandidateRevisionV1> }) {
+  const operation = await loadOperation(context.root, context.operationId);
+  const candidate = operation.candidateRevision!;
+  const policy = compileResolvedOperationPolicy({ projectId: candidate.projectId!, operationId: context.operationId, operationExecutionRevision: operation.operationExecutionRevision!, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch: currentControllerEpoch(operation), intent: "controller fencing fixture", route: "DIRECT", minimumAssurance: "STANDARD", policyVersions: {}, policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {}, allowedExternalEffects: [], humanDecisionRequirements: [] });
+  await bindResolvedOperationPolicy(context.root, context.operationId, policy);
 }
 
 function candidate(context: { operationId: string; candidate: ReturnType<typeof createCandidateRevisionV1> }, revision: number, _digestSeed: string) {

@@ -2,11 +2,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { saveOwnedOperation } from "../helpers/ownedOperation.js";
 import { ContextBudgetGateway } from "../../src/context/gateway.js";
 import { authorizeRetrieval } from "../../src/context/retrieval/authorization.js";
 import { ContextRetrievalGateway } from "../../src/context/retrieval/gateway.js";
 import { notifyOperationCompletion, registerOperationCompletionTarget } from "../../src/operations/completion.js";
-import { acknowledgeOperationLead, loadOperation, markTerminalDelivered, patchOperationMetadata, registerOperationAgent, registerSupervisorGeneration, saveOperation, transitionOperationToTerminal, updateSupervisorGeneration, type OperationRecord } from "../../src/operations/state.js";
+import { acknowledgeOperationLead, loadOperation, markTerminalDelivered, patchOperationMetadata, registerOperationAgent, registerSupervisorGeneration, transitionOperationToTerminal, updateSupervisorGeneration, type OperationRecord } from "../../src/operations/state.js";
 
 const config = { version: 1 as const, project: { name: "concurrency-campaign" }, telemetry: { enabled: false }, context: { mode: "enforce" as const, compression: { provider: "none" as const }, retrieval: { maxRequestsPerTurn: 4, maxTokensPerRequest: 100, maxTotalTokensPerTurn: 400 } } };
 
@@ -29,7 +30,7 @@ describe("AEH deterministic concurrency campaign", () => {
   it("serializes competing terminal transitions", async () => {
     const root = await tempRoot("aeh-concurrency-terminal-");
     try {
-      await saveOperation(root, operation(root, "TERMINAL-RACE"));
+      await saveOwnedOperation(root, operation(root, "TERMINAL-RACE"));
       const gate = barrier(4);
       const outcomes = await Promise.all((["SUCCEEDED", "FAILED", "CANCELLED", "SUCCEEDED"] as const).map(async (status) => { await gate.wait(); return transitionOperationToTerminal(root, "TERMINAL-RACE", { status, phase: status.toLowerCase() }); }));
       const final = await loadOperation(root, "TERMINAL-RACE");
@@ -42,20 +43,20 @@ describe("AEH deterministic concurrency campaign", () => {
   it("preserves every participant registration under concurrent writers", async () => {
     const root = await tempRoot("aeh-concurrency-participants-");
     try {
-      await saveOperation(root, operation(root, "PARTICIPANTS"));
+      await saveOwnedOperation(root, operation(root, "PARTICIPANTS"));
       const gate = barrier(8);
       await Promise.all(Array.from({ length: 8 }, (_, index) => (async () => { await gate.wait(); return registerOperationAgent(root, "PARTICIPANTS", { id: `agent-${index}`, role: "reviewer", phase: "review", transport: "direct" }); })()));
       const final = await loadOperation(root, "PARTICIPANTS");
       expect(Object.keys(final.participants)).toHaveLength(8);
       expect(final.progress.registered).toBe(8);
-      expect(final.revision).toBe(9);
+      expect(final.revision).toBe(10);
     } finally { await cleanup(root); }
   });
 
   it("delivers one completion callback when eight callers race", async () => {
     const root = await tempRoot("aeh-concurrency-completion-");
     try {
-      const record = operation(root, "COMPLETION-RACE", "RUNNING"); await saveOperation(root, record); await registerOperationCompletionTarget(root, record.id, "lead", "test", async () => undefined);
+      const record = operation(root, "COMPLETION-RACE", "RUNNING"); await saveOwnedOperation(root, record); await registerOperationCompletionTarget(root, record.id, "lead", "test", async () => undefined);
       const gate = barrier(8); let dispatchCalls = 0; let releaseDispatch!: () => void; const dispatchReleased = new Promise<void>((resolve) => { releaseDispatch = resolve; });
       const dispatch = async () => { dispatchCalls += 1; if (dispatchCalls === 1) await dispatchReleased; return { exitCode: 0, stdout: "", stderr: "", transport: "sdk" as const }; };
       const calls = Array.from({ length: 8 }, () => (async () => { await gate.wait(); return notifyOperationCompletion(root, record, { dispatch, trace: async () => undefined, retryDelaysMs: [0], sleep: async () => undefined }); })());
@@ -88,7 +89,7 @@ describe("AEH deterministic concurrency campaign", () => {
   it("keeps supervisor replacement structurally single-active under a late update", async () => {
     const root = await tempRoot("aeh-concurrency-supervisor-");
     try {
-      await saveOperation(root, operation(root, "SUPERVISOR-RACE")); const first = await registerSupervisorGeneration(root, "SUPERVISOR-RACE", { agentId: "supervisor-1", materialized: true }); const generation = first.supervision.generations[0]!.generation; const gate = barrier(2);
+      await saveOwnedOperation(root, operation(root, "SUPERVISOR-RACE")); const first = await registerSupervisorGeneration(root, "SUPERVISOR-RACE", { agentId: "supervisor-1", materialized: true }); const generation = first.supervision.generations[0]!.generation; const gate = barrier(2);
       await Promise.all([ (async () => { await gate.wait(); return registerSupervisorGeneration(root, "SUPERVISOR-RACE", { agentId: "supervisor-2", materialized: true }); })(), (async () => { await gate.wait(); return updateSupervisorGeneration(root, "SUPERVISOR-RACE", generation, { status: "FAILED", error: "late old generation" }); })() ]);
       const final = await loadOperation(root, "SUPERVISOR-RACE");
       expect(final.supervision.generations.filter((item) => item.status === "ACTIVE")).toHaveLength(1);
@@ -99,7 +100,7 @@ describe("AEH deterministic concurrency campaign", () => {
   it("keeps terminal truth when completion metadata races terminalization", async () => {
     const root = await tempRoot("aeh-concurrency-terminal-completion-");
     try {
-      const record = operation(root, "TERMINAL-COMPLETION"); await saveOperation(root, record); await registerOperationCompletionTarget(root, record.id, "lead", "test", async () => undefined); const gate = barrier(2);
+      const record = operation(root, "TERMINAL-COMPLETION"); await saveOwnedOperation(root, record); await registerOperationCompletionTarget(root, record.id, "lead", "test", async () => undefined); const gate = barrier(2);
       await Promise.all([ (async () => { await gate.wait(); return transitionOperationToTerminal(root, record.id, { status: "SUCCEEDED", phase: "finished" }); })(), (async () => { await gate.wait(); return notifyOperationCompletion(root, record, { dispatch: async () => ({ exitCode: 0, stdout: "", stderr: "", transport: "sdk" as const }), trace: async () => undefined, retryDelaysMs: [0], sleep: async () => undefined }); })() ]);
       const final = await loadOperation(root, record.id); expect(final.status).toBe("SUCCEEDED"); expect(final.finishedAt).toBeDefined();
     } finally { await cleanup(root); }
@@ -108,16 +109,16 @@ describe("AEH deterministic concurrency campaign", () => {
   it("keeps lead acknowledgement monotonic under concurrent wake consumers", async () => {
     const root = await tempRoot("aeh-concurrency-ack-");
     try {
-      await saveOperation(root, operation(root, "ACK-RACE")); const gate = barrier(8);
+      await saveOwnedOperation(root, operation(root, "ACK-RACE")); const gate = barrier(8);
       await Promise.all(Array.from({ length: 8 }, (_, index) => (async () => { await gate.wait(); return patchOperationMetadata(root, "ACK-RACE", { lead: { agentId: "lead", generation: 1, boundAt: new Date(0).toISOString(), acknowledgedRevision: index + 1 }, notification: { lastLeadWakeRevision: index + 1, terminalDelivered: false, attempts: 0 } }); })()));
-      const final = await loadOperation(root, "ACK-RACE"); expect(final.revision).toBe(1); expect(final.lead?.acknowledgedRevision).toBeGreaterThanOrEqual(1); expect(final.notification.lastLeadWakeRevision).toBeGreaterThanOrEqual(1);
+      const final = await loadOperation(root, "ACK-RACE"); expect(final.revision).toBe(2); expect(final.lead?.acknowledgedRevision).toBeGreaterThanOrEqual(1); expect(final.notification.lastLeadWakeRevision).toBeGreaterThanOrEqual(1);
     } finally { await cleanup(root); }
   });
 
   it("keeps terminal delivery durable under duplicate finalization calls", async () => {
     const root = await tempRoot("aeh-concurrency-delivery-");
     try {
-      const record = operation(root, "DELIVERY-RACE", "RUNNING"); await saveOperation(root, record); await transitionOperationToTerminal(root, record.id, { status: "FAILED", phase: "failed" }); const gate = barrier(8);
+      const record = operation(root, "DELIVERY-RACE", "RUNNING"); await saveOwnedOperation(root, record); await transitionOperationToTerminal(root, record.id, { status: "FAILED", phase: "failed" }); const gate = barrier(8);
       await Promise.all(Array.from({ length: 8 }, (_, index) => (async () => { await gate.wait(); return markTerminalDelivered(root, record.id, index + 1); })()));
       const final = await loadOperation(root, record.id); expect(final.status).toBe("FAILED"); expect(final.notification.terminalDelivered).toBe(true); expect(final.notification.lastLeadWakeRevision).toBe(final.revision);
     } finally { await cleanup(root); }

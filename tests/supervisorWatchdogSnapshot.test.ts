@@ -1,3 +1,4 @@
+import { saveOwnedOperation } from "./helpers/ownedOperation.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -29,7 +30,7 @@ async function fixture() {
   roots.push(root);
   const timestamp = new Date().toISOString();
   const record: OperationRecordV2 = { version: 2, id: "AUDIT-WATCH", kind: "audit", status: "RUNNING", phase: "reviewing", root, payload: { request: "review" }, revision: 1, createdAt: timestamp, updatedAt: timestamp, lastProgressAt: timestamp, supervision: { required: true, materialized: false, generations: [] }, stages: {}, participants: {}, progress: { expected: 0, registered: 0, running: 0, completed: 0, failed: 0, blocked: 0 }, notification: { lastLeadWakeRevision: 0, terminalDelivered: false, attempts: 0 } };
-  await saveOperation(root, record);
+  await saveOwnedOperation(root, record);
   await bindOperationLead(root, record.id, "lead-1", "test");
   await registerSupervisorGeneration(root, record.id, { agentId: "supervisor-1", materialized: true });
   await registerOperationAgent(root, record.id, { id: "reviewer-1", role: "reviewer", logicalAgent: "test-reviewer", phase: "reviewing" });

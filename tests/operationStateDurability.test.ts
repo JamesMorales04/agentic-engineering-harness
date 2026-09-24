@@ -1,3 +1,4 @@
+import { saveOwnedOperation } from "./helpers/ownedOperation.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -25,7 +26,7 @@ async function seededOperation(): Promise<{ root: string; stateFile: string; eve
     createdAt: now,
     updatedAt: now
   };
-  await saveOperation(root, record);
+  await saveOwnedOperation(root, record);
   return { root, stateFile: operationFile(root, record.id), eventFile: operationEventsFile(root, record.id) };
 }
 
@@ -40,7 +41,7 @@ describe("durable operation event outbox", () => {
     await fs.mkdir(eventFile);
     await expect(patchOperation(root, "OUTBOX-1", { phase: "reviewing" })).rejects.toThrow();
     const interrupted = JSON.parse(await fs.readFile(stateFile, "utf8")) as { revision: number; _pendingOperationEvent?: { type: string; phase: string } };
-    expect(interrupted).toMatchObject({ revision: 2, _pendingOperationEvent: { type: "operation.updated", phase: "reviewing" } });
+    expect(interrupted).toMatchObject({ revision: 3, _pendingOperationEvent: { type: "operation.updated", phase: "reviewing" } });
 
     await fs.rm(eventFile, { recursive: true });
     // Preserve the original event and simulate a torn append at the boundary.
@@ -49,9 +50,9 @@ describe("durable operation event outbox", () => {
     const lines = (await fs.readFile(eventFile, "utf8")).trim().split("\n");
     const events = lines.map((line) => JSON.parse(line) as { type: string; revision: number; phase: string });
 
-    expect(recovered).toMatchObject({ revision: 2, phase: "reviewing" });
-    expect(events).toHaveLength(2);
-    expect(events[1]).toMatchObject({ type: "operation.updated", revision: 2, phase: "reviewing" });
+    expect(recovered).toMatchObject({ revision: 3, phase: "reviewing" });
+    expect(events).toHaveLength(3);
+    expect(events[2]).toMatchObject({ type: "operation.updated", revision: 3, phase: "reviewing" });
     expect(JSON.parse(await fs.readFile(stateFile, "utf8"))).not.toHaveProperty("_pendingOperationEvent");
   });
 
@@ -67,13 +68,13 @@ describe("durable operation event outbox", () => {
     await expect(patchOperation(root, "OUTBOX-1", { phase: "reviewing" })).rejects.toThrow("injected crash");
     vi.restoreAllMocks();
     const eventsBeforeRecovery = (await fs.readFile(eventFile, "utf8")).trim().split("\n");
-    expect(eventsBeforeRecovery).toHaveLength(2);
+    expect(eventsBeforeRecovery).toHaveLength(3);
     expect(JSON.parse(await fs.readFile(stateFile, "utf8"))).toHaveProperty("_pendingOperationEvent.type", "operation.updated");
 
     const recovered = await loadOperation(root, "OUTBOX-1");
     const eventsAfterRecovery = (await fs.readFile(eventFile, "utf8")).trim().split("\n");
-    expect(recovered).toMatchObject({ revision: 2, phase: "reviewing" });
-    expect(eventsAfterRecovery).toHaveLength(2);
+    expect(recovered).toMatchObject({ revision: 3, phase: "reviewing" });
+    expect(eventsAfterRecovery).toHaveLength(3);
     expect(JSON.parse(await fs.readFile(stateFile, "utf8"))).not.toHaveProperty("_pendingOperationEvent");
   });
 });

@@ -1,3 +1,4 @@
+import { saveOwnedOperation } from "./helpers/ownedOperation.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -49,7 +50,7 @@ describe("operation lead rebinding", () => {
   it("moves active durable wake targets to the new lead without changing the active supervisor", async () => {
     const root = await tempRoot();
     const record = operation(root, "AUDIT-REBIND");
-    await saveOperation(root, record);
+    await saveOwnedOperation(root, record);
     await syncOperationPortfolio(root, "demo", record);
 
     const rebound = await rebindActiveOperationsToLead(root, config, "lead-new", "lead-handoff");

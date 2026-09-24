@@ -2,8 +2,9 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { saveOwnedOperation } from "./helpers/ownedOperation.js";
 import { spawnOperationMonitor } from "../src/operations/monitorProcess.js";
-import { loadOperation, saveOperation, type OperationRecord } from "../src/operations/state.js";
+import { loadOperation, type OperationRecord } from "../src/operations/state.js";
 
 describe("detached operation monitor", () => {
   it("records asynchronous monitor spawn errors without an unhandled child error", async () => {
@@ -19,7 +20,7 @@ describe("detached operation monitor", () => {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
-    await saveOperation(root, operation);
+    await saveOwnedOperation(root, operation);
     let onError: ((error: Error) => void) | undefined;
     const child = {
       pid: 5252,

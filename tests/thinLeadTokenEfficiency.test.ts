@@ -1,3 +1,4 @@
+import { saveOwnedOperation } from "./helpers/ownedOperation.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -51,7 +52,7 @@ const config = {
 describe("thin lead token efficiency", () => {
   it("keeps healthy unseen progress controller-owned instead of waking the lead", async () => {
     const root = await tempRoot();
-    await saveOperation(root, operation(root));
+    await saveOwnedOperation(root, operation(root));
     let current = await bindOperationLead(root, "AUDIT-THIN", "lead-1", "test");
     current = await setOperationStage(root, "AUDIT-THIN", "reviewing", "RUNNING");
     const now = Date.parse(current.lastProgressAt) + 60_000;
@@ -72,7 +73,7 @@ describe("thin lead token efficiency", () => {
 
   it("returns a bounded digest by default and reserves the full record for explicit diagnostics", async () => {
     const root = await tempRoot();
-    await saveOperation(root, operation(root));
+    await saveOwnedOperation(root, operation(root));
     await bindOperationLead(root, "AUDIT-THIN", "lead-1", "test");
 
     const compact = await readOperationStatus(root, "AUDIT-THIN");
@@ -89,7 +90,7 @@ describe("thin lead token efficiency", () => {
 
   it("does not acknowledge on reads and requires an exact bound-lead ACK", async () => {
     const root = await tempRoot();
-    await saveOperation(root, operation(root));
+    await saveOwnedOperation(root, operation(root));
     let current = await bindOperationLead(root, "AUDIT-THIN", "lead-1", "test");
     const acknowledgedAtBind = current.lead?.acknowledgedRevision ?? 0;
     current = await setOperationStage(root, "AUDIT-THIN", "reviewing", "RUNNING");

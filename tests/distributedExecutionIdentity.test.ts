@@ -1,3 +1,4 @@
+import { saveOwnedOperation } from "./helpers/ownedOperation.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -340,7 +341,7 @@ async function fixture(options: { skills?: Parameters<typeof compileSkillManifes
   process.env.AEH_OPERATION_ID = operationId;
   process.env.AEH_OPERATION_KIND = "run";
   process.env.AEH_CONTROL_ROOT = root;
-  await saveOperation(root, { version: 2, id: operationId, kind: "run", status: "RUNNING", phase: "implementation", root,
+  await saveOwnedOperation(root, { version: 2, id: operationId, kind: "run", status: "RUNNING", phase: "implementation", root,
     payload: { taskId: "TASK-DISTRIBUTED" }, revision: 1, operationExecutionRevision: 1, createdAt: now, updatedAt: now, lastProgressAt: now,
     supervision: { required: false, materialized: false, generations: [] }, stages: {}, participants: {}, progress: { expected: 0, registered: 0, running: 0, completed: 0, failed: 0, blocked: 0 },
     notification: { lastLeadWakeRevision: 0, terminalDelivered: false, attempts: 0 } });

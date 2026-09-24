@@ -2,11 +2,15 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { saveOwnedOperation } from "./helpers/ownedOperation.js";
 import { cancelOperation, executeOperation } from "../src/operations/controller.js";
 import { notifyOperationCompletion, operationCompletionFile, registerOperationCompletionTarget } from "../src/operations/completion.js";
 import {
   acknowledgeOperationLead,
   bindOperationLead,
+  bindResolvedOperationPolicy,
+  claimControllerEpoch,
+  currentControllerEpoch,
   loadOperation,
   markTerminalDelivered,
   registerSupervisorGeneration,
@@ -16,6 +20,8 @@ import {
   updateSupervisorGeneration,
   type OperationRecordV2
 } from "../src/operations/state.js";
+import { compileResolvedOperationPolicy } from "../src/architecture/executionIdentity.js";
+import { HumanDecisionLedgerV2 } from "../src/security/humanDecision.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -50,19 +56,41 @@ function operation(root: string, id = "AUDIT-LIFECYCLE"): OperationRecordV2 {
   };
 }
 
+async function bindCancellationDecision(root: string, operationId: string, actorId: string): Promise<void> {
+  const current = await loadOperation(root, operationId);
+  const candidate = current.candidateRevision!;
+  const policy = compileResolvedOperationPolicy({
+    projectId: candidate.projectId!, operationId,
+    operationExecutionRevision: current.operationExecutionRevision!,
+    candidateRevision: candidate.revision,
+    candidateDigest: candidate.identityDigest,
+    controllerEpoch: currentControllerEpoch(current),
+    intent: "lifecycle cancellation test", route: "DIRECT", minimumAssurance: "STANDARD",
+    policyVersions: { resolvedOperationPolicy: "1" }, policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {},
+    allowedExternalEffects: [], humanDecisionRequirements: []
+  });
+  const bound = await bindResolvedOperationPolicy(root, operationId, policy);
+  const ledger = new HumanDecisionLedgerV2(path.join(root, ".harness", "security", "human-decisions.json"));
+  await ledger.record({
+    operationId, candidate, operationExecutionRevision: bound.operationExecutionRevision!, policyDigest: policy.digest,
+    controllerEpoch: currentControllerEpoch(bound), purpose: { kind: "OPERATION_CONTROL", command: "CANCEL" }, kind: "CANCEL",
+    actorId, reason: "explicit cancellation test request", createdAt: new Date(), expiresAt: new Date(Date.now() + 60_000)
+  });
+}
+
 describe("operation lifecycle regressions", () => {
   it.each(["SUCCEEDED", "FAILED"] as const)("does not re-enter a %s operation", async (status) => {
     const root = await tempRoot();
     const record = operation(root, `TERMINAL-${status}`);
-    await saveOperation(root, record);
-    await transitionOperationToTerminal(root, record.id, { status, phase: status.toLowerCase() });
+    await saveOwnedOperation(root, record);
+    const terminal = await transitionOperationToTerminal(root, record.id, { status, phase: status.toLowerCase() });
 
     const runAudit = vi.fn();
     const result = await executeOperation(root, record.id, { runAudit: runAudit as never });
 
     expect(result.status).toBe(status);
     expect(runAudit).not.toHaveBeenCalled();
-    expect((await loadOperation(root, record.id)).revision).toBe(2);
+    expect((await loadOperation(root, record.id)).revision).toBe(terminal.record.revision);
   });
 
   it("restores operation routing environment after an in-process terminal read", async () => {
@@ -79,6 +107,7 @@ describe("operation lifecycle regressions", () => {
     try {
       for (const key of keys) delete process.env[key];
       await saveOperation(root, record);
+      await claimControllerEpoch(root, record.id, `controller:test:${record.id}`);
       await transitionOperationToTerminal(root, record.id, { status: "SUCCEEDED", phase: "finished" });
 
       process.env.AEH_CONTROL_ROOT = "/tmp/aeh-stale-control-root";
@@ -108,7 +137,7 @@ describe("operation lifecycle regressions", () => {
   it("preserves the first terminal participant state and settles nonterminal participants", async () => {
     const root = await tempRoot();
     const record = operation(root);
-    await saveOperation(root, record);
+    await saveOwnedOperation(root, record);
     await updateOperationParticipant(root, record.id, "worker-1", { status: "RUNNING" });
     await updateOperationParticipant(root, record.id, "worker-1", { status: "COMPLETED" });
     const preserved = await updateOperationParticipant(root, record.id, "worker-1", { status: "FAILED" });
@@ -124,11 +153,12 @@ describe("operation lifecycle regressions", () => {
     const root = await tempRoot();
     const record = operation(root, "CANCEL-CLEANUP");
     record.agents = [{ id: "worker-1", role: "reviewer", registeredAt: new Date().toISOString() }];
-    await saveOperation(root, record);
+    await saveOwnedOperation(root, record);
+    await bindCancellationDecision(root, record.id, "human:lifecycle-cancel-test");
     await registerSupervisorGeneration(root, record.id, { agentId: "supervisor-1", materialized: true });
 
     const run = vi.fn(async () => ({ exitCode: 0, stdout: "stopped", stderr: "", durationMs: 1 }));
-    await cancelOperation(root, record.id, { run: run as never, trace: vi.fn(async () => undefined) as never, notifyCompletion: vi.fn(async () => undefined) });
+    await cancelOperation(root, record.id, { run: run as never, trace: vi.fn(async () => undefined) as never, notifyCompletion: vi.fn(async () => undefined), humanActorId: "human:lifecycle-cancel-test" });
 
     expect(run.mock.calls.map(([command]) => String(command))).toEqual(expect.arrayContaining([
       "paseo stop 'worker-1'",
@@ -141,7 +171,7 @@ describe("operation lifecycle regressions", () => {
   it("drains active supervisor generations when the operation terminalizes", async () => {
     const root = await tempRoot();
     const record = operation(root, "TERMINAL-SUPERVISOR");
-    await saveOperation(root, record);
+    await saveOwnedOperation(root, record);
     await registerSupervisorGeneration(root, record.id, { agentId: "supervisor-1", materialized: true });
     const current = await loadOperation(root, record.id);
     const generation = current.supervision.generations[0]!.generation;
@@ -155,7 +185,7 @@ describe("operation lifecycle regressions", () => {
   it("keeps concurrent supervisor activations single-active", async () => {
     const root = await tempRoot();
     const record = operation(root, "SUPERVISOR-ACTIVE-RACE");
-    await saveOperation(root, record);
+    await saveOwnedOperation(root, record);
     await registerSupervisorGeneration(root, record.id, { agentId: "supervisor-1", materialized: true });
     await registerSupervisorGeneration(root, record.id, { agentId: "supervisor-2", materialized: true, status: "INITIALIZING" });
     await registerSupervisorGeneration(root, record.id, { agentId: "supervisor-3", materialized: true, status: "INITIALIZING" });
@@ -173,7 +203,7 @@ describe("operation lifecycle regressions", () => {
   it("repairs primary notification state when a SENT completion sidecar is found", async () => {
     const root = await tempRoot();
     const record = operation(root, "COMPLETION-REPAIR");
-    await saveOperation(root, record);
+    await saveOwnedOperation(root, record);
     await bindOperationLead(root, record.id, "lead-1", "test");
     const terminal = await transitionOperationToTerminal(root, record.id, { status: "SUCCEEDED", phase: "finished" });
     await registerOperationCompletionTarget(root, record.id, "lead-1", "test", vi.fn(async () => undefined));
@@ -189,12 +219,12 @@ describe("operation lifecycle regressions", () => {
   it("preserves acknowledgement while terminal delivery metadata is updated", async () => {
     const root = await tempRoot();
     const record = operation(root, "ACK-METADATA-RACE");
-    await saveOperation(root, record);
+    await saveOwnedOperation(root, record);
     await bindOperationLead(root, record.id, "lead-1", "test");
     const terminal = await transitionOperationToTerminal(root, record.id, { status: "SUCCEEDED", phase: "finished" });
 
     await Promise.all([
-      acknowledgeOperationLead(root, record.id, terminal.record.revision, "test"),
+      acknowledgeOperationLead(root, record.id, terminal.record.revision, "lead-1", currentControllerEpoch(terminal.record), "test"),
       markTerminalDelivered(root, record.id, 1)
     ]);
     const current = await loadOperation(root, record.id);

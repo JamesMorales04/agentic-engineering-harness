@@ -70,6 +70,19 @@ export const explorerOutputSchema = z.object({
   openQuestions: z.array(z.string()).default([])
 });
 
+const productChoiceDraftSchema = z.object({
+  issue: z.string().trim().min(1).max(4_000),
+  whatTried: z.array(z.string().trim().min(1).max(1_000)).min(1).max(16),
+  whyUnresolvable: z.string().trim().min(1).max(4_000),
+  choices: z.array(z.object({
+    choiceId: z.string().trim().min(1).max(120),
+    label: z.string().trim().min(1).max(200),
+    description: z.string().trim().min(1).max(2_000),
+    consequences: z.array(z.string().trim().min(1).max(1_000)).min(1).max(8)
+  }).strict()).min(1).max(12),
+  workThatCanContinue: z.array(z.string().trim().min(1).max(1_000)).max(32)
+}).strict();
+
 export const specAuthoringOutputSchema = z.object({
   change: z.string().min(1),
   status: z.enum(["READY", "BLOCKED"]),
@@ -78,11 +91,12 @@ export const specAuthoringOutputSchema = z.object({
     design: z.string().optional(),
     tasks: z.string().optional(),
     specs: z.array(z.string()).default([])
-  }),
+  }).strict(),
   requirements: z.array(z.string()).default([]),
   unresolvedDecisions: z.array(z.string()).default([]),
+  decisionRequests: z.array(productChoiceDraftSchema).max(8),
   validationReady: z.boolean()
-});
+}).strict();
 
 export const implementerOutputSchema = z.object({ filesChanged: z.array(z.string()), behaviorImplemented: z.array(z.string()), decisions: z.array(z.string()).default([]), assumptions: z.array(z.string()).default([]), risks: z.array(z.string()).default([]), validationCommands: z.array(z.string()).default([]), followUp: z.array(z.string()).default([]), contractSync: z.array(z.string()).optional() });
 export const findingSchema = z.object({ id: z.string().min(1), severity: z.enum(["critical", "high", "medium", "low", "note"]), category: z.string().min(1), location: z.object({ file: z.string().min(1), startLine: z.number().int().positive().optional(), endLine: z.number().int().positive().optional() }), evidence: z.string().min(1), impact: z.string().min(1), recommendedFix: z.string().min(1), requiredCompetencies: z.array(z.string()).min(1), reviewDimensions: z.array(z.string()).default([]), exceptionType: exceptionTypeSchema.optional() });
@@ -136,7 +150,7 @@ const jsonSchemas: Record<string, Record<string, unknown>> = {
   explorer: { type: "object", additionalProperties: false, required: ["summary", "relevantFiles", "findings", "moduleBoundaries", "tests", "dependencies", "risks", "openQuestions"], properties: { summary: { type: "string" }, relevantFiles: { type: "array", items: explorerFileJson }, findings: { type: "array", items: explorerFindingJson }, moduleBoundaries: stringArray, tests: stringArray, dependencies: stringArray, risks: stringArray, openQuestions: stringArray } },
   planner: { type: "object", additionalProperties: false, required: ["workUnits", "affectedAreas", "reviewDimensions", "validationRequirements", "outOfScopeImprovements"], properties: { workUnits: { type: "array", items: workUnitJson }, affectedAreas: stringArray, reviewDimensions: stringArray, validationRequirements: { type: "array", items: { type: "object", additionalProperties: false, required: ["version", "id", "property", "kind", "scope", "evidenceNeeded", "requirementRefs", "acceptanceRefs"], properties: { version: { const: 1 }, id: { type: "string" }, property: { type: "string" }, kind: { enum: [...validationRequirementKindValues] }, scope: stringArray, evidenceNeeded: stringArray, requirementRefs: stringArray, acceptanceRefs: stringArray } } }, outOfScopeImprovements: stringArray, formalizationNeed: { enum: ["NONE", "RECOMMENDED", "REQUIRED"] }, formalizationReason: { enum: ["PRODUCT_UNCERTAINTY", "ARCHITECTURE_UNCERTAINTY", "REQUIREMENT_CONTRADICTION", "CROSS_COMPONENT_DESIGN", "OTHER"] }, formalizationEvidenceRefs: stringArray } },
   "knowledge-pack": { type: "object", additionalProperties: false, required: ["pack"], properties: { pack: { type: "object", additionalProperties: false, required: ["version", "cacheKey", "topic", "claims", "sources", "retrievedAt", "packDigest"], properties: { version: { const: 1 }, cacheKey: { type: "string" }, topic: { type: "string" }, claims: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "statement", "competency", "confidence"], properties: { id: { type: "string" }, statement: { type: "string" }, competency: { type: "string" }, confidence: { enum: ["high", "medium", "low"] } } } }, sources: { type: "array", items: { type: "object", additionalProperties: false, required: ["uri", "kind"], properties: { uri: { type: "string" }, kind: { enum: ["official", "repository", "public-code", "unknown"] }, version: { type: "string" } } } }, retrievedAt: { type: "string" }, packDigest: { type: "string" } } }, skillCandidate: skillCandidateJson } },
-  "spec-authoring": { type: "object", additionalProperties: false, required: ["change", "status", "artifacts", "requirements", "unresolvedDecisions", "validationReady"], properties: { change: { type: "string" }, status: { enum: ["READY", "BLOCKED"] }, artifacts: { type: "object", additionalProperties: false, required: ["specs"], properties: { proposal: { type: "string" }, design: { type: "string" }, tasks: { type: "string" }, specs: stringArray } }, requirements: stringArray, unresolvedDecisions: stringArray, validationReady: { type: "boolean" } } },
+  "spec-authoring": { type: "object", additionalProperties: false, required: ["change", "status", "artifacts", "requirements", "unresolvedDecisions", "decisionRequests", "validationReady"], properties: { change: { type: "string" }, status: { enum: ["READY", "BLOCKED"] }, artifacts: { type: "object", additionalProperties: false, required: ["specs"], properties: { proposal: { type: "string" }, design: { type: "string" }, tasks: { type: "string" }, specs: stringArray } }, requirements: stringArray, unresolvedDecisions: stringArray, decisionRequests: { type: "array", maxItems: 8, items: { type: "object", additionalProperties: false, required: ["issue", "whatTried", "whyUnresolvable", "choices", "workThatCanContinue"], properties: { issue: { type: "string", minLength: 1, maxLength: 4000 }, whatTried: { type: "array", minItems: 1, maxItems: 16, items: { type: "string", minLength: 1, maxLength: 1000 } }, whyUnresolvable: { type: "string", minLength: 1, maxLength: 4000 }, choices: { type: "array", minItems: 1, maxItems: 12, items: { type: "object", additionalProperties: false, required: ["choiceId", "label", "description", "consequences"], properties: { choiceId: { type: "string", minLength: 1, maxLength: 120 }, label: { type: "string", minLength: 1, maxLength: 200 }, description: { type: "string", minLength: 1, maxLength: 2000 }, consequences: { type: "array", minItems: 1, maxItems: 8, items: { type: "string", minLength: 1, maxLength: 1000 } } } } }, workThatCanContinue: { type: "array", maxItems: 32, items: { type: "string", minLength: 1, maxLength: 1000 } } } } }, validationReady: { type: "boolean" } } },
   implementer: { type: "object", additionalProperties: false, required: ["filesChanged", "behaviorImplemented", "decisions", "assumptions", "risks", "validationCommands", "followUp"], properties: { filesChanged: stringArray, behaviorImplemented: stringArray, decisions: stringArray, assumptions: stringArray, risks: stringArray, validationCommands: stringArray, followUp: stringArray, contractSync: stringArray } },
   reviewer: { type: "object", additionalProperties: false, required: ["verdict", "findings", "finalizationSafety", "followUp"], properties: { verdict: { enum: ["PASS", "FAIL", "PASS_WITH_WARNINGS"] }, findings: { type: "array", items: findingJson }, finalizationSafety: { enum: ["SAFE", "BLOCKED", "RISK_KNOWN"] }, confidence: { type: "string" }, followUp: stringArray } },
   validator: { type: "object", additionalProperties: false, required: ["verdict", "checks"], properties: { verdict: { enum: ["PASS", "FAIL", "WARN"] }, checks: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "status"], properties: { id: { type: "string" }, status: { enum: ["PASS", "FAIL", "WARN", "SKIP"] }, evidence: { type: "string" } } } } } },

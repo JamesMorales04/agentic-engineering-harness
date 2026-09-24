@@ -1,3 +1,4 @@
+import { saveOwnedOperation } from "./helpers/ownedOperation.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -95,7 +96,7 @@ describe("worker execution authority boundary", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-worker-role-ceiling-"));
     roots.push(root);
     const now = "2026-01-01T00:00:00.000Z";
-    await saveOperation(root, {
+    await saveOwnedOperation(root, {
       version: 1,
       id: "RUN-ROLE-CEILING",
       kind: "run",
@@ -130,7 +131,7 @@ describe("worker execution authority boundary", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-worker-unregistered-role-"));
     roots.push(root);
     const now = "2026-01-01T00:00:00.000Z";
-    await saveOperation(root, {
+    await saveOwnedOperation(root, {
       version: 1,
       id: "RUN-UNKNOWN-ROLE",
       kind: "run",
@@ -160,7 +161,7 @@ describe("worker execution authority boundary", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-worker-authority-"));
     roots.push(root);
     const now = "2026-01-01T00:00:00.000Z";
-    await saveOperation(root, {
+    await saveOwnedOperation(root, {
       version: 1,
       id: "RUN-AUTH",
       kind: "run",

@@ -4,6 +4,7 @@ import { acceptedStructuredResultForAgent } from "../workers/resultGateway.js";
 export interface DurableAgentEvidence<T> {
   payload: T;
   artifact: string;
+  sha256: string;
 }
 
 export async function requireDurableChangeHandoff<T>(
@@ -25,5 +26,5 @@ export async function requireDurableChangeHandoff<T>(
   let payload: T;
   try { payload = schema.parse(accepted.payload); }
   catch (error) { throw new Error(`${label}_RESULT_INVALID: ${String(error)}`); }
-  return { payload, artifact: accepted.artifact };
+  return { payload, artifact: accepted.artifact, sha256: accepted.sha256 };
 }

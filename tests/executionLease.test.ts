@@ -1,3 +1,4 @@
+import { saveOwnedOperation } from "./helpers/ownedOperation.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -36,7 +37,7 @@ describe("execution capability leases", () => {
   it("binds launch authority to the current operation, candidate and participant", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-execution-lease-")); roots.push(root);
     const now = "2026-01-01T00:00:00.000Z";
-    await saveOperation(root, { version: 1, id: "RUN-LEASE", kind: "run", status: "RUNNING", phase: "implementation", root, payload: { taskId: "T-1" }, createdAt: now, updatedAt: now });
+    await saveOwnedOperation(root, { version: 1, id: "RUN-LEASE", kind: "run", status: "RUNNING", phase: "implementation", root, payload: { taskId: "T-1" }, createdAt: now, updatedAt: now });
     const candidate = (await loadOperation(root, "RUN-LEASE")).candidateRevision!;
     process.env.AEH_OPERATION_ID = "RUN-LEASE";
     process.env.AEH_CONTROL_ROOT = root;
@@ -58,7 +59,7 @@ describe("execution capability leases", () => {
   it("does not rebind an already registered participant to a different role", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-execution-lease-role-")); roots.push(root);
     const now = "2026-01-01T00:00:00.000Z";
-    await saveOperation(root, { version: 1, id: "RUN-ROLE", kind: "run", status: "RUNNING", phase: "implementation", root, payload: { taskId: "T-1" }, createdAt: now, updatedAt: now });
+    await saveOwnedOperation(root, { version: 1, id: "RUN-ROLE", kind: "run", status: "RUNNING", phase: "implementation", root, payload: { taskId: "T-1" }, createdAt: now, updatedAt: now });
     await registerOperationAgent(root, "RUN-ROLE", { id: "fixed-participant", logicalAgent: "reviewer", role: "Reviewer" });
     process.env.AEH_OPERATION_ID = "RUN-ROLE";
     process.env.AEH_CONTROL_ROOT = root;

@@ -7,7 +7,9 @@ import { runAudit } from "../audit/run.js";
 import { loadProjectConfig, loadTaskContract } from "../core/config.js";
 import { createControlPlaneSnapshot, materializeControlPlaneRuntimeSurface, materializeControlPlaneSnapshot } from "../core/controlPlane.js";
 import { runTask } from "../core/run.js";
-import type { HarnessProjectConfig } from "../core/types.js";
+import type { AssuranceLevel, ImplementationRoute } from "../architecture/contracts.js";
+import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
+import { assertResolvedOperationPolicyV1, compileResolvedOperationPolicy } from "../architecture/executionIdentity.js";
 import {
   deliveryWorkspaceId,
   deliveryWorkspacePath,
@@ -22,13 +24,14 @@ import {
   terminateManagedProcessGroup,
   type ProcessResult
 } from "../utils/process.js";
-import { runChangeOperation } from "./change.js";
+import { prepareChangeOperation, runChangeOperation, type PreparedChangeOperation } from "./change.js";
 import { computeWorktreeDigest, resolveBaseRef } from "../core/git.js";
-import { sha256Utf8 } from "../core/digest.js";
+import { sha256Canonical, sha256Utf8 } from "../core/digest.js";
 import { assertIntentDecisionForRoute } from "../audit/intentDecision.js";
 import { executeGatedAction } from "../security/gatedAction.js";
 import { reconcileToolAction } from "../security/actionReconciliation.js";
-import { controllerActorId, type ToolActionAuthorityEvidenceV1 } from "../security/toolActionGate.js";
+import { controllerActorId, listUnresolvedToolActionIntents, type ToolActionAuthorityEvidenceV1 } from "../security/toolActionGate.js";
+import { configuredExternalEffects, requiredHumanActionAuthorizations } from "../security/actionPolicy.js";
 import {
   disableOperationCompletionTarget,
   notifyOperationCompletion,
@@ -39,6 +42,9 @@ import { assertOperationCapacity, syncOperationPortfolio } from "./portfolio.js"
 import {
   bindOperationLead,
   bindOperationCandidate,
+  bindResolvedOperationPolicy,
+  assertCurrentControllerOwner,
+  bindControllerProcess,
   claimControllerEpoch,
   controllerEpochFromEnvironment,
   controllerTokenFromEnvironment,
@@ -56,7 +62,7 @@ import {
   type OperationRecordV2,
   type RunOperationPayload
 } from "./state.js";
-import { createCandidateRevisionV1 } from "./v2Contracts.js";
+import { candidateRevisionsEqual, createCandidateRevisionV1, type CandidateRevisionV1 } from "./v2Contracts.js";
 import { assertWorkspaceMatchesCandidate } from "../candidates/identity.js";
 
 export interface StartOperationOptions {
@@ -75,6 +81,8 @@ export interface OperationControllerDeps {
   runAudit?: typeof runAudit;
   runTask?: typeof runTask;
   runChange?: typeof runChangeOperation;
+  /** Trusted actor from the paired Control Center session; absent callers must present a recorded scoped decision. */
+  humanActorId?: string;
 }
 
 interface OperationWorkspace {
@@ -131,6 +139,11 @@ export async function startDetachedOperation(
   };
   await saveOperation(absoluteRoot, record);
 
+  const spawnProcess = options.spawnProcess ?? spawn;
+  record = await claimControllerEpoch(absoluteRoot, id, `controller:${process.pid}`, { pid: process.pid });
+  const controllerEpoch = currentControllerEpoch(record);
+  const controllerToken = controllerTokenFromEnvironment() ?? "";
+
   const completionAgentId = options.completionAgentId?.trim() || process.env.PASEO_AGENT_ID?.trim() || undefined;
   if (completionAgentId) {
     const source = options.completionSource ?? (options.completionAgentId ? "explicit" : "environment");
@@ -139,10 +152,6 @@ export async function startDetachedOperation(
   }
   if (config) await syncOperationPortfolio(absoluteRoot, config.project.name, record);
 
-  const spawnProcess = options.spawnProcess ?? spawn;
-  record = await claimControllerEpoch(absoluteRoot, id, `controller:${process.pid}`, { pid: process.pid });
-  const controllerEpoch = currentControllerEpoch(record);
-  const controllerToken = controllerTokenFromEnvironment() ?? "";
   let child: ChildProcess;
   try {
     child = spawnProcess(
@@ -163,6 +172,7 @@ export async function startDetachedOperation(
         }
       }
     );
+    if (typeof child.pid === "number") record = await bindControllerProcess(absoluteRoot, id, child.pid);
   } catch (error) {
     if (completionAgentId) {
       await disableOperationCompletionTarget(
@@ -246,14 +256,6 @@ async function executeOperationWithEnvironment(
   const trace = deps.trace ?? recordPaseoTrace;
   let record = await loadOperation(absoluteRoot, operationId);
   if (isTerminalOperation(record.status)) return record;
-  record = await patchOperation(absoluteRoot, operationId, {
-    status: "RUNNING",
-    phase: "preparing",
-    startedAt: record.startedAt ?? new Date().toISOString(),
-    pid: process.pid,
-    error: undefined
-  });
-  process.env.AEH_OPERATION_ID = record.id;
   process.env.AEH_OPERATION_KIND = record.kind;
   process.env.AEH_OPERATION_STATE_REDIRECT = "1";
   const inheritedEpoch = controllerEpochFromEnvironment();
@@ -264,6 +266,15 @@ async function executeOperationWithEnvironment(
     record = await claimControllerEpoch(absoluteRoot, operationId, `controller:${process.pid}`, { pid: process.pid });
   }
   process.env.AEH_CONTROLLER_EPOCH = String(currentControllerEpoch(record));
+  assertCurrentControllerOwner(record, "operation execution startup");
+  record = await patchOperation(absoluteRoot, operationId, {
+    status: "RUNNING",
+    phase: record.continuation?.state === "WAITING" ? "HUMAN_REQUIRED" : "preparing",
+    startedAt: record.startedAt ?? new Date().toISOString(),
+    pid: process.pid,
+    error: undefined
+  });
+  process.env.AEH_OPERATION_ID = record.id;
 
   let config = await loadProjectConfig(absoluteRoot);
   if (record.kind !== "audit") {
@@ -276,7 +287,37 @@ async function executeOperationWithEnvironment(
   }
   await syncOperationPortfolio(absoluteRoot, config.project.name, record);
   let stopWatchdog: (() => void) | undefined;
+  let preparedChange: PreparedChangeOperation | undefined;
+  let runContract: TaskContract | undefined;
   try {
+    let bootstrapRoute: ImplementationRoute | undefined;
+    let bootstrapAssurance: AssuranceLevel | undefined;
+    if (record.kind === "audit") {
+      bootstrapRoute = "NO_AGENT";
+      bootstrapAssurance = "NONE";
+    } else if (record.kind === "run") {
+      const payload = record.payload as RunOperationPayload;
+      runContract = await loadTaskContract(absoluteRoot, payload.taskId, config);
+      bootstrapRoute = runContract.routing?.route;
+      bootstrapAssurance = runContract.routing?.assurance;
+    } else {
+      const payload = record.payload as ChangeOperationPayload;
+      preparedChange = await prepareChangeOperation(absoluteRoot, config, record, payload);
+      if (record.continuation) {
+        if (record.intent?.route !== "FORMAL_SDD" || !record.intent.assurance) throw new Error("DECISION_CONTINUATION_TARGET_INVALID: persisted Spec Manager continuation has no frozen FORMAL_SDD route.");
+        bootstrapRoute = record.intent.route;
+        bootstrapAssurance = record.intent.assurance;
+      } else {
+        bootstrapRoute = preparedChange.triage.route;
+        bootstrapAssurance = preparedChange.triage.assurance;
+        record = await patchOperation(absoluteRoot, operationId, {
+          intent: { ...record.intent, route: bootstrapRoute, assurance: bootstrapAssurance }
+        });
+      }
+    }
+    if (!bootstrapRoute || !bootstrapAssurance) throw new Error("EXECUTION_POLICY_INPUT_MISSING: route and assurance must be resolved before a sensitive bootstrap action.");
+    record = await bindBootstrapOperationPolicy(absoluteRoot, config, record, bootstrapRoute, bootstrapAssurance, runContract);
+
   const workspace = await ensureOperationWorkspace(
       absoluteRoot,
       record,
@@ -347,7 +388,8 @@ async function executeOperationWithEnvironment(
         absoluteRoot,
         config,
         await loadOperation(absoluteRoot, operationId),
-        record.payload as ChangeOperationPayload
+        record.payload as ChangeOperationPayload,
+        preparedChange
       );
       const current = await loadOperation(absoluteRoot, operationId);
       if (current.status === "CANCELLED") return current;
@@ -373,7 +415,7 @@ async function executeOperationWithEnvironment(
     }
 
     const payload = record.payload as RunOperationPayload;
-    const contract = await loadTaskContract(absoluteRoot, payload.taskId, config);
+    const contract = runContract ?? await loadTaskContract(absoluteRoot, payload.taskId, config);
     if (executionRoot !== absoluteRoot) {
       await materializeTaskContext(absoluteRoot, executionRoot, config, contract);
     }
@@ -439,66 +481,165 @@ export async function cancelOperation(
   const absoluteRoot = path.resolve(root);
   const trace = deps.trace ?? recordPaseoTrace;
   const run = deps.run ?? runShell;
-  const record = await loadOperation(absoluteRoot, operationId);
-  if (isTerminalOperation(record.status)) return record;
-  const cleanupWarnings: string[] = [];
-  const config = await loadProjectConfigIfPresent(absoluteRoot);
+  const previousEpoch = process.env.AEH_CONTROLLER_EPOCH;
+  const previousToken = process.env.AEH_CONTROLLER_TOKEN;
+  try {
+    let record = await loadOperation(absoluteRoot, operationId);
+    if (isTerminalOperation(record.status)) return record;
+    const priorPolicy = assertCurrentCancellationPolicy(record);
 
-  const processHandles = await listManagedProcessHandles(absoluteRoot, operationId);
-  const descendantPids = record.pid ? await findDescendantProcessIds(record.pid, absoluteRoot) : [];
-  const processGroups = [...new Set(([
-    ...processHandles.map((handle) => handle.processGroupId),
-    ...processHandles.map((handle) => handle.pid),
-    ...descendantPids,
-    record.pid
-  ] as Array<number | undefined>).filter((pid): pid is number => typeof pid === "number" && Number.isInteger(pid) && pid > 0 && pid !== process.pid))];
-  await Promise.all(processGroups.map(async (pid) => {
-    try { await terminateManagedProcessGroup(pid); }
-    catch (error) { cleanupWarnings.push(`process group ${pid}: ${String(error)}`); }
-  }));
-  await clearManagedProcessHandles(absoluteRoot, operationId);
-
-  let agentIds = [...new Set([
-    ...(record.agents ?? []).map((agent) => agent.id),
-    ...Object.keys(record.participants),
-    ...record.supervision.generations.map((generation) => generation.agentId)
-  ].filter((agentId): agentId is string => Boolean(agentId)))];
-  if (agentIds.length > 0) {
-    await trace(absoluteRoot, "cleanup.discovery", { operationId, source: "operation-state", agentCount: agentIds.length });
-  } else if (config?.orchestration?.provider === "paseo") {
     try {
-      const discovered = await listManagedPaseoAgents(absoluteRoot, { "aeh.operation": operationId });
-      agentIds = [...new Set(discovered.map((agent) => agent.id))];
-      await trace(absoluteRoot, "cleanup.discovery", { operationId, source: "paseo-list-compatibility", agentCount: agentIds.length, reason: "legacy operation record has no registered agent identities" });
+      record = await claimControllerEpoch(absoluteRoot, operationId, `controller:cancel:${process.pid}`, {
+        pid: process.pid,
+        cause: "cancellation",
+        humanActorId: deps.humanActorId,
+        expectedCancellation: {
+          operationExecutionRevision: record.operationExecutionRevision!,
+          candidateDigest: record.candidateRevision!.identityDigest,
+          policyDigest: priorPolicy.digest,
+          controllerEpoch: currentControllerEpoch(record)
+        }
+      });
     } catch (error) {
-      cleanupWarnings.push(`agent discovery: ${String(error)}`);
-      await trace(absoluteRoot, "cleanup.cli.error", { operationId, error: String(error) });
+      const latest = await loadOperation(absoluteRoot, operationId).catch(() => undefined);
+      if (latest && isTerminalOperation(latest.status)) return latest;
+      throw error;
     }
-  }
+    process.env.AEH_CONTROLLER_EPOCH = String(currentControllerEpoch(record));
+    assertCurrentControllerOwner(record, "operation cancellation");
+    record = await rebindPolicyToCurrentCancellationEpoch(absoluteRoot, record, priorPolicy);
+    const cancellationFence = {
+      operationId: record.id,
+      candidate: record.candidateRevision!,
+      operationExecutionRevision: record.operationExecutionRevision!,
+      policyDigest: record.resolvedOperationPolicy!.digest,
+      controllerEpoch: currentControllerEpoch(record)
+    };
+    const cleanupWarnings: string[] = [];
+    const config = await loadProjectConfigIfPresent(absoluteRoot);
 
-  await trace(absoluteRoot, "cleanup.cli.required", {
-    operationId,
-    reason: "Paseo public SDK lacks cancel/kill parity for external controller cleanup",
-    agentCount: agentIds.length
-  });
-  for (const agentId of agentIds) {
-    const stopped = await run(`paseo stop ${quote(agentId)}`, { cwd: absoluteRoot, timeoutMs: 30_000 }).catch((error) => ({ exitCode: 1, stdout: "", stderr: String(error), durationMs: 0 }));
-    await trace(absoluteRoot, "cleanup.cli.stop", { operationId, agentId, exitCode: stopped.exitCode });
-    if (stopped.exitCode !== 0) cleanupWarnings.push(`agent ${agentId}: ${stopped.stderr || stopped.stdout || `exit ${stopped.exitCode}`}`);
-  }
+    const processHandles = await listManagedProcessHandles(absoluteRoot, operationId);
+    const descendantPids = record.pid ? await findDescendantProcessIds(record.pid, absoluteRoot) : [];
+    const processGroups = [...new Set(([
+      ...processHandles.map((handle) => handle.processGroupId),
+      ...processHandles.map((handle) => handle.pid),
+      ...descendantPids,
+      record.pid
+    ] as Array<number | undefined>).filter((pid): pid is number => typeof pid === "number" && Number.isInteger(pid) && pid > 0 && pid !== process.pid))];
+    for (const pid of processGroups) {
+      const latest = await loadOperation(absoluteRoot, operationId);
+      assertCancellationFence(latest, cancellationFence, "operation cancellation process fencing");
+      try { await terminateManagedProcessGroup(pid); }
+      catch (error) { cleanupWarnings.push(`process group ${pid}: ${String(error)}`); }
+      if (!(await waitForProcessExit(pid, 1_000))) cleanupWarnings.push(`process group ${pid}: process remained live after termination signals`);
+    }
+    const beforeHandleCleanup = await loadOperation(absoluteRoot, operationId);
+    assertCancellationFence(beforeHandleCleanup, cancellationFence, "operation cancellation handle cleanup");
+    await clearManagedProcessHandles(absoluteRoot, operationId);
 
-  return terminalizeOperation(
-    absoluteRoot,
-    operationId,
-    {
-      status: "CANCELLED",
-      phase: "cancelled",
-      finishedAt: new Date().toISOString(),
-      cleanupWarnings: cleanupWarnings.length ? cleanupWarnings : undefined
-    },
-    deps,
-    config
-  );
+    let agentIds = [...new Set([
+      ...(record.agents ?? []).map((agent) => agent.id),
+      ...Object.keys(record.participants),
+      ...record.supervision.generations.map((generation) => generation.agentId)
+    ].filter((agentId): agentId is string => Boolean(agentId)))];
+    if (agentIds.length > 0) {
+      await trace(absoluteRoot, "cleanup.discovery", { operationId, source: "operation-state", agentCount: agentIds.length });
+    } else if (config?.orchestration?.provider === "paseo") {
+      try {
+        const discovered = await listManagedPaseoAgents(absoluteRoot, { "aeh.operation": operationId });
+        agentIds = [...new Set(discovered.map((agent) => agent.id))];
+        await trace(absoluteRoot, "cleanup.discovery", { operationId, source: "paseo-list-compatibility", agentCount: agentIds.length, reason: "operation record has no registered agent identities" });
+      } catch (error) {
+        cleanupWarnings.push(`agent discovery: ${String(error)}`);
+        await trace(absoluteRoot, "cleanup.cli.error", { operationId, error: String(error) });
+      }
+    }
+
+    await trace(absoluteRoot, "cleanup.cli.required", {
+      operationId,
+      reason: "Paseo public SDK lacks cancel/kill parity for external controller cleanup",
+      agentCount: agentIds.length
+    });
+    for (const agentId of agentIds) {
+      const latest = await loadOperation(absoluteRoot, operationId);
+      assertCancellationFence(latest, cancellationFence, "operation cancellation participant fencing");
+      const stopped = await run(`paseo stop ${quote(agentId)}`, { cwd: absoluteRoot, timeoutMs: 30_000 }).catch((error) => ({ exitCode: 1, stdout: "", stderr: String(error), durationMs: 0 }));
+      await trace(absoluteRoot, "cleanup.cli.stop", { operationId, agentId, exitCode: stopped.exitCode });
+      if (stopped.exitCode !== 0) cleanupWarnings.push(`agent ${agentId}: ${stopped.stderr || stopped.stdout || `exit ${stopped.exitCode}`}`);
+    }
+
+    if (cleanupWarnings.length) {
+      const latest = await loadOperation(absoluteRoot, operationId);
+      assertCancellationFence(latest, cancellationFence, "operation cancellation fencing report");
+      await patchOperation(absoluteRoot, operationId, {
+        phase: "cancellation-fencing-required",
+        error: `Cancellation is not terminal because active writers could not be proven stopped: ${cleanupWarnings.join("; ")}.`,
+        cleanupWarnings
+      });
+      throw new Error(`AEH_CANCELLATION_FENCING_REQUIRED: cancellation cannot become terminal until every writer is fenced: ${cleanupWarnings.join("; ")}.`);
+    }
+
+    const latest = await loadOperation(absoluteRoot, operationId);
+    assertCancellationFence(latest, cancellationFence, "operation cancellation terminal transition");
+    const unresolvedActions = await listUnresolvedToolActionIntents(absoluteRoot, operationId);
+    if (unresolvedActions.length) {
+      const current = await loadOperation(absoluteRoot, operationId);
+      assertCancellationFence(current, cancellationFence, "operation cancellation reconciliation report");
+      await patchOperation(absoluteRoot, operationId, {
+        phase: "reconciling",
+        error: `Cancellation is fenced pending reconciliation of ${unresolvedActions.length} action intent(s): ${unresolvedActions.map((intent) => intent.actionKey).join(", ")}.`
+      });
+      throw new Error(`AEH_CANCELLATION_RECONCILIATION_REQUIRED: unresolved action intents must be reconciled before cancellation can become terminal: ${unresolvedActions.map((intent) => intent.actionKey).join(", ")}.`);
+    }
+    return await terminalizeOperation(
+      absoluteRoot,
+      operationId,
+      {
+        status: "CANCELLED",
+        phase: "cancelled",
+        finishedAt: new Date().toISOString(),
+        cleanupWarnings: cleanupWarnings.length ? cleanupWarnings : undefined
+      },
+      deps,
+      config
+    );
+  } finally {
+    if (previousEpoch === undefined) delete process.env.AEH_CONTROLLER_EPOCH;
+    else process.env.AEH_CONTROLLER_EPOCH = previousEpoch;
+    if (previousToken === undefined) delete process.env.AEH_CONTROLLER_TOKEN;
+    else process.env.AEH_CONTROLLER_TOKEN = previousToken;
+  }
+}
+
+function assertCurrentCancellationPolicy(record: OperationRecordV2) {
+  const candidate = record.candidateRevision;
+  const policy = record.resolvedOperationPolicy;
+  if (!candidate || !policy || !Number.isSafeInteger(record.operationExecutionRevision)) {
+    throw new Error("AEH_CANCELLATION_AUTHORITY_REQUIRED: cancellation requires current candidate, execution revision, and frozen policy identity.");
+  }
+  assertResolvedOperationPolicyV1(policy);
+  if (policy.operationId !== record.id || policy.operationExecutionRevision !== record.operationExecutionRevision
+    || policy.candidateRevision !== candidate.revision || policy.candidateDigest !== candidate.identityDigest
+    || policy.controllerEpoch !== currentControllerEpoch(record) || (candidate.projectId && policy.projectId !== candidate.projectId)) {
+    throw new Error("AEH_CANCELLATION_POLICY_STALE: cancellation policy does not match the current operation, candidate, execution revision, project, and epoch.");
+  }
+  return policy;
+}
+
+function assertCancellationFence(record: OperationRecordV2, expected: { operationId: string; candidate: CandidateRevisionV1; operationExecutionRevision: number; policyDigest: string; controllerEpoch: number }, action: string): void {
+  assertCurrentControllerOwner(record, action);
+  if (record.id !== expected.operationId || currentControllerEpoch(record) !== expected.controllerEpoch
+    || record.operationExecutionRevision !== expected.operationExecutionRevision
+    || !record.candidateRevision || !candidateRevisionsEqual(record.candidateRevision, expected.candidate)
+    || record.resolvedOperationPolicy?.digest !== expected.policyDigest) {
+    throw new Error(`AEH_CANCELLATION_FENCED: ${action} no longer matches the operation, candidate, policy, execution revision, and controller epoch authorized for this cancellation.`);
+  }
+}
+
+async function rebindPolicyToCurrentCancellationEpoch(root: string, record: OperationRecordV2, previousPolicy: ReturnType<typeof assertCurrentCancellationPolicy>): Promise<OperationRecordV2> {
+  const { version: _version, digest: _digest, ...body } = previousPolicy;
+  const policy = compileResolvedOperationPolicy({ ...body, controllerEpoch: currentControllerEpoch(record) });
+  return bindResolvedOperationPolicy(root, record.id, policy);
 }
 
 export function createOperationId(kind: OperationKind, seed: string): string {
@@ -530,6 +671,65 @@ async function terminalizeOperation(
     }).catch(() => undefined);
   }
   return loadOperation(root, operationId).catch(() => terminal);
+}
+
+export async function bindBootstrapOperationPolicy(
+  root: string,
+  config: HarnessProjectConfig,
+  operation: OperationRecordV2,
+  route: ImplementationRoute,
+  minimumAssurance: AssuranceLevel,
+  contract?: TaskContract
+): Promise<OperationRecordV2> {
+  const candidate = operation.candidateRevision;
+  const controllerEpoch = currentControllerEpoch(operation);
+  if (!candidate || !Number.isSafeInteger(operation.operationExecutionRevision) || !operation.controller?.tokenDigest) {
+    throw new Error("EXECUTION_POLICY_INPUT_MISSING: bootstrap policy requires current candidate, operation execution revision, and claimed controller epoch.");
+  }
+  if (operation.resolvedOperationPolicy) {
+    const frozen = operation.resolvedOperationPolicy;
+    assertResolvedOperationPolicyV1(frozen);
+    if (frozen.operationId !== operation.id || frozen.candidateRevision !== candidate.revision || frozen.candidateDigest !== candidate.identityDigest
+      || frozen.operationExecutionRevision !== operation.operationExecutionRevision || frozen.controllerEpoch !== controllerEpoch
+      || (candidate.projectId && frozen.projectId !== candidate.projectId) || frozen.route !== route || frozen.minimumAssurance !== minimumAssurance) {
+      throw new Error("EXECUTION_POLICY_STALE: existing frozen bootstrap policy does not match the current operation, candidate, route, assurance, and controller epoch.");
+    }
+    return operation;
+  }
+  const allowedExternalEffects = configuredExternalEffects(config, operation.kind);
+  const humanDecisionRequirements = requiredHumanActionAuthorizations(allowedExternalEffects);
+  const validationPolicy = contract?.verification ?? {};
+  const deliveryPolicy = {
+    githubEnabled: config.delivery?.github?.enabled === true,
+    paseoEnabled: config.delivery?.paseo?.enabled === true,
+    allowedExternalEffects
+  };
+  const policy = compileResolvedOperationPolicy({
+    projectId: candidate.projectId ?? config.project.name,
+    operationId: operation.id,
+    operationExecutionRevision: operation.operationExecutionRevision!,
+    candidateRevision: candidate.revision,
+    candidateDigest: candidate.identityDigest,
+    controllerEpoch,
+    intent: operation.intent?.request ?? contract?.routing?.intent ?? `${operation.kind} operation ${operation.id}`,
+    route,
+    minimumAssurance,
+    policyVersions: { resolvedOperationPolicy: "1", roleInvocationPolicy: "1", executionBlueprint: "2", executionBinding: "2", skillManifest: "1" },
+    policyDigests: {
+      validation: sha256Canonical(validationPolicy),
+      delivery: sha256Canonical({ ...deliveryPolicy, humanDecisionRequirements }),
+      knowledge: sha256Canonical([]),
+      context: sha256Canonical(config.context ?? null)
+    },
+    validationPolicy,
+    reviewPolicy: { minimumAssurance, independentReviewRequired: minimumAssurance === "ELEVATED" || minimumAssurance === "CRITICAL" },
+    deliveryPolicy,
+    knowledgePolicy: { bootstrap: true },
+    contextPolicy: config.context ?? { mode: "disabled" },
+    allowedExternalEffects,
+    humanDecisionRequirements
+  });
+  return bindResolvedOperationPolicy(root, operation.id, policy);
 }
 
 async function ensureOperationWorkspace(
@@ -785,4 +985,17 @@ async function findDescendantProcessIds(rootPid: number, operationRoot: string):
     } catch { return undefined; }
   }));
   return [...new Set([...descendants, ...related.filter((pid): pid is number => pid !== undefined)])];
+}
+
+async function waitForProcessExit(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try { process.kill(pid, 0); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") return true;
+      return false;
+    }
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
 }

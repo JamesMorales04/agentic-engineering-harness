@@ -15,7 +15,7 @@ import { buildOperationDigest, operationDigestText, type OperationDigest } from 
 import { rebindActiveOperationsToLead } from "./leadBinding.js";
 import { spawnOperationMonitor } from "./monitorProcess.js";
 import { loadOperationPortfolio } from "./portfolio.js";
-import { acknowledgeOperationLead, loadOperation, type AuditOperationPayload, type ChangeOperationPayload, type OperationKind, type OperationPayload, type OperationRecordV2, type RunOperationPayload } from "./state.js";
+import { acknowledgeOperationLead, currentControllerEpoch, loadOperation, type AuditOperationPayload, type ChangeOperationPayload, type OperationKind, type OperationPayload, type OperationRecordV2, type RunOperationPayload } from "./state.js";
 
 export interface OperationMcpRequest { jsonrpc?: string; id?: string | number | null; method?: string; params?: Record<string, unknown>; }
 export type ContextAgentIdentitySource = "argument" | "environment" | "lead-state";
@@ -260,7 +260,7 @@ export async function acknowledgeOperationRevision(
   if (revision !== operation.revision) {
     throw new Error(`AEH_OPERATION_ACK_REVISION_MISMATCH: requested revision ${revision}, current revision ${operation.revision}. Read the compact digest and acknowledge the exact current revision.`);
   }
-  const acknowledged = await acknowledgeOperationLead(root, operationId, revision, "operation-ack");
+  const acknowledged = await acknowledgeOperationLead(root, operationId, revision, identity.agentId, currentControllerEpoch(operation), "operation-ack");
   const acknowledgedRevision = acknowledged.lead?.acknowledgedRevision ?? 0;
   return {
     operationId,

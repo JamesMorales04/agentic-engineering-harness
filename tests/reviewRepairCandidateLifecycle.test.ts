@@ -1,3 +1,4 @@
+import { saveOwnedOperation } from "./helpers/ownedOperation.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -47,7 +48,7 @@ describe("review remediation candidate lifecycle", () => {
     const task = contract();
     const config = projectConfig();
     const now = "2026-01-01T00:00:00.000Z";
-    await saveOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "review", root, payload: { taskId: task.task.id }, createdAt: now, updatedAt: now });
+    await saveOwnedOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "review", root, payload: { taskId: task.task.id }, createdAt: now, updatedAt: now });
     const candidate = (await loadOperation(root, operationId)).candidateRevision!;
     process.env.AEH_OPERATION_ID = operationId;
     process.env.AEH_OPERATION_KIND = "run";
@@ -90,7 +91,7 @@ describe("review remediation candidate lifecycle", () => {
     const task = contract();
     const config = projectConfig();
     const now = "2026-01-01T00:00:00.000Z";
-    await saveOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "review", root, payload: { taskId: task.task.id }, createdAt: now, updatedAt: now });
+    await saveOwnedOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "review", root, payload: { taskId: task.task.id }, createdAt: now, updatedAt: now });
     const initialCandidate = (await loadOperation(root, operationId)).candidateRevision!;
     process.env.AEH_OPERATION_ID = operationId;
     process.env.AEH_OPERATION_KIND = "run";
@@ -152,7 +153,7 @@ describe("review remediation candidate lifecycle", () => {
     const task = contract();
     const config = projectConfig();
     const now = "2026-01-01T00:00:00.000Z";
-    await saveOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "review", root, payload: { taskId: task.task.id }, createdAt: now, updatedAt: now });
+    await saveOwnedOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "review", root, payload: { taskId: task.task.id }, createdAt: now, updatedAt: now });
     process.env.AEH_OPERATION_ID = operationId;
     process.env.AEH_OPERATION_KIND = "run";
     process.env.AEH_OPERATION_STATE_REDIRECT = "0";

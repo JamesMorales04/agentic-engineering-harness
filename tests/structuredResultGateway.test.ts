@@ -1,3 +1,4 @@
+import { saveOwnedOperation } from "./helpers/ownedOperation.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -54,7 +55,7 @@ async function fixture(options: { supervisorGeneration?: number } = {}) {
   await fs.writeFile(path.join(root, "source.ts"), "export const value = 1;\n");
   const operationId = "AUDIT-RESULT";
   const now = new Date().toISOString();
-  await saveOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "review", root, payload: { taskId: "TASK-RESULT" }, createdAt: now, updatedAt: now, operationExecutionRevision: 1 } as never);
+  await saveOwnedOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "review", root, payload: { taskId: "TASK-RESULT" }, createdAt: now, updatedAt: now, operationExecutionRevision: 1 } as never);
   const initial = await loadOperation(root, operationId);
   const participantId = "participant:security-reviewer";
   await registerOperationAgent(root, operationId, { id: participantId, logicalAgent: "security-reviewer", role: "Reviewer", phase: "review" });

@@ -459,8 +459,8 @@ function buildResult(intent: ActionIntentV1, outcome: ActionReconciliationOutcom
 }
 
 function assertReconcilableIntent(intent: ActionIntentV1): void {
-  if (!intent || typeof intent !== "object" || intent.version !== 1 || typeof intent.intentId !== "string" || !intent.intentId.trim() || typeof intent.action !== "string") {
-    throw new Error("ACTION_RECONCILIATION_INTENT_INVALID: a version 1 ActionIntent with intentId and action is required.");
+  if (!intent || typeof intent !== "object" || intent.version !== 2 || typeof intent.intentId !== "string" || !intent.intentId.trim() || typeof intent.action !== "string") {
+    throw new Error("ACTION_RECONCILIATION_INTENT_INVALID: a version 2 ActionIntent with intentId and action is required.");
   }
 }
 

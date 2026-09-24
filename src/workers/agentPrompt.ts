@@ -63,6 +63,7 @@ import { assertExecutionAuthority, prepareExecutionAuthority, type ExecutionAuth
 import { sha256Canonical } from "../core/digest.js";
 import { createPromptManifest } from "../context/runtimeV2.js";
 import { assertExecutionBindingV2, assertExecutionBlueprintV2, assertResolvedOperationPolicyV1, assertRoleInvocationPolicyV1, assertSkillManifestV1, compileExecutionBinding, compileResolvedOperationPolicy, compileRoleInvocationPolicy, compileSkillManifest, createExecutionBlueprintV2, type ExecutionBindingV2, type ExecutionBlueprintV2, type ResolvedOperationPolicyV1, type RoleInvocationPolicyV1, type SkillManifestV1 } from "../architecture/executionIdentity.js";
+import { configuredExternalEffects, requiredHumanActionAuthorizations } from "../security/actionPolicy.js";
 import { compileExecutionCatalog } from "../architecture/executionCatalog.js";
 import { defaultSkillSeed, roleProfile } from "../participants/index.js";
 import { createWorkGraph, type WorkGraphV1 } from "../architecture/workGraph.js";
@@ -1498,6 +1499,9 @@ async function compileParticipantInvocationIdentity(
   const invocationCompetencies = [...new Set([...(selection.specializations ?? []), ...(options.skillManifest?.entries.filter((entry) => entry.kind === "ephemeral").map((entry) => entry.competency) ?? [])])].sort();
   const skillManifest = options.skillManifest ?? compileSkillManifest({ scope: { operationId: operation.id, operationExecutionRevision: operation.operationExecutionRevision!, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch, participantId, workUnitIds: invocationWorkUnitIds, competencies: invocationCompetencies }, skills: selectedSkills.filter((skill): skill is NonNullable<typeof skill> => Boolean(skill)).map((skill) => ({ id: skill.id, kind: skill.kind, competencies: skill.competencies, proceduralSteps: skill.proceduralSteps })) });
   if (skillManifest.scope.participantId !== participantId || skillManifest.scope.operationId !== operation.id || skillManifest.scope.operationExecutionRevision !== operation.operationExecutionRevision || skillManifest.scope.candidateRevision !== candidate.revision || skillManifest.scope.candidateDigest !== candidate.identityDigest || skillManifest.scope.controllerEpoch !== controllerEpoch || sha256Canonical(skillManifest.scope.workUnitIds) !== sha256Canonical(invocationWorkUnitIds) || sha256Canonical(skillManifest.scope.competencies) !== sha256Canonical(invocationCompetencies)) throw new Error("SKILL_MANIFEST_ASSIGNMENT_MISMATCH: SkillManifest belongs to another operation, candidate, epoch, participant, work unit, or competency scope.");
+  const allowedExternalEffects = configuredExternalEffects(config, operation.kind);
+  const humanDecisionRequirements = requiredHumanActionAuthorizations(allowedExternalEffects);
+  const deliveryPolicy = { githubEnabled: config.delivery?.github?.enabled === true, paseoEnabled: config.delivery?.paseo?.enabled === true, allowedExternalEffects };
   const policy = operation.resolvedOperationPolicy ?? compileResolvedOperationPolicy({
     projectId: candidate.projectId ?? config.project.name,
     operationId: operation.id,
@@ -1511,17 +1515,17 @@ async function compileParticipantInvocationIdentity(
     policyVersions: { resolvedOperationPolicy: "1", roleInvocationPolicy: "1", executionBlueprint: "2", executionBinding: "2", skillManifest: "1" },
     policyDigests: {
       validation: sha256Canonical(contract.verification ?? {}),
-      delivery: sha256Canonical({ githubEnabled: config.delivery?.github?.enabled === true, paseoEnabled: config.delivery?.paseo?.enabled === true }),
+      delivery: sha256Canonical({ ...deliveryPolicy, humanDecisionRequirements }),
       knowledge: sha256Canonical(skillManifest.entries.map((entry) => ({ sourcePackDigest: entry.sourcePackDigest, trustDecisionDigest: entry.trustDecisionDigest }))),
       context: sha256Canonical(config.context ?? null)
     },
     validationPolicy: contract.verification ?? {},
     reviewPolicy: { minimumAssurance: assurance, independentReviewRequired: assurance === "ELEVATED" || assurance === "CRITICAL" },
-    deliveryPolicy: { githubEnabled: config.delivery?.github?.enabled === true, paseoEnabled: config.delivery?.paseo?.enabled === true },
+    deliveryPolicy,
     knowledgePolicy: { skillManifestDigest: skillManifest.digest },
     contextPolicy: config.context ?? { mode: "disabled" },
-    allowedExternalEffects: [],
-    humanDecisionRequirements: []
+    allowedExternalEffects,
+    humanDecisionRequirements
   });
   assertResolvedOperationPolicyV1(policy);
   if (policy.version !== 1 || policy.operationId !== operation.id || policy.projectId !== (candidate.projectId ?? config.project.name) || policy.operationExecutionRevision !== operation.operationExecutionRevision || policy.candidateRevision !== candidate.revision || policy.candidateDigest !== candidate.identityDigest || policy.controllerEpoch !== controllerEpoch || policy.route !== route || policy.minimumAssurance !== assurance) throw new Error("EXECUTION_POLICY_STALE: durable ResolvedOperationPolicy does not match the current execution inputs.");

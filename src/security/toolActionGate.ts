@@ -2,23 +2,16 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { sha256Canonical, sha256Utf8 } from "../core/digest.js";
 import type { ExecutionBlueprint } from "../architecture/participantPlan.js";
-import { assertExecutionBlueprintV2 } from "../architecture/executionIdentity.js";
+import { assertExecutionBlueprintV2, assertResolvedOperationPolicyV1, type HumanDecisionRequirementV1, type ResolvedOperationPolicyV1 } from "../architecture/executionIdentity.js";
 import { candidateRevisionsEqual, assertCandidateRevisionV1, type CandidateRevisionV1 } from "../operations/v2Contracts.js";
-import { currentOperationContext, controllerEpochFromEnvironment, currentControllerEpoch, loadOperation, resolveOperationStateRoot, assertControllerEpoch, assertControllerToken, type OperationRecordV2 } from "../operations/state.js";
+import { currentOperationContext, controllerEpochFromEnvironment, currentControllerEpoch, loadOperation, resolveOperationStateRoot, assertCurrentControllerOwner, assertControllerEpoch, type OperationRecordV2 } from "../operations/state.js";
 import { isCanonicalRole, roleProfile, type CanonicalRole } from "../participants/index.js";
 import { assertExecutionAuthority, type ExecutionAuthorityV1 } from "./executionLease.js";
+import { TOOL_ACTION_KINDS_V1, type ToolActionKindV1 } from "./actionKinds.js";
+import { HumanDecisionLedgerV2 } from "./humanDecision.js";
 
-export const TOOL_ACTION_KINDS_V1 = [
-  "git.branch.create",
-  "git.commit",
-  "git.push",
-  "github.issue.create",
-  "github.branch.create",
-  "github.pull-request.create",
-  "paseo.workspace.create"
-] as const;
-
-export type ToolActionKindV1 = (typeof TOOL_ACTION_KINDS_V1)[number];
+export { TOOL_ACTION_KINDS_V1 } from "./actionKinds.js";
+export type { ToolActionKindV1 } from "./actionKinds.js";
 export type ToolActionImpactV1 = "LOCAL_REPOSITORY_MUTATION" | "LOCAL_RESOURCE_CREATION" | "EXTERNAL_RECONCILABLE" | "EXTERNAL_NON_IDEMPOTENT" | "EXTERNAL_PUBLICATION";
 export type ToolActionOutcomeV1 = "SUCCEEDED" | "FAILED" | "UNKNOWN";
 
@@ -47,13 +40,15 @@ export function controllerActorId(operationId: string): string {
 }
 
 export interface ActionIntentV1 {
-  version: 1;
+  version: 2;
   intentId: string;
   actionKey: string;
   operationId: string;
   participantId: string;
   role?: CanonicalRole;
   candidate: CandidateRevisionV1;
+  operationExecutionRevision: number;
+  policyDigest: string;
   action: ToolActionKindV1;
   impact: ToolActionImpactV1;
   controllerEpoch: number;
@@ -64,14 +59,17 @@ export interface ActionIntentV1 {
 }
 
 export interface ActionReceiptV1 {
-  version: 1;
+  version: 2;
   receiptId: string;
   intentId: string;
   operationId: string;
   participantId: string;
   candidateDigest: string;
+  operationExecutionRevision: number;
+  policyDigest: string;
   action: ToolActionKindV1;
   controllerEpoch: number;
+  reconciledUnderEpoch?: number;
   outcome: ToolActionOutcomeV1;
   resultDigest: string;
   receiptDigest: string;
@@ -102,28 +100,48 @@ export function classifyToolActionImpact(action: ToolActionKindV1): ToolActionIm
  * returns its receipt or fails closed while the earlier attempt is unresolved.
  */
 export async function authorizeToolAction(request: ToolActionRequestV1): Promise<ToolActionGateResultV1> {
-  const identity = createActionIdentity(request);
-  const files = actionFiles(request.root, request.operationId, request.actionKey);
   const operation = await loadOperation(resolveOperationStateRoot(request.root), request.operationId);
+  const files = actionFiles(request.root, request.operationId, request.actionKey);
   assertControllerEpoch(operation, controllerEpochFromEnvironment(), "tool action authorization");
+  const suppliedEpoch = authorityEpoch(request.authority);
+  if (suppliedEpoch !== currentControllerEpoch(operation)) throw new Error(`TOOL_ACTION_CONTROLLER_FENCED: action authority cites epoch ${suppliedEpoch}, but the operation is owned by controller epoch ${currentControllerEpoch(operation)}.`);
 
   const prior = await readJson<ActionIntentV1>(files.intentFile);
   if (prior) {
     assertStoredIntent(prior);
-    if (prior.requestDigest !== identity.requestDigest) throw new Error("TOOL_ACTION_INTENT_CONFLICT: action key is already bound to a different authority, candidate, action, or payload.");
+    if (prior.operationId !== request.operationId || prior.action !== request.action || prior.payloadDigest !== sha256Canonical(request.payload) || !candidateRevisionsEqual(prior.candidate, request.candidate)) {
+      throw new Error("TOOL_ACTION_INTENT_CONFLICT: action key is already bound to a different operation, candidate, action, or effect.");
+    }
+    const policy = currentResolvedPolicy(operation, request);
+    if (operation.status !== "RUNNING" || prior.operationExecutionRevision !== operation.operationExecutionRevision
+      || prior.policyDigest !== policy.digest || prior.controllerEpoch !== currentControllerEpoch(operation)) {
+      throw new Error("TOOL_ACTION_POLICY_STALE: prior action intent does not match the current operation, candidate, policy, execution revision, and epoch.");
+    }
     const receipt = await readJson<ActionReceiptV1>(files.receiptFile);
     if (receipt) {
       assertStoredReceipt(receipt, prior);
+      if (prior.participantId !== request.participantId || prior.role !== request.role) throw new Error("TOOL_ACTION_ACTOR_MISMATCH: completed action receipt is bound to a different actor.");
+      await assertCurrentActionAuthority(request, prior.impact, operation, policy, false);
       return { decision: "ALREADY_COMPLETED", intent: prior, receipt };
+    }
+    if (request.authority?.kind !== "controller-authority" || request.role !== undefined || request.participantId !== controllerActorId(request.operationId)) {
+      throw new Error("TOOL_ACTION_RECONCILIATION_AUTHORITY_REQUIRED: unresolved effects may be reconciled only by the current controller owner.");
+    }
+    assertCurrentControllerOwner(operation, "tool action reconciliation");
+    if (operation.status !== "RUNNING" || !operation.candidateRevision || !candidateRevisionsEqual(operation.candidateRevision, prior.candidate)
+      || request.authority.operationId !== operation.id || request.authority.controllerEpoch !== currentControllerEpoch(operation)) {
+      throw new Error("TOOL_ACTION_RECONCILIATION_STALE: controller, operation, and candidate must be current to reconcile an unresolved effect.");
     }
     throw new Error("TOOL_ACTION_RECONCILIATION_REQUIRED: a prior intent has no receipt; reconcile its external effect before retrying.");
   }
   const orphanReceipt = await readJson<ActionReceiptV1>(files.receiptFile);
   if (orphanReceipt) throw new Error("TOOL_ACTION_RECEIPT_ORPHANED: a receipt exists without its ActionIntent; reconcile the durable state before retrying.");
 
-  await assertCurrentActionAuthority(request, identity.impact, operation);
+  const policy = currentResolvedPolicy(operation, request);
+  const identity = createActionIdentity(request, policy);
+  await assertCurrentActionAuthority(request, identity.impact, operation, policy);
   const intent: ActionIntentV1 = {
-    version: 1 as const,
+    version: 2 as const,
     intentId: identity.intentId,
     actionKey: request.actionKey,
     operationId: request.operationId,
@@ -132,6 +150,8 @@ export async function authorizeToolAction(request: ToolActionRequestV1): Promise
     candidate: request.candidate,
     action: request.action,
     impact: identity.impact,
+    operationExecutionRevision: identity.operationExecutionRevision,
+    policyDigest: identity.policyDigest,
     controllerEpoch: identity.controllerEpoch,
     payloadDigest: identity.payloadDigest,
     authorityBindingDigest: identity.authorityBindingDigest,
@@ -178,6 +198,26 @@ export async function loadActionReceipt(root: string, operationId: string, actio
   return receipt;
 }
 
+/** List current operation intents that have no durable or reconciled receipt. */
+export async function listUnresolvedToolActionIntents(root: string, operationId: string): Promise<ActionIntentV1[]> {
+  const operationKey = sha256Utf8(operationId).slice(0, 32);
+  const directory = path.resolve(resolveOperationStateRoot(root), ".harness", "security", "tool-actions", operationKey);
+  let names: string[];
+  try { names = await fs.readdir(directory); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
+  const unresolved: ActionIntentV1[] = [];
+  for (const name of names.filter((item) => item.endsWith(".intent.json")).sort()) {
+    const intent = await readJson<ActionIntentV1>(path.join(directory, name));
+    if (!intent) throw new Error("TOOL_ACTION_INTENT_CORRUPT: action directory contains an unreadable intent.");
+    assertStoredIntent(intent);
+    if (intent.operationId !== operationId) throw new Error("TOOL_ACTION_INTENT_CORRUPT: action directory contains an intent for another operation.");
+    const receipt = await readJson<ActionReceiptV1>(path.join(directory, name.replace(/\.intent\.json$/, ".receipt.json")));
+    if (!receipt) unresolved.push(intent);
+    else assertStoredReceipt(receipt, intent);
+  }
+  return unresolved;
+}
+
 /** Record the deterministic outcome after the caller has attempted the side effect. */
 export async function recordToolActionReceipt(  root: string,
   intent: ActionIntentV1,
@@ -190,16 +230,67 @@ export async function recordToolActionReceipt(  root: string,
   if (!current.id || current.id !== intent.operationId) throw new Error("TOOL_ACTION_OPERATION_MISMATCH: a receipt must be recorded inside its matching managed operation context.");
   const files = actionFiles(root, intent.operationId, intent.actionKey);
   const operation = await loadOperation(resolveOperationStateRoot(root), intent.operationId);
-  assertControllerEpoch(operation, controllerEpochFromEnvironment(), "tool action receipt");
+  assertCurrentControllerOwner(operation, "tool action receipt");
+  const currentPolicy = operation.resolvedOperationPolicy;
+  if (!currentPolicy) throw new Error("TOOL_ACTION_POLICY_REQUIRED: action receipts require the current frozen ResolvedOperationPolicy.");
+  assertResolvedOperationPolicyV1(currentPolicy);
+  if (currentPolicy.digest !== intent.policyDigest || operation.operationExecutionRevision !== intent.operationExecutionRevision || currentControllerEpoch(operation) !== intent.controllerEpoch || !operation.candidateRevision || !candidateRevisionsEqual(operation.candidateRevision, intent.candidate)) {
+    throw new Error("TOOL_ACTION_POLICY_STALE: action receipt no longer matches the current policy, candidate, execution revision, and epoch.");
+  }
   const stored = await readJson<ActionIntentV1>(files.intentFile);
   if (!stored) throw new Error("TOOL_ACTION_INTENT_REQUIRED: cannot record a receipt without a persisted intent.");
   assertStoredIntent(stored);
   if (stored.intentId !== intent.intentId || stored.requestDigest !== intent.requestDigest) throw new Error("TOOL_ACTION_INTENT_MISMATCH: receipt does not match the persisted intent.");
+  return persistActionReceipt(root, stored, outcome, resultEvidence, now);
+}
 
+/** Record observation-only reconciliation under a newly current controller epoch. */
+export async function recordReconciledToolActionReceipt(root: string, intent: ActionIntentV1, outcome: ToolActionOutcomeV1, resultEvidence: unknown, now = new Date()): Promise<ActionReceiptV1> {
+  assertStoredIntent(intent);
+  const current = currentOperationContext();
+  if (!current.id || current.id !== intent.operationId) throw new Error("TOOL_ACTION_OPERATION_MISMATCH: reconciliation must run inside its matching managed operation context.");
+  const operation = await loadOperation(resolveOperationStateRoot(root), intent.operationId);
+  assertCurrentControllerOwner(operation, "tool action reconciliation receipt");
+  if (operation.status !== "RUNNING" || !operation.candidateRevision || !candidateRevisionsEqual(operation.candidateRevision, intent.candidate)) {
+    throw new Error("TOOL_ACTION_RECONCILIATION_STALE: action reconciliation requires the active operation's same current candidate.");
+  }
+  if (!operation.resolvedOperationPolicy) throw new Error("TOOL_ACTION_POLICY_REQUIRED: action reconciliation requires the current frozen ResolvedOperationPolicy.");
+  assertResolvedOperationPolicyV1(operation.resolvedOperationPolicy);
+  if (operation.resolvedOperationPolicy.operationId !== operation.id
+    || operation.resolvedOperationPolicy.operationExecutionRevision !== operation.operationExecutionRevision
+    || operation.resolvedOperationPolicy.candidateRevision !== operation.candidateRevision.revision
+    || operation.resolvedOperationPolicy.candidateDigest !== operation.candidateRevision.identityDigest
+    || operation.resolvedOperationPolicy.controllerEpoch !== currentControllerEpoch(operation)
+    || (operation.candidateRevision.projectId && operation.resolvedOperationPolicy.projectId !== operation.candidateRevision.projectId)) {
+    throw new Error("TOOL_ACTION_POLICY_STALE: reconciliation policy does not match the current operation, candidate, execution revision, project, and epoch.");
+  }
+  const files = actionFiles(root, intent.operationId, intent.actionKey);
+  const stored = await readJson<ActionIntentV1>(files.intentFile);
+  if (!stored) throw new Error("TOOL_ACTION_INTENT_REQUIRED: cannot reconcile without a persisted ActionIntent.");
+  assertStoredIntent(stored);
+  if (stored.intentId !== intent.intentId || stored.requestDigest !== intent.requestDigest) throw new Error("TOOL_ACTION_INTENT_MISMATCH: reconciliation does not match the persisted intent.");
+  return persistActionReceipt(root, stored, outcome, resultEvidence, now, currentControllerEpoch(operation));
+}
+
+async function persistActionReceipt(root: string, stored: ActionIntentV1, outcome: ToolActionOutcomeV1, resultEvidence: unknown, now: Date, reconciledUnderEpoch?: number): Promise<ActionReceiptV1> {
   const resultDigest = sha256Canonical(resultEvidence);
-  const receiptIdentity = { version: 1 as const, intentId: stored.intentId, operationId: stored.operationId, participantId: stored.participantId, candidateDigest: stored.candidate.identityDigest, action: stored.action, controllerEpoch: currentControllerEpoch(operation), outcome, resultDigest };
+  const receiptIdentity = {
+    version: 2 as const,
+    intentId: stored.intentId,
+    operationId: stored.operationId,
+    participantId: stored.participantId,
+    candidateDigest: stored.candidate.identityDigest,
+    operationExecutionRevision: stored.operationExecutionRevision,
+    policyDigest: stored.policyDigest,
+    action: stored.action,
+    controllerEpoch: stored.controllerEpoch,
+    ...(reconciledUnderEpoch === undefined ? {} : { reconciledUnderEpoch }),
+    outcome,
+    resultDigest
+  };
   const receiptDigest = sha256Canonical(receiptIdentity);
   const receipt: ActionReceiptV1 = { ...receiptIdentity, receiptId: `action-receipt:${receiptDigest}`, receiptDigest, recordedAt: now.toISOString() };
+  const files = actionFiles(root, stored.operationId, stored.actionKey);
   try {
     await fs.writeFile(files.receiptFile, `${JSON.stringify(receipt, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
     return receipt;
@@ -213,7 +304,7 @@ export async function recordToolActionReceipt(  root: string,
   }
 }
 
-async function assertCurrentActionAuthority(request: ToolActionRequestV1, impact: ToolActionImpactV1, operation: OperationRecordV2): Promise<void> {
+async function assertCurrentActionAuthority(request: ToolActionRequestV1, impact: ToolActionImpactV1, operation: OperationRecordV2, policy: ResolvedOperationPolicyV1, consumeHumanDecision = true): Promise<void> {
   if (!request.operationId.trim() || !request.participantId.trim() || !request.actionKey.trim()) throw new Error("TOOL_ACTION_IDENTITY_REQUIRED: operation, participant, and action key are required.");
   assertCandidateRevisionV1(request.candidate);
   if (request.candidate.operationId !== request.operationId) throw new Error("TOOL_ACTION_CANDIDATE_MISMATCH: action candidate belongs to another operation.");
@@ -238,6 +329,7 @@ async function assertCurrentActionAuthority(request: ToolActionRequestV1, impact
     } else if (!participant || participant.role !== request.role) {
       throw new Error("TOOL_ACTION_PARTICIPANT_UNREGISTERED: participant is not registered with this canonical role.");
     }
+    if (impact.startsWith("EXTERNAL_")) throw new Error("TOOL_ACTION_CONTROLLER_AUTHORITY_REQUIRED: participant role identity cannot authorize an external effect.");
     if (evidence.kind === "execution-authority") {
       assertExecutionAuthority(evidence.authority, request.now ?? new Date());
       const authority = evidence.authority;
@@ -253,6 +345,7 @@ async function assertCurrentActionAuthority(request: ToolActionRequestV1, impact
       }
     } else if (evidence.kind === "execution-blueprint") {
       assertBlueprintBinding(evidence.blueprint, request, operationEpoch);
+      if (evidence.blueprint.resolvedOperationPolicy.digest !== policy.digest) throw new Error("TOOL_ACTION_POLICY_STALE: participant blueprint does not bind the current frozen operation policy.");
       const assignment = evidence.blueprint.plan.assignments.find((item) => item.participantId === request.participantId)!;
       if (impact === "LOCAL_REPOSITORY_MUTATION" && (!profile.authority.canWrite || !hasTool(assignment.toolPack, "repository-write"))) {
         throw new Error("TOOL_ACTION_CAPABILITY_DENIED: blueprint does not grant this role repository-write authority.");
@@ -263,11 +356,7 @@ async function assertCurrentActionAuthority(request: ToolActionRequestV1, impact
     } else {
       throw new Error("TOOL_ACTION_AUTHORITY_INVALID: unsupported authority evidence kind.");
     }
-    if (impact.startsWith("EXTERNAL_")) {
-      if (request.role !== "Lead/Director" || !profile.authority.canApprove || !leadBound) {
-        throw new Error("TOOL_ACTION_APPROVAL_REQUIRED: external delivery actions require the bound Lead/Director authority.");
-      }
-    }
+    if (consumeHumanDecision) await consumeRequiredHumanDecision(request, operation, policy, operationEpoch);
     return;
   }
 
@@ -278,8 +367,47 @@ async function assertCurrentActionAuthority(request: ToolActionRequestV1, impact
   if (request.participantId !== controllerActorId(request.operationId)) throw new Error("TOOL_ACTION_CONTROLLER_ACTOR_MISMATCH: controller authority requires the deterministic controller actor id.");
   if (evidence.operationId !== request.operationId) throw new Error("TOOL_ACTION_CONTROLLER_ACTOR_MISMATCH: controller authority belongs to another operation.");
   if (evidence.controllerEpoch !== operationEpoch) throw new Error(`TOOL_ACTION_CONTROLLER_FENCED: controller authority cites epoch ${evidence.controllerEpoch}, but the operation is owned by controller epoch ${operationEpoch}.`);
-  if (controllerEpochFromEnvironment() !== operationEpoch) throw new Error("TOOL_ACTION_CONTROLLER_FENCED: controller authority requires the current controller process environment.");
-  assertControllerToken(operation, "tool action authorization");
+  assertCurrentControllerOwner(operation, "tool action authorization");
+  if (impact.startsWith("EXTERNAL_") && !policy.allowedExternalEffects.includes(request.action)) {
+    throw new Error(`TOOL_ACTION_POLICY_DENIED: frozen policy does not authorize external effect '${request.action}'.`);
+  }
+  if (consumeHumanDecision) await consumeRequiredHumanDecision(request, operation, policy, operationEpoch);
+}
+
+async function consumeRequiredHumanDecision(request: ToolActionRequestV1, operation: OperationRecordV2, policy: ResolvedOperationPolicyV1, operationEpoch: number): Promise<void> {
+  const requirement: HumanDecisionRequirementV1 | undefined = policy.humanDecisionRequirements.find((item) => item.kind === "ACTION_AUTHORIZATION" && item.action === request.action);
+  if (requirement) {
+    const ledger = new HumanDecisionLedgerV2(path.resolve(resolveOperationStateRoot(request.root), ".harness", "security", "human-decisions.json"));
+    try {
+      const decision = await ledger.consume({
+        operationId: operation.id,
+        candidate: operation.candidateRevision!,
+        operationExecutionRevision: operation.operationExecutionRevision!,
+        policyDigest: policy.digest,
+        controllerEpoch: operationEpoch
+      }, { kind: "ACTION_AUTHORIZATION", action: request.action, effectDigest: sha256Canonical(request.payload) }, undefined, request.now ?? new Date());
+      if (decision.kind !== "APPROVE") throw new Error("matching HumanDecision rejects this exact action and effect.");
+    } catch (error) {
+      throw new Error(`TOOL_ACTION_HUMAN_DECISION_REQUIRED: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+}
+
+function currentResolvedPolicy(operation: OperationRecordV2, request: ToolActionRequestV1): ResolvedOperationPolicyV1 {
+  if (!operation.resolvedOperationPolicy) throw new Error("TOOL_ACTION_POLICY_REQUIRED: sensitive actions require a frozen ResolvedOperationPolicy.");
+  assertResolvedOperationPolicyV1(operation.resolvedOperationPolicy);
+  const policy = operation.resolvedOperationPolicy;
+  if (!operation.candidateRevision || !Number.isSafeInteger(operation.operationExecutionRevision)
+    || policy.operationId !== operation.id
+    || policy.operationExecutionRevision !== operation.operationExecutionRevision
+    || policy.candidateRevision !== operation.candidateRevision.revision
+    || policy.candidateDigest !== operation.candidateRevision.identityDigest
+    || policy.controllerEpoch !== currentControllerEpoch(operation)
+    || (operation.candidateRevision.projectId && policy.projectId !== operation.candidateRevision.projectId)
+    || !candidateRevisionsEqual(operation.candidateRevision, request.candidate)) {
+    throw new Error("TOOL_ACTION_POLICY_STALE: frozen policy does not bind the current operation, candidate, execution revision, project, and controller epoch.");
+  }
+  return policy;
 }
 
 function assertBlueprintBinding(blueprint: ExecutionBlueprint, request: ToolActionRequestV1, operationEpoch: number): void {
@@ -298,7 +426,7 @@ function hasTool(pack: { required: readonly string[]; optional: readonly string[
   return pack.required.includes(tool) || pack.optional.includes(tool);
 }
 
-function createActionIdentity(request: ToolActionRequestV1): Omit<ActionIntentV1, "createdAt"> {
+function createActionIdentity(request: ToolActionRequestV1, policy: ResolvedOperationPolicyV1): Omit<ActionIntentV1, "createdAt"> {
   assertCandidateRevisionV1(request.candidate);
   if (!TOOL_ACTION_KINDS_V1.includes(request.action)) throw new Error(`TOOL_ACTION_KIND_INVALID: ${String(request.action)} is not registered.`);
   const impact = classifyToolActionImpact(request.action);
@@ -306,7 +434,7 @@ function createActionIdentity(request: ToolActionRequestV1): Omit<ActionIntentV1
   const authorityBindingDigest = authorityDigest(request.authority);
   const intentId = `action-intent:${sha256Canonical({ operationId: request.operationId, actionKey: request.actionKey })}`;
   const requestIdentity = {
-    version: 1 as const,
+    version: 2 as const,
     intentId,
     actionKey: request.actionKey,
     operationId: request.operationId,
@@ -315,6 +443,8 @@ function createActionIdentity(request: ToolActionRequestV1): Omit<ActionIntentV1
     candidate: request.candidate,
     action: request.action,
     impact,
+    operationExecutionRevision: policy.operationExecutionRevision,
+    policyDigest: policy.digest,
     controllerEpoch: authorityEpoch(request.authority),
     payloadDigest,
     authorityBindingDigest
@@ -352,8 +482,8 @@ function authorityDigest(evidence: ToolActionAuthorityEvidenceV1): string {
 }
 
 function assertStoredIntent(value: ActionIntentV1): void {
-  if (!value || value.version !== 1 || !value.intentId || !value.actionKey || !value.operationId || !value.participantId || (value.role !== undefined && !isCanonicalRole(value.role)) || !TOOL_ACTION_KINDS_V1.includes(value.action) || value.impact !== classifyToolActionImpact(value.action) || !Number.isSafeInteger(value.controllerEpoch) || value.controllerEpoch < 0) {
-    throw new Error("TOOL_ACTION_INTENT_CORRUPT: persisted ActionIntent is malformed.");
+  if (!value || value.version !== 2 || !value.intentId || !value.actionKey || !value.operationId || !value.participantId || (value.role !== undefined && !isCanonicalRole(value.role)) || !TOOL_ACTION_KINDS_V1.includes(value.action) || value.impact !== classifyToolActionImpact(value.action) || !Number.isSafeInteger(value.controllerEpoch) || value.controllerEpoch < 0 || !Number.isSafeInteger(value.operationExecutionRevision) || value.operationExecutionRevision < 1 || !/^[a-f0-9]{64}$/.test(value.policyDigest)) {
+    throw new Error("UNSUPPORTED_TOOL_ACTION_INTENT_VERSION: persisted ActionIntent is malformed or requires explicit migration.");
   }
   assertCandidateRevisionV1(value.candidate);
   const { createdAt: _createdAt, requestDigest, ...identity } = value;
@@ -364,7 +494,7 @@ function assertStoredIntent(value: ActionIntentV1): void {
 }
 
 function assertStoredReceipt(value: ActionReceiptV1, intent: ActionIntentV1): void {
-  if (!value || value.version !== 1 || value.intentId !== intent.intentId || value.operationId !== intent.operationId || value.participantId !== intent.participantId || value.candidateDigest !== intent.candidate.identityDigest || value.action !== intent.action || !Number.isSafeInteger(value.controllerEpoch) || value.controllerEpoch < 0 || !["SUCCEEDED", "FAILED", "UNKNOWN"].includes(value.outcome)) {
+  if (!value || value.version !== 2 || value.intentId !== intent.intentId || value.operationId !== intent.operationId || value.participantId !== intent.participantId || value.candidateDigest !== intent.candidate.identityDigest || value.operationExecutionRevision !== intent.operationExecutionRevision || value.policyDigest !== intent.policyDigest || value.action !== intent.action || value.controllerEpoch !== intent.controllerEpoch || (value.reconciledUnderEpoch !== undefined && (!Number.isSafeInteger(value.reconciledUnderEpoch) || value.reconciledUnderEpoch < intent.controllerEpoch)) || !["SUCCEEDED", "FAILED", "UNKNOWN"].includes(value.outcome)) {
     throw new Error("TOOL_ACTION_RECEIPT_CORRUPT: persisted ActionReceipt is malformed or not bound to its ActionIntent.");
   }
   const { receiptId: _receiptId, receiptDigest, recordedAt: _recordedAt, ...identity } = value;

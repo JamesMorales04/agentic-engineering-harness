@@ -1,8 +1,9 @@
+import { saveOwnedOperation } from "./helpers/ownedOperation.js";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { afterEach, describe, expect, it } from "vitest";
-import { explorerOutputSchema, outputJsonSchema } from "../src/agents/outputContracts.js";
+import { explorerOutputSchema, outputJsonSchema, specAuthoringOutputSchema } from "../src/agents/outputContracts.js";
 import type { WorkerSession } from "../src/core/types.js";
 import { sha256Canonical } from "../src/core/digest.js";
 import { compileExecutionBinding, compileResolvedOperationPolicy, compileRoleInvocationPolicy, compileSkillManifest, createExecutionBlueprintV2 } from "../src/architecture/executionIdentity.js";
@@ -22,6 +23,27 @@ afterEach(() => {
 });
 
 describe("CHANGE durable handoff", () => {
+  it("requires a typed bounded product-choice draft without accepting authority fields from Spec Manager", () => {
+    const blocked = {
+      change: "catalog-choice",
+      status: "BLOCKED",
+      artifacts: { specs: [] },
+      requirements: [],
+      unresolvedDecisions: ["Which confirmation behavior should be required?"],
+      decisionRequests: [{
+        issue: "Choose a confirmation behavior.",
+        whatTried: ["Reviewed current behavior."],
+        whyUnresolvable: "Both options satisfy the source request.",
+        choices: [{ choiceId: "confirm", label: "Require confirmation", description: "Ask explicitly.", consequences: ["Adds a confirmation step."] }],
+        workThatCanContinue: []
+      }],
+      validationReady: false
+    };
+    expect(specAuthoringOutputSchema.parse(blocked)).toMatchObject({ status: "BLOCKED", decisionRequests: [{ choices: [{ choiceId: "confirm" }] }] });
+    expect(specAuthoringOutputSchema.safeParse({ ...blocked, decisionRequests: [{ ...blocked.decisionRequests[0], actorId: "human:forged" }] }).success).toBe(false);
+    expect(outputJsonSchema("spec-authoring")?.required).toContain("decisionRequests");
+  });
+
   it("consumes an accepted explorer artifact even when captured stdout is empty", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-change-handoff-"));
     const operationId = "CHANGE-TEST";
@@ -82,7 +104,7 @@ describe("CHANGE durable handoff", () => {
 
 async function bindExplorerIdentity(root: string, operationId: string, participantId: string) {
   const now = new Date().toISOString();
-  await saveOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "discovery", root,
+  await saveOwnedOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "discovery", root,
     payload: { taskId: "TASK-CHANGE" }, createdAt: now, updatedAt: now });
   let operation = await loadOperation(root, operationId);
   const candidate = operation.candidateRevision!;

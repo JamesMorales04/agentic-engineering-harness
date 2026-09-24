@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  bindBootstrapOperationPolicy,
   cancelOperation,
   createOperationId,
   extractWorkspaceId,
@@ -12,12 +13,24 @@ import {
 import {
   bindOperationCandidate,
   bindOperationExecutionSemantics,
+  bindProductChoiceExecutionSemantics,
   bindOperationParticipantExecution,
   bindResolvedOperationPolicy,
   claimControllerEpoch,
   currentControllerEpoch,
+  completeOperationProductChoice,
+  assertCurrentConsumedProductChoiceBinding,
+  loadOperationProductChoiceCheckpoint,
+  loadStaleConsumedProductChoiceCheckpointForReconfirmation,
+  loadWaitingOperationProductChoiceCheckpointForReissue,
+  markOperationProductChoiceConsumed,
+  reissueOperationProductChoice,
+  reconfirmStaleConsumedProductChoice,
+  resumeOperationProductChoice,
+  suspendOperationForProductChoice,
   loadOperation,
   operationEventsFile,
+  operationFile,
   acknowledgeOperationLead,
   patchOperation,
   patchOperationMetadata,
@@ -31,15 +44,21 @@ import {
 } from "../src/operations/state.js";
 import { createCandidateRevisionV1 } from "../src/operations/v2Contracts.js";
 import { compileExecutionBinding, compileResolvedOperationPolicy, type ResolvedOperationPolicyV1 } from "../src/architecture/executionIdentity.js";
-import { sha256Canonical } from "../src/core/digest.js";
+import { HumanDecisionLedgerV2 } from "../src/security/humanDecision.js";
+import { sha256Canonical, sha256Utf8 } from "../src/core/digest.js";
 import { runShell } from "../src/utils/process.js";
 import { resolveBaseRef } from "../src/core/git.js";
 
 const roots: string[] = [];
+const previousControllerEnv = Object.fromEntries(["AEH_OPERATION_ID", "AEH_CONTROL_ROOT", "AEH_OPERATION_STATE_REDIRECT", "AEH_CONTROLLER_EPOCH", "AEH_CONTROLLER_TOKEN"].map((key) => [key, process.env[key]])) as Record<string, string | undefined>;
 afterEach(async () => {
   await Promise.all(
     roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true }))
   );
+  for (const [key, value] of Object.entries(previousControllerEnv)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
 });
 
 async function tempRoot(): Promise<string> {
@@ -64,8 +83,14 @@ async function seed(
     updatedAt: new Date().toISOString(),
     ...overrides
   };
+  process.env.AEH_OPERATION_ID = record.id;
+  process.env.AEH_CONTROL_ROOT = root;
+  process.env.AEH_OPERATION_STATE_REDIRECT = "1";
   await saveOperation(root, record);
-  return record;
+  if (!["SUCCEEDED", "FAILED", "CANCELLED"].includes(record.status)) {
+    await claimControllerEpoch(root, record.id, `controller:test:${record.id}`, { pid: process.pid });
+  }
+  return loadOperation(root, record.id);
 }
 
 async function seedBoundExecution(
@@ -160,6 +185,63 @@ async function compilePolicyForCurrentIdentity(
   });
 }
 
+async function bindTestPolicyForCurrentIdentity(root: string, operationId: string): Promise<Awaited<ReturnType<typeof loadOperation>>> {
+  const policy = await compilePolicyForCurrentIdentity(root, operationId);
+  await bindResolvedOperationPolicy(root, operationId, policy);
+  return loadOperation(root, operationId);
+}
+
+async function createConsumedTestProductChoice(root: string, operationId: string) {
+  const record = await seed(root, { id: operationId, kind: "change", payload: { request: "Implement a formal change." }, status: "RUNNING", phase: "spec-authoring" });
+  const current = await bindTestPolicyForCurrentIdentity(root, record.id);
+  const content = {
+    issue: "Choose the product requirement behavior.",
+    authoritativeEvidence: [{ artifact: ".harness/results/spec-manager.json", sha256: "a".repeat(64), description: "Accepted Spec Manager result." }],
+    whatTried: ["Compared the existing contract and current behavior."],
+    whyUnresolvable: "Both product behaviors satisfy the current request.",
+    choices: [{ choiceId: "explicit", label: "Require explicit confirmation", description: "Make the decision visible to users.", consequences: ["Adds a confirmation requirement."] }],
+    workThatCanContinue: []
+  };
+  const suspended = await suspendOperationForProductChoice(root, record.id, content, { version: 1, resumeTarget: "SPEC_AUTHORING", taskId: record.id });
+  const request = suspended.decisionRequest!;
+  const ledger = new HumanDecisionLedgerV2(path.resolve(root, ".harness", "security", "human-decisions.json"));
+  const binding = {
+    operationId: record.id,
+    candidate: current.candidateRevision!,
+    operationExecutionRevision: current.operationExecutionRevision!,
+    policyDigest: current.resolvedOperationPolicy!.digest,
+    controllerEpoch: currentControllerEpoch(current)
+  };
+  const decision = await ledger.recordProductChoice({
+    ...binding,
+    purpose: { kind: "PRODUCT_CHOICE", requestId: request.requestId, choiceId: "explicit" },
+    kind: "CHOOSE",
+    actorId: "human:control-center:paired-test",
+    reason: "Require explicit confirmation."
+  }, request.requestId);
+  await ledger.consumeExact(binding, decision.purpose, decision.decisionId, decision.actorId);
+  const consumed = await markOperationProductChoiceConsumed(root, record.id, { requestId: request.requestId, decisionId: decision.decisionId, choiceId: "explicit" });
+  return { current: await loadOperation(root, record.id), consumed, decision, ledger };
+}
+
+async function recordTestCancellationDecision(root: string, operationId: string): Promise<void> {
+  const operation = await bindTestPolicyForCurrentIdentity(root, operationId);
+  const ledger = new HumanDecisionLedgerV2(path.resolve(root, ".harness", "security", "human-decisions.json"));
+  await ledger.record({
+    operationId,
+    candidate: operation.candidateRevision!,
+    operationExecutionRevision: operation.operationExecutionRevision!,
+    policyDigest: operation.resolvedOperationPolicy!.digest,
+    controllerEpoch: currentControllerEpoch(operation),
+    purpose: { kind: "OPERATION_CONTROL", command: "CANCEL" },
+    kind: "CANCEL",
+    actorId: "human:test:cancellation",
+    reason: "explicit cancellation test fixture",
+    createdAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 60_000)
+  });
+}
+
 type ParticipantPatch = Parameters<typeof updateOperationParticipant>[3];
 
 function hostileParticipantPatch(patch: Record<string, unknown>): ParticipantPatch {
@@ -179,7 +261,7 @@ describe("operation controller state", () => {
         phase: record.phase,
         root,
         payload: record.payload,
-        revision: 1,
+        revision: 2,
         operationExecutionRevision: 1,
         supervision: expect.objectContaining({ required: true, materialized: false }),
         participants: {},
@@ -288,7 +370,7 @@ describe("operation controller state", () => {
     const root = await tempRoot();
     const record = await seed(root, { status: "QUEUED", phase: "queued" });
     await expect(patchOperation(root, record.id, { status: "SUCCEEDED", phase: "finished" })).rejects.toThrow("Invalid operation status transition QUEUED -> SUCCEEDED");
-    expect(await loadOperation(root, record.id)).toMatchObject({ status: "QUEUED", phase: "queued", revision: 1 });
+    expect(await loadOperation(root, record.id)).toMatchObject({ status: "QUEUED", phase: "queued", revision: 2 });
   });
 
   it("does not let custom lifecycle mutations change a terminal operation", async () => {
@@ -559,13 +641,7 @@ describe("operation controller state", () => {
     await seedBoundExecution(root, operationId, participantId);
     const bound = await loadOperation(root, operationId);
     const policy = bound.resolvedOperationPolicy!;
-    const savedToken = process.env.AEH_CONTROLLER_TOKEN;
-    let claimed: Awaited<ReturnType<typeof claimControllerEpoch>>;
-    try {
-      claimed = await claimControllerEpoch(root, operationId, "controller:takeover");
-    } finally {
-      restoreEnv("AEH_CONTROLLER_TOKEN", savedToken);
-    }
+    const claimed = await claimControllerEpoch(root, operationId, "controller:takeover");
     expect(claimed.controller?.epoch).toBe(currentControllerEpoch(bound) + 1);
     expect(claimed.resolvedOperationPolicy).toBeUndefined();
     expect(claimed.participants[participantId]?.executionBinding).toBeUndefined();
@@ -809,7 +885,9 @@ describe("operation controller state", () => {
     const bound = await (await import("../src/operations/state.js")).bindOperationLead(root, record.id, "lead-1", "test");
     const staleRevision = bound.revision;
     const current = await setOperationStage(root, record.id, "review", "RUNNING");
-    await expect(acknowledgeOperationLead(root, record.id, staleRevision, "stale-read")).rejects.toThrow("AEH_OPERATION_ACK_REVISION_MISMATCH");
+    await expect(acknowledgeOperationLead(root, record.id, current.revision, "lead-2", currentControllerEpoch(current), "wrong-lead")).rejects.toThrow("AEH_OPERATION_ACK_ACTOR_MISMATCH");
+    await expect(acknowledgeOperationLead(root, record.id, current.revision, "lead-1", currentControllerEpoch(current) - 1, "stale-epoch")).rejects.toThrow("AEH_OPERATION_ACK_EPOCH_MISMATCH");
+    await expect(acknowledgeOperationLead(root, record.id, staleRevision, "lead-1", currentControllerEpoch(current), "stale-read")).rejects.toThrow("AEH_OPERATION_ACK_REVISION_MISMATCH");
     expect((await loadOperation(root, record.id)).lead?.acknowledgedRevision).toBeLessThan(current.revision);
   });
 
@@ -833,6 +911,7 @@ describe("operation controller state", () => {
         }
       ]
     });
+    await recordTestCancellationDecision(root, record.id);
     const run = vi.fn(async (command: string) => {
       if (command === "paseo stop 'reviewer-1'" || command === "paseo stop 'reviewer-2'") {
         return { exitCode: 0, stdout: "stopped", stderr: "", durationMs: 1 };
@@ -853,6 +932,19 @@ describe("operation controller state", () => {
       "cleanup.discovery",
       expect.objectContaining({ source: "operation-state", agentCount: 2 })
     );
+  });
+
+  it("rejects cancellation without a current scoped human decision before changing controller epoch", async () => {
+    const root = await tempRoot();
+    const record = await seed(root, { status: "RUNNING", phase: "review" });
+    const before = await bindTestPolicyForCurrentIdentity(root, record.id);
+    await expect(cancelOperation(root, record.id, {
+      run: vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "", durationMs: 1 })) as never,
+      trace: vi.fn(async () => undefined) as never
+    })).rejects.toThrow("no current HumanDecision");
+    const after = await loadOperation(root, record.id);
+    expect(currentControllerEpoch(after)).toBe(currentControllerEpoch(before));
+    expect(after.status).toBe("RUNNING");
   });
 
   it("starts a detached controller process and records its pid", async () => {
@@ -917,6 +1009,7 @@ describe("operation controller state", () => {
       phase: "executing",
       agents: [{ id: "reviewer-1", role: "reviewer", registeredAt: new Date().toISOString() }]
     });
+    await bindTestPolicyForCurrentIdentity(root, record.id);
     const previous = {
       id: process.env.AEH_OPERATION_ID,
       kind: process.env.AEH_OPERATION_KIND,
@@ -933,7 +1026,8 @@ describe("operation controller state", () => {
       await vi.waitFor(async () => expect((await fs.readdir(handles)).length).toBeGreaterThan(0));
       const cancelled = await cancelOperation(root, record.id, {
         run: vi.fn(async () => ({ exitCode: 0, stdout: "stopped", stderr: "", durationMs: 1 })) as never,
-        trace: vi.fn(async () => undefined) as never
+        trace: vi.fn(async () => undefined) as never,
+        humanActorId: "human:control-center:test-session"
       });
       const result = await running;
       expect(cancelled.status).toBe("CANCELLED");
@@ -967,6 +1061,7 @@ describe("operation controller state", () => {
       phase: "executing",
       pid: controller.pid
     });
+    await bindTestPolicyForCurrentIdentity(root, record.id);
     let descendantPid: number | undefined;
     try {
       await vi.waitFor(async () => {
@@ -975,7 +1070,8 @@ describe("operation controller state", () => {
       });
       const cancelled = await cancelOperation(root, record.id, {
         run: vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "", durationMs: 1 })) as never,
-        trace: vi.fn(async () => undefined) as never
+        trace: vi.fn(async () => undefined) as never,
+        humanActorId: "human:control-center:test-session"
       });
       expect(cancelled.status).toBe("CANCELLED");
       await vi.waitFor(async () => {
@@ -1006,6 +1102,210 @@ describe("operation controller state", () => {
     expect(createOperationId("audit", "same-seed")).toMatch(
       /^AUDIT-\d{8}T\d{6}Z-[a-f0-9]{8}$/
     );
+  });
+
+  it("persists a scoped product-choice continuation and resumes SPEC_AUTHORING only after current-policy revalidation", async () => {
+    const root = await tempRoot();
+    const record = await seed(root, { status: "RUNNING", phase: "spec-authoring" });
+    const current = await bindTestPolicyForCurrentIdentity(root, record.id);
+    const beforeExecutionRevision = current.operationExecutionRevision!;
+    const content = {
+      issue: "Choose the product requirement behavior.",
+      authoritativeEvidence: [{ artifact: ".harness/results/spec-manager.json", sha256: "a".repeat(64), description: "Accepted Spec Manager result." }],
+      whatTried: ["Compared the existing contract and current behavior."],
+      whyUnresolvable: "Both product behaviors satisfy the current request.",
+      choices: [{ choiceId: "explicit", label: "Require explicit confirmation", description: "Make the decision visible to users.", consequences: ["Adds a confirmation requirement."] }],
+      workThatCanContinue: ["Read-only discovery can continue."]
+    };
+    const suspended = await suspendOperationForProductChoice(root, record.id, content, { version: 1, resumeTarget: "SPEC_AUTHORING", taskId: record.id });
+    expect(suspended).toMatchObject({ phase: "HUMAN_REQUIRED", status: "RUNNING", decisionRequest: { resumeTarget: "SPEC_AUTHORING", operationExecutionRevision: beforeExecutionRevision }, continuation: { state: "WAITING", reason: "PRODUCT_CHOICE" } });
+    await expect(loadOperationProductChoiceCheckpoint(root, record.id)).resolves.toMatchObject({ taskId: record.id, resumeTarget: "SPEC_AUTHORING" });
+
+    const request = suspended.decisionRequest!;
+    const ledger = new HumanDecisionLedgerV2(path.resolve(root, ".harness", "security", "human-decisions.json"));
+    const decision = await ledger.recordProductChoice({
+      operationId: record.id,
+      candidate: current.candidateRevision!,
+      operationExecutionRevision: current.operationExecutionRevision!,
+      policyDigest: current.resolvedOperationPolicy!.digest,
+      controllerEpoch: currentControllerEpoch(current),
+      purpose: { kind: "PRODUCT_CHOICE", requestId: request.requestId, choiceId: "explicit" },
+      kind: "CHOOSE",
+      actorId: "human:control-center:paired-test",
+      reason: "Require explicit confirmation."
+    }, request.requestId);
+    await ledger.consumeExact({ operationId: current.id, candidate: current.candidateRevision!, operationExecutionRevision: current.operationExecutionRevision!, policyDigest: current.resolvedOperationPolicy!.digest, controllerEpoch: currentControllerEpoch(current) }, decision.purpose, decision.decisionId, decision.actorId);
+    const consumed = await markOperationProductChoiceConsumed(root, record.id, { requestId: request.requestId, decisionId: decision.decisionId, choiceId: "explicit" });
+    expect(consumed).toMatchObject({ phase: "REVALIDATING", decisionRequest: undefined, continuation: { state: "CHOICE_CONSUMED", selectedDecisionId: decision.decisionId, selectedChoiceId: "explicit" } });
+
+    const semanticsBound = await bindProductChoiceExecutionSemantics(root, record.id, { requirementDigest: "b".repeat(64), decisionId: decision.decisionId, choiceId: "explicit" });
+    expect(semanticsBound.operationExecutionRevision).toBe(beforeExecutionRevision + 1);
+    expect(semanticsBound.resolvedOperationPolicy).toBeUndefined();
+    expect(semanticsBound.continuation).toMatchObject({ state: "CHOICE_CONSUMED", appliedRequirementDigest: "b".repeat(64) });
+    const reboundPolicy = await compilePolicyForCurrentIdentity(root, record.id);
+    await bindResolvedOperationPolicy(root, record.id, reboundPolicy);
+    const resumed = await resumeOperationProductChoice(root, record.id);
+    expect(resumed).toMatchObject({ phase: "spec-authoring", continuation: { state: "RESUMING", selectedChoiceId: "explicit", operationExecutionRevision: beforeExecutionRevision + 1, policyDigest: reboundPolicy.digest, controllerEpoch: currentControllerEpoch(resumed) } });
+    const completed = await completeOperationProductChoice(root, record.id);
+    expect(completed.continuation).toBeUndefined();
+    expect(completed.decisionRequest).toBeUndefined();
+  });
+
+  it("rejects consumed product choices when decision or current execution, policy, or controller binding drifts", async () => {
+    const root = await tempRoot();
+    const { current, consumed, decision } = await createConsumedTestProductChoice(root, "AUDIT-CHOICE-STALE-BINDING");
+    const continuation = consumed.continuation!;
+    const selectedBinding = continuation.selectedDecisionBinding!;
+    expect(() => assertCurrentConsumedProductChoiceBinding(current, continuation, selectedBinding)).not.toThrow();
+
+    const alteredDecisionBindings = [
+      { ...selectedBinding, operationExecutionRevision: selectedBinding.operationExecutionRevision + 1 },
+      { ...selectedBinding, policyDigest: selectedBinding.policyDigest === "f".repeat(64) ? "e".repeat(64) : "f".repeat(64) },
+      { ...selectedBinding, controllerEpoch: selectedBinding.controllerEpoch + 1 }
+    ];
+    for (const altered of alteredDecisionBindings) {
+      expect(() => assertCurrentConsumedProductChoiceBinding(current, continuation, altered)).toThrow("DECISION_CONTINUATION_DECISION_BINDING_STALE");
+    }
+    expect(decision.operationExecutionRevision).toBe(selectedBinding.operationExecutionRevision);
+
+    const changedRevisionPolicy = await compilePolicyForCurrentIdentity(root, current.id, { operationExecutionRevision: current.operationExecutionRevision! + 1 });
+    const changedPolicy = await compilePolicyForCurrentIdentity(root, current.id, { intent: "changed product-choice policy identity" });
+    const nextEpoch = currentControllerEpoch(current) + 1;
+    const changedEpochPolicy = await compilePolicyForCurrentIdentity(root, current.id, { controllerEpoch: nextEpoch });
+    const changedOperations = [
+      { ...current, operationExecutionRevision: current.operationExecutionRevision! + 1, resolvedOperationPolicy: changedRevisionPolicy },
+      { ...current, resolvedOperationPolicy: changedPolicy },
+      { ...current, controller: { ...current.controller!, epoch: nextEpoch }, resolvedOperationPolicy: changedEpochPolicy }
+    ];
+    for (const changed of changedOperations) {
+      expect(() => assertCurrentConsumedProductChoiceBinding(changed, continuation, selectedBinding)).toThrow("DECISION_CONTINUATION_BINDING_STALE");
+    }
+  });
+
+  it("rejects checkpoint envelope tampering and stale current bindings across execution revision, policy, and controller epoch", async () => {
+    const tamperedFields = ["operationExecutionRevision", "policyDigest", "controllerEpoch"] as const;
+    for (const field of tamperedFields) {
+      const root = await tempRoot();
+      const { consumed } = await createConsumedTestProductChoice(root, `AUDIT-CHOICE-CHECKPOINT-TAMPER-${field}`);
+      const record = await loadOperation(root, consumed.id);
+      const continuation = record.continuation!;
+      const checkpointFile = path.resolve(root, continuation.checkpointArtifact);
+      const envelope = JSON.parse(await fs.readFile(checkpointFile, "utf8")) as { binding: Record<string, unknown> };
+      if (field === "operationExecutionRevision") envelope.binding[field] = Number(envelope.binding[field]) + 1;
+      else if (field === "controllerEpoch") envelope.binding[field] = Number(envelope.binding[field]) + 1;
+      else envelope.binding[field] = envelope.binding[field] === "f".repeat(64) ? "e".repeat(64) : "f".repeat(64);
+      const content = `${JSON.stringify(envelope, null, 2)}\n`;
+      await fs.writeFile(checkpointFile, content, "utf8");
+      const forgedRecord = { ...record, continuation: { ...continuation, checkpointDigest: sha256Utf8(content) } };
+      await fs.writeFile(operationFile(root, record.id), `${JSON.stringify(forgedRecord, null, 2)}\n`, "utf8");
+      await expect(loadOperationProductChoiceCheckpoint(root, record.id)).rejects.toThrow("DECISION_CONTINUATION_CHECKPOINT_BINDING_STALE");
+    }
+
+    for (const field of tamperedFields) {
+      const root = await tempRoot();
+      const { consumed } = await createConsumedTestProductChoice(root, `AUDIT-CHOICE-CURRENT-STALE-${field}`);
+      const record = await loadOperation(root, consumed.id);
+      let stale: typeof record;
+      if (field === "operationExecutionRevision") {
+        const nextRevision = record.operationExecutionRevision! + 1;
+        stale = { ...record, operationExecutionRevision: nextRevision, resolvedOperationPolicy: await compilePolicyForCurrentIdentity(root, record.id, { operationExecutionRevision: nextRevision }) };
+      } else if (field === "policyDigest") {
+        stale = { ...record, resolvedOperationPolicy: await compilePolicyForCurrentIdentity(root, record.id, { intent: "current policy changed after choice consumption" }) };
+      } else {
+        const nextEpoch = currentControllerEpoch(record) + 1;
+        stale = { ...record, controller: { ...record.controller!, epoch: nextEpoch }, resolvedOperationPolicy: await compilePolicyForCurrentIdentity(root, record.id, { controllerEpoch: nextEpoch }) };
+      }
+      await fs.writeFile(operationFile(root, record.id), `${JSON.stringify(stale, null, 2)}\n`, "utf8");
+      await expect(loadOperationProductChoiceCheckpoint(root, record.id)).rejects.toThrow("DECISION_CONTINUATION_CHECKPOINT_BINDING_STALE");
+    }
+  });
+
+  it("reissues only an intact unanswered checkpoint after controller epoch takeover", async () => {
+    const root = await tempRoot();
+    const record = await seed(root, { id: "AUDIT-CHOICE-REISSUE-TAKEOVER", status: "RUNNING", phase: "spec-authoring" });
+    const current = await bindTestPolicyForCurrentIdentity(root, record.id);
+    const suspended = await suspendOperationForProductChoice(root, record.id, {
+      issue: "Choose the product requirement behavior.",
+      authoritativeEvidence: [{ artifact: ".harness/results/spec-manager.json", sha256: "a".repeat(64), description: "Accepted Spec Manager result." }],
+      whatTried: ["Compared the existing contract and current behavior."],
+      whyUnresolvable: "Both product behaviors satisfy the current request.",
+      choices: [{ choiceId: "explicit", label: "Require explicit confirmation", description: "Make the decision visible to users.", consequences: ["Adds a confirmation requirement."] }],
+      workThatCanContinue: []
+    }, { version: 1, resumeTarget: "SPEC_AUTHORING", taskId: record.id });
+    const oldRequestId = suspended.decisionRequest!.requestId;
+    const oldEpoch = currentControllerEpoch(current);
+
+    const takenOver = await claimControllerEpoch(root, record.id, "controller:test:takeover");
+    expect(currentControllerEpoch(takenOver)).toBe(oldEpoch + 1);
+    await bindResolvedOperationPolicy(root, record.id, await compilePolicyForCurrentIdentity(root, record.id));
+    const oldCheckpoint = await loadWaitingOperationProductChoiceCheckpointForReissue(root, record.id);
+    const reissued = await reissueOperationProductChoice(root, record.id, oldCheckpoint);
+
+    expect(reissued.decisionRequest).toMatchObject({ operationExecutionRevision: current.operationExecutionRevision, controllerEpoch: oldEpoch + 1 });
+    expect(reissued.decisionRequest!.requestId).not.toBe(oldRequestId);
+    expect(reissued.continuation).toMatchObject({ state: "WAITING", operationExecutionRevision: current.operationExecutionRevision, controllerEpoch: oldEpoch + 1 });
+    await expect(loadOperationProductChoiceCheckpoint(root, record.id)).resolves.toMatchObject({ taskId: record.id, resumeTarget: "SPEC_AUTHORING" });
+  });
+
+  it("recovers the semantics-bound crash window through deterministic bootstrap policy binding and preserves an already rebound policy", async () => {
+    const root = await tempRoot();
+    const { current, consumed, decision } = await createConsumedTestProductChoice(root, "CHANGE-CHOICE-BOOTSTRAP-RECOVERY");
+    const requirementDigest = "c".repeat(64);
+    const semanticsBound = await bindProductChoiceExecutionSemantics(root, current.id, {
+      requirementDigest,
+      decisionId: decision.decisionId,
+      choiceId: "explicit"
+    });
+    expect(semanticsBound.resolvedOperationPolicy).toBeUndefined();
+    expect(semanticsBound.continuation).toMatchObject({ state: "CHOICE_CONSUMED", appliedRequirementDigest: requirementDigest });
+    await expect(loadOperationProductChoiceCheckpoint(root, current.id)).rejects.toThrow("DECISION_AUTHORITY_REQUIRED");
+
+    const config = { version: 1, project: { name: "bootstrap-recovery-test" } } as never;
+    const recovered = await bindBootstrapOperationPolicy(root, config, semanticsBound, "FORMAL_SDD", "STANDARD");
+    expect(recovered.resolvedOperationPolicy).toMatchObject({ operationId: current.id, operationExecutionRevision: current.operationExecutionRevision! + 1, controllerEpoch: currentControllerEpoch(current) });
+    expect(recovered.continuation!.selectedDecisionBinding).toEqual(consumed.continuation!.selectedDecisionBinding);
+    await expect(loadOperationProductChoiceCheckpoint(root, current.id)).resolves.toMatchObject({ taskId: current.id, resumeTarget: "SPEC_AUTHORING" });
+
+    const frozenPolicy = recovered.resolvedOperationPolicy!;
+    const restartedWithChangedConfig = await bindBootstrapOperationPolicy(root, { ...config, delivery: { github: { enabled: true } } } as never, recovered, "FORMAL_SDD", "STANDARD");
+    expect(restartedWithChangedConfig.resolvedOperationPolicy).toEqual(frozenPolicy);
+    expect(restartedWithChangedConfig.revision).toBe(recovered.revision);
+
+    const resumed = await resumeOperationProductChoice(root, current.id);
+    expect(resumed).toMatchObject({ status: "RUNNING", phase: "spec-authoring", continuation: { state: "RESUMING", appliedRequirementDigest: requirementDigest, selectedDecisionId: decision.decisionId } });
+    expect(resumed.continuation!.selectedDecisionBinding).toEqual(consumed.continuation!.selectedDecisionBinding);
+  });
+
+  it("turns a consumed choice stale after controller takeover into a fresh durable HUMAN_REQUIRED request", async () => {
+    const root = await tempRoot();
+    const { current, decision, consumed } = await createConsumedTestProductChoice(root, "CHANGE-CHOICE-RECONFIRM-TAKEOVER");
+    const requirementDigest = "d".repeat(64);
+    await bindProductChoiceExecutionSemantics(root, current.id, { requirementDigest, decisionId: decision.decisionId, choiceId: "explicit" });
+    const oldDecisionBinding = consumed.continuation!.selectedDecisionBinding!;
+
+    const takenOver = await claimControllerEpoch(root, current.id, "controller:test:reconfirm");
+    expect(currentControllerEpoch(takenOver)).toBe(oldDecisionBinding.controllerEpoch + 1);
+    const config = { version: 1, project: { name: "bootstrap-reconfirm-test" } } as never;
+    const reboundPolicy = await bindBootstrapOperationPolicy(root, config, takenOver, "FORMAL_SDD", "STANDARD");
+    expect(reboundPolicy.resolvedOperationPolicy!.controllerEpoch).toBe(oldDecisionBinding.controllerEpoch + 1);
+    expect(reboundPolicy.continuation!.selectedDecisionBinding).toEqual(oldDecisionBinding);
+    await expect(loadOperationProductChoiceCheckpoint(root, current.id)).rejects.toThrow("DECISION_CONTINUATION_CHECKPOINT_BINDING_STALE");
+
+    const historicalCheckpoint = await loadStaleConsumedProductChoiceCheckpointForReconfirmation(root, current.id);
+    const reconsented = await reconfirmStaleConsumedProductChoice(root, current.id, {
+      issue: "The prior decision expired with the former controller epoch. Confirm a current choice.",
+      authoritativeEvidence: [{ artifact: ".harness/results/spec-manager.json", sha256: "a".repeat(64), description: "Accepted Spec Manager result." }],
+      whatTried: ["Revalidated the saved product choice after controller takeover."],
+      whyUnresolvable: "The prior controller-scoped choice is stale.",
+      choices: [{ choiceId: "explicit", label: "Require explicit confirmation", description: "Make the decision visible to users.", consequences: ["Adds a confirmation requirement."] }],
+      workThatCanContinue: []
+    }, historicalCheckpoint);
+
+    expect(reconsented).toMatchObject({ status: "RUNNING", phase: "HUMAN_REQUIRED", decisionRequest: { operationId: current.id, controllerEpoch: oldDecisionBinding.controllerEpoch + 1 }, continuation: { state: "WAITING" } });
+    expect(reconsented.decisionRequest!.requestId).not.toBe(consumed.continuation!.requestId);
+    expect(reconsented.continuation!.selectedDecisionId).toBeUndefined();
+    expect(reconsented.continuation!.selectedDecisionBinding).toBeUndefined();
+    await expect(loadOperationProductChoiceCheckpoint(root, current.id)).resolves.toEqual(historicalCheckpoint);
   });
 
   it("falls back from an unavailable configured base ref to the current branch", async () => {

@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { saveOwnedOperation } from "../helpers/ownedOperation.js";
 import { buildOpenCodeRuntimeConfig, validateExecutionCapabilities } from "../../src/agents/permissions.js";
 import type { AgentExecutionSelection } from "../../src/agents/types.js";
 import { ContextBudgetGateway } from "../../src/context/gateway.js";
@@ -161,7 +162,7 @@ describe("AEH deterministic adversarial system paths", () => {
 
   it("does not allow a terminal operation to re-enter active execution", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-adversarial-terminal-reentry-"));
-    try { await saveOperation(root, operation(root, "TERMINAL", "RUNNING")); await transitionOperationToTerminal(root, "TERMINAL", { status: "SUCCEEDED", phase: "finished" }); expect((await patchOperation(root, "TERMINAL", { status: "RUNNING" })).status).toBe("SUCCEEDED"); }
+    try { await saveOwnedOperation(root, operation(root, "TERMINAL", "RUNNING")); await transitionOperationToTerminal(root, "TERMINAL", { status: "SUCCEEDED", phase: "finished" }); expect((await patchOperation(root, "TERMINAL", { status: "RUNNING" })).status).toBe("SUCCEEDED"); }
     finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 
@@ -173,7 +174,7 @@ describe("AEH deterministic adversarial system paths", () => {
 
   it("makes duplicate terminalization idempotent", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-adversarial-duplicate-terminal-"));
-    try { await saveOperation(root, operation(root, "DUPLICATE", "RUNNING")); expect((await transitionOperationToTerminal(root, "DUPLICATE", { status: "FAILED", phase: "failed" })).transitioned).toBe(true); expect((await transitionOperationToTerminal(root, "DUPLICATE", { status: "SUCCEEDED", phase: "finished" })).transitioned).toBe(false); expect((await loadOperation(root, "DUPLICATE")).status).toBe("FAILED"); }
+    try { await saveOwnedOperation(root, operation(root, "DUPLICATE", "RUNNING")); expect((await transitionOperationToTerminal(root, "DUPLICATE", { status: "FAILED", phase: "failed" })).transitioned).toBe(true); expect((await transitionOperationToTerminal(root, "DUPLICATE", { status: "SUCCEEDED", phase: "finished" })).transitioned).toBe(false); expect((await loadOperation(root, "DUPLICATE")).status).toBe("FAILED"); }
     finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 
@@ -185,7 +186,7 @@ describe("AEH deterministic adversarial system paths", () => {
 
   it("recovers a dead operation lock without accepting corrupted state", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-adversarial-stale-lock-"));
-    try { await saveOperation(root, operation(root, "STALE-LOCK", "RUNNING")); const file = path.join(root, ".harness", "operations", "STALE-LOCK.json"); await fs.writeFile(`${file}.lock`, "999999\n"); const updated = await patchOperation(root, "STALE-LOCK", { phase: "recovered" }); expect(updated.phase).toBe("recovered"); }
+    try { await saveOwnedOperation(root, operation(root, "STALE-LOCK", "RUNNING")); const file = path.join(root, ".harness", "operations", "STALE-LOCK.json"); await fs.writeFile(`${file}.lock`, "999999\n"); const updated = await patchOperation(root, "STALE-LOCK", { phase: "recovered" }); expect(updated.phase).toBe("recovered"); }
     finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 
@@ -213,8 +214,9 @@ describe("AEH deterministic adversarial system paths", () => {
   it("records completion callback failure without changing terminal truth", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-adversarial-completion-failure-"));
     try {
-      const terminal = operation(root, "COMPLETION", "SUCCEEDED"); await saveOperation(root, terminal); await registerOperationCompletionTarget(root, terminal.id, "lead", "test", async () => undefined);
-      const result = await notifyOperationCompletion(root, terminal, { dispatch: async () => ({ exitCode: 1, stdout: "", stderr: "Paseo unavailable", transport: "sdk" as const }), trace: async () => undefined, retryDelaysMs: [0], sleep: async () => undefined });
+      const terminal = operation(root, "COMPLETION", "RUNNING"); await saveOwnedOperation(root, terminal); await registerOperationCompletionTarget(root, terminal.id, "lead", "test", async () => undefined);
+      const completed = await transitionOperationToTerminal(root, terminal.id, { status: "SUCCEEDED", phase: "finished" });
+      const result = await notifyOperationCompletion(root, completed.record, { dispatch: async () => ({ exitCode: 1, stdout: "", stderr: "Paseo unavailable", transport: "sdk" as const }), trace: async () => undefined, retryDelaysMs: [0], sleep: async () => undefined });
       expect(result?.status).toBe("FAILED"); expect((await loadOperation(root, terminal.id)).status).toBe("SUCCEEDED");
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });

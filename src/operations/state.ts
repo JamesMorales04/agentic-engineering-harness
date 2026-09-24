@@ -7,6 +7,7 @@ import { canonicalSerialize, sha256Canonical, sha256Utf8 } from "../core/digest.
 import { computeWorktreeDigest } from "../core/git.js";
 import { assertWorkspaceMatchesCandidate } from "../candidates/identity.js";
 import { assertExecutionBindingV2, assertResolvedOperationPolicyV1, type ExecutionBindingV2, type ResolvedOperationPolicyV1 } from "../architecture/executionIdentity.js";
+import { HumanDecisionLedgerV2, assertContinuationRecordV1, assertDecisionRequestV1, type ContinuationRecordV1, type DecisionRequestV1, type HumanDecisionBindingV2 } from "../security/humanDecision.js";
 
 export type OperationKind = "audit" | "run" | "change";
 export type OperationStatus = "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
@@ -79,6 +80,8 @@ export interface OperationRecordV2 {
   executionSemanticsDigest?: string;
   resolvedOperationPolicy?: ResolvedOperationPolicyV1;
   controller?: OperationControllerBinding;
+  decisionRequest?: DecisionRequestV1;
+  continuation?: ContinuationRecordV1;
 }
 export type OperationRecord = OperationRecordV1 | OperationRecordV2;
 export interface TerminalOperationTransition { record: OperationRecordV2; transitioned: boolean; }
@@ -158,8 +161,8 @@ export async function transitionOperationToTerminal(root: string, operationId: s
     const stored = await readStoredOperation(file);
     await recoverPendingOperationEvent(stateRoot, file, stored);
     let current = stored.record;
-    assertControllerEpoch(current, controllerEpochFromEnvironment(), "terminal transition");
     if (isTerminal(current.status)) return { record: current, transitioned: false };
+    assertCurrentControllerOwner(current, "terminal transition");
     if (!isAllowedOperationStatusTransition(current.status, patch.status)) throw new Error(`Invalid operation status transition ${current.status} -> ${patch.status}.`);
     if (patch.status === "SUCCEEDED") {
       if (!current.candidateRevision) throw new Error("V2_TERMINAL_GATE_REJECTED: successful operations require a current candidate revision.");
@@ -170,7 +173,7 @@ export async function transitionOperationToTerminal(root: string, operationId: s
     }
     if (patch.status === "SUCCEEDED") assertSuccessTerminalEvidence(current);
     const now = new Date().toISOString(); const revision = current.revision + 1; const participants = settleParticipants(current.participants, patch.status, now); const supervision = settleSupervision(current.supervision, now);
-    const next = normalizeOperationRecord({ ...current, ...patch, version: 2, id: current.id, kind: current.kind, revision, updatedAt: now, lastProgressAt: now, finishedAt: patch.finishedAt ?? now, participants, progress: deriveProgress(participants), supervision, stages: { ...current.stages, finished: { name: "finished", status: terminalStageStatus(patch.status), revision, startedAt: now, finishedAt: now } } } as OperationRecordV2);
+    const next = normalizeOperationRecord({ ...current, ...patch, version: 2, id: current.id, kind: current.kind, revision, updatedAt: now, lastProgressAt: now, finishedAt: patch.finishedAt ?? now, participants, progress: deriveProgress(participants), supervision, decisionRequest: undefined, continuation: undefined, stages: { ...current.stages, finished: { name: "finished", status: terminalStageStatus(patch.status), revision, startedAt: now, finishedAt: now } } } as OperationRecordV2);
     if (patch.status === "SUCCEEDED" && next.candidateRevision) await assertWorkspaceMatchesCandidate(candidateWorkspaceRoot(next, next.candidateRevision), next.candidateRevision);
     await commitOperationRecord(stateRoot, file, next, "operation.terminal", ["status", "phase", "participants", "progress", "supervision"]); return { record: next, transitioned: true };
   });
@@ -194,13 +197,33 @@ export function assertControllerEpoch(record: OperationRecordV2, expected: numbe
   if (expected !== current) throw new Error(`V2_CONTROLLER_FENCED: ${action} was requested by controller epoch ${expected}, but the operation is owned by controller epoch ${current}.`);
 }
 
+/** Require both the current durable epoch and its controller token for owner-only mutations. */
+export function assertCurrentControllerOwner(record: OperationRecordV2, action: string): void {
+  const expected = controllerEpochFromEnvironment();
+  if (expected === undefined) throw new Error(`V2_CONTROLLER_FENCED: ${action} requires the current controller epoch.`);
+  assertControllerEpoch(record, expected, action);
+  assertControllerToken(record, action);
+}
+
 /** Claim durable monotonic controller ownership. Every takeover increments the epoch and mints a new controller token. */
-export async function claimControllerEpoch(root: string, operationId: string, ownerId: string, options: { pid?: number } = {}): Promise<OperationRecordV2> {
-  const previousEpoch = process.env.AEH_CONTROLLER_EPOCH;
+export async function claimControllerEpoch(root: string, operationId: string, ownerId: string, options: {
+  pid?: number;
+  cause?: "cancellation";
+  humanActorId?: string;
+  expectedCancellation?: { operationExecutionRevision: number; candidateDigest: string; policyDigest: string; controllerEpoch: number };
+} = {}): Promise<OperationRecordV2> {
   const token = crypto.randomBytes(32).toString("hex");
-  delete process.env.AEH_CONTROLLER_EPOCH;
-  try {
-    const record = await mutateOperation(root, operationId, {}, true, "operation.controller.claimed", (current, revision, now) => ({
+  const record = await mutateOperation(root, operationId, {}, true, "operation.controller.claimed", async (current, revision, now) => {
+    if (isTerminal(current.status)) throw new Error("V2_CONTROLLER_FENCED: terminal operations cannot acquire controller ownership.");
+    if (options.cause === "cancellation") await consumeControllerCancellationDecision(root, current, options);
+    const currentOwner = controllerEpochFromEnvironment() === currentControllerEpoch(current)
+      && Boolean(controllerTokenFromEnvironment())
+      && current.controller?.tokenDigest === sha256Utf8(controllerTokenFromEnvironment()!);
+    if (current.controller?.tokenDigest && !currentOwner && options.cause !== "cancellation") {
+      const ownerPid = current.controller.pid;
+      if (!ownerPid || processAlive(ownerPid)) throw new Error("V2_CONTROLLER_FENCED: a live or unproven controller owner cannot be displaced without an authorized cancellation.");
+    }
+    return {
       ...current,
       revision,
       updatedAt: now,
@@ -215,12 +238,68 @@ export async function claimControllerEpoch(root: string, operationId: string, ow
         ...(options.pid ? { pid: options.pid } : {}),
         ...(current.controller?.ownerId ? { previousOwnerId: current.controller.ownerId } : {})
       }
-    }));
-    process.env.AEH_CONTROLLER_TOKEN = token;
-    return record;
-  } finally {
-    if (previousEpoch !== undefined) process.env.AEH_CONTROLLER_EPOCH = previousEpoch;
+    };
+  });
+  process.env.AEH_CONTROLLER_TOKEN = token;
+  process.env.AEH_CONTROLLER_EPOCH = String(currentControllerEpoch(record));
+  return record;
+}
+
+async function consumeControllerCancellationDecision(root: string, current: OperationRecordV2, options: {
+  humanActorId?: string;
+  expectedCancellation?: { operationExecutionRevision: number; candidateDigest: string; policyDigest: string; controllerEpoch: number };
+}): Promise<void> {
+  const candidate = current.candidateRevision;
+  const policy = current.resolvedOperationPolicy;
+  if (!candidate || !policy || !Number.isSafeInteger(current.operationExecutionRevision)) {
+    throw new Error("AEH_CANCELLATION_AUTHORITY_REQUIRED: cancellation requires current candidate, execution revision, and frozen policy identity.");
   }
+  assertResolvedOperationPolicyV1(policy);
+  if (policy.operationId !== current.id || policy.operationExecutionRevision !== current.operationExecutionRevision
+    || policy.candidateRevision !== candidate.revision || policy.candidateDigest !== candidate.identityDigest
+    || policy.controllerEpoch !== currentControllerEpoch(current) || (candidate.projectId && policy.projectId !== candidate.projectId)) {
+    throw new Error("AEH_CANCELLATION_POLICY_STALE: cancellation policy does not match the current operation, candidate, execution revision, project, and epoch.");
+  }
+  const expected = options.expectedCancellation;
+  if (expected && (expected.operationExecutionRevision !== current.operationExecutionRevision
+    || expected.candidateDigest !== candidate.identityDigest || expected.policyDigest !== policy.digest
+    || expected.controllerEpoch !== currentControllerEpoch(current))) {
+    throw new Error("AEH_CANCELLATION_POLICY_STALE: operation identity changed after cancellation was requested.");
+  }
+  const binding = {
+    operationId: current.id,
+    candidate,
+    operationExecutionRevision: current.operationExecutionRevision!,
+    policyDigest: policy.digest,
+    controllerEpoch: currentControllerEpoch(current)
+  };
+  const purpose = { kind: "OPERATION_CONTROL" as const, command: "CANCEL" as const };
+  const ledger = new HumanDecisionLedgerV2(path.resolve(resolveOperationStateRoot(root), ".harness", "security", "human-decisions.json"));
+  const now = new Date();
+  if (options.humanActorId) {
+    const existing = (await ledger.active(binding, now)).some((decision) => decision.actorId === options.humanActorId
+      && decision.kind === "CANCEL" && canonicalSerialize(decision.purpose) === canonicalSerialize(purpose));
+    if (!existing) await ledger.record({
+      ...binding,
+      purpose,
+      kind: "CANCEL",
+      actorId: options.humanActorId,
+      reason: "Authenticated Control Center cancellation request.",
+      createdAt: now,
+      expiresAt: new Date(now.getTime() + 10 * 60_000)
+    });
+  }
+  const decision = await ledger.consume(binding, purpose, options.humanActorId, now);
+  if (decision.kind !== "CANCEL") throw new Error("AEH_CANCELLATION_AUTHORITY_REQUIRED: a scoped human CANCEL decision is required.");
+}
+
+/** Bind detached-process identity without changing the current owner's epoch or token. */
+export async function bindControllerProcess(root: string, operationId: string, pid: number): Promise<OperationRecordV2> {
+  if (!Number.isSafeInteger(pid) || pid < 1) throw new Error("V2_CONTROLLER_PROCESS_INVALID: controller pid must be a positive safe integer.");
+  return mutateOperation(root, operationId, {}, true, "operation.controller.process-bound", (current, revision, now) => {
+    if (!current.controller?.tokenDigest) throw new Error("V2_CONTROLLER_FENCED: controller process binding requires an owned operation.");
+    return { ...current, revision, updatedAt: now, lastProgressAt: now, controller: { ...current.controller, pid } };
+  });
 }
 
 /** The controller token a controller process was launched with, if any. */
@@ -238,8 +317,10 @@ export function assertControllerToken(record: OperationRecordV2, action: string)
   const token = controllerTokenFromEnvironment();
   if (!token || sha256Utf8(token) !== expected) throw new Error(`V2_CONTROLLER_FENCED: ${action} requires the current controller token.`);
 }
-export async function acknowledgeOperationLead(root: string, operationId: string, revision: number, reason?: string): Promise<OperationRecordV2> {
-  return mutateOperation(root, operationId, {}, false, "operation.metadata", (current, _revision, now) => {
+export async function acknowledgeOperationLead(root: string, operationId: string, revision: number, actorId: string, expectedControllerEpoch: number, reason?: string): Promise<OperationRecordV2> {
+  return mutateOperation(root, operationId, {}, false, "operation.lead.acknowledged", (current, _revision, now) => {
+    if (currentControllerEpoch(current) !== expectedControllerEpoch) throw new Error("AEH_OPERATION_ACK_EPOCH_MISMATCH: controller epoch changed before acknowledgement.");
+    if (!current.lead || current.lead.agentId !== requiredId(actorId)) throw new Error("AEH_OPERATION_ACK_ACTOR_MISMATCH: only the currently bound lead may acknowledge this operation.");
     if (current.revision !== revision) throw new Error(`AEH_OPERATION_ACK_REVISION_MISMATCH: requested revision ${revision}, current revision ${current.revision}.`);
     return {
       ...current,
@@ -273,14 +354,556 @@ export async function bindOperationCandidate(root: string, operationId: string, 
 
 export async function bindResolvedOperationPolicy(root: string, operationId: string, policy: ResolvedOperationPolicyV1): Promise<OperationRecordV2> {
   assertResolvedOperationPolicyV1(policy);
-  return mutateOperation(root, operationId, {}, true, "operation.policy.bound", (current, revision, now) => {
+  return mutateOperation(root, operationId, {}, true, "operation.policy.bound", async (current, revision, now) => {
     if (policy.operationId !== current.id) throw new Error("EXECUTION_POLICY_STALE: policy belongs to a different operation.");
     if (!current.candidateRevision || current.candidateRevision.identityDigest !== policy.candidateDigest || current.candidateRevision.revision !== policy.candidateRevision) throw new Error("EXECUTION_POLICY_STALE: policy does not bind the current candidate.");
     if (current.candidateRevision.projectId && current.candidateRevision.projectId !== policy.projectId) throw new Error("EXECUTION_POLICY_STALE: policy belongs to a different project.");
     if (current.operationExecutionRevision !== policy.operationExecutionRevision || !Number.isSafeInteger(current.operationExecutionRevision)) throw new Error("EXECUTION_POLICY_STALE: policy does not bind the current operation execution revision.");
     if (currentControllerEpoch(current) !== policy.controllerEpoch) throw new Error("EXECUTION_POLICY_STALE: policy does not bind the current controller epoch.");
     if (current.resolvedOperationPolicy && canonicalSerialize(current.resolvedOperationPolicy) !== canonicalSerialize(policy)) throw new Error("EXECUTION_POLICY_RECOMPILE_REQUIRED: execution semantics changed without advancing operationExecutionRevision.");
-    return { ...current, resolvedOperationPolicy: policy, revision, updatedAt: now, lastProgressAt: now };
+    let continuation = current.continuation && assertContinuationRecordV1(current.continuation);
+    if (continuation && continuation.state !== "WAITING" && continuation.appliedRequirementDigest) {
+      const selectedBinding = continuation.selectedDecisionBinding!;
+      if (!candidateRevisionsEqual(selectedBinding.candidate, current.candidateRevision!)) throw new Error("DECISION_CONTINUATION_BINDING_STALE: a consumed product choice cannot cross candidate changes.");
+      const nextBinding: HumanDecisionBindingV2 = {
+        operationId: current.id,
+        candidate: current.candidateRevision!,
+        operationExecutionRevision: current.operationExecutionRevision!,
+        policyDigest: policy.digest,
+        controllerEpoch: currentControllerEpoch(current)
+      };
+      if (nextBinding.operationExecutionRevision !== selectedBinding.operationExecutionRevision + 1
+        || continuation.operationExecutionRevision !== nextBinding.operationExecutionRevision) {
+        throw new Error("DECISION_CONTINUATION_BINDING_STALE: product-choice policy may bind only its single authorized execution revision.");
+      }
+      if (selectedBinding.controllerEpoch === policy.controllerEpoch) {
+        if (!sameHumanDecisionBinding(continuation, nextBinding)) continuation = await rewriteProductChoiceCheckpointBinding(root, current, continuation, nextBinding);
+      } else if (policy.controllerEpoch <= selectedBinding.controllerEpoch) {
+        throw new Error("DECISION_CONTINUATION_BINDING_STALE: controller epoch did not advance monotonically past the consumed choice.");
+      }
+    }
+    return { ...current, resolvedOperationPolicy: policy, ...(continuation ? { continuation: { ...continuation, updatedAt: now } } : {}), revision, updatedAt: now, lastProgressAt: now };
+  });
+}
+
+export type ProductChoiceRequestContentV1 = Pick<DecisionRequestV1,
+  "issue" | "authoritativeEvidence" | "whatTried" | "whyUnresolvable" | "choices" | "workThatCanContinue">;
+
+/** Persist the complete DecisionRequest and controller continuation before exposing HUMAN_REQUIRED. */
+export async function suspendOperationForProductChoice(
+  root: string,
+  operationId: string,
+  content: ProductChoiceRequestContentV1,
+  checkpoint: unknown,
+  expiresInMs = 24 * 60 * 60_000
+): Promise<OperationRecordV2> {
+  if (!Number.isSafeInteger(expiresInMs) || expiresInMs < 60_000 || expiresInMs > 7 * 24 * 60 * 60_000) throw new Error("DECISION_REQUEST_EXPIRY_INVALID: expiry must be between one minute and seven days.");
+  return mutateOperation(root, operationId, {}, true, "operation.human-decision.suspended", async (current, revision, now) => {
+    assertCurrentControllerOwner(current, "product-choice suspension");
+    const replacingConsumedChoice = current.continuation?.state === "RESUMING" && current.phase === "spec-authoring" && !current.decisionRequest;
+    if (current.status !== "RUNNING" || current.phase === "HUMAN_REQUIRED" || (current.continuation && !replacingConsumedChoice)) throw new Error("DECISION_REQUEST_STATE_INVALID: only active Spec Manager authoring without an unanswered continuation may suspend for a product choice.");
+    const binding = currentDecisionBinding(current, "product-choice suspension");
+    const requestId = `request:${crypto.randomUUID()}`;
+    const createdAt = now;
+    const expiresAt = new Date(Date.parse(now) + expiresInMs).toISOString();
+    const request = assertDecisionRequestV1({
+      version: 1,
+      requestId,
+      ...binding,
+      issue: content.issue,
+      authoritativeEvidence: content.authoritativeEvidence,
+      whatTried: content.whatTried,
+      whyUnresolvable: content.whyUnresolvable,
+      choices: content.choices,
+      workThatCanContinue: content.workThatCanContinue,
+      resumeTarget: "SPEC_AUTHORING",
+      createdAt,
+      expiresAt
+    });
+    const continuationId = `continuation:${crypto.randomUUID()}`;
+    const checkpointEnvelope = { version: 1, continuationId, requestId, operationId: current.id, binding, checkpoint };
+    const checkpointText = `${JSON.stringify(checkpointEnvelope, null, 2)}\n`;
+    if (Buffer.byteLength(checkpointText, "utf8") > 1_000_000) throw new Error("DECISION_CONTINUATION_CHECKPOINT_TOO_LARGE: continuation checkpoint exceeds one megabyte.");
+    const checkpointDigest = sha256Utf8(checkpointText);
+    const artifact = path.posix.join(".harness", "operations", safeId(current.id), "continuations", `${continuationId.slice("continuation:".length)}.json`);
+    const file = path.resolve(resolveOperationStateRoot(root), artifact);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    try { await fs.writeFile(file, checkpointText, { encoding: "utf8", flag: "wx", mode: 0o600 }); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("DECISION_CONTINUATION_COLLISION: create a new product-choice request.");
+      throw error;
+    }
+    const continuation = assertContinuationRecordV1({
+      version: 1,
+      continuationId,
+      ...binding,
+      resumeTarget: "SPEC_AUTHORING",
+      reason: "PRODUCT_CHOICE",
+      requestId,
+      checkpointArtifact: artifact,
+      checkpointDigest,
+      requiredRevalidation: ["candidate-current", "operation-revision-current", "policy-current", "controller-epoch-current", "checkpoint-current"],
+      state: "WAITING",
+      suspendedAt: now,
+      updatedAt: now
+    });
+    const stages = {
+      ...current.stages,
+      "spec-authoring": {
+        name: "spec-authoring",
+        status: "BLOCKED" as const,
+        revision,
+        startedAt: current.stages["spec-authoring"]?.startedAt ?? now,
+        finishedAt: now,
+        message: "Waiting for a scoped product choice.",
+        artifact: artifact
+      }
+    };
+    return { ...current, revision, updatedAt: now, lastProgressAt: now, phase: "HUMAN_REQUIRED", decisionRequest: request, continuation, stages };
+  });
+}
+
+export async function loadOperationProductChoiceCheckpoint(root: string, operationId: string): Promise<unknown> {
+  const current = await loadOperation(root, operationId);
+  const continuation = current.continuation;
+  if (!continuation || continuation.resumeTarget !== "SPEC_AUTHORING") throw new Error("DECISION_CONTINUATION_MISSING: no supported product-choice continuation is stored.");
+  assertContinuationRecordV1(continuation);
+  const envelope = await readProductChoiceCheckpointEnvelope(root, current, continuation);
+  const operationBinding = currentDecisionBinding(current, "product-choice checkpoint load");
+  if (!sameHumanDecisionBinding(envelope.binding, continuation) || !sameHumanDecisionBinding(continuation, operationBinding)) {
+    throw new Error("DECISION_CONTINUATION_CHECKPOINT_BINDING_STALE: checkpoint, saved continuation, and current operation bindings must match exactly.");
+  }
+  return envelope.checkpoint;
+}
+
+/** Read an intact WAITING checkpoint only to reissue its unanswered request under current authority. */
+export async function loadWaitingOperationProductChoiceCheckpointForReissue(root: string, operationId: string): Promise<unknown> {
+  const current = await loadOperation(root, operationId);
+  const continuation = current.continuation;
+  const request = current.decisionRequest;
+  if (current.status !== "RUNNING" || current.phase !== "HUMAN_REQUIRED" || !continuation || continuation.state !== "WAITING" || !request) {
+    throw new Error("DECISION_CONTINUATION_REISSUE_INVALID: only an unanswered HUMAN_REQUIRED choice can be reissued.");
+  }
+  assertContinuationRecordV1(continuation);
+  assertDecisionRequestV1(request);
+  const envelope = await readProductChoiceCheckpointEnvelope(root, current, continuation);
+  const requestBinding = bindingFromDecisionRecord(request);
+  if (!sameHumanDecisionBinding(envelope.binding, continuation) || !sameHumanDecisionBinding(requestBinding, continuation)
+    || request.requestId !== continuation.requestId || request.operationId !== current.id
+    || !current.candidateRevision || !candidateRevisionsEqual(current.candidateRevision, continuation.candidate)
+    || current.operationExecutionRevision !== continuation.operationExecutionRevision) {
+    throw new Error("DECISION_CONTINUATION_REISSUE_STALE: unanswered checkpoint is not bound to the current operation and saved request.");
+  }
+  return envelope.checkpoint;
+}
+
+/** Recovery-only checkpoint read for a consumed choice whose authority became stale after takeover. */
+export async function loadStaleConsumedProductChoiceCheckpointForReconfirmation(root: string, operationId: string): Promise<unknown> {
+  const current = await loadOperation(root, operationId);
+  const continuation = current.continuation;
+  if (!continuation) throw new Error("DECISION_CONTINUATION_MISSING: no consumed product-choice continuation is stored.");
+  assertContinuationRecordV1(continuation);
+  assertStaleConsumedChoiceEligible(current, continuation);
+  const envelope = await readProductChoiceCheckpointEnvelope(root, current, continuation);
+  await assertConsumedProductChoiceReceipt(root, continuation);
+  return envelope.checkpoint;
+}
+
+/** Re-open a stale consumed product choice as a new scoped HUMAN_REQUIRED request. */
+export async function reconfirmStaleConsumedProductChoice(
+  root: string,
+  operationId: string,
+  content: ProductChoiceRequestContentV1,
+  checkpoint: unknown
+): Promise<OperationRecordV2> {
+  const before = await loadOperation(root, operationId);
+  const previousContinuation = before.continuation && assertContinuationRecordV1(before.continuation);
+  const storedCheckpoint = await loadStaleConsumedProductChoiceCheckpointForReconfirmation(root, operationId);
+  if (!previousContinuation || canonicalSerialize(storedCheckpoint) !== canonicalSerialize(checkpoint)) throw new Error("DECISION_CONTINUATION_RECONFIRMATION_CHECKPOINT_MISMATCH: reconsent must preserve the verified saved checkpoint.");
+  return mutateOperation(root, operationId, {}, true, "operation.human-decision.reconfirmation-required", async (current, revision, now) => {
+    assertCurrentControllerOwner(current, "stale product-choice reconfirmation");
+    const continuation = current.continuation && assertContinuationRecordV1(current.continuation);
+    if (!continuation || continuation.continuationId !== before.continuation?.continuationId || continuation.requestId !== before.continuation?.requestId) {
+      throw new Error("DECISION_CONTINUATION_RECONFIRMATION_STALE: consumed continuation changed before reconsent.");
+    }
+    assertStaleConsumedChoiceEligible(current, continuation);
+    const envelope = await readProductChoiceCheckpointEnvelope(root, current, continuation);
+    await assertConsumedProductChoiceReceipt(root, continuation);
+    if (canonicalSerialize(envelope.checkpoint) !== canonicalSerialize(checkpoint)) throw new Error("DECISION_CONTINUATION_RECONFIRMATION_CHECKPOINT_MISMATCH: saved checkpoint changed before reconsent.");
+
+    const binding = currentDecisionBinding(current, "stale product-choice reconfirmation");
+    const requestId = `request:${crypto.randomUUID()}`;
+    const request = assertDecisionRequestV1({
+      version: 1,
+      requestId,
+      ...binding,
+      issue: content.issue,
+      authoritativeEvidence: content.authoritativeEvidence,
+      whatTried: content.whatTried,
+      whyUnresolvable: content.whyUnresolvable,
+      choices: content.choices,
+      workThatCanContinue: content.workThatCanContinue,
+      resumeTarget: "SPEC_AUTHORING",
+      createdAt: now,
+      expiresAt: new Date(Date.parse(now) + 24 * 60 * 60_000).toISOString()
+    });
+    const continuationId = `continuation:${crypto.randomUUID()}`;
+    const checkpointEnvelope = { version: 1, continuationId, requestId, operationId: current.id, binding, checkpoint };
+    const checkpointText = `${JSON.stringify(checkpointEnvelope, null, 2)}\n`;
+    if (Buffer.byteLength(checkpointText, "utf8") > 1_000_000) throw new Error("DECISION_CONTINUATION_CHECKPOINT_TOO_LARGE: continuation checkpoint exceeds one megabyte.");
+    const checkpointDigest = sha256Utf8(checkpointText);
+    const artifact = path.posix.join(".harness", "operations", safeId(current.id), "continuations", `${continuationId.slice("continuation:".length)}.json`);
+    const file = path.resolve(resolveOperationStateRoot(root), artifact);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, checkpointText, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    const nextContinuation = assertContinuationRecordV1({
+      version: 1,
+      continuationId,
+      ...binding,
+      resumeTarget: "SPEC_AUTHORING",
+      reason: "PRODUCT_CHOICE",
+      requestId,
+      checkpointArtifact: artifact,
+      checkpointDigest,
+      requiredRevalidation: ["candidate-current", "operation-revision-current", "policy-current", "controller-epoch-current", "checkpoint-current"],
+      state: "WAITING",
+      suspendedAt: now,
+      updatedAt: now
+    });
+    return {
+      ...current,
+      revision,
+      updatedAt: now,
+      lastProgressAt: now,
+      phase: "HUMAN_REQUIRED",
+      decisionRequest: request,
+      continuation: nextContinuation,
+      stages: { ...current.stages, "spec-authoring": { name: "spec-authoring", status: "BLOCKED", revision, startedAt: current.stages["spec-authoring"]?.startedAt ?? now, finishedAt: now, message: "Prior product choice became stale; a new current-authority choice is required before resumption.", artifact } }
+    };
+  });
+}
+
+/**
+ * Verify a consumed choice against both its original ledger binding and the
+ * narrowly permitted post-choice execution revision. A consumed selection can
+ * never be rebound across policy identity or controller epoch changes.
+ */
+export function assertCurrentConsumedProductChoiceBinding(
+  current: OperationRecordV2,
+  continuationInput: ContinuationRecordV1,
+  decisionBinding: HumanDecisionBindingV2
+): void {
+  const continuation = assertContinuationRecordV1(continuationInput);
+  const selectedBinding = continuation.selectedDecisionBinding;
+  if (!selectedBinding || !sameHumanDecisionBinding(selectedBinding, decisionBinding)) {
+    throw new Error("DECISION_CONTINUATION_DECISION_BINDING_STALE: consumed decision binding differs from its saved receipt identity.");
+  }
+  const currentBinding = currentDecisionBinding(current, "consumed product-choice validation");
+  if (!sameHumanDecisionBinding(currentBinding, continuation)) {
+    throw new Error("DECISION_CONTINUATION_BINDING_STALE: saved continuation does not match the current operation, candidate, revision, policy, and epoch.");
+  }
+  if (decisionBinding.operationId !== current.id || !current.candidateRevision
+    || !candidateRevisionsEqual(decisionBinding.candidate, current.candidateRevision)
+    || decisionBinding.controllerEpoch !== currentBinding.controllerEpoch) {
+    throw new Error("DECISION_CONTINUATION_DECISION_BINDING_STALE: consumed decision belongs to another operation, candidate, or controller epoch.");
+  }
+  if (continuation.appliedRequirementDigest) {
+    if (currentBinding.operationExecutionRevision !== decisionBinding.operationExecutionRevision + 1
+      || continuation.operationExecutionRevision !== currentBinding.operationExecutionRevision) {
+      throw new Error("DECISION_CONTINUATION_BINDING_STALE: only the single authorized product-choice revision may follow the consumed decision.");
+    }
+  } else if (!sameHumanDecisionBinding(currentBinding, decisionBinding)) {
+    throw new Error("DECISION_CONTINUATION_DECISION_BINDING_STALE: consumed decision no longer matches the current operation policy identity.");
+  }
+}
+
+interface ProductChoiceCheckpointEnvelopeV1 {
+  version: 1;
+  continuationId: string;
+  requestId: string;
+  operationId: string;
+  binding: HumanDecisionBindingV2;
+  checkpoint: unknown;
+}
+
+async function readProductChoiceCheckpointEnvelope(
+  root: string,
+  current: OperationRecordV2,
+  continuation: ContinuationRecordV1
+): Promise<ProductChoiceCheckpointEnvelopeV1> {
+  const stateRoot = resolveOperationStateRoot(root);
+  const file = path.resolve(stateRoot, continuation.checkpointArtifact);
+  const relative = path.relative(stateRoot, file);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("DECISION_CONTINUATION_CHECKPOINT_PATH: checkpoint escaped the operation state root.");
+  const content = await fs.readFile(file, "utf8");
+  if (sha256Utf8(content) !== continuation.checkpointDigest) throw new Error("DECISION_CONTINUATION_CHECKPOINT_STALE: checkpoint content digest changed.");
+  let raw: unknown;
+  try { raw = JSON.parse(content) as unknown; }
+  catch { throw new Error("DECISION_CONTINUATION_CHECKPOINT_INVALID: checkpoint envelope is not valid JSON."); }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("DECISION_CONTINUATION_CHECKPOINT_INVALID: checkpoint envelope must be an object.");
+  const envelope = raw as Record<string, unknown>;
+  const expectedKeys = ["version", "continuationId", "requestId", "operationId", "binding", "checkpoint"];
+  if (Object.keys(envelope).some((key) => !expectedKeys.includes(key)) || expectedKeys.some((key) => !(key in envelope))
+    || envelope.version !== 1 || envelope.continuationId !== continuation.continuationId || envelope.requestId !== continuation.requestId || envelope.operationId !== current.id) {
+    throw new Error("DECISION_CONTINUATION_CHECKPOINT_INVALID: checkpoint does not match the current continuation.");
+  }
+  const binding = assertCheckpointBinding(envelope.binding);
+  if (!sameHumanDecisionBinding(binding, continuation)) throw new Error("DECISION_CONTINUATION_CHECKPOINT_BINDING_STALE: checkpoint binding differs from the saved continuation.");
+  return { version: 1, continuationId: envelope.continuationId as string, requestId: envelope.requestId as string, operationId: envelope.operationId as string, binding, checkpoint: envelope.checkpoint };
+}
+
+function assertCheckpointBinding(value: unknown): HumanDecisionBindingV2 {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("DECISION_CONTINUATION_CHECKPOINT_INVALID: checkpoint binding must be an object.");
+  const binding = value as Record<string, unknown>;
+  const expectedKeys = ["operationId", "candidate", "operationExecutionRevision", "policyDigest", "controllerEpoch"];
+  if (Object.keys(binding).some((key) => !expectedKeys.includes(key)) || expectedKeys.some((key) => !(key in binding))) {
+    throw new Error("DECISION_CONTINUATION_CHECKPOINT_INVALID: checkpoint binding has an invalid shape.");
+  }
+  assertCandidateRevisionV1(binding.candidate);
+  if (typeof binding.operationId !== "string" || !binding.operationId.trim() || binding.candidate.operationId !== binding.operationId
+    || !Number.isSafeInteger(binding.operationExecutionRevision) || (binding.operationExecutionRevision as number) < 1
+    || typeof binding.policyDigest !== "string" || !/^[a-f0-9]{64}$/.test(binding.policyDigest)
+    || !Number.isSafeInteger(binding.controllerEpoch) || (binding.controllerEpoch as number) < 0) {
+    throw new Error("DECISION_CONTINUATION_CHECKPOINT_INVALID: checkpoint binding is malformed.");
+  }
+  return binding as unknown as HumanDecisionBindingV2;
+}
+
+function bindingFromDecisionRecord(value: HumanDecisionBindingV2): HumanDecisionBindingV2 {
+  return assertCheckpointBinding({
+    operationId: value.operationId,
+    candidate: value.candidate,
+    operationExecutionRevision: value.operationExecutionRevision,
+    policyDigest: value.policyDigest,
+    controllerEpoch: value.controllerEpoch
+  });
+}
+
+function sameHumanDecisionBinding(left: HumanDecisionBindingV2, right: HumanDecisionBindingV2): boolean {
+  return left.operationId === right.operationId
+    && candidateRevisionsEqual(left.candidate, right.candidate)
+    && left.operationExecutionRevision === right.operationExecutionRevision
+    && left.policyDigest === right.policyDigest
+    && left.controllerEpoch === right.controllerEpoch;
+}
+
+function assertStaleConsumedChoiceEligible(current: OperationRecordV2, continuation: ContinuationRecordV1): void {
+  if (current.status !== "RUNNING" || continuation.state === "WAITING" || !continuation.appliedRequirementDigest
+    || !continuation.selectedDecisionId || !continuation.selectedChoiceId || !continuation.selectedDecisionBinding) {
+    throw new Error("DECISION_CONTINUATION_RECONFIRMATION_INVALID: only a consumed product choice with applied requirement semantics can be reconfirmed.");
+  }
+  const selected = continuation.selectedDecisionBinding;
+  const currentBinding = currentDecisionBinding(current, "stale product-choice reconfirmation");
+  if (selected.operationId !== current.id || !current.candidateRevision
+    || !candidateRevisionsEqual(selected.candidate, current.candidateRevision)
+    || !candidateRevisionsEqual(continuation.candidate, current.candidateRevision)
+    || current.operationExecutionRevision !== selected.operationExecutionRevision + 1
+    || continuation.operationExecutionRevision !== current.operationExecutionRevision) {
+    throw new Error("DECISION_CONTINUATION_RECONFIRMATION_STALE: candidate or execution revision changed outside the single applied product-choice revision.");
+  }
+  if (sameHumanDecisionBinding(currentBinding, continuation)) throw new Error("DECISION_CONTINUATION_RECONFIRMATION_NOT_REQUIRED: consumed choice binding is already current.");
+  if (currentBinding.controllerEpoch < selected.controllerEpoch) throw new Error("DECISION_CONTINUATION_RECONFIRMATION_STALE: current controller epoch moved backwards.");
+}
+
+async function assertConsumedProductChoiceReceipt(root: string, continuation: ContinuationRecordV1): Promise<void> {
+  const selectedBinding = continuation.selectedDecisionBinding;
+  if (!selectedBinding || !continuation.selectedDecisionId || !continuation.selectedChoiceId) throw new Error("DECISION_CONTINUATION_STATE_INVALID: consumed product-choice identity is incomplete.");
+  const ledger = new HumanDecisionLedgerV2(path.join(resolveOperationStateRoot(root), ".harness", "security", "human-decisions.json"));
+  const decision = await ledger.find(continuation.selectedDecisionId);
+  if (!decision || decision.kind !== "CHOOSE" || decision.purpose.kind !== "PRODUCT_CHOICE"
+    || decision.purpose.requestId !== continuation.requestId || decision.purpose.choiceId !== continuation.selectedChoiceId
+    || !sameHumanDecisionBinding(decision, selectedBinding)
+    || !await ledger.consumedExact(selectedBinding, decision.purpose, decision.decisionId, decision.actorId)) {
+    throw new Error("DECISION_CONTINUATION_RECONFIRMATION_RECEIPT_INVALID: stale selection has no exact original consumed receipt.");
+  }
+}
+
+async function rewriteProductChoiceCheckpointBinding(
+  root: string,
+  current: OperationRecordV2,
+  continuation: ContinuationRecordV1,
+  binding: HumanDecisionBindingV2,
+  additional: Partial<Pick<ContinuationRecordV1, "appliedRequirementDigest">> = {}
+): Promise<ContinuationRecordV1> {
+  const previous = await readProductChoiceCheckpointEnvelope(root, current, continuation);
+  assertCheckpointBinding(binding);
+  if (binding.operationId !== current.id || !current.candidateRevision || !candidateRevisionsEqual(binding.candidate, current.candidateRevision)
+    || binding.operationExecutionRevision !== current.operationExecutionRevision || binding.controllerEpoch !== currentControllerEpoch(current)) {
+    throw new Error("DECISION_CONTINUATION_CHECKPOINT_BINDING_STALE: replacement checkpoint binding does not match the current operation identity.");
+  }
+  const envelope: ProductChoiceCheckpointEnvelopeV1 = { ...previous, binding };
+  const content = `${JSON.stringify(envelope, null, 2)}\n`;
+  if (Buffer.byteLength(content, "utf8") > 1_000_000) throw new Error("DECISION_CONTINUATION_CHECKPOINT_TOO_LARGE: continuation checkpoint exceeds one megabyte.");
+  const artifact = path.posix.join(".harness", "operations", safeId(current.id), "continuations", `${continuation.continuationId.slice("continuation:".length)}-${crypto.randomUUID()}.json`);
+  const file = path.resolve(resolveOperationStateRoot(root), artifact);
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, content, { encoding: "utf8", flag: "wx", mode: 0o600 });
+  return assertContinuationRecordV1({ ...continuation, ...binding, ...additional, checkpointArtifact: artifact, checkpointDigest: sha256Utf8(content) });
+}
+
+/** Refresh an unanswered request after controller takeover; old epoch-bound submissions remain stale. */
+export async function reissueOperationProductChoice(root: string, operationId: string, checkpoint: unknown): Promise<OperationRecordV2> {
+  const before = await loadOperation(root, operationId);
+  const previousContinuation = before.continuation && assertContinuationRecordV1(before.continuation);
+  const storedCheckpoint = await loadWaitingOperationProductChoiceCheckpointForReissue(root, operationId);
+  if (!previousContinuation || canonicalSerialize(storedCheckpoint) !== canonicalSerialize(checkpoint)) throw new Error("DECISION_CONTINUATION_REISSUE_CHECKPOINT_MISMATCH: reissue must preserve the verified saved checkpoint.");
+  return mutateOperation(root, operationId, {}, true, "operation.human-decision.reissued", async (current, revision, now) => {
+    assertCurrentControllerOwner(current, "product-choice request reissue");
+    const previousRequest = current.decisionRequest && assertDecisionRequestV1(current.decisionRequest);
+    const previousContinuation = current.continuation && assertContinuationRecordV1(current.continuation);
+    if (!previousRequest || !previousContinuation || current.phase !== "HUMAN_REQUIRED" || previousContinuation.state !== "WAITING"
+      || previousContinuation.continuationId !== before.continuation?.continuationId || previousContinuation.requestId !== before.continuation?.requestId) throw new Error("DECISION_REQUEST_STATE_INVALID: only an unchanged unanswered HUMAN_REQUIRED product choice can be rebound.");
+    const binding = currentDecisionBinding(current, "product-choice request reissue");
+    if (!candidateRevisionsEqual(previousContinuation.candidate, binding.candidate)
+      || previousContinuation.operationExecutionRevision !== binding.operationExecutionRevision) {
+      throw new Error("DECISION_CONTINUATION_STALE: candidate or execution semantics changed while the operation was suspended.");
+    }
+    const requestId = `request:${crypto.randomUUID()}`;
+    const request = assertDecisionRequestV1({
+      ...previousRequest,
+      ...binding,
+      requestId,
+      createdAt: now,
+      expiresAt: new Date(Date.parse(now) + 24 * 60 * 60_000).toISOString()
+    });
+    const continuationId = `continuation:${crypto.randomUUID()}`;
+    const checkpointEnvelope = { version: 1, continuationId, requestId, operationId: current.id, binding, checkpoint };
+    const checkpointText = `${JSON.stringify(checkpointEnvelope, null, 2)}\n`;
+    const checkpointDigest = sha256Utf8(checkpointText);
+    const artifact = path.posix.join(".harness", "operations", safeId(current.id), "continuations", `${continuationId.slice("continuation:".length)}.json`);
+    const file = path.resolve(resolveOperationStateRoot(root), artifact);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, checkpointText, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    const continuation = assertContinuationRecordV1({
+      version: 1,
+      continuationId,
+      ...binding,
+      resumeTarget: "SPEC_AUTHORING",
+      reason: "PRODUCT_CHOICE",
+      requestId,
+      checkpointArtifact: artifact,
+      checkpointDigest,
+      requiredRevalidation: ["candidate-current", "operation-revision-current", "policy-current", "controller-epoch-current", "checkpoint-current"],
+      state: "WAITING",
+      suspendedAt: previousContinuation.suspendedAt,
+      updatedAt: now
+    });
+    return {
+      ...current,
+      revision,
+      updatedAt: now,
+      lastProgressAt: now,
+      phase: "HUMAN_REQUIRED",
+      decisionRequest: request,
+      continuation,
+      stages: { ...current.stages, "spec-authoring": { ...current.stages["spec-authoring"], name: "spec-authoring", status: "BLOCKED", revision, message: "Waiting for a product choice under the current controller epoch.", artifact } }
+    };
+  });
+}
+
+/** Controller-owned transition after the ledger has atomically consumed the exact choice. */
+export async function markOperationProductChoiceConsumed(root: string, operationId: string, input: { requestId: string; decisionId: string; choiceId: string }): Promise<OperationRecordV2> {
+  return mutateOperation(root, operationId, {}, true, "operation.human-decision.consumed", (current, revision, now) => {
+    assertCurrentControllerOwner(current, "product-choice consumption");
+    const request = current.decisionRequest && assertDecisionRequestV1(current.decisionRequest);
+    const continuation = current.continuation && assertContinuationRecordV1(current.continuation);
+    if (!request || !continuation || current.phase !== "HUMAN_REQUIRED" || continuation.state !== "WAITING"
+      || request.requestId !== input.requestId || continuation.requestId !== input.requestId) throw new Error("DECISION_REQUEST_STALE: no matching current product-choice request is awaiting a decision.");
+    assertCurrentDecisionBinding(current, request, "product-choice consumption");
+    const selectedDecisionBinding = currentDecisionBinding(current, "product-choice consumption");
+    if (Date.parse(request.expiresAt) <= Date.parse(now)) throw new Error("DECISION_REQUEST_EXPIRED: the product-choice request has expired.");
+    if (!request.choices.some((choice) => choice.choiceId === input.choiceId)) throw new Error("DECISION_CHOICE_INVALID: selected choice is not one of the request's bounded options.");
+    if (!/^decision:[0-9a-f-]{36}$/i.test(input.decisionId)) throw new Error("DECISION_ID_INVALID: consumed HumanDecision id is malformed.");
+    return {
+      ...current,
+      revision,
+      updatedAt: now,
+      lastProgressAt: now,
+      phase: "REVALIDATING",
+      decisionRequest: undefined,
+      continuation: { ...continuation, state: "CHOICE_CONSUMED", selectedDecisionId: input.decisionId, selectedChoiceId: input.choiceId, selectedDecisionBinding, updatedAt: now }
+    };
+  });
+}
+
+/** Recompile operation semantics after the selected product choice has produced a revised sealed requirement contract. */
+export async function bindProductChoiceExecutionSemantics(root: string, operationId: string, input: { requirementDigest: string; decisionId: string; choiceId: string; priorDecisionIds?: string[] }): Promise<OperationRecordV2> {
+  if (!/^[a-f0-9]{64}$/.test(input.requirementDigest)) throw new Error("EXECUTION_SEMANTICS_INVALID: requirement digest must be a lowercase SHA-256 digest.");
+  const priorDecisionIds = input.priorDecisionIds ?? [];
+  if (priorDecisionIds.length > 16 || priorDecisionIds.some((id) => !/^decision:[0-9a-f-]{36}$/i.test(id)) || new Set(priorDecisionIds).size !== priorDecisionIds.length || priorDecisionIds.includes(input.decisionId)) throw new Error("DECISION_CONTINUATION_CHAIN_INVALID: prior product decision identities must be unique, valid and bounded.");
+  const before = await loadOperation(root, operationId);
+  if (before.continuation?.selectedDecisionId === input.decisionId && before.continuation.selectedChoiceId === input.choiceId
+    && before.continuation.appliedRequirementDigest === input.requirementDigest) {
+    assertCurrentConsumedProductChoiceBinding(before, before.continuation, before.continuation.selectedDecisionBinding!);
+    return before;
+  }
+  return mutateOperation(root, operationId, {}, true, "operation.human-decision.semantics-bound", async (current, revision, now) => {
+    assertCurrentControllerOwner(current, "product-choice semantics binding");
+    const continuation = current.continuation && assertContinuationRecordV1(current.continuation);
+    if (!continuation || (continuation.state !== "CHOICE_CONSUMED" && continuation.state !== "RESUMING") || continuation.selectedDecisionId !== input.decisionId || continuation.selectedChoiceId !== input.choiceId) throw new Error("DECISION_CONTINUATION_STATE_INVALID: revised product semantics require the consumed current product choice.");
+    if (!Number.isSafeInteger(current.operationExecutionRevision) || current.operationExecutionRevision! < 1) throw new Error("UNSUPPORTED_OPERATION_EXECUTION_REVISION: migrate this operation record before product-choice resumption.");
+    assertCurrentConsumedProductChoiceBinding(current, continuation, continuation.selectedDecisionBinding!);
+    const executionSemanticsDigest = sha256Canonical({ previous: current.executionSemanticsDigest ?? null, priorDecisionIds, decisionId: input.decisionId, choiceId: input.choiceId, requirementDigest: input.requirementDigest });
+    const participants = Object.fromEntries(Object.entries(current.participants).map(([id, participant]) => [id, { ...participant, executionBinding: undefined }]));
+    const nextBinding: HumanDecisionBindingV2 = {
+      operationId: current.id,
+      candidate: current.candidateRevision!,
+      operationExecutionRevision: current.operationExecutionRevision! + 1,
+      policyDigest: continuation.policyDigest,
+      controllerEpoch: currentControllerEpoch(current)
+    };
+    const projectedCurrent = { ...current, operationExecutionRevision: nextBinding.operationExecutionRevision };
+    const reboundContinuation = await rewriteProductChoiceCheckpointBinding(root, projectedCurrent, continuation, nextBinding, { appliedRequirementDigest: input.requirementDigest });
+    return {
+      ...current,
+      revision,
+      updatedAt: now,
+      lastProgressAt: now,
+      operationExecutionRevision: current.operationExecutionRevision! + 1,
+      executionSemanticsDigest,
+      resolvedOperationPolicy: undefined,
+      participants,
+      continuation: { ...reboundContinuation, state: "CHOICE_CONSUMED", appliedRequirementDigest: input.requirementDigest, updatedAt: now }
+    };
+  });
+}
+
+/** Rebind a consumed continuation only after the controller has recompiled and bound the current policy. */
+export async function resumeOperationProductChoice(root: string, operationId: string): Promise<OperationRecordV2> {
+  await loadOperationProductChoiceCheckpoint(root, operationId);
+  return mutateOperation(root, operationId, {}, true, "operation.human-decision.resumed", async (current, revision, now) => {
+    assertCurrentControllerOwner(current, "product-choice continuation resume");
+    const continuation = current.continuation && assertContinuationRecordV1(current.continuation);
+    if (!continuation || (continuation.state !== "CHOICE_CONSUMED" && continuation.state !== "RESUMING") || !continuation.selectedDecisionId || !continuation.selectedChoiceId) throw new Error("DECISION_CONTINUATION_STATE_INVALID: a consumed product choice is required before resumption.");
+    const binding = currentDecisionBinding(current, "product-choice continuation resume");
+    if (!sameHumanDecisionBinding(continuation, binding)) throw new Error("DECISION_CONTINUATION_BINDING_STALE: current operation identity changed before continuation resume.");
+    assertCurrentConsumedProductChoiceBinding(current, continuation, continuation.selectedDecisionBinding!);
+    const envelope = await readProductChoiceCheckpointEnvelope(root, current, continuation);
+    if (!sameHumanDecisionBinding(envelope.binding, continuation) || !sameHumanDecisionBinding(envelope.binding, binding)) {
+      throw new Error("DECISION_CONTINUATION_CHECKPOINT_BINDING_STALE: checkpoint identity changed before continuation resume.");
+    }
+    const nextContinuation = assertContinuationRecordV1({
+      ...continuation,
+      state: "RESUMING",
+      updatedAt: now
+    });
+    return {
+      ...current,
+      revision,
+      updatedAt: now,
+      lastProgressAt: now,
+      phase: "spec-authoring",
+      continuation: nextContinuation,
+      stages: { ...current.stages, "spec-authoring": { ...current.stages["spec-authoring"], name: "spec-authoring", status: "RUNNING", revision, startedAt: now, finishedAt: undefined, message: "Resuming Spec Manager after validated product choice." } }
+    };
+  });
+}
+
+export async function completeOperationProductChoice(root: string, operationId: string): Promise<OperationRecordV2> {
+  return mutateOperation(root, operationId, {}, true, "operation.human-decision.completed", (current, revision, now) => {
+    assertCurrentControllerOwner(current, "product-choice continuation completion");
+    if (!current.continuation || current.continuation.state !== "RESUMING" || !current.continuation.selectedDecisionId) throw new Error("DECISION_CONTINUATION_STATE_INVALID: only the active resumed product-choice continuation can complete.");
+    return { ...current, revision, updatedAt: now, lastProgressAt: now, continuation: undefined, decisionRequest: undefined };
   });
 }
 
@@ -374,11 +997,49 @@ export function currentOperationContext(): { id?: string; kind?: string; workspa
 export async function updateCurrentOperationPhase(root: string, phase: string): Promise<void> { const operationId = currentOperationContext().id; if (!operationId) return; try { await setOperationStage(resolveOperationStateRoot(root), operationId, phase, "RUNNING"); } catch { /* direct/non-controller */ } }
 
 export function normalizeOperationRecord(record: OperationRecord): OperationRecordV2 {
-  if (record.version === 2) { const participants = record.participants ?? {}; return { ...record, version: 2 as const, revision: Math.max(1, record.revision || 1), lastProgressAt: record.lastProgressAt || record.updatedAt, supervision: record.supervision ?? defaultSupervision(record.kind), stages: record.stages ?? {}, participants, progress: record.progress ?? deriveProgress(participants), notification: record.notification ?? defaultNotification(), controller: record.controller ?? { epoch: 0, ownerId: "controller:none", claimedAt: record.createdAt } }; }
+  if (record.version === 2) {
+    const participants = record.participants ?? {};
+    if (record.decisionRequest) assertDecisionRequestV1(record.decisionRequest);
+    if (record.continuation) assertContinuationRecordV1(record.continuation);
+    if (record.decisionRequest && (!record.continuation || record.continuation.state !== "WAITING")) throw new Error("DECISION_CONTINUATION_STATE_INVALID: only a waiting continuation may expose its DecisionRequest.");
+    if (record.continuation?.state === "WAITING" && !record.decisionRequest) throw new Error("DECISION_CONTINUATION_STATE_INVALID: a waiting continuation requires its DecisionRequest.");
+    if (record.phase === "HUMAN_REQUIRED" && (!record.decisionRequest || !record.continuation || record.continuation.state !== "WAITING")) throw new Error("DECISION_CONTINUATION_STATE_INVALID: HUMAN_REQUIRED requires a current waiting DecisionRequest and continuation.");
+    return { ...record, version: 2 as const, revision: Math.max(1, record.revision || 1), lastProgressAt: record.lastProgressAt || record.updatedAt, supervision: record.supervision ?? defaultSupervision(record.kind), stages: record.stages ?? {}, participants, progress: record.progress ?? deriveProgress(participants), notification: record.notification ?? defaultNotification(), controller: record.controller ?? { epoch: 0, ownerId: "controller:none", claimedAt: record.createdAt } };
+  }
   const participants: Record<string, OperationParticipantRecord> = {};
   for (const agent of record.agents ?? []) { if (agent.role === "operation-supervisor") continue; participants[agent.id] = { id: agent.id, logicalAgent: agent.role, role: agent.role, stage: agent.phase, phase: agent.phase, workspaceId: agent.workspaceId, transport: agent.transport, status: "REGISTERED", registeredAt: agent.registeredAt }; }
   const normalized = { ...record, version: 2 as const, kind: record.kind, payload: record.payload, revision: 1, lastProgressAt: record.updatedAt, intent: inferIntent(record.kind, record.payload), supervision: defaultSupervision(record.kind), stages: record.phase ? { [record.phase]: { name: record.phase, status: isTerminal(record.status) ? terminalStageStatus(record.status) : "RUNNING", revision: 1, startedAt: record.startedAt, finishedAt: record.finishedAt } } : {}, participants, progress: deriveProgress(participants), notification: defaultNotification() };
   return normalized;
+}
+
+function currentDecisionBinding(record: OperationRecordV2, action: string): HumanDecisionBindingV2 {
+  const candidate = record.candidateRevision;
+  const policy = record.resolvedOperationPolicy;
+  if (!candidate || !policy || !Number.isSafeInteger(record.operationExecutionRevision)) throw new Error(`DECISION_AUTHORITY_REQUIRED: ${action} requires current candidate, execution revision, and frozen policy.`);
+  assertResolvedOperationPolicyV1(policy);
+  const binding: HumanDecisionBindingV2 = {
+    operationId: record.id,
+    candidate,
+    operationExecutionRevision: record.operationExecutionRevision!,
+    policyDigest: policy.digest,
+    controllerEpoch: currentControllerEpoch(record)
+  };
+  assertCurrentDecisionBinding(record, binding, action);
+  return binding;
+}
+
+function assertCurrentDecisionBinding(record: OperationRecordV2, binding: HumanDecisionBindingV2, action: string): void {
+  const candidate = record.candidateRevision;
+  const policy = record.resolvedOperationPolicy;
+  if (!candidate || !policy || binding.operationId !== record.id || !candidateRevisionsEqual(binding.candidate, candidate)
+    || binding.operationExecutionRevision !== record.operationExecutionRevision || binding.policyDigest !== policy.digest
+    || binding.controllerEpoch !== currentControllerEpoch(record)
+    || policy.operationId !== record.id || policy.operationExecutionRevision !== record.operationExecutionRevision
+    || policy.candidateRevision !== candidate.revision || policy.candidateDigest !== candidate.identityDigest
+    || policy.controllerEpoch !== currentControllerEpoch(record)
+    || (candidate.projectId && policy.projectId !== candidate.projectId)) {
+    throw new Error(`DECISION_BINDING_STALE: ${action} does not match the current operation, candidate, execution revision, policy, and controller epoch.`);
+  }
 }
 
 async function mutateOperation(root: string, operationId: string, patch: Partial<OperationRecordV2>, touchRevision: boolean, eventType: string, custom?: (current: OperationRecordV2, revision: number, now: string) => OperationRecordV2 | Promise<OperationRecordV2>, allowTerminalCustom = false): Promise<OperationRecordV2> {
@@ -387,25 +1048,33 @@ async function mutateOperation(root: string, operationId: string, patch: Partial
     const stored = await readStoredOperation(file);
     await recoverPendingOperationEvent(stateRoot, file, stored);
     const current = stored.record;
-    assertControllerEpoch(current, controllerEpochFromEnvironment(), `operation mutation '${eventType}'`);
     if (patch.status && current.status === "QUEUED" && patch.status === "SUCCEEDED") throw new Error("Invalid operation status transition QUEUED -> SUCCEEDED.");
     if (patch.status && !isTerminal(current.status) && !isAllowedOperationStatusTransition(current.status, patch.status)) throw new Error(`Invalid operation status transition ${current.status} -> ${patch.status}.`);
     if (isTerminal(current.status) && custom && !allowTerminalCustom) return current;
     const guardedPatch = guardTerminalTransition(current, patch);
+    if (isTerminal(current.status) && Object.keys(guardedPatch).length === 0 && !allowTerminalCustom) return current;
+    if (eventType !== "operation.controller.claimed" && eventType !== "operation.lead.acknowledged") assertCurrentControllerOwner(current, `operation mutation '${eventType}'`);
     const now = new Date().toISOString();
     const revision = touchRevision ? current.revision + 1 : current.revision;
     // Mutation callbacks receive the loaded record itself and can mutate nested
     // state in place. Capture every lifecycle-owned execution identity before a
     // callback can alias or re-key its containing objects.
     const executionIdentitySnapshot = snapshotExecutionIdentity(current);
+    const controllerSnapshot = canonicalSerialize(current.controller ?? null);
     const candidate = custom ? await custom(current, revision, now) : ({ ...current, ...guardedPatch, version: 2, id: current.id, kind: current.kind, revision, updatedAt: now, lastProgressAt: touchRevision ? now : current.lastProgressAt } as OperationRecordV2);
     const next = normalizeOperationRecord(candidate);
+    if (isTerminal(current.status) && (next.status !== current.status || next.phase !== current.phase
+      || next.finishedAt !== current.finishedAt || !sameCanonicalOptional(next.result, current.result)
+      || next.error !== current.error)) {
+      throw new Error("V2_TERMINAL_IMMUTABLE: terminal status, result, error, phase, and finish time cannot change through metadata mutation.");
+    }
     if (!sameOptionalCandidate(current.candidateRevision, next.candidateRevision)) {
       if (eventType !== "operation.candidate.bound") throw new Error("V2_CANDIDATE_IMMUTABLE: CandidateRevision changes must use the candidate binding lifecycle.");
       if (current.candidateRevision && next.candidateRevision?.revision !== current.candidateRevision.revision + 1) throw new Error("V2_CANDIDATE_IMMUTABLE: CandidateRevision must advance by exactly one revision.");
       if (!current.candidateRevision && next.candidateRevision?.revision !== 1) throw new Error("V2_CANDIDATE_IMMUTABLE: the first CandidateRevision must start at revision 1.");
     }
     assertExecutionIdentityTransition(next, eventType, executionIdentitySnapshot);
+    assertControllerTransition(controllerSnapshot, next.controller, eventType);
     await commitOperationRecord(stateRoot, file, next, eventType, Object.keys(patch));
     return next;
   });
@@ -442,17 +1111,19 @@ function assertExecutionIdentityTransition(
   snapshot: ExecutionIdentityTransitionSnapshot
 ): void {
   const semanticsEvent = "operation.execution-semantics.bound";
+  const productChoiceSemanticsEvent = "operation.human-decision.semantics-bound";
   const semanticsChanged = snapshot.executionSemanticsDigest !== next.executionSemanticsDigest;
-  if (semanticsChanged && eventType !== semanticsEvent) {
+  if (semanticsChanged && eventType !== semanticsEvent && eventType !== productChoiceSemanticsEvent) {
     throw new Error("EXECUTION_SEMANTICS_IMMUTABLE: executionSemanticsDigest may change only through operation.execution-semantics.bound.");
   }
-  if (eventType === semanticsEvent && next.executionSemanticsDigest !== undefined && !/^[a-f0-9]{64}$/.test(next.executionSemanticsDigest)) {
+  if ((eventType === semanticsEvent || eventType === productChoiceSemanticsEvent) && next.executionSemanticsDigest !== undefined && !/^[a-f0-9]{64}$/.test(next.executionSemanticsDigest)) {
     throw new Error("EXECUTION_SEMANTICS_INVALID: semantics digest must be a lowercase SHA-256 digest.");
   }
 
-  const semanticsRebind = eventType === semanticsEvent && snapshot.executionSemanticsDigest !== undefined && semanticsChanged;
+  const semanticsRebind = (eventType === semanticsEvent || eventType === productChoiceSemanticsEvent) && snapshot.executionSemanticsDigest !== undefined && semanticsChanged;
   const canInvalidate = new Set(["operation.candidate.bound", "operation.controller.claimed"]);
   if (semanticsRebind) canInvalidate.add(semanticsEvent);
+  if (eventType === productChoiceSemanticsEvent) canInvalidate.add(productChoiceSemanticsEvent);
   assertOperationPolicyTransition(snapshot.resolvedOperationPolicyCanonical, next.resolvedOperationPolicy, eventType, canInvalidate);
   const bindingParticipantIds = new Set([...snapshot.participantIds, ...Object.keys(next.participants)]);
   const bindingChanges = [...bindingParticipantIds].flatMap((id) => {
@@ -480,6 +1151,13 @@ function assertExecutionIdentityTransition(
       throw new Error("EXECUTION_BINDING_IMMUTABLE: changed execution semantics must clear every participant execution binding.");
     }
   }
+  if (eventType === productChoiceSemanticsEvent) {
+    if (!semanticsChanged || next.operationExecutionRevision !== snapshot.operationExecutionRevision! + 1
+      || next.resolvedOperationPolicy !== undefined
+      || Object.values(next.participants).some((participant) => participant.executionBinding !== undefined)) {
+      throw new Error("DECISION_EXECUTION_REBIND_REQUIRED: product-choice semantics must advance the execution revision, clear policy, and invalidate participant bindings.");
+    }
+  }
 
   assertOperationExecutionRevisionTransition(snapshot, next, eventType, semanticsChanged);
 }
@@ -494,12 +1172,13 @@ function assertOperationExecutionRevisionTransition(
   const following = next.operationExecutionRevision;
   const candidateEvent = "operation.candidate.bound";
   const semanticsEvent = "operation.execution-semantics.bound";
+  const productChoiceSemanticsEvent = "operation.human-decision.semantics-bound";
 
-  if (eventType === candidateEvent || eventType === semanticsEvent) {
+  if (eventType === candidateEvent || eventType === semanticsEvent || eventType === productChoiceSemanticsEvent) {
     if (!Number.isSafeInteger(previous) || previous! < 1) {
       throw new Error("UNSUPPORTED_OPERATION_EXECUTION_REVISION: migrate this operation record before changing execution identity.");
     }
-    const advances = eventType === candidateEvent
+    const advances = eventType === candidateEvent || eventType === productChoiceSemanticsEvent
       || (eventType === semanticsEvent && snapshot.executionSemanticsDigest !== undefined && semanticsChanged);
     const expected = previous! + (advances ? 1 : 0);
     if (following !== expected) {
@@ -537,8 +1216,29 @@ function assertOperationPolicyTransition(currentCanonical: string | undefined, n
   }
   throw new Error("EXECUTION_POLICY_IMMUTABLE: frozen ResolvedOperationPolicy changes require candidate assembly, controller takeover, or execution-semantics recompilation.");
 }
+function assertControllerTransition(currentCanonical: string, next: OperationControllerBinding | undefined, eventType: string): void {
+  if (eventType === "operation.controller.claimed") return;
+  const nextCanonical = canonicalSerialize(next ?? null);
+  if (currentCanonical === nextCanonical) return;
+  if (eventType === "operation.controller.process-bound") {
+    const current = JSON.parse(currentCanonical) as OperationControllerBinding | null;
+    if (!current || !next || !Number.isSafeInteger(next.pid) || next.pid! < 1
+      || next.epoch !== current.epoch
+      || next.ownerId !== current.ownerId
+      || next.tokenDigest !== current.tokenDigest
+      || next.claimedAt !== current.claimedAt
+      || next.previousOwnerId !== current.previousOwnerId) {
+      throw new Error("V2_CONTROLLER_BINDING_IMMUTABLE: process binding may update only the current controller pid.");
+    }
+    return;
+  }
+  throw new Error("V2_CONTROLLER_BINDING_IMMUTABLE: controller ownership changes require the claim lifecycle.");
+}
 function sameOptionalCandidate(left: CandidateRevisionV1 | undefined, right: CandidateRevisionV1 | undefined): boolean {
   return left === undefined || right === undefined ? left === right : candidateRevisionsEqual(left, right);
+}
+function sameCanonicalOptional(left: unknown, right: unknown): boolean {
+  return left === undefined || right === undefined ? left === right : canonicalSerialize(left) === canonicalSerialize(right);
 }
 async function commitOperationRecord(root: string, file: string, record: OperationRecordV2, type: string, changed?: string[], details?: Record<string, unknown>): Promise<void> {
   const event: OperationEvent = { version: 1, operationId: record.id, revision: record.revision, at: new Date().toISOString(), type, status: record.status, phase: record.phase, changed, details };

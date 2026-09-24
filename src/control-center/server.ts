@@ -48,8 +48,8 @@ export interface LocalControlCenterOptionsV1 {
   host?: "127.0.0.1" | "localhost";
   port?: number;
   snapshot?: () => Promise<ControlCenterSnapshotInputV1> | ControlCenterSnapshotInputV1;
-  onDecision?: (decision: ControlCenterDecisionInputV1) => Promise<ControlCenterActionResultV1> | ControlCenterActionResultV1;
-  onCancelOperation?: (operationId: string) => Promise<ControlCenterActionResultV1> | ControlCenterActionResultV1;
+  onDecision?: (decision: ControlCenterDecisionInputV1, actorId: string) => Promise<ControlCenterActionResultV1> | ControlCenterActionResultV1;
+  onCancelOperation?: (operationId: string, actorId: string) => Promise<ControlCenterActionResultV1> | ControlCenterActionResultV1;
   healthProbeTimeoutMs?: number;
   paseoGateway?: PaseoGatewayV1;
   paseo?: { root: string; leadId?: string; participantLabels?: Record<string, string>; provider?: string; model?: string };
@@ -77,7 +77,7 @@ const DEFAULT_HEALTH_PROBE_TIMEOUT_MS = 1_000;
 const CONTROL_SESSION_TTL_SECONDS = 12 * 60 * 60;
 const CONTROL_SESSION_COOKIE = "aeh_control_session";
 
-interface ControlSessionV1 { csrfToken: string; expiresAt: number; }
+interface ControlSessionV1 { csrfToken: string; actorId: string; expiresAt: number; }
 
 interface ProjectHomeBindingV1 {
   registry: ProjectRegistryV1;
@@ -220,20 +220,24 @@ export class LocalControlCenterV1 {
         return this.json(response, 200, { version: CONTROL_CENTER_CONTRACT_VERSION, selection, project: this.publicProject(project) });
       }
       if (request.method === "POST" && url.pathname === "/api/v1/decisions") {
-        this.assertCsrf(request);
-        const result = this.onDecision ? await this.onDecision(await this.body(request) as ControlCenterDecisionInputV1) : { accepted: false, reason: "no decision handler configured" };
+        const session = this.assertCsrf(request);
+        const result = this.onDecision ? await this.onDecision(await this.body(request) as ControlCenterDecisionInputV1, session.actorId) : { accepted: false, reason: "no decision handler configured" };
         return this.json(response, 200, { version: CONTROL_CENTER_CONTRACT_VERSION, ...result });
       }
       const cancel = /^\/api\/v1\/operations\/([^/]+)\/cancel$/.exec(url.pathname);
       if (request.method === "POST" && cancel) {
-        this.assertCsrf(request);
+        const session = this.assertCsrf(request);
         const operationId = decodeURIComponent(cancel[1]);
-        const result = this.onCancelOperation ? await this.onCancelOperation(operationId) : { accepted: false, reason: "no cancellation handler configured" };
+        const result = this.onCancelOperation ? await this.onCancelOperation(operationId, session.actorId) : { accepted: false, reason: "no cancellation handler configured" };
         return this.json(response, 200, { version: CONTROL_CENTER_CONTRACT_VERSION, ...result });
       }
       this.json(response, 404, { error: "not found" });
     } catch (error) {
-      const status = error instanceof ControlCenterSecurityError ? error.statusCode : 400;
+      const status = error instanceof ControlCenterSecurityError
+        ? error.statusCode
+        : error && typeof error === "object" && "statusCode" in error && Number.isInteger((error as { statusCode?: unknown }).statusCode)
+          ? (error as { statusCode: number }).statusCode
+          : 400;
       this.json(response, status, { error: error instanceof Error ? error.message : String(error) });
     }
   }
@@ -403,12 +407,13 @@ export class LocalControlCenterV1 {
     if (!origin || !expectedOrigin || origin !== expectedOrigin) throw new ControlCenterSecurityError("Control Center mutations require the current loopback Origin.");
   }
 
-  private assertCsrf(request: IncomingMessage): void {
+  private assertCsrf(request: IncomingMessage): ControlSessionV1 {
     const session = this.sessionFor(request);
     const supplied = request.headers["x-aeh-csrf"];
     if (!session || typeof supplied !== "string" || supplied.length !== session.csrfToken.length || !timingSafeEqual(Buffer.from(supplied), Buffer.from(session.csrfToken))) {
       throw new ControlCenterSecurityError("mutating Control Center requests require the paired session CSRF token.");
     }
+    return session;
   }
 
   private async pair(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -420,7 +425,8 @@ export class LocalControlCenterV1 {
     this.pairingNonce = undefined;
     const sessionId = randomBytes(32).toString("base64url");
     const csrfToken = randomBytes(32).toString("base64url");
-    this.sessions.set(sessionId, { csrfToken, expiresAt: Date.now() + CONTROL_SESSION_TTL_SECONDS * 1_000 });
+    const actorId = `human:control-center:${sha256Utf8(sessionId).slice(0, 32)}`;
+    this.sessions.set(sessionId, { csrfToken, actorId, expiresAt: Date.now() + CONTROL_SESSION_TTL_SECONDS * 1_000 });
     response.setHeader("Set-Cookie", `${CONTROL_SESSION_COOKIE}=${sessionId}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${CONTROL_SESSION_TTL_SECONDS}`);
     this.json(response, 200, { version: CONTROL_CENTER_CONTRACT_VERSION, csrfToken });
   }
@@ -444,7 +450,7 @@ export class LocalControlCenterV1 {
       if (size > MAX_BODY_BYTES) throw new Error("request body exceeds the Control Center limit.");
       chunks.push(buffer);
     }
-    if (!size) return {};
+    if (!size) return {} as ControlCenterDecisionInputV1 & ProjectSelectionBodyV1 & LeadMessageBodyV1 & PairBodyV1;
     try {
       const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("body must be an object");
@@ -697,7 +703,8 @@ function contentTypeFor(extension: string): string {
 const OPERATION_EVENT_TYPES = new Set<ControlCenterEventTypeV1>([
   "operation.created", "operation.updated", "operation.metadata", "operation.terminal", "operation.stage",
   "operation.candidate.bound", "operation.lead.bound", "operation.participant.registered", "operation.participant.updated",
-  "operation.participant.receipt", "operation.supervisor.registered", "operation.supervisor.updated"
+  "operation.participant.receipt", "operation.supervisor.registered", "operation.supervisor.updated",
+  "operation.controller.claimed", "operation.controller.process-bound", "operation.lead.acknowledged"
 ]);
 
 function isOperationEvent(value: unknown): value is OperationEvent {

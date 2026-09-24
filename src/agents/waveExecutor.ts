@@ -20,6 +20,7 @@ import { compileExecutionBlueprint, type ExecutionBlueprint, type ParticipantAss
 import { createWorkGraph } from "../architecture/workGraph.js";
 import { bindOperationExecutionSemantics, bindResolvedOperationPolicy, currentOperationContext, loadOperation } from "../operations/state.js";
 import { compileResolvedOperationPolicy } from "../architecture/executionIdentity.js";
+import { configuredExternalEffects, requiredHumanActionAuthorizations } from "../security/actionPolicy.js";
 import type { ExecutionCatalogV1 } from "../architecture/executionCatalog.js";
 import type { CandidateImpactAssessmentRuntimeV1, CandidateImpactV1, ChangeSetV1 } from "../candidates/assembler.js";
 import { materializeCandidateState } from "../candidates/direct.js";
@@ -176,6 +177,9 @@ async function compileWaveExecutionBlueprint(args: {
   const controllerEpoch = operation.controller?.epoch;
   if (!candidate || !Number.isSafeInteger(operation.operationExecutionRevision) || operation.operationExecutionRevision! < 1 || !Number.isSafeInteger(controllerEpoch) || controllerEpoch! < 0) throw new AehError("EXECUTION_BLUEPRINT_INVALID", "Current candidate, operation execution revision, and controller epoch are required to compile an execution blueprint.");
   const knowledgePolicy = knowledgeResolutions.map((resolution) => ({ packDigest: resolution.pack?.packDigest, trustDecisionDigest: resolution.acceptedSkill?.trustDecision.decisionDigest })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  const allowedExternalEffects = configuredExternalEffects(input.config, operation.kind);
+  const humanDecisionRequirements = requiredHumanActionAuthorizations(allowedExternalEffects);
+  const deliveryPolicy = { githubEnabled: input.config.delivery?.github?.enabled === true, paseoEnabled: input.config.delivery?.paseo?.enabled === true, allowedExternalEffects };
   const resolvedOperationPolicy = compileResolvedOperationPolicy({
     projectId: candidate.projectId ?? input.config.project.name,
     operationId: operation.id,
@@ -189,17 +193,17 @@ async function compileWaveExecutionBlueprint(args: {
     policyVersions: { resolvedOperationPolicy: "1", roleInvocationPolicy: "1", executionBlueprint: "2", executionBinding: "2", skillManifest: "1" },
     policyDigests: {
       validation: validationResolution.digest,
-      delivery: sha256Canonical({ githubEnabled: input.config.delivery?.github?.enabled === true, paseoEnabled: input.config.delivery?.paseo?.enabled === true }),
+      delivery: sha256Canonical({ ...deliveryPolicy, humanDecisionRequirements }),
       knowledge: sha256Canonical(knowledgePolicy),
       context: sha256Canonical(input.config.context ?? null)
     },
     validationPolicy: validationResolution,
     reviewPolicy: { minimumAssurance: graph.assurance, reviewDimensions: plan.workUnits.flatMap((unit) => unit.changeKinds.map((kind) => `change:${kind}`)).sort(), independentReviewRequired: graph.assurance === "ELEVATED" || graph.assurance === "CRITICAL" },
-    deliveryPolicy: { githubEnabled: input.config.delivery?.github?.enabled === true, paseoEnabled: input.config.delivery?.paseo?.enabled === true },
+    deliveryPolicy,
     knowledgePolicy: { resolutions: knowledgePolicy },
     contextPolicy: input.config.context ?? { mode: "disabled" },
-    allowedExternalEffects: [],
-    humanDecisionRequirements: []
+    allowedExternalEffects,
+    humanDecisionRequirements
   });
   const persisted = operation.resolvedOperationPolicy?.digest === resolvedOperationPolicy.digest
     ? operation

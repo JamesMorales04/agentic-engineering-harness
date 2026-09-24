@@ -1,3 +1,4 @@
+import { saveOwnedOperation } from "./helpers/ownedOperation.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -18,9 +19,9 @@ import { outputJsonSchema } from "../src/agents/outputContracts.js";
 import type { AgentExecutionSelection } from "../src/agents/types.js";
 import { sha256Canonical } from "../src/core/digest.js";
 import type { HarnessProjectConfig, TaskContract } from "../src/core/types.js";
-import { compileExecutionBinding, compileSkillManifest, type ExecutionBindingV2, type SkillManifestScopeV1, type SkillManifestV1 } from "../src/architecture/executionIdentity.js";
+import { compileExecutionBinding, compileResolvedOperationPolicy, compileSkillManifest, type ExecutionBindingV2, type SkillManifestScopeV1, type SkillManifestV1 } from "../src/architecture/executionIdentity.js";
 import { applySkillTrustGate, knowledgePack, type KnowledgeGapV1 } from "../src/knowledge/index.js";
-import { loadOperation, registerOperationAgent, saveOperation } from "../src/operations/state.js";
+import { bindResolvedOperationPolicy, currentControllerEpoch, loadOperation, registerOperationAgent } from "../src/operations/state.js";
 import { createPromptManifest } from "../src/context/runtimeV2.js";
 import { prepareExecutionAuthority } from "../src/security/executionLease.js";
 import { executeAgentPrompt, prepareAgentExecutionBinding } from "../src/workers/agentPrompt.js";
@@ -67,9 +68,18 @@ describe("public Paseo launch result provenance", () => {
     process.env.AEH_OPERATION_KIND = "run";
     process.env.AEH_CONTROL_ROOT = root;
     const now = new Date().toISOString();
-    await saveOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "review", root, payload: { taskId: "TASK-LAUNCH" }, createdAt: now, updatedAt: now, operationExecutionRevision: 1 } as never);
+    await saveOwnedOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "review", root, payload: { taskId: "TASK-LAUNCH" }, createdAt: now, updatedAt: now, operationExecutionRevision: 1 } as never);
     await registerOperationAgent(root, operationId, { id: "participant:security-reviewer", logicalAgent: "security-reviewer", role: "Reviewer", phase: "review" });
-    const operation = await loadOperation(root, operationId);
+    let operation = await loadOperation(root, operationId);
+    operation = await bindResolvedOperationPolicy(root, operationId, compileResolvedOperationPolicy({
+      projectId: operation.candidateRevision!.projectId!, operationId,
+      operationExecutionRevision: operation.operationExecutionRevision!,
+      candidateRevision: operation.candidateRevision!.revision,
+      candidateDigest: operation.candidateRevision!.identityDigest,
+      controllerEpoch: currentControllerEpoch(operation), intent: "result provenance test", route: "DIRECT", minimumAssurance: "STANDARD",
+      policyVersions: { resolvedOperationPolicy: "1" }, policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {},
+      allowedExternalEffects: [], humanDecisionRequirements: []
+    }));
     const candidate = operation.candidateRevision!;
     const selection: AgentExecutionSelection = {
       logicalAgent: "security-reviewer",
@@ -93,7 +103,7 @@ describe("public Paseo launch result provenance", () => {
     const config: HarnessProjectConfig = { version: 1, project: { name: "result-provenance-test" }, orchestration: { provider: "paseo" } };
     const contract: TaskContract = { version: 1, task: { id: "TASK-LAUNCH", title: "Review result provenance" }, routing: { route: "DIRECT", assurance: "STANDARD", intent: "audit" }, scope: { allowed: ["src/**"] } };
     const participantId = "participant:security-reviewer";
-    const skillManifest = acceptedEphemeralManifest({ operationId, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, participantId }, ["Check the source claim exactly.", "Record the evidence digest."], "security-review");
+    const skillManifest = acceptedEphemeralManifest({ operationId, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch: currentControllerEpoch(operation), participantId }, ["Check the source claim exactly.", "Record the evidence digest."], "security-review");
     selection.permissions.read = "allow";
     const capabilityAuthority = await prepareExecutionAuthority(root, selection, { participantId, phase: "review", required: true });
     if (!capabilityAuthority) throw new Error("test requires controller-issued participant authority");
@@ -141,7 +151,7 @@ describe("public Paseo launch result provenance", () => {
       role: "Reviewer",
       taskId: "TASK-LAUNCH",
       candidate: expect.objectContaining({ identityDigest: candidate.identityDigest }),
-      controllerEpoch: 0,
+      controllerEpoch: currentControllerEpoch(operation),
       runtime: expect.objectContaining({ provider: "openai", model: "test-model", runtimeId: "codex", sessionId: expect.any(String) }),
       outputContract: "reviewer",
       outputSchemaDigest: sha256Canonical(outputJsonSchema("reviewer")),
@@ -154,7 +164,7 @@ describe("public Paseo launch result provenance", () => {
       operationId,
       operationExecutionRevision: 1,
       candidateDigest: candidate.identityDigest,
-      controllerEpoch: 0,
+      controllerEpoch: currentControllerEpoch(operation),
       participantId,
       participantGeneration: expect.any(String),
       contextManifestDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
@@ -168,7 +178,7 @@ describe("public Paseo launch result provenance", () => {
   });
 
   it.each(["direct", "podman"] as const)("propagates the same full binding through the %s production launch envelope", async (transport) => {
-    const { root, operationId, candidate, selection, config, contract, participantId } = await launchFixture(`RUN-RESULT-${transport.toUpperCase()}`, transport);
+    const { root, operationId, candidate, selection, config, contract, participantId, controllerEpoch } = await launchFixture(`RUN-RESULT-${transport.toUpperCase()}`, transport);
     const structured = { verdict: "PASS", findings: [], finalizationSafety: "SAFE", followUp: [] };
     runtime.runDirectWorkerProcess.mockResolvedValue({ exitCode: 0, stdout: runtimeSessionOutput("codex-thread-test", structured), stderr: "" });
     runtime.runExecutable.mockImplementation(async (command: string) => command === "podman"
@@ -179,7 +189,7 @@ describe("public Paseo launch result provenance", () => {
       outputContract: "reviewer",
       phase: "review",
       participantId,
-      capabilityAuthority: { version: 1, operationId, participantId, projectId: candidate.projectId, candidateRevision: candidate, candidateDigest: candidate.identityDigest, controllerEpoch: 0, leases: [] }
+      capabilityAuthority: { version: 1, operationId, participantId, projectId: candidate.projectId, candidateRevision: candidate, candidateDigest: candidate.identityDigest, controllerEpoch, leases: [] }
     });
     const binding = result.executionBinding as unknown as Record<string, unknown>;
     expect(binding).toEqual(expect.objectContaining({ version: 2, operationId, participantId, candidateDigest: candidate.identityDigest, contextManifestDigest: expect.stringMatching(/^[a-f0-9]{64}$/), promptManifestDigest: expect.stringMatching(/^[a-f0-9]{64}$/) }));
@@ -202,7 +212,7 @@ describe("public Paseo launch result provenance", () => {
   });
 
   it("materializes and reuses the actual OpenCode direct session before binding", async () => {
-    const { root, operationId, candidate, selection, config, contract, participantId } = await launchFixture("RUN-OPENCODE-DIRECT-SESSION", "direct");
+    const { root, operationId, candidate, selection, config, contract, participantId, controllerEpoch } = await launchFixture("RUN-OPENCODE-DIRECT-SESSION", "direct");
     selection.runtimeName = "opencode";
     selection.runtimeAdapter = "opencode";
     selection.modelId = "openai/gpt-test";
@@ -211,7 +221,7 @@ describe("public Paseo launch result provenance", () => {
 
     const result = await executeAgentPrompt(root, config, contract, selection, "Review this candidate.", {
       outputContract: "reviewer", phase: "review", participantId,
-      capabilityAuthority: { version: 1, operationId, participantId, projectId: candidate.projectId, candidateRevision: candidate, candidateDigest: candidate.identityDigest, controllerEpoch: 0, leases: [] }
+      capabilityAuthority: { version: 1, operationId, participantId, projectId: candidate.projectId, candidateRevision: candidate, candidateDigest: candidate.identityDigest, controllerEpoch, leases: [] }
     });
 
     expect(runtime.prepareOpenCodeSession).toHaveBeenCalledOnce();
@@ -223,7 +233,7 @@ describe("public Paseo launch result provenance", () => {
   });
 
   it.each(["direct", "podman", "paseo"] as const)("rejects a missing or different actual session returned by %s", async (transport) => {
-    const { root, operationId, candidate, selection, config, contract, participantId } = await launchFixture(`RUN-SESSION-MISMATCH-${transport.toUpperCase()}`, transport);
+    const { root, operationId, candidate, selection, config, contract, participantId, controllerEpoch } = await launchFixture(`RUN-SESSION-MISMATCH-${transport.toUpperCase()}`, transport);
     const structured = { verdict: "PASS", findings: [], finalizationSafety: "SAFE", followUp: [] };
     if (transport === "direct") runtime.runDirectWorkerProcess.mockResolvedValue({ exitCode: 0, stdout: runtimeSessionOutput("different-codex-thread", structured), stderr: "" });
     if (transport === "podman") runtime.runExecutable.mockImplementation(async (command: string) => command === "podman"
@@ -240,7 +250,7 @@ describe("public Paseo launch result provenance", () => {
   });
 
   it("fails closed before first prompt when Paseo cannot materialize a provider session id", async () => {
-    const { root, selection, config, contract, participantId } = await launchFixture("RUN-PASEO-SESSION-ID-MISSING", "paseo");
+    const { root, selection, config, contract, participantId, controllerEpoch } = await launchFixture("RUN-PASEO-SESSION-ID-MISSING", "paseo");
     runtime.materializeManagedPaseoAgent.mockResolvedValue({ id: undefined, exitCode: 0, stdout: "", stderr: "", transport: "sdk", status: "idle" });
     await expect(executeAgentPrompt(root, config, contract, selection, "Review this candidate.", { outputContract: "reviewer", phase: "review", participantId }))
       .rejects.toThrow("PASEO_EXECUTION_SESSION_PREPARATION_REQUIRED");
@@ -249,8 +259,8 @@ describe("public Paseo launch result provenance", () => {
   });
 
   it.each(["direct", "podman", "paseo"] as const)("rejects replayed and altered identity across the %s production launch boundary", async (transport) => {
-    const { root, operationId, candidate, selection, config, contract, participantId } = await launchFixture(`RUN-REJECT-${transport.toUpperCase()}`, transport);
-    const authority = { version: 1 as const, operationId, participantId, projectId: candidate.projectId, candidateRevision: candidate, candidateDigest: candidate.identityDigest, controllerEpoch: 0, leases: [] };
+    const { root, operationId, candidate, selection, config, contract, participantId, controllerEpoch } = await launchFixture(`RUN-REJECT-${transport.toUpperCase()}`, transport);
+    const authority = { version: 1 as const, operationId, participantId, projectId: candidate.projectId, candidateRevision: candidate, candidateDigest: candidate.identityDigest, controllerEpoch, leases: [] };
     const prepared = await import("../src/workers/agentPrompt.js").then(({ prepareAgentExecutionBinding }) => prepareAgentExecutionBinding(
       root, config, contract, selection, "Review this exact candidate.", { participantId, phase: "review", capabilityAuthority: authority, executionSessionId: "fixture-runtime-session" }
     ));
@@ -284,12 +294,12 @@ describe("public Paseo launch result provenance", () => {
   });
 
   it("does not project accepted ephemeral procedures without current participant authority", async () => {
-    const { root, operationId, candidate, selection, config, contract, participantId } = await launchFixture("RUN-SKILL-WITHOUT-AUTHORITY", "direct");
+    const { root, operationId, candidate, selection, config, contract, participantId, controllerEpoch } = await launchFixture("RUN-SKILL-WITHOUT-AUTHORITY", "direct");
     delete process.env.AEH_OPERATION_ID;
     delete process.env.AEH_OPERATION_KIND;
     delete process.env.AEH_CONTROL_ROOT;
     selection.permissions.read = "allow";
-    const skillManifest = acceptedEphemeralManifest({ operationId, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, participantId }, ["Only assigned participant."], "review");
+    const skillManifest = acceptedEphemeralManifest({ operationId, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch, participantId }, ["Only assigned participant."], "review");
     await expect(executeAgentPrompt(root, config, contract, selection, "Review this candidate.", { outputContract: "reviewer", participantId, skillManifest }))
       .rejects.toThrow("SKILL_MANIFEST_AUTHORITY_REQUIRED");
   });
@@ -297,9 +307,9 @@ describe("public Paseo launch result provenance", () => {
 
 describe("accepted ephemeral procedure transport projection", () => {
   it.each(["direct", "podman", "paseo"] as const)("delivers the exact accepted procedure bytes to the assigned authorized %s participant and binds the manifest digest", async (transport) => {
-    const { root, operationId, candidate, selection, config, contract, participantId } = await launchFixture(`RUN-SKILL-PROJECT-${transport.toUpperCase()}`, transport);
+    const { root, operationId, candidate, selection, config, contract, participantId, controllerEpoch } = await launchFixture(`RUN-SKILL-PROJECT-${transport.toUpperCase()}`, transport);
     selection.permissions.read = "allow";
-    const skillManifest = acceptedEphemeralManifest({ operationId, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, participantId });
+    const skillManifest = acceptedEphemeralManifest({ operationId, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch, participantId });
     const expectedProjection = procedureProjection(skillManifest);
     expect(skillManifest.entries[0]?.procedure).toEqual(ephemeralProcedure);
     expect(skillManifest.entries[0]?.procedureDigest).toBe(sha256Canonical(ephemeralProcedure));
@@ -352,10 +362,10 @@ describe("accepted ephemeral procedure transport projection", () => {
   });
 
   it.each(["direct", "podman", "paseo"] as const)("rejects an ephemeral manifest assigned to another participant before any %s launch", async (transport) => {
-    const { root, operationId, candidate, selection, config, contract, participantId } = await launchFixture(`RUN-SKILL-UNASSIGNED-${transport.toUpperCase()}`, transport);
+    const { root, operationId, candidate, selection, config, contract, participantId, controllerEpoch } = await launchFixture(`RUN-SKILL-UNASSIGNED-${transport.toUpperCase()}`, transport);
     const capabilityAuthority = await prepareExecutionAuthority(root, selection, { participantId, phase: "review", required: true });
     if (!capabilityAuthority) throw new Error("test requires controller-issued participant authority");
-    const foreignManifest = acceptedEphemeralManifest({ operationId, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, participantId: "participant:unassigned-reviewer" });
+    const foreignManifest = acceptedEphemeralManifest({ operationId, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch, participantId: "participant:unassigned-reviewer" });
     await expect(executeAgentPrompt(root, config, contract, selection, "Review this candidate.", {
       outputContract: "reviewer", phase: "review", participantId, skillManifest: foreignManifest, capabilityAuthority
     })).rejects.toThrow("SKILL_MANIFEST_ASSIGNMENT_MISMATCH");
@@ -363,11 +373,11 @@ describe("accepted ephemeral procedure transport projection", () => {
   });
 
   it.each(["direct", "podman", "paseo"] as const)("rejects accepted ephemeral projection without current controller authority before any %s launch", async (transport) => {
-    const { root, operationId, candidate, selection, config, contract, participantId } = await launchFixture(`RUN-SKILL-NO-AUTHORITY-${transport.toUpperCase()}`, transport);
+    const { root, operationId, candidate, selection, config, contract, participantId, controllerEpoch } = await launchFixture(`RUN-SKILL-NO-AUTHORITY-${transport.toUpperCase()}`, transport);
     delete process.env.AEH_OPERATION_ID;
     delete process.env.AEH_OPERATION_KIND;
     delete process.env.AEH_CONTROL_ROOT;
-    const skillManifest = acceptedEphemeralManifest({ operationId, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, participantId });
+    const skillManifest = acceptedEphemeralManifest({ operationId, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch, participantId });
     await expect(executeAgentPrompt(root, config, contract, selection, "Review this candidate.", {
       outputContract: "reviewer", phase: "review", participantId, skillManifest
     })).rejects.toThrow("SKILL_MANIFEST_AUTHORITY_REQUIRED");
@@ -375,9 +385,9 @@ describe("accepted ephemeral procedure transport projection", () => {
   });
 
   it("propagates a prepared ephemeral projection verbatim to the assigned participant", async () => {
-    const { root, operationId, candidate, selection, config, contract, participantId } = await launchFixture("RUN-SKILL-PREPARED", "direct");
+    const { root, operationId, candidate, selection, config, contract, participantId, controllerEpoch } = await launchFixture("RUN-SKILL-PREPARED", "direct");
     selection.permissions.read = "allow";
-    const skillManifest = acceptedEphemeralManifest({ operationId, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, participantId });
+    const skillManifest = acceptedEphemeralManifest({ operationId, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch, participantId });
     const prepared = await prepareAgentExecutionBinding(root, config, contract, selection, "Review this candidate.", {
       outputContract: "reviewer", phase: "review", participantId, skillManifest, executionSessionId: "fixture-runtime-session"
     });
@@ -411,9 +421,9 @@ describe("accepted ephemeral procedure transport projection", () => {
   });
 
   it("rejects a prepared prompt whose exact ephemeral procedure bytes were dropped before any launch", async () => {
-    const { root, selection, config, contract, participantId, operationId, candidate } = await launchFixture("RUN-SKILL-PREPARED-DROPPED", "direct");
+    const { root, selection, config, contract, participantId, operationId, candidate, controllerEpoch } = await launchFixture("RUN-SKILL-PREPARED-DROPPED", "direct");
     selection.permissions.read = "allow";
-    const skillManifest = acceptedEphemeralManifest({ operationId, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, participantId });
+    const skillManifest = acceptedEphemeralManifest({ operationId, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch, participantId });
     const prepared = await prepareAgentExecutionBinding(root, config, contract, selection, "Review this candidate.", {
       outputContract: "reviewer", phase: "review", participantId, skillManifest, executionSessionId: "fixture-runtime-session"
     });
@@ -443,7 +453,7 @@ describe("accepted ephemeral procedure transport projection", () => {
   });
 
   it("rejects an ID-only ephemeral manifest before any launch", async () => {
-    const { root, selection, config, contract, participantId } = await launchFixture("RUN-SKILL-ID-ONLY", "direct");
+    const { root, selection, config, contract, participantId, controllerEpoch } = await launchFixture("RUN-SKILL-ID-ONLY", "direct");
     selection.permissions.read = "allow";
     const capabilityAuthority = await prepareExecutionAuthority(root, selection, { participantId, phase: "review", required: true });
     if (!capabilityAuthority) throw new Error("test requires controller-issued participant authority");
@@ -461,7 +471,7 @@ const ephemeralProcedure = [
   "Record the accepted evidence digest before any edit."
 ];
 
-function acceptedEphemeralManifest(identity: { operationId: string; candidateRevision: number; candidateDigest: string; participantId: string }, procedure = ephemeralProcedure, competency = "security-review"): SkillManifestV1 {
+function acceptedEphemeralManifest(identity: { operationId: string; candidateRevision: number; candidateDigest: string; controllerEpoch: number; participantId: string }, procedure = ephemeralProcedure, competency = "security-review"): SkillManifestV1 {
   const sourceUri = "https://example.test/official/skill-evidence";
   const cacheKey = `skill-test:${identity.operationId}:${identity.participantId}`;
   const pack = knowledgePack({
@@ -481,7 +491,7 @@ function acceptedEphemeralManifest(identity: { operationId: string; candidateRev
     procedureEvidence: procedure.map((_step, stepIndex) => ({ stepIndex, claimIds: [`claim-${stepIndex}`], sourceUris: [sourceUri] }))
   }, pack, gap)!;
   return compileSkillManifest({
-    scope: { operationId: identity.operationId, operationExecutionRevision: 1, candidateRevision: identity.candidateRevision, candidateDigest: identity.candidateDigest, controllerEpoch: 0, participantId: identity.participantId, workUnitIds: [`invocation:${identity.participantId}`], competencies: [competency] },
+    scope: { operationId: identity.operationId, operationExecutionRevision: 1, candidateRevision: identity.candidateRevision, candidateDigest: identity.candidateDigest, controllerEpoch: identity.controllerEpoch, participantId: identity.participantId, workUnitIds: [`invocation:${identity.participantId}`], competencies: [competency] },
     skills: [{ id: accepted.id, kind: "ephemeral", competencies: [{ id: accepted.competency }], proceduralSteps: accepted.procedure, sourcePackDigest: accepted.sourcePackDigest, trustDecisionDigest: accepted.trustDecision.decisionDigest, groundedProcedure: accepted.groundedProcedure }]
   });
 }
@@ -503,16 +513,26 @@ async function launchFixture(operationId: string, transport: "direct" | "podman"
   process.env.AEH_OPERATION_KIND = "run";
   process.env.AEH_CONTROL_ROOT = root;
   const now = new Date().toISOString();
-  await saveOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "review", root, payload: { taskId: "TASK-TRANSPORT" }, createdAt: now, updatedAt: now, operationExecutionRevision: 1 } as never);
+  await saveOwnedOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "review", root, payload: { taskId: "TASK-TRANSPORT" }, createdAt: now, updatedAt: now, operationExecutionRevision: 1 } as never);
   const participantId = `participant:${transport}-reviewer`;
   await registerOperationAgent(root, operationId, { id: participantId, logicalAgent: `${transport}-reviewer`, role: "Reviewer", phase: "review" });
   const operation = await loadOperation(root, operationId);
+  const controllerEpoch = currentControllerEpoch(operation);
+  await bindResolvedOperationPolicy(root, operationId, compileResolvedOperationPolicy({
+    projectId: operation.candidateRevision!.projectId!, operationId,
+    operationExecutionRevision: operation.operationExecutionRevision!,
+    candidateRevision: operation.candidateRevision!.revision,
+    candidateDigest: operation.candidateRevision!.identityDigest,
+    controllerEpoch, intent: "result transport test", route: "DIRECT", minimumAssurance: "STANDARD",
+    policyVersions: { resolvedOperationPolicy: "1" }, policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {},
+    allowedExternalEffects: [], humanDecisionRequirements: []
+  }));
   const selection: AgentExecutionSelection = {
     logicalAgent: `${transport}-reviewer`, role: "Reviewer", domains: [], runtimeName: transport === "direct" ? "codex" : "opencode", runtimeAdapter: transport === "direct" ? "codex" : "opencode", paseoProvider: "codex", modelAlias: "test-model", modelId: "test-model", modelName: "test-model", modelProvider: "openai", transport, skills: [], mcps: [], permissions: { read: "allow", write: "deny", shell: "deny", network: "deny", delegate: "deny" }, outputContract: "reviewer", args: [], runtimeCapabilities: { structuredOutput: true, sessions: true, mcp: true, stdioMcp: true, localMcp: true }
   };
   const config: HarnessProjectConfig = { version: 1, project: { name: "result-transport-test" }, orchestration: { provider: transport }, ...(transport === "podman" ? { security: { sandbox: { image: "test/worker:latest" } } } : {}) };
   const contract: TaskContract = { version: 1, task: { id: "TASK-TRANSPORT", title: "Review launch binding" }, routing: { route: "DIRECT", assurance: "STANDARD", intent: "audit" }, scope: { allowed: ["src/**"] } };
-  return { root, operationId, candidate: operation.candidateRevision!, selection, config, contract, participantId };
+  return { root, operationId, candidate: operation.candidateRevision!, selection, config, contract, participantId, controllerEpoch };
 }
 
 async function createTestHome(): Promise<string> {

@@ -4,6 +4,12 @@ import type { AssuranceLevel, ImplementationRoute } from "./contracts.js";
 import type { ResourceClaimV1, WorkGraphV1 } from "./workGraph.js";
 import { roleProfile, type CanonicalRole, type ToolPackV1 } from "../participants/index.js";
 import type { GroundedProcedureStepV1 } from "../knowledge/index.js";
+import { TOOL_ACTION_KINDS_V1, type ToolActionKindV1 } from "../security/actionKinds.js";
+
+export interface HumanDecisionRequirementV1 {
+  kind: "ACTION_AUTHORIZATION";
+  action: ToolActionKindV1;
+}
 
 export interface ResolvedOperationPolicyV1 {
   version: 1;
@@ -24,7 +30,7 @@ export interface ResolvedOperationPolicyV1 {
   knowledgePolicy: unknown;
   contextPolicy: unknown;
   allowedExternalEffects: string[];
-  humanDecisionRequirements: unknown[];
+  humanDecisionRequirements: HumanDecisionRequirementV1[];
   digest: string;
 }
 
@@ -233,6 +239,8 @@ export function assertResolvedOperationPolicyV1(value: unknown): asserts value i
   const policy = value as ResolvedOperationPolicyV1;
   if (!policy.projectId || !policy.operationId || !policy.intent || !Number.isSafeInteger(policy.operationExecutionRevision) || policy.operationExecutionRevision < 1 || !Number.isSafeInteger(policy.candidateRevision) || policy.candidateRevision < 1 || !Number.isSafeInteger(policy.controllerEpoch) || policy.controllerEpoch < 0) throw new Error("RESOLVED_OPERATION_POLICY_INVALID: frozen policy identity is incomplete.");
   requiredDigest(policy.candidateDigest, "candidateDigest");
+  if (!Array.isArray(policy.allowedExternalEffects) || policy.allowedExternalEffects.some((action) => typeof action !== "string" || !TOOL_ACTION_KINDS_V1.includes(action as ToolActionKindV1))) throw new Error("RESOLVED_OPERATION_POLICY_INVALID: allowedExternalEffects must contain only registered tool action kinds.");
+  if (!Array.isArray(policy.humanDecisionRequirements) || policy.humanDecisionRequirements.some((requirement) => !requirement || requirement.kind !== "ACTION_AUTHORIZATION" || !TOOL_ACTION_KINDS_V1.includes(requirement.action))) throw new Error("RESOLVED_OPERATION_POLICY_INVALID: humanDecisionRequirements must be typed exact action authorizations.");
   const { digest, ...body } = policy;
   if (!/^[a-f0-9]{64}$/.test(digest) || sha256Canonical(body) !== digest) throw new Error("RESOLVED_OPERATION_POLICY_INVALID: frozen policy digest is inconsistent.");
 }

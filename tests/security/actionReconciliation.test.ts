@@ -464,15 +464,18 @@ async function reconcileBranch(root: string, expectedSha: string, observedSha: s
 
 function makeIntent(action: ToolActionKindV1, payload: unknown, overrides: Partial<ActionIntentV1> = {}): ActionIntentV1 {
   return {
-    version: 1,
+    version: 2,
     intentId: `action-intent:${action.replace(/[^a-z]+/g, "-")}`,
     actionKey: `delivery:${action}`,
     operationId: "RUN-RECONCILE-1",
     participantId: "participant:lead",
     role: "Lead/Director",
     candidate: createCandidateRevisionV1({ operationId: "RUN-RECONCILE-1", candidateId: "candidate:reconcile", projectId: "project-test", taskId: "T-1", revision: 1, sourceDigest: "a".repeat(64), createdAt: FIXED_NOW }),
+    operationExecutionRevision: 1,
+    policyDigest: "d".repeat(64),
     action,
     impact: classifyToolActionImpact(action),
+    controllerEpoch: 1,
     payloadDigest: sha256Canonical(payload),
     authorityBindingDigest: "b".repeat(64),
     requestDigest: "c".repeat(64),

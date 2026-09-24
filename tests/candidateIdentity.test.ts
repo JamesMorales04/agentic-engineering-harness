@@ -1,3 +1,4 @@
+import { saveOwnedOperation } from "./helpers/ownedOperation.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -42,7 +43,7 @@ describe("candidate source identity", () => {
     execFileSync("git", ["commit", "-m", "base"], { cwd: root, stdio: "ignore" });
     await fs.writeFile(path.join(root, "source.ts"), "export const value = 2;\n");
     const now = "2026-01-01T00:00:00.000Z";
-    await saveOperation(root, { version: 1, id: "RUN-CANDIDATE", kind: "run", status: "RUNNING", phase: "implementation", root, payload: { taskId: "CANDIDATE-REPORT" }, createdAt: now, updatedAt: now });
+    await saveOwnedOperation(root, { version: 1, id: "RUN-CANDIDATE", kind: "run", status: "RUNNING", phase: "implementation", root, payload: { taskId: "CANDIDATE-REPORT" }, createdAt: now, updatedAt: now });
     const digest = await computeWorktreeDigest(root);
     const candidate = (await loadOperation(root, "RUN-CANDIDATE")).candidateRevision!;
     process.env.AEH_OPERATION_ID = "RUN-CANDIDATE";

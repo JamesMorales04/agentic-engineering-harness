@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { saveOwnedOperation } from "../helpers/ownedOperation.js";
 import { buildOpenCodeRuntimeConfig } from "../../src/agents/permissions.js";
 import type { AgentExecutionSelection } from "../../src/agents/types.js";
 import { ContextBudgetGateway } from "../../src/context/gateway.js";
@@ -51,8 +52,8 @@ describe("AEH generated scenario matrix", () => {
       for (const from of OPERATION_STATUS_VALUES) for (const to of OPERATION_STATUS_VALUES) {
         const scenario = SCENARIOS.find((item) => item.id === `SCN-LIFECYCLE-${from}-${to}`)!;
         if (!enabled(scenario.id)) continue;
-        const record = seedRecord(root, "audit", from);
-        await saveOperation(root, record);
+        const record = seedRecord(root, "audit", from, `SCN-LIFECYCLE-${from}-${to}`);
+        await saveOwnedOperation(root, record);
         const allowed = isAllowedOperationStatusTransition(from, to);
         try {
           if (to === "SUCCEEDED" || to === "FAILED" || to === "CANCELLED") {
@@ -142,7 +143,7 @@ describe("AEH generated scenario matrix", () => {
     try {
       for (const action of actions) {
         const record = seedRecord(root, "run", action.initialStatus, `SCN-ACTION-${action.index}`);
-        await saveOperation(root, record);
+        await saveOwnedOperation(root, record);
         try {
           if (action.mode === "terminal") {
             const result = await transitionOperationToTerminal(root, record.id, { status: action.to as "SUCCEEDED" | "FAILED" | "CANCELLED", phase: action.to.toLowerCase() });
@@ -164,7 +165,7 @@ describe("AEH generated scenario matrix", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-state-properties-"));
     try {
       const terminal = seedRecord(root, "run", "QUEUED", "P1-terminal");
-      await saveOperation(root, terminal);
+      await saveOwnedOperation(root, terminal);
       await transitionOperationToTerminal(root, terminal.id, { status: "FAILED", phase: "failed" });
       expect((await patchOperation(root, terminal.id, { status: "RUNNING", phase: "running" })).status).toBe("FAILED"); // P1 terminal truth forbids active re-entry.
 
@@ -174,7 +175,7 @@ describe("AEH generated scenario matrix", () => {
       }
 
       const rejectedDelivery = seedRecord(root, "run", "RUNNING", "P3-delivery");
-      await saveOperation(root, rejectedDelivery);
+      await saveOwnedOperation(root, rejectedDelivery);
       await transitionOperationToTerminal(root, rejectedDelivery.id, { status: "FAILED", phase: "delivery-failed" });
       await expect(transitionOperationToTerminal(root, rejectedDelivery.id, { status: "SUCCEEDED", phase: "accepted" })).resolves.toMatchObject({ transitioned: false }); // P3/P7 delivery failure cannot become success.
 

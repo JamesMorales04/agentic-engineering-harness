@@ -5,6 +5,7 @@ import type { RuntimeSnapshotV1 } from "../runtime/index.js";
 import type { CapabilityLeaseV1 } from "../security/authorityV2.js";
 import type { OperationStatus } from "../operations/state.js";
 import type { BuildIdentityV1 } from "../build/identity.js";
+import type { DecisionRequestV1 } from "../security/humanDecision.js";
 
 export const CONTROL_CENTER_CONTRACT_VERSION = 1 as const;
 
@@ -47,6 +48,10 @@ export interface ControlCenterProjectProjectionV1 extends Pick<ProjectIdentityV1
 export type ControlCenterOperationKindV1 = "audit" | "run" | "change";
 export type ControlCenterOperationStatusV1 = "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
 
+export interface ControlCenterDecisionRequestV1 extends Omit<DecisionRequestV1, "candidate"> {
+  candidate: string;
+}
+
 export interface ControlCenterOperationProjectionV1 {
   version: typeof CONTROL_CENTER_CONTRACT_VERSION;
   operationId: ControlCenterOperationIdV1;
@@ -66,6 +71,7 @@ export interface ControlCenterOperationProjectionV1 {
   startedAt?: string;
   finishedAt?: string;
   error?: string;
+  decisionRequest?: ControlCenterDecisionRequestV1;
 }
 
 export interface ControlCenterParticipantProjectionV1 {
@@ -192,7 +198,10 @@ export type ControlCenterEventTypeV1 =
   | "operation.participant.updated"
   | "operation.participant.receipt"
   | "operation.supervisor.registered"
-  | "operation.supervisor.updated";
+  | "operation.supervisor.updated"
+  | "operation.controller.claimed"
+  | "operation.controller.process-bound"
+  | "operation.lead.acknowledged";
 
 export interface ControlCenterEventV1 {
   version: typeof CONTROL_CENTER_CONTRACT_VERSION;
@@ -226,15 +235,15 @@ export interface ControlCenterActionResultV1 {
   revision?: number;
   candidateRevision?: number;
   decisionId?: string;
+  requestId?: string;
+  choiceId?: string;
 }
 
 export interface ControlCenterDecisionInputV1 {
-  operationId?: string;
-  kind?: "APPROVE" | "REJECT" | "REQUEST_CHANGES";
-  actorId?: string;
+  operationId: string;
+  requestId: string;
+  choiceId: string;
   reason?: string;
-  decision?: string;
-  expiresAt?: string;
 }
 
 export interface ControlCenterSnapshotV1 {

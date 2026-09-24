@@ -1,3 +1,4 @@
+import { saveOwnedOperation } from "./helpers/ownedOperation.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -6,6 +7,7 @@ import {
   acknowledgeOperationLead,
   activeOperationSupervisor,
   bindOperationLead,
+  currentControllerEpoch,
   loadOperation,
   operationEventsFile,
   registerOperationAgent,
@@ -57,7 +59,7 @@ function operation(repositoryRoot: string): OperationRecordV2 {
 describe("OperationRecord v2 supervision", () => {
   it("keeps supervisor generations out of participant completion progress", async () => {
     const repositoryRoot = await root();
-    await saveOperation(repositoryRoot, operation(repositoryRoot));
+    await saveOwnedOperation(repositoryRoot, operation(repositoryRoot));
     await bindOperationLead(repositoryRoot, "CHANGE-STATE", "lead-1", "test");
     let current = await registerSupervisorGeneration(repositoryRoot, "CHANGE-STATE", {
       agentId: "supervisor-1",
@@ -96,7 +98,7 @@ describe("OperationRecord v2 supervision", () => {
 
   it("supports ACTIVE -> DRAINING -> new ACTIVE generations without reparenting old children", async () => {
     const repositoryRoot = await root();
-    await saveOperation(repositoryRoot, operation(repositoryRoot));
+    await saveOwnedOperation(repositoryRoot, operation(repositoryRoot));
     await registerSupervisorGeneration(repositoryRoot, "CHANGE-STATE", {
       agentId: "supervisor-1",
       materialized: true
@@ -128,7 +130,7 @@ describe("OperationRecord v2 supervision", () => {
 
   it("records stage revisions and requires explicit lead acknowledgement after terminalization", async () => {
     const repositoryRoot = await root();
-    await saveOperation(repositoryRoot, operation(repositoryRoot));
+    await saveOwnedOperation(repositoryRoot, operation(repositoryRoot));
     let current = await bindOperationLead(repositoryRoot, "CHANGE-STATE", "lead-1", "test");
     const initialAck = current.lead!.acknowledgedRevision;
     current = await setOperationStage(repositoryRoot, "CHANGE-STATE", "planning", "RUNNING");
@@ -144,7 +146,7 @@ describe("OperationRecord v2 supervision", () => {
     expect(terminal.transitioned).toBe(true);
     expect(terminal.record.lead!.acknowledgedRevision).toBeLessThan(terminal.record.revision);
 
-    current = await acknowledgeOperationLead(repositoryRoot, "CHANGE-STATE", terminal.record.revision, "status-read");
+    current = await acknowledgeOperationLead(repositoryRoot, "CHANGE-STATE", terminal.record.revision, "lead-1", currentControllerEpoch(terminal.record), "status-read");
     expect(current.lead!.acknowledgedRevision).toBe(current.revision);
 
     const events = (await fs.readFile(operationEventsFile(repositoryRoot, "CHANGE-STATE"), "utf8"))
@@ -158,7 +160,7 @@ describe("OperationRecord v2 supervision", () => {
   it("uses AEH_CONTROL_ROOT for one durable state machine from an isolated worktree", async () => {
     const repositoryRoot = await root();
     const worktree = await root();
-    await saveOperation(repositoryRoot, operation(repositoryRoot));
+    await saveOwnedOperation(repositoryRoot, operation(repositoryRoot));
     process.env.AEH_OPERATION_ID = "CHANGE-STATE";
     process.env.AEH_CONTROL_ROOT = repositoryRoot;
     process.env.AEH_OPERATION_STATE_REDIRECT = "1";
@@ -173,11 +175,11 @@ describe("OperationRecord v2 supervision", () => {
     const repositoryRoot = await root();
     const isolatedRoot = await root();
     const isolatedOperation = operation(isolatedRoot);
-    await saveOperation(repositoryRoot, operation(repositoryRoot));
+    await saveOwnedOperation(repositoryRoot, operation(repositoryRoot));
     process.env.AEH_OPERATION_ID = "CHANGE-STATE";
     process.env.AEH_CONTROL_ROOT = repositoryRoot;
 
-    await saveOperation(isolatedRoot, isolatedOperation);
+    await saveOwnedOperation(isolatedRoot, isolatedOperation);
     await expect(loadOperation(isolatedRoot, isolatedOperation.id)).resolves.toMatchObject({ root: isolatedRoot });
     await expect(fs.access(path.join(isolatedRoot, ".harness/operations/CHANGE-STATE.json"))).resolves.toBeUndefined();
   });

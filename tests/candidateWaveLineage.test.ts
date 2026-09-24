@@ -1,3 +1,4 @@
+import { saveOwnedOperation } from "./helpers/ownedOperation.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -302,7 +303,7 @@ async function createRepo(): Promise<string> {
 
 async function createOperation(root: string, operationId: string): Promise<CandidateRevisionV1> {
   const now = new Date().toISOString();
-  await saveOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "implementation", root, payload: { taskId: TASK }, createdAt: now, updatedAt: now });
+  await saveOwnedOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "implementation", root, payload: { taskId: TASK }, createdAt: now, updatedAt: now });
   return (await loadOperation(root, operationId)).candidateRevision!;
 }
 

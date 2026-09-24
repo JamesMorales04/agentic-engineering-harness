@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildProvenanceManifest, verifyProvenanceManifest, verifySupplyChainGate } from "../src/provenance/generate.js";
 import { buildOpaInput } from "../src/validators/opa.js";
+import { canonicalRoleValues } from "../src/participants/types.js";
 import { exportEventSpan, type TraceContext } from "../src/telemetry/otlp.js";
 import type { HarnessProjectConfig, TaskContract } from "../src/core/types.js";
 
@@ -25,9 +26,24 @@ describe("end-to-end architecture boundaries", () => {
 
   it("builds OPA input from the effective execution identity", () => {
     const contract: TaskContract = { version: 1, task: { id: "T", title: "t" }, routing: { risk: "high" } };
-    const input = buildOpaInput(contract, ["src/a.ts"], [".harness/contracts/T.yaml"], { newDependencies: [], schemaChanged: false, schemaFiles: [] }, { operationId: "OP", operationKind: "change", logicalAgent: "reviewer-2", role: "reviewer", profile: "strict", domains: ["security"], runtime: "opencode", modelAlias: "brain", permissions: { write: "deny", network: "deny" } });
-    expect(input.identity).toMatchObject({ logicalAgent: "reviewer-2", role: "reviewer", profile: "strict", risk: "high", runtime: "opencode", modelAlias: "brain" });
+    const input = buildOpaInput(contract, ["src/a.ts"], [".harness/contracts/T.yaml"], { newDependencies: [], schemaChanged: false, schemaFiles: [] }, { operationId: "OP", operationKind: "change", logicalAgent: "reviewer-2", role: "Reviewer", profile: "strict", domains: ["security"], runtime: "opencode", modelAlias: "brain", permissions: { write: "deny", network: "deny" } });
+    expect(input.identity).toMatchObject({ logicalAgent: "reviewer-2", role: "Reviewer", profile: "strict", risk: "high", runtime: "opencode", modelAlias: "brain" });
     expect(input).not.toHaveProperty("workerRole");
+  });
+
+  it("uses exact canonical role identity in the trust-boundary policy", async () => {
+    const policy = await fs.readFile(new URL("../policies/core/trust-boundary.rego", import.meta.url), "utf8");
+    const policyRoles = [...policy.matchAll(/input\.identity\.role\s*==\s*"([^"]+)"/g)].map((match) => match[1]);
+    expect(new Set(policyRoles)).toEqual(new Set(["Implementer", "Reviewer"]));
+    for (const role of policyRoles) expect(canonicalRoleValues).toContain(role);
+
+    const contract: TaskContract = { version: 1, task: { id: "T", title: "t" }, routing: { risk: "low" } };
+    const evidence = { newDependencies: [], schemaChanged: false, schemaFiles: [] };
+    const matching = canonicalRoleValues.filter((role) => {
+      const input = buildOpaInput(contract, ["src/a.ts"], [".harness/contracts/T.yaml"], evidence, { logicalAgent: role, role, permissions: { write: "allow" } });
+      return policyRoles.includes((input.identity as { role?: string }).role ?? "");
+    });
+    expect(matching).toEqual(["Implementer", "Reviewer"]);
   });
 
   it("blocks delivery when strict supply-chain evidence is absent", async () => {

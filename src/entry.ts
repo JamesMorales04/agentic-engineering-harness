@@ -32,7 +32,8 @@ import { LocalControlCenterV1, createProjectHome } from "./control-center/index.
 import { createProjectRegistry } from "./projects/index.js";
 import { cancelOperation } from "./operations/controller.js";
 import { loadOperationPortfolio } from "./operations/portfolio.js";
-import { HumanDecisionLedgerV1 } from "./security/humanDecision.js";
+import { loadOperation } from "./operations/state.js";
+import { HumanDecisionLedgerV2 } from "./security/humanDecision.js";
 import { createManagedRuntime, readManagedRuntimeSnapshot, runtimeProjectId } from "./runtime/index.js";
 import { serveSerenaMcpProxy, serveSerenaPoolServer } from "./providers/serenaProxy.js";
 import { recordControlCenterDecision } from "./control-center/decision.js";
@@ -125,7 +126,7 @@ async function runControlCenter(argv: string[]): Promise<void> {
   const config = root ? await loadProjectConfig(root) : undefined;
   const initialPortfolio = root && config ? await loadOperationPortfolio(root, config.project.name) : undefined;
   const runtime = root ? await createManagedRuntime({ root, projectId: runtimeProjectId(root), ownerId: `control-center:${process.pid}` }) : undefined;
-  const decisionLedger = root ? new HumanDecisionLedgerV1(path.join(root, ".harness", "security", "human-decisions.json")) : undefined;
+  const decisionLedger = root ? new HumanDecisionLedgerV2(path.join(root, ".harness", "security", "human-decisions.json")) : undefined;
   const center = new LocalControlCenterV1({
     port: parsed.value("port") ? Number(parsed.value("port")) : 0,
     operationRoots: () => root ? [root] : [],
@@ -133,13 +134,17 @@ async function runControlCenter(argv: string[]): Promise<void> {
       if (!root || !config) return {};
       const portfolio = await loadOperationPortfolio(root, config.project.name);
       return {
-        operations: Object.values(portfolio.operations).map((item) => ({
+        operations: await Promise.all(Object.values(portfolio.operations).map(async (item) => {
+          const detail = await loadOperation(root, item.operationId);
+          const request = detail.status === "RUNNING" && detail.phase === "HUMAN_REQUIRED" ? detail.decisionRequest : undefined;
+          return {
           version: 1 as const,
           operationId: controlCenterResourceId("operation", item.operationId),
           kind: item.kind === "audit" || item.kind === "run" || item.kind === "change" ? item.kind : "run",
           status: item.status,
           phase: item.phase,
           revision: item.revision,
+          ...(detail.candidateRevision ? { candidateId: controlCenterResourceId("candidate", detail.candidateRevision.candidateId), candidateDigest: detail.candidateRevision.identityDigest } : {}),
           participantCount: 0,
           runningParticipantCount: 0,
           completedParticipantCount: 0,
@@ -147,24 +152,27 @@ async function runControlCenter(argv: string[]): Promise<void> {
           createdAt: item.updatedAt,
           updatedAt: item.updatedAt,
           payloadSummary: `${item.kind} operation ${item.operationId}`,
-          participants: []
-        })),
+          participants: [],
+          ...(request ? { decisionRequest: { ...request, candidate: request.candidate.identityDigest } } : {})
+        }; })),
         services: await readManagedRuntimeSnapshot(root),
         quality: { activeOperations: Object.values(portfolio.operations).filter((item) => item.status === "RUNNING" || item.status === "QUEUED").length }
       };
     },
     ...(root ? { paseoGateway: new PaseoGatewayV1(), paseo: { root, leadId: initialPortfolio?.leadAgentId } } : {}),
-    onDecision: root && decisionLedger ? async (value): Promise<ControlCenterActionResultV1> => {
-      const result = await recordControlCenterDecision(root, decisionLedger, value);
+    onDecision: root && decisionLedger ? async (value, actorId): Promise<ControlCenterActionResultV1> => {
+      const result = await recordControlCenterDecision(root, decisionLedger, value, actorId);
       return {
         accepted: result.accepted === true,
         ...(typeof result.decisionId === "string" ? { decisionId: result.decisionId } : {}),
         ...(typeof result.operationId === "string" ? { operationId: result.operationId } : {}),
-        ...(typeof result.candidateRevision === "number" ? { candidateRevision: result.candidateRevision } : {})
+        ...(typeof result.candidateRevision === "number" ? { candidateRevision: result.candidateRevision } : {}),
+        ...(typeof result.requestId === "string" ? { requestId: result.requestId } : {}),
+        ...(typeof result.choiceId === "string" ? { choiceId: result.choiceId } : {})
       };
     } : undefined,
-    onCancelOperation: root ? async (operationId): Promise<ControlCenterActionResultV1> => {
-      const result = await cancelOperation(root, operationId);
+    onCancelOperation: root ? async (operationId, actorId): Promise<ControlCenterActionResultV1> => {
+      const result = await cancelOperation(root, operationId, { humanActorId: actorId });
       return { accepted: true, operationId: result.id, status: result.status, phase: result.phase, revision: result.revision };
     } : undefined
   });

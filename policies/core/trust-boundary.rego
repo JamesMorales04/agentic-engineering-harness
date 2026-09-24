@@ -12,12 +12,12 @@ package harness.trust_boundary
 default allow := true
 
 deny contains "implementation agent changed a frozen artifact" if {
-  input.identity.role == "implementer"
+  input.identity.role == "Implementer"
   count(input.frozenChangedFiles) > 0
 }
 
 deny contains "read-only role has write permission" if {
-  input.identity.role == "reviewer"
+  input.identity.role == "Reviewer"
   input.identity.permissions.write == "allow"
 }
 

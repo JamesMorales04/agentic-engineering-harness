@@ -1,3 +1,4 @@
+import { saveOwnedOperation } from "./helpers/ownedOperation.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -24,7 +25,7 @@ describe("DIRECT candidate lifecycle", () => {
     await runShell("git init -q && git add -A && git -c user.name=test -c user.email=test@example.com commit -qm initial", { cwd: root });
 
     const createdAt = "2026-01-01T00:00:00.000Z";
-    await saveOperation(root, { version: 1, id: "RUN-DIRECT-CANDIDATE", kind: "run", status: "RUNNING", phase: "implementation", root, payload: { taskId: "DIRECT-CANDIDATE" }, createdAt, updatedAt: createdAt });
+    await saveOwnedOperation(root, { version: 1, id: "RUN-DIRECT-CANDIDATE", kind: "run", status: "RUNNING", phase: "implementation", root, payload: { taskId: "DIRECT-CANDIDATE" }, createdAt, updatedAt: createdAt });
     const currentCandidate = (await loadOperation(root, "RUN-DIRECT-CANDIDATE")).candidateRevision!;
 
     const config: HarnessProjectConfig = { version: 1, project: { name: "direct-candidate" } };
@@ -91,7 +92,7 @@ describe("DIRECT candidate lifecycle", () => {
     await runShell("git init -q && git add -A && git -c user.name=test -c user.email=test@example.com commit -qm initial", { cwd: root });
     const operationId = "RUN-DIRECT-BIND-ROLLBACK";
     const now = "2026-01-01T00:00:00.000Z";
-    await saveOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "implementation", root, payload: { taskId: "DIRECT-CANDIDATE" }, createdAt: now, updatedAt: now });
+    await saveOwnedOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "implementation", root, payload: { taskId: "DIRECT-CANDIDATE" }, createdAt: now, updatedAt: now });
     const baseCandidate = (await loadOperation(root, operationId)).candidateRevision!;
     const config: HarnessProjectConfig = { version: 1, project: { name: "direct-candidate" } };
     const contract: TaskContract = { version: 1, task: { id: "DIRECT-CANDIDATE", title: "Direct candidate test" }, scope: { allowed: ["src/**"], forbidden: [] } };

@@ -1,3 +1,4 @@
+import { saveOwnedOperation } from "./helpers/ownedOperation.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -58,7 +59,7 @@ describe("public runTask Repairer candidate lifecycle", () => {
 
     const operationId = "RUN-REPAIR-PUBLIC";
     const now = "2026-01-01T00:00:00.000Z";
-    await saveOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "implementation", root, payload: { taskId: task.task.id }, createdAt: now, updatedAt: now });
+    await saveOwnedOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "implementation", root, payload: { taskId: task.task.id }, createdAt: now, updatedAt: now });
     const candidate = (await loadOperation(root, operationId)).candidateRevision!;
     process.env.AEH_OPERATION_ID = operationId;
     process.env.AEH_OPERATION_KIND = "run";
@@ -91,7 +92,7 @@ describe("public runTask Repairer candidate lifecycle", () => {
     await runShell("git init -q && git add -A && git -c user.name=test -c user.email=test@example.invalid commit -qm initial", { cwd: root });
     const operationId = "RUN-REPAIR-NO-AUTHORITY";
     const now = "2026-01-01T00:00:00.000Z";
-    await saveOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "implementation", root, payload: { taskId: task.task.id }, createdAt: now, updatedAt: now });
+    await saveOwnedOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "implementation", root, payload: { taskId: task.task.id }, createdAt: now, updatedAt: now });
     process.env.AEH_OPERATION_ID = operationId;
     process.env.AEH_OPERATION_KIND = "run";
     process.env.AEH_OPERATION_STATE_REDIRECT = "0";
