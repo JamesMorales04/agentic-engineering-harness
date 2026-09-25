@@ -311,3 +311,6 @@ evals:
 provenance:
   outputDir: .harness/provenance
   buildType: https://github.com/JamesMorales04/agentic-engineering-harness/v0.6
+  # Set artifact to the normalized root-relative packed artifact when any
+  # provenance, SBOM, or signing requirement is enabled.
+  # artifact: dist/agentic-engineering-harness.tgz

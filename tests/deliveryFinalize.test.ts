@@ -36,6 +36,18 @@ describe("accepted issue delivery finalization", () => {
     expect(await git(context.repo, "log", "-1", "--pretty=%s")).toBe("base");
   });
 
+  it("blocks delivery effects when strict supply-chain evidence is missing", async () => {
+    const context = await createFinalizeFixture();
+    const artifactPath = ".harness/aeh-candidate.tgz";
+    await fs.writeFile(path.join(context.repo, artifactPath), "packed candidate fixture\n");
+    const strictConfig: HarnessProjectConfig = { ...context.config, provenance: { required: true, artifact: artifactPath } };
+
+    await expect(finalizeAcceptedIssue(context.repo, strictConfig, context.contract, { candidate: context.candidate }))
+      .rejects.toThrow("SUPPLY_CHAIN_BLOCKED");
+    expect(context.requests).toHaveLength(0);
+    expect(await git(context.repo, "log", "-1", "--pretty=%s")).toBe("base");
+  });
+
   it("commits accepted work, pushes the exact issue branch and creates a draft PR through the tool action gate", async () => {
     const context = await createFinalizeFixture();
     await expect(finalizeAcceptedIssue(context.repo, context.config, context.contract, { candidate: context.candidate }))

@@ -14,9 +14,12 @@ describe("provenance", () => {
   });
 
   it("creates SLSA v1 build/run details", () => {
-    const predicate = buildSlsaPredicate({ project: "x", artifact: "a.tgz", taskId: "T-1", commit: "abc", remote: "https://example/repo.git", buildType: "https://example/build", invocationId: "i", startedOn: "s", finishedOn: "f" }) as any;
+    const artifactSha256 = "a".repeat(64);
+    const sbomSha256 = "b".repeat(64);
+    const predicate = buildSlsaPredicate({ project: "x", artifact: "a.tgz", taskId: "T-1", commit: "abc", remote: "https://example/repo.git", artifactSha256, sbomSha256, buildType: "https://example/build", invocationId: "i", startedOn: "s", finishedOn: "f" }) as any;
     expect(predicate.buildDefinition.buildType).toBe("https://example/build");
     expect(predicate.runDetails.metadata.invocationId).toBe("i");
+    expect(predicate.buildDefinition.internalParameters).toMatchObject({ artifactSha256, sbomSha256, sbomArtifactSha256: artifactSha256 });
   });
 
   it("limits task manifests to explicit lineage and detects normative artifact tampering", async () => {

@@ -12,6 +12,7 @@ import { ContextRetrievalGateway } from "../../src/context/retrieval/gateway.js"
 import type { HarnessProjectConfig, TaskContract } from "../../src/core/types.js";
 import { loadOperationCompletionTarget, notifyOperationCompletion, registerOperationCompletionTarget } from "../../src/operations/completion.js";
 import { loadOperation, patchOperation, saveOperation, transitionOperationToTerminal, type OperationRecord } from "../../src/operations/state.js";
+import { createCandidateRevisionV1 } from "../../src/operations/v2Contracts.js";
 import { filterStaleRecords } from "../../src/providers/engram.js";
 import { verifyProvenanceManifest, verifySupplyChainGate } from "../../src/provenance/generate.js";
 import { runExternalToolValidator } from "../../src/validators/external.js";
@@ -229,7 +230,15 @@ describe("AEH deterministic adversarial system paths", () => {
 
   it("blocks strict delivery when the provenance manifest is missing", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-adversarial-supply-chain-missing-"));
-    try { const result = await verifySupplyChainGate(root, { ...contextConfig(), provenance: { required: true } }); expect(result.ok).toBe(false); expect(result.failures.join(" ")).toContain("requires a provenance manifest"); }
+    try {
+      const artifactPath = ".harness/aeh-packed.tgz";
+      await fs.mkdir(path.join(root, ".harness"), { recursive: true });
+      await fs.writeFile(path.join(root, artifactPath), "packed candidate fixture\n");
+      const candidate = createCandidateRevisionV1({ operationId: "OP-S7-MISSING", candidateId: "candidate:OP-S7-MISSING:r1", projectId: "project:adversarial", taskId: "TASK-S7-MISSING", revision: 1, sourceDigest: "a".repeat(64) });
+      const result = await verifySupplyChainGate(root, { ...contextConfig(), provenance: { required: true, artifact: artifactPath } }, { candidate, artifactPath });
+      expect(result.ok).toBe(false);
+      expect(result.failures.join(" ")).toContain("requires an artifact-bound provenance manifest");
+    }
     finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 

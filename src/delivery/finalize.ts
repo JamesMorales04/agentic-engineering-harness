@@ -44,7 +44,7 @@ export async function finalizeAcceptedIssue(root: string, config: HarnessProject
   const authority: ToolActionAuthorityEvidenceV1 = { kind: "controller-authority", operationId, controllerEpoch };
   const actor = controllerActorId(operationId);
 
-  const supplyChain = await verifySupplyChainGate(root, config);
+  const supplyChain = await verifySupplyChainGate(root, config, { candidate: boundCandidate, artifactPath: config.provenance?.artifact ?? "" });
   if (!supplyChain.ok) throw new Error(`SUPPLY_CHAIN_BLOCKED: ${supplyChain.failures.join("; ")}`);
 
   const record = await loadDeliveryRecord(root, config, contract.task.id);

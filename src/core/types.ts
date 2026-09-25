@@ -185,7 +185,7 @@ export interface HarnessProjectConfig {
   telemetry?: { enabled?: boolean; required?: boolean; localEventsFile?: string; exporter?: "none" | "otlp-http-json" | string; endpoint?: string; headers?: Record<string, string>; serviceName?: string; };
   evals?: { corpusDir?: string; resultsDir?: string; workspacesDir?: string; defaultRuns?: number; confidenceLevel?: number; fullStack?: { enabled?: boolean; required?: boolean; strictSupplyChain?: boolean } };
   certification?: { enabled?: boolean; policyPath?: string; provider?: string; fixtureRoot?: string; requireSandbox?: boolean; maxAttempts?: number; maxDurationMs?: number; maxCostUsd?: number; maxTotalTokens?: number };
-  provenance?: { outputDir?: string; buildType?: string; cosignKey?: string; required?: boolean; sbom?: { required?: boolean; command?: string }; signing?: { required?: boolean; key?: string }; verification?: { required?: boolean; publicKey?: string } };
+  provenance?: { outputDir?: string; artifact?: string; buildType?: string; required?: boolean; sbom?: { required?: boolean; command?: string }; signing?: { required?: boolean; key?: string }; verification?: { required?: boolean; publicKey?: string } };
 }
 
 export interface TaskRequirement { id: string; description?: string; validator?: string; validators?: string[]; capabilities?: ValidationCapability[]; }

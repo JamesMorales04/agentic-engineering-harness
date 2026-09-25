@@ -13,7 +13,7 @@ import type { HarnessProjectConfig } from "../../src/core/types.js";
 import { loadOperation, patchOperation, saveOperation, transitionOperationToTerminal, type OperationRecord } from "../../src/operations/state.js";
 import { OPERATION_KIND_VALUES, OPERATION_STATUS_VALUES, isAllowedOperationStatusTransition } from "../../src/operations/state.js";
 import { filterStaleRecords } from "../../src/providers/engram.js";
-import { verifyProvenanceManifest } from "../../src/provenance/generate.js";
+import { buildProvenanceManifest, verifyProvenanceManifest } from "../../src/provenance/generate.js";
 import { PRESERVATION_VALUES, SCENARIOS, generateSeededActionSequence, scenarioFailure, scenarioSeed, selectedScenarios, TRANSPORT_VALUES } from "./aehScenarioModel.js";
 
 const selected = selectedScenarios();
@@ -193,16 +193,15 @@ describe("AEH generated scenario matrix", () => {
 
       const source = path.join(root, "task-contract.yaml");
       await fs.writeFile(source, "task: authoritative\n");
-      const sourceSha256 = (await import("node:crypto")).createHash("sha256").update("task: authoritative\n").digest("hex");
       const stale = await filterStaleRecords(root, [{ project: "p", type: "discovery", title: "stale", content: "memory cannot win", source: "task-contract.yaml", sourceSha256: "0".repeat(64) }]);
       expect(stale).toEqual([]); // P6 advisory memory cannot override current normative source.
-      expect(sourceSha256).not.toBe("0".repeat(64));
 
       const manifestPath = path.join(root, "manifest.json");
-      await fs.writeFile(manifestPath, JSON.stringify({ version: 1, buildIdentity: { version: 1, packageVersion: "0.0.0-test", gitSha: "unknown", releaseId: "release-test", buildDigest: "a".repeat(64), dirty: false }, entries: [{ path: "task-contract.yaml", kind: "task-contract", sha256: sourceSha256 }] }));
+      const manifest = await buildProvenanceManifest(root, baseConfig(), undefined, source);
+      await fs.writeFile(manifestPath, JSON.stringify(manifest));
       expect((await verifyProvenanceManifest(root, "manifest.json")).ok).toBe(true);
       await fs.writeFile(source, "task: tampered\n");
-      expect((await verifyProvenanceManifest(root, "manifest.json")).ok).toBe(false); // P10 lineage/source tampering breaks provenance.
+      expect((await verifyProvenanceManifest(root, "manifest.json")).ok).toBe(false); // P10 packed-subject tampering breaks provenance.
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 });
