@@ -48,6 +48,11 @@ export function changeSetDigest(changeSet: ChangeSetV1): string {
 
 export interface CandidateImpactV1 {
   version: 1;
+  /** The exact CandidateRevision that was assessed after successful assembly. */
+  candidate: { candidateId: string; revision: number; identityDigest: string };
+  /** Deterministic lineage and patch facts from the assembly that created candidate. */
+  baseCandidate: { candidateId: string; revision: number; identityDigest: string };
+  patchDigest: string;
   changedFiles: string[];
   changeKinds: string[];
   reviewDimensions: string[];
@@ -156,7 +161,11 @@ export async function assembleCandidateChangeSet(input: CandidateAssemblyInputV1
       createdAt: new Date().toISOString()
     });
     const semanticImpact = input.semanticAssessment ? await assessCandidateImpact(input.root, changeSet, changedFiles, candidate, input.semanticAssessment) : undefined;
-    const impact = projectCandidateImpact(changedFiles, semanticImpact);
+    const impact = projectCandidateImpact(changedFiles, semanticImpact, {
+      candidate: { candidateId: candidate.candidateId, revision: candidate.revision, identityDigest: candidate.identityDigest },
+      baseCandidate: { candidateId: input.currentCandidate.candidateId, revision: input.currentCandidate.revision, identityDigest: input.currentCandidate.identityDigest },
+      patchDigest: changeSet.patchDigest
+    });
     return { version: 1, changeSet: { ...changeSet, changedFiles }, candidate, impact };
   } catch (error) {
     const reverse = await runExecutable("git", ["apply", "--reverse", "--binary", "-"], { cwd: input.root, timeoutMs: 60_000, stdin: changeSet.patch });
@@ -322,10 +331,10 @@ function candidateImpactProjectionDigest(assessment: Omit<CandidateImpactProject
   return sha256Canonical(digestInput);
 }
 
-function projectCandidateImpact(changedFiles: readonly string[], assessment?: CandidateImpactProjectionV1): CandidateImpactV1 {
+function projectCandidateImpact(changedFiles: readonly string[], assessment: CandidateImpactProjectionV1 | undefined, binding: Pick<CandidateImpactV1, "candidate" | "baseCandidate" | "patchDigest">): CandidateImpactV1 {
   const normalized = [...new Set(changedFiles.map(normalizePath))].sort();
   if (!assessment) {
-    const payload = { version: 1 as const, changedFiles: normalized, changeKinds: [], reviewDimensions: [], requiresIndependentReview: true, interpretation: "BLOCKED" as const, unknowns: ["No evidence-bound candidate impact assessment was supplied."] };
+    const payload = { version: 1 as const, ...binding, changedFiles: normalized, changeKinds: [], reviewDimensions: [], requiresIndependentReview: true, interpretation: "BLOCKED" as const, unknowns: ["No evidence-bound candidate impact assessment was supplied."] };
     return { ...payload, digest: sha256Canonical(payload) };
   }
   const parsed = candidateImpactProjectionSchema.safeParse(assessment);
@@ -336,7 +345,7 @@ function projectCandidateImpact(changedFiles: readonly string[], assessment?: Ca
   const allowedRefs = new Set(normalized.map((file) => `candidate:file:${file}`));
   if (value.evidenceRefs.some((ref) => !allowedRefs.has(ref)) || normalized.some((file) => !value.evidenceRefs.includes(`candidate:file:${file}`))) throw new AehError("CANDIDATE_IMPACT_INVALID", "candidate impact evidenceRefs are not bound to every observed changed file.");
   if (value.assessmentDigest !== candidateImpactProjectionDigest(value)) throw new AehError("CANDIDATE_IMPACT_INVALID", "candidate impact projection digest does not match its typed claims.");
-  const payload = { version: 1 as const, changedFiles: normalized, changeKinds: [...new Set(value.changeKinds)].sort(), reviewDimensions: [...new Set(value.reviewDimensions)].sort(), requiresIndependentReview: true, interpretation: value.mechanism, unknowns: [...new Set(value.unknowns)].sort(), ...(value.semanticAssessmentDigest ? { semanticAssessmentDigest: value.semanticAssessmentDigest } : {}) };
+  const payload = { version: 1 as const, ...binding, changedFiles: normalized, changeKinds: [...new Set(value.changeKinds)].sort(), reviewDimensions: [...new Set(value.reviewDimensions)].sort(), requiresIndependentReview: true, interpretation: value.mechanism, unknowns: [...new Set(value.unknowns)].sort(), ...(value.semanticAssessmentDigest ? { semanticAssessmentDigest: value.semanticAssessmentDigest } : {}) };
   return { ...payload, digest: sha256Canonical(payload) };
 }
 

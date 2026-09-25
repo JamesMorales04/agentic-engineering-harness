@@ -17,6 +17,8 @@ import type { ExecutionCatalogV1 } from "../architecture/executionCatalog.js";
 import { recordEvent } from "../telemetry/events.js";
 import { currentOperationContext, loadOperation, resolveOperationStateRoot } from "../operations/state.js";
 import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
+import type { CandidateImpactAssessmentRuntimeV1, CandidateImpactV1 } from "../candidates/assembler.js";
+import type { CandidateAssuranceCompilationV1, CandidateAssuranceReviewAssignmentV1 } from "../architecture/candidateAssurance.js";
 import { consolidateWithOperationSupervisor, maybeRotateOperationSupervisor } from "../operations/supervisor.js";
 
 export type ReviewFinalState = "ACCEPTED" | "SPEC_CONTRADICTION" | "REQUIRES_PRODUCT_DECISION" | "BLOCKED_EXTERNAL" | "SYSTEM_FAILURE";
@@ -34,7 +36,7 @@ export interface ReviewLifecycleResult {
   exception?: ExceptionDecision;
 }
 
-export async function runReviewLifecycle(input: { root: string; stateRoot?: string; config: HarnessProjectConfig; contract: TaskContract; route: ResolvedRoute; reviewerSelections: Readonly<Record<string, AgentExecutionSelection>>; leadSelection?: AgentExecutionSelection; repairerSelection?: AgentExecutionSelection; executionCatalog?: ExecutionCatalogV1; prepareRepairWorkspace?: (isolatedRoot: string) => Promise<void>; stageSelections?: Readonly<Record<string, AgentExecutionSelection | undefined>>; supervisorSelection?: AgentExecutionSelection; implementationSelection: AgentExecutionSelection; report: ValidationReport; revalidate: () => Promise<ValidationReport>; }): Promise<ReviewLifecycleResult> {
+export async function runReviewLifecycle(input: { root: string; stateRoot?: string; config: HarnessProjectConfig; contract: TaskContract; route: ResolvedRoute; reviewerSelections: Readonly<Record<string, AgentExecutionSelection>>; leadSelection?: AgentExecutionSelection; repairerSelection?: AgentExecutionSelection; executionCatalog?: ExecutionCatalogV1; prepareRepairWorkspace?: (isolatedRoot: string) => Promise<void>; stageSelections?: Readonly<Record<string, AgentExecutionSelection | undefined>>; supervisorSelection?: AgentExecutionSelection; implementationSelection: AgentExecutionSelection; report: ValidationReport; candidateImpact?: CandidateImpactV1; candidateImpactAssessment?: CandidateImpactAssessmentRuntimeV1; candidateAssurance?: CandidateAssuranceCompilationV1; assuranceGateCheck?: ValidationCheck; recompileCandidateAssurance?: (impact: CandidateImpactV1 | undefined, report: ValidationReport) => Promise<{ compilation?: CandidateAssuranceCompilationV1; validationChecks: ValidationCheck[]; gateCheck: ValidationCheck }>; revalidate: () => Promise<ValidationReport>; }): Promise<ReviewLifecycleResult> {
   const { root, config, contract, route, reviewerSelections, leadSelection, repairerSelection, executionCatalog, prepareRepairWorkspace, stageSelections, supervisorSelection, implementationSelection } = input;
   const stateRoot = input.stateRoot ?? root;
   let report = input.report;
@@ -42,19 +44,42 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
   const checks: ValidationCheck[] = [];
   const qualityHistory: QualityState[] = [];
   const policy = config.workflow?.reviews;
-  if (policy?.enabled === false) return emptyResult(report, checks, sessions);
+  let candidateImpact = input.candidateImpact;
+  let candidateAssurance = input.candidateAssurance;
+  let assuranceGateCheck = input.assuranceGateCheck;
+  const requiredAssignments = candidateAssurance?.reviewAssignments ?? [];
+  if (policy?.enabled === false && requiredAssignments.length === 0) return emptyResult(report, checks, sessions);
 
   if (!report.candidate) throw new Error("CANDIDATE_BINDING_REQUIRED: review requires a candidate-bound validation report.");
   checks.push(candidateIdentityCheck("candidate.workspace-identity.review-entry", await assertCurrentReviewCandidate(root, report.candidate)));
+  if (assuranceGateCheck) checks.push(assuranceGateCheck);
 
   const isDirect = contract.routing?.route === "DIRECT";
-  const runReviewers = !isDirect || policy?.directReview === true;
-  const reviewerNames = runReviewers ? route.reviewers : [];
+  const runReviewers = requiredAssignments.length > 0 || !isDirect || policy?.directReview === true;
+  let reviewerAssignments = requiredAssignments;
+  let reviewerNames = requiredAssignments.length
+    ? requiredAssignments.map((assignment) => assignment.reviewerIdentity)
+    : runReviewers ? route.reviewers : [];
+  const recompileCandidate = async (impact: CandidateImpactV1 | undefined, candidateReport: ValidationReport): Promise<ValidationReport> => {
+    if (!input.recompileCandidateAssurance) return candidateReport;
+    const evaluation = await input.recompileCandidateAssurance(impact, candidateReport);
+    candidateImpact = impact;
+    candidateAssurance = evaluation.compilation;
+    assuranceGateCheck = evaluation.gateCheck;
+    reviewerAssignments = candidateAssurance?.reviewAssignments ?? [];
+    reviewerNames = reviewerAssignments.length
+      ? reviewerAssignments.map((assignment) => assignment.reviewerIdentity)
+      : runReviewers ? route.reviewers : [];
+    const prior = checks.findIndex((check) => check.id === evaluation.gateCheck.id);
+    if (prior >= 0) checks[prior] = evaluation.gateCheck;
+    else checks.push(evaluation.gateCheck);
+    return mergeReviewCheck(candidateReport, evaluation.gateCheck);
+  };
   const stages = escalationStages(config);
   let stageIndex = 0;
   let remediationRounds = 0;
   let replanContext: PlannerOutput | undefined;
-  let deduped = reviewerNames.length ? await runReviewRound(root, stateRoot, config, contract, reviewerSelections, implementationSelection, supervisorSelection, reviewerNames, report, sessions, 0, checks, prepareRepairWorkspace) : emptyFindings();
+  let deduped = reviewerNames.length ? await runReviewRound(root, stateRoot, config, contract, reviewerSelections, implementationSelection, supervisorSelection, reviewerNames, report, sessions, 0, checks, prepareRepairWorkspace, reviewerAssignments) : emptyFindings();
   let state = analyzeQualityState(deduped.findings, qualityHistory, config, report.candidate?.identityDigest);
   qualityHistory.push(state);
   await persistQualityState(stateRoot, config, contract.task.id, state);
@@ -151,13 +176,15 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
       forbiddenScope: [...(contract.scope?.forbidden ?? []), ...(contract.scope?.frozen ?? []), ...(config.validation?.frozenPaths ?? [])],
       prompt: repairPrompt,
       prepareWorkspace: prepareRepairWorkspace,
+      semanticAssessment: input.candidateImpactAssessment,
       execute: (isolatedRoot, participantId) => executeAgentPrompt(isolatedRoot, config, contract, remediationSelection, repairPrompt, { phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true })
     });
     const remediation = mutation.session;
     sessions.push(remediation);
     const rejectMutation = async (reason: string): Promise<void> => {
+      let restoredImpact = candidateImpact;
       if (mutation.changeSet) {
-        await rejectRepairCandidateChangeSet({
+        const restored = await rejectRepairCandidateChangeSet({
           root,
           stateRoot,
           operationId,
@@ -168,10 +195,13 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
           rejectedChangeSet: mutation.changeSet,
           allowedScope: contract.scope?.allowed ?? ["**"],
           forbiddenScope: [...(contract.scope?.forbidden ?? []), ...(contract.scope?.frozen ?? []), ...(config.validation?.frozenPaths ?? [])],
-          prepareWorkspace: prepareRepairWorkspace
+          prepareWorkspace: prepareRepairWorkspace,
+          semanticAssessment: input.candidateImpactAssessment
         });
+        restoredImpact = restored.impact;
       }
       report = await input.revalidate();
+      report = await recompileCandidate(restoredImpact, report);
       await recordEvent(stateRoot, config, "harness.quality.candidate-rejected", { taskId: contract.task.id, round: remediationRounds, reason, candidateRevision: report.candidate?.revision, candidateDigest: report.candidate?.sourceDigest });
     };
     const runtimeException = detectRuntimeExternalException(remediation);
@@ -185,7 +215,8 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
       continue;
     }
 
-    const candidateReport = await input.revalidate();
+    let candidateReport = await input.revalidate();
+    candidateReport = await recompileCandidate(mutation.impact ?? candidateImpact, candidateReport);
     const expectedCandidate = mutation.candidate?.identityDigest ?? report.candidate?.identityDigest;
     const observedCandidate = candidateReport.candidate?.identityDigest;
     if (expectedCandidate !== observedCandidate && (expectedCandidate !== undefined || observedCandidate !== undefined)) {
@@ -197,7 +228,7 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
       continue;
     }
 
-    const candidateFindings = reviewerNames.length ? await runReviewRound(root, stateRoot, config, contract, reviewerSelections, implementationSelection, supervisorSelection, reviewerNames, candidateReport, sessions, qualityHistory.length, checks, prepareRepairWorkspace) : emptyFindings();
+    const candidateFindings = reviewerNames.length ? await runReviewRound(root, stateRoot, config, contract, reviewerSelections, implementationSelection, supervisorSelection, reviewerNames, candidateReport, sessions, qualityHistory.length, checks, prepareRepairWorkspace, reviewerAssignments) : emptyFindings();
     const candidateState = analyzeQualityState(candidateFindings.findings, qualityHistory, config, candidateReport.candidate?.identityDigest);
     await persistQualityState(stateRoot, config, contract.task.id, candidateState);
 
@@ -217,19 +248,20 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
   }
 }
 
-async function runReviewRound(root: string, stateRoot: string, config: HarnessProjectConfig, contract: TaskContract, reviewerSelections: Readonly<Record<string, AgentExecutionSelection>>, implementationSelection: AgentExecutionSelection, supervisorSelection: AgentExecutionSelection | undefined, reviewerNames: string[], report: ValidationReport, sessions: WorkerSession[], round: number, checks: ValidationCheck[], prepareReviewWorkspace?: (isolatedRoot: string) => Promise<void>): Promise<DedupedFindings> {
+async function runReviewRound(root: string, stateRoot: string, config: HarnessProjectConfig, contract: TaskContract, reviewerSelections: Readonly<Record<string, AgentExecutionSelection>>, implementationSelection: AgentExecutionSelection, supervisorSelection: AgentExecutionSelection | undefined, reviewerNames: string[], report: ValidationReport, sessions: WorkerSession[], round: number, checks: ValidationCheck[], prepareReviewWorkspace?: (isolatedRoot: string) => Promise<void>, assuranceAssignments: readonly CandidateAssuranceReviewAssignmentV1[] = []): Promise<DedupedFindings> {
   if (!report.candidate) throw new Error("CANDIDATE_BINDING_REQUIRED: reviewer invocation requires a candidate-bound report.");
+  const assuranceByIdentity = new Map(assuranceAssignments.map((assignment) => [assignment.reviewerIdentity, assignment]));
   const outputs = await Promise.all(reviewerNames.map(async (name) => {
     const selection = reviewerSelections[name];
     if (!selection || selection.role !== "Reviewer") throw new Error(`REVIEW_AUTHORITY_REQUIRED: '${name}' is not a frozen canonical Reviewer selection.`);
     if (selection.logicalAgent === implementationSelection.logicalAgent) throw new Error("REVIEW_INDEPENDENCE_REQUIRED: the Implementer cannot review its own candidate.");
-    if (selection.permissions.write === "allow") throw new Error(`REVIEW_AUTHORITY_REQUIRED: Reviewer '${name}' cannot receive source-write authority.`);
+    if (selection.permissions.write !== "deny") throw new Error(`REVIEW_AUTHORITY_REQUIRED: Reviewer '${name}' must have denied source-write authority.`);
     const transport = selection.transport === "inherit" ? (config.orchestration?.provider ?? "none") : selection.transport;
     const capabilityIssues = validateExecutionCapabilities(selection, transport);
     if (capabilityIssues.length) throw new Error(`REVIEW_EXECUTION_INVALID: Reviewer '${name}' is not executable: ${capabilityIssues.join("; ")}`);
     const identityEvidence = await assertCurrentReviewCandidate(root, report.candidate!);
     checks.push(candidateIdentityCheck(`candidate.workspace-identity.reviewer-${round}-${name}`, identityEvidence));
-    return runReviewer(root, config, contract, selection, name, report, prepareReviewWorkspace);
+    return runReviewer(root, config, contract, selection, name, report, assuranceByIdentity.get(name)?.dimensions ?? [], prepareReviewWorkspace);
   }));
   const afterReviewerIdentity = await assertCurrentReviewCandidate(root, report.candidate);
   checks.push(candidateIdentityCheck(`candidate.workspace-identity.after-review-${round}`, afterReviewerIdentity));
@@ -237,6 +269,18 @@ async function runReviewRound(root: string, stateRoot: string, config: HarnessPr
   for (const output of outputs) {
     sessions.push(output.session);
     rawFindings.push(...output.findings.map((finding) => ({ ...finding, id: `${output.reviewer}:${finding.id}` })));
+    const assignment = assuranceByIdentity.get(output.reviewer);
+    if (assignment) {
+      const identityMatches = output.session.logicalAgent === assignment.reviewerIdentity;
+      const evidenceValid = output.valid && identityMatches;
+      checks.push({
+        id: `candidate.assurance.reviewer.${round}.${output.reviewer}`,
+        category: "candidate-assurance",
+        status: evidenceValid ? "PASS" : "FAIL",
+        message: evidenceValid ? `Configured independent Reviewer '${output.reviewer}' returned structured evidence for the assigned impact dimensions.` : `Assigned Reviewer '${output.reviewer}' did not return valid structured evidence from its exact configured identity.`,
+        details: { reviewerIdentity: assignment.reviewerIdentity, observedReviewerIdentity: output.session.logicalAgent, provider: assignment.provider, actualProvider: output.session.provider, dimensions: assignment.dimensions, candidate: assignment.candidate, impactDigest: assignment.impactDigest, policyDigest: assignment.policyDigest, sessionId: output.session.id }
+      });
+    }
   }
 
   let deduped: DedupedFindings;
@@ -270,7 +314,7 @@ async function assertCurrentReviewCandidate(root: string, candidate: CandidateRe
   return assertWorkspaceMatchesCandidate(root, candidate, operation.candidateRevision ?? null);
 }
 
-async function runReviewer(root: string, config: HarnessProjectConfig, contract: TaskContract, selection: AgentExecutionSelection | undefined, name: string, report: ValidationReport, prepareReviewWorkspace?: (isolatedRoot: string) => Promise<void>): Promise<{ reviewer: string; session: WorkerSession; findings: NormalizedFinding[] }> {
+async function runReviewer(root: string, config: HarnessProjectConfig, contract: TaskContract, selection: AgentExecutionSelection | undefined, name: string, report: ValidationReport, assignedDimensions: readonly string[], prepareReviewWorkspace?: (isolatedRoot: string) => Promise<void>): Promise<{ reviewer: string; session: WorkerSession; findings: NormalizedFinding[]; valid: boolean }> {
   if (!selection) throw new Error(`REVIEW_EXECUTION_INVALID: no frozen selection exists for reviewer '${name}'.`);
   const candidate = report.candidate;
   if (!candidate) throw new Error("CANDIDATE_BINDING_REQUIRED: reviewer invocation requires a candidate-bound report.");
@@ -283,19 +327,19 @@ async function runReviewer(root: string, config: HarnessProjectConfig, contract:
     config,
     contract,
     prepareWorkspace: prepareReviewWorkspace,
-    execute: (isolatedRoot) => executeAgentPrompt(isolatedRoot, config, contract, selection, buildReviewerPrompt(contract, name, report), { outputContract: "reviewer", phase: "review", operationKind: currentOperationContext().kind, requireExecutionAuthority: true })
+    execute: (isolatedRoot) => executeAgentPrompt(isolatedRoot, config, contract, selection, buildReviewerPrompt(contract, name, report, assignedDimensions), { outputContract: "reviewer", phase: "review", operationKind: currentOperationContext().kind, requireExecutionAuthority: true })
   });
   const session = isolated.session;
   if (isolated.changeSet) {
-    return { reviewer: name, session, findings: [syntheticFinding(name, "Reviewer attempted to modify its isolated candidate snapshot; the output was rejected.")] };
+    return { reviewer: name, session, findings: [syntheticFinding(name, "Reviewer attempted to modify its isolated candidate snapshot; the output was rejected.")], valid: false };
   }
-  if (session.exitCode !== 0) return { reviewer: name, session, findings: [syntheticFinding(name, `Reviewer runtime exited with code ${session.exitCode}.`)] };
+  if (session.exitCode !== 0) return { reviewer: name, session, findings: [syntheticFinding(name, `Reviewer runtime exited with code ${session.exitCode}.`)], valid: false };
   try {
     const output = reviewerOutputSchema.parse(extractMarkedJson(session.stdout, session.stderr));
-    if (output.verdict === "FAIL" && output.findings.length === 0) return { reviewer: name, session, findings: [syntheticFinding(name, "Reviewer returned FAIL without a structured finding.")] };
-    return { reviewer: name, session, findings: output.findings };
+    if (output.verdict === "FAIL" && output.findings.length === 0) return { reviewer: name, session, findings: [syntheticFinding(name, "Reviewer returned FAIL without a structured finding.")], valid: false };
+    return { reviewer: name, session, findings: output.findings, valid: true };
   } catch (error) {
-    return { reviewer: name, session, findings: [syntheticFinding(name, `Invalid reviewer output contract: ${String(error)}`)] };
+    return { reviewer: name, session, findings: [syntheticFinding(name, `Invalid reviewer output contract: ${String(error)}`)], valid: false };
   }
 }
 
@@ -307,6 +351,13 @@ function candidateIdentityCheck(id: string, evidence: CandidateWorkspaceIdentity
     message: `Workspace digest matches CandidateRevision ${evidence.candidateId} r${evidence.candidateRevision}.`,
     details: { ...evidence }
   };
+}
+
+function mergeReviewCheck(report: ValidationReport, check: ValidationCheck): ValidationReport {
+  const byId = new Map(report.checks.map((existing) => [existing.id, existing]));
+  byId.set(check.id, check);
+  const checks = [...byId.values()];
+  return { ...report, checks, status: checks.some((item) => item.status === "FAIL") ? "FAIL" : "PASS" };
 }
 
 async function runDiagnosis(root: string, config: HarnessProjectConfig, contract: TaskContract, selection: AgentExecutionSelection, state: QualityState, findings: DedupedFindings, sessions: WorkerSession[]): Promise<ExceptionDecision | undefined> {
@@ -344,8 +395,9 @@ async function runLeadAcceptance(root: string, config: HarnessProjectConfig, con
   }
 }
 
-function buildReviewerPrompt(contract: TaskContract, reviewer: string, report: ValidationReport): string {
-  return `You are reviewer ${reviewer} for ${contract.task.id}. Inspect the actual git diff from ${contract.git?.baseRef ?? "main"}, relevant source/tests, and the sealed task contract. Do not modify files. Deterministic validation currently reports ${report.status}. Return findings with requiredCompetencies and reviewDimensions; never select a concrete agent or reviewer. Use exceptionType only when the issue cannot be resolved from the sealed requirements/repository without an external human decision or resource. Your final output MUST contain exactly one line beginning AEH_RESULT_JSON= followed by the JSON object.`;
+function buildReviewerPrompt(contract: TaskContract, reviewer: string, report: ValidationReport, assignedDimensions: readonly string[] = []): string {
+  const assignment = assignedDimensions.length ? ` Your frozen independent review assignment covers these impact dimensions: ${assignedDimensions.join(", ")}. Inspect each assigned dimension against the assembled candidate.` : "";
+  return `You are reviewer ${reviewer} for ${contract.task.id}. Inspect the actual git diff from ${contract.git?.baseRef ?? "main"}, relevant source/tests, and the sealed task contract. Do not modify files. Deterministic validation currently reports ${report.status}.${assignment} Return findings with requiredCompetencies and reviewDimensions; never select a concrete agent or reviewer. Use exceptionType only when the issue cannot be resolved from the sealed requirements/repository without an external human decision or resource. Your final output MUST contain exactly one line beginning AEH_RESULT_JSON= followed by the JSON object.`;
 }
 function buildRemediationPrompt(contract: TaskContract, stage: ReviewEscalationStage, state: QualityState, findings: NormalizedFinding[], replan?: PlannerOutput): string {
   return `Autonomously remediate review debt for ${contract.task.id}. Stage=${stage.name}. Current DebtScore=${formatDebtScore(state.debtScore)}; final gate requires critical=0, high=0, medium=0, low<=3 and DebtScore<=3. Three notes equal one low. Do not change sealed contracts/specs/acceptance. Critical/high/medium findings are mandatory. Resolve low/note findings as needed to reach the final debt budget without broadening scope or creating regressions. ${replan ? `A stronger planner produced this advisory remediation plan (it does not override the sealed contract):\n${JSON.stringify(replan, null, 2)}\n` : ""}Findings:\n${JSON.stringify(findings, null, 2)}\nMake the smallest coherent changes and run focused checks. Do not ask the user unless a sealed requirement is contradictory, a product decision is genuinely missing, or an external credential/permission is required.`;

@@ -16,6 +16,7 @@ export interface RepairCandidateMutationResultV1 {
   session: WorkerSession;
   changeSet?: ChangeSetV1;
   candidate?: CandidateRevisionV1;
+  impact?: import("./assembler.js").CandidateImpactV1;
 }
 
 export function assertCompiledRepairer(selection: AgentExecutionSelection | undefined, catalog: ExecutionCatalogV1 | undefined): asserts selection is AgentExecutionSelection {
@@ -100,7 +101,7 @@ export async function executeRepairerCandidateMutation(input: {
     candidateDigest: assembled.candidate.sourceDigest,
     impactDigest: assembled.impact.digest
   });
-  return { session: isolated.session, changeSet: isolated.changeSet, candidate: assembled.candidate };
+  return { session: isolated.session, changeSet: isolated.changeSet, candidate: assembled.candidate, impact: assembled.impact };
 }
 
 export async function rejectRepairCandidateChangeSet(input: {
@@ -116,7 +117,7 @@ export async function rejectRepairCandidateChangeSet(input: {
   forbiddenScope: readonly string[];
   prepareWorkspace?: (isolatedRoot: string) => Promise<void>;
   semanticAssessment?: CandidateImpactAssessmentRuntimeV1;
-}): Promise<CandidateRevisionV1> {
+}): Promise<{ candidate: CandidateRevisionV1; impact: import("./assembler.js").CandidateImpactV1 }> {
   const operation = await loadOperation(input.stateRoot, input.operationId);
   const currentCandidate = operation.candidateRevision;
   if (!currentCandidate || currentCandidate.revision !== input.rejectedChangeSet.baseCandidateRevision + 1) {
@@ -156,7 +157,7 @@ export async function rejectRepairCandidateChangeSet(input: {
     rollbackCandidateRevision: assembled.candidate.revision,
     candidateDigest: assembled.candidate.sourceDigest
   });
-  return assembled.candidate;
+  return { candidate: assembled.candidate, impact: assembled.impact };
 }
 
 /** Files that define the frozen task, validation policy, or runtime policy cannot be changed by repair. */

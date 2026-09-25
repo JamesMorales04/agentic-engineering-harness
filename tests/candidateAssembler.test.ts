@@ -6,7 +6,7 @@ import { assembleCandidateChangeSet } from "../src/candidates/index.js";
 import { computeWorktreeDigest } from "../src/core/git.js";
 import { createCandidateRevisionV1 } from "../src/operations/v2Contracts.js";
 import { runShell } from "../src/utils/process.js";
-import { sha256Utf8 } from "../src/core/digest.js";
+import { sha256Canonical, sha256Utf8 } from "../src/core/digest.js";
 import { semanticCapabilityPolicyRevisionV1, type SemanticAssessmentRequestV1 } from "../src/semantic/assessment.js";
 import { semanticPayload, semanticTestService } from "./semanticAssessmentSupport.js";
 
@@ -25,6 +25,13 @@ describe("deterministic candidate assembly", () => {
       expect(result.candidate.parentCandidateId).toBe(current.candidateId);
       expect(result.candidate.sourceDigest).not.toBe(current.sourceDigest);
       expect(result.impact).toMatchObject({ interpretation: "BLOCKED", changeKinds: [], requiresIndependentReview: true });
+      expect(result.impact).toMatchObject({
+        candidate: { candidateId: result.candidate.candidateId, revision: result.candidate.revision, identityDigest: result.candidate.identityDigest },
+        baseCandidate: { candidateId: current.candidateId, revision: current.revision, identityDigest: current.identityDigest },
+        patchDigest: changeSet.patchDigest
+      });
+      const { digest: impactDigest, ...impactPayload } = result.impact;
+      expect(impactDigest).toBe(sha256Canonical(impactPayload));
       expect(await fs.readFile(path.join(root, "src", "value.ts"), "utf8")).toContain("value = 2");
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
