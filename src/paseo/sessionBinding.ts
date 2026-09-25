@@ -4,45 +4,57 @@ import path from "node:path";
 import { sha256Canonical, sha256Utf8 } from "../core/digest.js";
 import { resolveOperationStateRoot } from "../operations/state.js";
 
+export type PaseoSessionBindingStatusV1 = "ACTIVE" | "ARCHIVED" | "LOST";
+
 /**
- * Durable identity for one Paseo session bound to one operation participant.
+ * Complete deterministic identity for one Paseo session bound to one operation
+ * participant at one execution revision.
  *
- * The binding is a deterministic identity record: it is derived from operation
- * and participant identity plus generation/digest evidence, never from display
- * titles, agent names, mtimes, or session ordering. Paseo agent and workspace
- * ids are recorded as the concrete provider identity the session was created
- * with; reuse decisions are made only by `resolveReusablePaseoSession`.
+ * Every field is required and compared exactly: operation execution revision,
+ * project, participant and participant generation, candidate revision and
+ * digest, frozen ExecutionBlueprint, frozen resolved operation policy,
+ * ContextManifest, PromptManifest, and controller epoch. There are no optional
+ * or wildcard expectations: a missing or different value is never reusable.
+ * The identity is derived only from frozen execution evidence, never from
+ * display titles, agent names, mtimes, or session ordering.
  */
-export interface PaseoSessionBindingV1 {
-  version: 1;
-  bindingId: string;
+export interface PaseoSessionBindingIdentityV1 {
   projectId: string;
   operationId: string;
-  operationRevision: number;
+  operationExecutionRevision: number;
   participantId: string;
-  participantGeneration: number;
-  participantPlanDigest?: string;
-  executionBlueprintDigest?: string;
+  participantGeneration: string;
+  candidateRevision: number;
+  candidateDigest: string;
+  executionBlueprintDigest: string;
+  operationPolicyDigest: string;
+  contextManifestDigest: string;
+  promptManifestDigest: string;
+  controllerEpoch: number;
+}
+
+/**
+ * Durable binding record for one Paseo session. `paseoAgentId` is the actual
+ * Paseo agent/session id returned by launch and is required record integrity
+ * evidence; `sessionGeneration`, `status`, and timestamps describe the record
+ * lifecycle. The record is immutable identity evidence and grants no tools,
+ * authority, mutation, or capabilities. Reuse decisions are made only by
+ * `resolveReusablePaseoSession`.
+ */
+export interface PaseoSessionBindingV1 extends PaseoSessionBindingIdentityV1 {
+  version: 1;
+  bindingId: string;
   paseoAgentId: string;
-  workspaceId?: string;
   sessionGeneration: number;
-  status: "ACTIVE" | "ARCHIVED" | "LOST";
+  status: PaseoSessionBindingStatusV1;
   createdAt: string;
   updatedAt: string;
   bindingDigest: string;
 }
 
-export interface PaseoSessionBindingInputV1 {
-  projectId: string;
-  operationId: string;
-  operationRevision: number;
-  participantId: string;
-  participantGeneration: number;
-  participantPlanDigest?: string;
-  executionBlueprintDigest?: string;
+export interface PaseoSessionBindingInputV1 extends PaseoSessionBindingIdentityV1 {
   paseoAgentId: string;
-  workspaceId?: string;
-  status?: "ACTIVE" | "ARCHIVED" | "LOST";
+  status?: PaseoSessionBindingStatusV1;
   now?: Date;
 }
 
@@ -50,64 +62,77 @@ const SESSIONS_DIR = ".harness/paseo/sessions";
 const DIGEST_PATTERN = /^[a-f0-9]{64}$/;
 const BINDING_ID_PATTERN = /^paseo-binding:[a-f0-9]{64}$/;
 const BINDING_STATUS_VALUES = ["ACTIVE", "ARCHIVED", "LOST"] as const;
+const IDENTITY_FIELDS = [
+  "projectId",
+  "operationId",
+  "operationExecutionRevision",
+  "participantId",
+  "participantGeneration",
+  "candidateRevision",
+  "candidateDigest",
+  "executionBlueprintDigest",
+  "operationPolicyDigest",
+  "contextManifestDigest",
+  "promptManifestDigest",
+  "controllerEpoch"
+] as const satisfies readonly (keyof PaseoSessionBindingIdentityV1)[];
+const BINDING_FIELDS: ReadonlySet<string> = new Set<string>([
+  "version",
+  "bindingId",
+  ...IDENTITY_FIELDS,
+  "paseoAgentId",
+  "sessionGeneration",
+  "status",
+  "createdAt",
+  "updatedAt",
+  "bindingDigest"
+]);
 type BindingStatus = (typeof BINDING_STATUS_VALUES)[number];
 const LOCK_RETRY_MS = 20;
 const LOCK_TIMEOUT_MS = 5_000;
 const STALE_LOCK_MS = 30_000;
 
 interface NormalizedBindingInput {
-  projectId: string;
-  operationId: string;
-  operationRevision: number;
-  participantId: string;
-  participantGeneration: number;
-  participantPlanDigest?: string;
-  executionBlueprintDigest?: string;
+  identity: PaseoSessionBindingIdentityV1;
   paseoAgentId: string;
-  workspaceId?: string;
   status: BindingStatus;
   now: Date;
 }
 
 /** Create the first durable binding for a participant session. Repeating the
- * same identity with the same Paseo agent is idempotent; a different agent,
- * plan, blueprint, generation, or operation revision fails closed. Callers
- * rebind an existing participant through `rotatePaseoSessionBinding`. */
+ * same complete identity with the same actual Paseo agent is idempotent; any
+ * identity change fails closed as stale, and a different actual agent fails
+ * closed as a conflict. Callers rebind an existing participant only through
+ * `rotatePaseoSessionBinding`. */
 export async function bindPaseoSession(root: string, input: PaseoSessionBindingInputV1): Promise<PaseoSessionBindingV1> {
   const normalized = normalizeBindingInput(input);
-  const file = bindingFile(root, normalized.operationId, normalized.participantId);
+  const file = bindingFile(root, normalized.identity.operationId, normalized.identity.participantId);
   return withBindingLock(file, async () => {
-    const stored = await readStoredBinding(file, normalized.operationId, normalized.participantId);
+    const stored = await readStoredBinding(file, normalized.identity.operationId, normalized.identity.participantId);
     if (!stored) {
       const at = normalized.now.toISOString();
       const binding = createBinding(normalized, 1, at, at);
       await writeBinding(file, binding);
       return binding;
     }
-    if (!paseoSessionBindingMatches(stored, {
-      operationId: normalized.operationId,
-      participantId: normalized.participantId,
-      participantGeneration: normalized.participantGeneration,
-      participantPlanDigest: normalized.participantPlanDigest,
-      executionBlueprintDigest: normalized.executionBlueprintDigest,
-      operationRevision: normalized.operationRevision
-    })) {
-      throw bindingError("PASEO_SESSION_BINDING_STALE", `stored session binding for participant '${normalized.participantId}' does not match the requested participant generation, plan digest, blueprint digest, or operation revision.`);
+    if (!paseoSessionBindingMatches(stored, normalized.identity)) {
+      throw bindingError("PASEO_SESSION_BINDING_STALE", `stored session binding for participant '${normalized.identity.participantId}' does not match the requested operation execution revision, participant generation, candidate, blueprint, policy, context, prompt, or controller epoch.`);
     }
     if (stored.paseoAgentId !== normalized.paseoAgentId) {
-      throw bindingError("PASEO_SESSION_BINDING_CONFLICT", `stored session binding for participant '${normalized.participantId}' is already bound to Paseo agent '${stored.paseoAgentId}'.`);
+      throw bindingError("PASEO_SESSION_BINDING_CONFLICT", `stored session binding for participant '${normalized.identity.participantId}' is already bound to Paseo agent '${stored.paseoAgentId}'.`);
     }
     return stored;
   });
 }
 
 /** Explicit rebind path: always writes a new binding with the next session
- * generation, preserving the original createdAt when a binding already exists. */
+ * generation and the complete requested identity, preserving the original
+ * createdAt when a binding already exists. */
 export async function rotatePaseoSessionBinding(root: string, input: PaseoSessionBindingInputV1): Promise<PaseoSessionBindingV1> {
   const normalized = normalizeBindingInput(input);
-  const file = bindingFile(root, normalized.operationId, normalized.participantId);
+  const file = bindingFile(root, normalized.identity.operationId, normalized.identity.participantId);
   return withBindingLock(file, async () => {
-    const previous = await readStoredBinding(file, normalized.operationId, normalized.participantId);
+    const previous = await readStoredBinding(file, normalized.identity.operationId, normalized.identity.participantId);
     const at = normalized.now.toISOString();
     const sessionGeneration = (previous?.sessionGeneration ?? 0) + 1;
     const binding = createBinding(normalized, sessionGeneration, previous?.createdAt ?? at, at);
@@ -117,7 +142,8 @@ export async function rotatePaseoSessionBinding(root: string, input: PaseoSessio
 }
 
 /** Load the durable binding for a participant. Missing bindings return
- * undefined; a present but unreadable or inconsistent record fails closed. */
+ * undefined; a present but unreadable, incomplete, or inconsistent record
+ * fails closed. */
 export async function loadPaseoSessionBinding(root: string, operationId: string, participantId: string): Promise<PaseoSessionBindingV1 | undefined> {
   const operation = requiredText(operationId, "operationId");
   const participant = requiredText(participantId, "participantId");
@@ -129,29 +155,22 @@ export function assertPaseoSessionBinding(value: unknown): asserts value is Pase
   if (problem) throw bindingError("PASEO_SESSION_BINDING_CORRUPT", problem);
 }
 
-/** Deterministic identity/digest comparison. Display strings are never
- * compared; omitted optional expectations act as wildcards, while provided
- * digests, generation, and operation revision must match exactly. */
-export function paseoSessionBindingMatches(
-  binding: PaseoSessionBindingV1,
-  expected: Pick<PaseoSessionBindingInputV1, "operationId" | "participantId" | "participantGeneration" | "participantPlanDigest" | "executionBlueprintDigest"> & { operationRevision?: number }
-): boolean {
+/** Deterministic full-identity comparison. Every identity field must be
+ * present in the expectation and equal to the durable record; the durable
+ * record itself must be integrity-valid. Missing, malformed, or different
+ * expectations never match, and no field acts as a wildcard. */
+export function paseoSessionBindingMatches(binding: PaseoSessionBindingV1, expected: PaseoSessionBindingIdentityV1): boolean {
   if (paseoSessionBindingProblem(binding) !== undefined) return false;
-  if (!expected || typeof expected !== "object") return false;
-  if (binding.operationId !== expected.operationId) return false;
-  if (binding.participantId !== expected.participantId) return false;
-  if (binding.participantGeneration !== expected.participantGeneration) return false;
-  if (expected.operationRevision !== undefined && binding.operationRevision !== expected.operationRevision) return false;
-  if (expected.participantPlanDigest !== undefined && binding.participantPlanDigest !== expected.participantPlanDigest) return false;
-  if (expected.executionBlueprintDigest !== undefined && binding.executionBlueprintDigest !== expected.executionBlueprintDigest) return false;
-  return true;
+  if (paseoSessionBindingIdentityProblem(expected) !== undefined) return false;
+  return IDENTITY_FIELDS.every((field) => binding[field] === expected[field]);
 }
 
-/** Runtime reuse decision: only an ACTIVE binding whose identity matches may
- * be reused. This function never throws; anything unproven is not reusable. */
+/** Runtime reuse decision: only an ACTIVE, integrity-valid binding whose
+ * complete identity matches exactly may be reused. This function never
+ * throws; anything unproven is not reusable. */
 export function resolveReusablePaseoSession(
   binding: PaseoSessionBindingV1 | undefined,
-  expected: Parameters<typeof paseoSessionBindingMatches>[1]
+  expected: PaseoSessionBindingIdentityV1
 ): PaseoSessionBindingV1 | undefined {
   if (!binding || binding.status !== "ACTIVE") return undefined;
   return paseoSessionBindingMatches(binding, expected) ? binding : undefined;
@@ -164,16 +183,9 @@ function bindingIdFor(operationId: string, participantId: string, sessionGenerat
 function createBinding(input: NormalizedBindingInput, sessionGeneration: number, createdAt: string, updatedAt: string): PaseoSessionBindingV1 {
   const identity: Omit<PaseoSessionBindingV1, "bindingDigest"> = {
     version: 1,
-    bindingId: bindingIdFor(input.operationId, input.participantId, sessionGeneration),
-    projectId: input.projectId,
-    operationId: input.operationId,
-    operationRevision: input.operationRevision,
-    participantId: input.participantId,
-    participantGeneration: input.participantGeneration,
-    ...(input.participantPlanDigest ? { participantPlanDigest: input.participantPlanDigest } : {}),
-    ...(input.executionBlueprintDigest ? { executionBlueprintDigest: input.executionBlueprintDigest } : {}),
+    bindingId: bindingIdFor(input.identity.operationId, input.identity.participantId, sessionGeneration),
+    ...input.identity,
     paseoAgentId: input.paseoAgentId,
-    ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
     sessionGeneration,
     status: input.status,
     createdAt,
@@ -182,22 +194,33 @@ function createBinding(input: NormalizedBindingInput, sessionGeneration: number,
   return { ...identity, bindingDigest: sha256Canonical(identity) };
 }
 
+function paseoSessionBindingIdentityProblem(value: unknown): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "binding identity must be an object.";
+  const identity = value as Record<string, unknown>;
+  for (const field of ["projectId", "operationId", "participantId", "participantGeneration"]) {
+    if (typeof identity[field] !== "string" || (identity[field] as string).trim().length === 0) return `binding.${field} must be a non-empty string.`;
+  }
+  for (const field of ["operationExecutionRevision", "candidateRevision"]) {
+    if (!Number.isSafeInteger(identity[field]) || (identity[field] as number) < 1) return `binding.${field} must be a positive integer.`;
+  }
+  for (const field of ["candidateDigest", "executionBlueprintDigest", "operationPolicyDigest", "contextManifestDigest", "promptManifestDigest"]) {
+    if (typeof identity[field] !== "string" || !DIGEST_PATTERN.test(identity[field] as string)) return `binding.${field} must be a lowercase SHA-256 digest.`;
+  }
+  if (!Number.isSafeInteger(identity.controllerEpoch) || (identity.controllerEpoch as number) < 0) return "binding.controllerEpoch must be a non-negative integer.";
+  return undefined;
+}
+
 function paseoSessionBindingProblem(value: unknown): string | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return "binding must be an object.";
   const binding = value as Record<string, unknown>;
+  const unsupported = Object.keys(binding).filter((field) => !BINDING_FIELDS.has(field));
+  if (unsupported.length) return `binding contains unsupported field(s): ${unsupported.sort().join(", ")}.`;
   if (binding.version !== 1) return "binding.version must be 1.";
   if (typeof binding.bindingId !== "string" || !BINDING_ID_PATTERN.test(binding.bindingId)) return "binding.bindingId must be a 'paseo-binding:<digest>' identity.";
-  for (const field of ["projectId", "operationId", "participantId", "paseoAgentId"]) {
-    if (typeof binding[field] !== "string" || (binding[field] as string).trim().length === 0) return `binding.${field} must be a non-empty string.`;
-  }
-  for (const field of ["operationRevision", "participantGeneration", "sessionGeneration"]) {
-    if (!Number.isSafeInteger(binding[field]) || (binding[field] as number) < 0) return `binding.${field} must be a non-negative integer.`;
-  }
-  for (const field of ["participantPlanDigest", "executionBlueprintDigest"]) {
-    const digest = binding[field];
-    if (digest !== undefined && (typeof digest !== "string" || !DIGEST_PATTERN.test(digest))) return `binding.${field} must be a lowercase SHA-256 digest when present.`;
-  }
-  if (binding.workspaceId !== undefined && (typeof binding.workspaceId !== "string" || binding.workspaceId.trim().length === 0)) return "binding.workspaceId must be a non-empty string when present.";
+  const identityProblem = paseoSessionBindingIdentityProblem(binding);
+  if (identityProblem) return identityProblem;
+  if (typeof binding.paseoAgentId !== "string" || binding.paseoAgentId.trim().length === 0 || binding.paseoAgentId.trim().startsWith("launch:")) return "binding.paseoAgentId must be the actual Paseo agent/session id.";
+  if (!Number.isSafeInteger(binding.sessionGeneration) || (binding.sessionGeneration as number) < 1) return "binding.sessionGeneration must be a positive integer.";
   if (typeof binding.status !== "string" || !(BINDING_STATUS_VALUES as readonly string[]).includes(binding.status)) return "binding.status must be ACTIVE, ARCHIVED, or LOST.";
   if (!isInstant(binding.createdAt)) return "binding.createdAt must be a valid instant.";
   if (!isInstant(binding.updatedAt)) return "binding.updatedAt must be a valid instant.";
@@ -255,15 +278,21 @@ function normalizeBindingInput(input: PaseoSessionBindingInputV1): NormalizedBin
   const status = input.status ?? "ACTIVE";
   if (!(BINDING_STATUS_VALUES as readonly string[]).includes(status)) throw bindingError("PASEO_SESSION_BINDING_INVALID", `binding input status '${String(status)}' is not ACTIVE, ARCHIVED, or LOST.`);
   return {
-    projectId: requiredText(input.projectId, "projectId"),
-    operationId: requiredText(input.operationId, "operationId"),
-    operationRevision: requiredInteger(input.operationRevision, "operationRevision"),
-    participantId: requiredText(input.participantId, "participantId"),
-    participantGeneration: requiredInteger(input.participantGeneration, "participantGeneration"),
-    participantPlanDigest: optionalDigest(input.participantPlanDigest, "participantPlanDigest"),
-    executionBlueprintDigest: optionalDigest(input.executionBlueprintDigest, "executionBlueprintDigest"),
-    paseoAgentId: requiredText(input.paseoAgentId, "paseoAgentId"),
-    workspaceId: optionalText(input.workspaceId, "workspaceId"),
+    identity: {
+      projectId: requiredText(input.projectId, "projectId"),
+      operationId: requiredText(input.operationId, "operationId"),
+      operationExecutionRevision: requiredInteger(input.operationExecutionRevision, "operationExecutionRevision", 1),
+      participantId: requiredText(input.participantId, "participantId"),
+      participantGeneration: requiredText(input.participantGeneration, "participantGeneration"),
+      candidateRevision: requiredInteger(input.candidateRevision, "candidateRevision", 1),
+      candidateDigest: requiredDigest(input.candidateDigest, "candidateDigest"),
+      executionBlueprintDigest: requiredDigest(input.executionBlueprintDigest, "executionBlueprintDigest"),
+      operationPolicyDigest: requiredDigest(input.operationPolicyDigest, "operationPolicyDigest"),
+      contextManifestDigest: requiredDigest(input.contextManifestDigest, "contextManifestDigest"),
+      promptManifestDigest: requiredDigest(input.promptManifestDigest, "promptManifestDigest"),
+      controllerEpoch: requiredInteger(input.controllerEpoch, "controllerEpoch", 0)
+    },
+    paseoAgentId: requiredAgentId(input.paseoAgentId),
     status: status as BindingStatus,
     now
   };
@@ -274,20 +303,18 @@ function requiredText(value: unknown, field: string): string {
   return value.trim();
 }
 
-function requiredInteger(value: unknown, field: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0) throw bindingError("PASEO_SESSION_BINDING_INVALID", `Paseo session binding ${field} must be a non-negative integer.`);
+function requiredInteger(value: unknown, field: string, minimum: number): number {
+  if (!Number.isSafeInteger(value) || (value as number) < minimum) throw bindingError("PASEO_SESSION_BINDING_INVALID", `Paseo session binding ${field} must be an integer of at least ${minimum}.`);
   return value as number;
 }
 
-function optionalDigest(value: unknown, field: string): string | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== "string" || !DIGEST_PATTERN.test(value)) throw bindingError("PASEO_SESSION_BINDING_INVALID", `Paseo session binding ${field} must be a lowercase SHA-256 digest when provided.`);
+function requiredDigest(value: unknown, field: string): string {
+  if (typeof value !== "string" || !DIGEST_PATTERN.test(value)) throw bindingError("PASEO_SESSION_BINDING_INVALID", `Paseo session binding ${field} must be a lowercase SHA-256 digest.`);
   return value;
 }
 
-function optionalText(value: unknown, field: string): string | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== "string" || value.trim().length === 0) throw bindingError("PASEO_SESSION_BINDING_INVALID", `Paseo session binding ${field} must be a non-empty string when provided.`);
+function requiredAgentId(value: unknown): string {
+  if (typeof value !== "string" || value.trim().length === 0 || value.trim().startsWith("launch:")) throw bindingError("PASEO_SESSION_BINDING_INVALID", "Paseo session binding paseoAgentId must be the actual Paseo agent/session id returned by launch.");
   return value.trim();
 }
 

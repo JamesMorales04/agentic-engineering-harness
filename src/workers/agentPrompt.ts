@@ -68,6 +68,8 @@ import { compileExecutionCatalog } from "../architecture/executionCatalog.js";
 import { defaultSkillSeed, roleProfile } from "../participants/index.js";
 import { createWorkGraph, type WorkGraphV1 } from "../architecture/workGraph.js";
 import { candidateRevisionsEqual } from "../operations/v2Contracts.js";
+import { issueContextRefAuthorization, recordContextContinuation, validateCurrentContextAuthorization } from "../context/authorizationV2.js";
+import { bindPaseoSession, loadPaseoSessionBinding, paseoSessionBindingMatches, resolveReusablePaseoSession, rotatePaseoSessionBinding, type PaseoSessionBindingIdentityV1 } from "../paseo/sessionBinding.js";
 
 export interface AgentPromptOptions {
   outputContract?: string;
@@ -726,7 +728,21 @@ function withDirectContextIdentity(environment: Record<string, string>, root: st
     const config = JSON.parse(serialized) as { mcp?: Record<string, { environment?: Record<string, string> }> };
     const context = config.mcp?.["aeh-context"];
     if (!context) return environment;
-    context.environment = { ...(context.environment ?? {}), AEH_CONTEXT_ROOT: root, AEH_CONTEXT_OPERATION_ID: currentOperationContext().id ?? "", AEH_LOGICAL_AGENT: selection.logicalAgent, AEH_CONTEXT_PHASE: options.phase ?? "work" };
+    const participantId = options.capabilityAuthority?.participantId ?? options.executionBinding?.participantId;
+    if (!participantId) {
+      delete config.mcp?.["aeh-context"];
+      return { ...environment, OPENCODE_CONFIG_CONTENT: JSON.stringify(config) };
+    }
+    context.environment = {
+      ...(context.environment ?? {}),
+      AEH_CONTEXT_ROOT: root,
+      AEH_CONTEXT_CONTROL_ROOT: currentOperationContext().controlRoot ?? process.env.AEH_CONTROL_ROOT ?? root,
+      AEH_CONTEXT_OPERATION_ID: currentOperationContext().id ?? "",
+      AEH_CONTEXT_PARTICIPANT_ID: participantId,
+      AEH_CONTEXT_SESSION_ID: options.executionBinding?.runtime.sessionId ?? options.executionSessionId ?? options.resumeSessionId ?? "",
+      AEH_LOGICAL_AGENT: selection.logicalAgent,
+      AEH_CONTEXT_PHASE: options.phase ?? "work"
+    };
     return { ...environment, OPENCODE_CONFIG_CONTENT: JSON.stringify(config) };
   } catch {
     return environment;
@@ -801,7 +817,7 @@ export async function buildAgentContextFragments(
   const contextOutputPolicy = config.context ? outputPolicyInstruction(resolveContextPolicy(config), selection.role) : undefined;
   const transportCapabilities = options.contextCapabilities ?? await resolveContextTransportCapabilities(root, config, selection, { mode: "live" });
   const semanticRetrieval = transportCapabilities.semanticRetrieval;
-  const authorizedRetrieval = transportCapabilities.authorizedRetrieval;
+  const authorizedRetrieval = transportCapabilities.authorizedRetrieval && Boolean(options.capabilityAuthority?.participantId ?? options.executionBinding?.participantId) && Boolean(options.capabilityAuthority?.leases.some((lease) => lease.capability === "read"));
   const fragments: ContextFragment[] = [];
   const add = (id: string, kind: ContextFragment["kind"], preservation: ContextFragment["preservation"], priority: number, content: string | undefined, metadata?: Record<string, unknown>): void => {
     if (content?.trim()) fragments.push({ id, kind, preservation, priority, content, metadata });
@@ -864,7 +880,7 @@ export async function buildAgentContextFragments(
     if (recalled.length) add("advisory-memory", "memory", "PROJECTABLE", 45, JSON.stringify({ advisory: true, records: recalled.slice(0, 8) }), { advisory: true, authoritative: false });
   }
   if (transportCapabilities.requirements.rawRetrieval !== "FORBIDDEN") {
-    add("raw-evidence-references", "raw-evidence", "RETRIEVABLE", 35, JSON.stringify({ operationId: identity.operationId, note: "Raw evidence remains in durable AEH artifacts; retrieve only through transport-authorized fragment IDs." }));
+    add("raw-evidence-references", "raw-evidence", "RETRIEVABLE", 35, JSON.stringify({ operationId: identity.operationId, note: "Raw evidence remains in durable AEH artifacts; retrieve only through controller-authorized reference IDs." }));
   }
   return { fragments, capabilities: { authorizedRetrieval, semanticRetrieval } };
 }
@@ -897,6 +913,7 @@ export async function buildEffectivePromptIdentity(
     projectId: operation?.candidateRevision?.projectId ?? config.project.name,
     candidateDigest: operation?.candidateRevision?.identityDigest,
     participantId: options.capabilityAuthority?.participantId ?? options.participantId,
+    retrievalBudget: resolveContextPolicy(config).retrieval,
     fragments: preparedFragments.fragments.map((fragment) => ({ id: fragment.id, kind: fragment.kind, preservation: fragment.preservation, contentDigest: sha256Canonical(fragment.content), source: fragment.source, metadata: fragment.metadata }))
   };
   let rendered: string;
@@ -913,6 +930,11 @@ export async function buildEffectivePromptIdentity(
     rendered = prepared.rendered;
     contextManifest.envelopeDigest = prepared.envelope.provenance.sha256;
     contextManifest.deliveredFragments = prepared.envelope.fragments.map((fragment) => ({ id: fragment.id, contentDigest: sha256Canonical(fragment.content), source: fragment.source }));
+    contextManifest.addressableRefs = prepared.envelope.retrieval.allowedFragmentIds.map((refId) => {
+      const fragment = prepared.envelope.fragments.find((candidate) => candidate.id === refId);
+      if (!fragment?.source?.artifact || !fragment.source.sha256) throw new Error(`EXECUTION_BINDING_CONTEXT_MISMATCH: addressable ref '${refId}' lacks durable source provenance.`);
+      return { refId, artifactPath: fragment.source.artifact, sourceDigest: fragment.source.sha256 };
+    });
   }
   freezeIdentityObject(contextManifest);
   const contextManifestDigest = sha256Canonical(contextManifest);
@@ -1363,9 +1385,14 @@ async function resolveExecutionBinding(
     const current = currentOperationContext();
     if (current.id) {
       if (current.id !== binding.operationId) throw new Error("EXECUTION_BINDING_STALE: propagated binding belongs to a different managed operation.");
-      const durable = await loadOperation(current.controlRoot ?? root, current.id);
+      const propagatedStateRoot = current.controlRoot ?? root;
+      const durable = await loadOperation(propagatedStateRoot, current.id);
       const persisted = durable.participants[binding.participantId]?.executionBinding;
       if (!persisted || persisted.digest !== binding.digest || !durable.candidateRevision || durable.candidateRevision.identityDigest !== binding.candidateDigest || durable.operationExecutionRevision !== binding.operationExecutionRevision || durable.resolvedOperationPolicy?.digest !== binding.operationPolicyDigest || (durable.controller?.epoch ?? 0) !== binding.controllerEpoch) throw new Error("EXECUTION_BINDING_STALE: propagated binding is not the current durable participant execution identity.");
+      if (isPaseoExecution(selection, config)) {
+        await assertPaseoSessionBinding(propagatedStateRoot, durable, binding, true);
+        if (Array.isArray(options.contextManifest?.addressableRefs) && options.contextManifest.addressableRefs.length) await validateCurrentContextAuthorization(propagatedStateRoot, current.id, binding.participantId, actualSessionId);
+      }
     }
     return binding;
   }
@@ -1389,6 +1416,22 @@ async function resolveExecutionBinding(
       if (prior.executionBinding.runtime.sessionId !== actualSessionId) throw new Error("EXECUTION_BINDING_RUNTIME_SESSION_MISMATCH: resumed result channel does not identify the actual runtime session being continued.");
       assertResultProvenanceMatchesExecution(prior, operation, contract, selection, options);
       options.executionBinding = prior.executionBinding;
+      if (isPaseoExecution(selection, config)) await assertPaseoSessionBinding(stateRoot, operation, prior.executionBinding, true);
+      if (Array.isArray(options.contextManifest?.addressableRefs) && options.contextManifest.addressableRefs.length) await validateCurrentContextAuthorization(stateRoot, operationId, participantId, actualSessionId);
+      await recordContextContinuation(stateRoot, operationId, participantId, {
+        operationId,
+        projectId: identityProjectId(operation),
+        operationExecutionRevision: prior.executionBinding.operationExecutionRevision,
+        candidateRevision: prior.executionBinding.candidateRevision,
+        candidateRevisionDigest: prior.executionBinding.candidateDigest,
+        participantId,
+        participantGeneration: prior.executionBinding.participantGeneration,
+        executionBindingDigest: prior.executionBinding.digest,
+        controllerEpoch: prior.executionBinding.controllerEpoch,
+        contextManifestDigest: prior.executionBinding.contextManifestDigest,
+        promptManifestDigest: prior.executionBinding.promptManifestDigest,
+        previousSessionId: actualSessionId!
+      });
       return prior.executionBinding;
     }
     if (prior && prior.status !== "UNSUPPORTED") throw new Error("EXECUTION_BINDING_REQUIRED: resumed structured-result channel has unsupported partial identity and cannot be rebound.");
@@ -1427,10 +1470,57 @@ async function resolveExecutionBinding(
   assertExecutionBindingV2(binding);
   if (binding.contextManifestDigest !== options.contextManifestDigest || binding.promptManifestDigest !== options.promptManifestDigest || binding.operationExecutionRevision !== operation.operationExecutionRevision || binding.candidateDigest !== candidate.identityDigest || binding.controllerEpoch !== controllerEpoch || binding.operationId !== operationId || binding.participantId !== participantId) throw new Error("EXECUTION_BINDING_MISMATCH: supplied binding does not match the actual launch identity.");
   operation = await bindOperationParticipantExecution(stateRoot, operationId, { participantId, logicalAgent: selection.logicalAgent, role: selection.role, binding });
+  if (isPaseoExecution(selection, config)) await assertPaseoSessionBinding(stateRoot, operation, binding, false);
+  if (Array.isArray(options.contextManifest?.addressableRefs) && options.contextManifest.addressableRefs.length) {
+    if (!authority) throw new Error("CONTEXT_RUNTIME_V2_AUTHORITY_REJECTED: a controller-issued read lease is required to authorize addressable context refs.");
+    const contextAuthorization = await issueContextRefAuthorization(root, stateRoot, operationId, participantId, { logicalAgent: selection.logicalAgent, phase: options.phase ?? "work", retrievalBudget: resolveContextPolicy(config).retrieval, capabilityAuthority: authority, contextManifest: options.contextManifest! });
+    if (!contextAuthorization) throw new Error("CONTEXT_RUNTIME_V2_ISSUE_REJECTED: the launch manifest advertises addressable refs but the controller did not persist an authorization receipt.");
+  }
   options.executionBinding = binding;
   options.executionBlueprintDigest = binding.executionBlueprintDigest;
   options.resolvedOperationPolicyDigest = binding.operationPolicyDigest;
   return binding;
+}
+
+function isPaseoExecution(selection: AgentExecutionSelection, config: HarnessProjectConfig): boolean {
+  return selection.transport === "paseo" || (selection.transport === "inherit" && config.orchestration?.provider === "paseo");
+}
+
+function identityProjectId(operation: Awaited<ReturnType<typeof loadOperation>>): string {
+  if (operation.version !== 2 || !operation.resolvedOperationPolicy?.projectId) throw new Error("EXECUTION_BINDING_REQUIRED: frozen operation policy project identity is unavailable.");
+  return operation.resolvedOperationPolicy.projectId;
+}
+
+async function assertPaseoSessionBinding(stateRoot: string, operation: Awaited<ReturnType<typeof loadOperation>>, binding: ExecutionBindingV2, reuseRequired: boolean): Promise<void> {
+  if (operation.version !== 2 || !operation.resolvedOperationPolicy) throw new Error("PASEO_SESSION_BINDING_INVALID: current frozen operation policy is required.");
+  const identity: PaseoSessionBindingIdentityV1 = {
+    projectId: operation.resolvedOperationPolicy.projectId,
+    operationId: binding.operationId,
+    operationExecutionRevision: binding.operationExecutionRevision,
+    participantId: binding.participantId,
+    participantGeneration: binding.participantGeneration,
+    candidateRevision: binding.candidateRevision,
+    candidateDigest: binding.candidateDigest,
+    executionBlueprintDigest: binding.executionBlueprintDigest,
+    operationPolicyDigest: binding.operationPolicyDigest,
+    contextManifestDigest: binding.contextManifestDigest,
+    promptManifestDigest: binding.promptManifestDigest,
+    controllerEpoch: binding.controllerEpoch
+  };
+  const actualAgentId = binding.runtime.sessionId;
+  const current = await loadPaseoSessionBinding(stateRoot, binding.operationId, binding.participantId);
+  if (reuseRequired) {
+    const reusable = resolveReusablePaseoSession(current, identity);
+    if (!reusable || reusable.paseoAgentId !== actualAgentId) throw new Error("PASEO_SESSION_BINDING_STALE: requested session does not match the complete current canonical binding.");
+    return;
+  }
+  if (!current) {
+    await bindPaseoSession(stateRoot, { ...identity, paseoAgentId: actualAgentId });
+    return;
+  }
+  if (paseoSessionBindingMatches(current, identity) && current.paseoAgentId === actualAgentId && current.status === "ACTIVE") return;
+  if (current.paseoAgentId === actualAgentId) throw new Error("PASEO_SESSION_BINDING_STALE: an existing live Paseo session cannot be relabeled after identity drift; materialize a new session.");
+  await rotatePaseoSessionBinding(stateRoot, { ...identity, paseoAgentId: actualAgentId });
 }
 
 function verifyPreparedPrompt(prompt: string, options: AgentPromptOptions, selection: AgentExecutionSelection): { prompt: string; contextManifest: Readonly<Record<string, unknown>>; contextManifestDigest: string; promptManifestDigest: string } {

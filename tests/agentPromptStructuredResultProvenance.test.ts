@@ -22,6 +22,7 @@ import type { HarnessProjectConfig, TaskContract } from "../src/core/types.js";
 import { compileExecutionBinding, compileResolvedOperationPolicy, compileSkillManifest, type ExecutionBindingV2, type SkillManifestScopeV1, type SkillManifestV1 } from "../src/architecture/executionIdentity.js";
 import { applySkillTrustGate, knowledgePack, type KnowledgeGapV1 } from "../src/knowledge/index.js";
 import { bindResolvedOperationPolicy, currentControllerEpoch, loadOperation, registerOperationAgent } from "../src/operations/state.js";
+import { loadPaseoSessionBinding } from "../src/paseo/sessionBinding.js";
 import { createPromptManifest } from "../src/context/runtimeV2.js";
 import { prepareExecutionAuthority } from "../src/security/executionLease.js";
 import { executeAgentPrompt, prepareAgentExecutionBinding } from "../src/workers/agentPrompt.js";
@@ -140,6 +141,7 @@ describe("public Paseo launch result provenance", () => {
     expect(result?.id).toBe("paseo-actual-provider-agent");
     expect(runtime.materializeManagedPaseoAgent).toHaveBeenCalledBefore(runtime.continueManagedPaseoAgent);
     const provenance = await structuredResultProvenanceForAgent(root, "paseo-actual-provider-agent") as unknown as Record<string, unknown>;
+    const boundIdentity = provenance.executionBinding as ExecutionBindingV2;
     expect(provenance).toEqual(expect.objectContaining({
       status: "BOUND",
       projectId: candidate.projectId,
@@ -171,6 +173,23 @@ describe("public Paseo launch result provenance", () => {
       promptManifestDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
       outputContract: "reviewer"
     }));
+    expect(await loadPaseoSessionBinding(root, operationId, participantId)).toMatchObject({
+      projectId: candidate.projectId,
+      operationId,
+      operationExecutionRevision: boundIdentity.operationExecutionRevision,
+      participantId,
+      participantGeneration: boundIdentity.participantGeneration,
+      candidateRevision: candidate.revision,
+      candidateDigest: candidate.identityDigest,
+      executionBlueprintDigest: boundIdentity.executionBlueprintDigest,
+      operationPolicyDigest: boundIdentity.operationPolicyDigest,
+      contextManifestDigest: boundIdentity.contextManifestDigest,
+      promptManifestDigest: boundIdentity.promptManifestDigest,
+      controllerEpoch: currentControllerEpoch(operation),
+      paseoAgentId: "paseo-actual-provider-agent",
+      sessionGeneration: 1,
+      status: "ACTIVE"
+    });
     expect(operation.revision).toBeLessThan(provenance.operationRevision as number);
     await expect(executeAgentPrompt(root, config, contract, selection, "Review the candidate.", {
       outputContract: "reviewer", phase: "review", participantId, skillManifest, capabilityAuthority: wrongParticipantAuthority

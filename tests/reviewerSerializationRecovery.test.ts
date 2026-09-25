@@ -15,6 +15,7 @@ const state = vi.hoisted(() => ({
   operation: undefined as Record<string, any> | undefined,
   activeOperationSupervisor: vi.fn(() => undefined),
   loadOperation: vi.fn(async () => state.operation),
+  resolveOperationStateRoot: vi.fn((root: string) => root),
   currentControllerEpoch: vi.fn((operation: Record<string, any>) => operation.controller?.epoch ?? 0),
   bindResolvedOperationPolicy: vi.fn(async (_root: string, _operationId: string, policy: Record<string, any>) => {
     state.operation!.resolvedOperationPolicy = policy;

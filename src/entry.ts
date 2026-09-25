@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import crypto from "node:crypto";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { spawn } from "node:child_process";
@@ -25,7 +26,7 @@ import { createSemanticAssessmentRuntimeV1, createSemanticRepositoryBindingV1 } 
 import { runAudit } from "./audit/run.js";
 import type { TaskRisk } from "./core/types.js";
 import { VERSION } from "./version.js";
-import { retrievePersistedContext } from "./context/retrieval/persisted.js";
+import { retrieveAuthorizedContext } from "./context/authorizationV2.js";
 import { serveContextRetrievalMcp } from "./context/retrieval/server.js";
 import { createIntentDecision, type IntentDecisionV1 } from "./audit/intentDecision.js";
 import { LocalControlCenterV1, createProjectHome } from "./control-center/index.js";
@@ -273,13 +274,19 @@ async function runContextGuard(argv: string[]): Promise<void> {
 }
 
 async function runContextRetrieve(argv: string[]): Promise<void> {
-  const parsed = parseGeneric(argv, new Set(["fragment", "agent", "max-tokens"]), new Set());
+  const parsed = parseGeneric(argv, new Set(["ref", "participant", "agent", "max-tokens"]), new Set());
   if (parsed.positional.length > 2) throw new Error("aeh context retrieve accepts <operationId> and at most one project directory.");
   const operationId = parsed.positional[0]; if (!operationId) throw new Error("aeh context retrieve requires <operationId>.");
-  const root = path.resolve(parsed.positional[1] ?? "."); const fragmentId = parsed.value("fragment"); if (!fragmentId) throw new Error("aeh context retrieve requires --fragment <id>.");
+  const root = path.resolve(parsed.positional[1] ?? "."); const refId = parsed.value("ref"); if (!refId) throw new Error("aeh context retrieve requires --ref <controller-authorized-ref-id>.");
+  const participantId = parsed.value("participant") ?? process.env.AEH_CONTEXT_PARTICIPANT_ID ?? process.env.AEH_PARTICIPANT_ID; if (!participantId) throw new Error("aeh context retrieve requires --participant <current-participant-id> or AEH_CONTEXT_PARTICIPANT_ID.");
   const logicalAgent = parsed.value("agent") ?? process.env.AEH_LOGICAL_AGENT; if (!logicalAgent) throw new Error("aeh context retrieve requires --agent <logical-agent> or AEH_LOGICAL_AGENT.");
+  const sessionId = process.env.PASEO_AGENT_ID?.trim() || process.env.AEH_CONTEXT_SESSION_ID?.trim();
   const maxTokens = parsed.value("max-tokens") ? Number(parsed.value("max-tokens")) : undefined; if (maxTokens !== undefined && (!Number.isInteger(maxTokens) || maxTokens <= 0)) throw new Error("--max-tokens must be a positive integer.");
-  const config = await loadProjectConfig(root); console.log(JSON.stringify(await retrievePersistedContext(root, config, operationId, logicalAgent, { fragmentId, maxTokens }), null, 2));
+  const config = await loadProjectConfig(root);
+  const controlRoot = process.env.AEH_CONTEXT_CONTROL_ROOT?.trim() || process.env.AEH_CONTROL_ROOT?.trim() || root;
+  const phase = process.env.AEH_CONTEXT_PHASE?.trim() || "work";
+  const result = await retrieveAuthorizedContext(root, controlRoot, operationId, participantId, sessionId, logicalAgent, phase, { refId, requestId: crypto.randomUUID(), maxTokens });
+  console.log(JSON.stringify(result, null, 2));
 }
 
 async function runPaseoAgents(argv: string[]): Promise<void> {

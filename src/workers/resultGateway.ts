@@ -8,6 +8,7 @@ import { sha256Canonical } from "../core/digest.js";
 import { assertCandidateRevisionV1, candidateRevisionsEqual, type CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import { assertWorkspaceMatchesCandidate } from "../candidates/identity.js";
 import { assertExecutionBindingV2, type ExecutionBindingV2 } from "../architecture/executionIdentity.js";
+import { assertContextRetrievalEvidence, closeContextRetrievalForResult, contextRetrievalEvidenceForResult, type ContextRetrievalEvidenceV1 } from "../context/authorizationV2.js";
 
 export interface StructuredResultProvenanceV1 {
   version: 1;
@@ -91,6 +92,7 @@ export interface StructuredResultArtifact<T = unknown> {
   agentId?: string;
   contract: string;
   provenance: StructuredResultProvenanceV1;
+  contextEvidence: ContextRetrievalEvidenceV1;
   source: StructuredResultSource;
   createdAt: string;
   payloadSha256: string;
@@ -105,6 +107,7 @@ export interface AcceptedStructuredResult<T = unknown> {
   turnId: string;
   channelId: string;
   provenance: StructuredResultProvenanceV1;
+  contextEvidence: ContextRetrievalEvidenceV1;
 }
 
 export interface StructuredResultResolution<T = unknown> {
@@ -400,6 +403,10 @@ export async function acceptStructuredResult<T = unknown>(
       return readVerifiedAcceptedArtifact<T>(stateRoot, channel, turn);
     }
 
+    const executionBinding = channel.provenance.executionBinding;
+    if (!executionBinding) throw new Error("AEH_RESULT_PROVENANCE_INCOMPLETE: context evidence requires the frozen ExecutionBinding.");
+    const contextEvidence = await closeContextRetrievalForResult(stateRoot, executionBinding);
+    assertContextRetrievalEvidence(contextEvidence, executionBinding);
     const artifactEnvelope: StructuredResultArtifact<T> = {
       version: 1,
       kind: "agent-result",
@@ -417,6 +424,7 @@ export async function acceptStructuredResult<T = unknown>(
       agentId: channel.agentId,
       contract: turn.contract,
       provenance: channel.provenance,
+      contextEvidence,
       source,
       createdAt: new Date().toISOString(),
       payloadSha256: sha256,
@@ -439,7 +447,7 @@ export async function acceptStructuredResult<T = unknown>(
     if (channel.agentId) {
       await updateOperationParticipant(stateRoot, operationId, channel.agentId, { resultArtifact: artifact }).catch(() => undefined);
     }
-    return { artifact, sha256, payload: normalized, source, turnId: turn.id, channelId, provenance: channel.provenance };
+    return { artifact, sha256, payload: normalized, source, turnId: turn.id, channelId, provenance: channel.provenance, contextEvidence };
   });
 }
 
@@ -600,6 +608,11 @@ async function readVerifiedAcceptedArtifact<T>(
   const validation = validateAgentOutput(envelope.contract, envelope.payload);
   if (!validation.ok) throw new Error(`AEH_RESULT_INTEGRITY: accepted result no longer satisfies its contract: ${validation.issues.join("; ")}`);
   if (!channel.provenance || !envelope.provenance || sha256Canonical(envelope.provenance) !== sha256Canonical(channel.provenance)) throw new Error("AEH_RESULT_PROVENANCE: result artifact is missing or has different immutable provenance.");
+  const executionBinding = channel.provenance.executionBinding;
+  if (!executionBinding || !envelope.contextEvidence) throw new Error("AEH_RESULT_PROVENANCE: result artifact is missing context retrieval evidence.");
+  assertContextRetrievalEvidence(envelope.contextEvidence, executionBinding);
+  const currentContextEvidence = await contextRetrievalEvidenceForResult(stateRoot, executionBinding);
+  if (sha256Canonical(currentContextEvidence) !== sha256Canonical(envelope.contextEvidence)) throw new Error("AEH_RESULT_PROVENANCE: StructuredResult context evidence does not match the durable retrieval receipts.");
   if (channel.operationRevision !== undefined && channel.provenance.operationRevision !== undefined && channel.operationRevision !== channel.provenance.operationRevision) throw new Error("AEH_RESULT_PROVENANCE: channel operation revision does not match immutable result provenance.");
   assertStructuredResultProvenance(channel.provenance, { operationId: channel.operationId, logicalAgent: channel.logicalAgent, role: channel.role, taskId: channel.taskId, contract: channel.contract });
   assertStructuredResultProvenance(envelope.provenance, { operationId: channel.operationId, logicalAgent: channel.logicalAgent, role: channel.role, taskId: channel.taskId, contract: channel.contract });
@@ -614,7 +627,7 @@ async function readVerifiedAcceptedArtifact<T>(
     if (!operation.candidateRevision || !channel.provenance.candidate || !candidateRevisionsEqual(operation.candidateRevision, channel.provenance.candidate)) throw new Error("AEH_RESULT_STALE_CANDIDATE: result was produced for a candidate that is no longer current.");
     await assertWorkspaceMatchesCandidate(channel.provenance.candidate.worktree ?? operation.workspaceRoot ?? operation.root, channel.provenance.candidate, operation.candidateRevision);
   }
-  return { artifact: turn.artifact, sha256: turn.sha256, payload: envelope.payload, source: envelope.source, turnId: turn.id, channelId: channel.channelId, provenance: channel.provenance };
+  return { artifact: turn.artifact, sha256: turn.sha256, payload: envelope.payload, source: envelope.source, turnId: turn.id, channelId: channel.channelId, provenance: channel.provenance, contextEvidence: envelope.contextEvidence };
 }
 
 async function assertCurrentStructuredResultExecution(operation: Awaited<ReturnType<typeof loadOperation>>, provenance: StructuredResultProvenanceV1): Promise<void> {
