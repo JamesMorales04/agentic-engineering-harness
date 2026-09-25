@@ -198,7 +198,13 @@ async function compileWaveExecutionBlueprint(args: {
       context: sha256Canonical(input.config.context ?? null)
     },
     validationPolicy: validationResolution,
-    reviewPolicy: { minimumAssurance: graph.assurance, reviewDimensions: plan.workUnits.flatMap((unit) => unit.changeKinds.map((kind) => `change:${kind}`)).sort(), independentReviewRequired: graph.assurance === "ELEVATED" || graph.assurance === "CRITICAL" },
+    reviewPolicy: {
+      minimumAssurance: graph.assurance,
+      reviewDimensions: plan.workUnits.flatMap((unit) => unit.changeKinds.map((kind) => `change:${kind}`)).sort(),
+      independentReviewRequired: graph.assurance === "ELEVATED" || graph.assurance === "CRITICAL",
+      leadAcceptance: input.config.workflow?.reviews?.leadAcceptance !== false,
+      leadAcceptanceDirect: input.config.workflow?.reviews?.leadAcceptanceDirect === true
+    },
     deliveryPolicy,
     knowledgePolicy: { resolutions: knowledgePolicy },
     contextPolicy: input.config.context ?? { mode: "disabled" },

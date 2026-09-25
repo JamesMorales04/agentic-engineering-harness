@@ -96,13 +96,13 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
       if (currentOperationContext().id) {
         // The durable operation is bound to the actual interactive lead. Do not
         // synthesize a second hidden orchestrator session inside the RUN. The
-        // controller terminalizes deterministic work and the real lead consumes
-        // that durable result for user-facing semantic acceptance.
+        // controller uses the bound Lead for candidate-bound semantic evidence
+        // in the S6 AcceptanceOracle phase before any delivery effects.
         checks.push({
           id: "agent.interactive-lead-acceptance",
           category: "agent-review",
           status: "PASS",
-          message: "Deterministic quality acceptance completed; final semantic/user-facing acceptance is deferred to the bound interactive lead through the durable operation lifecycle."
+          message: "Deterministic quality checks passed; bound Lead semantic evidence and the controller-owned AcceptanceOracle run afterward before delivery. This quality check is not product acceptance."
         });
         return successResult(remediationRounds, report, deduped, checks, sessions, qualityHistory);
       }

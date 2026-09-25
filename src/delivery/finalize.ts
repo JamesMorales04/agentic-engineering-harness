@@ -9,6 +9,7 @@ import { reconcileToolAction } from "../security/actionReconciliation.js";
 import { executeGatedAction, type GatedActionResultV1 } from "../security/gatedAction.js";
 import { controllerActorId, type ToolActionAuthorityEvidenceV1 } from "../security/toolActionGate.js";
 import { assertWorkspaceMatchesCandidate } from "../candidates/identity.js";
+import { requireAcceptedCurrentOracleV1 } from "../architecture/acceptanceOracle.js";
 
 export type DeliveryFinalizationStatus = "SKIPPED" | "NO_CHANGES" | "FINALIZED" | "BLOCKED_EXTERNAL" | "BLOCKED_SUPPLY_CHAIN" | "SYSTEM_FAILURE";
 export interface DeliveryFinalizationResult {
@@ -38,6 +39,7 @@ export async function finalizeAcceptedIssue(root: string, config: HarnessProject
   if (!boundCandidate || !operation.candidateRevision || boundCandidate.identityDigest !== operation.candidateRevision.identityDigest) {
     throw new Error("DELIVERY_AUTHORITY_REQUIRED: delivery requires the operation's current CandidateRevision.");
   }
+  await requireAcceptedCurrentOracleV1(resolveOperationStateRoot(root), operation, boundCandidate);
   await assertWorkspaceMatchesCandidate(root, boundCandidate, operation.candidateRevision);
   const authority: ToolActionAuthorityEvidenceV1 = { kind: "controller-authority", operationId, controllerEpoch };
   const actor = controllerActorId(operationId);

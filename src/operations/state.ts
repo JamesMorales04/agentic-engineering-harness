@@ -7,6 +7,8 @@ import { canonicalSerialize, sha256Canonical, sha256Utf8 } from "../core/digest.
 import { computeWorktreeDigest } from "../core/git.js";
 import { assertWorkspaceMatchesCandidate } from "../candidates/identity.js";
 import { assertExecutionBindingV2, assertResolvedOperationPolicyV1, type ExecutionBindingV2, type ResolvedOperationPolicyV1 } from "../architecture/executionIdentity.js";
+import { evaluateObjectiveCompletionV1, type ObjectiveCompletionInputV1 } from "../architecture/objectiveCompletion.js";
+import { currentObjectiveIdentityV1, loadCurrentAcceptanceOracleArtifactV1, type AcceptanceOracleDispositionV1 } from "../architecture/acceptanceOracle.js";
 import { HumanDecisionLedgerV2, assertContinuationRecordV1, assertDecisionRequestV1, type ContinuationRecordV1, type DecisionRequestV1, type HumanDecisionBindingV2 } from "../security/humanDecision.js";
 
 export type OperationKind = "audit" | "run" | "change";
@@ -171,7 +173,7 @@ export async function transitionOperationToTerminal(root: string, operationId: s
     if (patch.status === "SUCCEEDED" && Object.keys(current.participants).length === 0 && Object.keys(current.participantReceipts ?? {}).length === 0) {
       current = await createControllerTerminalReceipt(stateRoot, current, patch);
     }
-    if (patch.status === "SUCCEEDED") assertSuccessTerminalEvidence(current);
+    if (patch.status === "SUCCEEDED") await assertSuccessTerminalEvidence(stateRoot, current, patch.result);
     const now = new Date().toISOString(); const revision = current.revision + 1; const participants = settleParticipants(current.participants, patch.status, now); const supervision = settleSupervision(current.supervision, now);
     const next = normalizeOperationRecord({ ...current, ...patch, version: 2, id: current.id, kind: current.kind, revision, updatedAt: now, lastProgressAt: now, finishedAt: patch.finishedAt ?? now, participants, progress: deriveProgress(participants), supervision, decisionRequest: undefined, continuation: undefined, stages: { ...current.stages, finished: { name: "finished", status: terminalStageStatus(patch.status), revision, startedAt: now, finishedAt: now } } } as OperationRecordV2);
     if (patch.status === "SUCCEEDED" && next.candidateRevision) await assertWorkspaceMatchesCandidate(candidateWorkspaceRoot(next, next.candidateRevision), next.candidateRevision);
@@ -1316,7 +1318,7 @@ function processAlive(pid: number): boolean { try { process.kill(pid, 0); return
 
 function guardTerminalTransition(current: OperationRecordV2, patch: Partial<OperationRecordV2>): Partial<OperationRecordV2> { if (!isTerminal(current.status)) return patch; const { status: _status, phase: _phase, result: _result, error: _error, finishedAt: _finishedAt, ...metadata } = patch; return metadata; }
 function deriveProgress(participants: Record<string, OperationParticipantRecord>): OperationProgress { const values = Object.values(participants); return { expected: values.length, registered: values.filter((item) => item.status === "REGISTERED" || item.status === "IDLE").length, running: values.filter((item) => item.status === "RUNNING").length, completed: values.filter((item) => item.status === "COMPLETED").length, failed: values.filter((item) => item.status === "FAILED" || item.status === "CANCELLED").length, blocked: values.filter((item) => item.status === "BLOCKED").length }; }
-function assertSuccessTerminalEvidence(record: OperationRecordV2): void {
+async function assertSuccessTerminalEvidence(stateRoot: string, record: OperationRecordV2, result?: Record<string, unknown>): Promise<void> {
   if (!record.candidateRevision) throw new Error("V2_TERMINAL_GATE_REJECTED: successful operations require a current candidate revision.");
   if (!Object.keys(record.participantReceipts ?? {}).length) throw new Error("V2_TERMINAL_GATE_REJECTED: successful operations require at least one terminal receipt.");
   for (const participant of Object.values(record.participants)) {
@@ -1324,6 +1326,35 @@ function assertSuccessTerminalEvidence(record: OperationRecordV2): void {
     if (!receipt) throw new Error(`V2_TERMINAL_GATE_REJECTED: participant ${participant.id} has no terminal receipt.`);
     const decision = evaluateTerminalGate(receipt, { operationId: record.id, candidate: record.candidateRevision });
     if (!decision.allowed) throw new Error(`V2_TERMINAL_GATE_REJECTED: ${decision.reasons.map((reason) => reason.code).join(",")}`);
+  }
+  if (record.kind === "audit") return;
+  const objective = result?.objectiveCompletion as ObjectiveCompletionInputV1 | undefined;
+  const reportedDecision = result?.objectiveCompletionDecision as ReturnType<typeof evaluateObjectiveCompletionV1> | undefined;
+  const reportedOracle = result?.acceptanceOracle as AcceptanceOracleDispositionV1 | undefined;
+  if (!objective || !reportedDecision || !reportedOracle || typeof result?.acceptanceOracleArtifact !== "string") {
+    throw new Error("OBJECTIVE_COMPLETION_REQUIRED: successful managed change/run operations require durable objective completion, current AcceptanceOracle disposition, and oracle artifact reference.");
+  }
+  const identity = currentObjectiveIdentityV1(record);
+  if (reportedOracle.disposition !== "ACCEPTED" || sha256Canonical(reportedOracle.identity) !== sha256Canonical(identity)
+    || objective.acceptance.disposition !== "ACCEPTED" || sha256Canonical(objective.identity) !== sha256Canonical(identity)) {
+    throw new Error("OBJECTIVE_COMPLETION_IDENTITY_STALE: current operation does not match the accepted candidate/policy/execution/epoch evidence.");
+  }
+  const artifact = await loadCurrentAcceptanceOracleArtifactV1(stateRoot, record);
+  if (!artifact || artifact.disposition.digest !== reportedOracle.digest) throw new Error("ACCEPTANCE_ORACLE_ARTIFACT_REQUIRED: successful terminalization requires the persisted current AcceptanceOracle disposition consumed by the run.");
+  if (sha256Canonical(artifact.disposition) !== sha256Canonical(reportedOracle)
+    || sha256Canonical(objective.acceptance.requiredAssertionIds) !== sha256Canonical(artifact.disposition.requiredAssertionIds)
+    || sha256Canonical(objective.acceptance.coveredAssertionIds) !== sha256Canonical(artifact.disposition.coveredAssertionIds)) {
+    throw new Error("OBJECTIVE_COMPLETION_ORACLE_COVERAGE_STALE: completion assertion coverage does not match the persisted current AcceptanceOracle disposition.");
+  }
+  const decision = evaluateObjectiveCompletionV1(objective);
+  if (!decision.complete || sha256Canonical(decision) !== sha256Canonical(reportedDecision)) {
+    throw new Error(`OBJECTIVE_COMPLETION_REJECTED: deterministic Definition of Done failed: ${decision.blockers.map((item) => item.code).join(",")}`);
+  }
+  for (const participant of Object.values(record.participants)) {
+    const snapshot = objective.participants.find((item) => item.id === participant.id);
+    if (!snapshot || snapshot.status !== participant.status || (participant.status === "REGISTERED" || participant.status === "IDLE" || participant.status === "RUNNING") && !snapshot.required) {
+      throw new Error(`OBJECTIVE_PARTICIPANT_SNAPSHOT_STALE: completion does not account for current participant '${participant.id}' state.`);
+    }
   }
 }
 

@@ -3,16 +3,22 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { sha256Canonical } from "../src/core/digest.js";
+import { compileResolvedOperationPolicy } from "../src/architecture/executionIdentity.js";
+import { currentObjectiveIdentityV1, persistAcceptanceOracleArtifactV1, type AcceptanceOracleDispositionV1, type EvidenceBundleV1 } from "../src/architecture/acceptanceOracle.js";
+import { evaluateObjectiveCompletionV1, type ObjectiveCompletionInputV1 } from "../src/architecture/objectiveCompletion.js";
 import {
   acknowledgeOperationLead,
   activeOperationSupervisor,
   bindOperationLead,
+  bindResolvedOperationPolicy,
   currentControllerEpoch,
   loadOperation,
   operationEventsFile,
   registerOperationAgent,
   registerSupervisorGeneration,
   saveOperation,
+  resolveOperationStateRoot,
   setOperationStage,
   transitionOperationToTerminal,
   updateOperationParticipant,
@@ -54,6 +60,37 @@ function operation(repositoryRoot: string): OperationRecordV2 {
     progress: { expected: 0, registered: 0, running: 0, completed: 0, failed: 0, blocked: 0 },
     notification: { lastLeadWakeRevision: 0, terminalDelivered: false, attempts: 0 }
   };
+}
+
+async function acceptedChangeResult(root: string, operationId: string): Promise<Record<string, unknown>> {
+  let current = await loadOperation(root, operationId);
+  const candidate = current.candidateRevision!;
+  const policy = compileResolvedOperationPolicy({
+    projectId: candidate.projectId!, operationId,
+    operationExecutionRevision: current.operationExecutionRevision!, candidateRevision: candidate.revision,
+    candidateDigest: candidate.identityDigest, controllerEpoch: currentControllerEpoch(current),
+    intent: "operation supervision lifecycle test", route: "DIRECT", minimumAssurance: "STANDARD",
+    policyVersions: { resolvedOperationPolicy: "1" }, policyDigests: {}, validationPolicy: {},
+    reviewPolicy: { leadAcceptance: false, leadAcceptanceDirect: false }, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {},
+    allowedExternalEffects: [], humanDecisionRequirements: []
+  });
+  await bindResolvedOperationPolicy(root, operationId, policy);
+  current = await loadOperation(root, operationId);
+  const identity = currentObjectiveIdentityV1(current);
+  const bundleBody = { version: 1 as const, identity, candidate: identity.candidate, impactDigest: sha256Canonical("empty impact"), compilationDigest: sha256Canonical("empty assertions"), requirements: [], evidence: [] };
+  const bundle: EvidenceBundleV1 = { ...bundleBody, digest: sha256Canonical(bundleBody) };
+  const dispositionBody = { version: 1 as const, disposition: "ACCEPTED" as const, identity, evidenceBundleDigest: bundle.digest, requiredAssertionIds: [] as string[], coveredAssertionIds: [] as string[], certificationRequired: false, blockers: [] as Array<{ code: string; message: string }> };
+  const acceptanceOracle: AcceptanceOracleDispositionV1 = { ...dispositionBody, digest: sha256Canonical(dispositionBody) };
+  const acceptanceOracleArtifact = await persistAcceptanceOracleArtifactV1(resolveOperationStateRoot(root), bundle, acceptanceOracle);
+  const objectiveCompletion: ObjectiveCompletionInputV1 = {
+    version: 1, identity, workspaceCandidate: identity.candidate,
+    workGraph: { requiredWorkUnitIds: [], accountedWorkUnitIds: [] },
+    validation: { requiredAssertionIds: [], evidence: [] }, review: { requiredAssertionIds: [], evidence: [] },
+    acceptance: { disposition: "ACCEPTED", requiredAssertionIds: [], coveredAssertionIds: [], identity },
+    certification: { required: false }, delivery: { required: false, disposition: "NOT_REQUIRED" },
+    findings: [], participants: [], terminalIdentity: identity
+  };
+  return { acceptanceOracle, acceptanceOracleArtifact, objectiveCompletion, objectiveCompletionDecision: evaluateObjectiveCompletionV1(objectiveCompletion) };
 }
 
 describe("OperationRecord v2 supervision", () => {
@@ -141,7 +178,7 @@ describe("OperationRecord v2 supervision", () => {
       status: "SUCCEEDED",
       phase: "finished",
       finishedAt: new Date().toISOString(),
-      result: { status: "PASS" }
+      result: { status: "PASS", ...await acceptedChangeResult(repositoryRoot, "CHANGE-STATE") }
     });
     expect(terminal.transitioned).toBe(true);
     expect(terminal.record.lead!.acknowledgedRevision).toBeLessThan(terminal.record.revision);

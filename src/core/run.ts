@@ -31,7 +31,7 @@ import { createControlPlaneSnapshot, detectControlPlaneDrift, materializeControl
 import { resolveOrganizationPolicyBundles, withOrganizationPolicies } from "../policy/bundles.js";
 import { buildRequirementEvidenceGraph, evidenceValidationCheck, type RequirementEvidenceGraph } from "../evidence/graph.js";
 import { enforceSandboxPolicy } from "../security/sandbox.js";
-import { bindOperationCandidate, currentOperationContext, loadOperation, resolveOperationStateRoot, setOperationStage } from "../operations/state.js";
+import { assertCurrentControllerOwner, bindOperationCandidate, currentOperationContext, loadOperation, resolveOperationStateRoot, setOperationStage } from "../operations/state.js";
 import { ensureOperationSupervisor, maybeRotateOperationSupervisor, settleDrainingSupervisorGenerations } from "../operations/supervisor.js";
 import { createMemoryProvider } from "../providers/memory.js";
 import { buildAcceptedOperationCandidates } from "../memory/candidates.js";
@@ -53,6 +53,9 @@ import { runConfiguredValidators } from "../validators/registry.js";
 import { providerSpecFor, runCapabilityValidator } from "../providers/validation/registry.js";
 import { runExternalToolValidator } from "../validators/external.js";
 import type { ValidationProviderContext } from "../providers/validation/types.js";
+import { buildAcceptanceEvidenceBundleV1, currentObjectiveIdentityV1, evaluateAcceptanceOracleV1, leadAcceptanceRequiredV1, persistAcceptanceOracleArtifactV1, type AcceptanceOracleDispositionV1, type EvidenceBundleV1 } from "../architecture/acceptanceOracle.js";
+import { requestManagedLeadAcceptance } from "../agents/managedLeadAcceptance.js";
+import { evaluateObjectiveCompletionV1, type ObjectiveCompletionInputV1 } from "../architecture/objectiveCompletion.js";
 
 export interface CandidateAssuranceEvaluationV1 {
   compilation?: CandidateAssuranceCompilationV1;
@@ -72,6 +75,11 @@ export interface TaskRunResult {
   controlPlane?: { sha256: string; gitCommit?: string; drifted: boolean; changed: string[]; missing: string[]; added: string[]; };
   evidence?: { sha256: string; complete: boolean; requirements: number; reasons: string[]; };
   candidateAssurance?: CandidateAssuranceEvaluationV1;
+  acceptanceOracle?: AcceptanceOracleDispositionV1;
+  acceptanceOracleArtifact?: string;
+  evidenceBundle?: EvidenceBundleV1;
+  objectiveCompletion?: ObjectiveCompletionInputV1;
+  objectiveCompletionDecision?: ReturnType<typeof evaluateObjectiveCompletionV1>;
   review?: { status: "PASS" | "FAIL"; finalState: string; humanRequired: boolean; rounds: number; findings: number; debtScore: number; debtPoints: number; counts: SeverityCounts; convergence: string; leadAccepted?: boolean; reviewerSessions: number; };
   delivery?: DeliveryFinalizationResult;
 }
@@ -384,6 +392,40 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     }
   }
 
+  let acceptanceOracle: AcceptanceOracleDispositionV1 | undefined;
+  let evidenceBundle: EvidenceBundleV1 | undefined;
+  let acceptanceOracleArtifact: string | undefined;
+  if (operationId) {
+    try {
+      const operation = await loadOperation(operationStateRoot, operationId);
+      assertCurrentControllerOwner(operation, "AcceptanceOracle disposition");
+      const compilation = assuranceEvaluation?.compilation;
+      if (!compilation) throw new Error("ACCEPTANCE_ASSERTIONS_REQUIRED: S6 requires current S4 AcceptanceAssertion compilation before disposition.");
+      const policy = operation.resolvedOperationPolicy;
+      if (!policy) throw new Error("ACCEPTANCE_POLICY_REQUIRED: AcceptanceOracle requires the operation's current frozen policy.");
+      const leadEvidence = report.status === "PASS" && leadAcceptanceRequiredV1(policy)
+        ? await requestManagedLeadAcceptance({ root: workspaceRoot, operationId, compilation, report, implementationIdentity: selection?.logicalAgent ?? "<missing-implementation-identity>" })
+        : undefined;
+      const current = await loadOperation(operationStateRoot, operationId);
+      assertCurrentControllerOwner(current, "AcceptanceOracle persistence");
+      evidenceBundle = buildAcceptanceEvidenceBundleV1({ operation: current, compilation, report, implementationIdentity: selection?.logicalAgent ?? "<missing-implementation-identity>", leadEvidence });
+      acceptanceOracle = evaluateAcceptanceOracleV1(evidenceBundle, compilation.evidenceStrength);
+      acceptanceOracleArtifact = await persistAcceptanceOracleArtifactV1(operationStateRoot, evidenceBundle, acceptanceOracle);
+      report = mergeChecks(report, [{
+        id: "acceptance.oracle",
+        category: "acceptance-oracle",
+        status: acceptanceOracle.disposition === "ACCEPTED" ? "PASS" : "FAIL",
+        message: acceptanceOracle.disposition === "ACCEPTED"
+          ? `AcceptanceOracle accepted ${acceptanceOracle.coveredAssertionIds.length} current candidate assertions.`
+          : `AcceptanceOracle rejected the current candidate: ${acceptanceOracle.blockers.map((item) => item.code).join(", ")}.`,
+        details: { disposition: acceptanceOracle.disposition, identity: acceptanceOracle.identity, evidenceBundleDigest: evidenceBundle.digest, artifact: acceptanceOracleArtifact, requiredAssertionIds: acceptanceOracle.requiredAssertionIds, coveredAssertionIds: acceptanceOracle.coveredAssertionIds, blockers: acceptanceOracle.blockers }
+      }]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      report = mergeChecks(report, [{ id: "acceptance.oracle", category: "acceptance-oracle", status: "FAIL", message: `AcceptanceOracle could not produce a current disposition: ${message}`, details: { error: message } }]);
+    }
+  }
+
   let deliverySummary: DeliveryFinalizationResult | undefined;
   if (report.status === "PASS") {
     if (operationId) await runStage(operationStateRoot, operationId, "delivery", "RUNNING");
@@ -408,11 +450,68 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
   if (controller) report = mergeChecks(report, [{ id: "trust.control-plane-freeze", category: "trust-boundary", status: "PASS", message: drift.drifted ? "Control-plane files changed during the run, but the run remained governed by its frozen controller snapshot; changes activate next run." : "Control-plane snapshot remained unchanged during the run.", details: { controllerSha256: controller.compositeSha256, gitCommit: controller.gitCommit, drift } }]);
 
   if (operationId && supervisorSelection) await settleDrainingSupervisorGenerations(workspaceRoot, operationId);
+  let objectiveCompletion: ObjectiveCompletionInputV1 | undefined;
+  let objectiveCompletionDecision: ReturnType<typeof evaluateObjectiveCompletionV1> | undefined;
+  if (operationId && report.status === "PASS") {
+    try {
+      const operation = await loadOperation(operationStateRoot, operationId);
+      assertCurrentControllerOwner(operation, "objective completion evaluation");
+      if (!acceptanceOracle || acceptanceOracle.disposition !== "ACCEPTED" || !evidenceBundle || !assuranceEvaluation?.compilation) {
+        throw new Error("OBJECTIVE_COMPLETION_EVIDENCE_REQUIRED: current accepted AcceptanceOracle, EvidenceBundle, and S4 assertion compilation are required.");
+      }
+      const identity = currentObjectiveIdentityV1(operation);
+      const requiredWorkUnitIds = waveResult?.plan?.workUnits.map((unit) => unit.id) ?? [`direct:${effectiveContract.task.id}`];
+      const accountedWorkUnitIds = waveResult?.plan
+        ? waveResult.waves.flatMap((wave) => wave.results.filter((result) => result.status === "PASS").map((result) => result.task.id))
+        : worker.exitCode === 0 ? [`direct:${effectiveContract.task.id}`] : [];
+      const validationRequirements = evidenceBundle.requirements.filter((requirement) => requirement.validationRequirementIds.length > 0);
+      const reviewRequirements = evidenceBundle.requirements.filter((requirement) => requirement.reviewDimensions.length > 0);
+      const evidenceForGate = (requirements: typeof validationRequirements, kind: "VALIDATION" | "REVIEW") => ({
+        requiredAssertionIds: requirements.map((requirement) => requirement.assertionId),
+        evidence: requirements.map((requirement) => {
+          const items = evidenceBundle!.evidence.filter((item) => item.kind === kind && item.assertionId === requirement.assertionId);
+          return { assertionId: requirement.assertionId, status: items.length > 0 && items.every((item) => item.status === "PASS") ? "PASS" as const : "FAIL" as const, identity };
+        })
+      });
+      const deliveryRequired = effectiveContract.issue?.provider === "github"
+        && effectiveConfig.delivery?.github?.enabled === true
+        && effectiveConfig.delivery.github.finalizeOnAcceptance === true;
+      const deliveryReconciled = deliverySummary?.status === "FINALIZED" || deliverySummary?.status === "NO_CHANGES";
+      objectiveCompletion = {
+        version: 1,
+        identity,
+        workspaceCandidate: identity.candidate,
+        workGraph: { requiredWorkUnitIds, accountedWorkUnitIds },
+        validation: evidenceForGate(validationRequirements, "VALIDATION"),
+        review: evidenceForGate(reviewRequirements, "REVIEW"),
+        acceptance: { disposition: acceptanceOracle.disposition, requiredAssertionIds: acceptanceOracle.requiredAssertionIds, coveredAssertionIds: acceptanceOracle.coveredAssertionIds, identity },
+        certification: { required: false },
+        delivery: { required: deliveryRequired, disposition: deliveryRequired ? deliveryReconciled ? "RECONCILED" : "PENDING" : "NOT_REQUIRED", ...(deliveryRequired && deliveryReconciled ? { identity } : {}) },
+        findings: reviewFindings.map((finding) => ({ candidate: identity.candidate, blocking: false })),
+        participants: [
+          ...Object.values(operation.participants).map((participant) => ({ id: participant.id, required: true, status: participant.status })),
+          ...(leadAcceptanceRequiredV1(operation.resolvedOperationPolicy!) ? [{ id: operation.lead?.agentId ?? "managed-lead", required: true, status: "COMPLETED" as const }] : [])
+        ],
+        terminalIdentity: identity
+      };
+      objectiveCompletionDecision = evaluateObjectiveCompletionV1(objectiveCompletion);
+      report = mergeChecks(report, [{
+        id: "objective.completion",
+        category: "objective-completion",
+        status: objectiveCompletionDecision.complete ? "PASS" : "FAIL",
+        message: objectiveCompletionDecision.complete ? "Complete objective evidence set satisfies the deterministic Definition of Done." : `Objective Definition of Done is blocked: ${objectiveCompletionDecision.blockers.map((item) => item.code).join(", ")}.`,
+        details: { identity, blockers: objectiveCompletionDecision.blockers, requiredWorkUnitIds, accountedWorkUnitIds }
+      }]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      report = mergeChecks(report, [{ id: "objective.completion", category: "objective-completion", status: "FAIL", message: `Objective Definition of Done could not be evaluated: ${message}`, details: { error: message } }]);
+    }
+  }
   const usageText = [...executionSessions, ...reviewSessions].map((session) => `${session.stdout}\n${session.stderr}`).join("\n");
   worker.metrics = extractUsageMetrics(usageText || `${worker.stdout}\n${worker.stderr}`);
   const metrics = buildRunMetrics({ firstPassSuccess, repairCount: attempts, humanInterventions: await countHumanInterventions(controlRoot, effectiveConfig, effectiveContract.task.id, startedAt), durationMs: Date.now() - startedMs, usage: worker.metrics });
   const routing = selection ? { profile: selection.profile, ruleIds: route?.ruleIds ?? [], agent: selection.logicalAgent, runtime: selection.runtimeName, model: selection.modelId, nativeAgent: selection.nativeAgent, reviewers: route?.reviewers ?? [], implementationRoute: route?.implementationRoute, assurance: route?.assurance } : undefined;
-  const result: TaskRunResult = { taskId: effectiveContract.task.id, status: report.status, attempts, worker, report, metrics, routing, planning: waveResult ? { used: waveResult.used, workUnits: waveResult.plan?.workUnits.length ?? 0, waves: waveResult.schedule?.waves.length ?? 0, distributed: effectiveConfig.workflow?.planning?.distributed === true && effectiveConfig.distributed?.enabled === true, graphUsed: waveResult.schedule?.graphUsed, compilerDigest: waveResult.blueprint?.plan.compilerDigest } : undefined, controlPlane: controller ? { sha256: controller.compositeSha256, gitCommit: controller.gitCommit, drifted: drift.drifted, changed: drift.changed, missing: drift.missing, added: drift.added } : undefined, evidence: evidenceGraph ? { sha256: evidenceGraph.sha256, complete: evidenceGraph.complete, requirements: evidenceGraph.requirements.length, reasons: evidenceGraph.reasons } : undefined, candidateAssurance: assuranceEvaluation, review: reviewSummary, delivery: deliverySummary };
+  const result: TaskRunResult = { taskId: effectiveContract.task.id, status: report.status, attempts, worker, report, metrics, routing, planning: waveResult ? { used: waveResult.used, workUnits: waveResult.plan?.workUnits.length ?? 0, waves: waveResult.schedule?.waves.length ?? 0, distributed: effectiveConfig.workflow?.planning?.distributed === true && effectiveConfig.distributed?.enabled === true, graphUsed: waveResult.schedule?.graphUsed, compilerDigest: waveResult.blueprint?.plan.compilerDigest } : undefined, controlPlane: controller ? { sha256: controller.compositeSha256, gitCommit: controller.gitCommit, drifted: drift.drifted, changed: drift.changed, missing: drift.missing, added: drift.added } : undefined, evidence: evidenceGraph ? { sha256: evidenceGraph.sha256, complete: evidenceGraph.complete, requirements: evidenceGraph.requirements.length, reasons: evidenceGraph.reasons } : undefined, candidateAssurance: assuranceEvaluation, acceptanceOracle, acceptanceOracleArtifact, evidenceBundle, objectiveCompletion, objectiveCompletionDecision, review: reviewSummary, delivery: deliverySummary };
   const runsDir = path.resolve(controlRoot, effectiveConfig.sdd?.runsDir ?? ".harness/runs");
   await fs.mkdir(runsDir, { recursive: true });
   const runFile = path.join(runsDir, `${effectiveContract.task.id}.json`);

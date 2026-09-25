@@ -405,6 +405,10 @@ async function executeOperationWithEnvironment(
             route: result.route,
             status: result.run.status,
             attempts: result.run.attempts,
+            acceptanceOracle: result.run.acceptanceOracle,
+            acceptanceOracleArtifact: result.run.acceptanceOracleArtifact,
+            objectiveCompletion: result.run.objectiveCompletion,
+            objectiveCompletionDecision: result.run.objectiveCompletionDecision,
             specChange: result.specChange,
             triageReasons: result.triageReasons
           }
@@ -432,7 +436,11 @@ async function executeOperationWithEnvironment(
         result: {
           taskId: result.taskId,
           status: result.status,
-          attempts: result.attempts
+          attempts: result.attempts,
+          acceptanceOracle: result.acceptanceOracle,
+          acceptanceOracleArtifact: result.acceptanceOracleArtifact,
+          objectiveCompletion: result.objectiveCompletion,
+          objectiveCompletionDecision: result.objectiveCompletionDecision
         }
       },
       deps,
@@ -722,7 +730,12 @@ export async function bindBootstrapOperationPolicy(
       context: sha256Canonical(config.context ?? null)
     },
     validationPolicy,
-    reviewPolicy: { minimumAssurance, independentReviewRequired: minimumAssurance === "ELEVATED" || minimumAssurance === "CRITICAL" },
+    reviewPolicy: {
+      minimumAssurance,
+      independentReviewRequired: minimumAssurance === "ELEVATED" || minimumAssurance === "CRITICAL",
+      leadAcceptance: config.workflow?.reviews?.leadAcceptance !== false,
+      leadAcceptanceDirect: config.workflow?.reviews?.leadAcceptanceDirect === true
+    },
     deliveryPolicy,
     knowledgePolicy: { bootstrap: true },
     contextPolicy: config.context ?? { mode: "disabled" },

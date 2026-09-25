@@ -1610,7 +1610,12 @@ async function compileParticipantInvocationIdentity(
       context: sha256Canonical(config.context ?? null)
     },
     validationPolicy: contract.verification ?? {},
-    reviewPolicy: { minimumAssurance: assurance, independentReviewRequired: assurance === "ELEVATED" || assurance === "CRITICAL" },
+    reviewPolicy: {
+      minimumAssurance: assurance,
+      independentReviewRequired: assurance === "ELEVATED" || assurance === "CRITICAL",
+      leadAcceptance: config.workflow?.reviews?.leadAcceptance !== false,
+      leadAcceptanceDirect: config.workflow?.reviews?.leadAcceptanceDirect === true
+    },
     deliveryPolicy,
     knowledgePolicy: { skillManifestDigest: skillManifest.digest },
     contextPolicy: config.context ?? { mode: "disabled" },

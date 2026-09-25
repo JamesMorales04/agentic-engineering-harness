@@ -63,7 +63,7 @@ afterEach(async () => {
 });
 
 describe("public runTask Repairer candidate lifecycle", () => {
-  it("repairs validation failures through an isolated Repairer ChangeSet and validates the new revision", async () => {
+  it("repairs validation failures but rejects acceptance without Reviewer execution provenance", async () => {
     const root = await createProject();
     const task = taskContract();
     const config = projectConfig();
@@ -88,7 +88,7 @@ describe("public runTask Repairer candidate lifecycle", () => {
       policyVersions: { resolvedOperationPolicy: "1" },
       policyDigests: { validation: sha256Canonical(task.verification ?? {}), review: sha256Canonical({ independentReviewRequired: false }) },
       validationPolicy: task.verification ?? {},
-      reviewPolicy: { minimumAssurance: "STANDARD", independentReviewRequired: false },
+      reviewPolicy: { minimumAssurance: "STANDARD", independentReviewRequired: false, leadAcceptance: true, leadAcceptanceDirect: false },
       deliveryPolicy: {},
       knowledgePolicy: {},
       contextPolicy: { mode: "disabled" },
@@ -112,7 +112,7 @@ describe("public runTask Repairer candidate lifecycle", () => {
 
     const result = await runTask(root, config, task, { semanticRuntime: testSemanticRuntime() });
 
-    expect(result.status).toBe("PASS");
+    expect(result.status).toBe("FAIL");
     expect(result.report.candidate?.revision).toBe(2);
     expect(result.report.candidate?.sourceDigest).toBe(await computeWorktreeDigest(root));
     expect(await fs.readFile(path.join(root, "src", "value.ts"), "utf8")).toBe("export const value = 2;\n");
@@ -122,6 +122,9 @@ describe("public runTask Repairer candidate lifecycle", () => {
     expect(mocks.executeAgentPrompt.mock.calls[1]?.[4]).toContain("behavior.correctness");
     expect(result.candidateAssurance?.compilation).toMatchObject({ status: "READY", candidate: { revision: 2 }, reviewAssignments: [expect.objectContaining({ reviewerIdentity: "reviewer", dimensions: ["behavior.correctness"] })] });
     expect(result.candidateAssurance?.validationChecks.every((check) => check.status === "PASS")).toBe(true);
+    expect(result.acceptanceOracle?.disposition).toBe("REJECTED");
+    expect(result.acceptanceOracle?.blockers.map((item) => item.code)).toContain("VERIFICATION_REVIEW_STRENGTH_INSUFFICIENT");
+    expect(result.report.checks.find((check) => check.id === "acceptance.oracle")?.status).toBe("FAIL");
     expect(mocks.legacyRepair).not.toHaveBeenCalled();
   });
 

@@ -8,6 +8,8 @@ import { sha256Canonical, sha256Utf8 } from "../src/core/digest.js";
 import { bindResolvedOperationPolicy, claimControllerEpoch, currentControllerEpoch, loadOperation, saveOperation } from "../src/operations/state.js";
 import { createCandidateRevisionV1, type CandidateRevisionV1 } from "../src/operations/v2Contracts.js";
 import { compileResolvedOperationPolicy } from "../src/architecture/executionIdentity.js";
+import { currentObjectiveIdentityV1, evaluateAcceptanceOracleV1, persistAcceptanceOracleArtifactV1, type AcceptanceEvidenceItemV1, type EvidenceBundleV1 } from "../src/architecture/acceptanceOracle.js";
+import { resolveOperationStateRoot } from "../src/operations/state.js";
 import { HumanDecisionLedgerV2 } from "../src/security/humanDecision.js";
 import { deliveryFinalizationFailure, finalizeAcceptedIssue } from "../src/delivery/finalize.js";
 import { runExecutable } from "../src/utils/process.js";
@@ -26,6 +28,14 @@ afterEach(async () => {
 });
 
 describe("accepted issue delivery finalization", () => {
+  it("blocks delivery effects until a current accepted AcceptanceOracle artifact is persisted", async () => {
+    const context = await createFinalizeFixture({ acceptanceOracle: false });
+    await expect(finalizeAcceptedIssue(context.repo, context.config, context.contract, { candidate: context.candidate }))
+      .rejects.toThrow("ACCEPTANCE_ORACLE_REQUIRED");
+    expect(context.requests).toHaveLength(0);
+    expect(await git(context.repo, "log", "-1", "--pretty=%s")).toBe("base");
+  });
+
   it("commits accepted work, pushes the exact issue branch and creates a draft PR through the tool action gate", async () => {
     const context = await createFinalizeFixture();
     await expect(finalizeAcceptedIssue(context.repo, context.config, context.contract, { candidate: context.candidate }))
@@ -128,7 +138,7 @@ interface FinalizeFixture {
   requests: Array<{ url: string; method: string; body?: string }>;
 }
 
-async function createFinalizeFixture(options: { managed?: boolean } = {}): Promise<FinalizeFixture> {
+async function createFinalizeFixture(options: { managed?: boolean; acceptanceOracle?: boolean } = {}): Promise<FinalizeFixture> {
   const managed = options.managed !== false;
   const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-finalize-"));
   roots.push(baseDir);
@@ -159,8 +169,9 @@ async function createFinalizeFixture(options: { managed?: boolean } = {}): Promi
     const allowedExternalEffects = ["paseo.workspace.create", "github.issue.create", "github.branch.create", "git.push", "github.pull-request.create"];
     const humanDecisionRequirements = ["git.push", "github.issue.create", "github.pull-request.create"].map((action) => ({ kind: "ACTION_AUTHORIZATION" as const, action }));
     const deliveryPolicy = { githubEnabled: true, allowedExternalEffects };
-    const policy = compileResolvedOperationPolicy({ projectId: candidate.projectId!, operationId, operationExecutionRevision: operation.operationExecutionRevision!, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch: currentControllerEpoch(operation), intent: "delivery finalization test", route: "DIRECT", minimumAssurance: "STANDARD", policyVersions: {}, policyDigests: { delivery: sha256Canonical({ ...deliveryPolicy, humanDecisionRequirements }) }, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy, knowledgePolicy: {}, contextPolicy: {}, allowedExternalEffects, humanDecisionRequirements });
+    const policy = compileResolvedOperationPolicy({ projectId: candidate.projectId!, operationId, operationExecutionRevision: operation.operationExecutionRevision!, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch: currentControllerEpoch(operation), intent: "delivery finalization test", route: "DIRECT", minimumAssurance: "STANDARD", policyVersions: {}, policyDigests: { delivery: sha256Canonical({ ...deliveryPolicy, humanDecisionRequirements }) }, validationPolicy: {}, reviewPolicy: { leadAcceptance: true, leadAcceptanceDirect: false, independentReviewRequired: false }, deliveryPolicy, knowledgePolicy: {}, contextPolicy: {}, allowedExternalEffects, humanDecisionRequirements });
     await bindResolvedOperationPolicy(repo, operationId, policy);
+    if (options.acceptanceOracle !== false) await persistFixtureAcceptanceOracle(repo, await loadOperation(repo, operationId));
   } else {
     candidate = createCandidateRevisionV1({ operationId, candidateId: `candidate:${operationId}:r1`, projectId: "project-finalize", taskId: "GH-5", revision: 1, sourceDigest: await computeWorktreeDigest(repo), createdAt: "2026-08-11T00:00:00Z" });
     delete process.env.AEH_OPERATION_ID;
@@ -177,6 +188,21 @@ async function createFinalizeFixture(options: { managed?: boolean } = {}): Promi
     return new Response("{}", { status: 200 });
   }));
   return { repo, remote, config, contract, candidate, operationId, requests };
+}
+
+async function persistFixtureAcceptanceOracle(root: string, operation: Awaited<ReturnType<typeof loadOperation>>): Promise<void> {
+  const identity = currentObjectiveIdentityV1(operation);
+  const evidenceBase = { assertionId: "ASSERT-DELIVERY", identity, strength: "ELEVATED" as const };
+  const evidence: AcceptanceEvidenceItemV1[] = [
+    { version: 1, id: "validation:REQ-DELIVERY:ASSERT-DELIVERY", ...evidenceBase, kind: "VALIDATION", status: "PASS", provenance: { sourceId: "REQ-DELIVERY", digest: sha256Canonical("validation") } },
+    { version: 1, id: "review:reviewer:test:architecture:ASSERT-DELIVERY", ...evidenceBase, kind: "REVIEW", status: "PASS", dimension: "architecture", reviewerIdentity: "reviewer:test", provider: "test", provenance: { sourceId: "session:reviewer:test", digest: sha256Canonical("review"), executionBindingDigest: sha256Canonical("review-binding") } }
+  ];
+  const requirement = { version: 1 as const, id: "verification:ASSERT-DELIVERY", assertionId: "ASSERT-DELIVERY", statement: "delivery candidate is ready", minimumAssurance: "STANDARD" as const, validationRequirementIds: ["REQ-DELIVERY"], reviewDimensions: ["architecture"], leadRequired: false };
+  const bundleBody = { version: 1 as const, identity, candidate: operation.candidateRevision!, impactDigest: sha256Canonical("impact"), compilationDigest: sha256Canonical("compilation"), requirements: [requirement], evidence };
+  const bundle: EvidenceBundleV1 = { ...bundleBody, digest: sha256Canonical(bundleBody) };
+  const disposition = evaluateAcceptanceOracleV1(bundle, { minimumAssurance: "ELEVATED", minimumIndependentReviewers: 1, providerDiversity: false, requiredDimensions: ["architecture"] });
+  expect(disposition.disposition).toBe("ACCEPTED");
+  await persistAcceptanceOracleArtifactV1(resolveOperationStateRoot(root), bundle, disposition);
 }
 
 async function recordActionAuthorization(context: FinalizeFixture, action: "git.push" | "github.issue.create" | "github.pull-request.create", payload: unknown): Promise<void> {

@@ -13,7 +13,9 @@ const config = { version: 1 as const, project: { name: "concurrency-campaign" },
 
 function operation(root: string, id: string, status: "QUEUED" | "RUNNING" = "RUNNING"): OperationRecord {
   const now = new Date(0).toISOString();
-  return { version: 2, id, kind: "run", status, phase: status.toLowerCase(), root, payload: { taskId: `TASK-${id}` }, revision: 1, createdAt: now, updatedAt: now, lastProgressAt: now, supervision: { required: false, materialized: false, generations: [] }, stages: {}, participants: {}, progress: { expected: 0, registered: 0, running: 0, completed: 0, failed: 0, blocked: 0 }, notification: { lastLeadWakeRevision: 0, terminalDelivered: false, attempts: 0 } };
+  // These races cover generic operation-state concurrency. Managed run/change
+  // success separately requires S6 AcceptanceOracle and objective evidence.
+  return { version: 2, id, kind: "audit", status, phase: status.toLowerCase(), root, payload: { request: `concurrency fixture ${id}` }, revision: 1, createdAt: now, updatedAt: now, lastProgressAt: now, supervision: { required: false, materialized: false, generations: [] }, stages: {}, participants: {}, progress: { expected: 0, registered: 0, running: 0, completed: 0, failed: 0, blocked: 0 }, notification: { lastLeadWakeRevision: 0, terminalDelivered: false, attempts: 0 } };
 }
 
 function barrier(count: number): { wait: () => Promise<void>; release: () => void } {

@@ -142,7 +142,10 @@ describe("AEH generated scenario matrix", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-seeded-actions-"));
     try {
       for (const action of actions) {
-        const record = seedRecord(root, "run", action.initialStatus, `SCN-ACTION-${action.index}`);
+        // This generator exercises generic lifecycle transition behavior. Keep
+        // its success transitions on the read-only audit path; managed run/change
+        // success has the separate S6 objective-completion gate.
+        const record = seedRecord(root, "audit", action.initialStatus, `SCN-ACTION-${action.index}`);
         await saveOwnedOperation(root, record);
         try {
           if (action.mode === "terminal") {
