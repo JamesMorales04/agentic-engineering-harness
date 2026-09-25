@@ -87,7 +87,7 @@ const ACTION_IMPACTS: Readonly<Record<ToolActionKindV1, ToolActionImpactV1>> = {
   "github.issue.create": "EXTERNAL_NON_IDEMPOTENT",
   "github.branch.create": "EXTERNAL_RECONCILABLE",
   "github.pull-request.create": "EXTERNAL_RECONCILABLE",
-  "paseo.workspace.create": "EXTERNAL_RECONCILABLE"
+  "paseo.workspace.create": "LOCAL_RESOURCE_CREATION"
 };
 
 /** Stable deterministic classification; callers cannot downgrade an action's impact. */
@@ -361,8 +361,8 @@ async function assertCurrentActionAuthority(request: ToolActionRequestV1, impact
   }
 
   // Deterministic controller authority: the fenced operation owner may perform
-  // the delivery actions the operation's configuration already authorized. It
-  // is not a participant and never inherits a role ceiling.
+  // policy-authorized delivery effects and controller-owned local resources.
+  // It is not a participant and never inherits a role ceiling.
   if (request.role !== undefined) throw new Error("TOOL_ACTION_ROLE_MISMATCH: controller authority must not claim a participant role.");
   if (request.participantId !== controllerActorId(request.operationId)) throw new Error("TOOL_ACTION_CONTROLLER_ACTOR_MISMATCH: controller authority requires the deterministic controller actor id.");
   if (evidence.operationId !== request.operationId) throw new Error("TOOL_ACTION_CONTROLLER_ACTOR_MISMATCH: controller authority belongs to another operation.");

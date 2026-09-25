@@ -7,6 +7,8 @@ import { validateSddChange } from "../core/sdd.js";
 import { verifyTaskSeal } from "../core/seal.js";
 import { runExecutable } from "../utils/process.js";
 import { assertWorkspaceMatchesCandidate } from "../candidates/identity.js";
+import { requireAcceptedCurrentOracleV1 } from "../architecture/acceptanceOracle.js";
+import { verifySupplyChainGate } from "../provenance/generate.js";
 import { currentOperationContext, controllerEpochFromEnvironment, loadOperation, resolveOperationStateRoot } from "../operations/state.js";
 import { controllerActorId, type ToolActionAuthorityEvidenceV1 } from "../security/toolActionGate.js";
 import { executeGatedAction } from "../security/gatedAction.js";
@@ -27,7 +29,7 @@ interface GithubIssue { number: number; html_url: string; body?: string; }
 interface GithubUser { login: string; }
 interface GithubRef { object: { sha: string } }
 
-export async function handoffTask(root: string, config: HarnessProjectConfig, taskId: string): Promise<DeliveryRecord> {
+export async function handoffTask(root: string, config: HarnessProjectConfig, taskId: string, options: { createWorkspace?: boolean } = {}): Promise<DeliveryRecord> {
   const contract = await loadTaskContract(root, taskId, config);
   if (contract.routing?.route === "FORMAL_SDD") {
     const validation = await validateSddChange(root, taskId, config);
@@ -43,8 +45,8 @@ export async function handoffTask(root: string, config: HarnessProjectConfig, ta
   if (record.paseo?.worktreePath && !(await exists(record.paseo.worktreePath))) record.paseo = undefined;
   const needsIssue = github?.enabled === true && !record.github?.issueNumber;
   const needsBranch = github?.enabled === true && !record.github?.branch;
-  const needsWorkspace = paseo?.enabled === true && paseo.createWorkspace !== false && !record.paseo?.workspaceId;
-  const handoffAuthority = needsIssue || needsBranch || needsWorkspace ? await requireHandoffAuthority(root, taskId) : undefined;
+  const needsWorkspace = options.createWorkspace !== false && paseo?.enabled === true && paseo.createWorkspace !== false && !record.paseo?.workspaceId;
+  const handoffAuthority = needsIssue || needsBranch || needsWorkspace ? await requireHandoffAuthority(root, config, taskId) : undefined;
   if (github?.enabled) {
     const token = resolveGithubToken(github.tokenEnv); const repository = record.github?.repository ?? github.repository ?? await inferGithubRepository(root); const apiBase = (github.apiBaseUrl ?? "https://api.github.com").replace(/\/$/, "");
     record.github = { repository, ...(record.github ?? {}) }; await saveDeliveryRecord(root, config, record);
@@ -86,7 +88,7 @@ export async function handoffTask(root: string, config: HarnessProjectConfig, ta
     }
   }
 
-  if (paseo?.enabled && paseo.createWorkspace !== false) {
+  if (options.createWorkspace !== false && paseo?.enabled && paseo.createWorkspace !== false) {
     if (!record.paseo?.workspaceId) {
       const issue = record.github?.issueNumber; const slug = renderPattern(paseo.worktreeSlugPattern ?? "gh-{issue}-{slug}", contract, issue);
       const remoteBranch = record.github?.branch;
@@ -150,7 +152,8 @@ export async function materializeTaskContext(controlRoot: string, workspaceRoot:
 }
 
 export async function loadDeliveryRecord(root: string, config: HarnessProjectConfig, taskId: string): Promise<DeliveryRecord | undefined> {
-  for (const candidate of await deliveryControlRoots(root)) { try { return JSON.parse(await fs.readFile(deliveryFile(candidate, config, taskId), "utf8")) as DeliveryRecord; } catch { /* try next root */ } }
+  const candidates = [path.resolve(resolveOperationStateRoot(root)), ...(await deliveryControlRoots(root))];
+  for (const candidate of [...new Set(candidates)]) { try { return JSON.parse(await fs.readFile(deliveryFile(candidate, config, taskId), "utf8")) as DeliveryRecord; } catch { /* try next root */ } }
   return undefined;
 }
 export async function deliveryWorkspaceId(root: string, config: HarnessProjectConfig, taskId: string): Promise<string | undefined> { if (config.delivery?.paseo?.enabled !== true || config.delivery.paseo.autoUseWorkspace === false) return undefined; return (await loadDeliveryRecord(root, config, taskId))?.paseo?.workspaceId; }
@@ -216,13 +219,16 @@ interface HandoffAuthority {
   evidence: ToolActionAuthorityEvidenceV1;
 }
 
-async function requireHandoffAuthority(root: string, taskId: string): Promise<HandoffAuthority> {
+async function requireHandoffAuthority(root: string, config: HarnessProjectConfig, taskId: string): Promise<HandoffAuthority> {
   const context = currentOperationContext();
   const controllerEpoch = controllerEpochFromEnvironment();
   if (!context.id || controllerEpoch === undefined) throw new Error("HANDOFF_AUTHORITY_REQUIRED: delivery handoff mutations require a managed operation and fenced controller.");
   const operation = await loadOperation(resolveOperationStateRoot(root), context.id);
   const candidate = operation.candidateRevision;
   if (!candidate || candidate.taskId !== taskId) throw new Error("HANDOFF_AUTHORITY_REQUIRED: delivery handoff requires the operation's current CandidateRevision for this task.");
+  await requireAcceptedCurrentOracleV1(resolveOperationStateRoot(root), operation, candidate);
+  const supplyChain = await verifySupplyChainGate(root, config, { candidate, artifactPath: config.provenance?.artifact ?? "" });
+  if (!supplyChain.ok) throw new Error(`SUPPLY_CHAIN_BLOCKED: ${supplyChain.failures.join("; ")}`);
   await assertWorkspaceMatchesCandidate(root, candidate, operation.candidateRevision);
   return { operationId: context.id, controllerEpoch, candidate, evidence: { kind: "controller-authority", operationId: context.id, controllerEpoch } };
 }
@@ -251,7 +257,7 @@ async function runPaseoWorkspace(root: string, mode: string[], slug: string, tit
 function parseWorkspace(raw: string, branch: string): { workspaceId?: string; worktreePath?: string } { try { const value = JSON.parse(raw) as unknown; const candidates = flattenObjects(value); const found = candidates.find((item) => [item.branch, item.branchName, item.gitBranch].some((candidate) => candidate === branch)) ?? candidates.find((item) => typeof item.id === "string" || typeof item.workspaceId === "string"); return found ? { workspaceId: stringValue(found.workspaceId) ?? stringValue(found.id), worktreePath: stringValue(found.worktreePath) ?? stringValue(found.path) ?? stringValue(found.root) } : {}; } catch { return {}; } }
 function flattenObjects(value: unknown): Array<Record<string, unknown>> { if (Array.isArray(value)) return value.flatMap(flattenObjects); if (!value || typeof value !== "object") return []; const record = value as Record<string, unknown>; return [record, ...Object.values(record).flatMap(flattenObjects)]; }
 function stringValue(value: unknown): string | undefined { return typeof value === "string" && value ? value : undefined; }
-async function saveDeliveryRecord(root: string, config: HarnessProjectConfig, record: DeliveryRecord): Promise<void> { const file = deliveryFile(root, config, record.taskId); await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, `${JSON.stringify(record, null, 2)}\n`); }
+async function saveDeliveryRecord(root: string, config: HarnessProjectConfig, record: DeliveryRecord): Promise<void> { const file = deliveryFile(resolveOperationStateRoot(root), config, record.taskId); await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, `${JSON.stringify(record, null, 2)}\n`); }
 async function deliveryControlRoots(root: string): Promise<string[]> { const roots = [path.resolve(root)]; const common = await runExecutable("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root, timeoutMs: 10_000 }); if (common.exitCode === 0) { const gitDir = common.stdout.trim(); if (path.basename(gitDir) === ".git") roots.push(path.dirname(gitDir)); } return [...new Set(roots)]; }
 function deliveryFile(root: string, config: HarnessProjectConfig, taskId: string): string { return path.join(root, config.delivery?.stateDir ?? ".harness/delivery", `${taskId}.json`); }
 function encodeRef(value: string): string { return value.split("/").map(encodeURIComponent).join("/"); }

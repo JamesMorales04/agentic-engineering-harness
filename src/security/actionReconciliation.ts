@@ -80,7 +80,7 @@ const GIT_TIMEOUT_MS = 30_000;
 const MAX_SNIPPET_LENGTH = 500;
 
 /**
- * Reconcile one tool action against externally observable state.
+ * Reconcile one tool action against observable state.
  *
  * `payload` is the action payload that the caller intends to verify; it is the
  * same value whose canonical digest the gate stored as `intent.payloadDigest`,
@@ -89,8 +89,10 @@ const MAX_SNIPPET_LENGTH = 500;
  * action; it never re-derives the intent identity from the payload.
  *
  * `root` is the repository root used for local Git observations
- * (`git rev-parse`, `git ls-remote`). Provider actions (`github.*`,
- * `paseo.workspace.create`) do not touch the local working tree.
+ * (`git rev-parse`, `git ls-remote`). Provider actions (`github.*` and
+ * `paseo.workspace.create`) do not touch the local working tree. Paseo
+ * workspace creation is controller-owned local execution infrastructure;
+ * uncertainty remains HUMAN_REQUIRED unless provider identity can be proven.
  */
 export async function reconcileToolAction(
   root: string,
@@ -123,8 +125,8 @@ export async function reconcileToolAction(
 /**
  * Map a reconciliation result to the status that may be persisted as a
  * terminal `ActionReceipt`. UNKNOWN and HUMAN_REQUIRED are deliberately not
- * persistable: an unresolved external effect must remain at the intent stage
- * so a later reconciliation can still change the conclusion.
+ * persistable: an unresolved action must remain at the intent stage so a
+ * later reconciliation can still change the conclusion.
  */
 export function reconciliationReceiptOutcome(result: ActionReconciliationResultV1): "SUCCEEDED" | "FAILED" | "UNKNOWN" | undefined {
   if (result.outcome === "SUCCEEDED" || result.outcome === "FAILED") return result.outcome;

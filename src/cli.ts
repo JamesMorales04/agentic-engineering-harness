@@ -25,8 +25,8 @@ import { resolveRoute } from "./agents/routing.js";
 import { validateAgentOutput, plannerOutputSchema } from "./agents/outputContracts.js";
 import { planParallelism } from "./agents/parallelism.js";
 import { dedupeFindings, extractFindings } from "./agents/findings.js";
-import { handoffTask } from "./delivery/handoff.js";
 import { inspectGithubIssue, prepareGithubIssueTask } from "./issues/intake.js";
+import { executeIssueWorkflow as executeManagedIssueWorkflow } from "./issues/workflow.js";
 import { VERSION } from "./version.js";
 import { createSemanticAssessmentRuntimeV1, createSemanticRepositoryBindingV1 } from "./semantic/runtime.js";
 import { CodexAgentProvider } from "./certification/codex.js";
@@ -87,7 +87,9 @@ agents.command("dedupe-findings").requiredOption("--input <paths...>").option("-
 const sdd = program.command("sdd").description("Spec-driven development workflow");
 sdd.command("new").argument("<taskId>").requiredOption("--title <title>").argument("[directory]", "Project directory", ".").action(async (taskId: string, directory: string, options: { title: string }) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const dir = await createSddChange(root, taskId, options.title, config); console.log(`Created SDD change at ${dir}`); console.log(`Created TaskContract at ${config.sdd?.contractsDir ?? ".harness/contracts"}/${taskId}.yaml`); });
 sdd.command("validate").argument("<taskId>").argument("[directory]", "Project directory", ".").action(async (taskId: string, directory: string) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const result = await validateSddChange(root, taskId, config); console.log(formatTraceabilityMatrix(result.requirements)); if (result.ok) console.log(`\n✓ ${taskId} SDD traceability is complete.`); else { for (const item of result.missing) console.error(`✗ missing: ${item}`); for (const issue of result.issues) console.error(`✗ ${issue}`); process.exitCode = 1; } });
-sdd.command("handoff").description("Publish a validated/sealed task to the optional GitHub issue/branch and Paseo worktree delivery flow").argument("<taskId>").argument("[directory]", "Project directory", ".").action(async (taskId: string, directory: string) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const record = await handoffTask(root, config, taskId); console.log(JSON.stringify(record, null, 2)); });
+sdd.command("handoff").description("Unsupported: delivery and execution workspace setup are owned by managed operations").argument("<taskId>").argument("[directory]", "Project directory", ".").action(async () => {
+  throw new Error("SDD_HANDOFF_UNSUPPORTED: standalone SDD handoff is deferred because the CLI has no managed operation context. Public GitHub issue, branch, push, and pull-request effects require current AcceptanceOracle acceptance and policy gates; execution workspace setup is controller-owned.");
+});
 
 program.command("seal").argument("<taskId>").argument("[directory]", "Project directory", ".").action(async (taskId: string, directory: string) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const contract = await loadTaskContract(root, taskId, config); console.log(`Sealed ${taskId}: ${await sealTask(root, config, contract)}`); });
 program.command("verify").argument("<taskId>").argument("[directory]", "Project directory", ".").action(async (taskId: string, directory: string) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const contract = await loadTaskContract(root, taskId, config); const report = await verifyTask(root, config, contract); printChecks(report.checks); console.log(`\n${report.status} — report written to ${(config.sdd?.reportsDir ?? ".harness/reports")}/${taskId}.json`); if (report.status === "FAIL") process.exitCode = 1; });
@@ -124,13 +126,7 @@ program.command("graph-snapshot").argument("<taskId>").requiredOption("--phase <
 program.command("graph-update").argument("[directory]", "Project directory", ".").action(async (directory: string) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); try { await new GraphifyCodeIntelligenceProvider(config).refresh(root); console.log("Graphify graph refreshed through the configured provider."); } catch (error) { console.error(String(error)); process.exitCode = 1; } });
 
 async function executeIssueWorkflow(root: string, issueNumber: number, options: { profile?: string; refresh?: boolean; force?: boolean }): Promise<{ result: TaskRunResult; contract: Awaited<ReturnType<typeof loadTaskContract>> }> {
-  const config = await loadProjectConfig(root);
-  const semanticRuntime = await createSemanticAssessmentRuntimeV1(root, config, { profile: options.profile });
-  const prepared = await prepareGithubIssueTask(root, config, issueNumber, { refresh: options.refresh, force: options.force, semanticRuntime });
-  if (config.workflow?.issueIntake?.autoHandoff !== false && (config.delivery?.github?.enabled || config.delivery?.paseo?.enabled)) await handoffTask(root, config, prepared.taskId);
-  const contract = await loadTaskContract(root, prepared.taskId, config);
-  const result = await runTask(root, config, contract, { profile: options.profile });
-  return { result, contract };
+  return executeManagedIssueWorkflow(root, issueNumber, options);
 }
 function parseIssueNumber(value: string): number { const parsed = Number(value.replace(/^#/, "")); if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`Invalid GitHub issue number: ${value}`); return parsed; }
 function printRunResult(result: TaskRunResult, route: string): void { printChecks(result.report.checks); console.log(`\n${result.status} — route=${route}, agent=${result.routing?.agent ?? result.worker.provider}, runtime=${result.routing?.runtime ?? result.worker.provider}, model=${result.routing?.model ?? result.worker.model ?? "default"}, profile=${result.routing?.profile ?? "legacy"}, repairs=${result.metrics.repairCount}, review=${result.review?.status ?? "skipped"}, finalState=${result.review?.finalState ?? "n/a"}, qualityRounds=${result.review?.rounds ?? 0}, debtScore=${result.review?.debtScore ?? "n/a"}, convergence=${result.review?.convergence ?? "n/a"}, humanRequired=${result.review?.humanRequired ?? false}, firstPass=${result.metrics.firstPassSuccess}, tokens=${result.metrics.usage.totalTokens ?? "n/a"}, costUsd=${result.metrics.usage.costUsd ?? "n/a"}`); if (result.status === "FAIL") process.exitCode = 1; }

@@ -475,8 +475,8 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
       });
       const deliveryRequired = effectiveContract.issue?.provider === "github"
         && effectiveConfig.delivery?.github?.enabled === true
-        && effectiveConfig.delivery.github.finalizeOnAcceptance === true;
-      const deliveryReconciled = deliverySummary?.status === "FINALIZED" || deliverySummary?.status === "NO_CHANGES";
+        && (effectiveConfig.delivery.github.finalizeOnAcceptance === true || effectiveConfig.workflow?.issueIntake?.autoHandoff !== false);
+      const deliveryReconciled = deliverySummary?.status === "HANDOFF_ONLY" || deliverySummary?.status === "FINALIZED" || deliverySummary?.status === "NO_CHANGES";
       objectiveCompletion = {
         version: 1,
         identity,

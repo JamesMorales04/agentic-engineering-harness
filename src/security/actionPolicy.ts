@@ -3,20 +3,15 @@ import type { OperationKind } from "../operations/state.js";
 import type { HumanDecisionRequirementV1 } from "../architecture/executionIdentity.js";
 import type { ToolActionKindV1 } from "./actionKinds.js";
 
-/**
- * Deterministic action allowlist for the effects the managed controller can
- * request from the frozen project delivery configuration. Workspace creation
- * is the mandatory controller bootstrap effect for managed operations.
- */
+/** Deterministic allowlist for externally observable delivery effects. */
 export function configuredExternalEffects(config: HarnessProjectConfig, kind: OperationKind): ToolActionKindV1[] {
-  const effects: ToolActionKindV1[] = ["paseo.workspace.create"];
-  if (kind === "audit") return effects;
+  if (kind === "audit") return [];
+  const effects: ToolActionKindV1[] = [];
   const github = config.delivery?.github;
   if (github?.enabled === true) {
     effects.push("github.issue.create", "github.branch.create");
     if (github.finalizeOnAcceptance === true) effects.push("git.push", "github.pull-request.create");
   }
-  if (config.delivery?.paseo?.enabled === true && config.delivery.paseo.createWorkspace !== false) effects.push("paseo.workspace.create");
   return [...new Set(effects)].sort();
 }
 

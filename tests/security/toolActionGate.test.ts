@@ -11,6 +11,7 @@ import { sha256Utf8 } from "../../src/core/digest.js";
 import { compileResolvedOperationPolicy } from "../../src/architecture/executionIdentity.js";
 import { sha256Canonical } from "../../src/core/digest.js";
 import { HumanDecisionLedgerV2 } from "../../src/security/humanDecision.js";
+import { configuredExternalEffects } from "../../src/security/actionPolicy.js";
 
 const roots: string[] = [];
 const previousEnv = {
@@ -35,7 +36,7 @@ describe("deterministic tool action gate", () => {
     expect(classifyToolActionImpact("git.commit")).toBe("LOCAL_REPOSITORY_MUTATION");
     expect(classifyToolActionImpact("github.issue.create")).toBe("EXTERNAL_NON_IDEMPOTENT");
     expect(classifyToolActionImpact("git.push")).toBe("EXTERNAL_PUBLICATION");
-    expect(classifyToolActionImpact("paseo.workspace.create")).toBe("EXTERNAL_RECONCILABLE");
+    expect(classifyToolActionImpact("paseo.workspace.create")).toBe("LOCAL_RESOURCE_CREATION");
   });
 
   it("persists one stable intent and returns its stable receipt on retry", async () => {
@@ -94,6 +95,32 @@ describe("deterministic tool action gate", () => {
     expect(allowed.decision).toBe("EXECUTE_ONCE");
     expect(allowed.intent.impact).toBe("EXTERNAL_RECONCILABLE");
     expect(allowed.intent.policyDigest).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("keeps controller workspace provisioning local and outside delivery external-effect policy", async () => {
+    const config = {
+      delivery: {
+        paseo: { enabled: true, createWorkspace: true },
+        github: { enabled: true, finalizeOnAcceptance: true }
+      }
+    } as never;
+    expect(configuredExternalEffects(config, "run")).toEqual([
+      "git.push",
+      "github.branch.create",
+      "github.issue.create",
+      "github.pull-request.create"
+    ]);
+    expect(configuredExternalEffects({ delivery: { paseo: { enabled: true } } } as never, "audit")).toEqual([]);
+
+    const context = await createContext("RUN-LOCAL-WORKSPACE", "Lead/Director", true, { allowedExternalEffects: [] });
+    const request = makeControllerRequest(context, "paseo.workspace.create", "workspace:create", {
+      isolation: "worktree",
+      path: context.root,
+      branch: "aeh/op-run-local-workspace"
+    });
+    const authorization = await authorizeToolAction(request);
+    expect(authorization.decision).toBe("EXECUTE_ONCE");
+    expect(authorization.intent.impact).toBe("LOCAL_RESOURCE_CREATION");
   });
 
   it("consumes only an exact human approval for an action effect; rejection and product choice cannot authorize it", async () => {

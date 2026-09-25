@@ -1,7 +1,7 @@
 import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
 import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
-import { computeWorktreeDigest, getCurrentBranch } from "../core/git.js";
-import { githubRequest, loadDeliveryRecord, resolveGithubToken } from "./handoff.js";
+import { computeWorktreeDigest } from "../core/git.js";
+import { handoffTask, githubRequest, loadDeliveryRecord, resolveGithubToken } from "./handoff.js";
 import { runExecutable } from "../utils/process.js";
 import { verifySupplyChainGate } from "../provenance/generate.js";
 import { controllerEpochFromEnvironment, currentOperationContext, loadOperation, resolveOperationStateRoot } from "../operations/state.js";
@@ -11,7 +11,7 @@ import { controllerActorId, type ToolActionAuthorityEvidenceV1 } from "../securi
 import { assertWorkspaceMatchesCandidate } from "../candidates/identity.js";
 import { requireAcceptedCurrentOracleV1 } from "../architecture/acceptanceOracle.js";
 
-export type DeliveryFinalizationStatus = "SKIPPED" | "NO_CHANGES" | "FINALIZED" | "BLOCKED_EXTERNAL" | "BLOCKED_SUPPLY_CHAIN" | "SYSTEM_FAILURE";
+export type DeliveryFinalizationStatus = "SKIPPED" | "HANDOFF_ONLY" | "NO_CHANGES" | "FINALIZED" | "BLOCKED_EXTERNAL" | "BLOCKED_SUPPLY_CHAIN" | "SYSTEM_FAILURE";
 export interface DeliveryFinalizationResult {
   status: DeliveryFinalizationStatus;
   humanRequired: boolean;
@@ -28,7 +28,9 @@ export async function finalizeAcceptedIssue(root: string, config: HarnessProject
   const candidate = options.candidate;
   const github = config.delivery?.github;
   if (!contract.issue || contract.issue.provider !== "github") return skipped("Task is not issue-derived.", candidate);
-  if (!github?.enabled || github.finalizeOnAcceptance !== true) return skipped("GitHub finalization is not enabled.", candidate);
+  const handoffRequested = config.workflow?.issueIntake?.autoHandoff !== false;
+  const finalizationRequested = github?.finalizeOnAcceptance === true;
+  if (!github?.enabled || (!handoffRequested && !finalizationRequested)) return skipped("GitHub delivery and issue handoff are not enabled.", candidate);
 
   const operationContext = currentOperationContext();
   const operationId = operationContext.id;
@@ -41,6 +43,18 @@ export async function finalizeAcceptedIssue(root: string, config: HarnessProject
   }
   await requireAcceptedCurrentOracleV1(resolveOperationStateRoot(root), operation, boundCandidate);
   await assertWorkspaceMatchesCandidate(root, boundCandidate, operation.candidateRevision);
+  const initialRecord = await loadDeliveryRecord(root, config, contract.task.id);
+  if ((handoffRequested || finalizationRequested) && (!initialRecord?.github?.issueNumber || !initialRecord.github.branch)) {
+    // The controller already provisioned the candidate's internal execution
+    // workspace. Handoff here may create public GitHub resources only after
+    // current acceptance and never provisions a second execution workspace.
+    await handoffTask(root, config, contract.task.id, { createWorkspace: false });
+  }
+  if (!finalizationRequested) {
+    return handoffRequested
+      ? { status: "HANDOFF_ONLY", humanRequired: false, committed: false, pushed: false, candidate: boundCandidate, message: `Accepted issue task ${contract.task.id} has completed its requested handoff.` }
+      : skipped("GitHub finalization and issue handoff are not enabled.", candidate);
+  }
   const authority: ToolActionAuthorityEvidenceV1 = { kind: "controller-authority", operationId, controllerEpoch };
   const actor = controllerActorId(operationId);
 
@@ -52,8 +66,6 @@ export async function finalizeAcceptedIssue(root: string, config: HarnessProject
   if (!branch) throw new Error(`BLOCKED_EXTERNAL: accepted issue task ${contract.task.id} has no issue-linked delivery branch to finalize.`);
   const repository = record.github?.repository ?? contract.issue.repository;
   const base = contract.git?.originatingBranch ?? contract.git?.baseRef ?? config.validation?.baseRef ?? "main";
-  const current = await getCurrentBranch(root);
-  if (current && current !== branch) throw new Error(`SYSTEM_FAILURE: refusing to finalize ${contract.task.id}; workspace branch is '${current}' but delivery branch is '${branch}'. Enable the isolated delivery workspace or run from the issue branch.`);
 
   const status = await runExecutable("git", ["status", "--porcelain"], { cwd: root, timeoutMs: 30_000 });
   if (status.exitCode !== 0) throw new Error(`SYSTEM_FAILURE: cannot inspect final Git state: ${status.stderr || status.stdout}`);

@@ -12,6 +12,13 @@ import { currentObjectiveIdentityV1, evaluateAcceptanceOracleV1, persistAcceptan
 import { resolveOperationStateRoot } from "../src/operations/state.js";
 import { HumanDecisionLedgerV2 } from "../src/security/humanDecision.js";
 import { deliveryFinalizationFailure, finalizeAcceptedIssue } from "../src/delivery/finalize.js";
+import { githubRequest, handoffTask, seedDeliveryRecordFromIssue } from "../src/delivery/handoff.js";
+import { executeIssueWorkflow } from "../src/issues/workflow.js";
+import { executeGatedAction } from "../src/security/gatedAction.js";
+import { controllerActorId } from "../src/security/toolActionGate.js";
+import { createSemanticAssessmentRuntimeV1 } from "../src/semantic/runtime.js";
+import { prepareGithubIssueTask } from "../src/issues/intake.js";
+import type { TaskRunResult } from "../src/core/run.js";
 import { runExecutable } from "../src/utils/process.js";
 
 async function git(cwd: string, ...args: string[]): Promise<string> { const result = await runExecutable("git", args, { cwd, timeoutMs: 120_000 }); if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed: ${result.stderr || result.stdout}`); return result.stdout.trim(); }
@@ -140,6 +147,151 @@ describe("accepted issue delivery finalization", () => {
   });
 });
 
+describe("controller-owned SDD handoff delivery gates", () => {
+  it("blocks requested handoff effects before a current accepted AcceptanceOracle disposition", async () => {
+    const context = await createFinalizeFixture({ acceptanceOracle: false });
+    const config = await prepareHandoff(context);
+
+    await expect(handoffTask(context.repo, config, context.contract.task.id))
+      .rejects.toThrow("ACCEPTANCE_ORACLE_REQUIRED");
+
+    expect(context.requests.filter((request) => request.method === "POST")).toHaveLength(0);
+    await expect(fs.access(actionDirectory(context.repo, context.operationId))).rejects.toThrow();
+    await expect(fs.access(path.join(context.repo, ".harness", "delivery", "GH-5.json"))).rejects.toThrow();
+  });
+
+  it("blocks requested handoff effects when policy-required S7 evidence is missing", async () => {
+    const context = await createFinalizeFixture();
+    const config = await prepareHandoff(context, {
+      provenance: { required: true, artifact: ".harness/aeh-candidate.tgz" }
+    });
+
+    await expect(handoffTask(context.repo, config, context.contract.task.id))
+      .rejects.toThrow("SUPPLY_CHAIN_BLOCKED");
+
+    expect(context.requests).toHaveLength(0);
+    await expect(fs.access(actionDirectory(context.repo, context.operationId))).rejects.toThrow();
+    await expect(fs.access(path.join(context.repo, ".harness", "delivery", "GH-5.json"))).rejects.toThrow();
+  });
+});
+
+describe("default managed issue workflow delivery boundary", () => {
+  it("uses internal controller workspace before acceptance and receipts public handoff after acceptance", async () => {
+    const context = await createFinalizeFixture({ acceptanceOracle: false, candidateBranch: "aeh/op-default-issue" });
+    const apiBase = "https://api.github.test";
+    const config: HarnessProjectConfig = {
+      ...context.config,
+      workflow: { issueIntake: { enabled: true, snapshotDir: ".harness/issues", verifyDriftOnRun: true, requireOpen: true } },
+      sdd: { contractsDir: ".harness/contracts", runsDir: ".harness/runs" },
+      validation: { baseRef: "main", requireSeal: false },
+      delivery: { ...context.config.delivery, github: { ...context.config.delivery?.github, enabled: true, repository: "owner/repo", branchPattern: "feature/gh-{issue}-{slug}", apiBaseUrl: apiBase, finalizeOnAcceptance: true } }
+    };
+    expect(config.workflow?.issueIntake?.autoHandoff).toBeUndefined();
+    const contractFile = path.join(context.repo, ".harness", "contracts", "GH-5.yaml");
+    await fs.mkdir(path.dirname(contractFile), { recursive: true });
+    await fs.writeFile(contractFile, `${JSON.stringify(context.contract, null, 2)}\n`);
+    await fs.rm(path.join(context.repo, ".harness", "delivery", "GH-5.json"), { force: true });
+
+    let accepted = false;
+    let internalWorkspaceReady = false;
+    let branchExists = false;
+    let pullRequestExists = false;
+    const baseSha = await git(context.repo, "rev-parse", "main");
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      const method = init?.method ?? "GET";
+      context.requests.push({ url: url.toString(), method, body: typeof init?.body === "string" ? init.body : undefined });
+      if (method === "POST") expect(accepted).toBe(true);
+      if (url.pathname === "/repos/owner/repo/issues/5") {
+        return new Response(JSON.stringify({ number: 5, html_url: "https://github.com/owner/repo/issues/5", title: "Update README", body: "Implement the accepted change.", state: "open" }), { status: 200 });
+      }
+      if (url.pathname.endsWith("/git/ref/heads/main")) return new Response(JSON.stringify({ object: { sha: baseSha } }), { status: 200 });
+      if (url.pathname.endsWith("/git/ref/heads/feature/gh-5-update-readme")) {
+        return branchExists
+          ? new Response(JSON.stringify({ object: { sha: await git(context.remote, "rev-parse", "refs/heads/feature/gh-5-update-readme").catch(() => baseSha) } }), { status: 200 })
+          : new Response("not found", { status: 404 });
+      }
+      if (method === "POST" && url.pathname === "/repos/owner/repo/git/refs") {
+        branchExists = true;
+        return new Response("{}", { status: 201 });
+      }
+      if (url.pathname === "/repos/owner/repo/pulls" && method === "GET") return new Response(JSON.stringify(pullRequestExists ? [pullRequest] : []), { status: 200 });
+      if (url.pathname === "/repos/owner/repo/pulls" && method === "POST") {
+        pullRequestExists = true;
+        return new Response(JSON.stringify(pullRequest), { status: 201 });
+      }
+      return new Response("{}", { status: 200 });
+    }));
+
+    const runFile = path.join(context.repo, ".harness", "runs", "GH-5.json");
+    const result = await executeIssueWorkflow(context.repo, 5, {}, {
+      loadConfig: async () => config,
+      createSemanticRuntime: async () => ({} as Awaited<ReturnType<typeof createSemanticAssessmentRuntimeV1>>),
+      prepareIssue: async (root, loadedConfig, issueNumber) => {
+        // Issue intake may inspect the existing issue, but performs no public write.
+        await githubRequest(apiBase, "test-token", `/repos/owner/repo/issues/${issueNumber}`);
+        await seedDeliveryRecordFromIssue(root, loadedConfig, context.contract, { repository: "owner/repo", issueNumber, issueUrl: `https://github.com/owner/repo/issues/${issueNumber}` });
+        return { taskId: "GH-5" } as Awaited<ReturnType<typeof prepareGithubIssueTask>>;
+      },
+      startOperation: async (root, kind, payload) => {
+        expect(kind).toBe("run");
+        expect(payload).toMatchObject({ taskId: "GH-5", intentDecision: { intent: "run", effects: { executePreparedTask: true } } });
+        expect(context.requests.filter((request) => request.method === "POST")).toHaveLength(0);
+        expect(internalWorkspaceReady).toBe(false);
+        return loadOperation(root, context.operationId);
+      },
+      waitForOperation: async (root, operationId) => {
+        expect(operationId).toBe(context.operationId);
+        const operation = await loadOperation(root, operationId);
+        const authority = { kind: "controller-authority" as const, operationId, controllerEpoch: currentControllerEpoch(operation) };
+        const workspaceGate = await executeGatedAction({
+          root,
+          request: { root, operationId, participantId: controllerActorId(operationId), candidate: operation.candidateRevision!, actionKey: "bootstrap:internal-workspace", action: "paseo.workspace.create", payload: { isolation: "worktree", kind: "issue-execution" }, authority },
+          execute: async () => { internalWorkspaceReady = true; return { outcome: "SUCCEEDED", evidence: { workspaceId: "paseo-local-fixture", worktreePath: root } }; },
+          reconcile: async () => ({ outcome: "UNKNOWN", detail: "fixture reconciliation is not used" })
+        });
+        expect(workspaceGate.receipt?.outcome).toBe("SUCCEEDED");
+        expect(internalWorkspaceReady).toBe(true);
+        expect(context.requests.filter((request) => request.method === "POST")).toHaveLength(0);
+
+        await persistFixtureAcceptanceOracle(root, await loadOperation(root, operationId));
+        accepted = true;
+        await expect(finalizeAcceptedIssue(root, config, context.contract, { candidate: operation.candidateRevision })).rejects.toThrow("TOOL_ACTION_HUMAN_DECISION_REQUIRED");
+        const commitSha = await git(root, "rev-parse", "HEAD");
+        const branch = "feature/gh-5-update-readme";
+        await recordActionAuthorization(context, "git.push", { remote: "origin", ref: branch, expectedCommit: commitSha });
+        await recordActionAuthorization(context, "github.pull-request.create", { repository: "owner/repo", head: branch, base: "main", apiBase });
+        const delivered = await finalizeAcceptedIssue(root, config, context.contract, { candidate: operation.candidateRevision });
+        expect(delivered.status).toBe("FINALIZED");
+        expect(await git(root, "branch", "--show-current")).toBe("aeh/op-default-issue");
+        expect(await git(context.remote, "rev-parse", `refs/heads/${branch}`)).toBe(await git(root, "rev-parse", "HEAD"));
+
+        const actionFiles = await fs.readdir(actionDirectory(root, operationId));
+        const receipts = await Promise.all(actionFiles.filter((file) => file.endsWith(".receipt.json")).map(async (file) => JSON.parse(await fs.readFile(path.join(actionDirectory(root, operationId), file), "utf8")) as { action: string; outcome: string }));
+        expect(receipts).toEqual(expect.arrayContaining([
+          expect.objectContaining({ action: "paseo.workspace.create", outcome: "SUCCEEDED" }),
+          expect.objectContaining({ action: "github.branch.create", outcome: "SUCCEEDED" }),
+          expect.objectContaining({ action: "git.commit", outcome: "SUCCEEDED" }),
+          expect.objectContaining({ action: "git.push", outcome: "SUCCEEDED" }),
+          expect.objectContaining({ action: "github.pull-request.create", outcome: "SUCCEEDED" })
+        ]));
+        expect(context.requests.filter((request) => request.method === "POST").map((request) => new URL(request.url).pathname)).toEqual(expect.arrayContaining([
+          "/repos/owner/repo/git/refs",
+          "/repos/owner/repo/pulls"
+        ]));
+
+        const runResult = { taskId: "GH-5", status: "PASS", delivery: delivered } as unknown as TaskRunResult;
+        await fs.mkdir(path.dirname(runFile), { recursive: true });
+        await fs.writeFile(runFile, `${JSON.stringify(runResult)}\n`);
+        return { ...operation, status: "SUCCEEDED" };
+      }
+    });
+    expect(result.contract.task.id).toBe("GH-5");
+    expect(result.result).toMatchObject({ taskId: "GH-5", status: "PASS", delivery: { status: "FINALIZED" } });
+    expect(context.requests.filter((request) => request.method === "POST").every(() => accepted)).toBe(true);
+  });
+});
+
 interface FinalizeFixture {
   repo: string;
   remote: string;
@@ -150,7 +302,7 @@ interface FinalizeFixture {
   requests: Array<{ url: string; method: string; body?: string }>;
 }
 
-async function createFinalizeFixture(options: { managed?: boolean; acceptanceOracle?: boolean } = {}): Promise<FinalizeFixture> {
+async function createFinalizeFixture(options: { managed?: boolean; acceptanceOracle?: boolean; candidateBranch?: string } = {}): Promise<FinalizeFixture> {
   const managed = options.managed !== false;
   const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-finalize-"));
   roots.push(baseDir);
@@ -159,7 +311,7 @@ async function createFinalizeFixture(options: { managed?: boolean; acceptanceOra
   await fs.mkdir(repo); await git(baseDir, "init", "--bare", remote); await git(repo, "init", "-b", "main");
   await git(repo, "config", "user.name", "AEH Test"); await git(repo, "config", "user.email", "aeh@example.invalid");
   await fs.writeFile(path.join(repo, "README.md"), "base\n"); await git(repo, "add", "README.md"); await git(repo, "commit", "-m", "base"); await git(repo, "remote", "add", "origin", remote); await git(repo, "push", "-u", "origin", "main");
-  await git(repo, "checkout", "-b", "feature/gh-5-update-readme");
+  await git(repo, "checkout", "-b", options.candidateBranch ?? "feature/gh-5-update-readme");
   await fs.writeFile(path.join(repo, "README.md"), "accepted implementation\n");
   await fs.writeFile(path.join(repo, ".gitignore"), ".harness/\n");
   await fs.mkdir(path.join(repo, ".harness", "delivery"), { recursive: true });
@@ -178,7 +330,7 @@ async function createFinalizeFixture(options: { managed?: boolean; acceptanceOra
     process.env.AEH_OPERATION_STATE_REDIRECT = "1";
     process.env.AEH_CONTROLLER_EPOCH = "1";
     const operation = await loadOperation(repo, operationId);
-    const allowedExternalEffects = ["paseo.workspace.create", "github.issue.create", "github.branch.create", "git.push", "github.pull-request.create"];
+    const allowedExternalEffects = ["github.issue.create", "github.branch.create", "git.push", "github.pull-request.create"];
     const humanDecisionRequirements = ["git.push", "github.issue.create", "github.pull-request.create"].map((action) => ({ kind: "ACTION_AUTHORIZATION" as const, action }));
     const deliveryPolicy = { githubEnabled: true, allowedExternalEffects };
     const policy = compileResolvedOperationPolicy({ projectId: candidate.projectId!, operationId, operationExecutionRevision: operation.operationExecutionRevision!, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch: currentControllerEpoch(operation), intent: "delivery finalization test", route: "DIRECT", minimumAssurance: "STANDARD", policyVersions: {}, policyDigests: { delivery: sha256Canonical({ ...deliveryPolicy, humanDecisionRequirements }) }, validationPolicy: {}, reviewPolicy: { leadAcceptance: true, leadAcceptanceDirect: false, independentReviewRequired: false }, deliveryPolicy, knowledgePolicy: {}, contextPolicy: {}, allowedExternalEffects, humanDecisionRequirements });
@@ -215,6 +367,23 @@ async function persistFixtureAcceptanceOracle(root: string, operation: Awaited<R
   const disposition = evaluateAcceptanceOracleV1(bundle, { minimumAssurance: "ELEVATED", minimumIndependentReviewers: 1, providerDiversity: false, requiredDimensions: ["architecture"] });
   expect(disposition.disposition).toBe("ACCEPTED");
   await persistAcceptanceOracleArtifactV1(resolveOperationStateRoot(root), bundle, disposition);
+}
+
+async function prepareHandoff(context: FinalizeFixture, overrides: Partial<HarnessProjectConfig> = {}): Promise<HarnessProjectConfig> {
+  await fs.rm(path.join(context.repo, ".harness", "delivery", "GH-5.json"), { force: true });
+  const contracts = path.join(context.repo, ".harness", "contracts");
+  await fs.mkdir(contracts, { recursive: true });
+  await fs.writeFile(path.join(contracts, "GH-5.yaml"), `${JSON.stringify(context.contract, null, 2)}\n`);
+  return {
+    ...context.config,
+    ...overrides,
+    sdd: { contractsDir: ".harness/contracts" },
+    validation: { ...context.config.validation, requireSeal: false },
+    delivery: {
+      ...context.config.delivery,
+      github: { ...context.config.delivery?.github, enabled: true, repository: "owner/repo" }
+    }
+  };
 }
 
 async function recordActionAuthorization(context: FinalizeFixture, action: "git.push" | "github.issue.create" | "github.pull-request.create", payload: unknown): Promise<void> {
