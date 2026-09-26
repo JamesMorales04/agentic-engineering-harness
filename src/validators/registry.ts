@@ -1,4 +1,5 @@
 import type { HarnessProjectConfig, TaskContract, ValidationCheck, ValidatorSpec } from "../core/types.js";
+import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import { runGherkinValidator } from "./gherkin.js";
 import { runExternalToolValidator } from "./external.js";
 import { runOpenApiValidator } from "./openapi.js";
@@ -7,12 +8,16 @@ import { runSpecCommand } from "./toolCommand.js";
 import type { ValidationContext } from "./types.js";
 import { capabilityRequirements, providerSpecFor, runCapabilityValidator } from "../providers/validation/registry.js";
 
-export async function runConfiguredValidators(root: string, config: HarnessProjectConfig, contract: TaskContract, baseRef: string, changedFiles: string[]): Promise<ValidationCheck[]> {
+export interface RunConfiguredValidatorsOptionsV1 {
+  candidate?: CandidateRevisionV1;
+}
+
+export async function runConfiguredValidators(root: string, config: HarnessProjectConfig, contract: TaskContract, baseRef: string, changedFiles: string[], options: RunConfiguredValidatorsOptionsV1 = {}): Promise<ValidationCheck[]> {
   const specs = [...(config.validation?.validators ?? []), ...(contract.verification?.validators ?? [])];
   const checks: ValidationCheck[] = [];
   for (const spec of specs) {
     const capability = capabilityForAdapter(spec.adapter);
-    const context: ValidationContext = { root, config, contract, spec, providerSpec: capability ? providerSpecFor(config, capability, spec) : undefined, baseRef, changedFiles };
+    const context: ValidationContext = { root, config, contract, spec, providerSpec: capability ? providerSpecFor(config, capability, spec) : undefined, baseRef, changedFiles, ...(options.candidate ? { candidate: options.candidate } : {}) };
     try { checks.push(await runValidator(context)); }
     catch (error) { checks.push({ id: spec.id, category: "validator", status: spec.required ? "FAIL" : "WARN", message: `${spec.adapter} validator crashed: ${String(error)}` }); }
   }
@@ -20,7 +25,7 @@ export async function runConfiguredValidators(root: string, config: HarnessProje
   for (const capability of declared) {
     if (specs.some((spec) => capabilityForAdapter(spec.adapter) === capability)) continue;
     const spec: ValidatorSpec = { id: `capability.${capability}`, adapter: capabilityAdapter(capability), required: true };
-    const context: ValidationContext = { root, config, contract, spec, providerSpec: providerSpecFor(config, capability), baseRef, changedFiles };
+    const context: ValidationContext = { root, config, contract, spec, providerSpec: providerSpecFor(config, capability), baseRef, changedFiles, ...(options.candidate ? { candidate: options.candidate } : {}) };
     try { checks.push(await runValidator(context)); }
     catch (error) { checks.push({ id: spec.id, category: "capability", status: "FAIL", message: `${capability} capability crashed: ${String(error)}` }); }
   }

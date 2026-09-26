@@ -224,7 +224,11 @@ function managedProcessDirectory(root: string, operationId: string): string {
 }
 
 export async function commandExists(command: string, cwd: string): Promise<boolean> {
-  if (!command.trim()) return false;
+  return (await resolveExecutable(command, cwd)) !== undefined;
+}
+
+export async function resolveExecutable(command: string, cwd: string): Promise<string | undefined> {
+  if (!command.trim()) return undefined;
   const directPath = path.isAbsolute(command) || command.includes(path.sep) || (path.sep === "/" && command.includes("\\"));
   const prefix = await toolchainPathPrefix(cwd);
   const searchPath = [prefix, process.env.PATH].filter(Boolean).join(path.delimiter);
@@ -235,13 +239,14 @@ export async function commandExists(command: string, cwd: string): Promise<boole
     : [""];
   for (const directory of directories) {
     for (const extension of extensions) {
+      const candidate = path.join(directory, baseName + extension);
       try {
-        await fs.access(path.join(directory, baseName + extension), process.platform === "win32" ? undefined : fs.constants.X_OK);
-        return true;
+        await fs.access(candidate, process.platform === "win32" ? undefined : fs.constants.X_OK);
+        return candidate;
       } catch { /* try the next executable path */ }
     }
   }
-  return false;
+  return undefined;
 }
 
 async function toolchainPathPrefix(cwd: string): Promise<string | undefined> {

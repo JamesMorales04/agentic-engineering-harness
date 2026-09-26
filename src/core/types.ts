@@ -180,6 +180,12 @@ export interface HarnessProjectConfig {
       environmentAllowlist?: string[];
       credentialEnvAllowlist?: string[];
     };
+    isolation?: {
+      required?: boolean;
+      provider?: "bwrap" | string;
+      network?: boolean;
+      environmentAllowlist?: string[];
+    };
     tools?: string[];
   };
   telemetry?: { enabled?: boolean; required?: boolean; localEventsFile?: string; exporter?: "none" | "otlp-http-json" | string; endpoint?: string; headers?: Record<string, string>; serviceName?: string; };

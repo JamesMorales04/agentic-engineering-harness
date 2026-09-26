@@ -43,7 +43,8 @@ import { bindAssembledCandidate } from "../candidates/binding.js";
 import { createSemanticAssessmentRuntimeV1, createSemanticRepositoryBindingV1, type SemanticAssessmentRuntimeV1 } from "../semantic/runtime.js";
 import { discoverProjectStackProfile, type ProjectStackProfileV1 } from "../participants/stack.js";
 import { compileCandidateAssuranceV1, candidateImpactValidationRequirementsV1, candidateAssuranceProviderAdapterV1, type CandidateAssuranceCompilationV1, type CandidateAssurancePolicyV1 } from "../architecture/candidateAssurance.js";
-import { resolveValidationRequirements, validationRequirementKindValues, type ValidationResolutionV1 } from "../architecture/validationRequirements.js";
+import { requireSastEvidenceV1 } from "../security/sastEvidence.js";
+import { resolveValidationRequirements, validationRequirementKindValues, type ResolvedValidationActionV1, type ValidationRequirementKindV1, type ValidationResolutionV1 } from "../architecture/validationRequirements.js";
 import type { CandidateImpactV1 } from "../candidates/assembler.js";
 import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import { assertResolvedOperationPolicyV1, compileResolvedOperationPolicy, type ResolvedOperationPolicyV1 } from "../architecture/executionIdentity.js";
@@ -735,52 +736,56 @@ async function runCandidateImpactValidations(input: {
       if (!execution) {
         if ((action.source === "project-script" || action.source === "configured-command") && action.command) {
           const command: ValidationCommand = { id: `candidate-impact-${requirement.id}`, command: action.command, required: true };
-          execution = await runValidationCommand(input.root, command);
+          execution = await runValidationCommand(input.root, command, { config: input.config });
         } else if (action.source === "configured-validator") {
-          configuredValidatorChecks ??= await runConfiguredValidators(input.root, input.config, input.contract, input.report.metadata.baseRef, input.report.changedFiles);
+          configuredValidatorChecks ??= await runConfiguredValidators(input.root, input.config, input.contract, input.report.metadata.baseRef, input.report.changedFiles, { candidate: input.report.candidate! });
           execution = configuredValidatorChecks.find((check) => check.id === action.selector);
           if (!execution) throw new Error(`configured validator '${action.selector}' produced no validation check`);
         } else if (action.source === "approved-provider") {
           const provider = input.config.validation?.providers?.find((candidate) => candidate.id === action.selector || candidate.provider === action.provider || candidate.provider === action.selector);
-          if (action.command) {
-            execution = await runValidationCommand(input.root, { id: `candidate-impact-${requirement.id}`, command: action.command, required: true });
+          const adapter = candidateAssuranceProviderAdapterV1(action.kind, action.provider ?? "");
+          if (adapter) {
+            execution = await runExternalToolValidator({
+              root: input.root,
+              config: input.config,
+              contract: input.contract,
+              spec: { id: `candidate-impact-${requirement.id}`, adapter, required: true, timeoutSeconds: provider?.timeoutSeconds, ...(action.command ? { command: action.command } : {}), options: provider?.options },
+              providerSpec: provider,
+              baseRef: input.report.metadata.baseRef,
+              changedFiles: input.report.changedFiles,
+              candidate: input.report.candidate!
+            });
+          } else if (action.command) {
+            execution = await runValidationCommand(input.root, { id: `candidate-impact-${requirement.id}`, command: action.command, required: true }, { config: input.config });
+          } else if (["unit-test", "integration-test", "bdd", "contract-test"].includes(action.kind)) {
+            const spec: ValidatorSpec = {
+              id: `candidate-impact-${requirement.id}`,
+              adapter: action.kind === "bdd" ? "bdd" : action.kind === "contract-test" ? "contract-test" : action.kind === "integration-test" ? "integration-environment" : "test-execution",
+              required: true,
+              options: { ...(action.provider ? { provider: action.provider } : {}) }
+            };
+            const context: ValidationProviderContext = {
+              root: input.root,
+              config: input.config,
+              contract: input.contract,
+              capability: action.kind,
+              spec,
+              providerSpec: provider ?? providerSpecFor(input.config, action.kind, spec),
+              rawArtifactDirectory: path.resolve(input.root, input.config.evidence?.outputDir ?? ".harness/evidence", "raw"),
+              baseRef: input.report.metadata.baseRef
+            };
+            execution = await runCapabilityValidator(context, spec.id, action.kind, true);
           } else {
-            const adapter = candidateAssuranceProviderAdapterV1(action.kind, action.provider ?? "");
-            if (adapter) {
-              execution = await runExternalToolValidator({
-                root: input.root,
-                config: input.config,
-                contract: input.contract,
-                spec: { id: `candidate-impact-${requirement.id}`, adapter, required: true, timeoutSeconds: provider?.timeoutSeconds, options: provider?.options },
-                providerSpec: provider,
-                baseRef: input.report.metadata.baseRef,
-                changedFiles: input.report.changedFiles
-              });
-            } else if (["unit-test", "integration-test", "bdd", "contract-test"].includes(action.kind)) {
-              const spec: ValidatorSpec = {
-                id: `candidate-impact-${requirement.id}`,
-                adapter: action.kind === "bdd" ? "bdd" : action.kind === "contract-test" ? "contract-test" : action.kind === "integration-test" ? "integration-environment" : "test-execution",
-                required: true,
-                options: { ...(action.provider ? { provider: action.provider } : {}) }
-              };
-              const context: ValidationProviderContext = {
-                root: input.root,
-                config: input.config,
-                contract: input.contract,
-                capability: action.kind,
-                spec,
-                providerSpec: provider ?? providerSpecFor(input.config, action.kind, spec),
-                rawArtifactDirectory: path.resolve(input.root, input.config.evidence?.outputDir ?? ".harness/evidence", "raw"),
-                baseRef: input.report.metadata.baseRef
-              };
-              execution = await runCapabilityValidator(context, spec.id, action.kind, true);
-            } else {
-              throw new Error(`approved provider '${action.provider ?? action.selector}' has no safe executor for '${action.kind}' and no explicit command`);
-            }
+            throw new Error(`approved provider '${action.provider ?? action.selector}' has no safe executor for '${action.kind}' and no explicit command`);
           }
         }
         if (!execution) throw new Error("resolved validation action has no executable implementation");
         executedActions.set(actionKey, execution);
+      }
+      let sastEvidence: { artifact: string; digest: string } | undefined;
+      if (execution.status === "PASS" && requiresCandidateBoundSastEvidence(requirement.kind, action, input.config)) {
+        const evidence = await requireSastEvidenceV1(input.root, input.config, input.report.candidate!, execution.id);
+        sastEvidence = { artifact: evidence.artifact, digest: evidence.digest };
       }
       output.push({
         id: `candidate.assurance.validation.${requirement.id}`,
@@ -788,7 +793,7 @@ async function runCandidateImpactValidations(input: {
         status: execution.status === "PASS" ? "PASS" : "FAIL",
         message: execution.status === "PASS" ? `Required ${requirement.kind} evidence passed: ${requirement.property}` : `Required ${requirement.kind} validation for impact requirement '${requirement.id}' returned ${execution.status}.`,
         durationMs: execution.durationMs,
-        details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest }
+        details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, ...(sastEvidence ? { sastEvidence, artifact: sastEvidence.artifact } : {}) }
       });
     } catch (error) {
       output.push({
@@ -801,6 +806,16 @@ async function runCandidateImpactValidations(input: {
     }
   }
   return output;
+}
+
+function requiresCandidateBoundSastEvidence(kind: ValidationRequirementKindV1, action: ResolvedValidationActionV1, config: HarnessProjectConfig): boolean {
+  if (kind !== "static-security" && kind !== "dependency-security") return false;
+  if (action.source === "approved-provider") return candidateAssuranceProviderAdapterV1(kind, action.provider ?? "") !== undefined;
+  if (action.source === "configured-validator") {
+    const spec = (config.validation?.validators ?? []).find((validator) => validator.id === action.selector);
+    return spec !== undefined && (spec.adapter === "opengrep" || spec.adapter === "trivy");
+  }
+  return false;
 }
 
 async function resolveExecutionBoundary(root: string, config: HarnessProjectConfig, contract: TaskContract, profileOverride?: string): Promise<FrozenExecutionBoundaryV1> {

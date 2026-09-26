@@ -40,8 +40,8 @@ export async function verifyTask(root: string, config: HarnessProjectConfig, con
   const frozenChanged = (scopeChecks.find((c) => c.id === "diff.frozen-paths")?.details?.frozenChanged ?? []) as string[];
   const evidence = collectPolicyEvidence(changedFiles);
   checks.push(await runOpaPolicies(executionRoot, config, contract, changedFiles, frozenChanged, evidence, policyRoot, options.executionIdentity));
-  const commands = [...(config.validation?.commands ?? []), ...(contract.verification?.commands ?? [])]; for (const command of commands) checks.push(await runValidationCommand(executionRoot, command));
-  checks.push(...await runConfiguredValidators(executionRoot, config, contract, baseRef, changedFiles));
+  const commands = [...(config.validation?.commands ?? []), ...(contract.verification?.commands ?? [])]; for (const command of commands) checks.push(await runValidationCommand(executionRoot, command, { config }));
+  checks.push(...await runConfiguredValidators(executionRoot, config, contract, baseRef, changedFiles, candidate ? { candidate } : {}));
   if (candidate) await assertWorkspaceMatchesCandidate(executionRoot, candidate, await currentCandidate(stateRoot) ?? null);
   const status = checks.some((check) => check.status === "FAIL") ? "FAIL" : "PASS";
   const findings = checks.flatMap((check) => Array.isArray(check.details?.findings) ? check.details.findings : []).filter((item): item is import("../core/types.js").ValidationFinding => Boolean(item && typeof item === "object" && typeof (item as Record<string, unknown>).fingerprint === "string"));

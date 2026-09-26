@@ -171,7 +171,7 @@ export async function runAudit(
 
     await operationStage(root, "validating", "RUNNING");
     for (const command of config.validation?.commands ?? []) {
-      validationChecks.push(classifyValidationCheck(await runValidationCommand(root, command)));
+      validationChecks.push(classifyValidationCheck(await runValidationCommand(root, command, { config })));
     }
     validationChecks.push(
       ...(await runConfiguredValidators(root, config, contract, baseRef, [])).map(

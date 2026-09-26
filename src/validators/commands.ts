@@ -1,13 +1,43 @@
 import path from "node:path";
-import type { ValidationCheck, ValidationCommand } from "../core/types.js";
-import { runShell } from "../utils/process.js";
+import type { HarnessProjectConfig, ValidationCheck, ValidationCommand } from "../core/types.js";
+import { runShell, type ProcessResult } from "../utils/process.js";
+import {
+  ISOLATION_PROVIDER_UNAVAILABLE,
+  assertSupportedIsolationProvider,
+  runIsolatedCommand,
+  validatorIsolationEnvironmentAllowlist,
+  validatorIsolationNetwork,
+  validatorIsolationRequired
+} from "../security/isolation.js";
 
-export async function runValidationCommand(root: string, command: ValidationCommand): Promise<ValidationCheck> {
+export async function runValidationCommand(root: string, command: ValidationCommand, options: { config?: HarnessProjectConfig } = {}): Promise<ValidationCheck> {
   const cwd = path.resolve(root, command.workingDirectory ?? ".");
-  const result = await runShell(command.command, {
-    cwd,
-    timeoutMs: (command.timeoutSeconds ?? 900) * 1000
-  });
+  const timeoutMs = (command.timeoutSeconds ?? 900) * 1000;
+  const isolationRequired = options.config ? validatorIsolationRequired(options.config, { id: command.id, adapter: "command", command: command.command }) : false;
+  let result: ProcessResult;
+  let isolation: Record<string, unknown> | undefined;
+  if (isolationRequired && options.config) {
+    try {
+      assertSupportedIsolationProvider(options.config);
+      const isolated = await runIsolatedCommand({
+        root,
+        command: command.command,
+        cwd,
+        workspaceRoot: root,
+        writablePaths: [root],
+        network: validatorIsolationNetwork(options.config),
+        timeoutMs
+      }, { environmentAllowlist: validatorIsolationEnvironmentAllowlist(options.config) });
+      result = { exitCode: isolated.exitCode, stdout: isolated.stdout, stderr: isolated.stderr, durationMs: isolated.durationMs, timedOut: isolated.timedOut };
+      isolation = isolated.isolation as unknown as Record<string, unknown>;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const blocker = message.includes(ISOLATION_PROVIDER_UNAVAILABLE) ? ISOLATION_PROVIDER_UNAVAILABLE : "ISOLATION_UNAVAILABLE";
+      return { id: `command.${command.id}`, category: "command", status: command.required === false ? "WARN" : "FAIL", message: `Validator-command isolation could not be established; the ${command.required === false ? "optional" : "required"} command did not run: ${message}`, details: { blocker, command: command.command, isolationRequired: true } };
+    }
+  } else {
+    result = await runShell(command.command, { cwd, timeoutMs });
+  }
   const passed = result.exitCode === 0;
   return {
     id: `command.${command.id}`,
@@ -15,9 +45,12 @@ export async function runValidationCommand(root: string, command: ValidationComm
     status: passed ? "PASS" : (command.required === false ? "WARN" : "FAIL"),
     message: passed ? `${command.id} passed.` : `${command.id} failed with exit code ${result.exitCode}.`,
     durationMs: result.durationMs,
-    details: passed
-      ? { command: command.command, cwd, exitCode: result.exitCode, summary: summarizePassingOutput(result.stdout), stdoutBytes: Buffer.byteLength(result.stdout), stderrBytes: Buffer.byteLength(result.stderr) }
-      : { command: command.command, cwd, exitCode: result.exitCode, stdout: trimOutput(result.stdout), stderr: trimOutput(result.stderr) }
+    details: {
+      ...(passed
+        ? { command: command.command, cwd, exitCode: result.exitCode, summary: summarizePassingOutput(result.stdout), stdoutBytes: Buffer.byteLength(result.stdout), stderrBytes: Buffer.byteLength(result.stderr) }
+        : { command: command.command, cwd, exitCode: result.exitCode, stdout: trimOutput(result.stdout), stderr: trimOutput(result.stderr) }),
+      ...(isolation ? { isolation } : {})
+    }
   };
 }
 
