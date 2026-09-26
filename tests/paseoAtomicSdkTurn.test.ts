@@ -103,6 +103,7 @@ describe("Paseo SDK resumed turns", () => {
       cwd: "/repo",
       workspaceId: "workspace-1",
       provider: "codex",
+      model: "gpt-test",
       title: "reviewer",
       outputSchema: schema
     });

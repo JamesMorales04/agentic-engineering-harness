@@ -22,6 +22,7 @@ import {
 } from "../src/operations/state.js";
 import { compileResolvedOperationPolicy } from "../src/architecture/executionIdentity.js";
 import { HumanDecisionLedgerV2 } from "../src/security/humanDecision.js";
+import { createManagedRuntime, runtimeProjectId } from "../src/runtime/index.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -166,6 +167,49 @@ describe("operation lifecycle regressions", () => {
     ]));
     const current = await loadOperation(root, record.id);
     expect(current.status).toBe("CANCELLED");
+  });
+
+  it("releases an operation provider lease only after the current cancellation observes the session quiescent", async () => {
+    const root = await tempRoot();
+    const record = operation(root, "CANCEL-PROVIDER-LEASE");
+    record.agents = [{ id: "provider-agent-1", role: "reviewer", registeredAt: new Date().toISOString() }];
+    await saveOwnedOperation(root, record);
+    await bindCancellationDecision(root, record.id, "human:lifecycle-cancel-test");
+    const current = await loadOperation(root, record.id);
+    const runtime = await createManagedRuntime({ root, projectId: runtimeProjectId(root), ownerId: `provider-controller:${record.id}:${current.controller!.epoch}` });
+    const lease = await runtime.acquireProviderLease({
+      provider: "opencode",
+      workspaceId: "operation-ws",
+      mode: "write",
+      lifecycle: {
+        operationId: current.id,
+        candidateDigest: current.candidateRevision!.identityDigest,
+        operationExecutionRevision: current.operationExecutionRevision!,
+        policyDigest: current.resolvedOperationPolicy!.digest,
+        controllerTokenDigest: current.controller!.tokenDigest!,
+        controllerEpoch: current.controller!.epoch,
+        participantId: "participant-cancel-test",
+        sessionId: "provider-agent-1",
+        providerStatus: "ACTIVE"
+      }
+    });
+    let providerStatus = "working";
+    const run = vi.fn(async () => {
+      providerStatus = "idle";
+      return { exitCode: 0, stdout: "stopped", stderr: "", durationMs: 1 };
+    });
+
+    const cancelled = await cancelOperation(root, record.id, {
+      run: run as never,
+      trace: vi.fn(async () => undefined) as never,
+      humanActorId: "human:lifecycle-cancel-test",
+      inspectProviderSession: async (_cwd, provider, sessionId) => provider === "opencode" && sessionId === "provider-agent-1" ? { status: providerStatus } : undefined
+    });
+
+    expect(cancelled.status).toBe("CANCELLED");
+    expect(run.mock.calls.map(([command]) => String(command))).toContain("paseo stop 'provider-agent-1'");
+    const snapshot = await (await createManagedRuntime({ root, projectId: runtimeProjectId(root), ownerId: "observer" })).snapshot();
+    expect(snapshot.providerLeases.some((item) => item.leaseId === lease.leaseId)).toBe(false);
   });
 
   it("drains active supervisor generations when the operation terminalizes", async () => {

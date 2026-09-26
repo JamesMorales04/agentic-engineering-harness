@@ -1,0 +1,405 @@
+{
+  "slice": "S9",
+  "productBoundary": "npm run aeh -- start --no-open <disposable-root> -> actual detached Control Center -> packaged UI -> frontend/server/controller",
+  "generatedAt": "2026-09-26T01:36:58.593Z",
+  "package": {
+    "version": 1,
+    "packageVersion": "0.8.4",
+    "gitSha": "c03647107bc8b8e4464afd4d8a189ac80e7a01aa",
+    "releaseId": "release-1790386441389-339964-cb4c88d0",
+    "buildDigest": "393dba2f05d0db58b3250e900de9cad3b91f92394f16005c4fdb4b5490da80ce",
+    "dirty": true
+  },
+  "playwright": {
+    "packageVersion": "1.62.1",
+    "runner": "@playwright/test"
+  },
+  "consumerRoot": "/tmp/aeh-s9-browser-bBAQva",
+  "consumerRootRetained": false,
+  "startup": {
+    "command": "npm run aeh -- start --no-open /tmp/aeh-s9-browser-bBAQva",
+    "exitCode": 0,
+    "controlCenterSession": "started",
+    "controlCenterOrigin": "http://127.0.0.1:41323",
+    "controlCenterPath": "/",
+    "pairingUrlEmitted": true,
+    "pairingFragmentPersisted": false,
+    "agentId": "392c6724-d765-4fca-81f7-df060ded7058",
+    "paseoSession": "created",
+    "leadAgent": "lead",
+    "provider": "codex",
+    "model": "gpt-6-luna",
+    "stdout": "\n> agentic-engineering-harness@0.8.4 aeh\n> node ./dist/main.js start --no-open /tmp/aeh-s9-browser-bBAQva\n\naehRuntime=0.8.4\naehEntry=/home/james/Desarrollo/agentic-engineering-harness/dist/main.js\nAEH Paseo ready for change-me.\ndaemon=reused\nsession=created\nlead=lead\nprovider=codex\nmodel=gpt-6-luna\npaseo=0.9.1\nagentId=392c6724-d765-4fca-81f7-df060ded7058\ntitle=AEH Lead\ncontrolCenter=http://127.0.0.1:41323/\ncontrolCenterSession=started\ncontrolCenterPairing=<redacted>\nOpen Paseo and continue in 'AEH Lead'. Engineering operations route through the Harness; normal aeh start creates a fresh lead, while --resume explicitly reuses a compatible one.\n",
+    "stderr": ""
+  },
+  "operation": {
+    "operationId": "CHANGE-20260926T013632Z-c5c81980",
+    "choiceId": "scope-narrow",
+    "choiceLabel": "Narrow explicit behavior",
+    "requestId": "request:86275e15-8130-4b24-b002-febedccb7893",
+    "candidateId": "candidate:CHANGE-20260926T013632Z-c5c81980:r1",
+    "candidateRevision": 1,
+    "candidateDigest": "5c2709ee24715aafb555668351b6b472b62e1e6af73065759214ac80b6e431ef",
+    "policyDigest": "e91eceee8597618b77d2b22ab27b88dfc561f53ef5da06432367d33122099107",
+    "controllerEpoch": 1,
+    "operationExecutionRevision": 1
+  },
+  "establishment": {
+    "provenance": "controller-accepted",
+    "controllerOwnedConsumption": true,
+    "contextArtifact": ".harness/operations/CHANGE-20260926T013632Z-c5c81980/events.ndjson",
+    "contextDigest": "",
+    "remainingGap": ""
+  },
+  "checks": [
+    {
+      "name": "authority.controller-produced-product-choice-request",
+      "status": "PASS",
+      "classification": "TEST_DEFECT"
+    },
+    {
+      "name": "startup.uses-current-candidate-runtime",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "startup.loopback-pairing-origin",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "pairing.navigation-succeeds",
+      "status": "PASS",
+      "classification": "ENVIRONMENT_DEFECT"
+    },
+    {
+      "name": "pairing.fragment-cleared",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "pairing.session-cookie-hardened",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "pairing.fragment-not-persisted",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "pairing.ui-authenticated",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "pairing.nonce-one-use-replay-rejected",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "pairing.sanitized-screenshot",
+      "status": "PASS",
+      "classification": "TEST_DEFECT"
+    },
+    {
+      "name": "projection.api-operation-identity",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "projection.api-decision-request-scope",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "projection.rendered-operation-card",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "projection.rendered-decision-scope",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "projection.rendered-choice-and-issue",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "projection.build-identity-matches-candidate",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "decision.ui-submits-one-choice",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "decision.durable-human-decision-persisted",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "decision.operation-waits-for-controller-consumption",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "rejection.replay-is-rejected",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "rejection.unknown-request-is-rejected",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "rejection.out-of-scope-choice-is-rejected",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "rejection.foreign-operation-is-rejected",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "rejection.missing-csrf-is-rejected",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "rejection.durable-state-unchanged",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "authority.controller-owned-continuation",
+      "status": "PASS",
+      "classification": "TEST_DEFECT"
+    },
+    {
+      "name": "continuation.controller-consumes-and-resumes",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "continuation.checkpoint-revalidated",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "continuation.exact-once-consumption-receipt",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "continuation.reissue-after-resume-is-stale",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "continuation.refreshed-ui-projection",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "pause.control-rendered",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "pause.reaches-durable-paused",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "pause.writers-are-fenced",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "pause.ui-projection-is-paused",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "resume.control-rendered",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "resume.revalidates-and-continues",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "resume.continuation-checkpoint-current",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "cancellation.control-rendered",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "cancellation.reaches-durable-cancelled",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "cancellation.stale-writers-fenced",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "cancellation.stale-decision-rejected",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "cancellation.refreshed-ui-projection",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "final.api-projection-equals-durable",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "final.rendered-projection-equals-durable",
+      "status": "PASS",
+      "classification": "PRODUCT_DEFECT"
+    },
+    {
+      "name": "final.sanitized-screenshot",
+      "status": "PASS",
+      "classification": "TEST_DEFECT"
+    }
+  ],
+  "notes": {
+    "browser": {
+      "engine": "Playwright Chromium",
+      "version": "151.0.7922.34"
+    },
+    "authority": {
+      "provenance": "controller-accepted",
+      "controllerOwnedConsumption": true,
+      "contextArtifact": ".harness/operations/CHANGE-20260926T013632Z-c5c81980/events.ndjson",
+      "contextDigest": "",
+      "remainingGap": ""
+    },
+    "startup": {
+      "command": "npm run aeh -- start --no-open /tmp/aeh-s9-browser-bBAQva",
+      "exitCode": 0,
+      "controlCenterSession": "started",
+      "controlCenterOrigin": "http://127.0.0.1:41323",
+      "controlCenterPath": "/",
+      "packageVersion": "0.8.4",
+      "releaseId": "release-1790386441389-339964-cb4c88d0",
+      "buildDigest": "393dba2f05d0db58b3250e900de9cad3b91f92394f16005c4fdb4b5490da80ce",
+      "gitSha": "c03647107bc8b8e4464afd4d8a189ac80e7a01aa",
+      "dirty": true,
+      "provider": "codex",
+      "model": "gpt-6-luna"
+    },
+    "pairedScreenshot": {
+      "file": "/home/james/Desarrollo/agentic-engineering-harness/.harness/evidence/browser/CHANGE-20260926T013632Z-c5c81980/paired-home.png",
+      "sha256": "5fb8aa4c29816c473444e6b9c3d6eaa82188a63ff5314cc71b5758df07b66328"
+    },
+    "pairing": {
+      "fragmentCleared": true,
+      "oneUseReplayRejected": true
+    },
+    "pairing.pageDiagnostics": {
+      "href": "http://127.0.0.1:41323/?mode=home",
+      "readyState": "complete",
+      "hasRoot": true
+    },
+    "projection": {
+      "operationId": "CHANGE-20260926T013632Z-c5c81980",
+      "durableRevision": 70,
+      "durablePhase": "HUMAN_REQUIRED",
+      "durableStatus": "RUNNING",
+      "candidateDigest": "5c2709ee24715aafb555668351b6b472b62e1e6af73065759214ac80b6e431ef",
+      "policyDigest": "e91eceee8597618b77d2b22ab27b88dfc561f53ef5da06432367d33122099107",
+      "operationExecutionRevision": 1,
+      "controllerEpoch": 1,
+      "requestId": "request:86275e15-8130-4b24-b002-febedccb7893"
+    },
+    "decision": {
+      "decisionId": "decision:6981d325-bfa0-4753-b790-7c18ada3fe5e",
+      "actorClass": "human:control-center",
+      "exactlyOnce": true
+    },
+    "continuation": {
+      "secondRequestId": "request:25dc3c5d-c2a2-4a61-989f-90b4d328d1a2",
+      "durableRevision": 84,
+      "durablePhase": "HUMAN_REQUIRED",
+      "policyDigest": "e91eceee8597618b77d2b22ab27b88dfc561f53ef5da06432367d33122099107"
+    },
+    "pause": {
+      "durableRevision": 85,
+      "durablePhase": "PAUSED",
+      "durableStatus": "RUNNING",
+      "operationExecutionRevision": 1,
+      "controllerEpoch": 1
+    },
+    "pause.fenceRejection": "V2_CONTROLLER_FENCED: operation mutation 'operation.policy.bound' requires the current controller epoch.",
+    "resume": {
+      "durableRevision": 86,
+      "durablePhase": "HUMAN_REQUIRED",
+      "continuationState": "WAITING"
+    },
+    "cancellation": {
+      "durableRevision": 89,
+      "durableStatus": "CANCELLED",
+      "durablePhase": "cancelled",
+      "controllerEpoch": 2
+    },
+    "cancellation.staleWriterAttempts": {
+      "bindResolvedOperationPolicy": "resolved without mutation ({\"version\":2,\"id\":\"CHANGE-20260926T013632Z-c5c81980\",\"kind\":)",
+      "claimControllerEpoch": "resolved without mutation ({\"version\":2,\"id\":\"CHANGE-20260926T013632Z-c5c81980\",\"kind\":)",
+      "transitionOperationToTerminal": "resolved without mutation (false)"
+    },
+    "finalScreenshot": {
+      "file": "/home/james/Desarrollo/agentic-engineering-harness/.harness/evidence/browser/CHANGE-20260926T013632Z-c5c81980/final-projection.png",
+      "sha256": "9af0d705210e9730b1736b8fc84bd5126f63e6c2f2e25ebd164071aaae7586ca"
+    },
+    "final": {
+      "operationId": "CHANGE-20260926T013632Z-c5c81980",
+      "durableRevision": 89,
+      "durableStatus": "CANCELLED",
+      "durablePhase": "cancelled",
+      "candidateDigest": "5c2709ee24715aafb555668351b6b472b62e1e6af73065759214ac80b6e431ef",
+      "operationExecutionRevision": 1,
+      "controllerEpoch": 2
+    },
+    "cleanup": [
+      "stopped exact fixture Control Center pid 347464",
+      "stopped exact fixture lead 392c6724-d765-4fca-81f7-df060ded7058"
+    ],
+    "evidenceDirectory": "/home/james/Desarrollo/agentic-engineering-harness/.harness/evidence/browser/CHANGE-20260926T013632Z-c5c81980"
+  },
+  "screenshots": [
+    {
+      "name": "paired-home",
+      "file": ".harness/evidence/browser/CHANGE-20260926T013632Z-c5c81980/paired-home.png",
+      "sha256": "5fb8aa4c29816c473444e6b9c3d6eaa82188a63ff5314cc71b5758df07b66328",
+      "capturedAfterPairingFragmentRemoval": true
+    },
+    {
+      "name": "final-projection",
+      "file": ".harness/evidence/browser/CHANGE-20260926T013632Z-c5c81980/final-projection.png",
+      "sha256": "9af0d705210e9730b1736b8fc84bd5126f63e6c2f2e25ebd164071aaae7586ca",
+      "capturedAfterPairingFragmentRemoval": true
+    }
+  ],
+  "credentialsCookiesCsrfHeadersAndNoncesPersisted": false
+}

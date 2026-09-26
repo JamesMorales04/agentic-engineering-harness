@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { extractMarkedJson } from "./structuredOutput.js";
-import { continueManagedPaseoAgent } from "../paseo/runtime.js";
+import { continueManagedPaseoAgent, inspectManagedPaseoAgent } from "../paseo/runtime.js";
 import { currentObjectiveIdentityV1, leadAcceptanceRequiredV1, type ManagedLeadAcceptanceEvidenceV1 } from "../architecture/acceptanceOracle.js";
 import type { CandidateAssuranceCompilationV1 } from "../architecture/candidateAssurance.js";
 import { sha256Canonical } from "../core/digest.js";
@@ -59,7 +59,16 @@ export async function requestManagedLeadAcceptance(input: {
     "Return one JSON object with exactly: assertions[{assertionId,verdict:'PASS'|'FAIL',rationale}], summary, unresolved[]. Include every supplied assertion exactly once and use its exact assertionId. Verdict PASS only when current candidate evidence supports the statement; otherwise use FAIL and explain the gap. Final line must be AEH_RESULT_JSON=<json>."
   ].join("\n");
   const promptDigest = sha256Canonical(prompt);
-  const response = await continueManagedPaseoAgent(input.root, binding.agentId, prompt, 600, undefined, leadOutputJsonSchema);
+  const paseoLead = await inspectManagedPaseoAgent(input.root, binding.agentId);
+  const provider = paseoLead?.labels?.["aeh.provider"];
+  if (!provider) throw new Error("ACCEPTANCE_LEAD_PROVIDER_IDENTITY_REQUIRED: the bound Paseo Lead session has no persisted provider label.");
+  const response = await continueManagedPaseoAgent(input.root, binding.agentId, prompt, 600, undefined, leadOutputJsonSchema, {
+    "aeh.operation": operation.id,
+    "aeh.lead.agentId": binding.agentId,
+    "aeh.lead.generation": String(binding.generation),
+    "aeh.provider": provider,
+    ...(paseoLead.workspaceId ? { "aeh.workspace.id": paseoLead.workspaceId } : {})
+  });
   const latest = await loadOperation(stateRoot, input.operationId);
   const latestIdentity = currentObjectiveIdentityV1(latest);
   if (latest.lead?.agentId !== binding.agentId || latest.lead.generation !== binding.generation

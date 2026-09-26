@@ -108,8 +108,10 @@ export async function compilePaseoAgentLaunchSpec(root: string, config: HarnessP
     "aeh.role": logicalAgent,
     "aeh.operation": operationId,
     "aeh.operation.kind": operationKind,
-    "aeh.operation.phase": phase
+    "aeh.operation.phase": phase,
+    "aeh.provider": provider
   };
+  if (workspaceId) labels["aeh.workspace.id"] = workspaceId;
   if (selection?.profile) labels["aeh.profile"] = selection.profile;
   if (selection?.outputContract) labels["aeh.output.contract"] = selection.outputContract;
   if (durable) labels["aeh.operation.revision"] = String(durable.revision);

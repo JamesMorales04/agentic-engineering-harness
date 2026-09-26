@@ -1,0 +1,72 @@
+{
+  "slice": "S9",
+  "finding": "R11 LeadGateway current-managed-lead binding failure",
+  "productBoundary": "packed public aeh start -> actual paired Control Center -> existing Paseo lead messages route",
+  "package": {
+    "release": "release-1790353208407-3798547-1d5be92b",
+    "version": "0.8.4"
+  },
+  "projectRoot": "/tmp/aeh-s9-browser-live.2m8tga",
+  "browser": {
+    "engine": "Playwright Chromium",
+    "version": "151.0.7922.34",
+    "launchProfilePath": "/tmp/aeh-s9-playwright-browsers"
+  },
+  "pairingFragmentRemovedBeforeCapture": true,
+  "credentialsOrPairingMaterialPersisted": false,
+  "screenshot": {
+    "path": "docs/evidence/s9/lead-gateway-failure.png",
+    "sha256": "3fcf104a4266187c944276e3e4ffab3710cbbfe5cf033c7d0eac340cef10a030"
+  },
+  "assertions": {
+    "controlCenterLoaded": true,
+    "leadConversationVisible": true,
+    "leadConversationFailureVisible": true,
+    "operationCount": 0,
+    "pendingDecisionCardCount": 0,
+    "currentManagedLeadBinding": "FAILED: request returned Paseo lead conversation is not configured."
+  },
+  "observedUi": {
+    "title": "AEH Control Center",
+    "headings": [
+      "Engineering signal, at a glance.",
+      "Knowledge gate",
+      "Assurance",
+      "Paseo gateway",
+      "Lead conversation",
+      "Operations"
+    ]
+  },
+  "network": [
+    {
+      "method": "GET",
+      "path": "/",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/assets/index-mVvMxanM.css",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/assets/index-EXJ423K4.js",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/pair",
+      "status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/overview",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/paseo/lead/messages",
+      "status": 200
+    }
+  ]
+}

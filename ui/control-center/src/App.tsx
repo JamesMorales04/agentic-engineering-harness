@@ -44,6 +44,15 @@ function PaseoCard({ connected }: { connected: boolean }) {
   return <Card title="Paseo gateway" aside={<StatusPill value={state} />}><p className="notice">{snapshot?.message ?? (snapshot?.status === "AVAILABLE" ? `${snapshot.participants.length} participant${snapshot.participants.length === 1 ? "" : "s"} projected by the bounded gateway.` : "The bounded Paseo gateway is unavailable or not configured." )}</p><span className="muted">{query.isFetching ? "Refreshing…" : snapshot ? `Captured ${new Date(snapshot.capturedAt).toLocaleTimeString()}` : "No gateway snapshot"} · no Paseo credentials are rendered or stored.</span></Card>;
 }
 
+function RuntimeCard({ services }: { services: Overview["services"] }) {
+  return <Card title="Runtime supervision">
+    <div className="runtime-columns">
+      <div><span className="eyebrow">Services</span><div className="stack">{services.services.length ? services.services.map((service) => <div className="row" key={service.serviceId}><span>{service.kind}<small>{service.serviceId}</small></span><StatusPill value={service.status} /></div>) : <span className="muted">No service projection.</span>}</div></div>
+      <div><span className="eyebrow">Provider leases</span><div className="stack">{services.providerLeases.length ? services.providerLeases.map((lease) => <div className="row" key={lease.leaseId}><span>{lease.provider} · {lease.mode}<small>{lease.workspaceId} · owner {short(lease.ownerId)}{lease.lifecycle ? ` · operation ${short(lease.lifecycle.operationId)} · participant ${short(lease.lifecycle.participantId)} · session ${lease.lifecycle.sessionId ? short(lease.lifecycle.sessionId) : "pending"}` : ""}</small></span><span className="muted">{Date.parse(lease.expiresAt) <= Date.now() ? "EXPIRED · FENCED" : lease.lifecycle?.providerStatus ?? "LEASED"} · until {new Date(lease.expiresAt).toLocaleTimeString()}</span></div>) : <span className="muted">No provider leases.</span>}</div></div>
+    </div>
+  </Card>;
+}
+
 function LeadConversation({ csrfToken, operationId }: { csrfToken: string; operationId?: string }) {
   const [message, setMessage] = useState("");
   const [result, setResult] = useState<string>();
@@ -62,7 +71,7 @@ function LeadConversation({ csrfToken, operationId }: { csrfToken: string; opera
 
 function ParticipantTable({ participants }: { participants: Participant[] }) {
   if (!participants.length) return <p className="muted">No compiled participants are currently projected.</p>;
-  return <div className="table-wrap"><table><caption className="sr-only">Compiled participant status</caption><thead><tr><th scope="col">Participant</th><th scope="col">Role</th><th scope="col">Phase</th><th scope="col">Status</th><th scope="col">Skills</th></tr></thead><tbody>{participants.map((participant) => <tr key={participant.participantId}><td><code>{short(participant.participantId)}</code></td><td>{participant.role ?? participant.logicalAgent ?? "—"}</td><td>{participant.phase ?? "—"}</td><td><StatusPill value={participant.status} /></td><td>{participant.skills.slice(0, 3).join(", ") || "—"}</td></tr>)}</tbody></table></div>;
+  return <div className="table-wrap"><table><caption className="sr-only">Compiled participant status</caption><thead><tr><th scope="col">Participant</th><th scope="col">Role</th><th scope="col">Phase</th><th scope="col">Status</th><th scope="col">Blocker</th><th scope="col">Skills</th></tr></thead><tbody>{participants.map((participant) => <tr key={participant.participantId}><td><code>{short(participant.participantId)}</code></td><td>{participant.role ?? participant.logicalAgent ?? "—"}</td><td>{participant.phase ?? "—"}</td><td><StatusPill value={participant.status} /></td><td>{participant.error ?? (participant.status === "BLOCKED" ? "Blocked" : "—")}</td><td>{participant.skills.slice(0, 3).join(", ") || "—"}</td></tr>)}</tbody></table></div>;
 }
 
 function DecisionRequestCard({ operation, request, csrfToken }: { operation: Operation; request: DecisionRequest; csrfToken: string }) {
@@ -81,6 +90,17 @@ function DecisionRequestCard({ operation, request, csrfToken }: { operation: Ope
   const disabled = pending || accepted || expired || !choiceId || !csrfToken;
   return <section className="card decision-request" aria-labelledby={`decision-title-${request.requestId}`}>
     <div className="card-heading"><div><span className="kicker">PRODUCT CHOICE</span><h2 id={`decision-title-${request.requestId}`}>This operation needs a human product decision.</h2><span className="muted"><code>{short(operation.operationId)}</code> · {label(operation.kind)} · phase {operation.phase} · expires {new Date(request.expiresAt).toLocaleString()}</span></div><StatusPill value={operation.phase} /></div>
+    <section className="decision-scope" aria-label="Current decision scope">
+      <h3>Current decision scope</h3>
+      <dl className="decision-scope-grid">
+        <div><dt>Operation</dt><dd><code>{request.operationId}</code></dd></div>
+        <div><dt>Candidate digest</dt><dd><code>{request.candidate}</code></dd></div>
+        <div><dt>Policy digest</dt><dd><code>{request.policyDigest}</code></dd></div>
+        <div><dt>Execution revision</dt><dd><code>{request.operationExecutionRevision}</code></dd></div>
+        <div><dt>Controller epoch</dt><dd><code>{request.controllerEpoch}</code></dd></div>
+        <div><dt>Decision request</dt><dd><code>{request.requestId}</code></dd></div>
+      </dl>
+    </section>
     <p className="notice">{request.issue}</p>
     <div className="decision-grid">
       <div className="decision-block"><span className="eyebrow">Why AEH cannot decide this</span><p>{request.whyUnresolvable}</p></div>
@@ -112,22 +132,52 @@ function ProductChoices({ operations, csrfToken }: { operations: Operation[]; cs
   return <div className="product-choices">{pending.map(({ operation, request }) => <DecisionRequestCard key={`${operation.operationId}:${request.requestId}`} operation={operation} request={request} csrfToken={csrfToken} />)}</div>;
 }
 
-function Operations({ operations }: { operations: Operation[] }) {
+type OperationControlCommand = "pause" | "resume" | "cancel";
+
+function OperationCard({ operation, csrfToken }: { operation: Operation; csrfToken: string }) {
+  const queryClient = useQueryClient();
+  const [requested, setRequested] = useState<OperationControlCommand | undefined>(undefined);
+  const mutation = useMutation({
+    mutationFn: (command: OperationControlCommand) => command === "pause"
+      ? api.pauseOperation(csrfToken, operation.operationId)
+      : command === "resume"
+        ? api.resumeOperation(csrfToken, operation.operationId)
+        : api.cancelOperation(csrfToken, operation.operationId),
+    onSuccess: (_result, command) => { setRequested(command); void queryClient.invalidateQueries({ queryKey: ["overview"] }); },
+    onError: () => { void queryClient.invalidateQueries({ queryKey: ["overview"] }); }
+  });
+  const controls = operation.controls;
+  const disabled = !csrfToken || mutation.isPending;
+  const button = (command: OperationControlCommand, labelText: string) => <button type="button" className="secondary" disabled={disabled || requested === command} onClick={() => mutation.mutate(command)} aria-label={`${labelText} operation ${operation.operationId}`}>{mutation.isPending && mutation.variables === command ? "Requesting…" : requested === command ? `${labelText} requested` : `${labelText} operation`}</button>;
+  const blockers = operation.stages.filter((stage) => stage.status === "BLOCKED");
+  return <article className="operation">
+    <div><strong>{label(operation.kind)}</strong><small><code>{short(operation.operationId)}</code> · {operation.phase} · {operation.participantCount} participants · {operation.blockedParticipantCount + operation.blockedStageCount} blocked</small>
+      {operation.error && <p className="error" role="status">{operation.error}</p>}
+      {operation.pause && <p className="notice" role="status">Paused · resumes at {operation.pause.resumePhase} · {operation.pause.reason}</p>}
+      {blockers.map((stage) => <p className="notice" role="status" key={`${stage.name}:${stage.revision}`}>Blocked at {stage.name}: {stage.message ?? "No blocker detail recorded."}</p>)}
+      {operation.stages.filter((stage) => stage.status === "RUNNING").map((stage) => <small key={`${stage.name}:${stage.revision}`}>Stage {stage.name}{stage.message ? ` · ${stage.message}` : ""}</small>)}
+    </div>
+    <div className="operation-controls">{operation.phase === "PAUSED" ? <span className="pill" aria-label="Status: paused">paused</span> : <StatusPill value={operation.status} />}{controls.pause && button("pause", "Pause")}{controls.resume && button("resume", "Resume")}{controls.cancel && button("cancel", "Cancel")}</div>
+    {mutation.error && <p className="error" role="alert">{mutation.error instanceof Error ? mutation.error.message : "The operation control was rejected."}</p>}
+  </article>;
+}
+
+function Operations({ operations, csrfToken }: { operations: Operation[]; csrfToken: string }) {
   return <Card title="Operations" aside={<span className="muted">{operations.length} projected</span>}>
-    {!operations.length ? <p className="muted">No operations in the current projection.</p> : <div className="operation-list">{operations.slice(0, 8).map((operation) => <div className="operation" key={operation.operationId}><div><strong>{label(operation.kind)}</strong><small><code>{short(operation.operationId)}</code> · {operation.phase}</small></div><StatusPill value={operation.status} /></div>)}</div>}
+    {!operations.length ? <p className="muted">No operations in the current projection.</p> : <div className="operation-list">{operations.slice(0, 8).map((operation) => <OperationCard operation={operation} csrfToken={csrfToken} key={operation.operationId} />)}</div>}
   </Card>;
 }
 
 function Home({ overview, csrfToken }: { overview: Overview; csrfToken: string }) {
   const active = overview.operations.filter((operation) => operation.status === "RUNNING" || operation.status === "QUEUED").length;
-  return <><div className="hero"><div><span className="kicker">AEH / HOME</span><h1>Engineering signal, at a glance.</h1><p>One read-only projection of projects, operations, participants, assurance, and current authority.</p></div><StatusPill value="CONNECTED" /></div><div className="metrics"><Metric name="Projects" value={overview.projects.length} /><Metric name="Active operations" value={active} detail={`${overview.operations.length} total`} /><Metric name="Participants" value={overview.participants.length} /><Metric name="Candidate" value={overview.candidates.length ? `r${overview.candidates.at(-1)?.revision ?? "—"}` : "—"} /></div><ProductChoices operations={overview.operations} csrfToken={csrfToken} /><div className="grid two"><KnowledgeCard knowledge={overview.knowledge} /><AssuranceCard overview={overview} /><PaseoCard connected /><LeadConversation csrfToken={csrfToken} /></div><Operations operations={overview.operations} /></>;
+  return <><div className="hero"><div><span className="kicker">AEH / HOME</span><h1>Engineering signal, at a glance.</h1><p>One read-only projection of projects, operations, participants, assurance, and current authority.</p></div><StatusPill value="CONNECTED" /></div><div className="metrics"><Metric name="Projects" value={overview.projects.length} /><Metric name="Active operations" value={active} detail={`${overview.operations.length} total`} /><Metric name="Participants" value={overview.participants.length} /><Metric name="Candidate" value={overview.candidates.length ? `r${overview.candidates.at(-1)?.revision ?? "—"}` : "—"} /></div><ProductChoices operations={overview.operations} csrfToken={csrfToken} /><div className="grid two"><KnowledgeCard knowledge={overview.knowledge} /><AssuranceCard overview={overview} /><PaseoCard connected /><LeadConversation csrfToken={csrfToken} /></div><Operations operations={overview.operations} csrfToken={csrfToken} /></>;
 }
 
 function ProjectCenter({ overview, csrfToken, onSelect }: { overview: Overview; csrfToken: string; onSelect: (id: string) => void }) {
   const project = overview.project ?? overview.projects[0];
   const context = overview.context;
   const budget = context.budgetTokens ? `${context.consumedTokens ?? 0}/${context.budgetTokens}` : "not projected";
-  return <><div className="hero"><div><span className="kicker">PROJECT CONTROL CENTER</span><h1>{project?.displayName ?? "Select a project"}</h1><p>{project ? `${project.repositoryIdentity} · ${short(project.configDigest)}` : "Choose a registered project to inspect its current projection."}</p></div>{project && <StatusPill value={project.availability} />}</div><div className="project-picker"><label htmlFor="project">Project</label><select id="project" value={overview.projectSelection?.projectId ?? project?.projectId ?? ""} onChange={(event) => onSelect(event.target.value)}><option value="">Select project</option>{overview.projects.map((item) => <option value={item.projectId} key={item.projectId}>{item.displayName}</option>)}</select><span className="muted">Health: {overview.projectHealth?.runtime.status ?? "not checked"}</span></div><div className="metrics"><Metric name="Token budget" value={budget} detail={`${context.continuationCount} continuations`} /><Metric name="Authorized refs" value={context.authorizedReferenceCount} /><Metric name="Leases" value={overview.authority.leases.length} /><Metric name="Evidence" value={overview.evidence.length} /></div><ProductChoices operations={overview.operations} csrfToken={csrfToken} /><div className="grid two"><KnowledgeCard knowledge={overview.knowledge} /><AssuranceCard overview={overview} /><Card title="Candidate"><p className="digest">{overview.candidates.length ? overview.candidates.map((candidate) => <span key={candidate.controlCenterId}><code>r{candidate.revision}</code> {short(candidate.identityDigest)}</span>) : <span className="muted">No candidate projection.</span>}</p></Card><Card title="Services"><div className="stack">{overview.services.services.length ? overview.services.services.map((service) => <div className="row" key={service.serviceId}><span>{service.kind}</span><StatusPill value={service.status} /></div>) : <span className="muted">No service projection.</span>}</div></Card></div><Card title="Compiled participants"><ParticipantTable participants={overview.participants} /></Card><LeadConversation csrfToken={csrfToken} operationId={overview.operations.find((item) => item.status === "RUNNING")?.operationId} /><Operations operations={overview.operations} /></>;
+  return <><div className="hero"><div><span className="kicker">PROJECT CONTROL CENTER</span><h1>{project?.displayName ?? "Select a project"}</h1><p>{project ? `${project.repositoryIdentity} · ${short(project.configDigest)}` : "Choose a registered project to inspect its current projection."}</p></div>{project && <StatusPill value={project.availability} />}</div><div className="project-picker"><label htmlFor="project">Project</label><select id="project" value={overview.projectSelection?.projectId ?? project?.projectId ?? ""} onChange={(event) => onSelect(event.target.value)}><option value="">Select project</option>{overview.projects.map((item) => <option value={item.projectId} key={item.projectId}>{item.displayName}</option>)}</select><span className="muted">Health: {overview.projectHealth?.runtime.status ?? "not checked"}</span></div><div className="metrics"><Metric name="Token budget" value={budget} detail={`${context.continuationCount} continuations`} /><Metric name="Authorized refs" value={context.authorizedReferenceCount} /><Metric name="Capability leases" value={overview.authority.leases.length} /><Metric name="Evidence" value={overview.evidence.length} /></div><ProductChoices operations={overview.operations} csrfToken={csrfToken} /><div className="grid two"><KnowledgeCard knowledge={overview.knowledge} /><AssuranceCard overview={overview} /><Card title="Candidate"><p className="digest">{overview.candidates.length ? overview.candidates.map((candidate) => <span key={candidate.controlCenterId}><code>r{candidate.revision}</code> {short(candidate.identityDigest)}</span>) : <span className="muted">No candidate projection.</span>}</p></Card><RuntimeCard services={overview.services} /></div><Card title="Compiled participants"><ParticipantTable participants={overview.participants} /></Card><LeadConversation csrfToken={csrfToken} operationId={overview.operations.find((item) => item.status === "RUNNING")?.operationId} /><Operations operations={overview.operations} csrfToken={csrfToken} /></>;
 }
 
 export function App({ mode, onModeChange }: { mode: Mode; onModeChange: (mode: Mode) => void }) {

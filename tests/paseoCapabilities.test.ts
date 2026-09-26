@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildPaseoBackgroundRunCommand, detectPaseoCapabilities, extractPaseoAgentId, isRecoverableDaemonStatus } from "../src/paseo/capabilities.js";
+import { buildPaseoBackgroundRunCommand, detectPaseoCapabilities, extractPaseoAgentId, observePaseoDaemonStatus } from "../src/paseo/capabilities.js";
 
 function result(exitCode: number, stdout = "", stderr = "") { return { exitCode, stdout, stderr, durationMs: 1 }; }
 
@@ -29,12 +29,16 @@ describe("Paseo capability negotiation", () => {
     expect(extractPaseoAgentId("agent-plain\n")).toBe("agent-plain");
   });
 
-  it("recognizes stale/unreachable daemons as recoverable startup state", () => {
-    expect(isRecoverableDaemonStatus(result(1, "", "stale_pid / unreachable"))).toBe(true);
-    expect(isRecoverableDaemonStatus(result(0, JSON.stringify({ localDaemon: "stale_pid", connectedDaemon: "unreachable" })))).toBe(true);
-    expect(isRecoverableDaemonStatus(result(0, JSON.stringify({ localDaemon: "stopped", connectedDaemon: "not_probed" })))).toBe(true);
-    expect(isRecoverableDaemonStatus(result(0, JSON.stringify({ localDaemon: "stopped", connectedDaemon: "connected" })))).toBe(false);
-    expect(isRecoverableDaemonStatus(result(0, JSON.stringify({ localDaemon: "stopped", connectedDaemon: "reachable" })))).toBe(false);
-    expect(isRecoverableDaemonStatus(result(1, "", "permission denied"))).toBe(false);
+  it("classifies current Paseo daemon state and identity from supported status output", () => {
+    expect(observePaseoDaemonStatus(result(0, JSON.stringify({ localDaemon: "running", connectedDaemon: "connected", pid: 41, serverId: "srv-current" })))).toEqual({ state: "healthy", serverId: "srv-current", pid: 41 });
+    expect(observePaseoDaemonStatus(result(0, JSON.stringify({ localDaemon: "stopped", connectedDaemon: "not_probed" })))).toEqual({ state: "stopped", stalePid: false });
+    expect(observePaseoDaemonStatus(result(1, "", "stale_pid / unreachable"))).toEqual({ state: "stopped", stalePid: true });
+    expect(observePaseoDaemonStatus(result(0, JSON.stringify({ localDaemon: "stopped", connectedDaemon: "reachable" })))).toEqual({ state: "healthy" });
+    expect(observePaseoDaemonStatus(result(0, JSON.stringify({ localDaemon: "running", connectedDaemon: "unreachable" })))).toEqual({ state: "unknown" });
+    expect(observePaseoDaemonStatus(result(1, JSON.stringify({ localDaemon: "running", connectedDaemon: "connected" })))).toEqual({ state: "unknown" });
+    expect(observePaseoDaemonStatus(result(1, JSON.stringify({ localDaemon: "stopped", connectedDaemon: "not_probed" })))).toEqual({ state: "unknown" });
+    expect(observePaseoDaemonStatus(result(0, "{}")).state).toBe("unknown");
+    expect(observePaseoDaemonStatus({ ...result(0, JSON.stringify({ localDaemon: "running" })), timedOut: true })).toEqual({ state: "unknown" });
+    expect(observePaseoDaemonStatus(result(1, "", "permission denied"))).toEqual({ state: "unknown" });
   });
 });

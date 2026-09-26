@@ -632,7 +632,9 @@ async function readVerifiedAcceptedArtifact<T>(
 
 async function assertCurrentStructuredResultExecution(operation: Awaited<ReturnType<typeof loadOperation>>, provenance: StructuredResultProvenanceV1): Promise<void> {
   const candidate = operation.candidateRevision;
-  const binding = provenance.participantId ? operation.participants[provenance.participantId]?.executionBinding : undefined;
+  const binding = provenance.participantId
+    ? operation.participants[provenance.participantId]?.executionBinding ?? operation.agents?.find((agent) => agent.id === provenance.participantId)?.executionBinding
+    : undefined;
   if (!candidate || !provenance.candidate || !candidateRevisionsEqual(candidate, provenance.candidate)) {
     throw new Error("AEH_RESULT_STALE_CANDIDATE: result was produced for a candidate that is no longer current.");
   }

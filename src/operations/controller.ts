@@ -15,7 +15,9 @@ import {
   deliveryWorkspacePath,
   materializeTaskContext
 } from "../delivery/handoff.js";
-import { listManagedPaseoAgents } from "../paseo/runtime.js";
+import { inspectManagedPaseoAgent, listManagedPaseoAgents } from "../paseo/runtime.js";
+import { isDeterministicPaseoRuntimeEnabled, isDeterministicPaseoSessionId } from "../paseo/deterministicRuntime.js";
+import { createManagedRuntime, readManagedRuntimeSnapshot, runtimeProjectId } from "../runtime/index.js";
 import { recordPaseoTrace } from "../paseo/trace.js";
 import {
   clearManagedProcessHandles,
@@ -24,7 +26,8 @@ import {
   terminateManagedProcessGroup,
   type ProcessResult
 } from "../utils/process.js";
-import { prepareChangeOperation, runChangeOperation, type PreparedChangeOperation } from "./change.js";
+import { prepareChangeOperation, resolveChangePreflightV1, runChangeOperation, type PreparedChangeOperation } from "./change.js";
+import type { ChangePreflightV1 } from "../core/triage.js";
 import { computeWorktreeDigest, resolveBaseRef } from "../core/git.js";
 import { sha256Canonical, sha256Utf8 } from "../core/digest.js";
 import { assertIntentDecisionForRoute } from "../audit/intentDecision.js";
@@ -40,6 +43,7 @@ import {
 import { startOperationWatchdog } from "./liveness.js";
 import { assertOperationCapacity, syncOperationPortfolio } from "./portfolio.js";
 import {
+  awaitOperationResume,
   bindOperationLead,
   bindOperationCandidate,
   bindResolvedOperationPolicy,
@@ -52,6 +56,7 @@ import {
   isTerminalOperation,
   loadOperation,
   patchOperation,
+  rebindPauseRecordToCurrentIdentity,
   saveOperation,
   transitionOperationToTerminal,
   type AuditOperationPayload,
@@ -71,6 +76,8 @@ export interface StartOperationOptions {
   spawnProcess?: typeof spawn;
   completionAgentId?: string;
   completionSource?: string;
+  /** Test seam for deterministic preflight-ordering regressions; public callers use the semantic resolver. */
+  resolveChangePreflight?: typeof resolveChangePreflightV1;
 }
 
 export interface OperationControllerDeps {
@@ -83,6 +90,8 @@ export interface OperationControllerDeps {
   runChange?: typeof runChangeOperation;
   /** Trusted actor from the paired Control Center session; absent callers must present a recorded scoped decision. */
   humanActorId?: string;
+  /** Deterministic provider observation seam for cleanup tests and disposable packed fixtures. */
+  inspectProviderSession?: (root: string, provider: string, sessionId: string) => Promise<{ status?: string } | undefined>;
 }
 
 interface OperationWorkspace {
@@ -104,6 +113,12 @@ export async function startDetachedOperation(
   const suppliedDecision = "intentDecision" in payload ? payload.intentDecision : undefined;
   if (suppliedDecision) assertIntentDecisionForRoute(suppliedDecision, kind === "audit" ? "audit" : kind === "change" ? "change" : "run");
 
+  let changePreflight: ChangePreflightV1 | undefined;
+  if (kind === "change") {
+    if (!config) throw new Error("CHANGE_PREFLIGHT_CONFIG_REQUIRED: project configuration must be loaded before resolving route and assurance.");
+    changePreflight = await (options.resolveChangePreflight ?? resolveChangePreflightV1)(absoluteRoot, config, payload as ChangeOperationPayload);
+  }
+
   const now = new Date().toISOString();
   const id = createOperationId(kind, JSON.stringify(payload));
   let record: OperationRecordV2 = {
@@ -119,7 +134,8 @@ export async function startDetachedOperation(
     createdAt: now,
     updatedAt: now,
     lastProgressAt: now,
-    intent: initialIntent(kind, payload),
+    intent: initialIntent(kind, payload, changePreflight),
+    ...(changePreflight ? { changePreflight } : {}),
     supervision: {
       required: kind === "audit" || kind === "change",
       materialized: false,
@@ -267,29 +283,31 @@ async function executeOperationWithEnvironment(
   }
   process.env.AEH_CONTROLLER_EPOCH = String(currentControllerEpoch(record));
   assertCurrentControllerOwner(record, "operation execution startup");
-  record = await patchOperation(absoluteRoot, operationId, {
-    status: "RUNNING",
-    phase: record.continuation?.state === "WAITING" ? "HUMAN_REQUIRED" : "preparing",
-    startedAt: record.startedAt ?? new Date().toISOString(),
-    pid: process.pid,
-    error: undefined
-  });
-  process.env.AEH_OPERATION_ID = record.id;
-
-  let config = await loadProjectConfig(absoluteRoot);
-  if (record.kind !== "audit") {
-    const configured = config.validation?.baseRef ?? "HEAD";
-    const resolved = await resolveBaseRef(absoluteRoot, configured);
-    if (resolved.ref !== configured) {
-      config = { ...config, validation: { ...config.validation, baseRef: resolved.ref } };
-      await trace(absoluteRoot, "operation.base-ref.fallback", { operationId, configured, resolved: resolved.ref, reason: "configured base ref is not resolvable" });
-    }
-  }
-  await syncOperationPortfolio(absoluteRoot, config.project.name, record);
+  let config: HarnessProjectConfig | undefined;
   let stopWatchdog: (() => void) | undefined;
   let preparedChange: PreparedChangeOperation | undefined;
   let runContract: TaskContract | undefined;
   try {
+    record = await patchOperation(absoluteRoot, operationId, {
+      status: "RUNNING",
+      phase: record.pause ? "PAUSED" : record.continuation?.state === "WAITING" ? "HUMAN_REQUIRED" : "preparing",
+      startedAt: record.startedAt ?? new Date().toISOString(),
+      pid: process.pid,
+      error: undefined
+    });
+    process.env.AEH_OPERATION_ID = record.id;
+
+    config = await loadProjectConfig(absoluteRoot);
+    if (record.kind !== "audit") {
+      const configured = config.validation?.baseRef ?? "HEAD";
+      const resolved = await resolveBaseRef(absoluteRoot, configured);
+      if (resolved.ref !== configured) {
+        config = { ...config, validation: { ...config.validation, baseRef: resolved.ref } };
+        await trace(absoluteRoot, "operation.base-ref.fallback", { operationId, configured, resolved: resolved.ref, reason: "configured base ref is not resolvable" });
+      }
+    }
+    await syncOperationPortfolio(absoluteRoot, config.project.name, record);
+
     let bootstrapRoute: ImplementationRoute | undefined;
     let bootstrapAssurance: AssuranceLevel | undefined;
     if (record.kind === "audit") {
@@ -317,6 +335,14 @@ async function executeOperationWithEnvironment(
     }
     if (!bootstrapRoute || !bootstrapAssurance) throw new Error("EXECUTION_POLICY_INPUT_MISSING: route and assurance must be resolved before a sensitive bootstrap action.");
     record = await bindBootstrapOperationPolicy(absoluteRoot, config, record, bootstrapRoute, bootstrapAssurance, runContract);
+
+    // A recovered PAUSED operation stays suspended until a scoped RESUME control
+    // revalidates the current operation, candidate, policy, revision, and epoch.
+    record = await loadOperation(absoluteRoot, operationId);
+    if (record.pause) {
+      record = await rebindPauseRecordToCurrentIdentity(absoluteRoot, operationId);
+      record = await awaitOperationResume(absoluteRoot, operationId);
+    }
 
   const workspace = await ensureOperationWorkspace(
       absoluteRoot,
@@ -550,6 +576,14 @@ export async function cancelOperation(
       ...Object.keys(record.participants),
       ...record.supervision.generations.map((generation) => generation.agentId)
     ].filter((agentId): agentId is string => Boolean(agentId)))];
+    // Authority participant identities (`participant:<digest>`) are not provider
+    // sessions and cannot be stopped through the Paseo boundary; actual sdk/cli
+    // sessions and explicitly registered agents are still stopped.
+    const authorityOnly = agentIds.filter((agentId) => /^participant:[0-9a-f]{16}$/.test(agentId));
+    if (authorityOnly.length) {
+      agentIds = agentIds.filter((agentId) => !authorityOnly.includes(agentId));
+      await trace(absoluteRoot, "cleanup.authority-identities.skipped", { operationId, agentIds: authorityOnly });
+    }
     if (agentIds.length > 0) {
       await trace(absoluteRoot, "cleanup.discovery", { operationId, source: "operation-state", agentCount: agentIds.length });
     } else if (config?.orchestration?.provider === "paseo") {
@@ -571,9 +605,60 @@ export async function cancelOperation(
     for (const agentId of agentIds) {
       const latest = await loadOperation(absoluteRoot, operationId);
       assertCancellationFence(latest, cancellationFence, "operation cancellation participant fencing");
+      if (isDeterministicPaseoSessionId(agentId)) {
+        // Scripted fixture sessions have no external process; their quiescence is
+        // observed through the deterministic inspect boundary instead.
+        await trace(absoluteRoot, "cleanup.deterministic.session-skipped", { operationId, agentId });
+        continue;
+      }
       const stopped = await run(`paseo stop ${quote(agentId)}`, { cwd: absoluteRoot, timeoutMs: 30_000 }).catch((error) => ({ exitCode: 1, stdout: "", stderr: String(error), durationMs: 0 }));
       await trace(absoluteRoot, "cleanup.cli.stop", { operationId, agentId, exitCode: stopped.exitCode });
       if (stopped.exitCode !== 0) cleanupWarnings.push(`agent ${agentId}: ${stopped.stderr || stopped.stdout || `exit ${stopped.exitCode}`}`);
+    }
+
+    const runtimeSnapshot = await readManagedRuntimeSnapshot(absoluteRoot).catch((error) => {
+      cleanupWarnings.push(`provider runtime snapshot: ${String(error)}`);
+      return undefined;
+    });
+    for (const lease of runtimeSnapshot?.providerLeases.filter((item) => item.lifecycle?.operationId === operationId) ?? []) {
+      const current = await loadOperation(absoluteRoot, operationId);
+      assertCancellationFence(current, cancellationFence, "operation cancellation provider lease cleanup");
+      const sessionId = lease.lifecycle?.sessionId;
+      if (!sessionId) {
+        cleanupWarnings.push(`provider lease ${lease.leaseId}: no durable provider session id is available to prove cleanup`);
+        continue;
+      }
+      if (isDeterministicPaseoSessionId(sessionId)) {
+        // Scripted fixture sessions have no external process to inspect or stop.
+        const latest = await loadOperation(absoluteRoot, operationId);
+        assertCancellationFence(latest, cancellationFence, "operation cancellation deterministic lease release");
+        const leaseOwner = await createManagedRuntime({ root: absoluteRoot, projectId: runtimeProjectId(absoluteRoot), ownerId: lease.ownerId });
+        await leaseOwner.releaseProviderLease(lease.leaseId);
+        await trace(absoluteRoot, "cleanup.provider.lease.released", { operationId, provider: lease.provider, sessionId, leaseId: lease.leaseId, observedStatus: "idle" });
+        continue;
+      }
+      // Lease.provider names the model provider (for example, opencode). Its
+      // session ID is still a Paseo-managed session and must be inspected at
+      // that runtime boundary.
+      const inspect = deps.inspectProviderSession ?? (async (cwd: string, _provider: string, id: string) => inspectManagedPaseoAgent(cwd, id));
+      let observed = await inspect(absoluteRoot, lease.provider, sessionId).catch(() => undefined);
+      let status = observed?.status?.toLowerCase();
+      if (!isProviderSessionQuiescent(status)) {
+        const stopped = await run(`paseo stop ${quote(sessionId)}`, { cwd: absoluteRoot, timeoutMs: 30_000 }).catch((error) => ({ exitCode: 1, stdout: "", stderr: String(error), durationMs: 0 }));
+        await trace(absoluteRoot, "cleanup.provider.stop", { operationId, provider: lease.provider, sessionId, exitCode: stopped.exitCode });
+        if (stopped.exitCode !== 0) cleanupWarnings.push(`provider session ${sessionId}: ${stopped.stderr || stopped.stdout || `stop exited ${stopped.exitCode}`}`);
+        observed = await inspect(absoluteRoot, lease.provider, sessionId).catch(() => undefined);
+        status = observed?.status?.toLowerCase();
+      }
+      if (!isProviderSessionQuiescent(status)) {
+        cleanupWarnings.push(`provider session ${sessionId}: lifecycle remains uncertain after stop (status ${status ?? "unavailable"}); lease ${lease.leaseId} remains fenced`);
+        continue;
+      }
+      const latest = await loadOperation(absoluteRoot, operationId);
+      assertCancellationFence(latest, cancellationFence, "operation cancellation provider lease release");
+      const leaseOwner = await createManagedRuntime({ root: absoluteRoot, projectId: runtimeProjectId(absoluteRoot), ownerId: lease.ownerId });
+      await leaseOwner.releaseProviderLease(lease.leaseId);
+      await trace(absoluteRoot, "cleanup.provider.lease.released", { operationId, provider: lease.provider, sessionId, leaseId: lease.leaseId, observedStatus: status });
     }
 
     if (cleanupWarnings.length) {
@@ -632,6 +717,10 @@ function assertCurrentCancellationPolicy(record: OperationRecordV2) {
     throw new Error("AEH_CANCELLATION_POLICY_STALE: cancellation policy does not match the current operation, candidate, execution revision, project, and epoch.");
   }
   return policy;
+}
+
+function isProviderSessionQuiescent(status?: string): status is "idle" | "completed" | "failed" | "stopped" {
+  return status === "idle" || status === "completed" || status === "failed" || status === "stopped";
 }
 
 function assertCancellationFence(record: OperationRecordV2, expected: { operationId: string; candidate: CandidateRevisionV1; operationExecutionRevision: number; policyDigest: string; controllerEpoch: number }, action: string): void {
@@ -752,6 +841,12 @@ async function ensureOperationWorkspace(
   run: typeof runShell,
   trace: typeof recordPaseoTrace
 ): Promise<OperationWorkspace> {
+  if (isDeterministicPaseoRuntimeEnabled()) {
+    // Fixture journeys execute against the disposable control root; no external
+    // Paseo worktree is materialized for the scripted provider boundary.
+    await trace(root, "workspace.deterministic.local-root", { operationId: record.id, kind: record.kind });
+    return { workspaceRoot: root };
+  }
   if (record.kind === "run") {
     const payload = record.payload as RunOperationPayload;
     const [existingRoot, existingId] = await Promise.all([
@@ -932,14 +1027,22 @@ async function loadProjectConfigIfPresent(root: string): Promise<HarnessProjectC
   return loadProjectConfig(root);
 }
 
-function initialIntent(kind: OperationKind, payload: OperationPayload): OperationRecordV2["intent"] {
+function initialIntent(kind: OperationKind, payload: OperationPayload, changePreflight?: ChangePreflightV1): OperationRecordV2["intent"] {
   if (kind === "audit") {
     const audit = payload as AuditOperationPayload;
     return { request: audit.request, classification: "AUDIT", risk: audit.risk, priority: 50, semanticDecision: audit.intentDecision };
   }
   if (kind === "change") {
     const change = payload as ChangeOperationPayload;
-    return { request: change.request, classification: "CHANGE", risk: change.risk, priority: change.priority ?? 50, semanticDecision: change.intentDecision };
+    return {
+      request: change.request,
+      classification: "CHANGE",
+      route: changePreflight?.triage.route,
+      assurance: changePreflight?.triage.assurance,
+      risk: change.risk,
+      priority: change.priority ?? 50,
+      semanticDecision: change.intentDecision
+    };
   }
   return { classification: "RUN", priority: (payload as RunOperationPayload).priority ?? 50, semanticDecision: (payload as RunOperationPayload).intentDecision };
 }

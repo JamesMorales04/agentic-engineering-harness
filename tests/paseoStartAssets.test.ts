@@ -32,7 +32,7 @@ describe("Paseo start managed assets", () => {
       return topology();
     });
     const run = vi.fn(async (command: string) => {
-      if (command === "paseo daemon status --json") return { exitCode: 0, stdout: "{}", stderr: "", durationMs: 1 };
+      if (command === "paseo daemon status --json") return { exitCode: 0, stdout: JSON.stringify({ localDaemon: "running", connectedDaemon: "not_probed" }), stderr: "", durationMs: 1 };
       throw new Error(`unexpected command: ${command}`);
     });
     const deps = {

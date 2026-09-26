@@ -27,9 +27,12 @@ function snapshot(): ControlCenterSnapshotInputV1 {
       runningParticipantCount: 1,
       completedParticipantCount: 0,
       failedParticipantCount: 0,
+      blockedParticipantCount: 0,
+      blockedStageCount: 0,
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:01:00.000Z",
       payloadSummary: "bounded Control Center API slice",
+      stages: [],
       participants: [{ version: 1, participantId, operationId, logicalAgent: "implementer", role: "Implementer", phase: "implementation", status: "RUNNING", specializations: ["typescript-node"], skills: ["implementation-discipline"], tools: ["repository-read"], registeredAt: "2026-01-01T00:00:00.000Z", startedAt: "2026-01-01T00:00:01.000Z" }]
     }],
     participants: [{ version: 1, participantId, operationId, logicalAgent: "implementer", role: "Implementer", phase: "implementation", status: "RUNNING", specializations: ["typescript-node"], skills: ["implementation-discipline"], tools: ["repository-read"], registeredAt: "2026-01-01T00:00:00.000Z" }],

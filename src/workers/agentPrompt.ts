@@ -396,8 +396,10 @@ export async function dispatchMaterializedAgentPrompt(
   options: AgentPromptOptions = {}
 ): Promise<WorkerSession> {
   if (!materialized?.id) return executeAgentPrompt(root, config, contract, selection, prompt, options);
-  const authority = options.capabilityAuthority ?? await prepareExecutionAuthority(root, selection, { participantId: options.participantId ?? materialized.id, phase: options.phase ?? materialized.phase });
+  const authority = options.capabilityAuthority ?? await prepareExecutionAuthority(root, selection, { participantId: options.participantId ?? materialized.participantId ?? materialized.id, phase: options.phase ?? materialized.phase });
   let effectiveOptions = authority ? { ...options, participantId: authority.participantId, capabilityAuthority: authority } : options;
+  const structuredContract = options.outputContract ?? selection.outputContract;
+  if (structuredContract && !effectiveOptions.outputContract) effectiveOptions = { ...effectiveOptions, outputContract: structuredContract };
   if (effectiveOptions.outputContract) {
     const provenance = await structuredResultProvenanceForAgent(root, materialized.id);
     if (!provenance) throw new Error("AEH_RESULT_PROVENANCE_UNSUPPORTED: materialized participant has no frozen result provenance.");
@@ -413,7 +415,7 @@ export async function dispatchMaterializedAgentPrompt(
   const projected = effectiveOptions.preparedPrompt
     ? verifyPreparedPrompt(effectiveOptions.preparedPrompt, effectiveOptions, selection)
     : await buildEffectivePromptIdentity(root, config, contract, selection, prompt, effectiveOptions);
-  effectiveOptions = { ...effectiveOptions, contextManifest: projected.contextManifest, contextManifestDigest: projected.contextManifestDigest, promptManifestDigest: projected.promptManifestDigest };
+  effectiveOptions = { ...effectiveOptions, preparedPrompt: projected.prompt, contextManifest: projected.contextManifest, contextManifestDigest: projected.contextManifestDigest, promptManifestDigest: projected.promptManifestDigest };
   effectiveOptions.executionSessionId = materialized.id;
   effectiveOptions.resumeSessionId = materialized.id;
   if (authority || effectiveOptions.outputContract) await resolveExecutionBinding(root, config, contract, selection, effectiveOptions, authority, materialized.id);
@@ -1675,7 +1677,9 @@ function assertResultProvenanceMatchesExecution(
   if (!operation.candidateRevision || !provenance.candidate || operation.candidateRevision.identityDigest !== provenance.candidate.identityDigest) {
     throw new Error("AEH_RESULT_STALE_CANDIDATE: materialized result channel is bound to a prior or missing candidate.");
   }
-  const executionBinding = provenance.participantId ? operation.participants[provenance.participantId]?.executionBinding : undefined;
+  const executionBinding = provenance.participantId
+    ? operation.participants[provenance.participantId]?.executionBinding ?? operation.agents?.find((agent) => agent.id === provenance.participantId)?.executionBinding
+    : undefined;
   if (!executionBinding || executionBinding.participantGeneration !== provenance.participantGeneration || executionBinding.operationExecutionRevision !== provenance.operationExecutionRevision || executionBinding.candidateDigest !== provenance.candidate.identityDigest || executionBinding.controllerEpoch !== provenance.controllerEpoch || executionBinding.executionBlueprintDigest !== provenance.executionBlueprintDigest || executionBinding.operationPolicyDigest !== provenance.resolvedOperationPolicyDigest || executionBinding.digest !== provenance.executionBinding?.digest) {
     throw new Error("AEH_RESULT_STALE_EXECUTION: result channel belongs to an older participant generation, operation revision, or ExecutionBlueprint.");
   }
@@ -1704,6 +1708,7 @@ function boundPaseoExecutionLabels(options: AgentPromptOptions, role: string, ch
   const binding = options.executionBinding;
   if (!binding) return undefined;
   const labels: Record<string, string> = {
+    "aeh.operation": binding.operationId,
     "aeh.canonical.role": role,
     "aeh.execution.binding": JSON.stringify(binding),
     "aeh.execution.binding.digest": binding.digest,
@@ -1714,6 +1719,8 @@ function boundPaseoExecutionLabels(options: AgentPromptOptions, role: string, ch
     "aeh.context.manifest.digest": binding.contextManifestDigest,
     "aeh.prompt.manifest.digest": binding.promptManifestDigest
   };
+  if (options.participantId) labels["aeh.participant"] = options.participantId;
+  if (options.supervisorAgent) labels["aeh.supervisor"] = "true";
   if (channelId) labels["aeh.result.channel"] = channelId;
   if (options.structuredResultProvenance) labels["aeh.result.provenance"] = JSON.stringify(options.structuredResultProvenance);
   return labels;

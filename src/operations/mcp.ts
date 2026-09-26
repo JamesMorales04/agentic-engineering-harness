@@ -12,7 +12,6 @@ import { recordPaseoTrace } from "../paseo/trace.js";
 import { VERSION } from "../version.js";
 import { cancelOperation, startDetachedOperation } from "./controller.js";
 import { buildOperationDigest, operationDigestText, type OperationDigest } from "./digest.js";
-import { rebindActiveOperationsToLead } from "./leadBinding.js";
 import { spawnOperationMonitor } from "./monitorProcess.js";
 import { loadOperationPortfolio } from "./portfolio.js";
 import { acknowledgeOperationLead, currentControllerEpoch, loadOperation, type AuditOperationPayload, type ChangeOperationPayload, type OperationKind, type OperationPayload, type OperationRecordV2, type RunOperationPayload } from "./state.js";
@@ -229,7 +228,6 @@ async function callTool(params: Record<string, unknown>): Promise<Record<string,
     const identity = await resolveContextAgentIdentity(root, optionalString(args.agentId));
     await recordPaseoTrace(root, "context.identity", { agentId: identity.agentId, source: identity.source });
     const config = await loadProjectConfig(root);
-    await rebindActiveOperationsToLead(root, config, identity.agentId, identity.source).catch(() => undefined);
     return operationToolResult(await statusLeadContext(root, config, identity.agentId), `Context status for ${identity.agentId} available in structuredContent.`);
   }
   throw new Error(`Unknown AEH operation tool '${name}'.`);
@@ -275,7 +273,6 @@ async function startManagedOperation(root: string, kind: OperationKind, payload:
   const config = await loadProjectConfig(root);
   const decision = (payload as AuditOperationPayload | ChangeOperationPayload | RunOperationPayload).intentDecision;
   assertManagedLeadDecision(decision, kind === "audit" ? "audit" : kind === "change" ? "change" : "run");
-  await rebindActiveOperationsToLead(root, config, identity.agentId, identity.source);
   await recordPaseoTrace(root, "operation.lead.target", { kind, agentId: identity.agentId, source: identity.source });
   const record = await startDetachedOperation(root, kind, payload, {
     nodeExecutable: process.execPath,

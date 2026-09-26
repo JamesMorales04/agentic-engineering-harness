@@ -8,7 +8,7 @@ import { createRoutedContract } from "../core/contract.js";
 import { runTask, type TaskRunResult } from "../core/run.js";
 import { validateSddChange } from "../core/sdd.js";
 import { sealTask } from "../core/seal.js";
-import { triageChangeWithSemanticAssessment, type TriageDecision } from "../core/triage.js";
+import { assertChangePreflightV1, normalizeTriageEvidence, triageChangeWithSemanticAssessment, type ChangePreflightV1, type TriageDecision } from "../core/triage.js";
 import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
 import type { AgentExecutionSelection } from "../agents/types.js";
 import type { AssuranceLevel, ImplementationRoute, RouteEvidence } from "../architecture/contracts.js";
@@ -33,17 +33,21 @@ import {
   markOperationProductChoiceConsumed,
   reissueOperationProductChoice,
   reconfirmStaleConsumedProductChoice,
+  operationControlCheckpoint,
   resolveOperationStateRoot,
   resumeOperationProductChoice,
   suspendOperationForProductChoice,
   assertCurrentControllerOwner,
+  currentOperationContext,
   setOperationStage,
   type ChangeOperationPayload,
   type OperationRecordV2
 } from "./state.js";
 import { candidateRevisionsEqual } from "./v2Contracts.js";
+import { drainOperationWriters } from "./control.js";
 import { ensureOperationSupervisor, maybeRotateOperationSupervisor } from "./supervisor.js";
 import { createSemanticAssessmentRuntimeV1, createSemanticRepositoryBindingV1 } from "../semantic/runtime.js";
+import { launchManagedPaseoAgent } from "../paseo/runtime.js";
 import { assertResolvedOperationPolicyV1, compileResolvedOperationPolicy } from "../architecture/executionIdentity.js";
 import { sha256Canonical } from "../core/digest.js";
 import { HumanDecisionLedgerV2, type DecisionChoiceV1, type HumanDecisionBindingV2 } from "../security/humanDecision.js";
@@ -59,6 +63,25 @@ export interface ChangeOperationResult {
 export interface PreparedChangeOperation {
   triage: TriageDecision;
   semanticRuntime: Awaited<ReturnType<typeof createSemanticAssessmentRuntimeV1>>;
+}
+
+export async function resolveChangePreflightV1(
+  root: string,
+  config: HarnessProjectConfig,
+  payload: ChangeOperationPayload,
+  options: { launch?: typeof launchManagedPaseoAgent } = {}
+): Promise<ChangePreflightV1> {
+  if (currentOperationContext().id) throw new Error("CHANGE_PREFLIGHT_OPERATION_CONTEXT_FORBIDDEN: route/assurance triage must finish before a durable operation is created.");
+  const evidence = { request: payload.request, files: payload.files, domains: payload.domains, risk: payload.risk };
+  const normalized = normalizeTriageEvidence(evidence);
+  const semanticRuntime = await createSemanticAssessmentRuntimeV1(root, config, { profile: normalizeAgentProfile(payload.profile), ...(options.launch ? { launch: options.launch } : {}) });
+  const repositoryBinding = await createSemanticRepositoryBindingV1(root, config);
+  const binding = {
+    ...repositoryBinding,
+    intentDigest: sha256Canonical({ request: payload.request, files: normalized.files, domains: normalized.domains, risk: normalized.risk, flags: normalized.flags })
+  };
+  const triage = await triageChangeWithSemanticAssessment(config, evidence, { service: semanticRuntime.service, binding, policyRevision: semanticRuntime.policyRevision });
+  return { version: 1, triage, binding };
 }
 
 interface ProductChoiceDraftV1 {
@@ -99,8 +122,32 @@ export async function prepareChangeOperation(
   payload: ChangeOperationPayload
 ): Promise<PreparedChangeOperation> {
   const semanticRuntime = await createSemanticAssessmentRuntimeV1(root, config, { profile: normalizeAgentProfile(payload.profile) });
-  const semanticBinding = await createSemanticRepositoryBindingV1(root, config, { operationId: operation.id, candidate: operation.candidateRevision });
-  const triage = await triageChangeWithSemanticAssessment(config, { request: payload.request, files: payload.files, domains: payload.domains, risk: payload.risk }, { service: semanticRuntime.service, binding: semanticBinding, policyRevision: semanticRuntime.policyRevision });
+  const evidence = { request: payload.request, files: payload.files, domains: payload.domains, risk: payload.risk };
+  const normalized = normalizeTriageEvidence(evidence);
+  const repositoryBinding = await createSemanticRepositoryBindingV1(root, config);
+  const expectedBinding = {
+    ...repositoryBinding,
+    intentDigest: sha256Canonical({ request: payload.request, files: normalized.files, domains: normalized.domains, risk: normalized.risk, flags: normalized.flags })
+  };
+  if (!operation.changePreflight) throw new Error("CHANGE_PREFLIGHT_REQUIRED: detached CHANGE operations must carry pre-operation route/assurance evidence.");
+  const preflight = assertChangePreflightV1(operation.changePreflight, { binding: expectedBinding, evidence });
+  let independentlyValidatedTriage: TriageDecision;
+  try {
+    independentlyValidatedTriage = await triageChangeWithSemanticAssessment(config, evidence, {
+      service: semanticRuntime.service,
+      binding: expectedBinding,
+      policyRevision: semanticRuntime.policyRevision
+    });
+  } catch (error) {
+    throw new Error(`CHANGE_PREFLIGHT_ASSESSMENT_EVIDENCE_UNAVAILABLE: current operation cannot revalidate its pre-operation semantic assessment from the durable cache: ${String(error)}`, { cause: error });
+  }
+  if (sha256Canonical(independentlyValidatedTriage) !== sha256Canonical(preflight.triage)) {
+    throw new Error("CHANGE_PREFLIGHT_ASSESSMENT_STALE: recomputed current route/assurance triage does not match the persisted preflight result.");
+  }
+  if (operation.intent?.route !== preflight.triage.route || operation.intent?.assurance !== preflight.triage.assurance) {
+    throw new Error("CHANGE_PREFLIGHT_OPERATION_INTENT_MISMATCH: durable intent does not match the validated pre-operation triage.");
+  }
+  const triage = independentlyValidatedTriage;
   return { triage, semanticRuntime };
 }
 
@@ -218,6 +265,7 @@ export async function runChangeOperation(
     await setOperationStage(controlRoot, operation.id, "spec-authoring", "COMPLETED", { artifact: specEvidence.artifact });
     await maybeRotateOperationSupervisor(root, config, bootstrapContract, supervisorSelection);
 
+    await awaitChangeControlCheckpoint(controlRoot, operation.id);
     await setOperationStage(controlRoot, operation.id, "spec-compilation", "RUNNING");
     await compileOpenSpecChange(root, config, taskId, title, preparedSpec.changeName);
     const validation = await validateSddChange(root, taskId, config);
@@ -249,6 +297,7 @@ export async function runChangeOperation(
     }
   }
 
+  await awaitChangeControlCheckpoint(controlRoot, operation.id);
   await setOperationStage(controlRoot, operation.id, "implementation", "RUNNING");
   const run = await runTask(root, config, contract, { profile: payload.profile, planning: plannerEvidence?.payload, semanticRuntime });
   await setOperationStage(controlRoot, operation.id, "implementation", run.status === "PASS" ? "COMPLETED" : "FAILED");
@@ -329,6 +378,16 @@ async function runPlanning(
   return requireDurableChangeHandoff(root, "PLANNER", session, plannerOutputSchema, controlRoot, { operationId, contract: "planner", phase: "planning" });
 }
 
+/**
+ * Controller-owned pause checkpoint. Applies a pending scoped PAUSE only after
+ * active mutable writers are drained, then blocks until a scoped RESUME or a
+ * terminal state. A non-quiescent drain leaves the request pending.
+ */
+async function awaitChangeControlCheckpoint(controlRoot: string, operationId: string): Promise<void> {
+  const receipt = await drainOperationWriters(controlRoot, operationId, { timeoutMs: 30_000 });
+  await operationControlCheckpoint(controlRoot, operationId, receipt);
+}
+
 async function runSpecManagerUntilReady(input: {
   root: string;
   controlRoot: string;
@@ -349,6 +408,7 @@ async function runSpecManagerUntilReady(input: {
 }): Promise<DurableAgentEvidence<SpecAuthoringOutput>> {
   let selectedChoice = input.initialChoice;
   for (;;) {
+    await awaitChangeControlCheckpoint(input.controlRoot, input.operationId);
     const specSession = await executeAgentPrompt(
       input.root, input.config, input.bootstrapContract, input.selection,
       buildSpecManagerPrompt(input.payload, input.changeName, input.explorerEvidence, input.plannerEvidence, input.inputs, selectedChoice),
@@ -381,6 +441,7 @@ async function runSpecManagerUntilReady(input: {
 async function awaitProductChoice(controlRoot: string, operationId: string, checkpoint: ProductChoiceCheckpointV1): Promise<ProductChoiceSelectionV1> {
   const ledger = new HumanDecisionLedgerV2(path.join(resolveOperationStateRoot(controlRoot), ".harness", "security", "human-decisions.json"));
   for (;;) {
+    await awaitChangeControlCheckpoint(controlRoot, operationId);
     const current = await loadOperation(controlRoot, operationId);
     assertCurrentControllerOwner(current, "product-choice continuation wait");
     if (current.status !== "RUNNING") throw new Error(`DECISION_CONTINUATION_STOPPED: operation is ${current.status}.`);

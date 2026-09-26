@@ -43,8 +43,7 @@ describe("Paseo operation parenting", () => {
       workspaceId: "workspace-op",
       parent: "supervisor-1",
       config: expect.objectContaining({
-        provider: "opencode",
-        model: "opencode-go/MiMo-V2.6-Flash"
+        provider: "opencode/opencode-go/MiMo-V2.6-Flash"
       })
     }));
     expect(received?.config).not.toHaveProperty("parent");

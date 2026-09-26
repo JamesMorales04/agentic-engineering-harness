@@ -1,9 +1,10 @@
 import type { HarnessProjectConfig } from "./types.js";
 import { resolveImplementationRoute, type ImplementationRoutingEvidence, type RouteAssessmentV1 } from "../agents/routingV2.js";
-import type { AssuranceLevel, ImplementationRoute, RouteEvidence } from "../architecture/contracts.js";
+import { assuranceLevelSchema, implementationRouteSchema, routeEvidenceSchema, type AssuranceLevel, type ImplementationRoute, type RouteEvidence } from "../architecture/contracts.js";
 import { sha256Canonical } from "./digest.js";
 import { AehError } from "./errors.js";
-import { createSemanticEvidenceReceiptV1, SemanticAssessmentServiceV1, type DecisionMechanismV1, type SemanticAssessmentBindingV1 } from "../semantic/assessment.js";
+import { createSemanticEvidenceReceiptV1, decisionMechanismSchema, semanticAssessmentBindingV1Schema, SemanticAssessmentServiceV1, type DecisionMechanismV1, type SemanticAssessmentBindingV1 } from "../semantic/assessment.js";
+import { z } from "zod";
 
 export type TriageFlag = "architecture" | "security" | "authentication" | "authorization" | "schema" | "migration" | "public-api" | "breaking-change" | "new-dependency" | "cross-module" | "ambiguous";
 export interface TriageEvidence { request: string; files?: string[]; domains?: string[]; risk?: "low" | "medium" | "high"; flags?: TriageFlag[]; }
@@ -16,6 +17,73 @@ export interface TriageDecision {
   reasons: string[];
   unknowns?: string[];
   evidence: Required<Pick<TriageEvidence, "request">> & { files: string[]; domains: string[]; risk: "low" | "medium" | "high"; flags: TriageFlag[]; };
+}
+
+const triageFlagValues = ["architecture", "security", "authentication", "authorization", "schema", "migration", "public-api", "breaking-change", "new-dependency", "cross-module", "ambiguous"] as const;
+
+export const triageDecisionV1Schema = z.object({
+  route: implementationRouteSchema,
+  assurance: assuranceLevelSchema,
+  mechanism: decisionMechanismSchema,
+  assessmentDigest: z.string().regex(/^[a-f0-9]{64}$/),
+  routeEvidence: z.array(routeEvidenceSchema).min(1).max(16),
+  reasons: z.array(z.string().trim().min(1).max(1_000)).min(1).max(32),
+  unknowns: z.array(z.string().trim().min(1).max(1_000)).max(32).optional(),
+  evidence: z.object({
+    request: z.string().min(1).max(24_000),
+    files: z.array(z.string().trim().min(1).max(500)).max(256),
+    domains: z.array(z.string().trim().min(1).max(200)).max(64),
+    risk: z.enum(["low", "medium", "high"]),
+    flags: z.array(z.enum(triageFlagValues)).max(32)
+  }).strict()
+}).strict();
+
+export interface ChangePreflightV1 {
+  version: 1;
+  triage: TriageDecision;
+  binding: SemanticAssessmentBindingV1;
+}
+
+export const changePreflightV1Schema = z.object({
+  version: z.literal(1),
+  triage: triageDecisionV1Schema,
+  binding: semanticAssessmentBindingV1Schema
+}).strict().superRefine((value, context) => {
+  if (value.binding.operationId !== undefined || value.binding.candidateId !== undefined || value.binding.candidateRevision !== undefined || value.binding.candidateDigest !== undefined) {
+    context.addIssue({ code: "custom", path: ["binding"], message: "pre-operation route triage must not claim an operation or candidate binding" });
+  }
+});
+
+export function assertChangePreflightV1(value: unknown, expected: {
+  binding: SemanticAssessmentBindingV1;
+  evidence: TriageEvidence;
+}): ChangePreflightV1 {
+  const parsed = changePreflightV1Schema.safeParse(value);
+  if (!parsed.success) throw new AehError("SEMANTIC_ASSESSMENT_INVALID", "persisted CHANGE preflight is malformed or has unsupported identity.", { cause: parsed.error });
+  const normalized = normalizeTriageEvidence(expected.evidence);
+  const actual = parsed.data;
+  if (actual.binding.projectId !== expected.binding.projectId
+    || actual.binding.repositoryDigest !== expected.binding.repositoryDigest
+    || actual.binding.repositoryRootDigest !== expected.binding.repositoryRootDigest
+    || actual.binding.intentDigest !== expected.binding.intentDigest
+    || actual.triage.evidence.request !== normalized.request
+    || JSON.stringify(actual.triage.evidence.files) !== JSON.stringify(normalized.files)
+    || JSON.stringify(actual.triage.evidence.domains) !== JSON.stringify(normalized.domains)
+    || actual.triage.evidence.risk !== normalized.risk
+    || JSON.stringify(actual.triage.evidence.flags) !== JSON.stringify(normalized.flags)) {
+    throw new AehError("SEMANTIC_ASSESSMENT_INVALID", "persisted CHANGE preflight does not match the current repository and request identity.");
+  }
+  return actual;
+}
+
+export function normalizeTriageEvidence(input: TriageEvidence): Required<Pick<TriageEvidence, "request">> & { files: string[]; domains: string[]; risk: "low" | "medium" | "high"; flags: TriageFlag[] } {
+  return {
+    request: input.request,
+    files: [...new Set(input.files ?? [])],
+    domains: [...new Set(input.domains ?? [])],
+    risk: input.risk ?? "low",
+    flags: [...new Set(input.flags ?? [])]
+  };
 }
 
 const defaultDisallowedDomains = ["security", "auth", "authentication", "authorization", "architecture", "database", "schema", "migration", "api-contract", "multi-tenancy"];

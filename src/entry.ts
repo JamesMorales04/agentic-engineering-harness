@@ -33,12 +33,15 @@ import { LocalControlCenterV1, createProjectHome } from "./control-center/index.
 import { createProjectRegistry } from "./projects/index.js";
 import { cancelOperation } from "./operations/controller.js";
 import { loadOperationPortfolio } from "./operations/portfolio.js";
-import { loadOperation } from "./operations/state.js";
+import { loadOperation, requestOperationPause, requestOperationResume } from "./operations/state.js";
 import { HumanDecisionLedgerV2 } from "./security/humanDecision.js";
 import { createManagedRuntime, readManagedRuntimeSnapshot, runtimeProjectId } from "./runtime/index.js";
 import { serveSerenaMcpProxy, serveSerenaPoolServer } from "./providers/serenaProxy.js";
 import { recordControlCenterDecision } from "./control-center/decision.js";
 import { controlCenterResourceId, type ControlCenterActionResultV1 } from "./control-center/contracts.js";
+import { projectOperationRecordV1 } from "./control-center/operationProjection.js";
+import { resolveControlCenterLeadBinding } from "./control-center/leadBinding.js";
+import { controlCenterHealthCheck, reusableControlCenterFromSnapshot } from "./control-center/reuse.js";
 
 const args = process.argv.slice(2);
 if (args.length === 1 && ["--version", "-V"].includes(args[0])) { console.log(VERSION); process.exit(0); }
@@ -85,6 +88,8 @@ async function runStart(argv: string[]): Promise<void> {
     title: parsed.value("title"),
     aehCommand
   });
+  const deterministic = parsed.flag("deterministic") || process.env.AEH_DETERMINISTIC_PASEO === "1";
+  const controlCenter = !deterministic && !parsed.flag("no-web-ui") ? await launchDetachedControlCenter(root, process.argv[1], parsed.flag("no-open"), result.agentId) : undefined;
   console.log(`AEH Paseo ready for ${config.project.name}.`);
   console.log(`daemon=${result.daemonStarted ? "started" : "reused"}`);
   console.log(`session=${result.session}`);
@@ -94,11 +99,10 @@ async function runStart(argv: string[]): Promise<void> {
   if (result.paseoVersion) console.log(`paseo=${result.paseoVersion}`);
   console.log(`agentId=${result.agentId}`);
   console.log(`title=${result.title}`);
-  const deterministic = parsed.flag("deterministic") || process.env.AEH_DETERMINISTIC_PASEO === "1";
-  const controlCenter = !deterministic && !parsed.flag("no-web-ui") ? await launchDetachedControlCenter(root, process.argv[1], parsed.flag("no-open")) : undefined;
   if (controlCenter) {
     console.log(`controlCenter=${controlCenter.url}`);
-    console.log(`controlCenterPairing=${controlCenter.pairingUrl}`);
+    console.log(`controlCenterSession=${controlCenter.reused ? "reused" : "started"}`);
+    if (controlCenter.pairingUrl) console.log(`controlCenterPairing=${controlCenter.pairingUrl}`);
   }
   if (deterministic) console.log("sessionBoundary=deterministic-fake-paseo-sdk");
   console.log(`Open Paseo and continue in '${result.title}'. Engineering operations route through the Harness; normal aeh start creates a fresh lead, while --resume explicitly reuses a compatible one.`);
@@ -125,7 +129,10 @@ async function runControlCenter(argv: string[]): Promise<void> {
   if (parsed.positional.length > 1) throw new Error("aeh control-center accepts at most one project directory.");
   const root = parsed.positional[0] ? path.resolve(parsed.positional[0]) : undefined;
   const config = root ? await loadProjectConfig(root) : undefined;
-  const initialPortfolio = root && config ? await loadOperationPortfolio(root, config.project.name) : undefined;
+  const expectedStartLeadId = process.env.AEH_CONTROL_CENTER_PARENT?.trim()
+    ? process.env.AEH_CONTROL_CENTER_EXPECTED_LEAD_ID?.trim()
+    : undefined;
+  const leadBinding = root ? await resolveControlCenterLeadBinding(root, expectedStartLeadId || undefined) : undefined;
   const runtime = root ? await createManagedRuntime({ root, projectId: runtimeProjectId(root), ownerId: `control-center:${process.pid}` }) : undefined;
   const decisionLedger = root ? new HumanDecisionLedgerV2(path.join(root, ".harness", "security", "human-decisions.json")) : undefined;
   const center = new LocalControlCenterV1({
@@ -134,33 +141,28 @@ async function runControlCenter(argv: string[]): Promise<void> {
     snapshot: async () => {
       if (!root || !config) return {};
       const portfolio = await loadOperationPortfolio(root, config.project.name);
+      const operationRecords = await Promise.all(Object.values(portfolio.operations).map(async (item) => ({ detail: await loadOperation(root, item.operationId) })));
+      const operations = operationRecords.map(({ detail }) => projectOperationRecordV1(detail));
+      const participants = operations.flatMap((operation) => operation.participants);
+      const candidates = operationRecords.flatMap(({ detail }) => detail.candidateRevision
+        ? [{ ...detail.candidateRevision, controlCenterId: controlCenterResourceId("candidate", detail.candidateRevision.candidateId) }]
+        : []);
       return {
-        operations: await Promise.all(Object.values(portfolio.operations).map(async (item) => {
-          const detail = await loadOperation(root, item.operationId);
-          const request = detail.status === "RUNNING" && detail.phase === "HUMAN_REQUIRED" ? detail.decisionRequest : undefined;
-          return {
-          version: 1 as const,
-          operationId: controlCenterResourceId("operation", item.operationId),
-          kind: item.kind === "audit" || item.kind === "run" || item.kind === "change" ? item.kind : "run",
-          status: item.status,
-          phase: item.phase,
-          revision: item.revision,
-          ...(detail.candidateRevision ? { candidateId: controlCenterResourceId("candidate", detail.candidateRevision.candidateId), candidateDigest: detail.candidateRevision.identityDigest } : {}),
-          participantCount: 0,
-          runningParticipantCount: 0,
-          completedParticipantCount: 0,
-          failedParticipantCount: 0,
-          createdAt: item.updatedAt,
-          updatedAt: item.updatedAt,
-          payloadSummary: `${item.kind} operation ${item.operationId}`,
-          participants: [],
-          ...(request ? { decisionRequest: { ...request, candidate: request.candidate.identityDigest } } : {})
-        }; })),
-        services: await readManagedRuntimeSnapshot(root),
+        operations,
+        participants,
+        candidates,
+        services: runtime ? await runtime.snapshot() : { version: 1 as const, capturedAt: new Date().toISOString(), services: [], providerLeases: [] },
         quality: { activeOperations: Object.values(portfolio.operations).filter((item) => item.status === "RUNNING" || item.status === "QUEUED").length }
       };
     },
-    ...(root ? { paseoGateway: new PaseoGatewayV1(), paseo: { root, leadId: initialPortfolio?.leadAgentId } } : {}),
+    ...(root ? { paseoGateway: new PaseoGatewayV1(), paseo: {
+      root,
+      leadId: leadBinding?.status === "BOUND" ? leadBinding.leadId : undefined,
+      resolveLeadId: async () => {
+        const current = await resolveControlCenterLeadBinding(root);
+        return current.status === "BOUND" ? current.leadId : undefined;
+      }
+    } } : {}),
     onDecision: root && decisionLedger ? async (value, actorId): Promise<ControlCenterActionResultV1> => {
       const result = await recordControlCenterDecision(root, decisionLedger, value, actorId);
       return {
@@ -175,47 +177,128 @@ async function runControlCenter(argv: string[]): Promise<void> {
     onCancelOperation: root ? async (operationId, actorId): Promise<ControlCenterActionResultV1> => {
       const result = await cancelOperation(root, operationId, { humanActorId: actorId });
       return { accepted: true, operationId: result.id, status: result.status, phase: result.phase, revision: result.revision };
+    } : undefined,
+    onPauseOperation: root ? async (operationId, actorId): Promise<ControlCenterActionResultV1> => {
+      const decision = await requestOperationPause(root, operationId, actorId);
+      const current = await loadOperation(root, operationId);
+      return { accepted: true, operationId: current.id, decisionId: decision.decisionId, status: current.status, phase: current.phase, revision: current.revision };
+    } : undefined,
+    onResumeOperation: root ? async (operationId, actorId): Promise<ControlCenterActionResultV1> => {
+      const decision = await requestOperationResume(root, operationId, actorId);
+      const current = await loadOperation(root, operationId);
+      return { accepted: true, operationId: current.id, decisionId: decision.decisionId, status: current.status, phase: current.phase, revision: current.revision };
     } : undefined
   });
   const started = await center.start();
-  if (runtime) await runtime.registerService({ serviceId: `control-center:${runtime.projectId}`, kind: "control-center", status: "READY", pid: process.pid, healthUrl: started.url, metadata: { aehVersion: VERSION } });
-  const readyFile = parsed.value("ready-file");
-  if (readyFile) await fs.writeFile(path.resolve(readyFile), `${JSON.stringify({ version: 1, url: started.url, pairingUrl: started.pairingUrl, pid: process.pid })}\n`, { encoding: "utf8", mode: 0o600 });
-  console.log(`AEH Project Control Center ready at ${started.url}`);
-  console.log(`controlCenterPairing=${started.pairingUrl}`);
+  const serviceId = runtime ? `control-center:${runtime.projectId}` : undefined;
+  let serviceHeartbeat: NodeJS.Timeout | undefined;
   try {
-    if (parsed.flag("once")) { await center.close(); return; }
+    if (runtime && serviceId) {
+      await runtime.registerService({ serviceId, kind: "control-center", status: "READY", pid: process.pid, healthUrl: started.url, metadata: { aehVersion: VERSION, leadBindingMode: "validated-current-session-v1" } });
+      serviceHeartbeat = setInterval(() => {
+        void runtime.heartbeat(serviceId).catch((error: unknown) => console.error(`Control Center runtime heartbeat failed: ${String(error)}`));
+      }, 15_000);
+      serviceHeartbeat.unref();
+    }
+    const readyFile = parsed.value("ready-file");
+    if (readyFile) await fs.writeFile(path.resolve(readyFile), `${JSON.stringify({ version: 1, url: started.url, pairingUrl: started.pairingUrl, pid: process.pid })}\n`, { encoding: "utf8", mode: 0o600 });
+    console.log(`AEH Project Control Center ready at ${started.url}`);
+    console.log(`controlCenterPairing=${started.pairingUrl}`);
+    if (parsed.flag("once")) return;
     await new Promise<void>((resolve) => {
-      const shutdown = () => { void center.close().finally(resolve); };
+      const shutdown = () => { process.off("SIGINT", shutdown); process.off("SIGTERM", shutdown); resolve(); };
       process.once("SIGINT", shutdown);
       process.once("SIGTERM", shutdown);
     });
   } finally {
-    if (runtime) await runtime.updateService(`control-center:${runtime.projectId}`, { status: "STOPPED" }).catch(() => undefined);
+    if (serviceHeartbeat) clearInterval(serviceHeartbeat);
+    await center.close();
+    if (runtime) await runtime.drainAndRelease();
   }
 }
 
-interface DetachedControlCenterV1 { url: string; pairingUrl: string; }
+interface DetachedControlCenterV1 { url: string; pairingUrl?: string; reused: boolean; }
 
-async function launchDetachedControlCenter(root: string, entry: string | undefined, noOpen: boolean): Promise<DetachedControlCenterV1 | undefined> {
-  if (!entry) return undefined;
-  const readyFile = path.join(root, ".harness", "runtime", "control-center.json");
+async function launchDetachedControlCenter(root: string, entry: string | undefined, noOpen: boolean, expectedLeadId: string): Promise<DetachedControlCenterV1> {
+  if (!entry) throw new Error("Control Center startup failed: the running AEH entry point could not be resolved.");
+  const existing = await findReusableControlCenter(root);
+  if (existing) {
+    if (!noOpen) openControlCenter(existing.url);
+    return { ...existing, reused: true };
+  }
+
+  const snapshot = await readManagedRuntimeSnapshot(root);
+  const serviceId = `control-center:${runtimeProjectId(root)}`;
+  const currentService = snapshot.services.find((service) => service.serviceId === serviceId);
+  if (currentService && currentService.canonicalRoot === path.resolve(root)
+    && currentService.status !== "STOPPED" && currentService.status !== "FAILED" && processIsAlive(currentService.pid)) {
+    throw new Error(`Control Center startup failed: active service owner ${currentService.ownerId} is not reusable by this build or failed its loopback health check. Stop the existing service and rerun aeh start.`);
+  }
+
+  const readyFile = path.join(root, ".harness", "runtime", `control-center-${process.pid}-${crypto.randomBytes(6).toString("hex")}.json`);
+  await fs.mkdir(path.dirname(readyFile), { recursive: true, mode: 0o700 });
   await fs.rm(readyFile, { force: true });
-  const child = spawn(process.execPath, [entry, "control-center", root, "--ready-file", readyFile], { cwd: root, detached: true, stdio: "ignore", env: { ...process.env, AEH_CONTROL_CENTER_PARENT: String(process.pid) } });
+  const child = spawn(process.execPath, [entry, "control-center", root, "--ready-file", readyFile], { cwd: root, detached: true, stdio: "ignore", env: { ...process.env, AEH_CONTROL_CENTER_PARENT: String(process.pid), AEH_CONTROL_CENTER_EXPECTED_LEAD_ID: expectedLeadId } });
   child.unref();
   const deadline = Date.now() + 15_000;
-  while (Date.now() < deadline) {
-    try {
-      const value = JSON.parse(await fs.readFile(readyFile, "utf8")) as Partial<DetachedControlCenterV1>;
-      if (typeof value.url === "string" && typeof value.pairingUrl === "string") {
+  try {
+    while (Date.now() < deadline) {
+      try {
+        const value = JSON.parse(await fs.readFile(readyFile, "utf8")) as { url?: unknown; pairingUrl?: unknown };
+        const url = typeof value.url === "string" ? safeControlCenterUrl(value.url) : undefined;
+        const pairingUrl = typeof value.pairingUrl === "string" ? safePairingUrl(value.pairingUrl, url) : undefined;
+        if (url && pairingUrl) {
+          await fs.rm(readyFile, { force: true });
+          if (!noOpen) openControlCenter(pairingUrl);
+          return { url, pairingUrl, reused: false };
+        }
+      } catch { /* wait for actual listener readiness */ }
+
+      const reused = await findReusableControlCenter(root);
+      if (reused) {
         await fs.rm(readyFile, { force: true });
-        if (!noOpen) openControlCenter(value.pairingUrl);
-        return { url: value.url, pairingUrl: value.pairingUrl };
+        if (!noOpen) openControlCenter(reused.url);
+        return { ...reused, reused: true };
       }
-    } catch { /* wait for actual listener readiness */ }
-    await new Promise((resolve) => setTimeout(resolve, 50));
+      if (child.exitCode !== null || child.signalCode !== null) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  } finally {
+    await fs.rm(readyFile, { force: true });
   }
-  return undefined;
+  throw new Error("Control Center startup failed: the detached server did not publish a valid ready record, and no compatible healthy project service became available.");
+}
+
+async function findReusableControlCenter(root: string): Promise<{ url: string } | undefined> {
+  const selected = reusableControlCenterFromSnapshot(root, await readManagedRuntimeSnapshot(root));
+  if (!selected || !await controlCenterHealthCheck(selected.url)) return undefined;
+  return selected;
+}
+
+function processIsAlive(pid: number | undefined): boolean {
+  if (!Number.isSafeInteger(pid) || (pid ?? 0) <= 0) return false;
+  try { process.kill(pid!, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
+function safeControlCenterUrl(value: string): string | undefined {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(url.hostname.toLowerCase()) || !url.port
+      || url.username || url.password || url.pathname !== "/" || url.search || url.hash) return undefined;
+    return url.origin + "/";
+  } catch { return undefined; }
+}
+
+function safePairingUrl(value: string, baseUrl: string | undefined): string | undefined {
+  if (!baseUrl) return undefined;
+  try {
+    const url = new URL(value);
+    const base = new URL(baseUrl);
+    if (url.origin !== base.origin || url.pathname !== "/" || url.username || url.password || url.search
+      || !/^#pair=[A-Za-z0-9_-]+$/.test(url.hash)) return undefined;
+    return url.toString();
+  } catch { return undefined; }
 }
 
 function openControlCenter(url: string): void {

@@ -81,6 +81,18 @@ describe("agent topology", () => {
     expect(lead.runtimeCapabilities.mcp).toBe(true);
   });
 
+  it("scopes the browser E2E evidence skill to the repository harness reviewer only", async () => {
+    const repositoryRoot = path.resolve(".");
+    const source = await loadAgentTopologySource(repositoryRoot, config);
+    const carriers = Object.entries(source.agents).filter(([, agent]) => agent.skills?.includes("aeh-browser-e2e")).map(([name]) => name);
+    expect(carriers).toEqual(["harness-reviewer"]);
+    const topology = resolveAgentTopology(source, source.activeProfile);
+    expect(executionSelectionForAgent(topology, "harness-reviewer").skills).toContain("aeh-browser-e2e");
+    for (const generic of ["lead", "implementer", "reviewer"]) {
+      expect(executionSelectionForAgent(topology, generic).skills).not.toContain("aeh-browser-e2e");
+    }
+  });
+
   it("gives OpenCode DeepSeek V4 Flash the max thinking variant and durable CHANGE contracts in the orchestration preset", async () => {
     const root = await fixture('{"version":1,"extends":["aeh:orchestration"]}');
     const topology = resolveAgentTopology(await loadAgentTopologySource(root, config), "balanced");

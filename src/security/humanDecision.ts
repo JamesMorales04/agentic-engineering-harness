@@ -5,13 +5,15 @@ import { canonicalSerialize, sha256Canonical } from "../core/digest.js";
 import { candidateRevisionsEqual, assertCandidateRevisionV1, type CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import { TOOL_ACTION_KINDS_V1, type ToolActionKindV1 } from "./actionKinds.js";
 
-export const humanDecisionKindValues = ["APPROVE", "REJECT", "CHOOSE", "CANCEL", "RETRY", "ACKNOWLEDGE"] as const;
+export const humanDecisionKindValues = ["APPROVE", "REJECT", "CHOOSE", "CANCEL", "RETRY", "ACKNOWLEDGE", "PAUSE", "RESUME"] as const;
 export type HumanDecisionKindV2 = (typeof humanDecisionKindValues)[number];
+
+export type OperationControlCommandV1 = "CANCEL" | "RETRY" | "ACKNOWLEDGE" | "PAUSE" | "RESUME";
 
 export type HumanDecisionPurposeV2 =
   | { kind: "PRODUCT_CHOICE"; requestId: string; choiceId: string }
   | { kind: "ACTION_AUTHORIZATION"; action: ToolActionKindV1; effectDigest: string }
-  | { kind: "OPERATION_CONTROL"; command: "CANCEL" | "RETRY" | "ACKNOWLEDGE" };
+  | { kind: "OPERATION_CONTROL"; command: OperationControlCommandV1 };
 
 export interface HumanDecisionV2 {
   version: 2;
@@ -523,7 +525,7 @@ function normalizePurpose(purpose: HumanDecisionPurposeV2): HumanDecisionPurpose
     if (!TOOL_ACTION_KINDS_V1.includes(purpose.action) || !/^[a-f0-9]{64}$/.test(purpose.effectDigest)) throw new HumanDecisionError("action authorization purpose is invalid.");
     return { kind: purpose.kind, action: purpose.action, effectDigest: purpose.effectDigest };
   }
-  if (purpose.kind === "OPERATION_CONTROL" && ["CANCEL", "RETRY", "ACKNOWLEDGE"].includes(purpose.command)) return { kind: purpose.kind, command: purpose.command };
+  if (purpose.kind === "OPERATION_CONTROL" && ["CANCEL", "RETRY", "ACKNOWLEDGE", "PAUSE", "RESUME"].includes(purpose.command)) return { kind: purpose.kind, command: purpose.command };
   throw new HumanDecisionError("unsupported HumanDecision purpose.");
 }
 

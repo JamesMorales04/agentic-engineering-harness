@@ -6,16 +6,15 @@ import { executionSelectionForAgent } from "../agents/routing.js";
 import { reconcileHarnessAssets } from "../core/assets.js";
 import type { HarnessProjectConfig } from "../core/types.js";
 import { buildManagedAgentEnvironment } from "../operations/executionContext.js";
-import { rebindActiveOperationsToLead } from "../operations/leadBinding.js";
 import { setupToolchain } from "../toolchain/setup.js";
 import { clearToolchainEnvCache, commandExists, runShell, type ProcessResult } from "../utils/process.js";
 import { VERSION } from "../version.js";
-import { detectPaseoDaemonCapabilities, isRecoverableDaemonStatus } from "./capabilities.js";
+import { detectPaseoDaemonCapabilities, observePaseoDaemonStatus } from "./capabilities.js";
 import { launchManagedPaseoAgent, probeManagedPaseoAgent } from "./runtime.js";
 import type { PaseoSdkAgentOptions } from "./sdk.js";
 import { createManagedRuntime, runtimeProjectId, type ManagedRuntimeSupervisorV1 } from "../runtime/index.js";
 
-export const PASEO_BOOTSTRAP_VERSION = 12;
+export const PASEO_BOOTSTRAP_VERSION = 13;
 export type PaseoSessionPolicy = "fresh-on-start" | "reuse-compatible" | "resume-explicit";
 
 export interface PaseoStartOptions {
@@ -88,10 +87,9 @@ export async function startPaseoHarness(
   deps: PaseoStartDeps = DEFAULT_DEPS
 ): Promise<PaseoStartResult> {
   const projectRoot = path.resolve(root);
-  const runtime = await createManagedRuntime({ root: projectRoot, projectId: runtimeProjectId(projectRoot) });
+  const projectId = runtimeProjectId(projectRoot);
+  const runtime = await createManagedRuntime({ root: projectRoot, projectId, ownerId: `paseo-daemon:${projectId}` });
   const paseoServiceId = `paseo:${runtime.projectId}`;
-  await runtime.registerService({ serviceId: paseoServiceId, kind: "paseo", status: "STARTING", pid: process.pid, metadata: { aehVersion: VERSION } });
-  const markRuntimeFailed = async (error: unknown) => { await runtime.updateService(paseoServiceId, { status: "FAILED", metadata: { error: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500) } }).catch(() => undefined); };
   await (deps.reconcileAssets ?? reconcileHarnessAssets)(projectRoot);
   const settings = config.orchestration?.interactive as InteractiveV10 | undefined;
   const autoSetup = options.autoSetup ?? settings?.autoSetup ?? true;
@@ -113,24 +111,50 @@ export async function startPaseoHarness(
     clearToolchainEnvCache();
   }
   const missingAfter = await missingCommands(projectRoot, ["paseo", runtimeCommand], deps);
-  if (missingAfter.length) { const error = new Error(`aeh start cannot launch Paseo because these managed commands are unavailable: ${missingAfter.join(", ")}. Run aeh setup or provide the required host prerequisite/credential.`); await markRuntimeFailed(error); throw error; }
+  if (missingAfter.length) throw new Error(`aeh start cannot launch Paseo because these managed commands are unavailable: ${missingAfter.join(", ")}. Run aeh setup or provide the required host prerequisite/credential.`);
 
   const capabilities = await deps.detectCapabilities(projectRoot, deps.run);
   let daemonStarted = false;
   const daemonStatusCommand = capabilities.daemonJson ? "paseo daemon status --json" : "paseo daemon status";
-  let daemonStatus = await deps.run(daemonStatusCommand, { cwd: projectRoot, timeoutMs: 30_000 });
-  if (daemonStatus.exitCode !== 0 || isRecoverableDaemonStatus(daemonStatus)) {
-    if (isRecoverableDaemonStatus(daemonStatus)) {
+  let daemonStatusResult: ProcessResult;
+  try {
+    daemonStatusResult = await deps.run(daemonStatusCommand, { cwd: projectRoot, timeoutMs: 30_000 });
+  } catch {
+    throw new Error("aeh start could not observe the current Paseo daemon status; the prior runtime service record was preserved.");
+  }
+  let daemonObservation = observePaseoDaemonStatus(daemonStatusResult);
+  if (daemonObservation.state === "unknown") {
+    throw new Error("aeh start could not determine whether the Paseo daemon is healthy or stopped from the supported status output; the prior runtime service record was preserved.");
+  }
+  const priorDaemonState = daemonObservation.state;
+  if (daemonObservation.state === "stopped") {
+    if (daemonObservation.stalePid) {
       await deps.run("paseo daemon stop", { cwd: projectRoot, timeoutMs: 30_000 }).catch(() => undefined);
     }
     const startCommand = webUi ? "paseo daemon start --web-ui" : "paseo daemon start";
     const daemonStart = await deps.run(startCommand, { cwd: projectRoot, timeoutMs: 60_000 });
-    if (daemonStart.exitCode !== 0) { const error = new Error(`Failed to start Paseo daemon: ${diagnostic(daemonStart)}`); await markRuntimeFailed(error); throw error; }
+    if (daemonStart.exitCode !== 0) throw new Error(`Failed to start Paseo daemon: ${diagnostic(daemonStart)}`);
     daemonStarted = true;
-    daemonStatus = await deps.run(daemonStatusCommand, { cwd: projectRoot, timeoutMs: 30_000 });
-    if (daemonStatus.exitCode !== 0 || isRecoverableDaemonStatus(daemonStatus)) { const error = new Error(`Paseo daemon did not become ready after startup: ${diagnostic(daemonStatus)}`); await markRuntimeFailed(error); throw error; }
+    let postStartStatus: ProcessResult;
+    try {
+      postStartStatus = await deps.run(daemonStatusCommand, { cwd: projectRoot, timeoutMs: 30_000 });
+    } catch {
+      throw new Error("Paseo daemon start returned successfully, but a current status observation could not be obtained; the prior runtime service record was preserved.");
+    }
+    daemonObservation = observePaseoDaemonStatus(postStartStatus);
+    if (daemonObservation.state !== "healthy") {
+      throw new Error("Paseo daemon start returned successfully, but the supported status output did not confirm a healthy daemon; the prior runtime service record was preserved.");
+    }
   }
-  await runtime.updateService(paseoServiceId, { status: "READY", metadata: { aehVersion: VERSION, paseoVersion: capabilities.version ?? "unknown" } });
+  if (daemonObservation.state !== "healthy") throw new Error("Paseo daemon is not confirmed healthy; the prior runtime service record was preserved.");
+  await runtime.registerObservedPaseoDaemon({
+    serviceId: paseoServiceId,
+    aehVersion: VERSION,
+    paseoVersion: capabilities.version ?? "unknown",
+    ...(daemonObservation.serverId ? { observedServerId: daemonObservation.serverId } : {}),
+    ...(daemonObservation.pid ? { observedPid: daemonObservation.pid } : {}),
+    priorDaemonState
+  });
 
   const provider = selection.paseoProvider;
   const model = paseoModel(selection);
@@ -144,7 +168,6 @@ export async function startPaseoHarness(
   const previous = await loadState(stateFile);
   if (!options.forceNew && reuseRequested && !options.handoffPath && previous && compatibleState(previous, { projectRoot, leadName, provider, model, title, aehCommand })) {
     if (await deps.probeAgent(projectRoot, previous.agentId)) {
-      await rebindActiveOperationsToLead(projectRoot, config, previous.agentId, "lead-resume");
       return {
         daemonStarted,
         session: "reused",
@@ -167,6 +190,8 @@ export async function startPaseoHarness(
     "aeh.project": config.project.name,
     "aeh.kind": "lead",
     "aeh.role": leadName,
+    "aeh.provider": provider,
+    "aeh.workspace.id": projectRoot,
     "aeh.generation": String(generation),
     "aeh.version": VERSION,
     "aeh.bootstrap": String(PASEO_BOOTSTRAP_VERSION)
@@ -211,7 +236,6 @@ export async function startPaseoHarness(
     handoffPath: options.handoffPath
   };
   await fs.writeFile(stateFile, `${JSON.stringify(state, null, 2)}\n`);
-  await rebindActiveOperationsToLead(projectRoot, config, agentId, options.handoffPath ? "lead-handoff" : "lead-start");
   return {
     daemonStarted,
     session: "created",

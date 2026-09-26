@@ -38,6 +38,9 @@ export async function launchManagedPaseoAgent(
     // Compatibility fallback is safe only before a semantic turn starts. Once
     // materialization succeeds, never create a second agent for the same turn.
     if (!isSdkUnavailable(error)) throw error;
+    if (options.labels?.["aeh.operation"]?.trim()) {
+      throw new Error(`PASEO_OPERATION_PROVIDER_LIFECYCLE_REQUIRED: an operation-owned Paseo session cannot fall back to the unleased CLI lifecycle. ${String(error)}`, { cause: error });
+    }
     if (options.agentId || options.labels?.["aeh.execution.binding.digest"]) {
       throw new Error(`PASEO_EXECUTION_SESSION_PREPARATION_REQUIRED: a launch carrying frozen execution identity requires SDK materialization before its first prompt. ${String(error)}`);
     }
@@ -55,7 +58,8 @@ export async function launchManagedPaseoAgent(
     options.prompt!,
     options.timeoutSeconds ?? secondsFromMs(options.timeoutMs),
     deps,
-    options.outputSchema
+    options.outputSchema,
+    options.labels
   );
 }
 

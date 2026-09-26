@@ -1,7 +1,9 @@
 import crypto from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { IntentDecisionV1 } from "../audit/intentDecision.js";
+import type { ChangePreflightV1 } from "../core/triage.js";
 import { assertCurrentCandidateBinding, assertCandidateRevisionV1, createCandidateRevisionV1, evaluateTerminalGate, candidateRevisionsEqual, type CandidateRevisionV1, type ParticipantReceiptV1 } from "./v2Contracts.js";
 import { canonicalSerialize, sha256Canonical, sha256Utf8 } from "../core/digest.js";
 import { computeWorktreeDigest } from "../core/git.js";
@@ -9,7 +11,7 @@ import { assertWorkspaceMatchesCandidate } from "../candidates/identity.js";
 import { assertExecutionBindingV2, assertResolvedOperationPolicyV1, type ExecutionBindingV2, type ResolvedOperationPolicyV1 } from "../architecture/executionIdentity.js";
 import { evaluateObjectiveCompletionV1, type ObjectiveCompletionInputV1 } from "../architecture/objectiveCompletion.js";
 import { currentObjectiveIdentityV1, loadCurrentAcceptanceOracleArtifactV1, type AcceptanceOracleDispositionV1 } from "../architecture/acceptanceOracle.js";
-import { HumanDecisionLedgerV2, assertContinuationRecordV1, assertDecisionRequestV1, type ContinuationRecordV1, type DecisionRequestV1, type HumanDecisionBindingV2 } from "../security/humanDecision.js";
+import { HumanDecisionLedgerV2, assertContinuationRecordV1, assertDecisionRequestV1, type ContinuationRecordV1, type DecisionRequestV1, type HumanDecisionBindingV2, type HumanDecisionV2, type OperationControlCommandV1 } from "../security/humanDecision.js";
 
 export type OperationKind = "audit" | "run" | "change";
 export type OperationStatus = "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
@@ -39,7 +41,7 @@ export interface RunOperationPayload { taskId: string; profile?: string; priorit
 export interface ChangeOperationPayload { request: string; title?: string; taskId?: string; files?: string[]; domains?: string[]; acceptance?: string[]; risk?: "low" | "medium" | "high"; profile?: string; priority?: number; intentDecision?: IntentDecisionV1; }
 export type OperationPayload = AuditOperationPayload | RunOperationPayload | ChangeOperationPayload;
 
-export interface OperationAgentRecord { id: string; role?: string; phase?: string; workspaceId?: string; transport?: string; registeredAt: string; }
+export interface OperationAgentRecord { id: string; role?: string; phase?: string; workspaceId?: string; transport?: string; registeredAt: string; executionBinding?: ExecutionBindingV2; }
 export interface OperationLeadBinding { agentId: string; source?: string; generation: number; boundAt: string; acknowledgedRevision: number; acknowledgedAt?: string; }
 export interface OperationSupervisorGeneration {
   generation: number;
@@ -65,6 +67,61 @@ export interface OperationNotificationState { lastLeadWakeRevision: number; last
 export interface OperationIntentState { request?: string; classification?: "AUDIT" | "CHANGE" | "RUN"; route?: "NO_AGENT" | "DIRECT" | "DELEGATED" | "FORMAL_SDD"; assurance?: "NONE" | "STANDARD" | "ELEVATED" | "CRITICAL"; risk?: "low" | "medium" | "high"; priority?: number; semanticDecision?: IntentDecisionV1; }
 export interface OperationControllerBinding { epoch: number; ownerId: string; claimedAt: string; previousOwnerId?: string; tokenDigest?: string; pid?: number; }
 
+export const operationPauseRevalidationValuesV1 = [
+  "candidate-current",
+  "operation-revision-current",
+  "policy-current",
+  "controller-epoch-current",
+  "continuation-current"
+] as const;
+export type OperationPauseRevalidationV1 = (typeof operationPauseRevalidationValuesV1)[number];
+
+/** Proof that the controller observed no active mutable writer before PAUSED. */
+export interface OperationPauseDrainReceiptV1 {
+  activeParticipantIds: string[];
+  activeProviderLeaseIds: string[];
+  observedAt: string;
+}
+
+/**
+ * Durable PAUSED suspension record. It overlays the saved resume phase and is
+ * removed only by a controller-owned resume that revalidates the full binding.
+ */
+export interface OperationPauseRecordV1 extends HumanDecisionBindingV2 {
+  version: 1;
+  resumePhase: string;
+  reason: string;
+  requestedBy: string;
+  requestedAt: string;
+  pausedAt: string;
+  drainReceipt: OperationPauseDrainReceiptV1;
+  requiredRevalidation: OperationPauseRevalidationV1[];
+  state: "PAUSED";
+}
+
+export function assertOperationPauseRecordV1(value: unknown): OperationPauseRecordV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("OPERATION_PAUSE_RECORD_INVALID: pause record must be an object.");
+  const record = value as OperationPauseRecordV1;
+  if (record.version !== 1 || record.state !== "PAUSED") throw new Error("OPERATION_PAUSE_RECORD_INVALID: unsupported pause record version or state.");
+  assertCandidateRevisionV1(record.candidate);
+  if (!Number.isSafeInteger(record.operationExecutionRevision) || record.operationExecutionRevision < 1) throw new Error("OPERATION_PAUSE_RECORD_INVALID: operationExecutionRevision must be a positive safe integer.");
+  if (!/^[a-f0-9]{64}$/.test(record.policyDigest)) throw new Error("OPERATION_PAUSE_RECORD_INVALID: policyDigest must be a lowercase SHA-256 digest.");
+  if (!Number.isSafeInteger(record.controllerEpoch) || record.controllerEpoch < 0) throw new Error("OPERATION_PAUSE_RECORD_INVALID: controllerEpoch must be a non-negative safe integer.");
+  if (typeof record.operationId !== "string" || !record.operationId.trim() || record.candidate.operationId !== record.operationId) throw new Error("OPERATION_PAUSE_RECORD_INVALID: operation identity is incomplete.");
+  if (typeof record.resumePhase !== "string" || !record.resumePhase.trim()) throw new Error("OPERATION_PAUSE_RECORD_INVALID: resumePhase is required.");
+  if (typeof record.reason !== "string" || !record.reason.trim()) throw new Error("OPERATION_PAUSE_RECORD_INVALID: reason is required.");
+  if (typeof record.requestedBy !== "string" || !record.requestedBy.startsWith("human:")) throw new Error("OPERATION_PAUSE_RECORD_INVALID: requestedBy must be a paired human actor.");
+  if (Number.isNaN(Date.parse(record.requestedAt)) || Number.isNaN(Date.parse(record.pausedAt))) throw new Error("OPERATION_PAUSE_RECORD_INVALID: pause instants are invalid.");
+  if (!record.drainReceipt || !Array.isArray(record.drainReceipt.activeParticipantIds) || !Array.isArray(record.drainReceipt.activeProviderLeaseIds)
+    || Number.isNaN(Date.parse(record.drainReceipt.observedAt))) throw new Error("OPERATION_PAUSE_RECORD_INVALID: drain receipt is incomplete.");
+  if (!Array.isArray(record.requiredRevalidation) || record.requiredRevalidation.length !== operationPauseRevalidationValuesV1.length
+    || new Set(record.requiredRevalidation).size !== operationPauseRevalidationValuesV1.length
+    || operationPauseRevalidationValuesV1.some((item) => !record.requiredRevalidation.includes(item))) {
+    throw new Error("OPERATION_PAUSE_RECORD_INVALID: requiredRevalidation must contain every current-identity check exactly once.");
+  }
+  return record;
+}
+
 export interface OperationRecordV1 {
   version: 1; id: string; kind: "audit" | "run"; status: OperationStatus; phase: string; root: string;
   payload: AuditOperationPayload | RunOperationPayload; createdAt: string; updatedAt: string; startedAt?: string; finishedAt?: string;
@@ -74,6 +131,7 @@ export interface OperationRecordV2 {
   version: 2; id: string; kind: OperationKind; status: OperationStatus; phase: string; root: string; workspaceRoot?: string;
   payload: OperationPayload; revision: number; createdAt: string; updatedAt: string; lastProgressAt: string; startedAt?: string; finishedAt?: string;
   pid?: number; workspaceId?: string; workspaceWarning?: string; intent?: OperationIntentState; lead?: OperationLeadBinding;
+  changePreflight?: ChangePreflightV1;
   supervision: OperationSupervisionState; stages: Record<string, OperationStageRecord>; participants: Record<string, OperationParticipantRecord>;
   progress: OperationProgress; notification: OperationNotificationState; agents?: OperationAgentRecord[]; cleanupWarnings?: string[]; result?: Record<string, unknown>; error?: string;
   candidateRevision?: CandidateRevisionV1; participantReceipts?: Record<string, ParticipantReceiptV1>;
@@ -84,6 +142,7 @@ export interface OperationRecordV2 {
   controller?: OperationControllerBinding;
   decisionRequest?: DecisionRequestV1;
   continuation?: ContinuationRecordV1;
+  pause?: OperationPauseRecordV1;
 }
 export type OperationRecord = OperationRecordV1 | OperationRecordV2;
 export interface TerminalOperationTransition { record: OperationRecordV2; transitioned: boolean; }
@@ -130,7 +189,11 @@ export async function saveOperation(root: string, record: OperationRecord): Prom
       operationId: normalized.id,
       candidateId: `candidate:${normalized.id}:r1`,
       projectId: `project:${sha256Utf8(sourceRoot).slice(0, 24)}`,
-      taskId: normalized.kind === "run" ? (normalized.payload as RunOperationPayload).taskId : normalized.id,
+      taskId: normalized.kind === "run"
+        ? (normalized.payload as RunOperationPayload).taskId
+        : normalized.kind === "change"
+          ? ((normalized.payload as ChangeOperationPayload).taskId?.trim() || normalized.id)
+          : normalized.id,
       revision: 1,
       sourceDigest: await computeWorktreeDigest(sourceRoot),
       worktree: sourceRoot,
@@ -148,7 +211,7 @@ export async function saveOperation(root: string, record: OperationRecord): Prom
       throw new Error(`AEH_OPERATION_EXISTS: operation '${normalized.id}' is already durable; mutate it through its lifecycle API.`);
     }
     if (normalized.candidateRevision) await assertWorkspaceMatchesCandidate(normalized.candidateRevision.worktree ?? sourceRoot, normalized.candidateRevision);
-    await commitOperationRecord(stateRoot, file, normalized, "operation.created", ["status", "phase", "candidateRevision"]);
+    await commitOperationRecord(stateRoot, file, normalized, "operation.created", ["status", "phase", "candidateRevision", "intent", "changePreflight"]);
   });
 }
 export async function patchOperation(root: string, operationId: string, patch: Partial<OperationRecordV2>): Promise<OperationRecordV2> { return mutateOperation(root, operationId, patch, true, "operation.updated"); }
@@ -175,7 +238,7 @@ export async function transitionOperationToTerminal(root: string, operationId: s
     }
     if (patch.status === "SUCCEEDED") await assertSuccessTerminalEvidence(stateRoot, current, patch.result);
     const now = new Date().toISOString(); const revision = current.revision + 1; const participants = settleParticipants(current.participants, patch.status, now); const supervision = settleSupervision(current.supervision, now);
-    const next = normalizeOperationRecord({ ...current, ...patch, version: 2, id: current.id, kind: current.kind, revision, updatedAt: now, lastProgressAt: now, finishedAt: patch.finishedAt ?? now, participants, progress: deriveProgress(participants), supervision, decisionRequest: undefined, continuation: undefined, stages: { ...current.stages, finished: { name: "finished", status: terminalStageStatus(patch.status), revision, startedAt: now, finishedAt: now } } } as OperationRecordV2);
+    const next = normalizeOperationRecord({ ...current, ...patch, version: 2, id: current.id, kind: current.kind, revision, updatedAt: now, lastProgressAt: now, finishedAt: patch.finishedAt ?? now, participants, progress: deriveProgress(participants), supervision, decisionRequest: undefined, continuation: undefined, pause: undefined, stages: { ...current.stages, finished: { name: "finished", status: terminalStageStatus(patch.status), revision, startedAt: now, finishedAt: now } } } as OperationRecordV2);
     if (patch.status === "SUCCEEDED" && next.candidateRevision) await assertWorkspaceMatchesCandidate(candidateWorkspaceRoot(next, next.candidateRevision), next.candidateRevision);
     await commitOperationRecord(stateRoot, file, next, "operation.terminal", ["status", "phase", "participants", "progress", "supervision"]); return { record: next, transitioned: true };
   });
@@ -402,8 +465,8 @@ export async function suspendOperationForProductChoice(
   if (!Number.isSafeInteger(expiresInMs) || expiresInMs < 60_000 || expiresInMs > 7 * 24 * 60 * 60_000) throw new Error("DECISION_REQUEST_EXPIRY_INVALID: expiry must be between one minute and seven days.");
   return mutateOperation(root, operationId, {}, true, "operation.human-decision.suspended", async (current, revision, now) => {
     assertCurrentControllerOwner(current, "product-choice suspension");
-    const replacingConsumedChoice = current.continuation?.state === "RESUMING" && current.phase === "spec-authoring" && !current.decisionRequest;
-    if (current.status !== "RUNNING" || current.phase === "HUMAN_REQUIRED" || (current.continuation && !replacingConsumedChoice)) throw new Error("DECISION_REQUEST_STATE_INVALID: only active Spec Manager authoring without an unanswered continuation may suspend for a product choice.");
+    const replacingConsumedChoice = current.continuation?.state === "RESUMING" && !current.decisionRequest;
+    if (current.status !== "RUNNING" || current.phase === "HUMAN_REQUIRED" || (current.continuation && !replacingConsumedChoice)) throw new Error(`DECISION_REQUEST_STATE_INVALID: only active Spec Manager authoring without an unanswered continuation may suspend for a product choice (status=${current.status}, phase=${current.phase}, continuation=${current.continuation?.state ?? "none"}, decisionRequest=${current.decisionRequest ? "present" : "absent"}).`);
     const binding = currentDecisionBinding(current, "product-choice suspension");
     const requestId = `request:${crypto.randomUUID()}`;
     const createdAt = now;
@@ -901,6 +964,164 @@ export async function resumeOperationProductChoice(root: string, operationId: st
   });
 }
 
+function operationControlLedger(root: string): HumanDecisionLedgerV2 {
+  return new HumanDecisionLedgerV2(path.join(resolveOperationStateRoot(root), ".harness", "security", "human-decisions.json"));
+}
+
+function operationControlPurpose(command: OperationControlCommandV1): { kind: "OPERATION_CONTROL"; command: OperationControlCommandV1 } {
+  return { kind: "OPERATION_CONTROL", command };
+}
+
+/** Record a scoped PAUSE control request for the current operation identity. */
+export async function requestOperationPause(root: string, operationId: string, actorId: string, reason?: string): Promise<HumanDecisionV2> {
+  const current = await loadOperation(root, operationId);
+  if (isTerminalOperation(current.status)) throw new Error("OPERATION_CONTROL_TERMINAL: a terminal operation cannot be paused.");
+  if (current.status !== "RUNNING") throw new Error("OPERATION_CONTROL_STATE_INVALID: only a running operation can be paused.");
+  if (current.phase === "PAUSED" || current.pause) throw new Error("OPERATION_CONTROL_STATE_INVALID: the operation is already paused.");
+  const binding = currentDecisionBinding(current, "pause request");
+  const ledger = operationControlLedger(root);
+  const now = new Date();
+  const purpose = operationControlPurpose("PAUSE");
+  const existing = (await ledger.active(binding, now)).find((decision) => decision.actorId === actorId && decision.kind === "PAUSE" && canonicalSerialize(decision.purpose) === canonicalSerialize(purpose));
+  if (existing) return existing;
+  return ledger.record({
+    ...binding,
+    purpose,
+    kind: "PAUSE",
+    actorId,
+    reason: reason?.trim() || "Authenticated Control Center pause request.",
+    createdAt: now,
+    expiresAt: new Date(now.getTime() + 10 * 60_000)
+  });
+}
+
+/** Record a scoped RESUME control request against a current PAUSED operation. */
+export async function requestOperationResume(root: string, operationId: string, actorId: string, reason?: string): Promise<HumanDecisionV2> {
+  const current = await loadOperation(root, operationId);
+  if (isTerminalOperation(current.status)) throw new Error("OPERATION_CONTROL_TERMINAL: a terminal operation cannot be resumed.");
+  if (current.phase !== "PAUSED" || !current.pause) throw new Error("OPERATION_CONTROL_STATE_INVALID: only a PAUSED operation can be resumed.");
+  assertOperationPauseRecordV1(current.pause);
+  const binding = currentDecisionBinding(current, "resume request");
+  if (!sameHumanDecisionBinding(current.pause, binding)) throw new Error("OPERATION_CONTROL_BINDING_STALE: the pause record no longer matches the current operation, candidate, policy, execution revision, and controller epoch.");
+  const ledger = operationControlLedger(root);
+  const now = new Date();
+  const purpose = operationControlPurpose("RESUME");
+  const existing = (await ledger.active(binding, now)).find((decision) => decision.actorId === actorId && decision.kind === "RESUME" && canonicalSerialize(decision.purpose) === canonicalSerialize(purpose));
+  if (existing) return existing;
+  return ledger.record({
+    ...binding,
+    purpose,
+    kind: "RESUME",
+    actorId,
+    reason: reason?.trim() || "Authenticated Control Center resume request.",
+    createdAt: now,
+    expiresAt: new Date(now.getTime() + 10 * 60_000)
+  });
+}
+
+/** Read the unique current-binding operation-control decision, if any. */
+export async function pendingOperationControl(root: string, operationId: string, command: OperationControlCommandV1): Promise<HumanDecisionV2 | undefined> {
+  const current = await loadOperation(root, operationId);
+  if (isTerminalOperation(current.status)) return undefined;
+  let binding: HumanDecisionBindingV2;
+  try { binding = currentDecisionBinding(current, `${command.toLowerCase()} control observation`); }
+  catch { return undefined; }
+  const ledger = operationControlLedger(root);
+  const purpose = operationControlPurpose(command);
+  const matches = (await ledger.active(binding, new Date())).filter((decision) => decision.kind === command && canonicalSerialize(decision.purpose) === canonicalSerialize(purpose));
+  if (matches.length > 1) throw new Error(`OPERATION_CONTROL_AMBIGUOUS: multiple current ${command} controls are pending for this operation identity.`);
+  return matches[0];
+}
+
+/**
+ * Controller-owned pause application. Consumes the exact scoped PAUSE control
+ * once and persists PAUSED with the drain receipt. A no-op when no current
+ * control exists or the operation is not pausable.
+ */
+export async function pauseOperationIfRequested(root: string, operationId: string, drainReceipt: OperationPauseDrainReceiptV1): Promise<OperationRecordV2> {
+  const decision = await pendingOperationControl(root, operationId, "PAUSE");
+  if (!decision) return loadOperation(root, operationId);
+  if (drainReceipt.activeParticipantIds.length || drainReceipt.activeProviderLeaseIds.length) return loadOperation(root, operationId);
+  return mutateOperation(root, operationId, {}, true, "operation.control.paused", async (current, revision, now) => {
+    assertCurrentControllerOwner(current, "operation pause");
+    if (current.status !== "RUNNING") throw new Error("OPERATION_CONTROL_STATE_INVALID: only a running operation can be paused.");
+    if (current.phase === "PAUSED" || current.pause) return current;
+    const binding = currentDecisionBinding(current, "operation pause");
+    if (!sameHumanDecisionBinding(decision, binding)) throw new Error("OPERATION_CONTROL_BINDING_STALE: pause control no longer matches the current operation, candidate, policy, execution revision, and controller epoch.");
+    await operationControlLedger(root).consumeExact(binding, decision.purpose, decision.decisionId, decision.actorId);
+    const pause: OperationPauseRecordV1 = {
+      version: 1,
+      ...binding,
+      resumePhase: current.phase,
+      reason: decision.reason,
+      requestedBy: decision.actorId,
+      requestedAt: decision.createdAt,
+      pausedAt: now,
+      drainReceipt,
+      requiredRevalidation: [...operationPauseRevalidationValuesV1],
+      state: "PAUSED"
+    };
+    return { ...current, revision, updatedAt: now, lastProgressAt: now, phase: "PAUSED", pause };
+  });
+}
+
+async function applyOperationResume(root: string, operationId: string, decision: HumanDecisionV2): Promise<OperationRecordV2> {
+  return mutateOperation(root, operationId, {}, true, "operation.control.resumed", async (current, revision, now) => {
+    assertCurrentControllerOwner(current, "operation resume");
+    if (current.status !== "RUNNING") throw new Error("OPERATION_CONTROL_STATE_INVALID: only a running paused operation can be resumed.");
+    if (current.phase !== "PAUSED" || !current.pause) return current;
+    const pause = assertOperationPauseRecordV1(current.pause);
+    const binding = currentDecisionBinding(current, "operation resume");
+    if (!sameHumanDecisionBinding(pause, binding)) throw new Error("OPERATION_CONTROL_BINDING_STALE: pause record no longer matches the current operation, candidate, policy, execution revision, and controller epoch.");
+    if (!sameHumanDecisionBinding(decision, binding)) throw new Error("OPERATION_CONTROL_BINDING_STALE: resume control no longer matches the current operation, candidate, policy, execution revision, and controller epoch.");
+    await operationControlLedger(root).consumeExact(binding, decision.purpose, decision.decisionId, decision.actorId);
+    return { ...current, revision, updatedAt: now, lastProgressAt: now, phase: pause.resumePhase, pause: undefined };
+  });
+}
+
+/**
+ * Controller-owned wait for a scoped RESUME control. Exits on a terminal
+ * operation or when the pause was already cleared by another current owner.
+ */
+export async function awaitOperationResume(root: string, operationId: string, options: { pollMs?: number } = {}): Promise<OperationRecordV2> {
+  const pollMs = options.pollMs ?? 250;
+  for (;;) {
+    const current = await loadOperation(root, operationId);
+    if (isTerminalOperation(current.status)) throw new Error(`OPERATION_CONTROL_TERMINAL: operation ${operationId} reached ${current.status} while paused.`);
+    if (current.phase !== "PAUSED" || !current.pause) return current;
+    if (!current.resolvedOperationPolicy) throw new Error("OPERATION_CONTROL_POLICY_REQUIRED: a paused operation must rebind its frozen policy before resume.");
+    assertCurrentControllerOwner(current, "paused operation wait");
+    const decision = await pendingOperationControl(root, operationId, "RESUME");
+    if (decision) {
+      try { return await applyOperationResume(root, operationId, decision); }
+      catch (error) {
+        const latest = await loadOperation(root, operationId).catch(() => current);
+        if (latest.phase !== "PAUSED" || !latest.pause) return latest;
+        throw error;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+}
+
+/** Apply a pending PAUSE and, when paused, block until a scoped RESUME or terminal state. */
+export async function operationControlCheckpoint(root: string, operationId: string, drainReceipt: OperationPauseDrainReceiptV1): Promise<OperationRecordV2> {
+  const paused = await pauseOperationIfRequested(root, operationId, drainReceipt);
+  if (paused.phase === "PAUSED" && paused.pause) return awaitOperationResume(root, operationId);
+  return paused;
+}
+
+/** Rebind a recovered PAUSED record to the current controller identity after takeover. */
+export async function rebindPauseRecordToCurrentIdentity(root: string, operationId: string): Promise<OperationRecordV2> {
+  return mutateOperation(root, operationId, {}, true, "operation.control.recovered", (current, revision, now) => {
+    assertCurrentControllerOwner(current, "paused operation recovery");
+    if (!current.pause || current.phase !== "PAUSED") return current;
+    assertOperationPauseRecordV1(current.pause);
+    const binding = currentDecisionBinding(current, "paused operation recovery");
+    return { ...current, revision, updatedAt: now, lastProgressAt: now, pause: { ...current.pause, ...binding, pausedAt: current.pause.pausedAt } };
+  });
+}
+
 export async function completeOperationProductChoice(root: string, operationId: string): Promise<OperationRecordV2> {
   return mutateOperation(root, operationId, {}, true, "operation.human-decision.completed", (current, revision, now) => {
     assertCurrentControllerOwner(current, "product-choice continuation completion");
@@ -979,7 +1200,26 @@ export async function bindOperationParticipantExecution(root: string, operationI
     if (current.operationExecutionRevision === undefined || current.operationExecutionRevision !== binding.operationExecutionRevision) throw new Error("V2_RESULT_PROVENANCE: execution binding operation execution revision is stale or unsupported.");
     if (currentControllerEpoch(current) !== binding.controllerEpoch) throw new Error("V2_RESULT_PROVENANCE: execution binding controller epoch is stale.");
     const previous = current.participants[input.participantId];
-    if (!previous || previous.role !== input.role || previous.logicalAgent !== input.logicalAgent) {
+    if (!previous) {
+      // The canonical Operation Supervisor is tracked in the supervision
+      // generation list rather than the work-participant map, but its session
+      // still needs a durable execution binding.
+      const agents = current.agents ?? [];
+      const agentIndex = agents.findIndex((agent) => agent.id === input.participantId);
+      const agent = agentIndex >= 0 ? agents[agentIndex] : undefined;
+      if (!agent || agent.role !== input.role || input.role !== "Operation Supervisor") {
+        throw new Error("V2_RESULT_PROVENANCE: execution binding participant is not registered for this role.");
+      }
+      if (binding.operationId !== current.id || binding.participantId !== input.participantId) throw new Error("V2_RESULT_PROVENANCE: execution binding operation or participant identity is stale.");
+      return {
+        ...current,
+        revision,
+        updatedAt: now,
+        lastProgressAt: now,
+        agents: agents.map((item, index) => index === agentIndex ? { ...item, executionBinding: binding } : item)
+      };
+    }
+    if (previous.role !== input.role || previous.logicalAgent !== input.logicalAgent) {
       throw new Error("V2_RESULT_PROVENANCE: execution binding participant is not registered for this role.");
     }
     if (binding.operationId !== current.id || binding.participantId !== input.participantId) throw new Error("V2_RESULT_PROVENANCE: execution binding operation or participant identity is stale.");
@@ -1311,7 +1551,19 @@ async function writeStoredRecord(file: string, record: OperationRecordV2, pendin
   try { await fs.rename(temp, file); } finally { await fs.rm(temp, { force: true }).catch(() => undefined); }
 }
 async function writeRecord(file: string, record: OperationRecordV2): Promise<void> { const temp = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`; await fs.writeFile(temp, `${JSON.stringify(record, null, 2)}\n`); try { await fs.rename(temp, file); } finally { await fs.rm(temp, { force: true }).catch(() => undefined); } }
-export async function withOperationCoordinationLock<T>(root: string, operationId: string, action: () => Promise<T>): Promise<T> { const stateRoot = resolveOperationStateRoot(root); const file = `${operationFile(stateRoot, operationId)}.coordination`; await fs.mkdir(path.dirname(file), { recursive: true }); return withOperationLock(file, action); }
+const coordinationLockOwner = new AsyncLocalStorage<string>();
+export async function withOperationCoordinationLock<T>(root: string, operationId: string, action: () => Promise<T>): Promise<T> {
+  const stateRoot = resolveOperationStateRoot(root);
+  const file = `${operationFile(stateRoot, operationId)}.coordination`;
+  const key = path.resolve(file);
+  // A controller-owned flow may re-enter its own coordination scope (for
+  // example supervisor initialization issuing context authorization). Only the
+  // holding async context is re-entrant; other callers still serialize on the
+  // durable file lock.
+  if (coordinationLockOwner.getStore() === key) return action();
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  return withOperationLock(file, () => coordinationLockOwner.run(key, action));
+}
 async function withOperationLock<T>(file: string, action: () => Promise<T>): Promise<T> { const lock = `${file}.lock`; const deadline = Date.now() + LOCK_TIMEOUT_MS; for (;;) { let handle: Awaited<ReturnType<typeof fs.open>> | undefined; try { handle = await fs.open(lock, "wx"); try { await handle.writeFile(`${process.pid}\n`); return await action(); } finally { await handle.close().catch(() => undefined); await fs.rm(lock, { force: true }).catch(() => undefined); } } catch (error) { if (handle) { await handle.close().catch(() => undefined); await fs.rm(lock, { force: true }).catch(() => undefined); throw error; } if (!isAlreadyExists(error)) throw error; if (await canRecoverLock(lock)) { await fs.rm(lock, { force: true }).catch(() => undefined); continue; } if (Date.now() >= deadline) throw new Error(`Timed out acquiring operation state lock for ${path.basename(file)}.`); await delay(LOCK_RETRY_MS); } } }
 async function canRecoverLock(lock: string): Promise<boolean> { try { const [rawPid, stat] = await Promise.all([fs.readFile(lock, "utf8").catch(() => ""), fs.stat(lock)]); const ownerPid = Number.parseInt(rawPid.trim(), 10); if (Number.isInteger(ownerPid) && ownerPid > 0 && !processAlive(ownerPid)) return true; return Date.now() - stat.mtimeMs > STALE_LOCK_MS; } catch { return true; } }
 function processAlive(pid: number): boolean { try { process.kill(pid, 0); return true; } catch { return false; } }

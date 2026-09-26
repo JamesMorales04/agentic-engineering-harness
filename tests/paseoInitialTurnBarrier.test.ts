@@ -108,4 +108,17 @@ describe("Paseo initial-turn barrier", () => {
     expect(runtime.sdk.materialize).toHaveBeenCalledTimes(1);
     expect(runtime.sdk.create).not.toHaveBeenCalled();
   });
+
+  it("fails closed instead of starting an unleased CLI lifecycle for an operation-owned turn", async () => {
+    const runtime = deps();
+    runtime.sdk.materialize.mockRejectedValue(Object.assign(new Error("provider SDK unavailable"), { name: "PaseoSdkUnavailableError" }));
+
+    await expect(launchManagedPaseoAgent("/repo", {
+      cwd: "/repo", title: "operation-owned", provider: "opencode", prompt: "work", labels: managedLabels
+    }, runtime as never)).rejects.toThrow("PASEO_OPERATION_PROVIDER_LIFECYCLE_REQUIRED");
+
+    expect(runtime.sdk.materialize).toHaveBeenCalledOnce();
+    expect(runtime.sdk.create).not.toHaveBeenCalled();
+    expect(runtime.run).not.toHaveBeenCalled();
+  });
 });

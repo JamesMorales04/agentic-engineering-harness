@@ -431,9 +431,10 @@ export async function recordContextContinuation(controlRoot: string, operationId
 function currentExecution(operation: OperationRecordV2, participantId: string): { binding: ExecutionBindingV2; policy: NonNullable<OperationRecordV2["resolvedOperationPolicy"]> } {
   if (operation.version !== 2 || !operation.resolvedOperationPolicy || !operation.candidateRevision || !operation.operationExecutionRevision) throw new Error("CONTEXT_RUNTIME_V2_BINDING_REJECTED: current operation candidate, policy, and execution revision are required.");
   const participant = operation.participants[participantId];
-  const binding = participant?.executionBinding;
+  const agent = operation.agents?.find((item) => item.id === participantId);
+  const binding = participant?.executionBinding ?? agent?.executionBinding;
   if (!binding) throw new Error("CONTEXT_RUNTIME_V2_BINDING_REJECTED: participant has no current durable ExecutionBinding.");
-  if (!participant || ["COMPLETED", "FAILED", "BLOCKED", "CANCELLED"].includes(participant.status)) throw new Error("CONTEXT_RUNTIME_V2_BINDING_REJECTED: context access is closed for a terminal participant execution.");
+  if (participant && ["COMPLETED", "FAILED", "BLOCKED", "CANCELLED"].includes(participant.status)) throw new Error("CONTEXT_RUNTIME_V2_BINDING_REJECTED: context access is closed for a terminal participant execution.");
   assertExecutionBindingV2(binding);
   const policy = operation.resolvedOperationPolicy;
   assertResolvedOperationPolicyV1(policy);

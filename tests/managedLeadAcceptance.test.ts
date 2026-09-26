@@ -11,7 +11,10 @@ import type { HarnessProjectConfig, TaskContract, ValidationReport } from "../sr
 import { sha256Canonical } from "../src/core/digest.js";
 import { continueManagedPaseoAgent } from "../src/paseo/runtime.js";
 
-vi.mock("../src/paseo/runtime.js", () => ({ continueManagedPaseoAgent: vi.fn() }));
+vi.mock("../src/paseo/runtime.js", () => ({
+  continueManagedPaseoAgent: vi.fn(),
+  inspectManagedPaseoAgent: vi.fn(async () => ({ id: "lead-session", status: "idle", workspaceId: "workspace-lead", labels: { "aeh.provider": "codex" }, raw: {} }))
+}));
 
 const roots: string[] = [];
 const environmentKeys = ["AEH_OPERATION_ID", "AEH_CONTROL_ROOT", "AEH_OPERATION_STATE_REDIRECT", "AEH_CONTROLLER_EPOCH", "AEH_CONTROLLER_TOKEN"] as const;
@@ -30,7 +33,7 @@ describe("managed Lead acceptance evidence", () => {
     const setup = await fixture();
     vi.mocked(continueManagedPaseoAgent).mockResolvedValue({ exitCode: 0, stdout: `AEH_RESULT_JSON=${JSON.stringify({ assertions: [{ assertionId: "ASSERT-1", verdict: "PASS", rationale: "The candidate output matches the requested behavior." }], summary: "Assertion supported.", unresolved: [] })}`, stderr: "", transport: "sdk" });
     const evidence = await requestManagedLeadAcceptance({ root: setup.root, operationId: setup.operationId, compilation: setup.compilation, report: setup.report, implementationIdentity: "implementer" });
-    expect(vi.mocked(continueManagedPaseoAgent)).toHaveBeenCalledWith(setup.root, "lead-session", expect.stringContaining("controllerEpoch"), 600, undefined, expect.objectContaining({ additionalProperties: false }));
+    expect(vi.mocked(continueManagedPaseoAgent)).toHaveBeenCalledWith(setup.root, "lead-session", expect.stringContaining("controllerEpoch"), 600, undefined, expect.objectContaining({ additionalProperties: false }), expect.objectContaining({ "aeh.lead.agentId": "lead-session", "aeh.provider": "codex" }));
     expect(evidence).toMatchObject({ status: "PASS", operationId: setup.operationId, candidate: setup.candidate, leadAgentId: "lead-session", leadGeneration: 1, assertions: [{ assertionId: "ASSERT-1", verdict: "PASS" }] });
     expect(evidence?.policyDigest).toBe((await loadOperation(setup.root, setup.operationId)).resolvedOperationPolicy?.digest);
   });

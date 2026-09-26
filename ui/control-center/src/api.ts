@@ -1,6 +1,7 @@
 import type {
   ControlCenterCandidateProjectionV1,
   ControlCenterCertificationProjectionV1,
+  ControlCenterActionResultV1,
   ControlCenterContextProjectionV1,
   ControlCenterDecisionRequestV1,
   ControlCenterKnowledgeProjectionV1,
@@ -197,5 +198,23 @@ export class ControlCenterApi {
       if (result.accepted !== true) throw new Error("The Control Center did not accept the decision choice.");
       return result;
     });
+  }
+
+  async cancelOperation(csrfToken: string, operationId: string): Promise<ControlCenterActionResultV1> {
+    const result = await this.request<ControlCenterActionResultV1>(`/api/v1/operations/${encodeURIComponent(operationId)}/cancel`, { method: "POST" }, csrfToken, ["version", "accepted"]);
+    if (result.accepted !== true) throw new Error(result.reason ?? "The Control Center did not accept the cancellation request.");
+    return result;
+  }
+
+  async pauseOperation(csrfToken: string, operationId: string): Promise<ControlCenterActionResultV1> {
+    const result = await this.request<ControlCenterActionResultV1>(`/api/v1/operations/${encodeURIComponent(operationId)}/pause`, { method: "POST" }, csrfToken, ["version", "accepted"]);
+    if (result.accepted !== true) throw new Error(result.reason ?? "The Control Center did not accept the pause request.");
+    return result;
+  }
+
+  async resumeOperation(csrfToken: string, operationId: string): Promise<ControlCenterActionResultV1> {
+    const result = await this.request<ControlCenterActionResultV1>(`/api/v1/operations/${encodeURIComponent(operationId)}/resume`, { method: "POST" }, csrfToken, ["version", "accepted"]);
+    if (result.accepted !== true) throw new Error(result.reason ?? "The Control Center did not accept the resume request.");
+    return result;
   }
 }

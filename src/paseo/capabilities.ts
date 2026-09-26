@@ -117,16 +117,41 @@ export function extractPaseoAgentId(stdout: string): string | undefined {
   return undefined;
 }
 
-export function isRecoverableDaemonStatus(result: ProcessResult): boolean {
-  const raw = `${result.stderr}\n${result.stdout}`;
+export type PaseoDaemonStatusObservation =
+  | { state: "healthy"; serverId?: string; pid?: number }
+  | { state: "stopped"; stalePid: boolean }
+  | { state: "unknown" };
+
+/** Classify only supported, current daemon evidence; ambiguous status must fail closed. */
+export function observePaseoDaemonStatus(result: ProcessResult): PaseoDaemonStatusObservation {
+  if (result.timedOut) return { state: "unknown" };
   const parsed = parseDaemonStatusJson(result.stdout) ?? parseDaemonStatusJson(result.stderr);
   if (parsed) {
-    const localDaemon = statusValue(parsed.localDaemon);
-    const connectedDaemon = statusValue(parsed.connectedDaemon);
-    if (connectedDaemon && isHealthyDaemonStatus(connectedDaemon)) return false;
-    if ([localDaemon, connectedDaemon].some((status) => status && isStoppedDaemonStatus(status))) return true;
+    const local = daemonStatusRecord(parsed.localDaemon);
+    const connected = daemonStatusRecord(parsed.connectedDaemon);
+    const localStatus = statusValue(parsed.localDaemon);
+    const connectedStatus = statusValue(parsed.connectedDaemon);
+    const connectedHealthy = connectedStatus !== undefined && isHealthyDaemonStatus(connectedStatus);
+    const connectedAmbiguous = connectedStatus !== undefined && !connectedHealthy && connectedStatus !== "not_probed";
+    if (result.exitCode === 0 && (connectedHealthy || (localStatus !== undefined && isHealthyDaemonStatus(localStatus) && !connectedAmbiguous))) {
+      const serverId = nonEmptyString(connected?.serverId) ?? nonEmptyString(parsed.serverId) ?? nonEmptyString(local?.serverId);
+      const pid = positivePid(parsed.pid) ?? positivePid(local?.pid);
+      return { state: "healthy", ...(serverId ? { serverId } : {}), ...(pid ? { pid } : {}) };
+    }
+    if (result.exitCode === 0 && (localStatus === "stopped" || localStatus === "not_running" || localStatus === "stale_pid")) {
+      if (connectedStatus === undefined || connectedStatus === "not_probed") {
+        return { state: "stopped", stalePid: localStatus === "stale_pid" };
+      }
+    }
+    return { state: "unknown" };
   }
-  return /stale[_ -]?pid|unreachable|connection refused|daemon.*not.*running|not running/i.test(raw);
+
+  const raw = `${result.stderr}\n${result.stdout}`;
+  if (/stale[_ -]?pid/i.test(raw)) return { state: "stopped", stalePid: true };
+  if (/daemon.*(?:not.*running|stopped)|\bnot running\b/i.test(raw)) return { state: "stopped", stalePid: false };
+  const legacyHealthy = /daemon.*(?:running|ready|connected|reachable)/i.test(raw);
+  if (result.exitCode === 0 && legacyHealthy) return { state: "healthy" };
+  return { state: "unknown" };
 }
 
 function parseDaemonStatusJson(value: string): Record<string, unknown> | undefined {
@@ -150,12 +175,20 @@ function statusValue(value: unknown): string | undefined {
   return undefined;
 }
 
-function isStoppedDaemonStatus(status: string): boolean {
-  return ["stopped", "not_running", "unreachable", "stale_pid", "error", "failed"].includes(status);
-}
-
 function isHealthyDaemonStatus(status: string): boolean {
   return ["connected", "reachable", "ready", "running", "healthy"].includes(status);
+}
+
+function daemonStatusRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function positivePid(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 
 function findId(value: unknown): string | undefined {

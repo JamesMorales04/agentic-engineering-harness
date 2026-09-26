@@ -138,6 +138,31 @@ describe("LocalControlCenterV1", () => {
     }
   });
 
+  it("passes only the paired human actor to pause and resume controls", async () => {
+    const received: Array<{ command: string; operationId: string; actorId: string }> = [];
+    const center = new LocalControlCenterV1({
+      onPauseOperation: (operationId, actorId) => { received.push({ command: "pause", operationId, actorId }); return { accepted: true }; },
+      onResumeOperation: (operationId, actorId) => { received.push({ command: "resume", operationId, actorId }); return { accepted: true }; }
+    });
+    const started = await center.start();
+    try {
+      const session = await pairControlCenter(started);
+      const pause = await fetch(`${started.url}api/v1/operations/OP-PAUSE/pause`, { method: "POST", headers: session.headers(true) });
+      const resume = await fetch(`${started.url}api/v1/operations/OP-PAUSE/resume`, { method: "POST", headers: session.headers(true) });
+      expect(pause.status).toBe(200);
+      expect(resume.status).toBe(200);
+      expect(received.map((item) => item.command)).toEqual(["pause", "resume"]);
+      for (const item of received) {
+        expect(item.operationId).toBe("OP-PAUSE");
+        expect(item.actorId).toMatch(/^human:control-center:[a-f0-9]{32}$/);
+      }
+      const missingCsrf = await fetch(`${started.url}api/v1/operations/OP-PAUSE/pause`, { method: "POST", headers: { Cookie: session.cookie, Origin: session.origin } });
+      expect(missingCsrf.status).toBe(403);
+    } finally {
+      await center.close();
+    }
+  });
+
   it("records one paired product choice against the current request, policy and controller epoch", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-control-decision-"));
     try {

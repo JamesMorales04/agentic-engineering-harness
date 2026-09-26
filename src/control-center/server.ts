@@ -50,9 +50,11 @@ export interface LocalControlCenterOptionsV1 {
   snapshot?: () => Promise<ControlCenterSnapshotInputV1> | ControlCenterSnapshotInputV1;
   onDecision?: (decision: ControlCenterDecisionInputV1, actorId: string) => Promise<ControlCenterActionResultV1> | ControlCenterActionResultV1;
   onCancelOperation?: (operationId: string, actorId: string) => Promise<ControlCenterActionResultV1> | ControlCenterActionResultV1;
+  onPauseOperation?: (operationId: string, actorId: string) => Promise<ControlCenterActionResultV1> | ControlCenterActionResultV1;
+  onResumeOperation?: (operationId: string, actorId: string) => Promise<ControlCenterActionResultV1> | ControlCenterActionResultV1;
   healthProbeTimeoutMs?: number;
   paseoGateway?: PaseoGatewayV1;
-  paseo?: { root: string; leadId?: string; participantLabels?: Record<string, string>; provider?: string; model?: string };
+  paseo?: { root: string; leadId?: string; resolveLeadId?: () => Promise<string | undefined>; participantLabels?: Record<string, string>; provider?: string; model?: string };
   uiRoot?: string;
   operationRoots?: () => Promise<readonly string[]> | readonly string[];
 }
@@ -109,6 +111,8 @@ export class LocalControlCenterV1 {
   private readonly snapshotProvider: LocalControlCenterOptionsV1["snapshot"];
   private readonly onDecision?: LocalControlCenterOptionsV1["onDecision"];
   private readonly onCancelOperation?: LocalControlCenterOptionsV1["onCancelOperation"];
+  private readonly onPauseOperation?: LocalControlCenterOptionsV1["onPauseOperation"];
+  private readonly onResumeOperation?: LocalControlCenterOptionsV1["onResumeOperation"];
   private readonly healthProbeTimeoutMs: number;
   private readonly projectHome?: ProjectHomeBindingV1;
   private readonly paseoGateway?: PaseoGatewayV1;
@@ -128,6 +132,8 @@ export class LocalControlCenterV1 {
     this.snapshotProvider = options.snapshot;
     this.onDecision = options.onDecision;
     this.onCancelOperation = options.onCancelOperation;
+    this.onPauseOperation = options.onPauseOperation;
+    this.onResumeOperation = options.onResumeOperation;
     this.healthProbeTimeoutMs = options.healthProbeTimeoutMs ?? DEFAULT_HEALTH_PROBE_TIMEOUT_MS;
     if (!Number.isInteger(this.healthProbeTimeoutMs) || this.healthProbeTimeoutMs < 1 || this.healthProbeTimeoutMs > 30_000) {
       throw new Error("Control Center health probe timeout must be an integer between 1 and 30000 milliseconds.");
@@ -199,8 +205,9 @@ export class LocalControlCenterV1 {
         const body = await this.body(request) as LeadMessageBodyV1;
         if (typeof body.prompt !== "string" || !body.prompt.trim()) throw new Error("prompt must be a non-empty string.");
         if (body.prompt.length > 32_000) throw new Error("prompt exceeds the 32000 character limit.");
-        if (!this.paseoGateway || !this.paseo?.root || !this.paseo.leadId) return this.json(response, 200, { version: CONTROL_CENTER_CONTRACT_VERSION, leadId: this.paseo?.leadId ?? "", status: "DEGRADED", error: "Paseo lead conversation is not configured." });
-        return this.json(response, 200, { version: CONTROL_CENTER_CONTRACT_VERSION, ...await this.paseoGateway.leadConversation({ root: this.paseo.root, leadId: this.paseo.leadId, prompt: body.prompt }) });
+        const leadId = await this.currentPaseoLeadId();
+        if (!this.paseoGateway || !this.paseo?.root || !leadId) return this.json(response, 200, { version: CONTROL_CENTER_CONTRACT_VERSION, leadId: leadId ?? "", status: "DEGRADED", error: "Paseo lead conversation is not configured for the current managed Lead." });
+        return this.json(response, 200, { version: CONTROL_CENTER_CONTRACT_VERSION, ...await this.paseoGateway.leadConversation({ root: this.paseo.root, leadId, prompt: body.prompt }) });
       }
       const projectResource = /^\/api\/v1\/projects\/([^/]+)$/.exec(url.pathname);
       if (request.method === "GET" && projectResource) return this.projectResource(response, decodeURIComponent(projectResource[1]));
@@ -229,6 +236,20 @@ export class LocalControlCenterV1 {
         const session = this.assertCsrf(request);
         const operationId = decodeURIComponent(cancel[1]);
         const result = this.onCancelOperation ? await this.onCancelOperation(operationId, session.actorId) : { accepted: false, reason: "no cancellation handler configured" };
+        return this.json(response, 200, { version: CONTROL_CENTER_CONTRACT_VERSION, ...result });
+      }
+      const pause = /^\/api\/v1\/operations\/([^/]+)\/pause$/.exec(url.pathname);
+      if (request.method === "POST" && pause) {
+        const session = this.assertCsrf(request);
+        const operationId = decodeURIComponent(pause[1]);
+        const result = this.onPauseOperation ? await this.onPauseOperation(operationId, session.actorId) : { accepted: false, reason: "no pause handler configured" };
+        return this.json(response, 200, { version: CONTROL_CENTER_CONTRACT_VERSION, ...result });
+      }
+      const resume = /^\/api\/v1\/operations\/([^/]+)\/resume$/.exec(url.pathname);
+      if (request.method === "POST" && resume) {
+        const session = this.assertCsrf(request);
+        const operationId = decodeURIComponent(resume[1]);
+        const result = this.onResumeOperation ? await this.onResumeOperation(operationId, session.actorId) : { accepted: false, reason: "no resume handler configured" };
         return this.json(response, 200, { version: CONTROL_CENTER_CONTRACT_VERSION, ...result });
       }
       this.json(response, 404, { error: "not found" });
@@ -433,7 +454,16 @@ export class LocalControlCenterV1 {
 
   private async paseoSnapshot(): Promise<PaseoGatewaySnapshotV1> {
     if (!this.paseoGateway || !this.paseo?.root) return { version: 1, status: "DEGRADED", capturedAt: new Date().toISOString(), message: "Paseo gateway is not configured.", participants: [] };
-    return this.paseoGateway.snapshot(this.paseo);
+    const leadId = await this.currentPaseoLeadId();
+    if (!leadId) return { version: 1, status: "DEGRADED", capturedAt: new Date().toISOString(), message: "The current durable managed Lead identity could not be validated.", participants: [] };
+    return this.paseoGateway.snapshot({ ...this.paseo, leadId });
+  }
+
+  private async currentPaseoLeadId(): Promise<string | undefined> {
+    if (!this.paseo) return undefined;
+    if (!this.paseo.resolveLeadId) return this.paseo.leadId;
+    try { return await this.paseo.resolveLeadId(); }
+    catch { return undefined; }
   }
 
   private async paseoParticipantTimeline(response: ServerResponse, participantId: string): Promise<void> {

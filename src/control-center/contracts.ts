@@ -52,6 +52,23 @@ export interface ControlCenterDecisionRequestV1 extends Omit<DecisionRequestV1, 
   candidate: string;
 }
 
+/** Server-derived legal controls; the UI renders only what the controller permits. */
+export interface ControlCenterOperationControlsV1 {
+  pause: boolean;
+  resume: boolean;
+  cancel: boolean;
+}
+
+export interface ControlCenterOperationPauseProjectionV1 {
+  version: typeof CONTROL_CENTER_CONTRACT_VERSION;
+  resumePhase: string;
+  reason: string;
+  requestedBy: string;
+  pausedAt: string;
+  activeParticipantIds: string[];
+  activeProviderLeaseIds: string[];
+}
+
 export interface ControlCenterOperationProjectionV1 {
   version: typeof CONTROL_CENTER_CONTRACT_VERSION;
   operationId: ControlCenterOperationIdV1;
@@ -66,12 +83,27 @@ export interface ControlCenterOperationProjectionV1 {
   runningParticipantCount: number;
   completedParticipantCount: number;
   failedParticipantCount: number;
+  blockedParticipantCount: number;
+  blockedStageCount: number;
   createdAt: string;
   updatedAt: string;
   startedAt?: string;
   finishedAt?: string;
   error?: string;
   decisionRequest?: ControlCenterDecisionRequestV1;
+  pause?: ControlCenterOperationPauseProjectionV1;
+  controls: ControlCenterOperationControlsV1;
+  stages: ControlCenterStageProjectionV1[];
+}
+
+export interface ControlCenterStageProjectionV1 {
+  name: string;
+  status: "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "BLOCKED" | "SKIPPED";
+  revision: number;
+  startedAt?: string;
+  finishedAt?: string;
+  message?: string;
+  artifact?: string;
 }
 
 export interface ControlCenterParticipantProjectionV1 {
@@ -89,6 +121,7 @@ export interface ControlCenterParticipantProjectionV1 {
   startedAt?: string;
   finishedAt?: string;
   resultArtifact?: string;
+  error?: string;
 }
 
 export interface ControlCenterOperationDetailProjectionV1 extends ControlCenterOperationProjectionV1 {

@@ -98,8 +98,7 @@ describe("AEH-managed OpenCode identity through Paseo", () => {
           OPENCODE_CONFIG_CONTENT: expect.any(String)
         }),
         config: expect.objectContaining({
-          provider: "opencode",
-          model: "opencode-go/MiMo-V2.6-Flash"
+          provider: "opencode/opencode-go/MiMo-V2.6-Flash"
         })
       })
     );
