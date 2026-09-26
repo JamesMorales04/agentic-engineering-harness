@@ -1,0 +1,22 @@
+version: 1
+id: quality-convergence-thresholds
+taskId: EVAL-QUALITY-1
+baseRef: HEAD
+domain: review-convergence
+scenario: evals/scenarios/qualityConvergenceThresholds.ts
+runCommand: node {aehRoot}/node_modules/.bin/tsx {aehRoot}/evals/scenarios/qualityConvergenceThresholds.ts {workspace}
+expectations:
+  status: PASS
+  maxRepairs: 2
+  maxHumanInterventions: 0
+  maxCostUsd: 0.05
+  requiredChecks:
+    - quality.clean-gate-passes
+    - quality.critical-blocks
+    - quality.remediation-required
+weights:
+  status: 60
+  firstPass: 15
+  repairs: 10
+  interventions: 10
+  efficiency: 5

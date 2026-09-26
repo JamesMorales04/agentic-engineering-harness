@@ -188,7 +188,7 @@ export interface HarnessProjectConfig {
     };
     tools?: string[];
   };
-  telemetry?: { enabled?: boolean; required?: boolean; localEventsFile?: string; exporter?: "none" | "otlp-http-json" | string; endpoint?: string; headers?: Record<string, string>; serviceName?: string; };
+  telemetry?: { enabled?: boolean; required?: boolean; localEventsFile?: string; localMetricsFile?: string; exporter?: "none" | "otlp-http-json" | string; endpoint?: string; headers?: Record<string, string>; serviceName?: string; };
   evals?: { corpusDir?: string; resultsDir?: string; workspacesDir?: string; defaultRuns?: number; confidenceLevel?: number; fullStack?: { enabled?: boolean; required?: boolean; strictSupplyChain?: boolean } };
   certification?: { enabled?: boolean; policyPath?: string; provider?: string; fixtureRoot?: string; requireSandbox?: boolean; maxAttempts?: number; maxDurationMs?: number; maxCostUsd?: number; maxTotalTokens?: number };
   provenance?: { outputDir?: string; artifact?: string; buildType?: string; required?: boolean; sbom?: { required?: boolean; command?: string }; signing?: { required?: boolean; key?: string }; verification?: { required?: boolean; publicKey?: string } };

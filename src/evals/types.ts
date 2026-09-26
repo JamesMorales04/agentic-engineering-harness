@@ -6,11 +6,36 @@ export interface EvalVariant {
   env?: Record<string, string>;
 }
 
+export interface EvalCorpusIdentityV1 {
+  version: 1;
+  corpusId: string;
+  corpusVersion: number;
+  digest: string;
+  caseDigest: string;
+}
+
+/** Build identity of the executable that produced an eval observation. */
+export interface EvalBuildIdentityV1 {
+  version: 1;
+  packageVersion: string;
+  releaseId: string;
+  gitSha: string;
+  buildDigest: string;
+}
+
+export interface EvalCorpusManifestV1 {
+  version: 1;
+  corpusId: string;
+  description?: string;
+  cases: Array<{ id: string; domain: string; path: string; scenario: string }>;
+}
+
 export interface EvalCase {
   version: 1;
   id: string;
   taskId: string;
   baseRef: string;
+  domain?: string;
   fixtureDir?: string;
   setupCommands?: string[];
   runCommand?: string;
@@ -46,4 +71,6 @@ export interface EvalResult {
   startedAt: string;
   finishedAt: string;
   resultFile?: string;
+  corpus?: EvalCorpusIdentityV1;
+  build?: EvalBuildIdentityV1;
 }

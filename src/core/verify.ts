@@ -8,6 +8,8 @@ import { validateDiffScope } from "../validators/diffScope.js";
 import { validateDiffBudget } from "../validators/constraints.js";
 import { runValidationCommand } from "../validators/commands.js";
 import { recordEvent } from "../telemetry/events.js";
+import { recordValidationTelemetry } from "../telemetry/metrics.js";
+import { resolveTelemetryCorrelation } from "../telemetry/identity.js";
 import { runOpaPolicies, type OpaExecutionIdentity } from "../validators/opa.js";
 import { verifyTaskSeal } from "./seal.js";
 import { runConfiguredValidators } from "../validators/registry.js";
@@ -49,6 +51,8 @@ export async function verifyTask(root: string, config: HarnessProjectConfig, con
   const reportsDir = config.sdd?.reportsDir ?? ".harness/reports"; const output = path.join(stateRoot, reportsDir, `${contract.task.id}.json`); await fs.mkdir(path.dirname(output), { recursive: true });
   if (candidate) await assertWorkspaceMatchesCandidate(executionRoot, candidate, await currentCandidate(stateRoot) ?? null);
   await fs.writeFile(output, `${JSON.stringify(report, null, 2)}\n`);
+  const telemetryIdentity = await resolveTelemetryCorrelation(stateRoot, currentOperationContext().id);
+  if (telemetryIdentity) await recordValidationTelemetry(stateRoot, config, telemetryIdentity, { status, durationMs: Date.now() - Date.parse(startedAt) });
   await recordEvent(stateRoot, config, "harness.verify.finish", { taskId: contract.task.id, status, checks: checks.length }); return report;
 }
 

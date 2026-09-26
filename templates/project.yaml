@@ -294,6 +294,7 @@ telemetry:
   enabled: true
   required: false
   localEventsFile: .harness/telemetry/events.ndjson
+  localMetricsFile: .harness/telemetry/metrics.ndjson
   exporter: none
   serviceName: engineering-harness-consumer
 

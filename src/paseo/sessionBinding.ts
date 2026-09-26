@@ -3,6 +3,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { sha256Canonical, sha256Utf8 } from "../core/digest.js";
 import { resolveOperationStateRoot } from "../operations/state.js";
+import { resolveTelemetryCorrelation } from "../telemetry/identity.js";
+import { recordRuntimeSessionTelemetry, type RuntimeSessionTelemetryEventV1 } from "../telemetry/metrics.js";
 
 export type PaseoSessionBindingStatusV1 = "ACTIVE" | "ARCHIVED" | "LOST";
 
@@ -113,6 +115,7 @@ export async function bindPaseoSession(root: string, input: PaseoSessionBindingI
       const at = normalized.now.toISOString();
       const binding = createBinding(normalized, 1, at, at);
       await writeBinding(file, binding);
+      await recordSessionTelemetry(root, normalized, "materialized");
       return binding;
     }
     if (!paseoSessionBindingMatches(stored, normalized.identity)) {
@@ -121,8 +124,15 @@ export async function bindPaseoSession(root: string, input: PaseoSessionBindingI
     if (stored.paseoAgentId !== normalized.paseoAgentId) {
       throw bindingError("PASEO_SESSION_BINDING_CONFLICT", `stored session binding for participant '${normalized.identity.participantId}' is already bound to Paseo agent '${stored.paseoAgentId}'.`);
     }
+    await recordSessionTelemetry(root, normalized, "reused");
     return stored;
   });
+}
+
+/** Observation-only runtime session metric bound to current durable identity. */
+async function recordSessionTelemetry(root: string, normalized: NormalizedBindingInput, event: RuntimeSessionTelemetryEventV1): Promise<void> {
+  const correlation = await resolveTelemetryCorrelation(root, normalized.identity.operationId, normalized.identity.participantId);
+  if (correlation) await recordRuntimeSessionTelemetry(root, undefined, correlation, event);
 }
 
 /** Explicit rebind path: always writes a new binding with the next session
@@ -137,6 +147,7 @@ export async function rotatePaseoSessionBinding(root: string, input: PaseoSessio
     const sessionGeneration = (previous?.sessionGeneration ?? 0) + 1;
     const binding = createBinding(normalized, sessionGeneration, previous?.createdAt ?? at, at);
     await writeBinding(file, binding);
+    await recordSessionTelemetry(root, normalized, "rotated");
     return binding;
   });
 }

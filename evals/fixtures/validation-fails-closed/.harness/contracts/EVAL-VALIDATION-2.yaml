@@ -1,0 +1,20 @@
+version: 1
+task:
+  id: EVAL-VALIDATION-2
+  title: deterministic validation fail-closed eval
+source:
+  spec: specs/EVAL-VALIDATION-2.md
+scope:
+  allowed:
+    - src/**
+    - specs/**
+    - .harness/**
+routing:
+  intent: implement
+  route: DIRECT
+  assurance: STANDARD
+requirements:
+  - id: REQ-1
+    description: a failing required command fails the validation
+    validators:
+      - command.smoke

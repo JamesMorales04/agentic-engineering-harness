@@ -59,6 +59,8 @@ import { runDirectWorkerProcess } from "./directProcess.js";
 import { createDirectWorkerHome, removeDirectWorkerHome, type DirectWorkerHome, buildDirectWorkerEnvironment } from "./directProcess.js";
 import { prepareCodexThread, prepareOpenCodeSession } from "./runtimeSessions.js";
 import { recordEvent } from "../telemetry/events.js";
+import { recordParticipantTelemetry } from "../telemetry/metrics.js";
+import { resolveTelemetryCorrelation } from "../telemetry/identity.js";
 import { assertExecutionAuthority, prepareExecutionAuthority, type ExecutionAuthorityV1 } from "../security/executionLease.js";
 import { sha256Canonical } from "../core/digest.js";
 import { createPromptManifest } from "../context/runtimeV2.js";
@@ -115,6 +117,34 @@ async function recordAgentLifecycle(
   // Lifecycle evidence must never turn an otherwise valid agent result into a
   // runtime failure. The event itself is durable when telemetry is enabled.
   await recordEvent(root, config, `harness.agent.${name}`, attributes).catch(() => undefined);
+  await recordParticipantLifecycleMetric(root, config, name, attributes).catch(() => undefined);
+}
+
+/**
+ * Participant launch/result signals are derived from the existing lifecycle
+ * evidence and bound to the current durable operation identity. Metrics are
+ * observations; a missing identity records nothing rather than guessing.
+ */
+async function recordParticipantLifecycleMetric(
+  root: string,
+  config: HarnessProjectConfig,
+  name: string,
+  attributes: Record<string, unknown>
+): Promise<void> {
+  if (name !== "participant.started" && name !== "participant.settled") return;
+  const operationId = typeof attributes.operationId === "string" ? attributes.operationId : undefined;
+  if (!operationId) return;
+  const participantId = typeof attributes.participantId === "string" ? attributes.participantId : undefined;
+  const correlation = await resolveTelemetryCorrelation(root, operationId, participantId);
+  if (!correlation) return;
+  const transport = typeof attributes.transport === "string" ? attributes.transport : undefined;
+  if (name === "participant.started") {
+    await recordParticipantTelemetry(root, config, correlation, { event: "launch", transport });
+    return;
+  }
+  const status = typeof attributes.status === "string" ? attributes.status : typeof attributes.participantStatus === "string" ? attributes.participantStatus : undefined;
+  const durationMs = typeof attributes.durationMs === "number" ? attributes.durationMs : undefined;
+  await recordParticipantTelemetry(root, config, correlation, { event: "result", transport, status, durationMs });
 }
 
 export async function executeAgentPrompt(
@@ -1252,13 +1282,16 @@ async function finalizeOperationSession(
     contractValid: !contractFailure
   });
   const settled = await loadOperation(root, operationId).catch(() => undefined);
+  const observedStartedMs = observed.startedAt ? Date.parse(observed.startedAt) : Number.NaN;
   await recordAgentLifecycle(root, config, "participant.settled", {
     operationId,
     participantId: observed.id,
     logicalAgent: selection.logicalAgent,
+    transport: observed.transport,
     participantStatus: settled?.participants[observed.id]?.status,
     operationStatus: settled?.status,
-    operationRevision: settled?.revision
+    operationRevision: settled?.revision,
+    ...(Number.isFinite(observedStartedMs) ? { durationMs: Math.max(0, Date.now() - observedStartedMs) } : {})
   });
   return result;
 }

@@ -52,6 +52,7 @@
     "@opentelemetry/context-async-hooks": "^2.10.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.206.0",
     "@opentelemetry/resources": "^2.10.0",
+    "@opentelemetry/sdk-metrics": "^2.1.0",
     "@opentelemetry/sdk-trace-node": "^2.10.0",
     "commander": "^14.0.1",
     "minimatch": "^10.0.3",

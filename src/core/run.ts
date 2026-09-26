@@ -22,6 +22,8 @@ import { executeAgentPrompt } from "../workers/agentPrompt.js";
 import { buildRepairPrompt } from "../workers/prompt.js";
 import { snapshotGraph } from "../validators/graphify.js";
 import { recordEvent } from "../telemetry/events.js";
+import { recordOperationTelemetry } from "../telemetry/metrics.js";
+import { resolveTelemetryCorrelation } from "../telemetry/identity.js";
 import { extractUsageMetrics } from "../metrics/usage.js";
 import { buildRunMetrics, countHumanInterventions } from "../metrics/runMetrics.js";
 import { deliveryWorkspacePath } from "../delivery/handoff.js";
@@ -530,6 +532,8 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
       if (effectiveConfig.memory.required) throw error;
     }
   }
+  const telemetryIdentity = await resolveTelemetryCorrelation(controlRoot, operationId ?? currentOperationContext().id);
+  if (telemetryIdentity) await recordOperationTelemetry(controlRoot, effectiveConfig, telemetryIdentity, { kind: "run", route: implementationRoute, assurance, status: result.status, durationMs: metrics.durationMs, repairCount: metrics.repairCount, humanInterventions: metrics.humanInterventions });
   await recordEvent(controlRoot, effectiveConfig, "harness.run.finish", { taskId: effectiveContract.task.id, status: result.status, attempts, route: implementationRoute, assurance, workspaceRoot: workspaceRoot === controlRoot ? undefined : workspaceRoot, agent: selection?.logicalAgent, runtime: selection?.runtimeName, model: selection?.modelId, profile: selection?.profile, waves: result.planning?.waves, controllerSha256: result.controlPlane?.sha256, controllerDrifted: result.controlPlane?.drifted, evidenceComplete: result.evidence?.complete, evidenceSha256: result.evidence?.sha256, reviewStatus: reviewSummary?.status, reviewFinalState: reviewSummary?.finalState, humanRequired: reviewSummary?.humanRequired ?? deliverySummary?.humanRequired, debtScore: reviewSummary?.debtScore, deliveryStatus: deliverySummary?.status, pullRequest: deliverySummary?.pullRequest, durationMs: metrics.durationMs, totalTokens: metrics.usage.totalTokens ?? 0, costUsd: metrics.usage.costUsd ?? 0 });
   return result;
 }
