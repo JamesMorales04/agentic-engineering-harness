@@ -280,6 +280,10 @@ export class ControlCenterJourneyFixture {
       if (/^AEH_(OPERATION_ID|OPERATION_KIND|OPERATION_WORKSPACE_ID|CONTROL_ROOT|OPERATION_STATE_REDIRECT|CONTROLLER_EPOCH|CONTROLLER_TOKEN|DETERMINISTIC_PASEO)$/.test(key)) delete env[key];
     }
     delete env.AEH_S9_REPO_ROOT;
+    // The disposable fixture must never attach its detached operation to the
+    // interactive Paseo session that is running the test.
+    delete env.PASEO_AGENT_ID;
+    delete env.PASEO_PARENT_AGENT_ID;
     return env;
   }
 

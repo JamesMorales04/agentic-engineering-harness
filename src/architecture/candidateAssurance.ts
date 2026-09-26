@@ -9,10 +9,11 @@ export const CANDIDATE_ASSURANCE_VERSION = 1 as const;
 
 export type CandidateAssuranceStatusV1 = "READY" | "BLOCKED";
 export type CandidateAssuranceRiskV1 = "low" | "medium" | "high";
-export type CandidateAssuranceProviderAdapterV1 = "playwright" | "opengrep" | "trivy";
+export type CandidateAssuranceProviderAdapterV1 = "playwright" | "visual" | "opengrep" | "trivy";
 
 const candidateAssuranceProviderAdapters: Readonly<Record<string, Readonly<Record<string, CandidateAssuranceProviderAdapterV1>>>> = {
   "browser-test": { playwright: "playwright" },
+  "visual-test": { playwright: "visual" },
   "static-security": { opengrep: "opengrep" },
   "dependency-security": { trivy: "trivy" }
 };
@@ -120,6 +121,7 @@ const reviewDimensionRules: Readonly<Record<string, ReviewDimensionRule>> = {
   "migration/schema": { kind: "integration-test", floor: "CRITICAL" },
   "dependency/supply chain": { kind: "dependency-security", floor: "CRITICAL" },
   "UI/browser": { kind: "browser-test", floor: "ELEVATED" },
+  "UI/visual": { kind: "visual-test", floor: "ELEVATED" },
   architecture: { kind: "architecture", floor: "ELEVATED" },
   concurrency: { kind: "integration-test", floor: "CRITICAL" },
   operations: { kind: "integration-test", floor: "ELEVATED" },
@@ -216,7 +218,7 @@ function validatedPolicy(policy: CandidateAssurancePolicyV1): CandidateAssurance
   if (typeof policy.providerDiversity !== "boolean") reject("policy.providerDiversity must be a boolean.");
   if (!Number.isSafeInteger(policy.minimumIndependentReviewers) || policy.minimumIndependentReviewers < 0) reject("policy.minimumIndependentReviewers must be a non-negative integer.");
   if (!Array.isArray(policy.allowedValidationKinds)) reject("policy.allowedValidationKinds must be an array.");
-  if (policy.allowedValidationKinds.some((kind) => !["unit-test", "integration-test", "bdd", "contract-test", "browser-test", "static-security", "dependency-security", "architecture", "policy", "command"].includes(kind))) reject("policy.allowedValidationKinds contains an unsupported validation kind.");
+  if (policy.allowedValidationKinds.some((kind) => !["unit-test", "integration-test", "bdd", "contract-test", "browser-test", "visual-test", "static-security", "dependency-security", "architecture", "policy", "command"].includes(kind))) reject("policy.allowedValidationKinds contains an unsupported validation kind.");
   return policy;
 }
 

@@ -1,4 +1,5 @@
 import type { HarnessProjectConfig, TaskContract, ValidationCapability, ValidationProviderSpec, ValidatorSpec } from "../../core/types.js";
+import type { CandidateRevisionV1 } from "../../operations/v2Contracts.js";
 
 export type ProviderStatus = "PASS" | "FAIL" | "SKIP";
 
@@ -11,6 +12,7 @@ export interface ValidationProviderContext {
   providerSpec?: ValidationProviderSpec;
   rawArtifactDirectory: string;
   baseRef?: string;
+  candidate?: CandidateRevisionV1;
 }
 
 export interface ProviderDetection {
@@ -107,7 +109,8 @@ export interface IntegrationEnvironmentResult {
   capability: "integration-test";
   status: ProviderStatus;
   requirements: IntegrationEnvironmentRequirement[];
-  lifecycle: { provisioned: boolean; ready: boolean; tested: boolean; cleaned: boolean; durationMs: number };
+  lifecycle: { provisioned: boolean; ready: boolean; tested: boolean; cleaned: boolean; cleanupRequired: boolean; durationMs: number };
+  blockers: string[];
   connectionData?: Record<string, string>;
   rawArtifact: string;
 }

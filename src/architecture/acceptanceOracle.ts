@@ -89,7 +89,7 @@ export interface AcceptanceOracleArtifactV1 {
 const assuranceRank: Readonly<Record<AssuranceLevel, number>> = { NONE: 0, STANDARD: 1, ELEVATED: 2, CRITICAL: 3 };
 const validationStrength: Readonly<Record<string, AssuranceLevel>> = {
   "unit-test": "STANDARD", bdd: "STANDARD", "integration-test": "ELEVATED", "contract-test": "ELEVATED",
-  "browser-test": "ELEVATED", architecture: "ELEVATED", policy: "ELEVATED", command: "STANDARD",
+  "browser-test": "ELEVATED", "visual-test": "ELEVATED", architecture: "ELEVATED", policy: "ELEVATED", command: "STANDARD",
   "static-security": "CRITICAL", "dependency-security": "CRITICAL"
 };
 

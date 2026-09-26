@@ -1,0 +1,110 @@
+{
+  "slice": "S11",
+  "generatedAt": "2026-09-26T20:18:55.461Z",
+  "candidate": {
+    "candidateId": "CAND-S11-BROWSER-VISUAL",
+    "revision": 1,
+    "identityDigest": "77df7abaf75009159a3c64e3dfcfa78e7120b2deece3fb18ea4151331ced80a1",
+    "sourceDigest": "622e00a0102db0b6bb56a0174c94142ff49a7bd8dcb9ec5fd32a8bdb1d95edd5"
+  },
+  "release": {
+    "releaseId": "release-1790453923904-20067-c73053be",
+    "version": 1,
+    "packageVersion": "0.8.4",
+    "gitSha": "9b74c04167e79748312160b6476cc5050050b4e3",
+    "buildDigest": "3f3572e5fb6452e43965e509df1a12f5d4483ea31ecc053d084829ecd2532b9c",
+    "dirty": true
+  },
+  "boundary": "real built candidate + real Control Center UI/server/controller + real Playwright Chromium through the candidate-bound validator path; the Paseo model conversation is the file-scripted deterministic boundary (BROWSER/VISUAL evidence, not REAL_PROVIDER certification)",
+  "runs": [
+    {
+      "lane": "BROWSER",
+      "checkId": "s11-browser-journey",
+      "command": "'/home/james/Desarrollo/agentic-engineering-harness/node_modules/.bin/playwright' test --config tests/browser/playwright.config.ts --grep \"S11 browser\" --output '/home/james/Desarrollo/agentic-engineering-harness/.harness/evidence/playwright-s11-output' --reporter=json",
+      "status": "PASS",
+      "message": "playwright validator passed.",
+      "findingCount": 0,
+      "evidence": {
+        "artifact": ".harness/evidence/browser/CAND-S11-BROWSER-VISUAL-r1-77df7abaf750/s11-browser-journey.json",
+        "digest": "9540a9d8c77db5c14e2ce6a0f682a4406d4cade43f52e6dc27f1466531501d39",
+        "provider": {
+          "name": "playwright",
+          "version": "1.62.1",
+          "runtime": "playwright"
+        },
+        "commandDigest": "265609cd279b6bcf47b92df309dea4825f0d076668897d819d84c784de4674c9",
+        "workspaceSourceDigest": "622e00a0102db0b6bb56a0174c94142ff49a7bd8dcb9ec5fd32a8bdb1d95edd5",
+        "artifacts": [
+          {
+            "kind": "raw",
+            "path": ".harness/evidence/browser/CAND-S11-BROWSER-VISUAL-r1-77df7abaf750/s11-browser-journey.raw",
+            "digest": "b909839594e46036bfce84452a80bb3737ba37d9eddcff723208fbefdcc02a32",
+            "bytes": 3732,
+            "sanitized": true
+          },
+          {
+            "kind": "screenshot",
+            "path": ".harness/evidence/playwright-s11-output/s11-control-center-browser-11b57-ndidate-bound-and-traceable-chromium/attachments/s11-browser-projection-b4e3121ea0fa8437776562734457858792b9904b.png",
+            "digest": "0c1cdf7ad1923b661ff00750689ab2f4d0ed41cef462a6581c76ed82e6ba3111",
+            "bytes": 302798,
+            "sanitized": true
+          }
+        ]
+      },
+      "verified": true
+    },
+    {
+      "lane": "VISUAL",
+      "checkId": "s11-visual-journey",
+      "command": "'/home/james/Desarrollo/agentic-engineering-harness/node_modules/.bin/playwright' test --config tests/browser/playwright.config.ts --grep \"S11 visual\" --output '/home/james/Desarrollo/agentic-engineering-harness/.harness/evidence/playwright-s11-output' --reporter=json",
+      "status": "PASS",
+      "message": "visual validator passed.",
+      "findingCount": 0,
+      "evidence": {
+        "artifact": ".harness/evidence/visual/CAND-S11-BROWSER-VISUAL-r1-77df7abaf750/s11-visual-journey.json",
+        "digest": "7169dd276b1ffcdf479b442949a8b2f745617692e9902870c691799cdbc53fe4",
+        "provider": {
+          "name": "playwright-visual",
+          "version": "1.62.1",
+          "runtime": "playwright"
+        },
+        "commandDigest": "6f4b6abcaab5dae5ffaa1fed550092f1d673f37cea039ec4c0fc7057fda3db36",
+        "workspaceSourceDigest": "622e00a0102db0b6bb56a0174c94142ff49a7bd8dcb9ec5fd32a8bdb1d95edd5",
+        "artifacts": [
+          {
+            "kind": "raw",
+            "path": ".harness/evidence/visual/CAND-S11-BROWSER-VISUAL-r1-77df7abaf750/s11-visual-journey.raw",
+            "digest": "a9688032f99c2cc4aa03afed8922ca9f2cb2c0c798a4049f3ba89d0743d69638",
+            "bytes": 4548,
+            "sanitized": true
+          },
+          {
+            "kind": "screenshot",
+            "path": ".harness/evidence/playwright-s11-output/s11-control-center-browser-2f6b5-are-stable-and-digest-bound-chromium/attachments/s11-visual-heading-2936930c8de6df4a6c31803d707b6cd33ad29455.png",
+            "digest": "21ec4e27bdb2aca29a3ed672c310e35533289f4636ddfe26f93badd8772565ee",
+            "bytes": 9375,
+            "sanitized": true
+          },
+          {
+            "kind": "screenshot",
+            "path": ".harness/evidence/playwright-s11-output/s11-control-center-browser-2f6b5-are-stable-and-digest-bound-chromium/attachments/s11-visual-decision-card-6256af476bf87af9dd7def1d59bf02d03327b0c6.png",
+            "digest": "3b6614e64a979592c1230296f522111c27892fb775f30d79db9f72aba3ae9eac",
+            "bytes": 125726,
+            "sanitized": true
+          },
+          {
+            "kind": "screenshot",
+            "path": ".harness/evidence/playwright-s11-output/s11-control-center-browser-2f6b5-are-stable-and-digest-bound-chromium/attachments/s11-visual-footer-62ce6d24d4f242be205fa5fa303b8fdbb33974f6.png",
+            "digest": "6a7e58358328e695f0434af10f6f27ab60224f87766c42315c35190b45795c68",
+            "bytes": 7490,
+            "sanitized": true
+          }
+        ]
+      },
+      "verified": true
+    }
+  ],
+  "status": "PASS",
+  "sanitized": true,
+  "credentialsCookiesCsrfHeadersAndNoncesPersisted": false
+}

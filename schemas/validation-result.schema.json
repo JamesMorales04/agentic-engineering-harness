@@ -46,7 +46,8 @@
         "capability": { "const": "integration-test" },
         "status": { "enum": ["PASS", "FAIL", "SKIP"] },
         "requirements": { "type": "array" },
-        "lifecycle": { "type": "object", "required": ["provisioned", "ready", "tested", "cleaned", "durationMs"] },
+        "lifecycle": { "type": "object", "required": ["provisioned", "ready", "tested", "cleaned", "durationMs"], "properties": { "cleanupRequired": { "type": "boolean" } } },
+        "blockers": { "type": "array", "items": { "type": "string" } },
         "rawArtifact": { "type": "string" }
       }
     },

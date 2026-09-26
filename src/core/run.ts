@@ -45,6 +45,7 @@ import { discoverProjectStackProfile, type ProjectStackProfileV1 } from "../part
 import { compileCandidateAssuranceV1, candidateImpactValidationRequirementsV1, candidateAssuranceProviderAdapterV1, type CandidateAssuranceCompilationV1, type CandidateAssurancePolicyV1 } from "../architecture/candidateAssurance.js";
 import { requireSastEvidenceV1 } from "../security/sastEvidence.js";
 import { resolveValidationRequirements, validationRequirementKindValues, type ResolvedValidationActionV1, type ValidationRequirementKindV1, type ValidationResolutionV1 } from "../architecture/validationRequirements.js";
+import { requireProviderLaneEvidenceForActionV1, type ProviderEvidenceLaneV1 } from "../validation/laneEvidence.js";
 import type { CandidateImpactV1 } from "../candidates/assembler.js";
 import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import { assertResolvedOperationPolicyV1, compileResolvedOperationPolicy, type ResolvedOperationPolicyV1 } from "../architecture/executionIdentity.js";
@@ -712,7 +713,7 @@ function candidateAssurancePolicyFromFrozenPolicy(policy: ResolvedOperationPolic
   };
 }
 
-async function runCandidateImpactValidations(input: {
+export async function runCandidateImpactValidations(input: {
   root: string;
   config: HarnessProjectConfig;
   contract: TaskContract;
@@ -772,7 +773,8 @@ async function runCandidateImpactValidations(input: {
               spec,
               providerSpec: provider ?? providerSpecFor(input.config, action.kind, spec),
               rawArtifactDirectory: path.resolve(input.root, input.config.evidence?.outputDir ?? ".harness/evidence", "raw"),
-              baseRef: input.report.metadata.baseRef
+              baseRef: input.report.metadata.baseRef,
+              ...(input.report.candidate ? { candidate: input.report.candidate } : {})
             };
             execution = await runCapabilityValidator(context, spec.id, action.kind, true);
           } else {
@@ -787,25 +789,56 @@ async function runCandidateImpactValidations(input: {
         const evidence = await requireSastEvidenceV1(input.root, input.config, input.report.candidate!, execution.id);
         sastEvidence = { artifact: evidence.artifact, digest: evidence.digest };
       }
+      let laneEvidence: { lane: ProviderEvidenceLaneV1; artifact: string; digest: string } | undefined;
+      const requiredLane = providerEvidenceLaneForKind(requirement.kind);
+      if (execution.status === "PASS" && requiredLane) {
+        const evidence = await requireProviderLaneEvidenceForActionV1({
+          root: input.root,
+          config: input.config,
+          lane: requiredLane,
+          candidate: input.report.candidate!,
+          checkId: execution.id,
+          kind: requirement.kind,
+          actionSource: action.source,
+          actionSelector: action.selector
+        });
+        laneEvidence = { lane: requiredLane, artifact: evidence.artifact, digest: evidence.digest };
+      }
       output.push({
         id: `candidate.assurance.validation.${requirement.id}`,
         category: "candidate-impact-validation",
         status: execution.status === "PASS" ? "PASS" : "FAIL",
-        message: execution.status === "PASS" ? `Required ${requirement.kind} evidence passed: ${requirement.property}` : `Required ${requirement.kind} validation for impact requirement '${requirement.id}' returned ${execution.status}.`,
+        message: execution.status === "PASS" ? `Required ${requirement.kind} evidence passed: ${requirement.property}` : `Required ${requirement.kind} validation for impact requirement '${requirement.id}' returned ${execution.status}: ${execution.message}`,
         durationMs: execution.durationMs,
-        details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, ...(sastEvidence ? { sastEvidence, artifact: sastEvidence.artifact } : {}) }
+        details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, ...(sastEvidence ? { sastEvidence, artifact: sastEvidence.artifact } : {}), ...(laneEvidence ? { laneEvidence, artifact: laneEvidence.artifact } : {}) }
       });
     } catch (error) {
+      const message = String(error);
+      const blocker = providerLaneBlockerFromMessage(message);
       output.push({
         id: `candidate.assurance.validation.${requirement.id}`,
         category: "candidate-impact-validation",
         status: "FAIL",
-        message: `Required validation for impact requirement '${requirement.id}' did not produce evidence: ${String(error)}`,
-        details: { requirementId: requirement.id, kind: requirement.kind, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest }
+        message: `Required validation for impact requirement '${requirement.id}' did not produce evidence: ${message}`,
+        details: { requirementId: requirement.id, kind: requirement.kind, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, ...(blocker ? { blocker } : {}) }
       });
     }
   }
   return output;
+}
+
+function providerEvidenceLaneForKind(kind: ValidationRequirementKindV1): ProviderEvidenceLaneV1 | undefined {
+  if (kind === "contract-test" || kind === "bdd") return "CONTRACT";
+  if (kind === "integration-test") return "INTEGRATION";
+  if (kind === "browser-test") return "BROWSER";
+  if (kind === "visual-test") return "VISUAL";
+  return undefined;
+}
+
+const providerLaneBlockerPattern = /(PROVIDER_LANE_EVIDENCE_(?:REQUIRED|STALE|TAMPERED|PERSIST_FAILED)|PROVIDER_LANE_REFERENCE_REQUIRED|PROVIDER_LANE_CANDIDATE_BINDING_REQUIRED|(?:CONTRACT|INTEGRATION|BROWSER|VISUAL)_PROVIDER_UNAVAILABLE)/;
+
+function providerLaneBlockerFromMessage(message: string): string | undefined {
+  return message.match(providerLaneBlockerPattern)?.[1];
 }
 
 function requiresCandidateBoundSastEvidence(kind: ValidationRequirementKindV1, action: ResolvedValidationActionV1, config: HarnessProjectConfig): boolean {

@@ -47,7 +47,8 @@ function validatorTool(spec: ValidatorSpec): string | undefined {
     case "gherkin": return "dotnet";
     case "opengrep": return "opengrep";
     case "trivy": return "trivy";
-    case "playwright": return "npx";
+    case "playwright": return "node_modules/.bin/playwright";
+    case "visual": return "node_modules/.bin/playwright";
     default: return undefined;
   }
 }

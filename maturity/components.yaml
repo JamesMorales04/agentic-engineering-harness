@@ -39,7 +39,7 @@ components:
     evidence:
       - { type: documentation, id: docs:gherkin, path: docs/VALIDATION.md }
       - { type: design, id: design:gherkin, path: docs/ARCHITECTURE.md }
-      - { type: adapter-source, id: provider:gherkin, path: src/validators/gherkin.ts }
+      - { type: adapter-source, id: provider:gherkin, path: src/validators/registry.ts }
       - { type: unit-contract, id: contract:gherkin, path: tests/validationProviders.test.ts }
       - { type: provider-contract, id: provider-contract:gherkin, path: tests/validationProviders.test.ts }
       - { type: workflow-test, id: workflow:gherkin, path: tests/validationProviders.test.ts }
