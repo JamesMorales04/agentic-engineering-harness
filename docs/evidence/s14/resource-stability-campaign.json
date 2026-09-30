@@ -1,0 +1,1071 @@
+{
+  "version": 1,
+  "slice": "S14",
+  "round": 14,
+  "runId": "s14-resource-2",
+  "campaign": "resource-stability",
+  "amendment": "CAMPAIGN RESOURCE-LIFECYCLE AMENDMENT (2026-09-29) / AEH-V2-0130",
+  "generatedAt": "2026-09-30T18:03:35.010Z",
+  "startedAt": "2026-09-30T17:51:18.115Z",
+  "checkout": "/home/james/Desarrollo/agentic-engineering-harness",
+  "sourceCommit": "af9bd8eadc968ed94c1eddd7d2046904d403d285",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s14ResourceStabilityCampaign.mjs",
+        "sha256": "959803651553e840f376b94f8de21c9c354f894e47829f3f18d3f0eb40f38ba9"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "3a88d64ef5c56c5e30503c6c864f04331d329fe63bf0fdb061308fa6dcd540b8"
+  },
+  "sharedRoot": "/tmp/aeh-s14-resource-16CHeO",
+  "lane": "change-direct",
+  "iterationCount": 2,
+  "iterations": [
+    {
+      "iteration": 1,
+      "childRunId": "s14-resource-2-i1",
+      "childExitCode": 0,
+      "lane": {
+        "result": "PASS",
+        "terminal": "SUCCEEDED",
+        "bounded": true,
+        "durationMs": 277515,
+        "artifact": "docs/evidence/s13/governed-lanes/round-14/s14-resource-2-i1/change-direct.json",
+        "candidateBuildDigest": "4c05da6ee7fe249bcad4adb730f2c08bb34867910eb512171bccb40b63203284"
+      },
+      "operationTerminal": true,
+      "startedAtIteration": "2026-09-30T17:51:21.242Z",
+      "finishedAtIteration": "2026-09-30T17:56:23.303Z",
+      "before": {
+        "workspaces": 0,
+        "agents": 0,
+        "runningAgents": 0,
+        "idleAgents": 0,
+        "processes": 0
+      },
+      "rawResidue": {
+        "workspaces": 3,
+        "agents": 3,
+        "processes": 28,
+        "runningAgents": 0
+      },
+      "createdWorkspaces": [
+        "wks_8657f1db54b2cba6",
+        "wks_db727235051112d9",
+        "wks_e92fa5b106c0fcae"
+      ],
+      "createdAgents": [
+        {
+          "id": "b06b5db0-9dad-444d-980e-c8ff5b13afed",
+          "status": "idle"
+        },
+        {
+          "id": "9b99cda4-c1ff-488e-b6f6-7042f43f862f",
+          "status": "idle"
+        },
+        {
+          "id": "d0361ea9-74fb-4291-b914-1d2c5aa0b128",
+          "status": "idle"
+        }
+      ],
+      "createdProcesses": [
+        623545,
+        625815,
+        625879,
+        625982,
+        625995,
+        625996,
+        626009,
+        626023,
+        626024,
+        626025,
+        626463,
+        626474,
+        626475,
+        626541,
+        631324,
+        634045,
+        634076,
+        634155,
+        634172,
+        634173,
+        634186,
+        634202,
+        634203,
+        634204,
+        634836,
+        634851,
+        634852,
+        634895
+      ],
+      "rawDetail": {
+        "workspaces": [
+          {
+            "workspaceId": "wks_8657f1db54b2cba6",
+            "project": "lane-change-fixture",
+            "cwd": "/tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-fGPXuf/work/lane-change-fixture"
+          },
+          {
+            "workspaceId": "wks_db727235051112d9",
+            "project": "lane-change-fixture",
+            "cwd": "/tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-fGPXuf/work/lane-change-fixture"
+          },
+          {
+            "workspaceId": "wks_e92fa5b106c0fcae",
+            "project": "lane-change-fixture",
+            "cwd": "/tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-fGPXuf/work/lane-change-fixture"
+          }
+        ],
+        "agents": [
+          {
+            "id": "b06b5db0-9dad-444d-980e-c8ff5b13afed",
+            "status": "idle",
+            "name": "aeh-semantic-assessor-candidate_impact",
+            "cwd": "/tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-fGPXuf/work/lane-change-fixture"
+          },
+          {
+            "id": "9b99cda4-c1ff-488e-b6f6-7042f43f862f",
+            "status": "idle",
+            "name": "aeh-semantic-assessor-stack",
+            "cwd": "/tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-fGPXuf/work/lane-change-fixture"
+          },
+          {
+            "id": "d0361ea9-74fb-4291-b914-1d2c5aa0b128",
+            "status": "idle",
+            "name": "aeh-semantic-assessor-route",
+            "cwd": "/tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-fGPXuf/work/lane-change-fixture"
+          }
+        ],
+        "processes": [
+          {
+            "pid": 623545,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-fGPXuf/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/main.js operation monitor CHANGE-20260930T175210Z-5de819ea /tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-fGPXuf/work/lane-cha"
+          },
+          {
+            "pid": 625815,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-fGPXuf/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/main.js provider serena-pool "
+          },
+          {
+            "pid": 625879,
+            "cmdline": "/home/james/.local/share/mise/installs/pipx-serena-agent/1.6.1/serena-agent/bin/python /home/james/.local/share/mise/installs/pipx-serena-agent/1.6.1/bin/serena start-mcp-server --context ide-assistant --project /tmp/aeh-s14-resource-16CHeO/aeh-direct-CHANGE-20260930T175210Z-5de819ea-wmH5G0 --enable"
+          },
+          {
+            "pid": 625982,
+            "cmdline": "node /home/james/.serena/language_servers/static/TypeScriptLanguageServer/ts-lsp/node_modules/.bin/typescript-language-server --stdio "
+          },
+          {
+            "pid": 625995,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.serena/language_servers/static/TypeScriptLanguageServer/ts-lsp/node_modules/typescript/lib/tsserver.js --serverMode partialSemantic --useInferredProjectPerProjectRoot --disableAutomaticTypingAcquisition --cancellationPipeName "
+          },
+          {
+            "pid": 625996,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.serena/language_servers/static/TypeScriptLanguageServer/ts-lsp/node_modules/typescript/lib/tsserver.js --useInferredProjectPerProjectRoot --cancellationPipeName /tmp/316328893ae8096444b2b82b180aa810/tscancellation* --locale en"
+          },
+          {
+            "pid": 626009,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.serena/language_servers/static/TypeScriptLanguageServer/ts-lsp/node_modules/typescript/lib/typingsInstaller.js --globalTypingsCacheLocation /home/james/.cache/typescript/5.9 --typesMapLocation /home/james/.serena/language_serv"
+          },
+          {
+            "pid": 626023,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-fGPXuf/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/main.js provider serena-proxy "
+          },
+          {
+            "pid": 626024,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-fGPXuf/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790790682095-621647-632411ec/workers/resultSinkMcp.js "
+          },
+          {
+            "pid": 626025,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-fGPXuf/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/main.js context mcp "
+          },
+          {
+            "pid": 626463,
+            "cmdline": "node /home/james/.cache/opencode/packages/typescript-language-server/node_modules/.bin/typescript-language-server --stdio "
+          },
+          {
+            "pid": 626474,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/typescript@5.9.3/node_modules/typescript/lib/tsserver.js --serverMode partialSemantic --useInferredProjectPerProjectRoot --disableAutoma"
+          },
+          {
+            "pid": 626475,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/typescript@5.9.3/node_modules/typescript/lib/tsserver.js --useInferredProjectPerProjectRoot --cancellationPipeName /tmp/d9a9245b98eca753"
+          },
+          {
+            "pid": 626541,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/typescript@5.9.3/node_modules/typescript/lib/typingsInstaller.js --globalTypingsCacheLocation /home/james/.cache/typescript/5.9 --typesM"
+          },
+          {
+            "pid": 631324,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-fGPXuf/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790790682095-621647-632411ec/workers/resultSinkMcp.js "
+          },
+          {
+            "pid": 634045,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-fGPXuf/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/main.js provider serena-pool "
+          },
+          {
+            "pid": 634076,
+            "cmdline": "/home/james/.local/share/mise/installs/pipx-serena-agent/1.6.1/serena-agent/bin/python /home/james/.local/share/mise/installs/pipx-serena-agent/1.6.1/bin/serena start-mcp-server --context ide-assistant --project /tmp/aeh-s14-resource-16CHeO/aeh-direct-CHANGE-20260930T175210Z-5de819ea-JbgKDD --enable"
+          },
+          {
+            "pid": 634155,
+            "cmdline": "node /home/james/.serena/language_servers/static/TypeScriptLanguageServer/ts-lsp/node_modules/.bin/typescript-language-server --stdio "
+          },
+          {
+            "pid": 634172,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.serena/language_servers/static/TypeScriptLanguageServer/ts-lsp/node_modules/typescript/lib/tsserver.js --serverMode partialSemantic --useInferredProjectPerProjectRoot --disableAutomaticTypingAcquisition --cancellationPipeName "
+          },
+          {
+            "pid": 634173,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.serena/language_servers/static/TypeScriptLanguageServer/ts-lsp/node_modules/typescript/lib/tsserver.js --useInferredProjectPerProjectRoot --cancellationPipeName /tmp/9c5e79c2a6e59d7d4905c978fe82e45f/tscancellation* --locale en"
+          },
+          {
+            "pid": 634186,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.serena/language_servers/static/TypeScriptLanguageServer/ts-lsp/node_modules/typescript/lib/typingsInstaller.js --globalTypingsCacheLocation /home/james/.cache/typescript/5.9 --typesMapLocation /home/james/.serena/language_serv"
+          },
+          {
+            "pid": 634202,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-fGPXuf/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/main.js provider serena-proxy "
+          },
+          {
+            "pid": 634203,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-fGPXuf/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790790682095-621647-632411ec/workers/resultSinkMcp.js "
+          },
+          {
+            "pid": 634204,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-fGPXuf/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/main.js context mcp "
+          },
+          {
+            "pid": 634836,
+            "cmdline": "node /home/james/.cache/opencode/packages/typescript-language-server/node_modules/.bin/typescript-language-server --stdio "
+          },
+          {
+            "pid": 634851,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/typescript@5.9.3/node_modules/typescript/lib/tsserver.js --serverMode partialSemantic --useInferredProjectPerProjectRoot --disableAutoma"
+          },
+          {
+            "pid": 634852,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/typescript@5.9.3/node_modules/typescript/lib/tsserver.js --useInferredProjectPerProjectRoot --cancellationPipeName /tmp/5e355635c2cd5a9b"
+          },
+          {
+            "pid": 634895,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/typescript@5.9.3/node_modules/typescript/lib/typingsInstaller.js --globalTypingsCacheLocation /home/james/.cache/typescript/5.9 --typesM"
+          }
+        ],
+        "counts": {
+          "workspaces": 3,
+          "agents": 3,
+          "runningAgents": 0,
+          "idleAgents": 3,
+          "processes": 28
+        }
+      },
+      "reconciliation": {
+        "archivedWorkspaces": [
+          {
+            "workspaceId": "wks_8657f1db54b2cba6",
+            "exitCode": 0,
+            "attempts": [
+              {
+                "attempt": 1,
+                "exitCode": 0,
+                "stderr": ""
+              }
+            ],
+            "cwd": "/tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-fGPXuf/work/lane-change-fixture"
+          },
+          {
+            "workspaceId": "wks_db727235051112d9",
+            "exitCode": 0,
+            "attempts": [
+              {
+                "attempt": 1,
+                "exitCode": 0,
+                "stderr": ""
+              }
+            ],
+            "cwd": "/tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-fGPXuf/work/lane-change-fixture"
+          },
+          {
+            "workspaceId": "wks_e92fa5b106c0fcae",
+            "exitCode": 0,
+            "attempts": [
+              {
+                "attempt": 1,
+                "exitCode": 0,
+                "stderr": ""
+              }
+            ],
+            "cwd": "/tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-fGPXuf/work/lane-change-fixture"
+          }
+        ],
+        "archivedAgents": [
+          {
+            "id": "b06b5db0-9dad-444d-980e-c8ff5b13afed",
+            "status": "idle",
+            "exitCode": 1,
+            "attempts": [
+              {
+                "attempt": 1,
+                "exitCode": 1,
+                "stderr": "Error: Agent b06b5db is already archived\nArchived at: 2026-09-30T17:56:27.376Z"
+              },
+              {
+                "attempt": 2,
+                "exitCode": 1,
+                "stderr": "Error: Agent b06b5db is already archived\nArchived at: 2026-09-30T17:56:27.376Z"
+              },
+              {
+                "attempt": 3,
+                "exitCode": 1,
+                "stderr": "Error: Agent b06b5db is already archived\nArchived at: 2026-09-30T17:56:27.376Z"
+              }
+            ]
+          },
+          {
+            "id": "9b99cda4-c1ff-488e-b6f6-7042f43f862f",
+            "status": "idle",
+            "exitCode": 1,
+            "attempts": [
+              {
+                "attempt": 1,
+                "exitCode": 1,
+                "stderr": "Error: Agent 9b99cda is already archived\nArchived at: 2026-09-30T17:56:26.485Z"
+              },
+              {
+                "attempt": 2,
+                "exitCode": 1,
+                "stderr": "Error: Agent 9b99cda is already archived\nArchived at: 2026-09-30T17:56:26.485Z"
+              },
+              {
+                "attempt": 3,
+                "exitCode": 1,
+                "stderr": "Error: Agent 9b99cda is already archived\nArchived at: 2026-09-30T17:56:26.485Z"
+              }
+            ]
+          },
+          {
+            "id": "d0361ea9-74fb-4291-b914-1d2c5aa0b128",
+            "status": "idle",
+            "exitCode": 1,
+            "attempts": [
+              {
+                "attempt": 1,
+                "exitCode": 1,
+                "stderr": "Error: Agent d0361ea is already archived\nArchived at: 2026-09-30T17:56:25.576Z"
+              },
+              {
+                "attempt": 2,
+                "exitCode": 1,
+                "stderr": "Error: Agent d0361ea is already archived\nArchived at: 2026-09-30T17:56:25.576Z"
+              },
+              {
+                "attempt": 3,
+                "exitCode": 1,
+                "stderr": "Error: Agent d0361ea is already archived\nArchived at: 2026-09-30T17:56:25.576Z"
+              }
+            ]
+          }
+        ],
+        "terminatedPids": [
+          623545,
+          625815,
+          625879,
+          625982,
+          625995,
+          625996,
+          626009,
+          626023,
+          626024,
+          626025,
+          626463,
+          626474,
+          626475,
+          626541,
+          631324,
+          634045,
+          634076,
+          634155,
+          634172,
+          634173,
+          634186,
+          634202,
+          634203,
+          634204,
+          634836,
+          634851,
+          634852,
+          634895
+        ],
+        "preservedNonTerminal": {
+          "workspaces": [],
+          "agents": [],
+          "processes": []
+        },
+        "preservedCount": 0,
+        "preservedIntact": true,
+        "remainingArchivable": {
+          "workspaces": 0,
+          "agents": 0,
+          "processes": 0
+        },
+        "remainingAfterArchive": {
+          "workspaces": 0,
+          "agents": 0,
+          "processes": 0
+        },
+        "baselineReturned": true,
+        "remainingDetail": {
+          "workspaces": [],
+          "agents": [],
+          "processes": [],
+          "counts": {
+            "workspaces": 0,
+            "agents": 0,
+            "runningAgents": 0,
+            "idleAgents": 0,
+            "processes": 0
+          }
+        }
+      },
+      "baselineAfter": {
+        "workspaces": 0,
+        "agents": 0,
+        "processes": 0
+      }
+    },
+    {
+      "iteration": 2,
+      "childRunId": "s14-resource-2-i2",
+      "childExitCode": 0,
+      "lane": {
+        "result": "PASS",
+        "terminal": "SUCCEEDED",
+        "bounded": true,
+        "durationMs": 321220,
+        "artifact": "docs/evidence/s13/governed-lanes/round-14/s14-resource-2-i2/change-direct.json",
+        "candidateBuildDigest": "4c05da6ee7fe249bcad4adb730f2c08bb34867910eb512171bccb40b63203284"
+      },
+      "operationTerminal": true,
+      "startedAtIteration": "2026-09-30T17:57:01.462Z",
+      "finishedAtIteration": "2026-09-30T18:02:46.439Z",
+      "before": {
+        "workspaces": 0,
+        "agents": 0,
+        "runningAgents": 0,
+        "idleAgents": 0,
+        "processes": 0
+      },
+      "rawResidue": {
+        "workspaces": 4,
+        "agents": 4,
+        "processes": 29,
+        "runningAgents": 0
+      },
+      "createdWorkspaces": [
+        "wks_00647a4f4f597b00",
+        "wks_52b0831e132f30ef",
+        "wks_9827e9a5db587aea",
+        "wks_c9a0a6844b27d367"
+      ],
+      "createdAgents": [
+        {
+          "id": "d113857d-e9a8-46aa-9401-b39f58922f00",
+          "status": "idle"
+        },
+        {
+          "id": "b81be996-ccc5-4177-ae36-754584307301",
+          "status": "idle"
+        },
+        {
+          "id": "092aee16-de89-47bf-a9d3-5a16a793d747",
+          "status": "idle"
+        },
+        {
+          "id": "f96778b9-15b5-411f-8627-060da0517a2e",
+          "status": "idle"
+        }
+      ],
+      "createdProcesses": [
+        644047,
+        646286,
+        646315,
+        646456,
+        646469,
+        646470,
+        646485,
+        646529,
+        646530,
+        646531,
+        646860,
+        646876,
+        646877,
+        646893,
+        651823,
+        654712,
+        654778,
+        654884,
+        654897,
+        654898,
+        654911,
+        654925,
+        654926,
+        654927,
+        655869,
+        655884,
+        655885,
+        655923,
+        657735
+      ],
+      "rawDetail": {
+        "workspaces": [
+          {
+            "workspaceId": "wks_00647a4f4f597b00",
+            "project": "lane-change-fixture",
+            "cwd": "/tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-68O8fA/work/lane-change-fixture"
+          },
+          {
+            "workspaceId": "wks_52b0831e132f30ef",
+            "project": "aeh-direct-CHANGE-20260930T175748Z-5de819ea-iWnwAc",
+            "cwd": "/tmp/aeh-s14-resource-16CHeO/aeh-direct-CHANGE-20260930T175748Z-5de819ea-iWnwAc"
+          },
+          {
+            "workspaceId": "wks_9827e9a5db587aea",
+            "project": "lane-change-fixture",
+            "cwd": "/tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-68O8fA/work/lane-change-fixture"
+          },
+          {
+            "workspaceId": "wks_c9a0a6844b27d367",
+            "project": "lane-change-fixture",
+            "cwd": "/tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-68O8fA/work/lane-change-fixture"
+          }
+        ],
+        "agents": [
+          {
+            "id": "d113857d-e9a8-46aa-9401-b39f58922f00",
+            "status": "idle",
+            "name": "aeh-CHANGE-20260930T175748Z-5de819ea-reviewer",
+            "cwd": "/tmp/aeh-s14-resource-16CHeO/aeh-direct-CHANGE-20260930T175748Z-5de819ea-iWnwAc"
+          },
+          {
+            "id": "b81be996-ccc5-4177-ae36-754584307301",
+            "status": "idle",
+            "name": "aeh-semantic-assessor-candidate_impact",
+            "cwd": "/tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-68O8fA/work/lane-change-fixture"
+          },
+          {
+            "id": "092aee16-de89-47bf-a9d3-5a16a793d747",
+            "status": "idle",
+            "name": "aeh-semantic-assessor-stack",
+            "cwd": "/tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-68O8fA/work/lane-change-fixture"
+          },
+          {
+            "id": "f96778b9-15b5-411f-8627-060da0517a2e",
+            "status": "idle",
+            "name": "aeh-semantic-assessor-route",
+            "cwd": "/tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-68O8fA/work/lane-change-fixture"
+          }
+        ],
+        "processes": [
+          {
+            "pid": 644047,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-68O8fA/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/main.js operation monitor CHANGE-20260930T175748Z-5de819ea /tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-68O8fA/work/lane-cha"
+          },
+          {
+            "pid": 646286,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-68O8fA/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/main.js provider serena-pool "
+          },
+          {
+            "pid": 646315,
+            "cmdline": "/home/james/.local/share/mise/installs/pipx-serena-agent/1.6.1/serena-agent/bin/python /home/james/.local/share/mise/installs/pipx-serena-agent/1.6.1/bin/serena start-mcp-server --context ide-assistant --project /tmp/aeh-s14-resource-16CHeO/aeh-direct-CHANGE-20260930T175748Z-5de819ea-JudRBM --enable"
+          },
+          {
+            "pid": 646456,
+            "cmdline": "node /home/james/.serena/language_servers/static/TypeScriptLanguageServer/ts-lsp/node_modules/.bin/typescript-language-server --stdio "
+          },
+          {
+            "pid": 646469,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.serena/language_servers/static/TypeScriptLanguageServer/ts-lsp/node_modules/typescript/lib/tsserver.js --serverMode partialSemantic --useInferredProjectPerProjectRoot --disableAutomaticTypingAcquisition --cancellationPipeName "
+          },
+          {
+            "pid": 646470,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.serena/language_servers/static/TypeScriptLanguageServer/ts-lsp/node_modules/typescript/lib/tsserver.js --useInferredProjectPerProjectRoot --cancellationPipeName /tmp/223bc1641c974f223e87fb4037783692/tscancellation* --locale en"
+          },
+          {
+            "pid": 646485,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.serena/language_servers/static/TypeScriptLanguageServer/ts-lsp/node_modules/typescript/lib/typingsInstaller.js --globalTypingsCacheLocation /home/james/.cache/typescript/5.9 --typesMapLocation /home/james/.serena/language_serv"
+          },
+          {
+            "pid": 646529,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-68O8fA/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/main.js provider serena-proxy "
+          },
+          {
+            "pid": 646530,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-68O8fA/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790791022198-642172-14a59fce/workers/resultSinkMcp.js "
+          },
+          {
+            "pid": 646531,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-68O8fA/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/main.js context mcp "
+          },
+          {
+            "pid": 646860,
+            "cmdline": "node /home/james/.cache/opencode/packages/typescript-language-server/node_modules/.bin/typescript-language-server --stdio "
+          },
+          {
+            "pid": 646876,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/typescript@5.9.3/node_modules/typescript/lib/tsserver.js --serverMode partialSemantic --useInferredProjectPerProjectRoot --disableAutoma"
+          },
+          {
+            "pid": 646877,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/typescript@5.9.3/node_modules/typescript/lib/tsserver.js --useInferredProjectPerProjectRoot --cancellationPipeName /tmp/4fd57affac17ba0f"
+          },
+          {
+            "pid": 646893,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/typescript@5.9.3/node_modules/typescript/lib/typingsInstaller.js --globalTypingsCacheLocation /home/james/.cache/typescript/5.9 --typesM"
+          },
+          {
+            "pid": 651823,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-68O8fA/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790791022198-642172-14a59fce/workers/resultSinkMcp.js "
+          },
+          {
+            "pid": 654712,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-68O8fA/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/main.js provider serena-pool "
+          },
+          {
+            "pid": 654778,
+            "cmdline": "/home/james/.local/share/mise/installs/pipx-serena-agent/1.6.1/serena-agent/bin/python /home/james/.local/share/mise/installs/pipx-serena-agent/1.6.1/bin/serena start-mcp-server --context ide-assistant --project /tmp/aeh-s14-resource-16CHeO/aeh-direct-CHANGE-20260930T175748Z-5de819ea-iWnwAc --enable"
+          },
+          {
+            "pid": 654884,
+            "cmdline": "node /home/james/.serena/language_servers/static/TypeScriptLanguageServer/ts-lsp/node_modules/.bin/typescript-language-server --stdio "
+          },
+          {
+            "pid": 654897,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.serena/language_servers/static/TypeScriptLanguageServer/ts-lsp/node_modules/typescript/lib/tsserver.js --serverMode partialSemantic --useInferredProjectPerProjectRoot --disableAutomaticTypingAcquisition --cancellationPipeName "
+          },
+          {
+            "pid": 654898,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.serena/language_servers/static/TypeScriptLanguageServer/ts-lsp/node_modules/typescript/lib/tsserver.js --useInferredProjectPerProjectRoot --cancellationPipeName /tmp/f8360b762fed36b12d336d9a1d956dae/tscancellation* --locale en"
+          },
+          {
+            "pid": 654911,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.serena/language_servers/static/TypeScriptLanguageServer/ts-lsp/node_modules/typescript/lib/typingsInstaller.js --globalTypingsCacheLocation /home/james/.cache/typescript/5.9 --typesMapLocation /home/james/.serena/language_serv"
+          },
+          {
+            "pid": 654925,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-68O8fA/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/main.js provider serena-proxy "
+          },
+          {
+            "pid": 654926,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-68O8fA/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790791022198-642172-14a59fce/workers/resultSinkMcp.js "
+          },
+          {
+            "pid": 654927,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-68O8fA/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/main.js context mcp "
+          },
+          {
+            "pid": 655869,
+            "cmdline": "node /home/james/.cache/opencode/packages/typescript-language-server/node_modules/.bin/typescript-language-server --stdio "
+          },
+          {
+            "pid": 655884,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/typescript@5.9.3/node_modules/typescript/lib/tsserver.js --serverMode partialSemantic --useInferredProjectPerProjectRoot --disableAutoma"
+          },
+          {
+            "pid": 655885,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/typescript@5.9.3/node_modules/typescript/lib/tsserver.js --useInferredProjectPerProjectRoot --cancellationPipeName /tmp/0e48d49f35e1972f"
+          },
+          {
+            "pid": 655923,
+            "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/typescript@5.9.3/node_modules/typescript/lib/typingsInstaller.js --globalTypingsCacheLocation /home/james/.cache/typescript/5.9 --typesM"
+          },
+          {
+            "pid": 657735,
+            "cmdline": "node /home/james/.cache/opencode/packages/yaml-language-server/node_modules/.bin/yaml-language-server --stdio "
+          }
+        ],
+        "counts": {
+          "workspaces": 4,
+          "agents": 4,
+          "runningAgents": 0,
+          "idleAgents": 4,
+          "processes": 29
+        }
+      },
+      "reconciliation": {
+        "archivedWorkspaces": [
+          {
+            "workspaceId": "wks_00647a4f4f597b00",
+            "exitCode": 0,
+            "attempts": [
+              {
+                "attempt": 1,
+                "exitCode": 0,
+                "stderr": ""
+              }
+            ],
+            "cwd": "/tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-68O8fA/work/lane-change-fixture"
+          },
+          {
+            "workspaceId": "wks_52b0831e132f30ef",
+            "exitCode": 0,
+            "attempts": [
+              {
+                "attempt": 1,
+                "exitCode": 0,
+                "stderr": ""
+              }
+            ],
+            "cwd": "/tmp/aeh-s14-resource-16CHeO/aeh-direct-CHANGE-20260930T175748Z-5de819ea-iWnwAc"
+          },
+          {
+            "workspaceId": "wks_9827e9a5db587aea",
+            "exitCode": 0,
+            "attempts": [
+              {
+                "attempt": 1,
+                "exitCode": 0,
+                "stderr": ""
+              }
+            ],
+            "cwd": "/tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-68O8fA/work/lane-change-fixture"
+          },
+          {
+            "workspaceId": "wks_c9a0a6844b27d367",
+            "exitCode": 0,
+            "attempts": [
+              {
+                "attempt": 1,
+                "exitCode": 0,
+                "stderr": ""
+              }
+            ],
+            "cwd": "/tmp/aeh-s14-resource-16CHeO/aeh-s13-gov-68O8fA/work/lane-change-fixture"
+          }
+        ],
+        "archivedAgents": [
+          {
+            "id": "d113857d-e9a8-46aa-9401-b39f58922f00",
+            "status": "idle",
+            "exitCode": 1,
+            "attempts": [
+              {
+                "attempt": 1,
+                "exitCode": 1,
+                "stderr": "Error: Agent d113857 is already archived\nArchived at: 2026-09-30T18:02:49.789Z"
+              },
+              {
+                "attempt": 2,
+                "exitCode": 1,
+                "stderr": "Error: Agent d113857 is already archived\nArchived at: 2026-09-30T18:02:49.789Z"
+              },
+              {
+                "attempt": 3,
+                "exitCode": 1,
+                "stderr": "Error: Agent d113857 is already archived\nArchived at: 2026-09-30T18:02:49.789Z"
+              }
+            ]
+          },
+          {
+            "id": "b81be996-ccc5-4177-ae36-754584307301",
+            "status": "idle",
+            "exitCode": 1,
+            "attempts": [
+              {
+                "attempt": 1,
+                "exitCode": 1,
+                "stderr": "Error: Agent b81be99 is already archived\nArchived at: 2026-09-30T18:02:51.881Z"
+              },
+              {
+                "attempt": 2,
+                "exitCode": 1,
+                "stderr": "Error: Agent b81be99 is already archived\nArchived at: 2026-09-30T18:02:51.881Z"
+              },
+              {
+                "attempt": 3,
+                "exitCode": 1,
+                "stderr": "Error: Agent b81be99 is already archived\nArchived at: 2026-09-30T18:02:51.881Z"
+              }
+            ]
+          },
+          {
+            "id": "092aee16-de89-47bf-a9d3-5a16a793d747",
+            "status": "idle",
+            "exitCode": 1,
+            "attempts": [
+              {
+                "attempt": 1,
+                "exitCode": 1,
+                "stderr": "Error: Agent 092aee1 is already archived\nArchived at: 2026-09-30T18:02:48.829Z"
+              },
+              {
+                "attempt": 2,
+                "exitCode": 1,
+                "stderr": "Error: Agent 092aee1 is already archived\nArchived at: 2026-09-30T18:02:48.829Z"
+              },
+              {
+                "attempt": 3,
+                "exitCode": 1,
+                "stderr": "Error: Agent 092aee1 is already archived\nArchived at: 2026-09-30T18:02:48.829Z"
+              }
+            ]
+          },
+          {
+            "id": "f96778b9-15b5-411f-8627-060da0517a2e",
+            "status": "idle",
+            "exitCode": 1,
+            "attempts": [
+              {
+                "attempt": 1,
+                "exitCode": 1,
+                "stderr": "Error: Agent f96778b is already archived\nArchived at: 2026-09-30T18:02:50.940Z"
+              },
+              {
+                "attempt": 2,
+                "exitCode": 1,
+                "stderr": "Error: Agent f96778b is already archived\nArchived at: 2026-09-30T18:02:50.940Z"
+              },
+              {
+                "attempt": 3,
+                "exitCode": 1,
+                "stderr": "Error: Agent f96778b is already archived\nArchived at: 2026-09-30T18:02:50.940Z"
+              }
+            ]
+          }
+        ],
+        "terminatedPids": [
+          644047,
+          646286,
+          646315,
+          646456,
+          646469,
+          646470,
+          646485,
+          646529,
+          646530,
+          646531,
+          646860,
+          646876,
+          646877,
+          646893,
+          651823,
+          654712,
+          654778,
+          654884,
+          654897,
+          654898,
+          654911
+        ],
+        "preservedNonTerminal": {
+          "workspaces": [],
+          "agents": [],
+          "processes": []
+        },
+        "preservedCount": 0,
+        "preservedIntact": true,
+        "remainingArchivable": {
+          "workspaces": 0,
+          "agents": 0,
+          "processes": 0
+        },
+        "remainingAfterArchive": {
+          "workspaces": 0,
+          "agents": 0,
+          "processes": 0
+        },
+        "baselineReturned": true,
+        "remainingDetail": {
+          "workspaces": [],
+          "agents": [],
+          "processes": [],
+          "counts": {
+            "workspaces": 0,
+            "agents": 0,
+            "runningAgents": 0,
+            "idleAgents": 0,
+            "processes": 0
+          }
+        }
+      },
+      "baselineAfter": {
+        "workspaces": 0,
+        "agents": 0,
+        "processes": 0
+      }
+    }
+  ],
+  "ceilings": {
+    "rawResidue": {
+      "workspaces": 12,
+      "agents": 12,
+      "processes": 96
+    },
+    "postReconciliationBaseline": {
+      "workspaces": 0,
+      "agents": 0,
+      "processes": 0
+    }
+  },
+  "candidateBuildDigest": "4c05da6ee7fe249bcad4adb730f2c08bb34867910eb512171bccb40b63203284",
+  "baseline": {
+    "workspaces": [],
+    "agents": [],
+    "processes": [],
+    "counts": {
+      "workspaces": 0,
+      "agents": 0,
+      "runningAgents": 0,
+      "idleAgents": 0,
+      "processes": 0
+    }
+  },
+  "final": {
+    "workspaces": [],
+    "agents": [],
+    "processes": [],
+    "counts": {
+      "workspaces": 0,
+      "agents": 0,
+      "runningAgents": 0,
+      "idleAgents": 0,
+      "processes": 0
+    }
+  },
+  "trend": {
+    "rawWorkspacesByIteration": [
+      3,
+      4
+    ],
+    "rawAgentsByIteration": [
+      3,
+      4
+    ],
+    "rawProcessesByIteration": [
+      28,
+      29
+    ],
+    "postReconciliationBaselineByIteration": [
+      {
+        "workspaces": 0,
+        "agents": 0,
+        "processes": 0
+      },
+      {
+        "workspaces": 0,
+        "agents": 0,
+        "processes": 0
+      }
+    ],
+    "postReconciliationNoGrowth": true
+  },
+  "reconciliation": {
+    "baselineReturned": true,
+    "preservedIntact": true,
+    "reconciliationPerformed": true,
+    "perIteration": [
+      {
+        "iteration": 1,
+        "archivedWorkspaces": 3,
+        "archivedAgents": 3,
+        "terminatedProcesses": 28
+      },
+      {
+        "iteration": 2,
+        "archivedWorkspaces": 4,
+        "archivedAgents": 4,
+        "terminatedProcesses": 21
+      }
+    ]
+  },
+  "classification": {
+    "aehV2_0130": "OPEN_PRODUCT_DEFECT_EVIDENCED",
+    "evidence": [
+      {
+        "iteration": 1,
+        "rawResidue": {
+          "workspaces": 3,
+          "agents": 3,
+          "processes": 28,
+          "runningAgents": 0
+        },
+        "reconciled": true
+      },
+      {
+        "iteration": 2,
+        "rawResidue": {
+          "workspaces": 4,
+          "agents": 4,
+          "processes": 29,
+          "runningAgents": 0
+        },
+        "reconciled": true
+      }
+    ],
+    "requiredArchitecture": [
+      "durable operation ownership -> durable provider/resource ownership",
+      "terminal/recovery reconciliation classifying live-owned / terminal-orphan / unknown",
+      "safe release/archive provable from terminal operation records",
+      "policy-driven concurrency/resource backpressure (no machine-specific memory constant in Core)"
+    ],
+    "note": "Terminal operations leave owned workspaces/agents/processes that only campaign-side terminality-gated reconciliation reclaims; the product-side durable reconciliation required by AEH-V2-0130 is not implemented."
+  },
+  "checks": [
+    {
+      "id": "s14.resource.iteration-1.terminal",
+      "ok": true,
+      "message": "lane=PASS terminal=SUCCEEDED"
+    },
+    {
+      "id": "s14.resource.iteration-1.raw-bounded",
+      "ok": true,
+      "message": "raw workspaces=3 agents=3 processes=28 ceiling={\"workspaces\":12,\"agents\":12,\"processes\":96}"
+    },
+    {
+      "id": "s14.resource.iteration-1.baseline-returned",
+      "ok": true,
+      "message": "remaining={\"workspaces\":0,\"agents\":0,\"processes\":0}"
+    },
+    {
+      "id": "s14.resource.iteration-1.terminal-only",
+      "ok": true,
+      "message": "preserved=0 intact=true"
+    },
+    {
+      "id": "s14.resource.iteration-2.terminal",
+      "ok": true,
+      "message": "lane=PASS terminal=SUCCEEDED"
+    },
+    {
+      "id": "s14.resource.iteration-2.raw-bounded",
+      "ok": true,
+      "message": "raw workspaces=4 agents=4 processes=29 ceiling={\"workspaces\":12,\"agents\":12,\"processes\":96}"
+    },
+    {
+      "id": "s14.resource.iteration-2.baseline-returned",
+      "ok": true,
+      "message": "remaining={\"workspaces\":0,\"agents\":0,\"processes\":0}"
+    },
+    {
+      "id": "s14.resource.iteration-2.terminal-only",
+      "ok": true,
+      "message": "preserved=0 intact=true"
+    },
+    {
+      "id": "s14.resource.no-post-reconciliation-growth",
+      "ok": true,
+      "message": "baselines=[{\"workspaces\":0,\"agents\":0,\"processes\":0},{\"workspaces\":0,\"agents\":0,\"processes\":0}]"
+    }
+  ],
+  "result": "PASS"
+}
