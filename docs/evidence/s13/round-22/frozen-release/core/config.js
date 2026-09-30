@@ -1,0 +1,122 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import YAML from "yaml";
+import { z } from "zod";
+import { assuranceLevelSchema, implementationRouteSchema, routeEvidenceSchema } from "../architecture/contracts.js";
+const validationCommandSchema = z.object({ id: z.string().min(1), command: z.string().min(1), required: z.boolean().optional(), timeoutSeconds: z.number().int().positive().optional(), workingDirectory: z.string().optional() });
+const validatorSpecSchema = z.object({ id: z.string().min(1), adapter: z.string().min(1), command: z.string().min(1).optional(), required: z.boolean().optional(), timeoutSeconds: z.number().int().positive().optional(), workingDirectory: z.string().optional(), options: z.record(z.string(), z.unknown()).optional() });
+const memoryBenchmarkProviderSchema = z.object({ name: z.string().min(1), command: z.string().min(1), timeoutSeconds: z.number().int().positive().optional() });
+const severitySchema = z.enum(["critical", "high", "medium", "low", "note"]);
+const riskSchema = z.enum(["low", "medium", "high"]);
+const severityNumberSchema = z.object({ critical: z.number().int().nonnegative().optional(), high: z.number().int().nonnegative().optional(), medium: z.number().int().nonnegative().optional(), low: z.number().int().nonnegative().optional(), note: z.number().int().nonnegative().optional() });
+const escalationStageSchema = z.object({ name: z.string().min(1), action: z.enum(["remediate", "diagnose", "replan"]).optional(), role: z.enum(["Lead/Director", "Operation Supervisor", "Explorer", "Librarian", "Planner", "Spec Manager", "Implementer", "Reviewer", "Repairer"]).optional(), model: z.string().min(1).optional() });
+const mcpServerSchema = z.object({ description: z.string().optional(), type: z.enum(["local", "remote"]), command: z.array(z.string().min(1)).optional(), url: z.string().url().optional(), environment: z.record(z.string(), z.string()).optional(), headers: z.record(z.string(), z.string()).optional(), oauth: z.boolean().optional(), enabled: z.boolean().optional(), timeoutMs: z.number().int().positive().optional(), codemode: z.boolean().optional() }).superRefine((value, ctx) => { if (value.type === "local" && !value.command?.length)
+    ctx.addIssue({ code: "custom", message: "local MCP servers require command" }); if (value.type === "remote" && !value.url)
+    ctx.addIssue({ code: "custom", message: "remote MCP servers require url" }); });
+const organizationPolicySourceSchema = z.object({ name: z.string().min(1), path: z.string().optional(), url: z.string().url().optional(), sha256: z.string().regex(/^[a-f0-9]{64}$/).optional(), required: z.boolean().optional(), publicKey: z.string().optional(), signature: z.string().optional() }).superRefine((value, ctx) => { if (!value.path && !value.url)
+    ctx.addIssue({ code: "custom", message: "policy bundle source requires path or url" }); });
+const interactiveContextSchema = z.object({ pressureThreshold: z.number().min(0).max(1).optional(), handoffThreshold: z.number().min(0).max(1).optional(), hardHandoffThreshold: z.number().min(0).max(1).optional() }).superRefine((value, ctx) => { const pressure = value.pressureThreshold ?? 0.7; const handoff = value.handoffThreshold ?? 0.8; const hard = value.hardHandoffThreshold ?? 0.9; if (handoff < pressure)
+    ctx.addIssue({ code: "custom", message: "handoffThreshold must be >= pressureThreshold" }); if (hard < handoff)
+    ctx.addIssue({ code: "custom", message: "hardHandoffThreshold must be >= handoffThreshold" }); });
+const contextBudgetSchema = z.object({ inputTokens: z.number().int().positive().optional(), maxTokens: z.number().int().positive().optional(), reserved: z.object({ instructions: z.number().int().nonnegative().optional(), normative: z.number().int().nonnegative().optional(), evidence: z.number().int().nonnegative().optional(), response: z.number().int().nonnegative().optional() }).optional() });
+function isNormalizedRootRelativePath(value) { return Boolean(value.trim()) && value === value.trim() && !value.includes("\0") && !path.isAbsolute(value) && !/^[A-Za-z]:/.test(value) && !value.split(/[\\/]/).some((segment) => !segment || segment === "." || segment === ".."); }
+const contextSchema = z.object({
+    mode: z.enum(["observe", "enforce"]).optional(),
+    budgets: z.object({ default: contextBudgetSchema.optional(), agents: z.record(z.string(), contextBudgetSchema).optional(), phases: z.record(z.string(), contextBudgetSchema).optional() }).optional(),
+    informational: z.object({ targetTokens: z.number().int().positive().optional(), softLimitTokens: z.number().int().positive().optional(), exceptionalTokens: z.number().int().positive().optional(), maxSources: z.number().int().positive().optional(), sourceSummaryTokens: z.number().int().positive().optional(), maxInitialBytesPerSource: z.number().int().positive().optional(), maxInitialBytesTotal: z.number().int().positive().optional() }).optional().superRefine((value, ctx) => {
+        const target = value?.targetTokens ?? 8_000;
+        const soft = value?.softLimitTokens ?? 12_000;
+        const exceptional = value?.exceptionalTokens ?? 15_000;
+        if (soft < target)
+            ctx.addIssue({ code: "custom", path: ["softLimitTokens"], message: "informational softLimitTokens must be >= targetTokens" });
+        if (exceptional < soft)
+            ctx.addIssue({ code: "custom", path: ["exceptionalTokens"], message: "informational exceptionalTokens must be >= softLimitTokens" });
+        const perSource = value?.maxInitialBytesPerSource ?? 4_000;
+        const total = value?.maxInitialBytesTotal ?? 20_000;
+        if (total < perSource)
+            ctx.addIssue({ code: "custom", path: ["maxInitialBytesTotal"], message: "informational maxInitialBytesTotal must be >= maxInitialBytesPerSource" });
+    }),
+    repositoryMap: z.object({ enabled: z.boolean().optional(), tokenBudget: z.number().int().positive().optional(), maxGraphHops: z.number().int().positive().optional() }).optional(),
+    semanticRetrieval: z.object({ provider: z.string().min(1).optional(), required: z.boolean().optional(), editing: z.boolean().optional() }).optional(),
+    compression: z.object({ provider: z.string().min(1).optional(), required: z.boolean().optional(), minTokens: z.number().int().positive().optional(), reversible: z.boolean().optional(), command: z.string().min(1).optional() }).optional(),
+    retrieval: z.object({ maxRequestsPerTurn: z.number().int().positive().optional(), maxTokensPerRequest: z.number().int().positive().optional(), maxTotalTokensPerTurn: z.number().int().positive().optional() }).optional(),
+    outputPolicy: z.object({ enabled: z.boolean().optional(), modes: z.record(z.string(), z.enum(["terse", "compact", "normal"])).optional() }).optional()
+}).superRefine((value, ctx) => {
+    if (value.semanticRetrieval?.provider && value.semanticRetrieval.provider !== "serena")
+        ctx.addIssue({ code: "custom", path: ["semanticRetrieval", "provider"], message: "Serena is the mandatory semantic retrieval provider." });
+    if (value.semanticRetrieval?.provider === "none" && value.semanticRetrieval.required === true)
+        ctx.addIssue({ code: "custom", path: ["semanticRetrieval", "required"], message: "A disabled semantic provider cannot be required." });
+    if (value.compression?.provider === "none" && value.compression.required === true)
+        ctx.addIssue({ code: "custom", path: ["compression", "required"], message: "A disabled compression provider cannot be required." });
+});
+const projectSchema = z.object({
+    version: z.literal(1), project: z.object({ name: z.string().min(1) }),
+    agents: z.object({ configPath: z.string().optional(), generatedPath: z.string().optional(), activeProfile: z.string().optional(), required: z.boolean().optional(), findingsDir: z.string().optional() }).optional(),
+    controlPlane: z.object({ snapshotDir: z.string().optional(), include: z.array(z.string()).optional(), required: z.boolean().optional() }).optional(),
+    workflow: z.object({
+        issueIntake: z.object({ enabled: z.boolean().optional(), snapshotDir: z.string().optional(), verifyDriftOnRun: z.boolean().optional(), requireOpen: z.boolean().optional(), plannerAgent: z.string().min(1).optional(), autoHandoff: z.boolean().optional() }).optional(),
+        planning: z.object({ enabled: z.boolean().optional(), plannerAgent: z.string().min(1).optional(), worktreeIsolation: z.boolean().optional(), barrierValidation: z.boolean().optional(), maxWaveConcurrency: z.number().int().positive().optional(), distributed: z.boolean().optional() }).optional(),
+        reviews: z.object({
+            enabled: z.boolean().optional(), directReview: z.boolean().optional(), leadAcceptance: z.boolean().optional(), leadAcceptanceDirect: z.boolean().optional(),
+            maxRemediationRounds: z.number().int().nonnegative().optional(), blockingSeverities: z.array(severitySchema).optional(),
+            quality: z.object({ severityPoints: severityNumberSchema.optional() }).optional(),
+            convergence: z.object({ minimumDebtPointImprovement: z.number().int().nonnegative().optional(), stagnationWindow: z.number().int().positive().optional(), cycleDetection: z.boolean().optional(), regressionDetection: z.boolean().optional() }).optional(),
+            finalQualityGate: z.object({ maxBySeverity: severityNumberSchema.optional(), maxDebtPoints: z.number().int().nonnegative().optional() }).optional(),
+            escalation: z.object({ stages: z.array(escalationStageSchema).optional(), criticalStartStage: z.number().int().nonnegative().optional(), replanResumeStage: z.number().int().nonnegative().optional(), maxRounds: z.number().int().positive().optional() }).optional()
+        }).optional()
+    }).optional(),
+    orchestration: z.object({
+        provider: z.string(),
+        required: z.boolean().optional(),
+        worker: z.object({ provider: z.string().optional(), model: z.string().optional(), maxRepairAttempts: z.number().int().nonnegative().optional(), timeoutSeconds: z.number().int().positive().optional(), titlePrefix: z.string().optional() }).optional(),
+        interactive: z.object({ autoSetup: z.boolean().optional(), webUi: z.boolean().optional(), leadAgent: z.string().min(1).optional(), reuseSession: z.boolean().optional(), sessionPolicy: z.enum(["fresh-on-start", "reuse-compatible", "resume-explicit"]).optional(), usePaseoTools: z.boolean().optional(), context: interactiveContextSchema.optional(), stateDir: z.string().min(1).optional(), title: z.string().min(1).optional() }).optional()
+    }).optional(),
+    toolchain: z.object({ configPath: z.string().optional(), lockPath: z.string().optional(), statePath: z.string().optional(), generatedMisePath: z.string().optional() }).optional(),
+    mcp: z.object({
+        servers: z.record(z.string(), mcpServerSchema).optional(),
+        benchmark: z.object({ enabled: z.boolean().optional(), resultsDir: z.string().optional(), repetitions: z.number().int().positive().optional() }).optional(),
+        packs: z.record(z.string(), z.object({ servers: z.array(z.string()), enabled: z.boolean().optional() })).optional()
+    }).optional(),
+    delivery: z.object({
+        stateDir: z.string().optional(),
+        github: z.object({ enabled: z.boolean().optional(), tokenEnv: z.string().min(1).optional(), repository: z.string().regex(/^[^/]+\/[^/]+$/).optional(), apiBaseUrl: z.string().url().optional(), assignTokenOwner: z.boolean().optional(), labels: z.array(z.string()).optional(), branchPattern: z.string().min(1).optional(), finalizeOnAcceptance: z.boolean().optional(), pullRequestDraft: z.boolean().optional(), pullRequests: z.boolean().optional() }).optional(),
+        paseo: z.object({ enabled: z.boolean().optional(), createWorkspace: z.boolean().optional(), autoUseWorkspace: z.boolean().optional(), worktreeSlugPattern: z.string().min(1).optional() }).optional()
+    }).optional(),
+    memory: z.object({ provider: z.string(), required: z.boolean().optional(), benchmark: z.object({ casesDir: z.string().optional(), resultsDir: z.string().optional(), providers: z.array(memoryBenchmarkProviderSchema).optional() }).optional() }).optional(),
+    codeIntelligence: z.object({ provider: z.string(), required: z.boolean().optional(), graphPath: z.string().optional(), snapshotDir: z.string().optional(), codeOnly: z.boolean().optional(), refreshCommand: z.string().optional(), scheduling: z.object({ useEdges: z.boolean().optional(), maxGraphHops: z.number().int().positive().optional(), maxSharedNodes: z.number().int().nonnegative().optional(), centralityConflictThreshold: z.number().nonnegative().optional() }).optional() }).optional(),
+    context: contextSchema.optional(),
+    evidence: z.object({ enabled: z.boolean().optional(), outputDir: z.string().optional(), requireComplete: z.boolean().optional() }).optional(),
+    organization: z.object({ policyBundles: z.object({ cacheDir: z.string().optional(), required: z.boolean().optional(), sources: z.array(organizationPolicySourceSchema).optional() }).optional() }).optional(),
+    distributed: z.object({ enabled: z.boolean().optional(), provider: z.string().optional(), queueDir: z.string().optional(), endpoint: z.string().url().optional(), tokenEnv: z.string().optional(), pollIntervalMs: z.number().int().positive().optional(), leaseSeconds: z.number().int().positive().optional(), workerId: z.string().optional() }).optional(),
+    sdd: z.object({ specsDir: z.string().optional(), contractsDir: z.string().optional(), reportsDir: z.string().optional(), repairsDir: z.string().optional(), runsDir: z.string().optional(), authoring: z.object({ provider: z.string().min(1).optional(), schema: z.string().min(1).optional(), managerAgent: z.string().min(1).optional() }).optional() }).optional(),
+    validation: z.object({ baseRef: z.string().optional(), commands: z.array(validationCommandSchema).optional(), validators: z.array(validatorSpecSchema).optional(), providers: z.array(z.object({ id: z.string().min(1), capability: z.string().min(1), provider: z.string().min(1), command: z.string().min(1).optional(), required: z.boolean().optional(), timeoutSeconds: z.number().int().positive().optional(), workingDirectory: z.string().optional(), options: z.record(z.string(), z.unknown()).optional() })).optional(), frozenPaths: z.array(z.string()).optional(), requireSeal: z.boolean().optional(), opa: z.object({ enabled: z.boolean().optional(), policyDirs: z.array(z.string()).optional() }).optional() }).optional(),
+    security: z.object({ sandbox: z.object({ provider: z.string().optional(), required: z.boolean().optional(), image: z.string().optional(), imageDigest: z.string().optional(), network: z.boolean().optional(), extraArgs: z.array(z.string()).optional(), readOnlyRoot: z.boolean().optional(), ephemeralHome: z.boolean().optional(), noNewPrivileges: z.boolean().optional(), capDropAll: z.boolean().optional(), pidsLimit: z.number().int().positive().optional(), memory: z.string().optional(), cpus: z.number().positive().optional(), tmpfs: z.array(z.string()).optional(), forceForRisks: z.array(riskSchema).optional(), environmentAllowlist: z.array(z.string()).optional(), credentialEnvAllowlist: z.array(z.string()).optional() }).optional(), isolation: z.object({ required: z.boolean().optional(), provider: z.string().optional(), network: z.boolean().optional(), environmentAllowlist: z.array(z.string()).optional() }).optional(), tools: z.array(z.string()).optional() }).optional(),
+    telemetry: z.object({ enabled: z.boolean().optional(), required: z.boolean().optional(), localEventsFile: z.string().optional(), localMetricsFile: z.string().optional(), exporter: z.string().optional(), endpoint: z.string().optional(), headers: z.record(z.string(), z.string()).optional(), serviceName: z.string().optional() }).optional(),
+    evals: z.object({ corpusDir: z.string().optional(), resultsDir: z.string().optional(), workspacesDir: z.string().optional(), defaultRuns: z.number().int().positive().optional(), confidenceLevel: z.number().gt(0).lt(1).optional(), fullStack: z.object({ enabled: z.boolean().optional(), required: z.boolean().optional(), strictSupplyChain: z.boolean().optional() }).optional() }).optional(),
+    certification: z.object({ enabled: z.boolean().optional(), policyPath: z.string().optional(), provider: z.string().optional(), fixtureRoot: z.string().optional(), requireSandbox: z.boolean().optional(), maxAttempts: z.number().int().nonnegative().optional(), maxDurationMs: z.number().int().positive().optional(), maxCostUsd: z.number().nonnegative().optional(), maxTotalTokens: z.number().int().nonnegative().optional() }).optional(),
+    provenance: z.object({ outputDir: z.string().optional(), artifact: z.string().min(1).optional(), buildType: z.string().optional(), required: z.boolean().optional(), sbom: z.object({ required: z.boolean().optional(), command: z.string().min(1).optional() }).strict().optional(), signing: z.object({ required: z.boolean().optional(), key: z.string().optional() }).strict().optional(), verification: z.object({ required: z.boolean().optional(), publicKey: z.string().optional() }).strict().optional() }).strict().optional().superRefine((value, ctx) => {
+        const strict = value?.required === true || value?.sbom?.required === true || value?.signing?.required === true || value?.verification?.required === true;
+        if (value?.outputDir && !isNormalizedRootRelativePath(value.outputDir))
+            ctx.addIssue({ code: "custom", path: ["outputDir"], message: "supply-chain outputDir must be a normalized root-relative path" });
+        if (!strict)
+            return;
+        if (!value?.artifact || !isNormalizedRootRelativePath(value.artifact))
+            ctx.addIssue({ code: "custom", path: ["artifact"], message: "strict supply-chain policy requires a normalized root-relative packed artifact path" });
+        if ((value?.signing?.required === true || value?.verification?.required === true) && (!value.signing?.key || !value.verification?.publicKey))
+            ctx.addIssue({ code: "custom", path: ["signing"], message: "required signing evidence needs both a signing key and a verification public key" });
+    })
+});
+const requirementSchema = z.object({ id: z.string().min(1), description: z.string().optional(), validator: z.string().optional(), validators: z.array(z.string()).optional(), capabilities: z.array(z.string().min(1)).optional() });
+const taskSchema = z.object({
+    version: z.literal(1), task: z.object({ id: z.string().min(1), title: z.string().min(1) }),
+    source: z.object({ proposal: z.string().optional(), spec: z.string().optional(), design: z.string().optional(), tasks: z.string().optional(), acceptance: z.string().optional(), issue: z.string().optional() }).optional(),
+    authoring: z.object({ provider: z.string().min(1), change: z.string().min(1), sourceSha256: z.string().regex(/^[a-f0-9]{64}$/) }).optional(),
+    issue: z.object({ provider: z.literal("github"), repository: z.string().regex(/^[^/]+\/[^/]+$/), number: z.number().int().positive(), url: z.string().url(), state: z.string().min(1), fetchedAt: z.string().min(1), updatedAt: z.string().min(1), contentSha256: z.string().regex(/^[a-f0-9]{64}$/), snapshotPath: z.string().min(1) }).optional(),
+    git: z.object({ baseRef: z.string().optional(), originatingBranch: z.string().optional() }).optional(), scope: z.object({ allowed: z.array(z.string()).optional(), forbidden: z.array(z.string()).optional(), frozen: z.array(z.string()).optional() }).optional(),
+    routing: z.object({ intent: z.string().optional(), domains: z.array(z.string()).optional(), risk: riskSchema.optional(), profile: z.string().optional(), route: implementationRouteSchema.optional(), assurance: assuranceLevelSchema.optional(), routeEvidence: z.array(routeEvidenceSchema).optional() }).strict().optional(),
+    requirements: z.array(requirementSchema).optional(), constraints: z.object({ breakingApiChanges: z.boolean().optional(), newDependencies: z.boolean().optional(), schemaChanges: z.boolean().optional(), maxFilesChanged: z.number().int().positive().optional(), maxLinesAdded: z.number().int().nonnegative().optional(), maxLinesDeleted: z.number().int().nonnegative().optional() }).optional(),
+    impact: z.object({ forbiddenEdges: z.array(z.string()).optional(), forbiddenNodes: z.array(z.string()).optional(), allowedCommunities: z.array(z.string()).optional() }).optional(), repair: z.object({ maxAttempts: z.number().int().nonnegative().optional() }).optional(), verification: z.object({ commands: z.array(validationCommandSchema).optional(), validators: z.array(validatorSpecSchema).optional(), capabilities: z.array(z.string().min(1)).optional() }).optional()
+}).strict();
+export async function loadProjectConfig(root) { return projectSchema.parse(YAML.parse(await fs.readFile(path.join(root, ".harness", "project.yaml"), "utf8"))); }
+export async function loadTaskContract(root, taskId, config) { const file = path.join(root, config.sdd?.contractsDir ?? ".harness/contracts", `${taskId}.yaml`); return taskSchema.parse(YAML.parse(await fs.readFile(file, "utf8"))); }
+//# sourceMappingURL=config.js.map

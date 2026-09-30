@@ -33,7 +33,7 @@ import { createControlPlaneSnapshot, detectControlPlaneDrift, materializeControl
 import { resolveOrganizationPolicyBundles, withOrganizationPolicies } from "../policy/bundles.js";
 import { buildRequirementEvidenceGraph, evidenceValidationCheck, type RequirementEvidenceGraph } from "../evidence/graph.js";
 import { enforceSandboxPolicy } from "../security/sandbox.js";
-import { assertCurrentControllerOwner, bindOperationCandidate, currentOperationContext, loadOperation, resolveOperationStateRoot, setOperationStage } from "../operations/state.js";
+import { assertCurrentControllerOwner, bindOperationCandidate, currentOperationContext, loadOperation, resolveOperationStateRoot, setOperationStage, type OperationParticipantStatus, type OperationRecordV2 } from "../operations/state.js";
 import { ensureOperationSupervisor, maybeRotateOperationSupervisor, settleDrainingSupervisorGenerations } from "../operations/supervisor.js";
 import { createMemoryProvider } from "../providers/memory.js";
 import { buildAcceptedOperationCandidates } from "../memory/candidates.js";
@@ -46,10 +46,11 @@ import { createSemanticAssessmentRuntimeV1, createSemanticRepositoryBindingV1, t
 import { discoverProjectStackProfile, type ProjectStackProfileV1 } from "../participants/stack.js";
 import { compileCandidateAssuranceV1, candidateImpactValidationRequirementsV1, candidateAssuranceProviderAdapterV1, type CandidateAssuranceCompilationV1, type CandidateAssurancePolicyV1 } from "../architecture/candidateAssurance.js";
 import { requireSastEvidenceV1 } from "../security/sastEvidence.js";
-import { resolveValidationRequirements, validationRequirementKindValues, type ResolvedValidationActionV1, type ValidationRequirementKindV1, type ValidationResolutionV1 } from "../architecture/validationRequirements.js";
+import { contractValidationRequirementsV1, mergeContractValidationRequirementsV1, resolveValidationRequirements, validationRequirementKindValues, type ResolvedValidationActionV1, type ValidationRequirementKindV1, type ValidationResolutionV1 } from "../architecture/validationRequirements.js";
 import { requireProviderLaneEvidenceForActionV1, type ProviderEvidenceLaneV1 } from "../validation/laneEvidence.js";
 import type { CandidateImpactV1 } from "../candidates/assembler.js";
-import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
+import { candidateRevisionsEqual, type CandidateRevisionV1 } from "../operations/v2Contracts.js";
+import { objectiveParticipantAccountingV1 } from "../operations/participantAccounting.js";
 import { assertResolvedOperationPolicyV1, compileResolvedOperationPolicy, type ResolvedOperationPolicyV1 } from "../architecture/executionIdentity.js";
 import { bindResolvedOperationPolicy, currentControllerEpoch } from "../operations/state.js";
 import { runValidationCommand } from "../validators/commands.js";
@@ -192,7 +193,14 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
       )).at(-1);
     }
     if (operationId) {
-      await runStage(operationStateRoot, operationId, "planning", waveResult.aggregateSession?.exitCode === 0 || !waveResult.aggregateSession ? "COMPLETED" : "FAILED");
+      const planningFailed = Boolean(waveResult.aggregateSession && waveResult.aggregateSession.exitCode !== 0);
+      // Persist the owning wave-planning failure reason: the synthetic aggregate session carries the
+      // deterministic rejection (plan validation, participant-plan compilation, knowledge gate), and
+      // a bare FAILED stage would mask it exactly like the R15-F9 terminal classification defect.
+      await runStage(operationStateRoot, operationId, "planning", planningFailed ? "FAILED" : "COMPLETED", planningFailed
+        ? { message: `Wave planning failed: ${(waveResult.aggregateSession?.stderr || waveResult.aggregateSession?.stdout || "unknown").slice(0, 2_000)}` }
+        : undefined);
+      if (planningFailed) await recordEvent(controlRoot, effectiveConfig, "harness.plan.failed", { taskId: effectiveContract.task.id, reason: (waveResult.aggregateSession?.stderr || waveResult.aggregateSession?.stdout || "unknown").slice(0, 2_000) });
       await maybeRotateOperationSupervisor(workspaceRoot, effectiveConfig, effectiveContract, supervisorSelection);
     }
   }
@@ -251,7 +259,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     }
     report = withWorkerExecutionCheck(await verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, selection), worker);
   }
-  if (operationId) await runStage(operationStateRoot, operationId, "implementation", report.status === "PASS" ? "COMPLETED" : "FAILED");
+  if (operationId) await runStage(operationStateRoot, operationId, "implementation", report.status === "PASS" ? "COMPLETED" : "FAILED", report.status === "PASS" ? {} : { message: validationFailureDetail(report) });
 
   let evidenceGraph: RequirementEvidenceGraph | undefined;
   const attachEvidence = async (candidate: ValidationReport): Promise<ValidationReport> => {
@@ -280,7 +288,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     return result.evaluation;
   };
   assuranceEvaluation = await recompileAssuranceForReport(candidateImpact, report);
-  report = mergeChecks(report, [assuranceEvaluation.gateCheck]);
+  report = mergeChecks(report, [...assuranceEvaluation.validationChecks, assuranceEvaluation.gateCheck]);
   report = await attachEvidence(report);
   const firstPassSuccess = report.status === "PASS";
   const maxRepairs = effectiveContract.repair?.maxAttempts ?? effectiveConfig.orchestration?.worker?.maxRepairAttempts ?? 2;
@@ -333,7 +341,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
       forbiddenScope: [...(effectiveContract.scope?.forbidden ?? []), ...(effectiveContract.scope?.frozen ?? []), ...(effectiveConfig.validation?.frozenPaths ?? [])],
       prompt: repairPrompt,
       prepareWorkspace: controller ? async (isolatedRoot) => { await materializeControlPlaneSnapshot(controller!, isolatedRoot, effectiveConfig); } : undefined,
-      execute: (isolatedRoot, participantId) => executeAgentPrompt(isolatedRoot, effectiveConfig, effectiveContract, repairerSelection, repairPrompt, { phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true }),
+      execute: (isolatedRoot, participantId) => executeAgentPrompt(isolatedRoot, effectiveConfig, effectiveContract, repairerSelection, repairPrompt, { outputContract: repairerSelection.outputContract ?? "implementer", phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true }),
       semanticAssessment: impactAssessmentRuntime
     });
     worker = repair.session;
@@ -341,12 +349,12 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     if (repair.candidate) candidateImpact = repair.impact;
     report = withWorkerExecutionCheck(await verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, selection), worker);
     assuranceEvaluation = await recompileAssuranceForReport(candidateImpact, report);
-    report = mergeChecks(report, [assuranceEvaluation.gateCheck]);
+    report = mergeChecks(report, [...assuranceEvaluation.validationChecks, assuranceEvaluation.gateCheck]);
     report = await attachEvidence(report);
     await recordEvent(controlRoot, effectiveConfig, "harness.repair.finish", { taskId: effectiveContract.task.id, attempt: attempts, status: report.status, agent: selection?.logicalAgent });
     if (operationId && supervisorSelection) await maybeRotateOperationSupervisor(workspaceRoot, effectiveConfig, effectiveContract, supervisorSelection);
   }
-  if (operationId && attempts > 0) await runStage(operationStateRoot, operationId, "remediation", report.status === "PASS" ? "COMPLETED" : "FAILED");
+  if (operationId && attempts > 0) await runStage(operationStateRoot, operationId, "remediation", report.status === "PASS" ? "COMPLETED" : "FAILED", report.status === "PASS" ? {} : { message: validationFailureDetail(report) });
 
   let reviewSummary: TaskRunResult["review"];
   let reviewFindings: import("../agents/outputContracts.js").NormalizedFinding[] = [];
@@ -383,11 +391,21 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     report = mergeChecks(withWorkerExecutionCheck(review.report, worker), review.checks);
     reviewFindings = review.findings.findings;
     reviewSessions = review.sessions;
-    const quality = review.qualityHistory.at(-1)!;
-    reviewSummary = { status: review.status, finalState: review.finalState, humanRequired: review.humanRequired, rounds: review.rounds, findings: review.findings.outputCount, debtScore: quality.debtScore, debtPoints: quality.debtPoints, counts: quality.counts, convergence: quality.convergence, leadAccepted: review.leadAccepted, reviewerSessions: review.sessions.length };
-    await recordEvent(controlRoot, effectiveConfig, "harness.review.finish", { taskId: effectiveContract.task.id, status: review.status, finalState: review.finalState, humanRequired: review.humanRequired, rounds: review.rounds, findings: review.findings.outputCount, debtScore: quality.debtScore, convergence: quality.convergence, leadAccepted: review.leadAccepted, sessions: review.sessions.length });
+    // A terminal review failure returns before the loop records a quality round, so the summary must
+    // tolerate an absent state instead of crashing the controller below the typed failure
+    // (AEH-V2-0120). The lifecycle guarantees a final state for every enumerated path; this fallback
+    // is defense in depth.
+    const quality = review.qualityHistory.at(-1);
+    const qualitySummary = {
+      debtScore: quality?.debtScore ?? 0,
+      debtPoints: quality?.debtPoints ?? 0,
+      counts: quality?.counts ?? { critical: 0, high: 0, medium: 0, low: 0, note: 0 },
+      convergence: quality?.convergence ?? "UNKNOWN"
+    };
+    reviewSummary = { status: review.status, finalState: review.finalState, humanRequired: review.humanRequired, rounds: review.rounds, findings: review.findings.outputCount, ...qualitySummary, leadAccepted: review.leadAccepted, reviewerSessions: review.sessions.length };
+    await recordEvent(controlRoot, effectiveConfig, "harness.review.finish", { taskId: effectiveContract.task.id, status: review.status, finalState: review.finalState, humanRequired: review.humanRequired, rounds: review.rounds, findings: review.findings.outputCount, debtScore: qualitySummary.debtScore, convergence: qualitySummary.convergence, leadAccepted: review.leadAccepted, sessions: review.sessions.length });
     if (operationId && willRunReviewers && (compiledReviewerNames.length > 0 || route.reviewers.length > 0)) {
-      await runStage(operationStateRoot, operationId, "review", review.status === "PASS" ? "COMPLETED" : review.humanRequired ? "BLOCKED" : "FAILED");
+      await runStage(operationStateRoot, operationId, "review", review.status === "PASS" ? "COMPLETED" : review.humanRequired ? "BLOCKED" : "FAILED", review.status === "PASS" ? {} : { message: review.humanRequired ? `Human exception ${review.finalState}: ${review.report.checks.filter((check) => check.status === "FAIL").map((check) => check.message).join("; ").slice(0, 800)}` : validationFailureDetail(report) });
       await maybeRotateOperationSupervisor(workspaceRoot, effectiveConfig, effectiveContract, supervisorSelection);
     }
     if (report.status === "PASS" && effectiveConfig.evidence?.enabled === true) {
@@ -493,7 +511,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
         delivery: { required: deliveryRequired, disposition: deliveryRequired ? deliveryReconciled ? "RECONCILED" : "PENDING" : "NOT_REQUIRED", ...(deliveryRequired && deliveryReconciled ? { identity } : {}) },
         findings: reviewFindings.map((finding) => ({ candidate: identity.candidate, blocking: false })),
         participants: [
-          ...Object.values(operation.participants).map((participant) => ({ id: participant.id, required: true, status: participant.status })),
+          ...objectiveParticipantAccountingV1(operation, identity.candidate),
           ...(leadAcceptanceRequiredV1(operation.resolvedOperationPolicy!) ? [{ id: operation.lead?.agentId ?? "managed-lead", required: true, status: "COMPLETED" as const }] : [])
         ],
         terminalIdentity: identity
@@ -570,7 +588,23 @@ async function recompileCandidateAssurance(input: {
     const policy = await bindAssurancePolicyToCandidate(input.stateRoot, input.operationId, currentCandidate, input.policySource);
     const candidateAssurancePolicy = candidateAssurancePolicyFromFrozenPolicy(policy);
     const impactRequirements = candidateImpactValidationRequirementsV1(input.impact);
-    const requirements = [...input.baseValidationRequirements, ...impactRequirements];
+    // Every frozen contract requirement deterministically binds its declared validation check ids
+    // (configured commands persist as `command.<id>`, configured validators under their own id) to
+    // an explicit candidate-bound ValidationRequirement, so the AcceptanceOracle resolves the exact
+    // evidence path instead of an empty DIRECT base set. No passing check satisfies an assertion it
+    // was not declared for; unknown check ids are never fabricated.
+    const contractValidationRequirements = contractValidationRequirementsV1({
+      requirements: input.contract.requirements ?? [],
+      scope: input.contract.scope?.allowed ?? ["**"],
+      commands: [...(input.config.validation?.commands ?? []), ...(input.contract.verification?.commands ?? [])],
+      validators: [...(input.config.validation?.validators ?? []), ...(input.contract.verification?.validators ?? [])]
+    });
+    // A plan-declared validation requirement may name the same deterministic check id as a frozen
+    // contract requirement (the plan observes the configured validator ids). The merged set keeps
+    // one requirement per check id, with the contract-derived requirement normative; an
+    // incompatible same-id kind fails closed (AEH-V2-0118).
+    const baseRequirements = mergeContractValidationRequirementsV1(input.baseValidationRequirements, contractValidationRequirements);
+    const requirements = [...baseRequirements, ...impactRequirements];
     const validationResolution = await resolveValidationRequirements({
       root: input.root,
       requirements,
@@ -591,7 +625,7 @@ async function recompileCandidateAssurance(input: {
         provider: selection.modelProvider || selection.paseoProvider || selection.runtimeName,
         readOnly: selection.role === "Reviewer" && selection.permissions.write === "deny"
       })),
-      baseValidationRequirements: [...input.baseValidationRequirements],
+      baseValidationRequirements: baseRequirements,
       validationResolution,
       acceptanceAssertions: (input.contract.requirements ?? []).map((requirement) => ({
         id: requirement.id,
@@ -599,8 +633,15 @@ async function recompileCandidateAssurance(input: {
         requirementRefs: [requirement.id]
       }))
     });
+    // Plan-declared (base) validation requirements carry model-authored ids, so unlike
+    // contract-derived requirements they do not necessarily coincide with an already executed
+    // configured check id. Every resolved base requirement that has no matching report check must
+    // execute its approved action and produce its own candidate-bound check, or the AcceptanceOracle
+    // sees a dangling requirement and fails closed (AEH-V2-0123). Requirements already evidenced by
+    // the report (for example the configured `command.<id>` / validator-id checks) are reused.
+    const unmatchedBaseRequirements = baseRequirements.filter((requirement) => !reportEvidencesValidationRequirement(input.report.checks, requirement.id));
     const validationChecks = compilation.status === "READY"
-      ? await runCandidateImpactValidations({ root: input.root, config: input.config, contract: input.contract, report: input.report, impact: input.impact, compilation, resolution: validationResolution })
+      ? await runCandidateImpactValidations({ root: input.root, config: input.config, contract: input.contract, report: input.report, impact: input.impact, compilation, resolution: validationResolution, requirements: [...impactRequirements, ...unmatchedBaseRequirements] })
       : [];
     const validationFailed = validationChecks.some((check) => check.status !== "PASS");
     const gatePassed = compilation.status === "READY" && !validationFailed;
@@ -717,6 +758,18 @@ function candidateAssurancePolicyFromFrozenPolicy(policy: ResolvedOperationPolic
   };
 }
 
+export { objectiveParticipantAccountingV1 } from "../operations/participantAccounting.js";
+
+/**
+ * The AcceptanceOracle's `validationForRequirement` matches a compiled requirement id to exactly
+ * one report check by check id or by the check's `details.requirementId`. A requirement that lacks
+ * such a check is dangling evidence and fails the oracle closed.
+ */
+function reportEvidencesValidationRequirement(checks: readonly ValidationCheck[], requirementId: string): boolean {
+  return checks.some((check) => check.id === requirementId || check.id === `candidate-impact-${requirementId}` || check.id === `candidate.assurance.validation.${requirementId}`
+    || Boolean(check.details && typeof check.details === "object" && (check.details as Record<string, unknown>).requirementId === requirementId));
+}
+
 export async function runCandidateImpactValidations(input: {
   root: string;
   config: HarnessProjectConfig;
@@ -725,8 +778,10 @@ export async function runCandidateImpactValidations(input: {
   impact: CandidateImpactV1;
   compilation: CandidateAssuranceCompilationV1;
   resolution: ValidationResolutionV1;
+  /** Defaults to the current impact requirements; callers may include resolved base requirements. */
+  requirements?: readonly import("../architecture/validationRequirements.js").ValidationRequirementV1[];
 }): Promise<ValidationCheck[]> {
-  const requirements = candidateImpactValidationRequirementsV1(input.impact);
+  const requirements = input.requirements ?? candidateImpactValidationRequirementsV1(input.impact);
   const actionById = new Map(input.resolution.actions.map((action) => [action.requirementId, action]));
   const executedActions = new Map<string, ValidationCheck>();
   let configuredValidatorChecks: ValidationCheck[] | undefined;
@@ -812,7 +867,7 @@ export async function runCandidateImpactValidations(input: {
         id: `candidate.assurance.validation.${requirement.id}`,
         category: "candidate-impact-validation",
         status: execution.status === "PASS" ? "PASS" : "FAIL",
-        message: execution.status === "PASS" ? `Required ${requirement.kind} evidence passed: ${requirement.property}` : `Required ${requirement.kind} validation for impact requirement '${requirement.id}' returned ${execution.status}: ${execution.message}`,
+        message: execution.status === "PASS" ? `Required ${requirement.kind} evidence passed: ${requirement.property}` : `Required ${requirement.kind} validation for requirement '${requirement.id}' returned ${execution.status}: ${execution.message}`,
         durationMs: execution.durationMs,
         details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, ...(sastEvidence ? { sastEvidence, artifact: sastEvidence.artifact } : {}), ...(laneEvidence ? { laneEvidence, artifact: laneEvidence.artifact } : {}) }
       });
@@ -823,7 +878,7 @@ export async function runCandidateImpactValidations(input: {
         id: `candidate.assurance.validation.${requirement.id}`,
         category: "candidate-impact-validation",
         status: "FAIL",
-        message: `Required validation for impact requirement '${requirement.id}' did not produce evidence: ${message}`,
+        message: `Required validation for requirement '${requirement.id}' did not produce evidence: ${message}`,
         details: { requirementId: requirement.id, kind: requirement.kind, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, ...(blocker ? { blocker } : {}) }
       });
     }
@@ -933,6 +988,23 @@ function mergeChecks(report: ValidationReport, extra: ValidationCheck[]): Valida
   for (const check of extra) byId.set(check.id, check);
   const checks = [...byId.values()];
   return { ...report, checks, status: checks.some((check) => check.status === "FAIL") ? "FAIL" : "PASS" };
+}
+
+/**
+ * Bounded deterministic failure detail for a failed validation report. A FAILED operation must
+ * carry the owning failing checks in its own durable record so the terminal cause is diagnosable
+ * without the disposable fixture (AEH-V2-0118); report messages are truncated, never interpreted.
+ */
+export function validationFailureDetail(report: ValidationReport, limit = 5): string {
+  const failures = report.checks.filter((check) => check.status === "FAIL");
+  const parts = failures.slice(0, limit).map((check) => `${check.id}: ${check.message.replace(/\s+/g, " ").trim().slice(0, 400)}`);
+  if (!parts.length) return `validation report status ${report.status}`;
+  return `${parts.join("; ")}${failures.length > parts.length ? `; +${failures.length - parts.length} more failing check(s)` : ""}`;
+}
+
+export function operationFailureDetail(result: Pick<TaskRunResult, "status" | "report" | "review">): string {
+  const review = result.review ? `; review=${result.review.finalState}${result.review.humanRequired ? " (human required)" : ""}` : "";
+  return `OPERATION_FAILED: ${validationFailureDetail(result.report)}${review}`;
 }
 
 async function verifyAfterWorker(workspaceRoot: string, controlRoot: string, config: HarnessProjectConfig, contract: TaskContract, controller?: ControlPlaneSnapshot, selection?: AgentExecutionSelection): Promise<ValidationReport> {

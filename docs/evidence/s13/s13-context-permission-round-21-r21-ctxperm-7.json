@@ -1,0 +1,127 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 21,
+  "runId": "r21-ctxperm-7",
+  "campaign": "context-permission",
+  "generatedAt": "2026-09-30T02:29:36.401Z",
+  "checkout": "/home/james/Desarrollo/agentic-engineering-harness",
+  "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13ContextPermissionCampaign.mjs",
+        "sha256": "ff7db8308682256574f78fdbd6943f843d85342cb6858edac6a20de3d06b8b22"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "eac8f478de575f01645f578e36ad2b8070fb481aa3b66bedee9278e902f06759"
+  },
+  "harnessBuildIdentity": {
+    "version": 1,
+    "packageVersion": "0.8.4",
+    "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "releaseId": "release-1790735182352-778506-6515b813",
+    "buildDigest": "e9a8862130319a82f458fc497305e05e44a1d007848938d2245966039d33b488",
+    "dirty": true
+  },
+  "candidate": {
+    "artifact": "agentic-engineering-harness-0.8.4.tgz",
+    "artifactDigest": "588ad59d1a41159270804c9c532d960c492660b809aef6141b4464b9b040e3c0"
+  },
+  "lanes": [
+    {
+      "capability": "context-handoff",
+      "result": "FAIL",
+      "checks": [],
+      "rowResult": null,
+      "error": "Error: CONTEXT_RUNTIME_V2_BINDING_REJECTED: context access is closed for a terminal participant execution.\n    at currentExecution (file:///tmp/aeh-s13-ctxperm-iWPWlq/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790735376878-792472-762f1ac5/context/authorizationV2.js:363:15)\n    at Module.validateCurrentContextAuthorization (file:///tmp/aeh-s13-ctxperm-iWPWlq/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790735376878-792472-762f1ac5/context/authorizationV2.js:202:21)\n    at async contextHandoffJourney (file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13ContextPermissionCampaign.mjs:253:19)\n    at async file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13ContextPermissionCampaign.mjs:366:45",
+      "artifact": "docs/evidence/s13/context-permission-lanes/round-21/r21-ctxperm-7/context-handoff.json"
+    },
+    {
+      "capability": "permission-delegation",
+      "result": "PASS",
+      "checks": [
+        {
+          "id": "permission-delegation.parent-lease",
+          "ok": true,
+          "message": "parent capabilities [execute,read,write] under epoch 1"
+        },
+        {
+          "id": "permission-delegation.ceiling-denial",
+          "ok": true,
+          "message": "V2_AUTHORITY_DENIED: role 'Reviewer' cannot receive capabilities outside its compiled RoleProfile ceiling: write."
+        },
+        {
+          "id": "permission-delegation.child-decision",
+          "ok": true,
+          "message": "child [read] subset=true; durable receipt persisted=true"
+        },
+        {
+          "id": "permission-delegation.real-child-session",
+          "ok": true,
+          "message": "real provider child session 7d2d8b88-a74a-4e1c-ac16-e16edafa9f05 exit=0"
+        }
+      ],
+      "rowResult": {
+        "permission-delegation": "PASS"
+      },
+      "error": null,
+      "artifact": "docs/evidence/s13/context-permission-lanes/round-21/r21-ctxperm-7/permission-delegation.json"
+    }
+  ],
+  "result": "SLICE_BLOCKED",
+  "workspaceInventory": [
+    {
+      "workspaceId": "wks_7a71938443d704ee",
+      "cwd": "/tmp/aeh-s13-ctxperm-iWPWlq/fixture-permission-delegation"
+    },
+    {
+      "workspaceId": "wks_a43294567a12cf9e",
+      "cwd": "/tmp/aeh-s13-ctxperm-iWPWlq/fixture-context-handoff"
+    }
+  ],
+  "workspaceCleanup": {
+    "archived": [
+      {
+        "workspaceId": "wks_7a71938443d704ee",
+        "cwd": "/tmp/aeh-s13-ctxperm-iWPWlq/fixture-permission-delegation",
+        "exitCode": 0
+      },
+      {
+        "workspaceId": "wks_a43294567a12cf9e",
+        "cwd": "/tmp/aeh-s13-ctxperm-iWPWlq/fixture-context-handoff",
+        "exitCode": 0
+      }
+    ],
+    "remaining": [],
+    "accounting": {
+      "inventoryCount": 2,
+      "archivedCount": 2,
+      "remainingCount": 0,
+      "unaccounted": [],
+      "accounted": true
+    }
+  },
+  "checkoutProof": {
+    "trackedDigestBefore": "dc180d079163776a729e4d723288253f8108f941af8111559c748312f1e5dbbc",
+    "trackedDigestAfter": "dc180d079163776a729e4d723288253f8108f941af8111559c748312f1e5dbbc",
+    "trackedFiles": 668,
+    "checkoutUntouched": true,
+    "postRunTrackedDocEditWindow": {
+      "opensAfterLaneFinish": true,
+      "note": "S13 tracked documentation/evidence is edited after lane execution; the recorded digest is the source-tree digest at lane end (R11-F6)."
+    }
+  }
+}

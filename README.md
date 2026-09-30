@@ -262,16 +262,9 @@ Repository-wide audits remain AUDIT operations; change routing is not inferred f
 
 ## OpenSpec-backed formal SDD authoring
 
-For FORMAL_SDD work the lead does **not** write proposal/spec/design/tasks itself. It delegates to `spec-manager`.
+For FORMAL_SDD work the lead does **not** write proposal/spec/design/tasks itself. The managed change controller delegates to `spec-manager` and accepts only its candidate-bound structured result. It persists validated READY content under canonical OpenSpec paths after that result is accepted, then performs deterministic OpenSpec validation and compilation. Preparing an authoring target does not write scaffold files into the frozen candidate workspace.
 
-```bash
-aeh spec prepare READABILITY-001 --title "Improve readability"
-# spec-manager authors/validates OpenSpec artifacts
-aeh spec compile READABILITY-001 --title "Improve readability"
-aeh sdd validate READABILITY-001
-aeh seal READABILITY-001
-aeh operation start run READABILITY-001
-```
+Use the managed CHANGE workflow for FORMAL_SDD work. The standalone `aeh spec prepare <taskId> --title <title>` command reports the canonical authoring target without writing scaffold files; only the controller persists OpenSpec content after the Spec Manager result passes deterministic provenance and schema checks. Compilation and sealing remain controller-owned operation steps.
 
 Authority split:
 

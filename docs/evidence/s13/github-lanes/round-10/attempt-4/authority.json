@@ -1,0 +1,130 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 10,
+  "runId": "attempt-4",
+  "capability": "authority",
+  "candidateBinding": {
+    "packedArtifact": "agentic-engineering-harness-0.8.4.tgz",
+    "packedArtifactDigest": "acf9610fa2b7053154ab7d9648770b661f28bf349ca9038d316e698cd471b2ff",
+    "packedBuild": {
+      "releaseId": "release-1790614455255-130652-d8e9e08f",
+      "buildDigest": "0fc216b8ebd40b942c19556b2f1e7d6c44be802bb27142d41deeab2cc7ee71ac",
+      "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+      "packageVersion": "0.8.4"
+    },
+    "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c"
+  },
+  "repository": "JamesMorales04/aeh-s13-round3-20260927035743-6bb5da",
+  "startedAt": "2026-09-28T16:57:28.324Z",
+  "checks": [
+    {
+      "id": "authority.human-gate",
+      "ok": true,
+      "message": "unapproved external effect status=HUMAN_REQUIRED"
+    },
+    {
+      "id": "authority.approved-effect",
+      "ok": true,
+      "message": "approved effect status=EXECUTED/SUCCEEDED"
+    },
+    {
+      "id": "authority.real-github-ref",
+      "ok": true,
+      "message": "real remote branch aeh-s13-authority-20260928165409 observed on JamesMorales04/aeh-s13-round3-20260927035743-6bb5da"
+    }
+  ],
+  "humanGate": {
+    "status": "HUMAN_REQUIRED",
+    "detail": "TOOL_ACTION_HUMAN_DECISION_REQUIRED: no current HumanDecision matches the operation, candidate, policy, epoch, actor, and exact purpose."
+  },
+  "humanDecision": {
+    "version": 2,
+    "decisionId": "decision:f050068d-1a81-4033-adaa-7357a1ac208f",
+    "operationId": "CHANGE-S13-GH-AUTHORITY",
+    "candidate": {
+      "operationId": "CHANGE-S13-GH-AUTHORITY",
+      "candidateId": "candidate:CHANGE-S13-GH-AUTHORITY:r1",
+      "projectId": "project:17d6b772a2ba2e4ed4a30751",
+      "taskId": "CHANGE-S13-GH-AUTHORITY",
+      "revision": 1,
+      "sourceDigest": "6b123fe1b6cb66fd2a765e23805f6ebc4ea8c589bf0d95b42680b8c8d32b36c4",
+      "worktree": "/tmp/aeh-s13-gh-nfOSRt/clone",
+      "createdAt": "2026-09-28T16:57:28.326Z",
+      "version": 1,
+      "canonicalIdentity": "{\"candidateId\":\"candidate:CHANGE-S13-GH-AUTHORITY:r1\",\"createdAt\":\"2026-09-28T16:57:28.326Z\",\"operationId\":\"CHANGE-S13-GH-AUTHORITY\",\"projectId\":\"project:17d6b772a2ba2e4ed4a30751\",\"revision\":1,\"sourceDigest\":\"6b123fe1b6cb66fd2a765e23805f6ebc4ea8c589bf0d95b42680b8c8d32b36c4\",\"taskId\":\"CHANGE-S13-GH-AUTHORITY\",\"version\":1,\"worktree\":\"/tmp/aeh-s13-gh-nfOSRt/clone\"}",
+      "identityDigest": "75ca91d1b80f55d7f2b2d1324fe63ef10d467139191b0cdee6d8073f1b83e798"
+    },
+    "operationExecutionRevision": 1,
+    "policyDigest": "86d3b55e8089a89eef38e1f074e85d98090f17eef344f9db3a43ab793155478f",
+    "controllerEpoch": 1,
+    "purpose": {
+      "kind": "ACTION_AUTHORIZATION",
+      "action": "git.push",
+      "effectDigest": "33218e8d6e7799ed9776468d62d808a12629f7dcfffd8115e06e4ed8be8fae33"
+    },
+    "kind": "APPROVE",
+    "actorId": "human:s13-github",
+    "reason": "Disposable S13 certification branch publication",
+    "createdAt": "2026-09-28T16:57:30.788Z",
+    "expiresAt": "2026-09-28T17:02:30.788Z"
+  },
+  "gatedAction": {
+    "status": "EXECUTED",
+    "action": "git.push",
+    "intent": {
+      "version": 2,
+      "intentId": "action-intent:7a85f0d63043afb58c7ae4f88c73a07e979aa99a70786a23d84fe41cdc22354f",
+      "actionKey": "github:push:aeh-s13-authority-20260928165409",
+      "operationId": "CHANGE-S13-GH-AUTHORITY",
+      "participantId": "controller:7b60a0ddff338003908b41ac",
+      "candidate": {
+        "operationId": "CHANGE-S13-GH-AUTHORITY",
+        "candidateId": "candidate:CHANGE-S13-GH-AUTHORITY:r1",
+        "projectId": "project:17d6b772a2ba2e4ed4a30751",
+        "taskId": "CHANGE-S13-GH-AUTHORITY",
+        "revision": 1,
+        "sourceDigest": "6b123fe1b6cb66fd2a765e23805f6ebc4ea8c589bf0d95b42680b8c8d32b36c4",
+        "worktree": "/tmp/aeh-s13-gh-nfOSRt/clone",
+        "createdAt": "2026-09-28T16:57:28.326Z",
+        "version": 1,
+        "canonicalIdentity": "{\"candidateId\":\"candidate:CHANGE-S13-GH-AUTHORITY:r1\",\"createdAt\":\"2026-09-28T16:57:28.326Z\",\"operationId\":\"CHANGE-S13-GH-AUTHORITY\",\"projectId\":\"project:17d6b772a2ba2e4ed4a30751\",\"revision\":1,\"sourceDigest\":\"6b123fe1b6cb66fd2a765e23805f6ebc4ea8c589bf0d95b42680b8c8d32b36c4\",\"taskId\":\"CHANGE-S13-GH-AUTHORITY\",\"version\":1,\"worktree\":\"/tmp/aeh-s13-gh-nfOSRt/clone\"}",
+        "identityDigest": "75ca91d1b80f55d7f2b2d1324fe63ef10d467139191b0cdee6d8073f1b83e798"
+      },
+      "action": "git.push",
+      "impact": "EXTERNAL_PUBLICATION",
+      "operationExecutionRevision": 1,
+      "policyDigest": "86d3b55e8089a89eef38e1f074e85d98090f17eef344f9db3a43ab793155478f",
+      "controllerEpoch": 1,
+      "payloadDigest": "33218e8d6e7799ed9776468d62d808a12629f7dcfffd8115e06e4ed8be8fae33",
+      "authorityBindingDigest": "52f6cc7d31f606243205cb110b46d31ebac91c171df4d9cb5e57019acb8538d0",
+      "requestDigest": "774aef68c6b971681dfbefb6edc1478f4e42e3aee41ee5d4489203c13872ce90",
+      "createdAt": "2026-09-28T16:57:30.789Z"
+    },
+    "receipt": {
+      "version": 2,
+      "intentId": "action-intent:7a85f0d63043afb58c7ae4f88c73a07e979aa99a70786a23d84fe41cdc22354f",
+      "operationId": "CHANGE-S13-GH-AUTHORITY",
+      "participantId": "controller:7b60a0ddff338003908b41ac",
+      "candidateDigest": "75ca91d1b80f55d7f2b2d1324fe63ef10d467139191b0cdee6d8073f1b83e798",
+      "operationExecutionRevision": 1,
+      "policyDigest": "86d3b55e8089a89eef38e1f074e85d98090f17eef344f9db3a43ab793155478f",
+      "action": "git.push",
+      "controllerEpoch": 1,
+      "outcome": "SUCCEEDED",
+      "resultDigest": "b002a8cb803b48ef0dd787f386bc3106923d46165cf750c0e6ea644abec2e9f9",
+      "receiptId": "action-receipt:9d06083695d6c5bc7f51eb66897e50f952e024f933f41d91a675a80266bc7741",
+      "receiptDigest": "9d06083695d6c5bc7f51eb66897e50f952e024f933f41d91a675a80266bc7741",
+      "recordedAt": "2026-09-28T16:57:33.738Z"
+    },
+    "reconciliation": null,
+    "reconciliationStrategy": "git ls-remote --heads origin aeh-s13-authority-20260928165409",
+    "detail": "Side effect executed and receipt persisted."
+  },
+  "remoteRef": {
+    "exitCode": 0,
+    "stdout": "refs/heads/aeh-s13-authority-20260928165409\n1cc4cf156441836236ef6d11f08e3336f6bebca2"
+  },
+  "result": "PASS",
+  "finishedAt": "2026-09-28T16:57:34.344Z"
+}

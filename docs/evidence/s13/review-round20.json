@@ -1,0 +1,324 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 20,
+  "reviewer": {
+    "identity": "fresh independent S13 round-20 reviewer; no implementation role in round 20",
+    "provider": "opencode-go",
+    "model": "deepseek-v4.1-flash",
+    "thinking": "plan-mode read-only review"
+  },
+  "noImplementationDisclosure": "I did not implement Round 20 and did not inherit any prior summary; durable source, Git and evidence were authoritative. I wrote no repository file, made no commit/push/stash/reset/clean/revert, issued no GitHub write (only read-only `gh api` GETs for the pushed ref, commit and issue #1), and launched no AEH operation against this checkout. Verification = read-only shell/read/grep/python plus read-only Paseo daemon listings; vitest/typecheck/build were NOT executed (cache/build writes are forbidden in this read-only review).",
+  "gitState": {
+    "branch": "core-architecture-v2",
+    "head": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "expectedHead": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "headMatches": true,
+    "upstream": "origin/core-architecture-v2",
+    "upstreamHeadObserved": "e3dad34aa79348e1d65cee28114d76d4ec0a736c (git ls-remote, read-only)",
+    "commitsAdded": 0,
+    "pushPerformed": false,
+    "stashes": 0,
+    "uncommittedEntries": 130,
+    "target": {
+      "path": "docs/CORE_ARCHITECTURE_V2.md",
+      "workingSha256": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+      "requiredSha256": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+      "match": true,
+      "diffVsHead": "empty (git diff and git show HEAD: sha256 both equal)"
+    },
+    "gitDiffCheck": "clean (exit 0, no output)"
+  },
+  "digestRecomputation": {
+    "status": "MATCH",
+    "method": "Independently recomputed the campaign tracked-digest algorithm (`git ls-files -z` sorted; sha256 over `path\\0<file>\\0` + file bytes) in a read-only python process.",
+    "target": "MATCH 4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+    "finalTrackedDigest": "MATCH e7d3bb9bb4bfdbe085328aeca4769d0972de4af193aff1c24d6d8b91df5c7351 (668 files)",
+    "frozenF1Digest": "NOT_RECONSTRUCTIBLE_FROM_CURRENT_TREE (F1 tree bytes no longer exist); source invariance independently supported: zero tracked non-doc files have mtime after the F1 build time 2026-09-29T16:54:37Z; only docs/CORE_ARCHITECTURE_V2_{STATUS,CONFORMANCE}.md and docs/ENGINEERING_LEDGER.md have mtime after Round-20 start; dist/current = release-1790726248916-392758-ab06c9c0 with buildDigest 408b178d53f32750aa81efb3a60965552b1aacd7756332b4c6dbf8fd3d1c744b = F1 buildDigest, gitSha e3dad34",
+    "journey8": {
+      "summary": "MATCH 73d56b5bdf76a5562d8d5134ff2b98f694ee29f7f9909282a5c33de9cc19411a",
+      "lane": "MATCH eae2e26231c251ebe5edec2b8abdfa9c81c01f6fae8721332a2fb1e96aa5364f",
+      "harness": "MATCH c5abc79bc8bb58d51e5ff84900824c638b738801ac2f66e16126da78798910d9 (on-disk)"
+    },
+    "dist4": {
+      "summary": "MATCH 28fa3bc5368cd87cb57799463d3bab57f7ab92e1fbf940e95c663d2d79b2d17f",
+      "lane": "MATCH 3a27aecf2f063594f6597c246b529595817f5fa2ec3200898088291c214a118a",
+      "harness": "MATCH 4fc7b11c3462f6abca836b27ff10dbc3931a60c1edbe5a04bd355a39637d7dda (on-disk)"
+    },
+    "round19": {
+      "r19-gh-1 lanes": "MATCH 40feabe428a9f76e06d32640fd0ae1cbf6b683bae546c05924eb305fc4e60dff / 1b0fe98eda46968c765894d07c8ca060d378bee7209a3c4b336867d4a6d4cd15 / bcec9d48330af4faace849a3cd6f3f25f10245fabef7351f27b748981e0ca690",
+      "r19-cert-1 summary": "MATCH 62c3f172c7dcdaffd592f95ff4e83da611be11d6f823f7ab4a981f3b6cda626b",
+      "r19-mw-1 lane/summary": "MATCH 0108aa2dbb342d0a183956dfc6af9fe5347bf655acf343af032f007965c608d7 / 582b2180ee23cafe4f00081745a8ef161a29ce5b5690e7c51eb57983a4883118",
+      "r19-gov-3 lane/summary": "MATCH b152098446f5c2b404026cfe4da878c9faf2b092e5eaa74d3cc1970c51afc66f / 939f5fcbe9c5a91d12d6cac9ccc5fac59bbf6aafef69482eba21e0b13bb5ccb6",
+      "review-round18": "MATCH 308abc1ad9c66f49f1ae2b24a3c3f576df49eab43c392cecbec75bb56683ffcc"
+    },
+    "ctxpermHarness": "MATCH 985b28dae398b5814fef4a9fbf1bbd1de9ddc33ee3b2affaf9baa7c2c5a05035 (on-disk = ctxperm-3 recorded revision)",
+    "authorizationArtifact": "MATCH 272c5cb76158a7c312edd4d8d97cd6545b599e5c57c7978bbfc3742c573bd460",
+    "stabilityHarnessPresent": "c8a7f96c69cf0c06e99c44ad1b998cfdd7f235f7ba15efbd5b8580b09f3bef70; no s13-resource-stability-round-*.json exists => NOT RUN"
+  },
+  "findings": [
+    {
+      "id": "R20-F1",
+      "priority": "P2",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "CONFIRMED_HARNESS_CONTRACT_DEFECT",
+      "evidence": "tests/packed/s13ResourceStabilityCampaign.mjs: when an iteration observes a non-terminal operation the loop sets `preserved=true` and breaks (lines 196-200), but reconciliation still runs by default (`if (harvest || !keepRoot) reconciliation = await reconcile()`, line 222; S13_RESOURCE_KEEP defaults unset) and reconcile() archives every owned workspace and agent under the shared root unconditionally (lines 122-150) with no terminality predicate. This contradicts the harness's own T5 contract (line 28-29: 'never archives a resource whose owning operation is not terminal') and campaign amendment rule 6 (only terminal-operation resources may be auto-reclaimed). Exactly the likely failure mode of a stability run (a stalled operation) would trigger an improper archive of that operation's resources.",
+      "requiredAction": "Before the Round-21 stability run: gate reconcile() per resource on proven terminality of the owning operation (preserve and report otherwise, per AEH-V2-0112), and make the T5 baseline-return check assert that no non-terminal-owned resource was archived."
+    },
+    {
+      "id": "R20-F2",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "CONFIRMED_RECORD_INCONSISTENCY",
+      "evidence": "docs/ENGINEERING_LEDGER.md AEH-V2-0128 status still reads 'ROUND 19 REPAIRED IN SOURCE + REGRESSED; live lane run pending ... its result is recorded in the Round-19 WorkGraph when the run completes', but the Round-19 WorkGraph line 1400 records `change-multifile` terminal SUCCEEDED rev 81, route DIRECT, sealed-contract route check PASS, oracle ACCEPTED, and STATUS line 311 / CONFORMANCE line 243 both claim `change-multifile` PASS. The ledger row was not reconciled with the completed run.",
+      "requiredAction": "Update AEH-V2-0128's status to FIXED_AND_REAL_PROVIDER_EXERCISED referencing the r19 `change-multifile` lane, or explain why the run does not close it."
+    },
+    {
+      "id": "R20-F3",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "PARTIAL_DURABILITY",
+      "evidence": "The claim '99 orphan fixture processes terminated' (W113; STATUS line 311) is only partially backed by the cited artifacts: docs/evidence/s13/round-20/distributed-2-orphan-reconciliation.json documents 19; resource-reconciliation.json documents 4 observed/8 exited after agent archive; round20-cleanup-after.json records no process-termination total. The 51 + 29 passes appear only in the WorkGraph prose, not in any repository-durable round-20 artifact. (19+8+51+29+... is internally ambiguous against '99'.)",
+      "requiredAction": "Persist per-pass termination inventories (or a consolidated sanitized JSON) for the 51 and 29 passes, or restate the count with its durable evidence anchors."
+    },
+    {
+      "id": "R20-F4",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "AMENDMENT_COMPLIANCE_GAP",
+      "evidence": "Live `paseo agent ls --json` (read-only, 2026-09-30T00:11Z) shows 14 idle managed agents. Ten belong to the two deliberately preserved non-terminal distributed operations (correct per the amendment). The remaining four are: Campaign Director af753081 (retained, correct), plus three historical campaign-owned idle agents not archived and not listed in the round-20 census preserved/uncertain inventory: 49b148f3-189f-43da-9772-56a24956bc19 (Round-9 lead), 12eb1e2a-27b6-488a-aa56-a5da0e15c681 (S3 OPA role agent), 21cb75ae-93a3-4cf1-8c3c-9726ef40f03e (aeh-self-AUDIT-20260922T221454Z supervisor). Amendment rules 1/3 require archiving after durable output consumption or explicit preservation/report.",
+      "requiredAction": "Archive the three historical idle agents through the supported Paseo archive lifecycle, or report them explicitly with ownership/uncertainty in the census."
+    },
+    {
+      "id": "R20-F5",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "RECORD_PRECISION",
+      "evidence": "STATUS line 311 says P0-C advanced through 'three harness repairs (contract-routing assurance, contract task identity)' — two repairs are named. Lane evidence shows three attempts with two harness revisions (r20-ctxperm-1 file f21a63d2; r20-ctxperm-2 7d4cc4d0; r20-ctxperm-3 985b28da) and attempt 3 failing on a provider MCP flake without a harness repair (W109).",
+      "requiredAction": "Correct to 'three attempts / two harness repairs (contract-routing assurance, contract task identity)'."
+    },
+    {
+      "id": "R20-F6",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "RECORD_INCONSISTENCY",
+      "evidence": "docs/evidence/s13/round-20-resource-census.json internally disagrees: agents.archivedViaCliThisPass = 65 while archiveResults.archivedAgents = 64; the WorkGraph boundary census and ledger 0130 say 64.",
+      "requiredAction": "Reconcile the archived-agent count in the census (state which value is authoritative and why)."
+    },
+    {
+      "id": "R20-F7",
+      "priority": "P2",
+      "mechanism": "HYBRID",
+      "disposition": "DISCLOSED_BOUNDARY_CONFIRMED_WITH_CAVEAT",
+      "evidence": "issue-driven `r20-journey-8` is a real PASS: governed operation CHANGE-20260929T222434Z-9eed7a49 terminal SUCCEEDED rev 81, candidate r3, oracle ACCEPTED (lane eae2e262…), and I independently confirmed via read-only GitHub API that branch aeh-s13-issue-journey-1-issue-journey-greet-contract-comment exists at 5f7d655d9048149ffb148ece4b97ce892425bbc0 with commit message naming the operation, and that issue #1 is still open/unchanged. However the delivery half (HUMAN_REQUIRED boundary, approval consumption, commit/push, reconciliation) runs on a harness-materialized RUNNING operation shell that rewrites the terminal operation record in the candidate worktree with a campaign-minted controller token (disclosed in deliveryOperationShell and CONFORMANCE line 243; the real operation stays terminal, no epoch re-claim). The product gate did consume the external-authorization decision bound to the exact git.push effect digest (src/security/toolActionGate.ts:377-394 requires exact sha256Canonical(payload) equality; finalize succeeded, so binding is proven). The 'HUMAN_REQUIRED' rejection was therefore exercised against the shell, not the real terminal operation.",
+      "requiredAction": "No product change; the Director should explicitly accept the disclosed fixture-scoped delivery shell as the issue-driven/delivery row boundary, or require a single continuous managed operation in a later round. Do not present the journey as a continuous managed operation."
+    },
+    {
+      "id": "R20-F8",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "PATH_EQUIVALENCE_VERIFIED",
+      "evidence": "certification-repair's last lane `r18-certrepair-4` binds pre-F1 source/build ca1d8f56 and was not rerun on F1. F1 changed src/agents/routingV2.ts, src/agents/waveExecutor.ts, src/core/triage.ts, src/paseo/runtimeCore.ts, src/runtime/providerLifecycle.ts. I verified `grep -rn 'runtimeCore|providerLifecycle|routingV2|waveExecutor|triage' src/certification/*.ts` is empty and the campaign uses certify.CodexAgentProvider directly (tests/packed/s13CertificationRepairCampaign.mjs), so the changed modules are not on the executed path.",
+      "requiredAction": "Record the path-equivalence basis in the row disposition (or rerun on F1 for a build-bound binding)."
+    },
+    {
+      "id": "R20-F9",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "VERIFICATION_BOUNDARY",
+      "evidence": "This review is read-only plan mode: vitest, typecheck and build were not executed (they write caches/build output). Verified statically: all 25 focused files exist; exactly 203 non-system `*.test.ts` files exist; tests/paseoSdkResolve.test.ts and src/paseo/sdkResolve.ts are byte-identical to HEAD; the recorded mise store path /home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6 exists; dist/current release-1790726248916-392758-ab06c9c0 + build-identity.json prove a successful final build at F1 buildDigest; git diff --check clean; TARGET exact. The 25/207, 203-file/1,361-test (1,351/3/7) and typecheck claims remain claimed-only; the 3 failures are classified PRE_EXISTING_ENVIRONMENT_DRIFT (all 3 in tests/paseoSdkResolve.test.ts, source and test unmodified vs HEAD).",
+      "requiredAction": "Reproduce the focused set, full non-system suite, typecheck and build in a writable environment at the checkpoint; provision away or formally disposition the 3 paseoSdkResolve environment-drift failures before final slice acceptance (as already recorded)."
+    }
+  ],
+  "stalenessDispositions": [
+    {
+      "scope": "startup, informational, audit, change, direct-change, delegated-change, formal-sdd, multi-worker, cancel, recovery, product-repair, repair, project-home, multi-project, authority",
+      "disposition": "CURRENT_ACCEPTED_ON_F1",
+      "evidence": "Round-19 runs on freeze F1 (trackedDigest 1183af86…/buildDigest 408b178d…): r19-cert-1 4/4 PASS (summary 62c3f172… MATCH); r19-gov-1 audit PASS; r19-gov-2/3 change-direct/change-delegated/change-formal PASS; r19-mw-1 (0108aa2d…/582b2180… MATCH); r19-lifecycle-1 cancel/recovery PASS; r19-gov-3 repair+product-repair PASS (b1520984…/939f5fcb… MATCH). Round 20 changed no src file (mtime sweep + buildDigest equality)."
+    },
+    {
+      "scope": "certification-repair",
+      "disposition": "CURRENT_ACCEPTED_BY_PATH_EQUIVALENCE",
+      "evidence": "r18-certrepair-4 (pre-F1 build ca1d8f56); F1-changed modules verified absent from the certification-repair executed path (src/certification imports checked). See R20-F8."
+    },
+    {
+      "scope": "issue-driven",
+      "disposition": "CURRENT_ACCEPTED_WITH_DISCLOSED_DELIVERY_SHELL",
+      "evidence": "r20-journey-8 full journey PASS; real remote ref 5f7d655d9048 and untouched issue #1 independently confirmed read-only; delivery half runs on the disclosed fixture shell (R20-F7)."
+    },
+    {
+      "scope": "delivery",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r19-gh-1 delivery lane PASS with exercised tokens `delivery.delivery-record` (record digest 8ad11b3cd966195a…) and `delivery.provenance` (S7 gate ok=true, required=false explicit no-artifact determination); r20-journey-8 adds a real push with receipts/reconciliation. The GitHub campaign's accepted candidate and acceptance bundle are fixture-constructed as before (disclosed pattern)."
+    },
+    {
+      "scope": "context-handoff, permission-delegation",
+      "disposition": "NO_CURRENT_PASS",
+      "evidence": "r20-ctxperm-1/2/3 all FAIL (EXECUTION_POLICY_STALE → AEH_RESULT_PROVENANCE → provider Serena MCP 'Connection closed'); final harness revision 985b28da…; rerun is Round-21 work. Rows lack required [context-ref, continuation] / [parent-lease, decision] PASS evidence."
+    },
+    {
+      "scope": "distributed-execution",
+      "disposition": "BLOCKED_CURRENT_PRODUCT_DEFECT_AEH_V2_0131",
+      "evidence": "r20-dist-4 lane FAIL; worker receipt FAIL with EXECUTION_BINDING_SESSION_UNSUPPORTED (src/workers/agentPrompt.ts:1355); operation RUNNING at the bound; oracle lease prepared=0/released=0/completed=1; summary 28fa3bc5… MATCH; r20-dist-2/4 stalled operations preserved."
+    },
+    {
+      "scope": "AEH-V2-0130 resource-stability acceptance prerequisite",
+      "disposition": "PENDING_NOT_RUN",
+      "evidence": "tests/packed/s13ResourceStabilityCampaign.mjs exists (c8a7f96c…) and is substantive, but no s13-resource-stability-round-*.json evidence exists; the product architecture (durable ownership + terminal/recovery reconciliation) is OPEN and the harness T5 contract has the R20-F1 defect. Amendment rule 7 requires this bounded campaign before final self-hosting acceptance."
+    },
+    {
+      "scope": "control-center",
+      "disposition": "NOT_APPLICABLE",
+      "evidence": "BROWSER lane only; S11 browser/visual evidence; never substituted for REAL_PROVIDER."
+    },
+    {
+      "scope": "campaign resource/agent hygiene",
+      "disposition": "PARTIAL_COMPLIANCE",
+      "evidence": "7 terminal workspaces and 4 idle supervisor generations archived; 2 stalled non-terminal operations + 2 terminality-unprovable workspaces preserved (verified live); 291 staging dirs removed; but 3 historical idle campaign agents remain unaccounted (R20-F4) and the 51+29 process passes lack durable artifacts (R20-F3)."
+    }
+  ],
+  "matrixDispositions": [
+    {
+      "capability": "startup",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r19-cert-1 lane PASS on F1, summary 62c3f172… MATCH; source unchanged in R20"
+    },
+    {
+      "capability": "informational",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r19-cert-1 lane PASS on F1 (real packed intent + Paseo session)"
+    },
+    {
+      "capability": "audit",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r19-gov-1 audit terminal SUCCEEDED rev 52, row oracle PASS on F1"
+    },
+    {
+      "capability": "change",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r19-gov-2 change-direct PASS (change row) + r20-journey-8 governed operation r3 ACCEPTED with receipts/validation"
+    },
+    {
+      "capability": "direct-change",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r19-gov-2 change-direct route DIRECT PASS; r20-journey-8 DIRECT"
+    },
+    {
+      "capability": "delegated-change",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r19-gov-1/3 change-delegated terminal SUCCEEDED, 0 escalations, oracle ACCEPTED"
+    },
+    {
+      "capability": "formal-sdd",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r19 change-formal terminal SUCCEEDED, canonical spec authoring/compilation PASS"
+    },
+    {
+      "capability": "multi-worker",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r19-mw-1 lane 0108aa2d… MATCH: workUnits=2 waves=1 conflicts=0, barrier PASS, 2 assembly receipts, accounting 6/6/0"
+    },
+    {
+      "capability": "cancel",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r19-lifecycle-1 cancel PASS (real SIGKILL owner, terminal CANCELLED, leases drained) on F1"
+    },
+    {
+      "capability": "recovery",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r19-lifecycle-1 recovery PASS (exact-session epoch takeover, operation preserved)"
+    },
+    {
+      "capability": "product-repair",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r19-gov-3 forcing geometry: repair packet with 6 failures in scope, re-validation/re-review, oracle ACCEPTED"
+    },
+    {
+      "capability": "certification-repair",
+      "disposition": "CURRENT_ACCEPTED_BY_PATH_EQUIVALENCE",
+      "evidence": "r18-certrepair-4 failure packet + real Codex actor + 1 repair turn + oracle re-check PASS; F1-changed modules not on executed path (verified)"
+    },
+    {
+      "capability": "repair",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r19-gov-3 repair PASS (r19-gov-3 lane b1520984… MATCH)"
+    },
+    {
+      "capability": "context-handoff",
+      "disposition": "NO_CURRENT_PASS_REQUIRED_EVIDENCE_MISSING",
+      "evidence": "r20-ctxperm-1/2/3 truthful FAILs; no [context-ref, continuation] PASS; rerun Round 21"
+    },
+    {
+      "capability": "permission-delegation",
+      "disposition": "NO_CURRENT_PASS_REQUIRED_EVIDENCE_MISSING",
+      "evidence": "r20-ctxperm-1/2/3 truthful FAILs; no [parent-lease, decision] PASS; rerun Round 21"
+    },
+    {
+      "capability": "issue-driven",
+      "disposition": "CURRENT_ACCEPTED_WITH_DISCLOSED_DELIVERY_SHELL",
+      "evidence": "r20-journey-8 PASS: issue #1 snapshot/drift → governed operation SUCCEEDED/r3/ACCEPTED → HUMAN_REQUIRED → external-authorization exact-effect approval → real remote ref 5f7d655d9048 (independently verified) → issue untouched; delivery shell disclosed (R20-F7)"
+    },
+    {
+      "capability": "delivery",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r19-gh-1 [delivery-record, provenance] tokens PASS with explicit no-artifact determination + r20 real push/receipts/reconciliation"
+    },
+    {
+      "capability": "distributed-execution",
+      "disposition": "BLOCKED_CURRENT_PRODUCT_DEFECT",
+      "evidence": "r20-dist-4 lane FAIL with EXECUTION_BINDING_SESSION_UNSUPPORTED; AEH-V2-0131 OPEN; no worker-receipt PASS"
+    },
+    {
+      "capability": "project-home",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r19-cert-1 lane PASS on F1 (real registry + loopback Home)"
+    },
+    {
+      "capability": "multi-project",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r19-cert-1 lane PASS on F1 (two isolated repository identities)"
+    },
+    {
+      "capability": "control-center",
+      "disposition": "NOT_APPLICABLE",
+      "evidence": "BROWSER lane only (S11); not a model/provider journey and never substituted"
+    },
+    {
+      "capability": "authority",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r19-gh-1 authority PASS: external-authorization approval, HUMAN_REQUIRED → EXECUTED/SUCCEEDED, real remote branch; lane 1b0fe98e… MATCH"
+    }
+  ],
+  "focusedTests": {
+    "executed": [
+      "git diff --check -> clean (exit 0)",
+      "python recomputation of the campaign tracked digest -> e7d3bb9b… (668 files) MATCH",
+      "read-only sha256 recomputation of 9 claimed evidence digests (journey-8 x2, dist-4 x2, r19-gh-1 x3, r19-cert-1, r19-mw-1 x2, r19-gov-3 x2, review-round18) -> all MATCH",
+      "read-only harness revision hashes (journey c5abc79b, governed 4fc7b11c, ctxperm 985b28da, stability c8a7f96c) -> MATCH",
+      "read-only GitHub API GETs: ref/commit/issue #1 -> real push confirmed, issue unchanged"
+    ],
+    "notExecutedBoundary": "vitest, npm run typecheck and npm run build were NOT executed (read-only review; these write caches/build output). The 25-file/207-test focused set, the 203-file/1,361-test (1,351/3/7) canonical suite, typecheck exit 0 and build exit 0 are claimed-only here.",
+    "staticInventory": {
+      "focusedFilesListed": 25,
+      "focusedFilesMissing": 0,
+      "nonSystemTestFiles": 203,
+      "totalTestFiles": 209,
+      "trackedFiles": 668,
+      "uncommittedEntries": 130
+    },
+    "paseoSdkResolveClassification": "PRE_EXISTING_ENVIRONMENT_DRIFT — tests/paseoSdkResolve.test.ts and src/paseo/sdkResolve.ts byte-identical to HEAD (empty git diff); the recorded real mise store path exists; same class reproduced at S10/S12/R12/R17/R18.",
+    "targetVerified": true,
+    "gitDiffCheck": "clean"
+  },
+  "verdict": "SLICE_BLOCKED",
+  "actionRequired": [
+    "S13 acceptance is impossible now: `context-handoff` and `permission-delegation` have no PASS (3 truthful FAIL attempts, final blocker provider Serena MCP flake; harness revision 985b28da…), and `distributed-execution` is a truthful FAIL blocked by OPEN product defect AEH-V2-0131 (`transport 'inherit'` unsupported by the two-phase worker session protocol, src/workers/agentPrompt.ts:1355).",
+    "AEH-V2-0130 remains OPEN: implement durable operation→resource ownership + terminal/recovery reconciliation; fix the stability harness R20-F1 reconcile/terminality defect; then run tests/packed/s13ResourceStabilityCampaign.mjs and persist the result. This is required before final self-hosting/S14 acceptance (amendment rule 7).",
+    "Fix the Round-20 record defects: AEH-V2-0128 ledger status still says 'live lane run pending' (R20-F2); persist the 51+29 process-termination inventory or correct the 99 count (R20-F3); reconcile the census 64/65 archived-agent count (R20-F6); correct the 'three harness repairs' wording (R20-F5).",
+    "Archive or explicitly report the three unaccounted historical idle campaign agents (49b148f3, 12eb1e2a, 21cb75ae) per amendment rules 1/3 (R20-F4).",
+    "Director must explicitly accept (or reject) the disclosed fixture-scoped RUNNING delivery-operation shell as the issue-driven/delivery row boundary; the real push, exact-effect authorization binding and untouched issue are independently verified (R20-F7).",
+    "Reproduce the focused set, canonical non-system suite, typecheck and build in a writable environment before any checkpoint, and formally disposition the 3 pre-existing paseoSdkResolve environment-drift failures (R20-F9).",
+    "Reconcile the two preserved stalled operations (r20-dist-2/r20-dist-4) only after the product can prove terminality or an authorized cancellation exists; keep the two terminality-unprovable workspaces preserved and reported.",
+    "S13 stays uncommitted; no checkpoint commit until a fresh independent SLICE_ACCEPTED; S14 must not start."
+  ]
+}

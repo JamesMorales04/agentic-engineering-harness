@@ -18,7 +18,8 @@ export const aehErrorCodeValues = [
   "STACK_ASSESSMENT_INVALID",
   "CANDIDATE_IMPACT_INVALID",
   "FAILURE_ASSESSMENT_INVALID",
-  "VALIDATION_REQUIREMENT_BLOCKED"
+  "VALIDATION_REQUIREMENT_BLOCKED",
+  "SPEC_MANAGER_CONTENT_NOT_CANONICAL"
 ] as const;
 
 export type AehErrorCode = (typeof aehErrorCodeValues)[number];

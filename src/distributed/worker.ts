@@ -7,19 +7,21 @@ import type { AgentExecutionSelection } from "../agents/types.js";
 import type { WorkUnitOutput } from "../agents/outputContracts.js";
 import type { ControlPlaneSnapshot } from "../core/controlPlane.js";
 import type { HarnessProjectConfig, TaskContract, WorkerSession } from "../core/types.js";
-import { executeAgentPrompt, materializeAgentPrompt, prepareAgentExecutionBinding, prepareRuntimeSession, type PreparedAgentExecutionIdentity } from "../workers/agentPrompt.js";
+import { executeAgentPrompt, materializeAgentPrompt, operationArtifactRoot, prepareAgentExecutionBinding, prepareRuntimeSession, type PreparedAgentExecutionIdentity } from "../workers/agentPrompt.js";
+import { persistOperationAgentArtifact } from "../operations/artifacts.js";
 import { assertRoleInvocationPolicyV1, assertSkillManifestV1, type RoleInvocationPolicyV1, type SkillManifestV1 } from "../architecture/executionIdentity.js";
 import { runExecutable } from "../utils/process.js";
 import { claimDistributedJob, completeDistributedJob, publishDistributedSessionReady, releaseDistributedExecutionBinding, submitDistributedJob, waitForDistributedExecutionRelease, waitForDistributedResult, waitForDistributedSessionReady } from "./queue.js";
-import type { DistributedDelegationJob, DistributedDelegationResult, DistributedExecutionReleaseV1, DistributedSessionReadyV1 } from "./types.js";
+import type { DistributedDelegationJob, DistributedDelegationResult, DistributedExecutionReleaseV1, DistributedSessionReadyV1, DistributedTransportResolutionV1 } from "./types.js";
 import { enforceSandboxPolicy, sandboxPolicyDigest } from "../security/sandbox.js";
 import type { ExecutionAuthorityV1 } from "../security/executionLease.js";
-import { assertExecutionBindingV2, assertExecutionBlueprintV2 } from "../architecture/executionIdentity.js";
+import { assertExecutionBindingV2, assertExecutionBlueprintV2, type ExecutionBindingV2 } from "../architecture/executionIdentity.js";
 import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import { assertWorkspaceMatchesCandidate } from "../candidates/identity.js";
-import { currentControllerEpoch, loadOperation } from "../operations/state.js";
+import { currentControllerEpoch, loadOperation, recordParticipantReceipt } from "../operations/state.js";
 import { assertExecutionAuthority } from "../security/executionLease.js";
 import { sha256Canonical } from "../core/digest.js";
+import { sha256 } from "../context/provenance.js";
 import { createPromptManifest } from "../context/runtimeV2.js";
 
 export async function dispatchDistributedDelegation(input: {
@@ -49,7 +51,8 @@ export async function dispatchDistributedDelegation(input: {
   const base = await runExecutable("git", ["rev-parse", "HEAD"], { cwd: input.root, timeoutMs: 10_000 }); if (base.exitCode !== 0) throw new Error("Distributed execution could not resolve the workspace HEAD.");
   const candidatePatch = await createDistributedCandidatePatch(input.root);
   const decision = enforceSandboxPolicy(input.selection, input.config, input.task.risk === "critical" ? "high" : input.task.risk);
-  const selection: AgentExecutionSelection = { ...decision.selection };
+  const transportResolution = resolveDistributedWorkerTransport(input.config, decision.selection);
+  const selection: AgentExecutionSelection = { ...decision.selection, transport: transportResolution.resolved };
   const job: DistributedDelegationJob = {
     version: 2,
     id: `${safe(input.contract.task.id)}-${safe(input.task.id)}-${crypto.randomUUID()}`,
@@ -63,6 +66,7 @@ export async function dispatchDistributedDelegation(input: {
     task: input.task,
     contract: input.contract,
     selection,
+    transportResolution,
     sandboxPolicySha256: sandboxPolicyDigest(input.config, selection, input.task.risk === "critical" ? "high" : input.task.risk),
     executionAuthority: identity.authority,
     executionBlueprint: identity.executionBlueprint,
@@ -95,7 +99,109 @@ export async function dispatchDistributedDelegation(input: {
   const result = await waitForDistributedResult(input.root, input.config, job.id);
   if (result.version !== 2) throw new Error("UNSUPPORTED_DISTRIBUTED_RESULT_VERSION: migrate this worker result to the two-phase execution identity protocol.");
   if (result.jobId !== job.id || result.workerId !== ready.workerId || result.status === "PASS" && (result.session.executionBinding?.digest !== prepared.binding.digest || result.session.id !== prepared.binding.runtime.sessionId)) throw new Error("DISTRIBUTED_EXECUTION_BINDING_MISMATCH: worker result does not carry the controller-issued binding, the same actual runtime session, and the owning job/worker identity.");
+  if (result.status === "PASS") await recordDistributedParticipantReceipt(input.root, job, selection, result, prepared.binding);
   return result;
+}
+
+/**
+ * The detached worker has no controller authority, so it cannot write durable participant
+ * evidence. The controller converts the settled remote result (session + accepted structured
+ * payload + patch) into the same candidate-bound participant receipt the local isolated launch
+ * path records, and persists the operator-visible artifact under its own state root. The
+ * assembly receipt then links this pre-assembly receipt to the candidate the worker produced
+ * (AEH-V2-0106/0131).
+ */
+async function recordDistributedParticipantReceipt(
+  root: string,
+  job: DistributedDelegationJob,
+  selection: AgentExecutionSelection,
+  result: DistributedDelegationResult,
+  binding: ExecutionBindingV2
+): Promise<void> {
+  const operationId = job.executionAuthority.operationId;
+  const stateRoot = operationArtifactRoot(root);
+  const current = await loadOperation(stateRoot, operationId).catch(() => undefined);
+  if (!current?.candidateRevision || current.candidateRevision.identityDigest !== job.executionAuthority.candidateDigest) throw new Error("V2_RECEIPT_REJECTED: distributed result cannot bind a different candidate than its controller-issued authority.");
+  const participantId = job.executionAuthority.participantId;
+  const outputContract = job.roleInvocationPolicy.outputContract;
+  const observedAt = new Date().toISOString();
+  const artifactRef = await persistOperationAgentArtifact(stateRoot, operationId, `distributed-${job.id}-${observedAt.replace(/[^0-9A-Za-z]+/g, "-")}`, {
+    logicalAgent: selection.logicalAgent,
+    role: selection.role,
+    phase: "distributed",
+    outputContract,
+    remote: { jobId: job.id, workerId: result.workerId, startedAt: result.startedAt, finishedAt: result.finishedAt, changedFiles: result.changedFiles, patchDigest: sha256(result.patch), executionBindingDigest: binding.digest },
+    acceptedOutput: result.session.stdout,
+    session: result.session
+  });
+  const artifactContent = await fs.readFile(path.resolve(stateRoot, artifactRef));
+  const artifactDigest = sha256(artifactContent);
+  await recordParticipantReceipt(stateRoot, operationId, {
+    version: 1,
+    receiptId: `receipt:${participantId}:${observedAt}`,
+    operationId,
+    participantId,
+    sessionId: result.session.id,
+    attempt: 1,
+    role: selection.role,
+    phase: "distributed",
+    startedAt: result.startedAt,
+    finishedAt: result.finishedAt,
+    outputContract,
+    outputDigest: sha256(result.session.stdout ?? ""),
+    artifactRef,
+    candidate: current.candidateRevision,
+    outcome: "SUCCEEDED",
+    runtimeTerminal: { kind: "runtime-terminal", eventId: `runtime:${result.session.id}:${observedAt}`, observedAt, terminal: true, status: "SUCCEEDED", exitCode: 0 },
+    contract: { contractId: outputContract, contractDigest: sha256(JSON.stringify({ task: job.contract.task, outputContract })), valid: true },
+    artifact: { artifactId: artifactRef, artifactDigest, persisted: true, persistedAt: observedAt },
+    provenance: { provenanceId: `provenance:${operationId}:${result.session.id}:${observedAt}`, provenanceDigest: sha256(`${current.candidateRevision.identityDigest}:${artifactDigest}:${result.session.id}`), source: "aeh-distributed-worker-finalization", valid: true },
+    settled: true,
+    createdAt: observedAt
+  });
+}
+
+/**
+ * A distributed job must freeze a concrete worker session-materialization transport before it is
+ * submitted: `inherit` is a local orchestration instruction (it resolves to the orchestration
+ * provider in-process), and the detached worker has no operation context to resolve it against.
+ * Deterministically resolve it once at job creation and fail closed for anything the worker has no
+ * approved pre-prompt session-materialization boundary for (AEH-V2-0131).
+ */
+export function resolveDistributedWorkerTransport(config: HarnessProjectConfig, selection: AgentExecutionSelection): DistributedTransportResolutionV1 {
+  const requested = selection.transport === "inherit" ? (config.orchestration?.provider ?? "none") : selection.transport;
+  if (requested === "direct") return { requested: selection.transport, resolved: "direct", inherited: selection.transport === "inherit", reason: "provider idle-session boundary" };
+  if (requested === "podman") {
+    if (selection.runtimeAdapter !== "opencode") throw new Error(`DISTRIBUTED_EXECUTION_TRANSPORT_UNSUPPORTED: hardened Podman session preparation does not support runtime '${selection.runtimeAdapter}'.`);
+    return { requested: selection.transport, resolved: "podman", inherited: selection.transport === "inherit", reason: "hardened container idle-session boundary" };
+  }
+  if (requested === "paseo") {
+    // An explicit Paseo selection remains the in-authority-domain worker path. An inherited
+    // orchestration provider does not carry the owning controller's epoch/token, and the provider
+    // session lifecycle is controller-owned, so a detached worker cannot materialize a Paseo
+    // session: resolve the inherited provider to its idle provider-session boundary instead
+    // (AEH-V2-0131). `prepareRuntimeSession` only ever receives direct/podman.
+    if (selection.transport === "paseo") return { requested, resolved: "paseo", inherited: false, reason: "explicit Paseo worker inside the owning operation authority domain" };
+    if (selection.runtimeAdapter !== "opencode" && selection.runtimeAdapter !== "codex") {
+      throw new Error(`DISTRIBUTED_EXECUTION_TRANSPORT_UNSUPPORTED: inherited transport cannot be resolved to an idle provider-session boundary for runtime '${selection.runtimeAdapter}'.`);
+    }
+    return { requested: selection.transport, resolved: "direct", inherited: true, reason: "inherited Paseo orchestration has no distributed worker session-materialization boundary without controller authority; resolved to the provider idle-session boundary" };
+  }
+  throw new Error(`DISTRIBUTED_EXECUTION_TRANSPORT_UNSUPPORTED: transport '${requested}' has no approved distributed worker session-materialization boundary (supported: direct, podman, paseo).`);
+}
+
+/** Worker-side fail-closed re-check: a claimed job may only carry a concrete approved transport. */
+function workerSessionTransport(job: DistributedDelegationJob, _config: HarnessProjectConfig): "direct" | "podman" | "paseo" {
+  const declared = job.selection.transport;
+  const resolution = job.transportResolution;
+  const described = Boolean(resolution)
+    && typeof resolution!.requested === "string"
+    && resolution!.resolved === declared
+    && resolution!.inherited === (resolution!.requested === "inherit")
+    && (resolution!.inherited || resolution!.requested === declared);
+  if (!described) throw new Error("DISTRIBUTED_EXECUTION_TRANSPORT_UNSUPPORTED: job transport resolution does not describe its frozen selection.");
+  if (declared === "direct" || declared === "podman" || declared === "paseo") return declared;
+  throw new Error(`DISTRIBUTED_EXECUTION_TRANSPORT_UNSUPPORTED: claimed job carries unresolved transport '${String(declared)}'; reject and resubmit from the controller.`);
 }
 
 export async function createDistributedCandidatePatch(root: string): Promise<string> {
@@ -153,6 +259,7 @@ export function validateDistributedSandboxPolicy(job: DistributedDelegationJob, 
   if (originating.selection.transport !== job.selection.transport) throw new Error("DISTRIBUTED_SANDBOX_POLICY_WEAKENED: job selection does not satisfy the originating sandbox policy.");
   const local = enforceSandboxPolicy(job.selection, workerConfig, job.task.risk === "critical" ? "high" : job.task.risk);
   if (local.selection.transport !== job.selection.transport) throw new Error("DISTRIBUTED_SANDBOX_POLICY_WEAKENED: job selection does not satisfy the worker sandbox policy.");
+  workerSessionTransport(job, job.config);
   return {
     selection: job.selection,
     config: local.required ? { ...job.config, security: { ...job.config.security, sandbox: workerConfig.security?.sandbox } } : job.config
@@ -163,6 +270,8 @@ async function executeClaimedJob(workerRoot: string, job: DistributedDelegationJ
   const startedAt = new Date().toISOString(); const worktree = await fs.mkdtemp(path.join(os.tmpdir(), `aeh-remote-${safe(job.id)}-`)); let session: WorkerSession = { provider: job.selection.runtimeAdapter, model: job.selection.modelName, logicalAgent: job.selection.logicalAgent, runtime: job.selection.runtimeName, exitCode: 1, stdout: "", stderr: "remote worker did not start" }; let directWorkerHome: { directory: string } | undefined; let materializedPaseoSession: WorkerSession | undefined;
   try {
     const sandbox = validateDistributedSandboxPolicy(job, workerConfig);
+    const transport = workerSessionTransport(job, sandbox.config);
+    {
     if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(job.baseRef)) return failure(job, workerId, startedAt, session, "distributed job baseRef is not a full Git object ID");
     const clone = await runExecutable("git", ["clone", "--quiet", "--no-checkout", "--", job.repositoryUrl, worktree], { cwd: os.tmpdir(), timeoutMs: 300_000, toolchain: false }); if (clone.exitCode !== 0) return failure(job, workerId, startedAt, session, `clone failed: ${clone.stderr || clone.stdout}`);
     const checkout = await runExecutable("git", ["checkout", "--quiet", "--detach", job.baseRef], { cwd: worktree, timeoutMs: 120_000 }); if (checkout.exitCode !== 0) return failure(job, workerId, startedAt, session, `checkout failed: ${checkout.stderr || checkout.stdout}`);
@@ -175,9 +284,9 @@ async function executeClaimedJob(workerRoot: string, job: DistributedDelegationJ
     if (baselineCommit.exitCode !== 0) return failure(job, workerId, startedAt, session, `baseline commit failed: ${baselineCommit.stderr || baselineCommit.stdout}`);
     if (!job.executionAuthority || job.executionBlueprint.version !== 2 || job.roleInvocationPolicy.version !== 1 || job.skillManifest.version !== 1) return failure(job, workerId, startedAt, session, "EXECUTION_BINDING_REQUIRED: distributed job lacks a complete versioned identity envelope.");
     const sessionPreparationOptions = { phase: "distributed", capabilityAuthority: job.executionAuthority, participantId: job.executionAuthority.participantId, outputContract: job.roleInvocationPolicy.outputContract, executionBlueprint: job.executionBlueprint, executionBlueprintDigest: job.executionBlueprint.digest, roleInvocationPolicy: job.roleInvocationPolicy, skillManifest: job.skillManifest, contextManifest: job.sessionPreparation.contextManifest, contextManifestDigest: job.sessionPreparation.contextManifestDigest, promptManifestDigest: job.sessionPreparation.promptManifestDigest };
-    const sessionId = sandbox.selection.transport === "paseo"
+    const sessionId = transport === "paseo"
       ? (materializedPaseoSession = await materializeAgentPrompt(worktree, sandbox.config, job.contract, sandbox.selection, sessionPreparationOptions))?.id
-      : await prepareRuntimeSession(worktree, sandbox.config, sandbox.selection, sessionPreparationOptions, job.executionAuthority, sandbox.selection.transport, (home) => { directWorkerHome = home; });
+      : await prepareRuntimeSession(worktree, sandbox.config, sandbox.selection, sessionPreparationOptions, job.executionAuthority, transport, (home) => { directWorkerHome = home; });
     if (!sessionId?.trim() || sessionId.startsWith("launch:")) return failure(job, workerId, startedAt, session, "EXECUTION_BINDING_SESSION_REQUIRED: worker runtime did not materialize an actual durable session before requesting the controller binding.");
     const ready: DistributedSessionReadyV1 = {
       version: 1, jobId: job.id, workerId, leaseId, preparedAt: new Date().toISOString(),
@@ -216,6 +325,7 @@ async function executeClaimedJob(workerRoot: string, job: DistributedDelegationJ
     const names = await runExecutable("git", ["diff", "--name-only", "HEAD"], { cwd: worktree, timeoutMs: 30_000 }); const changedFiles = names.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean); const escaped = changedFiles.filter((file) => !job.task.scope.some((scope) => matches(file, scope))); if (escaped.length) return failure(job, workerId, startedAt, session, `remote task escaped scope: ${escaped.join(", ")}`, changedFiles);
     const diff = await runExecutable("git", ["diff", "--binary", "--no-ext-diff", "HEAD"], { cwd: worktree, timeoutMs: 60_000 }); if (diff.exitCode !== 0) return failure(job, workerId, startedAt, session, diff.stderr || "unable to capture patch", changedFiles);
     return { version: 2, jobId: job.id, workerId, startedAt, finishedAt: new Date().toISOString(), status: "PASS", session, changedFiles, patch: diff.stdout, observedCandidateSourceDigest };
+    }
   } catch (error) { return failure(job, workerId, startedAt, session, String(error)); }
   finally { if (directWorkerHome) await fs.rm(directWorkerHome.directory, { recursive: true, force: true }).catch(() => undefined); await fs.rm(worktree, { recursive: true, force: true }).catch(() => undefined); }
 }

@@ -1,0 +1,149 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 21,
+  "runId": "r21-ctxperm-9",
+  "capability": "context-handoff",
+  "provider": "opencode/opencode-go/deepseek-v4.1-flash",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13ContextPermissionCampaign.mjs",
+        "sha256": "01a370daa47ea08d0dde8b6350afa29699a5a3bef1c6f22768b477bb4077b261"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "95093d0a23b73de6d079e6b08dee0d43287fc5c73eb6896779c28eeb826fbc4f"
+  },
+  "startedAt": "2026-09-30T02:42:09.294Z",
+  "checks": [
+    {
+      "id": "context-handoff.real-session",
+      "ok": true,
+      "message": "real provider session 4b156803-8d7a-419e-a13e-89e3ee05f72b inspected (exit=0)"
+    },
+    {
+      "id": "context-handoff.addressable-refs",
+      "ok": true,
+      "message": "9 addressable ref(s) with durable artifact/source digests"
+    },
+    {
+      "id": "context-handoff.authorization-grant",
+      "ok": false,
+      "message": "grant db123585347002fa34b0273b1cb7e2d35b87cf71b59ca7b0be1fb3ce9c095766 bound to binding 41f123ed7da2328bec7a879f6b1f1cd1fc5253c4406c119e5c2629f8bfabd7aa"
+    },
+    {
+      "id": "context-handoff.continuation-binding",
+      "ok": false,
+      "message": "continuation sequence=2 previousSession=missing"
+    }
+  ],
+  "candidateBinding": {
+    "packedArtifactDigest": "4ba1bc12b28b4065bf1d35fd5e6e4cfee84ce9cda252aa50735a0fff1865b27f",
+    "fixtureCommit": "199d5905214821fc7f8b1c295f374ea434d2676c"
+  },
+  "parentAuthority": {
+    "participantId": "participant:8549b4c471344d3c",
+    "controllerEpoch": 1,
+    "candidateDigest": "40278428cb8bf49e14d533dcce14ee09e23f98ef5ba538e398dc55fc2c688be6",
+    "leaseIds": [
+      "lease:CHANGE-S13-CTX-HANDOFF:request:CHANGE-S13-CTX-HANDOFF:participant:8549b4c471344d3c:read:review"
+    ]
+  },
+  "launch": {
+    "sessionId": "4b156803-8d7a-419e-a13e-89e3ee05f72b",
+    "exitCode": 0,
+    "participantId": "participant:8549b4c471344d3c"
+  },
+  "launchBinding": {
+    "digest": "41f123ed7da2328bec7a879f6b1f1cd1fc5253c4406c119e5c2629f8bfabd7aa",
+    "sessionId": "4b156803-8d7a-419e-a13e-89e3ee05f72b",
+    "contextManifestDigest": "1bc3ac78c12d84e4ec58a6c40a6f08fcba3e4882e855a1b247f296f300773be7"
+  },
+  "authorizationGrant": {
+    "receiptDigest": "db123585347002fa34b0273b1cb7e2d35b87cf71b59ca7b0be1fb3ce9c095766",
+    "refCount": 9,
+    "bindingDigest": null,
+    "refs": [
+      {
+        "refId": "execution-envelope",
+        "artifactPath": ".harness/context/CHANGE-S13-CTX-HANDOFF/execution-envelope.raw",
+        "sourceDigest": "2276081a73d80c62760fff0da11120f2c2e1bcc3d4f84f99f9c15f30bd3f3eec"
+      },
+      {
+        "refId": "operation-state",
+        "artifactPath": ".harness/context/CHANGE-S13-CTX-HANDOFF/operation-state.raw",
+        "sourceDigest": "3dd6c5ec3bd130138237bcc2e912d71dd253add24a3523f27c8d50f8646ea306"
+      },
+      {
+        "refId": "output-delivery-policy",
+        "artifactPath": ".harness/context/CHANGE-S13-CTX-HANDOFF/output-delivery-policy.raw",
+        "sourceDigest": "335a8246fb1c62a6c24d3eb89a897a6db1a5962c4ff4fa5256445a2b5229aaed"
+      },
+      {
+        "refId": "raw-evidence-references",
+        "artifactPath": ".harness/context/CHANGE-S13-CTX-HANDOFF/raw-evidence-references.raw",
+        "sourceDigest": "483d1a050d9b87a3e4bdf48c4036f578860cfbf4302b8fa3f23b1a01ac5aad39"
+      },
+      {
+        "refId": "repository-map",
+        "artifactPath": ".harness/context/CHANGE-S13-CTX-HANDOFF/repository-map.raw",
+        "sourceDigest": "41884c1d5e1b12b1d885fb4eecf0c3d1f2410fab2ac0b28c08650a46f4fdc862"
+      },
+      {
+        "refId": "sealed-acceptance",
+        "artifactPath": ".harness/seals/CHANGE-S13-CTX-HANDOFF.json",
+        "sourceDigest": "c04551835a423ec4dc50163972d2302eeb37f67c5b707e5392126c2dc8c00e64"
+      },
+      {
+        "refId": "semantic-retrieval-policy",
+        "artifactPath": ".harness/context/CHANGE-S13-CTX-HANDOFF/semantic-retrieval-policy.raw",
+        "sourceDigest": "a67cf4506dc6e7ebd751d9bfaf46febd702b8408dd4c7dd18b0df234bc8af9f1"
+      },
+      {
+        "refId": "task-assignment",
+        "artifactPath": ".harness/context/CHANGE-S13-CTX-HANDOFF/task-assignment.raw",
+        "sourceDigest": "34a95d9b3301a2d9c14f03e583300270f65ff76494830f33df2ca4d618b3d4c9"
+      },
+      {
+        "refId": "task-contract",
+        "artifactPath": ".harness/contracts/CHANGE-S13-CTX-HANDOFF.yaml",
+        "sourceDigest": "8469caa57f1e7e47dc1b3cf0a305772d1889eabd5c705722901d82a356e3384c"
+      }
+    ]
+  },
+  "resume": {
+    "sessionId": "4b156803-8d7a-419e-a13e-89e3ee05f72b",
+    "exitCode": 0
+  },
+  "continuation": {
+    "file": ".harness/context/runtime-v2/CHANGE-S13-CTX-HANDOFF-35098a20e8379704/participant-8549b4c471344d3c-f60ca4a6da937024/41f123ed7da2328bec7a879f6b1f1cd1fc5253c4406c119e5c2629f8bfabd7aa/continuation-state.json",
+    "sequence": 2,
+    "previousSessionId": null,
+    "executionBindingDigest": "41f123ed7da2328bec7a879f6b1f1cd1fc5253c4406c119e5c2629f8bfabd7aa",
+    "turnIds": [
+      "context-turn:41f123ed7da2328bec7a879f6b1f1cd1fc5253c4406c119e5c2629f8bfabd7aa:1",
+      "context-turn:41f123ed7da2328bec7a879f6b1f1cd1fc5253c4406c119e5c2629f8bfabd7aa:2:56532322-fe1b-44ef-bd20-d879a2948244"
+    ]
+  },
+  "sessionInspection": {
+    "exitCode": 0,
+    "status": null
+  },
+  "result": "FAIL",
+  "rowResult": {
+    "context-handoff": "FAIL"
+  },
+  "finishedAt": "2026-09-30T02:43:06.660Z"
+}

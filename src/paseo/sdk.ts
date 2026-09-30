@@ -12,6 +12,7 @@ import {
   type StructuredResultProvenanceV1
 } from "../workers/resultGateway.js";
 import { resolvePaseoSdkFromCli } from "./sdkResolve.js";
+import { recordPaseoTrace } from "./trace.js";
 
 export interface PaseoSdkMcpStdioServer {
   type: "stdio";
@@ -45,8 +46,19 @@ export interface PaseoSdkAgentOptions {
   labels?: Record<string, string>;
   mcpServers?: Record<string, PaseoSdkMcpStdioServer>;
   toolPolicy?: PaseoSdkToolPolicy;
+  /** Provider-native options validated by the selected provider (for example Codex sandbox policy). */
+  providerOptions?: Record<string, unknown>;
+  /** Paseo provider feature values (for example `{ auto_accept: true }` for OpenCode prompts). */
+  featureValues?: Record<string, unknown>;
   timeoutMs?: number;
   waitForFinish?: boolean;
+}
+
+export interface PaseoSdkPermissionStop {
+  name?: string;
+  title?: string;
+  description?: string;
+  patterns?: string[];
 }
 
 export interface PaseoSdkAgentResult {
@@ -55,6 +67,8 @@ export interface PaseoSdkAgentResult {
   status?: string;
   lastMessage?: string;
   error?: string;
+  /** Bounded identity of the provider approval prompt that stopped the turn (AEH-V2-0116). */
+  permission?: PaseoSdkPermissionStop;
 }
 
 export interface PaseoSdkAgentRecord {
@@ -70,12 +84,14 @@ interface PaseoSdkTurnResult {
   status: string;
   lastMessage?: string;
   error?: string;
+  final?: { pendingPermissions?: unknown } | null;
 }
 
 interface PaseoSdkAgentHandle {
   readonly id: string;
   readonly workspaceId?: string | null;
   readonly status?: unknown;
+  readonly pendingPermissions?: unknown;
   latest?(): Record<string, unknown> | null;
   refresh?(requestId?: string): Promise<{ agent: Record<string, unknown>; project: unknown } | null>;
   refetch?(requestId?: string): Promise<{ agent: Record<string, unknown>; project: unknown } | null>;
@@ -221,7 +237,21 @@ export async function runPaseoSdkAgent(
   const result = await withPaseoClient(root, async (client) =>
     runPaseoSdkAgentWithClient(client, agentId, prompt, timeoutMs, outputSchema)
   );
-  return projectAcceptedPaseoResult(root, result, { requireBoundProvenance: true, verifyCurrentCandidate: true });
+  let projected = await projectAcceptedPaseoResult(root, result, { requireBoundProvenance: true, verifyCurrentCandidate: true });
+  if (!projected.lastMessage?.trim()) {
+    // Some provider handles do not expose the completed turn text on the run handle; the
+    // canonical agent timeline still carries the assistant message and is the deterministic
+    // fallback for non-participant (assessor) turns that have no durable structured-result sink.
+    let timelineError: string | undefined;
+    const timeline = await inspectPaseoSdkAgentTimeline(root, agentId).catch((error) => {
+      timelineError = error instanceof Error ? error.message : String(error);
+      return undefined;
+    });
+    if (timelineError) await recordPaseoTrace(root, "timeline.refetch.failed", { agentId, error: timelineError, direction: "tail" }).catch(() => undefined);
+    const recovered = timeline?.length ? extractLastAssistantText(timeline) : undefined;
+    if (recovered) projected = { ...projected, lastMessage: recovered };
+  }
+  return projected;
 }
 
 export async function runPaseoSdkAgentWithClient(
@@ -268,7 +298,7 @@ export async function inspectPaseoSdkAgentTimeline(root: string, agentId: string
   return withPaseoClient(root, async (client) => {
     const handle = client.agents.ref(agentId);
     if (!handle.timeline || typeof handle.timeline.refetch !== "function") return undefined;
-    const result = await handle.timeline.refetch({ direction: "backward", limit: 100 });
+    const result = await handle.timeline.refetch({ direction: "tail", limit: 100 });
     return extractTimelineEntries(result);
   });
 }
@@ -426,6 +456,8 @@ function buildCreateOptions(options: PaseoSdkAgentOptions, includePrompt: boolea
   if (options.systemPrompt) config.systemPrompt = options.systemPrompt;
   if (options.mcpServers && Object.keys(options.mcpServers).length) config.mcpServers = options.mcpServers;
   if (options.toolPolicy?.preapproved.length) config.toolPolicy = options.toolPolicy;
+  if (options.providerOptions && Object.keys(options.providerOptions).length) config.options = options.providerOptions;
+  if (options.featureValues && Object.keys(options.featureValues).length) config.featureValues = options.featureValues;
 
   const createOptions: Record<string, unknown> = { config, title: options.title, cwd: options.cwd };
   if (options.agentId) createOptions.agentId = options.agentId;
@@ -449,14 +481,15 @@ async function waitForHandle(handle: PaseoSdkAgentHandle, timeoutMs = 1_800_000)
     const status = statusText(raw?.status ?? handle.status);
     if (isTerminalStatus(status)) {
       const timeline = handle.timeline && typeof handle.timeline.refetch === "function"
-        ? await handle.timeline.refetch({ direction: "backward", limit: 50 }).catch(() => undefined)
+        ? await handle.timeline.refetch({ direction: "tail", limit: 50 }).catch(() => undefined)
         : undefined;
       return {
         id: handle.id,
         workspaceId: handle.workspaceId ?? stringField(raw ?? {}, ["workspaceId", "workspace_id"]),
         status,
         lastMessage: stringField(raw ?? {}, ["lastMessage", "last_message"]) ?? extractLastAssistantText(timeline),
-        error: stringField(raw ?? {}, ["error", "lastError", "last_error"])
+        error: stringField(raw ?? {}, ["error", "lastError", "last_error"]),
+        ...(permissionStopDetail(raw?.pendingPermissions ?? handle.pendingPermissions) ? { permission: permissionStopDetail(raw?.pendingPermissions ?? handle.pendingPermissions) } : {})
       };
     }
     if (Date.now() >= deadline) return { id: handle.id, workspaceId: handle.workspaceId ?? undefined, status: "timeout", error: `Timed out after ${timeoutMs}ms.` };
@@ -488,19 +521,22 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs = 1_800_000, messag
 }
 
 async function turnResult(handle: PaseoSdkAgentHandle, turn: PaseoSdkTurnResult): Promise<PaseoSdkAgentResult> {
+  const permission = permissionStopDetail(turn.final?.pendingPermissions ?? handle.pendingPermissions);
   if (turn.lastMessage) {
     return {
       id: handle.id,
       workspaceId: handle.workspaceId ?? undefined,
       status: turn.status,
       lastMessage: turn.lastMessage,
-      error: turn.error
+      error: turn.error,
+      ...(permission ? { permission } : {})
     };
   }
   const raw = await refreshHandle(handle).catch(() => undefined);
   const timeline = handle.timeline && typeof handle.timeline.refetch === "function"
-    ? await handle.timeline.refetch({ direction: "backward", limit: 50 }).catch(() => undefined)
+    ? await handle.timeline.refetch({ direction: "tail", limit: 50 }).catch(() => undefined)
     : undefined;
+  const observedPermission = permission ?? permissionStopDetail(raw?.pendingPermissions);
   return {
     id: handle.id,
     workspaceId: handle.workspaceId ?? stringField(raw ?? {}, ["workspaceId", "workspace_id"]),
@@ -508,8 +544,43 @@ async function turnResult(handle: PaseoSdkAgentHandle, turn: PaseoSdkTurnResult)
     lastMessage:
       stringField(raw ?? {}, ["lastMessage", "last_message"]) ??
       extractLastAssistantText(timeline),
-    error: turn.error ?? stringField(raw ?? {}, ["error", "lastError", "last_error"])
+    error: turn.error ?? stringField(raw ?? {}, ["error", "lastError", "last_error"]),
+    ...(observedPermission ? { permission: observedPermission } : {})
   };
+}
+
+function permissionStopDetail(value: unknown): PaseoSdkPermissionStop | undefined {
+  const entries = Array.isArray(value) ? value : value && typeof value === "object" ? [value] : [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    const name = boundedString(record.name ?? record.permission);
+    const title = boundedString(record.title);
+    const description = boundedString(record.description);
+    const input = record.input && typeof record.input === "object" ? record.input as Record<string, unknown> : undefined;
+    const patterns = boundedStringArray(input?.patterns);
+    if (name || title || patterns?.length) {
+      return {
+        ...(name ? { name } : {}),
+        ...(title ? { title } : {}),
+        ...(description ? { description } : {}),
+        ...(patterns?.length ? { patterns } : {})
+      };
+    }
+  }
+  return undefined;
+}
+
+function boundedString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, 200) : undefined;
+}
+
+function boundedStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const strings = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).slice(0, 8).map((item) => item.slice(0, 300));
+  return strings.length ? strings : undefined;
 }
 
 async function refreshHandle(handle: PaseoSdkAgentHandle): Promise<Record<string, unknown> | undefined> {
@@ -520,10 +591,12 @@ async function refreshHandle(handle: PaseoSdkAgentHandle): Promise<Record<string
 
 function handleResult(handle: PaseoSdkAgentHandle): PaseoSdkAgentResult {
   const raw = handle.latest?.() ?? undefined;
+  const permission = permissionStopDetail(raw?.pendingPermissions ?? handle.pendingPermissions);
   return {
     id: handle.id,
     workspaceId: handle.workspaceId ?? stringField(raw ?? {}, ["workspaceId", "workspace_id"]),
-    status: statusText(raw?.status ?? handle.status)
+    status: statusText(raw?.status ?? handle.status),
+    ...(permission ? { permission } : {})
   };
 }
 
@@ -550,22 +623,46 @@ function normalizeRecord(raw: Record<string, unknown>): PaseoSdkAgentRecord {
   return { id, title: stringField(raw, ["title", "name"]), status: statusText(raw.status), workspaceId: stringField(raw, ["workspaceId", "workspace_id"]), labels: recordOfStrings(raw.labels), raw };
 }
 
+/**
+ * Select the canonical last assistant message from a timeline payload. Only the
+ * assistant entry's own top-level text/content is accepted; nested tool-call
+ * payloads, reasoning traces and user messages never become completion text.
+ * Schema validation remains the authority for any structured payload.
+ */
 function extractLastAssistantText(value: unknown): string | undefined {
-  const candidates: string[] = [];
-  visit(value, false, candidates);
-  return candidates.at(-1);
+  let found: string | undefined;
+  for (const entry of extractTimelineEntries(value)) {
+    const text = assistantEntryText(entry);
+    if (text !== undefined) found = text;
+  }
+  return found;
 }
 
-function visit(value: unknown, assistantContext: boolean, out: string[]): void {
-  if (Array.isArray(value)) { for (const item of value) visit(item, assistantContext, out); return; }
-  if (!value || typeof value !== "object") return;
-  const record = value as Record<string, unknown>;
-  const role = String(record.role ?? record.author ?? record.kind ?? record.type ?? "").toLowerCase();
-  const assistant = assistantContext || role.includes("assistant");
-  if (assistant) {
-    for (const key of ["text", "content", "message", "lastMessage"]) if (typeof record[key] === "string" && record[key]) out.push(record[key] as string);
+function assistantEntryText(entry: unknown): string | undefined {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return undefined;
+  const record = entry as Record<string, unknown>;
+  const item = record.item && typeof record.item === "object" && !Array.isArray(record.item) ? record.item as Record<string, unknown> : record;
+  const role = String(item.role ?? record.role ?? "").toLowerCase();
+  const type = String(item.type ?? item.kind ?? record.type ?? record.kind ?? "").toLowerCase();
+  const assistant = role === "assistant" || role.endsWith("/assistant") || type === "assistant_message" || type === "assistant-message" || type === "assistant";
+  if (!assistant) return undefined;
+  return messageText(item) ?? messageText(record);
+}
+
+function messageText(record: Record<string, unknown>): string | undefined {
+  for (const key of ["text", "message", "lastMessage"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value;
   }
-  for (const child of Object.values(record)) visit(child, assistant, out);
+  const content = record.content;
+  if (typeof content === "string" && content.trim()) return content;
+  if (Array.isArray(content)) {
+    const parts = content
+      .map((part) => typeof part === "string" ? part : (part && typeof part === "object" && typeof (part as Record<string, unknown>).text === "string" ? (part as Record<string, unknown>).text as string : undefined))
+      .filter((part): part is string => typeof part === "string" && part.trim().length > 0);
+    if (parts.length) return parts.join("\n");
+  }
+  return undefined;
 }
 
 function labelsMatch(actual: Record<string, string> | undefined, expected: Record<string, string>): boolean {

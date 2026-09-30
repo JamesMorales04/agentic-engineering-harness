@@ -1,0 +1,4 @@
+id: containers
+recommended:
+  localRuntime: podman-rootless
+  fallbackRuntime: docker-engine

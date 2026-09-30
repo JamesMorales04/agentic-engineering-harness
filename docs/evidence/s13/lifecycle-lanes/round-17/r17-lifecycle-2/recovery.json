@@ -1,0 +1,178 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 17,
+  "runId": "r17-lifecycle-2",
+  "capability": "recovery",
+  "provider": "opencode/opencode-go/mimo-v2.6-flash",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13RealPaseoLifecycleCampaign.mjs",
+        "sha256": "d30bb30c992dffaeebdb29cd0836ee53482c9d582da66f767b98e34f4e243214"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "3395aa19210f36b90fd22bd62056dbb8d5c48aab5a85bce4e5ea4d591cfd5146"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "cf5e0fc6d149b24ec4b1071d69f38fade23aa93dffaff15f062eba61f88b1bd1"
+  },
+  "startedAt": "2026-09-29T13:35:16.422Z",
+  "checks": [
+    {
+      "id": "recovery.real-session-lease",
+      "ok": true,
+      "message": "durable lease bound real provider session 34511ec6-0198-437d-95ea-08d19343b574"
+    },
+    {
+      "id": "recovery.preserved-operation",
+      "ok": true,
+      "message": "operation identity and candidate preserved across controller crash"
+    },
+    {
+      "id": "recovery.takeover-newer-epoch",
+      "ok": true,
+      "message": "controller epoch advanced to 2"
+    },
+    {
+      "id": "recovery.exact-session-takeover",
+      "ok": true,
+      "message": "takeover inspected the exact prior real session 34511ec6-0198-437d-95ea-08d19343b574 (2 inspection(s)); stop issued=false; observed prior status=idle"
+    },
+    {
+      "id": "recovery.resume",
+      "ok": true,
+      "message": "bounded provider work resumed after observed takeover"
+    },
+    {
+      "id": "recovery.lease-drained",
+      "ok": true,
+      "message": "provider leases after resume=0"
+    }
+  ],
+  "candidateBinding": {
+    "packedArtifactDigest": "8795d766d1c2b1506ad40a5b35709fde5e2b99d4cc8b7c30fcf95520f5bbc9b6",
+    "fixtureCommit": "06dea7fd66a4e5b9335df3d6d8b4923f55802a40"
+  },
+  "leaseAcquired": {
+    "leaseId": "lease:ec5fd765-0f49-4a45-9f49-89abca6b9881",
+    "provider": "opencode",
+    "lifecycle": {
+      "operationId": "AUDIT-S13-REAL-RECOVERY",
+      "candidateDigest": "c09ecbb24b54cc904702cfbd1a0fab8c6fce4eed0bf661b22d4219937d97cc11",
+      "operationExecutionRevision": 1,
+      "policyDigest": "f7e7d6f7ce880c1e78888f96445f0e0f6f569af75d40965a2275428f21d0a3ce",
+      "controllerTokenDigest": "0b8c3469739133d4593a12dd05a6a81f47fb31e1b439b8089064ab40e2bb6f0b",
+      "controllerEpoch": 1,
+      "leadAgentId": "packed-lifecycle-lead",
+      "leadGeneration": 1,
+      "sessionId": "34511ec6-0198-437d-95ea-08d19343b574",
+      "providerStatus": "ACTIVE"
+    }
+  },
+  "sessionBeforeTakeover": {
+    "Id": "34511ec6-0198-437d-95ea-08d19343b574",
+    "Name": "aeh-s13-lifecycle-recovery",
+    "Provider": "opencode",
+    "Model": "opencode-go/mimo-v2.6-flash",
+    "Thinking": "auto",
+    "Status": "idle",
+    "Archived": false,
+    "ArchivedAt": null,
+    "Mode": "default",
+    "Cwd": "/tmp/aeh-s13-lifecycle-O82owg/fixture-recovery",
+    "CreatedAt": "2026-09-29T13:35:25.151Z",
+    "UpdatedAt": "2026-09-29T13:35:25.175Z",
+    "LastUsage": null,
+    "Capabilities": {
+      "Streaming": true,
+      "Persistence": true,
+      "DynamicModes": true,
+      "McpServers": true
+    },
+    "AvailableModes": [
+      {
+        "id": "build",
+        "label": "Build"
+      },
+      {
+        "id": "plan",
+        "label": "Plan"
+      }
+    ],
+    "PendingPermissions": [],
+    "Worktree": null,
+    "ParentAgentId": null
+  },
+  "ownerTerminated": {
+    "signal": "SIGKILL",
+    "exitCode": null
+  },
+  "operationAfterOwnerCrash": {
+    "status": "RUNNING",
+    "controllerEpoch": 1,
+    "candidateDigest": "c09ecbb24b54cc904702cfbd1a0fab8c6fce4eed0bf661b22d4219937d97cc11"
+  },
+  "controllerEpochAfterRestart": 2,
+  "takeover": {
+    "resumed": "resumed-after-real-takeover",
+    "inspections": [
+      "34511ec6-0198-437d-95ea-08d19343b574",
+      "34511ec6-0198-437d-95ea-08d19343b574"
+    ],
+    "stops": [],
+    "leasesAfterResume": 0
+  },
+  "sessionAfterTakeover": {
+    "Id": "34511ec6-0198-437d-95ea-08d19343b574",
+    "Name": "aeh-s13-lifecycle-recovery",
+    "Provider": "opencode",
+    "Model": "opencode-go/mimo-v2.6-flash",
+    "Thinking": "auto",
+    "Status": "idle",
+    "Archived": false,
+    "ArchivedAt": null,
+    "Mode": "default",
+    "Cwd": "/tmp/aeh-s13-lifecycle-O82owg/fixture-recovery",
+    "CreatedAt": "2026-09-29T13:35:25.151Z",
+    "UpdatedAt": "2026-09-29T13:35:25.175Z",
+    "LastUsage": null,
+    "Capabilities": {
+      "Streaming": true,
+      "Persistence": true,
+      "DynamicModes": true,
+      "McpServers": true
+    },
+    "AvailableModes": [
+      {
+        "id": "build",
+        "label": "Build"
+      },
+      {
+        "id": "plan",
+        "label": "Plan"
+      }
+    ],
+    "PendingPermissions": [],
+    "Worktree": null,
+    "ParentAgentId": null
+  },
+  "operationStatePreserved": {
+    "status": "RUNNING",
+    "candidateDigest": "c09ecbb24b54cc904702cfbd1a0fab8c6fce4eed0bf661b22d4219937d97cc11"
+  },
+  "result": "PASS",
+  "rowResult": {
+    "recovery": "PASS"
+  },
+  "finishedAt": "2026-09-29T13:35:27.156Z"
+}

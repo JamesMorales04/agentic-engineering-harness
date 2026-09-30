@@ -1,0 +1,106 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 21,
+  "runId": "r21-ctxperm-2",
+  "campaign": "context-permission",
+  "generatedAt": "2026-09-30T02:13:51.961Z",
+  "checkout": "/home/james/Desarrollo/agentic-engineering-harness",
+  "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13ContextPermissionCampaign.mjs",
+        "sha256": "6654c509b27c518c3b5c08d288a5027f60b6d3c5c950ed20f592b35b5ed17b8d"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "7e6cdc076e19d19ee403e9a9b76ab19898fed93ad84480a4ab03a5de5acc8658"
+  },
+  "harnessBuildIdentity": {
+    "version": 1,
+    "packageVersion": "0.8.4",
+    "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "releaseId": "release-1790734396643-714475-1b33078d",
+    "buildDigest": "e9a8862130319a82f458fc497305e05e44a1d007848938d2245966039d33b488",
+    "dirty": true
+  },
+  "candidate": {
+    "artifact": "agentic-engineering-harness-0.8.4.tgz",
+    "artifactDigest": "82df6019261788ff722c35fecb39f2231d1131c80e085db9ac74ab011e94a0e1"
+  },
+  "lanes": [
+    {
+      "capability": "context-handoff",
+      "result": "FAIL",
+      "checks": [],
+      "rowResult": null,
+      "error": "Error: Failed to add OpenCode MCP server 'serena': MCP error -32000: Connection closed\n    at DaemonClient.sendAgentMessage (file:///home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1%7Eaube%7Eb089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/daemon-client.js:2061:19)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async Object.run (file:///home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1%7Eaube%7Eb089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/index.js:380:17)\n    at async runPaseoSdkAgentWithClient (file:///tmp/aeh-s13-ctxperm-7JXvTU/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790734432579-716858-b202667e/paseo/sdk.js:129:22)\n    at async withPaseoClient (file:///tmp/aeh-s13-ctxperm-7JXvTU/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790734432579-716858-b202667e/paseo/sdk.js:293:16)\n    at async Object.runPaseoSdkAgent [as run] (file:///tmp/aeh-s13-ctxperm-7JXvTU/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790734432579-716858-b202667e/paseo/sdk.js:107:20)\n    at async continueManagedPaseoAgentUnleased (file:///tmp/aeh-s13-ctxperm-7JXvTU/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790734432579-716858-b202667e/paseo/runtimeCore.js:172:28)\n    at async file:///tmp/aeh-s13-ctxperm-7JXvTU/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790734432579-716858-b202667e/paseo/runtimeCore.js:159:16\n    at async runWithOperationProviderLease (file:///tmp/aeh-s13-ctxperm-7JXvTU/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790734432579-716858-b202667e/runtime/providerLifecycle.js:38:30)\n    at async executeViaPaseo (file:///tmp/aeh-s13-ctxperm-7JXvTU/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790734432579-716858-b202667e/workers/agentPrompt.js:515:27)",
+      "artifact": "docs/evidence/s13/context-permission-lanes/round-21/r21-ctxperm-2/context-handoff.json"
+    },
+    {
+      "capability": "permission-delegation",
+      "result": "FAIL",
+      "checks": [],
+      "rowResult": null,
+      "error": "Error: Failed to add OpenCode MCP server 'serena': MCP error -32000: Connection closed\n    at DaemonClient.sendAgentMessage (file:///home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1%7Eaube%7Eb089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/daemon-client.js:2061:19)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async Object.run (file:///home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1%7Eaube%7Eb089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/index.js:380:17)\n    at async runPaseoSdkAgentWithClient (file:///tmp/aeh-s13-ctxperm-7JXvTU/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790734432579-716858-b202667e/paseo/sdk.js:129:22)\n    at async withPaseoClient (file:///tmp/aeh-s13-ctxperm-7JXvTU/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790734432579-716858-b202667e/paseo/sdk.js:293:16)\n    at async Object.runPaseoSdkAgent [as run] (file:///tmp/aeh-s13-ctxperm-7JXvTU/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790734432579-716858-b202667e/paseo/sdk.js:107:20)\n    at async continueManagedPaseoAgentUnleased (file:///tmp/aeh-s13-ctxperm-7JXvTU/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790734432579-716858-b202667e/paseo/runtimeCore.js:172:28)\n    at async file:///tmp/aeh-s13-ctxperm-7JXvTU/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790734432579-716858-b202667e/paseo/runtimeCore.js:159:16\n    at async runWithOperationProviderLease (file:///tmp/aeh-s13-ctxperm-7JXvTU/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790734432579-716858-b202667e/runtime/providerLifecycle.js:38:30)\n    at async executeViaPaseo (file:///tmp/aeh-s13-ctxperm-7JXvTU/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790734432579-716858-b202667e/workers/agentPrompt.js:515:27)",
+      "artifact": "docs/evidence/s13/context-permission-lanes/round-21/r21-ctxperm-2/permission-delegation.json"
+    }
+  ],
+  "result": "SLICE_BLOCKED",
+  "workspaceInventory": [
+    {
+      "workspaceId": "wks_61fcdfd5f316f687",
+      "cwd": "/tmp/aeh-s13-ctxperm-7JXvTU/fixture-context-handoff"
+    },
+    {
+      "workspaceId": "wks_ea232d16c6ea512d",
+      "cwd": "/tmp/aeh-s13-ctxperm-7JXvTU/fixture-permission-delegation"
+    }
+  ],
+  "workspaceCleanup": {
+    "archived": [
+      {
+        "workspaceId": "wks_61fcdfd5f316f687",
+        "cwd": "/tmp/aeh-s13-ctxperm-7JXvTU/fixture-context-handoff",
+        "exitCode": 0
+      },
+      {
+        "workspaceId": "wks_ea232d16c6ea512d",
+        "cwd": "/tmp/aeh-s13-ctxperm-7JXvTU/fixture-permission-delegation",
+        "exitCode": null
+      }
+    ],
+    "remaining": [
+      "wks_ea232d16c6ea512d"
+    ],
+    "accounting": {
+      "inventoryCount": 2,
+      "archivedCount": 1,
+      "remainingCount": 1,
+      "unaccounted": [],
+      "accounted": true
+    }
+  },
+  "checkoutProof": {
+    "trackedDigestBefore": "dc180d079163776a729e4d723288253f8108f941af8111559c748312f1e5dbbc",
+    "trackedDigestAfter": "dc180d079163776a729e4d723288253f8108f941af8111559c748312f1e5dbbc",
+    "trackedFiles": 668,
+    "checkoutUntouched": true,
+    "postRunTrackedDocEditWindow": {
+      "opensAfterLaneFinish": true,
+      "note": "S13 tracked documentation/evidence is edited after lane execution; the recorded digest is the source-tree digest at lane end (R11-F6)."
+    }
+  }
+}

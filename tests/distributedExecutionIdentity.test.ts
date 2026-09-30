@@ -192,6 +192,70 @@ describe("distributed execution identity", () => {
     expect(state.waitForDistributedExecutionRelease.mock.invocationCallOrder[0]).toBeLessThan(state.executeAgentPrompt.mock.invocationCallOrder[0]!);
   });
 
+  it("resolves an inherited Paseo orchestration to the provider idle-session boundary, records the controller-side receipt, and never carries inherit into session preparation", async () => {
+    const launch = await fixture({ transport: "inherit", orchestrationProvider: "paseo" });
+    state.waitForDistributedResult.mockImplementation(async () => {
+      const released = state.released as { executionBinding: { runtime: { sessionId: string } } };
+      return result(released.executionBinding, released.executionBinding.runtime.sessionId);
+    });
+    const dispatched = await dispatchDistributedDelegation(launch.input);
+    expect(dispatched.status).toBe("PASS");
+    const job = state.submittedJob as DistributedDelegationJob;
+    expect(job.selection.transport).toBe("direct");
+    expect(job.transportResolution).toEqual(expect.objectContaining({ requested: "inherit", resolved: "direct", inherited: true }));
+    expect(JSON.stringify(job)).not.toContain('"transport": "inherit"');
+    const operation = await loadOperation(launch.root, launch.operationId);
+    const receipt = Object.values(operation.participantReceipts ?? {}).find((entry) => entry.participantId === launch.participantId);
+    expect(receipt).toBeTruthy();
+    expect(receipt).toEqual(expect.objectContaining({ outcome: "SUCCEEDED", settled: true, sessionId: "worker-session" }));
+
+    state.claimDistributedJob.mockResolvedValue({ job, leaseId: "lease-test" });
+    state.waitForDistributedExecutionRelease.mockImplementation(async () => state.released);
+    state.executeAgentPrompt.mockImplementation(async (_root: string, _config: unknown, _contract: unknown, _selection: unknown, _prompt: string, options: { executionBinding: { runtime: { sessionId: string } }; executionSessionId: string }) => ({
+      provider: "codex", model: "test-model", logicalAgent: "distributed-implementer", runtime: "codex", id: options.executionSessionId, exitCode: 0, stdout: "", stderr: "", executionBinding: options.executionBinding
+    }));
+    const before = { id: process.env.AEH_OPERATION_ID, kind: process.env.AEH_OPERATION_KIND, root: process.env.AEH_CONTROL_ROOT };
+    const workerResult = await runDistributedWorkerOnce(launch.root, launch.config, "worker-test");
+    expect(workerResult?.status, workerResult?.message).toBe("PASS");
+    expect(state.prepareRuntimeSession).toHaveBeenCalledOnce();
+    expect(state.materializeAgentPrompt).not.toHaveBeenCalled();
+    // The worker is stateless with respect to controller authority: it must not impersonate the
+    // owning controller or leave a different operation context behind.
+    expect({ id: process.env.AEH_OPERATION_ID, kind: process.env.AEH_OPERATION_KIND, root: process.env.AEH_CONTROL_ROOT }).toEqual(before);
+  });
+
+  it("rejects unresolved or unsupported distributed transports before any session preparation", async () => {
+    const unresolved = await fixture({ transport: "inherit", orchestrationProvider: "paseo" });
+    state.waitForDistributedResult.mockImplementation(async () => {
+      const released = state.released as { executionBinding: { runtime: { sessionId: string } } };
+      return result(released.executionBinding, released.executionBinding.runtime.sessionId);
+    });
+    await dispatchDistributedDelegation(unresolved.input);
+    const job = state.submittedJob as DistributedDelegationJob;
+    expect(job.selection.transport).toBe("direct");
+    const forgedJobs: DistributedDelegationJob[] = [
+      { ...job, selection: { ...job.selection, transport: "inherit" }, transportResolution: { requested: "inherit", resolved: "paseo", inherited: true } },
+      { ...job, selection: { ...job.selection, transport: "inherit" }, transportResolution: undefined as never },
+      { ...job, selection: { ...job.selection, transport: "direct" }, transportResolution: { requested: "paseo", resolved: "podman", inherited: false } }
+    ];
+    for (const forged of forgedJobs) {
+      expect(() => validateDistributedSandboxPolicy(forged, unresolved.config)).toThrow("DISTRIBUTED_EXECUTION_TRANSPORT_UNSUPPORTED");
+      state.claimDistributedJob.mockResolvedValue({ job: forged, leaseId: "lease-forged" } as never);
+      state.executeAgentPrompt.mockClear();
+      state.materializeAgentPrompt.mockClear();
+      state.prepareRuntimeSession.mockClear();
+      const workerResult = await runDistributedWorkerOnce(unresolved.root, unresolved.config, "worker-forged");
+      expect(workerResult?.status).toBe("FAIL");
+      expect(workerResult?.message).toMatch("DISTRIBUTED_EXECUTION_TRANSPORT_UNSUPPORTED");
+      expect(state.materializeAgentPrompt).not.toHaveBeenCalled();
+      expect(state.prepareRuntimeSession).not.toHaveBeenCalled();
+      expect(state.executeAgentPrompt).not.toHaveBeenCalled();
+    }
+    const missingContext = await fixture({ transport: "inherit", orchestrationProvider: "none" });
+    await expect(dispatchDistributedDelegation(missingContext.input)).rejects.toThrow("DISTRIBUTED_EXECUTION_TRANSPORT_UNSUPPORTED");
+    expect(state.submitDistributedJob).not.toHaveBeenCalledWith(missingContext.root, missingContext.config, expect.anything());
+  });
+
   it("rejects stale candidate identity before a distributed job is submitted", async () => {
     const launch = await fixture();
     const altered = { ...launch.input, identity: { ...launch.identity, authority: { ...launch.identity.authority, candidateDigest: "d".repeat(64) } } };
@@ -333,7 +397,7 @@ function procedureProjection(manifest: SkillManifestV1): string {
   return manifest.entries.map((entry) => `Skill ${entry.skillId} (${entry.competency})\n${entry.procedure.join("\n")}`).join("\n\n");
 }
 
-async function fixture(options: { skills?: Parameters<typeof compileSkillManifest>[0]["skills"]; transport?: AgentExecutionSelection["transport"] } = {}) {
+async function fixture(options: { skills?: Parameters<typeof compileSkillManifest>[0]["skills"]; transport?: AgentExecutionSelection["transport"]; orchestrationProvider?: string } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-distributed-identity-"));
   roots.push(root);
   const now = new Date().toISOString();
@@ -370,7 +434,7 @@ async function fixture(options: { skills?: Parameters<typeof compileSkillManifes
   if (!authority) throw new Error("test fixture requires controller-issued distributed authority");
   const contract: TaskContract = { version: 1, task: { id: "TASK-DISTRIBUTED", title: "Implement distributed identity" }, routing: { route: "DELEGATED", assurance: "STANDARD", intent: "change" }, scope: { allowed: ["src/**"] } };
   const task = { id: "work", objective: "implement", scope: ["src/**"], dependencies: [], requirementRefs: [], acceptanceRefs: [], competencies: ["typescript"], riskTags: [], changeKinds: ["source"], risk: "low", resourceClaims: [] } as WorkUnitOutput;
-  const config: HarnessProjectConfig = { version: 1, project: { name: "distributed-test" }, distributed: { enabled: true } };
+  const config: HarnessProjectConfig = { version: 1, project: { name: "distributed-test" }, distributed: { enabled: true }, ...(options.orchestrationProvider ? { orchestration: { provider: options.orchestrationProvider } } : {}) };
   const prompt = "Implement the assigned change.";
   const identity = await prepareAgentExecutionIdentity(root, config, contract, selection, prompt, { participantId, phase: "distributed", operationKind: "change", capabilityAuthority: authority, executionBlueprint: blueprint, executionBlueprintDigest: blueprint.digest, roleInvocationPolicy: rolePolicy, skillManifest });
   return { root, operationId, config, contract, candidate, selection, participantId, policy, rolePolicy, skillManifest, blueprint, authority, identity,

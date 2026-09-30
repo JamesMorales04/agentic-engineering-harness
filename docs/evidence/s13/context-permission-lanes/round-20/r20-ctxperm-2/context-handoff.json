@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 20,
+  "runId": "r20-ctxperm-2",
+  "capability": "context-handoff",
+  "provider": "opencode/opencode-go/deepseek-v4.1-flash",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13ContextPermissionCampaign.mjs",
+        "sha256": "7d4cc4d0ad7171ae6257a175d4ad3e7dabf950c80aa618238c2621c82aa582e7"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "03afd531d91ef7db971517aa7a5deca947c4b54e38468481e2a6c828d260c87c"
+  },
+  "startedAt": "2026-09-29T22:18:34.215Z",
+  "checks": [],
+  "candidateBinding": {
+    "packedArtifactDigest": "038e9f3be5103bff2dc2b5b86d317b9f25b3439f6ed5ee21fe701f9d587a1768",
+    "fixtureCommit": "236342ae19717ee983a6f028feab8f9d921371ec"
+  },
+  "parentAuthority": {
+    "participantId": "participant:s13-context-handoff",
+    "controllerEpoch": 1,
+    "candidateDigest": "6cb55fbaaf61e9e79a16a35a1fd388d036378bbd2a15b9d6ca7c9d6af9c068dd",
+    "leaseIds": [
+      "lease:CHANGE-S13-CTX-HANDOFF:request:CHANGE-S13-CTX-HANDOFF:participant:s13-context-handoff:read:review"
+    ]
+  },
+  "error": "Error: AEH_RESULT_PROVENANCE: task identity does not match the candidate.\n    at assertStructuredResultProvenance (file:///tmp/aeh-s13-ctxperm-hXaBwx/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790720290559-172306-d1e3dfd0/workers/resultGateway.js:195:19)\n    at finalizeStructuredResultChannelForAgent (file:///tmp/aeh-s13-ctxperm-hXaBwx/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790720290559-172306-d1e3dfd0/workers/resultGateway.js:86:5)\n    at async resolveStructuredResultProvenance (file:///tmp/aeh-s13-ctxperm-hXaBwx/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790720290559-172306-d1e3dfd0/workers/agentPrompt.js:1274:9)\n    at async Module.executeAgentPrompt (file:///tmp/aeh-s13-ctxperm-hXaBwx/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790720290559-172306-d1e3dfd0/workers/agentPrompt.js:126:15)\n    at async contextHandoffJourney (file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13ContextPermissionCampaign.mjs:228:20)\n    at async file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13ContextPermissionCampaign.mjs:347:45",
+  "result": "FAIL",
+  "finishedAt": "2026-09-29T22:18:52.473Z"
+}

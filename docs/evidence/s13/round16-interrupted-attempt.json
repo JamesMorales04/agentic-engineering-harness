@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 16,
+  "kind": "interrupted-attempt-annotation",
+  "attempt": "r16-formal-2 (first launch)",
+  "operationId": "CHANGE-20260929T063741Z-b3ca3d6a",
+  "observedAt": "2026-09-29T06:50:00.000Z",
+  "cause": "The campaign harness process was terminated by the invoking tool timeout after it had already started the detached controller. The campaign envelope was never written, so the attempt has no durable lane evidence and no terminal state is claimed for it.",
+  "durableDiagnosticValue": "The interrupted operation record captured the owning wave-planning failure that the observability repair (run.ts planning-stage message) had just added: 'Wave planning failed: Participant plan rejected: Error: EXECUTION_POLICY_RECOMPILE_REQUIRED: execution semantics changed without advancing operationExecutionRevision.' This is the AEH-V2-0126-adjacent deterministic defect repaired in round 16 (provisional bootstrap policy after the controller-authoring candidate advance).",
+  "cleanup": {
+    "controllerPid": 738617,
+    "terminated": true,
+    "fixtureProcessesTerminated": true,
+    "workspaceArchived": "wks_29f3b61a3bc327fe",
+    "stagingRemoved": "/tmp/aeh-s13-gov-XRnCAp",
+    "humanDecisionMinted": false,
+    "note": "The product cancel path requires a HumanDecision; none was minted. The interrupted partial attempt was terminated and cleaned as an environment event, matching the round-14/15 interrupted-attempt handling."
+  }
+}

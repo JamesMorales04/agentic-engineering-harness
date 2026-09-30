@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "classification": {
+    "mechanism": "HYBRID",
+    "plannerAssessmentMechanism": "MODEL",
+    "routeVerification": "DETERMINISTIC",
+    "round9RouteTrigger": "UNRESOLVED"
+  },
+  "operationId": "CHANGE-20260928T030628Z-226f0cf0",
+  "candidateBinding": {
+    "packedArtifact": "agentic-engineering-harness-0.8.4.tgz",
+    "packedArtifactDigest": "821e5f764bf17958da7e3b557bcd7e6f0422915343e33a6210dc83b2ec4c86b8",
+    "packedBuild": {
+      "releaseId": "release-1790564751659-285750-95710878",
+      "buildDigest": "8e949b0113ddd90ae0573826b8ecc348915ae2c65fd6a77c99f82ba9b6a9ab84",
+      "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+      "packageVersion": "0.8.4"
+    },
+    "fixtureTreeDigest": "9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8",
+    "fixtureCommit": "d87a164051e7884ad883112ba0c348bca5b4860b"
+  },
+  "planner": {
+    "artifactPath": "results/planner/0002-0002-a4dc7cf0-0b20-44a1-98c4-dc34d15d0dba.json",
+    "artifactSha256": "6851ccf75707f232571dbf4ac1c89b450f787ef8a50a617b3b06106ff2e331b5",
+    "payloadSha256": "4cc71e9d7ddefefc42c7604bfb6fdffd8d57de6b664bfb58680933d844634f01",
+    "formalizationNeed": "NONE",
+    "workUnitIds": [
+      "greeting-farewell-and-usage-reexport"
+    ]
+  },
+  "route": {
+    "observed": "FORMAL_SDD",
+    "assurance": "ELEVATED",
+    "stages": {
+      "queued": "RUNNING",
+      "input-resolution": "COMPLETED",
+      "triage": "COMPLETED",
+      "environment-preflight": "COMPLETED",
+      "context": "RUNNING",
+      "discovery": "COMPLETED",
+      "planning": "COMPLETED",
+      "spec-authoring": "RUNNING",
+      "finished": "FAILED"
+    },
+    "routeEvidenceCaptured": false,
+    "triggerEvidence": "Not established by the retained lane envelope: the retained Planner artifact says NONE, while the Explorer result artifact payload is not projected into the durable campaign evidence."
+  },
+  "terminal": {
+    "status": "FAILED",
+    "phase": "failed",
+    "errorCode": "SPEC_MANAGER_RESULT_ARTIFACT_MISSING",
+    "error": "Error: SPEC_MANAGER_RESULT_ARTIFACT_MISSING: agent completed without an accepted structured result artifact.\n    at requireDurableChangeHandoff (file:///tmp/aeh-s13-gov-O6HUOD/work/lane-change-delegated-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790564751659-285750-95710878/operations/changeHandoff.js:13:15)\n    at async runSpecManagerUntilReady (file:///tmp/aeh-s13-gov-O6HUOD/work/lane-change-delegated-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790564751659-285750-95710878/operations/change.js:355:26)\n    at async runChangeOperation (file:///tmp/aeh-s13-gov-O6HUOD/work/lane-change-delegated-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790564751659-285750-95710878/operations/change.js:188:30)\n    at async executeOperationWithEnvironment (file:///tmp/aeh-s13-gov-O6HUOD/work/lane-change-delegated-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790564751659-285750-95710878/operations/controller.js:341:28)\n    at async executeOperation (file:///tmp/aeh-s13-gov-O6HUOD/work/lane-change-delegated-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790564751659-285750-95710878/operations/controller.js:167:16)\n    at async runOperationExecute (file:///tmp/aeh-s13-gov-O6HUOD/work/lane-change-delegated-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790564751659-285750-95710878/main.js:156:20)\n    at async file:///tmp/aeh-s13-gov-O6HUOD/work/lane-change-delegated-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790564751659-285750-95710878/main.js:36:5"
+  },
+  "specManager": {
+    "artifactPath": "agents/spec-manager-92552303-1148-43eb-859c-dd82429d0ada-2026-09-28T03-15-19-975Z.json",
+    "artifactSha256": "0cc821edd200852a41c245bd40032ecba26c26390d8d4bf215ad9dadcad3c694",
+    "delivery": {
+      "ok": false,
+      "failure": "NO_MARKER: Agent output contained no valid native JSON and no AEH_RESULT_JSON=<json> marker."
+    },
+    "session": {
+      "provider": "codex",
+      "model": "gpt-6-luna",
+      "exitCode": 0,
+      "status": "idle",
+      "stdoutReportedCandidateWorkspaceMismatch": true
+    },
+    "reportedFailureLine": "The durable submission endpoint rejected the authored result because the mounted workspace does not match controller candidate revision `r2` (`CANDIDATE_WORKSPACE_MISMATCH`). I have not changed files or attempted controller recovery; I’m returning the same complete READY payload here for transport compatibility."
+  },
+  "checkoutProof": {
+    "trackedDigestBefore": "86c94d9ecf893380a57f371acfca5802e293c60e672cf7613ecc0371fc486730",
+    "trackedDigestAfter": "86c94d9ecf893380a57f371acfca5802e293c60e672cf7613ecc0371fc486730",
+    "trackedFiles": 668,
+    "checkoutUntouched": true
+  },
+  "note": "The terminal error and delivery status are deterministic operation evidence. The retained Planner payload says formalizationNeed=NONE; the campaign envelope does not retain Explorer payload needed to attribute the observed FORMAL_SDD route. A transient earlier inspection appeared to show REQUIRED but its source artifact was not persisted and is not used as evidence. The CANDIDATE_WORKSPACE_MISMATCH explanation is session output only, not a direct tool error receipt."
+}

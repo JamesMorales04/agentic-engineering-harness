@@ -1,0 +1,299 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 18,
+  "reviewer": {
+    "identity": "fresh independent S13 round-18 reviewer; no implementation role in round 18",
+    "provider": "opencode-go",
+    "model": "deepseek-v4.1-flash",
+    "thinking": "plan-mode read-only review",
+    "repository": "/home/james/Desarrollo/agentic-engineering-harness"
+  },
+  "noImplementationDisclosure": "I did not implement any part of Round 18 and did not inherit any prior summary. I wrote no repository file, made no commit/push/stash/reset/clean/revert, ran no GitHub write, and launched no AEH operation against this checkout. Verification was read-only shell/read/grep plus one pure `node --test` execution of the policy module (no writes). TARGET and all evidence were treated as read-only inputs.",
+  "gitState": {
+    "branch": "core-architecture-v2",
+    "head": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "expectedHead": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "headMatches": true,
+    "upstream": "origin/core-architecture-v2",
+    "upstreamAhead": 0,
+    "upstreamBehind": 0,
+    "commitsAdded": 0,
+    "pushPerformed": false,
+    "stashes": 0,
+    "uncommittedEntries": 124,
+    "target": {
+      "path": "docs/CORE_ARCHITECTURE_V2.md",
+      "workingSha256": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+      "requiredSha256": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+      "match": true,
+      "diffVsHead": "empty",
+      "gitDiffCheck": "clean"
+    },
+    "workingTreeTrackedDigestRecomputed": "849ec335ac5c2aced28edc8c2df9308e9c83dec46048ca27ff3e0f7054dc872e",
+    "workingTreeTrackedFiles": 668,
+    "frozenProductDigest": "5d1b6680ee1d4f6b7ff623521ceedb77ae70e3f4180d2a48946e3e1c7adc4d7e",
+    "frozenDigestDirectRecomputation": "NOT_POSSIBLE_FROM_CURRENT_TREE (the freeze included the pre-round tracked docs); product-source invariance verified independently: only three tracked docs (docs/CORE_ARCHITECTURE_V2_STATUS.md, docs/CORE_ARCHITECTURE_V2_CONFORMANCE.md, docs/ENGINEERING_LEDGER.md) have mtime after the freeze; zero tracked src/schemas/presets/templates/tests/package files changed after 2026-09-29T12:18:44Z",
+    "buildDigestObservedInArtifacts": "ca1d8f5628784ff6b7d0650326d1655d2f25697ecf037780b3e05edbc7f5319a",
+    "noReFreezeRequired": true
+  },
+  "digestRecomputation": {
+    "status": "MATCH_WITH_ONE_UNSUPPORTED_CITATION",
+    "target": "MATCH",
+    "reviewRound17": "MATCH (1455f52c2ac08c0fd427b72b8c1a3df2e6a3ebd1dc4c38498e4168af1173585b)",
+    "postRoundTrackedDigest": "MATCH (849ec335ac5c2aced28edc8c2df9308e9c83dec46048ca27ff3e0f7054dc872e, 668 files)",
+    "round18ArtifactsRecomputed": {
+      "s13GovernedOperationCampaign.mjs": "MATCH dccf16e87ce3e9a8baf42bc74d3b823d144e2b4a2e72e46a0b38f59ab28bfdde (used by r18-mw-3)",
+      "s13CertificationRepairCampaign.mjs": "MATCH 62149e25adbb4d8bbd5d2069f65ae1f9ccd9c2d6dc5de2ac7f39bd511bb49dde",
+      "s13GithubEffectCampaign.mjs": "MATCH fe67f191187245caf2050bea65d66a5475d7c1fcb49373fd9e583a09dab98aca",
+      "s13IssueJourneyCampaign.mjs": "MISMATCH vs cited f7ede81d; no byte or artifact anywhere contains f7ede81d. journey-4 records file sha 398c5e2618c3199d25040374bf8ce3b6225d8a23aa2fcb032ec0ac4913142023 (equals current file) and aggregate a99d96b449fec2b90e8cd589136d48f5f1e6689bfca64166a45a7a1a35374a15; journey-1 recorded file sha 2b4c6f56 and aggregate 8336e696",
+      "r18-certrepair-4 lane": "MATCH 596d8515fcccff21df6a68dd377b6ffdc2be5a25d7271737f5310f7840da6d2f",
+      "r18-certrepair-4 summary": "MATCH 066a2893eed46318fb08144a4fdaf7951321a7b5eb8906c1de4f5f9b12cb39fc",
+      "r18-mw-3 lane": "MATCH 0d426bd7cdcb75304685fcf1ff3ec9659e24b7748dd1b9e56fcb46007e1b6779",
+      "r18-mw-3 summary": "MATCH b063ef3438953488cd262852f1bdd014040f1273539b890c9bb764e18b4e3fe2",
+      "r18-mw-2 lane": "MATCH f116c5004cd93933fbeef79f6f770882fcf48f2c3904298202397adc267013e4",
+      "r18-mw-exp1 lane": "MATCH f2ef1e628182a23a54b5cd60ee3f80da63ffbc4391fd728257b37618dce2bb9b",
+      "r18-repair-1 lane": "MATCH d2fed344493d186e652e7d17290afbc55b8df6beb5e85b7ebddcd9fd66df5ff2",
+      "r18-repair-1 summary": "MATCH e7b7c8f6e190e3d583d0c323ddb47f4deae136533dc6b5c4d74b946d6e82aac7",
+      "r18-journey-4 lane": "MATCH dd8c6b4f66dba1474289a556a716ac57a1dbc3bdec3246f0b473cf6a58ec07df",
+      "r18-journey-4 summary": "MATCH 04053e39da60b7319a0892e7a6ab5fac24dc9a431fd48292f4f5e6d6356718b5"
+    }
+  },
+  "findings": [
+    {
+      "id": "R18-F1",
+      "priority": "P1",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "CONFIRMED_FALSE_CLEANUP_CLAIM",
+      "evidence": "Round-18 W95 and STATUS line 309 claim all round-18 lane workspaces archived, all /tmp/aeh-s13-* staging removed and 24 orphaned fixture provider processes terminated. Durable current state contradicts all three: (a) 59 live fixture processes (ps, 2026-09-29T16:21Z) across journey roots /tmp/aeh-s13-jj-arIpwf (13), -D9hS9F (13), -nFyFMO (13), -L0ZFlM (9, journey-4's own root; e.g. PIDs 818132/818207/823043/826193/826321 started 15:52-15:56Z) and 11 /tmp/aeh-direct-CHANGE-* roots; (b) active Paseo fixture workspaces remain, including wks_891823999e90d2b8 (mw-3 operation CHANGE-20260929T151732Z-248e53a3 'farewell-module' directory), wks_82c5d32e3df9b54c, wks_a16efdfdc2e86158, wks_f37748ea4b534e9f, wks_4dbfd9e0eded0f88, wks_f465c0d32f707dbb, wks_0568b597354b4c3f; (c) staging dirs remain (/tmp/aeh-s13-jj-L0ZFlM, /tmp/aeh-certrepair-fixture-{EXOG9g,MrYw9p,wM88ud,YxpQJa}, /tmp/aeh-direct-CHANGE-20260929T154327Z-633993c4-UYVeOH, /tmp/aeh-direct-CHANGE-20260929T155125Z-9eed7a49-43nPuF).",
+      "requiredAction": "Terminate the fixture provider/MCP processes, archive every remaining fixture Paseo workspace, remove the /tmp staging roots, then correct the W95/STATUS cleanup claim and re-verify with a fresh inventory; do not claim cleanup complete before it is observable."
+    },
+    {
+      "id": "R18-F2",
+      "priority": "P2",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "PARTIAL_WORKSPACE_ACCOUNTING",
+      "evidence": "r18-mw-3 lane `workspaceInventory` lists 6 workspaces but `workspaceCleanup` archives only 3 and reports `remaining: []`; three inventory entries (wks_58dc8b943bc782f2, wks_81fba9010d9501d1, wks_9b27a76aa9422344) are unaccounted, and the operation's per-unit directory workspace wks_891823999e90d2b8 was never inventoried and is still active. r18-journey-4 has `workspaceInventory: null` and an archive list of 3 with no remaining/inventory accounting.",
+      "requiredAction": "Make each lane envelope emit a complete pre/post workspace inventory with an explicit archived/remaining disposition (including per-unit directory workspaces), and archive the still-active fixtures."
+    },
+    {
+      "id": "R18-F3",
+      "priority": "P2",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "INFERRED_NOT_EXECUTED",
+      "evidence": "The round-18 disposition 'distributed-execution BLOCKED (AEH-V2-0129)' is presented with causal language ('same-wave parallelism blocked before any worker receipt'), but no distributed execution exists: the only distributed artifact is `governed-lanes/round-18/smoke-r18/distributed.json` with `result: PREPARED`, no operation/session/terminal, and WorkGraph W91 itself says 'HARNESS BUILT, RUN PENDING'.",
+      "requiredAction": "State distributed-execution as BLOCKED_NO_EVIDENCE (harness built, dependency AEH-V2-0129) without execution inference, or run the lane after the 0129 repair."
+    },
+    {
+      "id": "R18-F4",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "UNSUPPORTED_HARNESS_DIGEST_CITATION",
+      "evidence": "The claimed `s13IssueJourneyCampaign.mjs` digest f7ede81d does not occur in any repository byte or evidence artifact. The run-time revisions recorded by the harness itself are journey-1 file sha 2b4c6f56 (aggregate 8336e696) and journey-4 file sha 398c5e26 (aggregate a99d96b4); the current file bytes hash to 398c5e26.",
+      "requiredAction": "Correct the citation to the recorded harness revision(s) or remove the digest claim; no evidence artifact needs regeneration (the recorded revisions recompute MATCH)."
+    },
+    {
+      "id": "R18-F5",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "CLAIM_NOT_DURABLE",
+      "evidence": "The claimed focused S13 '24 files / 200 tests' has no round-18 durable record. The only recorded focused counts are Round-17 W82 '24 files / 205 tests' and Round-6 '23 S13 files / 200 tests'; round-18 W84 records only the full non-system suite.",
+      "requiredAction": "Persist the exact focused command/file list/count in the round record or correct the claim to the recorded values."
+    },
+    {
+      "id": "R18-F6",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "VERIFICATION_BOUNDARY",
+      "evidence": "This review is read-only plan mode: vitest/typecheck/build were not executed (cache-writing commands), so the focused 24-file set, typecheck exit 0, build release and the 1,357-test total are claimed-only. Independently reproduced/verified: 203 non-system `*.test.ts` files statically counted; `git diff --check` clean; TARGET sha256 and empty diff; all round-18 artifact digests recomputed MATCH; `node --test tests/packed/s13GovernedCampaignPolicy.test.mjs` 1/1; the 3 `tests/paseoSdkResolve` failures classified PRE_EXISTING_ENVIRONMENT_DRIFT (tests/paseoSdkResolve.test.ts and src/paseo/sdkResolve.ts byte-identical to HEAD; the recorded real mise store path /home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/... exists).",
+      "requiredAction": "Reproduce the focused set and full non-system suite in a writable environment at the checkpoint (already a recorded action); reproduce or provision away the 3 environment-drift failures before final acceptance."
+    }
+  ],
+  "verifiedPositiveClaims": [
+    "Frozen product source unchanged all round: no tracked src/schemas/presets/templates/tests/package/tsconfig file has mtime after the 2026-09-29T12:18:44Z freeze; the only post-freeze tracked deltas are the three S13 docs; current tracked digest recomputes exactly to the claimed 849ec335... (668 files); artifacts bind buildDigest ca1d8f56... and HEAD e3dad34.",
+    "certification-repair r18-certrepair-4 is real and terminal: failure run persisted the canonical CertificationFailurePacket (reason ORACLE_FAILURE, certificationId cert-...76bddcda); repair run executed a real codex/gpt-6-luna actor turn (session 01a0edb7-9030-7363-9427-c0cd78bf4b48, 27,572 tokens) and exactly one bounded real repair turn (session 01a0edb7-b42e-7fa3-b5dc-e3d4284b0663, command `printf '42' > .harness/answer.txt`), deterministic oracle re-check PASS on attempt 1, state ACCEPTED, candidateTreeStable true, repairedAnswer 42.",
+    "multi-worker r18-mw-3 is truthful non-acceptance: oracle multi-worker.task-dag PASS with workUnits=2 waves=1 conflicts=0, wave-barrier/assembly FAIL, terminal FAILED rev 79 with the exact PASEO_PROVIDER_LEASE_TAKEOVER_BLOCKED stack through executePlannerWaves/Promise.all; control r18-mw-2 terminal SUCCEEDED rev 132 oracle ACCEPTED with the campaign row FAIL (single unit).",
+    "repair r18-repair-1 is truthful non-acceptance: terminal SUCCEEDED rev 81 but repair.failure-packet FAIL (0 packets), repair.oracle-recheck FAIL (no repair finish); no repair packet fabricated.",
+    "issue-driven r18-journey-4 is truthful non-terminal: result FAIL, operation RUNNING rev 62 phase context at ~957s > 900s bound, last stage review RUNNING, checkoutUntouched true, no delivery effect; run 1 preserved as truthful fixture-gap failure.",
+    "AEH-V2-0128 and AEH-V2-0129 classifications verified against source: triageChangeWithSemanticAssessment raises DIRECT for concrete 1<files<=5 while resolveImplementationRoute raises DELEGATED at workUnits>1 (src/core/triage.ts:126 vs src/agents/routingV2.ts:57); worktreeIsolation occurs only in schema/config/types/template and has no consumer in src logic. r18-mw-exp1 reproduces EXECUTION_POLICY_STALE (route DIRECT) and r18-mw-3 reproduces the lease collision.",
+    "R17-F4/F5/F6/F8/F10 corrections present (b32bf26a enumerated; wall clocks corrected; tracked-doc delta restricted to three docs; postRunTrackedDocEditWindow present in all five emitters; pre-re-freeze lanes labelled SUPERSEDED); AEH-V2-0118 closed in the ledger; P1-C `delivery.delivery-record`/`delivery.provenance` checks implemented (s13GithubEffectCampaign.mjs:657-658 with verifySupplyChainGate at :587) and not exercised (no round-18 GitHub lane).",
+    "No credential-like material found in docs/evidence/s13; TARGET untouched; no commits/push/stash."
+  ],
+  "stalenessDispositions": [
+    {
+      "scope": "startup, informational, project-home, multi-project, audit, change, direct-change, delegated-change, formal-sdd, cancel, recovery, authority",
+      "disposition": "UNCHANGED_EVIDENCE_VALID (CURRENT_ACCEPTED)",
+      "evidence": "Round-17 final-freeze lanes (r17-certification-2, r17-audit-2, r17-direct-1, r17-delegated-1, r17-formal-3, r17-lifecycle-2, r17-gh-4) bind build ca1d8f56/freeze 5d1b6680; round 18 changed no product source (mtime + docs-only tracked delta), so their executed paths are unchanged."
+    },
+    {
+      "scope": "certification-repair",
+      "disposition": "NEWLY_CURRENT_ACCEPTED",
+      "evidence": "r18-certrepair-4 independently verified (real failure packet, real actor + one repair turn, oracle re-check PASS, stable tree)."
+    },
+    {
+      "scope": "delivery",
+      "disposition": "CURRENT_ACCEPTED_WITH_UNEXERCISED_TOKEN_MAPPING",
+      "evidence": "R17 r17-gh-4 real effect chain remains current (no source change); P1-C token mapping implemented in the GitHub emitter but no GitHub lane ran in round 18, so the mapping is not exercised."
+    },
+    {
+      "scope": "issue-driven",
+      "disposition": "CURRENT_CONTRACT_TOKENS_VERIFIED_FULL_JOURNEY_OPEN",
+      "evidence": "R17 r17-gh-4 import/snapshot/drift/operation-bound import current; round-18 full-journey lane non-terminal with no delivery effect."
+    },
+    {
+      "scope": "multi-worker, distributed-execution",
+      "disposition": "BLOCKED (AEH-V2-0129)",
+      "evidence": "multi-worker: task-DAG-only evidence (r18-mw-3 FAILED on the shared-workspace write-lease collision); distributed: harness built, no execution (smoke PREPARED only)."
+    },
+    {
+      "scope": "repair, product-repair",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "r18-repair-1 produced no failure packet/repair turn; forcing requirement recorded."
+    },
+    {
+      "scope": "context-handoff, permission-delegation",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "No harness; exact dependencies recorded in W89/W90 (addressable context refs/continuation; durable parent-lease/child-decision receipt)."
+    }
+  ],
+  "matrixDispositions": [
+    {
+      "capability": "startup",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r17-certification-2 lane 3f6f2eee, real codex gpt-6-luna, oracle PASS; source unchanged in R18"
+    },
+    {
+      "capability": "informational",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r17-certification-2 lane f798a504, real packed intent + Paseo opencode session, oracle PASS; source unchanged"
+    },
+    {
+      "capability": "audit",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r17-audit-2 terminal SUCCEEDED/oracle PASS; source unchanged"
+    },
+    {
+      "capability": "change",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r17-direct-1 oracle row change PASS; source unchanged"
+    },
+    {
+      "capability": "direct-change",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r17-direct-1 route DIRECT, oracle ACCEPTED; source unchanged"
+    },
+    {
+      "capability": "delegated-change",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r17-delegated-1 route DELEGATED 0 escalations, SUCCEEDED/oracle ACCEPTED; source unchanged"
+    },
+    {
+      "capability": "formal-sdd",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r17-formal-3 canonical spec authoring/compilation, SUCCEEDED/oracle PASS; source unchanged"
+    },
+    {
+      "capability": "multi-worker",
+      "disposition": "BLOCKED",
+      "evidence": "r18-mw-3 task DAG PASS (workUnits=2 waves=1) but parallel implementers FAILED PASEO_PROVIDER_LEASE_TAKEOVER_BLOCKED; AEH-V2-0129 OPEN"
+    },
+    {
+      "capability": "cancel",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r17-lifecycle-2 real SIGKILL owner, terminal CANCELLED, leases drained; source unchanged"
+    },
+    {
+      "capability": "recovery",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r17-lifecycle-2 epoch takeover of exact session, operation preserved; source unchanged"
+    },
+    {
+      "capability": "product-repair",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "r18-repair-1 no repair packet; forcing requirement recorded"
+    },
+    {
+      "capability": "certification-repair",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r18-certrepair-4 independently verified: failure packet + real codex actor + 1 repair turn + oracle re-check PASS + stable candidate tree (lane 596d8515, summary 066a2893)"
+    },
+    {
+      "capability": "repair",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "r18-repair-1 repair.failure-packet FAIL (0 packets), oracle-recheck FAIL"
+    },
+    {
+      "capability": "context-handoff",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "no harness; dependency on addressable context refs + continuation binding (W89)"
+    },
+    {
+      "capability": "permission-delegation",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "no harness; dependency on durable parent-lease/child-decision receipt (W90)"
+    },
+    {
+      "capability": "issue-driven",
+      "disposition": "CURRENT_CONTRACT_TOKENS_VERIFIED_FULL_JOURNEY_OPEN",
+      "evidence": "R17 import/snapshot/drift current; r18-journey-4 non-terminal RUNNING at 900s bound after review, no delivery effect"
+    },
+    {
+      "capability": "delivery",
+      "disposition": "CURRENT_ACCEPTED_WITH_UNEXERCISED_TOKEN_MAPPING",
+      "evidence": "R17 r17-gh-4 real push/receipts/reconciliation current; P1-C delivery-record/provenance mapping implemented, not exercised"
+    },
+    {
+      "capability": "distributed-execution",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "harness built; smoke-r18 result PREPARED only; dependency AEH-V2-0129; no worker receipt"
+    },
+    {
+      "capability": "project-home",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r17-certification-2 lane 2d3d123f, real providers; source unchanged"
+    },
+    {
+      "capability": "multi-project",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r17-certification-2 lane ee769017, real providers; source unchanged"
+    },
+    {
+      "capability": "control-center",
+      "disposition": "NOT_APPLICABLE",
+      "evidence": "BROWSER lane only; never substituted for REAL_PROVIDER"
+    },
+    {
+      "capability": "authority",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r17-gh-4 external-authorization provenance, HUMAN_REQUIRED -> EXECUTED/SUCCEEDED, real branch; source unchanged"
+    }
+  ],
+  "focusedTests": {
+    "executed": [
+      "node --test tests/packed/s13GovernedCampaignPolicy.test.mjs -> 1/1 pass"
+    ],
+    "notExecutedBoundary": "vitest/typecheck/build were not run: read-only plan-mode review (these commands write caches/build output). Full-suite 1,357-test and focused-set counts are claimed-only.",
+    "staticInventory": {
+      "nonSystemTestFiles": 203,
+      "totalTestFiles": 209,
+      "trackedFiles": 668,
+      "uncommittedEntries": 124
+    },
+    "paseoSdkResolveClassification": "PRE_EXISTING_ENVIRONMENT_DRIFT (independent): tests/paseoSdkResolve.test.ts and src/paseo/sdkResolve.ts are byte-identical to HEAD; the resolver finds the real mise store (path recorded in W84 exists verbatim); the same class was reproduced at S10/S12/R12/R17 checkpoints. Not a round-18 regression.",
+    "gitDiffCheck": "clean",
+    "targetVerified": true
+  },
+  "verdict": "SLICE_BLOCKED",
+  "actionRequired": [
+    "R18-F1/R18-F2 cleanup truthfulness: terminate the 59 live fixture provider processes, archive the remaining fixture Paseo workspaces (including wks_891823999e90d2b8 and the six journey/direct fixtures), remove the remaining /tmp staging roots, then correct W95/STATUS and re-verify with a fresh inventory before any acceptance.",
+    "AEH-V2-0129: honor workflow.planning.worktreeIsolation (per-unit worktree + wave-base rebase + assembly receipt) or serialize same-workspace writers; rerun multi-worker to a terminal result with >=2 wave units and barrier/assembly evidence; then run the distributed lane.",
+    "AEH-V2-0128: reconcile the semantic and deterministic delegation floors (single definition or typed route-conflict rebind before participant launches) with a focused regression; rerun the affected concrete multi-file change geometry.",
+    "repair/product-repair: design a deterministic first-attempt failure the implementer turn cannot remove within its frozen scope; rerun for the failure packet + oracle re-check + scope check.",
+    "context-handoff/permission-delegation: build the harnesses with the recorded dependencies (addressable context refs/continuation; durable parent-lease/child-decision receipt); no waivers.",
+    "issue-driven full journey: rerun the journey lane with a 1,500 s bound and/or diagnose the review-stage stall observed in r18-journey-4; then exercise the delivery half and record the result.",
+    "P1-C: run the GitHub campaign (S13_GH_AUTHORIZATION_FILE, existing issue #1) to exercise delivery.delivery-record/delivery.provenance.",
+    "Correct the harness-digest and focused-count citations (R18-F4/R18-F5); persist exact commands/counts.",
+    "Reproduce the focused set and full non-system suite in a writable environment; reproduce or provision away the 3 pre-existing paseoSdkResolve failures before any checkpoint.",
+    "S13 stays uncommitted; no checkpoint commit until a fresh independent SLICE_ACCEPTED; S14 must not start."
+  ]
+}

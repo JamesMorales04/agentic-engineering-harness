@@ -20,8 +20,8 @@ import {
   bindOperationParticipantExecution,
   recordParticipantReceipt,
   registerOperationAgent,
-  updateOperationParticipant
-} from "../operations/state.js";
+  updateOperationParticipant,
+  updateRegisteredOperationParticipant, type OperationKind } from "../operations/state.js";
 import { compilePaseoAgentLaunchSpec } from "../paseo/launchSpec.js";
 import {
   continueManagedPaseoAgent,
@@ -69,13 +69,23 @@ import { configuredExternalEffects, requiredHumanActionAuthorizations } from "..
 import { compileExecutionCatalog } from "../architecture/executionCatalog.js";
 import { defaultSkillSeed, roleProfile } from "../participants/index.js";
 import { createWorkGraph, type WorkGraphV1 } from "../architecture/workGraph.js";
-import { candidateRevisionsEqual } from "../operations/v2Contracts.js";
+import { candidateRevisionsEqual, type CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import { issueContextRefAuthorization, recordContextContinuation, validateCurrentContextAuthorization } from "../context/authorizationV2.js";
 import { bindPaseoSession, loadPaseoSessionBinding, paseoSessionBindingMatches, resolveReusablePaseoSession, rotatePaseoSessionBinding, type PaseoSessionBindingIdentityV1 } from "../paseo/sessionBinding.js";
 
 export interface AgentPromptOptions {
   outputContract?: string;
   resumeSessionId?: string;
+  /**
+   * Explicit continuation of an already-bound participant generation on its exact durable session.
+   * A continuation turn may deliver a new event prompt/context to the same session; all other
+   * binding identity (operation, candidate, execution revision, blueprint, policy, controller
+   * epoch, participant generation, runtime session) must still match exactly. Used by the
+   * persistent Operation Supervisor for per-event semantic turns (initialization, consolidation,
+   * watchdog coordination) where the session binding is generation-scoped and each turn is
+   * activated as its own structured-result turn. Never set by participant launch paths.
+   */
+  continueBoundSession?: boolean;
   /** Actual runtime session observed or reserved before dispatching this turn. */
   executionSessionId?: string;
   /** Shared isolated home that owns a prepared direct-runtime session. */
@@ -299,8 +309,10 @@ export async function materializeAgentPrompt(
       env: spec.env,
       mcpServers: spec.mcpServers,
       toolPolicy: spec.toolPolicy,
+      providerOptions: spec.providerOptions,
+      featureValues: spec.featureValues,
       workspaceId: spec.workspaceId,
-      parentAgentId: spec.parentAgentId,
+      parentAgentId: spec.paseoParentAgentId,
       outputSchema: undefined,
       labels: spec.labels,
       waitForFinish: false,
@@ -327,6 +339,8 @@ export async function materializeAgentPrompt(
       structuredResultChannelId
     });
     if (result.id && !options.supervisorAgent) {
+      // The runtime session is the per-turn actor identity (status, artifacts, receipts); a
+      // controller-issued launch identity remains the durable work identity and stays resumable.
       await updateOperationParticipant(root, spec.operationId, result.id, {
         logicalAgent: selection.logicalAgent,
         role: selection.role,
@@ -407,12 +421,20 @@ export async function prepareAgentExecutionIdentity(
     ? verifyPreparedPrompt(options.preparedPrompt, options, selection)
     : await buildEffectivePromptIdentity(root, config, contract, selection, prompt, { ...options, capabilityAuthority: authority, participantId: authority.participantId, contextCapabilities });
   const identityOptions: AgentPromptOptions = { ...options, capabilityAuthority: authority, participantId: authority.participantId, preparedPrompt: projected.prompt, contextCapabilities, contextManifest: projected.contextManifest, contextManifestDigest: projected.contextManifestDigest, promptManifestDigest: projected.promptManifestDigest };
-  const operation = await loadOperation(currentOperationContext().controlRoot ?? root, authority.operationId);
-  const candidate = authority.candidateRevision ?? operation.candidateRevision;
+  // A detached distributed worker executes a propagated launch that already carries the frozen
+  // blueprint, role policy, skill manifest and controller-issued authority; it has no operation
+  // state root. The durable record is loaded when present and its equality checks are strictly
+  // applied; when absent, the same identity is validated against the controller-issued authority
+  // and frozen blueprint instead (AEH-V2-0131).
+  const stateRoot = currentOperationContext().controlRoot ?? root;
+  const operation = await loadOperation(stateRoot, authority.operationId).catch(() => undefined);
+  const candidate = authority.candidateRevision ?? operation?.candidateRevision;
   const epoch = authority.controllerEpoch;
   if (!candidate || epoch === undefined) throw new Error("EXECUTION_BINDING_REQUIRED: current candidate and controller epoch are required to compile remote execution identity.");
-  const compiled = await compileParticipantInvocationIdentity(root, config, contract, selection, identityOptions, operation, candidate, authority.participantId, epoch);
-  await bindResolvedPolicyIfAbsent(currentOperationContext().controlRoot ?? root, authority.operationId, compiled.policy);
+  if (!operation && !(options.executionBlueprint && options.roleInvocationPolicy && options.skillManifest)) throw new Error("EXECUTION_BINDING_REQUIRED: durable operation state or a complete propagated blueprint, role policy and skill manifest is required to compile remote execution identity.");
+  const operationIdentity: ParticipantInvocationOperationV1 = operation ?? { id: authority.operationId, operationExecutionRevision: options.executionBlueprint!.operationExecutionRevision, resolvedOperationPolicy: options.executionBlueprint!.resolvedOperationPolicy };
+  const compiled = await compileParticipantInvocationIdentity(root, config, contract, selection, identityOptions, operationIdentity, candidate, authority.participantId, epoch);
+  if (operation) await bindResolvedPolicyIfAbsent(stateRoot, authority.operationId, compiled.policy);
   return { authority, prompt: projected.prompt, contextManifest: projected.contextManifest, contextManifestDigest: projected.contextManifestDigest, promptManifestDigest: projected.promptManifestDigest, executionBlueprint: compiled.blueprint, roleInvocationPolicy: compiled.rolePolicy, skillManifest: compiled.skillManifest };
 }
 
@@ -531,7 +553,8 @@ export async function dispatchMaterializedAgentPrompt(
     repairPrompt,
     timeout,
     undefined,
-    undefined
+    undefined,
+    executionLabels
   );
   const repairedResult: WorkerSession = {
     ...materialized,
@@ -666,8 +689,10 @@ async function executeViaPaseo(
     env: spec.env,
     mcpServers: spec.mcpServers,
     toolPolicy: spec.toolPolicy,
+    providerOptions: spec.providerOptions,
+    featureValues: spec.featureValues,
     workspaceId: spec.workspaceId,
-    parentAgentId: spec.parentAgentId,
+    parentAgentId: spec.paseoParentAgentId,
     prompt,
     outputSchema: schema,
     labels: spec.labels,
@@ -697,7 +722,7 @@ async function executeDirect(root: string, config: HarnessProjectConfig, selecti
   const startedAt = new Date().toISOString();
   const executionEnv = boundedExecutionEnvironment(selection, options);
   if (selection.runtimeAdapter === "opencode") {
-    const projection = compileOpenCodeRuntimeProjection(selection, config, options.contextCapabilities);
+    const projection = compileOpenCodeRuntimeProjection(selection, config, options.contextCapabilities, undefined, root);
     const args = ["opencode", "run", "--auto", "--format", "json", "--model", selection.modelId];
     const sessionId = options.resumeSessionId ?? options.executionSessionId;
     if (sessionId) args.push("--session", sessionId);
@@ -799,7 +824,7 @@ async function executePodman(
   args.push("-v", `${options.directWorkerHome.directory}:/home/aeh:rw`, "-e", "HOME=/home/aeh", "-e", "XDG_CONFIG_HOME=/home/aeh/.config", "-e", "XDG_CACHE_HOME=/home/aeh/.cache");
   args.push("-v", `${root}:/workspace:${writable ? "rw" : "ro"}`);
   if (writable) for (const relative of sealedArtifacts(config, contract)) args.push("-v", `${repositoryPath(root, relative)}:/workspace/${relative}:ro`);
-  const projection = compileOpenCodeRuntimeProjection(selection, config, options.contextCapabilities);
+  const projection = compileOpenCodeRuntimeProjection(selection, config, options.contextCapabilities, undefined, root);
   args.push("-e", `OPENCODE_CONFIG_CONTENT=${projection.env.OPENCODE_CONFIG_CONTENT}`);
   for (const [name, value] of Object.entries(boundedExecutionEnvironment(selection, options))) args.push("-e", `${name}=${value}`);
   for (const [name, value] of Object.entries(allowedSandboxEnvironment(config))) args.push("-e", `${name}=${value}`);
@@ -1028,7 +1053,8 @@ function directMetadata(options: AgentPromptOptions, startedAt: string, transpor
 async function markOperationSessionRunning(root: string, agentId: string): Promise<void> {
   const operationId = currentOperationContext().id;
   if (!operationId) return;
-  await updateOperationParticipant(root, operationId, agentId, { status: "RUNNING" });
+  // Runtime session ids are provenance; only a durably registered work participant is marked.
+  await updateRegisteredOperationParticipant(root, operationId, agentId, { status: "RUNNING" });
 }
 
 async function continueWithDurableResultReconciliation(
@@ -1101,6 +1127,15 @@ async function waitForAcceptedResult(
   }
 }
 
+/**
+ * The durable operation state root that owns transcripts, accepted structured results, and
+ * receipts. Isolated candidate-mutation runs execute in a disposable worktree but must still
+ * persist and resolve operation artifacts under the operation's control root.
+ */
+export function operationArtifactRoot(root: string): string {
+  return currentOperationContext().controlRoot ?? root;
+}
+
 async function finalizeOperationSession(
   root: string,
   config: HarnessProjectConfig,
@@ -1110,6 +1145,10 @@ async function finalizeOperationSession(
   options: AgentPromptOptions
 ): Promise<WorkerSession> {
   const operationId = observed.operationId ?? currentOperationContext().id ?? contract.task.id;
+  // Operation state (participants, receipts, revisions) always lives under the authoritative
+  // operation state root. Isolated candidate-mutation runs execute in a disposable worktree, so
+  // resolving state through the execution root would silently no-op or target the wrong record.
+  const operationStateRoot = operationArtifactRoot(root);
   let result = observed;
   let accepted: AcceptedStructuredResult | undefined;
   let contractDelivery: CapturedContractValidation | undefined;
@@ -1187,7 +1226,7 @@ async function finalizeOperationSession(
 
   if (options.supervisorAgent) return result;
   const turnStamp = (observed.finishedAt ?? new Date().toISOString()).replace(/[^0-9A-Za-z]+/g, "-");
-  const transcriptArtifact = await persistOperationAgentArtifact(root, operationId, `${selection.logicalAgent}-${observed.id ?? "no-session"}-${turnStamp}`, {
+  const transcriptArtifact = await persistOperationAgentArtifact(operationStateRoot, operationId, `${selection.logicalAgent}-${observed.id ?? "no-session"}-${turnStamp}`, {
     logicalAgent: selection.logicalAgent,
     role: selection.role,
     phase: observed.phase ?? options.phase,
@@ -1204,53 +1243,58 @@ async function finalizeOperationSession(
     structuredResultArtifact: accepted?.artifact
   });
   if (!observed.id) return result;
-  let operation = await loadOperation(root, operationId).catch(() => undefined);
-  if (operation && !operation.participants[observed.id]) {
-    await registerOperationAgent(root, operationId, {
-      id: observed.id,
+  // The runtime session participant carries the per-turn lifecycle (registration, status,
+  // artifacts). The controller-issued launch identity, when present, is the durable bounded-work
+  // identity that owns the receipt; the session id remains receipt provenance in `sessionId`.
+  const sessionParticipantId = observed.id;
+  const receiptParticipantId = options.capabilityAuthority?.participantId ?? options.participantId ?? observed.id;
+  let operation = await loadOperation(operationStateRoot, operationId).catch(() => undefined);
+  if (operation && !operation.participants[sessionParticipantId]) {
+    await registerOperationAgent(operationStateRoot, operationId, {
+      id: sessionParticipantId,
       logicalAgent: selection.logicalAgent,
       role: selection.role,
       phase: observed.phase ?? options.phase,
       workspaceId: observed.workspaceId,
       transport: observed.transport?.includes("cli") ? "cli" : "sdk"
     }).catch(() => undefined);
-    operation = await loadOperation(root, operationId).catch(() => undefined);
+    operation = await loadOperation(operationStateRoot, operationId).catch(() => undefined);
   }
   const contractFailure = contractDelivery && !contractDelivery.ok
     ? contractDelivery.failure ?? `invalid ${options.outputContract ?? "agent"} output contract`
     : undefined;
   const failed = observed.exitCode !== 0 || Boolean(contractFailure);
-  await updateOperationParticipant(root, operationId, observed.id, {
+  await updateOperationParticipant(operationStateRoot, operationId, sessionParticipantId, {
     logicalAgent: selection.logicalAgent,
     role: selection.role,
     stage: observed.phase ?? options.phase,
     phase: observed.phase ?? options.phase,
-    parentAgentId: options.parentAgentId ?? operation?.participants[observed.id]?.parentAgentId,
-    parentSupervisorGeneration: operation?.participants[observed.id]?.parentSupervisorGeneration,
+    parentAgentId: options.parentAgentId ?? operation?.participants[sessionParticipantId]?.parentAgentId,
+    parentSupervisorGeneration: operation?.participants[sessionParticipantId]?.parentSupervisorGeneration,
     workspaceId: observed.workspaceId,
     transport: observed.transport,
     status: failed ? "FAILED" : "COMPLETED",
     resultArtifact: accepted?.artifact ?? transcriptArtifact,
     error: failed ? ((contractFailure ?? observed.stderr) || `agent exited with ${observed.exitCode}`) : undefined
   }).catch(() => undefined);
-  const afterParticipant = await loadOperation(root, operationId).catch(() => undefined);
+  const afterParticipant = await loadOperation(operationStateRoot, operationId).catch(() => undefined);
   const receiptArtifact = accepted?.artifact ?? transcriptArtifact;
   if (!failed && afterParticipant?.candidateRevision && receiptArtifact) {
-    const artifactPath = path.resolve(root, receiptArtifact);
+    const artifactPath = path.resolve(operationStateRoot, receiptArtifact);
     const artifactContent = await fs.readFile(artifactPath).catch(() => undefined);
     if (artifactContent) {
       const artifactDigest = sha256(artifactContent);
       const outcome = "SUCCEEDED" as const;
       const observedAt = new Date().toISOString();
-      await recordParticipantReceipt(root, operationId, {
+      await recordParticipantReceipt(operationStateRoot, operationId, {
         version: 1,
-        receiptId: `receipt:${observed.id}:${observedAt}`,
+        receiptId: `receipt:${receiptParticipantId}:${observedAt}`,
         operationId,
-        participantId: observed.id,
+        participantId: receiptParticipantId,
         sessionId: observed.id,
         attempt: 1,
         parentParticipantId: options.parentAgentId,
-        supervisorGeneration: afterParticipant.participants[observed.id]?.parentSupervisorGeneration,
+        supervisorGeneration: afterParticipant.participants[sessionParticipantId]?.parentSupervisorGeneration,
         role: selection.role,
         phase: observed.phase ?? options.phase,
         startedAt: observed.startedAt,
@@ -1281,7 +1325,7 @@ async function finalizeOperationSession(
     artifact: accepted?.artifact ?? transcriptArtifact,
     contractValid: !contractFailure
   });
-  const settled = await loadOperation(root, operationId).catch(() => undefined);
+  const settled = await loadOperation(operationStateRoot, operationId).catch(() => undefined);
   const observedStartedMs = observed.startedAt ? Date.parse(observed.startedAt) : Number.NaN;
   await recordAgentLifecycle(root, config, "participant.settled", {
     operationId,
@@ -1318,13 +1362,13 @@ export async function prepareRuntimeSession(
   if (transport !== "direct" && transport !== "podman") throw new Error(`EXECUTION_BINDING_SESSION_UNSUPPORTED: transport '${transport}' has no approved pre-prompt session materialization boundary.`);
   if (transport === "podman" && selection.runtimeAdapter !== "opencode") throw new Error("EXECUTION_BINDING_SESSION_UNSUPPORTED: hardened Podman session preparation currently supports only OpenCode.");
 
-  const home = await createDirectWorkerHome();
+  const home = await createDirectWorkerHome(selection.runtimeAdapter);
   onHome?.(home);
   try {
     const explicit = boundedExecutionEnvironment(selection, { ...options, capabilityAuthority: authority });
     let environment = buildDirectWorkerEnvironment(config, explicit, home.directory);
     if (selection.runtimeAdapter === "opencode") {
-      const projection = compileOpenCodeRuntimeProjection(selection, config, options.contextCapabilities);
+      const projection = compileOpenCodeRuntimeProjection(selection, config, options.contextCapabilities, undefined, root);
       environment = buildDirectWorkerEnvironment(config, { ...withDirectContextIdentity(projection.env, root, selection, options), ...explicit }, home.directory);
       return await prepareOpenCodeSession({ cwd: root, environment, home, timeoutMs: (config.orchestration?.worker?.timeoutSeconds ?? 1800) * 1000 });
     }
@@ -1352,24 +1396,36 @@ async function resolveStructuredResultProvenance(
   const operationId = authority?.operationId ?? context.id;
   if (!operationId) throw new Error("AEH_RESULT_PROVENANCE_UNSUPPORTED: output-contract participants require a managed operation identity.");
   const stateRoot = context.controlRoot ?? root;
-  const operation = await loadOperation(stateRoot, operationId);
-  const candidate = authority?.candidateRevision ?? operation.candidateRevision;
+  // A detached distributed worker has no operation state root: the controller-issued
+  // ExecutionAuthorityV1 + released ExecutionBindingV2 are its complete launch identity. The
+  // durable operation record is loaded when present (controller/isolated root) and its checks are
+  // strictly applied; when absent the same binding/blueprint equality is validated against the
+  // controller-issued authority and frozen blueprint instead (AEH-V2-0131).
+  const operation = await loadOperation(stateRoot, operationId).catch(() => undefined);
+  const candidate = authority?.candidateRevision ?? operation?.candidateRevision;
   const previous = options.resumeSessionId ? await structuredResultProvenanceForAgent(stateRoot, options.resumeSessionId) : undefined;
   if (previous?.status === "BOUND") {
-    assertResultProvenanceMatchesExecution(previous, operation, contract, selection, options);
+    if (!operation) throw new Error("AEH_RESULT_PROVENANCE_INCOMPLETE: a resumed structured-result channel requires the owning operation state root.");
+    assertResultProvenanceMatchesExecution(previous, operation, contract, selection, options, options.continueBoundSession === true);
     return previous;
   }
   if (previous && previous.status !== "UNSUPPORTED") throw new Error("AEH_RESULT_PROVENANCE_INCOMPLETE: only an inert pending Paseo channel can be finalized for a new binding.");
   const participantId = authority?.participantId ?? options.participantId;
   const binding = options.executionBinding;
   if (!candidate || !participantId || !binding) throw new Error("EXECUTION_BINDING_REQUIRED: structured output requires a complete versioned execution binding.");
-  if (binding.operationId !== operation.id || binding.participantId !== participantId || binding.candidateDigest !== candidate.identityDigest || binding.controllerEpoch !== (authority?.controllerEpoch ?? operation.controller?.epoch) || binding.operationExecutionRevision !== operation.operationExecutionRevision) throw new Error("EXECUTION_BINDING_STALE: binding does not match current operation, candidate, revision, epoch, or participant.");
+  if (operation) {
+    if (binding.operationId !== operation.id || binding.participantId !== participantId || binding.candidateDigest !== candidate.identityDigest || binding.controllerEpoch !== (authority?.controllerEpoch ?? operation.controller?.epoch) || binding.operationExecutionRevision !== operation.operationExecutionRevision) throw new Error("EXECUTION_BINDING_STALE: binding does not match current operation, candidate, revision, epoch, or participant.");
+  } else {
+    const executionRevision = options.executionBlueprint?.operationExecutionRevision;
+    const blueprintDigest = options.executionBlueprint?.digest;
+    if (!authority || authority.operationId !== operationId || authority.participantId !== participantId || authority.candidateRevision.identityDigest !== candidate.identityDigest || binding.participantId !== participantId || binding.candidateDigest !== candidate.identityDigest || binding.controllerEpoch !== authority.controllerEpoch || !Number.isSafeInteger(executionRevision) || binding.operationExecutionRevision !== executionRevision || !blueprintDigest || binding.executionBlueprintDigest !== blueprintDigest) throw new Error("EXECUTION_BINDING_STALE: worker binding does not match the controller-issued authority, candidate, revision, epoch, or frozen blueprint.");
+  }
   const outputSchema = outputJsonSchema(options.outputContract!);
   if (!outputSchema) throw new Error(`OUTPUT_CONTRACT_UNKNOWN: ${options.outputContract}.`);
   const provenance = createStructuredResultProvenance({
     operationId,
     projectId: authority?.projectId ?? candidate.projectId ?? config.project?.name,
-    operationRevision: operation.revision,
+    operationRevision: operation?.revision ?? binding.operationExecutionRevision,
     operationExecutionRevision: binding.operationExecutionRevision,
     participantId,
     participantGeneration: binding.participantGeneration,
@@ -1389,7 +1445,8 @@ async function resolveStructuredResultProvenance(
     promptManifestDigest: binding.promptManifestDigest,
     unsupported: []
   });
-  if (selection.transport === "paseo" || config.orchestration?.provider === "paseo") {
+  if (isPaseoExecution(selection, config)) {
+    if (!operation) throw new Error("AEH_RESULT_PROVENANCE_INCOMPLETE: a Paseo structured-result channel requires the owning operation state root.");
     const sessionId = binding.runtime.sessionId;
     if (!sessionId) throw new Error("EXECUTION_BINDING_SESSION_REQUIRED: structured Paseo result channel requires the materialized provider agent id.");
     await finalizeStructuredResultChannelForAgent(stateRoot, sessionId, provenance);
@@ -1447,13 +1504,14 @@ async function resolveExecutionBinding(
   if (options.resumeSessionId) {
     const prior = await structuredResultProvenanceForAgent(stateRoot, options.resumeSessionId);
     if (prior?.status === "BOUND") {
+      const continuation = options.continueBoundSession === true;
       if (!prior.executionBinding) throw new Error("EXECUTION_BINDING_REQUIRED: resumed session has no full versioned binding.");
       if (prior.executionBinding.runtime.sessionId !== actualSessionId) throw new Error("EXECUTION_BINDING_RUNTIME_SESSION_MISMATCH: resumed result channel does not identify the actual runtime session being continued.");
-      assertResultProvenanceMatchesExecution(prior, operation, contract, selection, options);
+      assertResultProvenanceMatchesExecution(prior, operation, contract, selection, options, continuation);
       options.executionBinding = prior.executionBinding;
       if (isPaseoExecution(selection, config)) await assertPaseoSessionBinding(stateRoot, operation, prior.executionBinding, true);
       if (Array.isArray(options.contextManifest?.addressableRefs) && options.contextManifest.addressableRefs.length) await validateCurrentContextAuthorization(stateRoot, operationId, participantId, actualSessionId);
-      await recordContextContinuation(stateRoot, operationId, participantId, {
+      if (!continuation) await recordContextContinuation(stateRoot, operationId, participantId, {
         operationId,
         projectId: identityProjectId(operation),
         operationExecutionRevision: prior.executionBinding.operationExecutionRevision,
@@ -1583,14 +1641,27 @@ async function bindResolvedPolicyIfAbsent(root: string, operationId: string, pol
   return bindResolvedOperationPolicy(root, operationId, policy);
 }
 
+/**
+ * The identity fields `compileParticipantInvocationIdentity` needs. The controller passes the
+ * durable OperationRecordV2; a detached distributed worker passes the controller-issued operation
+ * identity reconstructed from its frozen blueprint (no operation state root exists there).
+ */
+interface ParticipantInvocationOperationV1 {
+  id: string;
+  kind?: OperationKind;
+  intent?: { request?: string };
+  operationExecutionRevision?: number;
+  resolvedOperationPolicy?: ResolvedOperationPolicyV1;
+}
+
 async function compileParticipantInvocationIdentity(
   root: string,
   config: HarnessProjectConfig,
   contract: TaskContract,
   selection: AgentExecutionSelection,
   options: AgentPromptOptions,
-  operation: Awaited<ReturnType<typeof loadOperation>>,
-  candidate: NonNullable<Awaited<ReturnType<typeof loadOperation>>["candidateRevision"]>,
+  operation: ParticipantInvocationOperationV1,
+  candidate: CandidateRevisionV1,
   participantId: string,
   controllerEpoch: number
 ): Promise<{ policy: ResolvedOperationPolicyV1; blueprint: ExecutionBlueprintV2; rolePolicy: RoleInvocationPolicyV1; skillManifest: SkillManifestV1 }> {
@@ -1610,6 +1681,7 @@ async function compileParticipantInvocationIdentity(
     return { policy, blueprint: options.executionBlueprint, rolePolicy, skillManifest };
   }
   if (!Number.isSafeInteger(operation.operationExecutionRevision) || operation.operationExecutionRevision! < 1) throw new Error("UNSUPPORTED_OPERATION_EXECUTION_REVISION: migrate this operation record before structured-result launch.");
+  if (operation.kind === undefined) throw new Error("EXECUTION_POLICY_INPUT_MISSING: a durable operation kind is required to compile fresh participant identity.");
   const route = contract.routing?.route;
   const assurance = contract.routing?.assurance;
   if (!route || !assurance) throw new Error("EXECUTION_POLICY_INPUT_MISSING: TaskContract must carry deterministic route and minimum assurance before launch.");
@@ -1697,12 +1769,13 @@ async function compileParticipantInvocationIdentity(
   return { policy, blueprint, rolePolicy, skillManifest };
 }
 
-function assertResultProvenanceMatchesExecution(
+export function assertResultProvenanceMatchesExecution(
   provenance: StructuredResultProvenanceV1,
   operation: Awaited<ReturnType<typeof loadOperation>> | undefined,
   contract: TaskContract,
   selection: AgentExecutionSelection,
-  options: AgentPromptOptions
+  options: AgentPromptOptions,
+  continuation = false
 ): void {
   if (!operation || provenance.operationId !== operation.id || provenance.logicalAgent !== selection.logicalAgent || provenance.role !== selection.role || provenance.taskId !== contract.task.id || provenance.outputContract !== options.outputContract) {
     throw new Error("AEH_RESULT_PROVENANCE: materialized result channel does not match this operation, participant, task, role, or output contract.");
@@ -1716,13 +1789,22 @@ function assertResultProvenanceMatchesExecution(
   if (!executionBinding || executionBinding.participantGeneration !== provenance.participantGeneration || executionBinding.operationExecutionRevision !== provenance.operationExecutionRevision || executionBinding.candidateDigest !== provenance.candidate.identityDigest || executionBinding.controllerEpoch !== provenance.controllerEpoch || executionBinding.executionBlueprintDigest !== provenance.executionBlueprintDigest || executionBinding.operationPolicyDigest !== provenance.resolvedOperationPolicyDigest || executionBinding.digest !== provenance.executionBinding?.digest) {
     throw new Error("AEH_RESULT_STALE_EXECUTION: result channel belongs to an older participant generation, operation revision, or ExecutionBlueprint.");
   }
-  if (options.contextManifestDigest && provenance.contextManifestDigest !== options.contextManifestDigest) throw new Error("EXECUTION_BINDING_STALE: ContextManifest changed after session materialization.");
-  if (options.promptManifestDigest && provenance.promptManifestDigest !== options.promptManifestDigest) throw new Error("EXECUTION_BINDING_STALE: PromptManifest changed after session materialization.");
+  if (continuation) {
+    // An authorized continuation turn keeps the generation's frozen binding and delivers a new
+    // event prompt/context on the same durable session. Every non-manifest identity check above
+    // still applies, and the participant identity must remain the bound generation. The event's
+    // freshly compiled blueprint/skill manifests are turn-scoped: the generation blueprint is
+    // still enforced through the durable binding checked above.
+    if (!options.contextManifestDigest || !options.promptManifestDigest) throw new Error("EXECUTION_BINDING_REQUIRED: a continuation turn must carry actual ContextManifest and PromptManifest digests.");
+  } else {
+    if (options.contextManifestDigest && provenance.contextManifestDigest !== options.contextManifestDigest) throw new Error("EXECUTION_BINDING_STALE: ContextManifest changed after session materialization.");
+    if (options.promptManifestDigest && provenance.promptManifestDigest !== options.promptManifestDigest) throw new Error("EXECUTION_BINDING_STALE: PromptManifest changed after session materialization.");
+  }
   if (options.participantId && provenance.participantId !== options.participantId) throw new Error("AEH_RESULT_PROVENANCE: result channel belongs to a different participant identity.");
   if (options.capabilityAuthority && (options.capabilityAuthority.candidateDigest !== provenance.candidate.identityDigest || options.capabilityAuthority.controllerEpoch !== provenance.controllerEpoch)) {
     throw new Error("AEH_RESULT_PROVENANCE: result channel does not match the current execution authority.");
   }
-  if (options.executionBlueprintDigest && provenance.executionBlueprintDigest !== options.executionBlueprintDigest) throw new Error("AEH_RESULT_PROVENANCE: result channel belongs to a different execution blueprint.");
+  if (!continuation && options.executionBlueprintDigest && provenance.executionBlueprintDigest !== options.executionBlueprintDigest) throw new Error("AEH_RESULT_PROVENANCE: result channel belongs to a different execution blueprint.");
   if (options.resolvedOperationPolicyDigest && provenance.resolvedOperationPolicyDigest !== options.resolvedOperationPolicyDigest) throw new Error("AEH_RESULT_PROVENANCE: result channel belongs to a different operation policy.");
 }
 

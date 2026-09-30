@@ -1,0 +1,60 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import { runExecutable } from "../utils/process.js";
+export async function createWorktreeCheckpoint(root) {
+    const files = new Map();
+    for (const relative of await changedPaths(root)) {
+        const absolute = path.resolve(root, relative);
+        try {
+            files.set(relative, await fs.readFile(absolute));
+        }
+        catch {
+            files.set(relative, undefined);
+        }
+    }
+    return { createdAt: new Date().toISOString(), files };
+}
+export async function rollbackWorktreeCheckpoint(root, checkpoint) {
+    const current = new Set(await changedPaths(root));
+    const all = new Set([...current, ...checkpoint.files.keys()]);
+    const restored = [];
+    for (const relative of all) {
+        const absolute = path.resolve(root, relative);
+        if (!absolute.startsWith(`${path.resolve(root)}${path.sep}`) && absolute !== path.resolve(root))
+            throw new Error(`Unsafe rollback path: ${relative}`);
+        if (checkpoint.files.has(relative)) {
+            const content = checkpoint.files.get(relative);
+            if (content === undefined)
+                await fs.rm(absolute, { recursive: true, force: true });
+            else {
+                await fs.mkdir(path.dirname(absolute), { recursive: true });
+                await fs.writeFile(absolute, content);
+            }
+            restored.push(relative);
+            continue;
+        }
+        const tracked = await runExecutable("git", ["cat-file", "-e", `HEAD:${relative}`], { cwd: root, timeoutMs: 30_000 });
+        if (tracked.exitCode === 0) {
+            const restore = await runExecutable("git", ["restore", "--source=HEAD", "--worktree", "--staged", "--", relative], { cwd: root, timeoutMs: 30_000 });
+            if (restore.exitCode !== 0)
+                throw new Error(`Unable to rollback ${relative}: ${restore.stderr || restore.stdout}`);
+        }
+        else
+            await fs.rm(absolute, { recursive: true, force: true });
+        restored.push(relative);
+    }
+    return restored.sort();
+}
+async function changedPaths(root) {
+    const commands = [["diff", "--name-only", "HEAD"], ["diff", "--cached", "--name-only", "HEAD"], ["ls-files", "--others", "--exclude-standard"]];
+    const paths = new Set();
+    for (const args of commands) {
+        const result = await runExecutable("git", args, { cwd: root, timeoutMs: 30_000 });
+        if (result.exitCode !== 0)
+            throw new Error(`Unable to inspect worktree for rollback checkpoint: ${result.stderr || result.stdout}`);
+        for (const line of result.stdout.split(/\r?\n/).map((value) => value.trim()).filter(Boolean))
+            paths.add(line);
+    }
+    return [...paths].sort();
+}
+//# sourceMappingURL=gitCheckpoint.js.map

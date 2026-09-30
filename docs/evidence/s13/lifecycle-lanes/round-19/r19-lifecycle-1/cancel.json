@@ -1,0 +1,164 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 19,
+  "runId": "r19-lifecycle-1",
+  "capability": "cancel",
+  "provider": "opencode/opencode-go/mimo-v2.6-flash",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13RealPaseoLifecycleCampaign.mjs",
+        "sha256": "5dad1fc3864de7d4fb0bcb324badcfdfcaed3eccc4935db7c5085929ba715b5c"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "48bf4647c741746ae4fd4c96a22c0efcd40b889ae3fe74b8bf16b297edb4abe7"
+  },
+  "startedAt": "2026-09-29T20:02:29.888Z",
+  "checks": [
+    {
+      "id": "cancel.real-session-lease",
+      "ok": true,
+      "message": "durable lease bound real provider session f5a485ea-05ec-42dd-9932-dea321a4e089"
+    },
+    {
+      "id": "cancel.restart-newer-epoch",
+      "ok": true,
+      "message": "controller epoch advanced to 2"
+    },
+    {
+      "id": "cancel.terminal-state",
+      "ok": true,
+      "message": "terminal status=CANCELLED"
+    },
+    {
+      "id": "cancel.exact-session-stopped",
+      "ok": true,
+      "message": "real session status after cancel=idle"
+    },
+    {
+      "id": "cancel.lease-drained",
+      "ok": true,
+      "message": "provider leases after cancellation=0"
+    }
+  ],
+  "candidateBinding": {
+    "packedArtifactDigest": "f521a8e69ce73342198d92951b793c658d602d1f6e4cb921c810eb52a43be967",
+    "fixtureCommit": "b07d7be8803611702bf003be99e68db9ed149c56"
+  },
+  "leaseAcquired": {
+    "leaseId": "lease:4150889c-884c-4edd-a31b-3db32dc275e8",
+    "provider": "opencode",
+    "lifecycle": {
+      "operationId": "AUDIT-S13-REAL-CANCEL",
+      "candidateDigest": "a9cb5648f67ad41b3ec19026b1929f49b85085d034814f1e9f271b835b7edd64",
+      "operationExecutionRevision": 1,
+      "policyDigest": "54fb72425bc352bc3b5092d402d13be750ea482468041fe5eb7631445f5027f2",
+      "controllerTokenDigest": "a482a1f9d8932b09ef6eccaa17c76a204a6c2d264961bb0f05ab21f811951120",
+      "controllerEpoch": 1,
+      "leadAgentId": "packed-lifecycle-lead",
+      "leadGeneration": 1,
+      "providerStatus": "ACTIVE",
+      "sessionId": "f5a485ea-05ec-42dd-9932-dea321a4e089"
+    }
+  },
+  "sessionBeforeStop": {
+    "Id": "f5a485ea-05ec-42dd-9932-dea321a4e089",
+    "Name": "aeh-s13-lifecycle-cancel",
+    "Provider": "opencode",
+    "Model": "opencode-go/mimo-v2.6-flash",
+    "Thinking": "auto",
+    "Status": "idle",
+    "Archived": false,
+    "ArchivedAt": null,
+    "Mode": "default",
+    "Cwd": "/tmp/aeh-s13-lifecycle-5WdV7B/fixture-cancel",
+    "CreatedAt": "2026-09-29T20:02:40.257Z",
+    "UpdatedAt": "2026-09-29T20:02:40.275Z",
+    "LastUsage": null,
+    "Capabilities": {
+      "Streaming": true,
+      "Persistence": true,
+      "DynamicModes": true,
+      "McpServers": true
+    },
+    "AvailableModes": [
+      {
+        "id": "build",
+        "label": "Build"
+      },
+      {
+        "id": "plan",
+        "label": "Plan"
+      }
+    ],
+    "PendingPermissions": [],
+    "Worktree": null,
+    "ParentAgentId": null
+  },
+  "ownerTerminated": {
+    "signal": "SIGKILL",
+    "exitCode": null
+  },
+  "operationAfterOwnerCrash": {
+    "status": "RUNNING",
+    "controllerEpoch": 1
+  },
+  "controllerEpochAfterRestart": 2,
+  "operationTerminal": {
+    "status": "CANCELLED",
+    "phase": "cancelled"
+  },
+  "sessionAfterStop": {
+    "Id": "f5a485ea-05ec-42dd-9932-dea321a4e089",
+    "Name": "aeh-s13-lifecycle-cancel",
+    "Provider": "opencode",
+    "Model": "opencode-go/mimo-v2.6-flash",
+    "Thinking": "auto",
+    "Status": "idle",
+    "Archived": false,
+    "ArchivedAt": null,
+    "Mode": "default",
+    "Cwd": "/tmp/aeh-s13-lifecycle-5WdV7B/fixture-cancel",
+    "CreatedAt": "2026-09-29T20:02:40.257Z",
+    "UpdatedAt": "2026-09-29T20:02:40.275Z",
+    "LastUsage": null,
+    "Capabilities": {
+      "Streaming": true,
+      "Persistence": true,
+      "DynamicModes": true,
+      "McpServers": true
+    },
+    "AvailableModes": [
+      {
+        "id": "build",
+        "label": "Build"
+      },
+      {
+        "id": "plan",
+        "label": "Plan"
+      }
+    ],
+    "PendingPermissions": [],
+    "Worktree": null,
+    "ParentAgentId": null
+  },
+  "leasesAfterCancel": 0,
+  "result": "PASS",
+  "rowResult": {
+    "cancel": "PASS"
+  },
+  "finishedAt": "2026-09-29T20:02:43.606Z"
+}

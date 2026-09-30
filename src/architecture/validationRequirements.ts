@@ -44,6 +44,107 @@ export const validationRequirementSchema = z.object({
   acceptanceRefs: z.array(z.string().trim().min(1).max(120)).max(128)
 }).strict();
 
+/**
+ * Deterministic check-id → validation-kind mapping for the frozen contract requirement →
+ * configured validation traceability convention: configured commands persist as `command.<id>`
+ * (src/validators/commands.ts) and configured validators persist under their own id, which is
+ * what the requirement evidence graph matches against (src/evidence/graph.ts). A check id with
+ * no configured command/validator behind it has no deterministic kind and is never fabricated.
+ */
+export function configuredValidationKindForCheckV1(
+  checkId: string,
+  input: { commands?: readonly { id: string }[]; validators?: readonly { id: string; adapter: string }[] } = {}
+): ValidationRequirementKindV1 | undefined {
+  if (input.commands?.some((command) => `command.${command.id}` === checkId)) return "command";
+  const validator = input.validators?.find((candidate) => candidate.id === checkId);
+  if (validator) return adapterKinds[validator.adapter];
+  return undefined;
+}
+
+/**
+ * Compile the frozen contract requirements' bound validators into explicit candidate-bound
+ * ValidationRequirements. Each distinct validator check id becomes exactly one requirement whose
+ * id is the deterministic validation check id and whose `requirementRefs`/`acceptanceRefs` name
+ * every contract requirement that declared it, so `resolveVerificationRequirementsV1` binds the
+ * assertion to the exact evidence path. Validators without a configured deterministic kind are
+ * skipped; the AcceptanceOracle then fails closed with no fabricated correspondence.
+ */
+export function contractValidationRequirementsV1(input: {
+  requirements: readonly { id: string; validators?: readonly string[] }[];
+  scope: readonly string[];
+  commands?: readonly { id: string }[];
+  validators?: readonly { id: string; adapter: string }[];
+}): ValidationRequirementV1[] {
+  const scope = [...new Set(input.scope.map((entry) => entry.trim()).filter(Boolean))];
+  const byCheckId = new Map<string, Set<string>>();
+  for (const requirement of input.requirements) {
+    for (const checkId of new Set(requirement.validators ?? [])) {
+      if (!checkId.trim()) continue;
+      const refs = byCheckId.get(checkId) ?? new Set<string>();
+      refs.add(requirement.id);
+      byCheckId.set(checkId, refs);
+    }
+  }
+  const output: ValidationRequirementV1[] = [];
+  for (const [checkId, refs] of [...byCheckId.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+    const kind = configuredValidationKindForCheckV1(checkId, input);
+    if (!kind) continue;
+    const requirementRefs = [...refs].sort();
+    output.push({
+      version: 1,
+      id: checkId,
+      property: `Frozen contract requirement(s) ${requirementRefs.join(", ")} must be validated by '${checkId}'.`,
+      kind,
+      scope: scope.length ? scope : ["**"],
+      evidenceNeeded: [`passing '${checkId}' validation evidence for the frozen contract requirement(s) ${requirementRefs.join(", ")}.`],
+      requirementRefs,
+      acceptanceRefs: requirementRefs
+    });
+  }
+  return output;
+}
+
+/**
+ * Merge frozen-contract-derived validation requirements into the plan-declared base set. A plan
+ * requirement that names the same deterministic validation check id as a contract-derived
+ * requirement is the same validation need (the compiled plan is allowed to name the configured
+ * validator ids it observes); the contract-derived requirement is normative and replaces it when
+ * the declared kind agrees. An incompatible same-id declaration is a genuine deterministic
+ * conflict and fails closed instead of silently dropping a requirement.
+ */
+export function mergeContractValidationRequirementsV1(
+  base: readonly ValidationRequirementV1[],
+  contractDerived: readonly ValidationRequirementV1[]
+): ValidationRequirementV1[] {
+  const byId = new Map(base.map((requirement) => [requirement.id, requirement]));
+  for (const derived of contractDerived) {
+    const existing = byId.get(derived.id);
+    if (existing && existing.kind !== derived.kind) {
+      throw new Error(`VALIDATION_REQUIREMENT_ID_CONFLICT: plan requirement '${derived.id}' declares kind '${existing.kind}' but the frozen contract-derived requirement declares '${derived.kind}'.`);
+    }
+    byId.set(derived.id, derived);
+  }
+  return [...byId.values()];
+}
+
+/**
+ * Split plan-declared validation requirements into the resolvable set and the advisory set that no
+ * approved project script, configured command, validator, or provider resolves. Only the resolvable
+ * set may compile into the participant plan; the frozen contract's own validators are compiled and
+ * enforced independently, so an unresolvable advisory requirement is recorded and dropped instead
+ * of rejecting the entire implementation plan before any work runs (AEH-V2-0118).
+ */
+export function dropUnresolvablePlanValidationRequirementsV1(
+  requirements: readonly ValidationRequirementV1[],
+  resolution: ValidationResolutionV1
+): { kept: ValidationRequirementV1[]; dropped: ValidationRequirementV1[] } {
+  const blockedIds = new Set(resolution.blocked.map((item) => item.requirementId));
+  return {
+    kept: requirements.filter((requirement) => !blockedIds.has(requirement.id)),
+    dropped: requirements.filter((requirement) => blockedIds.has(requirement.id))
+  };
+}
+
 export interface ResolvedValidationActionV1 {
   version: 1;
   requirementId: string;
@@ -148,7 +249,12 @@ function resolveConfigured(
   providers: readonly { id: string; capability: ValidationCapability; provider: string; command?: string; options?: Record<string, unknown> }[],
   availableTools: readonly ToolAvailabilityV1[] | undefined
 ): ResolvedValidationActionV1 | undefined {
-  const command = commands.find((candidate) => candidate.id === requirement.id || candidate.id === requirement.kind);
+  // A `command`-kind requirement states the property to demonstrate; the Planner must not select a
+  // concrete command. When it does not name one of the approved command ids and the frozen project
+  // config approves exactly one command, that command is the deterministic resolution (matching the
+  // single-configured-validator/provider rule below) instead of a fail-closed block (AEH-V2-0110).
+  const command = commands.find((candidate) => candidate.id === requirement.id || candidate.id === requirement.kind || `command.${candidate.id}` === requirement.id)
+    ?? (requirement.kind === "command" && commands.length === 1 ? commands[0] : undefined);
   if (command) return action(requirement, "configured-command", command.id, command.command);
 
   const validator = validators.find((candidate) => adapterKinds[candidate.adapter] === requirement.kind && (candidate.id === requirement.id || candidate.id === requirement.kind || validators.length === 1));

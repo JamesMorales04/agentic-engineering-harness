@@ -1,0 +1,135 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 4,
+  "artifact": "independent-review",
+  "reviewedAt": "2026-09-27T07:45:00Z",
+  "reviewer": "fresh-independent-deepseek-v4.1-flash",
+  "result": "SLICE_BLOCKED",
+  "git": {
+    "branch": "core-architecture-v2",
+    "head": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "headSubject": "core-v2: record S12 independent acceptance",
+    "workingTree": "uncommitted S13 candidate (41 modified, 11 untracked paths)",
+    "targetUntouched": true,
+    "diffCheckClean": true
+  },
+  "evidenceDigestsVerified": {
+    "docs/evidence/s13/s13-governed-operations.json": "5d848848c16f5072b87265604fa670f90cecd7199c7633ba5eb43e94d569091e",
+    "docs/evidence/s13/governed-lanes/audit.json": "108b3cd5095a9422c37186070fac5bcea07c3370f9240af805ea5c5974da9914",
+    "docs/evidence/s13/governed-lanes/change-direct.json": "7a51ad2d158bcd327dadad9809e07f980c5b494764b0c6cc931784b239e3ad4f",
+    "docs/evidence/s13/s13-real-paseo-lifecycle.json": "6ec75306455c3962e558d6a4016aa0b8ef72365affaff2a4a03740528a2775c6",
+    "docs/evidence/s13/s13-github-effects.json": "228e3e963f48fabe783a7bc47bc8baaf6bb5756c7129323755e400c9ed7ccb7c",
+    "docs/evidence/s13/github-lanes/authority.json": "a516c2b1e38456e827b7fbb8f7f7afcc6609cf9347ce082775f22b4001117675",
+    "docs/evidence/s13/github-lanes/issue-driven.json": "5ae1220b8b50917fb65cf83af752b29ffe0e6609c68d6492344c3652967ee291",
+    "docs/evidence/s13/lifecycle-lanes/cancel.json": "badd7630b22b13a5c099c9151c61ab61bcc075d1fe88cfd340a68a88e04d857f",
+    "docs/evidence/s13/lifecycle-lanes/recovery.json": "cc02506ba3fe23c76796c8d4ac3da7f7fcd4c1814f10c1a084d9930ac0f88063",
+    "docs/evidence/s13/lanes/startup.json": "6493425f710828f6a1b109ab84a936997874082d68ae5d642c828fa94fae6af9",
+    "docs/evidence/s13/lanes/informational.json": "ea6840ef7474a9fa7f71ac5e0ef7aeddeca2f5cecd9ef106af9642b4c1e7f2e5",
+    "docs/evidence/s13/lanes/project-home.json": "c1932674f170040f09ea85de553a352417a6b392dcf6761711b37760e3ca86e5",
+    "docs/evidence/s13/lanes/multi-project.json": "449f4e85107c94509e5117cb7bdd9f1d999b28eafd821375083906d23deb9cb8"
+  },
+  "rowDispositions": {
+    "startup": "UNCHANGED_EVIDENCE_VALID",
+    "informational": "STALE_REQUIRES_RERUN",
+    "audit": "BLOCKED",
+    "change": "BLOCKED",
+    "direct-change": "BLOCKED",
+    "delegated-change": "BLOCKED",
+    "formal-sdd": "BLOCKED",
+    "multi-worker": "BLOCKED",
+    "cancel": "UNCHANGED_EVIDENCE_VALID",
+    "recovery": "UNCHANGED_EVIDENCE_VALID",
+    "product-repair": "BLOCKED",
+    "certification-repair": "BLOCKED",
+    "repair": "BLOCKED",
+    "context-handoff": "BLOCKED",
+    "permission-delegation": "BLOCKED",
+    "issue-driven": "BLOCKED",
+    "delivery": "BLOCKED",
+    "distributed-execution": "BLOCKED",
+    "project-home": "UNCHANGED_EVIDENCE_VALID",
+    "multi-project": "UNCHANGED_EVIDENCE_VALID",
+    "control-center": "NOT_APPLICABLE",
+    "authority": "UNCHANGED_EVIDENCE_VALID"
+  },
+  "stalenessReasoning": {
+    "informational": "Round-4 changed src/semantic/assessment.ts, src/semantic/runtime.ts, src/paseo/runtimeInitialTurn.ts, src/paseo/runtimeCore.ts and src/paseo/sdk.ts, all on the informational lane's real semantic-assessor execution path (assessor completion capture, retry, thinking bound). The cached-assessment oracle must be re-run against the current build.",
+    "startup/project-home/multi-project": "Lanes execute only init/doctor/project-registry CLI paths. No round-4 changed module lies on those paths; behavior-equivalent.",
+    "cancel/recovery": "Lifecycle lanes exercise src/security execution leases, src/operations/controller.ts (unchanged in round 4), controller epoch fencing and real Paseo inspect/stop. The round-4 runtimeCore lease change is label-gated to aeh.kind=semantic-assessment and cannot execute in these lanes; behavior-equivalent for this lane.",
+    "authority": "Real human gate + governed git.push + observed remote ref. Round-4 git.ts change is behavior-equivalent for fixtures without provider scratch; authority/effect code unchanged in round 4.",
+    "packedBuildCaveat": "All previously accepted rows bind to packed artifacts built before the round-4 source edits. UNCHANGED_EVIDENCE_VALID means the code path is behavior-equivalent; a final build-bound sweep of accepted rows is still required before any S13 checkpoint/commit."
+  },
+  "findings": [
+    {
+      "id": "R4-F1",
+      "severity": "P1",
+      "title": "Untracked identity exclusion is path-scoped and safe; required negative regressions are missing",
+      "detail": "PROVIDER_GENERATED_PREFIXES=[.serena, graphify-out] is filtered only for untracked paths (src/core/git.ts:listWorktreeDigestPaths) and via git pathspec excludes (src/candidates/direct.ts:executeIsolatedCandidateMutation). Independently reproduced in a scratch repository: with `git add -N --all`, `git diff --name-only <base> -- :(exclude).serena :(exclude).serena/** ...` returns src/new.ts and excludes provider scratch; `git ls-files --others --exclude-standard` still lists arbitrary legitimate untracked files, which remain in the digest input set. No P0-A regression. Gaps: (a) no regression proving a newly created legitimate untracked source file perturbs candidate identity; (b) no regression proving a newly created legitimate untracked source file appears in a DIRECT ChangeSet; (c) no negative test that an unknown untracked file is not silently ignored; (d) the filter is applied only to the untracked list, while intent-to-add entries surface under `git ls-files --cached` — a latent inconsistency if any real-index `add -N` ever runs in the bound workspace before a digest check (all current real-index adds are delivery-time or temp-index; disposable worktrees otherwise).",
+      "requiredRepair": "Add the four regressions; make the provider-scratch classification intent-to-add-aware or bind it to generatedArtifactPaths(config) while keeping tracked provider files contributing; keep behavior fail-closed for unknown paths."
+    },
+    {
+      "id": "R4-F2",
+      "severity": "P0",
+      "title": "Round-4 report overstates change-lane progress relative to durable evidence",
+      "detail": "docs/evidence/s13/governed-lanes/change-direct.json records: operation status=FAILED at implementation, 0 terminal participant receipts, 0 candidate-bound receipts, candidate r2 sourceDigest identical to the fixture tree digest, no validation report, no acceptance artifact. The round-4 prose (WORKGRAPH:186,202; STATUS:259; CONFORMANCE:90) claims 'a real implementer receipt, isolated mutation and ChangeSet assembly'. The durable evidence supports only real semantic sessions (3 real opencode/opencode-go/mimo-v2.6-flash sessions) and candidate binding; it does not support an implementer receipt or assembled mutation. WORKGRAPH:202 also misattributes the residual failure to AEH-V2-0081 instead of AEH-V2-0083.",
+      "requiredRepair": "Correct the round-4 prose to match the durable evidence; report only what the lane artifact proves."
+    },
+    {
+      "id": "R4-F3",
+      "severity": "P0",
+      "title": "Isolated DIRECT runs still do not persist participant receipts (AEH-V2-0080 incomplete)",
+      "detail": "src/workers/agentPrompt.ts:finalizeOperationSession resolves artifact paths through operationArtifactRoot(root) but continues to load/update operation state via the execution root (loadOperation(root), registerOperationAgent(root), updateOperationParticipant(root), recordParticipantReceipt(root)). For isolated DIRECT runs root is the disposable worktree, so participant registration/status/receipt persistence no-ops (most calls are .catch(() => undefined)) or targets the wrong state root. This is consistent with the change lane's 0 receipts and missing implementer receipt.",
+      "requiredRepair": "Resolve every operation-state read/write in finalization through the authoritative operation state root (operationArtifactRoot / currentOperationContext().controlRoot) while keeping workspace/artifact path semantics; add a regression that an isolated DIRECT execution persists a candidate-bound participant receipt."
+    },
+    {
+      "id": "R4-F4",
+      "severity": "P0",
+      "title": "AEH-V2-0082 audit stall: owning defect not established by the preserved evidence",
+      "detail": "audit.json shows operation RUNNING at revision 50 after the 15-minute lane bound, stages reviewing/validating/consolidating COMPLETED, supervision.generations=[{generation:1,status:ACTIVE,agentId codex 80d43fee, last update 06:52:58Z}], reviewer session idle, no audit report/terminal state, timeout:true, and no trace capture. No DRAINING generation and no watchdog trace exist in the artifact, so the reported 'watchdog wakes the busy supervisor while consolidation is in flight' is a hypothesis, not an evidenced fact. The oracle also reads the report via record.result.taskId, which is unset while the operation is non-terminal.",
+      "requiredRepair": "Reproduce with S13_GOV_KEEP=1 and per-stage timestamps plus operation.watchdog.* traces; determine the owning defect among (a) post-consolidation supervisor rotation/draining hang, (b) consolidation completion not advanced by the controller phase machine (queued/preparing-audit/context left RUNNING), (c) watchdog wake budget consumed against an in-flight/draining generation, (d) report persisted but result.taskId never bound. Then repair the owning defect and require a terminal audit report."
+    },
+    {
+      "id": "R4-F5",
+      "severity": "P0",
+      "title": "AEH-V2-0076 issue import: confirmed cause and repair contract",
+      "detail": "src/cli.ts:63 issue import -> src/issues/intake.ts:normalizeIssueWithPlanner -> executeAgentPrompt(..., requireExecutionAuthority: true) (intake.ts:123) -> src/security/executionLease.ts:53 throws V2_AUTHORITY_REQUIRED when currentOperationContext().id is absent. No managed operation, no controller-issued authority, no receipt.",
+      "requiredRepair": "Route issue import through the managed controller authority path: bootstrap/enter a controller-owned managed operation with a candidate revision and epoch, dispatch the Planner as a bounded participant with controller-issued ExecutionAuthorityV1, persist the normalization receipt and task contract, and report the prepared result. Forbidden: requireExecutionAuthority:false, ambient authority, special-casing GitHub, weakening the ownership chain. Preserve controller -> scoped authority -> participant -> effect intent/receipt semantics."
+    },
+    {
+      "id": "R4-F6",
+      "severity": "P1",
+      "title": "Structured-output retries and completion extraction need hardening, not more retries",
+      "detail": "(a) The hung-turn retry trigger is a message regex (/exit=124|status=timeout/i) rather than a typed timeout classification. (b) src/paseo/sdk.ts:extractLastAssistantText collects any nested string under an assistant context, including tool payloads, and the new direction:'tail' timeline refetch is unverified against the real Paseo SDK (errors swallowed). (c) parseSemanticAssessmentOutputV1's first/last-brace fallback can include trailing text; schema validation remains authoritative. (d) 300s assessor deadline x2 attempts can consume a lane budget; thinking is now bounded by reasoning class. Retries remain bounded (2) and cannot mutate or accept.",
+      "requiredRepair": "Classify timeouts deterministically; select the canonical last assistant message (top-level text/content for the last assistant entry) rather than arbitrary nested strings; confirm or revert direction:'tail' with a real-Paseo test; add regression coverage for prose/fenced replies; do not raise retry counts."
+    },
+    {
+      "id": "R4-F7",
+      "severity": "P1",
+      "title": "AEH-V2-0079 workspace guard is fail-open when the operation cannot be loaded",
+      "detail": "src/paseo/launchSpec.ts computes withinOperationWorkspace = !durableWorkspaceRoot || path.resolve(root) === durableWorkspaceRoot. If loadOperation fails while operation.id exists, the guard claims operation.workspaceId even though the launch root cannot be proven to be the durable workspace. Comparison uses path.resolve only (no realpath/case normalization).",
+      "requiredRepair": "Claim a workspace only under positive proof (durable operation and resolved workspace root match); otherwise fall back to no workspace binding. Add a regression for the unloadable-operation case."
+    },
+    {
+      "id": "R4-F8",
+      "severity": "P2",
+      "title": "Evidence/doc hygiene",
+      "detail": "s13-governed-operations.json generated during round 4 carries round:3; the single summary file is overwritten by each single-lane invocation (per-lane artifacts remain authoritative and their digests match the documented values).",
+      "requiredRepair": "Stamp the actual round and either accumulate lanes or clearly mark the summary as last-invocation only."
+    },
+    {
+      "id": "R4-F9",
+      "severity": "P2",
+      "title": "AEH-V2-0066 external tools classification",
+      "detail": "trivy/opengrep/opa/cosign are declared optional validation-profile tools (mise/aqua) activated by validation:*/security-tool:*/organization:* conditions; `aeh setup` is the supported provisioning path (classification A/B). podman is kind:system (classification C: external/user installation; only activated for orchestration:podman/sandbox:podman). buildah is not declared and not required by the current matrix (classification E). No current S13 row requires these tools; keep fail-closed and do not install substitutes.",
+      "requiredRepair": "No S13 action; document the classification and keep the blocker scoped to the rows that actually activate these tools."
+    }
+  ],
+  "reviewChecks": {
+    "supervisorContinuationAEH-V2-0074": "VERIFIED: continuation keeps the frozen durable ExecutionBinding (candidate, execution revision, controller epoch, participant generation, runtime session, blueprint/policy digests) via the binding equality check; participant identity and capability authority still checked; changed turn manifests are accepted only under explicit continueBoundSession and are recorded as deliveredTurn (sessionId, participantId, event, promptDigest, bindingDigest) in the consolidation artifact. tests/supervisorEventContinuation.test.ts asserts manifest staleness rejection, blueprint turn-scoping against the bound generation blueprint, and identity-change rejection.",
+    "assessorLifecycleAEH-V2-0083": "VERIFIED with notes: assessors run as managed atomic turns with outputSchema stripped (no structured-result channel), lease exemption is exact-operation and label-scoped, and the completion fallback remains behind schema/evidence validation (R4-F6 hardenings).",
+    "stackRetryCorrectionRef": "VERIFIED: reserved ref file:assessment.correction is a controller REQUEST receipt; signals citing it are rejected, and validateAssessmentReceipts accepts it only as the correction note.",
+    "focusedTests": "12 files / 84 tests passed independently (candidateIdentity, directCandidateLifecycle, supervisorEventContinuation, managedForegroundAssessmentLease, paseoAtomicSdkTurn, semanticAssessment, semanticAssessmentRuntime, participantsStackDiscovery, paseoLaunchSpec, reviewerSerializationRecovery, governedOperationBootstrap, supervisorPromptPolicy)."
+  },
+  "note": "The reviewer does not accept the slice and does not implement the repairs. Round 5 continues S13; S14 must not start."
+}

@@ -14,7 +14,7 @@ it("resolves balanced orchestration reviewers to the intended models", async () 
   const topology = resolveAgentTopology(await loadAgentTopologySource(root, config), "balanced");
   for (const name of ["reviewer", "implementer"]) {
     const selection = executionSelectionForAgent(topology, name);
-    expect([selection.runtimeAdapter, selection.modelName, selection.variant]).toEqual(["opencode", "MiMo-V2.6-Flash", "max"]);
+    expect([selection.runtimeAdapter, selection.modelName, selection.variant]).toEqual(["opencode", "mimo-v2.6-flash", "max"]);
   }
   const architecture = executionSelectionForAgent(topology, "repairer");
   expect([architecture.runtimeAdapter, architecture.modelName, architecture.variant]).toEqual(["codex", "gpt-6-luna", "xhigh"]);

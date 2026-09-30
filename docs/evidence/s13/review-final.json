@@ -1,0 +1,357 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": "final",
+  "reviewer": {
+    "identity": "final independent S13 reviewer",
+    "provider": "opencode-go",
+    "model": "deepseek-v4.1-flash",
+    "thinking": "plan/read-only (default)",
+    "noImplementationDisclosure": true,
+    "statement": "I implemented no S13 round and no repository change; all dispositions below were derived from durable source, Git, hashes and evidence artifacts read in this session."
+  },
+  "gitState": {
+    "branch": "core-architecture-v2",
+    "head": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "upstream": "origin/core-architecture-v2 = e3dad34 (identical)",
+    "s13Committed": false,
+    "trackedModified": 99,
+    "untracked": [
+      "docs/CORE_ARCHITECTURE_V2_S13_WORKGRAPH.md",
+      "docs/evidence/s13/",
+      "src/certification/journeys.ts",
+      "src/operations/bootstrapPolicy.ts",
+      "src/operations/participantAccounting.ts",
+      "src/semantic/structuredOutput.ts",
+      "+ tests"
+    ],
+    "stash": "empty",
+    "commitsOrPushPerformed": false,
+    "gitDiffCheck": "clean",
+    "targetSha256": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+    "targetByteIdentical": true,
+    "credentialsInEvidence": "none (only reviewer scan-pattern strings; pairing/token values REDACTED)",
+    "selfMintedHumanDecisions": "none found; r21-journey-3 approval is derived from docs/evidence/s13/github-effect-authorization.json sha256 272c5cb76158a7c312edd4d8d97cd6545b599e5c57c7978bbfc3742c573bd460 (campaignSelfAuthorization=PROHIBITED)"
+  },
+  "digestRecomputation": "MISMATCH",
+  "digestRecomputationDetails": {
+    "TARGET": "MATCH",
+    "citedArtifactDigests": "ALL MATCH (dist-14 lane 69b735d0…/summary 8c7c30d7…; ctxperm summary ee4a94ff…/lanes f40426c5…,c8200555…/harness c6806c78…; journey-3 summary e9c9f1c0…/lane 93488019…/harness 31fa92a2…; resource summary 8b67fc12…/harness d4fde611…; review-round20 ba47956a…; cert summary 62c3f172…; certrepair lane 596d8515…/summary 066a2893…; governed harness 4fc7b11c…; r19 lanes 0108aa2d…, b1520984…, 712fa5c1…; authorization 272c5cb7…)",
+    "finalTrackedDigestClaim": "MISMATCH: WorkGraph claims 0e1d1c80f0c3b1596fabfc8b8f9b64a24e38eee5916e379fd5038d0059e5081b (668 files); recomputation with the campaign's own algorithm (Node and Python agree) over the current tree = 3f9b7fd8767afe27c833a1a6580c362856b911c4d04dcd5f7833eaaa631634d8; claim appears only in the WorkGraph",
+    "f2BuildDigest": "599ed363223ff2dd85e17296c9f34c4134bf83e363916c4c57d7e7492ccbdf45 corroborated by three independent builds (r21-dist-14 packed release-1790737862108, journey-3 packed release-1790740699340, final validation release-1790743087471); final release dir is pruned and cannot be recomputed; current dist/current = release-1790743272073-648d0132 (a4fbc30d…, a buildHygiene-suite build), not the claimed final build"
+  },
+  "findings": [
+    {
+      "id": "FINAL-F1",
+      "priority": "P0",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "CONFIRMED_BLOCKING_STALENESS",
+      "evidence": "F2 changed src/workers/agentPrompt.ts (mtime 2026-09-30T03:09:37Z; packed into buildDigest 599ed363 at 03:11:02Z) and src/workers/directProcess.ts. src/workers/agentPrompt.ts is imported and executed by the governed path: src/core/run.ts:21, src/operations/change.ts:22, src/operations/supervisor.ts:11, src/agents/waveExecutor.ts:13, src/agents/reviewLifecycle.ts:12, src/issues/intake.ts:17, src/workers/{direct,podman,paseo}.ts, src/distributed/worker.ts:10. Every governed-lane row's current evidence is bound to F1 buildDigest 408b178d53f32750aa81efb3a60965552b1aacd7756332b4c6dbf8fd3d1c744b (Round 19: r19-gov-1/2/3, r19-mw-1) and therefore does not cover the current agentPrompt.ts. The Round-21 affected-row analysis (WorkGraph 1566/1590) claiming only distributed-execution is affected is false at module level, and violates the campaign's own re-freeze rule (WorkGraph 1541/1432).",
+      "requiredAction": "Rerun audit, change, direct-change, delegated-change, formal-sdd, multi-worker, repair, product-repair on F2-final (buildDigest 599ed363) or record an exact, evidence-backed path-equivalence determination with the pre-F2 bytes preserved (not currently possible from durable evidence)."
+    },
+    {
+      "id": "FINAL-F2",
+      "priority": "P0",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "CONFIRMED_BLOCKING_STALENESS",
+      "evidence": "r21-ctxperm-11 generatedAt 2026-09-30T02:54:06Z, harness buildDigest e9a88621 (pre-final F2), packed artifact a7a3ba9e; tests/packed/s13ContextPermissionCampaign.mjs:261-283,319-356 directly imports and calls the packed workers/agentPrompt.js `prepareAgentExecutionIdentity`/`executeAgentPrompt`; that exact function was changed at 03:09:37Z after the run and built into 599ed363. context-handoff and permission-delegation therefore have pre-final-F2 evidence.",
+      "requiredAction": "Rerun both lanes on F2-final (599ed363) with harness c6806c78."
+    },
+    {
+      "id": "FINAL-F3",
+      "priority": "P2",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "DIGEST_CLAIM_NOT_REPRODUCIBLE",
+      "evidence": "See digestRecomputationDetails.finalTrackedDigestClaim; three tracked docs last saved 23:42:23-56 local, WorkGraph claim written 23:43:40; current recompute 3f9b7fd8 ≠ 0e1d1c80.",
+      "requiredAction": "Recompute the final tracked digest after the last tracked-doc save and correct STATUS/WorkGraph, or explain the window with the pre-save bytes."
+    },
+    {
+      "id": "FINAL-F4",
+      "priority": "P2",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "BUILD_BINDING_PARTIALLY_UNRECOMPUTABLE",
+      "evidence": "The claimed final validation release release-1790743087471-1508623-8ef2a92d (599ed363) was pruned by two buildHygiene suite builds at 04:40:54Z/04:41:12Z (release-1790743254304, release-1790743272073, both a4fbc30d…); dist/current now points at the suite build; runtime assets/package.json in it are identical to the tree but the digest differs from 599ed363 for reasons not explained by durable bytes.",
+      "requiredAction": "Preserve/rebuild the final validation release before checkpoint; keep the suite from replacing dist/current, or re-cut and record a clean final build identity."
+    },
+    {
+      "id": "FINAL-F5",
+      "priority": "P2",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "SUBPATH_EVIDENCE_STALE_NON_BLOCKING_FOR_FROZEN_ORACLE",
+      "evidence": "issue-driven `issue.operation-import` is only exercised by r19-gh-1 (F1) via tests/packed/s13GithubEffectCampaign.mjs:353 (`aeh issue import` → src/issues/intake.ts → executeAgentPrompt); r21-journey-3 (F2) exercises snapshot/drift/governed operation/delivery but not `issue import` (it uses intake.inspectGithubIssue only, line 279/290). The frozen matrix oracle for issue-driven is snapshot+drift, which journey-3 covers on F2.",
+      "requiredAction": "Rerun the operation-bound import on F2 or explicitly re-scope the row's recorded evidence to the frozen-matrix oracle."
+    },
+    {
+      "id": "FINAL-F6",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "SUBSTANCE_OK_EVIDENCE_PROJECTION_GAP",
+      "evidence": "r21-journey-3 shell terminalization is through the product's state.transitionOperationToTerminal (harness line 352) with terminalStatus SUCCEEDED rev 82 and deliveryRecordDigest 8c6ca4bdda1622988caac22eb54c4e89b2c4c19bda8bad044b42ee9c7b6d0285 loaded from the terminal operation root; however the persisted deliveryOperationShell snapshot still records status RUNNING and the terminal record bytes are not retained.",
+      "requiredAction": "Retain the terminal shell record bytes (or re-read digest) with the next run; Director R20-F7 is substantively satisfied."
+    },
+    {
+      "id": "FINAL-F7",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "VERIFICATION_BOUNDARY_RECORDED",
+      "evidence": "vitest/typecheck/build were not executed (read-only plan mode; they write caches/dist). Claimed focused 27 files/242 tests; full non-system 203 files/1,363 tests = 1,352/4/7 with 3 pre-existing tests/paseoSdkResolve environment-drift failures (src and test byte-identical to HEAD) and 1 buildHygiene concurrency artifact passing in isolation (6 tests).",
+      "requiredAction": "Reproduce focused/full/typecheck/build in a writable environment before any checkpoint."
+    },
+    {
+      "id": "FINAL-F8",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "AEH_V2_0130_TRUTHFUL_DOES_NOT_INVALIDATE_ROWS",
+      "evidence": "r21-resource-1: iteration 1 terminal SUCCEEDED left 4 owned workspaces + 4 idle managed agents + 28 fixture processes (ceilings 0); iteration 2 grew to 6/6/29; no-monotonic-growth FAIL, baseline-returned FAIL; reconciliation-terminal-only PASS (preservedNonTerminal=0, intact=true). runningAgents=0 in both iterations. No certified S13 row's oracle asserts post-terminal agent/workspace/process reconciliation; all certified rows assert lease release and session quiescence, which hold.",
+      "requiredAction": "Carry AEH-V2-0130 (OPEN) to S14 with the recorded ownership/reconciliation architecture and stability test in the S14 composite; no S13 row rerun is required by the accumulation itself."
+    },
+    {
+      "id": "FINAL-F9",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "RECORD_FIXES_VERIFIED",
+      "evidence": "R20-F2 (0128 FIXED_AND_REAL_PROVIDER_EXERCISED), R20-F3 (99-process claim restated; 51/29 withdrawn), R20-F5 (three attempts/two harness repairs), R20-F6 (64 authoritative), R20-F8 (F1 path-equivalence determination recorded; src/certification/** imports none of routingV2/waveExecutor/triage/runtimeCore/providerLifecycle/agentPrompt/directProcess and the campaign drives certify.CodexAgentProvider directly) are all present in STATUS/CONFORMANCE/LEDGER; R20-F4 (12eb1e2a archived; 49b148f3/21cb75ae AGENT_NOT_FOUND, reported); amendment census/cleanup/preserved-operation reporting verified.",
+      "requiredAction": "None."
+    }
+  ],
+  "matrixDispositions": {
+    "startup": {
+      "disposition": "CURRENT_VALID_ON_F1_F2_UNAFFECTED",
+      "evidence": "docs/evidence/s13/s13-real-provider-certification.json sha256 62c3f172c7dcdaffd592f95ff4e83da611be11d6f823f7ab4a981f3b6cda626b (r19-cert-1)",
+      "binding": "F1 buildDigest 408b178d…",
+      "terminal": "PASS",
+      "oracle": "PASS",
+      "f2PathExposure": false
+    },
+    "informational": {
+      "disposition": "CURRENT_VALID_ON_F1_F2_UNAFFECTED",
+      "evidence": "same summary; packed `intent` via src/semantic/runtime.ts (no agentPrompt import)",
+      "binding": "F1 408b178d…",
+      "terminal": "PASS",
+      "oracle": "PASS",
+      "f2PathExposure": false
+    },
+    "audit": {
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "docs/evidence/s13/governed-lanes/round-19/r19-gov-1/audit.json sha256 4c8b553a2cdb8257b274e403ef085424711c65961a21ed4eb5a990f597210275",
+      "binding": "F1 408b178d…",
+      "terminal": "SUCCEEDED rev 52",
+      "oracle": "PASS",
+      "f2PathExposure": true
+    },
+    "change": {
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "docs/evidence/s13/governed-lanes/round-19/r19-gov-3/change-multifile.json sha256 712fa5c17297f7f1655616d8e2a027b99b249242492058259a69b35f5bdbad38",
+      "binding": "F1 408b178d…",
+      "terminal": "SUCCEEDED rev 81",
+      "oracle": "ACCEPTED",
+      "f2PathExposure": true
+    },
+    "direct-change": {
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "docs/evidence/s13/governed-lanes/round-19/r19-gov-2/change-direct.json sha256 b9a08a6dd50ea4896244db30d410321ce05abe13d10374c1ee5965286e8257e5",
+      "binding": "F1 408b178d…",
+      "terminal": "SUCCEEDED",
+      "oracle": "ACCEPTED",
+      "f2PathExposure": true
+    },
+    "delegated-change": {
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "docs/evidence/s13/governed-lanes/round-19/r19-gov-1/change-delegated.json sha256 d632def98adef3c88a8eaa49181c6d035a62e97d4016f111ba07ae450a372def",
+      "binding": "F1 408b178d…",
+      "terminal": "SUCCEEDED rev 132",
+      "oracle": "ACCEPTED",
+      "f2PathExposure": true
+    },
+    "formal-sdd": {
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "docs/evidence/s13/governed-lanes/round-19/r19-gov-1/change-formal.json sha256 2e963b47624e72e9c518b6d143695e200e37cbf958fd209e56b1ba4519b521ca",
+      "binding": "F1 408b178d…",
+      "terminal": "SUCCEEDED rev 165",
+      "oracle": "PASS",
+      "f2PathExposure": true
+    },
+    "multi-worker": {
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "docs/evidence/s13/governed-lanes/round-19/r19-mw-1/multi-worker.json sha256 0108aa2dbb342d0a183956dfc6af9fe5347bf655acf343af032f007965c608d7",
+      "binding": "F1 408b178d…",
+      "terminal": "SUCCEEDED rev 145",
+      "oracle": "ACCEPTED",
+      "f2PathExposure": true
+    },
+    "cancel": {
+      "disposition": "CURRENT_VALID_ON_F1_F2_UNAFFECTED",
+      "evidence": "docs/evidence/s13/s13-real-paseo-lifecycle-round-19-r19-lifecycle-1.json sha256 6b402ca43befdc35765b38660f8bdab4dc9ae9af376e19e84a93755eb0526dac",
+      "binding": "F1 408b178d…",
+      "terminal": "PASS (leases drained)",
+      "oracle": "PASS",
+      "f2PathExposure": false
+    },
+    "recovery": {
+      "disposition": "CURRENT_VALID_ON_F1_F2_UNAFFECTED",
+      "evidence": "same lifecycle summary (real SIGKILL owner, epoch takeover)",
+      "binding": "F1 408b178d…",
+      "terminal": "PASS (leases drained)",
+      "oracle": "PASS",
+      "f2PathExposure": false
+    },
+    "product-repair": {
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "docs/evidence/s13/governed-lanes/round-19/r19-gov-3/repair.json sha256 b152098446f5c2b404026cfe4da878c9faf2b092e5eaa74d3cc1970c51afc66f",
+      "binding": "F1 408b178d…",
+      "terminal": "SUCCEEDED",
+      "oracle": "ACCEPTED (repair packet + scope check)",
+      "f2PathExposure": true
+    },
+    "certification-repair": {
+      "disposition": "CURRENT_VALID_PATH_EQUIVALENCE_EXACT",
+      "evidence": "docs/evidence/s13/certification-repair-lanes/round-18/r18-certrepair-4/certification-repair.json sha256 596d8515fcccff21df6a68dd377b6ffdc2be5a25d7271737f5310f7840da6d2f; summary 066a2893eed46318fb08144a4fdaf7951321a7b5eb8906c1de4f5f9b12cb39fc",
+      "binding": "pre-F1 buildDigest ca1d8f56…; F1/F2 changed modules not imported by src/certification/** and not executed (certify.CodexAgentProvider direct)",
+      "terminal": "PASS",
+      "oracle": "PASS",
+      "f2PathExposure": false
+    },
+    "repair": {
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "same r19-gov-3/repair.json",
+      "binding": "F1 408b178d…",
+      "terminal": "SUCCEEDED",
+      "oracle": "ACCEPTED",
+      "f2PathExposure": true
+    },
+    "context-handoff": {
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "docs/evidence/s13/context-permission-lanes/round-21/r21-ctxperm-11/context-handoff.json sha256 f40426c51b9f194f84a07ec9b4dbf863f94e5c6eb90073fa7ad5e8020e3759a3; summary ee4a94ffac26db89bbf7e299af658a73a55a0e79f82c7528756d4201ec843743",
+      "binding": "F2-pre-final harness e9a88621 (packed a7a3ba9e, 02:54Z)",
+      "terminal": "PASS (real session, 9 addressable refs, grant, continuation seq 2)",
+      "oracle": "PASS",
+      "f2PathExposure": true
+    },
+    "permission-delegation": {
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "docs/evidence/s13/context-permission-lanes/round-21/r21-ctxperm-11/permission-delegation.json sha256 c8200555f9b87a3f6b174d6db50a31a4dc26793c997d6eae390afa72d2e92356",
+      "binding": "F2-pre-final e9a88621",
+      "terminal": "PASS (parent lease, ceiling denial, monotonic child [read], durable receipt, real child session)",
+      "oracle": "PASS",
+      "f2PathExposure": true
+    },
+    "issue-driven": {
+      "disposition": "F2_CURRENT_WITH_F1_IMPORT_SUBPATH",
+      "evidence": "docs/evidence/s13/issue-journey-lanes/round-21/r21-journey-3/issue-driven.json sha256 9348801949992c9fe3ed722e0340bf9200789db42c798fedfa35f434e0a465e2; summary e9c9f1c0131d816c1f2ba9252bb11c6a32e8d6183cfcbd9996951d8501b6ef23; import sub-path r19-gh-1 (F1)",
+      "binding": "F2-final 599ed363 (packed release-1790740699340)",
+      "terminal": "SUCCEEDED rev 81 + terminal delivery shell rev 82",
+      "oracle": "PASS (snapshot/drift/governed/human gate/push/receipts)",
+      "f2PathExposure": true
+    },
+    "delivery": {
+      "disposition": "F2_CURRENT",
+      "evidence": "r21-journey-3 (terminal delivery operation, record digest 8c6ca4bd…, branch c4b62e45cdea observed) + r19-gh-1 delivery lane (F1, path F2-unaffected; delivery.delivery-record/delivery.provenance tokens)",
+      "binding": "F2-final 599ed363 / F1 408b178d for the F2-unaffected GitHub fixture lane",
+      "terminal": "FINALIZED/pushed",
+      "oracle": "PASS",
+      "f2PathExposure": false
+    },
+    "distributed-execution": {
+      "disposition": "F2_CURRENT_ACCEPTED",
+      "evidence": "docs/evidence/s13/governed-lanes/round-21/r21-dist-14/distributed.json sha256 69b735d04a75f1d37795e6d930854a20d2da7822caf9f44b5b2e59268e1042d0; summary 8c7c30d795351cc471d31d54e7b95eda5e013d555f9ed2abea6d0215a67e1b75; packed artifact 61e008f3…",
+      "binding": "F2-final packed build release-1790737862108 buildDigest 599ed363…",
+      "terminal": "SUCCEEDED rev 137 bounded",
+      "oracle": "ACCEPTED; lease prepared=2/released=2/completed=2; worker receipt PASS (ses_f0faef79affe4CUexX9g65Hk4T); 5 receipts; checkoutUntouched",
+      "f2PathExposure": true
+    },
+    "project-home": {
+      "disposition": "CURRENT_VALID_ON_F1_F2_UNAFFECTED",
+      "evidence": "r19-cert-1 summary 62c3f172…",
+      "binding": "F1 408b178d…",
+      "terminal": "PASS",
+      "oracle": "PASS",
+      "f2PathExposure": false
+    },
+    "multi-project": {
+      "disposition": "CURRENT_VALID_ON_F1_F2_UNAFFECTED",
+      "evidence": "r19-cert-1 summary 62c3f172…",
+      "binding": "F1 408b178d…",
+      "terminal": "PASS",
+      "oracle": "PASS",
+      "f2PathExposure": false
+    },
+    "control-center": {
+      "disposition": "NOT_APPLICABLE",
+      "evidence": "frozen matrix: BROWSER lane only; never substituted for REAL_PROVIDER",
+      "binding": "n/a",
+      "terminal": "n/a",
+      "oracle": "n/a",
+      "f2PathExposure": false
+    },
+    "authority": {
+      "disposition": "CURRENT_VALID_ON_F1_F2_UNAFFECTED",
+      "evidence": "docs/evidence/s13/s13-github-effects-round-19-r19-gh-1.json sha256 b6db7d6a812953c2cec0847204239b21b54f1375addb7ae12f766201b5f0f4d0 (lane digests 40feabe4…/1b0fe98e…/bcec9d48…)",
+      "binding": "F1 408b178d…; gated effect path executes no F2 module",
+      "terminal": "EXECUTED/SUCCEEDED, real branch observed",
+      "oracle": "PASS",
+      "f2PathExposure": false
+    }
+  },
+  "stalenessDispositions": {
+    "STALE_REQUIRES_RERUN": [
+      "audit",
+      "change",
+      "direct-change",
+      "delegated-change",
+      "formal-sdd",
+      "multi-worker",
+      "repair",
+      "product-repair",
+      "context-handoff",
+      "permission-delegation"
+    ],
+    "F2_CURRENT": [
+      "distributed-execution",
+      "delivery",
+      "issue-driven (full journey; import sub-path F1-only)"
+    ],
+    "CURRENT_VALID_ON_F1_F2_UNAFFECTED": [
+      "startup",
+      "informational",
+      "cancel",
+      "recovery",
+      "project-home",
+      "multi-project",
+      "authority"
+    ],
+    "CURRENT_VALID_PATH_EQUIVALENCE_EXACT": [
+      "certification-repair"
+    ],
+    "NOT_APPLICABLE": [
+      "control-center"
+    ],
+    "blocking": true
+  },
+  "focusedTests": {
+    "reproduced": false,
+    "boundary": "read-only plan mode; vitest writes caches",
+    "claimed": "27 files / 242 tests passed (W122)",
+    "assessment": "claim consistent with prior rounds; not independently reproduced"
+  },
+  "fullSuite": {
+    "reproduced": false,
+    "boundary": "read-only plan mode",
+    "claimed": "203 files / 1,363 tests = 1,352 passed / 4 failed / 7 pending",
+    "classification": "3 pre-existing tests/paseoSdkResolve environment drift (src+test byte-identical to HEAD) + 1 buildHygiene concurrency artifact (passes in isolation, 6 tests) — plausible and consistent with R18/R20 records; not independently reproduced"
+  },
+  "resourceLifecycleDisposition": {
+    "aehV2_0130": "OPEN, truthfully evidenced by r21-resource-1 (RESOURCE_ACCUMULATION_OBSERVED; ceilings 0; no-monotonic-growth FAIL; reconciliation-terminal-only PASS)",
+    "blocksS13": false,
+    "reason": "No required S13 row's evidence asserts post-terminal agent/workspace/process reconciliation; certified rows assert terminal state, candidate binding, receipts, lease release and session quiescence, all of which the same run confirms. The defect is post-terminal residue and is carried to S14 per amendment rule 9; S14's disposable self-hosting composite must include cleanup/reconciliation and the bounded stability campaign.",
+    "carriedTo": "S14"
+  },
+  "verdict": "SLICE_BLOCKED",
+  "actionRequired": [
+    "Rerun on F2-final buildDigest 599ed363223ff2dd85e17296c9f34c4134bf83e363916c4c57d7e7492ccbdf45 (or provide an exact, evidence-backed path-equivalence determination with preserved pre-F2 bytes): audit, change, direct-change, delegated-change, formal-sdd, multi-worker, repair, product-repair, context-handoff, permission-delegation.",
+    "Recompute and correct the final tracked digest claim (current 3f9b7fd8… vs claimed 0e1d1c80…).",
+    "Preserve or re-cut the final validation build so the checkout-build binding is recomputable (current dist/current is a buildHygiene-suite release a4fbc30d…).",
+    "Optionally rerun the operation-bound issue import on F2 or re-scope the issue-driven evidence to the frozen oracle.",
+    "Reproduce focused/full suite, typecheck and build in a writable environment before any checkpoint.",
+    "Then run a fresh final independent review; S13 remains uncommitted and S14 must not start."
+  ]
+}

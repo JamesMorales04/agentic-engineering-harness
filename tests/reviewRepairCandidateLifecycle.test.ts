@@ -42,7 +42,7 @@ afterEach(async () => {
 });
 
 describe("review remediation candidate lifecycle", () => {
-  it("isolates a Reviewer mutation and rejects its result without changing the Candidate", async () => {
+  it("rejects a Reviewer mutation and terminalizes as SYSTEM_FAILURE without changing the Candidate", async () => {
     const root = await createRepo();
     const operationId = "RUN-REVIEW-MUTATION-ATTEMPT";
     const task = contract();
@@ -57,12 +57,9 @@ describe("review remediation candidate lifecycle", () => {
     const reviewer = selection("reviewer", "Reviewer");
     const repairer = selection("repairer", "Repairer");
     const implementer = selection("implementer", "Implementer");
-    let reviewerCall = 0;
     mocks.executeAgentPrompt.mockImplementation(async (agentRoot: string, _config: HarnessProjectConfig, _contract: TaskContract, agent: AgentExecutionSelection, _prompt: string, options: { participantId?: string }) => {
-      if (agent.role === "Repairer") return session(agent.logicalAgent, options.participantId);
       expect(agent.role).toBe("Reviewer");
-      reviewerCall += 1;
-      if (reviewerCall === 1) await fs.writeFile(path.join(agentRoot, "src", "value.ts"), "export const value = 99;\n");
+      await fs.writeFile(path.join(agentRoot, "src", "value.ts"), "export const value = 99;\n");
       return { ...session(agent.logicalAgent, options.participantId), stdout: `AEH_RESULT_JSON=${JSON.stringify({ verdict: "PASS", findings: [], finalizationSafety: "SAFE" })}` };
     });
 
@@ -80,9 +77,110 @@ describe("review remediation candidate lifecycle", () => {
       revalidate: () => validate(root, config, task)
     });
 
-    expect(mocks.executeAgentPrompt.mock.calls.map((call) => call[3].role)).toEqual(["Reviewer", "Repairer", "Reviewer"]);
+    // A reviewer authority violation is not implementation debt: no Repairer is invoked and the
+    // operation terminalizes with a durable typed system failure.
+    expect(mocks.executeAgentPrompt.mock.calls.map((call) => call[3].role)).toEqual(["Reviewer"]);
+    expect(result.status).toBe("FAIL");
+    expect(result.finalState).toBe("SYSTEM_FAILURE");
+    expect(result.humanRequired).toBe(false);
+    const failure = result.checks.find((check) => check.id === "agent.system-failure");
+    expect(failure?.message).toContain("Reviewer provider turn failed; this is not remediable implementation debt");
+    expect(failure?.message).toContain("MUTATION");
     expect(await fs.readFile(path.join(root, "src", "value.ts"), "utf8")).toBe("export const value = 1;\n");
     expect((await loadOperation(root, operationId)).candidateRevision?.identityDigest).toBe(candidate.identityDigest);
+  });
+
+  it("terminalizes a Reviewer provider stop as SYSTEM_FAILURE without remediation (AEH-V2-0119)", async () => {
+    const root = await createRepo();
+    const operationId = "RUN-REVIEW-PROVIDER-STOP";
+    const task = contract();
+    const config = projectConfig();
+    const now = "2026-01-01T00:00:00.000Z";
+    await saveOwnedOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "review", root, payload: { taskId: task.task.id }, createdAt: now, updatedAt: now });
+    process.env.AEH_OPERATION_ID = operationId;
+    process.env.AEH_OPERATION_KIND = "run";
+    process.env.AEH_OPERATION_STATE_REDIRECT = "0";
+    process.env.AEH_CONTROL_ROOT = root;
+    const reviewer = selection("reviewer", "Reviewer");
+    const repairer = selection("repairer", "Repairer");
+    const implementer = selection("implementer", "Implementer");
+    mocks.executeAgentPrompt.mockImplementation(async (_agentRoot: string, _config: HarnessProjectConfig, _contract: TaskContract, agent: AgentExecutionSelection, _prompt: string, options: { participantId?: string }) => {
+      if (agent.role === "Repairer") return session(agent.logicalAgent, options.participantId);
+      expect(agent.role).toBe("Reviewer");
+      return { ...session(agent.logicalAgent, options.participantId), id: "ses_reviewer_permission_stop", exitCode: 1, stderr: "provider session stopped on an unapproved 'permission' prompt (external_directory scope /control/.harness/*)" };
+    });
+
+    const result = await runReviewLifecycle({
+      root,
+      stateRoot: root,
+      config,
+      contract: task,
+      route: { ruleIds: ["test"], review: [], reviewers: ["reviewer"], reasons: [], implementationRoute: "DELEGATED", assurance: "STANDARD" } satisfies ResolvedRoute,
+      reviewerSelections: { reviewer },
+      repairerSelection: repairer,
+      executionCatalog: compileExecutionCatalog({ runtimes: { test: { adapter: "codex" } }, models: { test: { runtime: "test", model: "fake" } }, roleBindings: { Repairer: { runtimeId: "test", modelAlias: "test", transport: "direct", outputContract: "repair-result", args: [] } } }),
+      implementationSelection: implementer,
+      report: await validate(root, config, task),
+      revalidate: () => validate(root, config, task)
+    });
+
+    expect(mocks.executeAgentPrompt.mock.calls.map((call) => call[3].role)).toEqual(["Reviewer"]);
+    expect(result.status).toBe("FAIL");
+    expect(result.finalState).toBe("SYSTEM_FAILURE");
+    expect(result.humanRequired).toBe(false);
+    expect(result.rounds).toBe(0);
+    const failure = result.checks.find((check) => check.id === "agent.system-failure");
+    expect(failure?.message).toContain("RUNTIME");
+    expect(failure?.message).toContain("ses_reviewer_permission_stop");
+    expect(failure?.message).toContain("external_directory");
+    // A terminal failure path must still carry a quality state for the run summary (AEH-V2-0120).
+    expect(result.qualityHistory.length).toBeGreaterThan(0);
+    // The review prompt states the authorized boundary so a read-only reviewer cannot wander into
+    // an unprojected provider sandbox scope and stop on a permission prompt (AEH-V2-0119).
+    const reviewerPrompt = mocks.executeAgentPrompt.mock.calls[0]?.[4] as string;
+    expect(reviewerPrompt).toContain("do not attempt to access paths outside this candidate workspace and the operation control root");
+  });
+
+  it("terminalizes a SYSTEM_FAILURE-typed reviewer finding instead of remediating it", async () => {
+    const root = await createRepo();
+    const operationId = "RUN-REVIEW-SYSTEM-FAILURE-FINDING";
+    const task = contract();
+    const config = projectConfig();
+    const now = "2026-01-01T00:00:00.000Z";
+    await saveOwnedOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "review", root, payload: { taskId: task.task.id }, createdAt: now, updatedAt: now });
+    process.env.AEH_OPERATION_ID = operationId;
+    process.env.AEH_OPERATION_KIND = "run";
+    process.env.AEH_OPERATION_STATE_REDIRECT = "0";
+    process.env.AEH_CONTROL_ROOT = root;
+    const reviewer = selection("reviewer", "Reviewer");
+    const repairer = selection("repairer", "Repairer");
+    const implementer = selection("implementer", "Implementer");
+    mocks.executeAgentPrompt.mockImplementation(async (_agentRoot: string, _config: HarnessProjectConfig, _contract: TaskContract, agent: AgentExecutionSelection, _prompt: string, options: { participantId?: string }) => {
+      if (agent.role === "Repairer") return session(agent.logicalAgent, options.participantId);
+      expect(agent.role).toBe("Reviewer");
+      const findings = [{ ...finding(), severity: "critical" as const, category: "provider-boundary", exceptionType: "SYSTEM_FAILURE" as const, evidence: "The review could not inspect the control plane because the provider sandbox denied it." }];
+      return { ...session(agent.logicalAgent, options.participantId), stdout: `AEH_RESULT_JSON=${JSON.stringify({ verdict: "FAIL", findings, finalizationSafety: "BLOCKED" })}` };
+    });
+
+    const result = await runReviewLifecycle({
+      root,
+      stateRoot: root,
+      config,
+      contract: task,
+      route: { ruleIds: ["test"], review: [], reviewers: ["reviewer"], reasons: [], implementationRoute: "DELEGATED", assurance: "STANDARD" } satisfies ResolvedRoute,
+      reviewerSelections: { reviewer },
+      repairerSelection: repairer,
+      executionCatalog: compileExecutionCatalog({ runtimes: { test: { adapter: "codex" } }, models: { test: { runtime: "test", model: "fake" } }, roleBindings: { Repairer: { runtimeId: "test", modelAlias: "test", transport: "direct", outputContract: "repair-result", args: [] } } }),
+      implementationSelection: implementer,
+      report: await validate(root, config, task),
+      revalidate: () => validate(root, config, task)
+    });
+
+    expect(mocks.executeAgentPrompt.mock.calls.map((call) => call[3].role)).toEqual(["Reviewer"]);
+    expect(result.status).toBe("FAIL");
+    expect(result.finalState).toBe("SYSTEM_FAILURE");
+    expect(result.humanRequired).toBe(false);
+    expect(result.checks.find((check) => check.id === "agent.system-failure")?.message).toContain("SYSTEM_FAILURE");
   });
 
   it("routes quality remediation through Repairer assembly, revalidates, and reviews the new candidate", async () => {

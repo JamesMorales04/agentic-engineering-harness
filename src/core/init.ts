@@ -1,8 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { reconcileHarnessAssets } from "./assets.js";
-function packageRoot(): string { return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../.."); }
+import { PACKAGE_ROOT } from "../version.js";
+function packageRoot(): string { return PACKAGE_ROOT; }
 async function exists(file: string): Promise<boolean> { try { await fs.access(file); return true; } catch { return false; } }
 async function copyFileIfMissing(source: string, destination: string): Promise<void> { if (await exists(destination)) return; await fs.mkdir(path.dirname(destination), { recursive: true }); await fs.copyFile(source, destination); }
 export async function initializeProject(root: string): Promise<string[]> {

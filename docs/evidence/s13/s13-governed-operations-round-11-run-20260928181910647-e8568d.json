@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 11,
+  "runId": "run-20260928181910647-e8568d",
+  "roundLabel": "round-11/run-20260928181910647-e8568d (attempt-specific summary and lane artifacts are immutable evidence)",
+  "campaign": "governed-operations",
+  "generatedAt": "2026-09-28T18:19:10.687Z",
+  "checkout": "/home/james/Desarrollo/agentic-engineering-harness",
+  "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13GovernedOperationCampaign.mjs",
+        "sha256": "ad80e8c8d2f9a5a45f0637814b6b94fc1244fabb679746e132925098e7658a74"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "3395aa19210f36b90fd22bd62056dbb8d5c48aab5a85bce4e5ea4d591cfd5146"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "17bc2a7380a53eb207263ec0a5ec67980c68780e6add6d1504fb229fa2e1f93d"
+      }
+    ],
+    "digest": "30c0ec94e8fbc007d8df958e3ae87c98556d27429fc4defae3874f23ff27e9f3"
+  },
+  "harnessBuildIdentity": {
+    "version": 1,
+    "packageVersion": "0.8.4",
+    "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "releaseId": "release-1790619510154-212464-84acce3d",
+    "buildDigest": "0fc216b8ebd40b942c19556b2f1e7d6c44be802bb27142d41deeab2cc7ee71ac",
+    "dirty": true
+  },
+  "candidate": {
+    "artifact": "agentic-engineering-harness-0.8.4.tgz",
+    "artifactDigest": "b35cb7eb39022d86b088339b5723ae839c46579b442fdab5eca8cb7040caff22"
+  },
+  "lanes": [
+    {
+      "capability": "audit",
+      "result": "PASS",
+      "status": "SUCCEEDED",
+      "route": "DELEGATED",
+      "sessions": 2,
+      "oracle": "PASS",
+      "rows": {
+        "audit": "PASS"
+      },
+      "error": null,
+      "durationMs": 348944,
+      "timeout": false,
+      "lateTerminal": null,
+      "postCampaignOperationRead": {
+        "operationId": "AUDIT-20260928T181932Z-78e1af93",
+        "observedAt": "2026-09-28T18:25:16.124Z",
+        "observationWindowMs": 0,
+        "observations": 1,
+        "status": "SUCCEEDED",
+        "phase": "finished",
+        "revision": 51,
+        "controllerPid": 213814,
+        "controllerAlive": false,
+        "terminal": true,
+        "candidateWorktree": "/tmp/aeh-s13-gov-RmPie4/work/lane-audit-fixture",
+        "candidateWorktreeAvailable": true
+      },
+      "checkoutUntouched": true,
+      "workspacesArchived": 1,
+      "workspacesRemaining": 0,
+      "artifact": "docs/evidence/s13/governed-lanes/round-11/run-20260928181910647-e8568d/audit.json"
+    }
+  ],
+  "result": "PASS",
+  "checkoutProof": {
+    "trackedDigestBefore": "3599b62542cc0cdaeda8ef0649be1fe41cf86ef23f2ec08ea0c840e06b471a20",
+    "trackedDigestAfter": "3599b62542cc0cdaeda8ef0649be1fe41cf86ef23f2ec08ea0c840e06b471a20",
+    "trackedFiles": 668,
+    "checkoutUntouched": true,
+    "gitStatusBefore": "M README.md\n M docs/CORE_ARCHITECTURE_V2_CONFORMANCE.md\n M docs/CORE_ARCHITECTURE_V2_STATUS.md\n M docs/ENGINEERING_LEDGER.md\n M presets/agents/default.jsonc\n M presets/agents/orchestration.jsonc\n M src/agents/permissions.ts\n M src/agents/recovery.ts\n M src/agents/reviewLifecycle.ts\n M src/architecture/acceptanceOracle.ts\n M src/architecture/candidateAssurance.ts\n M src/architecture/validationRequirements.ts\n M src/audit/intent.ts\n M src/candidates/assembler.ts\n M src/candidates/binding.ts\n M src/candidates/direct.ts\n M src/candidates/identity.ts\n M src/certification/bootstrap.ts\n M src/certification/index.ts\n M src/cli.ts\n M src/core/contract.ts\n M src/core/git.ts\n M src/core/init.ts\n M src/core/run.ts\n M src/core/triage.ts\n M src/entry.ts\n M src/issues/intake.ts\n M src/issues/workflow.ts\n M src/operations/change.ts\n M src/operations/controller.ts\n M src/operations/state.ts\n M src/operations/supervisor.ts\n M src/operations/v2Contracts.ts\n M src/participants/skills.ts\n M src/participants/stack.ts\n M src/paseo/launchSpec.ts\n M src/paseo/native.ts\n M src/paseo/runtimeCore.ts\n M src/paseo/runtimeInitialTurn.ts\n M src/paseo/sdk.ts\n M src/semantic/assessment.ts\n M src/semantic/runtime.ts\n M src/spec/openspec.ts\n M src/workers/agentPrompt.ts\n M src/workers/resultGateway.ts\n M templates/agents.source.jsonc\n M tests/agentTopologyLayers.test.ts\n M tests/auditIntent.test.ts\n M tests/buildHygiene.test.ts\n M tests/candidateIdentity.test.ts\n M tests/changeRouting.test.ts\n M tests/deliveryFinalize.test.ts\n M tests/directCandidateLifecycle.test.ts\n M tests/objectiveCompletionLifecycle.test.ts\n M tests/openSpecBridge.test.ts\n M tests/operations.test.ts\n M tests/orchestrationProfileRouting.test.ts\n M tests/participantsStackDiscovery.test.ts\n M tests/paseoAtomicSdkTurn.test.ts\n M tests/paseoLaunchSpec.test.ts\n M tests/paseoNative.test.ts\n M tests/reviewLifecycle.test.ts\n M tests/reviewerSerializationRecovery.test.ts\n M tests/runRepairCandidateLifecycle.test.ts\n M tests/semanticAssessment.test.ts\n M tests/semanticAssessmentRuntime.test.ts\n M tests/semanticAssessmentSupport.ts\n M tests/semanticAssessorTopology.test.ts\n M tests/supervisorPromptPolicy.test.ts\n?? docs/CORE_ARCHITECTURE_V2_S13_WORKGRAPH.md\n?? docs/evidence/s13/\n?? src/certification/journeys.ts\n?? src/operations/participantAccounting.ts\n?? src/semantic/structuredOutput.ts\n?? tests/acceptanceReviewProvenance.test.ts\n?? tests/acceptanceValidationPath.test.ts\n?? tests/assemblyLineageCompletion.test.ts\n?? tests/certificationJourneys.test.ts\n?? tests/governedOperationBootstrap.test.ts\n?? tests/managedForegroundAssessmentLease.test.ts\n?? tests/objectiveParticipantAccounting.test.ts\n?? tests/packed/s13CampaignHarnessRevision.mjs\n?? tests/packed/s13ExternalEffectAuthorization.mjs\n?? tests/packed/s13GithubEffectCampaign.mjs\n?? tests/packed/s13GovernedCampaignPolicy.mjs\n?? tests/packed/s13GovernedCampaignPolicy.test.mjs\n?? tests/packed/s13GovernedOperationCampaign.mjs\n?? tests/packed/s13RealPaseoLifecycleCampaign.mjs\n?? tests/packed/s13RealProviderCertification.mjs\n?? tests/s13GithubCampaignPolicy.test.ts\n?? tests/semanticStructuredOutputCapability.test.ts\n?? tests/specEscalationPolicyRebind.test.ts\n?? tests/supervisorConsolidationProvenance.test.ts\n?? tests/supervisorEventContinuation.test.ts",
+    "gitStatusAfter": "M README.md\n M docs/CORE_ARCHITECTURE_V2_CONFORMANCE.md\n M docs/CORE_ARCHITECTURE_V2_STATUS.md\n M docs/ENGINEERING_LEDGER.md\n M presets/agents/default.jsonc\n M presets/agents/orchestration.jsonc\n M src/agents/permissions.ts\n M src/agents/recovery.ts\n M src/agents/reviewLifecycle.ts\n M src/architecture/acceptanceOracle.ts\n M src/architecture/candidateAssurance.ts\n M src/architecture/validationRequirements.ts\n M src/audit/intent.ts\n M src/candidates/assembler.ts\n M src/candidates/binding.ts\n M src/candidates/direct.ts\n M src/candidates/identity.ts\n M src/certification/bootstrap.ts\n M src/certification/index.ts\n M src/cli.ts\n M src/core/contract.ts\n M src/core/git.ts\n M src/core/init.ts\n M src/core/run.ts\n M src/core/triage.ts\n M src/entry.ts\n M src/issues/intake.ts\n M src/issues/workflow.ts\n M src/operations/change.ts\n M src/operations/controller.ts\n M src/operations/state.ts\n M src/operations/supervisor.ts\n M src/operations/v2Contracts.ts\n M src/participants/skills.ts\n M src/participants/stack.ts\n M src/paseo/launchSpec.ts\n M src/paseo/native.ts\n M src/paseo/runtimeCore.ts\n M src/paseo/runtimeInitialTurn.ts\n M src/paseo/sdk.ts\n M src/semantic/assessment.ts\n M src/semantic/runtime.ts\n M src/spec/openspec.ts\n M src/workers/agentPrompt.ts\n M src/workers/resultGateway.ts\n M templates/agents.source.jsonc\n M tests/agentTopologyLayers.test.ts\n M tests/auditIntent.test.ts\n M tests/buildHygiene.test.ts\n M tests/candidateIdentity.test.ts\n M tests/changeRouting.test.ts\n M tests/deliveryFinalize.test.ts\n M tests/directCandidateLifecycle.test.ts\n M tests/objectiveCompletionLifecycle.test.ts\n M tests/openSpecBridge.test.ts\n M tests/operations.test.ts\n M tests/orchestrationProfileRouting.test.ts\n M tests/participantsStackDiscovery.test.ts\n M tests/paseoAtomicSdkTurn.test.ts\n M tests/paseoLaunchSpec.test.ts\n M tests/paseoNative.test.ts\n M tests/reviewLifecycle.test.ts\n M tests/reviewerSerializationRecovery.test.ts\n M tests/runRepairCandidateLifecycle.test.ts\n M tests/semanticAssessment.test.ts\n M tests/semanticAssessmentRuntime.test.ts\n M tests/semanticAssessmentSupport.ts\n M tests/semanticAssessorTopology.test.ts\n M tests/supervisorPromptPolicy.test.ts\n?? docs/CORE_ARCHITECTURE_V2_S13_WORKGRAPH.md\n?? docs/evidence/s13/\n?? src/certification/journeys.ts\n?? src/operations/participantAccounting.ts\n?? src/semantic/structuredOutput.ts\n?? tests/acceptanceReviewProvenance.test.ts\n?? tests/acceptanceValidationPath.test.ts\n?? tests/assemblyLineageCompletion.test.ts\n?? tests/certificationJourneys.test.ts\n?? tests/governedOperationBootstrap.test.ts\n?? tests/managedForegroundAssessmentLease.test.ts\n?? tests/objectiveParticipantAccounting.test.ts\n?? tests/packed/s13CampaignHarnessRevision.mjs\n?? tests/packed/s13ExternalEffectAuthorization.mjs\n?? tests/packed/s13GithubEffectCampaign.mjs\n?? tests/packed/s13GovernedCampaignPolicy.mjs\n?? tests/packed/s13GovernedCampaignPolicy.test.mjs\n?? tests/packed/s13GovernedOperationCampaign.mjs\n?? tests/packed/s13RealPaseoLifecycleCampaign.mjs\n?? tests/packed/s13RealProviderCertification.mjs\n?? tests/s13GithubCampaignPolicy.test.ts\n?? tests/semanticStructuredOutputCapability.test.ts\n?? tests/specEscalationPolicyRebind.test.ts\n?? tests/supervisorConsolidationProvenance.test.ts\n?? tests/supervisorEventContinuation.test.ts",
+    "note": "Tracked-file digest captured before packing and after all governed lanes; candidates execute only inside disposable /tmp fixtures."
+  }
+}

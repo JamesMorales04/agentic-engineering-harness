@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "kind": "USER_EXTERNAL_EFFECT_AUTHORIZATION",
+  "authorizationId": "s13-github-effect-authorization-2026-09-28",
+  "status": "ACTIVE_PROSPECTIVE",
+  "authorizedBy": "user",
+  "authoritySource": {
+    "kind": "explicit user instruction",
+    "deliveredTo": "S13 Campaign Director session (fresh, post-Round-10)",
+    "date": "2026-09-28",
+    "appliesTo": "S13 certification runs at or after 2026-09-28",
+    "retroactive": false,
+    "supersedes": "earlier prospective constraints for future S13 certification runs"
+  },
+  "scope": {
+    "owner": "JamesMorales04",
+    "privacy": "PRIVATE_ONLY",
+    "purpose": "S13 real-provider and external-effect certification fixtures only",
+    "resources": [
+      "private disposable repositories",
+      "disposable test issues",
+      "disposable branches",
+      "disposable pull requests",
+      "other temporary GitHub resources strictly required by the canonical S13 certification flow"
+    ],
+    "namingConvention": "clearly identifiable campaign names such as aeh-s13-*",
+    "resourceNamePrefix": "aeh-s13-",
+    "allowedEffects": ["git.push", "github.branch.create", "github.issue.create"],
+    "allowedEffectsNote": "Machine-readable coverage for deterministic consumption (Round-11 AEH-V2-0114 repair). Repository create/delete, issue edit/delete and all other effects are NOT covered by this authorization and the campaign fails closed on them; a future user authorization may cover additional effects through the same governed path.",
+    "minimumNecessary": true,
+    "unrelatedUserRepositoriesAndResources": "PROHIBITED",
+    "hardcodedEffectNames": false
+  },
+  "governance": {
+    "ambientAuthorityGranted": false,
+    "eachEffectRequires": [
+      "frozen allowed-effect policy",
+      "scoped ActionIntent",
+      "ToolActionGate decision",
+      "human decision when the policy requires one",
+      "ActionReceipt",
+      "reconciliation"
+    ],
+    "campaignSelfAuthorization": "PROHIBITED — a campaign or model may not mint its own HumanDecision or otherwise widen this authorization",
+    "campaignFixtureConfigurationCannotWiden": true
+  },
+  "cleanup": {
+    "repositoryDeletionRequiredForAcceptance": false,
+    "deleteRepoPermissionRequired": false,
+    "owner": "user",
+    "classification": "USER_CLEANUP_NON_BLOCKING"
+  },
+  "consumption": {
+    "requiredBeforeAnyExternalCommand": true,
+    "requiredInput": "externally provided authorization file path; the certification lane must fail closed when the input is absent, unreadable, out of scope, or not bound to the exact external effect",
+    "expectedEnvChannel": "S13_GH_AUTHORIZATION_FILE",
+    "binding": "the lane must bind this authorization identity and scope to the frozen policy and the exact ActionIntent; a missing or mismatched authorization is a hard pre-effect failure",
+    "provenanceRule": "ActionIntent + ActionReceipt alone never prove user consent"
+  },
+  "notAuthorized": [
+    "repositories or resources owned by anyone other than JamesMorales04",
+    "public repositories or public fixture content",
+    "editing or deleting issues #2/#3 created in Round 10",
+    "retrying deletion of the Round-9 accidental repository",
+    "broadening GitHub credential scopes",
+    "any external effect outside the frozen allowed-effect policy"
+  ],
+  "expiresAt": "S13 independent acceptance and cleanup coordination",
+  "relatedArtifacts": [
+    "docs/evidence/s13/round10-0114-authorization-resolution.json",
+    "docs/evidence/s13/review-round10.json"
+  ],
+  "amendments": [
+    {
+      "amendedAt": "2026-09-28",
+      "round": 11,
+      "kind": "MACHINE_READABLE_SCOPE_ENCODING",
+      "previousSha256": "31a4743754d27e2fd45e8df05316691052f14d7f3e4e5e97a624a7ff15249b49",
+      "reason": "Round-11 AEH-V2-0114 repair requires the certification lane to consume this authorization as a typed external input and fail closed unless it covers the exact external effect. This amendment encodes the same prospective user grant in machine-readable fields (scope.resourceNamePrefix, scope.allowedEffects); it neither widens nor narrows the user's grant, and it remains prospective only (retroactive: false).",
+      "derivation": "scope.resources already authorizes private disposable repositories, test issues, branches and pull requests. scope.allowedEffects lists the canonical ToolActionKindV1 actions for the effects the S13 certification lanes may request. Repository create/delete and issue edit/delete are deliberately absent and therefore uncovered."
+    }
+  ]
+}

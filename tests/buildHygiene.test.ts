@@ -84,6 +84,42 @@ describe("repository build hygiene", () => {
     await expect(fs.access(path.join(root, "ui", "control-center", "dist", "index.html"))).rejects.toThrow();
   });
 
+  it("initializes projects from the freshly built release's own assets without shared dist/releases leftovers", async () => {
+    await runProcess(process.platform === "win32" ? "npm.cmd" : "npm", ["run", "build", "--silent"], root);
+    const releaseId = (await fs.readFile(path.join(root, "dist", "current"), "utf8")).trim();
+    const releaseRoot = path.join(root, "dist", "releases", releaseId);
+    const staging = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-clean-release-"));
+    try {
+      const stagedDist = path.join(staging, "dist");
+      await fs.cp(path.join(root, "dist"), stagedDist, { recursive: true });
+      await fs.symlink(path.join(root, "node_modules"), path.join(staging, "node_modules"), "dir");
+      for (const leftover of ["templates", "presets", "policies", "schemas", "maturity", "skills", "scripts", "package.json"]) {
+        await fs.rm(path.join(stagedDist, "releases", leftover), { recursive: true, force: true });
+      }
+      const consumer = path.join(staging, "consumer");
+      await fs.mkdir(consumer, { recursive: true });
+      await runProcess(process.execPath, [path.join(stagedDist, "main.js"), "init", consumer], staging);
+      const mappings: Array<[string, string]> = [
+        ["project.yaml", ".harness/project.yaml"],
+        ["toolchain.yaml", ".harness/toolchain.yaml"],
+        ["agents.source.jsonc", ".harness/agents.source.jsonc"],
+        ["AGENTS.md", "AGENTS.md"],
+        ["otel-collector.yaml", ".harness/otel-collector.yaml"]
+      ];
+      for (const [source, destination] of mappings) {
+        expect(await fs.readFile(path.join(consumer, destination), "utf8"), destination).toBe(await fs.readFile(path.join(releaseRoot, "templates", source), "utf8"));
+      }
+      const brokenDist = path.join(staging, "broken-dist");
+      await fs.cp(stagedDist, brokenDist, { recursive: true });
+      await fs.rm(path.join(brokenDist, "releases", releaseId, "templates", "project.yaml"), { force: true });
+      const brokenConsumer = path.join(staging, "broken-consumer");
+      await fs.mkdir(brokenConsumer, { recursive: true });
+      await expect(runProcess(process.execPath, [path.join(brokenDist, "main.js"), "init", brokenConsumer], staging)).rejects.toThrow();
+    } finally {
+      await fs.rm(staging, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it("includes the Headroom bridge in built and packed releases and lets the packaged provider doctor resolve it", async () => {
     const packageDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-headroom-pack-"));
     const extractDirectory = path.join(packageDirectory, "extract");
@@ -113,6 +149,9 @@ describe("repository build hygiene", () => {
         if (stat.isDirectory()) await fs.cp(source, destination, { recursive: true });
         else await fs.copyFile(source, destination);
       }
+      for (const leftover of ["templates", "presets", "policies", "schemas", "maturity", "skills", "scripts", "package.json"]) {
+        await fs.rm(path.join(packSourceDirectory, "dist", "releases", leftover), { recursive: true, force: true });
+      }
       await runProcess(process.platform === "win32" ? "npm.cmd" : "npm", ["pack", "--ignore-scripts", "--pack-destination", packDirectory, "--cache", path.join(packageDirectory, "npm-cache")], packSourceDirectory);
       const tarballName = (await fs.readdir(packDirectory)).find((name) => name.endsWith(".tgz"));
       expect(tarballName).toBeTruthy();
@@ -125,6 +164,12 @@ describe("repository build hygiene", () => {
       const packedIdentity = JSON.parse(await fs.readFile(path.join(packedReleaseRoot, "build-identity.json"), "utf8")) as { buildDigest: string };
       expect(await digestReleaseForTest(packedReleaseRoot)).toBe(packedIdentity.buildDigest);
       await assertHeadroomDoctor(packedReleaseRoot, path.join(packageDirectory, "packed-consumer"));
+      const packedInitConsumer = path.join(packageDirectory, "packed-init-consumer");
+      await fs.mkdir(packedInitConsumer, { recursive: true });
+      await fs.symlink(path.join(root, "node_modules"), path.join(consumerPackageRoot, "node_modules"), "dir");
+      await runProcess(process.execPath, [path.join(consumerPackageRoot, "dist", "main.js"), "init", packedInitConsumer], packageDirectory);
+      expect(await fs.readFile(path.join(packedInitConsumer, ".harness", "project.yaml"), "utf8")).toBe(await fs.readFile(path.join(packedReleaseRoot, "templates", "project.yaml"), "utf8"));
+      expect(await fs.readFile(path.join(packedInitConsumer, ".harness", "toolchain.yaml"), "utf8")).toBe(await fs.readFile(path.join(packedReleaseRoot, "templates", "toolchain.yaml"), "utf8"));
     } finally {
       await fs.rm(packageDirectory, { recursive: true, force: true });
     }

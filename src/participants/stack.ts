@@ -11,6 +11,7 @@ import {
   semanticCapabilityPolicyRevisionV1,
   semanticEvidenceBoundaryDigest,
   semanticEvidenceReceiptDigest,
+  semanticModelDeadlineMsV1,
   type SemanticAssessmentBindingV1,
   type SemanticAssessmentRequestV1,
   type SemanticAssessmentV1,
@@ -82,7 +83,7 @@ export const defaultProjectStackEvidenceBoundsV1: Readonly<ProjectStackEvidenceB
 };
 
 export interface ProjectStackSemanticAssessorV1 {
-  assess(request: SemanticAssessmentRequestV1): Promise<SemanticAssessmentV1>;
+  assess(request: SemanticAssessmentRequestV1, options?: { attemptBudget?: number }): Promise<SemanticAssessmentV1>;
 }
 
 export interface ProjectStackSemanticAssessmentInjectionV1 {
@@ -285,25 +286,79 @@ export async function collectProjectStackEvidence(root: string, input: { binding
   return { version: 1, items, receipts, digest, scannedFiles: scan.files.length, truncated };
 }
 
-function projectStackAssessmentRequest(packet: ProjectStackEvidencePacketV1, binding: SemanticAssessmentBindingV1): SemanticAssessmentRequestV1 {
+/**
+ * Bounded invalid-payload retry for the non-authoritative STACK interpretation. The first
+ * assessment is attempted against the frozen evidence packet; if deterministic profile validation
+ * rejects its judgment, one corrective retry is issued with a bounded rejection reason appended to
+ * the evidence so the cache key changes and the model receives exact validation feedback. The
+ * deterministic validation remains the gate: a second invalid reply fails closed.
+ *
+ * This loop is the single owner of the retry bound for STACK: every `service.assess` call it makes
+ * passes `attemptBudget: 1`, so the service's own bounded retry cannot compose with this loop.
+ * One STACK assessment therefore launches at most MAX_STACK_ASSESSMENT_ATTEMPTS real model turns.
+ */
+const MAX_STACK_ASSESSMENT_ATTEMPTS = 2;
+
+function stackCorrectionGuidance(detail: string): string {
+  return [
+    `The previous STACK judgment was rejected by deterministic validation: ${detail.slice(0, 500)}`,
+    "Return a corrected typed STACK judgment that validates against the supplied schema.",
+    "Every signal must cite a supplied repository file evidence ref (refs of the form file:<path>); never cite the assessment-correction note and never invent a ref.",
+    "projectSkillRoots must be repository-relative paths that already exist as directories.",
+    "Keep claims and versions bounded to the supplied evidence."
+  ].join(" ");
+}
+
+export function projectStackAssessmentRequest(packet: ProjectStackEvidencePacketV1, binding: SemanticAssessmentBindingV1, correction?: string): { request: SemanticAssessmentRequestV1; packet: ProjectStackEvidencePacketV1 } {
+  const evidenceRefs = packet.receipts.map((receipt) => receipt.ref);
+  const compactEvidence = packet.items.map((item) => ({ ref: `file:${item.path}`, content: item.content }));
+  const evidenceReceipts = [...packet.receipts];
+  let effectivePacket = packet;
+  if (correction) {
+    const correctionPath = "assessment.correction";
+    const ref = `file:${correctionPath}`;
+    const content = correction.slice(0, 1_000);
+    const receipt = createSemanticEvidenceReceiptV1({ binding, ref, content, kind: "REQUEST", path: correctionPath });
+    // The assessor request schema caps compactEvidence at 16 items. A full packet (16 files) plus
+    // the correction item exceeded that cap and failed the whole STACK assessment
+    // (SEMANTIC_ASSESSMENT_INVALID, formal lane r16-formal-6). The correction is the newest
+    // evidence, so it takes the last slot: the oldest bounded item is dropped from the correction
+    // turn only; the durable packet is never rewritten.
+    const baseCount = Math.min(compactEvidence.length, 15);
+    compactEvidence.length = baseCount;
+    evidenceRefs.length = baseCount;
+    evidenceReceipts.length = baseCount;
+    evidenceRefs.push(ref);
+    compactEvidence.push({ ref, content });
+    evidenceReceipts.push(receipt);
+    effectivePacket = {
+      ...packet,
+      items: [...packet.items.slice(0, baseCount), { path: correctionPath, content }],
+      receipts: [...packet.receipts.slice(0, baseCount), receipt],
+      digest: semanticAssessmentEvidenceDigest({ evidenceRefs, compactEvidence, evidenceReceipts })
+    };
+  }
   return {
-    version: 1,
-    assessmentType: "STACK",
-    evidenceRefs: packet.receipts.map((receipt) => receipt.ref),
-    compactEvidence: packet.items.map((item) => ({ ref: `file:${item.path}`, content: item.content })),
-    evidenceReceipts: [...packet.receipts],
-    requiredOutputSchema: "semantic-assessment-v1",
-    reasoningRequirement: {
-      reasoningClass: "STANDARD",
-      structuredOutputRequired: true,
-      independenceRequired: false,
-      externalKnowledgeRequired: false,
-      maxContextClass: "LARGE",
-      riskClass: "HIGH"
+    request: {
+      version: 1,
+      assessmentType: "STACK",
+      evidenceRefs,
+      compactEvidence,
+      evidenceReceipts,
+      requiredOutputSchema: "semantic-assessment-v1",
+      reasoningRequirement: {
+        reasoningClass: "STANDARD",
+        structuredOutputRequired: true,
+        independenceRequired: false,
+        externalKnowledgeRequired: false,
+        maxContextClass: "LARGE",
+        riskClass: "HIGH"
+      },
+      binding,
+      budget: { maxInputTokens: 8_000, maxOutputTokens: 2_000, deadlineMs: semanticModelDeadlineMsV1 },
+      policyRevision: semanticCapabilityPolicyRevisionV1
     },
-    binding,
-    budget: { maxInputTokens: 8_000, maxOutputTokens: 2_000, deadlineMs: 45_000 },
-    policyRevision: semanticCapabilityPolicyRevisionV1
+    packet: effectivePacket
   };
 }
 
@@ -312,20 +367,38 @@ export async function discoverProjectStackProfile(root: string, options: Project
   if (!injection?.service || typeof injection.service.assess !== "function") throw invalid("project stack discovery requires an injected AEH Semantic Assessor service; there is no deterministic fallback.");
   if (!injection.binding) throw invalid("project stack discovery requires a repository-bound semantic assessment binding.");
   const binding = parseBinding(injection.binding);
-  const packet = await collectProjectStackEvidence(root, { binding, ...(options.bounds ? { bounds: options.bounds } : {}) });
+  let packet = await collectProjectStackEvidence(root, { binding, ...(options.bounds ? { bounds: options.bounds } : {}) });
   if (!packet.items.length) throw invalid("bounded stack evidence scan found no readable repository evidence.");
-  const request = projectStackAssessmentRequest(packet, binding);
-  let assessment: SemanticAssessmentV1;
-  try {
-    assessment = await injection.service.assess(request);
-  } catch (error) {
-    if (error instanceof AehError) throw error;
-    throw invalid("AEH Semantic Assessor STACK assessment failed.", { cause: error });
+  let correction: string | undefined;
+  let lastInvalid: AehError | undefined;
+  for (let attempt = 1; attempt <= MAX_STACK_ASSESSMENT_ATTEMPTS; attempt += 1) {
+    const built = projectStackAssessmentRequest(packet, binding, correction);
+    packet = built.packet;
+    const request = built.request;
+    let assessment: SemanticAssessmentV1;
+    try {
+      assessment = await injection.service.assess(request, { attemptBudget: 1 });
+    } catch (error) {
+      if (!(error instanceof AehError)) throw invalid("AEH Semantic Assessor STACK assessment failed.", { cause: error });
+      // Non-authoritative model output that never became a typed judgment (for example a prose or
+      // empty reply) receives the same single bounded corrective retry as a rejected judgment.
+      if (error.code !== "SEMANTIC_ASSESSMENT_INVALID" || attempt >= MAX_STACK_ASSESSMENT_ATTEMPTS) throw error;
+      lastInvalid = error;
+      correction = stackCorrectionGuidance(`the reply was rejected before a typed judgment was accepted: ${error.message}`);
+      continue;
+    }
+    const canonicalRoot = await assertCurrentRepository(root, binding);
+    try {
+      const profile = await projectStackProfileFromAssessment(canonicalRoot, request, packet, assessment);
+      await assertCurrentRepository(canonicalRoot, binding);
+      return profile;
+    } catch (error) {
+      if (!(error instanceof AehError) || error.code !== "STACK_ASSESSMENT_INVALID" || attempt >= MAX_STACK_ASSESSMENT_ATTEMPTS) throw error;
+      lastInvalid = error;
+      correction = stackCorrectionGuidance(error.message);
+    }
   }
-  const canonicalRoot = await assertCurrentRepository(root, binding);
-  const profile = await projectStackProfileFromAssessment(canonicalRoot, request, packet, assessment);
-  await assertCurrentRepository(canonicalRoot, binding);
-  return profile;
+  throw lastInvalid ?? invalid("STACK assessment failed after bounded attempts.");
 }
 
 async function projectStackProfileFromAssessment(root: string, request: SemanticAssessmentRequestV1, packet: ProjectStackEvidencePacketV1, assessment: SemanticAssessmentV1): Promise<ProjectStackProfileV1> {
@@ -346,7 +419,7 @@ async function projectStackProfileFromAssessment(root: string, request: Semantic
   const receiptsByRef = new Map(packet.receipts.map((receipt) => [receipt.ref, receipt]));
   const signals: StackSignalV1[] = judgment.signals.map((signal) => {
     const receipt = receiptsByRef.get(signal.evidenceRef);
-    if (!receipt?.path) throw invalid(`STACK signal '${signal.id}' does not map to a supplied repository file evidence receipt.`);
+    if (!receipt?.path || signal.evidenceRef === "file:assessment.correction") throw invalid(`STACK signal '${signal.id}' does not map to a supplied repository file evidence receipt.`);
     return { id: signal.id, source: receipt.path };
   });
   const projectSkillRoots = await validateProjectSkillRoots(root, judgment.projectSkillRoots);
@@ -413,7 +486,10 @@ function validateAssessmentReceipts(request: SemanticAssessmentRequestV1, packet
     const supplied = suppliedReceipts.get(receipt.ref);
     const content = suppliedContent.get(receipt.ref);
     if (!supplied || content === undefined || sha256Canonical(receipt) !== sha256Canonical(supplied)) throw invalid(`STACK semantic assessment evidence receipt ${receipt.ref} does not match a supplied repository evidence receipt.`);
-    if (receipt.kind !== "REPOSITORY_FILE" || !receipt.path || receipt.ref !== `file:${receipt.path}`) throw invalid(`STACK semantic assessment evidence receipt ${receipt.ref} is not a repository file receipt.`);
+    // The bounded invalid-payload retry supplies exactly one controller REQUEST note under the
+    // reserved ref; it is never repository evidence and cannot be cited as a stack signal.
+    const correction = receipt.ref === "file:assessment.correction" && receipt.kind === "REQUEST";
+    if (!correction && (receipt.kind !== "REPOSITORY_FILE" || !receipt.path || receipt.ref !== `file:${receipt.path}`)) throw invalid(`STACK semantic assessment evidence receipt ${receipt.ref} is not a repository file receipt.`);
     if (receipt.contentDigest !== sha256Utf8(content) || receipt.contentBytes !== Buffer.byteLength(content, "utf8")) throw invalid(`STACK semantic assessment evidence receipt ${receipt.ref} does not bind the exact supplied bytes.`);
     if (receipt.boundaryDigest !== semanticEvidenceBoundaryDigest(request.binding)) throw invalid(`STACK semantic assessment evidence receipt ${receipt.ref} is outside the bound repository/candidate boundary.`);
     if (receipt.receiptDigest !== semanticEvidenceReceiptDigest(receipt)) throw invalid(`STACK semantic assessment evidence receipt ${receipt.ref} digest is invalid.`);

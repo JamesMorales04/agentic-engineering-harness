@@ -1,0 +1,151 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 6,
+  "artifact": "governed-lane-late-terminal",
+  "capability": "change-direct",
+  "generatedAt": "2026-09-27T21:06:07Z",
+  "note": "Supplementary terminal record for the round-6 amendment rerun. The campaign artifact change-direct.json captured RUNNING at its 900 s lane bound (the run legitimately needed longer: the real reviewer turn completed after the bound); its cancel attempt failed, the controller continued, and the operation later terminalized. This file is generated programmatically from the durable operation record and is not a substitute for a clean campaign run.",
+  "operation": {
+    "id": "CHANGE-20260927T204902Z-5de819ea",
+    "kind": "change",
+    "status": "FAILED",
+    "phase": "finished",
+    "revision": 73,
+    "error": null
+  },
+  "result": {
+    "status": "FAIL",
+    "attempts": 0,
+    "route": "DIRECT",
+    "acceptanceOracle": {
+      "version": 1,
+      "disposition": "REJECTED",
+      "identity": {
+        "operationId": "CHANGE-20260927T204902Z-5de819ea",
+        "candidate": {
+          "operationId": "CHANGE-20260927T204902Z-5de819ea",
+          "candidateId": "candidate:CHANGE-20260927T204902Z-5de819ea:r3",
+          "projectId": "project:8478d410adb600a887e5d4b5",
+          "taskId": "CHANGE-20260927T204902Z-5de819ea",
+          "revision": 3,
+          "parentCandidateId": "candidate:CHANGE-20260927T204902Z-5de819ea:r2",
+          "sourceDigest": "14ce1c8b59431c61571e2cb470dbd87bf55d38010b9712da301fb07ab6e8323a",
+          "workspace": "wks_7a5aa52d2f78831d",
+          "worktree": "/home/james/.paseo/worktrees/20itx946/aeh-change-20260927t204902z-5de819ea",
+          "createdAt": "2026-09-27T20:50:49.361Z",
+          "version": 1,
+          "canonicalIdentity": "{\"candidateId\":\"candidate:CHANGE-20260927T204902Z-5de819ea:r3\",\"createdAt\":\"2026-09-27T20:50:49.361Z\",\"operationId\":\"CHANGE-20260927T204902Z-5de819ea\",\"parentCandidateId\":\"candidate:CHANGE-20260927T204902Z-5de819ea:r2\",\"projectId\":\"project:8478d410adb600a887e5d4b5\",\"revision\":3,\"sourceDigest\":\"14ce1c8b59431c61571e2cb470dbd87bf55d38010b9712da301fb07ab6e8323a\",\"taskId\":\"CHANGE-20260927T204902Z-5de819ea\",\"version\":1,\"workspace\":\"wks_7a5aa52d2f78831d\",\"worktree\":\"/home/james/.paseo/worktrees/20itx946/aeh-change-20260927t204902z-5de819ea\"}",
+          "identityDigest": "a1d2fb7821ea4e2e84f1994de7c15ea7ac8a56e31be98aef2939846ee43255b3"
+        },
+        "policyDigest": "d5bc3c6404b3329ebc0e0a3a8bfa97a1c8f6f78a6932cbbc7057fc350ecc0c1f",
+        "operationExecutionRevision": 3,
+        "controllerEpoch": 1
+      },
+      "evidenceBundleDigest": "e58fdbc5837a7b26e6f22d5c6779b02361059b6595c937e61c6555c4145dba70",
+      "requiredAssertionIds": [
+        "AC-1",
+        "impact-acceptance-behavior-correctness",
+        "impact-acceptance-public-api"
+      ],
+      "coveredAssertionIds": [],
+      "certificationRequired": false,
+      "blockers": [
+        {
+          "code": "VERIFICATION_REVIEW_STRENGTH_INSUFFICIENT",
+          "message": "assertion 'AC-1' has 0 independent reviewers for 'behavior.correctness', below 1."
+        },
+        {
+          "code": "VERIFICATION_REVIEW_STRENGTH_INSUFFICIENT",
+          "message": "assertion 'AC-1' has 0 independent reviewers for 'public API', below 1."
+        },
+        {
+          "code": "VERIFICATION_REVIEW_STRENGTH_INSUFFICIENT",
+          "message": "assertion 'impact-acceptance-behavior-correctness' has 0 independent reviewers for 'behavior.correctness', below 1."
+        },
+        {
+          "code": "VERIFICATION_REVIEW_STRENGTH_INSUFFICIENT",
+          "message": "assertion 'impact-acceptance-public-api' has 0 independent reviewers for 'public API', below 1."
+        },
+        {
+          "code": "VERIFICATION_STRENGTH_INSUFFICIENT",
+          "message": "current non-Lead evidence for assertion 'impact-acceptance-behavior-correctness' is below STANDARD."
+        },
+        {
+          "code": "VERIFICATION_STRENGTH_INSUFFICIENT",
+          "message": "current non-Lead evidence for assertion 'impact-acceptance-public-api' is below ELEVATED."
+        },
+        {
+          "code": "VERIFICATION_VALIDATION_EVIDENCE_INSUFFICIENT",
+          "message": "assertion 'impact-acceptance-behavior-correctness' requires exactly one passing validation item for 'impact-review-behavior-correctness'."
+        },
+        {
+          "code": "VERIFICATION_VALIDATION_EVIDENCE_INSUFFICIENT",
+          "message": "assertion 'impact-acceptance-public-api' requires exactly one passing validation item for 'impact-review-public-api'."
+        },
+        {
+          "code": "VERIFICATION_VALIDATION_PATH_MISSING",
+          "message": "assertion 'AC-1' has no resolved candidate-bound validation requirement."
+        }
+      ],
+      "digest": "53436e86c94d2cdb65eb74b812e31eecdbac7304c229254eadae8aefdf202c6c"
+    }
+  },
+  "stages": {
+    "queued": "RUNNING",
+    "input-resolution": "COMPLETED",
+    "triage": "COMPLETED",
+    "environment-preflight": "SKIPPED",
+    "contract-authoring": "COMPLETED",
+    "implementation": "FAILED",
+    "executing": "RUNNING",
+    "validation": "RUNNING",
+    "context": "RUNNING",
+    "review": "COMPLETED",
+    "finished": "FAILED"
+  },
+  "participants": {
+    "participant:21ededae400f728e": {
+      "role": "Implementer",
+      "logicalAgent": "implementer",
+      "status": "FAILED",
+      "resultArtifact": null,
+      "hasExecutionBinding": false
+    },
+    "d39e9e24-affb-4259-9a7d-68222f214516": {
+      "role": "Implementer",
+      "logicalAgent": "implementer",
+      "status": "COMPLETED",
+      "resultArtifact": ".harness/operations/CHANGE-20260927T204902Z-5de819ea/results/implementer/0002-0002-79a4a767-fb16-4346-9601-2f04bf9a849e.json",
+      "hasExecutionBinding": false
+    },
+    "participant:6784f4c874e14ad8": {
+      "role": "Reviewer",
+      "logicalAgent": "reviewer",
+      "status": "FAILED",
+      "resultArtifact": null,
+      "hasExecutionBinding": true
+    },
+    "62a25bbe-e53d-44a4-810b-f89daaef4189": {
+      "role": "Reviewer",
+      "logicalAgent": "reviewer",
+      "status": "COMPLETED",
+      "resultArtifact": ".harness/operations/CHANGE-20260927T204902Z-5de819ea/results/reviewer/0002-0002-7def9990-ccb6-496b-afc3-1b3dabcce9ab.json",
+      "hasExecutionBinding": false
+    }
+  },
+  "receipts": [
+    {
+      "participantId": "participant:21ededae400f728e",
+      "sessionId": "d39e9e24-affb-4259-9a7d-68222f214516",
+      "role": "Implementer",
+      "outcome": "SUCCEEDED"
+    },
+    {
+      "participantId": "participant:6784f4c874e14ad8",
+      "sessionId": "62a25bbe-e53d-44a4-810b-f89daaef4189",
+      "role": "Reviewer",
+      "outcome": "SUCCEEDED"
+    }
+  ]
+}

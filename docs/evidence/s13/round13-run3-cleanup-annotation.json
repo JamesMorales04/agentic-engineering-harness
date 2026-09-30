@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 13,
+  "generatedAt": "2026-09-28T23:12:00Z",
+  "finding": "R12-F3",
+  "classification": "LEAD_OBSERVED_DAEMON_CORROBORATED",
+  "statement": "The Round-12 claim that the run-r12-delegated-3 manual cleanup archived wks_4fefe71e419da3b3 and wks_c12c0d706003413f has no durable archive record. The durable envelope only records workspaceCleanup.skipped=true reason=controller-not-terminal-or-still-alive with those two ids remaining. Round-13 inspected the live Paseo workspace inventory (94 active workspaces) and neither id is present, so the workspaces were indeed removed after the envelope was written; this is corroboration, not an archive receipt.",
+  "durableEnvelope": "docs/evidence/s13/governed-lanes/round-12/run-r12-delegated-3/change-delegated.json (workspaceCleanup.skipped=true, remaining=[wks_4fefe71e419da3b3,wks_c12c0d706003413f])",
+  "round13Query": {
+    "observedAt": "2026-09-28T23:12:00Z",
+    "workspaceCount": 94,
+    "wks_4fefe71e419da3b3": "ABSENT",
+    "wks_c12c0d706003413f": "ABSENT"
+  },
+  "limitation": "No archive command receipt exists for the manual cleanup; the absence from the live inventory is the strongest available evidence and is recorded as such.",
+  "sanitized": true
+}

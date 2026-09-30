@@ -1,0 +1,10 @@
+import type { HarnessProjectConfig } from "../core/types.js";
+import type { ToolchainConfig, ToolchainLock, ToolchainState } from "./types.js";
+export declare function toolchainConfigPath(config: HarnessProjectConfig): string;
+export declare function toolchainLockPath(config: HarnessProjectConfig, toolchain: ToolchainConfig): string;
+export declare function toolchainStatePath(config: HarnessProjectConfig, toolchain: ToolchainConfig): string;
+export declare function generatedMisePath(config: HarnessProjectConfig, toolchain: ToolchainConfig): string;
+export declare function loadToolchainConfig(root: string, config: HarnessProjectConfig): Promise<ToolchainConfig>;
+export declare function loadToolchainLock(root: string, config: HarnessProjectConfig, toolchain: ToolchainConfig): Promise<ToolchainLock | undefined>;
+export declare function loadToolchainState(root: string, config: HarnessProjectConfig, toolchain: ToolchainConfig): Promise<ToolchainState | undefined>;
+export declare function writeJsonFile(file: string, value: unknown): Promise<void>;

@@ -1,0 +1,198 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 21,
+  "runId": "r21-dist-11",
+  "capability": "distributed",
+  "kind": "change",
+  "providerPath": "FULL_OPERATION_REAL_PASEO",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13GovernedOperationCampaign.mjs",
+        "sha256": "4fc7b11c3462f6abca836b27ff10dbc3931a60c1edbe5a04bd355a39637d7dda"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "e2279bbba1400319294506c55cf34ab58669fa140cc49e93962bd9ee6c6b3c27"
+  },
+  "startedAt": "2026-09-30T02:11:45.767Z",
+  "candidateBinding": {
+    "packedArtifact": "agentic-engineering-harness-0.8.4.tgz",
+    "packedArtifactDigest": "5d1967ff7ded3d141121306b9dbf9f5eb43e54af92a903f0c6d7fd4eeb33f071",
+    "packedBuild": {
+      "releaseId": "release-1790734279441-706631-25b751e0",
+      "buildDigest": "e9a8862130319a82f458fc497305e05e44a1d007848938d2245966039d33b488",
+      "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+      "packageVersion": "0.8.4"
+    },
+    "fixtureTreeDigest": "691325057502c48ae2ce4fb7b77023d747085511f1d843c9a072deac414449df",
+    "fixtureCommit": "78f84cfa9378c8d1d4d76888a015774d1f04a742"
+  },
+  "start": {
+    "argv": [
+      "change",
+      "Deliver a two-module feature in the greeting fixture: (1) a new module src/farewell.mjs exporting function farewell(name) that returns `Goodbye, ${name}!`, and (2) an `export const FAREWELL = \"bye\";` line in src/greeting.mjs. Keep the existing greet export and behavior unchanged. The configured validators must pass.",
+      ".",
+      "--title",
+      "Distributed farewell module and export",
+      "--accept",
+      "node scripts/validate.mjs and node scripts/contract.mjs pass with the farewell module and FAREWELL export"
+    ],
+    "exitCode": 1,
+    "stdout": "",
+    "stderr": "file:///tmp/aeh-s13-gov-xbTcEn/work/lane-distributed-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790734279441-706631-25b751e0/semantic/assessment.js:433\n                    throw new AehError(\"SEMANTIC_ASSESSMENT_UNAVAILABLE\", `Paseo Semantic Assessor execution failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error });\n                          ^\n\nAehError: SEMANTIC_ASSESSMENT_UNAVAILABLE: Paseo Semantic Assessor execution failed: OpenCode server.connected event; your message was not sent. opencode-stream attempt=5 phase=first-record elapsedMs=49067 lastOutcome=error lastError=\"fetch failed\"\n    at SemanticAssessmentServiceV1.assess (file:///tmp/aeh-s13-gov-xbTcEn/work/lane-distributed-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790734279441-706631-25b751e0/semantic/assessment.js:433:27)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async triageChangeWithSemanticAssessment (file:///tmp/aeh-s13-gov-xbTcEn/work/lane-distributed-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790734279441-706631-25b751e0/core/triage.js:78:24)\n    at async resolveChangePreflightV1 (file:///tmp/aeh-s13-gov-xbTcEn/work/lane-distributed-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790734279441-706631-25b751e0/operations/change.js:43:20)\n    at async startDetachedOperation (file:///tmp/aeh-s13-gov-xbTcEn/work/lane-distributed-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790734279441-706631-25b751e0/operations/controller.js:46:27)\n    at async runOperationStart (file:///tmp/aeh-s13-gov-xbTcEn/work/lane-distributed-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790734279441-706631-25b751e0/main.js:139:20)\n    at async file:///tmp/aeh-s13-gov-xbTcEn/work/lane-distributed-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790734279441-706631-25b75",
+    "leadAgentId": "a6e36b06-127c-4ec2-9e62-1d609b765426"
+  },
+  "result": "FAIL",
+  "error": "Error: operation start did not report an operationId: file:///tmp/aeh-s13-gov-xbTcEn/work/lane-distributed-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790734279441-706631-25b751e0/semantic/assessment.js:433\n                    throw new AehError(\"SEMANTIC_ASSESSMENT_UNAVAILABLE\", `Paseo Semantic Assessor execution failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error });\n                          ^\n\nAehError: SEMANTIC_ASSESSMENT_UNAVAILABLE: Paseo Semantic Assessor execution failed: OpenCode server.connected event; your message was not sent. opencode-stream attempt=5 phase=first-record elapsedMs=49067 lastOutcome=error lastError=\"fetch failed\"\n    at SemanticAssessmentServiceV1.assess (file:///tmp/aeh-s13-gov-xbTcEn/work/lane-distributed-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790734279441-706631-25b751e0/semantic/assessment.js:433:27)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async triageChangeWithSemanticAssessment (file:///tmp/aeh-s13-gov-xbTcEn/work/lane-distributed-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790734279441-706631-25b751e0/core/triage.js:78:24)\n    at async resolveChangePreflightV1 (file:///tmp/aeh-s13-gov-xbTcEn/work/lane-distributed-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790734279441-706631-25b751e0/operations/change.js:43:20)\n    at async startDetachedOperation (file:///tmp/aeh-s13-gov-xbTcEn/work/lane-distributed-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790734279441-706631-25b751e0/operations/controller.js:46:27)\n    at async runOperationStart (file:///tmp/aeh-s13-gov-xbTcEn/work/lane-distributed-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790734279441-706631-25b751e0/main.js:139:20)\n    at async file:///tmp/aeh-s13-gov-xbTcEn/work/lane-distributed-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790734279441-706631-25b751e0/main.js:36:5 {\n  code: 'SEMANTIC_ASSESSMENT_UNAVAILABLE',\n  details: undefined,\n  cause: Error: OpenCode server.connected event; your message was not sent. opencode-stream attempt=5 phase=first-record elapsedMs=49067 lastOutcome=error lastError=\"fetch failed\"\n      at DaemonClient.createAgent (file:///home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1%7Eaube%7Eb089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/daemon-client.js:1558:19)\n      at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n      at async createAgent (file:///home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1%7Eaube%7Eb089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/index.js:84:23)\n      at async createPaseoSdkAgentWithClient (file:///tmp/aeh-s13-gov-xbTcEn/work/lane-distributed-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790734279441-706631-25b751e0/paseo/sdk.js:54:20)\n      at async withPaseoClient (file:///tmp/aeh-s13-gov-xbTcEn/work/lane-distributed-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790734279441-706631-25b751e0/paseo/sdk.js:293:16)\n      at async Object.createPaseoSdkAgent [as create] (file:///tmp/aeh-s13-gov-xbTcEn/work/lane-distributed-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790734279441-706631-25b751e0/paseo/sdk.js:39:20)\n      at async launchManagedPaseoAgent (file:///tmp/aeh-s13-gov-xbTcEn/work/lane-distributed-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790734279441-706631-25b751e0/paseo/runtimeCore.js:43:37)\n      at async PaseoSemanticAssessmentRunnerV1.assess (file:///tmp/aeh-s13-gov-xbTcEn/work/lane-distributed-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790734279441-706631-25b751e0/semantic/runtime.js:72:24)\n      at async SemanticAssessmentServiceV1.assess (file:///tmp/aeh-s13-gov-xbTcEn/work/lane-distributed-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790734279441-706631-25b751e0/semantic/assessment.js:429:23)\n      at async triageChangeWithSemanticAssessment (file:///tmp/aeh-s13-gov-xbTcEn/work/lane-distributed-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790734279441-706631-25b751e0/core/triage.js:78:24)\n}\n\nNode.js v22.23.2\n    at file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13GovernedOperationCampaign.mjs:1287:29",
+  "workspaceInventory": [
+    {
+      "workspaceId": "wks_0406c3da6e58ae3b",
+      "project": "lane-distributed-fixture",
+      "cwd": "/tmp/aeh-s13-gov-m1Zn7z/work/lane-distributed-fixture",
+      "laneCreated": false
+    },
+    {
+      "workspaceId": "wks_0f8e543a039b4766",
+      "project": "lane-distributed-fixture",
+      "cwd": "/tmp/aeh-s13-gov-22O2CK/work/lane-distributed-fixture",
+      "laneCreated": false
+    },
+    {
+      "workspaceId": "wks_2f7653997fd2e686",
+      "project": "lane-distributed-fixture",
+      "cwd": "/tmp/aeh-s13-gov-m1Zn7z/work/lane-distributed-fixture",
+      "laneCreated": false
+    },
+    {
+      "workspaceId": "wks_3a2d87c3cb74c4b7",
+      "project": "lane-distributed-fixture",
+      "cwd": "/home/james/.paseo/worktrees/1vptvchw/aeh-change-20260930t003106z-36b74caa",
+      "laneCreated": false
+    },
+    {
+      "workspaceId": "wks_3c6d058f5927b2d1",
+      "project": "lane-distributed-fixture",
+      "cwd": "/tmp/aeh-s13-gov-xbTcEn/work/lane-distributed-fixture",
+      "laneCreated": true
+    },
+    {
+      "workspaceId": "wks_5e3f2575f0bd04a4",
+      "project": "lane-distributed-fixture",
+      "cwd": "/home/james/.paseo/worktrees/27hzebh5/aeh-change-20260930t003557z-36b74caa",
+      "laneCreated": false
+    },
+    {
+      "workspaceId": "wks_6351fc521f570fd5",
+      "project": "lane-distributed-fixture",
+      "cwd": "/tmp/aeh-s13-gov-22O2CK/work/lane-distributed-fixture",
+      "laneCreated": false
+    },
+    {
+      "workspaceId": "wks_8922576d498086cc",
+      "project": "lane-distributed-fixture",
+      "cwd": "/tmp/aeh-s13-gov-YRDk85/work/lane-distributed-fixture",
+      "laneCreated": false
+    },
+    {
+      "workspaceId": "wks_a37297062f4df150",
+      "project": "lane-distributed-fixture",
+      "cwd": "/home/james/.paseo/worktrees/1b069bzd/aeh-change-20260929t170919z-36b74caa",
+      "laneCreated": false
+    },
+    {
+      "workspaceId": "wks_c8e856c0789d4f79",
+      "project": "lane-distributed-fixture",
+      "cwd": "/tmp/aeh-s13-gov-1si4N7/work/lane-distributed-fixture",
+      "laneCreated": false
+    },
+    {
+      "workspaceId": "wks_d3e51acf425dc8da",
+      "project": "lane-distributed-fixture",
+      "cwd": "/tmp/aeh-s13-gov-YRDk85/work/lane-distributed-fixture",
+      "laneCreated": false
+    },
+    {
+      "workspaceId": "wks_e2fd5599b5f1e53b",
+      "project": "lane-distributed-fixture",
+      "cwd": "/tmp/aeh-s13-gov-sfHOGq/work/lane-distributed-fixture",
+      "laneCreated": false
+    },
+    {
+      "workspaceId": "wks_e544936139cb43a5",
+      "project": "lane-distributed-fixture",
+      "cwd": "/tmp/aeh-s13-gov-2SKc2l/work/lane-distributed-fixture",
+      "laneCreated": false
+    },
+    {
+      "workspaceId": "wks_fa3b4ee0c9c4bff1",
+      "project": "lane-distributed-fixture",
+      "cwd": "/home/james/.paseo/worktrees/15ndlhfy/aeh-change-20260929t232202z-36b74caa",
+      "laneCreated": false
+    },
+    {
+      "workspaceId": "wks_fddb44533751e856",
+      "project": "lane-distributed-fixture",
+      "cwd": "/home/james/.paseo/worktrees/1nvt4xpb/aeh-change-20260929t224109z-36b74caa",
+      "laneCreated": false
+    }
+  ],
+  "workspaceCleanup": {
+    "skipped": true,
+    "reason": "controller-not-terminal-or-still-alive",
+    "operationTerminal": false,
+    "controllerExited": true,
+    "remaining": [
+      "wks_0406c3da6e58ae3b",
+      "wks_0f8e543a039b4766",
+      "wks_2f7653997fd2e686",
+      "wks_3a2d87c3cb74c4b7",
+      "wks_3c6d058f5927b2d1",
+      "wks_5e3f2575f0bd04a4",
+      "wks_6351fc521f570fd5",
+      "wks_8922576d498086cc",
+      "wks_a37297062f4df150",
+      "wks_c8e856c0789d4f79",
+      "wks_d3e51acf425dc8da",
+      "wks_e2fd5599b5f1e53b",
+      "wks_e544936139cb43a5",
+      "wks_fa3b4ee0c9c4bff1",
+      "wks_fddb44533751e856"
+    ],
+    "accounting": {
+      "inventoryCount": 15,
+      "archivedCount": 0,
+      "remainingCount": 15,
+      "unaccounted": [],
+      "accounted": true
+    }
+  },
+  "leadAgentCleanup": {
+    "agentId": "a6e36b06-127c-4ec2-9e62-1d609b765426",
+    "exitCode": 0
+  },
+  "checkoutProof": {
+    "trackedDigestBefore": "dc180d079163776a729e4d723288253f8108f941af8111559c748312f1e5dbbc",
+    "trackedDigestAfter": "dc180d079163776a729e4d723288253f8108f941af8111559c748312f1e5dbbc",
+    "trackedFiles": 668,
+    "checkoutUntouched": true,
+    "postRunTrackedDocEditWindow": {
+      "opensAfterLaneFinish": true,
+      "note": "S13 tracked documentation/evidence is edited after lane execution; the recorded digest is the source-tree digest at lane end (R11-F6)."
+    }
+  },
+  "finishedAt": "2026-09-30T02:12:55.579Z",
+  "durationMs": 69812
+}

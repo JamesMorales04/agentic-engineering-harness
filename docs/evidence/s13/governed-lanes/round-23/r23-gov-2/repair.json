@@ -1,0 +1,865 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 23,
+  "runId": "r23-gov-2",
+  "capability": "repair",
+  "kind": "change",
+  "providerPath": "FULL_OPERATION_REAL_PASEO",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13GovernedOperationCampaign.mjs",
+        "sha256": "b455b6c55165fddda6e39afd51e63687f0d7ba14ad2257f6b7c64cffe29699b1"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "1ec20d34d53dc871d399efc95775a06f26a4159fd59555b0461591a89910a130"
+  },
+  "startedAt": "2026-09-30T14:20:13.969Z",
+  "candidateBinding": {
+    "packedArtifact": "agentic-engineering-harness-0.8.4.tgz",
+    "packedArtifactDigest": "8bc34dffc8eee44fb01f49bd5bfbd4384e930199843e8320c87dd095a72663a6",
+    "packedBuild": {
+      "releaseId": "release-1790777995797-17447-cf0deb7a",
+      "buildDigest": "599ed363223ff2dd85e17296c9f34c4134bf83e363916c4c57d7e7492ccbdf45",
+      "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+      "packageVersion": "0.8.4"
+    },
+    "fixtureTreeDigest": "9f3cdd2b6798c00594329ddc3798d95e0c6b5d4a08114b7793263eea4f33ae88",
+    "fixtureCommit": "2df6dfc08491dc437257ae1cf508ef51cf262739"
+  },
+  "start": {
+    "argv": [
+      "change",
+      "Document the public greeting API with JSDoc comments: add a short JSDoc comment above greet() in src/greeting.mjs and above farewell() in src/farewell.mjs. Keep the greet() and farewell() functions and the public export surface unchanged; the configured validators define acceptance and must pass.",
+      ".",
+      "--file",
+      "src/*.mjs",
+      "--title",
+      "Document the greeting API",
+      "--accept",
+      "src/greeting.mjs documents greet() with a JSDoc comment and node scripts/validate.mjs passes",
+      "--accept",
+      "src/farewell.mjs documents farewell() with a JSDoc comment and node scripts/contract.mjs passes"
+    ],
+    "exitCode": 0,
+    "stdout": "operationId=CHANGE-20260930T142034Z-8e5ffed1\nkind=change\nstatus=QUEUED\nphase=dispatched\nrevision=5\nprogress=0/0 completed, 0 running, 0 failed, 0 blocked",
+    "stderr": "",
+    "operationId": "CHANGE-20260930T142034Z-8e5ffed1",
+    "leadAgentId": "17bc76fc-7d7f-479a-bc53-daa02374d128"
+  },
+  "stageTrace": [
+    {
+      "at": "2026-09-30T14:20:34.816Z",
+      "status": "QUEUED",
+      "phase": "dispatched",
+      "revision": 5,
+      "stages": {
+        "queued": "RUNNING"
+      }
+    },
+    {
+      "at": "2026-09-30T14:20:42.953Z",
+      "status": "RUNNING",
+      "phase": "context",
+      "revision": 25,
+      "stages": {
+        "queued": "RUNNING",
+        "input-resolution": "COMPLETED",
+        "triage": "COMPLETED",
+        "environment-preflight": "SKIPPED",
+        "context": "RUNNING"
+      },
+      "stageMessages": {
+        "input-resolution": "No external durable inputs referenced.",
+        "triage": "DELEGATED/NONE: scope requires concrete file paths, not wildcard paths: src/*.mjs",
+        "environment-preflight": "Canonical direct/delegated routes do not require formal SDD authoring."
+      }
+    },
+    {
+      "at": "2026-09-30T14:20:51.216Z",
+      "status": "FAILED",
+      "phase": "failed",
+      "revision": 35,
+      "stages": {
+        "queued": "RUNNING",
+        "input-resolution": "COMPLETED",
+        "triage": "COMPLETED",
+        "environment-preflight": "SKIPPED",
+        "context": "RUNNING",
+        "finished": "FAILED"
+      },
+      "stageMessages": {
+        "input-resolution": "No external durable inputs referenced.",
+        "triage": "DELEGATED/NONE: scope requires concrete file paths, not wildcard paths: src/*.mjs",
+        "environment-preflight": "Canonical direct/delegated routes do not require formal SDD authoring."
+      }
+    }
+  ],
+  "workspaceWatch": {
+    "transitions": [],
+    "finalStates": {
+      "/tmp/aeh-s13-gov-lpmSWs/work/lane-repair-fixture": [
+        ".gitignore",
+        ".harness/agents.source.jsonc",
+        ".harness/otel-collector.yaml",
+        ".harness/project.yaml",
+        ".harness/provider-versions.json",
+        ".harness/toolchain.yaml",
+        "AGENTS.md",
+        "README.md",
+        "openspec/config.yaml",
+        "package.json",
+        "scripts/architecture.mjs",
+        "scripts/contract.mjs",
+        "scripts/validate.mjs",
+        "src/config.mjs",
+        "src/constants.mjs",
+        "src/farewell.mjs",
+        "src/format.mjs",
+        "src/greeting.mjs",
+        "src/index.mjs"
+      ],
+      "/home/james/.paseo/worktrees/3si5zdi6/aeh-change-20260930t142034z-8e5ffed1": [
+        ".gitignore",
+        ".harness/agents.source.jsonc",
+        ".harness/otel-collector.yaml",
+        ".harness/project.yaml",
+        ".harness/provider-versions.json",
+        ".harness/toolchain.yaml",
+        "AGENTS.md",
+        "README.md",
+        "openspec/config.yaml",
+        "package.json",
+        "scripts/architecture.mjs",
+        "scripts/contract.mjs",
+        "scripts/validate.mjs",
+        "src/config.mjs",
+        "src/constants.mjs",
+        "src/farewell.mjs",
+        "src/format.mjs",
+        "src/greeting.mjs",
+        "src/index.mjs"
+      ]
+    }
+  },
+  "terminalRecord": {
+    "status": "FAILED",
+    "phase": "failed",
+    "revision": 35,
+    "error": "Error: AEH_OPERATION_SUPERVISOR_UNAVAILABLE: initialization failed after 2 bounded attempt(s): PASEO_PROVIDER_LEASE_TAKEOVER_BLOCKED: provider lease lease:d4f5dac3-181d-42bf-bbdc-585d4afa257b belongs to another or stale lifecycle without a current-session takeover binding.\n    at ensureOperationSupervisorUnlocked (file:///tmp/aeh-s13-gov-lpmSWs/work/lane-repair-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790777995797-17447-cf0deb7a/operations/supervisor.js:174:11)\n    at async withOperationLock (file:///tmp/aeh-s13-gov-lpmSWs/work/lane-repair-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790777995797-17447-cf0deb7a/operations/state.js:1671:20)\n    at async runChangeOperation (file:///tmp/aeh-s13-gov-lpmSWs/work/lane-repair-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790777995797-17447-cf0deb7a/operations/change.js:126:9)\n    at async executeOperationWithEnvironment (file:///tmp/aeh-s13-gov-lpmSWs/work/lane-repair-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790777995797-17447-cf0deb7a/operations/controller.js:342:28)\n    at async executeOperation (file:///tmp/aeh-s13-gov-lpmSWs/work/lane-repair-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790777995797-17447-cf0deb7a/operations/controller.js:168:16)\n    at async runOperationExecute (file:///tmp/aeh-s13-gov-lpmSWs/work/lane-repair-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790777995797-17447-cf0deb7a/main.js:156:20)\n    at async file:///tmp/aeh-s13-gov-lpmSWs/work/lane-repair-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790777995797-17447-cf0deb7a/main.js:36:5",
+    "finishedAt": "2026-09-30T14:20:44.494Z"
+  },
+  "artifacts": {
+    "acceptance": null,
+    "reviewers": [],
+    "specManagers": [],
+    "participants": [],
+    "failedParticipants": [],
+    "assessments": [
+      {
+        "file": "90f8b3a05a473a1a8c3e547e84566dd14e5582ebd21dc813a7fa2f3936bfda10.json",
+        "sha256": "2aa08513137566a4385719c3a852319df9943aaf6777806ba3a6c1c75d856ee3",
+        "bytes": 5353,
+        "assessmentType": "ROUTE",
+        "mechanism": "MODEL",
+        "digest": null,
+        "modelId": null,
+        "sessionId": null
+      }
+    ],
+    "reviewerArtifactsError": null
+  },
+  "candidateWorkspaceObservations": {
+    "observations": [
+      {
+        "source": "CandidateRevision.worktree",
+        "workspaceId": null,
+        "root": "/home/james/.paseo/worktrees/3si5zdi6/aeh-change-20260930t142034z-8e5ffed1",
+        "expectedSourceDigest": "9f3cdd2b6798c00594329ddc3798d95e0c6b5d4a08114b7793263eea4f33ae88",
+        "observedSourceDigest": "9f3cdd2b6798c00594329ddc3798d95e0c6b5d4a08114b7793263eea4f33ae88",
+        "candidateIdentityDigest": "f64056ab58415e0b993a931edc5b4b30da97ee14073f51930c25b1c813af1d45",
+        "candidateRevision": 2,
+        "status": "MATCH"
+      }
+    ]
+  },
+  "traces": {
+    "paseo": {
+      "total": 17,
+      "entries": [
+        {
+          "at": "2026-09-30T14:20:22.661Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-30T14:20:24.887Z",
+          "name": "harness.paseo.provider.preflight",
+          "attributes": {
+            "ok": true,
+            "provider": "opencode",
+            "model": "opencode-go/gpt-6-luna",
+            "providerStatus": "loading",
+            "source": "paseo-provider-models",
+            "availableModelCount": 67,
+            "message": "Provider opencode model opencode-go/gpt-6-luna passed Paseo preflight."
+          }
+        },
+        {
+          "at": "2026-09-30T14:20:28.637Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-30T14:20:34.678Z",
+          "name": "harness.paseo.agent.wait",
+          "attributes": {
+            "agentId": "66d3a7e6-88c4-4875-9b03-1238334aa218",
+            "source": "paseo-agent-subscription",
+            "status": "idle",
+            "updatesObserved": 0,
+            "baselineAssistant": "absent",
+            "baselineUserMessageAt": "absent",
+            "durationMs": 6028
+          }
+        },
+        {
+          "at": "2026-09-30T14:20:34.688Z",
+          "name": "harness.paseo.agent.wait.completed",
+          "attributes": {
+            "transport": "sdk",
+            "observation": "subscription",
+            "agentId": "66d3a7e6-88c4-4875-9b03-1238334aa218",
+            "status": "idle"
+          }
+        },
+        {
+          "at": "2026-09-30T14:20:37.741Z",
+          "name": "harness.paseo.operation.supervisor.materialized",
+          "attributes": {
+            "operationId": "CHANGE-20260930T142034Z-8e5ffed1",
+            "generation": 1,
+            "agentId": "01627f4b-c5df-4289-98d4-8ec3703d33d9",
+            "revision": 19,
+            "attempt": 1,
+            "status": "INITIALIZING"
+          }
+        },
+        {
+          "at": "2026-09-30T14:20:40.219Z",
+          "name": "harness.paseo.operation.watchdog.started",
+          "attributes": {
+            "operationId": "CHANGE-20260930T142034Z-8e5ffed1",
+            "pollIntervalMs": 15000,
+            "progressWakeIntervalMs": 45000,
+            "stallThresholdMs": 120000,
+            "supervisorStallWakeLimit": 2,
+            "leadWakeLimit": 1,
+            "terminalLeadWakeLimit": 2
+          }
+        },
+        {
+          "at": "2026-09-30T14:20:43.146Z",
+          "name": "harness.paseo.operation.supervisor.initialization-failed",
+          "attributes": {
+            "operationId": "CHANGE-20260930T142034Z-8e5ffed1",
+            "generation": 1,
+            "agentId": "01627f4b-c5df-4289-98d4-8ec3703d33d9",
+            "attempt": 1,
+            "error": "PASEO_PROVIDER_LIFECYCLE_UNCERTAIN: provider call returned without an observable quiescent session; lease lease:d4f5dac3-181d-42bf-bbdc-585d4afa257b remains durable and fenced.",
+            "timeoutSeconds": 120
+          }
+        },
+        {
+          "at": "2026-09-30T14:20:43.903Z",
+          "name": "harness.paseo.operation.supervisor.materialized",
+          "attributes": {
+            "operationId": "CHANGE-20260930T142034Z-8e5ffed1",
+            "generation": 2,
+            "agentId": "19c9fa4e-d033-4cef-a339-95a1f72ef6fc",
+            "revision": 27,
+            "attempt": 2,
+            "status": "INITIALIZING"
+          }
+        },
+        {
+          "at": "2026-09-30T14:20:44.489Z",
+          "name": "harness.paseo.operation.supervisor.initialization-failed",
+          "attributes": {
+            "operationId": "CHANGE-20260930T142034Z-8e5ffed1",
+            "generation": 2,
+            "agentId": "19c9fa4e-d033-4cef-a339-95a1f72ef6fc",
+            "attempt": 2,
+            "error": "PASEO_PROVIDER_LEASE_TAKEOVER_BLOCKED: provider lease lease:d4f5dac3-181d-42bf-bbdc-585d4afa257b belongs to another or stale lifecycle without a current-session takeover binding.",
+            "timeoutSeconds": 120
+          }
+        }
+      ]
+    },
+    "events": {
+      "total": 17,
+      "entries": [
+        {
+          "at": "2026-09-30T14:20:22.689Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-30T14:20:24.895Z",
+          "name": "harness.paseo.provider.preflight",
+          "attributes": {
+            "ok": true,
+            "provider": "opencode",
+            "model": "opencode-go/gpt-6-luna",
+            "providerStatus": "loading",
+            "source": "paseo-provider-models",
+            "availableModelCount": 67,
+            "message": "Provider opencode model opencode-go/gpt-6-luna passed Paseo preflight."
+          }
+        },
+        {
+          "at": "2026-09-30T14:20:28.645Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-30T14:20:34.687Z",
+          "name": "harness.paseo.agent.wait",
+          "attributes": {
+            "agentId": "66d3a7e6-88c4-4875-9b03-1238334aa218",
+            "source": "paseo-agent-subscription",
+            "status": "idle",
+            "updatesObserved": 0,
+            "baselineAssistant": "absent",
+            "baselineUserMessageAt": "absent",
+            "durationMs": 6028
+          }
+        },
+        {
+          "at": "2026-09-30T14:20:34.698Z",
+          "name": "harness.paseo.agent.wait.completed",
+          "attributes": {
+            "transport": "sdk",
+            "observation": "subscription",
+            "agentId": "66d3a7e6-88c4-4875-9b03-1238334aa218",
+            "status": "idle"
+          }
+        },
+        {
+          "at": "2026-09-30T14:20:37.749Z",
+          "name": "harness.paseo.operation.supervisor.materialized",
+          "attributes": {
+            "operationId": "CHANGE-20260930T142034Z-8e5ffed1",
+            "generation": 1,
+            "agentId": "01627f4b-c5df-4289-98d4-8ec3703d33d9",
+            "revision": 19,
+            "attempt": 1,
+            "status": "INITIALIZING"
+          }
+        },
+        {
+          "at": "2026-09-30T14:20:40.234Z",
+          "name": "harness.paseo.operation.watchdog.started",
+          "attributes": {
+            "operationId": "CHANGE-20260930T142034Z-8e5ffed1",
+            "pollIntervalMs": 15000,
+            "progressWakeIntervalMs": 45000,
+            "stallThresholdMs": 120000,
+            "supervisorStallWakeLimit": 2,
+            "leadWakeLimit": 1,
+            "terminalLeadWakeLimit": 2
+          }
+        },
+        {
+          "at": "2026-09-30T14:20:43.158Z",
+          "name": "harness.paseo.operation.supervisor.initialization-failed",
+          "attributes": {
+            "operationId": "CHANGE-20260930T142034Z-8e5ffed1",
+            "generation": 1,
+            "agentId": "01627f4b-c5df-4289-98d4-8ec3703d33d9",
+            "attempt": 1,
+            "error": "PASEO_PROVIDER_LIFECYCLE_UNCERTAIN: provider call returned without an observable quiescent session; lease lease:d4f5dac3-181d-42bf-bbdc-585d4afa257b remains durable and fenced.",
+            "timeoutSeconds": 120
+          }
+        },
+        {
+          "at": "2026-09-30T14:20:43.907Z",
+          "name": "harness.paseo.operation.supervisor.materialized",
+          "attributes": {
+            "operationId": "CHANGE-20260930T142034Z-8e5ffed1",
+            "generation": 2,
+            "agentId": "19c9fa4e-d033-4cef-a339-95a1f72ef6fc",
+            "revision": 27,
+            "attempt": 2,
+            "status": "INITIALIZING"
+          }
+        },
+        {
+          "at": "2026-09-30T14:20:44.493Z",
+          "name": "harness.paseo.operation.supervisor.initialization-failed",
+          "attributes": {
+            "operationId": "CHANGE-20260930T142034Z-8e5ffed1",
+            "generation": 2,
+            "agentId": "19c9fa4e-d033-4cef-a339-95a1f72ef6fc",
+            "attempt": 2,
+            "error": "PASEO_PROVIDER_LEASE_TAKEOVER_BLOCKED: provider lease lease:d4f5dac3-181d-42bf-bbdc-585d4afa257b belongs to another or stale lifecycle without a current-session takeover binding.",
+            "timeoutSeconds": 120
+          }
+        }
+      ]
+    }
+  },
+  "routeDiagnostics": {
+    "classification": "HYBRID",
+    "plannerAssessmentMechanism": "MODEL",
+    "routeGateMechanism": "DETERMINISTIC",
+    "participantArtifacts": [],
+    "triageEscalatedEvents": []
+  },
+  "candidateAssemblyReceipts": null,
+  "operation": {
+    "id": "CHANGE-20260930T142034Z-8e5ffed1",
+    "status": "FAILED",
+    "phase": "failed",
+    "kind": "change",
+    "intent": {
+      "request": "Document the public greeting API with JSDoc comments: add a short JSDoc comment above greet() in src/greeting.mjs and above farewell() in src/farewell.mjs. Keep the greet() and farewell() functions and the public export surface unchanged; the configured validators define acceptance and must pass.",
+      "classification": "CHANGE",
+      "route": "DELEGATED",
+      "assurance": "NONE",
+      "priority": 50,
+      "semanticDecision": {
+        "version": 1,
+        "source": "explicit-cli",
+        "intent": "change",
+        "requestedOutcome": "Document the public greeting API with JSDoc comments: add a short JSDoc comment above greet() in src/greeting.mjs and above farewell() in src/farewell.mjs. Keep the greet() and farewell() functions and the public export surface unchanged; the configured validators define acceptance and must pass.",
+        "effects": {
+          "evaluate": false,
+          "mutateRepository": true,
+          "executePreparedTask": false,
+          "deliver": false
+        },
+        "resolution": "resolved"
+      },
+      "risk": "low"
+    },
+    "revision": 35,
+    "operationExecutionRevision": 2,
+    "controllerPid": 18598,
+    "error": "Error: AEH_OPERATION_SUPERVISOR_UNAVAILABLE: initialization failed after 2 bounded attempt(s): PASEO_PROVIDER_LEASE_TAKEOVER_BLOCKED: provider lease lease:d4f5dac3-181d-42bf-bbdc-585d4afa257b belongs to another or stale lifecycle without a current-session takeover binding.\n    at ensureOperationSupervisorUnlocked (file:///tmp/aeh-s13-gov-lpmSWs/work/lane-repair-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790777995797-17447-cf0deb7a/operations/supervisor.js:174:11)\n    at async withOperationLock (file:///tmp/aeh-s13-gov-lpmSWs/work/lane-repair-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790777995797-17447-cf0deb7a/operations/state.js:1671:20)\n    at async runChangeOperation (file:///tmp/aeh-s13-gov-lpmSWs/work/lane-repair-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790777995797-17447-cf0deb7a/operations/change.js:126:9)\n    at async executeOperationWithEnvironment (file:///tmp/aeh-s13-gov-lpmSWs/work/lane-repair-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790777995797-17447-cf0deb7a/operations/controller.js:342:28)\n    at async executeOperation (file:///tmp/aeh-s13-gov-lpmSWs/work/lane-repair-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790777995797-17447-cf0deb7a/operations/controller.js:168:16)\n    at async runOperationExecute (file:///tmp/aeh-s13-gov-lpmSWs/work/lane-repair-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790777995797-17447-cf0deb7a/main.js:156:20)\n    at async file:///tmp/aeh-s13-gov-lpmSWs/work/lane-repair-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790777995797-17447-cf0deb7a/main.js:36:5",
+    "candidateRevision": {
+      "operationId": "CHANGE-20260930T142034Z-8e5ffed1",
+      "candidateId": "candidate:CHANGE-20260930T142034Z-8e5ffed1:r2",
+      "projectId": "project:f957802d847abccd0dc8eb20",
+      "taskId": "CHANGE-20260930T142034Z-8e5ffed1",
+      "revision": 2,
+      "parentCandidateId": "candidate:CHANGE-20260930T142034Z-8e5ffed1:r1",
+      "sourceDigest": "9f3cdd2b6798c00594329ddc3798d95e0c6b5d4a08114b7793263eea4f33ae88",
+      "workspace": "wks_24a6379672891604",
+      "worktree": "/home/james/.paseo/worktrees/3si5zdi6/aeh-change-20260930t142034z-8e5ffed1",
+      "createdAt": "2026-09-30T14:20:36.365Z",
+      "version": 1,
+      "canonicalIdentity": "{\"candidateId\":\"candidate:CHANGE-20260930T142034Z-8e5ffed1:r2\",\"createdAt\":\"2026-09-30T14:20:36.365Z\",\"operationId\":\"CHANGE-20260930T142034Z-8e5ffed1\",\"parentCandidateId\":\"candidate:CHANGE-20260930T142034Z-8e5ffed1:r1\",\"projectId\":\"project:f957802d847abccd0dc8eb20\",\"revision\":2,\"sourceDigest\":\"9f3cdd2b6798c00594329ddc3798d95e0c6b5d4a08114b7793263eea4f33ae88\",\"taskId\":\"CHANGE-20260930T142034Z-8e5ffed1\",\"version\":1,\"workspace\":\"wks_24a6379672891604\",\"worktree\":\"/home/james/.paseo/worktrees/3si5zdi6/aeh-change-20260930t142034z-8e5ffed1\"}",
+      "identityDigest": "f64056ab58415e0b993a931edc5b4b30da97ee14073f51930c25b1c813af1d45"
+    },
+    "participants": {},
+    "candidateAssemblyReceipts": null,
+    "supervision": {
+      "required": true,
+      "materialized": true,
+      "generations": [
+        {
+          "generation": 1,
+          "status": "FAILED",
+          "agentId": "01627f4b-c5df-4289-98d4-8ec3703d33d9",
+          "contextRatio": null,
+          "drainingAt": null
+        },
+        {
+          "generation": 2,
+          "status": "FAILED",
+          "agentId": "19c9fa4e-d033-4cef-a339-95a1f72ef6fc",
+          "contextRatio": null,
+          "drainingAt": null
+        }
+      ]
+    },
+    "stages": {
+      "queued": "RUNNING",
+      "input-resolution": "COMPLETED",
+      "triage": "COMPLETED",
+      "environment-preflight": "SKIPPED",
+      "context": "RUNNING",
+      "finished": "FAILED"
+    }
+  },
+  "sessionReceipts": [
+    {
+      "agentId": "01627f4b-c5df-4289-98d4-8ec3703d33d9",
+      "inspectExitCode": 0,
+      "provider": "codex",
+      "model": "gpt-6-luna",
+      "thinkingOptionId": "xhigh",
+      "status": "closed",
+      "sessionId": null,
+      "modeId": "auto",
+      "lastUsage": null,
+      "labels": null,
+      "createdAt": "2026-09-30T14:20:37.398Z",
+      "updatedAt": "2026-09-30T14:20:42.712Z"
+    },
+    {
+      "agentId": "19c9fa4e-d033-4cef-a339-95a1f72ef6fc",
+      "inspectExitCode": 0,
+      "provider": "codex",
+      "model": "gpt-6-luna",
+      "thinkingOptionId": "xhigh",
+      "status": "closed",
+      "sessionId": null,
+      "modeId": "auto",
+      "lastUsage": null,
+      "labels": null,
+      "createdAt": "2026-09-30T14:20:43.702Z",
+      "updatedAt": "2026-09-30T14:20:44.077Z"
+    }
+  ],
+  "oracle": {
+    "checks": [
+      {
+        "id": "operation.terminal-succeeded",
+        "status": "FAIL",
+        "required": true,
+        "message": "operation status=FAILED",
+        "evidence": {}
+      },
+      {
+        "id": "operation.candidate-bound",
+        "status": "PASS",
+        "required": true,
+        "message": "candidate revision identity digest is bound",
+        "evidence": {
+          "revision": 2
+        }
+      },
+      {
+        "id": "operation.participant-receipts",
+        "status": "FAIL",
+        "required": true,
+        "message": "0 terminal participant receipt(s) persisted",
+        "evidence": {}
+      },
+      {
+        "id": "operation.revision-current",
+        "status": "PASS",
+        "required": true,
+        "message": "operation execution revision is durable",
+        "evidence": {}
+      },
+      {
+        "id": "repair.failure-packet",
+        "status": "FAIL",
+        "required": true,
+        "message": "0 repair packet(s); failures=none; repair starts=0",
+        "evidence": {
+          "packetFile": null,
+          "packet": null,
+          "repairEvents": []
+        }
+      },
+      {
+        "id": "repair.oracle-recheck",
+        "status": "FAIL",
+        "required": true,
+        "message": "oracle=missing repairFinishes=none candidateRevision=2",
+        "evidence": {}
+      },
+      {
+        "id": "product-repair.repair-packet",
+        "status": "FAIL",
+        "required": true,
+        "message": "bounded product repair packet persisted (missing)",
+        "evidence": {}
+      },
+      {
+        "id": "product-repair.scope-check",
+        "status": "PASS",
+        "required": true,
+        "message": "0 changed file(s), 0 outside frozen contract scope [**]",
+        "evidence": {
+          "changedFiles": [],
+          "scopes": [
+            "**"
+          ],
+          "outOfScope": []
+        }
+      }
+    ],
+    "applicableChecks": [
+      {
+        "id": "repair.failure-packet",
+        "status": "FAIL",
+        "required": true,
+        "message": "0 repair packet(s); failures=none; repair starts=0",
+        "evidence": {
+          "packetFile": null,
+          "packet": null,
+          "repairEvents": []
+        }
+      },
+      {
+        "id": "repair.oracle-recheck",
+        "status": "FAIL",
+        "required": true,
+        "message": "oracle=missing repairFinishes=none candidateRevision=2",
+        "evidence": {}
+      },
+      {
+        "id": "product-repair.repair-packet",
+        "status": "FAIL",
+        "required": true,
+        "message": "bounded product repair packet persisted (missing)",
+        "evidence": {}
+      },
+      {
+        "id": "product-repair.scope-check",
+        "status": "PASS",
+        "required": true,
+        "message": "0 changed file(s), 0 outside frozen contract scope [**]",
+        "evidence": {
+          "changedFiles": [],
+          "scopes": [
+            "**"
+          ],
+          "outOfScope": []
+        }
+      }
+    ],
+    "rowResults": {
+      "repair": "FAIL",
+      "product-repair": "FAIL"
+    },
+    "detail": {
+      "checks": [
+        {
+          "id": "operation.terminal-succeeded",
+          "status": "FAIL",
+          "required": true,
+          "message": "operation status=FAILED",
+          "evidence": {}
+        },
+        {
+          "id": "operation.candidate-bound",
+          "status": "PASS",
+          "required": true,
+          "message": "candidate revision identity digest is bound",
+          "evidence": {
+            "revision": 2
+          }
+        },
+        {
+          "id": "operation.participant-receipts",
+          "status": "FAIL",
+          "required": true,
+          "message": "0 terminal participant receipt(s) persisted",
+          "evidence": {}
+        },
+        {
+          "id": "operation.revision-current",
+          "status": "PASS",
+          "required": true,
+          "message": "operation execution revision is durable",
+          "evidence": {}
+        },
+        {
+          "id": "repair.failure-packet",
+          "status": "FAIL",
+          "required": true,
+          "message": "0 repair packet(s); failures=none; repair starts=0",
+          "evidence": {
+            "packetFile": null,
+            "packet": null,
+            "repairEvents": []
+          }
+        },
+        {
+          "id": "repair.oracle-recheck",
+          "status": "FAIL",
+          "required": true,
+          "message": "oracle=missing repairFinishes=none candidateRevision=2",
+          "evidence": {}
+        },
+        {
+          "id": "product-repair.repair-packet",
+          "status": "FAIL",
+          "required": true,
+          "message": "bounded product repair packet persisted (missing)",
+          "evidence": {}
+        },
+        {
+          "id": "product-repair.scope-check",
+          "status": "PASS",
+          "required": true,
+          "message": "0 changed file(s), 0 outside frozen contract scope [**]",
+          "evidence": {
+            "changedFiles": [],
+            "scopes": [
+              "**"
+            ],
+            "outOfScope": []
+          }
+        }
+      ],
+      "rows": {
+        "repair": [
+          "repair.failure-packet",
+          "repair.oracle-recheck"
+        ],
+        "product-repair": [
+          "product-repair.repair-packet",
+          "product-repair.scope-check"
+        ]
+      },
+      "repairPackets": [],
+      "repairEvents": [],
+      "changedFiles": [],
+      "scopes": [
+        "**"
+      ]
+    }
+  },
+  "terminal": {
+    "status": "FAILED",
+    "bounded": true,
+    "lateTerminal": null
+  },
+  "result": "FAIL",
+  "workspaceInventory": [
+    {
+      "workspaceId": "wks_020f7bac76ed4974",
+      "project": "lane-repair-fixture",
+      "cwd": "/home/james/.paseo/worktrees/3vdj0p8c/aeh-change-20260930t083151z-cf2b9332",
+      "laneCreated": false
+    },
+    {
+      "workspaceId": "wks_05d05b809aed2f8f",
+      "project": "lane-repair-fixture",
+      "cwd": "/home/james/.paseo/worktrees/003ktfuu/aeh-change-20260930t075828z-cf2b9332",
+      "laneCreated": false
+    },
+    {
+      "workspaceId": "wks_24a6379672891604",
+      "project": "lane-repair-fixture",
+      "cwd": "/home/james/.paseo/worktrees/3si5zdi6/aeh-change-20260930t142034z-8e5ffed1",
+      "laneCreated": true
+    },
+    {
+      "workspaceId": "wks_6b46303403d18ee9",
+      "project": "lane-repair-fixture",
+      "cwd": "/tmp/aeh-s13-gov-lpmSWs/work/lane-repair-fixture",
+      "laneCreated": true
+    },
+    {
+      "workspaceId": "wks_767a74b4ec71b23a",
+      "project": "lane-repair-fixture",
+      "cwd": "/home/james/.paseo/worktrees/1lyyw77w/aeh-change-20260930t072457z-cf2b9332",
+      "laneCreated": false
+    }
+  ],
+  "workspaceCleanup": {
+    "archived": [
+      {
+        "workspaceId": "wks_24a6379672891604",
+        "project": "lane-repair-fixture",
+        "cwd": "/home/james/.paseo/worktrees/3si5zdi6/aeh-change-20260930t142034z-8e5ffed1",
+        "exitCode": 0
+      },
+      {
+        "workspaceId": "wks_6b46303403d18ee9",
+        "project": "lane-repair-fixture",
+        "cwd": "/tmp/aeh-s13-gov-lpmSWs/work/lane-repair-fixture",
+        "exitCode": 0
+      }
+    ],
+    "preExistingUntouched": [
+      {
+        "workspaceId": "wks_020f7bac76ed4974",
+        "cwd": "/home/james/.paseo/worktrees/3vdj0p8c/aeh-change-20260930t083151z-cf2b9332"
+      },
+      {
+        "workspaceId": "wks_05d05b809aed2f8f",
+        "cwd": "/home/james/.paseo/worktrees/003ktfuu/aeh-change-20260930t075828z-cf2b9332"
+      },
+      {
+        "workspaceId": "wks_767a74b4ec71b23a",
+        "cwd": "/home/james/.paseo/worktrees/1lyyw77w/aeh-change-20260930t072457z-cf2b9332"
+      }
+    ],
+    "remaining": [
+      "wks_020f7bac76ed4974",
+      "wks_05d05b809aed2f8f",
+      "wks_767a74b4ec71b23a"
+    ],
+    "accounting": {
+      "inventoryCount": 5,
+      "archivedCount": 2,
+      "remainingCount": 3,
+      "unaccounted": [],
+      "accounted": true
+    }
+  },
+  "postCampaignOperationRead": {
+    "operationId": "CHANGE-20260930T142034Z-8e5ffed1",
+    "observedAt": "2026-09-30T14:20:55.386Z",
+    "observationWindowMs": 0,
+    "observations": 1,
+    "status": "FAILED",
+    "phase": "failed",
+    "revision": 35,
+    "controllerPid": 18598,
+    "controllerAlive": false,
+    "terminal": true,
+    "candidateWorktree": "/home/james/.paseo/worktrees/3si5zdi6/aeh-change-20260930t142034z-8e5ffed1",
+    "candidateWorktreeAvailable": false
+  },
+  "leadAgentCleanup": {
+    "agentId": "17bc76fc-7d7f-479a-bc53-daa02374d128",
+    "exitCode": 0
+  },
+  "checkoutProof": {
+    "trackedDigestBefore": "3f9b7fd8767afe27c833a1a6580c362856b911c4d04dcd5f7833eaaa631634d8",
+    "trackedDigestAfter": "3f9b7fd8767afe27c833a1a6580c362856b911c4d04dcd5f7833eaaa631634d8",
+    "trackedFiles": 668,
+    "checkoutUntouched": true,
+    "postRunTrackedDocEditWindow": {
+      "opensAfterLaneFinish": true,
+      "note": "S13 tracked documentation/evidence is edited after lane execution; the recorded digest is the source-tree digest at lane end (R11-F6)."
+    }
+  },
+  "finishedAt": "2026-09-30T14:20:56.299Z",
+  "durationMs": 42330
+}

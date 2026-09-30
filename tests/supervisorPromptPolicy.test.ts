@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { supervisorOutputSchema } from "../src/agents/outputContracts.js";
 import { supervisorEventSkills } from "../src/operations/supervisorEventPolicy.js";
+import { defaultSkillSeed } from "../src/participants/skills.js";
 import {
   compactDeterministicEvidence,
   supervisorCheckpointProjection,
@@ -31,6 +32,22 @@ describe("supervisor semantic prompt policy", () => {
     expect(supervisorEventSkills("coordinate", "change", true)).toEqual(["verification-planning", "acceptance-traceability"]);
     expect(supervisorEventSkills("consolidate", "audit", false)).toEqual(["finding-dedup", "audit-consolidation-protocol"]);
     expect(supervisorEventSkills("consolidate", "audit", true)).toEqual(["finding-dedup", "audit-consolidation-protocol", "acceptance-traceability"]);
+  });
+
+  it("resolves every supervisor event skill to seed procedure content", () => {
+    const seed = new Map(defaultSkillSeed().skills.map((skill) => [skill.id, skill]));
+    const events = [
+      supervisorEventSkills("initialize", "audit", false),
+      supervisorEventSkills("coordinate", "change", true),
+      supervisorEventSkills("recover", "audit", false),
+      supervisorEventSkills("handoff", "change", true),
+      supervisorEventSkills("consolidate", "audit", true)
+    ];
+    for (const skillId of events.flat()) {
+      const skill = seed.get(skillId);
+      expect(skill, `seed skill '${skillId}'`).toBeDefined();
+      expect(skill?.proceduralSteps.length).toBeGreaterThan(0);
+    }
   });
 
   it("uses minimal per-turn projections while retaining rich durable checkpoint continuity", () => {

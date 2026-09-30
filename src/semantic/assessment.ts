@@ -7,6 +7,8 @@ import { validateExecutionCapabilities } from "../agents/permissions.js";
 import { sha256Canonical, sha256Utf8 } from "../core/digest.js";
 import { AehError } from "../core/errors.js";
 import { changeKindSchema } from "../architecture/workGraph.js";
+import { candidateReviewDimensionValues } from "../architecture/candidateAssurance.js";
+import { assertSemanticStructuredOutputCapabilityV1 } from "./structuredOutput.js";
 
 export const semanticAssessmentTypeValues = ["INTENT", "ROUTE", "STACK", "ISSUE", "FAILURE", "CANDIDATE_IMPACT", "VALIDATION_NEED"] as const;
 export type SemanticAssessmentTypeV1 = (typeof semanticAssessmentTypeValues)[number];
@@ -169,7 +171,7 @@ export const semanticAssessmentRequestV1Schema = z.object({
   requiredOutputSchema: z.literal("semantic-assessment-v1"),
   reasoningRequirement: assessmentRequirementSchema,
   binding: semanticAssessmentBindingV1Schema,
-  budget: z.object({ maxInputTokens: z.number().int().positive().max(32_000).optional(), maxOutputTokens: z.number().int().positive().max(8_000).optional(), deadlineMs: z.number().int().positive().max(120_000).optional() }).strict(),
+  budget: z.object({ maxInputTokens: z.number().int().positive().max(32_000).optional(), maxOutputTokens: z.number().int().positive().max(8_000).optional(), deadlineMs: z.number().int().positive().max(300_000).optional() }).strict(),
   policyRevision: z.string().trim().min(1).max(200)
 }).strict().superRefine((value, context) => {
   const refs = new Set(value.compactEvidence.map((item) => item.ref));
@@ -181,6 +183,8 @@ export const semanticAssessmentRequestV1Schema = z.object({
   const bytes = value.compactEvidence.reduce((total, item) => total + Buffer.byteLength(item.content, "utf8"), 0);
   if (bytes > 24_000) context.addIssue({ code: "custom", path: ["compactEvidence"], message: "compact evidence exceeds the 24000-byte bound" });
 });
+
+export const candidateReviewDimensionSchema = z.enum(candidateReviewDimensionValues);
 
 const claimStatusValues = ["SUPPORTED", "UNCERTAIN", "CONFLICTING"] as const;
 const semanticFailureClassValues = ["PATCH_CONTEXT_MISMATCH", "TOOL_FAILURE", "MISSING_CONTEXT", "WRONG_AGENT", "VALIDATION_FAILURE", "REVIEW_FAILURE", "AMBIGUOUS_OUTPUT", "CONFLICTING_RESULTS"] as const;
@@ -229,7 +233,7 @@ const semanticJudgmentSchema = z.discriminatedUnion("type", [
     type: z.literal("CANDIDATE_IMPACT"),
     changedFiles: z.array(z.string().trim().min(1).max(500)).max(256),
     changeKinds: z.array(changeKindSchema).max(32),
-    reviewDimensions: z.array(z.string().trim().min(1).max(200)).max(128),
+    reviewDimensions: z.array(candidateReviewDimensionSchema).max(32),
     requiresIndependentReview: z.boolean(),
     evidenceRefs: z.array(evidenceRefSchema).min(1).max(512),
     unknowns: z.array(z.string().trim().min(1).max(1_000)).max(64)
@@ -365,11 +369,37 @@ export class FileSemanticAssessmentCacheV1 implements SemanticAssessmentCacheV1 
 export interface SemanticAssessmentRunnerResultV1 {
   payload: unknown;
   paseoSession: SemanticPaseoSessionIdentityV1;
+  /** Bounded, sanitized fingerprint of the raw model reply for failure diagnosis. Never authority. */
+  rawReply?: SemanticReplyFingerprintV1;
+}
+
+export interface SemanticReplyFingerprintV1 {
+  version: 1;
+  lengthBytes: number;
+  sha256: string;
+  head: string;
+}
+
+/**
+ * Bounded, sanitized fingerprint of a rejected raw model reply. It records length, digest and a
+ * short control-character-free prefix so the next assessor failure is diagnosable without
+ * persisting or re-interpreting raw model prose.
+ */
+export function semanticReplyFingerprintV1(raw: string): SemanticReplyFingerprintV1 {
+  const sanitized = raw.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, " ");
+  return { version: 1, lengthBytes: Buffer.byteLength(raw, "utf8"), sha256: sha256Utf8(raw), head: sanitized.slice(0, 200) };
+}
+
+export function semanticReplyDiagnosticV1(diagnostic: { sessionId?: string; fingerprint?: SemanticReplyFingerprintV1 }): string {
+  const parts: string[] = [];
+  if (diagnostic.sessionId) parts.push(`assessorSession=${diagnostic.sessionId}`);
+  if (diagnostic.fingerprint) parts.push(`replyBytes=${diagnostic.fingerprint.lengthBytes}`, `replySha256=${diagnostic.fingerprint.sha256}`, `replyHead=${JSON.stringify(diagnostic.fingerprint.head)}`);
+  return parts.length ? ` [${parts.join(" ")}]` : "";
 }
 
 /** Production runners must execute the selected AEH agent through Paseo; provider inference calls are not this interface. */
 export interface SemanticAssessmentRunnerV1 {
-  assess(input: { request: SemanticAssessmentRequestV1; assessor: SemanticAssessorIdentityV1 }): Promise<SemanticAssessmentRunnerResultV1>;
+  assess(input: { request: SemanticAssessmentRequestV1; assessor: SemanticAssessorIdentityV1; repair?: { attempt: number; reason: string } }): Promise<SemanticAssessmentRunnerResultV1>;
 }
 
 export interface SemanticAssessmentServiceOptionsV1 {
@@ -380,15 +410,49 @@ export interface SemanticAssessmentServiceOptionsV1 {
   onTelemetry?: (event: SemanticAssessmentTelemetryV1) => Promise<void> | void;
 }
 
+export interface SemanticAssessmentAttemptOptionsV1 {
+  /**
+   * Caps provider turns launched inside this single call. Defaults to
+   * MAX_SEMANTIC_PAYLOAD_ATTEMPTS. A composing caller that owns its own bounded correction loop
+   * passes 1 so nested retries cannot multiply real-model attempts.
+   */
+  attemptBudget?: number;
+}
+
 export const semanticCapabilityPolicyRevisionV1 = "core-semantic-capability-policy-v1";
+const SEMANTIC_THINKING_RANK = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
+const SEMANTIC_THINKING_BY_REASONING_CLASS: Readonly<Record<ReasoningClassV1, (typeof SEMANTIC_THINKING_RANK)[number]>> = { LIGHT: "low", STANDARD: "medium", DEEP: "high" };
+
+/**
+ * Bound a topology-configured Paseo thinking option by the request's declared reasoning class.
+ * The topology remains the upper bound; the assessment request cannot raise reasoning above it.
+ * Deterministic and provider-appropriate: LIGHT requests must not launch a max-reasoning turn.
+ */
+export function boundSemanticThinkingOptionV1(variant: string | undefined, reasoningClass: ReasoningClassV1): string | undefined {
+  if (!variant) return undefined;
+  const configured = SEMANTIC_THINKING_RANK.indexOf(variant as (typeof SEMANTIC_THINKING_RANK)[number]);
+  const wanted = SEMANTIC_THINKING_RANK.indexOf(SEMANTIC_THINKING_BY_REASONING_CLASS[reasoningClass]);
+  if (configured < 0) return SEMANTIC_THINKING_BY_REASONING_CLASS[reasoningClass];
+  return SEMANTIC_THINKING_RANK[Math.min(configured, wanted)];
+}
+/** Model-backed semantic assessment deadline that accommodates a cold real provider launch (Paseo + CLI agent) without weakening any authority or acceptance semantics. */
+export const semanticModelDeadlineMsV1 = 300_000;
+
+/**
+ * Bounded retry for non-authoritative invalid model output. A real local model occasionally
+ * returns prose, truncated JSON, or a schema-incomplete payload; one bounded re-ask is allowed
+ * before the assessment fails closed. Provider unavailability, policy, evidence, and authority
+ * failures are never retried.
+ */
+export const MAX_SEMANTIC_PAYLOAD_ATTEMPTS = 2;
 export const semanticCapabilityPolicyV1: Readonly<Record<SemanticAssessmentTypeV1, { maxInputTokens: number; maxOutputTokens: number; maxDeadlineMs: number; maxReasoningClass: ReasoningClassV1; maxContextClass: AssessmentContextClassV1; maxRiskClass: AssessmentRiskClassV1 }>> = {
-  INTENT: { maxInputTokens: 4_000, maxOutputTokens: 1_000, maxDeadlineMs: 30_000, maxReasoningClass: "STANDARD", maxContextClass: "SMALL", maxRiskClass: "HIGH" },
-  ROUTE: { maxInputTokens: 8_000, maxOutputTokens: 1_500, maxDeadlineMs: 45_000, maxReasoningClass: "DEEP", maxContextClass: "STANDARD", maxRiskClass: "HIGH" },
-  STACK: { maxInputTokens: 8_000, maxOutputTokens: 2_000, maxDeadlineMs: 45_000, maxReasoningClass: "STANDARD", maxContextClass: "LARGE", maxRiskClass: "HIGH" },
-  ISSUE: { maxInputTokens: 8_000, maxOutputTokens: 2_000, maxDeadlineMs: 45_000, maxReasoningClass: "STANDARD", maxContextClass: "STANDARD", maxRiskClass: "HIGH" },
-  FAILURE: { maxInputTokens: 8_000, maxOutputTokens: 1_500, maxDeadlineMs: 45_000, maxReasoningClass: "STANDARD", maxContextClass: "STANDARD", maxRiskClass: "HIGH" },
-  CANDIDATE_IMPACT: { maxInputTokens: 12_000, maxOutputTokens: 2_000, maxDeadlineMs: 60_000, maxReasoningClass: "DEEP", maxContextClass: "LARGE", maxRiskClass: "CRITICAL" },
-  VALIDATION_NEED: { maxInputTokens: 8_000, maxOutputTokens: 1_500, maxDeadlineMs: 45_000, maxReasoningClass: "STANDARD", maxContextClass: "STANDARD", maxRiskClass: "HIGH" }
+  INTENT: { maxInputTokens: 4_000, maxOutputTokens: 1_000, maxDeadlineMs: semanticModelDeadlineMsV1, maxReasoningClass: "STANDARD", maxContextClass: "SMALL", maxRiskClass: "HIGH" },
+  ROUTE: { maxInputTokens: 8_000, maxOutputTokens: 1_500, maxDeadlineMs: semanticModelDeadlineMsV1, maxReasoningClass: "DEEP", maxContextClass: "STANDARD", maxRiskClass: "HIGH" },
+  STACK: { maxInputTokens: 8_000, maxOutputTokens: 2_000, maxDeadlineMs: semanticModelDeadlineMsV1, maxReasoningClass: "STANDARD", maxContextClass: "LARGE", maxRiskClass: "HIGH" },
+  ISSUE: { maxInputTokens: 8_000, maxOutputTokens: 2_000, maxDeadlineMs: semanticModelDeadlineMsV1, maxReasoningClass: "STANDARD", maxContextClass: "STANDARD", maxRiskClass: "HIGH" },
+  FAILURE: { maxInputTokens: 8_000, maxOutputTokens: 1_500, maxDeadlineMs: semanticModelDeadlineMsV1, maxReasoningClass: "STANDARD", maxContextClass: "STANDARD", maxRiskClass: "HIGH" },
+  CANDIDATE_IMPACT: { maxInputTokens: 12_000, maxOutputTokens: 2_000, maxDeadlineMs: semanticModelDeadlineMsV1, maxReasoningClass: "DEEP", maxContextClass: "LARGE", maxRiskClass: "CRITICAL" },
+  VALIDATION_NEED: { maxInputTokens: 8_000, maxOutputTokens: 1_500, maxDeadlineMs: semanticModelDeadlineMsV1, maxReasoningClass: "STANDARD", maxContextClass: "STANDARD", maxRiskClass: "HIGH" }
 };
 
 export function resolveSemanticAssessor(topology: ResolvedAgentTopology): ResolvedSemanticAssessorV1 {
@@ -404,6 +468,10 @@ export function resolveSemanticAssessor(topology: ResolvedAgentTopology): Resolv
   if (permissionIssues.length) throw new AehError("SEMANTIC_ASSESSMENT_UNAVAILABLE", `Semantic Assessor permissions must explicitly deny ${permissionIssues.join(", ")}.`);
   if (selection.transport !== "paseo" || selection.runtimeAdapter !== "opencode" || selection.paseoProvider !== "opencode") throw new AehError("SEMANTIC_ASSESSMENT_UNAVAILABLE", "Semantic Assessor requires the AEH-managed OpenCode runtime through Paseo.");
   if (selection.runtimeCapabilities.runtimeConfigInjection !== true || selection.runtimeCapabilities.structuredOutput !== true || selection.runtimeCapabilities.modelSelection !== true) throw new AehError("SEMANTIC_ASSESSMENT_UNAVAILABLE", "Semantic Assessor runtime must support AEH permission projection, topology model selection, and structured output.");
+  // Runtime-level `structuredOutput` is not proof for every model behind the runtime. The resolved
+  // assessor model must hold a certified structured-output capability at the required level, so an
+  // ineligible model fails closed before execution instead of silently falling back.
+  assertSemanticStructuredOutputCapabilityV1(selection.modelId);
   if (selection.nativeAgent || selection.skills.length || selection.mcps.length || selection.args.length || agent.capabilities?.length || agent.orchestratorPromptPath) throw new AehError("SEMANTIC_ASSESSMENT_UNAVAILABLE", "Semantic Assessor topology cannot select external agents, tools, skills, capabilities, runtime arguments, or orchestrator prompts.");
   if (selection.outputContract !== "semantic-assessment") throw new AehError("SEMANTIC_ASSESSMENT_UNAVAILABLE", "Semantic Assessor topology must use the semantic-assessment output contract.");
   const contextRequirements = agent.contextRequirements;
@@ -471,7 +539,9 @@ export class SemanticAssessmentServiceV1 {
     this.cache = options.cache ?? new InMemorySemanticAssessmentCacheV1();
   }
 
-  async assess(request: SemanticAssessmentRequestV1): Promise<SemanticAssessmentV1> {
+  async assess(request: SemanticAssessmentRequestV1, options: SemanticAssessmentAttemptOptionsV1 = {}): Promise<SemanticAssessmentV1> {
+    const attemptBudget = options.attemptBudget ?? MAX_SEMANTIC_PAYLOAD_ATTEMPTS;
+    if (!Number.isSafeInteger(attemptBudget) || attemptBudget < 1 || attemptBudget > MAX_SEMANTIC_PAYLOAD_ATTEMPTS) throw new AehError("SEMANTIC_ASSESSMENT_INVALID", `semantic assessment attemptBudget must be an integer in [1, ${MAX_SEMANTIC_PAYLOAD_ATTEMPTS}].`);
     const parsed = semanticAssessmentRequestV1Schema.safeParse(request);
     if (!parsed.success) throw new AehError("SEMANTIC_ASSESSMENT_INVALID", parsed.error.issues.map((issue) => `${issue.path.join(".") || "request"}: ${issue.message}`).join("; "));
     const normalizedRequest: SemanticAssessmentRequestV1 = {
@@ -492,43 +562,89 @@ export class SemanticAssessmentServiceV1 {
       return result;
     }
 
-    let run: SemanticAssessmentRunnerResultV1;
-    try {
-      run = await this.options.runner.assess({ request: normalizedRequest, assessor: this.options.assessor.identity });
-    } catch (error) {
-      if (error instanceof AehError) throw error;
-      throw new AehError("SEMANTIC_ASSESSMENT_UNAVAILABLE", `Paseo Semantic Assessor execution failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+    let lastInvalid: AehError | undefined;
+    for (let attempt = 1; attempt <= attemptBudget; attempt += 1) {
+      let run: SemanticAssessmentRunnerResultV1;
+      const repair = attempt > 1 && lastInvalid
+        ? {
+            attempt,
+            reason: [
+              `The previous reply was rejected: ${lastInvalid.message.slice(0, 400)}`,
+              `Return exactly one JSON object whose judgment.type is "${normalizedRequest.assessmentType}", includes every required field (including unknowns as an array), and whose evidenceRefs cite only these supplied refs: ${normalizedRequest.evidenceRefs.join(", ")}.`,
+              "Do not invent evidence refs and do not choose a different judgment type."
+            ].join(" ")
+          }
+        : undefined;
+      try {
+        run = await this.options.runner.assess({ request: normalizedRequest, assessor: this.options.assessor.identity, ...(repair ? { repair } : {}) });
+      } catch (error) {
+        if (!(error instanceof AehError)) throw new AehError("SEMANTIC_ASSESSMENT_UNAVAILABLE", `Paseo Semantic Assessor execution failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+        // Bounded retry for non-authoritative invalid model output (unparseable or schema-invalid)
+        // and for a real provider turn that hung past its deadline (a stuck read-only assessor
+        // session is retried once). The runner classifies the timeout typed in the error details;
+        // message text is never parsed for control. Other unavailability/authority failures are
+        // never retried.
+        const timeoutUnavailable = error.code === "SEMANTIC_ASSESSMENT_UNAVAILABLE" && error.details?.timeout === true;
+        if ((error.code === "SEMANTIC_ASSESSMENT_INVALID" || timeoutUnavailable) && attempt < attemptBudget) { lastInvalid = error; continue; }
+        throw error;
+      }
+      let payload: SemanticAssessmentPayloadV1;
+      try {
+        const payloadResult = semanticAssessmentPayloadV1Schema.safeParse(run.payload);
+        if (!payloadResult.success) throw new AehError("SEMANTIC_ASSESSMENT_INVALID", "Paseo Semantic Assessor returned an invalid non-authoritative structured assessment payload.", { cause: payloadResult.error });
+        payload = normalizePayloadUnknowns(payloadResult.data);
+        validateAssessmentPayload(payload, normalizedRequest);
+        validateSessionIdentity(run.paseoSession, this.options.assessor.identity);
+      } catch (error) {
+        if (error instanceof AehError && error.code === "SEMANTIC_ASSESSMENT_INVALID") {
+          const diagnosed = attachReplyDiagnostics(error, run);
+          if (attempt < attemptBudget) { lastInvalid = diagnosed; continue; }
+          throw diagnosed;
+        }
+        throw error;
+      }
+      const assessmentDigest = semanticAssessmentDigest(normalizedRequest, evidenceDigest, this.options.assessor.identity, run.paseoSession, cacheIdentity, payload);
+      const result: SemanticAssessmentV1 = {
+        version: 1,
+        assessmentType: normalizedRequest.assessmentType,
+        mechanism: "MODEL",
+        binding: normalizedRequest.binding,
+        policyRevision: normalizedRequest.policyRevision,
+        ...payload,
+        evidenceRefs: [...normalizedRequest.evidenceRefs],
+        evidenceReceipts: structuredClone(normalizedRequest.evidenceReceipts),
+        evidenceDigest,
+        assessor: this.options.assessor.identity,
+        paseoSession: run.paseoSession,
+        assessmentDigest,
+        cacheIdentity,
+        cacheDisposition: "FRESH"
+      };
+      await this.cache.set(cacheIdentity, result);
+      await this.emitTelemetry(result, false);
+      return result;
     }
-    const payloadResult = semanticAssessmentPayloadV1Schema.safeParse(run.payload);
-    if (!payloadResult.success) throw new AehError("SEMANTIC_ASSESSMENT_INVALID", "Paseo Semantic Assessor returned an invalid non-authoritative structured assessment payload.", { cause: payloadResult.error });
-    const payload = normalizePayloadUnknowns(payloadResult.data);
-    validateAssessmentPayload(payload, normalizedRequest);
-    validateSessionIdentity(run.paseoSession, this.options.assessor.identity);
-    const assessmentDigest = semanticAssessmentDigest(normalizedRequest, evidenceDigest, this.options.assessor.identity, run.paseoSession, cacheIdentity, payload);
-    const result: SemanticAssessmentV1 = {
-      version: 1,
-      assessmentType: normalizedRequest.assessmentType,
-      mechanism: "MODEL",
-      binding: normalizedRequest.binding,
-      policyRevision: normalizedRequest.policyRevision,
-      ...payload,
-      evidenceRefs: [...normalizedRequest.evidenceRefs],
-      evidenceReceipts: structuredClone(normalizedRequest.evidenceReceipts),
-      evidenceDigest,
-      assessor: this.options.assessor.identity,
-      paseoSession: run.paseoSession,
-      assessmentDigest,
-      cacheIdentity,
-      cacheDisposition: "FRESH"
-    };
-    await this.cache.set(cacheIdentity, result);
-    await this.emitTelemetry(result, false);
-    return result;
+    throw lastInvalid ?? new AehError("SEMANTIC_ASSESSMENT_INVALID", "Paseo Semantic Assessor returned an invalid non-authoritative structured assessment payload after bounded attempts.");
   }
 
   private async emitTelemetry(result: SemanticAssessmentV1, cacheHit: boolean): Promise<void> {
     await this.options.onTelemetry?.({ assessmentType: result.assessmentType, assessorId: result.assessor.logicalAgent, paseoAgentId: result.paseoSession.agentId, evidenceDigest: result.evidenceDigest, assessmentDigest: result.assessmentDigest, cacheHit });
   }
+}
+
+function attachReplyDiagnostics(error: AehError, run: SemanticAssessmentRunnerResultV1): AehError {
+  const sessionId = run.paseoSession?.agentId;
+  const diagnostic = semanticReplyDiagnosticV1({ ...(sessionId ? { sessionId } : {}), ...(run.rawReply ? { fingerprint: run.rawReply } : {}) });
+  if (!diagnostic) return error;
+  const message = error.message.includes("assessorSession=") ? error.message : `${error.message}${diagnostic}`;
+  return new AehError(error.code, message, {
+    cause: error,
+    details: {
+      ...(error.details ?? {}),
+      ...(sessionId ? { sessionId } : {}),
+      ...(run.rawReply ? { fingerprint: run.rawReply } : {})
+    }
+  });
 }
 
 function validateSessionIdentity(session: SemanticPaseoSessionIdentityV1, assessor: SemanticAssessorIdentityV1): void {

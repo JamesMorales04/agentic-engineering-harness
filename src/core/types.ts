@@ -82,7 +82,8 @@ export interface HarnessProjectConfig {
       quality?: { severityPoints?: Partial<Record<ReviewSeverity, number>>; };
       convergence?: { minimumDebtPointImprovement?: number; stagnationWindow?: number; cycleDetection?: boolean; regressionDetection?: boolean; };
       finalQualityGate?: { maxBySeverity?: Partial<Record<ReviewSeverity, number>>; maxDebtPoints?: number; };
-      escalation?: { stages?: ReviewEscalationStage[]; criticalStartStage?: number; replanResumeStage?: number; };
+      /** Bounded remediation execution budget; exhausting it terminalizes SYSTEM_FAILURE. */
+      escalation?: { stages?: ReviewEscalationStage[]; criticalStartStage?: number; replanResumeStage?: number; maxRounds?: number; };
     };
   };
   orchestration?: {
@@ -120,6 +121,7 @@ export interface HarnessProjectConfig {
       branchPattern?: string;
       finalizeOnAcceptance?: boolean;
       pullRequestDraft?: boolean;
+      pullRequests?: boolean;
     };
     paseo?: {
       enabled?: boolean;

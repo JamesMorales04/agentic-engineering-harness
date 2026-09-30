@@ -6,10 +6,91 @@ import { sha256Canonical } from "../src/core/digest.js";
 import { computeWorktreeDigest } from "../src/core/git.js";
 import type { HarnessProjectConfig } from "../src/core/types.js";
 import { launchManagedPaseoAgent } from "../src/paseo/runtime.js";
-import { createSemanticAssessmentRuntimeV1, createSemanticRepositoryBindingV1 } from "../src/semantic/runtime.js";
+import { createSemanticAssessmentRuntimeV1, createSemanticRepositoryBindingV1, parseSemanticAssessmentOutputV1 } from "../src/semantic/runtime.js";
 import { semanticPayload, semanticTestRequest, semanticAssessorTopologySource } from "./semanticAssessmentSupport.js";
 
 describe("Paseo Semantic Assessor runtime", () => {
+  it("extracts a typed assessment from a real provider reply that wraps its JSON", () => {
+    const payload = { assessmentType: "INTENT", classification: "INFORMATIONAL" };
+    expect(parseSemanticAssessmentOutputV1(JSON.stringify(payload))).toEqual(payload);
+    expect(parseSemanticAssessmentOutputV1(`assessment follows\n\`\`\`json\n${JSON.stringify(payload)}\n\`\`\`\nend`)).toEqual(payload);
+    expect(parseSemanticAssessmentOutputV1(`prefix {"assessmentType":"INTENT"} suffix`)).toEqual({ assessmentType: "INTENT" });
+    expect(() => parseSemanticAssessmentOutputV1("no json here")).toThrow("not a structured JSON result");
+    expect(() => parseSemanticAssessmentOutputV1("   ")).toThrow("no structured result");
+  });
+
+  it("recovers a complete object followed by bounded stray closing braces without repairing fields", () => {
+    const payload = { assessmentType: "STACK", judgment: { type: "STACK" } };
+    const complete = JSON.stringify(payload);
+    expect(parseSemanticAssessmentOutputV1(`${complete}}`)).toEqual(payload);
+    expect(parseSemanticAssessmentOutputV1(`${complete}}}\n`)).toEqual(payload);
+    expect(parseSemanticAssessmentOutputV1(`answer follows\n${complete}}}\nend`)).toEqual(payload);
+    expect(() => parseSemanticAssessmentOutputV1("{ not json }")).toThrow("not a structured JSON result");
+  });
+
+  it("does not repair interior JSON syntax: an interior stray brace stays invalid", () => {
+    expect(() => parseSemanticAssessmentOutputV1('{"judgment":{"type":"STACK"}},"claims":[{"id":"c1"}]}')).toThrow("not a structured JSON result");
+    expect(() => parseSemanticAssessmentOutputV1('{"judgment":{"type":"STACK"}},"claims":[]} trailing prose')).toThrow("not a structured JSON result");
+  });
+
+  it("classifies a real provider timeout in typed error details and retries exactly once", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-semantic-timeout-"));
+    try {
+      await fs.mkdir(path.join(root, ".harness"), { recursive: true });
+      await fs.writeFile(path.join(root, ".harness", "agents.source.jsonc"), JSON.stringify(semanticAssessorTopologySource), "utf8");
+      const config: HarnessProjectConfig = { version: 1, project: { name: "runtime-test" }, agents: { configPath: ".harness/agents.source.jsonc" } };
+      const launch = vi.fn<typeof launchManagedPaseoAgent>(async () => ({
+        id: "paseo-timeout-session",
+        exitCode: 124,
+        stdout: "",
+        stderr: "",
+        status: "timeout",
+        transport: "sdk"
+      }));
+      const runtime = await createSemanticAssessmentRuntimeV1(root, config, { launch });
+
+      await expect(runtime.service.assess(semanticTestRequest("ROUTE"))).rejects.toMatchObject({
+        code: "SEMANTIC_ASSESSMENT_UNAVAILABLE",
+        details: { timeout: true, exitCode: 124, status: "timeout" }
+      });
+      expect(launch).toHaveBeenCalledTimes(2);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("records a bounded rejected-reply fingerprint, the assessor session id, and a trace event for an unparseable reply", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-semantic-fingerprint-"));
+    try {
+      await fs.mkdir(path.join(root, ".harness"), { recursive: true });
+      await fs.writeFile(path.join(root, ".harness", "agents.source.jsonc"), JSON.stringify(semanticAssessorTopologySource), "utf8");
+      const config: HarnessProjectConfig = { version: 1, project: { name: "runtime-test" }, agents: { configPath: ".harness/agents.source.jsonc" } };
+      const rawReply = "I cannot return JSON; here is prose instead.";
+      const launch = vi.fn<typeof launchManagedPaseoAgent>(async () => ({
+        id: "paseo-prose-session",
+        exitCode: 0,
+        stdout: rawReply,
+        stderr: "",
+        status: "completed",
+        transport: "sdk"
+      }));
+      const runtime = await createSemanticAssessmentRuntimeV1(root, config, { launch });
+
+      let failure: { code?: string; message?: string; details?: Record<string, unknown> } | undefined;
+      try { await runtime.service.assess(semanticTestRequest("ROUTE")); } catch (error) { failure = error as typeof failure; }
+      expect(failure?.code).toBe("SEMANTIC_ASSESSMENT_INVALID");
+      expect(failure?.details?.sessionId).toBe("paseo-prose-session");
+      expect(failure?.details?.fingerprint).toMatchObject({ version: 1, lengthBytes: Buffer.byteLength(rawReply, "utf8"), sha256: expect.stringMatching(/^[a-f0-9]{64}$/), head: rawReply });
+      expect(failure?.message).toContain("assessorSession=paseo-prose-session");
+      expect(launch).toHaveBeenCalledTimes(2);
+      const traceFile = await fs.readFile(path.join(root, ".harness", "telemetry", "paseo.ndjson"), "utf8");
+      const rejection = traceFile.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line) as { name: string; attributes?: Record<string, unknown> }).find((entry) => entry.name.endsWith("semantic.assessor.reply.rejected"));
+      expect(rejection?.attributes).toMatchObject({ agentId: "paseo-prose-session", lengthBytes: Buffer.byteLength(rawReply, "utf8") });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("binds the canonical realpath when the repository root is addressed through a symlink", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-semantic-binding-root-"));
     const alias = `${root}-alias`;
@@ -51,7 +132,7 @@ describe("Paseo Semantic Assessor runtime", () => {
     expect(options).toBeDefined();
     expect(launch.mock.calls[0]?.[0]).toBe(root);
     expect(options?.provider).toBe("opencode");
-    expect(options?.model).toBe("openai/small-structured");
+    expect(options?.model).toBe("opencode-go/gpt-6-luna");
     expect(options?.outputSchema).toBeDefined();
     expect(options?.labels).toMatchObject({ "aeh.kind": "semantic-assessment", "aeh.role": "Semantic Assessor", "aeh.semantic.assessment.type": "STACK" });
     expect(options?.labels).not.toHaveProperty("aeh.task");
@@ -63,7 +144,7 @@ describe("Paseo Semantic Assessor runtime", () => {
     expect(runtimeConfig.tools).toBeUndefined();
     expect(assessment).toMatchObject({
       assessmentType: "STACK",
-      assessor: { logicalAgent: "assessor", modelId: "openai/small-structured" },
+      assessor: { logicalAgent: "assessor", modelId: "opencode-go/gpt-6-luna" },
       paseoSession: { provider: "opencode", agentId: "paseo-actual-session-7", workspaceId: "paseo-workspace-4", transport: "sdk" },
       cacheDisposition: "FRESH"
     });

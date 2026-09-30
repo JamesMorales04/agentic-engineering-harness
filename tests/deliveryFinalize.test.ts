@@ -16,8 +16,6 @@ import { githubRequest, handoffTask, seedDeliveryRecordFromIssue } from "../src/
 import { executeIssueWorkflow } from "../src/issues/workflow.js";
 import { executeGatedAction } from "../src/security/gatedAction.js";
 import { controllerActorId } from "../src/security/toolActionGate.js";
-import { createSemanticAssessmentRuntimeV1 } from "../src/semantic/runtime.js";
-import { prepareGithubIssueTask } from "../src/issues/intake.js";
 import type { TaskRunResult } from "../src/core/run.js";
 import { runExecutable } from "../src/utils/process.js";
 
@@ -73,6 +71,23 @@ describe("accepted issue delivery finalization", () => {
     const actions = await fs.readdir(actionDirectory(context.repo, context.operationId));
     expect(actions.filter((file) => file.endsWith(".intent.json"))).toHaveLength(3);
     expect(actions.filter((file) => file.endsWith(".receipt.json"))).toHaveLength(3);
+  });
+
+  it("finalizes an accepted candidate with a push-only delivery policy and never requests an unauthorized pull request", async () => {
+    const context = await createFinalizeFixture({ pullRequests: false });
+    await expect(finalizeAcceptedIssue(context.repo, context.config, context.contract, { candidate: context.candidate }))
+      .rejects.toThrow("TOOL_ACTION_HUMAN_DECISION_REQUIRED");
+    const commitSha = await git(context.repo, "rev-parse", "HEAD");
+    await recordActionAuthorization(context, "git.push", { remote: "origin", ref: "feature/gh-5-update-readme", expectedCommit: commitSha });
+    const result = await finalizeAcceptedIssue(context.repo, context.config, context.contract, { candidate: context.candidate });
+    expect(result).toMatchObject({ status: "FINALIZED", committed: false, pushed: true, humanRequired: false });
+    expect(result.pullRequest).toBeUndefined();
+    expect(context.requests.some((request) => request.method === "POST" && request.url.endsWith("/pulls"))).toBe(false);
+    expect(await git(context.repo, "status", "--porcelain")).toBe("");
+    expect(await git(context.remote, "rev-parse", "refs/heads/feature/gh-5-update-readme")).toBe(await git(context.repo, "rev-parse", "HEAD"));
+    const actions = await fs.readdir(actionDirectory(context.repo, context.operationId));
+    expect(actions.filter((file) => file.endsWith(".intent.json"))).toHaveLength(2);
+    expect(actions.filter((file) => file.endsWith(".receipt.json"))).toHaveLength(2);
   });
 
   it("reconciles a lost push receipt instead of retrying the side effect", async () => {
@@ -226,12 +241,13 @@ describe("default managed issue workflow delivery boundary", () => {
     const runFile = path.join(context.repo, ".harness", "runs", "GH-5.json");
     const result = await executeIssueWorkflow(context.repo, 5, {}, {
       loadConfig: async () => config,
-      createSemanticRuntime: async () => ({} as Awaited<ReturnType<typeof createSemanticAssessmentRuntimeV1>>),
-      prepareIssue: async (root, loadedConfig, issueNumber) => {
-        // Issue intake may inspect the existing issue, but performs no public write.
+      importIssue: async (root, issueNumber, _options, dependencies) => {
+        // The managed import operation is exercised separately; this fixture asserts the workflow
+        // consumes the durable intake result and never performs a public write itself.
         await githubRequest(apiBase, "test-token", `/repos/owner/repo/issues/${issueNumber}`);
-        await seedDeliveryRecordFromIssue(root, loadedConfig, context.contract, { repository: "owner/repo", issueNumber, issueUrl: `https://github.com/owner/repo/issues/${issueNumber}` });
-        return { taskId: "GH-5" } as Awaited<ReturnType<typeof prepareGithubIssueTask>>;
+        await seedDeliveryRecordFromIssue(root, config, context.contract, { repository: "owner/repo", issueNumber, issueUrl: `https://github.com/owner/repo/issues/${issueNumber}` });
+        void dependencies;
+        return { operationId: "CHANGE-GH-5-INTAKE", taskId: "GH-5", route: "DIRECT" as const, snapshot: { repository: "owner/repo", number: issueNumber, contentSha256: "a".repeat(64), path: ".harness/issues/GH-5.json" } };
       },
       startOperation: async (root, kind, payload) => {
         expect(kind).toBe("run");
@@ -302,7 +318,7 @@ interface FinalizeFixture {
   requests: Array<{ url: string; method: string; body?: string }>;
 }
 
-async function createFinalizeFixture(options: { managed?: boolean; acceptanceOracle?: boolean; candidateBranch?: string } = {}): Promise<FinalizeFixture> {
+async function createFinalizeFixture(options: { managed?: boolean; acceptanceOracle?: boolean; candidateBranch?: string; pullRequests?: boolean } = {}): Promise<FinalizeFixture> {
   const managed = options.managed !== false;
   const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-finalize-"));
   roots.push(baseDir);
@@ -317,7 +333,7 @@ async function createFinalizeFixture(options: { managed?: boolean; acceptanceOra
   await fs.mkdir(path.join(repo, ".harness", "delivery"), { recursive: true });
   await fs.writeFile(path.join(repo, ".harness", "delivery", "GH-5.json"), JSON.stringify({ version: 1, taskId: "GH-5", status: "ready", createdAt: "2026-08-11T00:00:00Z", updatedAt: "2026-08-11T00:00:00Z", originatingBranch: "main", github: { repository: "owner/repo", issueNumber: 5, issueUrl: "https://github.com/owner/repo/issues/5", branch: "feature/gh-5-update-readme" } }));
 
-  const config: HarnessProjectConfig = { version: 1, project: { name: "finalize-test" }, validation: { baseRef: "main" }, delivery: { stateDir: ".harness/delivery", github: { enabled: true, tokenEnv: "GH_TOKEN", finalizeOnAcceptance: true, pullRequestDraft: true } } };
+  const config: HarnessProjectConfig = { version: 1, project: { name: "finalize-test" }, validation: { baseRef: "main" }, delivery: { stateDir: ".harness/delivery", github: { enabled: true, tokenEnv: "GH_TOKEN", finalizeOnAcceptance: true, pullRequestDraft: true, ...(options.pullRequests === false ? { pullRequests: false } : {}) } } };
   const contract: TaskContract = { version: 1, task: { id: "GH-5", title: "Update README" }, issue: { provider: "github", repository: "owner/repo", number: 5, url: "https://github.com/owner/repo/issues/5", state: "open", fetchedAt: "2026-08-11T00:00:00Z", updatedAt: "2026-08-11T00:00:00Z", contentSha256: "a".repeat(64), snapshotPath: ".harness/issues/GH-5.json" }, git: { baseRef: "main", originatingBranch: "main" } };
   const operationId = "RUN-FINALIZE-GH-5";
   let candidate: CandidateRevisionV1;
@@ -330,8 +346,10 @@ async function createFinalizeFixture(options: { managed?: boolean; acceptanceOra
     process.env.AEH_OPERATION_STATE_REDIRECT = "1";
     process.env.AEH_CONTROLLER_EPOCH = "1";
     const operation = await loadOperation(repo, operationId);
-    const allowedExternalEffects = ["github.issue.create", "github.branch.create", "git.push", "github.pull-request.create"];
-    const humanDecisionRequirements = ["git.push", "github.issue.create", "github.pull-request.create"].map((action) => ({ kind: "ACTION_AUTHORIZATION" as const, action }));
+    const allowedExternalEffects: Array<"github.issue.create" | "github.branch.create" | "git.push" | "github.pull-request.create"> = options.pullRequests === false
+      ? ["github.issue.create", "github.branch.create", "git.push"]
+      : ["github.issue.create", "github.branch.create", "git.push", "github.pull-request.create"];
+    const humanDecisionRequirements = allowedExternalEffects.filter((action) => action !== "github.branch.create").map((action) => ({ kind: "ACTION_AUTHORIZATION" as const, action }));
     const deliveryPolicy = { githubEnabled: true, allowedExternalEffects };
     const policy = compileResolvedOperationPolicy({ projectId: candidate.projectId!, operationId, operationExecutionRevision: operation.operationExecutionRevision!, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch: currentControllerEpoch(operation), intent: "delivery finalization test", route: "DIRECT", minimumAssurance: "STANDARD", policyVersions: {}, policyDigests: { delivery: sha256Canonical({ ...deliveryPolicy, humanDecisionRequirements }) }, validationPolicy: {}, reviewPolicy: { leadAcceptance: true, leadAcceptanceDirect: false, independentReviewRequired: false }, deliveryPolicy, knowledgePolicy: {}, contextPolicy: {}, allowedExternalEffects, humanDecisionRequirements });
     await bindResolvedOperationPolicy(repo, operationId, policy);

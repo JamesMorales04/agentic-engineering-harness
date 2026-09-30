@@ -1,0 +1,259 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 18,
+  "runId": "r18-certrepair-1",
+  "capability": "certification-repair",
+  "providerPath": "FULL_OPERATION_REAL_CERTIFICATION",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13CertificationRepairCampaign.mjs",
+        "sha256": "5ec348dfbb5a1740479c87d5edb6f4eb37e81f43559380739d5347e1a4b43281"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "3395aa19210f36b90fd22bd62056dbb8d5c48aab5a85bce4e5ea4d591cfd5146"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "69c5aeaebf0cb53e4c511703c6ed3e4bb72e047ded554b6e390b6853c353be72"
+  },
+  "startedAt": "2026-09-29T14:59:56.301Z",
+  "candidate": {
+    "id": "agentic-engineering-harness-0.8.4",
+    "root": "/tmp/aeh-certrepair-fixture-EXOG9g",
+    "artifactDigest": "c49a292adef81197b2e617c037bbb2fb9ea69dcad0e08e1ea54445b70d510f67",
+    "treeDigest": "d8f3f4baabd9d38fb8a803d48115a7a2d728b4dcab587474d9ec67390a8460df",
+    "packedBuild": {
+      "packaging": "npm-pack-ignore-scripts"
+    }
+  },
+  "failureRun": {
+    "certificationId": "cert-agentic-engineering-harness-0.8.4-d2008629-fc27-431a-9182-3398e48955ab",
+    "state": "REPAIR_REQUIRED",
+    "accepted": false,
+    "oracle": {
+      "status": "FAIL",
+      "checks": [
+        {
+          "id": "fixture.answer",
+          "status": "FAIL",
+          "message": "Deterministic fixture oracle failed (exit 1)."
+        },
+        {
+          "id": "model.evidence",
+          "status": "FAIL",
+          "message": "Oracle did not verify a started real provider receipt."
+        }
+      ],
+      "failures": [
+        {
+          "id": "fixture.answer",
+          "category": "oracle",
+          "message": "Deterministic fixture oracle failed (exit 1).",
+          "details": {
+            "required": true,
+            "status": "FAIL",
+            "exitCode": 1,
+            "stdout": "",
+            "stderr": "ORACLE_FAILED: .harness/answer.txt=\"pending\""
+          }
+        },
+        {
+          "id": "model.evidence",
+          "category": "oracle",
+          "message": "Oracle did not verify a started real provider receipt.",
+          "details": {
+            "required": true,
+            "status": "FAIL",
+            "actorProvider": null,
+            "actorStatus": null,
+            "actorExitCode": null,
+            "structuredOutput": false,
+            "started": false,
+            "capabilityJourneyEvidence": "failure-run"
+          }
+        }
+      ]
+    },
+    "failurePacket": {
+      "version": 1,
+      "certificationId": "cert-agentic-engineering-harness-0.8.4-d2008629-fc27-431a-9182-3398e48955ab",
+      "candidateId": "agentic-engineering-harness-0.8.4",
+      "createdAt": "2026-09-29T15:00:16.596Z",
+      "reason": "ORACLE_FAILURE",
+      "failures": [
+        {
+          "id": "fixture.answer",
+          "category": "oracle",
+          "message": "Deterministic fixture oracle failed (exit 1).",
+          "details": {
+            "required": true,
+            "status": "FAIL",
+            "exitCode": 1,
+            "stdout": "",
+            "stderr": "ORACLE_FAILED: .harness/answer.txt=\"pending\""
+          }
+        },
+        {
+          "id": "model.evidence",
+          "category": "oracle",
+          "message": "Oracle did not verify a started real provider receipt.",
+          "details": {
+            "required": true,
+            "status": "FAIL",
+            "actorProvider": null,
+            "actorStatus": null,
+            "actorExitCode": null,
+            "structuredOutput": false,
+            "started": false,
+            "capabilityJourneyEvidence": "failure-run"
+          }
+        }
+      ],
+      "repairAttempt": 0,
+      "deterministic": true
+    },
+    "attempts": [
+      {
+        "attempt": 1,
+        "role": "oracle",
+        "status": "FAIL",
+        "startedAt": "2026-09-29T15:00:16.520Z",
+        "finishedAt": "2026-09-29T15:00:16.574Z",
+        "durationMs": 54,
+        "message": "Deterministic fixture oracle failed (exit 1).; Oracle did not verify a started real provider receipt."
+      }
+    ]
+  },
+  "repairRun": {
+    "certificationId": "cert-agentic-engineering-harness-0.8.4-336c8a10-638c-42a3-ab2b-a51a211168a7",
+    "state": "BLOCKED",
+    "accepted": false,
+    "assurance": "INSUFFICIENT",
+    "oracle": {
+      "status": "FAIL",
+      "checks": [
+        {
+          "id": "fixture.answer",
+          "status": "FAIL",
+          "message": "Deterministic fixture oracle failed (exit 1)."
+        },
+        {
+          "id": "model.evidence",
+          "status": "FAIL",
+          "message": "Oracle did not verify a started real provider receipt."
+        }
+      ],
+      "failures": [
+        {
+          "id": "fixture.answer",
+          "category": "oracle",
+          "message": "Deterministic fixture oracle failed (exit 1).",
+          "details": {
+            "required": true,
+            "status": "FAIL",
+            "exitCode": 1,
+            "stdout": "",
+            "stderr": "ORACLE_FAILED: .harness/answer.txt=\"pending\""
+          }
+        },
+        {
+          "id": "model.evidence",
+          "category": "oracle",
+          "message": "Oracle did not verify a started real provider receipt.",
+          "details": {
+            "required": true,
+            "status": "FAIL",
+            "actorProvider": "unknown",
+            "actorStatus": "FAILED",
+            "actorExitCode": 1,
+            "structuredOutput": false,
+            "started": false,
+            "capabilityJourneyEvidence": "repair-run"
+          }
+        }
+      ]
+    },
+    "attempts": [
+      {
+        "attempt": 1,
+        "role": "actor",
+        "status": "FAILED",
+        "startedAt": "2026-09-29T15:00:16.616Z",
+        "finishedAt": "2026-09-29T15:00:16.616Z",
+        "durationMs": 0,
+        "usage": {},
+        "message": "Certification provider cannot prove network isolation for a denied-network request."
+      },
+      {
+        "attempt": 2,
+        "role": "oracle",
+        "status": "FAIL",
+        "startedAt": "2026-09-29T15:00:16.645Z",
+        "finishedAt": "2026-09-29T15:00:16.703Z",
+        "durationMs": 58,
+        "message": "Deterministic fixture oracle failed (exit 1).; Oracle did not verify a started real provider receipt."
+      }
+    ],
+    "repairAttempts": 0,
+    "providerResults": [
+      {
+        "role": "actor",
+        "provider": "unknown",
+        "status": "FAILED",
+        "exitCode": 1,
+        "durationMs": 0,
+        "usage": {},
+        "executionEvidence": null,
+        "commandExecutions": []
+      }
+    ],
+    "candidateTreeStable": true,
+    "repairedAnswer": "pending",
+    "failurePacketAbsentBecauseAccepted": false
+  },
+  "checks": [
+    {
+      "id": "certification-repair.failure-packet",
+      "ok": true,
+      "message": "failure packet persisted reason=ORACLE_FAILURE failures=fixture.answer,model.evidence"
+    },
+    {
+      "id": "certification-repair.oracle-recheck",
+      "ok": false,
+      "message": "state=BLOCKED oracle=FAIL repaired=\"pending\" repairTurns=0 treeStable=true"
+    },
+    {
+      "id": "certification-repair.real-repair-provider",
+      "ok": false,
+      "message": "0 real repair provider receipt(s)"
+    },
+    {
+      "id": "certification-repair.cannot-self-accept",
+      "ok": false,
+      "message": "failed run accepted=false; repaired run accepted by deterministic oracle only"
+    }
+  ],
+  "result": "FAIL",
+  "finishedAt": "2026-09-29T15:00:16.738Z",
+  "durationMs": 20437,
+  "checkoutProof": {
+    "trackedDigestBefore": "b2b01f5da03fdd3ed836286096212cbb18931e3b4eae7ca4e067be56475e9daa",
+    "trackedDigestAfter": "b2b01f5da03fdd3ed836286096212cbb18931e3b4eae7ca4e067be56475e9daa",
+    "trackedFiles": 668,
+    "checkoutUntouched": true,
+    "postRunTrackedDocEditWindow": {
+      "opensAfterLaneFinish": true,
+      "note": "S13 tracked documentation/evidence is edited after lane execution; the recorded digest is the source-tree digest at lane end (R11-F6)."
+    }
+  }
+}

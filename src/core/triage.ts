@@ -1,9 +1,9 @@
 import type { HarnessProjectConfig } from "./types.js";
-import { resolveImplementationRoute, type ImplementationRoutingEvidence, type RouteAssessmentV1 } from "../agents/routingV2.js";
+import { requiresDelegatedPlanningV1, resolveImplementationRoute, type ImplementationRoutingEvidence, type RouteAssessmentV1 } from "../agents/routingV2.js";
 import { assuranceLevelSchema, implementationRouteSchema, routeEvidenceSchema, type AssuranceLevel, type ImplementationRoute, type RouteEvidence } from "../architecture/contracts.js";
 import { sha256Canonical } from "./digest.js";
 import { AehError } from "./errors.js";
-import { createSemanticEvidenceReceiptV1, decisionMechanismSchema, semanticAssessmentBindingV1Schema, SemanticAssessmentServiceV1, type DecisionMechanismV1, type SemanticAssessmentBindingV1 } from "../semantic/assessment.js";
+import { createSemanticEvidenceReceiptV1, decisionMechanismSchema, semanticAssessmentBindingV1Schema, semanticModelDeadlineMsV1, SemanticAssessmentServiceV1, type DecisionMechanismV1, type SemanticAssessmentBindingV1 } from "../semantic/assessment.js";
 import { z } from "zod";
 
 export type TriageFlag = "architecture" | "security" | "authentication" | "authorization" | "schema" | "migration" | "public-api" | "breaking-change" | "new-dependency" | "cross-module" | "ambiguous";
@@ -117,13 +117,12 @@ export async function triageChangeWithSemanticAssessment(
     requiredOutputSchema: "semantic-assessment-v1",
     reasoningRequirement: { reasoningClass: "STANDARD", structuredOutputRequired: true, independenceRequired: false, externalKnowledgeRequired: false, maxContextClass: "STANDARD", riskClass: risk === "high" ? "HIGH" : risk === "medium" ? "STANDARD" : "LOW" },
     binding,
-    budget: { maxInputTokens: 2_000, maxOutputTokens: 500, deadlineMs: 15_000 },
+    budget: { maxInputTokens: 2_000, maxOutputTokens: 500, deadlineMs: semanticModelDeadlineMsV1 },
     policyRevision: options.policyRevision
   });
   if (assessment.judgment?.type !== "ROUTE") throw new AehError("SEMANTIC_ASSESSMENT_INVALID", "ROUTE assessment did not contain a typed route judgment.");
   const judgment = assessment.judgment;
-  const nonConcrete = files.filter((file) => /[*?\[\]{}]/.test(file));
-  const deterministicDelegationFloor = files.length === 0 || nonConcrete.length > 0 || files.length > 5 || flags.includes("cross-module") || judgment.scopeClarity === "LOW" || judgment.decompositionNeed || judgment.coordinationNeed;
+  const deterministicDelegationFloor = requiresDelegatedPlanningV1({ files, crossModule: flags.includes("cross-module"), scopeConfidence: judgment.scopeClarity === "LOW" ? "low" : "high", decompositionNeed: judgment.decompositionNeed, coordinationNeed: judgment.coordinationNeed });
   const recommendedRoute = deterministicDelegationFloor && judgment.recommendedRoute === "DIRECT" ? "DELEGATED" : judgment.recommendedRoute;
   const semanticAssessment: RouteAssessmentV1 = { ...judgment, recommendedRoute };
   return {
@@ -156,7 +155,6 @@ function triageChangeUsingAssessment(config: HarnessProjectConfig, input: Triage
     architecture: flags.includes("architecture") || domains.some((domain) => /architecture/i.test(domain)),
     crossModule: flags.includes("cross-module") || files.length > maxFiles,
     scopeConfidence: files.length === 0 || nonConcrete.length > 0 ? "low" : "high",
-    expectedWorkUnits: Math.max(files.length, 1),
     risk,
     publicContractImpact: flags.includes("public-api") || flags.includes("breaking-change") || domains.some((domain) => /public-api|breaking|contract/i.test(domain)),
     dataOrSchemaImpact: flags.includes("schema") || flags.includes("migration") || domains.some((domain) => /schema|migration|database/i.test(domain)),

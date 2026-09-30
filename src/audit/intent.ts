@@ -3,7 +3,7 @@ import { sha256Canonical } from "../core/digest.js";
 import { AehError } from "../core/errors.js";
 import { triageChange, triageChangeWithSemanticAssessment, type TriageDecision, type TriageEvidence } from "../core/triage.js";
 import { createIntentDecision, type IntentDecisionV1, type IntentDecisionSource, type SemanticIntent } from "./intentDecision.js";
-import { createSemanticEvidenceReceiptV1, SemanticAssessmentServiceV1, type DecisionMechanismV1, type SemanticAssessmentBindingV1 } from "../semantic/assessment.js";
+import { createSemanticEvidenceReceiptV1, semanticModelDeadlineMsV1, SemanticAssessmentServiceV1, type DecisionMechanismV1, type SemanticAssessmentBindingV1 } from "../semantic/assessment.js";
 
 export { assertIntentDecisionForRoute, createIntentDecision, defaultEffects, intentDecisionV1Schema, InvalidIntentDecisionError, parseIntentDecision, semanticIntentValues, validateIntentDecision } from "./intentDecision.js";
 export type { IntentDecisionRoute, IntentDecisionResolution, IntentDecisionSource, IntentDecisionV1, SemanticIntent } from "./intentDecision.js";
@@ -112,7 +112,7 @@ export async function classifyEngineeringIntentWithSemanticAssessment(
     requiredOutputSchema: "semantic-assessment-v1",
     reasoningRequirement: { reasoningClass: "LIGHT", structuredOutputRequired: true, independenceRequired: false, externalKnowledgeRequired: false, maxContextClass: "SMALL", riskClass: risk === "high" ? "HIGH" : risk === "medium" ? "STANDARD" : "LOW" },
     binding,
-    budget: { maxInputTokens: 2_000, maxOutputTokens: 300, deadlineMs: 10_000 },
+    budget: { maxInputTokens: 2_000, maxOutputTokens: 300, deadlineMs: semanticModelDeadlineMsV1 },
     policyRevision: options.policyRevision
   });
   if (assessment.judgment?.type !== "INTENT") throw new AehError("SEMANTIC_ASSESSMENT_INVALID", "INTENT assessment did not contain a typed intent judgment.");

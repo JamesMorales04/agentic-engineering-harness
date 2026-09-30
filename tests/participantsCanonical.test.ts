@@ -52,6 +52,13 @@ describe("canonical participant foundation", () => {
     expect(compiled.skills.every((skill) => skill.proceduralSteps.length > 0)).toBe(true);
   });
 
+  it("selects the defining seed skill for a known technology competency without a matching specialization (AEH-V2-0110)", () => {
+    const compiled = compileSkillSet({ role: "Implementer", competencies: ["node-runtime"] });
+    expect(compiled.skillIds).toContain("typescript-node");
+    expect(compiled.competencies).toContain("node-runtime");
+    expect(() => compileSkillSet({ role: "Implementer", competencies: ["unknown-technology-competency"] })).toThrow(/unknown competencies/);
+  });
+
   it("rejects unknown competency and cannot expose forbidden or unavailable tools", () => {
     expect(() => compileSkillSet({ role: "Reviewer", competencies: ["made-up competency"] })).toThrow(/unknown competencies/);
     const authorization = authorizeToolPack({

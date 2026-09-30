@@ -1,0 +1,25 @@
+export const CERTIFICATION_CAPABILITY_MATRIX = [
+    { capability: "startup", deterministicContract: "install/init/setup/doctor and runtime identity", modelJourney: "start a fresh packed consumer", requiredEvidence: ["install", "doctor", "startup"] },
+    { capability: "informational", deterministicContract: "bounded read-only answer with no operation artifact", modelJourney: "resolve an informational turn", requiredEvidence: ["intent", "answer"] },
+    { capability: "audit", deterministicContract: "read-only audit report and validator evidence", modelJourney: "start and complete an audit journey", requiredEvidence: ["audit-report", "findings"] },
+    { capability: "change", deterministicContract: "candidate-bound change contract and terminal receipt", modelJourney: "route, execute, validate and deliver a change", requiredEvidence: ["candidate-revision", "participant-receipt", "validation"] },
+    { capability: "direct-change", deterministicContract: "one bounded implementer and assurance-specific validation", modelJourney: "complete a small direct change", requiredEvidence: ["direct-route", "candidate-revision", "validation"] },
+    { capability: "delegated-change", deterministicContract: "FeatureCapsule and bounded planner/worker coordination", modelJourney: "complete a multi-file delegated change", requiredEvidence: ["feature-capsule", "delegation", "review"] },
+    { capability: "formal-sdd", deterministicContract: "OpenSpec/SDD consistency and sealed TaskContract", modelJourney: "complete a formal SDD feature", requiredEvidence: ["openspec", "task-contract", "traceability"] },
+    { capability: "multi-worker", deterministicContract: "dependency-aware waves and barrier validation", modelJourney: "coordinate multiple implementers", requiredEvidence: ["task-dag", "wave-barrier"] },
+    { capability: "cancel", deterministicContract: "idempotent cancellation and drained descendants", modelJourney: "cancel a running operation", requiredEvidence: ["cancel-request", "terminal-state"] },
+    { capability: "recovery", deterministicContract: "restart/recovery preserves operation identity and evidence", modelJourney: "recover after a controlled interruption", requiredEvidence: ["recovery-event", "operation-state"] },
+    { capability: "product-repair", deterministicContract: "bounded product repair cannot widen frozen scope", modelJourney: "repair a failing product candidate", requiredEvidence: ["repair-packet", "scope-check"] },
+    { capability: "certification-repair", deterministicContract: "external certification repair is re-oracled and cannot self-accept", modelJourney: "repair a disposable certification fixture", requiredEvidence: ["failure-packet", "oracle-recheck"] },
+    { capability: "repair", deterministicContract: "bounded repair attempts cannot self-accept", modelJourney: "repair a failing candidate and re-run the oracle", requiredEvidence: ["failure-packet", "oracle-recheck"] },
+    { capability: "context-handoff", deterministicContract: "authorized context refs and continuation binding", modelJourney: "continue work across sessions", requiredEvidence: ["context-ref", "continuation"] },
+    { capability: "permission-delegation", deterministicContract: "monotonic child capability leases", modelJourney: "request and deny an authority escalation", requiredEvidence: ["parent-lease", "decision"] },
+    { capability: "issue-driven", deterministicContract: "frozen issue snapshot and drift gate", modelJourney: "import and execute an issue-derived task", requiredEvidence: ["issue-snapshot", "drift-check"] },
+    { capability: "delivery", deterministicContract: "accepted candidate delivery identity and provenance", modelJourney: "deliver an accepted candidate", requiredEvidence: ["delivery-record", "provenance"] },
+    { capability: "distributed-execution", deterministicContract: "leased queue execution and worker evidence", modelJourney: "run a distributed worker journey", requiredEvidence: ["lease", "worker-receipt"] },
+    { capability: "project-home", deterministicContract: "registry identity and moved-project health state", modelJourney: "select a project from AEH Home", requiredEvidence: ["project-id", "health"] },
+    { capability: "multi-project", deterministicContract: "same-name projects remain isolated by repository identity", modelJourney: "select between two registered projects", requiredEvidence: ["repository-identity", "project-selection"] },
+    { capability: "control-center", deterministicContract: "loopback token/CSRF protected control surface", modelJourney: "observe and request a human decision", requiredEvidence: ["overview", "decision"] },
+    { capability: "authority", deterministicContract: "monotonic capabilities and external human decisions", modelJourney: "approve or reject a gated action", requiredEvidence: ["lease", "human-decision"] }
+];
+//# sourceMappingURL=types.js.map

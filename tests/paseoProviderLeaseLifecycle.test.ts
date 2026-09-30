@@ -18,6 +18,7 @@ import {
   ManagedRuntimeSupervisorV1,
   RuntimeOwnershipError,
   createManagedRuntime,
+  providerLeaseWorkspaceKeyV1,
   readManagedRuntimeSnapshot,
   runWithOperationProviderLease,
   runtimeProjectId,
@@ -552,5 +553,20 @@ describe("runWithOperationProviderLease fault-injection", () => {
     expect(inspections).toEqual([]);
     expect(stops).toEqual([]);
     expect((await readManagedRuntimeSnapshot(fixture.root)).providerLeases).toEqual([]);
+  });
+});
+
+describe("AEH-V2-0129 provider lease workspace key", () => {
+  it("keeps explicit workspace ids and isolates per-unit launch roots deterministically", () => {
+    expect(providerLeaseWorkspaceKeyV1({ explicitWorkspaceId: "wks_op", launchRoot: "/tmp/unit-a", stateRoot: "/tmp/op", operationWorkspaceId: "wks_shared", operationId: "CHANGE-1" })).toBe("wks_op");
+    expect(providerLeaseWorkspaceKeyV1({ labelWorkspaceId: "wks_label", launchRoot: "/tmp/unit-a", stateRoot: "/tmp/op", operationWorkspaceId: "wks_shared", operationId: "CHANGE-1" })).toBe("wks_label");
+    const a = providerLeaseWorkspaceKeyV1({ launchRoot: "/tmp/unit-a", stateRoot: "/tmp/op", operationWorkspaceId: "wks_shared", operationId: "CHANGE-1" });
+    const b = providerLeaseWorkspaceKeyV1({ launchRoot: "/tmp/unit-b", stateRoot: "/tmp/op", operationWorkspaceId: "wks_shared", operationId: "CHANGE-1" });
+    expect(a).toMatch(/^isolated:[0-9a-f]{16}$/);
+    expect(b).toMatch(/^isolated:[0-9a-f]{16}$/);
+    expect(a).not.toBe(b);
+    expect(providerLeaseWorkspaceKeyV1({ launchRoot: "/tmp/unit-a", stateRoot: "/tmp/op", operationWorkspaceId: "wks_shared", operationId: "CHANGE-1" })).toBe(a);
+    expect(providerLeaseWorkspaceKeyV1({ launchRoot: "/tmp/op", stateRoot: "/tmp/op", operationWorkspaceId: "wks_shared", operationId: "CHANGE-1" })).toBe("wks_shared");
+    expect(providerLeaseWorkspaceKeyV1({ launchRoot: "/tmp/op", stateRoot: "/tmp/op", operationId: "CHANGE-1" })).toBe("CHANGE-1");
   });
 });

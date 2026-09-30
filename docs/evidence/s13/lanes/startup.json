@@ -1,0 +1,404 @@
+{
+  "version": 1,
+  "capability": "startup",
+  "provider": "codex",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13RealProviderCertification.mjs",
+        "sha256": "e008d145f175f0ef2e5a6ef2a001c69dd24206d6d69e23778229f30495dd1a9c"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "52cc4df585215b768577b300277a5aac6ca3a9f6101433ed2ed0363d6c77f461"
+  },
+  "startedAt": "2026-09-30T05:30:26.969Z",
+  "report": {
+    "certificationId": "cert-agentic-engineering-harness-0.8.4-768a7295-5604-462e-8282-69fd1adc63c5",
+    "state": "ACCEPTED",
+    "accepted": true,
+    "assurance": "DETERMINISTIC",
+    "policyId": "aeh-default-certification",
+    "harnessBuildIdentity": {
+      "version": 1,
+      "packageVersion": "0.8.4",
+      "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+      "releaseId": "release-1790746067053-1573412-feaf0aab",
+      "buildDigest": "599ed363223ff2dd85e17296c9f34c4134bf83e363916c4c57d7e7492ccbdf45",
+      "dirty": true
+    },
+    "candidate": {
+      "version": 1,
+      "id": "agentic-engineering-harness-0.8.4",
+      "root": "/tmp/aeh-cert-fixture-vjDCU9",
+      "artifactPath": "/tmp/aeh-cert-fixture-vjDCU9/.aeh-candidate.tgz",
+      "baseRef": "packed-checkout",
+      "sourceDigest": "332be9955c0c7013d4d753459653044869aec3f3c84194309268243e90a8469b",
+      "packedArtifactDigest": "332be9955c0c7013d4d753459653044869aec3f3c84194309268243e90a8469b",
+      "treeDigest": "88b5f42d77c56d8f3e152a21a8ebea4eb6263eae4ec435d97df321bc05216bd5",
+      "metadata": {
+        "artifactDigest": "332be9955c0c7013d4d753459653044869aec3f3c84194309268243e90a8469b",
+        "packaging": "npm-pack-ignore-scripts",
+        "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+        "sourceBranch": "core-architecture-v2",
+        "packedBuildRelease": "release-1790746227404-1579617-1bf9a054",
+        "packedBuildDigest": "599ed363223ff2dd85e17296c9f34c4134bf83e363916c4c57d7e7492ccbdf45",
+        "packedBuildGitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+        "packedBuildPackageVersion": "0.8.4"
+      }
+    },
+    "networkPolicy": {
+      "requested": "ALLOW",
+      "enforced": false,
+      "enforcement": "provider-allowed"
+    },
+    "budget": {
+      "attempts": 1,
+      "durationMs": 13071,
+      "usage": {
+        "inputTokens": 45428,
+        "cachedInputTokens": 36096,
+        "outputTokens": 178,
+        "reasoningOutputTokens": 0,
+        "totalTokens": 45606
+      },
+      "remaining": {
+        "attempts": 0,
+        "durationMs": 586929
+      },
+      "usageKnown": true
+    },
+    "attempts": [
+      {
+        "attempt": 1,
+        "role": "actor",
+        "status": "COMPLETED",
+        "startedAt": "2026-09-30T05:30:54.361Z",
+        "finishedAt": "2026-09-30T05:31:07.467Z",
+        "durationMs": 13024,
+        "usage": {
+          "inputTokens": 45428,
+          "cachedInputTokens": 36096,
+          "outputTokens": 178,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 45606
+        },
+        "message": "WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir \"/tmp\" (codex_home: AbsolutePathBuf(\"/tmp/aeh-cert-codex-home-yogrrK/.codex\"))\nReading additional input from stdin...\n"
+      },
+      {
+        "attempt": 2,
+        "role": "oracle",
+        "status": "PASS",
+        "startedAt": "2026-09-30T05:31:07.504Z",
+        "finishedAt": "2026-09-30T05:31:07.551Z",
+        "durationMs": 47
+      }
+    ],
+    "oracle": {
+      "status": "PASS",
+      "oracleId": "s13-journey:startup",
+      "checks": [
+        {
+          "id": "install",
+          "category": "journey",
+          "status": "PASS",
+          "required": true,
+          "message": "Journey evidence 'install' verified for startup.",
+          "evidence": {
+            "detail": {
+              "releaseId": "release-1790746227404-1579617-1bf9a054",
+              "buildDigest": "599ed363223ff2dd85e17296c9f34c4134bf83e363916c4c57d7e7492ccbdf45",
+              "packageVersion": "0.8.4"
+            }
+          }
+        },
+        {
+          "id": "doctor",
+          "category": "journey",
+          "status": "PASS",
+          "required": true,
+          "message": "Journey evidence 'doctor' verified for startup.",
+          "evidence": {
+            "detail": {
+              "exitCode": 0,
+              "output": "✓ git: git executable\n✓ node: node executable\n"
+            }
+          }
+        },
+        {
+          "id": "startup",
+          "category": "journey",
+          "status": "PASS",
+          "required": true,
+          "message": "Journey evidence 'startup' verified for startup.",
+          "evidence": {
+            "detail": {
+              "projectConfig": "version: 1\n\nproject:\n  name: s13-real-provider-fixture\n\nvalidation:",
+              "agentsSourceBytes": 143,
+              "agentsDocBytes": 5702
+            }
+          }
+        },
+        {
+          "id": "actor.command:init",
+          "category": "provider",
+          "status": "PASS",
+          "required": true,
+          "message": "Provider executed 'node_modules/agentic-engineering-harness/dist/main.js init'.",
+          "evidence": {
+            "matched": true,
+            "exitCode": 0,
+            "output": "Created: .harness managed assets (24)\n"
+          }
+        },
+        {
+          "id": "actor.command:doctor",
+          "category": "provider",
+          "status": "PASS",
+          "required": true,
+          "message": "Provider executed 'node_modules/agentic-engineering-harness/dist/main.js doctor'.",
+          "evidence": {
+            "matched": true,
+            "exitCode": 0,
+            "output": "✓ git: git executable\n✓ node: node executable\n"
+          }
+        },
+        {
+          "id": "model.evidence",
+          "category": "provider",
+          "status": "PASS",
+          "required": true,
+          "message": "Deterministic oracle verified the capability journey and the real provider execution.",
+          "evidence": {
+            "capability": "startup",
+            "evidenceOk": true,
+            "actorOk": true,
+            "executions": [
+              {
+                "command": "/usr/bin/bash -lc 'node node_modules/agentic-engineering-harness/dist/main.js init .'",
+                "exitCode": 0
+              },
+              {
+                "command": "/usr/bin/bash -lc 'node node_modules/agentic-engineering-harness/dist/main.js doctor .'",
+                "exitCode": 0
+              }
+            ]
+          }
+        }
+      ],
+      "failures": [],
+      "evidence": {
+        "capability": "startup",
+        "install": {
+          "ok": true,
+          "detail": {
+            "releaseId": "release-1790746227404-1579617-1bf9a054",
+            "buildDigest": "599ed363223ff2dd85e17296c9f34c4134bf83e363916c4c57d7e7492ccbdf45",
+            "packageVersion": "0.8.4"
+          }
+        },
+        "doctor": {
+          "ok": true,
+          "detail": {
+            "exitCode": 0,
+            "output": "✓ git: git executable\n✓ node: node executable\n"
+          }
+        },
+        "startup": {
+          "ok": true,
+          "detail": {
+            "projectConfig": "version: 1\n\nproject:\n  name: s13-real-provider-fixture\n\nvalidation:",
+            "agentsSourceBytes": 143,
+            "agentsDocBytes": 5702
+          }
+        }
+      }
+    },
+    "provider": {
+      "provider": "codex",
+      "status": "COMPLETED",
+      "exitCode": 0,
+      "usage": {
+        "inputTokens": 45428,
+        "cachedInputTokens": 36096,
+        "outputTokens": 178,
+        "reasoningOutputTokens": 0,
+        "totalTokens": 45606
+      },
+      "usageKnown": true,
+      "outputTruncated": false,
+      "executionEvidence": {
+        "started": true,
+        "provider": "codex",
+        "command": "codex",
+        "requestedModel": "gpt-6-luna",
+        "effectiveModel": "gpt-6-luna",
+        "requestedReasoningEffort": "low",
+        "effectiveReasoningEffort": "low",
+        "capabilitySource": "codex exec --help",
+        "sessionId": "01a0f0cb-5f12-7313-9480-4e65fbfca05e",
+        "processExitCode": 0,
+        "startedAt": "2026-09-30T05:30:54.424Z",
+        "finishedAt": "2026-09-30T05:31:07.449Z"
+      },
+      "commandExecutions": [
+        {
+          "command": "/usr/bin/bash -lc 'node node_modules/agentic-engineering-harness/dist/main.js init .'",
+          "exitCode": 0,
+          "output": "Created: .harness managed assets (24)\n"
+        },
+        {
+          "command": "/usr/bin/bash -lc 'node node_modules/agentic-engineering-harness/dist/main.js doctor .'",
+          "exitCode": 0,
+          "output": "✓ git: git executable\n✓ node: node executable\n"
+        }
+      ]
+    },
+    "capability": {
+      "capability": "startup",
+      "contract": {
+        "status": "PASS",
+        "evidence": {
+          "oracleId": "s13-journey:startup",
+          "checks": [
+            {
+              "id": "install",
+              "category": "journey",
+              "status": "PASS",
+              "required": true,
+              "message": "Journey evidence 'install' verified for startup.",
+              "evidence": {
+                "detail": {
+                  "releaseId": "release-1790746227404-1579617-1bf9a054",
+                  "buildDigest": "599ed363223ff2dd85e17296c9f34c4134bf83e363916c4c57d7e7492ccbdf45",
+                  "packageVersion": "0.8.4"
+                }
+              }
+            },
+            {
+              "id": "doctor",
+              "category": "journey",
+              "status": "PASS",
+              "required": true,
+              "message": "Journey evidence 'doctor' verified for startup.",
+              "evidence": {
+                "detail": {
+                  "exitCode": 0,
+                  "output": "✓ git: git executable\n✓ node: node executable\n"
+                }
+              }
+            },
+            {
+              "id": "startup",
+              "category": "journey",
+              "status": "PASS",
+              "required": true,
+              "message": "Journey evidence 'startup' verified for startup.",
+              "evidence": {
+                "detail": {
+                  "projectConfig": "version: 1\n\nproject:\n  name: s13-real-provider-fixture\n\nvalidation:",
+                  "agentsSourceBytes": 143,
+                  "agentsDocBytes": 5702
+                }
+              }
+            },
+            {
+              "id": "actor.command:init",
+              "category": "provider",
+              "status": "PASS",
+              "required": true,
+              "message": "Provider executed 'node_modules/agentic-engineering-harness/dist/main.js init'.",
+              "evidence": {
+                "matched": true,
+                "exitCode": 0,
+                "output": "Created: .harness managed assets (24)\n"
+              }
+            },
+            {
+              "id": "actor.command:doctor",
+              "category": "provider",
+              "status": "PASS",
+              "required": true,
+              "message": "Provider executed 'node_modules/agentic-engineering-harness/dist/main.js doctor'.",
+              "evidence": {
+                "matched": true,
+                "exitCode": 0,
+                "output": "✓ git: git executable\n✓ node: node executable\n"
+              }
+            },
+            {
+              "id": "model.evidence",
+              "category": "provider",
+              "status": "PASS",
+              "required": true,
+              "message": "Deterministic oracle verified the capability journey and the real provider execution.",
+              "evidence": {
+                "capability": "startup",
+                "evidenceOk": true,
+                "actorOk": true,
+                "executions": [
+                  {
+                    "command": "/usr/bin/bash -lc 'node node_modules/agentic-engineering-harness/dist/main.js init .'",
+                    "exitCode": 0
+                  },
+                  {
+                    "command": "/usr/bin/bash -lc 'node node_modules/agentic-engineering-harness/dist/main.js doctor .'",
+                    "exitCode": 0
+                  }
+                ]
+              }
+            }
+          ],
+          "requiredEvidence": [
+            "install",
+            "doctor",
+            "startup"
+          ],
+          "missingEvidence": []
+        }
+      },
+      "modelE2E": {
+        "status": "PASS",
+        "evidence": {
+          "execution": {
+            "started": true,
+            "provider": "codex",
+            "command": "codex",
+            "requestedModel": "gpt-6-luna",
+            "effectiveModel": "gpt-6-luna",
+            "requestedReasoningEffort": "low",
+            "effectiveReasoningEffort": "low",
+            "capabilitySource": "codex exec --help",
+            "sessionId": "01a0f0cb-5f12-7313-9480-4e65fbfca05e",
+            "processExitCode": 0,
+            "startedAt": "2026-09-30T05:30:54.424Z",
+            "finishedAt": "2026-09-30T05:31:07.449Z"
+          },
+          "usage": {
+            "inputTokens": 45428,
+            "cachedInputTokens": 36096,
+            "outputTokens": 178,
+            "reasoningOutputTokens": 0,
+            "totalTokens": 45606
+          },
+          "usageKnown": true
+        }
+      },
+      "overall": "PASS",
+      "requiredModelE2E": true
+    }
+  },
+  "result": "PASS",
+  "finishedAt": "2026-09-30T05:31:07.721Z"
+}

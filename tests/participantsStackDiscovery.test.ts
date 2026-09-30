@@ -4,21 +4,25 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import type { AgentExecutionSelection } from "../src/agents/types.js";
+import { AehError } from "../src/core/errors.js";
 import { sha256Canonical, sha256Utf8 } from "../src/core/digest.js";
 import { computeWorktreeDigest } from "../src/core/git.js";
 import {
   collectProjectStackEvidence,
   discoverProjectStackProfile,
+  projectStackAssessmentRequest,
   type ProjectStackDiscoveryOptionsV1,
   type ProjectStackSemanticAssessorV1
 } from "../src/participants/stack.js";
 import {
   createSemanticAssessmentServiceV1,
+  createSemanticEvidenceReceiptV1,
   semanticAssessmentBindingV1Schema,
   semanticAssessmentEvidenceDigest,
   semanticCapabilityPolicyRevisionV1,
   semanticEvidenceBoundaryDigest,
   semanticEvidenceReceiptDigest,
+  semanticModelDeadlineMsV1,
   type ResolvedSemanticAssessorV1,
   type SemanticAssessmentBindingV1,
   type SemanticAssessmentPayloadV1,
@@ -248,7 +252,7 @@ describe("model-first project stack discovery", () => {
       });
       expect(request.budget.maxInputTokens).toBeLessThanOrEqual(8_000);
       expect(request.budget.maxOutputTokens).toBeLessThanOrEqual(2_000);
-      expect(request.budget.deadlineMs).toBeLessThanOrEqual(45_000);
+      expect(request.budget.deadlineMs).toBeLessThanOrEqual(semanticModelDeadlineMsV1);
       expect(request.evidenceRefs).toEqual(["file:alpha.txt", "file:src/beta.txt"]);
       expect(request.evidenceRefs).toEqual(request.compactEvidence.map((item) => item.ref));
       expect(request.evidenceRefs).toEqual(request.evidenceReceipts.map((receipt) => receipt.ref));
@@ -623,6 +627,99 @@ describe("project skill root validation", () => {
     } finally {
       await fs.rm(fixture.root, { recursive: true, force: true });
       await fs.rm(fixture.outside, { recursive: true, force: true });
+    }
+  });
+
+  it("retries one invalid STACK judgment with bounded deterministic correction evidence", async () => {
+    const root = await temporaryRoot("aeh-stack-retry-");
+    try {
+      await fs.writeFile(path.join(root, "AGENTS.md"), "# guidance\n");
+      await fs.mkdir(path.join(root, "skills"), { recursive: true });
+      await fs.writeFile(path.join(root, "skills", "README.md"), "project skill root\n");
+      const binding = await repositoryBinding(root);
+      const requests: SemanticAssessmentRequestV1[] = [];
+      const service = stubService((request) => {
+        requests.push(request);
+        return stubAssessment(request, stackJudgment(request, { projectSkillRoots: requests.length === 1 ? ["AGENTS.md"] : ["skills"] }));
+      });
+
+      const profile = await discoverProjectStackProfile(root, { semanticAssessment: { service, binding } });
+
+      expect(requests).toHaveLength(2);
+      expect(requests[0]!.evidenceRefs).not.toContain("file:assessment.correction");
+      expect(requests[1]!.evidenceRefs).toContain("file:assessment.correction");
+      expect(requests[1]!.compactEvidence.find((item) => item.ref === "file:assessment.correction")?.content).toContain("projectSkillRoots");
+      expect(profile.projectSkillRoots).toEqual(["skills"]);
+      expect(profile.inputDigest).toBe(semanticAssessmentEvidenceDigest(requests[1]!));
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("retries one unparseable STACK assessor reply with bounded deterministic correction evidence", async () => {
+    const root = await temporaryRoot("aeh-stack-retry-parse-");
+    try {
+      await fs.mkdir(path.join(root, "skills"), { recursive: true });
+      await fs.writeFile(path.join(root, "skills", "README.md"), "project skill root\n");
+      const binding = await repositoryBinding(root);
+      const requests: SemanticAssessmentRequestV1[] = [];
+      const service = stubService((request) => {
+        requests.push(request);
+        if (requests.length === 1) throw new AehError("SEMANTIC_ASSESSMENT_INVALID", "Paseo Semantic Assessor output was not a structured JSON result.");
+        return stubAssessment(request, stackJudgment(request, { projectSkillRoots: ["skills"] }));
+      });
+
+      const profile = await discoverProjectStackProfile(root, { semanticAssessment: { service, binding } });
+
+      expect(requests).toHaveLength(2);
+      expect(requests[1]!.evidenceRefs).toContain("file:assessment.correction");
+      expect(profile.projectSkillRoots).toEqual(["skills"]);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("bounds the correction evidence to the 16-item assessor schema cap", async () => {
+    const root = await temporaryRoot("aeh-stack-correction-");
+    try {
+      const binding = await repositoryBinding(root);
+      const items = Array.from({ length: 16 }, (_, index) => ({ path: `file-${index}.ts`, content: `export const v${index} = ${index};` }));
+      const receipts = items.map((item) => createSemanticEvidenceReceiptV1({ binding, ref: `file:${item.path}`, content: item.content, kind: "REQUEST", path: item.path }));
+      const packet = {
+        version: 1 as const,
+        items,
+        receipts,
+        digest: semanticAssessmentEvidenceDigest({ evidenceRefs: receipts.map((receipt) => receipt.ref), compactEvidence: items.map((item) => ({ ref: `file:${item.path}`, content: item.content })), evidenceReceipts: receipts }),
+        scannedFiles: items.length,
+        truncated: false
+      };
+      const { request, packet: effective } = projectStackAssessmentRequest(packet, binding, "The previous STACK judgment was rejected by deterministic validation: unknown evidence ref.");
+      expect(request.compactEvidence).toHaveLength(16);
+      expect(request.evidenceRefs).toHaveLength(16);
+      expect(request.compactEvidence.at(-1)?.ref).toBe("file:assessment.correction");
+      expect(effective.items.at(-1)?.path).toBe("assessment.correction");
+      expect(effective.items).toHaveLength(16);
+      expect(effective.items[0]?.path).toBe("file-0.ts");
+      expect(effective.items.some((item) => item.path === "file-15.ts")).toBe(false);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed after a second invalid STACK judgment without further attempts", async () => {
+    const root = await temporaryRoot("aeh-stack-retry-fail-");
+    try {
+      await fs.writeFile(path.join(root, "AGENTS.md"), "# guidance\n");
+      const binding = await repositoryBinding(root);
+      let attempts = 0;
+      const service = stubService((request) => {
+        attempts += 1;
+        return stubAssessment(request, stackJudgment(request, { projectSkillRoots: ["AGENTS.md"] }));
+      });
+      await expect(discoverProjectStackProfile(root, { semanticAssessment: { service, binding } })).rejects.toMatchObject({ code: "STACK_ASSESSMENT_INVALID" });
+      expect(attempts).toBe(2);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
     }
   });
 });

@@ -400,8 +400,9 @@ async function runSpec(argv: string[]): Promise<void> {
   if (!title) throw new Error(`aeh spec ${sub} requires --title <title>.`);
   const config = await loadProjectConfig(root);
   if (sub === "prepare") {
-    const result = await prepareOpenSpecChange(root, config, taskId, title);
-    console.log(`OPENSPEC ${result.created ? "CREATED" : "READY"} ${result.changeName}`);
+    const result = await prepareOpenSpecChange(root, config, taskId);
+    console.log(`OPENSPEC AUTHORING TARGET ${result.changeName}`);
+    console.log("content is persisted by the controller after an accepted Spec Manager result");
     console.log(`manager=${result.managerAgent}`);
     console.log(`schema=${result.schema}`);
     console.log(`directory=${path.relative(root, result.directory).replaceAll("\\", "/")}`);

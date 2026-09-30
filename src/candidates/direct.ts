@@ -5,6 +5,7 @@ import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import type { HarnessProjectConfig, TaskContract, WorkerSession } from "../core/types.js";
 import { sha256Utf8 } from "../core/digest.js";
 import { AehError } from "../core/errors.js";
+import { providerGeneratedPathspecExcludes } from "../core/git.js";
 import { runExecutable } from "../utils/process.js";
 import { existingRepositoryPath, repositoryPath } from "../utils/repositoryPath.js";
 import { assertWorkspaceMatchesCandidate } from "./identity.js";
@@ -75,8 +76,8 @@ export async function executeIsolatedCandidateMutation(input: {
     const intent = await runExecutable("git", ["add", "-N", "--all"], { cwd: isolatedRoot, timeoutMs: 30_000 });
     if (intent.exitCode !== 0) throw new AehError("CANDIDATE_STALE", `Unable to enumerate DIRECT changes: ${intent.stderr || intent.stdout}`);
     const [names, diff] = await Promise.all([
-      runExecutable("git", ["diff", "--name-only", "--no-renames", "-z", baselineCommit, "--"], { cwd: isolatedRoot, timeoutMs: 30_000 }),
-      runExecutable("git", ["diff", "--binary", "--no-ext-diff", baselineCommit, "--"], { cwd: isolatedRoot, timeoutMs: 60_000 })
+      runExecutable("git", ["diff", "--name-only", "--no-renames", "-z", baselineCommit, "--", ...providerGeneratedPathspecExcludes()], { cwd: isolatedRoot, timeoutMs: 30_000 }),
+      runExecutable("git", ["diff", "--binary", "--no-ext-diff", baselineCommit, "--", ...providerGeneratedPathspecExcludes()], { cwd: isolatedRoot, timeoutMs: 60_000 })
     ]);
     if (names.exitCode !== 0 || diff.exitCode !== 0) throw new AehError("CANDIDATE_STALE", `Unable to capture DIRECT ChangeSet: ${names.stderr || diff.stderr || names.stdout || diff.stdout}`);
     const changedFiles = [...new Set(names.stdout.split("\0").map((file) => file.trim()).filter(Boolean))].sort();

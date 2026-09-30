@@ -39,9 +39,35 @@ export interface ImplementationRoutingDecision {
   routeEvidence: RouteEvidence[];
 }
 
+/**
+ * AEH-V2-0128: the single deterministic delegation floor. Semantic ROUTE triage and the sealed
+ * contract route must both consume this predicate, otherwise a bounded concrete scope can take the
+ * DIRECT branch while the contract seals DELEGATED and the supervisor fails closed stale. File
+ * count alone is not a work-unit count: only an explicit expectedWorkUnits above one (or a
+ * concrete delegation signal) raises the floor.
+ */
+export function requiresDelegatedPlanningV1(input: {
+  files: string[];
+  crossModule?: boolean;
+  scopeConfidence?: "low" | "medium" | "high";
+  expectedWorkUnits?: number;
+  decompositionNeed?: boolean;
+  coordinationNeed?: boolean;
+}): boolean {
+  const files = [...new Set(input.files ?? [])];
+  const nonConcrete = files.filter((file) => /[*?\[\]{}]/.test(file));
+  return files.length === 0
+    || nonConcrete.length > 0
+    || files.length > 5
+    || input.crossModule === true
+    || (input.expectedWorkUnits !== undefined && input.expectedWorkUnits > 1)
+    || input.scopeConfidence === "low"
+    || input.decompositionNeed === true
+    || input.coordinationNeed === true;
+}
+
 export function resolveImplementationRoute(input: ImplementationRoutingEvidence): ImplementationRoutingDecision {
   const files = [...new Set(input.files ?? [])];
-  const workUnits = input.expectedWorkUnits ?? Math.max(files.length, 1);
   const confidence = input.scopeConfidence ?? "medium";
   let route: ImplementationRoute;
   let statement: string;
@@ -54,7 +80,7 @@ export function resolveImplementationRoute(input: ImplementationRoutingEvidence)
   } else if (input.semanticAssessment) {
     route = input.semanticAssessment.recommendedRoute;
     statement = "A bounded semantic route assessment recommended the canonical workflow route; deterministic policy remains authoritative for assurance and action.";
-  } else if (input.crossModule || workUnits > 1 || confidence !== "high" || files.length > 5) {
+  } else if (requiresDelegatedPlanningV1({ files, crossModule: input.crossModule, scopeConfidence: confidence, expectedWorkUnits: input.expectedWorkUnits })) {
     route = "DELEGATED";
     statement = "The bounded work has multiple coordination units or needs delegated specialist execution.";
   } else {

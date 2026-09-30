@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 6,
+  "roundLabel": "last-invocation-only (per-lane artifacts under github-lanes/ are the immutable evidence)",
+  "campaign": "github-effects",
+  "generatedAt": "2026-09-28T03:23:09.711Z",
+  "checkout": "/home/james/Desarrollo/agentic-engineering-harness",
+  "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+  "repository": {
+    "name": "JamesMorales04/aeh-s13-round3-20260928032308-4317d7",
+    "visibility": "PRIVATE",
+    "createdAt": "2026-09-28T03:23:10Z",
+    "deletedAt": null,
+    "deletionVerified": false,
+    "url": "https://github.com/JamesMorales04/aeh-s13-round3-20260928032308-4317d7",
+    "deleteAttempt": {
+      "exitCode": 1,
+      "stdout": "",
+      "stderr": "HTTP 403: Must have admin rights to Repository. (https://api.github.com/repos/JamesMorales04/aeh-s13-round3-20260928032308-4317d7)\nThis API operation needs the \"delete_repo\" scope. To request it, run:  gh auth refresh -h github.com -s delete_repo"
+    }
+  },
+  "lanes": [
+    {
+      "capability": "issue-driven",
+      "result": "PASS",
+      "checks": [
+        {
+          "id": "issue.snapshot",
+          "ok": true,
+          "message": "frozen snapshot bd777eed917f matches live issue #1"
+        },
+        {
+          "id": "issue.drift-gate",
+          "ok": true,
+          "message": "ISSUE_DRIFT: GitHub issue #1 title/body changed after freeze (bd777eed917f -> baaf3ae5a7cf)."
+        },
+        {
+          "id": "issue.operation-import",
+          "ok": true,
+          "message": "operation-bound issue import completed"
+        }
+      ],
+      "artifact": "docs/evidence/s13/github-lanes/issue-driven.json"
+    },
+    {
+      "capability": "authority",
+      "result": "PASS",
+      "checks": [
+        {
+          "id": "authority.human-gate",
+          "ok": true,
+          "message": "unapproved external effect status=HUMAN_REQUIRED"
+        },
+        {
+          "id": "authority.approved-effect",
+          "ok": true,
+          "message": "approved effect status=EXECUTED/SUCCEEDED"
+        },
+        {
+          "id": "authority.real-github-ref",
+          "ok": true,
+          "message": "real remote branch aeh-s13-authority-20260928032308 observed on JamesMorales04/aeh-s13-round3-20260928032308-4317d7"
+        }
+      ],
+      "artifact": "docs/evidence/s13/github-lanes/authority.json"
+    },
+    {
+      "capability": "delivery",
+      "result": "BLOCKED",
+      "checks": [
+        {
+          "id": "delivery.accepted-candidate",
+          "ok": false,
+          "message": "A real GitHub delivery requires an accepted packed governed change candidate (S8 AcceptanceOracle); the packed FULL_OPERATION path is currently blocked by the recorded FULL_OPERATION defects."
+        }
+      ],
+      "artifact": null
+    }
+  ],
+  "result": "SLICE_BLOCKED",
+  "candidate": {
+    "artifactDigest": "4072a3e7a657a22448b0d294c03da23efbbb68af71350aed6df1eab6b2c38005"
+  },
+  "issue": {
+    "number": 1,
+    "url": "https://github.com/JamesMorales04/aeh-s13-round3-20260928032308-4317d7/issues/1",
+    "created": true
+  },
+  "checkoutProof": {
+    "trackedDigestBefore": "86c94d9ecf893380a57f371acfca5802e293c60e672cf7613ecc0371fc486730",
+    "trackedDigestAfter": "86c94d9ecf893380a57f371acfca5802e293c60e672cf7613ecc0371fc486730",
+    "trackedFiles": 668,
+    "checkoutUntouched": true,
+    "note": "Tracked digest captured before packing and after the GitHub effect lanes; no candidate executes in this checkout."
+  }
+}

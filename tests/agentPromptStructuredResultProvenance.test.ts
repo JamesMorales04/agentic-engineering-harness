@@ -525,16 +525,17 @@ function expectNoTransportLaunch(): void {
   expect(runtime.runExecutable.mock.calls.filter((call) => call[0] === "podman")).toHaveLength(0);
 }
 
-async function launchFixture(operationId: string, transport: "direct" | "podman" | "paseo") {
+async function launchFixture(operationId: string, transport: "direct" | "podman" | "paseo", role: "Reviewer" | "Implementer" = "Reviewer") {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-agent-result-transport-"));
   roots.push(root);
   process.env.AEH_OPERATION_ID = operationId;
   process.env.AEH_OPERATION_KIND = "run";
   process.env.AEH_CONTROL_ROOT = root;
   const now = new Date().toISOString();
-  await saveOwnedOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "review", root, payload: { taskId: "TASK-TRANSPORT" }, createdAt: now, updatedAt: now, operationExecutionRevision: 1 } as never);
-  const participantId = `participant:${transport}-reviewer`;
-  await registerOperationAgent(root, operationId, { id: participantId, logicalAgent: `${transport}-reviewer`, role: "Reviewer", phase: "review" });
+  const phase = role === "Reviewer" ? "review" : "implementation";
+  await saveOwnedOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase, root, payload: { taskId: "TASK-TRANSPORT" }, createdAt: now, updatedAt: now, operationExecutionRevision: 1 } as never);
+  const participantId = `participant:${transport}-${role === "Reviewer" ? "reviewer" : "implementer"}`;
+  await registerOperationAgent(root, operationId, { id: participantId, logicalAgent: `${transport}-${role === "Reviewer" ? "reviewer" : "implementer"}`, role, phase });
   const operation = await loadOperation(root, operationId);
   const controllerEpoch = currentControllerEpoch(operation);
   await bindResolvedOperationPolicy(root, operationId, compileResolvedOperationPolicy({
@@ -547,7 +548,7 @@ async function launchFixture(operationId: string, transport: "direct" | "podman"
     allowedExternalEffects: [], humanDecisionRequirements: []
   }));
   const selection: AgentExecutionSelection = {
-    logicalAgent: `${transport}-reviewer`, role: "Reviewer", domains: [], runtimeName: transport === "direct" ? "codex" : "opencode", runtimeAdapter: transport === "direct" ? "codex" : "opencode", paseoProvider: "codex", modelAlias: "test-model", modelId: "test-model", modelName: "test-model", modelProvider: "openai", transport, skills: [], mcps: [], permissions: { read: "allow", write: "deny", shell: "deny", network: "deny", delegate: "deny" }, outputContract: "reviewer", args: [], runtimeCapabilities: { structuredOutput: true, sessions: true, mcp: true, stdioMcp: true, localMcp: true }
+    logicalAgent: `${transport}-${role === "Reviewer" ? "reviewer" : "implementer"}`, role, domains: [], runtimeName: transport === "direct" ? "codex" : "opencode", runtimeAdapter: transport === "direct" ? "codex" : "opencode", paseoProvider: "codex", modelAlias: "test-model", modelId: "test-model", modelName: "test-model", modelProvider: "openai", transport, skills: [], mcps: [], permissions: role === "Reviewer" ? { read: "allow", write: "deny", shell: "deny", network: "deny", delegate: "deny" } : { read: "allow", write: "allow", shell: "allow", network: "deny", delegate: "deny" }, outputContract: role === "Reviewer" ? "reviewer" : "implementer", args: [], runtimeCapabilities: { structuredOutput: true, sessions: true, mcp: true, stdioMcp: true, localMcp: true }
   };
   const config: HarnessProjectConfig = { version: 1, project: { name: "result-transport-test" }, orchestration: { provider: transport }, ...(transport === "podman" ? { security: { sandbox: { image: "test/worker:latest" } } } : {}) };
   const contract: TaskContract = { version: 1, task: { id: "TASK-TRANSPORT", title: "Review launch binding" }, routing: { route: "DIRECT", assurance: "STANDARD", intent: "audit" }, scope: { allowed: ["src/**"] } };

@@ -1,0 +1,345 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 15,
+  "reviewer": {
+    "identity": "fresh independent S13 round-15 reviewer (no implementation role in round 14 or 15)",
+    "provider": "opencode",
+    "model": "opencode-go/deepseek-v4.1-flash",
+    "thinking": "max (campaign reviewer configuration; not self-observable)"
+  },
+  "noImplementationDisclosure": "No part of rounds 14/15 implemented or repaired by this reviewer. Read-only inspection only: no repository file written, no commit/push/stash/reset/clean/revert, no GitHub write, no AEH operation against this checkout. vitest was NOT executed (read-only plan boundary; vitest writes caches) — settled counts are claimed-only. `npm run typecheck` WAS executed because `tsc -p tsconfig.json --noEmit` writes nothing (tsconfig has no incremental/composite) and it reproduced exit 0. Evidence-boundary items are marked accordingly.",
+  "gitState": {
+    "branch": "core-architecture-v2",
+    "head": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "upstream": "origin/core-architecture-v2 == HEAD (no commits, no push; `git log origin/core-architecture-v2..HEAD` empty)",
+    "worktree": "entire S13 uncommitted: 85 modified tracked paths + 27 untracked paths (112 porcelain entries)",
+    "gitDiffCheck": "clean",
+    "targetSha256": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+    "targetMatchesHead": true,
+    "lastSourceEdit": "src/operations/change.ts mtime 2026-09-29T04:58:02Z",
+    "distCurrent": "release-1790657912954-477303-0f744c3e (final claimed build release-1790657900333-476517-2b4f5a93 also present; both post-final-edit)"
+  },
+  "digestRecomputation": {
+    "overall": "MATCH",
+    "target": "MATCH 4954b62b…",
+    "delegated9Lane": "MATCH 1ea0e5f093ee9403cccf925e6e0a779e794f87557a38a4d1a422649a2561ac09",
+    "delegated9Summary": "MATCH 22efabf50786ab102ee704ede0efbbb582e2ad3355236cf01625321d61e8e282",
+    "direct1Lane": "MATCH 4865e915b344b4eab5b54e91c284960683d81316eb150886604bbbf8965948a6",
+    "direct1Summary": "MATCH 7e374d7bee93bdf794145474ab7015247335c09bc65332e62dd45bb4a436f547",
+    "githubSummary": "MATCH 9a34d254ac51cdd628dea9442f88fe275c96f630aea75dde44390c1bac7d2eb8",
+    "githubIssueLane": "MATCH 70bbc3701bf43d11…",
+    "githubAuthorityLane": "MATCH fe900dcff5e67a97…",
+    "formal1": "MATCH 66ccf2cdafc9162f…",
+    "formal2": "MATCH 4b7c7ce8cd8c5a7f…",
+    "formal3": "MATCH 6f134a4e7346df06…",
+    "environmentLoss": "MATCH current bytes fd21c2385e6b7599ebe00255448f41601d576ff7490d274182a045ba0d0a2f27 (MD citation of bb1a5b3b… is STALE — see R15-F4)",
+    "postRestartInventory": "MATCH b9eb16447a6a873756f9f6feadbe3ee8f6fbf3c96ecb62c30ef3c018e80e2e50",
+    "reviewRound13": "MATCH 7e7c5587e7fd33bf084627ce056ef513106b20dbe2a6c72ceb4e700f9b36690a",
+    "authorizationHistory": "MATCH 20960a7e6e22a195a07a71124df3b73dee46cf3180aa282a8378394e8a0d540e",
+    "frozenAuthorization": "MATCH 272c5cb76158a7c312edd4d8d97cd6545b599e5c57c7978bbfc3742c573bd460",
+    "delegated1/2/3": "MATCH ebebdeb24f…, f1b436135a…, a0e535e72a…",
+    "harnessRevisions": "MATCH on-disk: governed campaign 47b87446…, campaign-revision 456980ed…, campaign-policy 3395aa19…, external-effect-authorization dd3e427f…, github-campaign 05eb311d…"
+  },
+  "findings": [
+    {
+      "id": "R15-F1",
+      "priority": "P0",
+      "mechanism": "HYBRID",
+      "disposition": "CONFIRMED_FALSE_CURRENT_SOURCE_CLAIM",
+      "evidence": "change-delegated run-9 packed build release-1790654322137 (2026-09-29T03:58:42Z); change-direct run direct-1 packed build release-1790655209482 (04:13:29Z). The current tree's last edit is src/operations/change.ts 04:58:02Z (adds the AEH_RESULT_JSON= marker line to the shared Explorer/Planner prompts at src/operations/change.ts:481,513, used by DELEGATED/DIRECT discovery+planning) and src/spec/openspec.ts 04:48:07Z (AEH-V2-0111-residual gate). Both lane artifacts are therefore NOT bound to the current source, yet WorkGraph round-15 row dispositions (lines 1015-1016), STATUS line 51 and the campaign claim say 'terminal SUCCEEDED on the current source'. Only formal run-3 (pack release-1790657912954, 04:58:32Z) is bound to the final tree, and it FAILED.",
+      "requiredAction": "Rerun change-delegated and change/direct-change on the final build (release-1790657900333 or dist/current release-1790657912954) or explicitly record the rows as bound to pre-final Round-15 builds and stale; correct the 'current source' wording in WorkGraph/STATUS."
+    },
+    {
+      "id": "R15-F2",
+      "priority": "P0",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "LATE_TERMINAL_RUN_USED_AS_ROW_EVIDENCE",
+      "evidence": "s13-governed-operations-round-15-run-20260929-r15-direct-1.json: lane `timeout: true`, `lateTerminal: {lateWaitSeconds: 300, operationStatus: SUCCEEDED, operationRevision: 81, observedAt: 04:29:54.657Z}`, durationMs 977515 (>900 s bound). The WorkGraph (line 1003) and STATUS present direct-1 as a clean terminal SUCCEEDED without disclosing the late-terminal observation. delegated-9 is a clean terminal (timeout false, no lateTerminal). Run-8 is NOT late-terminal: it is a truthful terminal FAILED (timeout false, terminalRecord FAILED rev 132, objective-completion PARTICIPANT_INCOMPLETE×2); its summary lane shows `result: PASS`/`oracle: PASS` because the summary `oracle` field reflects the internal AcceptanceOracle disposition while the lane's own checks scored `operation.terminal-succeeded: FAIL`.",
+      "requiredAction": "Do not accept direct-1 as change/direct-change row evidence; rerun bounded. Also fix the campaign summary classifier so `result/oracle` cannot read PASS for a terminal FAILED lane (R15-F3)."
+    },
+    {
+      "id": "R15-F3",
+      "priority": "P1",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "CONFIRMED_SUMMARY_TRUTHFULNESS_DEFECT",
+      "evidence": "s13-governed-operations-round-15-run-20260929-r15-delegated-8.json lane: `result: PASS`, `status: FAILED`, `oracle: PASS`; lane envelope oracle checks mark `operation.terminal-succeeded: FAIL`. The user-flagged run-8 anomaly is explained exactly.",
+      "requiredAction": "Bind the summary lane result to the durable terminal status (or label the oracle field as the AcceptanceOracle disposition) before any checkpoint."
+    },
+    {
+      "id": "R15-F4",
+      "priority": "P2",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "CONFIRMED_STALE_DIGEST_CITATION",
+      "evidence": "WorkGraph line 937 cites round15-environment-loss.json sha256 bb1a5b3b…; the current file (final cleanup addendum recorded 05:15Z) recomputes fd21c2385e6b… (verified). The addendum content (archived dead wks_508d36da23164764, terminated 59 orphan fixture processes, residual 0, removed 9 staging dirs + github staging) is real and verified by daemon/process/staging scans.",
+      "requiredAction": "Update the citation to fd21c238… (or preserve the pre-addendum bytes and cite both)."
+    },
+    {
+      "id": "R15-F5",
+      "priority": "P1",
+      "mechanism": "HYBRID",
+      "disposition": "CONFIRMED_UNREFRESHED_ACCEPTED_ROWS",
+      "evidence": "Rounds 14/15 edited modules that load/execute on previously accepted rows' paths after their newest evidence: audit (round-13 PASS lane governed-lanes/round-13/run-20260928233519184-38c9c4/audit.json) vs reviewLifecycle/supervisor/controller/run/participantPlan/validationRequirements/waveExecutor/launchSpec/state/v2Contracts edits (00:25Z-03:57Z); cancel/recovery (round-10 lifecycle evidence) vs controller/state/launchSpec edits; startup/project-home/multi-project and informational (round-13 certification release-1790636944026) vs core/config.ts, core/types.ts and paseo/launchSpec.ts edits; issue-driven round-15 import (pack 04:43:55Z) vs change.ts 04:58:02Z. No round-15 rerun of these rows exists.",
+      "requiredAction": "Run the mandated final build-bound sweep (certification 4, governed audit, lifecycle cancel/recovery, issue-driven, and the two change trunks) before any S13 checkpoint; record per-row staleness explicitly."
+    },
+    {
+      "id": "R15-F6",
+      "priority": "P2",
+      "mechanism": "MODEL",
+      "disposition": "TERMINAL_SEMANTICS_CHANGED_BOUNDED_AND_DOCUMENTED",
+      "evidence": "src/architecture/acceptanceOracle.ts untouched in rounds 14/15 (mtime 2026-09-27) and evaluateTerminalGate (src/operations/v2Contracts.ts:253-276) is byte-unchanged and still requires candidate equality, runtime-terminal evidence, contract validity, persisted artifact and provenance. However terminalReceiptDecision (src/operations/state.ts:1744-1760) now evaluates ANCESTOR/ASSEMBLY receipts against the candidate the work observed instead of the current candidate; resolveCandidateLineageReceiptV1 (v2Contracts.ts) restricts this to settled SUCCEEDED receipts of non-producing roles (Explorer/Planner/Reviewer/Librarian/Spec Manager) on the verified assembly ancestry. Producers (Implementer/Repairer) remain strict. No gate weakening found, but it is a real change to terminal acceptance semantics that should be independently re-reviewed.",
+      "requiredAction": "Have a fresh architectural/acceptance review confirm the ANCESTOR allowance cannot close a producing unit and that the full-ancestry walk is the only accepted lineage proof; keep raisers of AEH-V2-0124 covered by the objectiveParticipantAccounting/assemblyLineageCompletion tests."
+    },
+    {
+      "id": "R15-F7",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "CLAIMED_COUNTS_NOT_REPRODUCED",
+      "evidence": "Static `it(`/`test(` inventory of the 18 named final-validation files = 141 vs claimed 152 (it.each expansions plausibly account for the delta); named regression counts verified: reviewRepairCandidateLifecycle 5, reviewLifecycle 7, paseoLaunchSpec 10, supervisorConsolidationProvenance 10, managedLeadAcceptance 4 (tests/managedLeadAcceptance.test.ts), acceptanceValidationPath 12, specManagerCanonicality 8. Discrepancies: objectiveParticipantAccounting static 13 vs referenced 12 (round-15 AEH-V2-0124 test present, title 'counts non-producing ancestor-bound work complete without an assembly source naming (AEH-V2-0124)'), s13GithubCampaignPolicy static 11 vs round-11 reference 9.",
+      "requiredAction": "Rerun the focused 18-file set in a writable environment and record exact counts; reconcile the ledger/WorkGraph counts."
+    },
+    {
+      "id": "R15-F8",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "CONFIRMED_STALE_HARNESS_MESSAGE",
+      "evidence": "s13-github-effects-round-15… lane `delivery` check: 'the packed FULL_OPERATION path is currently blocked by the recorded FULL_OPERATION defects' although the delegated trunk reached SUCCEEDED in run-9. WorkGraph line 1004 already flags this.",
+      "requiredAction": "Correct the delivery blockade message when the delivery lane is implemented; do not leave a false blocker reason in machine evidence."
+    },
+    {
+      "id": "R15-F9",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "CONFIRMED_IMPRECISE_TERMINAL_ERROR_CLASSIFICATION",
+      "evidence": "formal run-3 terminalRecord.error = PLANNER_RESULT_ARTIFACT_MISSING while the durable failedParticipants payload for planner-8ef9209b… carries contractDelivery.failure = CANDIDATE_WORKSPACE_MISMATCH (expected 07ef82b3…, observed d7cf7bed…). The AEH-V2-0126 classification is supported by the durable bytes; only the top-level typed error is imprecise.",
+      "requiredAction": "Surface the owning contractDelivery failure code as the terminal error (or include it in the message) in a later round; no gate change required."
+    },
+    {
+      "id": "R15-F10",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "COVERAGE_GAP_ACKNOWLEDGED",
+      "evidence": "AEH-V2-0125 (Planner/Explorer AEH_RESULT_JSON= marker) has no unit regression by design (prompt-only); the marker lines exist at src/operations/change.ts:481/513 and the Spec Manager normative instruction at src/operations/change.ts:862; the fix is exercised only by formal run 3 (which then failed for AEH-V2-0126). formal-2 durably shows NO_MARKER for the pre-fix Planner turn; formal-3's Planner failure is the workspace mismatch, proving the marker gap was passed.",
+      "requiredAction": "Add a prompt-contract regression for the marker requirement in the same round that repairs AEH-V2-0126 and assert it under a real formal lane."
+    }
+  ],
+  "claimVerification": {
+    "claim1TerminalTrunks": "PARTIALLY_SUPPORTED: delegated run-9 is a clean terminal SUCCEEDED (SUCCEEDED rev 128, error null, oracle ACCEPTED 0 blockers, assembly receipt r2→r3, objectiveCompletionDecision complete=true blockers=[], 6 real sessions incl. codex lead b2c7c74b, lead:AC-1/lead:impact-* PASS, checkoutUntouched true/668 files, 4 workspaces archived/0 remaining, 797338 ms) but its build predates two final src edits; direct-1 is terminal SUCCEEDED rev 81 with oracle ACCEPTED, objective completion complete, 3 sessions, checkoutUntouched true, but is a LATE-TERMINAL run and also pre-final-source. run-8 is a truthful terminal FAILED, not a late-terminal variant; its lane `oracle: PASS` in the summary is the internal AcceptanceOracle disposition and its own checks oracle FAILed. The 'on current source' predicate is NOT supported (R15-F1/F2).",
+    "claim2Repairs": "SUPPORTED_WITH_NOTES: test titles verify AEH-V2-0119 (reviewer stop → SYSTEM_FAILURE, no remediation), 0120 (candidate-drift rotation, bounded turn timeout, quality-state present), 0121 (real Paseo Lead binding exercised by run-9), 0122 (managedLeadAcceptance no-schema-turn + prompt contract), 0123 (acceptanceValidationPath model-authored plan requirement + Lead projection), 0124 (ancestor completion + terminal-gate basis), 0111-residual (SHALL/MUST pre-persistence gate in src/spec/openspec.ts:98-104 with title-line acceptance and non-normative rejection), 0125 (prompt-only, no unit regression; exercised by formal-3). Counts per R15-F7. No gate weakening found beyond the documented ANCESTOR terminal-decision widening (R15-F6).",
+    "claim3Round14Reconciliation": "RECORDED_AND_TEST_COVERED_WITH_BOUNDARY: the 10 src files and 7 test files named match the post-Round-13 mtimes and the WorkGraph reconciliation table; every retained edit has a named focused regression or lane exercise. 'Nothing reverted' is not independently provable from durable bytes (no pre-Round-14 snapshot exists); no revert evidence found.",
+    "claim4Github": "SUPPORTED: external artifact 272c5cb7 consumed through the source-verified loader (kind/authorizedBy/status/scope/prefix/effect-coverage/no-ambient/no-self-authorization), HumanDecision bound to exact ActionIntent payloadDigest 76c4e6f2…; unapproved gate HUMAN_REQUIRED; approved EXECUTED/SUCCEEDED with receipt; real remote branch aeh-s13-authority-20260929043030 observed; repository createdByCampaign=false; issue #1 reused (created=false); harness contains no issue/repo create/edit/delete command; no credential pattern found in docs/evidence/s13; delivery BLOCKED (stale reason). Residual: the pre-amendment authorization provenance limitation is recorded, and the loader cannot itself prove human origin (recorded in authorization-history.json).",
+    "claim5FormalSdd": "SUPPORTED: formal-1 failed with the durable OpenSpec strict SHALL/MUST rejection; formal-2 failed PLANNER_RESULT_ARTIFACT_MISSING with durable NO_MARKER; formal-3 compiled the spec then failed CANDIDATE_WORKSPACE_MISMATCH (expected 07ef82b3…, observed d7cf7bed…). AEH-V2-0126 classification and the round-16 repair handoff are recorded; the added normative gate is a strengthening; no gate weakened.",
+    "claim6Environment": "SUPPORTED_FOR_ROUND_14_15_SCOPE: two restarts recorded with the addendum; no /tmp/aeh-s13* staging exists; no fixture process matches; all 8 checked lane/orphan workspace ids are absent from the live daemon; no lane fixture agent id from run-9/direct-1 remains. Note: 71 active workspaces remain in the daemon, all pre-round-14 (old S1-S11 test worktrees and local checkouts); the '0 remaining' claim is lane-scoped, not global.",
+    "claim7Staleness": "See matrixDispositions — only `authority` holds current required evidence; all previously accepted executable rows are STALE_REQUIRES_RERUN.",
+    "claim8Validation": "typecheck reproduced exit 0; git diff --check clean; focused vitest NOT run (read-only boundary) — counts claimed-only.",
+    "claim9Truthfulness": "TARGET MATCH; no credentials in docs/evidence/s13; no commits/push (HEAD == origin). Truthfulness defects found: R15-F1 (current-source overstatement), R15-F2 (undisclosed late-terminal direct lane), R15-F3 (PASS label on FAILED run-8 summary), R15-F4 (stale environment-loss citation)."
+  },
+  "stalenessDispositions": {
+    "lastSourceEdit": "2026-09-29T04:58:02Z (src/operations/change.ts)",
+    "finalBuild": "release-1790657900333-476517-2b4f5a93 (dist/current: release-1790657912954-477303-0f744c3e; both post-final-edit)",
+    "CURRENT_ACCEPTED": [
+      "authority"
+    ],
+    "STALE_REQUIRES_RERUN": [
+      "startup",
+      "informational",
+      "audit",
+      "change",
+      "direct-change",
+      "delegated-change",
+      "cancel",
+      "recovery",
+      "issue-driven",
+      "project-home",
+      "multi-project"
+    ],
+    "BLOCKED_OR_NOT_ACCEPTED": [
+      "formal-sdd",
+      "multi-worker",
+      "product-repair",
+      "certification-repair",
+      "repair",
+      "context-handoff",
+      "permission-delegation",
+      "delivery",
+      "distributed-execution"
+    ],
+    "NOT_APPLICABLE": [
+      "control-center"
+    ],
+    "rule": "A row holds current required evidence only if its newest durable lane is bound to a packed build whose source watermark includes every src edit on that row's executed path. No previously accepted executable row currently satisfies that test."
+  },
+  "matrixDispositions": [
+    {
+      "row": "startup",
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "round-13 packed certification release-1790636944026 (source watermark pre-round-14); core/config.ts + core/types.ts edited 2026-09-29T00:25Z and load on init/doctor",
+      "requiredAction": "rerun packed certification on the final build"
+    },
+    {
+      "row": "informational",
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "round-13 certification lane; paseo/launchSpec.ts edited 00:27Z on the semantic assessor path",
+      "requiredAction": "rerun packed intent lane on the final build"
+    },
+    {
+      "row": "audit",
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "round-13 governed audit PASS (lane 7fe095fb…); rounds 14/15 edited reviewLifecycle/supervisor/controller/run/participantPlan/validationRequirements/waveExecutor/launchSpec/state/v2Contracts after that build",
+      "requiredAction": "rerun governed audit on the final build"
+    },
+    {
+      "row": "change",
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "direct-1 packed 04:13:29Z terminal SUCCEEDED but late-terminal (timeout true) and pre-change.ts 04:58:02Z; delegated-9 also pre-final",
+      "requiredAction": "bounded rerun on the final build; disclose late-terminal"
+    },
+    {
+      "row": "direct-change",
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "same direct-1 artifact (oracle ACCEPTED, rev 81, objective complete) but late-terminal + pre-final-source",
+      "requiredAction": "bounded rerun on the final build"
+    },
+    {
+      "row": "delegated-change",
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "run-9 clean terminal SUCCEEDED rev 128 on release-1790654322137 (03:58:42Z), before the shared Explorer/Planner prompt edit in change.ts",
+      "requiredAction": "rerun on the final build to a terminal SUCCEEDED"
+    },
+    {
+      "row": "formal-sdd",
+      "disposition": "NOT_ACCEPTED_BLOCKED_OPEN_DEFECT",
+      "evidence": "formal-3 on the current source FAILED rev 70; durable CANDIDATE_WORKSPACE_MISMATCH (expected 07ef82b3…, observed d7cf7bed…); AEH-V2-0126 OPEN",
+      "requiredAction": "implement the recorded candidate-lineage advance repair, then rerun change-formal to a canonical accepted terminal"
+    },
+    {
+      "row": "multi-worker",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "no lane executed",
+      "requiredAction": "implement/execute wave-barrier certification lane"
+    },
+    {
+      "row": "cancel",
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "round-10 real-Paseo lifecycle evidence (7e285c57…); controller.ts/state.ts/launchSpec.ts edited in rounds 14/15",
+      "requiredAction": "rerun real-Paseo cancellation on the final build"
+    },
+    {
+      "row": "recovery",
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "round-10 lifecycle evidence; same edited modules on the takeover path",
+      "requiredAction": "rerun real-Paseo takeover on the final build"
+    },
+    {
+      "row": "product-repair",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "no lane executed",
+      "requiredAction": "bounded execution after the change trunk rerun"
+    },
+    {
+      "row": "certification-repair",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "no lane executed",
+      "requiredAction": "bounded execution"
+    },
+    {
+      "row": "repair",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "no lane executed",
+      "requiredAction": "bounded execution"
+    },
+    {
+      "row": "context-handoff",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "no lane executed",
+      "requiredAction": "bounded execution"
+    },
+    {
+      "row": "permission-delegation",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "no lane executed",
+      "requiredAction": "bounded execution"
+    },
+    {
+      "row": "issue-driven",
+      "disposition": "STALE_REQUIRES_RERUN_PARTIAL",
+      "evidence": "round-15 gh-1 import PASS (snapshot bd777eed…, drift gate, operation-bound import) on pack 04:43:55Z, before change.ts 04:58:02Z; full row still blocked on delivery",
+      "requiredAction": "rerun import on the final build; complete end-to-end after delivery"
+    },
+    {
+      "row": "delivery",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "lane intentionally blocked; check message is stale (R15-F8)",
+      "requiredAction": "implement delivery lane and correct the message"
+    },
+    {
+      "row": "distributed-execution",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "no lane executed",
+      "requiredAction": "bounded execution"
+    },
+    {
+      "row": "project-home",
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "round-13 certification lane; core/config.ts + core/types.ts edits load on project/home commands",
+      "requiredAction": "rerun packed certification on the final build"
+    },
+    {
+      "row": "multi-project",
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "round-13 certification lane; same config/type edits",
+      "requiredAction": "rerun packed certification on the final build"
+    },
+    {
+      "row": "control-center",
+      "disposition": "NOT_APPLICABLE",
+      "evidence": "BROWSER lane only (S11 evidence; no round-14/15 browser rerun claimed)",
+      "requiredAction": "none for S13 provider matrix"
+    },
+    {
+      "row": "authority",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "round-15 gh-1 authority lane fe900dcf… on pack 04:43:55Z; later src edits (openspec.ts 04:48, change.ts 04:58) are off the gated-action path; chain artifact→loader→exact effect digest→ToolActionGate→receipt→real branch verified",
+      "requiredAction": "include in the final sweep if any further src edit lands"
+    }
+  ],
+  "focusedTests": {
+    "vitest": "NOT_RUN — read-only plan boundary; result counts are claimed-only",
+    "typecheck": "REPRODUCED: `npm run typecheck` (tsc -p tsconfig.json --noEmit) exit 0",
+    "gitDiffCheck": "clean",
+    "staticInventory": {
+      "reviewRepairCandidateLifecycle": 5,
+      "reviewLifecycle": 7,
+      "paseoLaunchSpec": 10,
+      "supervisorConsolidationProvenance": 10,
+      "managedLeadAcceptance": 4,
+      "acceptanceValidationPath": 12,
+      "objectiveParticipantAccounting": 13,
+      "specManagerCanonicality": 8,
+      "s13GithubCampaignPolicy": 11,
+      "agentPromptStructuredResultProvenance": 13,
+      "acceptanceReviewProvenance": 7,
+      "assemblyLineageCompletion": 3,
+      "objectiveCompletionLifecycle": 5,
+      "changeRouting": 7,
+      "acceptanceOracle": 2,
+      "candidateAssurance": 13,
+      "permissions": 11,
+      "openSpecBridge": 8,
+      "named18Total": 141,
+      "claimed18Total": 152
+    },
+    "claimBoundary": "The claimed 18 files / 152 tests and the full-suite lane are recorded as CLAIMED-ONLY (not reproduced under the read-only boundary)."
+  },
+  "verdict": "SLICE_BLOCKED",
+  "actionRequired": [
+    "1. Rerun on the final build (release-1790657900333 or dist/current release-1790657912954): change-delegated and change/direct-change bounded to terminal SUCCEEDED; record direct-1's late-terminal nature or replace it.",
+    "2. Run the final build-bound sweep for audit, certification 4 (startup/informational/project-home/multi-project), cancel/recovery and issue-driven; mark each row explicitly.",
+    "3. Repair AEH-V2-0126 (FORMAL_SDD candidate lineage for authored OpenSpec persistence) with the recorded bounded repair and rerun change-formal to a canonical accepted terminal; add the AEH-V2-0125 prompt-contract regression.",
+    "4. Correct the truthfulness defects: 'current source' wording (R15-F1), summary PASS-on-FAILED classifier (R15-F3), environment-loss digest citation (R15-F4), delivery blocker message (R15-F8), and the objectiveParticipantAccounting/s13GithubCampaignPolicy count references (R15-F7).",
+    "5. Rerun the focused 18-file set and the full non-system suite in a writable environment; reproduce the 152-test count or record the exact counts.",
+    "6. Obtain independent review of the documented ANCESTOR terminal-decision widening (R15-F6) before acceptance.",
+    "S14 must not start; no checkpoint commit while any row lacks current required evidence."
+  ],
+  "persistenceNote": "This report was returned in-message only; no repository file was written. The Campaign Director persists it as docs/evidence/s13/review-round15.json."
+}

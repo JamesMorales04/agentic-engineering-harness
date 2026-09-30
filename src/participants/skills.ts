@@ -121,6 +121,50 @@ export const DEFAULT_SKILL_SEED_V1 = {
     },
     {
       version: 1,
+      id: "verification-planning",
+      name: "Verification planning",
+      description: "Derive deterministic, candidate-bound validation requirements from the frozen contract.",
+      kind: "cross-cutting",
+      proceduralSteps: ["derive deterministic validation requirements from the frozen contract", "require candidate-bound evidence", "reject unverified completion claims"],
+      competencies: [
+        { id: "verification-planning", description: "Plan deterministic candidate-bound verification for a bounded operation.", level: "PROFICIENT" }
+      ]
+    },
+    {
+      version: 1,
+      id: "recovery-classifier",
+      name: "Recovery classification",
+      description: "Classify a bounded failure and select the smallest sufficient recovery action.",
+      kind: "cross-cutting",
+      proceduralSteps: ["classify the failure as implementation, environment, contract, or provider", "select the smallest bounded recovery", "escalate ambiguity to a human decision"],
+      competencies: [
+        { id: "failure-classification", description: "Classify failures and select bounded recovery without widening scope.", level: "PROFICIENT" }
+      ]
+    },
+    {
+      version: 1,
+      id: "finding-dedup",
+      name: "Finding deduplication",
+      description: "Consolidate raw participant findings without losing provenance, conflicts, or missing evidence.",
+      kind: "cross-cutting",
+      proceduralSteps: ["group equivalent findings across participants", "preserve the exact source finding identities", "surface conflicts and missing evidence"],
+      competencies: [
+        { id: "finding-consolidation", description: "Deduplicate evidence-bound findings while preserving provenance.", level: "PROFICIENT" }
+      ]
+    },
+    {
+      version: 1,
+      id: "audit-consolidation-protocol",
+      name: "Audit consolidation protocol",
+      description: "Consolidate an audit reviewer set into a prioritized, evidence-bound result.",
+      kind: "cross-cutting",
+      proceduralSteps: ["account for the exact raw finding set", "preserve deterministic validation outcomes", "produce a prioritized roadmap derived only from consolidated findings"],
+      competencies: [
+        { id: "audit-consolidation", description: "Consolidate audit findings and deterministic evidence into a machine-readable result.", level: "PROFICIENT" }
+      ]
+    },
+    {
+      version: 1,
       id: "typescript-node",
       name: "TypeScript / Node.js",
       description: "TypeScript and Node.js implementation, testing, module, and toolchain practice.",

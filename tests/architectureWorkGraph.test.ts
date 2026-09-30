@@ -181,6 +181,16 @@ describe("canonical WorkGraph and participant compiler", () => {
       expect(result.actions[0]).not.toHaveProperty("property");
       const blocked = await resolveValidationRequirements({ root, requirements: [{ version: 1, id: "REQ-BROWSER", property: "browser behavior", kind: "browser-test", scope: ["ui/**"], evidenceNeeded: ["browser trace"], requirementRefs: [], acceptanceRefs: [] }] });
       expect(blocked.blocked[0]?.requirementId).toBe("REQ-BROWSER");
+
+      // A command-kind requirement that does not name the approved command id resolves to the only
+      // configured command instead of blocking the plan (AEH-V2-0110).
+      const singleCommand = await resolveValidationRequirements({
+        root,
+        config: { validation: { commands: [{ id: "fixture-greeting", command: "node scripts/validate.mjs", required: true }] } } as never,
+        requirements: [{ version: 1, id: "validate-greeting-fixture", property: "the fixture validator passes", kind: "command", scope: ["src/**"], evidenceNeeded: ["passing output"], requirementRefs: ["AC-1"], acceptanceRefs: ["AC-1"] }]
+      });
+      expect(singleCommand.blocked).toEqual([]);
+      expect(singleCommand.actions[0]).toMatchObject({ source: "configured-command", selector: "fixture-greeting", command: "node scripts/validate.mjs" });
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 });

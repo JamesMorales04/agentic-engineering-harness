@@ -1,0 +1,117 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 6,
+  "capability": "issue-driven-import",
+  "mechanism": "HYBRID (MODEL planner + DETERMINISTIC authority/terminal gates)",
+  "generatedAt": "2026-09-27T19:30:28Z",
+  "mode": "real-provider managed controller intake (freshly packed round-6 candidate installed in the GitHub campaign stable clone; no fixture substitution)",
+  "note": "Re-run of the AEH-V2-0076 managed intake verification after the round-5 R5-F4 stale-evidence finding. The import ran inside the round-6 GitHub campaign with its real issue #1 snapshot; the campaign import bound was raised from 420 s (which recorded an empty null-exit timeout in round 5) to 900 s, and this run reached a terminal disposition within that bound. The campaign issue-driven lane result covers snapshot/drift/import only; the full frozen issue-driven contract (intake -> governed change -> accepted candidate -> delivery/effect -> drift/reconciliation -> terminal evidence) is not satisfied.",
+  "candidate": {
+    "packedArtifactDigest": "6b0bbfd8182f4da29f07bf20981c9b04299c9c443f74248e75119eb20826a2e3"
+  },
+  "repository": {
+    "name": "JamesMorales04/aeh-s13-round3-20260927035743-6bb5da",
+    "visibility": "PRIVATE",
+    "createdAt": "2026-09-27T03:57:45Z",
+    "deletedAt": null,
+    "deletionVerified": false,
+    "url": "https://github.com/JamesMorales04/aeh-s13-round3-20260927035743-6bb5da",
+    "deleteAttempt": {
+      "exitCode": 1,
+      "stdout": "",
+      "stderr": "HTTP 403: Must have admin rights to Repository. (https://api.github.com/repos/JamesMorales04/aeh-s13-round3-20260927035743-6bb5da)\nThis API operation needs the \"delete_repo\" scope. To request it, run:  gh auth refresh -h github.com -s delete_repo"
+    }
+  },
+  "issue": {
+    "number": 1,
+    "url": "https://github.com/JamesMorales04/aeh-s13-round3-20260927035743-6bb5da/issues/1",
+    "created": false,
+    "reused": true
+  },
+  "operation": {
+    "id": "CHANGE-20260927T191951Z-311dddd6",
+    "kind": "change",
+    "status": "SUCCEEDED",
+    "phase": "issue-intake-finished",
+    "revision": 18,
+    "operationExecutionRevision": 1,
+    "controllerEpoch": 1,
+    "candidateRevision": {
+      "candidateId": "candidate:CHANGE-20260927T191951Z-311dddd6:r1",
+      "revision": 1,
+      "sourceDigest": "bc6c3ee33ede93ecc5f40b6d97fc706834234ed40596438b2f2a8a6a048614c4",
+      "identityDigest": "25c87aea9234d225cec833977a131aad7675dc2da46529c8d5a89a3e5aa73e3a"
+    }
+  },
+  "participants": {
+    "participant:c5e8b2888a5fb145": {
+      "role": "Planner",
+      "logicalAgent": "planner",
+      "status": "COMPLETED"
+    },
+    "73ff250b-7403-4e0f-8de5-9d8babb91ca1": {
+      "role": "Planner",
+      "logicalAgent": "planner",
+      "status": "COMPLETED"
+    }
+  },
+  "receipts": [
+    {
+      "receiptId": "receipt:participant:c5e8b2888a5fb145:2026-09-27T19:28:18.864Z",
+      "participantId": "participant:c5e8b2888a5fb145",
+      "sessionId": "73ff250b-7403-4e0f-8de5-9d8babb91ca1",
+      "role": "Planner",
+      "outcome": "SUCCEEDED"
+    }
+  ],
+  "result": {
+    "version": 1,
+    "taskId": "GH-1",
+    "route": "DELEGATED",
+    "normalizedBy": "planner+semantic-assessment",
+    "snapshot": {
+      "repository": "JamesMorales04/aeh-s13-round3-20260927035743-6bb5da",
+      "number": 1,
+      "contentSha256": "bd777eed917f9e30463af3c1790e3d5baf00017c17225ca32b1aa99a43bdfcc8",
+      "path": ".harness/issues/GH-1.json"
+    },
+    "contract": {
+      "path": ".harness/contracts/GH-1.yaml",
+      "digest": "a46bccc0cbb22ac73f9af9b96af36adc1bc1eca4f375a802fc72f4f2db8a8f17"
+    },
+    "planner": {
+      "participantId": "participant:c5e8b2888a5fb145",
+      "sessionId": "73ff250b-7403-4e0f-8de5-9d8babb91ca1"
+    },
+    "semanticAssessmentDigest": "f674787beecc0d6cbc1fd79a84b02ed4f651f245a09163c536d5ef21a2713d01",
+    "candidateAdvanced": false
+  },
+  "checks": [
+    {
+      "id": "issue.operation-bound-managed-authority",
+      "ok": true,
+      "message": "controller-owned change operation bootstrapped a candidate + controller epoch before the Planner launch"
+    },
+    {
+      "id": "issue.planner-receipt",
+      "ok": true,
+      "message": "bounded Planner receipt persisted with a candidate-bound terminal outcome"
+    },
+    {
+      "id": "issue.contract-authored",
+      "ok": true,
+      "message": "sealed TaskContract persisted with a recorded digest"
+    },
+    {
+      "id": "issue.snapshot-frozen",
+      "ok": true,
+      "message": "frozen GitHub issue snapshot digest recorded"
+    },
+    {
+      "id": "issue.terminal",
+      "ok": true,
+      "message": "terminal SUCCEEDED with deterministic intake evidence"
+    }
+  ]
+}

@@ -4,12 +4,21 @@ import path from "node:path";
 import YAML from "yaml";
 import type { HarnessProjectConfig, TaskContract, ValidationCommand } from "../core/types.js";
 import { getCurrentBranch } from "../core/git.js";
+import { AehError } from "../core/errors.js";
 import { runShell } from "../utils/process.js";
 
 export interface OpenSpecAuthoringConfig { provider?: "openspec" | "native" | string; schema?: string; managerAgent?: string; }
-export interface OpenSpecPreparedChange { taskId: string; changeName: string; directory: string; created: boolean; schema: string; managerAgent: string; }
+export interface OpenSpecPreparedChange { taskId: string; changeName: string; directory: string; schema: string; managerAgent: string; }
 export interface OpenSpecCompileResult { taskId: string; changeName: string; sddDirectory: string; contractPath: string; requirements: string[]; sourceSha256: string; validatorId: string; }
 export interface OpenSpecPreflightResult { version: string; schema: string; managerAgent: string; }
+/** One capability's canonical OpenSpec change spec delta (`specs/<capability>/spec.md`). */
+export interface OpenSpecSpecDeltaV1 { capability: string; content: string; }
+export interface OpenSpecAuthoringContentV1 {
+  proposal: string;
+  design?: string;
+  tasks: string;
+  specs: readonly OpenSpecSpecDeltaV1[];
+}
 
 type SddWithAuthoring = NonNullable<HarnessProjectConfig["sdd"]> & { authoring?: OpenSpecAuthoringConfig };
 const OPENSPEC_ENV = { OPENSPEC_NO_ANIMATION: "1", OPENSPEC_NO_UPDATE_CHECK: "1" };
@@ -43,20 +52,121 @@ export async function preflightOpenSpec(root: string, config: HarnessProjectConf
   return { version: firstLine(version.stdout || version.stderr) || "unknown", schema: settings.schema, managerAgent: settings.managerAgent };
 }
 
-export async function prepareOpenSpecChange(root: string, config: HarnessProjectConfig, taskId: string, title: string, run = runShell): Promise<OpenSpecPreparedChange> {
+export async function prepareOpenSpecChange(root: string, config: HarnessProjectConfig, taskId: string): Promise<OpenSpecPreparedChange> {
   const settings = openSpecAuthoringConfig(config);
   if (settings.provider !== "openspec") throw new Error(`Configured SDD authoring provider is '${settings.provider}', not openspec.`);
   const changeName = openSpecChangeName(taskId);
   const directory = path.join(root, "openspec", "changes", changeName);
-  let created = false;
-  try { await fs.access(directory); }
-  catch {
-    const command = `openspec new change ${quote(changeName)} --schema ${quote(settings.schema)} --description ${quote(title)}`;
-    const result = await run(command, { cwd: root, timeoutMs: 60_000, env: OPENSPEC_ENV });
-    if (result.exitCode !== 0) throw new Error(`OpenSpec failed to create change '${changeName}': ${result.stderr || result.stdout}`);
-    created = true;
+  // CandidateRevision is frozen before participant execution. OpenSpec's `new change` command
+  // writes placeholder files into the project tree, which would invalidate that binding before
+  // the read-only Spec Manager can submit its result. The Spec Manager returns the complete
+  // structured authoring content; the controller persists it after that result is accepted.
+  return { taskId, changeName, directory, schema: settings.schema, managerAgent: settings.managerAgent };
+}
+
+export const OPENSPEC_CAPABILITY_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const OPENSPEC_DELTA_HEADER_PATTERN = /^##\s+(ADDED|MODIFIED|REMOVED|RENAMED)\s+Requirements\s*$/;
+const OPENSPEC_REQUIREMENT_PATTERN = /^###\s+Requirement:\s*(.+?)\s*$/;
+const OPENSPEC_SCENARIO_PATTERN = /^####\s+Scenario:\s*(.+?)\s*$/;
+
+function specDeltaArtifactLabel(changeName: string, index: number, capability: string): string {
+  return `openspec/changes/${changeName}/specs/${capability || `<capability-${index + 1}>`}/spec.md (artifacts.specs[${index}])`;
+}
+
+function notCanonical(artifact: string, detail: string): AehError {
+  return new AehError("SPEC_MANAGER_CONTENT_NOT_CANONICAL", `${artifact}: ${detail}`, { details: { artifact } });
+}
+
+/**
+ * DETERMINISTIC pre-persistence canonicality gate for a READY Spec Manager result. OpenSpec
+ * compilation (`openspec validate --strict`) requires a canonical change layout; accepting a
+ * typed-but-non-canonical READY result would persist unusable content and fail later inside the
+ * compiler with a generic error. This gate rejects the result before any controller-owned write,
+ * with a typed `SPEC_MANAGER_CONTENT_NOT_CANONICAL` error naming the exact artifact.
+ */
+export function validateOpenSpecSpecDeltaCanonicalityV1(changeName: string, index: number, spec: OpenSpecSpecDeltaV1): void {
+  const artifact = specDeltaArtifactLabel(changeName, index, spec?.capability?.trim() ?? "");
+  if (!spec || typeof spec !== "object" || typeof spec.capability !== "string" || typeof spec.content !== "string") throw notCanonical(artifact, "spec delta must provide a canonical capability name and its complete markdown content.");
+  if (!OPENSPEC_CAPABILITY_NAME_PATTERN.test(spec.capability.trim())) throw notCanonical(artifact, `capability name '${spec.capability}' is not a canonical kebab-case OpenSpec capability name.`);
+  if (!spec.content.trim()) throw notCanonical(artifact, "spec delta content is empty.");
+  let deltaSeen = false;
+  let requirementCount = 0;
+  let openRequirement = "";
+  let openRequirementScenarios = 0;
+  let openRequirementNormative = false;
+  // OpenSpec `validate --strict` rejects a requirement whose text has no normative keyword; the
+  // pre-persistence gate must mirror that rule so a READY result without SHALL/MUST fails here with
+  // the exact artifact instead of inside the compiler (AEH-V2-0111/0115).
+  const normativePattern = /\b(SHALL|MUST)\b/;
+  const closeRequirement = (): void => {
+    if (!openRequirement) return;
+    if (openRequirementScenarios === 0) throw notCanonical(artifact, `requirement '${openRequirement}' has no '#### Scenario:' block; every canonical requirement needs at least one scenario.`);
+    if (!openRequirementNormative) throw notCanonical(artifact, `requirement '${openRequirement}' must contain the normative keyword SHALL or MUST; OpenSpec strict validation rejects non-normative requirements.`);
+  };
+  for (const line of spec.content.split(/\r?\n/)) {
+    if (OPENSPEC_DELTA_HEADER_PATTERN.test(line)) {
+      closeRequirement();
+      openRequirement = "";
+      openRequirementScenarios = 0;
+      openRequirementNormative = false;
+      deltaSeen = true;
+      continue;
+    }
+    const requirement = OPENSPEC_REQUIREMENT_PATTERN.exec(line);
+    if (requirement) {
+      if (!deltaSeen) throw notCanonical(artifact, "flat requirement document found: '### Requirement:' appears before any delta section (for example '## ADDED Requirements'). Canonical OpenSpec change deltas require an ADDED/MODIFIED/REMOVED/RENAMED Requirements section.");
+      closeRequirement();
+      openRequirement = requirement[1].trim();
+      openRequirementScenarios = 0;
+      openRequirementNormative = normativePattern.test(line);
+      requirementCount += 1;
+      continue;
+    }
+    const scenario = OPENSPEC_SCENARIO_PATTERN.exec(line);
+    if (scenario) {
+      if (!openRequirement) throw notCanonical(artifact, `'#### Scenario: ${scenario[1].trim()}' appears outside a '### Requirement:' block.`);
+      openRequirementScenarios += 1;
+    } else if (openRequirement && normativePattern.test(line)) {
+      openRequirementNormative = true;
+    }
   }
-  return { taskId, changeName, directory, created, schema: settings.schema, managerAgent: settings.managerAgent };
+  closeRequirement();
+  if (!deltaSeen) throw notCanonical(artifact, "no delta sections found. Add a '## ADDED Requirements', '## MODIFIED Requirements', '## REMOVED Requirements' or '## RENAMED Requirements' section; the change must have at least one delta.");
+  if (requirementCount === 0) throw notCanonical(artifact, "delta sections contain no '### Requirement:' entry; the change must have at least one delta requirement.");
+}
+
+export function validateOpenSpecAuthoringContentCanonicalityV1(changeName: string, content: Pick<OpenSpecAuthoringContentV1, "specs">): void {
+  if (!Array.isArray(content.specs) || content.specs.length === 0) {
+    throw new AehError("SPEC_MANAGER_CONTENT_NOT_CANONICAL", `openspec/changes/${changeName}/specs (artifacts.specs): at least one canonical capability spec delta is required; OpenSpec changes must contain at least one delta.`, { details: { artifact: `openspec/changes/${changeName}/specs (artifacts.specs)` } });
+  }
+  const capabilities = new Set<string>();
+  content.specs.forEach((spec, index) => {
+    validateOpenSpecSpecDeltaCanonicalityV1(changeName, index, spec);
+    const capability = spec.capability.trim();
+    if (capabilities.has(capability)) throw notCanonical(specDeltaArtifactLabel(changeName, index, capability), `capability '${capability}' is declared more than once.`);
+    capabilities.add(capability);
+  });
+}
+
+/** Persist the validated Spec Manager's structured authoring content using controller-owned writes. */
+export async function persistOpenSpecAuthoringContentV1(root: string, changeName: string, content: OpenSpecAuthoringContentV1): Promise<string[]> {
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(changeName)) throw new Error("OPENSPEC_CHANGE_NAME_INVALID: authoring output can only be persisted under a canonical change name.");
+  if (!content.proposal.trim() || !content.tasks.trim()) throw new Error("OPENSPEC_AUTHORING_CONTENT_INCOMPLETE: proposal and tasks content are required.");
+  validateOpenSpecAuthoringContentCanonicalityV1(changeName, content);
+  const directory = path.join(root, "openspec", "changes", changeName);
+  const files: Array<[string, string]> = [
+    [path.join(directory, "proposal.md"), content.proposal],
+    [path.join(directory, "tasks.md"), content.tasks]
+  ];
+  if (content.design?.trim()) files.push([path.join(directory, "design.md"), content.design]);
+  content.specs.forEach((spec) => {
+    files.push([path.join(directory, "specs", spec.capability.trim(), "spec.md"), spec.content]);
+  });
+  for (const [file, text] of files) {
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, `${text.trimEnd()}\n`, "utf8");
+  }
+  return files.map(([file]) => relative(root, file));
 }
 
 export async function compileOpenSpecChange(root: string, config: HarnessProjectConfig, taskId: string, title: string, changeName = openSpecChangeName(taskId), run = runShell): Promise<OpenSpecCompileResult> {

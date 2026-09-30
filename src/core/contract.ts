@@ -21,7 +21,19 @@ export async function createRoutedContract(root: string, config: HarnessProjectC
   const deterministicFloor = triageChange(config, { request: input.request, files: input.scope, domains: input.domains, risk: input.risk, flags: input.flags });
   const decision = input.routeDecision ? applyDeterministicRouteFloor(deterministicFloor, input.routeDecision) : deterministicFloor;
   const acceptance = input.acceptance ?? [];
-  const requirements = input.requirements ?? acceptance.map((description, index) => ({ id: `AC-${index + 1}`, description, validators: [] }));
+  // Requirement→validator traceability is deterministic: a requirement that does not name its own
+  // approved validators is bound to the project's configured validation commands and validators.
+  // The model cannot select commands, and a project without configured validation keeps the
+  // fail-closed empty set (the evidence-completeness gate then blocks).
+  // Requirement validators must name the deterministic validation check ids: configured commands
+  // persist as `command.<id>` (src/validators/commands.ts) and configured validators persist under
+  // their own id, which is what the requirement evidence graph matches against.
+  const configuredValidators = [...new Set([
+    ...(config.validation?.commands ?? []).map((command) => `command.${command.id}`),
+    ...(config.validation?.validators ?? []).map((validator) => validator.id)
+  ].filter((id) => id.trim().length > 0))].sort();
+  const requirements = (input.requirements ?? acceptance.map((description, index) => ({ id: `AC-${index + 1}`, description, validators: [] })))
+    .map((requirement) => requirement.validators?.length ? requirement : { ...requirement, validators: [...configuredValidators] });
   const contract: TaskContract = {
     version: 1,
     task: { id: taskId, title: input.title },

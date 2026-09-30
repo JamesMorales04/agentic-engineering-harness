@@ -31,7 +31,12 @@ const state = vi.hoisted(() => ({
     return state.operation;
   }),
   registerOperationAgent: vi.fn(async () => undefined),
-  updateOperationParticipant: vi.fn(async () => undefined)
+  updateOperationParticipant: vi.fn(async () => undefined),
+  updateRegisteredOperationParticipant: vi.fn(async (_root: string, _operationId: string, agentId: string, patch: Record<string, any>) => {
+    if (!state.operation!.participants?.[agentId]) return undefined;
+    state.operation!.participants[agentId] = { ...state.operation!.participants[agentId], ...patch };
+    return state.operation;
+  })
 }));
 const results = vi.hoisted(() => ({
   activateStructuredResultTurnForAgent: vi.fn(async () => undefined),
@@ -54,7 +59,7 @@ import { extractMarkedJson, StructuredOutputError } from "../src/agents/structur
 import { sha256Canonical } from "../src/core/digest.js";
 import { createCandidateRevisionV1 } from "../src/operations/v2Contracts.js";
 import { createStructuredResultProvenance } from "../src/workers/resultGateway.js";
-import { dispatchMaterializedAgentPrompt, prepareAgentExecutionBinding } from "../src/workers/agentPrompt.js";
+import { dispatchMaterializedAgentPrompt, operationArtifactRoot, prepareAgentExecutionBinding } from "../src/workers/agentPrompt.js";
 
 const selection = {
   logicalAgent: "code-quality-reviewer",
@@ -235,6 +240,39 @@ beforeEach(async () => {
 afterEach(async () => { vi.clearAllMocks(); await rm(testRoot, { recursive: true, force: true }); });
 
 describe("structured delivery recovery", () => {
+  it("resolves durable operation artifacts against the control root when execution is isolated", () => {
+    state.currentOperationContext.mockReturnValue({ id: "AUDIT-1", kind: "audit", controlRoot: "/control/root" } as never);
+    expect(operationArtifactRoot("/isolated/root")).toBe("/control/root");
+    state.currentOperationContext.mockReturnValue({ id: "AUDIT-1", kind: "audit" });
+    expect(operationArtifactRoot("/isolated/root")).toBe("/isolated/root");
+  });
+
+  it("persists isolated participant receipts against the authoritative operation state root", async () => {
+    const controlRoot = await mkdtemp(path.join(os.tmpdir(), "aeh-review-control-"));
+    try {
+      state.currentOperationContext.mockReturnValue({ id: "AUDIT-1", kind: "audit", controlRoot } as never);
+      runtime.continueManagedPaseoAgent.mockResolvedValueOnce({ id: "reviewer-1", exitCode: 0, stdout: "", stderr: "", status: "idle", transport: "sdk" });
+      results.reconcileStructuredResult.mockResolvedValueOnce({
+        ok: true,
+        accepted: { artifact: "results/reviewer.json", sha256: "sink123", payload: validReviewer, source: "captured", turnId: "turn-1", channelId: "channel-1" }
+      });
+      artifacts.persistOperationAgentArtifact.mockResolvedValue("results/transcript.json");
+      await mkdir(path.join(controlRoot, "results"), { recursive: true });
+      await writeFile(path.join(controlRoot, "results", "reviewer.json"), validReviewerJson);
+
+      const prepared = await prepareMaterializedIdentity(selection, "reviewer", "review", "perform the audit", "reviewer-1");
+      const result = await dispatchMaterializedAgentPrompt(testRoot, config, contract, selection, prepared.materializedSession as never, "perform the audit", prepared.options);
+
+      expect(result.stdout).toBe(validReviewerJson);
+      expect(state.loadOperation).toHaveBeenCalledWith(controlRoot, "AUDIT-1");
+      expect(state.updateOperationParticipant).toHaveBeenCalledWith(controlRoot, "AUDIT-1", "fixture-session:reviewer-1", expect.objectContaining({ status: "COMPLETED" }));
+      expect(state.recordParticipantReceipt).toHaveBeenCalledWith(controlRoot, "AUDIT-1", expect.objectContaining({ sessionId: "fixture-session:reviewer-1", participantId: "reviewer-1" }));
+    } finally {
+      state.currentOperationContext.mockReturnValue({ id: "AUDIT-1", kind: "audit" } as never);
+      await rm(controlRoot, { recursive: true, force: true });
+    }
+  });
+
   it("reconciles a valid durable result when Paseo never returns its terminal event", async () => {
     runtime.continueManagedPaseoAgent.mockImplementation(() => new Promise(() => undefined));
     results.acceptedStructuredResultForAgent
@@ -307,6 +345,7 @@ describe("structured delivery recovery", () => {
     expect(runtime.continueManagedPaseoAgent.mock.calls[1]?.[2]).toContain("Only repair delivery for the 'reviewer' output contract");
     expect(runtime.continueManagedPaseoAgent.mock.calls[1]?.[2]).toContain("aeh_submit_result");
     expect(runtime.continueManagedPaseoAgent.mock.calls[1]?.[5]).toBeUndefined();
+    expect(runtime.continueManagedPaseoAgent.mock.calls[1]?.[6]).toEqual(expect.objectContaining({ "aeh.operation": "AUDIT-1", "aeh.participant": "reviewer-1" }));
     expect(result.stdout).toBe(validReviewerJson);
     expect(result.phase).toBe("review-contract-repair");
     expect(artifacts.persistOperationAgentArtifact.mock.calls[0]?.[3]).toEqual(expect.objectContaining({ contractDelivery: expect.objectContaining({ ok: false, failure: expect.stringContaining("EMPTY_OUTPUT") }) }));

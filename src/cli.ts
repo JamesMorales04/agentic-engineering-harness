@@ -25,8 +25,8 @@ import { resolveRoute } from "./agents/routing.js";
 import { validateAgentOutput, plannerOutputSchema } from "./agents/outputContracts.js";
 import { planParallelism } from "./agents/parallelism.js";
 import { dedupeFindings, extractFindings } from "./agents/findings.js";
-import { inspectGithubIssue, prepareGithubIssueTask } from "./issues/intake.js";
-import { executeIssueWorkflow as executeManagedIssueWorkflow } from "./issues/workflow.js";
+import { inspectGithubIssue } from "./issues/intake.js";
+import { executeIssueWorkflow as executeManagedIssueWorkflow, importIssueThroughManagedOperation } from "./issues/workflow.js";
 import { VERSION } from "./version.js";
 import { createSemanticAssessmentRuntimeV1, createSemanticRepositoryBindingV1 } from "./semantic/runtime.js";
 import { CodexAgentProvider } from "./certification/codex.js";
@@ -60,9 +60,9 @@ issue.command("inspect").argument("<number>").argument("[directory]", "Project d
   console.log(`contentSha256=${inspected.snapshot.contentSha256}`); console.log("semanticRoute=not_assessed"); console.log(JSON.stringify(inspected.evidence, null, 2));
 });
 issue.command("import").argument("<number>").option("--refresh").option("--force").argument("[directory]", "Project directory", ".").action(async (number: string, directory: string, options: { refresh?: boolean; force?: boolean }) => {
-  const root = path.resolve(directory); const config = await loadProjectConfig(root); const semanticRuntime = await createSemanticAssessmentRuntimeV1(root, config); const prepared = await prepareGithubIssueTask(root, config, parseIssueNumber(number), { refresh: options.refresh, force: options.force, semanticRuntime });
-  console.log(`Prepared ${prepared.taskId} from ${prepared.snapshot.repository}#${prepared.snapshot.number}: route=${prepared.route}, normalizedBy=${prepared.normalizedBy}, sha=${prepared.snapshot.contentSha256.slice(0, 12)}`);
-  if (prepared.traceability) console.log(`\n${prepared.traceability}`);
+  const root = path.resolve(directory); const imported = await importIssueThroughManagedOperation(root, parseIssueNumber(number), { refresh: options.refresh, force: options.force });
+  console.log(`Prepared ${imported.taskId} from ${imported.snapshot.repository}#${imported.snapshot.number}: route=${imported.route}, normalizedBy=planner+semantic-assessment, sha=${imported.snapshot.contentSha256.slice(0, 12)}, operationId=${imported.operationId}`);
+  if (imported.traceability) console.log(`\n${imported.traceability}`);
 });
 issue.command("implement").argument("<number>").option("--profile <profile>").option("--refresh").option("--force").argument("[directory]", "Project directory", ".").action(async (number: string, directory: string, options: { profile?: string; refresh?: boolean; force?: boolean }) => {
   const root = path.resolve(directory); const result = await executeIssueWorkflow(root, parseIssueNumber(number), options); printRunResult(result.result, result.contract.routing?.route ?? "DIRECT");

@@ -1,0 +1,759 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 6,
+  "artifact": "structured-output-probe",
+  "generatedAt": "2026-09-27T20:39:18Z",
+  "purpose": "Diagnostic bounded probe of the real structured-output channel for the Semantic Assessor (amendment: establish the actual failure boundary before further change/direct-change runs). Not certification by itself.",
+  "environment": {
+    "openCodeVersion": "1.18.32",
+    "paseoServerVersion": "0.9.1",
+    "openCodeSdkVersion": "1.14.46",
+    "provider": "opencode (Paseo) -> OpenCode providers",
+    "schemaBytes": 8061,
+    "schemaSha256": "654622f9b3c12ab97fd70df07a9f19c6b3df66c3e231aef07c18f5f74b181c5c"
+  },
+  "channel": {
+    "paseoReceivesOutputSchema": {
+      "confirmed": true,
+      "evidence": "@getpaseo/server@0.9.1 create-agent/create.js builds runOptions.outputSchema from create_agent_request.outputSchema (line ~105); AEH passes outputSchema on the session-creating launch."
+    },
+    "openCodeReceivesFormat": {
+      "confirmed": true,
+      "evidence": "@getpaseo/server@0.9.1 opencode-agent.js calls client.session.promptAsync with format:{type:'json_schema',schema} when options.outputSchema is set; the probe exercised the same endpoint directly and observed finish:'tool-calls' for capable models."
+    },
+    "openCodeCanonicalChannel": {
+      "field": "assistant message info.structured",
+      "mechanism": "OpenCode implements structured output as a required StructuredOutput tool whose inputSchema is the supplied JSON schema; onSuccess captures the tool arguments into info.structured and sets finish 'tool-calls'."
+    },
+    "openCodeStructuredOutputError": {
+      "name": "StructuredOutputError",
+      "data": {
+        "message": "Model did not produce structured output",
+        "retries": 0
+      },
+      "when": "the model finished without calling the StructuredOutput tool; retries is hardcoded 0 in OpenCode 1.18.32 (no internal retry)",
+      "paseoVisibility": "Paseo consumes info.error only for child-session status; the main-session timeline emits raw text parts, so AEH cannot see StructuredOutputError through the Paseo SDK."
+    },
+    "permissionProjection": {
+      "defect": "The AEH Semantic Assessor permission projection set permission['*']='deny', which also suppressed OpenCode's injected StructuredOutput tool: with the wildcard deny the model never called the tool (free text + StructuredOutputError); the AEH-mediated assessor turn then stalled until the 300 s deadline.",
+      "fix": "permission.StructuredOutput='allow' under the retained wildcard deny.",
+      "probeEvidence": "wildcard-deny fails; wildcard-deny + StructuredOutput:'allow' succeeds (canonical structured object, judgment object); lowercase 'structuredoutput' fails (case-sensitive); explicit repository/tool-family denies without the wildcard also succeed."
+    },
+    "openCodeToolInputValidation": {
+      "platformValidatesToolInput": false,
+      "evidence": "mimo-v2.6-flash captured info.structured with judgment as an encoded JSON string under a schema requiring a judgment object; the tool part completed and info.structured was set, so OpenCode 1.18.32 does not enforce the advertised input schema."
+    },
+    "aehConsumption": {
+      "canonical": "Paseo serializes info.structured with JSON.stringify into an assistant_message; AEH parses that JSON text and deterministically validates it with semanticAssessmentPayloadV1Schema/validateAssessmentPayload.",
+      "freeForm": "Free-form assistant text exists when OpenCode raised StructuredOutputError; AEH parses it as a non-authoritative fallback and still applies the full deterministic schema/evidence validation.",
+      "preferenceDefect": "None observed: probe trials that produced canonical info.structured had zero text parts, so canonical output was the only AEH input."
+    },
+    "aehInvalidLayer": {
+      "unparseable": "PaseoSemanticAssessmentRunnerV1.assess -> parseSemanticAssessmentOutputV1 raises SEMANTIC_ASSESSMENT_INVALID",
+      "schemaInvalid": "SemanticAssessmentServiceV1.assess payload schema or validateAssessmentPayload raises SEMANTIC_ASSESSMENT_INVALID"
+    }
+  },
+  "cases": [
+    {
+      "id": "A",
+      "description": "opencode-go/mimo-v2.6-flash + minimal schema",
+      "trials": [
+        {
+          "label": "A-mimo-minimal-schema",
+          "trial": 1,
+          "elapsedMs": 5727,
+          "providerID": "opencode-go",
+          "modelID": "mimo-v2.6-flash",
+          "finish": "tool-calls",
+          "errorName": null,
+          "errorData": null,
+          "tokens": {
+            "input": 5685,
+            "output": 54,
+            "reasoning": 37
+          },
+          "structuredPresent": true,
+          "structuredSchemaValid": false,
+          "structuredFingerprint": {
+            "bytes": 117,
+            "sha256": "2c24549646470780648eb4e2d024def4bf993213b0d60a7837d5aa7a1e5174c8",
+            "head": "{\"judgment\":{\"type\":\"STACK\",\"languages\":[\"JavaScript\"]},\"evidenceRefs\":[\"file:package.json\",\"file:src/greeting.mjs\"]}"
+          },
+          "textBytes": 0,
+          "textParse": null,
+          "textSchemaValid": null,
+          "textFingerprint": null,
+          "reasoningBytes": 167,
+          "toolCalls": [
+            {
+              "tool": "StructuredOutput",
+              "status": "completed"
+            }
+          ]
+        },
+        {
+          "label": "A-mimo-minimal-schema",
+          "trial": 2,
+          "elapsedMs": 8687,
+          "providerID": "opencode-go",
+          "modelID": "mimo-v2.6-flash",
+          "finish": "tool-calls",
+          "errorName": null,
+          "errorData": null,
+          "tokens": {
+            "input": 53,
+            "output": 54,
+            "reasoning": 37
+          },
+          "structuredPresent": true,
+          "structuredSchemaValid": false,
+          "structuredFingerprint": {
+            "bytes": 117,
+            "sha256": "2c24549646470780648eb4e2d024def4bf993213b0d60a7837d5aa7a1e5174c8",
+            "head": "{\"judgment\":{\"type\":\"STACK\",\"languages\":[\"JavaScript\"]},\"evidenceRefs\":[\"file:package.json\",\"file:src/greeting.mjs\"]}"
+          },
+          "textBytes": 0,
+          "textParse": null,
+          "textSchemaValid": null,
+          "textFingerprint": null,
+          "reasoningBytes": 174,
+          "toolCalls": [
+            {
+              "tool": "StructuredOutput",
+              "status": "completed"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "B",
+      "description": "opencode-go/mimo-v2.6-flash + actual STACK schema",
+      "trials": [
+        {
+          "label": "B-mimo-stack-schema",
+          "trial": 1,
+          "elapsedMs": 40319,
+          "providerID": "opencode-go",
+          "modelID": "mimo-v2.6-flash",
+          "finish": "tool-calls",
+          "errorName": null,
+          "errorData": null,
+          "tokens": {
+            "input": 10890,
+            "output": 1115,
+            "reasoning": 712
+          },
+          "structuredPresent": true,
+          "structuredSchemaValid": false,
+          "structuredFingerprint": {
+            "bytes": 4075,
+            "sha256": "5fffa4325d57e208d77b0a6f8035c63bb349dcd3932751053ae35da6ca64412c",
+            "head": "{\"judgment\":\"{\\\"type\\\": \\\"INTENT\\\", \\\"intent\\\": \\\"informational\\\", \\\"confidence\\\": 0.85, \\\"evidenceRefs\\\": [\\\"file:package.json\\\", \\\"file:src/greeting.mjs\\\", \\\""
+          },
+          "textBytes": 0,
+          "textParse": null,
+          "textSchemaValid": null,
+          "textFingerprint": null,
+          "reasoningBytes": 3065,
+          "toolCalls": [
+            {
+              "tool": "StructuredOutput",
+              "status": "completed"
+            }
+          ]
+        },
+        {
+          "label": "B-mimo-stack-schema",
+          "trial": 2,
+          "elapsedMs": 26889,
+          "providerID": "opencode-go",
+          "modelID": "mimo-v2.6-flash",
+          "finish": "stop",
+          "errorName": "StructuredOutputError",
+          "errorData": {
+            "message": "Model did not produce structured output",
+            "retries": 0
+          },
+          "tokens": {
+            "input": 10,
+            "output": 847,
+            "reasoning": 78
+          },
+          "structuredPresent": false,
+          "structuredSchemaValid": null,
+          "structuredFingerprint": null,
+          "textBytes": 3676,
+          "textParse": true,
+          "textSchemaValid": true,
+          "textFingerprint": {
+            "bytes": 3676,
+            "sha256": "3950e9e0181c94c5f50cb597fd74f719a9b068a97bcf14f4d5e9c38f7a002cf9"
+          },
+          "reasoningBytes": 375,
+          "toolCalls": []
+        },
+        {
+          "label": "B-mimo-stack-schema",
+          "trial": 3,
+          "elapsedMs": 28731,
+          "providerID": "opencode-go",
+          "modelID": "mimo-v2.6-flash",
+          "finish": "stop",
+          "errorName": "StructuredOutputError",
+          "errorData": {
+            "message": "Model did not produce structured output",
+            "retries": 0
+          },
+          "tokens": {
+            "input": 10,
+            "output": 954,
+            "reasoning": 73
+          },
+          "structuredPresent": false,
+          "structuredSchemaValid": null,
+          "structuredFingerprint": null,
+          "textBytes": 4070,
+          "textParse": true,
+          "textSchemaValid": true,
+          "textFingerprint": {
+            "bytes": 4070,
+            "sha256": "3f0fe7de68c7000feed4fa2e54d07c67a9fa6c6bc3deb5f5d9cfe529d04d8c82"
+          },
+          "reasoningBytes": 314,
+          "toolCalls": []
+        }
+      ]
+    },
+    {
+      "id": "C",
+      "description": "opencode-go/mimo-v2.6-flash + actual STACK schema + compact output discipline",
+      "trials": [
+        {
+          "label": "C-mimo-stack-schema-discipline",
+          "trial": 1,
+          "elapsedMs": 14933,
+          "providerID": "opencode-go",
+          "modelID": "mimo-v2.6-flash",
+          "finish": "stop",
+          "errorName": "StructuredOutputError",
+          "errorData": {
+            "message": "Model did not produce structured output",
+            "retries": 0
+          },
+          "tokens": {
+            "input": 2803,
+            "output": 846,
+            "reasoning": 200
+          },
+          "structuredPresent": false,
+          "structuredSchemaValid": null,
+          "structuredFingerprint": null,
+          "textBytes": 3747,
+          "textParse": true,
+          "textSchemaValid": true,
+          "textFingerprint": {
+            "bytes": 3747,
+            "sha256": "42be58293585ba8f5008279ed9f6ee218e24b68622eeab337eb89c39a9a1eb10"
+          },
+          "reasoningBytes": 835,
+          "toolCalls": []
+        },
+        {
+          "label": "C-mimo-stack-schema-discipline",
+          "trial": 2,
+          "elapsedMs": 24529,
+          "providerID": "opencode-go",
+          "modelID": "mimo-v2.6-flash",
+          "finish": "tool-calls",
+          "errorName": null,
+          "errorData": null,
+          "tokens": {
+            "input": 51,
+            "output": 1418,
+            "reasoning": 485
+          },
+          "structuredPresent": true,
+          "structuredSchemaValid": false,
+          "structuredFingerprint": {
+            "bytes": 5428,
+            "sha256": "4dd46b7a0deb2f87675ca5c48a7ffbaa7cb1400dfc47b069d6ca715948f4c804",
+            "head": "{\"judgment\":\"{\\\"type\\\": \\\"STACK\\\", \\\"languages\\\": [\\\"JavaScript (ESM)\\\"], \\\"frameworks\\\": [], \\\"packageManagers\\\": [\\\"npm (implied, unconfirmed)\\\"], \\\"databases"
+          },
+          "textBytes": 0,
+          "textParse": null,
+          "textSchemaValid": null,
+          "textFingerprint": null,
+          "reasoningBytes": 1995,
+          "toolCalls": [
+            {
+              "tool": "StructuredOutput",
+              "status": "completed"
+            }
+          ]
+        },
+        {
+          "label": "C-mimo-stack-schema-discipline",
+          "trial": 3,
+          "elapsedMs": 17917,
+          "providerID": "opencode-go",
+          "modelID": "mimo-v2.6-flash",
+          "finish": "tool-calls",
+          "errorName": null,
+          "errorData": null,
+          "tokens": {
+            "input": 51,
+            "output": 1157,
+            "reasoning": 172
+          },
+          "structuredPresent": true,
+          "structuredSchemaValid": false,
+          "structuredFingerprint": {
+            "bytes": 4443,
+            "sha256": "c608634548691dc6e0a9bf8d58465dd42fe51c70a43514661af0b81b82f272fe",
+            "head": "{\"judgment\":\"{\\\"type\\\": \\\"STACK\\\", \\\"languages\\\": [\\\"JavaScript\\\"], \\\"frameworks\\\": [], \\\"packageManagers\\\": [\\\"npm\\\"], \\\"databases\\\": [], \\\"toolchains\\\": [\\\"No"
+          },
+          "textBytes": 0,
+          "textParse": null,
+          "textSchemaValid": null,
+          "textFingerprint": null,
+          "reasoningBytes": 748,
+          "toolCalls": [
+            {
+              "tool": "StructuredOutput",
+              "status": "completed"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "D",
+      "description": "other authorized provider/model + actual STACK schema (openai/gpt-6-luna first candidate: stored OAuth session returned 401 Token refresh failed; opencode-go catalog candidates were probed in the model matrix)",
+      "trials": [
+        {
+          "label": "D-openai-gpt6luna-stack-schema",
+          "trial": 1,
+          "elapsedMs": 726,
+          "providerID": "openai",
+          "modelID": "gpt-6-luna",
+          "finish": null,
+          "errorName": "UnknownError",
+          "errorData": {
+            "message": "Token refresh failed: 401",
+            "retries": null
+          },
+          "tokens": {
+            "input": 0,
+            "output": 0,
+            "reasoning": 0
+          },
+          "structuredPresent": false,
+          "structuredSchemaValid": null,
+          "structuredFingerprint": null,
+          "textBytes": 0,
+          "textParse": null,
+          "textSchemaValid": null,
+          "textFingerprint": null,
+          "reasoningBytes": 0,
+          "toolCalls": []
+        },
+        {
+          "label": "D-openai-gpt6luna-stack-schema",
+          "trial": 2,
+          "elapsedMs": 223,
+          "providerID": "openai",
+          "modelID": "gpt-6-luna",
+          "finish": null,
+          "errorName": "UnknownError",
+          "errorData": {
+            "message": "Token refresh failed: 401",
+            "retries": null
+          },
+          "tokens": {
+            "input": 0,
+            "output": 0,
+            "reasoning": 0
+          },
+          "structuredPresent": false,
+          "structuredSchemaValid": null,
+          "structuredFingerprint": null,
+          "textBytes": 0,
+          "textParse": null,
+          "textSchemaValid": null,
+          "textFingerprint": null,
+          "reasoningBytes": 0,
+          "toolCalls": []
+        }
+      ]
+    }
+  ],
+  "modelMatrix": {
+    "description": "same actual STACK schema, production assessor system prompt, no added discipline, 2 trials per model",
+    "trials": [
+      {
+        "trial": 1,
+        "model": "opencode-go/gpt-6-luna",
+        "elapsedMs": 4471,
+        "finish": "tool-calls",
+        "errorName": null,
+        "structuredPresent": true,
+        "textBytes": 0,
+        "textSchemaValid": null,
+        "judgmentKind": "object",
+        "judgmentDiscriminator": "STACK",
+        "zuoSchemaValid": true,
+        "structuredBytes": 1366,
+        "toolCall": true
+      },
+      {
+        "trial": 2,
+        "model": "opencode-go/gpt-6-luna",
+        "elapsedMs": 4823,
+        "finish": "tool-calls",
+        "errorName": null,
+        "structuredPresent": true,
+        "textBytes": 0,
+        "textSchemaValid": null,
+        "judgmentKind": "object",
+        "judgmentDiscriminator": "STACK",
+        "zuoSchemaValid": true,
+        "structuredBytes": 1578,
+        "toolCall": true
+      },
+      {
+        "trial": 1,
+        "model": "opencode-go/deepseek-v4.1-flash",
+        "elapsedMs": 11715,
+        "finish": "tool-calls",
+        "errorName": null,
+        "structuredPresent": true,
+        "textBytes": 0,
+        "textSchemaValid": null,
+        "judgmentKind": "object",
+        "judgmentDiscriminator": "STACK",
+        "zuoSchemaValid": true,
+        "structuredBytes": 4227,
+        "toolCall": true
+      },
+      {
+        "trial": 2,
+        "model": "opencode-go/deepseek-v4.1-flash",
+        "elapsedMs": 11121,
+        "finish": "tool-calls",
+        "errorName": null,
+        "structuredPresent": true,
+        "textBytes": 0,
+        "textSchemaValid": null,
+        "judgmentKind": "object",
+        "judgmentDiscriminator": "STACK",
+        "zuoSchemaValid": true,
+        "structuredBytes": 2088,
+        "toolCall": true
+      },
+      {
+        "trial": 1,
+        "model": "opencode-go/qwen3.8-max",
+        "elapsedMs": 1096,
+        "finish": null,
+        "errorName": "APIError",
+        "structuredPresent": false,
+        "textBytes": 0,
+        "textSchemaValid": null,
+        "judgmentKind": "absent",
+        "judgmentDiscriminator": null,
+        "zuoSchemaValid": null,
+        "structuredBytes": 0,
+        "toolCall": false
+      },
+      {
+        "trial": 2,
+        "model": "opencode-go/qwen3.8-max",
+        "elapsedMs": 980,
+        "finish": null,
+        "errorName": "APIError",
+        "structuredPresent": false,
+        "textBytes": 0,
+        "textSchemaValid": null,
+        "judgmentKind": "absent",
+        "judgmentDiscriminator": null,
+        "zuoSchemaValid": null,
+        "structuredBytes": 0,
+        "toolCall": false
+      },
+      {
+        "trial": 1,
+        "model": "opencode-go/glm-5.3",
+        "elapsedMs": 128911,
+        "finish": "tool-calls",
+        "errorName": null,
+        "structuredPresent": true,
+        "textBytes": 0,
+        "textSchemaValid": null,
+        "judgmentKind": "object",
+        "judgmentDiscriminator": "STACK",
+        "zuoSchemaValid": true,
+        "structuredBytes": 5485,
+        "toolCall": true
+      },
+      {
+        "trial": 2,
+        "model": "opencode-go/glm-5.3",
+        "elapsedMs": 81074,
+        "finish": "tool-calls",
+        "errorName": null,
+        "structuredPresent": true,
+        "textBytes": 0,
+        "textSchemaValid": null,
+        "judgmentKind": "object",
+        "judgmentDiscriminator": "STACK",
+        "zuoSchemaValid": true,
+        "structuredBytes": 4548,
+        "toolCall": true
+      },
+      {
+        "trial": 1,
+        "model": "opencode-go/kimi-k3",
+        "elapsedMs": 14382,
+        "finish": "tool-calls",
+        "errorName": null,
+        "structuredPresent": true,
+        "textBytes": 0,
+        "textSchemaValid": null,
+        "judgmentKind": "object",
+        "judgmentDiscriminator": "STACK",
+        "zuoSchemaValid": true,
+        "structuredBytes": 3072,
+        "toolCall": true
+      },
+      {
+        "trial": 2,
+        "model": "opencode-go/kimi-k3",
+        "elapsedMs": 11481,
+        "finish": "tool-calls",
+        "errorName": null,
+        "structuredPresent": true,
+        "textBytes": 0,
+        "textSchemaValid": null,
+        "judgmentKind": "object",
+        "judgmentDiscriminator": "STACK",
+        "zuoSchemaValid": true,
+        "structuredBytes": 3445,
+        "toolCall": true
+      }
+    ]
+  },
+  "permissionMatrix": {
+    "description": "direct OpenCode probe with the AEH-like managed agent config and full STACK schema; per-trial 60 s bound",
+    "note": "mimo-with-allow trials 2-3 are shown; trial 1 had the same schema-invalid encoded judgment.",
+    "results": [
+      {
+        "variant": "mimo-with-allow",
+        "ok": true,
+        "elapsedMs": 24754,
+        "finish": "tool-calls",
+        "errorName": null,
+        "errorMessage": null,
+        "structuredBytes": 5447,
+        "judgmentKind": "string",
+        "toolCalls": [
+          {
+            "tool": "StructuredOutput",
+            "status": "completed"
+          }
+        ],
+        "textBytes": 0,
+        "trial": 1
+      },
+      {
+        "variant": "mimo-with-allow",
+        "ok": true,
+        "elapsedMs": 24938,
+        "finish": "tool-calls",
+        "errorName": null,
+        "errorMessage": null,
+        "structuredBytes": 4761,
+        "judgmentKind": "string",
+        "toolCalls": [
+          {
+            "tool": "StructuredOutput",
+            "status": "completed"
+          }
+        ],
+        "textBytes": 0,
+        "trial": 2
+      },
+      {
+        "variant": "mimo-with-allow",
+        "ok": true,
+        "elapsedMs": 22492,
+        "finish": "tool-calls",
+        "errorName": null,
+        "errorMessage": null,
+        "structuredBytes": 5035,
+        "judgmentKind": "string",
+        "toolCalls": [
+          {
+            "tool": "StructuredOutput",
+            "status": "completed"
+          }
+        ],
+        "textBytes": 0,
+        "trial": 3
+      },
+      {
+        "variant": "gpt6luna-with-allow",
+        "ok": true,
+        "elapsedMs": 6745,
+        "finish": "tool-calls",
+        "errorName": null,
+        "errorMessage": null,
+        "structuredBytes": 1511,
+        "judgmentKind": "object",
+        "toolCalls": [
+          {
+            "tool": "StructuredOutput",
+            "status": "completed"
+          }
+        ],
+        "textBytes": 0,
+        "trial": 1
+      },
+      {
+        "variant": "gpt6luna-with-allow",
+        "ok": true,
+        "elapsedMs": 10707,
+        "finish": "tool-calls",
+        "errorName": null,
+        "errorMessage": null,
+        "structuredBytes": 1426,
+        "judgmentKind": "object",
+        "toolCalls": [
+          {
+            "tool": "StructuredOutput",
+            "status": "completed"
+          }
+        ],
+        "textBytes": 0,
+        "trial": 2
+      },
+      {
+        "variant": "wildcard-deny",
+        "ok": false,
+        "elapsedMs": 6225,
+        "finish": "stop",
+        "errorName": "StructuredOutputError",
+        "errorMessage": "Model did not produce structured output",
+        "structuredBytes": 0,
+        "judgmentKind": "absent",
+        "toolCalls": [],
+        "textBytes": 1158,
+        "trial": 1
+      },
+      {
+        "variant": "wildcard-deny-structuredoutput-allow",
+        "ok": true,
+        "elapsedMs": 8169,
+        "finish": "tool-calls",
+        "errorName": null,
+        "errorMessage": null,
+        "structuredBytes": 1918,
+        "judgmentKind": "object",
+        "toolCalls": [
+          {
+            "tool": "StructuredOutput",
+            "status": "completed"
+          }
+        ],
+        "textBytes": 0,
+        "trial": 1
+      },
+      {
+        "variant": "wildcard-deny-structuredoutput-lower",
+        "ok": false,
+        "elapsedMs": 6607,
+        "finish": "stop",
+        "errorName": "StructuredOutputError",
+        "errorMessage": "Model did not produce structured output",
+        "structuredBytes": 0,
+        "judgmentKind": "absent",
+        "toolCalls": [],
+        "textBytes": 1677,
+        "trial": 1
+      },
+      {
+        "variant": "explicit-tool-denies-no-wildcard",
+        "ok": true,
+        "elapsedMs": 7572,
+        "finish": "tool-calls",
+        "errorName": null,
+        "errorMessage": null,
+        "structuredBytes": 1437,
+        "judgmentKind": "object",
+        "toolCalls": [
+          {
+            "tool": "StructuredOutput",
+            "status": "completed"
+          }
+        ],
+        "textBytes": 0,
+        "trial": 1
+      }
+    ]
+  },
+  "aehMediatedObservation": {
+    "agentId": "eeb216d0-cd6b-4365-83ec-3a2bbce18ba2",
+    "model": "opencode-go/gpt-6-luna",
+    "outcome": "native wait timed out at 300 s with updatesObserved 0; agent became idle only when stopped; LastUsage output 20 tokens. Cause: the wildcard permission deny suppressed the StructuredOutput tool in the AEH-managed projection (isolated by the permission probe)."
+  },
+  "conclusions": {
+    "mimo": {
+      "level": "TEXTUAL_JSON",
+      "detail": "With the permission fix the tool is reachable, but mimo double-encodes nested values: 3/3 trials captured info.structured with judgment as a JSON string (schema-invalid for AEH). Without the fix it wrote free text or stalled. Not certified for semantic assessment."
+    },
+    "certified": [
+      {
+        "model": "opencode-go/gpt-6-luna",
+        "level": "SCHEMA_BOUND_TOOL_CALL",
+        "trials": 4,
+        "failures": 0,
+        "medianMs": 6400
+      },
+      {
+        "model": "opencode-go/deepseek-v4.1-flash",
+        "level": "SCHEMA_BOUND_TOOL_CALL",
+        "trials": 2,
+        "failures": 0,
+        "medianMs": 11418
+      },
+      {
+        "model": "opencode-go/kimi-k3",
+        "level": "SCHEMA_BOUND_TOOL_CALL",
+        "trials": 2,
+        "failures": 0,
+        "medianMs": 12932
+      },
+      {
+        "model": "opencode-go/glm-5.3",
+        "level": "SCHEMA_BOUND_TOOL_CALL",
+        "trials": 2,
+        "failures": 0,
+        "note": "slow (81-129 s per trial)"
+      }
+    ],
+    "unavailable": [
+      {
+        "model": "openai/gpt-6-luna",
+        "reason": "Token refresh failed: 401 (stored OAuth session expired)",
+        "classification": "authorization unavailable, not a capability result"
+      },
+      {
+        "model": "opencode-go/qwen3.8-max",
+        "reason": "APIError on both trials",
+        "classification": "provider error, not certified"
+      }
+    ],
+    "classification": "Primary AEH_PROVIDER_ADAPTER_DEFECT (the Semantic Assessor permission projection's wildcard deny suppressed OpenCode's injected StructuredOutput tool, making the provider-enforced channel unusable on every assessor turn) plus AEH_STRUCTURED_OUTPUT_CAPABILITY_DEFECT (runtime-level structuredOutput=true treated as model proof; the assessor shipped on mimo-v2.6-flash, which is not certified for schema-bound structured output even with the channel open). Contributing AEH_PROMPT_SCHEMA_DEFECT (discipline improves tool-call compliance and is retained as error reduction). Not AEH_COMPLETION_EXTRACTION_DEFECT (canonical output is consumed; free text appears only when structured output failed). mimo-only REAL_PROVIDER_CONTRACT_LIMITATION documented."
+  }
+}

@@ -1,10 +1,119 @@
 import { describe, expect, it } from "vitest";
-import { InMemorySemanticAssessmentCacheV1, SemanticAssessmentServiceV1, createSemanticEvidenceReceiptV1, semanticAssessmentTypeValues, semanticCapabilityPolicyRevisionV1, type SemanticAssessmentCacheV1, type SemanticAssessmentRequestV1, type SemanticAssessmentV1 } from "../src/semantic/assessment.js";
+import { AehError } from "../src/core/errors.js";
+import { InMemorySemanticAssessmentCacheV1, SemanticAssessmentServiceV1, createSemanticEvidenceReceiptV1, semanticAssessmentTypeValues, semanticCapabilityPolicyRevisionV1, semanticCapabilityPolicyV1, semanticModelDeadlineMsV1, boundSemanticThinkingOptionV1, type SemanticAssessmentCacheV1, type SemanticAssessmentRequestV1, type SemanticAssessmentV1 } from "../src/semantic/assessment.js";
+import { candidateReviewDimensionValues } from "../src/architecture/candidateAssurance.js";
 import { semanticTestAssessor, semanticTestRequest, semanticTestService, semanticPayload } from "./semanticAssessmentSupport.js";
 
 describe("Paseo-backed semantic assessment contract", () => {
+  it("bounds the Paseo thinking option by the request reasoning class", () => {
+    expect(boundSemanticThinkingOptionV1("max", "LIGHT")).toBe("low");
+    expect(boundSemanticThinkingOptionV1("max", "STANDARD")).toBe("medium");
+    expect(boundSemanticThinkingOptionV1("max", "DEEP")).toBe("high");
+    expect(boundSemanticThinkingOptionV1("low", "DEEP")).toBe("low");
+    expect(boundSemanticThinkingOptionV1(undefined, "DEEP")).toBeUndefined();
+    expect(boundSemanticThinkingOptionV1("provider-default", "LIGHT")).toBe("low");
+  });
+
+  it("allows a provider-appropriate model deadline for cold real Paseo providers", () => {
+    expect(semanticModelDeadlineMsV1).toBeGreaterThanOrEqual(60_000);
+    for (const assessmentType of semanticAssessmentTypeValues) expect(semanticCapabilityPolicyV1[assessmentType].maxDeadlineMs).toBeGreaterThanOrEqual(60_000);
+  });
+
   it("supports the seven canonical assessment types", () => {
     expect(semanticAssessmentTypeValues).toEqual(["INTENT", "ROUTE", "STACK", "ISSUE", "FAILURE", "CANDIDATE_IMPACT", "VALIDATION_NEED"]);
+  });
+
+  it("retries one hung real provider turn but not other provider unavailability", async () => {
+    let timedOutCalls = 0;
+    const timedOutOnce = semanticTestService({ runner: { assess: async ({ request, assessor }) => {
+      timedOutCalls += 1;
+      if (timedOutCalls === 1) throw new AehError("SEMANTIC_ASSESSMENT_UNAVAILABLE", "Paseo Semantic Assessor did not return a completed structured result (exit=124, status=timeout).", { details: { timeout: true, exitCode: 124, status: "timeout" } });
+      return { payload: semanticPayload(request), paseoSession: { provider: "opencode", agentId: "paseo-session-recovered", transport: "sdk" } };
+    } } });
+    const recovered = await timedOutOnce.assess(semanticTestRequest("ROUTE"));
+    expect(timedOutCalls).toBe(2);
+    expect(recovered.assessmentType).toBe("ROUTE");
+
+    let unavailableCalls = 0;
+    const unavailable = semanticTestService({ runner: { assess: async () => {
+      unavailableCalls += 1;
+      throw new AehError("SEMANTIC_ASSESSMENT_UNAVAILABLE", "Paseo provider is unavailable (authentication failed).");
+    } } });
+    await expect(unavailable.assess(semanticTestRequest("ROUTE"))).rejects.toMatchObject({ code: "SEMANTIC_ASSESSMENT_UNAVAILABLE" });
+    expect(unavailableCalls).toBe(1);
+
+    let messageOnlyCalls = 0;
+    const messageOnly = semanticTestService({ runner: { assess: async () => {
+      messageOnlyCalls += 1;
+      throw new AehError("SEMANTIC_ASSESSMENT_UNAVAILABLE", "Paseo Semantic Assessor did not return a completed structured result (exit=124, status=timeout).");
+    } } });
+    await expect(messageOnly.assess(semanticTestRequest("ROUTE"))).rejects.toMatchObject({ code: "SEMANTIC_ASSESSMENT_UNAVAILABLE" });
+    expect(messageOnlyCalls).toBe(1);
+  });
+
+  it("retries one invalid non-authoritative payload with a bounded repair note and fails closed after bounded attempts", async () => {
+    let calls = 0;
+    const runnerInputs: Array<{ repair?: { attempt: number; reason: string } }> = [];
+    const retrying = semanticTestService({ runner: { assess: async ({ request, repair }) => {
+      calls += 1;
+      runnerInputs.push({ ...(repair ? { repair } : {}) });
+      return { payload: calls === 1 ? { judgment: { type: "STACK" } } : semanticPayload(request), paseoSession: { provider: "opencode", agentId: `paseo-session-${calls}`, transport: "sdk" } };
+    } } });
+    const recovered = await retrying.assess(semanticTestRequest("STACK"));
+    expect(calls).toBe(2);
+    expect(recovered.judgment).toMatchObject({ type: "STACK" });
+    expect(runnerInputs[0]?.repair).toBeUndefined();
+    expect(runnerInputs[1]?.repair?.attempt).toBe(2);
+    expect(runnerInputs[1]?.repair?.reason).toContain("previous reply was rejected");
+
+    let failingCalls = 0;
+    const failing = semanticTestService({ runner: { assess: async () => {
+      failingCalls += 1;
+      return { payload: { judgment: { type: "STACK" } }, paseoSession: { provider: "opencode", agentId: "paseo-session-bad", transport: "sdk" } };
+    } } });
+    await expect(failing.assess(semanticTestRequest("STACK"))).rejects.toMatchObject({ code: "SEMANTIC_ASSESSMENT_INVALID" });
+    expect(failingCalls).toBe(2);
+  });
+
+  it("caps provider turns per call through an explicit attemptBudget owned by a composing caller", async () => {
+    let calls = 0;
+    const capped = semanticTestService({ runner: { assess: async () => {
+      calls += 1;
+      return { payload: { judgment: { type: "STACK" } }, paseoSession: { provider: "opencode", agentId: "paseo-session-capped", transport: "sdk" } };
+    } } });
+    await expect(capped.assess(semanticTestRequest("STACK"), { attemptBudget: 1 })).rejects.toMatchObject({ code: "SEMANTIC_ASSESSMENT_INVALID" });
+    expect(calls).toBe(1);
+    await expect(capped.assess(semanticTestRequest("STACK"), { attemptBudget: 3 })).rejects.toMatchObject({ code: "SEMANTIC_ASSESSMENT_INVALID" });
+    expect(calls).toBe(1);
+  });
+
+  it("constrains CandidateImpact review dimensions to the canonical typed vocabulary", async () => {
+    const request = semanticTestRequest("CANDIDATE_IMPACT");
+    const freeForm = semanticTestService({ payload: (value) => ({ ...semanticPayload(value), judgment: { ...semanticPayload(value).judgment, reviewDimensions: ["absence of accompanying tests"] } }) });
+    await expect(freeForm.assess(request)).rejects.toMatchObject({ code: "SEMANTIC_ASSESSMENT_INVALID" });
+
+    const canonical = semanticTestService({ payload: (value) => ({ ...semanticPayload(value), judgment: { ...semanticPayload(value).judgment, reviewDimensions: ["behavior.correctness", "public API"] } }) });
+    const assessment = await canonical.assess(request);
+    expect(assessment.judgment).toMatchObject({ type: "CANDIDATE_IMPACT", reviewDimensions: ["behavior.correctness", "public API"] });
+
+    const everyCanonical = semanticTestService({ payload: (value) => ({ ...semanticPayload(value), judgment: { ...semanticPayload(value).judgment, reviewDimensions: [...candidateReviewDimensionValues] } }) });
+    await expect(everyCanonical.assess(request)).resolves.toMatchObject({ judgment: { type: "CANDIDATE_IMPACT" } });
+  });
+
+  it("attaches a bounded rejected-reply fingerprint and the assessor session id to invalid payload failures", async () => {
+    const service = semanticTestService({ runner: { assess: async () => ({
+      payload: { judgment: { type: "STACK" } },
+      paseoSession: { provider: "opencode", agentId: "paseo-session-invalid", transport: "sdk" },
+      rawReply: { version: 1, lengthBytes: 42, sha256: "a".repeat(64), head: '{"judgment":' }
+    }) } });
+    let failure: AehError | undefined;
+    try { await service.assess(semanticTestRequest("STACK")); } catch (error) { failure = error as AehError; }
+    expect(failure).toMatchObject({
+      code: "SEMANTIC_ASSESSMENT_INVALID",
+      details: { sessionId: "paseo-session-invalid", fingerprint: { version: 1, lengthBytes: 42, sha256: "a".repeat(64), head: '{"judgment":' } }
+    });
+    expect(failure?.message).toContain("assessorSession=paseo-session-invalid");
+    expect(failure?.message).toContain(`replySha256=${"a".repeat(64)}`);
   });
 
   it("caches by evidence, full binding, policy, and topology profile while preserving Paseo provenance", async () => {
@@ -13,7 +122,7 @@ describe("Paseo-backed semantic assessment contract", () => {
     const base = semanticTestService({ runner: { assess: async ({ request, assessor }) => {
       calls += 1;
       expect(assessor.logicalAgent).toBe("assessor");
-      expect(assessor.modelId).toBe("openai/small-structured");
+      expect(assessor.modelId).toBe("opencode-go/gpt-6-luna");
       return { payload: semanticPayload(request), paseoSession: { provider: "opencode", agentId: `paseo-session-${calls}`, workspaceId: "workspace-test", transport: "sdk" } };
     } }, cache });
     const request = semanticTestRequest("STACK");
@@ -24,7 +133,7 @@ describe("Paseo-backed semantic assessment contract", () => {
     expect(first).toMatchObject({
       assessmentType: "STACK",
       mechanism: "MODEL",
-      assessor: { logicalAgent: "assessor", modelAlias: "assessorModel", modelId: "openai/small-structured" },
+      assessor: { logicalAgent: "assessor", modelAlias: "assessorModel", modelId: "opencode-go/gpt-6-luna" },
       paseoSession: { provider: "opencode", agentId: "paseo-session-1", workspaceId: "workspace-test", transport: "sdk" },
       evidenceRefs: ["evidence"],
       policyRevision: semanticCapabilityPolicyRevisionV1,

@@ -1,0 +1,240 @@
+{
+ "version": 1,
+ "slice": "S13",
+ "round": 23,
+ "generatedAt": "2026-09-30T16:38:14Z",
+ "source": "round-23 lead boundary census (sanitized; no credentials)",
+ "agents": {
+  "total": 129,
+  "byStatus": {
+   "running": 2,
+   "idle": 11,
+   "error": 1,
+   "closed": 115
+  }
+ },
+ "workspaces": {
+  "total": 44,
+  "campaignPreserved": [
+   "wks_020f7bac76ed4974",
+   "wks_05d05b809aed2f8f",
+   "wks_3a2d87c3cb74c4b7",
+   "wks_4d6fd213bd504648",
+   "wks_596896218c1466c5",
+   "wks_5ba0bf3f7539d3b5",
+   "wks_5e3f2575f0bd04a4",
+   "wks_767a74b4ec71b23a",
+   "wks_846580f3163f0ad5",
+   "wks_94415c0da1acaa3c",
+   "wks_a37297062f4df150",
+   "wks_b5b3ae1053e61281",
+   "wks_e7deb181f3a20517",
+   "wks_fa3b4ee0c9c4bff1",
+   "wks_fddb44533751e856"
+  ]
+ },
+ "fixtureProcesses": {
+  "count": 0,
+  "note": "no fixture child process remains; all orphans of terminal/aborted r23 attempts were terminated during the round-23 cleanup"
+ },
+ "opencodeServe": {
+  "count": 13,
+  "rssMbSum": 5041,
+  "entries": [
+   {
+    "pid": 5397,
+    "rssMb": 2074,
+    "agentId": null,
+    "agentStatus": null,
+    "controlRoot": null
+   },
+   {
+    "pid": 25511,
+    "rssMb": 248,
+    "agentId": "75e5d716-8c34-44fd-a6cd-abf6eb1c4ee6",
+    "agentStatus": "idle",
+    "controlRoot": null
+   },
+   {
+    "pid": 26223,
+    "rssMb": 144,
+    "agentId": "ff78ea48-5636-4b59-8c57-195199c6ca32",
+    "agentStatus": "idle",
+    "controlRoot": "/tmp/aeh-s13-gov-Zo72ph/work/lane-repair-fixture"
+   },
+   {
+    "pid": 28654,
+    "rssMb": 356,
+    "agentId": "b2e73be1-39ff-4723-9486-82876b3cfb9c",
+    "agentStatus": "running",
+    "controlRoot": "/tmp/aeh-s13-gov-Zo72ph/work/lane-repair-fixture"
+   },
+   {
+    "pid": 65002,
+    "rssMb": 159,
+    "agentId": "63bf1e7f-6aa8-46b6-bf38-8227b518cc72",
+    "agentStatus": "idle",
+    "controlRoot": null
+   },
+   {
+    "pid": 65900,
+    "rssMb": 137,
+    "agentId": "18fe8b9b-f835-4b64-b7af-700cf541d15f",
+    "agentStatus": "idle",
+    "controlRoot": "/tmp/aeh-s13-gov-6KeYap/work/lane-repair-fixture"
+   },
+   {
+    "pid": 67919,
+    "rssMb": 357,
+    "agentId": "159a7a4b-2da2-4fed-9b82-49973fa1ab36",
+    "agentStatus": "idle",
+    "controlRoot": "/tmp/aeh-s13-gov-6KeYap/work/lane-repair-fixture"
+   },
+   {
+    "pid": 91217,
+    "rssMb": 162,
+    "agentId": "6507ed0d-07d5-46ac-b954-e5262b5bd370",
+    "agentStatus": "idle",
+    "controlRoot": "/tmp/aeh-s13-gov-6KeYap/work/lane-repair-fixture"
+   },
+   {
+    "pid": 95122,
+    "rssMb": 176,
+    "agentId": "3cbd5301-f80a-43cb-acd7-b318572dd354",
+    "agentStatus": "idle",
+    "controlRoot": "/tmp/aeh-s13-gov-6KeYap/work/lane-repair-fixture"
+   },
+   {
+    "pid": 105749,
+    "rssMb": 348,
+    "agentId": "3c56f579-fbd4-41d2-84dc-8c18a8aea88d",
+    "agentStatus": null,
+    "controlRoot": null
+   },
+   {
+    "pid": 127273,
+    "rssMb": 355,
+    "agentId": "4a63e034-c414-40bb-9dae-b96de3cf9945",
+    "agentStatus": null,
+    "controlRoot": null
+   },
+   {
+    "pid": 137868,
+    "rssMb": 182,
+    "agentId": "874ce707-c9ae-4b5a-8df6-80e7b252c07e",
+    "agentStatus": null,
+    "controlRoot": null
+   },
+   {
+    "pid": 145662,
+    "rssMb": 343,
+    "agentId": "73a66815-0bae-4d04-88c7-628504dbaea1",
+    "agentStatus": null,
+    "controlRoot": null
+   }
+  ],
+  "classification": {
+   "preservedNonTerminal": [
+    {
+     "pid": 26223,
+     "rssMb": 144,
+     "agentId": "ff78ea48-5636-4b59-8c57-195199c6ca32",
+     "agentStatus": "idle",
+     "controlRoot": "/tmp/aeh-s13-gov-Zo72ph/work/lane-repair-fixture"
+    },
+    {
+     "pid": 28654,
+     "rssMb": 356,
+     "agentId": "b2e73be1-39ff-4723-9486-82876b3cfb9c",
+     "agentStatus": "running",
+     "controlRoot": "/tmp/aeh-s13-gov-Zo72ph/work/lane-repair-fixture"
+    },
+    {
+     "pid": 65900,
+     "rssMb": 137,
+     "agentId": "18fe8b9b-f835-4b64-b7af-700cf541d15f",
+     "agentStatus": "idle",
+     "controlRoot": "/tmp/aeh-s13-gov-6KeYap/work/lane-repair-fixture"
+    },
+    {
+     "pid": 67919,
+     "rssMb": 357,
+     "agentId": "159a7a4b-2da2-4fed-9b82-49973fa1ab36",
+     "agentStatus": "idle",
+     "controlRoot": "/tmp/aeh-s13-gov-6KeYap/work/lane-repair-fixture"
+    },
+    {
+     "pid": 91217,
+     "rssMb": 162,
+     "agentId": "6507ed0d-07d5-46ac-b954-e5262b5bd370",
+     "agentStatus": "idle",
+     "controlRoot": "/tmp/aeh-s13-gov-6KeYap/work/lane-repair-fixture"
+    },
+    {
+     "pid": 95122,
+     "rssMb": 176,
+     "agentId": "3cbd5301-f80a-43cb-acd7-b318572dd354",
+     "agentStatus": "idle",
+     "controlRoot": "/tmp/aeh-s13-gov-6KeYap/work/lane-repair-fixture"
+    }
+   ],
+   "unknownOwnershipPreserved": [
+    {
+     "pid": 5397,
+     "rssMb": 2074,
+     "agentId": null,
+     "agentStatus": null,
+     "controlRoot": null
+    },
+    {
+     "pid": 25511,
+     "rssMb": 248,
+     "agentId": "75e5d716-8c34-44fd-a6cd-abf6eb1c4ee6",
+     "agentStatus": "idle",
+     "controlRoot": null
+    },
+    {
+     "pid": 65002,
+     "rssMb": 159,
+     "agentId": "63bf1e7f-6aa8-46b6-bf38-8227b518cc72",
+     "agentStatus": "idle",
+     "controlRoot": null
+    },
+    {
+     "pid": 105749,
+     "rssMb": 348,
+     "agentId": "3c56f579-fbd4-41d2-84dc-8c18a8aea88d",
+     "agentStatus": null,
+     "controlRoot": null
+    },
+    {
+     "pid": 127273,
+     "rssMb": 355,
+     "agentId": "4a63e034-c414-40bb-9dae-b96de3cf9945",
+     "agentStatus": null,
+     "controlRoot": null
+    },
+    {
+     "pid": 137868,
+     "rssMb": 182,
+     "agentId": "874ce707-c9ae-4b5a-8df6-80e7b252c07e",
+     "agentStatus": null,
+     "controlRoot": null
+    },
+    {
+     "pid": 145662,
+     "rssMb": 343,
+     "agentId": "73a66815-0bae-4d04-88c7-628504dbaea1",
+     "agentStatus": null,
+     "controlRoot": null
+    }
+   ]
+  }
+ },
+ "tmpStaging": [
+  "aeh-s13-gov-6KeYap",
+  "aeh-s13-gov-Zo72ph",
+  "aeh-serena-pools"
+ ],
+ "checkoutTrackedDigestAtCensus": "3f9b7fd8767afe27c833a1a6580c362856b911c4d04dcd5f7833eaaa631634d8"
+}

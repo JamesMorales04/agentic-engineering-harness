@@ -48,6 +48,39 @@ describe("compiled participant runtime binding", () => {
     expect(selection).toMatchObject({ runtimeName: "direct", runtimeAdapter: "direct", modelAlias: "workhorse", modelId: "test/model", modelName: "model", runtimeCapabilities: { modelSelection: true, structuredOutput: true } });
   });
 
+  it("projects explicit launch permissions from the compiled tool ceiling (AEH-V2-0110)", () => {
+    const implementer: ParticipantAssignmentV1 = {
+      participantId: "participant:WU-1",
+      role: "Implementer",
+      specialization: "node-runtime",
+      competencies: ["node-runtime"],
+      skills: ["implementation-discipline"],
+      toolPack: { version: 1, required: ["repository-read", "repository-write", "command-execute", "context-read"], optional: [], forbidden: ["agent-spawn-by-name"] },
+      budget: { maxTokens: 1000, reservedTokens: 100, maxConcurrent: 1 },
+      workUnitIds: ["WU-1"]
+    };
+    const catalog = compileExecutionCatalog({
+      runtimes: { direct: { adapter: "direct" } },
+      models: { workhorse: { runtime: "direct", model: "model", id: "test/model" } },
+      roleBindings: { Implementer: { runtimeId: "direct", modelAlias: "workhorse", transport: "direct" } }
+    });
+    const providerDefaultBase: AgentExecutionSelection = { ...base, permissions: {} };
+    const projected = selectionForParticipant(providerDefaultBase, implementer, catalog);
+    expect(projected.permissions).toMatchObject({ read: "allow", write: "allow", gitWrite: "allow", shell: "allow", network: "deny" });
+
+    const explicitDeny = selectionForParticipant({ ...providerDefaultBase, permissions: { write: "deny" } }, implementer, catalog);
+    expect(explicitDeny.permissions.write).toBe("deny");
+
+    const librarian: ParticipantAssignmentV1 = { ...implementer, participantId: "participant:lookup", role: "Librarian", toolPack: { version: 1, required: ["context-read"], optional: ["approved-research"], forbidden: ["repository-write"] } };
+    const catalogWithLibrarian = compileExecutionCatalog({
+      runtimes: { direct: { adapter: "direct" } },
+      models: { workhorse: { runtime: "direct", model: "model", id: "test/model" } },
+      roleBindings: { Librarian: { runtimeId: "direct", modelAlias: "workhorse", transport: "direct" } }
+    });
+    const research = selectionForParticipant(providerDefaultBase, librarian, catalogWithLibrarian);
+    expect(research.permissions).toMatchObject({ read: "deny", write: "deny", shell: "deny", network: "allow" });
+  });
+
   it("fails closed when a frozen role has no catalog binding", () => {
     const assignment: ParticipantAssignmentV1 = {
       participantId: "participant:implementation",

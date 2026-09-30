@@ -1,0 +1,321 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": "final-r23",
+  "reviewer": {
+    "identity": "final independent S13 reviewer (Round-23 close-out)",
+    "provider": "opencode-go",
+    "model": "deepseek-v4.1-flash",
+    "thinking": "plan/read-only (default)",
+    "noImplementationDisclosure": true,
+    "statement": "I implemented no S13 round and made no repository change. Every disposition below was derived by reading durable source, Git objects, and recomputing sha256 digests in this session. No file was written, no commit/push/stash/reset/clean/revert, no GitHub write, no AEH operation launched against this checkout."
+  },
+  "gitState": {
+    "branch": "core-architecture-v2",
+    "head": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "upstream": "origin/core-architecture-v2 = e3dad34aa79348e1d65cee28114d76d4ec0a736c (identical)",
+    "s13Committed": false,
+    "trackedModified": 99,
+    "untracked": 35,
+    "stash": "empty",
+    "commitsOrPushPerformed": false,
+    "gitDiffCheck": "clean (re-verified at end of review)",
+    "targetSha256": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+    "targetByteIdentical": true,
+    "targetWorkingEqualsHeadBlob": true,
+    "credentialsInEvidence": "none found: token/pairing scans (gho_/ghp_/github_pat_/sk-/Bearer/#pair=) return no live values in docs/evidence/s13; pairing values appear only as REDACTED",
+    "selfMintedHumanDecisions": "none found; GitHub/journey approvals derive from the external user authorization docs/evidence/s13/github-effect-authorization.json sha256 272c5cb76158a7c312edd4d8d97cd6545b599e5c57c7978bbfc3742c573bd460 (campaignSelfAuthorization=PROHIBITED; allowedEffects machine-readable; HUMAN_REQUIRED denials preserved)"
+  },
+  "digestRecomputation": "MATCH",
+  "digestRecomputationDetails": {
+    "TARGET": "MATCH — working file and HEAD blob both 4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+    "currentTrackedDigest": "MATCH — recomputed with the campaign algorithm (git ls-files -z, sorted, 'path\\0<file>\\0'+bytes, sha256) over the current tree: e2cc89357c0ad6642d29bafbf8b28686250d1a7af1cf15b98b18a01d6c124356 (668 files), exactly the Round-23 final docs digest",
+    "f2TrackedDigest": "CORROBORATED (not directly recomputable) — 3f9b7fd8767afe27c833a1a6580c362856b911c4d04dcd5f7833eaaa631634d8 is recorded identically in frozen-release-manifest.json.trackedDigestAtBuild and as before==after checkoutProof in multiple independently executed durable lanes (r22-cert-1, r22-gov-1/2, r22-ctxperm-1, r23-gov-9); mtime sweep shows the only tracked files changed after the F2 build (2026-09-30T03:11Z) are docs/ENGINEERING_LEDGER.md, docs/CORE_ARCHITECTURE_V2_STATUS.md, docs/CORE_ARCHITECTURE_V2_CONFORMANCE.md (docs-only delta), so current e2cc8935 = 3f9b7fd8 + those three docs; the pre-reconciliation doc bytes are not preserved, so a byte-level reconstruction of 3f9b7fd8 is not possible today",
+    "preservedReleaseRecomputation": "MATCH — recomputed digestRelease (scripts/build.mjs algorithm: recursive files, path sort, relative+'\\0'+content+'\\0') over docs/evidence/s13/round-22/frozen-release excluding build-identity.json = 599ed363223ff2dd85e17296c9f34c4134bf83e363916c4c57d7e7492ccbdf45; the 892-file manifest recomputes 892/892 sha256 MATCH (0 missing, 0 bad); preserved build-identity.json: releaseId release-1790745699800-1565625-8d89648a, gitSha e3dad34, dirty true",
+    "liveBuildBinding": "dist/current = release-1790786395399-494892-5c8712f8 with build-identity buildDigest 599ed363223ff2dd85e17296c9f34c4134bf83e363916c4c57d7e7492ccbdf45, gitSha e3dad34 (the W135 fresh build — identical digest to F2)",
+    "sourceFreeze": "no src/** modified after src/workers/agentPrompt.ts 2026-09-30T03:09:37Z; newest tracked non-doc mtimes are the four F2 modules (agentPrompt, directProcess, distributed/worker, distributed/types)",
+    "citedArtifactDigests": "ALL MATCH (full recomputation of every artifact cited below; see matrixDispositions)"
+  },
+  "findings": [
+    {
+      "id": "R23-F1",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "TEST_FIXTURE_TMP_RESIDUE_NON_BLOCKING",
+      "evidence": "Current /tmp holds 110 /tmp/aeh-* dirs: 3 are campaign staging accounted by the Round-23 census (aeh-s13-gov-Zo72ph gov-3, aeh-s13-gov-6KeYap gov-5, aeh-serena-pools) and 107 are test-suite temp fixtures (aeh-97juOu, aeh-agents-*, aeh-assets-*, aeh-change-input-*, aeh-change-handoff-*, aeh-context-*, aeh-delivery-*, aeh-issue-*, aeh-openspec-*, aeh-paseo-sdk-*, aeh-semantic-*, aeh-toolchain-*, aeh-wave-* ...) created 2026-09-30T16:38:36–16:39:11Z (during the W135 writable-environment suite reproduction; the census was generated 16:38:14Z). None contains operation state (no operation*/state*.json found), no live process cwd references any of them, and the 13 live opencode serve PIDs exactly match the census classification (6 preserved non-terminal + 7 unknown-ownership). They are not operation-owned resources and are therefore not AEH-V2-0130 material; they are a test-teardown/census-scope hygiene gap (tests mkdtemp without cleanup).",
+      "requiredAction": "Round-24 hygiene (non-blocking): reap the 107 test-fixture dirs and extend the boundary census scope (or test teardown) to generic /tmp/aeh-* test fixtures. No S13 row is affected."
+    },
+    {
+      "id": "R23-F2",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "VERIFICATION_BOUNDARY_RECORDED_TESTS_NOT_RERUN",
+      "evidence": "vitest/typecheck/build were not executed in this read-only plan session (they write caches/dist). Claimed W135 reproduction: focused 27 files / 242 tests passed; canonical non-system suite 203 files / 1,363 tests = 1,353 passed / 3 failed / 7 skipped; typecheck/build exit 0 (fresh 599ed363 release); git diff --check clean. Structural corroboration performed: exactly 203 non-system *.test.ts files exist (matches the claimed file count); tests/paseoSdkResolve.test.ts is byte-identical to HEAD (git status empty) and its failures are the pre-existing mise/Paseo-CLI environment drift class (same since S10/S12/R17/R18/R20/R21); the fresh W135 buildDigest equals F2-final, proving deterministic source equality.",
+      "requiredAction": "None for acceptance; an optional writable re-run of focused/full/typecheck/build remains available to the Director before checkpoint."
+    },
+    {
+      "id": "R23-F3",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "DISCLOSED_FIXTURE_BRAIN_OVERRIDE_ACCEPTANCE_NEUTRAL",
+      "evidence": "r23-gov-9 records fixtureTopology {source: 'S13_GOV_BRAIN_* override', brain: {runtime: opencode, provider: opencode-go, model: gpt-6-luna}} in both the lane (docs/evidence/s13/governed-lanes/round-23/r23-gov-9/repair.json) and the summary (lanes[0].fixtureTopology of s13-governed-operations-round-23-r23-gov-9.json). tests/packed/s13GovernedOperationCampaign.mjs:483-498 documents the override; it writes the disposable fixture's documented .harness/agents.source.jsonc brain model alias only, and the lane lead now honors it. The codex brain was hard usage-limit blocked (recorded codex exec probe + daemon log in r23-gov-2/gov-4). The frozen repair oracle is 'failure packet + oracle re-check' and is model-agnostic; the lane ran 8 real opencode-go sessions and all deterministic gates unchanged.",
+      "requiredAction": "Optional Round-24 reinforcement: rerun r23-gov-9's exact env without S13_GOV_BRAIN_* after the codex quota reset. Not required for this row's frozen oracle."
+    },
+    {
+      "id": "R23-F4",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "F2_TRACKED_DIGEST_CORROBORATED_NOT_DIRECTLY_RECOMPUTABLE",
+      "evidence": "See digestRecomputationDetails.f2TrackedDigest. FINAL-F3 was corrected in place (0e1d1c80 withdrawn); the corrected 3f9b7fd8 is consistent with four durable recomputations and with the independently verified docs-only delta to the current e2cc8935.",
+      "requiredAction": "None. Preserve the frozen-release copy plus manifest as the recomputable checkout-build binding."
+    },
+    {
+      "id": "R23-F5",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "OPEN_OBSERVATIONS_CARRIED_FAIL_CLOSED",
+      "evidence": "AEH-V2-0130 (P1, resource lifecycle) remains OPEN with truthful accumulation evidence (r21-resource-1 summary 8b67fc12258b426a26ac19a55f845d67061b16abc01cdb425bb32cc57ec42bb0) and Round-23 reconciliation/census dossiers; AEH-V2-0132 (review liveness: r22-gov-3/r23-gov-6), AEH-V2-0133 (superseded repair attempt vs objective completion: r23-gov-8), AEH-V2-0134 (intermittent AEH_RESULT_PROVENANCE: r22-gov-1 vs r22-gov-2 pass) are OPEN observations. All are fail-closed and none invalidates an accepted row: repair/product-repair reached terminal SUCCEEDED on r23-gov-9, multi-worker PASSED on the r22-gov-2 rerun, and no certified row's oracle asserts post-terminal resource reconciliation or attempt-lineage completion.",
+      "requiredAction": "Carry 0130/0132/0133/0134 to S14 per amendment rule 9; S14's disposable self-hosting composite must include resource cleanup/reconciliation and the bounded repeated-operation stability campaign."
+    }
+  ],
+  "matrixDispositions": {
+    "startup": {
+      "disposition": "F2_CURRENT_ACCEPTED",
+      "evidence": "docs/evidence/s13/lanes/startup.json sha256 0b4318993ba8f169f394cfb7a0d29718faafe4633651803253f45ef214c28051; summary docs/evidence/s13/s13-real-provider-certification.json sha256 5446493ecf7e1b002aa97cb1ae4fe4d544c8273c50e42034e7e0ede27f8978af",
+      "operation": "none (packed CLI journey; real codex session 01a0f0cb-5f12-7313-9480-4e65fbfca05e, gpt-6-luna, init/doctor exit 0)",
+      "terminal": "ACCEPTED (state ACCEPTED, accepted true)",
+      "oracle": "PASS (6 checks)",
+      "binding": "packedBuildDigest 599ed363223ff2dd85e17296c9f34c4134bf83e363916c4c57d7e7492ccbdf45 (lane candidate.metadata)",
+      "checkoutProof": "3f9b7fd8… before==after, 668 files, checkoutUntouched true"
+    },
+    "informational": {
+      "disposition": "F2_CURRENT_ACCEPTED",
+      "evidence": "docs/evidence/s13/lanes/informational.json sha256 2ce03b3cd4961af6dff26024b03519ef2dd079ac72acbd288fba7a341ccd2460 (+ same summary 5446493e…)",
+      "operation": "none (packed product semantic runtime, provider packed-direct+paseo)",
+      "terminal": "ACCEPTED",
+      "oracle": "PASS",
+      "binding": "packedBuildDigest 599ed363…",
+      "checkoutProof": "3f9b7fd8… before==after, untouched true"
+    },
+    "audit": {
+      "disposition": "F2_CURRENT_ACCEPTED",
+      "evidence": "docs/evidence/s13/governed-lanes/round-22/r22-gov-1/audit.json sha256 973772b79c316d2a0d68c14ac4d4a474754fdc6cbdcd118677384ce91e936362",
+      "operation": "AUDIT-20260930T052814Z-78e1af93",
+      "terminal": "SUCCEEDED rev 52 (oracle row audit PASS; 9 checks incl audit-report, real reviewer session, validation command, supervisor generation)",
+      "oracle": "PASS",
+      "binding": "lane candidateBinding.packedBuild.buildDigest 599ed363…",
+      "checkoutProof": "3f9b7fd8… before==after, untouched true"
+    },
+    "change": {
+      "disposition": "F2_CURRENT_ACCEPTED",
+      "evidence": "r22-gov-1/change-multifile.json sha256 b3f931ad0bc188e95caa9f96b7ffd03f10a42e4bae381b79f39084c0f120b787 + r22-gov-2/change-formal.json sha256 a91a49e63241a315b44b3f9b8c16774aa07635a9551ad17cd01efb04bd8f1d71",
+      "operation": "CHANGE-20260930T053201Z-7379475e (SUCCEEDED rev 77) and CHANGE-20260930T070214Z-b3ca3d6a (SUCCEEDED rev 169)",
+      "terminal": "SUCCEEDED; rows change PASS both lanes",
+      "oracle": "ACCEPTED / PASS",
+      "binding": "599ed363…",
+      "checkoutProof": "3f9b7fd8… before==after, untouched true"
+    },
+    "direct-change": {
+      "disposition": "F2_CURRENT_ACCEPTED",
+      "evidence": "r22-gov-1/change-multifile.json b3f931ad… + r22-gov-1/change-direct.json sha256 0002a79678fa86f30e24df2bdb46a34f8509a53f523424d48c380d4ae804ccd3",
+      "operation": "CHANGE-20260930T053201Z-7379475e and CHANGE-20260930T053939Z-5de819ea",
+      "terminal": "SUCCEEDED rev 77 / rev 81; rows direct-change PASS",
+      "oracle": "ACCEPTED",
+      "binding": "599ed363…",
+      "checkoutProof": "3f9b7fd8… before==after, untouched true"
+    },
+    "delegated-change": {
+      "disposition": "F2_CURRENT_ACCEPTED",
+      "evidence": "r22-gov-1/change-delegated.json sha256 e21de775d76f32d33cbef5ed9c2622c0d14c571c5f7e52ce00c1a14fcc07ffaf",
+      "operation": "CHANGE-20260930T054511Z-e75534ab",
+      "terminal": "SUCCEEDED rev 128; rows change+delegated-change PASS",
+      "oracle": "ACCEPTED",
+      "binding": "599ed363…",
+      "checkoutProof": "3f9b7fd8… before==after, untouched true"
+    },
+    "formal-sdd": {
+      "disposition": "F2_CURRENT_ACCEPTED",
+      "evidence": "r22-gov-2/change-formal.json a91a49e6…",
+      "operation": "CHANGE-20260930T070214Z-b3ca3d6a",
+      "terminal": "SUCCEEDED rev 169; rows change+formal-sdd PASS (spec-authoring, spec-compilation, canonical spec delta PASS)",
+      "oracle": "ACCEPTED",
+      "binding": "599ed363…",
+      "checkoutProof": "3f9b7fd8… before==after, untouched true"
+    },
+    "multi-worker": {
+      "disposition": "F2_CURRENT_ACCEPTED",
+      "evidence": "r22-gov-2/multi-worker.json sha256 47693c99de958e747811cec1cfe3ea591a3d474e0e5a1457ecd73da9759a2f88",
+      "operation": "CHANGE-20260930T064951Z-248e53a3",
+      "terminal": "SUCCEEDED rev 141; task DAG workUnits=2 waves=1 conflicts=0; wave barrier 8 checks/0 failed; 2 assembly receipts",
+      "oracle": "PASS",
+      "binding": "599ed363…",
+      "checkoutProof": "3f9b7fd8… before==after, untouched true"
+    },
+    "cancel": {
+      "disposition": "F2_CURRENT_ACCEPTED",
+      "evidence": "docs/evidence/s13/lifecycle-lanes/round-22/r22-lifecycle-1/cancel.json sha256 464be08c49879722e4122b488d8beba2b69188b01ce032fb14732e9a717fc8d1; summary s13-real-paseo-lifecycle-round-22-r22-lifecycle-1.json sha256 3fcc039e0a03adc3973b3d3643e11e89f71303f6ecd96f3f7d20243db204dad9",
+      "operation": "real durable operation; real session 8e162f28-6deb-42a2-9d24-ece65461832d",
+      "terminal": "CANCELLED; leases after cancel 0",
+      "oracle": "PASS (5/5 checks)",
+      "binding": "harnessBuildIdentity.buildDigest 599ed363…; packed artifact 43e9379d…",
+      "checkoutProof": "3f9b7fd8… before==after, untouched true"
+    },
+    "recovery": {
+      "disposition": "F2_CURRENT_ACCEPTED",
+      "evidence": "r22-lifecycle-1/recovery.json sha256 d51dacd83ac015cb5fc445453ef8cce2757902af35041e63b366aa56bcaa98d7 (+ summary 3fcc039e…)",
+      "operation": "real session 02656628-5852-4464-a4f6-e04bbb4f19a0; epoch 1→2 takeover; preserved operation identity",
+      "terminal": "PASS (resume; leases drained 0)",
+      "oracle": "PASS (6/6 checks)",
+      "binding": "harnessBuildIdentity.buildDigest 599ed363…",
+      "checkoutProof": "3f9b7fd8… before==after, untouched true"
+    },
+    "product-repair": {
+      "disposition": "F2_CURRENT_ACCEPTED",
+      "evidence": "docs/evidence/s13/governed-lanes/round-23/r23-gov-9/repair.json sha256 20621848a613e921038fc81d503b1457dcf75c68c75029623d4af72b841dbd5c; summary s13-governed-operations-round-23-r23-gov-9.json sha256 6ce06bc0e782e10327b19dc7bf2a10fc667ceb05cfcb79c49af235aeaf58dfd4",
+      "operation": "CHANGE-20260930T161148Z-cf61361e",
+      "terminal": "SUCCEEDED rev 166 (timeout false, 1,307,773 ms); order rows product-repair PASS; repair packet CHANGE-20260930T161148Z-cf61361e-1.json; scope check 5 changed files, 0 outside frozen contract scope",
+      "oracle": "ACCEPTED (AcceptanceOracle disposition ACCEPTED, candidate r5)",
+      "binding": "packed build release-1790784657836-398208-ea436d52 buildDigest 599ed363…; packed artifact 37af2e33…",
+      "checkoutProof": "3f9b7fd8… before==after, 668 files, untouched true; disclosed fixtureTopology S13_GOV_BRAIN_* override"
+    },
+    "certification-repair": {
+      "disposition": "F2_CURRENT_ACCEPTED",
+      "evidence": "docs/evidence/s13/certification-repair-lanes/round-22/r22-certrepair-1/certification-repair.json sha256 e34604627d2f9972ea6bbff2da252fee0f4f0f1e14182072059f8ffa0e3dbf6b; summary s13-certification-repair-round-22-r22-certrepair-1.json sha256 2e10c4d4d433ba5506f42a09440ff2e75432176de876d0c047abba9b32c3f5ad",
+      "operation": "certification repair run (packed candidate 384d4ea3…; 1 real repair provider receipt)",
+      "terminal": "state ACCEPTED (oracle recheck PASS; repaired '42'; treeStable true)",
+      "oracle": "PASS (4/4 checks incl cannot-self-accept)",
+      "binding": "harnessBuildIdentity.buildDigest 599ed363…",
+      "checkoutProof": "3f9b7fd8… before==after, untouched true"
+    },
+    "repair": {
+      "disposition": "F2_CURRENT_ACCEPTED",
+      "evidence": "r23-gov-9/repair.json 20621848… (+ summary 6ce06bc0…)",
+      "operation": "CHANGE-20260930T161148Z-cf61361e",
+      "terminal": "SUCCEEDED rev 166; row repair PASS; canonical forcing geometry proven (first-pass validation FAIL on seeded src/config.mjs FAREWELL defect → RepairPacket → canonical Repairer → re-validation/re-review PASS → oracle re-check ACCEPTED)",
+      "oracle": "PASS — repair.failure-packet + repair.oracle-recheck (repairFinishes FAIL→PASS, candidate rev 5)",
+      "binding": "599ed363… (packed release-1790784657836-398208-ea436d52)",
+      "checkoutProof": "3f9b7fd8… before==after, untouched true"
+    },
+    "context-handoff": {
+      "disposition": "F2_CURRENT_ACCEPTED",
+      "evidence": "docs/evidence/s13/context-permission-lanes/round-22/r22-ctxperm-1/context-handoff.json sha256 33a125e6347c26af89208b67b4e1748c73891afa27c5372ffa4788dc278e1f95; summary s13-context-permission-round-22-r22-ctxperm-1.json sha256 457e05b9f72e8c16785176a7f283b8184da407a6512f3db373d15e548956eb0b",
+      "operation": "real provider session 9af15d0a-740b-475d-89b3-1c424cbbc50c; 9 addressable refs; controller-issued grant; continuation sequence 2",
+      "terminal": "PASS",
+      "oracle": "PASS (4/4 checks)",
+      "binding": "harnessBuildIdentity.buildDigest 599ed363…; packed artifact 3edb0d76…",
+      "checkoutProof": "3f9b7fd8… before==after, untouched true"
+    },
+    "permission-delegation": {
+      "disposition": "F2_CURRENT_ACCEPTED",
+      "evidence": "r22-ctxperm-1/permission-delegation.json sha256 e26176dcf85e30014be3f9fd6e9147b3ca4b958591d7fb491551bf52f0884015 (+ summary 457e05b9…)",
+      "operation": "parent lease epoch 1; monotonic child [read] subset; real child session 5ca8feae-1370-463e-89d8-166e5cac0024 exit 0",
+      "terminal": "PASS (ceiling denial V2_AUTHORITY_DENIED preserved)",
+      "oracle": "PASS (4/4 checks)",
+      "binding": "harnessBuildIdentity.buildDigest 599ed363…",
+      "checkoutProof": "3f9b7fd8… before==after, untouched true"
+    },
+    "issue-driven": {
+      "disposition": "F2_CURRENT_ACCEPTED",
+      "evidence": "docs/evidence/s13/github-lanes/round-22/r22-gh-1/issue-driven.json sha256 701c2cdb7355a270d77308257130afea2ad44dce9813aeae3b6c01f22ff0fcdb; full journey docs/evidence/s13/issue-journey-lanes/round-22/r22-journey-1/issue-driven.json sha256 6aab2cf158e22c1a2d0775d81d3f956787429595866f7539080f99cd3e4d9381; summary s13-github-effects-round-22-r22-gh-1.json sha256 10d3490a… and s13-issue-journey-round-22-r22-journey-1.json sha256 b5d71901…",
+      "operation": "operation-bound import CHANGE-20260930T061244Z-311dddd6 (exit 0, route FORMAL_SDD, GH-1-R1..R3) and full journey governed operation CHANGE-20260930T063245Z-9eed7a49 (SUCCEEDED rev 81, oracle ACCEPTED candidate r3)",
+      "terminal": "PASS (7/7 journey checks incl snapshot/drift, governed operation, HUMAN_REQUIRED denial, authorized push e559d4e94651, receipts, issue #1 untouched)",
+      "oracle": "PASS",
+      "binding": "github packed build release-1790748734771-1747236-9ddadccb buildDigest 599ed363…; journey packedBuildDigest 599ed363…",
+      "checkoutProof": "3f9b7fd8… before==after, untouched true"
+    },
+    "delivery": {
+      "disposition": "F2_CURRENT_ACCEPTED",
+      "evidence": "docs/evidence/s13/github-lanes/round-22/r22-gh-1/delivery.json sha256 7afdde1111a1e57cadd4a1363160cb9f8baaa804804b317192afb8abec2fd71b; journey lane 6aab2cf1…",
+      "operation": "delivery record GH-1 (digest 5fe3414914d6a30f…, branch aeh-s13-delivery-1-…-r22-gh-1@6f890cdce290) + terminal delivery shell CHANGE-20260930T063245Z-9eed7a49 (SUCCEEDED rev 82, phase delivery-finished, transitioned through product transitionOperationToTerminal, record digest bef2fe55a6c50fe2edd3e33b6db049e56918ea79098e1f21b953a16b871906f5)",
+      "terminal": "FINALIZED/pushed; 9/9 checks PASS (incl issue untouched, push-only, S7 provenance no-artifact ok=true)",
+      "oracle": "PASS",
+      "binding": "packedBuild 599ed363…",
+      "checkoutProof": "3f9b7fd8… before==after, untouched true"
+    },
+    "distributed-execution": {
+      "disposition": "F2_CURRENT_ACCEPTED",
+      "evidence": "docs/evidence/s13/governed-lanes/round-21/r21-dist-14/distributed.json sha256 69b735d04a75f1d37795e6d930854a20d2da7822caf9f44b5b2e59268e1042d0; summary s13-governed-operations-round-21-r21-dist-14.json sha256 8c7c30d795351cc471d31d54e7b95eda5e013d555f9ed2abea6d0215a67e1b75",
+      "operation": "CHANGE-20260930T031145Z-36b74caa",
+      "terminal": "SUCCEEDED rev 137 bounded; lease prepared=2/released=2/completed=2; real worker receipt session ses_f0faef79affe4CUexX9g65Hk4T",
+      "oracle": "PASS (6/6 checks; row distributed-execution PASS)",
+      "binding": "packed build release-1790737862108-997061-89156943 buildDigest 599ed363…; packed artifact 61e008f3…",
+      "checkoutProof": "d918cc72… before==after (its own window), untouched true"
+    },
+    "project-home": {
+      "disposition": "F2_CURRENT_ACCEPTED",
+      "evidence": "docs/evidence/s13/lanes/project-home.json sha256 99e74b52bfec7fa561156100b80d2378025970f5b96054bb162398513813fd9d (+ summary 5446493e…)",
+      "operation": "none (real codex session 01a0f0cc-962e-7ba0-bc9d-27e4c06cba16; registry + loopback Home)",
+      "terminal": "ACCEPTED",
+      "oracle": "PASS",
+      "binding": "packedBuildDigest 599ed363…",
+      "checkoutProof": "3f9b7fd8… before==after, untouched true"
+    },
+    "multi-project": {
+      "disposition": "F2_CURRENT_ACCEPTED",
+      "evidence": "docs/evidence/s13/lanes/multi-project.json sha256 33eed67184491547c608c1463f312998a150fd0c9e95ff8d676b3a5ca2cd98ee (+ summary 5446493e…)",
+      "operation": "none (real codex session 01a0f0cd-4131-7e33-9e58-877b7b454039; two registry identities)",
+      "terminal": "ACCEPTED",
+      "oracle": "PASS",
+      "binding": "packedBuildDigest 599ed363…",
+      "checkoutProof": "3f9b7fd8… before==after, untouched true"
+    },
+    "control-center": {
+      "disposition": "NOT_APPLICABLE",
+      "evidence": "Frozen matrix (WorkGraph lines 43-66): BROWSER lane only; never substituted for REAL_PROVIDER; S11 BROWSER/VISUAL evidence separately reported",
+      "operation": "n/a",
+      "terminal": "n/a",
+      "oracle": "n/a",
+      "binding": "n/a",
+      "checkoutProof": "n/a"
+    },
+    "authority": {
+      "disposition": "F2_CURRENT_ACCEPTED",
+      "evidence": "docs/evidence/s13/github-lanes/round-22/r22-gh-1/authority.json sha256 7fbed79965bc0003eb186ecee310120f31581fc2f90ee5907e5caf0f04abca6a",
+      "operation": "real human-gated effect on the authorized private repo (external authorization 272c5cb7… bound to the exact effect digest)",
+      "terminal": "EXECUTED/SUCCEEDED; unapproved action HUMAN_REQUIRED; real remote branch aeh-s13-authority-20260930061207 observed",
+      "oracle": "PASS (4/4 checks)",
+      "binding": "packed build release-1790748734771-1747236-9ddadccb buildDigest 599ed363…",
+      "checkoutProof": "3f9b7fd8… before==after, untouched true"
+    }
+  },
+  "resourceLifecycleDisposition": {
+    "aehV2_0130": "OPEN — carried to S14 (does not block S13). Truthful accumulation evidence r21-resource-1 (summary 8b67fc12258b426a26ac19a55f845d67061b16abc01cdb425bb32cc57ec42bb0; ceilings 0; no-monotonic-growth FAIL; reconciliation-terminal-only PASS). No required S13 row's oracle asserts post-terminal agent/workspace/process reconciliation; every certified row asserts terminal state, candidate binding, receipts, lease release and session quiescence, all of which hold.",
+    "round23Reconciliation": {
+      "reconciliation": "docs/evidence/s13/round-23/resource-reconciliation.json sha256 93164a991ac9a8507c09ca79366da31d93d98dabdd82ba040f7097200d83e128 (verified)",
+      "census": "docs/evidence/s13/round-23/round23-cleanup-after.json sha256 bba410dbd85f2f23b8ab9de45e84d323ba869dc95eb0c457d76551e1b5d64182 (verified)",
+      "deadControllerEvidence": "5 preserved non-terminal/fixture operations with dead controllers and preserved workspaces (r22-gov-3/-4/-5, r23-gov-3/-5) + 8 older-round workspaces — all PRESERVED_TERMINALITY_UNPROVABLE",
+      "orphanProcessesTerminated": 38,
+      "boundedWorkersArchived": "13 (archive results: 13 ok across terminal gov-6/7/8/9; 33 already-archived/unmanageable errors; non-terminal gov-3/gov-5 agents untouched)",
+      "liveNonTerminalArchived": false,
+      "preservedLiveResources": "6 non-terminal-owned plus 7 unknown-ownership opencode serve processes (13 PIDs match the census exactly; rules 2/6 honored)"
+    },
+    "tmpResidueDetermination": {
+      "currentCount": 110,
+      "accountedByCensus": "3 — aeh-s13-gov-Zo72ph (gov-3), aeh-s13-gov-6KeYap (gov-5), aeh-serena-pools",
+      "unaccountedCount": 107,
+      "unaccountedClassification": "test-harness temp fixtures created 2026-09-30T16:38:36–16:39:11Z by the W135 writable-environment suite reproduction (after the census generatedAt 16:38:14Z); names match test mkdtemp prefixes (agents/assets/change-input/change-handoff/context/delivery/issue/openspec/paseo-sdk/semantic/toolchain/wave…); no operation state files; no process cwd references; 0 live fixture processes",
+      "disposition": "NOT operation-owned residue (not AEH-V2-0130); a test-teardown/census-scope hygiene gap; Round-24 hygiene action recommended (R23-F1); does not block S13 acceptance",
+      "blocksS13": false
+    }
+  },
+  "focusedTests": {
+    "reproduced": false,
+    "boundary": "read-only plan mode; vitest/typecheck/build write caches/dist",
+    "claimed": "27 files / 242 tests passed (W135, 2026-09-30T16:40Z)",
+    "assessment": "consistent with prior rounds and structurally corroborated; not independently rerun"
+  },
+  "fullSuite": {
+    "reproduced": false,
+    "boundary": "read-only plan mode",
+    "claimed": "canonical non-system suite: 203 files / 1,363 tests = 1,353 passed / 3 failed / 7 skipped; typecheck exit 0; build exit 0 (599ed363 release)",
+    "classification": "3 failures all in tests/paseoSdkResolve.test.ts — pre-existing mise/Paseo-CLI environment drift (byte-identical to HEAD; same class since S10/S12/R17/R18/R20/R21); the prior buildHygiene concurrency artifact passed in this run; the 203 non-system *.test.ts file count exactly matches the claimed file count"
+  },
+  "verdict": "SLICE_ACCEPTED",
+  "actionRequired": [
+    "Persist this report (docs/evidence/s13/review-final-r23.json) and checkpoint S13 per campaign process; the slice is accepted on F2-final buildDigest 599ed363223ff2dd85e17296c9f34c4134bf83e363916c4c57d7e7492ccbdf45 with current tracke d digest e2cc89357c0ad6642d29bafbf8b28686250d1a7af1cf15b98b18a01d6c124356.",
+    "Keep docs/evidence/s13/round-22/frozen-release/ plus frozen-release-manifest.json as the recomputable checkout-build binding for F2-final (599ed363…).",
+    "Carry AEH-V2-0130 (resource lifecycle/reconciliation) and the open observations AEH-V2-0132/0133/0134 to S14; S14's disposable self-hosting composite must include cleanup/reconciliation plus the bounded repeated-operation resource-stability campaign.",
+    "Round-24 hygiene (non-blocking): reap the 107 W135 test-fixture /tmp/aeh-* directories and extend boundary-census scope (or test teardown) to generic test fixtures.",
+    "Optional Round-24: rerun r23-gov-9's exact env without S13_GOV_BRAIN_* after the codex ChatGPT quota reset for a default-brain reinforcement; not required by the row's frozen oracle."
+  ]
+}

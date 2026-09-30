@@ -4,6 +4,7 @@ import {
 } from "../agents/permissions.js";
 import type { AgentExecutionSelection } from "../agents/types.js";
 import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
+import { worktreeGitRoots } from "../core/git.js";
 import { deliveryWorkspaceId } from "../delivery/handoff.js";
 import { buildManagedAgentEnvironment } from "../operations/executionContext.js";
 import { activeOperationSupervisor, currentOperationContext, loadOperation } from "../operations/state.js";
@@ -12,6 +13,8 @@ import { staticContextCapabilities, type EffectiveContextCapabilities } from "..
 import { managedSerenaPool } from "../runtime/serenaPool.js";
 import { SERENA_VERSION } from "../context/repository/serena.js";
 import { createHash } from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
 import type { CapabilityLeaseV1 } from "../security/authorityV2.js";
 import { assertExecutionBindingV2, type ExecutionBindingV2 } from "../architecture/executionIdentity.js";
 
@@ -48,6 +51,8 @@ export interface PaseoAgentLaunchSpec {
   nativeAgentId?: string;
   workspaceId?: string;
   parentAgentId?: string;
+  /** Paseo parent handle; omitted for isolated launches so the provider cannot relocate the cwd. */
+  paseoParentAgentId?: string;
   supervisorGeneration?: number;
   labels: Record<string, string>;
   timeoutSeconds: number;
@@ -56,6 +61,8 @@ export interface PaseoAgentLaunchSpec {
   phase: string;
   mcpServers?: Record<string, PaseoSdkMcpStdioServer>;
   toolPolicy?: PaseoSdkToolPolicy;
+  providerOptions?: Record<string, unknown>;
+  featureValues?: Record<string, unknown>;
 }
 
 export async function compilePaseoAgentLaunchSpec(root: string, config: HarnessProjectConfig, contract: TaskContract, options: PaseoLaunchSpecOptions = {}): Promise<PaseoAgentLaunchSpec> {
@@ -69,21 +76,58 @@ export async function compilePaseoAgentLaunchSpec(root: string, config: HarnessP
   const operationKind = operation.kind ?? options.kind ?? inferOperationKind(contract);
   const phase = options.phase ?? inferAgentPhase(selection, logicalAgent);
   const deliveryId = await deliveryWorkspaceId(root, config, contract.task.id);
-  const workspaceId = deliveryId ?? operation.workspaceId;
   const title = `${options.titlePrefix ?? worker?.titlePrefix ?? "aeh"}-${contract.task.id}-${logicalAgent}`;
   const controlRoot = process.env.AEH_CONTROL_ROOT?.trim() || root;
   const durable = operation.id ? await loadOperation(controlRoot, operation.id).catch(() => undefined) : undefined;
+  // A session may only claim an operation workspace when a durable operation positively proves
+  // the launch root is its workspace root. Isolated candidate-mutation launches run in a
+  // disposable worktree and must not bind the provider session to the operation workspace, and an
+  // unloadable operation must never be treated as proof of a matching workspace.
+  const durableWorkspaceRoot = durable?.workspaceRoot ? await canonicalRootOrResolved(durable.workspaceRoot) : undefined;
+  const launchRoot = durableWorkspaceRoot ? await canonicalRootOrResolved(root) : undefined;
+  const withinOperationWorkspace = durableWorkspaceRoot !== undefined && launchRoot === durableWorkspaceRoot;
+  const workspaceId = withinOperationWorkspace ? (deliveryId ?? operation.workspaceId) : undefined;
   const activeSupervisor = durable ? activeOperationSupervisor(durable) : undefined;
   const supervisorAgent = options.supervisorAgent === true || logicalAgent === "operation-supervisor";
   const parentAgentId = options.parentAgentId ?? (supervisorAgent ? durable?.lead?.agentId : activeSupervisor?.agentId);
   const supervisorGeneration = supervisorAgent ? undefined : activeSupervisor?.generation;
+  // Paseo child agents inherit the parent agent's workspace AND run in the parent's cwd. An isolated
+  // launch (task worktree outside the durable operation workspace) must never carry the Paseo parent
+  // handle, or the provider silently executes the isolated turn inside the operation candidate
+  // workspace (AEH-V2-0117). Correlation stays in `aeh.parent-agent`; only the Paseo parent is dropped.
+  const isolatedLaunch = durableWorkspaceRoot !== undefined && launchRoot !== undefined && launchRoot !== durableWorkspaceRoot;
+  const paseoParentAgentId = isolatedLaunch ? undefined : parentAgentId;
 
   const contextCapabilities = options.contextCapabilities ?? (selection ? staticContextCapabilities(config, selection) : undefined);
-  const openCode = selection?.runtimeAdapter === "opencode" && provider === "opencode" ? compileOpenCodeRuntimeProjection(selection, config, contextCapabilities) : undefined;
+  // Provider sessions may be relocated by Paseo to the registered workspace root while the frozen
+  // participant was launched against an isolated task worktree (AEH-V2-0116). The provider must be
+  // able to reach exactly the roots the participant is authorized to use: the launch root and the
+  // git metadata directories of that worktree. Nothing else is projected.
+  const authorizedRoots = selection ? [...new Set([root, ...(await gitRootsOrEmpty(root))])].sort() : undefined;
+  // The control root holds the operation's durable state (contract/seal copies, findings, reports,
+  // operation record). Read-only participants (Reviewer/Planner/Explorer) verify their evidence
+  // against those files, and Paseo may have relocated the provider project root, so those reads are
+  // otherwise gated behind `external_directory`. Only roles with denied write authority receive the
+  // control root as an external read scope; mutating participants keep exactly their frozen launch
+  // root plus git metadata so no provider write can reach the durable control plane (AEH-V2-0119).
+  const externalRoots = selection && selection.permissions?.write === "deny" && controlRoot && controlRoot !== root
+    ? [...new Set([...(authorizedRoots ?? []), path.resolve(controlRoot)])].sort()
+    : authorizedRoots;
+  const openCode = selection?.runtimeAdapter === "opencode" && provider === "opencode" ? compileOpenCodeRuntimeProjection(selection, config, contextCapabilities, externalRoots, root, `${operationId}:${logicalAgent}`) : undefined;
+  const providerOptions = selection && provider === "codex" ? codexProviderOptions(selection, authorizedRoots) : undefined;
   const explicitOpenCodeMode = openCode && !openCode.binding.managed ? openCode.binding.agentId : undefined;
   const executionEnv = buildManagedAgentEnvironment({ logicalAgent, role: selection?.role ?? "worker", operationId, operationKind, phase, interactiveLead: false, orchestrationAllowed: false });
   const mcpServers = contextMcpServers(root, config, selection, logicalAgent, operationId, phase, contextCapabilities, options.participantId, controlRoot);
   const toolPolicy = mcpServers?.["aeh-context"] ? { preapproved: [{ kind: "mcp" as const, server: "aeh-context", tool: "aeh_context_retrieve" }] } : undefined;
+  // Paseo provider sessions stop on their own tool-approval prompt even when the AEH projection has
+  // already decided the exact tool surface; a stalled session returns no structured result and used
+  // to be reported as a successful empty turn (AEH-V2-0110). Auto-accept is enabled only when the
+  // deterministic projection contains no operator-declared `ask`, so it can never auto-approve a
+  // decision the operator reserved for a human.
+  const permissionDecisions = selection ? Object.values(selection.permissions ?? {}) : [];
+  const featureValues = selection && permissionDecisions.length > 0 && permissionDecisions.every((decision) => decision !== "ask")
+    ? { auto_accept: true }
+    : undefined;
   if (parentAgentId) executionEnv.AEH_PARENT_AGENT_ID = parentAgentId;
   if (supervisorGeneration !== undefined) executionEnv.AEH_SUPERVISOR_GENERATION = String(supervisorGeneration);
   if (supervisorAgent) executionEnv.AEH_OPERATION_SUPERVISOR = "1";
@@ -152,11 +196,14 @@ export async function compilePaseoAgentLaunchSpec(root: string, config: HarnessP
     nativeAgentId: openCode?.binding.agentId,
     workspaceId,
     parentAgentId,
+    paseoParentAgentId,
     supervisorGeneration,
     labels,
     timeoutSeconds: worker?.timeoutSeconds ?? 1800,
     ...(mcpServers ? { mcpServers } : {}),
     ...(toolPolicy ? { toolPolicy } : {}),
+    ...(providerOptions ? { providerOptions } : {}),
+    ...(featureValues ? { featureValues } : {}),
     operationId,
     operationKind,
     phase
@@ -195,4 +242,31 @@ function inferOperationKind(contract: TaskContract): string {
   if (intent === "audit") return "audit";
   if (intent) return intent;
   return contract.routing?.route === "DIRECT" ? "direct" : contract.routing?.route === "DELEGATED" ? "delegated" : contract.routing?.route === "FORMAL_SDD" ? "formal-sdd" : "run";
+}
+
+async function gitRootsOrEmpty(root: string): Promise<string[]> {
+  return worktreeGitRoots(root).catch(() => []);
+}
+
+/**
+ * Map the compiled permission ceiling to the Codex provider's deterministic sandbox.
+ * `approval_policy: never` means the provider never stops on a human approval prompt;
+ * operations outside the projected sandbox fail closed instead of being approved. The
+ * sandbox mode follows the same read/write/shell/network authority as the tool ceiling.
+ */
+function codexProviderOptions(selection: AgentExecutionSelection, authorizedRoots?: string[]): Record<string, unknown> {
+  const p = selection.permissions ?? {};
+  const mutating = p.write === "allow" || p.shell === "allow" || p.gitWrite === "allow";
+  return {
+    approval_policy: "never",
+    sandbox_mode: mutating ? "workspace-write" : "read-only",
+    ...(mutating && authorizedRoots?.length
+      ? { sandbox_workspace_write: { writable_roots: authorizedRoots, network_access: p.network === "allow" } }
+      : {})
+  };
+}
+
+async function canonicalRootOrResolved(value: string): Promise<string> {
+  const resolved = path.resolve(value);
+  return fs.realpath(resolved).catch(() => resolved);
 }

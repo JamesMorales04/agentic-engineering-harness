@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 20,
+  "runId": "r20-ctxperm-3",
+  "capability": "context-handoff",
+  "provider": "opencode/opencode-go/deepseek-v4.1-flash",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13ContextPermissionCampaign.mjs",
+        "sha256": "985b28dae398b5814fef4a9fbf1bbd1de9ddc33ee3b2affaf9baa7c2c5a05035"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "cb383556d542eaf1cf54a08fec2fc2670b3a5dbc8dc16390b62c212d5f83bdae"
+  },
+  "startedAt": "2026-09-29T22:35:17.297Z",
+  "checks": [],
+  "candidateBinding": {
+    "packedArtifactDigest": "30971c61de28733608ea921b61ab32afdb615aee5d5e0bf1674afc9f7b419a62",
+    "fixtureCommit": "b42c6a3ffaf752799b2d67191909d08ea6a797c0"
+  },
+  "parentAuthority": {
+    "participantId": "participant:s13-context-handoff",
+    "controllerEpoch": 1,
+    "candidateDigest": "9b71a252ea0037adbbe22aa00859b4409821b8fc62925640ece6376ccc38f91e",
+    "leaseIds": [
+      "lease:CHANGE-S13-CTX-HANDOFF:request:CHANGE-S13-CTX-HANDOFF:participant:s13-context-handoff:read:review"
+    ]
+  },
+  "error": "Error: Failed to add OpenCode MCP server 'serena': MCP error -32000: Connection closed\n    at DaemonClient.sendAgentMessage (file:///home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1%7Eaube%7Eb089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/daemon-client.js:2061:19)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async Object.run (file:///home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1%7Eaube%7Eb089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/index.js:380:17)\n    at async runPaseoSdkAgentWithClient (file:///tmp/aeh-s13-ctxperm-s507dF/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790721296898-198667-bb98e739/paseo/sdk.js:129:22)\n    at async withPaseoClient (file:///tmp/aeh-s13-ctxperm-s507dF/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790721296898-198667-bb98e739/paseo/sdk.js:293:16)\n    at async Object.runPaseoSdkAgent [as run] (file:///tmp/aeh-s13-ctxperm-s507dF/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790721296898-198667-bb98e739/paseo/sdk.js:107:20)\n    at async continueManagedPaseoAgentUnleased (file:///tmp/aeh-s13-ctxperm-s507dF/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790721296898-198667-bb98e739/paseo/runtimeCore.js:172:28)\n    at async file:///tmp/aeh-s13-ctxperm-s507dF/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790721296898-198667-bb98e739/paseo/runtimeCore.js:159:16\n    at async runWithOperationProviderLease (file:///tmp/aeh-s13-ctxperm-s507dF/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790721296898-198667-bb98e739/runtime/providerLifecycle.js:38:30)\n    at async executeViaPaseo (file:///tmp/aeh-s13-ctxperm-s507dF/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790721296898-198667-bb98e739/workers/agentPrompt.js:515:27)",
+  "result": "FAIL",
+  "finishedAt": "2026-09-29T22:35:35.227Z"
+}

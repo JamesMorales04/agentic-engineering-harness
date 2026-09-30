@@ -7,12 +7,12 @@ import { semanticAssessorTopologySource } from "./semanticAssessmentSupport.js";
 describe("Semantic Assessor topology resolution", () => {
   it("resolves model/profile selection only from AgentTopology", () => {
     const source = structuredClone(semanticAssessorTopologySource);
-    source.profiles = { high: { models: { assessorModel: { model: "large-structured" } } } };
+    source.profiles = { high: { models: { assessorModel: { model: "deepseek-v4.1-flash" } } } };
     const base = resolveSemanticAssessor(resolveAgentTopology(source));
     const profile = resolveSemanticAssessor(resolveAgentTopology(source, "high"));
 
-    expect(base.identity).toMatchObject({ logicalAgent: "assessor", modelAlias: "assessorModel", modelId: "openai/small-structured" });
-    expect(profile.identity).toMatchObject({ topologyProfile: "high", logicalAgent: "assessor", modelAlias: "assessorModel", modelId: "openai/large-structured" });
+    expect(base.identity).toMatchObject({ logicalAgent: "assessor", modelAlias: "assessorModel", modelId: "opencode-go/gpt-6-luna" });
+    expect(profile.identity).toMatchObject({ topologyProfile: "high", logicalAgent: "assessor", modelAlias: "assessorModel", modelId: "opencode-go/deepseek-v4.1-flash" });
     expect(profile.identity.identityDigest).not.toBe(base.identity.identityDigest);
   });
 

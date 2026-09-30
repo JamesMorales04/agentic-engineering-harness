@@ -1,4 +1,4 @@
-import { canonicalSerialize, sha256Utf8 } from "../core/digest.js";
+import { canonicalSerialize, sha256Canonical, sha256Utf8 } from "../core/digest.js";
 
 export const V2_CONTRACT_VERSION = 1 as const;
 
@@ -77,6 +77,47 @@ export type ParticipantReceiptV1 = {
   settled?: true;
   createdAt: string;
 };
+
+/**
+ * Deterministic ASSEMBLING evidence (TARGET 8.1: "ChangeSet lineage and assembly receipt").
+ * Exactly one receipt is recorded for every successful candidate transition, binding the frozen
+ * base candidate, the assembled candidate, and (when a settled bounded-work receipt exists for
+ * the ChangeSet producer) that source receipt. Completion evidence resolves a work receipt that
+ * binds the pre-assembly candidate through this chain instead of re-binding the receipt itself.
+ */
+export type CandidateAssemblyReceiptV1 = {
+  version: typeof V2_CONTRACT_VERSION;
+  assemblyId: string;
+  operationId: string;
+  taskId: string;
+  workUnitId: string;
+  /** ChangeSet producer identity (controller-issued participant id in managed execution). */
+  participantId: string;
+  baseCandidateId: string;
+  baseRevision: number;
+  baseIdentityDigest: string;
+  /** Candidate the producer actually observed; differs from base only for an explicit rebase. */
+  sourceBaseRevision: number;
+  sourceBaseIdentityDigest: string;
+  sourceReceiptId?: string;
+  sourceReceiptDigest?: string;
+  sourceChangeSetDigest: string;
+  candidateId: string;
+  revision: number;
+  identityDigest: string;
+  changeSetDigest: string;
+  patchDigest: string;
+  operationExecutionRevision: number;
+  controllerEpoch: number;
+  createdAt: string;
+  digest: string;
+};
+
+export type CandidateLineageReceiptResolutionV1 =
+  | { kind: "DIRECT" }
+  | { kind: "ASSEMBLY"; assembly: CandidateAssemblyReceiptV1 }
+  /** Non-producing bounded work (discovery, planning, review) completed on an ancestor candidate. */
+  | { kind: "ANCESTOR" };
 
 export type TerminalGateFailureCodeV1 =
   | "INVALID_RECEIPT"
@@ -244,3 +285,111 @@ export function assertParticipantReceiptV1(value: unknown): asserts value is Par
   });
   if (!decision.allowed) throw new Error(`V2_RECEIPT_REJECTED: ${decision.reasons.map((reason) => reason.code).join(",")}`);
 }
+
+export function candidateAssemblyReceiptIdV1(operationId: string, candidateId: string): string {
+  return `assembly:${operationId}:${candidateId}`;
+}
+
+function candidateAssemblyReceiptBodyV1(receipt: CandidateAssemblyReceiptV1): Record<string, unknown> {
+  const { digest: _digest, ...body } = receipt;
+  return body;
+}
+
+export function candidateAssemblyReceiptDigestV1(receipt: CandidateAssemblyReceiptV1): string {
+  return sha256(canonicalSerialize(candidateAssemblyReceiptBodyV1(receipt)));
+}
+
+export function createCandidateAssemblyReceiptV1(input: Omit<CandidateAssemblyReceiptV1, "version" | "assemblyId" | "digest">): CandidateAssemblyReceiptV1 {
+  const body = { ...input, version: V2_CONTRACT_VERSION, assemblyId: candidateAssemblyReceiptIdV1(input.operationId, input.candidateId) } as CandidateAssemblyReceiptV1;
+  const receipt = { ...body, digest: candidateAssemblyReceiptDigestV1(body) };
+  assertCandidateAssemblyReceiptV1(receipt);
+  return receipt;
+}
+
+export function assertCandidateAssemblyReceiptV1(value: unknown): asserts value is CandidateAssemblyReceiptV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("V2_ASSEMBLY_RECEIPT_INVALID: assembly receipt must be an object.");
+  const receipt = value as CandidateAssemblyReceiptV1;
+  if (receipt.version !== V2_CONTRACT_VERSION) throw new Error("V2_ASSEMBLY_RECEIPT_INVALID: unsupported assembly receipt version.");
+  for (const field of ["assemblyId", "operationId", "taskId", "workUnitId", "participantId", "baseCandidateId", "candidateId", "createdAt"] as const) requiredString(receipt[field], `assembly.${field}`);
+  validDigest(receipt.baseIdentityDigest, "assembly.baseIdentityDigest");
+  validDigest(receipt.sourceBaseIdentityDigest, "assembly.sourceBaseIdentityDigest");
+  validDigest(receipt.identityDigest, "assembly.identityDigest");
+  validDigest(receipt.sourceChangeSetDigest, "assembly.sourceChangeSetDigest");
+  validDigest(receipt.changeSetDigest, "assembly.changeSetDigest");
+  validDigest(receipt.patchDigest, "assembly.patchDigest");
+  validDigest(receipt.digest, "assembly.digest");
+  for (const field of ["baseRevision", "sourceBaseRevision", "revision", "operationExecutionRevision", "controllerEpoch"] as const) {
+    if (!Number.isSafeInteger(receipt[field]) || receipt[field] < 0) throw new Error(`V2_ASSEMBLY_RECEIPT_INVALID: assembly.${field} must be a non-negative safe integer.`);
+  }
+  if (receipt.assemblyId !== candidateAssemblyReceiptIdV1(receipt.operationId, receipt.candidateId)) throw new Error("V2_ASSEMBLY_RECEIPT_INVALID: assemblyId does not match its operation and candidate.");
+  if (receipt.revision !== receipt.baseRevision + 1) throw new Error("V2_ASSEMBLY_RECEIPT_INVALID: an assembly receipt must advance exactly one candidate revision.");
+  if (receipt.sourceBaseRevision > receipt.baseRevision) throw new Error("V2_ASSEMBLY_RECEIPT_INVALID: the source candidate cannot follow the assembly base.");
+  if (Date.parse(receipt.createdAt) === 0 || Number.isNaN(Date.parse(receipt.createdAt))) throw new Error("V2_ASSEMBLY_RECEIPT_INVALID: createdAt is not a valid instant.");
+  if ((receipt.sourceReceiptId === undefined) !== (receipt.sourceReceiptDigest === undefined)) throw new Error("V2_ASSEMBLY_RECEIPT_INVALID: a source receipt reference requires id and digest together.");
+  if (receipt.sourceReceiptId !== undefined) requiredString(receipt.sourceReceiptId, "assembly.sourceReceiptId");
+  if (receipt.sourceReceiptDigest !== undefined) validDigest(receipt.sourceReceiptDigest, "assembly.sourceReceiptDigest");
+  if (receipt.digest !== candidateAssemblyReceiptDigestV1(receipt)) throw new Error("V2_ASSEMBLY_RECEIPT_INVALID: assembly receipt digest is inconsistent.");
+}
+
+/**
+ * DETERMINISTIC receipt lineage resolution. A receipt is accepted for the current candidate when
+ * it is bound to it directly, or when the durable assembly-receipt chain proves the receipt's
+ * settled bounded work produced an assembly on the current candidate's ancestry, with the source
+ * receipt id and digest recorded at the assembly boundary. No receipt field is rewritten.
+ */
+export function resolveCandidateLineageReceiptV1(input: {
+  receipt: ParticipantReceiptV1;
+  current: CandidateRevisionV1;
+  assemblies: readonly CandidateAssemblyReceiptV1[];
+}): CandidateLineageReceiptResolutionV1 | undefined {
+  const bound = input.receipt.candidateBinding ?? input.receipt.candidate;
+  if (!bound) return undefined;
+  try {
+    assertCandidateRevisionV1(bound);
+    assertCandidateRevisionV1(input.current);
+  } catch {
+    return undefined;
+  }
+  if (candidateRevisionsEqual(bound, input.current)) return { kind: "DIRECT" };
+  if (input.receipt.settled !== true || input.receipt.outcome !== "SUCCEEDED") return undefined;
+  if (input.receipt.operationId !== input.current.operationId) return undefined;
+  const valid: CandidateAssemblyReceiptV1[] = [];
+  for (const assembly of input.assemblies) {
+    try {
+      assertCandidateAssemblyReceiptV1(assembly);
+      valid.push(assembly);
+    } catch { /* an invalid lineage entry is never usable evidence */ }
+  }
+  const receiptDigest = sha256Canonical(input.receipt);
+  const ancestry: Array<{ candidateId: string; revision: number; identityDigest: string }> = [];
+  let match: CandidateAssemblyReceiptV1 | undefined;
+  let cursor = { candidateId: input.current.candidateId, revision: input.current.revision, identityDigest: input.current.identityDigest };
+  for (let hop = 0; hop <= input.current.revision; hop += 1) {
+    const assembly = valid.find((entry) => entry.candidateId === cursor.candidateId && entry.revision === cursor.revision && entry.identityDigest === cursor.identityDigest);
+    if (!assembly) break;
+    if (assembly.sourceReceiptId === input.receipt.receiptId && assembly.sourceReceiptDigest === receiptDigest) match = assembly;
+    cursor = { candidateId: assembly.baseCandidateId, revision: assembly.baseRevision, identityDigest: assembly.baseIdentityDigest };
+    ancestry.push(cursor);
+  }
+  const onAncestry = ancestry.some((entry) => entry.revision === bound.revision && entry.identityDigest === bound.identityDigest);
+  if (!match) {
+    // Non-producing bounded work (Explorer, Planner, Reviewer, Spec Manager, and other read-only or
+    // authoring participants) completes against the candidate it observed. When that candidate is a
+    // deterministic ancestor of the current candidate through the verified assembly chain, the
+    // settled SUCCEEDED receipt proves its bounded work completed even though it produced no
+    // ChangeSet, so it is not named as an assembly source. Producers (Implementer/Repairer) stay
+    // strict: a superseded producer receipt that no assembly names is never completion evidence.
+    return onAncestry && nonProducingCandidateRoles.has(String(input.receipt.role ?? "")) ? { kind: "ANCESTOR" } : undefined;
+  }
+  // The source the producer observed must itself be a candidate on this ancestry (the assembly
+  // base for a direct ChangeSet, an earlier wave base for an explicit rebase).
+  if (!onAncestry) return undefined;
+  if (match.sourceBaseRevision !== bound.revision || match.sourceBaseIdentityDigest !== bound.identityDigest) return undefined;
+  return { kind: "ASSEMBLY", assembly: match };
+}
+
+/**
+ * Bounded roles with no ChangeSet authority whose settled work is lineage-proven by an ancestor
+ * binding (AEH-V2-0124). Every other or absent role is treated as a producer and stays strict.
+ */
+const nonProducingCandidateRoles = new Set(["Explorer", "Planner", "Reviewer", "Librarian", "Spec Manager"]);

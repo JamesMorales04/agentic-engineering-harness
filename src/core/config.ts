@@ -54,7 +54,7 @@ const projectSchema = z.object({
       quality: z.object({ severityPoints: severityNumberSchema.optional() }).optional(),
       convergence: z.object({ minimumDebtPointImprovement: z.number().int().nonnegative().optional(), stagnationWindow: z.number().int().positive().optional(), cycleDetection: z.boolean().optional(), regressionDetection: z.boolean().optional() }).optional(),
       finalQualityGate: z.object({ maxBySeverity: severityNumberSchema.optional(), maxDebtPoints: z.number().int().nonnegative().optional() }).optional(),
-      escalation: z.object({ stages: z.array(escalationStageSchema).optional(), criticalStartStage: z.number().int().nonnegative().optional(), replanResumeStage: z.number().int().nonnegative().optional() }).optional()
+      escalation: z.object({ stages: z.array(escalationStageSchema).optional(), criticalStartStage: z.number().int().nonnegative().optional(), replanResumeStage: z.number().int().nonnegative().optional(), maxRounds: z.number().int().positive().optional() }).optional()
     }).optional()
   }).optional(),
   orchestration: z.object({
@@ -71,7 +71,7 @@ const projectSchema = z.object({
   }).optional(),
   delivery: z.object({
     stateDir: z.string().optional(),
-    github: z.object({ enabled: z.boolean().optional(), tokenEnv: z.string().min(1).optional(), repository: z.string().regex(/^[^/]+\/[^/]+$/).optional(), apiBaseUrl: z.string().url().optional(), assignTokenOwner: z.boolean().optional(), labels: z.array(z.string()).optional(), branchPattern: z.string().min(1).optional(), finalizeOnAcceptance: z.boolean().optional(), pullRequestDraft: z.boolean().optional() }).optional(),
+    github: z.object({ enabled: z.boolean().optional(), tokenEnv: z.string().min(1).optional(), repository: z.string().regex(/^[^/]+\/[^/]+$/).optional(), apiBaseUrl: z.string().url().optional(), assignTokenOwner: z.boolean().optional(), labels: z.array(z.string()).optional(), branchPattern: z.string().min(1).optional(), finalizeOnAcceptance: z.boolean().optional(), pullRequestDraft: z.boolean().optional(), pullRequests: z.boolean().optional() }).optional(),
     paseo: z.object({ enabled: z.boolean().optional(), createWorkspace: z.boolean().optional(), autoUseWorkspace: z.boolean().optional(), worktreeSlugPattern: z.string().min(1).optional() }).optional()
   }).optional(),
   memory: z.object({ provider: z.string(), required: z.boolean().optional(), benchmark: z.object({ casesDir: z.string().optional(), resultsDir: z.string().optional(), providers: z.array(memoryBenchmarkProviderSchema).optional() }).optional() }).optional(),

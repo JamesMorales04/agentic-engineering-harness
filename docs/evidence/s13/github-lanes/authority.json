@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "capability": "authority",
+  "startedAt": "2026-09-28T03:31:03.584Z",
+  "checks": [
+    {
+      "id": "authority.human-gate",
+      "ok": true,
+      "message": "unapproved external effect status=HUMAN_REQUIRED"
+    },
+    {
+      "id": "authority.approved-effect",
+      "ok": true,
+      "message": "approved effect status=EXECUTED/SUCCEEDED"
+    },
+    {
+      "id": "authority.real-github-ref",
+      "ok": true,
+      "message": "real remote branch aeh-s13-authority-20260928032308 observed on JamesMorales04/aeh-s13-round3-20260928032308-4317d7"
+    }
+  ],
+  "humanGate": {
+    "status": "HUMAN_REQUIRED",
+    "detail": "TOOL_ACTION_HUMAN_DECISION_REQUIRED: no current HumanDecision matches the operation, candidate, policy, epoch, actor, and exact purpose."
+  },
+  "gatedAction": {
+    "status": "EXECUTED",
+    "intentId": "action-intent:f41561e0909ffce0298e3e511d7bd06dcac68084a5b2f298d81d61a3de73f880",
+    "receiptOutcome": "SUCCEEDED",
+    "detail": "Side effect executed and receipt persisted."
+  },
+  "remoteRef": {
+    "exitCode": 0,
+    "stdout": "refs/heads/aeh-s13-authority-20260928032308\nc21d41a7fcb92913db9eca1776f27a52ff244d28"
+  },
+  "result": "PASS",
+  "finishedAt": "2026-09-28T03:31:08.946Z"
+}

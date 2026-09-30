@@ -1,0 +1,88 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 21,
+  "runId": "r21-ctxperm-1",
+  "capability": "permission-delegation",
+  "provider": "opencode/opencode-go/deepseek-v4.1-flash",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13ContextPermissionCampaign.mjs",
+        "sha256": "21bdbbabcec9982217fcb827552a36136044d2b633973485bdb70b3c4c784727"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "b2946cf80837c8494c8ce491d4da911343f5bd497cd804b0cf8780b6a195c7f8"
+  },
+  "startedAt": "2026-09-30T01:51:25.195Z",
+  "checks": [],
+  "candidateBinding": {
+    "packedArtifactDigest": "30c3dcfcdd6c3aafbebae3e8f2cac23d5db1cd48e8fd24dfbc11f0031297c277",
+    "fixtureCommit": "635ed3f74c90f42e379b0c83e47a8332a5249482"
+  },
+  "parentLease": {
+    "participantId": "participant:s13-perm-parent",
+    "candidateDigest": "c0112af59ead9bda85a6922e93cfef0e69ba3335075bf157350d5fbb3a45bfbe",
+    "controllerEpoch": 1,
+    "capabilities": [
+      "execute",
+      "read",
+      "write"
+    ],
+    "leaseIds": [
+      "lease:CHANGE-S13-PERMISSION-DELEGATION:request:CHANGE-S13-PERMISSION-DELEGATION:participant:s13-perm-parent:read:implementation",
+      "lease:CHANGE-S13-PERMISSION-DELEGATION:request:CHANGE-S13-PERMISSION-DELEGATION:participant:s13-perm-parent:write:implementation",
+      "lease:CHANGE-S13-PERMISSION-DELEGATION:request:CHANGE-S13-PERMISSION-DELEGATION:participant:s13-perm-parent:execute:implementation"
+    ]
+  },
+  "ceilingDenial": {
+    "denied": true,
+    "message": "V2_AUTHORITY_DENIED: role 'Reviewer' cannot receive capabilities outside its compiled RoleProfile ceiling: write."
+  },
+  "childAuthority": {
+    "participantId": "participant:s13-perm-child",
+    "capabilities": [
+      "read"
+    ],
+    "leaseIds": [
+      "lease:CHANGE-S13-PERMISSION-DELEGATION:request:CHANGE-S13-PERMISSION-DELEGATION:participant:s13-perm-child:read:review"
+    ],
+    "monotonicSubsetOfParent": true
+  },
+  "decisionReceipt": {
+    "digest": "5e742733b852ac640ee68b5578bfdcab59d62164c6ee76f7204c353585d92ccc",
+    "persisted": true,
+    "persistedOperationId": "CHANGE-S13-PERMISSION-DELEGATION"
+  },
+  "error": "Error: PASEO_PROVIDER_LEASE_TAKEOVER_BLOCKED: provider lease lease:2503531b-7c1d-4872-9c78-e14398cbc7f0 belongs to another or stale lifecycle without a current-session takeover binding.\n    at takeOverPriorLeaseIfQuiescent (file:///tmp/aeh-s13-ctxperm-zbrFVG/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790733027656-610621-b4a368e8/runtime/providerLifecycle.js:113:19)\n    at async runWithOperationProviderLease (file:///tmp/aeh-s13-ctxperm-zbrFVG/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790733027656-610621-b4a368e8/runtime/providerLifecycle.js:19:5)\n    at async materializeManagedPaseoAgent (file:///tmp/aeh-s13-ctxperm-zbrFVG/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790733027656-610621-b4a368e8/paseo/runtimeCore.js:67:24)\n    at async materializeAgentPrompt (file:///tmp/aeh-s13-ctxperm-zbrFVG/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790733027656-610621-b4a368e8/workers/agentPrompt.js:218:30)\n    at async Module.executeAgentPrompt (file:///tmp/aeh-s13-ctxperm-zbrFVG/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790733027656-610621-b4a368e8/workers/agentPrompt.js:111:44)\n    at async withProviderTransportRetry (file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13ContextPermissionCampaign.mjs:62:21)\n    at async permissionDelegationJourney (file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13ContextPermissionCampaign.mjs:338:20)\n    at async file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13ContextPermissionCampaign.mjs:377:112",
+  "result": "FAIL",
+  "transportAttempts": [
+    {
+      "attempt": 1,
+      "ok": false,
+      "at": "2026-09-30T01:51:45.984Z",
+      "transient": true,
+      "message": "Failed to add OpenCode MCP server 'serena': MCP error -32000: Connection closed"
+    },
+    {
+      "attempt": 2,
+      "ok": false,
+      "at": "2026-09-30T01:51:52.337Z",
+      "transient": false,
+      "message": "PASEO_PROVIDER_LEASE_TAKEOVER_BLOCKED: provider lease lease:2503531b-7c1d-4872-9c78-e14398cbc7f0 belongs to another or stale lifecycle without a current-session takeover binding."
+    }
+  ],
+  "finishedAt": "2026-09-30T01:51:52.338Z"
+}

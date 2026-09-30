@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { extractMarkedJson } from "./structuredOutput.js";
 import { continueManagedPaseoAgent, inspectManagedPaseoAgent } from "../paseo/runtime.js";
-import { currentObjectiveIdentityV1, leadAcceptanceRequiredV1, type ManagedLeadAcceptanceEvidenceV1 } from "../architecture/acceptanceOracle.js";
+import { currentObjectiveIdentityV1, leadAcceptanceRequiredV1, resolveVerificationRequirementsV1, type ManagedLeadAcceptanceEvidenceV1 } from "../architecture/acceptanceOracle.js";
 import type { CandidateAssuranceCompilationV1 } from "../architecture/candidateAssurance.js";
 import { sha256Canonical } from "../core/digest.js";
 import type { ValidationReport } from "../core/types.js";
@@ -12,17 +12,6 @@ const leadOutputSchema = z.object({
   summary: z.string().trim().min(1),
   unresolved: z.array(z.string().trim().min(1))
 }).strict();
-
-const leadOutputJsonSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["assertions", "summary", "unresolved"],
-  properties: {
-    assertions: { type: "array", items: { type: "object", additionalProperties: false, required: ["assertionId", "verdict", "rationale"], properties: { assertionId: { type: "string" }, verdict: { enum: ["PASS", "FAIL"] }, rationale: { type: "string" } } } },
-    summary: { type: "string" },
-    unresolved: { type: "array", items: { type: "string" } }
-  }
-};
 
 export async function requestManagedLeadAcceptance(input: {
   root: string;
@@ -48,6 +37,20 @@ export async function requestManagedLeadAcceptance(input: {
     throw new Error("ACCEPTANCE_LEAD_INPUT_STALE: Lead acceptance requires current candidate-bound assertions and validation report.");
   }
 
+  // The Lead must judge against the resolved candidate-bound validation and review evidence, not
+  // infer it from opaque check ids: the projection below maps every assertion to its compiled
+  // validation requirements (with their deterministic kinds) and the status of the exact check the
+  // AcceptanceOracle will consume. This is evidence delivery only; the verdicts remain the Lead's
+  // semantic judgment and the deterministic Oracle checks are unchanged (AEH-V2-0123).
+  const assertionEvidence = resolveVerificationRequirementsV1(input.compilation, policy).map((requirement) => {
+    const validations = requirement.validationRequirementIds.map((id) => {
+      const compiled = input.compilation.validationRequirements.find((candidate) => candidate.id === id);
+      const check = input.report.checks.find((candidate) => candidate.id === id || candidate.id === `candidate.assurance.validation.${id}` || candidate.id === `candidate-impact-${id}`
+        || Boolean(candidate.details && typeof candidate.details === "object" && (candidate.details as Record<string, unknown>).requirementId === id));
+      return `${id}(${compiled?.kind ?? "unknown"})=${check?.status ?? "MISSING"}`;
+    });
+    return `${requirement.assertionId}: ${validations.length ? validations.join(", ") : "no resolved validation requirement"}; reviewDimensions=[${requirement.reviewDimensions.join(", ")}]`;
+  }).join("; ");
   const prompt = [
     "[AEH_MANAGED_LEAD_ACCEPTANCE]",
     `You are the currently bound Lead for managed operation ${identity.operationId}, generation ${binding.generation}.`,
@@ -55,6 +58,7 @@ export async function requestManagedLeadAcceptance(input: {
     `Current identity: ${JSON.stringify({ operationId: identity.operationId, candidate: { candidateId: identity.candidate.candidateId, revision: identity.candidate.revision, identityDigest: identity.candidate.identityDigest }, policyDigest: identity.policyDigest, operationExecutionRevision: identity.operationExecutionRevision, controllerEpoch: identity.controllerEpoch })}`,
     `Task: ${input.report.taskId}`,
     `Validation summary: ${input.report.status}; checks=${input.report.checks.map((check) => `${check.id}:${check.status}`).join(", ")}`,
+    `Resolved assertion evidence (validationRequirement(kind)=oracleCheckStatus): ${assertionEvidence}`,
     `Assertions: ${JSON.stringify(input.compilation.acceptanceAssertions.map(({ id, statement, requirementRefs, dimensions, evidenceStrength }) => ({ assertionId: id, statement, requirementRefs, dimensions, evidenceStrength })))}`,
     "Return one JSON object with exactly: assertions[{assertionId,verdict:'PASS'|'FAIL',rationale}], summary, unresolved[]. Include every supplied assertion exactly once and use its exact assertionId. Verdict PASS only when current candidate evidence supports the statement; otherwise use FAIL and explain the gap. Final line must be AEH_RESULT_JSON=<json>."
   ].join("\n");
@@ -62,7 +66,12 @@ export async function requestManagedLeadAcceptance(input: {
   const paseoLead = await inspectManagedPaseoAgent(input.root, binding.agentId);
   const provider = paseoLead?.labels?.["aeh.provider"];
   if (!provider) throw new Error("ACCEPTANCE_LEAD_PROVIDER_IDENTITY_REQUIRED: the bound Paseo Lead session has no persisted provider label.");
-  const response = await continueManagedPaseoAgent(input.root, binding.agentId, prompt, 600, undefined, leadOutputJsonSchema, {
+  // The bound interactive Lead session was created outside the AEH structured-result channel path
+  // (no `aeh-result` sink or result channel binding), so requesting an AEH-schema turn for it fails
+  // with `AEH_RESULT_CHANNEL_STATE` before the provider ever runs (AEH-V2-0122). The lead contract
+  // is delivered as a textual turn and remains deterministically authoritative: the exact typed
+  // schema parse, exact assertion coverage, verdicts and unresolved checks below all stay in force.
+  const response = await continueManagedPaseoAgent(input.root, binding.agentId, prompt, 600, undefined, undefined, {
     "aeh.operation": operation.id,
     "aeh.lead.agentId": binding.agentId,
     "aeh.lead.generation": String(binding.generation),

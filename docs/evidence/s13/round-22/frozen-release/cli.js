@@ -1,0 +1,249 @@
+#!/usr/bin/env node
+import fs from "node:fs/promises";
+import path from "node:path";
+import process from "node:process";
+import { Command } from "commander";
+import { initializeProject } from "./core/init.js";
+import { loadProjectConfig, loadTaskContract } from "./core/config.js";
+import { runDoctor } from "./core/doctor.js";
+import { verifyTask } from "./core/verify.js";
+import { createSddChange, formatTraceabilityMatrix, validateSddChange } from "./core/sdd.js";
+import { formatTriageDecision, triageChangeWithSemanticAssessment } from "./core/triage.js";
+import { GraphifyCodeIntelligenceProvider } from "./providers/graphify.js";
+import { sealTask } from "./core/seal.js";
+import { runTask } from "./core/run.js";
+import { snapshotGraph } from "./validators/graphify.js";
+import { compareEvalCase, runEvalCase } from "./evals/runner.js";
+import { recordEvent } from "./telemetry/events.js";
+import { runMemoryBenchmark } from "./memory/benchmark.js";
+import { runFullStackDogfood } from "./evals/fullStack.js";
+import { currentCandidateForTask, generateProvenance, verifyProvenanceManifest, verifySupplyChainGate } from "./provenance/generate.js";
+import { compileAgentTopology } from "./agents/compiler.js";
+import { auditAgentTopology } from "./agents/audit.js";
+import { loadAgentTopologySource, loadResolvedAgentTopology } from "./agents/config.js";
+import { resolveRoute } from "./agents/routing.js";
+import { validateAgentOutput, plannerOutputSchema } from "./agents/outputContracts.js";
+import { planParallelism } from "./agents/parallelism.js";
+import { dedupeFindings, extractFindings } from "./agents/findings.js";
+import { inspectGithubIssue } from "./issues/intake.js";
+import { executeIssueWorkflow as executeManagedIssueWorkflow, importIssueThroughManagedOperation } from "./issues/workflow.js";
+import { VERSION } from "./version.js";
+import { createSemanticAssessmentRuntimeV1, createSemanticRepositoryBindingV1 } from "./semantic/runtime.js";
+import { CodexAgentProvider } from "./certification/codex.js";
+import { createCommandOracle, runExternalSelfDogfood } from "./certification/bootstrap.js";
+import { defaultCertificationPolicy } from "./certification/policy.js";
+const program = new Command();
+program.name("engineering-harness").description("Deterministic control layer for routed, issue-driven and bounded multi-agent software engineering").version(VERSION);
+program.command("init").argument("[directory]", "Project directory", ".").action(async (directory) => {
+    const root = path.resolve(directory);
+    const created = await initializeProject(root);
+    const config = await loadProjectConfig(root);
+    if (config.agents) {
+        const compiled = await compileAgentTopology(root, config);
+        if (!compiled.ok)
+            throw new Error(compiled.issues.join("; "));
+    }
+    console.log(created.length ? `Created: ${created.join(", ")}` : "Harness already initialized.");
+});
+program.command("doctor").argument("[directory]", "Project directory", ".").action(async (directory) => {
+    const root = path.resolve(directory);
+    const config = await loadProjectConfig(root);
+    const results = await runDoctor(root, config);
+    let failed = false;
+    for (const result of results) {
+        const marker = result.ok ? "✓" : result.required ? "✗" : "!";
+        console.log(`${marker} ${result.component}: ${result.message}`);
+        if (!result.ok && result.required)
+            failed = true;
+    }
+    if (failed)
+        process.exitCode = 1;
+});
+program.command("triage").description("Assess the canonical implementation route and assurance").argument("<request>").option("--file <files...>").option("--domain <domains...>").option("--risk <risk>", "low, medium or high", "low").option("--flag <flags...>").argument("[directory]", "Project directory", ".").action(async (request, directory, options) => {
+    const root = path.resolve(directory);
+    const config = await loadProjectConfig(root);
+    const runtime = await createSemanticAssessmentRuntimeV1(root, config);
+    const binding = await createSemanticRepositoryBindingV1(root, config);
+    const decision = await triageChangeWithSemanticAssessment(config, { request, files: options.file, domains: options.domain, risk: options.risk, flags: options.flag }, { service: runtime.service, binding, policyRevision: runtime.policyRevision });
+    console.log(formatTriageDecision(decision));
+    console.log(JSON.stringify(decision, null, 2));
+});
+const issue = program.command("issue").description("Inspect, freeze and execute an existing GitHub issue through the Harness workflow");
+issue.command("inspect").argument("<number>").argument("[directory]", "Project directory", ".").action(async (number, directory) => {
+    const root = path.resolve(directory);
+    const config = await loadProjectConfig(root);
+    const inspected = await inspectGithubIssue(root, config, parseIssueNumber(number));
+    console.log(`INSPECTED — ${inspected.snapshot.repository}#${inspected.snapshot.number} ${inspected.snapshot.title}`);
+    console.log(`contentSha256=${inspected.snapshot.contentSha256}`);
+    console.log("semanticRoute=not_assessed");
+    console.log(JSON.stringify(inspected.evidence, null, 2));
+});
+issue.command("import").argument("<number>").option("--refresh").option("--force").argument("[directory]", "Project directory", ".").action(async (number, directory, options) => {
+    const root = path.resolve(directory);
+    const imported = await importIssueThroughManagedOperation(root, parseIssueNumber(number), { refresh: options.refresh, force: options.force });
+    console.log(`Prepared ${imported.taskId} from ${imported.snapshot.repository}#${imported.snapshot.number}: route=${imported.route}, normalizedBy=planner+semantic-assessment, sha=${imported.snapshot.contentSha256.slice(0, 12)}, operationId=${imported.operationId}`);
+    if (imported.traceability)
+        console.log(`\n${imported.traceability}`);
+});
+issue.command("implement").argument("<number>").option("--profile <profile>").option("--refresh").option("--force").argument("[directory]", "Project directory", ".").action(async (number, directory, options) => {
+    const root = path.resolve(directory);
+    const result = await executeIssueWorkflow(root, parseIssueNumber(number), options);
+    printRunResult(result.result, result.contract.routing?.route ?? "DIRECT");
+});
+const agents = program.command("agents").description("Compile, inspect and validate the declarative agent topology");
+agents.command("compile").option("--profile <profile>").argument("[directory]", "Project directory", ".").action(async (directory, options) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const result = await compileAgentTopology(root, config, options.profile); if (!result.ok) {
+    result.issues.forEach((issue) => console.error(`✗ ${issue}`));
+    process.exitCode = 1;
+}
+else
+    console.log(`Compiled agent topology: ${result.output}`); });
+agents.command("check").option("--profile <profile>").argument("[directory]", "Project directory", ".").action(async (directory, options) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const checkGenerated = !options.profile || options.profile === config.agents?.activeProfile; const report = await auditAgentTopology(root, config, options.profile, { checkGenerated }); for (const check of report.checks)
+    console.log(`${check.status.padEnd(4)} ${check.id}: ${check.message}`); if (!report.ok)
+    process.exitCode = 1; });
+agents.command("list").option("--profile <profile>").argument("[directory]", "Project directory", ".").action(async (directory, options) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const topology = await loadResolvedAgentTopology(root, config, options.profile); for (const agent of Object.values(topology.agents))
+    console.log(`${agent.name.padEnd(28)} role=${agent.role.padEnd(12)} runtime=${agent.runtime.name.padEnd(10)} model=@${agent.model.alias}(${agent.model.id}) native=${agent.execution.nativeAgent ?? "-"} transport=${agent.execution.transport ?? "inherit"}`); });
+agents.command("profiles").argument("[directory]", "Project directory", ".").action(async (directory) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const source = await loadAgentTopologySource(root, config); for (const name of Object.keys(source.profiles ?? {}))
+    console.log(`${name}${name === (config.agents?.activeProfile ?? source.activeProfile) ? " *" : ""}`); });
+agents.command("show").argument("<name>").option("--profile <profile>").argument("[directory]", "Project directory", ".").action(async (name, directory, options) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const topology = await loadResolvedAgentTopology(root, config, options.profile); const agent = topology.agents[name]; if (!agent)
+    throw new Error(`Unknown agent ${name}`); console.log(JSON.stringify(agent, null, 2)); });
+agents.command("route").requiredOption("--intent <intent>").option("--domain <domains...>").option("--file <files...>").option("--risk <risk>").option("--profile <profile>").argument("[directory]", "Project directory", ".").action(async (directory, options) => {
+    const root = path.resolve(directory);
+    const config = await loadProjectConfig(root);
+    const topology = await loadResolvedAgentTopology(root, config, options.profile);
+    const runtime = await createSemanticAssessmentRuntimeV1(root, config, { profile: options.profile });
+    const binding = await createSemanticRepositoryBindingV1(root, config);
+    const semanticRoute = await triageChangeWithSemanticAssessment(config, { request: options.intent, domains: options.domain, files: options.file, risk: options.risk }, { service: runtime.service, binding, policyRevision: runtime.policyRevision });
+    const selectedAgents = resolveRoute(topology, { intent: options.intent, domains: options.domain, files: options.file, risk: options.risk });
+    console.log(JSON.stringify({ implementationRoute: semanticRoute.route, assurance: semanticRoute.assurance, mechanism: semanticRoute.mechanism, assessmentDigest: semanticRoute.assessmentDigest, routeEvidence: semanticRoute.routeEvidence, agentSelection: selectedAgents }, null, 2));
+});
+agents.command("validate-output").argument("<agent>").requiredOption("--file <path>").option("--profile <profile>").argument("[directory]", "Project directory", ".").action(async (agentName, directory, options) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const topology = await loadResolvedAgentTopology(root, config, options.profile); const contract = topology.agents[agentName]?.outputContract; if (!contract)
+    throw new Error(`Agent ${agentName} has no outputContract.`); const result = validateAgentOutput(contract, JSON.parse(await fs.readFile(path.resolve(root, options.file), "utf8"))); if (result.ok)
+    console.log(`PASS ${agentName} output satisfies ${contract}.`);
+else {
+    result.issues.forEach((issue) => console.error(`FAIL ${issue}`));
+    process.exitCode = 1;
+} });
+agents.command("parallelism").argument("<taskId>").requiredOption("--plan <path>").argument("[directory]", "Project directory", ".").action(async (taskId, directory, options) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const parsed = plannerOutputSchema.parse(JSON.parse(await fs.readFile(path.resolve(root, options.plan), "utf8"))); const result = await planParallelism(root, config, taskId, parsed.workUnits); console.log(JSON.stringify(result, null, 2)); });
+agents.command("dedupe-findings").requiredOption("--input <paths...>").option("--out <path>").argument("[directory]", "Project directory", ".").action(async (directory, options) => { const root = path.resolve(directory); const findings = []; for (const file of options.input)
+    findings.push(...extractFindings(JSON.parse(await fs.readFile(path.resolve(root, file), "utf8")))); const result = dedupeFindings(findings); const json = `${JSON.stringify(result, null, 2)}\n`; if (options.out) {
+    await fs.mkdir(path.dirname(path.resolve(root, options.out)), { recursive: true });
+    await fs.writeFile(path.resolve(root, options.out), json);
+    console.log(`Wrote ${options.out}`);
+}
+else
+    process.stdout.write(json); });
+const sdd = program.command("sdd").description("Spec-driven development workflow");
+sdd.command("new").argument("<taskId>").requiredOption("--title <title>").argument("[directory]", "Project directory", ".").action(async (taskId, directory, options) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const dir = await createSddChange(root, taskId, options.title, config); console.log(`Created SDD change at ${dir}`); console.log(`Created TaskContract at ${config.sdd?.contractsDir ?? ".harness/contracts"}/${taskId}.yaml`); });
+sdd.command("validate").argument("<taskId>").argument("[directory]", "Project directory", ".").action(async (taskId, directory) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const result = await validateSddChange(root, taskId, config); console.log(formatTraceabilityMatrix(result.requirements)); if (result.ok)
+    console.log(`\n✓ ${taskId} SDD traceability is complete.`);
+else {
+    for (const item of result.missing)
+        console.error(`✗ missing: ${item}`);
+    for (const issue of result.issues)
+        console.error(`✗ ${issue}`);
+    process.exitCode = 1;
+} });
+sdd.command("handoff").description("Unsupported: delivery and execution workspace setup are owned by managed operations").argument("<taskId>").argument("[directory]", "Project directory", ".").action(async () => {
+    throw new Error("SDD_HANDOFF_UNSUPPORTED: standalone SDD handoff is deferred because the CLI has no managed operation context. Public GitHub issue, branch, push, and pull-request effects require current AcceptanceOracle acceptance and policy gates; execution workspace setup is controller-owned.");
+});
+program.command("seal").argument("<taskId>").argument("[directory]", "Project directory", ".").action(async (taskId, directory) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const contract = await loadTaskContract(root, taskId, config); console.log(`Sealed ${taskId}: ${await sealTask(root, config, contract)}`); });
+program.command("verify").argument("<taskId>").argument("[directory]", "Project directory", ".").action(async (taskId, directory) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const contract = await loadTaskContract(root, taskId, config); const report = await verifyTask(root, config, contract); printChecks(report.checks); console.log(`\n${report.status} — report written to ${(config.sdd?.reportsDir ?? ".harness/reports")}/${taskId}.json`); if (report.status === "FAIL")
+    process.exitCode = 1; });
+program.command("run").argument("[taskId]").option("--issue <number>", "Import and execute an existing GitHub issue").option("--profile <profile>").option("--refresh-issue").option("--force-issue-refresh").argument("[directory]", "Project directory", ".").description("Execute TaskContract/SDD or an existing GitHub issue through routing, deterministic validation and quality convergence").action(async (taskId, directory, options) => {
+    const root = path.resolve(directory);
+    const config = await loadProjectConfig(root);
+    if (options.issue) {
+        const executed = await executeIssueWorkflow(root, parseIssueNumber(options.issue), { profile: options.profile, refresh: options.refreshIssue, force: options.forceIssueRefresh });
+        printRunResult(executed.result, executed.contract.routing?.route ?? "DIRECT");
+        return;
+    }
+    if (!taskId)
+        throw new Error("run requires <taskId> or --issue <number>.");
+    const contract = await loadTaskContract(root, taskId, config);
+    const result = await runTask(root, config, contract, { profile: options.profile });
+    printRunResult(result, contract.routing?.route ?? "DIRECT");
+});
+program.command("intervention").argument("<taskId>").requiredOption("--reason <reason>").argument("[directory]", "Project directory", ".").action(async (taskId, directory, options) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); await recordEvent(root, config, "harness.human.intervention", { taskId, reason: options.reason }); console.log(`Recorded human intervention for ${taskId}.`); });
+const evalCommand = program.command("eval").description("Run and compare frozen engineering evals");
+evalCommand.command("run").argument("<caseId>").option("--variant <name>").argument("[directory]", "Project directory", ".").action(async (caseId, directory, options) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const result = await runEvalCase(root, config, caseId, options.variant); console.log(`${result.status} ${result.caseId}/${result.variant} score=${result.score} repairs=${result.metrics?.repairCount ?? "n/a"} costUsd=${result.metrics?.usage.costUsd ?? "n/a"}`); if (result.status === "FAIL")
+    process.exitCode = 1; });
+evalCommand.command("compare").argument("<caseId>").argument("[directory]", "Project directory", ".").action(async (caseId, directory) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const results = await compareEvalCase(root, config, caseId); if (!results.length) {
+    console.log("No eval results found.");
+    return;
+} for (const [index, result] of results.entries())
+    console.log(`${index + 1}. ${result.variant.padEnd(20)} score=${String(result.score).padEnd(8)} status=${result.status} repairs=${result.metrics?.repairCount ?? "n/a"} cost=${result.metrics?.usage.costUsd ?? "n/a"}`); });
+evalCommand.command("full-stack").argument("[directory]", "Project directory", ".").action(async (directory) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const report = await runFullStackDogfood(root, config); console.log(`${report.status} full-stack checks=${report.checks.length} configured=${report.configuredComponents.join(",")}`); if (report.status === "FAIL")
+    process.exitCode = 1; });
+const certification = program.command("certification").description("Runtime-agnostic candidate certification and external bootstrap dogfood");
+certification.command("self-dogfood").argument("<fixture>", "Disposable black-box fixture directory").requiredOption("--check <executable>", "Deterministic fixture oracle executable").option("--check-args <json>", "JSON array of oracle argv arguments", "[]").option("--prompt <text>", "Optional external actor instruction").option("--capability <capability>", "Capability lane from the certification matrix").option("--require-model-e2e", "Require a proven model-backed lane for acceptance").option("--model <model>", "Bootstrap provider model", "gpt-6-luna").option("--reasoning-effort <effort>", "Bootstrap provider reasoning effort", "high").argument("[directory]", "AEH source checkout", ".").action(async (fixture, directory, options) => {
+    const root = path.resolve(directory);
+    const config = await loadProjectConfig(root);
+    let args;
+    try {
+        const parsed = JSON.parse(options.checkArgs);
+        if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== "string"))
+            throw new Error("must be a JSON string array");
+        args = parsed;
+    }
+    catch (error) {
+        throw new Error(`--check-args must be a JSON string array: ${String(error)}`);
+    }
+    const configured = config.certification;
+    const policy = defaultCertificationPolicy({ budget: { maxAttempts: configured?.maxAttempts ?? 1, maxDurationMs: configured?.maxDurationMs ?? 30 * 60_000, ...(configured?.maxCostUsd === undefined ? {} : { maxCostUsd: configured.maxCostUsd }), ...(configured?.maxTotalTokens === undefined ? {} : { maxTotalTokens: configured.maxTotalTokens }) } });
+    const provider = options.prompt ? new CodexAgentProvider({ model: options.model, reasoningEffort: options.reasoningEffort }) : undefined;
+    const effectivePolicy = options.prompt ? defaultCertificationPolicy({ ...policy, security: { ...policy.security, allowNetwork: true } }) : policy;
+    const requireModelE2E = options.requireModelE2E ?? Boolean(options.prompt);
+    const report = await runExternalSelfDogfood({ root, fixture: { sourceDir: path.resolve(root, fixture) }, oracle: createCommandOracle({ command: options.check, args, requireModelEvidence: requireModelE2E }), policy: effectivePolicy, provider, actor: options.prompt ? (candidateRoot) => ({ version: 1, requestId: `bootstrap-${Date.now()}`, role: "actor", prompt: options.prompt, cwd: candidateRoot, command: "codex", args: [], timeoutMs: effectivePolicy.budget.maxDurationMs, maxOutputBytes: effectivePolicy.security.maxOutputBytes, allowNetwork: true }) : undefined, capability: options.prompt ? (options.capability ?? "informational") : undefined, requireModelE2E, persistRoot: root });
+    console.log(JSON.stringify(report, null, 2));
+    if (!report.accepted)
+        process.exitCode = 1;
+});
+program.command("memory-benchmark").argument("[directory]", "Project directory", ".").action(async (directory) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const report = await runMemoryBenchmark(root, config); for (const [index, provider] of report.providers.entries())
+    console.log(`${index + 1}. ${provider.provider.padEnd(18)} score=${String(provider.score).padEnd(8)} recall=${provider.averageRecall} contamination=${provider.averageContamination} latencyMs=${provider.averageLatencyMs}`); });
+program.command("telemetry-test").argument("[directory]", "Project directory", ".").action(async (directory) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); await recordEvent(root, config, "harness.telemetry.test", { project: config.project.name, ok: true }); console.log(`Telemetry test event recorded; exporter=${config.telemetry?.exporter ?? "none"}.`); });
+const provenance = program.command("provenance").description("Generate SLSA/in-toto provenance and optional SBOM/signature");
+provenance.command("generate").requiredOption("--artifact <path>").option("--task <id>").option("--no-sbom").option("--sign").argument("[directory]", "Project directory", ".").action(async (directory, options) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const result = await generateProvenance(root, config, { artifact: options.artifact, taskId: options.task, sbom: options.sbom, sign: options.sign }); console.log(`statement=${result.statementFile}`); console.log(`predicate=${result.predicateFile}`); console.log(`manifest=${result.manifestFile}`); if (result.sbomFile)
+    console.log(`sbom=${result.sbomFile}`); if (result.bundleFile)
+    console.log(`sigstoreBundle=${result.bundleFile}`); });
+provenance.command("verify").option("--manifest <file>").option("--task <id>").argument("[directory]", "Project directory", ".").action(async (directory, options) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); if (options.manifest) {
+    const result = await verifyProvenanceManifest(root, options.manifest, config.provenance?.verification?.publicKey);
+    if (result.ok)
+        console.log(`PASS provenance integrity manifest=${options.manifest} (candidate delivery gate not evaluated)`);
+    else {
+        for (const failure of result.failures)
+            console.error(`FAIL ${failure}`);
+        process.exitCode = 1;
+    }
+    return;
+} const candidate = options.task ? await currentCandidateForTask(root, options.task, config) : undefined; const result = await verifySupplyChainGate(root, config, candidate ? { candidate, artifactPath: config.provenance?.artifact ?? "" } : undefined); if (result.ok)
+    console.log("PASS strict supply-chain gate");
+else {
+    result.failures.forEach((failure) => console.error(`FAIL ${failure}`));
+    process.exitCode = 1;
+} });
+program.command("graph-snapshot").argument("<taskId>").requiredOption("--phase <phase>").argument("[directory]", "Project directory", ".").action(async (taskId, directory, options) => { if (options.phase !== "before" && options.phase !== "after")
+    throw new Error("--phase must be before or after"); const root = path.resolve(directory); const config = await loadProjectConfig(root); const file = await snapshotGraph(root, config, taskId, options.phase); if (!file) {
+    console.error("Graphify graph not found or unreadable.");
+    process.exitCode = 1;
+}
+else
+    console.log(`Graphify ${options.phase} snapshot: ${file}`); });
+program.command("graph-update").argument("[directory]", "Project directory", ".").action(async (directory) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); try {
+    await new GraphifyCodeIntelligenceProvider(config).refresh(root);
+    console.log("Graphify graph refreshed through the configured provider.");
+}
+catch (error) {
+    console.error(String(error));
+    process.exitCode = 1;
+} });
+async function executeIssueWorkflow(root, issueNumber, options) {
+    return executeManagedIssueWorkflow(root, issueNumber, options);
+}
+function parseIssueNumber(value) { const parsed = Number(value.replace(/^#/, "")); if (!Number.isInteger(parsed) || parsed <= 0)
+    throw new Error(`Invalid GitHub issue number: ${value}`); return parsed; }
+function printRunResult(result, route) { printChecks(result.report.checks); console.log(`\n${result.status} — route=${route}, agent=${result.routing?.agent ?? result.worker.provider}, runtime=${result.routing?.runtime ?? result.worker.provider}, model=${result.routing?.model ?? result.worker.model ?? "default"}, profile=${result.routing?.profile ?? "legacy"}, repairs=${result.metrics.repairCount}, review=${result.review?.status ?? "skipped"}, finalState=${result.review?.finalState ?? "n/a"}, qualityRounds=${result.review?.rounds ?? 0}, debtScore=${result.review?.debtScore ?? "n/a"}, convergence=${result.review?.convergence ?? "n/a"}, humanRequired=${result.review?.humanRequired ?? false}, firstPass=${result.metrics.firstPassSuccess}, tokens=${result.metrics.usage.totalTokens ?? "n/a"}, costUsd=${result.metrics.usage.costUsd ?? "n/a"}`); if (result.status === "FAIL")
+    process.exitCode = 1; }
+function printChecks(checks) { for (const check of checks)
+    console.log(`${check.status.padEnd(4)} ${check.id}: ${check.message}`); }
+await program.parseAsync(process.argv);
+//# sourceMappingURL=cli.js.map

@@ -33,7 +33,15 @@ describe("managed Lead acceptance evidence", () => {
     const setup = await fixture();
     vi.mocked(continueManagedPaseoAgent).mockResolvedValue({ exitCode: 0, stdout: `AEH_RESULT_JSON=${JSON.stringify({ assertions: [{ assertionId: "ASSERT-1", verdict: "PASS", rationale: "The candidate output matches the requested behavior." }], summary: "Assertion supported.", unresolved: [] })}`, stderr: "", transport: "sdk" });
     const evidence = await requestManagedLeadAcceptance({ root: setup.root, operationId: setup.operationId, compilation: setup.compilation, report: setup.report, implementationIdentity: "implementer" });
-    expect(vi.mocked(continueManagedPaseoAgent)).toHaveBeenCalledWith(setup.root, "lead-session", expect.stringContaining("controllerEpoch"), 600, undefined, expect.objectContaining({ additionalProperties: false }), expect.objectContaining({ "aeh.lead.agentId": "lead-session", "aeh.provider": "codex" }));
+    // The interactive Lead session has no AEH structured-result channel, so the continuation must
+    // not request an AEH-schema turn (which fails with AEH_RESULT_CHANNEL_STATE before the provider
+    // runs); the prompt line and deterministic typed parse stay authoritative (AEH-V2-0122).
+    expect(vi.mocked(continueManagedPaseoAgent)).toHaveBeenCalledWith(setup.root, "lead-session", expect.stringContaining("controllerEpoch"), 600, undefined, undefined, expect.objectContaining({ "aeh.lead.agentId": "lead-session", "aeh.provider": "codex" }));
+    const leadPrompt = vi.mocked(continueManagedPaseoAgent).mock.calls[0]?.[2] as string;
+    expect(leadPrompt).toContain("[AEH_MANAGED_LEAD_ACCEPTANCE]");
+    // The Lead judges against the resolved candidate-bound validation evidence, not opaque ids.
+    expect(leadPrompt).toContain("Resolved assertion evidence");
+    expect(leadPrompt).toContain("ASSERT-1");
     expect(evidence).toMatchObject({ status: "PASS", operationId: setup.operationId, candidate: setup.candidate, leadAgentId: "lead-session", leadGeneration: 1, assertions: [{ assertionId: "ASSERT-1", verdict: "PASS" }] });
     expect(evidence?.policyDigest).toBe((await loadOperation(setup.root, setup.operationId)).resolvedOperationPolicy?.digest);
   });

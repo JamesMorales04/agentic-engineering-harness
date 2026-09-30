@@ -114,7 +114,28 @@ interface ReviewDimensionRule {
   floor: AssuranceLevel;
 }
 
-const reviewDimensionRules: Readonly<Record<string, ReviewDimensionRule>> = {
+/**
+ * The canonical typed CandidateImpact review-dimension vocabulary. The semantic assessment contract
+ * is constrained to exactly these typed dimensions so model output cannot fabricate a validation
+ * obligation for a free-form dimension: every accepted dimension has one deterministic
+ * validation-kind mapping (and a bounded assurance floor), and the model cannot widen it.
+ */
+export const candidateReviewDimensionValues = [
+  "security",
+  "authentication/authorization",
+  "public API",
+  "migration/schema",
+  "dependency/supply chain",
+  "UI/browser",
+  "UI/visual",
+  "architecture",
+  "concurrency",
+  "operations",
+  "behavior.correctness"
+] as const;
+export type CandidateReviewDimensionV1 = (typeof candidateReviewDimensionValues)[number];
+
+const reviewDimensionRules: Readonly<Record<CandidateReviewDimensionV1, ReviewDimensionRule>> = {
   security: { kind: "static-security", floor: "CRITICAL" },
   "authentication/authorization": { kind: "integration-test", floor: "CRITICAL" },
   "public API": { kind: "contract-test", floor: "ELEVATED" },
@@ -139,7 +160,7 @@ function reject(message: string): never {
 }
 
 function reviewDimensionRule(dimension: string): ReviewDimensionRule {
-  return Object.hasOwn(reviewDimensionRules, dimension) ? reviewDimensionRules[dimension]! : unknownReviewDimensionRule;
+  return Object.hasOwn(reviewDimensionRules, dimension) ? reviewDimensionRules[dimension as CandidateReviewDimensionV1] : unknownReviewDimensionRule;
 }
 
 function assuranceRank(level: AssuranceLevel): number {

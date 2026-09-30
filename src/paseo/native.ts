@@ -1,6 +1,6 @@
 import process from "node:process";
 import { pathToFileURL } from "node:url";
-import { connectPaseoClient, PaseoSdkUnavailableError } from "./sdk.js";
+import { connectPaseoClient, PaseoSdkUnavailableError, type PaseoSdkPermissionStop } from "./sdk.js";
 import { resolvePaseoSdkFromCli } from "./sdkResolve.js";
 import { recordPaseoTrace } from "./trace.js";
 
@@ -50,6 +50,7 @@ export interface PaseoNativeWaitResult {
   status?: string;
   lastMessage?: string;
   error?: string;
+  permission?: PaseoSdkPermissionStop;
   source: "paseo-agent-subscription";
   updatesObserved: number;
 }
@@ -159,7 +160,7 @@ export async function capturePaseoAgentTurnBaseline(
     const timeline =
       handle.timeline && typeof handle.timeline.refetch === "function"
         ? await handle.timeline
-            .refetch({ direction: "backward", limit: 50 })
+            .refetch({ direction: "tail", limit: 50 })
             .catch(() => undefined)
         : undefined;
     return {
@@ -331,13 +332,15 @@ export async function waitForPaseoAgentNative(
 export async function waitForPaseoAgentHandle(
   handle: NativeAgentHandle,
   timeoutMs = 1_800_000,
-  baseline?: PaseoTurnBaseline
+  baseline?: PaseoTurnBaseline,
+  pollIntervalMs = 2_000
 ): Promise<PaseoNativeWaitResult> {
   let updatesObserved = 0;
   let sawActivity = false;
   let settled = false;
   let unsubscribe: () => void = () => {};
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let poll: ReturnType<typeof setInterval> | undefined;
   let chain = Promise.resolve();
 
   return new Promise<PaseoNativeWaitResult>((resolve, reject) => {
@@ -345,6 +348,7 @@ export async function waitForPaseoAgentHandle(
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
+      if (poll) clearInterval(poll);
       unsubscribe();
       resolve(value);
     };
@@ -352,6 +356,7 @@ export async function waitForPaseoAgentHandle(
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
+      if (poll) clearInterval(poll);
       unsubscribe();
       reject(error);
     };
@@ -367,7 +372,7 @@ export async function waitForPaseoAgentHandle(
       const timeline =
         handle.timeline && typeof handle.timeline.refetch === "function"
           ? await handle.timeline
-              .refetch({ direction: "backward", limit: 50 })
+              .refetch({ direction: "tail", limit: 50 })
               .catch(() => undefined)
           : undefined;
       const lastMessage =
@@ -403,6 +408,7 @@ export async function waitForPaseoAgentHandle(
         status,
         lastMessage,
         error: stringField(raw, ["error", "lastError", "last_error"]),
+        ...(permissionStopDetail(raw.pendingPermissions) ? { permission: permissionStopDetail(raw.pendingPermissions) } : {}),
         source: "paseo-agent-subscription",
         updatesObserved
       });
@@ -418,6 +424,10 @@ export async function waitForPaseoAgentHandle(
     }
 
     chain = chain.then(() => inspect(false)).catch(fail);
+    // Providers may not emit provider-level agent updates for every turn; poll the canonical
+    // snapshot as a bounded fallback so a completed initial turn is observed even when the
+    // subscription stream stays silent.
+    if (pollIntervalMs > 0) poll = setInterval(() => { chain = chain.then(() => inspect(false)).catch(fail); }, pollIntervalMs);
     timer = setTimeout(
       () =>
         finish({
@@ -681,7 +691,11 @@ function isTerminalStatus(status?: string): boolean {
     status === "completed" ||
     status === "failed" ||
     status === "error" ||
-    status === "cancelled"
+    status === "cancelled" ||
+    // A session stopped on its provider approval prompt is a terminal failed turn, not a
+    // successful empty one (AEH-V2-0110).
+    status === "permission" ||
+    status === "waiting"
   );
 }
 function finiteNonNegative(value: unknown): number | undefined {
@@ -698,6 +712,22 @@ function recordField(value: unknown, key: string): unknown {
 function stringField(record: Record<string, unknown>, keys: string[]): string | undefined {
   for (const key of keys) {
     if (typeof record[key] === "string" && record[key]) return record[key] as string;
+  }
+  return undefined;
+}
+function permissionStopDetail(value: unknown): PaseoSdkPermissionStop | undefined {
+  const entries = Array.isArray(value) ? value : value && typeof value === "object" ? [value] : [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    const name = typeof record.name === "string" && record.name.trim() ? record.name.trim().slice(0, 200) : undefined;
+    const title = typeof record.title === "string" && record.title.trim() ? record.title.trim().slice(0, 200) : undefined;
+    const description = typeof record.description === "string" && record.description.trim() ? record.description.trim().slice(0, 200) : undefined;
+    const input = record.input && typeof record.input === "object" ? record.input as Record<string, unknown> : undefined;
+    const patterns = Array.isArray(input?.patterns) ? input.patterns.filter((item): item is string => typeof item === "string" && item.trim().length > 0).slice(0, 8).map((item) => item.slice(0, 300)) : undefined;
+    if (name || title || patterns?.length) {
+      return { ...(name ? { name } : {}), ...(title ? { title } : {}), ...(description ? { description } : {}), ...(patterns?.length ? { patterns } : {}) };
+    }
   }
   return undefined;
 }

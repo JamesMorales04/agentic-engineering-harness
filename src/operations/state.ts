@@ -4,7 +4,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { IntentDecisionV1 } from "../audit/intentDecision.js";
 import type { ChangePreflightV1 } from "../core/triage.js";
-import { assertCurrentCandidateBinding, assertCandidateRevisionV1, createCandidateRevisionV1, evaluateTerminalGate, candidateRevisionsEqual, type CandidateRevisionV1, type ParticipantReceiptV1 } from "./v2Contracts.js";
+import { assertCurrentCandidateBinding, assertCandidateRevisionV1, createCandidateAssemblyReceiptV1, createCandidateRevisionV1, evaluateTerminalGate, candidateRevisionsEqual, resolveCandidateLineageReceiptV1, type CandidateAssemblyReceiptV1, type CandidateRevisionV1, type ParticipantReceiptV1 } from "./v2Contracts.js";
+import { objectiveParticipantAccountingV1 } from "./participantAccounting.js";
 import { canonicalSerialize, sha256Canonical, sha256Utf8 } from "../core/digest.js";
 import { computeWorktreeDigest } from "../core/git.js";
 import { assertWorkspaceMatchesCandidate } from "../candidates/identity.js";
@@ -38,7 +39,20 @@ export function isAllowedOperationStatusTransition(from: OperationStatus, to: Op
 
 export interface AuditOperationPayload { request: string; files?: string[]; domains?: string[]; risk?: "low" | "medium" | "high"; reviewers?: string[]; intentDecision?: IntentDecisionV1; }
 export interface RunOperationPayload { taskId: string; profile?: string; priority?: number; intentDecision?: IntentDecisionV1; }
-export interface ChangeOperationPayload { request: string; title?: string; taskId?: string; files?: string[]; domains?: string[]; acceptance?: string[]; risk?: "low" | "medium" | "high"; profile?: string; priority?: number; intentDecision?: IntentDecisionV1; }
+export interface IssueIntakeRequestV1 { number: number; refresh?: boolean; force?: boolean; }
+export interface ChangeOperationPayload { request: string; title?: string; taskId?: string; files?: string[]; domains?: string[]; acceptance?: string[]; risk?: "low" | "medium" | "high"; profile?: string; priority?: number; intentDecision?: IntentDecisionV1; issueIntake?: IssueIntakeRequestV1; }
+export interface IssueIntakeTerminalEvidenceV1 {
+  version: 1;
+  taskId: string;
+  route: string;
+  normalizedBy: string;
+  snapshot: { repository: string; number: number; contentSha256: string; path: string };
+  contract: { path: string; digest: string };
+  planner: { participantId?: string; sessionId?: string };
+  semanticAssessmentDigest?: string;
+  traceability?: string;
+  candidateAdvanced: boolean;
+}
 export type OperationPayload = AuditOperationPayload | RunOperationPayload | ChangeOperationPayload;
 
 export interface OperationAgentRecord { id: string; role?: string; phase?: string; workspaceId?: string; transport?: string; registeredAt: string; executionBinding?: ExecutionBindingV2; }
@@ -135,6 +149,8 @@ export interface OperationRecordV2 {
   supervision: OperationSupervisionState; stages: Record<string, OperationStageRecord>; participants: Record<string, OperationParticipantRecord>;
   progress: OperationProgress; notification: OperationNotificationState; agents?: OperationAgentRecord[]; cleanupWarnings?: string[]; result?: Record<string, unknown>; error?: string;
   candidateRevision?: CandidateRevisionV1; participantReceipts?: Record<string, ParticipantReceiptV1>;
+  /** Deterministic ASSEMBLING evidence: one receipt per successful candidate transition. */
+  candidateAssemblyReceipts?: Record<string, CandidateAssemblyReceiptV1>;
   /** Changes only when operation execution semantics change; record revision remains event/order identity. */
   operationExecutionRevision?: number;
   executionSemanticsDigest?: string;
@@ -245,6 +261,16 @@ export async function transitionOperationToTerminal(root: string, operationId: s
 }
 
 export async function bindOperationLead(root: string, operationId: string, agentId: string, source?: string): Promise<OperationRecordV2> { return mutateOperation(root, operationId, {}, true, "operation.lead.bound", (current, revision, now) => ({ ...current, revision, updatedAt: now, lastProgressAt: now, lead: { agentId: requiredId(agentId), source, generation: (current.lead?.generation ?? 0) + 1, boundAt: now, acknowledgedRevision: revision, acknowledgedAt: now }, notification: { ...current.notification, lastLeadWakeRevision: revision, lastLeadWakeAt: now, lastLeadWakeReason: "operation-started" } })); }
+
+/** Update a participant only when it is already durably registered; never upserts. Runtime session
+ * identities are provenance, not automatically work participants (TARGET: the Semantic Assessor is
+ * an AEH Agent, not automatically a WorkGraph Participant). */
+export async function updateRegisteredOperationParticipant(root: string, operationId: string, agentId: string, patch: Partial<Omit<OperationParticipantRecord, "id" | "registeredAt" | "executionBinding">>): Promise<OperationRecordV2 | undefined> {
+  const stateRoot = resolveOperationStateRoot(root);
+  const current = await loadOperation(stateRoot, operationId).catch(() => undefined);
+  if (!current?.participants[agentId]) return undefined;
+  return updateOperationParticipant(stateRoot, operationId, agentId, patch);
+}
 
 export function currentControllerEpoch(record: OperationRecordV2): number { return record.controller?.epoch ?? 0; }
 
@@ -1130,12 +1156,26 @@ export async function completeOperationProductChoice(root: string, operationId: 
   });
 }
 
+/**
+ * A provisional bootstrap policy is bound before the WorkGraph/knowledge/validation semantics exist
+ * so that early participants (Explorer, Planner, Librarian) have a frozen policy to launch under.
+ * The first real execution-semantics binding supersedes it exactly once: the planning semantics
+ * advance the operation execution revision, clear the provisional policy, and invalidate the
+ * participant bindings issued under it. Without this the compiled policy would collide with the
+ * provisional body and fail closed with EXECUTION_POLICY_RECOMPILE_REQUIRED (AEH-V2-0110).
+ */
+export function isProvisionalOperationPolicyV1(policy: ResolvedOperationPolicyV1 | undefined): boolean {
+  if (!policy || typeof policy.knowledgePolicy !== "object" || policy.knowledgePolicy === null || Array.isArray(policy.knowledgePolicy)) return false;
+  return (policy.knowledgePolicy as Record<string, unknown>).bootstrap === true;
+}
+
 export async function bindOperationExecutionSemantics(root: string, operationId: string, executionSemanticsDigest: string): Promise<OperationRecordV2> {
   if (!/^[a-f0-9]{64}$/.test(executionSemanticsDigest)) throw new Error("EXECUTION_SEMANTICS_INVALID: semantics digest must be a lowercase SHA-256 digest.");
   return mutateOperation(root, operationId, {}, true, "operation.execution-semantics.bound", (current, revision, now) => {
     if (!Number.isSafeInteger(current.operationExecutionRevision) || current.operationExecutionRevision! < 1) throw new Error("UNSUPPORTED_OPERATION_EXECUTION_REVISION: migrate this operation record before execution planning.");
-    if (current.executionSemanticsDigest === executionSemanticsDigest) return { ...current, revision, updatedAt: now, lastProgressAt: now };
-    const changed = current.executionSemanticsDigest !== undefined;
+    const provisional = isProvisionalOperationPolicyV1(current.resolvedOperationPolicy);
+    if (current.executionSemanticsDigest === executionSemanticsDigest && !provisional) return { ...current, revision, updatedAt: now, lastProgressAt: now };
+    const changed = current.executionSemanticsDigest !== undefined || provisional;
     const participants = changed ? Object.fromEntries(Object.entries(current.participants).map(([id, participant]) => [id, { ...participant, executionBinding: undefined }])) : current.participants;
     return { ...current, executionSemanticsDigest, ...(changed ? { operationExecutionRevision: current.operationExecutionRevision! + 1, resolvedOperationPolicy: undefined, participants } : {}), revision, updatedAt: now, lastProgressAt: now };
   });
@@ -1153,10 +1193,107 @@ export async function recordParticipantReceipt(root: string, operationId: string
     assertCurrentCandidateBinding(receipt.candidateBinding ?? receipt.candidate!, latest.candidateRevision);
     await assertWorkspaceMatchesCandidate(candidateWorkspaceRoot(latest, latest.candidateRevision), latest.candidateRevision);
     const previous = latest.participants[receipt.participantId];
+    // Controller-issued participant identities (`participant:<digest>`) are durable launch identities
+    // whose execution context may be resumed by a later turn (for example product-choice
+    // continuations); the bounded runtime session participant carries the per-turn terminal status.
+    // The receipt's accepted result artifact still belongs to the receipt participant identity, so
+    // acceptance evidence reads one coherent chain (authority identity + binding + receipt +
+    // artifact) while the runtime session id remains provenance.
+    const launchIdentity = /^participant:[0-9a-f]{16}$/.test(receipt.participantId);
+    const artifactId = (receipt.persistedArtifact ?? receipt.artifact)?.artifactId;
     const status: OperationParticipantStatus = receipt.outcome === "SUCCEEDED" ? "COMPLETED" : receipt.outcome === "FAILED" ? "FAILED" : "CANCELLED";
-    const participants = previous ? { ...latest.participants, [receipt.participantId]: { ...previous, status, finishedAt: previous.finishedAt ?? now, resultArtifact: (receipt.persistedArtifact ?? receipt.artifact)?.artifactId } } : latest.participants;
+    const participants = previous
+      ? launchIdentity
+        ? artifactId && previous.resultArtifact !== artifactId
+          ? { ...latest.participants, [receipt.participantId]: { ...previous, resultArtifact: artifactId } }
+          : latest.participants
+        : { ...latest.participants, [receipt.participantId]: { ...previous, status, finishedAt: previous.finishedAt ?? now, resultArtifact: artifactId } }
+      : latest.participants;
     return { ...latest, revision, updatedAt: now, lastProgressAt: now, participants, participantReceipts: { ...(latest.participantReceipts ?? {}), [receipt.receiptId]: receipt }, progress: deriveProgress(participants) };
   });
+}
+
+export interface CandidateAssemblyReceiptInputV1 {
+  baseCandidate: CandidateRevisionV1;
+  candidate: CandidateRevisionV1;
+  changeSet: {
+    operationId: string;
+    taskId: string;
+    workUnitId: string;
+    participantId: string;
+    baseCandidateRevision: number;
+    baseCandidateDigest: string;
+    patchDigest: string;
+    derivation?: { originalChangeSetDigest: string; originalBaseCandidateRevision: number; originalBaseCandidateDigest: string };
+  };
+}
+
+/**
+ * Record the deterministic ASSEMBLING receipt for a successful candidate transition. The source
+ * bounded-work receipt — when the ChangeSet producer has a settled `SUCCEEDED` receipt bound to
+ * the candidate the producer observed — is referenced by id and digest; the receipt itself is
+ * never rewritten. Completion evidence then resolves the pre-assembly binding through this chain
+ * (AEH-V2-0106). Assembly without a settled source receipt records lineage only and leaves
+ * participant completion fail-closed.
+ */
+export async function recordCandidateAssemblyReceipt(root: string, operationId: string, input: CandidateAssemblyReceiptInputV1): Promise<OperationRecordV2> {
+  assertCandidateRevisionV1(input.baseCandidate);
+  assertCandidateRevisionV1(input.candidate);
+  if (input.baseCandidate.operationId !== operationId || input.candidate.operationId !== operationId) throw new Error("V2_ASSEMBLY_RECEIPT_REJECTED: candidate belongs to a different operation.");
+  if (input.candidate.revision !== input.baseCandidate.revision + 1 || input.candidate.parentCandidateId !== input.baseCandidate.candidateId) throw new Error("V2_ASSEMBLY_RECEIPT_REJECTED: assembly must advance exactly one candidate from its bound parent.");
+  if (input.changeSet.operationId !== operationId || input.changeSet.baseCandidateRevision !== input.baseCandidate.revision || input.changeSet.baseCandidateDigest !== input.baseCandidate.identityDigest) throw new Error("V2_ASSEMBLY_RECEIPT_REJECTED: ChangeSet identity does not bind the assembly base.");
+  const derived = input.changeSet.derivation;
+  const sourceBaseRevision = derived?.originalBaseCandidateRevision ?? input.changeSet.baseCandidateRevision;
+  const sourceBaseIdentityDigest = derived?.originalBaseCandidateDigest ?? input.changeSet.baseCandidateDigest;
+  const effectiveChangeSetDigest = sha256Canonical(input.changeSet);
+  const sourceChangeSetDigest = derived?.originalChangeSetDigest ?? effectiveChangeSetDigest;
+  const current = await loadOperation(root, operationId);
+  const bound = current.candidateRevision;
+  if (!bound || bound.candidateId !== input.candidate.candidateId || bound.revision !== input.candidate.revision || bound.identityDigest !== input.candidate.identityDigest) throw new Error("V2_ASSEMBLY_RECEIPT_REJECTED: assembled candidate is not the operation's current CandidateRevision.");
+  const sourceReceipt = selectAssemblySourceReceipt(current, input.changeSet.participantId, sourceBaseRevision, sourceBaseIdentityDigest);
+  const assembly = createCandidateAssemblyReceiptV1({
+    operationId,
+    taskId: input.changeSet.taskId,
+    workUnitId: input.changeSet.workUnitId,
+    participantId: input.changeSet.participantId,
+    baseCandidateId: input.baseCandidate.candidateId,
+    baseRevision: input.baseCandidate.revision,
+    baseIdentityDigest: input.baseCandidate.identityDigest,
+    sourceBaseRevision,
+    sourceBaseIdentityDigest,
+    ...(sourceReceipt ? { sourceReceiptId: sourceReceipt.receiptId, sourceReceiptDigest: sha256Canonical(sourceReceipt) } : {}),
+    sourceChangeSetDigest,
+    candidateId: input.candidate.candidateId,
+    revision: input.candidate.revision,
+    identityDigest: input.candidate.identityDigest,
+    changeSetDigest: effectiveChangeSetDigest,
+    patchDigest: input.changeSet.patchDigest,
+    operationExecutionRevision: current.operationExecutionRevision ?? 1,
+    controllerEpoch: currentControllerEpoch(current),
+    createdAt: input.candidate.createdAt ?? new Date().toISOString()
+  });
+  return mutateOperation(root, operationId, {}, true, "operation.candidate.assembly-receipt", (latest, revision, now) => {
+    const latestBound = latest.candidateRevision;
+    if (!latestBound || latestBound.candidateId !== input.candidate.candidateId || latestBound.revision !== input.candidate.revision || latestBound.identityDigest !== input.candidate.identityDigest) throw new Error("V2_ASSEMBLY_RECEIPT_REJECTED: assembled candidate is not the operation's current CandidateRevision.");
+    const existing = latest.candidateAssemblyReceipts?.[assembly.assemblyId];
+    if (existing) {
+      if (existing.digest !== assembly.digest) throw new Error("V2_ASSEMBLY_RECEIPT_REJECTED: a conflicting assembly receipt already exists for this candidate.");
+      return { ...latest, revision, updatedAt: now, lastProgressAt: now };
+    }
+    return { ...latest, revision, updatedAt: now, lastProgressAt: now, candidateAssemblyReceipts: { ...(latest.candidateAssemblyReceipts ?? {}), [assembly.assemblyId]: assembly } };
+  });
+}
+
+function selectAssemblySourceReceipt(record: OperationRecordV2, participantId: string, sourceBaseRevision: number, sourceBaseIdentityDigest: string): ParticipantReceiptV1 | undefined {
+  const candidates = Object.values(record.participantReceipts ?? {}).filter((entry) => entry.settled === true && entry.outcome === "SUCCEEDED"
+    && (entry.participantId === participantId || entry.sessionId === participantId)
+    && entry.candidate !== undefined && entry.candidate.revision === sourceBaseRevision && entry.candidate.identityDigest === sourceBaseIdentityDigest)
+    .sort((left, right) => `${left.createdAt ?? ""}\0${left.receiptId}`.localeCompare(`${right.createdAt ?? ""}\0${right.receiptId}`));
+  for (const candidate of candidates.reverse()) {
+    const decision = evaluateTerminalGate(candidate, { operationId: record.id, candidate: candidate.candidate! });
+    if (decision.allowed) return candidate;
+  }
+  return undefined;
 }
 
 export async function setOperationStage(root: string, operationId: string, name: string, status: OperationStageStatus, options: { message?: string; artifact?: string } = {}): Promise<OperationRecordV2> {
@@ -1326,6 +1463,7 @@ interface ExecutionIdentityTransitionSnapshot {
   readonly operationExecutionRevision: number | undefined;
   readonly executionSemanticsDigest: string | undefined;
   readonly resolvedOperationPolicyCanonical: string | undefined;
+  readonly resolvedOperationPolicyProvisional: boolean;
   readonly participantIds: ReadonlySet<string>;
   readonly canonicalByParticipantId: ReadonlyMap<string, string | undefined>;
 }
@@ -1342,6 +1480,7 @@ function snapshotExecutionIdentity(record: OperationRecordV2): ExecutionIdentity
     operationExecutionRevision: record.operationExecutionRevision,
     executionSemanticsDigest: record.executionSemanticsDigest,
     resolvedOperationPolicyCanonical: record.resolvedOperationPolicy ? canonicalSerialize(record.resolvedOperationPolicy) : undefined,
+    resolvedOperationPolicyProvisional: isProvisionalOperationPolicyV1(record.resolvedOperationPolicy),
     participantIds,
     canonicalByParticipantId
   };
@@ -1362,7 +1501,7 @@ function assertExecutionIdentityTransition(
     throw new Error("EXECUTION_SEMANTICS_INVALID: semantics digest must be a lowercase SHA-256 digest.");
   }
 
-  const semanticsRebind = (eventType === semanticsEvent || eventType === productChoiceSemanticsEvent) && snapshot.executionSemanticsDigest !== undefined && semanticsChanged;
+  const semanticsRebind = (eventType === semanticsEvent || eventType === productChoiceSemanticsEvent) && (snapshot.executionSemanticsDigest !== undefined || snapshot.resolvedOperationPolicyProvisional) && semanticsChanged;
   const canInvalidate = new Set(["operation.candidate.bound", "operation.controller.claimed"]);
   if (semanticsRebind) canInvalidate.add(semanticsEvent);
   if (eventType === productChoiceSemanticsEvent) canInvalidate.add(productChoiceSemanticsEvent);
@@ -1421,7 +1560,7 @@ function assertOperationExecutionRevisionTransition(
       throw new Error("UNSUPPORTED_OPERATION_EXECUTION_REVISION: migrate this operation record before changing execution identity.");
     }
     const advances = eventType === candidateEvent || eventType === productChoiceSemanticsEvent
-      || (eventType === semanticsEvent && snapshot.executionSemanticsDigest !== undefined && semanticsChanged);
+      || (eventType === semanticsEvent && (snapshot.executionSemanticsDigest !== undefined || snapshot.resolvedOperationPolicyProvisional) && semanticsChanged);
     const expected = previous! + (advances ? 1 : 0);
     if (following !== expected) {
       throw new Error("OPERATION_EXECUTION_REVISION_INVALID: operationExecutionRevision may advance exactly once only for candidate binding or changed, previously bound execution semantics.");
@@ -1570,14 +1709,74 @@ function processAlive(pid: number): boolean { try { process.kill(pid, 0); return
 
 function guardTerminalTransition(current: OperationRecordV2, patch: Partial<OperationRecordV2>): Partial<OperationRecordV2> { if (!isTerminal(current.status)) return patch; const { status: _status, phase: _phase, result: _result, error: _error, finishedAt: _finishedAt, ...metadata } = patch; return metadata; }
 function deriveProgress(participants: Record<string, OperationParticipantRecord>): OperationProgress { const values = Object.values(participants); return { expected: values.length, registered: values.filter((item) => item.status === "REGISTERED" || item.status === "IDLE").length, running: values.filter((item) => item.status === "RUNNING").length, completed: values.filter((item) => item.status === "COMPLETED").length, failed: values.filter((item) => item.status === "FAILED" || item.status === "CANCELLED").length, blocked: values.filter((item) => item.status === "BLOCKED").length }; }
+/**
+ * Deterministic terminal evidence for a controller-owned GitHub issue import. The operation's
+ * deliverable is the authored, sealed TaskContract plus the frozen issue snapshot, so the gate
+ * verifies durable artifact digests and the bounded Planner receipt instead of the implementation
+ * objective-completion artifacts.
+ */
+async function assertIssueIntakeTerminalEvidence(stateRoot: string, record: OperationRecordV2, value: unknown): Promise<void> {
+  const evidence = value as IssueIntakeTerminalEvidenceV1 | undefined;
+  if (!evidence || evidence.version !== 1 || !evidence.taskId?.trim() || !evidence.route?.trim() || !evidence.snapshot?.path || !evidence.contract?.path
+    || !/^[a-f0-9]{64}$/.test(evidence.snapshot?.contentSha256 ?? "") || !/^[a-f0-9]{64}$/.test(evidence.contract?.digest ?? "")) {
+    throw new Error("ISSUE_INTAKE_EVIDENCE_REQUIRED: a successful issue import requires the complete deterministic intake evidence.");
+  }
+  const contractFile = path.resolve(stateRoot, evidence.contract.path);
+  const contractContent = await fs.readFile(contractFile, "utf8").catch(() => undefined);
+  if (!contractContent || sha256Utf8(contractContent) !== evidence.contract.digest) {
+    throw new Error("ISSUE_INTAKE_ARTIFACT_STALE: the authored TaskContract does not match the recorded digest.");
+  }
+  const receipt = Object.values(record.participantReceipts ?? {}).find((item) => item.role === "Planner" && item.outcome === "SUCCEEDED");
+  if (!receipt) throw new Error("ISSUE_INTAKE_RECEIPT_REQUIRED: a successful issue import requires the bounded Planner receipt.");
+  const current = record.candidateRevision!;
+  const receiptCandidate = receipt.candidate;
+  if (!receiptCandidate) throw new Error("ISSUE_INTAKE_RECEIPT_REQUIRED: the Planner receipt carries no candidate binding.");
+  const lineageAccepted = receiptCandidate.identityDigest === current.identityDigest || (evidence.candidateAdvanced && receiptCandidate.revision + 1 === current.revision);
+  if (!lineageAccepted) throw new Error("ISSUE_INTAKE_CANDIDATE_STALE: the Planner receipt is not bound to the intake candidate lineage.");
+}
+/**
+ * Strict successful-terminal receipt decision for one participant. A receipt bound to the current
+ * candidate is evaluated exactly as before. A receipt bound to the candidate the bounded work
+ * actually observed is accepted only when its settled work produced the current candidate through
+ * a verified assembly receipt chain; the receipt itself is still validated by `evaluateTerminalGate`
+ * against its own binding. Anything else keeps the original fail-closed CANDIDATE_MISMATCH.
+ */
+function terminalReceiptDecision(record: OperationRecordV2, receipts: readonly ParticipantReceiptV1[]): { allowed: true } | { allowed: false; reason: string } {
+  const current = record.candidateRevision!;
+  const assemblies = Object.values(record.candidateAssemblyReceipts ?? {});
+  let reason = "CANDIDATE_MISMATCH";
+  for (const receipt of receipts) {
+    const bound = receipt.candidateBinding ?? receipt.candidate;
+    const resolution = bound ? resolveCandidateLineageReceiptV1({ receipt, current, assemblies }) : undefined;
+    // Assembly-named producer receipts and ancestor-bound non-producing receipts are evaluated
+    // against the candidate the bounded work actually observed (the receipt is still validated by
+    // the unchanged terminal gate); anything else must bind the current candidate.
+    const decision = resolution?.kind === "ASSEMBLY" || resolution?.kind === "ANCESTOR"
+      ? evaluateTerminalGate(receipt, { operationId: record.id, candidate: bound! })
+      : evaluateTerminalGate(receipt, { operationId: record.id, candidate: current });
+    if (decision.allowed) return { allowed: true };
+    reason = decision.reasons.map((entry) => entry.code).join(",") || reason;
+  }
+  return { allowed: false, reason };
+}
+
 async function assertSuccessTerminalEvidence(stateRoot: string, record: OperationRecordV2, result?: Record<string, unknown>): Promise<void> {
   if (!record.candidateRevision) throw new Error("V2_TERMINAL_GATE_REJECTED: successful operations require a current candidate revision.");
   if (!Object.keys(record.participantReceipts ?? {}).length) throw new Error("V2_TERMINAL_GATE_REJECTED: successful operations require at least one terminal receipt.");
+  if (record.kind === "change" && (record.payload as ChangeOperationPayload).issueIntake) {
+    await assertIssueIntakeTerminalEvidence(stateRoot, record, result?.issueIntake);
+    return;
+  }
+  const supervisorAgentIds = new Set(record.supervision.generations.map((generation) => generation.agentId).filter((id): id is string => Boolean(id)));
   for (const participant of Object.values(record.participants)) {
-    const receipt = Object.values(record.participantReceipts ?? {}).find((item) => item.participantId === participant.id);
-    if (!receipt) throw new Error(`V2_TERMINAL_GATE_REJECTED: participant ${participant.id} has no terminal receipt.`);
-    const decision = evaluateTerminalGate(receipt, { operationId: record.id, candidate: record.candidateRevision });
-    if (!decision.allowed) throw new Error(`V2_TERMINAL_GATE_REJECTED: ${decision.reasons.map((reason) => reason.code).join(",")}`);
+    // Persistent semantic supervision is tracked in supervision generations, and the read-only
+    // Semantic Assessor is an AEH Agent rather than a WorkGraph Participant (TARGET); neither owns
+    // bounded work and neither produces participant receipts.
+    if (supervisorAgentIds.has(participant.id) || participant.role === "Operation Supervisor" || participant.role === "Semantic Assessor") continue;
+    const receipts = Object.values(record.participantReceipts ?? {}).filter((item) => item.participantId === participant.id || item.sessionId === participant.id);
+    if (!receipts.length) throw new Error(`V2_TERMINAL_GATE_REJECTED: participant ${participant.id} has no terminal receipt.`);
+    const decision = terminalReceiptDecision(record, receipts);
+    if (!decision.allowed) throw new Error(`V2_TERMINAL_GATE_REJECTED: participant ${participant.id} ${decision.reason}`);
   }
   if (record.kind === "audit") return;
   const objective = result?.objectiveCompletion as ObjectiveCompletionInputV1 | undefined;
@@ -1602,9 +1801,13 @@ async function assertSuccessTerminalEvidence(stateRoot: string, record: Operatio
   if (!decision.complete || sha256Canonical(decision) !== sha256Canonical(reportedDecision)) {
     throw new Error(`OBJECTIVE_COMPLETION_REJECTED: deterministic Definition of Done failed: ${decision.blockers.map((item) => item.code).join(",")}`);
   }
+  // The completion snapshot may report a resumable launch identity as COMPLETED only through the
+  // same deterministic receipt/lineage accounting this gate recomputes; anything else is stale.
+  const accountedParticipants = objectiveParticipantAccountingV1(record, record.candidateRevision!);
   for (const participant of Object.values(record.participants)) {
     const snapshot = objective.participants.find((item) => item.id === participant.id);
-    if (!snapshot || snapshot.status !== participant.status || (participant.status === "REGISTERED" || participant.status === "IDLE" || participant.status === "RUNNING") && !snapshot.required) {
+    const accounted = accountedParticipants.find((item) => item.id === participant.id);
+    if (!snapshot || !accounted || snapshot.status !== accounted.status || (participant.status === "REGISTERED" || participant.status === "IDLE" || participant.status === "RUNNING") && !snapshot.required) {
       throw new Error(`OBJECTIVE_PARTICIPANT_SNAPSHOT_STALE: completion does not account for current participant '${participant.id}' state.`);
     }
   }

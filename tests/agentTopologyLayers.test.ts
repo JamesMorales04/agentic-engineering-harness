@@ -99,7 +99,7 @@ describe("agent topology", () => {
     const selection = executionSelectionForAgent(topology, "reviewer");
     expect(selection.runtimeAdapter).toBe("opencode");
     expect(selection.modelAlias).toBe("workhorse");
-    expect(selection.modelName).toBe("MiMo-V2.6-Flash");
+    expect(selection.modelName).toBe("mimo-v2.6-flash");
     expect(selection.variant).toBe("max");
     expect(selection.runtimeCapabilities.variantSelection).toBe(true);
     expect(executionSelectionForAgent(topology, "explorer").outputContract).toBe("explorer");

@@ -6,6 +6,16 @@ import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import type { ExecutionBindingV2, SkillManifestV1, RoleInvocationPolicyV1 } from "../architecture/executionIdentity.js";
 import type { ExecutionBlueprintV2 } from "../architecture/executionIdentity.js";
 
+export interface DistributedTransportResolutionV1 {
+  /** The transport the local wave selection carried before inheritance ("inherit" when unset). */
+  requested: string;
+  /** The concrete frozen worker session-materialization transport. */
+  resolved: "direct" | "podman" | "paseo";
+  /** True when the selection inherited the concrete transport from the orchestration provider. */
+  inherited: boolean;
+  reason?: string;
+}
+
 export interface DistributedDelegationJob {
   version: 2;
   id: string;
@@ -19,6 +29,7 @@ export interface DistributedDelegationJob {
   task: WorkUnitOutput;
   contract: TaskContract;
   selection: AgentExecutionSelection;
+  transportResolution: DistributedTransportResolutionV1;
   sandboxPolicySha256: string;
   executionAuthority: ExecutionAuthorityV1;
   executionBlueprint: ExecutionBlueprintV2;

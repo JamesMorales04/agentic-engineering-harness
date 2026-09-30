@@ -1,0 +1,202 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 19,
+  "kind": "cleanup-after-inventory",
+  "capturedAt": "2026-09-29T16:39:03.281Z",
+  "trackedDigest": "849ec335ac5c2aced28edc8c2df9308e9c83dec46048ca27ff3e0f7054dc872e",
+  "trackedFiles": 668,
+  "fixtureProcesses": {
+    "count": 0
+  },
+  "stagingRoots": {
+    "count": 0
+  },
+  "paseoWorkspaces": {
+    "countBefore": 77,
+    "countAfter": 29,
+    "archived": 48,
+    "remaining": [
+      {
+        "workspaceId": "wks_06b8bdf06785c720",
+        "cwd": "/home/james/Desarrollo/agentic-engineering-harness",
+        "isolation": "local",
+        "name": "core-architecture-v2"
+      },
+      {
+        "workspaceId": "wks_0861ccdc906c344c",
+        "cwd": "/home/james/Desarrollo/agentic-engineering-harness",
+        "isolation": "local",
+        "name": "Diagnose Paseo/Codex runtime capability surface"
+      },
+      {
+        "workspaceId": "wks_0dfd4134b22fed63",
+        "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/core-v2-s5-session-binding",
+        "isolation": "worktree",
+        "name": "S5 session binding"
+      },
+      {
+        "workspaceId": "wks_1ab7113acc7ed9f9",
+        "cwd": "/home/james/Desarrollo/agentic-engineering-harness",
+        "isolation": "local",
+        "name": "Direct Core Architecture v2 S1 campaign"
+      },
+      {
+        "workspaceId": "wks_1e08874cc8151222",
+        "cwd": "/home/james/Desarrollo/agentic-engineering-harness",
+        "isolation": "local",
+        "name": "Recover S9 Control Center real browser closure"
+      },
+      {
+        "workspaceId": "wks_1e973a62648b706a",
+        "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/core-v2-s5-context-auth-manifest-regression",
+        "isolation": "worktree",
+        "name": "S5 context auth regression tests"
+      },
+      {
+        "workspaceId": "wks_37447636b0b5c817",
+        "cwd": "/home/james/Desarrollo/agentic-engineering-harness",
+        "isolation": "local",
+        "name": "core-architecture-v2"
+      },
+      {
+        "workspaceId": "wks_3995782614b438f5",
+        "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/core-v2-s5-progressive-projection",
+        "isolation": "worktree",
+        "name": "S5 Progressive Projection"
+      },
+      {
+        "workspaceId": "wks_3d549d1c1bd5a14c",
+        "cwd": "/home/james/Desarrollo/agentic-engineering-harness",
+        "isolation": "local",
+        "name": "Finalize Core-v2 kernel, repairer authority, oracle E2E"
+      },
+      {
+        "workspaceId": "wks_3ef69829192dd0c5",
+        "cwd": "/home/james/Desarrollo/agentic-engineering-harness",
+        "isolation": "local",
+        "name": "Reconstruct Core Architecture v2 status roadmap"
+      },
+      {
+        "workspaceId": "wks_432f7fdcc0357db0",
+        "cwd": "/home/james/Desarrollo/agentic-engineering-harness",
+        "isolation": "local",
+        "name": "core-architecture-v2"
+      },
+      {
+        "workspaceId": "wks_4b337f8155a10d42",
+        "cwd": "/home/james/Desarrollo/agentic-engineering-harness",
+        "isolation": "local",
+        "name": "core-architecture-v2"
+      },
+      {
+        "workspaceId": "wks_4c582e9af38aa000",
+        "cwd": "/home/james/Desarrollo/agentic-engineering-harness",
+        "isolation": "local",
+        "name": "Canonicalize Core Architecture V2 S0 docs"
+      },
+      {
+        "workspaceId": "wks_587e98b5e3223871",
+        "cwd": "/home/james/Desarrollo/agentic-engineering-harness",
+        "isolation": "local",
+        "name": "Recover S11 and continue Core Architecture v2 campaign"
+      },
+      {
+        "workspaceId": "wks_597ae9d07efd796b",
+        "cwd": "/home/james/Desarrollo/agentic-engineering-harness",
+        "isolation": "local",
+        "name": "AEH AUDIT · AUDIT-20260921T030752Z-1a99cbe8"
+      },
+      {
+        "workspaceId": "wks_6372895b7030491e",
+        "cwd": "/home/james/Desarrollo/agentic-engineering-harness",
+        "isolation": "local",
+        "name": "core-architecture-v2"
+      },
+      {
+        "workspaceId": "wks_7ca5865643b536ed",
+        "cwd": "/home/james/Desarrollo/agentic-engineering-harness",
+        "isolation": "local",
+        "name": "core-architecture-v2"
+      },
+      {
+        "workspaceId": "wks_7ff97219a6b83a98",
+        "cwd": "/home/james/Desarrollo/agentic-engineering-harness",
+        "isolation": "local",
+        "name": "Recover S9 state and build aeh-browser-e2e skill"
+      },
+      {
+        "workspaceId": "wks_84bfe4ec5e51b11c",
+        "cwd": "/home/james/Desarrollo/agentic-engineering-harness",
+        "isolation": "local",
+        "name": "AEH AUDIT · AUDIT-20260922T221454Z-7aa6fa6b"
+      },
+      {
+        "workspaceId": "wks_8c61d95b282279b3",
+        "cwd": "/home/james/Desarrollo/agentic-engineering-harness",
+        "isolation": "local",
+        "name": "Plan core architecture v2 status roadmap"
+      },
+      {
+        "workspaceId": "wks_8cd69d3efd77dc13",
+        "cwd": "/home/james/Desarrollo/agentic-engineering-harness",
+        "isolation": "local",
+        "name": "Resume Core V2 S13 certification after round 10"
+      },
+      {
+        "workspaceId": "wks_93db318dead0a9a6",
+        "cwd": "/home/james/Desarrollo/agentic-engineering-harness",
+        "isolation": "local",
+        "name": "AEH AUDIT · AUDIT-20260921T033251Z-bb99dfe6"
+      },
+      {
+        "workspaceId": "wks_a7e8612e197c1d53",
+        "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/core-architecture-v2-s3-opa",
+        "isolation": "worktree",
+        "name": "S3 OPA role policy"
+      },
+      {
+        "workspaceId": "wks_acd4f78471467297",
+        "cwd": "/home/james/Desarrollo/agentic-engineering-harness",
+        "isolation": "local",
+        "name": "core-architecture-v2"
+      },
+      {
+        "workspaceId": "wks_c31272d00b8a2d49",
+        "cwd": "/home/james/Desarrollo/agentic-engineering-harness",
+        "isolation": "local",
+        "name": "Close Candidate Truth invariants on core-architecture-v2"
+      },
+      {
+        "workspaceId": "wks_c361ade141d35ef8",
+        "cwd": "/home/james/Desarrollo/agentic-engineering-harness",
+        "isolation": "local",
+        "name": "core-architecture-v2"
+      },
+      {
+        "workspaceId": "wks_c96574f87b005b58",
+        "cwd": "/home/james/Desarrollo/agentic-engineering-harness",
+        "isolation": "local",
+        "name": "AEH AUDIT · AUDIT-20260922T200013Z-db672ea0"
+      },
+      {
+        "workspaceId": "wks_d5d3ae09621fa83d",
+        "cwd": "/home/james/Desarrollo/agentic-engineering-harness",
+        "isolation": "local",
+        "name": "core-architecture-v2"
+      },
+      {
+        "workspaceId": "wks_f1f7fdb68790b7e6",
+        "cwd": "/home/james/Desarrollo/agentic-engineering-harness",
+        "isolation": "local",
+        "name": "AEH AUDIT · AUDIT-20260922T193512Z-db672ea0"
+      }
+    ]
+  },
+  "cleanupDisposition": {
+    "processesTerminated": true,
+    "stagingRemoved": true,
+    "fixtureWorkspacesArchived": true,
+    "note": "All 48 fixture workspaces (20 non-change campaign worktrees + 22 aeh-change/tmp fixtures) archived; 29 remaining workspaces are the user local checkouts. journey-4 fixture (wks_f465c0d32f707dbb) owned by a non-terminal operation whose durable state was destroyed by the interrupted harness and whose controller is provably dead was archived as an orphaned fixture; no live operation resource was archived."
+  }
+}

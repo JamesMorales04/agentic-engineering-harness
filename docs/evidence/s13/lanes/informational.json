@@ -1,0 +1,407 @@
+{
+  "version": 1,
+  "capability": "informational",
+  "provider": "packed-direct+paseo",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13RealProviderCertification.mjs",
+        "sha256": "e008d145f175f0ef2e5a6ef2a001c69dd24206d6d69e23778229f30495dd1a9c"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "52cc4df585215b768577b300277a5aac6ca3a9f6101433ed2ed0363d6c77f461"
+  },
+  "startedAt": "2026-09-30T05:31:07.722Z",
+  "report": {
+    "certificationId": "cert-agentic-engineering-harness-0.8.4-fd033f27-eaf4-459e-9b7d-2c1ca4177f90",
+    "state": "ACCEPTED",
+    "accepted": true,
+    "assurance": "DETERMINISTIC",
+    "policyId": "aeh-default-certification",
+    "harnessBuildIdentity": {
+      "version": 1,
+      "packageVersion": "0.8.4",
+      "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+      "releaseId": "release-1790746067053-1573412-feaf0aab",
+      "buildDigest": "599ed363223ff2dd85e17296c9f34c4134bf83e363916c4c57d7e7492ccbdf45",
+      "dirty": true
+    },
+    "candidate": {
+      "version": 1,
+      "id": "agentic-engineering-harness-0.8.4",
+      "root": "/tmp/aeh-cert-fixture-b2XeC8",
+      "artifactPath": "/tmp/aeh-cert-fixture-b2XeC8/.aeh-candidate.tgz",
+      "baseRef": "packed-checkout",
+      "sourceDigest": "b3c57f222e33d078119ff1e1b8a45f095fff691acf303026808b65389be9e3b4",
+      "packedArtifactDigest": "b3c57f222e33d078119ff1e1b8a45f095fff691acf303026808b65389be9e3b4",
+      "treeDigest": "cb10096e0d032fa714a1f1be5ba01ef4152bee9a2a4e6fdc780b3526fd13fdc0",
+      "metadata": {
+        "artifactDigest": "b3c57f222e33d078119ff1e1b8a45f095fff691acf303026808b65389be9e3b4",
+        "packaging": "npm-pack-ignore-scripts",
+        "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+        "sourceBranch": "core-architecture-v2",
+        "packedBuildRelease": "release-1790746268114-1581441-eb6ecf51",
+        "packedBuildDigest": "599ed363223ff2dd85e17296c9f34c4134bf83e363916c4c57d7e7492ccbdf45",
+        "packedBuildGitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+        "packedBuildPackageVersion": "0.8.4"
+      }
+    },
+    "networkPolicy": {
+      "requested": "ALLOW",
+      "enforced": false,
+      "enforcement": "provider-allowed"
+    },
+    "budget": {
+      "attempts": 1,
+      "durationMs": 11944,
+      "usage": {},
+      "remaining": {
+        "attempts": 0,
+        "durationMs": 588056
+      },
+      "usageKnown": false
+    },
+    "attempts": [
+      {
+        "attempt": 1,
+        "role": "actor",
+        "status": "COMPLETED",
+        "startedAt": "2026-09-30T05:31:33.255Z",
+        "finishedAt": "2026-09-30T05:31:45.161Z",
+        "durationMs": 11905,
+        "usage": {}
+      },
+      {
+        "attempt": 2,
+        "role": "oracle",
+        "status": "PASS",
+        "startedAt": "2026-09-30T05:31:45.211Z",
+        "finishedAt": "2026-09-30T05:31:45.250Z",
+        "durationMs": 39
+      }
+    ],
+    "oracle": {
+      "status": "PASS",
+      "oracleId": "s13-journey:informational",
+      "checks": [
+        {
+          "id": "intent",
+          "category": "journey",
+          "status": "PASS",
+          "required": true,
+          "message": "Journey evidence 'intent' verified for informational.",
+          "evidence": {
+            "detail": {
+              "assessments": [
+                {
+                  "file": "b30b934d95260320db07378bfc088f0b3a2db5452bf15c22200606995b3468fe.json",
+                  "judgmentType": "INTENT",
+                  "intent": "informational",
+                  "assessmentDigest": "c5e97b33a8fc2941c47545f9a93d23dc1284bffe9da899fb72dd4bb89e38595a",
+                  "mechanism": "MODEL",
+                  "paseoSession": {
+                    "provider": "opencode",
+                    "agentId": "5c79bc4b-f5e1-4c9d-9282-a7cdf732851c",
+                    "workspaceId": "wks_9610cc6b3da1f5b4",
+                    "transport": "sdk"
+                  },
+                  "assessor": {
+                    "version": 1,
+                    "role": "Semantic Assessor",
+                    "logicalAgent": "semantic-assessor",
+                    "topologyProfile": "balanced",
+                    "modelAlias": "structured-assessor",
+                    "modelId": "opencode-go/gpt-6-luna",
+                    "modelName": "gpt-6-luna",
+                    "modelProvider": "opencode-go",
+                    "runtimeName": "opencode",
+                    "runtimeAdapter": "opencode",
+                    "paseoProvider": "opencode",
+                    "identityDigest": "e0fa35f9340081f11a05dba1be4235be0d51305963c18a22d123bda3322eb211"
+                  },
+                  "model": null
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "answer",
+          "category": "journey",
+          "status": "PASS",
+          "required": true,
+          "message": "Journey evidence 'answer' verified for informational.",
+          "evidence": {
+            "detail": {
+              "intent": "informational",
+              "paseoSession": {
+                "provider": "opencode",
+                "agentId": "5c79bc4b-f5e1-4c9d-9282-a7cdf732851c",
+                "workspaceId": "wks_9610cc6b3da1f5b4",
+                "transport": "sdk"
+              }
+            }
+          }
+        },
+        {
+          "id": "actor.command:intent",
+          "category": "provider",
+          "status": "PASS",
+          "required": true,
+          "message": "Provider executed 'node_modules/agentic-engineering-harness/dist/main.js intent'.",
+          "evidence": {
+            "matched": true,
+            "exitCode": 0,
+            "output": "INFORMATIONAL — typed semantic intent assessment selected informational\n{\n  \"intent\": \"informational\",\n  \"mechanism\": \"MODEL\",\n  \"reasons\": [\n    \"typed semantic intent assessment selected informational\"\n  ],\n  \"unknowns\": [\n    \"The supplied evidence does not describe the validation system itself, so its operation cannot be explained from this evidence alone.\"\n  ],\n  \"assessmentDigests\": [\n    \"c5e97b33a8fc2941c47545f9a93d23dc1284bffe9da899fb72dd4bb89e38595a\"\n  ],\n  \"evidence\": {\n    \"request\": \"Explain how the validation system works.\",\n    \"files\": [],\n    \"domains\": [],\n    \"risk\": \"low\",\n    \"flags\": []\n  }\n}\n\n"
+          }
+        },
+        {
+          "id": "model.evidence",
+          "category": "provider",
+          "status": "PASS",
+          "required": true,
+          "message": "Deterministic oracle verified the capability journey and the real provider execution.",
+          "evidence": {
+            "capability": "informational",
+            "evidenceOk": true,
+            "actorOk": true,
+            "executions": [
+              {
+                "command": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node node_modules/agentic-engineering-harness/dist/main.js intent Explain how the validation system works. .",
+                "exitCode": 0
+              }
+            ]
+          }
+        }
+      ],
+      "failures": [],
+      "evidence": {
+        "capability": "informational",
+        "intent": {
+          "ok": true,
+          "detail": {
+            "assessments": [
+              {
+                "file": "b30b934d95260320db07378bfc088f0b3a2db5452bf15c22200606995b3468fe.json",
+                "judgmentType": "INTENT",
+                "intent": "informational",
+                "assessmentDigest": "c5e97b33a8fc2941c47545f9a93d23dc1284bffe9da899fb72dd4bb89e38595a",
+                "mechanism": "MODEL",
+                "paseoSession": {
+                  "provider": "opencode",
+                  "agentId": "5c79bc4b-f5e1-4c9d-9282-a7cdf732851c",
+                  "workspaceId": "wks_9610cc6b3da1f5b4",
+                  "transport": "sdk"
+                },
+                "assessor": {
+                  "version": 1,
+                  "role": "Semantic Assessor",
+                  "logicalAgent": "semantic-assessor",
+                  "topologyProfile": "balanced",
+                  "modelAlias": "structured-assessor",
+                  "modelId": "opencode-go/gpt-6-luna",
+                  "modelName": "gpt-6-luna",
+                  "modelProvider": "opencode-go",
+                  "runtimeName": "opencode",
+                  "runtimeAdapter": "opencode",
+                  "paseoProvider": "opencode",
+                  "identityDigest": "e0fa35f9340081f11a05dba1be4235be0d51305963c18a22d123bda3322eb211"
+                },
+                "model": null
+              }
+            ]
+          }
+        },
+        "answer": {
+          "ok": true,
+          "detail": {
+            "intent": "informational",
+            "paseoSession": {
+              "provider": "opencode",
+              "agentId": "5c79bc4b-f5e1-4c9d-9282-a7cdf732851c",
+              "workspaceId": "wks_9610cc6b3da1f5b4",
+              "transport": "sdk"
+            }
+          }
+        }
+      }
+    },
+    "provider": {
+      "provider": "packed-direct",
+      "status": "COMPLETED",
+      "exitCode": 0,
+      "usage": {},
+      "usageKnown": false,
+      "outputTruncated": false,
+      "executionEvidence": {
+        "started": true,
+        "provider": "packed-direct",
+        "command": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node",
+        "startedAt": "2026-09-30T05:31:33.255Z",
+        "finishedAt": "2026-09-30T05:31:45.161Z",
+        "processExitCode": 0
+      },
+      "commandExecutions": [
+        {
+          "command": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node node_modules/agentic-engineering-harness/dist/main.js intent Explain how the validation system works. .",
+          "exitCode": 0,
+          "output": "INFORMATIONAL — typed semantic intent assessment selected informational\n{\n  \"intent\": \"informational\",\n  \"mechanism\": \"MODEL\",\n  \"reasons\": [\n    \"typed semantic intent assessment selected informational\"\n  ],\n  \"unknowns\": [\n    \"The supplied evidence does not describe the validation system itself, so its operation cannot be explained from this evidence alone.\"\n  ],\n  \"assessmentDigests\": [\n    \"c5e97b33a8fc2941c47545f9a93d23dc1284bffe9da899fb72dd4bb89e38595a\"\n  ],\n  \"evidence\": {\n    \"request\": \"Explain how the validation system works.\",\n    \"files\": [],\n    \"domains\": [],\n    \"risk\": \"low\",\n    \"flags\": []\n  }\n}\n\n"
+        }
+      ]
+    },
+    "capability": {
+      "capability": "informational",
+      "contract": {
+        "status": "PASS",
+        "evidence": {
+          "oracleId": "s13-journey:informational",
+          "checks": [
+            {
+              "id": "intent",
+              "category": "journey",
+              "status": "PASS",
+              "required": true,
+              "message": "Journey evidence 'intent' verified for informational.",
+              "evidence": {
+                "detail": {
+                  "assessments": [
+                    {
+                      "file": "b30b934d95260320db07378bfc088f0b3a2db5452bf15c22200606995b3468fe.json",
+                      "judgmentType": "INTENT",
+                      "intent": "informational",
+                      "assessmentDigest": "c5e97b33a8fc2941c47545f9a93d23dc1284bffe9da899fb72dd4bb89e38595a",
+                      "mechanism": "MODEL",
+                      "paseoSession": {
+                        "provider": "opencode",
+                        "agentId": "5c79bc4b-f5e1-4c9d-9282-a7cdf732851c",
+                        "workspaceId": "wks_9610cc6b3da1f5b4",
+                        "transport": "sdk"
+                      },
+                      "assessor": {
+                        "version": 1,
+                        "role": "Semantic Assessor",
+                        "logicalAgent": "semantic-assessor",
+                        "topologyProfile": "balanced",
+                        "modelAlias": "structured-assessor",
+                        "modelId": "opencode-go/gpt-6-luna",
+                        "modelName": "gpt-6-luna",
+                        "modelProvider": "opencode-go",
+                        "runtimeName": "opencode",
+                        "runtimeAdapter": "opencode",
+                        "paseoProvider": "opencode",
+                        "identityDigest": "e0fa35f9340081f11a05dba1be4235be0d51305963c18a22d123bda3322eb211"
+                      },
+                      "model": null
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "id": "answer",
+              "category": "journey",
+              "status": "PASS",
+              "required": true,
+              "message": "Journey evidence 'answer' verified for informational.",
+              "evidence": {
+                "detail": {
+                  "intent": "informational",
+                  "paseoSession": {
+                    "provider": "opencode",
+                    "agentId": "5c79bc4b-f5e1-4c9d-9282-a7cdf732851c",
+                    "workspaceId": "wks_9610cc6b3da1f5b4",
+                    "transport": "sdk"
+                  }
+                }
+              }
+            },
+            {
+              "id": "actor.command:intent",
+              "category": "provider",
+              "status": "PASS",
+              "required": true,
+              "message": "Provider executed 'node_modules/agentic-engineering-harness/dist/main.js intent'.",
+              "evidence": {
+                "matched": true,
+                "exitCode": 0,
+                "output": "INFORMATIONAL — typed semantic intent assessment selected informational\n{\n  \"intent\": \"informational\",\n  \"mechanism\": \"MODEL\",\n  \"reasons\": [\n    \"typed semantic intent assessment selected informational\"\n  ],\n  \"unknowns\": [\n    \"The supplied evidence does not describe the validation system itself, so its operation cannot be explained from this evidence alone.\"\n  ],\n  \"assessmentDigests\": [\n    \"c5e97b33a8fc2941c47545f9a93d23dc1284bffe9da899fb72dd4bb89e38595a\"\n  ],\n  \"evidence\": {\n    \"request\": \"Explain how the validation system works.\",\n    \"files\": [],\n    \"domains\": [],\n    \"risk\": \"low\",\n    \"flags\": []\n  }\n}\n\n"
+              }
+            },
+            {
+              "id": "model.evidence",
+              "category": "provider",
+              "status": "PASS",
+              "required": true,
+              "message": "Deterministic oracle verified the capability journey and the real provider execution.",
+              "evidence": {
+                "capability": "informational",
+                "evidenceOk": true,
+                "actorOk": true,
+                "executions": [
+                  {
+                    "command": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node node_modules/agentic-engineering-harness/dist/main.js intent Explain how the validation system works. .",
+                    "exitCode": 0
+                  }
+                ]
+              }
+            }
+          ],
+          "requiredEvidence": [
+            "intent",
+            "answer"
+          ],
+          "missingEvidence": []
+        }
+      },
+      "modelE2E": {
+        "status": "PASS",
+        "evidence": {
+          "execution": {
+            "started": true,
+            "provider": "packed-direct",
+            "command": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node",
+            "startedAt": "2026-09-30T05:31:33.255Z",
+            "finishedAt": "2026-09-30T05:31:45.161Z",
+            "processExitCode": 0
+          },
+          "usage": {},
+          "usageKnown": false
+        }
+      },
+      "overall": "PASS",
+      "requiredModelE2E": true
+    }
+  },
+  "paseoSessionReceipt": {
+    "agentId": "5c79bc4b-f5e1-4c9d-9282-a7cdf732851c",
+    "provider": "opencode",
+    "model": "opencode-go/gpt-6-luna",
+    "thinkingOptionId": "auto",
+    "status": "idle",
+    "sessionId": null,
+    "modeId": "default",
+    "lastUsage": {
+      "InputTokens": 126,
+      "OutputTokens": 132,
+      "CachedTokens": 0,
+      "CostUsd": 0.00105485
+    },
+    "labels": null,
+    "createdAt": "2026-09-30T05:31:40.831Z",
+    "updatedAt": "2026-09-30T05:31:44.568Z"
+  },
+  "result": "PASS",
+  "finishedAt": "2026-09-30T05:31:47.366Z"
+}

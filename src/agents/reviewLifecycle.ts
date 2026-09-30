@@ -22,6 +22,27 @@ import type { CandidateAssuranceCompilationV1, CandidateAssuranceReviewAssignmen
 import { consolidateWithOperationSupervisor, maybeRotateOperationSupervisor } from "../operations/supervisor.js";
 
 export type ReviewFinalState = "ACCEPTED" | "SPEC_CONTRADICTION" | "REQUIRES_PRODUCT_DECISION" | "BLOCKED_EXTERNAL" | "SYSTEM_FAILURE";
+
+/**
+ * A reviewer turn that did not produce reviewable evidence: the provider session stopped on an
+ * approval/permission prompt, the runtime exited non-zero, the reviewer attempted a mutation, or
+ * its structured output contract was invalid. None of these can be repaired by changing the
+ * implementation, so they must terminalize as a typed SYSTEM_FAILURE instead of entering the
+ * autonomous remediation loop as synthetic critical findings (AEH-V2-0119).
+ */
+export interface ReviewerRoundFailureV1 {
+  reviewer: string;
+  kind: "RUNTIME" | "CONTRACT" | "MUTATION";
+  detail: string;
+  sessionId?: string;
+  exitCode?: number;
+}
+
+export interface ReviewRoundResult {
+  findings: DedupedFindings;
+  failures: ReviewerRoundFailureV1[];
+}
+
 export interface ReviewLifecycleResult {
   status: "PASS" | "FAIL";
   finalState: ReviewFinalState;
@@ -73,13 +94,19 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
     const prior = checks.findIndex((check) => check.id === evaluation.gateCheck.id);
     if (prior >= 0) checks[prior] = evaluation.gateCheck;
     else checks.push(evaluation.gateCheck);
-    return mergeReviewCheck(candidateReport, evaluation.gateCheck);
+    const withValidationChecks = mergeChecksById(candidateReport, evaluation.validationChecks);
+    return mergeReviewCheck(withValidationChecks, evaluation.gateCheck);
   };
   const stages = escalationStages(config);
   let stageIndex = 0;
   let remediationRounds = 0;
   let replanContext: PlannerOutput | undefined;
-  let deduped = reviewerNames.length ? await runReviewRound(root, stateRoot, config, contract, reviewerSelections, implementationSelection, supervisorSelection, reviewerNames, report, sessions, 0, checks, prepareRepairWorkspace, reviewerAssignments) : emptyFindings();
+  let deduped = emptyFindings();
+  if (reviewerNames.length) {
+    const initialRound = await runReviewRound(root, stateRoot, config, contract, reviewerSelections, implementationSelection, supervisorSelection, reviewerNames, report, sessions, 0, checks, prepareRepairWorkspace, reviewerAssignments);
+    if (initialRound.failures.length) return await reviewerProviderFailureResult(stateRoot, config, contract, initialRound.failures, remediationRounds, report, initialRound.findings, checks, sessions, qualityHistory);
+    deduped = initialRound.findings;
+  }
   let state = analyzeQualityState(deduped.findings, qualityHistory, config, report.candidate?.identityDigest);
   qualityHistory.push(state);
   await persistQualityState(stateRoot, config, contract.task.id, state);
@@ -87,6 +114,9 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
   while (true) {
     const exception = detectHumanException(deduped.findings);
     if (exception?.humanRequired) return humanExceptionResult(exception, remediationRounds, report, deduped, checks, sessions, qualityHistory);
+    // A SYSTEM_FAILURE finding (reviewer/runtime contract failure or an explicit model
+    // classification) is a terminal system failure, never remediable implementation debt.
+    if (exception) return await systemFailureResult(stateRoot, config, contract, `Review system failure (${exception.type}): ${exception.rationale}`, remediationRounds, report, deduped, checks, sessions, qualityHistory);
 
     if (state.gate.pass) {
       checks.push({ id: "agent.final-quality-gate", category: "agent-review", status: "PASS", message: `Final Quality Gate passed: critical=${state.counts.critical}, high=${state.counts.high}, medium=${state.counts.medium}, low=${state.counts.low}, note=${state.counts.note}, DebtScore=${formatDebtScore(state.debtScore)}.`, details: { state } });
@@ -150,6 +180,17 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
       continue;
     }
 
+    // Deterministic execution budget: an autonomous remediation loop that repeatedly fails to reach
+    // the Final Quality Gate must terminalize instead of running forever (AEH-V2-0119). A reviewer
+    // provider stop surfaces as a synthetic critical finding, so without this bound a participant
+    // runtime failure could remediate indefinitely without changing anything.
+    if (remediationBudgetReached(remediationRounds, config)) {
+      const budget = remediationBudgetRounds(config);
+      const message = `Remediation budget of ${budget} round(s) is exhausted without satisfying the Final Quality Gate: ${state.gate.reasons.join("; ")}.`;
+      checks.push({ id: "agent.remediation-budget", category: "agent-review", status: "FAIL", message, details: { round: remediationRounds, budget, state } });
+      await recordEvent(stateRoot, config, "harness.quality.remediation-budget-exhausted", { taskId: contract.task.id, round: remediationRounds, budget, convergence: state.convergence, debtPoints: state.debtPoints });
+      return { status: "FAIL", finalState: "SYSTEM_FAILURE", humanRequired: false, rounds: remediationRounds, report, findings: deduped, checks, sessions, qualityHistory, leadAccepted: false };
+    }
     const remediationSelection = repairerSelection;
     if (!remediationSelection || !executionCatalog) throw new Error("REPAIR_AUTHORITY_REQUIRED: review remediation requires a frozen Repairer selection and compiled role binding.");
     const transport = remediationSelection.transport === "inherit" ? (config.orchestration?.provider ?? "none") : remediationSelection.transport;
@@ -177,7 +218,7 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
       prompt: repairPrompt,
       prepareWorkspace: prepareRepairWorkspace,
       semanticAssessment: input.candidateImpactAssessment,
-      execute: (isolatedRoot, participantId) => executeAgentPrompt(isolatedRoot, config, contract, remediationSelection, repairPrompt, { phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true })
+      execute: (isolatedRoot, participantId) => executeAgentPrompt(isolatedRoot, config, contract, remediationSelection, repairPrompt, { outputContract: remediationSelection.outputContract ?? "implementer", phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true })
     });
     const remediation = mutation.session;
     sessions.push(remediation);
@@ -228,7 +269,11 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
       continue;
     }
 
-    const candidateFindings = reviewerNames.length ? await runReviewRound(root, stateRoot, config, contract, reviewerSelections, implementationSelection, supervisorSelection, reviewerNames, candidateReport, sessions, qualityHistory.length, checks, prepareRepairWorkspace, reviewerAssignments) : emptyFindings();
+    const candidateRound = reviewerNames.length
+      ? await runReviewRound(root, stateRoot, config, contract, reviewerSelections, implementationSelection, supervisorSelection, reviewerNames, candidateReport, sessions, qualityHistory.length, checks, prepareRepairWorkspace, reviewerAssignments)
+      : { findings: emptyFindings(), failures: [] };
+    if (candidateRound.failures.length) return await reviewerProviderFailureResult(stateRoot, config, contract, candidateRound.failures, remediationRounds, candidateReport, candidateRound.findings, checks, sessions, qualityHistory);
+    const candidateFindings = candidateRound.findings;
     const candidateState = analyzeQualityState(candidateFindings.findings, qualityHistory, config, candidateReport.candidate?.identityDigest);
     await persistQualityState(stateRoot, config, contract.task.id, candidateState);
 
@@ -248,7 +293,16 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
   }
 }
 
-async function runReviewRound(root: string, stateRoot: string, config: HarnessProjectConfig, contract: TaskContract, reviewerSelections: Readonly<Record<string, AgentExecutionSelection>>, implementationSelection: AgentExecutionSelection, supervisorSelection: AgentExecutionSelection | undefined, reviewerNames: string[], report: ValidationReport, sessions: WorkerSession[], round: number, checks: ValidationCheck[], prepareReviewWorkspace?: (isolatedRoot: string) => Promise<void>, assuranceAssignments: readonly CandidateAssuranceReviewAssignmentV1[] = []): Promise<DedupedFindings> {
+/** Bounded autonomous remediation budget (deterministic execution policy, AEH-V2-0119). */
+export function remediationBudgetRounds(config: HarnessProjectConfig): number {
+  return config.workflow?.reviews?.escalation?.maxRounds ?? 6;
+}
+
+export function remediationBudgetReached(rounds: number, config: HarnessProjectConfig): boolean {
+  return rounds >= remediationBudgetRounds(config);
+}
+
+async function runReviewRound(root: string, stateRoot: string, config: HarnessProjectConfig, contract: TaskContract, reviewerSelections: Readonly<Record<string, AgentExecutionSelection>>, implementationSelection: AgentExecutionSelection, supervisorSelection: AgentExecutionSelection | undefined, reviewerNames: string[], report: ValidationReport, sessions: WorkerSession[], round: number, checks: ValidationCheck[], prepareReviewWorkspace?: (isolatedRoot: string) => Promise<void>, assuranceAssignments: readonly CandidateAssuranceReviewAssignmentV1[] = []): Promise<ReviewRoundResult> {
   if (!report.candidate) throw new Error("CANDIDATE_BINDING_REQUIRED: reviewer invocation requires a candidate-bound report.");
   const assuranceByIdentity = new Map(assuranceAssignments.map((assignment) => [assignment.reviewerIdentity, assignment]));
   const outputs = await Promise.all(reviewerNames.map(async (name) => {
@@ -266,14 +320,16 @@ async function runReviewRound(root: string, stateRoot: string, config: HarnessPr
   const afterReviewerIdentity = await assertCurrentReviewCandidate(root, report.candidate);
   checks.push(candidateIdentityCheck(`candidate.workspace-identity.after-review-${round}`, afterReviewerIdentity));
   const rawFindings: NormalizedFinding[] = [];
+  const failures: ReviewerRoundFailureV1[] = [];
   for (const output of outputs) {
     sessions.push(output.session);
     rawFindings.push(...output.findings.map((finding) => ({ ...finding, id: `${output.reviewer}:${finding.id}` })));
+    if (output.failure) failures.push(output.failure);
     const assignment = assuranceByIdentity.get(output.reviewer);
     if (assignment) {
       const identityMatches = output.session.logicalAgent === assignment.reviewerIdentity;
       const evidenceValid = output.valid && identityMatches;
-      checks.push({
+      replaceSupersededReviewerChecksV1(checks, round, output.reviewer, {
         id: `candidate.assurance.reviewer.${round}.${output.reviewer}`,
         category: "candidate-assurance",
         status: evidenceValid ? "PASS" : "FAIL",
@@ -282,6 +338,9 @@ async function runReviewRound(root: string, stateRoot: string, config: HarnessPr
       });
     }
   }
+  // A failed reviewer turn is terminal system evidence, not a finding to consolidate or remediate.
+  // Short-circuit before the supervisor turn so a model cannot reclassify a provider stop into debt.
+  if (failures.length) return { findings: dedupeFindings(rawFindings), failures };
 
   let deduped: DedupedFindings;
   const operationId = currentOperationContext().id;
@@ -304,7 +363,7 @@ async function runReviewRound(root: string, stateRoot: string, config: HarnessPr
   const afterConsolidationIdentity = await assertCurrentReviewCandidate(root, report.candidate);
   checks.push(candidateIdentityCheck(`candidate.workspace-identity.after-review-consolidation-${round}`, afterConsolidationIdentity));
   await persistFindings(stateRoot, config, contract.task.id, round, deduped);
-  return deduped;
+  return { findings: deduped, failures: [] };
 }
 
 async function assertCurrentReviewCandidate(root: string, candidate: CandidateRevisionV1): Promise<CandidateWorkspaceIdentityEvidenceV1> {
@@ -314,7 +373,7 @@ async function assertCurrentReviewCandidate(root: string, candidate: CandidateRe
   return assertWorkspaceMatchesCandidate(root, candidate, operation.candidateRevision ?? null);
 }
 
-async function runReviewer(root: string, config: HarnessProjectConfig, contract: TaskContract, selection: AgentExecutionSelection | undefined, name: string, report: ValidationReport, assignedDimensions: readonly string[], prepareReviewWorkspace?: (isolatedRoot: string) => Promise<void>): Promise<{ reviewer: string; session: WorkerSession; findings: NormalizedFinding[]; valid: boolean }> {
+async function runReviewer(root: string, config: HarnessProjectConfig, contract: TaskContract, selection: AgentExecutionSelection | undefined, name: string, report: ValidationReport, assignedDimensions: readonly string[], prepareReviewWorkspace?: (isolatedRoot: string) => Promise<void>): Promise<{ reviewer: string; session: WorkerSession; findings: NormalizedFinding[]; valid: boolean; failure?: ReviewerRoundFailureV1 }> {
   if (!selection) throw new Error(`REVIEW_EXECUTION_INVALID: no frozen selection exists for reviewer '${name}'.`);
   const candidate = report.candidate;
   if (!candidate) throw new Error("CANDIDATE_BINDING_REQUIRED: reviewer invocation requires a candidate-bound report.");
@@ -331,16 +390,37 @@ async function runReviewer(root: string, config: HarnessProjectConfig, contract:
   });
   const session = isolated.session;
   if (isolated.changeSet) {
-    return { reviewer: name, session, findings: [syntheticFinding(name, "Reviewer attempted to modify its isolated candidate snapshot; the output was rejected.")], valid: false };
+    const detail = "Reviewer attempted to modify its isolated candidate snapshot; the output was rejected.";
+    return { reviewer: name, session, findings: [syntheticFinding(name, detail)], valid: false, failure: { reviewer: name, kind: "MUTATION", detail, sessionId: session.id, exitCode: session.exitCode } };
   }
-  if (session.exitCode !== 0) return { reviewer: name, session, findings: [syntheticFinding(name, `Reviewer runtime exited with code ${session.exitCode}.`)], valid: false };
+  if (session.exitCode !== 0) {
+    const stop = (session.stderr || session.stdout || "no provider output").replace(/\s+/g, " ").trim().slice(0, 600);
+    const detail = `Reviewer provider session stopped or exited with code ${session.exitCode}: ${stop}`;
+    return { reviewer: name, session, findings: [syntheticFinding(name, detail)], valid: false, failure: { reviewer: name, kind: "RUNTIME", detail, sessionId: session.id, exitCode: session.exitCode } };
+  }
   try {
     const output = reviewerOutputSchema.parse(extractMarkedJson(session.stdout, session.stderr));
     if (output.verdict === "FAIL" && output.findings.length === 0) return { reviewer: name, session, findings: [syntheticFinding(name, "Reviewer returned FAIL without a structured finding.")], valid: false };
     return { reviewer: name, session, findings: output.findings, valid: true };
   } catch (error) {
-    return { reviewer: name, session, findings: [syntheticFinding(name, `Invalid reviewer output contract: ${String(error)}`)], valid: false };
+    const detail = `Invalid reviewer output contract: ${String(error)}`;
+    return { reviewer: name, session, findings: [syntheticFinding(name, detail)], valid: false, failure: { reviewer: name, kind: "CONTRACT", detail, sessionId: session.id, exitCode: session.exitCode } };
   }
+}
+
+function reviewerProviderFailureResult(stateRoot: string, config: HarnessProjectConfig, contract: TaskContract, failures: readonly ReviewerRoundFailureV1[], rounds: number, report: ValidationReport, findings: DedupedFindings, checks: ValidationCheck[], sessions: WorkerSession[], qualityHistory: QualityState[]): Promise<ReviewLifecycleResult> {
+  const detail = failures.map((failure) => `${failure.reviewer} (${failure.kind}${failure.sessionId ? `, session ${failure.sessionId}` : ""}${failure.exitCode !== undefined ? `, exit ${failure.exitCode}` : ""}): ${failure.detail}`).join(" | ");
+  return systemFailureResult(stateRoot, config, contract, `Reviewer provider turn failed; this is not remediable implementation debt. ${detail}`, rounds, report, findings, checks, sessions, qualityHistory);
+}
+
+async function systemFailureResult(stateRoot: string, config: HarnessProjectConfig, contract: TaskContract, message: string, rounds: number, report: ValidationReport, findings: DedupedFindings, checks: ValidationCheck[], sessions: WorkerSession[], qualityHistory: QualityState[]): Promise<ReviewLifecycleResult> {
+  const bounded = message.replace(/\s+/g, " ").trim().slice(0, 1200);
+  checks.push({ id: "agent.system-failure", category: "agent-review", status: "FAIL", message: bounded, details: { round: rounds } });
+  // Every returned lifecycle result carries at least one quality state; callers persist the review
+  // summary from it and must not crash on a terminal failure path (AEH-V2-0120).
+  qualityHistory.push(analyzeQualityState(findings.findings, qualityHistory, config, report.candidate?.identityDigest));
+  await recordEvent(stateRoot, config, "harness.review.system-failure", { taskId: contract.task.id, round: rounds, message: bounded }).catch(() => undefined);
+  return { status: "FAIL", finalState: "SYSTEM_FAILURE", humanRequired: false, rounds, report, findings, checks, sessions, qualityHistory, leadAccepted: false };
 }
 
 function candidateIdentityCheck(id: string, evidence: CandidateWorkspaceIdentityEvidenceV1): ValidationCheck {
@@ -353,9 +433,28 @@ function candidateIdentityCheck(id: string, evidence: CandidateWorkspaceIdentity
   };
 }
 
+/**
+ * Replace a reviewer's superseded round checks with the current round's check. A report carries
+ * checks across review/remediation rounds; an earlier failed round for a superseded candidate is
+ * not the current candidate's review state and must not poison the merged report status once a
+ * newer round produced the current evidence. Exactly one current check remains per reviewer.
+ */
+export function replaceSupersededReviewerChecksV1(checks: ValidationCheck[], round: number, reviewer: string, check: ValidationCheck): void {
+  const pattern = new RegExp(`^candidate\\.assurance\\.reviewer\\.(\\d+)\\.${reviewer.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`);
+  for (let index = checks.length - 1; index >= 0; index -= 1) {
+    const match = pattern.exec(checks[index]!.id);
+    if (match && Number(match[1]) < round) checks.splice(index, 1);
+  }
+  checks.push(check);
+}
+
 function mergeReviewCheck(report: ValidationReport, check: ValidationCheck): ValidationReport {
+  return mergeChecksById(report, [check]);
+}
+
+function mergeChecksById(report: ValidationReport, extra: readonly ValidationCheck[]): ValidationReport {
   const byId = new Map(report.checks.map((existing) => [existing.id, existing]));
-  byId.set(check.id, check);
+  for (const check of extra) byId.set(check.id, check);
   const checks = [...byId.values()];
   return { ...report, checks, status: checks.some((item) => item.status === "FAIL") ? "FAIL" : "PASS" };
 }
@@ -397,7 +496,12 @@ async function runLeadAcceptance(root: string, config: HarnessProjectConfig, con
 
 function buildReviewerPrompt(contract: TaskContract, reviewer: string, report: ValidationReport, assignedDimensions: readonly string[] = []): string {
   const assignment = assignedDimensions.length ? ` Your frozen independent review assignment covers these impact dimensions: ${assignedDimensions.join(", ")}. Inspect each assigned dimension against the assembled candidate.` : "";
-  return `You are reviewer ${reviewer} for ${contract.task.id}. Inspect the actual git diff from ${contract.git?.baseRef ?? "main"}, relevant source/tests, and the sealed task contract. Do not modify files. Deterministic validation currently reports ${report.status}.${assignment} Return findings with requiredCompetencies and reviewDimensions; never select a concrete agent or reviewer. Use exceptionType only when the issue cannot be resolved from the sealed requirements/repository without an external human decision or resource. Your final output MUST contain exactly one line beginning AEH_RESULT_JSON= followed by the JSON object.`;
+  const changed = [...new Set((report.changedFiles ?? []).filter(Boolean))].slice(0, 50);
+  const changedLine = changed.length ? ` The assembled candidate changed these files: ${changed.join(", ")}. Read them directly in this workspace.` : "";
+  const requirements = (contract.requirements ?? []).slice(0, 20).map((requirement) => `${requirement.id}: ${requirement.description}`).join(" | ");
+  const requirementsLine = requirements ? ` The sealed contract requirements are: ${requirements}.` : "";
+  const boundary = " This is a read-only review turn: do not modify files and do not attempt to access paths outside this candidate workspace and the operation control root (for example /root, /home or /etc). An out-of-scope read stops the provider session and fails the operation; inspect the candidate files directly instead.";
+  return `You are reviewer ${reviewer} for ${contract.task.id}. Inspect the assembled candidate against the sealed task contract, including the diff from ${contract.git?.baseRef ?? "main"} where a read-only command is available.${changedLine}${requirementsLine}${boundary} Deterministic validation currently reports ${report.status}.${assignment} Return findings with requiredCompetencies and reviewDimensions; never select a concrete agent or reviewer. Use exceptionType only when the issue cannot be resolved from the sealed requirements/repository without an external human decision or resource. Your final output MUST contain exactly one line beginning AEH_RESULT_JSON= followed by the JSON object.`;
 }
 function buildRemediationPrompt(contract: TaskContract, stage: ReviewEscalationStage, state: QualityState, findings: NormalizedFinding[], replan?: PlannerOutput): string {
   return `Autonomously remediate review debt for ${contract.task.id}. Stage=${stage.name}. Current DebtScore=${formatDebtScore(state.debtScore)}; final gate requires critical=0, high=0, medium=0, low<=3 and DebtScore<=3. Three notes equal one low. Do not change sealed contracts/specs/acceptance. Critical/high/medium findings are mandatory. Resolve low/note findings as needed to reach the final debt budget without broadening scope or creating regressions. ${replan ? `A stronger planner produced this advisory remediation plan (it does not override the sealed contract):\n${JSON.stringify(replan, null, 2)}\n` : ""}Findings:\n${JSON.stringify(findings, null, 2)}\nMake the smallest coherent changes and run focused checks. Do not ask the user unless a sealed requirement is contradictory, a product decision is genuinely missing, or an external credential/permission is required.`;

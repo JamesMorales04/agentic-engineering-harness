@@ -14,6 +14,26 @@ async function namesFrom(args: readonly string[], cwd: string): Promise<string[]
   return result.stdout.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
 }
 
+/**
+ * Absolute git metadata roots of a worktree: the worktree-private git dir and the
+ * shared common dir. These are the only git-internal paths a managed provider session
+ * may touch outside its project root (AEH-V2-0116); source access stays governed by the
+ * compiled tool ceiling.
+ */
+export async function worktreeGitRoots(cwd: string): Promise<string[]> {
+  const [gitDir, commonDir] = await Promise.all([
+    runExecutable("git", ["rev-parse", "--absolute-git-dir"], { cwd, timeoutMs: 15_000 }),
+    runExecutable("git", ["rev-parse", "--git-common-dir"], { cwd, timeoutMs: 15_000 })
+  ]);
+  const roots = new Set<string>();
+  if (gitDir.exitCode === 0 && gitDir.stdout.trim()) roots.add(path.resolve(gitDir.stdout.trim()));
+  if (commonDir.exitCode === 0 && commonDir.stdout.trim()) {
+    const value = commonDir.stdout.trim();
+    roots.add(path.isAbsolute(value) ? path.resolve(value) : path.resolve(cwd, value));
+  }
+  return [...roots].sort();
+}
+
 export async function getCurrentBranch(cwd: string): Promise<string | undefined> {
   const result = await runExecutable("git", ["branch", "--show-current"], { cwd });
   const branch = result.exitCode === 0 ? result.stdout.trim() : "";
@@ -46,6 +66,26 @@ export async function getChangedFiles(cwd: string, baseRef: string, options: Git
   return [...new Set(sets.flat())].filter((file) => !isIgnoredPath(file, options.ignoredPaths ?? [])).sort();
 }
 
+/**
+ * Untracked provider-owned directories never contribute to candidate/repository identity.
+ * Provider sessions (Serena semantic retrieval, Graphify code intelligence) activate and update
+ * project-local scratch inside the workspace while an operation runs; that scratch is not product
+ * source, must not become scope or change evidence, and must not destabilize a bound candidate
+ * digest. Tracked files always contribute, so a repository that deliberately versions provider
+ * configuration keeps its normal change detection.
+ */
+const PROVIDER_GENERATED_PREFIXES = [".serena", "graphify-out"];
+
+/** Git pathspec exclusions for provider-owned scratch that must never enter a candidate ChangeSet. */
+export function providerGeneratedPathspecExcludes(): string[] {
+  return PROVIDER_GENERATED_PREFIXES.flatMap((prefix) => [`:(exclude)${prefix}`, `:(exclude)${prefix}/**`]);
+}
+
+function isProviderGeneratedPath(file: string): boolean {
+  const normalized = file.replaceAll("\\", "/").replace(/^\.\//, "");
+  return PROVIDER_GENERATED_PREFIXES.some((prefix) => normalized === prefix || normalized.startsWith(`${prefix}/`));
+}
+
 /** Digest the actual current source tree, including unstaged and untracked files. */
 export async function computeWorktreeDigest(cwd: string): Promise<string> {
   let files: string[];
@@ -74,11 +114,39 @@ export async function computeWorktreeDigest(cwd: string): Promise<string> {
  * Return the exact Git path inventory hashed by computeWorktreeDigest when Git
  * enumeration is available. Callers that use this as a read boundary must
  * fail closed when Git cannot establish the tracked/non-ignored file set.
+ *
+ * `git add -N` (intent-to-add) entries surface under `git ls-files --cached`
+ * even though they carry no committed content, so provider-owned scratch could
+ * otherwise be smuggled into a digest. Intent-to-add entries are classified
+ * deterministically from `git status --porcelain=v2` (XY ".A") and only
+ * provider-generated ones are excluded; genuinely tracked provider files and
+ * legitimate intent-to-add source files always contribute.
  */
 export async function listWorktreeDigestPaths(cwd: string): Promise<string[]> {
-  const filesResult = await runExecutable("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], { cwd, timeoutMs: 15_000 });
-  if (filesResult.exitCode !== 0) throw new Error("Git could not enumerate the worktree digest file set.");
-  return [...new Set(filesResult.stdout.split("\0").filter(Boolean))].sort();
+  const [trackedResult, untrackedResult, intentToAdd] = await Promise.all([
+    runExecutable("git", ["ls-files", "-z", "--cached"], { cwd, timeoutMs: 15_000 }),
+    runExecutable("git", ["ls-files", "-z", "--others", "--exclude-standard"], { cwd, timeoutMs: 15_000 }),
+    listIntentToAddPaths(cwd)
+  ]);
+  if (trackedResult.exitCode !== 0 || untrackedResult.exitCode !== 0) throw new Error("Git could not enumerate the worktree digest file set.");
+  const tracked = trackedResult.stdout.split("\0").filter(Boolean).filter((file) => !(intentToAdd.has(file) && isProviderGeneratedPath(file)));
+  const untracked = untrackedResult.stdout.split("\0").filter(Boolean).filter((file) => !isProviderGeneratedPath(file));
+  return [...new Set([...tracked, ...untracked])].sort();
+}
+
+/** Deterministic intent-to-add inventory (`git add -N`), parsed from porcelain v2 records. */
+async function listIntentToAddPaths(cwd: string): Promise<Set<string>> {
+  const result = await runExecutable("git", ["status", "--porcelain=v2", "-z", "--untracked-files=no", "--no-renames"], { cwd, timeoutMs: 15_000 });
+  if (result.exitCode !== 0) throw new Error("Git could not classify intent-to-add entries in the worktree digest file set.");
+  const paths = new Set<string>();
+  for (const record of result.stdout.split("\0")) {
+    if (!record.startsWith("1 ")) continue;
+    const fields = record.split(" ");
+    if (fields[1] !== ".A") continue;
+    const file = fields.slice(8).join(" ");
+    if (file) paths.add(file);
+  }
+  return paths;
 }
 
 async function fallbackSourceFiles(root: string): Promise<string[]> {

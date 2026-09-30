@@ -105,4 +105,85 @@ describe("DIRECT candidate lifecycle", () => {
     expect(await computeWorktreeDigest(root)).toBe(baseCandidate.sourceDigest);
     expect((await loadOperation(root, operationId)).candidateRevision?.identityDigest).toBe(baseCandidate.identityDigest);
   });
+
+  it("excludes untracked provider-generated scratch from the DIRECT ChangeSet", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-direct-provider-scratch-"));
+    roots.push(root);
+    await fs.mkdir(path.join(root, "src"), { recursive: true });
+    await fs.writeFile(path.join(root, ".gitignore"), ".harness/\n");
+    await fs.writeFile(path.join(root, "src", "value.ts"), "export const value = 1;\n");
+    await runShell("git init -q && git add -A && git -c user.name=test -c user.email=test@example.com commit -qm initial", { cwd: root });
+    const operationId = "RUN-DIRECT-PROVIDER-SCRATCH";
+    const now = "2026-01-01T00:00:00.000Z";
+    await saveOwnedOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "implementation", root, payload: { taskId: "DIRECT-PROVIDER-SCRATCH" }, createdAt: now, updatedAt: now });
+    const baseCandidate = (await loadOperation(root, operationId)).candidateRevision!;
+    const config: HarnessProjectConfig = { version: 1, project: { name: "direct-candidate" } };
+    const contract: TaskContract = { version: 1, task: { id: "DIRECT-PROVIDER-SCRATCH", title: "Direct provider scratch test" }, scope: { allowed: ["src/**"], forbidden: [] } };
+
+    const isolated = await executeIsolatedCandidateMutation({
+      root,
+      operationId,
+      taskId: contract.task.id,
+      workUnitId: "direct:provider-scratch",
+      candidate: baseCandidate,
+      config,
+      contract,
+      execute: async (isolatedRoot) => {
+        await fs.writeFile(path.join(isolatedRoot, "src", "value.ts"), "export const value = 2;\n");
+        await fs.mkdir(path.join(isolatedRoot, ".serena"), { recursive: true });
+        await fs.writeFile(path.join(isolatedRoot, ".serena", "project.yml"), "provider scratch\n");
+        await fs.mkdir(path.join(isolatedRoot, "graphify-out", "cache"), { recursive: true });
+        await fs.writeFile(path.join(isolatedRoot, "graphify-out", "cache", "index.json"), "{}\n");
+        return { provider: "test", logicalAgent: "implementer", participantId: "participant:direct", exitCode: 0, stdout: "", stderr: "" };
+      }
+    });
+
+    expect(isolated.changeSet?.changedFiles).toEqual(["src/value.ts"]);
+    expect(isolated.changeSet?.patch).not.toContain(".serena");
+    expect(isolated.changeSet?.patch).not.toContain("graphify-out");
+    const assembled = await assembleCandidateChangeSet({
+      root,
+      operationId,
+      projectId: baseCandidate.projectId,
+      taskId: contract.task.id,
+      currentCandidate: baseCandidate,
+      changeSet: isolated.changeSet!,
+      allowedScope: contract.scope!.allowed,
+      forbiddenScope: contract.scope!.forbidden,
+      candidateId: `candidate:${operationId}:r2`
+    });
+    expect(assembled.candidate.revision).toBe(baseCandidate.revision + 1);
+  });
+
+  it("includes a newly created legitimate untracked source file in the DIRECT ChangeSet", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-direct-untracked-source-"));
+    roots.push(root);
+    await fs.mkdir(path.join(root, "src"), { recursive: true });
+    await fs.writeFile(path.join(root, ".gitignore"), ".harness/\n");
+    await fs.writeFile(path.join(root, "src", "value.ts"), "export const value = 1;\n");
+    await runShell("git init -q && git add -A && git -c user.name=test -c user.email=test@example.com commit -qm initial", { cwd: root });
+    const operationId = "RUN-DIRECT-UNTRACKED-SOURCE";
+    const now = "2026-01-01T00:00:00.000Z";
+    await saveOwnedOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "implementation", root, payload: { taskId: "DIRECT-UNTRACKED-SOURCE" }, createdAt: now, updatedAt: now });
+    const baseCandidate = (await loadOperation(root, operationId)).candidateRevision!;
+    const config: HarnessProjectConfig = { version: 1, project: { name: "direct-candidate" } };
+    const contract: TaskContract = { version: 1, task: { id: "DIRECT-UNTRACKED-SOURCE", title: "Direct untracked source test" }, scope: { allowed: ["src/**"], forbidden: [] } };
+
+    const isolated = await executeIsolatedCandidateMutation({
+      root,
+      operationId,
+      taskId: contract.task.id,
+      workUnitId: "direct:untracked-source",
+      candidate: baseCandidate,
+      config,
+      contract,
+      execute: async (isolatedRoot) => {
+        await fs.writeFile(path.join(isolatedRoot, "src", "extra.mjs"), "export const extra = true;\n");
+        return { provider: "test", logicalAgent: "implementer", participantId: "participant:direct", exitCode: 0, stdout: "", stderr: "" };
+      }
+    });
+
+    expect(isolated.changeSet?.changedFiles).toEqual(["src/extra.mjs"]);
+    expect(isolated.changeSet?.patch).toContain("src/extra.mjs");
+  });
 });

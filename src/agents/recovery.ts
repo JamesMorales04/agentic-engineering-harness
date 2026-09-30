@@ -3,7 +3,7 @@ import { sha256Canonical } from "../core/digest.js";
 import { AehError } from "../core/errors.js";
 import type { ValidationReport, WorkerSession } from "../core/types.js";
 import type { FailureType, RecoveryMap, RecoveryStep } from "./types.js";
-import { createSemanticEvidenceReceiptV1, SemanticAssessmentServiceV1, type SemanticAssessmentBindingV1 } from "../semantic/assessment.js";
+import { createSemanticEvidenceReceiptV1, SemanticAssessmentServiceV1, semanticModelDeadlineMsV1, type SemanticAssessmentBindingV1 } from "../semantic/assessment.js";
 
 export const failureTypeValues = ["PATCH_CONTEXT_MISMATCH", "TOOL_FAILURE", "MISSING_CONTEXT", "WRONG_AGENT", "VALIDATION_FAILURE", "REVIEW_FAILURE", "AMBIGUOUS_OUTPUT", "CONFLICTING_RESULTS"] as const;
 const failureTypeSchema = z.enum(failureTypeValues);
@@ -46,7 +46,7 @@ export async function classifyFailureWithSemanticAssessment(
     requiredOutputSchema: "semantic-assessment-v1",
     reasoningRequirement: { reasoningClass: "LIGHT", structuredOutputRequired: true, independenceRequired: false, externalKnowledgeRequired: false, maxContextClass: "STANDARD", riskClass: "STANDARD" },
     binding,
-    budget: { maxInputTokens: 2_000, maxOutputTokens: 300, deadlineMs: 10_000 },
+    budget: { maxInputTokens: 2_000, maxOutputTokens: 300, deadlineMs: semanticModelDeadlineMsV1 },
     policyRevision: options.policyRevision
   });
   if (assessment.judgment?.type !== "FAILURE") throw new AehError("FAILURE_ASSESSMENT_INVALID", "semantic failure assessment did not contain a typed failure judgment.");

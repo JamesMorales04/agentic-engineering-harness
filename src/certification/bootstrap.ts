@@ -101,7 +101,7 @@ export async function runExternalSelfDogfood(input: ExternalSelfDogfoodRequest):
     const candidateArtifact = path.join(fixtureRoot, ".aeh-candidate.tgz");
     await fs.copyFile(artifactPath, candidateArtifact);
     const artifactDigest = await sha256File(candidateArtifact);
-    const candidate: CandidateRevision = { version: 1, id: path.basename(artifactName, ".tgz"), root: fixtureRoot, artifactPath: candidateArtifact, baseRef: "packed-checkout", sourceDigest: artifactDigest, packedArtifactDigest: artifactDigest, treeDigest: await computeWorktreeDigest(fixtureRoot), metadata: { artifactDigest, packaging: "npm-pack-ignore-scripts", ...(await sourceIdentity(root)) } };
+    const candidate: CandidateRevision = { version: 1, id: path.basename(artifactName, ".tgz"), root: fixtureRoot, artifactPath: candidateArtifact, baseRef: "packed-checkout", sourceDigest: artifactDigest, packedArtifactDigest: artifactDigest, treeDigest: await computeWorktreeDigest(fixtureRoot), metadata: { artifactDigest, packaging: "npm-pack-ignore-scripts", ...(await sourceIdentity(root)), ...(await packedBuildIdentity(fixtureRoot)) } };
     const report = await new CertificationCore(input.oracle, input.provider).certify({ candidate, policy: input.policy ?? defaultCertificationPolicy(), actor: input.actor?.(fixtureRoot), capability: input.capability, requireModelE2E: input.requireModelE2E, requireModelEvidence: input.requireModelE2E });
     if (input.persistRoot) {
       const directory = input.persistDirectory ?? ".aeh-test-results/certification";
@@ -132,10 +132,34 @@ async function sourceIdentity(root: string): Promise<Record<string, string>> {
   };
 }
 
-function parsePackFilename(stdout: string): string {
+/** Read the installed packed artifact's own build identity so certification binds the candidate build, not only the harness build. */
+async function packedBuildIdentity(fixtureRoot: string): Promise<Record<string, string>> {
+  const packageRoot = path.join(fixtureRoot, "node_modules", "agentic-engineering-harness");
+  const dist = path.join(packageRoot, "dist");
+  try {
+    const releaseId = (await fs.readFile(path.join(dist, "current"), "utf8")).trim();
+    if (!/^release-[A-Za-z0-9._-]+$/.test(releaseId)) return {};
+    const raw = JSON.parse(await fs.readFile(path.join(dist, "releases", releaseId, "build-identity.json"), "utf8")) as Record<string, unknown>;
+    const metadata: Record<string, string> = { packedBuildRelease: releaseId };
+    if (typeof raw.buildDigest === "string") metadata.packedBuildDigest = raw.buildDigest;
+    if (typeof raw.gitSha === "string") metadata.packedBuildGitSha = raw.gitSha;
+    if (typeof raw.packageVersion === "string") metadata.packedBuildPackageVersion = raw.packageVersion;
+    return metadata;
+  } catch {
+    return {};
+  }
+}
+
+/** Extract the npm pack JSON payload; npm 10 may emit a package `prepare` build before the JSON array. */
+export function parsePackFilename(stdout: string): string {
+  const lines = stdout.split(/\r?\n/);
   let parsed: unknown;
-  try { parsed = JSON.parse(stdout); } catch { throw new Error("npm pack did not return JSON."); }
-  const record = Array.isArray(parsed) ? parsed[0] : parsed && typeof parsed === "object" && Object.values(parsed as Record<string, unknown>)[0];
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (lines[index].trim() !== "[") continue;
+    try { parsed = JSON.parse(lines.slice(index).join("\n")); break; } catch { /* keep scanning earlier lines */ }
+  }
+  if (parsed === undefined) throw new Error("npm pack did not return JSON.");
+  const record = Array.isArray(parsed) ? parsed[0] : parsed && typeof parsed === "object" ? Object.values(parsed as Record<string, unknown>)[0] : undefined;
   const filename = record && typeof record === "object" && typeof (record as { filename?: unknown }).filename === "string" ? (record as { filename: string }).filename : undefined;
   if (!filename || path.basename(filename) !== filename || !filename.endsWith(".tgz")) throw new Error("npm pack returned an unsafe artifact filename.");
   return filename;

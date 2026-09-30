@@ -1,0 +1,100 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 16,
+  "kind": "frozen-build-identity",
+  "recordedAt": "2026-09-29T07:44:38.000Z",
+  "checkout": "/home/james/Desarrollo/agentic-engineering-harness",
+  "branch": "core-architecture-v2",
+  "head": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+  "targetSha256": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+  "trackedDigest": "2bee2ec0c7c3ab1332daf76b3c5ffcbbe2665f7401bbf1da089acba36a083d5c",
+  "trackedFiles": 668,
+  "buildIdentity": "release-1790672477363-1539023-258dc5f0",
+  "buildCommand": "npm run build (exit 0)",
+  "typecheck": "npm run typecheck (exit 0)",
+  "gitDiffCheck": "clean",
+  "supersededFreezes": [
+    {
+      "trackedDigest": "d9f8fff1155b3f5cc9fdafa6b999cf079716d5a984063ec4363187d09cb86c74",
+      "buildIdentity": "release-1790659881012-555657-a5c8c94d",
+      "reason": "The first formal sweep run (r16-formal-1) exposed a real deterministic defect on the formal path: the controller-authoring candidate advance cleared the frozen policy, the Planner launch compiled a non-provisional policy at the same execution revision, and the first wave-semantics bind failed EXECUTION_POLICY_RECOMPILE_REQUIRED. The freeze was re-cut after the repair.",
+      "state": "SUPERSEDED"
+    },
+    {
+      "trackedDigest": "df4865ef4c9f23889d0d6a14c334057eb4df078b09db753bf6404e0e39586b0c",
+      "buildIdentity": "release-1790664718372-782894-a2c421b6",
+      "reason": "The delegated re-run (r16-delegated-2) exposed the provider-flaky candidate-drift replacement barrier: a completed handoff acknowledgment whose turn never reported completion failed the rotation. Repaired with the barrier prompt, a 120 s bounded readiness timeout, and a single bounded retry with a fresh session (mirroring initial supervisor materialization). The stale governedOperationBootstrap fixture (report-less FAILED run) was also corrected to the AEH-V2-0118 terminal-error contract.",
+      "state": "SUPERSEDED"
+    },
+    {
+      "trackedDigest": "d4eadc411a5c1b9d1abcc9e491b64d1b8add782406cc9d4964387706a7865b5e",
+      "buildIdentity": "release-1790667808816-1014546-05f087c1",
+      "reason": "The formal re-run (r16-formal-3) exposed a real multi-wave defect: the OpenCode inline Serena projection resolved a relative `--project .` against the controller cwd, so every isolated wave worktree shared one pool entry and a completed implementer's writer lease blocked the next wave (SerenaPoolOwnershipError). Repaired by keying the Serena pool by the actual launch root; a same-root concurrent-writer conflict still fails closed.",
+      "state": "SUPERSEDED"
+    }
+  ],
+  "frozenSourceRule": "No src/** edit is permitted during the P0-B sweep. Docs/evidence writes during lane windows are tracked-doc edits recorded by each lane's postRunTrackedDocEditWindow. If any source edit lands, every row whose executed path includes the changed module must be re-run on a newly frozen source (stated rule).",
+  "invalidationRuleApplied": "The final freeze differs from the first freeze in src/core/run.ts (wave-planning failure observability), src/operations/supervisor.ts (rotation handoff readiness barrier), src/operations/change.ts (provisional bootstrap policy after the authoring advance) and the extracted src/operations/bootstrapPolicy.ts. Every row whose executed path includes those modules is re-run on the final freeze: change-delegated, change/direct-change, audit, formal-sdd, certification 4, cancel/recovery, issue-driven/authority. No row keeps superseded-freeze evidence.",
+  "additionalRepairsAfterFirstFreeze": [
+    {
+      "defect": "AEH-V2-0126 residual (formal wave planning)",
+      "mechanism": "DETERMINISTIC",
+      "resolution": "The controller-authoring candidate advance re-establishes the provisional bootstrap policy for the advanced candidate (bindBootstrapOperationPolicy extracted to src/operations/bootstrapPolicy.ts), so the first execution-semantics bind advances the operation execution revision and clears the policy instead of failing EXECUTION_POLICY_RECOMPILE_REQUIRED at wave planning.",
+      "regressions": ["tests/formalAuthoringCandidateAdvance.test.ts (provisional policy + wave-semantics bind at the advanced revision)", "tests/operations.test.ts (bootstrap policy surface unchanged)"]
+    },
+    {
+      "defect": "Supervisor rotation readiness barrier (formal r16-formal-1)",
+      "mechanism": "DETERMINISTIC",
+      "resolution": "The candidate-drift rotation handoff prompt is an explicit session-readiness barrier that does not invite file reads or commands; the durable checkpoint remains continuity authority for later consolidation turns. The rotation previously exceeded the 60 s initialization barrier while the model inspected the checkpoint.",
+      "regressions": ["tests/supervisorConsolidationProvenance.test.ts (handoff prompt barrier contract)"]
+    },
+    {
+      "defect": "Wave-planning failure observability",
+      "mechanism": "DETERMINISTIC",
+      "resolution": "runTask persists the owning wave-planning rejection reason on the planning stage and a harness.plan.failed event instead of a bare FAILED stage; this is how the EXECUTION_POLICY_RECOMPILE_REQUIRED cause was captured durably (docs/evidence/s13/round16-interrupted-attempt.json).",
+      "regressions": ["exercised by the interrupted diagnostic attempt and every re-run lane"]
+    }
+  ],
+  "p0aRepairs": [
+    {
+      "defect": "AEH-V2-0126",
+      "mechanism": "DETERMINISTIC",
+      "resolution": "src/operations/change.ts advanceCandidateForControllerAuthoring: FORMAL_SDD persistence+compilation advances the candidate lineage exactly one successor revision, records the controller-authoring ASSEMBLY receipt naming the Spec Manager as producing bounded participant, and invalidates execution bindings through bindOperationCandidate (policy cleared, participant execution bindings dropped). Idempotent on unchanged digest.",
+      "regressions": ["tests/formalAuthoringCandidateAdvance.test.ts"]
+    },
+    {
+      "defect": "R15-F9",
+      "mechanism": "DETERMINISTIC",
+      "resolution": "src/operations/changeHandoff.ts requireDurableChangeHandoff surfaces the durable contract-delivery failure code (e.g. CANDIDATE_WORKSPACE_MISMATCH) as the terminal error prefix instead of masking it with PLANNER_RESULT_ARTIFACT_MISSING.",
+      "regressions": ["tests/changeHandoff.test.ts"]
+    },
+    {
+      "defect": "R15-F3",
+      "mechanism": "DETERMINISTIC",
+      "resolution": "tests/packed/s13GovernedOperationCampaign.mjs lane result now requires terminal SUCCEEDED and a bounded (non-timeout) lane; summary lanes expose terminal + acceptanceOracleDisposition.",
+      "regressions": ["campaign harness syntax check; exercised by every round-16 lane"]
+    },
+    {
+      "defect": "R15-F8",
+      "mechanism": "DETERMINISTIC",
+      "resolution": "tests/packed/s13GithubEffectCampaign.mjs delivery blocker message names the real remaining condition (delivery contract not implemented) instead of the stale FULL_OPERATION defect reason.",
+      "regressions": ["campaign harness syntax check"]
+    },
+    {
+      "defect": "R15-F10 / AEH-V2-0125",
+      "mechanism": "DETERMINISTIC",
+      "resolution": "Explorer/Planner/Spec Manager prompt builders exported from src/operations/change.ts; exact marker and normative-language prompt contract pinned.",
+      "regressions": ["tests/changePromptContract.test.ts"]
+    }
+  ],
+  "sweepQueuedRows": [
+    "change-delegated",
+    "change/direct-change",
+    "certification-4 (startup, informational, project-home, multi-project)",
+    "audit",
+    "cancel/recovery",
+    "issue-driven (import + authority under external authorization, issue #1 only)",
+    "formal-sdd (canonical live FORMAL_SDD)"
+  ]
+}

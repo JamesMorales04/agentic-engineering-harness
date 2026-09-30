@@ -65,7 +65,7 @@ describe("engineering intent classification", () => {
       maxContextClass: "SMALL",
       riskClass: "HIGH"
     });
-    expect(intentRequest!.budget).toEqual({ maxInputTokens: 2_000, maxOutputTokens: 300, deadlineMs: 10_000 });
+    expect(intentRequest!.budget).toEqual({ maxInputTokens: 2_000, maxOutputTokens: 300, deadlineMs: 300_000 });
     expect(decision).toMatchObject({ intent: "change", mechanism: "HYBRID", changeTriage: { route: "DIRECT", assurance: "CRITICAL", mechanism: "HYBRID" } });
     expect(decision.assessmentDigests).toHaveLength(2);
   });

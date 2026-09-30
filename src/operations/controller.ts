@@ -6,7 +6,7 @@ import process from "node:process";
 import { runAudit } from "../audit/run.js";
 import { loadProjectConfig, loadTaskContract } from "../core/config.js";
 import { createControlPlaneSnapshot, materializeControlPlaneRuntimeSurface, materializeControlPlaneSnapshot } from "../core/controlPlane.js";
-import { runTask } from "../core/run.js";
+import { operationFailureDetail, runTask } from "../core/run.js";
 import type { AssuranceLevel, ImplementationRoute } from "../architecture/contracts.js";
 import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
 import { assertResolvedOperationPolicyV1, compileResolvedOperationPolicy } from "../architecture/executionIdentity.js";
@@ -27,6 +27,8 @@ import {
   type ProcessResult
 } from "../utils/process.js";
 import { prepareChangeOperation, resolveChangePreflightV1, runChangeOperation, type PreparedChangeOperation } from "./change.js";
+import { prepareGithubIssueTask, type IssuePreparationResult } from "../issues/intake.js";
+import { createSemanticAssessmentRuntimeV1 } from "../semantic/runtime.js";
 import type { ChangePreflightV1 } from "../core/triage.js";
 import { computeWorktreeDigest, resolveBaseRef } from "../core/git.js";
 import { sha256Canonical, sha256Utf8 } from "../core/digest.js";
@@ -69,6 +71,9 @@ import {
 } from "./state.js";
 import { candidateRevisionsEqual, createCandidateRevisionV1, type CandidateRevisionV1 } from "./v2Contracts.js";
 import { assertWorkspaceMatchesCandidate } from "../candidates/identity.js";
+import { bindBootstrapOperationPolicy } from "./bootstrapPolicy.js";
+
+export { bindBootstrapOperationPolicy };
 
 export interface StartOperationOptions {
   nodeExecutable: string;
@@ -88,6 +93,8 @@ export interface OperationControllerDeps {
   runAudit?: typeof runAudit;
   runTask?: typeof runTask;
   runChange?: typeof runChangeOperation;
+  runIssueIntake?: typeof prepareGithubIssueTask;
+  createSemanticRuntime?: typeof createSemanticAssessmentRuntimeV1;
   /** Trusted actor from the paired Control Center session; absent callers must present a recorded scoped decision. */
   humanActorId?: string;
   /** Deterministic provider observation seam for cleanup tests and disposable packed fixtures. */
@@ -114,7 +121,7 @@ export async function startDetachedOperation(
   if (suppliedDecision) assertIntentDecisionForRoute(suppliedDecision, kind === "audit" ? "audit" : kind === "change" ? "change" : "run");
 
   let changePreflight: ChangePreflightV1 | undefined;
-  if (kind === "change") {
+  if (kind === "change" && !(payload as ChangeOperationPayload).issueIntake) {
     if (!config) throw new Error("CHANGE_PREFLIGHT_CONFIG_REQUIRED: project configuration must be loaded before resolving route and assurance.");
     changePreflight = await (options.resolveChangePreflight ?? resolveChangePreflightV1)(absoluteRoot, config, payload as ChangeOperationPayload);
   }
@@ -311,8 +318,15 @@ async function executeOperationWithEnvironment(
     let bootstrapRoute: ImplementationRoute | undefined;
     let bootstrapAssurance: AssuranceLevel | undefined;
     if (record.kind === "audit") {
-      bootstrapRoute = "NO_AGENT";
-      bootstrapAssurance = "NONE";
+      // AUDIT executes bounded read-only reviewers under the delegated review route; the
+      // bootstrap policy must bind the same route/assurance the audit TaskContract declares,
+      // otherwise participant structured-result launches reject the policy as stale.
+      const payload = record.payload as AuditOperationPayload;
+      bootstrapRoute = "DELEGATED";
+      bootstrapAssurance = payload.risk === "high" ? "CRITICAL" : "STANDARD";
+      record = await patchOperation(absoluteRoot, operationId, {
+        intent: { ...record.intent, route: bootstrapRoute, assurance: bootstrapAssurance }
+      });
     } else if (record.kind === "run") {
       const payload = record.payload as RunOperationPayload;
       runContract = await loadTaskContract(absoluteRoot, payload.taskId, config);
@@ -320,14 +334,26 @@ async function executeOperationWithEnvironment(
       bootstrapAssurance = runContract.routing?.assurance;
     } else {
       const payload = record.payload as ChangeOperationPayload;
-      preparedChange = await prepareChangeOperation(absoluteRoot, config, record, payload);
-      if (record.continuation) {
+      if (payload.issueIntake) {
+        // Controller-owned GitHub issue intake: the operation's deliverable is the authored,
+        // sealed TaskContract, so it binds a deterministic normalization policy and never runs
+        // the change implementation pipeline. The Planner launches inside this managed operation
+        // with controller-issued authority, a candidate revision, and the current epoch.
+        bootstrapRoute = "DELEGATED";
+        bootstrapAssurance = "STANDARD";
+        record = await patchOperation(absoluteRoot, operationId, {
+          intent: { ...record.intent, route: bootstrapRoute, assurance: bootstrapAssurance }
+        });
+      } else {
+        preparedChange = await prepareChangeOperation(absoluteRoot, config, record, payload);
+      }
+      if (!payload.issueIntake && record.continuation) {
         if (record.intent?.route !== "FORMAL_SDD" || !record.intent.assurance) throw new Error("DECISION_CONTINUATION_TARGET_INVALID: persisted Spec Manager continuation has no frozen FORMAL_SDD route.");
         bootstrapRoute = record.intent.route;
         bootstrapAssurance = record.intent.assurance;
-      } else {
-        bootstrapRoute = preparedChange.triage.route;
-        bootstrapAssurance = preparedChange.triage.assurance;
+      } else if (!payload.issueIntake) {
+        bootstrapRoute = preparedChange!.triage.route;
+        bootstrapAssurance = preparedChange!.triage.assurance;
         record = await patchOperation(absoluteRoot, operationId, {
           intent: { ...record.intent, route: bootstrapRoute, assurance: bootstrapAssurance }
         });
@@ -342,6 +368,10 @@ async function executeOperationWithEnvironment(
     if (record.pause) {
       record = await rebindPauseRecordToCurrentIdentity(absoluteRoot, operationId);
       record = await awaitOperationResume(absoluteRoot, operationId);
+    }
+
+    if (record.kind === "change" && (record.payload as ChangeOperationPayload).issueIntake) {
+      return await executeIssueIntakeOperation(absoluteRoot, config, record, deps, trace);
     }
 
   const workspace = await ensureOperationWorkspace(
@@ -380,6 +410,9 @@ async function executeOperationWithEnvironment(
         worktree: executionRoot,
         createdAt: new Date().toISOString()
       }));
+      // Binding a workspace candidate clears the frozen policy; participant launches require
+      // a policy that binds the current candidate revision and digest before they can start.
+      record = await bindBootstrapOperationPolicy(absoluteRoot, config, record, bootstrapRoute, bootstrapAssurance, runContract);
     } else await assertWorkspaceMatchesCandidate(executionRoot, priorCandidate);
     await syncOperationPortfolio(absoluteRoot, config.project.name, record);
     stopWatchdog = (deps.startWatchdog ?? startOperationWatchdog)(absoluteRoot, config, operationId);
@@ -389,7 +422,7 @@ async function executeOperationWithEnvironment(
       const report = await (deps.runAudit ?? runAudit)(executionRoot, config, { ...payload, auditId: record.id });
       const current = await loadOperation(absoluteRoot, operationId);
       if (current.status === "CANCELLED") return current;
-      return terminalizeOperation(
+      return await terminalizeOperation(
         absoluteRoot,
         operationId,
         {
@@ -419,12 +452,16 @@ async function executeOperationWithEnvironment(
       );
       const current = await loadOperation(absoluteRoot, operationId);
       if (current.status === "CANCELLED") return current;
-      return terminalizeOperation(
+      // A FAILED change run must carry its owning failing checks in the durable operation record
+      // instead of terminalizing with `error: null` (AEH-V2-0118).
+      const runFailure = result.run.status === "PASS" ? undefined : operationFailureDetail(result.run);
+      return await terminalizeOperation(
         absoluteRoot,
         operationId,
         {
           status: result.run.status === "PASS" ? "SUCCEEDED" : "FAILED",
           phase: "finished",
+          ...(runFailure ? { error: runFailure } : {}),
           finishedAt: new Date().toISOString(),
           result: {
             taskId: result.taskId,
@@ -452,12 +489,14 @@ async function executeOperationWithEnvironment(
     const result = await (deps.runTask ?? runTask)(executionRoot, config, contract, { profile: payload.profile });
     const current = await loadOperation(absoluteRoot, operationId);
     if (current.status === "CANCELLED") return current;
-    return terminalizeOperation(
+    const runFailure = result.status === "PASS" ? undefined : operationFailureDetail(result);
+    return await terminalizeOperation(
       absoluteRoot,
       operationId,
       {
         status: result.status === "PASS" ? "SUCCEEDED" : "FAILED",
         phase: "finished",
+        ...(runFailure ? { error: runFailure } : {}),
         finishedAt: new Date().toISOString(),
         result: {
           taskId: result.taskId,
@@ -475,7 +514,7 @@ async function executeOperationWithEnvironment(
   } catch (error) {
     const current = await loadOperation(absoluteRoot, operationId).catch(() => record);
     if (current.status === "CANCELLED") return current;
-    return terminalizeOperation(
+    return await terminalizeOperation(
       absoluteRoot,
       operationId,
       {
@@ -770,68 +809,65 @@ async function terminalizeOperation(
   return loadOperation(root, operationId).catch(() => terminal);
 }
 
-export async function bindBootstrapOperationPolicy(
-  root: string,
-  config: HarnessProjectConfig,
-  operation: OperationRecordV2,
-  route: ImplementationRoute,
-  minimumAssurance: AssuranceLevel,
-  contract?: TaskContract
-): Promise<OperationRecordV2> {
-  const candidate = operation.candidateRevision;
-  const controllerEpoch = currentControllerEpoch(operation);
-  if (!candidate || !Number.isSafeInteger(operation.operationExecutionRevision) || !operation.controller?.tokenDigest) {
-    throw new Error("EXECUTION_POLICY_INPUT_MISSING: bootstrap policy requires current candidate, operation execution revision, and claimed controller epoch.");
-  }
-  if (operation.resolvedOperationPolicy) {
-    const frozen = operation.resolvedOperationPolicy;
-    assertResolvedOperationPolicyV1(frozen);
-    if (frozen.operationId !== operation.id || frozen.candidateRevision !== candidate.revision || frozen.candidateDigest !== candidate.identityDigest
-      || frozen.operationExecutionRevision !== operation.operationExecutionRevision || frozen.controllerEpoch !== controllerEpoch
-      || (candidate.projectId && frozen.projectId !== candidate.projectId) || frozen.route !== route || frozen.minimumAssurance !== minimumAssurance) {
-      throw new Error("EXECUTION_POLICY_STALE: existing frozen bootstrap policy does not match the current operation, candidate, route, assurance, and controller epoch.");
-    }
-    return operation;
-  }
-  const allowedExternalEffects = configuredExternalEffects(config, operation.kind);
-  const humanDecisionRequirements = requiredHumanActionAuthorizations(allowedExternalEffects);
-  const validationPolicy = contract?.verification ?? {};
-  const deliveryPolicy = {
-    githubEnabled: config.delivery?.github?.enabled === true,
-    paseoEnabled: config.delivery?.paseo?.enabled === true,
-    allowedExternalEffects
-  };
-  const policy = compileResolvedOperationPolicy({
-    projectId: candidate.projectId ?? config.project.name,
-    operationId: operation.id,
-    operationExecutionRevision: operation.operationExecutionRevision!,
-    candidateRevision: candidate.revision,
-    candidateDigest: candidate.identityDigest,
-    controllerEpoch,
-    intent: operation.intent?.request ?? contract?.routing?.intent ?? `${operation.kind} operation ${operation.id}`,
-    route,
-    minimumAssurance,
-    policyVersions: { resolvedOperationPolicy: "1", roleInvocationPolicy: "1", executionBlueprint: "2", executionBinding: "2", skillManifest: "1" },
-    policyDigests: {
-      validation: sha256Canonical(validationPolicy),
-      delivery: sha256Canonical({ ...deliveryPolicy, humanDecisionRequirements }),
-      knowledge: sha256Canonical([]),
-      context: sha256Canonical(config.context ?? null)
-    },
-    validationPolicy,
-    reviewPolicy: {
-      minimumAssurance,
-      independentReviewRequired: minimumAssurance === "ELEVATED" || minimumAssurance === "CRITICAL",
-      leadAcceptance: config.workflow?.reviews?.leadAcceptance !== false,
-      leadAcceptanceDirect: config.workflow?.reviews?.leadAcceptanceDirect === true
-    },
-    deliveryPolicy,
-    knowledgePolicy: { bootstrap: true },
-    contextPolicy: config.context ?? { mode: "disabled" },
-    allowedExternalEffects,
-    humanDecisionRequirements
+/**
+ * Run the controller-owned GitHub issue import inside the already-bootstrapped managed operation.
+ * The bounded Planner launches with controller-issued ExecutionAuthorityV1 (candidate + epoch),
+ * the authored contract and normalized snapshot persist under the control root, and the intake
+ * terminal evidence is verified deterministically by the terminal gate.
+ */
+async function executeIssueIntakeOperation(root: string, config: HarnessProjectConfig, record: OperationRecordV2, deps: OperationControllerDeps, trace: typeof recordPaseoTrace): Promise<OperationRecordV2> {
+  const operationId = record.id;
+  const payload = record.payload as ChangeOperationPayload;
+  const intake = payload.issueIntake!;
+  const semanticRuntime = await (deps.createSemanticRuntime ?? createSemanticAssessmentRuntimeV1)(root, config, payload.profile ? { profile: payload.profile } : {});
+  const prepared: IssuePreparationResult = await (deps.runIssueIntake ?? prepareGithubIssueTask)(root, config, intake.number, {
+    refresh: intake.refresh,
+    force: intake.force,
+    semanticRuntime,
+    authoringPolicy: { route: "DELEGATED", assurance: "STANDARD" }
   });
-  return bindResolvedOperationPolicy(root, operation.id, policy);
+  const snapshotPath = path.posix.join((config.workflow?.issueIntake?.snapshotDir ?? ".harness/issues").replaceAll("\\", "/"), `${prepared.taskId}.json`);
+  const contractPath = path.posix.join((config.sdd?.contractsDir ?? ".harness/contracts").replaceAll("\\", "/"), `${prepared.taskId}.yaml`);
+  const contractContent = await fs.readFile(path.resolve(root, contractPath), "utf8");
+  const sourceDigest = await computeWorktreeDigest(root);
+  const current = await loadOperation(root, operationId);
+  let candidateAdvanced = false;
+  if (current.status === "CANCELLED") return current;
+  if (current.candidateRevision && current.candidateRevision.sourceDigest !== sourceDigest) {
+    await bindOperationCandidate(root, operationId, createCandidateRevisionV1({
+      operationId,
+      candidateId: `candidate:${operationId}:r${current.candidateRevision.revision + 1}`,
+      projectId: current.candidateRevision.projectId,
+      taskId: current.candidateRevision.taskId,
+      revision: current.candidateRevision.revision + 1,
+      parentCandidateId: current.candidateRevision.candidateId,
+      sourceDigest,
+      workspace: current.workspaceId,
+      worktree: root,
+      createdAt: new Date().toISOString()
+    }));
+    candidateAdvanced = true;
+    await trace(root, "operation.issue-intake.candidate-advanced", { operationId, taskId: prepared.taskId, sourceDigest });
+  }
+  return await terminalizeOperation(root, operationId, {
+    status: "SUCCEEDED",
+    phase: "issue-intake-finished",
+    finishedAt: new Date().toISOString(),
+    result: {
+      issueIntake: {
+        version: 1,
+        taskId: prepared.taskId,
+        route: prepared.route,
+        normalizedBy: prepared.normalizedBy,
+        snapshot: { repository: prepared.snapshot.repository, number: prepared.snapshot.number, contentSha256: prepared.snapshot.contentSha256, path: snapshotPath },
+        contract: { path: contractPath, digest: sha256Utf8(contractContent) },
+        planner: { participantId: prepared.plannerParticipantId, sessionId: prepared.plannerSessionId },
+        semanticAssessmentDigest: prepared.semanticAssessment?.assessmentDigest,
+        traceability: prepared.traceability,
+        candidateAdvanced
+      }
+    }
+  }, deps, config);
 }
 
 async function ensureOperationWorkspace(

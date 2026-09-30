@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 10,
+  "runId": "direct-cleanup-1",
+  "workUnit": "AEH-V2-0112 / R9-F4 / R9-F7",
+  "sourceLaneArtifact": {
+    "path": "docs/evidence/s13/governed-lanes/round-10/direct-cleanup-1/change-direct.json",
+    "sha256": "f2d8b9e80067237a9240c6069d13a63d8ad85c417944eff4d7af809d0fdf7979"
+  },
+  "sourceCampaignSummary": {
+    "path": "docs/evidence/s13/s13-governed-operations-round-10-direct-cleanup-1.json",
+    "sha256": "887f84327d78f615d4ebdc1a3e219c36a123751b4a976994fb900eac69d4b614"
+  },
+  "operationId": "CHANGE-20260928T163444Z-5de819ea",
+  "operationFile": "/tmp/aeh-s13-gov-45JzRk/work/lane-change-fixture/.harness/operations/CHANGE-20260928T163444Z-5de819ea.json",
+  "operationFileSha256": "bfc4a3082224ebdc5dcc827e21ab4bfdf6f392c1ef088fda2f66711b32d08190",
+  "observedAt": "2026-09-28T16:44:53.121Z",
+  "observation": {
+    "status": "SUCCEEDED",
+    "phase": "finished",
+    "revision": 80,
+    "finishedAt": "2026-09-28T16:43:31.246Z",
+    "error": null,
+    "controllerPid": 96160,
+    "controllerAlive": false
+  },
+  "candidate": {
+    "candidateId": "candidate:CHANGE-20260928T163444Z-5de819ea:r3",
+    "revision": 3,
+    "identityDigest": "7aaa1e699122143a146b6707d3129c759fdd21eb8b8cbd3797c8360f5abf0825",
+    "expectedSourceDigest": "14ce1c8b59431c61571e2cb470dbd87bf55d38010b9712da301fb07ab6e8323a",
+    "worktree": "/home/james/.paseo/worktrees/0dgpekds/aeh-change-20260928t163444z-5de819ea",
+    "worktreeExistsAfterArchive": false,
+    "preArchiveDigestObservation": "MATCH; expectedSourceDigest and observedSourceDigest are equal in the source lane artifact"
+  },
+  "cleanup": {
+    "guardDisposition": "ARCHIVE_AFTER_TERMINAL_AND_CONTROLLER_EXIT",
+    "archived": 4,
+    "remaining": 0,
+    "candidateWorkspaceId": "wks_590a4e72f758c87d"
+  },
+  "mechanism": "DETERMINISTIC",
+  "note": "This read occurred after campaign cleanup. The candidate worktree is absent because its archive was recorded after operation SUCCEEDED and controller exit; its pre-archive digest matched the bound CandidateRevision."
+}

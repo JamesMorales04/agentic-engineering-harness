@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 13,
+  "generatedAt": "2026-09-28T23:10:00Z",
+  "finding": "AEH-V2-0116",
+  "mechanism": "HYBRID",
+  "classification": "AEH_PRODUCT_DEFECTS_REPAIRED_PLUS_PROVIDER_BEHAVIOR_DOCUMENTED",
+  "providerBehavior": [
+    {
+      "id": "PASEO-AUTO-ACCEPT-TOOLPOLICY",
+      "statement": "Paseo deterministically disables OpenCode `auto_accept` whenever the agent config carries a `toolPolicy`: `@getpaseo/server@0.9.1` dist/server/server/agent/providers/opencode-agent.js:2425 sets `this.autoAcceptEnabled = !config.toolPolicy && isOpenCodeAutoAcceptEnabled(config)`. Every AEH participant launch with the context/result MCP preapprovals carries a toolPolicy, so `featureValues.auto_accept: true` alone can never clear a provider approval prompt.",
+      "evidence": "daemon-stored agent config `featureValues.auto_accept: true` + `toolPolicy.preapproved` (agent 3c313277-0aff-4c96-b1de-2a6ca5535017); provider source line as cited"
+    },
+    {
+      "id": "PASEO-CHILD-INHERITS-PARENT-WORKSPACE",
+      "statement": "Paseo child agents inherit the parent agent's workspace and execute in the parent's cwd, ignoring the requested create cwd.",
+      "evidence": "probe6: parent created at /home/james/.paseo/worktrees/1yo7ez85/aeh-change-20260928t224304z-e75534ab (workspace wks_e48e73753b74a9eb); child created with cwd=/tmp/aeh-r13-probe-wt and parent=parentId observed cwd=/home/james/.paseo/worktrees/1yo7ez85/... and workspaceId=wks_e48e73753b74a9eb (requested cwd ignored)"
+    }
+  ],
+  "aehDefects": [
+    {
+      "id": "D1",
+      "status": "REPAIRED",
+      "statement": "The OpenCode permission projection never declared `external_directory` for the frozen participant launch root. Because Paseo sibling tooling can relocate or reference the task worktree's git metadata outside the provider project root, OpenCode gated access behind `external_directory` and the session stopped at the approval prompt.",
+      "repair": "src/agents/permissions.ts projects a scoped `external_directory` allow for the resolved launch root and its git metadata roots when the compiled role has read/write/shell authority; Semantic Assessor and fully denied roles receive nothing; filesystem root and relative candidates are ignored. src/paseo/launchSpec.ts passes the launch root plus `worktreeGitRoots(root)` (new `src/core/git.ts` helper).",
+      "regressions": ["tests/permissions.test.ts (3)", "tests/paseoLaunchSpec.test.ts (external directory projection)"],
+      "probeEvidence": "probe2 outside-denied reproduced status=permission with pending name=external_directory patterns=[<outside>/*]; outside-allowed and scoped-pattern variants completed with zero prompts"
+    },
+    {
+      "id": "D2",
+      "status": "REPAIRED",
+      "statement": "The Paseo SDK discarded the pending approval payload returned by `WaitForFinishResult.final.pendingPermissions`, so the stopped permission identity was never durable (R12-F2 evidence gap).",
+      "repair": "src/paseo/sdk.ts captures a bounded permission stop detail (name/title/description/patterns) from `waitForFinish` final snapshots and handle snapshots; src/paseo/native.ts does the same on the subscription wait path; src/paseo/runtimeCore.ts includes it in the failed-turn stderr.",
+      "regressions": ["tests/paseoRuntime.test.ts (retains the provider approval identity and scope)"]
+    },
+    {
+      "id": "D3",
+      "status": "REPAIRED",
+      "statement": "Codex participant sessions ran with the provider-default `on-request` approval policy, so a real Repairer turn stopped on `CodexBash`/`CodexFileChange`.",
+      "repair": "src/paseo/launchSpec.ts projects provider-native `providerOptions` from the compiled permission ceiling: `approval_policy: never`, `sandbox_mode: workspace-write` with `writable_roots` (frozen launch + git metadata roots) and `network_access` from the ceiling, or `read-only` when the role cannot write/shell. `src/paseo/sdk.ts` sends `config.options`; `src/paseo/runtimeCore.ts` refuses CLI fallback when provider options exist (fail closed, never silently drop the sandbox projection).",
+      "regressions": ["tests/paseoLaunchSpec.test.ts (codex sandbox projection)"]
+    },
+    {
+      "id": "D4",
+      "status": "REPAIRED",
+      "statement": "AEH passed the supervisor as the Paseo `parent` for isolated wave-task launches; Paseo children inherit the parent workspace/cwd, so the isolated Implementer session executed inside the operation candidate workspace and mutated it, tripping the deterministic receipt gate with CANDIDATE_WORKSPACE_MISMATCH.",
+      "repair": "src/paseo/launchSpec.ts suppresses the Paseo parent handle for launches whose frozen root differs from the durable operation workspace root (`paseoParentAgentId`), keeping `aeh.parent-agent`/`AEH_PARENT_AGENT_ID` correlation. The provider can no longer relocate the isolated session.",
+      "regressions": ["tests/paseoLaunchSpec.test.ts (isolated launch keeps the label but drops the Paseo parent handle)"]
+    }
+  ],
+  "liveLaneEvidence": [
+    {
+      "run": "run-20260928222920325-9b7d9d",
+      "result": "FAILED",
+      "observation": "Implementer stopped on external_directory scope <fixture>/.git/worktrees/<task>/* (deterministic repro of D1 before repair)"
+    },
+    {
+      "run": "run-20260928224225868-7c8814",
+      "result": "FAILED",
+      "observation": "Implementer edited the operation candidate workspace (watcher: src/format.mjs added there) and the receipt gate failed CANDIDATE_WORKSPACE_MISMATCH (D4 before repair)"
+    },
+    {
+      "run": "run-20260928225446983-c5ff6c",
+      "result": "FAILED",
+      "observation": "After D1-D4 repairs: Implementer COMPLETED with a validated ChangeSet, assembly receipt r2->r3 recorded, configured validation PASS including `contract-test`, then remediation terminalized FAILED with both Repairer sessions reporting no applicable change (new AEH-V2-0118)"
+    }
+  ],
+  "residualBlocker": {
+    "id": "AEH-V2-0118",
+    "status": "OPEN",
+    "statement": "DELEGATED remediation launches Repairer participants after a PASS validation report; the Repairers return no-change (they diagnose a `contract-test` validator-id association blocker between the frozen contract and .harness/project.yaml), and the operation terminalizes FAILED at revision 122 with no durable error/message."
+  },
+  "sanitized": true
+}

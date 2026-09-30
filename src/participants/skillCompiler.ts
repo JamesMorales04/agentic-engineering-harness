@@ -52,8 +52,13 @@ export function compileSkillSet(input: SkillCompilationInputV1): CompiledSkillSe
 
   for (const id of profile.defaultSkills) addSkill(id, "role");
   for (const skill of seed.skills) {
-    if (skill.kind === "cross-cutting" && [...requestedCompetencies].some((competency) => skill.competencies.some((item) => item.id === competency))) addSkill(skill.id, "competency");
-    if (skill.kind === "technology" && [...specializations].some((specialization) => skill.specializations?.includes(specialization))) addSkill(skill.id, "specialization");
+    // A requested competency is covered by the seed skill that defines it, whether that skill is
+    // cross-cutting or technology-scoped. Selecting technology skills only through specializations
+    // left a known competency such as `node-runtime` simultaneously "known" and "uncovered", which
+    // rejected an otherwise valid participant plan (AEH-V2-0110).
+    const definesRequestedCompetency = [...requestedCompetencies].some((competency) => skill.competencies.some((item) => item.id === competency));
+    if (skill.kind === "cross-cutting" && definesRequestedCompetency) addSkill(skill.id, "competency");
+    if (skill.kind === "technology" && (definesRequestedCompetency || [...specializations].some((specialization) => skill.specializations?.includes(specialization)))) addSkill(skill.id, "specialization");
   }
   for (const skill of operationSkills) {
     if (requestedCompetencies.has(skill.competency)) addSkill(skill.id, "operation knowledge");

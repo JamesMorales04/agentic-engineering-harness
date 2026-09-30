@@ -118,6 +118,9 @@ describe("public runTask Repairer candidate lifecycle", () => {
     expect(await fs.readFile(path.join(root, "src", "value.ts"), "utf8")).toBe("export const value = 2;\n");
     expect(mocks.executeAgentPrompt).toHaveBeenCalledTimes(2);
     expect(mocks.executeAgentPrompt.mock.calls[0]?.[3]).toMatchObject({ role: "Repairer", logicalAgent: "repairer" });
+    // The Repairer's declared output contract must reach the dispatch/finalization path; otherwise
+    // its structured result turn is never activated and the repair can only fail silently (AEH-V2-0118).
+    expect(mocks.executeAgentPrompt.mock.calls[0]?.[5]).toMatchObject({ outputContract: "implementer" });
     expect(mocks.executeAgentPrompt.mock.calls[1]?.[3]).toMatchObject({ role: "Reviewer", logicalAgent: "reviewer" });
     expect(mocks.executeAgentPrompt.mock.calls[1]?.[4]).toContain("behavior.correctness");
     expect(result.candidateAssurance?.compilation).toMatchObject({ status: "READY", candidate: { revision: 2 }, reviewAssignments: [expect.objectContaining({ reviewerIdentity: "reviewer", dimensions: ["behavior.correctness"] })] });
@@ -126,6 +129,62 @@ describe("public runTask Repairer candidate lifecycle", () => {
     expect(result.acceptanceOracle?.blockers.map((item) => item.code)).toContain("VERIFICATION_REVIEW_STRENGTH_INSUFFICIENT");
     expect(result.report.checks.find((check) => check.id === "acceptance.oracle")?.status).toBe("FAIL");
     expect(mocks.legacyRepair).not.toHaveBeenCalled();
+  });
+
+  it("resolves a base contract assertion to its declared configured validation check through the acceptance bundle", async () => {
+    const root = await createProject();
+    const task = taskContractWithRequirements();
+    const config = projectConfig();
+    await writeProjectInputs(root, task);
+    await runShell("git init -q && git add -A && git -c user.name=test -c user.email=test@example.invalid commit -qm initial", { cwd: root });
+
+    const operationId = "RUN-REPAIR-ACCEPTANCE-PATH";
+    const now = "2026-01-01T00:00:00.000Z";
+    await saveOwnedOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "implementation", root, payload: { taskId: task.task.id }, createdAt: now, updatedAt: now });
+    const operation = await loadOperation(root, operationId);
+    const candidate = operation.candidateRevision!;
+    await bindResolvedOperationPolicy(root, operationId, compileResolvedOperationPolicy({
+      projectId: candidate.projectId ?? config.project.name,
+      operationId,
+      operationExecutionRevision: operation.operationExecutionRevision!,
+      candidateRevision: candidate.revision,
+      candidateDigest: candidate.identityDigest,
+      controllerEpoch: currentControllerEpoch(operation),
+      intent: "resolve a base contract assertion validation path",
+      route: "DIRECT",
+      minimumAssurance: "STANDARD",
+      policyVersions: { resolvedOperationPolicy: "1" },
+      policyDigests: { validation: sha256Canonical(task.verification ?? {}), review: sha256Canonical({ independentReviewRequired: false }) },
+      validationPolicy: task.verification ?? {},
+      reviewPolicy: { minimumAssurance: "STANDARD", independentReviewRequired: false, leadAcceptance: true, leadAcceptanceDirect: false },
+      deliveryPolicy: {},
+      knowledgePolicy: {},
+      contextPolicy: { mode: "disabled" },
+      allowedExternalEffects: [],
+      humanDecisionRequirements: []
+    }));
+    process.env.AEH_OPERATION_ID = operationId;
+    process.env.AEH_OPERATION_KIND = "run";
+    process.env.AEH_OPERATION_STATE_REDIRECT = "0";
+    process.env.AEH_CONTROL_ROOT = root;
+
+    mocks.start.mockResolvedValue(session("implementer", "participant:initial"));
+    mocks.executeAgentPrompt.mockImplementation(async (agentRoot: string, _config: HarnessProjectConfig, _contract: TaskContract, selection: { role: string; logicalAgent: string }, _prompt: string, options: { participantId?: string }) => {
+      if (selection.role === "Repairer") {
+        await fs.writeFile(path.join(agentRoot, "src", "value.ts"), "export const value = 2;\n");
+        return session(selection.logicalAgent, options.participantId);
+      }
+      if (selection.role === "Reviewer") return { ...session(selection.logicalAgent, options.participantId), stdout: `AEH_RESULT_JSON=${JSON.stringify({ verdict: "PASS", findings: [], finalizationSafety: "SAFE" })}` };
+      throw new Error(`Unexpected prompt role ${selection.role}.`);
+    });
+
+    const result = await runTask(root, config, task, { semanticRuntime: testSemanticRuntime() });
+
+    expect(result.candidateAssurance?.compilation?.validationRequirements.map((requirement) => requirement.id)).toContain("command.candidate-check");
+    expect(result.acceptanceOracle?.blockers.map((item) => item.code)).not.toContain("VERIFICATION_VALIDATION_PATH_MISSING");
+    const ac1Validation = (result.evidenceBundle?.evidence ?? []).filter((item) => item.assertionId === "AC-1" && item.kind === "VALIDATION");
+    expect(ac1Validation.map((item) => [item.provenance.sourceId, item.status])).toEqual([["command.candidate-check", "PASS"]]);
+    expect(result.acceptanceOracle?.blockers.map((item) => item.code)).toContain("VERIFICATION_REVIEW_STRENGTH_INSUFFICIENT");
   });
 
   it("fails closed when candidate repair has no compiled Repairer authority", async () => {
@@ -192,6 +251,13 @@ function taskContract(): TaskContract {
     routing: { intent: "implement", profile: "test", route: "DIRECT", assurance: "STANDARD" },
     repair: { maxAttempts: 1 },
     verification: { commands: [{ id: "candidate-check", command: "node check.mjs" }] }
+  };
+}
+
+function taskContractWithRequirements(): TaskContract {
+  return {
+    ...taskContract(),
+    requirements: [{ id: "AC-1", description: "src/value.ts exports value = 2", validators: ["command.candidate-check"] }]
   };
 }
 

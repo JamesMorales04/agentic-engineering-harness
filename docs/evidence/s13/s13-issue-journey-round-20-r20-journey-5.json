@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 20,
+  "runId": "r20-journey-5",
+  "campaign": "issue-journey",
+  "generatedAt": "2026-09-29T21:57:16.776Z",
+  "checkout": "/home/james/Desarrollo/agentic-engineering-harness",
+  "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13IssueJourneyCampaign.mjs",
+        "sha256": "676d4203f45c8cc11f528ed7e5fb5a0b5163b5e3871faab01f3a60dc00ed7325"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "803bd43692c2cd86fa3bd8f9651a821a8f50a2c1b848a4a5a83ba9a8a8f85a31"
+  },
+  "harnessBuildIdentity": {
+    "version": 1,
+    "packageVersion": "0.8.4",
+    "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "releaseId": "release-1790717821610-102347-36ed4223",
+    "buildDigest": "408b178d53f32750aa81efb3a60965552b1aacd7756332b4c6dbf8fd3d1c744b",
+    "dirty": true
+  },
+  "repository": {
+    "name": "JamesMorales04/aeh-s13-round3-20260927035743-6bb5da",
+    "visibility": "private",
+    "createdByCampaign": false
+  },
+  "issue": {
+    "number": 1,
+    "created": false,
+    "edited": false
+  },
+  "authorization": {
+    "authorizationId": "s13-github-effect-authorization-2026-09-28",
+    "artifactDigest": "272c5cb76158a7c312edd4d8d97cd6545b599e5c57c7978bbfc3742c573bd460",
+    "allowedEffects": [
+      "git.push",
+      "github.branch.create",
+      "github.issue.create"
+    ],
+    "resourceNamePrefix": "aeh-s13-",
+    "consumedBeforeAnyExternalCommand": true
+  },
+  "lanes": [
+    {
+      "capability": "issue-driven",
+      "result": "FAIL",
+      "checks": null,
+      "error": "AehError: CANDIDATE_WORKSPACE_MISMATCH: workspace does not materialize CandidateRevision candidate:CHANGE-20260929T215004Z-9eed7a49:r3 r3 (expectedSourceDigest=d95aaf3ae04c0f98d91bf67a4c2c31f94d4da031cfee6151a50d11cb1980cdce, observedSourceDigest=4c54afdd22bd110664016bf9eb37e692651e8fc805b840dcd5db3f85a55e5f4b). recent digest inputs: graphify-out/cache/stat-index.json@1790718797501, .harness/toolchain.yaml@1790718610953, .harness/project.yaml@1790718610941, .harness/agents.source.jsonc@1790718610939, node_modules/@opentelemetry/sdk-metrics/node_modules/@opentelemetry/core/build/esnext/semconv.js.map@1790718610236.\n    at assertWorkspaceSourceDigest (file:///home/james/Desarrollo/agentic-engineering-harness/dist/releases/release-1790717821610-102347-36ed4223/candidates/identity.js:14:15)\n    at async assertWorkspaceMatchesCandidate (file:///home/james/Desarrollo/agentic-engineering-harness/dist/releases/release-1790717821610-102347-36ed4223/candidates/identity.js:49:20)\n    at async Module.finalizeAcceptedIssue (file:///home/james/Desarrollo/agentic-engineering-harness/dist/releases/release-1790717821610-102347-36ed4223/delivery/finalize.js:31:5)\n    at async file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13IssueJourneyCampaign.mjs:338:21",
+      "artifact": "docs/evidence/s13/issue-journey-lanes/round-20/r20-journey-5/issue-driven.json"
+    }
+  ],
+  "result": "SLICE_BLOCKED",
+  "checkoutProof": {
+    "trackedDigestBefore": "8444d6a1ac8f1e10063819ff9c8bcfefe308b4ccc5c58a93fb967a819b492fc2",
+    "trackedDigestAfter": "8444d6a1ac8f1e10063819ff9c8bcfefe308b4ccc5c58a93fb967a819b492fc2",
+    "trackedFiles": 668,
+    "checkoutUntouched": true,
+    "postRunTrackedDocEditWindow": {
+      "opensAfterLaneFinish": true,
+      "note": "S13 tracked documentation/evidence is edited after lane execution; the recorded digest is the source-tree digest at lane end (R11-F6)."
+    }
+  }
+}

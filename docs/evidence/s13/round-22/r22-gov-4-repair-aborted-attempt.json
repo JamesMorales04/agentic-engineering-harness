@@ -1,0 +1,41 @@
+{
+ "version": 1,
+ "slice": "S13",
+ "round": 22,
+ "kind": "ABORTED_LANE_ATTEMPT_RECONCILIATION",
+ "runId": "r22-gov-4",
+ "generatedAt": "2026-09-30T08:30:48Z",
+ "operationId": "CHANGE-20260930T075828Z-cf2b9332",
+ "operationStatus": "RUNNING",
+ "operationRevision": 3,
+ "phase": "HUMAN_REQUIRED",
+ "blockedStage": {
+  "spec-authoring": {
+   "name": "spec-authoring",
+   "status": "BLOCKED",
+   "revision": 74,
+   "startedAt": "2026-09-30T08:06:56.692Z",
+   "finishedAt": "2026-09-30T08:08:51.992Z",
+   "message": "Waiting for a scoped product choice.",
+   "artifact": ".harness/operations/CHANGE-20260930T075828Z-cf2b9332/continuations/9791def8-c0a9-4e82-9fa8-22aabf4c9c83.json"
+  }
+ },
+ "reason": "repair lane second attempt: the Planner's typed formalization need escalated the DELEGATED design to FORMAL_SDD spec-authoring, where the operation correctly BLOCKED for a 'scoped product choice' (the request's comment-only/no-constant-change wording conflicts with the seeded src/config.mjs validator defect). No HumanDecision was minted; the lane hit its bound in HUMAN_REQUIRED and the detached controller outlived it.",
+ "processInventoryBeforeTermination": [
+  "2351999",
+  "2352005",
+  "2353260",
+  "2357538",
+  "2357672",
+  "2357673",
+  "2357674",
+  "2394032",
+  "2394033",
+  "2394034",
+  "2407027",
+  "2407028",
+  "2407029"
+ ],
+ "disposition": "orphan processes of the abandoned lane attempt terminated; operation state bytes, candidate worktree, Paseo workspaces/agents preserved and reported; no governed cancel, no HumanDecision",
+ "productObservation": "the DELEGATED repair fixture admits a legitimate Planner escalation to FORMAL_SDD because the request wording conflicts with the seeded failing validator; this is a lane-geometry variance (r19 DELEGATED pass had planning FAILED -> remediation), not a deterministic F2 regression"
+}

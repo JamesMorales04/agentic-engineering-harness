@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 20,
+  "kind": "STALLED_DISTRIBUTED_OPERATION_ORPHAN_RECONCILIATION",
+  "recordedAt": "2026-09-29T23:15Z",
+  "operation": {
+    "id": "CHANGE-20260929T224109Z-36b74caa",
+    "kind": "distributed lane r20-dist-2",
+    "statusAtReconciliation": "RUNNING",
+    "phase": "context",
+    "revision": 73,
+    "controllerPid": 203862,
+    "controllerAliveBefore": true,
+    "controllerAction": "terminated with SIGTERM after the harness ended (the campaign could not cancel: cancellation requires a HumanDecision, which is not authorized and was not minted)",
+    "terminality": "NOT_PROVABLE (non-terminal; preserved per the amendment)"
+  },
+  "workspacesPreserved": [
+    "wks_0f8e543a039b4766",
+    "wks_6351fc521f570fd5",
+    "wks_fddb44533751e856"
+  ],
+  "processes": {
+    "orphanCountAfterControllerTermination": 19,
+    "composition": "one operation monitor plus 18 provider/MCP child processes whose cwd was the stalled distributed candidate worktree /home/james/.paseo/worktrees/1nvt4xpb/aeh-change-20260929t224109z-36b74caa",
+    "action": "SIGTERM to every process whose /proc cwd resolved under the stalled fixture staging or candidate worktree; 0 remained after the grace period",
+    "note": "Processes were terminated because their controller no longer existed and they had no live continuation; workspaces and Paseo agent records were preserved because the owning operation is not terminal. This is direct AEH-V2-0130 evidence: a stalled distributed operation left a live controller, 19 child processes and three workspaces with no terminal/recovery reconciliation."
+  },
+  "finding": "AEH-V2-0130: the product's distributed coordinator can remain RUNNING past the campaign bound with a live controller and orphaned provider children; no terminal/recovery reconciliation exists.",
+  "relatedArtifacts": [
+    "docs/evidence/s13/governed-lanes/round-20/r20-dist-2/distributed.json",
+    "docs/evidence/s13/s13-governed-operations-round-20-r20-dist-2.json",
+    "docs/evidence/s13/round-20/resource-reconciliation.json"
+  ]
+}

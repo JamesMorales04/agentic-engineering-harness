@@ -1,0 +1,104 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 21,
+  "runId": "r21-ctxperm-1",
+  "campaign": "context-permission",
+  "generatedAt": "2026-09-30T01:50:27.019Z",
+  "checkout": "/home/james/Desarrollo/agentic-engineering-harness",
+  "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13ContextPermissionCampaign.mjs",
+        "sha256": "21bdbbabcec9982217fcb827552a36136044d2b633973485bdb70b3c4c784727"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "b2946cf80837c8494c8ce491d4da911343f5bd497cd804b0cf8780b6a195c7f8"
+  },
+  "harnessBuildIdentity": {
+    "version": 1,
+    "packageVersion": "0.8.4",
+    "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "releaseId": "release-1790732713987-589240-0ee41341",
+    "buildDigest": "e9a8862130319a82f458fc497305e05e44a1d007848938d2245966039d33b488",
+    "dirty": true
+  },
+  "candidate": {
+    "artifact": "agentic-engineering-harness-0.8.4.tgz",
+    "artifactDigest": "30c3dcfcdd6c3aafbebae3e8f2cac23d5db1cd48e8fd24dfbc11f0031297c277"
+  },
+  "lanes": [
+    {
+      "capability": "context-handoff",
+      "result": "FAIL",
+      "checks": [],
+      "rowResult": null,
+      "error": "Error: PASEO_PROVIDER_LEASE_TAKEOVER_BLOCKED: provider lease lease:b9b0194d-8d55-4598-aea3-2e0b99a54f96 belongs to another or stale lifecycle without a current-session takeover binding.\n    at takeOverPriorLeaseIfQuiescent (file:///tmp/aeh-s13-ctxperm-zbrFVG/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790733027656-610621-b4a368e8/runtime/providerLifecycle.js:113:19)\n    at async runWithOperationProviderLease (file:///tmp/aeh-s13-ctxperm-zbrFVG/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790733027656-610621-b4a368e8/runtime/providerLifecycle.js:19:5)\n    at async materializeManagedPaseoAgent (file:///tmp/aeh-s13-ctxperm-zbrFVG/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790733027656-610621-b4a368e8/paseo/runtimeCore.js:67:24)\n    at async materializeAgentPrompt (file:///tmp/aeh-s13-ctxperm-zbrFVG/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790733027656-610621-b4a368e8/workers/agentPrompt.js:218:30)\n    at async Module.executeAgentPrompt (file:///tmp/aeh-s13-ctxperm-zbrFVG/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790733027656-610621-b4a368e8/workers/agentPrompt.js:111:44)\n    at async withProviderTransportRetry (file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13ContextPermissionCampaign.mjs:62:21)\n    at async contextHandoffJourney (file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13ContextPermissionCampaign.mjs:255:20)\n    at async file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13ContextPermissionCampaign.mjs:377:45",
+      "artifact": "docs/evidence/s13/context-permission-lanes/round-21/r21-ctxperm-1/context-handoff.json"
+    },
+    {
+      "capability": "permission-delegation",
+      "result": "FAIL",
+      "checks": [],
+      "rowResult": null,
+      "error": "Error: PASEO_PROVIDER_LEASE_TAKEOVER_BLOCKED: provider lease lease:2503531b-7c1d-4872-9c78-e14398cbc7f0 belongs to another or stale lifecycle without a current-session takeover binding.\n    at takeOverPriorLeaseIfQuiescent (file:///tmp/aeh-s13-ctxperm-zbrFVG/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790733027656-610621-b4a368e8/runtime/providerLifecycle.js:113:19)\n    at async runWithOperationProviderLease (file:///tmp/aeh-s13-ctxperm-zbrFVG/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790733027656-610621-b4a368e8/runtime/providerLifecycle.js:19:5)\n    at async materializeManagedPaseoAgent (file:///tmp/aeh-s13-ctxperm-zbrFVG/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790733027656-610621-b4a368e8/paseo/runtimeCore.js:67:24)\n    at async materializeAgentPrompt (file:///tmp/aeh-s13-ctxperm-zbrFVG/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790733027656-610621-b4a368e8/workers/agentPrompt.js:218:30)\n    at async Module.executeAgentPrompt (file:///tmp/aeh-s13-ctxperm-zbrFVG/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790733027656-610621-b4a368e8/workers/agentPrompt.js:111:44)\n    at async withProviderTransportRetry (file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13ContextPermissionCampaign.mjs:62:21)\n    at async permissionDelegationJourney (file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13ContextPermissionCampaign.mjs:338:20)\n    at async file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13ContextPermissionCampaign.mjs:377:112",
+      "artifact": "docs/evidence/s13/context-permission-lanes/round-21/r21-ctxperm-1/permission-delegation.json"
+    }
+  ],
+  "result": "SLICE_BLOCKED",
+  "workspaceInventory": [
+    {
+      "workspaceId": "wks_3160ff0f00d24a32",
+      "cwd": "/tmp/aeh-s13-ctxperm-zbrFVG/fixture-permission-delegation"
+    },
+    {
+      "workspaceId": "wks_806b2878d0b12c4e",
+      "cwd": "/tmp/aeh-s13-ctxperm-zbrFVG/fixture-context-handoff"
+    }
+  ],
+  "workspaceCleanup": {
+    "archived": [
+      {
+        "workspaceId": "wks_3160ff0f00d24a32",
+        "cwd": "/tmp/aeh-s13-ctxperm-zbrFVG/fixture-permission-delegation",
+        "exitCode": 0
+      },
+      {
+        "workspaceId": "wks_806b2878d0b12c4e",
+        "cwd": "/tmp/aeh-s13-ctxperm-zbrFVG/fixture-context-handoff",
+        "exitCode": 0
+      }
+    ],
+    "remaining": [],
+    "accounting": {
+      "inventoryCount": 2,
+      "archivedCount": 2,
+      "remainingCount": 0,
+      "unaccounted": [],
+      "accounted": true
+    }
+  },
+  "checkoutProof": {
+    "trackedDigestBefore": "dc180d079163776a729e4d723288253f8108f941af8111559c748312f1e5dbbc",
+    "trackedDigestAfter": "dc180d079163776a729e4d723288253f8108f941af8111559c748312f1e5dbbc",
+    "trackedFiles": 668,
+    "checkoutUntouched": true,
+    "postRunTrackedDocEditWindow": {
+      "opensAfterLaneFinish": true,
+      "note": "S13 tracked documentation/evidence is edited after lane execution; the recorded digest is the source-tree digest at lane end (R11-F6)."
+    }
+  }
+}

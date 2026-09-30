@@ -10,7 +10,12 @@ export function configuredExternalEffects(config: HarnessProjectConfig, kind: Op
   const github = config.delivery?.github;
   if (github?.enabled === true) {
     effects.push("github.issue.create", "github.branch.create");
-    if (github.finalizeOnAcceptance === true) effects.push("git.push", "github.pull-request.create");
+    if (github.finalizeOnAcceptance === true) {
+      effects.push("git.push");
+      // Requested and authorized effects are enumerated in frozen policy (TARGET 11): a
+      // delivery policy may finalize push-only when pull requests are not requested.
+      if (github.pullRequests !== false) effects.push("github.pull-request.create");
+    }
   }
   return [...new Set(effects)].sort();
 }

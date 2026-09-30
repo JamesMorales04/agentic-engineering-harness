@@ -1,0 +1,516 @@
+{
+  "version": "1.0",
+  "slice": "S13",
+  "round": 11,
+  "reviewer": {
+    "identity": "FRESH INDEPENDENT S13 ROUND-11 REVIEWER (DeepSeek V4.1 Flash)",
+    "provider": "opencode-go",
+    "model": "deepseek-v4.1-flash",
+    "thinking": "plan-mode read-only; exact thinking option not exposed",
+    "implementedRound11": false,
+    "inheritedPriorDispositions": false
+  },
+  "noImplementationDisclosure": {
+    "wroteRepositoryFile": false,
+    "commitPushStashResetCleanRevert": false,
+    "githubWriteCommands": false,
+    "aehOperationAgainstCheckout": false,
+    "sideEffects": "read-only inspection plus focused vitest/typecheck/node --test execution; only /tmp artifacts and ignored tool caches were written; git status count (94) and TARGET sha256 unchanged before/after review"
+  },
+  "gitState": {
+    "repository": "/home/james/Desarrollo/agentic-engineering-harness",
+    "branch": "core-architecture-v2",
+    "head": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "headExpected": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "headMatches": true,
+    "upstream": "origin/core-architecture-v2 (0 behind, 0 local commits ahead)",
+    "workingTree": "69 tracked modifications + 25 untracked paths; entire S13 uncommitted",
+    "gitDiffCheck": "clean",
+    "targetUntouched": true,
+    "productSourceAfterPackedBuild": "no src/ file modified after 2026-09-28T16:18:32Z (src/entry.ts); packed build digest 0fc216b8... reproduced by independent builds before and after the Round-11 runs",
+    "credentialsInEvidence": "none found (gho_/github_pat_/x-access-token/Bearer/GH_TOKEN= scan)"
+  },
+  "digestRecomputation": [
+    {
+      "artifact": "docs/CORE_ARCHITECTURE_V2.md",
+      "expected": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+      "recomputed": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+      "result": "MATCH",
+      "note": "also equals git show HEAD:docs/CORE_ARCHITECTURE_V2.md"
+    },
+    {
+      "artifact": "docs/evidence/s13/github-effect-authorization.json",
+      "expected": "272c5cb76158a7c312edd4d8d97cd6545b599e5c57c7978bbfc3742c573bd460",
+      "recomputed": "272c5cb76158a7c312edd4d8d97cd6545b599e5c57c7978bbfc3742c573bd460",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/s13-real-provider-certification.json",
+      "expected": "1ab94ea7d0f08494d6eacb988c3063369f545087a911b353c10a04b0a7a4d0ea",
+      "recomputed": "1ab94ea7d0f08494d6eacb988c3063369f545087a911b353c10a04b0a7a4d0ea",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/lanes/startup.json",
+      "expected": "ab130248931f24dc2034694bc4df07cf4ad0a68ae6750c2fedb19c3ed40a356a",
+      "recomputed": "ab130248931f24dc2034694bc4df07cf4ad0a68ae6750c2fedb19c3ed40a356a",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/lanes/informational.json",
+      "expected": "c8e078ca7d0889d0e156a32d4df0a03f98fdad17b90c4914c05db7529f728cdc",
+      "recomputed": "c8e078ca7d0889d0e156a32d4df0a03f98fdad17b90c4914c05db7529f728cdc",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/lanes/project-home.json",
+      "expected": "b29134923e4ae6079c32ab7509292eb81225d71b5ff0f7d42c8c423347c26e56",
+      "recomputed": "b29134923e4ae6079c32ab7509292eb81225d71b5ff0f7d42c8c423347c26e56",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/lanes/multi-project.json",
+      "expected": "afef107a015caa84a3aedf6be17eda0d4ea6c70954de80ccd1b5ec295338e53f",
+      "recomputed": "afef107a015caa84a3aedf6be17eda0d4ea6c70954de80ccd1b5ec295338e53f",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/governed-lanes/round-11/run-20260928181910647-e8568d/audit.json",
+      "expected": "f31a34f8673419a8f5dee73754f68d28b806bf90eed20341a940df61c83f9b6f",
+      "recomputed": "f31a34f8673419a8f5dee73754f68d28b806bf90eed20341a940df61c83f9b6f",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/s13-governed-operations-round-11-run-20260928181910647-e8568d.json",
+      "expected": "370b53a247818d1310fed0f6a1d0fe1c50c0ad56877361216d00303165676891",
+      "recomputed": "370b53a247818d1310fed0f6a1d0fe1c50c0ad56877361216d00303165676891",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/s13-github-effects-round-11-run-20260928182516439-59f68a.json",
+      "expected": "e8e6f5ea3e8cfc5ccce6cad3226785f9a69f6409eaa50cf94a2b3c5b753e9a0d",
+      "recomputed": "e8e6f5ea3e8cfc5ccce6cad3226785f9a69f6409eaa50cf94a2b3c5b753e9a0d",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/github-lanes/round-11/run-20260928182516439-59f68a/authority.json",
+      "expected": "aaa8ea76de64dbd6bdf428fd7a64cb3e73b0d2509679bc6c252f0bce7bacefe7",
+      "recomputed": "aaa8ea76de64dbd6bdf428fd7a64cb3e73b0d2509679bc6c252f0bce7bacefe7",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/github-lanes/round-11/run-20260928182516439-59f68a/issue-driven.json",
+      "expected": "49ac06e1bdde050400190e19b2e386704a13b3a5a6d7e65eb74c63a374fbdbea",
+      "recomputed": "49ac06e1bdde050400190e19b2e386704a13b3a5a6d7e65eb74c63a374fbdbea",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/governed-lanes/round-11/run-20260928183023575-c38a80/change-delegated.json",
+      "expected": "5e9b18a100fa4d5dd2b4da0810b8cac7ab2ce3c309ea18531c9511e82bdf044b",
+      "recomputed": "5e9b18a100fa4d5dd2b4da0810b8cac7ab2ce3c309ea18531c9511e82bdf044b",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/s13-governed-operations-round-11-run-20260928183023575-c38a80.json",
+      "expected": "dc26366c1f62388cc7c0c9bc565ed10434c9023087e04bba3da4843ee0177f1e",
+      "recomputed": "dc26366c1f62388cc7c0c9bc565ed10434c9023087e04bba3da4843ee0177f1e",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/round10-review-dispositions.json",
+      "expected": "e44e22bb42da739753fe68f72f9a850915e2cdf75ad64e8a3820c6fbf809207c",
+      "recomputed": "e44e22bb42da739753fe68f72f9a850915e2cdf75ad64e8a3820c6fbf809207c",
+      "result": "MATCH",
+      "note": "original cdf2c2f4... is recorded in review-round10.json lines 146-149 (preserved)"
+    },
+    {
+      "artifact": "docs/evidence/s13/review-round10.json",
+      "expected": "ab31f436327641c4e8ec326ac0f4b5e13ac1c83b9f49e7f7947b60f18ccd0d44",
+      "recomputed": "ab31f436327641c4e8ec326ac0f4b5e13ac1c83b9f49e7f7947b60f18ccd0d44",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/round10-0114-authorization-resolution.json",
+      "expected": "218e3523626694e7f2653b851b9c25da9b1448545d1ea31322f65459b6e92698 (review-round10 MATCH_CURRENT)",
+      "recomputed": "218e3523626694e7f2653b851b9c25da9b1448545d1ea31322f65459b6e92698",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/s13-real-provider-certification-round-9.json",
+      "expected": "faad882abe490217cacad159d7404d4ffc28b2620199acb4c76ab135ddc2c92b",
+      "recomputed": "faad882abe490217cacad159d7404d4ffc28b2620199acb4c76ab135ddc2c92b",
+      "result": "MATCH",
+      "note": "preserved Round-9 bytes for the rerun certification"
+    },
+    {
+      "artifact": "docs/evidence/s13/s13-governed-operations-round-10-direct-cleanup-1.json",
+      "expected": "887f84327d78f615d4ebdc1a3e219c36a123751b4a976994fb900eac69d4b614",
+      "recomputed": "887f84327d78f615d4ebdc1a3e219c36a123751b4a976994fb900eac69d4b614",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/governed-lanes/round-10/direct-cleanup-1/change-direct.json",
+      "expected": "f2d8b9e80067237a9240c6069d13a63d8ad85c417944eff4d7af809d0fdf7979",
+      "recomputed": "f2d8b9e80067237a9240c6069d13a63d8ad85c417944eff4d7af809d0fdf7979",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/governed-lanes/round-10/direct-cleanup-1/post-campaign-operation-read.json",
+      "expected": "c80bdbf812312eb86cecf6aa04d2bb12888d3632cfedeebcbb4ee96031413a55",
+      "recomputed": "c80bdbf812312eb86cecf6aa04d2bb12888d3632cfedeebcbb4ee96031413a55",
+      "result": "MATCH",
+      "note": "review-round10.json transcribed this as a 63-char digest; WorkGraph self-correction is accurate"
+    },
+    {
+      "artifact": "docs/evidence/s13/s13-real-paseo-lifecycle-round-10-lifecycle-round10-1.json",
+      "expected": "7e285c57463827e7a92d5358f925ccd6bbc932d90bd2330699e354e6549ce3ff",
+      "recomputed": "7e285c57463827e7a92d5358f925ccd6bbc932d90bd2330699e354e6549ce3ff",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/{s13-github-effects-round-10-attempt-4.json, github-lanes/round-10/attempt-4/issue-driven.json, authority.json, s13-github-effects-round-10-attempt-3.json, governed-lanes/round-10/formal-diagnostic-1/change-delegated.json, s13-governed-operations-round-10-formal-diagnostic-1.json, round10-synthetic-decision-evidence.json}",
+      "expected": "6cf03b9d/68270e9d/9fee87ab/3dbffa27/3daada86/a1c632fd/0b34fb56 (historical, tainted where applicable)",
+      "recomputed": "6cf03b9d73a9b41a7d7deb4d97b7c735ac56dd819e9f62dcc0c469550238c878 / 68270e9ddc08866b0c825ac5e0ea2ca1ced75ddd8b28d4ff0afdd7701a122b98 / 9fee87ab565ba51e6e6cd515dbff76ea3899a56d04ecb1ebd81d78ea29e4a4c5 / 3dbffa27725c029ed08f73476133ffc2f9cc0902772a5f0e3c0766b87628e8f8 / 3daada863167bf49ed98a852364491647a221e903e722e025ff42b474e6c3871 / a1c632fd71415587f6f43b3fb6b23966ff0dd18bba7b3981454c7816c98c03fd / 0b34fb56ccef657c331a35521b9a09c3a8aff28fc561037b73b541e981d4d919",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "change-delegated participant payloads (Spec Manager 66ba2766, Planner cba6db51, Explorer 54fcca55)",
+      "expected": "lane-recorded payloadSha256 values",
+      "recomputed": "sha256(JSON.stringify(payload)) reproduces exactly",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "harnessRevisions aggregates (cert 03f25c84, GitHub 9ffd1be9, governed 30c0ec94)",
+      "expected": "summary-recorded digests",
+      "recomputed": "03f25c842350625671a168dc1e8b62d3db669a1aa23104cd5626516b04356711 / 9ffd1be9b08f31c4c113e66a5a1a838c9e813df9ee1df0cc7f19abe126445e06 / 30c0ec94e8fbc007d8df958e3ae87c98556d27429fc4defae3874f23ff27e9f3",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "packed build digest 0fc216b8ebd40b942c19556b2f1e7d6c44be802bb27142d41deeab2cc7ee71ac",
+      "expected": "all Round-10/Round-11 lane and summary build bindings",
+      "recomputed": "consistent across six independent build identities (release-1790613227455, -1790614455255, -1790619195689, -1790619551152, -1790620224160, -1790620873452); digestRelease hashes release file contents; src/ mtimes precede the first build",
+      "result": "MATCH_CONSISTENT"
+    },
+    {
+      "artifact": "current tracked-file digest vs lane checkout baseline",
+      "expected": "3599b62542cc0cdaeda8ef0649be1fe41cf86ef23f2ec08ea0c840e06b471a20 (lane before/after)",
+      "recomputed": "8758fea385be10365be6c6ad6f4feee16d7640b795297de6f6505450b13b6500",
+      "result": "MISMATCH_BY_DESIGN",
+      "note": "tracked documentation corrections written at 2026-09-28T18:40Z, after the Round-11 run windows (cert/audit/GitHub ended by 18:30:17Z); see finding R11-F3"
+    }
+  ],
+  "findings": [
+    {
+      "id": "R11-F1",
+      "priority": "P0",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "VERIFIED_REPAIRED",
+      "finding": "AEH-V2-0114 is repaired in the packed campaign path only. No campaign-generated HumanDecision approval remains: ledger.record() receives only externalAuthorizationDecisionInputV1 output; the loader enforces kind/status/authorizedBy/PRIVATE_ONLY/owner/allowedEffects/resourceNamePrefix/ambientAuthority/campaignSelfAuthorization/consumption and returns a Symbol-branded frozen object; typed errors fire before any gh command/staging/approval. Static test asserts absence of human:s13-github, repo create/delete, issue edit. Round-11 lanes used only git.push + github.branch.create on the user-owned private aeh-s13- repository and reused issue #1; no issue/repo create/edit/delete and no credential broadening occurred.",
+      "evidence": "tests/packed/s13ExternalEffectAuthorization.mjs:25-159; tests/packed/s13GithubEffectCampaign.mjs:61-66,214-222,439-447,494-505 (no fabricated literals); tests/s13GithubCampaignPolicy.test.ts 9/9 (absence -> no gh + empty TMPDIR, unbranded rejection, static assertions); github-lanes/round-11/.../authority.json aaa8ea76 (HUMAN_REQUIRED -> EXECUTED/SUCCEEDED, real ref aeh-s13-authority-20260928182516); issue-driven.json 49ac06e1 (issue #1 created:false reused:true); no src/ change after 16:18:32Z",
+      "requiredAction": "None for the repair itself. Track R11-F1-residual below; do not exercise github.issue.create under this artifact without explicit user confirmation of machine-readable coverage."
+    },
+    {
+      "id": "R11-F1-residual",
+      "priority": "P2",
+      "mechanism": "HYBRID",
+      "disposition": "PROVENANCE_LIMITATION_CONFIRMED",
+      "finding": "The prospective authorization artifact was amended by the Round-11 lead (31a47437... -> 272c5cb7...) to add scope.resourceNamePrefix/allowedEffects. The pre-amendment bytes were not preserved, and the user's prospective instruction is not durably quoted, so 'no widening' cannot be independently byte-verified; the pre-amendment resource scope is corroborated only by the preserved original dispositions record (test issues, branches, pull requests, minimum S13 fixtures). Round 11 exercised no widened effect (no github.issue.create, no repo/issue mutation), so no unauthorized effect occurred. The loader cannot be tricked by campaign code or fixture config: no code path writes or defaults S13_GH_AUTHORIZATION_FILE (campaign reads process.env only; tests write temp files outside the campaign process), and fixture project.yaml cannot set it.",
+      "evidence": "github-effect-authorization.json:74-83 (amendment record); review-round10.json:104-107 (prior digest) and round10-review-dispositions.json:20 (preserved pre-amendment resource scope); grep: no S13_GH_AUTHORIZATION_FILE writer in tests/packed; Round-11 effects limited to push/branch on JamesMorales04/aeh-s13-round3-20260927035743-6bb5da",
+      "requiredAction": "Preserve prior authorization bytes before future amendments (e.g. docs/evidence/s13/history/) and record the user's prospective instruction verbatim; require explicit user confirmation before any issue-create effect under this artifact."
+    },
+    {
+      "id": "R11-F2",
+      "priority": "P1",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "CONFIRMED_OPEN_REAL_DEFECT",
+      "finding": "AEH-V2-0115 confirmed: Spec Manager READY content is persisted without OpenSpec canonicality validation. Lane payload shows status READY, validationReady true, specs as flat ### Requirement:/#### Scenario: document with no ## ADDED/MODIFIED/REMOVED/RENAMED delta headers; operation terminalized FAILED inside compileOpenSpecChange (revision 80). The recorded required repair (typed pre-persistence canonicality validation + spec-authoring contract alignment) strictly narrows acceptance and weakens no gate.",
+      "evidence": "governed-lanes/round-11/.../change-delegated.json 5e9b18a1: terminalRecord.error 'No delta sections found'; artifacts.specManagers[0] artifactSha256 0f85afd2..., payloadSha256 66ba2766...; ENGINEERING_LEDGER AEH-V2-0115; STATUS lines 291-293",
+      "requiredAction": "Implement typed SPEC_MANAGER_CONTENT_NOT_CANONICAL validation before persistence and align the spec-authoring contract; then rerun formal-sdd to a canonical accepted result. Blocks formal-sdd, delegated-change escalation completion and full issue-driven delivery."
+    },
+    {
+      "id": "R11-F3",
+      "priority": "P1",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "CONFIRMED_OPEN",
+      "finding": "AEH-V2-0110 remains OPEN. The Round-11 run legitimately escalated DELEGATED->FORMAL_SDD exactly once with durable provenance (harness.change.triage-escalated at 2026-09-28T18:35:09.505Z, reason 'SPEC escalation came from durable explorer/planner evidence', explorer artifact sha256 4816557c..., planner payload sha256 cba6db51... with formalizationNeed=NONE, routeDiagnostics HYBRID / plannerAssessmentMechanism MODEL / routeGateMechanism DETERMINISTIC). The exact deterministic constraint that escalates despite formalizationNeed NONE is still not isolated; no accepted DELEGATED completion exists.",
+      "evidence": "change-delegated lane 5e9b18a1 routeDiagnostics + traces; ENGINEERING_LEDGER AEH-V2-0110 (OPEN); STATUS line 291",
+      "requiredAction": "Isolate and document the deterministic escalation predicate over explorer/planner evidence; produce an accepted DELEGATED completion."
+    },
+    {
+      "id": "R11-F4",
+      "priority": "P1",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "CONFIRMED_OPEN_PARTIALLY_ADVANCED",
+      "finding": "AEH-V2-0111 remains OPEN. The live FORMAL_SDD path reached a validated READY structured result (participant:137e533e857cbb1c, artifact 0f85afd2..., payload 66ba2766...) and the lane contains no CANDIDATE_WORKSPACE_MISMATCH anywhere. Canonical acceptance is still missing because of AEH-V2-0115.",
+      "evidence": "change-delegated lane 5e9b18a1 artifacts.specManagers; raw file contains no CANDIDATE_WORKSPACE_MISMATCH; ENGINEERING_LEDGER AEH-V2-0111 (OPEN)",
+      "requiredAction": "Keep OPEN until an accepted live FORMAL_SDD result exists; do not close on the READY result alone."
+    },
+    {
+      "id": "R11-F5",
+      "priority": "P2",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "DOC_OVERCLAIM_CONFIRMED",
+      "finding": "R10-F6 is claimed CLOSED and CONFORMANCE/WorkGraph assert 'every lane envelope records harnessRevisions'. No Round-11 lane envelope contains harnessRevisions; only the four top-level summaries do (cert 03f25c84, GitHub 9ffd1be9, governed 30c0ec94). A lane cited without its summary (as the WorkGraph does with lane digests) is not harness-bound, which is exactly what R10-F6 required.",
+      "evidence": "grep -rl harnessRevisions docs/evidence/s13/lanes docs/evidence/s13/github-lanes/round-11 docs/evidence/s13/governed-lanes/round-11 -> none; summaries contain it; CONFORMANCE line 221; WORKGRAPH S13-W53 line 637 and line 677 (CLOSED)",
+      "requiredAction": "Add harnessRevisions to each lane envelope or correct the three statements to 'summary envelope' and reopen R10-F6."
+    },
+    {
+      "id": "R11-F6",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "OBSERVATION_NO_GATE_IMPACT",
+      "finding": "Round-11 lane checkout proofs record tracked digest 3599b625 before==after; the current tracked tree digest is 8758fea3 because the tracked documentation corrections (STATUS/CONFORMANCE/LEDGER) were written at 18:40Z, after all Round-11 run windows. Product source is untouched (newest src mtime 16:18:32Z < packed build 16:33:47Z < runs 18:16-18:37Z; six builds produce identical content digest 0fc216b8). The in-run claim is truthful; recomputation against the current tree cannot reproduce it.",
+      "evidence": "certification/audit/GitHub checkoutProof before==after 3599b625...; current recomputation 8758fea3...; mtimes src/entry.ts 16:18:32Z, docs 18:40Z; lane build bindings 0fc216b8",
+      "requiredAction": "Record the post-run tracked-doc edit window next to the checkout proofs (or capture a per-lane tree baseline) so checkoutUntouched is not misread by a later recomputation."
+    },
+    {
+      "id": "R11-F7",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "DISCLOSURE_ACCURATE",
+      "finding": "The disclosed discarded first certification invocation (4/4 lane PASS but checkoutUntouched:false from concurrent tracked-doc edits) is consistent with the durable bytes: the cited summary 1ab94ea7 has checkoutUntouched true with identical before/after, and the cited lane timestamps 18:16:31-18:19:10Z fall inside the clean rerun window that starts at generatedAt 18:16:29.686Z. No durable trace of the discarded draft exists, which is expected for a discarded run; the disclosure is candid and accurate.",
+      "evidence": "s13-real-provider-certification.json 1ab94ea7 checkoutProof + generatedAt; lanes mtimes/startedAt; WORKGRAPH 'Honesty note' line 658",
+      "requiredAction": "None."
+    },
+    {
+      "id": "R11-F8",
+      "priority": "P1",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "SLICE_BLOCKED_DRIVER",
+      "finding": "Eleven of 22 capability rows hold current required evidence (startup, informational, audit, change, direct-change, cancel, recovery, project-home, multi-project, issue-driven, authority), one is NOT_APPLICABLE (control-center, BROWSER lane), and ten remain NOT_ACCEPTED/BLOCKED (delegated-change, formal-sdd, multi-worker, product-repair, certification-repair, repair, context-handoff, permission-delegation, delivery, distributed-execution). Slice acceptance is impossible while any row lacks current required evidence.",
+      "evidence": "matrixDispositions below; certification lanes 4/4 + governed audit f31a34f8 + GitHub authority aaa8ea76/issue-driven 49ac06e1 + round-10 direct f2d8b9e8 and lifecycle 7e285c57 (product source/build unchanged)",
+      "requiredAction": "Continue S13; S14 must not start."
+    }
+  ],
+  "matrixDispositions": [
+    {
+      "capability": "startup",
+      "requiredEvidence": [
+        "install",
+        "doctor",
+        "startup"
+      ],
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "lanes/startup.json ab130248, build 0fc216b8, real codex actor, oracle PASS"
+    },
+    {
+      "capability": "informational",
+      "requiredEvidence": [
+        "intent",
+        "answer"
+      ],
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "lanes/informational.json c8e078ca, real Paseo opencode session, MODEL INTENT assessment digest b03bab34, oracle PASS"
+    },
+    {
+      "capability": "audit",
+      "requiredEvidence": [
+        "audit-report",
+        "findings"
+      ],
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "audit lane f31a34f8, terminal SUCCEEDED, oracle PASS, report+2 findings, 2 real reviewer sessions, build 0fc216b8"
+    },
+    {
+      "capability": "change",
+      "requiredEvidence": [
+        "candidate-revision",
+        "participant-receipt",
+        "validation"
+      ],
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "round-10 change-direct lane f2d8b9e8, terminal SUCCEEDED revision 80, oracle change PASS, validation PASS, build 0fc216b8, product source/build unchanged"
+    },
+    {
+      "capability": "direct-change",
+      "requiredEvidence": [
+        "direct-route",
+        "candidate-revision",
+        "validation"
+      ],
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "same round-10 lane; oracle direct-change PASS; route scoping AEH-V2-0109"
+    },
+    {
+      "capability": "delegated-change",
+      "requiredEvidence": [
+        "feature-capsule",
+        "delegation",
+        "review"
+      ],
+      "disposition": "NOT_ACCEPTED",
+      "evidence": "round-11 lane 5e9b18a1 terminal FAILED at OpenSpec compile after FORMAL_SDD escalation; no implementer/ChangeSet; AEH-V2-0110/0115"
+    },
+    {
+      "capability": "formal-sdd",
+      "requiredEvidence": [
+        "openspec",
+        "task-contract",
+        "traceability"
+      ],
+      "disposition": "NOT_ACCEPTED",
+      "evidence": "live READY result reached (0f85afd2/66ba2766) but compile rejected non-canonical persisted specs; AEH-V2-0111/0115"
+    },
+    {
+      "capability": "multi-worker",
+      "requiredEvidence": [
+        "task-dag",
+        "wave-barrier"
+      ],
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "no harness/real wave journey; no row evidence exists"
+    },
+    {
+      "capability": "cancel",
+      "requiredEvidence": [
+        "cancel-request",
+        "terminal-state"
+      ],
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "round-10 lifecycle 7e285c57, real session 425029af..., terminal CANCELLED, leases 0, build 0fc216b8"
+    },
+    {
+      "capability": "recovery",
+      "requiredEvidence": [
+        "recovery-event",
+        "operation-state"
+      ],
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "round-10 lifecycle 7e285c57, real session 4d0dc9e6..., epoch 1->2 takeover, identity preserved, leases 0"
+    },
+    {
+      "capability": "product-repair",
+      "requiredEvidence": [
+        "repair-packet",
+        "scope-check"
+      ],
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "no current row evidence"
+    },
+    {
+      "capability": "certification-repair",
+      "requiredEvidence": [
+        "failure-packet",
+        "oracle-recheck"
+      ],
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "no current row evidence"
+    },
+    {
+      "capability": "repair",
+      "requiredEvidence": [
+        "failure-packet",
+        "oracle-recheck"
+      ],
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "repair family remains unexercised as capability rows"
+    },
+    {
+      "capability": "context-handoff",
+      "requiredEvidence": [
+        "context-ref",
+        "continuation"
+      ],
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "no current row evidence"
+    },
+    {
+      "capability": "permission-delegation",
+      "requiredEvidence": [
+        "parent-lease",
+        "decision"
+      ],
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "no current row evidence"
+    },
+    {
+      "capability": "issue-driven",
+      "requiredEvidence": [
+        "issue-snapshot",
+        "drift-check"
+      ],
+      "disposition": "CURRENT_REQUIRED_EVIDENCE_VERIFIED",
+      "evidence": "round-11 lane 49ac06e1 under repaired authorization: issue #1 reused, snapshot bd777eed matches, ISSUE_DRIFT gate PASS, operation-bound import exit 0; full end-to-end delivery remains unexercised"
+    },
+    {
+      "capability": "delivery",
+      "requiredEvidence": [
+        "delivery-record",
+        "provenance"
+      ],
+      "disposition": "BLOCKED",
+      "evidence": "GitHub summary e8e6f5ea lane delivery BLOCKED (no accepted packed candidate)"
+    },
+    {
+      "capability": "distributed-execution",
+      "requiredEvidence": [
+        "lease",
+        "worker-receipt"
+      ],
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "no current row evidence"
+    },
+    {
+      "capability": "project-home",
+      "requiredEvidence": [
+        "project-id",
+        "health"
+      ],
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "lanes/project-home.json b2913492, build 0fc216b8, oracle PASS"
+    },
+    {
+      "capability": "multi-project",
+      "requiredEvidence": [
+        "repository-identity",
+        "project-selection"
+      ],
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "lanes/multi-project.json afef107a, build 0fc216b8, oracle PASS"
+    },
+    {
+      "capability": "control-center",
+      "requiredEvidence": [
+        "overview",
+        "decision"
+      ],
+      "disposition": "NOT_APPLICABLE",
+      "evidence": "BROWSER lane only per frozen matrix; S11 BROWSER/VISUAL independently accepted separately"
+    },
+    {
+      "capability": "authority",
+      "requiredEvidence": [
+        "lease",
+        "human-decision"
+      ],
+      "disposition": "CURRENT_REQUIRED_EVIDENCE_VERIFIED",
+      "evidence": "round-11 lane aaa8ea76: external-authorization check PASS (272c5cb7, exact effect digest), HUMAN_REQUIRED -> EXECUTED/SUCCEEDED, receipt c6173d55, real remote ref; provenance residual R11-F1-residual"
+    }
+  ],
+  "focusedTests": {
+    "focusedVitest": {
+      "command": "npx vitest run tests/semanticStructuredOutputCapability.test.ts tests/openSpecBridge.test.ts tests/candidateIdentity.test.ts tests/s13GithubCampaignPolicy.test.ts tests/changeRouting.test.ts tests/specEscalationPolicyRebind.test.ts tests/supervisorConsolidationProvenance.test.ts tests/objectiveParticipantAccounting.test.ts tests/assemblyLineageCompletion.test.ts tests/acceptanceReviewProvenance.test.ts tests/acceptanceValidationPath.test.ts tests/reviewLifecycle.test.ts",
+      "result": "12 files passed / 80 tests passed / 0 failed",
+      "duration": "2.64s (vitest 3.2.7)"
+    },
+    "typecheck": {
+      "command": "npm run typecheck",
+      "result": "exit 0"
+    },
+    "packedPolicyNodeTest": {
+      "command": "node --test tests/packed/s13GovernedCampaignPolicy.test.mjs",
+      "result": "1/1 pass, 0 fail"
+    }
+  },
+  "verdict": "SLICE_BLOCKED",
+  "actionRequired": [
+    "AEH-V2-0115: add typed pre-persistence OpenSpec canonicality validation and align the Spec Manager spec-authoring contract; rerun formal-sdd to an accepted result.",
+    "AEH-V2-0110: isolate the deterministic escalation constraint that routes DELEGATED->FORMAL_SDD despite planner formalizationNeed NONE; reach an accepted DELEGATED completion.",
+    "AEH-V2-0111: keep OPEN until a live FORMAL_SDD result is canonically accepted.",
+    "R11-F5: either bind harnessRevisions into every lane envelope or correct the three 'R10-F6 CLOSED' statements and reopen R10-F6.",
+    "R11-F1-residual: preserve future authorization bytes before amendment, capture the user's prospective instruction verbatim, and require explicit user confirmation before any issue-create effect.",
+    "R11-F6: document the post-run tracked-doc edit window beside checkout proofs.",
+    "Remaining matrix rows (multi-worker, product-repair, certification-repair, repair, context-handoff, permission-delegation, distributed-execution, delivery, delegated-change, formal-sdd) require new real-provider evidence before slicing.",
+    "S14 must not start."
+  ]
+}

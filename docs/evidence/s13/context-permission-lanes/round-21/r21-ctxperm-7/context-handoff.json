@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 21,
+  "runId": "r21-ctxperm-7",
+  "capability": "context-handoff",
+  "provider": "opencode/opencode-go/deepseek-v4.1-flash",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13ContextPermissionCampaign.mjs",
+        "sha256": "ff7db8308682256574f78fdbd6943f843d85342cb6858edac6a20de3d06b8b22"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "eac8f478de575f01645f578e36ad2b8070fb481aa3b66bedee9278e902f06759"
+  },
+  "startedAt": "2026-09-30T02:30:00.548Z",
+  "checks": [],
+  "candidateBinding": {
+    "packedArtifactDigest": "588ad59d1a41159270804c9c532d960c492660b809aef6141b4464b9b040e3c0",
+    "fixtureCommit": "b88e0870cf8d1047c2cd09578e00cb676238ec47"
+  },
+  "parentAuthority": {
+    "participantId": "participant:s13-context-handoff",
+    "controllerEpoch": 1,
+    "candidateDigest": "49846f64887ab86acaf429be686d077be95a62afe46682f189cb96f00fe6647b",
+    "leaseIds": [
+      "lease:CHANGE-S13-CTX-HANDOFF:request:CHANGE-S13-CTX-HANDOFF:participant:s13-context-handoff:read:review"
+    ]
+  },
+  "launch": {
+    "sessionId": "4decd926-698b-4c9e-876c-12573a042258",
+    "exitCode": 0,
+    "participantId": "participant:s13-context-handoff"
+  },
+  "launchBinding": {
+    "digest": "35c60c5842600462e43e88d28e96369ff640371446c4bffc6cb1bc205898a541",
+    "sessionId": "4decd926-698b-4c9e-876c-12573a042258",
+    "contextManifestDigest": "564ce1d4f44d8f3a19af3dc37f4b5f6bc1e2c41972f136b4d5254e63d77e68a0"
+  },
+  "error": "Error: CONTEXT_RUNTIME_V2_BINDING_REJECTED: context access is closed for a terminal participant execution.\n    at currentExecution (file:///tmp/aeh-s13-ctxperm-iWPWlq/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790735376878-792472-762f1ac5/context/authorizationV2.js:363:15)\n    at Module.validateCurrentContextAuthorization (file:///tmp/aeh-s13-ctxperm-iWPWlq/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790735376878-792472-762f1ac5/context/authorizationV2.js:202:21)\n    at async contextHandoffJourney (file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13ContextPermissionCampaign.mjs:253:19)\n    at async file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13ContextPermissionCampaign.mjs:366:45",
+  "result": "FAIL",
+  "finishedAt": "2026-09-30T02:30:40.521Z"
+}

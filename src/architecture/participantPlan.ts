@@ -110,7 +110,11 @@ export function compileExecutionBlueprint(input: Omit<ParticipantCompilerInputV1
   const planAssignments = initialPlan.assignments.map((assignment) => {
     const units = input.graph.units.filter((unit) => assignment.workUnitIds.includes(unit.id));
     const workUnitIds = assignment.workUnitIds;
-    const outputContract = roleProfile(assignment.role).outputContract;
+    // The compiled execution catalog is the frozen agent topology: it carries the configured output
+    // contract for the concrete agent. The canonical role profile contract is only the fallback
+    // default, so the frozen role invocation policy must not silently disagree with the catalog the
+    // participant is actually launched from (AEH-V2-0118).
+    const outputContract = input.executionCatalog.roleBindings[assignment.role]?.outputContract ?? roleProfile(assignment.role).outputContract;
     const roleInvocationPolicy = compileRoleInvocationPolicy({
       operationId: input.candidate.operationId,
       operationPolicyDigest: input.resolvedOperationPolicy.digest,

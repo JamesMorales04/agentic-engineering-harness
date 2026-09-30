@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 8,
+  "artifact": "independent-review-round8",
+  "reviewer": "fresh-independent-reviewer",
+  "result": "SLICE_BLOCKED",
+  "git": {
+    "branch": "core-architecture-v2",
+    "head": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "workingTree": { "modified": 65, "untracked": 20, "total": 85 },
+    "targetPath": "docs/CORE_ARCHITECTURE_V2.md",
+    "targetWorkingSha256": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+    "targetHeadSha256": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+    "targetUntouched": true,
+    "diffCheck": "PASS"
+  },
+  "evidenceDigestsRecomputed": {
+    "docs/evidence/s13/governed-lanes/change-direct.json": { "sha256": "f1bddeff05744e02abdc9b980e4f2777505ace90f07bb61053f6f7353a575ca7", "expected": "f1bddeff05744e02abdc9b980e4f2777505ace90f07bb61053f6f7353a575ca7", "status": "MATCH" },
+    "docs/evidence/s13/governed-lanes/change-direct-round8-operation.json": { "sha256": "8e19971981b536f25de5d70797bbdb85baef4fb61d71e4c49d33bdfde2b912d4", "expected": "8e19971981b536f25de5d70797bbdb85baef4fb61d71e4c49d33bdfde2b912d4", "status": "MATCH" },
+    "docs/evidence/s13/governed-lanes/change-delegated.json": { "sha256": "0abdbae41a8b98d70dd9ec3fb6b0c3ddd2c4ced9b4881448715d2c731e1354a1", "expected": "0abdbae41a8b98d70dd9ec3fb6b0c3ddd2c4ced9b4881448715d2c731e1354a1", "status": "MATCH" },
+    "docs/evidence/s13/governed-lanes/audit.json": { "sha256": "004baabdb0e18e52afb4790951d14eb4f369755bf88677e8009fa59afe876ecb", "expected": "004baabdb0e18e52afb4790951d14eb4f369755bf88677e8009fa59afe876ecb", "status": "MATCH" },
+    "docs/evidence/s13/s13-governed-operations.json": { "sha256": "4449fef19d9b765a4d72944c17584f4d0c733b3f88c2840daae19ef242c75f24", "expected": "4449fef19d9b765a4d72944c17584f4d0c733b3f88c2840daae19ef242c75f24", "status": "MATCH" },
+    "docs/CORE_ARCHITECTURE_V2.md": { "workingSha256": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a", "headSha256": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a", "status": "MATCH" },
+    "change-direct acceptance raw artifact": { "bytes": 27417, "claimedSha256": "4263478a961036d2de9615d76fe33abe1439b5d997f6be5df9de3865a025c860", "recomputedSha256": "4263478a961036d2de9615d76fe33abe1439b5d997f6be5df9de3865a025c860", "status": "MATCH" },
+    "assembly receipt": { "assemblyId": "assembly:CHANGE-20260928T013113Z-5de819ea:candidate:CHANGE-20260928T013113Z-5de819ea:r3", "sourceReceiptId": "receipt:participant:429ce2201a833daa:2026-09-28T01:32:35.263Z", "sourceReceiptDigest": "f004f24e98658e1530df8e797d384aae23afe769240fd07a63c3701178ec1cec", "assemblyDigest": "76a9f6a2dee28e8930df2357c446ed3a68f50da3651607b1e63c8231ff60173c", "status": "PRESENT_IN_PERSISTED_OPERATION_COPY" }
+  },
+  "verification": {
+    "A_0106": { "status": "CONFIRMED", "detail": "Assembly receipt contract recomputes its deterministic digest and validates revisions, identities, and paired source receipt references. Resolver starts at current candidate, walks recorded parents, requires exact receipt id plus canonical digest, settled SUCCEEDED receipt, operation match, observed candidate ancestry, and matching source base. Invalid/broken chain entries are unusable. objectiveParticipantAccountingV1 and terminalReceiptDecision consume this resolver; completion snapshot is recomputed. evaluateTerminalGate implementation was not changed and still evaluates each receipt against its own binding." },
+    "B_direct_lane": { "status": "CONFIRMED_WITH_CAMPAIGN_SUMMARY_CAVEAT", "detail": "Operation CHANGE-20260928T013113Z-5de819ea is SUCCEEDED revision 84; persisted operation copy contains ACCEPTED oracle and complete objective decision with no blockers, plus r2-to-r3 assembly binding to the exact implementer receipt. Lane rows change and direct-change PASS. Lane envelope aggregate result remains FAIL due delegated-only checks, see R8-F1." },
+    "C_0107": { "status": "CONFIRMED_UNIT_ONLY", "detail": "rebindEscalatedChangePolicy advances execution semantics, establishes baseline when absent, canonically clears/rebinds policy with escalated route/assurance before participant launch, and returns early for identical semantics. Three focused tests pass. No weakened guard or gate observed; live formal escalation was not re-exercised." },
+    "D_0109": { "status": "PARTIAL", "detail": "Raw acceptance bytes recompute. checkoutProof is true in every round-8 lane artifact and workspaceCleanup.remaining is empty. Route-specific change/direct-change rows pass. However candidateAssemblyReceipts are absent from the governed-lanes/change-direct.json envelope itself; they are present in the separate persisted operation-copy artifact. Also the direct lane's aggregate result remains FAIL, see R8-F1." },
+    "E_open_rows": { "status": "CONFIRMED", "detail": "Delegated lane is FAILED revision 110, route DELEGATED, with four settled receipts and zero assembly receipts; no Implementer/ChangeSet is recorded and validation fails. Audit timed out with timeout=true while operation remains RUNNING revision 50; the reported consolidation correction and supervisor-busy watchdog behavior are present. The post-amendment build-bound sweep is incomplete." },
+    "F_R7_F3": { "status": "CONFIRMED", "detail": "Required focused test tests/changeControllerOwnedDecision.test.ts passed here, including its disposable git init." }
+  },
+  "sourceReview": {
+    "assemblyProduction": "bindAssembledCandidate persists assembly after binding and restores/rejects a failed unbound candidate; persisted operation copy contains exact receipt and assembly digests.",
+    "failClosedCases": "Focused tests cover absent assembly, wrong source receipt, divergent source candidate, broken/tampered chain, and unsettled source receipt.",
+    "escalation": "Canonical bindOperationExecutionSemantics invalidation/rebind remains in use; escalation policy is rebound before FORMAL_SDD launch.",
+    "gates": "No change to evaluateTerminalGate or acceptance gate identified; no evidence that authority, acceptance, schema, or evidence validation was weakened.",
+    "campaign": "Checks include route-specific rows, but direct lane envelope still computes aggregate FAIL from required delegated checks. Assembly receipt projection is retained in the separate operation-copy JSON, not lane envelope JSON."
+  },
+  "reviewChecks": {
+    "commands": [
+      { "command": "sha256sum docs/evidence/s13/governed-lanes/change-direct.json docs/evidence/s13/governed-lanes/change-direct-round8-operation.json docs/evidence/s13/governed-lanes/change-delegated.json docs/evidence/s13/governed-lanes/audit.json docs/evidence/s13/s13-governed-operations.json docs/CORE_ARCHITECTURE_V2.md", "outcome": "PASS; all six hashes match expected values" },
+      { "command": "git show HEAD:docs/CORE_ARCHITECTURE_V2.md | sha256sum", "outcome": "PASS; matches working TARGET hash" },
+      { "command": "npx vitest run tests/objectiveParticipantAccounting.test.ts tests/assemblyLineageCompletion.test.ts tests/objectiveCompletionLifecycle.test.ts tests/specEscalationPolicyRebind.test.ts tests/changeControllerOwnedDecision.test.ts", "outcome": "PASS; 5 files, 24 tests" },
+      { "command": "npm run typecheck", "outcome": "PASS; exit 0" },
+      { "command": "git diff --check", "outcome": "PASS; clean" },
+      { "command": "rg -n -i 'gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{20,}|bearer[[:space:]]+[A-Za-z0-9._~+/-]{16,}|AKIA[0-9A-Z]{16}' docs/evidence/s13", "outcome": "PASS; no matches" },
+      { "command": "node JSON inspection/recomputation of change-direct.json artifacts.acceptance.raw", "outcome": "PASS; 27417 bytes; computed SHA-256 equals rawSha256" },
+      { "command": "node JSON inspection of each round-8 lane checkoutProof.checkoutUntouched and workspaceCleanup.remaining", "outcome": "PASS; true and empty for every lane artifact" },
+      { "command": "node JSON inspection of delegated/audit state and receipts", "outcome": "PASS; delegated FAILED rev 110, 4 receipts, 0 assemblies; audit timeout with RUNNING rev 50" },
+      { "command": "git status --porcelain=v1", "outcome": "PASS; 65 modified and 20 untracked before adding this review; no TARGET change" }
+    ],
+    "noPackedCampaign": true,
+    "noAehOperation": true,
+    "sourceDiffReview": "PASS; no weakening identified",
+    "credentialScan": "PASS; no credential-shaped token matches"
+  },
+  "findings": [
+    { "id": "R8-F1", "severity": "P2", "title": "Direct lane aggregate still fails on delegated-only checks", "detail": "The change-direct operation itself is SUCCEEDED with ACCEPTED oracle and complete objective decision, and its change/direct-change route rows PASS. However governed-lanes/change-direct.json records result FAIL because change.delegated-route and delegated.feature-capsule remain required and fail on a DIRECT route. This contradicts the route-scoping repair's claim that the direct lane result is accepted by its own campaign gates.", "requiredRepair": "Make lane aggregate disposition and required checks derive from the observed route; regenerate or preserve a direct-lane artifact whose aggregate result reflects only applicable rows, then recompute and document its digest." },
+    { "id": "R8-F2", "severity": "P3", "title": "Assembly receipt omitted from the lane envelope", "detail": "candidateAssemblyReceipts are preserved and digest-verifiable in change-direct-round8-operation.json, but are not projected into governed-lanes/change-direct.json itself. A reviewer following the lane artifact alone cannot inspect the claimed receipt chain.", "requiredRepair": "Project the operation's candidateAssemblyReceipts into each lane envelope as claimed, then recompute the envelope digest." }
+  ],
+  "rowDispositions": {
+    "change": "ACCEPTED_BY_OPERATION_GATES; SUCCEEDED rev 84, oracle ACCEPTED, objective completion complete with zero blockers; campaign aggregate FAIL finding R8-F1.",
+    "direct-change": "ACCEPTED_BY_OPERATION_GATES; route row PASS and persisted operation evidence supports acceptance; campaign aggregate FAIL finding R8-F1.",
+    "delegated-change": "NOT_ACCEPTED / OPEN AEH-V2-0110; FAILED rev 110, no Implementer/ChangeSet, four settled receipts and zero assemblies, validation FAIL.",
+    "formal-sdd": "REPAIR UNIT-REGRESSED (AEH-V2-0107); NOT LIVE-ACCEPTED; escalation path not re-exercised after repair.",
+    "audit": "NOT_ACCEPTED / OPEN AEH-V2-0108; timed out, operation RUNNING rev 50.",
+    "startup": "NOT RE-RUN post-amendment; historical/pre-amendment evidence only.",
+    "informational": "NOT RE-RUN post-amendment; historical/pre-amendment evidence only.",
+    "project-home": "NOT RE-RUN post-amendment; historical/pre-amendment evidence only.",
+    "multi-project": "NOT RE-RUN post-amendment; historical/pre-amendment evidence only.",
+    "cancel": "NOT RE-RUN post-amendment; historical/pre-amendment evidence only.",
+    "recovery": "NOT RE-RUN post-amendment; historical/pre-amendment evidence only.",
+    "authority": "NOT RE-RUN post-amendment; historical/pre-amendment evidence only.",
+    "managed issue import": "NOT RE-RUN post-amendment; historical evidence is not current build-bound acceptance.",
+    "BLOCKED rows": ["multi-worker", "repair-family", "context-handoff", "permission-delegation", "distributed-execution", "delivery", "full issue-driven", "full formal-sdd matrix"],
+    "control-center": "NOT_APPLICABLE (BROWSER lane only).",
+    "tooling": "OPEN; not activated in round 8."
+  },
+  "note": "Independent review found strong source and focused-test support for AEH-V2-0106 and AEH-V2-0107, but round 8 does not exhaust the S13 matrix. The direct operation evidence is accepted by product gates while its campaign artifact aggregate remains FAIL; the delegated and audit rows remain open. No acceptance is granted to the full S13 slice."
+}

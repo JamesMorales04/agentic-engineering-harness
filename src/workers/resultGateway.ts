@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { validateAgentOutput } from "../agents/outputContracts.js";
 import { extractMarkedJson, StructuredOutputError } from "../agents/structuredOutput.js";
-import { currentControllerEpoch, loadOperation, operationArtifactDir, resolveOperationStateRoot, updateOperationParticipant } from "../operations/state.js";
+import { currentControllerEpoch, loadOperation, operationArtifactDir, resolveOperationStateRoot, updateRegisteredOperationParticipant } from "../operations/state.js";
 import { sha256Canonical } from "../core/digest.js";
 import { assertCandidateRevisionV1, candidateRevisionsEqual, type CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import { assertWorkspaceMatchesCandidate } from "../candidates/identity.js";
@@ -445,7 +445,7 @@ export async function acceptStructuredResult<T = unknown>(
     channel.updatedAt = acceptedAt;
     await writeJsonAtomic(file, channel);
     if (channel.agentId) {
-      await updateOperationParticipant(stateRoot, operationId, channel.agentId, { resultArtifact: artifact }).catch(() => undefined);
+      await updateRegisteredOperationParticipant(stateRoot, operationId, channel.agentId, { resultArtifact: artifact }).catch(() => undefined);
     }
     return { artifact, sha256, payload: normalized, source, turnId: turn.id, channelId, provenance: channel.provenance, contextEvidence };
   });

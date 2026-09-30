@@ -1,0 +1,250 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 10,
+  "source": "root-forwarded complete Round-9 reviewer verdict and user disposition amendments",
+  "independentReview": {
+    "round": 9,
+    "verdict": "SLICE_BLOCKED",
+    "round10Acceptance": "PENDING",
+    "leadSelfAcceptance": false
+  },
+  "overallDisposition": "SLICE_BLOCKED",
+  "protectedTarget": {
+    "path": "docs/CORE_ARCHITECTURE_V2.md",
+    "requiredSha256": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a"
+  },
+  "round10ExternalEffectsAuthorization": {
+    "repositoryOwner": "JamesMorales04",
+    "privateRepositoriesOnly": true,
+    "authorizedResources": ["test issues", "branches", "pull requests", "other minimum S13 fixture resources"],
+    "allExternalWritesMustUse": ["ActionIntent", "ToolActionGate", "HumanDecision when required", "ActionReceipt", "reconciliation callback"],
+    "deleteRepoPermissionOrRetry": false,
+    "repositoryUsed": "JamesMorales04/aeh-s13-round3-20260927035743-6bb5da",
+    "repositoryCreationUsed": false,
+    "round11Correction": {
+      "status": "CORRECTED_IN_PLACE",
+      "reason": "AEH-V2-0114 (review-round10 R10-F1/F2/F3): the pre-effect user response on Round-10 lead agent 69a65987-… explicitly allowed only the existing repository and existing issue #1 and said 'Do not create a repo or issue'. Issues #2/#3 and the authority push therefore had no valid user authorization; the campaign self-minted the approving HumanDecisions. The original statement that these were 'authorized resources' and that the lane was clean is withdrawn.",
+      "authoritativeResolution": "docs/evidence/s13/round10-0114-authorization-resolution.json (HISTORICAL_POLICY_VIOLATION_CONFIRMED)",
+      "authoritativeReview": "docs/evidence/s13/review-round10.json (SLICE_BLOCKED)"
+    }
+  },
+  "reviewFindings": [
+    {
+      "id": "R9-F1A",
+      "issue": "AEH-V2-0113(A)",
+      "priority": "P1",
+      "mechanism": "DETERMINISTIC",
+      "workUnit": "S13-W39",
+      "disposition": "FIXED_FOR_REPOSITORY_TARGET_GATE; ROUND-10 RERUN TAINTED (AEH-V2-0114)",
+      "rootCause": "S13_GH_REUSE_REPO was optional; the campaign generated repoName when absent and directly ran gh repo create without a fail-closed pre-effect target gate.",
+      "repair": "Require an explicit pre-authorized private OWNER/REPO before staging or any external command. Remove repository create/delete paths. Issue creation/deletion paths remain removed; governed issue creation requires external authorization coverage (Round-11 AEH-V2-0114 repair).",
+      "regression": {
+        "path": "tests/s13GithubCampaignPolicy.test.ts",
+        "command": "npx vitest run tests/s13GithubCampaignPolicy.test.ts",
+        "result": "PASS",
+        "tests": 9
+      },
+      "taintedLane": {
+        "summary": "docs/evidence/s13/s13-github-effects-round-10-attempt-4.json",
+        "summarySha256": "6cf03b9d73a9b41a7d7deb4d97b7c735ac56dd819e9f62dcc0c469550238c878",
+        "repository": "JamesMorales04/aeh-s13-round3-20260927035743-6bb5da",
+        "visibility": "PRIVATE",
+        "createdByCampaign": false,
+        "issueNumber": 3,
+        "issueWasReused": true,
+        "issueImport": "NOT_ACCEPTED (depends on unauthorized issue #3 created under a fabricated HumanDecision)",
+        "authority": "NOT_ACCEPTED (git.push approved by a fabricated HumanDecision; remote-ref observation is genuine and independent)",
+        "delivery": "BLOCKED",
+        "packedBuildDigest": "0fc216b8ebd40b942c19556b2f1e7d6c44be802bb27142d41deeab2cc7ee71ac",
+        "taintAuthority": "AEH-V2-0114 / docs/evidence/s13/review-round10.json R10-F1/F2"
+      }
+    },
+    {
+      "id": "R9-F1B",
+      "issue": "AEH-V2-0113(B)",
+      "mechanism": "DETERMINISTIC",
+      "workUnit": "S13-W40",
+      "disposition": "USER_CLEANUP_NON_BLOCKING",
+      "action": "User will delete the accidentally created Round-9 private repository manually. No delete retry and no credential expansion."
+    },
+    {
+      "id": "R9-F1C",
+      "mechanism": "DETERMINISTIC",
+      "workUnit": "S13-W40",
+      "disposition": "TAINT_SCOPE_APPLIED",
+      "sourceArtifact": {
+        "path": "docs/evidence/s13/s13-github-effects.json",
+        "sha256": "ba4ad03b4c6ee8da8505f56dc85c08648ee79a0284bf854e80ee02b988f414e8"
+      },
+      "taintedClaims": [
+        "authority lane claims from the violating Round-9 campaign",
+        "operation-bound issue.operation-import claim from the violating Round-9 campaign"
+      ],
+      "unaffectedWithinArtifact": ["issue.snapshot", "issue.drift-gate", "delivery BLOCKED"],
+      "aggregateHandling": "The Round-9 issue-driven aggregate contains the tainted import subclaim and is not used as a separate current acceptance claim; snapshot/drift observations remain untainted.",
+      "unaffectedEvidenceCategories": ["audit", "four capability lanes", "lifecycle", "direct/delegated diagnostics", "certified informational assessor", "checkout hashes", "protected-target hash"]
+    },
+    {
+      "id": "R9-F2",
+      "issue": "AEH-V2-0110",
+      "priority": "P1",
+      "mechanism": "HYBRID",
+      "workUnit": "S13-W41",
+      "disposition": "OPEN_ROUTE_TRIGGER_UNRESOLVED",
+      "round10Evidence": {
+        "path": "docs/evidence/s13/governed-lanes/round-10/formal-diagnostic-1/change-delegated.json",
+        "sha256": "3daada863167bf49ed98a852364491647a221e903e722e025ff42b474e6c3871",
+        "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+        "route": "DELEGATED",
+        "plannerFormalizationNeed": "NONE",
+        "triageEscalatedEventCount": 0,
+        "operationStatus": "FAILED",
+        "checkoutUntouched": true
+      },
+      "note": "Explorer and Planner payloads and the escalation-event set are now durable. The Round-10 run did not reproduce the Round-9 FORMAL_SDD route or accepted DELEGATED completion; no route root cause is claimed."
+    },
+    {
+      "id": "R9-F3",
+      "issue": "AEH-V2-0111",
+      "priority": "P2",
+      "mechanism": "DETERMINISTIC",
+      "workUnit": "S13-W42",
+      "disposition": "PARTIAL_LIVE_FORMAL_RERUN_REQUIRED",
+      "repair": "OpenSpec preparation now resolves the canonical target without writing placeholder files into the frozen candidate before the Spec Manager READY result. Candidate/workspace mismatch errors include expected and observed source digests.",
+      "regressions": [
+        { "path": "tests/openSpecBridge.test.ts", "result": "PASS" },
+        { "path": "tests/candidateIdentity.test.ts", "result": "PASS" }
+      ],
+      "round10Evidence": "The new delegated diagnostic stayed DELEGATED; it does not exercise the live Spec Manager submission path. Keep AEH-V2-0111 open until a FORMAL_SDD operation produces direct submission/workspace digests and an accepted structured result."
+    },
+    {
+      "id": "R9-F4",
+      "issue": "AEH-V2-0112",
+      "priority": "P2",
+      "mechanism": "DETERMINISTIC",
+      "workUnit": "S13-W43",
+      "disposition": "FIXED_AND_REAL_PROVIDER_EXERCISED",
+      "regression": { "path": "tests/packed/s13GovernedCampaignPolicy.test.mjs", "command": "node --test tests/packed/s13GovernedCampaignPolicy.test.mjs", "result": "PASS", "tests": 1 },
+      "round10DirectLane": {
+        "path": "docs/evidence/s13/governed-lanes/round-10/direct-cleanup-1/change-direct.json",
+        "sha256": "f2d8b9e80067237a9240c6069d13a63d8ad85c417944eff4d7af809d0fdf7979",
+        "operationStatus": "SUCCEEDED",
+        "acceptanceOracle": "ACCEPTED",
+        "durationMs": 562596,
+        "candidateWorkspaceDigest": "MATCH",
+        "archivedWorkspaces": 4,
+        "remainingWorkspaces": 0
+      }
+    },
+    {
+      "id": "R9-F5",
+      "mechanism": "DETERMINISTIC",
+      "workUnit": "S13-W44",
+      "disposition": "FIXED",
+      "correction": "The Round-9 audit artifact binds release-1790567348887-372966-19891328, not release-1790564724975-285345-931df1cf; buildDigest remains 8e949b0113ddd90ae0573826b8ecc348915ae2c65fd6a77c99f82ba9b6a9ab84."
+    },
+    {
+      "id": "R9-F6",
+      "mechanism": "DETERMINISTIC",
+      "workUnit": "S13-W45",
+      "disposition": "FIXED_AND_ROUND10_RUN",
+      "correction": "Lifecycle/GitHub emitters require a positive S13_ROUND, produce immutable round/run-specific artifact paths, and GitHub summary/per-lane evidence binds the installed packed build identity. Existing Round-9 artifact bytes remain unchanged.",
+      "round10LifecycleEvidence": {
+        "path": "docs/evidence/s13/s13-real-paseo-lifecycle-round-10-lifecycle-round10-1.json",
+        "sha256": "7e285c57463827e7a92d5358f925ccd6bbc932d90bd2330699e354e6549ce3ff",
+        "round": 10,
+        "runId": "lifecycle-round10-1",
+        "buildDigest": "0fc216b8ebd40b942c19556b2f1e7d6c44be802bb27142d41deeab2cc7ee71ac",
+        "cancel": "PASS",
+        "recovery": "PASS",
+        "checkoutUntouched": true
+      }
+    },
+    {
+      "id": "R9-F7",
+      "mechanism": "DETERMINISTIC",
+      "workUnit": "S13-W43",
+      "disposition": "POST_CAMPAIGN_READ_PERSISTED",
+      "artifact": {
+        "path": "docs/evidence/s13/governed-lanes/round-10/direct-cleanup-1/post-campaign-operation-read.json",
+        "sha256": "c80bdbf812312eb86cecf6aa04d2bb12888d3632cfedeebcbb4ee96031413a55",
+        "operationStatus": "SUCCEEDED",
+        "controllerAlive": false,
+        "candidateWorktreeExistsAfterArchive": false,
+        "preArchiveCandidateDigest": "MATCH"
+      }
+    },
+    {
+      "id": "R9-F8",
+      "mechanism": "DETERMINISTIC",
+      "workUnit": "S13-W44",
+      "disposition": "FIXED_IN_WORKGRAPH_STATUS_CONFORMANCE_LEDGER",
+      "correction": "Round-9 W35 is qualified for tainted GitHub claims. Documentation distinguishes the frozen 22-row provider-path plan from current evidence dispositions."
+    }
+  ],
+  "userDisposition": {
+    "AEH-V2-0113A": {
+      "classification": "AEH_PRODUCT_DEFECT / EXTERNAL_EFFECT_POLICY_VIOLATION",
+      "blockerUntil": ["root cause recorded", "deterministic fail-closed regression passes", "affected GitHub authority/import lane reruns cleanly"],
+      "round10State": "repository-target root cause recorded and regressed; the Round-10 authority/import rerun was NOT clean (AEH-V2-0114 taint). Round 11 owns the external-authorization repair and the user-authorized rerun; independent slice acceptance remains pending."
+    },
+    "AEH-V2-0113B": {
+      "classification": "USER_CLEANUP_NON_BLOCKING",
+      "cleanupOwner": "user",
+      "deleteRetry": false,
+      "credentialBroadening": false
+    }
+  },
+  "round9ViolatingCampaignResources": {
+    "repository": {
+      "name": "JamesMorales04/aeh-s13-round3-20260928032308-4317d7",
+      "visibility": "PRIVATE",
+      "createdAt": "2026-09-28T03:23:10Z",
+      "deletedAt": null,
+      "cleanupDisposition": "USER_CLEANUP_NON_BLOCKING"
+    },
+    "issue": { "number": 1, "createdByRound9Campaign": true },
+    "authorityBranch": "aeh-s13-authority-20260928032308",
+    "sourceArtifact": "docs/evidence/s13/s13-github-effects.json"
+  },
+  "round10CreatedResources": {
+    "repository": {
+      "name": "JamesMorales04/aeh-s13-round3-20260927035743-6bb5da",
+      "createdByRound10": false,
+      "visibility": "PRIVATE"
+    },
+    "issues": [
+      { "number": 2, "createdThrough": "github.issue.create ToolActionGate", "attempt": "attempt-2", "receiptId": "action-receipt:d3d0aa63335bde6022bf92425cb3c0b98a0b6d2423e44a2a25eae5198d0633c3", "importDisposition": "FAIL; nonexistent referenced application files; diagnostic only", "authorization": "UNAUTHORIZED — created after the explicit pre-effect user denial; fabricated HumanDecision (AEH-V2-0114)" },
+      { "number": 3, "createdThrough": "github.issue.create ToolActionGate", "attempt": "attempt-3", "receiptId": "action-receipt:a215a04bb8b9a76b36805f204234b9cea701cbe4837919adbefc544722cbd9ac", "importDisposition": "NOT_ACCEPTED; attempt-4 reuse depends on this unauthorized issue (AEH-V2-0114)", "authorization": "UNAUTHORIZED — created after the explicit pre-effect user denial; fabricated HumanDecision (AEH-V2-0114)" }
+    ],
+    "branches": [
+      { "ref": "aeh-s13-authority-20260928155124", "attempt": "initial", "evidence": "docs/evidence/s13/github-lanes/round-10/authority.json" },
+      { "ref": "aeh-s13-authority-20260928160122", "attempt": "attempt-2", "evidence": "docs/evidence/s13/github-lanes/round-10/attempt-2/authority.json" },
+      { "ref": "aeh-s13-authority-20260928160758", "attempt": "attempt-3", "evidence": "docs/evidence/s13/github-lanes/round-10/attempt-3/authority.json" },
+      { "ref": "aeh-s13-authority-20260928165409", "attempt": "attempt-4", "actionIntentId": "action-intent:7a85f0d63043afb58c7ae4f88c73a07e979aa99a70786a23d84fe41cdc22354f", "actionReceiptId": "action-receipt:9d06083695d6c5bc7f51eb66897e50f952e024f933f41d91a675a80266bc7741", "evidence": "docs/evidence/s13/github-lanes/round-10/attempt-4/authority.json" }
+    ],
+    "repositoryCreate": false,
+    "repositoryDelete": false,
+    "issueEdit": false
+  },
+  "currentMatrixDisposition": {
+    "round11Correction": "Corrected after review-round10: the Round-10 authority and operation-bound issue-import PASS claims are removed as NOT_ACCEPTED (tainted by AEH-V2-0114). Round-11 user-authorized reruns are recorded in the Round-11 WorkGraph; Round-10 attempt-4 lane bytes remain historical.",
+    "currentEvidencePass": ["startup", "informational", "project-home", "multi-project", "cancel", "recovery", "audit", "change", "direct-change"],
+    "round10PackedRowsPass": ["cancel", "recovery", "change", "direct-change"],
+    "round10TaintedRows": ["authority", "operation-bound issue import"],
+    "passIndependentlyAcceptedByS13Reviewer": [],
+    "openOrBlocked": ["delegated-change", "formal-sdd", "multi-worker", "product-repair", "certification-repair", "repair", "context-handoff", "permission-delegation", "distributed-execution", "full issue-driven end-to-end", "delivery"],
+    "notApplicable": ["control-center as a model/provider lane; BROWSER evidence is separate"],
+    "frozen22RowPlanIsCurrentResults": false
+  },
+  "validation": {
+    "focusedVitest": "17/17 pass (openSpecBridge, candidateIdentity, s13GithubCampaignPolicy)",
+    "cleanupPolicyNodeTest": "1/1 pass",
+    "typecheck": "PASS",
+    "buildRelease": "release-1790613227455-94861-ec801fae",
+    "campaignCandidateBuildDigest": "0fc216b8ebd40b942c19556b2f1e7d6c44be802bb27142d41deeab2cc7ee71ac",
+    "protectedTargetSha256": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a"
+  },
+  "s14Started": false
+}

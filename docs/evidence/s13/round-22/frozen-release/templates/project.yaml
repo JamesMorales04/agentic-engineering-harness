@@ -1,0 +1,317 @@
+version: 1
+
+project:
+  name: change-me
+
+agents:
+  configPath: .harness/agents.source.jsonc
+  generatedPath: .harness/generated/agents.json
+  activeProfile: balanced
+  required: true
+  findingsDir: .harness/findings
+
+controlPlane:
+  snapshotDir: .harness/controller
+  required: true
+  include: []
+
+workflow:
+  issueIntake:
+    enabled: true
+    snapshotDir: .harness/issues
+    verifyDriftOnRun: true
+    requireOpen: true
+    plannerAgent: planner
+    autoHandoff: true
+  planning:
+    enabled: true
+    plannerAgent: planner
+    worktreeIsolation: true
+    barrierValidation: true
+    maxWaveConcurrency: 4
+    distributed: false
+  reviews:
+    enabled: true
+    leadAcceptance: true
+    quality:
+      severityPoints:
+        critical: 300
+        high: 75
+        medium: 24
+        low: 3
+        note: 1
+    convergence:
+      minimumDebtPointImprovement: 3
+      stagnationWindow: 2
+      cycleDetection: true
+      regressionDetection: true
+    finalQualityGate:
+      maxBySeverity:
+        critical: 0
+        high: 0
+        medium: 0
+        low: 3
+      maxDebtPoints: 9
+    escalation:
+      criticalStartStage: 2
+      replanResumeStage: 2
+      stages:
+        - name: normal
+          action: remediate
+        - name: quality
+          action: remediate
+          role: Implementer
+        - name: senior
+          action: remediate
+          role: Implementer
+          model: "@brain"
+        - name: diagnosis
+          action: diagnose
+          role: Reviewer
+          model: "@brain"
+        - name: replan
+          action: replan
+          role: Planner
+          model: "@brain"
+
+orchestration:
+  provider: paseo
+  required: false
+  worker:
+    provider: opencode
+    maxRepairAttempts: 2
+  interactive:
+    autoSetup: true
+    webUi: true
+    leadAgent: lead
+    sessionPolicy: fresh-on-start
+    usePaseoTools: true
+    stateDir: .harness/paseo
+    title: AEH Lead
+    context:
+      pressureThreshold: 0.70
+      handoffThreshold: 0.80
+      hardHandoffThreshold: 0.90
+
+toolchain:
+  configPath: .harness/toolchain.yaml
+  lockPath: .harness/toolchain.lock.json
+  statePath: .harness/toolchain.state.json
+  generatedMisePath: .config/mise/conf.d/aeh.toml
+
+mcp:
+  servers:
+    context7:
+      description: Current library/framework documentation lookup.
+      type: remote
+      url: https://mcp.context7.com/mcp
+      oauth: false
+      enabled: true
+    playwright:
+      description: Browser exploration and stateful UI validation; prefer deterministic Playwright tests when they are sufficient.
+      type: local
+      command: [npx, -y, "@playwright/mcp@0.0.78"]
+      enabled: true
+      timeoutMs: 30000
+    github:
+      description: Official GitHub MCP server in read-only mode for repository/issue/PR/action triage. Deterministic Harness delivery owns writes.
+      type: local
+      command: [podman, run, -i, --rm, -e, GITHUB_PERSONAL_ACCESS_TOKEN, -e, GITHUB_TOOLSETS, -e, GITHUB_READ_ONLY, ghcr.io/github/github-mcp-server]
+      environment:
+        GITHUB_PERSONAL_ACCESS_TOKEN: "{env:GITHUB_TOKEN}"
+        GITHUB_TOOLSETS: repos,issues,pull_requests,actions
+        GITHUB_READ_ONLY: "1"
+      enabled: true
+      timeoutMs: 30000
+    sentry:
+      description: Optional production-error and trace investigation via Sentry's remote MCP.
+      type: remote
+      url: https://mcp.sentry.dev/mcp
+      enabled: false
+      timeoutMs: 10000
+  benchmark:
+    enabled: false
+    resultsDir: .harness/mcp-benchmarks
+    repetitions: 3
+  packs:
+    research:
+      servers: [context7]
+      enabled: true
+    browser:
+      servers: [playwright, context7]
+      enabled: true
+    github-readonly:
+      servers: [github]
+      enabled: true
+    observability:
+      servers: [sentry]
+      enabled: false
+
+delivery:
+  stateDir: .harness/delivery
+  github:
+    enabled: false
+    tokenEnv: GH_TOKEN
+    assignTokenOwner: true
+    labels: []
+    branchPattern: feature/gh-{issue}-{slug}
+    finalizeOnAcceptance: true
+    pullRequestDraft: true
+  paseo:
+    enabled: false
+    createWorkspace: true
+    autoUseWorkspace: true
+    worktreeSlugPattern: gh-{issue}-{slug}
+
+memory:
+  provider: engram
+  required: false
+  benchmark:
+    casesDir: memory-benchmarks
+    resultsDir: .harness/memory-benchmarks
+    providers: []
+
+codeIntelligence:
+  provider: graphify
+  required: false
+  graphPath: graphify-out/graph.json
+  snapshotDir: .harness/graphify
+  scheduling:
+    useEdges: true
+    maxGraphHops: 1
+    maxSharedNodes: 0
+    centralityConflictThreshold: 0.35
+
+context:
+  mode: enforce
+  budgets:
+    default:
+      inputTokens: 16000
+    agents:
+      lead:
+        inputTokens: 12000
+      explorer:
+        inputTokens: 12000
+      planner:
+        inputTokens: 10000
+      spec-manager:
+        inputTokens: 18000
+      implementer:
+        inputTokens: 24000
+      reviewer:
+        inputTokens: 14000
+      operation-supervisor:
+        inputTokens: 1500
+  informational:
+    targetTokens: 8000
+    softLimitTokens: 12000
+    exceptionalTokens: 15000
+    maxSources: 8
+    sourceSummaryTokens: 96
+    maxInitialBytesPerSource: 4000
+    maxInitialBytesTotal: 20000
+  repositoryMap:
+    enabled: true
+    tokenBudget: 2000
+    maxGraphHops: 2
+  semanticRetrieval:
+    provider: serena
+    required: true
+    editing: false
+  compression:
+    provider: headroom
+    required: true
+    minTokens: 2000
+    reversible: true
+  retrieval:
+    maxRequestsPerTurn: 8
+    maxTokensPerRequest: 6000
+    maxTotalTokensPerTurn: 20000
+  outputPolicy:
+    enabled: true
+
+evidence:
+  enabled: true
+  outputDir: .harness/evidence
+  requireComplete: true
+
+organization:
+  policyBundles:
+    cacheDir: .harness/policy-bundles
+    required: false
+    sources: []
+
+distributed:
+  enabled: false
+  provider: filesystem
+  queueDir: .harness/distributed
+  pollIntervalMs: 1000
+  leaseSeconds: 1800
+
+sdd:
+  specsDir: specs
+  contractsDir: .harness/contracts
+  reportsDir: .harness/reports
+  repairsDir: .harness/repairs
+  runsDir: .harness/runs
+  authoring:
+    provider: openspec
+    schema: spec-driven
+    managerAgent: spec-manager
+
+validation:
+  baseRef: main
+  requireSeal: true
+  frozenPaths:
+    - .harness/contracts/**
+    - .harness/seals/**
+    - tests/acceptance/frozen/**
+  commands: []
+  validators: []
+  providers: []
+  opa:
+    enabled: false
+    policyDirs:
+      - .harness/policies/core
+
+security:
+  sandbox:
+    provider: podman
+    required: false
+    readOnlyRoot: true
+    ephemeralHome: true
+    noNewPrivileges: true
+    capDropAll: true
+    pidsLimit: 512
+    forceForRisks: []
+    environmentAllowlist: []
+    credentialEnvAllowlist: []
+  tools:
+    - opengrep
+    - trivy
+
+telemetry:
+  enabled: true
+  required: false
+  localEventsFile: .harness/telemetry/events.ndjson
+  localMetricsFile: .harness/telemetry/metrics.ndjson
+  exporter: none
+  serviceName: engineering-harness-consumer
+
+evals:
+  corpusDir: evals/corpus
+  resultsDir: .harness/evals/results
+  workspacesDir: .harness/evals/workspaces
+  defaultRuns: 5
+  confidenceLevel: 0.95
+  fullStack:
+    enabled: false
+    required: false
+    strictSupplyChain: false
+
+provenance:
+  outputDir: .harness/provenance
+  buildType: https://github.com/JamesMorales04/agentic-engineering-harness/v0.6
+  # Set artifact to the normalized root-relative packed artifact when any
+  # provenance, SBOM, or signing requirement is enabled.
+  # artifact: dist/agentic-engineering-harness.tgz

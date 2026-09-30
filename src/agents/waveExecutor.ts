@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { minimatch } from "minimatch";
-import type { AgentExecutionSelection } from "./types.js";
+import type { AgentExecutionSelection, PermissionDecision } from "./types.js";
 import { planParallelism, type ParallelismPlan } from "./parallelism.js";
 import { knowledgePackOutputSchema, plannerOutputSchema, type PlannerOutput, type WorkUnitOutput } from "./outputContracts.js";
 import { extractMarkedJson } from "./structuredOutput.js";
@@ -30,7 +30,7 @@ import { sha256Canonical, sha256Utf8 } from "../core/digest.js";
 import { AehError } from "../core/errors.js";
 import { FileKnowledgeCacheV1, resolveKnowledgeGate, validateKnowledgePack, type KnowledgeCacheV1, type KnowledgeLookupResultV1, type KnowledgeModeV1, type KnowledgePackV1, type KnowledgeResolutionV1 } from "../knowledge/index.js";
 import { defaultSkillSeed } from "../participants/index.js";
-import { resolveValidationRequirements, type ValidationResolutionV1 } from "../architecture/validationRequirements.js";
+import { dropUnresolvablePlanValidationRequirementsV1, resolveValidationRequirements, type ValidationResolutionV1 } from "../architecture/validationRequirements.js";
 import type { ProjectStackProfileV1 } from "../participants/stack.js";
 
 export interface DelegationExecutionResult { task: WorkUnitOutput; session: WorkerSession; changedFiles: string[]; patch: string; status: "PASS" | "FAIL"; message?: string; distributed?: boolean; candidate?: CandidateRevisionV1; impact?: CandidateImpactV1; changeSet?: ChangeSetV1; }
@@ -78,7 +78,20 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
       throw new AehError("EXECUTION_BLUEPRINT_INVALID", "A managed CandidateRevision and controller epoch are required before compiling an execution blueprint.");
     }
     validationResolution = await resolveValidationRequirements({ root: input.root, requirements: plan.validationRequirements, config: input.config, contract: input.contract, projectStack: input.projectStack });
-    if (validationResolution.blocked.length) throw new AehError("VALIDATION_REQUIREMENT_BLOCKED", validationResolution.blocked.map((item) => `${item.requirementId}: ${item.reason}`).join("; "), { details: { validationResolution } });
+    // A planner-declared validation requirement that no approved project script, configured
+    // command, validator, or provider can resolve is advisory plan intent, not a frozen gate. The
+    // frozen contract's own validators are compiled and enforced independently, so an unresolvable
+    // advisory requirement must not reject the whole participant plan before implementation (it is
+    // not repairable by any implementation change). Drop it with a durable deterministic record and
+    // keep the resolvable subset; a genuine inconsistency between the remaining set still fails
+    // closed below.
+    if (validationResolution.blocked.length) {
+      const partition = dropUnresolvablePlanValidationRequirementsV1(plan.validationRequirements, validationResolution);
+      await recordEvent(input.stateRoot, input.config, "harness.plan.validation-requirements-dropped", { taskId: input.contract.task.id, dropped: partition.dropped.map((requirement) => ({ id: requirement.id, kind: requirement.kind })), reasons: validationResolution.blocked });
+      plan = { ...plan, validationRequirements: partition.kept };
+      validationResolution = await resolveValidationRequirements({ root: input.root, requirements: plan.validationRequirements, config: input.config, contract: input.contract, projectStack: input.projectStack });
+      if (validationResolution.blocked.length) throw new AehError("VALIDATION_REQUIREMENT_BLOCKED", validationResolution.blocked.map((item) => `${item.requirementId}: ${item.reason}`).join("; "), { details: { validationResolution } });
+    }
     const executionSemanticsDigest = sha256Canonical({ workGraph: graph, plannerPlan: plan, executionCatalogDigest: input.executionCatalog.digest, validationResolution, knowledge: knowledgeResolutions.map((resolution) => ({ packDigest: resolution.pack?.packDigest, trustDecisionDigest: resolution.acceptedSkill?.trustDecision.decisionDigest })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))), contextPolicy: input.config.context ?? null });
     operation = await bindOperationExecutionSemantics(input.stateRoot, operation!.id, executionSemanticsDigest);
   blueprint = await compileWaveExecutionBlueprint({ input, operation, graph, knowledgeResolutions, validationResolution, plan });
@@ -86,7 +99,8 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
     return { used: true, plan, waves: [], sessions, aggregateSession: aggregate(sessions, 1, `Participant plan rejected: ${String(error)}`) };
   }
   const schedule = await planParallelism(input.root, input.config, input.contract.task.id, plan.workUnits);
-  await recordEvent(input.stateRoot, input.config, "harness.plan.ready", { taskId: input.contract.task.id, workUnits: plan.workUnits.length, waves: schedule.waves.length, conflicts: schedule.conflicts.length, graphUsed: schedule.graphUsed, compilerDigest: blueprint.plan.compilerDigest, distributed: planning?.distributed === true && input.config.distributed?.enabled === true });
+  const worktreeIsolation = planning?.worktreeIsolation !== false;
+  await recordEvent(input.stateRoot, input.config, "harness.plan.ready", { taskId: input.contract.task.id, workUnits: plan.workUnits.length, waves: schedule.waves.length, conflicts: schedule.conflicts.length, graphUsed: schedule.graphUsed, compilerDigest: blueprint.plan.compilerDigest, worktreeIsolation, distributed: planning?.distributed === true && input.config.distributed?.enabled === true });
   const waveSummaries: WaveExecutionSummary[] = []; let finalReport: ValidationReport | undefined; let currentCandidate = operation?.candidateRevision;
   for (let index = 0; index < schedule.waves.length; index += 1) {
     if (index > 0 && graph && operation) {
@@ -108,7 +122,7 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
     const waveOperationId = operation.id;
     const waveBlueprint = blueprint;
     const waveBase = createWaveBase({ operationId: waveOperationId, taskId: input.contract.task.id, waveIndex: index, candidate: currentCandidate });
-    const results = await mapLimit(tasks, planning?.maxWaveConcurrency ?? tasks.length, (task) => executeDelegation({ ...input, operationId: waveOperationId, task, participantAssignment: participantByWorkUnit.get(task.id), executionBlueprint: waveBlueprint, waveBase: waveBase.candidate })); sessions.push(...results.map((result) => result.session));
+    const results = await mapLimit(tasks, waveConcurrencyV1(planning, tasks.length), (task) => executeDelegation({ ...input, operationId: waveOperationId, task, participantAssignment: participantByWorkUnit.get(task.id), executionBlueprint: waveBlueprint, waveBase: waveBase.candidate })); sessions.push(...results.map((result) => result.session));
     if (results.some((result) => result.status === "FAIL")) { const summary: WaveExecutionSummary = { wave: index + 1, taskIds: ids, status: "FAIL", results }; waveSummaries.push(summary); await recordEvent(input.stateRoot, input.config, "harness.wave.finish", { taskId: input.contract.task.id, wave: index + 1, status: "FAIL", tasks: ids }); return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, aggregateSession: aggregate(sessions, 1, `Wave ${index + 1} failed.`) }; }
     const resultByWorkUnit = new Map(results.map((result) => [result.task.id, result] as const));
     const submissions: WaveChangeSetSubmissionV1[] = [];
@@ -270,7 +284,11 @@ async function executeDelegation(input: { root: string; stateRoot: string; confi
     if (baselineAdd.exitCode !== 0) return failed(input.task, selection, `Unable to create task baseline: ${baselineAdd.stderr || baselineAdd.stdout}`);
     const baselineCommit = await runExecutable("git", ["-c", "user.name=aeh", "-c", "user.email=aeh@localhost", "commit", "--no-gpg-sign", "-m", "aeh wave baseline", "--allow-empty"], { cwd: worktree, timeoutMs: 60_000 });
     if (baselineCommit.exitCode !== 0) return failed(input.task, selection, `Unable to create task baseline: ${baselineCommit.stderr || baselineCommit.stdout}`);
-    const session = await executeAgentPrompt(worktree, input.config, input.contract, selection, prompt, { participantId, phase: "implementation", operationKind: currentOperationContext().kind, requireExecutionAuthority: true, executionBlueprint: input.executionBlueprint, executionBlueprintDigest: input.executionBlueprint.digest, roleInvocationPolicy: input.participantAssignment.roleInvocationPolicy, skillManifest: input.participantAssignment.skillManifest }); if (session.exitCode !== 0) return { task: input.task, session, changedFiles: [], patch: "", status: "FAIL", message: `Agent exited with ${session.exitCode}.` };
+    // The frozen role invocation policy's output contract is the durable structured result for this
+    // work unit. It must be propagated on dispatch (provider turn activation) and finalization
+    // (acceptance), or the Implementer's result channel is never activated and the participant can
+    // only fall back to unstructured text (AEH-V2-0118).
+    const session = await executeAgentPrompt(worktree, input.config, input.contract, selection, prompt, { outputContract: input.participantAssignment.roleInvocationPolicy?.outputContract ?? selection.outputContract ?? "implementer", participantId, phase: "implementation", operationKind: currentOperationContext().kind, requireExecutionAuthority: true, executionBlueprint: input.executionBlueprint, executionBlueprintDigest: input.executionBlueprint.digest, roleInvocationPolicy: input.participantAssignment.roleInvocationPolicy, skillManifest: input.participantAssignment.skillManifest }); if (session.exitCode !== 0) return { task: input.task, session, changedFiles: [], patch: "", status: "FAIL", message: `Agent exited with ${session.exitCode}.` };
     const status = await runExecutable("git", ["status", "--porcelain"], { cwd: worktree, timeoutMs: 30_000 }); const untracked = status.stdout.split(/\r?\n/).filter((line) => line.startsWith("?? ")).map((line) => line.slice(3).trim()).filter(Boolean); if (untracked.length) await runExecutable("git", ["add", "-N", "--", ...untracked], { cwd: worktree, timeoutMs: 30_000 });
     const names = await runExecutable("git", ["diff", "--name-only", "HEAD"], { cwd: worktree, timeoutMs: 30_000 }); const changedFiles = names.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean); const violations = changedFiles.filter((file) => !matchesAny(file, input.task.scope)); if (violations.length) return { task: input.task, session, changedFiles, patch: "", status: "FAIL", message: `Delegation escaped scope: ${violations.join(", ")}` };
     const diff = await runExecutable("git", ["diff", "--binary", "--no-ext-diff", "HEAD"], { cwd: worktree, timeoutMs: 60_000 }); if (diff.exitCode !== 0) return { task: input.task, session, changedFiles, patch: "", status: "FAIL", message: diff.stderr || "Unable to capture delegation patch." };
@@ -309,10 +327,19 @@ export function selectionForParticipant(base: AgentExecutionSelection, assignmen
   if (model.runtime !== binding.runtimeId) throw new Error(`EXECUTION_BLUEPRINT_INVALID: execution binding for role '${assignment.role}' pairs model '${binding.modelAlias}' with runtime '${binding.runtimeId}', but the model requires '${model.runtime}'.`);
   const permissions = { ...base.permissions };
   const exposedTools = [...new Set([...assignment.toolPack.required, ...assignment.toolPack.optional])].filter((tool) => !assignment.toolPack.forbidden.includes(tool));
-  if (!exposedTools.includes("repository-read")) permissions.read = "deny";
-  if (!exposedTools.includes("repository-write")) { permissions.write = "deny"; permissions.gitWrite = "deny"; }
-  if (!exposedTools.includes("command-execute")) permissions.shell = "deny";
-  if (!exposedTools.includes("approved-research")) permissions.network = "deny";
+  // The compiled assignment toolPack is the role ceiling-checked capability set, so the launch
+  // permission projection must express it explicitly instead of leaving provider defaults ("ask")
+  // in place: an undefined provider permission made a real Implementer session stop for write
+  // approval and return an empty result (AEH-V2-0110). An explicit base deny is never widened.
+  const allowIfExposed = (current: PermissionDecision | undefined, tool: string): PermissionDecision => {
+    if (!exposedTools.includes(tool)) return "deny";
+    return current === "deny" || current === "ask" ? current : "allow";
+  };
+  permissions.read = allowIfExposed(permissions.read, "repository-read");
+  permissions.write = allowIfExposed(permissions.write, "repository-write");
+  permissions.gitWrite = allowIfExposed(permissions.gitWrite, "repository-write");
+  permissions.shell = allowIfExposed(permissions.shell, "command-execute");
+  permissions.network = exposedTools.includes("approved-research") ? (permissions.network === "deny" ? "deny" : "allow") : "deny";
   if (assignment.role === "Reviewer") { permissions.write = "deny"; permissions.gitWrite = "deny"; }
   return {
     ...base,
@@ -346,5 +373,15 @@ function matchesAny(file: string, patterns: string[]): boolean { return patterns
 function staticPrefix(pattern: string): string { return pattern.split(/[?*\[]/, 1)[0].replace(/\/+$/, ""); }
 function failed(task: WorkUnitOutput, selection: AgentExecutionSelection, message: string, distributed = false): DelegationExecutionResult { return { task, session: { provider: selection.runtimeAdapter, model: selection.modelName, logicalAgent: selection.logicalAgent, runtime: selection.runtimeName, profile: selection.profile, exitCode: 1, stdout: "", stderr: message }, changedFiles: [], patch: "", status: "FAIL", message, distributed }; }
 function aggregate(sessions: WorkerSession[], exitCode: number, message: string): WorkerSession { return { provider: "multi-worker", logicalAgent: "planner-waves", exitCode, stdout: message, stderr: exitCode ? sessions.filter((session) => session.exitCode !== 0).map((session) => session.stderr).filter(Boolean).join("\n") : "" }; }
+/**
+ * AEH-V2-0129: `workflow.planning.worktreeIsolation` defaults to true and is honored by per-unit
+ * candidate worktrees. When it is explicitly disabled, same-workspace writers are serialized
+ * deterministically (one work unit at a time) instead of running parallel writers, because
+ * DELEGATED candidate assembly always captures one ChangeSet per unit.
+ */
+export function waveConcurrencyV1(planning: { worktreeIsolation?: boolean; maxWaveConcurrency?: number } | undefined, taskCount: number): number {
+  if (planning?.worktreeIsolation === false) return 1;
+  return Math.max(1, Math.min(planning?.maxWaveConcurrency ?? taskCount, taskCount));
+}
 async function mapLimit<T, R>(values: T[], limit: number, fn: (value: T) => Promise<R>): Promise<R[]> { if (!values.length) return []; const result = new Array<R>(values.length); let cursor = 0; const workers = Array.from({ length: Math.max(1, Math.min(limit, values.length)) }, async () => { while (true) { const index = cursor++; if (index >= values.length) return; result[index] = await fn(values[index]); } }); await Promise.all(workers); return result; }
 function safe(value: string): string { return value.replace(/[^A-Za-z0-9._-]/g, "-"); }

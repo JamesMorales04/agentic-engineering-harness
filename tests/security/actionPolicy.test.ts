@@ -65,6 +65,17 @@ describe("frozen S8 action policy contract", () => {
       }
     });
 
+    it("enumerates a push-only delivery policy when pull requests are not requested", () => {
+      const pushOnly = project({ github: { enabled: true, finalizeOnAcceptance: true, pullRequests: false } });
+      for (const kind of ["run", "change"] as const) {
+        expect(configuredExternalEffects(pushOnly, kind)).toEqual(["git.push", "github.branch.create", "github.issue.create"]);
+        expect(requiredHumanActionAuthorizations(configuredExternalEffects(pushOnly, kind))).toEqual([
+          { kind: "ACTION_AUTHORIZATION", action: "git.push" },
+          { kind: "ACTION_AUTHORIZATION", action: "github.issue.create" }
+        ]);
+      }
+    });
+
     it("returns stable, distinct, sorted effect lists", () => {
       const first = configuredExternalEffects(GITHUB_AND_PASEO_FINALIZE_ON, "change");
       const second = configuredExternalEffects(GITHUB_AND_PASEO_FINALIZE_ON, "change");

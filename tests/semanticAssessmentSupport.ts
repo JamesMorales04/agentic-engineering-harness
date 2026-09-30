@@ -21,7 +21,7 @@ export const semanticAssessorTopologySource: AgentTopologySource = {
       capabilities: { modelSelection: true, structuredOutput: true, runtimeConfigInjection: true }
     }
   },
-  models: { assessorModel: { runtime: "opencode", provider: "openai", model: "small-structured" } },
+  models: { assessorModel: { runtime: "opencode", provider: "opencode-go", model: "gpt-6-luna" } },
   agents: {
     assessor: {
       role: "Semantic Assessor",

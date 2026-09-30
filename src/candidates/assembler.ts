@@ -11,7 +11,7 @@ import { createCandidateRevisionV1, type CandidateRevisionV1 } from "../operatio
 import { assertWorkspaceMatchesCandidate } from "./identity.js";
 import { runExecutable } from "../utils/process.js";
 import { changeKindSchema, changeKindValues, type ChangeKind } from "../architecture/workGraph.js";
-import { createSemanticEvidenceReceiptV1, semanticAssessmentEvidenceDigest, semanticEvidenceBoundaryDigest, type SemanticAssessmentBindingV1, type SemanticAssessmentServiceV1, type SemanticAssessmentV1 } from "../semantic/assessment.js";
+import { createSemanticEvidenceReceiptV1, semanticAssessmentEvidenceDigest, semanticEvidenceBoundaryDigest, semanticModelDeadlineMsV1, type SemanticAssessmentBindingV1, type SemanticAssessmentServiceV1, type SemanticAssessmentV1 } from "../semantic/assessment.js";
 
 export interface ChangeSetV1 {
   version: 1;
@@ -222,7 +222,7 @@ async function assessCandidateImpact(root: string, changeSet: ChangeSetV1, chang
     requiredOutputSchema: "semantic-assessment-v1" as const,
     reasoningRequirement: { reasoningClass: "STANDARD" as const, structuredOutputRequired: true, independenceRequired: false, externalKnowledgeRequired: false, maxContextClass: "LARGE" as const, riskClass: "HIGH" as const },
     binding,
-    budget: { maxInputTokens: 8_000, maxOutputTokens: 2_000, deadlineMs: 45_000 },
+    budget: { maxInputTokens: 8_000, maxOutputTokens: 2_000, deadlineMs: semanticModelDeadlineMsV1 },
     policyRevision: runtime.policyRevision
   };
   const assessment: SemanticAssessmentV1 = await runtime.service.assess(request);

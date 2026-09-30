@@ -1,0 +1,104 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 20,
+  "runId": "r20-ctxperm-2",
+  "campaign": "context-permission",
+  "generatedAt": "2026-09-29T22:18:09.970Z",
+  "checkout": "/home/james/Desarrollo/agentic-engineering-harness",
+  "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13ContextPermissionCampaign.mjs",
+        "sha256": "7d4cc4d0ad7171ae6257a175d4ad3e7dabf950c80aa618238c2621c82aa582e7"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "03afd531d91ef7db971517aa7a5deca947c4b54e38468481e2a6c828d260c87c"
+  },
+  "harnessBuildIdentity": {
+    "version": 1,
+    "packageVersion": "0.8.4",
+    "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "releaseId": "release-1790719895318-158964-9935d53e",
+    "buildDigest": "408b178d53f32750aa81efb3a60965552b1aacd7756332b4c6dbf8fd3d1c744b",
+    "dirty": true
+  },
+  "candidate": {
+    "artifact": "agentic-engineering-harness-0.8.4.tgz",
+    "artifactDigest": "038e9f3be5103bff2dc2b5b86d317b9f25b3439f6ed5ee21fe701f9d587a1768"
+  },
+  "lanes": [
+    {
+      "capability": "context-handoff",
+      "result": "FAIL",
+      "checks": [],
+      "rowResult": null,
+      "error": "Error: AEH_RESULT_PROVENANCE: task identity does not match the candidate.\n    at assertStructuredResultProvenance (file:///tmp/aeh-s13-ctxperm-hXaBwx/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790720290559-172306-d1e3dfd0/workers/resultGateway.js:195:19)\n    at finalizeStructuredResultChannelForAgent (file:///tmp/aeh-s13-ctxperm-hXaBwx/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790720290559-172306-d1e3dfd0/workers/resultGateway.js:86:5)\n    at async resolveStructuredResultProvenance (file:///tmp/aeh-s13-ctxperm-hXaBwx/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790720290559-172306-d1e3dfd0/workers/agentPrompt.js:1274:9)\n    at async Module.executeAgentPrompt (file:///tmp/aeh-s13-ctxperm-hXaBwx/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790720290559-172306-d1e3dfd0/workers/agentPrompt.js:126:15)\n    at async contextHandoffJourney (file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13ContextPermissionCampaign.mjs:228:20)\n    at async file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13ContextPermissionCampaign.mjs:347:45",
+      "artifact": "docs/evidence/s13/context-permission-lanes/round-20/r20-ctxperm-2/context-handoff.json"
+    },
+    {
+      "capability": "permission-delegation",
+      "result": "FAIL",
+      "checks": [],
+      "rowResult": null,
+      "error": "Error: AEH_RESULT_PROVENANCE: task identity does not match the candidate.\n    at assertStructuredResultProvenance (file:///tmp/aeh-s13-ctxperm-hXaBwx/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790720290559-172306-d1e3dfd0/workers/resultGateway.js:195:19)\n    at finalizeStructuredResultChannelForAgent (file:///tmp/aeh-s13-ctxperm-hXaBwx/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790720290559-172306-d1e3dfd0/workers/resultGateway.js:86:5)\n    at async resolveStructuredResultProvenance (file:///tmp/aeh-s13-ctxperm-hXaBwx/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790720290559-172306-d1e3dfd0/workers/agentPrompt.js:1274:9)\n    at async Module.executeAgentPrompt (file:///tmp/aeh-s13-ctxperm-hXaBwx/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790720290559-172306-d1e3dfd0/workers/agentPrompt.js:126:15)\n    at async permissionDelegationJourney (file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13ContextPermissionCampaign.mjs:309:20)\n    at async file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13ContextPermissionCampaign.mjs:347:112",
+      "artifact": "docs/evidence/s13/context-permission-lanes/round-20/r20-ctxperm-2/permission-delegation.json"
+    }
+  ],
+  "result": "SLICE_BLOCKED",
+  "workspaceInventory": [
+    {
+      "workspaceId": "wks_48eb4cae1c234bec",
+      "cwd": "/tmp/aeh-s13-ctxperm-hXaBwx/fixture-permission-delegation"
+    },
+    {
+      "workspaceId": "wks_fe179e8e9ea079c7",
+      "cwd": "/tmp/aeh-s13-ctxperm-hXaBwx/fixture-context-handoff"
+    }
+  ],
+  "workspaceCleanup": {
+    "archived": [
+      {
+        "workspaceId": "wks_48eb4cae1c234bec",
+        "cwd": "/tmp/aeh-s13-ctxperm-hXaBwx/fixture-permission-delegation",
+        "exitCode": 0
+      },
+      {
+        "workspaceId": "wks_fe179e8e9ea079c7",
+        "cwd": "/tmp/aeh-s13-ctxperm-hXaBwx/fixture-context-handoff",
+        "exitCode": 0
+      }
+    ],
+    "remaining": [],
+    "accounting": {
+      "inventoryCount": 2,
+      "archivedCount": 2,
+      "remainingCount": 0,
+      "unaccounted": [],
+      "accounted": true
+    }
+  },
+  "checkoutProof": {
+    "trackedDigestBefore": "8444d6a1ac8f1e10063819ff9c8bcfefe308b4ccc5c58a93fb967a819b492fc2",
+    "trackedDigestAfter": "8444d6a1ac8f1e10063819ff9c8bcfefe308b4ccc5c58a93fb967a819b492fc2",
+    "trackedFiles": 668,
+    "checkoutUntouched": true,
+    "postRunTrackedDocEditWindow": {
+      "opensAfterLaneFinish": true,
+      "note": "S13 tracked documentation/evidence is edited after lane execution; the recorded digest is the source-tree digest at lane end (R11-F6)."
+    }
+  }
+}

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import { assertExecutionBindingV2, assertResolvedOperationPolicyV1, type ExecutionBindingV2 } from "../architecture/executionIdentity.js";
 import { sha256Utf8 } from "../core/digest.js";
 import {
@@ -304,4 +305,26 @@ function assertLifecycleCurrent(operation: OperationRecordV2, identity: Provider
 
 export function operationProviderReservationId(): string {
   return `provider-session:${randomUUID()}`;
+}
+
+/**
+ * AEH-V2-0129: the provider write-lease workspace key. A launch explicitly bound to the operation
+ * workspace keeps that identity; an isolated per-unit wave launch (launch root differs from the
+ * operation state/control root) gets its own deterministic key derived from the isolated root, so
+ * parallel same-wave units no longer collide on the shared operation workspace key while writers of
+ * one workspace still serialize.
+ */
+export function providerLeaseWorkspaceKeyV1(input: {
+  explicitWorkspaceId?: string;
+  labelWorkspaceId?: string;
+  launchRoot: string;
+  stateRoot: string;
+  operationWorkspaceId?: string;
+  operationId: string;
+}): string {
+  const explicit = input.explicitWorkspaceId ?? input.labelWorkspaceId;
+  if (explicit) return explicit;
+  const launchRoot = path.resolve(input.launchRoot);
+  if (launchRoot !== path.resolve(input.stateRoot)) return `isolated:${sha256Utf8(launchRoot).slice(0, 16)}`;
+  return input.operationWorkspaceId ?? input.operationId;
 }

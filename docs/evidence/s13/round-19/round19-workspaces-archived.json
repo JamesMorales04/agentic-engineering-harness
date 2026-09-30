@@ -1,0 +1,298 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 19,
+  "kind": "workspace-archive-receipt",
+  "capturedAt": "2026-09-29T16:39:09.729Z",
+  "archivedCount": 48,
+  "archived": [
+    {
+      "workspaceId": "wks_004a06066c0b31db",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s3-product-choice-control-center",
+      "isolation": "worktree",
+      "name": "S3 Product Choice Control Center"
+    },
+    {
+      "workspaceId": "wks_00f2ab1259260fb9",
+      "cwd": "/home/james/.paseo/worktrees/29lhtj73/aeh-change-20260921t051132z-c5c9e367",
+      "isolation": "worktree",
+      "name": "AEH CHANGE · CHANGE-20260921T051132Z-c5c9e367"
+    },
+    {
+      "workspaceId": "wks_02e4ed4769d6cc01",
+      "cwd": "/home/james/.paseo/worktrees/29lhtj73/aeh-change-20260921t053757z-96b5e2aa",
+      "isolation": "worktree",
+      "name": "AEH CHANGE · CHANGE-20260921T053757Z-96b5e2aa"
+    },
+    {
+      "workspaceId": "wks_06712c9f27eb151c",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/aeh-change-20260922t211154z-c7831489",
+      "isolation": "worktree",
+      "name": "AEH CHANGE · CHANGE-20260922T211154Z-c7831489"
+    },
+    {
+      "workspaceId": "wks_0aa890e895147745",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s2-evidence-boundary-flash-20260924",
+      "isolation": "worktree",
+      "name": "S2 Evidence Boundary Regression Tests"
+    },
+    {
+      "workspaceId": "wks_0b12e54e3c548cca",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/aeh-change-20260922t213926z-da0e3d70",
+      "isolation": "worktree",
+      "name": "AEH CHANGE · CHANGE-20260922T213926Z-da0e3d70"
+    },
+    {
+      "workspaceId": "wks_10812e56dd873c95",
+      "cwd": "/home/james/.paseo/worktrees/29lhtj73/aeh-change-20260921t050808z-c5c9e367",
+      "isolation": "worktree",
+      "name": "AEH CHANGE · CHANGE-20260921T050808Z-c5c9e367"
+    },
+    {
+      "workspaceId": "wks_12c4f8bf3b16235f",
+      "cwd": "/home/james/.paseo/worktrees/29lhtj73/aeh-change-20260921t051849z-01163a84",
+      "isolation": "worktree",
+      "name": "AEH CHANGE · CHANGE-20260921T051849Z-01163a84"
+    },
+    {
+      "workspaceId": "wks_16f267f082482354",
+      "cwd": "/home/james/.paseo/worktrees/29lhtj73/aeh-change-20260921t053023z-96b5e2aa",
+      "isolation": "worktree",
+      "name": "AEH CHANGE · CHANGE-20260921T053023Z-96b5e2aa"
+    },
+    {
+      "workspaceId": "wks_2e7e43422e09960c",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/aeh-change-20260922t212228z-c7831489",
+      "isolation": "worktree",
+      "name": "AEH CHANGE · CHANGE-20260922T212228Z-c7831489"
+    },
+    {
+      "workspaceId": "wks_3305bca48271b614",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s1-callback-mutation-flash-20260924",
+      "isolation": "worktree",
+      "name": "S1 callback binding regression"
+    },
+    {
+      "workspaceId": "wks_352a603f7dc9f645",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s1-frozen-binding-guard-flash",
+      "isolation": "worktree",
+      "name": "S1 binding guard Flash"
+    },
+    {
+      "workspaceId": "wks_37ea8b7888fcc666",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s10-baseline-gaps",
+      "isolation": "worktree",
+      "name": "S10 baseline gap reproduction"
+    },
+    {
+      "workspaceId": "wks_3ac6d011920867ef",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/aeh-change-20260815t201400z-5c5c49d3",
+      "isolation": "worktree",
+      "name": "AEH CHANGE · CHANGE-20260815T201400Z-5c5c49d3"
+    },
+    {
+      "workspaceId": "wks_3e0721b9ce70a17f",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/aeh-change-20260921t032544z-6886a116",
+      "isolation": "worktree",
+      "name": "AEH CHANGE · CHANGE-20260921T032544Z-6886a116"
+    },
+    {
+      "workspaceId": "wks_445a4d8676e6d2bd",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s9-r15-control-center-reuse-tests",
+      "isolation": "worktree",
+      "name": "S9 R15 Control Center reuse regression"
+    },
+    {
+      "workspaceId": "wks_4d4da53cce706036",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s6-objective-completion-flash",
+      "isolation": "worktree",
+      "name": "Core v2 S6 objective completion"
+    },
+    {
+      "workspaceId": "wks_4dbfd9e0eded0f88",
+      "cwd": "/tmp/aeh-direct-CHANGE-20260929T154327Z-633993c4-UYVeOH",
+      "isolation": "local",
+      "name": "aeh-direct-CHANGE-20260929T154327Z-633993c4-UYVeOH"
+    },
+    {
+      "workspaceId": "wks_504a82db4a321cc4",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s2-stack-semantic-flash-20260924",
+      "isolation": "worktree",
+      "name": "S2 Semantic Stack Migration"
+    },
+    {
+      "workspaceId": "wks_55255151cf926b67",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s9-provider-lease-fault-tests",
+      "isolation": "worktree",
+      "name": "S9 provider lease fault tests"
+    },
+    {
+      "workspaceId": "wks_7785ac3c6d515f1b",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s8-action-policy-tests-flash",
+      "isolation": "worktree",
+      "name": "S8 Action Policy Test Unit"
+    },
+    {
+      "workspaceId": "wks_8033b61572f7d0a0",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s4-candidate-assurance-flash",
+      "isolation": "worktree",
+      "name": "S4 Candidate Assurance Flash"
+    },
+    {
+      "workspaceId": "wks_818da397145f102a",
+      "cwd": "/home/james/.paseo/worktrees/29lhtj73/aeh-change-20260921t051032z-c5c9e367",
+      "isolation": "worktree",
+      "name": "AEH CHANGE · CHANGE-20260921T051032Z-c5c9e367"
+    },
+    {
+      "workspaceId": "wks_82c5d32e3df9b54c",
+      "cwd": "/home/james/.paseo/worktrees/3fomoob1/aeh-change-20260929t152341z-633993c4",
+      "isolation": "worktree",
+      "name": "AEH CHANGE · CHANGE-20260929T152341Z-633993c4"
+    },
+    {
+      "workspaceId": "wks_843223a7208dc6ea",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s9-browser-discovery",
+      "isolation": "worktree",
+      "name": "S9 browser discovery"
+    },
+    {
+      "workspaceId": "wks_891823999e90d2b8",
+      "cwd": "/tmp/aeh-CHANGE-20260929T151732Z-248e53a3-farewell-module-qkusUi",
+      "isolation": "local",
+      "name": "aeh-CHANGE-20260929T151732Z-248e53a3-farewell-module-qkusUi"
+    },
+    {
+      "workspaceId": "wks_89187e6a5298a10e",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s7-provenance-flash-tests",
+      "isolation": "worktree",
+      "name": "S7 provenance test isolation"
+    },
+    {
+      "workspaceId": "wks_89d1ea19aa4e2d2f",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s2-stack-flash-20260924",
+      "isolation": "worktree",
+      "name": "S2 Stack Adapter — Flash"
+    },
+    {
+      "workspaceId": "wks_980401dce49edf4b",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s7-provenance-schema-regression",
+      "isolation": "worktree",
+      "name": "S7 schema guard regression"
+    },
+    {
+      "workspaceId": "wks_9a1e242090dad294",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s9-browser-harness",
+      "isolation": "worktree",
+      "name": "S9 browser harness"
+    },
+    {
+      "workspaceId": "wks_a16efdfdc2e86158",
+      "cwd": "/home/james/.paseo/worktrees/3cpda7yj/aeh-change-20260929t153302z-633993c4",
+      "isolation": "worktree",
+      "name": "AEH CHANGE · CHANGE-20260929T153302Z-633993c4"
+    },
+    {
+      "workspaceId": "wks_a9ba45efe035d731",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/aeh-change-20260921t032636z-280a1a57",
+      "isolation": "worktree",
+      "name": "AEH CHANGE · CHANGE-20260921T032636Z-280a1a57"
+    },
+    {
+      "workspaceId": "wks_aee892da9fbbf6c1",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s9-browser-skill",
+      "isolation": "worktree",
+      "name": "S9 browser E2E skill"
+    },
+    {
+      "workspaceId": "wks_b82fd032afd95af3",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s11-baseline",
+      "isolation": "worktree",
+      "name": "S11 baseline verification (bounded)"
+    },
+    {
+      "workspaceId": "wks_cf0aa07f4e2fbcad",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s9-r17-semantic-preflight-tests",
+      "isolation": "worktree",
+      "name": "S9 R17 semantic preflight tests"
+    },
+    {
+      "workspaceId": "wks_d3fc4487a9ae2c50",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/aeh-change-20260922t204407z-da0e3d70",
+      "isolation": "worktree",
+      "name": "AEH CHANGE · CHANGE-20260922T204407Z-da0e3d70"
+    },
+    {
+      "workspaceId": "wks_d84f637b13355e22",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s8-flash-gated-action-exception",
+      "isolation": "worktree",
+      "name": "S8 Flash gated action reconciliation"
+    },
+    {
+      "workspaceId": "wks_d86868e933e6bc6b",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s1-execution-semantics-flash-20260924",
+      "isolation": "worktree",
+      "name": "S1 execution semantics lifecycle tests"
+    },
+    {
+      "workspaceId": "wks_d92a14c7ee85a8e3",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/aeh-change-20260922t213436z-da0e3d70",
+      "isolation": "worktree",
+      "name": "AEH CHANGE · CHANGE-20260922T213436Z-da0e3d70"
+    },
+    {
+      "workspaceId": "wks_df80fb40e7fd9d18",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s1-remediation-flash",
+      "isolation": "worktree",
+      "name": "S1 remediation test worktree"
+    },
+    {
+      "workspaceId": "wks_e0edb0e15e687a89",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s1-policy-mutation-flash",
+      "isolation": "worktree",
+      "name": "S1 policy mutation Flash"
+    },
+    {
+      "workspaceId": "wks_e75cbff45b32c5f3",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s9-r12-startup-failure-regression",
+      "isolation": "worktree",
+      "name": "S9 R12 startup failure test"
+    },
+    {
+      "workspaceId": "wks_eba8476c48577edf",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s9-r13-start-rebind-regression",
+      "isolation": "worktree",
+      "name": "S9 R13 start rebind regression"
+    },
+    {
+      "workspaceId": "wks_ee195c79a66c2093",
+      "cwd": "/home/james/.paseo/worktrees/29lhtj73/aeh-change-20260921t050702z-f75a6c2d",
+      "isolation": "worktree",
+      "name": "AEH CHANGE · CHANGE-20260921T050702Z-f75a6c2d"
+    },
+    {
+      "workspaceId": "wks_f37748ea4b534e9f",
+      "cwd": "/home/james/.paseo/worktrees/1p5mgvdp/aeh-change-20260929t154327z-633993c4",
+      "isolation": "worktree",
+      "name": "AEH CHANGE · CHANGE-20260929T154327Z-633993c4"
+    },
+    {
+      "workspaceId": "wks_f43e2216181d869a",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/aeh-change-20260922t203535z-da0e3d70",
+      "isolation": "worktree",
+      "name": "AEH CHANGE · CHANGE-20260922T203535Z-da0e3d70"
+    },
+    {
+      "workspaceId": "wks_f465c0d32f707dbb",
+      "cwd": "/home/james/.paseo/worktrees/109rnc4g/aeh-change-20260929t155125z-9eed7a49",
+      "isolation": "local",
+      "name": "AEH CHANGE · CHANGE-20260929T155125Z-9eed7a49"
+    },
+    {
+      "workspaceId": "wks_ffd1fc8e778d9a81",
+      "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s8-gated-action-flash",
+      "isolation": "worktree",
+      "name": "S8 gated-action reconciliation Flash"
+    }
+  ]
+}

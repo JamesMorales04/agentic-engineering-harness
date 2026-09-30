@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import { loadResolvedAgentTopology } from "../agents/config.js";
 import { explorerOutputSchema, plannerOutputSchema, specAuthoringOutputSchema, type ExplorerOutput, type PlannerOutput, type SpecAuthoringOutput } from "../agents/outputContracts.js";
@@ -5,6 +6,7 @@ import { executionSelectionForAgent } from "../agents/routing.js";
 import { createControlPlaneSnapshot } from "../core/controlPlane.js";
 import { loadTaskContract } from "../core/config.js";
 import { createRoutedContract } from "../core/contract.js";
+import { computeWorktreeDigest } from "../core/git.js";
 import { runTask, type TaskRunResult } from "../core/run.js";
 import { validateSddChange } from "../core/sdd.js";
 import { sealTask } from "../core/seal.js";
@@ -14,14 +16,20 @@ import type { AgentExecutionSelection } from "../agents/types.js";
 import type { AssuranceLevel, ImplementationRoute, RouteEvidence } from "../architecture/contracts.js";
 import { createRouteEvidence } from "../architecture/contracts.js";
 import { createDelegatedFeatureCapsule, persistFeatureCapsule } from "../architecture/featureCapsule.js";
-import { compileOpenSpecChange, preflightOpenSpec, prepareOpenSpecChange, type OpenSpecPreflightResult } from "../spec/openspec.js";
+import { defaultSkillSeed } from "../participants/skills.js";
+import { compileOpenSpecChange, persistOpenSpecAuthoringContentV1, preflightOpenSpec, prepareOpenSpecChange, validateOpenSpecAuthoringContentCanonicalityV1, type OpenSpecPreflightResult } from "../spec/openspec.js";
 import { recordEvent } from "../telemetry/events.js";
 import { executeAgentPrompt } from "../workers/agentPrompt.js";
+import { bindBootstrapOperationPolicy } from "./bootstrapPolicy.js";
 import { requireDurableChangeHandoff, type DurableAgentEvidence } from "./changeHandoff.js";
 import { changeInputsPrompt, resolveChangeInputs, type ChangeInputReference } from "./changeInputs.js";
 import {
+  bindOperationCandidate,
   loadOperation,
   patchOperation,
+  recordCandidateAssemblyReceipt,
+  bindOperationExecutionSemantics,
+  isProvisionalOperationPolicyV1,
   bindProductChoiceExecutionSemantics,
   bindResolvedOperationPolicy,
   completeOperationProductChoice,
@@ -43,7 +51,7 @@ import {
   type ChangeOperationPayload,
   type OperationRecordV2
 } from "./state.js";
-import { candidateRevisionsEqual } from "./v2Contracts.js";
+import { candidateRevisionsEqual, createCandidateRevisionV1 } from "./v2Contracts.js";
 import { drainOperationWriters } from "./control.js";
 import { ensureOperationSupervisor, maybeRotateOperationSupervisor } from "./supervisor.js";
 import { createSemanticAssessmentRuntimeV1, createSemanticRepositoryBindingV1 } from "../semantic/runtime.js";
@@ -51,6 +59,7 @@ import { launchManagedPaseoAgent } from "../paseo/runtime.js";
 import { assertResolvedOperationPolicyV1, compileResolvedOperationPolicy } from "../architecture/executionIdentity.js";
 import { sha256Canonical } from "../core/digest.js";
 import { HumanDecisionLedgerV2, type DecisionChoiceV1, type HumanDecisionBindingV2 } from "../security/humanDecision.js";
+import { deterministicParticipantId } from "../security/executionLease.js";
 
 export interface ChangeOperationResult {
   taskId: string;
@@ -215,29 +224,21 @@ export async function runChangeOperation(
   if (route === "DELEGATED" || route === "FORMAL_SDD") await maybeRotateOperationSupervisor(root, config, bootstrapContract, supervisorSelection);
 
   let plannerEvidence: DurableAgentEvidence<PlannerOutput> | undefined;
-  if (route === "DELEGATED" || route === "FORMAL_SDD") {
+  const planAgainstSealedContract = async (sealed: TaskContract): Promise<DurableAgentEvidence<PlannerOutput> | undefined> => {
     await setOperationStage(controlRoot, operation.id, "planning", "RUNNING");
-    plannerEvidence = await runPlanning(root, controlRoot, config, bootstrapContract, plannerSelection, operation.id, payload, explorerEvidence, inputs);
-    await setOperationStage(controlRoot, operation.id, "planning", "COMPLETED", { artifact: plannerEvidence?.artifact, message: plannerEvidence ? "Planner durable result accepted." : "Planner disabled or unavailable by topology." });
-  }
+    const evidence = await runPlanning(root, controlRoot, config, sealed, plannerSelection, operation.id, payload, explorerEvidence, inputs);
+    await setOperationStage(controlRoot, operation.id, "planning", "COMPLETED", { artifact: evidence?.artifact, message: evidence ? "Planner durable result accepted against the sealed TaskContract." : "Planner disabled or unavailable by topology." });
+    return evidence;
+  };
 
-  if (route !== "FORMAL_SDD" && requiresSpecEscalation(explorerEvidence, plannerEvidence)) {
-    route = "FORMAL_SDD";
-    triage = formalizeEscalatedTriage(triage);
-    bootstrapContract = operationBootstrapContract(taskId, title, payload, route, triage.assurance, triage.routeEvidence);
-    triageReasons = [...triageReasons, "SPEC escalation came from durable explorer/planner evidence."];
-    await patchOperation(controlRoot, operation.id, { intent: { ...(await loadOperation(controlRoot, operation.id)).intent, route, assurance: triage.assurance } });
-    await recordEvent(controlRoot, config, "harness.change.triage-escalated", { operationId: operation.id, reason: triageReasons.at(-1), explorerArtifact: explorerEvidence?.artifact, plannerArtifact: plannerEvidence?.artifact });
-    await setOperationStage(controlRoot, operation.id, "environment-preflight", "RUNNING");
-    specPreflight = await preflightOpenSpec(root, config);
-    await setOperationStage(controlRoot, operation.id, "environment-preflight", "COMPLETED", { message: `OpenSpec ${specPreflight.version}; schema=${specPreflight.schema}; manager=${specPreflight.managerAgent}` });
-    const manager = topology.agents[specPreflight.managerAgent];
-    if (!manager || manager.disabled) throw new Error(`SPEC_MANAGER_UNAVAILABLE: ${specPreflight.managerAgent}`);
-  }
-
-  let contract: TaskContract;
+  let contract: TaskContract | undefined;
   let specChange: string | undefined;
   if (route === "DELEGATED") {
+    // TARGET 4.2: the WorkGraph is derived from frozen requirements. For DELEGATED the routed
+    // TaskContract is deterministic (acceptance-derived requirement IDs), so it is authored and
+    // sealed before planning; the Planner receives the exact frozen requirement IDs. Planning
+    // before the contract existed made every plan reference unknowable IDs and fail the WorkGraph
+    // contract check (AEH-V2-0110).
     await setOperationStage(controlRoot, operation.id, "contract-authoring", "RUNNING");
     const capsule = createDelegatedFeatureCapsule({ taskId, objective: payload.request, scope: { allowed: payload.files?.length ? payload.files : ["**"], forbidden: [] }, acceptance: payload.acceptance, assurance: triage.assurance, routeEvidence: triage.routeEvidence, candidateRevision: (await loadOperation(controlRoot, operation.id)).candidateRevision as unknown as Record<string, unknown> });
     const capsuleArtifact = await persistFeatureCapsule(root, capsule);
@@ -245,16 +246,61 @@ export async function runChangeOperation(
     contract = { ...routed.contract, scope: capsule.scope };
     await sealTask(root, config, contract);
     await setOperationStage(controlRoot, operation.id, "contract-authoring", "COMPLETED", { artifact: capsuleArtifact });
-  } else if (route === "DIRECT") {
+
+    plannerEvidence = await planAgainstSealedContract(contract);
+    const specEscalation = specEscalationConstraintV1(plannerEvidence);
+    if (specEscalation) {
+      route = "FORMAL_SDD";
+      triage = formalizeEscalatedTriage(triage);
+      bootstrapContract = operationBootstrapContract(taskId, title, payload, route, triage.assurance, triage.routeEvidence);
+      triageReasons = [...triageReasons, "SPEC escalation came from the Planner's typed formalization need."];
+      await patchOperation(controlRoot, operation.id, { intent: { ...(await loadOperation(controlRoot, operation.id)).intent, route, assurance: triage.assurance } });
+      await recordEvent(controlRoot, config, "harness.change.triage-escalated", {
+        operationId: operation.id,
+        reason: triageReasons.at(-1),
+        constraint: specEscalation.constraint,
+        plannerArtifact: plannerEvidence?.artifact,
+        plannerFormalizationNeed: specEscalation.plannerFormalizationNeed,
+        plannerFormalizationReason: specEscalation.plannerFormalizationReason ?? null,
+        plannerFormalizationEvidenceRefs: specEscalation.plannerFormalizationEvidenceRefs,
+        explorerArtifact: explorerEvidence?.artifact,
+        explorerFindings: (explorerEvidence?.payload.findings ?? []).map((finding) => ({ id: finding.id, status: finding.status, evidenceRefs: finding.evidence.length }))
+      });
+      await setOperationStage(controlRoot, operation.id, "environment-preflight", "RUNNING");
+      specPreflight = await preflightOpenSpec(root, config);
+      await setOperationStage(controlRoot, operation.id, "environment-preflight", "COMPLETED", { message: `OpenSpec ${specPreflight.version}; schema=${specPreflight.schema}; manager=${specPreflight.managerAgent}` });
+      const manager = topology.agents[specPreflight.managerAgent];
+      if (!manager || manager.disabled) throw new Error(`SPEC_MANAGER_UNAVAILABLE: ${specPreflight.managerAgent}`);
+      // Escalation changes the execution semantics (route and assurance). The frozen policy must be
+      // advanced and rebound deterministically before any FORMAL_SDD participant launches; otherwise
+      // the Spec Manager identity compiles against the superseded DELEGATED policy and fails closed
+      // with EXECUTION_POLICY_STALE (AEH-V2-0107).
+      await rebindEscalatedChangePolicy({
+        controlRoot,
+        operationId: operation.id,
+        route,
+        assurance: triage.assurance,
+        escalationEvidence: { explorerArtifact: explorerEvidence?.artifact, plannerArtifact: plannerEvidence?.artifact }
+      });
+      // The plan derived from the superseded DELEGATED contract cannot be reused against the
+      // compiled formal contract (different frozen requirement IDs). It remains provenance for the
+      // escalation; planning runs again after compilation against the frozen formal requirements.
+      plannerEvidence = undefined;
+    }
+  }
+  // This chain is evaluated after the DELEGATED branch so a Planner-driven escalation enters the
+  // formalization path in the same operation (the local `route` mutation must not be skipped by a
+  // branch selected before the escalation).
+  if (route === "DIRECT") {
     await setOperationStage(controlRoot, operation.id, "contract-authoring", "RUNNING");
     const routed = await createRoutedContract(root, config, taskId, { title, request: payload.request, scope: payload.files ?? [], acceptance: payload.acceptance, domains: payload.domains, risk: payload.risk, profile: payload.profile, routeDecision: triage });
     contract = routed.contract;
     await sealTask(root, config, contract);
     await setOperationStage(controlRoot, operation.id, "contract-authoring", "COMPLETED", { artifact: relativeContract(config, taskId) });
-  } else {
+  } else if (route === "FORMAL_SDD") {
     if (!specPreflight) throw new Error("SPEC_PREFLIGHT_STATE: formal SDD authoring reached without a completed OpenSpec preflight.");
     await setOperationStage(controlRoot, operation.id, "spec-authoring", "RUNNING");
-    const preparedSpec = await prepareOpenSpecChange(root, config, taskId, title);
+    const preparedSpec = await prepareOpenSpecChange(root, config, taskId);
     specChange = preparedSpec.changeName;
     if (preparedSpec.managerAgent !== specPreflight.managerAgent) throw new Error(`SPEC_MANAGER_PREFLIGHT_DRIFT: preflight=${specPreflight.managerAgent} prepared=${preparedSpec.managerAgent}`);
     const selection = executionSelectionForAgent(topology, preparedSpec.managerAgent);
@@ -274,6 +320,19 @@ export async function runChangeOperation(
     contract.routing = { ...contract.routing, route, assurance: triage.assurance, routeEvidence: triage.routeEvidence };
     await sealTask(root, config, contract);
     await setOperationStage(controlRoot, operation.id, "spec-compilation", "COMPLETED", { artifact: relativeContract(config, taskId) });
+    // AEH-V2-0126: the controller-owned authoring persistence and OpenSpec compilation changed the
+    // candidate workspace after its binding. Advance the candidate lineage deterministically before
+    // any further execution binding is consumed (the Planner launch and its accepted result bind
+    // the advanced candidate).
+    const authoringAdvance = await advanceCandidateForControllerAuthoring({ root, controlRoot, config, operationId: operation.id, taskId, changeName: preparedSpec.changeName, route, assurance: triage.assurance, contract });
+    await recordEvent(controlRoot, config, "harness.change.authoring-candidate-advance", {
+      operationId: operation.id,
+      taskId,
+      changeName: preparedSpec.changeName,
+      advanced: authoringAdvance.advanced,
+      candidateRevision: authoringAdvance.revision,
+      candidateIdentityDigest: authoringAdvance.identityDigest
+    });
     const choiceOperation = await loadOperation(controlRoot, operation.id);
     if (choiceOperation.continuation?.state === "RESUMING" && choiceOperation.continuation.selectedDecisionId && choiceOperation.continuation.selectedChoiceId) {
       const priorPolicy = choiceOperation.resolvedOperationPolicy;
@@ -295,8 +354,13 @@ export async function runChangeOperation(
       await bindResolvedOperationPolicy(controlRoot, operation.id, currentPolicy);
       await resumeOperationProductChoice(controlRoot, operation.id);
     }
+    // TARGET 4.1/4.2: formalization precedes the WorkGraph. The compiled, sealed formal contract is
+    // the frozen requirement source, so planning runs against its exact requirement IDs.
+    await awaitChangeControlCheckpoint(controlRoot, operation.id);
+    plannerEvidence = await planAgainstSealedContract(contract);
   }
 
+  if (!contract) throw new Error(`CHANGE_CONTRACT_MISSING: route ${route} reached implementation without a sealed TaskContract.`);
   await awaitChangeControlCheckpoint(controlRoot, operation.id);
   await setOperationStage(controlRoot, operation.id, "implementation", "RUNNING");
   const run = await runTask(root, config, contract, { profile: payload.profile, planning: plannerEvidence?.payload, semanticRuntime });
@@ -306,10 +370,185 @@ export async function runChangeOperation(
   return { taskId, route, triageReasons, run, specChange };
 }
 
-export function requiresSpecEscalation(explorerEvidence?: DurableAgentEvidence<ExplorerOutput>, plannerEvidence?: DurableAgentEvidence<PlannerOutput>): boolean {
-  const explorerEscalates = explorerEvidence?.payload.findings.some((finding) => (finding.status === "BLOCKED" || finding.status === "PARTIAL") && finding.evidence.length > 0) ?? false;
-  const plannerEscalates = plannerEvidence?.payload.formalizationNeed === "REQUIRED";
-  return explorerEscalates || plannerEscalates;
+/**
+ * DETERMINISTIC spec-escalation policy advance. Durable explorer/planner evidence may escalate a
+ * DELEGATED change to FORMAL_SDD with a higher assurance; that is an execution-semantics change, so
+ * the operation execution revision advances, the superseded policy is cleared, and a policy with
+ * the escalated route/assurance is recompiled for the current candidate and epoch. Repeating the
+ * same escalation is idempotent (same semantics digest, identical policy).
+ */
+export async function rebindEscalatedChangePolicy(input: {
+  controlRoot: string;
+  operationId: string;
+  route: ImplementationRoute;
+  assurance: AssuranceLevel;
+  escalationEvidence: Record<string, unknown>;
+}): Promise<OperationRecordV2> {
+  const current = await loadOperation(input.controlRoot, input.operationId);
+  const prior = current.resolvedOperationPolicy;
+  if (!prior || !current.candidateRevision) throw new Error("EXECUTION_POLICY_INPUT_MISSING: spec escalation requires the current frozen policy and candidate to rebind.");
+  assertResolvedOperationPolicyV1(prior);
+  const semanticsDigest = sha256Canonical({
+    kind: "SPEC_ESCALATION",
+    operationId: input.operationId,
+    route: input.route,
+    assurance: input.assurance,
+    candidateId: current.candidateRevision.candidateId,
+    candidateDigest: current.candidateRevision.identityDigest,
+    ...input.escalationEvidence
+  });
+  if (current.executionSemanticsDigest === semanticsDigest && prior.route === input.route && prior.minimumAssurance === input.assurance) return current;
+  if (current.executionSemanticsDigest === undefined && !isProvisionalOperationPolicyV1(prior)) {
+    // Canonical first-bind deliberately preserves the frozen policy (the digest baseline is not a
+    // change). The superseded policy was frozen before any digest existed, so establish that
+    // baseline first and let the escalation itself be the semantics change that invalidates it.
+    // A provisional bootstrap policy is superseded directly by the first real semantics bind.
+    await bindOperationExecutionSemantics(input.controlRoot, input.operationId, sha256Canonical({
+      kind: "CHANGE_SEMANTICS_BASELINE",
+      operationId: input.operationId,
+      candidateId: current.candidateRevision.candidateId,
+      candidateDigest: current.candidateRevision.identityDigest,
+      route: prior.route,
+      assurance: prior.minimumAssurance,
+      policyDigest: prior.digest
+    }));
+  }
+  const advanced = await bindOperationExecutionSemantics(input.controlRoot, input.operationId, semanticsDigest);
+  const { version: _version, digest: _digest, ...policyBody } = prior;
+  const priorReview = policyBody.reviewPolicy && typeof policyBody.reviewPolicy === "object" && !Array.isArray(policyBody.reviewPolicy)
+    ? policyBody.reviewPolicy as Record<string, unknown>
+    : {};
+  const escalated = compileResolvedOperationPolicy({
+    ...policyBody,
+    route: input.route,
+    minimumAssurance: input.assurance,
+    reviewPolicy: { ...priorReview, minimumAssurance: input.assurance, independentReviewRequired: input.assurance === "ELEVATED" || input.assurance === "CRITICAL" },
+    operationExecutionRevision: advanced.operationExecutionRevision!,
+    controllerEpoch: currentControllerEpoch(advanced)
+  });
+  await bindResolvedOperationPolicy(input.controlRoot, input.operationId, escalated);
+  return loadOperation(input.controlRoot, input.operationId);
+}
+
+/**
+ * DETERMINISTIC controller-authoring candidate advance (AEH-V2-0126). FORMAL_SDD persists the
+ * validated Spec Manager content and compiles the sealed OpenSpec artifacts into the bound
+ * candidate workspace after the candidate was frozen. Those controller-owned writes change the
+ * workspace source digest, so the next participant launch (and the Planner's accepted result)
+ * would be rejected `CANDIDATE_WORKSPACE_MISMATCH` against the stale binding. This advance binds
+ * exactly one successor CandidateRevision for the authored transition, records the deterministic
+ * ASSEMBLY lineage receipt for the authored change (the Spec Manager is the producing bounded
+ * participant), and invalidates the frozen policy and participant execution bindings through the
+ * canonical `bindOperationCandidate` path; the next launch recompiles the policy for the advanced
+ * candidate. It is idempotent: an unchanged workspace digest never advances a revision.
+ */
+export async function advanceCandidateForControllerAuthoring(input: {
+  root: string;
+  controlRoot: string;
+  config: HarnessProjectConfig;
+  operationId: string;
+  taskId: string;
+  changeName: string;
+  route: ImplementationRoute;
+  assurance: AssuranceLevel;
+  contract?: TaskContract;
+}): Promise<{ advanced: boolean; revision: number; identityDigest: string }> {
+  const current = await loadOperation(input.controlRoot, input.operationId);
+  const base = current.candidateRevision;
+  if (!base) throw new Error("CANDIDATE_BINDING_REQUIRED: controller authoring cannot advance without a current CandidateRevision.");
+  const sourceDigest = await computeWorktreeDigest(input.root);
+  if (sourceDigest === base.sourceDigest) return { advanced: false, revision: base.revision, identityDigest: base.identityDigest };
+  const advanced = createCandidateRevisionV1({
+    operationId: input.operationId,
+    candidateId: `candidate:${input.operationId}:r${base.revision + 1}`,
+    projectId: base.projectId,
+    taskId: base.taskId,
+    revision: base.revision + 1,
+    parentCandidateId: base.candidateId,
+    sourceDigest,
+    workspace: current.workspaceId,
+    worktree: input.root,
+    createdAt: new Date().toISOString()
+  });
+  await bindOperationCandidate(input.controlRoot, input.operationId, advanced);
+  const rebound = await loadOperation(input.controlRoot, input.operationId);
+  await recordCandidateAssemblyReceipt(input.controlRoot, input.operationId, {
+    baseCandidate: base,
+    candidate: advanced,
+    changeSet: {
+      operationId: input.operationId,
+      taskId: input.taskId,
+      workUnitId: `authoring:${input.changeName}`,
+      participantId: controllerAuthoringParticipantId(rebound, input.operationId),
+      baseCandidateRevision: base.revision,
+      baseCandidateDigest: base.identityDigest,
+      patchDigest: await controllerAuthoringPatchDigest(input.root, input.changeName, input.taskId)
+    }
+  });
+  // Binding a candidate clears the frozen policy. The controller-owned authoring advance must
+  // re-establish the provisional bootstrap policy for the advanced candidate exactly like a
+  // workspace-candidate bind does; otherwise the first execution-semantics bind (wave planning)
+  // preserves the launch-compiled policy at the same execution revision and fails
+  // EXECUTION_POLICY_RECOMPILE_REQUIRED.
+  await bindBootstrapOperationPolicy(input.controlRoot, input.config, await loadOperation(input.controlRoot, input.operationId), input.route, input.assurance, input.contract);
+  return { advanced: true, revision: advanced.revision, identityDigest: advanced.identityDigest };
+}
+
+function controllerAuthoringParticipantId(operation: OperationRecordV2, operationId: string): string {
+  const participants = Object.values(operation.participants);
+  const launchIdentity = participants.find((participant) => participant.role === "Spec Manager" && /^participant:[0-9a-f]{16}$/.test(participant.id));
+  const anySpecManager = participants.find((participant) => participant.role === "Spec Manager");
+  return launchIdentity?.id ?? anySpecManager?.id ?? deterministicParticipantId(operationId, "spec-manager", "spec-authoring");
+}
+
+/** Content-bound digest of the authored OpenSpec change directory (the controller-authoring patch). */
+async function controllerAuthoringPatchDigest(root: string, changeName: string, taskId: string): Promise<string> {
+  const directory = path.join(root, "openspec", "changes", changeName);
+  const files: string[] = [];
+  const visit = async (current: string): Promise<void> => {
+    for (const entry of await fs.readdir(current, { withFileTypes: true }).catch(() => [])) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) await visit(full);
+      else if (entry.isFile()) files.push(full);
+    }
+  };
+  await visit(directory);
+  const entries: Array<{ path: string; sha256: string }> = [];
+  for (const file of files.sort()) {
+    entries.push({ path: path.relative(root, file).replaceAll("\\", "/"), sha256: sha256Canonical(await fs.readFile(file, "utf8")) });
+  }
+  return sha256Canonical({ version: 1, taskId, changeName, files: entries });
+}
+
+export interface SpecEscalationConstraintV1 {
+  constraint: "PLANNER_FORMALIZATION_NEED_REQUIRED";
+  plannerFormalizationNeed: "REQUIRED";
+  plannerFormalizationReason?: string;
+  plannerFormalizationEvidenceRefs: string[];
+}
+
+/**
+ * DETERMINISTIC post-discovery escalation constraint for the HYBRID route. The Planner owns the
+ * typed semantic `formalizationNeed` judgment over its evidence (including durable Explorer
+ * findings); this constraint escalates a DELEGATED route to FORMAL_SDD only when that judgment is
+ * `REQUIRED`. Explorer finding statuses are discovery-quality facts (CONFIRMED/PARTIAL/
+ * NOT_REPRODUCED/BLOCKED) — for example a PARTIAL finding may mean the Explorer could not execute a
+ * validator in its read-only session — and are not by themselves a formalization need. Incomplete
+ * discovery that needs formal authoring must surface through the Planner's typed judgment with its
+ * reason and evidence refs, which are recorded as durable escalation provenance (AEH-V2-0110).
+ */
+export function specEscalationConstraintV1(plannerEvidence?: DurableAgentEvidence<PlannerOutput>): SpecEscalationConstraintV1 | undefined {
+  if (plannerEvidence?.payload.formalizationNeed !== "REQUIRED") return undefined;
+  return {
+    constraint: "PLANNER_FORMALIZATION_NEED_REQUIRED",
+    plannerFormalizationNeed: "REQUIRED",
+    ...(plannerEvidence.payload.formalizationReason ? { plannerFormalizationReason: plannerEvidence.payload.formalizationReason } : {}),
+    plannerFormalizationEvidenceRefs: [...(plannerEvidence.payload.formalizationEvidenceRefs ?? [])]
+  };
+}
+
+export function requiresSpecEscalation(plannerEvidence?: DurableAgentEvidence<PlannerOutput>): boolean {
+  return Boolean(specEscalationConstraintV1(plannerEvidence));
 }
 
 export function formalizeEscalatedTriage(triage: TriageDecision): TriageDecision {
@@ -329,6 +568,20 @@ export function normalizeAgentProfile(profile?: string): string | undefined {
   return value;
 }
 
+/** Deterministic Explorer prompt contract (AEH-V2-0125 regression surface). */
+export function buildExplorerPrompt(operationId: string, payload: ChangeOperationPayload, inputs: ChangeInputReference[]): string {
+  return [
+    "Perform bounded repository discovery for this CHANGE operation.",
+    `Operation: ${operationId}`,
+    `Request: ${payload.request}`,
+    `Explicit files: ${(payload.files ?? []).join(", ") || "none"}`,
+    `Domains: ${(payload.domains ?? []).join(", ") || "unspecified"}`,
+    changeInputsPrompt(inputs),
+    "Return the explorer output contract with only relevant files/symbols/tests/module boundaries, verified finding status and concrete evidence. Do not implement, author specs or start another AEH workflow.",
+    "Your final output MUST contain exactly one line beginning AEH_RESULT_JSON= followed by the JSON object matching the explorer output contract; a turn without that marker is rejected as EXPLORER_RESULT_ARTIFACT_MISSING."
+  ].join("\n\n");
+}
+
 async function runDiscovery(
   root: string,
   controlRoot: string,
@@ -340,16 +593,29 @@ async function runDiscovery(
   inputs: ChangeInputReference[]
 ): Promise<DurableAgentEvidence<ExplorerOutput> | undefined> {
   if (!selection) return undefined;
-  const session = await executeAgentPrompt(root, config, contract, selection, [
-    "Perform bounded repository discovery for this CHANGE operation.",
+  const session = await executeAgentPrompt(root, config, contract, selection, buildExplorerPrompt(operationId, payload, inputs), { outputContract: "explorer", phase: "discovery", operationKind: "change", requireExecutionAuthority: true });
+  return requireDurableChangeHandoff(root, "EXPLORER", session, explorerOutputSchema, controlRoot, { operationId: operationId, contract: "explorer", phase: "discovery" });
+}
+
+/** Deterministic Planner prompt contract (AEH-V2-0125 regression surface). */
+export function buildPlannerPrompt(operationId: string, contract: TaskContract, payload: ChangeOperationPayload, explorerEvidence: DurableAgentEvidence<ExplorerOutput> | undefined, inputs: ChangeInputReference[]): string {
+  const explorerContext = explorerEvidence
+    ? [`Explorer durable result artifact: ${explorerEvidence.artifact}`, `Explorer evidence projection:\n${compactJson(explorerEvidence.payload, 12_000)}`].join("\n")
+    : "Explorer is disabled/unavailable by topology; no explorer result was expected.";
+  const requirementLines = (contract.requirements ?? []).map((requirement) => `- ${requirement.id}: ${requirement.description ?? ""}`).join("\n")
+    || "- none: the sealed TaskContract declares no requirement ids, so leave requirementRefs and acceptanceRefs empty.";
+  const knownCompetencyIds = [...new Set(defaultSkillSeed().skills.flatMap((skill) => skill.competencies.map((competency) => competency.id)))].sort();
+  return [
+    "Produce planning/triage evidence only for this CHANGE operation. Do not implement or author the specification.",
     `Operation: ${operationId}`,
     `Request: ${payload.request}`,
-    `Explicit files: ${(payload.files ?? []).join(", ") || "none"}`,
-    `Domains: ${(payload.domains ?? []).join(", ") || "unspecified"}`,
     changeInputsPrompt(inputs),
-    "Return the explorer output contract with only relevant files/symbols/tests/module boundaries, verified finding status and concrete evidence. Do not implement, author specs or start another AEH workflow."
-  ].join("\n\n"), { outputContract: "explorer", phase: "discovery", operationKind: "change", requireExecutionAuthority: true });
-  return requireDurableChangeHandoff(root, "EXPLORER", session, explorerOutputSchema, controlRoot, { operationId: operationId, contract: "explorer", phase: "discovery" });
+    explorerContext,
+    `Sealed TaskContract requirement ids (immutable; map every id to at least one work unit and use only these exact ids in requirementRefs and acceptanceRefs):\n${requirementLines}`,
+    `Known competency ids (use only these controlled ids for workUnits[].competencies when the work matches; a competency outside this set must genuinely require researched knowledge and will be checked by the deterministic KnowledgeGate): ${knownCompetencyIds.join(", ")}`,
+    "Identify affected areas, dependencies, bounded implementer ownership, reviewers and deterministic validation gates. Keep normative requirements unchanged.",
+    "Your final output MUST contain exactly one line beginning AEH_RESULT_JSON= followed by the JSON object matching the planner output contract; a turn without that marker is rejected as PLANNER_RESULT_ARTIFACT_MISSING."
+  ].join("\n\n");
 }
 
 async function runPlanning(
@@ -364,17 +630,7 @@ async function runPlanning(
   inputs: ChangeInputReference[]
 ): Promise<DurableAgentEvidence<PlannerOutput> | undefined> {
   if (!selection) return undefined;
-  const explorerContext = explorerEvidence
-    ? [`Explorer durable result artifact: ${explorerEvidence.artifact}`, `Explorer evidence projection:\n${compactJson(explorerEvidence.payload, 12_000)}`].join("\n")
-    : "Explorer is disabled/unavailable by topology; no explorer result was expected.";
-  const session = await executeAgentPrompt(root, config, contract, selection, [
-    "Produce planning/triage evidence only for this CHANGE operation. Do not implement or author the specification.",
-    `Operation: ${operationId}`,
-    `Request: ${payload.request}`,
-    changeInputsPrompt(inputs),
-    explorerContext,
-    "Identify affected areas, dependencies, bounded implementer ownership, reviewers and deterministic validation gates. Keep normative requirements unchanged."
-  ].join("\n\n"), { outputContract: "planner", phase: "planning", operationKind: "change", requireExecutionAuthority: true });
+  const session = await executeAgentPrompt(root, config, contract, selection, buildPlannerPrompt(operationId, contract, payload, explorerEvidence, inputs), { outputContract: "planner", phase: "planning", operationKind: "change", requireExecutionAuthority: true });
   return requireDurableChangeHandoff(root, "PLANNER", session, plannerOutputSchema, controlRoot, { operationId, contract: "planner", phase: "planning" });
 }
 
@@ -416,7 +672,10 @@ async function runSpecManagerUntilReady(input: {
     );
     const evidence = await requireDurableChangeHandoff(input.root, "SPEC_MANAGER", specSession, specAuthoringOutputSchema, input.controlRoot, { operationId: input.operationId, contract: "spec-authoring", phase: "spec-authoring" });
     validateSpecAuthoringResult(input.changeName, evidence.payload);
-    if (evidence.payload.status === "READY") return evidence;
+    if (evidence.payload.status === "READY") {
+      await persistOpenSpecAuthoringContentV1(input.root, input.changeName, { ...evidence.payload.artifacts, proposal: evidence.payload.artifacts.proposal!, tasks: evidence.payload.artifacts.tasks! });
+      return evidence;
+    }
 
     const draft = evidence.payload.decisionRequests[0]!;
     const priorSelections = [...(input.priorSelections ?? []), ...(selectedChoice ? [selectedChoice] : [])];
@@ -526,7 +785,7 @@ async function resumeProductChoiceContinuation(
   if (checkpoint.taskId !== taskId || checkpoint.title !== title) throw new Error("DECISION_CONTINUATION_STALE: persisted task identity no longer matches the current operation payload.");
   const bootstrapContract = operationBootstrapContract(taskId, title, payload, "FORMAL_SDD", operationAssurance, [createRouteEvidence("FORMAL_SDD", "saved-product-choice-continuation", "Resuming the persisted Spec Manager stage after a scoped human product choice.")]);
   const preflight = await preflightOpenSpec(root, config);
-  const preparedSpec = await prepareOpenSpecChange(root, config, taskId, title);
+  const preparedSpec = await prepareOpenSpecChange(root, config, taskId);
   if (preparedSpec.changeName !== checkpoint.changeName || preparedSpec.managerAgent !== preflight.managerAgent) throw new Error("DECISION_CONTINUATION_STALE: OpenSpec resume target or Spec Manager changed while suspended.");
   const topology = await loadResolvedAgentTopology(root, config, normalizeAgentProfile(payload.profile) ?? config.agents?.activeProfile);
   const manager = topology.agents[preflight.managerAgent];
@@ -688,6 +947,10 @@ function validateSpecAuthoringResult(expectedChange: string, result: SpecAuthori
   if (!result.artifacts.proposal?.trim() || !result.artifacts.tasks?.trim()) {
     throw new Error("SPEC_MANAGER_INCOMPLETE_RESULT: READY spec authoring must identify proposal.md and tasks.md artifacts.");
   }
+  // DETERMINISTIC pre-persistence gate: the typed READY result must already be a canonical
+  // OpenSpec change delta. A non-canonical result is rejected here, before any controller-owned
+  // write, with a typed error naming the exact artifact (AEH-V2-0115).
+  validateOpenSpecAuthoringContentCanonicalityV1(expectedChange, { specs: result.artifacts.specs });
 }
 
 function operationBootstrapContract(taskId: string, title: string, payload: ChangeOperationPayload, route: ImplementationRoute = "DELEGATED", assurance: AssuranceLevel = "STANDARD", routeEvidence: RouteEvidence[] = [{ route: "DELEGATED", source: "change-bootstrap", statement: "Change operations use the selected canonical implementation route." }]): TaskContract {
@@ -700,7 +963,7 @@ function operationBootstrapContract(taskId: string, title: string, payload: Chan
   };
 }
 
-function buildSpecManagerPrompt(
+export function buildSpecManagerPrompt(
   payload: ChangeOperationPayload,
   changeName: string,
   explorerEvidence: DurableAgentEvidence<ExplorerOutput> | undefined,
@@ -715,7 +978,7 @@ function buildSpecManagerPrompt(
     changeInputsPrompt(inputs),
     explorerEvidence ? `Explorer durable result: ${explorerEvidence.artifact}\n${compactJson(explorerEvidence.payload, 10_000)}` : "Explorer result: not expected by topology.",
     plannerEvidence ? `Planner durable result: ${plannerEvidence.artifact}\n${compactJson(plannerEvidence.payload, 12_000)}` : "Planner result: not expected by topology.",
-    "Use `openspec status`, `openspec instructions` and the OpenSpec authoring workflow to complete proposal.md, specs, design.md when needed and tasks.md.",
+    "Return complete authored file contents in artifacts.proposal, artifacts.tasks, optional artifacts.design, and artifacts.specs. artifacts.specs is one entry per capability: { capability: \"<kebab-case-capability>\", content: \"<complete OpenSpec change spec delta markdown>\" }. Every content value MUST be a canonical OpenSpec change spec delta: it starts with (or contains) a '## ADDED Requirements', '## MODIFIED Requirements', '## REMOVED Requirements' or '## RENAMED Requirements' section; every requirement is written as '### Requirement: <name>' inside a delta section; every requirement has at least one '#### Scenario: <name>' block; and every requirement statement MUST contain the normative keyword SHALL or MUST (OpenSpec strict validation rejects non-normative requirements). Flat requirement documents without delta headers, requirements without scenarios, requirements without SHALL/MUST and non-kebab-case capability names are rejected before persistence. Do not write files or request repository-write access; the deterministic controller persists these validated contents into the prepared OpenSpec change directory (openspec/changes/<change>/specs/<capability>/spec.md) before OpenSpec validation and compilation.",
     selectedChoice ? [
       "Resume the saved SPEC_AUTHORING stage using this paired human product choice as requirement input only:",
       JSON.stringify({ requestId: selectedChoice.requestId, issue: selectedChoice.choice.description, choiceId: selectedChoice.choiceId, label: selectedChoice.choice.label, consequences: selectedChoice.choice.consequences }, null, 2),

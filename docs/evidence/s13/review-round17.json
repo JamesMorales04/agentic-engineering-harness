@@ -1,0 +1,449 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 17,
+  "reviewer": {
+    "identity": "fresh independent S13 round-17 reviewer (no implementation role in round 17; read-only)",
+    "provider": "opencode",
+    "model": "opencode-go/deepseek-v4.1-flash",
+    "thinking": "plan/read-only review mode (thinking setting not self-observable)"
+  },
+  "noImplementationDisclosure": "No part of Round 17 (or any prior S13 round) was implemented or repaired by this reviewer. No repository file was written; no commit/push/stash/reset/clean/revert; no GitHub write; no AEH operation launched against this checkout. vitest/typecheck/build were NOT executed (read-only plan boundary: vitest/tsc write caches); all test counts are static inventory or claimed-only. Read-only shell, git, sha256 and jq inspection only.",
+  "gitState": {
+    "repository": "/home/james/Desarrollo/agentic-engineering-harness",
+    "branch": "core-architecture-v2",
+    "head": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "upstreamAhead": 0,
+    "upstreamBehind": 0,
+    "commitsAdded": 0,
+    "pushPerformed": false,
+    "uncommittedEntries": 122,
+    "target": {
+      "path": "docs/CORE_ARCHITECTURE_V2.md",
+      "workingSha256": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+      "headSha256": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+      "match": true,
+      "diffVsHead": "empty"
+    },
+    "workingTreeTrackedDigestRecomputed": "9e36dcb5fe00b026936894759b6f1344cef9c3d3bb4e7af65b9eed271dc38ace",
+    "workingTreeTrackedFiles": 668,
+    "postRoundDocClaim": "9e36dcb5fe00b026936894759b6f1344cef9c3d3bb4e7af65b9eed271dc38ace",
+    "postRoundDocClaimMatch": true,
+    "frozenProductSourceDigest": "5d1b6680ee1d4f6b7ff623521ceedb77ae70e3f4180d2a48946e3e1c7adc4d7e",
+    "frozenProductSourceDigestCorroboration": "every Round-17 current row artifact records checkoutProof.trackedDigestBefore == trackedDigestAfter == 5d1b6680... (668 files); only three tracked docs were modified after the 12:18:44Z freeze (CONFORMANCE 14:16Z, STATUS 14:15Z, LEDGER 14:14Z); zero tracked non-doc files have mtime after the freeze; the final local build release-1790691625579-497131-5d48ad62 reproduces buildDigest ca1d8f5628784ff6b7d0650326d1655d2f25697ecf037780b3e05edbc7f5319a, identical to every Round-17 lane packed build.",
+    "frozenBuildRelease": "release-1790684324214-110138-2fd31d7e",
+    "frozenBuildReleaseVerificationBoundary": "the release directory is pruned (dist retains only current + two); the release-ID to build-content-digest mapping could not be recomputed directly, but buildDigest ca1d8f56... is the content digest bound by every lane and reproduced by the final rebuild.",
+    "credentialsInEvidence": "NONE_FOUND (rg for gho_/ghp_/github_pat_/PRIVATE KEY over docs/evidence/s13 returned no matches)",
+    "tmpStaging": "no /tmp/aeh-s13* or /tmp/aeh-direct-* directories remain",
+    "paseoWorkspaceCleanup": "no Round-17 lane fixture workspace (lane-*) present in the live Paseo inventory (71 workspaces, all pre-S13/S1-S11 or lead sessions)"
+  },
+  "digestRecomputation": {
+    "result": "MATCH",
+    "verified": [
+      {
+        "artifact": "docs/evidence/s13/s13-real-provider-certification.json",
+        "expected": "2352769b9b1e9d123645cb3f03b55645a4a1275cdc98a330862e1c0aa8c4205c",
+        "actual": "2352769b9b1e9d123645cb3f03b55645a4a1275cdc98a330862e1c0aa8c4205c"
+      },
+      {
+        "artifact": "docs/evidence/s13/lanes/startup.json",
+        "expected": "3f6f2eee...",
+        "actual": "3f6f2eee84c21b042349b30a68ae7ed895be853877e018b86036f323d499eeb0"
+      },
+      {
+        "artifact": "docs/evidence/s13/lanes/informational.json",
+        "expected": "f798a504...",
+        "actual": "f798a504a5aa2d2f3ab55c288e6d196d234b0ea082aa19da13d44ffc870002a2"
+      },
+      {
+        "artifact": "docs/evidence/s13/lanes/project-home.json",
+        "expected": "2d3d123f...",
+        "actual": "2d3d123f71b4203370ba9c16da858093dcbf3b3010b2c7cb29c64b5a26d50452"
+      },
+      {
+        "artifact": "docs/evidence/s13/lanes/multi-project.json",
+        "expected": "ee769017...",
+        "actual": "ee7690174174c94cfd0cc62daa85fa487f2533fa47c22aeb48bde5d47fe83d1a"
+      },
+      {
+        "artifact": "docs/evidence/s13/s13-real-paseo-lifecycle-round-17-r17-lifecycle-2.json",
+        "expected": "172fdb41be661f2db23491af6e58bf315028b67d93700d019012e5580ff9139b",
+        "actual": "172fdb41be661f2db23491af6e58bf315028b67d93700d019012e5580ff9139b"
+      },
+      {
+        "artifact": "docs/evidence/s13/s13-github-effects-round-17-r17-gh-4.json",
+        "expected": "116a884afe3fe85cbe810bc935984b72fe944748949091654794cda6c6d2eacd",
+        "actual": "116a884afe3fe85cbe810bc935984b72fe944748949091654794cda6c6d2eacd"
+      },
+      {
+        "artifact": "docs/evidence/s13/github-lanes/round-17/r17-gh-4/delivery.json",
+        "expected": "2b8dc82d...",
+        "actual": "2b8dc82d9cdae78a891f7cecb2b2f66cfe91ccc78d2cad314eaf03ac47e4535b"
+      },
+      {
+        "artifact": "docs/evidence/s13/github-lanes/round-17/r17-gh-4/issue-driven.json",
+        "expected": "791a4c01...",
+        "actual": "791a4c01c0d6c0fb8d9a141be74ea0517ea56f68c7c053dd1c6fca1fc6edc58d"
+      },
+      {
+        "artifact": "docs/evidence/s13/github-lanes/round-17/r17-gh-4/authority.json",
+        "expected": "ded7faf1...",
+        "actual": "ded7faf155b5fabad72ace4a9caf2942ac7358be49e7645b2776c33b8a91f144"
+      },
+      {
+        "artifact": "docs/evidence/s13/s13-governed-operations-round-17-r17-formal-3.json",
+        "expected": "76e2550adddda754efda4aeea52bb96e258266584c973f3d9d9191dee688a7f7",
+        "actual": "76e2550adddda754efda4aeea52bb96e258266584c973f3d9d9191dee688a7f7"
+      },
+      {
+        "artifact": "docs/evidence/s13/governed-lanes/round-17/r17-formal-3/change-formal.json",
+        "expected": "2303d6f3...",
+        "actual": "2303d6f3c7d339784001247cedcbc948578b81f24290ff4c834d0c409520328c"
+      },
+      {
+        "artifact": "docs/evidence/s13/s13-governed-operations-round-17-r17-direct-1.json",
+        "expected": "4d8e8093b9b8e82e116eb2a7690d014cbe24c1ba435f76d6e7c1952969f255e6",
+        "actual": "4d8e8093b9b8e82e116eb2a7690d014cbe24c1ba435f76d6e7c1952969f255e6"
+      },
+      {
+        "artifact": "docs/evidence/s13/s13-governed-operations-round-17-r17-delegated-1.json",
+        "expected": "0bbab0f96286d2224d5717e2a8948f3b0bd772d5986bd13b2ceb4547c0f267f4",
+        "actual": "0bbab0f96286d2224d5717e2a8948f3b0bd772d5986bd13b2ceb4547c0f267f4"
+      },
+      {
+        "artifact": "docs/evidence/s13/s13-governed-operations-round-17-r17-audit-2.json",
+        "expected": "675aec750cd121bb17b7300185df58358fc9f0972b58b613ee11ad67bc0a8479",
+        "actual": "675aec750cd121bb17b7300185df58358fc9f0972b58b613ee11ad67bc0a8479"
+      },
+      {
+        "artifact": "docs/evidence/s13/review-round15.json",
+        "expected": "0cfa7f9359425d6d1bac4c3b18aef7ba63a02252ff340bb7059b131a7fe1c06d",
+        "actual": "0cfa7f9359425d6d1bac4c3b18aef7ba63a02252ff340bb7059b131a7fe1c06d"
+      },
+      {
+        "artifact": "docs/evidence/s13/s13-real-provider-certification-round-17-prefinal.json",
+        "expected": "2b95dd1d...",
+        "actual": "2b95dd1d0e12eb1d7e5d5f41291449d03c38fab208701708b680d6872f49c882"
+      },
+      {
+        "artifact": "docs/evidence/s13/round15-environment-loss.json",
+        "expected": "fd21c238... (R15-F4 correction)",
+        "actual": "fd21c2385e6b7599ebe00255448f41601d576ff7490d274182a045ba0d0a2f27"
+      },
+      {
+        "artifact": "docs/evidence/s13/github-effect-authorization.json",
+        "expected": "272c5cb7... (as bound in the delivery lane)",
+        "actual": "272c5cb76158a7c312edd4d8d97cd6545b599e5c57c7978bbfc3742c573bd460"
+      },
+      {
+        "artifact": "tests/packed/*.mjs harness revisions recorded in lane envelopes",
+        "expected": "per-file sha256",
+        "actual": "all current harness files match their recorded sha256 exactly (governed 21e0d33e..., certification 2e9166ed..., github c3959531..., lifecycle d30bb30c..., helper 456980ed..., policy 3395aa19..., authorization dd3e427f...)"
+      }
+    ],
+    "notCitedOrNotMatched": [
+      {
+        "artifact": "docs/evidence/s13/round16-freeze.json",
+        "note": "not cited with a digest by the Round-17 lead; content verified (final 2bee2ec0..., three superseded freezes, stale recordedAt)"
+      }
+    ]
+  },
+  "findings": [
+    {
+      "id": "R17-F1",
+      "priority": "P0",
+      "mechanism": "HYBRID",
+      "disposition": "SLICE_BLOCKED_DRIVER",
+      "evidence": "Seven matrix rows have no current real-provider evidence on the frozen source: multi-worker, repair, product-repair, certification-repair, context-handoff, permission-delegation, distributed-execution; issue-driven is import/snapshot/drift-only; control-center is NOT_APPLICABLE by design. The lead's own Round-17 record labels these NOT STARTED/BLOCKED_NO_EVIDENCE (S13-W81, blocker 1-2).",
+      "requiredAction": "Build one bounded real-provider harness per missing row with a deterministic oracle (S13-W81 exact actions) and complete issue-driven end-to-end; then freeze, sweep and re-review. Slice acceptance is impossible before this."
+    },
+    {
+      "id": "R17-F2",
+      "priority": "P1",
+      "mechanism": "HYBRID",
+      "disposition": "PARTIAL_EVIDENCE_CONFIRMED",
+      "evidence": "r17-gh-4 issue-driven lane: issueNumber 1, authorized repo, checks issue.snapshot/issue.drift-gate/issue.operation-import all ok, issueCreated=false, issueEdited=false. The capability model journey ('import and execute an issue-derived task') has no accepted-candidate/delivery path in any artifact. The lead's own W80 states the condition remains open.",
+      "requiredAction": "Either an authorized implementation-grade issue with configured validation in the authorized repo, or a governed-campaign lane binding the real GitHub delivery effect to the governed fixture's accepted candidate."
+    },
+    {
+      "id": "R17-F3",
+      "priority": "P2",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "CURRENT_ACCEPTED_WITH_EVIDENCE_MAPPING_GAP",
+      "evidence": "The frozen matrix requires delivery evidence tokens [delivery-record, provenance]. The r17-gh-4 delivery lane verifies accepted-candidate, external-authorization, human-gate, real-effect, push-only, receipts, issue-untouched -- no provenance/S7 gate check or artifact is named (rg for 'provenance' in delivery.json = 0).",
+      "requiredAction": "Name and verify the provenance evidence for the delivery row (S7 gate artifact) or record the explicit policy determination that the fixture requires none, before final slice acceptance."
+    },
+    {
+      "id": "R17-F4",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "RECONSTRUCTION_UNDERCOUNT",
+      "evidence": "round16-freeze.json lists three superseded freezes (d9f8fff1, df4865ef, d4eadc41) and the Round-17 caveat names two further unrecorded repaired states (f685db29 formal-4, aece8ba7 formal-5/6). Lane evidence also exposes a third unrecorded transient tracked digest b32bf26a8fc3 (r16-delegated-3 RUNNING and r16-delegated-4 FAILED, before==after), which the run table marks '(unrecorded transient)' but the freeze-history correction omits.",
+      "requiredAction": "Enumerate b32bf26a and its repair delta in the reconstructed Round-16 freeze history for completeness."
+    },
+    {
+      "id": "R17-F5",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "RECORD_ACCURACY",
+      "evidence": "Run-table wall clocks disagree with artifact startedAt/finishedAt for four lanes: direct-1 283 s vs durationMs 305,144 ms; delegated-1 820 s vs 841,719 ms; audit-1 291 s vs 299,846 ms; audit-2 282 s vs 291,431 ms (formal-1/2/3 match). All remain inside their bounds and terminals are unchanged.",
+      "requiredAction": "Correct the run-table wall clocks to the artifact-derived durations or annotate the measurement basis."
+    },
+    {
+      "id": "R17-F6",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "IMPRECISE_NOT_MATERIAL",
+      "evidence": "The post-round tracked-doc delta is attributed to four docs, but docs/CORE_ARCHITECTURE_V2_S13_WORKGRAPH.md is untracked (git ls-files returns nothing) and cannot enter the 668-file trackedDigest; only STATUS, CONFORMANCE and LEDGER were modified after the freeze.",
+      "requiredAction": "Restrict the tracked-delta wording to the three tracked docs (the WorkGraph remains the round record, untracked)."
+    },
+    {
+      "id": "R17-F7",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "VERIFICATION_BOUNDARY",
+      "evidence": "Focused 24 files/205 tests and full non-system 1,347 passed / 3 failed / 7 skipped were not independently reproduced (read-only; vitest writes caches). Static inventory: 203 non-system *.test.ts and 6 system test files, matching the claimed 203-file scope; tests/paseoSdkResolve.test.ts contains 3 tests. Its module chain (src/paseo/sdkResolve.ts, tests/paseoSdkResolve.test.ts) is unmodified vs HEAD, so the 3 failures cannot be a Round-17 regression; earlier reviews reproduced them as PRE_EXISTING_ENVIRONMENT_DRIFT.",
+      "requiredAction": "Reproduce the focused and full non-system suites in a writable environment at the next checkpoint (already Round-18 action 3)."
+    },
+    {
+      "id": "R17-F8",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "MINOR_DISCLOSURE_GAP",
+      "evidence": "postRunTrackedDocEditWindow is present in the governed lane envelopes but absent from the certification, lifecycle and GitHub summary checkoutProof objects (R11-F6/R12-W60 wording implies campaign-wide coverage).",
+      "requiredAction": "Bind the window in every campaign summary or scope the claim to the governed campaign."
+    },
+    {
+      "id": "R17-F9",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "RECORD_INCONSISTENCY",
+      "evidence": "Ledger AEH-V2-0118 status still ends 'Keep OPEN until change-delegated reaches a terminal SUCCEEDED' although change-delegated reached terminal SUCCEEDED in Round-15 run 9 and Round-17 r17-delegated-1 (oracle ACCEPTED). The row was not updated or explained.",
+      "requiredAction": "Close AEH-V2-0118 or restate the remaining open question (the original closure condition is met)."
+    },
+    {
+      "id": "R17-F10",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "LABELING_GAP",
+      "evidence": "The re-freeze rule says superseded lanes are labelled; r17-formal-1, r17-certification-1, r17-lifecycle-1 and r17-gh-1 are pre-re-freeze (2bee2ec0.../cecc186c...) and are not marked superseded in the run table, though the final dispositions correctly cite only the re-freeze runs.",
+      "requiredAction": "Label superseded pre-re-freeze lanes explicitly."
+    },
+    {
+      "id": "R17-F11",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "OBSERVATION_NO_GATE_IMPACT",
+      "evidence": "The certification summary's result=SLICE_BLOCKED is the truthful matrix-wide aggregate over its frozen 22-row availability plan (17 blocked rows), not a contradiction of the 4/4 executed-lane PASS claim; however its blockedRows requiredAction text is stale relative to current per-row evidence.",
+      "requiredAction": "None required for acceptance; optionally annotate the frozen-plan aggregate as non-current row status (already documented by R9-F8)."
+    }
+  ],
+  "verifiedPositiveClaims": [
+    "All seven cited Round-17 terminal artifacts (certification, lifecycle, gh-4, formal-3, direct-1, delegated-1, audit-2) exist, match their digests, bind the frozen tracked digest 5d1b6680... and packed build digest ca1d8f56..., report checkoutUntouched true, carry per-lane harnessRevisions, and record zero remaining workspaces.",
+    "Terminal/oracle verification: formal-3 SUCCEEDED/oracle PASS/canonical delta/ACCEPTED acceptance; direct-1 SUCCEEDED/rows change+direct-change PASS; delegated-1 route DELEGATED with 0 escalation events/SUCCEEDED/ACCEPTED; audit-2 SUCCEEDED/audit PASS; lifecycle cancel CANCELLED (leases 0) and recovery epoch 2 takeover/resume (leases 0); gh-4 all lanes PASS.",
+    "Truthful FAILED intermediates preserved and not used as acceptance evidence: r17-formal-2 (REQUIRES_PRODUCT_DECISION + VERIFICATION_LEAD_EVIDENCE_INSUFFICIENT), r17-audit-1 (AEH_OPERATION_SUPERVISOR_CONTRACT), gh-2 (NO_CHANGES; human-gate not exercised), gh-3 (FINALIZED push but no branch-create receipt). r17-formal-1 is PASS but binds the superseded Round-16 freeze 2bee2ec0.../build cecc186c..., so r17-formal-3 is the source-current formal run.",
+    "AEH-V2-0127 product change verified in source: delivery.github.pullRequests optional in src/core/types.ts:124, src/core/config.ts:74, schemas/project.schema.json; configuredExternalEffects (src/security/actionPolicy.ts:17) omits github.pull-request.create when false; finalizeAcceptedIssue (src/delivery/finalize.ts:118) returns push-only FINALIZED after the gated push; regressions tests/deliveryFinalize.test.ts (12 it) and tests/security/actionPolicy.test.ts (11 it) contain the push-only cases.",
+    "Delivery effect chain verified from bytes: authorization artifact sha256 272c5cb7 (unchanged, covers git.push/github.branch.create/github.issue.create) -> frozen policy [git.push, github.branch.create] pullRequests=false -> HUMAN_REQUIRED denial -> external-authorization-derived APPROVE bound to exact effect digest 1c8d62fb -> 3 intents/receipts (git.commit, git.push, github.branch.create) -> real remote ref aeh-s13-delivery-1-...@5adaddcf297b -> reconciliation remoteRefSha==localHead, 0 open PRs. No repo create, no issue create/edit/delete, issue #1 only.",
+    "Ledger closures AEH-V2-0110/0111/0115/0126 -> FIXED AND REAL E2E VERIFIED and AEH-V2-0127 -> FIXED_AND_REAL_E2E_VERIFIED are supported by the final-freeze delegated/formal lanes. R15-F3 classifier present and exercised; R15-F4 digest corrected (fd21c238...); R15-F6 verified (evaluateTerminalGate function body byte-identical to HEAD; ANCESTOR widening present in src/operations/v2Contracts.ts); R15-F8 stale message removed; R15-F7 counts claimed-only (boundary).",
+    "Round-16 corrections verified: two unrecorded repaired states f685db29 (formal-4) and aece8ba7 (formal-5/6) plus one further unrecorded transient b32bf26a (delegated-3/4); recordedAt 2026-09-29T07:44:38Z predates formal-6 (finished 08:59:39Z) and the final digest 2bee2ec0... first appears in formal-7 (started 09:01:54Z); the 09:20:26Z post-formal-7 interrupted attempt is documented and its workspace is absent from the live inventory.",
+    "TARGET byte-identical; no commits/push; no credentials in docs/evidence/s13; staged /tmp and lane workspaces clean; authorized branches reported as USER_CLEANUP_NON_BLOCKING with no deletion retry or scope request."
+  ],
+  "stalenessDispositions": [
+    {
+      "scope": "startup, informational, project-home, multi-project",
+      "disposition": "CURRENT_ON_FINAL_FREEZE",
+      "evidence": "r17-certification-2 4/4 PASS, lanes bind ca1d8f56/5d1b6680, real providers, checkoutUntouched true; pre-re-freeze certification-1 preserved separately."
+    },
+    {
+      "scope": "audit",
+      "disposition": "CURRENT_ON_FINAL_FREEZE",
+      "evidence": "r17-audit-2 terminal SUCCEEDED/oracle PASS on ca1d8f56; r17-audit-1 truthful FAIL preserved."
+    },
+    {
+      "scope": "change, direct-change",
+      "disposition": "CURRENT_ON_FINAL_FREEZE",
+      "evidence": "r17-direct-1 terminal SUCCEEDED, oracle ACCEPTED, rows PASS."
+    },
+    {
+      "scope": "delegated-change",
+      "disposition": "CURRENT_ON_FINAL_FREEZE",
+      "evidence": "r17-delegated-1 route DELEGATED, 0 escalations, SUCCEEDED, oracle ACCEPTED, 6 sessions."
+    },
+    {
+      "scope": "formal-sdd",
+      "disposition": "CURRENT_ON_FINAL_FREEZE (r17-formal-1 SUPERSEDED)",
+      "evidence": "r17-formal-3 SUCCEEDED/oracle PASS on ca1d8f56; r17-formal-1 binds the superseded 2bee2ec0/cecc186c build."
+    },
+    {
+      "scope": "cancel, recovery",
+      "disposition": "CURRENT_ON_FINAL_FREEZE",
+      "evidence": "r17-lifecycle-2 real sessions, epochs, leases drained; summary binds ca1d8f56/5d1b6680."
+    },
+    {
+      "scope": "authority",
+      "disposition": "CURRENT_ON_FINAL_FREEZE",
+      "evidence": "r17-gh-4 authority: external authorization, HUMAN_REQUIRED then EXECUTED/SUCCEEDED, real branch observed."
+    },
+    {
+      "scope": "issue-driven",
+      "disposition": "CURRENT_CONTRACT_TOKENS_VERIFIED; FULL_JOURNEY_OPEN",
+      "evidence": "r17-gh-4 issue #1 reused, snapshot/ISSUE_DRIFT gate PASS, operation-bound import completed; no accepted-candidate delivery from an issue."
+    },
+    {
+      "scope": "delivery",
+      "disposition": "CURRENT_EFFECT_CHAIN_VERIFIED; PROVENANCE TOKEN UNMAPPED",
+      "evidence": "r17-gh-4 delivery FINALIZED/pushed/reconciled; no provenance check named."
+    },
+    {
+      "scope": "multi-worker, repair, product-repair, certification-repair, context-handoff, permission-delegation, distributed-execution",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "no harness exists; no artifact on the frozen source."
+    },
+    {
+      "scope": "control-center",
+      "disposition": "NOT_APPLICABLE",
+      "evidence": "BROWSER lane only; never substituted for REAL_PROVIDER."
+    },
+    {
+      "scope": "pre-re-freeze lanes (formal-1, certification-1, lifecycle-1, gh-1)",
+      "disposition": "SUPERSEDED_NOT_CITED_AS_CURRENT",
+      "evidence": "bind 2bee2ec0/cecc186c; not used in final dispositions; not labelled superseded in the run table (R17-F10)."
+    }
+  ],
+  "matrixDispositions": [
+    {
+      "capability": "startup",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "lanes/startup.json 3f6f2eee: real codex gpt-6-luna session, oracle PASS, requiredEvidence install/doctor/startup, build ca1d8f56"
+    },
+    {
+      "capability": "informational",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "lanes/informational.json f798a504: real packed intent, real Paseo opencode session d997a7f4..., INTENT assessment digest 4db5131b..., oracle PASS"
+    },
+    {
+      "capability": "audit",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r17-audit-2 4ac8b05a: SUCCEEDED rev52, report FINDINGS/2 findings, 2 reviewer sessions, validation PASS"
+    },
+    {
+      "capability": "change",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r17-direct-1: oracle row change PASS, validation PASS, 2 receipts"
+    },
+    {
+      "capability": "direct-change",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r17-direct-1: oracle row direct-change PASS, route DIRECT, ACCEPTED"
+    },
+    {
+      "capability": "delegated-change",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r17-delegated-1: route DELEGATED 0 escalations, feature-capsule/review PASS, 4 receipts, ACCEPTED"
+    },
+    {
+      "capability": "formal-sdd",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r17-formal-3: canonical spec delta, spec-authoring/compilation PASS, sealed contract, ACCEPTED"
+    },
+    {
+      "capability": "multi-worker",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "no task-DAG/wave-barrier evidence; no harness"
+    },
+    {
+      "capability": "cancel",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r17-lifecycle-2 cancel: real session SIGKILL owner, terminal CANCELLED, leases 0"
+    },
+    {
+      "capability": "recovery",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r17-lifecycle-2 recovery: epoch 2 takeover of exact prior session, operation preserved, resumed, leases 0"
+    },
+    {
+      "capability": "product-repair",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "no repair-packet/scope-check harness"
+    },
+    {
+      "capability": "certification-repair",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "no failure-packet/oracle-recheck harness"
+    },
+    {
+      "capability": "repair",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "no bounded repair self-acceptance harness"
+    },
+    {
+      "capability": "context-handoff",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "no context-ref/continuation journey"
+    },
+    {
+      "capability": "permission-delegation",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "no parent-lease/monotonic child decision receipt"
+    },
+    {
+      "capability": "issue-driven",
+      "disposition": "CURRENT_CONTRACT_TOKENS_VERIFIED_FULL_JOURNEY_OPEN",
+      "evidence": "r17-gh-4 issue-driven: snapshot/drift/import PASS on issue #1; no issue-to-accepted-candidate-to-delivery path"
+    },
+    {
+      "capability": "delivery",
+      "disposition": "CURRENT_ACCEPTED_WITH_PROVENANCE_TOKEN_GAP",
+      "evidence": "r17-gh-4 delivery: accepted candidate r2, exact-effect approval, FINALIZED push, 3 receipts, reconciliation, 0 PRs; provenance token not named (R17-F3)"
+    },
+    {
+      "capability": "distributed-execution",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "no leased queue/worker-receipt journey"
+    },
+    {
+      "capability": "project-home",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "lanes/project-home.json 2d3d123f: real codex session, project-id/health PASS"
+    },
+    {
+      "capability": "multi-project",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "lanes/multi-project.json ee769017: two real registrations, isolation PASS"
+    },
+    {
+      "capability": "control-center",
+      "disposition": "NOT_APPLICABLE",
+      "evidence": "BROWSER lane only per frozen matrix; not a model/provider journey"
+    },
+    {
+      "capability": "authority",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "r17-gh-4 authority: HUMAN_REQUIRED -> approved EXECUTED/SUCCEEDED, real remote branch, external-authorization bound"
+    }
+  ],
+  "focusedTests": {
+    "executed": false,
+    "boundary": "Read-only review; vitest/typecheck/build not run (vitest/tsc caches). Counts are claimed-only; static inventory used.",
+    "staticInventory": {
+      "testFilesNonSystem": 203,
+      "testFilesSystem": 6,
+      "paseoSdkResolveTests": 3
+    },
+    "claimedByLead": {
+      "focused": "24 files / 205 tests passed",
+      "fullNonSystem": "1,347 passed / 3 failed / 7 skipped",
+      "failureClass": "pre-existing tests/paseoSdkResolve.ts mise/Paseo-CLI environment drift"
+    },
+    "independentClassification": "The 3 paseoSdkResolve failures cannot be a Round-17 regression: src/paseo/sdkResolve.ts and tests/paseoSdkResolve.test.ts are unmodified vs HEAD (the modified paseo file is sdk.ts only), and prior reviews reproduced the same failures at earlier checkpoints (PRE_EXISTING_ENVIRONMENT_DRIFT). Exact counts remain unreproduced in this read-only review (R17-F7)."
+  },
+  "verdict": "SLICE_BLOCKED",
+  "actionRequired": [
+    "Round 18 blocker 1: complete issue-driven end-to-end (authorized implementation-grade issue with configured validation, or a governed lane binding the real GitHub delivery effect to the governed fixture's accepted candidate).",
+    "Round 18 blocker 2: build one bounded real-provider harness per missing row - multi-worker (task DAG + wave barrier), repair/product-repair/certification-repair (forced validation failure + Repairer assembly + re-review + oracle re-check), context-handoff, permission-delegation, distributed-execution - with deterministic oracles; no waivers.",
+    "Map or verify the delivery row's provenance requiredEvidence token (R17-F3) before final acceptance.",
+    "Reproduce the focused set and the full non-system suite in a writable environment (R17-F7) and reproduce or provision away the 3 paseoSdkResolve failures before any checkpoint.",
+    "Apply the small record corrections: b32bf26a in the freeze history (R17-F4), run-table wall clocks (R17-F5), tracked-doc delta wording (R17-F6), postRunTrackedDocEditWindow coverage (R17-F8), AEH-V2-0118 closure (R17-F9), superseded-lane labels (R17-F10).",
+    "Keep S13 uncommitted; no checkpoint commit until an independent final SLICE_ACCEPTED; S14 must not start; authorized branches remain USER_CLEANUP_NON_BLOCKING with no deletion retry or credential broadening."
+  ]
+}

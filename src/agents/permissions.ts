@@ -106,9 +106,12 @@ export function buildOpenCodeRuntimeConfig(
   selection: AgentExecutionSelection,
   config?: HarnessProjectConfig,
   binding: OpenCodeAgentBinding = resolveOpenCodeAgentBinding(selection),
-  resolvedContextCapabilities?: EffectiveContextCapabilities
+  resolvedContextCapabilities?: EffectiveContextCapabilities,
+  authorizedRoots?: string[],
+  launchRoot?: string,
+  serenaOwnerId?: string
 ): Record<string, unknown> {
-  const permission = buildOpenCodePermission(selection);
+  const permission = buildOpenCodePermission(selection, authorizedRoots);
   const mcp: Record<string, unknown> = {};
   const tools: Record<string, boolean> = {};
   const configured = config?.mcp?.servers ?? {};
@@ -116,14 +119,14 @@ export function buildOpenCodeRuntimeConfig(
   for (const [name, server] of Object.entries(configured)) {
     const selected = selection.mcps.includes(name) && server.enabled !== false;
     tools[`${name}_*`] = selected;
-    if (selected) mcp[name] = name === "serena" ? toManagedSerenaMcp(server, selection) : toOpenCodeMcp(server);
+    if (selected) mcp[name] = name === "serena" ? toManagedSerenaMcp(server, selection, launchRoot, serenaOwnerId) : toOpenCodeMcp(server);
   }
   for (const name of selection.mcps) {
     if (!configured[name]) tools[`${name}_*`] = true;
   }
   const capabilities = resolvedContextCapabilities ?? (config ? staticContextCapabilities(config, selection) : undefined);
   if (capabilities?.mcpServers.serena && !mcp.serena) {
-    mcp.serena = toManagedSerenaMcp({ type: "local", command: ["serena", "start-mcp-server", "--context", "ide-assistant", "--project", "."], enabled: true, timeoutMs: 30_000 }, selection);
+    mcp.serena = toManagedSerenaMcp({ type: "local", command: ["serena", "start-mcp-server", "--context", "ide-assistant", "--project", "."], enabled: true, timeoutMs: 30_000 }, selection, launchRoot, serenaOwnerId);
     tools["serena_*"] = true;
   }
   // Headroom is controller-side compression. Its MCP schema is intentionally
@@ -167,10 +170,13 @@ export function buildOpenCodeRuntimeConfig(
 export function compileOpenCodeRuntimeProjection(
   selection: AgentExecutionSelection,
   config?: HarnessProjectConfig,
-  resolvedContextCapabilities?: EffectiveContextCapabilities
+  resolvedContextCapabilities?: EffectiveContextCapabilities,
+  authorizedRoots?: string[],
+  launchRoot?: string,
+  serenaOwnerId?: string
 ): OpenCodeRuntimeProjection {
   const binding = resolveOpenCodeAgentBinding(selection);
-  const runtimeConfig = buildOpenCodeRuntimeConfig(selection, config, binding, resolvedContextCapabilities);
+  const runtimeConfig = buildOpenCodeRuntimeConfig(selection, config, binding, resolvedContextCapabilities, authorizedRoots, launchRoot, serenaOwnerId);
   return {
     binding,
     config: runtimeConfig,
@@ -181,11 +187,19 @@ export function compileOpenCodeRuntimeProjection(
 }
 
 function buildOpenCodePermission(
-  selection: AgentExecutionSelection
+  selection: AgentExecutionSelection,
+  authorizedRoots?: string[]
 ): Record<string, unknown> {
   const permission: Record<string, unknown> = {};
   const p = selection.permissions;
-  if (selection.role === "Semantic Assessor") permission["*"] = "deny";
+  if (selection.role === "Semantic Assessor") {
+    permission["*"] = "deny";
+    // The wildcard deny is repository/tool defense in depth. OpenCode implements
+    // `format: json_schema` through an injected StructuredOutput tool, so the assessor
+    // projection must allow exactly that platform mechanism; otherwise the provider-enforced
+    // structured-output channel is silently unavailable and the model falls back to raw text.
+    permission.StructuredOutput = "allow";
+  }
   if (p.read) permission.read = p.read;
   if (p.write) permission.edit = p.write;
   if (p.network) {
@@ -202,7 +216,38 @@ function buildOpenCodePermission(
     ]);
   }
   if (selection.role === "Semantic Assessor") permission.skill = "deny";
+  // Paseo may relocate a managed session to the registered workspace root while the
+  // frozen participant was launched against an isolated task worktree (AEH-V2-0116).
+  // OpenCode then gates every access to that authorized root behind the
+  // `external_directory` permission, which the projection never declared, so the
+  // session stopped at an approval prompt. Project only the participant's own frozen
+  // launch root; a role with no read/write/shell authority never receives it.
+  const externalRoots = authorizedExternalRoots(selection, authorizedRoots);
+  if (externalRoots.length) {
+    const rules: Record<string, PermissionDecision> = {};
+    for (const root of externalRoots) {
+      rules[root] = "allow";
+      rules[`${root}/*`] = "allow";
+      rules[`${root}/**`] = "allow";
+    }
+    permission.external_directory = rules;
+  }
   return permission;
+}
+
+function authorizedExternalRoots(selection: AgentExecutionSelection, authorizedRoots?: string[]): string[] {
+  if (selection.role === "Semantic Assessor") return [];
+  const p = selection.permissions;
+  if (p.read === "deny" && p.write === "deny" && p.shell === "deny") return [];
+  const roots = new Set<string>();
+  for (const candidate of authorizedRoots ?? []) {
+    if (!path.isAbsolute(candidate)) continue;
+    const resolved = path.resolve(candidate);
+    const filesystemRoot = path.parse(resolved).root;
+    if (resolved === filesystemRoot) continue;
+    roots.add(resolved);
+  }
+  return [...roots].sort();
 }
 
 function managedOpenCodeAgentId(logicalAgent: string): string {
@@ -239,15 +284,23 @@ function toOpenCodeMcp(server: McpServerConfig): Record<string, unknown> {
   };
 }
 
-function toManagedSerenaMcp(server: McpServerConfig, selection: AgentExecutionSelection): Record<string, unknown> {
+function toManagedSerenaMcp(server: McpServerConfig, selection: AgentExecutionSelection, launchRoot?: string, serenaOwnerId?: string): Record<string, unknown> {
   const canEdit = selection.permissions.write === "allow" && (selection.role === "Implementer" || selection.role === "Repairer");
   const original = server.command?.[0] ?? "serena";
   const rootIndex = server.command?.indexOf("--project") ?? -1;
   const root = rootIndex >= 0 ? server.command?.[rootIndex + 1] ?? "." : ".";
-  const canonicalRoot = path.resolve(root);
+  // A relative Serena project root belongs to the launch root, not the controller cwd. Keying the
+  // pool by the controller cwd made every isolated wave worktree share one pool entry, so a
+  // completed implementer's writer lease blocked the next wave's implementer (formal lane
+  // r16-formal-3). Absolute project roots are preserved.
+  const canonicalRoot = path.isAbsolute(root) ? path.resolve(root) : path.resolve(launchRoot ?? ".", root);
   const projectId = `project:${createHash("sha256").update(canonicalRoot).digest("hex").slice(0, 24)}`;
   const workspaceId = process.env.AEH_OPERATION_WORKSPACE_ID?.trim() || "project";
-  const session = managedSerenaPool.acquire({ projectId, canonicalRoot, workspaceId, serenaVersion: SERENA_VERSION, ownerId: `${process.env.AEH_PARENT_OPERATION_ID?.trim() || "direct"}:${selection.logicalAgent}`, access: canEdit ? "write" : "read", editingEnabled: canEdit });
+  // A Paseo launch acquires Serena through both this OpenCode inline projection and the Paseo MCP
+  // server projection; both must use the same owner identity or the pool reports a self-conflict
+  // between them (formal lane r16-formal-4). Non-Paseo (direct) launches keep the ambient owner.
+  const ownerId = serenaOwnerId ?? `${process.env.AEH_PARENT_OPERATION_ID?.trim() || "direct"}:${selection.logicalAgent}`;
+  const session = managedSerenaPool.acquire({ projectId, canonicalRoot, workspaceId, serenaVersion: SERENA_VERSION, ownerId, access: canEdit ? "write" : "read", editingEnabled: canEdit });
   const pooled = session.mcpServer;
   return {
     type: "local",

@@ -2,7 +2,7 @@ import process from "node:process";
 import type { OpenCodeAgentBindingSource } from "../agents/permissions.js";
 import { currentOperationContext, loadOperation, registerCurrentOperationAgent } from "../operations/state.js";
 import type { ExecutionBindingV2 } from "../architecture/executionIdentity.js";
-import { runWithOperationProviderLease } from "../runtime/providerLifecycle.js";
+import { providerLeaseWorkspaceKeyV1, runWithOperationProviderLease } from "../runtime/providerLifecycle.js";
 import { runExecutable, runShell } from "../utils/process.js";
 import {
   buildPaseoBackgroundRunCommand,
@@ -298,6 +298,13 @@ async function withProviderSessionLease<T>(
   if (!context.id) return (await action()).value;
   const operationId = labels?.["aeh.operation"]?.trim();
   const participantId = labels?.["aeh.participant"]?.trim();
+  if (labels?.["aeh.kind"] === "semantic-assessment" && operationId === context.id) {
+    // Controller-side semantic assessments are non-authoritative, tool-less, read-only model calls
+    // with no WorkGraph Participant identity. They must not take a mutable writer provider lease
+    // (there is no participant or Lead generation actor to bind), but managed foreground turns
+    // still materialize and run atomically so the completed reply is captured reliably.
+    return (await action()).value;
+  }
   if (!operationId || context.id !== operationId || !participantId) {
     const leadAgentId = labels?.["aeh.lead.agentId"]?.trim();
     const leadGeneration = Number(labels?.["aeh.lead.generation"]);
@@ -318,7 +325,7 @@ async function withProviderSessionLease<T>(
   return runWithOperationProviderLease({
     root: stateRoot,
     provider,
-    workspaceId: workspaceId ?? labels?.["aeh.workspace.id"] ?? operation.workspaceId ?? operationId,
+    workspaceId: providerLeaseWorkspaceKeyV1({ explicitWorkspaceId: workspaceId, labelWorkspaceId: labels?.["aeh.workspace.id"], launchRoot: root, stateRoot, operationWorkspaceId: operation.workspaceId, operationId }),
     operationId,
     ...(supervisorAgentId ? { supervisorAgentId } : participantId ? { participantId } : { leadAgentId, leadGeneration }),
     sessionId,
@@ -423,6 +430,7 @@ async function traceResolvedIdentity(root: string, options: ManagedPaseoAgentOpt
 async function launchCli(root: string, options: ManagedPaseoAgentOptions, deps: PaseoRuntimeDeps, fallbackReason: string): Promise<ManagedPaseoAgentResult> {
   if (options.prompt === undefined && options.systemPrompt !== undefined) throw new PaseoSdkUnavailableError(`Paseo SDK is required to create an idle systemPrompt-only agent. Refusing CLI fallback because it would expose session instructions as a user turn. ${fallbackReason}`);
   if (options.env && Object.keys(options.env).length) throw new PaseoSdkUnavailableError(`Paseo SDK is required for session-scoped launch environment used by provider ${options.provider}${options.modeId ? ` mode ${options.modeId}` : ""}. Refusing CLI fallback because dropping that environment could change the native execution identity or permissions. ${fallbackReason}`);
+  if (options.providerOptions && Object.keys(options.providerOptions).length) throw new PaseoSdkUnavailableError(`Paseo SDK is required for provider-native options used by provider ${options.provider}. Refusing CLI fallback because dropping the projected sandbox policy could change the participant's execution authority. ${fallbackReason}`);
   const capabilities = await deps.detectCapabilities(root, deps.run);
   const prompt = options.prompt;
   if (prompt === undefined) throw new Error("Paseo CLI fallback requires a prompt.");
@@ -452,6 +460,13 @@ async function registerManagedAgent(root: string, options: ManagedPaseoAgentOpti
   if (!result.id) return;
   const role = options.labels?.["aeh.role"];
   if (!role) return;
+  // The Semantic Assessor is an AEH Agent, not automatically a WorkGraph Participant: its
+  // read-only assessment turns carry no WorkUnit ownership and never produce participant receipts.
+  if (options.labels?.["aeh.kind"] === "semantic-assessment") return;
+  // A launch that carries a controller-issued participant identity is already durably registered
+  // by the execution-authority path; minting a second participant for the runtime session would
+  // split one bounded work unit across two terminal-gate identities.
+  if (options.labels?.["aeh.participant"] || options.env?.AEH_PARTICIPANT_ID) return;
   await registerCurrentOperationAgent(root, { id: result.id, role, phase: options.labels?.["aeh.operation.phase"], workspaceId: result.workspaceId ?? options.workspaceId, transport: result.transport });
 }
 
@@ -475,9 +490,16 @@ function forceCli(): boolean { return process.env.AEH_PASEO_FORCE_CLI === "1"; }
 function sdkCanFallback(error: unknown): boolean { return error instanceof PaseoSdkUnavailableError || (error instanceof Error && error.name === "PaseoSdkUnavailableError"); }
 function timeoutMs(seconds?: number): number { return (seconds ?? 1800) * 1000; }
 function secondsFromMs(ms?: number): number | undefined { return ms === undefined ? undefined : Math.max(1, Math.ceil(ms / 1000)); }
-function fromSdk(result: PaseoSdkAgentResult): ManagedPaseoAgentResult { return { id: result.id, exitCode: sdkExitCode(result.status, result.error), stdout: result.lastMessage ?? "", stderr: result.error ?? "", status: result.status, workspaceId: result.workspaceId, transport: "sdk" }; }
-function fromNativeWait(result: PaseoNativeWaitResult): ManagedPaseoAgentResult { return { id: result.id, exitCode: sdkExitCode(result.status, result.error), stdout: result.lastMessage ?? "", stderr: result.error ?? "", status: result.status, workspaceId: result.workspaceId, transport: "sdk", observation: "subscription" }; }
-function sdkExitCode(status?: string, error?: string): number { if (status === "timeout") return 124; if (error) return 1; if (status === "failed" || status === "error" || status === "cancelled") return 1; return 0; }
+function providerStopDetail(status?: string, permission?: { name?: string; title?: string; patterns?: string[] }): string | undefined {
+  if (status !== "permission" && status !== "waiting") return undefined;
+  const descriptor = permission
+    ? [permission.name ?? permission.title, permission.patterns?.length ? `scope ${permission.patterns.join(", ")}` : undefined].filter(Boolean).join(" ")
+    : undefined;
+  return `provider session stopped on an unapproved '${status}' prompt${descriptor ? ` (${descriptor})` : ""}; the turn produced no result`;
+}
+function fromSdk(result: PaseoSdkAgentResult): ManagedPaseoAgentResult { return { id: result.id, exitCode: sdkExitCode(result.status, result.error), stdout: result.lastMessage ?? "", stderr: [result.error ?? "", providerStopDetail(result.status, result.permission)].filter(Boolean).join("\n"), status: result.status, workspaceId: result.workspaceId, transport: "sdk" }; }
+function fromNativeWait(result: PaseoSdkAgentResult): ManagedPaseoAgentResult { return { id: result.id, exitCode: sdkExitCode(result.status, result.error), stdout: result.lastMessage ?? "", stderr: [result.error ?? "", providerStopDetail(result.status, result.permission)].filter(Boolean).join("\n"), status: result.status, workspaceId: result.workspaceId, transport: "sdk", observation: "subscription" }; }
+function sdkExitCode(status?: string, error?: string): number { if (status === "timeout") return 124; if (error) return 1; if (status === "failed" || status === "error" || status === "cancelled" || status === "permission" || status === "waiting") return 1; return 0; }
 function firstString(record: Record<string, unknown>, keys: string[]): string | undefined { for (const key of keys) if (typeof record[key] === "string" && record[key]) return record[key] as string; return undefined; }
 function stringRecord(value: unknown): Record<string, string> | undefined { if (!value || typeof value !== "object" || Array.isArray(value)) return undefined; const result: Record<string, string> = {}; for (const [key, item] of Object.entries(value as Record<string, unknown>)) if (typeof item === "string") result[key] = item; return Object.keys(result).length ? result : undefined; }
 function statusText(value: unknown): string | undefined { if (typeof value === "string") return value; if (value && typeof value === "object" && typeof (value as Record<string, unknown>).status === "string") return (value as Record<string, unknown>).status as string; return undefined; }

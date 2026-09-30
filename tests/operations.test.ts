@@ -1043,7 +1043,7 @@ describe("operation controller state", () => {
   it("cancels detached descendants that are outside the controller process group", async () => {
     if (process.platform !== "linux") return;
     const root = await tempRoot();
-    const descendantFile = path.join(root, "descendant.pid");
+    const descendantFile = path.join(await tempRoot(), "descendant.pid");
     const script = [
       "const fs = require('node:fs');",
       "const { spawn } = require('node:child_process');",

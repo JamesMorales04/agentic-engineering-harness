@@ -1,0 +1,108 @@
+import { z } from "zod";
+import { extractMarkedJson } from "./structuredOutput.js";
+import { continueManagedPaseoAgent, inspectManagedPaseoAgent } from "../paseo/runtime.js";
+import { currentObjectiveIdentityV1, leadAcceptanceRequiredV1, resolveVerificationRequirementsV1 } from "../architecture/acceptanceOracle.js";
+import { sha256Canonical } from "../core/digest.js";
+import { loadOperation, resolveOperationStateRoot } from "../operations/state.js";
+const leadOutputSchema = z.object({
+    assertions: z.array(z.object({ assertionId: z.string().trim().min(1), verdict: z.enum(["PASS", "FAIL"]), rationale: z.string().trim().min(1) }).strict()),
+    summary: z.string().trim().min(1),
+    unresolved: z.array(z.string().trim().min(1))
+}).strict();
+export async function requestManagedLeadAcceptance(input) {
+    const stateRoot = resolveOperationStateRoot(input.root);
+    const operation = await loadOperation(stateRoot, input.operationId);
+    const policy = operation.resolvedOperationPolicy;
+    if (!policy || !leadAcceptanceRequiredV1(policy))
+        return undefined;
+    const identity = currentObjectiveIdentityV1(operation);
+    const binding = operation.lead;
+    if (!binding?.agentId || !Number.isSafeInteger(binding.generation) || binding.generation < 1) {
+        throw new Error("ACCEPTANCE_LEAD_REQUIRED: managed operation has no current bound Lead generation.");
+    }
+    if (binding.agentId === input.implementationIdentity || operation.participants[binding.agentId]?.logicalAgent === input.implementationIdentity) {
+        throw new Error("ACCEPTANCE_LEAD_NOT_INDEPENDENT: bound managed Lead is the implementation actor.");
+    }
+    if (!input.report.candidate || input.report.candidate.identityDigest !== identity.candidate.identityDigest
+        || input.compilation.policyDigest !== identity.policyDigest || input.compilation.candidate.identityDigest !== identity.candidate.identityDigest) {
+        throw new Error("ACCEPTANCE_LEAD_INPUT_STALE: Lead acceptance requires current candidate-bound assertions and validation report.");
+    }
+    // The Lead must judge against the resolved candidate-bound validation and review evidence, not
+    // infer it from opaque check ids: the projection below maps every assertion to its compiled
+    // validation requirements (with their deterministic kinds) and the status of the exact check the
+    // AcceptanceOracle will consume. This is evidence delivery only; the verdicts remain the Lead's
+    // semantic judgment and the deterministic Oracle checks are unchanged (AEH-V2-0123).
+    const assertionEvidence = resolveVerificationRequirementsV1(input.compilation, policy).map((requirement) => {
+        const validations = requirement.validationRequirementIds.map((id) => {
+            const compiled = input.compilation.validationRequirements.find((candidate) => candidate.id === id);
+            const check = input.report.checks.find((candidate) => candidate.id === id || candidate.id === `candidate.assurance.validation.${id}` || candidate.id === `candidate-impact-${id}`
+                || Boolean(candidate.details && typeof candidate.details === "object" && candidate.details.requirementId === id));
+            return `${id}(${compiled?.kind ?? "unknown"})=${check?.status ?? "MISSING"}`;
+        });
+        return `${requirement.assertionId}: ${validations.length ? validations.join(", ") : "no resolved validation requirement"}; reviewDimensions=[${requirement.reviewDimensions.join(", ")}]`;
+    }).join("; ");
+    const prompt = [
+        "[AEH_MANAGED_LEAD_ACCEPTANCE]",
+        `You are the currently bound Lead for managed operation ${identity.operationId}, generation ${binding.generation}.`,
+        "Assess the candidate's AcceptanceAssertions against the current candidate and sealed task requirements. This is semantic evidence only: do not claim authority, change operation state, accept on behalf of the controller, or initiate delivery effects.",
+        `Current identity: ${JSON.stringify({ operationId: identity.operationId, candidate: { candidateId: identity.candidate.candidateId, revision: identity.candidate.revision, identityDigest: identity.candidate.identityDigest }, policyDigest: identity.policyDigest, operationExecutionRevision: identity.operationExecutionRevision, controllerEpoch: identity.controllerEpoch })}`,
+        `Task: ${input.report.taskId}`,
+        `Validation summary: ${input.report.status}; checks=${input.report.checks.map((check) => `${check.id}:${check.status}`).join(", ")}`,
+        `Resolved assertion evidence (validationRequirement(kind)=oracleCheckStatus): ${assertionEvidence}`,
+        `Assertions: ${JSON.stringify(input.compilation.acceptanceAssertions.map(({ id, statement, requirementRefs, dimensions, evidenceStrength }) => ({ assertionId: id, statement, requirementRefs, dimensions, evidenceStrength })))}`,
+        "Return one JSON object with exactly: assertions[{assertionId,verdict:'PASS'|'FAIL',rationale}], summary, unresolved[]. Include every supplied assertion exactly once and use its exact assertionId. Verdict PASS only when current candidate evidence supports the statement; otherwise use FAIL and explain the gap. Final line must be AEH_RESULT_JSON=<json>."
+    ].join("\n");
+    const promptDigest = sha256Canonical(prompt);
+    const paseoLead = await inspectManagedPaseoAgent(input.root, binding.agentId);
+    const provider = paseoLead?.labels?.["aeh.provider"];
+    if (!provider)
+        throw new Error("ACCEPTANCE_LEAD_PROVIDER_IDENTITY_REQUIRED: the bound Paseo Lead session has no persisted provider label.");
+    // The bound interactive Lead session was created outside the AEH structured-result channel path
+    // (no `aeh-result` sink or result channel binding), so requesting an AEH-schema turn for it fails
+    // with `AEH_RESULT_CHANNEL_STATE` before the provider ever runs (AEH-V2-0122). The lead contract
+    // is delivered as a textual turn and remains deterministically authoritative: the exact typed
+    // schema parse, exact assertion coverage, verdicts and unresolved checks below all stay in force.
+    const response = await continueManagedPaseoAgent(input.root, binding.agentId, prompt, 600, undefined, undefined, {
+        "aeh.operation": operation.id,
+        "aeh.lead.agentId": binding.agentId,
+        "aeh.lead.generation": String(binding.generation),
+        "aeh.provider": provider,
+        ...(paseoLead.workspaceId ? { "aeh.workspace.id": paseoLead.workspaceId } : {})
+    });
+    const latest = await loadOperation(stateRoot, input.operationId);
+    const latestIdentity = currentObjectiveIdentityV1(latest);
+    if (latest.lead?.agentId !== binding.agentId || latest.lead.generation !== binding.generation
+        || sha256Canonical(latestIdentity) !== sha256Canonical(identity)) {
+        throw new Error("ACCEPTANCE_LEAD_BINDING_STALE: operation identity or bound Lead generation changed during semantic assessment.");
+    }
+    let parsed;
+    if (response.exitCode === 0) {
+        try {
+            parsed = leadOutputSchema.parse(extractMarkedJson(response.stdout, response.stderr));
+        }
+        catch {
+            parsed = undefined;
+        }
+    }
+    const expected = input.compilation.acceptanceAssertions.map((assertion) => assertion.id).sort();
+    const observed = parsed?.assertions.map((assertion) => assertion.assertionId).sort() ?? [];
+    const exactCoverage = expected.length === observed.length && expected.every((id, index) => id === observed[index]);
+    const passed = Boolean(parsed && exactCoverage && parsed.assertions.every((assertion) => assertion.verdict === "PASS") && parsed.unresolved.length === 0);
+    return {
+        version: 1,
+        status: passed ? "PASS" : "FAIL",
+        operationId: identity.operationId,
+        candidate: identity.candidate,
+        policyDigest: identity.policyDigest,
+        operationExecutionRevision: identity.operationExecutionRevision,
+        controllerEpoch: identity.controllerEpoch,
+        leadAgentId: binding.agentId,
+        leadGeneration: binding.generation,
+        assertions: parsed?.assertions ?? [],
+        summary: parsed?.summary ?? `Bound Lead response did not satisfy the structured acceptance contract (exitCode=${response.exitCode}).`,
+        unresolved: parsed?.unresolved ?? ["Lead response missing or invalid."],
+        promptDigest,
+        responseDigest: sha256Canonical({ exitCode: response.exitCode, stdout: response.stdout, stderr: response.stderr })
+    };
+}
+//# sourceMappingURL=managedLeadAcceptance.js.map

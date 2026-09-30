@@ -115,6 +115,10 @@ export async function finalizeAcceptedIssue(root: string, config: HarnessProject
   assertDeliveryGateProgress(pushGate, "git.push");
   if (pushGate.receipt?.outcome === "FAILED") throw new Error(`BLOCKED_EXTERNAL: git push failed for ${branch}: ${pushGate.detail}`);
 
+  if (github.pullRequests === false) {
+    return { status: "FINALIZED", humanRequired: false, committed, commitSha, pushed: true, candidate, message: `Accepted issue task finalized on ${branch} with a push-only delivery policy; pull request creation was not requested by frozen policy.` };
+  }
+
   const token = resolveGithubToken(github.tokenEnv);
   const apiBase = (github.apiBaseUrl ?? "https://api.github.com").replace(/\/$/, "");
   const owner = repository.split("/")[0];

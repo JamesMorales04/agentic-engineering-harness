@@ -1,0 +1,102 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 20,
+  "kind": "ROUND_BOUNDARY_CLEANUP_INVENTORY",
+  "recordedAt": "2026-09-30T00:05Z",
+  "workspaces": {
+    "totalActive": 37,
+    "campaignFixtureActive": [
+      {
+        "workspaceId": "wks_0406c3da6e58ae3b",
+        "project": "lane-distributed-fixture",
+        "cwd": "/tmp/aeh-s13-gov-m1Zn7z/work/lane-distributed-fixture"
+      },
+      {
+        "workspaceId": "wks_0f8e543a039b4766",
+        "project": "lane-distributed-fixture",
+        "cwd": "/tmp/aeh-s13-gov-22O2CK/work/lane-distributed-fixture"
+      },
+      {
+        "workspaceId": "wks_2f7653997fd2e686",
+        "project": "lane-distributed-fixture",
+        "cwd": "/tmp/aeh-s13-gov-m1Zn7z/work/lane-distributed-fixture"
+      },
+      {
+        "workspaceId": "wks_5ba0bf3f7539d3b5",
+        "project": "journey",
+        "cwd": "/home/james/.paseo/worktrees/3tjml084/aeh-change-20260929t202218z-9eed7a49"
+      },
+      {
+        "workspaceId": "wks_6351fc521f570fd5",
+        "project": "lane-distributed-fixture",
+        "cwd": "/tmp/aeh-s13-gov-22O2CK/work/lane-distributed-fixture"
+      },
+      {
+        "workspaceId": "wks_a37297062f4df150",
+        "project": "lane-distributed-fixture",
+        "cwd": "/home/james/.paseo/worktrees/1b069bzd/aeh-change-20260929t170919z-36b74caa"
+      },
+      {
+        "workspaceId": "wks_fa3b4ee0c9c4bff1",
+        "project": "lane-distributed-fixture",
+        "cwd": "/home/james/.paseo/worktrees/15ndlhfy/aeh-change-20260929t232202z-36b74caa"
+      },
+      {
+        "workspaceId": "wks_fddb44533751e856",
+        "project": "lane-distributed-fixture",
+        "cwd": "/home/james/.paseo/worktrees/1nvt4xpb/aeh-change-20260929t224109z-36b74caa"
+      }
+    ]
+  },
+  "agents": {
+    "totalManaged": 121,
+    "byStatus": {
+      "running": 1,
+      "idle": 14,
+      "closed": 106
+    }
+  },
+  "fixtureProcesses": {
+    "count": 1,
+    "entries": [
+      {
+        "pid": 403355,
+        "cwd": "/home/james/Desarrollo/agentic-engineering-harness",
+        "cmd": "/usr/bin/bash -c python3 - <<'EOF'\nimport json,subprocess,os,glob\nws=json.loads(subprocess.run(['paseo','workspace','ls','--json'],capture_output=True,text=True).stdout)\nagents=json.loads(subprocess.r"
+      }
+    ]
+  },
+  "staging": {
+    "removed": 291,
+    "failed": 0,
+    "preserved": [
+      "/tmp/aeh-s13-gov-22O2CK (r20-dist-2 non-terminal operation state)",
+      "/tmp/aeh-s13-gov-m1Zn7z (r20-dist-4 non-terminal operation state)",
+      "/tmp/aeh-serena-pools (runtime-owned pool)"
+    ]
+  },
+  "dispositions": {
+    "archivedTerminalThisRound": [
+      "wks_c0d4176da857fd13",
+      "wks_07b89e8aa94f625b",
+      "wks_9401a4153f7a8998",
+      "wks_453defda30c5ab17",
+      "wks_f36c2ab59bd0168c",
+      "wks_084b28cf58ac874b",
+      "wks_d57928fffca790cd"
+    ],
+    "preservedNonTerminal": [
+      "wks_0f8e543a039b4766",
+      "wks_6351fc521f570fd5",
+      "wks_fddb44533751e856",
+      "wks_0406c3da6e58ae3b",
+      "wks_2f7653997fd2e686",
+      "wks_fa3b4ee0c9c4bff1"
+    ],
+    "preservedNotProvable": [
+      "wks_a37297062f4df150",
+      "wks_5ba0bf3f7539d3b5"
+    ]
+  }
+}

@@ -276,32 +276,55 @@ function currentReviewEvidence(operation: OperationRecordV2, checks: ValidationC
   for (const assignment of assignments) {
     const matches = checks.filter((check) => check.category === "candidate-assurance" && check.id.startsWith("candidate.assurance.reviewer.")
       && check.details && typeof check.details === "object" && (check.details as Record<string, unknown>).reviewerIdentity === assignment.reviewerIdentity);
-    for (const check of matches) {
-      const details = check.details as Record<string, unknown>;
-      const sessionId = details.sessionId;
-      const participant = Object.values(operation.participants).find((candidate) => candidate.executionBinding?.runtime.sessionId === sessionId);
-      let bindingValid = false;
-      try {
-        if (participant?.executionBinding) {
-          assertExecutionBindingV2(participant.executionBinding);
-          const binding = participant.executionBinding;
-          bindingValid = binding.operationId === identity.operationId && binding.operationExecutionRevision === identity.operationExecutionRevision
-            && binding.candidateRevision === identity.candidate.revision && binding.candidateDigest === identity.candidate.identityDigest
-            && binding.operationPolicyDigest === identity.policyDigest && binding.controllerEpoch === identity.controllerEpoch
-            && binding.roleInvocationPolicyDigest.length > 0 && participant.role === "Reviewer"
-            && participant.logicalAgent === assignment.reviewerIdentity && participant.resultArtifact !== undefined;
-        }
-      } catch { bindingValid = false; }
-      const detailCandidate = details.candidate as { candidateId?: unknown; revision?: unknown; identityDigest?: unknown } | undefined;
-      const detailDimensions = Array.isArray(details.dimensions) ? details.dimensions : [];
-      const status = check.status === "PASS" && bindingValid && details.observedReviewerIdentity === assignment.reviewerIdentity
-        && details.policyDigest === identity.policyDigest && details.impactDigest === compilation.impactDigest
-        && detailCandidate !== undefined && sameCandidateBinding(detailCandidate as never, compilation.candidate)
-        && detailDimensions.includes(dimension) && details.provider === assignment.provider ? "PASS" : "FAIL";
-      output.push({ status, reviewerIdentity: assignment.reviewerIdentity, provider: assignment.provider, sourceId: String(sessionId ?? check.id), digest: sha256Canonical(check), artifact: participant?.resultArtifact, executionBindingDigest: participant?.executionBinding?.digest });
-    }
+    // One deterministic evidence identity per (reviewer, dimension, assertion). A report can carry
+    // review checks from several rounds; earlier rounds bind superseded candidates and must not be
+    // admitted as current evidence or collide with the current round's item. The latest round that
+    // binds the current candidate/policy/impact wins; with no current round the latest round is
+    // reported (and fails closed) instead of emitting a duplicate identity.
+    const check = selectCurrentReviewCheck(matches, assignment, compilation, identity, dimension);
+    if (!check) continue;
+    const details = check.details as Record<string, unknown>;
+    const sessionId = details.sessionId;
+    const participant = Object.values(operation.participants).find((candidate) => candidate.executionBinding?.runtime.sessionId === sessionId);
+    let bindingValid = false;
+    try {
+      if (participant?.executionBinding) {
+        assertExecutionBindingV2(participant.executionBinding);
+        const binding = participant.executionBinding;
+        bindingValid = binding.operationId === identity.operationId && binding.operationExecutionRevision === identity.operationExecutionRevision
+          && binding.candidateRevision === identity.candidate.revision && binding.candidateDigest === identity.candidate.identityDigest
+          && binding.operationPolicyDigest === identity.policyDigest && binding.controllerEpoch === identity.controllerEpoch
+          && binding.roleInvocationPolicyDigest.length > 0 && participant.role === "Reviewer"
+          && participant.logicalAgent === assignment.reviewerIdentity && participant.resultArtifact !== undefined;
+      }
+    } catch { bindingValid = false; }
+    const status = check.status === "PASS" && bindingValid && reviewCheckBindsCurrentCandidate(check, assignment, compilation, identity, dimension) ? "PASS" : "FAIL";
+    output.push({ status, reviewerIdentity: assignment.reviewerIdentity, provider: assignment.provider, sourceId: String(sessionId ?? check.id), digest: sha256Canonical(check), artifact: participant?.resultArtifact, executionBindingDigest: participant?.executionBinding?.digest });
   }
   return output;
+}
+
+function reviewCheckBindsCurrentCandidate(check: ValidationCheck, assignment: { reviewerIdentity: string; provider: string }, compilation: CandidateAssuranceCompilationV1, identity: ObjectiveCompletionIdentityV1, dimension: string): boolean {
+  const details = check.details as Record<string, unknown>;
+  const detailCandidate = details.candidate as { candidateId?: unknown; revision?: unknown; identityDigest?: unknown } | undefined;
+  const detailDimensions = Array.isArray(details.dimensions) ? details.dimensions : [];
+  return details.observedReviewerIdentity === assignment.reviewerIdentity
+    && details.policyDigest === identity.policyDigest && details.impactDigest === compilation.impactDigest
+    && detailCandidate !== undefined && sameCandidateBinding(detailCandidate as never, compilation.candidate)
+    && detailDimensions.includes(dimension) && details.provider === assignment.provider;
+}
+
+function selectCurrentReviewCheck(matches: ValidationCheck[], assignment: { reviewerIdentity: string; provider: string }, compilation: CandidateAssuranceCompilationV1, identity: ObjectiveCompletionIdentityV1, dimension: string): ValidationCheck | undefined {
+  if (!matches.length) return undefined;
+  const ordered = matches.map((check, index) => ({ check, index, round: reviewRoundOf(check.id) }))
+    .sort((left, right) => left.round - right.round || left.index - right.index);
+  const current = ordered.filter((entry) => reviewCheckBindsCurrentCandidate(entry.check, assignment, compilation, identity, dimension));
+  return (current.length ? current : ordered).at(-1)?.check;
+}
+
+function reviewRoundOf(checkId: string): number {
+  const match = /^candidate\.assurance\.reviewer\.(\d+)\./.exec(checkId);
+  return match ? Number(match[1]) : -1;
 }
 
 function makeEvidence(input: { id: string; assertionId: string; kind: AcceptanceEvidenceItemV1["kind"]; status: AcceptanceEvidenceItemV1["status"]; identity: ObjectiveCompletionIdentityV1; strength: AssuranceLevel; sourceId: string; sourceDigest: string; artifact?: string; executionBindingDigest?: string; actorId?: string; actorGeneration?: number; promptDigest?: string; assessment?: string; dimension?: string; reviewerIdentity?: string; provider?: string }): AcceptanceEvidenceItemV1 {

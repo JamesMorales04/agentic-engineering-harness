@@ -285,6 +285,40 @@ describe("managed Paseo runtime", () => {
     expect(run).toHaveBeenCalledWith("paseo stop 'agent-timeout'", expect.objectContaining({ timeoutMs: 30_000 }));
   });
 
+  it("reports a provider approval stop as a failed turn instead of a successful empty result (AEH-V2-0110)", async () => {
+    const run = vi.fn(async () => result(0, ""));
+    const nativeDeps = native({
+      wait: vi.fn(async () => ({
+        id: "agent-permission",
+        status: "permission",
+        lastMessage: undefined,
+        source: "paseo-agent-subscription" as const,
+        updatesObserved: 1
+      }))
+    });
+    const waited = await waitManagedPaseoAgent("/repo", "agent-permission", 1, deps(run, sdk(), nativeDeps));
+    expect(waited).toEqual(expect.objectContaining({ id: "agent-permission", status: "permission", exitCode: 1, stdout: "" }));
+    expect(waited.stderr).toContain("unapproved 'permission' prompt");
+  });
+
+  it("retains the provider approval identity and scope in the failed-turn detail (AEH-V2-0116)", async () => {
+    const run = vi.fn(async () => result(0, ""));
+    const nativeDeps = native({
+      wait: vi.fn(async () => ({
+        id: "agent-external-directory",
+        status: "permission",
+        permission: { name: "external_directory", title: "Access external directory", patterns: ["/tmp/aeh-task-root/*"] },
+        source: "paseo-agent-subscription" as const,
+        updatesObserved: 1
+      }))
+    });
+    const waited = await waitManagedPaseoAgent("/repo", "agent-external-directory", 1, deps(run, sdk(), nativeDeps));
+    expect(waited).toEqual(expect.objectContaining({ status: "permission", exitCode: 1 }));
+    expect(waited.stderr).toContain("unapproved 'permission' prompt");
+    expect(waited.stderr).toContain("external_directory");
+    expect(waited.stderr).toContain("/tmp/aeh-task-root/*");
+  });
+
   it("fails before create when provider/model preflight is authoritative and negative", async () => {
     const run = vi.fn();
     const sdkDeps = sdk();

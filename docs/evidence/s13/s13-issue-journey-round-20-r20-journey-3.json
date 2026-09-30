@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 20,
+  "runId": "r20-journey-3",
+  "campaign": "issue-journey",
+  "generatedAt": "2026-09-29T21:35:01.412Z",
+  "checkout": "/home/james/Desarrollo/agentic-engineering-harness",
+  "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13IssueJourneyCampaign.mjs",
+        "sha256": "bf4e7dea46d551f29d1ea7bd1c3304ce2347e53ddbe070299d1fd588225bd09a"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "f42b90a3658cc01cb3bd97ed29f41a2e7be3536f44654ccc846ad12b811215de"
+  },
+  "harnessBuildIdentity": {
+    "version": 1,
+    "packageVersion": "0.8.4",
+    "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "releaseId": "release-1790716333625-65829-63a377b2",
+    "buildDigest": "408b178d53f32750aa81efb3a60965552b1aacd7756332b4c6dbf8fd3d1c744b",
+    "dirty": true
+  },
+  "repository": {
+    "name": "JamesMorales04/aeh-s13-round3-20260927035743-6bb5da",
+    "visibility": "private",
+    "createdByCampaign": false
+  },
+  "issue": {
+    "number": 1,
+    "created": false,
+    "edited": false
+  },
+  "authorization": {
+    "authorizationId": "s13-github-effect-authorization-2026-09-28",
+    "artifactDigest": "272c5cb76158a7c312edd4d8d97cd6545b599e5c57c7978bbfc3742c573bd460",
+    "allowedEffects": [
+      "git.push",
+      "github.branch.create",
+      "github.issue.create"
+    ],
+    "resourceNamePrefix": "aeh-s13-",
+    "consumedBeforeAnyExternalCommand": true
+  },
+  "lanes": [
+    {
+      "capability": "issue-driven",
+      "result": "FAIL",
+      "checks": null,
+      "error": "Error: V2_CONTROLLER_FENCED: tool action authorization requires the current controller token.\n    at assertControllerToken (file:///home/james/Desarrollo/agentic-engineering-harness/dist/releases/release-1790716333625-65829-63a377b2/operations/state.js:317:15)\n    at assertCurrentControllerOwner (file:///home/james/Desarrollo/agentic-engineering-harness/dist/releases/release-1790716333625-65829-63a377b2/operations/state.js:208:5)\n    at assertCurrentActionAuthority (file:///home/james/Desarrollo/agentic-engineering-harness/dist/releases/release-1790716333625-65829-63a377b2/security/toolActionGate.js:336:5)\n    at authorizeToolAction (file:///home/james/Desarrollo/agentic-engineering-harness/dist/releases/release-1790716333625-65829-63a377b2/security/toolActionGate.js:74:11)\n    at async executeGatedAction (file:///home/james/Desarrollo/agentic-engineering-harness/dist/releases/release-1790716333625-65829-63a377b2/security/gatedAction.js:6:25)\n    at async handoffTask (file:///home/james/Desarrollo/agentic-engineering-harness/dist/releases/release-1790716333625-65829-63a377b2/delivery/handoff.js:78:30)\n    at async Module.finalizeAcceptedIssue (file:///home/james/Desarrollo/agentic-engineering-harness/dist/releases/release-1790716333625-65829-63a377b2/delivery/finalize.js:37:9)\n    at async file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13IssueJourneyCampaign.mjs:329:21",
+      "artifact": "docs/evidence/s13/issue-journey-lanes/round-20/r20-journey-3/issue-driven.json"
+    }
+  ],
+  "result": "SLICE_BLOCKED",
+  "checkoutProof": {
+    "trackedDigestBefore": "8444d6a1ac8f1e10063819ff9c8bcfefe308b4ccc5c58a93fb967a819b492fc2",
+    "trackedDigestAfter": "8444d6a1ac8f1e10063819ff9c8bcfefe308b4ccc5c58a93fb967a819b492fc2",
+    "trackedFiles": 668,
+    "checkoutUntouched": true,
+    "postRunTrackedDocEditWindow": {
+      "opensAfterLaneFinish": true,
+      "note": "S13 tracked documentation/evidence is edited after lane execution; the recorded digest is the source-tree digest at lane end (R11-F6)."
+    }
+  }
+}

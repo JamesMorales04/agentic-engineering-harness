@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 18,
+  "runId": "smoke-r18",
+  "capability": "multi-worker",
+  "kind": "change",
+  "providerPath": "FULL_OPERATION_REAL_PASEO",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13GovernedOperationCampaign.mjs",
+        "sha256": "3cc5ee9cb0359ef93aecf1de27bac0e5bd4e5634640881b9e17cd7fc136db5ca"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "3395aa19210f36b90fd22bd62056dbb8d5c48aab5a85bce4e5ea4d591cfd5146"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "8f4e6e1eaa0d5341f5d07939fb5a26581a9d9672c8e8e8bf5dbcd920e1169e5d"
+  },
+  "startedAt": "2026-09-29T14:46:56.303Z",
+  "candidateBinding": {
+    "packedArtifact": "agentic-engineering-harness-0.8.4.tgz",
+    "packedArtifactDigest": "fb9ce92661008f02400a053e3c27a59cc8a3f2a9198ab6e18153fdaf77e89106",
+    "packedBuild": {
+      "releaseId": "release-1790693199818-534971-ba839416",
+      "buildDigest": "ca1d8f5628784ff6b7d0650326d1655d2f25697ecf037780b3e05edbc7f5319a",
+      "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+      "packageVersion": "0.8.4"
+    },
+    "fixtureTreeDigest": "ff7d3cb0dc2ec3adbc9d66639bc4731ee8c670f289f70bec81cb1c5fa9bd5095",
+    "fixtureCommit": "9e8ece056c2d31929f3e3b6a179f2979f3bfc499"
+  },
+  "result": "PREPARED",
+  "topologyCheck": {
+    "exitCode": 0,
+    "stdout": "PASS topology.references: Agent/model/prompt/skill references resolve.\nPASS topology.output-contracts: All output contracts are known.\nPASS topology.permissions-capabilities: Agent permissions and runtime capabilities are coherent.\nPASS topology.generated-drift: Generated runtime matches source topology and prompts.",
+    "stderr": ""
+  },
+  "doctor": "✓ git: git executable\n✓ node: node executable\n✗ toolchain-lock: No resolved toolchain lock; run aeh setup.\n✗ toolchain-state: No machine-local toolchain state; run aeh setup.\n✗ toolchain-profile: No installed profile is recorded; run aeh setup to select and install a profile.\n✗ toolchain-project-requirements: Active project requirements are missing or non-compliant (16 required tool(s)); see toolchain:project entries. This check is separate from installed profile 'unknown'.\n✗ toolchain:project:codex: Project requirement missing: codex is required by the active project but not recorded in a resolved toolchain lock; run aeh setup.\n✗ toolchain:project:engram: Project requirement missing: engram is required by the active project but not recorded in a resolved toolchain lock; run aeh setup.\n✗ toolchain:project:git: Project requirement missing: git is required by the active project but not recorded in a resolved toolchain lock; run aeh setup.\n✗ toolchain:project:graphify: Project requirement missing: graphify is required by the active project but not recorded in a resolved toolchain lock; run aeh setup.\n✗ toolchain:project:headroom: Project requirement missing: headroom is required by the active project but not recorded in a resolved toolchain lock; run aeh setup.\n✗ toolchain:project:node: Project requirement missing: node is required by the active project but not recorded in a resolved toolchain lock; run aeh setup.\n✗ toolchain:project:opencode: Project requirement missing: opencode is required by the active project but not recorded in a resolved toolchain lock; run aeh setup.\n✗ toolchain:project:opengrep: Project requirement missing: opengrep is required by the active project but not recorded in a resolved toolchain lock; run aeh setup.\n✗ toolchain:project:openspec: Project requirement missing: openspec is required by the active project but not recorded in a resolved toolchain lock; run aeh setup.\n✗ toolchain:project:paseo: Project requirement missing: paseo is required"
+}
