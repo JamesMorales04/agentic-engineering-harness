@@ -122,8 +122,8 @@ function versioned(key: string, relativePath: string, sha256: string, assertions
   return { key, path: relativePath, binding: VERSIONED, expectedSha256: sha256, assertions };
 }
 
-function runtime(key: string, fileName: string, assertions: CompositeAssertionV1[]): CompositeArtifactSpecV1 {
-  return { key, path: `docs/evidence/s14/${fileName}`, binding: RUNTIME, assertions };
+function runtime(key: string, relativePath: string, assertions: CompositeAssertionV1[]): CompositeArtifactSpecV1 {
+  return { key, path: relativePath, binding: RUNTIME, assertions };
 }
 
 const TERMINAL_SUCCEEDED: CompositeAssertionV1[] = [{ path: "terminalRecord.status", op: "equals", value: "SUCCEEDED" }];
@@ -267,7 +267,7 @@ export const SELF_HOSTING_COMPOSITE_ARTIFACTS: Readonly<Record<string, Composite
     { path: "assertions.firstEvidenceStaleForRevisionTwo", op: "equals", value: true },
     { path: "assertions.noFabricatedPass", op: "equals", value: true }
   ]),
-  "s14.campaign": runtime("s14.campaign", "disposable-self-modification-campaign.json", [
+  "s14.campaign": runtime("s14.campaign", "docs/evidence/closure/disposable-self-modification-campaign.json", [
     ...RESULT_PASS,
     { path: "campaign", op: "equals", value: "disposable-self-modification" },
     { path: "sourceLane.result", op: "equals", value: "PASS" },
@@ -283,27 +283,41 @@ export const SELF_HOSTING_COMPOSITE_ARTIFACTS: Readonly<Record<string, Composite
     { path: "effects.publicEffects", op: "equals", value: [] },
     { path: "cleanup.accounting.accounted", op: "equals", value: true },
     { path: "cleanup.accounting.unaccounted", op: "equals", value: [] },
+    { path: "cleanup.campaignSideCleanup", op: "equals", value: "NONE" },
+    { path: "cleanup.productResourceReconciliation.cleanupComplete", op: "equals", value: true },
+    { path: "cleanup.productResourceReconciliation.receiptSha256", op: "matches", value: "^[0-9a-f]{64}$" },
+    { path: "cleanup.productResourceReconciliation.classification.liveOwned", op: "equals", value: 0 },
+    { path: "cleanup.productResourceReconciliation.errors", op: "equals", value: [] },
     { path: "sourceLaneSha256", op: "matches", value: "^[0-9a-f]{64}$" },
-    { path: "sourceLanePath", op: "equals", value: "docs/evidence/s14/raw/disposable-campaign-lane.json" }
+    { path: "sourceLanePath", op: "equals", value: "docs/evidence/closure/raw/disposable-campaign-lane.json" }
   ]),
-  "s14.campaign-raw": runtime("s14.campaign-raw", "raw/disposable-campaign-lane.json", [
+  "s14.campaign-raw": runtime("s14.campaign-raw", "docs/evidence/closure/raw/disposable-campaign-lane.json", [
     ...RESULT_PASS,
     ...TERMINAL_SUCCEEDED,
     ...CHECKOUT_UNTOUCHED,
     { path: "candidateBinding.packedBuild.buildDigest", op: "equals", value: CANDIDATE_BUILD_DIGEST_PLACEHOLDER },
     { path: "candidateBinding.fixtureTreeDigest", op: "matches", value: "^[0-9a-f]{64}$" }
   ]),
-  "s14.stability": runtime("s14.stability", "resource-stability-campaign.json", [
+  "s14.stability": runtime("s14.stability", "docs/evidence/closure/resource-stability-product.json", [
     ...RESULT_PASS,
-    { path: "campaign", op: "equals", value: "resource-stability" },
+    { path: "campaign", op: "equals", value: "resource-stability-product" },
     { path: "iterations.length", op: "gte", value: 2 },
     { path: "candidateBuildDigest", op: "equals", value: CANDIDATE_BUILD_DIGEST_PLACEHOLDER },
+    { path: "productReconciliation.applied", op: "equals", value: true },
     { path: "reconciliation.baselineReturned", op: "equals", value: true },
     { path: "reconciliation.preservedIntact", op: "equals", value: true },
+    { path: "reconciliation.productOwned", op: "equals", value: true },
+    { path: "reconciliation.campaignSideCleanup", op: "equals", value: "NONE" },
     { path: "trend.postReconciliationNoGrowth", op: "equals", value: true },
-    { path: "classification.aehV2_0130", op: "exists", type: "string" }
+    { path: "classification.aehV2_0130", op: "equals", value: "CLOSED_BY_PRODUCT" }
   ]),
-  "s14.adversarial": runtime("s14.adversarial", "adversarial-negative-checks.json", [
+  "s14.lifecycle-current": runtime("s14.lifecycle-current", "docs/evidence/closure/paseo-lifecycle-cancel-recovery.json", [
+    ...RESULT_PASS,
+    ...CHECKOUT_UNTOUCHED,
+    { path: "lanes", op: "array-contains", match: { capability: "cancel", result: "PASS" } },
+    { path: "lanes", op: "array-contains", match: { capability: "recovery", result: "PASS" } }
+  ]),
+  "s14.adversarial": runtime("s14.adversarial", "docs/evidence/closure/adversarial-negative-checks.json", [
     ...RESULT_PASS,
     { path: "campaign", op: "equals", value: "adversarial-negative-checks" },
     { path: "failedChecks", op: "equals", value: [] },
@@ -328,7 +342,7 @@ export const SELF_HOSTING_COMPOSITE_ITEMS: readonly CompositeItemV1[] = [
   { id: "repair-replan", title: "Bounded repair/replan with oracle re-check", target: "§16 repair/replan; §8", mechanism: "HYBRID", required: true, artifactKeys: ["s13.gov.repair", "s13.certification-repair"] },
   { id: "human-exception-handling", title: "Human exception handling and external authorization", target: "§16 human exception handling; §12", mechanism: "HYBRID", required: true, artifactKeys: ["s13.journey.issue", "s13.gh.authority"] },
   { id: "delivery-reconciliation", title: "Delivery intents, receipts and reconciliation", target: "§16 delivery reconciliation; §11", mechanism: "HYBRID", required: true, artifactKeys: ["s13.gh.delivery", "s13.journey.issue"] },
-  { id: "runtime-recovery", title: "Runtime supervision, cancellation and recovery", target: "§16 runtime recovery; §9", mechanism: "DETERMINISTIC", required: true, artifactKeys: ["s13.lifecycle", "s13.gov.distributed"] },
+  { id: "runtime-recovery", title: "Runtime supervision, cancellation and recovery", target: "§16 runtime recovery; §9", mechanism: "DETERMINISTIC", required: true, artifactKeys: ["s13.lifecycle", "s14.lifecycle-current", "s13.gov.distributed"] },
   { id: "sandbox-security", title: "Sandbox/security isolation and candidate-bound SAST", target: "§16 sandbox/security; §12", mechanism: "DETERMINISTIC", required: true, artifactKeys: ["s10.sast", "s13.ctx.permission-delegation"] },
   { id: "supply-chain", title: "Supply-chain provenance gate", target: "§16 supply chain; §11/§15", mechanism: "DETERMINISTIC", required: true, artifactKeys: ["s13.gh.delivery", "s13.review-final"] },
   { id: "real-provider-certification", title: "Real-provider certification matrix", target: "§16 real-provider certification; §15", mechanism: "HYBRID", required: true, artifactKeys: ["s13.certification", "s13.review-final"] },

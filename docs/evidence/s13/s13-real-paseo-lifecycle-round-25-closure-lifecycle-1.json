@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 25,
+  "runId": "closure-lifecycle-1",
+  "campaign": "real-paseo-lifecycle",
+  "generatedAt": "2026-09-30T21:30:38.737Z",
+  "checkout": "/home/james/Desarrollo/agentic-engineering-harness",
+  "sourceCommit": "1d1dd973ff585c8a886f4af3a13a9343d6b1d618",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13RealPaseoLifecycleCampaign.mjs",
+        "sha256": "5dad1fc3864de7d4fb0bcb324badcfdfcaed3eccc4935db7c5085929ba715b5c"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "48bf4647c741746ae4fd4c96a22c0efcd40b889ae3fe74b8bf16b297edb4abe7"
+  },
+  "harnessBuildIdentity": {
+    "version": 1,
+    "packageVersion": "0.8.4",
+    "gitSha": "1d1dd973ff585c8a886f4af3a13a9343d6b1d618",
+    "releaseId": "release-1790803312167-1275019-c50630f8",
+    "buildDigest": "d266692df02c95bf432ac6c9578e127fb16584aa2cc18d469d2c844ed3b0a2ab",
+    "dirty": true
+  },
+  "candidate": {
+    "artifact": "agentic-engineering-harness-0.8.4.tgz",
+    "artifactDigest": "272b0ecff74946f9bde8b6d1a29da7578c114ea488d1cee12a6729e7017f8d49"
+  },
+  "lanes": [
+    {
+      "capability": "cancel",
+      "result": "PASS",
+      "sessions": "2218bd8f-a469-45da-94c3-5f493faf9a11",
+      "rowResult": {
+        "cancel": "PASS"
+      },
+      "error": null,
+      "artifact": "docs/evidence/s13/lifecycle-lanes/round-25/closure-lifecycle-1/cancel.json"
+    },
+    {
+      "capability": "recovery",
+      "result": "PASS",
+      "sessions": "b2562f02-fc8c-45a5-b14e-dda06fff9ff0",
+      "rowResult": {
+        "recovery": "PASS"
+      },
+      "error": null,
+      "artifact": "docs/evidence/s13/lifecycle-lanes/round-25/closure-lifecycle-1/recovery.json"
+    }
+  ],
+  "result": "PASS",
+  "checkoutProof": {
+    "trackedDigestBefore": "32ee7885a4663a0cdce6203f2d8e357cf2ef67c18d1e90606bf033204610237c",
+    "trackedDigestAfter": "32ee7885a4663a0cdce6203f2d8e357cf2ef67c18d1e90606bf033204610237c",
+    "trackedFiles": 2078,
+    "checkoutUntouched": true,
+    "postRunTrackedDocEditWindow": {
+      "opensAfter": "2026-09-30T21:31:43.801Z",
+      "note": "R17-F8: tracked documentation/evidence writes after this timestamp are expected; compare source digests only within a run window."
+    },
+    "note": "Tracked digest captured before packing and after all real lifecycle journeys; all provider sessions run against disposable /tmp fixtures."
+  }
+}

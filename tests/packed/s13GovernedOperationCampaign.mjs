@@ -907,6 +907,27 @@ async function loadJsonRelative(root, relative) {
   return readJson(path.join(root, relative));
 }
 
+/**
+ * The product archives operation-owned workspaces at terminalization (removing the
+ * Paseo worktree); before archiving it persists the bounded `.harness` run-evidence
+ * subtrees under `<fixtureRoot>/.harness/operations/<id>/workspace-evidence/latest`.
+ * Verification reads the worktree when present and falls back to that product-owned
+ * snapshot, so no check is weakened and no campaign-side copy is used.
+ */
+function worktreeEvidenceRoots(fixtureRoot, record, worktreeRoot) {
+  const roots = [worktreeRoot, record?.workspaceRoot].filter((value) => typeof value === "string" && value);
+  if (record?.id) roots.push(path.join(fixtureRoot, ".harness", "operations", record.id, "workspace-evidence", "latest"));
+  return [...new Set(roots)];
+}
+
+async function loadJsonFromRoots(roots, relative) {
+  for (const root of roots) {
+    const value = await readJson(path.join(root, relative));
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
 async function readEventEntries(fixtureRoot, names, extraRoots = []) {
   const entries = [];
   const roots = [...new Set([fixtureRoot, ...extraRoots.filter((value) => typeof value === "string" && value)])];
@@ -1101,9 +1122,10 @@ async function verifyChangeLane({ fixtureRoot, record }) {
   const route = record?.intent?.route;
   const candidate = record?.candidateRevision;
   const worktreeRoot = candidate?.worktree ?? record?.workspaceRoot ?? fixtureRoot;
+  const evidenceRoots = worktreeEvidenceRoots(fixtureRoot, record, worktreeRoot);
   const taskId = record?.result?.taskId ?? null;
-  const report = taskId ? await loadJsonRelative(worktreeRoot, `.harness/reports/${taskId}.json`) : undefined;
-  const capsule = taskId ? await loadJsonRelative(worktreeRoot, `.harness/capsules/${taskId}.json`) : undefined;
+  const report = taskId ? await loadJsonFromRoots(evidenceRoots, `.harness/reports/${taskId}.json`) : undefined;
+  const capsule = taskId ? await loadJsonFromRoots(evidenceRoots, `.harness/capsules/${taskId}.json`) : undefined;
   const checksById = new Map((report?.checks ?? []).map((entry) => [entry.id, entry]));
   const candidateReceipts = Object.values(record?.participantReceipts ?? {}).filter((receipt) => agentIdOf(receipt?.sessionId ?? receipt?.agentId ?? receipt?.participantId));
   const validationPass = report?.status === "PASS" && (checksById.get("command.fixture-greeting")?.status === "PASS" || !checksById.size);
@@ -1158,7 +1180,12 @@ async function verifyMultiFileChangeLane(args) {
   const contractRoot = record?.candidateRevision?.worktree ?? record?.workspaceRoot ?? fixtureRoot;
   let sealedRoute;
   if (taskId) {
-    try { sealedRoute = YAML.parse(await fs.readFile(path.join(contractRoot, ".harness", "contracts", `${taskId}.yaml`), "utf8"))?.routing?.route; } catch { sealedRoute = undefined; }
+    for (const root of worktreeEvidenceRoots(fixtureRoot, record, contractRoot)) {
+      try {
+        sealedRoute = YAML.parse(await fs.readFile(path.join(root, ".harness", "contracts", `${taskId}.yaml`), "utf8"))?.routing?.route;
+        if (sealedRoute !== undefined) break;
+      } catch { sealedRoute = undefined; }
+    }
   }
   const routeMatches = sealedRoute === "DIRECT" && sealedRoute === record?.intent?.route;
   base.checks.push(check("change.unified-route", routeMatches, `sealed contract route=${sealedRoute ?? "missing"} operation route=${record?.intent?.route ?? "missing"}`));
@@ -1339,6 +1366,7 @@ for (const name of laneNames) {
   let laneAux;
   try {
     fixture = await prepareFixture(lane.fixture, candidate);
+    laneEvidence.fixtureRoot = fixture.root;
     laneEvidence.candidateBinding = fixture.candidateBinding;
     laneEvidence.fixtureTopology = fixture.topologyOverride ? { source: "S13_GOV_BRAIN_* override", brain: fixture.topologyOverride } : { source: "product-default" };
     if (prepareOnly) {

@@ -8,8 +8,12 @@ import { loadResolvedAgentTopology } from "../agents/config.js";
 import { compileOpenCodeRuntimeProjection } from "../agents/permissions.js";
 import { outputJsonSchema } from "../agents/outputContracts.js";
 import { AehError } from "../core/errors.js";
+import { currentOperationContext } from "../operations/state.js";
+import { isDeterministicPaseoRuntimeEnabled } from "../paseo/deterministicRuntime.js";
 import { launchManagedPaseoAgent, type ManagedPaseoAgentOptions } from "../paseo/runtime.js";
+import { archivePaseoSdkAgent } from "../paseo/sdk.js";
 import { recordPaseoTrace } from "../paseo/trace.js";
+import { runShell, type ProcessResult } from "../utils/process.js";
 import {
   createSemanticAssessmentServiceV1,
   FileSemanticAssessmentCacheV1,
@@ -45,10 +49,13 @@ export interface PaseoSemanticAssessmentRunnerOptionsV1 {
 export class PaseoSemanticAssessmentRunnerV1 {
   private readonly launch: typeof launchManagedPaseoAgent;
   private readonly root: string;
+  private readonly cleanupSessions: boolean;
 
   constructor(private readonly options: PaseoSemanticAssessmentRunnerOptionsV1) {
     this.root = path.resolve(options.root);
     this.launch = options.launch ?? launchManagedPaseoAgent;
+    // Injected deterministic launches own their own fixture lifecycle.
+    this.cleanupSessions = options.launch === undefined;
   }
 
   async assess(input: { request: SemanticAssessmentRequestV1; assessor: ResolvedSemanticAssessorV1["identity"]; repair?: { attempt: number; reason: string } }): Promise<SemanticAssessmentRunnerResultV1> {
@@ -95,6 +102,11 @@ export class PaseoSemanticAssessmentRunnerV1 {
       }
     };
     const result = await this.launch(this.root, options);
+    // Pre-operation route/assurance triage has no owning operation, so its exact
+    // session and workspace are released as soon as the turn returns; in-operation
+    // assessor sessions remain operation-owned and are reconciled with the
+    // operation's terminal resources.
+    if (this.cleanupSessions && !currentOperationContext().id) await cleanupAssessorSession(this.root, result).catch(() => undefined);
     if (result.exitCode !== 0 || !result.id || !result.stdout.trim()) {
       // Typed, deterministic timeout classification: a real provider turn that exceeded its
       // deadline is retryable once; every other unavailability failure is not.
@@ -209,4 +221,34 @@ export async function createSemanticAssessmentRuntimeV1(
 
 export function semanticAssessmentTypesV1(): readonly string[] {
   return semanticAssessmentTypeValues;
+}
+
+/**
+ * Release the exact pre-operation triage assessor session returned by the launch,
+ * plus the exact local workspace record Paseo materializes for it. The workspace
+ * is a `local_checkout` record for the control root created per agent, never the
+ * operation's worktree workspace; it is archived by the exact id returned from the
+ * launch (no name/glob inference). Pre-operation triage has no operation owner at
+ * all, so immediate release is the only deterministic path.
+ */
+async function cleanupAssessorSession(root: string, result: { id?: string; workspaceId?: string }): Promise<void> {
+  if (!result?.id || isDeterministicPaseoRuntimeEnabled()) return;
+  try {
+    await archivePaseoSdkAgent(root, result.id);
+  } catch {
+    const archived = await runShell(`paseo agent archive ${quote(result.id)}`, { cwd: root, timeoutMs: 60_000 }).catch(() => ({ exitCode: 1, stdout: "", stderr: "", durationMs: 0 } as ProcessResult));
+    if (archived.exitCode !== 0) {
+      await recordPaseoTrace(root, "semantic.assessor.cleanup-failed", { agentId: result.id, error: (archived.stderr || archived.stdout || `exit ${archived.exitCode}`).slice(0, 300) }).catch(() => undefined);
+    }
+  }
+  if (result.workspaceId) {
+    const archivedWorkspace = await runShell(`paseo workspace archive ${quote(result.workspaceId)}`, { cwd: root, timeoutMs: 120_000 }).catch(() => ({ exitCode: 1, stdout: "", stderr: "", durationMs: 0 } as ProcessResult));
+    if (archivedWorkspace.exitCode !== 0) {
+      await recordPaseoTrace(root, "semantic.assessor.workspace-cleanup-failed", { workspaceId: result.workspaceId, error: (archivedWorkspace.stderr || archivedWorkspace.stdout || `exit ${archivedWorkspace.exitCode}`).slice(0, 300) }).catch(() => undefined);
+    }
+  }
+}
+
+function quote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }

@@ -1,0 +1,235 @@
+{
+  "version": 1,
+  "kind": "residue-census",
+  "capturedAt": "2026-09-30T18:58:03.847Z",
+  "host": "dark-pc",
+  "note": "W0 read-only census. No process killed, no directory removed. Classification only, and no PID/name/path alone is ownership authority.",
+  "counts": {
+    "interestingProcesses": 74,
+    "opencodeServe": 24,
+    "serena": 14,
+    "aehNamedOrCwd": 12,
+    "tmpAehDirs": 154,
+    "tmpAehCompositeTestDirs": 52
+  },
+  "knownStagingRoots": [
+    {
+      "path": "/tmp/aeh-s13-gov-6KeYap",
+      "exists": true,
+      "mtime": "2026-09-30T14:39:44.435Z"
+    },
+    {
+      "path": "/tmp/aeh-s13-gov-Zo72ph",
+      "exists": true,
+      "mtime": "2026-09-30T14:23:43.848Z"
+    },
+    {
+      "path": "/tmp/aeh-serena-pools",
+      "exists": true,
+      "mtime": "2026-09-30T17:49:00.709Z"
+    }
+  ],
+  "processSamples": [
+    {
+      "pid": 105749,
+      "cwd": "/home/james/.paseo/opencode-home",
+      "cmdline": "/home/james/.local/share/mise/installs/aqua-anomalyco-opencode/1.18.32/opencode serve --port 40027"
+    },
+    {
+      "pid": 127273,
+      "cwd": "/home/james/.paseo/opencode-home",
+      "cmdline": "/home/james/.local/share/mise/installs/aqua-anomalyco-opencode/1.18.32/opencode serve --port 44629"
+    },
+    {
+      "pid": 137868,
+      "cwd": "/home/james/.paseo/opencode-home",
+      "cmdline": "/home/james/.local/share/mise/installs/aqua-anomalyco-opencode/1.18.32/opencode serve --port 42955"
+    },
+    {
+      "pid": 145662,
+      "cwd": "/home/james/.paseo/opencode-home",
+      "cmdline": "/home/james/.local/share/mise/installs/aqua-anomalyco-opencode/1.18.32/opencode serve --port 44083"
+    },
+    {
+      "pid": 25511,
+      "cwd": "/home/james/.paseo/opencode-home",
+      "cmdline": "/home/james/.local/share/mise/installs/aqua-anomalyco-opencode/1.18.32/opencode serve --port 39045"
+    },
+    {
+      "pid": 26223,
+      "cwd": "/home/james/.paseo/opencode-home",
+      "cmdline": "/home/james/.local/share/mise/installs/aqua-anomalyco-opencode/1.18.32/opencode serve --port 38109"
+    },
+    {
+      "pid": 28654,
+      "cwd": "/home/james/.paseo/opencode-home",
+      "cmdline": "/home/james/.local/share/mise/installs/aqua-anomalyco-opencode/1.18.32/opencode serve --port 34159"
+    },
+    {
+      "pid": 30261,
+      "cwd": "/home/james/.paseo/worktrees/0yy63els/aeh-change-20260930t142423z-8e5ffed1",
+      "cmdline": "node /home/james/.cache/opencode/packages/typescript-language-server/node_modules/.bin/typescript-language-server --stdio"
+    },
+    {
+      "pid": 30273,
+      "cwd": "/home/james/.paseo/worktrees/0yy63els/aeh-change-20260930t142423z-8e5ffed1",
+      "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/typescript@5.9.3/node_modules/typescript/lib/tsserver.js"
+    },
+    {
+      "pid": 30274,
+      "cwd": "/home/james/.paseo/worktrees/0yy63els/aeh-change-20260930t142423z-8e5ffed1",
+      "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/typescript@5.9.3/node_modules/typescript/lib/tsserver.js"
+    },
+    {
+      "pid": 30331,
+      "cwd": "/home/james/.paseo/worktrees/0yy63els/aeh-change-20260930t142423z-8e5ffed1",
+      "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/typescript@5.9.3/node_modules/typescript/lib/typingsInst"
+    },
+    {
+      "pid": 32116,
+      "cwd": "/home/james/.paseo/worktrees/0yy63els/aeh-change-20260930t142423z-8e5ffed1",
+      "cmdline": "node /home/james/.cache/opencode/packages/yaml-language-server/node_modules/.bin/yaml-language-server --stdio"
+    },
+    {
+      "pid": 4474,
+      "cwd": "/home/james/Desarrollo/agentic-engineering-harness",
+      "cmdline": "Paseo Supervisor"
+    },
+    {
+      "pid": 4503,
+      "cwd": "/home/james/Desarrollo/agentic-engineering-harness",
+      "cmdline": "Paseo Daemon"
+    },
+    {
+      "pid": 4591,
+      "cwd": "/home/james/Desarrollo/agentic-engineering-harness",
+      "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/@getpaseo+server@0.9.1_react@19.1.9/node_modules/@getpas"
+    },
+    {
+      "pid": 528583,
+      "cwd": "/tmp/aeh-s13-gov-JZYqlh/work/lane-change-multifile-fixture",
+      "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /tmp/aeh-s13-gov-JZYqlh/work/lane-change-multifile-fixture/node_modules/agentic-engineering-harness/dist/main.js operation monitor CHANGE-20260930T171617Z-7379"
+    },
+    {
+      "pid": 529949,
+      "cwd": "/home/james/.paseo/opencode-home",
+      "cmdline": "/home/james/.local/share/mise/installs/aqua-anomalyco-opencode/1.18.32/opencode serve --port 34035"
+    },
+    {
+      "pid": 530253,
+      "cwd": "/tmp/aeh-direct-CHANGE-20260930T171617Z-7379475e-NTWIjG (deleted)",
+      "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /tmp/aeh-s13-gov-JZYqlh/work/lane-change-multifile-fixture/node_modules/agentic-engineering-harness/dist/main.js provider serena-pool"
+    },
+    {
+      "pid": 530276,
+      "cwd": "/tmp/aeh-direct-CHANGE-20260930T171617Z-7379475e-NTWIjG (deleted)",
+      "cmdline": "/home/james/.local/share/mise/installs/pipx-serena-agent/1.6.1/serena-agent/bin/python /home/james/.local/share/mise/installs/pipx-serena-agent/1.6.1/bin/serena start-mcp-server --context ide-assistant --project /tmp/aeh"
+    },
+    {
+      "pid": 530324,
+      "cwd": "/tmp/aeh-direct-CHANGE-20260930T171617Z-7379475e-NTWIjG (deleted)",
+      "cmdline": "node /home/james/.serena/language_servers/static/TypeScriptLanguageServer/ts-lsp/node_modules/.bin/typescript-language-server --stdio"
+    },
+    {
+      "pid": 530349,
+      "cwd": "/tmp/aeh-direct-CHANGE-20260930T171617Z-7379475e-NTWIjG (deleted)",
+      "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.serena/language_servers/static/TypeScriptLanguageServer/ts-lsp/node_modules/typescript/lib/tsserver.js --serverMode partialSemantic --useInferredP"
+    },
+    {
+      "pid": 530350,
+      "cwd": "/tmp/aeh-direct-CHANGE-20260930T171617Z-7379475e-NTWIjG (deleted)",
+      "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.serena/language_servers/static/TypeScriptLanguageServer/ts-lsp/node_modules/typescript/lib/tsserver.js --useInferredProjectPerProjectRoot --cancel"
+    },
+    {
+      "pid": 530364,
+      "cwd": "/tmp/aeh-direct-CHANGE-20260930T171617Z-7379475e-NTWIjG (deleted)",
+      "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.serena/language_servers/static/TypeScriptLanguageServer/ts-lsp/node_modules/typescript/lib/typingsInstaller.js --globalTypingsCacheLocation /home/"
+    },
+    {
+      "pid": 530390,
+      "cwd": "/tmp/aeh-direct-CHANGE-20260930T171617Z-7379475e-NTWIjG (deleted)",
+      "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /tmp/aeh-s13-gov-JZYqlh/work/lane-change-multifile-fixture/node_modules/agentic-engineering-harness/dist/main.js provider serena-proxy"
+    },
+    {
+      "pid": 530391,
+      "cwd": "/tmp/aeh-direct-CHANGE-20260930T171617Z-7379475e-NTWIjG (deleted)",
+      "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /tmp/aeh-s13-gov-JZYqlh/work/lane-change-multifile-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790788531671-527129-070e2b42/workers"
+    },
+    {
+      "pid": 530392,
+      "cwd": "/tmp/aeh-direct-CHANGE-20260930T171617Z-7379475e-NTWIjG (deleted)",
+      "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /tmp/aeh-s13-gov-JZYqlh/work/lane-change-multifile-fixture/node_modules/agentic-engineering-harness/dist/main.js context mcp"
+    },
+    {
+      "pid": 531084,
+      "cwd": "/tmp/aeh-direct-CHANGE-20260930T171617Z-7379475e-NTWIjG (deleted)",
+      "cmdline": "node /home/james/.cache/opencode/packages/typescript-language-server/node_modules/.bin/typescript-language-server --stdio"
+    },
+    {
+      "pid": 531100,
+      "cwd": "/tmp/aeh-direct-CHANGE-20260930T171617Z-7379475e-NTWIjG (deleted)",
+      "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/typescript@5.9.3/node_modules/typescript/lib/tsserver.js"
+    },
+    {
+      "pid": 531101,
+      "cwd": "/tmp/aeh-direct-CHANGE-20260930T171617Z-7379475e-NTWIjG (deleted)",
+      "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/typescript@5.9.3/node_modules/typescript/lib/tsserver.js"
+    },
+    {
+      "pid": 531121,
+      "cwd": "/tmp/aeh-direct-CHANGE-20260930T171617Z-7379475e-NTWIjG (deleted)",
+      "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/typescript@5.9.3/node_modules/typescript/lib/typingsInst"
+    },
+    {
+      "pid": 532673,
+      "cwd": "/tmp/aeh-direct-CHANGE-20260930T171617Z-7379475e-NTWIjG (deleted)",
+      "cmdline": "node /home/james/.cache/opencode/packages/yaml-language-server/node_modules/.bin/yaml-language-server --stdio"
+    },
+    {
+      "pid": 5397,
+      "cwd": "/home/james/.paseo/opencode-home",
+      "cmdline": "/home/james/.local/share/mise/installs/aqua-anomalyco-opencode/1.18.32/opencode serve --port 33697"
+    },
+    {
+      "pid": 558823,
+      "cwd": "/home/james/.paseo/opencode-home",
+      "cmdline": "/home/james/.local/share/mise/installs/aqua-anomalyco-opencode/1.18.32/opencode serve --port 35755"
+    },
+    {
+      "pid": 566612,
+      "cwd": "/home/james/.paseo/worktrees/2f6h68v2/aeh-change-20260930t172621z-5de819ea",
+      "cmdline": "node /home/james/.cache/opencode/packages/typescript-language-server/node_modules/.bin/typescript-language-server --stdio"
+    },
+    {
+      "pid": 566637,
+      "cwd": "/home/james/.paseo/worktrees/2f6h68v2/aeh-change-20260930t172621z-5de819ea",
+      "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/typescript@5.9.3/node_modules/typescript/lib/tsserver.js"
+    },
+    {
+      "pid": 566638,
+      "cwd": "/home/james/.paseo/worktrees/2f6h68v2/aeh-change-20260930t172621z-5de819ea",
+      "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/typescript@5.9.3/node_modules/typescript/lib/tsserver.js"
+    },
+    {
+      "pid": 566706,
+      "cwd": "/home/james/.paseo/worktrees/2f6h68v2/aeh-change-20260930t172621z-5de819ea",
+      "cmdline": "/home/james/.local/share/mise/installs/node/22.23.2/bin/node /home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/typescript@5.9.3/node_modules/typescript/lib/typingsInst"
+    },
+    {
+      "pid": 573079,
+      "cwd": "/home/james/.paseo/opencode-home",
+      "cmdline": "/home/james/.local/share/mise/installs/aqua-anomalyco-opencode/1.18.32/opencode serve --port 42807"
+    },
+    {
+      "pid": 578131,
+      "cwd": "/home/james/.paseo/opencode-home",
+      "cmdline": "/home/james/.local/share/mise/installs/aqua-anomalyco-opencode/1.18.32/opencode serve --port 34039"
+    },
+    {
+      "pid": 580473,
+      "cwd": "/home/james/.paseo/opencode-home",
+      "cmdline": "/home/james/.local/share/mise/installs/aqua-anomalyco-opencode/1.18.32/opencode serve --port 45513"
+    }
+  ],
+  "sampledAt": "2026-09-30T18:58:03.848Z"
+}

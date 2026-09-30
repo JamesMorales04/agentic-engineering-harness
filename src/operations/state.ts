@@ -159,6 +159,8 @@ export interface OperationRecordV2 {
   decisionRequest?: DecisionRequestV1;
   continuation?: ContinuationRecordV1;
   pause?: OperationPauseRecordV1;
+  /** How the operation workspace is owned: operation-owned resources are terminal-reconciled, delivery workspaces are retained. */
+  workspaceDisposition?: "OPERATION_OWNED" | "DELIVERY_REUSED";
 }
 export type OperationRecord = OperationRecordV1 | OperationRecordV2;
 export interface TerminalOperationTransition { record: OperationRecordV2; transitioned: boolean; }

@@ -1,0 +1,372 @@
+{
+  "version": 1,
+  "slice": "closure",
+  "round": 25,
+  "runId": "closure-resource-4",
+  "campaign": "resource-stability-product",
+  "amendment": "CAMPAIGN RESOURCE-LIFECYCLE AMENDMENT (2026-09-29) / AEH-V2-0130 / AEH-V2-0135",
+  "generatedAt": "2026-09-30T20:43:32.310Z",
+  "startedAt": "2026-09-30T20:29:08.823Z",
+  "checkout": "/home/james/Desarrollo/agentic-engineering-harness",
+  "sourceCommit": "1d1dd973ff585c8a886f4af3a13a9343d6b1d618",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "closureResourceStabilityCampaign.mjs",
+        "sha256": "6c1ad5383947ca401c47ebff65401e0fa589fc0f314bdfb83f9224d496f87285"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "c58546c296e559ad3440111c16720e0c4a3c8fb3196f018c45daebaf36724477"
+  },
+  "sharedRoot": "/tmp/aeh-closure-resource-5cquUj",
+  "lane": "change-direct",
+  "iterationCount": 2,
+  "iterations": [
+    {
+      "iteration": 1,
+      "childRunId": "closure-resource-4-i1",
+      "childExitCode": 0,
+      "startedAtIteration": "2026-09-30T20:29:12.049Z",
+      "finishedAtIteration": "2026-09-30T20:37:10.740Z",
+      "before": {
+        "workspaces": 0,
+        "agents": 0,
+        "processes": 0
+      },
+      "lane": {
+        "result": "PASS",
+        "terminal": "SUCCEEDED",
+        "bounded": true,
+        "durationMs": 452570,
+        "artifact": "docs/evidence/s13/governed-lanes/round-25/closure-resource-4-i1/change-direct.json",
+        "candidateBuildDigest": "43995128402098d38728cd5afdb4c138243476b461d8acd9fc19e306b2824177"
+      },
+      "operationId": "CHANGE-20260930T203007Z-5de819ea",
+      "operationTerminal": true,
+      "fixtureRoot": "/tmp/aeh-closure-resource-5cquUj/aeh-s13-gov-jwJV0s/work/lane-change-fixture",
+      "productReconciliation": {
+        "receipt": "aeh-s13-gov-jwJV0s/work/lane-change-fixture/.harness/operations/CHANGE-20260930T203007Z-5de819ea/resource-reconciliation.json",
+        "receiptSha256": "ec840b342c04592a50c437594b86323bdaa03bcddace64b5dec784214a0049ab",
+        "operationId": "CHANGE-20260930T203007Z-5de819ea",
+        "operationStatus": "SUCCEEDED",
+        "cleanupComplete": true,
+        "candidateDigest": "793e493579be7962d8ba2d8d337e14ce44795448abc2f9fa98ed608ada786214",
+        "controllerEpoch": 1,
+        "classification": {
+          "liveOwned": 0,
+          "terminalOrphans": 9,
+          "unknownOrUnowned": 0
+        },
+        "dispositionCounts": {
+          "total": 9,
+          "reconciled": 7,
+          "alreadyReconciled": 2,
+          "failed": 0
+        },
+        "reconciledWorkspaces": [
+          {
+            "identity": "wks_6e18bb9fc10e3e2b",
+            "action": "archive"
+          },
+          {
+            "identity": "wks_76cfb4490e43c796",
+            "action": "archive"
+          },
+          {
+            "identity": "wks_ab099bafae22bc43",
+            "action": "archive"
+          }
+        ],
+        "reconciledIdentities": [
+          {
+            "kind": "managed-process",
+            "identity": "1110023"
+          },
+          {
+            "kind": "paseo-workspace",
+            "identity": "wks_6e18bb9fc10e3e2b"
+          },
+          {
+            "kind": "paseo-agent",
+            "identity": "8a21d6a3-63bc-439d-baf6-729a9c1c5fe9"
+          },
+          {
+            "kind": "paseo-workspace",
+            "identity": "wks_76cfb4490e43c796"
+          },
+          {
+            "kind": "paseo-agent",
+            "identity": "7fa03e1e-71cd-49df-b1ba-27e36f8301c6"
+          },
+          {
+            "kind": "paseo-agent",
+            "identity": "da411a24-9284-409a-be81-24ef7a641e54"
+          },
+          {
+            "kind": "paseo-workspace",
+            "identity": "wks_ab099bafae22bc43"
+          }
+        ],
+        "errors": []
+      },
+      "baselineAfter": {
+        "workspaces": 0,
+        "agents": 0,
+        "processes": 0
+      },
+      "campaignSideCleanup": "NONE",
+      "preserved": false,
+      "preservedResources": null,
+      "errors": [],
+      "durableOperation": {
+        "status": "SUCCEEDED",
+        "phase": "finished"
+      },
+      "receiptWorkspacesArchived": true,
+      "baselineReturned": true,
+      "residueDetail": {
+        "workspaces": [],
+        "agents": [],
+        "processes": [],
+        "counts": {
+          "workspaces": 0,
+          "agents": 0,
+          "processes": 0
+        }
+      }
+    },
+    {
+      "iteration": 2,
+      "childRunId": "closure-resource-4-i2",
+      "childExitCode": 1,
+      "startedAtIteration": "2026-09-30T20:38:07.000Z",
+      "finishedAtIteration": "2026-09-30T20:42:44.977Z",
+      "before": {
+        "workspaces": 0,
+        "agents": 0,
+        "processes": 0
+      },
+      "lane": {
+        "result": "FAIL",
+        "terminal": "FAILED",
+        "bounded": true,
+        "durationMs": 251559,
+        "artifact": "docs/evidence/s13/governed-lanes/round-25/closure-resource-4-i2/change-direct.json",
+        "candidateBuildDigest": "43995128402098d38728cd5afdb4c138243476b461d8acd9fc19e306b2824177"
+      },
+      "operationId": "CHANGE-20260930T203935Z-5de819ea",
+      "operationTerminal": true,
+      "fixtureRoot": "/tmp/aeh-closure-resource-5cquUj/aeh-s13-gov-v3c15m/work/lane-change-fixture",
+      "productReconciliation": {
+        "receipt": "aeh-s13-gov-v3c15m/work/lane-change-fixture/.harness/operations/CHANGE-20260930T203935Z-5de819ea/resource-reconciliation.json",
+        "receiptSha256": "ec41b426bd92eac26341ef6ce7542723957a1508271494fab6e1bce20d0dd59a",
+        "operationId": "CHANGE-20260930T203935Z-5de819ea",
+        "operationStatus": "FAILED",
+        "cleanupComplete": true,
+        "candidateDigest": "c17a04a2a3bf8c9b75d771dce74b8f3769b84681bb5d913d82ec574aba412455",
+        "controllerEpoch": 1,
+        "classification": {
+          "liveOwned": 0,
+          "terminalOrphans": 5,
+          "unknownOrUnowned": 0
+        },
+        "dispositionCounts": {
+          "total": 5,
+          "reconciled": 4,
+          "alreadyReconciled": 1,
+          "failed": 0
+        },
+        "reconciledWorkspaces": [
+          {
+            "identity": "wks_c6360ad5af056e78",
+            "action": "archive"
+          },
+          {
+            "identity": "wks_6c37c684d3978de3",
+            "action": "archive"
+          }
+        ],
+        "reconciledIdentities": [
+          {
+            "kind": "managed-process",
+            "identity": "1142429"
+          },
+          {
+            "kind": "paseo-workspace",
+            "identity": "wks_c6360ad5af056e78"
+          },
+          {
+            "kind": "paseo-agent",
+            "identity": "b2e5f6eb-a663-4bd1-bd10-2add449849b7"
+          },
+          {
+            "kind": "paseo-workspace",
+            "identity": "wks_6c37c684d3978de3"
+          }
+        ],
+        "errors": []
+      },
+      "baselineAfter": {
+        "workspaces": 0,
+        "agents": 0,
+        "processes": 0
+      },
+      "campaignSideCleanup": "NONE",
+      "preserved": false,
+      "preservedResources": null,
+      "errors": [],
+      "durableOperation": {
+        "status": "FAILED",
+        "phase": "failed"
+      },
+      "receiptWorkspacesArchived": true,
+      "baselineReturned": true,
+      "residueDetail": {
+        "workspaces": [],
+        "agents": [],
+        "processes": [],
+        "counts": {
+          "workspaces": 0,
+          "agents": 0,
+          "processes": 0
+        }
+      }
+    }
+  ],
+  "candidateBuildDigest": "43995128402098d38728cd5afdb4c138243476b461d8acd9fc19e306b2824177",
+  "baseline": {
+    "workspaces": [],
+    "agents": [],
+    "processes": [],
+    "counts": {
+      "workspaces": 0,
+      "agents": 0,
+      "processes": 0
+    }
+  },
+  "final": {
+    "workspaces": [],
+    "agents": [],
+    "processes": [],
+    "counts": {
+      "workspaces": 0,
+      "agents": 0,
+      "processes": 0
+    }
+  },
+  "productReconciliation": {
+    "applied": true,
+    "campaignSideCleanup": "NONE",
+    "requiredArchitecture": [
+      "durable operation ownership -> durable provider/resource ownership",
+      "terminal/recovery reconciliation classifying live-owned / terminal-orphan / unknown",
+      "safe release/archive/stop provable from terminal operation records",
+      "policy-driven concurrency/resource backpressure (no machine-specific memory constant in Core)"
+    ]
+  },
+  "trend": {
+    "postReconciliationBaselineByIteration": [
+      {
+        "workspaces": 0,
+        "agents": 0,
+        "processes": 0
+      },
+      {
+        "workspaces": 0,
+        "agents": 0,
+        "processes": 0
+      }
+    ],
+    "postReconciliationNoGrowth": true
+  },
+  "reconciliation": {
+    "baselineReturned": true,
+    "preservedIntact": true,
+    "productOwned": true,
+    "campaignSideCleanup": "NONE"
+  },
+  "classification": {
+    "aehV2_0130": "CLOSED_BY_PRODUCT",
+    "aehV2_0135": "CLOSED_BY_PRODUCT"
+  },
+  "checks": [
+    {
+      "id": "closure.resource.iteration-1.terminal",
+      "ok": true,
+      "message": "lane=PASS terminal=SUCCEEDED"
+    },
+    {
+      "id": "closure.resource.iteration-1.product-receipt",
+      "ok": true,
+      "message": "{\"reconciliation\":{\"total\":9,\"reconciled\":7,\"alreadyReconciled\":2,\"failed\":0},\"errors\":[]}"
+    },
+    {
+      "id": "closure.resource.iteration-1.receipt-binds-operation",
+      "ok": true,
+      "message": "receiptOperation=CHANGE-20260930T203007Z-5de819ea laneOperation=CHANGE-20260930T203007Z-5de819ea"
+    },
+    {
+      "id": "closure.resource.iteration-1.owned-workspaces-archived",
+      "ok": true,
+      "message": "reconciledWorkspaces=[{\"identity\":\"wks_6e18bb9fc10e3e2b\",\"action\":\"archive\"},{\"identity\":\"wks_76cfb4490e43c796\",\"action\":\"archive\"},{\"identity\":\"wks_ab099bafae22bc43\",\"action\":\"archive\"}]"
+    },
+    {
+      "id": "closure.resource.iteration-1.baseline-returned",
+      "ok": true,
+      "message": "after={\"workspaces\":0,\"agents\":0,\"processes\":0}"
+    },
+    {
+      "id": "closure.resource.iteration-1.no-campaign-cleanup",
+      "ok": true,
+      "message": "campaign never archives/stops/kills owned resources"
+    },
+    {
+      "id": "closure.resource.iteration-2.terminal",
+      "ok": true,
+      "message": "lane=FAIL terminal=FAILED"
+    },
+    {
+      "id": "closure.resource.iteration-2.product-receipt",
+      "ok": true,
+      "message": "{\"reconciliation\":{\"total\":5,\"reconciled\":4,\"alreadyReconciled\":1,\"failed\":0},\"errors\":[]}"
+    },
+    {
+      "id": "closure.resource.iteration-2.receipt-binds-operation",
+      "ok": true,
+      "message": "receiptOperation=CHANGE-20260930T203935Z-5de819ea laneOperation=CHANGE-20260930T203935Z-5de819ea"
+    },
+    {
+      "id": "closure.resource.iteration-2.owned-workspaces-archived",
+      "ok": true,
+      "message": "reconciledWorkspaces=[{\"identity\":\"wks_c6360ad5af056e78\",\"action\":\"archive\"},{\"identity\":\"wks_6c37c684d3978de3\",\"action\":\"archive\"}]"
+    },
+    {
+      "id": "closure.resource.iteration-2.baseline-returned",
+      "ok": true,
+      "message": "after={\"workspaces\":0,\"agents\":0,\"processes\":0}"
+    },
+    {
+      "id": "closure.resource.iteration-2.no-campaign-cleanup",
+      "ok": true,
+      "message": "campaign never archives/stops/kills owned resources"
+    },
+    {
+      "id": "closure.resource.no-post-reconciliation-growth",
+      "ok": true,
+      "message": "baselines=[{\"workspaces\":0,\"agents\":0,\"processes\":0},{\"workspaces\":0,\"agents\":0,\"processes\":0}]"
+    }
+  ],
+  "result": "PASS"
+}

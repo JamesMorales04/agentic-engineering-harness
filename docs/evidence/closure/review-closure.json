@@ -1,0 +1,340 @@
+{
+  "version": 1,
+  "kind": "closure-final",
+  "generatedAt": "2026-09-30T22:10:00Z",
+  "reviewer": {
+    "identity": "fresh independent closure reviewer",
+    "provider": "opencode-go",
+    "model": "deepseek-v4.1-flash",
+    "thinking": "default (unspecified)",
+    "noImplementationDisclosure": "I did not implement this closure, did not trust prior summaries, and performed no repository write, commit, push, stash, reset, clean, revert, GitHub write or AEH operation against this checkout. All findings are from durable bytes, source inspection and read-only recomputation.",
+    "readBoundary": "Plan/read-only mode: no test suite, build or composite script was re-executed; verification of those claims is off durable artifacts plus independent digest recomputation, with boundaries stated."
+  },
+  "gitState": {
+    "repository": "/home/james/Desarrollo/agentic-engineering-harness",
+    "branch": "core-architecture-v2",
+    "head": "1d1dd973ff585c8a886f4af3a13a9343d6b1d618",
+    "headExpected": "1d1dd973ff585c8a886f4af3a13a9343d6b1d618",
+    "upstream": "1d1dd973ff585c8a886f4af3a13a9343d6b1d618 (refs/heads/core-architecture-v2 via git ls-remote origin; no push by closure lead)",
+    "workingTree": "38 entries, all modified tracked files or untracked closure files; no commits after HEAD; git reflog shows no commit/reset/stash by the closure lead; git stash list empty",
+    "gitDiffCheck": "CLEAN (exit 0, no output)",
+    "targetSha256": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+    "targetExpected": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+    "targetByteIdentical": true,
+    "noCredentialsInClosureEvidence": true,
+    "noSelfMintedHumanDecisions": true,
+    "noGitHubEffects": "disposable campaign effects.publicEffects=[] and externalEffects=[]; no authority/delivery/issue lane was run in closure; remote ref unchanged",
+    "noOperationsAgainstCheckout": "no .harness/operations entry newer than 2026-09-23; campaigns ran only in /tmp fixtures"
+  },
+  "digestRecomputation": {
+    "result": "MATCH",
+    "algorithm": "campaign tracked digest: git ls-files -z, sorted; sha256 over path\\0<file>\\0 + working-tree bytes",
+    "trackedDigest": "64656de32ded7af14c0aecf876f48b617af8c612d022f5dae0615741ba4d86f9",
+    "trackedDigestClaimed": "64656de32ded7af14c0aecf876f48b617af8c612d022f5dae0615741ba4d86f9",
+    "trackedFiles": 2078,
+    "targetSha256RecomputedMatch": true,
+    "buildDigest": "d266692df02c95bf432ac6c9578e127fb16584aa2cc18d469d2c844ed3b0a2ab",
+    "buildDigestRecomputed": "d266692df02c95bf432ac6c9578e127fb16584aa2cc18d469d2c844ed3b0a2ab (digestRelease over dist/releases/release-1790804163834-1329785-d71fa5f9 excluding build-identity.json, 899 files)",
+    "evidenceDigestsRecomputed": {
+      "focused-regressions.json": "0d670ab4a9abd7bab7c2ed31f2c523427e703cb98b899874bb04843b6486087d MATCH",
+      "resource-stability-product.json": "94ed891de6e1d72b4039f7a733b55e6625a94a48df61fd5f0288147c5a157f14 MATCH",
+      "disposable-self-modification-campaign.json": "17e9b926cc17aaaafa34efa78222bcb1d6c1119f77b0e0375f398160d0f6e19a MATCH",
+      "paseo-lifecycle-cancel-recovery.json": "ead63493846fb3bb15b1ea7bba083a2486d89b642c62c187407d88ae22c73438 MATCH",
+      "self-hosting-composite-report.json": "9b9e2134c6a4d6f22a0bbc2b6cd0b4c6a35202ced96da18b51c0f24a95d84b7f MATCH",
+      "certification-evidence-manifest.json": "ff1b5b113adeae34c88abdd6aaa5c2a4770f98a8d3b47cb8dd521def4ea54b9a MATCH",
+      "adversarial-negative-checks.json": "c100197d811fbf5e7cb7344f0157de22288cb809c19f916b42efae592a7a6a20 MATCH",
+      "staleness-analysis.json": "e6739566fcbc5880997dee543d42eab112587209e3e37de952a4c2d173024eec MATCH",
+      "validation.json": "572c2d1c1a944c3035206db2cb8337aa1ac92f8fc29f27afe9adc918a4b97da1 MATCH",
+      "residue-census.json": "c352ae7eb9b99c86c4dd9f536a9345b3514accbbc321c2d466cf3b6129cadd49 MATCH"
+    },
+    "manifestArtifactDigests": "25/25 recomputed against files using the frozen paths parsed from src/certification/composite.ts",
+    "disposableProductReceipt": "d1265be8fbf1706167794499288452962c836f144fd0e2e1110546352e4d14e1 recomputed from /tmp fixture bytes MATCH (operationId CHANGE-20260930T212250Z-7379475e, status SUCCEEDED, 13 dispositions = 11 reconciled + 2 already, 0 failed, cleanupComplete true)",
+    "mismatches": []
+  },
+  "findings": [
+    {
+      "id": "F1",
+      "priority": "P2",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "DOCUMENTATION_OVERCLAIM",
+      "evidence": "docs/CORE_ARCHITECTURE_V2_CLOSURE_WORKGRAPH.md C-W1 and architecture item 4 claim a terminal-record `resourceReconciliation` summary field. `grep -rn resourceReconciliation src tests` returns zero matches; the fixture terminal record CHANGE-20260930T212250Z-7379475e.json contains no such field. The durable receipt resource-reconciliation.json is implemented and sufficient.",
+      "requiredAction": "Correct the WorkGraph wording to describe only the durable receipt (src/runtime/operationResources.ts:264-405, 401), or implement the summary field. Wording correction is sufficient; no re-verification required."
+    },
+    {
+      "id": "F2",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "IMPRECISE_RETENTION_CLAIM",
+      "evidence": "CLOSURE_WORKGRAPH C-W5/line 67 and STATUS say five superseded truthful-failure runs are 'retained'. Only run-4 and run-5 summary JSONs are retained (resource-stability-product.superseded-run4/run5.json). Runs 1-3 summaries were overwritten at the single summary path; only their lane artifacts (docs/evidence/s13/governed-lanes/round-25/closure-resource-1..3-i1/i2) and their sha256 values in narrative remain (hashes fa8d9c63/93d2bcbc/d0ac6e89 do not recompute from retained bytes).",
+      "requiredAction": "Correct wording to 'lane artifacts retained; run-1..3 summary bytes superseded (hash recorded in the execution log)' or restore run-1..3 summary bytes."
+    },
+    {
+      "id": "F3",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "UNSUPPORTED_RECEIPT_ATTRIBUTION",
+      "evidence": "STATUS closure paragraph: 'the affected real-Paseo cancel/recovery lifecycle lane reran 2/2 PASS with product receipts'. `grep -c 'receipt|resource-reconciliation'` in closure-lifecycle-1 cancel.json/recovery.json returns 0/0; the envelope lanes expose only capability/result/sessions/rowResult/artifact. The lane does verify operationTerminal CANCELLED, leasesAfterCancel 0 and 2/2 PASS on candidate d266692d, but no resource-reconciliation receipt.",
+      "requiredAction": "Remove 'with product receipts' or cite the correct durable fields. Optional coverage improvement: assert resource-reconciliation receipt presence after CANCELLED in the lifecycle lane (the same terminalizeOperation path is already covered by focused tests D/E and the stability receipts for terminal operations)."
+    },
+    {
+      "id": "F4",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "HARDENING_OBSERVATION",
+      "evidence": "src/runtime/operationResources.ts:444-453 `assertProviderSessionCapacity` fails open if readManagedRuntimeSnapshot cannot be read (catch -> active 0) and is a check-then-acquire with no atomic reservation, so concurrent acquires can exceed the configured ceiling by the race width. It cannot be widened by model output and is typed WAIT_OR_RAISE; observed real concurrency is far below the default 16.",
+      "requiredAction": "Optional hardening (typed capacity-unavailable error on snapshot read failure and/or reservation under the provider lease). Not required for this closure."
+    },
+    {
+      "id": "F5",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "DISCLOSURE_SCOPE",
+      "evidence": "tests/packed/closureResourceStabilityCampaign.mjs census counts only resources whose cwd/cmdline starts with the campaign shared root (lines 51-72), so 'baseline 0/0/0' is campaign-scope; global dormant Paseo store records are outside it (the separate residue-census.json records them, preserved not killed).",
+      "requiredAction": "None for acceptance; optionally state the census scope in the stability envelope note."
+    },
+    {
+      "id": "F6",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "WEAK_BUT_SUFFICIENT_REASONING",
+      "evidence": "staleness-analysis.json row `multi-worker` justifies the new provider ceiling with 'observed live concurrency in closure runs is ≤5' rather than the row's own r22-gov-2 geometry (workUnits=2, waves=1); row `distributed-execution` does not name the provider-ceiling delta that executes on its lease path (r21-dist-14 prepared=2/released=2). Both remain bounded: default ceiling 16 > observed concurrency.",
+      "requiredAction": "Correct the two reasoning strings to cite the row's own lease/work-unit counts. Does not require a rerun."
+    }
+  ],
+  "productRepairVerification": {
+    "verdict": "REAL_AND_VERIFIED",
+    "registry": "src/runtime/operationResources.ts:156-166 registry at operationArtifactDir/.harness/operations/<id>/resources.json; fs.mkdir 0700; atomic write; cross-process lock with stale-PID recovery (853-891). Recomputed on disk for the disposable operation.",
+    "ownershipProof": "Exact durable identity only: registered resources (173-220), operation record workspace+disposition (500-536), record agents/participants/supervision (543-566), product-minted `aeh.operation` label discovery (567-574), exact session inspection for workspace binding (575-599), provider lease lifecycle operationId (601-614), registered managed-process handles (616-625). No PID-name or filesystem-glob inference; the staging remove guard (751-761) is an additional safety check on an already-registered exact path.",
+    "classification": "LIVE_OWNED / TERMINAL_ORPHAN / UNKNOWN_OR_UNOWNED implemented at 300-341; non-terminal operations are never released; unproven or RETAIN_SHARED resources are preserved and reported.",
+    "canonicalTerminality": "Reconciliation gates on isTerminalOperation (state.ts:1861-1862: only SUCCEEDED/FAILED/CANCELLED); terminal truth is committed by transitionOperationToTerminal (state.ts:241-263, idempotent, owner-fenced, candidate/evidence gated) before reconciliation.",
+    "postTerminalReconciliation": "src/operations/controller.ts:863-886 terminalizeOperation runs reconcileOperationResources after the terminal transition, inside try/catch with tracing; the terminal status is never rewritten.",
+    "crashRestartRecovery": "controller.ts:293-310 executeOperation terminal entry reconciles a durably terminal operation; controller.ts:128-130 startDetachedOperation runs reconcileTerminalOperationResources sweep before dispatch; sweep only touches terminal operations with an ownership surface and incomplete receipt (operationResources.ts:412-441).",
+    "receipt": "Durable operation-resource-reconciliation receipt (operationResources.ts:120-135, 399-403) binds operationId, status, terminal flag, candidateDigest, execution revision, controllerEpoch, classification counts, per-resource kind/identity/disposition/outcome/evidence, terminalOrphansRemaining, cleanupComplete, errors. Independently recomputed for the disposable operation (d1265be8...).",
+    "idempotenceAndFailures": "Already-released resources yield already-reconciled (329-341, 376-381); real failures stay visible with outcome=failed and errors[], resource state remains OWNED for retry (358-373); per-resource errors are isolated so one failure cannot prevent later releases; reconcile failures cannot alter the terminal outcome.",
+    "ceilings": "Generic policy (operationResources.ts:85-154) from frozen project config orchestration.operations.resources with defaults 64 owned / 16 concurrent provider sessions; typed RESOURCE_CEILING_EXHAUSTED (core/errors.ts); enforced at registration (196-202) and provider lease acquire (providerLifecycle.ts:62). Unknown/model-shaped keys are ignored; model output cannot widen.",
+    "registrationPoints": "workspace disposition/registration (controller.ts:419-448), liveness monitor as managed-process (monitorProcess.ts:48-61), DIRECT staging root register/release (candidates/direct.ts:58-70,113), pre-operation triage assessor exact-id release (semantic/runtime.ts:102-110, 226-254).",
+    "integrationFilesUnchangedButInPath": "src/operations/change.ts and src/core/run.ts contain no closure edit; all governed terminal transitions route through controller.ts terminalizeOperation (call sites 475/508/543/567/776/930), including cancelOperation (599-794) which fences writers then terminalizes CANCELLED."
+  },
+  "stabilityVerification": {
+    "runId": "closure-resource-6",
+    "artifact": "docs/evidence/closure/resource-stability-product.json",
+    "artifactSha256": "94ed891de6e1d72b4039f7a733b55e6625a94a48df61fd5f0288147c5a157f14",
+    "candidateBuildDigest": "d266692d... (recomputed from dist)",
+    "iterations": "2/2 real change-direct operations terminal SUCCEEDED; lane PASS; bounded; child exit 0",
+    "productReceipts": "Both receipts cleanupComplete=true, classification liveOwned 0 / terminalOrphans 13 / unknownOrUnowned 0, dispositions 11 reconciled + 2 alreadyReconciled + 0 failed, errors []; receipt bind-op checks pass (receiptOperation == laneOperation); exact identities embedded (5 workspaces, agents, managed-process per iteration; distinct across iterations)",
+    "baseline": "before 0/0/0 and baselineAfter 0/0/0 both iterations; final 0/0/0; postReconciliationNoGrowth true",
+    "campaignSideCleanup": "NONE (harness only runs `paseo <kind> ls --json`, `/proc` census reads, and spawns the governed-operation child; no archive/stop/kill/delete executed)",
+    "classification": "aehV2_0130/0135 = CLOSED_BY_PRODUCT; reconciliation.productOwned true; preservedIntact true",
+    "supersededRuns": "retained truthfully as lane artifacts closure-resource-1..5 plus summary JSONs for run-4 (a PASS superseded because the first gate accepted terminal-any-status before being tightened to require SUCCEEDED+lane PASS) and run-5 (truthful FAIL: supervisor provider/daemon flake, missing receipt within the then-90s poll). Run-1..3 summaries were overwritten (see F2).",
+    "boundary": "The two stability fixture roots under /tmp/aeh-closure-resource-EDnyTM no longer exist, so receiptSha256 d91dfadd.../fc47fbbb... could not be byte-recomputed; verification is off the durable envelope plus the verified product code path."
+  },
+  "disposableCampaignVerification": {
+    "runId": "closure-disposable-1",
+    "artifact": "docs/evidence/closure/disposable-self-modification-campaign.json",
+    "artifactSha256": "17e9b926cc17aaaafa34efa78222bcb1d6c1119f77b0e0375f398160d0f6e19a",
+    "result": "PASS; source lane terminalRecord.status SUCCEEDED, bounded; lane oracle 12/12 checks PASS, 0 failed; rows change + direct-change PASS; 3 real sessions; operation participants 4 / participantReceipts 2",
+    "checkoutProof": "trackedDigestBefore == trackedDigestAfter == 32ee7885a4663a0cdce6203f2d8e357cf2ef67c18d1e90606bf033204610237c (2078 files), checkoutUntouched true; the same digest was independently captured by the lifecycle campaign in a separate window, and the later drift to the current 64656de3 is fully explained by tracked documentation writes after the recorded post-run edit window (doc mtimes 16:37-16:38 local = 21:37-21:38Z).",
+    "containment": "mutation roots confined to /tmp and /home/james/.paseo/worktrees; checkoutOutsideMutationRoots true; candidateWorktree mutated then product-archived (observation accepted as product-archived, not a fabricated pass)",
+    "productReceipt": "receiptSha256 d1265be8fbf1706167794499288452962c836f144fd0e2e1110546352e4d14e1 independently RECOMPUTED from fixture bytes: operationId CHANGE-20260930T212250Z-7379475e, status SUCCEEDED, terminal true, classification 0/13/0, 13/13 dispositions (11 reconciled + 2 already), 0 failed, cleanupComplete true",
+    "effects": "publicEffects [] and externalEffects []; no GitHub effect",
+    "boundary": "The campaign tracked digest covers tracked files only; untracked closure source files (operationResources.ts, tests, harnesses) were independently checked by mtime (all <= campaign start) and by the recomputed product receipt and build digest."
+  },
+  "compositeVerification": {
+    "report": "docs/evidence/closure/self-hosting-composite-report.json (9b9e2134...)",
+    "manifest": "docs/evidence/closure/certification-evidence-manifest.json (ff1b5b11...)",
+    "ready": true,
+    "items": "21/21 PASS (20 required + resource-lifecycle amendment + disposable campaign; every item status PASS, every artifact instance status PASS)",
+    "verifiedArtifacts": 47,
+    "failedArtifacts": 0,
+    "policyDigest": "1be97df3f7736b76dd048648555874b43e7df5cffc5d1ba98b6a0b555085aef3",
+    "readinessAuthority": "DETERMINISTIC_COMPOSITE",
+    "modelAuthority": "NONE (modelReadinessClaims received 0, evaluated false)",
+    "candidateBuildDigest": "d266692d...",
+    "resourceLifecycleItem": "backed by PRODUCT-owned reconciliation: s14.stability (resource-stability-product.json) + s14.campaign + s14.campaign-raw, all runtime-bound and PASS; runtime-recovery item additionally binds s14.lifecycle-current ead63493",
+    "adversarial": "11/11 gate-level negative checks + 18/18 product-level tests, 0 failed (c100197d...)",
+    "independentChecks": "25/25 manifest artifact digests recomputed; report.manifestSha256 equals manifest bytes; report policy digest equals manifest policy digest; all artifact sha256 fields in items match the manifest",
+    "boundary": "The composite script/build were not re-executed under the read-only boundary; byte-reproducibility with the recorded generatedAt is accepted from the deterministic report plus the digest bindings verified above."
+  },
+  "stalenessDetermination": {
+    "summary": "7 rows re-executed CURRENT on closure candidate d266692d; 17 rows remain STALE_REQUIRES_RERUN as build bindings but are accepted with exact bounded-scope reasoning; 1 NOT_APPLICABLE. No row requires rerun before this closure acceptance. Delta surfaces: new src/runtime/operationResources.ts executed at (a) post-terminal terminalizeOperation/executeOperation-terminal-entry/startup sweep, (b) provider lease acquire ceiling, (c) DIRECT staging registration, (d) pre-operation triage session release, (e) liveness-monitor registration; plus state.ts optional field, errors.ts code, certification/composite + scripts + campaign harness (deterministic gates only).",
+    "rows": [
+      {
+        "id": "change",
+        "current": true,
+        "mustRerun": false,
+        "reasoning": "RE_EXECUTED: closure-disposable-1 change-multifile terminal SUCCEEDED / oracle 12/12."
+      },
+      {
+        "id": "direct-change",
+        "current": true,
+        "mustRerun": false,
+        "reasoning": "RE_EXECUTED_TWICE: closure-resource-6 iterations 1/2 both terminal SUCCEEDED with product receipts."
+      },
+      {
+        "id": "cancel",
+        "current": true,
+        "mustRerun": false,
+        "reasoning": "RE_EXECUTED: closure-lifecycle-1 cancel PASS on closure candidate; source path cancelOperation -> terminalizeOperation (controller.ts:776) verified."
+      },
+      {
+        "id": "recovery",
+        "current": true,
+        "mustRerun": false,
+        "reasoning": "RE_EXECUTED: closure-lifecycle-1 recovery PASS (restart/takeover) plus focused regressions D and executeOperation terminal-entry reconciliation."
+      },
+      {
+        "id": "resource-stability",
+        "current": true,
+        "mustRerun": false,
+        "reasoning": "RE_EXECUTED: product reconciliation is the campaign PASS mechanism."
+      },
+      {
+        "id": "disposable-self-modification",
+        "current": true,
+        "mustRerun": false,
+        "reasoning": "RE_EXECUTED on closure candidate with recomputed product receipt."
+      },
+      {
+        "id": "self-hosting-composite",
+        "current": true,
+        "mustRerun": false,
+        "reasoning": "REGENERATED against closure evidence; 25/25 digests recomputed."
+      },
+      {
+        "id": "audit",
+        "current": false,
+        "mustRerun": false,
+        "reasoning": "BOUNDED: only delta is post-terminal reconcileOperationResources (controller.ts:863) after transitionOperationToTerminal; audit assertions (report/checks/reviewer sessions) are durable control-root artifacts completed before terminal; failures are caught and traced; campaign verifier reads product-owned workspace snapshot when the worktree is archived (same bytes). No assertion surface is touched. Remains STALE for a hypothetical S13 re-certification."
+      },
+      {
+        "id": "change-delegated",
+        "current": false,
+        "mustRerun": false,
+        "reasoning": "BOUNDED: same post-terminal delta; route/capsule/oracle/checkout assertions complete upstream of reconciliation; harness fallback preserves identical verification bytes."
+      },
+      {
+        "id": "formal-sdd",
+        "current": false,
+        "mustRerun": false,
+        "reasoning": "BOUNDED: same post-terminal delta; spec authoring/compilation/acceptance assertions are upstream of terminalizeOperation."
+      },
+      {
+        "id": "multi-worker",
+        "current": false,
+        "mustRerun": false,
+        "reasoning": "BOUNDED: only added executed check is assertProviderSessionCapacity (providerLifecycle.ts:62) with default ceiling 16; row geometry is 2 work units / 1 wave; ceiling cannot be reached. Wording should cite row geometry (F6)."
+      },
+      {
+        "id": "repair",
+        "current": false,
+        "mustRerun": false,
+        "reasoning": "BOUNDED: repair-packet/scope/oracle-recheck assertions are upstream of terminal reconciliation; workspace archive is post-terminal and the campaign verifier has the product snapshot fallback."
+      },
+      {
+        "id": "product-repair",
+        "current": false,
+        "mustRerun": false,
+        "reasoning": "BOUNDED: same as repair."
+      },
+      {
+        "id": "certification-repair",
+        "current": false,
+        "mustRerun": false,
+        "reasoning": "BOUNDED: certification core drives the provider directly; no governed-operation terminalizeOperation path executes on its asserted surface (R20-F8 path determination stands)."
+      },
+      {
+        "id": "distributed-execution",
+        "current": false,
+        "mustRerun": false,
+        "reasoning": "BOUNDED: distributed modules unmodified; the provider ceiling executes on the worker lease path with prepared=2/released=2 leases << 16; terminal reconciliation only after terminal truth. (Ceiling delta not named in the row text: F6 wording.)"
+      },
+      {
+        "id": "context-handoff",
+        "current": false,
+        "mustRerun": false,
+        "reasoning": "BOUNDED: provider leasing only gains the generic ceiling check; grants/continuations asserted from durable operation state, not the worktree."
+      },
+      {
+        "id": "permission-delegation",
+        "current": false,
+        "mustRerun": false,
+        "reasoning": "BOUNDED: same as context-handoff."
+      },
+      {
+        "id": "authority",
+        "current": false,
+        "mustRerun": false,
+        "reasoning": "BOUNDED: authority/gated-action modules unmodified; closure produces no external effects; delivery intents/receipts unchanged."
+      },
+      {
+        "id": "delivery",
+        "current": false,
+        "mustRerun": false,
+        "reasoning": "BOUNDED: delivery reconciliation modules unmodified; no external effects produced by closure."
+      },
+      {
+        "id": "issue-driven",
+        "current": false,
+        "mustRerun": false,
+        "reasoning": "BOUNDED: the change operation's terminal reconciliation archives only the registered change workspace; the journey delivery shell owns/retains its own workspace (DELIVERY_REUSED) and asserts durable intents/receipts/remote ref/issue snapshot; the journey harness already falls back from the missing worktree to the control root (s13IssueJourneyCampaign.mjs:283-285). Remains STALE for a hypothetical S13 re-certification."
+      },
+      {
+        "id": "startup",
+        "current": false,
+        "mustRerun": false,
+        "reasoning": "BOUNDED: startDetachedOperation adds a bounded sweep that reconciles only durably terminal operations with ownership proof and incomplete receipts; startup certification assertions (install/doctor/project config bytes) are unaffected."
+      },
+      {
+        "id": "informational",
+        "current": false,
+        "mustRerun": false,
+        "reasoning": "BOUNDED: pre-operation triage cleanup releases the exact launch-id session/workspace after the turn; the informational oracle asserts durable assessment-cache entries (assessmentDigest, judgment INTENT, session.provider/agentId strings), not live session state; the auxiliary paseoSessionReceipt is not a PASS gate (s13RealProviderCertification.mjs:304-327)."
+      },
+      {
+        "id": "project-home",
+        "current": false,
+        "mustRerun": false,
+        "reasoning": "BOUNDED: project registry/Control Center home path not modified by the closure."
+      },
+      {
+        "id": "multi-project",
+        "current": false,
+        "mustRerun": false,
+        "reasoning": "BOUNDED: project isolation path not modified."
+      },
+      {
+        "id": "control-center",
+        "current": false,
+        "mustRerun": false,
+        "reasoning": "NOT_APPLICABLE: browser-only row; no closure delta executes on its surface."
+      }
+    ],
+    "determination": "The bounded-scope reasoning is exact and sufficient for closure acceptance for every non-rerun row: each delta executable on a row's path is named above with its phase, and none can alter that row's asserted evidence or gates. The two weak reasonings (F6) are wording fixes, not coverage gaps. Rows remain STALE_REQUIRES_RERUN only for a hypothetical S13 re-certification, which is the correct, disclosed classification."
+  },
+  "docsReconciliationVerification": {
+    "statusConformanceWorkGraphs": "CURRENT-state sections added/preserved: S1-S12 ACCEPTED (commit records), S13 ACCEPTED (docs/evidence/s13/review-final-r23.json SLICE_ACCEPTED; older review-final.json SLICE_BLOCKED preserved as history), S14 ACCEPTED (docs/evidence/s14/review-s14.json SLICE_ACCEPTED), AEH-V2-0130/0135 FIXED/CLOSED with product-owned reconciliation evidence, Core Architecture v2 COMPLETE. Historical round records preserved in place; old paragraphs remain and new closure paragraphs appended.",
+    "ledger": "Rows 0130/0135 carry FINAL CLOSURE dispositions with exact digests; 0132/0133/0134 remain open observations unchanged; test hygiene S14-F4 and tests/paseoSdkResolve drift explicitly listed as open post-v2 observations.",
+    "workGraphs": "CLOSURE_WORKGRAPH contains frozen facts, WorkUnits C-W0..C-W11, execution log including truthful failed runs, evidence index with recomputed digests.",
+    "defects": "F1 (WorkGraph summary-field overclaim), F2 (retention wording), F3 (STATUS lifecycle 'product receipts' wording). Otherwise the current-state claims are backed by durable bytes."
+  },
+  "validationResults": {
+    "claimed": "canonical non-system suite 205 files / 1,391 tests = 1,380 passed / 7 skipped / 4 failed; focused closure 43 suites / 201 tests passed; typecheck and build exit 0; git diff --check clean",
+    "independentChecks": "focused-regressions.json digest and command verified; tests/operationResourceReconciliation.test.ts statically verified to contain and assert A-J plus K/L/M (12 tests); TARGET/git/build digests recomputed match; no modified source for the failing suites (tests/paseoSdkResolve.test.ts and tests/buildHygiene.test.ts are unmodified from HEAD)",
+    "classification": {
+      "paseoSdkResolve": "PRE_EXISTING_REPRODUCIBLE, consistent with the documented mise/Paseo-CLI drift class since S10/S12/R17-R23 and this closure's environment",
+      "buildHygiene": "FLAKE_CONFIRMED per artifact note (real-build child exitCode null under full-suite parallel load; 6/6 in isolation)"
+    },
+    "boundary": "The suite, typecheck and build were not re-executed under the read-only plan-mode boundary; the independent classification is based on unmodified sources, prior-round history and the recorded evidence, not a fresh run."
+  },
+  "verdict": "SLICE_ACCEPTED",
+  "actionRequired": [
+    "Before the checkpoint commit, apply the documentation corrections F1/F2/F3/F6 to the still-uncommitted closure docs (CLOSURE_WORKGRAPH, STATUS/CONFORMANCE/S14 WorkGraph wording as applicable); no re-verification or campaign rerun is required.",
+    "Optional (non-blocking): harden assertProviderSessionCapacity fail-open/race behavior (F4) and disclose the campaign-scope census boundary (F5) in a later change.",
+    "Campaign Director: persist this report as docs/evidence/closure/review-closure.json and checkpoint only with the corrections above included; no product source change is needed for acceptance."
+  ],
+  "boundaries": [
+    "No test/build/composite/adversarial execution was performed (read-only plan mode); those results are verified off durable artifacts plus independent digest recomputation.",
+    "Stability receipt bytes (d91dfadd..., fc47fbbb...) are not recomputable because the /tmp fixture roots were removed; the disposable receipt was recomputed and matches.",
+    "Remote-side GitHub effects cannot be independently enumerated offline; local evidence shows no effects, no remote ref change and no delivery/authority lane executed."
+  ]
+}

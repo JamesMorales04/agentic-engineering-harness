@@ -22,7 +22,7 @@ import {
  */
 
 const checkout = path.resolve(process.argv[2] ?? process.cwd());
-const evidenceRoot = path.join(checkout, "docs", "evidence", "s14");
+const evidenceRoot = path.join(checkout, "docs", "evidence", "closure");
 const artifactPath = path.join(evidenceRoot, "adversarial-negative-checks.json");
 
 function sha256(value: string | Buffer): string {

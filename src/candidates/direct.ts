@@ -7,6 +7,7 @@ import { sha256Utf8 } from "../core/digest.js";
 import { AehError } from "../core/errors.js";
 import { providerGeneratedPathspecExcludes } from "../core/git.js";
 import { runExecutable } from "../utils/process.js";
+import { markOperationResourceReleased, registerOperationResource } from "../runtime/operationResources.js";
 import { existingRepositoryPath, repositoryPath } from "../utils/repositoryPath.js";
 import { assertWorkspaceMatchesCandidate } from "./identity.js";
 import type { ChangeSetV1 } from "./assembler.js";
@@ -54,6 +55,17 @@ export async function executeIsolatedCandidateMutation(input: {
   await assertWorkspaceMatchesCandidate(input.root, input.candidate);
 
   const isolatedRoot = await fs.mkdtemp(path.join(os.tmpdir(), `aeh-direct-${safe(input.taskId)}-`));
+  // Durable ownership of the temporary candidate staging root: if this process
+  // dies before the inline cleanup, the terminal/recovery reconciliation removes
+  // exactly this registered path.
+  const staging = await registerOperationResource(input.root, input.operationId, {
+    kind: "staging-root",
+    identity: isolatedRoot,
+    reclaim: "REMOVE_ON_TERMINAL",
+    path: isolatedRoot,
+    label: `direct-${input.taskId}`,
+    owner: { source: "controller-registration", candidateDigest: input.candidate.identityDigest }
+  }).catch(() => undefined);
   try {
     const add = await runExecutable("git", ["worktree", "add", "--detach", isolatedRoot, "HEAD"], { cwd: input.root, timeoutMs: 120_000 });
     if (add.exitCode !== 0) throw new AehError("CANDIDATE_STALE", `Unable to create isolated DIRECT workspace: ${add.stderr || add.stdout}`);
@@ -98,6 +110,7 @@ export async function executeIsolatedCandidateMutation(input: {
   } finally {
     await runExecutable("git", ["worktree", "remove", "--force", isolatedRoot], { cwd: input.root, timeoutMs: 120_000 }).catch(() => undefined);
     await fs.rm(isolatedRoot, { recursive: true, force: true }).catch(() => undefined);
+    if (staging) await markOperationResourceReleased(input.root, input.operationId, staging.resourceId, { action: "staging.remove", path: isolatedRoot }).catch(() => undefined);
   }
 }
 

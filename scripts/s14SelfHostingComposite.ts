@@ -16,15 +16,15 @@ import {
  *
  *   npx tsx scripts/s14SelfHostingComposite.ts [checkout]
  *
- * Outputs (under docs/evidence/s14/):
+ * Outputs (under docs/evidence/closure/):
  *   certification-evidence-manifest.json  -- versioned evidence index + policy digest
  *   self-hosting-composite-report.json    -- deterministic gate report (readiness authority)
  */
 
 const checkout = path.resolve(process.argv[2] ?? process.cwd());
-const evidenceRoot = path.join(checkout, "docs", "evidence", "s14");
-const manifestPath = "docs/evidence/s14/certification-evidence-manifest.json";
-const reportPath = "docs/evidence/s14/self-hosting-composite-report.json";
+const evidenceRoot = path.join(checkout, "docs", "evidence", "closure");
+const manifestPath = "docs/evidence/closure/certification-evidence-manifest.json";
+const reportPath = "docs/evidence/closure/self-hosting-composite-report.json";
 
 async function buildIdentity() {
   const releaseId = (await fs.readFile(path.join(checkout, "dist", "current"), "utf8")).trim();
@@ -38,9 +38,9 @@ const policyDigest = selfHostingCompositePolicyDigestV1(policy);
 
 const runtimeArtifactDigests: { artifact: string; digest: string }[] = [];
 for (const [artifact, key] of [
-  ["docs/evidence/s14/disposable-self-modification-campaign.json", "candidateBuildDigest"],
-  ["docs/evidence/s14/resource-stability-campaign.json", "candidateBuildDigest"],
-  ["docs/evidence/s14/adversarial-negative-checks.json", "candidateBuildDigest"]
+  ["docs/evidence/closure/disposable-self-modification-campaign.json", "candidateBuildDigest"],
+  ["docs/evidence/closure/resource-stability-product.json", "candidateBuildDigest"],
+  ["docs/evidence/closure/adversarial-negative-checks.json", "candidateBuildDigest"]
 ] as const) {
   try {
     const parsed = JSON.parse(await fs.readFile(path.join(checkout, artifact), "utf8")) as Record<string, unknown>;

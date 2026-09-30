@@ -18,6 +18,12 @@ import {
 import { inspectManagedPaseoAgent, listManagedPaseoAgents } from "../paseo/runtime.js";
 import { isDeterministicPaseoRuntimeEnabled, isDeterministicPaseoSessionId } from "../paseo/deterministicRuntime.js";
 import { createManagedRuntime, readManagedRuntimeSnapshot, runtimeProjectId } from "../runtime/index.js";
+import {
+  operationResourcePolicy,
+  reconcileOperationResources,
+  reconcileTerminalOperationResources,
+  registerOperationResource
+} from "../runtime/operationResources.js";
 import { recordPaseoTrace } from "../paseo/trace.js";
 import {
   clearManagedProcessHandles,
@@ -99,6 +105,8 @@ export interface OperationControllerDeps {
   humanActorId?: string;
   /** Deterministic provider observation seam for cleanup tests and disposable packed fixtures. */
   inspectProviderSession?: (root: string, provider: string, sessionId: string) => Promise<{ status?: string } | undefined>;
+  /** Deterministic seam for durable label-bound agent discovery during resource reconciliation. */
+  listOperationAgents?: (root: string, operationId: string) => Promise<Array<{ id?: string; workspaceId?: string }>>;
 }
 
 interface OperationWorkspace {
@@ -106,6 +114,7 @@ interface OperationWorkspace {
   workspaceRoot?: string;
   warning?: string;
   reusedDelivery?: boolean;
+  disposition?: "OPERATION_OWNED" | "DELIVERY_REUSED";
 }
 
 export async function startDetachedOperation(
@@ -116,6 +125,9 @@ export async function startDetachedOperation(
 ): Promise<OperationRecordV2> {
   const absoluteRoot = path.resolve(root);
   const config = await loadProjectConfigIfPresent(absoluteRoot);
+  // Restart recovery: any proven terminal operation in this control root with an
+  // incomplete resource receipt is reconciled before new work starts.
+  await reconcileTerminalOperationResources(absoluteRoot).catch(() => undefined);
   if (config) await assertOperationCapacity(absoluteRoot, config, operationPriority(payload));
   const suppliedDecision = "intentDecision" in payload ? payload.intentDecision : undefined;
   if (suppliedDecision) assertIntentDecisionForRoute(suppliedDecision, kind === "audit" ? "audit" : kind === "change" ? "change" : "run");
@@ -278,7 +290,23 @@ async function executeOperationWithEnvironment(
   process.env.AEH_OPERATION_ID = operationId;
   const trace = deps.trace ?? recordPaseoTrace;
   let record = await loadOperation(absoluteRoot, operationId);
-  if (isTerminalOperation(record.status)) return record;
+  if (isTerminalOperation(record.status)) {
+    // Crash-recovery reconciliation: a controller that died between
+    // terminalization and cleanup leaves a durable terminal operation whose
+    // registry is incomplete. Re-running the operation execute path (or the
+    // project-level sweep) reclaims exactly those proven terminal orphans.
+    await reconcileOperationResources(absoluteRoot, operationId, {
+      ...(deps.run ? { run: deps.run } : {}),
+      ...(deps.trace ? { trace: deps.trace } : {}),
+      ...(deps.inspectProviderSession
+        ? { inspectAgent: (cwd: string, agentId: string) => deps.inspectProviderSession!(cwd, "paseo", agentId) }
+        : {}),
+      ...(deps.listOperationAgents ? { listOwnedAgents: deps.listOperationAgents } : {})
+    }).catch(async (error: unknown) => {
+      await trace(absoluteRoot, "operation.resource.recovery-failed", { operationId, error: error instanceof Error ? error.message : String(error) }).catch(() => undefined);
+    });
+    return record;
+  }
   process.env.AEH_OPERATION_KIND = record.kind;
   process.env.AEH_OPERATION_STATE_REDIRECT = "1";
   const inheritedEpoch = controllerEpochFromEnvironment();
@@ -391,8 +419,30 @@ async function executeOperationWithEnvironment(
   record = await patchOperation(absoluteRoot, operationId, {
       workspaceId: workspace.workspaceId,
       workspaceRoot: executionRoot,
-      workspaceWarning: workspace.warning
+      workspaceWarning: workspace.warning,
+      ...(workspace.disposition ? { workspaceDisposition: workspace.disposition } : {})
     });
+    if (workspace.disposition && workspace.workspaceId) {
+      const workspaceIdentity = workspace.workspaceId;
+      await registerOperationResource(absoluteRoot, operationId, {
+        kind: "paseo-workspace",
+        identity: workspaceIdentity,
+        reclaim: workspace.disposition === "DELIVERY_REUSED" ? "RETAIN_SHARED" : "ARCHIVE_ON_TERMINAL",
+        path: executionRoot,
+        label: `${record.kind} ${record.id}`,
+        owner: {
+          candidateDigest: record.candidateRevision?.identityDigest,
+          operationExecutionRevision: record.operationExecutionRevision,
+          controllerEpoch: record.controller?.epoch,
+          source: "controller-registration"
+        }
+      }, { policy: operationResourcePolicy(config) }).catch((error: unknown) => trace(absoluteRoot, "operation.resource.register-failed", {
+        operationId,
+        kind: "paseo-workspace",
+        identity: workspaceIdentity,
+        error: error instanceof Error ? error.message : String(error)
+      }).catch(() => undefined));
+    }
     if (!record.candidateRevision) {
       throw new Error(`CANDIDATE_BINDING_REQUIRED: operation ${operationId} did not bind its initial workspace candidate.`);
     }
@@ -806,6 +856,34 @@ async function terminalizeOperation(
       boundary: "controller"
     }).catch(() => undefined);
   }
+  // Durable product-owned terminal reconciliation: release/archive/stop every
+  // resource whose ownership this operation proved. Failures stay visible in
+  // the receipt and are retried by the recovery sweep; they never rewrite the
+  // terminal status.
+  try {
+    const receipt = await reconcileOperationResources(root, operationId, {
+      ...(deps.run ? { run: deps.run } : {}),
+      ...(deps.trace ? { trace: deps.trace } : {}),
+      ...(deps.inspectProviderSession
+        ? { inspectAgent: (cwd: string, agentId: string) => deps.inspectProviderSession!(cwd, "paseo", agentId) }
+        : {}),
+      ...(deps.listOperationAgents ? { listOwnedAgents: deps.listOperationAgents } : {})
+    });
+    await trace(root, "operation.resource.reconciliation", {
+      operationId,
+      operationStatus: terminal.status,
+      cleanupComplete: receipt.cleanupComplete,
+      reconciled: receipt.dispositions.filter((item) => item.outcome === "reconciled").length,
+      alreadyReconciled: receipt.dispositions.filter((item) => item.alreadyReconciled).length,
+      failed: receipt.errors.length
+    }).catch(() => undefined);
+  } catch (error) {
+    await trace(root, "operation.resource.reconciliation-failed", {
+      operationId,
+      operationStatus: terminal.status,
+      error: error instanceof Error ? error.message : String(error)
+    }).catch(() => undefined);
+  }
   return loadOperation(root, operationId).catch(() => terminal);
 }
 
@@ -895,7 +973,7 @@ async function ensureOperationWorkspace(
         workspaceId: existingId ?? "",
         workspaceRoot: existingRoot
       });
-      return { workspaceId: existingId, workspaceRoot: existingRoot, reusedDelivery: true };
+      return { workspaceId: existingId, workspaceRoot: existingRoot, reusedDelivery: true, disposition: "DELIVERY_REUSED" };
     }
   }
 
@@ -918,7 +996,7 @@ async function ensureOperationWorkspace(
       // write race; execution may continue at the repository root.
       return { workspaceRoot: root, warning };
     }
-    return { workspaceId: extractWorkspaceId(result.stdout), workspaceRoot: root };
+    return { workspaceId: extractWorkspaceId(result.stdout), workspaceRoot: root, disposition: "OPERATION_OWNED" };
   }
 
   const slug = `aeh-${record.id.toLowerCase().replace(/[^a-z0-9-]+/g, "-").slice(0, 80)}`;
@@ -953,7 +1031,7 @@ async function ensureOperationWorkspace(
     throw new Error(`AEH_OPERATION_WORKTREE_REQUIRED: Paseo created a worktree workspace for ${record.id} but did not expose a resolvable worktree path.`);
   }
   await trace(root, "workspace.cli.created", { operationId: record.id, workspaceId: workspaceId ?? "", workspaceRoot, isolation: "worktree", branch });
-  return { workspaceId, workspaceRoot };
+  return { workspaceId, workspaceRoot, disposition: "OPERATION_OWNED" };
 }
 
 async function gatedWorkspaceCreate(input: {

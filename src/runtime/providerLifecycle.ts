@@ -11,6 +11,7 @@ import {
   type OperationRecordV2
 } from "../operations/state.js";
 import { createManagedRuntime, runtimeProjectId } from "./managed.js";
+import { assertProviderSessionCapacity } from "./operationResources.js";
 import type { ProviderLeaseLifecycleIdentityV1, ProviderLeaseQuiescenceV1 } from "./supervisorV2.js";
 
 export interface ProviderSessionObservationV1 {
@@ -56,6 +57,9 @@ export async function runWithOperationProviderLease<T>(
   const runtime = await createManagedRuntime({ root: operationRoot, projectId: runtimeProjectId(operationRoot), ownerId, leaseTtlMs: input.ttlMs });
   const identity = lifecycleIdentity(initial, input, input.sessionId);
   await takeOverPriorLeaseIfQuiescent(runtime, input, identity, ownerId);
+  // Generic policy-driven backpressure: an operation cannot widen its concurrent
+  // provider-session ceiling through model output; exhaustion is a typed failure.
+  await assertProviderSessionCapacity(operationRoot, initial.id);
   const lease = await runtime.acquireProviderLease({ provider: input.provider, workspaceId: input.workspaceId, mode: "write", ttlMs: input.ttlMs, lifecycle: identity });
 
   let renewalError: unknown;
