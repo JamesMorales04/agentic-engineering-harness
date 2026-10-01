@@ -1,0 +1,154 @@
+{
+  "version": 1,
+  "lane": "REAL_PROVIDER (local OSS Trivy) + SYSTEM_DETERMINISTIC (real rootless bwrap execution)",
+  "harnessBuild": {
+    "version": 1,
+    "packageVersion": "0.8.4",
+    "gitSha": "85877349558477e21386d6e076393d15e2a90e26",
+    "releaseId": "release-1790866583369-387000-cc8194fb",
+    "buildDigest": "93fb2b413e748a3fdc9070a0cf6c0100facd37f15894dea7ce4904dacd258bbe",
+    "dirty": false
+  },
+  "release": "release-1790866583369-387000-cc8194fb",
+  "tool": {
+    "name": "trivy",
+    "version": "0.70.0",
+    "binary": "/home/james/.local/share/mise/installs/aqua-aquasecurity-trivy/0.70.0/trivy",
+    "binarySha256": "379d59f24a4a828c55de5f0b91b6805cc35d13580180b658820e648611256166"
+  },
+  "isolation": {
+    "provider": "bwrap",
+    "providerVersion": "0.13.0",
+    "networkAccess": "none",
+    "namespaces": {
+      "user": true,
+      "mount": true,
+      "pid": true,
+      "uts": true,
+      "ipc": true,
+      "network": false
+    },
+    "visibleReadOnlyPaths": [
+      "/bin",
+      "/etc",
+      "/home/james/.bun",
+      "/home/james/.bun/bin",
+      "/home/james/.codex/tmp/arg0/codex-arg0bFVvCv",
+      "/home/james/.config/Code/User/globalStorage/github.copilot-chat/copilotCli",
+      "/home/james/.config/Code/User/globalStorage/github.copilot-chat/debugCommand",
+      "/home/james/.local",
+      "/home/james/.local/bin",
+      "/home/james/.local/share/flatpak/exports",
+      "/home/james/.local/share/flatpak/exports/bin",
+      "/home/james/.local/share/mise/installs/aqua-anomalyco-opencode/1.18.32",
+      "/home/james/.local/share/mise/installs/aqua-aquasecurity-trivy/0.70.0",
+      "/home/james/.local/share/mise/installs/node/22.23.2",
+      "/home/james/.local/share/mise/installs/node/22.23.2/bin",
+      "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.bin",
+      "/home/james/.local/share/mise/installs/npm-openai-codex/0.156.1~aube~80df4d38193f15ff/node_modules/.bin",
+      "/home/james/.local/share/mise/installs/npm-openai-codex/0.156.1~aube~80df4d38193f15ff/node_modules/.mise/@openai+codex-linux-x64@0.156.1-linux-x64/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl",
+      "/home/james/.local/share/mise/installs/npm-openai-codex/0.156.1~aube~80df4d38193f15ff/node_modules/.mise/@openai+codex-linux-x64@0.156.1-linux-x64/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/codex-path",
+      "/home/james/.local/share/mise/installs/pipx-headroom-ai/0.28.0",
+      "/home/james/.local/share/mise/installs/pipx-headroom-ai/0.28.0/bin",
+      "/home/james/.local/share/mise/installs/pipx-serena-agent/1.6.1",
+      "/home/james/.local/share/mise/installs/pipx-serena-agent/1.6.1/bin",
+      "/home/james/.local/share/mise/installs/python/3.13.15",
+      "/home/james/.local/share/mise/installs/python/3.13.15/bin",
+      "/home/james/.local/share/mise/installs/uv/0.12.18/.mise-bins",
+      "/home/james/.vscode/extensions/ms-python.debugpy-2026.6.0-linux-x64/bundled/scripts/noConfigScripts",
+      "/lib",
+      "/lib64",
+      "/opt/rocm/bin",
+      "/sbin",
+      "/tmp/aeh-s10-real-sast-KDAHqw",
+      "/usr",
+      "/usr/bin",
+      "/usr/bin/core_perl",
+      "/usr/bin/site_perl",
+      "/usr/bin/vendor_perl",
+      "/usr/lib/jvm/default/bin",
+      "/usr/local/bin",
+      "/usr/local/sbin",
+      "/var/lib/flatpak/exports/bin"
+    ],
+    "maskedHostPaths": [
+      "/root (host)",
+      "/run (host)",
+      "/home (host contents except explicit toolchain binds)",
+      "/tmp (host)",
+      "/var/tmp (host)",
+      "/mnt (host)",
+      "/media (host)",
+      "/srv (host)"
+    ],
+    "writablePaths": [
+      "/tmp/aeh-s10-real-sast-KDAHqw/.harness/evidence"
+    ],
+    "environmentAllowlist": [
+      "HOME",
+      "LANG",
+      "LC_ALL",
+      "LC_CTYPE",
+      "PATH",
+      "SHELL",
+      "TERM",
+      "TMPDIR",
+      "USER"
+    ]
+  },
+  "candidates": [
+    {
+      "candidateId": "CAND-S10-REAL",
+      "revision": 1,
+      "identityDigest": "8648ef7b56d0ecab99eef2cbe33028c6696f4bb26fe11d86270f40de9a850e9b",
+      "sourceDigest": "219debfd791e9a5c71a393f0934bdf57627dca92f583d2a7af59737c40b40a32",
+      "scan": {
+        "status": "FAIL",
+        "findingCount": 1,
+        "rules": [
+          "github-pat"
+        ],
+        "artifact": ".harness/evidence/sast/CAND-S10-REAL-r1-8648ef7b56d0/s10-real-sast-r1.json",
+        "digest": "f6b0f06069e77f4877756c8359d3fa8d98309f22df70151866fb5911ffdb6380",
+        "rawArtifactDigest": "316bcaf1fc3bde588f0760759224567bfaf5e9238656d41be0796bcc9854dd10"
+      }
+    },
+    {
+      "candidateId": "CAND-S10-REAL",
+      "revision": 2,
+      "identityDigest": "154b31f503fcf1da67b1eedbc336ff815a390c28d4beb89fc425231397651ff7",
+      "sourceDigest": "621e7c4125bbe9fde0f3c97c4baee0ac14dd0298a2c5218a985dea0540b8ef2b",
+      "scan": {
+        "status": "PASS",
+        "findingCount": 0,
+        "artifact": ".harness/evidence/sast/CAND-S10-REAL-r2-154b31f503fc/s10-real-sast-r2.json",
+        "digest": "cf3738f3686762dec2a107c5e2b62c27cba718afc0732e9e7a7877b9e2ee0927",
+        "rawArtifactDigest": "a96ce31c1387bff87c544391ec08993ece99074c8dd562494169d30b82053049"
+      }
+    }
+  ],
+  "staleRevisionCheck": {
+    "ok": false,
+    "blockers": [
+      "SAST_EVIDENCE_STALE: evidence is bound to CAND-S10-REAL r1 (8648ef7b56d0) but the current candidate is CAND-S10-REAL r2 (154b31f503fc).",
+      "SAST_EVIDENCE_TAMPERED: evidence artifact path '.harness/evidence/sast/CAND-S10-REAL-r1-8648ef7b56d0/s10-real-sast-r1.json' is not the candidate-scoped path for 's10-real-sast-r1'."
+    ]
+  },
+  "tamperedEvidenceCheck": {
+    "ok": false,
+    "blockers": [
+      "SAST_EVIDENCE_TAMPERED: evidence digest does not match its content."
+    ]
+  },
+  "assertions": {
+    "firstFailedWithFindings": true,
+    "secondPassedClean": true,
+    "toolVersionRecorded": true,
+    "isolationExercised": true,
+    "candidateBoundExactly": true,
+    "firstEvidenceStaleForRevisionTwo": true,
+    "tamperedEvidenceRejected": true,
+    "noFabricatedPass": true
+  },
+  "result": "PASS"
+}
