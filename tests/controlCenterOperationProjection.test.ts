@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { compileResolvedOperationPolicy, type ResolvedOperationPolicyV1 } from "../src/architecture/executionIdentity.js";
 import { projectOperationRecordV1 } from "../src/control-center/operationProjection.js";
 import { sha256Canonical } from "../src/core/digest.js";
+import { operationEfficiencySummaryV1Schema } from "../src/telemetry/efficiency.js";
 import type { OperationParticipantRecord, OperationRecordV2 } from "../src/operations/state.js";
 import { createCandidateRevisionV1, type CandidateRevisionInputV1, type CandidateRevisionV1 } from "../src/operations/v2Contracts.js";
 import type { ContinuationRecordV1, DecisionRequestV1 } from "../src/security/humanDecision.js";
@@ -351,5 +352,32 @@ describe("Control Center operation projection", () => {
     const before = structuredClone(record);
     projectOperationRecordV1(record);
     expect(record).toEqual(before);
+  });
+
+  it("projects read-only efficiency data without adding controls", () => {
+    const record = { ...waitingRecord(), status: "SUCCEEDED" as const, finishedAt: UPDATED_AT };
+    const summary = operationEfficiencySummaryV1Schema.parse({
+      version: 1,
+      operationId: OPERATION_ID,
+      terminalStatus: "SUCCEEDED",
+      route: "FORMAL_SDD",
+      assurance: "STANDARD",
+      currentCandidateId: record.candidateRevision!.candidateId,
+      currentCandidateRevision: record.candidateRevision!.revision,
+      currentCandidateDigest: record.candidateRevision!.identityDigest,
+      participants: 1,
+      participantGenerations: 1,
+      providerTurns: null,
+      usage: { inputTokens: null, cachedInputTokens: null, outputTokens: null, reasoningOutputTokens: null, totalTokens: null, totalTokensBasis: "UNKNOWN", costUsd: null, knownParticipants: 0, participantCount: 1, costKnownParticipants: 0, completeObservations: 0, partialObservations: 0, unknownObservations: 1, byParticipant: [] },
+      context: { rawContextTokens: 0, projectedContextTokens: 0, deliveredContextTokens: 0, retrievalRequestCount: 0, retrievalDeliveredTokens: 0, crossParticipantRepeatedFragmentTokens: 0, tokenBasis: "AEH_ESTIMATOR" },
+      tools: { toolCalls: 0, firstAttemptSuccesses: 0, failedFirstAttempts: 0, retryCalls: 0, recoveredAfterRetry: 0, repeatedEquivalentCalls: 0, unrecoveredToolFailures: 0, unknownCausalRetries: 0, failuresByClass: {}, retryAssociatedInputTokens: null, retryAssociatedOutputTokens: null, retryAssociatedTotalTokens: null, retryUsageCoverage: "UNKNOWN" },
+      workflow: { repairRounds: 0, candidateRevisions: 1, reviewRounds: 0, humanInterventions: null },
+      timing: { totalDurationMs: null, participantDurationMs: null },
+      outcome: { accepted: true, delivered: false },
+      generatedAt: UPDATED_AT
+    });
+    const projection = projectOperationRecordV1(record, summary);
+    expect(projection.efficiency).toEqual(summary);
+    expect(projection.controls).toEqual({ pause: false, resume: false, cancel: false });
   });
 });

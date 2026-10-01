@@ -3,6 +3,9 @@ import { pathToFileURL } from "node:url";
 import { connectPaseoClient, PaseoSdkUnavailableError, type PaseoSdkPermissionStop } from "./sdk.js";
 import { resolvePaseoSdkFromCli } from "./sdkResolve.js";
 import { recordPaseoTrace } from "./trace.js";
+import { capturePaseoTimelineV1, type PaseoTimelineEventEnvelopeV1 } from "../telemetry/paseoTimeline.js";
+import type { ProviderTelemetryEvidenceV1 } from "../telemetry/efficiency.js";
+import { loadProjectConfig } from "../core/config.js";
 
 export interface PaseoNativeUsage {
   inputTokens?: number;
@@ -51,6 +54,7 @@ export interface PaseoNativeWaitResult {
   lastMessage?: string;
   error?: string;
   permission?: PaseoSdkPermissionStop;
+  efficiencyTelemetry?: ProviderTelemetryEvidenceV1;
   source: "paseo-agent-subscription";
   updatesObserved: number;
 }
@@ -66,7 +70,10 @@ export interface NativeAgentHandle {
   refetch?(requestId?: string): Promise<{ agent: Record<string, unknown>; project?: unknown } | null>;
   refresh?(requestId?: string): Promise<{ agent: Record<string, unknown>; project?: unknown } | null>;
   subscribe?(handler: (update: unknown) => void): () => void;
-  timeline?: { refetch(options?: Record<string, unknown>): Promise<unknown> };
+  timeline?: {
+    refetch(options?: Record<string, unknown>): Promise<unknown>;
+    subscribe?(handler: (event: unknown) => void): (() => void) & { ready?: Promise<void> };
+  };
 }
 
 interface NativeProviderActions {
@@ -307,6 +314,7 @@ export async function waitForPaseoAgentNative(
   timeoutMs = 1_800_000,
   baseline?: PaseoTurnBaseline
 ): Promise<PaseoNativeWaitResult> {
+  const captureEfficiencyTelemetry = await loadProjectConfig(root).then((config) => config.telemetry?.enabled === true).catch(() => false);
   return withNativeClient(root, async (client) => {
     const handle = client.agents.ref(agentId);
     if (typeof handle.subscribe !== "function") {
@@ -315,7 +323,7 @@ export async function waitForPaseoAgentNative(
       );
     }
     const startedAt = Date.now();
-    const result = await waitForPaseoAgentHandle(handle, timeoutMs, baseline);
+    const result = await waitForPaseoAgentHandle(handle, timeoutMs, baseline, 2_000, captureEfficiencyTelemetry);
     await recordPaseoTrace(root, "agent.wait", {
       agentId,
       source: result.source,
@@ -333,12 +341,17 @@ export async function waitForPaseoAgentHandle(
   handle: NativeAgentHandle,
   timeoutMs = 1_800_000,
   baseline?: PaseoTurnBaseline,
-  pollIntervalMs = 2_000
+  pollIntervalMs = 2_000,
+  captureEfficiencyTelemetry = false
 ): Promise<PaseoNativeWaitResult> {
   let updatesObserved = 0;
   let sawActivity = false;
   let settled = false;
   let unsubscribe: () => void = () => {};
+  let unsubscribeTimeline: () => void = () => {};
+  let timelineSubscriptionReady = false;
+  const timelineEvents: PaseoTimelineEventEnvelopeV1[] = [];
+  let timelineEventsTruncated = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let poll: ReturnType<typeof setInterval> | undefined;
   let chain = Promise.resolve();
@@ -350,6 +363,7 @@ export async function waitForPaseoAgentHandle(
       if (timer) clearTimeout(timer);
       if (poll) clearInterval(poll);
       unsubscribe();
+      unsubscribeTimeline();
       resolve(value);
     };
     const fail = (error: unknown) => {
@@ -358,6 +372,7 @@ export async function waitForPaseoAgentHandle(
       if (timer) clearTimeout(timer);
       if (poll) clearInterval(poll);
       unsubscribe();
+      unsubscribeTimeline();
       reject(error);
     };
 
@@ -372,9 +387,17 @@ export async function waitForPaseoAgentHandle(
       const timeline =
         handle.timeline && typeof handle.timeline.refetch === "function"
           ? await handle.timeline
-              .refetch({ direction: "tail", limit: 50 })
+              .refetch({ direction: "tail", limit: captureEfficiencyTelemetry ? 500 : 50, ...(captureEfficiencyTelemetry ? { projection: "canonical" } : {}) })
               .catch(() => undefined)
           : undefined;
+      const normalizedTimeline = timeline;
+      const capture = captureEfficiencyTelemetry ? capturePaseoTimelineV1({
+        liveEvents: timelineEvents,
+        liveEventsTruncated: timelineEventsTruncated,
+        timelinePayload: normalizedTimeline,
+        snapshotUsage: raw.lastUsage,
+        subscriptionReady: timelineSubscriptionReady
+      }) : undefined;
       const lastMessage =
         stringField(raw, ["lastMessage", "last_message"]) ?? extractLastAssistantText(timeline);
       const lastUserMessageAt = stringField(raw, ["lastUserMessageAt", "last_user_message_at"]);
@@ -409,12 +432,31 @@ export async function waitForPaseoAgentHandle(
         lastMessage,
         error: stringField(raw, ["error", "lastError", "last_error"]),
         ...(permissionStopDetail(raw.pendingPermissions) ? { permission: permissionStopDetail(raw.pendingPermissions) } : {}),
+        ...(capture ? { efficiencyTelemetry: capture.evidence } : {}),
         source: "paseo-agent-subscription",
         updatesObserved
       });
     };
 
     try {
+      if (captureEfficiencyTelemetry && handle.timeline && typeof handle.timeline.subscribe === "function") {
+        const timelineSubscription = handle.timeline.subscribe((value) => {
+          if (!value || typeof value !== "object" || Array.isArray(value)) return;
+          const record = value as Record<string, unknown>;
+          const event = record.event && typeof record.event === "object" && !Array.isArray(record.event) ? record.event as Record<string, unknown> : undefined;
+          timelineEvents.push({
+            ...(typeof record.agentId === "string" ? { agentId: record.agentId } : {}),
+            ...(event ? { event } : {}),
+            receivedAt: new Date().toISOString()
+          });
+          if (timelineEvents.length > 4_096) {
+            timelineEvents.shift();
+            timelineEventsTruncated = true;
+          }
+        });
+        unsubscribeTimeline = timelineSubscription;
+        void timelineSubscription.ready?.then(() => { timelineSubscriptionReady = true; }).catch(() => { timelineSubscriptionReady = false; });
+      }
       unsubscribe = handle.subscribe!(() => {
         chain = chain.then(() => inspect(true)).catch(fail);
       });

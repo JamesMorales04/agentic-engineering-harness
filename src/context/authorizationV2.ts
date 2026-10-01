@@ -10,6 +10,8 @@ import { assertContextEnvelope, type ContextEnvelope, type ContextFragmentProjec
 import { contextEnvelopePath } from "./gateway.js";
 import { verifyContextEnvelope } from "./envelope.js";
 import { sha256 as sha256Bytes } from "./provenance.js";
+import { loadProjectConfig } from "../core/config.js";
+import { recordContextRetrievalObservation } from "../telemetry/efficiency.js";
 import {
   assertContextRefAuthorization,
   assertContinuationBinding,
@@ -279,6 +281,30 @@ export async function retrieveAuthorizedContext(root: string, controlRoot: strin
     });
     await writeJsonAtomic(stateFile, nextState);
     await writeJsonAtomic(retrievalReceiptFile(stateRoot, operationId, participantId, current.binding.digest, retrievalReceipt.receiptId), retrievalReceipt);
+    const telemetryConfig = await loadProjectConfig(controlRoot).catch(() => undefined);
+    if (telemetryConfig?.telemetry?.enabled === true && operation.candidateRevision) {
+      await recordContextRetrievalObservation(stateRoot, telemetryConfig, {
+        version: 1,
+        operationId,
+        candidateId: operation.candidateRevision.candidateId,
+        candidateRevision: current.binding.candidateRevision,
+        candidateDigest: current.binding.candidateDigest,
+        operationExecutionRevision: current.binding.operationExecutionRevision,
+        controllerEpoch: current.binding.controllerEpoch,
+        participantId,
+        generation: current.binding.participantGeneration,
+        role: operation.participants[participantId]?.role ?? logicalAgent,
+        phase,
+        sessionId: actualSessionId,
+        requestId: request.requestId,
+        fragmentId: entry.fragmentId,
+        contentDigest: digestText(deliveredContent),
+        estimatedTokens,
+        repeated: priorReceipts.some((prior) => prior.refId === entry.refId),
+        retrievedAt: retrievalReceipt.retrievedAt,
+        tokenBasis: "AEH_ESTIMATOR"
+      }).catch(() => false);
+    }
     return { fragmentId: entry.fragmentId, content: deliveredContent, artifact: entry.artifactPath, sha256: sourceDigest, estimatedTokens, repeated: priorReceipts.some((prior) => prior.refId === entry.refId), receipt: retrievalReceipt };
   });
 }

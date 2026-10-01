@@ -66,19 +66,18 @@ describe("durable controller fencing", () => {
   it("fences a zombie process from authorizing new tool actions", async () => {
     const context = await createContext("RUN-FENCE-ACTION", "Implementer");
     process.env.AEH_CONTROLLER_EPOCH = "1";
-    const authority = await makeAuthority(context, implementerSelection);
     await takeOver(context);
+    process.env.AEH_CONTROLLER_EPOCH = "2";
+    await bindCurrentPolicy(context);
 
     // The zombie still holds its epoch-1 environment and epoch-1 authority.
     process.env.AEH_CONTROLLER_EPOCH = "1";
-    await expect(authorizeToolAction(makeRequest(context, authority, "git.commit", "delivery:commit")))
+    await expect(authorizeToolAction(makeControllerRequest(context, "paseo.workspace.create", "workspace:create")))
       .rejects.toThrow("V2_CONTROLLER_FENCED");
 
     // The current controller can still authorize with authority compiled under epoch 2.
     process.env.AEH_CONTROLLER_EPOCH = "2";
-    const currentAuthority = await makeAuthority(context, implementerSelection);
-    await bindCurrentPolicy(context);
-    const allowed = await authorizeToolAction(makeRequest(context, currentAuthority, "git.commit", "delivery:commit"));
+    const allowed = await authorizeToolAction(makeControllerRequest(context, "paseo.workspace.create", "workspace:create"));
     expect(allowed.decision).toBe("EXECUTE_ONCE");
     expect(allowed.intent.controllerEpoch).toBe(2);
   });
@@ -86,8 +85,7 @@ describe("durable controller fencing", () => {
   it("fences a zombie from recording a receipt after takeover", async () => {
     const context = await createContext("RUN-FENCE-RECEIPT", "Implementer");
     process.env.AEH_CONTROLLER_EPOCH = "1";
-    const authority = await makeAuthority(context, implementerSelection);
-    const authorized = await authorizeToolAction(makeRequest(context, authority, "git.commit", "delivery:commit"));
+    const authorized = await authorizeToolAction(makeControllerRequest(context, "paseo.workspace.create", "workspace:create"));
     expect(authorized.decision).toBe("EXECUTE_ONCE");
     if (authorized.decision !== "EXECUTE_ONCE") throw new Error("expected EXECUTE_ONCE");
     await takeOver(context);
@@ -123,7 +121,7 @@ describe("durable controller fencing", () => {
     process.env.AEH_CONTROLLER_EPOCH = "2";
 
     const authority = await makeAuthority(context, implementerSelection);
-    const request = { ...makeRequest(context, authority, "git.commit", "delivery:commit"), authority: { kind: "execution-blueprint" as const, blueprint } };
+    const request = { ...makeRequest(context, authority, "paseo.workspace.create", "workspace:create"), authority: { kind: "execution-blueprint" as const, blueprint } };
     await expect(authorizeToolAction(request)).rejects.toThrow("TOOL_ACTION_CONTROLLER_FENCED");
   });
 
@@ -167,8 +165,8 @@ describe("durable controller fencing", () => {
       operationId: context.operationId,
       participantId: controllerActorId(context.operationId),
       candidate: context.candidate,
-      actionKey: "delivery:commit",
-      action: "git.commit",
+      actionKey: "workspace:create",
+      action: "paseo.workspace.create",
       payload: { taskId: "T-1" },
       authority: { kind: "controller-authority", operationId: context.operationId, controllerEpoch: 1 }
     };
@@ -271,6 +269,10 @@ async function makeAuthority(context: { root: string; operationId: string; parti
 
 function makeRequest(context: { root: string; operationId: string; participantId: string; candidate: ReturnType<typeof createCandidateRevisionV1> }, authority: ExecutionAuthorityV1, action: ToolActionRequestV1["action"], actionKey: string): ToolActionRequestV1 {
   return { root: context.root, operationId: context.operationId, participantId: context.participantId, role: "Implementer", candidate: context.candidate, actionKey, action, payload: { taskId: "T-1", action }, authority: { kind: "execution-authority", authority }, now: new Date(NOW) };
+}
+
+function makeControllerRequest(context: { root: string; operationId: string; candidate: ReturnType<typeof createCandidateRevisionV1> }, action: ToolActionRequestV1["action"], actionKey: string): ToolActionRequestV1 {
+  return { root: context.root, operationId: context.operationId, participantId: controllerActorId(context.operationId), candidate: context.candidate, actionKey, action, payload: { taskId: "T-1", action }, authority: { kind: "controller-authority", operationId: context.operationId, controllerEpoch: Number(process.env.AEH_CONTROLLER_EPOCH) }, now: new Date(NOW) };
 }
 
 function restoreEnv(name: string, value: string | undefined): void { if (value === undefined) delete process.env[name]; else process.env[name] = value; }

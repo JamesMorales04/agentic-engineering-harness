@@ -40,9 +40,8 @@ describe("deterministic tool action gate", () => {
   });
 
   it("persists one stable intent and returns its stable receipt on retry", async () => {
-    const context = await createContext("RUN-ACTION-1", "Implementer");
-    const authority = await makeAuthority(context, implementerSelection);
-    const request = makeRequest(context, authority, "git.commit", "delivery:commit");
+    const context = await createContext("RUN-ACTION-1", "Lead/Director", true);
+    const request = makeControllerRequest(context, "git.commit", "delivery:commit");
 
     const first = await authorizeToolAction(request);
     expect(first.decision).toBe("EXECUTE_ONCE");
@@ -57,31 +56,38 @@ describe("deterministic tool action gate", () => {
     expect(retry.receipt.receiptId).toBe(receipt.receiptId);
   });
 
+  it("requires project delivery policy for controller-owned local branch and commit actions", async () => {
+    const denied = await createContext("RUN-LOCAL-DELIVERY-DENIED", "Lead/Director", true, { allowedActions: [] });
+    await expect(authorizeToolAction(makeControllerRequest(denied, "git.commit", "delivery:commit")))
+      .rejects.toThrow("TOOL_ACTION_POLICY_DENIED: frozen project delivery policy does not authorize local delivery action 'git.commit'");
+
+    const allowed = await createContext("RUN-LOCAL-DELIVERY-ALLOWED", "Lead/Director", true, { allowedActions: ["git.branch.create", "git.commit"] });
+    await expect(authorizeToolAction(makeControllerRequest(allowed, "git.commit", "delivery:commit")))
+      .resolves.toMatchObject({ decision: "EXECUTE_ONCE" });
+  });
+
   it("blocks a retry whose prior intent has no receipt until reconciliation", async () => {
-    const context = await createContext("RUN-ACTION-PENDING", "Implementer");
-    const authority = await makeAuthority(context, implementerSelection);
-    const request = makeRequest(context, authority, "git.commit", "delivery:commit");
+    const context = await createContext("RUN-ACTION-PENDING", "Lead/Director", true);
+    const request = makeControllerRequest(context, "git.commit", "delivery:commit");
     const first = await authorizeToolAction(request);
     expect(first.decision).toBe("EXECUTE_ONCE");
-    await expect(authorizeToolAction(request)).rejects.toThrow("TOOL_ACTION_RECONCILIATION_AUTHORITY_REQUIRED");
-    await expect(authorizeToolAction(makeControllerRequest(context, "git.commit", "delivery:commit", request.payload))).rejects.toThrow("TOOL_ACTION_RECONCILIATION_REQUIRED");
+    await expect(authorizeToolAction(request)).rejects.toThrow("TOOL_ACTION_RECONCILIATION_REQUIRED");
   });
 
   it("rejects action-key reuse with a changed payload or candidate", async () => {
-    const context = await createContext("RUN-ACTION-CONFLICT", "Implementer");
-    const authority = await makeAuthority(context, implementerSelection);
-    const request = makeRequest(context, authority, "git.commit", "delivery:commit");
+    const context = await createContext("RUN-ACTION-CONFLICT", "Lead/Director", true);
+    const request = makeControllerRequest(context, "git.commit", "delivery:commit");
     await authorizeToolAction(request);
     await expect(authorizeToolAction({ ...request, payload: { commitMessage: "changed" } })).rejects.toThrow("TOOL_ACTION_INTENT_CONFLICT");
     const newer = createCandidateRevisionV1({ operationId: context.operationId, candidateId: "candidate-newer", projectId: "project-test", taskId: "T-1", revision: 2, sourceDigest: "b".repeat(64) });
     await expect(authorizeToolAction({ ...request, candidate: newer })).rejects.toThrow("TOOL_ACTION_INTENT_CONFLICT");
   });
 
-  it("requires the registered role's write ceiling and candidate-bound lease", async () => {
+  it("keeps local delivery branch and commit actions controller-owned", async () => {
     const context = await createContext("RUN-ACTION-ROLE", "Reviewer");
     const reviewerAuthority = await makeAuthority(context, reviewerSelection);
     const request = makeRequest(context, reviewerAuthority, "git.commit", "delivery:commit");
-    await expect(authorizeToolAction(request)).rejects.toThrow("TOOL_ACTION_CAPABILITY_DENIED");
+    await expect(authorizeToolAction(request)).rejects.toThrow("TOOL_ACTION_CONTROLLER_AUTHORITY_REQUIRED");
   });
 
   it("rejects participant external authority and requires controller authority for policy-listed effects", async () => {
@@ -101,7 +107,7 @@ describe("deterministic tool action gate", () => {
     const config = {
       delivery: {
         paseo: { enabled: true, createWorkspace: true },
-        github: { enabled: true, finalizeOnAcceptance: true }
+        github: { enabled: true, allowedActions: ["github.issue.create", "github.branch.create", "git.push", "github.pull-request.create"], finalizeOnAcceptance: true }
       }
     } as never;
     expect(configuredExternalEffects(config, "run")).toEqual([
@@ -195,9 +201,8 @@ describe("deterministic tool action gate", () => {
   });
 
   it("rejects a completed action receipt after its candidate or frozen policy becomes stale", async () => {
-    const context = await createContext("RUN-ACTION-STALE-RECEIPT", "Implementer");
-    const authority = await makeAuthority(context, implementerSelection);
-    const request = makeRequest(context, authority, "git.commit", "delivery:commit");
+    const context = await createContext("RUN-ACTION-STALE-RECEIPT", "Lead/Director", true);
+    const request = makeControllerRequest(context, "git.commit", "delivery:commit");
     const authorized = await authorizeToolAction(request);
     if (authorized.decision !== "EXECUTE_ONCE") throw new Error("expected EXECUTE_ONCE");
     await recordToolActionReceipt(context.root, authorized.intent, "SUCCEEDED", { commit: "abc" }, new Date(NOW));
@@ -208,9 +213,8 @@ describe("deterministic tool action gate", () => {
   });
 
   it("fails closed when a receipt exists without its ActionIntent", async () => {
-    const context = await createContext("RUN-ACTION-ORPHAN", "Implementer");
-    const authority = await makeAuthority(context, implementerSelection);
-    const request = makeRequest(context, authority, "git.commit", "delivery:commit");
+    const context = await createContext("RUN-ACTION-ORPHAN", "Lead/Director", true);
+    const request = makeControllerRequest(context, "git.commit", "delivery:commit");
     const first = await authorizeToolAction(request);
     expect(first.decision).toBe("EXECUTE_ONCE");
     await recordToolActionReceipt(context.root, first.intent, "SUCCEEDED", { commit: "abc" }, new Date(NOW));
@@ -251,7 +255,7 @@ const implementerSelection: AgentExecutionSelection = {
 const reviewerSelection: AgentExecutionSelection = { ...implementerSelection, logicalAgent: "reviewer", role: "Reviewer", permissions: { ...implementerSelection.permissions, write: "deny", shell: "deny" } };
 const leadSelection: AgentExecutionSelection = { ...implementerSelection, logicalAgent: "lead", role: "Lead/Director", permissions: { read: "allow", write: "deny", shell: "deny", network: "deny", delegate: "allow" } };
 
-async function createContext(operationId: string, role: ToolActionRequestV1["role"], bindLead = false, policyOptions: { allowedExternalEffects?: ToolActionRequestV1["action"][]; humanDecisionActions?: ToolActionRequestV1["action"][] } = {}): Promise<{ root: string; operationId: string; participantId: string; role: ToolActionRequestV1["role"]; candidate: ReturnType<typeof createCandidateRevisionV1> }> {
+async function createContext(operationId: string, role: ToolActionRequestV1["role"], bindLead = false, policyOptions: { allowedExternalEffects?: ToolActionRequestV1["action"][]; allowedActions?: ToolActionRequestV1["action"][]; humanDecisionActions?: ToolActionRequestV1["action"][] } = {}): Promise<{ root: string; operationId: string; participantId: string; role: ToolActionRequestV1["role"]; candidate: ReturnType<typeof createCandidateRevisionV1> }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-tool-action-gate-")); roots.push(root);
   const participantId = `participant:${operationId.toLowerCase()}`;
   process.env.AEH_OPERATION_ID = operationId;
@@ -262,7 +266,7 @@ async function createContext(operationId: string, role: ToolActionRequestV1["rol
   const owned = await claimControllerEpoch(root, operationId, `controller:${operationId}`, { pid: process.pid });
   await registerOperationAgent(root, operationId, { id: participantId, role, logicalAgent: role, phase: "implementation" });
   if (bindLead) await patchOperationMetadata(root, operationId, { lead: { agentId: participantId, generation: 1, boundAt: NOW, acknowledgedRevision: 1, acknowledgedAt: NOW } });
-  const policy = compileResolvedOperationPolicy({ projectId: candidate.projectId!, operationId, operationExecutionRevision: owned.operationExecutionRevision!, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch: currentControllerEpoch(owned), intent: "tool action test", route: "DIRECT", minimumAssurance: "STANDARD", policyVersions: {}, policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {}, allowedExternalEffects: policyOptions.allowedExternalEffects ?? ["github.branch.create"], humanDecisionRequirements: (policyOptions.humanDecisionActions ?? []).map((action) => ({ kind: "ACTION_AUTHORIZATION" as const, action })) });
+  const policy = compileResolvedOperationPolicy({ projectId: candidate.projectId!, operationId, operationExecutionRevision: owned.operationExecutionRevision!, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch: currentControllerEpoch(owned), intent: "tool action test", route: "DIRECT", minimumAssurance: "STANDARD", policyVersions: {}, policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: { allowedActions: policyOptions.allowedActions ?? ["git.branch.create", "git.commit"] }, knowledgePolicy: {}, contextPolicy: {}, allowedExternalEffects: policyOptions.allowedExternalEffects ?? ["github.branch.create"], humanDecisionRequirements: (policyOptions.humanDecisionActions ?? []).map((action) => ({ kind: "ACTION_AUTHORIZATION" as const, action })) });
   await bindResolvedOperationPolicy(root, operationId, policy);
   return { root, operationId, participantId, role, candidate };
 }

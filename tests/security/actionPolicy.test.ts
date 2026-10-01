@@ -1,123 +1,71 @@
 import { describe, expect, it } from "vitest";
 import type { HarnessProjectConfig } from "../../src/core/types.js";
-import type { ToolActionKindV1 } from "../../src/security/actionKinds.js";
-import { configuredExternalEffects, requiredHumanActionAuthorizations } from "../../src/security/actionPolicy.js";
+import { GITHUB_DELIVERY_ACTIONS_V1, type ToolActionKindV1 } from "../../src/security/actionKinds.js";
+import { configuredDeliveryActions, configuredDeliveryPolicy, configuredExternalEffects, requiredHumanActionAuthorizations } from "../../src/security/actionPolicy.js";
 
-function project(delivery: HarnessProjectConfig["delivery"]): HarnessProjectConfig {
-  return { version: 1, project: { name: "action-policy-matrix" }, ...(delivery ? { delivery } : {}) };
+function project(github?: NonNullable<HarnessProjectConfig["delivery"]>["github"]): HarnessProjectConfig {
+  return { version: 1, project: { name: "action-policy-matrix" }, delivery: { github, paseo: { enabled: false } } };
 }
 
-const NO_DELIVERY = project(undefined);
-const PASEO_ENABLED = project({ paseo: { enabled: true, createWorkspace: true } });
-const PASEO_DISABLED = project({ paseo: { enabled: false, createWorkspace: true } });
-const PASEO_CREATE_DISABLED = project({ paseo: { enabled: true, createWorkspace: false } });
-const GITHUB_FINALIZE_OFF = project({ github: { enabled: true, finalizeOnAcceptance: false } });
-const GITHUB_FINALIZE_DEFAULT = project({ github: { enabled: true } });
-const GITHUB_FINALIZE_ON = project({ github: { enabled: true, finalizeOnAcceptance: true } });
-const GITHUB_AND_PASEO_FINALIZE_ON = project({ github: { enabled: true, finalizeOnAcceptance: true }, paseo: { enabled: true, createWorkspace: true } });
-const GITHUB_DISABLED_PASEO_ENABLED = project({ github: { enabled: false }, paseo: { enabled: true, createWorkspace: true } });
-
-const ISSUE_AND_BRANCH: ToolActionKindV1[] = ["github.branch.create", "github.issue.create"];
-const FULL_GITHUB_EFFECTS: ToolActionKindV1[] = ["git.push", "github.branch.create", "github.issue.create", "github.pull-request.create"];
-const FULL_GITHUB_REQUIREMENTS = [
+const CHANGE_DELIVERY_ACTIONS: ToolActionKindV1[] = ["git.branch.create", "git.commit", "git.push", "github.pull-request.create"];
+const CHANGE_EXTERNAL_EFFECTS: ToolActionKindV1[] = ["git.push", "github.pull-request.create"];
+const CHANGE_HUMAN_REQUIREMENTS = [
   { kind: "ACTION_AUTHORIZATION" as const, action: "git.push" as const },
-  { kind: "ACTION_AUTHORIZATION" as const, action: "github.issue.create" as const },
   { kind: "ACTION_AUTHORIZATION" as const, action: "github.pull-request.create" as const }
 ];
 
-describe("frozen S8 action policy contract", () => {
-  describe("configuredExternalEffects", () => {
-    it("configures no external delivery effects for audit operations regardless of delivery configuration", () => {
-      for (const config of [NO_DELIVERY, PASEO_ENABLED, GITHUB_FINALIZE_OFF, GITHUB_FINALIZE_ON, GITHUB_AND_PASEO_FINALIZE_ON, GITHUB_DISABLED_PASEO_ENABLED]) {
-        expect(configuredExternalEffects(config, "audit")).toEqual([]);
-      }
-    });
-
-    it("configures no external delivery effects for run and change operations without enabled delivery providers", () => {
-      for (const kind of ["run", "change"] as const) {
-        expect(configuredExternalEffects(NO_DELIVERY, kind)).toEqual([]);
-        expect(configuredExternalEffects(PASEO_ENABLED, kind)).toEqual([]);
-        expect(configuredExternalEffects(PASEO_DISABLED, kind)).toEqual([]);
-        expect(configuredExternalEffects(GITHUB_DISABLED_PASEO_ENABLED, kind)).toEqual([]);
-      }
-    });
-
-    it("excludes controller-owned paseo.workspace.create from configured external effects regardless of Paseo configuration", () => {
-      for (const config of [PASEO_ENABLED, PASEO_DISABLED, PASEO_CREATE_DISABLED, GITHUB_AND_PASEO_FINALIZE_ON]) {
-        for (const kind of ["audit", "run", "change"] as const) {
-          expect(configuredExternalEffects(config, kind)).not.toContain("paseo.workspace.create");
-        }
-      }
-    });
-
-    it("keeps issue and remote branch creation configured when GitHub delivery is enabled without finalization", () => {
-      for (const kind of ["run", "change"] as const) {
-        expect(configuredExternalEffects(GITHUB_FINALIZE_OFF, kind)).toEqual(ISSUE_AND_BRANCH);
-        expect(configuredExternalEffects(GITHUB_FINALIZE_DEFAULT, kind)).toEqual(ISSUE_AND_BRANCH);
-        expect(configuredExternalEffects(project({ github: { enabled: true }, paseo: { enabled: true } }), kind)).toEqual(ISSUE_AND_BRANCH);
-      }
-    });
-
-    it("configures git.push and pull-request creation only when finalizeOnAcceptance is true", () => {
-      for (const kind of ["run", "change"] as const) {
-        expect(configuredExternalEffects(GITHUB_FINALIZE_ON, kind)).toEqual(FULL_GITHUB_EFFECTS);
-        expect(configuredExternalEffects(GITHUB_AND_PASEO_FINALIZE_ON, kind)).toEqual(FULL_GITHUB_EFFECTS);
-      }
-    });
-
-    it("enumerates a push-only delivery policy when pull requests are not requested", () => {
-      const pushOnly = project({ github: { enabled: true, finalizeOnAcceptance: true, pullRequests: false } });
-      for (const kind of ["run", "change"] as const) {
-        expect(configuredExternalEffects(pushOnly, kind)).toEqual(["git.push", "github.branch.create", "github.issue.create"]);
-        expect(requiredHumanActionAuthorizations(configuredExternalEffects(pushOnly, kind))).toEqual([
-          { kind: "ACTION_AUTHORIZATION", action: "git.push" },
-          { kind: "ACTION_AUTHORIZATION", action: "github.issue.create" }
-        ]);
-      }
-    });
-
-    it("returns stable, distinct, sorted effect lists", () => {
-      const first = configuredExternalEffects(GITHUB_AND_PASEO_FINALIZE_ON, "change");
-      const second = configuredExternalEffects(GITHUB_AND_PASEO_FINALIZE_ON, "change");
-      expect(first).toEqual(FULL_GITHUB_EFFECTS);
-      expect(second).toEqual(first);
-      expect(new Set(first).size).toBe(first.length);
-      expect(first).toEqual([...first].sort());
-      expect(first).not.toContain("paseo.workspace.create");
-    });
+describe("frozen GitHub delivery action policy", () => {
+  it("keeps disabled GitHub delivery blocked even when an action allowlist is present", () => {
+    const config = project({ enabled: false, allowedActions: CHANGE_DELIVERY_ACTIONS, finalizeOnAcceptance: true });
+    expect(configuredDeliveryActions(config, "change")).toEqual([]);
+    expect(configuredExternalEffects(config, "change")).toEqual([]);
+    expect(configuredExternalEffects(config, "audit")).toEqual([]);
   });
 
-  describe("requiredHumanActionAuthorizations", () => {
-    it("requires exact authorization for push, issue creation, and pull-request creation only", () => {
-      expect(requiredHumanActionAuthorizations(FULL_GITHUB_EFFECTS)).toEqual(FULL_GITHUB_REQUIREMENTS);
+  it("requires explicit, exact project action scope for a self-hosted CHANGE", () => {
+    const config = project({ enabled: true, allowedActions: CHANGE_DELIVERY_ACTIONS, finalizeOnAcceptance: true, pullRequests: true });
+    expect(configuredDeliveryPolicy(config, "change")).toMatchObject({
+      githubEnabled: true,
+      finalizeOnAcceptance: true,
+      allowedActions: CHANGE_DELIVERY_ACTIONS,
+      allowedExternalEffects: CHANGE_EXTERNAL_EFFECTS
     });
+    expect(requiredHumanActionAuthorizations(configuredExternalEffects(config, "change"))).toEqual(CHANGE_HUMAN_REQUIREMENTS);
+  });
 
-    it("does not require human authorization for branch creation or local resource creation", () => {
-      expect(requiredHumanActionAuthorizations(["github.branch.create", "paseo.workspace.create"])).toEqual([]);
-      expect(requiredHumanActionAuthorizations([])).toEqual([]);
-    });
+  it("does not imply issue creation or remote branch creation from GitHub enabled", () => {
+    const config = project({ enabled: true, allowedActions: ["git.branch.create", "git.commit", "git.push", "github.pull-request.create"], finalizeOnAcceptance: true });
+    expect(configuredExternalEffects(config, "change")).not.toContain("github.issue.create");
+    expect(configuredExternalEffects(config, "change")).not.toContain("github.branch.create");
+  });
 
-    it("deduplicates and sorts repeated effect inputs deterministically", () => {
-      const effects: ToolActionKindV1[] = [
-        "github.pull-request.create",
-        "git.push",
-        "github.issue.create",
-        "git.push",
-        "github.issue.create",
-        "github.pull-request.create"
-      ];
-      const requirements = requiredHumanActionAuthorizations(effects);
-      expect(requirements).toEqual(FULL_GITHUB_REQUIREMENTS);
-      expect(new Set(requirements.map((requirement) => requirement.action)).size).toBe(requirements.length);
-    });
+  it("honors push-only and handoff-only action lists", () => {
+    const pushOnly = project({ enabled: true, allowedActions: ["git.branch.create", "git.commit", "git.push"], finalizeOnAcceptance: true, pullRequests: false });
+    expect(configuredExternalEffects(pushOnly, "change")).toEqual(["git.push"]);
+    expect(requiredHumanActionAuthorizations(configuredExternalEffects(pushOnly, "change"))).toEqual([
+      { kind: "ACTION_AUTHORIZATION", action: "git.push" }
+    ]);
 
-    it("derives requirements consistently from configured effects", () => {
-      expect(requiredHumanActionAuthorizations(configuredExternalEffects(GITHUB_FINALIZE_OFF, "change"))).toEqual([
-        { kind: "ACTION_AUTHORIZATION", action: "github.issue.create" }
-      ]);
-      expect(requiredHumanActionAuthorizations(configuredExternalEffects(GITHUB_FINALIZE_ON, "change"))).toEqual(FULL_GITHUB_REQUIREMENTS);
-      expect(requiredHumanActionAuthorizations(configuredExternalEffects(GITHUB_FINALIZE_ON, "audit"))).toEqual([]);
-      expect(requiredHumanActionAuthorizations(configuredExternalEffects(PASEO_ENABLED, "run"))).toEqual([]);
-    });
+    const issueHandoff = project({ enabled: true, allowedActions: ["github.issue.create", "github.branch.create"], finalizeOnAcceptance: false });
+    expect(configuredExternalEffects(issueHandoff, "change")).toEqual(["github.branch.create", "github.issue.create"]);
+  });
+
+  it("removes finalization actions when finalizeOnAcceptance is false", () => {
+    const config = project({ enabled: true, allowedActions: CHANGE_DELIVERY_ACTIONS, finalizeOnAcceptance: false });
+    expect(configuredDeliveryActions(config, "change")).toEqual(["git.branch.create"]);
+    expect(configuredExternalEffects(config, "change")).toEqual([]);
+  });
+
+  it("does not allow merge, force-push, deletion, or credential mutation actions", () => {
+    const unsupported = ["github.pull-request.merge", "git.push.force", "git.branch.delete", "github.repository.delete", "github.credentials.update"];
+    for (const action of unsupported) {
+      expect(GITHUB_DELIVERY_ACTIONS_V1).not.toContain(action);
+    }
+  });
+
+  it("deduplicates and sorts configured actions deterministically", () => {
+    const config = project({ enabled: true, allowedActions: ["github.pull-request.create", "git.push", "git.push", "git.commit", "git.branch.create"], finalizeOnAcceptance: true });
+    expect(configuredDeliveryActions(config, "change")).toEqual([...CHANGE_DELIVERY_ACTIONS].sort());
+    expect(configuredExternalEffects(config, "change")).toEqual([...CHANGE_EXTERNAL_EFFECTS].sort());
   });
 });

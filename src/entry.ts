@@ -40,6 +40,7 @@ import { serveSerenaMcpProxy, serveSerenaPoolServer } from "./providers/serenaPr
 import { recordControlCenterDecision } from "./control-center/decision.js";
 import { controlCenterResourceId, type ControlCenterActionResultV1 } from "./control-center/contracts.js";
 import { projectOperationRecordV1 } from "./control-center/operationProjection.js";
+import { readOperationEfficiencySummary } from "./telemetry/efficiency.js";
 import { resolveControlCenterLeadBinding } from "./control-center/leadBinding.js";
 import { controlCenterHealthCheck, reusableControlCenterFromSnapshot } from "./control-center/reuse.js";
 
@@ -142,7 +143,9 @@ async function runControlCenter(argv: string[]): Promise<void> {
       if (!root || !config) return {};
       const portfolio = await loadOperationPortfolio(root, config.project.name);
       const operationRecords = await Promise.all(Object.values(portfolio.operations).map(async (item) => ({ detail: await loadOperation(root, item.operationId) })));
-      const operations = operationRecords.map(({ detail }) => projectOperationRecordV1(detail));
+      const operations = await Promise.all(operationRecords.map(async ({ detail }) =>
+        projectOperationRecordV1(detail, await readOperationEfficiencySummary(root, detail))
+      ));
       const participants = operations.flatMap((operation) => operation.participants);
       const candidates = operationRecords.flatMap(({ detail }) => detail.candidateRevision
         ? [{ ...detail.candidateRevision, controlCenterId: controlCenterResourceId("candidate", detail.candidateRevision.candidateId) }]

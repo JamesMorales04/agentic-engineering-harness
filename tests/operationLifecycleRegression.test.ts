@@ -13,6 +13,7 @@ import {
   currentControllerEpoch,
   loadOperation,
   markTerminalDelivered,
+  operationEventsFile,
   registerSupervisorGeneration,
   saveOperation,
   transitionOperationToTerminal,
@@ -80,6 +81,28 @@ async function bindCancellationDecision(root: string, operationId: string, actor
 }
 
 describe("operation lifecycle regressions", () => {
+  it.each([
+    { terminal: "SUCCEEDED", stageStatus: "COMPLETED" },
+    { terminal: "FAILED", stageStatus: "FAILED" },
+    { terminal: "CANCELLED", stageStatus: "SKIPPED" }
+  ] as const)("settles RUNNING stages when an operation becomes $terminal", async ({ terminal, stageStatus }) => {
+    const root = await tempRoot();
+    const record = operation(root, `STAGE-SETTLEMENT-${terminal}`);
+    record.stages = {
+      planning: { name: "planning", status: "COMPLETED", revision: 4, startedAt: new Date(0).toISOString(), finishedAt: new Date(1).toISOString(), message: "completed before terminalization" },
+      validation: { name: "validation", status: "RUNNING", revision: 5, startedAt: new Date(2).toISOString() },
+      context: { name: "context", status: "RUNNING", revision: 6, startedAt: new Date(3).toISOString() }
+    };
+    await saveOwnedOperation(root, record);
+    const terminalRecord = await transitionOperationToTerminal(root, record.id, { status: terminal, phase: "finished" });
+    expect(terminalRecord.record.stages.planning).toEqual(record.stages.planning);
+    for (const name of ["validation", "context"]) {
+      expect(terminalRecord.record.stages[name]).toMatchObject({ status: stageStatus, revision: terminalRecord.record.revision, finishedAt: terminalRecord.record.finishedAt });
+    }
+    const events = (await fs.readFile(operationEventsFile(root, record.id), "utf8")).trim().split(/\r?\n/).map((line) => JSON.parse(line) as { type: string; changed?: string[] });
+    expect(events.findLast((event) => event.type === "operation.terminal")?.changed).toContain("stages");
+  });
+
   it.each(["SUCCEEDED", "FAILED"] as const)("does not re-enter a %s operation", async (status) => {
     const root = await tempRoot();
     const record = operation(root, `TERMINAL-${status}`);

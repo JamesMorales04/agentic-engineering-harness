@@ -61,6 +61,8 @@ import type { ValidationProviderContext } from "../providers/validation/types.js
 import { buildAcceptanceEvidenceBundleV1, currentObjectiveIdentityV1, evaluateAcceptanceOracleV1, leadAcceptanceRequiredV1, persistAcceptanceOracleArtifactV1, type AcceptanceOracleDispositionV1, type EvidenceBundleV1 } from "../architecture/acceptanceOracle.js";
 import { requestManagedLeadAcceptance } from "../agents/managedLeadAcceptance.js";
 import { evaluateObjectiveCompletionV1, type ObjectiveCompletionInputV1 } from "../architecture/objectiveCompletion.js";
+import { setupToolchain } from "../toolchain/setup.js";
+import { sha256Canonical, sha256Utf8 } from "./digest.js";
 
 export interface CandidateAssuranceEvaluationV1 {
   compilation?: CandidateAssuranceCompilationV1;
@@ -76,7 +78,7 @@ export interface TaskRunResult {
   report: ValidationReport;
   metrics: RunMetrics;
   routing?: { profile?: string; ruleIds: string[]; agent: string; runtime: string; model: string; nativeAgent?: string; reviewers: string[]; implementationRoute?: string; assurance?: string; };
-  planning?: { used: boolean; workUnits: number; waves: number; distributed: boolean; graphUsed?: boolean; compilerDigest?: string; };
+  planning?: { used: boolean; workUnits: number; waves: number; distributed: boolean; graphUsed?: boolean; compilerDigest?: string; correctionAttempts?: 0 | 1; };
   controlPlane?: { sha256: string; gitCommit?: string; drifted: boolean; changed: string[]; missing: string[]; added: string[]; };
   evidence?: { sha256: string; complete: boolean; requirements: number; reasons: string[]; };
   candidateAssurance?: CandidateAssuranceEvaluationV1;
@@ -127,6 +129,19 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
   if (implementationRoute === "NO_AGENT") throw new Error(`NO_AGENT_ROUTE: task ${effectiveContract.task.id} is explicitly non-mutating and cannot enter implementation execution.`);
   const startedMs = Date.now();
   const startedAt = new Date(startedMs).toISOString();
+  let preparedDependencyManifestDigest: string | undefined;
+  const prepareValidationWorkspace = async (): Promise<void> => {
+    const manifestDigest = await dependencyManifestDigest(workspaceRoot);
+    if (manifestDigest === preparedDependencyManifestDigest) return;
+    const setup = await setupToolchain(workspaceRoot, effectiveConfig);
+    preparedDependencyManifestDigest = manifestDigest;
+    await recordEvent(controlRoot, effectiveConfig, "harness.toolchain.validation-environment-ready", {
+      taskId: effectiveContract.task.id,
+      manifestDigest,
+      dependencyCommands: setup.projectDependencyCommands,
+      profile: setup.profile
+    });
+  };
 
   const issueDrift = await verifyGithubIssueDrift(controlRoot, effectiveConfig, effectiveContract);
   if (!issueDrift.ok) throw new Error(issueDrift.message);
@@ -183,7 +198,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
   if (planningEnabled && route && selection && executionCatalog) {
     const planningSelection = selection;
     if (operationId) await runStage(operationStateRoot, operationId, "planning", "RUNNING");
-    waveResult = await executePlannerWaves({ root: workspaceRoot, stateRoot: controlRoot, config: effectiveConfig, contract: effectiveContract, plannerSelection, librarianSelection, implementationSelection: planningSelection, executionCatalog, controller, precomputedPlan: options?.planning, projectStack, semanticAssessment: impactAssessmentRuntime, revalidate: async () => verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, planningSelection) });
+    waveResult = await executePlannerWaves({ root: workspaceRoot, stateRoot: controlRoot, config: effectiveConfig, contract: effectiveContract, plannerSelection, librarianSelection, implementationSelection: planningSelection, executionCatalog, controller, precomputedPlan: options?.planning, projectStack, semanticAssessment: impactAssessmentRuntime, revalidate: async () => { await prepareValidationWorkspace(); return verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, planningSelection); } });
     executionSessions = [...waveResult.sessions];
     if (waveResult.blueprint?.resolvedOperationPolicy) assurancePolicySource = waveResult.blueprint.resolvedOperationPolicy;
     if (operationId) {
@@ -205,61 +220,89 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     }
   }
 
-  if (operationId) await runStage(operationStateRoot, operationId, "implementation", "RUNNING");
-  if (waveResult?.used && waveResult.aggregateSession) {
-    worker = waveResult.aggregateSession;
-    report = withWorkerExecutionCheck(waveResult.report ?? await verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, selection), worker);
-  } else {
-    const executor = createWorkerExecutor(effectiveConfig, selection);
-    const health = await executor.doctor(workspaceRoot, effectiveConfig, selection);
-    if (!health.ok) throw new Error(`${executor.name} executor unavailable: ${health.message}`);
-    if (!operationId) throw new Error("CANDIDATE_BINDING_REQUIRED: DIRECT implementation requires a managed operation candidate.");
-    const operation = await loadOperation(operationStateRoot, operationId);
-    const currentCandidate = operation.candidateRevision;
-    if (!currentCandidate) throw new Error(`CANDIDATE_BINDING_REQUIRED: operation ${operationId} has no current candidate revision.`);
-    const isolated = await executeIsolatedCandidateMutation({
-      root: workspaceRoot,
-      operationId,
+  const preExecutionFailure = waveResult?.preExecutionFailure ? waveResult : undefined;
+  const planningFailure = Boolean(preExecutionFailure);
+  if (preExecutionFailure) {
+    worker = preExecutionFailure.aggregateSession ?? {
+      provider: "aeh-planner",
+      logicalAgent: "planner",
+      exitCode: 1,
+      stdout: "",
+      stderr: "Planner did not produce a valid execution plan.",
+      status: "failed",
+      startedAt,
+      finishedAt: new Date().toISOString()
+    };
+    const operation = operationId ? await loadOperation(operationStateRoot, operationId) : undefined;
+    const blocker = (worker.stderr || worker.stdout || "Planner did not produce a valid execution plan.").slice(0, 2_000);
+    report = preExecutionPlanningFailureReport({
       taskId: effectiveContract.task.id,
-      workUnitId: `direct:${effectiveContract.task.id}`,
-      candidate: currentCandidate,
-      config: effectiveConfig,
-      contract: effectiveContract,
-      execute: (isolatedRoot) => executor.start(isolatedRoot, effectiveConfig, effectiveContract, selection),
-      prepareWorkspace: controller ? async (isolatedRoot) => { await materializeControlPlaneSnapshot(controller!, isolatedRoot, effectiveConfig); } : undefined
+      project: effectiveConfig.project.name,
+      baseRef: effectiveConfig.validation?.baseRef ?? "main",
+      candidate: operation?.candidateRevision,
+      blocker,
+      correctionAttempts: preExecutionFailure.correctionAttempts ?? 0,
+      startedAt
     });
-    worker = isolated.session;
-    executionSessions.push(worker);
-    if (isolated.changeSet) {
-      const assembled = await assembleCandidateChangeSet({
+  } else {
+    if (operationId) await runStage(operationStateRoot, operationId, "implementation", "RUNNING");
+    if (waveResult?.used && waveResult.aggregateSession) {
+      worker = waveResult.aggregateSession;
+      if (!waveResult.report) await prepareValidationWorkspace();
+      report = withWorkerExecutionCheck(waveResult.report ?? await verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, selection), worker);
+    } else {
+      const executor = createWorkerExecutor(effectiveConfig, selection);
+      const health = await executor.doctor(workspaceRoot, effectiveConfig, selection);
+      if (!health.ok) throw new Error(`${executor.name} executor unavailable: ${health.message}`);
+      if (!operationId) throw new Error("CANDIDATE_BINDING_REQUIRED: DIRECT implementation requires a managed operation candidate.");
+      const operation = await loadOperation(operationStateRoot, operationId);
+      const currentCandidate = operation.candidateRevision;
+      if (!currentCandidate) throw new Error(`CANDIDATE_BINDING_REQUIRED: operation ${operationId} has no current candidate revision.`);
+      const isolated = await executeIsolatedCandidateMutation({
         root: workspaceRoot,
         operationId,
-        projectId: currentCandidate.projectId,
         taskId: effectiveContract.task.id,
-        currentCandidate,
-        changeSet: isolated.changeSet,
-        allowedScope: effectiveContract.scope?.allowed ?? ["**"],
-        forbiddenScope: effectiveContract.scope?.forbidden ?? [],
-        candidateId: `candidate:${operationId}:r${currentCandidate.revision + 1}`,
-        workspace: currentCandidate.workspace,
-        worktree: workspaceRoot,
-        semanticAssessment: impactAssessmentRuntime
+        workUnitId: `direct:${effectiveContract.task.id}`,
+        candidate: currentCandidate,
+        config: effectiveConfig,
+        contract: effectiveContract,
+        execute: (isolatedRoot) => executor.start(isolatedRoot, effectiveConfig, effectiveContract, selection),
+        prepareWorkspace: controller ? async (isolatedRoot) => { await materializeControlPlaneSnapshot(controller!, isolatedRoot, effectiveConfig); } : undefined
       });
-      const boundCandidate = await bindAssembledCandidate({ root: workspaceRoot, stateRoot: controlRoot, operationId, baseCandidate: currentCandidate, candidate: assembled.candidate, changeSet: isolated.changeSet });
-      candidateImpact = assembled.impact;
-      await recordEvent(controlRoot, effectiveConfig, "harness.candidate.assembled", {
-        taskId: effectiveContract.task.id,
-        workUnitId: isolated.changeSet.workUnitId,
-        participantId: isolated.changeSet.participantId,
-        candidateRevision: boundCandidate.revision,
-        candidateDigest: boundCandidate.sourceDigest,
-        impactDigest: assembled.impact.digest,
-        requiresIndependentReview: assembled.impact.requiresIndependentReview
-      });
+      worker = isolated.session;
+      executionSessions.push(worker);
+      if (isolated.changeSet) {
+        const assembled = await assembleCandidateChangeSet({
+          root: workspaceRoot,
+          operationId,
+          projectId: currentCandidate.projectId,
+          taskId: effectiveContract.task.id,
+          currentCandidate,
+          changeSet: isolated.changeSet,
+          allowedScope: effectiveContract.scope?.allowed ?? ["**"],
+          forbiddenScope: effectiveContract.scope?.forbidden ?? [],
+          candidateId: `candidate:${operationId}:r${currentCandidate.revision + 1}`,
+          workspace: currentCandidate.workspace,
+          worktree: workspaceRoot,
+          semanticAssessment: impactAssessmentRuntime
+        });
+        const boundCandidate = await bindAssembledCandidate({ root: workspaceRoot, stateRoot: controlRoot, operationId, baseCandidate: currentCandidate, candidate: assembled.candidate, changeSet: isolated.changeSet });
+        candidateImpact = assembled.impact;
+        await recordEvent(controlRoot, effectiveConfig, "harness.candidate.assembled", {
+          taskId: effectiveContract.task.id,
+          workUnitId: isolated.changeSet.workUnitId,
+          participantId: isolated.changeSet.participantId,
+          candidateRevision: boundCandidate.revision,
+          candidateDigest: boundCandidate.sourceDigest,
+          impactDigest: assembled.impact.digest,
+          requiresIndependentReview: assembled.impact.requiresIndependentReview
+        });
+      }
+      await prepareValidationWorkspace();
+      report = withWorkerExecutionCheck(await verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, selection), worker);
     }
-    report = withWorkerExecutionCheck(await verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, selection), worker);
   }
-  if (operationId) await runStage(operationStateRoot, operationId, "implementation", report.status === "PASS" ? "COMPLETED" : "FAILED", report.status === "PASS" ? {} : { message: validationFailureDetail(report) });
+  if (operationId) await runStage(operationStateRoot, operationId, "implementation", planningFailure ? "SKIPPED" : report.status === "PASS" ? "COMPLETED" : "FAILED", planningFailure ? { message: "Implementation was skipped because pre-execution planning failed." } : report.status === "PASS" ? {} : { message: validationFailureDetail(report) });
 
   let evidenceGraph: RequirementEvidenceGraph | undefined;
   const attachEvidence = async (candidate: ValidationReport): Promise<ValidationReport> => {
@@ -287,13 +330,15 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     assuranceEvaluation = result.evaluation;
     return result.evaluation;
   };
-  assuranceEvaluation = await recompileAssuranceForReport(candidateImpact, report);
-  report = mergeChecks(report, [...assuranceEvaluation.validationChecks, assuranceEvaluation.gateCheck]);
+  if (!planningFailure) {
+    assuranceEvaluation = await recompileAssuranceForReport(candidateImpact, report);
+    report = mergeChecks(report, [...assuranceEvaluation.validationChecks, assuranceEvaluation.gateCheck]);
+  }
   report = await attachEvidence(report);
   const firstPassSuccess = report.status === "PASS";
   const maxRepairs = effectiveContract.repair?.maxAttempts ?? effectiveConfig.orchestration?.worker?.maxRepairAttempts ?? 2;
   let attempts = 0;
-  while (report.status === "FAIL" && attempts < maxRepairs) {
+  while (!planningFailure && report.status === "FAIL" && attempts < maxRepairs) {
     if (operationId && supervisorSelection) {
       await ensureOperationSupervisor(workspaceRoot, effectiveConfig, effectiveContract, supervisorSelection, { required: true, forceMaterialize: true });
       await runStage(operationStateRoot, operationId, "remediation", "RUNNING");
@@ -347,6 +392,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     worker = repair.session;
     executionSessions.push(worker);
     if (repair.candidate) candidateImpact = repair.impact;
+    await prepareValidationWorkspace();
     report = withWorkerExecutionCheck(await verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, selection), worker);
     assuranceEvaluation = await recompileAssuranceForReport(candidateImpact, report);
     report = mergeChecks(report, [...assuranceEvaluation.validationChecks, assuranceEvaluation.gateCheck]);
@@ -386,7 +432,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
       candidateAssurance: assuranceEvaluation?.compilation,
       assuranceGateCheck: assuranceEvaluation?.gateCheck,
       recompileCandidateAssurance: async (impact, candidateReport) => recompileAssuranceForReport(impact, candidateReport),
-      revalidate: async () => verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, selection)
+      revalidate: async () => { await prepareValidationWorkspace(); return verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, selection); }
     });
     report = mergeChecks(withWorkerExecutionCheck(review.report, worker), review.checks);
     reviewFindings = review.findings.findings;
@@ -417,7 +463,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
   let acceptanceOracle: AcceptanceOracleDispositionV1 | undefined;
   let evidenceBundle: EvidenceBundleV1 | undefined;
   let acceptanceOracleArtifact: string | undefined;
-  if (operationId) {
+  if (operationId && !planningFailure) {
     try {
       const operation = await loadOperation(operationStateRoot, operationId);
       assertCurrentControllerOwner(operation, "AcceptanceOracle disposition");
@@ -533,7 +579,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
   worker.metrics = extractUsageMetrics(usageText || `${worker.stdout}\n${worker.stderr}`);
   const metrics = buildRunMetrics({ firstPassSuccess, repairCount: attempts, humanInterventions: await countHumanInterventions(controlRoot, effectiveConfig, effectiveContract.task.id, startedAt), durationMs: Date.now() - startedMs, usage: worker.metrics });
   const routing = selection ? { profile: selection.profile, ruleIds: route?.ruleIds ?? [], agent: selection.logicalAgent, runtime: selection.runtimeName, model: selection.modelId, nativeAgent: selection.nativeAgent, reviewers: route?.reviewers ?? [], implementationRoute: route?.implementationRoute, assurance: route?.assurance } : undefined;
-  const result: TaskRunResult = { taskId: effectiveContract.task.id, status: report.status, attempts, worker, report, metrics, routing, planning: waveResult ? { used: waveResult.used, workUnits: waveResult.plan?.workUnits.length ?? 0, waves: waveResult.schedule?.waves.length ?? 0, distributed: effectiveConfig.workflow?.planning?.distributed === true && effectiveConfig.distributed?.enabled === true, graphUsed: waveResult.schedule?.graphUsed, compilerDigest: waveResult.blueprint?.plan.compilerDigest } : undefined, controlPlane: controller ? { sha256: controller.compositeSha256, gitCommit: controller.gitCommit, drifted: drift.drifted, changed: drift.changed, missing: drift.missing, added: drift.added } : undefined, evidence: evidenceGraph ? { sha256: evidenceGraph.sha256, complete: evidenceGraph.complete, requirements: evidenceGraph.requirements.length, reasons: evidenceGraph.reasons } : undefined, candidateAssurance: assuranceEvaluation, acceptanceOracle, acceptanceOracleArtifact, evidenceBundle, objectiveCompletion, objectiveCompletionDecision, review: reviewSummary, delivery: deliverySummary };
+  const result: TaskRunResult = { taskId: effectiveContract.task.id, status: report.status, attempts, worker, report, metrics, routing, planning: waveResult ? { used: waveResult.used, workUnits: waveResult.plan?.workUnits.length ?? 0, waves: waveResult.schedule?.waves.length ?? 0, distributed: effectiveConfig.workflow?.planning?.distributed === true && effectiveConfig.distributed?.enabled === true, graphUsed: waveResult.schedule?.graphUsed, compilerDigest: waveResult.blueprint?.plan.compilerDigest, correctionAttempts: waveResult.correctionAttempts } : undefined, controlPlane: controller ? { sha256: controller.compositeSha256, gitCommit: controller.gitCommit, drifted: drift.drifted, changed: drift.changed, missing: drift.missing, added: drift.added } : undefined, evidence: evidenceGraph ? { sha256: evidenceGraph.sha256, complete: evidenceGraph.complete, requirements: evidenceGraph.requirements.length, reasons: evidenceGraph.reasons } : undefined, candidateAssurance: assuranceEvaluation, acceptanceOracle, acceptanceOracleArtifact, evidenceBundle, objectiveCompletion, objectiveCompletionDecision, review: reviewSummary, delivery: deliverySummary };
   const runsDir = path.resolve(controlRoot, effectiveConfig.sdd?.runsDir ?? ".harness/runs");
   await fs.mkdir(runsDir, { recursive: true });
   const runFile = path.join(runsDir, `${effectiveContract.task.id}.json`);
@@ -1005,6 +1051,49 @@ export function validationFailureDetail(report: ValidationReport, limit = 5): st
 export function operationFailureDetail(result: Pick<TaskRunResult, "status" | "report" | "review">): string {
   const review = result.review ? `; review=${result.review.finalState}${result.review.humanRequired ? " (human required)" : ""}` : "";
   return `OPERATION_FAILED: ${validationFailureDetail(result.report)}${review}`;
+}
+
+async function dependencyManifestDigest(root: string): Promise<string> {
+  const discovered = await fs.readdir(root).catch(() => [] as string[]);
+  const names = new Set([
+    "package.json", "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "bun.lock", "bun.lockb", "yarn.lock",
+    "pyproject.toml", "uv.lock", "requirements.txt", "global.json", "go.mod", "Cargo.toml"
+  ]);
+  for (const name of discovered) if (name.endsWith(".sln") || name.endsWith(".slnx") || name.endsWith(".csproj")) names.add(name);
+  const entries: Array<{ name: string; digest: string }> = [];
+  for (const name of [...names].sort()) {
+    try { entries.push({ name, digest: sha256Utf8(await fs.readFile(path.join(root, name), "utf8")) }); }
+    catch { /* only existing package-manager inputs contribute to this identity */ }
+  }
+  return sha256Canonical(entries);
+}
+
+function preExecutionPlanningFailureReport(input: {
+  taskId: string;
+  project: string;
+  baseRef: string;
+  candidate?: CandidateRevisionV1;
+  blocker: string;
+  correctionAttempts: number;
+  startedAt: string;
+}): ValidationReport {
+  return {
+    version: 1,
+    taskId: input.taskId,
+    status: "FAIL",
+    startedAt: input.startedAt,
+    finishedAt: new Date().toISOString(),
+    checks: [{
+      id: "planning.pre-execution",
+      category: "planning",
+      status: "FAIL",
+      message: "Execution stopped because Planner output did not compile into a valid WorkGraph.",
+      details: { blocker: input.blocker, correctionAttempts: input.correctionAttempts }
+    }],
+    changedFiles: [],
+    ...(input.candidate ? { candidate: input.candidate } : {}),
+    metadata: { project: input.project, baseRef: input.baseRef }
+  };
 }
 
 async function verifyAfterWorker(workspaceRoot: string, controlRoot: string, config: HarnessProjectConfig, contract: TaskContract, controller?: ControlPlaneSnapshot, selection?: AgentExecutionSelection): Promise<ValidationReport> {

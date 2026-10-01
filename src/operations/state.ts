@@ -256,9 +256,11 @@ export async function transitionOperationToTerminal(root: string, operationId: s
     }
     if (patch.status === "SUCCEEDED") await assertSuccessTerminalEvidence(stateRoot, current, patch.result);
     const now = new Date().toISOString(); const revision = current.revision + 1; const participants = settleParticipants(current.participants, patch.status, now); const supervision = settleSupervision(current.supervision, now);
-    const next = normalizeOperationRecord({ ...current, ...patch, version: 2, id: current.id, kind: current.kind, revision, updatedAt: now, lastProgressAt: now, finishedAt: patch.finishedAt ?? now, participants, progress: deriveProgress(participants), supervision, decisionRequest: undefined, continuation: undefined, pause: undefined, stages: { ...current.stages, finished: { name: "finished", status: terminalStageStatus(patch.status), revision, startedAt: now, finishedAt: now } } } as OperationRecordV2);
+    const stages = settleRunningStages(current.stages, patch.status, revision, now);
+    stages.finished = { name: "finished", status: terminalStageStatus(patch.status), revision, startedAt: now, finishedAt: now };
+    const next = normalizeOperationRecord({ ...current, ...patch, version: 2, id: current.id, kind: current.kind, revision, updatedAt: now, lastProgressAt: now, finishedAt: patch.finishedAt ?? now, participants, progress: deriveProgress(participants), supervision, decisionRequest: undefined, continuation: undefined, pause: undefined, stages } as OperationRecordV2);
     if (patch.status === "SUCCEEDED" && next.candidateRevision) await assertWorkspaceMatchesCandidate(candidateWorkspaceRoot(next, next.candidateRevision), next.candidateRevision);
-    await commitOperationRecord(stateRoot, file, next, "operation.terminal", ["status", "phase", "participants", "progress", "supervision"]); return { record: next, transitioned: true };
+    await commitOperationRecord(stateRoot, file, next, "operation.terminal", ["status", "phase", "participants", "progress", "supervision", "stages"]); return { record: next, transitioned: true };
   });
 }
 
@@ -1854,6 +1856,15 @@ function candidateWorkspaceRoot(record: OperationRecordV2, candidate: CandidateR
 function settleParticipants(participants: Record<string, OperationParticipantRecord>, status: Extract<OperationStatus, "SUCCEEDED" | "FAILED" | "CANCELLED">, finishedAt: string): Record<string, OperationParticipantRecord> { const participantStatus: OperationParticipantStatus = status === "SUCCEEDED" ? "COMPLETED" : status === "FAILED" ? "FAILED" : "CANCELLED"; return Object.fromEntries(Object.entries(participants).map(([id, participant]) => isParticipantTerminal(participant.status) ? [id, participant] : [id, { ...participant, status: participantStatus, finishedAt: participant.finishedAt ?? finishedAt }])); }
 function isParticipantTerminal(status: OperationParticipantStatus): boolean { return status === "COMPLETED" || status === "FAILED" || status === "CANCELLED"; }
 function settleSupervision(supervision: OperationSupervisionState, at: string): OperationSupervisionState { return { ...supervision, activeGeneration: undefined, generations: supervision.generations.map((generation) => generation.status === "ACTIVE" || generation.status === "INITIALIZING" ? { ...generation, status: "DRAINING" as const, drainingAt: generation.drainingAt ?? at } : generation) }; }
+function settleRunningStages(stages: Record<string, OperationStageRecord>, status: Extract<OperationStatus, "SUCCEEDED" | "FAILED" | "CANCELLED">, revision: number, finishedAt: string): Record<string, OperationStageRecord> {
+  return Object.fromEntries(Object.entries(stages).map(([key, stage]) => stage.status !== "RUNNING" ? [key, stage] : [key, {
+    ...stage,
+    status: terminalStageStatus(status),
+    revision,
+    finishedAt,
+    message: stage.message ?? `Operation terminalized as ${status} while this stage was active.`
+  }]));
+}
 function defaultSupervision(kind: OperationKind): OperationSupervisionState { return { required: kind === "audit" || kind === "change", materialized: false, generations: [] }; }
 function defaultNotification(): OperationNotificationState { return { lastLeadWakeRevision: 0, terminalDelivered: false, attempts: 0 }; }
 function inferIntent(kind: OperationKind, payload: OperationPayload): OperationIntentState { if (kind === "audit") { const audit = payload as AuditOperationPayload; return { request: audit.request, classification: "AUDIT", risk: audit.risk }; } if (kind === "change") { const change = payload as ChangeOperationPayload; return { request: change.request, classification: "CHANGE", risk: change.risk, priority: change.priority }; } return { classification: "RUN", priority: (payload as RunOperationPayload).priority }; }

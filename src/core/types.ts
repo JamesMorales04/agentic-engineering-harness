@@ -1,6 +1,7 @@
 import type { AssuranceLevel, ImplementationRoute, RouteEvidence } from "../architecture/contracts.js";
 import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import type { CandidateWorkspaceIdentityEvidenceV1 } from "../candidates/identity.js";
+import type { GitHubDeliveryActionV1 } from "../security/actionKinds.js";
 
 export type CheckStatus = "PASS" | "FAIL" | "SKIP" | "WARN";
 export type ReviewSeverity = "critical" | "high" | "medium" | "low" | "note";
@@ -113,6 +114,7 @@ export interface HarnessProjectConfig {
     stateDir?: string;
     github?: {
       enabled?: boolean;
+      allowedActions?: GitHubDeliveryActionV1[];
       tokenEnv?: string;
       repository?: string;
       apiBaseUrl?: string;
@@ -261,6 +263,8 @@ export interface WorkerSession {
   stdout: string;
   stderr: string;
   metrics?: UsageMetrics;
+  /** Sanitized provider telemetry carried until the observation-only efficiency writer persists it. */
+  efficiencyTelemetry?: import("../telemetry/efficiency.js").ProviderTelemetryEvidenceV1;
   participantId?: string;
   capabilityLeases?: import("../security/authorityV2.js").CapabilityLeaseV1[];
   executionBinding?: import("../architecture/executionIdentity.js").ExecutionBindingV2;

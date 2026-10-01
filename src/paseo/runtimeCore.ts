@@ -49,6 +49,7 @@ export interface ManagedPaseoAgentResult {
   workspaceId?: string;
   transport: "sdk" | "cli";
   observation?: "subscription" | "sdk-run" | "sdk-wait" | "cli-wait";
+  efficiencyTelemetry?: import("../telemetry/efficiency.js").ProviderTelemetryEvidenceV1;
 }
 
 export interface PaseoRuntimeDeps {
@@ -498,7 +499,7 @@ function providerStopDetail(status?: string, permission?: { name?: string; title
   return `provider session stopped on an unapproved '${status}' prompt${descriptor ? ` (${descriptor})` : ""}; the turn produced no result`;
 }
 function fromSdk(result: PaseoSdkAgentResult): ManagedPaseoAgentResult { return { id: result.id, exitCode: sdkExitCode(result.status, result.error), stdout: result.lastMessage ?? "", stderr: [result.error ?? "", providerStopDetail(result.status, result.permission)].filter(Boolean).join("\n"), status: result.status, workspaceId: result.workspaceId, transport: "sdk" }; }
-function fromNativeWait(result: PaseoSdkAgentResult): ManagedPaseoAgentResult { return { id: result.id, exitCode: sdkExitCode(result.status, result.error), stdout: result.lastMessage ?? "", stderr: [result.error ?? "", providerStopDetail(result.status, result.permission)].filter(Boolean).join("\n"), status: result.status, workspaceId: result.workspaceId, transport: "sdk", observation: "subscription" }; }
+function fromNativeWait(result: PaseoNativeWaitResult): ManagedPaseoAgentResult { return { id: result.id, exitCode: sdkExitCode(result.status, result.error), stdout: result.lastMessage ?? "", stderr: [result.error ?? "", providerStopDetail(result.status, result.permission)].filter(Boolean).join("\n"), status: result.status, workspaceId: result.workspaceId, transport: "sdk", observation: "subscription", ...(result.efficiencyTelemetry ? { efficiencyTelemetry: result.efficiencyTelemetry } : {}) }; }
 function sdkExitCode(status?: string, error?: string): number { if (status === "timeout") return 124; if (error) return 1; if (status === "failed" || status === "error" || status === "cancelled" || status === "permission" || status === "waiting") return 1; return 0; }
 function firstString(record: Record<string, unknown>, keys: string[]): string | undefined { for (const key of keys) if (typeof record[key] === "string" && record[key]) return record[key] as string; return undefined; }
 function stringRecord(value: unknown): Record<string, string> | undefined { if (!value || typeof value !== "object" || Array.isArray(value)) return undefined; const result: Record<string, string> = {}; for (const [key, item] of Object.entries(value as Record<string, unknown>)) if (typeof item === "string") result[key] = item; return Object.keys(result).length ? result : undefined; }

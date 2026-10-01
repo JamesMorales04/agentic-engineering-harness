@@ -11,8 +11,9 @@ import {
   type ControlCenterOperationPauseProjectionV1,
   type ControlCenterParticipantProjectionV1
 } from "./contracts.js";
+import type { OperationEfficiencySummaryV1 } from "../telemetry/efficiency.js";
 
-export function projectOperationRecordV1(record: OperationRecordV2): ControlCenterOperationDetailProjectionV1 {
+export function projectOperationRecordV1(record: OperationRecordV2, efficiency?: OperationEfficiencySummaryV1): ControlCenterOperationDetailProjectionV1 {
   const participants = Object.values(record.participants).map((participant) => projectParticipant(record.id, participant));
   const stages = Object.values(record.stages).map((stage) => ({
     name: stage.name,
@@ -46,6 +47,7 @@ export function projectOperationRecordV1(record: OperationRecordV2): ControlCent
     ...(record.startedAt !== undefined ? { startedAt: record.startedAt } : {}),
     ...(record.finishedAt !== undefined ? { finishedAt: record.finishedAt } : {}),
     ...(record.error !== undefined ? { error: record.error } : {}),
+    ...(efficiency ? { efficiency } : {}),
     payloadSummary: `${record.kind} operation ${record.id}`,
     participants,
     stages,

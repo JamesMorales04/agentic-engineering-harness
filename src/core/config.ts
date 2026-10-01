@@ -4,6 +4,7 @@ import YAML from "yaml";
 import { z } from "zod";
 import type { HarnessProjectConfig, TaskContract } from "./types.js";
 import { assuranceLevelSchema, implementationRouteSchema, routeEvidenceSchema } from "../architecture/contracts.js";
+import { GITHUB_DELIVERY_ACTIONS_V1 } from "../security/actionKinds.js";
 
 const validationCommandSchema = z.object({ id: z.string().min(1), command: z.string().min(1), required: z.boolean().optional(), timeoutSeconds: z.number().int().positive().optional(), workingDirectory: z.string().optional() });
 const validatorSpecSchema = z.object({ id: z.string().min(1), adapter: z.string().min(1), command: z.string().min(1).optional(), required: z.boolean().optional(), timeoutSeconds: z.number().int().positive().optional(), workingDirectory: z.string().optional(), options: z.record(z.string(), z.unknown()).optional() });
@@ -71,7 +72,9 @@ const projectSchema = z.object({
   }).optional(),
   delivery: z.object({
     stateDir: z.string().optional(),
-    github: z.object({ enabled: z.boolean().optional(), tokenEnv: z.string().min(1).optional(), repository: z.string().regex(/^[^/]+\/[^/]+$/).optional(), apiBaseUrl: z.string().url().optional(), assignTokenOwner: z.boolean().optional(), labels: z.array(z.string()).optional(), branchPattern: z.string().min(1).optional(), finalizeOnAcceptance: z.boolean().optional(), pullRequestDraft: z.boolean().optional(), pullRequests: z.boolean().optional() }).optional(),
+    github: z.object({ enabled: z.boolean().optional(), allowedActions: z.array(z.enum(GITHUB_DELIVERY_ACTIONS_V1)).optional(), tokenEnv: z.string().min(1).optional(), repository: z.string().regex(/^[^/]+\/[^/]+$/).optional(), apiBaseUrl: z.string().url().optional(), assignTokenOwner: z.boolean().optional(), labels: z.array(z.string()).optional(), branchPattern: z.string().min(1).optional(), finalizeOnAcceptance: z.boolean().optional(), pullRequestDraft: z.boolean().optional(), pullRequests: z.boolean().optional() }).optional().superRefine((value, ctx) => {
+      if (value?.enabled === true && !value.allowedActions) ctx.addIssue({ code: "custom", path: ["allowedActions"], message: "delivery.github.allowedActions is required when GitHub delivery is enabled; list the exact permitted delivery actions" });
+    }),
     paseo: z.object({ enabled: z.boolean().optional(), createWorkspace: z.boolean().optional(), autoUseWorkspace: z.boolean().optional(), worktreeSlugPattern: z.string().min(1).optional() }).optional()
   }).optional(),
   memory: z.object({ provider: z.string(), required: z.boolean().optional(), benchmark: z.object({ casesDir: z.string().optional(), resultsDir: z.string().optional(), providers: z.array(memoryBenchmarkProviderSchema).optional() }).optional() }).optional(),
