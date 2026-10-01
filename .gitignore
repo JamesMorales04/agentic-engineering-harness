@@ -22,3 +22,13 @@ ui/control-center/dist/
 graphify-out/
 *.log
 .DS_Store
+
+# BEGIN Agentic Engineering Harness generated state
+.harness/*
+!.harness/project.yaml
+!.harness/toolchain.yaml
+!.harness/provider-versions.json
+!.harness/agents.source.jsonc
+!.harness/otel-collector.yaml
+.config/mise/conf.d/aeh.toml
+# END Agentic Engineering Harness generated state
