@@ -180,3 +180,35 @@ describe("S7 provenance config loading", () => {
     await expect(loadProjectConfig(root)).rejects.toThrow(/signing key and a verification public key/);
   });
 });
+
+describe("GitHub delivery action scope", () => {
+  async function writeDeliveryConfig(github: Record<string, unknown>): Promise<string> {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-github-scope-"));
+    tempRoots.push(root);
+    await fs.mkdir(path.join(root, ".harness"), { recursive: true });
+    await fs.writeFile(path.join(root, ".harness", "project.yaml"), YAML.stringify({ version: 1, project: { name: "delivery-scope" }, delivery: { github } }), "utf8");
+    return root;
+  }
+
+  it("requires an explicit action allowlist when GitHub delivery is enabled", async () => {
+    const root = await writeDeliveryConfig({ enabled: true });
+    await expect(loadProjectConfig(root)).rejects.toThrow(/allowedActions is required/);
+  });
+
+  it("accepts only the supported exact delivery effects", async () => {
+    const root = await writeDeliveryConfig({
+      enabled: true,
+      allowedActions: ["git.branch.create", "git.commit", "git.push", "github.pull-request.create"],
+      finalizeOnAcceptance: true
+    });
+    const config = await loadProjectConfig(root);
+    expect(config.delivery?.github?.allowedActions).toEqual(["git.branch.create", "git.commit", "git.push", "github.pull-request.create"]);
+  });
+
+  it("rejects merge, force, delete, and credential actions outside the supported allowlist", async () => {
+    for (const action of ["github.pull-request.merge", "git.push.force", "git.branch.delete", "github.repository.delete", "github.credentials.update"]) {
+      const root = await writeDeliveryConfig({ enabled: true, allowedActions: [action] });
+      await expect(loadProjectConfig(root)).rejects.toThrow();
+    }
+  });
+});

@@ -113,7 +113,7 @@ describe("git.branch.create reconciliation", () => {
   it("reports FAILED when the exact local branch is absent", async () => {
     const root = await tempRoot();
     const payload = { branch: "feature/change-1", expectedCommit: "a".repeat(40) };
-    const runExecutableSpy: typeof runExecutable = async () => ({ exitCode: 1, stdout: "", stderr: "", durationMs: 1 });
+    const runExecutableSpy: typeof runExecutable = async () => ({ exitCode: 0, stdout: "", stderr: "", durationMs: 1 });
     const result = await reconcileToolAction(root, makeIntent("git.branch.create", payload), payload, { runExecutable: runExecutableSpy });
     expect(result.outcome).toBe("FAILED");
     expect(result.detail).toBe("local-branch-absent");

@@ -144,9 +144,9 @@ async function reconcileGitBranchCreate(root: string, intent: ActionIntentV1, pa
   if (invalid.length || !branch || !expectedCommit) return buildResult(intent, "UNKNOWN", "payload-missing-evidence", invalidPayloadEvidence(payload, invalid), dependencies.now);
 
   const ref = `refs/heads/${branch}`;
-  const observed = await tryExecutable(dependencies.run, "git", ["show-ref", "--verify", "--hash", ref], { cwd: root, timeoutMs: GIT_TIMEOUT_MS });
+  const observed = await tryExecutable(dependencies.run, "git", ["for-each-ref", "--format=%(objectname)", ref], { cwd: root, timeoutMs: GIT_TIMEOUT_MS });
   if (observed.kind === "error") return buildResult(intent, "UNKNOWN", "git-unavailable", { branch, expectedCommit, error: observed.message }, dependencies.now);
-  if (observed.result.exitCode === 1) return buildResult(intent, "FAILED", "local-branch-absent", { branch, expectedCommit }, dependencies.now);
+  if (observed.result.exitCode === 0 && !observed.result.stdout.trim()) return buildResult(intent, "FAILED", "local-branch-absent", { branch, expectedCommit }, dependencies.now);
   if (observed.result.exitCode !== 0 || observed.result.timedOut) return buildResult(intent, "UNKNOWN", "local-branch-unreadable", { branch, expectedCommit, exitCode: observed.result.exitCode, timedOut: observed.result.timedOut === true, stderr: snippet(observed.result.stderr) }, dependencies.now);
   const observedCommit = observed.result.stdout.trim().toLowerCase();
   if (!GIT_COMMIT_PATTERN.test(observedCommit)) return buildResult(intent, "UNKNOWN", "local-branch-unreadable", { branch, expectedCommit, stdout: snippet(observed.result.stdout) }, dependencies.now);

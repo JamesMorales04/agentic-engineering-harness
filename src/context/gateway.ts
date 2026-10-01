@@ -13,6 +13,9 @@ import { HeadroomCompressionProvider } from "./compression/headroom.js";
 import { recordContextMetrics } from "./telemetry.js";
 import type { ContextCompressionProvider } from "./compression/types.js";
 import type { ContextEnvelope, ContextFragment, ContextFragmentProjection, ContextMetrics, ContextPreparationRequest, ContextPreparationResult } from "./types.js";
+import { recordContextAccountingObservation } from "../telemetry/efficiency.js";
+import { loadOperation, resolveOperationStateRoot } from "../operations/state.js";
+import { sha256Canonical } from "../core/digest.js";
 
 export interface ContextBudgetGatewayOptions { compressor?: ContextCompressionProvider; persist?: boolean; telemetry?: boolean; }
 
@@ -53,6 +56,34 @@ export class ContextBudgetGateway {
     const rendered = renderContextEnvelope(envelope);
     const metrics = metricsFor(durable, candidates.map((candidate) => candidate.optimized), delivered, discarded);
     if (this.telemetry && this.config.telemetry?.enabled !== false) await this.emitTelemetry(request, metrics, envelope);
+    if (this.telemetry && this.config.telemetry?.enabled === true && request.participantId) {
+      const stateRoot = resolveOperationStateRoot(this.root);
+      const operation = await loadOperation(stateRoot, request.operationId).catch(() => undefined);
+      const candidate = operation?.candidateRevision;
+      if (candidate && Number.isSafeInteger(operation?.operationExecutionRevision)) {
+        await recordContextAccountingObservation(stateRoot, this.config, {
+          operationId: request.operationId,
+          participantId: request.participantId,
+          generation: request.participantGeneration ?? operation.participants[request.participantId]?.executionBinding?.participantGeneration,
+          role,
+          logicalAgent: request.logicalAgent,
+          phase: request.phase,
+          candidate,
+          operationExecutionRevision: operation.operationExecutionRevision!,
+          controllerEpoch: operation.controller?.epoch ?? 0,
+          runtimeSessionId: request.runtimeSessionId,
+          envelopeDigest: envelope.provenance.sha256,
+          rawContextTokens: metrics.estimatedRawTokens,
+          projectedContextTokens: metrics.estimatedProjectedTokens,
+          deliveredContextTokens: metrics.estimatedDeliveredTokens,
+          fragmentIdentities: envelope.fragments.map((fragment) => ({
+            fragmentId: fragment.id,
+            contentDigest: sha256Canonical(fragment.content),
+            deliveredTokens: fragment.estimatedTokens
+          }))
+        }).catch(() => false);
+      }
+    }
     return { envelope, rendered, metrics, retrieval: { root: this.root, operationId: request.operationId, logicalAgent: request.logicalAgent, allowedFragmentIds: [...envelope.retrieval.allowedFragmentIds] } };
   }
 
@@ -203,7 +234,7 @@ function metricsFor(raw: ContextFragment[], optimized: ContextFragmentProjection
   const rawTokens = raw.reduce((sum, fragment) => sum + estimateTokens(fragment.content), 0); const projectedTokens = optimized.reduce((sum, fragment) => sum + estimateTokens(fragment.content), 0); const deliveredTokens = delivered.reduce((sum, fragment) => sum + fragment.estimatedTokens, 0);
   const rawBytes = raw.reduce((sum, fragment) => sum + estimateBytes(fragment.content), 0); const projectedBytes = optimized.reduce((sum, fragment) => sum + estimateBytes(fragment.content), 0); const deliveredBytes = delivered.reduce((sum, fragment) => sum + estimateBytes(fragment.content), 0);
   const compressed = optimized.filter((fragment) => fragment.compressed).length;
-  return { rawBytes, projectedBytes, deliveredBytes, estimatedRawTokens: rawTokens, estimatedDeliveredTokens: deliveredTokens, retrievedFragments: 0, deliveredFragments: delivered.length, compressedFragments: compressed, discardedFragments: discarded.length, retrievalRequests: 0, retrievalRetries: 0, retrievalEscapes: 0, compressionRatio: rawTokens ? deliveredTokens / rawTokens : undefined, projectionRatio: rawTokens ? projectedTokens / rawTokens : undefined };
+  return { rawBytes, projectedBytes, deliveredBytes, estimatedRawTokens: rawTokens, estimatedProjectedTokens: projectedTokens, estimatedDeliveredTokens: deliveredTokens, retrievedFragments: 0, deliveredFragments: delivered.length, compressedFragments: compressed, discardedFragments: discarded.length, retrievalRequests: 0, retrievalRetries: 0, retrievalEscapes: 0, compressionRatio: rawTokens ? deliveredTokens / rawTokens : undefined, projectionRatio: rawTokens ? projectedTokens / rawTokens : undefined };
 }
 
 function safeSegment(value: string): string { const sanitized = value.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, ""); return sanitized || "fragment"; }

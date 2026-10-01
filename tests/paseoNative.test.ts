@@ -78,6 +78,67 @@ describe("Paseo native observability", () => {
     expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 
+  it("leaves structured timeline capture off unless efficiency telemetry is enabled", async () => {
+    let status = "working";
+    let agentUpdate: (() => void) | undefined;
+    const timelineSubscribe = vi.fn(() => vi.fn());
+    const timelineRefetch = vi.fn(async () => ({ entries: [{ type: "assistant_message", text: "done" }] }));
+    const handle = {
+      id: "agent-telemetry-disabled",
+      subscribe: vi.fn((handler: () => void) => { agentUpdate = handler; return vi.fn(); }),
+      refetch: vi.fn(async () => ({ agent: { id: "agent-telemetry-disabled", status } })),
+      timeline: { refetch: timelineRefetch, subscribe: timelineSubscribe }
+    };
+    const waiting = waitForPaseoAgentHandle(handle, 2_000, undefined, 10);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    status = "idle";
+    agentUpdate?.();
+    const result = await waiting;
+    expect(result.lastMessage).toBe("done");
+    expect(result.efficiencyTelemetry).toBeUndefined();
+    expect(timelineSubscribe).not.toHaveBeenCalled();
+    expect(timelineRefetch).toHaveBeenCalledWith({ direction: "tail", limit: 50 });
+  });
+
+  it("captures provider turns and canonical tool calls when local efficiency telemetry is enabled", async () => {
+    let status = "working";
+    let agentUpdate: (() => void) | undefined;
+    let timelineUpdate: ((value: unknown) => void) | undefined;
+    const handle = {
+      id: "agent-telemetry-enabled",
+      subscribe: vi.fn((handler: () => void) => { agentUpdate = handler; return vi.fn(); }),
+      refetch: vi.fn(async () => ({ agent: { id: "agent-telemetry-enabled", status, lastUsage: { inputTokens: 90, outputTokens: 20, contextWindowUsedTokens: 128 } } })),
+      timeline: {
+        subscribe: vi.fn((handler: (value: unknown) => void) => {
+          timelineUpdate = handler;
+          const unsubscribe = vi.fn();
+          Object.assign(unsubscribe, { ready: Promise.resolve() });
+          return unsubscribe;
+        }),
+        refetch: vi.fn(async () => ({
+          projection: "canonical", gap: false, reset: false, staleCursor: false, hasOlder: false,
+          entries: [{ provider: "openai", item: { type: "tool_call", status: "failed", callId: "call-1", name: "shell", detail: { type: "shell", command: "private command" }, metadata: { server: "local-shell" }, error: { code: "timeout" } }, turnId: "turn-1", timestamp: "2026-01-01T00:00:02.000Z", seqStart: 2, seqEnd: 2, collapsed: [] }]
+        }))
+      }
+    };
+    const waiting = waitForPaseoAgentHandle(handle, 2_000, undefined, 10, true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    timelineUpdate?.({ event: { type: "turn_started", provider: "openai", turnId: "turn-1", timestamp: "2026-01-01T00:00:01.000Z" } });
+    timelineUpdate?.({ event: { type: "turn_completed", provider: "openai", turnId: "turn-1", timestamp: "2026-01-01T00:00:03.000Z", usage: { inputTokens: 90, cachedInputTokens: 10, outputTokens: 20, totalCostUsd: 0.01 } } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    status = "idle";
+    agentUpdate?.();
+    const result = await waiting;
+    expect(result.efficiencyTelemetry).toMatchObject({
+      source: "PROVIDER_TURN_EVENTS",
+      coverage: "COMPLETE",
+      turnCount: 1,
+      turns: [{ turnId: "turn-1", inputTokens: 90, cachedInputTokens: 10, outputTokens: 20, costUsd: 0.01 }],
+      toolCalls: [{ callId: "call-1", toolName: "shell", outcome: "TIMEOUT" }]
+    });
+    expect(JSON.stringify(result.efficiencyTelemetry)).not.toContain("private command");
+  });
+
   it("accepts a completed structured turn from changed lastUserMessageAt even without assistant text", async () => {
     const unsubscribe = vi.fn();
     const handle = {

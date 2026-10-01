@@ -434,7 +434,7 @@ async function createContext(operationId: string, options: { allowedExternalEffe
     policyDigests: {},
     validationPolicy: {},
     reviewPolicy: {},
-    deliveryPolicy: {},
+    deliveryPolicy: { allowedActions: ["git.branch.create", "git.commit"] },
     knowledgePolicy: {},
     contextPolicy: {},
     allowedExternalEffects: options.allowedExternalEffects ?? ["github.branch.create"],

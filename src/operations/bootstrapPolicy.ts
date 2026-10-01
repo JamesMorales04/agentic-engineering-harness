@@ -2,7 +2,7 @@ import { compileResolvedOperationPolicy, assertResolvedOperationPolicyV1 } from 
 import type { AssuranceLevel, ImplementationRoute } from "../architecture/contracts.js";
 import { sha256Canonical } from "../core/digest.js";
 import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
-import { configuredExternalEffects, requiredHumanActionAuthorizations } from "../security/actionPolicy.js";
+import { configuredDeliveryPolicy, requiredHumanActionAuthorizations } from "../security/actionPolicy.js";
 import { bindResolvedOperationPolicy, currentControllerEpoch, type OperationRecordV2 } from "./state.js";
 
 /**
@@ -35,14 +35,10 @@ export async function bindBootstrapOperationPolicy(
     }
     return operation;
   }
-  const allowedExternalEffects = configuredExternalEffects(config, operation.kind);
+  const deliveryPolicy = configuredDeliveryPolicy(config, operation.kind);
+  const allowedExternalEffects = deliveryPolicy.allowedExternalEffects;
   const humanDecisionRequirements = requiredHumanActionAuthorizations(allowedExternalEffects);
   const validationPolicy = contract?.verification ?? {};
-  const deliveryPolicy = {
-    githubEnabled: config.delivery?.github?.enabled === true,
-    paseoEnabled: config.delivery?.paseo?.enabled === true,
-    allowedExternalEffects
-  };
   const policy = compileResolvedOperationPolicy({
     projectId: candidate.projectId ?? config.project.name,
     operationId: operation.id,

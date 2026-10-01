@@ -1,0 +1,1374 @@
+{
+  "schemaVersion": 1,
+  "analysisKind": "AEH_SELF_HOSTING_FAILURE_FORENSICS",
+  "operation": {
+    "id": "CHANGE-20261001T193128Z-a55b08d5",
+    "status": "FAILED",
+    "terminalRevision": 104,
+    "terminalAt": "2026-10-01T20:00:56.166Z",
+    "leadAcknowledgedRevision": 104,
+    "leadAcknowledgedAt": "2026-10-01T20:01:08.749Z",
+    "createdAt": "2026-10-01T19:31:28.877Z",
+    "startedAt": "2026-10-01T19:31:30.339Z",
+    "finishedAt": "2026-10-01T20:00:56.165Z",
+    "route": "FORMAL_SDD",
+    "assurance": "ELEVATED",
+    "operationExecutionRevision": 3,
+    "controllerEpoch": 1,
+    "sourceEvidence": "read through operations/state.ts loadOperation; no operation state was changed"
+  },
+  "classificationLegend": {
+    "OBSERVED": "Present in a durable operation, report, participant receipt, result, or Paseo trace.",
+    "DERIVED_FROM_OBSERVED": "Deterministic conclusion supported by listed durable fields.",
+    "NOT_PRODUCED": "No artifact/event/result exists in the inspected durable record.",
+    "UNKNOWN": "Insufficient durable evidence; no state is inferred."
+  },
+  "evidence": [
+    {
+      "kind": "OperationRecord",
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5.json",
+      "status": "OBSERVED",
+      "bytes": 56762,
+      "sha256": "56fb176d246987d84abe0ecddf37bb6e45070cba3ba2a5ea94c6d86fdc8bd340"
+    },
+    {
+      "kind": "OperationEvents",
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/events.ndjson",
+      "status": "OBSERVED",
+      "eventCount": 106,
+      "bytes": 21035,
+      "sha256": "93ae7423eaa8b9c3f40d50aeac6cc4ec35f0a17e168822dfbcef8ec1c64c49ba",
+      "note": "Events preserve revision, time, type, status, phase and changed field names; they do not include transition payloads.",
+      "operationStatusEvent": "operation.terminal FAILED revision 104; operation.lead.acknowledged revision 104 at 2026-10-01T20:01:08.752Z."
+    },
+    {
+      "kind": "PlannerStructuredResult",
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/results/planner/0001-0001-9ffdc034-34f0-4309-98fc-536cdff0f0e5.json",
+      "status": "OBSERVED",
+      "attempt": 1,
+      "sequence": 1,
+      "payloadSha256": "476e3c953288647b41a39fbbc7e7de2135c9e2479ea0a8779bb8907bee2c4c22",
+      "bytes": 19503,
+      "sha256": "bcc2eef8743bbe43a99f8c6877709a5d8991feb62fba0f46ce486baff5207186"
+    },
+    {
+      "kind": "PlannerStructuredResult",
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/results/planner/0002-0002-7ef4fa8c-c001-474a-b00d-c7c46bfc5ead.json",
+      "status": "OBSERVED",
+      "attempt": 1,
+      "sequence": 2,
+      "payloadSha256": "476e3c953288647b41a39fbbc7e7de2135c9e2479ea0a8779bb8907bee2c4c22",
+      "bytes": 19508,
+      "sha256": "f554e61321beb086e42e1be70e4d2666b4446cdee6f4466071b6f4f3a41df664",
+      "note": "The two accepted payload digests match; no corrective Planner output is evidenced."
+    },
+    {
+      "kind": "SealedTaskContract",
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/workspace-evidence/latest/.harness/contracts/CHANGE-20261001T193128Z-a55b08d5.yaml",
+      "status": "OBSERVED",
+      "bytes": 1502,
+      "sha256": "8942339329d4af9aed20f48f2b56f23e9fadf9ff70fadf36545759952289bc2d"
+    },
+    {
+      "kind": "Seal",
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/workspace-evidence/latest/.harness/seals/CHANGE-20261001T193128Z-a55b08d5.json",
+      "status": "OBSERVED",
+      "bytes": 1161,
+      "sha256": "7af52809865016510b1798713995f63c0dacd55e3f0852c92e9054632fe903c6"
+    },
+    {
+      "kind": "ValidationReport",
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/workspace-evidence/latest/.harness/reports/CHANGE-20261001T193128Z-a55b08d5.json",
+      "status": "OBSERVED",
+      "bytes": 17019,
+      "sha256": "2130dd32ae5078557d36e6d02f6a8f508776edd4425daa0b81586bf5ba7919d9"
+    },
+    {
+      "kind": "PaseoTrace",
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/workspace-evidence/latest/.harness/telemetry/paseo.ndjson",
+      "status": "OBSERVED",
+      "eventCount": 37,
+      "bytes": 9938,
+      "sha256": "87411a99fa648596988e85539f70300a1a1d5e241703052777944026b6d02f11"
+    },
+    {
+      "kind": "ResolvedOperationPolicy",
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5.json#/resolvedOperationPolicy",
+      "status": "OBSERVED",
+      "digest": "8ad0d8a61ce316c7a461426cbe07cca51fa2863ffecb57010c5207cad30eb701",
+      "operationExecutionRevision": 3,
+      "candidateRevision": 3,
+      "githubEnabled": false,
+      "allowedActions": [],
+      "allowedExternalEffects": [],
+      "humanDecisionRequirements": [],
+      "sha256OfContainingOperationRecord": "56fb176d246987d84abe0ecddf37bb6e45070cba3ba2a5ea94c6d86fdc8bd340"
+    }
+  ],
+  "timeline": [
+    {
+      "at": "2026-10-01T19:31:28.877Z",
+      "operationRevision": 1,
+      "candidate": null,
+      "executionRevision": null,
+      "participant": "controller",
+      "artifact": "OperationRecord.intent / changePreflight",
+      "status": "QUEUED",
+      "blocker": null,
+      "causalPredecessor": null,
+      "classification": "OBSERVED",
+      "detail": "IntentDecision classified CHANGE; route FORMAL_SDD and assurance ELEVATED."
+    },
+    {
+      "at": "2026-10-01T19:31:30.759Z",
+      "operationRevision": 8,
+      "candidate": null,
+      "executionRevision": null,
+      "participant": "controller",
+      "artifact": "ResolvedOperationPolicy bootstrap bind",
+      "status": "BOUND",
+      "blocker": null,
+      "causalPredecessor": "revision 1 CHANGE intent",
+      "classification": "OBSERVED",
+      "detail": "Initial policy was bound before route/candidate execution semantics were final."
+    },
+    {
+      "at": "2026-10-01T19:31:34.305Z",
+      "operationRevision": 10,
+      "candidate": null,
+      "executionRevision": null,
+      "participant": "controller",
+      "artifact": "CandidateRevision bind",
+      "status": "BOUND",
+      "blocker": null,
+      "causalPredecessor": "controller bootstrap",
+      "classification": "OBSERVED",
+      "detail": "An initial candidate was bound; its exact identity is not present in the event payload."
+    },
+    {
+      "at": "2026-10-01T19:31:34.327Z",
+      "operationRevision": 11,
+      "candidate": null,
+      "executionRevision": null,
+      "participant": "controller",
+      "artifact": "ResolvedOperationPolicy bind",
+      "status": "BOUND",
+      "blocker": null,
+      "causalPredecessor": "revision 10 candidate bind",
+      "classification": "OBSERVED",
+      "detail": "The exact digest and candidate binding for this historical policy revision are not present in the event payload."
+    },
+    {
+      "at": "2026-10-01T19:31:35.919Z",
+      "operationRevision": 19,
+      "candidate": null,
+      "executionRevision": null,
+      "participant": "Operation Supervisor generation 1",
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/supervisors/generation-1.json",
+      "status": "ACTIVE",
+      "blocker": null,
+      "causalPredecessor": "environment preflight",
+      "classification": "OBSERVED",
+      "detail": "Paseo materialized the first supervisor."
+    },
+    {
+      "at": "2026-10-01T19:32:14.877Z",
+      "operationRevision": 24,
+      "candidate": "candidate:CHANGE-20261001T193128Z-a55b08d5:r2 / 406145e468a63ce4b4ea7896d79c1d7c8336ef382220b61c1aafa52db1bbb70c",
+      "executionRevision": 3,
+      "participant": "Explorer participant:1179e0329b06567d; session a13cb177-db31-44b6-8de6-d3808722371b",
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/results/explorer/0002-0002-f0fa6370-a62d-4f17-b5c1-896990fb3666.json",
+      "status": "SUCCEEDED",
+      "blocker": null,
+      "causalPredecessor": "first supervisor generation active",
+      "classification": "OBSERVED",
+      "detail": "Receipt finished at 19:41:14.414Z; durable result accepted at 19:41:15.520Z."
+    },
+    {
+      "at": "2026-10-01T19:41:16.177Z",
+      "operationRevision": 33,
+      "candidate": "candidate:CHANGE-20261001T193128Z-a55b08d5:r2 / 406145e468a63ce4b4ea7896d79c1d7c8336ef382220b61c1aafa52db1bbb70c",
+      "executionRevision": 3,
+      "participant": "Operation Supervisor generation 1",
+      "artifact": "Paseo context status snapshot",
+      "status": "USAGE_OBSERVED_CONTEXT_WINDOW_ONLY",
+      "blocker": null,
+      "causalPredecessor": "Explorer completion",
+      "classification": "OBSERVED",
+      "detail": "Paseo reported contextWindowUsedTokens=23840 and contextWindowMaxTokens=828400. These are context-window values, not provider billing usage."
+    },
+    {
+      "at": "2026-10-01T19:41:16.207Z",
+      "operationRevision": 35,
+      "candidate": "candidate:CHANGE-20261001T193128Z-a55b08d5:r2 / 406145e468a63ce4b4ea7896d79c1d7c8336ef382220b61c1aafa52db1bbb70c",
+      "executionRevision": 3,
+      "participant": "Spec Manager participant:a855f29b284f0545; session 0f2cdcfb-0f0b-4798-8b16-7807cba49bcc",
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/results/spec-manager/0002-0002-559d6163-b0b5-4a19-8a01-f9d1482e32df.json",
+      "status": "READY / SUCCEEDED",
+      "blocker": null,
+      "causalPredecessor": "Explorer durable result",
+      "classification": "OBSERVED",
+      "detail": "Authored proposal, design, tasks and one capability spec are present as structured-result content (sanitized sizes: 2184, 2536, 1571 and 3805 bytes)."
+    },
+    {
+      "at": "2026-10-01T19:44:45.922Z",
+      "operationRevision": 48,
+      "candidate": "candidate:CHANGE-20261001T193128Z-a55b08d5:r3 / 1777a48c19d05a8c1b484415ad0559f98c979c7403591cde7bdc10b957d40407; source d86afe9f936293793a306b459eeeb7eef16d2b9440a56ee4e4174ed32116fbd9",
+      "executionRevision": 3,
+      "participant": "controller compiling sealed SDD",
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/workspace-evidence/latest/.harness/contracts/CHANGE-20261001T193128Z-a55b08d5.yaml and seal",
+      "status": "COMPLETED",
+      "blocker": null,
+      "causalPredecessor": "Spec Manager READY result",
+      "classification": "OBSERVED",
+      "detail": "Compiled TaskContract, OpenSpec and native specs, then advanced candidate to r3."
+    },
+    {
+      "at": "2026-10-01T19:44:46.179Z",
+      "operationRevision": 51,
+      "candidate": "candidate:CHANGE-20261001T193128Z-a55b08d5:r3 / 1777a48c19d05a8c1b484415ad0559f98c979c7403591cde7bdc10b957d40407",
+      "executionRevision": 3,
+      "participant": "Planner participant:34efe2b4124d9471; session 344eae6e-90a7-4ee9-8e3f-dd355a19fb24",
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/results/planner/0002-0002-7ef4fa8c-c001-474a-b00d-c7c46bfc5ead.json",
+      "status": "STRUCTURED_RESULT_ACCEPTED; WORKGRAPH_REJECTED",
+      "blocker": "units[0].objective=601 characters and units[1].objective=798 characters exceed workGraphV1Schema objective.max(500)",
+      "causalPredecessor": "sealed TaskContract / SDD candidate r3",
+      "classification": "OBSERVED",
+      "detail": "Planner output contract accepted the strings; deterministic WorkGraph validation rejected them. The third objective was 428 characters. No WorkGraph, ParticipantPlan or ExecutionBlueprint was compiled."
+    },
+    {
+      "at": "2026-10-01T19:50:54.228Z",
+      "operationRevision": 65,
+      "candidate": "candidate:CHANGE-20261001T193128Z-a55b08d5:r3 / 1777a48c19d05a8c1b484415ad0559f98c979c7403591cde7bdc10b957d40407",
+      "executionRevision": 3,
+      "participant": "controller planning gate",
+      "artifact": "OperationRecord.stages.planning",
+      "status": "FAILED",
+      "blocker": "Participant plan rejected by WorkGraph schema validation.",
+      "causalPredecessor": "Planner structured output with two oversized objectives",
+      "classification": "OBSERVED",
+      "detail": "No corrective Planner turn was requested."
+    },
+    {
+      "at": "2026-10-01T19:51:46.881Z",
+      "operationRevision": 73,
+      "candidate": "candidate:CHANGE-20261001T193128Z-a55b08d5:r3 / 1777a48c19d05a8c1b484415ad0559f98c979c7403591cde7bdc10b957d40407",
+      "executionRevision": 3,
+      "participant": "validation infrastructure",
+      "artifact": "npm-check command validation",
+      "status": "FAIL (two observed checks across two repair rounds; retained final report is second report)",
+      "blocker": "npm run check exit 2 during TypeScript typecheck; dependencies/types were unavailable; build/tests did not run.",
+      "causalPredecessor": "WorkGraph rejection was not used to stop generic runTask validation/repair flow",
+      "classification": "DERIVED_FROM_OBSERVED",
+      "detail": "The retained stdout is 12015 bytes with SHA-256 a1d1d45cbf69187c656688aa5c227cef28cbc5240130d16bd33e31fdd6cceb77; stderr is empty. It contains 96 TypeScript diagnostics: TS2307=44, TS2580=14, TS7006=20, TS7053=6, TS2339=8, TS2345=2, TS2322=1, TS2503=1."
+    },
+    {
+      "at": "2026-10-01T19:51:54.459Z",
+      "operationRevision": 78,
+      "candidate": "candidate:CHANGE-20261001T193128Z-a55b08d5:r3 / 1777a48c19d05a8c1b484415ad0559f98c979c7403591cde7bdc10b957d40407",
+      "executionRevision": 3,
+      "participant": "Repairer participant:43feab9f7f5c7947; session eaf91e2e-ee3c-47c8-b3b7-8216c2c17a6d",
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/results/repairer/0002-0002-eb8f52c4-5ec6-42a0-969f-2a99a51bb6a0.json",
+      "status": "SUCCEEDED runtime; no candidate revision advance evidenced",
+      "blocker": "npm-check and CandidateAssurance remained blocked",
+      "causalPredecessor": "first npm-check failure",
+      "classification": "OBSERVED",
+      "detail": "Repair packet attempt 1 classified VALIDATION_FAILURE; its accepted participant receipt did not produce a bound CandidateImpact."
+    },
+    {
+      "at": "2026-10-01T19:55:41.295Z",
+      "operationRevision": 91,
+      "candidate": "candidate:CHANGE-20261001T193128Z-a55b08d5:r3 / 1777a48c19d05a8c1b484415ad0559f98c979c7403591cde7bdc10b957d40407",
+      "executionRevision": 3,
+      "participant": "Repairer participant:eb5a8d4c202f36d8; session 96d64bf8-51de-4732-8b3f-b9f7ec5e81d6",
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/results/repairer/0002-0002-eb22ac46-7316-4918-9f0f-a843563a8458.json",
+      "status": "SUCCEEDED runtime; no candidate revision advance evidenced",
+      "blocker": "npm-check and CandidateAssurance remained blocked",
+      "causalPredecessor": "second validation-repair attempt",
+      "classification": "OBSERVED",
+      "detail": "Repair packet attempt 2 also classified VALIDATION_FAILURE."
+    },
+    {
+      "at": "2026-10-01T20:00:48.515Z",
+      "operationRevision": 99,
+      "candidate": "candidate:CHANGE-20261001T193128Z-a55b08d5:r3 / 1777a48c19d05a8c1b484415ad0559f98c979c7403591cde7bdc10b957d40407",
+      "executionRevision": 3,
+      "participant": "validation infrastructure",
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/workspace-evidence/latest/.harness/reports/CHANGE-20261001T193128Z-a55b08d5.json",
+      "status": "FAIL",
+      "blocker": "command.npm-check exit 2; CandidateAssurance blocked without CandidateImpact",
+      "causalPredecessor": "Repairer attempt 2 completed without a new candidate impact",
+      "classification": "OBSERVED",
+      "detail": "The report candidate identity matched r3 and the observed source digest matched the expected source digest."
+    },
+    {
+      "at": "2026-10-01T20:00:56.166Z",
+      "operationRevision": 104,
+      "candidate": "candidate:CHANGE-20261001T193128Z-a55b08d5:r3 / 1777a48c19d05a8c1b484415ad0559f98c979c7403591cde7bdc10b957d40407",
+      "executionRevision": 3,
+      "participant": "operation controller",
+      "artifact": "OperationRecord.result and operation.terminal event",
+      "status": "FAILED",
+      "blocker": "npm-check; CandidateAssurance without current CandidateImpact; AcceptanceOracle without current AcceptanceAssertions",
+      "causalPredecessor": "planning and validation gates remained failed",
+      "classification": "OBSERVED",
+      "detail": "No Reviewer, EvidenceBundle, accepted Oracle disposition, ObjectiveCompletion, delivery ActionIntent or ActionReceipt was produced."
+    },
+    {
+      "at": "2026-10-01T20:00:56.165Z",
+      "operationRevision": 104,
+      "candidate": "candidate:CHANGE-20261001T193128Z-a55b08d5:r3 / 1777a48c19d05a8c1b484415ad0559f98c979c7403591cde7bdc10b957d40407",
+      "executionRevision": 3,
+      "participant": "operation controller",
+      "artifact": "OperationRecord.stages at terminalization",
+      "status": "FAILED; active stage records remained RUNNING",
+      "blocker": "context, executing, validation retained RUNNING without finishedAt",
+      "causalPredecessor": "terminalization revision 104",
+      "classification": "OBSERVED",
+      "detail": "This is a separate stage-ledger observability defect; it did not cause the WorkGraph or npm-check failure."
+    }
+  ],
+  "workGraph": {
+    "plannerOutputContract": "VALID",
+    "workGraphV1Schema": "REJECTED",
+    "maximumObjectiveCharacters": 500,
+    "objectives": [
+      {
+        "workUnitId": "projection-source-map",
+        "characters": 601,
+        "status": "REJECTED"
+      },
+      {
+        "workUnitId": "control-center-redesign",
+        "characters": 798,
+        "status": "REJECTED"
+      },
+      {
+        "workUnitId": "browser-and-visual-evidence",
+        "characters": 428,
+        "status": "VALID"
+      }
+    ],
+    "workGraph": "NOT_PRODUCED",
+    "participantPlan": "NOT_PRODUCED",
+    "executionBlueprint": "NOT_PRODUCED",
+    "correctiveRetry": "NOT_PRODUCED",
+    "silentTruncation": "NOT_OBSERVED",
+    "plannerResultArtifacts": [
+      {
+        "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/results/planner/0001-0001-9ffdc034-34f0-4309-98fc-536cdff0f0e5.json",
+        "createdAt": "2026-10-01T19:49:38.023Z",
+        "operationRevision": 54,
+        "executionRevision": 3,
+        "participantId": "participant:34efe2b4124d9471",
+        "sessionId": "344eae6e-90a7-4ee9-8e3f-dd355a19fb24",
+        "supervisorGeneration": 1,
+        "candidate": {
+          "candidateId": "candidate:CHANGE-20261001T193128Z-a55b08d5:r3",
+          "revision": 3,
+          "identityDigest": "1777a48c19d05a8c1b484415ad0559f98c979c7403591cde7bdc10b957d40407"
+        },
+        "attempt": 1,
+        "sequence": 1,
+        "source": "mcp",
+        "payloadSha256": "476e3c953288647b41a39fbbc7e7de2135c9e2479ea0a8779bb8907bee2c4c22",
+        "artifactSha256": "bcc2eef8743bbe43a99f8c6877709a5d8991feb62fba0f46ce486baff5207186"
+      },
+      {
+        "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/results/planner/0002-0002-7ef4fa8c-c001-474a-b00d-c7c46bfc5ead.json",
+        "createdAt": "2026-10-01T19:50:34.409Z",
+        "operationRevision": 54,
+        "executionRevision": 3,
+        "participantId": "participant:34efe2b4124d9471",
+        "sessionId": "344eae6e-90a7-4ee9-8e3f-dd355a19fb24",
+        "supervisorGeneration": 1,
+        "candidate": {
+          "candidateId": "candidate:CHANGE-20261001T193128Z-a55b08d5:r3",
+          "revision": 3,
+          "identityDigest": "1777a48c19d05a8c1b484415ad0559f98c979c7403591cde7bdc10b957d40407"
+        },
+        "attempt": 1,
+        "sequence": 2,
+        "source": "captured",
+        "payloadSha256": "476e3c953288647b41a39fbbc7e7de2135c9e2479ea0a8779bb8907bee2c4c22",
+        "artifactSha256": "f554e61321beb086e42e1be70e4d2666b4446cdee6f4466071b6f4f3a41df664"
+      }
+    ],
+    "resultInterpretation": "The two durable Planner files are attempt 1, same participant/session/candidate and identical payloadSha256; one is the MCP result and one its captured copy. They are not a corrective retry."
+  },
+  "rootCauseGraph": {
+    "nodes": [
+      {
+        "id": "planner-objectives",
+        "status": "OBSERVED",
+        "summary": "Two Planner objectives exceed the WorkGraph schema limit."
+      },
+      {
+        "id": "workgraph-rejected",
+        "status": "OBSERVED",
+        "summary": "Deterministic WorkGraph compilation failed; no ParticipantPlan or ExecutionBlueprint followed."
+      },
+      {
+        "id": "planning-gate-failed",
+        "status": "OBSERVED",
+        "summary": "The planning stage recorded the WorkGraph failure."
+      },
+      {
+        "id": "execution-continued",
+        "status": "OBSERVED",
+        "summary": "Generic runTask validation and Repairer recovery continued despite the pre-execution planning failure."
+      },
+      {
+        "id": "npm-check-environment",
+        "status": "OBSERVED",
+        "summary": "The candidate workspace did not resolve required project packages/types before npm run check."
+      },
+      {
+        "id": "candidate-impact-absent",
+        "status": "OBSERVED",
+        "summary": "No candidate ChangeSet/assembly impact was produced."
+      },
+      {
+        "id": "assurance-blocked",
+        "status": "OBSERVED",
+        "summary": "CandidateAssurance correctly failed closed without a bound CandidateImpact."
+      },
+      {
+        "id": "assertions-absent",
+        "status": "OBSERVED",
+        "summary": "S4 AcceptanceAssertions compilation was not produced because current candidate assurance did not compile."
+      },
+      {
+        "id": "oracle-blocked",
+        "status": "OBSERVED",
+        "summary": "AcceptanceOracle rejected disposition because current assertions were absent."
+      },
+      {
+        "id": "github-disabled",
+        "status": "OBSERVED",
+        "summary": "ResolvedOperationPolicy had no allowed external effects because project GitHub delivery was disabled."
+      },
+      {
+        "id": "delivery-policy-empty",
+        "status": "OBSERVED",
+        "summary": "Even after an accepted candidate, the frozen project policy would have blocked branch publication and PR delivery."
+      },
+      {
+        "id": "stage-ledger-open",
+        "status": "OBSERVED",
+        "summary": "Several stage records remained RUNNING in the terminal FAILED OperationRecord; separate from the causal failure chain."
+      },
+      {
+        "id": "operation-terminal",
+        "status": "OBSERVED",
+        "summary": "Operation terminalized FAILED at revision 104 and the Lead acknowledged revision 104."
+      },
+      {
+        "id": "repairer-runs",
+        "status": "OBSERVED",
+        "summary": "Two bounded Repairer rounds ran after npm-check failures; neither advanced the candidate."
+      }
+    ],
+    "edges": [
+      {
+        "from": "planner-objectives",
+        "to": "workgraph-rejected",
+        "kind": "DETERMINISTIC_VALIDATION"
+      },
+      {
+        "from": "workgraph-rejected",
+        "to": "planning-gate-failed",
+        "kind": "CAUSAL"
+      },
+      {
+        "from": "planning-gate-failed",
+        "to": "execution-continued",
+        "kind": "GATING_DEFECT"
+      },
+      {
+        "from": "workgraph-rejected",
+        "to": "candidate-impact-absent",
+        "kind": "NO_CHANGESET_COULD_BE_EXECUTED"
+      },
+      {
+        "from": "candidate-impact-absent",
+        "to": "assurance-blocked",
+        "kind": "REQUIRED_INPUT_ABSENT"
+      },
+      {
+        "from": "assurance-blocked",
+        "to": "assertions-absent",
+        "kind": "REQUIRED_COMPILATION_ABSENT"
+      },
+      {
+        "from": "assertions-absent",
+        "to": "oracle-blocked",
+        "kind": "FAIL_CLOSED"
+      },
+      {
+        "from": "execution-continued",
+        "to": "npm-check-environment",
+        "kind": "INDEPENDENT_VALIDATION_BRANCH"
+      },
+      {
+        "from": "github-disabled",
+        "to": "delivery-policy-empty",
+        "kind": "CORRECT_POLICY_RESULT"
+      },
+      {
+        "from": "stage-ledger-open",
+        "to": "operation-terminal",
+        "kind": "OBSERVABILITY_DEFECT_NOT_CAUSAL"
+      },
+      {
+        "from": "npm-check-environment",
+        "to": "repairer-runs",
+        "kind": "TRIGGERED_TWO_REPAIR_ROUNDS"
+      }
+    ],
+    "minimumCauses": [
+      "The initiating planning defect was the missing bounded corrective retry after deterministic WorkGraph rejection; generic runTask also continued into validation and Repairer recovery after pre-execution planning had failed.",
+      "npm-check was a separate candidate-workspace dependency setup failure. Exact stdout proves TypeScript could not resolve project modules and Node declarations; build/tests were not reached.",
+      "No WorkGraph meant no ParticipantPlan/ExecutionBlueprint, Implementer ChangeSet, or CandidateImpact request. Candidate assurance, assertions, EvidenceBundle, AcceptanceOracle, and ObjectiveCompletion were downstream absent/blocked states, not independent bugs.",
+      "GitHub project policy was disabled and correctly resolved to an empty external-effect allowlist. Delivery finalization was not reached after acceptance had already failed.",
+      "Open stage statuses at terminalization were a separate observability defect and have now been repaired for future operations."
+    ]
+  },
+  "candidateImpactLifecycle": {
+    "classification": "A_AND_F",
+    "requested": false,
+    "produced": false,
+    "reason": "No WorkGraph wave or ChangeSet existed after the planning gate failed; no CandidateImpact semantic assessment request was formed.",
+    "candidateBinding": "The final validation report matched candidate r3; no stale or wrong-candidate impact was observed.",
+    "assuranceCompilation": {
+      "status": "BLOCKED",
+      "blocker": "current assembled candidate has no bound CandidateImpact"
+    },
+    "acceptanceAssertions": {
+      "status": "NOT_PRODUCED",
+      "reason": "S4 compilation requires current candidate assurance"
+    },
+    "evidenceBundle": "NOT_PRODUCED",
+    "acceptanceOracle": {
+      "status": "BLOCKED",
+      "artifact": "NOT_PRODUCED",
+      "blocker": "ACCEPTANCE_ASSERTIONS_REQUIRED"
+    },
+    "objectiveCompletion": "NOT_PRODUCED",
+    "deliveryGateReached": false
+  },
+  "validation": {
+    "command": "npm run check",
+    "exitCode": 2,
+    "firstCommandReached": "tsc -p tsconfig.json --noEmit",
+    "buildReached": false,
+    "testsReached": false,
+    "stdoutBytes": 12015,
+    "stdoutSha256": "a1d1d45cbf69187c656688aa5c227cef28cbc5240130d16bd33e31fdd6cceb77",
+    "stderrBytes": 0,
+    "stderr": "",
+    "typescriptDiagnostics": 96,
+    "diagnosticCounts": {
+      "TS2307": 44,
+      "TS2580": 14,
+      "TS7006": 20,
+      "TS7053": 6,
+      "TS2339": 8,
+      "TS2345": 2,
+      "TS2322": 1,
+      "TS2503": 1
+    },
+    "classification": "ENVIRONMENT_DEPENDENCY_SETUP",
+    "reason": "TypeScript could not resolve node built-ins/types and project dependencies including zod, minimatch and yaml. The retained workspace path was later archived; direct node_modules inspection is UNKNOWN.",
+    "homeSourceDefect": "NOT_EVIDENCED",
+    "repairerPolicy": "Two bounded Repairer rounds did run; neither advanced candidate r3 or produced a bound CandidateImpact."
+  },
+  "failedHomeCandidate": {
+    "candidateId": "candidate:CHANGE-20261001T193128Z-a55b08d5:r3",
+    "revision": 3,
+    "candidateIdentityDigest": "1777a48c19d05a8c1b484415ad0559f98c979c7403591cde7bdc10b957d40407",
+    "sourceDigest": "d86afe9f936293793a306b459eeeb7eef16d2b9440a56ee4e4174ed32116fbd9",
+    "changedFiles": [
+      "openspec/changes/change-20261001t193128z-a55b08d5/design.md",
+      "openspec/changes/change-20261001t193128z-a55b08d5/proposal.md",
+      "openspec/changes/change-20261001t193128z-a55b08d5/specs/control-center-workspace/spec.md",
+      "openspec/changes/change-20261001t193128z-a55b08d5/tasks.md",
+      "specs/changes/CHANGE-20261001T193128Z-a55b08d5/acceptance.feature",
+      "specs/changes/CHANGE-20261001T193128Z-a55b08d5/design.md",
+      "specs/changes/CHANGE-20261001T193128Z-a55b08d5/proposal.md",
+      "specs/changes/CHANGE-20261001T193128Z-a55b08d5/spec.md",
+      "specs/changes/CHANGE-20261001T193128Z-a55b08d5/tasks.yaml"
+    ],
+    "changedFileCount": 9,
+    "diffDigest": null,
+    "diffAvailability": "UNKNOWN; operation-owned Paseo workspace was archived at terminal reconciliation and no patch/diff artifact was retained.",
+    "validationStatus": "FAIL; npm-check stopped during TypeScript typecheck",
+    "screenshots": "NOT_PRODUCED",
+    "salvageable": false,
+    "notes": "The candidate contains SDD/OpenSpec planning artifacts, not a Home implementation. Treat those artifacts as evidence/reference only; do not copy them into the next Home run."
+  },
+  "delivery": {
+    "projectGitHubEnabled": false,
+    "finalizeOnAcceptance": true,
+    "pullRequests": true,
+    "resolvedPolicy": {
+      "githubEnabled": false,
+      "paseoEnabled": false,
+      "allowedExternalEffects": [],
+      "humanDecisionRequirements": []
+    },
+    "actionIntents": "NOT_PRODUCED",
+    "actionReceipts": "NOT_PRODUCED",
+    "classification": "POLICY_DISABLED; DELIVERY NOT REACHED",
+    "detail": "The accepted delivery finalizer was not reached because the operation failed before acceptance. Independently, project GitHub policy resolved to no allowed external effects, so human authorization alone could not authorize branch publication or PR delivery.",
+    "actionGateReached": false
+  },
+  "paseoAndTelemetry": {
+    "participantRoles": [
+      "Operation Supervisor",
+      "Explorer",
+      "Spec Manager",
+      "Planner",
+      "Repairer",
+      "Repairer"
+    ],
+    "supervisorGenerations": 2,
+    "provider": "Paseo SDK",
+    "modelsObserved": [
+      "openai/gpt-6-luna",
+      "opencode-go/mimo-v2.6-flash"
+    ],
+    "providerTokenUsage": "UNKNOWN; no structured per-turn usage was retained in operation receipts or Paseo trace.",
+    "contextWindowSnapshots": [
+      {
+        "at": "2026-10-01T19:41:16.177Z",
+        "participant": "Operation Supervisor generation 1",
+        "usedTokens": 23840,
+        "limitTokens": 828400
+      },
+      {
+        "at": "2026-10-01T19:50:54.340Z",
+        "participant": "Operation Supervisor generation 1",
+        "usedTokens": 24629,
+        "limitTokens": 828400
+      },
+      {
+        "at": "2026-10-01T19:55:39.600Z",
+        "participant": "Operation Supervisor generation 2",
+        "usedTokens": 33922,
+        "limitTokens": 828400
+      },
+      {
+        "at": "2026-10-01T20:00:56.081Z",
+        "participant": "Operation Supervisor generation 2",
+        "usedTokens": 33922,
+        "limitTokens": 828400
+      }
+    ],
+    "contextWindowValuesAreProviderBilling": false,
+    "toolCallTimeline": "UNKNOWN; the retained AEH Paseo trace has 37 lifecycle/context entries but no structured tool_call events. Paseo activity API access failed after its archived workspace disappeared.",
+    "contextFragmentAccounting": "NOT_RETAINED as participant-bound efficiency observations",
+    "generalTelemetryEnabled": false,
+    "contextEnvelopes": "UNKNOWN; no participant-bound ContextEnvelope artifact was retained under the operation archive.",
+    "retrievalTraces": "NOT_PRODUCED in the retained operation artifact set; no ContextRef retrieval receipt or efficiency retrieval observation was present.",
+    "operationOwnedArchiveInventory": {
+      "classification": "OBSERVED",
+      "inspectedArtifacts": [
+        "workspace-evidence/latest/.harness/contracts/CHANGE-20261001T193128Z-a55b08d5.yaml",
+        "workspace-evidence/latest/.harness/reports/CHANGE-20261001T193128Z-a55b08d5.json",
+        "workspace-evidence/latest/.harness/seals/CHANGE-20261001T193128Z-a55b08d5.json",
+        "workspace-evidence/latest/.harness/telemetry/paseo.ndjson",
+        "results/{operation-supervisor,explorer,spec-manager,planner,repairer}/*.json",
+        "events.ndjson",
+        "supervisors/generation-1.json"
+      ],
+      "separateArtifactsNotFound": [
+        "ContextEnvelope",
+        "ContextRef retrieval receipts",
+        "CandidateImpact request/result",
+        "CandidateAssuranceCompilation",
+        "AcceptanceAssertions compilation",
+        "EvidenceBundle",
+        "ObjectiveCompletion",
+        "ActionIntent",
+        "ActionReceipt"
+      ],
+      "note": "The archive contains no separate retained records for the listed artifacts. This records absence in the inspected artifact inventory and does not infer whether transient in-memory data existed."
+    }
+  },
+  "deliveryEffects": {
+    "branch": "NOT_PRODUCED",
+    "commit": "NOT_PRODUCED",
+    "push": "NOT_PRODUCED",
+    "pullRequest": "NOT_PRODUCED",
+    "merge": "NOT_AUTHORIZED"
+  },
+  "operationArtifactsMutatedDuringInvestigation": false,
+  "homeImplementationCopiedToRepairBranch": false,
+  "stageTimeline": [
+    {
+      "operationRevision": 1,
+      "executionRevision": 3,
+      "phase": "queued",
+      "participant": [
+        "controller / infrastructure"
+      ],
+      "artifact": null,
+      "candidate": null,
+      "status": "RUNNING",
+      "blocker": [],
+      "startedAt": "2026-10-01T19:31:28.877Z",
+      "finishedAt": null,
+      "classification": "OBSERVED"
+    },
+    {
+      "operationRevision": 13,
+      "executionRevision": 3,
+      "phase": "input-resolution",
+      "participant": [
+        "controller / infrastructure"
+      ],
+      "artifact": null,
+      "candidate": null,
+      "status": "COMPLETED",
+      "blocker": [],
+      "startedAt": "2026-10-01T19:31:34.481Z",
+      "finishedAt": "2026-10-01T19:31:34.484Z",
+      "classification": "OBSERVED"
+    },
+    {
+      "operationRevision": 16,
+      "executionRevision": 3,
+      "phase": "triage",
+      "participant": [
+        "controller / infrastructure"
+      ],
+      "artifact": null,
+      "candidate": null,
+      "status": "COMPLETED",
+      "blocker": [],
+      "startedAt": "2026-10-01T19:31:34.487Z",
+      "finishedAt": "2026-10-01T19:31:34.502Z",
+      "classification": "OBSERVED"
+    },
+    {
+      "operationRevision": 18,
+      "executionRevision": 3,
+      "phase": "environment-preflight",
+      "participant": [
+        "controller / infrastructure"
+      ],
+      "artifact": null,
+      "candidate": null,
+      "status": "COMPLETED",
+      "blocker": [],
+      "startedAt": "2026-10-01T19:31:34.505Z",
+      "finishedAt": "2026-10-01T19:31:35.896Z",
+      "classification": "OBSERVED"
+    },
+    {
+      "operationRevision": 32,
+      "executionRevision": 3,
+      "phase": "discovery",
+      "participant": [
+        "Explorer participant:1179e0329b06567d",
+        "Paseo session:a13cb177-db31-44b6-8de6-d3808722371b"
+      ],
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/results/explorer/0002-0002-f0fa6370-a62d-4f17-b5c1-896990fb3666.json",
+      "candidate": {
+        "candidateId": "candidate:CHANGE-20261001T193128Z-a55b08d5:r2",
+        "identityDigest": "406145e468a63ce4b4ea7896d79c1d7c8336ef382220b61c1aafa52db1bbb70c"
+      },
+      "status": "COMPLETED",
+      "blocker": [],
+      "startedAt": "2026-10-01T19:32:14.877Z",
+      "finishedAt": "2026-10-01T19:41:16.067Z",
+      "classification": "OBSERVED"
+    },
+    {
+      "operationRevision": 100,
+      "executionRevision": 3,
+      "phase": "context",
+      "participant": [
+        "Operation Supervisor generations 1 and 2; exact owner not stored per context stage"
+      ],
+      "artifact": null,
+      "candidate": {
+        "candidateId": "candidate:CHANGE-20261001T193128Z-a55b08d5:r2",
+        "identityDigest": "406145e468a63ce4b4ea7896d79c1d7c8336ef382220b61c1aafa52db1bbb70c"
+      },
+      "status": "RUNNING",
+      "blocker": [],
+      "startedAt": "2026-10-01T19:41:16.194Z",
+      "finishedAt": null,
+      "classification": "OBSERVED"
+    },
+    {
+      "operationRevision": 43,
+      "executionRevision": 3,
+      "phase": "spec-authoring",
+      "participant": [
+        "Spec Manager participant:a855f29b284f0545",
+        "Paseo session:0f2cdcfb-0f0b-4798-8b16-7807cba49bcc"
+      ],
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/results/spec-manager/0002-0002-559d6163-b0b5-4a19-8a01-f9d1482e32df.json",
+      "candidate": {
+        "candidateId": "candidate:CHANGE-20261001T193128Z-a55b08d5:r2",
+        "identityDigest": "406145e468a63ce4b4ea7896d79c1d7c8336ef382220b61c1aafa52db1bbb70c"
+      },
+      "status": "COMPLETED",
+      "blocker": [],
+      "startedAt": "2026-10-01T19:41:16.206Z",
+      "finishedAt": "2026-10-01T19:44:44.592Z",
+      "classification": "OBSERVED"
+    },
+    {
+      "operationRevision": 47,
+      "executionRevision": 3,
+      "phase": "spec-compilation",
+      "participant": [
+        "controller / infrastructure"
+      ],
+      "artifact": ".harness/contracts/CHANGE-20261001T193128Z-a55b08d5.yaml",
+      "candidate": {
+        "candidateId": "candidate:CHANGE-20261001T193128Z-a55b08d5:r2",
+        "identityDigest": "406145e468a63ce4b4ea7896d79c1d7c8336ef382220b61c1aafa52db1bbb70c"
+      },
+      "status": "COMPLETED",
+      "blocker": [],
+      "startedAt": "2026-10-01T19:44:44.752Z",
+      "finishedAt": "2026-10-01T19:44:45.675Z",
+      "classification": "OBSERVED"
+    },
+    {
+      "operationRevision": 65,
+      "executionRevision": 3,
+      "phase": "planning",
+      "participant": [
+        "Planner participant:34efe2b4124d9471",
+        "Paseo session:344eae6e-90a7-4ee9-8e3f-dd355a19fb24"
+      ],
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/results/planner/0002-0002-7ef4fa8c-c001-474a-b00d-c7c46bfc5ead.json",
+      "candidate": {
+        "candidateId": "candidate:CHANGE-20261001T193128Z-a55b08d5:r3",
+        "identityDigest": "1777a48c19d05a8c1b484415ad0559f98c979c7403591cde7bdc10b957d40407"
+      },
+      "status": "FAILED",
+      "blocker": [
+        "WORKGRAPH_SCHEMA_INVALID"
+      ],
+      "startedAt": "2026-10-01T19:44:46.179Z",
+      "finishedAt": "2026-10-01T19:50:54.227Z",
+      "classification": "OBSERVED"
+    },
+    {
+      "operationRevision": 103,
+      "executionRevision": 3,
+      "phase": "implementation",
+      "participant": [
+        "controller / infrastructure"
+      ],
+      "artifact": null,
+      "candidate": {
+        "candidateId": "candidate:CHANGE-20261001T193128Z-a55b08d5:r3",
+        "identityDigest": "1777a48c19d05a8c1b484415ad0559f98c979c7403591cde7bdc10b957d40407"
+      },
+      "status": "FAILED",
+      "blocker": [
+        "AGENT_EXECUTION_EXIT_1",
+        "NPM_CHECK_EXIT_2"
+      ],
+      "startedAt": "2026-10-01T19:50:35.455Z",
+      "finishedAt": "2026-10-01T20:00:56.161Z",
+      "classification": "OBSERVED"
+    },
+    {
+      "operationRevision": 62,
+      "executionRevision": 3,
+      "phase": "supervision",
+      "participant": [
+        "Operation Supervisor generation 2"
+      ],
+      "artifact": null,
+      "candidate": null,
+      "status": "COMPLETED",
+      "blocker": [],
+      "startedAt": "2026-10-01T19:50:54.092Z",
+      "finishedAt": "2026-10-01T19:50:54.099Z",
+      "classification": "OBSERVED"
+    },
+    {
+      "operationRevision": 63,
+      "executionRevision": 3,
+      "phase": "executing",
+      "participant": [
+        "controller / infrastructure"
+      ],
+      "artifact": null,
+      "candidate": null,
+      "status": "RUNNING",
+      "blocker": [],
+      "startedAt": "2026-10-01T19:50:54.215Z",
+      "finishedAt": null,
+      "classification": "OBSERVED"
+    },
+    {
+      "operationRevision": 99,
+      "executionRevision": 3,
+      "phase": "validation",
+      "participant": [
+        "controller / infrastructure"
+      ],
+      "artifact": null,
+      "candidate": {
+        "candidateId": "candidate:CHANGE-20261001T193128Z-a55b08d5:r3",
+        "identityDigest": "1777a48c19d05a8c1b484415ad0559f98c979c7403591cde7bdc10b957d40407"
+      },
+      "status": "RUNNING",
+      "blocker": [
+        "NPM_CHECK_EXIT_2"
+      ],
+      "startedAt": "2026-10-01T19:51:46.881Z",
+      "finishedAt": null,
+      "classification": "OBSERVED"
+    },
+    {
+      "operationRevision": 102,
+      "executionRevision": 3,
+      "phase": "remediation",
+      "participant": [
+        "Repairer participants:43feab9f7f5c7947, eb5a8d4c202f36d8"
+      ],
+      "artifact": null,
+      "candidate": {
+        "candidateId": "candidate:CHANGE-20261001T193128Z-a55b08d5:r3",
+        "identityDigest": "1777a48c19d05a8c1b484415ad0559f98c979c7403591cde7bdc10b957d40407"
+      },
+      "status": "FAILED",
+      "blocker": [
+        "NPM_CHECK_EXIT_2",
+        "CANDIDATE_ASSURANCE_BLOCKED"
+      ],
+      "startedAt": "2026-10-01T19:51:52.959Z",
+      "finishedAt": "2026-10-01T20:00:56.123Z",
+      "classification": "OBSERVED"
+    },
+    {
+      "operationRevision": 104,
+      "executionRevision": 3,
+      "phase": "finished",
+      "participant": [
+        "controller / infrastructure"
+      ],
+      "artifact": null,
+      "candidate": null,
+      "status": "FAILED",
+      "blocker": [],
+      "startedAt": "2026-10-01T20:00:56.165Z",
+      "finishedAt": "2026-10-01T20:00:56.165Z",
+      "classification": "OBSERVED"
+    }
+  ],
+  "participantResults": [
+    {
+      "role": "Operation Supervisor",
+      "participantId": "participant:8e2e7f144b9a0822",
+      "sessionId": "22edae3f-063b-4ff9-99bf-e4d421eec8e2",
+      "supervisorGeneration": null,
+      "operationRevision": 70,
+      "executionRevision": 3,
+      "candidate": {
+        "candidateId": "candidate:CHANGE-20261001T193128Z-a55b08d5:r3",
+        "revision": 3,
+        "identityDigest": "1777a48c19d05a8c1b484415ad0559f98c979c7403591cde7bdc10b957d40407"
+      },
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/results/operation-supervisor/0001-0001-b90b42fc-c9aa-4918-acc3-5b512ee622eb.json",
+      "createdAt": "2026-10-01T19:51:35.803Z",
+      "attempt": 1,
+      "sequence": 1,
+      "source": "mcp",
+      "payloadSha256": "96fb1bcb7d47253cd55c3fc8b146abf657f959c51c2357b64308fd09014185ed",
+      "artifactSha256": "0d99384d7e339e2538b30d81bdc8d15c28b6bebda9491852231a4abe37bf64e1",
+      "classification": "OBSERVED"
+    },
+    {
+      "role": "Operation Supervisor",
+      "participantId": "participant:8e2e7f144b9a0822",
+      "sessionId": "04fed88e-8ab1-4733-86ac-6f6fb3334d35",
+      "supervisorGeneration": null,
+      "operationRevision": 22,
+      "executionRevision": 2,
+      "candidate": {
+        "candidateId": "candidate:CHANGE-20261001T193128Z-a55b08d5:r2",
+        "revision": 2,
+        "identityDigest": "406145e468a63ce4b4ea7896d79c1d7c8336ef382220b61c1aafa52db1bbb70c"
+      },
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/results/operation-supervisor/0001-0001-e21b4dc0-330d-419c-a23a-25a653f45937.json",
+      "createdAt": "2026-10-01T19:32:05.926Z",
+      "attempt": 1,
+      "sequence": 1,
+      "source": "mcp",
+      "payloadSha256": "4c4acd473e09991f41d9b994ad286c1d78961843764ad08098ec9ce0bfb14c6d",
+      "artifactSha256": "5a2d9e81d31e77570b15dd816c3118850c8f178774fd6319530cfeb26e14447a",
+      "classification": "OBSERVED"
+    },
+    {
+      "role": "Operation Supervisor",
+      "participantId": "participant:8e2e7f144b9a0822",
+      "sessionId": "04fed88e-8ab1-4733-86ac-6f6fb3334d35",
+      "supervisorGeneration": null,
+      "operationRevision": 22,
+      "executionRevision": 2,
+      "candidate": {
+        "candidateId": "candidate:CHANGE-20261001T193128Z-a55b08d5:r2",
+        "revision": 2,
+        "identityDigest": "406145e468a63ce4b4ea7896d79c1d7c8336ef382220b61c1aafa52db1bbb70c"
+      },
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/results/operation-supervisor/0002-0002-7543a2b4-63c1-49b8-8dc0-5e93cddba943.json",
+      "createdAt": "2026-10-01T19:32:14.864Z",
+      "attempt": 1,
+      "sequence": 2,
+      "source": "captured",
+      "payloadSha256": "4c4acd473e09991f41d9b994ad286c1d78961843764ad08098ec9ce0bfb14c6d",
+      "artifactSha256": "a9ad6015f84e5122dbb61a0a15d6585db1d2f3f80853788b8e5f2016118f5456",
+      "classification": "OBSERVED"
+    },
+    {
+      "role": "Operation Supervisor",
+      "participantId": "participant:8e2e7f144b9a0822",
+      "sessionId": "22edae3f-063b-4ff9-99bf-e4d421eec8e2",
+      "supervisorGeneration": null,
+      "operationRevision": 70,
+      "executionRevision": 3,
+      "candidate": {
+        "candidateId": "candidate:CHANGE-20261001T193128Z-a55b08d5:r3",
+        "revision": 3,
+        "identityDigest": "1777a48c19d05a8c1b484415ad0559f98c979c7403591cde7bdc10b957d40407"
+      },
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/results/operation-supervisor/0002-0002-8b4fd2af-0bcb-469c-956e-94f9362878a9.json",
+      "createdAt": "2026-10-01T19:51:46.638Z",
+      "attempt": 1,
+      "sequence": 2,
+      "source": "captured",
+      "payloadSha256": "96fb1bcb7d47253cd55c3fc8b146abf657f959c51c2357b64308fd09014185ed",
+      "artifactSha256": "5036fa56d83031bd0c4b786f91b8d416d10f2f7ddc85a2b09dbff4ea9a3c52df",
+      "classification": "OBSERVED"
+    },
+    {
+      "role": "Explorer",
+      "participantId": "participant:1179e0329b06567d",
+      "sessionId": "a13cb177-db31-44b6-8de6-d3808722371b",
+      "supervisorGeneration": 1,
+      "operationRevision": 27,
+      "executionRevision": 2,
+      "candidate": {
+        "candidateId": "candidate:CHANGE-20261001T193128Z-a55b08d5:r2",
+        "revision": 2,
+        "identityDigest": "406145e468a63ce4b4ea7896d79c1d7c8336ef382220b61c1aafa52db1bbb70c"
+      },
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/results/explorer/0001-0001-df1eea5e-2235-49ed-8d73-fd26d4d8ec6e.json",
+      "createdAt": "2026-10-01T19:40:14.422Z",
+      "attempt": 1,
+      "sequence": 1,
+      "source": "mcp",
+      "payloadSha256": "f7ba77b1d785650aaaf13b72d4470c447b690cb779cf06b861bbec1bfabee5a5",
+      "artifactSha256": "63a91d615f3963db590f7be4251b3ed91ec89b90b11805f03de2709d8ccfff3a",
+      "classification": "OBSERVED"
+    },
+    {
+      "role": "Explorer",
+      "participantId": "participant:1179e0329b06567d",
+      "sessionId": "a13cb177-db31-44b6-8de6-d3808722371b",
+      "supervisorGeneration": 1,
+      "operationRevision": 27,
+      "executionRevision": 2,
+      "candidate": {
+        "candidateId": "candidate:CHANGE-20261001T193128Z-a55b08d5:r2",
+        "revision": 2,
+        "identityDigest": "406145e468a63ce4b4ea7896d79c1d7c8336ef382220b61c1aafa52db1bbb70c"
+      },
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/results/explorer/0002-0002-f0fa6370-a62d-4f17-b5c1-896990fb3666.json",
+      "createdAt": "2026-10-01T19:41:14.967Z",
+      "attempt": 1,
+      "sequence": 2,
+      "source": "captured",
+      "payloadSha256": "f7ba77b1d785650aaaf13b72d4470c447b690cb779cf06b861bbec1bfabee5a5",
+      "artifactSha256": "f8d80254bfef638f635373a40c87de2dd4ba9c5aa56152fe1995bbb5f79e16ff",
+      "classification": "OBSERVED"
+    },
+    {
+      "role": "Spec Manager",
+      "participantId": "participant:a855f29b284f0545",
+      "sessionId": "0f2cdcfb-0f0b-4798-8b16-7807cba49bcc",
+      "supervisorGeneration": 1,
+      "operationRevision": 38,
+      "executionRevision": 2,
+      "candidate": {
+        "candidateId": "candidate:CHANGE-20261001T193128Z-a55b08d5:r2",
+        "revision": 2,
+        "identityDigest": "406145e468a63ce4b4ea7896d79c1d7c8336ef382220b61c1aafa52db1bbb70c"
+      },
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/results/spec-manager/0001-0001-1b6152ed-eaef-4b05-a38f-be98e6cdfd14.json",
+      "createdAt": "2026-10-01T19:44:27.527Z",
+      "attempt": 1,
+      "sequence": 1,
+      "source": "mcp",
+      "payloadSha256": "65455e502eeb099ad9ce240e3e27ef4a2211abdd1037041ffa6968ab9f05e20e",
+      "artifactSha256": "2390546292ee6ac0f000d40bce3113ed31b65229ff99a53da3c402fbd8bdae18",
+      "classification": "OBSERVED"
+    },
+    {
+      "role": "Spec Manager",
+      "participantId": "participant:a855f29b284f0545",
+      "sessionId": "0f2cdcfb-0f0b-4798-8b16-7807cba49bcc",
+      "supervisorGeneration": 1,
+      "operationRevision": 38,
+      "executionRevision": 2,
+      "candidate": {
+        "candidateId": "candidate:CHANGE-20261001T193128Z-a55b08d5:r2",
+        "revision": 2,
+        "identityDigest": "406145e468a63ce4b4ea7896d79c1d7c8336ef382220b61c1aafa52db1bbb70c"
+      },
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/results/spec-manager/0002-0002-559d6163-b0b5-4a19-8a01-f9d1482e32df.json",
+      "createdAt": "2026-10-01T19:44:43.539Z",
+      "attempt": 1,
+      "sequence": 2,
+      "source": "captured",
+      "payloadSha256": "65455e502eeb099ad9ce240e3e27ef4a2211abdd1037041ffa6968ab9f05e20e",
+      "artifactSha256": "c6c97be63a488b27fd589c44d5d6e2006f265873dc0c1fce7a5f6167d44592e6",
+      "classification": "OBSERVED"
+    },
+    {
+      "role": "Planner",
+      "participantId": "participant:34efe2b4124d9471",
+      "sessionId": "344eae6e-90a7-4ee9-8e3f-dd355a19fb24",
+      "supervisorGeneration": 1,
+      "operationRevision": 54,
+      "executionRevision": 3,
+      "candidate": {
+        "candidateId": "candidate:CHANGE-20261001T193128Z-a55b08d5:r3",
+        "revision": 3,
+        "identityDigest": "1777a48c19d05a8c1b484415ad0559f98c979c7403591cde7bdc10b957d40407"
+      },
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/results/planner/0001-0001-9ffdc034-34f0-4309-98fc-536cdff0f0e5.json",
+      "createdAt": "2026-10-01T19:49:38.023Z",
+      "attempt": 1,
+      "sequence": 1,
+      "source": "mcp",
+      "payloadSha256": "476e3c953288647b41a39fbbc7e7de2135c9e2479ea0a8779bb8907bee2c4c22",
+      "artifactSha256": "bcc2eef8743bbe43a99f8c6877709a5d8991feb62fba0f46ce486baff5207186",
+      "classification": "OBSERVED"
+    },
+    {
+      "role": "Planner",
+      "participantId": "participant:34efe2b4124d9471",
+      "sessionId": "344eae6e-90a7-4ee9-8e3f-dd355a19fb24",
+      "supervisorGeneration": 1,
+      "operationRevision": 54,
+      "executionRevision": 3,
+      "candidate": {
+        "candidateId": "candidate:CHANGE-20261001T193128Z-a55b08d5:r3",
+        "revision": 3,
+        "identityDigest": "1777a48c19d05a8c1b484415ad0559f98c979c7403591cde7bdc10b957d40407"
+      },
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/results/planner/0002-0002-7ef4fa8c-c001-474a-b00d-c7c46bfc5ead.json",
+      "createdAt": "2026-10-01T19:50:34.409Z",
+      "attempt": 1,
+      "sequence": 2,
+      "source": "captured",
+      "payloadSha256": "476e3c953288647b41a39fbbc7e7de2135c9e2479ea0a8779bb8907bee2c4c22",
+      "artifactSha256": "f554e61321beb086e42e1be70e4d2666b4446cdee6f4466071b6f4f3a41df664",
+      "classification": "OBSERVED"
+    },
+    {
+      "role": "Repairer",
+      "participantId": "participant:43feab9f7f5c7947",
+      "sessionId": "eaf91e2e-ee3c-47c8-b3b7-8216c2c17a6d",
+      "supervisorGeneration": 2,
+      "operationRevision": 80,
+      "executionRevision": 3,
+      "candidate": {
+        "candidateId": "candidate:CHANGE-20261001T193128Z-a55b08d5:r3",
+        "revision": 3,
+        "identityDigest": "1777a48c19d05a8c1b484415ad0559f98c979c7403591cde7bdc10b957d40407"
+      },
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/results/repairer/0001-0001-61d67cef-370b-4fd5-9c3a-c0ab373bcc35.json",
+      "createdAt": "2026-10-01T19:55:16.816Z",
+      "attempt": 1,
+      "sequence": 1,
+      "source": "mcp",
+      "payloadSha256": "b330c734c92b9e06d4ca04639b7af46ffd9cca42ae6ef75165a1ab56c6d9846a",
+      "artifactSha256": "6b4611657bdd29741115db83568b7d13423a7cac3bc1e127b71a5734dd35486a",
+      "classification": "OBSERVED"
+    },
+    {
+      "role": "Repairer",
+      "participantId": "participant:eb5a8d4c202f36d8",
+      "sessionId": "96d64bf8-51de-4732-8b3f-b9f7ec5e81d6",
+      "supervisorGeneration": 2,
+      "operationRevision": 93,
+      "executionRevision": 3,
+      "candidate": {
+        "candidateId": "candidate:CHANGE-20261001T193128Z-a55b08d5:r3",
+        "revision": 3,
+        "identityDigest": "1777a48c19d05a8c1b484415ad0559f98c979c7403591cde7bdc10b957d40407"
+      },
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/results/repairer/0001-0001-69174638-e0d9-42d4-9df3-77646acedd20.json",
+      "createdAt": "2026-10-01T20:00:27.122Z",
+      "attempt": 1,
+      "sequence": 1,
+      "source": "mcp",
+      "payloadSha256": "acea33dfa0281a284ba3b433c40d46148d87eac0214688609cadc15bbccdc161",
+      "artifactSha256": "827bfa8e50dd04d04ffe572d229130c4022b29bfc1957717f6ae49908f034935",
+      "classification": "OBSERVED"
+    },
+    {
+      "role": "Repairer",
+      "participantId": "participant:eb5a8d4c202f36d8",
+      "sessionId": "96d64bf8-51de-4732-8b3f-b9f7ec5e81d6",
+      "supervisorGeneration": 2,
+      "operationRevision": 93,
+      "executionRevision": 3,
+      "candidate": {
+        "candidateId": "candidate:CHANGE-20261001T193128Z-a55b08d5:r3",
+        "revision": 3,
+        "identityDigest": "1777a48c19d05a8c1b484415ad0559f98c979c7403591cde7bdc10b957d40407"
+      },
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/results/repairer/0002-0002-eb22ac46-7316-4918-9f0f-a843563a8458.json",
+      "createdAt": "2026-10-01T20:00:47.201Z",
+      "attempt": 1,
+      "sequence": 2,
+      "source": "captured",
+      "payloadSha256": "acea33dfa0281a284ba3b433c40d46148d87eac0214688609cadc15bbccdc161",
+      "artifactSha256": "7076f71e53cc9306c6bc761f4b9cbd7ddadb39ddae028865d7dd33d6351a3f37",
+      "classification": "OBSERVED"
+    },
+    {
+      "role": "Repairer",
+      "participantId": "participant:43feab9f7f5c7947",
+      "sessionId": "eaf91e2e-ee3c-47c8-b3b7-8216c2c17a6d",
+      "supervisorGeneration": 2,
+      "operationRevision": 80,
+      "executionRevision": 3,
+      "candidate": {
+        "candidateId": "candidate:CHANGE-20261001T193128Z-a55b08d5:r3",
+        "revision": 3,
+        "identityDigest": "1777a48c19d05a8c1b484415ad0559f98c979c7403591cde7bdc10b957d40407"
+      },
+      "artifact": ".harness/operations/CHANGE-20261001T193128Z-a55b08d5/results/repairer/0002-0002-eb8f52c4-5ec6-42a0-969f-2a99a51bb6a0.json",
+      "createdAt": "2026-10-01T19:55:32.298Z",
+      "attempt": 1,
+      "sequence": 2,
+      "source": "captured",
+      "payloadSha256": "b330c734c92b9e06d4ca04639b7af46ffd9cca42ae6ef75165a1ab56c6d9846a",
+      "artifactSha256": "376d78c95022cc07b7079cb827c98e3636df82df52ecbd8de829bef3190af9fb",
+      "classification": "OBSERVED"
+    }
+  ],
+  "stageClosureAtTerminal": {
+    "classification": "OBSERVED",
+    "terminalRevision": 104,
+    "terminalStatus": "FAILED",
+    "stagesStillRunning": [
+      {
+        "name": "queued",
+        "revision": 1,
+        "startedAt": "2026-10-01T19:31:28.877Z"
+      },
+      {
+        "name": "context",
+        "revision": 100,
+        "startedAt": "2026-10-01T19:41:16.194Z"
+      },
+      {
+        "name": "executing",
+        "revision": 63,
+        "startedAt": "2026-10-01T19:50:54.215Z"
+      },
+      {
+        "name": "validation",
+        "revision": 99,
+        "startedAt": "2026-10-01T19:51:46.881Z"
+      }
+    ],
+    "note": "The OperationRecord retained queued, context, executing, and validation stage statuses as RUNNING at terminal revision 104. This historical record remains untouched; future terminal transitions now settle active stages."
+  },
+  "stackAssessment": {
+    "status": "UNKNOWN",
+    "classification": "UNKNOWN",
+    "note": "No durable structured ProjectStack profile or stack-assessment event was present in the retained operation artifact set. Environment preflight durably records OpenSpec 1.13.2, schema=spec-driven, manager=spec-manager."
+  },
+  "unproducedArtifacts": [
+    {
+      "artifact": "WorkGraph",
+      "status": "NOT_PRODUCED",
+      "reason": "WorkGraph schema rejected two objectives before graph compilation."
+    },
+    {
+      "artifact": "ParticipantPlan",
+      "status": "NOT_PRODUCED",
+      "reason": "Requires a valid WorkGraph."
+    },
+    {
+      "artifact": "ExecutionBlueprint",
+      "status": "NOT_PRODUCED",
+      "reason": "Requires accepted planning compilation."
+    },
+    {
+      "artifact": "Implementer execution and ChangeSet",
+      "status": "NOT_PRODUCED",
+      "reason": "No implementation WorkUnit was dispatched."
+    },
+    {
+      "artifact": "CandidateImpact request/result",
+      "status": "NOT_PRODUCED",
+      "reason": "No ChangeSet/assembled candidate existed to bind an impact assessment."
+    },
+    {
+      "artifact": "CandidateAssuranceCompilation",
+      "status": "BLOCKED",
+      "reason": "Validation report records current candidate assurance blocked without bound CandidateImpact."
+    },
+    {
+      "artifact": "AcceptanceAssertions",
+      "status": "NOT_PRODUCED",
+      "reason": "No current candidate assurance compilation."
+    },
+    {
+      "artifact": "EvidenceBundle",
+      "status": "NOT_PRODUCED",
+      "reason": "No candidate-bound assertions/evidence bundle was compiled."
+    },
+    {
+      "artifact": "AcceptanceOracle artifact",
+      "status": "NOT_PRODUCED",
+      "reason": "Disposition blocked on ACCEPTANCE_ASSERTIONS_REQUIRED; the operation report and state have no persisted oracle artifact."
+    },
+    {
+      "artifact": "ObjectiveCompletion",
+      "status": "NOT_PRODUCED",
+      "reason": "No accepted oracle, EvidenceBundle, or S4 compilation."
+    },
+    {
+      "artifact": "Reviewer execution",
+      "status": "NOT_PRODUCED",
+      "reason": "No candidate passed validation and current assurance/review compilation."
+    },
+    {
+      "artifact": "ActionIntent and ActionReceipt",
+      "status": "NOT_PRODUCED",
+      "reason": "Acceptance was not reached and resolved GitHub policy allowed no external effect."
+    },
+    {
+      "artifact": "Branch, commit, push, pull request",
+      "status": "NOT_PRODUCED",
+      "reason": "Delivery finalization was not reached."
+    },
+    {
+      "artifact": "Home screenshots",
+      "status": "NOT_PRODUCED",
+      "reason": "No Home implementation or browser validation was produced."
+    }
+  ],
+  "participantResultInterpretation": "For each repeated MCP/captured pair, payloadSha256 matches exactly. Sequence 2 is a durable captured copy of sequence 1, not evidence of another model attempt. All Planner artifacts have attempt=1."
+}

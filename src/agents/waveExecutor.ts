@@ -20,7 +20,7 @@ import { compileExecutionBlueprint, type ExecutionBlueprint, type ParticipantAss
 import { createWorkGraph } from "../architecture/workGraph.js";
 import { bindOperationExecutionSemantics, bindResolvedOperationPolicy, currentOperationContext, loadOperation } from "../operations/state.js";
 import { compileResolvedOperationPolicy } from "../architecture/executionIdentity.js";
-import { configuredExternalEffects, requiredHumanActionAuthorizations } from "../security/actionPolicy.js";
+import { configuredDeliveryPolicy, requiredHumanActionAuthorizations } from "../security/actionPolicy.js";
 import type { ExecutionCatalogV1 } from "../architecture/executionCatalog.js";
 import type { CandidateImpactAssessmentRuntimeV1, CandidateImpactV1, ChangeSetV1 } from "../candidates/assembler.js";
 import { materializeCandidateState } from "../candidates/direct.js";
@@ -32,10 +32,11 @@ import { FileKnowledgeCacheV1, resolveKnowledgeGate, validateKnowledgePack, type
 import { defaultSkillSeed } from "../participants/index.js";
 import { dropUnresolvablePlanValidationRequirementsV1, resolveValidationRequirements, type ValidationResolutionV1 } from "../architecture/validationRequirements.js";
 import type { ProjectStackProfileV1 } from "../participants/stack.js";
+import { compilePlannerWorkGraphWithOneCorrection, PlannerWorkGraphCorrectionError } from "./plannerWorkGraphCorrection.js";
 
 export interface DelegationExecutionResult { task: WorkUnitOutput; session: WorkerSession; changedFiles: string[]; patch: string; status: "PASS" | "FAIL"; message?: string; distributed?: boolean; candidate?: CandidateRevisionV1; impact?: CandidateImpactV1; changeSet?: ChangeSetV1; }
 export interface WaveExecutionSummary { wave: number; taskIds: string[]; status: "PASS" | "FAIL"; results: DelegationExecutionResult[]; barrier?: ValidationReport; }
-export interface PlannerWaveResult { used: boolean; plan?: PlannerOutput; blueprint?: ExecutionBlueprint; schedule?: ParallelismPlan; waves: WaveExecutionSummary[]; sessions: WorkerSession[]; aggregateSession?: WorkerSession; report?: ValidationReport; }
+export interface PlannerWaveResult { used: boolean; plan?: PlannerOutput; blueprint?: ExecutionBlueprint; schedule?: ParallelismPlan; waves: WaveExecutionSummary[]; sessions: WorkerSession[]; aggregateSession?: WorkerSession; report?: ValidationReport; preExecutionFailure?: boolean; correctionAttempts?: 0 | 1; }
 
 export async function executePlannerWaves(input: { root: string; stateRoot: string; config: HarnessProjectConfig; contract: TaskContract; plannerSelection?: AgentExecutionSelection; librarianSelection?: AgentExecutionSelection; implementationSelection: AgentExecutionSelection; executionCatalog: ExecutionCatalogV1; controller?: ControlPlaneSnapshot; precomputedPlan?: PlannerOutput; semanticAssessment?: CandidateImpactAssessmentRuntimeV1; projectStack?: ProjectStackProfileV1; knowledgeMode?: KnowledgeModeV1; knowledgeCache?: KnowledgeCacheV1; knowledgeResolutions?: readonly KnowledgeResolutionV1[]; knowledgeLookup?: (gap: Parameters<NonNullable<Parameters<typeof resolveKnowledgeGate>[0]["lookup"]>>[0]) => Promise<KnowledgePackV1 | KnowledgeLookupResultV1>; revalidate: () => Promise<ValidationReport>; }): Promise<PlannerWaveResult> {
   const planning = input.config.workflow?.planning;
@@ -44,31 +45,37 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
   const sessions: WorkerSession[] = [];
   let plan: PlannerOutput;
   if (input.precomputedPlan) {
-    plan = plannerOutputSchema.parse(input.precomputedPlan);
+    try { plan = plannerOutputSchema.parse(input.precomputedPlan); }
+    catch (error) { return { used: true, waves: [], sessions, preExecutionFailure: true, aggregateSession: aggregate(sessions, 1, `Invalid Planner output schema: ${String(error)}`) }; }
   } else {
     const plannerSession = await executeAgentPrompt(input.root, input.config, input.contract, input.plannerSelection!, buildPlannerPrompt(input.contract), { outputContract: "planner", phase: "planning", requireExecutionAuthority: true });
     sessions.push(plannerSession);
-    if (plannerSession.exitCode !== 0) return { used: true, waves: [], sessions, aggregateSession: aggregate(sessions, 1, "Planner runtime failed.") };
-    try { plan = plannerOutputSchema.parse(extractMarkedJson(plannerSession.stdout, plannerSession.stderr)); } catch (error) { return { used: true, waves: [], sessions, aggregateSession: aggregate(sessions, 1, `Invalid planner output: ${String(error)}`) }; }
+    if (plannerSession.exitCode !== 0) return { used: true, waves: [], sessions, preExecutionFailure: true, aggregateSession: aggregate(sessions, 1, "Planner runtime failed.") };
+    try { plan = plannerOutputSchema.parse(extractMarkedJson(plannerSession.stdout, plannerSession.stderr)); } catch (error) { return { used: true, waves: [], sessions, preExecutionFailure: true, aggregateSession: aggregate(sessions, 1, `Invalid planner output: ${String(error)}`) }; }
   }
   const planIssues = validatePlannerWavePlan(input.contract, plan);
-  if (planIssues.length) return { used: true, plan, waves: [], sessions, aggregateSession: aggregate(sessions, 1, `Planner contract rejected: ${planIssues.join("; ")}`) };
+  if (planIssues.length) return { used: true, plan, waves: [], sessions, preExecutionFailure: true, aggregateSession: aggregate(sessions, 1, `Planner contract rejected: ${planIssues.join("; ")}`) };
   if (!plan.workUnits.length) return { used: false, plan, waves: [], sessions };
   let blueprint: ExecutionBlueprint;
   let graph: ReturnType<typeof createWorkGraph>;
   let validationResolution: ValidationResolutionV1;
   let knowledgeResolutions: KnowledgeResolutionV1[] = [];
   let operation: Awaited<ReturnType<typeof loadOperation>> | undefined;
+  let correctionAttempts: 0 | 1 = 0;
   try {
-    graph = createWorkGraph({
-      taskId: input.contract.task.id,
-      objective: input.contract.task.title,
-      route: input.contract.routing?.route ?? "DELEGATED",
-      assurance: input.contract.routing?.assurance ?? "STANDARD",
-      requirementRefs: (input.contract.requirements ?? []).map((item) => item.id),
-      acceptanceRefs: plan.workUnits.flatMap((unit) => unit.acceptanceRefs),
-      units: plan.workUnits.map((unit) => ({ version: 1 as const, ...unit, status: "PENDING" as const }))
+    const validatedPlan = await compilePlannerWorkGraphWithOneCorrection({
+      contract: input.contract,
+      plan,
+      requestCorrection: input.plannerSelection ? async (correctionPrompt) => {
+        const correctionSession = await executeAgentPrompt(input.root, input.config, input.contract, input.plannerSelection!, correctionPrompt, { outputContract: "planner", phase: "planning", requireExecutionAuthority: true });
+        sessions.push(correctionSession);
+        if (correctionSession.exitCode !== 0) throw new Error(`corrective Planner runtime failed with exit code ${correctionSession.exitCode}`);
+        return extractMarkedJson(correctionSession.stdout, correctionSession.stderr);
+      } : undefined
     });
+    plan = validatedPlan.plan;
+    graph = validatedPlan.graph;
+    correctionAttempts = validatedPlan.correctionAttempts;
     knowledgeResolutions = await resolvePlannerKnowledge(plan, input);
     const operationContext = currentOperationContext();
     operation = operationContext.id ? await loadOperation(input.stateRoot, operationContext.id) : undefined;
@@ -96,7 +103,8 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
     operation = await bindOperationExecutionSemantics(input.stateRoot, operation!.id, executionSemanticsDigest);
   blueprint = await compileWaveExecutionBlueprint({ input, operation, graph, knowledgeResolutions, validationResolution, plan });
   } catch (error) {
-    return { used: true, plan, waves: [], sessions, aggregateSession: aggregate(sessions, 1, `Participant plan rejected: ${String(error)}`) };
+    const failedCorrectionAttempts = error instanceof PlannerWorkGraphCorrectionError ? error.correctionAttempts : correctionAttempts;
+    return { used: true, plan, waves: [], sessions, preExecutionFailure: true, correctionAttempts: failedCorrectionAttempts, aggregateSession: aggregate(sessions, 1, `Participant plan rejected: ${String(error)}`) };
   }
   const schedule = await planParallelism(input.root, input.config, input.contract.task.id, plan.workUnits);
   const worktreeIsolation = planning?.worktreeIsolation !== false;
@@ -152,7 +160,7 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
     if (results.some((result) => result.status === "FAIL")) { const summary: WaveExecutionSummary = { wave: index + 1, taskIds: ids, status: "FAIL", results }; waveSummaries.push(summary); await recordEvent(input.stateRoot, input.config, "harness.wave.finish", { taskId: input.contract.task.id, wave: index + 1, status: "FAIL", tasks: ids, reconciliationRequired: results.filter((result) => result.message?.startsWith("WAVE_RECONCILIATION_REQUIRED")).map((result) => result.task.id) }); return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, aggregateSession: aggregate(sessions, 1, `Wave ${index + 1} candidate assembly failed.`) }; }
     finalReport = planning?.barrierValidation === false ? undefined : await input.revalidate(); const status = finalReport?.status === "FAIL" ? "FAIL" : "PASS"; const summary: WaveExecutionSummary = { wave: index + 1, taskIds: ids, status, results, barrier: finalReport }; waveSummaries.push(summary); await recordEvent(input.stateRoot, input.config, "harness.wave.finish", { taskId: input.contract.task.id, wave: index + 1, status, tasks: ids, checks: finalReport?.checks.length }); if (status === "FAIL") return { used: true, plan, schedule, waves: waveSummaries, sessions, aggregateSession: aggregate(sessions, 1, `Wave ${index + 1} deterministic barrier failed.`), report: finalReport };
   }
-  finalReport ??= await input.revalidate(); return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, aggregateSession: aggregate(sessions, finalReport.status === "PASS" ? 0 : 1, `Executed ${plan.workUnits.length} work unit(s) across ${schedule.waves.length} wave(s).`), report: finalReport };
+  finalReport ??= await input.revalidate(); return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, aggregateSession: aggregate(sessions, finalReport.status === "PASS" ? 0 : 1, `Executed ${plan.workUnits.length} work unit(s) across ${schedule.waves.length} wave(s).`), report: finalReport, correctionAttempts };
 }
 
 export async function resolvePlannerKnowledge(plan: PlannerOutput, input: Pick<Parameters<typeof executePlannerWaves>[0], "contract" | "root" | "config" | "librarianSelection" | "knowledgeMode" | "knowledgeCache" | "knowledgeResolutions" | "knowledgeLookup"> & Partial<Pick<Parameters<typeof executePlannerWaves>[0], "stateRoot">>): Promise<KnowledgeResolutionV1[]> {
@@ -191,9 +199,9 @@ async function compileWaveExecutionBlueprint(args: {
   const controllerEpoch = operation.controller?.epoch;
   if (!candidate || !Number.isSafeInteger(operation.operationExecutionRevision) || operation.operationExecutionRevision! < 1 || !Number.isSafeInteger(controllerEpoch) || controllerEpoch! < 0) throw new AehError("EXECUTION_BLUEPRINT_INVALID", "Current candidate, operation execution revision, and controller epoch are required to compile an execution blueprint.");
   const knowledgePolicy = knowledgeResolutions.map((resolution) => ({ packDigest: resolution.pack?.packDigest, trustDecisionDigest: resolution.acceptedSkill?.trustDecision.decisionDigest })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
-  const allowedExternalEffects = configuredExternalEffects(input.config, operation.kind);
+  const deliveryPolicy = configuredDeliveryPolicy(input.config, operation.kind);
+  const allowedExternalEffects = deliveryPolicy.allowedExternalEffects;
   const humanDecisionRequirements = requiredHumanActionAuthorizations(allowedExternalEffects);
-  const deliveryPolicy = { githubEnabled: input.config.delivery?.github?.enabled === true, paseoEnabled: input.config.delivery?.paseo?.enabled === true, allowedExternalEffects };
   const resolvedOperationPolicy = compileResolvedOperationPolicy({
     projectId: candidate.projectId ?? input.config.project.name,
     operationId: operation.id,

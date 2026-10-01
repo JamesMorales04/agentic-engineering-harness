@@ -42,6 +42,7 @@ import { assertIntentDecisionForRoute } from "../audit/intentDecision.js";
 import { executeGatedAction } from "../security/gatedAction.js";
 import { reconcileToolAction } from "../security/actionReconciliation.js";
 import { controllerActorId, listUnresolvedToolActionIntents, type ToolActionAuthorityEvidenceV1 } from "../security/toolActionGate.js";
+import { writeOperationEfficiencySummary } from "../telemetry/efficiency.js";
 import { configuredExternalEffects, requiredHumanActionAuthorizations } from "../security/actionPolicy.js";
 import {
   disableOperationCompletionTarget,
@@ -520,6 +521,7 @@ async function executeOperationWithEnvironment(
             attempts: result.run.attempts,
             acceptanceOracle: result.run.acceptanceOracle,
             acceptanceOracleArtifact: result.run.acceptanceOracleArtifact,
+            ...(result.run.delivery ? { delivery: { status: result.run.delivery.status, committed: result.run.delivery.committed, pushed: result.run.delivery.pushed, pullRequest: result.run.delivery.pullRequest } } : {}),
             objectiveCompletion: result.run.objectiveCompletion,
             objectiveCompletionDecision: result.run.objectiveCompletionDecision,
             specChange: result.specChange,
@@ -554,6 +556,7 @@ async function executeOperationWithEnvironment(
           attempts: result.attempts,
           acceptanceOracle: result.acceptanceOracle,
           acceptanceOracleArtifact: result.acceptanceOracleArtifact,
+          ...(result.delivery ? { delivery: { status: result.delivery.status, committed: result.delivery.committed, pushed: result.delivery.pushed, pullRequest: result.delivery.pullRequest } } : {}),
           objectiveCompletion: result.objectiveCompletion,
           objectiveCompletionDecision: result.objectiveCompletionDecision
         }
@@ -842,6 +845,7 @@ async function terminalizeOperation(
   config?: HarnessProjectConfig
 ): Promise<OperationRecordV2> {
   const { record: terminal, transitioned } = await transitionOperationToTerminal(root, operationId, patch);
+  if (config) await writeOperationEfficiencySummary(root, config, terminal).catch(() => undefined);
   if (config) await syncOperationPortfolio(root, config.project.name, terminal).catch(() => undefined);
   if (!transitioned) return terminal;
   const trace = deps.trace ?? recordPaseoTrace;

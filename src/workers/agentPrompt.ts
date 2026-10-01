@@ -59,13 +59,14 @@ import { runDirectWorkerProcess } from "./directProcess.js";
 import { createDirectWorkerHome, removeDirectWorkerHome, type DirectWorkerHome, buildDirectWorkerEnvironment } from "./directProcess.js";
 import { prepareCodexThread, prepareOpenCodeSession } from "./runtimeSessions.js";
 import { recordEvent } from "../telemetry/events.js";
+import { participantUsageObservationFromSession, recordParticipantUsageObservation, recordToolCallObservations } from "../telemetry/efficiency.js";
 import { recordParticipantTelemetry } from "../telemetry/metrics.js";
 import { resolveTelemetryCorrelation } from "../telemetry/identity.js";
 import { assertExecutionAuthority, prepareExecutionAuthority, type ExecutionAuthorityV1 } from "../security/executionLease.js";
 import { sha256Canonical } from "../core/digest.js";
 import { createPromptManifest } from "../context/runtimeV2.js";
 import { assertExecutionBindingV2, assertExecutionBlueprintV2, assertResolvedOperationPolicyV1, assertRoleInvocationPolicyV1, assertSkillManifestV1, compileExecutionBinding, compileResolvedOperationPolicy, compileRoleInvocationPolicy, compileSkillManifest, createExecutionBlueprintV2, type ExecutionBindingV2, type ExecutionBlueprintV2, type ResolvedOperationPolicyV1, type RoleInvocationPolicyV1, type SkillManifestV1 } from "../architecture/executionIdentity.js";
-import { configuredExternalEffects, requiredHumanActionAuthorizations } from "../security/actionPolicy.js";
+import { configuredDeliveryPolicy, requiredHumanActionAuthorizations } from "../security/actionPolicy.js";
 import { compileExecutionCatalog } from "../architecture/executionCatalog.js";
 import { defaultSkillSeed, roleProfile } from "../participants/index.js";
 import { createWorkGraph, type WorkGraphV1 } from "../architecture/workGraph.js";
@@ -654,6 +655,7 @@ async function executeViaPaseo(
       status: continued.status,
       startedAt,
       finishedAt: new Date().toISOString(),
+      ...(continued.efficiencyTelemetry ? { efficiencyTelemetry: continued.efficiencyTelemetry } : {}),
       participantId: options.participantId,
       capabilityLeases: options.capabilityAuthority?.leases
     });
@@ -674,7 +676,8 @@ async function executeViaPaseo(
       workspaceId: continued.workspaceId ?? materialized.workspaceId,
       status: continued.status,
       startedAt,
-      finishedAt: new Date().toISOString()
+      finishedAt: new Date().toISOString(),
+      ...(continued.efficiencyTelemetry ? { efficiencyTelemetry: continued.efficiencyTelemetry } : {})
     };
   }
   if (options.executionBinding) throw new Error("PASEO_EXECUTION_SESSION_PREPARATION_REQUIRED: a fresh binding-bearing Paseo launch must continue an already materialized actual session.");
@@ -713,6 +716,7 @@ async function executeViaPaseo(
     status: launched.status,
     startedAt,
     finishedAt: new Date().toISOString(),
+    ...(launched.efficiencyTelemetry ? { efficiencyTelemetry: launched.efficiencyTelemetry } : {}),
     participantId: options.participantId,
     capabilityLeases: options.capabilityAuthority?.leases
   });
@@ -978,6 +982,7 @@ export async function buildEffectivePromptIdentity(
   else {
     const prepared = await prepareContext(root, config, {
       operationId: identity.id ?? contract.task.id,
+      participantId: options.capabilityAuthority?.participantId ?? options.participantId,
       logicalAgent: selection.logicalAgent,
       role: selection.role ?? "worker",
       phase: options.phase ?? "work",
@@ -1136,6 +1141,55 @@ export function operationArtifactRoot(root: string): string {
   return currentOperationContext().controlRoot ?? root;
 }
 
+async function persistEfficiencyObservations(
+  root: string,
+  config: HarnessProjectConfig,
+  selection: AgentExecutionSelection,
+  session: WorkerSession,
+  options: AgentPromptOptions,
+  stateRoot: string,
+  operationId: string,
+  resultStatus?: "SUCCEEDED" | "FAILED" | "BLOCKED" | "UNKNOWN"
+): Promise<void> {
+  if (config.telemetry?.enabled !== true || !session.executionBinding) return;
+  try {
+    const operation = await loadOperation(stateRoot, operationId);
+    const candidate = operation.candidateRevision;
+    const participantId = options.capabilityAuthority?.participantId ?? options.participantId ?? session.participantId;
+    if (!candidate || !participantId) return;
+    const role = selection.role;
+    const phase = session.phase ?? options.phase ?? "work";
+    const usage = participantUsageObservationFromSession({
+      operationId,
+      participantId,
+      role,
+      phase,
+      candidate,
+      session,
+      providerTelemetry: session.efficiencyTelemetry,
+      resultStatus
+    });
+    if (usage) await recordParticipantUsageObservation(stateRoot, config, usage).catch(() => false);
+    const providerTelemetry = session.efficiencyTelemetry;
+    if (providerTelemetry?.toolCalls.length) {
+      await recordToolCallObservations(stateRoot, config, {
+        operationId,
+        participantId,
+        role,
+        phase,
+        candidate,
+        operationExecutionRevision: session.executionBinding.operationExecutionRevision,
+        controllerEpoch: session.executionBinding.controllerEpoch,
+        participantGeneration: session.executionBinding.participantGeneration,
+        sessionId: session.executionBinding.runtime.sessionId,
+        observations: providerTelemetry.toolCalls
+      }).catch(() => 0);
+    }
+  } catch {
+    // Efficiency telemetry is local, optional evidence. Observation failure never affects delivery or acceptance.
+  }
+}
+
 async function finalizeOperationSession(
   root: string,
   config: HarnessProjectConfig,
@@ -1224,7 +1278,10 @@ async function finalizeOperationSession(
     }
   }
 
-  if (options.supervisorAgent) return result;
+  if (options.supervisorAgent) {
+    await persistEfficiencyObservations(root, config, selection, result, options, operationStateRoot, operationId);
+    return result;
+  }
   const turnStamp = (observed.finishedAt ?? new Date().toISOString()).replace(/[^0-9A-Za-z]+/g, "-");
   const transcriptArtifact = await persistOperationAgentArtifact(operationStateRoot, operationId, `${selection.logicalAgent}-${observed.id ?? "no-session"}-${turnStamp}`, {
     logicalAgent: selection.logicalAgent,
@@ -1264,6 +1321,7 @@ async function finalizeOperationSession(
     ? contractDelivery.failure ?? `invalid ${options.outputContract ?? "agent"} output contract`
     : undefined;
   const failed = observed.exitCode !== 0 || Boolean(contractFailure);
+  await persistEfficiencyObservations(root, config, selection, result, options, operationStateRoot, operationId, failed ? "FAILED" : "SUCCEEDED");
   await updateOperationParticipant(operationStateRoot, operationId, sessionParticipantId, {
     logicalAgent: selection.logicalAgent,
     role: selection.role,
@@ -1696,9 +1754,9 @@ async function compileParticipantInvocationIdentity(
   const invocationCompetencies = [...new Set([...(selection.specializations ?? []), ...(options.skillManifest?.entries.filter((entry) => entry.kind === "ephemeral").map((entry) => entry.competency) ?? [])])].sort();
   const skillManifest = options.skillManifest ?? compileSkillManifest({ scope: { operationId: operation.id, operationExecutionRevision: operation.operationExecutionRevision!, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch, participantId, workUnitIds: invocationWorkUnitIds, competencies: invocationCompetencies }, skills: selectedSkills.filter((skill): skill is NonNullable<typeof skill> => Boolean(skill)).map((skill) => ({ id: skill.id, kind: skill.kind, competencies: skill.competencies, proceduralSteps: skill.proceduralSteps })) });
   if (skillManifest.scope.participantId !== participantId || skillManifest.scope.operationId !== operation.id || skillManifest.scope.operationExecutionRevision !== operation.operationExecutionRevision || skillManifest.scope.candidateRevision !== candidate.revision || skillManifest.scope.candidateDigest !== candidate.identityDigest || skillManifest.scope.controllerEpoch !== controllerEpoch || sha256Canonical(skillManifest.scope.workUnitIds) !== sha256Canonical(invocationWorkUnitIds) || sha256Canonical(skillManifest.scope.competencies) !== sha256Canonical(invocationCompetencies)) throw new Error("SKILL_MANIFEST_ASSIGNMENT_MISMATCH: SkillManifest belongs to another operation, candidate, epoch, participant, work unit, or competency scope.");
-  const allowedExternalEffects = configuredExternalEffects(config, operation.kind);
+  const deliveryPolicy = configuredDeliveryPolicy(config, operation.kind);
+  const allowedExternalEffects = deliveryPolicy.allowedExternalEffects;
   const humanDecisionRequirements = requiredHumanActionAuthorizations(allowedExternalEffects);
-  const deliveryPolicy = { githubEnabled: config.delivery?.github?.enabled === true, paseoEnabled: config.delivery?.paseo?.enabled === true, allowedExternalEffects };
   const policy = operation.resolvedOperationPolicy ?? compileResolvedOperationPolicy({
     projectId: candidate.projectId ?? config.project.name,
     operationId: operation.id,

@@ -11,8 +11,8 @@ import { compileResolvedOperationPolicy } from "../src/architecture/executionIde
 import { currentObjectiveIdentityV1, evaluateAcceptanceOracleV1, persistAcceptanceOracleArtifactV1, type AcceptanceEvidenceItemV1, type EvidenceBundleV1 } from "../src/architecture/acceptanceOracle.js";
 import { resolveOperationStateRoot } from "../src/operations/state.js";
 import { HumanDecisionLedgerV2 } from "../src/security/humanDecision.js";
-import { deliveryFinalizationFailure, finalizeAcceptedIssue } from "../src/delivery/finalize.js";
-import { githubRequest, handoffTask, seedDeliveryRecordFromIssue } from "../src/delivery/handoff.js";
+import { buildChangePullRequestBody, deliveryFinalizationFailure, finalizeAcceptedChange, finalizeAcceptedIssue } from "../src/delivery/finalize.js";
+import { githubRequest, handoffTask, renderPattern, seedDeliveryRecordFromIssue } from "../src/delivery/handoff.js";
 import { executeIssueWorkflow } from "../src/issues/workflow.js";
 import { executeGatedAction } from "../src/security/gatedAction.js";
 import { controllerActorId } from "../src/security/toolActionGate.js";
@@ -21,11 +21,12 @@ import { runExecutable } from "../src/utils/process.js";
 
 async function git(cwd: string, ...args: string[]): Promise<string> { const result = await runExecutable("git", args, { cwd, timeoutMs: 120_000 }); if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed: ${result.stderr || result.stdout}`); return result.stdout.trim(); }
 const roots: string[] = [];
-const previousEnv = { id: process.env.AEH_OPERATION_ID, control: process.env.AEH_CONTROL_ROOT, redirect: process.env.AEH_OPERATION_STATE_REDIRECT, epoch: process.env.AEH_CONTROLLER_EPOCH };
+const previousEnv = { id: process.env.AEH_OPERATION_ID, kind: process.env.AEH_OPERATION_KIND, control: process.env.AEH_CONTROL_ROOT, redirect: process.env.AEH_OPERATION_STATE_REDIRECT, epoch: process.env.AEH_CONTROLLER_EPOCH };
 afterEach(async () => {
   vi.unstubAllGlobals();
   delete process.env.GH_TOKEN;
   restoreEnv("AEH_OPERATION_ID", previousEnv.id);
+  restoreEnv("AEH_OPERATION_KIND", previousEnv.kind);
   restoreEnv("AEH_CONTROL_ROOT", previousEnv.control);
   restoreEnv("AEH_OPERATION_STATE_REDIRECT", previousEnv.redirect);
   restoreEnv("AEH_CONTROLLER_EPOCH", previousEnv.epoch);
@@ -159,6 +160,57 @@ describe("accepted issue delivery finalization", () => {
   it("maps external delivery failures to human-on-exception", () => {
     expect(deliveryFinalizationFailure(new Error("BLOCKED_EXTERNAL: token unavailable"))).toMatchObject({ status: "BLOCKED_EXTERNAL", humanRequired: true });
     expect(deliveryFinalizationFailure(new Error("SYSTEM_FAILURE: branch mismatch"))).toMatchObject({ status: "SYSTEM_FAILURE", humanRequired: false });
+  });
+});
+
+describe("accepted no-Issue CHANGE delivery", () => {
+  it("creates a local branch, commit, push, and pull request only through accepted, scoped ToolActionGates", async () => {
+    const context = await createFinalizeFixture({ taskId: "CHANGE-SELFHOST-1", issueDerived: false });
+    const branch = renderPattern("feature/{task}-{slug}", context.contract);
+    expect(await git(context.repo, "status", "--porcelain")).toContain("README.md");
+
+    await expect(finalizeAcceptedChange(context.repo, context.config, context.contract, { candidate: context.candidate }))
+      .rejects.toThrow("TOOL_ACTION_HUMAN_DECISION_REQUIRED");
+    expect(await git(context.repo, "branch", "--show-current")).toBe(branch);
+    const commitSha = await git(context.repo, "rev-parse", "HEAD");
+    const pushPayload = { remote: "origin", ref: branch, expectedCommit: commitSha };
+    await recordActionAuthorization(context, "git.push", pushPayload);
+
+    const body = buildChangePullRequestBody(context.contract);
+    const prPayload = {
+      repository: "owner/repo",
+      head: branch,
+      base: "main",
+      apiBase: "https://api.github.com",
+      title: `${context.contract.task.id}: ${context.contract.task.title}`,
+      bodyDigest: sha256Canonical(body),
+      draft: true
+    };
+    await expect(finalizeAcceptedChange(context.repo, context.config, context.contract, { candidate: context.candidate }))
+      .rejects.toThrow("TOOL_ACTION_HUMAN_DECISION_REQUIRED");
+    await recordActionAuthorization(context, "github.pull-request.create", prPayload);
+
+    const result = await finalizeAcceptedChange(context.repo, context.config, context.contract, { candidate: context.candidate });
+    expect(result).toMatchObject({ status: "FINALIZED", committed: true, pushed: true, pullRequest: { number: 9, draft: true } });
+    expect(await git(context.remote, "rev-parse", `refs/heads/${branch}`)).toBe(commitSha);
+    expect(await git(context.repo, "status", "--porcelain")).toBe("");
+    expect(context.requests.some((request) => request.url.includes("/issues"))).toBe(false);
+    expect(context.requests.filter((request) => request.method === "POST" && request.url.endsWith("/pulls"))).toHaveLength(1);
+
+    const actions = await fs.readdir(actionDirectory(context.repo, context.operationId));
+    expect(actions.filter((file) => file.endsWith(".intent.json"))).toHaveLength(4);
+    expect(actions.filter((file) => file.endsWith(".receipt.json"))).toHaveLength(4);
+    const intents = await Promise.all(actions.filter((file) => file.endsWith(".intent.json")).map(async (file) => JSON.parse(await fs.readFile(path.join(actionDirectory(context.repo, context.operationId), file), "utf8")) as { action: string }));
+    expect(intents.map((intent) => intent.action).sort()).toEqual(["git.branch.create", "git.commit", "git.push", "github.pull-request.create"].sort());
+  });
+
+  it("keeps no-Issue delivery disabled when project policy is disabled", async () => {
+    const context = await createFinalizeFixture({ taskId: "CHANGE-SELFHOST-DISABLED", issueDerived: false });
+    const disabled: HarnessProjectConfig = { ...context.config, delivery: { ...context.config.delivery, github: { ...context.config.delivery?.github, enabled: false, allowedActions: [] } } };
+    const result = await finalizeAcceptedChange(context.repo, disabled, context.contract, { candidate: context.candidate });
+    expect(result.status).toBe("SKIPPED");
+    expect(context.requests).toHaveLength(0);
+    expect(await git(context.repo, "branch", "--show-current")).toBe("aeh/op-change-selfhost");
   });
 });
 
@@ -318,8 +370,10 @@ interface FinalizeFixture {
   requests: Array<{ url: string; method: string; body?: string }>;
 }
 
-async function createFinalizeFixture(options: { managed?: boolean; acceptanceOracle?: boolean; candidateBranch?: string; pullRequests?: boolean } = {}): Promise<FinalizeFixture> {
+async function createFinalizeFixture(options: { managed?: boolean; acceptanceOracle?: boolean; candidateBranch?: string; pullRequests?: boolean; taskId?: string; issueDerived?: boolean } = {}): Promise<FinalizeFixture> {
   const managed = options.managed !== false;
+  const taskId = options.taskId ?? "GH-5";
+  const issueDerived = options.issueDerived !== false;
   const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-finalize-"));
   roots.push(baseDir);
   const remote = path.join(baseDir, "origin.git");
@@ -327,30 +381,34 @@ async function createFinalizeFixture(options: { managed?: boolean; acceptanceOra
   await fs.mkdir(repo); await git(baseDir, "init", "--bare", remote); await git(repo, "init", "-b", "main");
   await git(repo, "config", "user.name", "AEH Test"); await git(repo, "config", "user.email", "aeh@example.invalid");
   await fs.writeFile(path.join(repo, "README.md"), "base\n"); await git(repo, "add", "README.md"); await git(repo, "commit", "-m", "base"); await git(repo, "remote", "add", "origin", remote); await git(repo, "push", "-u", "origin", "main");
-  await git(repo, "checkout", "-b", options.candidateBranch ?? "feature/gh-5-update-readme");
+  await git(repo, "checkout", "-b", options.candidateBranch ?? (issueDerived ? "feature/gh-5-update-readme" : "aeh/op-change-selfhost"));
   await fs.writeFile(path.join(repo, "README.md"), "accepted implementation\n");
   await fs.writeFile(path.join(repo, ".gitignore"), ".harness/\n");
   await fs.mkdir(path.join(repo, ".harness", "delivery"), { recursive: true });
-  await fs.writeFile(path.join(repo, ".harness", "delivery", "GH-5.json"), JSON.stringify({ version: 1, taskId: "GH-5", status: "ready", createdAt: "2026-08-11T00:00:00Z", updatedAt: "2026-08-11T00:00:00Z", originatingBranch: "main", github: { repository: "owner/repo", issueNumber: 5, issueUrl: "https://github.com/owner/repo/issues/5", branch: "feature/gh-5-update-readme" } }));
+  if (issueDerived) await fs.writeFile(path.join(repo, ".harness", "delivery", `${taskId}.json`), JSON.stringify({ version: 1, taskId, status: "ready", createdAt: "2026-08-11T00:00:00Z", updatedAt: "2026-08-11T00:00:00Z", originatingBranch: "main", github: { repository: "owner/repo", issueNumber: 5, issueUrl: "https://github.com/owner/repo/issues/5", branch: "feature/gh-5-update-readme" } }));
 
-  const config: HarnessProjectConfig = { version: 1, project: { name: "finalize-test" }, validation: { baseRef: "main" }, delivery: { stateDir: ".harness/delivery", github: { enabled: true, tokenEnv: "GH_TOKEN", finalizeOnAcceptance: true, pullRequestDraft: true, ...(options.pullRequests === false ? { pullRequests: false } : {}) } } };
-  const contract: TaskContract = { version: 1, task: { id: "GH-5", title: "Update README" }, issue: { provider: "github", repository: "owner/repo", number: 5, url: "https://github.com/owner/repo/issues/5", state: "open", fetchedAt: "2026-08-11T00:00:00Z", updatedAt: "2026-08-11T00:00:00Z", contentSha256: "a".repeat(64), snapshotPath: ".harness/issues/GH-5.json" }, git: { baseRef: "main", originatingBranch: "main" } };
-  const operationId = "RUN-FINALIZE-GH-5";
+  const allowedActions: Array<"git.branch.create" | "git.commit" | "git.push" | "github.issue.create" | "github.branch.create" | "github.pull-request.create"> = ["git.branch.create", "git.commit", "git.push", ...(issueDerived ? ["github.issue.create", "github.branch.create"] as const : []), ...(options.pullRequests === false ? [] : ["github.pull-request.create" as const])];
+  const config: HarnessProjectConfig = { version: 1, project: { name: "finalize-test" }, validation: { baseRef: "main" }, delivery: { stateDir: ".harness/delivery", github: { enabled: true, allowedActions, repository: "owner/repo", tokenEnv: "GH_TOKEN", finalizeOnAcceptance: true, pullRequestDraft: true, ...(options.pullRequests === false ? { pullRequests: false } : {}) } } };
+  const contract: TaskContract = { version: 1, task: { id: taskId, title: issueDerived ? "Update README" : "Redesign Home" }, ...(issueDerived ? { issue: { provider: "github" as const, repository: "owner/repo", number: 5, url: "https://github.com/owner/repo/issues/5", state: "open", fetchedAt: "2026-08-11T00:00:00Z", updatedAt: "2026-08-11T00:00:00Z", contentSha256: "a".repeat(64), snapshotPath: ".harness/issues/GH-5.json" } } : {}), git: { baseRef: "main", originatingBranch: "main" }, routing: { route: "DIRECT", assurance: "STANDARD" } };
+  const operationId = `RUN-FINALIZE-${taskId}`;
   let candidate: CandidateRevisionV1;
   if (managed) {
-    await saveOperation(repo, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "delivery", root: repo, payload: { taskId: "GH-5" }, createdAt: "2026-08-11T00:00:00Z", updatedAt: "2026-08-11T00:00:00Z" });
+    await saveOperation(repo, { version: 1, id: operationId, kind: issueDerived ? "run" : "change", status: "RUNNING", phase: "delivery", root: repo, payload: { taskId }, createdAt: "2026-08-11T00:00:00Z", updatedAt: "2026-08-11T00:00:00Z" });
     candidate = (await loadOperation(repo, operationId)).candidateRevision!;
     await claimControllerEpoch(repo, operationId, "controller:test");
     process.env.AEH_OPERATION_ID = operationId;
+    process.env.AEH_OPERATION_KIND = issueDerived ? "run" : "change";
     process.env.AEH_CONTROL_ROOT = repo;
     process.env.AEH_OPERATION_STATE_REDIRECT = "1";
     process.env.AEH_CONTROLLER_EPOCH = "1";
     const operation = await loadOperation(repo, operationId);
-    const allowedExternalEffects: Array<"github.issue.create" | "github.branch.create" | "git.push" | "github.pull-request.create"> = options.pullRequests === false
-      ? ["github.issue.create", "github.branch.create", "git.push"]
-      : ["github.issue.create", "github.branch.create", "git.push", "github.pull-request.create"];
+    const allowedExternalEffects: Array<"github.issue.create" | "github.branch.create" | "git.push" | "github.pull-request.create"> = [
+      ...(issueDerived ? ["github.issue.create", "github.branch.create"] as const : []),
+      "git.push",
+      ...(options.pullRequests === false ? [] : ["github.pull-request.create" as const])
+    ];
     const humanDecisionRequirements = allowedExternalEffects.filter((action) => action !== "github.branch.create").map((action) => ({ kind: "ACTION_AUTHORIZATION" as const, action }));
-    const deliveryPolicy = { githubEnabled: true, allowedExternalEffects };
+    const deliveryPolicy = { githubEnabled: true, allowedActions, allowedExternalEffects };
     const policy = compileResolvedOperationPolicy({ projectId: candidate.projectId!, operationId, operationExecutionRevision: operation.operationExecutionRevision!, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch: currentControllerEpoch(operation), intent: "delivery finalization test", route: "DIRECT", minimumAssurance: "STANDARD", policyVersions: {}, policyDigests: { delivery: sha256Canonical({ ...deliveryPolicy, humanDecisionRequirements }) }, validationPolicy: {}, reviewPolicy: { leadAcceptance: true, leadAcceptanceDirect: false, independentReviewRequired: false }, deliveryPolicy, knowledgePolicy: {}, contextPolicy: {}, allowedExternalEffects, humanDecisionRequirements });
     await bindResolvedOperationPolicy(repo, operationId, policy);
     if (options.acceptanceOracle !== false) await persistFixtureAcceptanceOracle(repo, await loadOperation(repo, operationId));

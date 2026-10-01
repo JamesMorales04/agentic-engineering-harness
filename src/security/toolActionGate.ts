@@ -319,6 +319,7 @@ async function assertCurrentActionAuthority(request: ToolActionRequestV1, impact
   if (!evidence || typeof evidence !== "object") throw new Error("TOOL_ACTION_AUTHORITY_REQUIRED: blueprint or execution authority lease is required.");
   const controllerEvidence = evidence.kind === "controller-authority";
   if (!controllerEvidence) {
+    if (request.action === "git.branch.create" || request.action === "git.commit") throw new Error(`TOOL_ACTION_CONTROLLER_AUTHORITY_REQUIRED: delivery action '${request.action}' is controller-owned and cannot be authorized by a participant.`);
     if (!request.role || !isCanonicalRole(request.role)) throw new Error(`TOOL_ACTION_ROLE_UNREGISTERED: '${String(request.role)}' is not a canonical role.`);
     const profile = roleProfile(request.role);
     const leadBound = operation.lead?.agentId === request.participantId;
@@ -368,6 +369,15 @@ async function assertCurrentActionAuthority(request: ToolActionRequestV1, impact
   if (evidence.operationId !== request.operationId) throw new Error("TOOL_ACTION_CONTROLLER_ACTOR_MISMATCH: controller authority belongs to another operation.");
   if (evidence.controllerEpoch !== operationEpoch) throw new Error(`TOOL_ACTION_CONTROLLER_FENCED: controller authority cites epoch ${evidence.controllerEpoch}, but the operation is owned by controller epoch ${operationEpoch}.`);
   assertCurrentControllerOwner(operation, "tool action authorization");
+  if (request.action === "git.branch.create" || request.action === "git.commit") {
+    const deliveryPolicy = policy.deliveryPolicy && typeof policy.deliveryPolicy === "object" && !Array.isArray(policy.deliveryPolicy)
+      ? policy.deliveryPolicy as Record<string, unknown>
+      : {};
+    const allowedActions = Array.isArray(deliveryPolicy.allowedActions) ? deliveryPolicy.allowedActions : [];
+    if (!allowedActions.includes(request.action)) {
+      throw new Error(`TOOL_ACTION_POLICY_DENIED: frozen project delivery policy does not authorize local delivery action '${request.action}'.`);
+    }
+  }
   if (impact.startsWith("EXTERNAL_") && !policy.allowedExternalEffects.includes(request.action)) {
     throw new Error(`TOOL_ACTION_POLICY_DENIED: frozen policy does not authorize external effect '${request.action}'.`);
   }

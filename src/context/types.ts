@@ -53,6 +53,7 @@ export interface ContextMetrics {
   projectedBytes: number;
   deliveredBytes: number;
   estimatedRawTokens: number;
+  estimatedProjectedTokens: number;
   estimatedDeliveredTokens: number;
   retrievedFragments: number;
   deliveredFragments: number;
@@ -67,6 +68,9 @@ export interface ContextMetrics {
 
 export interface ContextPreparationRequest {
   operationId: string;
+  participantId?: string;
+  participantGeneration?: string;
+  runtimeSessionId?: string;
   logicalAgent: string;
   role?: string;
   phase: string;

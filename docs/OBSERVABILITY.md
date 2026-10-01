@@ -60,6 +60,68 @@ identity and is explicitly unverified; production call sites always derive the
 correlation from the current durable operation and record nothing when it is
 unresolvable.
 
+## Efficiency observations (V2)
+
+When `telemetry.enabled` is true, AEH writes versioned participant, context,
+tool-call, and operation-summary JSON/NDJSON records under
+`.harness/telemetry/efficiency/`. This remains local and works with
+`telemetry.exporter: none`; no collector, hosted service, or paid dependency is
+required. Consumers may leave telemetry disabled.
+
+`ParticipantUsageObservationV1` prefers per-turn structured provider usage,
+then Paseo's structured agent usage snapshot/adapter data, then the existing
+AEH usage extractor. Missing fields remain `null`. `usageKnown` and
+`usageCoverage` distinguish a complete participant total from a partial
+snapshot or extracted fragment. Paseo currently exposes input, cached input,
+output and cost on completed turns, but does not expose reasoning tokens or a
+provider-reported total-token field; AEH records reasoning as unknown and marks
+`totalTokensBasis: INPUT_PLUS_OUTPUT` when it derives that sum. A context-window
+snapshot is never treated as provider billing usage. Text extraction is
+explicitly tagged and is not described as provider-native.
+
+The operation summary deduplicates repeated per-turn history by provider turn
+identity. When only aggregate snapshot/adapter observations are available for
+the same participant generation and runtime session, it keeps the latest value
+and marks coverage partial because the provider does not identify whether each
+snapshot is cumulative or incremental. `usage.byParticipant` retains the
+participant-level totals needed for token-share KPIs.
+
+`ContextAccountingObservationV1` joins the operation and participant identity
+to `rawContextTokens`, `projectedContextTokens`, `deliveredContextTokens`, and
+retrieval receipts. These are deterministic AEH estimator values. They are
+useful for comparison with provider input tokens, but the two measures are not
+equivalent. Cross-participant repeated-fragment tokens are derived from
+fragment IDs, content digests, and AEH-delivered token estimates; no fragment
+body is copied into the efficiency records. Retrieved fragments contribute
+their own content identity and estimator count; multiple fragments returned by
+one retrieval request count as one request.
+
+The Paseo adapter reads its structured timeline subscription and canonical
+timeline projection. The normalizer accepts `tool_call` items with optional
+call ID, name, status, detail, provider, turn ID, timestamp, and sequence, plus
+`turn_completed` usage events. AEH captures these structured events and stores
+only tool identity, normalized-argument digest/byte length, times, result byte
+length, error fingerprint, outcome, and a proven retry link. Raw arguments,
+tool output, prompts, and error text are not persisted. A retry is linked only
+when an earlier equivalent call failed in the same session, phase, and known
+provider turn with a call ID. Calls without IDs or known turn identity retain
+`UNKNOWN` retry causality.
+
+`retryAssociatedInputTokens`, `retryAssociatedOutputTokens`, and
+`retryAssociatedTotalTokens` summarize provider usage observed on turns that
+contain a proven retry call. They do not claim tokens were caused exclusively
+by the tool. A tool failure without a proven retry does not attribute usage to
+later turns. If per-turn provider usage is unavailable, these fields remain
+unknown.
+
+`OperationEfficiencySummaryV1` is derived from these local observations after
+terminalization. It has no callers in routing, assurance, validation,
+acceptance, delivery, `ToolActionGate`, or `ObjectiveCompletion`. Recording or
+forging an observation cannot pass a gate or grant an effect. The Control
+Center's operation detail may expose this summary read-only; it adds no action
+surface. KPI denominators should use the explicit known-usage/causality coverage
+and leave cost-per-accepted-operation unavailable when provider cost is unknown.
+
 ## Export lanes
 
 - **Local file/NDJSON (default):** `.harness/telemetry/events.ndjson` and

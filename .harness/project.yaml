@@ -108,13 +108,15 @@ mcp:
 delivery:
   stateDir: .harness/delivery
   github:
-    enabled: false
+    enabled: true
+    allowedActions: [git.branch.create, git.commit, git.push, github.pull-request.create]
     tokenEnv: GH_TOKEN
     assignTokenOwner: true
     labels: []
-    branchPattern: feature/gh-{issue}-{slug}
+    branchPattern: fix/{task}-{slug}
     finalizeOnAcceptance: true
     pullRequestDraft: true
+    pullRequests: true
   paseo:
     enabled: false
     createWorkspace: true
@@ -204,7 +206,7 @@ security:
     credentialEnvAllowlist: []
 
 telemetry:
-  enabled: false
+  enabled: true
   required: false
   exporter: none
 

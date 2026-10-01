@@ -7,7 +7,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   start: vi.fn(),
   legacyRepair: vi.fn(),
-  executeAgentPrompt: vi.fn()
+  executeAgentPrompt: vi.fn(),
+  executePlannerWaves: vi.fn(),
+  setupToolchain: vi.fn(async () => ({ profile: "test", generatedConfig: ".config/mise/conf.d/aeh.toml", lockFile: ".harness/toolchain.lock.json", stateFile: ".harness/toolchain.state.json", installed: [], containers: [], systemMissing: [], projectDependencyCommands: ["npm ci"] }))
 }));
 
 vi.mock("../src/workers/factory.js", () => ({
@@ -20,6 +22,8 @@ vi.mock("../src/workers/factory.js", () => ({
 }));
 
 vi.mock("../src/workers/agentPrompt.js", () => ({ executeAgentPrompt: mocks.executeAgentPrompt }));
+vi.mock("../src/agents/waveExecutor.js", () => ({ executePlannerWaves: mocks.executePlannerWaves }));
+vi.mock("../src/toolchain/setup.js", () => ({ setupToolchain: mocks.setupToolchain, compileToolchain: vi.fn() }));
 vi.mock("../src/operations/supervisor.js", () => ({
   ensureOperationSupervisor: vi.fn(async (_root, _config, _contract, selection) => selection ? { operationId: "RUN-REPAIR-PUBLIC", generation: 1, agentId: "supervisor:test", materialized: true, selection } : undefined),
   maybeRotateOperationSupervisor: vi.fn(async () => undefined),
@@ -59,10 +63,72 @@ afterEach(async () => {
   mocks.start.mockReset();
   mocks.legacyRepair.mockReset();
   mocks.executeAgentPrompt.mockReset();
+  mocks.executePlannerWaves.mockReset();
+  mocks.setupToolchain.mockClear();
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
 });
 
 describe("public runTask Repairer candidate lifecycle", () => {
+  it("fails closed after one invalid WorkGraph correction without running validators or Repairer", async () => {
+    const root = await createProject();
+    const task: TaskContract = { ...taskContract(), routing: { ...taskContract().routing, route: "DELEGATED" } };
+    const config = projectConfig();
+    await writeProjectInputs(root, task);
+    await runShell("git init -q && git add -A && git -c user.name=test -c user.email=test@example.invalid commit -qm initial", { cwd: root });
+
+    const operationId = "CHANGE-PLANNER-FAIL-CLOSED";
+    const now = "2026-01-01T00:00:00.000Z";
+    await saveOwnedOperation(root, { version: 1, id: operationId, kind: "change", status: "RUNNING", phase: "implementation", root, payload: { taskId: task.task.id }, createdAt: now, updatedAt: now });
+    const operation = await loadOperation(root, operationId);
+    const candidate = operation.candidateRevision!;
+    await bindResolvedOperationPolicy(root, operationId, compileResolvedOperationPolicy({
+      projectId: candidate.projectId ?? config.project.name,
+      operationId,
+      operationExecutionRevision: operation.operationExecutionRevision!,
+      candidateRevision: candidate.revision,
+      candidateDigest: candidate.identityDigest,
+      controllerEpoch: currentControllerEpoch(operation),
+      intent: "reject invalid Planner WorkGraph",
+      route: "DELEGATED",
+      minimumAssurance: "STANDARD",
+      policyVersions: { resolvedOperationPolicy: "1" },
+      policyDigests: { validation: sha256Canonical(task.verification ?? {}) },
+      validationPolicy: task.verification ?? {},
+      reviewPolicy: { minimumAssurance: "STANDARD", independentReviewRequired: false, leadAcceptance: true, leadAcceptanceDirect: false },
+      deliveryPolicy: { allowedActions: [] },
+      knowledgePolicy: {},
+      contextPolicy: { mode: "disabled" },
+      allowedExternalEffects: [],
+      humanDecisionRequirements: []
+    }));
+    process.env.AEH_OPERATION_ID = operationId;
+    process.env.AEH_OPERATION_KIND = "change";
+    process.env.AEH_OPERATION_STATE_REDIRECT = "0";
+    process.env.AEH_CONTROL_ROOT = root;
+    mocks.executePlannerWaves.mockResolvedValue({
+      used: true,
+      plan: { workUnits: [] },
+      waves: [],
+      sessions: [],
+      preExecutionFailure: true,
+      correctionAttempts: 1,
+      aggregateSession: { provider: "test", logicalAgent: "planner", exitCode: 1, stdout: "", stderr: "WorkGraph remained invalid after one corrective retry." }
+    });
+
+    const result = await runTask(root, config, task, { semanticRuntime: testSemanticRuntime() });
+
+    expect(result.status).toBe("FAIL");
+    expect(result.report.checks).toContainEqual(expect.objectContaining({ id: "planning.pre-execution", status: "FAIL" }));
+    expect(result.report.checks.some((check) => check.id === "command.candidate-check" || check.id === "acceptance.oracle" || check.id === "candidate.assurance.recompiled")).toBe(false);
+    expect(result.candidateAssurance).toBeUndefined();
+    expect(result.acceptanceOracle).toBeUndefined();
+    expect(result.attempts).toBe(0);
+    expect((await loadOperation(root, operationId)).stages.implementation).toMatchObject({ status: "SKIPPED", finishedAt: expect.any(String) });
+    expect(mocks.setupToolchain).not.toHaveBeenCalled();
+    expect(mocks.executeAgentPrompt).not.toHaveBeenCalled();
+    expect(mocks.legacyRepair).not.toHaveBeenCalled();
+  });
+
   it("repairs validation failures but rejects acceptance without Reviewer execution provenance", async () => {
     const root = await createProject();
     const task = taskContract();
@@ -113,6 +179,7 @@ describe("public runTask Repairer candidate lifecycle", () => {
     const result = await runTask(root, config, task, { semanticRuntime: testSemanticRuntime() });
 
     expect(result.status).toBe("FAIL");
+    expect(mocks.setupToolchain).toHaveBeenCalledTimes(1);
     expect(result.report.candidate?.revision).toBe(2);
     expect(result.report.candidate?.sourceDigest).toBe(await computeWorktreeDigest(root));
     expect(await fs.readFile(path.join(root, "src", "value.ts"), "utf8")).toBe("export const value = 2;\n");
@@ -286,6 +353,7 @@ async function writeProjectInputs(root: string, contract: TaskContract, includeR
     models: { test: { runtime: "test", provider: "test", model: "fake" } },
     agents: {
       implementer: { role: "Implementer", execution: { model: "@test", transport: "direct" }, permissions: { read: "allow", write: "allow", shell: "allow", delegate: "deny" } },
+      planner: { role: "Planner", execution: { model: "@test", transport: "direct" }, permissions: { read: "allow", write: "deny", shell: "deny", delegate: "deny" }, outputContract: "planner" },
       reviewer: { role: "Reviewer", execution: { model: "@test", transport: "direct" }, permissions: { read: "allow", write: "deny", shell: "allow", review: "allow" } },
       "operation-supervisor": { role: "Operation Supervisor", execution: { model: "@test", transport: "direct" }, permissions: { read: "allow", write: "deny", shell: "allow", delegate: "allow" } },
       ...(includeRepairer ? { repairer: { role: "Repairer", execution: { model: "@test", transport: "direct" }, permissions: { read: "allow", write: "allow", shell: "allow", delegate: "deny" }, outputContract: "implementer" } } : {})
