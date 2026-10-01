@@ -13,6 +13,7 @@ import { assertSemanticStructuredOutputCapabilityV1 } from "./structuredOutput.j
 export const semanticAssessmentTypeValues = ["INTENT", "ROUTE", "STACK", "ISSUE", "FAILURE", "CANDIDATE_IMPACT", "VALIDATION_NEED"] as const;
 export type SemanticAssessmentTypeV1 = (typeof semanticAssessmentTypeValues)[number];
 export const semanticAssessmentTypeSchema = z.enum(semanticAssessmentTypeValues);
+export const semanticAssessmentMaxCompactEvidenceBytesV1 = 24_000;
 
 export const reasoningClassValues = ["LIGHT", "STANDARD", "DEEP"] as const;
 export type ReasoningClassV1 = (typeof reasoningClassValues)[number];
@@ -92,7 +93,7 @@ const semanticEvidenceReceiptShape = z.object({
   ref: z.string().trim().min(1).max(200),
   path: z.string().trim().min(1).max(500).optional(),
   contentDigest: z.string().regex(/^[a-f0-9]{64}$/),
-  contentBytes: z.number().int().nonnegative().max(24_000),
+  contentBytes: z.number().int().nonnegative().max(semanticAssessmentMaxCompactEvidenceBytesV1),
   boundaryDigest: z.string().regex(/^[a-f0-9]{64}$/),
   receiptDigest: z.string().regex(/^[a-f0-9]{64}$/)
 }).strict();
@@ -132,7 +133,7 @@ export function createSemanticEvidenceReceiptV1(input: {
     contentBytes: Buffer.byteLength(input.content, "utf8"),
     boundaryDigest: semanticEvidenceBoundaryDigest(input.binding)
   };
-  if (base.contentBytes > 24_000) throw new AehError("SEMANTIC_ASSESSMENT_INVALID", "semantic evidence exceeds the controller receipt byte bound.");
+  if (base.contentBytes > semanticAssessmentMaxCompactEvidenceBytesV1) throw new AehError("SEMANTIC_ASSESSMENT_INVALID", "semantic evidence exceeds the controller receipt byte bound.");
   return { ...base, receiptDigest: sha256Canonical(base) };
 }
 
@@ -181,7 +182,7 @@ export const semanticAssessmentRequestV1Schema = z.object({
   if (value.evidenceRefs.length !== refs.size || value.evidenceRefs.some((ref) => !refs.has(ref) || !receiptRefs.has(ref))) context.addIssue({ code: "custom", path: ["evidenceRefs"], message: "evidenceRefs, compactEvidence, and evidenceReceipts must have the same refs" });
   if (receiptRefs.size !== refs.size || [...receiptRefs].some((ref) => !refs.has(ref))) context.addIssue({ code: "custom", path: ["evidenceReceipts"], message: "every evidence receipt must identify exactly one supplied evidence item" });
   const bytes = value.compactEvidence.reduce((total, item) => total + Buffer.byteLength(item.content, "utf8"), 0);
-  if (bytes > 24_000) context.addIssue({ code: "custom", path: ["compactEvidence"], message: "compact evidence exceeds the 24000-byte bound" });
+  if (bytes > semanticAssessmentMaxCompactEvidenceBytesV1) context.addIssue({ code: "custom", path: ["compactEvidence"], message: "compact evidence exceeds the 24000-byte bound" });
 });
 
 export const candidateReviewDimensionSchema = z.enum(candidateReviewDimensionValues);

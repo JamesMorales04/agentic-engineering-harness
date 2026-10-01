@@ -12,6 +12,7 @@ import {
   discoverProjectStackProfile,
   projectStackAssessmentRequest,
   type ProjectStackDiscoveryOptionsV1,
+  type ProjectStackEvidencePacketV1,
   type ProjectStackSemanticAssessorV1
 } from "../src/participants/stack.js";
 import {
@@ -19,6 +20,8 @@ import {
   createSemanticEvidenceReceiptV1,
   semanticAssessmentBindingV1Schema,
   semanticAssessmentEvidenceDigest,
+  semanticAssessmentMaxCompactEvidenceBytesV1,
+  semanticAssessmentRequestV1Schema,
   semanticCapabilityPolicyRevisionV1,
   semanticEvidenceBoundaryDigest,
   semanticEvidenceReceiptDigest,
@@ -148,6 +151,45 @@ function stubService(assessment: (request: SemanticAssessmentRequestV1) => Seman
       return assessment(request);
     }
   };
+}
+
+function stackEvidencePacket(binding: SemanticAssessmentBindingV1, items: Array<{ path: string; content: string }>): ProjectStackEvidencePacketV1 {
+  const receipts = items.map((item) => createSemanticEvidenceReceiptV1({ binding, ref: `file:${item.path}`, content: item.content, kind: "REPOSITORY_FILE", path: item.path }));
+  const evidenceRefs = receipts.map((receipt) => receipt.ref);
+  const compactEvidence = items.map((item) => ({ ref: `file:${item.path}`, content: item.content }));
+  return {
+    version: 1,
+    items,
+    receipts,
+    digest: semanticAssessmentEvidenceDigest({ evidenceRefs, compactEvidence, evidenceReceipts: receipts }),
+    scannedFiles: items.length,
+    truncated: false
+  };
+}
+
+function expectBoundedCorrectionRequest(request: SemanticAssessmentRequestV1): void {
+  expect(semanticAssessmentRequestV1Schema.safeParse(request).success).toBe(true);
+  expect(request.compactEvidence.length).toBeLessThanOrEqual(16);
+  expect(request.compactEvidence.reduce((total, item) => total + Buffer.byteLength(item.content, "utf8"), 0)).toBeLessThanOrEqual(semanticAssessmentMaxCompactEvidenceBytesV1);
+  expect(request.compactEvidence.every((item) => item.content.length <= 4_000)).toBe(true);
+  const compactRefs = request.compactEvidence.map((item) => item.ref);
+  const receiptRefs = request.evidenceReceipts.map((receipt) => receipt.ref);
+  expect(new Set(compactRefs).size).toBe(compactRefs.length);
+  expect(request.evidenceRefs).toEqual(compactRefs);
+  expect(receiptRefs).toEqual(compactRefs);
+  for (const item of request.compactEvidence) {
+    const receipt = request.evidenceReceipts.find((candidate) => candidate.ref === item.ref)!;
+    expect(receipt.contentDigest).toBe(sha256Utf8(item.content));
+    expect(receipt.contentBytes).toBe(Buffer.byteLength(item.content, "utf8"));
+    expect(receipt.boundaryDigest).toBe(semanticEvidenceBoundaryDigest(request.binding));
+    expect(receipt.receiptDigest).toBe(semanticEvidenceReceiptDigest(receipt));
+  }
+  const correction = request.compactEvidence.find((item) => item.ref === "file:assessment.correction");
+  const correctionReceipt = request.evidenceReceipts.find((receipt) => receipt.ref === "file:assessment.correction");
+  expect(correction).toBeDefined();
+  expect(correctionReceipt).toMatchObject({ kind: "REQUEST", path: "assessment.correction" });
+  expect(correctionReceipt?.contentDigest).toBe(sha256Utf8(correction!.content));
+  expect(correctionReceipt?.contentBytes).toBe(Buffer.byteLength(correction!.content, "utf8"));
 }
 
 async function temporaryRoot(prefix: string): Promise<string> {
@@ -684,15 +726,7 @@ describe("project skill root validation", () => {
     try {
       const binding = await repositoryBinding(root);
       const items = Array.from({ length: 16 }, (_, index) => ({ path: `file-${index}.ts`, content: `export const v${index} = ${index};` }));
-      const receipts = items.map((item) => createSemanticEvidenceReceiptV1({ binding, ref: `file:${item.path}`, content: item.content, kind: "REQUEST", path: item.path }));
-      const packet = {
-        version: 1 as const,
-        items,
-        receipts,
-        digest: semanticAssessmentEvidenceDigest({ evidenceRefs: receipts.map((receipt) => receipt.ref), compactEvidence: items.map((item) => ({ ref: `file:${item.path}`, content: item.content })), evidenceReceipts: receipts }),
-        scannedFiles: items.length,
-        truncated: false
-      };
+      const packet = stackEvidencePacket(binding, items);
       const { request, packet: effective } = projectStackAssessmentRequest(packet, binding, "The previous STACK judgment was rejected by deterministic validation: unknown evidence ref.");
       expect(request.compactEvidence).toHaveLength(16);
       expect(request.evidenceRefs).toHaveLength(16);
@@ -701,6 +735,105 @@ describe("project skill root validation", () => {
       expect(effective.items).toHaveLength(16);
       expect(effective.items[0]?.path).toBe("file-0.ts");
       expect(effective.items.some((item) => item.path === "file-15.ts")).toBe(false);
+      expectBoundedCorrectionRequest(request);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a correction retry within 24000 bytes when the original packet is exactly full", async () => {
+    const root = await temporaryRoot("aeh-stack-correction-byte-bound-");
+    try {
+      const binding = await repositoryBinding(root);
+      const items = Array.from({ length: 6 }, (_, index) => ({ path: `source-${index}.ts`, content: "x".repeat(4_000) }));
+      const packet = stackEvidencePacket(binding, items);
+      const before = structuredClone(packet);
+      expect(items.reduce((total, item) => total + Buffer.byteLength(item.content, "utf8"), 0)).toBe(24_000);
+
+      const { request, packet: effective } = projectStackAssessmentRequest(packet, binding, "c".repeat(500));
+
+      expectBoundedCorrectionRequest(request);
+      expect(request.compactEvidence).toHaveLength(6);
+      expect(request.compactEvidence.slice(0, -1).map((item) => item.ref)).toEqual(items.slice(0, 5).map((item) => `file:${item.path}`));
+      expect(packet).toEqual(before);
+      expect(packet.items).toHaveLength(6);
+      expect(effective.items).toHaveLength(6);
+      expect(effective.items.at(-1)?.path).toBe("assessment.correction");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("enforces both item and byte caps when a full 16-item packet receives a correction", async () => {
+    const root = await temporaryRoot("aeh-stack-correction-dual-bound-");
+    try {
+      const binding = await repositoryBinding(root);
+      const items = [
+        ...Array.from({ length: 15 }, (_, index) => ({ path: `source-${index}.ts`, content: "a".repeat(1_590) })),
+        { path: "source-15.ts", content: "z".repeat(150) }
+      ];
+      const packet = stackEvidencePacket(binding, items);
+      expect(items.reduce((total, item) => total + Buffer.byteLength(item.content, "utf8"), 0)).toBe(24_000);
+
+      const { request, packet: effective } = projectStackAssessmentRequest(packet, binding, "r".repeat(200));
+
+      expectBoundedCorrectionRequest(request);
+      expect(request.compactEvidence).toHaveLength(16);
+      expect(request.compactEvidence.at(-1)?.ref).toBe("file:assessment.correction");
+      expect(request.compactEvidence.map((item) => item.ref)).toEqual([
+        ...items.slice(0, 14).map((item) => `file:${item.path}`),
+        "file:source-15.ts",
+        "file:assessment.correction"
+      ]);
+      expect(effective.items).toHaveLength(16);
+      expect(effective.items.some((item) => item.path === "source-14.ts")).toBe(false);
+      expect(effective.items.at(-1)?.path).toBe("assessment.correction");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("budgets correction evidence by UTF-8 bytes for multibyte repository content", async () => {
+    const root = await temporaryRoot("aeh-stack-correction-utf8-");
+    try {
+      const binding = await repositoryBinding(root);
+      const items = Array.from({ length: 12 }, (_, index) => ({ path: `unicode-${index}.ts`, content: "é".repeat(1_000) }));
+      const packet = stackEvidencePacket(binding, items);
+      expect(items.reduce((total, item) => total + Buffer.byteLength(item.content, "utf8"), 0)).toBe(24_000);
+
+      const { request } = projectStackAssessmentRequest(packet, binding, "界".repeat(1_000));
+
+      expectBoundedCorrectionRequest(request);
+      expect(request.compactEvidence).toHaveLength(11);
+      expect(request.compactEvidence.slice(0, -1).map((item) => item.ref)).toEqual(items.slice(0, 10).map((item) => `file:${item.path}`));
+      expect(Buffer.byteLength(request.compactEvidence.at(-1)!.content, "utf8")).toBe(3_000);
+      expect(request.compactEvidence.reduce((total, item) => total + Buffer.byteLength(item.content, "utf8"), 0)).toBe(23_000);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not allow the REQUEST correction receipt to support a repository signal", async () => {
+    const root = await temporaryRoot("aeh-stack-correction-not-repository-");
+    try {
+      await fs.writeFile(path.join(root, "AGENTS.md"), "# guidance\n");
+      const binding = await repositoryBinding(root);
+      const requests: SemanticAssessmentRequestV1[] = [];
+      const service = stubService((request) => {
+        requests.push(request);
+        if (requests.length === 1) return stubAssessment(request, stackJudgment(request, { projectSkillRoots: ["missing"] }));
+        const correctionRef = "file:assessment.correction";
+        return stubAssessment(request, stackJudgment(request, {
+          evidenceRefs: [correctionRef],
+          signals: [{ id: "semantic:correction", evidenceRef: correctionRef }]
+        }));
+      });
+
+      await expect(discoverProjectStackProfile(root, { semanticAssessment: { service, binding } })).rejects.toMatchObject({ code: "STACK_ASSESSMENT_INVALID", message: expect.stringContaining("does not map to a supplied repository file evidence receipt") });
+
+      expect(requests).toHaveLength(2);
+      expectBoundedCorrectionRequest(requests[1]!);
+      expect(requests[1]!.evidenceReceipts.find((receipt) => receipt.ref === "file:assessment.correction")?.kind).toBe("REQUEST");
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -712,12 +845,15 @@ describe("project skill root validation", () => {
       await fs.writeFile(path.join(root, "AGENTS.md"), "# guidance\n");
       const binding = await repositoryBinding(root);
       let attempts = 0;
+      const requests: SemanticAssessmentRequestV1[] = [];
       const service = stubService((request) => {
         attempts += 1;
+        requests.push(request);
         return stubAssessment(request, stackJudgment(request, { projectSkillRoots: ["AGENTS.md"] }));
       });
       await expect(discoverProjectStackProfile(root, { semanticAssessment: { service, binding } })).rejects.toMatchObject({ code: "STACK_ASSESSMENT_INVALID" });
       expect(attempts).toBe(2);
+      expect(requests[1]!.evidenceRefs).toContain("file:assessment.correction");
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
