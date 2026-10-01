@@ -121,7 +121,8 @@ describe("Paseo Harness start", () => {
       commands.push(command);
       if (command === "paseo daemon status --json") return daemonReady ? processResult(0, healthyDaemonStatus()) : processResult(1, "", "not running");
       if (command === "paseo daemon stop") return processResult(0, "stopped");
-      if (command === "paseo daemon start --web-ui") { daemonReady = true; return processResult(0, "started"); }
+      if (command === "paseo daemon config set features.webUi.enabled true") return processResult(0, "configured");
+      if (command === "paseo daemon start") { daemonReady = true; return processResult(0, "started"); }
       throw new Error(`unexpected command: ${command}`);
     });
     const launchAgent = vi.fn(async () => { launchCount += 1; return managed(`agent-${launchCount}`); });
@@ -151,6 +152,11 @@ describe("Paseo Harness start", () => {
     expect(bootstrap).not.toContain("Delegation policy:");
     expect(bootstrap).not.toContain("AEH READY");
     expect(commands.some((command) => command.startsWith("paseo run"))).toBe(false);
+    expect(commands).toContain("paseo daemon config set features.webUi.enabled true");
+    expect(commands).toContain("paseo daemon start");
+    expect(commands).not.toContain("paseo daemon start --web-ui");
+    const startIndex = commands.indexOf("paseo daemon start");
+    expect(commands[startIndex + 1]).toBe("paseo daemon status --json");
 
     const launchOptions = launchAgent.mock.calls[0][1];
     expect(launchOptions).toEqual(expect.objectContaining({
@@ -193,12 +199,16 @@ describe("Paseo Harness start", () => {
     const run = vi.fn(async (command: string) => {
       if (command === "paseo daemon status --json") { calls += 1; return calls === 1 ? processResult(1, "", "stale_pid/unreachable") : processResult(0, healthyDaemonStatus()); }
       if (command === "paseo daemon stop") return processResult(0, "stopped");
-      if (command === "paseo daemon start --web-ui") return processResult(0, "started");
+      if (command === "paseo daemon config set features.webUi.enabled true") return processResult(0, "configured");
+      if (command === "paseo daemon start") return processResult(0, "started");
       throw new Error(command);
     });
     const deps = { run: run as never, commandExists: vi.fn(async () => true) as never, setupToolchain: vi.fn(async () => ({} as never)) as never, loadTopology: vi.fn(async () => topology()) as never, detectCapabilities: vi.fn(async () => capabilities()) as never, launchAgent: vi.fn(async () => managed("agent-stale")) as never, probeAgent: vi.fn(async () => false) as never };
     const value = await startPaseoHarness(root, config, {}, deps);
     expect(value.daemonStarted).toBe(true); expect(run).toHaveBeenCalledWith("paseo daemon stop", expect.anything());
+    expect(run).toHaveBeenCalledWith("paseo daemon config set features.webUi.enabled true", expect.anything());
+    expect(run).toHaveBeenCalledWith("paseo daemon start", expect.anything());
+    expect(run).not.toHaveBeenCalledWith("paseo daemon start --web-ui", expect.anything());
   });
 
   it("starts a daemon when Paseo returns a successful JSON status that says stopped", async () => {
@@ -211,13 +221,40 @@ describe("Paseo Harness start", () => {
           : processResult(0, JSON.stringify({ localDaemon: "running", connectedDaemon: "not_probed" }));
       }
       if (command === "paseo daemon stop") return processResult(0, "stopped");
-      if (command === "paseo daemon start --web-ui") return processResult(0, "started");
+      if (command === "paseo daemon config set features.webUi.enabled true") return processResult(0, "configured");
+      if (command === "paseo daemon start") return processResult(0, "started");
       throw new Error(command);
     });
     const deps = { run: run as never, commandExists: vi.fn(async () => true) as never, setupToolchain: vi.fn(async () => ({} as never)) as never, loadTopology: vi.fn(async () => topology()) as never, detectCapabilities: vi.fn(async () => capabilities()) as never, launchAgent: vi.fn(async () => managed("agent-running")) as never, probeAgent: vi.fn(async () => false) as never };
     const value = await startPaseoHarness(root, config, {}, deps);
     expect(value.daemonStarted).toBe(true);
-    expect(run).toHaveBeenCalledWith("paseo daemon start --web-ui", expect.anything());
+    expect(run).toHaveBeenCalledWith("paseo daemon config set features.webUi.enabled true", expect.anything());
+    expect(run).toHaveBeenCalledWith("paseo daemon start", expect.anything());
+    expect(run).not.toHaveBeenCalledWith("paseo daemon start --web-ui", expect.anything());
+    expect(run).toHaveBeenCalledWith("paseo daemon status --json", expect.anything());
+  });
+
+  it("fails closed when the web UI configuration command fails", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-paseo-config-failure-"));
+    const commands: string[] = [];
+    const run = vi.fn(async (command: string) => {
+      commands.push(command);
+      if (command === "paseo daemon status --json") return processResult(1, "", "not running");
+      if (command === "paseo daemon config set features.webUi.enabled true") return processResult(1, "", "configuration rejected");
+      if (command === "paseo daemon start") return processResult(0, "started");
+      throw new Error(command);
+    });
+    const launchAgent = vi.fn(async () => managed("should-not-launch"));
+    const deps = { ...paseoStartDeps(run), launchAgent: launchAgent as never };
+
+    await expect(startPaseoHarness(root, config, {}, deps)).rejects.toThrow(/Failed to configure Paseo web UI: configuration rejected/);
+    expect(commands).toEqual([
+      "paseo daemon status --json",
+      "paseo daemon config set features.webUi.enabled true"
+    ]);
+    expect(commands).not.toContain("paseo daemon start");
+    expect(commands).not.toContain("paseo daemon start --web-ui");
+    expect(launchAgent).not.toHaveBeenCalled();
   });
 
   it("auto-runs toolchain setup when Paseo or the lead runtime is missing", async () => {
