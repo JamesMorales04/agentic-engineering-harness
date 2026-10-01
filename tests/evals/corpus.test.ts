@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { afterAll, describe, expect, it } from "vitest";
 import { computeEvalCorpusIdentity, loadEvalCorpusManifest, runEvalCase } from "../../src/evals/runner.js";
 import { evalResultComparableV1 } from "../../src/evals/scoring.js";
+import { VERSION } from "../../src/version.js";
 import type { HarnessProjectConfig } from "../../src/core/types.js";
 
 const run = promisify(execFile);
@@ -104,7 +105,11 @@ describe("versioned advisory eval corpus", () => {
     expect(result.corpus?.corpusId).toBe("aeh-core-v2-engineering-evals");
     expect(result.corpus?.caseDigest).toMatch(/^[a-f0-9]{64}$/);
     expect(result.build?.buildDigest).toMatch(/^[a-f0-9]{64}$/);
-    expect(result.build?.packageVersion).toBe("0.8.4");
+    expect(result.build?.packageVersion).toBe(VERSION);
+    const currentRelease = (await fs.readFile(path.join(REPO_ROOT, "dist", "current"), "utf8")).trim();
+    const buildIdentity = JSON.parse(await fs.readFile(path.join(REPO_ROOT, "dist", "releases", currentRelease, "build-identity.json"), "utf8")) as { packageVersion: string };
+    expect(buildIdentity.packageVersion).toBe(VERSION);
+    expect(result.build?.packageVersion).toBe(buildIdentity.packageVersion);
   }, 300_000);
 
   it("reproduces status, score, metrics, checks, and corpus identity across runs", async () => {

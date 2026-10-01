@@ -12,7 +12,7 @@ AEH treats Paseo as the authority for agent runtime state and generic agent orch
 | Provider/model availability | Paseo | provider snapshot/listModels/diagnostic |
 | OpenCode native execution identity | AEH topology + session-local OpenCode config | AEH runtime projection -> `OPENCODE_CONFIG_CONTENT` / `default_agent`; explicit external agents may use Paseo `modeId` |
 | Generic create/send/status/activity tools | Paseo | injected native/MCP Paseo tools |
-| AUDIT/RUN operation state | AEH | `aeh-control` / operation state |
+| AUDIT/CHANGE/RUN operation state | AEH | `aeh-control` / operation state |
 | Detached operation completion wake-up | AEH + Paseo dispatch | durable completion target + follow-up to existing lead |
 | Context thresholds and handoff policy | AEH | `aeh_context_status` / `context guard` |
 | SDD, contracts, seals, validation | AEH | deterministic Harness core |
@@ -22,7 +22,8 @@ Do not copy generic Paseo lifecycle tools into `aeh-control`. The AEH MCP exists
 
 ## Context pressure
 
-Paseo v0.3.1 exposes canonical context-window fields in `AgentUsage`:
+The active Paseo client exposes provider usage on the agent snapshot through
+`lastUsage`; AEH reads the context-window values when they are present:
 
 ```text
 contextWindowUsedTokens
@@ -55,7 +56,7 @@ HARD_HANDOFF
 
 Managed leads receive the preapproved `aeh_context_status` tool. A normal managed lead calls it without an `agentId`. AEH resolves the context target in strict order: explicit diagnostic `agentId`, host-provided `PASEO_AGENT_ID`, then the compatible project-local `lead-session.json` written by `aeh start`. The durable fallback respects configured `orchestration.interactive.stateDir` and validates the lead-state schema version, current bootstrap/runtime version, project root, project name and agent id before use. It fails closed on stale or mismatched state and never guesses by listing agents. The selected identity source is traced as `harness.paseo.context.identity`.
 
-`aeh context guard --agent ...` remains the CLI compatibility/non-interactive surface and owns handoff-artifact/rotation side effects.
+`aeh context guard --agent ...` is the CLI surface for automation and owns handoff-artifact/rotation side effects.
 
 ## Event-driven agent completion
 
@@ -86,16 +87,18 @@ Fallback order:
 ```text
 Paseo SDK subscription
         ↓ unavailable
-public SDK wait compatibility
+Paseo SDK wait surface
         ↓ unavailable
-Paseo CLI wait/log compatibility
+Paseo CLI wait/log surface
 ```
 
-The selected path is emitted in Paseo integration traces.
+The selected observation path is emitted in Paseo integration traces. This
+describes the current runtime path selection; no fixed Paseo version floor is
+claimed.
 
 ## Detached operation completion wake-up
 
-A detached AUDIT/RUN deliberately outlives the conversational turn that starts it. The initiating lead is therefore not required to remain active or poll until all reviewers/workers finish.
+A detached AUDIT, CHANGE, or RUN deliberately outlives the conversational turn that starts it. The initiating lead is therefore not required to remain active or poll until all reviewers/workers finish.
 
 For a managed-lead MCP start, AEH resolves the current lead identity and persists a completion target beside the operation:
 
@@ -121,7 +124,7 @@ and includes the operation id/status plus the durable result/report path when av
 
 This solves the case where the lead's original turn ends while reviewers are still running. The reviewers remain independent top-level Paseo agents; the completion callback reactivates the lead only after the controller's full completion barrier has resolved and the operation is terminal.
 
-Callback delivery does not participate in engineering acceptance. If the follow-up cannot be delivered, the callback sidecar becomes `FAILED` and the failure is traced, but a successful AUDIT/RUN remains successful. `aeh_operation_status` is therefore a recovery/diagnostic surface, not the normal mechanism for keeping a conversational turn alive.
+Callback delivery does not participate in engineering acceptance. If the follow-up cannot be delivered, the callback sidecar becomes `FAILED` and the failure is traced, but a successful AUDIT, CHANGE, or RUN remains successful. `aeh_operation_status` is therefore a recovery/diagnostic surface, not the normal mechanism for keeping a conversational turn alive.
 
 Cancellation uses the same terminal callback path after worker cleanup. A synchronous controller spawn failure disables a callback that could otherwise arrive as a confusing continuation after the start tool itself already failed.
 
@@ -174,19 +177,25 @@ harness.paseo.provider.mode.preflight
 
 `aeh.native-agent.source` is `aeh-managed` for compiled identities and `explicit` for externally configured native agents. Provider mode preflight applies only when AEH actually supplies an explicit `modeId`; generated session-local identities are represented by the native-agent labels and inline OpenCode configuration instead of a Paseo mode.
 
-## Intentional CLI parity gaps (P2)
+## Current CLI calls in AEH
 
-CLI usage is not forbidden when the public SDK lacks required semantics. It must be narrow and traced.
+The active AEH source still uses the Paseo CLI for a small set of operations.
+These are current transport choices, not claims that the latest public SDK is
+missing the corresponding high-level API. The upstream [SDK reference](https://github.com/getpaseo/paseo/blob/main/public-docs/sdk/reference.md)
+documents client-managed workspaces, workspace titles, and agent handles. AEH
+has not migrated every CLI call to those SDK methods.
 
 ### Operation workspace creation
 
-AEH currently uses:
+For detached operation workspaces, AEH currently runs:
 
 ```text
 paseo workspace create --isolation local --path ... --title ... --json
 ```
 
-because the Paseo v0.3.1 public SDK workspace create surface does not expose equivalent isolation/title controls. This workspace is orchestration grouping only; it is not a Git delivery worktree.
+This creates an orchestration grouping in the existing repository directory; it
+does not create a Git delivery worktree. The command and result are recorded in
+Paseo integration traces.
 
 Trace events:
 
@@ -198,7 +207,11 @@ harness.paseo.workspace.cli.error
 
 ### External controller cleanup
 
-The external deterministic controller may stop agents with the supported Paseo CLI because the public v0.3.1 agent handle does not expose the cancel/kill parity needed for operation cleanup. AEH deliberately does not import internal `DaemonClient` APIs.
+The external deterministic controller currently stops exact operation-owned
+agents with `paseo stop <agent-id>` and archives owned workspaces through the
+Paseo CLI. AEH does not import Paseo's internal `DaemonClient` APIs. The public
+SDK reference documents agent and workspace handles, but this AEH cleanup path
+has not been migrated to them.
 
 Trace events:
 
@@ -262,13 +275,13 @@ A useful trace answers:
 - the associated agent/operation/provider/model/workspace;
 - the relevant duration/status/error when applicable.
 
-## Migration rule
+## Superseding a CLI path
 
-When Paseo adds public SDK parity for a CLI-only operation:
+When a change replaces one of these production CLI paths with the public SDK:
 
-1. add the public SDK path;
-2. make it primary;
-3. retain CLI only as version-negotiated compatibility if still necessary;
-4. add a regression proving SDK use;
-5. keep a fallback trace until the compatibility floor makes CLI removable;
-6. remove any capability inference based on parsing help text when it no longer serves a compatibility path.
+1. migrate current callers and provider contracts to the SDK path;
+2. add a regression proving the SDK path's required semantics and lifecycle;
+3. update current documentation and traces to the new behavior;
+4. delete the superseded CLI branch and compatibility checks unless an
+   externally approved compatibility surface, lifetime, and removal condition
+   are recorded.

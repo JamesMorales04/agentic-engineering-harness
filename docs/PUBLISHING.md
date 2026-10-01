@@ -75,9 +75,19 @@ If the package has never been published and npm does not permit Trusted Publishe
 
 ## Version policy
 
-The repository currently starts this release line at `0.6.1`. After that, normal merges do not require a human to edit the version manually. The release workflow owns the release metadata bump.
+The root `package.json` version is the canonical release base; `package-lock.json`
+is synchronized with it by the release workflow. No release-line version is
+maintained in this document. On `main`, an unpublished current package version
+is published as-is. When it is already published, `release-version.mjs` selects
+the next semantic version from Conventional Commit messages since the latest
+release tag, unless a manual bump was requested.
 
-If a PR intentionally changes the package version to a version that is not yet on npm, that repository version wins: the next `main` publication ships it before any further automatic increment. This makes explicit release corrections and recovery deterministic.
+If a PR intentionally changes `package.json` to a version that is not yet on
+npm, that candidate version ships before any automatic increment. The workflow
+synchronizes both package manifests, runs `release:check` on the synchronized
+candidate, and only then commits version metadata and creates a tag. A failed
+validation therefore creates no release commit, tag, npm publication, or
+GitHub Release.
 
 ## What enters the npm tarball
 

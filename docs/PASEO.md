@@ -4,10 +4,11 @@ Paseo is AEH's default interactive orchestration surface. The integration separa
 
 ## Visible operation graph
 
-A managed conversational lead does not own a long-running shell process. Long AUDIT/RUN workflows are first-class detached AEH operations:
+A managed conversational lead does not own a long-running shell process. Managed AUDIT, CHANGE, and RUN workflows can start as first-class detached AEH operations:
 
 ```bash
 aeh operation start audit "Review the repository architecture and security"
+aeh operation start change "Add a health endpoint"
 aeh operation start run TASK-123
 ```
 
@@ -41,7 +42,9 @@ aeh paseo agents --operation <operation-id>
 aeh paseo agents --operation <operation-id> --phase review
 ```
 
-Synchronous `aeh audit` / `aeh run` remain valid compatibility entrypoints for non-interactive automation.
+Synchronous `aeh audit` and `aeh run` remain command-line surfaces for
+non-interactive automation. Managed conversations route engineering work
+through the governed operation path.
 
 The conversational lead is the semantic authority for translating each human
 turn into a typed, versioned `IntentDecisionV1`. It resolves the requested
@@ -62,22 +65,23 @@ Explanations and orientation use the bounded `aeh_informational_context` tool
 and do not create an operation. Defect discovery, correctness/safety judgments
 and formal review use the AUDIT start tool; mixed requests preserve the lead's
 explicit semantic decision. A heuristic classifier remains available for the
-`aeh intent` diagnostic/evaluation surface and explicitly marked compatibility
-fallbacks only; disagreement cannot veto a lead decision.
+`aeh intent` diagnostic/evaluation surface and explicitly marked fallback
+paths only; disagreement cannot veto a lead decision.
 
 ## SDK-first control plane
 
-AEH uses Paseo's published TypeScript client package, `@getpaseo/client`, as the primary control surface for agent creation, follow-up turns, status lookup and directory queries. Paseo currently documents that package as public but **not yet a stable public SDK**, so AEH deliberately resolves the copy bundled with the active `@getpaseo/cli` installation first instead of independently selecting a client version.
+AEH uses Paseo's published TypeScript client package, `@getpaseo/client`, as the primary control surface for agent creation, follow-up turns, status lookup and directory queries. The current upstream [client README](https://github.com/getpaseo/paseo/blob/main/packages/client/README.md) identifies the package-root API as the supported SDK surface. AEH resolves the client installed with the active `@getpaseo/cli` first; the toolchain configuration selects the CLI as `latest`, rather than pinning an unrelated client version.
 
-The resolver supports normal PATH installations and mise-managed npm tools, including non-hoisted/store layouts. AEH asks `command -v paseo`, `mise which paseo`, and `mise where npm:@getpaseo/cli`, then resolves or bounded-scans the active installation for its exact `@getpaseo/client` entry. A direct project-level SDK import is retained only as a compatibility fallback.
+The resolver supports normal PATH installations and mise-managed npm tools, including non-hoisted/store layouts. AEH asks `command -v paseo`, `mise which paseo`, and `mise where npm:@getpaseo/cli`, then resolves or bounded-scans the active installation for its exact `@getpaseo/client` entry. If it cannot find that installation, the current runtime tries Node's project-level `@getpaseo/client` resolution; if both paths fail, it raises `PaseoSdkUnavailableError` instead of inventing a provider.
 
 Normal lifecycle is always SDK-first unless `AEH_PASEO_FORCE_CLI=1` is explicitly set:
 
 ```text
 AEH
 ├── daemon/bootstrap/recovery          -> Paseo CLI
-├── normal agent lifecycle             -> active @getpaseo/client
-└── explicit/recoverable compatibility -> Paseo CLI
+├── normal participant lifecycle       -> active @getpaseo/client first
+├── worker launch fallback / forced CLI -> Paseo CLI
+└── idle lead materialization           -> SDK only; fail closed if unavailable
 ```
 
 `PASEO_DAEMON_URL` overrides the default SDK endpoint `ws://127.0.0.1:6767/ws`; `PASEO_DAEMON_PASSWORD` supplies daemon authentication when configured.
@@ -98,7 +102,12 @@ materialize -> dispatch -> wait
 
 For AUDIT, AEH materializes the selected read-only reviewers before running deterministic validators. They remain visible/idle while validation runs, then AEH dispatches them with the completed validator evidence. This preserves deterministic evidence precedence without the earlier “silent terminal” UX.
 
-The adapter follows the Paseo 0.3.1 create contract: `cwd` remains present even when `workspaceId` controls placement, `initialPrompt` is used for the first turn, and provider/model remain separate session-config fields. It supports current handles through `send`, `refetch`, timeline polling and compatible legacy helpers where present.
+The adapter passes `cwd`, optional `workspaceId`, `initialPrompt`, labels, and
+session configuration through the client API resolved from the active CLI
+installation. Provider and model selection remain separate fields. The adapter
+uses the client handle for dispatch, refresh, timelines, and wait observation;
+it does not assume that every CLI release or daemon supports the same newer
+capabilities.
 
 ## Conversational lead
 
@@ -188,7 +197,7 @@ The operation-aware view reports stable Paseo IDs, role, operation, phase, task,
 
 Paseo workspaces and Git delivery isolation are separate concepts.
 
-For each detached operation AEH attempts to create a **local Paseo workspace** pointing at the existing repository directory. Its purpose is UI/execution grouping: multiple agents for the same audit/run appear together. It does not create or imply a Git branch/worktree.
+For each detached operation AEH attempts to create a **local Paseo workspace** pointing at the existing repository directory. Its purpose is UI/execution grouping: multiple agents for the same audit, change, or run appear together. It does not create or imply a Git branch/worktree.
 
 When delivery policy creates an issue-linked worktree workspace, that delivery workspace takes precedence for implementation/review agents:
 
@@ -231,7 +240,7 @@ finishedAt
 logicalAgent / runtime / model
 ```
 
-Audit/run reports can therefore distinguish a real Paseo SDK session from CLI/direct/Podman execution without inferring it from logs.
+Audit/change/run reports can therefore distinguish a real Paseo SDK session from CLI/direct/Podman execution without inferring it from logs.
 
 Operation phase is durable even when optional telemetry export is disabled. Harness lifecycle events update `.harness/operations/<id>.json` through phases such as `validating`, `planning`, `implementation`, `remediation`, `review`, `delivery`, and `finished`.
 

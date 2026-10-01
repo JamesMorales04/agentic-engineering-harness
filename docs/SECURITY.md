@@ -1,24 +1,19 @@
 # Security and Isolation
 
-A Git worktree is not a security sandbox.
+A Git worktree separates source changes; it is not an operating-system
+security sandbox. AEH has distinct isolation paths whose availability depends
+on configuration and the host:
 
-The target model is an ephemeral rootless container per worker:
+- validator and external-tool commands use rootless bubblewrap (`bwrap`) when
+  the project isolation policy or a validator spec requires isolation;
+- Podman/OCI worker and integration-provider paths are available when selected
+  and provisioned;
+- missing required providers block their execution; they do not trigger an
+  unsandboxed fallback or a fabricated PASS.
 
-- repository workspace writable;
-- frozen contracts/acceptance validators read-only;
-- no host SSH keys;
-- no production credentials;
-- network denied or allow-listed where possible;
-- CPU/RAM/time limits;
-- extract resulting diff, then destroy sandbox.
-
-Recommended OSS tools:
-
-- Podman rootless for worker isolation;
-- Opengrep for deterministic pattern/dataflow checks;
-- Trivy for vulnerabilities, secrets, IaC and SBOM scanning;
-- OPA for policy-as-code;
-- Cosign/in-toto for later provenance/attestations.
+Security and evidence tools include Opengrep for static analysis, Trivy for
+vulnerability/secret/IaC scanning and SBOM generation, OPA for policy-as-code,
+and Cosign/in-toto for provenance. Using one provider does not certify another.
 
 ## Executed isolation provider (S10)
 
@@ -29,17 +24,19 @@ minimal read-only host root (`/usr`, `/etc`, `/bin`, `/lib*`, `/sbin`, plus
 explicit toolchain binds derived from `PATH` and the running Node executable).
 The repository is read-only; only declared writable paths (the evidence
 directory, or the workspace for project test commands) are bound read-write.
-The host home, root, run, tmp, var/tmp, mnt, media and srv paths are not
-projected; the environment is cleared and rebuilt from an allowlist with
-`HOME`/`TMPDIR` pointing at sandbox scratch. Network is denied unless
+Host home contents are masked except for explicit toolchain bind destinations;
+host root, run, tmp, var/tmp, mnt, media and srv contents are not projected.
+The environment is cleared and rebuilt from an allowlist with `HOME`/`TMPDIR`
+pointing at sandbox scratch. Network is denied unless
 `security.isolation.network: true`.
 
 Missing or unsupported providers fail closed with an explicit
 `ISOLATION_PROVIDER_UNAVAILABLE` or `ISOLATION_PROVIDER_UNSUPPORTED` blocker;
 a required validator is never executed outside the boundary and never reported
 as a silent SKIP or PASS. Rootless Podman/OCI execution remains a separate
-provider lane and is not provisioned in every environment; when it is absent
-the hardened Podman worker path fails its `doctor` check rather than degrading.
+provider path and is not provisioned in every environment. When it is absent,
+a selected required Podman worker path fails its `doctor` check rather than
+degrading.
 
 Security validators (`opengrep`, `trivy`) additionally persist candidate-bound
 `SastEvidenceV1` when a current CandidateRevision is available: the artifact
