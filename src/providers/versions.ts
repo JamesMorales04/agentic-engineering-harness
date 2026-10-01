@@ -10,6 +10,7 @@ export const providerVersions = versions as {
   engram: string;
   serena: string;
   trivy: string;
+  cosign: string;
   opengrep: string;
   playwright: string;
   pnpm: string;

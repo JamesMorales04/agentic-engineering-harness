@@ -137,7 +137,20 @@ describe("DELEGATED planning derives from the sealed TaskContract (AEH-V2-0110)"
 
     const final = await executeOperation(root, operation.id, { startWatchdog: () => () => undefined });
     const stages = final.stages ?? {};
-    expect(stages["contract-authoring"]?.status).toBe("COMPLETED");
+    const completedStages = Object.entries(stages).filter(([, stage]) => stage.status === "COMPLETED").sort((left, right) => Date.parse(left[1].finishedAt ?? "") - Date.parse(right[1].finishedAt ?? ""));
+    const contractText = await fs.readFile(path.join(root, ".harness", "contracts", `${taskId}.yaml`), "utf8").catch(() => undefined);
+    const providerCursor = await fs.readFile(path.join(root, ".harness", "paseo", "deterministic-runtime-cursor.json"), "utf8").catch(() => undefined);
+    const diagnosticPlanner = Object.values(final.participants ?? {}).find((participant) => participant.role === "Planner");
+    const diagnostics = {
+      terminal: { status: final.status, phase: final.phase, error: final.error },
+      lastCompletedStage: completedStages.at(-1)?.[0],
+      route: final.intent?.route,
+      taskContract: contractText ? YAML.parse(contractText) : "absent",
+      planner: diagnosticPlanner ? { id: diagnosticPlanner.id, status: diagnosticPlanner.status, resultArtifact: diagnosticPlanner.resultArtifact, error: diagnosticPlanner.error } : "absent",
+      executionPolicy: { fresh: Boolean(final.resolvedOperationPolicy), digest: final.resolvedOperationPolicy?.digest, operationExecutionRevision: final.operationExecutionRevision },
+      providerFixtureCursor: providerCursor ? JSON.parse(providerCursor) : "not consumed"
+    };
+    expect(stages["contract-authoring"]?.status, JSON.stringify(diagnostics, null, 2)).toBe("COMPLETED");
     expect(stages["planning"]?.status).toBe("COMPLETED");
     expect(Date.parse(stages["planning"]!.startedAt!)).toBeGreaterThanOrEqual(Date.parse(stages["contract-authoring"]!.finishedAt!));
 

@@ -1,3 +1,5 @@
+import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -43,7 +45,7 @@ function request(overrides: Partial<IsolatedCommandRequestV1> = {}): IsolatedCom
   return { root, command: "echo ok", cwd: root, workspaceRoot: root, ...overrides };
 }
 
-describe("rootless isolation provider contract", () => {
+describe.sequential("rootless isolation provider contract", () => {
   it("fails closed with an explicit provider-unavailable blocker instead of skipping", async () => {
     await expect(runIsolatedCommand(request(), { capabilities: capabilities({ available: false, executable: undefined }) }))
       .rejects.toMatchObject({ code: ISOLATION_PROVIDER_UNAVAILABLE });
@@ -110,20 +112,35 @@ describe("rootless isolation provider contract", () => {
     expect(validatorIsolationRequired({ version: 1, project: { name: "x" } } as HarnessProjectConfig)).toBe(false);
   });
 
-  it("detects provider capabilities deterministically and reports missing providers", async () => {
-    clearIsolationCapabilityCache();
-    const detected = await detectIsolationCapabilities(root);
-    expect(detected.version).toBe(1);
-    expect(["bwrap", "none"]).toContain(detected.provider);
-    expect(typeof detected.available).toBe("boolean");
-    expect(typeof detected.podman.available).toBe("boolean");
-    expect(typeof detected.buildah.available).toBe("boolean");
-    expect(detected.details.length).toBeGreaterThan(0);
-    if (detected.available) {
-      expect(detected.provider).toBe("bwrap");
-      expect(detected.executable).toBeTruthy();
-    } else {
-      expect(detected.provider).toBe("none");
+  it("reports missing providers from an isolated executable search path", async () => {
+    const isolatedRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-isolation-provider-contract-"));
+    const emptyPath = path.join(isolatedRoot, "empty-bin");
+    await fs.mkdir(emptyPath);
+    const originalPath = process.env.PATH;
+    try {
+      process.env.PATH = emptyPath;
+      clearIsolationCapabilityCache();
+      const detected = await detectIsolationCapabilities(isolatedRoot);
+      expect(detected).toMatchObject({
+        version: 1,
+        provider: "none",
+        available: false,
+        rootless: true,
+        podman: { available: false, rootless: null },
+        buildah: { available: false }
+      });
+      expect(detected.executable).toBeUndefined();
+      expect(detected.details).toEqual(expect.arrayContaining([
+        "bwrap: missing",
+        "podman: missing",
+        "buildah: missing",
+        "no rootless isolation provider is currently executable"
+      ]));
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      clearIsolationCapabilityCache();
+      await fs.rm(isolatedRoot, { recursive: true, force: true });
     }
   });
 });

@@ -3,6 +3,7 @@ import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
+import { watch } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -34,26 +35,46 @@ describe("repository build hygiene", () => {
   it("keeps dist/main.js available while a real build is running", async () => {
     const child = spawn(process.platform === "win32" ? "npm.cmd" : "npm", ["run", "build", "--silent"], { cwd: root, stdio: "ignore" });
     const completion = new Promise<number | null>((resolve) => child.once("close", (code) => resolve(code)));
-    const missing: string[] = [];
     const invocations: Promise<number | null>[] = [];
-    const deadline = Date.now() + 30_000;
-    while (child.exitCode === null && Date.now() < deadline) {
-      try { await fs.access(path.join(root, "dist", "main.js")); }
-      catch { missing.push(new Date().toISOString()); }
-      if (invocations.length < 12 && await fs.access(path.join(root, "dist", "main.js")).then(() => true, () => false)) {
-        invocations.push(new Promise<number | null>((resolve) => {
-          const probe = spawn(process.execPath, [path.join(root, "dist", "main.js"), "--version"], {
-            cwd: root,
-            stdio: "ignore",
-          });
-          probe.once("close", (code) => resolve(code));
-          probe.once("error", () => resolve(null));
-        }));
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
+    const missing: string[] = [];
+    const dist = path.join(root, "dist");
+    const entry = path.join(dist, "main.js");
+    const buildLock = path.join(dist, ".build.lock");
+    const observations: Promise<void>[] = [];
+    const watcher = watch(dist);
+    const inspectEntry = (): void => {
+      observations.push(fs.access(entry).catch(() => { missing.push(new Date().toISOString()); }));
+    };
+    watcher.on("change", inspectEntry);
+    watcher.on("rename", inspectEntry);
+    watcher.on("error", (error) => { missing.push(`watcher error: ${String(error)}`); });
+    const buildLockObserved = new Promise<boolean>((resolve) => {
+      let settled = false;
+      const inspectLock = (): void => {
+        if (settled) return;
+        void fs.access(buildLock).then(() => { settled = true; resolve(true); }, () => {
+          if (child.exitCode !== null) { settled = true; resolve(false); }
+        });
+      };
+      watcher.on("change", inspectLock);
+      watcher.on("rename", inspectLock);
+      child.once("close", inspectLock);
+      inspectLock();
+    });
+    const acquired = await buildLockObserved;
+    expect(acquired, "the real build must acquire its published build lock").toBe(true);
+    await expect(fs.access(entry)).resolves.toBeUndefined();
+    while (invocations.length < 12 && await fs.access(buildLock).then(() => true, () => false)) {
+      await expect(fs.access(entry)).resolves.toBeUndefined();
+      invocations.push(new Promise<number | null>((resolve) => {
+        const probe = spawn(process.execPath, [entry, "--version"], { cwd: root, stdio: "ignore" });
+        probe.once("close", (code) => resolve(code));
+        probe.once("error", () => resolve(null));
+      }));
     }
-    if (child.exitCode === null) child.kill("SIGKILL");
     const exitCode = await completion;
+    watcher.close();
+    await Promise.all(observations);
     expect(missing).toEqual([]);
     expect(exitCode).toBe(0);
     expect(invocations.length).toBeGreaterThan(0);

@@ -4,15 +4,20 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { saveOwnedOperation } from "../helpers/ownedOperation.js";
+import { sha256Canonical } from "../../src/core/digest.js";
 import { buildOpenCodeRuntimeConfig, validateExecutionCapabilities } from "../../src/agents/permissions.js";
 import type { AgentExecutionSelection } from "../../src/agents/types.js";
+import { currentObjectiveIdentityV1, evaluateAcceptanceOracleV1, persistAcceptanceOracleArtifactV1, type EvidenceBundleV1 } from "../../src/architecture/acceptanceOracle.js";
+import { evaluateObjectiveCompletionV1 } from "../../src/architecture/objectiveCompletion.js";
 import { ContextBudgetGateway } from "../../src/context/gateway.js";
 import { authorizeRetrieval } from "../../src/context/retrieval/authorization.js";
 import { ContextRetrievalGateway } from "../../src/context/retrieval/gateway.js";
 import type { HarnessProjectConfig, TaskContract } from "../../src/core/types.js";
 import { loadOperationCompletionTarget, notifyOperationCompletion, registerOperationCompletionTarget } from "../../src/operations/completion.js";
-import { loadOperation, patchOperation, saveOperation, transitionOperationToTerminal, type OperationRecord } from "../../src/operations/state.js";
+import { bindResolvedOperationPolicy, currentControllerEpoch, loadOperation, patchOperation, resolveOperationStateRoot, saveOperation, transitionOperationToTerminal, type OperationRecord } from "../../src/operations/state.js";
 import { createCandidateRevisionV1 } from "../../src/operations/v2Contracts.js";
+import { compileResolvedOperationPolicy } from "../../src/architecture/executionIdentity.js";
+import { objectiveParticipantAccountingV1 } from "../../src/operations/participantAccounting.js";
 import { filterStaleRecords } from "../../src/providers/engram.js";
 import { verifyProvenanceManifest, verifySupplyChainGate } from "../../src/provenance/generate.js";
 import { runExternalToolValidator } from "../../src/validators/external.js";
@@ -25,6 +30,64 @@ function command(script: string): string { return `${JSON.stringify(process.exec
 function operation(root: string, id: string, status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED" = "RUNNING"): OperationRecord {
   const now = new Date(0).toISOString();
   return { version: 2, id, kind: "run", status, phase: status.toLowerCase(), root, payload: { taskId: `TASK-${id}` }, revision: 1, createdAt: now, updatedAt: now, lastProgressAt: now, supervision: { required: false, materialized: false, generations: [] }, stages: {}, participants: {}, progress: { expected: 0, registered: 0, running: 0, completed: 0, failed: 0, blocked: 0 }, notification: { lastLeadWakeRevision: 0, terminalDelivered: false, attempts: 0 } };
+}
+
+async function acceptedTerminalEvidence(root: string, id: string): Promise<Record<string, unknown>> {
+  let current = await loadOperation(root, id);
+  const candidate = current.candidateRevision!;
+  await bindResolvedOperationPolicy(root, id, compileResolvedOperationPolicy({
+    projectId: candidate.projectId!,
+    operationId: id,
+    operationExecutionRevision: current.operationExecutionRevision!,
+    candidateRevision: candidate.revision,
+    candidateDigest: candidate.identityDigest,
+    controllerEpoch: currentControllerEpoch(current),
+    intent: "adversarial accepted terminal fixture",
+    route: "DIRECT",
+    minimumAssurance: "STANDARD",
+    policyVersions: { resolvedOperationPolicy: "1" },
+    policyDigests: {},
+    validationPolicy: {},
+    reviewPolicy: { leadAcceptance: false, leadAcceptanceDirect: false },
+    deliveryPolicy: {},
+    knowledgePolicy: {},
+    contextPolicy: {},
+    allowedExternalEffects: [],
+    humanDecisionRequirements: []
+  }));
+  current = await loadOperation(root, id);
+  const identity = currentObjectiveIdentityV1(current);
+  const assertionId = `assertion:${id}`;
+  const bundleBody = {
+    version: 1 as const,
+    identity,
+    candidate: identity.candidate,
+    impactDigest: sha256Canonical({ id, impact: "terminal fixture" }),
+    compilationDigest: sha256Canonical({ id, assertions: [assertionId] }),
+    requirements: [{ version: 1 as const, id: `verification:${assertionId}`, assertionId, statement: "fixture validation passes", minimumAssurance: "STANDARD" as const, validationRequirementIds: ["validation:fixture"], reviewDimensions: [], leadRequired: false }],
+    evidence: [{ version: 1 as const, id: `validation:validation:fixture:${assertionId}`, assertionId, kind: "VALIDATION" as const, status: "PASS" as const, identity, strength: "STANDARD" as const, provenance: { sourceId: "adversarial-fixture", digest: sha256Canonical({ id, status: "PASS" }) } }]
+  };
+  const bundle: EvidenceBundleV1 = { ...bundleBody, digest: sha256Canonical(bundleBody) };
+  const acceptanceOracle = evaluateAcceptanceOracleV1(bundle, { minimumAssurance: "STANDARD", minimumIndependentReviewers: 0, providerDiversity: false, requiredDimensions: [] });
+  if (acceptanceOracle.disposition !== "ACCEPTED") throw new Error(`Adversarial success fixture did not satisfy AcceptanceOracle: ${acceptanceOracle.blockers.map((item) => item.code).join(",")}`);
+  const acceptanceOracleArtifact = await persistAcceptanceOracleArtifactV1(resolveOperationStateRoot(root), bundle, acceptanceOracle);
+  const objectiveCompletion = {
+    version: 1 as const,
+    identity,
+    workspaceCandidate: identity.candidate,
+    workGraph: { requiredWorkUnitIds: [], accountedWorkUnitIds: [] },
+    validation: { requiredAssertionIds: [assertionId], evidence: [{ assertionId, status: "PASS" as const, identity }] },
+    review: { requiredAssertionIds: [], evidence: [] },
+    acceptance: { disposition: "ACCEPTED" as const, requiredAssertionIds: [assertionId], coveredAssertionIds: [assertionId], identity },
+    certification: { required: false },
+    delivery: { required: false, disposition: "NOT_REQUIRED" as const },
+    findings: [],
+    participants: objectiveParticipantAccountingV1(current, identity.candidate),
+    terminalIdentity: identity
+  };
+  const objectiveCompletionDecision = evaluateObjectiveCompletionV1(objectiveCompletion);
+  if (!objectiveCompletionDecision.complete) throw new Error(`Adversarial success fixture did not satisfy Definition of Done: ${objectiveCompletionDecision.blockers.map((item) => item.code).join(",")}`);
+  return { acceptanceOracle, acceptanceOracleArtifact, objectiveCompletion, objectiveCompletionDecision };
 }
 
 function contextConfig(): HarnessProjectConfig { return { version: 1, project: { name: "adversarial-system" }, telemetry: { enabled: false }, evidence: { outputDir: ".harness/evidence" }, context: { mode: "enforce", retrieval: { maxRequestsPerTurn: 2, maxTokensPerRequest: 100, maxTotalTokensPerTurn: 200 } } }; }
@@ -163,7 +226,12 @@ describe("AEH deterministic adversarial system paths", () => {
 
   it("does not allow a terminal operation to re-enter active execution", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-adversarial-terminal-reentry-"));
-    try { await saveOwnedOperation(root, operation(root, "TERMINAL", "RUNNING")); await transitionOperationToTerminal(root, "TERMINAL", { status: "SUCCEEDED", phase: "finished" }); expect((await patchOperation(root, "TERMINAL", { status: "RUNNING" })).status).toBe("SUCCEEDED"); }
+    try {
+      await saveOwnedOperation(root, operation(root, "TERMINAL", "RUNNING"));
+      const result = await acceptedTerminalEvidence(root, "TERMINAL");
+      await transitionOperationToTerminal(root, "TERMINAL", { status: "SUCCEEDED", phase: "finished", result });
+      expect((await patchOperation(root, "TERMINAL", { status: "RUNNING" })).status).toBe("SUCCEEDED");
+    }
     finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 
@@ -216,7 +284,8 @@ describe("AEH deterministic adversarial system paths", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-adversarial-completion-failure-"));
     try {
       const terminal = operation(root, "COMPLETION", "RUNNING"); await saveOwnedOperation(root, terminal); await registerOperationCompletionTarget(root, terminal.id, "lead", "test", async () => undefined);
-      const completed = await transitionOperationToTerminal(root, terminal.id, { status: "SUCCEEDED", phase: "finished" });
+      const resultEvidence = await acceptedTerminalEvidence(root, terminal.id);
+      const completed = await transitionOperationToTerminal(root, terminal.id, { status: "SUCCEEDED", phase: "finished", result: resultEvidence });
       const result = await notifyOperationCompletion(root, completed.record, { dispatch: async () => ({ exitCode: 1, stdout: "", stderr: "Paseo unavailable", transport: "sdk" as const }), trace: async () => undefined, retryDelaysMs: [0], sleep: async () => undefined });
       expect(result?.status).toBe("FAILED"); expect((await loadOperation(root, terminal.id)).status).toBe("SUCCEEDED");
     } finally { await fs.rm(root, { recursive: true, force: true }); }

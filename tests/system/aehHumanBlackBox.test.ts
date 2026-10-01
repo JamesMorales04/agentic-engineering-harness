@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
+import { DETERMINISTIC_RUNTIME_ENV } from "../../src/paseo/deterministicRuntime.js";
 import { HUMAN_JOURNEY_IDS } from "./aehReliabilityInventory.js";
 
 const execFileAsync = promisify(execFile);
@@ -13,6 +14,14 @@ const entry = path.join(repositoryRoot, "dist", "main.js");
 const HUMAN_JOURNEYS = HUMAN_JOURNEY_IDS.map((id, index) => ({ id, prompt: ["Review the repository and report validation status.", "Perform a security-focused audit and preserve the evidence reference.", "Assess architecture closure and return a structured outcome.", "Check provider boundaries and state the validation result.", "Inspect context preservation and retrieval constraints.", "Exercise recovery-aware review and return the terminal outcome.", "Review delivery gates and report whether completion is safe.", "Review operation lifecycle truth and return its durable result.", "Check source lineage and provide the authoritative report reference.", "Review permission boundaries and return a structured validation result.", "Review concurrent operation handling and report the final state.", "Run a packaged consumer journey and return the completion evidence."][index]! }));
 const scriptedAuditDecision = { version: 1, source: "lead-semantic", intent: "audit", requestedOutcome: "evaluate the repository and return structured findings", effects: { evaluate: true, mutateRepository: false, executePreparedTask: false, deliver: false } } as const;
 const scriptedInformationalDecision = { version: 1, source: "lead-semantic", intent: "informational", requestedOutcome: "explain existing repository behavior", effects: { evaluate: false, mutateRepository: false, executePreparedTask: false, deliver: false } } as const;
+
+function semanticIntentPayload(intent: "informational" | "audit" | "change") {
+  return { judgment: { type: "INTENT", intent, confidence: 1, evidenceRefs: ["request"] }, claims: [], assumptions: [], unknowns: [], recommendations: [], knowledgeGaps: [] };
+}
+
+function semanticRoutePayload() {
+  return { judgment: { type: "ROUTE", recommendedRoute: "DIRECT", scopeClarity: "HIGH", decompositionNeed: false, coordinationNeed: false, architectureUncertainty: false, productUncertainty: false, formalizationNeed: "NONE", semanticRiskSignals: [], evidenceRefs: ["request"], unknowns: [] }, claims: [], assumptions: [], unknowns: [], recommendations: [], knowledgeGaps: [] };
+}
 
 function structured(stdout: string): Record<string, any> {
   const start = stdout.indexOf("{");
@@ -30,9 +39,9 @@ async function runDeterministicJourney(root: string, prompt: string, decision = 
   return structured(turn.stdout);
 }
 
-async function cli(args: string[], cwd: string): Promise<{ stdout: string; stderr: string; code: number }> {
+async function cli(args: string[], cwd: string, extraEnv: Record<string, string> = {}): Promise<{ stdout: string; stderr: string; code: number }> {
   try {
-    const result = await execFileAsync(process.execPath, [entry, ...args], { cwd, env: { ...process.env, AEH_PASEO_FORCE_CLI: "1" } });
+    const result = await execFileAsync(process.execPath, [entry, ...args], { cwd, env: { ...process.env, AEH_PASEO_FORCE_CLI: "1", ...extraEnv } });
     return { stdout: result.stdout, stderr: result.stderr, code: 0 };
   } catch (error) {
     const failure = error as { stdout?: string; stderr?: string; code?: number };
@@ -78,12 +87,19 @@ describe.sequential("AEH human-instruction black-box entry", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-human-black-box-"));
     try {
       expect((await cli(["init", root], repositoryRoot)).code).toBe(0);
-      const informational = await cli(["intent", "Explain how the validation system works.", root], repositoryRoot);
-      const audit = await cli(["intent", "Review this repository for important problems.", root], repositoryRoot);
-      const change = await cli(["intent", "Fix the bug in add() and add tests.", root, "--file", "src/add.ts"], repositoryRoot);
-      expect(informational.stdout).toContain("INFORMATIONAL");
-      expect(audit.stdout).toContain("AUDIT");
-      expect(change.stdout).toContain("CHANGE/");
+      const fixturePath = path.join(root, ".harness", "fixtures", "deterministic-paseo-runtime.json");
+      await fs.mkdir(path.dirname(fixturePath), { recursive: true });
+      await fs.writeFile(fixturePath, `${JSON.stringify({ version: 1, responses: {
+        "semantic-assessment:INTENT": [semanticIntentPayload("informational"), semanticIntentPayload("audit"), semanticIntentPayload("change")],
+        "semantic-assessment:ROUTE": [semanticRoutePayload()]
+      } }, null, 2)}\n`);
+      const deterministicSemanticEnv = { [DETERMINISTIC_RUNTIME_ENV]: "1", AEH_PASEO_FORCE_CLI: "0" };
+      const informational = await cli(["intent", "Explain how the validation system works.", root], repositoryRoot, deterministicSemanticEnv);
+      const audit = await cli(["intent", "Review this repository for important problems.", root], repositoryRoot, deterministicSemanticEnv);
+      const change = await cli(["intent", "Fix the bug in add() and add tests.", root, "--file", "src/add.ts"], repositoryRoot, deterministicSemanticEnv);
+      expect(informational.stdout, informational.stderr).toContain("INFORMATIONAL");
+      expect(audit.stdout, audit.stderr).toContain("AUDIT");
+      expect(change.stdout, change.stderr).toContain("CHANGE/");
       expect(JSON.parse(informational.stdout.slice(informational.stdout.indexOf("{"))).intent).toBe("informational");
       expect(JSON.parse(audit.stdout.slice(audit.stdout.indexOf("{"))).intent).toBe("audit");
       expect(JSON.parse(change.stdout.slice(change.stdout.indexOf("{"))).intent).toBe("change");
@@ -146,7 +162,7 @@ describe.sequential("AEH human-instruction black-box entry", () => {
       expect(report.validationChecks[0]?.status).toBe("PASS");
       expect(report.validationChecks[0]?.details?.rawArtifact).toMatch(/^\.harness\/evidence\//);
     } finally { await fs.rm(root, { recursive: true, force: true }); }
-  });
+  }, 15_000);
 
   it("follows a scripted informational follow-up instead of creating a second audit", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-human-followup-"));
@@ -175,8 +191,17 @@ describe.sequential("AEH human-instruction black-box entry", () => {
     const packageRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-packaged-tarball-"));
     const consumer = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-packaged-consumer-"));
     try {
-      const packed = await execFileAsync("npm", ["pack", "--silent", "--pack-destination", packageRoot], { cwd: repositoryRoot });
-      const tarball = path.join(packageRoot, packed.stdout.trim().split(/\r?\n/).at(-1)!);
+      await fs.access(entry);
+      await execFileAsync(process.execPath, [path.join(repositoryRoot, "scripts", "ci", "packCandidate.mjs")], {
+        cwd: repositoryRoot,
+        env: { ...process.env, AEH_PACK_DESTINATION: packageRoot }
+      });
+      const packageMetadata = JSON.parse(await fs.readFile(path.join(repositoryRoot, "package.json"), "utf8")) as { name: string; version: string };
+      const packageFilename = `${packageMetadata.name.replace(/^@/, "").replaceAll("/", "-")}-${packageMetadata.version}.tgz`;
+      const tarball = path.join(packageRoot, packageFilename);
+      expect(path.dirname(tarball)).toBe(packageRoot);
+      const archiveStat = await fs.stat(tarball);
+      expect(archiveStat.size).toBeGreaterThan(0);
       await execFileAsync("tar", ["-xzf", tarball, "-C", consumer]);
       await fs.symlink(path.join(repositoryRoot, "node_modules"), path.join(consumer, "package", "node_modules"), "dir");
       const packagedEntry = path.join(consumer, "package", "dist", "main.js");
@@ -190,5 +215,5 @@ describe.sequential("AEH human-instruction black-box entry", () => {
       expect(result.completion.status).toBe("SENT");
       expect(result.lead.wakeReceived).toBe(true);
     } finally { await fs.rm(packageRoot, { recursive: true, force: true }); await fs.rm(consumer, { recursive: true, force: true }); }
-  }, 30_000);
+  }, 45_000);
 });

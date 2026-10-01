@@ -192,7 +192,29 @@ describe("controller-owned product-choice lifecycle with the scripted provider b
     const first = await waitForRecord(async () => {
       const record = await loadOperation(root, operation.id);
       return record.phase === "HUMAN_REQUIRED" && record.decisionRequest ? record : undefined;
-    }, 90_000, "the controller-owned first product-choice suspension");
+    }, 90_000, "the controller-owned first product-choice suspension").catch(async (error) => {
+      const record = await loadOperation(root, operation.id).catch(() => undefined);
+      const operationFile = path.join(root, ".harness", "operations", `${operation.id}.json`);
+      const operationFileText = await fs.readFile(operationFile, "utf8").catch(() => undefined);
+      const taskContractPath = path.join(root, ".harness", "contracts", `${taskId}.yaml`);
+      const taskContractText = await fs.readFile(taskContractPath, "utf8").catch(() => undefined);
+      const cursorText = await fs.readFile(path.join(root, ".harness", "paseo", "deterministic-runtime-cursor.json"), "utf8").catch(() => undefined);
+      const eventText = await fs.readFile(path.join(root, ".harness", "operations", operation.id, "events.ndjson"), "utf8").catch(() => "");
+      const stages = Object.entries(record?.stages ?? {}).map(([name, stage]) => ({ name, status: stage.status, finishedAt: stage.finishedAt }));
+      const lastCompletedStage = stages.filter((stage) => stage.status === "COMPLETED").sort((left, right) => Date.parse(left.finishedAt ?? "") - Date.parse(right.finishedAt ?? "")).at(-1)?.name;
+      const policy = record?.resolvedOperationPolicy;
+      const diagnostics = {
+        durableState: record ? { status: record.status, phase: record.phase, error: record.error, route: record.intent?.route, stages, lastCompletedStage } : "unreadable",
+        taskContract: { path: taskContractPath, state: taskContractText ? taskContractText.slice(0, 1600) : "absent" },
+        decisionParticipants: Object.values(record?.participants ?? {}).filter((participant) => participant.role === "Spec Manager" || participant.logicalAgent?.includes("spec")).map((participant) => ({ id: participant.id, logicalAgent: participant.logicalAgent, role: participant.role, phase: participant.phase, status: participant.status, transport: participant.transport, executionBinding: participant.executionBinding })),
+        decisionRequest: record?.decisionRequest ?? "absent",
+        continuation: record?.continuation ? { state: record.continuation.state, checkpointArtifact: record.continuation.checkpointArtifact } : "absent",
+        executionPolicy: policy ? { digest: policy.digest, route: policy.route, candidateCurrent: policy.candidateDigest === record?.candidateRevision?.identityDigest, epochCurrent: policy.controllerEpoch === record?.controller?.epoch, executionRevisionCurrent: policy.operationExecutionRevision === record?.operationExecutionRevision } : "absent",
+        providerFixtureCursor: cursorText ? JSON.parse(cursorText) : "absent",
+        controllerReadPath: { file: operationFile, readable: Boolean(operationFileText), eventTail: eventText.trim().split("\n").slice(-5) }
+      };
+      throw new Error(`${error instanceof Error ? error.message : String(error)} | first HUMAN_REQUIRED suspension diagnostics=${JSON.stringify(diagnostics)}`);
+    });
     expect(first.decisionRequest!.choices.map((choice) => choice.choiceId)).toEqual(["choice-a"]);
     expect(first.continuation?.state).toBe("WAITING");
 

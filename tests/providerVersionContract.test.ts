@@ -17,12 +17,16 @@ describe("provider version contract", () => {
     expect(template.tools.headroom.version).toBe(expected.headroom);
     expect(template.tools.engram.version).toBe(expected.engram);
     expect(template.tools.trivy.version).toBe(expected.trivy);
+    expect(template.tools.cosign.version).toBe(expected.cosign);
     expect(template.tools.opengrep.version).toBe(expected.opengrep);
+    expect(template.tools.openspec.version).toBe(expected.openspec);
     expect(template.tools.pnpm.version).toBe(expected.pnpm);
     expect(initialized.tools.graphify.version).toBe(expected.graphify);
     expect(initialized.tools.engram.version).toBe(expected.engram);
     expect(initialized.tools.trivy.version).toBe(expected.trivy);
+    expect(initialized.tools.cosign.version).toBe(expected.cosign);
     expect(initialized.tools.opengrep.version).toBe(expected.opengrep);
+    expect(initialized.tools.openspec.version).toBe(expected.openspec);
     expect(packageJson.devDependencies?.["@playwright/test"]).toBe(expected.playwright);
   });
 
@@ -30,6 +34,6 @@ describe("provider version contract", () => {
     const workflow = await fs.readFile(path.join(root, ".github/workflows/ci.yml"), "utf8");
     expect(workflow).toContain("templates/provider-versions.json");
     expect(workflow).not.toContain("aquasecurity/trivy-action@");
-    for (const version of ["0.28.0", "0.9.43", "0.4.1", "1.6.1", "0.70.0", "1.22.0", "1.62.1"]) expect(workflow).not.toContain(version);
+    for (const version of ["0.28.0", "1.13.2", "0.9.43", "0.4.1", "1.6.1", "0.70.0", "2.6.5", "1.22.0", "1.62.1"]) expect(workflow).not.toContain(version);
   });
 });

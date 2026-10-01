@@ -93,13 +93,24 @@ describe("specialized validation capabilities fail closed instead of falling thr
     const root = await fixture();
     const configured: HarnessProjectConfig = { ...config, validation: { validators: [{ id: "oci-integration", adapter: "integration-environment", required: true, options: { image: "docker.io/library/alpine:3.20", testCommand: "true" } }] } };
     const contract: TaskContract = { version: 1, task: { id: "FC-5", title: "oci" } };
-    const checks = await runConfiguredValidators(root, configured, contract, "HEAD", []);
-    const check = checks.find((item) => item.id === "oci-integration");
-    expect(check).toBeDefined();
-    expect(check!.status).toBe("FAIL");
-    const result = check!.details?.result as { blockers?: string[] } | undefined;
-    const blocked = check!.details?.blocker === "INTEGRATION_PROVIDER_UNAVAILABLE" || (result?.blockers ?? []).some((blocker) => blocker.startsWith("INTEGRATION_"));
-    expect(blocked, `expected an explicit integration blocker, received ${JSON.stringify(check!.details)}`).toBe(true);
+    const previousPath = process.env.PATH;
+    const emptyProviderPath = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-no-container-runtime-"));
+    try {
+      // This contract asserts behavior when no runtime executable exists; the OCI lane separately
+      // exercises a real Docker runtime. Do not let a GitHub-hosted Docker daemon become the fixture.
+      process.env.PATH = emptyProviderPath;
+      const checks = await runConfiguredValidators(root, configured, contract, "HEAD", []);
+      const check = checks.find((item) => item.id === "oci-integration");
+      expect(check).toBeDefined();
+      expect(check!.status).toBe("FAIL");
+      const result = check!.details?.result as { blockers?: string[] } | undefined;
+      const blocked = check!.details?.blocker === "INTEGRATION_PROVIDER_UNAVAILABLE" || (result?.blockers ?? []).some((blocker) => blocker.startsWith("INTEGRATION_"));
+      expect(blocked, `expected an explicit integration blocker, received ${JSON.stringify(check!.details)}`).toBe(true);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await fs.rm(emptyProviderPath, { recursive: true, force: true });
+    }
   });
 
   it("fails an integration lifecycle that has no explicit readiness step", async () => {
