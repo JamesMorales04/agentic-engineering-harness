@@ -105,7 +105,11 @@ docs/
 
 plus npm-required package metadata such as `package.json`, README and LICENSE.
 
-Packaged `skills/` and core `policies/` are runtime control-plane assets. `aeh init`, `aeh setup`, and `aeh start` reconcile those package assets into the consumer repository's `.harness` directory. `.harness/managed-assets.json` is versioned project state: it records hashes so missing or untouched files can be restored/upgraded, retired untouched assets can be removed, and project-local modifications remain protected as overrides.
+Packaged `skills/` and core `policies/` are runtime control-plane assets. In consumer repositories, `aeh init`, `aeh setup`, and `aeh start` reconcile those package assets into `.harness/skills/` and `.harness/policies/core/`. Their copies stay ignored. `.harness/managed-assets.json` is versioned reconciliation metadata: its source and managed hashes let a fresh checkout restore missing assets, upgrade untouched assets, preserve local overrides, and safely retire removed assets.
+
+Consumer bootstrap configuration is declarative and versionable: `.harness/project.yaml`, `.harness/toolchain.yaml`, `.harness/provider-versions.json`, `.harness/agents.source.jsonc`, `.harness/otel-collector.yaml`, and `openspec/config.yaml`. AEH runtime state such as operation, Paseo, run, audit, report, telemetry, controller, delivery, eval, toolchain-state, and managed-asset copies remains ignored. The generated `.config/mise/conf.d/aeh.toml` is ignored; repository reproducibility locks at `.config/mise/mise.lock` and `.config/mise/locks/` remain trackable. Toolchain YAML declares requested versions; `mise.lock` records the resolved versions for reproducible installation. The source checkout's `.harness/toolchain.yaml` is its development toolchain, while `templates/toolchain.yaml` is the consumer starter configuration.
+
+In the AEH source checkout, `package.json` identity plus Git metadata marks the repository as the package source. Init/setup use the tracked root `.harness/project.yaml`, `.harness/toolchain.yaml`, `.harness/agents.source.jsonc`, and `openspec/config.yaml` directly; they do not create consumer copies from `templates/` or reconcile source `skills/` and `policies/` back into `.harness/`. The source-owned OpenSpec config guides AEH's own formal changes. Use the source checkout with `npm ci`, `npm run build`, and `npm run aeh -- start`; it does not need the released `agentic-engineering-harness` package as a dependency of itself.
 
 ## Consumer installation
 

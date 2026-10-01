@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { isAehSourceCheckout } from "./sourceCheckout.js";
 import { PACKAGE_ROOT, VERSION } from "../version.js";
 
 const MANIFEST_PATH = ".harness/managed-assets.json";
@@ -39,6 +40,9 @@ const MANAGED_ROOTS = [
 export async function reconcileHarnessAssets(root: string, options: HarnessAssetReconcileOptions = {}): Promise<HarnessAssetReconcileResult> {
   const projectRoot = path.resolve(root);
   const sourceRoot = options.packageRoot ?? PACKAGE_ROOT;
+  if (await isAehSourceCheckout(projectRoot, sourceRoot)) {
+    return { manifestPath: MANIFEST_PATH, created: [], updated: [], removed: [], preservedOverrides: [], unchanged: [] };
+  }
   const manifestFile = path.join(projectRoot, MANIFEST_PATH);
   const previous = await loadManifest(manifestFile);
   const next: ManagedAssetManifest = { version: 1, aehVersion: options.aehVersion ?? VERSION, assets: {} };

@@ -45,7 +45,9 @@ npm exec aeh -- start
 
 `aeh start` creates a fresh Lead by default. Use `aeh start --resume` to explicitly resume a compatible managed Lead. Setup provisions the project-selected toolchain; there is no mutating npm `postinstall`.
 
-The initialized project includes declarative Harness configuration, the `engineering-workflow` skill, managed assets, and OpenSpec authoring configuration. `aeh init`, `aeh setup`, and `aeh start` reconcile packaged managed assets. Untouched managed files can be upgraded; locally modified files are preserved as project overrides.
+The initialized project includes declarative Harness configuration, the `engineering-workflow` skill, managed assets, and OpenSpec authoring configuration. Consumer configuration such as `.harness/project.yaml`, `.harness/toolchain.yaml`, `.harness/provider-versions.json`, `.harness/agents.source.jsonc`, `.harness/otel-collector.yaml`, and `openspec/config.yaml` is project-owned and can be versioned. `.harness/managed-assets.json` is also versioned: it carries the hashes needed to restore missing assets, upgrade untouched assets, preserve local overrides, and retire removed assets safely. Other runtime state under `.harness/`, plus `.config/mise/conf.d/aeh.toml`, stays ignored; `.config/mise/mise.lock` and `.config/mise/locks/` remain trackable reproducibility inputs.
+
+`aeh init`, `aeh setup`, and `aeh start` reconcile packaged managed assets in consumer repositories. Untouched managed files can be upgraded; locally modified files are preserved as project overrides.
 
 ## Operations and evidence
 
@@ -68,7 +70,7 @@ npm run aeh -- start
 # equivalent: node dist/main.js start
 ```
 
-An external or global AEH invocation targeting an AEH checkout re-enters that checkout's `dist/main.js`. If the local build is missing, start fails closed with build instructions. Consumer repositories should pin AEH as a development dependency and use their project-local `npm exec aeh -- ...` binary.
+AEH identifies its source checkout by the package name and repository identity in `package.json` together with Git metadata. Init/setup then use the checkout's tracked configuration and templates as their canonical sources instead of copying consumer bootstrap files or packaged assets back into the source tree. The source checkout does not install the published AEH package as its own dependency. An external or global AEH invocation targeting an AEH checkout re-enters that checkout's `dist/main.js`; if the local build is missing, start fails closed with build instructions. Consumer repositories should pin AEH as a development dependency and use their project-local `npm exec aeh -- ...` binary.
 
 ## Further reading
 

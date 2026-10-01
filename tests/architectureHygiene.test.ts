@@ -29,12 +29,14 @@ describe("Core-v2 architecture hygiene", () => {
 
   it("does not let the candidate depend on a released copy of itself", async () => {
     const pkg = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8")) as { name: string; dependencies?: Record<string, string>; devDependencies?: Record<string, string>; optionalDependencies?: Record<string, string> };
-    const lock = JSON.parse(await fs.readFile(path.join(root, "package-lock.json"), "utf8")) as { packages?: Record<string, { dependencies?: Record<string, string>; devDependencies?: Record<string, string> }> };
+    const lock = JSON.parse(await fs.readFile(path.join(root, "package-lock.json"), "utf8")) as { packages?: Record<string, { dependencies?: Record<string, string>; devDependencies?: Record<string, string>; optionalDependencies?: Record<string, string> }> };
     expect(pkg.dependencies?.[pkg.name]).toBeUndefined();
     expect(pkg.devDependencies?.[pkg.name]).toBeUndefined();
     expect(pkg.optionalDependencies?.[pkg.name]).toBeUndefined();
     const rootPackage = lock.packages?.[""];
     expect(rootPackage?.dependencies?.[pkg.name]).toBeUndefined();
     expect(rootPackage?.devDependencies?.[pkg.name]).toBeUndefined();
+    expect(rootPackage?.optionalDependencies?.[pkg.name]).toBeUndefined();
+    expect(lock.packages?.[`node_modules/${pkg.name}`]).toBeUndefined();
   });
 });
