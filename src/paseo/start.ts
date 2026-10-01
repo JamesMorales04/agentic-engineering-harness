@@ -131,8 +131,25 @@ export async function startPaseoHarness(
     if (daemonObservation.stalePid) {
       await deps.run("paseo daemon stop", { cwd: projectRoot, timeoutMs: 30_000 }).catch(() => undefined);
     }
-    const startCommand = webUi ? "paseo daemon start --web-ui" : "paseo daemon start";
-    const daemonStart = await deps.run(startCommand, { cwd: projectRoot, timeoutMs: 60_000 });
+
+    if (webUi) {
+      const configResult = await deps.run(
+        "paseo daemon config set features.webUi.enabled true",
+        { cwd: projectRoot, timeoutMs: 30_000 }
+      );
+
+      if (configResult.exitCode !== 0) {
+        throw new Error(
+          `Failed to configure Paseo web UI: ${diagnostic(configResult)}`
+        );
+      }
+    }
+
+    const daemonStart = await deps.run(
+      "paseo daemon start",
+      { cwd: projectRoot, timeoutMs: 60_000 }
+    );
+
     if (daemonStart.exitCode !== 0) throw new Error(`Failed to start Paseo daemon: ${diagnostic(daemonStart)}`);
     daemonStarted = true;
     let postStartStatus: ProcessResult;

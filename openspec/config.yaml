@@ -1,0 +1,24 @@
+schema: spec-driven
+
+context: |
+  This repository uses Agentic Engineering Harness (AEH) as the execution and validation control plane.
+  OpenSpec is the SPEC authoring source before freeze. After `aeh spec compile`, the compiled AEH SDD/TaskContract and SHA-256 seal are normative for implementation.
+  Keep requirements observable, preserve existing public behavior unless change is explicit, and ground design decisions in repository evidence supplied by the planner/explorer.
+  For pure refactors/tooling/docs/internal-readability changes with no observable behavior delta, declare `skip_specs: true` in the change `.openspec.yaml` instead of inventing a behavioral delta. If behavior changes, remove the marker and author real delta specs.
+
+rules:
+  proposal:
+    - State the problem, desired outcome, scope and non-goals.
+    - Do not silently invent product decisions; record unresolved decisions explicitly.
+    - State explicitly whether externally observable behavior changes.
+  specs:
+    - Use explicit `### Requirement:` sections.
+    - Use `#### Scenario:` sections with GIVEN/WHEN/THEN bullets for observable behavior.
+    - Describe behavior, not implementation trivia.
+    - Do not create a spec delta for a pure no-behavior refactor; use the OpenSpec skip_specs marker instead.
+  design:
+    - Map the proposed approach to repository boundaries and risks.
+    - Call out API, schema, security and compatibility impact explicitly.
+    - For no-behavior refactors, document how behavior preservation will be proven deterministically.
+  tasks:
+    - Keep tasks bounded and dependency-aware so AEH can compile them into executable planner work.
