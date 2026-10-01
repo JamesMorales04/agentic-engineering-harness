@@ -1,0 +1,165 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 17,
+  "runId": "r17-gh-4",
+  "capability": "authority",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13GithubEffectCampaign.mjs",
+        "sha256": "c39595318618d7f2b92fdf78ae7077986ef5b963b029f304850450bfa019a0ad"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "3395aa19210f36b90fd22bd62056dbb8d5c48aab5a85bce4e5ea4d591cfd5146"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "7f006d66a7c7534ecce48446d60e5173463369272b5c9ff7937b94b5c2770365"
+  },
+  "candidateBinding": {
+    "packedArtifact": "agentic-engineering-harness-0.8.4.tgz",
+    "packedArtifactDigest": "a71eb44d90b3aadaec68c61395fac84b7e507f64018ca053fea282c5d1624e9b",
+    "packedBuild": {
+      "releaseId": "release-1790685905100-138636-52c73475",
+      "buildDigest": "ca1d8f5628784ff6b7d0650326d1655d2f25697ecf037780b3e05edbc7f5319a",
+      "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+      "packageVersion": "0.8.4"
+    },
+    "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c"
+  },
+  "repository": "JamesMorales04/aeh-s13-round3-20260927035743-6bb5da",
+  "startedAt": "2026-09-29T12:55:41.856Z",
+  "checks": [
+    {
+      "id": "authority.external-authorization",
+      "ok": true,
+      "message": "approval derived from external authorization s13-github-effect-authorization-2026-09-28 (sha256 272c5cb76158) bound to the exact effect digest"
+    },
+    {
+      "id": "authority.human-gate",
+      "ok": true,
+      "message": "unapproved external effect status=HUMAN_REQUIRED"
+    },
+    {
+      "id": "authority.approved-effect",
+      "ok": true,
+      "message": "approved effect status=EXECUTED/SUCCEEDED"
+    },
+    {
+      "id": "authority.real-github-ref",
+      "ok": true,
+      "message": "real remote branch aeh-s13-authority-20260929124459 observed on JamesMorales04/aeh-s13-round3-20260927035743-6bb5da"
+    }
+  ],
+  "humanGate": {
+    "status": "HUMAN_REQUIRED",
+    "detail": "TOOL_ACTION_HUMAN_DECISION_REQUIRED: no current HumanDecision matches the operation, candidate, policy, epoch, actor, and exact purpose."
+  },
+  "externalAuthorization": {
+    "authorizationId": "s13-github-effect-authorization-2026-09-28",
+    "artifactDigest": "272c5cb76158a7c312edd4d8d97cd6545b599e5c57c7978bbfc3742c573bd460",
+    "coveredEffects": [
+      "git.push",
+      "github.branch.create"
+    ],
+    "consumedBeforeAnyExternalCommand": true
+  },
+  "humanDecision": {
+    "version": 2,
+    "decisionId": "decision:655ac4dd-5007-4b7d-b121-add27d298b4f",
+    "operationId": "CHANGE-S13-GH-AUTHORITY",
+    "candidate": {
+      "operationId": "CHANGE-S13-GH-AUTHORITY",
+      "candidateId": "candidate:CHANGE-S13-GH-AUTHORITY:r1",
+      "projectId": "project:6fb980516ea632be2aad6297",
+      "taskId": "CHANGE-S13-GH-AUTHORITY",
+      "revision": 1,
+      "sourceDigest": "1b57e47fddc1443755711ec91f1e6c00e5c2c33cc154c9839df2707dc76eaa44",
+      "worktree": "/tmp/aeh-s13-gh-3WXKrk/clone",
+      "createdAt": "2026-09-29T12:55:41.857Z",
+      "version": 1,
+      "canonicalIdentity": "{\"candidateId\":\"candidate:CHANGE-S13-GH-AUTHORITY:r1\",\"createdAt\":\"2026-09-29T12:55:41.857Z\",\"operationId\":\"CHANGE-S13-GH-AUTHORITY\",\"projectId\":\"project:6fb980516ea632be2aad6297\",\"revision\":1,\"sourceDigest\":\"1b57e47fddc1443755711ec91f1e6c00e5c2c33cc154c9839df2707dc76eaa44\",\"taskId\":\"CHANGE-S13-GH-AUTHORITY\",\"version\":1,\"worktree\":\"/tmp/aeh-s13-gh-3WXKrk/clone\"}",
+      "identityDigest": "06a5c76731ba9fa6ab62d5230598b1da8765bec98050da91cc1671d6decc859d"
+    },
+    "operationExecutionRevision": 1,
+    "policyDigest": "7a1554abf52783c778e82397878c658876cc04f517e49012c2999d32ac8c206e",
+    "controllerEpoch": 1,
+    "purpose": {
+      "kind": "ACTION_AUTHORIZATION",
+      "action": "git.push",
+      "effectDigest": "5cc67f3ec7d2a0b31aaebb7fd7070549c535cc50a91b1450d11abba667df5ee1"
+    },
+    "kind": "APPROVE",
+    "actorId": "human:external-authorization:s13-github-effect-authorization-2026-09-28",
+    "reason": "External user authorization 's13-github-effect-authorization-2026-09-28' (sha256 272c5cb76158a7c312edd4d8d97cd6545b599e5c57c7978bbfc3742c573bd460) covers git.push for owner JamesMorales04 on PRIVATE_ONLY resources bound to effect digest 5cc67f3ec7d2a0b31aaebb7fd7070549c535cc50a91b1450d11abba667df5ee1.",
+    "createdAt": "2026-09-29T12:55:44.283Z",
+    "expiresAt": "2026-09-29T13:00:44.283Z"
+  },
+  "gatedAction": {
+    "status": "EXECUTED",
+    "action": "git.push",
+    "intent": {
+      "version": 2,
+      "intentId": "action-intent:87a8ae16c673c9da17c8dae250ccd92103db98c047b38331412fca4f1313fc73",
+      "actionKey": "github:push:aeh-s13-authority-20260929124459",
+      "operationId": "CHANGE-S13-GH-AUTHORITY",
+      "participantId": "controller:7b60a0ddff338003908b41ac",
+      "candidate": {
+        "operationId": "CHANGE-S13-GH-AUTHORITY",
+        "candidateId": "candidate:CHANGE-S13-GH-AUTHORITY:r1",
+        "projectId": "project:6fb980516ea632be2aad6297",
+        "taskId": "CHANGE-S13-GH-AUTHORITY",
+        "revision": 1,
+        "sourceDigest": "1b57e47fddc1443755711ec91f1e6c00e5c2c33cc154c9839df2707dc76eaa44",
+        "worktree": "/tmp/aeh-s13-gh-3WXKrk/clone",
+        "createdAt": "2026-09-29T12:55:41.857Z",
+        "version": 1,
+        "canonicalIdentity": "{\"candidateId\":\"candidate:CHANGE-S13-GH-AUTHORITY:r1\",\"createdAt\":\"2026-09-29T12:55:41.857Z\",\"operationId\":\"CHANGE-S13-GH-AUTHORITY\",\"projectId\":\"project:6fb980516ea632be2aad6297\",\"revision\":1,\"sourceDigest\":\"1b57e47fddc1443755711ec91f1e6c00e5c2c33cc154c9839df2707dc76eaa44\",\"taskId\":\"CHANGE-S13-GH-AUTHORITY\",\"version\":1,\"worktree\":\"/tmp/aeh-s13-gh-3WXKrk/clone\"}",
+        "identityDigest": "06a5c76731ba9fa6ab62d5230598b1da8765bec98050da91cc1671d6decc859d"
+      },
+      "action": "git.push",
+      "impact": "EXTERNAL_PUBLICATION",
+      "operationExecutionRevision": 1,
+      "policyDigest": "7a1554abf52783c778e82397878c658876cc04f517e49012c2999d32ac8c206e",
+      "controllerEpoch": 1,
+      "payloadDigest": "5cc67f3ec7d2a0b31aaebb7fd7070549c535cc50a91b1450d11abba667df5ee1",
+      "authorityBindingDigest": "52f6cc7d31f606243205cb110b46d31ebac91c171df4d9cb5e57019acb8538d0",
+      "requestDigest": "358e1597d83c268fb1410f368fb5d3982dc095a81dbd67d21ac1ec8236626ff8",
+      "createdAt": "2026-09-29T12:55:44.284Z"
+    },
+    "receipt": {
+      "version": 2,
+      "intentId": "action-intent:87a8ae16c673c9da17c8dae250ccd92103db98c047b38331412fca4f1313fc73",
+      "operationId": "CHANGE-S13-GH-AUTHORITY",
+      "participantId": "controller:7b60a0ddff338003908b41ac",
+      "candidateDigest": "06a5c76731ba9fa6ab62d5230598b1da8765bec98050da91cc1671d6decc859d",
+      "operationExecutionRevision": 1,
+      "policyDigest": "7a1554abf52783c778e82397878c658876cc04f517e49012c2999d32ac8c206e",
+      "action": "git.push",
+      "controllerEpoch": 1,
+      "outcome": "SUCCEEDED",
+      "resultDigest": "8384a9990f78d5cc9c321f084d8a75be09e0dde1a0c491c0fdc38b27480f550e",
+      "receiptId": "action-receipt:b63003dad8f3dfbb5ee1dfa1177f0240c6b4f9481bfe006ce3367d1f5d5ef72c",
+      "receiptDigest": "b63003dad8f3dfbb5ee1dfa1177f0240c6b4f9481bfe006ce3367d1f5d5ef72c",
+      "recordedAt": "2026-09-29T12:55:46.710Z"
+    },
+    "reconciliation": null,
+    "reconciliationStrategy": "git ls-remote --heads origin aeh-s13-authority-20260929124459",
+    "detail": "Side effect executed and receipt persisted."
+  },
+  "remoteRef": {
+    "exitCode": 0,
+    "stdout": "refs/heads/aeh-s13-authority-20260929124459\nc1c673d3487c5d3784411664215224c96189c87e"
+  },
+  "result": "PASS",
+  "finishedAt": "2026-09-29T12:55:47.245Z"
+}

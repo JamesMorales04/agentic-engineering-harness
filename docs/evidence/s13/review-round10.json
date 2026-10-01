@@ -1,0 +1,518 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 10,
+  "reviewer": {
+    "identity": "S13 Round-10 fresh independent reviewer (no implementation role in Round 10)",
+    "provider": "opencode-go",
+    "model": "deepseek-v4.1-flash",
+    "thinking": "not-disclosed-to-reviewer-session",
+    "independenceDisclosure": {
+      "didNotImplementRound10": true,
+      "readOnly": true,
+      "filesWritten": 0,
+      "commitsMade": 0,
+      "pushesMade": 0,
+      "aehOperationsLaunched": false,
+      "priorSummariesTrusted": false
+    }
+  },
+  "gitState": {
+    "branch": "core-architecture-v2",
+    "head": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "upstream": "origin/core-architecture-v2",
+    "upstreamHead": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "uncommitted": {
+      "modifiedTracked": 69,
+      "untracked": 23,
+      "total": 92
+    },
+    "gitDiffCheck": "clean",
+    "stashList": "empty",
+    "newCommitsOrPushByReviewer": false,
+    "targetByteIdentity": {
+      "path": "docs/CORE_ARCHITECTURE_V2.md",
+      "workingSha256": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+      "headSha256": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+      "result": "MATCH"
+    },
+    "credentialScan": {
+      "pattern": "ghp_|github_pat_|Bearer token|sk-|xox[baprs]-",
+      "scope": "docs/evidence/s13/",
+      "matches": 0,
+      "result": "CLEAN"
+    },
+    "externalWritesByReviewer": "none (no gh write commands executed)"
+  },
+  "digestRecomputation": [
+    {
+      "artifact": "docs/evidence/s13/governed-lanes/round-10/direct-cleanup-1/change-direct.json",
+      "expected": "f2d8b9e80067237a9240c6069d13a63d8ad85c417944eff4d7af809d0fdf7979",
+      "recomputed": "f2d8b9e80067237a9240c6069d13a63d8ad85c417944eff4d7af809d0fdf7979",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/s13-governed-operations-round-10-direct-cleanup-1.json",
+      "expected": "887f84327d78f615d4ebdc1a3e219c36a123751b4a976994fb900eac69d4b614",
+      "recomputed": "887f84327d78f615d4ebdc1a3e219c36a123751b4a976994fb900eac69d4b614",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/governed-lanes/round-10/direct-cleanup-1/post-campaign-operation-read.json",
+      "expected": "c80bdbf812312eb86ecf6aa04d2bb12888d3632cfedeebcbb4ee96031413a55",
+      "recomputed": "c80bdbf812312eb86ecf6aa04d2bb12888d3632cfedeebcbb4ee96031413a55",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/s13-real-paseo-lifecycle-round-10-lifecycle-round10-1.json",
+      "expected": "7e285c57463827e7a92d5358f925ccd6bbc932d90bd2330699e354e6549ce3ff",
+      "recomputed": "7e285c57463827e7a92d5358f925ccd6bbc932d90bd2330699e354e6549ce3ff",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/s13-github-effects-round-10-attempt-4.json",
+      "expected": "6cf03b9d73a9b41a7d7deb4d97b7c735ac56dd819e9f62dcc0c469550238c878",
+      "recomputed": "6cf03b9d73a9b41a7d7deb4d97b7c735ac56dd819e9f62dcc0c469550238c878",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/github-lanes/round-10/attempt-4/issue-driven.json",
+      "expected": "68270e9ddc08866b0c825ac5e0ea2ca1ced75ddd8b28d4ff0afdd7701a122b98",
+      "recomputed": "68270e9ddc08866b0c825ac5e0ea2ca1ced75ddd8b28d4ff0afdd7701a122b98",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/github-lanes/round-10/attempt-4/authority.json",
+      "expected": "9fee87ab565ba51e6e6cd515dbff76ea3899a56d04ecb1ebd81d78ea29e4a4c5",
+      "recomputed": "9fee87ab565ba51e6e6cd515dbff76ea3899a56d04ecb1ebd81d78ea29e4a4c5",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/round10-0114-authorization-resolution.json",
+      "expected": "8d82599f570abf402895f27fc1960997e270e6d47f281ecc62a0a7bc5974d233 (pre-edit brief value)",
+      "recomputed": "218e3523626694e7f2653b851b9c25da9b1448545d1ea31322f65459b6e92698",
+      "result": "MATCH_CURRENT",
+      "note": "Campaign Director declared one post-review-creation edit citing the newly preserved synthetic-decision copy; delta is not treated as tamper/integrity finding per Director note."
+    },
+    {
+      "artifact": "docs/evidence/s13/round10-synthetic-decision-evidence.json",
+      "expected": "0b34fb56ccef657c331a35521b9a09c3a8aff28fc561037b73b541e981d4d919",
+      "recomputed": "0b34fb56ccef657c331a35521b9a09c3a8aff28fc561037b73b541e981d4d919",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/github-effect-authorization.json",
+      "expected": "31a4743754d27e2fd45e8df05316691052f14d7f3e4e5e97a624a7ff15249b49",
+      "recomputed": "31a4743754d27e2fd45e8df05316691052f14d7f3e4e5e97a624a7ff15249b49",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/s13-real-provider-certification.json",
+      "expected": "faad882abe490217cacad159d7404d4ffc28b2620199acb4c76ab135ddc2c92b (documented round-9)",
+      "recomputed": "faad882abe490217cacad159d7404d4ffc28b2620199acb4c76ab135ddc2c92b",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/s13-real-paseo-lifecycle.json",
+      "expected": "77ecdfbd37301639af74aac131a8a9f65b2b43b6f183deb15789af3ff1633d55 (documented round-9)",
+      "recomputed": "77ecdfbd37301639af74aac131a8a9f65b2b43b6f183deb15789af3ff1633d55",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/governed-lanes/audit.json",
+      "expected": "91e4ff8c2f77cf8f1ad647b20b0d86abb395a2a3a5b34183f53948094f4a71d8 (documented round-9)",
+      "recomputed": "91e4ff8c2f77cf8f1ad647b20b0d86abb395a2a3a5b34183f53948094f4a71d8",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/s13-github-effects-round-10-attempt-3.json",
+      "expected": "3dbffa27725c029ed08f73476133ffc2f9cc0902772a5f0e3c0766b87628e8f8 (documented round-10)",
+      "recomputed": "3dbffa27725c029ed08f73476133ffc2f9cc0902772a5f0e3c0766b87628e8f8",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/s13-governed-operations-round-10-formal-diagnostic-1.json",
+      "expected": "a1c632fd71415587f6f43b3fb6b23966ff0dd18bba7b3981454c7816c98c03fd",
+      "recomputed": "a1c632fd71415587f6f43b3fb6b23966ff0dd18bba7b3981454c7816c98c03fd",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/governed-lanes/round-10/formal-diagnostic-1/change-delegated.json",
+      "expected": "3daada863167bf49ed98a852364491647a221e903e722e025ff42b474e6c3871",
+      "recomputed": "3daada863167bf49ed98a852364491647a221e903e722e025ff42b474e6c3871",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/round10-review-dispositions.json",
+      "expected": "cdf2c2f40e9f9693dae83e3bd4f0fe378f17231103f94ffbf31f0fe443a04393",
+      "recomputed": "cdf2c2f40e9f9693dae83e3bd4f0fe378f17231103f94ffbf31f0fe443a04393",
+      "result": "MATCH"
+    },
+    {
+      "artifact": "docs/evidence/s13/governed-lanes/round-10/direct-cleanup-1/change-direct.json :: artifacts.acceptance.raw bytes (27,417)",
+      "expected": "cf2957f00f3e379775892906fd0b5a11ee54feabab1a9c71c738e9ac9f51e8ac (recorded)",
+      "recomputed": "cf2957f00f3e379775892906fd0b5a11ee54feabab1a9c71c738e9ac9f51e8ac",
+      "result": "MATCH",
+      "note": "R7-F2 artifact-byte retention verified; raw bytes recompute exactly (jq -j, no newline artifact)."
+    }
+  ],
+  "round10Verifications": {
+    "directTrunk": {
+      "operationId": "CHANGE-20260928T163444Z-5de819ea",
+      "terminal": "SUCCEEDED",
+      "acceptanceOracle": "ACCEPTED (digest f993942dc68beb090fde7ea496aff3661d3dcc6fbef7bc08ff1a8e797b35b4ec)",
+      "candidate": "candidate:CHANGE-20260928T163444Z-5de819ea:r3 identityDigest 7aaa1e699122143a146b6707d3129c759fdd21eb8b8cbd3797c8360f5abf0825",
+      "candidateWorkspaceDigest": "MATCH (expected==observed 14ce1c8b59431c61571e2cb470dbd87bf55d38010b9712da301fb07ab6e8323a, r3, pre-archive)",
+      "participantReceipts": "complete; 2 terminal candidate-bound receipts (implementer r2 + assembly receipt naming it; reviewer r3); all 4 objective-completion participants COMPLETED",
+      "validation": "PASS (all applicable checks PASS; policy.opa SKIP=not required)",
+      "checkoutUntouched": true,
+      "postCampaignRead": "controller exited (controllerAlive=false), worktree absent after archive, 4 archived / 0 remaining",
+      "packedBuild": "release-1790613227455-94861-ec801fae, buildDigest 0fc216b8ebd40b942c19556b2f1e7d6c44be802bb27142d41deeab2cc7ee71ac, gitSha e3dad34",
+      "sourceDeltaAfterBuild": "NONE — latest product source mtime 2026-09-28T16:18:32.841Z (src/entry.ts) < pack/build 2026-09-28T16:33:47Z; tests are not packed (package.json files list); change and direct-change can be CURRENT_ACCEPTED at row level",
+      "note": "Governed-campaign harness file mtime 16:39:08Z falls inside the direct lane window (16:34:09Z-16:43:48Z); exact harness revision used is not preserved (see R10-F6), but the packed product build is source-current."
+    },
+    "lifecycle": {
+      "runId": "lifecycle-round10-1",
+      "result": "PASS",
+      "cancel": "PASS — real session 425029af-f4a2-40b5-8999-550bd807a114, epoch 1->2, terminal CANCELLED, lease drained 0",
+      "recovery": "PASS — real session 4d0dc9e6-b3aa-4ddc-81b8-8561fb9a49a9, preserved operation/candidate, epoch 1->2 takeover, resumed, lease drained 0",
+      "packedBuildBinding": "0fc216b8ebd40b942c19556b2f1e7d6c44be802bb27142d41deeab2cc7ee71ac",
+      "checkoutUntouched": true
+    },
+    "github": {
+      "attempt4Summary": "SLICE_BLOCKED; issue-driven PASS, authority PASS, delivery BLOCKED; issue #3 reused created=false",
+      "attempt4Build": "release-1790614455255-130652-d8e9e08f, buildDigest 0fc216b8… (per-lane candidateBinding)",
+      "attempt2Effect": "issue #2 intent 2026-09-28T16:01:50.692Z / receipt 2026-09-28T16:01:52.323Z — after pre-effect denial",
+      "attempt3Effect": "issue #3 intent 2026-09-28T16:08:26.221Z / receipt 2026-09-28T16:08:27.317Z — after pre-effect denial",
+      "preEffectDenial": "Durable Paseo agent 69a65987-… persistence.metadata.asyncQuestions[0].resolution: 'Use only pre-authorized existing private repository JamesMorales04/aeh-s13-round3-20260927035743-6bb5da and existing issue #1 … Do not create a repo or issue.' The first Round-10 run (generatedAt 2026-09-28T15:51:25.730Z) reused issue #1 (created:false, reused:true), proving the denial predates both violating effects.",
+      "selfMintingConfirmed": "tests/packed/s13GithubEffectCampaign.mjs issue path (lines ~172-201) and authority push path (lines ~385-402) still record ledger.record({kind:'APPROVE', actorId:'human:s13-github', …}); durable synthetic copy decision:c8b08e1a… created+consumed 2026-09-28T15:52:15.116/117Z; attempt-4 authority uses the same actorId (decision:f050068d…, 16:57:30Z)",
+      "authorityRefIndependence": "CONFIRMED — attempt-4 remoteRef observed via gh api repos/.../git/ref/heads/aeh-s13-authority-20260928165409; does not depend on issue #3 effects",
+      "resolutionDetermination": "HISTORICAL_POLICY_VIOLATION_CONFIRMED is correct",
+      "prospectiveAuthorization": "github-effect-authorization.json is status ACTIVE_PROSPECTIVE, retroactive:false; not misused to validate Round-10 effects"
+    },
+    "aehV2_0110": {
+      "state": "OPEN (must remain open)",
+      "durable": "governed-lanes/round-10/formal-diagnostic-1/change-delegated.json (3daada86…): operation CHANGE-20260928T162325Z-226f0cf0 FAILED, route stayed DELEGATED, Planner payload d07a6586… formalizationNeed=NONE, Explorer artifact fd6e02a1…/payload 0c80e53b…, triageEscalatedEvents=[] (count 0), candidate workspace digest MATCH, checkoutUntouched=true, 3 workspaces archived / 0 remaining",
+      "unresolved": "No explanation of the Round-9 FORMAL_SDD route (Round-9 Explorer payload absent); no accepted DELEGATED completion. No closure support."
+    },
+    "aehV2_0111": {
+      "state": "OPEN (must remain open)",
+      "repairVerified": "src/spec/openspec.ts prepareOpenSpecChange returns canonical target without writing placeholders (lines 52-62); persistence moved to persistOpenSpecAuthoringContentV1 after validated result",
+      "tests": "tests/openSpecBridge.test.ts 8 pass including 'does not mutate a frozen CandidateRevision workspace…'; tests/candidateIdentity.test.ts 6 pass including exact expected/observed digest mismatch reporting",
+      "liveRerun": "NOT RE-EXERCISED — Round-10 governed diagnostic route stayed DELEGATED; no live FORMAL_SDD Spec Manager result"
+    },
+    "aehV2_0112": {
+      "state": "FIXED (verified)",
+      "guard": "tests/packed/s13GovernedCampaignPolicy.mjs workspaceArchiveDecision requires terminal status AND controller exited; node --test 1/1 PASS",
+      "invariant": "campaign cleanup must not archive a live/nonterminal operation's resources — HOLDS: direct lane terminal SUCCEEDED + controller exited before 4 workspaces archived / 0 remaining; post-campaign read persists controller-exited observation; packed direct lane exercised the guard"
+    }
+  },
+  "findings": [
+    {
+      "id": "R10-F1",
+      "priority": "P0",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "CONFIRMED_UNREPAIRED_POLICY_VIOLATION (BLOCKED_DEFECT)",
+      "summary": "AEH-V2-0114 root cause persists in the current working tree: the certification campaign self-mints HumanDecision APPROVE records (actorId 'human:s13-github') for external effects, so no valid scoped user authorization existed before Round-10 issue #2/#3 creation and the authority push.",
+      "evidence": [
+        "tests/packed/s13GithubEffectCampaign.mjs:172-201 and :385-402 (current bytes) still call ledger.record({kind:'APPROVE', actorId:'human:s13-github'})",
+        "docs/evidence/s13/round10-synthetic-decision-evidence.json (0b34fb56…) decision:c8b08e1a created+consumed 15:52:15Z",
+        "docs/evidence/s13/round10-0114-authorization-resolution.json (218e3523…) determination HISTORICAL_POLICY_VIOLATION_CONFIRMED",
+        "attempt-2/3 receipts at 16:01:52.323Z / 16:08:27.317Z vs pre-effect denial in ~/.paseo/agents/…/69a65987-….json"
+      ],
+      "requiredAction": "Remove all campaign-generated HumanDecision approvals; require an externally provided authorization artifact bound to the exact ActionIntent with hard fail-closed behavior (or restrict the lane to existing user-authorized issue #1); add a deterministic regression proving the campaign cannot self-authorize; then rerun authority and issue-import with genuine user authorization."
+    },
+    {
+      "id": "R10-F2",
+      "priority": "P1",
+      "mechanism": "HYBRID",
+      "disposition": "TAINTED_ACCEPTANCE_CLAIMS",
+      "summary": "Round-10 attempt-4 issue-import PASS depends on tainted issue #3; attempt-4 authority PASS relies on a self-minted approval (its remote-ref observation is genuine and independent). Neither row can be CURRENT_ACCEPTED.",
+      "evidence": [
+        "attempt-4/issue-driven.json (68270e9d…) checks PASS against issue #3 (snapshot 0c0d1b61838c)",
+        "attempt-4/authority.json (9fee87ab…) humanDecision actorId 'human:s13-github', created 16:57:30Z",
+        "round10-0114-authorization-resolution.json taintScope.tainted"
+      ],
+      "requiredAction": "Mark authority and issue-driven NOT_ACCEPTED (tainted) until R10-F1 is repaired and a user-authorized rerun produces valid HumanDecision provenance."
+    },
+    {
+      "id": "R10-F3",
+      "priority": "P1",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "UNSUPPORTED_DOCUMENTATION_CLAIMS",
+      "summary": "Documentation presents the Round-10 GitHub effects as user-authorized/clean, which the pre-effect denial contradicts.",
+      "evidence": [
+        "docs/CORE_ARCHITECTURE_V2_S13_WORKGRAPH.md:563 ('clean Round-10 rerun'), :569 (S13-W39 'user-authorized minimum test issue'), :570, :582, :586",
+        "docs/CORE_ARCHITECTURE_V2_STATUS.md:291 ('clean Round-10 authority and operation-bound issue-import rows PASS'; issue created with persisted HumanDecision)",
+        "docs/CORE_ARCHITECTURE_V2_CONFORMANCE.md:221",
+        "docs/ENGINEERING_LEDGER.md:133 ('when explicitly authorized'; 'Clean Round-10 attempt 4 passes …')",
+        "docs/evidence/s13/round10-review-dispositions.json round10ExternalEffectsAuthorization.authorizedResources and R9-F1A cleanLane (cdf2c2f4…)"
+      ],
+      "requiredAction": "Correct these claims to reflect the confirmed violation and taint (resolution requiredRepairs item 4); do not delete/edit issues #2/#3 and do not retry repository deletion."
+    },
+    {
+      "id": "R10-F4",
+      "priority": "P1",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "STALE_REQUIRES_RERUN",
+      "summary": "startup, informational, project-home, multi-project and audit still bind the Round-9 build 8e949b0113ddd90ae0573826b8ecc348915ae2c65fd6a77c99f82ba9b6a9ab84, while the current product source produces build 0fc216b8… after Round-10 edits (src/entry.ts, src/candidates/identity.ts, src/operations/change.ts, src/spec/openspec.ts at 16:15-16:18Z). The R6-F3 build-bound sweep remains incomplete.",
+      "evidence": [
+        "s13-real-provider-certification.json (faad882a…) harnessBuildIdentity buildDigest 8e949b…",
+        "governed-lanes/audit.json (91e4ff8c…) candidateBinding.packedBuild.buildDigest 8e949b…",
+        "current packed build digest 0fc216b8… (round-10 direct/lifecycle/GitHub lanes)",
+        "WorkGraph:563/586 present these as 'current evidence groups' without a current-build rerun"
+      ],
+      "requiredAction": "Run one bounded current-build rerun of s13RealProviderCertification.mjs (4 lanes) and the audit lane, then update row dispositions."
+    },
+    {
+      "id": "R10-F5",
+      "priority": "P2",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "LEDGER_GAP",
+      "summary": "AEH-V2-0114 is not yet recorded in docs/ENGINEERING_LEDGER.md (latest ledger row is AEH-V2-0113), contrary to resolution requiredRepairs item 1.",
+      "evidence": [
+        "grep AEH-V2-011[0-4] docs/ENGINEERING_LEDGER.md — 0110-0113 present, 0114 absent"
+      ],
+      "requiredAction": "Add the P1 AEH_PRODUCT_DEFECT / EXTERNAL_EFFECT_POLICY_VIOLATION row for AEH-V2-0114 with the exact receipts and issues."
+    },
+    {
+      "id": "R10-F6",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "REPRODUCIBILITY_GAP",
+      "summary": "The exact harness revisions that produced Round-10 evidence are not preserved: s13GithubEffectCampaign.mjs mtime 2026-09-28T17:00:28Z is after attempt-4 completed (16:57:34Z) and s13GovernedOperationCampaign.mjs mtime 16:39:08Z falls inside the direct lane window (16:34:09-16:43:48Z).",
+      "evidence": [
+        "file mtimes vs artifact timestamps"
+      ],
+      "requiredAction": "Record a harness digest in each lane envelope or freeze the campaign revision for a run."
+    },
+    {
+      "id": "R10-F7",
+      "priority": "P2",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "OPEN_CONFIRMED_DO_NOT_CLOSE",
+      "summary": "AEH-V2-0110 remains OPEN: durable Explorer/Planner payloads and the empty escalation-event set are now retained, but the Round-9 FORMAL_SDD route trigger is unresolved and no DELEGATED lane reached accepted completion.",
+      "evidence": [
+        "formal-diagnostic-1 lane 3daada86…",
+        "ledger row 0110"
+      ],
+      "requiredAction": "Keep open; do not close until the route trigger is evidenced and a DELEGATED lane is accepted."
+    },
+    {
+      "id": "R10-F8",
+      "priority": "P2",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "OPEN_CONFIRMED_DO_NOT_CLOSE",
+      "summary": "AEH-V2-0111 remains OPEN: the OpenSpec pre-result mutation repair and digest diagnostics are present and regressed, but the live FORMAL_SDD result path was not re-exercised (diagnostic stayed DELEGATED).",
+      "evidence": [
+        "src/spec/openspec.ts:52-62",
+        "tests/openSpecBridge.test.ts / tests/candidateIdentity.test.ts (14 tests PASS)",
+        "ledger row 0111"
+      ],
+      "requiredAction": "Keep open; run a live FORMAL_SDD operation to accepted structured result."
+    },
+    {
+      "id": "R10-F9",
+      "priority": "P2",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "FIXED_VERIFIED",
+      "summary": "AEH-V2-0112 verified: the archival guard requires terminal operation and exited controller; the Round-10 direct lane exercised it (SUCCEEDED, digest MATCH, 4 archived / 0 remaining) with a separate post-campaign read.",
+      "evidence": [
+        "tests/packed/s13GovernedCampaignPolicy.mjs workspaceArchiveDecision",
+        "node --test 1/1 PASS",
+        "post-campaign-operation-read.json c80bdbf8…"
+      ],
+      "requiredAction": "None beyond retaining the evidence."
+    }
+  ],
+  "matrixDispositions": [
+    {
+      "capability": "startup",
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "round-9 cert summary faad882a…, buildDigest 8e949b…; current build 0fc216b8…",
+      "requiredEvidenceGap": "current-build packed run"
+    },
+    {
+      "capability": "informational",
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "round-9 cert summary faad882a…, buildDigest 8e949b…",
+      "requiredEvidenceGap": "current-build packed run"
+    },
+    {
+      "capability": "audit",
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "governed-lanes/audit.json 91e4ff8c…, packedBuild buildDigest 8e949b…",
+      "requiredEvidenceGap": "current-build governed audit run"
+    },
+    {
+      "capability": "change",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "round-10 direct lane f2d8b9e8…: terminal SUCCEEDED, oracle ACCEPTED, validation PASS, receipts complete, workspace digest MATCH, checkoutUntouched, packed build 0fc216b8…; no product source edit after build",
+      "requiredEvidenceGap": "none; independent row acceptance confirmed"
+    },
+    {
+      "capability": "direct-change",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "same round-10 direct lane; rowResults direct-change PASS with direct-route/candidate-revision/validation",
+      "requiredEvidenceGap": "none; independent row acceptance confirmed"
+    },
+    {
+      "capability": "delegated-change",
+      "disposition": "NOT_ACCEPTED",
+      "evidence": "round-10 formal-diagnostic-1 lane 3daada86… FAILED, route DELEGATED, no Implementer/ChangeSet/accepted completion; AEH-V2-0110 OPEN",
+      "requiredEvidenceGap": "accepted DELEGATED lane with feature-capsule/delegation/review"
+    },
+    {
+      "capability": "formal-sdd",
+      "disposition": "NOT_ACCEPTED",
+      "evidence": "no live FORMAL_SDD acceptance; AEH-V2-0111 OPEN; last attempt SPEC_MANAGER_RESULT_ARTIFACT_MISSING",
+      "requiredEvidenceGap": "live OpenSpec/traceability + sealed TaskContract result"
+    },
+    {
+      "capability": "multi-worker",
+      "disposition": "NOT_ACCEPTED",
+      "evidence": "no real-provider harness or evidence exists",
+      "requiredEvidenceGap": "task DAG + wave barrier real-provider run"
+    },
+    {
+      "capability": "cancel",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "round-10 lifecycle cancel.json PASS: real session 425029af…, epoch 1->2, CANCELLED, leases 0; build 0fc216b8…; checkout untouched",
+      "requiredEvidenceGap": "none at row level"
+    },
+    {
+      "capability": "recovery",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "round-10 lifecycle recovery.json PASS: real session 4d0dc9e6…, preserved identity, epoch 1->2 takeover, resumed, leases 0; build 0fc216b8…",
+      "requiredEvidenceGap": "none at row level"
+    },
+    {
+      "capability": "product-repair",
+      "disposition": "NOT_ACCEPTED",
+      "evidence": "no S13 packed repair-family evidence",
+      "requiredEvidenceGap": "repair packet + scope check run"
+    },
+    {
+      "capability": "certification-repair",
+      "disposition": "NOT_ACCEPTED",
+      "evidence": "no S13 packed evidence",
+      "requiredEvidenceGap": "failure packet + oracle re-check run"
+    },
+    {
+      "capability": "repair",
+      "disposition": "NOT_ACCEPTED",
+      "evidence": "no accepted repair-family lane (round-8 repairers produced zero ChangeSets)",
+      "requiredEvidenceGap": "bounded repair to accepted re-oracle"
+    },
+    {
+      "capability": "context-handoff",
+      "disposition": "NOT_ACCEPTED",
+      "evidence": "no S13 real-provider handoff lane",
+      "requiredEvidenceGap": "context refs + continuation binding run"
+    },
+    {
+      "capability": "permission-delegation",
+      "disposition": "NOT_ACCEPTED",
+      "evidence": "no S13 real-provider lane",
+      "requiredEvidenceGap": "parent lease + monotonic child decision run"
+    },
+    {
+      "capability": "issue-driven",
+      "disposition": "NOT_ACCEPTED",
+      "evidence": "attempt-4 import PASS depends on tainted issue #3 (AEH-V2-0114); attempt-3 summary 3dbffa27… tainted; full intake->change->delivery contract absent",
+      "requiredEvidenceGap": "user-authorized issue lane and full governed flow"
+    },
+    {
+      "capability": "delivery",
+      "disposition": "NOT_ACCEPTED",
+      "evidence": "round-10 GitHub summary delivery BLOCKED; requires accepted packed change + authorized external effect",
+      "requiredEvidenceGap": "delivery record + provenance on accepted candidate"
+    },
+    {
+      "capability": "distributed-execution",
+      "disposition": "NOT_ACCEPTED",
+      "evidence": "no S13 real-provider worker lane",
+      "requiredEvidenceGap": "lease + worker receipt run"
+    },
+    {
+      "capability": "project-home",
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "round-9 cert summary faad882a…, buildDigest 8e949b…",
+      "requiredEvidenceGap": "current-build packed run"
+    },
+    {
+      "capability": "multi-project",
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "round-9 cert summary faad882a…, buildDigest 8e949b…",
+      "requiredEvidenceGap": "current-build packed run"
+    },
+    {
+      "capability": "control-center",
+      "disposition": "NOT_APPLICABLE",
+      "evidence": "frozen matrix classifies it as BROWSER-only, never substituted for REAL_PROVIDER; S11 BROWSER evidence reported separately",
+      "requiredEvidenceGap": "none (out of provider scope)"
+    },
+    {
+      "capability": "authority",
+      "disposition": "NOT_ACCEPTED",
+      "evidence": "attempt-4/authority.json 9fee87ab… PASS but its APPROVE is a campaign self-minted decision (actorId human:s13-github); remote ref observation genuine/independent; AEH-V2-0114",
+      "requiredEvidenceGap": "valid user-authorized human decision + rerun"
+    }
+  ],
+  "focusedTests": {
+    "command": "npx vitest run tests/semanticStructuredOutputCapability.test.ts tests/openSpecBridge.test.ts tests/candidateIdentity.test.ts tests/s13GithubCampaignPolicy.test.ts tests/changeRouting.test.ts tests/specEscalationPolicyRebind.test.ts tests/supervisorConsolidationProvenance.test.ts tests/objectiveParticipantAccounting.test.ts tests/assemblyLineageCompletion.test.ts tests/acceptanceReviewProvenance.test.ts tests/acceptanceValidationPath.test.ts tests/reviewLifecycle.test.ts",
+    "files": {
+      "passed": 12,
+      "failed": 0
+    },
+    "tests": {
+      "passed": 74,
+      "failed": 0
+    },
+    "environmentRestriction": null,
+    "additional": {
+      "nodePolicyTest": "node --test tests/packed/s13GovernedCampaignPolicy.test.mjs — 1 passed / 0 failed",
+      "typecheck": "npm run typecheck — exit 0"
+    }
+  },
+  "fullSuite": {
+    "run": false,
+    "reason": "Optional per review contract; focused set covers all Round-10 changed modules (structured output, OpenSpec bridge, candidate identity, campaign policy, routing, escalation, consolidation, objective accounting, assembly lineage, acceptance provenance/path, review lifecycle)."
+  },
+  "truthfulnessAudit": {
+    "supported": [
+      "Round-10 direct lane terminal SUCCEEDED / oracle ACCEPTED / validation PASS / workspace digest MATCH / checkout untouched (all recomputed or directly read)",
+      "Round-10 lifecycle cancel/recovery PASS on build 0fc216b8…",
+      "Attempt-2/3 issue creation timestamps and attempt-4 branch-ref observation",
+      "AEH-V2-0110/0111 durable payload digests and OPEN states",
+      "AEH-V2-0112 guard and exercised invariant",
+      "All reviewed-digest claims (see digestRecomputation)"
+    ],
+    "unsupportedClaimsFlagged": [
+      "WorkGraph:563 'clean Round-10 rerun'; :569 'user-authorized minimum test issue'; :586 'clean Round-10 authority and managed issue import PASS'",
+      "STATUS:291 'clean Round-10 authority and operation-bound issue-import rows PASS' and the implication that the persisted HumanDecision legitimizes the test issue",
+      "CONFORMANCE:221 'passes issue snapshot/drift/import and authority checks' as a compliant acceptance statement",
+      "LEDGER:133 'when explicitly authorized' and 'Clean Round-10 attempt 4 passes authority and operation-bound issue-import rows' with status FIXED_AND_REAL_PROVIDER_EXERCISED",
+      "round10-review-dispositions.json round10ExternalEffectsAuthorization (test issues listed as authorized resources) and R9-F1A cleanLane issueImport PASS"
+    ]
+  },
+  "round10GithubResolution": {
+    "determination": "HISTORICAL_POLICY_VIOLATION_CONFIRMED",
+    "reviewerAssessment": "CORRECT",
+    "attempt3And4IssueImportPass": "TAINTED — depends on issue #3 created without valid authorization",
+    "explicitlyAuthorizedStatements": "UNSUPPORTED",
+    "attempt4BranchRefObservationIndependent": true,
+    "githubEffectAuthorizationUse": "PROSPECTIVE_ONLY — correctly marked retroactive:false and not misused; however it does not cure the Round-10 violation or authorize further runs until the self-authorization repair is in place"
+  },
+  "verdict": "SLICE_BLOCKED",
+  "actionRequired": [
+    "P0: Repair AEH-V2-0114 — remove campaign self-minted HumanDecision approvals; require externally provided, scoped user authorization bound to the exact ActionIntent, fail closed when absent; add deterministic anti-self-authorization regression.",
+    "P1: Rerun the GitHub authority and operation-import rows with genuine user authorization (or restrict to the user-authorized issue #1); keep both rows NOT_ACCEPTED until then.",
+    "P1: Correct all unsupported 'user-authorized'/'clean' documentation claims (WorkGraph, STATUS, CONFORMANCE, LEDGER 0113, round10-review-dispositions) and record AEH-V2-0114 in the ledger with exact receipts.",
+    "P1: Complete the current-build sweep — rerun startup, informational, project-home, multi-project and audit on build 0fc216b8 (or record a source-delta equivalence analysis).",
+    "P2: Keep AEH-V2-0110 and AEH-V2-0111 OPEN and do not close them without the required evidence; keep AEH-V2-0112 closed as FIXED with its evidence.",
+    "P2: Preserve a harness revision digest in future lane envelopes to close the reproducibility gap.",
+    "P2: Continue S13 delegated/formal-SDD/multi-worker/repair-family/context-handoff/permission-delegation/distributed-execution/full issue-driven/delivery rows; do not start S14.",
+    "P3: Preserve the current direct lane and lifecycle evidence bytes as-is; the Campaign Director may persist this report verbatim as docs/evidence/s13/review-round10.json."
+  ]
+}

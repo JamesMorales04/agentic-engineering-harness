@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { validateAgentOutput } from "../agents/outputContracts.js";
@@ -9,6 +8,7 @@ import {
   type AcceptedStructuredResult,
   type StructuredResultSource
 } from "./resultGateway.js";
+import { sha256Canonical } from "../core/digest.js";
 
 export async function commitStructuredResult<T = unknown>(
   root: string,
@@ -26,7 +26,7 @@ export async function commitStructuredResult<T = unknown>(
       const validation = validateAgentOutput(turn.contract, payload);
       if (!validation.ok) throw new Error(`RESULT_ALREADY_ACCEPTED: ${validation.issues.join("; ")}`);
       const normalized = validation.value as T;
-      const sha256 = crypto.createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
+      const sha256 = sha256Canonical(normalized);
       if (sha256 !== turn.sha256) throw new Error("CONFLICTING_RESULT: the active turn already has a different accepted payload.");
       return acceptStructuredResult<T>(root, operationId, channelId, normalized, source);
     }

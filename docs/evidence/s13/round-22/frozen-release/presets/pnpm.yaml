@@ -1,0 +1,6 @@
+id: pnpm
+validation:
+  commands:
+    - id: pnpm-test
+      command: pnpm test
+      required: true

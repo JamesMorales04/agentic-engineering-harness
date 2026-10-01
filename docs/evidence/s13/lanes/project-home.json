@@ -1,0 +1,367 @@
+{
+  "version": 1,
+  "capability": "project-home",
+  "provider": "codex",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13RealProviderCertification.mjs",
+        "sha256": "e008d145f175f0ef2e5a6ef2a001c69dd24206d6d69e23778229f30495dd1a9c"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "52cc4df585215b768577b300277a5aac6ca3a9f6101433ed2ed0363d6c77f461"
+  },
+  "startedAt": "2026-09-30T05:31:47.367Z",
+  "report": {
+    "certificationId": "cert-agentic-engineering-harness-0.8.4-49384d29-239d-4096-9e6b-5beaf9644428",
+    "state": "ACCEPTED",
+    "accepted": true,
+    "assurance": "DETERMINISTIC",
+    "policyId": "aeh-default-certification",
+    "harnessBuildIdentity": {
+      "version": 1,
+      "packageVersion": "0.8.4",
+      "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+      "releaseId": "release-1790746067053-1573412-feaf0aab",
+      "buildDigest": "599ed363223ff2dd85e17296c9f34c4134bf83e363916c4c57d7e7492ccbdf45",
+      "dirty": true
+    },
+    "candidate": {
+      "version": 1,
+      "id": "agentic-engineering-harness-0.8.4",
+      "root": "/tmp/aeh-cert-fixture-7sHeCN",
+      "artifactPath": "/tmp/aeh-cert-fixture-7sHeCN/.aeh-candidate.tgz",
+      "baseRef": "packed-checkout",
+      "sourceDigest": "736ca576ac4781db9f4a7503343b495de79852600353a73995128e78d99ba00c",
+      "packedArtifactDigest": "736ca576ac4781db9f4a7503343b495de79852600353a73995128e78d99ba00c",
+      "treeDigest": "c3942b05a1a0632e836056b06ee6bdc7fa01d3286e24c29f6727a70a796695ea",
+      "metadata": {
+        "artifactDigest": "736ca576ac4781db9f4a7503343b495de79852600353a73995128e78d99ba00c",
+        "packaging": "npm-pack-ignore-scripts",
+        "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+        "sourceBranch": "core-architecture-v2",
+        "packedBuildRelease": "release-1790746307731-1583636-8730a5bd",
+        "packedBuildDigest": "599ed363223ff2dd85e17296c9f34c4134bf83e363916c4c57d7e7492ccbdf45",
+        "packedBuildGitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+        "packedBuildPackageVersion": "0.8.4"
+      }
+    },
+    "networkPolicy": {
+      "requested": "ALLOW",
+      "enforced": false,
+      "enforcement": "provider-allowed"
+    },
+    "budget": {
+      "attempts": 1,
+      "durationMs": 17197,
+      "usage": {
+        "inputTokens": 46049,
+        "cachedInputTokens": 40192,
+        "outputTokens": 267,
+        "reasoningOutputTokens": 0,
+        "totalTokens": 46316
+      },
+      "remaining": {
+        "attempts": 0,
+        "durationMs": 582803
+      },
+      "usageKnown": true
+    },
+    "attempts": [
+      {
+        "attempt": 1,
+        "role": "actor",
+        "status": "COMPLETED",
+        "startedAt": "2026-09-30T05:32:13.903Z",
+        "finishedAt": "2026-09-30T05:32:31.077Z",
+        "durationMs": 17155,
+        "usage": {
+          "inputTokens": 46049,
+          "cachedInputTokens": 40192,
+          "outputTokens": 267,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 46316
+        },
+        "message": "WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir \"/tmp\" (codex_home: AbsolutePathBuf(\"/tmp/aeh-cert-codex-home-0oDhK8/.codex\"))\nReading additional input from stdin...\n"
+      },
+      {
+        "attempt": 2,
+        "role": "oracle",
+        "status": "PASS",
+        "startedAt": "2026-09-30T05:32:31.114Z",
+        "finishedAt": "2026-09-30T05:32:31.156Z",
+        "durationMs": 42
+      }
+    ],
+    "oracle": {
+      "status": "PASS",
+      "oracleId": "s13-journey:project-home",
+      "checks": [
+        {
+          "id": "project-id",
+          "category": "journey",
+          "status": "PASS",
+          "required": true,
+          "message": "Journey evidence 'project-id' verified for project-home.",
+          "evidence": {
+            "detail": {
+              "projectId": "project_b69e4234ded26d3cb3bdb67247c2459d",
+              "repositoryIdentity": "https://example.invalid/s13/project-home",
+              "canonicalRealpath": "/tmp/aeh-cert-fixture-7sHeCN"
+            }
+          }
+        },
+        {
+          "id": "health",
+          "category": "journey",
+          "status": "PASS",
+          "required": true,
+          "message": "Journey evidence 'health' verified for project-home.",
+          "evidence": {
+            "detail": {
+              "availability": "available",
+              "health": null
+            }
+          }
+        },
+        {
+          "id": "actor.command:register",
+          "category": "provider",
+          "status": "PASS",
+          "required": true,
+          "message": "Provider executed 'node_modules/agentic-engineering-harness/dist/main.js project register'.",
+          "evidence": {
+            "matched": true,
+            "exitCode": 0,
+            "output": "{\n  \"version\": 1,\n  \"projectId\": \"project_b69e4234ded26d3cb3bdb67247c2459d\",\n  \"canonicalRealpath\": \"/tmp/aeh-cert-fixture-7sHeCN\",\n  \"repositoryIdentity\": \"https://example.invalid/s13/project-home\",\n  \"displayName\": \"S13 Home\",\n  \"configDigest\": \"17e2f017d8a655226bba5545dcb95ca60d7b4c5b53fc3b4cdedee74c9dd6a4c2\",\n  \"createdAt\": \"2026-09-30T05:32:24.996Z\",\n  \"updatedAt\": \"2026-09-30T05:32:24.996Z\",\n  \"availability\": \"available\"\n}\n"
+          }
+        },
+        {
+          "id": "actor.command:home",
+          "category": "provider",
+          "status": "PASS",
+          "required": true,
+          "message": "Provider executed 'node_modules/agentic-engineering-harness/dist/main.js home'.",
+          "evidence": {
+            "matched": true,
+            "exitCode": 0,
+            "output": "AEH Home ready at http://127.0.0.1:37929/\ncontrolCenterPairing=REDACTED\n"
+          }
+        },
+        {
+          "id": "model.evidence",
+          "category": "provider",
+          "status": "PASS",
+          "required": true,
+          "message": "Deterministic oracle verified the capability journey and the real provider execution.",
+          "evidence": {
+            "capability": "project-home",
+            "evidenceOk": true,
+            "actorOk": true,
+            "executions": [
+              {
+                "command": "/usr/bin/bash -lc 'node node_modules/agentic-engineering-harness/dist/main.js project register . --repository https://example.invalid/s13/project-home --display-name \"S13 Home\" --registry /tmp/aeh-cert-fixture-7sHeCN/.harness/s13-registry/registry.json'",
+                "exitCode": 0
+              },
+              {
+                "command": "/usr/bin/bash -lc 'node node_modules/agentic-engineering-harness/dist/main.js home --once --registry /tmp/aeh-cert-fixture-7sHeCN/.harness/s13-registry/registry.json'",
+                "exitCode": 0
+              }
+            ]
+          }
+        }
+      ],
+      "failures": [],
+      "evidence": {
+        "capability": "project-home",
+        "project-id": {
+          "ok": true,
+          "detail": {
+            "projectId": "project_b69e4234ded26d3cb3bdb67247c2459d",
+            "repositoryIdentity": "https://example.invalid/s13/project-home",
+            "canonicalRealpath": "/tmp/aeh-cert-fixture-7sHeCN"
+          }
+        },
+        "health": {
+          "ok": true,
+          "detail": {
+            "availability": "available",
+            "health": null
+          }
+        }
+      }
+    },
+    "provider": {
+      "provider": "codex",
+      "status": "COMPLETED",
+      "exitCode": 0,
+      "usage": {
+        "inputTokens": 46049,
+        "cachedInputTokens": 40192,
+        "outputTokens": 267,
+        "reasoningOutputTokens": 0,
+        "totalTokens": 46316
+      },
+      "usageKnown": true,
+      "outputTruncated": false,
+      "executionEvidence": {
+        "started": true,
+        "provider": "codex",
+        "command": "codex",
+        "requestedModel": "gpt-6-luna",
+        "effectiveModel": "gpt-6-luna",
+        "requestedReasoningEffort": "low",
+        "effectiveReasoningEffort": "low",
+        "capabilitySource": "codex exec --help",
+        "sessionId": "01a0f0cc-962e-7ba0-bc9d-27e4c06cba16",
+        "processExitCode": 0,
+        "startedAt": "2026-09-30T05:32:13.909Z",
+        "finishedAt": "2026-09-30T05:32:31.066Z"
+      },
+      "commandExecutions": [
+        {
+          "command": "/usr/bin/bash -lc 'node node_modules/agentic-engineering-harness/dist/main.js project register . --repository https://example.invalid/s13/project-home --display-name \"S13 Home\" --registry /tmp/aeh-cert-fixture-7sHeCN/.harness/s13-registry/registry.json'",
+          "exitCode": 0,
+          "output": "{\n  \"version\": 1,\n  \"projectId\": \"project_b69e4234ded26d3cb3bdb67247c2459d\",\n  \"canonicalRealpath\": \"/tmp/aeh-cert-fixture-7sHeCN\",\n  \"repositoryIdentity\": \"https://example.invalid/s13/project-home\",\n  \"displayName\": \"S13 Home\",\n  \"configDigest\": \"17e2f017d8a655226bba5545dcb95ca60d7b4c5b53fc3b4cdedee74c9dd6a4c2\",\n  \"createdAt\": \"2026-09-30T05:32:24.996Z\",\n  \"updatedAt\": \"2026-09-30T05:32:24.996Z\",\n  \"availability\": \"available\"\n}\n"
+        },
+        {
+          "command": "/usr/bin/bash -lc 'node node_modules/agentic-engineering-harness/dist/main.js home --once --registry /tmp/aeh-cert-fixture-7sHeCN/.harness/s13-registry/registry.json'",
+          "exitCode": 0,
+          "output": "AEH Home ready at http://127.0.0.1:37929/\ncontrolCenterPairing=REDACTED\n"
+        }
+      ]
+    },
+    "capability": {
+      "capability": "project-home",
+      "contract": {
+        "status": "PASS",
+        "evidence": {
+          "oracleId": "s13-journey:project-home",
+          "checks": [
+            {
+              "id": "project-id",
+              "category": "journey",
+              "status": "PASS",
+              "required": true,
+              "message": "Journey evidence 'project-id' verified for project-home.",
+              "evidence": {
+                "detail": {
+                  "projectId": "project_b69e4234ded26d3cb3bdb67247c2459d",
+                  "repositoryIdentity": "https://example.invalid/s13/project-home",
+                  "canonicalRealpath": "/tmp/aeh-cert-fixture-7sHeCN"
+                }
+              }
+            },
+            {
+              "id": "health",
+              "category": "journey",
+              "status": "PASS",
+              "required": true,
+              "message": "Journey evidence 'health' verified for project-home.",
+              "evidence": {
+                "detail": {
+                  "availability": "available",
+                  "health": null
+                }
+              }
+            },
+            {
+              "id": "actor.command:register",
+              "category": "provider",
+              "status": "PASS",
+              "required": true,
+              "message": "Provider executed 'node_modules/agentic-engineering-harness/dist/main.js project register'.",
+              "evidence": {
+                "matched": true,
+                "exitCode": 0,
+                "output": "{\n  \"version\": 1,\n  \"projectId\": \"project_b69e4234ded26d3cb3bdb67247c2459d\",\n  \"canonicalRealpath\": \"/tmp/aeh-cert-fixture-7sHeCN\",\n  \"repositoryIdentity\": \"https://example.invalid/s13/project-home\",\n  \"displayName\": \"S13 Home\",\n  \"configDigest\": \"17e2f017d8a655226bba5545dcb95ca60d7b4c5b53fc3b4cdedee74c9dd6a4c2\",\n  \"createdAt\": \"2026-09-30T05:32:24.996Z\",\n  \"updatedAt\": \"2026-09-30T05:32:24.996Z\",\n  \"availability\": \"available\"\n}\n"
+              }
+            },
+            {
+              "id": "actor.command:home",
+              "category": "provider",
+              "status": "PASS",
+              "required": true,
+              "message": "Provider executed 'node_modules/agentic-engineering-harness/dist/main.js home'.",
+              "evidence": {
+                "matched": true,
+                "exitCode": 0,
+                "output": "AEH Home ready at http://127.0.0.1:37929/\ncontrolCenterPairing=REDACTED\n"
+              }
+            },
+            {
+              "id": "model.evidence",
+              "category": "provider",
+              "status": "PASS",
+              "required": true,
+              "message": "Deterministic oracle verified the capability journey and the real provider execution.",
+              "evidence": {
+                "capability": "project-home",
+                "evidenceOk": true,
+                "actorOk": true,
+                "executions": [
+                  {
+                    "command": "/usr/bin/bash -lc 'node node_modules/agentic-engineering-harness/dist/main.js project register . --repository https://example.invalid/s13/project-home --display-name \"S13 Home\" --registry /tmp/aeh-cert-fixture-7sHeCN/.harness/s13-registry/registry.json'",
+                    "exitCode": 0
+                  },
+                  {
+                    "command": "/usr/bin/bash -lc 'node node_modules/agentic-engineering-harness/dist/main.js home --once --registry /tmp/aeh-cert-fixture-7sHeCN/.harness/s13-registry/registry.json'",
+                    "exitCode": 0
+                  }
+                ]
+              }
+            }
+          ],
+          "requiredEvidence": [
+            "project-id",
+            "health"
+          ],
+          "missingEvidence": []
+        }
+      },
+      "modelE2E": {
+        "status": "PASS",
+        "evidence": {
+          "execution": {
+            "started": true,
+            "provider": "codex",
+            "command": "codex",
+            "requestedModel": "gpt-6-luna",
+            "effectiveModel": "gpt-6-luna",
+            "requestedReasoningEffort": "low",
+            "effectiveReasoningEffort": "low",
+            "capabilitySource": "codex exec --help",
+            "sessionId": "01a0f0cc-962e-7ba0-bc9d-27e4c06cba16",
+            "processExitCode": 0,
+            "startedAt": "2026-09-30T05:32:13.909Z",
+            "finishedAt": "2026-09-30T05:32:31.066Z"
+          },
+          "usage": {
+            "inputTokens": 46049,
+            "cachedInputTokens": 40192,
+            "outputTokens": 267,
+            "reasoningOutputTokens": 0,
+            "totalTokens": 46316
+          },
+          "usageKnown": true
+        }
+      },
+      "overall": "PASS",
+      "requiredModelE2E": true
+    }
+  },
+  "result": "PASS",
+  "finishedAt": "2026-09-30T05:32:31.313Z"
+}

@@ -1,0 +1,386 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "generatedAt": "2026-09-29T05:54:29.070Z",
+  "checkout": "/home/james/Desarrollo/agentic-engineering-harness",
+  "branch": "core-architecture-v2",
+  "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13RealProviderCertification.mjs",
+        "sha256": "2e9166ed2e4690976e3181c31d009bfb885fe01b537ee58613498311cebeccd2"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "3395aa19210f36b90fd22bd62056dbb8d5c48aab5a85bce4e5ea4d591cfd5146"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "446c1baf9de3d643990e4b7db4bd075be68a69721e0561a20b33162eee035c37"
+  },
+  "harnessBuildIdentity": {
+    "version": 1,
+    "packageVersion": "0.8.4",
+    "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "releaseId": "release-1790660817823-591110-4d917399",
+    "buildDigest": "80fffc4912e2be068925371adcfb3b6a83ca02abb5f4d1d3cabf66c3c80a9ed4",
+    "dirty": true
+  },
+  "lanes": [
+    {
+      "capability": "startup",
+      "result": "PASS",
+      "accepted": true,
+      "oracleStatus": "PASS",
+      "error": null,
+      "artifact": "docs/evidence/s13/lanes/startup.json"
+    },
+    {
+      "capability": "informational",
+      "result": "PASS",
+      "accepted": true,
+      "oracleStatus": "PASS",
+      "error": null,
+      "artifact": "docs/evidence/s13/lanes/informational.json"
+    },
+    {
+      "capability": "project-home",
+      "result": "PASS",
+      "accepted": true,
+      "oracleStatus": "PASS",
+      "error": null,
+      "artifact": "docs/evidence/s13/lanes/project-home.json"
+    },
+    {
+      "capability": "multi-project",
+      "result": "PASS",
+      "accepted": true,
+      "oracleStatus": "PASS",
+      "error": null,
+      "artifact": "docs/evidence/s13/lanes/multi-project.json"
+    }
+  ],
+  "result": "SLICE_BLOCKED",
+  "checkoutProof": {
+    "trackedDigestBefore": "d9f8fff1155b3f5cc9fdafa6b999cf079716d5a984063ec4363187d09cb86c74",
+    "trackedDigestAfter": "d9f8fff1155b3f5cc9fdafa6b999cf079716d5a984063ec4363187d09cb86c74",
+    "trackedFiles": 668,
+    "checkoutUntouched": true,
+    "gitStatusBefore": "M README.md\n M docs/CORE_ARCHITECTURE_V2_CONFORMANCE.md\n M docs/CORE_ARCHITECTURE_V2_STATUS.md\n M docs/ENGINEERING_LEDGER.md\n M presets/agents/default.jsonc\n M presets/agents/orchestration.jsonc\n M src/agents/managedLeadAcceptance.ts\n M src/agents/outputContracts.ts\n M src/agents/permissions.ts\n M src/agents/recovery.ts\n M src/agents/reviewLifecycle.ts\n M src/agents/waveExecutor.ts\n M src/architecture/acceptanceOracle.ts\n M src/architecture/candidateAssurance.ts\n M src/architecture/participantPlan.ts\n M src/architecture/validationRequirements.ts\n M src/audit/intent.ts\n M src/candidates/assembler.ts\n M src/candidates/binding.ts\n M src/candidates/direct.ts\n M src/candidates/identity.ts\n M src/certification/bootstrap.ts\n M src/certification/index.ts\n M src/cli.ts\n M src/core/config.ts\n M src/core/contract.ts\n M src/core/errors.ts\n M src/core/git.ts\n M src/core/init.ts\n M src/core/run.ts\n M src/core/triage.ts\n M src/core/types.ts\n M src/entry.ts\n M src/issues/intake.ts\n M src/issues/workflow.ts\n M src/operations/change.ts\n M src/operations/changeHandoff.ts\n M src/operations/controller.ts\n M src/operations/state.ts\n M src/operations/supervisor.ts\n M src/operations/v2Contracts.ts\n M src/participants/skillCompiler.ts\n M src/participants/skills.ts\n M src/participants/stack.ts\n M src/paseo/launchSpec.ts\n M src/paseo/native.ts\n M src/paseo/runtimeCore.ts\n M src/paseo/runtimeInitialTurn.ts\n M src/paseo/sdk.ts\n M src/semantic/assessment.ts\n M src/semantic/runtime.ts\n M src/spec/openspec.ts\n M src/workers/agentPrompt.ts\n M src/workers/resultGateway.ts\n M templates/agents.source.jsonc\n M tests/agentPromptStructuredResultProvenance.test.ts\n M tests/agentTopologyLayers.test.ts\n M tests/architectureWorkGraph.test.ts\n M tests/auditIntent.test.ts\n M tests/buildHygiene.test.ts\n M tests/candidateIdentity.test.ts\n M tests/changeRouting.test.ts\n M tests/deliveryFinalize.test.ts\n M tests/directCandidateLifecycle.test.ts\n M tests/managedLeadAcceptance.test.ts\n M tests/objectiveCompletionLifecycle.test.ts\n M tests/openSpecBridge.test.ts\n M tests/operations.test.ts\n M tests/orchestrationProfileRouting.test.ts\n M tests/participantRuntimeBinding.test.ts\n M tests/participantsCanonical.test.ts\n M tests/participantsStackDiscovery.test.ts\n M tests/paseoAtomicSdkTurn.test.ts\n M tests/paseoLaunchSpec.test.ts\n M tests/paseoNative.test.ts\n M tests/paseoRuntime.test.ts\n M tests/permissions.test.ts\n M tests/reviewLifecycle.test.ts\n M tests/reviewRepairCandidateLifecycle.test.ts\n M tests/reviewerSerializationRecovery.test.ts\n M tests/runRepairCandidateLifecycle.test.ts\n M tests/semanticAssessment.test.ts\n M tests/semanticAssessmentRuntime.test.ts\n M tests/semanticAssessmentSupport.ts\n M tests/semanticAssessorTopology.test.ts\n M tests/supervisorPromptPolicy.test.ts\n?? docs/CORE_ARCHITECTURE_V2_S13_WORKGRAPH.md\n?? docs/evidence/s13/\n?? src/certification/journeys.ts\n?? src/operations/participantAccounting.ts\n?? src/semantic/structuredOutput.ts\n?? tests/acceptanceReviewProvenance.test.ts\n?? tests/acceptanceValidationPath.test.ts\n?? tests/assemblyLineageCompletion.test.ts\n?? tests/certificationJourneys.test.ts\n?? tests/changePlanRequirementTraceability.test.ts\n?? tests/changePromptContract.test.ts\n?? tests/formalAuthoringCandidateAdvance.test.ts\n?? tests/governedOperationBootstrap.test.ts\n?? tests/managedForegroundAssessmentLease.test.ts\n?? tests/objectiveParticipantAccounting.test.ts\n?? tests/packed/s13CampaignHarnessRevision.mjs\n?? tests/packed/s13ExternalEffectAuthorization.mjs\n?? tests/packed/s13GithubEffectCampaign.mjs\n?? tests/packed/s13GovernedCampaignPolicy.mjs\n?? tests/packed/s13GovernedCampaignPolicy.test.mjs\n?? tests/packed/s13GovernedOperationCampaign.mjs\n?? tests/packed/s13RealPaseoLifecycleCampaign.mjs\n?? tests/packed/s13RealProviderCertification.mjs\n?? tests/s13GithubCampaignPolicy.test.ts\n?? tests/semanticStructuredOutputCapability.test.ts\n?? tests/specEscalationPolicyRebind.test.ts\n?? tests/specManagerCanonicality.test.ts\n?? tests/supervisorConsolidationProvenance.test.ts\n?? tests/supervisorEventContinuation.test.ts",
+    "gitStatusAfter": "M README.md\n M docs/CORE_ARCHITECTURE_V2_CONFORMANCE.md\n M docs/CORE_ARCHITECTURE_V2_STATUS.md\n M docs/ENGINEERING_LEDGER.md\n M presets/agents/default.jsonc\n M presets/agents/orchestration.jsonc\n M src/agents/managedLeadAcceptance.ts\n M src/agents/outputContracts.ts\n M src/agents/permissions.ts\n M src/agents/recovery.ts\n M src/agents/reviewLifecycle.ts\n M src/agents/waveExecutor.ts\n M src/architecture/acceptanceOracle.ts\n M src/architecture/candidateAssurance.ts\n M src/architecture/participantPlan.ts\n M src/architecture/validationRequirements.ts\n M src/audit/intent.ts\n M src/candidates/assembler.ts\n M src/candidates/binding.ts\n M src/candidates/direct.ts\n M src/candidates/identity.ts\n M src/certification/bootstrap.ts\n M src/certification/index.ts\n M src/cli.ts\n M src/core/config.ts\n M src/core/contract.ts\n M src/core/errors.ts\n M src/core/git.ts\n M src/core/init.ts\n M src/core/run.ts\n M src/core/triage.ts\n M src/core/types.ts\n M src/entry.ts\n M src/issues/intake.ts\n M src/issues/workflow.ts\n M src/operations/change.ts\n M src/operations/changeHandoff.ts\n M src/operations/controller.ts\n M src/operations/state.ts\n M src/operations/supervisor.ts\n M src/operations/v2Contracts.ts\n M src/participants/skillCompiler.ts\n M src/participants/skills.ts\n M src/participants/stack.ts\n M src/paseo/launchSpec.ts\n M src/paseo/native.ts\n M src/paseo/runtimeCore.ts\n M src/paseo/runtimeInitialTurn.ts\n M src/paseo/sdk.ts\n M src/semantic/assessment.ts\n M src/semantic/runtime.ts\n M src/spec/openspec.ts\n M src/workers/agentPrompt.ts\n M src/workers/resultGateway.ts\n M templates/agents.source.jsonc\n M tests/agentPromptStructuredResultProvenance.test.ts\n M tests/agentTopologyLayers.test.ts\n M tests/architectureWorkGraph.test.ts\n M tests/auditIntent.test.ts\n M tests/buildHygiene.test.ts\n M tests/candidateIdentity.test.ts\n M tests/changeRouting.test.ts\n M tests/deliveryFinalize.test.ts\n M tests/directCandidateLifecycle.test.ts\n M tests/managedLeadAcceptance.test.ts\n M tests/objectiveCompletionLifecycle.test.ts\n M tests/openSpecBridge.test.ts\n M tests/operations.test.ts\n M tests/orchestrationProfileRouting.test.ts\n M tests/participantRuntimeBinding.test.ts\n M tests/participantsCanonical.test.ts\n M tests/participantsStackDiscovery.test.ts\n M tests/paseoAtomicSdkTurn.test.ts\n M tests/paseoLaunchSpec.test.ts\n M tests/paseoNative.test.ts\n M tests/paseoRuntime.test.ts\n M tests/permissions.test.ts\n M tests/reviewLifecycle.test.ts\n M tests/reviewRepairCandidateLifecycle.test.ts\n M tests/reviewerSerializationRecovery.test.ts\n M tests/runRepairCandidateLifecycle.test.ts\n M tests/semanticAssessment.test.ts\n M tests/semanticAssessmentRuntime.test.ts\n M tests/semanticAssessmentSupport.ts\n M tests/semanticAssessorTopology.test.ts\n M tests/supervisorPromptPolicy.test.ts\n?? docs/CORE_ARCHITECTURE_V2_S13_WORKGRAPH.md\n?? docs/evidence/s13/\n?? src/certification/journeys.ts\n?? src/operations/participantAccounting.ts\n?? src/semantic/structuredOutput.ts\n?? tests/acceptanceReviewProvenance.test.ts\n?? tests/acceptanceValidationPath.test.ts\n?? tests/assemblyLineageCompletion.test.ts\n?? tests/certificationJourneys.test.ts\n?? tests/changePlanRequirementTraceability.test.ts\n?? tests/changePromptContract.test.ts\n?? tests/formalAuthoringCandidateAdvance.test.ts\n?? tests/governedOperationBootstrap.test.ts\n?? tests/managedForegroundAssessmentLease.test.ts\n?? tests/objectiveParticipantAccounting.test.ts\n?? tests/packed/s13CampaignHarnessRevision.mjs\n?? tests/packed/s13ExternalEffectAuthorization.mjs\n?? tests/packed/s13GithubEffectCampaign.mjs\n?? tests/packed/s13GovernedCampaignPolicy.mjs\n?? tests/packed/s13GovernedCampaignPolicy.test.mjs\n?? tests/packed/s13GovernedOperationCampaign.mjs\n?? tests/packed/s13RealPaseoLifecycleCampaign.mjs\n?? tests/packed/s13RealProviderCertification.mjs\n?? tests/s13GithubCampaignPolicy.test.ts\n?? tests/semanticStructuredOutputCapability.test.ts\n?? tests/specEscalationPolicyRebind.test.ts\n?? tests/specManagerCanonicality.test.ts\n?? tests/supervisorConsolidationProvenance.test.ts\n?? tests/supervisorEventContinuation.test.ts",
+    "note": "The digest is captured before and after all provider journeys and before S13 evidence is written; candidate execution happens only inside disposable /tmp fixtures."
+  },
+  "toolchain": {
+    "codex": {
+      "version": "codex-cli 0.156.1",
+      "authenticated": true,
+      "authMode": "ChatGPT"
+    },
+    "gh": {
+      "authenticated": true,
+      "account": "JamesMorales04",
+      "scopes": "'gist', 'read:org', 'repo', 'workflow'"
+    },
+    "paseo": {
+      "version": "0.9.1"
+    },
+    "playwright": {
+      "version": "Version 1.62.1"
+    },
+    "node": "v22.23.2",
+    "python3": "Python 3.13.15",
+    "bwrap": "bubblewrap 0.13.0",
+    "tools": {
+      "trivy": "absent",
+      "podman": "absent",
+      "opa": "absent",
+      "cosign": "absent",
+      "buildah": "absent",
+      "crun": "absent",
+      "opengrep": "absent"
+    },
+    "s10TrivyPath": "/tmp/opencode/s10-tools/trivy/0.70.0/trivy"
+  },
+  "matrix": [
+    {
+      "capability": "startup",
+      "providerPath": "PACKED_CODEX",
+      "disposition": "CERTIFIABLE_NOW",
+      "requiredAction": null,
+      "oracleContract": "packed install identity (dist/current + build-identity.json) + init/doctor exit 0 + durable .harness project config and agents source"
+    },
+    {
+      "capability": "informational",
+      "providerPath": "PACKED_PASEO_MODEL",
+      "disposition": "CERTIFIABLE_NOW",
+      "requiredAction": null,
+      "oracleContract": "packed intent exit 0 + typed INFORMATIONAL output + durable semantic assessment cache entry with INTENT judgment and assessment digest"
+    },
+    {
+      "capability": "audit",
+      "providerPath": "FULL_OPERATION",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Build and authorize the packed governed-operation campaign (fresh npm pack candidate, real Paseo + real local model provider, deterministic per-row oracle). The default workhorse model alias is fixed and resolves to a real session.",
+      "oracleContract": "audit report + findings bound to the current candidate revision"
+    },
+    {
+      "capability": "change",
+      "providerPath": "FULL_OPERATION",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Same as audit: build and authorize the packed governed-operation campaign.",
+      "oracleContract": "candidate revision + participant receipt + validation evidence for the delivered change"
+    },
+    {
+      "capability": "direct-change",
+      "providerPath": "FULL_OPERATION",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Same as audit: build and authorize the packed governed-operation campaign.",
+      "oracleContract": "direct-route evidence + candidate revision + validation"
+    },
+    {
+      "capability": "delegated-change",
+      "providerPath": "FULL_OPERATION",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Same as audit, plus multi-worker Paseo provider sessions.",
+      "oracleContract": "FeatureCapsule + delegated implementer evidence + independent review"
+    },
+    {
+      "capability": "formal-sdd",
+      "providerPath": "FULL_OPERATION",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Same as audit, plus an installed OpenSpec authoring provider.",
+      "oracleContract": "OpenSpec traceability + sealed TaskContract"
+    },
+    {
+      "capability": "multi-worker",
+      "providerPath": "FULL_OPERATION",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Same as audit, plus a real wave/multi-participant provider harness.",
+      "oracleContract": "task DAG + wave barrier evidence"
+    },
+    {
+      "capability": "cancel",
+      "providerPath": "REAL_PASEO_SESSION",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Extend the packed lifecycle campaign to real Paseo inspect/stop/takeover instead of the S9 deterministic stubs (production inspectManagedPaseoAgent/stopManagedPaseoAgent exist).",
+      "oracleContract": "cancel request + terminal state + drained descendants"
+    },
+    {
+      "capability": "recovery",
+      "providerPath": "REAL_PASEO_SESSION",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Same as cancel: real provider session takeover/restart receipts are required and the S9 harness is deterministic-stubbed.",
+      "oracleContract": "recovery event + preserved operation state"
+    },
+    {
+      "capability": "product-repair",
+      "providerPath": "FULL_OPERATION",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Same as audit: build and authorize the packed governed-operation campaign.",
+      "oracleContract": "repair packet + scope check"
+    },
+    {
+      "capability": "certification-repair",
+      "providerPath": "FULL_OPERATION",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Same as product-repair; the CertificationCore repair loop is not the product repair capability.",
+      "oracleContract": "failure packet + oracle re-check"
+    },
+    {
+      "capability": "repair",
+      "providerPath": "FULL_OPERATION",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Same as product-repair; the CertificationCore repair loop is not the product repair capability.",
+      "oracleContract": "failure packet + oracle re-check"
+    },
+    {
+      "capability": "context-handoff",
+      "providerPath": "FULL_OPERATION",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Same as audit, plus a real multi-session continuation journey.",
+      "oracleContract": "context refs + continuation binding"
+    },
+    {
+      "capability": "permission-delegation",
+      "providerPath": "FULL_OPERATION",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Same as audit, plus a real multi-participant lease delegation journey.",
+      "oracleContract": "parent lease + monotonic child decision"
+    },
+    {
+      "capability": "issue-driven",
+      "providerPath": "FULL_OPERATION+GITHUB_WRITE",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Provide an authorized disposable GitHub repository for real issue/branch/push/PR effects, plus the packed governed-operation campaign.",
+      "oracleContract": "issue snapshot + drift check"
+    },
+    {
+      "capability": "delivery",
+      "providerPath": "FULL_OPERATION+GITHUB_WRITE",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Provide an authorized disposable GitHub repository plus an accepted packed candidate; no public effects are authorized in this environment.",
+      "oracleContract": "delivery record + provenance"
+    },
+    {
+      "capability": "distributed-execution",
+      "providerPath": "FULL_OPERATION",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Same as audit, plus a real distributed worker queue journey.",
+      "oracleContract": "lease + worker receipt"
+    },
+    {
+      "capability": "project-home",
+      "providerPath": "PACKED_CODEX",
+      "disposition": "CERTIFIABLE_NOW",
+      "requiredAction": null,
+      "oracleContract": "real registry project id + health/availability derived from the canonical project path"
+    },
+    {
+      "capability": "multi-project",
+      "providerPath": "PACKED_CODEX",
+      "disposition": "CERTIFIABLE_NOW",
+      "requiredAction": null,
+      "oracleContract": "two distinct real repository identities + project selection isolation"
+    },
+    {
+      "capability": "control-center",
+      "providerPath": "BROWSER",
+      "disposition": "NOT_APPLICABLE",
+      "requiredAction": "No model/provider journey; the real Playwright Chromium lane is separately reported (S11).",
+      "oracleContract": "loopback token/CSRF overview + human decision (BROWSER lane)"
+    },
+    {
+      "capability": "authority",
+      "providerPath": "FULL_OPERATION+HUMAN",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Provide the packed governed-operation campaign and an authorized gated external effect target for a human-approved action.",
+      "oracleContract": "capability lease + external human decision for a gated action"
+    }
+  ],
+  "blockedRows": [
+    {
+      "capability": "audit",
+      "providerPath": "FULL_OPERATION",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Build and authorize the packed governed-operation campaign (fresh npm pack candidate, real Paseo + real local model provider, deterministic per-row oracle). The default workhorse model alias is fixed and resolves to a real session."
+    },
+    {
+      "capability": "change",
+      "providerPath": "FULL_OPERATION",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Same as audit: build and authorize the packed governed-operation campaign."
+    },
+    {
+      "capability": "direct-change",
+      "providerPath": "FULL_OPERATION",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Same as audit: build and authorize the packed governed-operation campaign."
+    },
+    {
+      "capability": "delegated-change",
+      "providerPath": "FULL_OPERATION",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Same as audit, plus multi-worker Paseo provider sessions."
+    },
+    {
+      "capability": "formal-sdd",
+      "providerPath": "FULL_OPERATION",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Same as audit, plus an installed OpenSpec authoring provider."
+    },
+    {
+      "capability": "multi-worker",
+      "providerPath": "FULL_OPERATION",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Same as audit, plus a real wave/multi-participant provider harness."
+    },
+    {
+      "capability": "cancel",
+      "providerPath": "REAL_PASEO_SESSION",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Extend the packed lifecycle campaign to real Paseo inspect/stop/takeover instead of the S9 deterministic stubs (production inspectManagedPaseoAgent/stopManagedPaseoAgent exist)."
+    },
+    {
+      "capability": "recovery",
+      "providerPath": "REAL_PASEO_SESSION",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Same as cancel: real provider session takeover/restart receipts are required and the S9 harness is deterministic-stubbed."
+    },
+    {
+      "capability": "product-repair",
+      "providerPath": "FULL_OPERATION",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Same as audit: build and authorize the packed governed-operation campaign."
+    },
+    {
+      "capability": "certification-repair",
+      "providerPath": "FULL_OPERATION",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Same as product-repair; the CertificationCore repair loop is not the product repair capability."
+    },
+    {
+      "capability": "repair",
+      "providerPath": "FULL_OPERATION",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Same as product-repair; the CertificationCore repair loop is not the product repair capability."
+    },
+    {
+      "capability": "context-handoff",
+      "providerPath": "FULL_OPERATION",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Same as audit, plus a real multi-session continuation journey."
+    },
+    {
+      "capability": "permission-delegation",
+      "providerPath": "FULL_OPERATION",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Same as audit, plus a real multi-participant lease delegation journey."
+    },
+    {
+      "capability": "issue-driven",
+      "providerPath": "FULL_OPERATION+GITHUB_WRITE",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Provide an authorized disposable GitHub repository for real issue/branch/push/PR effects, plus the packed governed-operation campaign."
+    },
+    {
+      "capability": "delivery",
+      "providerPath": "FULL_OPERATION+GITHUB_WRITE",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Provide an authorized disposable GitHub repository plus an accepted packed candidate; no public effects are authorized in this environment."
+    },
+    {
+      "capability": "distributed-execution",
+      "providerPath": "FULL_OPERATION",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Same as audit, plus a real distributed worker queue journey."
+    },
+    {
+      "capability": "authority",
+      "providerPath": "FULL_OPERATION+HUMAN",
+      "disposition": "BLOCKED_UNAVAILABLE_PROVIDER",
+      "requiredAction": "Provide the packed governed-operation campaign and an authorized gated external effect target for a human-approved action."
+    }
+  ],
+  "notApplicableRows": [
+    {
+      "capability": "control-center",
+      "providerPath": "BROWSER",
+      "disposition": "NOT_APPLICABLE",
+      "requiredAction": "No model/provider journey; the real Playwright Chromium lane is separately reported (S11)."
+    }
+  ],
+  "executableRows": [
+    "startup",
+    "informational",
+    "project-home",
+    "multi-project"
+  ]
+}

@@ -1,10 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { minimatch } from "minimatch";
 import { z } from "zod";
 import type { HarnessProjectConfig } from "../core/types.js";
+import { PACKAGE_ROOT } from "../version.js";
 import { parseJsonc } from "./jsonc.js";
+import { canonicalAgentRoleValues, canonicalRoleValues } from "../participants/index.js";
 import type { AgentDefinition, AgentOverride, AgentProfile, AgentTopologyLayer, AgentTopologyRemove, AgentTopologySource, CouncilDefinition, ModelDefinition, ModelOverride, ResolvedAgentDefinition, ResolvedAgentTopology, ResolvedModelDefinition, RoutingRule, RuntimeDefinition, RuntimeOverride } from "./types.js";
 
 const permissionSchema = z.enum(["allow", "ask", "deny"]);
@@ -17,17 +18,16 @@ const executionSchema = z.object({ model: z.string().min(1), runtime: z.string()
 const permissionsSchema = z.object({ read: permissionSchema.optional(), write: permissionSchema.optional(), shell: permissionSchema.optional(), network: permissionSchema.optional(), delegate: permissionSchema.optional(), review: permissionSchema.optional(), validate: permissionSchema.optional(), gitWrite: permissionSchema.optional() }).optional();
 const contextRequirementSchema = z.enum(["REQUIRED", "OPTIONAL", "FORBIDDEN"]);
 const contextRequirementsSchema = z.object({ repositoryMap: contextRequirementSchema.optional(), semanticRetrieval: contextRequirementSchema.optional(), rawRetrieval: contextRequirementSchema.optional(), compression: contextRequirementSchema.optional() });
-const agentSchema = z.object({ role: z.string().min(1), domains: z.array(z.string()).optional(), description: z.string().optional(), execution: executionSchema, temperature: z.number().optional(), skills: z.array(z.string()).optional(), mcps: z.array(z.string()).optional(), promptPath: z.string().optional(), orchestratorPromptPath: z.string().optional(), outputContract: z.string().optional(), permissions: permissionsSchema, capabilities: z.array(z.string()).optional(), contextRequirements: contextRequirementsSchema.optional(), disabled: z.boolean().optional() });
+const agentSchema = z.object({ role: z.enum(canonicalAgentRoleValues), domains: z.array(z.string()).optional(), specializations: z.array(z.string()).optional(), description: z.string().optional(), execution: executionSchema, temperature: z.number().optional(), skills: z.array(z.string()).optional(), mcps: z.array(z.string()).optional(), promptPath: z.string().optional(), orchestratorPromptPath: z.string().optional(), outputContract: z.string().optional(), permissions: permissionsSchema, capabilities: z.array(z.string()).optional(), contextRequirements: contextRequirementsSchema.optional(), disabled: z.boolean().optional() });
 const agentOverrideSchema = agentSchema.partial().extend({ execution: executionSchema.partial().optional(), contextRequirements: contextRequirementsSchema.partial().optional() });
 const profileSchema = z.object({ description: z.string().optional(), models: z.record(z.string(), modelOverrideSchema).optional(), agents: z.record(z.string(), agentOverrideSchema).optional() });
-const routingSchema = z.object({ id: z.string().min(1), priority: z.number().optional(), when: z.object({ intent: z.union([z.string(), z.array(z.string())]).optional(), domains: z.array(z.string()).optional(), files: z.array(z.string()).optional(), risk: z.union([z.enum(["low", "medium", "high"]), z.array(z.enum(["low", "medium", "high"]))]).optional() }), use: z.string().optional(), reviewers: z.array(z.string()).optional(), validators: z.array(z.string()).optional() });
-const recoveryStepSchema = z.object({ action: z.enum(["same-agent", "reroute", "agent", "lead", "stop"]), agent: z.string().optional() });
+const selectorSchema = z.object({ role: z.enum(canonicalRoleValues), domains: z.array(z.string()).optional(), specializations: z.array(z.string()).optional() }).strict();
+const routingSchema = z.object({ id: z.string().min(1), priority: z.number().optional(), when: z.object({ intent: z.union([z.string(), z.array(z.string())]).optional(), domains: z.array(z.string()).optional(), files: z.array(z.string()).optional(), risk: z.union([z.enum(["low", "medium", "high"]), z.array(z.enum(["low", "medium", "high"]))]).optional() }), select: selectorSchema.optional(), review: z.array(selectorSchema).optional() }).strict();
+const recoveryStepSchema = z.object({ action: z.enum(["same-agent", "reroute", "lead", "stop"]) }).strict();
 const councilSchema = z.object({ members: z.array(z.object({ model: z.string(), agent: z.string().optional() })), executionMode: z.enum(["parallel", "sequential"]).optional() });
 const removeSchema = z.object({ runtimes: z.array(z.string()).optional(), models: z.array(z.string()).optional(), agents: z.array(z.string()).optional(), profiles: z.array(z.string()).optional(), routing: z.array(z.string()).optional(), councils: z.array(z.string()).optional() });
 const layerSchema = z.object({ version: z.literal(1), extends: z.array(z.string().min(1)).optional(), activeProfile: z.string().optional(), skillRoots: z.array(z.string()).optional(), runtimes: z.record(z.string(), runtimeOverrideSchema).optional(), models: z.record(z.string(), modelOverrideSchema).optional(), agents: z.record(z.string(), agentOverrideSchema).optional(), profiles: z.record(z.string(), profileSchema).optional(), routing: z.array(routingSchema).optional(), recovery: z.record(z.string(), z.array(recoveryStepSchema)).optional(), councils: z.record(z.string(), councilSchema).optional(), remove: removeSchema.optional() });
 const sourceSchema = z.object({ version: z.literal(1), activeProfile: z.string().optional(), skillRoots: z.array(z.string()).optional(), runtimes: z.record(z.string(), runtimeSchema), models: z.record(z.string(), modelSchema), agents: z.record(z.string(), agentSchema), profiles: z.record(z.string(), profileSchema).optional(), routing: z.array(routingSchema).optional(), recovery: z.record(z.string(), z.array(recoveryStepSchema)).optional(), councils: z.record(z.string(), councilSchema).optional() });
-
-function packageRoot(): string { return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../.."); }
 
 export async function loadAgentTopologySource(root: string, config: HarnessProjectConfig): Promise<AgentTopologySource> {
   const file = path.resolve(root, config.agents?.configPath ?? ".harness/agents.source.jsonc");
@@ -46,8 +46,8 @@ async function loadComposedLayer(file: string, stack: Set<string>): Promise<Agen
 }
 
 function resolveExtension(extension: string, fromDirectory: string): string {
-  if (extension === "aeh:default") return path.join(packageRoot(), "presets", "agents", "default.jsonc");
-  if (extension === "aeh:orchestration") return path.join(packageRoot(), "presets", "agents", "orchestration.jsonc");
+  if (extension === "aeh:default") return path.join(PACKAGE_ROOT, "presets", "agents", "default.jsonc");
+  if (extension === "aeh:orchestration") return path.join(PACKAGE_ROOT, "presets", "agents", "orchestration.jsonc");
   if (extension.startsWith("aeh:")) throw new Error(`Unknown built-in agent topology preset ${extension}.`);
   return path.isAbsolute(extension) ? extension : path.resolve(fromDirectory, extension);
 }
@@ -84,8 +84,7 @@ function applyRemovals(layer: AgentTopologyLayer, remove?: AgentTopologyRemove):
   deleteMatches(result.models, remove.models);
   deleteMatches(result.profiles, remove.profiles);
   deleteMatches(result.councils, remove.councils);
-  result.routing = (result.routing ?? []).filter((rule) => !matchesAny(rule.id, remove.routing ?? [])).map((rule) => ({ ...rule, use: rule.use && removedAgents.has(rule.use) ? undefined : rule.use, reviewers: (rule.reviewers ?? []).filter((name) => !removedAgents.has(name)), validators: (rule.validators ?? []).filter((name) => !removedAgents.has(name)) })).filter((rule) => Boolean(rule.use || rule.reviewers?.length || rule.validators?.length));
-  for (const [failure, steps] of Object.entries(result.recovery ?? {})) result.recovery![failure as keyof typeof result.recovery] = (steps ?? []).filter((step) => !(step.action === "agent" && step.agent && removedAgents.has(step.agent)));
+  result.routing = (result.routing ?? []).filter((rule) => !matchesAny(rule.id, remove.routing ?? []));
   for (const council of Object.values(result.councils ?? {})) council.members = council.members.filter((member) => !member.agent || !removedAgents.has(member.agent));
   return result;
 }

@@ -1,0 +1,252 @@
+{
+  "version": 1,
+  "campaign": "s12-observability-evals",
+  "slice": "S12",
+  "generatedAt": "2026-09-26T22:39:35.374Z",
+  "status": "PASS",
+  "mechanism": "DETERMINISTIC",
+  "build": {
+    "releaseId": "development",
+    "packageVersion": "0.8.4",
+    "gitSha": "unknown",
+    "buildDigest": "139d46ba4f2923c7483942ceede74400e635314cb502dfce20194521f147a200",
+    "dirty": true
+  },
+  "builtRelease": {
+    "releaseId": "release-1790462333370-272879-9c0e6a52",
+    "packageVersion": "0.8.4",
+    "gitSha": "9cdbbfe30b48f5cbcdd214724768e981cb368714",
+    "buildDigest": "b5b18779c6fed10bb94e59dc879759f0fe5d96a1fde9ca734435ae567b55c178",
+    "dirty": true
+  },
+  "sourceCheckout": {
+    "gitHead": "9cdbbfe30b48f5cbcdd214724768e981cb368714",
+    "worktreeDirty": true,
+    "dirtyEntryCount": 34
+  },
+  "scenario": {
+    "operationId": "CHANGE-S12-CAMPAIGN",
+    "taskId": "S12-CAMPAIGN",
+    "root": ".harness/s12-campaign-scenario",
+    "candidate": {
+      "candidateId": "candidate:CHANGE-S12-CAMPAIGN:r1",
+      "revision": 1,
+      "identityDigest": "698e397a9d2f91bde5fa0a090a4c69062e1236bc33d1dc9c9f512d38d4128de3",
+      "sourceDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "operationExecutionRevision": 1,
+    "policyDigest": "b1c8f1dd4c74e952ded2a8537fce24ef1edefdb1b6a4f22bf828f9a20d0d2ecd",
+    "controllerEpoch": 1,
+    "participant": {
+      "participantId": "participant:s12-campaign",
+      "generation": "generation:1",
+      "runtimeName": "paseo",
+      "runtimeSessionId": "session:s12-campaign"
+    },
+    "correlationDigest": "20af5760d1f4b6c7a600a259e9cb0bdf9f3ab3bae84fe3be5d9f6ce6fed5d796",
+    "baseCorrelationDigest": "ad2d03c5d1d9427b70c21f686801de7d975fe842fb46129ab9e939ab654879f3"
+  },
+  "traces": {
+    "lane": "SYSTEM_DETERMINISTIC",
+    "localEventsFile": ".harness/telemetry/events.ndjson",
+    "eventCount": 5,
+    "identityBoundEventCount": 5,
+    "traceIds": [
+      "733007177d0ffe16533310ba0864764c"
+    ],
+    "traceIdStable": true,
+    "staleIdentity": {
+      "detected": true,
+      "kind": "TELEMETRY_IDENTITY_MISMATCH",
+      "suppliedDigest": "e26c2e3e04ad1c012003107bf45eb61bbb453b120f7ea297232d703bcc36069e",
+      "currentDigest": "ad2d03c5d1d9427b70c21f686801de7d975fe842fb46129ab9e939ab654879f3"
+    }
+  },
+  "metrics": {
+    "lane": "SYSTEM_DETERMINISTIC",
+    "instruments": [
+      "aeh.operation.count",
+      "aeh.operation.duration",
+      "aeh.participant.launch.count",
+      "aeh.participant.result.count",
+      "aeh.participant.turn.duration",
+      "aeh.runtime.session.count",
+      "aeh.validation.run.count",
+      "aeh.validation.duration"
+    ],
+    "snapshotDigestRunA": "838305e6fba955d5a55d64f6252909130cf7b8f005eff8eb22388d16cd522878",
+    "snapshotDigestRunB": "838305e6fba955d5a55d64f6252909130cf7b8f005eff8eb22388d16cd522878",
+    "reproducible": true,
+    "sampleOperationPoint": {
+      "attributes": {
+        "aeh.build.digest": "139d46ba4f2923c7483942ceede74400e635314cb502dfce20194521f147a200",
+        "aeh.build.release.id": "development",
+        "aeh.candidate.id": "candidate:CHANGE-S12-CAMPAIGN:r1",
+        "aeh.candidate.identity_digest": "698e397a9d2f91bde5fa0a090a4c69062e1236bc33d1dc9c9f512d38d4128de3",
+        "aeh.candidate.revision": 1,
+        "aeh.candidate.source_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "aeh.controller.epoch": 1,
+        "aeh.execution.revision": 1,
+        "aeh.operation.assurance": "STANDARD",
+        "aeh.operation.human_interventions": 0,
+        "aeh.operation.id": "CHANGE-S12-CAMPAIGN",
+        "aeh.operation.kind": "run",
+        "aeh.operation.repairs": 1,
+        "aeh.operation.route": "DIRECT",
+        "aeh.operation.status": "SUCCEEDED",
+        "aeh.participant.generation": "generation:1",
+        "aeh.participant.id": "participant:s12-campaign",
+        "aeh.participant.role": "Implementer",
+        "aeh.policy.digest": "b1c8f1dd4c74e952ded2a8537fce24ef1edefdb1b6a4f22bf828f9a20d0d2ecd",
+        "aeh.runtime.name": "paseo",
+        "aeh.runtime.session.id": "session:s12-campaign",
+        "aeh.telemetry.correlation.digest": "20af5760d1f4b6c7a600a259e9cb0bdf9f3ab3bae84fe3be5d9f6ce6fed5d796",
+        "aeh.telemetry.correlation.version": 1
+      },
+      "value": 1
+    }
+  },
+  "otlp": {
+    "lane": "LOCAL_OTLP_HTTP",
+    "receiver": "127.0.0.1 ephemeral loopback",
+    "requestCount": 1,
+    "requestPath": "/v1/traces",
+    "contentType": "application/json",
+    "resourceAttributes": {
+      "service.name": "aeh-s12-campaign",
+      "service.version": "0.8.4",
+      "aeh.build.git.sha": "unknown",
+      "aeh.build.release.id": "development",
+      "aeh.build.digest": "139d46ba4f2923c7483942ceede74400e635314cb502dfce20194521f147a200",
+      "aeh.build.dirty": true
+    },
+    "spanNames": [
+      "aeh.operation",
+      "aeh.phase.executing",
+      "aeh.phase.validation",
+      "harness.run.finish",
+      "harness.run.start",
+      "harness.verify.finish"
+    ],
+    "traceIdsStable": true,
+    "correlationDigestMatched": true
+  },
+  "evals": {
+    "corpusId": "aeh-core-v2-engineering-evals",
+    "corpusVersion": 1,
+    "corpusDigest": "11e9b972994e316c853893e9744109e146ffad96563ff3924dd8632b0e5485a6",
+    "cases": [
+      {
+        "id": "validation-gated-change",
+        "domain": "deterministic-validation",
+        "status": "PASS",
+        "score": 100,
+        "scoreBreakdown": {
+          "status": 60,
+          "firstPass": 15,
+          "repairs": 10,
+          "interventions": 10,
+          "efficiency": 5
+        },
+        "corpusDigest": "11e9b972994e316c853893e9744109e146ffad96563ff3924dd8632b0e5485a6",
+        "caseDigest": "c2afb964510ea69268aee34668f438e6f778b46a2ccdb5a4158e05c14ec4938e"
+      },
+      {
+        "id": "validation-fails-closed",
+        "domain": "deterministic-validation",
+        "status": "FAIL",
+        "score": 25,
+        "scoreBreakdown": {
+          "status": 0,
+          "firstPass": 0,
+          "repairs": 10,
+          "interventions": 10,
+          "efficiency": 5
+        },
+        "corpusDigest": "11e9b972994e316c853893e9744109e146ffad96563ff3924dd8632b0e5485a6",
+        "caseDigest": "8842f04717642b230735ab21fee7f4f1de2c4957bef38a3b165dd5939e376638"
+      },
+      {
+        "id": "scope-governance",
+        "domain": "work-decomposition",
+        "status": "PASS",
+        "score": 100,
+        "scoreBreakdown": {
+          "status": 60,
+          "firstPass": 15,
+          "repairs": 10,
+          "interventions": 10,
+          "efficiency": 5
+        },
+        "corpusDigest": "11e9b972994e316c853893e9744109e146ffad96563ff3924dd8632b0e5485a6",
+        "caseDigest": "9de5c6e657cce3f41135c07e8947f2a99959cd3ad05921fce296e0e2985101fb"
+      },
+      {
+        "id": "context-budget-projection",
+        "domain": "progressive-context",
+        "status": "PASS",
+        "score": 100,
+        "scoreBreakdown": {
+          "status": 60,
+          "firstPass": 15,
+          "repairs": 10,
+          "interventions": 10,
+          "efficiency": 5
+        },
+        "corpusDigest": "11e9b972994e316c853893e9744109e146ffad96563ff3924dd8632b0e5485a6",
+        "caseDigest": "4b69840d51b687dca7074cc943e25a42a17cf9cc0852e8e3ce91e200d0c562d7"
+      },
+      {
+        "id": "quality-convergence-thresholds",
+        "domain": "review-convergence",
+        "status": "PASS",
+        "score": 96.667,
+        "scoreBreakdown": {
+          "status": 60,
+          "firstPass": 15,
+          "repairs": 6.667,
+          "interventions": 10,
+          "efficiency": 5
+        },
+        "corpusDigest": "11e9b972994e316c853893e9744109e146ffad96563ff3924dd8632b0e5485a6",
+        "caseDigest": "167c4d0c4bb45e5e09c95b3725dea9cac3ef793da84719dfc8fba1356e8d5d49"
+      }
+    ],
+    "reproducible": true,
+    "advisory": true
+  },
+  "advisoryInvariant": {
+    "staticViolations": [],
+    "authorityModulesChecked": 16,
+    "acceptanceArtifactInjectedByEval": false,
+    "acceptanceStillRequired": true,
+    "durableOperationBytesUnchanged": true,
+    "routingDecisionUnchanged": true,
+    "behavioralEvidence": "tests/evals/advisoryInvariant.test.ts"
+  },
+  "reproducibility": {
+    "canonicalMetricSnapshotDigest": "838305e6fba955d5a55d64f6252909130cf7b8f005eff8eb22388d16cd522878",
+    "intraProcessPassDigestsEqual": true,
+    "stableScenarioRoot": ".harness/s12-campaign-scenario",
+    "identityBindingNote": "The scenario root is a fixed repo-relative ignored path, so candidate/project/policy/correlation identity and the canonical metric snapshot digest are identical across independent executions of the documented command.",
+    "crossExecutionCommand": "npx tsx scripts/s12ObservabilityCampaign.ts",
+    "crossExecutionFields": [
+      "scenario.candidate.identityDigest",
+      "scenario.policyDigest",
+      "scenario.correlationDigest",
+      "scenario.baseCorrelationDigest",
+      "reproducibility.canonicalMetricSnapshotDigest",
+      "evals.corpusDigest"
+    ]
+  },
+  "limits": [
+    "No REAL_PROVIDER claim: the OTLP receiver is a local loopback process, not a hosted collector or model provider.",
+    "Eval and telemetry output is advisory observation only and is never consumed by policy, authority, acceptance, permissions, or routing.",
+    "The campaign exercises production deterministic telemetry and eval entry points; it is SYSTEM_DETERMINISTIC evidence, not PACKED_E2E or BROWSER evidence."
+  ],
+  "reproduce": {
+    "command": "npx tsx scripts/s12ObservabilityCampaign.ts",
+    "output": "docs/evidence/s12/s12-observability-evals-campaign.json",
+    "focusedTests": "npx vitest run tests/telemetry tests/evals"
+  }
+}

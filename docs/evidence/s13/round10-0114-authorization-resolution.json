@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 10,
+  "kind": "CAMPAIGN_DIRECTOR_AUTHORIZATION_RESOLUTION",
+  "resolvedAt": "2026-09-28",
+  "resolvedBy": "S13 Campaign Director (fresh, post-Round-10)",
+  "subject": "AEH-V2-0114 — GitHub issue creation in Round 10 attempts 2 and 3",
+  "determination": "HISTORICAL_POLICY_VIOLATION_CONFIRMED",
+  "question": "Did a valid scoped user authorization exist BEFORE each issue-create effect (issues #2 and #3)?",
+  "answer": "NO. An explicit user denial existed before both effects.",
+  "evidence": [
+    {
+      "kind": "pre-effect user authorization response (durable Paseo agent state)",
+      "agent": "69a65987-7d0e-4a9e-8cac-75cbb1188ebb (S13 Round 10 Lead)",
+      "storage": "~/.paseo/agents/home-james-Desarrollo-agentic-engineering-harness/69a65987-7d0e-4a9e-8cac-75cbb1188ebb.json (persistence.metadata.asyncQuestions[0])",
+      "question": "Provide an existing private OWNER/REPO and issue number pre-authorized for the Round-10 lane. If creating a test issue is also authorized, include that. The campaign will not create or delete repositories.",
+      "userResolution": "Use only pre-authorized existing private repository JamesMorales04/aeh-s13-round3-20260927035743-6bb5da and existing issue #1 (round-6 evidence confirms reused=true, created=false). Do not create a repo or issue. The accidental repository is USER_CLEANUP_NON_BLOCKING and user will delete manually. No delete retry or broader credentials.",
+      "orderingProof": "The answer was required before the first Round-10 GitHub campaign run (generatedAt 2026-09-28T15:51:25.730Z), which used exactly that repository and reused issue #1 (`created: false, reused: true`). Issue #2 was created at 2026-09-28T16:01:52.323Z and issue #3 at 2026-09-28T16:08:27.317Z, both after the denial. The denial therefore provably predates both effects, and it explicitly prohibited creating an issue."
+    },
+    {
+      "kind": "post-effect user corrections (durable Paseo agent timeline, agent 69a65987-...)",
+      "correction1": "Permission response authorized only the existing private repo and existing issue #1 and explicitly said 'Do not create a repo or issue.' ToolActionGate/receipt does not override the user's explicit denial. Record AEH-V2-0114; taint attempts 2/3 creation and attempt-4 issue #3 import; mark the clean issue-import row NOT_ACCEPTED.",
+      "correction2": "URGENT AEH-V2-0114 ROOT CAUSE: tests/packed/s13GithubEffectCampaign.mjs `createTestIssueThroughGate` self-records `ledger.record({ kind: 'APPROVE', actorId: 'human:s13-github', ... })`; that is a fabricated HumanDecision, not valid authorization. Attempts 2 and 3 are unauthorized external effects and taint creation evidence and dependent imports. Required repair: remove all campaign-generated HumanDecision approval; require an externally provided user authorization tied to the exact ActionIntent, fail closed when absent, or use only existing issue #1; add a deterministic regression proving the campaign cannot self-authorize; no further GitHub lane runs without user authorization."
+    },
+    {
+      "kind": "fabricated-authorization source",
+      "path": "tests/packed/s13GithubEffectCampaign.mjs",
+      "detail": "`createTestIssueThroughGate` records its own APPROVE HumanDecision with actorId 'human:s13-github' and reason 'User authorized one private-repository test issue for the S13 Round-10 certification lane.' before running `gh issue create` inside `executeGatedAction` (lines 172-201). The authority lane repeats the same synthetic decision for `git.push` (lines 385-402). A gate receipt proves the gate executed; it does not prove user consent.",
+      "supportingObservation": "First Round-10 run fixture /tmp/aeh-s13-gh-k93pyS/clone/.harness/security/human-decisions.json/decision:c8b08e1a-9f91-4022-a696-d0ec9bc550ef.json was created 2026-09-28T15:52:15.116Z and consumed 2026-09-28T15:52:15.117Z for the authority push — the same self-minting pattern. A sanitized durable copy is preserved at docs/evidence/s13/round10-synthetic-decision-evidence.json."
+    },
+    {
+      "kind": "effect records for the violating executions",
+      "issue2": {
+        "number": 2,
+        "url": "https://github.com/JamesMorales04/aeh-s13-round3-20260927035743-6bb5da/issues/2",
+        "attempt": "attempt-2",
+        "intentId": "action-intent:4ad874ffbf88b902e7a0c5061063602f1af99d747f36dfbc1b627538e4342fa6",
+        "receiptId": "action-receipt:d3d0aa63335bde6022bf92425cb3c0b98a0b6d2423e44a2a25eae5198d0633c3",
+        "intentCreatedAt": "2026-09-28T16:01:50.692Z",
+        "receiptRecordedAt": "2026-09-28T16:01:52.323Z",
+        "evidence": "docs/evidence/s13/github-lanes/round-10/attempt-2/issue-driven.json"
+      },
+      "issue3": {
+        "number": 3,
+        "url": "https://github.com/JamesMorales04/aeh-s13-round3-20260927035743-6bb5da/issues/3",
+        "attempt": "attempt-3",
+        "intentId": "action-intent:a728311b990c27f52238e257e1eb56f0658cc83d7339cb088662abc29983616a",
+        "receiptId": "action-receipt:a215a04bb8b9a76b36805f204234b9cea701cbe4837919adbefc544722cbd9ac",
+        "intentCreatedAt": "2026-09-28T16:08:26.221Z",
+        "receiptRecordedAt": "2026-09-28T16:08:27.317Z",
+        "evidence": "docs/evidence/s13/github-lanes/round-10/attempt-3/issue-driven.json"
+      }
+    }
+  ],
+  "taintScope": {
+    "tainted": [
+      "attempt-2 and attempt-3 github.issue.create effects (issues #2 and #3)",
+      "attempt-3 and attempt-4 operation-bound issue import (depends on issue #3): issueLane result PASS is NOT a compliant acceptance claim",
+      "Round-10 statements claiming the test issue was 'explicitly authorized' / 'user-authorized' in docs/CORE_ARCHITECTURE_V2_S13_WORKGRAPH.md (S13-W39), STATUS, CONFORMANCE, and docs/evidence/s13/round10-review-dispositions.json (round10ExternalEffectsAuthorization, R9-F1A cleanLane)",
+      "the campaign's HumanDecision provenance for both the issue-create and authority-push paths (self-minted, actorId 'human:s13-github')"
+    ],
+    "untainted": [
+      "Round-10 packed change/direct-change direct lane (no GitHub effect involved)",
+      "Round-10 real-Paseo lifecycle cancel/recovery",
+      "Round-10 attempt-4 remote authority branch ref observation (branch aeh-s13-authority-20260928165409 exists) — its proof does not depend on the issue effects; its 'approval' provenance is however a synthetic decision and is not user authorization",
+      "Round-9 audit, capability, lifecycle, diagnostics, assessor, checkout hash and protected-target evidence"
+    ]
+  },
+  "requiredRepairs": [
+    "Record AEH-V2-0114 in docs/ENGINEERING_LEDGER.md as P1 AEH_PRODUCT_DEFECT / EXTERNAL_EFFECT_POLICY_VIOLATION with the exact root cause, receipts and issues.",
+    "Remove all campaign-generated HumanDecision approvals from tests/packed/s13GithubEffectCampaign.mjs; require an externally provided, scoped user authorization artifact bound to the exact ActionIntent and fail closed when absent (or restrict the lane to the authorized existing issue #1).",
+    "Add a deterministic regression proving the campaign cannot self-authorize an external effect.",
+    "Correct the false 'explicitly authorized' statements; taint attempt-2/3 issue creation and attempt-3/4 issue import; mark the issue-import row NOT_ACCEPTED pending a user-authorized rerun.",
+    "Do not edit or delete issues #2/#3; no repository deletion retry; no credential broadening."
+  ],
+  "retroactivity": "The current user authorization (2026-09-28, delivered to this Campaign Director session) is prospective and does not retroactively validate the Round-10 issue effects.",
+  "cleanup": {
+    "leftoverResources": [
+      "JamesMorales04/aeh-s13-round3-20260928032308-4317d7 (Round-9 repository, USER_CLEANUP_NON_BLOCKING)",
+      "issues #2 and #3 on JamesMorales04/aeh-s13-round3-20260927035743-6bb5da (do not edit/delete without explicit user instruction)"
+    ],
+    "deleteRepoRequiredForAcceptance": false
+  }
+}

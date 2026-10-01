@@ -14,7 +14,7 @@ describe("agent topology", () => {
       activeProfile: "balanced",
       runtimes: { codex: { adapter: "codex" }, opencode: { adapter: "opencode", capabilities: { nativeAgent: true } } },
       models: { brain: { runtime: "codex", provider: "openai", model: "gpt-x", variant: "max" }, workhorse: { runtime: "opencode", provider: "local", model: "fast" } },
-      agents: { lead: { role: "orchestrator", execution: { model: "@brain" } }, worker: { role: "implementer", execution: { model: "@workhorse", nativeAgent: "build" } } },
+      agents: { lead: { role: "Lead/Director", execution: { model: "@brain" } }, worker: { role: "Implementer", execution: { model: "@workhorse", nativeAgent: "build" } } },
       profiles: { balanced: { agents: { worker: { temperature: 0.05 } } } }
     };
     const resolved = resolveAgentTopology(source);

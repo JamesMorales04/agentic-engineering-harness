@@ -54,6 +54,22 @@ describe("delivery handoff", () => {
     expect(body).toContain("delivery mirror");
   });
 
+  it("rejects external handoff outside a managed fenced operation before publishing", async () => {
+    const root = await makeRoot(); await createSddChange(root, "CHANGE-4", "External Delivery", config); await resolveTemplateTodos(root, "CHANGE-4");
+    const contract = await loadTaskContract(root, "CHANGE-4", config); await sealTask(root, config, contract);
+    const previous = { operationId: process.env.AEH_OPERATION_ID, epoch: process.env.AEH_CONTROLLER_EPOCH, controlRoot: process.env.AEH_CONTROL_ROOT };
+    delete process.env.AEH_OPERATION_ID; delete process.env.AEH_CONTROLLER_EPOCH; delete process.env.AEH_CONTROL_ROOT;
+    try {
+      const external: HarnessProjectConfig = { ...config, delivery: { ...config.delivery, github: { enabled: true, repository: "owner/repo" } } };
+      await expect(handoffSdd(root, external, "CHANGE-4")).rejects.toThrow("HANDOFF_AUTHORITY_REQUIRED");
+      await expect(fs.access(path.join(root, ".harness", "delivery", "CHANGE-4.json"))).rejects.toThrow();
+    } finally {
+      if (previous.operationId === undefined) delete process.env.AEH_OPERATION_ID; else process.env.AEH_OPERATION_ID = previous.operationId;
+      if (previous.epoch === undefined) delete process.env.AEH_CONTROLLER_EPOCH; else process.env.AEH_CONTROLLER_EPOCH = previous.epoch;
+      if (previous.controlRoot === undefined) delete process.env.AEH_CONTROL_ROOT; else process.env.AEH_CONTROL_ROOT = previous.controlRoot;
+    }
+  });
+
   it("materializes sealed task context into a worktree without forcing workspace use when delivery is disabled", async () => {
     const root = await makeRoot(); const workspace = await makeRoot();
     await createSddChange(root, "CHANGE-3", "Workspace Context", config); await resolveTemplateTodos(root, "CHANGE-3");

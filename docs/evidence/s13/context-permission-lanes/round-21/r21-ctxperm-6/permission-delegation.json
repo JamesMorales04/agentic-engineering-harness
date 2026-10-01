@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 21,
+  "runId": "r21-ctxperm-6",
+  "capability": "permission-delegation",
+  "provider": "opencode/opencode-go/deepseek-v4.1-flash",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13ContextPermissionCampaign.mjs",
+        "sha256": "6654c509b27c518c3b5c08d288a5027f60b6d3c5c950ed20f592b35b5ed17b8d"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "7e6cdc076e19d19ee403e9a9b76ab19898fed93ad84480a4ab03a5de5acc8658"
+  },
+  "startedAt": "2026-09-30T02:21:18.694Z",
+  "checks": [],
+  "candidateBinding": {
+    "packedArtifactDigest": "9936f1346a2018a8458cd1204fb1f098239fb647ffa30d3b10d2a745792fc8e3",
+    "fixtureCommit": "83996344d1f43d7b611915de7604ca2a365328ed"
+  },
+  "parentLease": {
+    "participantId": "participant:s13-perm-parent",
+    "candidateDigest": "2e9eaffa837f96874b6baea399cd4a9dc54a02abb10da1f88a2fa9c5b7c6c04a",
+    "controllerEpoch": 1,
+    "capabilities": [
+      "execute",
+      "read",
+      "write"
+    ],
+    "leaseIds": [
+      "lease:CHANGE-S13-PERMISSION-DELEGATION:request:CHANGE-S13-PERMISSION-DELEGATION:participant:s13-perm-parent:read:implementation",
+      "lease:CHANGE-S13-PERMISSION-DELEGATION:request:CHANGE-S13-PERMISSION-DELEGATION:participant:s13-perm-parent:write:implementation",
+      "lease:CHANGE-S13-PERMISSION-DELEGATION:request:CHANGE-S13-PERMISSION-DELEGATION:participant:s13-perm-parent:execute:implementation"
+    ]
+  },
+  "ceilingDenial": {
+    "denied": true,
+    "message": "V2_AUTHORITY_DENIED: role 'Reviewer' cannot receive capabilities outside its compiled RoleProfile ceiling: write."
+  },
+  "childAuthority": {
+    "participantId": "participant:s13-perm-child",
+    "capabilities": [
+      "read"
+    ],
+    "leaseIds": [
+      "lease:CHANGE-S13-PERMISSION-DELEGATION:request:CHANGE-S13-PERMISSION-DELEGATION:participant:s13-perm-child:read:review"
+    ],
+    "monotonicSubsetOfParent": true
+  },
+  "decisionReceipt": {
+    "digest": "d8b507abc5ace5afc8f37500e2241e04b71c33dd9bfcade18d26380619a4bde3",
+    "persisted": true,
+    "persistedOperationId": "CHANGE-S13-PERMISSION-DELEGATION"
+  },
+  "error": "Error: Failed to add OpenCode MCP server 'aeh-context': MCP error -32000: Connection closed\n    at DaemonClient.sendAgentMessage (file:///home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1%7Eaube%7Eb089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/daemon-client.js:2061:19)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async Object.run (file:///home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1%7Eaube%7Eb089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/index.js:380:17)\n    at async runPaseoSdkAgentWithClient (file:///tmp/aeh-s13-ctxperm-iP2yN4/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790734836123-753498-ebae5f0f/paseo/sdk.js:129:22)\n    at async withPaseoClient (file:///tmp/aeh-s13-ctxperm-iP2yN4/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790734836123-753498-ebae5f0f/paseo/sdk.js:293:16)\n    at async Object.runPaseoSdkAgent [as run] (file:///tmp/aeh-s13-ctxperm-iP2yN4/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790734836123-753498-ebae5f0f/paseo/sdk.js:107:20)\n    at async continueManagedPaseoAgentUnleased (file:///tmp/aeh-s13-ctxperm-iP2yN4/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790734836123-753498-ebae5f0f/paseo/runtimeCore.js:172:28)\n    at async file:///tmp/aeh-s13-ctxperm-iP2yN4/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790734836123-753498-ebae5f0f/paseo/runtimeCore.js:159:16\n    at async runWithOperationProviderLease (file:///tmp/aeh-s13-ctxperm-iP2yN4/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790734836123-753498-ebae5f0f/runtime/providerLifecycle.js:38:30)\n    at async executeViaPaseo (file:///tmp/aeh-s13-ctxperm-iP2yN4/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790734836123-753498-ebae5f0f/workers/agentPrompt.js:515:27)",
+  "result": "FAIL",
+  "finishedAt": "2026-09-30T02:21:38.569Z"
+}

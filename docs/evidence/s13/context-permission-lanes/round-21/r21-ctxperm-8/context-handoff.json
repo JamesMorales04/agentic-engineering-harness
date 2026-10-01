@@ -1,0 +1,108 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 21,
+  "runId": "r21-ctxperm-8",
+  "capability": "context-handoff",
+  "provider": "opencode/opencode-go/deepseek-v4.1-flash",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13ContextPermissionCampaign.mjs",
+        "sha256": "bce5270e0fff31e63a3854e037541f6e9a53930162d3f456e089489d9071b8c5"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "515419e82f173785ca2e3bd0434398f536adfbcbdfce335269c24bca415220d9"
+  },
+  "startedAt": "2026-09-30T02:36:14.677Z",
+  "checks": [],
+  "candidateBinding": {
+    "packedArtifactDigest": "db689a0658938398ffca0b6d1185559078df0eea19c22509a7e61921ff9dc943",
+    "fixtureCommit": "1b2ad0ecdc8491100a51fc57cd3d2a968efff270"
+  },
+  "parentAuthority": {
+    "participantId": "participant:8549b4c471344d3c",
+    "controllerEpoch": 1,
+    "candidateDigest": "6189d9e02972b747d9567b83ad275b03b88ae1fa18f0c34f28cd46062bb0d381",
+    "leaseIds": [
+      "lease:CHANGE-S13-CTX-HANDOFF:request:CHANGE-S13-CTX-HANDOFF:participant:8549b4c471344d3c:read:review"
+    ]
+  },
+  "launch": {
+    "sessionId": "85c18081-e670-4bd2-ae36-5895a6483f45",
+    "exitCode": 0,
+    "participantId": "participant:8549b4c471344d3c"
+  },
+  "launchBinding": {
+    "digest": "f5f72a7e0c475af282ef58d90fd26a4326d19081cc1dc27b8925c7e86cc22dac",
+    "sessionId": "85c18081-e670-4bd2-ae36-5895a6483f45",
+    "contextManifestDigest": "81e98e036c7f4927f7987aba833c4c1ce830a961da3b1edfb0dfa5d4b1d85b5d"
+  },
+  "authorizationGrant": {
+    "receiptDigest": "b07ae729582cb563c65874c4b7ee7fa803b38a2bc4b1bc4142316cb15b2df4f7",
+    "refCount": 9,
+    "bindingDigest": null,
+    "refs": [
+      {
+        "refId": "execution-envelope",
+        "artifactPath": ".harness/context/CHANGE-S13-CTX-HANDOFF/execution-envelope.raw",
+        "sourceDigest": "2276081a73d80c62760fff0da11120f2c2e1bcc3d4f84f99f9c15f30bd3f3eec"
+      },
+      {
+        "refId": "operation-state",
+        "artifactPath": ".harness/context/CHANGE-S13-CTX-HANDOFF/operation-state.raw",
+        "sourceDigest": "7fb6750a096de16a61363248ebcdf62702f0d224bd7e0c2a4922b7389fb97bc9"
+      },
+      {
+        "refId": "output-delivery-policy",
+        "artifactPath": ".harness/context/CHANGE-S13-CTX-HANDOFF/output-delivery-policy.raw",
+        "sourceDigest": "335a8246fb1c62a6c24d3eb89a897a6db1a5962c4ff4fa5256445a2b5229aaed"
+      },
+      {
+        "refId": "raw-evidence-references",
+        "artifactPath": ".harness/context/CHANGE-S13-CTX-HANDOFF/raw-evidence-references.raw",
+        "sourceDigest": "483d1a050d9b87a3e4bdf48c4036f578860cfbf4302b8fa3f23b1a01ac5aad39"
+      },
+      {
+        "refId": "repository-map",
+        "artifactPath": ".harness/context/CHANGE-S13-CTX-HANDOFF/repository-map.raw",
+        "sourceDigest": "41884c1d5e1b12b1d885fb4eecf0c3d1f2410fab2ac0b28c08650a46f4fdc862"
+      },
+      {
+        "refId": "sealed-acceptance",
+        "artifactPath": ".harness/seals/CHANGE-S13-CTX-HANDOFF.json",
+        "sourceDigest": "787ddd03e9605f05d6214e5fd96dc18c5f60602d35e06156c6942a71ac01a5cd"
+      },
+      {
+        "refId": "semantic-retrieval-policy",
+        "artifactPath": ".harness/context/CHANGE-S13-CTX-HANDOFF/semantic-retrieval-policy.raw",
+        "sourceDigest": "a67cf4506dc6e7ebd751d9bfaf46febd702b8408dd4c7dd18b0df234bc8af9f1"
+      },
+      {
+        "refId": "task-assignment",
+        "artifactPath": ".harness/context/CHANGE-S13-CTX-HANDOFF/task-assignment.raw",
+        "sourceDigest": "34a95d9b3301a2d9c14f03e583300270f65ff76494830f33df2ca4d618b3d4c9"
+      },
+      {
+        "refId": "task-contract",
+        "artifactPath": ".harness/contracts/CHANGE-S13-CTX-HANDOFF.yaml",
+        "sourceDigest": "8469caa57f1e7e47dc1b3cf0a305772d1889eabd5c705722901d82a356e3384c"
+      }
+    ]
+  },
+  "error": "Error: EXECUTION_BINDING_STALE: ContextManifest changed after session materialization.\n    at assertResultProvenanceMatchesExecution (file:///tmp/aeh-s13-ctxperm-jKZOxa/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790735753481-819466-303d6549/workers/agentPrompt.js:1641:19)\n    at resolveExecutionBinding (file:///tmp/aeh-s13-ctxperm-jKZOxa/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790735753481-819466-303d6549/workers/agentPrompt.js:1355:13)\n    at async Module.executeAgentPrompt (file:///tmp/aeh-s13-ctxperm-jKZOxa/fixture-context-handoff/node_modules/agentic-engineering-harness/dist/releases/release-1790735753481-819466-303d6549/workers/agentPrompt.js:120:13)\n    at async contextHandoffJourney (file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13ContextPermissionCampaign.mjs:263:21)\n    at async file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13ContextPermissionCampaign.mjs:374:45",
+  "result": "FAIL",
+  "finishedAt": "2026-09-30T02:36:56.589Z"
+}

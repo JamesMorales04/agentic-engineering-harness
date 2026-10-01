@@ -1,0 +1,292 @@
+import { createHash } from "node:crypto";
+import { staticContextCapabilities } from "../context/transport.js";
+import { SERENA_VERSION } from "../context/repository/serena.js";
+import { managedSerenaPool } from "../runtime/serenaPool.js";
+import path from "node:path";
+export function validateExecutionCapabilities(selection, transport) {
+    const issues = [];
+    if (selection.nativeAgent && selection.runtimeCapabilities.nativeAgent === false) {
+        issues.push(`Runtime ${selection.runtimeName} cannot select native agent ${selection.nativeAgent}.`);
+    }
+    const nativeAgentViaPaseo = selection.runtimeCapabilities.nativeAgentViaPaseo === true ||
+        (selection.runtimeAdapter === "opencode" && selection.paseoProvider === "opencode");
+    if (selection.nativeAgent && transport === "paseo" && !nativeAgentViaPaseo) {
+        issues.push(`Agent ${selection.logicalAgent} requires nativeAgent=${selection.nativeAgent}, but runtime ${selection.runtimeName} does not support that native agent through Paseo.`);
+    }
+    if (selection.variant && selection.runtimeCapabilities.variantSelection === false) {
+        issues.push(`Runtime ${selection.runtimeName} cannot select variant ${selection.variant}.`);
+    }
+    if (selection.role === "Implementer" && selection.permissions.write === "deny") {
+        issues.push(`Implementer ${selection.logicalAgent} denies write permission.`);
+    }
+    if (selection.role === "Reviewer" &&
+        selection.permissions.write === "allow") {
+        issues.push(`${selection.role} ${selection.logicalAgent} explicitly allows writes; read-only roles should use write=deny unless intentionally mutating.`);
+    }
+    if (selection.role === "Semantic Assessor") {
+        const denied = ["read", "write", "shell", "network", "delegate", "review", "validate", "gitWrite"];
+        const opened = denied.filter((key) => selection.permissions[key] !== "deny");
+        if (opened.length)
+            issues.push(`Semantic Assessor ${selection.logicalAgent} must explicitly deny ${opened.join(", ")}.`);
+        if (transport !== "paseo" || selection.runtimeAdapter !== "opencode" || selection.paseoProvider !== "opencode")
+            issues.push(`Semantic Assessor ${selection.logicalAgent} requires the AEH-managed OpenCode runtime through Paseo.`);
+        if (selection.runtimeCapabilities.runtimeConfigInjection !== true || selection.runtimeCapabilities.structuredOutput !== true || selection.runtimeCapabilities.modelSelection !== true)
+            issues.push(`Semantic Assessor ${selection.logicalAgent} runtime must support AEH permission projection, topology model selection, and structured output.`);
+        if (selection.nativeAgent || selection.skills.length || selection.mcps.length || selection.args.length)
+            issues.push(`Semantic Assessor ${selection.logicalAgent} cannot select native agents, skills, MCP servers, or runtime arguments.`);
+    }
+    if ((selection.role === "Lead/Director" || selection.role === "Operation Supervisor") && selection.permissions.delegate === "deny") {
+        issues.push(`${selection.role} ${selection.logicalAgent} denies delegation.`);
+    }
+    return issues;
+}
+export function permissionSummary(selection) {
+    return (Object.entries(selection.permissions)
+        .map(([key, value]) => `${key}=${value}`)
+        .join(", ") || "unspecified");
+}
+/**
+ * Resolve the concrete OpenCode execution identity for an AEH logical agent.
+ *
+ * Explicit nativeAgent is an externally-authored OpenCode primary/all agent and
+ * is preserved exactly. Otherwise AEH owns the native identity and injects a
+ * primary agent with a deterministic collision-resistant name into the
+ * session-local OpenCode config.
+ */
+export function resolveOpenCodeAgentBinding(selection) {
+    const explicit = selection.nativeAgent?.trim();
+    if (explicit) {
+        return { agentId: explicit, source: "explicit", managed: false };
+    }
+    return {
+        agentId: managedOpenCodeAgentId(selection.logicalAgent),
+        source: "aeh-managed",
+        managed: true
+    };
+}
+/**
+ * Compile the inline OpenCode configuration used by direct, Podman and Paseo
+ * transports. OPENCODE_CONFIG_CONTENT is loaded after ordinary user/project
+ * config, so the AEH-managed identity and policy are deterministic without
+ * mutating the user's global OpenCode configuration.
+ */
+export function buildOpenCodeRuntimeConfig(selection, config, binding = resolveOpenCodeAgentBinding(selection), resolvedContextCapabilities, authorizedRoots, launchRoot, serenaOwnerId) {
+    const permission = buildOpenCodePermission(selection, authorizedRoots);
+    const mcp = {};
+    const tools = {};
+    const configured = config?.mcp?.servers ?? {};
+    for (const [name, server] of Object.entries(configured)) {
+        const selected = selection.mcps.includes(name) && server.enabled !== false;
+        tools[`${name}_*`] = selected;
+        if (selected)
+            mcp[name] = name === "serena" ? toManagedSerenaMcp(server, selection, launchRoot, serenaOwnerId) : toOpenCodeMcp(server);
+    }
+    for (const name of selection.mcps) {
+        if (!configured[name])
+            tools[`${name}_*`] = true;
+    }
+    const capabilities = resolvedContextCapabilities ?? (config ? staticContextCapabilities(config, selection) : undefined);
+    if (capabilities?.mcpServers.serena && !mcp.serena) {
+        mcp.serena = toManagedSerenaMcp({ type: "local", command: ["serena", "start-mcp-server", "--context", "ide-assistant", "--project", "."], enabled: true, timeoutMs: 30_000 }, selection, launchRoot, serenaOwnerId);
+        tools["serena_*"] = true;
+    }
+    // Headroom is controller-side compression. Its MCP schema is intentionally
+    // not exposed to runtime agents. Direct OpenCode receives the same
+    // authorized raw-fragment gateway as Paseo when the local entry is known.
+    if (capabilities?.mcpServers.context && !mcp["aeh-context"] && process.argv[1]) {
+        mcp["aeh-context"] = { type: "local", command: [process.execPath, process.env.AEH_ENTRY_FILE?.trim() || process.argv[1], "context", "mcp"], environment: { AEH_CONTEXT_ROOT: ".", AEH_CONTEXT_OPERATION_ID: process.env.AEH_PARENT_OPERATION_ID ?? "", AEH_LOGICAL_AGENT: selection.logicalAgent, AEH_CONTEXT_PHASE: process.env.AEH_AGENT_PHASE ?? "work" }, enabled: true };
+        tools["aeh-context_*"] = true;
+    }
+    const managedAgent = binding.managed
+        ? {
+            agent: {
+                [binding.agentId]: {
+                    mode: "primary",
+                    description: selection.description ??
+                        `AEH-managed OpenCode execution identity for ${selection.logicalAgent}.`,
+                    model: selection.modelId,
+                    prompt: `AEH execution identity: ${selection.logicalAgent}. Follow the task-scoped AEH charter, frozen control-plane context, permissions and acceptance criteria supplied with each turn.`,
+                    ...(selection.variant ? { variant: selection.variant } : {}),
+                    ...(selection.temperature !== undefined
+                        ? { temperature: selection.temperature }
+                        : {}),
+                    ...(Object.keys(permission).length ? { permission } : {})
+                }
+            },
+            default_agent: binding.agentId
+        }
+        : {};
+    return {
+        $schema: "https://opencode.ai/config.json",
+        permission,
+        ...managedAgent,
+        ...(Object.keys(mcp).length ? { mcp } : {}),
+        ...(Object.keys(tools).length ? { tools } : {})
+    };
+}
+export function compileOpenCodeRuntimeProjection(selection, config, resolvedContextCapabilities, authorizedRoots, launchRoot, serenaOwnerId) {
+    const binding = resolveOpenCodeAgentBinding(selection);
+    const runtimeConfig = buildOpenCodeRuntimeConfig(selection, config, binding, resolvedContextCapabilities, authorizedRoots, launchRoot, serenaOwnerId);
+    return {
+        binding,
+        config: runtimeConfig,
+        env: {
+            OPENCODE_CONFIG_CONTENT: JSON.stringify(runtimeConfig)
+        }
+    };
+}
+function buildOpenCodePermission(selection, authorizedRoots) {
+    const permission = {};
+    const p = selection.permissions;
+    if (selection.role === "Semantic Assessor") {
+        permission["*"] = "deny";
+        // The wildcard deny is repository/tool defense in depth. OpenCode implements
+        // `format: json_schema` through an injected StructuredOutput tool, so the assessor
+        // projection must allow exactly that platform mechanism; otherwise the provider-enforced
+        // structured-output channel is silently unavailable and the model falls back to raw text.
+        permission.StructuredOutput = "allow";
+    }
+    if (p.read)
+        permission.read = p.read;
+    if (p.write)
+        permission.edit = p.write;
+    if (p.network) {
+        permission.webfetch = p.network;
+        permission.websearch = p.network;
+    }
+    if (p.delegate)
+        permission.task = p.delegate;
+    const bash = buildBashPermission(p.shell, p.gitWrite);
+    if (bash)
+        permission.bash = bash;
+    if (selection.skills.length && !selection.skills.includes("*")) {
+        permission.skill = Object.fromEntries([
+            ["*", "deny"],
+            ...selection.skills.map((skill) => [skill, "allow"])
+        ]);
+    }
+    if (selection.role === "Semantic Assessor")
+        permission.skill = "deny";
+    // Paseo may relocate a managed session to the registered workspace root while the
+    // frozen participant was launched against an isolated task worktree (AEH-V2-0116).
+    // OpenCode then gates every access to that authorized root behind the
+    // `external_directory` permission, which the projection never declared, so the
+    // session stopped at an approval prompt. Project only the participant's own frozen
+    // launch root; a role with no read/write/shell authority never receives it.
+    const externalRoots = authorizedExternalRoots(selection, authorizedRoots);
+    if (externalRoots.length) {
+        const rules = {};
+        for (const root of externalRoots) {
+            rules[root] = "allow";
+            rules[`${root}/*`] = "allow";
+            rules[`${root}/**`] = "allow";
+        }
+        permission.external_directory = rules;
+    }
+    return permission;
+}
+function authorizedExternalRoots(selection, authorizedRoots) {
+    if (selection.role === "Semantic Assessor")
+        return [];
+    const p = selection.permissions;
+    if (p.read === "deny" && p.write === "deny" && p.shell === "deny")
+        return [];
+    const roots = new Set();
+    for (const candidate of authorizedRoots ?? []) {
+        if (!path.isAbsolute(candidate))
+            continue;
+        const resolved = path.resolve(candidate);
+        const filesystemRoot = path.parse(resolved).root;
+        if (resolved === filesystemRoot)
+            continue;
+        roots.add(resolved);
+    }
+    return [...roots].sort();
+}
+function managedOpenCodeAgentId(logicalAgent) {
+    const original = logicalAgent.trim();
+    if (!original)
+        throw new Error("AEH logical agent name is required for OpenCode identity.");
+    const slug = original
+        .toLowerCase()
+        .replace(/[^a-z0-9._-]+/g, "-")
+        .replace(/^-+|-+$/g, "") || "agent";
+    const normalizedOriginal = original.toLowerCase();
+    if (slug === normalizedOriginal)
+        return `aeh-${slug}`;
+    const digest = createHash("sha256").update(original).digest("hex").slice(0, 8);
+    return `aeh-${slug}-${digest}`;
+}
+function toOpenCodeMcp(server) {
+    if (server.type === "local") {
+        return {
+            type: "local",
+            command: server.command,
+            enabled: true,
+            ...(server.environment ? { environment: server.environment } : {}),
+            ...(server.timeoutMs ? { timeout: server.timeoutMs } : {})
+        };
+    }
+    return {
+        type: "remote",
+        url: server.url,
+        enabled: true,
+        ...(server.headers ? { headers: server.headers } : {}),
+        ...(server.oauth !== undefined ? { oauth: server.oauth } : {}),
+        ...(server.timeoutMs ? { timeout: server.timeoutMs } : {})
+    };
+}
+function toManagedSerenaMcp(server, selection, launchRoot, serenaOwnerId) {
+    const canEdit = selection.permissions.write === "allow" && (selection.role === "Implementer" || selection.role === "Repairer");
+    const original = server.command?.[0] ?? "serena";
+    const rootIndex = server.command?.indexOf("--project") ?? -1;
+    const root = rootIndex >= 0 ? server.command?.[rootIndex + 1] ?? "." : ".";
+    // A relative Serena project root belongs to the launch root, not the controller cwd. Keying the
+    // pool by the controller cwd made every isolated wave worktree share one pool entry, so a
+    // completed implementer's writer lease blocked the next wave's implementer (formal lane
+    // r16-formal-3). Absolute project roots are preserved.
+    const canonicalRoot = path.isAbsolute(root) ? path.resolve(root) : path.resolve(launchRoot ?? ".", root);
+    const projectId = `project:${createHash("sha256").update(canonicalRoot).digest("hex").slice(0, 24)}`;
+    const workspaceId = process.env.AEH_OPERATION_WORKSPACE_ID?.trim() || "project";
+    // A Paseo launch acquires Serena through both this OpenCode inline projection and the Paseo MCP
+    // server projection; both must use the same owner identity or the pool reports a self-conflict
+    // between them (formal lane r16-formal-4). Non-Paseo (direct) launches keep the ambient owner.
+    const ownerId = serenaOwnerId ?? `${process.env.AEH_PARENT_OPERATION_ID?.trim() || "direct"}:${selection.logicalAgent}`;
+    const session = managedSerenaPool.acquire({ projectId, canonicalRoot, workspaceId, serenaVersion: SERENA_VERSION, ownerId, access: canEdit ? "write" : "read", editingEnabled: canEdit });
+    const pooled = session.mcpServer;
+    return {
+        type: "local",
+        command: pooled.command,
+        enabled: true,
+        environment: {
+            ...(server.environment ?? {}),
+            ...(pooled.environment ?? {}),
+            AEH_SERENA_COMMAND: original
+        },
+        timeout: server.timeoutMs ?? 30_000,
+        toolPolicy: session.editingEnabled ? { allow: ["*"], deny: [] } : { allow: session.allowedTools, deny: session.deniedTools }
+    };
+}
+function buildBashPermission(shell, gitWrite) {
+    if (!gitWrite)
+        return shell;
+    const result = { "*": shell ?? "ask" };
+    for (const pattern of [
+        "git add *",
+        "git commit *",
+        "git push *",
+        "git tag *",
+        "git checkout *",
+        "git switch *",
+        "git reset *",
+        "git clean *",
+        "git restore *",
+        "git merge *",
+        "git rebase *",
+        "git cherry-pick *"
+    ]) {
+        result[pattern] = gitWrite;
+    }
+    return result;
+}
+//# sourceMappingURL=permissions.js.map

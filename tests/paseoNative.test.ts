@@ -158,6 +158,32 @@ describe("Paseo native observability", () => {
     expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 
+  it("polls the canonical snapshot when the provider never emits updates", async () => {
+    let status = "working";
+    let done = false;
+    const unsubscribe = vi.fn();
+    const handle = {
+      id: "agent-quiet",
+      subscribe: vi.fn(() => unsubscribe),
+      refetch: vi.fn(async () => ({
+        agent: { id: "agent-quiet", status, workspaceId: "workspace-1", lastUserMessageAt: "2026-09-26T23:43:42.000Z" }
+      })),
+      timeline: {
+        refetch: vi.fn(async () => ({ entries: done ? [{ type: "assistant_message", text: "done" }] : [] }))
+      }
+    };
+    setTimeout(() => { status = "idle"; done = true; }, 30);
+    const result = await waitForPaseoAgentHandle(handle, 5_000, undefined, 10);
+    expect(result).toEqual(
+      expect.objectContaining({
+        id: "agent-quiet",
+        status: "idle",
+        lastMessage: "done"
+      })
+    );
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
   it("does not treat metadata-only updates plus stale assistant output as turn completion", async () => {
     let status = "idle";
     let message = "previous turn";

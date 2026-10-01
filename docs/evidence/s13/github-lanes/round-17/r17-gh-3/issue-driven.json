@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 17,
+  "runId": "r17-gh-3",
+  "capability": "issue-driven",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13GithubEffectCampaign.mjs",
+        "sha256": "5443a4f562ca2741bcd3975b2eb45276b28742ae840dfa17166919999889757d"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "3395aa19210f36b90fd22bd62056dbb8d5c48aab5a85bce4e5ea4d591cfd5146"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "d6c1e95f2d52ef308be780d088124290ac1c462c30c92347e892e3b53a584f42"
+  },
+  "candidateBinding": {
+    "packedArtifact": "agentic-engineering-harness-0.8.4.tgz",
+    "packedArtifactDigest": "82ec540a483c500805a5b31bcde0d5b4c14daaf067d8ee0ccbd11d0632ae9094",
+    "packedBuild": {
+      "releaseId": "release-1790685332682-127093-895ad615",
+      "buildDigest": "ca1d8f5628784ff6b7d0650326d1655d2f25697ecf037780b3e05edbc7f5319a",
+      "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+      "packageVersion": "0.8.4"
+    },
+    "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c"
+  },
+  "repository": "JamesMorales04/aeh-s13-round3-20260927035743-6bb5da",
+  "issueNumber": 1,
+  "issueCreation": null,
+  "externalAuthorization": null,
+  "startedAt": "2026-09-29T12:35:52.438Z",
+  "checks": [
+    {
+      "id": "issue.snapshot",
+      "ok": true,
+      "message": "frozen snapshot bd777eed917f matches live issue #1"
+    },
+    {
+      "id": "issue.drift-gate",
+      "ok": true,
+      "message": "ISSUE_DRIFT: GitHub issue #1 title/body changed after freeze (000000000000 -> bd777eed917f)."
+    },
+    {
+      "id": "issue.operation-import",
+      "ok": true,
+      "message": "operation-bound issue import completed"
+    }
+  ],
+  "inspect": {
+    "exitCode": 0,
+    "snapshotSha256": "bd777eed917f9e30463af3c1790e3d5baf00017c17225ca32b1aa99a43bdfcc8",
+    "stdout": "INSPECTED — JamesMorales04/aeh-s13-round3-20260927035743-6bb5da#1 S13 certification fixture: real issue-driven snapshot\ncontentSha256=bd777eed917f9e30463af3c1790e3d5baf00017c17225ca32b1aa99a43bdfcc8\nsemanticRoute=not_assessed\n{\n  \"request\": \"S13 certification fixture: real issue-driven snapshot\\nFreeze this real GitHub issue snapshot, verify that the deterministic drift gate rejects later edits, and report the exact operation-bound import disposition.\",\n  \"files\": [],\n  \"domains\": [],\n  \"risk\": \"low\",\n  \"flags\": []\n}"
+  },
+  "drift": {
+    "cleanSnapshot": {
+      "ok": true,
+      "message": "GitHub issue #1 still matches the frozen intake snapshot.",
+      "remote": {
+        "version": 1,
+        "provider": "github",
+        "repository": "JamesMorales04/aeh-s13-round3-20260927035743-6bb5da",
+        "number": 1,
+        "url": "https://github.com/JamesMorales04/aeh-s13-round3-20260927035743-6bb5da/issues/1",
+        "title": "S13 certification fixture: real issue-driven snapshot",
+        "body": "Freeze this real GitHub issue snapshot, verify that the deterministic drift gate rejects later edits, and report the exact operation-bound import disposition.",
+        "state": "open",
+        "labels": [],
+        "createdAt": "2026-09-27T03:58:14Z",
+        "updatedAt": "2026-09-27T19:19:50Z",
+        "fetchedAt": "2026-09-29T12:35:54.414Z",
+        "contentSha256": "bd777eed917f9e30463af3c1790e3d5baf00017c17225ca32b1aa99a43bdfcc8"
+      }
+    },
+    "staleSnapshot": {
+      "ok": false,
+      "message": "ISSUE_DRIFT: GitHub issue #1 title/body changed after freeze (000000000000 -> bd777eed917f)."
+    },
+    "mutation": "none; compares the live issue with an intentionally stale frozen content digest"
+  },
+  "operationImport": {
+    "exitCode": 0,
+    "stdout": "Prepared GH-1 from JamesMorales04/aeh-s13-round3-20260927035743-6bb5da#1: route=FORMAL_SDD, normalizedBy=planner+semantic-assessment, sha=bd777eed917f, operationId=CHANGE-20260929T123555Z-311dddd6\n\nRequirement | Proposal | Spec | Design | Acceptance | Tasks | Contract | Validators\n--- | --- | --- | --- | --- | --- | --- | ---\nGH-1-R1 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | gherkin\nGH-1-R2 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | gherkin\nGH-1-R3 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | gherkin",
+    "stderr": ""
+  },
+  "result": "PASS",
+  "finishedAt": "2026-09-29T12:44:01.302Z"
+}

@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "kind": "CAMPAIGN_RESOURCE_CENSUS",
+  "recordedAt": "2026-09-29T21:05:00Z",
+  "amendment": "CAMPAIGN RESOURCE-LIFECYCLE AMENDMENT (user, 2026-09-29)",
+  "purpose": "Round-boundary resource census required by the amendment: agents, workspaces, provider/session processes, cleanup/archive results. No credentials or process environment are recorded.",
+  "agents": {
+    "storeRecordsTotal": 430,
+    "campaignOwnedClosedOrIdle": 415,
+    "uncertainOwnershipPreserved": 15,
+    "runningAtCensus": 0,
+    "archivedViaCliThisPass": 65,
+    "archiveNotPossibleSummary": "351+94+4 campaign records returned 'Agent not found' from the daemon archive command (dormant store records the restarted daemon no longer manages). They hold no running processes or sessions; reported for user cleanup rather than deleted.",
+    "preservedForUncertainty": [
+      "b652307f-e7b1-4b36-bc6f-8f816a1758e4 (evaluation prompt)",
+      "4bca0a15-ba70-4482-b862-c66f28ee9ff4 (# CORE-v2 FINAL CONVERGENCE)",
+      "2ac3adcf-7768-4257-902a-6dd892e7a50a (S0 architecture canonicalization)",
+      "38034bec-6d86-4f32-a7ce-6423a7a049ff (audit delivery/paseo/acceptance)",
+      "430368c2-7079-41e7-90b3-5d74de293a0a (audit security/integrations)",
+      "12e4978e-476b-43ef-9372-fa096511d340 (verify product lifecycle)",
+      "c3585f4e-c69b-4062-908e-6407bb92e37d (verify acceptance delivery)",
+      "026306b6-fe67-457b-893b-b465ddd6ceaa (verify semantic/skill runtime)",
+      "59982251-25db-4c40-80cd-6ddab738a458, 6ed79745-25f7-4fe2-ab10-6a908668dfe8, 61e6d72e-afd8-4f32-8b2a-cbfb3daacabd, 95087063-78d2-4eb7-9898-c1c80309f938 (historical parents; relationship clear but retained for user review)",
+      "7369a0ec-ba87-4769-92f7-2121b438f988, b77dfbca, 8889300d, 4fe65f4c, 7aae99c2, b94d3dc0, fc816aaa"
+    ],
+    "currentRoundRetained": [
+      "af753081-2efb-46a8-8fd6-7c84df8d9016 (Campaign Director)",
+      "ff796bfe-e0fd-4c1b-b4e8-fe0bf605a69a (Round-20 reviewer, active)"
+    ],
+    "round20LeadArchived": "0fb80436-c92f-43b4-a95d-a9ddc1f767aa archived 2026-09-30T00:07:27Z after durable report consumption (amendment rule 1)"
+  },
+  "workspaces": {
+    "totalActive": 32,
+    "campaignFixtureWorktrees": [
+      "wks_a37297062f4df150 (AEH CHANGE CHANGE-20260929T170919Z-36b74caa)",
+      "wks_c0d4176da857fd13 (AEH CHANGE CHANGE-20260929T201057Z-9eed7a49)",
+      "wks_5ba0bf3f7539d3b5 (AEH CHANGE CHANGE-20260929T202218Z-9eed7a49)"
+    ],
+    "preserved": "29 local checkouts and historical S3/S5 worktrees; ownership/live state not proven terminal, preserved and reported (never bulk-archived)",
+    "pendingReconciliation": "The three AEH CHANGE fixture worktrees must be reconciled by the next lead: archive only if the owning operation is terminal and no live continuation exists (AEH-V2-0112 predicate); otherwise preserve."
+  },
+  "providerProcesses": {
+    "fixtureProcessesAliveAtCensus": 0,
+    "tmpStagingDirs": 0,
+    "note": "Round-19 cleanup terminated 96 processes and removed 507 staging dirs; Round-20 fixtures were cleaned by their harnesses. No /tmp/aeh-* remains.",
+    "stagingPreservedForNonTerminalOperations": 3,
+    "processesAliveAtCensus2": 0
+  },
+  "archiveResults": {
+    "archivedAgents": 64,
+    "workspacesArchivedRound19": 48,
+    "processesTerminatedRound19": 96,
+    "stagingRemovedRound19": 507
+  },
+  "lifecycleFinding": "AEH-V2-0130 (OPEN) \u2014 campaign resource-lifecycle accumulation and missing terminal/recovery reconciliation; see docs/ENGINEERING_LEDGER.md",
+  "nextRoundRequirements": [
+    "Reconcile the three AEH CHANGE fixture worktrees.",
+    "Investigate and repair AEH-V2-0130: durable operation\u2192resource ownership, terminal/recovery reconciliation, safe release, verification.",
+    "Build the bounded repeated-operation resource-stability test with trend assertions before final S13 acceptance.",
+    "Include resource cleanup/reconciliation in S14's disposable self-hosting composite."
+  ]
+}

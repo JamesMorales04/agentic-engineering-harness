@@ -1,0 +1,121 @@
+{
+ "version": 1,
+ "slice": "S13",
+ "round": 22,
+ "phase": "before",
+ "generatedAt": "2026-09-30T05:21:35Z",
+ "head": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+ "workspaces": {
+  "total": 41,
+  "fixtureUnderTmp": 4,
+  "userOrOther": 37,
+  "fixtureIds": [
+   "wks_0406c3da6e58ae3b",
+   "wks_0f8e543a039b4766",
+   "wks_2f7653997fd2e686",
+   "wks_6351fc521f570fd5"
+  ],
+  "fixtureDetail": [
+   {
+    "workspaceId": "wks_0406c3da6e58ae3b",
+    "project": "lane-distributed-fixture",
+    "isolation": "local",
+    "cwd": "/tmp/aeh-s13-gov-m1Zn7z/work/lane-distributed-fixture"
+   },
+   {
+    "workspaceId": "wks_0f8e543a039b4766",
+    "project": "lane-distributed-fixture",
+    "isolation": "local",
+    "cwd": "/tmp/aeh-s13-gov-22O2CK/work/lane-distributed-fixture"
+   },
+   {
+    "workspaceId": "wks_2f7653997fd2e686",
+    "project": "lane-distributed-fixture",
+    "isolation": "local",
+    "cwd": "/tmp/aeh-s13-gov-m1Zn7z/work/lane-distributed-fixture"
+   },
+   {
+    "workspaceId": "wks_6351fc521f570fd5",
+    "project": "lane-distributed-fixture",
+    "isolation": "local",
+    "cwd": "/tmp/aeh-s13-gov-22O2CK/work/lane-distributed-fixture"
+   }
+  ]
+ },
+ "agents": {
+  "total": 114,
+  "byStatus": {
+   "running": 1,
+   "idle": 7,
+   "closed": 106
+  },
+  "idle": [
+   {
+    "agentId": "69e45cbd-a855-48d2-8ffc-a2d689da7e8c",
+    "status": "idle"
+   },
+   {
+    "agentId": "f1fea276-73ac-4a44-a94f-038962d2527f",
+    "status": "idle"
+   },
+   {
+    "agentId": "77ef3547-307c-4914-81ea-3bc71b79f670",
+    "status": "idle"
+   },
+   {
+    "agentId": "c0eb88be-bfcf-450e-80dd-d7f5b927402a",
+    "status": "idle"
+   },
+   {
+    "agentId": "af753081-2efb-46a8-8fd6-7c84df8d9016",
+    "status": "idle"
+   },
+   {
+    "agentId": "49b148f3-189f-43da-9772-56a24956bc19",
+    "status": "idle"
+   },
+   {
+    "agentId": "21cb75ae-93a3-4cf1-8c3c-9726ef40f03e",
+    "status": "idle"
+   }
+  ],
+  "running": [
+   {
+    "agentId": "b9de371f-5496-4bb9-8956-fd949e64bba8",
+    "status": "running"
+   }
+  ]
+ },
+ "fixtureProcesses": {
+  "count": 1,
+  "entries": [
+   "1565543    9213       0  8076 /usr/bin/bash -c cd /home/james/Desarrollo/agentic-engineering-harness && python3 - <<'EOF' import json, subprocess, re, collections, os w=json.load(open('/tmp/opencode/r22/workspaces.json')"
+  ]
+ },
+ "opencodeServe": {
+  "count": 14,
+  "entries": [
+   "9213    8603   31715 5252492 /home/james/.local/share/mise/installs/aqua-anomalyco-opencode/1.18.32/opencode serve --port 34197",
+   "203675    8603   24035 364228 /home/james/.local/share/mise/installs/aqua-anomalyco-opencode/1.18.32/opencode serve --port 44875",
+   "212620    8603   23785 364672 /home/james/.local/share/mise/installs/aqua-anomalyco-opencode/1.18.32/opencode serve --port 41343",
+   "289092    8603   21582 359148 /home/james/.local/share/mise/installs/aqua-anomalyco-opencode/1.18.32/opencode serve --port 43579",
+   "305406    8603   21238 358904 /home/james/.local/share/mise/installs/aqua-anomalyco-opencode/1.18.32/opencode serve --port 43985",
+   "428132    8603   17440 360288 /home/james/.local/share/mise/installs/aqua-anomalyco-opencode/1.18.32/opencode serve --port 37873",
+   "1059099    8603    7298 197028 /home/james/.local/share/mise/installs/aqua-anomalyco-opencode/1.18.32/opencode serve --port 35437",
+   "1112904    8603    6797 198644 /home/james/.local/share/mise/installs/aqua-anomalyco-opencode/1.18.32/opencode serve --port 33953",
+   "1134981    8603    6587 372228 /home/james/.local/share/mise/installs/aqua-anomalyco-opencode/1.18.32/opencode serve --port 37789",
+   "1202166    8603    5892 475992 /home/james/.local/share/mise/installs/aqua-anomalyco-opencode/1.18.32/opencode serve --port 45321",
+   "1220030    8603    5723 382948 /home/james/.local/share/mise/installs/aqua-anomalyco-opencode/1.18.32/opencode serve --port 40059",
+   "1297592    8603    4890 386892 /home/james/.local/share/mise/installs/aqua-anomalyco-opencode/1.18.32/opencode serve --port 35235",
+   "1320085    8603    4666 474456 /home/james/.local/share/mise/installs/aqua-anomalyco-opencode/1.18.32/opencode serve --port 45895",
+   "1400472    8603    3771 523292 /home/james/.local/share/mise/installs/aqua-anomalyco-opencode/1.18.32/opencode serve --port 43413"
+  ]
+ },
+ "tmpStaging": {
+  "total": 202,
+  "aehS13": [
+   "/tmp/aeh-s13-gov-22O2CK",
+   "/tmp/aeh-s13-gov-m1Zn7z"
+  ]
+ }
+}

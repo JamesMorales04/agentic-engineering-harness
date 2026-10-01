@@ -1,0 +1,106 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 21,
+  "runId": "r21-ctxperm-9",
+  "capability": "permission-delegation",
+  "provider": "opencode/opencode-go/deepseek-v4.1-flash",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13ContextPermissionCampaign.mjs",
+        "sha256": "01a370daa47ea08d0dde8b6350afa29699a5a3bef1c6f22768b477bb4077b261"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "95093d0a23b73de6d079e6b08dee0d43287fc5c73eb6896779c28eeb826fbc4f"
+  },
+  "startedAt": "2026-09-30T02:43:08.089Z",
+  "checks": [
+    {
+      "id": "permission-delegation.parent-lease",
+      "ok": true,
+      "message": "parent capabilities [execute,read,write] under epoch 1"
+    },
+    {
+      "id": "permission-delegation.ceiling-denial",
+      "ok": true,
+      "message": "V2_AUTHORITY_DENIED: role 'Reviewer' cannot receive capabilities outside its compiled RoleProfile ceiling: write."
+    },
+    {
+      "id": "permission-delegation.child-decision",
+      "ok": true,
+      "message": "child [read] subset=true; durable receipt persisted=true"
+    },
+    {
+      "id": "permission-delegation.real-child-session",
+      "ok": true,
+      "message": "real provider child session 18141777-6224-4adc-bfcd-9931bd122c89 exit=0"
+    }
+  ],
+  "candidateBinding": {
+    "packedArtifactDigest": "4ba1bc12b28b4065bf1d35fd5e6e4cfee84ce9cda252aa50735a0fff1865b27f",
+    "fixtureCommit": "a71b0432212271d7dbe3e9089b629760e872d769"
+  },
+  "parentLease": {
+    "participantId": "participant:0e1312d5b1703f76",
+    "candidateDigest": "eda46df0072dbefd980fdcabde66cac2e271cdc4729faaf1e948791ea2f5aa16",
+    "controllerEpoch": 1,
+    "capabilities": [
+      "execute",
+      "read",
+      "write"
+    ],
+    "leaseIds": [
+      "lease:CHANGE-S13-PERMISSION-DELEGATION:request:CHANGE-S13-PERMISSION-DELEGATION:participant:0e1312d5b1703f76:read:implementation",
+      "lease:CHANGE-S13-PERMISSION-DELEGATION:request:CHANGE-S13-PERMISSION-DELEGATION:participant:0e1312d5b1703f76:write:implementation",
+      "lease:CHANGE-S13-PERMISSION-DELEGATION:request:CHANGE-S13-PERMISSION-DELEGATION:participant:0e1312d5b1703f76:execute:implementation"
+    ]
+  },
+  "ceilingDenial": {
+    "denied": true,
+    "message": "V2_AUTHORITY_DENIED: role 'Reviewer' cannot receive capabilities outside its compiled RoleProfile ceiling: write."
+  },
+  "childAuthority": {
+    "participantId": "participant:656386d561d2f3d3",
+    "capabilities": [
+      "read"
+    ],
+    "leaseIds": [
+      "lease:CHANGE-S13-PERMISSION-DELEGATION:request:CHANGE-S13-PERMISSION-DELEGATION:participant:656386d561d2f3d3:read:review"
+    ],
+    "monotonicSubsetOfParent": true
+  },
+  "decisionReceipt": {
+    "digest": "df78ac3759d0d0aaccf7ea350fd5867689db2b703a231f9fa8df34c7ca0c8a1c",
+    "persisted": true,
+    "persistedOperationId": "CHANGE-S13-PERMISSION-DELEGATION"
+  },
+  "childSession": {
+    "sessionId": "18141777-6224-4adc-bfcd-9931bd122c89",
+    "exitCode": 0,
+    "bindingDigest": "1839bfc82fd955f795e3b8640d6df29e93c28aa9e67e13b32431d18a4445fcaf",
+    "leaseIdentities": [
+      "lease:CHANGE-S13-PERMISSION-DELEGATION:request:CHANGE-S13-PERMISSION-DELEGATION:participant:656386d561d2f3d3:read:review"
+    ]
+  },
+  "sessionInspection": {
+    "exitCode": 0
+  },
+  "result": "PASS",
+  "rowResult": {
+    "permission-delegation": "PASS"
+  },
+  "finishedAt": "2026-09-30T02:43:44.994Z"
+}

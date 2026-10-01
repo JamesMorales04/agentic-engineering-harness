@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 20,
+  "kind": "ROUND_BOUNDARY_RESOURCE_RECONCILIATION",
+  "amendment": "CAMPAIGN RESOURCE-LIFECYCLE AMENDMENT (2026-09-29); AEH-V2-0130",
+  "recordedAt": "2026-09-29T21:52Z",
+  "censusInput": "docs/evidence/s13/round-20-resource-census.json",
+  "predicate": "archive only when the owning operation is durably terminal and no live continuation exists (AEH-V2-0112); IDLE is not a continuation; uncertain terminality is preserved and reported",
+  "worktrees": [
+    {
+      "workspaceId": "wks_c0d4176da857fd13",
+      "operationId": "CHANGE-20260929T201057Z-9eed7a49",
+      "owningOperation": "r19-journey-1 governed operation",
+      "terminality": "PROVEN_TERMINAL_SUCCEEDED",
+      "terminalEvidence": "r19-journey-1 lane artifact operation.status=SUCCEEDED revision 81; candidate telemetry harness.run.finish PASS",
+      "liveContinuation": false,
+      "disposition": "ARCHIVED",
+      "archivedAt": "2026-09-29T20:51:57Z"
+    },
+    {
+      "workspaceId": "wks_a37297062f4df150",
+      "operationId": "CHANGE-20260929T170919Z-36b74caa",
+      "owningOperation": "r19-dist-1 distributed lane (RUNNING at its 1,560 s bound; durable state destroyed by restart)",
+      "terminality": "NOT_PROVABLE",
+      "liveContinuation": false,
+      "liveContinuationEvidence": "0 /proc cwd references; 0 matching Paseo agents; no controller process",
+      "disposition": "PRESERVED_AND_REPORTED",
+      "reason": "owning operation terminality is not provable (staging/state destroyed); the amendment forbids archiving without proven terminality"
+    },
+    {
+      "workspaceId": "wks_5ba0bf3f7539d3b5",
+      "operationId": "CHANGE-20260929T202218Z-9eed7a49",
+      "owningOperation": "unrecorded round-19 journey rerun (last telemetry 2026-09-29T20:25:24Z; interrupted by the restart)",
+      "terminality": "NOT_PROVABLE",
+      "liveContinuation": false,
+      "liveContinuationEvidence": "0 /proc cwd references; 0 matching Paseo agents; no controller process",
+      "disposition": "PRESERVED_AND_REPORTED",
+      "reason": "owning operation terminality is not provable (staging/state destroyed); the amendment forbids archiving without proven terminality"
+    }
+  ],
+  "round20AttemptCleanup": {
+    "note": "Round-20 journey attempts 1-4 left their per-unit candidate Paseo workspaces unarchived because the journey harness workspace scope did not match candidate worktrees (R18-F2/W96b class gap). All four owning operations are terminal (artifacts: journey-1 FAILED, journey-2 SUCCEEDED, journey-3 SUCCEEDED, journey-4 FAILED), all supervisor generations were idle, no controller existed. The harness scope and the terminal+controller-exit archive gate were repaired in tests/packed/s13IssueJourneyCampaign.mjs for later runs.",
+    "archivedWorkspaces": [
+      { "workspaceId": "wks_07b89e8aa94f625b", "operationId": "CHANGE-20260929T205255Z-9eed7a49", "attempt": "r20-journey-1", "operationTerminal": "FAILED", "archivedAt": "2026-09-29T21:51:45Z" },
+      { "workspaceId": "wks_9401a4153f7a8998", "operationId": "CHANGE-20260929T211259Z-9eed7a49", "attempt": "r20-journey-2", "operationTerminal": "SUCCEEDED", "archivedAt": "2026-09-29T21:51:47Z" },
+      { "workspaceId": "wks_453defda30c5ab17", "operationId": "CHANGE-20260929T212722Z-9eed7a49", "attempt": "r20-journey-3", "operationTerminal": "SUCCEEDED", "archivedAt": "2026-09-29T21:51:48Z" },
+      { "workspaceId": "wks_f36c2ab59bd0168c", "operationId": "CHANGE-20260929T213746Z-9eed7a49", "attempt": "r20-journey-4", "operationTerminal": "FAILED", "archivedAt": "2026-09-29T21:51:49Z" }
+    ],
+    "archivedIdleAgents": [
+      { "agentId": "fd1471bf-fb22-4d29-8c76-4dcc1f1cfbb1", "operation": "r20-journey-1 supervisor generation 1", "status": "idle", "archivedAt": "2026-09-29T21:51:21Z" },
+      { "agentId": "58f8e732-a7eb-4590-9694-0c6d80a753b9", "operation": "r20-journey-2 supervisor generation 1", "status": "idle", "archivedAt": "2026-09-29T21:51:19Z" },
+      { "agentId": "b9629068-4ef9-41ea-88d2-6f0466ef1554", "operation": "r20-journey-3 supervisor generation 1", "status": "idle", "archivedAt": "2026-09-29T21:51:18Z" },
+      { "agentId": "a842bfa3-2a20-425f-968d-e4148da71682", "operation": "r20-journey-4 supervisor generation 1", "status": "idle", "archivedAt": "2026-09-29T21:51:17Z" }
+    ],
+    "orphanProcesses": {
+      "observed": 4,
+      "kind": "resultSinkMcp.js child processes of idle provider sessions (one per terminal journey operation)",
+      "parent": "codex app-server processes of the same idle sessions",
+      "action": "archiving the idle supervisor agents released the sessions; all 8 processes (4 resultSinkMcp + 4 parents) exited within 4 s",
+      "terminatedBy": "paseo agent archive (supported lifecycle), not signal-based cleanup"
+    }
+  },
+  "finding": "AEH-V2-0130 evidence: terminal operations retained their supervisor agent records (idle) and their provider child processes until the agents were archived by hand; the product has no terminal resource reconciliation for these. Harness-side scope/gate repairs are recorded in the workgraph (W96b/W113).",
+  "totals": {
+    "workspacesArchivedThisReconciliation": 5,
+    "agentsArchivedThisReconciliation": 4,
+    "providerProcessesExitedOnAgentArchive": 8,
+    "stagingRemoved": 0,
+    "workspacesPreserved": 2
+  }
+}

@@ -1,0 +1,94 @@
+{
+ "version": 1,
+ "slice": "S13",
+ "round": 5,
+ "capability": "issue-driven-import",
+ "mechanism": "HYBRID (MODEL planner + DETERMINISTIC authority/terminal gates)",
+ "generatedAt": "2026-09-27T09:55:00Z",
+ "mode": "real-provider managed controller intake (checkout dist, stable clone; no packed fixture)",
+ "operation": {
+  "id": "CHANGE-20260927T094602Z-311dddd6",
+  "kind": "change",
+  "status": "SUCCEEDED",
+  "phase": "issue-intake-finished",
+  "revision": 19,
+  "operationExecutionRevision": 2,
+  "controllerEpoch": 1,
+  "candidateRevision": {
+   "candidateId": "candidate:CHANGE-20260927T094602Z-311dddd6:r2",
+   "revision": 2,
+   "sourceDigest": "1af5f12079ae2b47e84e662e5dc61cc518553987a9b9cd3ca9dc6fd8276691f0",
+   "identityDigest": "5031e51e6388139b3a6f62b60d1c70acd804a0e1c49387e73f1c42e0faac717e"
+  }
+ },
+ "participants": {
+  "participant:f40c6434e0b998b5": {
+   "id": "participant:f40c6434e0b998b5",
+   "role": "Planner",
+   "status": "COMPLETED"
+  }
+ },
+ "receipts": [
+  {
+   "receiptId": "receipt:participant:f40c6434e0b998b5:2026-09-27T09:50:04.954Z",
+   "participantId": "participant:f40c6434e0b998b5",
+   "sessionId": "7e87febe-06fc-4306-9f25-1d953329fc4e",
+   "role": "Planner",
+   "outcome": "SUCCEEDED"
+  }
+ ],
+ "result": {
+  "issueIntake": {
+   "version": 1,
+   "taskId": "GH-1",
+   "route": "FORMAL_SDD",
+   "normalizedBy": "planner+semantic-assessment",
+   "snapshot": {
+    "repository": "JamesMorales04/aeh-s13-round3-20260927035743-6bb5da",
+    "number": 1,
+    "contentSha256": "bd777eed917f9e30463af3c1790e3d5baf00017c17225ca32b1aa99a43bdfcc8",
+    "path": ".harness/issues/GH-1.json"
+   },
+   "contract": {
+    "path": ".harness/contracts/GH-1.yaml",
+    "digest": "8212929d952c7c69179f19ed5f8a99bc45fcf7483f0d874a7c5a29f003b51e6f"
+   },
+   "planner": {
+    "participantId": "participant:f40c6434e0b998b5",
+    "sessionId": "7e87febe-06fc-4306-9f25-1d953329fc4e"
+   },
+   "semanticAssessmentDigest": "c26cb259d46c33e3451d4160b3886968e6cd7f8992547eb29a871af313196e8f",
+   "traceability": "Requirement | Proposal | Spec | Design | Acceptance | Tasks | Contract | Validators\n--- | --- | --- | --- | --- | --- | --- | ---\nGH-1-R1 | \u2713 | \u2713 | \u2713 | \u2713 | \u2713 | \u2713 | gherkin\nGH-1-R2 | \u2713 | \u2713 | \u2713 | \u2713 | \u2713 | \u2713 | gherkin\nGH-1-R3 | \u2713 | \u2713 | \u2713 | \u2713 | \u2713 | \u2713 | gherkin",
+   "candidateAdvanced": true
+  }
+ },
+ "cliStdout": "Prepared GH-1 from JamesMorales04/aeh-s13-round3-20260927035743-6bb5da#1: route=FORMAL_SDD, normalizedBy=planner+semantic-assessment, sha=bd777eed917f, operationId=CHANGE-20260927T094602Z-311dddd6\n\nRequirement | Proposal | Spec | Design | Acceptance | Tasks | Contract | Validators\n--- | --- | --- | --- | --- | --- | --- | ---\nGH-1-R1 | \u2713 | \u2713 | \u2713 | \u2713 | \u2713 | \u2713 | gherkin\nGH-1-R2 | \u2713 | \u2713 | \u2713 | \u2713 | \u2713 | \u2713 | gherkin\nGH-1-R3 | \u2713 | \u2713 | \u2713 | \u2713 | \u2713 | \u2713 | gherkin",
+ "checks": [
+  {
+   "id": "issue.operation-bound-managed-authority",
+   "ok": true,
+   "message": "controller-owned change operation bootstrapped candidate r1 + DELEGATED/STANDARD normalization policy + controller epoch before the Planner launch"
+  },
+  {
+   "id": "issue.planner-receipt",
+   "ok": true,
+   "message": "bounded Planner receipt persisted with a candidate-bound terminal outcome"
+  },
+  {
+   "id": "issue.contract-authored",
+   "ok": true,
+   "message": "sealed TaskContract persisted with a recorded digest"
+  },
+  {
+   "id": "issue.snapshot-frozen",
+   "ok": true,
+   "message": "frozen GitHub issue snapshot digest recorded"
+  },
+  {
+   "id": "issue.terminal",
+   "ok": true,
+   "message": "terminal SUCCEEDED with deterministic intake evidence"
+  }
+ ],
+ "note": "Supplementary real-provider verification of the AEH-V2-0076 managed intake repair in a stable clone; the governed-campaign issue-driven lane remains PARTIAL because its own import invocation raced the authority lane in the same clone and its workspace identity correctly rejected the stale Planner receipt."
+}

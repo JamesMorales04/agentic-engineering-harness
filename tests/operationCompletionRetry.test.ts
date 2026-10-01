@@ -1,3 +1,4 @@
+import { saveOwnedOperation } from "./helpers/ownedOperation.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -43,7 +44,7 @@ function operation(root: string): OperationRecordV2 {
 describe("terminal completion fallback", () => {
   it("retries an explicitly rejected send and stops immediately after Paseo accepts a later turn", async () => {
     const root = await tempRoot();
-    await saveOperation(root, operation(root));
+    await saveOwnedOperation(root, operation(root));
     await bindOperationLead(root, "AUDIT-RETRY", "lead-1", "test");
     await registerOperationCompletionTarget(root, "AUDIT-RETRY", "lead-1", "test", vi.fn(async () => undefined));
     const terminal = await transitionOperationToTerminal(root, "AUDIT-RETRY", {
@@ -70,7 +71,7 @@ describe("terminal completion fallback", () => {
 
   it("persists three exhausted attempts without rewriting a successful operation result", async () => {
     const root = await tempRoot();
-    await saveOperation(root, operation(root));
+    await saveOwnedOperation(root, operation(root));
     await bindOperationLead(root, "AUDIT-RETRY", "lead-1", "test");
     await registerOperationCompletionTarget(root, "AUDIT-RETRY", "lead-1", "test", vi.fn(async () => undefined));
     const terminal = await transitionOperationToTerminal(root, "AUDIT-RETRY", {

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { CertificationCore, type AgentProvider } from "../src/certification/core.js";
+import { computeWorktreeDigest } from "../src/core/git.js";
 import { createCertificationOracleResult, oracleCanAccept } from "../src/certification/oracle.js";
 import { defaultCertificationPolicy } from "../src/certification/policy.js";
 import { buildProviderEnvironment, executeArgv, LocalAgentProvider, parseJsonl } from "../src/certification/provider.js";
@@ -24,7 +25,7 @@ function policy(overrides: Partial<CertificationPolicy> = {}): CertificationPoli
 async function candidate(): Promise<{ root: string; value: CandidateRevision }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-cert-test-"));
   await fs.writeFile(path.join(root, "state.txt"), "bad\n");
-  return { root, value: { version: 1, id: "candidate-1", root } };
+  return { root, value: { version: 1, id: "candidate-1", root, sourceDigest: await computeWorktreeDigest(root) } };
 }
 
 function oracleForFile(expected: string): CertificationOracle {
@@ -54,6 +55,17 @@ async function resolveCodexBinary(): Promise<string | undefined> {
 }
 
 describe("CertificationCore", () => {
+  it("rejects a workspace that no longer materializes its candidate before oracle execution", async () => {
+    const fixture = await candidate();
+    let oracleCalls = 0;
+    const oracle: CertificationOracle = { id: "identity-oracle", independent: true, async evaluate() { oracleCalls += 1; return createCertificationOracleResult({ oracleId: "identity-oracle", checks: [{ id: "state", status: "PASS", required: true, message: "accepted" }] }); } };
+    await fs.writeFile(path.join(fixture.root, "state.txt"), "changed after candidate binding\n");
+    try {
+      await expect(new CertificationCore(oracle).certify({ candidate: fixture.value, policy: policy() })).rejects.toThrow("CANDIDATE_WORKSPACE_MISMATCH");
+      expect(oracleCalls).toBe(0);
+    } finally { await fs.rm(fixture.root, { recursive: true, force: true }); }
+  });
+
   it("accepts only deterministic oracle evidence and does not need a provider", async () => {
     const fixture = await candidate();
     try {
@@ -76,7 +88,21 @@ describe("CertificationCore", () => {
     } finally { await fs.rm(fixture.root, { recursive: true, force: true }); }
   });
 
-  it("bounds repair attempts and accepts only after the oracle observes the repaired candidate", async () => {
+  it("rejects model observations after the actor changes the bound candidate workspace", async () => {
+    const fixture = await candidate();
+    let oracleCalls = 0;
+    const oracle: CertificationOracle = { id: "identity-after-actor", independent: true, async evaluate() { oracleCalls += 1; return createCertificationOracleResult({ oracleId: "identity-after-actor", checks: [{ id: "state", status: "PASS", required: true, message: "accepted" }] }); } };
+    const provider: AgentProvider = { name: "mutating-actor", networkIsolation: "enforced", async execute(request) { await fs.writeFile(path.join(fixture.root, "state.txt"), "actor changed source\n"); return providerResult(request); } };
+    const actor: AgentProviderRequest = { version: 1, requestId: "actor-mutates-candidate", role: "actor", prompt: "act", cwd: fixture.root, command: process.execPath, args: [], timeoutMs: 1000, maxOutputBytes: 1024, allowNetwork: false };
+    try {
+      const result = await new CertificationCore(oracle, provider).certify({ candidate: fixture.value, policy: policy(), actor });
+      expect(result.accepted).toBe(false);
+      expect(result.oracle.failures.some((failure) => failure.message.includes("CANDIDATE_WORKSPACE_MISMATCH"))).toBe(true);
+      expect(oracleCalls).toBe(0);
+    } finally { await fs.rm(fixture.root, { recursive: true, force: true }); }
+  });
+
+  it("does not certify an in-place repair under the prior CandidateRevision", async () => {
     const fixture = await candidate();
     const provider: AgentProvider = { name: "repair", networkIsolation: "enforced", async execute(request) { await fs.writeFile(path.join(fixture.root, "state.txt"), "good\n"); return providerResult(request); } };
     try {
@@ -85,9 +111,11 @@ describe("CertificationCore", () => {
         policy: policy({ budget: { maxAttempts: 1, maxDurationMs: 10_000 }, repair: { enabled: true, maxAttempts: 1, humanOnExhaustion: true } }),
         repair: { create: (attempt, failures, revision) => ({ version: 1, requestId: `repair-${attempt}`, role: "repair", prompt: failures[0]?.message ?? "repair", cwd: revision.root, command: process.execPath, args: [], timeoutMs: 1000, maxOutputBytes: 1024, allowNetwork: false }) }
       });
-      expect(result.state).toBe("ACCEPTED");
+      expect(result.state).toBe("BLOCKED");
+      expect(result.accepted).toBe(false);
+      expect(result.oracle.failures.some((failure) => failure.message.includes("CANDIDATE_WORKSPACE_MISMATCH"))).toBe(true);
       expect(result.budget.attempts).toBe(1);
-      expect(result.failurePacket).toBeUndefined();
+      expect(result.failurePacket?.candidateId).toBe(fixture.value.id);
     } finally { await fs.rm(fixture.root, { recursive: true, force: true }); }
   });
 
@@ -125,7 +153,24 @@ describe("CertificationCore", () => {
         actor: { version: 1, requestId: "actor-mock", role: "actor", prompt: "answer", cwd: fixture.root, command: process.execPath, args: [], timeoutMs: 1000, maxOutputBytes: 1024, allowNetwork: false }
       });
       expect(result.oracle.status).toBe("PASS");
-      expect(result.capability).toMatchObject({ contract: { status: "PASS" }, modelE2E: { status: "BLOCKED" }, overall: "PARTIAL" });
+      expect(result.capability).toMatchObject({ contract: { status: "INSUFFICIENT" }, modelE2E: { status: "BLOCKED" }, overall: "FAIL" });
+      expect(result.accepted).toBe(false);
+      expect(result.state).toBe("BLOCKED");
+    } finally { await fs.rm(fixture.root, { recursive: true, force: true }); }
+  });
+
+  it("requires oracle-verified journey evidence whenever model E2E is required", async () => {
+    const fixture = await candidate();
+    const provider: AgentProvider = { name: "started-model", networkIsolation: "enforced", async execute(request) { return { ...providerResult(request), executionEvidence: { started: true, provider: "test", command: request.command, startedAt: new Date().toISOString() } }; } };
+    try {
+      const result = await new CertificationCore(oracleForFile("bad\n"), provider).certify({
+        candidate: fixture.value,
+        policy: policy(),
+        capability: "informational",
+        requireModelE2E: true,
+        actor: { version: 1, requestId: "actor-no-oracle-evidence", role: "actor", prompt: "answer", cwd: fixture.root, command: process.execPath, args: [], timeoutMs: 1000, maxOutputBytes: 1024, allowNetwork: false }
+      });
+      expect(result.capability?.modelE2E.status).toBe("INSUFFICIENT");
       expect(result.accepted).toBe(false);
       expect(result.state).toBe("BLOCKED");
     } finally { await fs.rm(fixture.root, { recursive: true, force: true }); }
@@ -136,7 +181,7 @@ describe("CertificationCore", () => {
     try {
       const result = await new CertificationCore(oracleForFile("bad\n")).certify({ candidate: fixture.value, policy: policy(), capability: "audit", requireModelE2E: true });
       expect(result.capability?.modelE2E.status).toBe("NOT_TESTED");
-      expect(result.capability?.overall).toBe("PARTIAL");
+      expect(result.capability?.overall).toBe("FAIL");
       expect(result.accepted).toBe(false);
       expect(result.state).toBe("BLOCKED");
     } finally { await fs.rm(fixture.root, { recursive: true, force: true }); }

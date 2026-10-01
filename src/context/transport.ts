@@ -5,7 +5,7 @@ import type {
   ContextCapabilityRequirements,
   RuntimeCapabilities
 } from "../agents/types.js";
-import { commandExists, runProcess } from "../utils/process.js";
+import { commandExists, runShell } from "../utils/process.js";
 
 export interface ResolvedContextCapabilityRequirements {
   repositoryMap: ContextCapabilityRequirement;
@@ -40,7 +40,7 @@ export interface EffectiveContextCapabilities {
 
 export interface TransportProbe {
   commandExists?: (command: string, cwd: string) => Promise<boolean>;
-  run?: typeof runProcess;
+  run?: typeof runShell;
 }
 
 export interface PodmanSerenaProbe {
@@ -74,7 +74,7 @@ export function resolveContextCapabilityRequirements(
   selection: AgentExecutionSelection
 ): ResolvedContextCapabilityRequirements {
   const configured = selection.contextRequirements;
-  const coordinator = selection.role === "orchestrator" || selection.role === "coordinator";
+  const coordinator = selection.role === "Lead/Director" || selection.role === "Operation Supervisor";
   const semanticConfigured = Boolean(config.context?.semanticRetrieval?.provider && config.context.semanticRetrieval.provider !== "none");
   const semanticDefault: ContextCapabilityRequirement = semanticConfigured && config.context?.semanticRetrieval?.required !== false ? "REQUIRED" : "OPTIONAL";
   const compressionConfigured = Boolean(config.context?.compression?.provider && config.context.compression.provider !== "none");
@@ -195,7 +195,7 @@ export async function resolveContextTransportCapabilities(root: string, config: 
 /** Bounded, no-pull diagnostic for an explicitly provisioned Podman image. */
 export async function probePodmanSerena(root: string, image: string, probe: TransportProbe = {}): Promise<PodmanSerenaProbe> {
   const executable = probe.commandExists ?? commandExists;
-  const runner = probe.run ?? runProcess;
+  const runner = probe.run ?? runShell;
   if (!(await executable("podman", root))) return { available: false, imagePresent: false, exposesSerena: false, message: "Podman executable is unavailable" };
   const imageCheck = await runner(`podman image exists ${quote(image)}`, { cwd: root, timeoutMs: 10_000 });
   if (imageCheck.exitCode !== 0) return { available: true, imagePresent: false, exposesSerena: false, message: "configured Podman image is not already present; no pull was attempted" };

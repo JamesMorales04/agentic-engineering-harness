@@ -1,0 +1,489 @@
+{
+  "version": 1,
+  "capability": "multi-project",
+  "provider": "codex",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13RealProviderCertification.mjs",
+        "sha256": "e008d145f175f0ef2e5a6ef2a001c69dd24206d6d69e23778229f30495dd1a9c"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "52cc4df585215b768577b300277a5aac6ca3a9f6101433ed2ed0363d6c77f461"
+  },
+  "startedAt": "2026-09-30T05:32:31.313Z",
+  "report": {
+    "certificationId": "cert-agentic-engineering-harness-0.8.4-f773ddc4-b1ff-4a38-82ff-d5c3beef01b6",
+    "state": "ACCEPTED",
+    "accepted": true,
+    "assurance": "DETERMINISTIC",
+    "policyId": "aeh-default-certification",
+    "harnessBuildIdentity": {
+      "version": 1,
+      "packageVersion": "0.8.4",
+      "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+      "releaseId": "release-1790746067053-1573412-feaf0aab",
+      "buildDigest": "599ed363223ff2dd85e17296c9f34c4134bf83e363916c4c57d7e7492ccbdf45",
+      "dirty": true
+    },
+    "candidate": {
+      "version": 1,
+      "id": "agentic-engineering-harness-0.8.4",
+      "root": "/tmp/aeh-cert-fixture-XjMdaT",
+      "artifactPath": "/tmp/aeh-cert-fixture-XjMdaT/.aeh-candidate.tgz",
+      "baseRef": "packed-checkout",
+      "sourceDigest": "b43cc00cb40f69dffafd387b4d93e9fcf064ae1f077145d944844bb66cf3b603",
+      "packedArtifactDigest": "b43cc00cb40f69dffafd387b4d93e9fcf064ae1f077145d944844bb66cf3b603",
+      "treeDigest": "f0a10505250be774c5a1b5d6eb4082a2d59587edf5b9bec3066f6ea8707eb71c",
+      "metadata": {
+        "artifactDigest": "b43cc00cb40f69dffafd387b4d93e9fcf064ae1f077145d944844bb66cf3b603",
+        "packaging": "npm-pack-ignore-scripts",
+        "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+        "sourceBranch": "core-architecture-v2",
+        "packedBuildRelease": "release-1790746351676-1586461-0b304820",
+        "packedBuildDigest": "599ed363223ff2dd85e17296c9f34c4134bf83e363916c4c57d7e7492ccbdf45",
+        "packedBuildGitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+        "packedBuildPackageVersion": "0.8.4"
+      }
+    },
+    "networkPolicy": {
+      "requested": "ALLOW",
+      "enforced": false,
+      "enforcement": "provider-allowed"
+    },
+    "budget": {
+      "attempts": 1,
+      "durationMs": 18405,
+      "usage": {
+        "inputTokens": 78966,
+        "cachedInputTokens": 70400,
+        "outputTokens": 452,
+        "reasoningOutputTokens": 0,
+        "totalTokens": 79418
+      },
+      "remaining": {
+        "attempts": 0,
+        "durationMs": 581595
+      },
+      "usageKnown": true
+    },
+    "attempts": [
+      {
+        "attempt": 1,
+        "role": "actor",
+        "status": "COMPLETED",
+        "startedAt": "2026-09-30T05:32:57.865Z",
+        "finishedAt": "2026-09-30T05:33:16.241Z",
+        "durationMs": 18364,
+        "usage": {
+          "inputTokens": 78966,
+          "cachedInputTokens": 70400,
+          "outputTokens": 452,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 79418
+        },
+        "message": "WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir \"/tmp\" (codex_home: AbsolutePathBuf(\"/tmp/aeh-cert-codex-home-QIyEON/.codex\"))\nReading additional input from stdin...\n"
+      },
+      {
+        "attempt": 2,
+        "role": "oracle",
+        "status": "PASS",
+        "startedAt": "2026-09-30T05:33:16.283Z",
+        "finishedAt": "2026-09-30T05:33:16.324Z",
+        "durationMs": 41
+      }
+    ],
+    "oracle": {
+      "status": "PASS",
+      "oracleId": "s13-journey:multi-project",
+      "checks": [
+        {
+          "id": "repository-identity",
+          "category": "journey",
+          "status": "PASS",
+          "required": true,
+          "message": "Journey evidence 'repository-identity' verified for multi-project.",
+          "evidence": {
+            "detail": {
+              "count": 2,
+              "repositoryIdentities": [
+                "https://example.invalid/s13/project-a",
+                "https://example.invalid/s13/project-b"
+              ],
+              "projectIds": [
+                "project_b341e2fc7f1328dc9c183a37bfa0b665",
+                "project_8afcc6d2901ff03ef3e7d97d62dd5224"
+              ],
+              "canonicalRealpaths": [
+                "/tmp/aeh-cert-fixture-XjMdaT",
+                "/tmp/aeh-cert-fixture-XjMdaT/.harness/projects/project-b"
+              ]
+            }
+          }
+        },
+        {
+          "id": "project-selection",
+          "category": "journey",
+          "status": "PASS",
+          "required": true,
+          "message": "Journey evidence 'project-selection' verified for multi-project.",
+          "evidence": {
+            "detail": {
+              "displayNames": [
+                "S13 Shared Name"
+              ],
+              "isolatedBy": [
+                "repositoryIdentity",
+                "projectId",
+                "canonicalRealpath"
+              ]
+            }
+          }
+        },
+        {
+          "id": "actor.command:init-b",
+          "category": "provider",
+          "status": "PASS",
+          "required": true,
+          "message": "Provider executed 'node_modules/agentic-engineering-harness/dist/main.js init .harness/projects/project-b'.",
+          "evidence": {
+            "matched": true,
+            "exitCode": 0,
+            "output": "Created: .harness/project.yaml, .harness/toolchain.yaml, .harness/provider-versions.json, .harness/agents.source.jsonc, AGENTS.md, .harness/otel-collector.yaml, openspec/config.yaml, .harness managed assets (24), .gitignore (AEH generated-state block)\n"
+          }
+        },
+        {
+          "id": "actor.command:register-a",
+          "category": "provider",
+          "status": "PASS",
+          "required": true,
+          "message": "Provider executed 'node_modules/agentic-engineering-harness/dist/main.js project register . --repository https://example.invalid/s13/project-a'.",
+          "evidence": {
+            "matched": true,
+            "exitCode": 0,
+            "output": "{\n  \"version\": 1,\n  \"projectId\": \"project_b341e2fc7f1328dc9c183a37bfa0b665\",\n  \"canonicalRealpath\": \"/tmp/aeh-cert-fixture-XjMdaT\",\n  \"repositoryIdentity\": \"https://example.invalid/s13/project-a\",\n  \"displayName\": \"S13 Shared Name\",\n  \"configDigest\": \"17e2f017d8a655226bba5545dcb95ca60d7b4c5b53fc3b4cdedee74c9dd6a4c2\",\n  \"createdAt\": \"2026-09-30T05:33:07.737Z\",\n  \"updatedAt\": \"2026-09-30T05:33:07.737Z\",\n  \"availability\": \"available\"\n}\n"
+          }
+        },
+        {
+          "id": "actor.command:register-b",
+          "category": "provider",
+          "status": "PASS",
+          "required": true,
+          "message": "Provider executed 'node_modules/agentic-engineering-harness/dist/main.js project register .harness/projects/project-b --repository https://example.invalid/s13/project-b'.",
+          "evidence": {
+            "matched": true,
+            "exitCode": 0,
+            "output": "{\n  \"version\": 1,\n  \"projectId\": \"project_8afcc6d2901ff03ef3e7d97d62dd5224\",\n  \"canonicalRealpath\": \"/tmp/aeh-cert-fixture-XjMdaT/.harness/projects/project-b\",\n  \"repositoryIdentity\": \"https://example.invalid/s13/project-b\",\n  \"displayName\": \"S13 Shared Name\",\n  \"configDigest\": \"85e608b1113763bcf747e3a2985b8907963bb5969b9da8620d6341aed0d501d0\",\n  \"createdAt\": \"2026-09-30T05:33:11.113Z\",\n  \"updatedAt\": \"2026-09-30T05:33:11.113Z\",\n  \"availability\": \"available\"\n}\n"
+          }
+        },
+        {
+          "id": "actor.command:list",
+          "category": "provider",
+          "status": "PASS",
+          "required": true,
+          "message": "Provider executed 'node_modules/agentic-engineering-harness/dist/main.js project list'.",
+          "evidence": {
+            "matched": true,
+            "exitCode": 0,
+            "output": "[\n  {\n    \"version\": 1,\n    \"projectId\": \"project_b341e2fc7f1328dc9c183a37bfa0b665\",\n    \"canonicalRealpath\": \"/tmp/aeh-cert-fixture-XjMdaT\",\n    \"repositoryIdentity\": \"https://example.invalid/s13/project-a\",\n    \"displayName\": \"S13 Shared Name\",\n    \"configDigest\": \"17e2f017d8a655226bba5545dcb95ca60d7b4c5b53fc3b4cdedee74c9dd6a4c2\",\n    \"createdAt\": \"2026-09-30T05:33:07.737Z\",\n    \"updatedAt\": \"2026-09-30T05:33:07.737Z\",\n    \"availability\": \"available\"\n  },\n  {\n    \"version\": 1,\n    \"projectId\": \"project_8afcc6d2901ff03ef3e7d97d62dd5224\",\n    \"canonicalRealpath\": \"/tmp/aeh-cert-fixture-XjMdaT/.harness/projects/project-b\",\n    \"repositoryIdentity\": \"https://example.invalid/s13/project-b\",\n    \"displayName\": \"S13 Shared Name\",\n    \"configDigest\": \"85e608b1113763bcf747e3a2985b8907963bb5969b9da8620d6341aed0d501d0\",\n    \"createdAt\": \"2026-09-30T05:33:11.113Z\",\n    \"updatedAt\": \"2026-09-30T05:33:11.113Z\",\n    \"availability\": \"available\"\n  }\n]\n"
+          }
+        },
+        {
+          "id": "model.evidence",
+          "category": "provider",
+          "status": "PASS",
+          "required": true,
+          "message": "Deterministic oracle verified the capability journey and the real provider execution.",
+          "evidence": {
+            "capability": "multi-project",
+            "evidenceOk": true,
+            "actorOk": true,
+            "executions": [
+              {
+                "command": "/usr/bin/bash -lc 'node node_modules/agentic-engineering-harness/dist/main.js init .harness/projects/project-b'",
+                "exitCode": 0
+              },
+              {
+                "command": "/usr/bin/bash -lc 'node node_modules/agentic-engineering-harness/dist/main.js project register . --repository https://example.invalid/s13/project-a --display-name \"S13 Shared Name\" --registry /tmp/aeh-cert-fixture-XjMdaT/.harness/s13-registry/registry.json'",
+                "exitCode": 0
+              },
+              {
+                "command": "/usr/bin/bash -lc 'node node_modules/agentic-engineering-harness/dist/main.js project register .harness/projects/project-b --repository https://example.invalid/s13/project-b --display-name \"S13 Shared Name\" --registry /tmp/aeh-cert-fixture-XjMdaT/.harness/s13-registry/registry.json'",
+                "exitCode": 0
+              },
+              {
+                "command": "/usr/bin/bash -lc 'node node_modules/agentic-engineering-harness/dist/main.js project list --registry /tmp/aeh-cert-fixture-XjMdaT/.harness/s13-registry/registry.json'",
+                "exitCode": 0
+              }
+            ]
+          }
+        }
+      ],
+      "failures": [],
+      "evidence": {
+        "capability": "multi-project",
+        "repository-identity": {
+          "ok": true,
+          "detail": {
+            "count": 2,
+            "repositoryIdentities": [
+              "https://example.invalid/s13/project-a",
+              "https://example.invalid/s13/project-b"
+            ],
+            "projectIds": [
+              "project_b341e2fc7f1328dc9c183a37bfa0b665",
+              "project_8afcc6d2901ff03ef3e7d97d62dd5224"
+            ],
+            "canonicalRealpaths": [
+              "/tmp/aeh-cert-fixture-XjMdaT",
+              "/tmp/aeh-cert-fixture-XjMdaT/.harness/projects/project-b"
+            ]
+          }
+        },
+        "project-selection": {
+          "ok": true,
+          "detail": {
+            "displayNames": [
+              "S13 Shared Name"
+            ],
+            "isolatedBy": [
+              "repositoryIdentity",
+              "projectId",
+              "canonicalRealpath"
+            ]
+          }
+        }
+      }
+    },
+    "provider": {
+      "provider": "codex",
+      "status": "COMPLETED",
+      "exitCode": 0,
+      "usage": {
+        "inputTokens": 78966,
+        "cachedInputTokens": 70400,
+        "outputTokens": 452,
+        "reasoningOutputTokens": 0,
+        "totalTokens": 79418
+      },
+      "usageKnown": true,
+      "outputTruncated": false,
+      "executionEvidence": {
+        "started": true,
+        "provider": "codex",
+        "command": "codex",
+        "requestedModel": "gpt-6-luna",
+        "effectiveModel": "gpt-6-luna",
+        "requestedReasoningEffort": "low",
+        "effectiveReasoningEffort": "low",
+        "capabilitySource": "codex exec --help",
+        "sessionId": "01a0f0cd-4131-7e33-9e58-877b7b454039",
+        "processExitCode": 0,
+        "startedAt": "2026-09-30T05:32:57.865Z",
+        "finishedAt": "2026-09-30T05:33:16.230Z"
+      },
+      "commandExecutions": [
+        {
+          "command": "/usr/bin/bash -lc 'node node_modules/agentic-engineering-harness/dist/main.js init .harness/projects/project-b'",
+          "exitCode": 0,
+          "output": "Created: .harness/project.yaml, .harness/toolchain.yaml, .harness/provider-versions.json, .harness/agents.source.jsonc, AGENTS.md, .harness/otel-collector.yaml, openspec/config.yaml, .harness managed assets (24), .gitignore (AEH generated-state block)\n"
+        },
+        {
+          "command": "/usr/bin/bash -lc 'node node_modules/agentic-engineering-harness/dist/main.js project register . --repository https://example.invalid/s13/project-a --display-name \"S13 Shared Name\" --registry /tmp/aeh-cert-fixture-XjMdaT/.harness/s13-registry/registry.json'",
+          "exitCode": 0,
+          "output": "{\n  \"version\": 1,\n  \"projectId\": \"project_b341e2fc7f1328dc9c183a37bfa0b665\",\n  \"canonicalRealpath\": \"/tmp/aeh-cert-fixture-XjMdaT\",\n  \"repositoryIdentity\": \"https://example.invalid/s13/project-a\",\n  \"displayName\": \"S13 Shared Name\",\n  \"configDigest\": \"17e2f017d8a655226bba5545dcb95ca60d7b4c5b53fc3b4cdedee74c9dd6a4c2\",\n  \"createdAt\": \"2026-09-30T05:33:07.737Z\",\n  \"updatedAt\": \"2026-09-30T05:33:07.737Z\",\n  \"availability\": \"available\"\n}\n"
+        },
+        {
+          "command": "/usr/bin/bash -lc 'node node_modules/agentic-engineering-harness/dist/main.js project register .harness/projects/project-b --repository https://example.invalid/s13/project-b --display-name \"S13 Shared Name\" --registry /tmp/aeh-cert-fixture-XjMdaT/.harness/s13-registry/registry.json'",
+          "exitCode": 0,
+          "output": "{\n  \"version\": 1,\n  \"projectId\": \"project_8afcc6d2901ff03ef3e7d97d62dd5224\",\n  \"canonicalRealpath\": \"/tmp/aeh-cert-fixture-XjMdaT/.harness/projects/project-b\",\n  \"repositoryIdentity\": \"https://example.invalid/s13/project-b\",\n  \"displayName\": \"S13 Shared Name\",\n  \"configDigest\": \"85e608b1113763bcf747e3a2985b8907963bb5969b9da8620d6341aed0d501d0\",\n  \"createdAt\": \"2026-09-30T05:33:11.113Z\",\n  \"updatedAt\": \"2026-09-30T05:33:11.113Z\",\n  \"availability\": \"available\"\n}\n"
+        },
+        {
+          "command": "/usr/bin/bash -lc 'node node_modules/agentic-engineering-harness/dist/main.js project list --registry /tmp/aeh-cert-fixture-XjMdaT/.harness/s13-registry/registry.json'",
+          "exitCode": 0,
+          "output": "[\n  {\n    \"version\": 1,\n    \"projectId\": \"project_b341e2fc7f1328dc9c183a37bfa0b665\",\n    \"canonicalRealpath\": \"/tmp/aeh-cert-fixture-XjMdaT\",\n    \"repositoryIdentity\": \"https://example.invalid/s13/project-a\",\n    \"displayName\": \"S13 Shared Name\",\n    \"configDigest\": \"17e2f017d8a655226bba5545dcb95ca60d7b4c5b53fc3b4cdedee74c9dd6a4c2\",\n    \"createdAt\": \"2026-09-30T05:33:07.737Z\",\n    \"updatedAt\": \"2026-09-30T05:33:07.737Z\",\n    \"availability\": \"available\"\n  },\n  {\n    \"version\": 1,\n    \"projectId\": \"project_8afcc6d2901ff03ef3e7d97d62dd5224\",\n    \"canonicalRealpath\": \"/tmp/aeh-cert-fixture-XjMdaT/.harness/projects/project-b\",\n    \"repositoryIdentity\": \"https://example.invalid/s13/project-b\",\n    \"displayName\": \"S13 Shared Name\",\n    \"configDigest\": \"85e608b1113763bcf747e3a2985b8907963bb5969b9da8620d6341aed0d501d0\",\n    \"createdAt\": \"2026-09-30T05:33:11.113Z\",\n    \"updatedAt\": \"2026-09-30T05:33:11.113Z\",\n    \"availability\": \"available\"\n  }\n]\n"
+        }
+      ]
+    },
+    "capability": {
+      "capability": "multi-project",
+      "contract": {
+        "status": "PASS",
+        "evidence": {
+          "oracleId": "s13-journey:multi-project",
+          "checks": [
+            {
+              "id": "repository-identity",
+              "category": "journey",
+              "status": "PASS",
+              "required": true,
+              "message": "Journey evidence 'repository-identity' verified for multi-project.",
+              "evidence": {
+                "detail": {
+                  "count": 2,
+                  "repositoryIdentities": [
+                    "https://example.invalid/s13/project-a",
+                    "https://example.invalid/s13/project-b"
+                  ],
+                  "projectIds": [
+                    "project_b341e2fc7f1328dc9c183a37bfa0b665",
+                    "project_8afcc6d2901ff03ef3e7d97d62dd5224"
+                  ],
+                  "canonicalRealpaths": [
+                    "/tmp/aeh-cert-fixture-XjMdaT",
+                    "/tmp/aeh-cert-fixture-XjMdaT/.harness/projects/project-b"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "project-selection",
+              "category": "journey",
+              "status": "PASS",
+              "required": true,
+              "message": "Journey evidence 'project-selection' verified for multi-project.",
+              "evidence": {
+                "detail": {
+                  "displayNames": [
+                    "S13 Shared Name"
+                  ],
+                  "isolatedBy": [
+                    "repositoryIdentity",
+                    "projectId",
+                    "canonicalRealpath"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "actor.command:init-b",
+              "category": "provider",
+              "status": "PASS",
+              "required": true,
+              "message": "Provider executed 'node_modules/agentic-engineering-harness/dist/main.js init .harness/projects/project-b'.",
+              "evidence": {
+                "matched": true,
+                "exitCode": 0,
+                "output": "Created: .harness/project.yaml, .harness/toolchain.yaml, .harness/provider-versions.json, .harness/agents.source.jsonc, AGENTS.md, .harness/otel-collector.yaml, openspec/config.yaml, .harness managed assets (24), .gitignore (AEH generated-state block)\n"
+              }
+            },
+            {
+              "id": "actor.command:register-a",
+              "category": "provider",
+              "status": "PASS",
+              "required": true,
+              "message": "Provider executed 'node_modules/agentic-engineering-harness/dist/main.js project register . --repository https://example.invalid/s13/project-a'.",
+              "evidence": {
+                "matched": true,
+                "exitCode": 0,
+                "output": "{\n  \"version\": 1,\n  \"projectId\": \"project_b341e2fc7f1328dc9c183a37bfa0b665\",\n  \"canonicalRealpath\": \"/tmp/aeh-cert-fixture-XjMdaT\",\n  \"repositoryIdentity\": \"https://example.invalid/s13/project-a\",\n  \"displayName\": \"S13 Shared Name\",\n  \"configDigest\": \"17e2f017d8a655226bba5545dcb95ca60d7b4c5b53fc3b4cdedee74c9dd6a4c2\",\n  \"createdAt\": \"2026-09-30T05:33:07.737Z\",\n  \"updatedAt\": \"2026-09-30T05:33:07.737Z\",\n  \"availability\": \"available\"\n}\n"
+              }
+            },
+            {
+              "id": "actor.command:register-b",
+              "category": "provider",
+              "status": "PASS",
+              "required": true,
+              "message": "Provider executed 'node_modules/agentic-engineering-harness/dist/main.js project register .harness/projects/project-b --repository https://example.invalid/s13/project-b'.",
+              "evidence": {
+                "matched": true,
+                "exitCode": 0,
+                "output": "{\n  \"version\": 1,\n  \"projectId\": \"project_8afcc6d2901ff03ef3e7d97d62dd5224\",\n  \"canonicalRealpath\": \"/tmp/aeh-cert-fixture-XjMdaT/.harness/projects/project-b\",\n  \"repositoryIdentity\": \"https://example.invalid/s13/project-b\",\n  \"displayName\": \"S13 Shared Name\",\n  \"configDigest\": \"85e608b1113763bcf747e3a2985b8907963bb5969b9da8620d6341aed0d501d0\",\n  \"createdAt\": \"2026-09-30T05:33:11.113Z\",\n  \"updatedAt\": \"2026-09-30T05:33:11.113Z\",\n  \"availability\": \"available\"\n}\n"
+              }
+            },
+            {
+              "id": "actor.command:list",
+              "category": "provider",
+              "status": "PASS",
+              "required": true,
+              "message": "Provider executed 'node_modules/agentic-engineering-harness/dist/main.js project list'.",
+              "evidence": {
+                "matched": true,
+                "exitCode": 0,
+                "output": "[\n  {\n    \"version\": 1,\n    \"projectId\": \"project_b341e2fc7f1328dc9c183a37bfa0b665\",\n    \"canonicalRealpath\": \"/tmp/aeh-cert-fixture-XjMdaT\",\n    \"repositoryIdentity\": \"https://example.invalid/s13/project-a\",\n    \"displayName\": \"S13 Shared Name\",\n    \"configDigest\": \"17e2f017d8a655226bba5545dcb95ca60d7b4c5b53fc3b4cdedee74c9dd6a4c2\",\n    \"createdAt\": \"2026-09-30T05:33:07.737Z\",\n    \"updatedAt\": \"2026-09-30T05:33:07.737Z\",\n    \"availability\": \"available\"\n  },\n  {\n    \"version\": 1,\n    \"projectId\": \"project_8afcc6d2901ff03ef3e7d97d62dd5224\",\n    \"canonicalRealpath\": \"/tmp/aeh-cert-fixture-XjMdaT/.harness/projects/project-b\",\n    \"repositoryIdentity\": \"https://example.invalid/s13/project-b\",\n    \"displayName\": \"S13 Shared Name\",\n    \"configDigest\": \"85e608b1113763bcf747e3a2985b8907963bb5969b9da8620d6341aed0d501d0\",\n    \"createdAt\": \"2026-09-30T05:33:11.113Z\",\n    \"updatedAt\": \"2026-09-30T05:33:11.113Z\",\n    \"availability\": \"available\"\n  }\n]\n"
+              }
+            },
+            {
+              "id": "model.evidence",
+              "category": "provider",
+              "status": "PASS",
+              "required": true,
+              "message": "Deterministic oracle verified the capability journey and the real provider execution.",
+              "evidence": {
+                "capability": "multi-project",
+                "evidenceOk": true,
+                "actorOk": true,
+                "executions": [
+                  {
+                    "command": "/usr/bin/bash -lc 'node node_modules/agentic-engineering-harness/dist/main.js init .harness/projects/project-b'",
+                    "exitCode": 0
+                  },
+                  {
+                    "command": "/usr/bin/bash -lc 'node node_modules/agentic-engineering-harness/dist/main.js project register . --repository https://example.invalid/s13/project-a --display-name \"S13 Shared Name\" --registry /tmp/aeh-cert-fixture-XjMdaT/.harness/s13-registry/registry.json'",
+                    "exitCode": 0
+                  },
+                  {
+                    "command": "/usr/bin/bash -lc 'node node_modules/agentic-engineering-harness/dist/main.js project register .harness/projects/project-b --repository https://example.invalid/s13/project-b --display-name \"S13 Shared Name\" --registry /tmp/aeh-cert-fixture-XjMdaT/.harness/s13-registry/registry.json'",
+                    "exitCode": 0
+                  },
+                  {
+                    "command": "/usr/bin/bash -lc 'node node_modules/agentic-engineering-harness/dist/main.js project list --registry /tmp/aeh-cert-fixture-XjMdaT/.harness/s13-registry/registry.json'",
+                    "exitCode": 0
+                  }
+                ]
+              }
+            }
+          ],
+          "requiredEvidence": [
+            "repository-identity",
+            "project-selection"
+          ],
+          "missingEvidence": []
+        }
+      },
+      "modelE2E": {
+        "status": "PASS",
+        "evidence": {
+          "execution": {
+            "started": true,
+            "provider": "codex",
+            "command": "codex",
+            "requestedModel": "gpt-6-luna",
+            "effectiveModel": "gpt-6-luna",
+            "requestedReasoningEffort": "low",
+            "effectiveReasoningEffort": "low",
+            "capabilitySource": "codex exec --help",
+            "sessionId": "01a0f0cd-4131-7e33-9e58-877b7b454039",
+            "processExitCode": 0,
+            "startedAt": "2026-09-30T05:32:57.865Z",
+            "finishedAt": "2026-09-30T05:33:16.230Z"
+          },
+          "usage": {
+            "inputTokens": 78966,
+            "cachedInputTokens": 70400,
+            "outputTokens": 452,
+            "reasoningOutputTokens": 0,
+            "totalTokens": 79418
+          },
+          "usageKnown": true
+        }
+      },
+      "overall": "PASS",
+      "requiredModelE2E": true
+    }
+  },
+  "result": "PASS",
+  "finishedAt": "2026-09-30T05:33:16.471Z"
+}

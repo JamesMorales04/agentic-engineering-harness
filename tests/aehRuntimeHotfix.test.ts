@@ -1,3 +1,4 @@
+import { saveOwnedOperation } from "./helpers/ownedOperation.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -68,7 +69,7 @@ const config = {
 describe("AEH runtime hotfix", () => {
   it("keeps status reads read-only and acknowledges only through the explicit exact-revision lead primitive", async () => {
     const root = await tempRoot();
-    await saveOperation(root, operation(root));
+    await saveOwnedOperation(root, operation(root));
     let current = await bindOperationLead(root, "AUDIT-HOTFIX", "lead-1", "test");
     const boundRevision = current.revision;
     current = await setOperationStage(root, "AUDIT-HOTFIX", "reviewing", "RUNNING");
@@ -97,7 +98,7 @@ describe("AEH runtime hotfix", () => {
 
   it("persists a bounded stalled-revision wake budget across monitor reloads", async () => {
     const root = await tempRoot();
-    await saveOperation(root, operation(root));
+    await saveOwnedOperation(root, operation(root));
     let current = await bindOperationLead(root, "AUDIT-HOTFIX", "lead-1", "test");
     current = await registerSupervisorGeneration(root, "AUDIT-HOTFIX", {
       agentId: "supervisor-1",
@@ -141,7 +142,7 @@ describe("AEH runtime hotfix", () => {
 
   it("suppresses further terminal LLM wakes after the durable retry budget is exhausted", async () => {
     const root = await tempRoot();
-    await saveOperation(root, operation(root));
+    await saveOwnedOperation(root, operation(root));
     await bindOperationLead(root, "AUDIT-HOTFIX", "lead-1", "test");
     const terminal = await transitionOperationToTerminal(root, "AUDIT-HOTFIX", {
       status: "CANCELLED",

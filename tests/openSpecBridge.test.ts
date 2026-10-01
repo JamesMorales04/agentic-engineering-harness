@@ -1,10 +1,14 @@
 import fs from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import YAML from "yaml";
 import { describe, expect, it, vi } from "vitest";
 import type { HarnessProjectConfig, TaskContract } from "../src/core/types.js";
-import { compileOpenSpecChange, openSpecChangeName, preflightOpenSpec, prepareOpenSpecChange } from "../src/spec/openspec.js";
+import { computeWorktreeDigest } from "../src/core/git.js";
+import { assertWorkspaceMatchesCandidate } from "../src/candidates/identity.js";
+import { createCandidateRevisionV1 } from "../src/operations/v2Contracts.js";
+import { compileOpenSpecChange, openSpecChangeName, persistOpenSpecAuthoringContentV1, preflightOpenSpec, prepareOpenSpecChange } from "../src/spec/openspec.js";
 import { validateSddChange } from "../src/core/sdd.js";
 
 function result(exitCode: number, stdout = "", stderr = "") { return { exitCode, stdout, stderr, durationMs: 1 }; }
@@ -17,6 +21,25 @@ const config = {
 } as HarnessProjectConfig;
 
 describe("OpenSpec authoring bridge", () => {
+  it("persists Spec Manager structured content through controller-owned canonical paths", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-openspec-authoring-content-"));
+    const paths = await persistOpenSpecAuthoringContentV1(root, "change-1", {
+      proposal: "# Change\n\nAdd an observable behavior.\n",
+      design: "# Design\n\nKeep implementation scoped.\n",
+      tasks: "- [ ] Implement the behavior\n",
+      specs: [{ capability: "demo-capability", content: "# Capability\n\n## ADDED Requirements\n\n### Requirement: Behavior\nThe system SHALL behave.\n\n#### Scenario: Behavior is observable\n\n- **WHEN** the change is applied\n- **THEN** the behavior is observable\n" }]
+    });
+    expect(paths).toEqual([
+      "openspec/changes/change-1/proposal.md",
+      "openspec/changes/change-1/tasks.md",
+      "openspec/changes/change-1/design.md",
+      "openspec/changes/change-1/specs/demo-capability/spec.md"
+    ]);
+    expect(await fs.readFile(path.join(root, paths[0]!), "utf8")).toContain("# Change");
+    expect(await fs.readFile(path.join(root, paths[3]!), "utf8")).toContain("Requirement: Behavior");
+    await expect(persistOpenSpecAuthoringContentV1(root, "../outside", { proposal: "x", tasks: "y", specs: [] })).rejects.toThrow("OPENSPEC_CHANGE_NAME_INVALID");
+  });
+
   it("preflights required capabilities without depending on --json output", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-openspec-preflight-"));
     const commands: string[] = [];
@@ -30,10 +53,39 @@ describe("OpenSpec authoring bridge", () => {
       return result(1, "", `unexpected ${command}`);
     });
     const preflight = await preflightOpenSpec(root, config, run as never);
-    const prepared = await prepareOpenSpecChange(root, config, "CHANGE-1", "Compatibility", run as never);
+    const prepared = await prepareOpenSpecChange(root, config, "CHANGE-1");
     expect(preflight).toEqual(expect.objectContaining({ version: "OpenSpec 0.test", schema: "spec-driven", managerAgent: "spec-manager" }));
     expect(prepared.changeName).toBe("change-1");
     expect(commands.some((command) => command.includes("--json"))).toBe(false);
+  });
+
+  it("does not mutate a frozen CandidateRevision workspace before the Spec Manager result is accepted", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-openspec-candidate-binding-"));
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: root, stdio: "ignore" });
+    execFileSync("git", ["config", "user.name", "AEH Test"], { cwd: root, stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "aeh@example.invalid"], { cwd: root, stdio: "ignore" });
+    await fs.writeFile(path.join(root, "README.md"), "# Formal candidate\n");
+    execFileSync("git", ["add", "README.md"], { cwd: root, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "candidate baseline"], { cwd: root, stdio: "ignore" });
+
+    const candidate = createCandidateRevisionV1({
+      operationId: "CHANGE-1",
+      candidateId: "candidate:CHANGE-1:r1",
+      taskId: "CHANGE-1",
+      revision: 1,
+      sourceDigest: await computeWorktreeDigest(root),
+      worktree: root
+    });
+    const prepared = await prepareOpenSpecChange(root, config, "CHANGE-1");
+
+    expect(prepared.changeName).toBe("change-1");
+    expect(await computeWorktreeDigest(root)).toBe(candidate.sourceDigest);
+    await expect(assertWorkspaceMatchesCandidate(root, candidate)).resolves.toMatchObject({
+      expectedSourceDigest: candidate.sourceDigest,
+      observedSourceDigest: candidate.sourceDigest,
+      status: "MATCH"
+    });
+    await expect(fs.access(prepared.directory)).rejects.toThrow();
   });
 
   it("fails preflight when a semantic OpenSpec capability is unavailable", async () => {

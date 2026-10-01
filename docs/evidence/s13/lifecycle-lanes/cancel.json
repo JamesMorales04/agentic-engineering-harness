@@ -1,0 +1,140 @@
+{
+  "version": 1,
+  "capability": "cancel",
+  "provider": "opencode/opencode-go/mimo-v2.6-flash",
+  "startedAt": "2026-09-28T03:22:36.956Z",
+  "checks": [
+    {
+      "id": "cancel.real-session-lease",
+      "ok": true,
+      "message": "durable lease bound real provider session eb37eea4-0724-4cf4-bd12-ac255f00c7cc"
+    },
+    {
+      "id": "cancel.restart-newer-epoch",
+      "ok": true,
+      "message": "controller epoch advanced to 2"
+    },
+    {
+      "id": "cancel.terminal-state",
+      "ok": true,
+      "message": "terminal status=CANCELLED"
+    },
+    {
+      "id": "cancel.exact-session-stopped",
+      "ok": true,
+      "message": "real session status after cancel=idle"
+    },
+    {
+      "id": "cancel.lease-drained",
+      "ok": true,
+      "message": "provider leases after cancellation=0"
+    }
+  ],
+  "candidateBinding": {
+    "packedArtifactDigest": "db969697dd217fc2c27d9d30a7b9966265d26babb34a8330eebb7c15f33b0770",
+    "fixtureCommit": "e0546e96794f96e7f654678e3ea68f6d3d493a35"
+  },
+  "leaseAcquired": {
+    "leaseId": "lease:90adfe82-19d9-4050-a909-b589f2664535",
+    "provider": "opencode",
+    "lifecycle": {
+      "operationId": "AUDIT-S13-REAL-CANCEL",
+      "candidateDigest": "8254f7e2b1f9144d109985cd25610830fe918e693a1c6377d48af7ff4064f896",
+      "operationExecutionRevision": 1,
+      "policyDigest": "effdaf7f437ee75a7ab14c9f8c809bba6aec64b6e5b212d48b1600dd1524f79e",
+      "controllerTokenDigest": "a8400d3de09b7c0dcac4bf077c6186793979ccab32e60bcaa0d4a0b9009ded23",
+      "controllerEpoch": 1,
+      "leadAgentId": "packed-lifecycle-lead",
+      "leadGeneration": 1,
+      "providerStatus": "ACTIVE",
+      "sessionId": "eb37eea4-0724-4cf4-bd12-ac255f00c7cc"
+    }
+  },
+  "sessionBeforeStop": {
+    "Id": "eb37eea4-0724-4cf4-bd12-ac255f00c7cc",
+    "Name": "aeh-s13-lifecycle-cancel",
+    "Provider": "opencode",
+    "Model": "opencode-go/mimo-v2.6-flash",
+    "Thinking": "auto",
+    "Status": "idle",
+    "Archived": false,
+    "ArchivedAt": null,
+    "Mode": "default",
+    "Cwd": "/tmp/aeh-s13-lifecycle-RpNwmk/fixture-cancel",
+    "CreatedAt": "2026-09-28T03:22:45.814Z",
+    "UpdatedAt": "2026-09-28T03:22:45.848Z",
+    "LastUsage": null,
+    "Capabilities": {
+      "Streaming": true,
+      "Persistence": true,
+      "DynamicModes": true,
+      "McpServers": true
+    },
+    "AvailableModes": [
+      {
+        "id": "build",
+        "label": "Build"
+      },
+      {
+        "id": "plan",
+        "label": "Plan"
+      }
+    ],
+    "PendingPermissions": [],
+    "Worktree": null,
+    "ParentAgentId": null
+  },
+  "ownerTerminated": {
+    "signal": "SIGKILL",
+    "exitCode": null
+  },
+  "operationAfterOwnerCrash": {
+    "status": "RUNNING",
+    "controllerEpoch": 1
+  },
+  "controllerEpochAfterRestart": 2,
+  "operationTerminal": {
+    "status": "CANCELLED",
+    "phase": "cancelled"
+  },
+  "sessionAfterStop": {
+    "Id": "eb37eea4-0724-4cf4-bd12-ac255f00c7cc",
+    "Name": "aeh-s13-lifecycle-cancel",
+    "Provider": "opencode",
+    "Model": "opencode-go/mimo-v2.6-flash",
+    "Thinking": "auto",
+    "Status": "idle",
+    "Archived": false,
+    "ArchivedAt": null,
+    "Mode": "default",
+    "Cwd": "/tmp/aeh-s13-lifecycle-RpNwmk/fixture-cancel",
+    "CreatedAt": "2026-09-28T03:22:45.814Z",
+    "UpdatedAt": "2026-09-28T03:22:45.848Z",
+    "LastUsage": null,
+    "Capabilities": {
+      "Streaming": true,
+      "Persistence": true,
+      "DynamicModes": true,
+      "McpServers": true
+    },
+    "AvailableModes": [
+      {
+        "id": "build",
+        "label": "Build"
+      },
+      {
+        "id": "plan",
+        "label": "Plan"
+      }
+    ],
+    "PendingPermissions": [],
+    "Worktree": null,
+    "ParentAgentId": null
+  },
+  "leasesAfterCancel": 0,
+  "result": "PASS",
+  "rowResult": {
+    "cancel": "PASS"
+  },
+  "finishedAt": "2026-09-28T03:22:49.060Z"
+}

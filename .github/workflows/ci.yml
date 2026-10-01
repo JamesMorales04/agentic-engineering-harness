@@ -28,17 +28,43 @@ jobs:
           npm exec -- aeh --version | grep -Fx "$EXPECTED_VERSION"
           npm exec -- aeh --help | grep -q 'operation start audit|run'
       - run: npm run release:check
+
+  packaged-consumer:
+    name: packaged-consumer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - run: npm ci
+      - name: Provision the required consumer toolchain provider
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y podman
+          podman --version
+      - name: Run packaged build and hygiene contracts
+        run: npm run test:packaged-consumer
       - name: Smoke packaged CLI from consumer install
         shell: bash
         run: |
           set -euo pipefail
           EXPECTED_VERSION="$(node -p "require('./package.json').version")"
-          TGZ="$(npm pack --silent)"
+          npm run build
+          PACKAGE_NAME="$(node -p "require('./package.json').name.replace(/^@/, '').replaceAll('/', '-')")"
+          PACK_DESTINATION="$(mktemp -d "$RUNNER_TEMP/aeh-packaged-consumer.XXXXXX")"
+          AEH_PACK_DESTINATION="$PACK_DESTINATION" node scripts/ci/packCandidate.mjs
+          TGZ="$PACK_DESTINATION/$PACKAGE_NAME-$EXPECTED_VERSION.tgz"
+          test -s "$TGZ"
+          sha256sum "$TGZ"
           TMP="$(mktemp -d)"
           mkdir -p "$TMP/consumer"
           cd "$TMP/consumer"
           npm init -y >/dev/null
-          npm install "$GITHUB_WORKSPACE/$TGZ" >/dev/null
+          npm install "$TGZ" >/dev/null
           ./node_modules/.bin/aeh --version | grep -Fx "$EXPECTED_VERSION"
           TOOLS="$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | ./node_modules/.bin/aeh operation mcp)"
           printf '%s\n' "$TOOLS" | grep -q 'aeh_operation_start_audit'
@@ -72,7 +98,30 @@ jobs:
           ./node_modules/.bin/aeh setup --dry-run repo
           test -f repo/.harness/skills/engineering-workflow/SKILL.md
           ./node_modules/.bin/aeh policy sync repo >/dev/null
-          ./node_modules/.bin/aeh intent 'review the repo and validate the code for improvements' repo | grep -q '^AUDIT'
+          mkdir -p repo/.harness/fixtures
+          cat > repo/.harness/fixtures/deterministic-paseo-runtime.json <<'EOF'
+          {
+            "version": 1,
+            "responses": {
+              "semantic-assessment:INTENT": [
+                {
+                  "judgment": {
+                    "type": "INTENT",
+                    "intent": "audit",
+                    "confidence": 1,
+                    "evidenceRefs": ["request"]
+                  },
+                  "claims": [],
+                  "assumptions": [],
+                  "unknowns": [],
+                  "recommendations": [],
+                  "knowledgeGaps": []
+                }
+              ]
+            }
+          }
+          EOF
+          AEH_DETERMINISTIC_PASEO_RUNTIME=1 AEH_PASEO_FORCE_CLI=0 ./node_modules/.bin/aeh intent 'review the repo and validate the code for improvements' repo | grep -q '^AUDIT'
           ./node_modules/.bin/aeh operation status DOES-NOT-EXIST repo >/dev/null 2>&1 && exit 1 || true
 
   scenario-matrix:
@@ -152,6 +201,39 @@ jobs:
           path: .aeh-test-results/
           if-no-files-found: ignore
 
+  rootless-isolation:
+    name: rootless-isolation
+    # Temporary runner choice during GitHub's Ubuntu 22 deprecation window: deprecation began 2026-09-17; fully unsupported 2027-04-17, so migrate before then (https://github.com/actions/runner-images/issues/14254).
+    # Ubuntu 24.04's default AppArmor user-namespace policy denies capabilities bwrap needs.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - run: npm ci
+      - name: Provision the required rootless bwrap provider
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y bubblewrap
+          bwrap --version
+          HOST_UID="$(id -u)"
+          BWRAP_ARGS=(--unshare-user --unshare-pid --unshare-uts --unshare-ipc --unshare-net --die-with-parent --new-session --proc /proc --dev /dev --tmpfs /tmp)
+          for SYSTEM_ROOT in /usr /etc /bin /lib /lib64 /sbin; do
+            if test -e "$SYSTEM_ROOT"; then BWRAP_ARGS+=(--ro-bind-try "$SYSTEM_ROOT" "$SYSTEM_ROOT"); fi
+          done
+          bwrap "${BWRAP_ARGS[@]}" --chdir /tmp --clearenv --setenv PATH /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin --setenv HOME /tmp --setenv EXPECTED_UID "$HOST_UID" -- /bin/sh -c '
+            test "$(id -u)" = "$EXPECTED_UID"
+            test "$(ip -o link show 2>/dev/null | wc -l)" -eq 1
+            grep -E "^(CapEff|NoNewPrivs):" /proc/self/status
+            printf "rootless_bwrap_namespace_smoke=PASS\n"
+          '
+      - name: Run real namespace, mutation, validator, and egress campaign
+        run: npm run test:rootless-isolation
+
   full-stack-contract:
     name: full-stack-contract
     runs-on: ubuntu-latest
@@ -198,6 +280,13 @@ jobs:
         env:
           AEH_STRICT_FULL_STACK: "1"
         run: npx vitest run tests/architectureClosureIntegration.test.ts
+      - name: Upload strict full-stack authority and recovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-stack-contract-evidence
+          path: .aeh-test-results/full-stack-contract.json
+          if-no-files-found: error
 
   provider-contracts:
     name: provider-contracts
@@ -223,11 +312,12 @@ jobs:
           GRAPHIFY_VERSION="$(node -p "require('./$VERSIONS').graphify")"
           SERENA_VERSION="$(node -p "require('./$VERSIONS').serena")"
           ENGRAM_VERSION="$(node -p "require('./$VERSIONS').engram")"
+          OPENSPEC_VERSION="$(node -p "require('./$VERSIONS').openspec")"
           TRIVY_VERSION="$(node -p "require('./$VERSIONS').trivy")"
           OPENGREP_VERSION="$(node -p "require('./$VERSIONS').opengrep")"
           PNPM_VERSION="$(node -p "require('./$VERSIONS').pnpm")"
           mkdir -p "$RUNNER_TEMP/aeh-provider-tools"
-          (cd "$RUNNER_TEMP/aeh-provider-tools" && mise use --yes "npm:pnpm@$PNPM_VERSION" "aqua:aquasecurity/trivy@$TRIVY_VERSION" "aqua:opengrep/opengrep@$OPENGREP_VERSION")
+          (cd "$RUNNER_TEMP/aeh-provider-tools" && mise use --yes "npm:pnpm@$PNPM_VERSION" "npm:@fission-ai/openspec@$OPENSPEC_VERSION" "aqua:aquasecurity/trivy@$TRIVY_VERSION" "aqua:opengrep/opengrep@$OPENGREP_VERSION")
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           (cd "$RUNNER_TEMP/aeh-provider-tools" && mise bin-paths) >> "$GITHUB_PATH"
           uv tool install "headroom-ai[all]==$HEADROOM_VERSION"
@@ -237,6 +327,7 @@ jobs:
           test "$(cd "$RUNNER_TEMP/aeh-provider-tools" && mise exec -- pnpm --version)" = "$PNPM_VERSION"
           (cd "$RUNNER_TEMP/aeh-provider-tools" && mise exec -- trivy --version) | grep -F "Version: $TRIVY_VERSION"
           (cd "$RUNNER_TEMP/aeh-provider-tools" && mise exec -- opengrep --version) | grep -F "$OPENGREP_VERSION"
+          test "$(cd "$RUNNER_TEMP/aeh-provider-tools" && mise exec -- openspec --version)" = "$OPENSPEC_VERSION"
           npx playwright install --with-deps chromium
       - name: Start Engram local server
         shell: bash
@@ -247,7 +338,7 @@ jobs:
       - name: Run real provider contracts
         env:
           AEH_RUN_REAL_PROVIDERS: "1"
-        run: npx vitest run tests/providerContracts.test.ts
+        run: npx vitest run tests/providerContracts.test.ts tests/specManagerCanonicality.test.ts tests/changePlanRequirementTraceability.test.ts tests/changeControllerOwnedDecision.test.ts
 
   supply-chain:
     name: supply-chain
@@ -259,13 +350,19 @@ jobs:
           node-version: 22
           package-manager-cache: false
       - run: npm ci
-      - run: npm run build
       - run: npx vitest run tests/provenance.test.ts
       - uses: jdx/mise-action@v4
         with:
           version: 2026.7.0
           install: false
+      - name: Select pinned Cosign release
+        id: cosign-version
+        run: |
+          COSIGN_VERSION="$(node -p "require('./templates/provider-versions.json').cosign")"
+          printf 'version=%s\n' "$COSIGN_VERSION" >> "$GITHUB_OUTPUT"
       - uses: sigstore/cosign-installer@v3.7.0
+        with:
+          cosign-release: v${{ steps.cosign-version.outputs.version }}
       - name: Install the pinned Trivy provider
         shell: bash
         run: |
@@ -276,40 +373,99 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           (cd "$RUNNER_TEMP/aeh-provider-tools" && mise bin-paths) >> "$GITHUB_PATH"
           (cd "$RUNNER_TEMP/aeh-provider-tools" && mise exec -- trivy --version) | grep -F "Version: $TRIVY_VERSION"
-      - name: Generate an ephemeral non-production Cosign key
+      - name: Create disposable candidate worktree
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORKTREE="$RUNNER_TEMP/aeh-supply-chain-worktree"
+          git worktree add --detach "$WORKTREE" HEAD
+          printf 'AEH_SUPPLY_ROOT=%s\n' "$WORKTREE" >> "$GITHUB_ENV"
+      - name: Build candidate in disposable worktree
+        working-directory: ${{ runner.temp }}/aeh-supply-chain-worktree
+        run: |
+          npm ci
+          npm run build
+      - name: Pack exact candidate and configure strict identity policy
+        working-directory: ${{ runner.temp }}/aeh-supply-chain-worktree
         env:
           COSIGN_PASSWORD: ''
+        shell: bash
         run: |
-          cosign generate-key-pair
+          set -euo pipefail
+          COSIGN_VERSION="$(node -p "require('./templates/provider-versions.json').cosign")"
+          cosign version | grep -Fx "GitVersion:    v$COSIGN_VERSION"
+          mkdir -p .harness/supply-chain
+          (cd .harness/supply-chain && cosign generate-key-pair)
+          AEH_PACKED_ARTIFACT="$(node --input-type=module -e "import fs from 'node:fs'; const pkg=JSON.parse(fs.readFileSync('package.json','utf8')); process.stdout.write('.harness/supply-chain/'+pkg.name.replace(/^@/,'').replaceAll('/','-')+'-'+pkg.version+'.tgz')")"
+          printf 'AEH_PACKED_ARTIFACT=%s\n' "$AEH_PACKED_ARTIFACT" >> "$GITHUB_ENV"
+          export AEH_PACKED_ARTIFACT
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
           import { parse, stringify } from 'yaml';
+          const artifact = process.env.AEH_PACKED_ARTIFACT;
           const file = '.harness/project.yaml';
           const document = parse(fs.readFileSync(file, 'utf8'));
+          const outputDir = document.provenance?.outputDir ?? '.harness/provenance';
+          const sbom = `${outputDir}/${artifact.split('/').at(-1)}.cyclonedx.json`;
           document.provenance = {
             ...(document.provenance ?? {}),
-            sbom: { ...(document.provenance?.sbom ?? {}), required: true },
-            signing: { ...(document.provenance?.signing ?? {}), required: true, key: 'cosign.key' },
-            verification: { ...(document.provenance?.verification ?? {}), required: true, publicKey: 'cosign.pub' }
+            required: true,
+            artifact,
+            sbom: {
+              ...(document.provenance?.sbom ?? {}),
+              required: true,
+              command: `node scripts/ci/generatePackedArtifactSbom.mjs ${artifact} ${sbom}`
+            },
+            signing: { ...(document.provenance?.signing ?? {}), required: true, key: '.harness/supply-chain/cosign.key' },
+            verification: { ...(document.provenance?.verification ?? {}), required: true, publicKey: '.harness/supply-chain/cosign.pub' }
           };
           fs.writeFileSync(file, stringify(document));
           NODE
-      - name: Generate and verify the production-path evidence chain
+          npm pack --ignore-scripts --pack-destination .harness/supply-chain > "$RUNNER_TEMP/aeh-pack.log" 2>&1
+          test -s "$AEH_PACKED_ARTIFACT"
+          EXPECTED_IDENTITY="$(node --input-type=module -e "import fs from 'node:fs'; const pkg=JSON.parse(fs.readFileSync('package.json','utf8')); process.stdout.write(pkg.name+'@'+pkg.version)")"
+          PACKED_IDENTITY="$(tar -xOf "$AEH_PACKED_ARTIFACT" package/package.json | node --input-type=module -e "let input=''; for await (const chunk of process.stdin) input+=chunk; const pkg=JSON.parse(input); process.stdout.write(pkg.name+'@'+pkg.version)")"
+          test "$PACKED_IDENTITY" = "$EXPECTED_IDENTITY"
+          sha256sum "$AEH_PACKED_ARTIFACT"
+      - name: Create controller-owned candidate evidence in disposable worktree
+        working-directory: ${{ runner.temp }}/aeh-supply-chain-worktree
+        run: npx tsx scripts/ci/createSupplyChainCandidate.ts
+      - name: Generate and verify exact-artifact evidence chain
+        working-directory: ${{ runner.temp }}/aeh-supply-chain-worktree
         env:
           COSIGN_PASSWORD: ''
         run: |
-          printf 'supply-chain-fixture\n' > supply-chain-fixture.txt
-          node dist/main.js provenance generate --artifact supply-chain-fixture.txt --sign .
-          node dist/main.js provenance verify .
+          set -euo pipefail
+          node dist/main.js provenance generate --artifact "$AEH_PACKED_ARTIFACT" --task "$AEH_SUPPLY_TASK_ID" --sign .
+          node dist/main.js provenance verify --task "$AEH_SUPPLY_TASK_ID" .
+      - name: Collect pre-tamper artifact-bound evidence
+        working-directory: ${{ runner.temp }}/aeh-supply-chain-worktree
+        env:
+          AEH_SUPPLY_EVIDENCE_DIR: ${{ runner.temp }}/aeh-supply-chain-evidence
+        run: node scripts/ci/prepareSupplyChainEvidence.mjs "$AEH_SUPPLY_EVIDENCE_DIR"
+      - name: Upload verified supply-chain evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: supply-chain-evidence
+          path: ${{ runner.temp }}/aeh-supply-chain-evidence/
+          if-no-files-found: error
       - name: Confirm tampering is rejected
+        working-directory: ${{ runner.temp }}/aeh-supply-chain-worktree
         env:
           COSIGN_PASSWORD: ''
         run: |
-          printf 'tampered\n' >> supply-chain-fixture.txt
-          if node dist/main.js provenance verify .; then
-            echo 'tampered supply-chain evidence was accepted' >&2
+          set -euo pipefail
+          printf 'tampered\n' >> "$AEH_PACKED_ARTIFACT"
+          if node dist/main.js provenance verify --task "$AEH_SUPPLY_TASK_ID" .; then
+            echo 'tampered packed candidate was accepted' >&2
             exit 1
           fi
+      - name: Remove disposable candidate worktree
+        if: always()
+        shell: bash
+        run: |
+          git worktree remove --force "$RUNNER_TEMP/aeh-supply-chain-worktree" || true
+          git worktree prune
 
   validation-contracts:
     name: validation provider contracts
@@ -321,7 +477,7 @@ jobs:
           node-version: 22
           package-manager-cache: false
       - run: npm ci
-      - run: npm test -- --run tests/validationProviders.test.ts tests/maturityEvidence.test.ts
+      - run: npx vitest run tests/validationProviders.test.ts tests/maturityEvidence.test.ts
 
   contract-testing:
     name: real Pact provider verification
@@ -336,7 +492,7 @@ jobs:
       - run: npm ci
       - name: Install the official local Pact CLI
         run: cargo install pact --locked
-      - run: npm test -- --run tests/validationProviders.test.ts
+      - run: npx vitest run tests/validationProviders.test.ts
 
   integration-environment:
     name: OCI integration environment contract
@@ -350,4 +506,4 @@ jobs:
       - run: npm ci
       - name: Run the capability-gated OCI fixture
         run: docker run --rm --network none alpine:3.20 sh -c 'test "$(printf ready)" = ready'
-      - run: npm test -- --run tests/validationProviders.test.ts
+      - run: npx vitest run tests/validationProviders.test.ts

@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "id": "aeh-self-hosting-composite-v1",
+  "generatedAt": "2026-09-30T21:36:42.266Z",
+  "policyDigest": "1be97df3f7736b76dd048648555874b43e7df5cffc5d1ba98b6a0b555085aef3",
+  "artifacts": {
+    "s10.sast": "3a106006801c7b03e79795b8beedc4af240facd16ee78675d8f8194fd7848779",
+    "s13.certification": "5446493ecf7e1b002aa97cb1ae4fe4d544c8273c50e42034e7e0ede27f8978af",
+    "s13.certification-repair": "2e10c4d4d433ba5506f42a09440ff2e75432176de876d0c047abba9b32c3f5ad",
+    "s13.ctx.context-handoff": "33a125e6347c26af89208b67b4e1748c73891afa27c5372ffa4788dc278e1f95",
+    "s13.ctx.permission-delegation": "e26176dcf85e30014be3f9fd6e9147b3ca4b958591d7fb491551bf52f0884015",
+    "s13.frozen-release-manifest": "ac134c331984f013eadac860987973333ae2c56a3fa2132e4a27471b87564286",
+    "s13.gh.authority": "7fbed79965bc0003eb186ecee310120f31581fc2f90ee5907e5caf0f04abca6a",
+    "s13.gh.delivery": "7afdde1111a1e57cadd4a1363160cb9f8baaa804804b317192afb8abec2fd71b",
+    "s13.gh.issue-driven": "701c2cdb7355a270d77308257130afea2ad44dce9813aeae3b6c01f22ff0fcdb",
+    "s13.gov.audit": "973772b79c316d2a0d68c14ac4d4a474754fdc6cbdcd118677384ce91e936362",
+    "s13.gov.change-delegated": "e21de775d76f32d33cbef5ed9c2622c0d14c571c5f7e52ce00c1a14fcc07ffaf",
+    "s13.gov.change-direct": "0002a79678fa86f30e24df2bdb46a34f8509a53f523424d48c380d4ae804ccd3",
+    "s13.gov.change-formal": "a91a49e63241a315b44b3f9b8c16774aa07635a9551ad17cd01efb04bd8f1d71",
+    "s13.gov.change-multifile": "b3f931ad0bc188e95caa9f96b7ffd03f10a42e4bae381b79f39084c0f120b787",
+    "s13.gov.distributed": "69b735d04a75f1d37795e6d930854a20d2da7822caf9f44b5b2e59268e1042d0",
+    "s13.gov.multi-worker": "47693c99de958e747811cec1cfe3ea591a3d474e0e5a1457ecd73da9759a2f88",
+    "s13.gov.repair": "20621848a613e921038fc81d503b1457dcf75c68c75029623d4af72b841dbd5c",
+    "s13.journey.issue": "6aab2cf158e22c1a2d0775d81d3f956787429595866f7539080f99cd3e4d9381",
+    "s13.lifecycle": "3fcc039e0a03adc3973b3d3643e11e89f71303f6ecd96f3f7d20243db204dad9",
+    "s13.review-final": "fe3bc3d1b507c4c4bab36f32deabdc1c98defedcb1dd12b1006b366a19bd4f8a",
+    "s14.adversarial": "c100197d811fbf5e7cb7344f0157de22288cb809c19f916b42efae592a7a6a20",
+    "s14.campaign": "17e9b926cc17aaaafa34efa78222bcb1d6c1119f77b0e0375f398160d0f6e19a",
+    "s14.campaign-raw": "ad38ea222c842f9751c1c62ec75816818268db022d852e0ac911710a315f5a95",
+    "s14.lifecycle-current": "ead63493846fb3bb15b1ea7bba083a2486d89b642c62c187407d88ae22c73438",
+    "s14.stability": "94ed891de6e1d72b4039f7a733b55e6625a94a48df61fd5f0288147c5a157f14"
+  }
+}

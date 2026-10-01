@@ -1,9 +1,13 @@
 # Roadmap
 
-Roadmap checkboxes indicate that a capability exists in the current revision;
-they do not by themselves claim production maturity. See
-[`docs/COMPONENT_MATURITY.md`](docs/COMPONENT_MATURITY.md) for the current
-classification and remaining hardening work for each component.
+This file records product evolution and version history. Its checkboxes are
+historical milestones and do not define the normative Core Architecture v2
+target or its current implementation status. The sole normative target is
+[docs/CORE_ARCHITECTURE_V2.md](docs/CORE_ARCHITECTURE_V2.md); the living
+Core-v2 roadmap and evidence snapshot are in
+[docs/CORE_ARCHITECTURE_V2_STATUS.md](docs/CORE_ARCHITECTURE_V2_STATUS.md), with
+claim-to-evidence boundaries in
+[docs/CORE_ARCHITECTURE_V2_CONFORMANCE.md](docs/CORE_ARCHITECTURE_V2_CONFORMANCE.md).
 
 ## v0.1 — foundation ✅
 - [x] portable CLI, TaskContracts, sealing, deterministic gates, OPA, Paseo/Engram/Graphify, telemetry and reusable skills

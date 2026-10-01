@@ -1,0 +1,102 @@
+{
+ "version": 1,
+ "slice": "S13",
+ "round": 23,
+ "kind": "ABORTED_LANE_ATTEMPT_RECONCILIATION",
+ "runId": "r23-gov-6",
+ "generatedAt": "2026-09-30T15:29:40Z",
+ "operationId": "CHANGE-20260930T145259Z-cf61361e",
+ "operationStatusAtReconciliation": "RUNNING",
+ "operationPhaseAtReconciliation": "context (review RUNNING)",
+ "operationRevisionAtReconciliation": 134,
+ "operationStateCopy": "/tmp/opencode/r23/gov-6-operation-state.json",
+ "laneArtifact": "docs/evidence/s13/governed-lanes/round-23/r23-gov-6/repair.json",
+ "reason": "The forcing geometry worked end to end through remediation (repair packet `CHANGE-20260930T145259Z-cf61361e-1.json`, Repairer COMPLETED, candidate r4 validation report PASS, `product-repair` row PASS), but the bounded lane hit its 1,800 s bound with `review` RUNNING (rev 134, watchdog `supervisor-suppressed-active-children` 1 active runtime participant / 5 unresolved). The reviewer provider turn (opencode-go/mimo-v2.6-flash) stayed in a long deliberation loop for 24+ minutes, reasoning about a latent out-of-contract fixture artifact (the seeded src/format.mjs that scripts/architecture.mjs expects greeting.mjs to import) without settling. The attempt was aborted deliberately; the fixture now removes that latent artifact, and the rerun declares a bound (3,300 s) that accounts for the observed review latency plus a late settlement. No product cancel was attempted (would require a HumanDecision; none minted).",
+ "controllerPid": 106179,
+ "controllerAlive": false,
+ "reviewerSession": {
+  "agentId": "68d21387-9580-4c1c-ad16-2dbed52180c9",
+  "disposition": "INTERRUPTED via `paseo agent stop` after the abort (idle); owned by the aborted operation"
+ },
+ "terminatedProcesses": [
+  104404,
+  106179,
+  106185,
+  107098,
+  109093,
+  109370,
+  109371,
+  109372,
+  122762,
+  122763,
+  122764,
+  129016,
+  129164,
+  129165,
+  129166,
+  139443,
+  139706,
+  139707,
+  139708,
+  147020,
+  149697,
+  149850,
+  149851,
+  149852
+ ],
+ "terminatedProcessDisposition": "campaign harness process, operation execute, operation monitor and fixture child processes of the deliberately aborted attempt were terminated (SIGTERM, 0 survivors at the time of writing); the non-terminal operation state bytes and the lane-created Paseo workspaces are preserved and reported (an abort is not terminality; AEH-V2-0112 predicate not satisfied).",
+ "workspaces": [
+  {
+   "workspaceId": "wks_a0e0dfc944d68517",
+   "project": "lane-repair-fixture",
+   "cwd": "/home/james/.paseo/worktrees/3th9r3f8/aeh-change-20260930t145259z-cf61361e",
+   "role": "candidate worktree",
+   "laneCreated": true,
+   "disposition": "ELIGIBLE_TERMINAL_OPERATION_LATE_TERMINAL (archive under AEH-V2-0112; late terminal recorded separately)"
+  },
+  {
+   "workspaceId": "wks_73e5fdff1360c990",
+   "project": "lane-repair-fixture",
+   "cwd": "/tmp/aeh-s13-gov-WGDLVA/work/lane-repair-fixture",
+   "role": "fixture root",
+   "laneCreated": true,
+   "disposition": "ELIGIBLE_TERMINAL_OPERATION_LATE_TERMINAL (archive under AEH-V2-0112; late terminal recorded separately)"
+  },
+  {
+   "workspaceId": "wks_a4a807237b193d4b",
+   "project": "lane-repair-fixture",
+   "cwd": "/tmp/aeh-s13-gov-WGDLVA/work/lane-repair-fixture",
+   "role": "fixture root (duplicate registration)",
+   "laneCreated": true,
+   "disposition": "ELIGIBLE_TERMINAL_OPERATION_LATE_TERMINAL (archive under AEH-V2-0112; late terminal recorded separately)"
+  },
+  {
+   "workspaceId": "wks_b6fc52a993a12ffd",
+   "project": "lane-repair-fixture",
+   "cwd": "/tmp/aeh-s13-gov-WGDLVA/work/lane-repair-fixture",
+   "role": "fixture root (duplicate registration)",
+   "laneCreated": true,
+   "disposition": "ELIGIBLE_TERMINAL_OPERATION_LATE_TERMINAL (archive under AEH-V2-0112; late terminal recorded separately)"
+  },
+  {
+   "workspaceId": "wks_ea1b315a2d0d0b89",
+   "project": "lane-repair-fixture",
+   "cwd": "/tmp/aeh-s13-gov-WGDLVA/work/lane-repair-fixture",
+   "role": "fixture root (duplicate registration)",
+   "laneCreated": true,
+   "disposition": "ELIGIBLE_TERMINAL_OPERATION_LATE_TERMINAL (archive under AEH-V2-0112; late terminal recorded separately)"
+  }
+ ],
+ "staging": "/tmp/aeh-s13-gov-WGDLVA",
+ "checkoutUntouched": true,
+ "note": "No terminal state is claimed. The lane artifact records timeout:true / repair row FAIL and product-repair row PASS; both stay truthful for the bounded run.",
+ "lateTerminal": {
+  "status": "FAILED",
+  "phase": "finished",
+  "revision": 143,
+  "finishedAt": "2026-09-30T15:29:21.832Z",
+  "error": "OPERATION_FAILED: candidate.assurance.reviewer.0.reviewer: Assigned Reviewer 'reviewer' did not return valid structured ...",
+  "note": "The interrupted controller terminalized FAILED immediately after the abort (SIGTERM); the operation is durably terminal with the controller dead, so the AEH-V2-0112 predicate is satisfied for the lane-created workspaces and they are eligible for archive under the reset/abort reconciliation."
+ },
+ "postAbortTerminalStatus": "FAILED (late terminal at 15:29:21.832Z)"
+}

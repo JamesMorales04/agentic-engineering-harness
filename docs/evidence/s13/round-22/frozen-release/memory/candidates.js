@@ -1,0 +1,38 @@
+import crypto from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { assertWorkspaceMatchesCandidate } from "../candidates/identity.js";
+import { loadOperation } from "../operations/state.js";
+/** Build bounded, artifact-backed memory. No prompt or chain-of-thought is read. */
+export async function buildAcceptedOperationCandidates(input) {
+    if (input.result.status !== "PASS")
+        return [];
+    const candidate = input.result.report.candidate;
+    if (candidate) {
+        const operation = input.operationId ? await loadOperation(input.root, input.operationId) : undefined;
+        await assertWorkspaceMatchesCandidate(candidate.worktree ?? operation?.workspaceRoot ?? input.root, candidate, input.operationId ? operation?.candidateRevision ?? null : undefined);
+    }
+    const candidates = [];
+    const add = async (type, title, content, source, tags) => {
+        const relative = path.relative(input.root, source).replaceAll("\\", "/");
+        const sourceSha256 = await sha256(source).catch(() => undefined);
+        if (!sourceSha256)
+            return;
+        candidates.push({ project: input.project, type, title, content: content.slice(0, 3_000), source: relative, sourceSha256, createdAt: new Date().toISOString(), tags: [...new Set(["aeh", "accepted", ...tags])] });
+    };
+    const task = input.contract.task;
+    await add("summary", `Accepted operation ${task.id}`, `Accepted task ${task.id}: ${task.title}. Validation=${input.result.report.status}; attempts=${input.result.attempts}; review=${input.result.review?.status ?? "not-run"}; evidence=${input.result.evidence?.complete === true ? "complete" : "not-configured"}.`, input.runFile, [input.contract.routing?.route ?? "DIRECT"]);
+    const reportFile = input.reportFile ?? path.resolve(input.root, ".harness/reports", `${task.id}.json`);
+    const report = input.result.report;
+    if ((report.findings?.length ?? 0) > 0 || report.checks.some((check) => check.status === "WARN")) {
+        const findings = (report.findings ?? []).slice(0, 12).map((finding) => `${finding.tool}/${finding.kind}${finding.rule ? ` rule=${finding.rule}` : ""}${finding.file ? ` file=${finding.file}` : ""}: ${finding.message ?? "finding"}`).join("\n");
+        await add("discovery", `Validation evidence for ${task.id}`, `Accepted validation produced bounded structured evidence:\n${findings || "warnings were recorded in the report"}`, reportFile, ["validation"]);
+    }
+    if (input.result.evidence?.complete) {
+        const evidenceFile = input.evidenceFile ?? path.resolve(input.root, ".harness/evidence", `${task.id}.json`);
+        await add("decision", `Requirement coverage accepted for ${task.id}`, `The accepted operation established complete requirement coverage for ${input.result.evidence.requirements} requirement(s). EvidenceGraph sha256=${input.result.evidence.sha256}.`, evidenceFile, ["evidence", "coverage"]);
+    }
+    return candidates;
+}
+async function sha256(file) { return crypto.createHash("sha256").update(await fs.readFile(file)).digest("hex"); }
+//# sourceMappingURL=candidates.js.map

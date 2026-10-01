@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 22,
+  "runId": "r22-certrepair-1",
+  "campaign": "certification-repair",
+  "generatedAt": "2026-09-30T06:49:44.127Z",
+  "checkout": "/home/james/Desarrollo/agentic-engineering-harness",
+  "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13CertificationRepairCampaign.mjs",
+        "sha256": "62149e25adbb4d8bbd5d2069f65ae1f9ccd9c2d6dc5de2ac7f39bd511bb49dde"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "4c93aeb73a48f8a78066547b45f4a806f4d81df3e3620a307317541034b1a498"
+  },
+  "harnessBuildIdentity": {
+    "version": 1,
+    "packageVersion": "0.8.4",
+    "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "releaseId": "release-1790750943087-1932617-e09b8c63",
+    "buildDigest": "599ed363223ff2dd85e17296c9f34c4134bf83e363916c4c57d7e7492ccbdf45",
+    "dirty": true
+  },
+  "lanes": [
+    {
+      "capability": "certification-repair",
+      "result": "PASS",
+      "state": "ACCEPTED",
+      "accepted": true,
+      "checks": [
+        {
+          "id": "certification-repair.failure-packet",
+          "ok": true,
+          "message": "failure packet persisted reason=ORACLE_FAILURE failures=fixture.answer,model.evidence,failure-packet,oracle-recheck"
+        },
+        {
+          "id": "certification-repair.oracle-recheck",
+          "ok": true,
+          "message": "state=ACCEPTED oracle=PASS repaired=\"42\" repairTurns=1 treeStable=true"
+        },
+        {
+          "id": "certification-repair.real-repair-provider",
+          "ok": true,
+          "message": "1 real repair provider receipt(s)"
+        },
+        {
+          "id": "certification-repair.cannot-self-accept",
+          "ok": true,
+          "message": "failed run accepted=false; repaired run accepted by deterministic oracle only"
+        }
+      ],
+      "error": null,
+      "artifact": "docs/evidence/s13/certification-repair-lanes/round-22/r22-certrepair-1/certification-repair.json"
+    }
+  ],
+  "result": "PASS"
+}

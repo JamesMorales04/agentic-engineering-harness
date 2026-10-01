@@ -85,7 +85,7 @@ describe("managed Paseo lead execution identity", () => {
     const deps = {
       run: vi.fn(async (command: string) => {
         if (command === "paseo daemon status --json") {
-          return { exitCode: 0, stdout: "{}", stderr: "", durationMs: 1 };
+          return { exitCode: 0, stdout: JSON.stringify({ localDaemon: "running", connectedDaemon: "not_probed" }), stderr: "", durationMs: 1 };
         }
         throw new Error(`unexpected command: ${command}`);
       }) as never,

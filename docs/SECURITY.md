@@ -20,6 +20,34 @@ Recommended OSS tools:
 - OPA for policy-as-code;
 - Cosign/in-toto for later provenance/attestations.
 
+## Executed isolation provider (S10)
+
+`security.isolation.required: true` selects the deterministic rootless isolation
+provider (`bwrap`) for validator and external-tool commands. The provider runs
+each command in real user, mount, PID, UTS, IPC and network namespaces over a
+minimal read-only host root (`/usr`, `/etc`, `/bin`, `/lib*`, `/sbin`, plus
+explicit toolchain binds derived from `PATH` and the running Node executable).
+The repository is read-only; only declared writable paths (the evidence
+directory, or the workspace for project test commands) are bound read-write.
+The host home, root, run, tmp, var/tmp, mnt, media and srv paths are not
+projected; the environment is cleared and rebuilt from an allowlist with
+`HOME`/`TMPDIR` pointing at sandbox scratch. Network is denied unless
+`security.isolation.network: true`.
+
+Missing or unsupported providers fail closed with an explicit
+`ISOLATION_PROVIDER_UNAVAILABLE` or `ISOLATION_PROVIDER_UNSUPPORTED` blocker;
+a required validator is never executed outside the boundary and never reported
+as a silent SKIP or PASS. Rootless Podman/OCI execution remains a separate
+provider lane and is not provisioned in every environment; when it is absent
+the hardened Podman worker path fails its `doctor` check rather than degrading.
+
+Security validators (`opengrep`, `trivy`) additionally persist candidate-bound
+`SastEvidenceV1` when a current CandidateRevision is available: the artifact
+binds the exact candidate identity and workspace source digest, tool version,
+command digest, raw-output digest, normalized findings, and the isolation
+evidence, and it is verified by digest before the S4 security impact path
+accepts it. Stale, tampered, missing, or workspace-drifted evidence blocks.
+
 External security and browser validators emit normalized findings with stable
 fingerprints (rule, severity, location, package/resource and artifact details)
 while their complete stdout/stderr is retained as a retrievable evidence

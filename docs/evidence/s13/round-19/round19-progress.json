@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 19,
+  "updatedAt": "2026-09-29T20:10:21.888Z",
+  "freeze": {
+    "trackedDigest": "1183af8670139090c5e89c74fadc2cff8b1ff2e80f0890013822ef5b76bb2765",
+    "build": "release-1790700877245-895418-89cefbf6",
+    "buildDigest": "408b178d53f32750aa81efb3a60965552b1aacd7756332b4c6dbf8fd3d1c744b"
+  },
+  "repairs": {
+    "v0129": "fixed+multi-worker PASS",
+    "v0128": "fixed+change-multifile PASS",
+    "repairForcing": "PASS (r19-gov-3)"
+  },
+  "runs": [
+    {
+      "run": "r19-cleanup",
+      "result": "96 processes terminated, 48 workspaces archived, 507 /tmp/aeh-* removed"
+    },
+    {
+      "run": "r19-mw-1",
+      "lane": "0108aa2dbb342d0a183956dfc6af9fe5347bf655acf343af032f007965c608d7",
+      "result": "PASS",
+      "summary": "582b2180ee23cafe4f00081745a8ef161a29ce5b5690e7c51eb57983a4883118"
+    },
+    {
+      "run": "r19-dist-1",
+      "lane": "distributed",
+      "result": "FAIL timeout (worker root mismatch; harness fixed)"
+    },
+    {
+      "run": "r19-gov-1",
+      "result": "audit PASS, change-delegated PASS, change-formal PASS, change-multifile FAIL(verifier bug), repair FAIL(harness gaps), change-direct FAIL(provider flake)",
+      "summary": "58f2f0c2fbb558f3186524088c2ddfd06180cb1df8bbdfc78078d25cf043bd9c"
+    },
+    {
+      "run": "r19-gov-2",
+      "result": "change-direct PASS; repair timeout RUNNING (product-repair PASS); change-multifile FAIL(provider flake)",
+      "summary": "bf50ed9e29391ccc20b602454b0792dfce73f5d9a8c389cf400620739e7bd715"
+    },
+    {
+      "run": "r19-gov-3",
+      "result": "repair PASS, change-multifile PASS",
+      "summary": "939f5fcbe9c5a91d12d6cac9ccc5fac59bbf6aafef69482eba21e0b13bb5ccb6",
+      "lanes": {
+        "repair": "b152098446f5c2b404026cfe4da878c9faf2b092e5eaa74d3cc1970c51afc66f",
+        "change-multifile": "712fa5c17297f7f1655616d8e2a027b99b249242492058259a69b35f5bdbad38"
+      }
+    },
+    {
+      "run": "r19-cert-1",
+      "lane": "certification x4",
+      "result": "4/4 PASS",
+      "summary": "62c3f172c7dcdaffd592f95ff4e83da611be11d6f823f7ab4a981f3b6cda626b"
+    },
+    {
+      "run": "r19-lifecycle-1",
+      "lane": "cancel+recovery",
+      "result": "2/2 PASS",
+      "summary": "6b402ca43befdc35765b38660f8bdab4dc9ae9af376e19e84a93755eb0526dac"
+    },
+    {
+      "run": "r19-gh-1",
+      "lane": "issue-driven+authority+delivery",
+      "result": "3/3 PASS incl delivery.delivery-record/provenance",
+      "summary": "b6db7d6a812953c2cec0847204239b21b54f1375addb7ae12f766201b5f0f4d0",
+      "lanes": {
+        "authority": "1b0fe98eda46968c765894d07c8ca060d378bee7209a3c4b336867d4a6d4cd15",
+        "delivery": "bcec9d48330af4faace849a3cd6f3f25f10245fabef7351f27b748981e0ca690",
+        "issue-driven": "40feabe428a9f76e06d32640fd0ae1cbf6b683bae546c05924eb305fc4e60dff"
+      }
+    }
+  ]
+}

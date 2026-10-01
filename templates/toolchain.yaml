@@ -84,7 +84,7 @@ tools:
     kind: mise
     command: openspec
     source: "npm:@fission-ai/openspec"
-    version: latest
+    version: "1.13.2"
     activateWhen: [spec-authoring:openspec]
 
   uv:
@@ -165,7 +165,7 @@ tools:
     kind: mise
     command: cosign
     source: "aqua:sigstore/cosign"
-    version: latest
+    version: "2.6.5"
     activateWhen: [organization:signed-policy]
 
   podman:

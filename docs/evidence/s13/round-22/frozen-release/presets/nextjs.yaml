@@ -1,0 +1,8 @@
+id: nextjs
+validation:
+  commands:
+    - id: next-build
+      command: pnpm build
+      required: true
+recommended:
+  e2e: Playwright

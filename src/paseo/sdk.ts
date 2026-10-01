@@ -5,10 +5,14 @@ import {
   activateStructuredResultTurn,
   activateStructuredResultTurnForAgent,
   bindStructuredResultChannel,
+  loadStructuredResultChannel,
   provisionStructuredResultChannel,
-  resultSinkMcpServerDefinition
+  resultSinkMcpServerDefinition,
+  type StructuredResultExpectation,
+  type StructuredResultProvenanceV1
 } from "../workers/resultGateway.js";
 import { resolvePaseoSdkFromCli } from "./sdkResolve.js";
+import { recordPaseoTrace } from "./trace.js";
 
 export interface PaseoSdkMcpStdioServer {
   type: "stdio";
@@ -16,6 +20,8 @@ export interface PaseoSdkMcpStdioServer {
   args?: string[];
   env?: Record<string, string>;
   alwaysLoad?: boolean;
+  /** Metadata consumed by AEH-managed MCP proxies; native Paseo ignores it. */
+  toolPolicy?: { allow?: string[]; deny?: string[] };
 }
 
 export interface PaseoSdkToolPolicy {
@@ -23,6 +29,8 @@ export interface PaseoSdkToolPolicy {
 }
 
 export interface PaseoSdkAgentOptions {
+  /** Provider resource id requested for a frozen pre-prompt execution binding. */
+  agentId?: string;
   cwd: string;
   workspaceId?: string;
   parentAgentId?: string;
@@ -38,8 +46,19 @@ export interface PaseoSdkAgentOptions {
   labels?: Record<string, string>;
   mcpServers?: Record<string, PaseoSdkMcpStdioServer>;
   toolPolicy?: PaseoSdkToolPolicy;
+  /** Provider-native options validated by the selected provider (for example Codex sandbox policy). */
+  providerOptions?: Record<string, unknown>;
+  /** Paseo provider feature values (for example `{ auto_accept: true }` for OpenCode prompts). */
+  featureValues?: Record<string, unknown>;
   timeoutMs?: number;
   waitForFinish?: boolean;
+}
+
+export interface PaseoSdkPermissionStop {
+  name?: string;
+  title?: string;
+  description?: string;
+  patterns?: string[];
 }
 
 export interface PaseoSdkAgentResult {
@@ -48,6 +67,8 @@ export interface PaseoSdkAgentResult {
   status?: string;
   lastMessage?: string;
   error?: string;
+  /** Bounded identity of the provider approval prompt that stopped the turn (AEH-V2-0116). */
+  permission?: PaseoSdkPermissionStop;
 }
 
 export interface PaseoSdkAgentRecord {
@@ -63,12 +84,14 @@ interface PaseoSdkTurnResult {
   status: string;
   lastMessage?: string;
   error?: string;
+  final?: { pendingPermissions?: unknown } | null;
 }
 
 interface PaseoSdkAgentHandle {
   readonly id: string;
   readonly workspaceId?: string | null;
   readonly status?: unknown;
+  readonly pendingPermissions?: unknown;
   latest?(): Record<string, unknown> | null;
   refresh?(requestId?: string): Promise<{ agent: Record<string, unknown>; project: unknown } | null>;
   refetch?(requestId?: string): Promise<{ agent: Record<string, unknown>; project: unknown } | null>;
@@ -111,11 +134,34 @@ export class PaseoSdkTimeoutError extends Error {
   }
 }
 
+export async function connectPaseoClient(
+  client: { connect(): Promise<void> },
+  timeoutMs = 15_000
+): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      client.connect(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new PaseoSdkTimeoutError(`Connecting to the Paseo daemon timed out after ${timeoutMs}ms.`)),
+          timeoutMs
+        );
+      })
+    ]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new PaseoSdkUnavailableError(`Unable to connect to the Paseo daemon through @getpaseo/client: ${message}`, { cause: error });
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function createPaseoSdkAgent(root: string, options: PaseoSdkAgentOptions): Promise<PaseoSdkAgentResult> {
   const effective = await withStructuredResultSink(root, options, Boolean(options.prompt !== undefined && options.outputSchema));
   const result = await withPaseoClient(root, async (client) => createPaseoSdkAgentWithClient(client, effective));
   await bindStructuredResultFromOptions(root, effective, result.id);
-  return projectAcceptedPaseoResult(root, result);
+  return projectAcceptedPaseoResult(root, result, structuredResultExpectation(effective.labels));
 }
 
 export async function materializePaseoSdkAgent(root: string, options: PaseoSdkAgentOptions): Promise<PaseoSdkAgentResult> {
@@ -170,7 +216,7 @@ export async function waitPaseoSdkAgent(root: string, agentId: string, timeoutMs
     if (result.status === "timeout") await stopPaseoSdkAgentHandle(handle);
     return result;
   });
-  return projectAcceptedPaseoResult(root, result);
+  return projectAcceptedPaseoResult(root, result, { requireBoundProvenance: true, verifyCurrentCandidate: true });
 }
 
 /** Execute one resumed turn on one concrete SDK handle. Prefer the SDK's atomic
@@ -191,7 +237,21 @@ export async function runPaseoSdkAgent(
   const result = await withPaseoClient(root, async (client) =>
     runPaseoSdkAgentWithClient(client, agentId, prompt, timeoutMs, outputSchema)
   );
-  return projectAcceptedPaseoResult(root, result);
+  let projected = await projectAcceptedPaseoResult(root, result, { requireBoundProvenance: true, verifyCurrentCandidate: true });
+  if (!projected.lastMessage?.trim()) {
+    // Some provider handles do not expose the completed turn text on the run handle; the
+    // canonical agent timeline still carries the assistant message and is the deterministic
+    // fallback for non-participant (assessor) turns that have no durable structured-result sink.
+    let timelineError: string | undefined;
+    const timeline = await inspectPaseoSdkAgentTimeline(root, agentId).catch((error) => {
+      timelineError = error instanceof Error ? error.message : String(error);
+      return undefined;
+    });
+    if (timelineError) await recordPaseoTrace(root, "timeline.refetch.failed", { agentId, error: timelineError, direction: "tail" }).catch(() => undefined);
+    const recovered = timeline?.length ? extractLastAssistantText(timeline) : undefined;
+    if (recovered) projected = { ...projected, lastMessage: recovered };
+  }
+  return projected;
 }
 
 export async function runPaseoSdkAgentWithClient(
@@ -234,6 +294,15 @@ export async function inspectPaseoSdkAgent(root: string, agentId: string): Promi
   });
 }
 
+export async function inspectPaseoSdkAgentTimeline(root: string, agentId: string): Promise<unknown[] | undefined> {
+  return withPaseoClient(root, async (client) => {
+    const handle = client.agents.ref(agentId);
+    if (!handle.timeline || typeof handle.timeline.refetch !== "function") return undefined;
+    const result = await handle.timeline.refetch({ direction: "tail", limit: 100 });
+    return extractTimelineEntries(result);
+  });
+}
+
 export async function probePaseoSdkAgent(root: string, agentId: string): Promise<boolean> {
   return Boolean(await inspectPaseoSdkAgent(root, agentId));
 }
@@ -255,13 +324,37 @@ async function withStructuredResultSink(root: string, options: PaseoSdkAgentOpti
   if (!contract || !operationId || !logicalAgent) return options;
   const operationRevision = Number(options.labels?.["aeh.operation.revision"]);
   const supervisorGeneration = Number(options.labels?.["aeh.supervisor.generation"]);
+  const taskId = options.labels?.["aeh.task"]?.trim();
+  const role = options.labels?.["aeh.canonical.role"]?.trim();
+  const rawBinding = options.labels?.["aeh.execution.binding"];
+  if (!rawBinding) {
+    const pendingChannelId = options.labels?.["aeh.result.channel"]?.trim();
+    if (options.labels?.["aeh.execution.binding.phase"] !== "PENDING_SESSION" || !pendingChannelId) {
+      throw new Error("EXECUTION_BINDING_REQUIRED: Paseo structured-result launch must carry a complete versioned binding or an inert pending-session channel.");
+    }
+    const pending = await loadStructuredResultChannel(root, operationId, pendingChannelId);
+    if (pending.operationId !== operationId || pending.logicalAgent !== logicalAgent || pending.role !== role || pending.taskId !== taskId || pending.contract !== contract || pending.provenance.status !== "UNSUPPORTED" || pending.agentId || pending.activeTurn || !options.mcpServers?.["aeh-result"] || !options.toolPolicy?.preapproved.some((item) => item.kind === "mcp" && item.server === "aeh-result" && item.tool === "aeh_submit_result")) {
+      throw new Error("AEH_RESULT_PROVENANCE: pending Paseo result channel is not inert or does not match the launch contract.");
+    }
+    return options;
+  }
+  const provenance = parseStructuredResultProvenance(options.labels?.["aeh.result.provenance"], {
+    operationId,
+    logicalAgent,
+    role,
+    taskId,
+    contract
+  });
+  if (!rawBinding || !provenance.executionBinding || rawBinding !== JSON.stringify(provenance.executionBinding) || options.labels?.["aeh.execution.binding.digest"] !== provenance.executionBinding.digest) throw new Error("EXECUTION_BINDING_REQUIRED: Paseo structured-result launch must carry the complete versioned binding in its launch labels.");
   const channel = await provisionStructuredResultChannel(root, {
     operationId,
     logicalAgent,
-    role: logicalAgent,
+    role,
+    taskId,
     contract,
     operationRevision: Number.isInteger(operationRevision) ? operationRevision : undefined,
-    supervisorGeneration: Number.isInteger(supervisorGeneration) ? supervisorGeneration : undefined
+    supervisorGeneration: Number.isInteger(supervisorGeneration) ? supervisorGeneration : undefined,
+    provenance
   });
   if (activateInitialTurn) await activateStructuredResultTurn(root, operationId, channel.channelId, options.labels?.["aeh.operation.phase"]);
   const server = "aeh-result";
@@ -284,9 +377,43 @@ async function bindStructuredResultFromOptions(root: string, options: PaseoSdkAg
   await bindStructuredResultChannel(root, operationId, channelId, agentId);
 }
 
-async function projectAcceptedPaseoResult(root: string, result: PaseoSdkAgentResult): Promise<PaseoSdkAgentResult> {
-  const accepted = await acceptedStructuredResultForAgent(root, result.id).catch(() => undefined);
+async function projectAcceptedPaseoResult(root: string, result: PaseoSdkAgentResult, expected: StructuredResultExpectation = { requireBoundProvenance: true, verifyCurrentCandidate: true }): Promise<PaseoSdkAgentResult> {
+  const accepted = await acceptedStructuredResultForAgent(root, result.id, expected).catch(() => undefined);
   return accepted ? { ...result, lastMessage: JSON.stringify(accepted.payload) } : result;
+}
+
+function parseStructuredResultProvenance(
+  raw: string | undefined,
+  identity: { operationId: string; logicalAgent: string; role?: string; taskId?: string; contract: string }
+): StructuredResultProvenanceV1 {
+  if (raw) {
+    let value: unknown;
+    try { value = JSON.parse(raw); }
+    catch { throw new Error("AEH_RESULT_PROVENANCE: Paseo launch provenance label is not valid JSON."); }
+    const provenance = value as StructuredResultProvenanceV1;
+    if (!provenance || provenance.version !== 1 || provenance.operationId !== identity.operationId || provenance.logicalAgent !== identity.logicalAgent || provenance.role !== identity.role || provenance.taskId !== identity.taskId || provenance.outputContract !== identity.contract) {
+      throw new Error("AEH_RESULT_PROVENANCE: Paseo launch provenance label does not match operation/participant/task/contract labels.");
+    }
+    return provenance;
+  }
+  throw new Error("EXECUTION_BINDING_REQUIRED: Paseo structured-result launches must propagate a complete versioned StructuredResultProvenance before session creation.");
+}
+
+function structuredResultExpectation(labels: Record<string, string> | undefined): StructuredResultExpectation {
+  const operationId = labels?.["aeh.operation"];
+  const logicalAgent = labels?.["aeh.role"];
+  const raw = labels?.["aeh.result.provenance"];
+  if (!operationId || !logicalAgent || !raw) return { requireBoundProvenance: true, verifyCurrentCandidate: true };
+  return {
+    operationId,
+    logicalAgent,
+    role: labels?.["aeh.canonical.role"],
+    taskId: labels?.["aeh.task"],
+    contract: labels?.["aeh.output.contract"],
+    provenance: parseStructuredResultProvenance(raw, { operationId, logicalAgent, role: labels?.["aeh.canonical.role"], taskId: labels?.["aeh.task"], contract: labels?.["aeh.output.contract"] ?? "" }),
+    requireBoundProvenance: true,
+    verifyCurrentCandidate: true
+  };
 }
 
 async function withPaseoClient<T>(root: string, action: (client: PaseoSdkClient) => Promise<T>): Promise<T> {
@@ -297,10 +424,7 @@ async function withPaseoClient<T>(root: string, action: (client: PaseoSdkClient)
     password: process.env.PASEO_DAEMON_PASSWORD?.trim() || undefined
   });
   try {
-    try { await client.connect(); }
-    catch (error) {
-      throw new PaseoSdkUnavailableError(`Unable to connect to the Paseo daemon through @getpaseo/client: ${String(error)}`, { cause: error });
-    }
+    await connectPaseoClient(client);
     return await action(client);
   } finally {
     await client.close().catch(() => undefined);
@@ -326,14 +450,17 @@ async function loadPaseoSdk(root: string): Promise<PaseoSdkModule> {
 }
 
 function buildCreateOptions(options: PaseoSdkAgentOptions, includePrompt: boolean): Record<string, unknown> {
-  const config: Record<string, unknown> = normalizeProviderModel(options.provider, options.model);
+  const config: Record<string, unknown> = { provider: providerModelForSdk(options.provider, options.model) };
   if (options.modeId) config.modeId = options.modeId;
   if (options.thinkingOptionId) config.thinkingOptionId = options.thinkingOptionId;
   if (options.systemPrompt) config.systemPrompt = options.systemPrompt;
   if (options.mcpServers && Object.keys(options.mcpServers).length) config.mcpServers = options.mcpServers;
   if (options.toolPolicy?.preapproved.length) config.toolPolicy = options.toolPolicy;
+  if (options.providerOptions && Object.keys(options.providerOptions).length) config.options = options.providerOptions;
+  if (options.featureValues && Object.keys(options.featureValues).length) config.featureValues = options.featureValues;
 
   const createOptions: Record<string, unknown> = { config, title: options.title, cwd: options.cwd };
+  if (options.agentId) createOptions.agentId = options.agentId;
   if (options.env && Object.keys(options.env).length) createOptions.env = options.env;
   if (options.workspaceId) createOptions.workspaceId = options.workspaceId;
   if (options.parentAgentId) createOptions.parent = options.parentAgentId;
@@ -354,14 +481,15 @@ async function waitForHandle(handle: PaseoSdkAgentHandle, timeoutMs = 1_800_000)
     const status = statusText(raw?.status ?? handle.status);
     if (isTerminalStatus(status)) {
       const timeline = handle.timeline && typeof handle.timeline.refetch === "function"
-        ? await handle.timeline.refetch({ direction: "backward", limit: 50 }).catch(() => undefined)
+        ? await handle.timeline.refetch({ direction: "tail", limit: 50 }).catch(() => undefined)
         : undefined;
       return {
         id: handle.id,
         workspaceId: handle.workspaceId ?? stringField(raw ?? {}, ["workspaceId", "workspace_id"]),
         status,
         lastMessage: stringField(raw ?? {}, ["lastMessage", "last_message"]) ?? extractLastAssistantText(timeline),
-        error: stringField(raw ?? {}, ["error", "lastError", "last_error"])
+        error: stringField(raw ?? {}, ["error", "lastError", "last_error"]),
+        ...(permissionStopDetail(raw?.pendingPermissions ?? handle.pendingPermissions) ? { permission: permissionStopDetail(raw?.pendingPermissions ?? handle.pendingPermissions) } : {})
       };
     }
     if (Date.now() >= deadline) return { id: handle.id, workspaceId: handle.workspaceId ?? undefined, status: "timeout", error: `Timed out after ${timeoutMs}ms.` };
@@ -393,19 +521,22 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs = 1_800_000, messag
 }
 
 async function turnResult(handle: PaseoSdkAgentHandle, turn: PaseoSdkTurnResult): Promise<PaseoSdkAgentResult> {
+  const permission = permissionStopDetail(turn.final?.pendingPermissions ?? handle.pendingPermissions);
   if (turn.lastMessage) {
     return {
       id: handle.id,
       workspaceId: handle.workspaceId ?? undefined,
       status: turn.status,
       lastMessage: turn.lastMessage,
-      error: turn.error
+      error: turn.error,
+      ...(permission ? { permission } : {})
     };
   }
   const raw = await refreshHandle(handle).catch(() => undefined);
   const timeline = handle.timeline && typeof handle.timeline.refetch === "function"
-    ? await handle.timeline.refetch({ direction: "backward", limit: 50 }).catch(() => undefined)
+    ? await handle.timeline.refetch({ direction: "tail", limit: 50 }).catch(() => undefined)
     : undefined;
+  const observedPermission = permission ?? permissionStopDetail(raw?.pendingPermissions);
   return {
     id: handle.id,
     workspaceId: handle.workspaceId ?? stringField(raw ?? {}, ["workspaceId", "workspace_id"]),
@@ -413,8 +544,43 @@ async function turnResult(handle: PaseoSdkAgentHandle, turn: PaseoSdkTurnResult)
     lastMessage:
       stringField(raw ?? {}, ["lastMessage", "last_message"]) ??
       extractLastAssistantText(timeline),
-    error: turn.error ?? stringField(raw ?? {}, ["error", "lastError", "last_error"])
+    error: turn.error ?? stringField(raw ?? {}, ["error", "lastError", "last_error"]),
+    ...(observedPermission ? { permission: observedPermission } : {})
   };
+}
+
+function permissionStopDetail(value: unknown): PaseoSdkPermissionStop | undefined {
+  const entries = Array.isArray(value) ? value : value && typeof value === "object" ? [value] : [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    const name = boundedString(record.name ?? record.permission);
+    const title = boundedString(record.title);
+    const description = boundedString(record.description);
+    const input = record.input && typeof record.input === "object" ? record.input as Record<string, unknown> : undefined;
+    const patterns = boundedStringArray(input?.patterns);
+    if (name || title || patterns?.length) {
+      return {
+        ...(name ? { name } : {}),
+        ...(title ? { title } : {}),
+        ...(description ? { description } : {}),
+        ...(patterns?.length ? { patterns } : {})
+      };
+    }
+  }
+  return undefined;
+}
+
+function boundedString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, 200) : undefined;
+}
+
+function boundedStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const strings = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).slice(0, 8).map((item) => item.slice(0, 300));
+  return strings.length ? strings : undefined;
 }
 
 async function refreshHandle(handle: PaseoSdkAgentHandle): Promise<Record<string, unknown> | undefined> {
@@ -425,27 +591,30 @@ async function refreshHandle(handle: PaseoSdkAgentHandle): Promise<Record<string
 
 function handleResult(handle: PaseoSdkAgentHandle): PaseoSdkAgentResult {
   const raw = handle.latest?.() ?? undefined;
+  const permission = permissionStopDetail(raw?.pendingPermissions ?? handle.pendingPermissions);
   return {
     id: handle.id,
     workspaceId: handle.workspaceId ?? stringField(raw ?? {}, ["workspaceId", "workspace_id"]),
-    status: statusText(raw?.status ?? handle.status)
+    status: statusText(raw?.status ?? handle.status),
+    ...(permission ? { permission } : {})
   };
 }
 
-function normalizeProviderModel(provider: string, model?: string): Record<string, string> {
+function providerModelForSdk(provider: string, model?: string): string {
   const normalizedProvider = provider.trim();
   if (!normalizedProvider) throw new Error("Paseo SDK requires a provider.");
   const separator = normalizedProvider.indexOf("/");
   if (separator < 0) {
     const explicitModel = model?.trim();
-    return explicitModel ? { provider: normalizedProvider, model: explicitModel } : { provider: normalizedProvider };
+    if (!explicitModel) throw new Error("Paseo SDK requires a provider/model value.");
+    return `${normalizedProvider}/${explicitModel}`;
   }
   const providerId = normalizedProvider.slice(0, separator).trim();
   const embeddedModel = normalizedProvider.slice(separator + 1).trim();
   if (!providerId || !embeddedModel) throw new Error(`Invalid Paseo provider/model value '${provider}'. Expected '<provider>/<model>'.`);
   const explicitModel = model?.trim();
   if (explicitModel && explicitModel !== embeddedModel) throw new Error(`Conflicting Paseo models: provider value '${provider}' embeds '${embeddedModel}' but explicit model is '${explicitModel}'.`);
-  return { provider: providerId, model: explicitModel || embeddedModel };
+  return `${providerId}/${embeddedModel}`;
 }
 
 function normalizeRecord(raw: Record<string, unknown>): PaseoSdkAgentRecord {
@@ -454,22 +623,46 @@ function normalizeRecord(raw: Record<string, unknown>): PaseoSdkAgentRecord {
   return { id, title: stringField(raw, ["title", "name"]), status: statusText(raw.status), workspaceId: stringField(raw, ["workspaceId", "workspace_id"]), labels: recordOfStrings(raw.labels), raw };
 }
 
+/**
+ * Select the canonical last assistant message from a timeline payload. Only the
+ * assistant entry's own top-level text/content is accepted; nested tool-call
+ * payloads, reasoning traces and user messages never become completion text.
+ * Schema validation remains the authority for any structured payload.
+ */
 function extractLastAssistantText(value: unknown): string | undefined {
-  const candidates: string[] = [];
-  visit(value, false, candidates);
-  return candidates.at(-1);
+  let found: string | undefined;
+  for (const entry of extractTimelineEntries(value)) {
+    const text = assistantEntryText(entry);
+    if (text !== undefined) found = text;
+  }
+  return found;
 }
 
-function visit(value: unknown, assistantContext: boolean, out: string[]): void {
-  if (Array.isArray(value)) { for (const item of value) visit(item, assistantContext, out); return; }
-  if (!value || typeof value !== "object") return;
-  const record = value as Record<string, unknown>;
-  const role = String(record.role ?? record.author ?? record.kind ?? record.type ?? "").toLowerCase();
-  const assistant = assistantContext || role.includes("assistant");
-  if (assistant) {
-    for (const key of ["text", "content", "message", "lastMessage"]) if (typeof record[key] === "string" && record[key]) out.push(record[key] as string);
+function assistantEntryText(entry: unknown): string | undefined {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return undefined;
+  const record = entry as Record<string, unknown>;
+  const item = record.item && typeof record.item === "object" && !Array.isArray(record.item) ? record.item as Record<string, unknown> : record;
+  const role = String(item.role ?? record.role ?? "").toLowerCase();
+  const type = String(item.type ?? item.kind ?? record.type ?? record.kind ?? "").toLowerCase();
+  const assistant = role === "assistant" || role.endsWith("/assistant") || type === "assistant_message" || type === "assistant-message" || type === "assistant";
+  if (!assistant) return undefined;
+  return messageText(item) ?? messageText(record);
+}
+
+function messageText(record: Record<string, unknown>): string | undefined {
+  for (const key of ["text", "message", "lastMessage"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value;
   }
-  for (const child of Object.values(record)) visit(child, assistant, out);
+  const content = record.content;
+  if (typeof content === "string" && content.trim()) return content;
+  if (Array.isArray(content)) {
+    const parts = content
+      .map((part) => typeof part === "string" ? part : (part && typeof part === "object" && typeof (part as Record<string, unknown>).text === "string" ? (part as Record<string, unknown>).text as string : undefined))
+      .filter((part): part is string => typeof part === "string" && part.trim().length > 0);
+    if (parts.length) return parts.join("\n");
+  }
+  return undefined;
 }
 
 function labelsMatch(actual: Record<string, string> | undefined, expected: Record<string, string>): boolean {
@@ -495,4 +688,12 @@ function statusText(value: unknown): string | undefined {
     if (typeof nested === "string") return nested;
   }
   return undefined;
+}
+
+function extractTimelineEntries(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== "object") return [];
+  const record = value as Record<string, unknown>;
+  for (const key of ["entries", "items", "events", "messages"]) if (Array.isArray(record[key])) return record[key] as unknown[];
+  return [];
 }

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { canonicalSerialize } from "../core/digest.js";
 
 export const CONTEXT_PROJECTION_VERSION = "aeh-context-v1";
 
@@ -7,8 +8,5 @@ export function sha256(value: string | Buffer): string {
 }
 
 export function stableJson(value: unknown): string {
-  return JSON.stringify(value, (_key, nested) => {
-    if (!nested || typeof nested !== "object" || Array.isArray(nested)) return nested;
-    return Object.fromEntries(Object.entries(nested as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)));
-  });
+  return canonicalSerialize(value);
 }

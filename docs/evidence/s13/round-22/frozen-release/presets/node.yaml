@@ -1,0 +1,6 @@
+id: node
+validation:
+  commands:
+    - id: npm-test
+      command: npm test
+      required: true

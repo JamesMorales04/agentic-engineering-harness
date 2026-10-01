@@ -45,4 +45,25 @@ export function rankEvalResults(results: EvalResult[]): EvalResult[] {
   return [...results].sort((a, b) => b.score - a.score || (a.metrics?.usage.costUsd ?? Infinity) - (b.metrics?.usage.costUsd ?? Infinity));
 }
 
+/**
+ * Deterministic projection of an eval result for reproducibility comparison.
+ * Timestamps, absolute paths, and result file names are excluded because they
+ * are not part of the scored observation.
+ */
+export function evalResultComparableV1(result: EvalResult): Record<string, unknown> {
+  return {
+    caseId: result.caseId,
+    variant: result.variant,
+    taskId: result.taskId,
+    baseRef: result.baseRef,
+    status: result.status,
+    score: result.score,
+    scoreBreakdown: result.scoreBreakdown,
+    metrics: result.metrics ?? null,
+    checks: (result.report?.checks ?? []).map((check) => ({ id: check.id, status: check.status })),
+    corpus: result.corpus ?? null,
+    build: result.build ?? null
+  };
+}
+
 function round(value: number): number { return Math.round(value * 1000) / 1000; }

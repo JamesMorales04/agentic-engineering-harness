@@ -1,3 +1,4 @@
+import { saveOwnedOperation } from "./helpers/ownedOperation.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -11,6 +12,7 @@ import {
 import {
   acknowledgeOperationLead,
   bindOperationLead,
+  currentControllerEpoch,
   loadOperation,
   patchOperationMetadata,
   registerSupervisorGeneration,
@@ -64,7 +66,7 @@ const config = {
 describe("operation liveness", () => {
   it("does not equate an accepted terminal wake with lead acknowledgement", async () => {
     const root = await tempRoot();
-    await saveOperation(root, base(root));
+    await saveOwnedOperation(root, base(root));
     await bindOperationLead(root, "AUDIT-LIVE", "lead-1", "test");
     const terminal = await transitionOperationToTerminal(root, "AUDIT-LIVE", {
       status: "SUCCEEDED",
@@ -108,14 +110,14 @@ describe("operation liveness", () => {
 
     current = await loadOperation(root, "AUDIT-LIVE");
     expect(operationRevisionAcknowledged(current)).toBe(false);
-    current = await acknowledgeOperationLead(root, "AUDIT-LIVE", current.revision, "operation-status");
+    current = await acknowledgeOperationLead(root, "AUDIT-LIVE", current.revision, "lead-1", currentControllerEpoch(current), "operation-status");
     expect(operationRevisionAcknowledged(current)).toBe(true);
     expect(evaluateOperationWake(current, operationLivenessPolicy(config), Date.now()).target).toBe("none");
   });
 
   it("routes a stalled operation to the supervisor first and escalates to the lead if supervisor wake fails", async () => {
     const root = await tempRoot();
-    await saveOperation(root, base(root));
+    await saveOwnedOperation(root, base(root));
     let current = await bindOperationLead(root, "AUDIT-LIVE", "lead-1", "test");
     current = await registerSupervisorGeneration(root, "AUDIT-LIVE", {
       agentId: "supervisor-1",
@@ -161,7 +163,7 @@ describe("operation liveness", () => {
 
   it("keeps a recent terminal wake quiet while waiting for the lead to acknowledge it", async () => {
     const root = await tempRoot();
-    await saveOperation(root, base(root));
+    await saveOwnedOperation(root, base(root));
     await bindOperationLead(root, "AUDIT-LIVE", "lead-1", "test");
     const terminal = await transitionOperationToTerminal(root, "AUDIT-LIVE", {
       status: "SUCCEEDED",

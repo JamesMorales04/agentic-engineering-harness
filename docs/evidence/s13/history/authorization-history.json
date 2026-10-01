@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "kind": "EXTERNAL_EFFECT_AUTHORIZATION_HISTORY",
+  "recordedAt": "2026-09-28T00:00:00.000Z",
+  "recordedBy": "S13 round-12 lead",
+  "purpose": "R11-F1-residual: preserve authorization bytes and the user's prospective instructions; require explicit user confirmation before any github.issue.create effect under the current artifact.",
+  "history": [
+    {
+      "revision": "pre-amendment",
+      "artifact": "docs/evidence/s13/github-effect-authorization.json",
+      "sha256": "31a4743754d27e2fd45e8df05316691052f14d7f3e4e5e97a624a7ff15249b49",
+      "bytesPreserved": false,
+      "bytesPreservedReason": "The pre-amendment bytes were amended in place during Round 11 before this round created the history directory; the digest is recorded here from the Round-11 amendment record and the Round-10 independent review, but the exact bytes are unrecoverable. The round-12 lead attempted byte-exact reconstruction from the current bytes by removing the amendment-added fields (scope.resourceNamePrefix, scope.allowedEffects, scope.allowedEffectsNote, amendments) under both JSON serializations in use; no reconstruction matched the recorded digest, so no reconstruction is stored as evidence.",
+      "recordedDigestSources": [
+        "docs/evidence/s13/github-effect-authorization.json amendments[0].previousSha256",
+        "docs/evidence/s13/review-round10.json digest section",
+        "docs/CORE_ARCHITECTURE_V2_S13_WORKGRAPH.md Round-11 prospective authorization amendment"
+      ]
+    },
+    {
+      "revision": "current",
+      "artifact": "docs/evidence/s13/github-effect-authorization.json",
+      "sha256": "272c5cb76158a7c312edd4d8d97cd6545b599e5c57c7978bbfc3742c573bd460",
+      "bytesPreserved": true,
+      "preservedCopy": "docs/evidence/s13/history/github-effect-authorization.272c5cb76158a7c312edd4d8d97cd6545b599e5c57c7978bbfc3742c573bd460.json",
+      "amendment": "Round-11 MACHINE_READABLE_SCOPE_ENCODING (scope.resourceNamePrefix, scope.allowedEffects) — same prospective user grant, retroactive:false; repository create/delete and issue edit/delete remain uncovered"
+    }
+  ],
+  "userInstructionsVerbatim": [
+    {
+      "id": "round-10-pre-effect-denial",
+      "deliveredTo": "Round-10 lead Paseo session 69a65987-7d0e-4a9e-8cac-75cbb1188ebb (persistence.metadata.asyncQuestions[0].resolution)",
+      "kind": "pre-effect constraint",
+      "text": "Use only pre-authorized existing private repository JamesMorales04/aeh-s13-round3-20260927035743-6bb5da and existing issue #1 (round-6 evidence confirms reused=true, created=false). Do not create a repo or issue. The accidental repository is USER_CLEANUP_NON_BLOCKING and user will delete manually. No delete retry or broader credentials."
+    },
+    {
+      "id": "round-12-external-effects-instruction",
+      "deliveredTo": "S13 round-12 lead",
+      "kind": "prospective instruction",
+      "text": "EXTERNAL EFFECTS: after P0, every effect chain must be: current user authorization (prospective artifact above, consumed as a typed external input via the repaired loader) → frozen allowed-effect policy → exact scoped ActionIntent → ToolActionGate → effect → ActionReceipt/reconciliation. Never mint HumanDecisions; ActionIntent + receipt alone never prove consent. Owner JamesMorales04, PRIVATE only, minimum genuinely required, identifiable aeh-s13-* names."
+    }
+  ],
+  "issueCreateConfirmation": {
+    "required": true,
+    "scope": "any request for the github.issue.create effect under any revision of this artifact",
+    "channel": "S13_GH_ISSUE_CREATE_CONFIRMATION (must equal the consumed authorizationId)",
+    "enforcement": "tests/packed/s13ExternalEffectAuthorization.mjs fails closed with EXTERNAL_AUTHORIZATION_ISSUE_CREATE_UNCONFIRMED before any gh command, staging directory or approval when the confirmation is absent or mismatched; externalAuthorizationDecisionInputV1 also refuses to derive an issue-create approval from an unconfirmed authorization object",
+    "rationale": "The prospective artifact lists github.issue.create among covered effects, but the user's most recent explicit instruction was 'Do not create a repo or issue'. Coverage is not consent: an explicit, per-authorization confirmation is required."
+  },
+  "residualProvenanceLimitation": "The authorization artifact and the confirmation are user-supplied data; the deterministic loader is the trust gate and cannot itself prove human origin. The campaign records the artifact digest, the authorizationId, and (when applicable) the confirmation channel in every lane."
+}

@@ -11,7 +11,7 @@ import { buildAcceptedOperationCandidates } from "../src/memory/candidates.js";
 import type { AgentExecutionSelection } from "../src/agents/types.js";
 import type { HarnessProjectConfig, TaskContract, ValidationReport } from "../src/core/types.js";
 
-const selection = (runtimeAdapter: string, transport: AgentExecutionSelection["transport"]): AgentExecutionSelection => ({ logicalAgent: "worker", role: "implementer", domains: [], runtimeName: runtimeAdapter, runtimeAdapter, paseoProvider: "none", modelAlias: "test", modelId: "test", modelName: "test", transport, skills: [], mcps: [], permissions: { read: "allow", write: "allow" }, args: [], runtimeCapabilities: {} });
+const selection = (runtimeAdapter: string, transport: AgentExecutionSelection["transport"]): AgentExecutionSelection => ({ logicalAgent: "worker", role: "Implementer", domains: [], runtimeName: runtimeAdapter, runtimeAdapter, paseoProvider: "none", modelAlias: "test", modelId: "test", modelName: "test", transport, skills: [], mcps: [], permissions: { read: "allow", write: "allow" }, args: [], runtimeCapabilities: {} });
 
 describe("architecture closure integration", () => {
   it("resolves Serena and raw retrieval by effective transport", async () => {
@@ -22,7 +22,7 @@ describe("architecture closure integration", () => {
       await expect(resolveContextTransportCapabilities(root, config, selection("opencode", "direct"))).resolves.toMatchObject({ semanticRetrieval: true, authorizedRetrieval: true });
       await expect(resolveContextTransportCapabilities(root, { ...config, context: { ...config.context, semanticRetrieval: { provider: "serena", required: true } } }, selection("codex", "direct"))).rejects.toThrow("UNSUPPORTED_CAPABILITY");
       await expect(resolveContextTransportCapabilities(root, { ...config, security: { sandbox: { image: "missing-image" } } }, selection("opencode", "podman"))).resolves.toMatchObject({ semanticRetrieval: false, authorizedRetrieval: false });
-      const supervisor = { ...selection("codex", "paseo"), logicalAgent: "operation-supervisor", role: "coordinator" };
+      const supervisor = { ...selection("codex", "paseo"), logicalAgent: "operation-supervisor", role: "Operation Supervisor" };
       await expect(resolveContextTransportCapabilities(root, { ...config, context: { ...config.context, semanticRetrieval: { provider: "serena", required: true } } }, supervisor)).resolves.toMatchObject({ semanticRetrieval: false, authorizedRetrieval: false, mcpServers: { serena: false, context: false }, requirements: { semanticRetrieval: "FORBIDDEN", rawRetrieval: "FORBIDDEN" } });
       expect(staticContextCapabilities({ ...config, context: { ...config.context, semanticRetrieval: { provider: "serena", required: true } } }, { ...selection("codex", "paseo"), logicalAgent: "semantic-worker" })).toMatchObject({ semanticRetrieval: true, mcpServers: { serena: true } });
       expect(resolveContextCapabilityRequirements(config, supervisor)).toMatchObject({ repositoryMap: "FORBIDDEN", semanticRetrieval: "FORBIDDEN", rawRetrieval: "FORBIDDEN" });
@@ -81,7 +81,74 @@ describe("architecture closure integration", () => {
 
   it("runs the deterministic full-stack production-path fixture", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-full-stack-report-"));
-    try { const report = await runFullStackDogfood(root, { version: 1, project: { name: "dogfood" }, evals: { resultsDir: ".harness/evals/results" } }); expect(report.status, JSON.stringify(report.checks.filter((item) => item.status === "FAIL"), null, 2)).toBe("PASS"); expect(report.checks.map((item) => item.id)).toEqual(expect.arrayContaining(["context.production-assembly", "validation.report", "evidence.graph", "provenance.chain"])); } finally { await fs.rm(root, { recursive: true, force: true }); }
+    try {
+      const report = await runFullStackDogfood(root, { version: 1, project: { name: "dogfood" }, evals: { resultsDir: ".harness/evals/results" } });
+      if (process.env.AEH_STRICT_FULL_STACK === "1") {
+        const evidenceDirectory = path.join(process.cwd(), ".aeh-test-results");
+        await fs.mkdir(evidenceDirectory, { recursive: true });
+        const evidenceFile = path.join(evidenceDirectory, "full-stack-contract.json");
+        await fs.writeFile(evidenceFile, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+        process.stdout.write(`AEH_FULL_STACK_REPORT_FILE ${evidenceFile}\n`);
+      }
+      expect(report.status, JSON.stringify(report.checks.filter((item) => item.status === "FAIL"), null, 2)).toBe("PASS");
+      const checks = new Map(report.checks.map((item) => [item.id, item]));
+      expect([...checks.keys()]).toEqual(expect.arrayContaining(["context.production-assembly", "context.audit-report-scope", "context.controller-identity", "context.authorized-recovery", "validation.report", "evidence.graph", "provenance.chain"]));
+      const auditScope = checks.get("context.audit-report-scope");
+      expect(auditScope?.status).toBe("PASS");
+      expect(auditScope?.details).toMatchObject({ status: "DEGRADED", productionSafe: false });
+      const identity = checks.get("context.controller-identity");
+      const recovery = checks.get("context.authorized-recovery");
+      expect(identity?.status).toBe("PASS");
+      expect(recovery?.status).toBe("PASS");
+      const identityDetails = identity?.details ?? {};
+      const recoveryDetails = recovery?.details ?? {};
+      expect(identityDetails).toMatchObject({
+        operationId: expect.any(String),
+        participantId: expect.stringMatching(/^participant:/),
+        controllerEpoch: expect.any(Number),
+        executionBindingDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+        sessionId: expect.any(String),
+        readLeaseId: expect.any(String),
+        participantStatus: "COMPLETED",
+        receiptId: expect.any(String)
+      });
+      expect(recoveryDetails).toMatchObject({
+        refId: "validation-evidence",
+        sourceDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+        deliveredContentDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+        executionBindingDigest: identityDetails.executionBindingDigest,
+        sessionId: identityDetails.sessionId
+      });
+      expect(recoveryDetails.deliveredContentDigest).toBe(recoveryDetails.sourceDigest);
+
+      if (process.env.AEH_STRICT_FULL_STACK === "1") {
+        const reversibility = checks.get("context.reversibility");
+        const assembly = checks.get("context.production-assembly");
+        expect(reversibility?.status).toBe("PASS");
+        expect(assembly?.details?.compressedFragments).toBeGreaterThan(0);
+        expect(reversibility?.details).toMatchObject({
+          fragmentId: "validation-evidence",
+          recoveryHandle: expect.any(String),
+          retrievedDigest: recoveryDetails.deliveredContentDigest
+        });
+        expect(recoveryDetails.compressionHandle).toBe(reversibility?.details?.recoveryHandle);
+        process.stdout.write("AEH_FULL_STACK_CONTEXT_EVIDENCE " + JSON.stringify({
+          operationId: identityDetails.operationId,
+          participantId: identityDetails.participantId,
+          controllerEpoch: identityDetails.controllerEpoch,
+          sessionId: identityDetails.sessionId,
+          readLeaseId: identityDetails.readLeaseId,
+          executionBindingDigest: identityDetails.executionBindingDigest,
+          participantReceiptId: identityDetails.receiptId,
+          contextRefId: recoveryDetails.refId,
+          sourceDigest: recoveryDetails.sourceDigest,
+          recoveredDigest: recoveryDetails.deliveredContentDigest,
+          recoveryHandle: recoveryDetails.compressionHandle,
+          compressedFragments: assembly?.details?.compressedFragments,
+          checks: ["context.controller-identity", "context.authorized-recovery", "context.reversibility", "context.production-assembly", "context.audit-report-scope"]
+        }) + "\n");
+      }
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
   }, 120_000);
 
   it("builds source-hash-verified accepted-operation memory candidates", async () => {

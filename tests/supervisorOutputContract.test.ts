@@ -14,7 +14,8 @@ describe("operation supervisor output contract", () => {
           evidence: "Both reviewers identify the same dependency inversion.",
           impact: "Layer boundary can be bypassed.",
           recommendedFix: "Move the dependency behind the application boundary.",
-          suggestedAgent: "backend-implementer",
+          requiredCompetencies: ["architecture"],
+          reviewDimensions: ["boundary-integrity"],
           exceptionType: "IMPLEMENTATION_DEFECT"
         }
       ],

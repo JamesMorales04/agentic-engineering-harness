@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { reconcileHarnessAssets } from "../core/assets.js";
 import type { HarnessProjectConfig } from "../core/types.js";
-import { runProcess, clearToolchainEnvCache } from "../utils/process.js";
+import { commandExists, runExecutable, runShell, clearToolchainEnvCache } from "../utils/process.js";
 import { generatedMisePath, loadToolchainConfig, loadToolchainLock, toolchainLockPath, toolchainStatePath, writeJsonFile } from "./config.js";
 import { resolveToolchain } from "./resolve.js";
 import { installMiseTools, miseBinPaths, miseResolvedVersion, resolveMiseAdapter, writeMiseConfig } from "./mise.js";
@@ -46,7 +46,7 @@ export async function setupToolchain(root: string, project: HarnessProjectConfig
   if (miseTools.length) {
     adapter = await resolveMiseAdapter(root, toolchain.manager.minimumVersion);
     await writeMiseConfig(root, generatedConfig, toolchain, resolved, lock, options.updateLock ?? false);
-    await installMiseTools(root, adapter, false);
+    await installMiseTools(root, adapter, miseTools.map((tool) => tool.source!), false, options.updateLock ?? false);
     binPaths = await miseBinPaths(root, adapter);
     for (const tool of miseTools) {
       const resolvedVersion = await miseResolvedVersion(root, adapter, tool.command);
@@ -60,7 +60,7 @@ export async function setupToolchain(root: string, project: HarnessProjectConfig
     const configuredImage = tool.container!.image;
     const lockedRef = !options.updateLock ? lock?.tools[tool.name]?.digestRef : undefined;
     const pullRef = lockedRef ?? configuredImage;
-    const pull = await runProcess(`${engine} pull ${quote(pullRef)}`, { cwd: root, timeoutMs: 900_000, toolchain: false });
+    const pull = await runExecutable(engine, ["pull", pullRef], { cwd: root, timeoutMs: 900_000, toolchain: false });
     if (pull.exitCode !== 0) throw new Error(`${engine} pull failed for ${pullRef}: ${pull.stderr || pull.stdout}`);
     const digestRef = lockedRef ?? await inspectDigest(root, engine, configuredImage);
     await writeContainerWrapper(wrappersDir, tool.command, engine, digestRef);
@@ -71,7 +71,7 @@ export async function setupToolchain(root: string, project: HarnessProjectConfig
   if (!options.skipProjectDependencies) {
     const env = { PATH: `${[wrappersDir, ...binPaths].join(path.delimiter)}${path.delimiter}${process.env.PATH ?? ""}` };
     for (const command of projectDependencyCommands) {
-      const result = await runProcess(command, { cwd: root, timeoutMs: 1_800_000, env, toolchain: false });
+      const result = await runShell(command, { cwd: root, timeoutMs: 1_800_000, env, toolchain: false });
       if (result.exitCode !== 0) throw new Error(`Project dependency setup failed (${command}): ${result.stderr || result.stdout}`);
     }
   }
@@ -115,13 +115,12 @@ async function writeContainerWrapper(dir: string, command: string, engine: strin
   await fs.writeFile(file, script, { mode: 0o755 }); await fs.chmod(file, 0o755);
 }
 async function inspectDigest(root: string, engine: string, image: string): Promise<string> {
-  const inspect = await runProcess(`${engine} image inspect --format '{{index .RepoDigests 0}}' ${quote(image)}`, { cwd: root, timeoutMs: 60_000, toolchain: false });
+  const inspect = await runExecutable(engine, ["image", "inspect", "--format", "{{index .RepoDigests 0}}", image], { cwd: root, timeoutMs: 60_000, toolchain: false });
   if (inspect.exitCode !== 0 || !inspect.stdout.trim()) throw new Error(`Could not resolve immutable digest for ${image}: ${inspect.stderr || inspect.stdout}`);
   return inspect.stdout.trim();
 }
-async function commandVersion(root: string, command: string): Promise<string | undefined> { const result = await runProcess(`${command} --version`, { cwd: root, timeoutMs: 15_000, toolchain: false }); return result.exitCode === 0 ? (result.stdout || result.stderr).split(/\r?\n/)[0]?.trim() : undefined; }
-async function rawCommandExists(root: string, command: string): Promise<boolean> { return (await runProcess(`command -v ${quote(command)}`, { cwd: root, timeoutMs: 10_000, toolchain: false })).exitCode === 0; }
+async function commandVersion(root: string, command: string): Promise<string | undefined> { const result = await runExecutable(command, ["--version"], { cwd: root, timeoutMs: 15_000, toolchain: false }); return result.exitCode === 0 ? (result.stdout || result.stderr).split(/\r?\n/)[0]?.trim() : undefined; }
+async function rawCommandExists(root: string, command: string): Promise<boolean> { return commandExists(command, root); }
 async function exists(file: string): Promise<boolean> { try { await fs.access(file); return true; } catch { return false; } }
 function unique(values: string[]): string[] { return [...new Set(values)]; }
-function quote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }
 function shellLiteral(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }

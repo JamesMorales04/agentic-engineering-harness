@@ -1,7 +1,9 @@
 import process from "node:process";
 import type { OpenCodeAgentBindingSource } from "../agents/permissions.js";
-import { registerCurrentOperationAgent } from "../operations/state.js";
-import { runProcess } from "../utils/process.js";
+import { currentOperationContext, loadOperation, registerCurrentOperationAgent } from "../operations/state.js";
+import type { ExecutionBindingV2 } from "../architecture/executionIdentity.js";
+import { providerLeaseWorkspaceKeyV1, runWithOperationProviderLease } from "../runtime/providerLifecycle.js";
+import { runExecutable, runShell } from "../utils/process.js";
 import {
   buildPaseoBackgroundRunCommand,
   detectPaseoCapabilities,
@@ -31,6 +33,7 @@ import {
   type PaseoSdkAgentResult
 } from "./sdk.js";
 import { recordPaseoTrace } from "./trace.js";
+import { deterministicPaseoRuntimeDeps, isDeterministicPaseoRuntimeEnabled } from "./deterministicRuntime.js";
 
 export interface ManagedPaseoAgentOptions extends PaseoSdkAgentOptions {
   timeoutSeconds?: number;
@@ -48,8 +51,9 @@ export interface ManagedPaseoAgentResult {
   observation?: "subscription" | "sdk-run" | "sdk-wait" | "cli-wait";
 }
 
-interface PaseoRuntimeDeps {
-  run: typeof runProcess;
+export interface PaseoRuntimeDeps {
+  run: typeof runShell;
+  updateLabels?: (root: string, agentId: string, labels: Record<string, string>) => Promise<void>;
   detectCapabilities: typeof detectPaseoCapabilities;
   trace?: typeof recordPaseoTrace;
   native?: {
@@ -70,8 +74,9 @@ interface PaseoRuntimeDeps {
   };
 }
 
-const DEFAULT_DEPS: PaseoRuntimeDeps = {
-  run: runProcess,
+const REAL_DEPS: PaseoRuntimeDeps = {
+  run: runShell,
+  updateLabels: updatePaseoExecutionLabels,
   detectCapabilities: detectPaseoCapabilities,
   trace: recordPaseoTrace,
   native: {
@@ -92,12 +97,17 @@ const DEFAULT_DEPS: PaseoRuntimeDeps = {
   }
 };
 
+/** The runtime boundary selected for this process: real Paseo, or the file-scripted fixture boundary. */
+function defaultDeps(): PaseoRuntimeDeps {
+  return isDeterministicPaseoRuntimeEnabled() ? deterministicPaseoRuntimeDeps() : REAL_DEPS;
+}
+
 export async function launchManagedPaseoAgent(
   root: string,
   options: ManagedPaseoAgentOptions,
-  deps: PaseoRuntimeDeps = DEFAULT_DEPS
+  deps: PaseoRuntimeDeps = defaultDeps()
 ): Promise<ManagedPaseoAgentResult> {
-  const trace = deps.trace ?? DEFAULT_DEPS.trace!;
+  const trace = deps.trace ?? defaultDeps().trace!;
   if (!forceCli()) {
     await ensurePreflight(root, options, deps);
     await traceResolvedIdentity(root, options, trace);
@@ -117,13 +127,16 @@ export async function launchManagedPaseoAgent(
   return launchCli(root, options, deps, "AEH_PASEO_FORCE_CLI=1 forced the compatibility lifecycle.");
 }
 
-export async function materializeManagedPaseoAgent(root: string, options: ManagedPaseoAgentOptions, deps: PaseoRuntimeDeps = DEFAULT_DEPS): Promise<ManagedPaseoAgentResult> {
+export async function materializeManagedPaseoAgent(root: string, options: ManagedPaseoAgentOptions, deps: PaseoRuntimeDeps = defaultDeps()): Promise<ManagedPaseoAgentResult> {
   if (forceCli()) throw new PaseoSdkUnavailableError("Idle agent materialization is SDK-only; AEH_PASEO_FORCE_CLI=1 is active.");
   await ensurePreflight(root, options, deps);
-  const trace = deps.trace ?? DEFAULT_DEPS.trace!;
+  const trace = deps.trace ?? defaultDeps().trace!;
   await traceResolvedIdentity(root, options, trace);
   try {
-    const result = fromSdk(await deps.sdk.materialize(root, { ...options, prompt: undefined, waitForFinish: false }));
+    const result = await withProviderSessionLease(root, options.provider, options.workspaceId, options.labels, undefined, deps, async () => {
+      const value = fromSdk(await deps.sdk.materialize(root, { ...options, prompt: undefined, waitForFinish: false }));
+      return { value, sessionId: value.id };
+    });
     await registerManagedAgent(root, options, result);
     await trace(root, "agent.materialize", { transport: "sdk", agentId: result.id ?? "", provider: options.provider, model: options.model ?? "", modeId: options.modeId ?? "", modeSource: options.modeSource ?? "", workspaceId: result.workspaceId ?? "" });
     return result;
@@ -133,8 +146,8 @@ export async function materializeManagedPaseoAgent(root: string, options: Manage
   }
 }
 
-export async function dispatchManagedPaseoAgent(root: string, agentId: string, prompt: string, timeoutSeconds?: number, deps: PaseoRuntimeDeps = DEFAULT_DEPS): Promise<ManagedPaseoAgentResult> {
-  const trace = deps.trace ?? DEFAULT_DEPS.trace!;
+export async function dispatchManagedPaseoAgent(root: string, agentId: string, prompt: string, timeoutSeconds?: number, deps: PaseoRuntimeDeps = defaultDeps()): Promise<ManagedPaseoAgentResult> {
+  const trace = deps.trace ?? defaultDeps().trace!;
   if (!forceCli()) {
     try {
       const result = fromSdk(await deps.sdk.dispatch(root, agentId, prompt, timeoutMs(timeoutSeconds)));
@@ -154,11 +167,11 @@ export async function dispatchManagedPaseoAgent(root: string, agentId: string, p
   return { id: agentId, exitCode: send.exitCode, stdout: send.stdout, stderr: send.stderr, status: send.exitCode === 0 ? "working" : "failed", transport: "cli" };
 }
 
-export async function waitManagedPaseoAgent(root: string, agentId: string, timeoutSeconds?: number, deps: PaseoRuntimeDeps = DEFAULT_DEPS, baseline?: PaseoTurnBaseline): Promise<ManagedPaseoAgentResult> {
+export async function waitManagedPaseoAgent(root: string, agentId: string, timeoutSeconds?: number, deps: PaseoRuntimeDeps = defaultDeps(), baseline?: PaseoTurnBaseline): Promise<ManagedPaseoAgentResult> {
   const timeout = timeoutMs(timeoutSeconds);
-  const trace = deps.trace ?? DEFAULT_DEPS.trace!;
+  const trace = deps.trace ?? defaultDeps().trace!;
   if (!forceCli()) {
-    const native = deps.native ?? DEFAULT_DEPS.native!;
+    const native = deps.native ?? defaultDeps().native!;
     try {
       const result = fromNativeWait(await native.wait(root, agentId, timeout, baseline));
       if (result.status === "timeout") {
@@ -196,7 +209,7 @@ export async function waitManagedPaseoAgent(root: string, agentId: string, timeo
   return result;
 }
 
-export async function stopManagedPaseoAgent(root: string, agentId: string, deps: PaseoRuntimeDeps = DEFAULT_DEPS): Promise<{ exitCode: number; stderr: string }> {
+export async function stopManagedPaseoAgent(root: string, agentId: string, deps: PaseoRuntimeDeps = defaultDeps()): Promise<{ exitCode: number; stderr: string }> {
   try {
     const result = await deps.run(`paseo stop ${quote(agentId)}`, { cwd: root, timeoutMs: 30_000 });
     return { exitCode: result.exitCode, stderr: result.exitCode === 0 ? "" : result.stderr || result.stdout || `paseo stop exited ${result.exitCode}` };
@@ -210,10 +223,30 @@ export async function continueManagedPaseoAgent(
   agentId: string,
   prompt: string,
   timeoutSeconds?: number,
-  deps: PaseoRuntimeDeps = DEFAULT_DEPS,
-  outputSchema?: Record<string, unknown>
+  deps: PaseoRuntimeDeps = defaultDeps(),
+  outputSchema?: Record<string, unknown>,
+  executionIdentityLabels?: Record<string, string>
 ): Promise<ManagedPaseoAgentResult> {
-  const trace = deps.trace ?? DEFAULT_DEPS.trace!;
+  return withProviderSessionLease(root, executionIdentityLabels?.["aeh.provider"] ?? "paseo", undefined, executionIdentityLabels, agentId, deps, async () => ({
+    value: await continueManagedPaseoAgentUnleased(root, agentId, prompt, timeoutSeconds, deps, outputSchema, executionIdentityLabels),
+    sessionId: agentId
+  }));
+}
+
+async function continueManagedPaseoAgentUnleased(
+  root: string,
+  agentId: string,
+  prompt: string,
+  timeoutSeconds?: number,
+  deps: PaseoRuntimeDeps = defaultDeps(),
+  outputSchema?: Record<string, unknown>,
+  executionIdentityLabels?: Record<string, string>
+): Promise<ManagedPaseoAgentResult> {
+  const trace = deps.trace ?? defaultDeps().trace!;
+  if (executionIdentityLabels?.["aeh.execution.binding"]) {
+    const updateLabels = deps.updateLabels ?? defaultDeps().updateLabels!;
+    await updateLabels(root, agentId, executionIdentityLabels);
+  }
   if (!forceCli()) {
     try {
       const result = {
@@ -236,7 +269,7 @@ export async function continueManagedPaseoAgent(
   }
   let baseline: PaseoTurnBaseline | undefined;
   if (!forceCli()) {
-    const native = deps.native ?? DEFAULT_DEPS.native!;
+    const native = deps.native ?? defaultDeps().native!;
     if (typeof native.capture === "function") {
       try {
         baseline = await native.capture(root, agentId);
@@ -252,19 +285,108 @@ export async function continueManagedPaseoAgent(
   return waitManagedPaseoAgent(root, agentId, timeoutSeconds, deps, baseline);
 }
 
-export async function probeManagedPaseoAgent(root: string, agentId: string, deps: PaseoRuntimeDeps = DEFAULT_DEPS): Promise<boolean> {
+async function withProviderSessionLease<T>(
+  root: string,
+  provider: string,
+  workspaceId: string | undefined,
+  labels: Record<string, string> | undefined,
+  sessionId: string | undefined,
+  deps: PaseoRuntimeDeps,
+  action: () => Promise<{ value: T; sessionId?: string }>
+): Promise<T> {
+  const context = currentOperationContext();
+  if (!context.id) return (await action()).value;
+  const operationId = labels?.["aeh.operation"]?.trim();
+  const participantId = labels?.["aeh.participant"]?.trim();
+  if (labels?.["aeh.kind"] === "semantic-assessment" && operationId === context.id) {
+    // Controller-side semantic assessments are non-authoritative, tool-less, read-only model calls
+    // with no WorkGraph Participant identity. They must not take a mutable writer provider lease
+    // (there is no participant or Lead generation actor to bind), but managed foreground turns
+    // still materialize and run atomically so the completed reply is captured reliably.
+    return (await action()).value;
+  }
+  if (!operationId || context.id !== operationId || !participantId) {
+    const leadAgentId = labels?.["aeh.lead.agentId"]?.trim();
+    const leadGeneration = Number(labels?.["aeh.lead.generation"]);
+    if (!operationId || context.id !== operationId || !leadAgentId || !Number.isSafeInteger(leadGeneration) || leadGeneration < 1 || participantId) {
+      throw new Error("PASEO_PROVIDER_LEASE_CONTEXT_MISMATCH: operation-bound Paseo work requires matching participant or bound Lead generation labels.");
+    }
+  }
+  const supervisorAgentId = participantId && labels?.["aeh.supervisor"] === "true" ? participantId : undefined;
+  const leadAgentId = participantId ? undefined : labels?.["aeh.lead.agentId"]?.trim();
+  const leadGeneration = leadAgentId ? Number(labels?.["aeh.lead.generation"]) : undefined;
+  const stateRoot = context.controlRoot ?? process.env.AEH_CONTROL_ROOT?.trim() ?? root;
+  const operation = await loadOperation(stateRoot, operationId);
+  const binding = executionBindingFromLabels(labels);
+  const stop = async (agentId: string) => {
+    const stopped = await stopManagedPaseoAgent(root, agentId, deps);
+    if (stopped.exitCode !== 0) throw new Error(stopped.stderr || `Paseo stop exited ${stopped.exitCode}.`);
+  };
+  return runWithOperationProviderLease({
+    root: stateRoot,
+    provider,
+    workspaceId: providerLeaseWorkspaceKeyV1({ explicitWorkspaceId: workspaceId, labelWorkspaceId: labels?.["aeh.workspace.id"], launchRoot: root, stateRoot, operationWorkspaceId: operation.workspaceId, operationId }),
+    operationId,
+    ...(supervisorAgentId ? { supervisorAgentId } : participantId ? { participantId } : { leadAgentId, leadGeneration }),
+    sessionId,
+    executionBinding: binding,
+    inspect: async (agentId) => deps.sdk.inspect(root, agentId),
+    stop,
+    discoverSession: async () => {
+      const found = await deps.sdk.list(root, labels).catch(() => []);
+      return found.length === 1 ? found[0]!.id : undefined;
+    }
+  }, action).then((value) => value);
+}
+
+function executionBindingFromLabels(labels?: Record<string, string>): ExecutionBindingV2 | undefined {
+  const raw = labels?.["aeh.execution.binding"];
+  if (!raw) return undefined;
+  const decoded = labels?.["aeh.execution.binding.encoding"] === "base64url"
+    ? Buffer.from(raw, "base64url").toString("utf8")
+    : raw;
+  try {
+    const parsed: unknown = JSON.parse(decoded);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("expected a JSON object");
+    return parsed as ExecutionBindingV2;
+  } catch (error) {
+    throw new Error(`PASEO_PROVIDER_LEASE_EXECUTION_BINDING_INVALID: ${String(error)}`);
+  }
+}
+
+async function updatePaseoExecutionLabels(root: string, agentId: string, labels: Record<string, string>): Promise<void> {
+  const encoded = { ...labels };
+  for (const key of ["aeh.execution.binding", "aeh.result.provenance"] as const) {
+    const value = encoded[key];
+    if (value === undefined) continue;
+    try { JSON.parse(value); }
+    catch { throw new Error(`PASEO_EXECUTION_IDENTITY_INVALID: ${key} is not valid JSON before metadata binding.`); }
+    encoded[key] = Buffer.from(value, "utf8").toString("base64url");
+    encoded[`${key}.encoding`] = "base64url";
+  }
+  const args = ["agent", "update", agentId, ...Object.entries(encoded).flatMap(([key, value]) => ["--label", `${key}=${value}`])];
+  const updated = await runExecutable("paseo", args, { cwd: root, timeoutMs: 60_000 });
+  if (updated.exitCode !== 0) throw new Error(`PASEO_EXECUTION_IDENTITY_UPDATE_FAILED: ${updated.stderr || updated.stdout || `paseo agent update exited ${updated.exitCode}`}`);
+  const observed = await inspectPaseoSdkAgent(root, agentId);
+  if (!observed) throw new Error("PASEO_EXECUTION_IDENTITY_UPDATE_UNVERIFIED: Paseo could not read back the materialized agent labels before first-turn dispatch.");
+  for (const [key, value] of Object.entries(encoded)) {
+    if (observed.labels?.[key] !== value) throw new Error(`PASEO_EXECUTION_IDENTITY_UPDATE_UNVERIFIED: Paseo did not persist label '${key}' before first-turn dispatch.`);
+  }
+}
+
+export async function probeManagedPaseoAgent(root: string, agentId: string, deps: PaseoRuntimeDeps = defaultDeps()): Promise<boolean> {
   if (!forceCli()) { try { return await deps.sdk.probe(root, agentId); } catch (error) { if (!sdkCanFallback(error)) return false; } }
   const probe = await deps.run(`paseo logs ${quote(agentId)} --tail 1`, { cwd: root, timeoutMs: 30_000 });
   return probe.exitCode === 0;
 }
 
-export async function inspectManagedPaseoAgent(root: string, agentId: string, deps: PaseoRuntimeDeps = DEFAULT_DEPS): Promise<PaseoSdkAgentRecord | undefined> {
+export async function inspectManagedPaseoAgent(root: string, agentId: string, deps: PaseoRuntimeDeps = defaultDeps()): Promise<PaseoSdkAgentRecord | undefined> {
   if (!forceCli()) { try { return await deps.sdk.inspect(root, agentId); } catch (error) { if (!sdkCanFallback(error)) return undefined; } }
   return (await listCliAgents(root, deps)).find((agent) => agent.id === agentId);
 }
 
-export async function listManagedPaseoAgents(root: string, labels: Record<string, string> = {}, deps: PaseoRuntimeDeps = DEFAULT_DEPS): Promise<PaseoSdkAgentRecord[]> {
-  const trace = deps.trace ?? DEFAULT_DEPS.trace!;
+export async function listManagedPaseoAgents(root: string, labels: Record<string, string> = {}, deps: PaseoRuntimeDeps = defaultDeps()): Promise<PaseoSdkAgentRecord[]> {
+  const trace = deps.trace ?? defaultDeps().trace!;
   if (!forceCli()) {
     try { return await deps.sdk.list(root, labels); }
     catch (error) {
@@ -276,8 +398,8 @@ export async function listManagedPaseoAgents(root: string, labels: Record<string
 }
 
 async function ensurePreflight(root: string, options: ManagedPaseoAgentOptions, deps: PaseoRuntimeDeps): Promise<void> {
-  const native = deps.native ?? DEFAULT_DEPS.native!;
-  const trace = deps.trace ?? DEFAULT_DEPS.trace!;
+  const native = deps.native ?? defaultDeps().native!;
+  const trace = deps.trace ?? defaultDeps().trace!;
   try {
     const result = await native.preflight(root, options.provider, options.model, options.cwd);
     if (!result.ok) {
@@ -308,6 +430,7 @@ async function traceResolvedIdentity(root: string, options: ManagedPaseoAgentOpt
 async function launchCli(root: string, options: ManagedPaseoAgentOptions, deps: PaseoRuntimeDeps, fallbackReason: string): Promise<ManagedPaseoAgentResult> {
   if (options.prompt === undefined && options.systemPrompt !== undefined) throw new PaseoSdkUnavailableError(`Paseo SDK is required to create an idle systemPrompt-only agent. Refusing CLI fallback because it would expose session instructions as a user turn. ${fallbackReason}`);
   if (options.env && Object.keys(options.env).length) throw new PaseoSdkUnavailableError(`Paseo SDK is required for session-scoped launch environment used by provider ${options.provider}${options.modeId ? ` mode ${options.modeId}` : ""}. Refusing CLI fallback because dropping that environment could change the native execution identity or permissions. ${fallbackReason}`);
+  if (options.providerOptions && Object.keys(options.providerOptions).length) throw new PaseoSdkUnavailableError(`Paseo SDK is required for provider-native options used by provider ${options.provider}. Refusing CLI fallback because dropping the projected sandbox policy could change the participant's execution authority. ${fallbackReason}`);
   const capabilities = await deps.detectCapabilities(root, deps.run);
   const prompt = options.prompt;
   if (prompt === undefined) throw new Error("Paseo CLI fallback requires a prompt.");
@@ -337,6 +460,13 @@ async function registerManagedAgent(root: string, options: ManagedPaseoAgentOpti
   if (!result.id) return;
   const role = options.labels?.["aeh.role"];
   if (!role) return;
+  // The Semantic Assessor is an AEH Agent, not automatically a WorkGraph Participant: its
+  // read-only assessment turns carry no WorkUnit ownership and never produce participant receipts.
+  if (options.labels?.["aeh.kind"] === "semantic-assessment") return;
+  // A launch that carries a controller-issued participant identity is already durably registered
+  // by the execution-authority path; minting a second participant for the runtime session would
+  // split one bounded work unit across two terminal-gate identities.
+  if (options.labels?.["aeh.participant"] || options.env?.AEH_PARTICIPANT_ID) return;
   await registerCurrentOperationAgent(root, { id: result.id, role, phase: options.labels?.["aeh.operation.phase"], workspaceId: result.workspaceId ?? options.workspaceId, transport: result.transport });
 }
 
@@ -360,9 +490,16 @@ function forceCli(): boolean { return process.env.AEH_PASEO_FORCE_CLI === "1"; }
 function sdkCanFallback(error: unknown): boolean { return error instanceof PaseoSdkUnavailableError || (error instanceof Error && error.name === "PaseoSdkUnavailableError"); }
 function timeoutMs(seconds?: number): number { return (seconds ?? 1800) * 1000; }
 function secondsFromMs(ms?: number): number | undefined { return ms === undefined ? undefined : Math.max(1, Math.ceil(ms / 1000)); }
-function fromSdk(result: PaseoSdkAgentResult): ManagedPaseoAgentResult { return { id: result.id, exitCode: sdkExitCode(result.status, result.error), stdout: result.lastMessage ?? "", stderr: result.error ?? "", status: result.status, workspaceId: result.workspaceId, transport: "sdk" }; }
-function fromNativeWait(result: PaseoNativeWaitResult): ManagedPaseoAgentResult { return { id: result.id, exitCode: sdkExitCode(result.status, result.error), stdout: result.lastMessage ?? "", stderr: result.error ?? "", status: result.status, workspaceId: result.workspaceId, transport: "sdk", observation: "subscription" }; }
-function sdkExitCode(status?: string, error?: string): number { if (status === "timeout") return 124; if (error) return 1; if (status === "failed" || status === "error" || status === "cancelled") return 1; return 0; }
+function providerStopDetail(status?: string, permission?: { name?: string; title?: string; patterns?: string[] }): string | undefined {
+  if (status !== "permission" && status !== "waiting") return undefined;
+  const descriptor = permission
+    ? [permission.name ?? permission.title, permission.patterns?.length ? `scope ${permission.patterns.join(", ")}` : undefined].filter(Boolean).join(" ")
+    : undefined;
+  return `provider session stopped on an unapproved '${status}' prompt${descriptor ? ` (${descriptor})` : ""}; the turn produced no result`;
+}
+function fromSdk(result: PaseoSdkAgentResult): ManagedPaseoAgentResult { return { id: result.id, exitCode: sdkExitCode(result.status, result.error), stdout: result.lastMessage ?? "", stderr: [result.error ?? "", providerStopDetail(result.status, result.permission)].filter(Boolean).join("\n"), status: result.status, workspaceId: result.workspaceId, transport: "sdk" }; }
+function fromNativeWait(result: PaseoSdkAgentResult): ManagedPaseoAgentResult { return { id: result.id, exitCode: sdkExitCode(result.status, result.error), stdout: result.lastMessage ?? "", stderr: [result.error ?? "", providerStopDetail(result.status, result.permission)].filter(Boolean).join("\n"), status: result.status, workspaceId: result.workspaceId, transport: "sdk", observation: "subscription" }; }
+function sdkExitCode(status?: string, error?: string): number { if (status === "timeout") return 124; if (error) return 1; if (status === "failed" || status === "error" || status === "cancelled" || status === "permission" || status === "waiting") return 1; return 0; }
 function firstString(record: Record<string, unknown>, keys: string[]): string | undefined { for (const key of keys) if (typeof record[key] === "string" && record[key]) return record[key] as string; return undefined; }
 function stringRecord(value: unknown): Record<string, string> | undefined { if (!value || typeof value !== "object" || Array.isArray(value)) return undefined; const result: Record<string, string> = {}; for (const [key, item] of Object.entries(value as Record<string, unknown>)) if (typeof item === "string") result[key] = item; return Object.keys(result).length ? result : undefined; }
 function statusText(value: unknown): string | undefined { if (typeof value === "string") return value; if (value && typeof value === "object" && typeof (value as Record<string, unknown>).status === "string") return (value as Record<string, unknown>).status as string; return undefined; }

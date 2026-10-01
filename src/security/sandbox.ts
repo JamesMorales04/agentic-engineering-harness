@@ -1,6 +1,6 @@
-import crypto from "node:crypto";
 import type { AgentExecutionSelection } from "../agents/types.js";
 import type { HarnessProjectConfig, TaskRisk } from "../core/types.js";
+import { sha256Canonical } from "../core/digest.js";
 
 export interface SandboxDecision {
   required: boolean;
@@ -17,7 +17,7 @@ export function sandboxPolicyDigest(config: HarnessProjectConfig, selection: Age
     transport: selection.transport,
     permissions: selection.permissions
   };
-  return crypto.createHash("sha256").update(stableJson(policy)).digest("hex");
+  return sha256Canonical(policy);
 }
 
 export function enforceSandboxPolicy(selection: AgentExecutionSelection, config: HarnessProjectConfig, risk: TaskRisk = "low"): SandboxDecision {
@@ -32,7 +32,7 @@ export function enforceSandboxPolicy(selection: AgentExecutionSelection, config:
   return { required: true, provider, reasons: force ? [`risk:${risk}`] : ["security.sandbox.required"], selection: { ...selection, transport: provider === "podman" ? "podman" : selection.transport } };
 }
 
-export function hardenedPodmanArgs(config: HarnessProjectConfig, selection: AgentExecutionSelection, writable: boolean): string[] {
+export function hardenedPodmanArgs(config: HarnessProjectConfig, selection: AgentExecutionSelection, writable: boolean, options: { persistentIsolatedHome?: boolean } = {}): string[] {
   const sandbox = config.security?.sandbox;
   const args: string[] = ["--rm", "-i", "--userns=keep-id"];
   if (sandbox?.readOnlyRoot !== false) args.push("--read-only");
@@ -44,7 +44,7 @@ export function hardenedPodmanArgs(config: HarnessProjectConfig, selection: Agen
   if (sandbox?.network === false || selection.permissions.network === "deny") args.push("--network=none");
   const tmpfs = sandbox?.tmpfs ?? ["/tmp:rw,nosuid,nodev,noexec,size=1g"];
   for (const mount of tmpfs) args.push(`--tmpfs=${mount}`);
-  if (sandbox?.ephemeralHome !== false) {
+  if (sandbox?.ephemeralHome !== false && !options.persistentIsolatedHome) {
     args.push("--tmpfs=/home/aeh:rw,nosuid,nodev,size=256m");
     args.push("--env=HOME=/home/aeh");
   }
@@ -68,11 +68,4 @@ export function allowedSandboxEnvironment(config: HarnessProjectConfig, source: 
   const result: Record<string, string> = {};
   for (const name of [...allowed, ...credentials]) if (source[name] !== undefined) result[name] = source[name]!;
   return result;
-}
-
-function stableJson(value: unknown): string {
-  return JSON.stringify(value, (_key, nested) => {
-    if (!nested || typeof nested !== "object" || Array.isArray(nested)) return nested;
-    return Object.fromEntries(Object.entries(nested as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)));
-  });
 }

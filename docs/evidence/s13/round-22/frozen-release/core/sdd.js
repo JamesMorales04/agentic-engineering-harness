@@ -1,0 +1,88 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import YAML from "yaml";
+import { getCurrentBranch } from "./git.js";
+const requiredArtifacts = ["proposal.md", "spec.md", "design.md", "tasks.yaml", "acceptance.feature"];
+export async function createSddChange(root, taskId, title, config) { const specsDir = config?.sdd?.specsDir ?? "specs"; const dir = path.join(root, specsDir, "changes", taskId); const requirementId = `${taskId}-R1`; const originatingBranch = await getCurrentBranch(root); await fs.mkdir(dir, { recursive: true }); const files = { "proposal.md": `# ${taskId}: ${title}\n\n## Problem\n\nTODO\n\n## Desired outcome\n\nTODO\n\n## Requirements\n\n- ${requirementId} — TODO observable requirement.\n\n## Scope\n\n## Non-goals\n`, "spec.md": `# Specification: ${title}\n\n## Requirements\n\n### ${requirementId}\n\nTODO observable behavior.\n\n## Invariants\n\nTODO\n`, "design.md": `# Design: ${title}\n\n## Current state\n\n## Proposed design\n\n## Requirement mapping\n\n- ${requirementId} — TODO implementation approach.\n\n## Data/API impact\n\n## Risks and trade-offs\n`, "tasks.yaml": `version: 1\ntask: ${taskId}\nitems:\n  - id: 1\n    title: Implement ${requirementId}\n    status: pending\n    requirements:\n      - ${requirementId}\n`, "acceptance.feature": `@${taskId}\nFeature: ${title}\n\n  Rule: TODO business rule\n\n    @${requirementId}\n    Scenario: TODO observable behavior\n      Given TODO\n      When TODO\n      Then TODO\n` }; for (const [name, content] of Object.entries(files))
+    await writeIfMissing(path.join(dir, name), content); const contractsDir = path.join(root, config?.sdd?.contractsDir ?? ".harness/contracts"); await fs.mkdir(contractsDir, { recursive: true }); const contractPath = path.join(contractsDir, `${taskId}.yaml`); const contract = { version: 1, task: { id: taskId, title }, source: { proposal: relative(root, path.join(dir, "proposal.md")), spec: relative(root, path.join(dir, "spec.md")), design: relative(root, path.join(dir, "design.md")), tasks: relative(root, path.join(dir, "tasks.yaml")), acceptance: relative(root, path.join(dir, "acceptance.feature")) }, git: { baseRef: config?.validation?.baseRef ?? "main", ...(originatingBranch ? { originatingBranch } : {}) }, scope: { allowed: ["**"], forbidden: [], frozen: [] }, routing: { intent: "implement", domains: [], risk: "medium", route: "FORMAL_SDD", assurance: "ELEVATED", routeEvidence: [{ route: "FORMAL_SDD", source: "sdd-authoring", statement: "OpenSpec/SDD authoring is the formal route for this contract." }] }, requirements: [{ id: requirementId, description: "TODO observable requirement.", validators: ["gherkin"] }], constraints: { breakingApiChanges: false, newDependencies: false, schemaChanges: false }, repair: { maxAttempts: config?.orchestration?.worker?.maxRepairAttempts ?? 2 } }; await writeIfMissing(contractPath, YAML.stringify(contract)); return dir; }
+export async function validateSddChange(root, taskId, config) { const specsDir = config?.sdd?.specsDir ?? "specs"; const dir = path.join(root, specsDir, "changes", taskId); const missing = []; const issues = []; const contents = new Map(); for (const name of requiredArtifacts) {
+    try {
+        const content = await fs.readFile(path.join(dir, name), "utf8");
+        if (!content.trim())
+            missing.push(name);
+        else
+            contents.set(name, content);
+    }
+    catch {
+        missing.push(name);
+    }
+} if (missing.length)
+    return { ok: false, missing, issues, requirements: [] }; const spec = contents.get("spec.md") ?? ""; const proposal = contents.get("proposal.md") ?? ""; const design = contents.get("design.md") ?? ""; const acceptance = contents.get("acceptance.feature") ?? ""; const tasksRaw = contents.get("tasks.yaml") ?? ""; const requirementIds = extractRequirementIds(spec); if (!requirementIds.length)
+    issues.push("spec.md defines no traceable requirement IDs (expected e.g. CHANGE-123-R1 or REQ-001)."); const taskRequirements = extractTaskRequirements(tasksRaw); const contract = await tryLoadContract(root, taskId, config); if (!contract)
+    issues.push(`TaskContract ${taskId}.yaml is missing or unreadable.`); const known = config ? knownValidatorNames(config, contract) : undefined; const traces = requirementIds.map((id) => { const contractRequirement = contract?.requirements?.find((item) => item.id === id); const validators = normalizeValidators(contractRequirement); const trace = { id, proposal: proposal.includes(id), spec: true, design: design.includes(id), acceptance: containsTag(acceptance, id), tasks: taskRequirements.has(id), contract: Boolean(contractRequirement), validators }; for (const field of ["proposal", "design", "acceptance", "tasks", "contract"])
+    if (!trace[field])
+        issues.push(`${id} is not traceable through ${field}.`); if (!validators.length)
+    issues.push(`${id} has no validator declared in the TaskContract.`); if (known)
+    for (const validator of validators) {
+        const name = validator.split(":", 1)[0];
+        if (!known.has(name) && !known.has(validator))
+            issues.push(`${id} references unknown validator '${validator}'.`);
+    } return trace; }); for (const requirement of contract?.requirements ?? [])
+    if (!requirementIds.includes(requirement.id))
+        issues.push(`${requirement.id} exists in the TaskContract but not in spec.md.`); return { ok: missing.length === 0 && issues.length === 0, missing, issues, requirements: traces }; }
+export function formatTraceabilityMatrix(requirements) { const header = ["Requirement", "Proposal", "Spec", "Design", "Acceptance", "Tasks", "Contract", "Validators"].join(" | "); const separator = ["---", "---", "---", "---", "---", "---", "---", "---"].join(" | "); const rows = requirements.map((item) => [item.id, mark(item.proposal), mark(item.spec), mark(item.design), mark(item.acceptance), mark(item.tasks), mark(item.contract), item.validators.join(", ") || "—"].join(" | ")); return [header, separator, ...rows].join("\n"); }
+function extractRequirementIds(markdown) { const matches = markdown.matchAll(/(?:^|\s|[#`*-])((?:[A-Za-z][A-Za-z0-9_-]*-R\d+)|(?:REQ-\d+))(?:\b|`)/gm); return [...new Set([...matches].map((match) => match[1]))]; }
+function containsTag(feature, id) { return new RegExp(`(^|\\s)@${escapeRegex(id)}(?=\\s|$)`, "m").test(feature); }
+function extractTaskRequirements(raw) { try {
+    const value = YAML.parse(raw);
+    const ids = new Set();
+    collectRequirementValues(value, ids);
+    return ids;
+}
+catch {
+    return new Set();
+} }
+function collectRequirementValues(value, ids, key) { if (Array.isArray(value)) {
+    for (const item of value)
+        collectRequirementValues(item, ids, key);
+    return;
+} if (!value || typeof value !== "object") {
+    if ((key === "requirement" || key === "requirements") && typeof value === "string")
+        ids.add(value);
+    return;
+} for (const [childKey, child] of Object.entries(value)) {
+    if ((childKey === "requirement" || childKey === "requirements") && typeof child === "string")
+        ids.add(child);
+    if (childKey === "requirements" && Array.isArray(child))
+        for (const item of child)
+            if (typeof item === "string")
+                ids.add(item);
+    collectRequirementValues(child, ids, childKey);
+} }
+async function tryLoadContract(root, taskId, config) { try {
+    const contractsDir = config?.sdd?.contractsDir ?? ".harness/contracts";
+    return YAML.parse(await fs.readFile(path.join(root, contractsDir, `${taskId}.yaml`), "utf8"));
+}
+catch {
+    return undefined;
+} }
+function knownValidatorNames(config, contract) { const names = new Set(["build", "test", "lint", "typecheck", "architecture", "gherkin", "bdd", "test-execution", "unit-test", "integration-test", "integration-environment", "contract-test", "capability", "openapi", "graphify", "opengrep", "trivy", "playwright", "visual", "pact", "mutation", "property", "command"]); for (const item of config.validation?.commands ?? [])
+    names.add(item.id); for (const item of config.validation?.validators ?? []) {
+    names.add(item.id);
+    names.add(item.adapter);
+} for (const item of contract?.verification?.commands ?? [])
+    names.add(item.id); for (const item of contract?.verification?.validators ?? []) {
+    names.add(item.id);
+    names.add(item.adapter);
+} return names; }
+function normalizeValidators(requirement) { return [...new Set([...(requirement?.validators ?? []), ...(requirement?.validator ? [requirement.validator] : []), ...(requirement?.capabilities ?? []).map((capability) => `capability:${capability}`)])]; }
+function relative(root, file) { return path.relative(root, file).replaceAll("\\", "/"); }
+function mark(value) { return value ? "✓" : "✗"; }
+function escapeRegex(value) { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+async function writeIfMissing(file, content) { try {
+    await fs.access(file);
+}
+catch {
+    await fs.writeFile(file, content);
+} }
+//# sourceMappingURL=sdd.js.map

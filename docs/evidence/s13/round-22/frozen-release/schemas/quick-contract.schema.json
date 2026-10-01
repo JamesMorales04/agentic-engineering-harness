@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Agentic Engineering Harness QuickContract",
+  "type": "object",
+  "required": ["version", "mode", "task", "quick", "scope", "routing", "constraints"],
+  "properties": {
+    "version": { "const": 1 },
+    "mode": { "const": "quick" },
+    "task": { "type": "object", "required": ["id", "title"], "properties": { "id": { "type": "string", "minLength": 1 }, "title": { "type": "string", "minLength": 1 } } },
+    "quick": { "type": "object", "required": ["request", "acceptance", "triage"], "properties": { "request": { "type": "string", "minLength": 1 }, "acceptance": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }, "triage": { "type": "object" } } },
+    "scope": { "type": "object", "required": ["allowed"], "properties": { "allowed": { "type": "array", "minItems": 1, "items": { "type": "string" } }, "forbidden": { "type": "array", "items": { "type": "string" } }, "frozen": { "type": "array", "items": { "type": "string" } } } },
+    "routing": { "type": "object" },
+    "constraints": { "type": "object", "properties": { "breakingApiChanges": { "const": false }, "newDependencies": { "const": false }, "schemaChanges": { "const": false } } },
+    "repair": { "type": "object" },
+    "verification": { "type": "object" }
+  }
+}

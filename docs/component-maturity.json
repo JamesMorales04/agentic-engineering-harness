@@ -14,7 +14,7 @@
     "BDD Execution": { "claimed": "WORKFLOW_INTEGRATED", "evidence": ["src/providers/validation/bddExecution.ts", "tests/validationProviders.test.ts"] },
     "Integration Environment": { "claimed": "EXECUTABLE", "evidence": ["src/providers/validation/integrationEnvironment.ts", "tests/validationProviders.test.ts"] },
     "Contract Testing / Pact": { "claimed": "EXECUTABLE", "evidence": ["src/providers/validation/pact.ts", "tests/validationProviders.test.ts"] },
-    "Gherkin": { "claimed": "WORKFLOW_INTEGRATED", "evidence": ["src/validators/gherkin.ts", "tests/validationProviders.test.ts"] },
+    "Gherkin": { "claimed": "WORKFLOW_INTEGRATED", "evidence": ["src/validators/registry.ts", "tests/validationProviders.test.ts"] },
     "Playwright": { "claimed": "WORKFLOW_INTEGRATED", "evidence": ["src/validators/external.ts", "src/validators/toolEvidence.ts", "tests/providerContracts.test.ts", ".github/workflows/ci.yml"] },
     "OPA": { "claimed": "WORKFLOW_INTEGRATED", "evidence": ["src/validators/opa.ts", "tests/architectureIntegrationContracts.test.ts"] },
     "Opengrep": { "claimed": "WORKFLOW_INTEGRATED", "evidence": ["src/validators/external.ts", "src/validators/toolEvidence.ts", "tests/providerContracts.test.ts", ".github/workflows/ci.yml"] },

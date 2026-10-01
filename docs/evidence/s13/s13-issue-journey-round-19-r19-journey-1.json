@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 19,
+  "runId": "r19-journey-1",
+  "campaign": "issue-journey",
+  "generatedAt": "2026-09-29T20:19:54.332Z",
+  "checkout": "/home/james/Desarrollo/agentic-engineering-harness",
+  "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13IssueJourneyCampaign.mjs",
+        "sha256": "0533b20c174d2429c4f242b6625104b7528cce3a9cbfb8171f6163b74a2d98d5"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "b49cc6cb11f156b7e8498f711057274e7fda02efd0fb7d6d7439a668f1208b9c"
+  },
+  "harnessBuildIdentity": {
+    "version": 1,
+    "packageVersion": "0.8.4",
+    "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "releaseId": "release-1790712212127-1416438-cdaf8967",
+    "buildDigest": "408b178d53f32750aa81efb3a60965552b1aacd7756332b4c6dbf8fd3d1c744b",
+    "dirty": true
+  },
+  "repository": {
+    "name": "JamesMorales04/aeh-s13-round3-20260927035743-6bb5da",
+    "visibility": "private",
+    "createdByCampaign": false
+  },
+  "issue": {
+    "number": 1,
+    "created": false,
+    "edited": false
+  },
+  "authorization": {
+    "authorizationId": "s13-github-effect-authorization-2026-09-28",
+    "artifactDigest": "272c5cb76158a7c312edd4d8d97cd6545b599e5c57c7978bbfc3742c573bd460",
+    "allowedEffects": [
+      "git.push",
+      "github.branch.create",
+      "github.issue.create"
+    ],
+    "resourceNamePrefix": "aeh-s13-",
+    "consumedBeforeAnyExternalCommand": true
+  },
+  "lanes": [
+    {
+      "capability": "issue-driven",
+      "result": "FAIL",
+      "checks": null,
+      "error": "TypeError: (intermediate value).loadTaskContract is not a function\n    at file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13IssueJourneyCampaign.mjs:272:99",
+      "artifact": "docs/evidence/s13/issue-journey-lanes/round-19/r19-journey-1/issue-driven.json"
+    }
+  ],
+  "result": "SLICE_BLOCKED",
+  "checkoutProof": {
+    "trackedDigestBefore": "5160135395bc02e072a8b0bf48d67f093c6afc8b7fff73a9b1ec7183707dcf88",
+    "trackedDigestAfter": "5160135395bc02e072a8b0bf48d67f093c6afc8b7fff73a9b1ec7183707dcf88",
+    "trackedFiles": 668,
+    "checkoutUntouched": true,
+    "postRunTrackedDocEditWindow": {
+      "opensAfterLaneFinish": true,
+      "note": "S13 tracked documentation/evidence is edited after lane execution; the recorded digest is the source-tree digest at lane end (R11-F6)."
+    }
+  }
+}

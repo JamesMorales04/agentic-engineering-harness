@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 10,
+  "runId": "lifecycle-round10-1",
+  "campaign": "real-paseo-lifecycle",
+  "generatedAt": "2026-09-28T17:11:00.558Z",
+  "checkout": "/home/james/Desarrollo/agentic-engineering-harness",
+  "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+  "harnessBuildIdentity": {
+    "version": 1,
+    "packageVersion": "0.8.4",
+    "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "releaseId": "release-1790614455255-130652-d8e9e08f",
+    "buildDigest": "0fc216b8ebd40b942c19556b2f1e7d6c44be802bb27142d41deeab2cc7ee71ac",
+    "dirty": true
+  },
+  "candidate": {
+    "artifact": "agentic-engineering-harness-0.8.4.tgz",
+    "artifactDigest": "13d260fe4b3a413a5bd11b71f59386ae8ad395bae0698283d9833cecdd5583b0"
+  },
+  "lanes": [
+    {
+      "capability": "cancel",
+      "result": "PASS",
+      "sessions": "425029af-f4a2-40b5-8999-550bd807a114",
+      "rowResult": {
+        "cancel": "PASS"
+      },
+      "error": null,
+      "artifact": "docs/evidence/s13/lifecycle-lanes/round-10/lifecycle-round10-1/cancel.json"
+    },
+    {
+      "capability": "recovery",
+      "result": "PASS",
+      "sessions": "4d0dc9e6-b3aa-4ddc-81b8-8561fb9a49a9",
+      "rowResult": {
+        "recovery": "PASS"
+      },
+      "error": null,
+      "artifact": "docs/evidence/s13/lifecycle-lanes/round-10/lifecycle-round10-1/recovery.json"
+    }
+  ],
+  "result": "PASS",
+  "checkoutProof": {
+    "trackedDigestBefore": "72a38012289897ce242072995fd19100646653a3daa266978d88b9071eb5fabe",
+    "trackedDigestAfter": "72a38012289897ce242072995fd19100646653a3daa266978d88b9071eb5fabe",
+    "trackedFiles": 668,
+    "checkoutUntouched": true,
+    "note": "Tracked digest captured before packing and after all real lifecycle journeys; all provider sessions run against disposable /tmp fixtures."
+  }
+}

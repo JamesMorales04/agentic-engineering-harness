@@ -12,6 +12,12 @@ export interface DirectWorkerProcessOptions {
   timeoutMs: number;
   environment?: Record<string, string | undefined>;
   maxOutputBytes?: number;
+  /** A shared isolated home used to prepare a real provider session before its first turn. */
+  homeDirectory?: string;
+}
+
+export interface DirectWorkerHome {
+  directory: string;
 }
 
 export interface DirectWorkerProcessResult {
@@ -31,7 +37,8 @@ export async function runDirectWorkerProcess(
   config: HarnessProjectConfig,
   options: DirectWorkerProcessOptions
 ): Promise<DirectWorkerProcessResult> {
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-direct-home-"));
+  const ownedHome = options.homeDirectory ? undefined : await createDirectWorkerHome(path.basename(command));
+  const home = options.homeDirectory ?? ownedHome!.directory;
   const environment = buildDirectWorkerEnvironment(config, options.environment, home);
   const started = Date.now();
 
@@ -126,8 +133,41 @@ export async function runDirectWorkerProcess(
       }
     });
   } finally {
-    await fs.rm(home, { recursive: true, force: true });
+    if (ownedHome) await fs.rm(ownedHome.directory, { recursive: true, force: true });
   }
+}
+
+export async function createDirectWorkerHome(runtime?: string): Promise<DirectWorkerHome> {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-direct-home-"));
+  await projectDirectProviderAuth(directory, runtime);
+  return { directory };
+}
+
+/**
+ * Project only the exact provider auth file the selected direct runtime needs into its ephemeral
+ * controlled home, with 0600 permissions, mirroring the certified CodexAgentProvider boundary.
+ * The same OS user's provider process reads its own credential; no credential is minted,
+ * broadened, logged or shared, and the home is removed with the turn. A missing auth file is not
+ * an error here: the provider reports unauthenticated startup through its own failure.
+ */
+export async function projectDirectProviderAuth(directory: string, runtime?: string): Promise<void> {
+  const hostHome = os.homedir();
+  const codexHome = process.env.CODEX_HOME?.trim() || path.join(hostHome, ".codex");
+  const openCodeData = process.env.XDG_DATA_HOME?.trim() || path.join(hostHome, ".local", "share");
+  const targets: Array<{ source: string; target: string }> = [];
+  if (runtime === undefined || runtime === "codex") targets.push({ source: path.join(codexHome, "auth.json"), target: path.join(directory, ".codex", "auth.json") });
+  if (runtime === undefined || runtime === "opencode") targets.push({ source: path.join(openCodeData, "opencode", "auth.json"), target: path.join(directory, ".local", "share", "opencode", "auth.json") });
+  for (const entry of targets) {
+    try {
+      await fs.mkdir(path.dirname(entry.target), { recursive: true, mode: 0o700 });
+      await fs.copyFile(entry.source, entry.target);
+      await fs.chmod(entry.target, 0o600);
+    } catch { /* absent auth file: the provider reports its own unauthenticated startup */ }
+  }
+}
+
+export async function removeDirectWorkerHome(home: DirectWorkerHome | undefined): Promise<void> {
+  if (home) await fs.rm(home.directory, { recursive: true, force: true });
 }
 
 export function buildDirectWorkerEnvironment(

@@ -1,0 +1,3548 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 10,
+  "runId": "formal-diagnostic-1",
+  "capability": "change-delegated",
+  "kind": "change",
+  "providerPath": "FULL_OPERATION_REAL_PASEO",
+  "startedAt": "2026-09-28T16:23:06.876Z",
+  "candidateBinding": {
+    "packedArtifact": "agentic-engineering-harness-0.8.4.tgz",
+    "packedArtifactDigest": "507efa34645e46c10f6937e7035c405887f24e8af153e403b5863f204f5d7f69",
+    "packedBuild": {
+      "releaseId": "release-1790612571097-73117-3a0d3daa",
+      "buildDigest": "0fc216b8ebd40b942c19556b2f1e7d6c44be802bb27142d41deeab2cc7ee71ac",
+      "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+      "packageVersion": "0.8.4"
+    },
+    "fixtureTreeDigest": "9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8",
+    "fixtureCommit": "6b23b4a8703ae071431b6ae9ab6ebd5cb756d54e"
+  },
+  "start": {
+    "argv": [
+      "change",
+      "Extend the greeting fixture across modules: add the FAREWELL constant export in src/greeting.mjs and wire a small usage module that re-exports it, keeping validation green.",
+      ".",
+      "--title",
+      "Delegated greeting extension",
+      "--accept",
+      "node scripts/validate.mjs passes with the FAREWELL export available"
+    ],
+    "exitCode": 0,
+    "stdout": "operationId=CHANGE-20260928T162325Z-226f0cf0\nkind=change\nstatus=QUEUED\nphase=dispatched\nrevision=4\nprogress=0/0 completed, 0 running, 0 failed, 0 blocked",
+    "stderr": "",
+    "operationId": "CHANGE-20260928T162325Z-226f0cf0"
+  },
+  "stageTrace": [
+    {
+      "at": "2026-09-28T16:23:25.413Z",
+      "status": "QUEUED",
+      "phase": "dispatched",
+      "revision": 4,
+      "stages": {
+        "queued": "RUNNING"
+      }
+    },
+    {
+      "at": "2026-09-28T16:23:33.432Z",
+      "status": "RUNNING",
+      "phase": "context",
+      "revision": 24,
+      "stages": {
+        "queued": "RUNNING",
+        "input-resolution": "COMPLETED",
+        "triage": "COMPLETED",
+        "environment-preflight": "SKIPPED",
+        "context": "RUNNING"
+      }
+    },
+    {
+      "at": "2026-09-28T16:24:14.306Z",
+      "status": "RUNNING",
+      "phase": "context",
+      "revision": 37,
+      "stages": {
+        "queued": "RUNNING",
+        "input-resolution": "COMPLETED",
+        "triage": "COMPLETED",
+        "environment-preflight": "SKIPPED",
+        "context": "RUNNING",
+        "discovery": "RUNNING"
+      }
+    },
+    {
+      "at": "2026-09-28T16:25:53.475Z",
+      "status": "RUNNING",
+      "phase": "context",
+      "revision": 52,
+      "stages": {
+        "queued": "RUNNING",
+        "input-resolution": "COMPLETED",
+        "triage": "COMPLETED",
+        "environment-preflight": "SKIPPED",
+        "context": "RUNNING",
+        "discovery": "COMPLETED",
+        "planning": "RUNNING"
+      }
+    },
+    {
+      "at": "2026-09-28T16:27:39.692Z",
+      "status": "RUNNING",
+      "phase": "implementation",
+      "revision": 60,
+      "stages": {
+        "queued": "RUNNING",
+        "input-resolution": "COMPLETED",
+        "triage": "COMPLETED",
+        "environment-preflight": "SKIPPED",
+        "context": "RUNNING",
+        "discovery": "COMPLETED",
+        "planning": "COMPLETED",
+        "contract-authoring": "COMPLETED",
+        "implementation": "RUNNING"
+      }
+    },
+    {
+      "at": "2026-09-28T16:27:48.309Z",
+      "status": "RUNNING",
+      "phase": "context",
+      "revision": 82,
+      "stages": {
+        "queued": "RUNNING",
+        "input-resolution": "COMPLETED",
+        "triage": "COMPLETED",
+        "environment-preflight": "SKIPPED",
+        "context": "RUNNING",
+        "discovery": "COMPLETED",
+        "planning": "FAILED",
+        "contract-authoring": "COMPLETED",
+        "implementation": "FAILED",
+        "supervision": "COMPLETED",
+        "executing": "RUNNING",
+        "validation": "RUNNING",
+        "remediation": "RUNNING"
+      }
+    },
+    {
+      "at": "2026-09-28T16:29:19.427Z",
+      "status": "FAILED",
+      "phase": "finished",
+      "revision": 110,
+      "stages": {
+        "queued": "RUNNING",
+        "input-resolution": "COMPLETED",
+        "triage": "COMPLETED",
+        "environment-preflight": "SKIPPED",
+        "context": "RUNNING",
+        "discovery": "COMPLETED",
+        "planning": "FAILED",
+        "contract-authoring": "COMPLETED",
+        "implementation": "FAILED",
+        "supervision": "COMPLETED",
+        "executing": "RUNNING",
+        "validation": "RUNNING",
+        "remediation": "FAILED",
+        "finished": "FAILED"
+      }
+    }
+  ],
+  "workspaceWatch": {
+    "transitions": [
+      {
+        "at": "2026-09-28T16:24:12.837Z",
+        "cwd": "/tmp/aeh-s13-gov-helb5T/work/lane-change-delegated-fixture",
+        "added": [
+          ".serena/.gitignore",
+          ".serena/project.yml"
+        ],
+        "removed": []
+      },
+      {
+        "at": "2026-09-28T16:24:15.672Z",
+        "cwd": "/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0",
+        "added": [
+          ".serena/.gitignore",
+          ".serena/project.yml"
+        ],
+        "removed": []
+      },
+      {
+        "at": "2026-09-28T16:27:42.551Z",
+        "cwd": "/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0",
+        "added": [
+          "graphify-out/cache/stat-index.json"
+        ],
+        "removed": []
+      }
+    ],
+    "finalStates": {
+      "/tmp/aeh-s13-gov-helb5T/work/lane-change-delegated-fixture": [
+        ".gitignore",
+        ".harness/agents.source.jsonc",
+        ".harness/otel-collector.yaml",
+        ".harness/project.yaml",
+        ".harness/provider-versions.json",
+        ".harness/toolchain.yaml",
+        ".serena/.gitignore",
+        ".serena/project.yml",
+        "AGENTS.md",
+        "README.md",
+        "openspec/config.yaml",
+        "package.json",
+        "scripts/contract.mjs",
+        "scripts/validate.mjs",
+        "src/greeting.mjs"
+      ],
+      "/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0": [
+        ".gitignore",
+        ".harness/agents.source.jsonc",
+        ".harness/otel-collector.yaml",
+        ".harness/project.yaml",
+        ".harness/provider-versions.json",
+        ".harness/toolchain.yaml",
+        ".serena/.gitignore",
+        ".serena/project.yml",
+        "AGENTS.md",
+        "README.md",
+        "graphify-out/cache/stat-index.json",
+        "openspec/config.yaml",
+        "package.json",
+        "scripts/contract.mjs",
+        "scripts/validate.mjs",
+        "src/greeting.mjs"
+      ]
+    }
+  },
+  "terminalRecord": {
+    "status": "FAILED",
+    "phase": "finished",
+    "revision": 110,
+    "error": null,
+    "finishedAt": "2026-09-28T16:29:10.626Z"
+  },
+  "artifacts": {
+    "acceptance": null,
+    "reviewers": [],
+    "specManagers": [],
+    "participants": [
+      {
+        "participantId": "participant:0ed0eb6e46e1830c",
+        "role": "Explorer",
+        "status": "FAILED",
+        "artifact": ".harness/operations/CHANGE-20260928T162325Z-226f0cf0/results/explorer/0002-0002-8e5be3ac-4ff7-4ccd-b0b9-4bf81a3f0c66.json",
+        "artifactSha256": "fd6e02a12f90a8907148d3a2dc47c3a26a286daa661d93d4cf2a1671cfff6a9d",
+        "payloadSha256": "0c80e53b2ba8282eb52b895100d1e01e50d6ff8ff5db56d2a1b88262fe6a9a45",
+        "bytes": 13406,
+        "payload": {
+          "version": 1,
+          "kind": "agent-result",
+          "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+          "channelId": "f4622fd5-47bd-40ab-ae96-48a080e15009",
+          "turnId": "0002-8e5be3ac-4ff7-4ccd-b0b9-4bf81a3f0c66",
+          "sequence": 2,
+          "revision": 2,
+          "attempt": 1,
+          "logicalAgent": "explorer",
+          "role": "Explorer",
+          "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+          "operationRevision": 37,
+          "supervisorGeneration": 1,
+          "agentId": "3de61594-b9c7-45d7-bd9d-7e1a2fc96d36",
+          "contract": "explorer",
+          "provenance": {
+            "version": 1,
+            "status": "BOUND",
+            "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+            "projectId": "project:a3780e955160a50f9fa4cf41",
+            "operationRevision": 37,
+            "operationExecutionRevision": 2,
+            "participantId": "participant:0ed0eb6e46e1830c",
+            "participantGeneration": "23acc01a-8819-40bf-8719-cd28a7b14f20",
+            "logicalAgent": "explorer",
+            "role": "Explorer",
+            "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+            "candidate": {
+              "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+              "candidateId": "candidate:CHANGE-20260928T162325Z-226f0cf0:r2",
+              "projectId": "project:a3780e955160a50f9fa4cf41",
+              "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+              "revision": 2,
+              "parentCandidateId": "candidate:CHANGE-20260928T162325Z-226f0cf0:r1",
+              "sourceDigest": "9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8",
+              "workspace": "wks_2b0163d441781667",
+              "worktree": "/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0",
+              "createdAt": "2026-09-28T16:23:26.924Z",
+              "version": 1,
+              "canonicalIdentity": "{\"candidateId\":\"candidate:CHANGE-20260928T162325Z-226f0cf0:r2\",\"createdAt\":\"2026-09-28T16:23:26.924Z\",\"operationId\":\"CHANGE-20260928T162325Z-226f0cf0\",\"parentCandidateId\":\"candidate:CHANGE-20260928T162325Z-226f0cf0:r1\",\"projectId\":\"project:a3780e955160a50f9fa4cf41\",\"revision\":2,\"sourceDigest\":\"9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8\",\"taskId\":\"CHANGE-20260928T162325Z-226f0cf0\",\"version\":1,\"workspace\":\"wks_2b0163d441781667\",\"worktree\":\"/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0\"}",
+              "identityDigest": "2967141f93497ef3c6f477160a0a9bcacc3f50be5010ea09a6c38a56b790a0a7"
+            },
+            "controllerEpoch": 1,
+            "runtime": {
+              "provider": "opencode-go",
+              "model": "opencode-go/mimo-v2.6-flash",
+              "runtimeId": "opencode",
+              "sessionId": "3de61594-b9c7-45d7-bd9d-7e1a2fc96d36"
+            },
+            "outputContract": "explorer",
+            "outputSchemaDigest": "23c68214e8a71bd7fb44010d0a3c1befb4f26614bbca2ccff1bb464f67faf134",
+            "executionBlueprintDigest": "76364f9f1609ec9801c5b6d1a492ead7e85c1bbda0d12a1c423518e0aadec70b",
+            "resolvedOperationPolicyDigest": "e64c1b58b6c362e5ff2099f65fb71088469f85d00e628fd9973df186e00fc32b",
+            "executionBinding": {
+              "version": 2,
+              "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+              "operationExecutionRevision": 2,
+              "candidateRevision": 2,
+              "candidateDigest": "2967141f93497ef3c6f477160a0a9bcacc3f50be5010ea09a6c38a56b790a0a7",
+              "controllerEpoch": 1,
+              "executionBlueprintDigest": "76364f9f1609ec9801c5b6d1a492ead7e85c1bbda0d12a1c423518e0aadec70b",
+              "operationPolicyDigest": "e64c1b58b6c362e5ff2099f65fb71088469f85d00e628fd9973df186e00fc32b",
+              "participantId": "participant:0ed0eb6e46e1830c",
+              "participantGeneration": "23acc01a-8819-40bf-8719-cd28a7b14f20",
+              "roleInvocationPolicyDigest": "f9263214a71b172ab69197e2bc990a56668e2a8a725555006e55e05c5c3125b2",
+              "skillManifestDigest": "a812a903f191f8a6862d5a3d120363920354b18be6f8ffd2944749f90507de96",
+              "runtime": {
+                "runtimeId": "opencode",
+                "provider": "opencode-go",
+                "modelId": "opencode-go/mimo-v2.6-flash",
+                "model": "mimo-v2.6-flash",
+                "sessionId": "3de61594-b9c7-45d7-bd9d-7e1a2fc96d36"
+              },
+              "contextManifestDigest": "6f4301b4cf1e2bd61132b7a6f7f46e1b88d1d76b83c311789d55341097d1f38a",
+              "promptManifestDigest": "a0eedf30098e63bc5c3d13032ab25ba3304685b47bf95b002d4c947337552aba",
+              "outputContract": "explorer",
+              "leaseIdentities": [
+                "lease:CHANGE-20260928T162325Z-226f0cf0:request:CHANGE-20260928T162325Z-226f0cf0:participant:0ed0eb6e46e1830c:read:discovery"
+              ],
+              "digest": "9212d25c0a0c171b2b6e3a2a27b64b4ff0c2666aae595e5ebf6513af5dfea9cd"
+            },
+            "skillManifestDigest": "a812a903f191f8a6862d5a3d120363920354b18be6f8ffd2944749f90507de96",
+            "contextManifestDigest": "6f4301b4cf1e2bd61132b7a6f7f46e1b88d1d76b83c311789d55341097d1f38a",
+            "promptManifestDigest": "a0eedf30098e63bc5c3d13032ab25ba3304685b47bf95b002d4c947337552aba",
+            "unsupported": [],
+            "provenanceDigest": "dbc95cacdf839439791b900587805069c2760bcd18a5f6582cd7c871d55f1d37"
+          },
+          "contextEvidence": {
+            "version": 1,
+            "executionBindingDigest": "9212d25c0a0c171b2b6e3a2a27b64b4ff0c2666aae595e5ebf6513af5dfea9cd",
+            "contextManifestDigest": "6f4301b4cf1e2bd61132b7a6f7f46e1b88d1d76b83c311789d55341097d1f38a",
+            "promptManifestDigest": "a0eedf30098e63bc5c3d13032ab25ba3304685b47bf95b002d4c947337552aba",
+            "receiptIds": [],
+            "receiptDigests": [],
+            "receiptsDigest": "3d9617614ba6f684cc2e8e1cb93ddab90427958aab763bfc5ca7a22adaf01f75",
+            "retrievalBudget": {
+              "maxRequestsPerTurn": 8,
+              "maxTokensPerRequest": 6000,
+              "maxTotalTokensPerTurn": 20000
+            },
+            "requests": 0,
+            "totalTokens": 0,
+            "retrievalStateDigest": "777f934596c4b5537080bada8a40dd58f9a82b8fbe7f09186d2199a9c1c3e51d",
+            "progressiveManifestDigest": "276d8a3ef0325137fdcfc19e016ae22b640e2910b6ff18cae247d6d10d246c4e",
+            "evidenceDigest": "ce3cba53d315dce13e0e4d506267eab6ac52e5fafca6edb3531f60bdb22b8008"
+          },
+          "source": "captured",
+          "createdAt": "2026-09-28T16:25:46.489Z",
+          "payloadSha256": "42edb36c1b3cdc306c66d76ff725c60ca951565be6d00f5dce32d6d997afe32b",
+          "payload": {
+            "summary": "Discovery: FAREWELL is required by both validators but absent from src/greeting.mjs (currently only exports greet), so validation is red today. contract.mjs enforces an exact allowlist of public exports {greet, FAREWELL} on src/greeting.mjs, so the re-exporting usage module must be a NEW separate file (e.g. src/usage.mjs), not an added export in greeting.mjs. Value must be exactly \"bye\". No existing usage module, tests/ or specs/ directories exist; validators are wired as required in .harness/project.yaml (fixture-greeting, contract-test) and npm test runs validate.mjs.",
+            "relevantFiles": [
+              {
+                "path": "src/greeting.mjs",
+                "symbols": [
+                  "greet"
+                ],
+                "reason": "Change target: only export today is greet (lines 0-2); FAREWELL must be added with exact value \"bye\" and no other exports."
+              },
+              {
+                "path": "scripts/validate.mjs",
+                "symbols": [
+                  "failures"
+                ],
+                "reason": "Required command fixture-greeting; line 7 fails unless module.FAREWELL === \"bye\"; line 4 enforces greet(\"AEH\") === \"Hello, AEH!\"."
+              },
+              {
+                "path": "scripts/contract.mjs",
+                "symbols": [
+                  "failures"
+                ],
+                "reason": "Required validator contract-test; lines 8-9 require FAREWELL string === \"bye\"; line 11 rejects any export of src/greeting.mjs outside {greet, FAREWELL}."
+              },
+              {
+                "path": ".harness/project.yaml",
+                "symbols": [
+                  "validation.commands",
+                  "validation.validators"
+                ],
+                "reason": "Lines 269-281: fixture-greeting -> node scripts/validate.mjs and contract-test -> node scripts/contract.mjs, both required: true, baseRef master."
+              },
+              {
+                "path": "package.json",
+                "symbols": [
+                  "scripts.test"
+                ],
+                "reason": "Line 6: test -> node scripts/validate.mjs (the local green-keeping entrypoint)."
+              },
+              {
+                "path": "README.md",
+                "symbols": [],
+                "reason": "Line 3 declares validate.mjs and contract.mjs as the real validation commands for this fixture."
+              }
+            ],
+            "findings": [
+              {
+                "id": "F1",
+                "status": "CONFIRMED",
+                "evidence": [
+                  "src/greeting.mjs symbol overview lists only Function greet; body: `export function greet(name) { return \\`Hello, ${name}!\\`; }`",
+                  "scripts/validate.mjs:7 `if (!failures.length && module.FAREWELL !== \"bye\") failures.push(\"FAREWELL export\");` with greet check at line 4 passing and module load at line 6 succeeding -> exits 1 with VALIDATION_FAILED: FAREWELL export"
+                ],
+                "notes": "Deterministic from static code reading; runtime execution was not possible (bash permission denied for explorer role), so no live exit-code capture."
+              },
+              {
+                "id": "F2",
+                "status": "CONFIRMED",
+                "evidence": [
+                  "scripts/contract.mjs:8 `typeof module.FAREWELL !== \"string\"` -> \"FAREWELL export contract\"",
+                  "scripts/contract.mjs:9 `module.FAREWELL !== \"bye\"` -> \"FAREWELL value contract\"",
+                  "scripts/contract.mjs:11 `if (Object.keys(moduleValue).some((key) => ![\"greet\", \"FAREWELL\"].includes(key))) failures.push(\"unexpected public export\")`"
+                ],
+                "notes": "Hard constraint: greeting.mjs public surface must be exactly {greet, FAREWELL}; the usage/re-export module must live in a separate file and must not add exports to greeting.mjs."
+              },
+              {
+                "id": "F3",
+                "status": "CONFIRMED",
+                "evidence": [
+                  "glob **/*.{mjs,js,json,yaml,yaml,md} returned only src/greeting.mjs, scripts/validate.mjs, scripts/contract.mjs",
+                  "glob {specs,src,tests,test}/**/* returned only src/greeting.mjs",
+                  "grep for 'usage' across repo matched no source files"
+                ],
+                "notes": "No usage module, no tests/ or specs/ directories; the usage module is a net-new file (suggested convention: src/usage.mjs importing ../src/greeting.mjs style per existing relative ESM .mjs imports)."
+              },
+              {
+                "id": "F4",
+                "status": "CONFIRMED",
+                "evidence": [
+                  ".harness/project.yaml:270 `baseRef: master`",
+                  ".harness/project.yaml:272-275 `- id: fixture-greeting / command: node scripts/validate.mjs / required: true`",
+                  ".harness/project.yaml:277-281 `- id: contract-test / adapter: contract-test / command: node scripts/contract.mjs / required: true`",
+                  "package.json:6 `\"test\": \"node scripts/validate.mjs\"`"
+                ],
+                "notes": "Both validators are required gates for keeping validation green."
+              },
+              {
+                "id": "F5",
+                "status": "CONFIRMED",
+                "evidence": [
+                  "scripts/validate.mjs (12 lines) checks only greet behavior, module load and FAREWELL; no reference to any usage module",
+                  "scripts/contract.mjs (17 lines) checks only exports of ../src/greeting.mjs"
+                ],
+                "notes": "Gap/risk: the new usage module will have zero validator coverage; 'validation green' constrains only greeting.mjs (FAREWELL === \"bye\", exact export set)."
+              }
+            ],
+            "moduleBoundaries": [
+              "src/greeting.mjs: fixture core public API; must remain exactly {greet, FAREWELL} per contract.mjs:11 allowlist",
+              "src/<usage-module>.mjs (new, e.g. src/usage.mjs): re-export surface for FAREWELL; isolated from greeting.mjs export set; currently unvalidated",
+              "scripts/validate.mjs + scripts/contract.mjs: deterministic read-only validators, entrypoints via npm test and .harness/project.yaml",
+              ".harness/project.yaml validation section: gate wiring (fixture-greeting, contract-test), config-only, not to be weakened"
+            ],
+            "tests": [
+              "node scripts/validate.mjs (npm test; required command id fixture-greeting)",
+              "node scripts/contract.mjs (required validator id contract-test)",
+              "Not executed in this discovery phase: bash permission denied for explorer role; verification is static-only"
+            ],
+            "dependencies": [
+              "Node.js ESM (.mjs, top-level await in validators)",
+              "No external npm dependencies (package.json has no deps)",
+              "Relative import convention: scripts/*.mjs -> ../src/greeting.mjs",
+              ".harness/project.yaml validation commands/validators"
+            ],
+            "risks": [
+              "contract.mjs:11 exact-export allowlist: any extra export added to src/greeting.mjs (including a usage re-export placed there) fails contract-test",
+              "FAREWELL value must be the exact string \"bye\" in both validators",
+              "The new usage module has no validator/test coverage -> silent regressions possible",
+              "Explorer could not run validators (bash denied), so current red/green state is inferred statically rather than observed",
+              "validate.mjs:7 only checks FAREWELL when earlier failures are empty; a broken greet would mask the FAREWELL signal",
+              "validation.baseRef is master; any validator weakening would be caught by policy, so acceptance criteria must not be relaxed"
+            ],
+            "openQuestions": [
+              "Exact path/name of the usage module (e.g. src/usage.mjs vs src/greeting-usage.mjs) is unspecified",
+              "Should the usage module's re-export be added to a validator (contract.mjs/validate.mjs) or covered by a new check, given zero current coverage?",
+              "Should a spec delta be authored for this observable behavior change (FAREWELL export + new module) rather than openspec skip_specs?"
+            ]
+          }
+        }
+      },
+      {
+        "participantId": "3de61594-b9c7-45d7-bd9d-7e1a2fc96d36",
+        "role": "Explorer",
+        "status": "COMPLETED",
+        "artifact": ".harness/operations/CHANGE-20260928T162325Z-226f0cf0/results/explorer/0002-0002-8e5be3ac-4ff7-4ccd-b0b9-4bf81a3f0c66.json",
+        "artifactSha256": "fd6e02a12f90a8907148d3a2dc47c3a26a286daa661d93d4cf2a1671cfff6a9d",
+        "payloadSha256": "0c80e53b2ba8282eb52b895100d1e01e50d6ff8ff5db56d2a1b88262fe6a9a45",
+        "bytes": 13406,
+        "payload": {
+          "version": 1,
+          "kind": "agent-result",
+          "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+          "channelId": "f4622fd5-47bd-40ab-ae96-48a080e15009",
+          "turnId": "0002-8e5be3ac-4ff7-4ccd-b0b9-4bf81a3f0c66",
+          "sequence": 2,
+          "revision": 2,
+          "attempt": 1,
+          "logicalAgent": "explorer",
+          "role": "Explorer",
+          "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+          "operationRevision": 37,
+          "supervisorGeneration": 1,
+          "agentId": "3de61594-b9c7-45d7-bd9d-7e1a2fc96d36",
+          "contract": "explorer",
+          "provenance": {
+            "version": 1,
+            "status": "BOUND",
+            "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+            "projectId": "project:a3780e955160a50f9fa4cf41",
+            "operationRevision": 37,
+            "operationExecutionRevision": 2,
+            "participantId": "participant:0ed0eb6e46e1830c",
+            "participantGeneration": "23acc01a-8819-40bf-8719-cd28a7b14f20",
+            "logicalAgent": "explorer",
+            "role": "Explorer",
+            "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+            "candidate": {
+              "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+              "candidateId": "candidate:CHANGE-20260928T162325Z-226f0cf0:r2",
+              "projectId": "project:a3780e955160a50f9fa4cf41",
+              "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+              "revision": 2,
+              "parentCandidateId": "candidate:CHANGE-20260928T162325Z-226f0cf0:r1",
+              "sourceDigest": "9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8",
+              "workspace": "wks_2b0163d441781667",
+              "worktree": "/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0",
+              "createdAt": "2026-09-28T16:23:26.924Z",
+              "version": 1,
+              "canonicalIdentity": "{\"candidateId\":\"candidate:CHANGE-20260928T162325Z-226f0cf0:r2\",\"createdAt\":\"2026-09-28T16:23:26.924Z\",\"operationId\":\"CHANGE-20260928T162325Z-226f0cf0\",\"parentCandidateId\":\"candidate:CHANGE-20260928T162325Z-226f0cf0:r1\",\"projectId\":\"project:a3780e955160a50f9fa4cf41\",\"revision\":2,\"sourceDigest\":\"9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8\",\"taskId\":\"CHANGE-20260928T162325Z-226f0cf0\",\"version\":1,\"workspace\":\"wks_2b0163d441781667\",\"worktree\":\"/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0\"}",
+              "identityDigest": "2967141f93497ef3c6f477160a0a9bcacc3f50be5010ea09a6c38a56b790a0a7"
+            },
+            "controllerEpoch": 1,
+            "runtime": {
+              "provider": "opencode-go",
+              "model": "opencode-go/mimo-v2.6-flash",
+              "runtimeId": "opencode",
+              "sessionId": "3de61594-b9c7-45d7-bd9d-7e1a2fc96d36"
+            },
+            "outputContract": "explorer",
+            "outputSchemaDigest": "23c68214e8a71bd7fb44010d0a3c1befb4f26614bbca2ccff1bb464f67faf134",
+            "executionBlueprintDigest": "76364f9f1609ec9801c5b6d1a492ead7e85c1bbda0d12a1c423518e0aadec70b",
+            "resolvedOperationPolicyDigest": "e64c1b58b6c362e5ff2099f65fb71088469f85d00e628fd9973df186e00fc32b",
+            "executionBinding": {
+              "version": 2,
+              "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+              "operationExecutionRevision": 2,
+              "candidateRevision": 2,
+              "candidateDigest": "2967141f93497ef3c6f477160a0a9bcacc3f50be5010ea09a6c38a56b790a0a7",
+              "controllerEpoch": 1,
+              "executionBlueprintDigest": "76364f9f1609ec9801c5b6d1a492ead7e85c1bbda0d12a1c423518e0aadec70b",
+              "operationPolicyDigest": "e64c1b58b6c362e5ff2099f65fb71088469f85d00e628fd9973df186e00fc32b",
+              "participantId": "participant:0ed0eb6e46e1830c",
+              "participantGeneration": "23acc01a-8819-40bf-8719-cd28a7b14f20",
+              "roleInvocationPolicyDigest": "f9263214a71b172ab69197e2bc990a56668e2a8a725555006e55e05c5c3125b2",
+              "skillManifestDigest": "a812a903f191f8a6862d5a3d120363920354b18be6f8ffd2944749f90507de96",
+              "runtime": {
+                "runtimeId": "opencode",
+                "provider": "opencode-go",
+                "modelId": "opencode-go/mimo-v2.6-flash",
+                "model": "mimo-v2.6-flash",
+                "sessionId": "3de61594-b9c7-45d7-bd9d-7e1a2fc96d36"
+              },
+              "contextManifestDigest": "6f4301b4cf1e2bd61132b7a6f7f46e1b88d1d76b83c311789d55341097d1f38a",
+              "promptManifestDigest": "a0eedf30098e63bc5c3d13032ab25ba3304685b47bf95b002d4c947337552aba",
+              "outputContract": "explorer",
+              "leaseIdentities": [
+                "lease:CHANGE-20260928T162325Z-226f0cf0:request:CHANGE-20260928T162325Z-226f0cf0:participant:0ed0eb6e46e1830c:read:discovery"
+              ],
+              "digest": "9212d25c0a0c171b2b6e3a2a27b64b4ff0c2666aae595e5ebf6513af5dfea9cd"
+            },
+            "skillManifestDigest": "a812a903f191f8a6862d5a3d120363920354b18be6f8ffd2944749f90507de96",
+            "contextManifestDigest": "6f4301b4cf1e2bd61132b7a6f7f46e1b88d1d76b83c311789d55341097d1f38a",
+            "promptManifestDigest": "a0eedf30098e63bc5c3d13032ab25ba3304685b47bf95b002d4c947337552aba",
+            "unsupported": [],
+            "provenanceDigest": "dbc95cacdf839439791b900587805069c2760bcd18a5f6582cd7c871d55f1d37"
+          },
+          "contextEvidence": {
+            "version": 1,
+            "executionBindingDigest": "9212d25c0a0c171b2b6e3a2a27b64b4ff0c2666aae595e5ebf6513af5dfea9cd",
+            "contextManifestDigest": "6f4301b4cf1e2bd61132b7a6f7f46e1b88d1d76b83c311789d55341097d1f38a",
+            "promptManifestDigest": "a0eedf30098e63bc5c3d13032ab25ba3304685b47bf95b002d4c947337552aba",
+            "receiptIds": [],
+            "receiptDigests": [],
+            "receiptsDigest": "3d9617614ba6f684cc2e8e1cb93ddab90427958aab763bfc5ca7a22adaf01f75",
+            "retrievalBudget": {
+              "maxRequestsPerTurn": 8,
+              "maxTokensPerRequest": 6000,
+              "maxTotalTokensPerTurn": 20000
+            },
+            "requests": 0,
+            "totalTokens": 0,
+            "retrievalStateDigest": "777f934596c4b5537080bada8a40dd58f9a82b8fbe7f09186d2199a9c1c3e51d",
+            "progressiveManifestDigest": "276d8a3ef0325137fdcfc19e016ae22b640e2910b6ff18cae247d6d10d246c4e",
+            "evidenceDigest": "ce3cba53d315dce13e0e4d506267eab6ac52e5fafca6edb3531f60bdb22b8008"
+          },
+          "source": "captured",
+          "createdAt": "2026-09-28T16:25:46.489Z",
+          "payloadSha256": "42edb36c1b3cdc306c66d76ff725c60ca951565be6d00f5dce32d6d997afe32b",
+          "payload": {
+            "summary": "Discovery: FAREWELL is required by both validators but absent from src/greeting.mjs (currently only exports greet), so validation is red today. contract.mjs enforces an exact allowlist of public exports {greet, FAREWELL} on src/greeting.mjs, so the re-exporting usage module must be a NEW separate file (e.g. src/usage.mjs), not an added export in greeting.mjs. Value must be exactly \"bye\". No existing usage module, tests/ or specs/ directories exist; validators are wired as required in .harness/project.yaml (fixture-greeting, contract-test) and npm test runs validate.mjs.",
+            "relevantFiles": [
+              {
+                "path": "src/greeting.mjs",
+                "symbols": [
+                  "greet"
+                ],
+                "reason": "Change target: only export today is greet (lines 0-2); FAREWELL must be added with exact value \"bye\" and no other exports."
+              },
+              {
+                "path": "scripts/validate.mjs",
+                "symbols": [
+                  "failures"
+                ],
+                "reason": "Required command fixture-greeting; line 7 fails unless module.FAREWELL === \"bye\"; line 4 enforces greet(\"AEH\") === \"Hello, AEH!\"."
+              },
+              {
+                "path": "scripts/contract.mjs",
+                "symbols": [
+                  "failures"
+                ],
+                "reason": "Required validator contract-test; lines 8-9 require FAREWELL string === \"bye\"; line 11 rejects any export of src/greeting.mjs outside {greet, FAREWELL}."
+              },
+              {
+                "path": ".harness/project.yaml",
+                "symbols": [
+                  "validation.commands",
+                  "validation.validators"
+                ],
+                "reason": "Lines 269-281: fixture-greeting -> node scripts/validate.mjs and contract-test -> node scripts/contract.mjs, both required: true, baseRef master."
+              },
+              {
+                "path": "package.json",
+                "symbols": [
+                  "scripts.test"
+                ],
+                "reason": "Line 6: test -> node scripts/validate.mjs (the local green-keeping entrypoint)."
+              },
+              {
+                "path": "README.md",
+                "symbols": [],
+                "reason": "Line 3 declares validate.mjs and contract.mjs as the real validation commands for this fixture."
+              }
+            ],
+            "findings": [
+              {
+                "id": "F1",
+                "status": "CONFIRMED",
+                "evidence": [
+                  "src/greeting.mjs symbol overview lists only Function greet; body: `export function greet(name) { return \\`Hello, ${name}!\\`; }`",
+                  "scripts/validate.mjs:7 `if (!failures.length && module.FAREWELL !== \"bye\") failures.push(\"FAREWELL export\");` with greet check at line 4 passing and module load at line 6 succeeding -> exits 1 with VALIDATION_FAILED: FAREWELL export"
+                ],
+                "notes": "Deterministic from static code reading; runtime execution was not possible (bash permission denied for explorer role), so no live exit-code capture."
+              },
+              {
+                "id": "F2",
+                "status": "CONFIRMED",
+                "evidence": [
+                  "scripts/contract.mjs:8 `typeof module.FAREWELL !== \"string\"` -> \"FAREWELL export contract\"",
+                  "scripts/contract.mjs:9 `module.FAREWELL !== \"bye\"` -> \"FAREWELL value contract\"",
+                  "scripts/contract.mjs:11 `if (Object.keys(moduleValue).some((key) => ![\"greet\", \"FAREWELL\"].includes(key))) failures.push(\"unexpected public export\")`"
+                ],
+                "notes": "Hard constraint: greeting.mjs public surface must be exactly {greet, FAREWELL}; the usage/re-export module must live in a separate file and must not add exports to greeting.mjs."
+              },
+              {
+                "id": "F3",
+                "status": "CONFIRMED",
+                "evidence": [
+                  "glob **/*.{mjs,js,json,yaml,yaml,md} returned only src/greeting.mjs, scripts/validate.mjs, scripts/contract.mjs",
+                  "glob {specs,src,tests,test}/**/* returned only src/greeting.mjs",
+                  "grep for 'usage' across repo matched no source files"
+                ],
+                "notes": "No usage module, no tests/ or specs/ directories; the usage module is a net-new file (suggested convention: src/usage.mjs importing ../src/greeting.mjs style per existing relative ESM .mjs imports)."
+              },
+              {
+                "id": "F4",
+                "status": "CONFIRMED",
+                "evidence": [
+                  ".harness/project.yaml:270 `baseRef: master`",
+                  ".harness/project.yaml:272-275 `- id: fixture-greeting / command: node scripts/validate.mjs / required: true`",
+                  ".harness/project.yaml:277-281 `- id: contract-test / adapter: contract-test / command: node scripts/contract.mjs / required: true`",
+                  "package.json:6 `\"test\": \"node scripts/validate.mjs\"`"
+                ],
+                "notes": "Both validators are required gates for keeping validation green."
+              },
+              {
+                "id": "F5",
+                "status": "CONFIRMED",
+                "evidence": [
+                  "scripts/validate.mjs (12 lines) checks only greet behavior, module load and FAREWELL; no reference to any usage module",
+                  "scripts/contract.mjs (17 lines) checks only exports of ../src/greeting.mjs"
+                ],
+                "notes": "Gap/risk: the new usage module will have zero validator coverage; 'validation green' constrains only greeting.mjs (FAREWELL === \"bye\", exact export set)."
+              }
+            ],
+            "moduleBoundaries": [
+              "src/greeting.mjs: fixture core public API; must remain exactly {greet, FAREWELL} per contract.mjs:11 allowlist",
+              "src/<usage-module>.mjs (new, e.g. src/usage.mjs): re-export surface for FAREWELL; isolated from greeting.mjs export set; currently unvalidated",
+              "scripts/validate.mjs + scripts/contract.mjs: deterministic read-only validators, entrypoints via npm test and .harness/project.yaml",
+              ".harness/project.yaml validation section: gate wiring (fixture-greeting, contract-test), config-only, not to be weakened"
+            ],
+            "tests": [
+              "node scripts/validate.mjs (npm test; required command id fixture-greeting)",
+              "node scripts/contract.mjs (required validator id contract-test)",
+              "Not executed in this discovery phase: bash permission denied for explorer role; verification is static-only"
+            ],
+            "dependencies": [
+              "Node.js ESM (.mjs, top-level await in validators)",
+              "No external npm dependencies (package.json has no deps)",
+              "Relative import convention: scripts/*.mjs -> ../src/greeting.mjs",
+              ".harness/project.yaml validation commands/validators"
+            ],
+            "risks": [
+              "contract.mjs:11 exact-export allowlist: any extra export added to src/greeting.mjs (including a usage re-export placed there) fails contract-test",
+              "FAREWELL value must be the exact string \"bye\" in both validators",
+              "The new usage module has no validator/test coverage -> silent regressions possible",
+              "Explorer could not run validators (bash denied), so current red/green state is inferred statically rather than observed",
+              "validate.mjs:7 only checks FAREWELL when earlier failures are empty; a broken greet would mask the FAREWELL signal",
+              "validation.baseRef is master; any validator weakening would be caught by policy, so acceptance criteria must not be relaxed"
+            ],
+            "openQuestions": [
+              "Exact path/name of the usage module (e.g. src/usage.mjs vs src/greeting-usage.mjs) is unspecified",
+              "Should the usage module's re-export be added to a validator (contract.mjs/validate.mjs) or covered by a new check, given zero current coverage?",
+              "Should a spec delta be authored for this observable behavior change (FAREWELL export + new module) rather than openspec skip_specs?"
+            ]
+          }
+        }
+      },
+      {
+        "participantId": "participant:81b51c468748c2a3",
+        "role": "Planner",
+        "status": "FAILED",
+        "artifact": ".harness/operations/CHANGE-20260928T162325Z-226f0cf0/results/planner/0002-0002-2ac61340-ef66-4ee4-a9a8-0b6155d5e6d3.json",
+        "artifactSha256": "51a5fadfbc554eac996cf90f11fde76c05576499f48c42ca4afe690a1f1d6bf4",
+        "payloadSha256": "d07a6586360720a2ac4c66194bb50d2f80507e953de1bdf8aa45ececa5d3e827",
+        "bytes": 10286,
+        "payload": {
+          "version": 1,
+          "kind": "agent-result",
+          "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+          "channelId": "315bffc4-6c3a-44b9-aee5-df0387841319",
+          "turnId": "0002-2ac61340-ef66-4ee4-a9a8-0b6155d5e6d3",
+          "sequence": 2,
+          "revision": 2,
+          "attempt": 1,
+          "logicalAgent": "planner",
+          "role": "Planner",
+          "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+          "operationRevision": 52,
+          "supervisorGeneration": 1,
+          "agentId": "1e2ab27d-7230-4353-872b-02a14c687ef9",
+          "contract": "planner",
+          "provenance": {
+            "version": 1,
+            "status": "BOUND",
+            "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+            "projectId": "project:a3780e955160a50f9fa4cf41",
+            "operationRevision": 52,
+            "operationExecutionRevision": 2,
+            "participantId": "participant:81b51c468748c2a3",
+            "participantGeneration": "b51fa5bc-41f6-4095-8a45-cec7112ae084",
+            "logicalAgent": "planner",
+            "role": "Planner",
+            "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+            "candidate": {
+              "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+              "candidateId": "candidate:CHANGE-20260928T162325Z-226f0cf0:r2",
+              "projectId": "project:a3780e955160a50f9fa4cf41",
+              "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+              "revision": 2,
+              "parentCandidateId": "candidate:CHANGE-20260928T162325Z-226f0cf0:r1",
+              "sourceDigest": "9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8",
+              "workspace": "wks_2b0163d441781667",
+              "worktree": "/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0",
+              "createdAt": "2026-09-28T16:23:26.924Z",
+              "version": 1,
+              "canonicalIdentity": "{\"candidateId\":\"candidate:CHANGE-20260928T162325Z-226f0cf0:r2\",\"createdAt\":\"2026-09-28T16:23:26.924Z\",\"operationId\":\"CHANGE-20260928T162325Z-226f0cf0\",\"parentCandidateId\":\"candidate:CHANGE-20260928T162325Z-226f0cf0:r1\",\"projectId\":\"project:a3780e955160a50f9fa4cf41\",\"revision\":2,\"sourceDigest\":\"9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8\",\"taskId\":\"CHANGE-20260928T162325Z-226f0cf0\",\"version\":1,\"workspace\":\"wks_2b0163d441781667\",\"worktree\":\"/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0\"}",
+              "identityDigest": "2967141f93497ef3c6f477160a0a9bcacc3f50be5010ea09a6c38a56b790a0a7"
+            },
+            "controllerEpoch": 1,
+            "runtime": {
+              "provider": "openai",
+              "model": "openai/gpt-6-luna",
+              "runtimeId": "codex",
+              "sessionId": "1e2ab27d-7230-4353-872b-02a14c687ef9"
+            },
+            "outputContract": "planner",
+            "outputSchemaDigest": "c78cafe8ae6e1dc4d710ca8199702e572b40d1de78bca5fbf5c9ae0d3dd96566",
+            "executionBlueprintDigest": "7aadf392e00879140e882ecc19a4439e6339e1657110622948ef5bbb7019d992",
+            "resolvedOperationPolicyDigest": "e64c1b58b6c362e5ff2099f65fb71088469f85d00e628fd9973df186e00fc32b",
+            "executionBinding": {
+              "version": 2,
+              "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+              "operationExecutionRevision": 2,
+              "candidateRevision": 2,
+              "candidateDigest": "2967141f93497ef3c6f477160a0a9bcacc3f50be5010ea09a6c38a56b790a0a7",
+              "controllerEpoch": 1,
+              "executionBlueprintDigest": "7aadf392e00879140e882ecc19a4439e6339e1657110622948ef5bbb7019d992",
+              "operationPolicyDigest": "e64c1b58b6c362e5ff2099f65fb71088469f85d00e628fd9973df186e00fc32b",
+              "participantId": "participant:81b51c468748c2a3",
+              "participantGeneration": "b51fa5bc-41f6-4095-8a45-cec7112ae084",
+              "roleInvocationPolicyDigest": "d34e6c8d70ca1965226de8fda42e9b7f470b2dde83626fd7b6411b9b1b5bb450",
+              "skillManifestDigest": "e637a7f9a2e50d91cf931a4ae0e7fce11419c642efc17614e68c3a97fdd0501f",
+              "runtime": {
+                "runtimeId": "codex",
+                "provider": "openai",
+                "modelId": "openai/gpt-6-luna",
+                "model": "gpt-6-luna",
+                "sessionId": "1e2ab27d-7230-4353-872b-02a14c687ef9"
+              },
+              "contextManifestDigest": "1af81a103c52c7ab6426763523258b164ac6aed8a05e8e584087060b2a4cbe64",
+              "promptManifestDigest": "7f903c8b697afc640a2d71ef6cd7352c4097fbb611ee0b6e2758888468815e9f",
+              "outputContract": "planner",
+              "leaseIdentities": [
+                "lease:CHANGE-20260928T162325Z-226f0cf0:request:CHANGE-20260928T162325Z-226f0cf0:participant:81b51c468748c2a3:read:planning"
+              ],
+              "digest": "900b257f105ed4aaf26c24c76e62db2c9ad4c000ca943695aa70a69ab8782b7f"
+            },
+            "skillManifestDigest": "e637a7f9a2e50d91cf931a4ae0e7fce11419c642efc17614e68c3a97fdd0501f",
+            "contextManifestDigest": "1af81a103c52c7ab6426763523258b164ac6aed8a05e8e584087060b2a4cbe64",
+            "promptManifestDigest": "7f903c8b697afc640a2d71ef6cd7352c4097fbb611ee0b6e2758888468815e9f",
+            "unsupported": [],
+            "provenanceDigest": "5f9f9e47a01addbe92d7ae52d82764cebd627a682ee059c9686002eafd91ce24"
+          },
+          "contextEvidence": {
+            "version": 1,
+            "executionBindingDigest": "900b257f105ed4aaf26c24c76e62db2c9ad4c000ca943695aa70a69ab8782b7f",
+            "contextManifestDigest": "1af81a103c52c7ab6426763523258b164ac6aed8a05e8e584087060b2a4cbe64",
+            "promptManifestDigest": "7f903c8b697afc640a2d71ef6cd7352c4097fbb611ee0b6e2758888468815e9f",
+            "receiptIds": [],
+            "receiptDigests": [],
+            "receiptsDigest": "3d9617614ba6f684cc2e8e1cb93ddab90427958aab763bfc5ca7a22adaf01f75",
+            "retrievalBudget": {
+              "maxRequestsPerTurn": 8,
+              "maxTokensPerRequest": 6000,
+              "maxTotalTokensPerTurn": 20000
+            },
+            "requests": 0,
+            "totalTokens": 0,
+            "retrievalStateDigest": "6e15e01b2f25038883b14318164275140d37f744040a19a1881d6fb116f90c16",
+            "progressiveManifestDigest": "51530b79b56335e4c2ec67a4a0a0710b56103224b46c27b0835cf5a02d34c29a",
+            "evidenceDigest": "c4391b34ad9a0e2274d77e3f4926c25d7888e493a73e4d02fce5aeefd5424508"
+          },
+          "source": "captured",
+          "createdAt": "2026-09-28T16:27:29.947Z",
+          "payloadSha256": "97c487361a3e3b50476d339c551c120de344f7567502cb521bae0117ce86904b",
+          "payload": {
+            "workUnits": [
+              {
+                "id": "WU-source",
+                "objective": "Add the required FAREWELL constant export and a separate usage module that re-exports it.",
+                "scope": [
+                  "src/greeting.mjs",
+                  "src/usage.mjs"
+                ],
+                "dependencies": [],
+                "requirementRefs": [
+                  "REQ-1",
+                  "REQ-2"
+                ],
+                "acceptanceRefs": [
+                  "AC-1",
+                  "AC-2"
+                ],
+                "competencies": [
+                  "JavaScript ES modules",
+                  "Node.js"
+                ],
+                "riskTags": [
+                  "public-api-contract"
+                ],
+                "changeKinds": [
+                  "source"
+                ],
+                "risk": "low",
+                "resourceClaims": []
+              },
+              {
+                "id": "WU-contract-coverage",
+                "objective": "Extend the existing contract validator with an explicit check that src/usage.mjs re-exports FAREWELL, while preserving its existing assertions.",
+                "scope": [
+                  "scripts/contract.mjs"
+                ],
+                "dependencies": [
+                  "WU-source"
+                ],
+                "requirementRefs": [
+                  "REQ-1",
+                  "REQ-2",
+                  "REQ-3"
+                ],
+                "acceptanceRefs": [
+                  "AC-1",
+                  "AC-2",
+                  "AC-3"
+                ],
+                "competencies": [
+                  "JavaScript ES modules",
+                  "Node.js validation"
+                ],
+                "riskTags": [
+                  "validation-coverage"
+                ],
+                "changeKinds": [
+                  "test"
+                ],
+                "risk": "low",
+                "resourceClaims": []
+              }
+            ],
+            "affectedAreas": [
+              "src/greeting.mjs: add the named FAREWELL export with the exact value \"bye\" required by the existing validators; keep the public export set exactly {greet, FAREWELL} and preserve greet behavior.",
+              "src/usage.mjs (new): provide a small ESM re-export of FAREWELL from ./greeting.mjs.",
+              "scripts/contract.mjs: add an assertion that the usage module re-exports FAREWELL; preserve all existing contract assertions.",
+              ".harness/project.yaml: existing required fixture-greeting and contract-test gates already cover the relevant scripts; no configuration change is indicated."
+            ],
+            "reviewDimensions": [
+              "API boundary: src/greeting.mjs exports exactly greet and FAREWELL, with FAREWELL equal to \"bye\"; src/usage.mjs re-exports that value.",
+              "Behavior: greet(\"AEH\") continues to return \"Hello, AEH!\".",
+              "Validation: the usage-module assertion is additive, and both existing required validators remain green."
+            ],
+            "validationRequirements": [
+              {
+                "version": 1,
+                "id": "VG-fixture-greeting",
+                "property": "The existing greeting fixture contract passes, including unchanged greet behavior and FAREWELL equal to \"bye\".",
+                "kind": "command",
+                "scope": [
+                  "scripts/validate.mjs",
+                  "src/greeting.mjs"
+                ],
+                "evidenceNeeded": [
+                  "Exit code 0 from the configured required command `node scripts/validate.mjs` (also exposed as `npm test`)."
+                ],
+                "requirementRefs": [
+                  "REQ-1",
+                  "REQ-3"
+                ],
+                "acceptanceRefs": [
+                  "AC-1",
+                  "AC-3"
+                ]
+              },
+              {
+                "version": 1,
+                "id": "VG-contract-test",
+                "property": "The contract validator passes its existing exact-export and value checks and verifies src/usage.mjs re-exports FAREWELL.",
+                "kind": "contract-test",
+                "scope": [
+                  "scripts/contract.mjs",
+                  "src/greeting.mjs",
+                  "src/usage.mjs"
+                ],
+                "evidenceNeeded": [
+                  "Exit code 0 from the configured required command `node scripts/contract.mjs`.",
+                  "The validator retains the exact src/greeting.mjs export allowlist and includes an explicit assertion for the usage-module re-export."
+                ],
+                "requirementRefs": [
+                  "REQ-1",
+                  "REQ-2",
+                  "REQ-3"
+                ],
+                "acceptanceRefs": [
+                  "AC-1",
+                  "AC-2",
+                  "AC-3"
+                ]
+              }
+            ],
+            "outOfScopeImprovements": [
+              "Do not add exports beyond greet and FAREWELL to src/greeting.mjs or broaden the requested usage-module API.",
+              "Do not weaken or remove existing validator assertions, alter validation gate configuration, add dependencies, or make unrelated documentation changes."
+            ],
+            "formalizationNeed": "NONE",
+            "formalizationEvidenceRefs": []
+          }
+        }
+      },
+      {
+        "participantId": "1e2ab27d-7230-4353-872b-02a14c687ef9",
+        "role": "Planner",
+        "status": "COMPLETED",
+        "artifact": ".harness/operations/CHANGE-20260928T162325Z-226f0cf0/results/planner/0002-0002-2ac61340-ef66-4ee4-a9a8-0b6155d5e6d3.json",
+        "artifactSha256": "51a5fadfbc554eac996cf90f11fde76c05576499f48c42ca4afe690a1f1d6bf4",
+        "payloadSha256": "d07a6586360720a2ac4c66194bb50d2f80507e953de1bdf8aa45ececa5d3e827",
+        "bytes": 10286,
+        "payload": {
+          "version": 1,
+          "kind": "agent-result",
+          "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+          "channelId": "315bffc4-6c3a-44b9-aee5-df0387841319",
+          "turnId": "0002-2ac61340-ef66-4ee4-a9a8-0b6155d5e6d3",
+          "sequence": 2,
+          "revision": 2,
+          "attempt": 1,
+          "logicalAgent": "planner",
+          "role": "Planner",
+          "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+          "operationRevision": 52,
+          "supervisorGeneration": 1,
+          "agentId": "1e2ab27d-7230-4353-872b-02a14c687ef9",
+          "contract": "planner",
+          "provenance": {
+            "version": 1,
+            "status": "BOUND",
+            "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+            "projectId": "project:a3780e955160a50f9fa4cf41",
+            "operationRevision": 52,
+            "operationExecutionRevision": 2,
+            "participantId": "participant:81b51c468748c2a3",
+            "participantGeneration": "b51fa5bc-41f6-4095-8a45-cec7112ae084",
+            "logicalAgent": "planner",
+            "role": "Planner",
+            "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+            "candidate": {
+              "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+              "candidateId": "candidate:CHANGE-20260928T162325Z-226f0cf0:r2",
+              "projectId": "project:a3780e955160a50f9fa4cf41",
+              "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+              "revision": 2,
+              "parentCandidateId": "candidate:CHANGE-20260928T162325Z-226f0cf0:r1",
+              "sourceDigest": "9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8",
+              "workspace": "wks_2b0163d441781667",
+              "worktree": "/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0",
+              "createdAt": "2026-09-28T16:23:26.924Z",
+              "version": 1,
+              "canonicalIdentity": "{\"candidateId\":\"candidate:CHANGE-20260928T162325Z-226f0cf0:r2\",\"createdAt\":\"2026-09-28T16:23:26.924Z\",\"operationId\":\"CHANGE-20260928T162325Z-226f0cf0\",\"parentCandidateId\":\"candidate:CHANGE-20260928T162325Z-226f0cf0:r1\",\"projectId\":\"project:a3780e955160a50f9fa4cf41\",\"revision\":2,\"sourceDigest\":\"9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8\",\"taskId\":\"CHANGE-20260928T162325Z-226f0cf0\",\"version\":1,\"workspace\":\"wks_2b0163d441781667\",\"worktree\":\"/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0\"}",
+              "identityDigest": "2967141f93497ef3c6f477160a0a9bcacc3f50be5010ea09a6c38a56b790a0a7"
+            },
+            "controllerEpoch": 1,
+            "runtime": {
+              "provider": "openai",
+              "model": "openai/gpt-6-luna",
+              "runtimeId": "codex",
+              "sessionId": "1e2ab27d-7230-4353-872b-02a14c687ef9"
+            },
+            "outputContract": "planner",
+            "outputSchemaDigest": "c78cafe8ae6e1dc4d710ca8199702e572b40d1de78bca5fbf5c9ae0d3dd96566",
+            "executionBlueprintDigest": "7aadf392e00879140e882ecc19a4439e6339e1657110622948ef5bbb7019d992",
+            "resolvedOperationPolicyDigest": "e64c1b58b6c362e5ff2099f65fb71088469f85d00e628fd9973df186e00fc32b",
+            "executionBinding": {
+              "version": 2,
+              "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+              "operationExecutionRevision": 2,
+              "candidateRevision": 2,
+              "candidateDigest": "2967141f93497ef3c6f477160a0a9bcacc3f50be5010ea09a6c38a56b790a0a7",
+              "controllerEpoch": 1,
+              "executionBlueprintDigest": "7aadf392e00879140e882ecc19a4439e6339e1657110622948ef5bbb7019d992",
+              "operationPolicyDigest": "e64c1b58b6c362e5ff2099f65fb71088469f85d00e628fd9973df186e00fc32b",
+              "participantId": "participant:81b51c468748c2a3",
+              "participantGeneration": "b51fa5bc-41f6-4095-8a45-cec7112ae084",
+              "roleInvocationPolicyDigest": "d34e6c8d70ca1965226de8fda42e9b7f470b2dde83626fd7b6411b9b1b5bb450",
+              "skillManifestDigest": "e637a7f9a2e50d91cf931a4ae0e7fce11419c642efc17614e68c3a97fdd0501f",
+              "runtime": {
+                "runtimeId": "codex",
+                "provider": "openai",
+                "modelId": "openai/gpt-6-luna",
+                "model": "gpt-6-luna",
+                "sessionId": "1e2ab27d-7230-4353-872b-02a14c687ef9"
+              },
+              "contextManifestDigest": "1af81a103c52c7ab6426763523258b164ac6aed8a05e8e584087060b2a4cbe64",
+              "promptManifestDigest": "7f903c8b697afc640a2d71ef6cd7352c4097fbb611ee0b6e2758888468815e9f",
+              "outputContract": "planner",
+              "leaseIdentities": [
+                "lease:CHANGE-20260928T162325Z-226f0cf0:request:CHANGE-20260928T162325Z-226f0cf0:participant:81b51c468748c2a3:read:planning"
+              ],
+              "digest": "900b257f105ed4aaf26c24c76e62db2c9ad4c000ca943695aa70a69ab8782b7f"
+            },
+            "skillManifestDigest": "e637a7f9a2e50d91cf931a4ae0e7fce11419c642efc17614e68c3a97fdd0501f",
+            "contextManifestDigest": "1af81a103c52c7ab6426763523258b164ac6aed8a05e8e584087060b2a4cbe64",
+            "promptManifestDigest": "7f903c8b697afc640a2d71ef6cd7352c4097fbb611ee0b6e2758888468815e9f",
+            "unsupported": [],
+            "provenanceDigest": "5f9f9e47a01addbe92d7ae52d82764cebd627a682ee059c9686002eafd91ce24"
+          },
+          "contextEvidence": {
+            "version": 1,
+            "executionBindingDigest": "900b257f105ed4aaf26c24c76e62db2c9ad4c000ca943695aa70a69ab8782b7f",
+            "contextManifestDigest": "1af81a103c52c7ab6426763523258b164ac6aed8a05e8e584087060b2a4cbe64",
+            "promptManifestDigest": "7f903c8b697afc640a2d71ef6cd7352c4097fbb611ee0b6e2758888468815e9f",
+            "receiptIds": [],
+            "receiptDigests": [],
+            "receiptsDigest": "3d9617614ba6f684cc2e8e1cb93ddab90427958aab763bfc5ca7a22adaf01f75",
+            "retrievalBudget": {
+              "maxRequestsPerTurn": 8,
+              "maxTokensPerRequest": 6000,
+              "maxTotalTokensPerTurn": 20000
+            },
+            "requests": 0,
+            "totalTokens": 0,
+            "retrievalStateDigest": "6e15e01b2f25038883b14318164275140d37f744040a19a1881d6fb116f90c16",
+            "progressiveManifestDigest": "51530b79b56335e4c2ec67a4a0a0710b56103224b46c27b0835cf5a02d34c29a",
+            "evidenceDigest": "c4391b34ad9a0e2274d77e3f4926c25d7888e493a73e4d02fce5aeefd5424508"
+          },
+          "source": "captured",
+          "createdAt": "2026-09-28T16:27:29.947Z",
+          "payloadSha256": "97c487361a3e3b50476d339c551c120de344f7567502cb521bae0117ce86904b",
+          "payload": {
+            "workUnits": [
+              {
+                "id": "WU-source",
+                "objective": "Add the required FAREWELL constant export and a separate usage module that re-exports it.",
+                "scope": [
+                  "src/greeting.mjs",
+                  "src/usage.mjs"
+                ],
+                "dependencies": [],
+                "requirementRefs": [
+                  "REQ-1",
+                  "REQ-2"
+                ],
+                "acceptanceRefs": [
+                  "AC-1",
+                  "AC-2"
+                ],
+                "competencies": [
+                  "JavaScript ES modules",
+                  "Node.js"
+                ],
+                "riskTags": [
+                  "public-api-contract"
+                ],
+                "changeKinds": [
+                  "source"
+                ],
+                "risk": "low",
+                "resourceClaims": []
+              },
+              {
+                "id": "WU-contract-coverage",
+                "objective": "Extend the existing contract validator with an explicit check that src/usage.mjs re-exports FAREWELL, while preserving its existing assertions.",
+                "scope": [
+                  "scripts/contract.mjs"
+                ],
+                "dependencies": [
+                  "WU-source"
+                ],
+                "requirementRefs": [
+                  "REQ-1",
+                  "REQ-2",
+                  "REQ-3"
+                ],
+                "acceptanceRefs": [
+                  "AC-1",
+                  "AC-2",
+                  "AC-3"
+                ],
+                "competencies": [
+                  "JavaScript ES modules",
+                  "Node.js validation"
+                ],
+                "riskTags": [
+                  "validation-coverage"
+                ],
+                "changeKinds": [
+                  "test"
+                ],
+                "risk": "low",
+                "resourceClaims": []
+              }
+            ],
+            "affectedAreas": [
+              "src/greeting.mjs: add the named FAREWELL export with the exact value \"bye\" required by the existing validators; keep the public export set exactly {greet, FAREWELL} and preserve greet behavior.",
+              "src/usage.mjs (new): provide a small ESM re-export of FAREWELL from ./greeting.mjs.",
+              "scripts/contract.mjs: add an assertion that the usage module re-exports FAREWELL; preserve all existing contract assertions.",
+              ".harness/project.yaml: existing required fixture-greeting and contract-test gates already cover the relevant scripts; no configuration change is indicated."
+            ],
+            "reviewDimensions": [
+              "API boundary: src/greeting.mjs exports exactly greet and FAREWELL, with FAREWELL equal to \"bye\"; src/usage.mjs re-exports that value.",
+              "Behavior: greet(\"AEH\") continues to return \"Hello, AEH!\".",
+              "Validation: the usage-module assertion is additive, and both existing required validators remain green."
+            ],
+            "validationRequirements": [
+              {
+                "version": 1,
+                "id": "VG-fixture-greeting",
+                "property": "The existing greeting fixture contract passes, including unchanged greet behavior and FAREWELL equal to \"bye\".",
+                "kind": "command",
+                "scope": [
+                  "scripts/validate.mjs",
+                  "src/greeting.mjs"
+                ],
+                "evidenceNeeded": [
+                  "Exit code 0 from the configured required command `node scripts/validate.mjs` (also exposed as `npm test`)."
+                ],
+                "requirementRefs": [
+                  "REQ-1",
+                  "REQ-3"
+                ],
+                "acceptanceRefs": [
+                  "AC-1",
+                  "AC-3"
+                ]
+              },
+              {
+                "version": 1,
+                "id": "VG-contract-test",
+                "property": "The contract validator passes its existing exact-export and value checks and verifies src/usage.mjs re-exports FAREWELL.",
+                "kind": "contract-test",
+                "scope": [
+                  "scripts/contract.mjs",
+                  "src/greeting.mjs",
+                  "src/usage.mjs"
+                ],
+                "evidenceNeeded": [
+                  "Exit code 0 from the configured required command `node scripts/contract.mjs`.",
+                  "The validator retains the exact src/greeting.mjs export allowlist and includes an explicit assertion for the usage-module re-export."
+                ],
+                "requirementRefs": [
+                  "REQ-1",
+                  "REQ-2",
+                  "REQ-3"
+                ],
+                "acceptanceRefs": [
+                  "AC-1",
+                  "AC-2",
+                  "AC-3"
+                ]
+              }
+            ],
+            "outOfScopeImprovements": [
+              "Do not add exports beyond greet and FAREWELL to src/greeting.mjs or broaden the requested usage-module API.",
+              "Do not weaken or remove existing validator assertions, alter validation gate configuration, add dependencies, or make unrelated documentation changes."
+            ],
+            "formalizationNeed": "NONE",
+            "formalizationEvidenceRefs": []
+          }
+        }
+      }
+    ],
+    "assessments": [
+      {
+        "file": "9c2165e2092fd03c3ba4d59db93db8a98b9d0e168ce7c735c27d32e0f6998a4f.json",
+        "sha256": "a209464dc24ab2fc29176dab5950da019f13884ba8bcc341745e73490b59be30",
+        "bytes": 5496,
+        "assessmentType": "ROUTE",
+        "mechanism": "MODEL",
+        "digest": null,
+        "modelId": null,
+        "sessionId": null
+      },
+      {
+        "file": "c4cda4d4495c7c49443a35d195f533b2a1927b4b1d2a32b1f92bd5d1b826b450.json",
+        "sha256": "6238d4906371055db6505a919919446b6a4b421c3f97ef0590ab69a31c06e0e1",
+        "bytes": 8127,
+        "assessmentType": "STACK",
+        "mechanism": "MODEL",
+        "digest": null,
+        "modelId": null,
+        "sessionId": null
+      }
+    ],
+    "reviewerArtifactsError": null
+  },
+  "candidateWorkspaceObservations": {
+    "observations": [
+      {
+        "source": "CandidateRevision.worktree",
+        "workspaceId": null,
+        "root": "/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0",
+        "expectedSourceDigest": "9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8",
+        "observedSourceDigest": "9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8",
+        "candidateIdentityDigest": "2967141f93497ef3c6f477160a0a9bcacc3f50be5010ea09a6c38a56b790a0a7",
+        "candidateRevision": 2,
+        "status": "MATCH"
+      }
+    ]
+  },
+  "traces": {
+    "paseo": {
+      "total": 18,
+      "entries": [
+        {
+          "at": "2026-09-28T16:23:13.363Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-28T16:23:15.511Z",
+          "name": "harness.paseo.provider.preflight",
+          "attributes": {
+            "ok": true,
+            "provider": "opencode",
+            "model": "opencode-go/gpt-6-luna",
+            "providerStatus": "loading",
+            "source": "paseo-provider-models",
+            "availableModelCount": 69,
+            "message": "Provider opencode model opencode-go/gpt-6-luna passed Paseo preflight."
+          }
+        },
+        {
+          "at": "2026-09-28T16:23:19.257Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-28T16:23:25.301Z",
+          "name": "harness.paseo.agent.wait",
+          "attributes": {
+            "agentId": "ddbc32f0-b713-46d7-a630-988d22d3f105",
+            "source": "paseo-agent-subscription",
+            "status": "idle",
+            "updatesObserved": 0,
+            "baselineAssistant": "absent",
+            "baselineUserMessageAt": "absent",
+            "durationMs": 6028
+          }
+        },
+        {
+          "at": "2026-09-28T16:23:25.309Z",
+          "name": "harness.paseo.agent.wait.completed",
+          "attributes": {
+            "transport": "sdk",
+            "observation": "subscription",
+            "agentId": "ddbc32f0-b713-46d7-a630-988d22d3f105",
+            "status": "idle"
+          }
+        },
+        {
+          "at": "2026-09-28T16:23:28.793Z",
+          "name": "harness.paseo.operation.supervisor.materialized",
+          "attributes": {
+            "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+            "generation": 1,
+            "agentId": "0a822baf-b8df-46e1-895f-bb68c91279a0",
+            "revision": 18,
+            "attempt": 1,
+            "status": "INITIALIZING"
+          }
+        },
+        {
+          "at": "2026-09-28T16:23:30.847Z",
+          "name": "harness.paseo.operation.watchdog.started",
+          "attributes": {
+            "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+            "pollIntervalMs": 15000,
+            "progressWakeIntervalMs": 45000,
+            "stallThresholdMs": 120000,
+            "supervisorStallWakeLimit": 2,
+            "leadWakeLimit": 1,
+            "terminalLeadWakeLimit": 2
+          }
+        },
+        {
+          "at": "2026-09-28T16:24:05.266Z",
+          "name": "harness.paseo.operation.supervisor.initialized",
+          "attributes": {
+            "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+            "generation": 1,
+            "agentId": "0a822baf-b8df-46e1-895f-bb68c91279a0",
+            "revision": 29,
+            "attempt": 1,
+            "timeoutSeconds": 60,
+            "evidence": "turn-barrier"
+          }
+        },
+        {
+          "at": "2026-09-28T16:27:30.183Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-28T16:27:30.196Z",
+          "name": "harness.paseo.provider.preflight",
+          "attributes": {
+            "ok": true,
+            "provider": "opencode",
+            "model": "opencode-go/gpt-6-luna",
+            "providerStatus": "ready",
+            "source": "paseo-provider-snapshot",
+            "availableModelCount": 69,
+            "message": "Provider opencode model opencode-go/gpt-6-luna passed Paseo preflight."
+          }
+        },
+        {
+          "at": "2026-09-28T16:27:34.102Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-28T16:27:42.150Z",
+          "name": "harness.paseo.agent.wait",
+          "attributes": {
+            "agentId": "9c84633c-7afe-4286-af5f-0a16ddf46e1e",
+            "source": "paseo-agent-subscription",
+            "status": "idle",
+            "updatesObserved": 0,
+            "baselineAssistant": "absent",
+            "baselineUserMessageAt": "absent",
+            "durationMs": 8040
+          }
+        },
+        {
+          "at": "2026-09-28T16:27:42.157Z",
+          "name": "harness.paseo.agent.wait.completed",
+          "attributes": {
+            "transport": "sdk",
+            "observation": "subscription",
+            "agentId": "9c84633c-7afe-4286-af5f-0a16ddf46e1e",
+            "status": "idle"
+          }
+        },
+        {
+          "at": "2026-09-28T16:29:17.510Z",
+          "name": "harness.paseo.operation.watchdog.stopped",
+          "attributes": {
+            "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+            "reason": "terminal-without-lead"
+          }
+        }
+      ]
+    },
+    "events": {
+      "total": 19,
+      "entries": [
+        {
+          "at": "2026-09-28T16:23:13.388Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-28T16:23:15.518Z",
+          "name": "harness.paseo.provider.preflight",
+          "attributes": {
+            "ok": true,
+            "provider": "opencode",
+            "model": "opencode-go/gpt-6-luna",
+            "providerStatus": "loading",
+            "source": "paseo-provider-models",
+            "availableModelCount": 69,
+            "message": "Provider opencode model opencode-go/gpt-6-luna passed Paseo preflight."
+          }
+        },
+        {
+          "at": "2026-09-28T16:23:19.269Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-28T16:23:25.307Z",
+          "name": "harness.paseo.agent.wait",
+          "attributes": {
+            "agentId": "ddbc32f0-b713-46d7-a630-988d22d3f105",
+            "source": "paseo-agent-subscription",
+            "status": "idle",
+            "updatesObserved": 0,
+            "baselineAssistant": "absent",
+            "baselineUserMessageAt": "absent",
+            "durationMs": 6028
+          }
+        },
+        {
+          "at": "2026-09-28T16:23:25.323Z",
+          "name": "harness.paseo.agent.wait.completed",
+          "attributes": {
+            "transport": "sdk",
+            "observation": "subscription",
+            "agentId": "ddbc32f0-b713-46d7-a630-988d22d3f105",
+            "status": "idle"
+          }
+        },
+        {
+          "at": "2026-09-28T16:23:28.798Z",
+          "name": "harness.paseo.operation.supervisor.materialized",
+          "attributes": {
+            "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+            "generation": 1,
+            "agentId": "0a822baf-b8df-46e1-895f-bb68c91279a0",
+            "revision": 18,
+            "attempt": 1,
+            "status": "INITIALIZING"
+          }
+        },
+        {
+          "at": "2026-09-28T16:23:30.861Z",
+          "name": "harness.paseo.operation.watchdog.started",
+          "attributes": {
+            "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+            "pollIntervalMs": 15000,
+            "progressWakeIntervalMs": 45000,
+            "stallThresholdMs": 120000,
+            "supervisorStallWakeLimit": 2,
+            "leadWakeLimit": 1,
+            "terminalLeadWakeLimit": 2
+          }
+        },
+        {
+          "at": "2026-09-28T16:24:05.276Z",
+          "name": "harness.paseo.operation.supervisor.initialized",
+          "attributes": {
+            "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+            "generation": 1,
+            "agentId": "0a822baf-b8df-46e1-895f-bb68c91279a0",
+            "revision": 29,
+            "attempt": 1,
+            "timeoutSeconds": 60,
+            "evidence": "turn-barrier"
+          }
+        },
+        {
+          "at": "2026-09-28T16:27:30.189Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-28T16:27:30.201Z",
+          "name": "harness.paseo.provider.preflight",
+          "attributes": {
+            "ok": true,
+            "provider": "opencode",
+            "model": "opencode-go/gpt-6-luna",
+            "providerStatus": "ready",
+            "source": "paseo-provider-snapshot",
+            "availableModelCount": 69,
+            "message": "Provider opencode model opencode-go/gpt-6-luna passed Paseo preflight."
+          }
+        },
+        {
+          "at": "2026-09-28T16:27:34.107Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-28T16:27:42.155Z",
+          "name": "harness.paseo.agent.wait",
+          "attributes": {
+            "agentId": "9c84633c-7afe-4286-af5f-0a16ddf46e1e",
+            "source": "paseo-agent-subscription",
+            "status": "idle",
+            "updatesObserved": 0,
+            "baselineAssistant": "absent",
+            "baselineUserMessageAt": "absent",
+            "durationMs": 8040
+          }
+        },
+        {
+          "at": "2026-09-28T16:27:42.163Z",
+          "name": "harness.paseo.agent.wait.completed",
+          "attributes": {
+            "transport": "sdk",
+            "observation": "subscription",
+            "agentId": "9c84633c-7afe-4286-af5f-0a16ddf46e1e",
+            "status": "idle"
+          }
+        },
+        {
+          "at": "2026-09-28T16:29:17.534Z",
+          "name": "harness.paseo.operation.watchdog.stopped",
+          "attributes": {
+            "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+            "reason": "terminal-without-lead"
+          }
+        }
+      ]
+    }
+  },
+  "routeDiagnostics": {
+    "classification": "HYBRID",
+    "plannerAssessmentMechanism": "MODEL",
+    "routeGateMechanism": "DETERMINISTIC",
+    "participantArtifacts": [
+      {
+        "participantId": "participant:0ed0eb6e46e1830c",
+        "role": "Explorer",
+        "status": "FAILED",
+        "artifact": ".harness/operations/CHANGE-20260928T162325Z-226f0cf0/results/explorer/0002-0002-8e5be3ac-4ff7-4ccd-b0b9-4bf81a3f0c66.json",
+        "artifactSha256": "fd6e02a12f90a8907148d3a2dc47c3a26a286daa661d93d4cf2a1671cfff6a9d",
+        "payloadSha256": "0c80e53b2ba8282eb52b895100d1e01e50d6ff8ff5db56d2a1b88262fe6a9a45",
+        "bytes": 13406,
+        "payload": {
+          "version": 1,
+          "kind": "agent-result",
+          "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+          "channelId": "f4622fd5-47bd-40ab-ae96-48a080e15009",
+          "turnId": "0002-8e5be3ac-4ff7-4ccd-b0b9-4bf81a3f0c66",
+          "sequence": 2,
+          "revision": 2,
+          "attempt": 1,
+          "logicalAgent": "explorer",
+          "role": "Explorer",
+          "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+          "operationRevision": 37,
+          "supervisorGeneration": 1,
+          "agentId": "3de61594-b9c7-45d7-bd9d-7e1a2fc96d36",
+          "contract": "explorer",
+          "provenance": {
+            "version": 1,
+            "status": "BOUND",
+            "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+            "projectId": "project:a3780e955160a50f9fa4cf41",
+            "operationRevision": 37,
+            "operationExecutionRevision": 2,
+            "participantId": "participant:0ed0eb6e46e1830c",
+            "participantGeneration": "23acc01a-8819-40bf-8719-cd28a7b14f20",
+            "logicalAgent": "explorer",
+            "role": "Explorer",
+            "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+            "candidate": {
+              "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+              "candidateId": "candidate:CHANGE-20260928T162325Z-226f0cf0:r2",
+              "projectId": "project:a3780e955160a50f9fa4cf41",
+              "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+              "revision": 2,
+              "parentCandidateId": "candidate:CHANGE-20260928T162325Z-226f0cf0:r1",
+              "sourceDigest": "9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8",
+              "workspace": "wks_2b0163d441781667",
+              "worktree": "/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0",
+              "createdAt": "2026-09-28T16:23:26.924Z",
+              "version": 1,
+              "canonicalIdentity": "{\"candidateId\":\"candidate:CHANGE-20260928T162325Z-226f0cf0:r2\",\"createdAt\":\"2026-09-28T16:23:26.924Z\",\"operationId\":\"CHANGE-20260928T162325Z-226f0cf0\",\"parentCandidateId\":\"candidate:CHANGE-20260928T162325Z-226f0cf0:r1\",\"projectId\":\"project:a3780e955160a50f9fa4cf41\",\"revision\":2,\"sourceDigest\":\"9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8\",\"taskId\":\"CHANGE-20260928T162325Z-226f0cf0\",\"version\":1,\"workspace\":\"wks_2b0163d441781667\",\"worktree\":\"/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0\"}",
+              "identityDigest": "2967141f93497ef3c6f477160a0a9bcacc3f50be5010ea09a6c38a56b790a0a7"
+            },
+            "controllerEpoch": 1,
+            "runtime": {
+              "provider": "opencode-go",
+              "model": "opencode-go/mimo-v2.6-flash",
+              "runtimeId": "opencode",
+              "sessionId": "3de61594-b9c7-45d7-bd9d-7e1a2fc96d36"
+            },
+            "outputContract": "explorer",
+            "outputSchemaDigest": "23c68214e8a71bd7fb44010d0a3c1befb4f26614bbca2ccff1bb464f67faf134",
+            "executionBlueprintDigest": "76364f9f1609ec9801c5b6d1a492ead7e85c1bbda0d12a1c423518e0aadec70b",
+            "resolvedOperationPolicyDigest": "e64c1b58b6c362e5ff2099f65fb71088469f85d00e628fd9973df186e00fc32b",
+            "executionBinding": {
+              "version": 2,
+              "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+              "operationExecutionRevision": 2,
+              "candidateRevision": 2,
+              "candidateDigest": "2967141f93497ef3c6f477160a0a9bcacc3f50be5010ea09a6c38a56b790a0a7",
+              "controllerEpoch": 1,
+              "executionBlueprintDigest": "76364f9f1609ec9801c5b6d1a492ead7e85c1bbda0d12a1c423518e0aadec70b",
+              "operationPolicyDigest": "e64c1b58b6c362e5ff2099f65fb71088469f85d00e628fd9973df186e00fc32b",
+              "participantId": "participant:0ed0eb6e46e1830c",
+              "participantGeneration": "23acc01a-8819-40bf-8719-cd28a7b14f20",
+              "roleInvocationPolicyDigest": "f9263214a71b172ab69197e2bc990a56668e2a8a725555006e55e05c5c3125b2",
+              "skillManifestDigest": "a812a903f191f8a6862d5a3d120363920354b18be6f8ffd2944749f90507de96",
+              "runtime": {
+                "runtimeId": "opencode",
+                "provider": "opencode-go",
+                "modelId": "opencode-go/mimo-v2.6-flash",
+                "model": "mimo-v2.6-flash",
+                "sessionId": "3de61594-b9c7-45d7-bd9d-7e1a2fc96d36"
+              },
+              "contextManifestDigest": "6f4301b4cf1e2bd61132b7a6f7f46e1b88d1d76b83c311789d55341097d1f38a",
+              "promptManifestDigest": "a0eedf30098e63bc5c3d13032ab25ba3304685b47bf95b002d4c947337552aba",
+              "outputContract": "explorer",
+              "leaseIdentities": [
+                "lease:CHANGE-20260928T162325Z-226f0cf0:request:CHANGE-20260928T162325Z-226f0cf0:participant:0ed0eb6e46e1830c:read:discovery"
+              ],
+              "digest": "9212d25c0a0c171b2b6e3a2a27b64b4ff0c2666aae595e5ebf6513af5dfea9cd"
+            },
+            "skillManifestDigest": "a812a903f191f8a6862d5a3d120363920354b18be6f8ffd2944749f90507de96",
+            "contextManifestDigest": "6f4301b4cf1e2bd61132b7a6f7f46e1b88d1d76b83c311789d55341097d1f38a",
+            "promptManifestDigest": "a0eedf30098e63bc5c3d13032ab25ba3304685b47bf95b002d4c947337552aba",
+            "unsupported": [],
+            "provenanceDigest": "dbc95cacdf839439791b900587805069c2760bcd18a5f6582cd7c871d55f1d37"
+          },
+          "contextEvidence": {
+            "version": 1,
+            "executionBindingDigest": "9212d25c0a0c171b2b6e3a2a27b64b4ff0c2666aae595e5ebf6513af5dfea9cd",
+            "contextManifestDigest": "6f4301b4cf1e2bd61132b7a6f7f46e1b88d1d76b83c311789d55341097d1f38a",
+            "promptManifestDigest": "a0eedf30098e63bc5c3d13032ab25ba3304685b47bf95b002d4c947337552aba",
+            "receiptIds": [],
+            "receiptDigests": [],
+            "receiptsDigest": "3d9617614ba6f684cc2e8e1cb93ddab90427958aab763bfc5ca7a22adaf01f75",
+            "retrievalBudget": {
+              "maxRequestsPerTurn": 8,
+              "maxTokensPerRequest": 6000,
+              "maxTotalTokensPerTurn": 20000
+            },
+            "requests": 0,
+            "totalTokens": 0,
+            "retrievalStateDigest": "777f934596c4b5537080bada8a40dd58f9a82b8fbe7f09186d2199a9c1c3e51d",
+            "progressiveManifestDigest": "276d8a3ef0325137fdcfc19e016ae22b640e2910b6ff18cae247d6d10d246c4e",
+            "evidenceDigest": "ce3cba53d315dce13e0e4d506267eab6ac52e5fafca6edb3531f60bdb22b8008"
+          },
+          "source": "captured",
+          "createdAt": "2026-09-28T16:25:46.489Z",
+          "payloadSha256": "42edb36c1b3cdc306c66d76ff725c60ca951565be6d00f5dce32d6d997afe32b",
+          "payload": {
+            "summary": "Discovery: FAREWELL is required by both validators but absent from src/greeting.mjs (currently only exports greet), so validation is red today. contract.mjs enforces an exact allowlist of public exports {greet, FAREWELL} on src/greeting.mjs, so the re-exporting usage module must be a NEW separate file (e.g. src/usage.mjs), not an added export in greeting.mjs. Value must be exactly \"bye\". No existing usage module, tests/ or specs/ directories exist; validators are wired as required in .harness/project.yaml (fixture-greeting, contract-test) and npm test runs validate.mjs.",
+            "relevantFiles": [
+              {
+                "path": "src/greeting.mjs",
+                "symbols": [
+                  "greet"
+                ],
+                "reason": "Change target: only export today is greet (lines 0-2); FAREWELL must be added with exact value \"bye\" and no other exports."
+              },
+              {
+                "path": "scripts/validate.mjs",
+                "symbols": [
+                  "failures"
+                ],
+                "reason": "Required command fixture-greeting; line 7 fails unless module.FAREWELL === \"bye\"; line 4 enforces greet(\"AEH\") === \"Hello, AEH!\"."
+              },
+              {
+                "path": "scripts/contract.mjs",
+                "symbols": [
+                  "failures"
+                ],
+                "reason": "Required validator contract-test; lines 8-9 require FAREWELL string === \"bye\"; line 11 rejects any export of src/greeting.mjs outside {greet, FAREWELL}."
+              },
+              {
+                "path": ".harness/project.yaml",
+                "symbols": [
+                  "validation.commands",
+                  "validation.validators"
+                ],
+                "reason": "Lines 269-281: fixture-greeting -> node scripts/validate.mjs and contract-test -> node scripts/contract.mjs, both required: true, baseRef master."
+              },
+              {
+                "path": "package.json",
+                "symbols": [
+                  "scripts.test"
+                ],
+                "reason": "Line 6: test -> node scripts/validate.mjs (the local green-keeping entrypoint)."
+              },
+              {
+                "path": "README.md",
+                "symbols": [],
+                "reason": "Line 3 declares validate.mjs and contract.mjs as the real validation commands for this fixture."
+              }
+            ],
+            "findings": [
+              {
+                "id": "F1",
+                "status": "CONFIRMED",
+                "evidence": [
+                  "src/greeting.mjs symbol overview lists only Function greet; body: `export function greet(name) { return \\`Hello, ${name}!\\`; }`",
+                  "scripts/validate.mjs:7 `if (!failures.length && module.FAREWELL !== \"bye\") failures.push(\"FAREWELL export\");` with greet check at line 4 passing and module load at line 6 succeeding -> exits 1 with VALIDATION_FAILED: FAREWELL export"
+                ],
+                "notes": "Deterministic from static code reading; runtime execution was not possible (bash permission denied for explorer role), so no live exit-code capture."
+              },
+              {
+                "id": "F2",
+                "status": "CONFIRMED",
+                "evidence": [
+                  "scripts/contract.mjs:8 `typeof module.FAREWELL !== \"string\"` -> \"FAREWELL export contract\"",
+                  "scripts/contract.mjs:9 `module.FAREWELL !== \"bye\"` -> \"FAREWELL value contract\"",
+                  "scripts/contract.mjs:11 `if (Object.keys(moduleValue).some((key) => ![\"greet\", \"FAREWELL\"].includes(key))) failures.push(\"unexpected public export\")`"
+                ],
+                "notes": "Hard constraint: greeting.mjs public surface must be exactly {greet, FAREWELL}; the usage/re-export module must live in a separate file and must not add exports to greeting.mjs."
+              },
+              {
+                "id": "F3",
+                "status": "CONFIRMED",
+                "evidence": [
+                  "glob **/*.{mjs,js,json,yaml,yaml,md} returned only src/greeting.mjs, scripts/validate.mjs, scripts/contract.mjs",
+                  "glob {specs,src,tests,test}/**/* returned only src/greeting.mjs",
+                  "grep for 'usage' across repo matched no source files"
+                ],
+                "notes": "No usage module, no tests/ or specs/ directories; the usage module is a net-new file (suggested convention: src/usage.mjs importing ../src/greeting.mjs style per existing relative ESM .mjs imports)."
+              },
+              {
+                "id": "F4",
+                "status": "CONFIRMED",
+                "evidence": [
+                  ".harness/project.yaml:270 `baseRef: master`",
+                  ".harness/project.yaml:272-275 `- id: fixture-greeting / command: node scripts/validate.mjs / required: true`",
+                  ".harness/project.yaml:277-281 `- id: contract-test / adapter: contract-test / command: node scripts/contract.mjs / required: true`",
+                  "package.json:6 `\"test\": \"node scripts/validate.mjs\"`"
+                ],
+                "notes": "Both validators are required gates for keeping validation green."
+              },
+              {
+                "id": "F5",
+                "status": "CONFIRMED",
+                "evidence": [
+                  "scripts/validate.mjs (12 lines) checks only greet behavior, module load and FAREWELL; no reference to any usage module",
+                  "scripts/contract.mjs (17 lines) checks only exports of ../src/greeting.mjs"
+                ],
+                "notes": "Gap/risk: the new usage module will have zero validator coverage; 'validation green' constrains only greeting.mjs (FAREWELL === \"bye\", exact export set)."
+              }
+            ],
+            "moduleBoundaries": [
+              "src/greeting.mjs: fixture core public API; must remain exactly {greet, FAREWELL} per contract.mjs:11 allowlist",
+              "src/<usage-module>.mjs (new, e.g. src/usage.mjs): re-export surface for FAREWELL; isolated from greeting.mjs export set; currently unvalidated",
+              "scripts/validate.mjs + scripts/contract.mjs: deterministic read-only validators, entrypoints via npm test and .harness/project.yaml",
+              ".harness/project.yaml validation section: gate wiring (fixture-greeting, contract-test), config-only, not to be weakened"
+            ],
+            "tests": [
+              "node scripts/validate.mjs (npm test; required command id fixture-greeting)",
+              "node scripts/contract.mjs (required validator id contract-test)",
+              "Not executed in this discovery phase: bash permission denied for explorer role; verification is static-only"
+            ],
+            "dependencies": [
+              "Node.js ESM (.mjs, top-level await in validators)",
+              "No external npm dependencies (package.json has no deps)",
+              "Relative import convention: scripts/*.mjs -> ../src/greeting.mjs",
+              ".harness/project.yaml validation commands/validators"
+            ],
+            "risks": [
+              "contract.mjs:11 exact-export allowlist: any extra export added to src/greeting.mjs (including a usage re-export placed there) fails contract-test",
+              "FAREWELL value must be the exact string \"bye\" in both validators",
+              "The new usage module has no validator/test coverage -> silent regressions possible",
+              "Explorer could not run validators (bash denied), so current red/green state is inferred statically rather than observed",
+              "validate.mjs:7 only checks FAREWELL when earlier failures are empty; a broken greet would mask the FAREWELL signal",
+              "validation.baseRef is master; any validator weakening would be caught by policy, so acceptance criteria must not be relaxed"
+            ],
+            "openQuestions": [
+              "Exact path/name of the usage module (e.g. src/usage.mjs vs src/greeting-usage.mjs) is unspecified",
+              "Should the usage module's re-export be added to a validator (contract.mjs/validate.mjs) or covered by a new check, given zero current coverage?",
+              "Should a spec delta be authored for this observable behavior change (FAREWELL export + new module) rather than openspec skip_specs?"
+            ]
+          }
+        }
+      },
+      {
+        "participantId": "3de61594-b9c7-45d7-bd9d-7e1a2fc96d36",
+        "role": "Explorer",
+        "status": "COMPLETED",
+        "artifact": ".harness/operations/CHANGE-20260928T162325Z-226f0cf0/results/explorer/0002-0002-8e5be3ac-4ff7-4ccd-b0b9-4bf81a3f0c66.json",
+        "artifactSha256": "fd6e02a12f90a8907148d3a2dc47c3a26a286daa661d93d4cf2a1671cfff6a9d",
+        "payloadSha256": "0c80e53b2ba8282eb52b895100d1e01e50d6ff8ff5db56d2a1b88262fe6a9a45",
+        "bytes": 13406,
+        "payload": {
+          "version": 1,
+          "kind": "agent-result",
+          "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+          "channelId": "f4622fd5-47bd-40ab-ae96-48a080e15009",
+          "turnId": "0002-8e5be3ac-4ff7-4ccd-b0b9-4bf81a3f0c66",
+          "sequence": 2,
+          "revision": 2,
+          "attempt": 1,
+          "logicalAgent": "explorer",
+          "role": "Explorer",
+          "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+          "operationRevision": 37,
+          "supervisorGeneration": 1,
+          "agentId": "3de61594-b9c7-45d7-bd9d-7e1a2fc96d36",
+          "contract": "explorer",
+          "provenance": {
+            "version": 1,
+            "status": "BOUND",
+            "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+            "projectId": "project:a3780e955160a50f9fa4cf41",
+            "operationRevision": 37,
+            "operationExecutionRevision": 2,
+            "participantId": "participant:0ed0eb6e46e1830c",
+            "participantGeneration": "23acc01a-8819-40bf-8719-cd28a7b14f20",
+            "logicalAgent": "explorer",
+            "role": "Explorer",
+            "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+            "candidate": {
+              "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+              "candidateId": "candidate:CHANGE-20260928T162325Z-226f0cf0:r2",
+              "projectId": "project:a3780e955160a50f9fa4cf41",
+              "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+              "revision": 2,
+              "parentCandidateId": "candidate:CHANGE-20260928T162325Z-226f0cf0:r1",
+              "sourceDigest": "9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8",
+              "workspace": "wks_2b0163d441781667",
+              "worktree": "/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0",
+              "createdAt": "2026-09-28T16:23:26.924Z",
+              "version": 1,
+              "canonicalIdentity": "{\"candidateId\":\"candidate:CHANGE-20260928T162325Z-226f0cf0:r2\",\"createdAt\":\"2026-09-28T16:23:26.924Z\",\"operationId\":\"CHANGE-20260928T162325Z-226f0cf0\",\"parentCandidateId\":\"candidate:CHANGE-20260928T162325Z-226f0cf0:r1\",\"projectId\":\"project:a3780e955160a50f9fa4cf41\",\"revision\":2,\"sourceDigest\":\"9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8\",\"taskId\":\"CHANGE-20260928T162325Z-226f0cf0\",\"version\":1,\"workspace\":\"wks_2b0163d441781667\",\"worktree\":\"/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0\"}",
+              "identityDigest": "2967141f93497ef3c6f477160a0a9bcacc3f50be5010ea09a6c38a56b790a0a7"
+            },
+            "controllerEpoch": 1,
+            "runtime": {
+              "provider": "opencode-go",
+              "model": "opencode-go/mimo-v2.6-flash",
+              "runtimeId": "opencode",
+              "sessionId": "3de61594-b9c7-45d7-bd9d-7e1a2fc96d36"
+            },
+            "outputContract": "explorer",
+            "outputSchemaDigest": "23c68214e8a71bd7fb44010d0a3c1befb4f26614bbca2ccff1bb464f67faf134",
+            "executionBlueprintDigest": "76364f9f1609ec9801c5b6d1a492ead7e85c1bbda0d12a1c423518e0aadec70b",
+            "resolvedOperationPolicyDigest": "e64c1b58b6c362e5ff2099f65fb71088469f85d00e628fd9973df186e00fc32b",
+            "executionBinding": {
+              "version": 2,
+              "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+              "operationExecutionRevision": 2,
+              "candidateRevision": 2,
+              "candidateDigest": "2967141f93497ef3c6f477160a0a9bcacc3f50be5010ea09a6c38a56b790a0a7",
+              "controllerEpoch": 1,
+              "executionBlueprintDigest": "76364f9f1609ec9801c5b6d1a492ead7e85c1bbda0d12a1c423518e0aadec70b",
+              "operationPolicyDigest": "e64c1b58b6c362e5ff2099f65fb71088469f85d00e628fd9973df186e00fc32b",
+              "participantId": "participant:0ed0eb6e46e1830c",
+              "participantGeneration": "23acc01a-8819-40bf-8719-cd28a7b14f20",
+              "roleInvocationPolicyDigest": "f9263214a71b172ab69197e2bc990a56668e2a8a725555006e55e05c5c3125b2",
+              "skillManifestDigest": "a812a903f191f8a6862d5a3d120363920354b18be6f8ffd2944749f90507de96",
+              "runtime": {
+                "runtimeId": "opencode",
+                "provider": "opencode-go",
+                "modelId": "opencode-go/mimo-v2.6-flash",
+                "model": "mimo-v2.6-flash",
+                "sessionId": "3de61594-b9c7-45d7-bd9d-7e1a2fc96d36"
+              },
+              "contextManifestDigest": "6f4301b4cf1e2bd61132b7a6f7f46e1b88d1d76b83c311789d55341097d1f38a",
+              "promptManifestDigest": "a0eedf30098e63bc5c3d13032ab25ba3304685b47bf95b002d4c947337552aba",
+              "outputContract": "explorer",
+              "leaseIdentities": [
+                "lease:CHANGE-20260928T162325Z-226f0cf0:request:CHANGE-20260928T162325Z-226f0cf0:participant:0ed0eb6e46e1830c:read:discovery"
+              ],
+              "digest": "9212d25c0a0c171b2b6e3a2a27b64b4ff0c2666aae595e5ebf6513af5dfea9cd"
+            },
+            "skillManifestDigest": "a812a903f191f8a6862d5a3d120363920354b18be6f8ffd2944749f90507de96",
+            "contextManifestDigest": "6f4301b4cf1e2bd61132b7a6f7f46e1b88d1d76b83c311789d55341097d1f38a",
+            "promptManifestDigest": "a0eedf30098e63bc5c3d13032ab25ba3304685b47bf95b002d4c947337552aba",
+            "unsupported": [],
+            "provenanceDigest": "dbc95cacdf839439791b900587805069c2760bcd18a5f6582cd7c871d55f1d37"
+          },
+          "contextEvidence": {
+            "version": 1,
+            "executionBindingDigest": "9212d25c0a0c171b2b6e3a2a27b64b4ff0c2666aae595e5ebf6513af5dfea9cd",
+            "contextManifestDigest": "6f4301b4cf1e2bd61132b7a6f7f46e1b88d1d76b83c311789d55341097d1f38a",
+            "promptManifestDigest": "a0eedf30098e63bc5c3d13032ab25ba3304685b47bf95b002d4c947337552aba",
+            "receiptIds": [],
+            "receiptDigests": [],
+            "receiptsDigest": "3d9617614ba6f684cc2e8e1cb93ddab90427958aab763bfc5ca7a22adaf01f75",
+            "retrievalBudget": {
+              "maxRequestsPerTurn": 8,
+              "maxTokensPerRequest": 6000,
+              "maxTotalTokensPerTurn": 20000
+            },
+            "requests": 0,
+            "totalTokens": 0,
+            "retrievalStateDigest": "777f934596c4b5537080bada8a40dd58f9a82b8fbe7f09186d2199a9c1c3e51d",
+            "progressiveManifestDigest": "276d8a3ef0325137fdcfc19e016ae22b640e2910b6ff18cae247d6d10d246c4e",
+            "evidenceDigest": "ce3cba53d315dce13e0e4d506267eab6ac52e5fafca6edb3531f60bdb22b8008"
+          },
+          "source": "captured",
+          "createdAt": "2026-09-28T16:25:46.489Z",
+          "payloadSha256": "42edb36c1b3cdc306c66d76ff725c60ca951565be6d00f5dce32d6d997afe32b",
+          "payload": {
+            "summary": "Discovery: FAREWELL is required by both validators but absent from src/greeting.mjs (currently only exports greet), so validation is red today. contract.mjs enforces an exact allowlist of public exports {greet, FAREWELL} on src/greeting.mjs, so the re-exporting usage module must be a NEW separate file (e.g. src/usage.mjs), not an added export in greeting.mjs. Value must be exactly \"bye\". No existing usage module, tests/ or specs/ directories exist; validators are wired as required in .harness/project.yaml (fixture-greeting, contract-test) and npm test runs validate.mjs.",
+            "relevantFiles": [
+              {
+                "path": "src/greeting.mjs",
+                "symbols": [
+                  "greet"
+                ],
+                "reason": "Change target: only export today is greet (lines 0-2); FAREWELL must be added with exact value \"bye\" and no other exports."
+              },
+              {
+                "path": "scripts/validate.mjs",
+                "symbols": [
+                  "failures"
+                ],
+                "reason": "Required command fixture-greeting; line 7 fails unless module.FAREWELL === \"bye\"; line 4 enforces greet(\"AEH\") === \"Hello, AEH!\"."
+              },
+              {
+                "path": "scripts/contract.mjs",
+                "symbols": [
+                  "failures"
+                ],
+                "reason": "Required validator contract-test; lines 8-9 require FAREWELL string === \"bye\"; line 11 rejects any export of src/greeting.mjs outside {greet, FAREWELL}."
+              },
+              {
+                "path": ".harness/project.yaml",
+                "symbols": [
+                  "validation.commands",
+                  "validation.validators"
+                ],
+                "reason": "Lines 269-281: fixture-greeting -> node scripts/validate.mjs and contract-test -> node scripts/contract.mjs, both required: true, baseRef master."
+              },
+              {
+                "path": "package.json",
+                "symbols": [
+                  "scripts.test"
+                ],
+                "reason": "Line 6: test -> node scripts/validate.mjs (the local green-keeping entrypoint)."
+              },
+              {
+                "path": "README.md",
+                "symbols": [],
+                "reason": "Line 3 declares validate.mjs and contract.mjs as the real validation commands for this fixture."
+              }
+            ],
+            "findings": [
+              {
+                "id": "F1",
+                "status": "CONFIRMED",
+                "evidence": [
+                  "src/greeting.mjs symbol overview lists only Function greet; body: `export function greet(name) { return \\`Hello, ${name}!\\`; }`",
+                  "scripts/validate.mjs:7 `if (!failures.length && module.FAREWELL !== \"bye\") failures.push(\"FAREWELL export\");` with greet check at line 4 passing and module load at line 6 succeeding -> exits 1 with VALIDATION_FAILED: FAREWELL export"
+                ],
+                "notes": "Deterministic from static code reading; runtime execution was not possible (bash permission denied for explorer role), so no live exit-code capture."
+              },
+              {
+                "id": "F2",
+                "status": "CONFIRMED",
+                "evidence": [
+                  "scripts/contract.mjs:8 `typeof module.FAREWELL !== \"string\"` -> \"FAREWELL export contract\"",
+                  "scripts/contract.mjs:9 `module.FAREWELL !== \"bye\"` -> \"FAREWELL value contract\"",
+                  "scripts/contract.mjs:11 `if (Object.keys(moduleValue).some((key) => ![\"greet\", \"FAREWELL\"].includes(key))) failures.push(\"unexpected public export\")`"
+                ],
+                "notes": "Hard constraint: greeting.mjs public surface must be exactly {greet, FAREWELL}; the usage/re-export module must live in a separate file and must not add exports to greeting.mjs."
+              },
+              {
+                "id": "F3",
+                "status": "CONFIRMED",
+                "evidence": [
+                  "glob **/*.{mjs,js,json,yaml,yaml,md} returned only src/greeting.mjs, scripts/validate.mjs, scripts/contract.mjs",
+                  "glob {specs,src,tests,test}/**/* returned only src/greeting.mjs",
+                  "grep for 'usage' across repo matched no source files"
+                ],
+                "notes": "No usage module, no tests/ or specs/ directories; the usage module is a net-new file (suggested convention: src/usage.mjs importing ../src/greeting.mjs style per existing relative ESM .mjs imports)."
+              },
+              {
+                "id": "F4",
+                "status": "CONFIRMED",
+                "evidence": [
+                  ".harness/project.yaml:270 `baseRef: master`",
+                  ".harness/project.yaml:272-275 `- id: fixture-greeting / command: node scripts/validate.mjs / required: true`",
+                  ".harness/project.yaml:277-281 `- id: contract-test / adapter: contract-test / command: node scripts/contract.mjs / required: true`",
+                  "package.json:6 `\"test\": \"node scripts/validate.mjs\"`"
+                ],
+                "notes": "Both validators are required gates for keeping validation green."
+              },
+              {
+                "id": "F5",
+                "status": "CONFIRMED",
+                "evidence": [
+                  "scripts/validate.mjs (12 lines) checks only greet behavior, module load and FAREWELL; no reference to any usage module",
+                  "scripts/contract.mjs (17 lines) checks only exports of ../src/greeting.mjs"
+                ],
+                "notes": "Gap/risk: the new usage module will have zero validator coverage; 'validation green' constrains only greeting.mjs (FAREWELL === \"bye\", exact export set)."
+              }
+            ],
+            "moduleBoundaries": [
+              "src/greeting.mjs: fixture core public API; must remain exactly {greet, FAREWELL} per contract.mjs:11 allowlist",
+              "src/<usage-module>.mjs (new, e.g. src/usage.mjs): re-export surface for FAREWELL; isolated from greeting.mjs export set; currently unvalidated",
+              "scripts/validate.mjs + scripts/contract.mjs: deterministic read-only validators, entrypoints via npm test and .harness/project.yaml",
+              ".harness/project.yaml validation section: gate wiring (fixture-greeting, contract-test), config-only, not to be weakened"
+            ],
+            "tests": [
+              "node scripts/validate.mjs (npm test; required command id fixture-greeting)",
+              "node scripts/contract.mjs (required validator id contract-test)",
+              "Not executed in this discovery phase: bash permission denied for explorer role; verification is static-only"
+            ],
+            "dependencies": [
+              "Node.js ESM (.mjs, top-level await in validators)",
+              "No external npm dependencies (package.json has no deps)",
+              "Relative import convention: scripts/*.mjs -> ../src/greeting.mjs",
+              ".harness/project.yaml validation commands/validators"
+            ],
+            "risks": [
+              "contract.mjs:11 exact-export allowlist: any extra export added to src/greeting.mjs (including a usage re-export placed there) fails contract-test",
+              "FAREWELL value must be the exact string \"bye\" in both validators",
+              "The new usage module has no validator/test coverage -> silent regressions possible",
+              "Explorer could not run validators (bash denied), so current red/green state is inferred statically rather than observed",
+              "validate.mjs:7 only checks FAREWELL when earlier failures are empty; a broken greet would mask the FAREWELL signal",
+              "validation.baseRef is master; any validator weakening would be caught by policy, so acceptance criteria must not be relaxed"
+            ],
+            "openQuestions": [
+              "Exact path/name of the usage module (e.g. src/usage.mjs vs src/greeting-usage.mjs) is unspecified",
+              "Should the usage module's re-export be added to a validator (contract.mjs/validate.mjs) or covered by a new check, given zero current coverage?",
+              "Should a spec delta be authored for this observable behavior change (FAREWELL export + new module) rather than openspec skip_specs?"
+            ]
+          }
+        }
+      },
+      {
+        "participantId": "participant:81b51c468748c2a3",
+        "role": "Planner",
+        "status": "FAILED",
+        "artifact": ".harness/operations/CHANGE-20260928T162325Z-226f0cf0/results/planner/0002-0002-2ac61340-ef66-4ee4-a9a8-0b6155d5e6d3.json",
+        "artifactSha256": "51a5fadfbc554eac996cf90f11fde76c05576499f48c42ca4afe690a1f1d6bf4",
+        "payloadSha256": "d07a6586360720a2ac4c66194bb50d2f80507e953de1bdf8aa45ececa5d3e827",
+        "bytes": 10286,
+        "payload": {
+          "version": 1,
+          "kind": "agent-result",
+          "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+          "channelId": "315bffc4-6c3a-44b9-aee5-df0387841319",
+          "turnId": "0002-2ac61340-ef66-4ee4-a9a8-0b6155d5e6d3",
+          "sequence": 2,
+          "revision": 2,
+          "attempt": 1,
+          "logicalAgent": "planner",
+          "role": "Planner",
+          "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+          "operationRevision": 52,
+          "supervisorGeneration": 1,
+          "agentId": "1e2ab27d-7230-4353-872b-02a14c687ef9",
+          "contract": "planner",
+          "provenance": {
+            "version": 1,
+            "status": "BOUND",
+            "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+            "projectId": "project:a3780e955160a50f9fa4cf41",
+            "operationRevision": 52,
+            "operationExecutionRevision": 2,
+            "participantId": "participant:81b51c468748c2a3",
+            "participantGeneration": "b51fa5bc-41f6-4095-8a45-cec7112ae084",
+            "logicalAgent": "planner",
+            "role": "Planner",
+            "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+            "candidate": {
+              "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+              "candidateId": "candidate:CHANGE-20260928T162325Z-226f0cf0:r2",
+              "projectId": "project:a3780e955160a50f9fa4cf41",
+              "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+              "revision": 2,
+              "parentCandidateId": "candidate:CHANGE-20260928T162325Z-226f0cf0:r1",
+              "sourceDigest": "9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8",
+              "workspace": "wks_2b0163d441781667",
+              "worktree": "/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0",
+              "createdAt": "2026-09-28T16:23:26.924Z",
+              "version": 1,
+              "canonicalIdentity": "{\"candidateId\":\"candidate:CHANGE-20260928T162325Z-226f0cf0:r2\",\"createdAt\":\"2026-09-28T16:23:26.924Z\",\"operationId\":\"CHANGE-20260928T162325Z-226f0cf0\",\"parentCandidateId\":\"candidate:CHANGE-20260928T162325Z-226f0cf0:r1\",\"projectId\":\"project:a3780e955160a50f9fa4cf41\",\"revision\":2,\"sourceDigest\":\"9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8\",\"taskId\":\"CHANGE-20260928T162325Z-226f0cf0\",\"version\":1,\"workspace\":\"wks_2b0163d441781667\",\"worktree\":\"/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0\"}",
+              "identityDigest": "2967141f93497ef3c6f477160a0a9bcacc3f50be5010ea09a6c38a56b790a0a7"
+            },
+            "controllerEpoch": 1,
+            "runtime": {
+              "provider": "openai",
+              "model": "openai/gpt-6-luna",
+              "runtimeId": "codex",
+              "sessionId": "1e2ab27d-7230-4353-872b-02a14c687ef9"
+            },
+            "outputContract": "planner",
+            "outputSchemaDigest": "c78cafe8ae6e1dc4d710ca8199702e572b40d1de78bca5fbf5c9ae0d3dd96566",
+            "executionBlueprintDigest": "7aadf392e00879140e882ecc19a4439e6339e1657110622948ef5bbb7019d992",
+            "resolvedOperationPolicyDigest": "e64c1b58b6c362e5ff2099f65fb71088469f85d00e628fd9973df186e00fc32b",
+            "executionBinding": {
+              "version": 2,
+              "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+              "operationExecutionRevision": 2,
+              "candidateRevision": 2,
+              "candidateDigest": "2967141f93497ef3c6f477160a0a9bcacc3f50be5010ea09a6c38a56b790a0a7",
+              "controllerEpoch": 1,
+              "executionBlueprintDigest": "7aadf392e00879140e882ecc19a4439e6339e1657110622948ef5bbb7019d992",
+              "operationPolicyDigest": "e64c1b58b6c362e5ff2099f65fb71088469f85d00e628fd9973df186e00fc32b",
+              "participantId": "participant:81b51c468748c2a3",
+              "participantGeneration": "b51fa5bc-41f6-4095-8a45-cec7112ae084",
+              "roleInvocationPolicyDigest": "d34e6c8d70ca1965226de8fda42e9b7f470b2dde83626fd7b6411b9b1b5bb450",
+              "skillManifestDigest": "e637a7f9a2e50d91cf931a4ae0e7fce11419c642efc17614e68c3a97fdd0501f",
+              "runtime": {
+                "runtimeId": "codex",
+                "provider": "openai",
+                "modelId": "openai/gpt-6-luna",
+                "model": "gpt-6-luna",
+                "sessionId": "1e2ab27d-7230-4353-872b-02a14c687ef9"
+              },
+              "contextManifestDigest": "1af81a103c52c7ab6426763523258b164ac6aed8a05e8e584087060b2a4cbe64",
+              "promptManifestDigest": "7f903c8b697afc640a2d71ef6cd7352c4097fbb611ee0b6e2758888468815e9f",
+              "outputContract": "planner",
+              "leaseIdentities": [
+                "lease:CHANGE-20260928T162325Z-226f0cf0:request:CHANGE-20260928T162325Z-226f0cf0:participant:81b51c468748c2a3:read:planning"
+              ],
+              "digest": "900b257f105ed4aaf26c24c76e62db2c9ad4c000ca943695aa70a69ab8782b7f"
+            },
+            "skillManifestDigest": "e637a7f9a2e50d91cf931a4ae0e7fce11419c642efc17614e68c3a97fdd0501f",
+            "contextManifestDigest": "1af81a103c52c7ab6426763523258b164ac6aed8a05e8e584087060b2a4cbe64",
+            "promptManifestDigest": "7f903c8b697afc640a2d71ef6cd7352c4097fbb611ee0b6e2758888468815e9f",
+            "unsupported": [],
+            "provenanceDigest": "5f9f9e47a01addbe92d7ae52d82764cebd627a682ee059c9686002eafd91ce24"
+          },
+          "contextEvidence": {
+            "version": 1,
+            "executionBindingDigest": "900b257f105ed4aaf26c24c76e62db2c9ad4c000ca943695aa70a69ab8782b7f",
+            "contextManifestDigest": "1af81a103c52c7ab6426763523258b164ac6aed8a05e8e584087060b2a4cbe64",
+            "promptManifestDigest": "7f903c8b697afc640a2d71ef6cd7352c4097fbb611ee0b6e2758888468815e9f",
+            "receiptIds": [],
+            "receiptDigests": [],
+            "receiptsDigest": "3d9617614ba6f684cc2e8e1cb93ddab90427958aab763bfc5ca7a22adaf01f75",
+            "retrievalBudget": {
+              "maxRequestsPerTurn": 8,
+              "maxTokensPerRequest": 6000,
+              "maxTotalTokensPerTurn": 20000
+            },
+            "requests": 0,
+            "totalTokens": 0,
+            "retrievalStateDigest": "6e15e01b2f25038883b14318164275140d37f744040a19a1881d6fb116f90c16",
+            "progressiveManifestDigest": "51530b79b56335e4c2ec67a4a0a0710b56103224b46c27b0835cf5a02d34c29a",
+            "evidenceDigest": "c4391b34ad9a0e2274d77e3f4926c25d7888e493a73e4d02fce5aeefd5424508"
+          },
+          "source": "captured",
+          "createdAt": "2026-09-28T16:27:29.947Z",
+          "payloadSha256": "97c487361a3e3b50476d339c551c120de344f7567502cb521bae0117ce86904b",
+          "payload": {
+            "workUnits": [
+              {
+                "id": "WU-source",
+                "objective": "Add the required FAREWELL constant export and a separate usage module that re-exports it.",
+                "scope": [
+                  "src/greeting.mjs",
+                  "src/usage.mjs"
+                ],
+                "dependencies": [],
+                "requirementRefs": [
+                  "REQ-1",
+                  "REQ-2"
+                ],
+                "acceptanceRefs": [
+                  "AC-1",
+                  "AC-2"
+                ],
+                "competencies": [
+                  "JavaScript ES modules",
+                  "Node.js"
+                ],
+                "riskTags": [
+                  "public-api-contract"
+                ],
+                "changeKinds": [
+                  "source"
+                ],
+                "risk": "low",
+                "resourceClaims": []
+              },
+              {
+                "id": "WU-contract-coverage",
+                "objective": "Extend the existing contract validator with an explicit check that src/usage.mjs re-exports FAREWELL, while preserving its existing assertions.",
+                "scope": [
+                  "scripts/contract.mjs"
+                ],
+                "dependencies": [
+                  "WU-source"
+                ],
+                "requirementRefs": [
+                  "REQ-1",
+                  "REQ-2",
+                  "REQ-3"
+                ],
+                "acceptanceRefs": [
+                  "AC-1",
+                  "AC-2",
+                  "AC-3"
+                ],
+                "competencies": [
+                  "JavaScript ES modules",
+                  "Node.js validation"
+                ],
+                "riskTags": [
+                  "validation-coverage"
+                ],
+                "changeKinds": [
+                  "test"
+                ],
+                "risk": "low",
+                "resourceClaims": []
+              }
+            ],
+            "affectedAreas": [
+              "src/greeting.mjs: add the named FAREWELL export with the exact value \"bye\" required by the existing validators; keep the public export set exactly {greet, FAREWELL} and preserve greet behavior.",
+              "src/usage.mjs (new): provide a small ESM re-export of FAREWELL from ./greeting.mjs.",
+              "scripts/contract.mjs: add an assertion that the usage module re-exports FAREWELL; preserve all existing contract assertions.",
+              ".harness/project.yaml: existing required fixture-greeting and contract-test gates already cover the relevant scripts; no configuration change is indicated."
+            ],
+            "reviewDimensions": [
+              "API boundary: src/greeting.mjs exports exactly greet and FAREWELL, with FAREWELL equal to \"bye\"; src/usage.mjs re-exports that value.",
+              "Behavior: greet(\"AEH\") continues to return \"Hello, AEH!\".",
+              "Validation: the usage-module assertion is additive, and both existing required validators remain green."
+            ],
+            "validationRequirements": [
+              {
+                "version": 1,
+                "id": "VG-fixture-greeting",
+                "property": "The existing greeting fixture contract passes, including unchanged greet behavior and FAREWELL equal to \"bye\".",
+                "kind": "command",
+                "scope": [
+                  "scripts/validate.mjs",
+                  "src/greeting.mjs"
+                ],
+                "evidenceNeeded": [
+                  "Exit code 0 from the configured required command `node scripts/validate.mjs` (also exposed as `npm test`)."
+                ],
+                "requirementRefs": [
+                  "REQ-1",
+                  "REQ-3"
+                ],
+                "acceptanceRefs": [
+                  "AC-1",
+                  "AC-3"
+                ]
+              },
+              {
+                "version": 1,
+                "id": "VG-contract-test",
+                "property": "The contract validator passes its existing exact-export and value checks and verifies src/usage.mjs re-exports FAREWELL.",
+                "kind": "contract-test",
+                "scope": [
+                  "scripts/contract.mjs",
+                  "src/greeting.mjs",
+                  "src/usage.mjs"
+                ],
+                "evidenceNeeded": [
+                  "Exit code 0 from the configured required command `node scripts/contract.mjs`.",
+                  "The validator retains the exact src/greeting.mjs export allowlist and includes an explicit assertion for the usage-module re-export."
+                ],
+                "requirementRefs": [
+                  "REQ-1",
+                  "REQ-2",
+                  "REQ-3"
+                ],
+                "acceptanceRefs": [
+                  "AC-1",
+                  "AC-2",
+                  "AC-3"
+                ]
+              }
+            ],
+            "outOfScopeImprovements": [
+              "Do not add exports beyond greet and FAREWELL to src/greeting.mjs or broaden the requested usage-module API.",
+              "Do not weaken or remove existing validator assertions, alter validation gate configuration, add dependencies, or make unrelated documentation changes."
+            ],
+            "formalizationNeed": "NONE",
+            "formalizationEvidenceRefs": []
+          }
+        }
+      },
+      {
+        "participantId": "1e2ab27d-7230-4353-872b-02a14c687ef9",
+        "role": "Planner",
+        "status": "COMPLETED",
+        "artifact": ".harness/operations/CHANGE-20260928T162325Z-226f0cf0/results/planner/0002-0002-2ac61340-ef66-4ee4-a9a8-0b6155d5e6d3.json",
+        "artifactSha256": "51a5fadfbc554eac996cf90f11fde76c05576499f48c42ca4afe690a1f1d6bf4",
+        "payloadSha256": "d07a6586360720a2ac4c66194bb50d2f80507e953de1bdf8aa45ececa5d3e827",
+        "bytes": 10286,
+        "payload": {
+          "version": 1,
+          "kind": "agent-result",
+          "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+          "channelId": "315bffc4-6c3a-44b9-aee5-df0387841319",
+          "turnId": "0002-2ac61340-ef66-4ee4-a9a8-0b6155d5e6d3",
+          "sequence": 2,
+          "revision": 2,
+          "attempt": 1,
+          "logicalAgent": "planner",
+          "role": "Planner",
+          "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+          "operationRevision": 52,
+          "supervisorGeneration": 1,
+          "agentId": "1e2ab27d-7230-4353-872b-02a14c687ef9",
+          "contract": "planner",
+          "provenance": {
+            "version": 1,
+            "status": "BOUND",
+            "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+            "projectId": "project:a3780e955160a50f9fa4cf41",
+            "operationRevision": 52,
+            "operationExecutionRevision": 2,
+            "participantId": "participant:81b51c468748c2a3",
+            "participantGeneration": "b51fa5bc-41f6-4095-8a45-cec7112ae084",
+            "logicalAgent": "planner",
+            "role": "Planner",
+            "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+            "candidate": {
+              "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+              "candidateId": "candidate:CHANGE-20260928T162325Z-226f0cf0:r2",
+              "projectId": "project:a3780e955160a50f9fa4cf41",
+              "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+              "revision": 2,
+              "parentCandidateId": "candidate:CHANGE-20260928T162325Z-226f0cf0:r1",
+              "sourceDigest": "9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8",
+              "workspace": "wks_2b0163d441781667",
+              "worktree": "/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0",
+              "createdAt": "2026-09-28T16:23:26.924Z",
+              "version": 1,
+              "canonicalIdentity": "{\"candidateId\":\"candidate:CHANGE-20260928T162325Z-226f0cf0:r2\",\"createdAt\":\"2026-09-28T16:23:26.924Z\",\"operationId\":\"CHANGE-20260928T162325Z-226f0cf0\",\"parentCandidateId\":\"candidate:CHANGE-20260928T162325Z-226f0cf0:r1\",\"projectId\":\"project:a3780e955160a50f9fa4cf41\",\"revision\":2,\"sourceDigest\":\"9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8\",\"taskId\":\"CHANGE-20260928T162325Z-226f0cf0\",\"version\":1,\"workspace\":\"wks_2b0163d441781667\",\"worktree\":\"/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0\"}",
+              "identityDigest": "2967141f93497ef3c6f477160a0a9bcacc3f50be5010ea09a6c38a56b790a0a7"
+            },
+            "controllerEpoch": 1,
+            "runtime": {
+              "provider": "openai",
+              "model": "openai/gpt-6-luna",
+              "runtimeId": "codex",
+              "sessionId": "1e2ab27d-7230-4353-872b-02a14c687ef9"
+            },
+            "outputContract": "planner",
+            "outputSchemaDigest": "c78cafe8ae6e1dc4d710ca8199702e572b40d1de78bca5fbf5c9ae0d3dd96566",
+            "executionBlueprintDigest": "7aadf392e00879140e882ecc19a4439e6339e1657110622948ef5bbb7019d992",
+            "resolvedOperationPolicyDigest": "e64c1b58b6c362e5ff2099f65fb71088469f85d00e628fd9973df186e00fc32b",
+            "executionBinding": {
+              "version": 2,
+              "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+              "operationExecutionRevision": 2,
+              "candidateRevision": 2,
+              "candidateDigest": "2967141f93497ef3c6f477160a0a9bcacc3f50be5010ea09a6c38a56b790a0a7",
+              "controllerEpoch": 1,
+              "executionBlueprintDigest": "7aadf392e00879140e882ecc19a4439e6339e1657110622948ef5bbb7019d992",
+              "operationPolicyDigest": "e64c1b58b6c362e5ff2099f65fb71088469f85d00e628fd9973df186e00fc32b",
+              "participantId": "participant:81b51c468748c2a3",
+              "participantGeneration": "b51fa5bc-41f6-4095-8a45-cec7112ae084",
+              "roleInvocationPolicyDigest": "d34e6c8d70ca1965226de8fda42e9b7f470b2dde83626fd7b6411b9b1b5bb450",
+              "skillManifestDigest": "e637a7f9a2e50d91cf931a4ae0e7fce11419c642efc17614e68c3a97fdd0501f",
+              "runtime": {
+                "runtimeId": "codex",
+                "provider": "openai",
+                "modelId": "openai/gpt-6-luna",
+                "model": "gpt-6-luna",
+                "sessionId": "1e2ab27d-7230-4353-872b-02a14c687ef9"
+              },
+              "contextManifestDigest": "1af81a103c52c7ab6426763523258b164ac6aed8a05e8e584087060b2a4cbe64",
+              "promptManifestDigest": "7f903c8b697afc640a2d71ef6cd7352c4097fbb611ee0b6e2758888468815e9f",
+              "outputContract": "planner",
+              "leaseIdentities": [
+                "lease:CHANGE-20260928T162325Z-226f0cf0:request:CHANGE-20260928T162325Z-226f0cf0:participant:81b51c468748c2a3:read:planning"
+              ],
+              "digest": "900b257f105ed4aaf26c24c76e62db2c9ad4c000ca943695aa70a69ab8782b7f"
+            },
+            "skillManifestDigest": "e637a7f9a2e50d91cf931a4ae0e7fce11419c642efc17614e68c3a97fdd0501f",
+            "contextManifestDigest": "1af81a103c52c7ab6426763523258b164ac6aed8a05e8e584087060b2a4cbe64",
+            "promptManifestDigest": "7f903c8b697afc640a2d71ef6cd7352c4097fbb611ee0b6e2758888468815e9f",
+            "unsupported": [],
+            "provenanceDigest": "5f9f9e47a01addbe92d7ae52d82764cebd627a682ee059c9686002eafd91ce24"
+          },
+          "contextEvidence": {
+            "version": 1,
+            "executionBindingDigest": "900b257f105ed4aaf26c24c76e62db2c9ad4c000ca943695aa70a69ab8782b7f",
+            "contextManifestDigest": "1af81a103c52c7ab6426763523258b164ac6aed8a05e8e584087060b2a4cbe64",
+            "promptManifestDigest": "7f903c8b697afc640a2d71ef6cd7352c4097fbb611ee0b6e2758888468815e9f",
+            "receiptIds": [],
+            "receiptDigests": [],
+            "receiptsDigest": "3d9617614ba6f684cc2e8e1cb93ddab90427958aab763bfc5ca7a22adaf01f75",
+            "retrievalBudget": {
+              "maxRequestsPerTurn": 8,
+              "maxTokensPerRequest": 6000,
+              "maxTotalTokensPerTurn": 20000
+            },
+            "requests": 0,
+            "totalTokens": 0,
+            "retrievalStateDigest": "6e15e01b2f25038883b14318164275140d37f744040a19a1881d6fb116f90c16",
+            "progressiveManifestDigest": "51530b79b56335e4c2ec67a4a0a0710b56103224b46c27b0835cf5a02d34c29a",
+            "evidenceDigest": "c4391b34ad9a0e2274d77e3f4926c25d7888e493a73e4d02fce5aeefd5424508"
+          },
+          "source": "captured",
+          "createdAt": "2026-09-28T16:27:29.947Z",
+          "payloadSha256": "97c487361a3e3b50476d339c551c120de344f7567502cb521bae0117ce86904b",
+          "payload": {
+            "workUnits": [
+              {
+                "id": "WU-source",
+                "objective": "Add the required FAREWELL constant export and a separate usage module that re-exports it.",
+                "scope": [
+                  "src/greeting.mjs",
+                  "src/usage.mjs"
+                ],
+                "dependencies": [],
+                "requirementRefs": [
+                  "REQ-1",
+                  "REQ-2"
+                ],
+                "acceptanceRefs": [
+                  "AC-1",
+                  "AC-2"
+                ],
+                "competencies": [
+                  "JavaScript ES modules",
+                  "Node.js"
+                ],
+                "riskTags": [
+                  "public-api-contract"
+                ],
+                "changeKinds": [
+                  "source"
+                ],
+                "risk": "low",
+                "resourceClaims": []
+              },
+              {
+                "id": "WU-contract-coverage",
+                "objective": "Extend the existing contract validator with an explicit check that src/usage.mjs re-exports FAREWELL, while preserving its existing assertions.",
+                "scope": [
+                  "scripts/contract.mjs"
+                ],
+                "dependencies": [
+                  "WU-source"
+                ],
+                "requirementRefs": [
+                  "REQ-1",
+                  "REQ-2",
+                  "REQ-3"
+                ],
+                "acceptanceRefs": [
+                  "AC-1",
+                  "AC-2",
+                  "AC-3"
+                ],
+                "competencies": [
+                  "JavaScript ES modules",
+                  "Node.js validation"
+                ],
+                "riskTags": [
+                  "validation-coverage"
+                ],
+                "changeKinds": [
+                  "test"
+                ],
+                "risk": "low",
+                "resourceClaims": []
+              }
+            ],
+            "affectedAreas": [
+              "src/greeting.mjs: add the named FAREWELL export with the exact value \"bye\" required by the existing validators; keep the public export set exactly {greet, FAREWELL} and preserve greet behavior.",
+              "src/usage.mjs (new): provide a small ESM re-export of FAREWELL from ./greeting.mjs.",
+              "scripts/contract.mjs: add an assertion that the usage module re-exports FAREWELL; preserve all existing contract assertions.",
+              ".harness/project.yaml: existing required fixture-greeting and contract-test gates already cover the relevant scripts; no configuration change is indicated."
+            ],
+            "reviewDimensions": [
+              "API boundary: src/greeting.mjs exports exactly greet and FAREWELL, with FAREWELL equal to \"bye\"; src/usage.mjs re-exports that value.",
+              "Behavior: greet(\"AEH\") continues to return \"Hello, AEH!\".",
+              "Validation: the usage-module assertion is additive, and both existing required validators remain green."
+            ],
+            "validationRequirements": [
+              {
+                "version": 1,
+                "id": "VG-fixture-greeting",
+                "property": "The existing greeting fixture contract passes, including unchanged greet behavior and FAREWELL equal to \"bye\".",
+                "kind": "command",
+                "scope": [
+                  "scripts/validate.mjs",
+                  "src/greeting.mjs"
+                ],
+                "evidenceNeeded": [
+                  "Exit code 0 from the configured required command `node scripts/validate.mjs` (also exposed as `npm test`)."
+                ],
+                "requirementRefs": [
+                  "REQ-1",
+                  "REQ-3"
+                ],
+                "acceptanceRefs": [
+                  "AC-1",
+                  "AC-3"
+                ]
+              },
+              {
+                "version": 1,
+                "id": "VG-contract-test",
+                "property": "The contract validator passes its existing exact-export and value checks and verifies src/usage.mjs re-exports FAREWELL.",
+                "kind": "contract-test",
+                "scope": [
+                  "scripts/contract.mjs",
+                  "src/greeting.mjs",
+                  "src/usage.mjs"
+                ],
+                "evidenceNeeded": [
+                  "Exit code 0 from the configured required command `node scripts/contract.mjs`.",
+                  "The validator retains the exact src/greeting.mjs export allowlist and includes an explicit assertion for the usage-module re-export."
+                ],
+                "requirementRefs": [
+                  "REQ-1",
+                  "REQ-2",
+                  "REQ-3"
+                ],
+                "acceptanceRefs": [
+                  "AC-1",
+                  "AC-2",
+                  "AC-3"
+                ]
+              }
+            ],
+            "outOfScopeImprovements": [
+              "Do not add exports beyond greet and FAREWELL to src/greeting.mjs or broaden the requested usage-module API.",
+              "Do not weaken or remove existing validator assertions, alter validation gate configuration, add dependencies, or make unrelated documentation changes."
+            ],
+            "formalizationNeed": "NONE",
+            "formalizationEvidenceRefs": []
+          }
+        }
+      }
+    ],
+    "triageEscalatedEvents": []
+  },
+  "candidateAssemblyReceipts": null,
+  "operation": {
+    "id": "CHANGE-20260928T162325Z-226f0cf0",
+    "status": "FAILED",
+    "phase": "finished",
+    "kind": "change",
+    "intent": {
+      "request": "Extend the greeting fixture across modules: add the FAREWELL constant export in src/greeting.mjs and wire a small usage module that re-exports it, keeping validation green.",
+      "classification": "CHANGE",
+      "route": "DELEGATED",
+      "assurance": "NONE",
+      "priority": 50,
+      "semanticDecision": {
+        "version": 1,
+        "source": "explicit-cli",
+        "intent": "change",
+        "requestedOutcome": "Extend the greeting fixture across modules: add the FAREWELL constant export in src/greeting.mjs and wire a small usage module that re-exports it, keeping validation green.",
+        "effects": {
+          "evaluate": false,
+          "mutateRepository": true,
+          "executePreparedTask": false,
+          "deliver": false
+        },
+        "resolution": "resolved"
+      },
+      "risk": "low"
+    },
+    "result": {
+      "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+      "route": "DELEGATED",
+      "status": "FAIL",
+      "attempts": 2,
+      "triageReasons": [
+        "a bounded file scope was not supplied"
+      ]
+    },
+    "revision": 110,
+    "operationExecutionRevision": 2,
+    "controllerPid": 73985,
+    "error": null,
+    "candidateRevision": {
+      "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+      "candidateId": "candidate:CHANGE-20260928T162325Z-226f0cf0:r2",
+      "projectId": "project:a3780e955160a50f9fa4cf41",
+      "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+      "revision": 2,
+      "parentCandidateId": "candidate:CHANGE-20260928T162325Z-226f0cf0:r1",
+      "sourceDigest": "9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8",
+      "workspace": "wks_2b0163d441781667",
+      "worktree": "/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0",
+      "createdAt": "2026-09-28T16:23:26.924Z",
+      "version": 1,
+      "canonicalIdentity": "{\"candidateId\":\"candidate:CHANGE-20260928T162325Z-226f0cf0:r2\",\"createdAt\":\"2026-09-28T16:23:26.924Z\",\"operationId\":\"CHANGE-20260928T162325Z-226f0cf0\",\"parentCandidateId\":\"candidate:CHANGE-20260928T162325Z-226f0cf0:r1\",\"projectId\":\"project:a3780e955160a50f9fa4cf41\",\"revision\":2,\"sourceDigest\":\"9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8\",\"taskId\":\"CHANGE-20260928T162325Z-226f0cf0\",\"version\":1,\"workspace\":\"wks_2b0163d441781667\",\"worktree\":\"/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0\"}",
+      "identityDigest": "2967141f93497ef3c6f477160a0a9bcacc3f50be5010ea09a6c38a56b790a0a7"
+    },
+    "participants": {
+      "participant:0ed0eb6e46e1830c": {
+        "role": "Explorer",
+        "logicalAgent": "explorer",
+        "status": "FAILED",
+        "phase": "discovery",
+        "workspaceId": null,
+        "resultArtifact": ".harness/operations/CHANGE-20260928T162325Z-226f0cf0/results/explorer/0002-0002-8e5be3ac-4ff7-4ccd-b0b9-4bf81a3f0c66.json"
+      },
+      "3de61594-b9c7-45d7-bd9d-7e1a2fc96d36": {
+        "role": "Explorer",
+        "logicalAgent": "explorer",
+        "status": "COMPLETED",
+        "phase": "discovery",
+        "workspaceId": "wks_2b0163d441781667",
+        "resultArtifact": ".harness/operations/CHANGE-20260928T162325Z-226f0cf0/results/explorer/0002-0002-8e5be3ac-4ff7-4ccd-b0b9-4bf81a3f0c66.json"
+      },
+      "participant:81b51c468748c2a3": {
+        "role": "Planner",
+        "logicalAgent": "planner",
+        "status": "FAILED",
+        "phase": "planning",
+        "workspaceId": null,
+        "resultArtifact": ".harness/operations/CHANGE-20260928T162325Z-226f0cf0/results/planner/0002-0002-2ac61340-ef66-4ee4-a9a8-0b6155d5e6d3.json"
+      },
+      "1e2ab27d-7230-4353-872b-02a14c687ef9": {
+        "role": "Planner",
+        "logicalAgent": "planner",
+        "status": "COMPLETED",
+        "phase": "planning",
+        "workspaceId": "wks_2b0163d441781667",
+        "resultArtifact": ".harness/operations/CHANGE-20260928T162325Z-226f0cf0/results/planner/0002-0002-2ac61340-ef66-4ee4-a9a8-0b6155d5e6d3.json"
+      },
+      "participant:0241adfb2d4266eb": {
+        "role": "Repairer",
+        "logicalAgent": "repairer",
+        "status": "FAILED",
+        "phase": "repair",
+        "workspaceId": null,
+        "resultArtifact": ".harness/operations/CHANGE-20260928T162325Z-226f0cf0/agents/repairer-ad3f3ccb-32b8-4346-93f6-8e20450da89b-2026-09-28T16-28-33-702Z.json"
+      },
+      "ad3f3ccb-32b8-4346-93f6-8e20450da89b": {
+        "role": "Repairer",
+        "logicalAgent": "repairer",
+        "status": "COMPLETED",
+        "phase": "repair",
+        "workspaceId": "wks_2b0163d441781667",
+        "resultArtifact": ".harness/operations/CHANGE-20260928T162325Z-226f0cf0/agents/repairer-ad3f3ccb-32b8-4346-93f6-8e20450da89b-2026-09-28T16-28-33-702Z.json"
+      },
+      "participant:a0a0f62f8d14ed05": {
+        "role": "Repairer",
+        "logicalAgent": "repairer",
+        "status": "FAILED",
+        "phase": "repair",
+        "workspaceId": null,
+        "resultArtifact": ".harness/operations/CHANGE-20260928T162325Z-226f0cf0/agents/repairer-d2a6807e-5e50-4e52-a7d6-81f9032b580c-2026-09-28T16-29-10-000Z.json"
+      },
+      "d2a6807e-5e50-4e52-a7d6-81f9032b580c": {
+        "role": "Repairer",
+        "logicalAgent": "repairer",
+        "status": "COMPLETED",
+        "phase": "repair",
+        "workspaceId": "wks_2b0163d441781667",
+        "resultArtifact": ".harness/operations/CHANGE-20260928T162325Z-226f0cf0/agents/repairer-d2a6807e-5e50-4e52-a7d6-81f9032b580c-2026-09-28T16-29-10-000Z.json"
+      }
+    },
+    "participantReceipts": {
+      "receipt:participant:0ed0eb6e46e1830c:2026-09-28T16:25:46.497Z": {
+        "version": 1,
+        "receiptId": "receipt:participant:0ed0eb6e46e1830c:2026-09-28T16:25:46.497Z",
+        "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+        "participantId": "participant:0ed0eb6e46e1830c",
+        "sessionId": "3de61594-b9c7-45d7-bd9d-7e1a2fc96d36",
+        "attempt": 1,
+        "supervisorGeneration": 1,
+        "role": "Explorer",
+        "phase": "discovery",
+        "startedAt": "2026-09-28T16:24:09.860Z",
+        "finishedAt": "2026-09-28T16:25:46.449Z",
+        "outputContract": "explorer",
+        "outputDigest": "ee605acfd60b5fa9ab850aa799bd8975bad3c7bfeebd5612c61ecec877238d04",
+        "artifactRef": ".harness/operations/CHANGE-20260928T162325Z-226f0cf0/results/explorer/0002-0002-8e5be3ac-4ff7-4ccd-b0b9-4bf81a3f0c66.json",
+        "candidate": {
+          "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+          "candidateId": "candidate:CHANGE-20260928T162325Z-226f0cf0:r2",
+          "projectId": "project:a3780e955160a50f9fa4cf41",
+          "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+          "revision": 2,
+          "parentCandidateId": "candidate:CHANGE-20260928T162325Z-226f0cf0:r1",
+          "sourceDigest": "9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8",
+          "workspace": "wks_2b0163d441781667",
+          "worktree": "/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0",
+          "createdAt": "2026-09-28T16:23:26.924Z",
+          "version": 1,
+          "canonicalIdentity": "{\"candidateId\":\"candidate:CHANGE-20260928T162325Z-226f0cf0:r2\",\"createdAt\":\"2026-09-28T16:23:26.924Z\",\"operationId\":\"CHANGE-20260928T162325Z-226f0cf0\",\"parentCandidateId\":\"candidate:CHANGE-20260928T162325Z-226f0cf0:r1\",\"projectId\":\"project:a3780e955160a50f9fa4cf41\",\"revision\":2,\"sourceDigest\":\"9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8\",\"taskId\":\"CHANGE-20260928T162325Z-226f0cf0\",\"version\":1,\"workspace\":\"wks_2b0163d441781667\",\"worktree\":\"/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0\"}",
+          "identityDigest": "2967141f93497ef3c6f477160a0a9bcacc3f50be5010ea09a6c38a56b790a0a7"
+        },
+        "outcome": "SUCCEEDED",
+        "runtimeTerminal": {
+          "kind": "runtime-terminal",
+          "eventId": "runtime:3de61594-b9c7-45d7-bd9d-7e1a2fc96d36:2026-09-28T16:25:46.497Z",
+          "observedAt": "2026-09-28T16:25:46.497Z",
+          "terminal": true,
+          "status": "SUCCEEDED",
+          "exitCode": 0
+        },
+        "contract": {
+          "contractId": "explorer",
+          "contractDigest": "b749e3269c08350b82d149e0401d56bc98372bf80ff359cfc216df444cd80d55",
+          "valid": true
+        },
+        "artifact": {
+          "artifactId": ".harness/operations/CHANGE-20260928T162325Z-226f0cf0/results/explorer/0002-0002-8e5be3ac-4ff7-4ccd-b0b9-4bf81a3f0c66.json",
+          "artifactDigest": "fd6e02a12f90a8907148d3a2dc47c3a26a286daa661d93d4cf2a1671cfff6a9d",
+          "persisted": true,
+          "persistedAt": "2026-09-28T16:25:46.497Z"
+        },
+        "provenance": {
+          "provenanceId": "provenance:CHANGE-20260928T162325Z-226f0cf0:3de61594-b9c7-45d7-bd9d-7e1a2fc96d36:2026-09-28T16:25:46.497Z",
+          "provenanceDigest": "89b6b6b45cb9c6a7084e929cc2959aea143e6eff070edf82828223f683841b84",
+          "source": "aeh-worker-finalization",
+          "valid": true
+        },
+        "settled": true,
+        "createdAt": "2026-09-28T16:25:46.497Z"
+      },
+      "receipt:participant:81b51c468748c2a3:2026-09-28T16:27:29.954Z": {
+        "version": 1,
+        "receiptId": "receipt:participant:81b51c468748c2a3:2026-09-28T16:27:29.954Z",
+        "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+        "participantId": "participant:81b51c468748c2a3",
+        "sessionId": "1e2ab27d-7230-4353-872b-02a14c687ef9",
+        "attempt": 1,
+        "supervisorGeneration": 1,
+        "role": "Planner",
+        "phase": "planning",
+        "startedAt": "2026-09-28T16:25:48.215Z",
+        "finishedAt": "2026-09-28T16:27:29.910Z",
+        "outputContract": "planner",
+        "outputDigest": "55cb70b92c62c1746394da8f01a06fd10803c048e1949a9b7997ab1552bd855f",
+        "artifactRef": ".harness/operations/CHANGE-20260928T162325Z-226f0cf0/results/planner/0002-0002-2ac61340-ef66-4ee4-a9a8-0b6155d5e6d3.json",
+        "candidate": {
+          "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+          "candidateId": "candidate:CHANGE-20260928T162325Z-226f0cf0:r2",
+          "projectId": "project:a3780e955160a50f9fa4cf41",
+          "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+          "revision": 2,
+          "parentCandidateId": "candidate:CHANGE-20260928T162325Z-226f0cf0:r1",
+          "sourceDigest": "9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8",
+          "workspace": "wks_2b0163d441781667",
+          "worktree": "/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0",
+          "createdAt": "2026-09-28T16:23:26.924Z",
+          "version": 1,
+          "canonicalIdentity": "{\"candidateId\":\"candidate:CHANGE-20260928T162325Z-226f0cf0:r2\",\"createdAt\":\"2026-09-28T16:23:26.924Z\",\"operationId\":\"CHANGE-20260928T162325Z-226f0cf0\",\"parentCandidateId\":\"candidate:CHANGE-20260928T162325Z-226f0cf0:r1\",\"projectId\":\"project:a3780e955160a50f9fa4cf41\",\"revision\":2,\"sourceDigest\":\"9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8\",\"taskId\":\"CHANGE-20260928T162325Z-226f0cf0\",\"version\":1,\"workspace\":\"wks_2b0163d441781667\",\"worktree\":\"/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0\"}",
+          "identityDigest": "2967141f93497ef3c6f477160a0a9bcacc3f50be5010ea09a6c38a56b790a0a7"
+        },
+        "outcome": "SUCCEEDED",
+        "runtimeTerminal": {
+          "kind": "runtime-terminal",
+          "eventId": "runtime:1e2ab27d-7230-4353-872b-02a14c687ef9:2026-09-28T16:27:29.954Z",
+          "observedAt": "2026-09-28T16:27:29.954Z",
+          "terminal": true,
+          "status": "SUCCEEDED",
+          "exitCode": 0
+        },
+        "contract": {
+          "contractId": "planner",
+          "contractDigest": "87ceca2c02b889a5b5ece6e94def0dd326468c8cfd72b83a02e69d9af808e416",
+          "valid": true
+        },
+        "artifact": {
+          "artifactId": ".harness/operations/CHANGE-20260928T162325Z-226f0cf0/results/planner/0002-0002-2ac61340-ef66-4ee4-a9a8-0b6155d5e6d3.json",
+          "artifactDigest": "51a5fadfbc554eac996cf90f11fde76c05576499f48c42ca4afe690a1f1d6bf4",
+          "persisted": true,
+          "persistedAt": "2026-09-28T16:27:29.954Z"
+        },
+        "provenance": {
+          "provenanceId": "provenance:CHANGE-20260928T162325Z-226f0cf0:1e2ab27d-7230-4353-872b-02a14c687ef9:2026-09-28T16:27:29.954Z",
+          "provenanceDigest": "7358ba267abec54ebdc4dfce4ef9eb811109a53416e855716c0a1d1b8f571c63",
+          "source": "aeh-worker-finalization",
+          "valid": true
+        },
+        "settled": true,
+        "createdAt": "2026-09-28T16:27:29.954Z"
+      },
+      "receipt:participant:0241adfb2d4266eb:2026-09-28T16:28:33.705Z": {
+        "version": 1,
+        "receiptId": "receipt:participant:0241adfb2d4266eb:2026-09-28T16:28:33.705Z",
+        "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+        "participantId": "participant:0241adfb2d4266eb",
+        "sessionId": "ad3f3ccb-32b8-4346-93f6-8e20450da89b",
+        "attempt": 1,
+        "supervisorGeneration": 1,
+        "role": "Repairer",
+        "phase": "repair",
+        "startedAt": "2026-09-28T16:27:45.432Z",
+        "finishedAt": "2026-09-28T16:28:33.702Z",
+        "outputDigest": "98c1c4001acd63444dfe4ca9dcacd21dee836e9b3047962d8ffae7808d4e08a0",
+        "artifactRef": ".harness/operations/CHANGE-20260928T162325Z-226f0cf0/agents/repairer-ad3f3ccb-32b8-4346-93f6-8e20450da89b-2026-09-28T16-28-33-702Z.json",
+        "candidate": {
+          "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+          "candidateId": "candidate:CHANGE-20260928T162325Z-226f0cf0:r2",
+          "projectId": "project:a3780e955160a50f9fa4cf41",
+          "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+          "revision": 2,
+          "parentCandidateId": "candidate:CHANGE-20260928T162325Z-226f0cf0:r1",
+          "sourceDigest": "9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8",
+          "workspace": "wks_2b0163d441781667",
+          "worktree": "/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0",
+          "createdAt": "2026-09-28T16:23:26.924Z",
+          "version": 1,
+          "canonicalIdentity": "{\"candidateId\":\"candidate:CHANGE-20260928T162325Z-226f0cf0:r2\",\"createdAt\":\"2026-09-28T16:23:26.924Z\",\"operationId\":\"CHANGE-20260928T162325Z-226f0cf0\",\"parentCandidateId\":\"candidate:CHANGE-20260928T162325Z-226f0cf0:r1\",\"projectId\":\"project:a3780e955160a50f9fa4cf41\",\"revision\":2,\"sourceDigest\":\"9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8\",\"taskId\":\"CHANGE-20260928T162325Z-226f0cf0\",\"version\":1,\"workspace\":\"wks_2b0163d441781667\",\"worktree\":\"/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0\"}",
+          "identityDigest": "2967141f93497ef3c6f477160a0a9bcacc3f50be5010ea09a6c38a56b790a0a7"
+        },
+        "outcome": "SUCCEEDED",
+        "runtimeTerminal": {
+          "kind": "runtime-terminal",
+          "eventId": "runtime:ad3f3ccb-32b8-4346-93f6-8e20450da89b:2026-09-28T16:28:33.705Z",
+          "observedAt": "2026-09-28T16:28:33.705Z",
+          "terminal": true,
+          "status": "SUCCEEDED",
+          "exitCode": 0
+        },
+        "contract": {
+          "contractId": "task:CHANGE-20260928T162325Z-226f0cf0",
+          "contractDigest": "9b7f180e5b99d8b8fda02279d1fa1cbd3c93e2e05766ac15183e89395d5a3a92",
+          "valid": true
+        },
+        "artifact": {
+          "artifactId": ".harness/operations/CHANGE-20260928T162325Z-226f0cf0/agents/repairer-ad3f3ccb-32b8-4346-93f6-8e20450da89b-2026-09-28T16-28-33-702Z.json",
+          "artifactDigest": "a8eb9a47812da0c5d0d8c5e35a64d7b0df1a702fe4de7a5608eab8364ff64f49",
+          "persisted": true,
+          "persistedAt": "2026-09-28T16:28:33.705Z"
+        },
+        "provenance": {
+          "provenanceId": "provenance:CHANGE-20260928T162325Z-226f0cf0:ad3f3ccb-32b8-4346-93f6-8e20450da89b:2026-09-28T16:28:33.705Z",
+          "provenanceDigest": "48ddb27c6e31b6e8550738c9c3b9ae43104831c293838de607edd056ae4e20a3",
+          "source": "aeh-worker-finalization",
+          "valid": true
+        },
+        "settled": true,
+        "createdAt": "2026-09-28T16:28:33.705Z"
+      },
+      "receipt:participant:a0a0f62f8d14ed05:2026-09-28T16:29:10.007Z": {
+        "version": 1,
+        "receiptId": "receipt:participant:a0a0f62f8d14ed05:2026-09-28T16:29:10.007Z",
+        "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+        "participantId": "participant:a0a0f62f8d14ed05",
+        "sessionId": "d2a6807e-5e50-4e52-a7d6-81f9032b580c",
+        "attempt": 1,
+        "supervisorGeneration": 1,
+        "role": "Repairer",
+        "phase": "repair",
+        "startedAt": "2026-09-28T16:28:36.093Z",
+        "finishedAt": "2026-09-28T16:29:10.000Z",
+        "outputDigest": "1a72608cce8734f40894a29128d9a4d43970410c4672ede1023925791219e2f7",
+        "artifactRef": ".harness/operations/CHANGE-20260928T162325Z-226f0cf0/agents/repairer-d2a6807e-5e50-4e52-a7d6-81f9032b580c-2026-09-28T16-29-10-000Z.json",
+        "candidate": {
+          "operationId": "CHANGE-20260928T162325Z-226f0cf0",
+          "candidateId": "candidate:CHANGE-20260928T162325Z-226f0cf0:r2",
+          "projectId": "project:a3780e955160a50f9fa4cf41",
+          "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+          "revision": 2,
+          "parentCandidateId": "candidate:CHANGE-20260928T162325Z-226f0cf0:r1",
+          "sourceDigest": "9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8",
+          "workspace": "wks_2b0163d441781667",
+          "worktree": "/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0",
+          "createdAt": "2026-09-28T16:23:26.924Z",
+          "version": 1,
+          "canonicalIdentity": "{\"candidateId\":\"candidate:CHANGE-20260928T162325Z-226f0cf0:r2\",\"createdAt\":\"2026-09-28T16:23:26.924Z\",\"operationId\":\"CHANGE-20260928T162325Z-226f0cf0\",\"parentCandidateId\":\"candidate:CHANGE-20260928T162325Z-226f0cf0:r1\",\"projectId\":\"project:a3780e955160a50f9fa4cf41\",\"revision\":2,\"sourceDigest\":\"9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8\",\"taskId\":\"CHANGE-20260928T162325Z-226f0cf0\",\"version\":1,\"workspace\":\"wks_2b0163d441781667\",\"worktree\":\"/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0\"}",
+          "identityDigest": "2967141f93497ef3c6f477160a0a9bcacc3f50be5010ea09a6c38a56b790a0a7"
+        },
+        "outcome": "SUCCEEDED",
+        "runtimeTerminal": {
+          "kind": "runtime-terminal",
+          "eventId": "runtime:d2a6807e-5e50-4e52-a7d6-81f9032b580c:2026-09-28T16:29:10.007Z",
+          "observedAt": "2026-09-28T16:29:10.007Z",
+          "terminal": true,
+          "status": "SUCCEEDED",
+          "exitCode": 0
+        },
+        "contract": {
+          "contractId": "task:CHANGE-20260928T162325Z-226f0cf0",
+          "contractDigest": "9b7f180e5b99d8b8fda02279d1fa1cbd3c93e2e05766ac15183e89395d5a3a92",
+          "valid": true
+        },
+        "artifact": {
+          "artifactId": ".harness/operations/CHANGE-20260928T162325Z-226f0cf0/agents/repairer-d2a6807e-5e50-4e52-a7d6-81f9032b580c-2026-09-28T16-29-10-000Z.json",
+          "artifactDigest": "9f6dc016d258b180abdd06c538a85d2f9a72da96c6f17088adadad8befa024b2",
+          "persisted": true,
+          "persistedAt": "2026-09-28T16:29:10.007Z"
+        },
+        "provenance": {
+          "provenanceId": "provenance:CHANGE-20260928T162325Z-226f0cf0:d2a6807e-5e50-4e52-a7d6-81f9032b580c:2026-09-28T16:29:10.007Z",
+          "provenanceDigest": "74660e9ab11a10febff2ab3a7e804ef56ec420001749f6f3122cf8c1860037c9",
+          "source": "aeh-worker-finalization",
+          "valid": true
+        },
+        "settled": true,
+        "createdAt": "2026-09-28T16:29:10.007Z"
+      }
+    },
+    "candidateAssemblyReceipts": null,
+    "supervision": {
+      "required": true,
+      "materialized": true,
+      "generations": [
+        {
+          "generation": 1,
+          "status": "DRAINING",
+          "agentId": "0a822baf-b8df-46e1-895f-bb68c91279a0",
+          "contextRatio": 0.029142926122646063,
+          "drainingAt": "2026-09-28T16:29:10.627Z",
+          "initializationEvidence": "paseo-sdk-turn-barrier"
+        }
+      ]
+    },
+    "stages": {
+      "queued": "RUNNING",
+      "input-resolution": "COMPLETED",
+      "triage": "COMPLETED",
+      "environment-preflight": "SKIPPED",
+      "context": "RUNNING",
+      "discovery": "COMPLETED",
+      "planning": "FAILED",
+      "contract-authoring": "COMPLETED",
+      "implementation": "FAILED",
+      "supervision": "COMPLETED",
+      "executing": "RUNNING",
+      "validation": "RUNNING",
+      "remediation": "FAILED",
+      "finished": "FAILED"
+    }
+  },
+  "sessionReceipts": [
+    {
+      "agentId": "3de61594-b9c7-45d7-bd9d-7e1a2fc96d36",
+      "inspectExitCode": 0,
+      "provider": "opencode",
+      "model": "opencode-go/mimo-v2.6-flash",
+      "thinkingOptionId": "max",
+      "status": "idle",
+      "sessionId": null,
+      "modeId": "default",
+      "lastUsage": {
+        "InputTokens": 2701,
+        "OutputTokens": 202,
+        "CachedTokens": 26688,
+        "CostUsd": 0.005890304
+      },
+      "labels": null,
+      "createdAt": "2026-09-28T16:24:09.721Z",
+      "updatedAt": "2026-09-28T16:25:46.314Z"
+    },
+    {
+      "agentId": "1e2ab27d-7230-4353-872b-02a14c687ef9",
+      "inspectExitCode": 0,
+      "provider": "codex",
+      "model": "gpt-6-luna",
+      "thinkingOptionId": "xhigh",
+      "status": "idle",
+      "sessionId": null,
+      "modeId": "auto",
+      "lastUsage": {
+        "InputTokens": 36876,
+        "OutputTokens": 339,
+        "CachedTokens": 32512,
+        "CostUsd": 0
+      },
+      "labels": null,
+      "createdAt": "2026-09-28T16:25:47.998Z",
+      "updatedAt": "2026-09-28T16:27:29.785Z"
+    },
+    {
+      "agentId": "ad3f3ccb-32b8-4346-93f6-8e20450da89b",
+      "inspectExitCode": 0,
+      "provider": "codex",
+      "model": "gpt-6-luna",
+      "thinkingOptionId": "xhigh",
+      "status": "idle",
+      "sessionId": null,
+      "modeId": "auto",
+      "lastUsage": {
+        "InputTokens": 25006,
+        "OutputTokens": 552,
+        "CachedTokens": 23296,
+        "CostUsd": 0
+      },
+      "labels": null,
+      "createdAt": "2026-09-28T16:27:44.618Z",
+      "updatedAt": "2026-09-28T16:28:33.605Z"
+    },
+    {
+      "agentId": "d2a6807e-5e50-4e52-a7d6-81f9032b580c",
+      "inspectExitCode": 0,
+      "provider": "codex",
+      "model": "gpt-6-luna",
+      "thinkingOptionId": "xhigh",
+      "status": "idle",
+      "sessionId": null,
+      "modeId": "auto",
+      "lastUsage": {
+        "InputTokens": 24647,
+        "OutputTokens": 657,
+        "CachedTokens": 23296,
+        "CostUsd": 0
+      },
+      "labels": null,
+      "createdAt": "2026-09-28T16:28:35.820Z",
+      "updatedAt": "2026-09-28T16:29:09.888Z"
+    },
+    {
+      "agentId": "0a822baf-b8df-46e1-895f-bb68c91279a0",
+      "inspectExitCode": 0,
+      "provider": "codex",
+      "model": "gpt-6-luna",
+      "thinkingOptionId": "xhigh",
+      "status": "idle",
+      "sessionId": null,
+      "modeId": "auto",
+      "lastUsage": {
+        "InputTokens": 23863,
+        "OutputTokens": 279,
+        "CachedTokens": 23296,
+        "CostUsd": 0
+      },
+      "labels": null,
+      "createdAt": "2026-09-28T16:23:27.936Z",
+      "updatedAt": "2026-09-28T16:24:05.080Z"
+    }
+  ],
+  "oracle": {
+    "checks": [
+      {
+        "id": "operation.terminal-succeeded",
+        "status": "FAIL",
+        "required": true,
+        "message": "operation status=FAILED",
+        "evidence": {}
+      },
+      {
+        "id": "operation.candidate-bound",
+        "status": "PASS",
+        "required": true,
+        "message": "candidate revision identity digest is bound",
+        "evidence": {
+          "revision": 2
+        }
+      },
+      {
+        "id": "operation.participant-receipts",
+        "status": "PASS",
+        "required": true,
+        "message": "4 terminal participant receipt(s) persisted",
+        "evidence": {}
+      },
+      {
+        "id": "operation.revision-current",
+        "status": "PASS",
+        "required": true,
+        "message": "operation execution revision is durable",
+        "evidence": {}
+      },
+      {
+        "id": "change.route",
+        "status": "PASS",
+        "required": true,
+        "message": "implementation route=DELEGATED",
+        "evidence": {
+          "assurance": "NONE",
+          "preflight": "DELEGATED"
+        }
+      },
+      {
+        "id": "change.delegated-route",
+        "status": "PASS",
+        "required": true,
+        "message": "delegated implementation route=DELEGATED",
+        "evidence": {}
+      },
+      {
+        "id": "delegated.feature-capsule",
+        "status": "PASS",
+        "required": true,
+        "message": "feature capsule artifact=present",
+        "evidence": {}
+      },
+      {
+        "id": "delegated.review",
+        "status": "FAIL",
+        "required": true,
+        "message": "accepted assertions covered by the reviewed candidate",
+        "evidence": {
+          "covered": 0
+        }
+      },
+      {
+        "id": "change.candidate-revision",
+        "status": "PASS",
+        "required": true,
+        "message": "candidate revision=2",
+        "evidence": {}
+      },
+      {
+        "id": "change.participant-receipt",
+        "status": "PASS",
+        "required": true,
+        "message": "4 candidate-bound participant receipt(s)",
+        "evidence": {}
+      },
+      {
+        "id": "change.validation",
+        "status": "FAIL",
+        "required": true,
+        "message": "validation report status=FAIL fixture command=FAIL",
+        "evidence": {
+          "checks": [
+            {
+              "id": "candidate.workspace-identity",
+              "status": "PASS"
+            },
+            {
+              "id": "trust.seal",
+              "status": "PASS"
+            },
+            {
+              "id": "diff.allowed-scope",
+              "status": "PASS"
+            },
+            {
+              "id": "diff.forbidden-paths",
+              "status": "PASS"
+            },
+            {
+              "id": "diff.frozen-paths",
+              "status": "PASS"
+            },
+            {
+              "id": "policy.opa",
+              "status": "SKIP"
+            },
+            {
+              "id": "command.fixture-greeting",
+              "status": "FAIL"
+            },
+            {
+              "id": "contract-test",
+              "status": "FAIL"
+            }
+          ]
+        }
+      },
+      {
+        "id": "change.acceptance-oracle",
+        "status": "FAIL",
+        "required": true,
+        "message": "acceptance oracle artifact=missing",
+        "evidence": {
+          "disposition": null
+        }
+      },
+      {
+        "id": "change.objective-completion",
+        "status": "FAIL",
+        "required": true,
+        "message": "objective completion decision persisted",
+        "evidence": {}
+      }
+    ],
+    "applicableChecks": [
+      {
+        "id": "change.delegated-route",
+        "status": "PASS",
+        "required": true,
+        "message": "delegated implementation route=DELEGATED",
+        "evidence": {}
+      },
+      {
+        "id": "delegated.feature-capsule",
+        "status": "PASS",
+        "required": true,
+        "message": "feature capsule artifact=present",
+        "evidence": {}
+      },
+      {
+        "id": "delegated.review",
+        "status": "FAIL",
+        "required": true,
+        "message": "accepted assertions covered by the reviewed candidate",
+        "evidence": {
+          "covered": 0
+        }
+      },
+      {
+        "id": "change.candidate-revision",
+        "status": "PASS",
+        "required": true,
+        "message": "candidate revision=2",
+        "evidence": {}
+      },
+      {
+        "id": "change.participant-receipt",
+        "status": "PASS",
+        "required": true,
+        "message": "4 candidate-bound participant receipt(s)",
+        "evidence": {}
+      },
+      {
+        "id": "change.validation",
+        "status": "FAIL",
+        "required": true,
+        "message": "validation report status=FAIL fixture command=FAIL",
+        "evidence": {
+          "checks": [
+            {
+              "id": "candidate.workspace-identity",
+              "status": "PASS"
+            },
+            {
+              "id": "trust.seal",
+              "status": "PASS"
+            },
+            {
+              "id": "diff.allowed-scope",
+              "status": "PASS"
+            },
+            {
+              "id": "diff.forbidden-paths",
+              "status": "PASS"
+            },
+            {
+              "id": "diff.frozen-paths",
+              "status": "PASS"
+            },
+            {
+              "id": "policy.opa",
+              "status": "SKIP"
+            },
+            {
+              "id": "command.fixture-greeting",
+              "status": "FAIL"
+            },
+            {
+              "id": "contract-test",
+              "status": "FAIL"
+            }
+          ]
+        }
+      }
+    ],
+    "rowResults": {
+      "change": "FAIL",
+      "delegated-change": "FAIL"
+    },
+    "detail": {
+      "checks": [
+        {
+          "id": "operation.terminal-succeeded",
+          "status": "FAIL",
+          "required": true,
+          "message": "operation status=FAILED",
+          "evidence": {}
+        },
+        {
+          "id": "operation.candidate-bound",
+          "status": "PASS",
+          "required": true,
+          "message": "candidate revision identity digest is bound",
+          "evidence": {
+            "revision": 2
+          }
+        },
+        {
+          "id": "operation.participant-receipts",
+          "status": "PASS",
+          "required": true,
+          "message": "4 terminal participant receipt(s) persisted",
+          "evidence": {}
+        },
+        {
+          "id": "operation.revision-current",
+          "status": "PASS",
+          "required": true,
+          "message": "operation execution revision is durable",
+          "evidence": {}
+        },
+        {
+          "id": "change.route",
+          "status": "PASS",
+          "required": true,
+          "message": "implementation route=DELEGATED",
+          "evidence": {
+            "assurance": "NONE",
+            "preflight": "DELEGATED"
+          }
+        },
+        {
+          "id": "change.delegated-route",
+          "status": "PASS",
+          "required": true,
+          "message": "delegated implementation route=DELEGATED",
+          "evidence": {}
+        },
+        {
+          "id": "delegated.feature-capsule",
+          "status": "PASS",
+          "required": true,
+          "message": "feature capsule artifact=present",
+          "evidence": {}
+        },
+        {
+          "id": "delegated.review",
+          "status": "FAIL",
+          "required": true,
+          "message": "accepted assertions covered by the reviewed candidate",
+          "evidence": {
+            "covered": 0
+          }
+        },
+        {
+          "id": "change.candidate-revision",
+          "status": "PASS",
+          "required": true,
+          "message": "candidate revision=2",
+          "evidence": {}
+        },
+        {
+          "id": "change.participant-receipt",
+          "status": "PASS",
+          "required": true,
+          "message": "4 candidate-bound participant receipt(s)",
+          "evidence": {}
+        },
+        {
+          "id": "change.validation",
+          "status": "FAIL",
+          "required": true,
+          "message": "validation report status=FAIL fixture command=FAIL",
+          "evidence": {
+            "checks": [
+              {
+                "id": "candidate.workspace-identity",
+                "status": "PASS"
+              },
+              {
+                "id": "trust.seal",
+                "status": "PASS"
+              },
+              {
+                "id": "diff.allowed-scope",
+                "status": "PASS"
+              },
+              {
+                "id": "diff.forbidden-paths",
+                "status": "PASS"
+              },
+              {
+                "id": "diff.frozen-paths",
+                "status": "PASS"
+              },
+              {
+                "id": "policy.opa",
+                "status": "SKIP"
+              },
+              {
+                "id": "command.fixture-greeting",
+                "status": "FAIL"
+              },
+              {
+                "id": "contract-test",
+                "status": "FAIL"
+              }
+            ]
+          }
+        },
+        {
+          "id": "change.acceptance-oracle",
+          "status": "FAIL",
+          "required": true,
+          "message": "acceptance oracle artifact=missing",
+          "evidence": {
+            "disposition": null
+          }
+        },
+        {
+          "id": "change.objective-completion",
+          "status": "FAIL",
+          "required": true,
+          "message": "objective completion decision persisted",
+          "evidence": {}
+        }
+      ],
+      "rows": {
+        "change": [
+          "change.candidate-revision",
+          "change.participant-receipt",
+          "change.validation"
+        ],
+        "delegated-change": [
+          "change.delegated-route",
+          "delegated.feature-capsule",
+          "delegated.review"
+        ]
+      },
+      "candidate": {
+        "candidateId": "candidate:CHANGE-20260928T162325Z-226f0cf0:r2",
+        "revision": 2,
+        "identityDigest": "2967141f93497ef3c6f477160a0a9bcacc3f50be5010ea09a6c38a56b790a0a7",
+        "sourceDigest": "9ac1f5a5925e6589c125c874a75c94568fccac6c188a95d3ad0cbe5201ec2ef8",
+        "worktree": "/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0"
+      },
+      "validationReport": {
+        "status": "FAIL",
+        "checks": [
+          {
+            "id": "candidate.workspace-identity",
+            "status": "PASS",
+            "message": "Workspace materializes candidate:CHANGE-20260928T162325Z-226f0cf0:r2 r2."
+          },
+          {
+            "id": "trust.seal",
+            "status": "PASS",
+            "message": "TaskContract and sealed SDD artifacts match their SHA-256 seal."
+          },
+          {
+            "id": "diff.allowed-scope",
+            "status": "PASS",
+            "message": "All changed files are within allowed scope."
+          },
+          {
+            "id": "diff.forbidden-paths",
+            "status": "PASS",
+            "message": "No forbidden paths changed."
+          },
+          {
+            "id": "diff.frozen-paths",
+            "status": "PASS",
+            "message": "Frozen paths were not modified."
+          },
+          {
+            "id": "policy.opa",
+            "status": "SKIP",
+            "message": "OPA policy evaluation disabled."
+          },
+          {
+            "id": "command.fixture-greeting",
+            "status": "FAIL",
+            "message": "fixture-greeting failed with exit code 1."
+          },
+          {
+            "id": "contract-test",
+            "status": "FAIL",
+            "message": "configured-command contract failed."
+          }
+        ]
+      },
+      "capsule": {
+        "taskId": "CHANGE-20260928T162325Z-226f0cf0",
+        "scope": {
+          "allowed": [
+            "**"
+          ],
+          "forbidden": []
+        }
+      },
+      "worktreeRoot": "/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0"
+    }
+  },
+  "result": "FAIL",
+  "workspaceInventory": [
+    {
+      "workspaceId": "wks_2b0163d441781667",
+      "project": "lane-change-delegated-fixture",
+      "cwd": "/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0"
+    },
+    {
+      "workspaceId": "wks_42ccec115fac6a3b",
+      "project": "lane-change-delegated-fixture",
+      "cwd": "/tmp/aeh-s13-gov-helb5T/work/lane-change-delegated-fixture"
+    },
+    {
+      "workspaceId": "wks_892143c400871495",
+      "project": "lane-change-delegated-fixture",
+      "cwd": "/tmp/aeh-s13-gov-helb5T/work/lane-change-delegated-fixture"
+    }
+  ],
+  "workspaceCleanup": {
+    "archived": [
+      {
+        "workspaceId": "wks_2b0163d441781667",
+        "project": "lane-change-delegated-fixture",
+        "cwd": "/home/james/.paseo/worktrees/2hhqj4nf/aeh-change-20260928t162325z-226f0cf0",
+        "exitCode": 0
+      },
+      {
+        "workspaceId": "wks_42ccec115fac6a3b",
+        "project": "lane-change-delegated-fixture",
+        "cwd": "/tmp/aeh-s13-gov-helb5T/work/lane-change-delegated-fixture",
+        "exitCode": 0
+      },
+      {
+        "workspaceId": "wks_892143c400871495",
+        "project": "lane-change-delegated-fixture",
+        "cwd": "/tmp/aeh-s13-gov-helb5T/work/lane-change-delegated-fixture",
+        "exitCode": 0
+      }
+    ],
+    "remaining": []
+  },
+  "checkoutProof": {
+    "trackedDigestBefore": "8182f5ca306daa88da3774e136aa197c62ce935e4ab1285d9686f593a4788b66",
+    "trackedDigestAfter": "8182f5ca306daa88da3774e136aa197c62ce935e4ab1285d9686f593a4788b66",
+    "trackedFiles": 668,
+    "checkoutUntouched": true
+  },
+  "finishedAt": "2026-09-28T16:29:27.792Z",
+  "durationMs": 380916
+}

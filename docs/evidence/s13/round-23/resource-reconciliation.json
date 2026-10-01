@@ -1,0 +1,120 @@
+{
+ "version": 1,
+ "slice": "S13",
+ "round": 23,
+ "kind": "RESOURCE_RECONCILIATION",
+ "generatedAt": "2026-09-30T16:38:26Z",
+ "predicate": "AEH-V2-0112: archive eligible only for a terminal operation with an exited controller; a campaign timeout or abort is not terminality.",
+ "deadControllerEvidence": [
+  {
+   "operationId": "CHANGE-20260930T072457Z-cf2b9332",
+   "attempt": "r22-gov-3",
+   "controllerPid": 2134435,
+   "alive": false,
+   "terminality": "UNPROVABLE (RUNNING at the 1,800 s bound; staging destroyed by the machine restart)",
+   "workspaces": [
+    "wks_767a74b4ec71b23a"
+   ],
+   "disposition": "PRESERVED_TERMINALITY_UNPROVABLE"
+  },
+  {
+   "operationId": "CHANGE-20260930T075828Z-cf2b9332",
+   "attempt": "r22-gov-4",
+   "controllerPid": 2351999,
+   "alive": false,
+   "terminality": "UNPROVABLE (HUMAN_REQUIRED at the bound; staging destroyed by the restart)",
+   "workspaces": [
+    "wks_05d05b809aed2f8f"
+   ],
+   "disposition": "PRESERVED_TERMINALITY_UNPROVABLE"
+  },
+  {
+   "operationId": "CHANGE-20260930T083151Z-cf2b9332",
+   "attempt": "r22-gov-5",
+   "controllerPid": null,
+   "alive": false,
+   "terminality": "UNPROVABLE (no durable result; fixture cleared by the restart)",
+   "workspaces": [
+    "wks_020f7bac76ed4974"
+   ],
+   "disposition": "PRESERVED_TERMINALITY_UNPROVABLE"
+  },
+  {
+   "operationId": "CHANGE-20260930T142423Z-8e5ffed1",
+   "attempt": "r23-gov-3 (deliberately aborted)",
+   "controllerPid": 25735,
+   "alive": false,
+   "terminality": "NON-TERMINAL (RUNNING rev 38 at abort; state copy preserved at docs/evidence/s13/round-23/gov-3-operation-state.json)",
+   "workspaces": [
+    "wks_596896218c1466c5",
+    "wks_94415c0da1acaa3c"
+   ],
+   "disposition": "PRESERVED_TERMINALITY_UNPROVABLE"
+  },
+  {
+   "operationId": "CHANGE-20260930T144026Z-8e5ffed1",
+   "attempt": "r23-gov-5 (deliberately aborted)",
+   "controllerPid": 65380,
+   "alive": false,
+   "terminality": "NON-TERMINAL (HUMAN_REQUIRED rev 78 at abort; state copy preserved at docs/evidence/s13/round-23/gov-5-operation-state.json)",
+   "workspaces": [
+    "wks_e7deb181f3a20517",
+    "wks_b5b3ae1053e61281"
+   ],
+   "disposition": "PRESERVED_TERMINALITY_UNPROVABLE"
+  },
+  {
+   "operationId": "older rounds (r19/r20/r21)",
+   "attempt": "various",
+   "controllerPid": null,
+   "alive": false,
+   "terminality": "UNPROVABLE (previously reported in rounds 20/21/22; staging destroyed)",
+   "workspaces": [
+    "wks_3a2d87c3cb74c4b7",
+    "wks_4d6fd213bd504648",
+    "wks_5ba0bf3f7539d3b5",
+    "wks_5e3f2575f0bd04a4",
+    "wks_846580f3163f0ad5",
+    "wks_a37297062f4df150",
+    "wks_fa3b4ee0c9c4bff1",
+    "wks_fddb44533751e856"
+   ],
+   "disposition": "PRESERVED_TERMINALITY_UNPROVABLE"
+  }
+ ],
+ "eligibleArchivedThisRound": [
+  {
+   "operations": [
+    "CHANGE-20260930T143226Z-8e5ffed1 (r23-gov-4, terminal FAILED)",
+    "CHANGE-20260930T153054Z-cf61361e (r23-gov-7, terminal FAILED)",
+    "CHANGE-20260930T154959Z-cf61361e (r23-gov-8, terminal FAILED)",
+    "CHANGE-20260930T161148Z-cf61361e (r23-gov-9, terminal SUCCEEDED)",
+    "CHANGE-20260930T145259Z-cf61361e (r23-gov-6, late terminal FAILED at 2026-09-30T15:29:21.832Z)"
+   ],
+   "disposition": "harness-archived lane workspaces (accounting complete) + gov-6 late-terminal workspaces archived in the round-23 reconciliation (wks_a0e0dfc944d68517, wks_73e5fdff1360c990, wks_a4a807237b193d4b, wks_b6fc52a993a12ffd, wks_ea1b315a2d0d0b89)",
+   "evidence": "docs/evidence/s13/governed-lanes/round-23/r23-gov-{4,6,7,8,9}/repair.json; docs/evidence/s13/round-23/r23-gov-6-repair-aborted-attempt.json"
+  }
+ ],
+ "cleanupActions": [
+  {
+   "action": "orphan process termination",
+   "detail": "38 orphaned fixture processes (serena pools/proxies, context MCPs, result sinks) of terminal/aborted attempts terminated after confirming no live controller; gov-9 staging processes terminated; no serviceable operation lost",
+   "evidence": "docs/evidence/s13/round-23/round23-cleanup-after.json"
+  },
+  {
+   "action": "staging removal",
+   "detail": "terminal-operation staging roots removed (gov-4 C1oa55, gov-7 GKn16b, gov-8 a8NI2X, gov-6 WGDLVA, gov-9 bkMb1z); non-terminal gov-3 Zo72ph and gov-5 6KeYap preserved"
+  },
+  {
+   "action": "bounded-worker archive",
+   "detail": "13 campaign-owned agents of terminal r23 runs archived through the Paseo lifecycle (the remaining 33 ids were already archived or unmanageable dormant records); non-terminal gov-3/gov-5 agents preserved; the orphaned running gov-3 explorer session was interrupted",
+   "evidence": "/tmp/opencode/r23/agent-archive-results.json (working copy; per-run ownership in the round-23 lane artifacts)"
+  },
+  {
+   "action": "provider server reclamation",
+   "detail": "servers of terminal operations were released via agent archive; remaining servers are preserved non-terminal (6KeYap/Zo72ph) or unknown-ownership (rule 6)",
+   "evidence": "docs/evidence/s13/round-23/round23-cleanup-after.json"
+  }
+ ],
+ "aehV2_0130": "OPEN (carried to S14). Round-23 evidence strengthens it: superseded/failed attempts leave orphaned provider sessions and stale Serena indexes (the r23-gov-8 first repair attempt read a stale sibling isolated-root path); the S14 disposable self-hosting composite must include cleanup/reconciliation plus the bounded repeated-operation resource-stability campaign."
+}

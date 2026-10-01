@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 10,
+  "runId": "attempt-2",
+  "capability": "authority",
+  "candidateBinding": {
+    "packedArtifact": "agentic-engineering-harness-0.8.4.tgz",
+    "packedArtifactDigest": "7fd24cb27bf6e80045df50ae4493f205248d35aee71ebf4cf7d48c53f42ec2bc",
+    "packedBuild": {
+      "releaseId": "release-1790611288725-49456-893a5fd3",
+      "buildDigest": "8e949b0113ddd90ae0573826b8ecc348915ae2c65fd6a77c99f82ba9b6a9ab84",
+      "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+      "packageVersion": "0.8.4"
+    },
+    "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c"
+  },
+  "repository": "JamesMorales04/aeh-s13-round3-20260927035743-6bb5da",
+  "startedAt": "2026-09-28T16:04:14.408Z",
+  "checks": [
+    {
+      "id": "authority.human-gate",
+      "ok": true,
+      "message": "unapproved external effect status=HUMAN_REQUIRED"
+    },
+    {
+      "id": "authority.approved-effect",
+      "ok": true,
+      "message": "approved effect status=EXECUTED/SUCCEEDED"
+    },
+    {
+      "id": "authority.real-github-ref",
+      "ok": true,
+      "message": "real remote branch aeh-s13-authority-20260928160122 observed on JamesMorales04/aeh-s13-round3-20260927035743-6bb5da"
+    }
+  ],
+  "humanGate": {
+    "status": "HUMAN_REQUIRED",
+    "detail": "TOOL_ACTION_HUMAN_DECISION_REQUIRED: no current HumanDecision matches the operation, candidate, policy, epoch, actor, and exact purpose."
+  },
+  "gatedAction": {
+    "status": "EXECUTED",
+    "intentId": "action-intent:0797563ec1c041760ba918a5300982c36447d286881e16ea57d0bea2803423d4",
+    "receiptOutcome": "SUCCEEDED",
+    "detail": "Side effect executed and receipt persisted."
+  },
+  "remoteRef": {
+    "exitCode": 0,
+    "stdout": "refs/heads/aeh-s13-authority-20260928160122\n3f84abd09748e81f3f7dd6b0ad988d79ccdd2e3e"
+  },
+  "result": "PASS",
+  "finishedAt": "2026-09-28T16:04:19.394Z"
+}

@@ -1,0 +1,151 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 17,
+  "runId": "r17-gh-1",
+  "roundLabel": "round-17/r17-gh-1 (attempt-specific summary and lane artifacts are immutable evidence)",
+  "campaign": "github-effects",
+  "generatedAt": "2026-09-29T12:03:28.627Z",
+  "checkout": "/home/james/Desarrollo/agentic-engineering-harness",
+  "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13GithubEffectCampaign.mjs",
+        "sha256": "55469dad11c6fde6ddec1fbcf2fd599f9a6225dc8a4c9740764a2164b9075848"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "3395aa19210f36b90fd22bd62056dbb8d5c48aab5a85bce4e5ea4d591cfd5146"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "31b2ba0752b789dc8cbf24984a88eda6ef322bda6bef0c1311ba3141d9e92d14"
+  },
+  "authorization": {
+    "kind": "USER_EXTERNAL_EFFECT_AUTHORIZATION",
+    "authorizationId": "s13-github-effect-authorization-2026-09-28",
+    "artifactDigest": "272c5cb76158a7c312edd4d8d97cd6545b599e5c57c7978bbfc3742c573bd460",
+    "owner": "JamesMorales04",
+    "privacy": "PRIVATE_ONLY",
+    "allowedEffects": [
+      "git.push",
+      "github.branch.create",
+      "github.issue.create"
+    ],
+    "resourceNamePrefix": "aeh-s13-",
+    "consumedBeforeAnyExternalCommand": true,
+    "campaignSelfAuthorization": "PROHIBITED"
+  },
+  "repository": {
+    "name": "JamesMorales04/aeh-s13-round3-20260927035743-6bb5da",
+    "visibility": "PRIVATE",
+    "suppliedAsPreAuthorizedInput": true,
+    "createdByCampaign": false,
+    "verifiedAt": "2026-09-29T12:03:29.324Z",
+    "createdAt": "2026-09-27T03:57:45Z",
+    "url": "https://github.com/JamesMorales04/aeh-s13-round3-20260927035743-6bb5da"
+  },
+  "issueInput": {
+    "requested": "1",
+    "source": "explicit-existing-issue",
+    "createThroughGovernedGate": false
+  },
+  "lanes": [
+    {
+      "capability": "issue-driven",
+      "result": "PASS",
+      "checks": [
+        {
+          "id": "issue.snapshot",
+          "ok": true,
+          "message": "frozen snapshot bd777eed917f matches live issue #1"
+        },
+        {
+          "id": "issue.drift-gate",
+          "ok": true,
+          "message": "ISSUE_DRIFT: GitHub issue #1 title/body changed after freeze (000000000000 -> bd777eed917f)."
+        },
+        {
+          "id": "issue.operation-import",
+          "ok": true,
+          "message": "operation-bound issue import completed"
+        }
+      ],
+      "artifact": "docs/evidence/s13/github-lanes/round-17/r17-gh-1/issue-driven.json"
+    },
+    {
+      "capability": "authority",
+      "result": "PASS",
+      "checks": [
+        {
+          "id": "authority.external-authorization",
+          "ok": true,
+          "message": "approval derived from external authorization s13-github-effect-authorization-2026-09-28 (sha256 272c5cb76158) bound to the exact effect digest"
+        },
+        {
+          "id": "authority.human-gate",
+          "ok": true,
+          "message": "unapproved external effect status=HUMAN_REQUIRED"
+        },
+        {
+          "id": "authority.approved-effect",
+          "ok": true,
+          "message": "approved effect status=EXECUTED/SUCCEEDED"
+        },
+        {
+          "id": "authority.real-github-ref",
+          "ok": true,
+          "message": "real remote branch aeh-s13-authority-20260929120327 observed on JamesMorales04/aeh-s13-round3-20260927035743-6bb5da"
+        }
+      ],
+      "artifact": "docs/evidence/s13/github-lanes/round-17/r17-gh-1/authority.json"
+    },
+    {
+      "capability": "delivery",
+      "result": "BLOCKED",
+      "checks": [
+        {
+          "id": "delivery.accepted-candidate",
+          "ok": false,
+          "message": "Remaining condition: the delivery contract (accepted candidate -> authorized delivery intent -> ActionIntent -> ToolActionGate -> real GitHub effect -> ActionReceipt -> reconciliation -> durable terminal state) is not implemented in this campaign; the blocked FULL_OPERATION reason previously recorded here was stale (R15-F8)."
+        }
+      ],
+      "artifact": null
+    }
+  ],
+  "result": "SLICE_BLOCKED",
+  "candidate": {
+    "artifactDigest": "074cc232a45d15f32e8b5099005365bd26017274bb9155b5afddfa675352181a",
+    "packedArtifact": "agentic-engineering-harness-0.8.4.tgz",
+    "packedArtifactDigest": "074cc232a45d15f32e8b5099005365bd26017274bb9155b5afddfa675352181a",
+    "packedBuild": {
+      "releaseId": "release-1790683413377-93322-05a40cc9",
+      "buildDigest": "cecc186cf32ad5f8b2ff5fd2dd58f863f90bef90cc1eb7d2d4aa514b0fd718e9",
+      "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+      "packageVersion": "0.8.4"
+    },
+    "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c"
+  },
+  "issue": {
+    "number": 1,
+    "url": "https://github.com/JamesMorales04/aeh-s13-round3-20260927035743-6bb5da/issues/1",
+    "created": false,
+    "reused": true,
+    "source": "explicit-existing-issue"
+  },
+  "checkoutProof": {
+    "trackedDigestBefore": "2bee2ec0c7c3ab1332daf76b3c5ffcbbe2665f7401bbf1da089acba36a083d5c",
+    "trackedDigestAfter": "2bee2ec0c7c3ab1332daf76b3c5ffcbbe2665f7401bbf1da089acba36a083d5c",
+    "trackedFiles": 668,
+    "checkoutUntouched": true,
+    "note": "Tracked digest captured before packing and after the GitHub effect lanes; no candidate executes in this checkout."
+  }
+}

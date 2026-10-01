@@ -1,0 +1,890 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 18,
+  "runId": "r18-mw-exp1",
+  "capability": "multi-worker",
+  "kind": "change",
+  "providerPath": "FULL_OPERATION_REAL_PASEO",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13GovernedOperationCampaign.mjs",
+        "sha256": "3cc5ee9cb0359ef93aecf1de27bac0e5bd4e5634640881b9e17cd7fc136db5ca"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "3395aa19210f36b90fd22bd62056dbb8d5c48aab5a85bce4e5ea4d591cfd5146"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "8f4e6e1eaa0d5341f5d07939fb5a26581a9d9672c8e8e8bf5dbcd920e1169e5d"
+  },
+  "startedAt": "2026-09-29T14:55:47.160Z",
+  "candidateBinding": {
+    "packedArtifact": "agentic-engineering-harness-0.8.4.tgz",
+    "packedArtifactDigest": "36d3abb2fadf21ad7ce1bb33429cd7e59342194ed3c58c6e83aebb4f45918862",
+    "packedBuild": {
+      "releaseId": "release-1790693730315-568545-c19f97cc",
+      "buildDigest": "ca1d8f5628784ff6b7d0650326d1655d2f25697ecf037780b3e05edbc7f5319a",
+      "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+      "packageVersion": "0.8.4"
+    },
+    "fixtureTreeDigest": "ff7d3cb0dc2ec3adbc9d66639bc4731ee8c670f289f70bec81cb1c5fa9bd5095",
+    "fixtureCommit": "0b0f28ba8e5887f62eb777eec9763917e74dbe92"
+  },
+  "start": {
+    "argv": [
+      "change",
+      "Add two deliverables to the greeting fixture: (1) a new module src/farewell.mjs exporting function farewell(name) that returns `Goodbye, ${name}!`, and (2) an `export const FAREWELL = \"bye\";` line in src/greeting.mjs. Keep the existing greet export and behavior unchanged. The configured validators must pass.",
+      ".",
+      "--file",
+      "src/farewell.mjs",
+      "--file",
+      "src/greeting.mjs",
+      "--title",
+      "Add farewell module and export",
+      "--accept",
+      "node scripts/validate.mjs and node scripts/contract.mjs pass with the farewell module and FAREWELL export"
+    ],
+    "exitCode": 0,
+    "stdout": "operationId=CHANGE-20260929T145607Z-12fc06c4\nkind=change\nstatus=QUEUED\nphase=dispatched\nrevision=5\nprogress=0/0 completed, 0 running, 0 failed, 0 blocked",
+    "stderr": "",
+    "operationId": "CHANGE-20260929T145607Z-12fc06c4",
+    "leadAgentId": "44ff1ebe-3ea5-4ec8-a662-b2169d55d894"
+  },
+  "stageTrace": [
+    {
+      "at": "2026-09-29T14:56:07.986Z",
+      "status": "QUEUED",
+      "phase": "dispatched",
+      "revision": 5,
+      "stages": {
+        "queued": "RUNNING"
+      }
+    },
+    {
+      "at": "2026-09-29T14:56:17.148Z",
+      "status": "RUNNING",
+      "phase": "implementation",
+      "revision": 20,
+      "stages": {
+        "queued": "RUNNING",
+        "input-resolution": "COMPLETED",
+        "triage": "COMPLETED",
+        "environment-preflight": "SKIPPED",
+        "contract-authoring": "COMPLETED",
+        "implementation": "RUNNING"
+      },
+      "stageMessages": {
+        "input-resolution": "No external durable inputs referenced.",
+        "triage": "DIRECT/NONE: bounded request classified by explicit evidence and canonical route policy",
+        "environment-preflight": "Canonical direct/delegated routes do not require formal SDD authoring."
+      }
+    },
+    {
+      "at": "2026-09-29T14:56:35.259Z",
+      "status": "FAILED",
+      "phase": "failed",
+      "revision": 37,
+      "stages": {
+        "queued": "RUNNING",
+        "input-resolution": "COMPLETED",
+        "triage": "COMPLETED",
+        "environment-preflight": "SKIPPED",
+        "contract-authoring": "COMPLETED",
+        "implementation": "RUNNING",
+        "supervision": "RUNNING",
+        "context": "RUNNING",
+        "finished": "FAILED"
+      },
+      "stageMessages": {
+        "input-resolution": "No external durable inputs referenced.",
+        "triage": "DIRECT/NONE: bounded request classified by explicit evidence and canonical route policy",
+        "environment-preflight": "Canonical direct/delegated routes do not require formal SDD authoring."
+      }
+    }
+  ],
+  "workspaceWatch": {
+    "transitions": [],
+    "finalStates": {
+      "/tmp/aeh-s13-gov-UuFKJs/work/lane-multi-worker-fixture": [
+        ".gitignore",
+        ".harness/agents.source.jsonc",
+        ".harness/otel-collector.yaml",
+        ".harness/project.yaml",
+        ".harness/provider-versions.json",
+        ".harness/toolchain.yaml",
+        "AGENTS.md",
+        "README.md",
+        "openspec/config.yaml",
+        "package.json",
+        "scripts/architecture.mjs",
+        "scripts/contract.mjs",
+        "scripts/validate.mjs",
+        "src/greeting.mjs"
+      ],
+      "/home/james/.paseo/worktrees/3m77eaal/aeh-change-20260929t145607z-12fc06c4": [
+        ".gitignore",
+        ".harness/agents.source.jsonc",
+        ".harness/otel-collector.yaml",
+        ".harness/project.yaml",
+        ".harness/provider-versions.json",
+        ".harness/toolchain.yaml",
+        "AGENTS.md",
+        "README.md",
+        "openspec/config.yaml",
+        "package.json",
+        "scripts/architecture.mjs",
+        "scripts/contract.mjs",
+        "scripts/validate.mjs",
+        "src/greeting.mjs"
+      ]
+    }
+  },
+  "terminalRecord": {
+    "status": "FAILED",
+    "phase": "failed",
+    "revision": 37,
+    "error": "Error: AEH_OPERATION_SUPERVISOR_UNAVAILABLE: initialization failed after 2 bounded attempt(s): EXECUTION_POLICY_STALE: durable ResolvedOperationPolicy does not match the current execution inputs.\n    at ensureOperationSupervisorUnlocked (file:///tmp/aeh-s13-gov-UuFKJs/work/lane-multi-worker-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790693730315-568545-c19f97cc/operations/supervisor.js:174:11)\n    at async withOperationLock (file:///tmp/aeh-s13-gov-UuFKJs/work/lane-multi-worker-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790693730315-568545-c19f97cc/operations/state.js:1671:20)\n    at async runTask (file:///tmp/aeh-s13-gov-UuFKJs/work/lane-multi-worker-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790693730315-568545-c19f97cc/core/run.js:113:9)\n    at async runChangeOperation (file:///tmp/aeh-s13-gov-UuFKJs/work/lane-multi-worker-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790693730315-568545-c19f97cc/operations/change.js:278:17)\n    at async executeOperationWithEnvironment (file:///tmp/aeh-s13-gov-UuFKJs/work/lane-multi-worker-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790693730315-568545-c19f97cc/operations/controller.js:342:28)\n    at async executeOperation (file:///tmp/aeh-s13-gov-UuFKJs/work/lane-multi-worker-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790693730315-568545-c19f97cc/operations/controller.js:168:16)\n    at async runOperationExecute (file:///tmp/aeh-s13-gov-UuFKJs/work/lane-multi-worker-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790693730315-568545-c19f97cc/main.js:156:20)\n    at async file:///tmp/aeh-s13-gov-UuFKJs/work/lane-multi-worker-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790693730315-568545-c19f97cc/main.js:36:5",
+    "finishedAt": "2026-09-29T14:56:27.018Z"
+  },
+  "artifacts": {
+    "acceptance": null,
+    "reviewers": [],
+    "specManagers": [],
+    "participants": [],
+    "failedParticipants": [],
+    "assessments": [
+      {
+        "file": "363109d0b8b96e48546eab7fccbf11bcd3521c33eb4f187db70f9902c311c1ac.json",
+        "sha256": "70ceb5359006774b932143f2021559e06e5b0bf5ff205b452fa6def0e7f92a53",
+        "bytes": 4985,
+        "assessmentType": "ROUTE",
+        "mechanism": "MODEL",
+        "digest": null,
+        "modelId": null,
+        "sessionId": null
+      },
+      {
+        "file": "de80ca51fe191f2590f829d36fe9c47233d648df854f22bd1f3ae2e6a99b5236.json",
+        "sha256": "c0e3ebf6572e547831ec1f13cb8b7b1ecef7970a56815abed152208e80f13922",
+        "bytes": 8959,
+        "assessmentType": "STACK",
+        "mechanism": "MODEL",
+        "digest": null,
+        "modelId": null,
+        "sessionId": null
+      }
+    ],
+    "reviewerArtifactsError": null
+  },
+  "candidateWorkspaceObservations": {
+    "observations": [
+      {
+        "source": "CandidateRevision.worktree",
+        "workspaceId": null,
+        "root": "/home/james/.paseo/worktrees/3m77eaal/aeh-change-20260929t145607z-12fc06c4",
+        "expectedSourceDigest": "ff7d3cb0dc2ec3adbc9d66639bc4731ee8c670f289f70bec81cb1c5fa9bd5095",
+        "observedSourceDigest": "ff7d3cb0dc2ec3adbc9d66639bc4731ee8c670f289f70bec81cb1c5fa9bd5095",
+        "candidateIdentityDigest": "1c2545f59975e24c9a816a4f1d079dc3945015ce920aa82474473096d014d6ac",
+        "candidateRevision": 2,
+        "status": "MATCH"
+      }
+    ]
+  },
+  "traces": {
+    "paseo": {
+      "total": 23,
+      "entries": [
+        {
+          "at": "2026-09-29T14:55:54.932Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-29T14:55:57.512Z",
+          "name": "harness.paseo.provider.preflight",
+          "attributes": {
+            "ok": true,
+            "provider": "opencode",
+            "model": "opencode-go/gpt-6-luna",
+            "providerStatus": "loading",
+            "source": "paseo-provider-models",
+            "availableModelCount": 65,
+            "message": "Provider opencode model opencode-go/gpt-6-luna passed Paseo preflight."
+          }
+        },
+        {
+          "at": "2026-09-29T14:56:01.818Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-29T14:56:07.860Z",
+          "name": "harness.paseo.agent.wait",
+          "attributes": {
+            "agentId": "cebc7364-677f-4f66-b734-3d570875f4a2",
+            "source": "paseo-agent-subscription",
+            "status": "idle",
+            "updatesObserved": 0,
+            "baselineAssistant": "absent",
+            "baselineUserMessageAt": "absent",
+            "durationMs": 6031
+          }
+        },
+        {
+          "at": "2026-09-29T14:56:07.866Z",
+          "name": "harness.paseo.agent.wait.completed",
+          "attributes": {
+            "transport": "sdk",
+            "observation": "subscription",
+            "agentId": "cebc7364-677f-4f66-b734-3d570875f4a2",
+            "status": "idle"
+          }
+        },
+        {
+          "at": "2026-09-29T14:56:10.067Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-29T14:56:10.306Z",
+          "name": "harness.paseo.provider.preflight",
+          "attributes": {
+            "ok": true,
+            "provider": "opencode",
+            "model": "opencode-go/gpt-6-luna",
+            "providerStatus": "ready",
+            "source": "paseo-provider-snapshot",
+            "availableModelCount": 65,
+            "message": "Provider opencode model opencode-go/gpt-6-luna passed Paseo preflight."
+          }
+        },
+        {
+          "at": "2026-09-29T14:56:13.446Z",
+          "name": "harness.paseo.operation.watchdog.started",
+          "attributes": {
+            "operationId": "CHANGE-20260929T145607Z-12fc06c4",
+            "pollIntervalMs": 15000,
+            "progressWakeIntervalMs": 45000,
+            "stallThresholdMs": 120000,
+            "supervisorStallWakeLimit": 2,
+            "leadWakeLimit": 1,
+            "terminalLeadWakeLimit": 2
+          }
+        },
+        {
+          "at": "2026-09-29T14:56:15.400Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-29T14:56:23.451Z",
+          "name": "harness.paseo.agent.wait",
+          "attributes": {
+            "agentId": "165fe3fe-38b0-4f7a-a190-5dab573aad06",
+            "source": "paseo-agent-subscription",
+            "status": "idle",
+            "updatesObserved": 0,
+            "baselineAssistant": "absent",
+            "baselineUserMessageAt": "absent",
+            "durationMs": 8041
+          }
+        },
+        {
+          "at": "2026-09-29T14:56:23.462Z",
+          "name": "harness.paseo.agent.wait.completed",
+          "attributes": {
+            "transport": "sdk",
+            "observation": "subscription",
+            "agentId": "165fe3fe-38b0-4f7a-a190-5dab573aad06",
+            "status": "idle"
+          }
+        },
+        {
+          "at": "2026-09-29T14:56:24.553Z",
+          "name": "harness.paseo.operation.supervisor.materialized",
+          "attributes": {
+            "operationId": "CHANGE-20260929T145607Z-12fc06c4",
+            "generation": 1,
+            "agentId": "6cddfe0d-0303-423d-affa-59976c6173d5",
+            "revision": 23,
+            "attempt": 1,
+            "status": "INITIALIZING"
+          }
+        },
+        {
+          "at": "2026-09-29T14:56:25.261Z",
+          "name": "harness.paseo.operation.supervisor.initialization-failed",
+          "attributes": {
+            "operationId": "CHANGE-20260929T145607Z-12fc06c4",
+            "generation": 1,
+            "agentId": "6cddfe0d-0303-423d-affa-59976c6173d5",
+            "attempt": 1,
+            "error": "EXECUTION_POLICY_STALE: durable ResolvedOperationPolicy does not match the current execution inputs.",
+            "timeoutSeconds": 120
+          }
+        },
+        {
+          "at": "2026-09-29T14:56:26.081Z",
+          "name": "harness.paseo.operation.supervisor.materialized",
+          "attributes": {
+            "operationId": "CHANGE-20260929T145607Z-12fc06c4",
+            "generation": 2,
+            "agentId": "5d75ce2b-e727-4de1-a8ef-22776e4f7661",
+            "revision": 30,
+            "attempt": 2,
+            "status": "INITIALIZING"
+          }
+        },
+        {
+          "at": "2026-09-29T14:56:27.006Z",
+          "name": "harness.paseo.operation.supervisor.initialization-failed",
+          "attributes": {
+            "operationId": "CHANGE-20260929T145607Z-12fc06c4",
+            "generation": 2,
+            "agentId": "5d75ce2b-e727-4de1-a8ef-22776e4f7661",
+            "attempt": 2,
+            "error": "EXECUTION_POLICY_STALE: durable ResolvedOperationPolicy does not match the current execution inputs.",
+            "timeoutSeconds": 120
+          }
+        }
+      ]
+    },
+    "events": {
+      "total": 23,
+      "entries": [
+        {
+          "at": "2026-09-29T14:55:54.967Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-29T14:55:57.524Z",
+          "name": "harness.paseo.provider.preflight",
+          "attributes": {
+            "ok": true,
+            "provider": "opencode",
+            "model": "opencode-go/gpt-6-luna",
+            "providerStatus": "loading",
+            "source": "paseo-provider-models",
+            "availableModelCount": 65,
+            "message": "Provider opencode model opencode-go/gpt-6-luna passed Paseo preflight."
+          }
+        },
+        {
+          "at": "2026-09-29T14:56:01.826Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-29T14:56:07.866Z",
+          "name": "harness.paseo.agent.wait",
+          "attributes": {
+            "agentId": "cebc7364-677f-4f66-b734-3d570875f4a2",
+            "source": "paseo-agent-subscription",
+            "status": "idle",
+            "updatesObserved": 0,
+            "baselineAssistant": "absent",
+            "baselineUserMessageAt": "absent",
+            "durationMs": 6031
+          }
+        },
+        {
+          "at": "2026-09-29T14:56:07.872Z",
+          "name": "harness.paseo.agent.wait.completed",
+          "attributes": {
+            "transport": "sdk",
+            "observation": "subscription",
+            "agentId": "cebc7364-677f-4f66-b734-3d570875f4a2",
+            "status": "idle"
+          }
+        },
+        {
+          "at": "2026-09-29T14:56:10.086Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-29T14:56:10.317Z",
+          "name": "harness.paseo.provider.preflight",
+          "attributes": {
+            "ok": true,
+            "provider": "opencode",
+            "model": "opencode-go/gpt-6-luna",
+            "providerStatus": "ready",
+            "source": "paseo-provider-snapshot",
+            "availableModelCount": 65,
+            "message": "Provider opencode model opencode-go/gpt-6-luna passed Paseo preflight."
+          }
+        },
+        {
+          "at": "2026-09-29T14:56:13.464Z",
+          "name": "harness.paseo.operation.watchdog.started",
+          "attributes": {
+            "operationId": "CHANGE-20260929T145607Z-12fc06c4",
+            "pollIntervalMs": 15000,
+            "progressWakeIntervalMs": 45000,
+            "stallThresholdMs": 120000,
+            "supervisorStallWakeLimit": 2,
+            "leadWakeLimit": 1,
+            "terminalLeadWakeLimit": 2
+          }
+        },
+        {
+          "at": "2026-09-29T14:56:15.406Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-29T14:56:23.461Z",
+          "name": "harness.paseo.agent.wait",
+          "attributes": {
+            "agentId": "165fe3fe-38b0-4f7a-a190-5dab573aad06",
+            "source": "paseo-agent-subscription",
+            "status": "idle",
+            "updatesObserved": 0,
+            "baselineAssistant": "absent",
+            "baselineUserMessageAt": "absent",
+            "durationMs": 8041
+          }
+        },
+        {
+          "at": "2026-09-29T14:56:23.474Z",
+          "name": "harness.paseo.agent.wait.completed",
+          "attributes": {
+            "transport": "sdk",
+            "observation": "subscription",
+            "agentId": "165fe3fe-38b0-4f7a-a190-5dab573aad06",
+            "status": "idle"
+          }
+        },
+        {
+          "at": "2026-09-29T14:56:24.565Z",
+          "name": "harness.paseo.operation.supervisor.materialized",
+          "attributes": {
+            "operationId": "CHANGE-20260929T145607Z-12fc06c4",
+            "generation": 1,
+            "agentId": "6cddfe0d-0303-423d-affa-59976c6173d5",
+            "revision": 23,
+            "attempt": 1,
+            "status": "INITIALIZING"
+          }
+        },
+        {
+          "at": "2026-09-29T14:56:25.273Z",
+          "name": "harness.paseo.operation.supervisor.initialization-failed",
+          "attributes": {
+            "operationId": "CHANGE-20260929T145607Z-12fc06c4",
+            "generation": 1,
+            "agentId": "6cddfe0d-0303-423d-affa-59976c6173d5",
+            "attempt": 1,
+            "error": "EXECUTION_POLICY_STALE: durable ResolvedOperationPolicy does not match the current execution inputs.",
+            "timeoutSeconds": 120
+          }
+        },
+        {
+          "at": "2026-09-29T14:56:26.088Z",
+          "name": "harness.paseo.operation.supervisor.materialized",
+          "attributes": {
+            "operationId": "CHANGE-20260929T145607Z-12fc06c4",
+            "generation": 2,
+            "agentId": "5d75ce2b-e727-4de1-a8ef-22776e4f7661",
+            "revision": 30,
+            "attempt": 2,
+            "status": "INITIALIZING"
+          }
+        },
+        {
+          "at": "2026-09-29T14:56:27.014Z",
+          "name": "harness.paseo.operation.supervisor.initialization-failed",
+          "attributes": {
+            "operationId": "CHANGE-20260929T145607Z-12fc06c4",
+            "generation": 2,
+            "agentId": "5d75ce2b-e727-4de1-a8ef-22776e4f7661",
+            "attempt": 2,
+            "error": "EXECUTION_POLICY_STALE: durable ResolvedOperationPolicy does not match the current execution inputs.",
+            "timeoutSeconds": 120
+          }
+        }
+      ]
+    }
+  },
+  "routeDiagnostics": {
+    "classification": "HYBRID",
+    "plannerAssessmentMechanism": "MODEL",
+    "routeGateMechanism": "DETERMINISTIC",
+    "participantArtifacts": [],
+    "triageEscalatedEvents": []
+  },
+  "candidateAssemblyReceipts": null,
+  "operation": {
+    "id": "CHANGE-20260929T145607Z-12fc06c4",
+    "status": "FAILED",
+    "phase": "failed",
+    "kind": "change",
+    "intent": {
+      "request": "Add two deliverables to the greeting fixture: (1) a new module src/farewell.mjs exporting function farewell(name) that returns `Goodbye, ${name}!`, and (2) an `export const FAREWELL = \"bye\";` line in src/greeting.mjs. Keep the existing greet export and behavior unchanged. The configured validators must pass.",
+      "classification": "CHANGE",
+      "route": "DIRECT",
+      "assurance": "NONE",
+      "priority": 50,
+      "semanticDecision": {
+        "version": 1,
+        "source": "explicit-cli",
+        "intent": "change",
+        "requestedOutcome": "Add two deliverables to the greeting fixture: (1) a new module src/farewell.mjs exporting function farewell(name) that returns `Goodbye, ${name}!`, and (2) an `export const FAREWELL = \"bye\";` line in src/greeting.mjs. Keep the existing greet export and behavior unchanged. The configured validators must pass.",
+        "effects": {
+          "evaluate": false,
+          "mutateRepository": true,
+          "executePreparedTask": false,
+          "deliver": false
+        },
+        "resolution": "resolved"
+      },
+      "risk": "low"
+    },
+    "revision": 37,
+    "operationExecutionRevision": 2,
+    "controllerPid": 570267,
+    "error": "Error: AEH_OPERATION_SUPERVISOR_UNAVAILABLE: initialization failed after 2 bounded attempt(s): EXECUTION_POLICY_STALE: durable ResolvedOperationPolicy does not match the current execution inputs.\n    at ensureOperationSupervisorUnlocked (file:///tmp/aeh-s13-gov-UuFKJs/work/lane-multi-worker-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790693730315-568545-c19f97cc/operations/supervisor.js:174:11)\n    at async withOperationLock (file:///tmp/aeh-s13-gov-UuFKJs/work/lane-multi-worker-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790693730315-568545-c19f97cc/operations/state.js:1671:20)\n    at async runTask (file:///tmp/aeh-s13-gov-UuFKJs/work/lane-multi-worker-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790693730315-568545-c19f97cc/core/run.js:113:9)\n    at async runChangeOperation (file:///tmp/aeh-s13-gov-UuFKJs/work/lane-multi-worker-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790693730315-568545-c19f97cc/operations/change.js:278:17)\n    at async executeOperationWithEnvironment (file:///tmp/aeh-s13-gov-UuFKJs/work/lane-multi-worker-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790693730315-568545-c19f97cc/operations/controller.js:342:28)\n    at async executeOperation (file:///tmp/aeh-s13-gov-UuFKJs/work/lane-multi-worker-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790693730315-568545-c19f97cc/operations/controller.js:168:16)\n    at async runOperationExecute (file:///tmp/aeh-s13-gov-UuFKJs/work/lane-multi-worker-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790693730315-568545-c19f97cc/main.js:156:20)\n    at async file:///tmp/aeh-s13-gov-UuFKJs/work/lane-multi-worker-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790693730315-568545-c19f97cc/main.js:36:5",
+    "candidateRevision": {
+      "operationId": "CHANGE-20260929T145607Z-12fc06c4",
+      "candidateId": "candidate:CHANGE-20260929T145607Z-12fc06c4:r2",
+      "projectId": "project:edd37186b9a522350d26d6e0",
+      "taskId": "CHANGE-20260929T145607Z-12fc06c4",
+      "revision": 2,
+      "parentCandidateId": "candidate:CHANGE-20260929T145607Z-12fc06c4:r1",
+      "sourceDigest": "ff7d3cb0dc2ec3adbc9d66639bc4731ee8c670f289f70bec81cb1c5fa9bd5095",
+      "workspace": "wks_81fba9010d9501d1",
+      "worktree": "/home/james/.paseo/worktrees/3m77eaal/aeh-change-20260929t145607z-12fc06c4",
+      "createdAt": "2026-09-29T14:56:09.653Z",
+      "version": 1,
+      "canonicalIdentity": "{\"candidateId\":\"candidate:CHANGE-20260929T145607Z-12fc06c4:r2\",\"createdAt\":\"2026-09-29T14:56:09.653Z\",\"operationId\":\"CHANGE-20260929T145607Z-12fc06c4\",\"parentCandidateId\":\"candidate:CHANGE-20260929T145607Z-12fc06c4:r1\",\"projectId\":\"project:edd37186b9a522350d26d6e0\",\"revision\":2,\"sourceDigest\":\"ff7d3cb0dc2ec3adbc9d66639bc4731ee8c670f289f70bec81cb1c5fa9bd5095\",\"taskId\":\"CHANGE-20260929T145607Z-12fc06c4\",\"version\":1,\"workspace\":\"wks_81fba9010d9501d1\",\"worktree\":\"/home/james/.paseo/worktrees/3m77eaal/aeh-change-20260929t145607z-12fc06c4\"}",
+      "identityDigest": "1c2545f59975e24c9a816a4f1d079dc3945015ce920aa82474473096d014d6ac"
+    },
+    "participants": {},
+    "candidateAssemblyReceipts": null,
+    "supervision": {
+      "required": true,
+      "materialized": true,
+      "generations": [
+        {
+          "generation": 1,
+          "status": "FAILED",
+          "agentId": "6cddfe0d-0303-423d-affa-59976c6173d5",
+          "contextRatio": null,
+          "drainingAt": null
+        },
+        {
+          "generation": 2,
+          "status": "FAILED",
+          "agentId": "5d75ce2b-e727-4de1-a8ef-22776e4f7661",
+          "contextRatio": null,
+          "drainingAt": null
+        }
+      ]
+    },
+    "stages": {
+      "queued": "RUNNING",
+      "input-resolution": "COMPLETED",
+      "triage": "COMPLETED",
+      "environment-preflight": "SKIPPED",
+      "contract-authoring": "COMPLETED",
+      "implementation": "RUNNING",
+      "supervision": "RUNNING",
+      "context": "RUNNING",
+      "finished": "FAILED"
+    }
+  },
+  "sessionReceipts": [
+    {
+      "agentId": "6cddfe0d-0303-423d-affa-59976c6173d5",
+      "inspectExitCode": 0,
+      "provider": "codex",
+      "model": "gpt-6-luna",
+      "thinkingOptionId": "xhigh",
+      "status": "closed",
+      "sessionId": null,
+      "modeId": "auto",
+      "lastUsage": null,
+      "labels": null,
+      "createdAt": "2026-09-29T14:56:24.202Z",
+      "updatedAt": "2026-09-29T14:56:24.802Z"
+    },
+    {
+      "agentId": "5d75ce2b-e727-4de1-a8ef-22776e4f7661",
+      "inspectExitCode": 0,
+      "provider": "codex",
+      "model": "gpt-6-luna",
+      "thinkingOptionId": "xhigh",
+      "status": "closed",
+      "sessionId": null,
+      "modeId": "auto",
+      "lastUsage": null,
+      "labels": null,
+      "createdAt": "2026-09-29T14:56:25.820Z",
+      "updatedAt": "2026-09-29T14:56:26.294Z"
+    }
+  ],
+  "oracle": {
+    "checks": [
+      {
+        "id": "operation.terminal-succeeded",
+        "status": "FAIL",
+        "required": true,
+        "message": "operation status=FAILED",
+        "evidence": {}
+      },
+      {
+        "id": "operation.candidate-bound",
+        "status": "PASS",
+        "required": true,
+        "message": "candidate revision identity digest is bound",
+        "evidence": {
+          "revision": 2
+        }
+      },
+      {
+        "id": "operation.participant-receipts",
+        "status": "FAIL",
+        "required": true,
+        "message": "0 terminal participant receipt(s) persisted",
+        "evidence": {}
+      },
+      {
+        "id": "operation.revision-current",
+        "status": "PASS",
+        "required": true,
+        "message": "operation execution revision is durable",
+        "evidence": {}
+      },
+      {
+        "id": "multi-worker.task-dag",
+        "status": "FAIL",
+        "required": true,
+        "message": "planner task DAG workUnits=missing waves=missing conflicts=missing graphUsed=missing",
+        "evidence": {
+          "plan": {}
+        }
+      },
+      {
+        "id": "multi-worker.wave-barrier",
+        "status": "FAIL",
+        "required": true,
+        "message": "0 wave finish event(s), 0 barrier check(s), failed waves=0",
+        "evidence": {
+          "waveFinishes": [],
+          "runFinishWaves": null
+        }
+      },
+      {
+        "id": "multi-worker.assembly-receipts",
+        "status": "FAIL",
+        "required": true,
+        "message": "0 per-unit candidate assembly event(s)",
+        "evidence": {
+          "assemblies": []
+        }
+      }
+    ],
+    "applicableChecks": [
+      {
+        "id": "multi-worker.task-dag",
+        "status": "FAIL",
+        "required": true,
+        "message": "planner task DAG workUnits=missing waves=missing conflicts=missing graphUsed=missing",
+        "evidence": {
+          "plan": {}
+        }
+      },
+      {
+        "id": "multi-worker.wave-barrier",
+        "status": "FAIL",
+        "required": true,
+        "message": "0 wave finish event(s), 0 barrier check(s), failed waves=0",
+        "evidence": {
+          "waveFinishes": [],
+          "runFinishWaves": null
+        }
+      },
+      {
+        "id": "multi-worker.assembly-receipts",
+        "status": "FAIL",
+        "required": true,
+        "message": "0 per-unit candidate assembly event(s)",
+        "evidence": {
+          "assemblies": []
+        }
+      }
+    ],
+    "rowResults": {
+      "multi-worker": "FAIL"
+    },
+    "detail": {
+      "checks": [
+        {
+          "id": "operation.terminal-succeeded",
+          "status": "FAIL",
+          "required": true,
+          "message": "operation status=FAILED",
+          "evidence": {}
+        },
+        {
+          "id": "operation.candidate-bound",
+          "status": "PASS",
+          "required": true,
+          "message": "candidate revision identity digest is bound",
+          "evidence": {
+            "revision": 2
+          }
+        },
+        {
+          "id": "operation.participant-receipts",
+          "status": "FAIL",
+          "required": true,
+          "message": "0 terminal participant receipt(s) persisted",
+          "evidence": {}
+        },
+        {
+          "id": "operation.revision-current",
+          "status": "PASS",
+          "required": true,
+          "message": "operation execution revision is durable",
+          "evidence": {}
+        },
+        {
+          "id": "multi-worker.task-dag",
+          "status": "FAIL",
+          "required": true,
+          "message": "planner task DAG workUnits=missing waves=missing conflicts=missing graphUsed=missing",
+          "evidence": {
+            "plan": {}
+          }
+        },
+        {
+          "id": "multi-worker.wave-barrier",
+          "status": "FAIL",
+          "required": true,
+          "message": "0 wave finish event(s), 0 barrier check(s), failed waves=0",
+          "evidence": {
+            "waveFinishes": [],
+            "runFinishWaves": null
+          }
+        },
+        {
+          "id": "multi-worker.assembly-receipts",
+          "status": "FAIL",
+          "required": true,
+          "message": "0 per-unit candidate assembly event(s)",
+          "evidence": {
+            "assemblies": []
+          }
+        }
+      ],
+      "rows": {
+        "multi-worker": [
+          "multi-worker.task-dag",
+          "multi-worker.wave-barrier",
+          "multi-worker.assembly-receipts"
+        ]
+      },
+      "plan": {
+        "plan": {},
+        "waveFinishes": [],
+        "assemblies": [],
+        "runFinishWaves": null
+      }
+    }
+  },
+  "terminal": {
+    "status": "FAILED",
+    "bounded": true,
+    "lateTerminal": null
+  },
+  "result": "FAIL",
+  "workspaceInventory": [
+    {
+      "workspaceId": "wks_58dc8b943bc782f2",
+      "project": "lane-multi-worker-fixture",
+      "cwd": "/tmp/aeh-s13-gov-UuFKJs/work/lane-multi-worker-fixture"
+    },
+    {
+      "workspaceId": "wks_81fba9010d9501d1",
+      "project": "lane-multi-worker-fixture",
+      "cwd": "/home/james/.paseo/worktrees/3m77eaal/aeh-change-20260929t145607z-12fc06c4"
+    },
+    {
+      "workspaceId": "wks_9b27a76aa9422344",
+      "project": "lane-multi-worker-fixture",
+      "cwd": "/tmp/aeh-s13-gov-UuFKJs/work/lane-multi-worker-fixture"
+    }
+  ],
+  "workspaceCleanup": {
+    "skipped": true,
+    "reason": "S13_GOV_KEEP=1",
+    "archiveEvidence": false
+  },
+  "postCampaignOperationRead": {
+    "operationId": "CHANGE-20260929T145607Z-12fc06c4",
+    "observedAt": "2026-09-29T14:56:37.406Z",
+    "observationWindowMs": 0,
+    "observations": 1,
+    "status": "FAILED",
+    "phase": "failed",
+    "revision": 37,
+    "controllerPid": 570267,
+    "controllerAlive": false,
+    "terminal": true,
+    "candidateWorktree": "/home/james/.paseo/worktrees/3m77eaal/aeh-change-20260929t145607z-12fc06c4",
+    "candidateWorktreeAvailable": true
+  },
+  "leadAgentCleanup": {
+    "agentId": "44ff1ebe-3ea5-4ec8-a662-b2169d55d894",
+    "exitCode": 0
+  },
+  "checkoutProof": {
+    "trackedDigestBefore": "9e36dcb5fe00b026936894759b6f1344cef9c3d3bb4e7af65b9eed271dc38ace",
+    "trackedDigestAfter": "9e36dcb5fe00b026936894759b6f1344cef9c3d3bb4e7af65b9eed271dc38ace",
+    "trackedFiles": 668,
+    "checkoutUntouched": true,
+    "postRunTrackedDocEditWindow": {
+      "opensAfterLaneFinish": true,
+      "note": "S13 tracked documentation/evidence is edited after lane execution; the recorded digest is the source-tree digest at lane end (R11-F6)."
+    }
+  },
+  "finishedAt": "2026-09-29T14:56:38.547Z",
+  "durationMs": 51387
+}

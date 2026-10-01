@@ -6,25 +6,43 @@ import process from "node:process";
 import { runAudit } from "../audit/run.js";
 import { loadProjectConfig, loadTaskContract } from "../core/config.js";
 import { createControlPlaneSnapshot, materializeControlPlaneRuntimeSurface, materializeControlPlaneSnapshot } from "../core/controlPlane.js";
-import { runTask } from "../core/run.js";
-import type { HarnessProjectConfig } from "../core/types.js";
+import { operationFailureDetail, runTask } from "../core/run.js";
+import type { AssuranceLevel, ImplementationRoute } from "../architecture/contracts.js";
+import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
+import { assertResolvedOperationPolicyV1, compileResolvedOperationPolicy } from "../architecture/executionIdentity.js";
 import {
   deliveryWorkspaceId,
   deliveryWorkspacePath,
   materializeTaskContext
 } from "../delivery/handoff.js";
-import { listManagedPaseoAgents } from "../paseo/runtime.js";
+import { inspectManagedPaseoAgent, listManagedPaseoAgents } from "../paseo/runtime.js";
+import { isDeterministicPaseoRuntimeEnabled, isDeterministicPaseoSessionId } from "../paseo/deterministicRuntime.js";
+import { createManagedRuntime, readManagedRuntimeSnapshot, runtimeProjectId } from "../runtime/index.js";
+import {
+  operationResourcePolicy,
+  reconcileOperationResources,
+  reconcileTerminalOperationResources,
+  registerOperationResource
+} from "../runtime/operationResources.js";
 import { recordPaseoTrace } from "../paseo/trace.js";
 import {
   clearManagedProcessHandles,
   listManagedProcessHandles,
-  runProcess,
+  runShell,
   terminateManagedProcessGroup,
   type ProcessResult
 } from "../utils/process.js";
-import { runChangeOperation } from "./change.js";
-import { resolveBaseRef } from "../core/git.js";
+import { prepareChangeOperation, resolveChangePreflightV1, runChangeOperation, type PreparedChangeOperation } from "./change.js";
+import { prepareGithubIssueTask, type IssuePreparationResult } from "../issues/intake.js";
+import { createSemanticAssessmentRuntimeV1 } from "../semantic/runtime.js";
+import type { ChangePreflightV1 } from "../core/triage.js";
+import { computeWorktreeDigest, resolveBaseRef } from "../core/git.js";
+import { sha256Canonical, sha256Utf8 } from "../core/digest.js";
 import { assertIntentDecisionForRoute } from "../audit/intentDecision.js";
+import { executeGatedAction } from "../security/gatedAction.js";
+import { reconcileToolAction } from "../security/actionReconciliation.js";
+import { controllerActorId, listUnresolvedToolActionIntents, type ToolActionAuthorityEvidenceV1 } from "../security/toolActionGate.js";
+import { configuredExternalEffects, requiredHumanActionAuthorizations } from "../security/actionPolicy.js";
 import {
   disableOperationCompletionTarget,
   notifyOperationCompletion,
@@ -33,10 +51,20 @@ import {
 import { startOperationWatchdog } from "./liveness.js";
 import { assertOperationCapacity, syncOperationPortfolio } from "./portfolio.js";
 import {
+  awaitOperationResume,
   bindOperationLead,
+  bindOperationCandidate,
+  bindResolvedOperationPolicy,
+  assertCurrentControllerOwner,
+  bindControllerProcess,
+  claimControllerEpoch,
+  controllerEpochFromEnvironment,
+  controllerTokenFromEnvironment,
+  currentControllerEpoch,
   isTerminalOperation,
   loadOperation,
   patchOperation,
+  rebindPauseRecordToCurrentIdentity,
   saveOperation,
   transitionOperationToTerminal,
   type AuditOperationPayload,
@@ -47,6 +75,11 @@ import {
   type OperationRecordV2,
   type RunOperationPayload
 } from "./state.js";
+import { candidateRevisionsEqual, createCandidateRevisionV1, type CandidateRevisionV1 } from "./v2Contracts.js";
+import { assertWorkspaceMatchesCandidate } from "../candidates/identity.js";
+import { bindBootstrapOperationPolicy } from "./bootstrapPolicy.js";
+
+export { bindBootstrapOperationPolicy };
 
 export interface StartOperationOptions {
   nodeExecutable: string;
@@ -54,16 +87,26 @@ export interface StartOperationOptions {
   spawnProcess?: typeof spawn;
   completionAgentId?: string;
   completionSource?: string;
+  /** Test seam for deterministic preflight-ordering regressions; public callers use the semantic resolver. */
+  resolveChangePreflight?: typeof resolveChangePreflightV1;
 }
 
 export interface OperationControllerDeps {
-  run?: typeof runProcess;
+  run?: typeof runShell;
   trace?: typeof recordPaseoTrace;
   notifyCompletion?: (root: string, operation: OperationRecord) => Promise<unknown>;
   startWatchdog?: typeof startOperationWatchdog;
   runAudit?: typeof runAudit;
   runTask?: typeof runTask;
   runChange?: typeof runChangeOperation;
+  runIssueIntake?: typeof prepareGithubIssueTask;
+  createSemanticRuntime?: typeof createSemanticAssessmentRuntimeV1;
+  /** Trusted actor from the paired Control Center session; absent callers must present a recorded scoped decision. */
+  humanActorId?: string;
+  /** Deterministic provider observation seam for cleanup tests and disposable packed fixtures. */
+  inspectProviderSession?: (root: string, provider: string, sessionId: string) => Promise<{ status?: string } | undefined>;
+  /** Deterministic seam for durable label-bound agent discovery during resource reconciliation. */
+  listOperationAgents?: (root: string, operationId: string) => Promise<Array<{ id?: string; workspaceId?: string }>>;
 }
 
 interface OperationWorkspace {
@@ -71,6 +114,7 @@ interface OperationWorkspace {
   workspaceRoot?: string;
   warning?: string;
   reusedDelivery?: boolean;
+  disposition?: "OPERATION_OWNED" | "DELIVERY_REUSED";
 }
 
 export async function startDetachedOperation(
@@ -81,9 +125,18 @@ export async function startDetachedOperation(
 ): Promise<OperationRecordV2> {
   const absoluteRoot = path.resolve(root);
   const config = await loadProjectConfigIfPresent(absoluteRoot);
+  // Restart recovery: any proven terminal operation in this control root with an
+  // incomplete resource receipt is reconciled before new work starts.
+  await reconcileTerminalOperationResources(absoluteRoot).catch(() => undefined);
   if (config) await assertOperationCapacity(absoluteRoot, config, operationPriority(payload));
   const suppliedDecision = "intentDecision" in payload ? payload.intentDecision : undefined;
   if (suppliedDecision) assertIntentDecisionForRoute(suppliedDecision, kind === "audit" ? "audit" : kind === "change" ? "change" : "run");
+
+  let changePreflight: ChangePreflightV1 | undefined;
+  if (kind === "change" && !(payload as ChangeOperationPayload).issueIntake) {
+    if (!config) throw new Error("CHANGE_PREFLIGHT_CONFIG_REQUIRED: project configuration must be loaded before resolving route and assurance.");
+    changePreflight = await (options.resolveChangePreflight ?? resolveChangePreflightV1)(absoluteRoot, config, payload as ChangeOperationPayload);
+  }
 
   const now = new Date().toISOString();
   const id = createOperationId(kind, JSON.stringify(payload));
@@ -96,10 +149,12 @@ export async function startDetachedOperation(
     root: absoluteRoot,
     payload,
     revision: 1,
+    operationExecutionRevision: 1,
     createdAt: now,
     updatedAt: now,
     lastProgressAt: now,
-    intent: initialIntent(kind, payload),
+    intent: initialIntent(kind, payload, changePreflight),
+    ...(changePreflight ? { changePreflight } : {}),
     supervision: {
       required: kind === "audit" || kind === "change",
       materialized: false,
@@ -119,6 +174,11 @@ export async function startDetachedOperation(
   };
   await saveOperation(absoluteRoot, record);
 
+  const spawnProcess = options.spawnProcess ?? spawn;
+  record = await claimControllerEpoch(absoluteRoot, id, `controller:${process.pid}`, { pid: process.pid });
+  const controllerEpoch = currentControllerEpoch(record);
+  const controllerToken = controllerTokenFromEnvironment() ?? "";
+
   const completionAgentId = options.completionAgentId?.trim() || process.env.PASEO_AGENT_ID?.trim() || undefined;
   if (completionAgentId) {
     const source = options.completionSource ?? (options.completionAgentId ? "explicit" : "environment");
@@ -127,7 +187,6 @@ export async function startDetachedOperation(
   }
   if (config) await syncOperationPortfolio(absoluteRoot, config.project.name, record);
 
-  const spawnProcess = options.spawnProcess ?? spawn;
   let child: ChildProcess;
   try {
     child = spawnProcess(
@@ -142,10 +201,13 @@ export async function startDetachedOperation(
           AEH_CONTROL_ROOT: absoluteRoot,
           AEH_OPERATION_ID: id,
           AEH_OPERATION_KIND: kind,
-          AEH_OPERATION_STATE_REDIRECT: "1"
+          AEH_OPERATION_STATE_REDIRECT: "1",
+          AEH_CONTROLLER_EPOCH: String(controllerEpoch),
+          AEH_CONTROLLER_TOKEN: controllerToken
         }
       }
     );
+    if (typeof child.pid === "number") record = await bindControllerProcess(absoluteRoot, id, child.pid);
   } catch (error) {
     if (completionAgentId) {
       await disableOperationCompletionTarget(
@@ -202,7 +264,9 @@ export async function executeOperation(
     "AEH_OPERATION_ID",
     "AEH_OPERATION_KIND",
     "AEH_OPERATION_STATE_REDIRECT",
-    "AEH_OPERATION_WORKSPACE_ID"
+    "AEH_OPERATION_WORKSPACE_ID",
+    "AEH_CONTROLLER_EPOCH",
+    "AEH_CONTROLLER_TOKEN"
   ] as const;
   const previous = Object.fromEntries(environmentKeys.map((key) => [key, process.env[key]])) as Record<string, string | undefined>;
   try {
@@ -226,35 +290,123 @@ async function executeOperationWithEnvironment(
   process.env.AEH_OPERATION_ID = operationId;
   const trace = deps.trace ?? recordPaseoTrace;
   let record = await loadOperation(absoluteRoot, operationId);
-  if (isTerminalOperation(record.status)) return record;
-  record = await patchOperation(absoluteRoot, operationId, {
-    status: "RUNNING",
-    phase: "preparing",
-    startedAt: record.startedAt ?? new Date().toISOString(),
-    pid: process.pid,
-    error: undefined
-  });
-  process.env.AEH_OPERATION_ID = record.id;
+  if (isTerminalOperation(record.status)) {
+    // Crash-recovery reconciliation: a controller that died between
+    // terminalization and cleanup leaves a durable terminal operation whose
+    // registry is incomplete. Re-running the operation execute path (or the
+    // project-level sweep) reclaims exactly those proven terminal orphans.
+    await reconcileOperationResources(absoluteRoot, operationId, {
+      ...(deps.run ? { run: deps.run } : {}),
+      ...(deps.trace ? { trace: deps.trace } : {}),
+      ...(deps.inspectProviderSession
+        ? { inspectAgent: (cwd: string, agentId: string) => deps.inspectProviderSession!(cwd, "paseo", agentId) }
+        : {}),
+      ...(deps.listOperationAgents ? { listOwnedAgents: deps.listOperationAgents } : {})
+    }).catch(async (error: unknown) => {
+      await trace(absoluteRoot, "operation.resource.recovery-failed", { operationId, error: error instanceof Error ? error.message : String(error) }).catch(() => undefined);
+    });
+    return record;
+  }
   process.env.AEH_OPERATION_KIND = record.kind;
   process.env.AEH_OPERATION_STATE_REDIRECT = "1";
-
-  let config = await loadProjectConfig(absoluteRoot);
-  if (record.kind !== "audit") {
-    const configured = config.validation?.baseRef ?? "HEAD";
-    const resolved = await resolveBaseRef(absoluteRoot, configured);
-    if (resolved.ref !== configured) {
-      config = { ...config, validation: { ...config.validation, baseRef: resolved.ref } };
-      await trace(absoluteRoot, "operation.base-ref.fallback", { operationId, configured, resolved: resolved.ref, reason: "configured base ref is not resolvable" });
-    }
+  const inheritedEpoch = controllerEpochFromEnvironment();
+  const inheritedToken = controllerTokenFromEnvironment();
+  const epochMatches = inheritedEpoch !== undefined && inheritedEpoch === currentControllerEpoch(record);
+  const tokenMatches = inheritedToken !== undefined && record.controller?.tokenDigest === sha256Utf8(inheritedToken);
+  if (!epochMatches || !tokenMatches) {
+    record = await claimControllerEpoch(absoluteRoot, operationId, `controller:${process.pid}`, { pid: process.pid });
   }
-  await syncOperationPortfolio(absoluteRoot, config.project.name, record);
+  process.env.AEH_CONTROLLER_EPOCH = String(currentControllerEpoch(record));
+  assertCurrentControllerOwner(record, "operation execution startup");
+  let config: HarnessProjectConfig | undefined;
   let stopWatchdog: (() => void) | undefined;
+  let preparedChange: PreparedChangeOperation | undefined;
+  let runContract: TaskContract | undefined;
   try {
+    record = await patchOperation(absoluteRoot, operationId, {
+      status: "RUNNING",
+      phase: record.pause ? "PAUSED" : record.continuation?.state === "WAITING" ? "HUMAN_REQUIRED" : "preparing",
+      startedAt: record.startedAt ?? new Date().toISOString(),
+      pid: process.pid,
+      error: undefined
+    });
+    process.env.AEH_OPERATION_ID = record.id;
+
+    config = await loadProjectConfig(absoluteRoot);
+    if (record.kind !== "audit") {
+      const configured = config.validation?.baseRef ?? "HEAD";
+      const resolved = await resolveBaseRef(absoluteRoot, configured);
+      if (resolved.ref !== configured) {
+        config = { ...config, validation: { ...config.validation, baseRef: resolved.ref } };
+        await trace(absoluteRoot, "operation.base-ref.fallback", { operationId, configured, resolved: resolved.ref, reason: "configured base ref is not resolvable" });
+      }
+    }
+    await syncOperationPortfolio(absoluteRoot, config.project.name, record);
+
+    let bootstrapRoute: ImplementationRoute | undefined;
+    let bootstrapAssurance: AssuranceLevel | undefined;
+    if (record.kind === "audit") {
+      // AUDIT executes bounded read-only reviewers under the delegated review route; the
+      // bootstrap policy must bind the same route/assurance the audit TaskContract declares,
+      // otherwise participant structured-result launches reject the policy as stale.
+      const payload = record.payload as AuditOperationPayload;
+      bootstrapRoute = "DELEGATED";
+      bootstrapAssurance = payload.risk === "high" ? "CRITICAL" : "STANDARD";
+      record = await patchOperation(absoluteRoot, operationId, {
+        intent: { ...record.intent, route: bootstrapRoute, assurance: bootstrapAssurance }
+      });
+    } else if (record.kind === "run") {
+      const payload = record.payload as RunOperationPayload;
+      runContract = await loadTaskContract(absoluteRoot, payload.taskId, config);
+      bootstrapRoute = runContract.routing?.route;
+      bootstrapAssurance = runContract.routing?.assurance;
+    } else {
+      const payload = record.payload as ChangeOperationPayload;
+      if (payload.issueIntake) {
+        // Controller-owned GitHub issue intake: the operation's deliverable is the authored,
+        // sealed TaskContract, so it binds a deterministic normalization policy and never runs
+        // the change implementation pipeline. The Planner launches inside this managed operation
+        // with controller-issued authority, a candidate revision, and the current epoch.
+        bootstrapRoute = "DELEGATED";
+        bootstrapAssurance = "STANDARD";
+        record = await patchOperation(absoluteRoot, operationId, {
+          intent: { ...record.intent, route: bootstrapRoute, assurance: bootstrapAssurance }
+        });
+      } else {
+        preparedChange = await prepareChangeOperation(absoluteRoot, config, record, payload);
+      }
+      if (!payload.issueIntake && record.continuation) {
+        if (record.intent?.route !== "FORMAL_SDD" || !record.intent.assurance) throw new Error("DECISION_CONTINUATION_TARGET_INVALID: persisted Spec Manager continuation has no frozen FORMAL_SDD route.");
+        bootstrapRoute = record.intent.route;
+        bootstrapAssurance = record.intent.assurance;
+      } else if (!payload.issueIntake) {
+        bootstrapRoute = preparedChange!.triage.route;
+        bootstrapAssurance = preparedChange!.triage.assurance;
+        record = await patchOperation(absoluteRoot, operationId, {
+          intent: { ...record.intent, route: bootstrapRoute, assurance: bootstrapAssurance }
+        });
+      }
+    }
+    if (!bootstrapRoute || !bootstrapAssurance) throw new Error("EXECUTION_POLICY_INPUT_MISSING: route and assurance must be resolved before a sensitive bootstrap action.");
+    record = await bindBootstrapOperationPolicy(absoluteRoot, config, record, bootstrapRoute, bootstrapAssurance, runContract);
+
+    // A recovered PAUSED operation stays suspended until a scoped RESUME control
+    // revalidates the current operation, candidate, policy, revision, and epoch.
+    record = await loadOperation(absoluteRoot, operationId);
+    if (record.pause) {
+      record = await rebindPauseRecordToCurrentIdentity(absoluteRoot, operationId);
+      record = await awaitOperationResume(absoluteRoot, operationId);
+    }
+
+    if (record.kind === "change" && (record.payload as ChangeOperationPayload).issueIntake) {
+      return await executeIssueIntakeOperation(absoluteRoot, config, record, deps, trace);
+    }
+
   const workspace = await ensureOperationWorkspace(
       absoluteRoot,
       record,
       config,
-      deps.run ?? runProcess,
+      deps.run ?? runShell,
       trace
   );
   if (workspace.workspaceId) process.env.AEH_OPERATION_WORKSPACE_ID = workspace.workspaceId;
@@ -267,8 +419,51 @@ async function executeOperationWithEnvironment(
   record = await patchOperation(absoluteRoot, operationId, {
       workspaceId: workspace.workspaceId,
       workspaceRoot: executionRoot,
-      workspaceWarning: workspace.warning
+      workspaceWarning: workspace.warning,
+      ...(workspace.disposition ? { workspaceDisposition: workspace.disposition } : {})
     });
+    if (workspace.disposition && workspace.workspaceId) {
+      const workspaceIdentity = workspace.workspaceId;
+      await registerOperationResource(absoluteRoot, operationId, {
+        kind: "paseo-workspace",
+        identity: workspaceIdentity,
+        reclaim: workspace.disposition === "DELIVERY_REUSED" ? "RETAIN_SHARED" : "ARCHIVE_ON_TERMINAL",
+        path: executionRoot,
+        label: `${record.kind} ${record.id}`,
+        owner: {
+          candidateDigest: record.candidateRevision?.identityDigest,
+          operationExecutionRevision: record.operationExecutionRevision,
+          controllerEpoch: record.controller?.epoch,
+          source: "controller-registration"
+        }
+      }, { policy: operationResourcePolicy(config) }).catch((error: unknown) => trace(absoluteRoot, "operation.resource.register-failed", {
+        operationId,
+        kind: "paseo-workspace",
+        identity: workspaceIdentity,
+        error: error instanceof Error ? error.message : String(error)
+      }).catch(() => undefined));
+    }
+    if (!record.candidateRevision) {
+      throw new Error(`CANDIDATE_BINDING_REQUIRED: operation ${operationId} did not bind its initial workspace candidate.`);
+    }
+    const priorCandidate = record.candidateRevision;
+    if (path.resolve(priorCandidate.worktree ?? absoluteRoot) !== executionRoot) {
+      record = await bindOperationCandidate(absoluteRoot, operationId, createCandidateRevisionV1({
+        operationId,
+        candidateId: `candidate:${operationId}:r${priorCandidate.revision + 1}`,
+        projectId: priorCandidate.projectId,
+        taskId: priorCandidate.taskId,
+        revision: priorCandidate.revision + 1,
+        parentCandidateId: priorCandidate.candidateId,
+        sourceDigest: await computeWorktreeDigest(executionRoot),
+        workspace: workspace.workspaceId,
+        worktree: executionRoot,
+        createdAt: new Date().toISOString()
+      }));
+      // Binding a workspace candidate clears the frozen policy; participant launches require
+      // a policy that binds the current candidate revision and digest before they can start.
+      record = await bindBootstrapOperationPolicy(absoluteRoot, config, record, bootstrapRoute, bootstrapAssurance, runContract);
+    } else await assertWorkspaceMatchesCandidate(executionRoot, priorCandidate);
     await syncOperationPortfolio(absoluteRoot, config.project.name, record);
     stopWatchdog = (deps.startWatchdog ?? startOperationWatchdog)(absoluteRoot, config, operationId);
 
@@ -277,7 +472,7 @@ async function executeOperationWithEnvironment(
       const report = await (deps.runAudit ?? runAudit)(executionRoot, config, { ...payload, auditId: record.id });
       const current = await loadOperation(absoluteRoot, operationId);
       if (current.status === "CANCELLED") return current;
-      return terminalizeOperation(
+      return await terminalizeOperation(
         absoluteRoot,
         operationId,
         {
@@ -302,22 +497,31 @@ async function executeOperationWithEnvironment(
         absoluteRoot,
         config,
         await loadOperation(absoluteRoot, operationId),
-        record.payload as ChangeOperationPayload
+        record.payload as ChangeOperationPayload,
+        preparedChange
       );
       const current = await loadOperation(absoluteRoot, operationId);
       if (current.status === "CANCELLED") return current;
-      return terminalizeOperation(
+      // A FAILED change run must carry its owning failing checks in the durable operation record
+      // instead of terminalizing with `error: null` (AEH-V2-0118).
+      const runFailure = result.run.status === "PASS" ? undefined : operationFailureDetail(result.run);
+      return await terminalizeOperation(
         absoluteRoot,
         operationId,
         {
           status: result.run.status === "PASS" ? "SUCCEEDED" : "FAILED",
           phase: "finished",
+          ...(runFailure ? { error: runFailure } : {}),
           finishedAt: new Date().toISOString(),
           result: {
             taskId: result.taskId,
-            mode: result.mode,
+            route: result.route,
             status: result.run.status,
             attempts: result.run.attempts,
+            acceptanceOracle: result.run.acceptanceOracle,
+            acceptanceOracleArtifact: result.run.acceptanceOracleArtifact,
+            objectiveCompletion: result.run.objectiveCompletion,
+            objectiveCompletionDecision: result.run.objectiveCompletionDecision,
             specChange: result.specChange,
             triageReasons: result.triageReasons
           }
@@ -328,24 +532,30 @@ async function executeOperationWithEnvironment(
     }
 
     const payload = record.payload as RunOperationPayload;
-    const contract = await loadTaskContract(absoluteRoot, payload.taskId, config);
+    const contract = runContract ?? await loadTaskContract(absoluteRoot, payload.taskId, config);
     if (executionRoot !== absoluteRoot) {
       await materializeTaskContext(absoluteRoot, executionRoot, config, contract);
     }
     const result = await (deps.runTask ?? runTask)(executionRoot, config, contract, { profile: payload.profile });
     const current = await loadOperation(absoluteRoot, operationId);
     if (current.status === "CANCELLED") return current;
-    return terminalizeOperation(
+    const runFailure = result.status === "PASS" ? undefined : operationFailureDetail(result);
+    return await terminalizeOperation(
       absoluteRoot,
       operationId,
       {
         status: result.status === "PASS" ? "SUCCEEDED" : "FAILED",
         phase: "finished",
+        ...(runFailure ? { error: runFailure } : {}),
         finishedAt: new Date().toISOString(),
         result: {
           taskId: result.taskId,
           status: result.status,
-          attempts: result.attempts
+          attempts: result.attempts,
+          acceptanceOracle: result.acceptanceOracle,
+          acceptanceOracleArtifact: result.acceptanceOracleArtifact,
+          objectiveCompletion: result.objectiveCompletion,
+          objectiveCompletionDecision: result.objectiveCompletionDecision
         }
       },
       deps,
@@ -354,7 +564,7 @@ async function executeOperationWithEnvironment(
   } catch (error) {
     const current = await loadOperation(absoluteRoot, operationId).catch(() => record);
     if (current.status === "CANCELLED") return current;
-    return terminalizeOperation(
+    return await terminalizeOperation(
       absoluteRoot,
       operationId,
       {
@@ -393,67 +603,229 @@ export async function cancelOperation(
 ): Promise<OperationRecordV2> {
   const absoluteRoot = path.resolve(root);
   const trace = deps.trace ?? recordPaseoTrace;
-  const run = deps.run ?? runProcess;
-  const record = await loadOperation(absoluteRoot, operationId);
-  if (isTerminalOperation(record.status)) return record;
-  const cleanupWarnings: string[] = [];
+  const run = deps.run ?? runShell;
+  const previousEpoch = process.env.AEH_CONTROLLER_EPOCH;
+  const previousToken = process.env.AEH_CONTROLLER_TOKEN;
+  try {
+    let record = await loadOperation(absoluteRoot, operationId);
+    if (isTerminalOperation(record.status)) return record;
+    const priorPolicy = assertCurrentCancellationPolicy(record);
 
-  const processHandles = await listManagedProcessHandles(absoluteRoot, operationId);
-  const descendantPids = record.pid ? await findDescendantProcessIds(record.pid, absoluteRoot) : [];
-  const processGroups = [...new Set(([
-    ...processHandles.map((handle) => handle.processGroupId),
-    ...processHandles.map((handle) => handle.pid),
-    ...descendantPids,
-    record.pid
-  ] as Array<number | undefined>).filter((pid): pid is number => typeof pid === "number" && Number.isInteger(pid) && pid > 0 && pid !== process.pid))];
-  await Promise.all(processGroups.map(async (pid) => {
-    try { await terminateManagedProcessGroup(pid); }
-    catch (error) { cleanupWarnings.push(`process group ${pid}: ${String(error)}`); }
-  }));
-  await clearManagedProcessHandles(absoluteRoot, operationId);
-
-  let agentIds = [...new Set([
-    ...(record.agents ?? []).map((agent) => agent.id),
-    ...Object.keys(record.participants),
-    ...record.supervision.generations.map((generation) => generation.agentId)
-  ].filter((agentId): agentId is string => Boolean(agentId)))];
-  if (agentIds.length > 0) {
-    await trace(absoluteRoot, "cleanup.discovery", { operationId, source: "operation-state", agentCount: agentIds.length });
-  } else {
     try {
-      const discovered = await listManagedPaseoAgents(absoluteRoot, { "aeh.operation": operationId });
-      agentIds = [...new Set(discovered.map((agent) => agent.id))];
-      await trace(absoluteRoot, "cleanup.discovery", { operationId, source: "paseo-list-compatibility", agentCount: agentIds.length, reason: "legacy operation record has no registered agent identities" });
+      record = await claimControllerEpoch(absoluteRoot, operationId, `controller:cancel:${process.pid}`, {
+        pid: process.pid,
+        cause: "cancellation",
+        humanActorId: deps.humanActorId,
+        expectedCancellation: {
+          operationExecutionRevision: record.operationExecutionRevision!,
+          candidateDigest: record.candidateRevision!.identityDigest,
+          policyDigest: priorPolicy.digest,
+          controllerEpoch: currentControllerEpoch(record)
+        }
+      });
     } catch (error) {
-      cleanupWarnings.push(`agent discovery: ${String(error)}`);
-      await trace(absoluteRoot, "cleanup.cli.error", { operationId, error: String(error) });
+      const latest = await loadOperation(absoluteRoot, operationId).catch(() => undefined);
+      if (latest && isTerminalOperation(latest.status)) return latest;
+      throw error;
     }
-  }
+    process.env.AEH_CONTROLLER_EPOCH = String(currentControllerEpoch(record));
+    assertCurrentControllerOwner(record, "operation cancellation");
+    record = await rebindPolicyToCurrentCancellationEpoch(absoluteRoot, record, priorPolicy);
+    const cancellationFence = {
+      operationId: record.id,
+      candidate: record.candidateRevision!,
+      operationExecutionRevision: record.operationExecutionRevision!,
+      policyDigest: record.resolvedOperationPolicy!.digest,
+      controllerEpoch: currentControllerEpoch(record)
+    };
+    const cleanupWarnings: string[] = [];
+    const config = await loadProjectConfigIfPresent(absoluteRoot);
 
-  await trace(absoluteRoot, "cleanup.cli.required", {
-    operationId,
-    reason: "Paseo public SDK lacks cancel/kill parity for external controller cleanup",
-    agentCount: agentIds.length
-  });
-  for (const agentId of agentIds) {
-    const stopped = await run(`paseo stop ${quote(agentId)}`, { cwd: absoluteRoot, timeoutMs: 30_000 }).catch((error) => ({ exitCode: 1, stdout: "", stderr: String(error), durationMs: 0 }));
-    await trace(absoluteRoot, "cleanup.cli.stop", { operationId, agentId, exitCode: stopped.exitCode });
-    if (stopped.exitCode !== 0) cleanupWarnings.push(`agent ${agentId}: ${stopped.stderr || stopped.stdout || `exit ${stopped.exitCode}`}`);
-  }
+    const processHandles = await listManagedProcessHandles(absoluteRoot, operationId);
+    const descendantPids = record.pid ? await findDescendantProcessIds(record.pid, absoluteRoot) : [];
+    const processGroups = [...new Set(([
+      ...processHandles.map((handle) => handle.processGroupId),
+      ...processHandles.map((handle) => handle.pid),
+      ...descendantPids,
+      record.pid
+    ] as Array<number | undefined>).filter((pid): pid is number => typeof pid === "number" && Number.isInteger(pid) && pid > 0 && pid !== process.pid))];
+    for (const pid of processGroups) {
+      const latest = await loadOperation(absoluteRoot, operationId);
+      assertCancellationFence(latest, cancellationFence, "operation cancellation process fencing");
+      try { await terminateManagedProcessGroup(pid); }
+      catch (error) { cleanupWarnings.push(`process group ${pid}: ${String(error)}`); }
+      if (!(await waitForProcessExit(pid, 1_000))) cleanupWarnings.push(`process group ${pid}: process remained live after termination signals`);
+    }
+    const beforeHandleCleanup = await loadOperation(absoluteRoot, operationId);
+    assertCancellationFence(beforeHandleCleanup, cancellationFence, "operation cancellation handle cleanup");
+    await clearManagedProcessHandles(absoluteRoot, operationId);
 
-  const config = await loadProjectConfigIfPresent(absoluteRoot);
-  return terminalizeOperation(
-    absoluteRoot,
-    operationId,
-    {
-      status: "CANCELLED",
-      phase: "cancelled",
-      finishedAt: new Date().toISOString(),
-      cleanupWarnings: cleanupWarnings.length ? cleanupWarnings : undefined
-    },
-    deps,
-    config
-  );
+    let agentIds = [...new Set([
+      ...(record.agents ?? []).map((agent) => agent.id),
+      ...Object.keys(record.participants),
+      ...record.supervision.generations.map((generation) => generation.agentId)
+    ].filter((agentId): agentId is string => Boolean(agentId)))];
+    // Authority participant identities (`participant:<digest>`) are not provider
+    // sessions and cannot be stopped through the Paseo boundary; actual sdk/cli
+    // sessions and explicitly registered agents are still stopped.
+    const authorityOnly = agentIds.filter((agentId) => /^participant:[0-9a-f]{16}$/.test(agentId));
+    if (authorityOnly.length) {
+      agentIds = agentIds.filter((agentId) => !authorityOnly.includes(agentId));
+      await trace(absoluteRoot, "cleanup.authority-identities.skipped", { operationId, agentIds: authorityOnly });
+    }
+    if (agentIds.length > 0) {
+      await trace(absoluteRoot, "cleanup.discovery", { operationId, source: "operation-state", agentCount: agentIds.length });
+    } else if (config?.orchestration?.provider === "paseo") {
+      try {
+        const discovered = await listManagedPaseoAgents(absoluteRoot, { "aeh.operation": operationId });
+        agentIds = [...new Set(discovered.map((agent) => agent.id))];
+        await trace(absoluteRoot, "cleanup.discovery", { operationId, source: "paseo-list-compatibility", agentCount: agentIds.length, reason: "operation record has no registered agent identities" });
+      } catch (error) {
+        cleanupWarnings.push(`agent discovery: ${String(error)}`);
+        await trace(absoluteRoot, "cleanup.cli.error", { operationId, error: String(error) });
+      }
+    }
+
+    await trace(absoluteRoot, "cleanup.cli.required", {
+      operationId,
+      reason: "Paseo public SDK lacks cancel/kill parity for external controller cleanup",
+      agentCount: agentIds.length
+    });
+    for (const agentId of agentIds) {
+      const latest = await loadOperation(absoluteRoot, operationId);
+      assertCancellationFence(latest, cancellationFence, "operation cancellation participant fencing");
+      if (isDeterministicPaseoSessionId(agentId)) {
+        // Scripted fixture sessions have no external process; their quiescence is
+        // observed through the deterministic inspect boundary instead.
+        await trace(absoluteRoot, "cleanup.deterministic.session-skipped", { operationId, agentId });
+        continue;
+      }
+      const stopped = await run(`paseo stop ${quote(agentId)}`, { cwd: absoluteRoot, timeoutMs: 30_000 }).catch((error) => ({ exitCode: 1, stdout: "", stderr: String(error), durationMs: 0 }));
+      await trace(absoluteRoot, "cleanup.cli.stop", { operationId, agentId, exitCode: stopped.exitCode });
+      if (stopped.exitCode !== 0) cleanupWarnings.push(`agent ${agentId}: ${stopped.stderr || stopped.stdout || `exit ${stopped.exitCode}`}`);
+    }
+
+    const runtimeSnapshot = await readManagedRuntimeSnapshot(absoluteRoot).catch((error) => {
+      cleanupWarnings.push(`provider runtime snapshot: ${String(error)}`);
+      return undefined;
+    });
+    for (const lease of runtimeSnapshot?.providerLeases.filter((item) => item.lifecycle?.operationId === operationId) ?? []) {
+      const current = await loadOperation(absoluteRoot, operationId);
+      assertCancellationFence(current, cancellationFence, "operation cancellation provider lease cleanup");
+      const sessionId = lease.lifecycle?.sessionId;
+      if (!sessionId) {
+        cleanupWarnings.push(`provider lease ${lease.leaseId}: no durable provider session id is available to prove cleanup`);
+        continue;
+      }
+      if (isDeterministicPaseoSessionId(sessionId)) {
+        // Scripted fixture sessions have no external process to inspect or stop.
+        const latest = await loadOperation(absoluteRoot, operationId);
+        assertCancellationFence(latest, cancellationFence, "operation cancellation deterministic lease release");
+        const leaseOwner = await createManagedRuntime({ root: absoluteRoot, projectId: runtimeProjectId(absoluteRoot), ownerId: lease.ownerId });
+        await leaseOwner.releaseProviderLease(lease.leaseId);
+        await trace(absoluteRoot, "cleanup.provider.lease.released", { operationId, provider: lease.provider, sessionId, leaseId: lease.leaseId, observedStatus: "idle" });
+        continue;
+      }
+      // Lease.provider names the model provider (for example, opencode). Its
+      // session ID is still a Paseo-managed session and must be inspected at
+      // that runtime boundary.
+      const inspect = deps.inspectProviderSession ?? (async (cwd: string, _provider: string, id: string) => inspectManagedPaseoAgent(cwd, id));
+      let observed = await inspect(absoluteRoot, lease.provider, sessionId).catch(() => undefined);
+      let status = observed?.status?.toLowerCase();
+      if (!isProviderSessionQuiescent(status)) {
+        const stopped = await run(`paseo stop ${quote(sessionId)}`, { cwd: absoluteRoot, timeoutMs: 30_000 }).catch((error) => ({ exitCode: 1, stdout: "", stderr: String(error), durationMs: 0 }));
+        await trace(absoluteRoot, "cleanup.provider.stop", { operationId, provider: lease.provider, sessionId, exitCode: stopped.exitCode });
+        if (stopped.exitCode !== 0) cleanupWarnings.push(`provider session ${sessionId}: ${stopped.stderr || stopped.stdout || `stop exited ${stopped.exitCode}`}`);
+        observed = await inspect(absoluteRoot, lease.provider, sessionId).catch(() => undefined);
+        status = observed?.status?.toLowerCase();
+      }
+      if (!isProviderSessionQuiescent(status)) {
+        cleanupWarnings.push(`provider session ${sessionId}: lifecycle remains uncertain after stop (status ${status ?? "unavailable"}); lease ${lease.leaseId} remains fenced`);
+        continue;
+      }
+      const latest = await loadOperation(absoluteRoot, operationId);
+      assertCancellationFence(latest, cancellationFence, "operation cancellation provider lease release");
+      const leaseOwner = await createManagedRuntime({ root: absoluteRoot, projectId: runtimeProjectId(absoluteRoot), ownerId: lease.ownerId });
+      await leaseOwner.releaseProviderLease(lease.leaseId);
+      await trace(absoluteRoot, "cleanup.provider.lease.released", { operationId, provider: lease.provider, sessionId, leaseId: lease.leaseId, observedStatus: status });
+    }
+
+    if (cleanupWarnings.length) {
+      const latest = await loadOperation(absoluteRoot, operationId);
+      assertCancellationFence(latest, cancellationFence, "operation cancellation fencing report");
+      await patchOperation(absoluteRoot, operationId, {
+        phase: "cancellation-fencing-required",
+        error: `Cancellation is not terminal because active writers could not be proven stopped: ${cleanupWarnings.join("; ")}.`,
+        cleanupWarnings
+      });
+      throw new Error(`AEH_CANCELLATION_FENCING_REQUIRED: cancellation cannot become terminal until every writer is fenced: ${cleanupWarnings.join("; ")}.`);
+    }
+
+    const latest = await loadOperation(absoluteRoot, operationId);
+    assertCancellationFence(latest, cancellationFence, "operation cancellation terminal transition");
+    const unresolvedActions = await listUnresolvedToolActionIntents(absoluteRoot, operationId);
+    if (unresolvedActions.length) {
+      const current = await loadOperation(absoluteRoot, operationId);
+      assertCancellationFence(current, cancellationFence, "operation cancellation reconciliation report");
+      await patchOperation(absoluteRoot, operationId, {
+        phase: "reconciling",
+        error: `Cancellation is fenced pending reconciliation of ${unresolvedActions.length} action intent(s): ${unresolvedActions.map((intent) => intent.actionKey).join(", ")}.`
+      });
+      throw new Error(`AEH_CANCELLATION_RECONCILIATION_REQUIRED: unresolved action intents must be reconciled before cancellation can become terminal: ${unresolvedActions.map((intent) => intent.actionKey).join(", ")}.`);
+    }
+    return await terminalizeOperation(
+      absoluteRoot,
+      operationId,
+      {
+        status: "CANCELLED",
+        phase: "cancelled",
+        finishedAt: new Date().toISOString(),
+        cleanupWarnings: cleanupWarnings.length ? cleanupWarnings : undefined
+      },
+      deps,
+      config
+    );
+  } finally {
+    if (previousEpoch === undefined) delete process.env.AEH_CONTROLLER_EPOCH;
+    else process.env.AEH_CONTROLLER_EPOCH = previousEpoch;
+    if (previousToken === undefined) delete process.env.AEH_CONTROLLER_TOKEN;
+    else process.env.AEH_CONTROLLER_TOKEN = previousToken;
+  }
+}
+
+function assertCurrentCancellationPolicy(record: OperationRecordV2) {
+  const candidate = record.candidateRevision;
+  const policy = record.resolvedOperationPolicy;
+  if (!candidate || !policy || !Number.isSafeInteger(record.operationExecutionRevision)) {
+    throw new Error("AEH_CANCELLATION_AUTHORITY_REQUIRED: cancellation requires current candidate, execution revision, and frozen policy identity.");
+  }
+  assertResolvedOperationPolicyV1(policy);
+  if (policy.operationId !== record.id || policy.operationExecutionRevision !== record.operationExecutionRevision
+    || policy.candidateRevision !== candidate.revision || policy.candidateDigest !== candidate.identityDigest
+    || policy.controllerEpoch !== currentControllerEpoch(record) || (candidate.projectId && policy.projectId !== candidate.projectId)) {
+    throw new Error("AEH_CANCELLATION_POLICY_STALE: cancellation policy does not match the current operation, candidate, execution revision, project, and epoch.");
+  }
+  return policy;
+}
+
+function isProviderSessionQuiescent(status?: string): status is "idle" | "completed" | "failed" | "stopped" {
+  return status === "idle" || status === "completed" || status === "failed" || status === "stopped";
+}
+
+function assertCancellationFence(record: OperationRecordV2, expected: { operationId: string; candidate: CandidateRevisionV1; operationExecutionRevision: number; policyDigest: string; controllerEpoch: number }, action: string): void {
+  assertCurrentControllerOwner(record, action);
+  if (record.id !== expected.operationId || currentControllerEpoch(record) !== expected.controllerEpoch
+    || record.operationExecutionRevision !== expected.operationExecutionRevision
+    || !record.candidateRevision || !candidateRevisionsEqual(record.candidateRevision, expected.candidate)
+    || record.resolvedOperationPolicy?.digest !== expected.policyDigest) {
+    throw new Error(`AEH_CANCELLATION_FENCED: ${action} no longer matches the operation, candidate, policy, execution revision, and controller epoch authorized for this cancellation.`);
+  }
+}
+
+async function rebindPolicyToCurrentCancellationEpoch(root: string, record: OperationRecordV2, previousPolicy: ReturnType<typeof assertCurrentCancellationPolicy>): Promise<OperationRecordV2> {
+  const { version: _version, digest: _digest, ...body } = previousPolicy;
+  const policy = compileResolvedOperationPolicy({ ...body, controllerEpoch: currentControllerEpoch(record) });
+  return bindResolvedOperationPolicy(root, record.id, policy);
 }
 
 export function createOperationId(kind: OperationKind, seed: string): string {
@@ -484,16 +856,111 @@ async function terminalizeOperation(
       boundary: "controller"
     }).catch(() => undefined);
   }
+  // Durable product-owned terminal reconciliation: release/archive/stop every
+  // resource whose ownership this operation proved. Failures stay visible in
+  // the receipt and are retried by the recovery sweep; they never rewrite the
+  // terminal status.
+  try {
+    const receipt = await reconcileOperationResources(root, operationId, {
+      ...(deps.run ? { run: deps.run } : {}),
+      ...(deps.trace ? { trace: deps.trace } : {}),
+      ...(deps.inspectProviderSession
+        ? { inspectAgent: (cwd: string, agentId: string) => deps.inspectProviderSession!(cwd, "paseo", agentId) }
+        : {}),
+      ...(deps.listOperationAgents ? { listOwnedAgents: deps.listOperationAgents } : {})
+    });
+    await trace(root, "operation.resource.reconciliation", {
+      operationId,
+      operationStatus: terminal.status,
+      cleanupComplete: receipt.cleanupComplete,
+      reconciled: receipt.dispositions.filter((item) => item.outcome === "reconciled").length,
+      alreadyReconciled: receipt.dispositions.filter((item) => item.alreadyReconciled).length,
+      failed: receipt.errors.length
+    }).catch(() => undefined);
+  } catch (error) {
+    await trace(root, "operation.resource.reconciliation-failed", {
+      operationId,
+      operationStatus: terminal.status,
+      error: error instanceof Error ? error.message : String(error)
+    }).catch(() => undefined);
+  }
   return loadOperation(root, operationId).catch(() => terminal);
+}
+
+/**
+ * Run the controller-owned GitHub issue import inside the already-bootstrapped managed operation.
+ * The bounded Planner launches with controller-issued ExecutionAuthorityV1 (candidate + epoch),
+ * the authored contract and normalized snapshot persist under the control root, and the intake
+ * terminal evidence is verified deterministically by the terminal gate.
+ */
+async function executeIssueIntakeOperation(root: string, config: HarnessProjectConfig, record: OperationRecordV2, deps: OperationControllerDeps, trace: typeof recordPaseoTrace): Promise<OperationRecordV2> {
+  const operationId = record.id;
+  const payload = record.payload as ChangeOperationPayload;
+  const intake = payload.issueIntake!;
+  const semanticRuntime = await (deps.createSemanticRuntime ?? createSemanticAssessmentRuntimeV1)(root, config, payload.profile ? { profile: payload.profile } : {});
+  const prepared: IssuePreparationResult = await (deps.runIssueIntake ?? prepareGithubIssueTask)(root, config, intake.number, {
+    refresh: intake.refresh,
+    force: intake.force,
+    semanticRuntime,
+    authoringPolicy: { route: "DELEGATED", assurance: "STANDARD" }
+  });
+  const snapshotPath = path.posix.join((config.workflow?.issueIntake?.snapshotDir ?? ".harness/issues").replaceAll("\\", "/"), `${prepared.taskId}.json`);
+  const contractPath = path.posix.join((config.sdd?.contractsDir ?? ".harness/contracts").replaceAll("\\", "/"), `${prepared.taskId}.yaml`);
+  const contractContent = await fs.readFile(path.resolve(root, contractPath), "utf8");
+  const sourceDigest = await computeWorktreeDigest(root);
+  const current = await loadOperation(root, operationId);
+  let candidateAdvanced = false;
+  if (current.status === "CANCELLED") return current;
+  if (current.candidateRevision && current.candidateRevision.sourceDigest !== sourceDigest) {
+    await bindOperationCandidate(root, operationId, createCandidateRevisionV1({
+      operationId,
+      candidateId: `candidate:${operationId}:r${current.candidateRevision.revision + 1}`,
+      projectId: current.candidateRevision.projectId,
+      taskId: current.candidateRevision.taskId,
+      revision: current.candidateRevision.revision + 1,
+      parentCandidateId: current.candidateRevision.candidateId,
+      sourceDigest,
+      workspace: current.workspaceId,
+      worktree: root,
+      createdAt: new Date().toISOString()
+    }));
+    candidateAdvanced = true;
+    await trace(root, "operation.issue-intake.candidate-advanced", { operationId, taskId: prepared.taskId, sourceDigest });
+  }
+  return await terminalizeOperation(root, operationId, {
+    status: "SUCCEEDED",
+    phase: "issue-intake-finished",
+    finishedAt: new Date().toISOString(),
+    result: {
+      issueIntake: {
+        version: 1,
+        taskId: prepared.taskId,
+        route: prepared.route,
+        normalizedBy: prepared.normalizedBy,
+        snapshot: { repository: prepared.snapshot.repository, number: prepared.snapshot.number, contentSha256: prepared.snapshot.contentSha256, path: snapshotPath },
+        contract: { path: contractPath, digest: sha256Utf8(contractContent) },
+        planner: { participantId: prepared.plannerParticipantId, sessionId: prepared.plannerSessionId },
+        semanticAssessmentDigest: prepared.semanticAssessment?.assessmentDigest,
+        traceability: prepared.traceability,
+        candidateAdvanced
+      }
+    }
+  }, deps, config);
 }
 
 async function ensureOperationWorkspace(
   root: string,
   record: OperationRecordV2,
   config: HarnessProjectConfig,
-  run: typeof runProcess,
+  run: typeof runShell,
   trace: typeof recordPaseoTrace
 ): Promise<OperationWorkspace> {
+  if (isDeterministicPaseoRuntimeEnabled()) {
+    // Fixture journeys execute against the disposable control root; no external
+    // Paseo worktree is materialized for the scripted provider boundary.
+    await trace(root, "workspace.deterministic.local-root", { operationId: record.id, kind: record.kind });
+    return { workspaceRoot: root };
+  }
   if (record.kind === "run") {
     const payload = record.payload as RunOperationPayload;
     const [existingRoot, existingId] = await Promise.all([
@@ -506,7 +973,7 @@ async function ensureOperationWorkspace(
         workspaceId: existingId ?? "",
         workspaceRoot: existingRoot
       });
-      return { workspaceId: existingId, workspaceRoot: existingRoot, reusedDelivery: true };
+      return { workspaceId: existingId, workspaceRoot: existingRoot, reusedDelivery: true, disposition: "DELIVERY_REUSED" };
     }
   }
 
@@ -514,7 +981,14 @@ async function ensureOperationWorkspace(
   if (record.kind === "audit") {
     const command = `paseo workspace create --isolation local --path ${quote(root)} --title ${quote(title)} --json`;
     await trace(root, "workspace.cli.required", { operationId: record.id, kind: record.kind, reason: "Paseo public SDK workspace create lacks isolation/title parity", isolation: "local" });
-    const result = await safeRun(run, command, root, 60_000);
+    let result: ProcessResult;
+    try {
+      result = await gatedWorkspaceCreate({ root, record, run, command, timeoutMs: 60_000, payload: { isolation: "local", path: root, title } });
+    } catch (error) {
+      const warning = `Paseo audit workspace could not be created: ${String(error)}`;
+      await trace(root, "workspace.cli.error", { operationId: record.id, error: warning });
+      return { workspaceRoot: root, warning };
+    }
     if (result.exitCode !== 0) {
       const warning = `Paseo audit workspace could not be created: ${result.stderr || result.stdout || `exit ${result.exitCode}`}`;
       await trace(root, "workspace.cli.error", { operationId: record.id, error: warning });
@@ -522,7 +996,7 @@ async function ensureOperationWorkspace(
       // write race; execution may continue at the repository root.
       return { workspaceRoot: root, warning };
     }
-    return { workspaceId: extractWorkspaceId(result.stdout), workspaceRoot: root };
+    return { workspaceId: extractWorkspaceId(result.stdout), workspaceRoot: root, disposition: "OPERATION_OWNED" };
   }
 
   const slug = `aeh-${record.id.toLowerCase().replace(/[^a-z0-9-]+/g, "-").slice(0, 80)}`;
@@ -540,7 +1014,7 @@ async function ensureOperationWorkspace(
     "--json"
   ].join(" ");
   await trace(root, "workspace.cli.required", { operationId: record.id, kind: record.kind, reason: "mutating operations require isolated worktree execution", isolation: "worktree", branch, base });
-  const result = await safeRun(run, command, root, 180_000);
+  const result = await gatedWorkspaceCreate({ root, record, run, command, timeoutMs: 180_000, payload: { isolation: "worktree", path: root, title, branch, base, slug } });
   if (result.exitCode !== 0) {
     throw new Error(`AEH_OPERATION_WORKTREE_REQUIRED: unable to create isolated worktree for ${record.id}: ${result.stderr || result.stdout || `exit ${result.exitCode}`}`);
   }
@@ -557,7 +1031,35 @@ async function ensureOperationWorkspace(
     throw new Error(`AEH_OPERATION_WORKTREE_REQUIRED: Paseo created a worktree workspace for ${record.id} but did not expose a resolvable worktree path.`);
   }
   await trace(root, "workspace.cli.created", { operationId: record.id, workspaceId: workspaceId ?? "", workspaceRoot, isolation: "worktree", branch });
-  return { workspaceId, workspaceRoot };
+  return { workspaceId, workspaceRoot, disposition: "OPERATION_OWNED" };
+}
+
+async function gatedWorkspaceCreate(input: {
+  root: string;
+  record: OperationRecordV2;
+  run: typeof runShell;
+  command: string;
+  timeoutMs: number;
+  payload: Record<string, unknown>;
+}): Promise<ProcessResult> {
+  const candidate = input.record.candidateRevision;
+  if (!candidate) throw new Error("AEH_OPERATION_WORKTREE_REQUIRED: workspace creation requires a bound CandidateRevision.");
+  const controllerEpoch = controllerEpochFromEnvironment();
+  if (controllerEpoch === undefined) throw new Error("DELIVERY_AUTHORITY_REQUIRED: workspace creation requires a fenced controller epoch.");
+  const authority: ToolActionAuthorityEvidenceV1 = { kind: "controller-authority", operationId: input.record.id, controllerEpoch };
+  let observed: ProcessResult | undefined;
+  const gate = await executeGatedAction({
+    root: input.root,
+    request: { root: input.root, operationId: input.record.id, participantId: controllerActorId(input.record.id), candidate, actionKey: `workspace:${input.record.id}:create`, action: "paseo.workspace.create", payload: input.payload, authority },
+    execute: async () => {
+      observed = await safeRun(input.run, input.command, input.root, input.timeoutMs);
+      return { outcome: observed.exitCode === 0 ? "SUCCEEDED" as const : "FAILED" as const, evidence: { exitCode: observed.exitCode, stderr: (observed.stderr ?? "").slice(-2000), stdout: (observed.stdout ?? "").slice(-2000) } };
+    },
+    reconcile: (intent) => reconcileToolAction(input.root, intent, input.payload)
+  });
+  if (gate.status === "HUMAN_REQUIRED" || gate.status === "RECONCILIATION_REQUIRED") throw new Error(`AEH_OPERATION_WORKTREE_REQUIRED: workspace creation requires human reconciliation: ${gate.detail}`);
+  if (!observed) throw new Error(`AEH_OPERATION_WORKTREE_REQUIRED: workspace creation did not run: ${gate.detail}`);
+  return observed;
 }
 
 export function extractWorkspaceId(text: string): string | undefined {
@@ -628,7 +1130,7 @@ function findBranchWorkspace(value: unknown, branch: string): { workspaceId?: st
   return undefined;
 }
 
-async function safeRun(run: typeof runProcess, command: string, cwd: string, timeoutMs: number): Promise<ProcessResult> {
+async function safeRun(run: typeof runShell, command: string, cwd: string, timeoutMs: number): Promise<ProcessResult> {
   try { return await run(command, { cwd, timeoutMs }); }
   catch (error) { return { exitCode: 1, stdout: "", stderr: String(error), durationMs: 0 }; }
 }
@@ -639,14 +1141,22 @@ async function loadProjectConfigIfPresent(root: string): Promise<HarnessProjectC
   return loadProjectConfig(root);
 }
 
-function initialIntent(kind: OperationKind, payload: OperationPayload): OperationRecordV2["intent"] {
+function initialIntent(kind: OperationKind, payload: OperationPayload, changePreflight?: ChangePreflightV1): OperationRecordV2["intent"] {
   if (kind === "audit") {
     const audit = payload as AuditOperationPayload;
     return { request: audit.request, classification: "AUDIT", risk: audit.risk, priority: 50, semanticDecision: audit.intentDecision };
   }
   if (kind === "change") {
     const change = payload as ChangeOperationPayload;
-    return { request: change.request, classification: "CHANGE", risk: change.risk, priority: change.priority ?? 50, semanticDecision: change.intentDecision };
+    return {
+      request: change.request,
+      classification: "CHANGE",
+      route: changePreflight?.triage.route,
+      assurance: changePreflight?.triage.assurance,
+      risk: change.risk,
+      priority: change.priority ?? 50,
+      semanticDecision: change.intentDecision
+    };
   }
   return { classification: "RUN", priority: (payload as RunOperationPayload).priority ?? 50, semanticDecision: (payload as RunOperationPayload).intentDecision };
 }
@@ -705,4 +1215,17 @@ async function findDescendantProcessIds(rootPid: number, operationRoot: string):
     } catch { return undefined; }
   }));
   return [...new Set([...descendants, ...related.filter((pid): pid is number => pid !== undefined)])];
+}
+
+async function waitForProcessExit(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try { process.kill(pid, 0); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") return true;
+      return false;
+    }
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
 }

@@ -16,9 +16,6 @@ controlPlane:
   include: []
 
 workflow:
-  quick:
-    maxFiles: 5
-    disallowedDomains: [security, authentication, authorization, architecture, database, schema, migration, api-contract]
   issueIntake:
     enabled: true
     snapshotDir: .harness/issues
@@ -35,9 +32,7 @@ workflow:
     distributed: false
   reviews:
     enabled: true
-    reviewQuick: false
     leadAcceptance: true
-    leadAcceptanceQuick: false
     quality:
       severityPoints: { critical: 300, high: 75, medium: 24, low: 3, note: 1 }
     convergence:
@@ -53,17 +48,17 @@ workflow:
       replanResumeStage: 2
       stages:
         - { name: normal, action: remediate }
-        - { name: quality, action: remediate, agent: quality-implementer }
-        - { name: senior, action: remediate, agent: senior-implementer, model: "@brain" }
-        - { name: diagnosis, action: diagnose, agent: oracle, model: "@brain" }
-        - { name: replan, action: replan, agent: planner, model: "@brain" }
+        - { name: quality, action: remediate, role: Implementer }
+        - { name: senior, action: remediate, role: Implementer, model: "@brain" }
+        - { name: diagnosis, action: diagnose, role: Reviewer, model: "@brain" }
+        - { name: replan, action: replan, role: Planner, model: "@brain" }
 
 orchestration:
   provider: paseo
   required: false
   worker:
     provider: opencode
-    model: deepseek-v4-flash
+    model: MiMo-V2.6-Flash
     maxRepairAttempts: 2
     timeoutSeconds: 1800
     titlePrefix: aeh-self

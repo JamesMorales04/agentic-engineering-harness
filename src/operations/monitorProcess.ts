@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import process from "node:process";
+import { registerOperationResource } from "../runtime/operationResources.js";
 import { loadOperation, patchOperationMetadata, type OperationRecordV2 } from "./state.js";
 
 export interface SpawnOperationMonitorOptions {
@@ -44,6 +45,18 @@ export async function spawnOperationMonitor(
       })().catch(() => undefined);
     });
     child.unref();
+    if (child.pid) {
+      // Durable operation ownership: the detached liveness monitor is
+      // terminated by the operation's terminal/recovery resource reconciliation
+      // instead of lingering after the operation is terminal.
+      await registerOperationResource(absoluteRoot, operation.id, {
+        kind: "managed-process",
+        identity: String(child.pid),
+        reclaim: "TERMINATE_ON_TERMINAL",
+        label: "operation liveness monitor",
+        owner: { source: "controller-registration", controllerEpoch: operation.controller?.epoch }
+      }).catch(() => undefined);
+    }
     return child.pid;
   } catch (error) {
     const current = await loadOperation(absoluteRoot, operation.id).catch(() => operation);

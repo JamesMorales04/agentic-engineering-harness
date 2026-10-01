@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 18,
+  "runId": "r18-journey-1",
+  "campaign": "issue-journey",
+  "generatedAt": "2026-09-29T15:31:05.854Z",
+  "checkout": "/home/james/Desarrollo/agentic-engineering-harness",
+  "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13IssueJourneyCampaign.mjs",
+        "sha256": "2b4c6f56128cccea904ab0ef131b44532459e593f66cc5fef938d58592da971b"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "3395aa19210f36b90fd22bd62056dbb8d5c48aab5a85bce4e5ea4d591cfd5146"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "8336e696e1bf628ad66201efca7e109fec4fb74a6527acb7d85ac81431cb98ea"
+  },
+  "harnessBuildIdentity": {
+    "version": 1,
+    "packageVersion": "0.8.4",
+    "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "releaseId": "release-1790695009366-659073-809d9241",
+    "buildDigest": "ca1d8f5628784ff6b7d0650326d1655d2f25697ecf037780b3e05edbc7f5319a",
+    "dirty": true
+  },
+  "repository": {
+    "name": "JamesMorales04/aeh-s13-round3-20260927035743-6bb5da",
+    "visibility": "private",
+    "createdByCampaign": false
+  },
+  "issue": {
+    "number": 1,
+    "created": false,
+    "edited": false
+  },
+  "authorization": {
+    "authorizationId": "s13-github-effect-authorization-2026-09-28",
+    "artifactDigest": "272c5cb76158a7c312edd4d8d97cd6545b599e5c57c7978bbfc3742c573bd460",
+    "allowedEffects": [
+      "git.push",
+      "github.branch.create",
+      "github.issue.create"
+    ],
+    "resourceNamePrefix": "aeh-s13-",
+    "consumedBeforeAnyExternalCommand": true
+  },
+  "lanes": [
+    {
+      "capability": "issue-driven",
+      "result": "FAIL",
+      "checks": null,
+      "error": "Error: governed journey did not reach terminal SUCCEEDED (status=FAILED)\n    at file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13IssueJourneyCampaign.mjs:218:55",
+      "artifact": "docs/evidence/s13/issue-journey-lanes/round-18/r18-journey-1/issue-driven.json"
+    }
+  ],
+  "result": "SLICE_BLOCKED",
+  "checkoutProof": {
+    "trackedDigestBefore": "4013deb5de39e6e59346d4edcb89afdc39ece86e9b13aa6ecc7dbc97c2750dfc",
+    "trackedDigestAfter": "d62b214fbfc7207ebd1920e536099e56be42b70e58db9e6926dad2f26a891708",
+    "trackedFiles": 668,
+    "checkoutUntouched": false,
+    "postRunTrackedDocEditWindow": {
+      "opensAfterLaneFinish": true,
+      "note": "S13 tracked documentation/evidence is edited after lane execution; the recorded digest is the source-tree digest at lane end (R11-F6)."
+    }
+  }
+}

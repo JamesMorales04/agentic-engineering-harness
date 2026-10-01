@@ -22,6 +22,9 @@ import type {
   CertificationNetworkPolicy,
   ProviderEvent
 } from "./types.js";
+import { CERTIFICATION_CAPABILITY_MATRIX } from "./types.js";
+import { getBuildIdentity } from "../build/identity.js";
+import { assertWorkspaceSourceDigest } from "../candidates/identity.js";
 
 export interface AgentProvider {
   readonly name: string;
@@ -77,6 +80,7 @@ export class CertificationCore {
     const evaluateOracle = async (attempt: number): Promise<CertificationOracleResult> => {
       const remaining = policy.budget.maxDurationMs - durationMs;
       if (remaining <= 0) throw new Error("Certification duration budget exhausted before oracle evaluation.");
+      await assertCandidateWorkspaceCurrent(candidate);
       const controller = new AbortController();
       const began = Date.now();
       const startedAt = new Date(began).toISOString();
@@ -86,6 +90,7 @@ export class CertificationCore {
           this.oracle.evaluate({ candidate, policy, attempt, signal: controller.signal, actor: actorResult }),
           new Promise<CertificationOracleResult>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error("Certification oracle timed out.")); }, remaining); })
         ]);
+        await assertCandidateWorkspaceCurrent(candidate);
         const finishedAt = nowIso();
         attempts.push({ attempt: attempts.length + 1, role: "oracle", status: result.status, startedAt, finishedAt, durationMs: Date.now() - began, message: result.failures.length ? result.failures.map((failure) => failure.message).join("; ") : undefined });
         return result;
@@ -111,7 +116,7 @@ export class CertificationCore {
     let failureReason: CertificationFailurePacket["reason"] | undefined;
     let failures = oracleResult.failures;
     const budgetEvidenceMissing = providerResults.length ? budgetEvidenceUnavailable(policy, usage, usageKnown) : undefined;
-    const modelE2E = modelE2ELane(actorResult, oracleResult, input.requireModelEvidence === true);
+    const modelE2E = modelE2ELane(actorResult, oracleResult, input.requireModelE2E === true || input.requireModelEvidence === true);
     const modelRequired = input.requireModelE2E === true;
     if (policy.security.requireNetworkIsolation && !networkPolicy.enforced) {
       state = "BLOCKED";
@@ -171,11 +176,25 @@ export class CertificationCore {
       }
     }
 
+    try {
+      await assertCandidateWorkspaceCurrent(candidate);
+    } catch (error) {
+      state = "BLOCKED";
+      failureReason = "SAFETY_FAILURE";
+      failures = [{ id: "candidate.identity", category: "candidate", message: String(error) }];
+    }
+
+    const capability = input.capability ? buildCapabilityResult(input.capability, oracleResult, modelE2E, modelRequired) : undefined;
+    if (state === "ACCEPTED" && capability && capability.overall !== "PASS") {
+      state = "HUMAN_REQUIRED";
+      failureReason = "SAFETY_FAILURE";
+      failures = [{ id: "capability.evidence", category: "certification", message: `Capability '${input.capability}' lacks complete required contract/model evidence.` }];
+    }
     const accepted = state === "ACCEPTED";
     const packet = !accepted ? makeFailurePacket(certificationId, candidate, failureReason ?? "ORACLE_FAILURE", failures, attempts.filter((item) => item.role === "repair").length) : undefined;
-    const capability = input.capability ? buildCapabilityResult(input.capability, oracleResult, modelE2E, modelRequired) : undefined;
     const report: CertificationReport = {
       version: 1,
+      buildIdentity: getBuildIdentity(),
       certificationId,
       candidate,
       policyId: policy.id,
@@ -248,7 +267,10 @@ function modelE2ELane(result: AgentProviderResult | undefined, oracle: Certifica
 }
 
 function buildCapabilityResult(capability: NonNullable<CertificationRequest["capability"]>, oracle: CertificationOracleResult, modelE2E: ReturnType<typeof modelE2ELane>, requiredModelE2E: boolean): CertificationCapabilityResult {
-  const contract = { status: oracle.status === "PASS" ? "PASS" as const : "FAIL" as const, evidence: { oracleId: oracle.oracleId, checks: oracle.checks } };
+  const requirement = CERTIFICATION_CAPABILITY_MATRIX.find((item) => item.capability === capability);
+  const missingEvidence = requirement?.requiredEvidence.filter((id) => !oracle.evidence[id] && !oracle.checks.some((check) => check.id === id && check.status === "PASS" && check.evidence !== undefined)) ?? [];
+  const contractStatus = oracle.status !== "PASS" ? "FAIL" as const : missingEvidence.length ? "INSUFFICIENT" as const : "PASS" as const;
+  const contract = { status: contractStatus, evidence: { oracleId: oracle.oracleId, checks: oracle.checks, requiredEvidence: requirement?.requiredEvidence ?? [], missingEvidence } };
   const overall = contract.status !== "PASS" ? "FAIL" as const : modelE2E.status === "PASS" ? "PASS" as const : "PARTIAL" as const;
   return { capability, contract, modelE2E, overall, requiredModelE2E };
 }
@@ -262,8 +284,38 @@ async function normalizeCandidate(input: CandidateRevision): Promise<CandidateRe
   if (!input.id || input.version !== 1) throw new Error("Invalid CandidateRevision.");
   const root = await fs.realpath(path.resolve(input.root));
   const stat = await fs.stat(root); if (!stat.isDirectory()) throw new Error("CandidateRevision.root must be a directory.");
-  if (input.artifactPath) { const artifact = await fs.realpath(path.resolve(input.artifactPath)); if (!isWithin(root, artifact)) throw new Error("Candidate artifact escapes its certification workspace."); return { ...input, root, artifactPath: artifact }; }
+  if (input.artifactPath) {
+    const artifact = await fs.realpath(path.resolve(input.artifactPath));
+    if (!isWithin(root, artifact)) throw new Error("Candidate artifact escapes its certification workspace.");
+    const expectedArtifactDigest = input.packedArtifactDigest ?? input.sourceDigest;
+    if (!isDigest(expectedArtifactDigest)) throw new Error("Candidate artifact requires a frozen packedArtifactDigest or sourceDigest.");
+    const observedArtifactDigest = await sha256File(artifact);
+    if (observedArtifactDigest !== expectedArtifactDigest) throw new Error(`CANDIDATE_WORKSPACE_MISMATCH: packed artifact digest differs from CandidateRevision ${input.id}.`);
+    if (!isDigest(input.treeDigest)) throw new Error("Packed CandidateRevision requires a frozen treeDigest for its observed certification workspace.");
+    await assertWorkspaceSourceDigest(root, input.treeDigest, { candidateId: input.id, candidateRevision: input.revision ?? 0, candidateIdentityDigest: input.candidateRevisionId ?? input.id });
+    return { ...input, root, artifactPath: artifact };
+  }
+  const expectedTreeDigest = input.treeDigest ?? input.sourceDigest;
+  if (!isDigest(expectedTreeDigest)) throw new Error("CandidateRevision requires a frozen sourceDigest/treeDigest before certification.");
+  await assertWorkspaceSourceDigest(root, expectedTreeDigest, { candidateId: input.id, candidateRevision: input.revision ?? 0, candidateIdentityDigest: input.candidateRevisionId ?? input.id });
   return { ...input, root };
+}
+
+async function sha256File(file: string): Promise<string> { return crypto.createHash("sha256").update(await fs.readFile(file)).digest("hex"); }
+function isDigest(value: unknown): value is string { return typeof value === "string" && /^[a-f0-9]{64}$/i.test(value); }
+
+async function assertCandidateWorkspaceCurrent(candidate: CandidateRevision): Promise<void> {
+  if (candidate.artifactPath) {
+    const expectedArtifactDigest = candidate.packedArtifactDigest ?? candidate.sourceDigest;
+    if (!isDigest(expectedArtifactDigest) || await sha256File(candidate.artifactPath) !== expectedArtifactDigest) {
+      throw new Error(`CANDIDATE_WORKSPACE_MISMATCH: packed artifact for CandidateRevision ${candidate.id} changed during certification.`);
+    }
+  }
+  const expectedTreeDigest = candidate.treeDigest ?? (!candidate.artifactPath ? candidate.sourceDigest : undefined);
+  if (!isDigest(expectedTreeDigest)) {
+    throw new Error(`CANDIDATE_WORKSPACE_MISMATCH: certification workspace changed during observation of CandidateRevision ${candidate.id}.`);
+  }
+  await assertWorkspaceSourceDigest(candidate.root, expectedTreeDigest, { candidateId: candidate.id, candidateRevision: candidate.revision ?? 0, candidateIdentityDigest: candidate.candidateRevisionId ?? candidate.id });
 }
 
 function withCertificationEnvironment(request: AgentProviderRequest): AgentProviderRequest { return { ...request, environment: { ...(request.environment ?? {}), AEH_CERTIFICATION_ACTIVE: "1", AEH_CERTIFICATION_DEPTH: "1" } }; }

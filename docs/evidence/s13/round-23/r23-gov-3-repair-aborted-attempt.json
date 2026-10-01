@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 23,
+  "kind": "ABORTED_LANE_ATTEMPT_RECONCILIATION",
+  "runId": "r23-gov-3",
+  "generatedAt": "2026-09-30T14:31:20Z",
+  "operationId": "CHANGE-20260930T142423Z-8e5ffed1",
+  "operationStatusAtReconciliation": "RUNNING",
+  "operationPhaseAtReconciliation": "context",
+  "operationRevisionAtReconciliation": 38,
+  "operationStateCopy": "/tmp/opencode/r23/gov-3-operation-state.json",
+  "reason": "Deliberately aborted by the Round-23 lead: the lane's bound lead agent was created by the harness with a hard-coded codex/gpt-6-luna (harness defect), and the codex ChatGPT account is hard usage-limit blocked in this environment (Paseo daemon error 'You've hit your usage limit ... try again at 1:10 PM' for every codex turn). The errored lead cannot serve the acceptance continuation, so the run could not produce a valid terminal PASS. The harness was repaired (lane lead creation now honors the disclosed S13_GOV_BRAIN_* fixture topology override) before the replacement run. No product cancel was attempted (it would require a HumanDecision; none was minted).",
+  "controllerPid": 25735,
+  "controllerAlive": false,
+  "terminatedProcesses": [
+    24584,
+    25735,
+    25736,
+    26524,
+    28954,
+    29089,
+    29090,
+    29091
+  ],
+  "terminatedProcessDisposition": "campaign harness process, operation execute, operation monitor and fixture child processes of the deliberately aborted attempt were terminated (SIGTERM, 0 survivors at the time of writing); the non-terminal operation state bytes and the lane-created Paseo workspaces are preserved and reported (a campaign abort is not terminality; AEH-V2-0112 predicate not satisfied).",
+  "workspaces": [
+    {
+      "workspaceId": "wks_596896218c1466c5",
+      "project": "lane-repair-fixture",
+      "cwd": "/home/james/.paseo/worktrees/0yy63els/aeh-change-20260930t142423z-8e5ffed1",
+      "role": "candidate worktree",
+      "laneCreated": true,
+      "disposition": "PRESERVED_TERMINALITY_UNPROVABLE"
+    },
+    {
+      "workspaceId": "wks_94415c0da1acaa3c",
+      "project": "lane-repair-fixture",
+      "cwd": "/tmp/aeh-s13-gov-Zo72ph/work/lane-repair-fixture",
+      "role": "fixture root",
+      "laneCreated": true,
+      "disposition": "PRESERVED_TERMINALITY_UNPROVABLE"
+    }
+  ],
+  "staging": "/tmp/aeh-s13-gov-Zo72ph",
+  "agents": [
+    {
+      "agentId": "cfcf5eb3-b704-49be-8ba9-437e3f75d66d",
+      "role": "lane lead",
+      "provider": "codex",
+      "model": "gpt-6-luna",
+      "status": "error",
+      "errorClass": "codex ChatGPT usage limit (harness hard-coded provider; fixed in the harness for subsequent runs)"
+    },
+    {
+      "agentId": "ff78ea48-5636-4b59-8c57-195199c6ca32",
+      "role": "operation supervisor generation 1 (opencode-go/gpt-6-luna via the disclosed fixture brain override)",
+      "status": "ACTIVE at abort"
+    }
+  ],
+  "checkoutUntouched": true,
+  "note": "No terminal state is claimed for this operation. The attempt is preserved as an aborted-attempt record only; it is not evidence for or against the repair capability."
+}

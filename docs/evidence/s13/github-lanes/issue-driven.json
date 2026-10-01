@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "capability": "issue-driven",
+  "startedAt": "2026-09-28T03:23:38.549Z",
+  "checks": [
+    {
+      "id": "issue.snapshot",
+      "ok": true,
+      "message": "frozen snapshot bd777eed917f matches live issue #1"
+    },
+    {
+      "id": "issue.drift-gate",
+      "ok": true,
+      "message": "ISSUE_DRIFT: GitHub issue #1 title/body changed after freeze (bd777eed917f -> baaf3ae5a7cf)."
+    },
+    {
+      "id": "issue.operation-import",
+      "ok": true,
+      "message": "operation-bound issue import completed"
+    }
+  ],
+  "inspect": {
+    "exitCode": 0,
+    "snapshotSha256": "bd777eed917f9e30463af3c1790e3d5baf00017c17225ca32b1aa99a43bdfcc8",
+    "stdout": "INSPECTED — JamesMorales04/aeh-s13-round3-20260928032308-4317d7#1 S13 certification fixture: real issue-driven snapshot\ncontentSha256=bd777eed917f9e30463af3c1790e3d5baf00017c17225ca32b1aa99a43bdfcc8\nsemanticRoute=not_assessed\n{\n  \"request\": \"S13 certification fixture: real issue-driven snapshot\\nFreeze this real GitHub issue snapshot, verify that the deterministic drift gate rejects later edits, and report the exact operation-bound import disposition.\",\n  \"files\": [],\n  \"domains\": [],\n  \"risk\": \"low\",\n  \"flags\": []\n}"
+  },
+  "drift": {
+    "clean": {
+      "ok": true,
+      "message": "GitHub issue #1 still matches the frozen intake snapshot.",
+      "remote": {
+        "version": 1,
+        "provider": "github",
+        "repository": "JamesMorales04/aeh-s13-round3-20260928032308-4317d7",
+        "number": 1,
+        "url": "https://github.com/JamesMorales04/aeh-s13-round3-20260928032308-4317d7/issues/1",
+        "title": "S13 certification fixture: real issue-driven snapshot",
+        "body": "Freeze this real GitHub issue snapshot, verify that the deterministic drift gate rejects later edits, and report the exact operation-bound import disposition.",
+        "state": "open",
+        "labels": [],
+        "createdAt": "2026-09-28T03:23:38Z",
+        "updatedAt": "2026-09-28T03:23:38Z",
+        "fetchedAt": "2026-09-28T03:23:40.643Z",
+        "contentSha256": "bd777eed917f9e30463af3c1790e3d5baf00017c17225ca32b1aa99a43bdfcc8"
+      }
+    },
+    "afterEdit": {
+      "ok": false,
+      "message": "ISSUE_DRIFT: GitHub issue #1 title/body changed after freeze (bd777eed917f -> baaf3ae5a7cf)."
+    },
+    "editExitCode": 0
+  },
+  "operationImport": {
+    "exitCode": 0,
+    "stdout": "Prepared GH-1 from JamesMorales04/aeh-s13-round3-20260928032308-4317d7#1: route=FORMAL_SDD, normalizedBy=planner+semantic-assessment, sha=bd777eed917f, operationId=CHANGE-20260928T032343Z-311dddd6\n\nRequirement | Proposal | Spec | Design | Acceptance | Tasks | Contract | Validators\n--- | --- | --- | --- | --- | --- | --- | ---\nGH-1-R1 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | gherkin\nGH-1-R2 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | gherkin\nGH-1-R3 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | gherkin",
+    "stderr": ""
+  },
+  "result": "PASS",
+  "finishedAt": "2026-09-28T03:31:03.579Z"
+}

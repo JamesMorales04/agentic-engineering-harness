@@ -1,9 +1,9 @@
-import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { HarnessProjectConfig } from "../core/types.js";
 import { loadAgentTopologySource, resolveAgentTopology } from "./config.js";
 import type { ResolvedAgentTopology } from "./types.js";
+import { sha256Canonical, sha256Utf8 } from "../core/digest.js";
 
 export interface TopologyCheckResult { ok: boolean; issues: string[]; output?: string; }
 
@@ -18,11 +18,11 @@ export async function compileAgentTopology(root: string, config: HarnessProjectC
   for (const [name, agent] of Object.entries(topology.agents)) {
     let prompt: string | undefined;
     let orchestratorPrompt: string | undefined;
-    if (agent.promptPath) { prompt = await fs.readFile(path.resolve(root, agent.promptPath), "utf8"); promptHashes[agent.promptPath] = sha(prompt); }
-    if (agent.orchestratorPromptPath) { orchestratorPrompt = await fs.readFile(path.resolve(root, agent.orchestratorPromptPath), "utf8"); promptHashes[agent.orchestratorPromptPath] = sha(orchestratorPrompt); }
+    if (agent.promptPath) { prompt = await fs.readFile(path.resolve(root, agent.promptPath), "utf8"); promptHashes[agent.promptPath] = sha256Utf8(prompt); }
+    if (agent.orchestratorPromptPath) { orchestratorPrompt = await fs.readFile(path.resolve(root, agent.orchestratorPromptPath), "utf8"); promptHashes[agent.orchestratorPromptPath] = sha256Utf8(orchestratorPrompt); }
     agents[name] = { ...agent, prompt, orchestratorPrompt };
   }
-  const runtime = { version: 1, profile: topology.profile, sourceHash: sha(JSON.stringify({ source, promptHashes })), models: topology.models, agents, routing: topology.routing, recovery: topology.recovery, councils: topology.councils };
+  const runtime = { version: 1, profile: topology.profile, sourceHash: sha256Canonical({ source, promptHashes }), models: topology.models, agents, routing: topology.routing, recovery: topology.recovery, councils: topology.councils };
   const generated = `${JSON.stringify(runtime, null, 2)}\n`;
   const output = path.resolve(root, config.agents?.generatedPath ?? ".harness/generated/agents.json");
   if (checkOnly) {
@@ -47,7 +47,6 @@ export async function validateAgentTopology(root: string, config: HarnessProject
 
 async function validateReferences(root: string, topology: ResolvedAgentTopology): Promise<string[]> {
   const issues: string[] = [];
-  const agentNames = new Set(Object.keys(topology.agents));
   for (const [name, agent] of Object.entries(topology.agents)) {
     for (const promptPath of [agent.promptPath, agent.orchestratorPromptPath].filter((value): value is string => Boolean(value))) {
       try { await fs.access(path.resolve(root, promptPath)); } catch { issues.push(`Agent ${name} references missing prompt ${promptPath}`); }
@@ -62,12 +61,9 @@ async function validateReferences(root: string, topology: ResolvedAgentTopology)
     }
   }
   for (const rule of topology.routing) {
-    if (rule.use && !agentNames.has(rule.use)) issues.push(`Routing rule ${rule.id} selects unknown agent ${rule.use}`);
-    for (const reviewer of rule.reviewers ?? []) if (!agentNames.has(reviewer)) issues.push(`Routing rule ${rule.id} references unknown reviewer ${reviewer}`);
-    for (const validator of rule.validators ?? []) if (!agentNames.has(validator)) issues.push(`Routing rule ${rule.id} references unknown validator ${validator}`);
+    for (const selector of [rule.select, ...(rule.review ?? [])].filter((value): value is NonNullable<typeof rule.select> => Boolean(value))) {
+      if (!Object.values(topology.agents).some((agent) => agent.role === selector.role && !agent.disabled)) issues.push(`Routing rule ${rule.id} selects unavailable role ${selector.role}`);
+    }
   }
-  for (const [failure, steps] of Object.entries(topology.recovery)) for (const step of steps ?? []) if (step.action === "agent" && step.agent && !agentNames.has(step.agent)) issues.push(`Recovery ${failure} references unknown agent ${step.agent}`);
-  for (const [name, council] of Object.entries(topology.councils)) for (const member of council.members) if (member.agent && !agentNames.has(member.agent)) issues.push(`Council ${name} references unknown agent ${member.agent}`);
   return [...new Set(issues)];
 }
-function sha(value: string): string { return crypto.createHash("sha256").update(value).digest("hex"); }

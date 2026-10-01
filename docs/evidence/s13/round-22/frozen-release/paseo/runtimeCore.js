@@ -1,0 +1,487 @@
+import process from "node:process";
+import { currentOperationContext, loadOperation, registerCurrentOperationAgent } from "../operations/state.js";
+import { providerLeaseWorkspaceKeyV1, runWithOperationProviderLease } from "../runtime/providerLifecycle.js";
+import { runExecutable, runShell } from "../utils/process.js";
+import { buildPaseoBackgroundRunCommand, detectPaseoCapabilities, extractPaseoAgentId } from "./capabilities.js";
+import { preflightPaseoProviderMode } from "./modePreflight.js";
+import { capturePaseoAgentTurnBaseline, preflightPaseoProviderModel, waitForPaseoAgentNative } from "./native.js";
+import { PaseoSdkUnavailableError, PaseoSdkTimeoutError, createPaseoSdkAgent, dispatchPaseoSdkAgent, inspectPaseoSdkAgent, listPaseoSdkAgents, materializePaseoSdkAgent, probePaseoSdkAgent, runPaseoSdkAgent, waitPaseoSdkAgent } from "./sdk.js";
+import { recordPaseoTrace } from "./trace.js";
+import { deterministicPaseoRuntimeDeps, isDeterministicPaseoRuntimeEnabled } from "./deterministicRuntime.js";
+const REAL_DEPS = {
+    run: runShell,
+    updateLabels: updatePaseoExecutionLabels,
+    detectCapabilities: detectPaseoCapabilities,
+    trace: recordPaseoTrace,
+    native: {
+        preflight: preflightPaseoProviderModel,
+        preflightMode: preflightPaseoProviderMode,
+        wait: waitForPaseoAgentNative,
+        capture: capturePaseoAgentTurnBaseline
+    },
+    sdk: {
+        create: createPaseoSdkAgent,
+        materialize: materializePaseoSdkAgent,
+        dispatch: dispatchPaseoSdkAgent,
+        wait: waitPaseoSdkAgent,
+        run: runPaseoSdkAgent,
+        probe: probePaseoSdkAgent,
+        inspect: inspectPaseoSdkAgent,
+        list: listPaseoSdkAgents
+    }
+};
+/** The runtime boundary selected for this process: real Paseo, or the file-scripted fixture boundary. */
+function defaultDeps() {
+    return isDeterministicPaseoRuntimeEnabled() ? deterministicPaseoRuntimeDeps() : REAL_DEPS;
+}
+export async function launchManagedPaseoAgent(root, options, deps = defaultDeps()) {
+    const trace = deps.trace ?? defaultDeps().trace;
+    if (!forceCli()) {
+        await ensurePreflight(root, options, deps);
+        await traceResolvedIdentity(root, options, trace);
+        try {
+            const created = fromSdk(await deps.sdk.create(root, { ...options, waitForFinish: false }));
+            await registerManagedAgent(root, options, created);
+            await trace(root, "agent.launch", { transport: "sdk", agentId: created.id ?? "", provider: options.provider, model: options.model ?? "", modeId: options.modeId ?? "", modeSource: options.modeSource ?? "", status: created.status ?? "unknown" });
+            if (!created.id || options.prompt === undefined || options.waitForFinish === false)
+                return created;
+            return waitManagedPaseoAgent(root, created.id, options.timeoutSeconds ?? secondsFromMs(options.timeoutMs), deps);
+        }
+        catch (error) {
+            if (!sdkCanFallback(error))
+                throw error;
+            await trace(root, "fallback.cli", { operation: "launch", provider: options.provider, model: options.model ?? "", modeId: options.modeId ?? "", reason: errorMessage(error) });
+            return launchCli(root, options, deps, `SDK unavailable: ${errorMessage(error)}`);
+        }
+    }
+    await trace(root, "fallback.cli", { operation: "launch", provider: options.provider, model: options.model ?? "", modeId: options.modeId ?? "", reason: "AEH_PASEO_FORCE_CLI=1" });
+    return launchCli(root, options, deps, "AEH_PASEO_FORCE_CLI=1 forced the compatibility lifecycle.");
+}
+export async function materializeManagedPaseoAgent(root, options, deps = defaultDeps()) {
+    if (forceCli())
+        throw new PaseoSdkUnavailableError("Idle agent materialization is SDK-only; AEH_PASEO_FORCE_CLI=1 is active.");
+    await ensurePreflight(root, options, deps);
+    const trace = deps.trace ?? defaultDeps().trace;
+    await traceResolvedIdentity(root, options, trace);
+    try {
+        const result = await withProviderSessionLease(root, options.provider, options.workspaceId, options.labels, undefined, deps, async () => {
+            const value = fromSdk(await deps.sdk.materialize(root, { ...options, prompt: undefined, waitForFinish: false }));
+            return { value, sessionId: value.id };
+        });
+        await registerManagedAgent(root, options, result);
+        await trace(root, "agent.materialize", { transport: "sdk", agentId: result.id ?? "", provider: options.provider, model: options.model ?? "", modeId: options.modeId ?? "", modeSource: options.modeSource ?? "", workspaceId: result.workspaceId ?? "" });
+        return result;
+    }
+    catch (error) {
+        if (sdkCanFallback(error))
+            throw new PaseoSdkUnavailableError(`Paseo SDK is required to materialize an idle visible agent. ${errorMessage(error)}`, { cause: error });
+        throw error;
+    }
+}
+export async function dispatchManagedPaseoAgent(root, agentId, prompt, timeoutSeconds, deps = defaultDeps()) {
+    const trace = deps.trace ?? defaultDeps().trace;
+    if (!forceCli()) {
+        try {
+            const result = fromSdk(await deps.sdk.dispatch(root, agentId, prompt, timeoutMs(timeoutSeconds)));
+            await trace(root, "agent.dispatch", { transport: "sdk", agentId, status: result.status ?? "unknown" });
+            return result;
+        }
+        catch (error) {
+            if (error instanceof PaseoSdkTimeoutError || (error instanceof Error && error.name === "PaseoSdkTimeoutError")) {
+                const stopped = await stopManagedPaseoAgent(root, agentId, deps);
+                return { id: agentId, exitCode: 124, stdout: "", stderr: [errorMessage(error), stopped.stderr].filter(Boolean).join("\n"), status: "timeout", transport: "sdk" };
+            }
+            if (!sdkCanFallback(error))
+                throw error;
+            await trace(root, "fallback.cli", { operation: "dispatch", agentId, reason: errorMessage(error) });
+        }
+    }
+    const send = await deps.run(`paseo send ${quote(agentId)} --no-wait ${quote(prompt)}`, { cwd: root, timeoutMs: 60_000 });
+    await trace(root, "agent.dispatch", { transport: "cli", agentId, exitCode: send.exitCode });
+    return { id: agentId, exitCode: send.exitCode, stdout: send.stdout, stderr: send.stderr, status: send.exitCode === 0 ? "working" : "failed", transport: "cli" };
+}
+export async function waitManagedPaseoAgent(root, agentId, timeoutSeconds, deps = defaultDeps(), baseline) {
+    const timeout = timeoutMs(timeoutSeconds);
+    const trace = deps.trace ?? defaultDeps().trace;
+    if (!forceCli()) {
+        const native = deps.native ?? defaultDeps().native;
+        try {
+            const result = fromNativeWait(await native.wait(root, agentId, timeout, baseline));
+            if (result.status === "timeout") {
+                const stopped = await stopManagedPaseoAgent(root, agentId, deps);
+                result.stderr = [result.stderr, stopped.stderr].filter(Boolean).join("\n");
+            }
+            await trace(root, "agent.wait.completed", { transport: "sdk", observation: "subscription", agentId, status: result.status ?? "unknown" });
+            return result;
+        }
+        catch (error) {
+            if (!sdkCanFallback(error))
+                throw error;
+            await trace(root, "agent.wait.fallback", { agentId, from: "subscription", to: "sdk-wait", reason: errorMessage(error) });
+            try {
+                const result = { ...fromSdk(await deps.sdk.wait(root, agentId, timeout)), observation: "sdk-wait" };
+                if (result.status === "timeout") {
+                    const stopped = await stopManagedPaseoAgent(root, agentId, deps);
+                    result.stderr = [result.stderr, stopped.stderr].filter(Boolean).join("\n");
+                }
+                await trace(root, "agent.wait.completed", { transport: "sdk", observation: "sdk-wait", agentId, status: result.status ?? "unknown" });
+                return result;
+            }
+            catch (sdkError) {
+                if (!sdkCanFallback(sdkError))
+                    throw sdkError;
+                await trace(root, "fallback.cli", { operation: "wait", agentId, reason: errorMessage(sdkError) });
+            }
+        }
+    }
+    const timeoutSec = timeoutSeconds ?? 1800;
+    const wait = await deps.run(`paseo wait ${quote(agentId)} --timeout ${timeoutSec}`, { cwd: root, timeoutMs: (timeoutSec + 30) * 1000 });
+    let cleanupStderr = "";
+    if (wait.timedOut || wait.exitCode !== 0) {
+        cleanupStderr = (await stopManagedPaseoAgent(root, agentId, deps)).stderr;
+    }
+    const logs = await deps.run(`paseo logs ${quote(agentId)} --tail 200`, { cwd: root, timeoutMs: 60_000 });
+    const result = { id: agentId, exitCode: wait.exitCode, stdout: logs.stdout || wait.stdout, stderr: [wait.stderr, cleanupStderr, logs.stderr].filter(Boolean).join("\n"), status: wait.exitCode === 0 ? "idle" : "failed", transport: "cli", observation: "cli-wait" };
+    await trace(root, "agent.wait.completed", { transport: "cli", observation: "cli-wait", agentId, status: result.status ?? "unknown" });
+    return result;
+}
+export async function stopManagedPaseoAgent(root, agentId, deps = defaultDeps()) {
+    try {
+        const result = await deps.run(`paseo stop ${quote(agentId)}`, { cwd: root, timeoutMs: 30_000 });
+        return { exitCode: result.exitCode, stderr: result.exitCode === 0 ? "" : result.stderr || result.stdout || `paseo stop exited ${result.exitCode}` };
+    }
+    catch (error) {
+        return { exitCode: 1, stderr: errorMessage(error) };
+    }
+}
+export async function continueManagedPaseoAgent(root, agentId, prompt, timeoutSeconds, deps = defaultDeps(), outputSchema, executionIdentityLabels) {
+    return withProviderSessionLease(root, executionIdentityLabels?.["aeh.provider"] ?? "paseo", undefined, executionIdentityLabels, agentId, deps, async () => ({
+        value: await continueManagedPaseoAgentUnleased(root, agentId, prompt, timeoutSeconds, deps, outputSchema, executionIdentityLabels),
+        sessionId: agentId
+    }));
+}
+async function continueManagedPaseoAgentUnleased(root, agentId, prompt, timeoutSeconds, deps = defaultDeps(), outputSchema, executionIdentityLabels) {
+    const trace = deps.trace ?? defaultDeps().trace;
+    if (executionIdentityLabels?.["aeh.execution.binding"]) {
+        const updateLabels = deps.updateLabels ?? defaultDeps().updateLabels;
+        await updateLabels(root, agentId, executionIdentityLabels);
+    }
+    if (!forceCli()) {
+        try {
+            const result = {
+                ...fromSdk(await deps.sdk.run(root, agentId, prompt, timeoutMs(timeoutSeconds), outputSchema)),
+                observation: "sdk-run"
+            };
+            await trace(root, "agent.turn.completed", {
+                transport: "sdk",
+                observation: "sdk-run",
+                agentId,
+                status: result.status ?? "unknown",
+                structured: Boolean(outputSchema),
+                payloadCaptured: Boolean(result.stdout)
+            });
+            return result;
+        }
+        catch (error) {
+            if (!sdkCanFallback(error))
+                throw error;
+            await trace(root, "agent.turn.fallback", { agentId, from: "sdk-run", to: "subscription", reason: errorMessage(error), structured: Boolean(outputSchema) });
+        }
+    }
+    let baseline;
+    if (!forceCli()) {
+        const native = deps.native ?? defaultDeps().native;
+        if (typeof native.capture === "function") {
+            try {
+                baseline = await native.capture(root, agentId);
+                await trace(root, "agent.turn.baseline", { agentId, assistantMessage: baseline.lastAssistantMessage ? "present" : "absent" });
+            }
+            catch (error) {
+                if (!sdkCanFallback(error))
+                    throw error;
+                await trace(root, "agent.turn.baseline.skipped", { agentId, reason: errorMessage(error) });
+            }
+        }
+    }
+    const sent = await dispatchManagedPaseoAgent(root, agentId, prompt, timeoutSeconds, deps);
+    if (sent.exitCode !== 0)
+        return sent;
+    return waitManagedPaseoAgent(root, agentId, timeoutSeconds, deps, baseline);
+}
+async function withProviderSessionLease(root, provider, workspaceId, labels, sessionId, deps, action) {
+    const context = currentOperationContext();
+    if (!context.id)
+        return (await action()).value;
+    const operationId = labels?.["aeh.operation"]?.trim();
+    const participantId = labels?.["aeh.participant"]?.trim();
+    if (labels?.["aeh.kind"] === "semantic-assessment" && operationId === context.id) {
+        // Controller-side semantic assessments are non-authoritative, tool-less, read-only model calls
+        // with no WorkGraph Participant identity. They must not take a mutable writer provider lease
+        // (there is no participant or Lead generation actor to bind), but managed foreground turns
+        // still materialize and run atomically so the completed reply is captured reliably.
+        return (await action()).value;
+    }
+    if (!operationId || context.id !== operationId || !participantId) {
+        const leadAgentId = labels?.["aeh.lead.agentId"]?.trim();
+        const leadGeneration = Number(labels?.["aeh.lead.generation"]);
+        if (!operationId || context.id !== operationId || !leadAgentId || !Number.isSafeInteger(leadGeneration) || leadGeneration < 1 || participantId) {
+            throw new Error("PASEO_PROVIDER_LEASE_CONTEXT_MISMATCH: operation-bound Paseo work requires matching participant or bound Lead generation labels.");
+        }
+    }
+    const supervisorAgentId = participantId && labels?.["aeh.supervisor"] === "true" ? participantId : undefined;
+    const leadAgentId = participantId ? undefined : labels?.["aeh.lead.agentId"]?.trim();
+    const leadGeneration = leadAgentId ? Number(labels?.["aeh.lead.generation"]) : undefined;
+    const stateRoot = context.controlRoot ?? process.env.AEH_CONTROL_ROOT?.trim() ?? root;
+    const operation = await loadOperation(stateRoot, operationId);
+    const binding = executionBindingFromLabels(labels);
+    const stop = async (agentId) => {
+        const stopped = await stopManagedPaseoAgent(root, agentId, deps);
+        if (stopped.exitCode !== 0)
+            throw new Error(stopped.stderr || `Paseo stop exited ${stopped.exitCode}.`);
+    };
+    return runWithOperationProviderLease({
+        root: stateRoot,
+        provider,
+        workspaceId: providerLeaseWorkspaceKeyV1({ explicitWorkspaceId: workspaceId, labelWorkspaceId: labels?.["aeh.workspace.id"], launchRoot: root, stateRoot, operationWorkspaceId: operation.workspaceId, operationId }),
+        operationId,
+        ...(supervisorAgentId ? { supervisorAgentId } : participantId ? { participantId } : { leadAgentId, leadGeneration }),
+        sessionId,
+        executionBinding: binding,
+        inspect: async (agentId) => deps.sdk.inspect(root, agentId),
+        stop,
+        discoverSession: async () => {
+            const found = await deps.sdk.list(root, labels).catch(() => []);
+            return found.length === 1 ? found[0].id : undefined;
+        }
+    }, action).then((value) => value);
+}
+function executionBindingFromLabels(labels) {
+    const raw = labels?.["aeh.execution.binding"];
+    if (!raw)
+        return undefined;
+    const decoded = labels?.["aeh.execution.binding.encoding"] === "base64url"
+        ? Buffer.from(raw, "base64url").toString("utf8")
+        : raw;
+    try {
+        const parsed = JSON.parse(decoded);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+            throw new Error("expected a JSON object");
+        return parsed;
+    }
+    catch (error) {
+        throw new Error(`PASEO_PROVIDER_LEASE_EXECUTION_BINDING_INVALID: ${String(error)}`);
+    }
+}
+async function updatePaseoExecutionLabels(root, agentId, labels) {
+    const encoded = { ...labels };
+    for (const key of ["aeh.execution.binding", "aeh.result.provenance"]) {
+        const value = encoded[key];
+        if (value === undefined)
+            continue;
+        try {
+            JSON.parse(value);
+        }
+        catch {
+            throw new Error(`PASEO_EXECUTION_IDENTITY_INVALID: ${key} is not valid JSON before metadata binding.`);
+        }
+        encoded[key] = Buffer.from(value, "utf8").toString("base64url");
+        encoded[`${key}.encoding`] = "base64url";
+    }
+    const args = ["agent", "update", agentId, ...Object.entries(encoded).flatMap(([key, value]) => ["--label", `${key}=${value}`])];
+    const updated = await runExecutable("paseo", args, { cwd: root, timeoutMs: 60_000 });
+    if (updated.exitCode !== 0)
+        throw new Error(`PASEO_EXECUTION_IDENTITY_UPDATE_FAILED: ${updated.stderr || updated.stdout || `paseo agent update exited ${updated.exitCode}`}`);
+    const observed = await inspectPaseoSdkAgent(root, agentId);
+    if (!observed)
+        throw new Error("PASEO_EXECUTION_IDENTITY_UPDATE_UNVERIFIED: Paseo could not read back the materialized agent labels before first-turn dispatch.");
+    for (const [key, value] of Object.entries(encoded)) {
+        if (observed.labels?.[key] !== value)
+            throw new Error(`PASEO_EXECUTION_IDENTITY_UPDATE_UNVERIFIED: Paseo did not persist label '${key}' before first-turn dispatch.`);
+    }
+}
+export async function probeManagedPaseoAgent(root, agentId, deps = defaultDeps()) {
+    if (!forceCli()) {
+        try {
+            return await deps.sdk.probe(root, agentId);
+        }
+        catch (error) {
+            if (!sdkCanFallback(error))
+                return false;
+        }
+    }
+    const probe = await deps.run(`paseo logs ${quote(agentId)} --tail 1`, { cwd: root, timeoutMs: 30_000 });
+    return probe.exitCode === 0;
+}
+export async function inspectManagedPaseoAgent(root, agentId, deps = defaultDeps()) {
+    if (!forceCli()) {
+        try {
+            return await deps.sdk.inspect(root, agentId);
+        }
+        catch (error) {
+            if (!sdkCanFallback(error))
+                return undefined;
+        }
+    }
+    return (await listCliAgents(root, deps)).find((agent) => agent.id === agentId);
+}
+export async function listManagedPaseoAgents(root, labels = {}, deps = defaultDeps()) {
+    const trace = deps.trace ?? defaultDeps().trace;
+    if (!forceCli()) {
+        try {
+            return await deps.sdk.list(root, labels);
+        }
+        catch (error) {
+            if (!sdkCanFallback(error))
+                throw error;
+            await trace(root, "agent.list.cli.required", { reason: errorMessage(error), labelCount: Object.keys(labels).length });
+        }
+    }
+    return (await listCliAgents(root, deps)).filter((agent) => Object.entries(labels).every(([key, value]) => agent.labels?.[key] === value));
+}
+async function ensurePreflight(root, options, deps) {
+    const native = deps.native ?? defaultDeps().native;
+    const trace = deps.trace ?? defaultDeps().trace;
+    try {
+        const result = await native.preflight(root, options.provider, options.model, options.cwd);
+        if (!result.ok) {
+            const available = result.availableModels?.length ? ` Available models: ${result.availableModels.join(", ")}.` : "";
+            throw new Error(`Paseo provider preflight failed: ${result.message}${available}`);
+        }
+    }
+    catch (error) {
+        if (sdkCanFallback(error))
+            await trace(root, "provider.preflight.skipped", { provider: options.provider, model: options.model ?? "", reason: errorMessage(error) });
+        else
+            throw error;
+    }
+    if (!options.modeId)
+        return;
+    if (options.modeSource === "aeh-managed") {
+        await trace(root, "provider.mode.preflight", { ok: true, provider: options.provider, modeId: options.modeId, source: "aeh-inline-config", message: "AEH injects this primary OpenCode agent through the session launch environment; ambient provider mode discovery is not authoritative for the dedicated helper." });
+        return;
+    }
+    const mode = await native.preflightMode(root, options.provider, options.modeId, options.cwd);
+    if (!mode.ok) {
+        const available = mode.availableModes.length ? ` Available modes: ${mode.availableModes.join(", ")}.` : "";
+        throw new Error(`Paseo mode preflight failed: ${mode.message}${available}`);
+    }
+}
+async function traceResolvedIdentity(root, options, trace) {
+    if (!options.modeId)
+        return;
+    await trace(root, "agent.identity", { provider: options.provider, model: options.model ?? "", modeId: options.modeId, source: options.modeSource ?? "provider-mode", sessionScopedEnv: options.env?.OPENCODE_CONFIG_CONTENT ? true : false });
+}
+async function launchCli(root, options, deps, fallbackReason) {
+    if (options.prompt === undefined && options.systemPrompt !== undefined)
+        throw new PaseoSdkUnavailableError(`Paseo SDK is required to create an idle systemPrompt-only agent. Refusing CLI fallback because it would expose session instructions as a user turn. ${fallbackReason}`);
+    if (options.env && Object.keys(options.env).length)
+        throw new PaseoSdkUnavailableError(`Paseo SDK is required for session-scoped launch environment used by provider ${options.provider}${options.modeId ? ` mode ${options.modeId}` : ""}. Refusing CLI fallback because dropping that environment could change the native execution identity or permissions. ${fallbackReason}`);
+    if (options.providerOptions && Object.keys(options.providerOptions).length)
+        throw new PaseoSdkUnavailableError(`Paseo SDK is required for provider-native options used by provider ${options.provider}. Refusing CLI fallback because dropping the projected sandbox policy could change the participant's execution authority. ${fallbackReason}`);
+    const capabilities = await deps.detectCapabilities(root, deps.run);
+    const prompt = options.prompt;
+    if (prompt === undefined)
+        throw new Error("Paseo CLI fallback requires a prompt.");
+    const timeout = options.timeoutSeconds ?? Math.max(1, Math.ceil((options.timeoutMs ?? 1_800_000) / 1000));
+    if (options.outputSchema) {
+        if (!capabilities.outputSchema)
+            throw new Error(`Installed Paseo${capabilities.version ? ` ${capabilities.version}` : ""} does not advertise --output-schema required by this agent.`);
+        const parts = ["paseo run --quiet", `--title ${quote(options.title)}`, `--provider ${quote(options.provider)}`];
+        if (options.workspaceId)
+            parts.push(`--workspace ${quote(options.workspaceId)}`);
+        if (options.model)
+            parts.push(`--model ${quote(options.model)}`);
+        parts.push(`--output-schema ${quote(JSON.stringify(options.outputSchema))}`, quote(prompt));
+        const result = await deps.run(parts.join(" "), { cwd: root, timeoutMs: timeout * 1000 });
+        return { exitCode: result.exitCode, stdout: result.stdout, stderr: [fallbackReason, result.stderr].filter(Boolean).join("\n"), status: result.exitCode === 0 ? "idle" : "failed", transport: "cli" };
+    }
+    const command = buildPaseoBackgroundRunCommand({ title: options.title, provider: options.provider, model: options.model, workspaceId: options.workspaceId, prompt }, capabilities);
+    const launch = await deps.run(command, { cwd: root, timeoutMs: 60_000 });
+    if (launch.exitCode !== 0)
+        return { exitCode: launch.exitCode, stdout: launch.stdout, stderr: [fallbackReason, launch.stderr].filter(Boolean).join("\n"), status: "failed", transport: "cli" };
+    const id = extractPaseoAgentId(launch.stdout);
+    if (!id)
+        return { exitCode: 1, stdout: launch.stdout, stderr: [fallbackReason, "Paseo returned no parseable agent id."].join("\n"), status: "failed", transport: "cli" };
+    const launched = { id, exitCode: 0, stdout: launch.stdout, stderr: launch.stderr, status: "working", workspaceId: options.workspaceId, transport: "cli" };
+    await registerManagedAgent(root, options, launched);
+    if (options.waitForFinish === false)
+        return launched;
+    const waited = await waitManagedPaseoAgent(root, id, timeout, deps);
+    return { ...waited, stderr: [fallbackReason, launch.stderr, waited.stderr].filter(Boolean).join("\n") };
+}
+async function registerManagedAgent(root, options, result) {
+    if (!result.id)
+        return;
+    const role = options.labels?.["aeh.role"];
+    if (!role)
+        return;
+    // The Semantic Assessor is an AEH Agent, not automatically a WorkGraph Participant: its
+    // read-only assessment turns carry no WorkUnit ownership and never produce participant receipts.
+    if (options.labels?.["aeh.kind"] === "semantic-assessment")
+        return;
+    // A launch that carries a controller-issued participant identity is already durably registered
+    // by the execution-authority path; minting a second participant for the runtime session would
+    // split one bounded work unit across two terminal-gate identities.
+    if (options.labels?.["aeh.participant"] || options.env?.AEH_PARTICIPANT_ID)
+        return;
+    await registerCurrentOperationAgent(root, { id: result.id, role, phase: options.labels?.["aeh.operation.phase"], workspaceId: result.workspaceId ?? options.workspaceId, transport: result.transport });
+}
+async function listCliAgents(root, deps) {
+    const result = await deps.run("paseo ls -a -g --json", { cwd: root, timeoutMs: 30_000 });
+    if (result.exitCode !== 0 || !result.stdout.trim())
+        return [];
+    try {
+        const records = new Map();
+        collectCliAgents(JSON.parse(result.stdout), records);
+        return [...records.values()];
+    }
+    catch {
+        return [];
+    }
+}
+function collectCliAgents(value, out) {
+    if (Array.isArray(value)) {
+        for (const child of value)
+            collectCliAgents(child, out);
+        return;
+    }
+    if (!value || typeof value !== "object")
+        return;
+    const record = value;
+    const id = firstString(record, ["id", "agentId", "agent_id"]);
+    if (id && ("status" in record || "title" in record || "labels" in record))
+        out.set(id, { id, title: firstString(record, ["title", "name"]), status: statusText(record.status), workspaceId: firstString(record, ["workspaceId", "workspace_id"]), labels: stringRecord(record.labels), raw: record });
+    for (const child of Object.values(record))
+        collectCliAgents(child, out);
+}
+function forceCli() { return process.env.AEH_PASEO_FORCE_CLI === "1"; }
+function sdkCanFallback(error) { return error instanceof PaseoSdkUnavailableError || (error instanceof Error && error.name === "PaseoSdkUnavailableError"); }
+function timeoutMs(seconds) { return (seconds ?? 1800) * 1000; }
+function secondsFromMs(ms) { return ms === undefined ? undefined : Math.max(1, Math.ceil(ms / 1000)); }
+function providerStopDetail(status, permission) {
+    if (status !== "permission" && status !== "waiting")
+        return undefined;
+    const descriptor = permission
+        ? [permission.name ?? permission.title, permission.patterns?.length ? `scope ${permission.patterns.join(", ")}` : undefined].filter(Boolean).join(" ")
+        : undefined;
+    return `provider session stopped on an unapproved '${status}' prompt${descriptor ? ` (${descriptor})` : ""}; the turn produced no result`;
+}
+function fromSdk(result) { return { id: result.id, exitCode: sdkExitCode(result.status, result.error), stdout: result.lastMessage ?? "", stderr: [result.error ?? "", providerStopDetail(result.status, result.permission)].filter(Boolean).join("\n"), status: result.status, workspaceId: result.workspaceId, transport: "sdk" }; }
+function fromNativeWait(result) { return { id: result.id, exitCode: sdkExitCode(result.status, result.error), stdout: result.lastMessage ?? "", stderr: [result.error ?? "", providerStopDetail(result.status, result.permission)].filter(Boolean).join("\n"), status: result.status, workspaceId: result.workspaceId, transport: "sdk", observation: "subscription" }; }
+function sdkExitCode(status, error) { if (status === "timeout")
+    return 124; if (error)
+    return 1; if (status === "failed" || status === "error" || status === "cancelled" || status === "permission" || status === "waiting")
+    return 1; return 0; }
+function firstString(record, keys) { for (const key of keys)
+    if (typeof record[key] === "string" && record[key])
+        return record[key]; return undefined; }
+function stringRecord(value) { if (!value || typeof value !== "object" || Array.isArray(value))
+    return undefined; const result = {}; for (const [key, item] of Object.entries(value))
+    if (typeof item === "string")
+        result[key] = item; return Object.keys(result).length ? result : undefined; }
+function statusText(value) { if (typeof value === "string")
+    return value; if (value && typeof value === "object" && typeof value.status === "string")
+    return value.status; return undefined; }
+function errorMessage(error) { return error instanceof Error ? error.message : String(error); }
+function quote(value) { return `'${value.replaceAll("'", "'\\''")}'`; }
+//# sourceMappingURL=runtimeCore.js.map

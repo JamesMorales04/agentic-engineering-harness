@@ -111,8 +111,8 @@ describe("OpenCode permission projection", () => {
       logicalAgent: "code-quality-reviewer",
       role: "reviewer",
       description: "Review bounded code quality findings.",
-      modelId: "opencode-go/deepseek-v4-flash",
-      modelName: "deepseek-v4-flash",
+      modelId: "opencode-go/MiMo-V2.6-Flash",
+      modelName: "MiMo-V2.6-Flash",
       variant: "high",
       permissions: {
         read: "allow",
@@ -139,7 +139,7 @@ describe("OpenCode permission projection", () => {
     expect(config.agent[binding.agentId]).toEqual(
       expect.objectContaining({
         mode: "primary",
-        model: "opencode-go/deepseek-v4-flash",
+        model: "opencode-go/MiMo-V2.6-Flash",
         variant: "high",
         description: "Review bounded code quality findings.",
         permission: expect.objectContaining({ edit: "deny", read: "allow" })
@@ -179,6 +179,35 @@ describe("OpenCode permission projection", () => {
     const projection = compileOpenCodeRuntimeProjection(selection());
     expect(JSON.parse(projection.env.OPENCODE_CONFIG_CONTENT)).toEqual(projection.config);
     expect(projection.binding.agentId).toBe("aeh-worker");
+  });
+
+  it("projects only the frozen launch root as an allowed external directory (AEH-V2-0116)", () => {
+    const projection = compileOpenCodeRuntimeProjection(selection(), undefined, undefined, ["/tmp/aeh-task-root", "/tmp/aeh-task-root"]);
+    const permission = (projection.config.permission ?? {}) as Record<string, unknown>;
+    expect(permission.external_directory).toEqual({
+      "/tmp/aeh-task-root": "allow",
+      "/tmp/aeh-task-root/*": "allow",
+      "/tmp/aeh-task-root/**": "allow"
+    });
+    const rootless = compileOpenCodeRuntimeProjection(selection());
+    expect((rootless.config.permission as Record<string, unknown>).external_directory).toBeUndefined();
+    const deniedSelection = { ...selection(), permissions: { read: "deny" as const, write: "deny" as const, shell: "deny" as const } };
+    const denied = compileOpenCodeRuntimeProjection(deniedSelection, undefined, undefined, ["/tmp/aeh-task-root"]);
+    expect((denied.config.permission as Record<string, unknown>).external_directory).toBeUndefined();
+  });
+
+  it("never grants the semantic assessor an external directory or widens its wildcard deny", () => {
+    const assessor = { ...selection(), role: "Semantic Assessor" as const, permissions: { read: "deny" as const, write: "deny" as const, shell: "deny" as const, network: "deny" as const, delegate: "deny" as const } };
+    const projection = compileOpenCodeRuntimeProjection(assessor, undefined, undefined, ["/tmp/aeh-task-root"]);
+    const permission = (projection.config.permission ?? {}) as Record<string, unknown>;
+    expect(permission["*"]).toBe("deny");
+    expect(permission.StructuredOutput).toBe("allow");
+    expect(permission.external_directory).toBeUndefined();
+  });
+
+  it("ignores a filesystem-root or relative external directory candidate (AEH-V2-0116)", () => {
+    const projection = compileOpenCodeRuntimeProjection(selection(), undefined, undefined, ["/", "relative/path"]);
+    expect((projection.config.permission as Record<string, unknown>).external_directory).toBeUndefined();
   });
 
   it("keeps generated identities collision-resistant when names require normalization", () => {

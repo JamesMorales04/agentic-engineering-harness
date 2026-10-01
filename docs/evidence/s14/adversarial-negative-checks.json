@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "slice": "S14",
+  "campaign": "adversarial-negative-checks",
+  "generatedAt": "2026-09-30T17:50:53.120Z",
+  "checkout": "/home/james/Desarrollo/agentic-engineering-harness",
+  "candidateBuildDigest": "4c05da6ee7fe249bcad4adb730f2c08bb34867910eb512171bccb40b63203284",
+  "modelAuthority": "NONE",
+  "checks": [
+    {
+      "id": "adversarial.gate-baseline-passes",
+      "ok": true,
+      "detail": "valid synthetic evidence passes"
+    },
+    {
+      "id": "adversarial.missing-manifest-fails-closed",
+      "ok": true,
+      "detail": "absent manifest is rejected"
+    },
+    {
+      "id": "adversarial.unsafe-manifest-path-rejected",
+      "ok": true,
+      "detail": "traversal manifest path is rejected"
+    },
+    {
+      "id": "adversarial.unsupported-version-rejected",
+      "ok": true,
+      "detail": "manifest version 2 is unsupported"
+    },
+    {
+      "id": "adversarial.policy-digest-mismatch-rejected",
+      "ok": true,
+      "detail": "policy digest mismatch is rejected"
+    },
+    {
+      "id": "adversarial.frozen-pin-drift-rejected",
+      "ok": true,
+      "detail": "manifest digest deviating from the frozen pin is rejected"
+    },
+    {
+      "id": "adversarial.tampered-evidence-rejected",
+      "ok": true,
+      "detail": "post-manifest tampering is rejected by digest"
+    },
+    {
+      "id": "adversarial.stale-candidate-binding-rejected",
+      "ok": true,
+      "detail": "runtime evidence bound to another candidate build is stale"
+    },
+    {
+      "id": "adversarial.model-claim-cannot-declare-readiness",
+      "ok": true,
+      "detail": "model readiness claims are recorded and never evaluated"
+    },
+    {
+      "id": "adversarial.out-of-fixture-mutation-rejected",
+      "ok": true,
+      "detail": "a mutation outside the disposable fixture fails the gate"
+    },
+    {
+      "id": "adversarial.missing-manifest-code",
+      "ok": true,
+      "detail": "missing manifest has a typed failure"
+    }
+  ],
+  "failedChecks": [],
+  "productLevelChecks": {
+    "command": "npx vitest run tests/candidateIdentity.test.ts tests/directCandidateLifecycle.test.ts tests/candidateAssembler.test.ts --reporter=json --outputFile=/tmp/aeh-s14-adversarial-product.json",
+    "exitCode": 0,
+    "parseError": null,
+    "numTotalTestSuites": 6,
+    "numPassedTestSuites": 6,
+    "numTotalTests": 18,
+    "numPassedTests": 18,
+    "numFailedTests": 0,
+    "success": true
+  },
+  "result": "PASS"
+}

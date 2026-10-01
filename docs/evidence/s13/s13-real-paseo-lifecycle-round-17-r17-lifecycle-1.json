@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 17,
+  "runId": "r17-lifecycle-1",
+  "campaign": "real-paseo-lifecycle",
+  "generatedAt": "2026-09-29T12:02:33.016Z",
+  "checkout": "/home/james/Desarrollo/agentic-engineering-harness",
+  "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13RealPaseoLifecycleCampaign.mjs",
+        "sha256": "d30bb30c992dffaeebdb29cd0836ee53482c9d582da66f767b98e34f4e243214"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "3395aa19210f36b90fd22bd62056dbb8d5c48aab5a85bce4e5ea4d591cfd5146"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "cf5e0fc6d149b24ec4b1071d69f38fade23aa93dffaff15f062eba61f88b1bd1"
+  },
+  "harnessBuildIdentity": {
+    "version": 1,
+    "packageVersion": "0.8.4",
+    "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "releaseId": "release-1790683277100-90191-a76e6f7d",
+    "buildDigest": "cecc186cf32ad5f8b2ff5fd2dd58f863f90bef90cc1eb7d2d4aa514b0fd718e9",
+    "dirty": true
+  },
+  "candidate": {
+    "artifact": "agentic-engineering-harness-0.8.4.tgz",
+    "artifactDigest": "636a8463e4a565e21d25ef899fa8c728fe02efa2dba17d8b3054e4816997ba68"
+  },
+  "lanes": [
+    {
+      "capability": "cancel",
+      "result": "PASS",
+      "sessions": "d9dcb50b-7610-4101-89ef-d559d18130a8",
+      "rowResult": {
+        "cancel": "PASS"
+      },
+      "error": null,
+      "artifact": "docs/evidence/s13/lifecycle-lanes/round-17/r17-lifecycle-1/cancel.json"
+    },
+    {
+      "capability": "recovery",
+      "result": "PASS",
+      "sessions": "b6bc7547-8607-44bc-b25c-5d6d7fdace96",
+      "rowResult": {
+        "recovery": "PASS"
+      },
+      "error": null,
+      "artifact": "docs/evidence/s13/lifecycle-lanes/round-17/r17-lifecycle-1/recovery.json"
+    }
+  ],
+  "result": "PASS",
+  "checkoutProof": {
+    "trackedDigestBefore": "2bee2ec0c7c3ab1332daf76b3c5ffcbbe2665f7401bbf1da089acba36a083d5c",
+    "trackedDigestAfter": "2bee2ec0c7c3ab1332daf76b3c5ffcbbe2665f7401bbf1da089acba36a083d5c",
+    "trackedFiles": 668,
+    "checkoutUntouched": true,
+    "note": "Tracked digest captured before packing and after all real lifecycle journeys; all provider sessions run against disposable /tmp fixtures."
+  }
+}

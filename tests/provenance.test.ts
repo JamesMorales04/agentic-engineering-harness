@@ -14,9 +14,12 @@ describe("provenance", () => {
   });
 
   it("creates SLSA v1 build/run details", () => {
-    const predicate = buildSlsaPredicate({ project: "x", artifact: "a.tgz", taskId: "T-1", commit: "abc", remote: "https://example/repo.git", buildType: "https://example/build", invocationId: "i", startedOn: "s", finishedOn: "f" }) as any;
+    const artifactSha256 = "a".repeat(64);
+    const sbomSha256 = "b".repeat(64);
+    const predicate = buildSlsaPredicate({ project: "x", artifact: "a.tgz", taskId: "T-1", commit: "abc", remote: "https://example/repo.git", artifactSha256, sbomSha256, buildType: "https://example/build", invocationId: "i", startedOn: "s", finishedOn: "f" }) as any;
     expect(predicate.buildDefinition.buildType).toBe("https://example/build");
     expect(predicate.runDetails.metadata.invocationId).toBe("i");
+    expect(predicate.buildDefinition.internalParameters).toMatchObject({ artifactSha256, sbomSha256, sbomArtifactSha256: artifactSha256 });
   });
 
   it("limits task manifests to explicit lineage and detects normative artifact tampering", async () => {
@@ -30,6 +33,10 @@ describe("provenance", () => {
       const manifest = await buildProvenanceManifest(root, config, "T-1", path.join(root, "artifact.txt")); const file = path.join(root, "manifest.json"); await fs.writeFile(file, `${JSON.stringify(manifest)}\n`);
       expect(manifest.entries.some((entry) => entry.path.includes("UNRELATED"))).toBe(false); expect(manifest.lineage?.operationId).toBe("OP-1"); expect((await verifyProvenanceManifest(root, "manifest.json")).ok).toBe(true);
       await fs.writeFile(path.join(root, ".harness/contracts", "T-1.yaml"), "tampered\n"); expect((await verifyProvenanceManifest(root, "manifest.json")).ok).toBe(false);
+      await fs.writeFile(path.join(root, ".harness/contracts", "T-1.yaml"), "contract\n");
+      const alteredManifest = { ...manifest, buildIdentity: { ...manifest.buildIdentity, buildDigest: "invalid" } };
+      await fs.writeFile(file, `${JSON.stringify(alteredManifest)}\n`);
+      expect((await verifyProvenanceManifest(root, "manifest.json")).failures).toContain("manifest BuildIdentity is invalid");
       await fs.writeFile(path.join(root, ".harness/runs", "T-1.json"), JSON.stringify({ taskId: "T-1", operationId: "MISSING" }) + "\n");
       await expect(buildProvenanceManifest(root, config, "T-1", path.join(root, "artifact.txt"))).rejects.toThrow("PROVENANCE_REQUIRED_ARTIFACT_MISSING");
     } finally { await fs.rm(root, { recursive: true, force: true }); }

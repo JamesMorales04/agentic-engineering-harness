@@ -1,0 +1,636 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 19,
+  "kind": "cleanup-before-inventory",
+  "capturedAt": "2026-09-29T16:30:23.907Z",
+  "trackedDigest": "849ec335ac5c2aced28edc8c2df9308e9c83dec46048ca27ff3e0f7054dc872e",
+  "trackedFiles": 668,
+  "fixtureProcesses": {
+    "count": 59,
+    "roots": [
+      "/tmp/aeh-direct-CHANGE-20260929T152341Z-633993c4-7cCUe8",
+      "/tmp/aeh-direct-CHANGE-20260929T152341Z-633993c4-ZwHYN3",
+      "/tmp/aeh-direct-CHANGE-20260929T152341Z-633993c4-oZmdOq",
+      "/tmp/aeh-direct-CHANGE-20260929T153302Z-633993c4-aZqQ01",
+      "/tmp/aeh-direct-CHANGE-20260929T153302Z-633993c4-cMBZAP",
+      "/tmp/aeh-direct-CHANGE-20260929T153302Z-633993c4-xQqgbh",
+      "/tmp/aeh-direct-CHANGE-20260929T154327Z-633993c4-GHteWY",
+      "/tmp/aeh-direct-CHANGE-20260929T154327Z-633993c4-UYVeOH",
+      "/tmp/aeh-direct-CHANGE-20260929T154327Z-633993c4-YR7fSY",
+      "/tmp/aeh-direct-CHANGE-20260929T155125Z-9eed7a49-43nPuF",
+      "/tmp/aeh-direct-CHANGE-20260929T155125Z-9eed7a49-NVerCh",
+      "/tmp/aeh-s13-jj-D9hS9F",
+      "/tmp/aeh-s13-jj-L0ZFlM",
+      "/tmp/aeh-s13-jj-arIpwf",
+      "/tmp/aeh-s13-jj-nFyFMO"
+    ],
+    "byRoot": {
+      "/tmp/aeh-s13-jj-arIpwf": 13,
+      "/tmp/aeh-direct-CHANGE-20260929T152341Z-633993c4-ZwHYN3": 1,
+      "/tmp/aeh-direct-CHANGE-20260929T152341Z-633993c4-7cCUe8": 1,
+      "/tmp/aeh-direct-CHANGE-20260929T152341Z-633993c4-oZmdOq": 1,
+      "/tmp/aeh-s13-jj-D9hS9F": 13,
+      "/tmp/aeh-direct-CHANGE-20260929T153302Z-633993c4-aZqQ01": 1,
+      "/tmp/aeh-direct-CHANGE-20260929T153302Z-633993c4-xQqgbh": 1,
+      "/tmp/aeh-direct-CHANGE-20260929T153302Z-633993c4-cMBZAP": 1,
+      "/tmp/aeh-s13-jj-nFyFMO": 13,
+      "/tmp/aeh-direct-CHANGE-20260929T154327Z-633993c4-YR7fSY": 1,
+      "/tmp/aeh-direct-CHANGE-20260929T154327Z-633993c4-GHteWY": 1,
+      "/tmp/aeh-direct-CHANGE-20260929T154327Z-633993c4-UYVeOH": 1,
+      "/tmp/aeh-s13-jj-L0ZFlM": 9,
+      "/tmp/aeh-direct-CHANGE-20260929T155125Z-9eed7a49-NVerCh": 1,
+      "/tmp/aeh-direct-CHANGE-20260929T155125Z-9eed7a49-43nPuF": 1
+    },
+    "kinds": [
+      "contextMcp",
+      "resultSinkMcp",
+      "serenaPool",
+      "serenaProxy",
+      "serenaServer"
+    ],
+    "entries": [
+      {
+        "pid": 701696,
+        "ppid": 1121,
+        "ageSeconds": 3908,
+        "root": "/tmp/aeh-s13-jj-arIpwf",
+        "kind": "serenaPool"
+      },
+      {
+        "pid": 701765,
+        "ppid": 701696,
+        "ageSeconds": 3908,
+        "root": "/tmp/aeh-direct-CHANGE-20260929T152341Z-633993c4-ZwHYN3",
+        "kind": "serenaServer"
+      },
+      {
+        "pid": 702023,
+        "ppid": 701299,
+        "ageSeconds": 3906,
+        "root": "/tmp/aeh-s13-jj-arIpwf",
+        "kind": "serenaProxy"
+      },
+      {
+        "pid": 702024,
+        "ppid": 701299,
+        "ageSeconds": 3906,
+        "root": "/tmp/aeh-s13-jj-arIpwf",
+        "kind": "resultSinkMcp"
+      },
+      {
+        "pid": 702025,
+        "ppid": 701299,
+        "ageSeconds": 3906,
+        "root": "/tmp/aeh-s13-jj-arIpwf",
+        "kind": "contextMcp"
+      },
+      {
+        "pid": 710890,
+        "ppid": 710606,
+        "ageSeconds": 3803,
+        "root": "/tmp/aeh-s13-jj-arIpwf",
+        "kind": "resultSinkMcp"
+      },
+      {
+        "pid": 714948,
+        "ppid": 714767,
+        "ageSeconds": 3755,
+        "root": "/tmp/aeh-s13-jj-arIpwf",
+        "kind": "contextMcp"
+      },
+      {
+        "pid": 714949,
+        "ppid": 714767,
+        "ageSeconds": 3755,
+        "root": "/tmp/aeh-s13-jj-arIpwf",
+        "kind": "serenaProxy"
+      },
+      {
+        "pid": 714950,
+        "ppid": 714767,
+        "ageSeconds": 3755,
+        "root": "/tmp/aeh-s13-jj-arIpwf",
+        "kind": "resultSinkMcp"
+      },
+      {
+        "pid": 715034,
+        "ppid": 714949,
+        "ageSeconds": 3754,
+        "root": "/tmp/aeh-s13-jj-arIpwf",
+        "kind": "serenaPool"
+      },
+      {
+        "pid": 715055,
+        "ppid": 715034,
+        "ageSeconds": 3754,
+        "root": "/tmp/aeh-direct-CHANGE-20260929T152341Z-633993c4-7cCUe8",
+        "kind": "serenaServer"
+      },
+      {
+        "pid": 723501,
+        "ppid": 723345,
+        "ageSeconds": 3642,
+        "root": "/tmp/aeh-s13-jj-arIpwf",
+        "kind": "resultSinkMcp"
+      },
+      {
+        "pid": 723502,
+        "ppid": 723345,
+        "ageSeconds": 3642,
+        "root": "/tmp/aeh-s13-jj-arIpwf",
+        "kind": "serenaProxy"
+      },
+      {
+        "pid": 723503,
+        "ppid": 723345,
+        "ageSeconds": 3642,
+        "root": "/tmp/aeh-s13-jj-arIpwf",
+        "kind": "contextMcp"
+      },
+      {
+        "pid": 723585,
+        "ppid": 723502,
+        "ageSeconds": 3642,
+        "root": "/tmp/aeh-s13-jj-arIpwf",
+        "kind": "serenaPool"
+      },
+      {
+        "pid": 723633,
+        "ppid": 723585,
+        "ageSeconds": 3641,
+        "root": "/tmp/aeh-direct-CHANGE-20260929T152341Z-633993c4-oZmdOq",
+        "kind": "serenaServer"
+      },
+      {
+        "pid": 745164,
+        "ppid": 1121,
+        "ageSeconds": 3349,
+        "root": "/tmp/aeh-s13-jj-D9hS9F",
+        "kind": "serenaPool"
+      },
+      {
+        "pid": 745224,
+        "ppid": 745164,
+        "ageSeconds": 3348,
+        "root": "/tmp/aeh-direct-CHANGE-20260929T153302Z-633993c4-aZqQ01",
+        "kind": "serenaServer"
+      },
+      {
+        "pid": 745317,
+        "ppid": 744551,
+        "ageSeconds": 3346,
+        "root": "/tmp/aeh-s13-jj-D9hS9F",
+        "kind": "serenaProxy"
+      },
+      {
+        "pid": 745318,
+        "ppid": 744551,
+        "ageSeconds": 3346,
+        "root": "/tmp/aeh-s13-jj-D9hS9F",
+        "kind": "resultSinkMcp"
+      },
+      {
+        "pid": 745319,
+        "ppid": 744551,
+        "ageSeconds": 3346,
+        "root": "/tmp/aeh-s13-jj-D9hS9F",
+        "kind": "contextMcp"
+      },
+      {
+        "pid": 757408,
+        "ppid": 757272,
+        "ageSeconds": 3232,
+        "root": "/tmp/aeh-s13-jj-D9hS9F",
+        "kind": "resultSinkMcp"
+      },
+      {
+        "pid": 762666,
+        "ppid": 762493,
+        "ageSeconds": 3177,
+        "root": "/tmp/aeh-s13-jj-D9hS9F",
+        "kind": "contextMcp"
+      },
+      {
+        "pid": 762667,
+        "ppid": 762493,
+        "ageSeconds": 3177,
+        "root": "/tmp/aeh-s13-jj-D9hS9F",
+        "kind": "serenaProxy"
+      },
+      {
+        "pid": 762668,
+        "ppid": 762493,
+        "ageSeconds": 3177,
+        "root": "/tmp/aeh-s13-jj-D9hS9F",
+        "kind": "resultSinkMcp"
+      },
+      {
+        "pid": 762935,
+        "ppid": 762667,
+        "ageSeconds": 3177,
+        "root": "/tmp/aeh-s13-jj-D9hS9F",
+        "kind": "serenaPool"
+      },
+      {
+        "pid": 762978,
+        "ppid": 762935,
+        "ageSeconds": 3176,
+        "root": "/tmp/aeh-direct-CHANGE-20260929T153302Z-633993c4-xQqgbh",
+        "kind": "serenaServer"
+      },
+      {
+        "pid": 770541,
+        "ppid": 770398,
+        "ageSeconds": 3081,
+        "root": "/tmp/aeh-s13-jj-D9hS9F",
+        "kind": "contextMcp"
+      },
+      {
+        "pid": 770542,
+        "ppid": 770398,
+        "ageSeconds": 3081,
+        "root": "/tmp/aeh-s13-jj-D9hS9F",
+        "kind": "resultSinkMcp"
+      },
+      {
+        "pid": 770543,
+        "ppid": 770398,
+        "ageSeconds": 3081,
+        "root": "/tmp/aeh-s13-jj-D9hS9F",
+        "kind": "serenaProxy"
+      },
+      {
+        "pid": 770640,
+        "ppid": 770543,
+        "ageSeconds": 3081,
+        "root": "/tmp/aeh-s13-jj-D9hS9F",
+        "kind": "serenaPool"
+      },
+      {
+        "pid": 770667,
+        "ppid": 770640,
+        "ageSeconds": 3080,
+        "root": "/tmp/aeh-direct-CHANGE-20260929T153302Z-633993c4-cMBZAP",
+        "kind": "serenaServer"
+      },
+      {
+        "pid": 795683,
+        "ppid": 1121,
+        "ageSeconds": 2715,
+        "root": "/tmp/aeh-s13-jj-nFyFMO",
+        "kind": "serenaPool"
+      },
+      {
+        "pid": 795700,
+        "ppid": 795683,
+        "ageSeconds": 2714,
+        "root": "/tmp/aeh-direct-CHANGE-20260929T154327Z-633993c4-YR7fSY",
+        "kind": "serenaServer"
+      },
+      {
+        "pid": 795764,
+        "ppid": 795408,
+        "ageSeconds": 2712,
+        "root": "/tmp/aeh-s13-jj-nFyFMO",
+        "kind": "serenaProxy"
+      },
+      {
+        "pid": 795765,
+        "ppid": 795408,
+        "ageSeconds": 2712,
+        "root": "/tmp/aeh-s13-jj-nFyFMO",
+        "kind": "resultSinkMcp"
+      },
+      {
+        "pid": 795766,
+        "ppid": 795408,
+        "ageSeconds": 2712,
+        "root": "/tmp/aeh-s13-jj-nFyFMO",
+        "kind": "contextMcp"
+      },
+      {
+        "pid": 800372,
+        "ppid": 800243,
+        "ageSeconds": 2608,
+        "root": "/tmp/aeh-s13-jj-nFyFMO",
+        "kind": "resultSinkMcp"
+      },
+      {
+        "pid": 802660,
+        "ppid": 802456,
+        "ageSeconds": 2548,
+        "root": "/tmp/aeh-s13-jj-nFyFMO",
+        "kind": "serenaProxy"
+      },
+      {
+        "pid": 802661,
+        "ppid": 802456,
+        "ageSeconds": 2548,
+        "root": "/tmp/aeh-s13-jj-nFyFMO",
+        "kind": "contextMcp"
+      },
+      {
+        "pid": 802662,
+        "ppid": 802456,
+        "ageSeconds": 2548,
+        "root": "/tmp/aeh-s13-jj-nFyFMO",
+        "kind": "resultSinkMcp"
+      },
+      {
+        "pid": 802767,
+        "ppid": 802660,
+        "ageSeconds": 2548,
+        "root": "/tmp/aeh-s13-jj-nFyFMO",
+        "kind": "serenaPool"
+      },
+      {
+        "pid": 802796,
+        "ppid": 802767,
+        "ageSeconds": 2548,
+        "root": "/tmp/aeh-direct-CHANGE-20260929T154327Z-633993c4-GHteWY",
+        "kind": "serenaServer"
+      },
+      {
+        "pid": 806649,
+        "ppid": 806502,
+        "ageSeconds": 2426,
+        "root": "/tmp/aeh-s13-jj-nFyFMO",
+        "kind": "serenaProxy"
+      },
+      {
+        "pid": 806650,
+        "ppid": 806502,
+        "ageSeconds": 2426,
+        "root": "/tmp/aeh-s13-jj-nFyFMO",
+        "kind": "contextMcp"
+      },
+      {
+        "pid": 806651,
+        "ppid": 806502,
+        "ageSeconds": 2426,
+        "root": "/tmp/aeh-s13-jj-nFyFMO",
+        "kind": "resultSinkMcp"
+      },
+      {
+        "pid": 806743,
+        "ppid": 806649,
+        "ageSeconds": 2426,
+        "root": "/tmp/aeh-s13-jj-nFyFMO",
+        "kind": "serenaPool"
+      },
+      {
+        "pid": 806760,
+        "ppid": 806743,
+        "ageSeconds": 2426,
+        "root": "/tmp/aeh-direct-CHANGE-20260929T154327Z-633993c4-UYVeOH",
+        "kind": "serenaServer"
+      },
+      {
+        "pid": 818132,
+        "ppid": 1121,
+        "ageSeconds": 2244,
+        "root": "/tmp/aeh-s13-jj-L0ZFlM",
+        "kind": "serenaPool"
+      },
+      {
+        "pid": 818144,
+        "ppid": 818132,
+        "ageSeconds": 2243,
+        "root": "/tmp/aeh-direct-CHANGE-20260929T155125Z-9eed7a49-NVerCh",
+        "kind": "serenaServer"
+      },
+      {
+        "pid": 818207,
+        "ppid": 817859,
+        "ageSeconds": 2242,
+        "root": "/tmp/aeh-s13-jj-L0ZFlM",
+        "kind": "serenaProxy"
+      },
+      {
+        "pid": 818208,
+        "ppid": 817859,
+        "ageSeconds": 2242,
+        "root": "/tmp/aeh-s13-jj-L0ZFlM",
+        "kind": "resultSinkMcp"
+      },
+      {
+        "pid": 818209,
+        "ppid": 817859,
+        "ageSeconds": 2242,
+        "root": "/tmp/aeh-s13-jj-L0ZFlM",
+        "kind": "contextMcp"
+      },
+      {
+        "pid": 823043,
+        "ppid": 822901,
+        "ageSeconds": 2084,
+        "root": "/tmp/aeh-s13-jj-L0ZFlM",
+        "kind": "resultSinkMcp"
+      },
+      {
+        "pid": 826193,
+        "ppid": 1121,
+        "ageSeconds": 1998,
+        "root": "/tmp/aeh-s13-jj-L0ZFlM",
+        "kind": "serenaPool"
+      },
+      {
+        "pid": 826205,
+        "ppid": 826193,
+        "ageSeconds": 1998,
+        "root": "/tmp/aeh-direct-CHANGE-20260929T155125Z-9eed7a49-43nPuF",
+        "kind": "serenaServer"
+      },
+      {
+        "pid": 826321,
+        "ppid": 825920,
+        "ageSeconds": 1993,
+        "root": "/tmp/aeh-s13-jj-L0ZFlM",
+        "kind": "serenaProxy"
+      },
+      {
+        "pid": 826322,
+        "ppid": 825920,
+        "ageSeconds": 1993,
+        "root": "/tmp/aeh-s13-jj-L0ZFlM",
+        "kind": "resultSinkMcp"
+      },
+      {
+        "pid": 826323,
+        "ppid": 825920,
+        "ageSeconds": 1993,
+        "root": "/tmp/aeh-s13-jj-L0ZFlM",
+        "kind": "contextMcp"
+      }
+    ]
+  },
+  "paseoWorkspaces": {
+    "count": 77,
+    "fixtureCandidates": [
+      {
+        "workspaceId": "wks_00f2ab1259260fb9",
+        "project": "aeh-live-quick-qcxPFM",
+        "name": "AEH CHANGE · CHANGE-20260921T051132Z-c5c9e367",
+        "isolation": "worktree",
+        "cwd": "/home/james/.paseo/worktrees/29lhtj73/aeh-change-20260921t051132z-c5c9e367"
+      },
+      {
+        "workspaceId": "wks_02e4ed4769d6cc01",
+        "project": "aeh-live-quick-qcxPFM",
+        "name": "AEH CHANGE · CHANGE-20260921T053757Z-96b5e2aa",
+        "isolation": "worktree",
+        "cwd": "/home/james/.paseo/worktrees/29lhtj73/aeh-change-20260921t053757z-96b5e2aa"
+      },
+      {
+        "workspaceId": "wks_06712c9f27eb151c",
+        "project": "agentic-engineering-harness",
+        "name": "AEH CHANGE · CHANGE-20260922T211154Z-c7831489",
+        "isolation": "worktree",
+        "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/aeh-change-20260922t211154z-c7831489"
+      },
+      {
+        "workspaceId": "wks_0b12e54e3c548cca",
+        "project": "agentic-engineering-harness",
+        "name": "AEH CHANGE · CHANGE-20260922T213926Z-da0e3d70",
+        "isolation": "worktree",
+        "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/aeh-change-20260922t213926z-da0e3d70"
+      },
+      {
+        "workspaceId": "wks_10812e56dd873c95",
+        "project": "aeh-live-quick-qcxPFM",
+        "name": "AEH CHANGE · CHANGE-20260921T050808Z-c5c9e367",
+        "isolation": "worktree",
+        "cwd": "/home/james/.paseo/worktrees/29lhtj73/aeh-change-20260921t050808z-c5c9e367"
+      },
+      {
+        "workspaceId": "wks_12c4f8bf3b16235f",
+        "project": "aeh-live-quick-qcxPFM",
+        "name": "AEH CHANGE · CHANGE-20260921T051849Z-01163a84",
+        "isolation": "worktree",
+        "cwd": "/home/james/.paseo/worktrees/29lhtj73/aeh-change-20260921t051849z-01163a84"
+      },
+      {
+        "workspaceId": "wks_16f267f082482354",
+        "project": "aeh-live-quick-qcxPFM",
+        "name": "AEH CHANGE · CHANGE-20260921T053023Z-96b5e2aa",
+        "isolation": "worktree",
+        "cwd": "/home/james/.paseo/worktrees/29lhtj73/aeh-change-20260921t053023z-96b5e2aa"
+      },
+      {
+        "workspaceId": "wks_2e7e43422e09960c",
+        "project": "agentic-engineering-harness",
+        "name": "AEH CHANGE · CHANGE-20260922T212228Z-c7831489",
+        "isolation": "worktree",
+        "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/aeh-change-20260922t212228z-c7831489"
+      },
+      {
+        "workspaceId": "wks_3ac6d011920867ef",
+        "project": "agentic-engineering-harness",
+        "name": "AEH CHANGE · CHANGE-20260815T201400Z-5c5c49d3",
+        "isolation": "worktree",
+        "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/aeh-change-20260815t201400z-5c5c49d3"
+      },
+      {
+        "workspaceId": "wks_3e0721b9ce70a17f",
+        "project": "agentic-engineering-harness",
+        "name": "AEH CHANGE · CHANGE-20260921T032544Z-6886a116",
+        "isolation": "worktree",
+        "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/aeh-change-20260921t032544z-6886a116"
+      },
+      {
+        "workspaceId": "wks_4dbfd9e0eded0f88",
+        "project": "aeh-direct-CHANGE-20260929T154327Z-633993c4-UYVeOH",
+        "name": "aeh-direct-CHANGE-20260929T154327Z-633993c4-UYVeOH",
+        "isolation": "local",
+        "cwd": "/tmp/aeh-direct-CHANGE-20260929T154327Z-633993c4-UYVeOH"
+      },
+      {
+        "workspaceId": "wks_818da397145f102a",
+        "project": "aeh-live-quick-qcxPFM",
+        "name": "AEH CHANGE · CHANGE-20260921T051032Z-c5c9e367",
+        "isolation": "worktree",
+        "cwd": "/home/james/.paseo/worktrees/29lhtj73/aeh-change-20260921t051032z-c5c9e367"
+      },
+      {
+        "workspaceId": "wks_82c5d32e3df9b54c",
+        "project": "journey",
+        "name": "AEH CHANGE · CHANGE-20260929T152341Z-633993c4",
+        "isolation": "worktree",
+        "cwd": "/home/james/.paseo/worktrees/3fomoob1/aeh-change-20260929t152341z-633993c4"
+      },
+      {
+        "workspaceId": "wks_891823999e90d2b8",
+        "project": "aeh-CHANGE-20260929T151732Z-248e53a3-farewell-module-qkusUi",
+        "name": "aeh-CHANGE-20260929T151732Z-248e53a3-farewell-module-qkusUi",
+        "isolation": "local",
+        "cwd": "/tmp/aeh-CHANGE-20260929T151732Z-248e53a3-farewell-module-qkusUi"
+      },
+      {
+        "workspaceId": "wks_a16efdfdc2e86158",
+        "project": "journey",
+        "name": "AEH CHANGE · CHANGE-20260929T153302Z-633993c4",
+        "isolation": "worktree",
+        "cwd": "/home/james/.paseo/worktrees/3cpda7yj/aeh-change-20260929t153302z-633993c4"
+      },
+      {
+        "workspaceId": "wks_a9ba45efe035d731",
+        "project": "agentic-engineering-harness",
+        "name": "AEH CHANGE · CHANGE-20260921T032636Z-280a1a57",
+        "isolation": "worktree",
+        "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/aeh-change-20260921t032636z-280a1a57"
+      },
+      {
+        "workspaceId": "wks_d3fc4487a9ae2c50",
+        "project": "agentic-engineering-harness",
+        "name": "AEH CHANGE · CHANGE-20260922T204407Z-da0e3d70",
+        "isolation": "worktree",
+        "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/aeh-change-20260922t204407z-da0e3d70"
+      },
+      {
+        "workspaceId": "wks_d92a14c7ee85a8e3",
+        "project": "agentic-engineering-harness",
+        "name": "AEH CHANGE · CHANGE-20260922T213436Z-da0e3d70",
+        "isolation": "worktree",
+        "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/aeh-change-20260922t213436z-da0e3d70"
+      },
+      {
+        "workspaceId": "wks_ee195c79a66c2093",
+        "project": "aeh-live-quick-qcxPFM",
+        "name": "AEH CHANGE · CHANGE-20260921T050702Z-f75a6c2d",
+        "isolation": "worktree",
+        "cwd": "/home/james/.paseo/worktrees/29lhtj73/aeh-change-20260921t050702z-f75a6c2d"
+      },
+      {
+        "workspaceId": "wks_f37748ea4b534e9f",
+        "project": "journey",
+        "name": "AEH CHANGE · CHANGE-20260929T154327Z-633993c4",
+        "isolation": "worktree",
+        "cwd": "/home/james/.paseo/worktrees/1p5mgvdp/aeh-change-20260929t154327z-633993c4"
+      },
+      {
+        "workspaceId": "wks_f43e2216181d869a",
+        "project": "agentic-engineering-harness",
+        "name": "AEH CHANGE · CHANGE-20260922T203535Z-da0e3d70",
+        "isolation": "worktree",
+        "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/aeh-change-20260922t203535z-da0e3d70"
+      },
+      {
+        "workspaceId": "wks_f465c0d32f707dbb",
+        "project": "journey",
+        "name": "AEH CHANGE · CHANGE-20260929T155125Z-9eed7a49",
+        "isolation": "local",
+        "cwd": "/home/james/.paseo/worktrees/109rnc4g/aeh-change-20260929t155125z-9eed7a49"
+      }
+    ]
+  },
+  "stagingRoots": [
+    "/tmp/aeh-certrepair-fixture-EXOG9g",
+    "/tmp/aeh-certrepair-fixture-MrYw9p",
+    "/tmp/aeh-certrepair-fixture-wM88ud",
+    "/tmp/aeh-certrepair-fixture-YxpQJa",
+    "/tmp/aeh-CHANGE-20260929T151732Z-248e53a3-farewell-module-qkusUi",
+    "/tmp/aeh-direct-CHANGE-20260929T154327Z-633993c4-UYVeOH",
+    "/tmp/aeh-s13-jj-L0ZFlM"
+  ]
+}

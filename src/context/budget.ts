@@ -25,7 +25,7 @@ export interface InformationalContextBudget {
   maxInitialBytesTotal: number;
 }
 
-export function resolveContextBudget(config: HarnessProjectConfig, role = "implementer", phase = "work"): ContextBudget {
+export function resolveContextBudget(config: HarnessProjectConfig, role = "Implementer", phase = "work"): ContextBudget {
   const policy = resolveContextPolicy(config);
   const override = { ...policy.defaultBudget, ...(policy.agentBudgets[role] ?? {}), ...(policy.phaseBudgets[phase] ?? {}) };
   const maxTokens = override.inputTokens ?? override.maxTokens ?? 16_000;

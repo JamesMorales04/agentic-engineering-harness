@@ -1,5 +1,7 @@
 node_modules/
 dist/
+!ui/control-center/dist/
+!ui/control-center/dist/**
 coverage/
 .aeh-test-results/
 .env
@@ -9,6 +11,7 @@ coverage/
 # Harness runtime/generated state is ignored by default. Repository-owned
 # declarative configuration is explicitly allowlisted below.
 .harness/*
+ui/control-center/dist/
 !.harness/project.yaml
 !.harness/toolchain.yaml
 !.harness/agents.source.jsonc

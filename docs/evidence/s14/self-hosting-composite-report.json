@@ -1,0 +1,608 @@
+{
+  "version": 1,
+  "gateId": "aeh-self-hosting-composite-v1",
+  "policyId": "aeh-self-hosting-composite-v1",
+  "policyDigest": "458145cbd4e4d9ddb8c83c6999531b5dd4852a49f230ab634a941a3aef22130a",
+  "manifestPath": "docs/evidence/s14/certification-evidence-manifest.json",
+  "manifestSha256": "d8c4a69da36f0b7c29788380aaa6802b3ff1a0bc1346e7f1bb2f3019c7207d3c",
+  "candidateBuildDigest": "4c05da6ee7fe249bcad4adb730f2c08bb34867910eb512171bccb40b63203284",
+  "generatedAt": "2026-09-30T18:06:43.976Z",
+  "readinessAuthority": "DETERMINISTIC_COMPOSITE",
+  "modelAuthority": "NONE",
+  "modelReadinessClaims": {
+    "received": 0,
+    "sources": [],
+    "evaluated": false
+  },
+  "ready": true,
+  "items": [
+    {
+      "id": "candidate-truth",
+      "title": "Candidate truth and immutable assembly",
+      "target": "§16 candidate truth; §2 candidate truth",
+      "mechanism": "DETERMINISTIC",
+      "required": true,
+      "status": "PASS",
+      "artifacts": [
+        {
+          "key": "s13.frozen-release-manifest",
+          "path": "docs/evidence/s13/round-22/frozen-release-manifest.json",
+          "binding": "versioned",
+          "sha256": "ac134c331984f013eadac860987973333ae2c56a3fa2132e4a27471b87564286",
+          "status": "PASS",
+          "failures": []
+        },
+        {
+          "key": "s13.gov.change-multifile",
+          "path": "docs/evidence/s13/governed-lanes/round-22/r22-gov-1/change-multifile.json",
+          "binding": "versioned",
+          "sha256": "b3f931ad0bc188e95caa9f96b7ffd03f10a42e4bae381b79f39084c0f120b787",
+          "status": "PASS",
+          "failures": []
+        },
+        {
+          "key": "s13.gov.change-direct",
+          "path": "docs/evidence/s13/governed-lanes/round-22/r22-gov-1/change-direct.json",
+          "binding": "versioned",
+          "sha256": "0002a79678fa86f30e24df2bdb46a34f8509a53f523424d48c380d4ae804ccd3",
+          "status": "PASS",
+          "failures": []
+        }
+      ]
+    },
+    {
+      "id": "controller-fencing",
+      "title": "Controller fencing and exact-current authority",
+      "target": "§16 controller fencing; §9 authority",
+      "mechanism": "DETERMINISTIC",
+      "required": true,
+      "status": "PASS",
+      "artifacts": [
+        {
+          "key": "s13.gh.authority",
+          "path": "docs/evidence/s13/github-lanes/round-22/r22-gh-1/authority.json",
+          "binding": "versioned",
+          "sha256": "7fbed79965bc0003eb186ecee310120f31581fc2f90ee5907e5caf0f04abca6a",
+          "status": "PASS",
+          "failures": []
+        },
+        {
+          "key": "s13.lifecycle",
+          "path": "docs/evidence/s13/s13-real-paseo-lifecycle-round-22-r22-lifecycle-1.json",
+          "binding": "versioned",
+          "sha256": "3fcc039e0a03adc3973b3d3643e11e89f71303f6ecd96f3f7d20243db204dad9",
+          "status": "PASS",
+          "failures": []
+        }
+      ]
+    },
+    {
+      "id": "capability-authority",
+      "title": "Capability authority and human-gated effects",
+      "target": "§16 capability authority; §12 authority",
+      "mechanism": "HYBRID",
+      "required": true,
+      "status": "PASS",
+      "artifacts": [
+        {
+          "key": "s13.gh.authority",
+          "path": "docs/evidence/s13/github-lanes/round-22/r22-gh-1/authority.json",
+          "binding": "versioned",
+          "sha256": "7fbed79965bc0003eb186ecee310120f31581fc2f90ee5907e5caf0f04abca6a",
+          "status": "PASS",
+          "failures": []
+        },
+        {
+          "key": "s13.ctx.permission-delegation",
+          "path": "docs/evidence/s13/context-permission-lanes/round-22/r22-ctxperm-1/permission-delegation.json",
+          "binding": "versioned",
+          "sha256": "e26176dcf85e30014be3f9fd6e9147b3ca4b958591d7fb491551bf52f0884015",
+          "status": "PASS",
+          "failures": []
+        },
+        {
+          "key": "s13.gov.change-delegated",
+          "path": "docs/evidence/s13/governed-lanes/round-22/r22-gov-1/change-delegated.json",
+          "binding": "versioned",
+          "sha256": "e21de775d76f32d33cbef5ed9c2622c0d14c571c5f7e52ce00c1a14fcc07ffaf",
+          "status": "PASS",
+          "failures": []
+        }
+      ]
+    },
+    {
+      "id": "policy-freeze",
+      "title": "Frozen policy identity across the governed lifecycle",
+      "target": "§16 policy freeze; §3 policy",
+      "mechanism": "DETERMINISTIC",
+      "required": true,
+      "status": "PASS",
+      "artifacts": [
+        {
+          "key": "s13.gov.change-formal",
+          "path": "docs/evidence/s13/governed-lanes/round-22/r22-gov-2/change-formal.json",
+          "binding": "versioned",
+          "sha256": "a91a49e63241a315b44b3f9b8c16774aa07635a9551ad17cd01efb04bd8f1d71",
+          "status": "PASS",
+          "failures": []
+        },
+        {
+          "key": "s13.gov.change-delegated",
+          "path": "docs/evidence/s13/governed-lanes/round-22/r22-gov-1/change-delegated.json",
+          "binding": "versioned",
+          "sha256": "e21de775d76f32d33cbef5ed9c2622c0d14c571c5f7e52ce00c1a14fcc07ffaf",
+          "status": "PASS",
+          "failures": []
+        }
+      ]
+    },
+    {
+      "id": "execution-identity-provenance",
+      "title": "Execution identity, provenance and worker receipts",
+      "target": "§16 execution identity and provenance; §5",
+      "mechanism": "DETERMINISTIC",
+      "required": true,
+      "status": "PASS",
+      "artifacts": [
+        {
+          "key": "s13.gov.distributed",
+          "path": "docs/evidence/s13/governed-lanes/round-21/r21-dist-14/distributed.json",
+          "binding": "versioned",
+          "sha256": "69b735d04a75f1d37795e6d930854a20d2da7822caf9f44b5b2e59268e1042d0",
+          "status": "PASS",
+          "failures": []
+        },
+        {
+          "key": "s13.gov.multi-worker",
+          "path": "docs/evidence/s13/governed-lanes/round-22/r22-gov-2/multi-worker.json",
+          "binding": "versioned",
+          "sha256": "47693c99de958e747811cec1cfe3ea591a3d474e0e5a1457ecd73da9759a2f88",
+          "status": "PASS",
+          "failures": []
+        }
+      ]
+    },
+    {
+      "id": "skillmanifest-context",
+      "title": "SkillManifest and authorized context delivery",
+      "target": "§16 SkillManifest and context; §6",
+      "mechanism": "HYBRID",
+      "required": true,
+      "status": "PASS",
+      "artifacts": [
+        {
+          "key": "s13.ctx.context-handoff",
+          "path": "docs/evidence/s13/context-permission-lanes/round-22/r22-ctxperm-1/context-handoff.json",
+          "binding": "versioned",
+          "sha256": "33a125e6347c26af89208b67b4e1748c73891afa27c5372ffa4788dc278e1f95",
+          "status": "PASS",
+          "failures": []
+        },
+        {
+          "key": "s13.ctx.permission-delegation",
+          "path": "docs/evidence/s13/context-permission-lanes/round-22/r22-ctxperm-1/permission-delegation.json",
+          "binding": "versioned",
+          "sha256": "e26176dcf85e30014be3f9fd6e9147b3ca4b958591d7fb491551bf52f0884015",
+          "status": "PASS",
+          "failures": []
+        }
+      ]
+    },
+    {
+      "id": "paseo-session-identity",
+      "title": "Paseo session identity and lifecycle",
+      "target": "§16 Paseo session identity; §6",
+      "mechanism": "DETERMINISTIC",
+      "required": true,
+      "status": "PASS",
+      "artifacts": [
+        {
+          "key": "s13.lifecycle",
+          "path": "docs/evidence/s13/s13-real-paseo-lifecycle-round-22-r22-lifecycle-1.json",
+          "binding": "versioned",
+          "sha256": "3fcc039e0a03adc3973b3d3643e11e89f71303f6ecd96f3f7d20243db204dad9",
+          "status": "PASS",
+          "failures": []
+        },
+        {
+          "key": "s13.certification",
+          "path": "docs/evidence/s13/s13-real-provider-certification.json",
+          "binding": "versioned",
+          "sha256": "5446493ecf7e1b002aa97cb1ae4fe4d544c8273c50e42034e7e0ede27f8978af",
+          "status": "PASS",
+          "failures": []
+        }
+      ]
+    },
+    {
+      "id": "impact-driven-assurance",
+      "title": "Impact-driven assurance recompilation",
+      "target": "§16 impact-driven assurance; §4",
+      "mechanism": "HYBRID",
+      "required": true,
+      "status": "PASS",
+      "artifacts": [
+        {
+          "key": "s13.gov.change-direct",
+          "path": "docs/evidence/s13/governed-lanes/round-22/r22-gov-1/change-direct.json",
+          "binding": "versioned",
+          "sha256": "0002a79678fa86f30e24df2bdb46a34f8509a53f523424d48c380d4ae804ccd3",
+          "status": "PASS",
+          "failures": []
+        },
+        {
+          "key": "s13.gov.change-multifile",
+          "path": "docs/evidence/s13/governed-lanes/round-22/r22-gov-1/change-multifile.json",
+          "binding": "versioned",
+          "sha256": "b3f931ad0bc188e95caa9f96b7ffd03f10a42e4bae381b79f39084c0f120b787",
+          "status": "PASS",
+          "failures": []
+        }
+      ]
+    },
+    {
+      "id": "validation",
+      "title": "Validation requirements and candidate-bound evidence",
+      "target": "§16 validation; §8",
+      "mechanism": "DETERMINISTIC",
+      "required": true,
+      "status": "PASS",
+      "artifacts": [
+        {
+          "key": "s13.gov.change-multifile",
+          "path": "docs/evidence/s13/governed-lanes/round-22/r22-gov-1/change-multifile.json",
+          "binding": "versioned",
+          "sha256": "b3f931ad0bc188e95caa9f96b7ffd03f10a42e4bae381b79f39084c0f120b787",
+          "status": "PASS",
+          "failures": []
+        },
+        {
+          "key": "s13.gov.change-delegated",
+          "path": "docs/evidence/s13/governed-lanes/round-22/r22-gov-1/change-delegated.json",
+          "binding": "versioned",
+          "sha256": "e21de775d76f32d33cbef5ed9c2622c0d14c571c5f7e52ce00c1a14fcc07ffaf",
+          "status": "PASS",
+          "failures": []
+        }
+      ]
+    },
+    {
+      "id": "independent-review",
+      "title": "Independent review evidence",
+      "target": "§16 independent review; §7",
+      "mechanism": "HYBRID",
+      "required": true,
+      "status": "PASS",
+      "artifacts": [
+        {
+          "key": "s13.gov.change-delegated",
+          "path": "docs/evidence/s13/governed-lanes/round-22/r22-gov-1/change-delegated.json",
+          "binding": "versioned",
+          "sha256": "e21de775d76f32d33cbef5ed9c2622c0d14c571c5f7e52ce00c1a14fcc07ffaf",
+          "status": "PASS",
+          "failures": []
+        },
+        {
+          "key": "s13.journey.issue",
+          "path": "docs/evidence/s13/issue-journey-lanes/round-22/r22-journey-1/issue-driven.json",
+          "binding": "versioned",
+          "sha256": "6aab2cf158e22c1a2d0775d81d3f956787429595866f7539080f99cd3e4d9381",
+          "status": "PASS",
+          "failures": []
+        }
+      ]
+    },
+    {
+      "id": "acceptance-oracle",
+      "title": "AcceptanceOracle and objective completion",
+      "target": "§16 acceptance/oracle; §10",
+      "mechanism": "DETERMINISTIC",
+      "required": true,
+      "status": "PASS",
+      "artifacts": [
+        {
+          "key": "s13.gov.change-direct",
+          "path": "docs/evidence/s13/governed-lanes/round-22/r22-gov-1/change-direct.json",
+          "binding": "versioned",
+          "sha256": "0002a79678fa86f30e24df2bdb46a34f8509a53f523424d48c380d4ae804ccd3",
+          "status": "PASS",
+          "failures": []
+        },
+        {
+          "key": "s13.gov.change-formal",
+          "path": "docs/evidence/s13/governed-lanes/round-22/r22-gov-2/change-formal.json",
+          "binding": "versioned",
+          "sha256": "a91a49e63241a315b44b3f9b8c16774aa07635a9551ad17cd01efb04bd8f1d71",
+          "status": "PASS",
+          "failures": []
+        }
+      ]
+    },
+    {
+      "id": "repair-replan",
+      "title": "Bounded repair/replan with oracle re-check",
+      "target": "§16 repair/replan; §8",
+      "mechanism": "HYBRID",
+      "required": true,
+      "status": "PASS",
+      "artifacts": [
+        {
+          "key": "s13.gov.repair",
+          "path": "docs/evidence/s13/governed-lanes/round-23/r23-gov-9/repair.json",
+          "binding": "versioned",
+          "sha256": "20621848a613e921038fc81d503b1457dcf75c68c75029623d4af72b841dbd5c",
+          "status": "PASS",
+          "failures": []
+        },
+        {
+          "key": "s13.certification-repair",
+          "path": "docs/evidence/s13/s13-certification-repair-round-22-r22-certrepair-1.json",
+          "binding": "versioned",
+          "sha256": "2e10c4d4d433ba5506f42a09440ff2e75432176de876d0c047abba9b32c3f5ad",
+          "status": "PASS",
+          "failures": []
+        }
+      ]
+    },
+    {
+      "id": "human-exception-handling",
+      "title": "Human exception handling and external authorization",
+      "target": "§16 human exception handling; §12",
+      "mechanism": "HYBRID",
+      "required": true,
+      "status": "PASS",
+      "artifacts": [
+        {
+          "key": "s13.journey.issue",
+          "path": "docs/evidence/s13/issue-journey-lanes/round-22/r22-journey-1/issue-driven.json",
+          "binding": "versioned",
+          "sha256": "6aab2cf158e22c1a2d0775d81d3f956787429595866f7539080f99cd3e4d9381",
+          "status": "PASS",
+          "failures": []
+        },
+        {
+          "key": "s13.gh.authority",
+          "path": "docs/evidence/s13/github-lanes/round-22/r22-gh-1/authority.json",
+          "binding": "versioned",
+          "sha256": "7fbed79965bc0003eb186ecee310120f31581fc2f90ee5907e5caf0f04abca6a",
+          "status": "PASS",
+          "failures": []
+        }
+      ]
+    },
+    {
+      "id": "delivery-reconciliation",
+      "title": "Delivery intents, receipts and reconciliation",
+      "target": "§16 delivery reconciliation; §11",
+      "mechanism": "HYBRID",
+      "required": true,
+      "status": "PASS",
+      "artifacts": [
+        {
+          "key": "s13.gh.delivery",
+          "path": "docs/evidence/s13/github-lanes/round-22/r22-gh-1/delivery.json",
+          "binding": "versioned",
+          "sha256": "7afdde1111a1e57cadd4a1363160cb9f8baaa804804b317192afb8abec2fd71b",
+          "status": "PASS",
+          "failures": []
+        },
+        {
+          "key": "s13.journey.issue",
+          "path": "docs/evidence/s13/issue-journey-lanes/round-22/r22-journey-1/issue-driven.json",
+          "binding": "versioned",
+          "sha256": "6aab2cf158e22c1a2d0775d81d3f956787429595866f7539080f99cd3e4d9381",
+          "status": "PASS",
+          "failures": []
+        }
+      ]
+    },
+    {
+      "id": "runtime-recovery",
+      "title": "Runtime supervision, cancellation and recovery",
+      "target": "§16 runtime recovery; §9",
+      "mechanism": "DETERMINISTIC",
+      "required": true,
+      "status": "PASS",
+      "artifacts": [
+        {
+          "key": "s13.lifecycle",
+          "path": "docs/evidence/s13/s13-real-paseo-lifecycle-round-22-r22-lifecycle-1.json",
+          "binding": "versioned",
+          "sha256": "3fcc039e0a03adc3973b3d3643e11e89f71303f6ecd96f3f7d20243db204dad9",
+          "status": "PASS",
+          "failures": []
+        },
+        {
+          "key": "s13.gov.distributed",
+          "path": "docs/evidence/s13/governed-lanes/round-21/r21-dist-14/distributed.json",
+          "binding": "versioned",
+          "sha256": "69b735d04a75f1d37795e6d930854a20d2da7822caf9f44b5b2e59268e1042d0",
+          "status": "PASS",
+          "failures": []
+        }
+      ]
+    },
+    {
+      "id": "sandbox-security",
+      "title": "Sandbox/security isolation and candidate-bound SAST",
+      "target": "§16 sandbox/security; §12",
+      "mechanism": "DETERMINISTIC",
+      "required": true,
+      "status": "PASS",
+      "artifacts": [
+        {
+          "key": "s10.sast",
+          "path": "docs/evidence/s10/real-sast-campaign.json",
+          "binding": "versioned",
+          "sha256": "3a106006801c7b03e79795b8beedc4af240facd16ee78675d8f8194fd7848779",
+          "status": "PASS",
+          "failures": []
+        },
+        {
+          "key": "s13.ctx.permission-delegation",
+          "path": "docs/evidence/s13/context-permission-lanes/round-22/r22-ctxperm-1/permission-delegation.json",
+          "binding": "versioned",
+          "sha256": "e26176dcf85e30014be3f9fd6e9147b3ca4b958591d7fb491551bf52f0884015",
+          "status": "PASS",
+          "failures": []
+        }
+      ]
+    },
+    {
+      "id": "supply-chain",
+      "title": "Supply-chain provenance gate",
+      "target": "§16 supply chain; §11/§15",
+      "mechanism": "DETERMINISTIC",
+      "required": true,
+      "status": "PASS",
+      "artifacts": [
+        {
+          "key": "s13.gh.delivery",
+          "path": "docs/evidence/s13/github-lanes/round-22/r22-gh-1/delivery.json",
+          "binding": "versioned",
+          "sha256": "7afdde1111a1e57cadd4a1363160cb9f8baaa804804b317192afb8abec2fd71b",
+          "status": "PASS",
+          "failures": []
+        },
+        {
+          "key": "s13.review-final",
+          "path": "docs/evidence/s13/review-final-r23.json",
+          "binding": "versioned",
+          "sha256": "fe3bc3d1b507c4c4bab36f32deabdc1c98defedcb1dd12b1006b366a19bd4f8a",
+          "status": "PASS",
+          "failures": []
+        }
+      ]
+    },
+    {
+      "id": "real-provider-certification",
+      "title": "Real-provider certification matrix",
+      "target": "§16 real-provider certification; §15",
+      "mechanism": "HYBRID",
+      "required": true,
+      "status": "PASS",
+      "artifacts": [
+        {
+          "key": "s13.certification",
+          "path": "docs/evidence/s13/s13-real-provider-certification.json",
+          "binding": "versioned",
+          "sha256": "5446493ecf7e1b002aa97cb1ae4fe4d544c8273c50e42034e7e0ede27f8978af",
+          "status": "PASS",
+          "failures": []
+        },
+        {
+          "key": "s13.review-final",
+          "path": "docs/evidence/s13/review-final-r23.json",
+          "binding": "versioned",
+          "sha256": "fe3bc3d1b507c4c4bab36f32deabdc1c98defedcb1dd12b1006b366a19bd4f8a",
+          "status": "PASS",
+          "failures": []
+        }
+      ]
+    },
+    {
+      "id": "adversarial-fault-injection",
+      "title": "Adversarial and fault-injection evidence",
+      "target": "§16 adversarial/fault injection",
+      "mechanism": "DETERMINISTIC",
+      "required": true,
+      "status": "PASS",
+      "artifacts": [
+        {
+          "key": "s14.adversarial",
+          "path": "docs/evidence/s14/adversarial-negative-checks.json",
+          "binding": "runtime",
+          "sha256": "d987ff6eef8bd73d748fc3962eca6699af9faba30de189bde7127edba223b5bb",
+          "status": "PASS",
+          "failures": []
+        },
+        {
+          "key": "s13.gov.distributed",
+          "path": "docs/evidence/s13/governed-lanes/round-21/r21-dist-14/distributed.json",
+          "binding": "versioned",
+          "sha256": "69b735d04a75f1d37795e6d930854a20d2da7822caf9f44b5b2e59268e1042d0",
+          "status": "PASS",
+          "failures": []
+        }
+      ]
+    },
+    {
+      "id": "resource-lifecycle-reconciliation",
+      "title": "Resource lifecycle reconciliation and stability (AEH-V2-0130)",
+      "target": "§16 + CAMPAIGN RESOURCE-LIFECYCLE AMENDMENT",
+      "mechanism": "HYBRID",
+      "required": true,
+      "status": "PASS",
+      "artifacts": [
+        {
+          "key": "s14.stability",
+          "path": "docs/evidence/s14/resource-stability-campaign.json",
+          "binding": "runtime",
+          "sha256": "090dace900895ec2a98fef1c20840fcff28fe6242f0e64186ba81f2bf0b43fb0",
+          "status": "PASS",
+          "failures": []
+        },
+        {
+          "key": "s14.campaign",
+          "path": "docs/evidence/s14/disposable-self-modification-campaign.json",
+          "binding": "runtime",
+          "sha256": "3d22460116bfbeb6957cd6e43dfa75f36a76549243c9fc22ae63b6cda2e586d9",
+          "status": "PASS",
+          "failures": []
+        },
+        {
+          "key": "s14.campaign-raw",
+          "path": "docs/evidence/s14/raw/disposable-campaign-lane.json",
+          "binding": "runtime",
+          "sha256": "98d62371ed14175ee20cfb39221230216695c715c45c89a83b350a2ea75baea3",
+          "status": "PASS",
+          "failures": []
+        }
+      ]
+    },
+    {
+      "id": "disposable-self-modification",
+      "title": "Disposable self-modification campaign",
+      "target": "§16 disposable self-modification campaign",
+      "mechanism": "HYBRID",
+      "required": true,
+      "status": "PASS",
+      "artifacts": [
+        {
+          "key": "s14.campaign",
+          "path": "docs/evidence/s14/disposable-self-modification-campaign.json",
+          "binding": "runtime",
+          "sha256": "3d22460116bfbeb6957cd6e43dfa75f36a76549243c9fc22ae63b6cda2e586d9",
+          "status": "PASS",
+          "failures": []
+        },
+        {
+          "key": "s14.campaign-raw",
+          "path": "docs/evidence/s14/raw/disposable-campaign-lane.json",
+          "binding": "runtime",
+          "sha256": "98d62371ed14175ee20cfb39221230216695c715c45c89a83b350a2ea75baea3",
+          "status": "PASS",
+          "failures": []
+        },
+        {
+          "key": "s13.review-final",
+          "path": "docs/evidence/s13/review-final-r23.json",
+          "binding": "versioned",
+          "sha256": "fe3bc3d1b507c4c4bab36f32deabdc1c98defedcb1dd12b1006b366a19bd4f8a",
+          "status": "PASS",
+          "failures": []
+        }
+      ]
+    }
+  ],
+  "failures": [],
+  "summary": {
+    "requiredItems": 21,
+    "passedItems": 21,
+    "failedItems": 0,
+    "verifiedArtifacts": 46,
+    "failedArtifacts": 0,
+    "versionedArtifacts": 20,
+    "runtimeArtifacts": 4
+  }
+}

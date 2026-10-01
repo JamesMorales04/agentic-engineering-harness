@@ -6,8 +6,10 @@ import { AlwaysOnSampler, BatchSpanProcessor } from "@opentelemetry/sdk-trace-ba
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import type { HarnessProjectConfig } from "../core/types.js";
 import { resolveEndpoint } from "./otlp.js";
+import { getBuildIdentity } from "../build/identity.js";
 
 const instrumentationName = "agentic-engineering-harness";
+const buildIdentity = getBuildIdentity();
 const roots = new Map<string, Span>();
 const phases = new Map<string, Map<string, Span>>();
 const activePhases = new Map<string, string>();
@@ -28,7 +30,7 @@ export function ensureTracing(config: HarnessProjectConfig): NodeTracerProvider 
     : [];
   const next = new NodeTracerProvider({
     sampler: new AlwaysOnSampler(),
-    resource: resourceFromAttributes({ "service.name": config.telemetry?.serviceName ?? process.env.OTEL_SERVICE_NAME ?? config.project.name, "service.version": "0.6.29" }),
+    resource: resourceFromAttributes({ "service.name": config.telemetry?.serviceName ?? process.env.OTEL_SERVICE_NAME ?? config.project.name, "service.version": buildIdentity.packageVersion, "aeh.build.git.sha": buildIdentity.gitSha, "aeh.build.release.id": buildIdentity.releaseId, "aeh.build.digest": buildIdentity.buildDigest, "aeh.build.dirty": buildIdentity.dirty }),
     spanProcessors: processors
   });
   if (!contextManagerRegistered) {
@@ -41,11 +43,11 @@ export function ensureTracing(config: HarnessProjectConfig): NodeTracerProvider 
 }
 
 export function tracer(config: HarnessProjectConfig) {
-  return ensureTracing(config).getTracer(instrumentationName, "0.6.29");
+  return ensureTracing(config).getTracer(instrumentationName, buildIdentity.packageVersion);
 }
 
 export function startOperationSpan(config: HarnessProjectConfig, operationId: string, attributes: Record<string, unknown>): { span: Span; context: Context } {
-  const span = tracer(config).startSpan("aeh.operation", { attributes: safeAttributes({ ...attributes, operationId }) });
+  const span = tracer(config).startSpan("aeh.operation", { attributes: safeAttributes({ ...buildIdentityAttributes(), ...attributes, operationId }) });
   roots.set(operationId, span);
   phases.set(operationId, new Map());
   activePhases.delete(operationId);
@@ -64,7 +66,7 @@ export function startEventSpan(config: HarnessProjectConfig, operationId: string
     if (previous && previous !== phase) finishPhase(operationId, previous);
     let phaseSpan = operationPhases.get(phase);
     if (!phaseSpan) {
-      phaseSpan = tracer(config).startSpan(`aeh.phase.${phase}`, { attributes: safeAttributes(attributes) }, rootContext);
+      phaseSpan = tracer(config).startSpan(`aeh.phase.${phase}`, { attributes: safeAttributes({ ...buildIdentityAttributes(), ...attributes }) }, rootContext);
       phaseSpan.setAttribute("aeh.phase", phase);
       operationPhases.set(phase, phaseSpan);
     }
@@ -72,7 +74,7 @@ export function startEventSpan(config: HarnessProjectConfig, operationId: string
     parent = phaseSpan;
   }
   const parentContext = parent ? trace.setSpan(context.active(), parent) : context.active();
-  const span = tracer(config).startSpan(name, { attributes: safeAttributes(attributes) }, parentContext);
+  const span = tracer(config).startSpan(name, { attributes: safeAttributes({ ...buildIdentityAttributes(), ...attributes }) }, parentContext);
   return { span, parentSpanId: parent?.spanContext().spanId };
 }
 
@@ -134,6 +136,10 @@ export function safeAttributes(attributes: Record<string, unknown>): Record<stri
 }
 
 export function configuredTelemetry(): HarnessProjectConfig | undefined { return firstConfig; }
+
+function buildIdentityAttributes(): Record<string, string | boolean> {
+  return { "aeh.build.git.sha": buildIdentity.gitSha, "aeh.build.release.id": buildIdentity.releaseId, "aeh.build.digest": buildIdentity.buildDigest, "aeh.build.dirty": buildIdentity.dirty };
+}
 
 function providerKey(config: HarnessProjectConfig): string {
   return JSON.stringify({ exporter: config.telemetry?.exporter ?? "none", endpoint: config.telemetry?.endpoint ?? "", serviceName: config.telemetry?.serviceName ?? process.env.OTEL_SERVICE_NAME ?? config.project.name, headers: config.telemetry?.headers ?? {} });

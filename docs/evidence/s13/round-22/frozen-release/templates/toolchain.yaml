@@ -1,0 +1,185 @@
+version: 1
+
+manager:
+  provider: mise
+  generatedConfig: .config/mise/conf.d/aeh.toml
+  lockFile: .harness/toolchain.lock.json
+  stateFile: .harness/toolchain.state.json
+  minimumVersion: "2026.7.0"
+
+strategy:
+  validators: local # local | prefer-container
+  containerEngine: podman
+
+profiles:
+  core:
+    tools: [git, node]
+  agents:
+    extends: [core]
+    tools: [codex, opencode, paseo]
+  spec:
+    extends: [core]
+    tools: [openspec]
+  intelligence:
+    extends: [core]
+    tools: [python, uv, graphify, serena, headroom]
+  validation:
+    extends: [core]
+    tools: [opa, opengrep, trivy, cosign]
+  full:
+    extends: [agents, spec, intelligence, validation]
+    tools: [podman, dotnet, bun]
+
+tools:
+  git:
+    kind: system
+    command: git
+    required: true
+    activateWhen: [always]
+
+  node:
+    kind: mise
+    command: node
+    source: node
+    version: "22"
+    required: true
+    activateWhen: [always, project:node, project:pnpm, project:yarn]
+
+  bun:
+    kind: mise
+    command: bun
+    source: bun
+    version: latest
+    activateWhen: [project:bun]
+
+  dotnet:
+    kind: mise
+    command: dotnet
+    source: dotnet
+    version: latest
+    activateWhen: [project:dotnet]
+
+  codex:
+    kind: mise
+    command: codex
+    source: "npm:@openai/codex"
+    version: latest
+    activateWhen: [runtime:codex]
+
+  opencode:
+    kind: mise
+    command: opencode
+    source: "aqua:anomalyco/opencode"
+    version: latest
+    activateWhen: [runtime:opencode]
+
+  paseo:
+    kind: mise
+    command: paseo
+    source: "npm:@getpaseo/cli"
+    version: latest
+    activateWhen: [orchestration:paseo, delivery:paseo]
+
+  openspec:
+    kind: mise
+    command: openspec
+    source: "npm:@fission-ai/openspec"
+    version: latest
+    activateWhen: [spec-authoring:openspec]
+
+  uv:
+    kind: mise
+    command: uv
+    source: uv
+    version: latest
+    activateWhen: [code-intelligence:graphify, project:python]
+
+  python:
+    kind: mise
+    command: python
+    source: python
+    version: "3.13"
+    required: true
+    activateWhen: [semantic-retrieval:serena, compression:headroom, project:python]
+
+  graphify:
+    kind: mise
+    command: graphify
+    source: "pipx:graphifyy"
+    version: "0.9.43"
+    dependsOn: [uv]
+    activateWhen: [code-intelligence:graphify]
+
+  serena:
+    kind: mise
+    command: serena
+    source: "pipx:serena-agent"
+    version: "1.6.1"
+    required: true
+    dependsOn: [uv, python]
+    activateWhen: [semantic-retrieval:serena]
+
+  headroom:
+    kind: mise
+    command: headroom
+    source: "pipx:headroom-ai[all]"
+    version: "0.28.0"
+    required: true
+    dependsOn: [uv, python]
+    activateWhen: [compression:headroom]
+
+  engram:
+    kind: mise
+    command: engram
+    source: "npm:@engram-ai-memory/cli"
+    version: "0.4.1"
+    dependsOn: [pnpm]
+    activateWhen: [memory:engram]
+
+  opa:
+    kind: mise
+    command: opa
+    source: "aqua:open-policy-agent/opa"
+    version: latest
+    activateWhen: [validation:opa]
+    container:
+      image: docker.io/openpolicyagent/opa:latest-static
+
+  opengrep:
+    kind: mise
+    command: opengrep
+    source: "aqua:opengrep/opengrep"
+    version: "1.22.0"
+    activateWhen: [security-tool:opengrep, validator:opengrep]
+
+  trivy:
+    kind: mise
+    command: trivy
+    source: "aqua:aquasecurity/trivy"
+    version: "0.70.0"
+    activateWhen: [security-tool:trivy, validator:trivy]
+    container:
+      image: ghcr.io/aquasecurity/trivy:latest
+
+  cosign:
+    kind: mise
+    command: cosign
+    source: "aqua:sigstore/cosign"
+    version: latest
+    activateWhen: [organization:signed-policy]
+
+  podman:
+    kind: system
+    command: podman
+    activateWhen: [orchestration:podman, sandbox:podman]
+
+  pnpm:
+    kind: mise
+    command: pnpm
+    source: "npm:pnpm"
+    version: "10.15.0"
+    activateWhen: [memory:engram, project:pnpm]
+
+projectDependencies:
+  autoDetect: true
+  commands: []

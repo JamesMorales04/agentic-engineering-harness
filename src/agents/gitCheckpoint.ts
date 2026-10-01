@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { runProcess } from "../utils/process.js";
+import { runExecutable } from "../utils/process.js";
 
 export interface WorktreeCheckpoint { createdAt: string; files: Map<string, Buffer | undefined>; }
 
@@ -27,9 +27,9 @@ export async function rollbackWorktreeCheckpoint(root: string, checkpoint: Workt
       restored.push(relative);
       continue;
     }
-    const tracked = await runProcess(`git cat-file -e ${quote(`HEAD:${relative}`)}`, { cwd: root, timeoutMs: 30_000 });
+    const tracked = await runExecutable("git", ["cat-file", "-e", `HEAD:${relative}`], { cwd: root, timeoutMs: 30_000 });
     if (tracked.exitCode === 0) {
-      const restore = await runProcess(`git restore --source=HEAD --worktree --staged -- ${quote(relative)}`, { cwd: root, timeoutMs: 30_000 });
+      const restore = await runExecutable("git", ["restore", "--source=HEAD", "--worktree", "--staged", "--", relative], { cwd: root, timeoutMs: 30_000 });
       if (restore.exitCode !== 0) throw new Error(`Unable to rollback ${relative}: ${restore.stderr || restore.stdout}`);
     } else await fs.rm(absolute, { recursive: true, force: true });
     restored.push(relative);
@@ -38,14 +38,12 @@ export async function rollbackWorktreeCheckpoint(root: string, checkpoint: Workt
 }
 
 async function changedPaths(root: string): Promise<string[]> {
-  const commands = ["git diff --name-only HEAD", "git diff --cached --name-only HEAD", "git ls-files --others --exclude-standard"];
+  const commands = [["diff", "--name-only", "HEAD"], ["diff", "--cached", "--name-only", "HEAD"], ["ls-files", "--others", "--exclude-standard"]];
   const paths = new Set<string>();
-  for (const command of commands) {
-    const result = await runProcess(command, { cwd: root, timeoutMs: 30_000 });
+  for (const args of commands) {
+    const result = await runExecutable("git", args, { cwd: root, timeoutMs: 30_000 });
     if (result.exitCode !== 0) throw new Error(`Unable to inspect worktree for rollback checkpoint: ${result.stderr || result.stdout}`);
     for (const line of result.stdout.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)) paths.add(line);
   }
   return [...paths].sort();
 }
-
-function quote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }

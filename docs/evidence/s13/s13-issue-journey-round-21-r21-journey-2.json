@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 21,
+  "runId": "r21-journey-2",
+  "campaign": "issue-journey",
+  "generatedAt": "2026-09-30T03:51:41.127Z",
+  "checkout": "/home/james/Desarrollo/agentic-engineering-harness",
+  "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13IssueJourneyCampaign.mjs",
+        "sha256": "58a7b6accd71ead628166d3d430faea227a1558af616542e3f032cc73bd1d366"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "72b3a33aaeff78b5f19ac8f1387f787ac1f74af359e929b35819e4d145bd92dc"
+  },
+  "harnessBuildIdentity": {
+    "version": 1,
+    "packageVersion": "0.8.4",
+    "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "releaseId": "release-1790738813731-1102366-49fddee2",
+    "buildDigest": "599ed363223ff2dd85e17296c9f34c4134bf83e363916c4c57d7e7492ccbdf45",
+    "dirty": true
+  },
+  "repository": {
+    "name": "JamesMorales04/aeh-s13-round3-20260927035743-6bb5da",
+    "visibility": "private",
+    "createdByCampaign": false
+  },
+  "issue": {
+    "number": 1,
+    "created": false,
+    "edited": false
+  },
+  "authorization": {
+    "authorizationId": "s13-github-effect-authorization-2026-09-28",
+    "artifactDigest": "272c5cb76158a7c312edd4d8d97cd6545b599e5c57c7978bbfc3742c573bd460",
+    "allowedEffects": [
+      "git.push",
+      "github.branch.create",
+      "github.issue.create"
+    ],
+    "resourceNamePrefix": "aeh-s13-",
+    "consumedBeforeAnyExternalCommand": true
+  },
+  "lanes": [
+    {
+      "capability": "issue-driven",
+      "result": "FAIL",
+      "checks": null,
+      "error": "Error: BLOCKED_EXTERNAL: git push failed for aeh-s13-issue-journey-1-issue-journey-greet-contract-comment: Side effect failed deterministically and the failure receipt was persisted.\n    at Module.finalizeAcceptedIssue (file:///home/james/Desarrollo/agentic-engineering-harness/dist/releases/release-1790738813731-1102366-49fddee2/delivery/finalize.js:109:15)\n    at async file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13IssueJourneyCampaign.mjs:342:21",
+      "artifact": "docs/evidence/s13/issue-journey-lanes/round-21/r21-journey-2/issue-driven.json"
+    }
+  ],
+  "result": "SLICE_BLOCKED",
+  "checkoutProof": {
+    "trackedDigestBefore": "d918cc727fd17c84bea741d6a9ee0ae2d01888880f82b6e269918f48cf7252a2",
+    "trackedDigestAfter": "d918cc727fd17c84bea741d6a9ee0ae2d01888880f82b6e269918f48cf7252a2",
+    "trackedFiles": 668,
+    "checkoutUntouched": true,
+    "postRunTrackedDocEditWindow": {
+      "opensAfterLaneFinish": true,
+      "note": "S13 tracked documentation/evidence is edited after lane execution; the recorded digest is the source-tree digest at lane end (R11-F6)."
+    }
+  }
+}

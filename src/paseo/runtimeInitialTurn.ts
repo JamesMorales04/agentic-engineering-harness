@@ -3,6 +3,7 @@ import {
   continueManagedPaseoAgent,
   launchManagedPaseoAgent as launchLegacyManagedPaseoAgent,
   materializeManagedPaseoAgent,
+  stopManagedPaseoAgent,
   type ManagedPaseoAgentOptions,
   type ManagedPaseoAgentResult
 } from "./runtimeCore.js";
@@ -16,13 +17,22 @@ type RuntimeDeps = Parameters<typeof launchLegacyManagedPaseoAgent>[2];
  * fast idle -> running -> idle cycle cannot finish before AEH observes it.
  * Standalone runtime callers and explicit detached launches retain the legacy
  * lifecycle for compatibility.
+ *
+ * Controller-side semantic assessments are the exception: the installed Paseo/OpenCode stack
+ * honors a provider-enforced output schema only on the session-creating initial prompt
+ * (`send_agent_message_request` carries no outputSchema), so the assessor session is created
+ * with the assessment prompt as its initial prompt plus the unchanged semantic-assessment
+ * schema. It carries no `aeh.output.contract` label, so the AEH structured-result sink stays
+ * inert: no result channel, no MCP server, no writer provider lease, no participant
+ * registration. Completion is observed through the canonical native wait and reported via
+ * `agent.wait.completed`, and the deterministic semantic validation remains authoritative.
  */
 export async function launchManagedPaseoAgent(
   root: string,
   options: ManagedPaseoAgentOptions,
   deps?: RuntimeDeps
 ): Promise<ManagedPaseoAgentResult> {
-  if (!isManagedForegroundTurn(options)) {
+  if (!isManagedForegroundTurn(options) || options.labels?.["aeh.kind"] === "semantic-assessment") {
     return launchLegacyManagedPaseoAgent(root, options, deps);
   }
 
@@ -37,17 +47,28 @@ export async function launchManagedPaseoAgent(
     // Compatibility fallback is safe only before a semantic turn starts. Once
     // materialization succeeds, never create a second agent for the same turn.
     if (!isSdkUnavailable(error)) throw error;
+    if (options.labels?.["aeh.operation"]?.trim()) {
+      throw new Error(`PASEO_OPERATION_PROVIDER_LIFECYCLE_REQUIRED: an operation-owned Paseo session cannot fall back to the unleased CLI lifecycle. ${String(error)}`, { cause: error });
+    }
+    if (options.agentId || options.labels?.["aeh.execution.binding.digest"]) {
+      throw new Error(`PASEO_EXECUTION_SESSION_PREPARATION_REQUIRED: a launch carrying frozen execution identity requires SDK materialization before its first prompt. ${String(error)}`);
+    }
     return launchLegacyManagedPaseoAgent(root, options, deps);
   }
 
   if (!materialized.id) return materialized;
+  if (options.agentId && materialized.id !== options.agentId) {
+    await stopManagedPaseoAgent(root, materialized.id, deps).catch(() => undefined);
+    throw new Error("EXECUTION_BINDING_RUNTIME_SESSION_MISMATCH: Paseo materialized a different provider agent id than the frozen binding.");
+  }
   return continueManagedPaseoAgent(
     root,
     materialized.id,
     options.prompt!,
     options.timeoutSeconds ?? secondsFromMs(options.timeoutMs),
     deps,
-    options.outputSchema
+    options.outputSchema,
+    options.labels
   );
 }
 

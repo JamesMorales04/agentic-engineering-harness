@@ -1,0 +1,21 @@
+version: 1
+id: validation-fails-closed
+taskId: EVAL-VALIDATION-2
+baseRef: HEAD
+domain: deterministic-validation
+scenario: evals/scenarios/validationFailsClosed.ts
+fixtureDir: evals/fixtures/validation-fails-closed
+runCommand: node {aehRoot}/node_modules/.bin/tsx {aehRoot}/evals/scenarios/validationFailsClosed.ts {workspace}
+expectations:
+  status: FAIL
+  maxRepairs: 2
+  maxHumanInterventions: 0
+  maxCostUsd: 0.05
+  requiredChecks:
+    - command.smoke
+weights:
+  status: 60
+  firstPass: 15
+  repairs: 10
+  interventions: 10
+  efficiency: 5

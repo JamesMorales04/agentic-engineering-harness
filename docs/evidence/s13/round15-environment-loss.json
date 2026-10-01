@@ -1,0 +1,101 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 15,
+  "artifact": "round15-environment-loss",
+  "recordedAt": "2026-09-29T01:45:00.000Z",
+  "environmentEvents": [
+    {
+      "kind": "MACHINE_RESTART",
+      "observedAt": "2026-09-29T01:35:00.000Z",
+      "effects": [
+        "live direct-lane controller PID 779405 terminated",
+        "round-14 delegated-lane controller PID 968367 terminated",
+        "all /tmp fixture, staging and lane working directories cleared",
+        "Paseo daemon restarted (startedAt 2026-09-29T01:45:38.609Z, pid 3892)"
+      ]
+    },
+    {
+      "kind": "MACHINE_RESTART",
+      "observedAt": "2026-09-29T02:46:00.000Z",
+      "effects": [
+        "round-15 lane attempt 4 (run-20260929-r15-delegated-4, real-Lead binding) controller terminated",
+        "all /tmp fixture and staging directories cleared, no fixture processes remain (verified read-only)",
+        "Paseo daemon restarted (startedAt 2026-09-29T02:46:29.653Z, pid 3667)",
+        "the attempt-4 lead agent c2fa090f-0b26-4386-a212-d080fd417f6d was left closed and deleted during cleanup"
+      ],
+      "terminalStateClaim": "NONE_ENVIRONMENT_LOSS"
+    }
+  ],
+  "operations": [
+    {
+      "operationId": "CHANGE-20260928T234347Z-5de819ea",
+      "lane": "change-direct",
+      "controllerPid": 779405,
+      "lastIndependentObservation": { "status": "RUNNING", "revision": 187, "phase": "context", "source": "docs/evidence/s13/review-round13.json R13-F3" },
+      "controllerAliveNow": false,
+      "terminalState": null,
+      "terminalStateClaim": "NONE_ENVIRONMENT_LOSS",
+      "lastDurableEvidence": "docs/evidence/s13/governed-lanes/round-13/run-20260928234307110-a01f01/change-direct.json"
+    },
+    {
+      "operationId": "CHANGE-20260929T011155Z-e75534ab",
+      "lane": "change-delegated",
+      "runId": "run-20260929-r14-delegated-4",
+      "controllerPid": 968367,
+      "lastDurableObservation": { "status": "RUNNING", "revision": 154, "phase": "context", "stages": { "planning": "FAILED", "implementation": "FAILED", "remediation": "COMPLETED", "review": "RUNNING" } },
+      "controllerAliveNow": false,
+      "terminalState": null,
+      "terminalStateClaim": "NONE_ENVIRONMENT_LOSS",
+      "lastDurableEvidence": "docs/evidence/s13/governed-lanes/round-14/run-20260929-r14-delegated-4/change-delegated.json"
+    }
+  ],
+  "orphanedWorkspaces": [
+    { "workspaceId": "wks_8dcb9df35023d77f", "project": "lane-change-fixture", "cwd": "/home/james/.paseo/worktrees/0u9g56pz/aeh-change-20260928t234347z-5de819ea", "fixtureStagingPresent": false, "controllerAlive": false, "agents": "all associated Paseo agents status=closed", "disposition": "ARCHIVED_DEAD_FIXTURE_ORPHAN" },
+    { "workspaceId": "wks_ad14d755c247d505", "project": "lane-change-delegated-fixture", "cwd": "/home/james/.paseo/worktrees/0asmbufz/aeh-change-20260929t011155z-e75534ab", "fixtureStagingPresent": false, "controllerAlive": false, "agents": "all associated Paseo agents status=closed", "disposition": "ARCHIVED_DEAD_FIXTURE_ORPHAN" },
+    { "workspaceId": "wks_a8ef4972722ea03e", "project": "lane-change-delegated-fixture", "cwd": "/home/james/.paseo/worktrees/14rnv1lj/aeh-change-20260929t013611z-e75534ab", "fixtureStagingPresent": false, "controllerAlive": false, "agents": "all associated Paseo agents status=closed", "disposition": "ARCHIVED_DEAD_FIXTURE_ORPHAN" }
+  ],
+  "round13WorkspaceEnumerationReconciliation": {
+    "citedInRound13Record": ["wks_53932714a694e7d4", "wks_7e19752028cb1d37", "wks_8dcb9df35023d77f", "wks_c1c70f29c16606fd", "wks_cde3b7c23f8e5b9f"],
+    "presentInPostRestartInventory": ["wks_8dcb9df35023d77f"],
+    "note": "R13-F5 cited six live workspaces including wks_cbbf9c0d1e27867d; the post-restart daemon inventory no longer lists four of the five round-13 ids. No archive receipt exists for them; the restart/daemon recovery is the only observed cause. No terminal state is claimed."
+  },
+  "cleanupBoundary": "Only the three workspaces whose controllers were independently observed dead and whose fixture staging directories were destroyed by the restart were archived. No live fixture, controller, agent or operation was cleaned.",
+  "finalCleanupAddendum": {
+    "recordedAt": "2026-09-29T05:15:00.000Z",
+    "items": [
+      {
+        "kind": "ARCHIVED_DEAD_FIXTURE_WORKSPACE",
+        "workspaceId": "wks_508d36da23164764",
+        "project": "lane-change-delegated-fixture",
+        "title": "AEH CHANGE · CHANGE-20260929T024250Z-e75534ab",
+        "evidence": "interrupted lane attempt 4 operation (started before the second restart); no live process referenced it, fixture staging destroyed by the restart; archived with 2 closed agents",
+        "terminalStateClaim": "NONE_ENVIRONMENT_LOSS"
+      },
+      {
+        "kind": "TERMINATED_ORPHAN_FIXTURE_PROCESSES",
+        "count": 59,
+        "scope": "only processes whose command line referenced /tmp/aeh-s13-gov-* or lane-change*fixture staging directories",
+        "precondition": "every round-15 lane was terminal (SUCCEEDED or truthful FAILED), its workspaces were archived (remaining: 0) and its staging directory was removed before termination; the interrupted attempt-4 controller was already dead from the restart",
+        "residual": 0
+      },
+      {
+        "kind": "DELETED_ORPHAN_LEAD_AGENT",
+        "agentId": "c2fa090f-0b26-4386-a212-d080fd417f6d",
+        "detail": "interrupted attempt-4 lane lead, status closed; deleted with no live operation"
+      },
+      {
+        "kind": "REMOVED_ROUND15_STAGING",
+        "paths": ["/tmp/aeh-s13-gov-3W5u10", "/tmp/aeh-s13-gov-5lcrcW", "/tmp/aeh-s13-gov-cFbi8n", "/tmp/aeh-s13-gov-CLPKBT", "/tmp/aeh-s13-gov-LIUCMM", "/tmp/aeh-s13-gov-m4RWRt", "/tmp/aeh-s13-gov-pw8khR", "/tmp/aeh-s13-gov-uDU7LD", "/tmp/aeh-s13-gov-ZtwGdC"],
+        "precondition": "all corresponding operations terminal and lane artifacts persisted"
+      },
+      {
+        "kind": "REMOVED_GITHUB_CAMPAIGN_STAGING_AND_ORPHANS",
+        "paths": ["/tmp/aeh-s13-gh-2IzISj"],
+        "detail": "GitHub campaign staging (temporary clone) plus 5 orphan provider processes (serena-proxy/resultSinkMcp/context-mcp/serena-pool/serena) from the completed, terminal issue-import operation; issue-driven and authority lane artifacts were already persisted (PASS)",
+        "residual": 0
+      }
+    ]
+  },
+  "checkoutDigestNote": "This artifact and subsequent round-15 tracked-doc edits occur after every round-14 lane window (post-run tracked-doc edit window)."
+}

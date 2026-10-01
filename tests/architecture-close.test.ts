@@ -7,14 +7,12 @@ import { createControlPlaneSnapshot, detectControlPlaneDrift, loadFrozenSkillCon
 import { validatePlannerWavePlan } from "../src/agents/waveExecutor.js";
 import { buildRequirementEvidenceGraph, evidenceValidationCheck } from "../src/evidence/graph.js";
 import { enforceSandboxPolicy, hardenedPodmanArgs } from "../src/security/sandbox.js";
-import type { AgentExecutionSelection, ResolvedAgentTopology } from "../src/agents/types.js";
+import type { AgentExecutionSelection } from "../src/agents/types.js";
 import type { HarnessProjectConfig, TaskContract, ValidationReport } from "../src/core/types.js";
 
 const selection: AgentExecutionSelection = {
   logicalAgent: "worker", role: "implementer", domains: ["*"], runtimeName: "opencode", runtimeAdapter: "opencode", paseoProvider: "opencode", modelAlias: "workhorse", modelId: "test/model", modelName: "model", modelProvider: "test", transport: "direct", skills: [], mcps: [], permissions: { read: "allow", write: "allow", shell: "allow", network: "deny", delegate: "deny", gitWrite: "deny" }, args: [], runtimeCapabilities: { modelSelection: true }
 };
-const topology: ResolvedAgentTopology = { version: 1, skillRoots: [], runtimes: {}, models: {}, agents: { worker: { name: "worker", role: "implementer", execution: { model: "@workhorse" }, runtime: { name: "opencode", adapter: "opencode" }, model: { alias: "workhorse", runtime: "opencode", model: "model", id: "test/model" } } }, routing: [], recovery: {}, councils: {} };
-
 describe("architecture close", () => {
   it("materializes a frozen controller and detects live drift without mutating the snapshot", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-control-"));
@@ -37,8 +35,8 @@ describe("architecture close", () => {
 
   it("rejects a planner wave plan that leaves a requirement unassigned", () => {
     const contract: TaskContract = { version: 1, task: { id: "T", title: "test" }, scope: { allowed: ["src/**"] }, requirements: [{ id: "REQ-1" }, { id: "REQ-2" }] };
-    const issues = validatePlannerWavePlan(contract, topology, { tasks: [{ id: "A", summary: "a", agent: "worker", scope: ["src/a.ts"], dependencies: [], acceptance: ["REQ-1"], risk: "low" }], affectedAreas: [], requiredReviewers: [], validationGates: [], fallbackRouting: [], outOfScopeImprovements: [] });
-    expect(issues).toContain("requirement REQ-2 is not assigned to any implementation task");
+    const issues = validatePlannerWavePlan(contract, { workUnits: [{ id: "A", objective: "a", scope: ["src/a.ts"], dependencies: [], requirementRefs: ["REQ-1"], acceptanceRefs: [], competencies: ["typescript"], riskTags: [], changeKinds: ["source"], risk: "low" }], affectedAreas: [], reviewDimensions: [], validationRequirements: [], outOfScopeImprovements: [] });
+    expect(issues).toContain("requirement REQ-2 is not assigned to any implementation work unit");
   });
 
   it("requires both changed implementation files and PASS validators for strict evidence", async () => {

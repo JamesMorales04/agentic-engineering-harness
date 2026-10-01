@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { saveOwnedOperation } from "../helpers/ownedOperation.js";
 import { buildOpenCodeRuntimeConfig } from "../../src/agents/permissions.js";
 import type { AgentExecutionSelection } from "../../src/agents/types.js";
 import { ContextBudgetGateway } from "../../src/context/gateway.js";
@@ -12,7 +13,7 @@ import type { HarnessProjectConfig } from "../../src/core/types.js";
 import { loadOperation, patchOperation, saveOperation, transitionOperationToTerminal, type OperationRecord } from "../../src/operations/state.js";
 import { OPERATION_KIND_VALUES, OPERATION_STATUS_VALUES, isAllowedOperationStatusTransition } from "../../src/operations/state.js";
 import { filterStaleRecords } from "../../src/providers/engram.js";
-import { verifyProvenanceManifest } from "../../src/provenance/generate.js";
+import { buildProvenanceManifest, verifyProvenanceManifest } from "../../src/provenance/generate.js";
 import { PRESERVATION_VALUES, SCENARIOS, generateSeededActionSequence, scenarioFailure, scenarioSeed, selectedScenarios, TRANSPORT_VALUES } from "./aehScenarioModel.js";
 
 const selected = selectedScenarios();
@@ -51,8 +52,8 @@ describe("AEH generated scenario matrix", () => {
       for (const from of OPERATION_STATUS_VALUES) for (const to of OPERATION_STATUS_VALUES) {
         const scenario = SCENARIOS.find((item) => item.id === `SCN-LIFECYCLE-${from}-${to}`)!;
         if (!enabled(scenario.id)) continue;
-        const record = seedRecord(root, "audit", from);
-        await saveOperation(root, record);
+        const record = seedRecord(root, "audit", from, `SCN-LIFECYCLE-${from}-${to}`);
+        await saveOwnedOperation(root, record);
         const allowed = isAllowedOperationStatusTransition(from, to);
         try {
           if (to === "SUCCEEDED" || to === "FAILED" || to === "CANCELLED") {
@@ -141,8 +142,11 @@ describe("AEH generated scenario matrix", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-seeded-actions-"));
     try {
       for (const action of actions) {
-        const record = seedRecord(root, "run", action.initialStatus, `SCN-ACTION-${action.index}`);
-        await saveOperation(root, record);
+        // This generator exercises generic lifecycle transition behavior. Keep
+        // its success transitions on the read-only audit path; managed run/change
+        // success has the separate S6 objective-completion gate.
+        const record = seedRecord(root, "audit", action.initialStatus, `SCN-ACTION-${action.index}`);
+        await saveOwnedOperation(root, record);
         try {
           if (action.mode === "terminal") {
             const result = await transitionOperationToTerminal(root, record.id, { status: action.to as "SUCCEEDED" | "FAILED" | "CANCELLED", phase: action.to.toLowerCase() });
@@ -164,7 +168,7 @@ describe("AEH generated scenario matrix", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-state-properties-"));
     try {
       const terminal = seedRecord(root, "run", "QUEUED", "P1-terminal");
-      await saveOperation(root, terminal);
+      await saveOwnedOperation(root, terminal);
       await transitionOperationToTerminal(root, terminal.id, { status: "FAILED", phase: "failed" });
       expect((await patchOperation(root, terminal.id, { status: "RUNNING", phase: "running" })).status).toBe("FAILED"); // P1 terminal truth forbids active re-entry.
 
@@ -174,7 +178,7 @@ describe("AEH generated scenario matrix", () => {
       }
 
       const rejectedDelivery = seedRecord(root, "run", "RUNNING", "P3-delivery");
-      await saveOperation(root, rejectedDelivery);
+      await saveOwnedOperation(root, rejectedDelivery);
       await transitionOperationToTerminal(root, rejectedDelivery.id, { status: "FAILED", phase: "delivery-failed" });
       await expect(transitionOperationToTerminal(root, rejectedDelivery.id, { status: "SUCCEEDED", phase: "accepted" })).resolves.toMatchObject({ transitioned: false }); // P3/P7 delivery failure cannot become success.
 
@@ -189,16 +193,15 @@ describe("AEH generated scenario matrix", () => {
 
       const source = path.join(root, "task-contract.yaml");
       await fs.writeFile(source, "task: authoritative\n");
-      const sourceSha256 = (await import("node:crypto")).createHash("sha256").update("task: authoritative\n").digest("hex");
       const stale = await filterStaleRecords(root, [{ project: "p", type: "discovery", title: "stale", content: "memory cannot win", source: "task-contract.yaml", sourceSha256: "0".repeat(64) }]);
       expect(stale).toEqual([]); // P6 advisory memory cannot override current normative source.
-      expect(sourceSha256).not.toBe("0".repeat(64));
 
       const manifestPath = path.join(root, "manifest.json");
-      await fs.writeFile(manifestPath, JSON.stringify({ version: 1, entries: [{ path: "task-contract.yaml", kind: "task-contract", sha256: sourceSha256 }] }));
+      const manifest = await buildProvenanceManifest(root, baseConfig(), undefined, source);
+      await fs.writeFile(manifestPath, JSON.stringify(manifest));
       expect((await verifyProvenanceManifest(root, "manifest.json")).ok).toBe(true);
       await fs.writeFile(source, "task: tampered\n");
-      expect((await verifyProvenanceManifest(root, "manifest.json")).ok).toBe(false); // P10 lineage/source tampering breaks provenance.
+      expect((await verifyProvenanceManifest(root, "manifest.json")).ok).toBe(false); // P10 packed-subject tampering breaks provenance.
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 });

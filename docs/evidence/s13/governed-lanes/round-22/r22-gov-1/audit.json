@@ -1,0 +1,1008 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 22,
+  "runId": "r22-gov-1",
+  "capability": "audit",
+  "kind": "audit",
+  "providerPath": "FULL_OPERATION_REAL_PASEO",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13GovernedOperationCampaign.mjs",
+        "sha256": "4fc7b11c3462f6abca836b27ff10dbc3931a60c1edbe5a04bd355a39637d7dda"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "e2279bbba1400319294506c55cf34ab58669fa140cc49e93962bd9ee6c6b3c27"
+  },
+  "startedAt": "2026-09-30T05:28:06.504Z",
+  "candidateBinding": {
+    "packedArtifact": "agentic-engineering-harness-0.8.4.tgz",
+    "packedArtifactDigest": "8989d9cdf10f66853d99edffbd505543a816280853dc3ad49dc9cf7bead780b2",
+    "packedBuild": {
+      "releaseId": "release-1790746067053-1573412-feaf0aab",
+      "buildDigest": "599ed363223ff2dd85e17296c9f34c4134bf83e363916c4c57d7e7492ccbdf45",
+      "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+      "packageVersion": "0.8.4"
+    },
+    "fixtureTreeDigest": "6da54e7b929b85dfd8418f528374c13b9998f98b16650a75e894e5cb89be0e52",
+    "fixtureCommit": "fa96b3a9325d9fc844db6a9eb9493b337090893f"
+  },
+  "start": {
+    "argv": [
+      "audit",
+      "Audit the fixture greeting module for correctness and clarity.",
+      ".",
+      "--reviewer",
+      "reviewer",
+      "--risk",
+      "low",
+      "--file",
+      "src/greeting.mjs"
+    ],
+    "exitCode": 0,
+    "stdout": "operationId=AUDIT-20260930T052814Z-78e1af93\nkind=audit\nstatus=QUEUED\nphase=dispatched\nrevision=5\nprogress=0/0 completed, 0 running, 0 failed, 0 blocked",
+    "stderr": "",
+    "operationId": "AUDIT-20260930T052814Z-78e1af93",
+    "leadAgentId": "e9ba22a8-7662-4a56-be93-f7da39ffe38e"
+  },
+  "stageTrace": [
+    {
+      "at": "2026-09-30T05:28:14.980Z",
+      "status": "QUEUED",
+      "phase": "dispatched",
+      "revision": 5,
+      "stages": {
+        "queued": "RUNNING"
+      }
+    },
+    {
+      "at": "2026-09-30T05:28:23.746Z",
+      "status": "RUNNING",
+      "phase": "context",
+      "revision": 19,
+      "stages": {
+        "queued": "RUNNING",
+        "preparing-audit": "RUNNING",
+        "supervision": "RUNNING",
+        "context": "RUNNING"
+      }
+    },
+    {
+      "at": "2026-09-30T05:28:58.612Z",
+      "status": "RUNNING",
+      "phase": "materializing-reviewers",
+      "revision": 27,
+      "stages": {
+        "queued": "RUNNING",
+        "preparing-audit": "RUNNING",
+        "supervision": "COMPLETED",
+        "context": "RUNNING",
+        "materializing-reviewers": "RUNNING"
+      }
+    },
+    {
+      "at": "2026-09-30T05:29:07.474Z",
+      "status": "RUNNING",
+      "phase": "context",
+      "revision": 38,
+      "stages": {
+        "queued": "RUNNING",
+        "preparing-audit": "RUNNING",
+        "supervision": "COMPLETED",
+        "context": "RUNNING",
+        "materializing-reviewers": "COMPLETED",
+        "validating": "COMPLETED",
+        "reviewing": "RUNNING"
+      }
+    },
+    {
+      "at": "2026-09-30T05:31:14.291Z",
+      "status": "RUNNING",
+      "phase": "context",
+      "revision": 47,
+      "stages": {
+        "queued": "RUNNING",
+        "preparing-audit": "RUNNING",
+        "supervision": "COMPLETED",
+        "context": "RUNNING",
+        "materializing-reviewers": "COMPLETED",
+        "validating": "COMPLETED",
+        "reviewing": "COMPLETED",
+        "consolidating": "RUNNING"
+      }
+    },
+    {
+      "at": "2026-09-30T05:31:32.725Z",
+      "status": "SUCCEEDED",
+      "phase": "finished",
+      "revision": 52,
+      "stages": {
+        "queued": "RUNNING",
+        "preparing-audit": "RUNNING",
+        "supervision": "COMPLETED",
+        "context": "RUNNING",
+        "materializing-reviewers": "COMPLETED",
+        "validating": "COMPLETED",
+        "reviewing": "COMPLETED",
+        "consolidating": "COMPLETED",
+        "finished": "COMPLETED"
+      }
+    }
+  ],
+  "workspaceWatch": {
+    "transitions": [
+      {
+        "at": "2026-09-30T05:29:02.282Z",
+        "cwd": "/tmp/aeh-s13-gov-w5ugD8/work/lane-audit-fixture",
+        "added": [
+          ".serena/.gitignore",
+          ".serena/project.yml"
+        ],
+        "removed": []
+      },
+      {
+        "at": "2026-09-30T05:31:03.100Z",
+        "cwd": "/tmp/aeh-s13-gov-w5ugD8/work/lane-audit-fixture",
+        "added": [
+          ".serena/cache/typescript/document_symbols.pkl",
+          ".serena/cache/typescript/raw_document_symbols.pkl",
+          ".serena/project.local.yml"
+        ],
+        "removed": [
+          ".serena/.gitignore",
+          ".serena/project.yml"
+        ]
+      }
+    ],
+    "finalStates": {
+      "/tmp/aeh-s13-gov-w5ugD8/work/lane-audit-fixture": [
+        ".gitignore",
+        ".harness/agents.source.jsonc",
+        ".harness/otel-collector.yaml",
+        ".harness/project.yaml",
+        ".harness/provider-versions.json",
+        ".harness/toolchain.yaml",
+        ".serena/cache/typescript/document_symbols.pkl",
+        ".serena/cache/typescript/raw_document_symbols.pkl",
+        ".serena/project.local.yml",
+        "AGENTS.md",
+        "README.md",
+        "openspec/config.yaml",
+        "package.json",
+        "scripts/architecture.mjs",
+        "scripts/contract.mjs",
+        "scripts/validate.mjs",
+        "src/greeting.mjs"
+      ]
+    }
+  },
+  "terminalRecord": {
+    "status": "SUCCEEDED",
+    "phase": "finished",
+    "revision": 52,
+    "error": null,
+    "finishedAt": "2026-09-30T05:31:26.491Z"
+  },
+  "artifacts": {
+    "acceptance": null,
+    "reviewers": [
+      {
+        "participantId": "participant:8371c9160aebc66f",
+        "sessionId": "8a8d14ab-5982-446c-8cc5-8bcd7fc2ae14",
+        "status": "COMPLETED",
+        "artifact": ".harness/operations/AUDIT-20260930T052814Z-78e1af93/results/reviewer/0002-0002-222ccf03-2973-4a4a-9f28-f04f772a7a00.json",
+        "sha256": "e1a7bb1baaf416939754838ba4ee192567a0f5fa3fadd04f0ed0462ccd84ddb1",
+        "bytes": 8451,
+        "verdict": null,
+        "findings": null
+      },
+      {
+        "participantId": "8a8d14ab-5982-446c-8cc5-8bcd7fc2ae14",
+        "sessionId": null,
+        "status": "COMPLETED",
+        "artifact": ".harness/operations/AUDIT-20260930T052814Z-78e1af93/results/reviewer/0002-0002-222ccf03-2973-4a4a-9f28-f04f772a7a00.json",
+        "sha256": "e1a7bb1baaf416939754838ba4ee192567a0f5fa3fadd04f0ed0462ccd84ddb1",
+        "bytes": 8451,
+        "verdict": null,
+        "findings": null
+      }
+    ],
+    "specManagers": [],
+    "participants": [],
+    "failedParticipants": [],
+    "assessments": [],
+    "reviewerArtifactsError": null
+  },
+  "candidateWorkspaceObservations": {
+    "observations": [
+      {
+        "source": "CandidateRevision.worktree",
+        "workspaceId": null,
+        "root": "/tmp/aeh-s13-gov-w5ugD8/work/lane-audit-fixture",
+        "expectedSourceDigest": "6da54e7b929b85dfd8418f528374c13b9998f98b16650a75e894e5cb89be0e52",
+        "observedSourceDigest": "6da54e7b929b85dfd8418f528374c13b9998f98b16650a75e894e5cb89be0e52",
+        "candidateIdentityDigest": "9bb279d209b70f3061e74331b419a8af86fc63310c8ac8da04f9e109acebf4f4",
+        "candidateRevision": 1,
+        "status": "MATCH"
+      }
+    ]
+  },
+  "traces": {
+    "paseo": {
+      "total": 22,
+      "entries": [
+        {
+          "at": "2026-09-30T05:28:17.138Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-30T05:28:17.406Z",
+          "name": "harness.paseo.provider.preflight",
+          "attributes": {
+            "ok": true,
+            "provider": "codex",
+            "model": "gpt-6-luna",
+            "providerStatus": "loading",
+            "source": "paseo-provider-models",
+            "availableModelCount": 13,
+            "message": "Provider codex model gpt-6-luna passed Paseo preflight."
+          }
+        },
+        {
+          "at": "2026-09-30T05:28:18.300Z",
+          "name": "harness.paseo.operation.supervisor.materialized",
+          "attributes": {
+            "operationId": "AUDIT-20260930T052814Z-78e1af93",
+            "generation": 1,
+            "agentId": "1ca1d02b-84da-460e-9032-a60227e546dd",
+            "revision": 13,
+            "attempt": 1,
+            "status": "INITIALIZING"
+          }
+        },
+        {
+          "at": "2026-09-30T05:28:20.425Z",
+          "name": "harness.paseo.operation.watchdog.started",
+          "attributes": {
+            "operationId": "AUDIT-20260930T052814Z-78e1af93",
+            "pollIntervalMs": 15000,
+            "progressWakeIntervalMs": 45000,
+            "stallThresholdMs": 120000,
+            "supervisorStallWakeLimit": 2,
+            "leadWakeLimit": 1,
+            "terminalLeadWakeLimit": 2
+          }
+        },
+        {
+          "at": "2026-09-30T05:28:52.781Z",
+          "name": "harness.paseo.operation.supervisor.initialized",
+          "attributes": {
+            "operationId": "AUDIT-20260930T052814Z-78e1af93",
+            "generation": 1,
+            "agentId": "1ca1d02b-84da-460e-9032-a60227e546dd",
+            "revision": 24,
+            "attempt": 1,
+            "timeoutSeconds": 120,
+            "evidence": "turn-barrier"
+          }
+        },
+        {
+          "at": "2026-09-30T05:28:53.845Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-30T05:28:53.865Z",
+          "name": "harness.paseo.provider.preflight",
+          "attributes": {
+            "ok": true,
+            "provider": "opencode",
+            "model": "opencode-go/mimo-v2.6-flash",
+            "providerStatus": "ready",
+            "source": "paseo-provider-snapshot",
+            "availableModelCount": 67,
+            "message": "Provider opencode model opencode-go/mimo-v2.6-flash passed Paseo preflight."
+          }
+        },
+        {
+          "at": "2026-09-30T05:31:01.842Z",
+          "name": "harness.paseo.operation.watchdog.supervisor-suppressed-active-children",
+          "attributes": {
+            "operationId": "AUDIT-20260930T052814Z-78e1af93",
+            "revision": 38,
+            "activeRuntimeParticipants": 1,
+            "unresolvedParticipants": 2
+          }
+        },
+        {
+          "at": "2026-09-30T05:31:26.452Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-30T05:31:26.465Z",
+          "name": "harness.paseo.agent.snapshot",
+          "attributes": {
+            "agentId": "1ca1d02b-84da-460e-9032-a60227e546dd",
+            "status": "idle",
+            "hasUsage": true,
+            "contextWindowUsedTokens": 27429,
+            "contextWindowMaxTokens": 828400
+          }
+        },
+        {
+          "at": "2026-09-30T05:31:26.474Z",
+          "name": "harness.paseo.context.status",
+          "attributes": {
+            "agentId": "1ca1d02b-84da-460e-9032-a60227e546dd",
+            "state": "OK",
+            "source": "paseo-agent-snapshot",
+            "used": 27429,
+            "limit": 828400,
+            "ratio": 0.03311081603090295,
+            "pressureThreshold": 0.7,
+            "handoffThreshold": 0.8,
+            "hardHandoffThreshold": 0.9
+          }
+        }
+      ]
+    },
+    "events": {
+      "total": 63,
+      "entries": [
+        {
+          "at": "2026-09-30T05:28:16.804Z",
+          "name": "harness.audit.start",
+          "attributes": {
+            "auditId": "AUDIT-20260930T052814Z-78e1af93",
+            "request": "Audit the fixture greeting module for correctness and clarity.",
+            "reviewers": [
+              "reviewer"
+            ],
+            "dirtyPaths": [],
+            "commit": "fa96b3a9325d9fc844db6a9eb9493b337090893f"
+          }
+        },
+        {
+          "at": "2026-09-30T05:28:17.166Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-30T05:28:17.415Z",
+          "name": "harness.paseo.provider.preflight",
+          "attributes": {
+            "ok": true,
+            "provider": "codex",
+            "model": "gpt-6-luna",
+            "providerStatus": "loading",
+            "source": "paseo-provider-models",
+            "availableModelCount": 13,
+            "message": "Provider codex model gpt-6-luna passed Paseo preflight."
+          }
+        },
+        {
+          "at": "2026-09-30T05:28:18.309Z",
+          "name": "harness.paseo.operation.supervisor.materialized",
+          "attributes": {
+            "operationId": "AUDIT-20260930T052814Z-78e1af93",
+            "generation": 1,
+            "agentId": "1ca1d02b-84da-460e-9032-a60227e546dd",
+            "revision": 13,
+            "attempt": 1,
+            "status": "INITIALIZING"
+          }
+        },
+        {
+          "at": "2026-09-30T05:28:20.437Z",
+          "name": "harness.paseo.operation.watchdog.started",
+          "attributes": {
+            "operationId": "AUDIT-20260930T052814Z-78e1af93",
+            "pollIntervalMs": 15000,
+            "progressWakeIntervalMs": 45000,
+            "stallThresholdMs": 120000,
+            "supervisorStallWakeLimit": 2,
+            "leadWakeLimit": 1,
+            "terminalLeadWakeLimit": 2
+          }
+        },
+        {
+          "at": "2026-09-30T05:28:52.793Z",
+          "name": "harness.paseo.operation.supervisor.initialized",
+          "attributes": {
+            "operationId": "AUDIT-20260930T052814Z-78e1af93",
+            "generation": 1,
+            "agentId": "1ca1d02b-84da-460e-9032-a60227e546dd",
+            "revision": 24,
+            "attempt": 1,
+            "timeoutSeconds": 120,
+            "evidence": "turn-barrier"
+          }
+        },
+        {
+          "at": "2026-09-30T05:28:53.855Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-30T05:28:53.872Z",
+          "name": "harness.paseo.provider.preflight",
+          "attributes": {
+            "ok": true,
+            "provider": "opencode",
+            "model": "opencode-go/mimo-v2.6-flash",
+            "providerStatus": "ready",
+            "source": "paseo-provider-snapshot",
+            "availableModelCount": 67,
+            "message": "Provider opencode model opencode-go/mimo-v2.6-flash passed Paseo preflight."
+          }
+        },
+        {
+          "at": "2026-09-30T05:31:01.852Z",
+          "name": "harness.paseo.operation.watchdog.supervisor-suppressed-active-children",
+          "attributes": {
+            "operationId": "AUDIT-20260930T052814Z-78e1af93",
+            "revision": 38,
+            "activeRuntimeParticipants": 1,
+            "unresolvedParticipants": 2
+          }
+        },
+        {
+          "at": "2026-09-30T05:31:26.460Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-30T05:31:26.472Z",
+          "name": "harness.paseo.agent.snapshot",
+          "attributes": {
+            "agentId": "1ca1d02b-84da-460e-9032-a60227e546dd",
+            "status": "idle",
+            "hasUsage": true
+          }
+        },
+        {
+          "at": "2026-09-30T05:31:26.484Z",
+          "name": "harness.paseo.context.status",
+          "attributes": {
+            "agentId": "1ca1d02b-84da-460e-9032-a60227e546dd",
+            "state": "OK",
+            "source": "paseo-agent-snapshot",
+            "used": 27429,
+            "limit": 828400,
+            "ratio": 0.03311081603090295,
+            "pressureThreshold": 0.7,
+            "handoffThreshold": 0.8,
+            "hardHandoffThreshold": 0.9
+          }
+        },
+        {
+          "at": "2026-09-30T05:31:26.487Z",
+          "name": "harness.audit.finish",
+          "attributes": {
+            "auditId": "AUDIT-20260930T052814Z-78e1af93",
+            "status": "FINDINGS",
+            "findings": 1,
+            "rawFindings": 1,
+            "debtPoints": 3,
+            "productionSafe": true,
+            "supervisorGeneration": 1,
+            "consolidationArtifact": ".harness/operations/AUDIT-20260930T052814Z-78e1af93/consolidations/audit-reviewers.json"
+          }
+        }
+      ]
+    }
+  },
+  "routeDiagnostics": {
+    "classification": "HYBRID",
+    "plannerAssessmentMechanism": "MODEL",
+    "routeGateMechanism": "DETERMINISTIC",
+    "participantArtifacts": [],
+    "triageEscalatedEvents": []
+  },
+  "candidateAssemblyReceipts": null,
+  "operation": {
+    "id": "AUDIT-20260930T052814Z-78e1af93",
+    "status": "SUCCEEDED",
+    "phase": "finished",
+    "kind": "audit",
+    "intent": {
+      "request": "Audit the fixture greeting module for correctness and clarity.",
+      "classification": "AUDIT",
+      "risk": "low",
+      "priority": 50,
+      "semanticDecision": {
+        "version": 1,
+        "source": "explicit-cli",
+        "intent": "audit",
+        "requestedOutcome": "Audit the fixture greeting module for correctness and clarity.",
+        "effects": {
+          "evaluate": true,
+          "mutateRepository": false,
+          "executePreparedTask": false,
+          "deliver": false
+        },
+        "resolution": "resolved"
+      },
+      "route": "DELEGATED",
+      "assurance": "STANDARD"
+    },
+    "result": {
+      "auditId": "AUDIT-20260930T052814Z-78e1af93",
+      "status": "FINDINGS",
+      "productionSafe": true,
+      "report": ".harness/audits/AUDIT-20260930T052814Z-78e1af93.json"
+    },
+    "revision": 52,
+    "operationExecutionRevision": 1,
+    "controllerPid": 1574246,
+    "error": null,
+    "candidateRevision": {
+      "operationId": "AUDIT-20260930T052814Z-78e1af93",
+      "candidateId": "candidate:AUDIT-20260930T052814Z-78e1af93:r1",
+      "projectId": "project:2189a326564dff3c515f384b",
+      "taskId": "AUDIT-20260930T052814Z-78e1af93",
+      "revision": 1,
+      "sourceDigest": "6da54e7b929b85dfd8418f528374c13b9998f98b16650a75e894e5cb89be0e52",
+      "worktree": "/tmp/aeh-s13-gov-w5ugD8/work/lane-audit-fixture",
+      "createdAt": "2026-09-30T05:28:14.907Z",
+      "version": 1,
+      "canonicalIdentity": "{\"candidateId\":\"candidate:AUDIT-20260930T052814Z-78e1af93:r1\",\"createdAt\":\"2026-09-30T05:28:14.907Z\",\"operationId\":\"AUDIT-20260930T052814Z-78e1af93\",\"projectId\":\"project:2189a326564dff3c515f384b\",\"revision\":1,\"sourceDigest\":\"6da54e7b929b85dfd8418f528374c13b9998f98b16650a75e894e5cb89be0e52\",\"taskId\":\"AUDIT-20260930T052814Z-78e1af93\",\"version\":1,\"worktree\":\"/tmp/aeh-s13-gov-w5ugD8/work/lane-audit-fixture\"}",
+      "identityDigest": "9bb279d209b70f3061e74331b419a8af86fc63310c8ac8da04f9e109acebf4f4"
+    },
+    "participants": {
+      "participant:8371c9160aebc66f": {
+        "role": "Reviewer",
+        "logicalAgent": "reviewer",
+        "status": "COMPLETED",
+        "phase": "review",
+        "workspaceId": null,
+        "resultArtifact": ".harness/operations/AUDIT-20260930T052814Z-78e1af93/results/reviewer/0002-0002-222ccf03-2973-4a4a-9f28-f04f772a7a00.json",
+        "error": null
+      },
+      "8a8d14ab-5982-446c-8cc5-8bcd7fc2ae14": {
+        "role": "Reviewer",
+        "logicalAgent": "reviewer",
+        "status": "COMPLETED",
+        "phase": "review",
+        "workspaceId": "wks_828fa83661bf1d19",
+        "resultArtifact": ".harness/operations/AUDIT-20260930T052814Z-78e1af93/results/reviewer/0002-0002-222ccf03-2973-4a4a-9f28-f04f772a7a00.json",
+        "error": null
+      }
+    },
+    "participantReceipts": {
+      "receipt:participant:8371c9160aebc66f:2026-09-30T05:31:02.693Z": {
+        "version": 1,
+        "receiptId": "receipt:participant:8371c9160aebc66f:2026-09-30T05:31:02.693Z",
+        "operationId": "AUDIT-20260930T052814Z-78e1af93",
+        "participantId": "participant:8371c9160aebc66f",
+        "sessionId": "8a8d14ab-5982-446c-8cc5-8bcd7fc2ae14",
+        "attempt": 1,
+        "supervisorGeneration": 1,
+        "role": "Reviewer",
+        "phase": "review",
+        "startedAt": "2026-09-30T05:28:53.777Z",
+        "finishedAt": "2026-09-30T05:31:02.646Z",
+        "outputContract": "reviewer",
+        "outputDigest": "5668677590781dfd4656f16188330674a20e74f3ec3c7c0e3e690535c22dfdb6",
+        "artifactRef": ".harness/operations/AUDIT-20260930T052814Z-78e1af93/results/reviewer/0002-0002-222ccf03-2973-4a4a-9f28-f04f772a7a00.json",
+        "candidate": {
+          "operationId": "AUDIT-20260930T052814Z-78e1af93",
+          "candidateId": "candidate:AUDIT-20260930T052814Z-78e1af93:r1",
+          "projectId": "project:2189a326564dff3c515f384b",
+          "taskId": "AUDIT-20260930T052814Z-78e1af93",
+          "revision": 1,
+          "sourceDigest": "6da54e7b929b85dfd8418f528374c13b9998f98b16650a75e894e5cb89be0e52",
+          "worktree": "/tmp/aeh-s13-gov-w5ugD8/work/lane-audit-fixture",
+          "createdAt": "2026-09-30T05:28:14.907Z",
+          "version": 1,
+          "canonicalIdentity": "{\"candidateId\":\"candidate:AUDIT-20260930T052814Z-78e1af93:r1\",\"createdAt\":\"2026-09-30T05:28:14.907Z\",\"operationId\":\"AUDIT-20260930T052814Z-78e1af93\",\"projectId\":\"project:2189a326564dff3c515f384b\",\"revision\":1,\"sourceDigest\":\"6da54e7b929b85dfd8418f528374c13b9998f98b16650a75e894e5cb89be0e52\",\"taskId\":\"AUDIT-20260930T052814Z-78e1af93\",\"version\":1,\"worktree\":\"/tmp/aeh-s13-gov-w5ugD8/work/lane-audit-fixture\"}",
+          "identityDigest": "9bb279d209b70f3061e74331b419a8af86fc63310c8ac8da04f9e109acebf4f4"
+        },
+        "outcome": "SUCCEEDED",
+        "runtimeTerminal": {
+          "kind": "runtime-terminal",
+          "eventId": "runtime:8a8d14ab-5982-446c-8cc5-8bcd7fc2ae14:2026-09-30T05:31:02.693Z",
+          "observedAt": "2026-09-30T05:31:02.693Z",
+          "terminal": true,
+          "status": "SUCCEEDED",
+          "exitCode": 0
+        },
+        "contract": {
+          "contractId": "reviewer",
+          "contractDigest": "7d9329041b591938a08b75907bef22763bca4722181e7b3befdb81f7e343850a",
+          "valid": true
+        },
+        "artifact": {
+          "artifactId": ".harness/operations/AUDIT-20260930T052814Z-78e1af93/results/reviewer/0002-0002-222ccf03-2973-4a4a-9f28-f04f772a7a00.json",
+          "artifactDigest": "e1a7bb1baaf416939754838ba4ee192567a0f5fa3fadd04f0ed0462ccd84ddb1",
+          "persisted": true,
+          "persistedAt": "2026-09-30T05:31:02.693Z"
+        },
+        "provenance": {
+          "provenanceId": "provenance:AUDIT-20260930T052814Z-78e1af93:8a8d14ab-5982-446c-8cc5-8bcd7fc2ae14:2026-09-30T05:31:02.693Z",
+          "provenanceDigest": "21108a3ba8c7acfc236615600978749bb341c6bf60b25ef1664394b75e0afd53",
+          "source": "aeh-worker-finalization",
+          "valid": true
+        },
+        "settled": true,
+        "createdAt": "2026-09-30T05:31:02.693Z"
+      }
+    },
+    "candidateAssemblyReceipts": null,
+    "supervision": {
+      "required": true,
+      "materialized": true,
+      "generations": [
+        {
+          "generation": 1,
+          "status": "DRAINING",
+          "agentId": "1ca1d02b-84da-460e-9032-a60227e546dd",
+          "contextRatio": 0.03311081603090295,
+          "drainingAt": "2026-09-30T05:31:26.514Z",
+          "initializationEvidence": "paseo-sdk-turn-barrier"
+        }
+      ]
+    },
+    "stages": {
+      "queued": "RUNNING",
+      "preparing-audit": "RUNNING",
+      "supervision": "COMPLETED",
+      "context": "RUNNING",
+      "materializing-reviewers": "COMPLETED",
+      "validating": "COMPLETED",
+      "reviewing": "COMPLETED",
+      "consolidating": "COMPLETED",
+      "finished": "COMPLETED"
+    }
+  },
+  "sessionReceipts": [
+    {
+      "agentId": "8a8d14ab-5982-446c-8cc5-8bcd7fc2ae14",
+      "inspectExitCode": 0,
+      "provider": "opencode",
+      "model": "opencode-go/mimo-v2.6-flash",
+      "thinkingOptionId": "max",
+      "status": "idle",
+      "sessionId": null,
+      "modeId": "default",
+      "lastUsage": {
+        "InputTokens": 1865,
+        "OutputTokens": 194,
+        "CachedTokens": 26432,
+        "CostUsd": 0.0037810920000000002
+      },
+      "labels": null,
+      "createdAt": "2026-09-30T05:28:57.724Z",
+      "updatedAt": "2026-09-30T05:31:02.528Z"
+    },
+    {
+      "agentId": "1ca1d02b-84da-460e-9032-a60227e546dd",
+      "inspectExitCode": 0,
+      "provider": "codex",
+      "model": "gpt-6-luna",
+      "thinkingOptionId": "xhigh",
+      "status": "idle",
+      "sessionId": null,
+      "modeId": "auto",
+      "lastUsage": {
+        "InputTokens": 27316,
+        "OutputTokens": 113,
+        "CachedTokens": 25344,
+        "CostUsd": 0
+      },
+      "labels": null,
+      "createdAt": "2026-09-30T05:28:17.914Z",
+      "updatedAt": "2026-09-30T05:31:26.205Z"
+    }
+  ],
+  "oracle": {
+    "checks": [
+      {
+        "id": "operation.terminal-succeeded",
+        "status": "PASS",
+        "required": true,
+        "message": "operation status=SUCCEEDED",
+        "evidence": {}
+      },
+      {
+        "id": "operation.candidate-bound",
+        "status": "PASS",
+        "required": true,
+        "message": "candidate revision identity digest is bound",
+        "evidence": {
+          "revision": 1
+        }
+      },
+      {
+        "id": "operation.participant-receipts",
+        "status": "PASS",
+        "required": true,
+        "message": "1 terminal participant receipt(s) persisted",
+        "evidence": {}
+      },
+      {
+        "id": "operation.revision-current",
+        "status": "PASS",
+        "required": true,
+        "message": "operation execution revision is durable",
+        "evidence": {}
+      },
+      {
+        "id": "audit-report",
+        "status": "PASS",
+        "required": true,
+        "message": "audit report AUDIT-20260930T052814Z-78e1af93 persisted at .harness/audits/AUDIT-20260930T052814Z-78e1af93.json",
+        "evidence": {
+          "status": "FINDINGS",
+          "findings": 1,
+          "productionSafe": true
+        }
+      },
+      {
+        "id": "audit-real-reviewer-session",
+        "status": "PASS",
+        "required": true,
+        "message": "2 reviewer session(s) bound to the report",
+        "evidence": {}
+      },
+      {
+        "id": "audit-validation-command",
+        "status": "PASS",
+        "required": true,
+        "message": "configured fixture validation command PASS",
+        "evidence": {}
+      },
+      {
+        "id": "audit-no-system-failure",
+        "status": "PASS",
+        "required": true,
+        "message": "reviewer output contract parsed without synthetic system failure",
+        "evidence": {}
+      },
+      {
+        "id": "audit-supervisor-generation",
+        "status": "PASS",
+        "required": true,
+        "message": "semantic supervisor generation materialized",
+        "evidence": {
+          "generations": [
+            {
+              "generation": 1,
+              "agentId": "1ca1d02b-84da-460e-9032-a60227e546dd",
+              "status": "DRAINING"
+            }
+          ]
+        }
+      }
+    ],
+    "applicableChecks": [
+      {
+        "id": "audit-report",
+        "status": "PASS",
+        "required": true,
+        "message": "audit report AUDIT-20260930T052814Z-78e1af93 persisted at .harness/audits/AUDIT-20260930T052814Z-78e1af93.json",
+        "evidence": {
+          "status": "FINDINGS",
+          "findings": 1,
+          "productionSafe": true
+        }
+      },
+      {
+        "id": "audit-real-reviewer-session",
+        "status": "PASS",
+        "required": true,
+        "message": "2 reviewer session(s) bound to the report",
+        "evidence": {}
+      },
+      {
+        "id": "audit-validation-command",
+        "status": "PASS",
+        "required": true,
+        "message": "configured fixture validation command PASS",
+        "evidence": {}
+      }
+    ],
+    "rowResults": {
+      "audit": "PASS"
+    },
+    "detail": {
+      "checks": [
+        {
+          "id": "operation.terminal-succeeded",
+          "status": "PASS",
+          "required": true,
+          "message": "operation status=SUCCEEDED",
+          "evidence": {}
+        },
+        {
+          "id": "operation.candidate-bound",
+          "status": "PASS",
+          "required": true,
+          "message": "candidate revision identity digest is bound",
+          "evidence": {
+            "revision": 1
+          }
+        },
+        {
+          "id": "operation.participant-receipts",
+          "status": "PASS",
+          "required": true,
+          "message": "1 terminal participant receipt(s) persisted",
+          "evidence": {}
+        },
+        {
+          "id": "operation.revision-current",
+          "status": "PASS",
+          "required": true,
+          "message": "operation execution revision is durable",
+          "evidence": {}
+        },
+        {
+          "id": "audit-report",
+          "status": "PASS",
+          "required": true,
+          "message": "audit report AUDIT-20260930T052814Z-78e1af93 persisted at .harness/audits/AUDIT-20260930T052814Z-78e1af93.json",
+          "evidence": {
+            "status": "FINDINGS",
+            "findings": 1,
+            "productionSafe": true
+          }
+        },
+        {
+          "id": "audit-real-reviewer-session",
+          "status": "PASS",
+          "required": true,
+          "message": "2 reviewer session(s) bound to the report",
+          "evidence": {}
+        },
+        {
+          "id": "audit-validation-command",
+          "status": "PASS",
+          "required": true,
+          "message": "configured fixture validation command PASS",
+          "evidence": {}
+        },
+        {
+          "id": "audit-no-system-failure",
+          "status": "PASS",
+          "required": true,
+          "message": "reviewer output contract parsed without synthetic system failure",
+          "evidence": {}
+        },
+        {
+          "id": "audit-supervisor-generation",
+          "status": "PASS",
+          "required": true,
+          "message": "semantic supervisor generation materialized",
+          "evidence": {
+            "generations": [
+              {
+                "generation": 1,
+                "agentId": "1ca1d02b-84da-460e-9032-a60227e546dd",
+                "status": "DRAINING"
+              }
+            ]
+          }
+        }
+      ],
+      "rows": {
+        "audit": [
+          "audit-report",
+          "audit-real-reviewer-session",
+          "audit-validation-command"
+        ]
+      },
+      "reviewerSessions": [
+        {
+          "id": "8a8d14ab-5982-446c-8cc5-8bcd7fc2ae14",
+          "provider": "opencode",
+          "model": "mimo-v2.6-flash",
+          "exitCode": 0
+        },
+        {
+          "id": "1ca1d02b-84da-460e-9032-a60227e546dd",
+          "provider": "codex",
+          "model": "gpt-6-luna",
+          "exitCode": 0
+        }
+      ],
+      "auditId": "AUDIT-20260930T052814Z-78e1af93"
+    }
+  },
+  "terminal": {
+    "status": "SUCCEEDED",
+    "bounded": true,
+    "lateTerminal": null
+  },
+  "result": "PASS",
+  "workspaceInventory": [
+    {
+      "workspaceId": "wks_828fa83661bf1d19",
+      "project": "lane-audit-fixture",
+      "cwd": "/tmp/aeh-s13-gov-w5ugD8/work/lane-audit-fixture",
+      "laneCreated": true
+    }
+  ],
+  "workspaceCleanup": {
+    "archived": [
+      {
+        "workspaceId": "wks_828fa83661bf1d19",
+        "project": "lane-audit-fixture",
+        "cwd": "/tmp/aeh-s13-gov-w5ugD8/work/lane-audit-fixture",
+        "exitCode": 0
+      }
+    ],
+    "preExistingUntouched": [],
+    "remaining": [],
+    "accounting": {
+      "inventoryCount": 1,
+      "archivedCount": 1,
+      "remainingCount": 0,
+      "unaccounted": [],
+      "accounted": true
+    }
+  },
+  "postCampaignOperationRead": {
+    "operationId": "AUDIT-20260930T052814Z-78e1af93",
+    "observedAt": "2026-09-30T05:31:37.005Z",
+    "observationWindowMs": 0,
+    "observations": 1,
+    "status": "SUCCEEDED",
+    "phase": "finished",
+    "revision": 52,
+    "controllerPid": 1574246,
+    "controllerAlive": false,
+    "terminal": true,
+    "candidateWorktree": "/tmp/aeh-s13-gov-w5ugD8/work/lane-audit-fixture",
+    "candidateWorktreeAvailable": true
+  },
+  "leadAgentCleanup": {
+    "agentId": "e9ba22a8-7662-4a56-be93-f7da39ffe38e",
+    "exitCode": 0
+  },
+  "checkoutProof": {
+    "trackedDigestBefore": "3f9b7fd8767afe27c833a1a6580c362856b911c4d04dcd5f7833eaaa631634d8",
+    "trackedDigestAfter": "3f9b7fd8767afe27c833a1a6580c362856b911c4d04dcd5f7833eaaa631634d8",
+    "trackedFiles": 668,
+    "checkoutUntouched": true,
+    "postRunTrackedDocEditWindow": {
+      "opensAfterLaneFinish": true,
+      "note": "S13 tracked documentation/evidence is edited after lane execution; the recorded digest is the source-tree digest at lane end (R11-F6)."
+    }
+  },
+  "finishedAt": "2026-09-30T05:31:38.187Z",
+  "durationMs": 211683
+}

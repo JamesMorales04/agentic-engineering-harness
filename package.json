@@ -3,6 +3,9 @@
   "version": "0.8.4",
   "description": "OSS-first engineering harness for deterministic, spec-driven, issue-driven, audit-governed and orchestration-first multi-agent software delivery.",
   "type": "module",
+  "workspaces": [
+    "ui/control-center"
+  ],
   "bin": {
     "engineering-harness": "./dist/main.js",
     "aeh": "./dist/main.js"
@@ -21,17 +24,24 @@
   ],
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "npm run clean && tsc -p tsconfig.json",
+    "build": "node scripts/build.mjs",
     "prepare": "npm run build && node scripts/link-self-bin.mjs",
     "aeh": "node ./dist/main.js",
     "dev": "tsx src/main.ts",
-    "test": "vitest run",
+    "ui:build": "npm run build --workspace=@aeh/control-center",
+    "test": "npm run test:deterministic",
+    "test:unit": "vitest run --exclude 'tests/system/**' --exclude 'tests/packed/*.test.mjs' --exclude 'tests/buildHygiene.test.ts' --exclude 'tests/specManagerCanonicality.test.ts' --exclude 'tests/changePlanRequirementTraceability.test.ts' --exclude 'tests/changeControllerOwnedDecision.test.ts'",
+    "test:deterministic": "npm run test:unit && node --test tests/packed/s13GovernedCampaignPolicy.test.mjs",
     "test:watch": "vitest",
     "test:scenario": "npm run build && vitest run tests/system/aehScenarioMatrix.test.ts && AEH_RELIABILITY_SUITES=scenario tsx scripts/generate-reliability-report.ts",
     "test:adversarial": "npm run build && vitest run tests/system/aehAdversarialE2E.test.ts && AEH_RELIABILITY_SUITES=adversarial tsx scripts/generate-reliability-report.ts",
     "test:concurrency": "npm run build && vitest run tests/system/aehConcurrencyCampaign.test.ts && AEH_RELIABILITY_SUITES=concurrency tsx scripts/generate-reliability-report.ts",
     "test:human-e2e": "npm run build && vitest run tests/system/aehHumanBlackBox.test.ts && AEH_RELIABILITY_SUITES=human tsx scripts/generate-reliability-report.ts",
-    "test:system-all": "npm run build && vitest run tests/system && AEH_RELIABILITY_SUITES=system AEH_RELIABILITY_REQUIRE_COMPLETE=1 tsx scripts/generate-reliability-report.ts",
+    "test:browser-e2e": "npm run build && playwright test --config tests/browser/playwright.config.ts",
+    "test:browser-visual": "npm run build && tsx scripts/s11BrowserVisualCampaign.ts",
+    "test:system-all": "npm run build && vitest run tests/system --exclude tests/system/aehIsolationCampaign.test.ts && AEH_RELIABILITY_SUITES=system AEH_RELIABILITY_REQUIRE_COMPLETE=1 tsx scripts/generate-reliability-report.ts",
+    "test:rootless-isolation": "vitest run tests/system/aehIsolationCampaign.test.ts",
+    "test:packaged-consumer": "vitest run tests/buildHygiene.test.ts && vitest run tests/system/aehHumanBlackBox.test.ts -t 'runs the packaged tarball through init, deterministic start, and a completed user turn'",
     "reliability:report": "tsx scripts/generate-reliability-report.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "check": "npm run typecheck && npm run build && npm test",
@@ -46,6 +56,7 @@
     "@opentelemetry/context-async-hooks": "^2.10.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.206.0",
     "@opentelemetry/resources": "^2.10.0",
+    "@opentelemetry/sdk-metrics": "^2.1.0",
     "@opentelemetry/sdk-trace-node": "^2.10.0",
     "commander": "^14.0.1",
     "minimatch": "^10.0.3",
@@ -55,7 +66,6 @@
   "devDependencies": {
     "@playwright/test": "1.62.1",
     "@types/node": "^24.2.1",
-    "agentic-engineering-harness": "^0.6.29",
     "tsx": "^4.20.3",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"

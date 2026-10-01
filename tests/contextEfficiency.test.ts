@@ -9,7 +9,6 @@ import { rankRepositoryNodes } from "../src/context/repository/rank.js";
 import { ContextRetrievalGateway } from "../src/context/retrieval/gateway.js";
 import { authorizeRetrieval } from "../src/context/retrieval/authorization.js";
 import { recoveryHandle } from "../src/context/gateway.js";
-import { createPersistedContextGateway, retrievePersistedContext } from "../src/context/retrieval/persisted.js";
 import type { ContextCompressionProvider } from "../src/context/compression/types.js";
 import type { HarnessProjectConfig } from "../src/core/types.js";
 
@@ -46,6 +45,53 @@ describe("context efficiency subsystem", () => {
     const result = await new ContextBudgetGateway("/tmp", config(), { persist: false, telemetry: false }).prepare({ operationId: "OP-1", logicalAgent: "reviewer", role: "reviewer", phase: "review", fragments: [{ id: "contract", kind: "normative", preservation: "VERBATIM", priority: 100, content: "exact\nanchor: {value}\nsha: 0123456789" }] });
     expect(result.envelope.fragments[0]?.content).toBe("exact\nanchor: {value}\nsha: 0123456789");
     expect(verifyContextEnvelope(result.envelope)).toBe(true);
+  });
+
+  it("projects Planner and Explorer structured handoffs through their role projectors", async () => {
+    const planner = await new ContextBudgetGateway("/tmp", config(), { persist: false, telemetry: false }).prepare({ operationId: "OP-ROLE-PLANNER", logicalAgent: "planner", role: "Planner", phase: "planning", fragments: [{ id: "planner-handoff", kind: "handoff", preservation: "PROJECTABLE", priority: 80, content: JSON.stringify({ objective: "bounded slice", workUnits: [{ id: "u1" }, { id: "u2" }], constraints: ["scope"] }) }] });
+    const plannerFragment = planner.envelope.fragments.find((fragment) => fragment.id === "planner-handoff")!;
+    expect(plannerFragment.projected).toBe(true);
+    expect(plannerFragment.content).toBe("role=planner\nconstraints=count=1\nobjective=bounded slice\nworkUnits=count=2\nauthoritative structured result remains in its durable artifact");
+    expect(verifyContextEnvelope(planner.envelope)).toBe(true);
+
+    const explorer = await new ContextBudgetGateway("/tmp", config(), { persist: false, telemetry: false }).prepare({ operationId: "OP-ROLE-EXPLORER", logicalAgent: "explorer", role: "explorer", phase: "discovery", fragments: [{ id: "explorer-handoff", kind: "handoff", preservation: "PROJECTABLE", priority: 80, content: JSON.stringify({ files: ["src/a.ts", "src/b.ts"], modules: { core: true }, verified: 2 }) }] });
+    const explorerFragment = explorer.envelope.fragments.find((fragment) => fragment.id === "explorer-handoff")!;
+    expect(explorerFragment.projected).toBe(true);
+    expect(explorerFragment.content).toBe("role=explorer\nfiles=count=2\nmodules=keys=core\nverified=2\nauthoritative structured result remains in its durable artifact");
+
+    const agentScoped = await new ContextBudgetGateway("/tmp", config(), { persist: false, telemetry: false }).prepare({ operationId: "OP-ROLE-AGENT", logicalAgent: "planner", phase: "planning", fragments: [{ id: "planner-handoff", kind: "handoff", preservation: "PROJECTABLE", priority: 80, content: JSON.stringify({ objective: "agent-scoped" }) }] });
+    expect(agentScoped.envelope.fragments[0]?.content).toBe("role=planner\nobjective=agent-scoped\nauthoritative structured result remains in its durable artifact");
+  });
+
+  it("keeps the fallback projection for non-role handoffs and preserved fragments", async () => {
+    const handoff = JSON.stringify({ parentAgentId: "parent", operationId: "OP-ROLE-FALLBACK", phase: "implementation" });
+    const result = await new ContextBudgetGateway("/tmp", config(), { persist: false, telemetry: false }).prepare({ operationId: "OP-ROLE-FALLBACK", logicalAgent: "implementer", role: "implementer", phase: "implementation", fragments: [
+      { id: "handoff", kind: "handoff", preservation: "PROJECTABLE", priority: 80, content: handoff },
+      { id: "contract", kind: "normative", preservation: "VERBATIM", priority: 125, content: "exact\nanchor: {value}" }
+    ] });
+    const fallback = result.envelope.fragments.find((fragment) => fragment.id === "handoff")!;
+    expect(fallback.projected).toBe(false);
+    expect(fallback.content).toBe(handoff);
+    expect(result.envelope.fragments.find((fragment) => fragment.id === "contract")?.content).toBe("exact\nanchor: {value}");
+  });
+
+  it("keeps kind-based projection for other fragment kinds inside Planner contexts", async () => {
+    const lines = Array.from({ length: 100 }, (_, index) => `line-${String(index).padStart(3, "0")}`);
+    const report = { version: 1, taskId: "TASK-ROLE", status: "PASS", startedAt: "now", finishedAt: "now", checks: [], changedFiles: ["src/app.ts"], metadata: { project: "context-test", baseRef: "main" } };
+    const result = await new ContextBudgetGateway("/tmp", config(), { persist: false, telemetry: false }).prepare({ operationId: "OP-ROLE-KINDS", logicalAgent: "planner", role: "planner", phase: "planning", fragments: [
+      { id: "logs", kind: "tool-output", preservation: "PROJECTABLE", priority: 10, content: lines.join("\n") },
+      { id: "validation", kind: "validation", preservation: "PROJECTABLE", priority: 75, content: JSON.stringify(report) }
+    ] });
+    const logs = result.envelope.fragments.find((fragment) => fragment.id === "logs")!;
+    expect(logs.projected).toBe(true);
+    expect(logs.content).not.toContain("role=planner");
+    expect(logs.content).toContain("line-000");
+    expect(logs.content).toContain("line-099");
+    expect(logs.content).not.toContain("line-050");
+    const validation = result.envelope.fragments.find((fragment) => fragment.id === "validation")!;
+    expect(validation.projected).toBe(true);
+    expect(validation.content).toContain("status=PASS");
+    expect(validation.content).not.toContain("role=planner");
   });
 
   it("disambiguates implicit artifacts when stable fragment IDs carry different agent context", async () => {
@@ -89,12 +135,15 @@ describe("context efficiency subsystem", () => {
       ]);
       await expect(fs.access(contextEnvelopePath(root, "OP-ISOLATED", "reviewer-a", "review"))).resolves.toBeUndefined();
       await expect(fs.access(contextEnvelopePath(root, "OP-ISOLATED", "reviewer-b", "review"))).resolves.toBeUndefined();
-      const result = await retrievePersistedContext(root, config(), "OP-ISOLATED", "reviewer-a", { fragmentId: "raw" }, "review");
-      expect(result.content).toBe("reviewer A evidence");
+      const first = JSON.parse(await fs.readFile(contextEnvelopePath(root, "OP-ISOLATED", "reviewer-a", "review"), "utf8")) as { fragments: Array<{ source?: { artifact?: string } }> };
+      const second = JSON.parse(await fs.readFile(contextEnvelopePath(root, "OP-ISOLATED", "reviewer-b", "review"), "utf8")) as { fragments: Array<{ source?: { artifact?: string } }> };
+      expect(await fs.readFile(path.join(root, first.fragments[0]!.source!.artifact!), "utf8")).toBe("reviewer A evidence");
+      expect(await fs.readFile(path.join(root, second.fragments[0]!.source!.artifact!), "utf8")).toBe("reviewer B evidence");
+      expect(first.fragments[0]?.source?.artifact).not.toBe(second.fragments[0]?.source?.artifact);
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 
-  it("rejects a tampered persisted context envelope before authorization", async () => {
+  it("detects a tampered persisted context envelope", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-context-envelope-integrity-"));
     try {
       const gateway = new ContextBudgetGateway(root, config(), { telemetry: false });
@@ -103,19 +152,7 @@ describe("context efficiency subsystem", () => {
       const envelope = JSON.parse(await fs.readFile(envelopeFile, "utf8")) as { fragments: Array<{ source?: { artifact?: string } }> };
       envelope.fragments[0]!.source = { artifact: "secret.txt" };
       await fs.writeFile(envelopeFile, `${JSON.stringify(envelope)}\n`);
-      await expect(createPersistedContextGateway(root, config(), "OP-INTEGRITY", "reviewer", "review")).rejects.toThrow("CONTEXT_RETRIEVAL_PROVENANCE_MISMATCH");
-    } finally { await fs.rm(root, { recursive: true, force: true }); }
-  });
-
-  it("preserves persisted MCP retrieval budgets across calls in one session", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-context-persisted-budget-"));
-    try {
-      const gateway = new ContextBudgetGateway(root, { ...config(), context: { ...config().context, retrieval: { maxRequestsPerTurn: 1, maxTokensPerRequest: 30, maxTotalTokensPerTurn: 30 } } }, { telemetry: false });
-      await gateway.prepare({ operationId: "OP-BUDGET", logicalAgent: "reviewer", phase: "review", fragments: [{ id: "raw", kind: "tool-output", preservation: "RETRIEVABLE", priority: 10, content: "bounded evidence" }] });
-      const constrained = { ...config(), context: { ...config().context, retrieval: { maxRequestsPerTurn: 1, maxTokensPerRequest: 30, maxTotalTokensPerTurn: 30 } } };
-      const persisted = await createPersistedContextGateway(root, constrained, "OP-BUDGET", "reviewer", "review");
-      await retrievePersistedContext(root, constrained, "OP-BUDGET", "reviewer", { fragmentId: "raw" }, "review", persisted);
-      await expect(retrievePersistedContext(root, constrained, "OP-BUDGET", "reviewer", { fragmentId: "raw" }, "review", persisted)).rejects.toThrow("CONTEXT_RETRIEVAL_BUDGET_EXCEEDED");
+      expect(verifyContextEnvelope(envelope as never)).toBe(false);
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 

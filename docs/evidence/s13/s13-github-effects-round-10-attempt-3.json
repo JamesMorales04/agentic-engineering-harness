@@ -1,0 +1,161 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 10,
+  "runId": "attempt-3",
+  "roundLabel": "round-10/attempt-3 (attempt-specific summary and lane artifacts are immutable evidence)",
+  "campaign": "github-effects",
+  "generatedAt": "2026-09-28T16:07:59.852Z",
+  "checkout": "/home/james/Desarrollo/agentic-engineering-harness",
+  "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+  "repository": {
+    "name": "JamesMorales04/aeh-s13-round3-20260927035743-6bb5da",
+    "visibility": "PRIVATE",
+    "suppliedAsPreAuthorizedInput": true,
+    "createdByCampaign": false,
+    "verifiedAt": "2026-09-28T16:08:00.518Z",
+    "createdAt": "2026-09-27T03:57:45Z",
+    "url": "https://github.com/JamesMorales04/aeh-s13-round3-20260927035743-6bb5da"
+  },
+  "lanes": [
+    {
+      "capability": "issue-driven",
+      "result": "PASS",
+      "checks": [
+        {
+          "id": "issue.snapshot",
+          "ok": true,
+          "message": "frozen snapshot 0c0d1b61838c matches live issue #3"
+        },
+        {
+          "id": "issue.drift-gate",
+          "ok": true,
+          "message": "ISSUE_DRIFT: GitHub issue #3 title/body changed after freeze (000000000000 -> 0c0d1b61838c)."
+        },
+        {
+          "id": "issue.operation-import",
+          "ok": true,
+          "message": "operation-bound issue import completed"
+        }
+      ],
+      "artifact": "docs/evidence/s13/github-lanes/round-10/attempt-3/issue-driven.json"
+    },
+    {
+      "capability": "authority",
+      "result": "PASS",
+      "checks": [
+        {
+          "id": "authority.human-gate",
+          "ok": true,
+          "message": "unapproved external effect status=HUMAN_REQUIRED"
+        },
+        {
+          "id": "authority.approved-effect",
+          "ok": true,
+          "message": "approved effect status=EXECUTED/SUCCEEDED"
+        },
+        {
+          "id": "authority.real-github-ref",
+          "ok": true,
+          "message": "real remote branch aeh-s13-authority-20260928160758 observed on JamesMorales04/aeh-s13-round3-20260927035743-6bb5da"
+        }
+      ],
+      "artifact": "docs/evidence/s13/github-lanes/round-10/attempt-3/authority.json"
+    },
+    {
+      "capability": "delivery",
+      "result": "BLOCKED",
+      "checks": [
+        {
+          "id": "delivery.accepted-candidate",
+          "ok": false,
+          "message": "A real GitHub delivery requires an accepted packed governed change candidate (S8 AcceptanceOracle); the packed FULL_OPERATION path is currently blocked by the recorded FULL_OPERATION defects."
+        }
+      ],
+      "artifact": null
+    }
+  ],
+  "result": "SLICE_BLOCKED",
+  "candidate": {
+    "artifactDigest": "cda26ba474fbecd757ac4f3fda6535860fd7e4a43dd7e8501fb9d81281f50e3b",
+    "packedArtifact": "agentic-engineering-harness-0.8.4.tgz",
+    "packedArtifactDigest": "cda26ba474fbecd757ac4f3fda6535860fd7e4a43dd7e8501fb9d81281f50e3b",
+    "packedBuild": {
+      "releaseId": "release-1790611685139-57283-d7e9f8e2",
+      "buildDigest": "8e949b0113ddd90ae0573826b8ecc348915ae2c65fd6a77c99f82ba9b6a9ab84",
+      "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+      "packageVersion": "0.8.4"
+    },
+    "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c"
+  },
+  "issue": {
+    "number": 3,
+    "url": "https://github.com/JamesMorales04/aeh-s13-round3-20260927035743-6bb5da/issues/3",
+    "created": true,
+    "reused": false,
+    "creation": {
+      "number": 3,
+      "url": "https://github.com/JamesMorales04/aeh-s13-round3-20260927035743-6bb5da/issues/3",
+      "title": "Create a minimal greeting fixture with a farewell export and validator",
+      "body": "## Starting state\nThe repository has no application source tree. Create every file in this request from scratch; do not assume an existing greeting implementation or validator.\n\n## Request\nCreate a minimal Node.js greeting fixture with a `greet` function and a `FAREWELL` export.\n\n## Acceptance criteria\n- Create `package.json` with `npm test` running `node scripts/validate.mjs` and no new dependencies.\n- Create `src/greeting.mjs`; `greet('AEH')` returns `Hello, AEH!` and `FAREWELL` equals `Goodbye`.\n- Create `scripts/validate.mjs` to assert both greeting exports and exit nonzero on failure.\n- `npm test` exits successfully from the repository root.\n\n## Scope\n- `package.json` (new)\n- `src/greeting.mjs` (new)\n- `scripts/validate.mjs` (new)\n\nCampaign marker: AEH-S13-attempt-3",
+      "marker": "AEH-S13-attempt-3",
+      "action": "github.issue.create",
+      "operationId": "CHANGE-S13-GH-ISSUE-attempt-3",
+      "actionStatus": "EXECUTED",
+      "detail": "Side effect executed and receipt persisted.",
+      "intent": {
+        "version": 2,
+        "intentId": "action-intent:a728311b990c27f52238e257e1eb56f0658cc83d7339cb088662abc29983616a",
+        "actionKey": "github:issue:create:attempt-3",
+        "operationId": "CHANGE-S13-GH-ISSUE-attempt-3",
+        "participantId": "controller:a859e13fa2416db4332de409",
+        "candidate": {
+          "operationId": "CHANGE-S13-GH-ISSUE-attempt-3",
+          "candidateId": "candidate:CHANGE-S13-GH-ISSUE-attempt-3:r1",
+          "projectId": "project:01e2e3cbf3fdc4b7db232ada",
+          "taskId": "CHANGE-S13-GH-ISSUE-attempt-3",
+          "revision": 1,
+          "sourceDigest": "1e8f323332f9b0fccc54671477ac28e00a5d5214b6abddfe5719579317324762",
+          "worktree": "/tmp/aeh-s13-gh-fdkI3H/clone",
+          "createdAt": "2026-09-28T16:08:23.988Z",
+          "version": 1,
+          "canonicalIdentity": "{\"candidateId\":\"candidate:CHANGE-S13-GH-ISSUE-attempt-3:r1\",\"createdAt\":\"2026-09-28T16:08:23.988Z\",\"operationId\":\"CHANGE-S13-GH-ISSUE-attempt-3\",\"projectId\":\"project:01e2e3cbf3fdc4b7db232ada\",\"revision\":1,\"sourceDigest\":\"1e8f323332f9b0fccc54671477ac28e00a5d5214b6abddfe5719579317324762\",\"taskId\":\"CHANGE-S13-GH-ISSUE-attempt-3\",\"version\":1,\"worktree\":\"/tmp/aeh-s13-gh-fdkI3H/clone\"}",
+          "identityDigest": "bc4d77de83ed7d0a5fe78b666c3a0cdaae37297dc27a7e278a64a607b072168c"
+        },
+        "action": "github.issue.create",
+        "impact": "EXTERNAL_NON_IDEMPOTENT",
+        "operationExecutionRevision": 1,
+        "policyDigest": "53eff71e2db61c5cf10ba8a58e870937e16b78a5438a857e0eca5412a51d1d29",
+        "controllerEpoch": 1,
+        "payloadDigest": "e6a1de945efc282fdeccf647e8a578b7e93f02bb0e034772d36a97acbc7a006d",
+        "authorityBindingDigest": "9ad6d64c112f890118ae499267d0c853db39e23f89de7f3de7a96a635579721f",
+        "requestDigest": "05e9cb5203f422b441cd58d4db32a6ee4b1ee252bc94bc9bc0fae95a554cd970",
+        "createdAt": "2026-09-28T16:08:26.221Z"
+      },
+      "receipt": {
+        "version": 2,
+        "intentId": "action-intent:a728311b990c27f52238e257e1eb56f0658cc83d7339cb088662abc29983616a",
+        "operationId": "CHANGE-S13-GH-ISSUE-attempt-3",
+        "participantId": "controller:a859e13fa2416db4332de409",
+        "candidateDigest": "bc4d77de83ed7d0a5fe78b666c3a0cdaae37297dc27a7e278a64a607b072168c",
+        "operationExecutionRevision": 1,
+        "policyDigest": "53eff71e2db61c5cf10ba8a58e870937e16b78a5438a857e0eca5412a51d1d29",
+        "action": "github.issue.create",
+        "controllerEpoch": 1,
+        "outcome": "SUCCEEDED",
+        "resultDigest": "17df9677f46d7f8d1e0eee3c19e3b6d40a2a72243a1a714c086dec3fb4695707",
+        "receiptId": "action-receipt:a215a04bb8b9a76b36805f204234b9cea701cbe4837919adbefc544722cbd9ac",
+        "receiptDigest": "a215a04bb8b9a76b36805f204234b9cea701cbe4837919adbefc544722cbd9ac",
+        "recordedAt": "2026-09-28T16:08:27.317Z"
+      },
+      "reconciliation": null
+    }
+  },
+  "checkoutProof": {
+    "trackedDigestBefore": "e87d6d2ed4e1ddddb940512be5e76edc644ece7ca987ca3f2a72f632186cdb20",
+    "trackedDigestAfter": "e87d6d2ed4e1ddddb940512be5e76edc644ece7ca987ca3f2a72f632186cdb20",
+    "trackedFiles": 668,
+    "checkoutUntouched": true,
+    "note": "Tracked digest captured before packing and after the GitHub effect lanes; no candidate executes in this checkout."
+  }
+}

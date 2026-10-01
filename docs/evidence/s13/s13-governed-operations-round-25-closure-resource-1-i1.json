@@ -1,0 +1,115 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 25,
+  "runId": "closure-resource-1-i1",
+  "roundLabel": "round-25/closure-resource-1-i1 (attempt-specific summary and lane artifacts are immutable evidence)",
+  "campaign": "governed-operations",
+  "generatedAt": "2026-09-30T19:19:28.400Z",
+  "checkout": "/home/james/Desarrollo/agentic-engineering-harness",
+  "sourceCommit": "1d1dd973ff585c8a886f4af3a13a9343d6b1d618",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13GovernedOperationCampaign.mjs",
+        "sha256": "069d8c0469425ef9894faf8d142a17bda21d325b8e4d862af7d8e0c40ed3e090"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "a08399ef19672fc994b26ded531e53da12f4f5e6cfd3cb3f37c3a857f1dd79d1"
+  },
+  "harnessBuildIdentity": {
+    "version": 1,
+    "packageVersion": "0.8.4",
+    "gitSha": "1d1dd973ff585c8a886f4af3a13a9343d6b1d618",
+    "releaseId": "release-1790795898004-870959-248396b0",
+    "buildDigest": "834ab29bc89a79483f4d2d956736a802d7b47278d5d72e4a5a690c7070776c13",
+    "dirty": true
+  },
+  "candidate": {
+    "artifact": "agentic-engineering-harness-0.8.4.tgz",
+    "artifactDigest": "f9ddc6f1201bbbb994be9b4ff0d7e613aa4844b2c0fc7362a5d14c4f35cdab10"
+  },
+  "lanes": [
+    {
+      "capability": "change-direct",
+      "result": "PASS",
+      "status": "SUCCEEDED",
+      "terminal": {
+        "status": "SUCCEEDED",
+        "bounded": true,
+        "lateTerminal": null
+      },
+      "route": "DIRECT",
+      "sessions": 3,
+      "oracle": "PASS",
+      "acceptanceOracleDisposition": "ACCEPTED",
+      "rows": {
+        "change": "PASS",
+        "direct-change": "PASS"
+      },
+      "error": null,
+      "durationMs": 293118,
+      "timeout": false,
+      "lateTerminal": null,
+      "postCampaignOperationRead": {
+        "operationId": "CHANGE-20260930T192014Z-5de819ea",
+        "observedAt": "2026-09-30T19:24:42.331Z",
+        "observationWindowMs": 0,
+        "observations": 1,
+        "status": "SUCCEEDED",
+        "phase": "finished",
+        "revision": 81,
+        "controllerPid": 877312,
+        "controllerAlive": false,
+        "terminal": true,
+        "candidateWorktree": "/home/james/.paseo/worktrees/0mr2ajd8/aeh-change-20260930t192014z-5de819ea",
+        "candidateWorktreeAvailable": false
+      },
+      "checkoutUntouched": true,
+      "workspacesArchived": 0,
+      "workspacesRemaining": 9,
+      "workspaceAccounting": {
+        "inventoryCount": 9,
+        "archivedCount": 0,
+        "remainingCount": 9,
+        "unaccounted": [],
+        "accounted": true
+      },
+      "fixtureTopology": {
+        "source": "S13_GOV_BRAIN_* override",
+        "brain": {
+          "runtime": "opencode",
+          "provider": "opencode-go",
+          "model": "gpt-6-luna"
+        }
+      },
+      "artifact": "docs/evidence/s13/governed-lanes/round-25/closure-resource-1-i1/change-direct.json"
+    }
+  ],
+  "result": "PASS",
+  "checkoutProof": {
+    "trackedDigestBefore": "1295c55405a509ad4467726d9190bb9c1d2140627bc5ce9594422edac11b4c92",
+    "trackedDigestAfter": "1295c55405a509ad4467726d9190bb9c1d2140627bc5ce9594422edac11b4c92",
+    "trackedFiles": 2078,
+    "checkoutUntouched": true,
+    "gitStatusBefore": "M scripts/s14AdversarialChecks.ts\n M scripts/s14SelfHostingComposite.ts\n M src/candidates/direct.ts\n M src/certification/composite.ts\n M src/core/errors.ts\n M src/operations/controller.ts\n M src/operations/state.ts\n M src/runtime/index.ts\n M src/runtime/providerLifecycle.ts\n M tests/packed/s13GovernedOperationCampaign.mjs\n?? docs/CORE_ARCHITECTURE_V2_CLOSURE_WORKGRAPH.md\n?? docs/evidence/closure/\n?? src/runtime/operationResources.ts\n?? tests/operationResourceReconciliation.test.ts\n?? tests/packed/closureCampaignEnvelope.mjs\n?? tests/packed/closureResourceStabilityCampaign.mjs",
+    "gitStatusAfter": "M scripts/s14AdversarialChecks.ts\n M scripts/s14SelfHostingComposite.ts\n M src/candidates/direct.ts\n M src/certification/composite.ts\n M src/core/errors.ts\n M src/operations/controller.ts\n M src/operations/state.ts\n M src/runtime/index.ts\n M src/runtime/providerLifecycle.ts\n M tests/packed/s13GovernedOperationCampaign.mjs\n?? docs/CORE_ARCHITECTURE_V2_CLOSURE_WORKGRAPH.md\n?? docs/evidence/closure/\n?? src/runtime/operationResources.ts\n?? tests/operationResourceReconciliation.test.ts\n?? tests/packed/closureCampaignEnvelope.mjs\n?? tests/packed/closureResourceStabilityCampaign.mjs",
+    "note": "Tracked-file digest captured before packing and after all governed lanes; candidates execute only inside disposable /tmp fixtures.",
+    "postRunTrackedDocEditWindow": {
+      "opensAfter": "2026-09-30T19:24:43.885Z",
+      "note": "Tracked documentation writes after this timestamp are expected; compare source digests only within a run window."
+    }
+  }
+}

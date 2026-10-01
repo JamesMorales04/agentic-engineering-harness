@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 20,
+  "runId": "r20-journey-7",
+  "campaign": "issue-journey",
+  "generatedAt": "2026-09-29T22:21:40.869Z",
+  "checkout": "/home/james/Desarrollo/agentic-engineering-harness",
+  "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13IssueJourneyCampaign.mjs",
+        "sha256": "c5abc79bc8bb58d51e5ff84900824c638b738801ac2f66e16126da78798910d9"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "fb8043be3f3ec308cc91a845ce6fced32e50fc229b91995f5ff8a512fab38795"
+  },
+  "harnessBuildIdentity": {
+    "version": 1,
+    "packageVersion": "0.8.4",
+    "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "releaseId": "release-1790719165171-141497-ec0aae8c",
+    "buildDigest": "408b178d53f32750aa81efb3a60965552b1aacd7756332b4c6dbf8fd3d1c744b",
+    "dirty": true
+  },
+  "repository": {
+    "name": "JamesMorales04/aeh-s13-round3-20260927035743-6bb5da",
+    "visibility": "private",
+    "createdByCampaign": false
+  },
+  "issue": {
+    "number": 1,
+    "created": false,
+    "edited": false
+  },
+  "authorization": {
+    "authorizationId": "s13-github-effect-authorization-2026-09-28",
+    "artifactDigest": "272c5cb76158a7c312edd4d8d97cd6545b599e5c57c7978bbfc3742c573bd460",
+    "allowedEffects": [
+      "git.push",
+      "github.branch.create",
+      "github.issue.create"
+    ],
+    "resourceNamePrefix": "aeh-s13-",
+    "consumedBeforeAnyExternalCommand": true
+  },
+  "lanes": [
+    {
+      "capability": "issue-driven",
+      "result": "FAIL",
+      "checks": null,
+      "error": "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/home/james/Desarrollo/agentic-engineering-harness/dist/releases/release-1790719165171-141497-ec0aae8c/operations/state.js' imported from /home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13IssueJourneyCampaign.mjs\n    at finalizeResolution (node:internal/modules/esm/resolve:275:11)\n    at moduleResolve (node:internal/modules/esm/resolve:861:10)\n    at defaultResolve (node:internal/modules/esm/resolve:985:11)\n    at #cachedDefaultResolve (node:internal/modules/esm/loader:747:20)\n    at ModuleLoader.resolve (node:internal/modules/esm/loader:724:38)\n    at ModuleLoader.getModuleJobForImport (node:internal/modules/esm/loader:320:38)\n    at onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:680:36)\n    at TracingChannel.tracePromise (node:diagnostics_channel:350:14)\n    at ModuleLoader.import (node:internal/modules/esm/loader:679:21)\n    at defaultImportModuleDynamicallyForModule (node:internal/modules/esm/utils:222:31)",
+      "artifact": "docs/evidence/s13/issue-journey-lanes/round-20/r20-journey-7/issue-driven.json"
+    }
+  ],
+  "result": "SLICE_BLOCKED",
+  "checkoutProof": {
+    "trackedDigestBefore": "8444d6a1ac8f1e10063819ff9c8bcfefe308b4ccc5c58a93fb967a819b492fc2",
+    "trackedDigestAfter": "8444d6a1ac8f1e10063819ff9c8bcfefe308b4ccc5c58a93fb967a819b492fc2",
+    "trackedFiles": 668,
+    "checkoutUntouched": true,
+    "postRunTrackedDocEditWindow": {
+      "opensAfterLaneFinish": true,
+      "note": "S13 tracked documentation/evidence is edited after lane execution; the recorded digest is the source-tree digest at lane end (R11-F6)."
+    }
+  }
+}

@@ -37,7 +37,7 @@ export async function runDoctor(root: string, config: HarnessProjectConfig): Pro
     const endpoint = resolveEndpoint(config);
     results.push({ component: "otlp-endpoint", required: config.telemetry.required ?? false, ok: Boolean(endpoint), message: endpoint ? `OTLP/HTTP JSON endpoint: ${endpoint}` : "OTLP exporter configured without an endpoint" });
   }
-  if (config.provenance?.cosignKey) results.push({ component: "cosign", required: false, ok: await commandExists("cosign", root), message: "Cosign provenance signing" });
+  if (config.provenance?.signing?.key || config.provenance?.signing?.required || config.provenance?.verification?.required) results.push({ component: "cosign", required: config.provenance.signing?.required === true || config.provenance.verification?.required === true, ok: await commandExists("cosign", root), message: "Cosign provenance signing" });
   return results;
 }
 
@@ -47,7 +47,8 @@ function validatorTool(spec: ValidatorSpec): string | undefined {
     case "gherkin": return "dotnet";
     case "opengrep": return "opengrep";
     case "trivy": return "trivy";
-    case "playwright": return "npx";
+    case "playwright": return "node_modules/.bin/playwright";
+    case "visual": return "node_modules/.bin/playwright";
     default: return undefined;
   }
 }

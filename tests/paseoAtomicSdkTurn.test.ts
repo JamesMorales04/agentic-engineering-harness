@@ -67,7 +67,75 @@ describe("Paseo SDK resumed turns", () => {
     );
 
     expect(result.lastMessage).toBe(payload);
-    expect(handle.timeline.refetch).toHaveBeenCalledWith({ direction: "backward", limit: 50 });
+    expect(handle.timeline.refetch).toHaveBeenCalledWith({ direction: "tail", limit: 50 });
+  });
+
+  it("recovers the assistant payload from the OpenCode provider timeline item shape", async () => {
+    const payload = '{"judgment":{"type":"ROUTE","recommendedRoute":"DIRECT"}}';
+    const handle = {
+      id: "agent-timeline-opencode",
+      workspaceId: "workspace-1",
+      run: vi.fn(async () => ({ status: "idle" })),
+      refetch: vi.fn(async () => ({ agent: { id: "agent-timeline-opencode", status: "idle" }, project: {} })),
+      timeline: {
+        refetch: vi.fn(async () => ({ entries: [
+          { provider: "opencode", item: { type: "user_message", text: "assess this" } },
+          { provider: "opencode", item: { type: "reasoning", text: "thinking" } },
+          { provider: "opencode", item: { type: "assistant_message", text: payload } }
+        ] }))
+      }
+    };
+    const client = { agents: { ref: vi.fn(() => handle) } };
+
+    const result = await runPaseoSdkAgentWithClient(client as never, "agent-timeline-opencode", "assess", 60_000);
+
+    expect(result.lastMessage).toBe(payload);
+  });
+
+  it("selects only the canonical last assistant message and never a nested tool payload", async () => {
+    const payload = '{"judgment":{"type":"ROUTE","recommendedRoute":"DIRECT"}}';
+    const handle = {
+      id: "agent-timeline-tools",
+      workspaceId: "workspace-1",
+      run: vi.fn(async () => ({ status: "idle" })),
+      refetch: vi.fn(async () => ({ agent: { id: "agent-timeline-tools", status: "idle" }, project: {} })),
+      timeline: {
+        refetch: vi.fn(async () => ({ entries: [
+          { role: "assistant", content: [{ type: "text", text: "older assistant text" }] },
+          { provider: "opencode", item: { type: "tool_call", input: { text: "nested-tool-payload" }, output: "nested-tool-output" } },
+          { provider: "opencode", item: { type: "assistant_message", content: [{ type: "text", text: payload }, { type: "tool_use", input: { text: "assistant-nested-tool-payload" } }] } }
+        ] }))
+      }
+    };
+    const client = { agents: { ref: vi.fn(() => handle) } };
+
+    const result = await runPaseoSdkAgentWithClient(client as never, "agent-timeline-tools", "assess", 60_000);
+
+    expect(result.lastMessage).toBe(payload);
+    expect(result.lastMessage).not.toContain("nested-tool");
+    expect(result.lastMessage).not.toContain("older assistant text");
+  });
+
+  it("ignores user and reasoning entries when selecting the last assistant message", async () => {
+    const payload = "assistant reply";
+    const handle = {
+      id: "agent-timeline-user-last",
+      workspaceId: "workspace-1",
+      run: vi.fn(async () => ({ status: "idle" })),
+      refetch: vi.fn(async () => ({ agent: { id: "agent-timeline-user-last", status: "idle" }, project: {} })),
+      timeline: {
+        refetch: vi.fn(async () => ({ entries: [
+          { provider: "opencode", item: { type: "assistant_message", text: payload } },
+          { provider: "opencode", item: { type: "user_message", text: "follow-up user turn" } },
+          { provider: "opencode", item: { type: "reasoning", text: "late reasoning" } }
+        ] }))
+      }
+    };
+    const client = { agents: { ref: vi.fn(() => handle) } };
+
+    const result = await runPaseoSdkAgentWithClient(client as never, "agent-timeline-user-last", "assess", 60_000);
+
+    expect(result.lastMessage).toBe(payload);
   });
 
   it("falls back to send plus wait on the same handle", async () => {
@@ -103,6 +171,7 @@ describe("Paseo SDK resumed turns", () => {
       cwd: "/repo",
       workspaceId: "workspace-1",
       provider: "codex",
+      model: "gpt-test",
       title: "reviewer",
       outputSchema: schema
     });

@@ -1,0 +1,611 @@
+import process from "node:process";
+import { pathToFileURL } from "node:url";
+import { connectPaseoClient, PaseoSdkUnavailableError } from "./sdk.js";
+import { resolvePaseoSdkFromCli } from "./sdkResolve.js";
+import { recordPaseoTrace } from "./trace.js";
+export async function inspectPaseoNativeAgent(root, agentId) {
+    return withNativeClient(root, async (client) => {
+        const raw = await refetchAgent(client.agents.ref(agentId));
+        if (!raw)
+            return undefined;
+        const snapshot = normalizePaseoNativeAgent(raw);
+        await recordPaseoTrace(root, "agent.snapshot", {
+            agentId,
+            status: snapshot.status ?? "unknown",
+            hasUsage: Boolean(snapshot.lastUsage),
+            contextWindowUsedTokens: snapshot.lastUsage?.contextWindowUsedTokens ?? -1,
+            contextWindowMaxTokens: snapshot.lastUsage?.contextWindowMaxTokens ?? -1
+        });
+        return snapshot;
+    });
+}
+export function normalizePaseoNativeAgent(raw) {
+    const id = stringField(raw, ["id", "agentId", "agent_id"]);
+    if (!id)
+        throw new Error("Paseo agent snapshot does not contain an id.");
+    return {
+        id,
+        status: statusText(raw.status),
+        workspaceId: stringField(raw, ["workspaceId", "workspace_id"]),
+        labels: stringRecord(raw.labels),
+        lastUsage: parseUsage(raw.lastUsage),
+        raw
+    };
+}
+export function contextUsageFromPaseoSnapshot(snapshot) {
+    if (!snapshot.lastUsage) {
+        return { source: "paseo-agent-snapshot", availability: "no-usage-yet" };
+    }
+    const used = finiteNonNegative(snapshot.lastUsage.contextWindowUsedTokens);
+    const limit = finitePositive(snapshot.lastUsage.contextWindowMaxTokens);
+    if (used === undefined || limit === undefined) {
+        return {
+            used,
+            limit,
+            source: "paseo-agent-snapshot",
+            availability: "provider-usage-unavailable"
+        };
+    }
+    return {
+        used,
+        limit,
+        ratio: Math.min(used / limit, 1),
+        source: "paseo-agent-snapshot",
+        availability: "available"
+    };
+}
+export async function capturePaseoAgentTurnBaseline(root, agentId) {
+    return withNativeClient(root, async (client) => {
+        const handle = client.agents.ref(agentId);
+        const raw = await refetchAgent(handle);
+        const timeline = handle.timeline && typeof handle.timeline.refetch === "function"
+            ? await handle.timeline
+                .refetch({ direction: "tail", limit: 50 })
+                .catch(() => undefined)
+            : undefined;
+        return {
+            lastAssistantMessage: (raw ? stringField(raw, ["lastMessage", "last_message"]) : undefined) ??
+                extractLastAssistantText(timeline),
+            lastUserMessageAt: raw
+                ? stringField(raw, ["lastUserMessageAt", "last_user_message_at"])
+                : undefined
+        };
+    });
+}
+export async function preflightPaseoProviderModel(root, providerValue, modelValue, cwd = root) {
+    const { provider, model } = normalizeProviderModel(providerValue, modelValue);
+    return withNativeClient(root, async (client) => {
+        const providers = client.providers;
+        if (!providers) {
+            throw new PaseoSdkUnavailableError("The active Paseo SDK does not expose provider APIs required for preflight.");
+        }
+        let entry;
+        if (typeof providers.snapshot === "function") {
+            try {
+                entry = findProviderEntry(await providers.snapshot({ cwd }), provider);
+            }
+            catch (error) {
+                await recordPaseoTrace(root, "provider.preflight.snapshot_error", {
+                    provider,
+                    model: model ?? "",
+                    error: String(error)
+                });
+            }
+        }
+        const providerStatus = entry ? stringField(entry, ["status"]) : undefined;
+        const enabled = entry?.enabled;
+        if (enabled === false || providerStatus === "error" || providerStatus === "unavailable") {
+            const diagnostic = await providerDiagnostic(providers, provider);
+            const result = {
+                ok: false,
+                provider,
+                model,
+                providerStatus,
+                source: diagnostic ? "paseo-provider-diagnostic" : "paseo-provider-snapshot",
+                message: diagnostic ||
+                    `Provider ${provider} is ${enabled === false ? "disabled" : providerStatus}.`
+            };
+            await tracePreflight(root, result);
+            return result;
+        }
+        let models = modelIds(entry?.models);
+        let source = entry
+            ? "paseo-provider-snapshot"
+            : "paseo-provider-unchecked";
+        if (!entry && typeof providers.listAvailable === "function") {
+            try {
+                const available = providerIds(await providers.listAvailable());
+                if (available.length > 0 && !available.includes(provider)) {
+                    const diagnostic = await providerDiagnostic(providers, provider);
+                    const result = {
+                        ok: false,
+                        provider,
+                        model,
+                        source: diagnostic ? "paseo-provider-diagnostic" : "paseo-provider-snapshot",
+                        message: diagnostic || `Provider ${provider} is not configured in Paseo.`
+                    };
+                    await tracePreflight(root, result);
+                    return result;
+                }
+            }
+            catch (error) {
+                await recordPaseoTrace(root, "provider.preflight.available_error", {
+                    provider,
+                    error: String(error)
+                });
+            }
+        }
+        if (model && models.length === 0 && typeof providers.listModels === "function") {
+            try {
+                const listed = await providers.listModels(provider, { cwd });
+                models = modelIds(recordField(listed, "models") ?? listed);
+                source = "paseo-provider-models";
+            }
+            catch (error) {
+                const diagnostic = await providerDiagnostic(providers, provider);
+                const result = {
+                    ok: false,
+                    provider,
+                    model,
+                    providerStatus,
+                    source: diagnostic ? "paseo-provider-diagnostic" : "paseo-provider-models",
+                    message: diagnostic ||
+                        `Paseo could not list models for provider ${provider}: ${String(error)}`
+                };
+                await tracePreflight(root, result);
+                return result;
+            }
+        }
+        if (model && models.length > 0 && !models.includes(model)) {
+            const result = {
+                ok: false,
+                provider,
+                model,
+                providerStatus,
+                availableModels: models,
+                source,
+                message: `Model ${provider}/${model} is not present in Paseo's current provider catalog.`
+            };
+            await tracePreflight(root, result);
+            return result;
+        }
+        const result = {
+            ok: true,
+            provider,
+            model,
+            providerStatus,
+            availableModels: models.length ? models : undefined,
+            source,
+            message: models.length || entry
+                ? `Provider ${provider}${model ? ` model ${model}` : ""} passed Paseo preflight.`
+                : `Paseo provider preflight had no authoritative catalog entry for ${provider}; agent creation remains authoritative.`
+        };
+        await tracePreflight(root, result);
+        return result;
+    });
+}
+export async function waitForPaseoAgentNative(root, agentId, timeoutMs = 1_800_000, baseline) {
+    return withNativeClient(root, async (client) => {
+        const handle = client.agents.ref(agentId);
+        if (typeof handle.subscribe !== "function") {
+            throw new PaseoSdkUnavailableError("The active Paseo SDK agent handle does not expose subscribe(); event-driven waiting is unavailable.");
+        }
+        const startedAt = Date.now();
+        const result = await waitForPaseoAgentHandle(handle, timeoutMs, baseline);
+        await recordPaseoTrace(root, "agent.wait", {
+            agentId,
+            source: result.source,
+            status: result.status ?? "unknown",
+            updatesObserved: result.updatesObserved,
+            baselineAssistant: baseline?.lastAssistantMessage ? "present" : "absent",
+            baselineUserMessageAt: baseline?.lastUserMessageAt ?? "absent",
+            durationMs: Date.now() - startedAt
+        });
+        return result;
+    });
+}
+export async function waitForPaseoAgentHandle(handle, timeoutMs = 1_800_000, baseline, pollIntervalMs = 2_000) {
+    let updatesObserved = 0;
+    let sawActivity = false;
+    let settled = false;
+    let unsubscribe = () => { };
+    let timer;
+    let poll;
+    let chain = Promise.resolve();
+    return new Promise((resolve, reject) => {
+        const finish = (value) => {
+            if (settled)
+                return;
+            settled = true;
+            if (timer)
+                clearTimeout(timer);
+            if (poll)
+                clearInterval(poll);
+            unsubscribe();
+            resolve(value);
+        };
+        const fail = (error) => {
+            if (settled)
+                return;
+            settled = true;
+            if (timer)
+                clearTimeout(timer);
+            if (poll)
+                clearInterval(poll);
+            unsubscribe();
+            reject(error);
+        };
+        const inspect = async (fromUpdate) => {
+            const raw = await refetchAgent(handle);
+            if (!raw || settled)
+                return;
+            const status = statusText(raw.status);
+            if (fromUpdate)
+                updatesObserved += 1;
+            if (isActiveStatus(status) || Boolean(raw.activeTurn))
+                sawActivity = true;
+            if (!isTerminalStatus(status))
+                return;
+            const timeline = handle.timeline && typeof handle.timeline.refetch === "function"
+                ? await handle.timeline
+                    .refetch({ direction: "tail", limit: 50 })
+                    .catch(() => undefined)
+                : undefined;
+            const lastMessage = stringField(raw, ["lastMessage", "last_message"]) ?? extractLastAssistantText(timeline);
+            const lastUserMessageAt = stringField(raw, ["lastUserMessageAt", "last_user_message_at"]);
+            const newAssistantEvidence = Boolean(lastMessage && lastMessage !== baseline?.lastAssistantMessage);
+            const newUserTurnEvidence = Boolean(baseline &&
+                lastUserMessageAt &&
+                lastUserMessageAt !== baseline.lastUserMessageAt);
+            // Subscription updates can be metadata-only. An idle snapshot is accepted
+            // only when AEH observed a real active-turn state, a new assistant reply,
+            // or Paseo's canonical lastUserMessageAt proves that the prompt dispatched
+            // after the captured baseline was accepted as a distinct turn. The latter
+            // closes the fast structured-output race where idle->running->idle happens
+            // before AEH subscribes and no normal assistant text is present.
+            if (status === "idle" &&
+                !sawActivity &&
+                !newAssistantEvidence &&
+                !newUserTurnEvidence) {
+                return;
+            }
+            finish({
+                id: handle.id,
+                workspaceId: stringField(raw, ["workspaceId", "workspace_id"]),
+                status,
+                lastMessage,
+                error: stringField(raw, ["error", "lastError", "last_error"]),
+                ...(permissionStopDetail(raw.pendingPermissions) ? { permission: permissionStopDetail(raw.pendingPermissions) } : {}),
+                source: "paseo-agent-subscription",
+                updatesObserved
+            });
+        };
+        try {
+            unsubscribe = handle.subscribe(() => {
+                chain = chain.then(() => inspect(true)).catch(fail);
+            });
+        }
+        catch (error) {
+            fail(error);
+            return;
+        }
+        chain = chain.then(() => inspect(false)).catch(fail);
+        // Providers may not emit provider-level agent updates for every turn; poll the canonical
+        // snapshot as a bounded fallback so a completed initial turn is observed even when the
+        // subscription stream stays silent.
+        if (pollIntervalMs > 0)
+            poll = setInterval(() => { chain = chain.then(() => inspect(false)).catch(fail); }, pollIntervalMs);
+        timer = setTimeout(() => finish({
+            id: handle.id,
+            status: "timeout",
+            error: `Timed out after ${timeoutMs}ms.`,
+            source: "paseo-agent-subscription",
+            updatesObserved
+        }), timeoutMs);
+    });
+}
+async function withNativeClient(root, action) {
+    const sdk = await loadNativeSdk(root);
+    const client = sdk.createPaseoClient({
+        url: process.env.PASEO_DAEMON_URL?.trim() || "ws://127.0.0.1:6767/ws",
+        clientId: `aeh-native-${process.pid}`,
+        password: process.env.PASEO_DAEMON_PASSWORD?.trim() || undefined
+    });
+    try {
+        await connectPaseoClient(client);
+        return await action(client);
+    }
+    finally {
+        await client.close().catch(() => undefined);
+    }
+}
+async function loadNativeSdk(root) {
+    const bundled = await resolvePaseoSdkFromCli(root);
+    if (bundled.resolved) {
+        try {
+            const sdk = (await import(pathToFileURL(bundled.resolved).href));
+            if (typeof sdk.createPaseoClient === "function") {
+                await recordPaseoTrace(root, "sdk.resolve", {
+                    source: "active-paseo-cli",
+                    entry: bundled.resolved
+                });
+                return sdk;
+            }
+        }
+        catch (error) {
+            bundled.diagnostics.push(`native bundled import: ${String(error)}`);
+        }
+    }
+    const packageName = "@getpaseo/client";
+    let directError;
+    try {
+        const direct = (await import(packageName));
+        if (typeof direct.createPaseoClient === "function") {
+            await recordPaseoTrace(root, "sdk.resolve", { source: "direct-project-import" });
+            return direct;
+        }
+    }
+    catch (error) {
+        directError = error;
+    }
+    const detail = bundled.diagnostics.length
+        ? ` Resolution diagnostics: ${bundled.diagnostics.join("; ")}.`
+        : "";
+    const message = `Paseo native SDK could not be resolved.${detail}${directError ? ` Direct import: ${String(directError)}` : ""}`;
+    await recordPaseoTrace(root, "sdk.resolve.error", { error: message });
+    throw new PaseoSdkUnavailableError(message, { cause: directError });
+}
+async function refetchAgent(handle) {
+    if (typeof handle.refetch === "function")
+        return (await handle.refetch())?.agent;
+    if (typeof handle.refresh === "function")
+        return (await handle.refresh())?.agent;
+    return handle.latest?.() ?? undefined;
+}
+async function providerDiagnostic(providers, provider) {
+    if (typeof providers.diagnostic !== "function")
+        return undefined;
+    try {
+        return firstDiagnosticMessage(await providers.diagnostic(provider));
+    }
+    catch {
+        return undefined;
+    }
+}
+async function tracePreflight(root, result) {
+    await recordPaseoTrace(root, "provider.preflight", {
+        ok: result.ok,
+        provider: result.provider,
+        model: result.model ?? "",
+        providerStatus: result.providerStatus ?? "unknown",
+        source: result.source,
+        availableModelCount: result.availableModels?.length ?? 0,
+        message: result.message
+    });
+}
+function parseUsage(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value))
+        return undefined;
+    const record = value;
+    const usage = {
+        inputTokens: finiteNonNegative(record.inputTokens),
+        cachedInputTokens: finiteNonNegative(record.cachedInputTokens),
+        outputTokens: finiteNonNegative(record.outputTokens),
+        totalCostUsd: finiteNonNegative(record.totalCostUsd),
+        contextWindowMaxTokens: finitePositive(record.contextWindowMaxTokens),
+        contextWindowUsedTokens: finiteNonNegative(record.contextWindowUsedTokens)
+    };
+    return Object.values(usage).some((item) => item !== undefined) ? usage : undefined;
+}
+function findProviderEntry(value, provider) {
+    if (Array.isArray(value)) {
+        for (const item of value) {
+            const found = findProviderEntry(item, provider);
+            if (found)
+                return found;
+        }
+        return undefined;
+    }
+    if (!value || typeof value !== "object")
+        return undefined;
+    const record = value;
+    const id = stringField(record, ["provider", "id", "key"]);
+    if (id === provider && ("status" in record || "models" in record || "enabled" in record)) {
+        return record;
+    }
+    for (const child of Object.values(record)) {
+        const found = findProviderEntry(child, provider);
+        if (found)
+            return found;
+    }
+    return undefined;
+}
+function providerIds(value) {
+    const result = new Set();
+    const visit = (item) => {
+        if (Array.isArray(item)) {
+            for (const child of item)
+                visit(child);
+            return;
+        }
+        if (!item || typeof item !== "object")
+            return;
+        const record = item;
+        const id = stringField(record, ["provider", "id", "key"]);
+        if (id && ("status" in record || "enabled" in record || "models" in record))
+            result.add(id);
+        for (const child of Object.values(record))
+            visit(child);
+    };
+    visit(value);
+    return [...result];
+}
+function modelIds(value) {
+    const result = new Set();
+    const visit = (item) => {
+        if (Array.isArray(item)) {
+            for (const child of item)
+                visit(child);
+            return;
+        }
+        if (!item || typeof item !== "object")
+            return;
+        const record = item;
+        const id = stringField(record, ["id", "model", "name"]);
+        if (id &&
+            ("label" in record || "provider" in record || "aliases" in record || "isDefault" in record)) {
+            result.add(id);
+        }
+        if (Array.isArray(record.aliases)) {
+            for (const alias of record.aliases)
+                if (typeof alias === "string")
+                    result.add(alias);
+        }
+        for (const [key, child] of Object.entries(record)) {
+            if (key !== "aliases")
+                visit(child);
+        }
+    };
+    visit(value);
+    return [...result];
+}
+function firstDiagnosticMessage(value) {
+    if (typeof value === "string" && value.trim())
+        return value.trim();
+    if (Array.isArray(value)) {
+        for (const child of value) {
+            const found = firstDiagnosticMessage(child);
+            if (found)
+                return found;
+        }
+        return undefined;
+    }
+    if (!value || typeof value !== "object")
+        return undefined;
+    const record = value;
+    for (const key of ["error", "message", "diagnostic", "detail"]) {
+        if (typeof record[key] === "string" && record[key].trim()) {
+            return record[key].trim();
+        }
+    }
+    for (const child of Object.values(record)) {
+        const found = firstDiagnosticMessage(child);
+        if (found)
+            return found;
+    }
+    return undefined;
+}
+function normalizeProviderModel(providerValue, modelValue) {
+    const provider = providerValue.trim();
+    if (!provider)
+        throw new Error("Paseo provider is required.");
+    const slash = provider.indexOf("/");
+    if (slash < 0)
+        return { provider, model: modelValue?.trim() || undefined };
+    const providerId = provider.slice(0, slash).trim();
+    const embedded = provider.slice(slash + 1).trim();
+    const explicit = modelValue?.trim();
+    if (!providerId || !embedded) {
+        throw new Error(`Invalid Paseo provider/model '${providerValue}'.`);
+    }
+    if (explicit && explicit !== embedded) {
+        throw new Error(`Conflicting Paseo model '${explicit}' versus embedded '${embedded}'.`);
+    }
+    return { provider: providerId, model: explicit || embedded };
+}
+function extractLastAssistantText(value) {
+    const out = [];
+    const visit = (item, assistant = false) => {
+        if (Array.isArray(item)) {
+            for (const child of item)
+                visit(child, assistant);
+            return;
+        }
+        if (!item || typeof item !== "object")
+            return;
+        const record = item;
+        const role = String(record.role ?? record.author ?? record.kind ?? record.type ?? "").toLowerCase();
+        const isAssistant = assistant || role.includes("assistant");
+        if (isAssistant) {
+            for (const key of ["text", "content", "message"]) {
+                if (typeof record[key] === "string" && record[key])
+                    out.push(record[key]);
+            }
+        }
+        for (const child of Object.values(record))
+            visit(child, isAssistant);
+    };
+    visit(value);
+    return out.at(-1);
+}
+function isActiveStatus(status) {
+    return status === "working" || status === "running" || status === "streaming" || status === "starting";
+}
+function isTerminalStatus(status) {
+    return (status === "idle" ||
+        status === "finished" ||
+        status === "completed" ||
+        status === "failed" ||
+        status === "error" ||
+        status === "cancelled" ||
+        // A session stopped on its provider approval prompt is a terminal failed turn, not a
+        // successful empty one (AEH-V2-0110).
+        status === "permission" ||
+        status === "waiting");
+}
+function finiteNonNegative(value) {
+    return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+function finitePositive(value) {
+    return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+function recordField(value, key) {
+    return value && typeof value === "object" && !Array.isArray(value)
+        ? value[key]
+        : undefined;
+}
+function stringField(record, keys) {
+    for (const key of keys) {
+        if (typeof record[key] === "string" && record[key])
+            return record[key];
+    }
+    return undefined;
+}
+function permissionStopDetail(value) {
+    const entries = Array.isArray(value) ? value : value && typeof value === "object" ? [value] : [];
+    for (const entry of entries) {
+        if (!entry || typeof entry !== "object")
+            continue;
+        const record = entry;
+        const name = typeof record.name === "string" && record.name.trim() ? record.name.trim().slice(0, 200) : undefined;
+        const title = typeof record.title === "string" && record.title.trim() ? record.title.trim().slice(0, 200) : undefined;
+        const description = typeof record.description === "string" && record.description.trim() ? record.description.trim().slice(0, 200) : undefined;
+        const input = record.input && typeof record.input === "object" ? record.input : undefined;
+        const patterns = Array.isArray(input?.patterns) ? input.patterns.filter((item) => typeof item === "string" && item.trim().length > 0).slice(0, 8).map((item) => item.slice(0, 300)) : undefined;
+        if (name || title || patterns?.length) {
+            return { ...(name ? { name } : {}), ...(title ? { title } : {}), ...(description ? { description } : {}), ...(patterns?.length ? { patterns } : {}) };
+        }
+    }
+    return undefined;
+}
+function stringRecord(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value))
+        return undefined;
+    const out = {};
+    for (const [key, item] of Object.entries(value)) {
+        if (typeof item === "string")
+            out[key] = item;
+    }
+    return Object.keys(out).length ? out : undefined;
+}
+function statusText(value) {
+    if (typeof value === "string")
+        return value;
+    if (value &&
+        typeof value === "object" &&
+        typeof value.status === "string") {
+        return value.status;
+    }
+    return undefined;
+}
+//# sourceMappingURL=native.js.map

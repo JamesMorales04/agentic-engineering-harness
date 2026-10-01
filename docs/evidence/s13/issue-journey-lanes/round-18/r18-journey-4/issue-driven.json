@@ -1,0 +1,299 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 18,
+  "runId": "r18-journey-4",
+  "capability": "issue-driven",
+  "kind": "full-journey",
+  "providerPath": "FULL_OPERATION_REAL_PASEO+GITHUB",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13IssueJourneyCampaign.mjs",
+        "sha256": "398c5e2618c3199d25040374bf8ce3b6225d8a23aa2fcb032ec0ac4913142023"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "3395aa19210f36b90fd22bd62056dbb8d5c48aab5a85bce4e5ea4d591cfd5146"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "a99d96b449fec2b90e8cd589136d48f5f1e6689bfca64166a45a7a1a35374a15"
+  },
+  "startedAt": "2026-09-29T15:50:40.062Z",
+  "repository": {
+    "name": "JamesMorales04/aeh-s13-round3-20260927035743-6bb5da",
+    "visibility": "private",
+    "createdByCampaign": false
+  },
+  "issue": {
+    "number": 1,
+    "created": false,
+    "edited": false
+  },
+  "authorization": {
+    "authorizationId": "s13-github-effect-authorization-2026-09-28",
+    "artifactDigest": "272c5cb76158a7c312edd4d8d97cd6545b599e5c57c7978bbfc3742c573bd460",
+    "allowedEffects": [
+      "git.push",
+      "github.branch.create",
+      "github.issue.create"
+    ],
+    "resourceNamePrefix": "aeh-s13-",
+    "consumedBeforeAnyExternalCommand": true
+  },
+  "journey": {
+    "root": "/tmp/aeh-s13-jj-L0ZFlM/journey",
+    "baseBranch": "aeh-s13-authority-20260927035743",
+    "baselineCommit": "2e72578b015cf979211df302a646be51e3cdff75",
+    "packedArtifactDigest": "519ecb3f72038951a15857f31338ec1865d507e46d7750263ce1dd5748e78123",
+    "packedBuild": {
+      "packedBuildRelease": "release-1790697045910-809268-6946e454",
+      "packedBuildDigest": "ca1d8f5628784ff6b7d0650326d1655d2f25697ecf037780b3e05edbc7f5319a",
+      "packedBuildGitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c"
+    }
+  },
+  "leadAgentId": "05074f33-8adb-420a-87d9-cfba91734433",
+  "start": {
+    "operationId": "CHANGE-20260929T155125Z-9eed7a49",
+    "exitCode": 0,
+    "stdout": "operationId=CHANGE-20260929T155125Z-9eed7a49\nkind=change\nstatus=QUEUED\nphase=dispatched\nrevision=5\nprogress=0/0 completed, 0 running, 0 failed, 0 blocked",
+    "stderr": ""
+  },
+  "stageTrace": [
+    {
+      "at": "2026-09-29T15:51:27.203Z",
+      "status": "QUEUED",
+      "phase": "dispatched",
+      "revision": 5,
+      "stages": {
+        "queued": "RUNNING"
+      }
+    },
+    {
+      "at": "2026-09-29T15:51:37.253Z",
+      "status": "RUNNING",
+      "phase": "implementation",
+      "revision": 20,
+      "stages": {
+        "queued": "RUNNING",
+        "input-resolution": "COMPLETED",
+        "triage": "COMPLETED",
+        "environment-preflight": "SKIPPED",
+        "contract-authoring": "COMPLETED",
+        "implementation": "RUNNING"
+      }
+    },
+    {
+      "at": "2026-09-29T15:51:57.342Z",
+      "status": "RUNNING",
+      "phase": "implementation",
+      "revision": 24,
+      "stages": {
+        "queued": "RUNNING",
+        "input-resolution": "COMPLETED",
+        "triage": "COMPLETED",
+        "environment-preflight": "SKIPPED",
+        "contract-authoring": "COMPLETED",
+        "implementation": "RUNNING",
+        "executing": "RUNNING",
+        "validation": "RUNNING"
+      }
+    },
+    {
+      "at": "2026-09-29T15:52:02.368Z",
+      "status": "RUNNING",
+      "phase": "context",
+      "revision": 28,
+      "stages": {
+        "queued": "RUNNING",
+        "input-resolution": "COMPLETED",
+        "triage": "COMPLETED",
+        "environment-preflight": "SKIPPED",
+        "contract-authoring": "COMPLETED",
+        "implementation": "RUNNING",
+        "executing": "RUNNING",
+        "validation": "RUNNING",
+        "context": "RUNNING"
+      }
+    },
+    {
+      "at": "2026-09-29T15:54:48.133Z",
+      "status": "RUNNING",
+      "phase": "context",
+      "revision": 49,
+      "stages": {
+        "queued": "RUNNING",
+        "input-resolution": "COMPLETED",
+        "triage": "COMPLETED",
+        "environment-preflight": "SKIPPED",
+        "contract-authoring": "COMPLETED",
+        "implementation": "COMPLETED",
+        "executing": "RUNNING",
+        "validation": "RUNNING",
+        "context": "RUNNING"
+      }
+    },
+    {
+      "at": "2026-09-29T15:55:58.444Z",
+      "status": "RUNNING",
+      "phase": "review",
+      "revision": 55,
+      "stages": {
+        "queued": "RUNNING",
+        "input-resolution": "COMPLETED",
+        "triage": "COMPLETED",
+        "environment-preflight": "SKIPPED",
+        "contract-authoring": "COMPLETED",
+        "implementation": "COMPLETED",
+        "executing": "RUNNING",
+        "validation": "RUNNING",
+        "context": "RUNNING",
+        "review": "RUNNING"
+      }
+    }
+  ],
+  "operation": {
+    "id": "CHANGE-20260929T155125Z-9eed7a49",
+    "status": "RUNNING",
+    "phase": "context",
+    "revision": 62,
+    "error": null,
+    "intent": {
+      "request": "Add a short JSDoc comment above the greet() function in src/greeting.mjs describing its contract. Do not change runtime behavior, constants or the public export surface.",
+      "classification": "CHANGE",
+      "route": "DIRECT",
+      "assurance": "NONE",
+      "priority": 50,
+      "semanticDecision": {
+        "version": 1,
+        "source": "explicit-cli",
+        "intent": "change",
+        "requestedOutcome": "Add a short JSDoc comment above the greet() function in src/greeting.mjs describing its contract. Do not change runtime behavior, constants or the public export surface.",
+        "effects": {
+          "evaluate": false,
+          "mutateRepository": true,
+          "executePreparedTask": false,
+          "deliver": false
+        },
+        "resolution": "resolved"
+      },
+      "risk": "low"
+    },
+    "candidateRevision": {
+      "operationId": "CHANGE-20260929T155125Z-9eed7a49",
+      "candidateId": "candidate:CHANGE-20260929T155125Z-9eed7a49:r3",
+      "projectId": "project:4240fdda399cf88c149fd73c",
+      "taskId": "CHANGE-20260929T155125Z-9eed7a49",
+      "revision": 3,
+      "parentCandidateId": "candidate:CHANGE-20260929T155125Z-9eed7a49:r2",
+      "sourceDigest": "704ce1b620e0e2c8cd38c188d2a0a3f6d539ad20940efcf3b58392a0449aeeee",
+      "workspace": "wks_f465c0d32f707dbb",
+      "worktree": "/home/james/.paseo/worktrees/109rnc4g/aeh-change-20260929t155125z-9eed7a49",
+      "createdAt": "2026-09-29T15:54:14.854Z",
+      "version": 1,
+      "canonicalIdentity": "{\"candidateId\":\"candidate:CHANGE-20260929T155125Z-9eed7a49:r3\",\"createdAt\":\"2026-09-29T15:54:14.854Z\",\"operationId\":\"CHANGE-20260929T155125Z-9eed7a49\",\"parentCandidateId\":\"candidate:CHANGE-20260929T155125Z-9eed7a49:r2\",\"projectId\":\"project:4240fdda399cf88c149fd73c\",\"revision\":3,\"sourceDigest\":\"704ce1b620e0e2c8cd38c188d2a0a3f6d539ad20940efcf3b58392a0449aeeee\",\"taskId\":\"CHANGE-20260929T155125Z-9eed7a49\",\"version\":1,\"workspace\":\"wks_f465c0d32f707dbb\",\"worktree\":\"/home/james/.paseo/worktrees/109rnc4g/aeh-change-20260929t155125z-9eed7a49\"}",
+      "identityDigest": "3edf412981f1a3366f1ce8e4fda5de2e05838506934e618869605f61221dbb63"
+    },
+    "participantReceipts": {
+      "receipt:participant:2ac03cf93bbf0424:2026-09-29T15:54:08.608Z": {
+        "version": 1,
+        "receiptId": "receipt:participant:2ac03cf93bbf0424:2026-09-29T15:54:08.608Z",
+        "operationId": "CHANGE-20260929T155125Z-9eed7a49",
+        "participantId": "participant:2ac03cf93bbf0424",
+        "sessionId": "f8a60c64-38dc-4ae4-bdde-cd224e6dcb04",
+        "attempt": 1,
+        "role": "Implementer",
+        "phase": "implementation",
+        "startedAt": "2026-09-29T15:52:05.248Z",
+        "finishedAt": "2026-09-29T15:54:06.398Z",
+        "outputContract": "implementer",
+        "outputDigest": "4af8417b5528241ca1d7caeca81b62929cfca1a6dd6fe586d21191fa4a42f17b",
+        "artifactRef": ".harness/operations/CHANGE-20260929T155125Z-9eed7a49/results/implementer/0002-0002-02922e62-c621-4520-b3d2-a2b31c9403fb.json",
+        "candidate": {
+          "operationId": "CHANGE-20260929T155125Z-9eed7a49",
+          "candidateId": "candidate:CHANGE-20260929T155125Z-9eed7a49:r2",
+          "projectId": "project:4240fdda399cf88c149fd73c",
+          "taskId": "CHANGE-20260929T155125Z-9eed7a49",
+          "revision": 2,
+          "parentCandidateId": "candidate:CHANGE-20260929T155125Z-9eed7a49:r1",
+          "sourceDigest": "8f4e7cd0e50e452e1dc82fe3fe56c6e6cda146931e386f20b6a3350928e09ca6",
+          "workspace": "wks_f465c0d32f707dbb",
+          "worktree": "/home/james/.paseo/worktrees/109rnc4g/aeh-change-20260929t155125z-9eed7a49",
+          "createdAt": "2026-09-29T15:51:31.564Z",
+          "version": 1,
+          "canonicalIdentity": "{\"candidateId\":\"candidate:CHANGE-20260929T155125Z-9eed7a49:r2\",\"createdAt\":\"2026-09-29T15:51:31.564Z\",\"operationId\":\"CHANGE-20260929T155125Z-9eed7a49\",\"parentCandidateId\":\"candidate:CHANGE-20260929T155125Z-9eed7a49:r1\",\"projectId\":\"project:4240fdda399cf88c149fd73c\",\"revision\":2,\"sourceDigest\":\"8f4e7cd0e50e452e1dc82fe3fe56c6e6cda146931e386f20b6a3350928e09ca6\",\"taskId\":\"CHANGE-20260929T155125Z-9eed7a49\",\"version\":1,\"workspace\":\"wks_f465c0d32f707dbb\",\"worktree\":\"/home/james/.paseo/worktrees/109rnc4g/aeh-change-20260929t155125z-9eed7a49\"}",
+          "identityDigest": "a9798bfedca171c7b6dddb28fc91d056349634a8cc4f1e2dd000b9781075cbcb"
+        },
+        "outcome": "SUCCEEDED",
+        "runtimeTerminal": {
+          "kind": "runtime-terminal",
+          "eventId": "runtime:f8a60c64-38dc-4ae4-bdde-cd224e6dcb04:2026-09-29T15:54:08.608Z",
+          "observedAt": "2026-09-29T15:54:08.608Z",
+          "terminal": true,
+          "status": "SUCCEEDED",
+          "exitCode": 0
+        },
+        "contract": {
+          "contractId": "implementer",
+          "contractDigest": "b54d53e8c9abfecc9d567aebd8b4935c1a3f50d12d16b09f81a4d34a1fa82985",
+          "valid": true
+        },
+        "artifact": {
+          "artifactId": ".harness/operations/CHANGE-20260929T155125Z-9eed7a49/results/implementer/0002-0002-02922e62-c621-4520-b3d2-a2b31c9403fb.json",
+          "artifactDigest": "123227923023e2103c38c151276a6e3f36365856fc0d5f66ad38f3a19a735a87",
+          "persisted": true,
+          "persistedAt": "2026-09-29T15:54:08.608Z"
+        },
+        "provenance": {
+          "provenanceId": "provenance:CHANGE-20260929T155125Z-9eed7a49:f8a60c64-38dc-4ae4-bdde-cd224e6dcb04:2026-09-29T15:54:08.608Z",
+          "provenanceDigest": "09a05945e0407800cf28b46f3693f65e5e28c3f537e00af6ec7f1ff77667da01",
+          "source": "aeh-worker-finalization",
+          "valid": true
+        },
+        "settled": true,
+        "createdAt": "2026-09-29T15:54:08.608Z"
+      }
+    },
+    "stages": {
+      "queued": "RUNNING",
+      "input-resolution": "COMPLETED",
+      "triage": "COMPLETED",
+      "environment-preflight": "SKIPPED",
+      "contract-authoring": "COMPLETED",
+      "implementation": "COMPLETED",
+      "executing": "RUNNING",
+      "validation": "RUNNING",
+      "context": "RUNNING",
+      "review": "RUNNING"
+    }
+  },
+  "result": "FAIL",
+  "error": "Error: governed journey did not reach terminal SUCCEEDED (status=RUNNING)\n    at file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13IssueJourneyCampaign.mjs:245:55",
+  "workspaceCleanup": {
+    "archived": [
+      "wks_0e46f8d5c564fa51",
+      "wks_4df24ea13683bd2c",
+      "wks_9509706121fde4dd"
+    ]
+  },
+  "finishedAt": "2026-09-29T16:06:36.844Z",
+  "durationMs": 956782,
+  "checkoutProof": {
+    "trackedDigestBefore": "d62b214fbfc7207ebd1920e536099e56be42b70e58db9e6926dad2f26a891708",
+    "trackedDigestAfter": "d62b214fbfc7207ebd1920e536099e56be42b70e58db9e6926dad2f26a891708",
+    "trackedFiles": 668,
+    "checkoutUntouched": true,
+    "postRunTrackedDocEditWindow": {
+      "opensAfterLaneFinish": true,
+      "note": "S13 tracked documentation/evidence is edited after lane execution; the recorded digest is the source-tree digest at lane end (R11-F6)."
+    }
+  }
+}

@@ -1,0 +1,134 @@
+{
+  "version": 1,
+  "lane": "REAL_PROVIDER (local OSS Trivy) + SYSTEM_DETERMINISTIC (real rootless bwrap execution)",
+  "release": "release-1790389747122-486790-a8c37684",
+  "tool": {
+    "name": "trivy",
+    "version": "0.70.0",
+    "binary": "/tmp/opencode/s10-tools/trivy/0.70.0/trivy",
+    "binarySha256": "379d59f24a4a828c55de5f0b91b6805cc35d13580180b658820e648611256166"
+  },
+  "isolation": {
+    "provider": "bwrap",
+    "providerVersion": "0.13.0",
+    "networkAccess": "none",
+    "namespaces": {
+      "user": true,
+      "mount": true,
+      "pid": true,
+      "uts": true,
+      "ipc": true,
+      "network": false
+    },
+    "visibleReadOnlyPaths": [
+      "/bin",
+      "/etc",
+      "/home/james/.bun",
+      "/home/james/.bun/bin",
+      "/home/james/.config/Code/User/globalStorage/github.copilot-chat/copilotCli",
+      "/home/james/.config/Code/User/globalStorage/github.copilot-chat/debugCommand",
+      "/home/james/.local",
+      "/home/james/.local/bin",
+      "/home/james/.local/share/flatpak/exports",
+      "/home/james/.local/share/flatpak/exports/bin",
+      "/home/james/.local/share/mise/installs/aqua-anomalyco-opencode/1.18.32",
+      "/home/james/.local/share/mise/installs/node/22.23.2",
+      "/home/james/.local/share/mise/installs/node/22.23.2/bin",
+      "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.bin",
+      "/home/james/.local/share/mise/installs/npm-openai-codex/0.156.1~aube~80df4d38193f15ff/node_modules/.bin",
+      "/home/james/.local/share/mise/installs/pipx-headroom-ai/0.28.0",
+      "/home/james/.local/share/mise/installs/pipx-headroom-ai/0.28.0/bin",
+      "/home/james/.local/share/mise/installs/pipx-serena-agent/1.6.1",
+      "/home/james/.local/share/mise/installs/pipx-serena-agent/1.6.1/bin",
+      "/home/james/.local/share/mise/installs/python/3.13.15",
+      "/home/james/.local/share/mise/installs/python/3.13.15/bin",
+      "/home/james/.local/share/mise/installs/uv/0.12.18/.mise-bins",
+      "/home/james/.vscode/extensions/ms-python.debugpy-2026.6.0-linux-x64/bundled/scripts/noConfigScripts",
+      "/lib",
+      "/lib64",
+      "/opt/rocm/bin",
+      "/sbin",
+      "/tmp/aeh-s10-real-sast-wmprnc",
+      "/tmp/opencode/s10-tools/trivy/0.70.0",
+      "/usr",
+      "/usr/bin",
+      "/usr/bin/core_perl",
+      "/usr/bin/site_perl",
+      "/usr/bin/vendor_perl",
+      "/usr/lib/jvm/default/bin",
+      "/usr/local/bin",
+      "/usr/local/sbin",
+      "/var/lib/flatpak/exports/bin"
+    ],
+    "maskedHostPaths": [
+      "/root (host)",
+      "/run (host)",
+      "/home (host contents except explicit toolchain binds)",
+      "/tmp (host)",
+      "/var/tmp (host)",
+      "/mnt (host)",
+      "/media (host)",
+      "/srv (host)"
+    ],
+    "writablePaths": [
+      "/tmp/aeh-s10-real-sast-wmprnc/.harness/evidence"
+    ],
+    "environmentAllowlist": [
+      "HOME",
+      "LANG",
+      "PATH",
+      "SHELL",
+      "TERM",
+      "TMPDIR",
+      "USER"
+    ]
+  },
+  "candidates": [
+    {
+      "candidateId": "CAND-S10-REAL",
+      "revision": 1,
+      "identityDigest": "8648ef7b56d0ecab99eef2cbe33028c6696f4bb26fe11d86270f40de9a850e9b",
+      "sourceDigest": "219debfd791e9a5c71a393f0934bdf57627dca92f583d2a7af59737c40b40a32",
+      "scan": {
+        "status": "FAIL",
+        "findingCount": 1,
+        "rules": [
+          "github-pat"
+        ],
+        "artifact": ".harness/evidence/sast/CAND-S10-REAL-r1-8648ef7b56d0/s10-real-sast-r1.json",
+        "digest": "8cdde6810df8b4385422b9758b30c35aeec7a48c731a99763b16e6c194f879ab",
+        "rawArtifactDigest": "9776c4b09fed4682cf6e237610e9b70c816a2e368537f9b209b35084350a6890"
+      }
+    },
+    {
+      "candidateId": "CAND-S10-REAL",
+      "revision": 2,
+      "identityDigest": "154b31f503fcf1da67b1eedbc336ff815a390c28d4beb89fc425231397651ff7",
+      "sourceDigest": "621e7c4125bbe9fde0f3c97c4baee0ac14dd0298a2c5218a985dea0540b8ef2b",
+      "scan": {
+        "status": "PASS",
+        "findingCount": 0,
+        "artifact": ".harness/evidence/sast/CAND-S10-REAL-r2-154b31f503fc/s10-real-sast-r2.json",
+        "digest": "f0134d325625d96bf13bd5a542258744010f19d0f4616c134577e6163c8c96e9",
+        "rawArtifactDigest": "fa584569c10e1b19dabe6c7b3ff377e699efac5d173a97292155bad61a28a125"
+      }
+    }
+  ],
+  "staleRevisionCheck": {
+    "ok": false,
+    "blockers": [
+      "SAST_EVIDENCE_STALE: evidence is bound to CAND-S10-REAL r1 (8648ef7b56d0) but the current candidate is CAND-S10-REAL r2 (154b31f503fc).",
+      "SAST_EVIDENCE_TAMPERED: evidence artifact path '.harness/evidence/sast/CAND-S10-REAL-r1-8648ef7b56d0/s10-real-sast-r1.json' is not the candidate-scoped path for 's10-real-sast-r1'."
+    ]
+  },
+  "assertions": {
+    "firstFailedWithFindings": true,
+    "secondPassedClean": true,
+    "toolVersionRecorded": true,
+    "isolationExercised": true,
+    "candidateBoundExactly": true,
+    "firstEvidenceStaleForRevisionTwo": true,
+    "noFabricatedPass": true
+  },
+  "result": "PASS"
+}

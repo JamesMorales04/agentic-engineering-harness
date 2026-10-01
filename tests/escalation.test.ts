@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { nextEscalationIndex, resumeAfterReplan } from "../src/agents/escalation.js";
+import { nextEscalationIndex, resumeAfterReplan, selectionForStage } from "../src/agents/escalation.js";
 import type { QualityState } from "../src/agents/qualityConvergence.js";
 import type { HarnessProjectConfig } from "../src/core/types.js";
 const config: HarnessProjectConfig = { version: 1, project: { name: "test" } };
@@ -8,4 +8,9 @@ describe("quality escalation", () => {
   it("escalates stagnation to the next strategy", () => expect(nextEscalationIndex(state("STAGNATING"), 0, config)).toBe(1));
   it("starts a first-round critical finding at the senior stage", () => expect(nextEscalationIndex(state("INITIAL", 1, 0), 0, config)).toBe(2));
   it("resumes one slot before senior so the next convergence decision selects senior", () => expect(resumeAfterReplan(config)).toBe(1));
+  it("uses caller-frozen stage selections without requiring topology", () => {
+    const fallback = { logicalAgent: "implementer", role: "Implementer", runtimeName: "local", modelAlias: "base", modelId: "base", modelName: "base", runtimeAdapter: "direct", paseoProvider: "direct", transport: "direct", domains: [], skills: [], mcps: [], permissions: {}, args: [], runtimeCapabilities: {} } as const;
+    const reviewer = { ...fallback, logicalAgent: "reviewer", role: "Reviewer" as const };
+    expect(selectionForStage(fallback, { name: "diagnosis", action: "diagnose", role: "Reviewer" }, reviewer)?.logicalAgent).toBe("reviewer");
+  });
 });

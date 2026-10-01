@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "kind": "closure-validation",
+  "generatedAt": "2026-09-30T21:38:37.090Z",
+  "head": "1d1dd973ff585c8a886f4af3a13a9343d6b1d618",
+  "targetSha256": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+  "targetExpected": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+  "trackedDigest": "64656de32ded7af14c0aecf876f48b617af8c612d022f5dae0615741ba4d86f9",
+  "trackedFiles": 2078,
+  "typecheck": {
+    "command": "npm run typecheck",
+    "exitCode": 0
+  },
+  "build": {
+    "command": "npm run build",
+    "buildDigest": "d266692df02c95bf432ac6c9578e127fb16584aa2cc18d469d2c844ed3b0a2ab",
+    "gitSha": "1d1dd973ff585c8a886f4af3a13a9343d6b1d618",
+    "dirty": true
+  },
+  "gitDiffCheck": "CLEAN",
+  "canonicalNonSystemSuite": {
+    "command": "npx vitest run --exclude tests/system/** --exclude **/*.test.mjs",
+    "files": 205,
+    "passedFiles": 202,
+    "skippedFiles": 1,
+    "failedFiles": 2,
+    "tests": 1391,
+    "passed": 1380,
+    "skipped": 7,
+    "failed": 4,
+    "failures": [
+      {
+        "suite": "tests/paseoSdkResolve.test.ts",
+        "tests": 3,
+        "classification": "PRE_EXISTING_REPRODUCIBLE",
+        "note": "mise/Paseo-CLI store drift, same class since S10/S12/R17-R23; source byte-identical to HEAD"
+      },
+      {
+        "suite": "tests/buildHygiene.test.ts",
+        "tests": 1,
+        "classification": "FLAKE_CONFIRMED",
+        "note": "real-build child exitCode null under full-suite parallel load; passes 6/6 in isolation immediately after"
+      }
+    ]
+  },
+  "focused": {
+    "artifact": "docs/evidence/closure/focused-regressions.json",
+    "suites": 43,
+    "tests": 201,
+    "failed": 0
+  },
+  "tail": "\n\n Test Files  2 failed | 202 passed | 1 skipped (205)\n      Tests  4 failed | 1380 passed | 7 skipped (1391)\n   Start at  16:33:37\n   Duration  74.89s (transform 17.69s, setup 0ms, collect 208.34s, tests 352.68s, environment 113ms, prepare 28.61s)"
+}

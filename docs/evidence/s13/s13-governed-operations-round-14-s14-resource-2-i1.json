@@ -1,0 +1,115 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 14,
+  "runId": "s14-resource-2-i1",
+  "roundLabel": "round-14/s14-resource-2-i1 (attempt-specific summary and lane artifacts are immutable evidence)",
+  "campaign": "governed-operations",
+  "generatedAt": "2026-09-30T17:51:21.348Z",
+  "checkout": "/home/james/Desarrollo/agentic-engineering-harness",
+  "sourceCommit": "af9bd8eadc968ed94c1eddd7d2046904d403d285",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13GovernedOperationCampaign.mjs",
+        "sha256": "61c2332ab6438c2d42ef115138dea296f7abef23e2869c33c5d7dc0adf39b19b"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "8a9a6221b4ea1827f1286fb91b3cce02568ebd6a12b3fd69fb58b3ef3f2e8f92"
+  },
+  "harnessBuildIdentity": {
+    "version": 1,
+    "packageVersion": "0.8.4",
+    "gitSha": "af9bd8eadc968ed94c1eddd7d2046904d403d285",
+    "releaseId": "release-1790790004312-590177-00175729",
+    "buildDigest": "4c05da6ee7fe249bcad4adb730f2c08bb34867910eb512171bccb40b63203284",
+    "dirty": true
+  },
+  "candidate": {
+    "artifact": "agentic-engineering-harness-0.8.4.tgz",
+    "artifactDigest": "2dda4d73da0daa9ac49700fb3df241ea782518612f5d73fb99db9d1f3f853a8e"
+  },
+  "lanes": [
+    {
+      "capability": "change-direct",
+      "result": "PASS",
+      "status": "SUCCEEDED",
+      "terminal": {
+        "status": "SUCCEEDED",
+        "bounded": true,
+        "lateTerminal": null
+      },
+      "route": "DIRECT",
+      "sessions": 3,
+      "oracle": "PASS",
+      "acceptanceOracleDisposition": "ACCEPTED",
+      "rows": {
+        "change": "PASS",
+        "direct-change": "PASS"
+      },
+      "error": null,
+      "durationMs": 277515,
+      "timeout": false,
+      "lateTerminal": null,
+      "postCampaignOperationRead": {
+        "operationId": "CHANGE-20260930T175210Z-5de819ea",
+        "observedAt": "2026-09-30T17:56:20.342Z",
+        "observationWindowMs": 0,
+        "observations": 1,
+        "status": "SUCCEEDED",
+        "phase": "finished",
+        "revision": 81,
+        "controllerPid": 623539,
+        "controllerAlive": false,
+        "terminal": true,
+        "candidateWorktree": "/home/james/.paseo/worktrees/0xusszzh/aeh-change-20260930t175210z-5de819ea",
+        "candidateWorktreeAvailable": true
+      },
+      "checkoutUntouched": true,
+      "workspacesArchived": 0,
+      "workspacesRemaining": 8,
+      "workspaceAccounting": {
+        "inventoryCount": 8,
+        "archivedCount": 0,
+        "remainingCount": 8,
+        "unaccounted": [],
+        "accounted": true
+      },
+      "fixtureTopology": {
+        "source": "S13_GOV_BRAIN_* override",
+        "brain": {
+          "runtime": "opencode",
+          "provider": "opencode-go",
+          "model": "gpt-6-luna"
+        }
+      },
+      "artifact": "docs/evidence/s13/governed-lanes/round-14/s14-resource-2-i1/change-direct.json"
+    }
+  ],
+  "result": "PASS",
+  "checkoutProof": {
+    "trackedDigestBefore": "3fe7e1b7f6553b25e6ac92b909b27eef29760f173395a4e0638fa7072e012505",
+    "trackedDigestAfter": "3fe7e1b7f6553b25e6ac92b909b27eef29760f173395a4e0638fa7072e012505",
+    "trackedFiles": 2050,
+    "checkoutUntouched": true,
+    "gitStatusBefore": "M src/certification/index.ts\n?? docs/CORE_ARCHITECTURE_V2_S14_WORKGRAPH.md\n?? docs/evidence/s13/governed-lanes/round-14/s14-campaign-1/\n?? docs/evidence/s13/governed-lanes/round-14/s14-campaign-2/\n?? docs/evidence/s13/governed-lanes/round-14/s14-resource-1-i1/\n?? docs/evidence/s13/governed-lanes/round-14/s14-resource-1-i2/\n?? docs/evidence/s13/s13-governed-operations-round-14-s14-campaign-1.json\n?? docs/evidence/s13/s13-governed-operations-round-14-s14-campaign-2.json\n?? docs/evidence/s13/s13-governed-operations-round-14-s14-resource-1-i1.json\n?? docs/evidence/s13/s13-governed-operations-round-14-s14-resource-1-i2.json\n?? docs/evidence/s14/\n?? scripts/s14AdversarialChecks.ts\n?? scripts/s14SelfHostingComposite.ts\n?? src/certification/composite.ts\n?? tests/packed/s14CampaignEnvelope.mjs\n?? tests/packed/s14ResourceStabilityCampaign.mjs\n?? tests/selfHostingComposite.test.ts",
+    "gitStatusAfter": "M src/certification/index.ts\n?? docs/CORE_ARCHITECTURE_V2_S14_WORKGRAPH.md\n?? docs/evidence/s13/governed-lanes/round-14/s14-campaign-1/\n?? docs/evidence/s13/governed-lanes/round-14/s14-campaign-2/\n?? docs/evidence/s13/governed-lanes/round-14/s14-resource-1-i1/\n?? docs/evidence/s13/governed-lanes/round-14/s14-resource-1-i2/\n?? docs/evidence/s13/s13-governed-operations-round-14-s14-campaign-1.json\n?? docs/evidence/s13/s13-governed-operations-round-14-s14-campaign-2.json\n?? docs/evidence/s13/s13-governed-operations-round-14-s14-resource-1-i1.json\n?? docs/evidence/s13/s13-governed-operations-round-14-s14-resource-1-i2.json\n?? docs/evidence/s14/\n?? scripts/s14AdversarialChecks.ts\n?? scripts/s14SelfHostingComposite.ts\n?? src/certification/composite.ts\n?? tests/packed/s14CampaignEnvelope.mjs\n?? tests/packed/s14ResourceStabilityCampaign.mjs\n?? tests/selfHostingComposite.test.ts",
+    "note": "Tracked-file digest captured before packing and after all governed lanes; candidates execute only inside disposable /tmp fixtures.",
+    "postRunTrackedDocEditWindow": {
+      "opensAfter": "2026-09-30T17:56:21.748Z",
+      "note": "Tracked documentation writes after this timestamp are expected; compare source digests only within a run window."
+    }
+  }
+}

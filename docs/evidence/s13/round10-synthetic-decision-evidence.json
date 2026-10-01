@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 10,
+  "kind": "SYNTHETIC_HUMAN_DECISION_EVIDENCE",
+  "note": "Raw sanitized copy of the campaign-self-minted HumanDecision for the first Round-10 GitHub authority run. It demonstrates the AEH-V2-0114 defect family: the certification campaign records its own APPROVE decision with actorId 'human:s13-github' instead of consuming an externally provided user authorization. Preserved durably because the source fixture (/tmp/aeh-s13-gh-k93pyS) is disposable.",
+  "source": {
+    "path": "/tmp/aeh-s13-gh-k93pyS/clone/.harness/security/human-decisions.json/",
+    "files": [
+      "c8b08e1a-9f91-4022-a696-d0ec9bc550ef.json",
+      "c8b08e1a-9f91-4022-a696-d0ec9bc550ef.consumed.json"
+    ],
+    "campaignRun": "Round-10 first GitHub run (generatedAt 2026-09-28T15:51:25.730Z)"
+  },
+  "decision": {
+    "version": 2,
+    "decisionId": "decision:c8b08e1a-9f91-4022-a696-d0ec9bc550ef",
+    "operationId": "CHANGE-S13-GH-AUTHORITY",
+    "candidateId": "candidate:CHANGE-S13-GH-AUTHORITY:r1",
+    "projectId": "project:470522fda9fb37e573335f8b",
+    "candidateIdentityDigest": "48de36d3d00a7db0e835c61b24f4c7a6c4f7a0ec7c1303f5f23eef37eeb6df27",
+    "operationExecutionRevision": 1,
+    "policyDigest": "c36ebd561c4cc4a19d4100294bf5b9d45826c8302681729189bfbea288b4dca2",
+    "controllerEpoch": 1,
+    "purpose": {
+      "kind": "ACTION_AUTHORIZATION",
+      "action": "git.push",
+      "effectDigest": "99b648822a9493b1fadcaeceb602e3cb05ccc9f67af6a8830aa153617b519367"
+    },
+    "kind": "APPROVE",
+    "actorId": "human:s13-github",
+    "reason": "Disposable S13 certification branch publication",
+    "createdAt": "2026-09-28T15:52:15.116Z",
+    "expiresAt": "2026-09-28T15:57:15.116Z"
+  },
+  "consumption": {
+    "version": 1,
+    "decisionId": "decision:c8b08e1a-9f91-4022-a696-d0ec9bc550ef",
+    "consumedAt": "2026-09-28T15:52:15.117Z",
+    "consumerDigest": "b8d2c7d3dc87e366f853ee54f1559e242b133d2513dac31ca50b744ac1b31a2b"
+  },
+  "sourceCode": {
+    "path": "tests/packed/s13GithubEffectCampaign.mjs",
+    "issueCreatePath": "lines 172-201 (createTestIssueThroughGate): ledger.record({ kind: 'APPROVE', actorId: 'human:s13-github', ... }) then gh issue create inside executeGatedAction",
+    "authorityPushPath": "lines 385-402: same self-minted APPROVE decision for git.push"
+  }
+}

@@ -1,0 +1,265 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 5,
+  "artifact": "independent-review",
+  "reviewedAt": "2026-09-27T17:50:00Z",
+  "reviewer": "fresh-independent-deepseek-v4.1-flash",
+  "result": "SLICE_BLOCKED",
+  "git": {
+    "branch": "core-architecture-v2",
+    "head": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "headSubject": "core-v2: record S12 independent acceptance",
+    "workingTree": "uncommitted S13 candidate (46 tracked modifications, 11 untracked paths)",
+    "targetUntouched": true,
+    "diffCheckClean": true,
+    "diffStat": "46 files changed, 1527 insertions(+), 262 deletions(-)"
+  },
+  "evidenceDigestsRecomputed": {
+    "docs/evidence/s13/governed-lanes/audit.json": { "sha256": "84517c3dd6445f9ad1baee8b76221fc67babd75bd7841f615f7862d1c3740a6e", "documented": "84517c3dd6445f9a…", "status": "MATCH" },
+    "docs/evidence/s13/governed-lanes/change-direct.json": { "sha256": "beb0f5d606fdf1ee3dd2ed0c8bb2ace4ba6b542d20d551e6a2e3148a3764c1e8", "documented": "beb0f5d606fdf1ee…", "status": "MATCH" },
+    "docs/evidence/s13/s13-governed-operations.json": { "sha256": "2f25ebd7df6bf05a671e7c018c571dc6cfd8720c0f030d0897661299c5cc948d", "documented": "2f25ebd7df6bf05a…", "status": "MATCH" },
+    "docs/evidence/s13/issue-import-round5.json": { "sha256": "41cfbc5ce0328f72d9aa890555e03d08f9c40e1e0cf47a35bc45ad7c4dc83a61", "documented": "41cfbc5ce0328f72…", "status": "MATCH" },
+    "docs/evidence/s13/s13-real-paseo-lifecycle.json": { "sha256": "6ec75306455c3962e558d6a4016aa0b8ef72365affaff2a4a03740528a2775c6", "documented": "6ec75306455c3962…", "status": "MATCH" },
+    "docs/evidence/s13/lifecycle-lanes/cancel.json": { "sha256": "badd7630b22b13a5c099c9151c61ab61bcc075d1fe88cfd340a68a88e04d857f", "documented": "badd7630b22b13a5…", "status": "MATCH" },
+    "docs/evidence/s13/lifecycle-lanes/recovery.json": { "sha256": "cc02506ba3fe23c76796c8d4ac3da7f7fcd4c1814f10c1a084d9930ac0f88063", "documented": "cc02506ba3fe23c7…", "status": "MATCH" },
+    "docs/evidence/s13/s13-real-provider-certification.json": { "sha256": "e30db968c9e34b98d342e9e676a6a9dc90a574280e78436953248b6bd8c38621", "documented": "e30db968c9e34b98…", "status": "MATCH" },
+    "docs/evidence/s13/lanes/startup.json": { "sha256": "6493425f710828f6a1b109ab84a936997874082d68ae5d642c828fa94fae6af9", "documented": "6493425f…", "status": "MATCH" },
+    "docs/evidence/s13/lanes/informational.json": { "sha256": "ea6840ef7474a9fa7f71ac5e0ef7aeddeca2f5cecd9ef106af9642b4c1e7f2e5", "documented": "ea6840ef…", "status": "MATCH" },
+    "docs/evidence/s13/lanes/project-home.json": { "sha256": "c1932674f170040f09ea85de553a352417a6b392dcf6761711b37760e3ca86e5", "documented": "c1932674…", "status": "MATCH" },
+    "docs/evidence/s13/lanes/multi-project.json": { "sha256": "449f4e85107c94509e5117cb7bdd9f1d999b28eafd821375083906d23deb9cb8", "documented": "449f4e85…", "status": "MATCH" },
+    "docs/evidence/s13/s13-github-effects.json": { "sha256": "dbd6627f531d68b1b82f433df59ad834f07da2ce624110dfaebc5f94dd02542f", "documented": "228e3e963f48fabe… (STATUS/CONFORMANCE/WORKGRAPH round-3)", "status": "MISMATCH_FILE_REWRITTEN_IN_ROUND_5" },
+    "docs/evidence/s13/github-lanes/authority.json": { "sha256": "7490816c6a20ef56a7aeb3733b6f3074f9544e2847dff9fe6f385c7a7ac6cc0b", "documented": "a516c2b1e38456e8… (WORKGRAPH round-3)", "status": "MISMATCH_FILE_REWRITTEN_IN_ROUND_5" },
+    "docs/evidence/s13/github-lanes/issue-driven.json": { "sha256": "6d6036cbb3eccb9895472f8ae1ebc1f6d19c74a5395691cc1fcad1782d6a1c04", "documented": "5ae1220b8b50917f… (WORKGRAPH round-3)", "status": "MISMATCH_FILE_REWRITTEN_IN_ROUND_5" }
+  },
+  "repairVerification": {
+    "R4-F1_untracked_identity": {
+      "status": "VERIFIED_FIXED",
+      "detail": "src/core/git.ts now splits cached/untracked, classifies intent-to-add from porcelain-v2 '1 .A' records, and excludes provider scratch from both lists while keeping tracked provider files; src/candidates/direct.ts excludes scratch from the isolated ChangeSet pathspec. Independent scratch-repo reproduction confirmed: git add -N .serena/cache.bin + new.ts -> porcelain-v2 '1 .A' for both; digest includes new.ts and legit-intent.ts, excludes .serena/graphify-out; unknown untracked (provider-cache/index.bin) still perturbs identity. tests/candidateIdentity.test.ts (5) + tests/directCandidateLifecycle.test.ts (5) pass.",
+      "evidence": ["src/core/git.ts:listWorktreeDigestPaths", "src/core/git.ts:listIntentToAddPaths", "tests/candidateIdentity.test.ts", "tests/directCandidateLifecycle.test.ts"]
+    },
+    "R4-F3_receipt_state_root": {
+      "status": "VERIFIED_FIXED_SOURCE_AND_UNIT",
+      "detail": "finalizeOperationSession resolves operationStateRoot = operationArtifactRoot(root) and routes loadOperation/registerOperationAgent/updateOperationParticipant/recordParticipantReceipt plus artifact resolution through it; receiptParticipantId = capabilityAuthority.participantId ?? participantId ?? sessionId. tests/reviewerSerializationRecovery.test.ts (8) includes the operationArtifactRoot and isolated state-root receipt regressions. No packed proof exists because no packed change run reached participant finalization.",
+      "evidence": ["src/workers/agentPrompt.ts:finalizeOperationSession", "tests/reviewerSerializationRecovery.test.ts"]
+    },
+    "R4-F4_AEH-V2-0082_0084_audit_terminalization": {
+      "status": "VERIFIED_FIXED_PACKED_EXERCISED",
+      "detail": "All six terminalizeOperation call sites in src/operations/controller.ts are awaited (lines 422/452/485/508/717/843; grep shows no 'return terminalizeOperation' without await). Unit regression converts a gate rejection into durable FAILED. Packed audit rerun terminalized SUCCEEDED with report/validation/receipts and traces; no source file was modified after the audit evidence (last relevant src mtime 2026-09-27T09:58:32Z; audit lane ran 10:00:01-10:03:08Z), so the audit evidence binds the current candidate.",
+      "evidence": ["src/operations/controller.ts", "tests/governedOperationBootstrap.test.ts", "docs/evidence/s13/governed-lanes/audit.json"]
+    },
+    "AEH-V2-0085_participant_identity": {
+      "status": "VERIFIED_FIXED",
+      "detail": "registerManagedAgent skips semantic-assessment and authority-bound launches; updateRegisteredOperationParticipant never upserts; receipt binds the controller-issued participant:<digest> with sessionId provenance; terminal gate exempts supervision generations and Operation Supervisor/Semantic Assessor roles and matches receipts by participantId or sessionId. Packed audit shows exactly one candidate-bound bounded receipt (participant:33365a9026cdc21d, sessionId 7fdc116d, candidate 32846da1…).",
+      "evidence": ["src/operations/state.ts:recordParticipantReceipt", "src/operations/state.ts:assertSuccessTerminalEvidence", "src/paseo/runtimeCore.ts:registerManagedAgent", "docs/evidence/s13/governed-lanes/audit.json"]
+    },
+    "AEH-V2-0089_launch_identity_liveness": {
+      "status": "VERIFIED_FIXED",
+      "detail": "recordParticipantReceipt does not flip ^participant:[0-9a-f]{16}$ launch identities to a terminal status; the successful-terminal gate accepts a receipt bound by participantId or sessionId. tests/changeControllerOwnedDecision.test.ts passes (9s) and was part of the 103-test focused set.",
+      "evidence": ["src/operations/state.ts", "tests/changeControllerOwnedDecision.test.ts"]
+    },
+    "R4-F7_workspace_guard": {
+      "status": "VERIFIED_FIXED",
+      "detail": "compilePaseoAgentLaunchSpec claims the operation workspace only when a durable operation's canonical realpath workspace root equals the launch root; unloadable operation -> no workspace binding. tests/paseoLaunchSpec.test.ts (6) includes the unloadable-operation regression.",
+      "evidence": ["src/paseo/launchSpec.ts", "tests/paseoLaunchSpec.test.ts"]
+    },
+    "R4-F5_AEH-V2-0076_managed_issue_import": {
+      "status": "IMPLEMENTED_REAL_PROVIDER_VERIFIED_ON_PRE_FINAL_SOURCE_STALE",
+      "detail": "aeh issue import -> importIssueThroughManagedOperation starts a controller-owned change operation with ChangeOperationPayload.issueIntake; the controller binds DELEGATED/STANDARD, runs prepareGithubIssueTask with controller-issued authority (deterministicParticipantId + requireExecutionAuthority:true), persists contract/snapshot under the control root, advances candidate lineage explicitly, and verifies digest + bounded Planner receipt in the deterministic intake terminal gate. No ambient authority, no requireExecutionAuthority:false, no GitHub special case. issue-import-round5.json records terminal SUCCEEDED (Planner receipt participant:f40c6434e0b998b5 session 7e87febe…, sealed GH-1 contract 8212929d…), BUT it was generated at 2026-09-27T09:55:00Z, before the last src edits (src/operations/state.ts and src/workers/agentPrompt.ts at 09:58:32Z) that changed receipt/terminal-gate semantics; the import path was not re-run afterwards. The governed-campaign lane artifact shows a 420s timeout with empty stdout/stderr (exitCode null), not the workgraph-claimed 'workspace-identity gate correctly rejected the stale Planner receipt'.",
+      "evidence": ["src/issues/workflow.ts", "src/issues/intake.ts", "src/operations/controller.ts:executeIssueIntakeOperation", "docs/evidence/s13/issue-import-round5.json", "docs/evidence/s13/github-lanes/issue-driven.json"]
+    },
+    "R4-F6_AEH-V2-0088_structured_output_boundary": {
+      "status": "PARTIALLY_VERIFIED",
+      "verified": [
+        "Typed timeout classification from the runner result (exitCode 124 / status timeout, details.timeout) drives the single service retry; message text is never parsed.",
+        "extractLastAssistantText selects only assistant_message timeline entries and excludes reasoning items; verified against @getpaseo/protocol@0.9.1 AgentTimelineItemPayloadSchema (flat assistant_message/reasoning items).",
+        "direction:'tail' is a valid enum in the installed @getpaseo/protocol@0.9.1 (tail/before/after); timeline refetch failure in runPaseoSdkAgent is traced (timeline.refetch.failed).",
+        "Deterministic schema/evidence/provenance validation remains authoritative; retries cannot coerce a malformed judgment to PASS."
+      ],
+      "defects": [
+        "Nested retry amplification: SemanticAssessmentServiceV1 retries invalid payloads once (MAX_SEMANTIC_PAYLOAD_ATTEMPTS=2) and discoverProjectStackProfile wraps it with MAX_STACK_ASSESSMENT_ATTEMPTS=2, so a single STACK assessment can launch up to 4 real model turns (the change-lane trace shows 4 sdk.resolve+provider.preflight launch pairs). The round-5 claim 'retries stay at 2' is true only for the service constant, not the STACK product path.",
+        "The rejected raw assessor reply is not persisted anywhere (bounded fingerprint or digest), so 'real model-output flakiness' is not evidenced; the failed assessor agent ids are not recorded in the lane evidence either (collectSessionReceipts has no participant/generation entry for failed assessors).",
+        "waitForHandle/turnResult still swallow timeline refetch errors with .catch(() => undefined) on the primary completion path (only runPaseoSdkAgent's fallback traces)."
+      ],
+      "evidence": ["src/semantic/assessment.ts", "src/semantic/runtime.ts", "src/participants/stack.ts", "src/paseo/sdk.ts", "tests/semanticAssessment.test.ts", "tests/paseoAtomicSdkTurn.test.ts"]
+    }
+  },
+  "auditVerdict": {
+    "status": "ACCEPTED_CURRENT",
+    "detail": "governed-lanes/audit.json binds the current candidate (packed artifact 8e67326c784c8ff7…, packed build release-1790503184568-945008-1133190d, gitSha e3dad34, fixture tree digest a6287407… equals the operation candidate r1 sourceDigest). Operation AUDIT-20260927T100008Z-78e1af93 terminal SUCCEEDED revision 51 with stages finished/queued; one candidate-bound bounded receipt (participant:33365a9026cdc21d, sessionId 7fdc116d-c2ab-4c7f-9c0d-e058cf7cb273, candidate 32846da1…); report AUDIT-… persisted with 2 findings, productionSafe true; configured fixture validation PASS; supervisor generation 1 DRAAGING/real codex/gpt-6-luna agentId 3e688d36… (inspectExitCode 0, 29,816 input tokens) and real opencode/mimo-v2.6-flash reviewer session (inspectExitCode 0, 1,802 input tokens); oracle all 9 required checks PASS; checkoutUntouched true (7829c2b3… -> 7829c2b3…, 668 tracked files). No fixture substituted for REAL_PROVIDER behavior (laneEnvironment strips AEH_DETERMINISTIC_PASEO_RUNTIME; sessions inspected via real paseo agent inspect). No source change after the evidence touched the audit execution path.",
+    "caveats": [
+      "The oracle check named audit-real-reviewer-session counts report.sessions, which contains the codex supervisor session in addition to the reviewer session; the '2 reviewer sessions' message is loose naming (one reviewer session is real, the supervisor session is real but not a reviewer).",
+      "The audit lane's oracle check 'operation.participant-receipts' counts 1 receipt while operation.participants has 2 entries (authority identity + runtime session); the gate intentionally accepts the authority receipt via sessionId provenance, and the session participant is COMPLETED. This is consistent with AEH-V2-0085, but the evidence only proves one candidate-bound bounded receipt."
+    ]
+  },
+  "changeRootCause": {
+    "classification": "AEH_PROVIDER_ADAPTER_DEFECT",
+    "confidence": "MEDIUM_HIGH",
+    "evidence": [
+      "governed-lanes/change-direct.json: operation CHANGE-20260927T100352Z-5de819ea terminal FAILED at src/semantic/runtime.ts parseSemanticAssessmentOutputV1 ('Paseo Semantic Assessor output was not a structured JSON result') called from discoverProjectStackProfile; 0 participant receipts; candidate r2 sourceDigest 5e599a14… identical to fixtureTreeDigest 5e599a14… (no mutation); total lane time ~4.4 min.",
+      "Trace shows 4 harness.paseo.sdk.resolve + provider.preflight launch pairs after operation start (10:03:54/55, 10:05:13, 10:05:49, 10:06:33), consistent with STACK being launched up to 4 times (service 2 x stack 2); the final error is the last attempt's INVALID. No agent.wait/turn events for the assessor attempts and no raw reply captured.",
+      "src/paseo/runtimeInitialTurn.ts strips outputSchema for aeh.kind=semantic-assessment both at materialize and at the continued run; src/paseo/sdk.ts runPaseoSdkAgent then calls handle.run(prompt, {timeoutMs}) only. The installed Paseo stack DOES support provider-enforced JSON output for the initial prompt: @getpaseo/server create.js builds runOptions from create_agent_request.outputSchema and @getpaseo/server opencode-agent.js applies format {type:'json_schema', schema} to session.promptAsync. The installed @getpaseo/protocol@0.9.1 send_agent_message_request carries no outputSchema, so only the creation-time/initial-prompt channel can enforce it.",
+      "resolveSemanticAssessor requires selection.runtimeCapabilities.structuredOutput === true for the assessor runtime, and the semantic request requires structuredOutputRequired:true, but the operation-scoped managed path never exercises the provider's structured-output mode; the non-operation path (no aeh.operation label) uses launchManagedPaseoAgent creation with initialPrompt+outputSchema and the round-2 informational lane succeeded through a real mimo session.",
+      "The claimed disposition 'real model-output flakiness' cannot be the final classification because the rejected payload was not persisted; the adapter degradation is a verifiable product condition that makes the contract satisfiable only by model prose compliance."
+    ],
+    "round6RepairContract": [
+      "Make the operation-scoped semantic assessor turn use provider-enforced structured output: either (a) create the assessor agent with the assessment prompt as initialPrompt plus the semantic-assessment outputSchema so Paseo/OpenCode applies format json_schema, or (b) separate 'provider output schema' from 'AEH structured-result sink activation' in the SDK adapter so a non-participant assessor turn can pass outputSchema without activating the AEH result channel. Preserve: no WorkGraph participant registration, no writer lease, no tools/MCPs, read-only assessor identity, deterministic schema/evidence/binding/provenance validation authoritative.",
+      "Keep the deterministic schema unchanged and the total real-model attempts per assessment <= 2 by giving the bounded retry a single owner (collapse the nested STACK correction loop or make its retry count compose to one total) and update the docs claim accordingly.",
+      "Persist a bounded, sanitized fingerprint of the rejected raw reply (length + sha256 + first N chars) in the failure details/trace and record failed assessor session ids in lane evidence so the next failure is diagnosable; never coerce or synthesize fields.",
+      "Add focused deterministic regressions: the operation-scoped assessor launch carries the provider output schema while NOT activating the AEH result sink; timeout classification and bounded retry unchanged; then one real-provider verification of an operation-scoped STACK/assessment, then rerun change/direct-change to a real terminal ACCEPTED result.",
+      "If real verification proves the provider cannot honor json_schema for the selected model, record REAL_PROVIDER_CONTRACT_LIMITATION truthfully with the exact provider error and do not weaken the schema; the full_suite lane must still bind a real successful assessment or a truthful terminal failure."
+    ]
+  },
+  "fullSuite": {
+    "command": "npx vitest run --reporter=json --outputFile=/tmp/opencode/full-suite.json",
+    "result": "196 files: 192 passed / 4 failed; 1307 tests: 1275 passed / 25 failed / 7 pending; 0 unhandled errors; matches the round-5 reported 191-192/196 files, 1275 passed, 25 failed, 7 skipped",
+    "groups": [
+      {
+        "group": "tests/system/aehHumanBlackBox.test.ts",
+        "classification": "PRE_EXISTING_REPRODUCIBLE",
+        "failingTests": 19,
+        "evidence": "Reproduced identically at e3dad34 in a disposable worktree after restoring the checkout's shared dist/releases assets (19 fails, same signature counts: 16x 'expected 1 to be +0' (aeh start --deterministic), 1x \"'' to contain 'INFORMATIONAL'\" (intent with AEH_PASEO_FORCE_CLI=1), 1x STACK_TRACE_ERROR, 1x packaged command failure). Root causes are environment/test: the local Paseo daemon reports 'Status details unavailable (DAEMON_REQUEST_TIMEOUT)' persistently, so startPaseoHarness (unmodified src/paseo/start.ts) cannot observe healthy/stopped; and AEH_PASEO_FORCE_CLI=1 blocks the session-scoped assessor SDK launch required since before S13 (runtimeCore guard exists at base). Not an S13 regression."
+      },
+      {
+        "group": "tests/system/aehAdversarialE2E.test.ts",
+        "classification": "PRE_EXISTING_REPRODUCIBLE",
+        "failingTests": 2,
+        "evidence": "Both failures are the long-recorded OBJECTIVE_COMPLETION_REQUIRED terminal-fixture failures; reproduced identically at e3dad34 (2/2). Recorded as pre-existing since S6/S7 in the ledger."
+      },
+      {
+        "group": "tests/paseoSdkResolve.test.ts",
+        "classification": "PRE_EXISTING_REPRODUCIBLE",
+        "failingTests": 3,
+        "evidence": "Reproduced 3/3 at e3dad34; src/paseo/sdkResolve.ts and the test file are unmodified by S13. The tests expect fixture-local mise stores but the real mise install is resolved; environment drift from the installed Paseo CLI, as recorded at S10/S12."
+      },
+      {
+        "group": "tests/operations.test.ts (descendant-cancel)",
+        "classification": "TEST_DEFECT",
+        "failingTests": 1,
+        "evidence": "Current candidate: failed once in the full suite and once in 6 file-isolation runs (1 failure in 19 current executions including the single-test loop); base e3dad34: 0 failures in 19 equivalent executions. Stack proves the test races itself: the descendant writer process is spawned before seed()->saveOperation()->assertWorkspaceMatchesSourceDigest, and saveOperation computes the candidate digest and then asserts it on the same tree while the child writes descendant.pid; in a non-git temp root the inventory is empty ('recent digest inputs: <none>'). The product gate correctly fails closed on a mutated workspace. S13's listWorktreeDigestPaths now issues three git invocations per digest computation instead of one, widening the race window in this non-git fixture. Round 6 must make the fixture deterministic (bind the candidate before spawning the writer or keep the pid file outside the digest root) and may reduce the non-git digest enumeration cost; do not weaken assertWorkspaceSourceDigest."
+      }
+    ]
+  },
+  "rowDispositions": {
+    "startup": "STALE_REQUIRES_RERUN — round-2 packed evidence predates all round-3/4/5 source edits and the final build; no S13 lane rerun in round 5.",
+    "informational": "STALE_REQUIRES_RERUN — round-2 packed evidence; round-5 sdk/semantic/runtimeCore edits are directly on its real assessor path (round 5 did not rerun it).",
+    "audit": "CURRENT_ACCEPTED — packed evidence produced after the last source edit; real providers; oracle PASS; checkoutUntouched.",
+    "change": "NOT_ACCEPTED — truthful terminal FAILED at the STACK assessor on the current build; no participant/ChangeSet/validation/acceptance artifacts.",
+    "direct-change": "NOT_ACCEPTED — same lane; route DIRECT reached, then assessor failure.",
+    "delegated-change": "NOT_ACCEPTED — governed-lanes/change-delegated.json is a round-3 PREPARED artifact (release-1790477233044-…) with no execution; the round-5 claim of an earlier DELEGATED run has no durable artifact.",
+    "formal-sdd": "BLOCKED — depends on the change trunk.",
+    "multi-worker": "BLOCKED — depends on the change trunk.",
+    "cancel": "STALE_REQUIRES_RERUN — round-3 real-Paseo evidence (2026-09-27T03:53Z) predates the round-4/5 controller/state/runtimeCore/agentPrompt edits; build-bound sweep required.",
+    "recovery": "STALE_REQUIRES_RERUN — same as cancel.",
+    "product-repair": "BLOCKED — depends on the change/audit trunk.",
+    "certification-repair": "BLOCKED — depends on the change/audit trunk.",
+    "repair": "BLOCKED — depends on the change trunk.",
+    "context-handoff": "BLOCKED — depends on the change/supervisor paths.",
+    "permission-delegation": "BLOCKED — depends on the change/authority paths.",
+    "issue-driven": "STALE_REQUIRES_RERUN — the managed import authority path is implemented; the supplementary real-provider verification (issue-import-round5.json) predates the 0089 state.ts/agentPrompt.ts edits, and the governed-campaign lane timed out with empty output rather than an evidenced gate rejection. The full frozen contract (intake -> governed change -> accepted candidate -> delivery/effect -> drift/reconciliation -> terminal evidence) is NOT satisfied; import alone is not issue-driven acceptance.",
+    "delivery": "BLOCKED — requires an accepted packed change candidate.",
+    "distributed-execution": "BLOCKED — depends on the change/worker trunk.",
+    "project-home": "STALE_REQUIRES_RERUN — round-2 packed evidence, pre-final build.",
+    "multi-project": "STALE_REQUIRES_RERUN — round-2 packed evidence, pre-final build.",
+    "control-center": "NOT_APPLICABLE — browser lane separately reported (S11); never substituted for REAL_PROVIDER.",
+    "authority": "STALE_REQUIRES_RERUN — the round-5 GitHub campaign did rerun authority against a new packed candidate (branch aeh-s13-authority-20260927093539, PASS), but it predates the 2026-09-27T09:58:32Z state.ts/agentPrompt.ts edits, the docs misstate it as 'UNCHANGED (round-3)', and the current artifact digests do not match the digests cited in STATUS/CONFORMANCE/WORKGRAPH."
+  },
+  "toolClassifications": {
+    "matrix": "CERTIFICATION_CAPABILITY_MATRIX in src/certification/types.ts: 22 rows; no row's requiredEvidence names trivy, opengrep, podman, buildah, opa or cosign.",
+    "trivy": "OPTIONAL_NOT_IN_REQUIRED_MATRIX — declared security tool (aqua:aquasecurity/trivy) activated by security-tool/validator conditions; supported `aeh setup`/mise provisioning path exists; absent here, fail-closed unchanged.",
+    "opengrep": "OPTIONAL_NOT_IN_REQUIRED_MATRIX — declared security tool (aqua:opengrep/opengrep) with the supported setup path; absent; fail-closed.",
+    "opa": "OPTIONAL_NOT_IN_REQUIRED_MATRIX — declared (aqua:open-policy-agent/opa) activated by validation:opa; absent; no live Rego evaluation claimed.",
+    "cosign": "OPTIONAL_NOT_IN_REQUIRED_MATRIX — declared signing tool; only required when supply-chain policy requires signing; current fixtures use the fake boundary.",
+    "podman": "OPTIONAL_NOT_IN_REQUIRED_MATRIX — system container engine (templates/toolchain.yaml containerEngine) not provisioned by `aeh setup`; not required by any matrix row.",
+    "buildah": "NOT_APPLICABLE — undeclared in toolchain.yaml and not required by the matrix.",
+    "round6Action": "Do not install substitutes. Provision through `aeh setup`/mise/aqua only if a matrix row actually activates one of these tools."
+  },
+  "findings": [
+    {
+      "id": "R5-F1",
+      "severity": "P1",
+      "title": "GitHub external-effect evidence was rewritten in round 5 but the docs still cite round-3 digests and claim 'UNCHANGED'",
+      "detail": "s13-github-effects.json (round:5, generatedAt 09:35:40Z) and github-lanes/{authority,issue-driven}.json were regenerated in round 5 (authority branch aeh-s13-authority-20260927093539). Current sha256 values are dbd6627f…, 7490816c…, 6d6036cb…; STATUS line 257, CONFORMANCE line 88 and WORKGRAPH lines 149/204/205/179 still cite 228e3e963f48fabe…, a516c2b1e38456e8…, 5ae1220b8b50917f…. The round-5 disposition table says authority is 'UNCHANGED (round-3 accepted real-GitHub evidence)', which is false.",
+      "requiredRepair": "Reconcile the record: either cite the round-5 artifacts and digests with their pre-final-source caveat, or re-run the GitHub lanes against the current build and cite the new digests. Never leave documented digests that do not match the files."
+    },
+    {
+      "id": "R5-F2",
+      "severity": "P1",
+      "title": "Clean-build asset resolution defect: init resolves templates from stale shared dist/releases assets",
+      "detail": "packageRoot() in src/core/init.ts resolves `templates/*` as dist/releases/templates, while scripts/build.mjs publishes assets only per release (dist/releases/<id>/templates). The current checkout only works because stale Sep-22 pre-v2 shared copies exist at dist/releases/templates (project.yaml with a quick: block and old agent names, pre-v2 AGENTS.md). A fresh build in a disposable worktree at e3dad34 fails `init` with ENOENT dist/releases/templates/project.yaml (pre-existing, reproduced), and npm pack ships the stale shared copies inside every packed candidate. The S13 packed fixtures were initialized from those stale templates; only the campaign's explicit rewrite of .harness/project.yaml masked it.",
+      "requiredRepair": "Resolve runtime assets relative to the running release (or publish shared assets at dist/releases atomically) so a clean build + packed init works without stale leftovers; add a regression that a fresh build's init succeeds with no dist/releases/* shared-asset leftovers and that packed init uses the release's own assets. Keep fail-closed behavior."
+    },
+    {
+      "id": "R5-F3",
+      "severity": "P1",
+      "title": "Change/direct-change residual: assessor executes without provider-enforced structured output; nested STACK retries exceed the documented bound; rejected output not captured",
+      "detail": "See changeRootCause. The round-5 workgraph claims AEH-V2-0088 keeps retries at 2, but the STACK path composes service (2) x stack (2) up to 4 real model turns (the lane trace shows 4 launches). No raw payload or assessor session id is retained on failure, so the residual disposition is not evidence-based.",
+      "requiredRepair": "See changeRootCause.round6RepairContract."
+    },
+    {
+      "id": "R5-F4",
+      "severity": "P1",
+      "title": "Issue-import real-provider verification is stale against the final source and the lane explanation is unsupported",
+      "detail": "issue-import-round5.json was produced at 09:55:00Z; src/operations/state.ts and src/workers/agentPrompt.ts changed at 09:58:32Z (receipt identity/terminal gate). The governed-campaign issue import shows exitCode null with empty stdout/stderr (420s timeout), not the WORKGRAPH-claimed 'workspace-identity gate correctly rejected the stale Planner receipt'.",
+      "requiredRepair": "Re-run the managed issue import (real provider, stable clone) against the current build and record the exact import disposition; correct the lane explanation to match the artifact."
+    },
+    {
+      "id": "R5-F5",
+      "severity": "P1",
+      "title": "Full-suite failure narrative is inaccurate",
+      "detail": "STATUS/CONFORMANCE claim '189/196 files passed; 27 tests in 6 files' and list the operations descendant-cancel failure as merely 'parallel-only'. Current run: 192/196 files passed, 25 tests in 4 files; the descendant-cancel failure is a racy test fixture that reproduces in isolation (1/6) and is absent at base (0/19); the human black-box group's root causes are the persistent Paseo daemon status-detail timeout and FORCE_CLI-vs-assessor-SDK, both pre-existing.",
+      "requiredRepair": "Correct the counts and the classifications to the independent-review record; fix the racy operations fixture."
+    },
+    {
+      "id": "R5-F6",
+      "severity": "P2",
+      "title": "Ledger contains two contradictory AEH-V2-0076 rows",
+      "detail": "ENGINEERING_LEDGER has line 107 'AEH-V2-0076 (S13 round 5, FIX IMPLEMENTED)' and line 108 'AEH-V2-0076 (S13 round 3, OPEN — unchanged)'. The file contradicts itself about the same finding.",
+      "requiredRepair": "Reconcile to one row (or mark the superseded row SUPERSEDED) without changing history semantics."
+    },
+    {
+      "id": "R5-F7",
+      "severity": "P2",
+      "title": "Round-5 prose asserts an unverifiable earlier DELEGATED change run",
+      "detail": "The workgraph/STATUS claim an earlier round-5 run reached the DELEGATED path with 4 candidate-bound receipts and a failing validation while the final artifact is the DIRECT failure. No durable artifact for that run exists (last-invocation-only summary; per-lane artifacts overwritten).",
+      "requiredRepair": "Either retain the per-run evidence for future claims or reword to state the claim is not evidence-bound."
+    },
+    {
+      "id": "R5-F8",
+      "severity": "P3",
+      "title": "Audit oracle naming/counting looseness",
+      "detail": "audit-real-reviewer-session counts report.sessions which includes the supervisor session; the check message '2 reviewer session(s)' overstates reviewer count (1 reviewer + 1 supervisor, both real).",
+      "requiredRepair": "Rename/count by role or record reviewerSessionCount separately; keep the oracle required."
+    },
+    {
+      "id": "R5-F9",
+      "severity": "P2",
+      "title": "Docs overstate that no post-evidence accepted row needs a build-bound sweep",
+      "detail": "Only audit is current. startup, informational, project-home, multi-project, cancel, recovery, authority and the issue import evidence are stale relative to the final source/build; the round-5 prose says cancel/recovery/authority 'remain accepted by path-equivalence'.",
+      "requiredRepair": "Rerun each stale accepted row against a fresh packed candidate before any S13 checkpoint, and update the dispositions."
+    },
+    {
+      "id": "R5-F10",
+      "severity": "P3",
+      "title": "Disposable Paseo workspace cleanup claim is not supported",
+      "detail": "The round-5 workgraph claims 'disposable Paseo workspaces were archived and /tmp staging removed'. Active Paseo workspaces still include the round-5 change-lane candidate worktrees: wks_1a8379328b475b5e (/home/james/.paseo/worktrees/2ftv7mji/aeh-change-20260927t100352z-5de819ea, referenced by governed-lanes/change-direct.json), wks_effa47345587b823 (09:09Z run) and wks_7fcfc35e1d1bdcd5 (09:16Z run). The final run used S13_GOV_KEEP=1, which skips archiveNewWorkspaces.",
+      "requiredRepair": "Archive the leftover disposable workspaces and correct the cleanup claim; keep the KEEP flag for evidence capture but clean up explicitly afterwards."
+    }
+  ],
+  "reviewChecks": {
+    "focusedTests": "23 files / 197 tests green independently: candidateIdentity (5), directCandidateLifecycle (5), governedOperationBootstrap (5), reviewerSerializationRecovery (8), paseoLaunchSpec (6), semanticAssessment (15), semanticAssessmentRuntime (5), paseoAtomicSdkTurn (8), paseoNative (7), supervisorEventContinuation (4), managedForegroundAssessmentLease (2), participantsStackDiscovery (27), changeControllerOwnedDecision (1), supervisorPromptPolicy (5), certification (19), certificationMatrix, certificationJourneys (8), auditIntent (34), deliveryFinalize (11), triage (6), issueIntake (7), agentTopologyLayers, orchestrationProfileRouting.",
+    "typecheck": "npm run typecheck exit 0.",
+    "baseReproduction": "Disposable git worktree at e3dad34 in /tmp with the checkout's shared dist/releases assets restored: full suite reproduces 3+2+19 = 24 group failures (base lacks 42 S13-added tests); tests/operations descendant-cancel never failed at base (0/19); a clean base build without shared assets reproduces the init ENOENT asset defect.",
+    "intentCommandProbe": "AEH_PASEO_FORCE_CLI=1 aeh intent in a fresh project exits 1 with SEMANTIC_ASSESSMENT_UNAVAILABLE: 'Paseo SDK is required for session-scoped launch environment...' (same guard exists at e3dad34); not an S13 regression.",
+    "paseoProtocolProbe": "Installed @getpaseo/protocol@0.9.1 timeline direction enum = tail/before/after; send_agent_message_request has no outputSchema; server opencode-agent.js applies format json_schema only via turn runOptions, which create.js derives from create_agent_request.outputSchema (initial prompt)."
+  },
+  "round6Priority": [
+    "P0: fix the racy operations descendant-cancel fixture (R5-F5/TEST_DEFECT) and the clean-build asset-resolution defect (R5-F2); reconcile evidence digests/claims (R5-F1/R5-F4/R5-F5/R5-F6/R5-F7).",
+    "P1: apply the assessor provider-structured-output adapter repair + single-owner retry bound + rejected-output diagnostics (R5-F3); one real reproduction -> focused repair -> focused deterministic regression -> one real-provider verification.",
+    "P2: rerun change/direct-change to a real terminal ACCEPTED operation (participants, ChangeSet, validation, acceptance oracle, durable terminal state).",
+    "P3: rerun stale accepted rows (informational, startup, project-home, multi-project, cancel, recovery, authority, issue import) against the current build.",
+    "P4: breadth-first matrix exhaustion in DAG order: delegated-change, formal-sdd, multi-worker; repair/product-repair/certification-repair; context-handoff, permission-delegation, distributed-execution; issue-driven full contract; delivery.",
+    "P5: no tool provisioning is required by the canonical 22-row requiredEvidence; do not install substitutes."
+  ],
+  "note": "The reviewer does not accept the slice, does not implement repairs, does not commit, and did not modify docs/CORE_ARCHITECTURE_V2.md. Round 6 continues S13; S14 must not start."
+}

@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 20,
+  "runId": "r20-ctxperm-1",
+  "capability": "permission-delegation",
+  "provider": "opencode/opencode-go/deepseek-v4.1-flash",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13ContextPermissionCampaign.mjs",
+        "sha256": "f21a63d29463e5f87061ec09adb9d89d826041fc40f28cf134ff917c65aa8c68"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "8fc09b4fed4f02e760d814899488205305febc713059d4d011c3ff010661a629"
+  },
+  "startedAt": "2026-09-29T22:12:07.687Z",
+  "checks": [],
+  "candidateBinding": {
+    "packedArtifactDigest": "d00e7d0e706f79c7f822c293ef3729851652704e1ddda15b26f9d89a00708b17",
+    "fixtureCommit": "0c22bf023d611864afc4647ebd2dfb9e8657233c"
+  },
+  "parentLease": {
+    "participantId": "participant:s13-perm-parent",
+    "candidateDigest": "93b583a658b93b6a833888ae07fb93e964aca1fd6524cc8caabf336d766bc402",
+    "controllerEpoch": 1,
+    "capabilities": [
+      "execute",
+      "read",
+      "write"
+    ],
+    "leaseIds": [
+      "lease:CHANGE-S13-PERMISSION-DELEGATION:request:CHANGE-S13-PERMISSION-DELEGATION:participant:s13-perm-parent:read:implementation",
+      "lease:CHANGE-S13-PERMISSION-DELEGATION:request:CHANGE-S13-PERMISSION-DELEGATION:participant:s13-perm-parent:write:implementation",
+      "lease:CHANGE-S13-PERMISSION-DELEGATION:request:CHANGE-S13-PERMISSION-DELEGATION:participant:s13-perm-parent:execute:implementation"
+    ]
+  },
+  "ceilingDenial": {
+    "denied": true,
+    "message": "V2_AUTHORITY_DENIED: role 'Reviewer' cannot receive capabilities outside its compiled RoleProfile ceiling: write."
+  },
+  "childAuthority": {
+    "participantId": "participant:s13-perm-child",
+    "capabilities": [
+      "read"
+    ],
+    "leaseIds": [
+      "lease:CHANGE-S13-PERMISSION-DELEGATION:request:CHANGE-S13-PERMISSION-DELEGATION:participant:s13-perm-child:read:review"
+    ],
+    "monotonicSubsetOfParent": true
+  },
+  "decisionReceipt": {
+    "digest": "cae89945a9840334aa097b755fbd2715828efd6d3b7a4205b1eb5ce75815b8ab",
+    "persisted": true,
+    "persistedOperationId": "CHANGE-S13-PERMISSION-DELEGATION"
+  },
+  "error": "Error: EXECUTION_POLICY_STALE: durable ResolvedOperationPolicy does not match the current execution inputs.\n    at compileParticipantInvocationIdentity (file:///tmp/aeh-s13-ctxperm-l176IY/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790719895318-158964-9935d53e/workers/agentPrompt.js:1561:15)\n    at prepareAgentExecutionIdentity (file:///tmp/aeh-s13-ctxperm-l176IY/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790719895318-158964-9935d53e/workers/agentPrompt.js:323:28)\n    at async Module.executeAgentPrompt (file:///tmp/aeh-s13-ctxperm-l176IY/fixture-permission-delegation/node_modules/agentic-engineering-harness/dist/releases/release-1790719895318-158964-9935d53e/workers/agentPrompt.js:101:38)\n    at async permissionDelegationJourney (file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13ContextPermissionCampaign.mjs:309:20)\n    at async file:///home/james/Desarrollo/agentic-engineering-harness/tests/packed/s13ContextPermissionCampaign.mjs:347:112",
+  "result": "FAIL",
+  "finishedAt": "2026-09-29T22:12:15.306Z"
+}

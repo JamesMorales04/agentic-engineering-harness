@@ -1,11 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  connectPaseoClient,
   createPaseoSdkAgentWithClient,
   dispatchPaseoSdkAgentWithClient,
   materializePaseoSdkAgentWithClient
 } from "../src/paseo/sdk.js";
 
 describe("Paseo SDK adapter", () => {
+  it("returns a clear SDK-unavailable error when daemon connection never settles", async () => {
+    const client = { connect: vi.fn(async () => await new Promise<void>(() => undefined)) };
+    await expect(connectPaseoClient(client, 5)).rejects.toThrow(
+      "Unable to connect to the Paseo daemon through @getpaseo/client: Connecting to the Paseo daemon timed out after 5ms."
+    );
+  });
+
   it("enforces a timeout for send-based dispatch and stops the agent", async () => {
     const stop = vi.fn(async () => undefined);
     const handle = { id: "agent-hung", status: "working", send: vi.fn(async () => await new Promise<void>(() => undefined)), stop };
@@ -28,7 +36,7 @@ describe("Paseo SDK adapter", () => {
       close: vi.fn()
     };
 
-    const result = await createPaseoSdkAgentWithClient(client as never, { cwd: "/repo", provider: "opencode", title: "worker", prompt: "work", timeoutMs: 10 });
+    const result = await createPaseoSdkAgentWithClient(client as never, { cwd: "/repo", provider: "opencode", model: "test-model", title: "worker", prompt: "work", timeoutMs: 10 });
     expect(result.status).toBe("timeout");
     expect(stop).toHaveBeenCalledTimes(1);
   });
@@ -74,8 +82,7 @@ describe("Paseo SDK adapter", () => {
         cwd: "/repo",
         workspaceId: "workspace-1",
         config: {
-          provider: "codex",
-          model: "gpt-test",
+          provider: "codex/gpt-test",
           systemPrompt: "authoritative session instructions"
         },
         labels: { "aeh.task": "TASK-1", "aeh.role": "backend-implementer" }
@@ -132,8 +139,7 @@ describe("Paseo SDK adapter", () => {
       expect.objectContaining({
         cwd: "/repo",
         config: {
-          provider: "codex",
-          model: "gpt-test",
+          provider: "codex/gpt-test",
           systemPrompt: "bootstrap",
           mcpServers: {
             "aeh-control": {
@@ -188,7 +194,7 @@ describe("Paseo SDK adapter", () => {
       cwd: "/repo",
       workspaceId: "workspace-op",
       provider: "opencode",
-      model: "opencode-go/deepseek-v4-flash",
+      model: "opencode-go/MiMo-V2.6-Flash",
       modeId: "aeh-code-quality-reviewer",
       thinkingOptionId: "high",
       env: { OPENCODE_CONFIG_CONTENT: inline },
@@ -202,8 +208,7 @@ describe("Paseo SDK adapter", () => {
         workspaceId: "workspace-op",
         env: { OPENCODE_CONFIG_CONTENT: inline },
         config: {
-          provider: "opencode",
-          model: "opencode-go/deepseek-v4-flash",
+          provider: "opencode/opencode-go/MiMo-V2.6-Flash",
           modeId: "aeh-code-quality-reviewer",
           thinkingOptionId: "high"
         }
@@ -238,7 +243,7 @@ describe("Paseo SDK adapter", () => {
     const result = await createPaseoSdkAgentWithClient(client as never, {
       cwd: "/repo",
       provider: "opencode",
-      model: "deepseek-v4-flash",
+      model: "MiMo-V2.6-Flash",
       title: "worker",
       prompt: "Implement the bounded task",
       outputSchema: { type: "object" },
@@ -250,7 +255,7 @@ describe("Paseo SDK adapter", () => {
         cwd: "/repo",
         initialPrompt: "Implement the bounded task",
         outputSchema: { type: "object" },
-        config: { provider: "opencode", model: "deepseek-v4-flash" }
+        config: { provider: "opencode/MiMo-V2.6-Flash" }
       })
     );
     expect(received).not.toHaveProperty("prompt");
@@ -284,6 +289,7 @@ describe("Paseo SDK adapter", () => {
     };
 
     const result = await materializePaseoSdkAgentWithClient(client as never, {
+      agentId: "agent-idle",
       cwd: "/repo",
       workspaceId: "workspace-op",
       provider: "codex",
@@ -301,47 +307,35 @@ describe("Paseo SDK adapter", () => {
     );
     expect(received).toEqual(
       expect.objectContaining({
+        agentId: "agent-idle",
         cwd: "/repo",
         workspaceId: "workspace-op",
-        config: { provider: "codex", model: "gpt-test" }
+        config: { provider: "codex/gpt-test" }
       })
     );
     expect(received).not.toHaveProperty("initialPrompt");
   });
 
-  it("allows the SDK/provider to select a default model when AEH has none", async () => {
-    let received: Record<string, unknown> | undefined;
-    const handle = {
-      id: "agent-default",
-      workspaceId: null,
-      status: "idle",
-      refresh: vi.fn(),
-      run: vi.fn(),
-      waitForFinish: vi.fn()
-    };
+  it("rejects provider-only input that cannot satisfy the SDK provider/model contract", async () => {
+    const create = vi.fn();
     const client = {
       agents: {
-        create: vi.fn(async (options: Record<string, unknown>) => {
-          received = options;
-          return handle;
-        }),
+        create,
         ref: vi.fn(),
         list: vi.fn()
       },
       connect: vi.fn(),
       close: vi.fn()
     };
-    await createPaseoSdkAgentWithClient(client as never, {
+    await expect(createPaseoSdkAgentWithClient(client as never, {
       cwd: "/repo",
       provider: "codex",
       title: "default"
-    });
-    expect(received).toEqual(
-      expect.objectContaining({ cwd: "/repo", config: { provider: "codex" } })
-    );
+    })).rejects.toThrow("Paseo SDK requires a provider/model value");
+    expect(create).not.toHaveBeenCalled();
   });
 
-  it("normalizes a legacy combined provider/model value into Paseo config fields", async () => {
+  it("preserves an already combined provider/model value for Paseo", async () => {
     let received: Record<string, unknown> | undefined;
     const handle = {
       id: "agent-legacy",
@@ -366,15 +360,16 @@ describe("Paseo SDK adapter", () => {
 
     await createPaseoSdkAgentWithClient(client as never, {
       cwd: "/repo",
-      provider: "codex/gpt-5.6-luna",
+      provider: "codex/gpt-6-luna",
       title: "legacy"
     });
 
     expect(received).toEqual(
       expect.objectContaining({
-        config: { provider: "codex", model: "gpt-5.6-luna" }
+        config: { provider: "codex/gpt-6-luna" }
       })
     );
+    expect((received?.config as Record<string, unknown>)).not.toHaveProperty("model");
   });
 
   it("rejects conflicting embedded and explicit model values", async () => {

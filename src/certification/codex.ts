@@ -29,7 +29,7 @@ export class CodexAgentProvider extends LocalAgentProvider {
 
   constructor(options: CodexProviderOptions = {}) {
     super();
-    this.options = { command: options.command ?? "codex", model: options.model ?? "gpt-5.6-luna", reasoningEffort: options.reasoningEffort ?? "high", extraArgs: options.extraArgs ?? [] };
+    this.options = { command: options.command ?? "codex", model: options.model ?? "gpt-6-luna", reasoningEffort: options.reasoningEffort ?? "high", extraArgs: options.extraArgs ?? [] };
   }
 
   override async execute(request: AgentProviderRequest): Promise<AgentProviderResult> {
@@ -82,7 +82,7 @@ export class CodexAgentProvider extends LocalAgentProvider {
 }
 
 export function codexCommandPreview(options: CodexProviderOptions = {}, request: Pick<AgentProviderRequest, "args" | "prompt">): string[] {
-  return ["exec", "--json", "--ephemeral", "--skip-git-repo-check", "--sandbox", "workspace-write", "--model", options.model ?? "gpt-5.6-luna", "-c", `model_reasoning_effort=${JSON.stringify(options.reasoningEffort ?? "high")}`, ...(options.extraArgs ?? []), ...request.args, request.prompt];
+  return ["exec", "--json", "--ephemeral", "--skip-git-repo-check", "--sandbox", "workspace-write", "--model", options.model ?? "gpt-6-luna", "-c", `model_reasoning_effort=${JSON.stringify(options.reasoningEffort ?? "high")}`, ...(options.extraArgs ?? []), ...request.args, request.prompt];
 }
 
 let capabilityCache: Promise<CodexCapabilities> | undefined;

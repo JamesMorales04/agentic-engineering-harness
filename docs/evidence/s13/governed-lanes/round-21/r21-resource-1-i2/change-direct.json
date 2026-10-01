@@ -1,0 +1,816 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 21,
+  "runId": "r21-resource-1-i2",
+  "capability": "change-direct",
+  "kind": "change",
+  "providerPath": "FULL_OPERATION_REAL_PASEO",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13GovernedOperationCampaign.mjs",
+        "sha256": "4fc7b11c3462f6abca836b27ff10dbc3931a60c1edbe5a04bd355a39637d7dda"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "e2279bbba1400319294506c55cf34ab58669fa140cc49e93962bd9ee6c6b3c27"
+  },
+  "startedAt": "2026-09-30T04:25:08.374Z",
+  "candidateBinding": {
+    "packedArtifact": "agentic-engineering-harness-0.8.4.tgz",
+    "packedArtifactDigest": "33b0781c74b3299714fbe4e312f810855986517d965aff41b7479be0ca577611",
+    "packedBuild": {
+      "releaseId": "release-1790742282509-1441086-e8c2345b",
+      "buildDigest": "599ed363223ff2dd85e17296c9f34c4134bf83e363916c4c57d7e7492ccbdf45",
+      "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+      "packageVersion": "0.8.4"
+    },
+    "fixtureTreeDigest": "e2ce31855004ce591afd2960dd9e5489ce3776956efe06b25f752d40ebf5f5cc",
+    "fixtureCommit": "d880fa47ce3748306a32b3c93c0e7394a1937d3d"
+  },
+  "start": {
+    "argv": [
+      "change",
+      "Add exactly one export line to src/greeting.mjs: export const FAREWELL = \"bye\"; Keep the existing greet export unchanged.",
+      ".",
+      "--file",
+      "src/greeting.mjs",
+      "--title",
+      "Add FAREWELL constant",
+      "--accept",
+      "node scripts/validate.mjs passes and src/greeting.mjs exports FAREWELL === \"bye\""
+    ],
+    "exitCode": 0,
+    "stdout": "operationId=CHANGE-20260930T042538Z-5de819ea\nkind=change\nstatus=QUEUED\nphase=dispatched\nrevision=5\nprogress=0/0 completed, 0 running, 0 failed, 0 blocked",
+    "stderr": "",
+    "operationId": "CHANGE-20260930T042538Z-5de819ea",
+    "leadAgentId": "6a2e01cb-3f75-4bc8-8349-a82d87877443"
+  },
+  "stageTrace": [
+    {
+      "at": "2026-09-30T04:25:38.498Z",
+      "status": "QUEUED",
+      "phase": "dispatched",
+      "revision": 5,
+      "stages": {
+        "queued": "RUNNING"
+      }
+    },
+    {
+      "at": "2026-09-30T04:25:49.300Z",
+      "status": "RUNNING",
+      "phase": "implementation",
+      "revision": 20,
+      "stages": {
+        "queued": "RUNNING",
+        "input-resolution": "COMPLETED",
+        "triage": "COMPLETED",
+        "environment-preflight": "SKIPPED",
+        "contract-authoring": "COMPLETED",
+        "implementation": "RUNNING"
+      },
+      "stageMessages": {
+        "input-resolution": "No external durable inputs referenced.",
+        "triage": "DIRECT/NONE: bounded request classified by explicit evidence and canonical route policy",
+        "environment-preflight": "Canonical direct/delegated routes do not require formal SDD authoring."
+      }
+    },
+    {
+      "at": "2026-09-30T04:26:39.205Z",
+      "status": "FAILED",
+      "phase": "failed",
+      "revision": 21,
+      "stages": {
+        "queued": "RUNNING",
+        "input-resolution": "COMPLETED",
+        "triage": "COMPLETED",
+        "environment-preflight": "SKIPPED",
+        "contract-authoring": "COMPLETED",
+        "implementation": "RUNNING",
+        "finished": "FAILED"
+      },
+      "stageMessages": {
+        "input-resolution": "No external durable inputs referenced.",
+        "triage": "DIRECT/NONE: bounded request classified by explicit evidence and canonical route policy",
+        "environment-preflight": "Canonical direct/delegated routes do not require formal SDD authoring."
+      }
+    }
+  ],
+  "workspaceWatch": {
+    "transitions": [],
+    "finalStates": {
+      "/tmp/aeh-s13-resource-IVVIPZ/aeh-s13-gov-DJ5ETt/work/lane-change-fixture": [
+        ".gitignore",
+        ".harness/agents.source.jsonc",
+        ".harness/otel-collector.yaml",
+        ".harness/project.yaml",
+        ".harness/provider-versions.json",
+        ".harness/toolchain.yaml",
+        "AGENTS.md",
+        "README.md",
+        "openspec/config.yaml",
+        "package.json",
+        "scripts/architecture.mjs",
+        "scripts/contract.mjs",
+        "scripts/validate.mjs",
+        "src/greeting.mjs"
+      ],
+      "/home/james/.paseo/worktrees/2gwk2stn/aeh-change-20260930t041747z-5de819ea": [
+        ".gitignore",
+        ".harness/agents.source.jsonc",
+        ".harness/otel-collector.yaml",
+        ".harness/project.yaml",
+        ".harness/provider-versions.json",
+        ".harness/toolchain.yaml",
+        "AGENTS.md",
+        "README.md",
+        "graphify-out/cache/stat-index.json",
+        "openspec/config.yaml",
+        "package.json",
+        "scripts/architecture.mjs",
+        "scripts/contract.mjs",
+        "scripts/validate.mjs",
+        "src/greeting.mjs"
+      ],
+      "/tmp/aeh-s13-resource-IVVIPZ/aeh-s13-gov-RQNWA9/work/lane-change-fixture": [
+        ".gitignore",
+        ".harness/agents.source.jsonc",
+        ".harness/otel-collector.yaml",
+        ".harness/project.yaml",
+        ".harness/provider-versions.json",
+        ".harness/toolchain.yaml",
+        "AGENTS.md",
+        "README.md",
+        "openspec/config.yaml",
+        "package.json",
+        "scripts/architecture.mjs",
+        "scripts/contract.mjs",
+        "scripts/validate.mjs",
+        "src/greeting.mjs"
+      ],
+      "/home/james/.paseo/worktrees/1r8t577f/aeh-change-20260930t042538z-5de819ea": [
+        ".gitignore",
+        ".harness/agents.source.jsonc",
+        ".harness/otel-collector.yaml",
+        ".harness/project.yaml",
+        ".harness/provider-versions.json",
+        ".harness/toolchain.yaml",
+        "AGENTS.md",
+        "README.md",
+        "openspec/config.yaml",
+        "package.json",
+        "scripts/architecture.mjs",
+        "scripts/contract.mjs",
+        "scripts/validate.mjs",
+        "src/greeting.mjs"
+      ]
+    }
+  },
+  "terminalRecord": {
+    "status": "FAILED",
+    "phase": "failed",
+    "revision": 21,
+    "error": "AehError: SEMANTIC_ASSESSMENT_UNAVAILABLE: Paseo Semantic Assessor execution failed: OpenCode server.connected event; your message was not sent. opencode-stream attempt=5 phase=first-record elapsedMs=49101 lastOutcome=error lastError=\"fetch failed\"\n    at SemanticAssessmentServiceV1.assess (file:///tmp/aeh-s13-resource-IVVIPZ/aeh-s13-gov-RQNWA9/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790742282509-1441086-e8c2345b/semantic/assessment.js:433:27)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async discoverProjectStackProfile (file:///tmp/aeh-s13-resource-IVVIPZ/aeh-s13-gov-RQNWA9/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790742282509-1441086-e8c2345b/participants/stack.js:319:26)\n    at async runTask (file:///tmp/aeh-s13-resource-IVVIPZ/aeh-s13-gov-RQNWA9/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790742282509-1441086-e8c2345b/core/run.js:70:24)\n    at async runChangeOperation (file:///tmp/aeh-s13-resource-IVVIPZ/aeh-s13-gov-RQNWA9/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790742282509-1441086-e8c2345b/operations/change.js:278:17)\n    at async executeOperationWithEnvironment (file:///tmp/aeh-s13-resource-IVVIPZ/aeh-s13-gov-RQNWA9/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790742282509-1441086-e8c2345b/operations/controller.js:342:28)\n    at async executeOperation (file:///tmp/aeh-s13-resource-IVVIPZ/aeh-s13-gov-RQNWA9/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790742282509-1441086-e8c2345b/operations/controller.js:168:16)\n    at async runOperationExecute (file:///tmp/aeh-s13-resource-IVVIPZ/aeh-s13-gov-RQNWA9/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790742282509-1441086-e8c2345b/main.js:156:20)\n    at async file:///tmp/aeh-s13-resource-IVVIPZ/aeh-s13-gov-RQNWA9/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790742282509-1441086-e8c2345b/main.js:36:5",
+    "finishedAt": "2026-09-30T04:26:33.987Z"
+  },
+  "artifacts": {
+    "acceptance": null,
+    "reviewers": [],
+    "specManagers": [],
+    "participants": [],
+    "failedParticipants": [],
+    "assessments": [
+      {
+        "file": "8fdae9a61e3746134e958606c8ca64f66befd6e0619e3d13bc2bd4b9c2f91b44.json",
+        "sha256": "2d8d48c4ee335a42f41906468637639ea15a1e52b875d62c9b016e17ed014c6a",
+        "bytes": 4679,
+        "assessmentType": "ROUTE",
+        "mechanism": "MODEL",
+        "digest": null,
+        "modelId": null,
+        "sessionId": null
+      }
+    ],
+    "reviewerArtifactsError": null
+  },
+  "candidateWorkspaceObservations": {
+    "observations": [
+      {
+        "source": "CandidateRevision.worktree",
+        "workspaceId": null,
+        "root": "/home/james/.paseo/worktrees/1r8t577f/aeh-change-20260930t042538z-5de819ea",
+        "expectedSourceDigest": "e2ce31855004ce591afd2960dd9e5489ce3776956efe06b25f752d40ebf5f5cc",
+        "observedSourceDigest": "e2ce31855004ce591afd2960dd9e5489ce3776956efe06b25f752d40ebf5f5cc",
+        "candidateIdentityDigest": "1fccabb2de64f4db77fff0a22571af7f55f201d92049f1cc6f5364aae18a4590",
+        "candidateRevision": 2,
+        "status": "MATCH"
+      }
+    ]
+  },
+  "traces": {
+    "paseo": {
+      "total": 15,
+      "entries": [
+        {
+          "at": "2026-09-30T04:25:21.221Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-30T04:25:25.589Z",
+          "name": "harness.paseo.provider.preflight",
+          "attributes": {
+            "ok": true,
+            "provider": "opencode",
+            "model": "opencode-go/gpt-6-luna",
+            "providerStatus": "loading",
+            "source": "paseo-provider-models",
+            "availableModelCount": 67,
+            "message": "Provider opencode model opencode-go/gpt-6-luna passed Paseo preflight."
+          }
+        },
+        {
+          "at": "2026-09-30T04:25:32.318Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-30T04:25:38.365Z",
+          "name": "harness.paseo.agent.wait",
+          "attributes": {
+            "agentId": "972c2a3e-2938-492d-90ce-15f0ddd41134",
+            "source": "paseo-agent-subscription",
+            "status": "idle",
+            "updatesObserved": 0,
+            "baselineAssistant": "absent",
+            "baselineUserMessageAt": "absent",
+            "durationMs": 6022
+          }
+        },
+        {
+          "at": "2026-09-30T04:25:38.373Z",
+          "name": "harness.paseo.agent.wait.completed",
+          "attributes": {
+            "transport": "sdk",
+            "observation": "subscription",
+            "agentId": "972c2a3e-2938-492d-90ce-15f0ddd41134",
+            "status": "idle"
+          }
+        },
+        {
+          "at": "2026-09-30T04:25:41.886Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-30T04:25:42.211Z",
+          "name": "harness.paseo.provider.preflight",
+          "attributes": {
+            "ok": true,
+            "provider": "opencode",
+            "model": "opencode-go/gpt-6-luna",
+            "providerStatus": "ready",
+            "source": "paseo-provider-snapshot",
+            "availableModelCount": 67,
+            "message": "Provider opencode model opencode-go/gpt-6-luna passed Paseo preflight."
+          }
+        },
+        {
+          "at": "2026-09-30T04:25:44.132Z",
+          "name": "harness.paseo.operation.watchdog.started",
+          "attributes": {
+            "operationId": "CHANGE-20260930T042538Z-5de819ea",
+            "pollIntervalMs": 15000,
+            "progressWakeIntervalMs": 45000,
+            "stallThresholdMs": 120000,
+            "supervisorStallWakeLimit": 2,
+            "leadWakeLimit": 1,
+            "terminalLeadWakeLimit": 2
+          }
+        }
+      ]
+    },
+    "events": {
+      "total": 15,
+      "entries": [
+        {
+          "at": "2026-09-30T04:25:21.258Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-30T04:25:25.610Z",
+          "name": "harness.paseo.provider.preflight",
+          "attributes": {
+            "ok": true,
+            "provider": "opencode",
+            "model": "opencode-go/gpt-6-luna",
+            "providerStatus": "loading",
+            "source": "paseo-provider-models",
+            "availableModelCount": 67,
+            "message": "Provider opencode model opencode-go/gpt-6-luna passed Paseo preflight."
+          }
+        },
+        {
+          "at": "2026-09-30T04:25:32.333Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-30T04:25:38.373Z",
+          "name": "harness.paseo.agent.wait",
+          "attributes": {
+            "agentId": "972c2a3e-2938-492d-90ce-15f0ddd41134",
+            "source": "paseo-agent-subscription",
+            "status": "idle",
+            "updatesObserved": 0,
+            "baselineAssistant": "absent",
+            "baselineUserMessageAt": "absent",
+            "durationMs": 6022
+          }
+        },
+        {
+          "at": "2026-09-30T04:25:38.379Z",
+          "name": "harness.paseo.agent.wait.completed",
+          "attributes": {
+            "transport": "sdk",
+            "observation": "subscription",
+            "agentId": "972c2a3e-2938-492d-90ce-15f0ddd41134",
+            "status": "idle"
+          }
+        },
+        {
+          "at": "2026-09-30T04:25:41.898Z",
+          "name": "harness.paseo.sdk.resolve",
+          "attributes": {
+            "source": "active-paseo-cli",
+            "entry": "/home/james/.local/share/mise/installs/npm-getpaseo-cli/0.9.1~aube~b089781319af45f6/node_modules/.mise/@getpaseo+client@0.9.1/node_modules/@getpaseo/client/dist/index.js"
+          }
+        },
+        {
+          "at": "2026-09-30T04:25:42.222Z",
+          "name": "harness.paseo.provider.preflight",
+          "attributes": {
+            "ok": true,
+            "provider": "opencode",
+            "model": "opencode-go/gpt-6-luna",
+            "providerStatus": "ready",
+            "source": "paseo-provider-snapshot",
+            "availableModelCount": 67,
+            "message": "Provider opencode model opencode-go/gpt-6-luna passed Paseo preflight."
+          }
+        },
+        {
+          "at": "2026-09-30T04:25:44.149Z",
+          "name": "harness.paseo.operation.watchdog.started",
+          "attributes": {
+            "operationId": "CHANGE-20260930T042538Z-5de819ea",
+            "pollIntervalMs": 15000,
+            "progressWakeIntervalMs": 45000,
+            "stallThresholdMs": 120000,
+            "supervisorStallWakeLimit": 2,
+            "leadWakeLimit": 1,
+            "terminalLeadWakeLimit": 2
+          }
+        }
+      ]
+    }
+  },
+  "routeDiagnostics": {
+    "classification": "HYBRID",
+    "plannerAssessmentMechanism": "MODEL",
+    "routeGateMechanism": "DETERMINISTIC",
+    "participantArtifacts": [],
+    "triageEscalatedEvents": []
+  },
+  "candidateAssemblyReceipts": null,
+  "operation": {
+    "id": "CHANGE-20260930T042538Z-5de819ea",
+    "status": "FAILED",
+    "phase": "failed",
+    "kind": "change",
+    "intent": {
+      "request": "Add exactly one export line to src/greeting.mjs: export const FAREWELL = \"bye\"; Keep the existing greet export unchanged.",
+      "classification": "CHANGE",
+      "route": "DIRECT",
+      "assurance": "NONE",
+      "priority": 50,
+      "semanticDecision": {
+        "version": 1,
+        "source": "explicit-cli",
+        "intent": "change",
+        "requestedOutcome": "Add exactly one export line to src/greeting.mjs: export const FAREWELL = \"bye\"; Keep the existing greet export unchanged.",
+        "effects": {
+          "evaluate": false,
+          "mutateRepository": true,
+          "executePreparedTask": false,
+          "deliver": false
+        },
+        "resolution": "resolved"
+      },
+      "risk": "low"
+    },
+    "revision": 21,
+    "operationExecutionRevision": 2,
+    "controllerPid": 1446524,
+    "error": "AehError: SEMANTIC_ASSESSMENT_UNAVAILABLE: Paseo Semantic Assessor execution failed: OpenCode server.connected event; your message was not sent. opencode-stream attempt=5 phase=first-record elapsedMs=49101 lastOutcome=error lastError=\"fetch failed\"\n    at SemanticAssessmentServiceV1.assess (file:///tmp/aeh-s13-resource-IVVIPZ/aeh-s13-gov-RQNWA9/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790742282509-1441086-e8c2345b/semantic/assessment.js:433:27)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async discoverProjectStackProfile (file:///tmp/aeh-s13-resource-IVVIPZ/aeh-s13-gov-RQNWA9/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790742282509-1441086-e8c2345b/participants/stack.js:319:26)\n    at async runTask (file:///tmp/aeh-s13-resource-IVVIPZ/aeh-s13-gov-RQNWA9/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790742282509-1441086-e8c2345b/core/run.js:70:24)\n    at async runChangeOperation (file:///tmp/aeh-s13-resource-IVVIPZ/aeh-s13-gov-RQNWA9/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790742282509-1441086-e8c2345b/operations/change.js:278:17)\n    at async executeOperationWithEnvironment (file:///tmp/aeh-s13-resource-IVVIPZ/aeh-s13-gov-RQNWA9/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790742282509-1441086-e8c2345b/operations/controller.js:342:28)\n    at async executeOperation (file:///tmp/aeh-s13-resource-IVVIPZ/aeh-s13-gov-RQNWA9/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790742282509-1441086-e8c2345b/operations/controller.js:168:16)\n    at async runOperationExecute (file:///tmp/aeh-s13-resource-IVVIPZ/aeh-s13-gov-RQNWA9/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790742282509-1441086-e8c2345b/main.js:156:20)\n    at async file:///tmp/aeh-s13-resource-IVVIPZ/aeh-s13-gov-RQNWA9/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/releases/release-1790742282509-1441086-e8c2345b/main.js:36:5",
+    "candidateRevision": {
+      "operationId": "CHANGE-20260930T042538Z-5de819ea",
+      "candidateId": "candidate:CHANGE-20260930T042538Z-5de819ea:r2",
+      "projectId": "project:73862056d97f1a9e42c3b39c",
+      "taskId": "CHANGE-20260930T042538Z-5de819ea",
+      "revision": 2,
+      "parentCandidateId": "candidate:CHANGE-20260930T042538Z-5de819ea:r1",
+      "sourceDigest": "e2ce31855004ce591afd2960dd9e5489ce3776956efe06b25f752d40ebf5f5cc",
+      "workspace": "wks_846580f3163f0ad5",
+      "worktree": "/home/james/.paseo/worktrees/1r8t577f/aeh-change-20260930t042538z-5de819ea",
+      "createdAt": "2026-09-30T04:25:41.233Z",
+      "version": 1,
+      "canonicalIdentity": "{\"candidateId\":\"candidate:CHANGE-20260930T042538Z-5de819ea:r2\",\"createdAt\":\"2026-09-30T04:25:41.233Z\",\"operationId\":\"CHANGE-20260930T042538Z-5de819ea\",\"parentCandidateId\":\"candidate:CHANGE-20260930T042538Z-5de819ea:r1\",\"projectId\":\"project:73862056d97f1a9e42c3b39c\",\"revision\":2,\"sourceDigest\":\"e2ce31855004ce591afd2960dd9e5489ce3776956efe06b25f752d40ebf5f5cc\",\"taskId\":\"CHANGE-20260930T042538Z-5de819ea\",\"version\":1,\"workspace\":\"wks_846580f3163f0ad5\",\"worktree\":\"/home/james/.paseo/worktrees/1r8t577f/aeh-change-20260930t042538z-5de819ea\"}",
+      "identityDigest": "1fccabb2de64f4db77fff0a22571af7f55f201d92049f1cc6f5364aae18a4590"
+    },
+    "participants": {},
+    "candidateAssemblyReceipts": null,
+    "supervision": {
+      "required": true,
+      "materialized": false,
+      "generations": []
+    },
+    "stages": {
+      "queued": "RUNNING",
+      "input-resolution": "COMPLETED",
+      "triage": "COMPLETED",
+      "environment-preflight": "SKIPPED",
+      "contract-authoring": "COMPLETED",
+      "implementation": "RUNNING",
+      "finished": "FAILED"
+    }
+  },
+  "sessionReceipts": [],
+  "oracle": {
+    "checks": [
+      {
+        "id": "operation.terminal-succeeded",
+        "status": "FAIL",
+        "required": true,
+        "message": "operation status=FAILED",
+        "evidence": {}
+      },
+      {
+        "id": "operation.candidate-bound",
+        "status": "PASS",
+        "required": true,
+        "message": "candidate revision identity digest is bound",
+        "evidence": {
+          "revision": 2
+        }
+      },
+      {
+        "id": "operation.participant-receipts",
+        "status": "FAIL",
+        "required": true,
+        "message": "0 terminal participant receipt(s) persisted",
+        "evidence": {}
+      },
+      {
+        "id": "operation.revision-current",
+        "status": "PASS",
+        "required": true,
+        "message": "operation execution revision is durable",
+        "evidence": {}
+      },
+      {
+        "id": "change.route",
+        "status": "PASS",
+        "required": true,
+        "message": "implementation route=DIRECT",
+        "evidence": {
+          "assurance": "NONE",
+          "preflight": "DIRECT"
+        }
+      },
+      {
+        "id": "change.direct-route",
+        "status": "PASS",
+        "required": true,
+        "message": "direct implementation route=DIRECT",
+        "evidence": {}
+      },
+      {
+        "id": "change.candidate-revision",
+        "status": "PASS",
+        "required": true,
+        "message": "candidate revision=2",
+        "evidence": {}
+      },
+      {
+        "id": "change.participant-receipt",
+        "status": "FAIL",
+        "required": true,
+        "message": "0 candidate-bound participant receipt(s)",
+        "evidence": {}
+      },
+      {
+        "id": "change.validation",
+        "status": "FAIL",
+        "required": true,
+        "message": "validation report status=missing fixture command=missing",
+        "evidence": {
+          "checks": []
+        }
+      },
+      {
+        "id": "change.acceptance-oracle",
+        "status": "FAIL",
+        "required": true,
+        "message": "acceptance oracle artifact=missing",
+        "evidence": {
+          "disposition": null
+        }
+      },
+      {
+        "id": "change.objective-completion",
+        "status": "FAIL",
+        "required": true,
+        "message": "objective completion decision persisted",
+        "evidence": {}
+      }
+    ],
+    "applicableChecks": [
+      {
+        "id": "change.direct-route",
+        "status": "PASS",
+        "required": true,
+        "message": "direct implementation route=DIRECT",
+        "evidence": {}
+      },
+      {
+        "id": "change.candidate-revision",
+        "status": "PASS",
+        "required": true,
+        "message": "candidate revision=2",
+        "evidence": {}
+      },
+      {
+        "id": "change.participant-receipt",
+        "status": "FAIL",
+        "required": true,
+        "message": "0 candidate-bound participant receipt(s)",
+        "evidence": {}
+      },
+      {
+        "id": "change.validation",
+        "status": "FAIL",
+        "required": true,
+        "message": "validation report status=missing fixture command=missing",
+        "evidence": {
+          "checks": []
+        }
+      }
+    ],
+    "rowResults": {
+      "change": "FAIL",
+      "direct-change": "FAIL"
+    },
+    "detail": {
+      "checks": [
+        {
+          "id": "operation.terminal-succeeded",
+          "status": "FAIL",
+          "required": true,
+          "message": "operation status=FAILED",
+          "evidence": {}
+        },
+        {
+          "id": "operation.candidate-bound",
+          "status": "PASS",
+          "required": true,
+          "message": "candidate revision identity digest is bound",
+          "evidence": {
+            "revision": 2
+          }
+        },
+        {
+          "id": "operation.participant-receipts",
+          "status": "FAIL",
+          "required": true,
+          "message": "0 terminal participant receipt(s) persisted",
+          "evidence": {}
+        },
+        {
+          "id": "operation.revision-current",
+          "status": "PASS",
+          "required": true,
+          "message": "operation execution revision is durable",
+          "evidence": {}
+        },
+        {
+          "id": "change.route",
+          "status": "PASS",
+          "required": true,
+          "message": "implementation route=DIRECT",
+          "evidence": {
+            "assurance": "NONE",
+            "preflight": "DIRECT"
+          }
+        },
+        {
+          "id": "change.direct-route",
+          "status": "PASS",
+          "required": true,
+          "message": "direct implementation route=DIRECT",
+          "evidence": {}
+        },
+        {
+          "id": "change.candidate-revision",
+          "status": "PASS",
+          "required": true,
+          "message": "candidate revision=2",
+          "evidence": {}
+        },
+        {
+          "id": "change.participant-receipt",
+          "status": "FAIL",
+          "required": true,
+          "message": "0 candidate-bound participant receipt(s)",
+          "evidence": {}
+        },
+        {
+          "id": "change.validation",
+          "status": "FAIL",
+          "required": true,
+          "message": "validation report status=missing fixture command=missing",
+          "evidence": {
+            "checks": []
+          }
+        },
+        {
+          "id": "change.acceptance-oracle",
+          "status": "FAIL",
+          "required": true,
+          "message": "acceptance oracle artifact=missing",
+          "evidence": {
+            "disposition": null
+          }
+        },
+        {
+          "id": "change.objective-completion",
+          "status": "FAIL",
+          "required": true,
+          "message": "objective completion decision persisted",
+          "evidence": {}
+        }
+      ],
+      "rows": {
+        "change": [
+          "change.candidate-revision",
+          "change.participant-receipt",
+          "change.validation"
+        ],
+        "direct-change": [
+          "change.direct-route",
+          "change.candidate-revision",
+          "change.validation"
+        ]
+      },
+      "candidate": {
+        "candidateId": "candidate:CHANGE-20260930T042538Z-5de819ea:r2",
+        "revision": 2,
+        "identityDigest": "1fccabb2de64f4db77fff0a22571af7f55f201d92049f1cc6f5364aae18a4590",
+        "sourceDigest": "e2ce31855004ce591afd2960dd9e5489ce3776956efe06b25f752d40ebf5f5cc",
+        "worktree": "/home/james/.paseo/worktrees/1r8t577f/aeh-change-20260930t042538z-5de819ea"
+      },
+      "validationReport": null,
+      "capsule": null,
+      "worktreeRoot": "/home/james/.paseo/worktrees/1r8t577f/aeh-change-20260930t042538z-5de819ea"
+    }
+  },
+  "terminal": {
+    "status": "FAILED",
+    "bounded": true,
+    "lateTerminal": null
+  },
+  "result": "FAIL",
+  "workspaceInventory": [
+    {
+      "workspaceId": "wks_1f5aeebf118384e6",
+      "project": "lane-change-fixture",
+      "cwd": "/tmp/aeh-s13-resource-IVVIPZ/aeh-s13-gov-RQNWA9/work/lane-change-fixture",
+      "laneCreated": true
+    },
+    {
+      "workspaceId": "wks_49c9505301eef024",
+      "project": "lane-change-fixture",
+      "cwd": "/tmp/aeh-s13-resource-IVVIPZ/aeh-s13-gov-DJ5ETt/work/lane-change-fixture",
+      "laneCreated": false
+    },
+    {
+      "workspaceId": "wks_4c0f8fc95e5ffd99",
+      "project": "lane-change-fixture",
+      "cwd": "/tmp/aeh-s13-resource-IVVIPZ/aeh-s13-gov-DJ5ETt/work/lane-change-fixture",
+      "laneCreated": false
+    },
+    {
+      "workspaceId": "wks_4d6fd213bd504648",
+      "project": "lane-change-fixture",
+      "cwd": "/home/james/.paseo/worktrees/2gwk2stn/aeh-change-20260930t041747z-5de819ea",
+      "laneCreated": false
+    },
+    {
+      "workspaceId": "wks_846580f3163f0ad5",
+      "project": "lane-change-fixture",
+      "cwd": "/home/james/.paseo/worktrees/1r8t577f/aeh-change-20260930t042538z-5de819ea",
+      "laneCreated": true
+    },
+    {
+      "workspaceId": "wks_cf48bdd193fd602a",
+      "project": "lane-change-fixture",
+      "cwd": "/tmp/aeh-s13-resource-IVVIPZ/aeh-s13-gov-RQNWA9/work/lane-change-fixture",
+      "laneCreated": true
+    },
+    {
+      "workspaceId": "wks_ddda155c80790107",
+      "project": "lane-change-fixture",
+      "cwd": "/tmp/aeh-s13-resource-IVVIPZ/aeh-s13-gov-DJ5ETt/work/lane-change-fixture",
+      "laneCreated": false
+    }
+  ],
+  "workspaceCleanup": {
+    "skipped": true,
+    "reason": "S13_GOV_KEEP=1",
+    "archiveEvidence": false,
+    "remaining": [
+      "wks_1f5aeebf118384e6",
+      "wks_49c9505301eef024",
+      "wks_4c0f8fc95e5ffd99",
+      "wks_4d6fd213bd504648",
+      "wks_846580f3163f0ad5",
+      "wks_cf48bdd193fd602a",
+      "wks_ddda155c80790107"
+    ],
+    "accounting": {
+      "inventoryCount": 7,
+      "archivedCount": 0,
+      "remainingCount": 7,
+      "unaccounted": [],
+      "accounted": true
+    }
+  },
+  "postCampaignOperationRead": {
+    "operationId": "CHANGE-20260930T042538Z-5de819ea",
+    "observedAt": "2026-09-30T04:26:40.130Z",
+    "observationWindowMs": 0,
+    "observations": 1,
+    "status": "FAILED",
+    "phase": "failed",
+    "revision": 21,
+    "controllerPid": 1446524,
+    "controllerAlive": false,
+    "terminal": true,
+    "candidateWorktree": "/home/james/.paseo/worktrees/1r8t577f/aeh-change-20260930t042538z-5de819ea",
+    "candidateWorktreeAvailable": true
+  },
+  "leadAgentCleanup": {
+    "agentId": "6a2e01cb-3f75-4bc8-8349-a82d87877443",
+    "exitCode": 0
+  },
+  "checkoutProof": {
+    "trackedDigestBefore": "d918cc727fd17c84bea741d6a9ee0ae2d01888880f82b6e269918f48cf7252a2",
+    "trackedDigestAfter": "d918cc727fd17c84bea741d6a9ee0ae2d01888880f82b6e269918f48cf7252a2",
+    "trackedFiles": 668,
+    "checkoutUntouched": true,
+    "postRunTrackedDocEditWindow": {
+      "opensAfterLaneFinish": true,
+      "note": "S13 tracked documentation/evidence is edited after lane execution; the recorded digest is the source-tree digest at lane end (R11-F6)."
+    }
+  },
+  "finishedAt": "2026-09-30T04:26:41.517Z",
+  "durationMs": 93143
+}

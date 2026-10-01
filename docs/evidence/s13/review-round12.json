@@ -1,0 +1,428 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 12,
+  "reviewer": {
+    "identity": "fresh independent reviewer, Paseo agent 03f76e99-aae7-4059-8631-c54a7b0f939b",
+    "provider": "opencode-go",
+    "model": "deepseek-v4.1-flash",
+    "thinking": "plan mode; thinking option not exposed to this reviewer process",
+    "noImplementationDisclosure": "I did not implement Round 12 and inherited no prior disposition. I made no repository modification; no commit/push/stash/reset/clean/revert; no GitHub write; no AEH operation launched against this checkout. I only read files, computed digests, inspected the Paseo daemon read-only, and ran the mandated focused vitest set (which writes only disposable temp paths; git status and HEAD were identical before and after). I did not run the full suite or `npm run build` because those can rewrite ignored `dist/` and the checkout was required to stay read-only."
+  },
+  "gitState": {
+    "branch": "core-architecture-v2",
+    "head": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "headMatchesExpected": true,
+    "upstreamCommitsAheadBehind": "0/0 (HEAD is the S12 acceptance commit)",
+    "workingTree": "77 tracked modifications + 27 untracked paths, all uncommitted; no stashes; no staged index",
+    "gitDiffCheck": "clean (exit 0)",
+    "targetDigest": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a (working == HEAD, MATCH)",
+    "credentialsInEvidence": "none found (ghp_/github_pat_/gho_/ghs_/sk-/BEGIN PRIVATE KEY/AKIA/xox scans; pairing tokens appear only as REDACTED)",
+    "finalBuild": "release-1790631202146-602954-3ab91eb7 exists and is dist/current; no src/ mtime after the build (last src edit 21:19:28Z, build 21:33:22Z)"
+  },
+  "digestRecomputation": [
+    {
+      "artifact": "docs/CORE_ARCHITECTURE_V2.md",
+      "claimed": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+      "recomputed": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+      "verdict": "MATCH"
+    },
+    {
+      "artifact": "governed-lanes/round-12/run-r12-delegated-8/change-delegated.json",
+      "claimed": "a2a0ad38e53a1bdd40f1aafedf2449ed9ea261096a1c0826d64c2c1799d34b3a",
+      "recomputed": "a2a0ad38e53a1bdd40f1aafedf2449ed9ea261096a1c0826d64c2c1799d34b3a",
+      "verdict": "MATCH"
+    },
+    {
+      "artifact": "governed-lanes/round-12/run-r12-delegated-10/change-delegated.json",
+      "claimed": "9ef78df6cf5b7c8bc5fe9377ac6a8711a1bef164cdaf877989a4102315ff35b7",
+      "recomputed": "9ef78df6cf5b7c8bc5fe9377ac6a8711a1bef164cdaf877989a4102315ff35b7",
+      "verdict": "MATCH"
+    },
+    {
+      "artifact": "governed-lanes/round-12/run-r12-delegated-11/change-delegated.json",
+      "claimed": "360fea66a73308d2d96d476c751aaf0108d156332807c68da0e9cf5575132e5d",
+      "recomputed": "360fea66a73308d2d96d476c751aaf0108d156332807c68da0e9cf5575132e5d",
+      "verdict": "MATCH"
+    },
+    {
+      "artifact": "s13-governed-operations-round-12-run-r12-delegated-11.json",
+      "claimed": "9b23266356ae1593aad76575ad58ed55b49e7de0cdd0d76a09ea57059496f009",
+      "recomputed": "9b23266356ae1593aad76575ad58ed55b49e7de0cdd0d76a09ea57059496f009",
+      "verdict": "MATCH"
+    },
+    {
+      "artifact": "history/authorization-history.json",
+      "claimed": "20960a7e6e22a195a07a71124df3b73dee46cf3180aa282a8378394e8a0d540e",
+      "recomputed": "20960a7e6e22a195a07a71124df3b73dee46cf3180aa282a8378394e8a0d540e",
+      "verdict": "MATCH"
+    },
+    {
+      "artifact": "history/github-effect-authorization.272c5cb7…json",
+      "claimed": "272c5cb76158a7c312edd4d8d97cd6545b599e5c57c7978bbfc3742c573bd460",
+      "recomputed": "272c5cb76158a7c312edd4d8d97cd6545b599e5c57c7978bbfc3742c573bd460",
+      "verdict": "MATCH"
+    },
+    {
+      "artifact": "github-effect-authorization.json (current)",
+      "claimed": "272c5cb76158a7c312edd4d8d97cd6545b599e5c57c7978bbfc3742c573bd460",
+      "recomputed": "272c5cb76158a7c312edd4d8d97cd6545b599e5c57c7978bbfc3742c573bd460",
+      "verdict": "MATCH"
+    },
+    {
+      "artifact": "review-round11.json",
+      "claimed": "27d4715837ae6dca20f27f2c13fb9f2aae707ca26a8fe82eec719c8d66553863",
+      "recomputed": "27d4715837ae6dca20f27f2c13fb9f2aae707ca26a8fe82eec719c8d66553863",
+      "verdict": "MATCH"
+    },
+    {
+      "artifact": "review-round10.json",
+      "claimed": "ab31f436327641c4e8ec326ac0f4b5e13ac1c83b9f49e7f7947b60f18ccd0d44",
+      "recomputed": "ab31f436327641c4e8ec326ac0f4b5e13ac1c83b9f49e7f7947b60f18ccd0d44",
+      "verdict": "MATCH"
+    },
+    {
+      "artifact": "governed-lanes/round-11/…-e8568d/audit.json",
+      "claimed": "f31a34f8673419a8f5dee73754f68d28b806bf90eed20341a940df61c83f9b6f",
+      "recomputed": "f31a34f8673419a8f5dee73754f68d28b806bf90eed20341a940df61c83f9b6f",
+      "verdict": "MATCH"
+    },
+    {
+      "artifact": "s13-governed-operations-round-11-…-e8568d.json",
+      "claimed": "370b53a247818d1310fed0f6a1d0fe1c50c0ad56877361216d00303165676891",
+      "recomputed": "370b53a247818d1310fed0f6a1d0fe1c50c0ad56877361216d00303165676891",
+      "verdict": "MATCH"
+    },
+    {
+      "artifact": "governed-lanes/round-11/…-c38a80/change-delegated.json",
+      "claimed": "5e9b18a100fa4d5dd2b4da0810b8cac7ab2ce3c309ea18531c9511e82bdf044b",
+      "recomputed": "5e9b18a100fa4d5dd2b4da0810b8cac7ab2ce3c309ea18531c9511e82bdf044b",
+      "verdict": "MATCH"
+    },
+    {
+      "artifact": "s13-governed-operations-round-11-…-c38a80.json",
+      "claimed": "dc26366c1f62388cc7c0c9bc565ed10434c9023087e04bba3da4843ee0177f1e",
+      "recomputed": "dc26366c1f62388cc7c0c9bc565ed10434c9023087e04bba3da4843ee0177f1e",
+      "verdict": "MATCH"
+    },
+    {
+      "artifact": "github-lanes/round-11/…/authority.json",
+      "claimed": "aaa8ea76de64dbd6bdf428fd7a64cb3e73b0d2509679bc6c252f0bce7bacefe7",
+      "recomputed": "aaa8ea76de64dbd6bdf428fd7a64cb3e73b0d2509679bc6c252f0bce7bacefe7",
+      "verdict": "MATCH"
+    },
+    {
+      "artifact": "github-lanes/round-11/…/issue-driven.json",
+      "claimed": "49ac06e1bdde050400190e19b2e386704a13b3a5a6d7e65eb74c63a374fbdbea",
+      "recomputed": "49ac06e1bdde050400190e19b2e386704a13b3a5a6d7e65eb74c63a374fbdbea",
+      "verdict": "MATCH"
+    },
+    {
+      "artifact": "s13-github-effects-round-11-…-59f68a.json",
+      "claimed": "e8e6f5ea3e8cfc5ccce6cad3226785f9a69f6409eaa50cf94a2b3c5b753e9a0d",
+      "recomputed": "e8e6f5ea3e8cfc5ccce6cad3226785f9a69f6409eaa50cf94a2b3c5b753e9a0d",
+      "verdict": "MATCH"
+    },
+    {
+      "artifact": "s13-real-provider-certification.json (round-11 sweep)",
+      "claimed": "1ab94ea7d0f08494d6eacb988c3063369f545087a911b353c10a04b0a7a4d0ea",
+      "recomputed": "1ab94ea7d0f08494d6eacb988c3063369f545087a911b353c10a04b0a7a4d0ea",
+      "verdict": "MATCH"
+    },
+    {
+      "artifact": "s13-real-paseo-lifecycle-round-10-lifecycle-round10-1.json",
+      "claimed": "7e285c57463827e7a92d5358f925ccd6bbc932d90bd2330699e354e6549ce3ff",
+      "recomputed": "7e285c57463827e7a92d5358f925ccd6bbc932d90bd2330699e354e6549ce3ff",
+      "verdict": "MATCH"
+    },
+    {
+      "artifact": "s13-real-provider-certification-round-9.json (preserved)",
+      "claimed": "faad882abe490217cacad159d7404d4ffc28b2620199acb4c76ab135ddc2c92b",
+      "recomputed": "faad882abe490217cacad159d7404d4ffc28b2620199acb4c76ab135ddc2c92b",
+      "verdict": "MATCH"
+    },
+    {
+      "artifact": "round10-review-dispositions.json",
+      "claimed": "e44e22bb42da739753fe68f72f9a850915e2cdf75ad64e8a3820c6fbf809207c",
+      "recomputed": "e44e22bb42da739753fe68f72f9a850915e2cdf75ad64e8a3820c6fbf809207c",
+      "verdict": "MATCH"
+    },
+    {
+      "artifact": "round10-0114-authorization-resolution.json",
+      "claimed": "218e3523…(documented as HISTORICAL_POLICY_VIOLATION_CONFIRMED)",
+      "recomputed": "218e3523626694e7f2653b851b9c25da9b1448545d1ea31322f65459b6e92698",
+      "verdict": "MATCH"
+    }
+  ],
+  "verifiedClaims": {
+    "AEH-V2-0115": "CONFIRMED IN SOURCE. validateOpenSpecSpecDeltaCanonicalityV1/validateOpenSpecAuthoringContentCanonicalityV1 reject non-canonical READY content with typed SPEC_MANAGER_CONTENT_NOT_CANONICAL naming openspec/changes/<change>/specs/<capability>/spec.md (artifacts.specs[i]); the call at src/operations/change.ts:832 precedes persistence at :555; persist writes per-capability specs/<capability>/spec.md (src/spec/openspec.ts:138-156); outputContracts spec-authoring now requires one {capability, content} per capability; tests/specManagerCanonicality.test.ts has exactly 6 tests including a frozen-controller run (no persistence/spec-compilation) and the escalation path.",
+    "AEH-V2-0110": "CONFIRMED IN SOURCE. specEscalationConstraintV1 returns only for plannerEvidence.payload.formalizationNeed === REQUIRED (constraint PLANNER_FORMALIZATION_NEED_REQUIRED) and is the sole escalation call site; the event records constraint, plannerArtifact, formalizationReason/EvidenceRefs and Explorer finding statuses. Live: run-2 has exactly one escalation with that provenance; runs 4-11 have zero escalations and route DELEGATED. tests/changeRouting.test.ts covers PARTIAL-explorer + NONE no-escalation.",
+    "pipelineRepairs": "CONFIRMED for all seven listed fixes (contract sealed before planning change.ts:236-244 + tests/changePlanRequirementTraceability.test.ts:92; escalation enters formalization in the same operation change.ts:285-295; provisional policy supersede state.ts:1156-1190 + tests/specEscalationPolicyRebind.test.ts:115; defining seed skill src/participants/skillCompiler.ts:55-60 + tests/participantsCanonical.test.ts:55; explicit permission projection src/agents/waveExecutor.ts:303-325 + tests/participantRuntimeBinding.test.ts:51; single-command resolution src/architecture/validationRequirements.ts:211-217 + tests/architectureWorkGraph.test.ts:174; approval-stop failed turn src/paseo/runtimeCore.ts:492-497 + src/paseo/native.ts:685-698 + tests/paseoRuntime.test.ts:288).",
+    "P1-C": "CONFIRMED IN SOURCE for all four emitters (certification :385, governed :810, lifecycle :211/:304, GitHub :322/:372) and in all 11 round-12 governed lane envelopes (harnessRevisions with per-file sha256 + digest).",
+    "P1-D": "CONFIRMED. history/authorization-history.json records both digests, bytesPreserved:false with the byte-exact-reconstruction-failure verdict for 31a47437…, verbatim Round-10/Round-12 user instructions, and the issue-create confirmation requirement; tests/packed/s13ExternalEffectAuthorization.mjs fails with EXTERNAL_AUTHORIZATION_ISSUE_CREATE_UNCONFIRMED before any gh/staging/approval and refuses to derive an unconfirmed issue-create approval (regressions in tests/s13GithubCampaignPolicy.test.ts:164,229).",
+    "P1-E": "CONFIRMED. checkoutProof.postRunTrackedDocEditWindow present in every round-12 lane envelope; WorkGraph records the edit window (lane end 19:16:17Z-21:29:08Z, docs edited after).",
+    "runTable": "Terminal facts are truthful: routes match (1 DELEGATED; 2-3 FORMAL_SDD; 4-11 DELEGATED), escalation counts match (run 2/3 = 1, others 0), run 3 captured RUNNING/HUMAN_REQUIRED rev 78 with a rejected cancel (HumanDecisionError: no current HumanDecision) and cleanup skipped; run 10 Implementer COMPLETED with zero assembly receipts and workspace digest MATCH (no ChangeSet); run 11 Implementer FAILED on both identities with zero assembly receipts. Oracle validationReport command.fixture-greeting/contract-test PASS is durable for run 10/11.",
+    "noWaiverNoSubstitution": "CONFIRMED. All round-12 participant sessions are opencode/opencode-go/mimo-v2.6-flash (codex/gpt-6-luna supervisor); no provider substitution; delegated-change NOT_ACCEPTED and the lane terminalized FAILED; no row or slice self-accepted.",
+    "paseoSdkResolve": "PRE-EXISTING_ENVIRONMENT_DRIFT (reproduced 3/3 failing at the current tree). tests/paseoSdkResolve.test.ts and src/paseo/sdkResolve.ts are unchanged from HEAD; the test's sandboxed mise store (0.3.1) is not isolated from the real user mise install (0.9.1~aube~…), which is what the resolver finds. Documented failing since S10 at baseline 0afebcd. Not introduced by Round 12."
+  },
+  "findings": [
+    {
+      "id": "R12-F1",
+      "priority": "P0",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "CONFIRMED_UNMARKED_STALENESS",
+      "evidence": "Round-12 product edits (edit-time set: src/core/errors.ts, src/spec/openspec.ts, src/agents/outputContracts.ts, src/operations/change.ts, src/operations/state.ts, src/participants/skillCompiler.ts, src/agents/waveExecutor.ts, src/architecture/validationRequirements.ts, src/paseo/sdk.ts, src/workers/agentPrompt.ts, src/paseo/launchSpec.ts, src/paseo/runtimeCore.ts, src/paseo/native.ts; no src/core/run.ts edit in Round 12 — its last edit was Round 7) are on the executed paths of five previously accepted rows: informational (assessor managed-turn conversion sdk/native/runtimeCore), audit (materializeAgentPrompt featureValues + permission-stop classification + Paseo wait), change/direct-change (change.ts orchestration, provisional-policy supersede, wave permission projection, validation resolution, Paseo launch/wait), issue-driven (managed change/Planner import path). The WorkGraph line 756 asserts 'no staleness reason arose for these product sources', which is unsupported. startup/project-home/multi-project (CLI-only), cancel/recovery (materialize/inspect/stop path; new permission/waiting branches cannot fire; no wait/isTerminalStatus use) and authority (gated-effect path; unchanged state functions) are genuinely unaffected.",
+      "requiredAction": "Mark informational, audit, change, direct-change and issue-driven STALE_REQUIRES_RERUN and rerun them build-bound on the post-Round-12 source before any S13 checkpoint; correct WorkGraph line 756."
+    },
+    {
+      "id": "R12-F2",
+      "priority": "P1",
+      "mechanism": "HYBRID",
+      "disposition": "CONFIRMED_EVIDENCE_GAP_AND_UNRESOLVED_CLASSIFICATION",
+      "evidence": "AEH-V2-0116's core is durable: run-11 Implementer identities FAILED, no receipt, zero assembly receipts, candidate workspace digest MATCH (no ChangeSet); run-10 Implementer COMPLETED with no ChangeSet. But the ledger/WorkGraph assertions 'provider session stopped on an unapproved permission prompt', 'featureValues.auto_accept: true', 'the approval is not a pendingPermissions entry' and 'the prompt identity is not retained' do not appear anywhere in the durable lane envelopes or summaries (literal-string scan over all round-12 evidence: 0 occurrences of unapproved/stopped-on/auto_accept/pendingPermissions). The exact requested permission and the created agent's featureValues are not retained. Whether this is an AEH projection/adapter defect or a Paseo/OpenCode provider limitation is therefore NOT PROVEN; the Round-12 mitigations are sound and do not mask it (permission/waiting become explicit failed turns; auto_accept only when no operator ask; explicit ceiling projection) but they do not resolve the root cause.",
+      "requiredAction": "Round 13: capture the daemon approval payload/session event and the created agent featureValues/permission projection into the lane envelope at the stop; classify AEH defect vs provider limitation only from that evidence; do not assert the daemon/pendingPermissions mechanism as fact before then."
+    },
+    {
+      "id": "R12-F3",
+      "priority": "P2",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "CONFIRMED_DURABILITY_GAP",
+      "evidence": "run-r12-delegated-3/change-delegated.json records workspaceCleanup.skipped=true reason=controller-not-terminal-or-still-alive with remaining=[wks_4fefe71e419da3b3, wks_c12c0d706003413f] and postCampaignOperationRead.controllerAlive=true/terminal=false; the WorkGraph claim 'controller killed and workspaces archived manually' has no durable record. The current daemon no longer lists either workspace, so the claim is plausible but unverified; the round statement 'all Paseo workspaces archived with none remaining' is not durable for run 3.",
+      "requiredAction": "Persist a post-campaign archive/query record for any manually cleaned lane, or annotate the run-3 claim as lead-observed (daemon-corroborated) rather than durable."
+    },
+    {
+      "id": "R12-F4",
+      "priority": "P2",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "CONFIRMED_PARTIAL_CAUSAL_EVIDENCE",
+      "evidence": "For runs 1, 5, 6, 7, 8, 9, 10 the lane envelope has terminalRecord.error=null and operation.error=null and retains no stage message; the implementer artifact bytes are not retained. The run table's causal labels (contract-order rejection, Librarian EMPTY_OUTPUT, node-runtime uncovered, provisional-policy collision, silent empty implementer result, unresolved command-kind requirement) are lead diagnoses only partially inferable from retained Explorer/Planner payloads (e.g. run-1 Planner references REQ-1, run-6 payload names node-runtime, run-9 names a command-kind requirement).",
+      "requiredAction": "Retain the terminal/stage error detail (or a sanitized failure fingerprint) and the failing participant artifact bytes in the lane envelope for every run; mark non-durable causal labels as diagnostics."
+    },
+    {
+      "id": "R12-F5",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "CONFIRMED_COUNT_INCONSISTENCY",
+      "evidence": "STATUS line 45 and WorkGraph line 703 say 'six further real defects' while both enumerate seven (WorkGraph repair table items 1-7; S13-W57 names seven; the findings section lists seven).",
+      "requiredAction": "Reconcile the count to seven (or explicitly exclude the approval-stop mitigation and say so)."
+    },
+    {
+      "id": "R12-F6",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "CONFIRMED_OVERSTATEMENT",
+      "evidence": "WorkGraph line 723 states 'placeholder content is never accepted'. The gate validates canonical structure only (non-empty content, delta headers, requirement + scenario); a structurally valid but semantically empty placeholder passes the gate and is only later subject to openspec validate --strict, which does not judge content quality either.",
+      "requiredAction": "Reword to 'structurally non-canonical or empty content is rejected before persistence'."
+    },
+    {
+      "id": "R12-F7",
+      "priority": "P2",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "VERIFICATION_BOUNDARY",
+      "evidence": "The claimed focused 20 files/172 tests and full non-system 200 files (198 passed/1 skipped) were not independently reproduced (running the full suite/build would rewrite ignored dist/, incompatible with read-only review). The mandated 12-file set passed 12 files/90 tests and typecheck exited 0; tests/paseoSdkResolve.test.ts reproduced 3/3 failing and is classified pre-existing.",
+      "requiredAction": "None beyond recording; a later checkpoint must rerun the full non-system lane in a writable environment."
+    }
+  ],
+  "stalenessDispositions": [
+    {
+      "row": "startup",
+      "previous": "CURRENT_ACCEPTED",
+      "disposition": "UNCHANGED_EVIDENCE_VALID",
+      "reason": "Round-12 edited logic does not execute on the packed init/doctor CLI path"
+    },
+    {
+      "row": "informational",
+      "previous": "CURRENT_ACCEPTED",
+      "disposition": "STALE_REQUIRES_RERUN",
+      "reason": "assessor managed-turn conversion/wait classification changed (paseo sdk/native/runtimeCore)"
+    },
+    {
+      "row": "audit",
+      "previous": "CURRENT_ACCEPTED",
+      "disposition": "STALE_REQUIRES_RERUN",
+      "reason": "materializeAgentPrompt featureValues + permission-stop classification + Paseo wait changed on the reviewer/supervisor launch path"
+    },
+    {
+      "row": "change",
+      "previous": "CURRENT_ACCEPTED",
+      "disposition": "STALE_REQUIRES_RERUN",
+      "reason": "change.ts orchestration, provisional-policy supersede, wave permission projection, validation resolution and Paseo launch changed"
+    },
+    {
+      "row": "direct-change",
+      "previous": "CURRENT_ACCEPTED",
+      "disposition": "STALE_REQUIRES_RERUN",
+      "reason": "same executed DIRECT pipeline as change"
+    },
+    {
+      "row": "cancel",
+      "previous": "CURRENT_ACCEPTED",
+      "disposition": "UNCHANGED_EVIDENCE_VALID",
+      "reason": "materialize/inspect/stop path; new permission/waiting branches cannot fire and isTerminalStatus is not used by inspect/stop"
+    },
+    {
+      "row": "recovery",
+      "previous": "CURRENT_ACCEPTED",
+      "disposition": "UNCHANGED_EVIDENCE_VALID",
+      "reason": "same lifecycle path as cancel"
+    },
+    {
+      "row": "project-home",
+      "previous": "CURRENT_ACCEPTED",
+      "disposition": "UNCHANGED_EVIDENCE_VALID",
+      "reason": "project register/home --once CLI path unaffected"
+    },
+    {
+      "row": "multi-project",
+      "previous": "CURRENT_ACCEPTED",
+      "disposition": "UNCHANGED_EVIDENCE_VALID",
+      "reason": "two-registry CLI path unaffected"
+    },
+    {
+      "row": "issue-driven",
+      "previous": "CURRENT_REQUIRED_EVIDENCE_VERIFIED",
+      "disposition": "STALE_REQUIRES_RERUN",
+      "reason": "managed change/Planner import path changed (change.ts/state.ts/waveExecutor/agentPrompt/Paseo)"
+    },
+    {
+      "row": "authority",
+      "previous": "CURRENT_REQUIRED_EVIDENCE_VERIFIED",
+      "disposition": "UNCHANGED_EVIDENCE_VALID",
+      "reason": "gated-effect path uses unchanged state/gatedAction functions; no round-12 changed logic executes"
+    }
+  ],
+  "matrixDispositions": [
+    {
+      "capability": "startup",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "round-11 sweep build 0fc216b8; path unchanged by round 12"
+    },
+    {
+      "capability": "informational",
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "R12-F1"
+    },
+    {
+      "capability": "audit",
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "R12-F1"
+    },
+    {
+      "capability": "change",
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "R12-F1"
+    },
+    {
+      "capability": "direct-change",
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "R12-F1"
+    },
+    {
+      "capability": "delegated-change",
+      "disposition": "NOT_ACCEPTED",
+      "evidence": "AEH-V2-0116; no accepted DELEGATED completion"
+    },
+    {
+      "capability": "formal-sdd",
+      "disposition": "NOT_ACCEPTED",
+      "evidence": "AEH-V2-0115 source-repaired, live canonical rerun not reached; AEH-V2-0111 open"
+    },
+    {
+      "capability": "multi-worker",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "not started in round 12"
+    },
+    {
+      "capability": "cancel",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "round-10 build-bound lifecycle; path unchanged"
+    },
+    {
+      "capability": "recovery",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "round-10 build-bound lifecycle; path unchanged"
+    },
+    {
+      "capability": "product-repair",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "not started"
+    },
+    {
+      "capability": "certification-repair",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "not started"
+    },
+    {
+      "capability": "repair",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "not started"
+    },
+    {
+      "capability": "context-handoff",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "not started"
+    },
+    {
+      "capability": "permission-delegation",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "not started"
+    },
+    {
+      "capability": "issue-driven",
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "R12-F1; round-11 verified path changed"
+    },
+    {
+      "capability": "delivery",
+      "disposition": "BLOCKED",
+      "evidence": "requires an accepted change trunk"
+    },
+    {
+      "capability": "distributed-execution",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "not started"
+    },
+    {
+      "capability": "project-home",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "round-11 sweep; path unchanged"
+    },
+    {
+      "capability": "multi-project",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "round-11 sweep; path unchanged"
+    },
+    {
+      "capability": "control-center",
+      "disposition": "NOT_APPLICABLE",
+      "evidence": "BROWSER lane only; never a REAL_PROVIDER substitute"
+    },
+    {
+      "capability": "authority",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "round-11 verified under external authorization; path unchanged"
+    }
+  ],
+  "focusedTests": {
+    "command": "npx vitest run tests/specManagerCanonicality.test.ts tests/changeRouting.test.ts tests/changePlanRequirementTraceability.test.ts tests/specEscalationPolicyRebind.test.ts tests/participantsCanonical.test.ts tests/participantRuntimeBinding.test.ts tests/architectureWorkGraph.test.ts tests/paseoRuntime.test.ts tests/paseoLaunchSpec.test.ts tests/openSpecBridge.test.ts tests/candidateIdentity.test.ts tests/s13GithubCampaignPolicy.test.ts --reporter=dot",
+    "result": "12 files passed / 90 tests passed / 0 failed",
+    "typecheck": "npm run typecheck exit 0",
+    "claimed20x172": "not independently reproduced (read-only boundary)",
+    "paseoSdkResolve": "1 file / 3 tests failed (reproduced)"
+  },
+  "preExistingFailureClassification": {
+    "file": "tests/paseoSdkResolve.test.ts",
+    "classification": "PRE_EXISTING_ENVIRONMENT_DRIFT",
+    "introducedByRound12": false,
+    "evidence": "3/3 failures reproduced; test file and src/paseo/sdkResolve.ts unchanged from HEAD (test committed at 1dc5194); failure is the test's sandboxed mise-store expectation (0.3.1) versus the real user mise install (0.9.1~aube~b089781319af45f6); documented failing at S10 baseline 0afebcd."
+  },
+  "verdict": "SLICE_BLOCKED",
+  "actionRequired": [
+    "Round 13: mark and rerun the five stale rows (informational, audit, change, direct-change, issue-driven) build-bound on post-Round-12 source; correct WorkGraph line 756.",
+    "Round 13: diagnose AEH-V2-0116 with daemon-level evidence (approval payload/session event, created-agent featureValues, permission projection) and classify AEH defect vs Paseo/OpenCode limitation; no provider substitution or silent waiver may be used to bypass it.",
+    "Round 13: rerun change-delegated to an accepted terminal result; run the live FORMAL_SDD canonical rerun (AEH-V2-0115 closure, AEH-V2-0111); then the P2-F matrix rows.",
+    "Persist run-3 manual cleanup and per-run causal failure details (R12-F3/F4).",
+    "Reconcile the six/seven defect count and the placeholder-acceptance wording (R12-F5/F6).",
+    "S14 must not start; no row or slice is accepted by this review."
+  ]
+}

@@ -1,0 +1,215 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 19,
+  "runId": "r19-gh-1",
+  "capability": "delivery",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13GithubEffectCampaign.mjs",
+        "sha256": "fe67f191187245caf2050bea65d66a5475d7c1fcb49373fd9e583a09dab98aca"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "347ca16af800e08e988999ed82ae6e8132f6a7d6164b5c5e3048cd5231847e8f"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "15c31c126b86ffb6303d847f8ea606e66893c0529c02e3bf3076348e8b649ff1"
+  },
+  "candidateBinding": {
+    "packedArtifact": "agentic-engineering-harness-0.8.4.tgz",
+    "packedArtifactDigest": "883daa81fea1bba4ff917ce12b316745412f03ca79876bcef086077991fa5afc",
+    "packedBuild": {
+      "releaseId": "release-1790712212127-1416438-cdaf8967",
+      "buildDigest": "408b178d53f32750aa81efb3a60965552b1aacd7756332b4c6dbf8fd3d1c744b",
+      "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+      "packageVersion": "0.8.4"
+    },
+    "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c"
+  },
+  "repository": "JamesMorales04/aeh-s13-round3-20260927035743-6bb5da",
+  "issueNumber": 1,
+  "startedAt": "2026-09-29T20:09:25.066Z",
+  "checks": [
+    {
+      "id": "delivery.accepted-candidate",
+      "ok": true,
+      "message": "candidate r2 with persisted accepted AcceptanceOracle (1 assertions)"
+    },
+    {
+      "id": "delivery.external-authorization",
+      "ok": true,
+      "message": "approval derived from external authorization s13-github-effect-authorization-2026-09-28 bound to the exact git.push effect digest"
+    },
+    {
+      "id": "delivery.human-gate",
+      "ok": true,
+      "message": "unapproved delivery push status=HUMAN_REQUIRED"
+    },
+    {
+      "id": "delivery.real-effect",
+      "ok": true,
+      "message": "finalized=FINALIZED pushed=true remote aeh-s13-delivery-1-s13-delivery-certification-change-r19-gh-1@7747483eff8f"
+    },
+    {
+      "id": "delivery.push-only",
+      "ok": true,
+      "message": "no pull-request intent/receipt and 0 open pull request(s) for aeh-s13-delivery-1-s13-delivery-certification-change-r19-gh-1"
+    },
+    {
+      "id": "delivery.receipts",
+      "ok": true,
+      "message": "3 intent(s); receipts: git.commit, git.push, github.branch.create"
+    },
+    {
+      "id": "delivery.issue-untouched",
+      "ok": true,
+      "message": "authorized issue #1 unchanged: GitHub issue #1 still matches the frozen intake snapshot."
+    },
+    {
+      "id": "delivery.delivery-record",
+      "ok": true,
+      "message": "durable delivery record GH-1 issue=#1 branch=aeh-s13-delivery-1-s13-delivery-certification-change-r19-gh-1 digest=8ad11b3cd966195a"
+    },
+    {
+      "id": "delivery.provenance",
+      "ok": true,
+      "message": "S7 supply-chain gate ok=true artifactPath=<none> required=false; explicit no-artifact policy determination recorded",
+      "evidence": {
+        "policy": {
+          "required": false,
+          "artifact": null,
+          "signingRequired": false,
+          "verificationRequired": false
+        },
+        "failures": []
+      }
+    }
+  ],
+  "frozenDeliveryPolicy": {
+    "route": "DIRECT",
+    "allowedExternalEffects": [
+      "git.push",
+      "github.branch.create"
+    ],
+    "pullRequests": false,
+    "branch": "aeh-s13-delivery-1-s13-delivery-certification-change-r19-gh-1"
+  },
+  "humanGate": {
+    "status": "HUMAN_REQUIRED"
+  },
+  "acceptedCandidate": {
+    "operationId": "CHANGE-S13-GH-DELIVERY-r19-gh-1",
+    "candidateId": "candidate:CHANGE-S13-GH-DELIVERY-r19-gh-1:r2",
+    "revision": 2,
+    "sourceDigest": "f682174c67a16f4146144f87a1b2016c62a1881ed92d32bf1c950d981c923ad5",
+    "identityDigest": "625e6edf12218450f3ecbb87f2cfb796f736c3422ceb6b4126ab3ec7f36636c3",
+    "acceptanceArtifact": ".harness/operations/CHANGE-S13-GH-DELIVERY-r19-gh-1/acceptance/oracle-1d6b18f6e41792aecbc8bae39e1106c538edce7958a1ca1c07f433921c47895b.json",
+    "acceptanceDisposition": "ACCEPTED",
+    "acceptanceDispositionDigest": "828bf7e24c848d2385ab1012cb48b743c0e5d0da63e44a19ee133870a7a94264"
+  },
+  "externalAuthorization": {
+    "authorizationId": "s13-github-effect-authorization-2026-09-28",
+    "artifactDigest": "272c5cb76158a7c312edd4d8d97cd6545b599e5c57c7978bbfc3742c573bd460",
+    "coveredEffects": [
+      "git.push",
+      "github.branch.create",
+      "github.issue.create"
+    ],
+    "exactEffectDigest": "72e3303c17115d43ad1d6fb928f21529a07d2258788c479a63718a9400766320"
+  },
+  "humanDecision": {
+    "version": 2,
+    "decisionId": "decision:6ff181b6-820b-45db-89e8-efee893f3084",
+    "operationId": "CHANGE-S13-GH-DELIVERY-r19-gh-1",
+    "candidate": {
+      "operationId": "CHANGE-S13-GH-DELIVERY-r19-gh-1",
+      "candidateId": "candidate:CHANGE-S13-GH-DELIVERY-r19-gh-1:r2",
+      "projectId": "project:35ca8142408aa26c988db101",
+      "taskId": "GH-1",
+      "revision": 2,
+      "parentCandidateId": "candidate:CHANGE-S13-GH-DELIVERY-r19-gh-1:r1",
+      "sourceDigest": "f682174c67a16f4146144f87a1b2016c62a1881ed92d32bf1c950d981c923ad5",
+      "worktree": "/tmp/aeh-s13-gh-nMxvXw/delivery-clone",
+      "createdAt": "2026-09-29T20:09:33.295Z",
+      "version": 1,
+      "canonicalIdentity": "{\"candidateId\":\"candidate:CHANGE-S13-GH-DELIVERY-r19-gh-1:r2\",\"createdAt\":\"2026-09-29T20:09:33.295Z\",\"operationId\":\"CHANGE-S13-GH-DELIVERY-r19-gh-1\",\"parentCandidateId\":\"candidate:CHANGE-S13-GH-DELIVERY-r19-gh-1:r1\",\"projectId\":\"project:35ca8142408aa26c988db101\",\"revision\":2,\"sourceDigest\":\"f682174c67a16f4146144f87a1b2016c62a1881ed92d32bf1c950d981c923ad5\",\"taskId\":\"GH-1\",\"version\":1,\"worktree\":\"/tmp/aeh-s13-gh-nMxvXw/delivery-clone\"}",
+      "identityDigest": "625e6edf12218450f3ecbb87f2cfb796f736c3422ceb6b4126ab3ec7f36636c3"
+    },
+    "operationExecutionRevision": 2,
+    "policyDigest": "7b9d7a8011877d9724c508bf49d05cdadc49406a96aef0ccc5c0b34e746d7863",
+    "controllerEpoch": 1,
+    "purpose": {
+      "kind": "ACTION_AUTHORIZATION",
+      "action": "git.push",
+      "effectDigest": "72e3303c17115d43ad1d6fb928f21529a07d2258788c479a63718a9400766320"
+    },
+    "kind": "APPROVE",
+    "actorId": "human:external-authorization:s13-github-effect-authorization-2026-09-28",
+    "reason": "External user authorization 's13-github-effect-authorization-2026-09-28' (sha256 272c5cb76158a7c312edd4d8d97cd6545b599e5c57c7978bbfc3742c573bd460) covers git.push for owner JamesMorales04 on PRIVATE_ONLY resources bound to effect digest 72e3303c17115d43ad1d6fb928f21529a07d2258788c479a63718a9400766320.",
+    "createdAt": "2026-09-29T20:09:43.422Z",
+    "expiresAt": "2026-09-29T20:14:43.422Z"
+  },
+  "finalized": {
+    "status": "FINALIZED",
+    "committed": false,
+    "commitSha": "7747483eff8f53f757230c1ddc20fee7b429fd1d",
+    "pushed": true,
+    "pullRequest": null,
+    "message": "Accepted issue task finalized on aeh-s13-delivery-1-s13-delivery-certification-change-r19-gh-1 with a push-only delivery policy; pull request creation was not requested by frozen policy."
+  },
+  "gatedActions": {
+    "intents": 3,
+    "receiptActions": [
+      "git.commit",
+      "git.push",
+      "github.branch.create"
+    ],
+    "branchDisposition": "created"
+  },
+  "reconciliation": {
+    "remoteRefExitCode": 0,
+    "remoteRefSha": "7747483eff8f53f757230c1ddc20fee7b429fd1d",
+    "localHead": "7747483eff8f53f757230c1ddc20fee7b429fd1d",
+    "openPullRequests": 0
+  },
+  "deliveryRecord": {
+    "taskId": "GH-1",
+    "digest": "8ad11b3cd966195a34f5ccb38959040a8a33cfd480f1e5cc9a46aad2f8d90b0c",
+    "branch": "aeh-s13-delivery-1-s13-delivery-certification-change-r19-gh-1",
+    "issueNumber": 1,
+    "repository": "JamesMorales04/aeh-s13-round3-20260927035743-6bb5da",
+    "status": "ready",
+    "finalizedAt": "2026-09-29T20:09:38.469Z"
+  },
+  "provenance": {
+    "policy": {
+      "required": false,
+      "artifact": null,
+      "signingRequired": false,
+      "verificationRequired": false
+    },
+    "gate": {
+      "ok": true,
+      "failures": []
+    },
+    "note": "S7 supply-chain gate evaluated against the bound accepted candidate; the fixture requests no provenance artifact, so the explicit policy determination is recorded rather than a fabricated manifest (R17-F3)."
+  },
+  "issueDrift": {
+    "ok": true,
+    "message": "GitHub issue #1 still matches the frozen intake snapshot.",
+    "issueCreated": false,
+    "issueEdited": false
+  },
+  "result": "PASS",
+  "finishedAt": "2026-09-29T20:09:50.915Z"
+}

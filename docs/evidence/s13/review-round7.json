@@ -1,0 +1,123 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 7,
+  "artifact": "independent-review-round7",
+  "reviewedAt": "2026-09-28T01:10:00Z",
+  "reviewer": "fresh-independent-reviewer",
+  "result": "SLICE_BLOCKED",
+  "git": {
+    "branch": "core-architecture-v2",
+    "head": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "headSubject": "core-v2: record S12 independent acceptance",
+    "workingTree": "uncommitted S13 candidate; review-round7.json is the sole reviewer-created file",
+    "trackedFiles": 668,
+    "targetUntouched": true,
+    "targetSha256": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+    "targetHeadSha256": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+    "targetMatchesHead": true,
+    "diffCheckClean": true,
+    "commitsThisRound": 0,
+    "credentialsInEvidence": "No credential-shaped tokens found in docs/evidence/s13 (scan for GitHub tokens, API keys, and bearer tokens)."
+  },
+  "evidenceDigestsRecomputed": {
+    "docs/evidence/s13/governed-lanes/change-direct.json": {"sha256":"ebdf63950657ec918562f71aeeb17c15182d17af4f44d92ad18f8ce7722e8e7a","documented":"ebdf63950657ec918562f71aeeb17c15182d17af4f44d92ad18f8ce7722e8e7a","status":"MATCH"},
+    "docs/evidence/s13/governed-lanes/change-direct-round7-run3.json": {"sha256":"c85e136d24d6e489878eb091f4cace58a3cdd5b7895ab6119f1152ebbcbca33d","documented":"c85e136d24d6e489878eb091f4cace58a3cdd5b7895ab6119f1152ebbcbca33d","status":"MATCH"},
+    "docs/evidence/s13/governed-lanes/change-direct-round7-run4.json": {"sha256":"4c13abf1b5e64a29ed23a1c71db103696b39377e5ad5e0f0aaf8200d6561d5b3","documented":"4c13abf1b5e64a29ed23a1c71db103696b39377e5ad5e0f0aaf8200d6561d5b3","status":"MATCH"},
+    "docs/evidence/s13/governed-lanes/change-direct-round7-run5.json": {"sha256":"e8ab50beca870acff9aa791f0db737257d8e9cf2bd705913f669210d559d654b","documented":"e8ab50beca870acff9aa791f0db737257d8e9cf2bd705913f669210d559d654b","status":"MATCH"},
+    "docs/evidence/s13/governed-lanes/change-direct-round7-run6.json": {"sha256":"ebdf63950657ec918562f71aeeb17c15182d17af4f44d92ad18f8ce7722e8e7a","documented":"ebdf63950657ec918562f71aeeb17c15182d17af4f44d92ad18f8ce7722e8e7a","status":"MATCH"},
+    "docs/evidence/s13/s13-governed-operations.json": {"sha256":"488585adb2ce6aaa4b49c8ad5fc22fc86a52cad715d361818e02b211396efd23","documented":"488585adb2ce6aaa4b49c8ad5fc22fc86a52cad715d361818e02b211396efd23","status":"MATCH"},
+    "Acceptance artifact (external packed fixture path)": {"sha256":"c325323b156c131d6442aab407b6f0042e6ed1e262558c968723096311f487e9","documented":"c325323b156c131d6442aab407b6f0042e6ed1e262558c968723096311f487e9","status":"NOT_RECOMPUTABLE — the artifact bytes are not present in this checkout/evidence; lane JSON contains only path, claimed digest, byte count, disposition and a summarized evidence list."},
+    "docs/CORE_ARCHITECTURE_V2.md": {"sha256":"4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a","documented":"git show HEAD:docs/CORE_ARCHITECTURE_V2.md sha256 is identical","status":"MATCH"}
+  },
+  "verificationA": {
+    "verdict": "CONFIRMED — source and focused regressions support AEH-V2-0099; no AcceptanceOracle evaluator gate was changed.",
+    "checks": [
+      {"id":"A-compile-contract-requirements","status":"PASS","detail":"contractValidationRequirementsV1 in src/architecture/validationRequirements.ts maps contract validator check ids into deterministic validation requirements with requirementRefs and acceptanceRefs; configuredValidationKindForCheckV1 recognizes command.<id>; resolveConfigured matches command.<id> to configured command ids."},
+      {"id":"A-report-producer","status":"PASS","detail":"src/core/run.ts compiles these base requirements and merges assuranceEvaluation.validationChecks and gateCheck into the report at initial assurance compilation and on subsequent recompilations."},
+      {"id":"A-focused-properties","status":"PASS","detail":"acceptanceValidationPath.test.ts covers base assertion resolution to the compiled check, rejection of unrelated PASS validators, fail-closed missing/unknown path, candidate-stale evidence rejection, and requirement-coverage/oracle agreement."},
+      {"id":"A-oracle-gate","status":"PASS","detail":"evaluateAcceptanceOracleV1 validation path/evidence checks remain strict; source diff changes evidence production/current review selection, not the evaluator. No oracle gate was weakened."}
+    ]
+  },
+  "verificationB": {
+    "verdict": "CONFIRMED — AEH-V2-0100 is producer-side and bounded; strict oracle predicate retained.",
+    "checks": [
+      {"id":"B-receipt-record","status":"PASS","detail":"src/operations/state.ts recordParticipantReceipt stores the accepted resultArtifact on the controller-issued receipt participant and keeps launch status unchanged; runtime session remains receipt provenance."},
+      {"id":"B-regressions","status":"PASS","detail":"acceptanceReviewProvenance.test.ts covers coherent persistence/acceptance, split-record rejection, session-only rejection, stale candidate rejection and resumed/rebound identity."},
+      {"id":"B-predicate","status":"PASS","detail":"currentReviewEvidence still requires one participant record with current execution binding and result artifact and retains reviewer, candidate, policy, epoch and impact checks."}
+    ]
+  },
+  "verificationC": {
+    "verdict": "CONFIRMED — repairs are bounded; gates and routing/schema controls remain intact.",
+    "checks": [
+      {"id":"C-objective-accounting","status":"PASS","detail":"objectiveParticipantAccountingV1 consumes a settled receipt only when its candidate equals current candidate; absent/stale receipt preserves live status and fails closed."},
+      {"id":"C-supervisor-correction","status":"PASS","detail":"One correction turn maximum (two total turns) covers schema-invalid or provenance-mismatched consolidation; strict supervisor schema and exact source-id set validation remain. Seven focused regressions pass."},
+      {"id":"C-review-rounds","status":"PASS","detail":"One current-candidate review check is emitted per reviewer/dimension/assertion; reviewLifecycle replaces superseded checks. Focused regressions pass."},
+      {"id":"C-gates-and-routing","status":"PASS","detail":"evaluateAcceptanceOracleV1 and evaluateTerminalGate checks are unchanged in strength. No structured-output routing, schema, retry, or capability-registry files were modified in round 7; schemas remain strict."}
+    ]
+  },
+  "verificationD": {
+    "verdict": "PARTIALLY CONFIRMED — the packed lane durably records ACCEPTED oracle disposition, all three assertions covered, zero blockers, validation PASS, real provider sessions, and a truthful FAILED terminal. The acceptance artifact's claimed digest cannot be independently recomputed because its bytes are absent. AEH-V2-0106 is confirmed as an evidence-producer/assembly-lineage gap, not a TARGET contradiction.",
+    "checks": [
+      {"id":"D-oracle-validation-sessions","status":"PASS","detail":"Final lane JSON embeds ACCEPTED with zero blockers and all three required assertions covered; validation report checks PASS; implementer/reviewer are opencode-go/mimo-v2.6-flash and supervisor is codex/gpt-6-luna with usage/session records."},
+      {"id":"D-acceptance-digest","status":"NOT_VERIFIABLE","detail":"Artifact path is inside the disposable packed fixture and artifact bytes are not preserved. The repeated metadata hash is not a recomputation."},
+      {"id":"D-checkout","status":"PARTIAL","detail":"The docs report tracked digest before==after bfee9f4bcf471394…; final artifact itself does not contain that checkoutUntouched field or digest. TARGET byte identity independently matches HEAD."},
+      {"id":"D-0106-source-chain","status":"PASS","detail":"finalizeOperationSession in src/workers/agentPrompt.ts records receipt.candidate from the then-current candidate before assembly. src/core/run.ts then calls assembleCandidateChangeSet and bindAssembledCandidate; src/candidates/binding.ts advances current candidate to the assembled revision. objectiveParticipantAccountingV1 requires receipt candidate equal current candidate, leaving the implementer's r2 receipt unsettled against r3. evaluateTerminalGate in src/operations/v2Contracts.ts applies the same candidate equality and rejects stale receipt. The final artifact independently shows participant:0dcc072d8d513bfa, Implementer, settled SUCCEEDED receipt candidate r2, current candidate r3, and one PARTICIPANT_INCOMPLETE. This is a producer/evidence-model gap: either record assembly-aware completion evidence or verify deterministic assembly lineage without loosening the gate."},
+      {"id":"D-run4-late-terminal","status":"PASS","detail":"Run 4 records duration 969063 ms, timeout=true at the 900 s bound, cancellation rejected by HumanDecision authorization, explicit lateWaitSeconds=600, terminal=true, and late terminal FAILED at revision 106. This matches the documented timeout/late-terminal account."}
+    ]
+  },
+  "verificationE": {
+    "verdict": "PARTIAL — all six cited lane/summary digests recompute; TARGET matches HEAD; diff check is clean; no credential-shaped tokens found; round-4 staging directory is absent. The acceptance artifact hash and Paseo workspace archival claim cannot be independently verified from retained evidence.",
+    "checks": [
+      {"id":"E-digests","status":"PASS","detail":"Recomputed SHA-256 for final lane, preserved runs 3–6 and governed-operation summary; all match round-7 documentation."},
+      {"id":"E-target","status":"PASS","detail":"sha256 docs/CORE_ARCHITECTURE_V2.md equals sha256 of git show HEAD:docs/CORE_ARCHITECTURE_V2.md."},
+      {"id":"E-diff-check","status":"PASS","detail":"git diff --check returned clean (Git emitted an fsmonitor IPC warning, but the command exited successfully)."},
+      {"id":"E-credentials","status":"PASS","detail":"Credential-shaped token scan under docs/evidence/s13 found no matches."},
+      {"id":"E-cleanup","status":"PARTIAL","detail":"No /tmp/aeh-s13-* staging directories currently exist. The retained lane artifact records temporary fixture paths and workspace IDs but no independent archive/query result for the Paseo workspace cleanup claim."},
+      {"id":"E-acceptance-bytes","status":"NOT_VERIFIABLE","detail":"The acceptance artifact is external to the checkout and absent; only its metadata digest is retained."}
+    ]
+  },
+  "reviewChecks": {
+    "focusedTests": "npx vitest run on the eight required files: 7 files / 40 tests passed; tests/changeControllerOwnedDecision.test.ts failed before product assertions at disposableGitProject git init with spawnSync git EPERM in the sandbox. Exact focused set was invoked.",
+    "typecheck": "npm run typecheck exited 0.",
+    "noPackedCampaign": "The packed real-provider campaign was not run.",
+    "noAehOperation": "No AEH operation was launched against this checkout.",
+    "readOnly": "No commits, pushes, stashes, resets, cleans, reverts or TARGET edits were made. Only this requested review artifact is added."
+  },
+  "findings": [
+    {"id":"R7-F1","severity":"P1","title":"Assembly advances candidate after participant receipt is settled","detail":"The final operation cannot satisfy objective completion or terminalization: Implementer receipt for controller-issued identity participant:0dcc072d8d513bfa binds r2, while assembly creates current candidate r3. objectiveParticipantAccountingV1 and evaluateTerminalGate correctly fail closed on the mismatch. This is not a TARGET contradiction; receipt/evidence production needs deterministic assembly lineage.","requiredRepair":"Round 8 owns an assembly-aware receipt/completion-evidence design for implementer and repairer turns. Preserve evaluateTerminalGate candidate strictness, AEH-V2-0089 resumability and the coherent receipt/artifact chain; add direct regressions and rerun the bounded packed lane to terminal SUCCEEDED."},
+    {"id":"R7-F2","severity":"P2","title":"Acceptance artifact bytes are not retained for independent digest recomputation","detail":"The lane JSON states sha256 c325323b… and byte count 27417 but does not include the artifact bytes, and the artifact path belongs to a disposable fixture. The repeated hash claim cannot be independently recomputed from this checkout.","requiredRepair":"Preserve the acceptance artifact itself (or a content-addressed evidence copy) with the next lane artifact so its digest and disposition can be recomputed by fresh reviewers."},
+    {"id":"R7-F3","severity":"P2","title":"Required focused test blocked by sandbox git EPERM","detail":"changeControllerOwnedDecision.test.ts fails while initializing its disposable repository: spawnSync git EPERM at git init. The other seven files pass (40 tests) and typecheck passes; this run does not establish that the eighth test passes.","requiredRepair":"Re-run the exact focused set in an environment that permits git init in the test temporary directory; preserve the outcome."},
+    {"id":"R7-F4","severity":"P3","title":"Round-7 checkout and workspace cleanup proof is not fully in final lane artifact","detail":"The docs cite checkoutUntouched before/after digest and archived Paseo workspaces, but the final per-run JSON has no explicit checkoutUntouched field and does not retain an independent workspace archive/query result. The target file is independently confirmed untouched and no /tmp staging directories remain now.","requiredRepair":"Retain campaign-emitted checkout before/after digest and workspace archive/query evidence in each durable final lane envelope."}
+  ],
+  "rowDispositions": {
+    "change": "NOT_ACCEPTED — final packed run terminal FAILED on AEH-V2-0106; oracle ACCEPTED but objective completion fails closed.",
+    "direct-change": "NOT_ACCEPTED — same final lane; AEH-V2-0106 remains open.",
+    "audit": "ACCEPTED_PRE_AMENDMENT / historical disposition only; no round-7 post-amendment sweep.",
+    "startup": "ACCEPTED_PRE_AMENDMENT / historical disposition only; R6-F3 sweep remains open.",
+    "informational": "ACCEPTED_PRE_AMENDMENT / historical disposition only; R6-F3 sweep remains open.",
+    "project-home": "ACCEPTED_PRE_AMENDMENT / historical disposition only; R6-F3 sweep remains open.",
+    "multi-project": "ACCEPTED_PRE_AMENDMENT / historical disposition only; R6-F3 sweep remains open.",
+    "cancel": "ACCEPTED_PRE_AMENDMENT / historical disposition only; R6-F3 sweep remains open.",
+    "recovery": "ACCEPTED_PRE_AMENDMENT / historical disposition only; R6-F3 sweep remains open.",
+    "authority": "ACCEPTED_PRE_AMENDMENT / historical disposition only; R6-F3 sweep remains open.",
+    "issue-driven": "IMPORT VERIFIED only; full intake-to-delivery row NOT_ACCEPTED.",
+    "delegated-change": "BLOCKED — depends on accepted change trunk.",
+    "formal-sdd": "BLOCKED — depends on accepted change trunk.",
+    "multi-worker": "BLOCKED — depends on accepted change trunk.",
+    "repair-family": "BLOCKED — depends on accepted change trunk.",
+    "context-handoff": "BLOCKED — depends on accepted change trunk.",
+    "permission-delegation": "BLOCKED — depends on accepted change trunk.",
+    "distributed-execution": "BLOCKED — depends on accepted change trunk.",
+    "delivery": "BLOCKED — depends on accepted change trunk.",
+    "control-center": "NOT_APPLICABLE — BROWSER lane only; not a REAL_PROVIDER substitute.",
+    "tooling": "OPEN — canonical evidence requirements/tooling row remains unactivated."
+  },
+  "nextOwningWork": [
+    "Round 8: implement and test assembly-aware completion evidence for implementer/repairer receipts, or verify deterministic assembly lineage at completion. Do not weaken evaluateTerminalGate, alter frozen acceptance requirements, or rebind evidence without lineage proof.",
+    "Round 8: preserve the acceptance artifact bytes and exact checkout before/after plus workspace cleanup evidence in durable lane artifacts; recompute those digests independently.",
+    "Round 8 verification: rerun the focused set in an environment permitting disposable git init; then rerun change/direct-change with the unchanged 900 s bound to terminal SUCCEEDED and retain all terminal artifacts.",
+    "After the change trunk succeeds, complete the post-amendment build-bound sweep (R6-F3), dependent FULL_OPERATION rows, and the full issue-driven contract. S14 must not start before S13 matrix exhaustion and fresh independent acceptance."
+  ],
+  "note": "Fresh independent review; no acceptance granted for any S13 row. Source/evidence support the six round-7 repairs as bounded and the final lane's deterministic AEH-V2-0106 blocker. Review remained read-only except for this requested evidence JSON; no packed provider campaign or AEH operation was run."
+}

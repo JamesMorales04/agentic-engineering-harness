@@ -1,0 +1,54 @@
+{
+ "version": 1,
+ "slice": "S13",
+ "round": 23,
+ "kind": "ABORTED_LANE_ATTEMPT_RECONCILIATION",
+ "runId": "r23-gov-5",
+ "generatedAt": "2026-09-30T14:52:00Z",
+ "operationId": "CHANGE-20260930T144026Z-8e5ffed1",
+ "operationStatusAtReconciliation": "RUNNING",
+ "operationPhaseAtReconciliation": "HUMAN_REQUIRED",
+ "operationRevisionAtReconciliation": 78,
+ "operationStateCopy": "/tmp/opencode/r23/gov-5-operation-state.json",
+ "reason": "Deliberately aborted by the Round-23 lead: the de-ambiguated request still produced a legitimate Planner formalization escalation (formalizationNeed REQUIRED, formalizationReason REQUIREMENT_CONTRADICTION) and the Spec Manager blocked at spec-authoring 'Waiting for a scoped product choice' (HUMAN_REQUIRED). The fixture request was adjusted further (the pre-existing src/config.mjs FAREWELL defect is now explicitly assigned to the governed repair step and excluded from the documentation change) before the replacement run. No product cancel was attempted (would require a HumanDecision; none minted).",
+ "controllerPid": 65380,
+ "controllerAlive": false,
+ "terminatedProcesses": [
+  63882,
+  65380,
+  65386,
+  66184,
+  68227,
+  68394,
+  68395,
+  68396,
+  91526,
+  91527,
+  91528,
+  95502,
+  95503,
+  95505
+ ],
+ "terminatedProcessDisposition": "campaign harness process, operation execute, operation monitor and fixture child processes of the deliberately aborted attempt were terminated (SIGTERM, 0 survivors at the time of writing); the non-terminal operation state bytes and the lane-created Paseo workspaces are preserved and reported (an abort is not terminality; AEH-V2-0112 predicate not satisfied).",
+ "workspaces": [
+  {
+   "workspaceId": "wks_e7deb181f3a20517",
+   "project": "lane-repair-fixture",
+   "cwd": "/home/james/.paseo/worktrees/2t5uv38q/aeh-change-20260930t144026z-8e5ffed1",
+   "role": "candidate worktree",
+   "laneCreated": true,
+   "disposition": "PRESERVED_TERMINALITY_UNPROVABLE"
+  },
+  {
+   "workspaceId": "wks_b5b3ae1053e61281",
+   "project": "lane-repair-fixture",
+   "cwd": "/tmp/aeh-s13-gov-6KeYap/work/lane-repair-fixture",
+   "role": "fixture root",
+   "laneCreated": true,
+   "disposition": "PRESERVED_TERMINALITY_UNPROVABLE"
+  }
+ ],
+ "staging": "/tmp/aeh-s13-gov-6KeYap",
+ "checkoutUntouched": true,
+ "note": "No terminal state is claimed; not evidence for or against the repair capability."
+}

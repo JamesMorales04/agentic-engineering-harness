@@ -1,0 +1,520 @@
+[
+  {
+    "workspaceId": "wks_004a06066c0b31db",
+    "project": "agentic-engineering-harness",
+    "name": "S3 Product Choice Control Center",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s3-product-choice-control-center"
+  },
+  {
+    "workspaceId": "wks_00f2ab1259260fb9",
+    "project": "aeh-live-quick-qcxPFM",
+    "name": "AEH CHANGE · CHANGE-20260921T051132Z-c5c9e367",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/29lhtj73/aeh-change-20260921t051132z-c5c9e367"
+  },
+  {
+    "workspaceId": "wks_02e4ed4769d6cc01",
+    "project": "aeh-live-quick-qcxPFM",
+    "name": "AEH CHANGE · CHANGE-20260921T053757Z-96b5e2aa",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/29lhtj73/aeh-change-20260921t053757z-96b5e2aa"
+  },
+  {
+    "workspaceId": "wks_06712c9f27eb151c",
+    "project": "agentic-engineering-harness",
+    "name": "AEH CHANGE · CHANGE-20260922T211154Z-c7831489",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/aeh-change-20260922t211154z-c7831489"
+  },
+  {
+    "workspaceId": "wks_06b8bdf06785c720",
+    "project": "agentic-engineering-harness",
+    "name": "core-architecture-v2",
+    "isolation": "local",
+    "cwd": "/home/james/Desarrollo/agentic-engineering-harness"
+  },
+  {
+    "workspaceId": "wks_0861ccdc906c344c",
+    "project": "agentic-engineering-harness",
+    "name": "Diagnose Paseo/Codex runtime capability surface",
+    "isolation": "local",
+    "cwd": "/home/james/Desarrollo/agentic-engineering-harness"
+  },
+  {
+    "workspaceId": "wks_0aa890e895147745",
+    "project": "agentic-engineering-harness",
+    "name": "S2 Evidence Boundary Regression Tests",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s2-evidence-boundary-flash-20260924"
+  },
+  {
+    "workspaceId": "wks_0b12e54e3c548cca",
+    "project": "agentic-engineering-harness",
+    "name": "AEH CHANGE · CHANGE-20260922T213926Z-da0e3d70",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/aeh-change-20260922t213926z-da0e3d70"
+  },
+  {
+    "workspaceId": "wks_0dfd4134b22fed63",
+    "project": "agentic-engineering-harness",
+    "name": "S5 session binding",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/core-v2-s5-session-binding"
+  },
+  {
+    "workspaceId": "wks_10812e56dd873c95",
+    "project": "aeh-live-quick-qcxPFM",
+    "name": "AEH CHANGE · CHANGE-20260921T050808Z-c5c9e367",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/29lhtj73/aeh-change-20260921t050808z-c5c9e367"
+  },
+  {
+    "workspaceId": "wks_12c4f8bf3b16235f",
+    "project": "aeh-live-quick-qcxPFM",
+    "name": "AEH CHANGE · CHANGE-20260921T051849Z-01163a84",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/29lhtj73/aeh-change-20260921t051849z-01163a84"
+  },
+  {
+    "workspaceId": "wks_16f267f082482354",
+    "project": "aeh-live-quick-qcxPFM",
+    "name": "AEH CHANGE · CHANGE-20260921T053023Z-96b5e2aa",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/29lhtj73/aeh-change-20260921t053023z-96b5e2aa"
+  },
+  {
+    "workspaceId": "wks_1ab7113acc7ed9f9",
+    "project": "agentic-engineering-harness",
+    "name": "Direct Core Architecture v2 S1 campaign",
+    "isolation": "local",
+    "cwd": "/home/james/Desarrollo/agentic-engineering-harness"
+  },
+  {
+    "workspaceId": "wks_1e08874cc8151222",
+    "project": "agentic-engineering-harness",
+    "name": "Recover S9 Control Center real browser closure",
+    "isolation": "local",
+    "cwd": "/home/james/Desarrollo/agentic-engineering-harness"
+  },
+  {
+    "workspaceId": "wks_1e973a62648b706a",
+    "project": "agentic-engineering-harness",
+    "name": "S5 context auth regression tests",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/core-v2-s5-context-auth-manifest-regression"
+  },
+  {
+    "workspaceId": "wks_2e7e43422e09960c",
+    "project": "agentic-engineering-harness",
+    "name": "AEH CHANGE · CHANGE-20260922T212228Z-c7831489",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/aeh-change-20260922t212228z-c7831489"
+  },
+  {
+    "workspaceId": "wks_3305bca48271b614",
+    "project": "agentic-engineering-harness",
+    "name": "S1 callback binding regression",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s1-callback-mutation-flash-20260924"
+  },
+  {
+    "workspaceId": "wks_352a603f7dc9f645",
+    "project": "agentic-engineering-harness",
+    "name": "S1 binding guard Flash",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s1-frozen-binding-guard-flash"
+  },
+  {
+    "workspaceId": "wks_37447636b0b5c817",
+    "project": "agentic-engineering-harness",
+    "name": "core-architecture-v2",
+    "isolation": "local",
+    "cwd": "/home/james/Desarrollo/agentic-engineering-harness"
+  },
+  {
+    "workspaceId": "wks_37ea8b7888fcc666",
+    "project": "agentic-engineering-harness",
+    "name": "S10 baseline gap reproduction",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s10-baseline-gaps"
+  },
+  {
+    "workspaceId": "wks_3995782614b438f5",
+    "project": "agentic-engineering-harness",
+    "name": "S5 Progressive Projection",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/core-v2-s5-progressive-projection"
+  },
+  {
+    "workspaceId": "wks_3ac6d011920867ef",
+    "project": "agentic-engineering-harness",
+    "name": "AEH CHANGE · CHANGE-20260815T201400Z-5c5c49d3",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/aeh-change-20260815t201400z-5c5c49d3"
+  },
+  {
+    "workspaceId": "wks_3d549d1c1bd5a14c",
+    "project": "agentic-engineering-harness",
+    "name": "Finalize Core-v2 kernel, repairer authority, oracle E2E",
+    "isolation": "local",
+    "cwd": "/home/james/Desarrollo/agentic-engineering-harness"
+  },
+  {
+    "workspaceId": "wks_3e0721b9ce70a17f",
+    "project": "agentic-engineering-harness",
+    "name": "AEH CHANGE · CHANGE-20260921T032544Z-6886a116",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/aeh-change-20260921t032544z-6886a116"
+  },
+  {
+    "workspaceId": "wks_3ef69829192dd0c5",
+    "project": "agentic-engineering-harness",
+    "name": "Reconstruct Core Architecture v2 status roadmap",
+    "isolation": "local",
+    "cwd": "/home/james/Desarrollo/agentic-engineering-harness"
+  },
+  {
+    "workspaceId": "wks_432f7fdcc0357db0",
+    "project": "agentic-engineering-harness",
+    "name": "core-architecture-v2",
+    "isolation": "local",
+    "cwd": "/home/james/Desarrollo/agentic-engineering-harness"
+  },
+  {
+    "workspaceId": "wks_445a4d8676e6d2bd",
+    "project": "agentic-engineering-harness",
+    "name": "S9 R15 Control Center reuse regression",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s9-r15-control-center-reuse-tests"
+  },
+  {
+    "workspaceId": "wks_4b337f8155a10d42",
+    "project": "agentic-engineering-harness",
+    "name": "core-architecture-v2",
+    "isolation": "local",
+    "cwd": "/home/james/Desarrollo/agentic-engineering-harness"
+  },
+  {
+    "workspaceId": "wks_4c582e9af38aa000",
+    "project": "agentic-engineering-harness",
+    "name": "Canonicalize Core Architecture V2 S0 docs",
+    "isolation": "local",
+    "cwd": "/home/james/Desarrollo/agentic-engineering-harness"
+  },
+  {
+    "workspaceId": "wks_4d4da53cce706036",
+    "project": "agentic-engineering-harness",
+    "name": "Core v2 S6 objective completion",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s6-objective-completion-flash"
+  },
+  {
+    "workspaceId": "wks_504a82db4a321cc4",
+    "project": "agentic-engineering-harness",
+    "name": "S2 Semantic Stack Migration",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s2-stack-semantic-flash-20260924"
+  },
+  {
+    "workspaceId": "wks_55255151cf926b67",
+    "project": "agentic-engineering-harness",
+    "name": "S9 provider lease fault tests",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s9-provider-lease-fault-tests"
+  },
+  {
+    "workspaceId": "wks_587e98b5e3223871",
+    "project": "agentic-engineering-harness",
+    "name": "Recover S11 and continue Core Architecture v2 campaign",
+    "isolation": "local",
+    "cwd": "/home/james/Desarrollo/agentic-engineering-harness"
+  },
+  {
+    "workspaceId": "wks_597ae9d07efd796b",
+    "project": "agentic-engineering-harness",
+    "name": "AEH AUDIT · AUDIT-20260921T030752Z-1a99cbe8",
+    "isolation": "local",
+    "cwd": "/home/james/Desarrollo/agentic-engineering-harness"
+  },
+  {
+    "workspaceId": "wks_6372895b7030491e",
+    "project": "agentic-engineering-harness",
+    "name": "core-architecture-v2",
+    "isolation": "local",
+    "cwd": "/home/james/Desarrollo/agentic-engineering-harness"
+  },
+  {
+    "workspaceId": "wks_7785ac3c6d515f1b",
+    "project": "agentic-engineering-harness",
+    "name": "S8 Action Policy Test Unit",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s8-action-policy-tests-flash"
+  },
+  {
+    "workspaceId": "wks_7ca5865643b536ed",
+    "project": "agentic-engineering-harness",
+    "name": "core-architecture-v2",
+    "isolation": "local",
+    "cwd": "/home/james/Desarrollo/agentic-engineering-harness"
+  },
+  {
+    "workspaceId": "wks_7ff97219a6b83a98",
+    "project": "agentic-engineering-harness",
+    "name": "Recover S9 state and build aeh-browser-e2e skill",
+    "isolation": "local",
+    "cwd": "/home/james/Desarrollo/agentic-engineering-harness"
+  },
+  {
+    "workspaceId": "wks_8033b61572f7d0a0",
+    "project": "agentic-engineering-harness",
+    "name": "S4 Candidate Assurance Flash",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s4-candidate-assurance-flash"
+  },
+  {
+    "workspaceId": "wks_818da397145f102a",
+    "project": "aeh-live-quick-qcxPFM",
+    "name": "AEH CHANGE · CHANGE-20260921T051032Z-c5c9e367",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/29lhtj73/aeh-change-20260921t051032z-c5c9e367"
+  },
+  {
+    "workspaceId": "wks_843223a7208dc6ea",
+    "project": "agentic-engineering-harness",
+    "name": "S9 browser discovery",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s9-browser-discovery"
+  },
+  {
+    "workspaceId": "wks_84bfe4ec5e51b11c",
+    "project": "agentic-engineering-harness",
+    "name": "AEH AUDIT · AUDIT-20260922T221454Z-7aa6fa6b",
+    "isolation": "local",
+    "cwd": "/home/james/Desarrollo/agentic-engineering-harness"
+  },
+  {
+    "workspaceId": "wks_89187e6a5298a10e",
+    "project": "agentic-engineering-harness",
+    "name": "S7 provenance test isolation",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s7-provenance-flash-tests"
+  },
+  {
+    "workspaceId": "wks_89d1ea19aa4e2d2f",
+    "project": "agentic-engineering-harness",
+    "name": "S2 Stack Adapter — Flash",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s2-stack-flash-20260924"
+  },
+  {
+    "workspaceId": "wks_8c61d95b282279b3",
+    "project": "agentic-engineering-harness",
+    "name": "Plan core architecture v2 status roadmap",
+    "isolation": "local",
+    "cwd": "/home/james/Desarrollo/agentic-engineering-harness"
+  },
+  {
+    "workspaceId": "wks_8cd69d3efd77dc13",
+    "project": "agentic-engineering-harness",
+    "name": "Resume Core V2 S13 certification after round 10",
+    "isolation": "local",
+    "cwd": "/home/james/Desarrollo/agentic-engineering-harness"
+  },
+  {
+    "workspaceId": "wks_8dcb9df35023d77f",
+    "project": "lane-change-fixture",
+    "name": "AEH CHANGE · CHANGE-20260928T234347Z-5de819ea",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0u9g56pz/aeh-change-20260928t234347z-5de819ea"
+  },
+  {
+    "workspaceId": "wks_93db318dead0a9a6",
+    "project": "agentic-engineering-harness",
+    "name": "AEH AUDIT · AUDIT-20260921T033251Z-bb99dfe6",
+    "isolation": "local",
+    "cwd": "/home/james/Desarrollo/agentic-engineering-harness"
+  },
+  {
+    "workspaceId": "wks_980401dce49edf4b",
+    "project": "agentic-engineering-harness",
+    "name": "S7 schema guard regression",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s7-provenance-schema-regression"
+  },
+  {
+    "workspaceId": "wks_9a1e242090dad294",
+    "project": "agentic-engineering-harness",
+    "name": "S9 browser harness",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s9-browser-harness"
+  },
+  {
+    "workspaceId": "wks_a7e8612e197c1d53",
+    "project": "agentic-engineering-harness",
+    "name": "S3 OPA role policy",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/core-architecture-v2-s3-opa"
+  },
+  {
+    "workspaceId": "wks_a8ef4972722ea03e",
+    "project": "lane-change-delegated-fixture",
+    "name": "AEH CHANGE · CHANGE-20260929T013611Z-e75534ab",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/14rnv1lj/aeh-change-20260929t013611z-e75534ab"
+  },
+  {
+    "workspaceId": "wks_a9ba45efe035d731",
+    "project": "agentic-engineering-harness",
+    "name": "AEH CHANGE · CHANGE-20260921T032636Z-280a1a57",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/aeh-change-20260921t032636z-280a1a57"
+  },
+  {
+    "workspaceId": "wks_acd4f78471467297",
+    "project": "agentic-engineering-harness",
+    "name": "core-architecture-v2",
+    "isolation": "local",
+    "cwd": "/home/james/Desarrollo/agentic-engineering-harness"
+  },
+  {
+    "workspaceId": "wks_ad14d755c247d505",
+    "project": "lane-change-delegated-fixture",
+    "name": "AEH CHANGE · CHANGE-20260929T011155Z-e75534ab",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0asmbufz/aeh-change-20260929t011155z-e75534ab"
+  },
+  {
+    "workspaceId": "wks_aee892da9fbbf6c1",
+    "project": "agentic-engineering-harness",
+    "name": "S9 browser E2E skill",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s9-browser-skill"
+  },
+  {
+    "workspaceId": "wks_b82fd032afd95af3",
+    "project": "agentic-engineering-harness",
+    "name": "S11 baseline verification (bounded)",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s11-baseline"
+  },
+  {
+    "workspaceId": "wks_c31272d00b8a2d49",
+    "project": "agentic-engineering-harness",
+    "name": "Close Candidate Truth invariants on core-architecture-v2",
+    "isolation": "local",
+    "cwd": "/home/james/Desarrollo/agentic-engineering-harness"
+  },
+  {
+    "workspaceId": "wks_c361ade141d35ef8",
+    "project": "agentic-engineering-harness",
+    "name": "core-architecture-v2",
+    "isolation": "local",
+    "cwd": "/home/james/Desarrollo/agentic-engineering-harness"
+  },
+  {
+    "workspaceId": "wks_c96574f87b005b58",
+    "project": "agentic-engineering-harness",
+    "name": "AEH AUDIT · AUDIT-20260922T200013Z-db672ea0",
+    "isolation": "local",
+    "cwd": "/home/james/Desarrollo/agentic-engineering-harness"
+  },
+  {
+    "workspaceId": "wks_cf0aa07f4e2fbcad",
+    "project": "agentic-engineering-harness",
+    "name": "S9 R17 semantic preflight tests",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s9-r17-semantic-preflight-tests"
+  },
+  {
+    "workspaceId": "wks_d3fc4487a9ae2c50",
+    "project": "agentic-engineering-harness",
+    "name": "AEH CHANGE · CHANGE-20260922T204407Z-da0e3d70",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/aeh-change-20260922t204407z-da0e3d70"
+  },
+  {
+    "workspaceId": "wks_d5d3ae09621fa83d",
+    "project": "agentic-engineering-harness",
+    "name": "core-architecture-v2",
+    "isolation": "local",
+    "cwd": "/home/james/Desarrollo/agentic-engineering-harness"
+  },
+  {
+    "workspaceId": "wks_d84f637b13355e22",
+    "project": "agentic-engineering-harness",
+    "name": "S8 Flash gated action reconciliation",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s8-flash-gated-action-exception"
+  },
+  {
+    "workspaceId": "wks_d86868e933e6bc6b",
+    "project": "agentic-engineering-harness",
+    "name": "S1 execution semantics lifecycle tests",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s1-execution-semantics-flash-20260924"
+  },
+  {
+    "workspaceId": "wks_d92a14c7ee85a8e3",
+    "project": "agentic-engineering-harness",
+    "name": "AEH CHANGE · CHANGE-20260922T213436Z-da0e3d70",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/aeh-change-20260922t213436z-da0e3d70"
+  },
+  {
+    "workspaceId": "wks_df80fb40e7fd9d18",
+    "project": "agentic-engineering-harness",
+    "name": "S1 remediation test worktree",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s1-remediation-flash"
+  },
+  {
+    "workspaceId": "wks_e0edb0e15e687a89",
+    "project": "agentic-engineering-harness",
+    "name": "S1 policy mutation Flash",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s1-policy-mutation-flash"
+  },
+  {
+    "workspaceId": "wks_e75cbff45b32c5f3",
+    "project": "agentic-engineering-harness",
+    "name": "S9 R12 startup failure test",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s9-r12-startup-failure-regression"
+  },
+  {
+    "workspaceId": "wks_eba8476c48577edf",
+    "project": "agentic-engineering-harness",
+    "name": "S9 R13 start rebind regression",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s9-r13-start-rebind-regression"
+  },
+  {
+    "workspaceId": "wks_ee195c79a66c2093",
+    "project": "aeh-live-quick-qcxPFM",
+    "name": "AEH CHANGE · CHANGE-20260921T050702Z-f75a6c2d",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/29lhtj73/aeh-change-20260921t050702z-f75a6c2d"
+  },
+  {
+    "workspaceId": "wks_f1f7fdb68790b7e6",
+    "project": "agentic-engineering-harness",
+    "name": "AEH AUDIT · AUDIT-20260922T193512Z-db672ea0",
+    "isolation": "local",
+    "cwd": "/home/james/Desarrollo/agentic-engineering-harness"
+  },
+  {
+    "workspaceId": "wks_f43e2216181d869a",
+    "project": "agentic-engineering-harness",
+    "name": "AEH CHANGE · CHANGE-20260922T203535Z-da0e3d70",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/aeh-change-20260922t203535z-da0e3d70"
+  },
+  {
+    "workspaceId": "wks_ffd1fc8e778d9a81",
+    "project": "agentic-engineering-harness",
+    "name": "S8 gated-action reconciliation Flash",
+    "isolation": "worktree",
+    "cwd": "/home/james/.paseo/worktrees/0jx5pvzi/s8-gated-action-flash"
+  }
+]

@@ -1,0 +1,99 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import { estimateTokens } from "../estimator.js";
+import { runShell, commandExists } from "../../utils/process.js";
+import { providerVersions } from "../../providers/versions.js";
+import { PACKAGE_ROOT } from "../../version.js";
+export const HEADROOM_VERSION = providerVersions.headroom;
+/** AEH-owned adapter. It talks to a local Headroom executable and never starts an agent process. */
+export class HeadroomCompressionProvider {
+    name = "headroom";
+    command;
+    expectedVersion;
+    python;
+    bridge;
+    executor;
+    constructor(options = {}) {
+        this.command = options.command ?? "headroom";
+        this.expectedVersion = options.version ?? HEADROOM_VERSION;
+        this.python = options.python;
+        this.bridge = options.bridge;
+        this.executor = options.executor ?? runShell;
+    }
+    async doctor(root) {
+        if (!(await commandExists(this.command, root)))
+            return { ok: false, message: `Headroom executable '${this.command}' was not found in the reconciled toolchain PATH.` };
+        const result = await this.executor(`${quote(this.command)} --version`, { cwd: root, timeoutMs: 15_000 });
+        if (result.exitCode !== 0)
+            return { ok: false, message: `Headroom health check failed: ${result.stderr || result.stdout}` };
+        const version = (result.stdout || result.stderr).trim().split(/\r?\n/)[0];
+        if (this.expectedVersion && !version.includes(this.expectedVersion))
+            return { ok: false, version, message: `Headroom version drift: expected ${this.expectedVersion}, got ${version}.` };
+        try {
+            const bridge = await this.bridgeCommand(root);
+            const bridgeResult = await this.executor(`${bridge} --doctor`, { cwd: root, timeoutMs: 15_000, stdin: JSON.stringify({ version: 1, operation: "doctor" }) });
+            const parsed = parseBridgeResponse(bridgeResult.stdout);
+            if (bridgeResult.exitCode !== 0 || parsed?.providerVersion !== this.expectedVersion)
+                return { ok: false, version, message: `Headroom SDK bridge is unavailable or drifted: expected ${this.expectedVersion}.` };
+        }
+        catch (error) {
+            return { ok: false, version, message: `Headroom SDK bridge could not be resolved: ${String(error)}` };
+        }
+        return { ok: true, version, message: `Headroom local compressor ready${version ? ` (${version})` : ""}.` };
+    }
+    async compress(root, request) {
+        const bridge = await this.bridgeCommand(root);
+        const result = await this.executor(bridge, {
+            cwd: root,
+            timeoutMs: 120_000,
+            stdin: JSON.stringify({ version: 1, operation: "compress", content: request.fragment.content, maxTokens: request.maxTokens ?? estimateTokens(request.fragment.content), reversible: request.reversible === true, sourceSha256: request.sourceSha256 })
+        });
+        if (result.exitCode !== 0)
+            throw new Error(`HEADROOM_RUNTIME_FAILURE: ${result.stderr || result.stdout}`);
+        const parsed = parseBridgeResponse(result.stdout);
+        if (!parsed)
+            throw new Error("HEADROOM_MALFORMED_RESPONSE: Headroom SDK bridge returned no usable JSON response.");
+        if (typeof parsed.content !== "string" || typeof parsed.reversible !== "boolean")
+            throw new Error("HEADROOM_MALFORMED_RESPONSE: compression response omitted required fields.");
+        if (parsed.sourceSha256 !== request.sourceSha256)
+            throw new Error("HEADROOM_PROVENANCE_MISMATCH: bridge response source hash differs from request.");
+        if (this.expectedVersion && parsed.providerVersion !== this.expectedVersion)
+            throw new Error(`HEADROOM_VERSION_DRIFT: expected ${this.expectedVersion}, got ${parsed.providerVersion ?? "unknown"}.`);
+        return { content: parsed.content, provider: this.name, providerVersion: parsed.providerVersion, reversible: parsed.reversible, handle: parsed.handle, originalTokens: parsed.originalTokens ?? estimateTokens(request.fragment.content), compressedTokens: parsed.compressedTokens ?? estimateTokens(parsed.content) };
+    }
+    async bridgeCommand(root) {
+        const bridge = this.bridge ?? path.join(PACKAGE_ROOT, "scripts", "headroom-bridge.py");
+        await fs.access(bridge);
+        const python = this.python ?? await resolveHeadroomPython(this.command, root, this.executor);
+        return `${quote(python)} ${quote(bridge)}`;
+    }
+}
+function parseBridgeResponse(stdout) {
+    const lines = stdout.trim().split(/\r?\n/).filter(Boolean);
+    if (lines.length !== 1)
+        return undefined;
+    try {
+        const parsed = JSON.parse(lines[0]);
+        if (parsed.version !== 1 || parsed.error || typeof parsed.providerVersion !== "string")
+            return undefined;
+        return parsed;
+    }
+    catch {
+        return undefined;
+    }
+}
+async function resolveHeadroomPython(command, root, executor) {
+    const located = await executor(`command -v ${quote(command)}`, { cwd: root, timeoutMs: 15_000 });
+    if (located.exitCode !== 0)
+        throw new Error(`Headroom executable '${command}' was not found.`);
+    const executable = located.stdout.trim().split(/\r?\n/).at(-1)?.trim();
+    if (!executable)
+        throw new Error("Headroom executable path was empty.");
+    const firstLine = await fs.readFile(executable, "utf8").then((value) => value.split(/\r?\n/, 1)[0]).catch(() => "");
+    const shebang = firstLine.match(/^#!\s*(\S+)/)?.[1];
+    if (!shebang)
+        throw new Error("Headroom executable does not expose a Python shebang for the SDK bridge.");
+    return shebang;
+}
+function quote(value) { return `'${value.replaceAll("'", "'\\''")}'`; }
+//# sourceMappingURL=headroom.js.map

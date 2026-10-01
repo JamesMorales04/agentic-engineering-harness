@@ -1,3 +1,4 @@
+import { saveOwnedOperation } from "./helpers/ownedOperation.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -39,7 +40,7 @@ describe("supervisor initialization state", () => {
       progress: { expected: 0, registered: 0, running: 0, completed: 0, failed: 0, blocked: 0 },
       notification: { lastLeadWakeRevision: 0, terminalDelivered: false, attempts: 0 }
     };
-    await saveOperation(root, operation);
+    await saveOwnedOperation(root, operation);
 
     let current = await registerSupervisorGeneration(root, operation.id, {
       agentId: "supervisor-1",

@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 10,
+  "capability": "authority",
+  "candidateBinding": {
+    "packedArtifact": "agentic-engineering-harness-0.8.4.tgz",
+    "packedArtifactDigest": "da101e0772569057f404c9c8088fd2edc98af1b8d3f71ee5403e68bc31fe9c47",
+    "packedBuild": {
+      "releaseId": "release-1790610690411-40239-22762b7f",
+      "buildDigest": "8e949b0113ddd90ae0573826b8ecc348915ae2c65fd6a77c99f82ba9b6a9ab84",
+      "gitSha": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+      "packageVersion": "0.8.4"
+    },
+    "sourceCommit": "e3dad34aa79348e1d65cee28114d76d4ec0a736c"
+  },
+  "repository": "JamesMorales04/aeh-s13-round3-20260927035743-6bb5da",
+  "startedAt": "2026-09-28T15:52:12.767Z",
+  "checks": [
+    {
+      "id": "authority.human-gate",
+      "ok": true,
+      "message": "unapproved external effect status=HUMAN_REQUIRED"
+    },
+    {
+      "id": "authority.approved-effect",
+      "ok": true,
+      "message": "approved effect status=EXECUTED/SUCCEEDED"
+    },
+    {
+      "id": "authority.real-github-ref",
+      "ok": true,
+      "message": "real remote branch aeh-s13-authority-20260928155124 observed on JamesMorales04/aeh-s13-round3-20260927035743-6bb5da"
+    }
+  ],
+  "humanGate": {
+    "status": "HUMAN_REQUIRED",
+    "detail": "TOOL_ACTION_HUMAN_DECISION_REQUIRED: no current HumanDecision matches the operation, candidate, policy, epoch, actor, and exact purpose."
+  },
+  "gatedAction": {
+    "status": "EXECUTED",
+    "intentId": "action-intent:33cff649963785cc12cf9f8a1c48cd9b0790765a8e257e45970838741e05321a",
+    "receiptOutcome": "SUCCEEDED",
+    "detail": "Side effect executed and receipt persisted."
+  },
+  "remoteRef": {
+    "exitCode": 0,
+    "stdout": "refs/heads/aeh-s13-authority-20260928155124\n39460493723bcba7e6718f90db74cfab6c71a75d"
+  },
+  "result": "PASS",
+  "finishedAt": "2026-09-28T15:52:17.829Z"
+}

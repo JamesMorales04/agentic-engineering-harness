@@ -23,7 +23,7 @@ export function compileAgentPromptPolicy(
   let skills = new Set(inheritedSkills.filter((skill) => skill !== "structured-output-delivery"));
   const contractRepair = options.phase?.endsWith("-contract-repair") ?? false;
 
-  if (options.operationKind === "audit" && selection.role === "reviewer") {
+  if (options.operationKind === "audit" && selection.role === "Reviewer") {
     skills = new Set(["audit-review-protocol"]);
     if (hasTraceableAcceptance(contract) && inheritedSkills.includes("acceptance-traceability")) {
       skills.add("acceptance-traceability");
@@ -42,7 +42,7 @@ export function compileAgentPromptPolicy(
 }
 
 export function hasTraceableAcceptance(contract: TaskContract): boolean {
-  return Boolean(contract.requirements?.length || contract.quick?.acceptance?.length || contract.source?.acceptance);
+  return Boolean(contract.requirements?.length || contract.source?.acceptance);
 }
 
 export function nativeSchemaEnforced(selection: AgentExecutionSelection, transport: string): boolean {

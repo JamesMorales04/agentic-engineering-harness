@@ -1,3 +1,4 @@
+import { saveOwnedOperation } from "./helpers/ownedOperation.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -10,7 +11,9 @@ import {
 } from "../src/operations/completion.js";
 import { claimFromOperation, evidenceDisciplineInstruction } from "../src/operations/evidence.js";
 import { cancelOperation, startDetachedOperation } from "../src/operations/controller.js";
-import { saveOperation, type OperationRecord } from "../src/operations/state.js";
+import { bindResolvedOperationPolicy, currentControllerEpoch, loadOperation, type OperationRecord } from "../src/operations/state.js";
+import { compileResolvedOperationPolicy } from "../src/architecture/executionIdentity.js";
+import { HumanDecisionLedgerV2 } from "../src/security/humanDecision.js";
 
 const roots: string[] = [];
 const originalAgentId = process.env.PASEO_AGENT_ID;
@@ -183,14 +186,35 @@ describe("operation completion callbacks", () => {
         registeredAt: new Date().toISOString()
       }]
     });
-    await saveOperation(root, record);
+    await saveOwnedOperation(root, record);
+    const current = await loadOperation(root, record.id);
+    const candidate = current.candidateRevision!;
+    const policy = compileResolvedOperationPolicy({
+      projectId: candidate.projectId!, operationId: record.id,
+      operationExecutionRevision: current.operationExecutionRevision!,
+      candidateRevision: candidate.revision,
+      candidateDigest: candidate.identityDigest,
+      controllerEpoch: currentControllerEpoch(current),
+      intent: "completion cancellation test", route: "DIRECT", minimumAssurance: "STANDARD",
+      policyVersions: { resolvedOperationPolicy: "1" }, policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {},
+      allowedExternalEffects: [], humanDecisionRequirements: []
+    });
+    const bound = await bindResolvedOperationPolicy(root, record.id, policy);
+    const humanActorId = "human:completion-cancel-test";
+    const ledger = new HumanDecisionLedgerV2(path.join(root, ".harness", "security", "human-decisions.json"));
+    await ledger.record({
+      operationId: record.id, candidate, operationExecutionRevision: bound.operationExecutionRevision!, policyDigest: policy.digest,
+      controllerEpoch: currentControllerEpoch(bound), purpose: { kind: "OPERATION_CONTROL", command: "CANCEL" }, kind: "CANCEL",
+      actorId: humanActorId, reason: "explicit cancellation test request", createdAt: new Date(), expiresAt: new Date(Date.now() + 60_000)
+    });
     const notifyCompletion = vi.fn(async () => undefined);
     const run = vi.fn(async () => ({ exitCode: 0, stdout: "stopped", stderr: "", durationMs: 1 }));
 
     const cancelled = await cancelOperation(root, record.id, {
       run: run as never,
       trace: vi.fn(async () => undefined) as never,
-      notifyCompletion
+      notifyCompletion,
+      humanActorId
     });
 
     expect(cancelled.status).toBe("CANCELLED");

@@ -3,7 +3,7 @@ import path from "node:path";
 import YAML from "yaml";
 import { z } from "zod";
 import type { HarnessProjectConfig } from "../core/types.js";
-import { runProcess } from "../utils/process.js";
+import { runShell } from "../utils/process.js";
 
 const caseSchema = z.object({
   version: z.literal(1),
@@ -29,7 +29,7 @@ export async function runMemoryBenchmark(root: string, config: HarnessProjectCon
     const caseResults: MemoryBenchmarkCaseResult[] = [];
     for (const item of cases) {
       const command = provider.command.replaceAll("{query}", shellQuote(item.query)).replaceAll("{caseId}", item.id);
-      const execution = await runProcess(command, { cwd: root, timeoutMs: (provider.timeoutSeconds ?? 60) * 1000 });
+      const execution = await runShell(command, { cwd: root, timeoutMs: (provider.timeoutSeconds ?? 60) * 1000 });
       const output = `${execution.stdout}\n${execution.stderr}`.trim();
       caseResults.push(scoreMemoryOutput(item, execution.exitCode === 0, execution.durationMs, output));
     }

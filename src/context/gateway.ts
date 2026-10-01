@@ -8,9 +8,7 @@ import { estimateBytes, estimateTokens } from "./estimator.js";
 import { buildContextEnvelope, renderContextEnvelope } from "./envelope.js";
 import { resolveContextPolicy } from "./policy.js";
 import { sha256 } from "./provenance.js";
-import { projectAudit, projectDiff, projectOperation, projectSource, projectValidation } from "./projectors/index.js";
-import { authorizeRetrieval } from "./retrieval/authorization.js";
-import { ContextRetrievalGateway } from "./retrieval/gateway.js";
+import { projectAudit, projectDiff, projectExplorer, projectOperation, projectPlanner, projectSource, projectValidation } from "./projectors/index.js";
 import { HeadroomCompressionProvider } from "./compression/headroom.js";
 import { recordContextMetrics } from "./telemetry.js";
 import type { ContextCompressionProvider } from "./compression/types.js";
@@ -32,7 +30,8 @@ export class ContextBudgetGateway {
 
   async prepare(request: ContextPreparationRequest): Promise<ContextPreparationResult> {
     const policy = resolveContextPolicy(this.config);
-    const budget = resolveContextBudget(this.config, request.role ?? request.logicalAgent, request.phase);
+    const role = request.role ?? request.logicalAgent;
+    const budget = resolveContextBudget(this.config, role, request.phase);
     const durable = await Promise.all(request.fragments.map((fragment) => this.persistRawFragment(request.operationId, fragment)));
     const rawBytes = durable.reduce((sum, fragment) => sum + estimateBytes(fragment.content), 0);
     const rawTokens = durable.reduce((sum, fragment) => sum + estimateTokens(fragment.content), 0);
@@ -40,7 +39,7 @@ export class ContextBudgetGateway {
 
     for (const fragment of durable) {
       classifyFragment(fragment);
-      const optimized = await this.optimizeFragment(fragment, request.operationId, policy.compression.minTokens, request.capabilities?.authorizedRetrieval !== false, policy.compression.reversible, policy.compression.required);
+      const optimized = await this.optimizeFragment(fragment, request.operationId, policy.compression.minTokens, request.capabilities?.authorizedRetrieval !== false, policy.compression.reversible, policy.compression.required, role);
       candidates.push({ raw: fragment, optimized });
     }
 
@@ -53,13 +52,11 @@ export class ContextBudgetGateway {
     if (this.persist) await this.persistEnvelope(request.operationId, request.logicalAgent, request.phase, envelope);
     const rendered = renderContextEnvelope(envelope);
     const metrics = metricsFor(durable, candidates.map((candidate) => candidate.optimized), delivered, discarded);
-    const retrieval = new ContextRetrievalGateway(authorizeRetrieval({ root: this.root, operationId: request.operationId, logicalAgent: request.logicalAgent, allowedFragmentIds: retrievalAvailable ? delivered.map((fragment) => fragment.id) : [], fragments: durable }), policy.retrieval);
-
     if (this.telemetry && this.config.telemetry?.enabled !== false) await this.emitTelemetry(request, metrics, envelope);
     return { envelope, rendered, metrics, retrieval: { root: this.root, operationId: request.operationId, logicalAgent: request.logicalAgent, allowedFragmentIds: [...envelope.retrieval.allowedFragmentIds] } };
   }
 
-  private async optimizeFragment(fragment: ContextFragment, operationId: string, minCompressionTokens: number, authorizedRetrieval: boolean, reversibleRequired: boolean, compressionRequired: boolean): Promise<ContextFragmentProjection> {
+  private async optimizeFragment(fragment: ContextFragment, operationId: string, minCompressionTokens: number, authorizedRetrieval: boolean, reversibleRequired: boolean, compressionRequired: boolean, role: string): Promise<ContextFragmentProjection> {
     const originalTokens = estimateTokens(fragment.content);
     if (isRequiredFragment(fragment)) return projectSource(fragment);
     if (fragment.preservation === "DISCARDABLE") return { ...fragment, content: "", estimatedTokens: 0, originalTokens, projected: true };
@@ -82,11 +79,11 @@ export class ContextBudgetGateway {
       case "repository-map": projected = projectSource(fragment); break;
       case "tool-output": projected = genericProjection(fragment); break;
       case "memory": projected = genericProjection(fragment); break;
+      case "handoff": projected = projectHandoff(role, fragment); break;
       case "instruction":
       case "execution-envelope":
       case "agent-charter":
       case "skill":
-      case "handoff":
       case "delivery":
       case "normative": projected = projectSource(fragment); break;
       case "raw-evidence": projected = genericProjection(fragment); break;
@@ -187,6 +184,13 @@ function selectWithinBudget(fragments: ContextFragmentProjection[], maxTokens: n
     if (isRequiredProjection(fragment)) throw new Error(`CONTEXT_BUDGET_EXCEEDED: required fragment '${fragment.id}' cannot be delivered without loss.`);
   }
   return selected;
+}
+
+function projectHandoff(role: string, fragment: ContextFragment): ContextFragmentProjection {
+  const normalized = role.trim().toLowerCase();
+  if (normalized === "planner") return projectPlanner(fragment);
+  if (normalized === "explorer") return projectExplorer(fragment);
+  return projectSource(fragment);
 }
 
 function genericProjection(fragment: ContextFragment): ContextFragmentProjection {

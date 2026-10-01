@@ -3,16 +3,14 @@ import { classifyAuditFailure, selectAuditReviewers } from "../src/audit/run.js"
 import { compileAuditReviewerPrompt } from "../src/audit/reviewerPrompt.js";
 
 function topology(names: string[]) {
-  return {
-    routing: [],
-    agents: Object.fromEntries(names.map((name) => [name, { name, role: "reviewer", disabled: false }]))
-  } as never;
+    return { routing: [], agents: Object.fromEntries(names.map((name) => [name, { name, role: "Reviewer", domains: ["*"], disabled: false }])) } as never;
 }
 
 describe("audit reviewer scheduling", () => {
   it("does not silently discard the fifth default reviewer for a low-risk repository audit", () => {
     const names = ["code-quality-reviewer", "architecture-reviewer", "security-reviewer", "test-quality-reviewer", "test-reviewer"];
-    expect(selectAuditReviewers(topology(names), { request: "audit" })).toEqual(names);
+    expect(selectAuditReviewers(topology(names), { request: "audit" })).toEqual(expect.arrayContaining(names));
+    expect(selectAuditReviewers(topology(names), { request: "audit" })).toHaveLength(names.length);
   });
 
   it("preserves explicitly requested reviewers ahead of defaults", () => {

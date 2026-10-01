@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "kind": "focused-regressions",
+  "generatedAt": "2026-09-30T21:37:12.900Z",
+  "command": "npx vitest run tests/operationResourceReconciliation.test.ts tests/operations.test.ts tests/operationLifecycleRegression.test.ts tests/operationV2Identity.test.ts tests/paseoProviderLeaseLifecycle.test.ts tests/runtimeSupervisorV2.test.ts tests/governedOperationBootstrap.test.ts tests/directCandidateLifecycle.test.ts tests/supervisorBootstrapRegression.test.ts tests/semanticAssessment.test.ts tests/semanticAssessmentRuntime.test.ts tests/selfHostingComposite.test.ts tests/certification.test.ts tests/certificationMatrix.test.ts tests/certificationJourneys.test.ts tests/paseoAtomicSdkTurn.test.ts tests/changeRouting.test.ts tests/triage.test.ts tests/operationStartupFailure.test.ts",
+  "numTotalTestSuites": 43,
+  "numPassedTestSuites": 43,
+  "numFailedTestSuites": 0,
+  "numTotalTests": 201,
+  "numPassedTests": 201,
+  "numFailedTests": 0,
+  "success": true,
+  "regressionsAtoM": "tests/operationResourceReconciliation.test.ts (12 A-J plus K/L/M) passed"
+}

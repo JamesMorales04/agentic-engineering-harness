@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { HarnessProjectConfig } from "../core/types.js";
 import type { CodeIntelligenceProvider, CodeImpactReport } from "./types.js";
-import { commandExists, runProcess } from "../utils/process.js";
+import { commandExists, runExecutable, runShell } from "../utils/process.js";
 import { loadCanonicalGraph } from "./graphifyModel.js";
 import { providerVersions } from "./versions.js";
 
@@ -23,7 +23,7 @@ export const GRAPHIFY_VERSION = providerVersions.graphify;
 /** Graphify owns generation/freshness; all consumers use graphifyModel.ts. */
 export class GraphifyCodeIntelligenceProvider implements CodeIntelligenceProvider {
   readonly name = "graphify";
-  constructor(private readonly config?: HarnessProjectConfig, private readonly executor: typeof runProcess = runProcess) {}
+  constructor(private readonly config?: HarnessProjectConfig, private readonly executor: typeof runShell = runShell) {}
 
   async doctor(root: string): Promise<{ ok: boolean; message: string }> {
     const cli = await commandExists(GRAPHIFY_COMMAND, root);
@@ -59,8 +59,8 @@ export class GraphifyCodeIntelligenceProvider implements CodeIntelligenceProvide
       if (result.exitCode !== 0) throw new Error(`GRAPHIFY_REFRESH_FAILED: ${result.stderr || result.stdout}`);
     } else {
       if (!(await commandExists(GRAPHIFY_COMMAND, root))) throw new Error("GRAPHIFY_UNAVAILABLE: Graphify CLI is not installed.");
-      const args = [GRAPHIFY_COMMAND, ".", ...(incremental ? ["--update"] : []), ...(this.config?.codeIntelligence?.codeOnly ? ["--code-only"] : []), "--no-viz"];
-      const result = await this.executor(args.map(quote).join(" "), { cwd: root, timeoutMs: 300_000 });
+      const args = [".", ...(incremental ? ["--update"] : []), ...(this.config?.codeIntelligence?.codeOnly ? ["--code-only"] : []), "--no-viz"];
+      const result = await runExecutable(GRAPHIFY_COMMAND, args, { cwd: root, timeoutMs: 300_000 });
       if (result.exitCode !== 0) throw new Error(`GRAPHIFY_REFRESH_FAILED: ${result.stderr || result.stdout}`);
     }
     await this.targetConfiguredGraph(root);
@@ -89,7 +89,7 @@ export class GraphifyCodeIntelligenceProvider implements CodeIntelligenceProvide
   private metadataPath(root: string): string { return path.resolve(root, this.config?.codeIntelligence?.snapshotDir ?? ".harness/graphify", "generation.json"); }
   private async readMetadata(root: string): Promise<GraphifyGenerationMetadata | undefined> { try { return JSON.parse(await fs.readFile(this.metadataPath(root), "utf8")) as GraphifyGenerationMetadata; } catch { return undefined; } }
   private async providerVersion(root: string): Promise<string> {
-    const result = await this.executor(`${quote(GRAPHIFY_COMMAND)} --version`, { cwd: root, timeoutMs: 30_000 });
+    const result = await runExecutable(GRAPHIFY_COMMAND, ["--version"], { cwd: root, timeoutMs: 30_000 });
     if (result.exitCode !== 0) throw new Error(`Graphify version check failed: ${result.stderr || result.stdout}`);
     const version = (result.stdout || result.stderr).trim().split(/\r?\n/).at(0)?.trim();
     if (!version) throw new Error("Graphify version check returned no version.");
@@ -98,11 +98,11 @@ export class GraphifyCodeIntelligenceProvider implements CodeIntelligenceProvide
 }
 
 async function sourceFingerprint(root: string): Promise<{ sourceFingerprint: string; gitCommit?: string }> {
-  const filesResult = await runProcess("git ls-files -co --exclude-standard", { cwd: root, timeoutMs: 30_000 });
+  const filesResult = await runExecutable("git", ["ls-files", "-co", "--exclude-standard"], { cwd: root, timeoutMs: 30_000 });
   const names = filesResult.exitCode === 0 ? filesResult.stdout.split(/\r?\n/).map((item) => item.trim()).filter((item) => item && !excluded(item)) : await fallbackSourceFiles(root);
   const hash = crypto.createHash("sha256");
   for (const name of [...new Set(names)].sort()) hash.update(name).update("\0").update(await fs.readFile(path.resolve(root, name)).catch(() => Buffer.from(""))).update("\0");
-  const commitResult = await runProcess("git rev-parse HEAD", { cwd: root, timeoutMs: 30_000 });
+  const commitResult = await runExecutable("git", ["rev-parse", "HEAD"], { cwd: root, timeoutMs: 30_000 });
   return { sourceFingerprint: hash.digest("hex"), gitCommit: commitResult.exitCode === 0 ? commitResult.stdout.trim() : undefined };
 }
 
@@ -118,4 +118,3 @@ async function fallbackSourceFiles(root: string): Promise<string[]> {
 }
 
 function excluded(relative: string): boolean { return relative === ".git" || relative.startsWith(".git/") || relative === "node_modules" || relative.startsWith("node_modules/") || relative === ".harness" || relative.startsWith(".harness/") || relative === "graphify-out" || relative.startsWith("graphify-out/"); }
-function quote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }

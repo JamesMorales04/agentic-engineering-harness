@@ -43,7 +43,9 @@ const SESSION_FILE = ".harness/paseo/deterministic-session.json";
  */
 export async function startDeterministicPaseoHarness(root: string, config: HarnessProjectConfig, options: PaseoStartOptions = {}): Promise<PaseoStartResult> {
   const result = await startPaseoHarness(root, config, options, {
-    run: async (command: string) => command.includes("daemon status") ? { exitCode: 0, stdout: "{}", stderr: "", durationMs: 1 } : { exitCode: 1, stdout: "", stderr: "deterministic fake Paseo command boundary", durationMs: 1 },
+    run: async (command: string) => command.includes("daemon status")
+      ? { exitCode: 0, stdout: JSON.stringify({ localDaemon: "running", connectedDaemon: "not_probed" }), stderr: "", durationMs: 1 }
+      : { exitCode: 1, stdout: "", stderr: "deterministic fake Paseo command boundary", durationMs: 1 },
     commandExists: async () => true,
     setupToolchain: async () => ({ profile: "deterministic" } as never),
     loadTopology: loadResolvedAgentTopology,

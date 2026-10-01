@@ -1,0 +1,490 @@
+{
+  "report": "s14-independent-review",
+  "version": 1,
+  "slice": 14,
+  "reviewer": {
+    "identity": "fresh independent S14 reviewer (Paseo agent 63b10609-dcfe-4f88-804b-a8a87c38881f, title 'S14 Independent Reviewer')",
+    "provider": "opencode-go",
+    "model": "deepseek-v4.1-flash",
+    "thinking": "default"
+  },
+  "noImplementationDisclosure": true,
+  "readOnlyDisclosure": {
+    "repositoryFilesModified": false,
+    "commitsPushesStashResetClean": false,
+    "githubWrites": false,
+    "aehOperationAgainstCheckout": false,
+    "method": "Read-only shell (git, sha256sum, find, /proc, ps, paseo ls) plus in-memory node --input-type=module reproduction against the compiled candidate release. No file writes, deletions or permission changes were performed. No build/vitest/typecheck executed (they write dist/caches/temp).",
+    "verificationBoundaries": [
+      "npm run build / npm run typecheck / vitest not re-executed (write boundary); build reproducibility supported by two independently cut releases sharing buildDigest 4c05da6e... and by byte-identical report regeneration from the compiled candidate release.",
+      "Full non-system suite 204 files / 1378 tests result and focused 4-file/43-test run not re-executed; file/test counts verified statically (204 *.test.ts excluding tests/system; 15+19+1+8=43 it() in the four focused files).",
+      "Fail-closed S14_COMPOSITE_CANDIDATE_BUILD_POINTER_STALE verified by source inspection (dist/current currently is the candidate release, so a live mismatch could not be induced without mutating dist).",
+      "Product-level 6 suites / 18 tests not re-executed; assertions verified by reading tests/candidateIdentity.test.ts, directCandidateLifecycle.test.ts, candidateAssembler.test.ts (6+5+7=18 it())."
+    ]
+  },
+  "gitState": {
+    "branch": "core-architecture-v2",
+    "head": "af9bd8eadc968ed94c1eddd7d2046904d403d285",
+    "originHead": "af9bd8eadc968ed94c1eddd7d2046904d403d285",
+    "headEqualsOrigin": true,
+    "stashEmpty": true,
+    "trackedModifications": [
+      "docs/CORE_ARCHITECTURE_V2_CONFORMANCE.md",
+      "docs/CORE_ARCHITECTURE_V2_STATUS.md",
+      "docs/ENGINEERING_LEDGER.md",
+      "src/certification/index.ts"
+    ],
+    "untrackedS14Paths": [
+      "docs/CORE_ARCHITECTURE_V2_S14_WORKGRAPH.md",
+      "docs/evidence/s14/",
+      "docs/evidence/s13/governed-lanes/round-14/s14-campaign-1/",
+      "docs/evidence/s13/governed-lanes/round-14/s14-campaign-2/",
+      "docs/evidence/s13/governed-lanes/round-14/s14-resource-1-i1/",
+      "docs/evidence/s13/governed-lanes/round-14/s14-resource-1-i2/",
+      "docs/evidence/s13/governed-lanes/round-14/s14-resource-2-i1/",
+      "docs/evidence/s13/governed-lanes/round-14/s14-resource-2-i2/",
+      "docs/evidence/s13/s13-governed-operations-round-14-s14-campaign-{1,2}.json",
+      "docs/evidence/s13/s13-governed-operations-round-14-s14-resource-{1,2}-i{1,2}.json",
+      "scripts/s14AdversarialChecks.ts",
+      "scripts/s14SelfHostingComposite.ts",
+      "src/certification/composite.ts",
+      "tests/packed/s14CampaignEnvelope.mjs",
+      "tests/packed/s14ResourceStabilityCampaign.mjs",
+      "tests/selfHostingComposite.test.ts"
+    ],
+    "targetSha256": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+    "targetByteIdentical": true,
+    "s13ReviewFinalSha256": "fe3bc3d1b507c4c4bab36f32deabdc1c98defedcb1dd12b1006b366a19bd4f8a",
+    "s13ReviewFinalMatchesPin": true,
+    "gitDiffCheckClean": true
+  },
+  "digestRecomputation": "MATCH",
+  "recomputedDigests": {
+    "target": {
+      "actual": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+      "expected": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+      "match": true
+    },
+    "policyDigest": {
+      "actual": "458145cbd4e4d9ddb8c83c6999531b5dd4852a49f230ab634a941a3aef22130a",
+      "expected": "458145cb...",
+      "match": true,
+      "method": "compiled candidate release certification/composite.js selfHostingCompositePolicyDigestV1()"
+    },
+    "compositeReport": {
+      "actual": "75b18b6eeb966d8b4e747d77d47545f64f6bea9d3ccc13d451a5f70da143d65c",
+      "expected": "75b18b6e...",
+      "match": true,
+      "method": "in-memory regenerate with recorded generatedAt 2026-09-30T18:06:43.976Z + JSON.stringify(report,null,2)+'\\n'"
+    },
+    "manifest": {
+      "actual": "d8c4a69da36f0b7c29788380aaa6802b3ff1a0bc1346e7f1bb2f3019c7207d3c",
+      "expected": "d8c4a69d...",
+      "match": true,
+      "method": "in-memory generateSelfHostingEvidenceManifestV1 with recorded generatedAt"
+    },
+    "versionedPins": {
+      "checked": 20,
+      "mismatches": 0,
+      "method": "independent sha256 of each pinned path vs policy expectedSha256"
+    },
+    "campaignEnvelope": {
+      "actual": "3d22460116bfbeb6957cd6e43dfa75f36a76549243c9fc22ae63b6cda2e586d9",
+      "expected": "3d224601...",
+      "match": true,
+      "identity": "s14-campaign-2 (current durable file)"
+    },
+    "campaignRawLane": {
+      "actual": "98d62371ed14175ee20cfb39221230216695c715c45c89a83b350a2ea75baea3",
+      "expected": "98d62371...",
+      "match": true,
+      "identity": "s14-campaign-2 lane, byte-identical to docs/evidence/s13/governed-lanes/round-14/s14-campaign-2/change-multifile.json"
+    },
+    "campaign1RawLane": {
+      "actual": "bf25f0f380db7803cbb2c2fcaa510cfeea1411133678a3341e95593ffcd235b0",
+      "expected": "bf25f0f3...",
+      "match": true,
+      "identity": "superseded s14-campaign-1 lane still durable at docs/evidence/s13/governed-lanes/round-14/s14-campaign-1/change-multifile.json"
+    },
+    "campaign2Summary": {
+      "actual": "263f9f5f00f7cccf9db7c2609b22df93e7caff9e89e93900aee8542f00f13fb4",
+      "expected": "263f9f5f...",
+      "match": true
+    },
+    "resourceStability": {
+      "actual": "090dace900895ec2a98fef1c20840fcff28fe6242f0e64186ba81f2bf0b43fb0",
+      "expected": "090dace9...",
+      "match": true
+    },
+    "resourceStabilitySuperseded": {
+      "actual": "e17ab9ad6789b14f58b5d1cf73107eb37ab1f3352952662fc122f3b8ec6d2770",
+      "expected": "e17ab9ad...",
+      "match": true
+    },
+    "adversarial": {
+      "actual": "d987ff6eef8bd73d748fc3962eca6699af9faba30de189bde7127edba223b5bb",
+      "expected": "d987ff6e...",
+      "match": true
+    },
+    "checkoutTrackedDigestNow": {
+      "actual": "b41a9e262ea0220a7b4b032662eae7aa744604a74aabee4c03e20f134394793c",
+      "expected": "b41a9e26... (WorkGraph final post-reconciliation digest)",
+      "match": true,
+      "files": 2050,
+      "method": "exact campaign algorithm: git ls-files -z | sort; sha256 over 'path\\0<file>\\0' + file bytes"
+    },
+    "campaign1Envelope": {
+      "actual": "not durably present (overwritten by s14-campaign-2 regeneration)",
+      "expected": "d544fa1a...",
+      "match": "UNVERIFIABLE_SUPERSEDED",
+      "disclosure": "truthfully recorded only in docs/CORE_ARCHITECTURE_V2_S14_WORKGRAPH.md line 47; not cited by the gate policy or manifest"
+    }
+  },
+  "findings": [
+    {
+      "id": "S14-F1",
+      "priority": "low",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "DISCLOSURE_DEFECT_NONBLOCKING",
+      "evidence": "docs/CORE_ARCHITECTURE_V2_S14_WORKGRAPH.md lines 45-52 label launch/step times as '12:16Z/12:2xZ' while the durable lane/operation IDs and later lines show 17:16:17Z (s14-campaign-1) and 17:40:24Z (s14-campaign-2); file mtimes show the same local-time/UTC mix.",
+      "requiredAction": "Correct the WorkGraph timestamp labels to UTC (or drop the Z suffix) in a post-acceptance docs touch; digests and results are unaffected."
+    },
+    {
+      "id": "S14-F2",
+      "priority": "medium",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "KNOWN_OPEN_DEFECT_AHEV2_0130_0135_CONSISTENT_NOT_A_FALSE_CLAIM",
+      "evidence": "At review time live AEH-owned post-terminal residue exists from both S14 W2 campaign runs: s14-campaign-2 (PIDs 591800 operation monitor, 593529/593595/593813/593814/593815 provider MCP/serena children; /proc environ S13_RUN_ID=s14-campaign-2, AEH_PARENT_OPERATION_ID=CHANGE-20260930T174049Z-7379475e) and s14-campaign-1 (PIDs 528583/530253/530276/530390-392). Staging dirs /tmp/aeh-s13-gov-noNlzG and /tmp/aeh-s13-gov-JZYqlh persist; 4 total /tmp/aeh-s13-gov-* dirs. The W2 envelope cleanup accounting is workspace-scoped (5/5/0, 0 remaining, all 5 workspace ids absent from `paseo workspace ls`) and the W3 0/0/0 baseline is scoped to its own mkdtemp root (ownedWorkspaces/ownedAgents/ownedProcesses filter on root), so neither claim covers this residue.",
+      "requiredAction": "Post-v2 carry per AEH-V2-0130/0135 (already OPEN with the required architecture). Treat TARGET §16 'cleanup succeeds' as workspace-accounting-scoped; optionally add an explicit process/staging residue line to the S14 final record. No composite assertion is false."
+    },
+    {
+      "id": "S14-F3",
+      "priority": "low",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "SUPERSEDED_PROVENANCE_LIMITATION",
+      "evidence": "The s14-campaign-1 envelope d544fa1a... exists only as a WorkGraph citation; the file path was overwritten by the s14-campaign-2 envelope (3d224601...). The campaign-1 lane (bf25f0f3..., terminal SUCCEEDED, oracle ACCEPTED, checkout 3fe7e1b7... before/after) and summary (6c749905...) are durable and verified.",
+      "requiredAction": "None blocking; the superseded status is truthfully disclosed and the gate cites only the campaign-2 artifact."
+    },
+    {
+      "id": "S14-F4",
+      "priority": "low",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "TEST_HYGIENE",
+      "evidence": "52 /tmp/aeh-composite-test-* dirs observed (4 runs x 13 fixture-creating tests in tests/selfHostingComposite.test.ts; mkdtemp without cleanup) and /tmp/aeh-s14-adversarial-* fixtures from scripts/s14AdversarialChecks.ts.",
+      "requiredAction": "Optional test-fixture cleanup (afterEach rm) in a later touch; evidence unaffected."
+    },
+    {
+      "id": "S14-F5",
+      "priority": "low",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "COUNTING_DIRECTION_SAFE",
+      "evidence": "In resource-stability iteration 1 the three archivedAgents attempts returned exitCode 1 'already archived' yet are counted in reconciliation.archivedAgents; raw residue agent counts therefore include already-archived idle records (over-count, not under-count). Baseline still ends 0/0/0 and preservedIntact true.",
+      "requiredAction": "None blocking."
+    },
+    {
+      "id": "S14-F6",
+      "priority": "low",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "PRE_EXISTING_DRIFT_CONFIRMED_UNRELATED",
+      "evidence": "tests/paseoSdkResolve.test.ts and src/paseo/sdkResolve.ts are not among the modified tracked files; the 3 failing tests are the same mise/Paseo-CLI environment drift documented and accepted since S10/S12/S13. S14 adds no dependency on that path.",
+      "requiredAction": "None."
+    }
+  ],
+  "compositeGateVerification": {
+    "gateId": "aeh-self-hosting-composite-v1",
+    "policyVersion": 1,
+    "policyDigest": "458145cbd4e4d9ddb8c83c6999531b5dd4852a49f230ab634a941a3aef22130a",
+    "candidateBuildDigest": "4c05da6ee7fe249bcad4adb730f2c08bb34867910eb512171bccb40b63203284",
+    "candidateRelease": "release-1790791747684-692606-9152377f (dist/current, gitSha af9bd8e, dirty true)",
+    "requiredItems": 21,
+    "passedItems": 21,
+    "failedItems": 0,
+    "artifactSpecs": 24,
+    "versionedArtifactSpecs": 20,
+    "runtimeArtifactSpecs": 4,
+    "artifactInstances": 46,
+    "verifiedArtifacts": 46,
+    "failedArtifacts": 0,
+    "ready": true,
+    "readinessAuthority": "DETERMINISTIC_COMPOSITE",
+    "modelAuthority": "NONE",
+    "modelReadinessClaimsEvaluated": false,
+    "byteReproducible": true,
+    "byteReproducibilityMethod": "Compiled candidate release imported in-memory; report and manifest regenerated with the recorded generatedAt 2026-09-30T18:06:43.976Z and compared by sha256 (75b18b6e.../d8c4a69d... exact).",
+    "versionedPinsRehashedIndependently": true,
+    "failClosedChecks": [
+      {
+        "code": "stale/replayed candidate binding",
+        "probe": "candidateBuildDigest=0*64 + model claim",
+        "result": "ready=false, failedItems=3, modelReadinessClaims.evaluated=false, modelAuthority=NONE",
+        "mechanism": "DETERMINISTIC"
+      },
+      {
+        "code": "COMPOSITE_MANIFEST_MISSING",
+        "probe": "manifestPath points to absent file",
+        "result": "ready=false",
+        "mechanism": "DETERMINISTIC"
+      },
+      {
+        "code": "COMPOSITE_MANIFEST_UNSAFE_PATH",
+        "probe": "absolute manifest path /etc/passwd",
+        "result": "ready=false",
+        "mechanism": "DETERMINISTIC"
+      },
+      {
+        "code": "COMPOSITE_POLICY_DIGEST_MISMATCH / frozen-pin drift",
+        "probe": "expectedSha256 altered in policy",
+        "result": "ready=false, code present",
+        "mechanism": "DETERMINISTIC"
+      },
+      {
+        "code": "COMPOSITE_MANIFEST_INVALID",
+        "probe": "manifest without artifacts object",
+        "result": "ready=false",
+        "mechanism": "DETERMINISTIC"
+      },
+      {
+        "code": "COMPOSITE_UNSUPPORTED_VERSION / tampered bytes / out-of-fixture mutation",
+        "probe": "verified by source + scripts/s14AdversarialChecks.ts real fixture evaluations (declared 11/11; assertions read and confirmed)",
+        "result": "fail closed",
+        "mechanism": "DETERMINISTIC"
+      },
+      {
+        "code": "S14_COMPOSITE_CANDIDATE_BUILD_POINTER_STALE",
+        "probe": "source-inspected (scripts/s14SelfHostingComposite.ts:39-59) against runtime artifacts' recorded candidateBuildDigest; dist/current currently is the candidate, so not live-triggered",
+        "result": "exit 2 before report write on mismatch",
+        "mechanism": "DETERMINISTIC"
+      }
+    ],
+    "coverageVsTargetSection16": {
+      "requiredAreas": [
+        "candidate truth",
+        "controller fencing",
+        "capability authority",
+        "policy freeze",
+        "execution identity/provenance",
+        "SkillManifest and context",
+        "Paseo session identity",
+        "impact-driven assurance",
+        "validation",
+        "independent review",
+        "acceptance/oracle",
+        "repair/replan",
+        "human exception handling",
+        "delivery reconciliation",
+        "runtime recovery",
+        "sandbox/security",
+        "supply chain",
+        "real-provider certification",
+        "adversarial/fault injection"
+      ],
+      "allCovered": true,
+      "amendmentResourceItemPresent": true,
+      "disposableCampaignItemPresent": true,
+      "modelCannotDeclareReadiness": true,
+      "aggregatesRatherThanExecutes": true,
+      "aggregationEvidence": "verifySelfHostingCompositeGateV1 only reads/hashes/asserts declared evidence; it never launches operations, participants or providers; readiness = passedItems === requiredItems computed solely from deterministic checks."
+    }
+  },
+  "disposableCampaignVerification": {
+    "citedArtifact": "docs/evidence/s14/disposable-self-modification-campaign.json (s14-campaign-2, sha256 3d22460116bfbeb6957cd6e43dfa75f36a76549243c9fc22ae63b6cda2e586d9)",
+    "rawLane": "docs/evidence/s14/raw/disposable-campaign-lane.json (98d62371ed14175ee20cfb39221230216695c715c45c89a83b350a2ea75baea3); envelope.sourceLaneSha256 == file hash verified",
+    "reconciliationOfClaimedDigests": {
+      "campaign2Envelope3d224601": "MATCH (on-disk)",
+      "campaign1EnvelopeD544fa1a": "UNVERIFIABLE_SUPERSEDED — recorded truthfully in WorkGraph as overwritten by the frozen-source re-run",
+      "campaign2Raw98d62371": "MATCH (on-disk; s13 round-14 lane byte-identical)",
+      "campaign1RawBf25f0f3": "MATCH (superseded lane retained at its original path as truthful history)"
+    },
+    "candidateBuildDigest": "4c05da6ee7fe249bcad4adb730f2c08bb34867910eb512171bccb40b63203284",
+    "packedBuild": "release-1790790004312-590177-00175729",
+    "fixtureCommit": "ce21584f92ce6d6b95820c00bd88e75dcd60fdc2",
+    "fixtureTreeDigest": "dada5827eb4f97480a6b3dd43b4a1e6310ef40cc265daa7cf47b830a3a97c3b3",
+    "terminalRecord": "SUCCEEDED (rev 81, controllerPid 591794, controllerAlive false, post-campaign re-read SUCCEEDED)",
+    "route": "DIRECT",
+    "oracle": {
+      "disposition": "ACCEPTED",
+      "rowResults": {
+        "change": "PASS",
+        "direct-change": "PASS"
+      },
+      "participantReceiptsPASS": true,
+      "candidateBoundPASS": true
+    },
+    "realParticipants": {
+      "sessions": 3,
+      "roles": [
+        "Implementer",
+        "Implementer",
+        "Reviewer",
+        "Reviewer"
+      ],
+      "allTerminalStatuses": [
+        "COMPLETED"
+      ]
+    },
+    "checkoutUntouched": {
+      "trackedDigestBefore": "3fe7e1b7f6553b25e6ac92b909b27eef29760f173395a4e0638fa7072e012505",
+      "trackedDigestAfter": "3fe7e1b7f6553b25e6ac92b909b27eef29760f173395a4e0638fa7072e012505",
+      "identical": true,
+      "trackedFiles": 2050,
+      "algorithmReproducedIndependently": true,
+      "algorithmNowYields": "b41a9e262ea0220a7b4b032662eae7aa744604a74aabee4c03e20f134394793c (2,050 files) = WorkGraph final post-reconciliation digest"
+    },
+    "containment": {
+      "fixtureRoot": "/tmp/aeh-s13-gov-noNlzG/work/lane-change-multifile-fixture",
+      "mutationRoots": [
+        "/tmp/aeh-s13-gov-noNlzG/work/lane-change-multifile-fixture",
+        "/home/james/.paseo/worktrees/1qx6yf2a/aeh-change-20260930t174049z-7379475e",
+        "/tmp/aeh-direct-CHANGE-20260930T174049Z-7379475e-Nq1ECf"
+      ],
+      "allDisposable": true,
+      "noneInsideCheckout": true,
+      "changedPathsRepositoryRelative": true,
+      "candidateWorkspaceObservationsMatched": true
+    },
+    "cleanup": {
+      "inventoryCount": 5,
+      "archivedCount": 5,
+      "remainingCount": 0,
+      "unaccounted": [],
+      "accounted": true,
+      "allFiveWorkspaceIdsAbsentFromLivePaseoInventory": true,
+      "leadAgentCleanupExitCode": 0,
+      "workspaceCleanupError": null,
+      "scope": "workspace/lead-agent accounting only; provider process and staging-dir residue persists (see finding S14-F2, AEH-V2-0130/0135 OPEN)"
+    },
+    "fixtureTopologyOverride": {
+      "runtime": "opencode",
+      "provider": "opencode-go",
+      "model": "gpt-6-luna",
+      "reason": "codex hard usage-limit blocked; disclosed as in S13 R23-F3; acceptance-neutral",
+      "recordedInLaneAndEnvelope": true
+    },
+    "publicEffects": [],
+    "externalEffects": []
+  },
+  "resourceStabilityVerification": {
+    "artifact": "docs/evidence/s14/resource-stability-campaign.json (090dace9...), runId s14-resource-2, lane change-direct",
+    "supersededArtifact": "docs/evidence/s14/resource-stability-campaign.superseded-s14-resource-1.json (e17ab9ad...), iterations-as-count shape; correctly explained by WorkGraph as the composite-shape failure that was fixed harness-only",
+    "candidateBuildDigest": "4c05da6ee7fe249bcad4adb730f2c08bb34867910eb512171bccb40b63203284",
+    "iterations": 2,
+    "bothTerminalSucceeded": true,
+    "bothOracleAccepted": true,
+    "ceilings": {
+      "workspaces": 12,
+      "agents": 12,
+      "processes": 96
+    },
+    "rawTerminalOwnedResidue": [
+      {
+        "iteration": 1,
+        "workspaces": 3,
+        "agents": 3,
+        "processes": 28,
+        "withinCeiling": true
+      },
+      {
+        "iteration": 2,
+        "workspaces": 4,
+        "agents": 4,
+        "processes": 29,
+        "withinCeiling": true
+      }
+    ],
+    "supersededFirstRunResidue": [
+      {
+        "iteration": 1,
+        "workspaces": 5,
+        "agents": 5,
+        "processes": 29
+      },
+      {
+        "iteration": 2,
+        "workspaces": 3,
+        "agents": 3,
+        "processes": 28
+      }
+    ],
+    "terminalityGatedReconciliation": true,
+    "baselineReturned": true,
+    "preservedIntact": true,
+    "preservedCount": 0,
+    "preservedNonTerminal": [],
+    "postReconciliationBaseline": [
+      {
+        "workspaces": 0,
+        "agents": 0,
+        "processes": 0
+      },
+      {
+        "workspaces": 0,
+        "agents": 0,
+        "processes": 0
+      }
+    ],
+    "postReconciliationNoGrowth": true,
+    "finalBaseline": {
+      "workspaces": 0,
+      "agents": 0,
+      "processes": 0
+    },
+    "classification": {
+      "aehV2_0130": "OPEN_PRODUCT_DEFECT_EVIDENCED",
+      "accurate": true
+    },
+    "ledgerRowAehV2_0135": {
+      "present": true,
+      "accurate": true,
+      "notes": "5/5/29 superseded first-run iteration 1, 3/3/28 corrected run, 4/4/29 iteration 2 — all verified against artifacts"
+    },
+    "compositeIncludesItem": true,
+    "compositeItemIds": [
+      "resource-lifecycle-reconciliation",
+      "disposable-self-modification"
+    ],
+    "directorResidueInvestigation": {
+      "liveOpencodeServeProcesses": "20+ Paseo-daemon-parented `opencode serve` workers (09:11–12:59 local; 3–4 h old) belonging to the Paseo session pool (many idle/closed agents, incl. this reviewer); not in any S14 campaign resource inventory. Do not kill — Paseo-managed user/session infrastructure.",
+      "liveAehOwnedS14Processes": "12 processes proven AEH-owned by /proc/<pid>/environ: s14-campaign-2 (591800 monitor + 5 provider children, AEH_PARENT_OPERATION_ID=CHANGE-20260930T174049Z-7379475e) and s14-campaign-1 (6 processes, CHANGE-20260930T171617Z), still alive at review.",
+      "tmpDirs": "155 /tmp/aeh-* dirs: 52 aeh-composite-test (S14 test fixtures), 9 aeh-toolchain / 7 aeh-agents / 6 aeh-issue / 5 aeh-delivery / 4 aeh-s13-gov (S13/S14 staging) etc.; no /tmp/aeh-s14-resource-* processes remain.",
+      "ownershipVerdict": "The Director-observed residue is genuine post-terminal AEH-owned residue (AEH-V2-0130/0135 class, post-v2 carry) plus Paseo session-pool workers and old test staging dirs. It does NOT contradict the S14 scoped claims: W2 cleanup is workspace-accounting (5/5/0 true, verified against live Paseo inventory) and W3 0/0/0 is scoped to the stability campaign's own /tmp/aeh-s14-resource-* root. It does confirm the disclosed OPEN product defect (no durable operation→resource ownership/terminal reconciliation), and it shows the W2 campaign's own provider processes were never reconciled by any S14 lane. No S14 artifact claims process-level global cleanup."
+    }
+  },
+  "adversarialVerification": {
+    "artifact": "docs/evidence/s14/adversarial-negative-checks.json (d987ff6e...), result PASS, failedChecks [], modelAuthority NONE, candidateBuildDigest 4c05da6e...",
+    "gateLevelChecks": {
+      "claimed": 11,
+      "verifiedReal": true,
+      "method": "read scripts/s14AdversarialChecks.ts: real synthetic fixture + real generate/verify calls; independently reproduced stale-binding, missing-manifest, unsafe-path, policy/pin mismatch, invalid-manifest, and model-claim non-authority in memory"
+    },
+    "productLevelChecks": {
+      "claimedSuites": 6,
+      "claimedTests": 18,
+      "testsExist": true,
+      "countsVerified": "candidateIdentity 6 + directCandidateLifecycle 5 + candidateAssembler 7 = 18 it(); not executed (write boundary)",
+      "confinementAssertionsPresent": true
+    },
+    "modelClaimNonAuthorityVerified": true,
+    "candidateDriftReplayRejected": true,
+    "pathSafetyRejected": true,
+    "outOfFixtureMutationRejectedCheckPresent": true
+  },
+  "focusedTests": {
+    "claimed": "4 files / 43 tests",
+    "staticCount": {
+      "tests/selfHostingComposite.test.ts": 15,
+      "tests/certification.test.ts": 19,
+      "tests/certificationMatrix.test.ts": 1,
+      "tests/certificationJourneys.test.ts": 8,
+      "total": 43
+    },
+    "executionBoundary": "not re-executed (write boundary)"
+  },
+  "fullSuite": {
+    "claimed": "204 files / 1378 tests = 1368 passed / 3 failed / 7 skipped (only pre-existing tests/paseoSdkResolve mise drift)",
+    "testFileCountVerified": 204,
+    "executionBoundary": "not re-executed (write boundary)",
+    "preExistingDriftPathUnmodified": true
+  },
+  "verdict": "SLICE_ACCEPTED",
+  "actionRequired": "No blocking action. Campaign Director may checkpoint S14 (commit/push) including the S14 worktree as-is. Non-blocking follow-ups: (1) correct the WorkGraph local-time/Z timestamp labels (S14-F1); (2) ensure the post-v2 AEH-V2-0130/0135 carry explicitly scopes TARGET §16 'cleanup succeeds' to workspace accounting and reclaims campaign provider processes/staging dirs (S14-F2); (3) optional test-fixture cleanup (S14-F4). The cited evidence binds candidate build 4c05da6e...; if any S14 src or evidence byte changes before checkpoint, this acceptance no longer binds and the composite gate must be re-run and verified."
+}

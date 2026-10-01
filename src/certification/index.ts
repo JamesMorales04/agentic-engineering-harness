@@ -5,5 +5,7 @@ export * from "./provider.js";
 export * from "./codex.js";
 export * from "./core.js";
 export * from "./bootstrap.js";
+export * from "./journeys.js";
 export * from "./adapters.js";
 export * from "./artifacts.js";
+export * from "./composite.js";

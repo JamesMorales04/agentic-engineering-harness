@@ -1,0 +1,440 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 13,
+  "reviewer": {
+    "identity": "fresh independent S13 round-13 reviewer; no implementation role in round 13 and no prior round-13 disposition inherited",
+    "provider": "opencode-go",
+    "model": "deepseek-v4.1-flash",
+    "thinking": "plan mode (read-only); thinking option not exposed to this reviewer process"
+  },
+  "noImplementationDisclosure": "I did not implement any part of Round 13. I made no repository modification, no commit/push/stash/reset/clean/revert, no GitHub write, and launched no AEH operation against this checkout. I only read files, recomputed digests, inspected the installed Paseo 0.9.1 provider source, inspected the live fixture controller/operation record read-only, and queried the Paseo daemon workspace inventory read-only. I did not run vitest, typecheck or build (they write caches/dist); those are recorded as verification boundaries.",
+  "gitState": {
+    "branch": "core-architecture-v2",
+    "head": "e3dad34aa79348e1d65cee28114d76d4ec0a736c",
+    "headMatchesExpected": true,
+    "upstream": "origin/core-architecture-v2 == e3dad34aa79348e1d65cee28114d76d4ec0a736c (branch.ab +0 -0); no commits and no push",
+    "workingTree": "78 tracked modifications + 27 untracked paths, all uncommitted; index empty; no stashes",
+    "gitDiffCheck": "clean (exit 0)",
+    "targetDigest": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a (working) == git show HEAD:docs/CORE_ARCHITECTURE_V2.md (MATCH)",
+    "round13SourceEditWindow": "src/paseo/native.ts 17:27:00, src/agents/permissions.ts 17:27:32, src/core/git.ts 17:39:22, src/paseo/sdk.ts 17:40:43, src/paseo/runtimeCore.ts 17:40:53, src/paseo/launchSpec.ts 17:53:12, src/workers/agentPrompt.ts 17:53:18 (local -05:00); no src edit after 17:53:18 and no src edit inside any round-13 lane window",
+    "credentialsInEvidence": "none found (ghp_/github_pat_/gho_/ghs_/gh_token/sk-/BEGIN PRIVATE KEY/AKIA/xox scan over docs/evidence/s13; only scan-pattern strings inside reviewer records; pairing fragments appear only as REDACTED)"
+  },
+  "digestRecomputation": {
+    "verdict": "MATCH",
+    "entries": [
+      {
+        "artifact": "docs/CORE_ARCHITECTURE_V2.md working",
+        "recomputed": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+        "verdict": "MATCH"
+      },
+      {
+        "artifact": "docs/CORE_ARCHITECTURE_V2.md HEAD blob",
+        "recomputed": "4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a",
+        "verdict": "MATCH"
+      },
+      {
+        "artifact": "docs/evidence/s13/review-round12.json",
+        "claimed": "bc3acad9…",
+        "recomputed": "bc3acad9dbb84cc2c0a4814f4383ee52766184abcb3a0a25023b81a38bc35345",
+        "verdict": "MATCH"
+      },
+      {
+        "artifact": "docs/evidence/s13/s13-real-provider-certification.json",
+        "claimed": "9b4efcb0…",
+        "recomputed": "9b4efcb045fd68155a6140fd576497f9143271b7054ff8bd853e3b72404e4268",
+        "verdict": "MATCH"
+      },
+      {
+        "artifact": "docs/evidence/s13/lanes/startup.json",
+        "claimed": "073d4074…",
+        "recomputed": "073d4074776f3c3f5aebdf0a6bb0b0749cc4fb9eea129d07e4bce214540827d4",
+        "verdict": "MATCH"
+      },
+      {
+        "artifact": "docs/evidence/s13/lanes/informational.json",
+        "claimed": "f1e8acc0…",
+        "recomputed": "f1e8acc07087759f4a462f4c240d872f870467e3ab87d93f06bd39b888f69d07",
+        "verdict": "MATCH"
+      },
+      {
+        "artifact": "docs/evidence/s13/lanes/project-home.json",
+        "claimed": "6b7c4582…",
+        "recomputed": "6b7c4582f2e25f96a4636cfcbc4e714a68c4d76d9a5c2e1b0b7524b034b58e60",
+        "verdict": "MATCH"
+      },
+      {
+        "artifact": "docs/evidence/s13/lanes/multi-project.json",
+        "claimed": "178344bc…",
+        "recomputed": "178344bcb43c5433bab0e0b414b9806a3a2564d2451bd99d7a1a84f426b6bc0a",
+        "verdict": "MATCH"
+      },
+      {
+        "artifact": "governed-lanes/round-13/run-20260928233519184-38c9c4/audit.json",
+        "claimed": "7fe095fb…",
+        "recomputed": "7fe095fb3fe07fd9cf40b5c8abeede68dffdbaa521022b940ee0189117228dff",
+        "verdict": "MATCH"
+      },
+      {
+        "artifact": "s13-governed-operations-round-13-run-20260928233519184-38c9c4.json",
+        "claimed": "a21eb275…",
+        "recomputed": "a21eb275d553bae4dfed1266c3f3b1c6a28acb6136a2c199e8b27877dc85d57d",
+        "verdict": "MATCH"
+      },
+      {
+        "artifact": "s13-governed-operations-round-13-run-20260928234307110-a01f01.json",
+        "claimed": "0d518af9…",
+        "recomputed": "0d518af94f5c2c1d2d21866745705e59bc469686b2b6e86c66fc3861cdfd0866",
+        "verdict": "MATCH"
+      },
+      {
+        "artifact": "governed-lanes/round-13/run-20260928234307110-a01f01/change-direct.json (not doc-claimed)",
+        "recomputed": "95ff04852b708ead7c9d07531518dd456c64a1d456cc5f3be519dd71c43da75f",
+        "verdict": "INFO"
+      },
+      {
+        "artifact": "governed-lanes/round-13/run-20260928222920325-9b7d9d/change-delegated.json (not doc-claimed)",
+        "recomputed": "96ced72f499d439d872a7693e3a0d48be5432291f0fa23d98b1e93ffd2642c89",
+        "verdict": "INFO"
+      },
+      {
+        "artifact": "governed-lanes/round-13/run-20260928224225868-7c8814/change-delegated.json (not doc-claimed)",
+        "recomputed": "bcdd003a2cef648b24a73773e9c256c5aab26fdd466af1e2c30a1ae3c444714c",
+        "verdict": "INFO"
+      },
+      {
+        "artifact": "governed-lanes/round-13/run-20260928225446983-c5ff6c/change-delegated.json (not doc-claimed)",
+        "recomputed": "708934e8326b282045d57e58e76d6207790c84eddd988dfd4d4416b54fd065ae",
+        "verdict": "INFO"
+      },
+      {
+        "artifact": "docs/evidence/s13/history/authorization-history.json",
+        "claimed": "20960a7e…",
+        "recomputed": "20960a7e6e22a195a07a71124df3b73dee46cf3180aa282a8378394e8a0d540e",
+        "verdict": "MATCH"
+      },
+      {
+        "artifact": "history/github-effect-authorization.272c5cb7…json",
+        "claimed": "272c5cb7…",
+        "recomputed": "272c5cb76158a7c312edd4d8d97cd6545b599e5c57c7978bbfc3742c573bd460",
+        "verdict": "MATCH"
+      },
+      {
+        "artifact": "docs/evidence/s13/github-effect-authorization.json",
+        "claimed": "272c5cb7…",
+        "recomputed": "272c5cb76158a7c312edd4d8d97cd6545b599e5c57c7978bbfc3742c573bd460",
+        "verdict": "MATCH"
+      },
+      {
+        "artifact": "docs/evidence/s13/round10-0114-authorization-resolution.json",
+        "recomputed": "218e3523626694e7f2653b851b9c25da9b1448545d1ea31322f65459b6e92698",
+        "verdict": "MATCH"
+      },
+      {
+        "artifact": "s13-real-provider-certification-round-11.json (preserved)",
+        "recomputed": "1ab94ea7d0f08494d6eacb988c3063369f545087a911b353c10a04b0a7a4d0ea",
+        "verdict": "MATCH"
+      }
+    ]
+  },
+  "findings": [
+    {
+      "id": "R13-F1-AEH-V2-0116",
+      "priority": "P1",
+      "mechanism": "HYBRID",
+      "disposition": "VERIFIED_SUPPORTED_NO_GATE_WEAKENED",
+      "evidence": "Provider behavior (1) independently verified in installed @getpaseo/server@0.9.1 dist/server/server/agent/providers/opencode-agent.js:2425 `this.autoAcceptEnabled = !config.toolPolicy && isOpenCodeAutoAcceptEnabled(config)` and daemon `paseo --version` = 0.9.1. D1 present: src/agents/permissions.ts:214-247 (external_directory scoped allow; Semantic Assessor and fully-denied roles get none; filesystem root/relative ignored) + src/core/git.ts:23-35 worktreeGitRoots + src/paseo/launchSpec.ts:106-107. D2 present and bounded: src/paseo/sdk.ts:524-564, src/paseo/native.ts:411/718-733 (≤200-char fields, ≤8 patterns ×300), src/paseo/runtimeCore.ts:493-502; exercised in run-1 stderr `(external_directory scope <fixture>/.git/worktrees/<task>/*)` and Codex names `(CodexBash)`/`(CodexFileChange)`. D3 present: src/paseo/launchSpec.ts:248-258 (`approval_policy: never`, sandbox_mode from ceiling), src/paseo/sdk.ts:459 config.options, src/paseo/runtimeCore.ts:433 CLI fallback refused for providerOptions; exercised in run-3 (two real codex Repairer turns executed without approval stops, exit 0). D4/AEH-V2-0117 present: src/paseo/launchSpec.ts:94-99, src/workers/agentPrompt.ts:316/688; run-2 lane workspaceWatch durably records `src/format.mjs` added inside the operation candidate worktree /home/james/.paseo/worktrees/1yo7ez85/… plus CANDIDATE_WORKSPACE_MISMATCH, and run-3 no longer reproduces. No acceptance/terminal/authority gate file was edited in round 13 (src edit window of 7 files only).",
+      "requiredAction": "None for correctness; preserve the bounded permission detail and keep the projection scoped."
+    },
+    {
+      "id": "R13-F2-AEH-V2-0118",
+      "priority": "P1",
+      "mechanism": "HYBRID",
+      "disposition": "CONFIRMED_OPEN_CLASSIFICATION_CORRECT",
+      "evidence": "run-20260928225446983-c5ff6c/change-delegated.json: terminal FAILED phase finished rev 122, terminalRecord.error=null, operation.error=null, no implementation/remediation stage message; implementer receipt `receipt:participant:extract-greeting-format:2026-09-28T23:01:59.157Z` outcome SUCCEEDED with artifact; assembly receipt r2→r3 (base r2 digest f86042830d82d022…, sourceChangeSetDigest 81cdd7976f83e480…) exists; validation report PASS with `command.fixture-greeting` and `contract-test` PASS; stages implementation FAILED, remediation FAILED; two Repairer receipts (b56933dc869b913a, 3604836497d5e611) outcome SUCCEEDED/exitCode 0 with retained transcripts stating no applicable implementation-only change and a `contract-test` validator-id collision between the sealed contract and .harness/project.yaml; the repairer diagnosis is agent-reported and unverified by a tool receipt, exactly as the ledger row states.",
+      "requiredAction": "Round 14: reproduce with trace, persist the failing repair-stage error, isolate why remediation runs after a PASS validation report and why `contract-test` cannot resolve, fix the trigger/wiring, then rerun change-delegated to terminal SUCCEEDED."
+    },
+    {
+      "id": "R13-F3-change-direct-rerun",
+      "priority": "P1",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "NOT_ACCEPTED_NON_TERMINAL",
+      "evidence": "run-20260928234307110-a01f01: terminalRecord RUNNING phase context rev 139, lateTerminal recorded after 900 s + 300 s (`observedAt 2026-09-29T00:03:51Z`), oracle rowResults change=FAIL/direct-change=FAIL, no acceptance artifact; live controller PID 779405 still alive and the durable operation record has since advanced to revision 187 phase context (observed read-only). The rows therefore lack current terminal evidence.",
+      "requiredAction": "Observe/complete the live operation to a terminal state (late-terminal read) or rerun the bounded lane; do not clean its workspaces until terminal and controller-exited (AEH-V2-0112 predicate)."
+    },
+    {
+      "id": "R13-F4-R12F1-sweep",
+      "priority": "P2",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "PARTIAL_SWEEP",
+      "evidence": "Current build (buildDigest e9221b7495cb08ccd26f6a1aa750e97971745648f0d3bed79b1dde14be9f36d4, source e3dad34) after all 7 round-13 source edits (last 17:53:18 local): certification 4/4 PASS (packed release-1790636944026-740060-fa9fa05c, checkoutUntouched true), audit PASS SUCCEEDED rev 51 (packed release-1790638519704-767139-9bb72af4); change/direct-change rerun non-terminal (R13-F3); issue-driven explicitly not rerun (STALE_REQUIRES_RERUN). The Round-12 R12-F1 correction is present (WorkGraph:756).",
+      "requiredAction": "Complete change/direct-change and rerun issue-driven with S13_GH_AUTHORIZATION_FILE and the user-authorized existing issue #1 (no new issue/repository) before any S13 checkpoint."
+    },
+    {
+      "id": "R13-F5-cleanup-disclosure",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "MINOR_DISCLOSURE_GAP",
+      "evidence": "Live Paseo inventory (read-only) has 77 workspaces; every workspace referenced by the round-13 change-delegated runs, the audit lane and the probe (including wks_7cebe4ce54832f05, wks_8c4f2ce91ef3f5ae, wks_bff64d05ba37cc41, wks_ebe4c770b13c72a6, wks_9200d2ef91e2c7fd, wks_4fefe71e419da3b3, wks_c12c0d706003413f, wks_48e73753b74a9eb) is absent, corroborating archival. However the live direct fixture still owns 6 workspaces, not the 5 listed at WorkGraph:871: wks_53932714a694e7d4, wks_7e19752028cb1d37, wks_8dcb9df35023d77f, wks_c1c70f29c16606fd, wks_cde3b7c23f8e5b9f plus wks_cbbf9c0d1e27867d; /tmp also retains /tmp/aeh-direct-CHANGE-20260928T234347Z-5de819ea-QMiNmg (the second staging dir of the same live operation) besides /tmp/aeh-s13-gov-QqfIgD.",
+      "requiredAction": "Correct the live-workspace/staging enumeration in the round record; clean up only after the operation is terminal and the controller has exited (AEH-V2-0112 guard)."
+    },
+    {
+      "id": "R13-F6-cancel-recovery-rationale",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "IMPRECISE_RATIONALE_EVIDENCE_STILL_VALID",
+      "evidence": "Round 13 edited the Paseo create/wait/launch-option surface (sdk.ts config.options 459, native.ts subscription wait, runtimeCore.ts create/fallback 431-433, launchSpec.ts 94-121) which the lifecycle fixture does execute when materializing sessions; the inspect/stop functions (runtimeCore.ts:212, 383) and the state/gated-action path are unchanged, and the new branches (providerOptions=codex only, isolated-parent suppression, permission-stop capture) cannot fire in an opencode non-isolated lifecycle run. The WorkGraph reason 'their paths are not touched by round-13 edits' overstates this.",
+      "requiredAction": "Reword to 'round-13 changed branches cannot fire in the lifecycle fixture; inspect/stop unchanged', or add a cheap build-bound cancel/recovery rerun."
+    },
+    {
+      "id": "R13-F7-probe-durability",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "EVIDENCE_BOUNDARY",
+      "evidence": "round13-0116-diagnosis.json is a lead summary (probe2/probe6 observations, one provider source line); the raw probe transcripts and the created-agent featureValues payload are not preserved as separate durable artifacts. Provider behavior (1) was independently re-verified from the installed Paseo source; provider behavior (2) is corroborated by the run-2 durable workspace watcher/observation (MISMATCH with src/format.mjs added in the candidate worktree) and by the D4 fix. The reported stop itself is durable in run-1 and run-3 evidence.",
+      "requiredAction": "Preserve raw probe transcripts (daemon snapshots/agent configs) as a digest-bound evidence artifact in future diagnoses; the current classification is supported by corroboration, not by the probe bytes."
+    },
+    {
+      "id": "R13-F8-verification-boundary",
+      "priority": "P3",
+      "mechanism": "DETERMINISTIC",
+      "disposition": "VERIFICATION_BOUNDARY",
+      "evidence": "Focused dynamic rerun, `npm run typecheck` and `npm run build` were not executed under the read-only mandate. Static inventory of the 13 named round-13 focused files yields exactly 104 `it()` declarations, matching the claimed 104; the claimed local build release-1790636826709-736683-4189e1df is no longer in dist/releases (retention prunes to current+2) but the current-pack buildDigest e9221b74… is consistent across all round-13 lane groups. Round-12 R12-F7 (full non-system lane) remains open.",
+      "requiredAction": "Re-run the full non-system suite and the focused 13-file set in a writable environment at the next checkpoint; keep the dynamic counts as a claim until then."
+    }
+  ],
+  "liveControllerObservation": {
+    "pid": 779405,
+    "cmd": "node /tmp/aeh-s13-gov-QqfIgD/work/lane-change-fixture/node_modules/agentic-engineering-harness/dist/main.js operation execute CHANGE-20260928T234347Z-5de819ea /tmp/aeh-s13-gov-QqfIgD/work/lane-change-fixture",
+    "aliveAtObservation": true,
+    "startedLocal": "2026-09-28 18:43 (-05:00)",
+    "elapsedAtFirstObservation": "23m41s",
+    "operation": "CHANGE-20260928T234347Z-5de819ea",
+    "laneSnapshot": {
+      "status": "RUNNING",
+      "phase": "context",
+      "revision": 139,
+      "checkoutUntouched": false,
+      "reason": "tracked S13 docs edited during the run (post-run tracked-doc edit window), not candidate/source drift"
+    },
+    "currentDurableRecord": {
+      "status": "RUNNING",
+      "phase": "context",
+      "revision": 187,
+      "terminal": false,
+      "controllerPid": 779405,
+      "candidateWorktreeAvailable": true
+    },
+    "liveWorkspaces": [
+      "wks_53932714a694e7d4",
+      "wks_7e19752028cb1d37",
+      "wks_8dcb9df35023d77f",
+      "wks_c1c70f29c16606fd",
+      "wks_cde3b7c23f8e5b9f",
+      "wks_cbbf9c0d1e27867d"
+    ],
+    "consistencyWithAEH_V2_0112": "Consistent: the campaign skipped archival under S13_GOV_KEEP=1, no live resource was archived, and leaving the controller running is disclosed at WorkGraph blocker 6; cleanup is deferred until the operation is terminal and the controller exited. Observation was read-only; the process was not signaled.",
+    "disclosed": true
+  },
+  "stalenessDispositions": [
+    {
+      "row": "startup",
+      "previous": "CURRENT_ACCEPTED",
+      "disposition": "CURRENT_ACCEPTED",
+      "reason": "Round-13 certification rerun PASS on build e9221b74… after all round-13 edits; checkoutUntouched true"
+    },
+    {
+      "row": "informational",
+      "previous": "STALE_REQUIRES_RERUN",
+      "disposition": "CURRENT_ACCEPTED",
+      "reason": "Round-13 certification rerun PASS with a real Paseo session (opencode-go/gpt-6-luna) on the repaired assessor/launch path"
+    },
+    {
+      "row": "audit",
+      "previous": "STALE_REQUIRES_RERUN",
+      "disposition": "CURRENT_ACCEPTED",
+      "reason": "Round-13 governed audit rerun PASS (AUDIT-20260928T233544Z-78e1af93, SUCCEEDED rev 51, oracle all PASS) on the post-round-13 build"
+    },
+    {
+      "row": "change",
+      "previous": "CURRENT_ACCEPTED (round 10)",
+      "disposition": "STALE_RERUN_INCOMPLETE",
+      "reason": "Round-10 acceptance predates round-12/13 edits to change/launch/session surfaces; round-13 rerun non-terminal (RUNNING rev 139→187)"
+    },
+    {
+      "row": "direct-change",
+      "previous": "CURRENT_ACCEPTED (round 10)",
+      "disposition": "STALE_RERUN_INCOMPLETE",
+      "reason": "Same DIRECT pipeline; round-13 rerun non-terminal"
+    },
+    {
+      "row": "cancel",
+      "previous": "CURRENT_ACCEPTED (round 10)",
+      "disposition": "UNCHANGED_EVIDENCE_VALID",
+      "reason": "Round-13 edited create/wait branches cannot fire in the lifecycle fixture; inspect/stop and state/gated-action functions unchanged (see R13-F6)"
+    },
+    {
+      "row": "recovery",
+      "previous": "CURRENT_ACCEPTED (round 10)",
+      "disposition": "UNCHANGED_EVIDENCE_VALID",
+      "reason": "Same lifecycle path as cancel"
+    },
+    {
+      "row": "project-home",
+      "previous": "CURRENT_ACCEPTED",
+      "disposition": "CURRENT_ACCEPTED",
+      "reason": "Round-13 certification rerun PASS on build e9221b74…"
+    },
+    {
+      "row": "multi-project",
+      "previous": "CURRENT_ACCEPTED",
+      "disposition": "CURRENT_ACCEPTED",
+      "reason": "Round-13 certification rerun PASS on build e9221b74…"
+    },
+    {
+      "row": "issue-driven",
+      "previous": "CURRENT_REQUIRED_EVIDENCE_VERIFIED (round 11)",
+      "disposition": "STALE_REQUIRES_RERUN",
+      "reason": "Not rerun in round 13; managed change/Planner/Paseo launch path was edited in rounds 12–13"
+    },
+    {
+      "row": "authority",
+      "previous": "CURRENT_REQUIRED_EVIDENCE_VERIFIED (round 11)",
+      "disposition": "UNCHANGED_EVIDENCE_VALID",
+      "reason": "Gated-effect path executes no round-12/13 edited module"
+    }
+  ],
+  "matrixDispositions": [
+    {
+      "capability": "startup",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "lanes/startup.json 073d4074… PASS, packed release-1790636944026-740060-fa9fa05c, build e9221b74…, checkoutUntouched true"
+    },
+    {
+      "capability": "informational",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "lanes/informational.json f1e8acc0… PASS with real Paseo session agentId 7197d447-36d6-440f-a6b8-ead3f5ed6484 (opencode-go/gpt-6-luna)"
+    },
+    {
+      "capability": "audit",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "round-13 audit.json 7fe095fb…/summary a21eb275… SUCCEEDED rev 51, oracle PASS, real opencode+codex sessions, workspace wks_9200d2ef91e2c7fd archived"
+    },
+    {
+      "capability": "change",
+      "disposition": "NOT_ACCEPTED (stale rerun incomplete)",
+      "evidence": "round-13 change-direct lane RUNNING rev 139 at lane end (now rev 187), no acceptance artifact"
+    },
+    {
+      "capability": "direct-change",
+      "disposition": "NOT_ACCEPTED (stale rerun incomplete)",
+      "evidence": "same lane; oracle rows change/direct-change FAIL non-terminal"
+    },
+    {
+      "capability": "delegated-change",
+      "disposition": "NOT_ACCEPTED",
+      "evidence": "run-20260928225446983-c5ff6c truthful terminal FAILED rev 122; AEH-V2-0118"
+    },
+    {
+      "capability": "formal-sdd",
+      "disposition": "NOT_REACHED / NOT_ACCEPTED",
+      "evidence": "no round-13 formal lane artifact; depends on the delegated trunk; AEH-V2-0111/0115 remain open"
+    },
+    {
+      "capability": "multi-worker",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "not started; no fabricated harness"
+    },
+    {
+      "capability": "cancel",
+      "disposition": "UNCHANGED_EVIDENCE_VALID",
+      "evidence": "round-10 build-bound lifecycle PASS; round-13 changed branches cannot fire (R13-F6)"
+    },
+    {
+      "capability": "recovery",
+      "disposition": "UNCHANGED_EVIDENCE_VALID",
+      "evidence": "round-10 build-bound lifecycle PASS; same rationale"
+    },
+    {
+      "capability": "product-repair",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "not started"
+    },
+    {
+      "capability": "certification-repair",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "not started"
+    },
+    {
+      "capability": "repair",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "not started; AEH-V2-0118 remediation semantics are part of this family"
+    },
+    {
+      "capability": "context-handoff",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "not started"
+    },
+    {
+      "capability": "permission-delegation",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "not started"
+    },
+    {
+      "capability": "issue-driven",
+      "disposition": "STALE_REQUIRES_RERUN",
+      "evidence": "round-11 verified path edited since; not rerun in round 13 (external authorization + existing issue #1 required)"
+    },
+    {
+      "capability": "delivery",
+      "disposition": "BLOCKED",
+      "evidence": "requires an accepted change/delegated candidate"
+    },
+    {
+      "capability": "distributed-execution",
+      "disposition": "BLOCKED_NO_EVIDENCE",
+      "evidence": "not started"
+    },
+    {
+      "capability": "project-home",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "lanes/project-home.json 6b7c4582… PASS, build e9221b74…"
+    },
+    {
+      "capability": "multi-project",
+      "disposition": "CURRENT_ACCEPTED",
+      "evidence": "lanes/multi-project.json 178344bc… PASS, build e9221b74…"
+    },
+    {
+      "capability": "control-center",
+      "disposition": "NOT_APPLICABLE",
+      "evidence": "BROWSER lane only; never substituted for REAL_PROVIDER"
+    },
+    {
+      "capability": "authority",
+      "disposition": "UNCHANGED_EVIDENCE_VALID",
+      "evidence": "round-11 authorized gated-effect PASS; no round-12/13 edited module on the path"
+    }
+  ],
+  "focusedTests": {
+    "claimed": "13 files / 104 tests passed; npm run typecheck exit 0; npm run build exit 0 (release-1790636826709-736683-4189e1df); git diff --check clean; TARGET unchanged",
+    "independentlyReproduced": {
+      "staticInventory": "13 named files contain exactly 104 `it()` declarations (specManagerCanonicality 6, changeRouting 7, changePlanRequirementTraceability 1, specEscalationPolicyRebind 4, participantsCanonical 7, participantRuntimeBinding 4, architectureWorkGraph 16, paseoRuntime 14, paseoLaunchSpec 9, openSpecBridge 8, candidateIdentity 6, s13GithubCampaignPolicy 11, permissions 11)",
+      "gitDiffCheck": "clean (exit 0)",
+      "targetUntouched": "MATCH",
+      "newRegressionTestsPresent": "permissions.test.ts:184/199/208 (3 AEH-V2-0116), paseoLaunchSpec.test.ts:322/343 (external_directory, Codex sandbox), paseoRuntime.test.ts:304 (approval identity+scope)"
+    },
+    "notReproduced": "dynamic vitest run, npm run typecheck, npm run build (read-only mandate; they write cache/dist). Full non-system lane (R12-F7) remains outstanding.",
+    "verificationBoundary": "Dynamic counts and the local build release id remain lead claims; the packed buildDigest e9221b74… across all round-13 lane groups is independently consistent."
+  },
+  "verdict": "SLICE_BLOCKED",
+  "actionRequired": [
+    "Round 14 owns AEH-V2-0118: reproduce with trace, persist the failing repair-stage error, isolate the remediation trigger and `contract-test` wiring, fix, then rerun change-delegated to a terminal SUCCEEDED.",
+    "Complete or rerun change/direct-change to a terminal result and record the late-terminal read; the live controller PID 779405 is still RUNNING (rev 187) and must not be cleaned before terminal+exited.",
+    "Complete the R12-F1 sweep: rerun issue-driven with S13_GH_AUTHORIZATION_FILE and the user-authorized existing issue #1; no new issue/repository/credential.",
+    "Close formal-sdd only with a canonical live accepted result (AEH-V2-0111/0115), then the P2-F rows (multi-worker, repair family, context-handoff, permission-delegation, distributed-execution, delivery).",
+    "Correct the live fixture workspace/staging enumeration (add wks_cbbf9c0d1e27867d and /tmp/aeh-direct-CHANGE-20260928T234347Z-5de819ea-QMiNmg) and the cancel/recovery rationale wording; preserve raw probe transcripts as durable evidence.",
+    "Rerun the full non-system suite and the focused set in a writable environment at the next checkpoint (R12-F7).",
+    "S14 must not start; no row or slice is self-accepted."
+  ]
+}

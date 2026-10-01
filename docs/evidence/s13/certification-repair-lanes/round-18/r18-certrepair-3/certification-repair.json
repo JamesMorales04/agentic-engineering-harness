@@ -1,0 +1,326 @@
+{
+  "version": 1,
+  "slice": "S13",
+  "round": 18,
+  "runId": "r18-certrepair-3",
+  "capability": "certification-repair",
+  "providerPath": "FULL_OPERATION_REAL_CERTIFICATION",
+  "harnessRevisions": {
+    "files": [
+      {
+        "file": "s13CertificationRepairCampaign.mjs",
+        "sha256": "7879db16354daed65e948fcd4e332842e9cff7923e6f51cf5f549985afe23964"
+      },
+      {
+        "file": "s13CampaignHarnessRevision.mjs",
+        "sha256": "456980ed3c062d28e2256de3fa449e7ee5b1c21980dbdaca594f46ed071601c2"
+      },
+      {
+        "file": "s13GovernedCampaignPolicy.mjs",
+        "sha256": "3395aa19210f36b90fd22bd62056dbb8d5c48aab5a85bce4e5ea4d591cfd5146"
+      },
+      {
+        "file": "s13ExternalEffectAuthorization.mjs",
+        "sha256": "dd3e427f3b075d3fcdc9250550a9e7c5ebc5c46afe28af4956b2414c6b4d93c0"
+      }
+    ],
+    "digest": "dcf501847dbba1ce4d0e56f98a3414cfdcb8fc07d24a29cdefe870a063dc273f"
+  },
+  "startedAt": "2026-09-29T15:05:31.602Z",
+  "candidate": {
+    "id": "agentic-engineering-harness-0.8.4",
+    "root": "/tmp/aeh-certrepair-fixture-wM88ud",
+    "artifactDigest": "17bc68e083261aa0194d4c77fdca0288a98c1828efb76600165d568863e507f6",
+    "treeDigest": "6d564e7f43f1f648f4140622189f88d27d89ffd176b9d7b031d575c3d4f8d48c",
+    "packedBuild": {
+      "packaging": "npm-pack-ignore-scripts"
+    }
+  },
+  "failureRun": {
+    "certificationId": "cert-agentic-engineering-harness-0.8.4-4831761b-9b1d-4928-ba66-a67357a72e06",
+    "state": "REPAIR_REQUIRED",
+    "accepted": false,
+    "oracle": {
+      "status": "FAIL",
+      "checks": [
+        {
+          "id": "fixture.answer",
+          "status": "FAIL",
+          "message": "Deterministic fixture oracle failed (exit 1)."
+        },
+        {
+          "id": "model.evidence",
+          "status": "FAIL",
+          "message": "Oracle did not verify a started real provider receipt."
+        }
+      ],
+      "failures": [
+        {
+          "id": "fixture.answer",
+          "category": "oracle",
+          "message": "Deterministic fixture oracle failed (exit 1).",
+          "details": {
+            "required": true,
+            "status": "FAIL",
+            "exitCode": 1,
+            "stdout": "",
+            "stderr": "ORACLE_FAILED: .harness/answer.txt=\"pending\""
+          }
+        },
+        {
+          "id": "model.evidence",
+          "category": "oracle",
+          "message": "Oracle did not verify a started real provider receipt.",
+          "details": {
+            "required": true,
+            "status": "FAIL",
+            "actorProvider": null,
+            "actorStatus": null,
+            "actorExitCode": null,
+            "structuredOutput": false,
+            "started": false,
+            "capabilityJourneyEvidence": "failure-run"
+          }
+        }
+      ]
+    },
+    "failurePacket": {
+      "version": 1,
+      "certificationId": "cert-agentic-engineering-harness-0.8.4-4831761b-9b1d-4928-ba66-a67357a72e06",
+      "candidateId": "agentic-engineering-harness-0.8.4",
+      "createdAt": "2026-09-29T15:05:50.869Z",
+      "reason": "ORACLE_FAILURE",
+      "failures": [
+        {
+          "id": "fixture.answer",
+          "category": "oracle",
+          "message": "Deterministic fixture oracle failed (exit 1).",
+          "details": {
+            "required": true,
+            "status": "FAIL",
+            "exitCode": 1,
+            "stdout": "",
+            "stderr": "ORACLE_FAILED: .harness/answer.txt=\"pending\""
+          }
+        },
+        {
+          "id": "model.evidence",
+          "category": "oracle",
+          "message": "Oracle did not verify a started real provider receipt.",
+          "details": {
+            "required": true,
+            "status": "FAIL",
+            "actorProvider": null,
+            "actorStatus": null,
+            "actorExitCode": null,
+            "structuredOutput": false,
+            "started": false,
+            "capabilityJourneyEvidence": "failure-run"
+          }
+        }
+      ],
+      "repairAttempt": 0,
+      "deterministic": true
+    },
+    "attempts": [
+      {
+        "attempt": 1,
+        "role": "oracle",
+        "status": "FAIL",
+        "startedAt": "2026-09-29T15:05:50.749Z",
+        "finishedAt": "2026-09-29T15:05:50.838Z",
+        "durationMs": 89,
+        "message": "Deterministic fixture oracle failed (exit 1).; Oracle did not verify a started real provider receipt."
+      }
+    ]
+  },
+  "repairRun": {
+    "certificationId": "cert-agentic-engineering-harness-0.8.4-36564207-d1b5-46b8-8a86-6290e4f1bb1a",
+    "state": "HUMAN_REQUIRED",
+    "accepted": false,
+    "assurance": "INSUFFICIENT",
+    "oracle": {
+      "status": "PASS",
+      "checks": [
+        {
+          "id": "fixture.answer",
+          "status": "PASS",
+          "message": "Deterministic fixture oracle passed."
+        },
+        {
+          "id": "model.evidence",
+          "status": "PASS",
+          "message": "Oracle verified a started real provider receipt."
+        }
+      ],
+      "failures": []
+    },
+    "attempts": [
+      {
+        "attempt": 1,
+        "role": "actor",
+        "status": "COMPLETED",
+        "startedAt": "2026-09-29T15:05:50.899Z",
+        "finishedAt": "2026-09-29T15:05:58.609Z",
+        "durationMs": 7646,
+        "usage": {
+          "inputTokens": 27546,
+          "cachedInputTokens": 24064,
+          "outputTokens": 64,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 27610
+        },
+        "message": "WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir \"/tmp\" (codex_home: AbsolutePathBuf(\"/tmp/aeh-cert-codex-home-KFr0Cw/.codex\"))\nReading additional input from stdin...\n"
+      },
+      {
+        "attempt": 2,
+        "role": "oracle",
+        "status": "FAIL",
+        "startedAt": "2026-09-29T15:05:58.628Z",
+        "finishedAt": "2026-09-29T15:05:58.677Z",
+        "durationMs": 49,
+        "message": "Deterministic fixture oracle failed (exit 1)."
+      },
+      {
+        "attempt": 3,
+        "role": "repair",
+        "status": "COMPLETED",
+        "startedAt": "2026-09-29T15:05:58.678Z",
+        "finishedAt": "2026-09-29T15:06:12.285Z",
+        "durationMs": 13586,
+        "usage": {
+          "inputTokens": 41792,
+          "cachedInputTokens": 37120,
+          "outputTokens": 160,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 41952
+        },
+        "message": "WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir \"/tmp\" (codex_home: AbsolutePathBuf(\"/tmp/aeh-cert-codex-home-4QYB6p/.codex\"))\nReading additional input from stdin...\n"
+      },
+      {
+        "attempt": 4,
+        "role": "oracle",
+        "status": "PASS",
+        "startedAt": "2026-09-29T15:06:12.313Z",
+        "finishedAt": "2026-09-29T15:06:12.385Z",
+        "durationMs": 72
+      }
+    ],
+    "repairAttempts": 1,
+    "providerResults": [
+      {
+        "role": "actor",
+        "provider": "codex",
+        "status": "COMPLETED",
+        "exitCode": 0,
+        "durationMs": 7646,
+        "usage": {
+          "inputTokens": 27546,
+          "cachedInputTokens": 24064,
+          "outputTokens": 64,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 27610
+        },
+        "executionEvidence": {
+          "started": true,
+          "provider": "codex",
+          "command": "codex",
+          "requestedModel": "gpt-6-luna",
+          "effectiveModel": "gpt-6-luna",
+          "requestedReasoningEffort": "low",
+          "effectiveReasoningEffort": "low",
+          "capabilitySource": "codex exec --help",
+          "sessionId": "01a0edb3-6339-7562-a16d-22c59d9b33b4",
+          "processExitCode": 0,
+          "startedAt": "2026-09-29T15:05:50.949Z",
+          "finishedAt": "2026-09-29T15:05:58.595Z"
+        },
+        "commandExecutions": [
+          {
+            "command": "/usr/bin/bash -lc 'cat .harness/answer.txt'",
+            "exitCode": 0,
+            "output": "pending\n"
+          }
+        ]
+      },
+      {
+        "role": "repair",
+        "provider": "codex",
+        "status": "COMPLETED",
+        "exitCode": 0,
+        "durationMs": 13586,
+        "usage": {
+          "inputTokens": 41792,
+          "cachedInputTokens": 37120,
+          "outputTokens": 160,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 41952
+        },
+        "executionEvidence": {
+          "started": true,
+          "provider": "codex",
+          "command": "codex",
+          "requestedModel": "gpt-6-luna",
+          "effectiveModel": "gpt-6-luna",
+          "requestedReasoningEffort": "low",
+          "effectiveReasoningEffort": "low",
+          "capabilitySource": "codex exec --help",
+          "sessionId": "01a0edb3-829a-7851-83af-cb60e7dc7d85",
+          "processExitCode": 0,
+          "startedAt": "2026-09-29T15:05:58.678Z",
+          "finishedAt": "2026-09-29T15:06:12.265Z"
+        },
+        "commandExecutions": [
+          {
+            "command": "/usr/bin/bash -lc 'pwd && ls -la .harness'",
+            "exitCode": 0,
+            "output": "/tmp/aeh-certrepair-fixture-wM88ud\ntotal 4\ndrwxr-xr-x 2 james james  60 Sep 29 10:05 .\ndrwx------ 7 james james 220 Sep 29 10:06 ..\n-rw-r--r-- 1 james james   8 Sep 29 10:05 answer.txt\n"
+          },
+          {
+            "command": "/usr/bin/bash -lc \"printf '42' > .harness/answer.txt\"",
+            "exitCode": 0,
+            "output": ""
+          }
+        ]
+      }
+    ],
+    "candidateTreeStable": true,
+    "repairedAnswer": "42",
+    "failurePacketAbsentBecauseAccepted": false
+  },
+  "checks": [
+    {
+      "id": "certification-repair.failure-packet",
+      "ok": true,
+      "message": "failure packet persisted reason=ORACLE_FAILURE failures=fixture.answer,model.evidence"
+    },
+    {
+      "id": "certification-repair.oracle-recheck",
+      "ok": false,
+      "message": "state=HUMAN_REQUIRED oracle=PASS repaired=\"42\" repairTurns=1 treeStable=true"
+    },
+    {
+      "id": "certification-repair.real-repair-provider",
+      "ok": true,
+      "message": "1 real repair provider receipt(s)"
+    },
+    {
+      "id": "certification-repair.cannot-self-accept",
+      "ok": false,
+      "message": "failed run accepted=false; repaired run accepted by deterministic oracle only"
+    }
+  ],
+  "result": "FAIL",
+  "finishedAt": "2026-09-29T15:06:12.431Z",
+  "durationMs": 40829,
+  "checkoutProof": {
+    "trackedDigestBefore": "b2b01f5da03fdd3ed836286096212cbb18931e3b4eae7ca4e067be56475e9daa",
+    "trackedDigestAfter": "b2b01f5da03fdd3ed836286096212cbb18931e3b4eae7ca4e067be56475e9daa",
+    "trackedFiles": 668,
+    "checkoutUntouched": true,
+    "postRunTrackedDocEditWindow": {
+      "opensAfterLaneFinish": true,
+      "note": "S13 tracked documentation/evidence is edited after lane execution; the recorded digest is the source-tree digest at lane end (R11-F6)."
+    }
+  }
+}

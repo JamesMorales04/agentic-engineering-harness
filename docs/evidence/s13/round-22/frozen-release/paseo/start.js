@@ -1,0 +1,308 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import { loadResolvedAgentTopology } from "../agents/config.js";
+import { executionSelectionForAgent } from "../agents/routing.js";
+import { reconcileHarnessAssets } from "../core/assets.js";
+import { buildManagedAgentEnvironment } from "../operations/executionContext.js";
+import { setupToolchain } from "../toolchain/setup.js";
+import { clearToolchainEnvCache, commandExists, runShell } from "../utils/process.js";
+import { VERSION } from "../version.js";
+import { detectPaseoDaemonCapabilities, observePaseoDaemonStatus } from "./capabilities.js";
+import { launchManagedPaseoAgent, probeManagedPaseoAgent } from "./runtime.js";
+import { createManagedRuntime, runtimeProjectId } from "../runtime/index.js";
+export const PASEO_BOOTSTRAP_VERSION = 13;
+const DEFAULT_DEPS = {
+    run: runShell,
+    commandExists,
+    setupToolchain,
+    loadTopology: loadResolvedAgentTopology,
+    detectCapabilities: detectPaseoDaemonCapabilities,
+    launchAgent: launchManagedPaseoAgent,
+    probeAgent: probeManagedPaseoAgent,
+    reconcileAssets: reconcileHarnessAssets
+};
+export async function startPaseoHarness(root, config, options = {}, deps = DEFAULT_DEPS) {
+    const projectRoot = path.resolve(root);
+    const projectId = runtimeProjectId(projectRoot);
+    const runtime = await createManagedRuntime({ root: projectRoot, projectId, ownerId: `paseo-daemon:${projectId}` });
+    const paseoServiceId = `paseo:${runtime.projectId}`;
+    await (deps.reconcileAssets ?? reconcileHarnessAssets)(projectRoot);
+    const settings = config.orchestration?.interactive;
+    const autoSetup = options.autoSetup ?? settings?.autoSetup ?? true;
+    const webUi = options.webUi ?? settings?.webUi ?? true;
+    const stateDir = path.resolve(projectRoot, settings?.stateDir ?? ".harness/paseo");
+    const stateFile = path.join(stateDir, "lead-session.json");
+    const bootstrapFile = path.join(stateDir, "lead-bootstrap.md");
+    const sessionPolicy = settings?.sessionPolicy ?? "fresh-on-start";
+    const reuseRequested = options.resume === true || (sessionPolicy === "reuse-compatible" && options.forceNew !== true);
+    const topology = await deps.loadTopology(projectRoot, config, config.agents?.activeProfile);
+    const leadName = resolveLeadAgent(topology, options.leadAgent ?? settings?.leadAgent);
+    const selection = executionSelectionForAgent(topology, leadName);
+    const runtimeCommand = runtimeExecutable(topology, leadName);
+    const missingBefore = await missingCommands(projectRoot, ["paseo", runtimeCommand], deps);
+    if (missingBefore.length && autoSetup) {
+        await deps.setupToolchain(projectRoot, config, { skipProjectDependencies: true });
+        clearToolchainEnvCache();
+    }
+    const missingAfter = await missingCommands(projectRoot, ["paseo", runtimeCommand], deps);
+    if (missingAfter.length)
+        throw new Error(`aeh start cannot launch Paseo because these managed commands are unavailable: ${missingAfter.join(", ")}. Run aeh setup or provide the required host prerequisite/credential.`);
+    const capabilities = await deps.detectCapabilities(projectRoot, deps.run);
+    let daemonStarted = false;
+    const daemonStatusCommand = capabilities.daemonJson ? "paseo daemon status --json" : "paseo daemon status";
+    let daemonStatusResult;
+    try {
+        daemonStatusResult = await deps.run(daemonStatusCommand, { cwd: projectRoot, timeoutMs: 30_000 });
+    }
+    catch {
+        throw new Error("aeh start could not observe the current Paseo daemon status; the prior runtime service record was preserved.");
+    }
+    let daemonObservation = observePaseoDaemonStatus(daemonStatusResult);
+    if (daemonObservation.state === "unknown") {
+        throw new Error("aeh start could not determine whether the Paseo daemon is healthy or stopped from the supported status output; the prior runtime service record was preserved.");
+    }
+    const priorDaemonState = daemonObservation.state;
+    if (daemonObservation.state === "stopped") {
+        if (daemonObservation.stalePid) {
+            await deps.run("paseo daemon stop", { cwd: projectRoot, timeoutMs: 30_000 }).catch(() => undefined);
+        }
+        const startCommand = webUi ? "paseo daemon start --web-ui" : "paseo daemon start";
+        const daemonStart = await deps.run(startCommand, { cwd: projectRoot, timeoutMs: 60_000 });
+        if (daemonStart.exitCode !== 0)
+            throw new Error(`Failed to start Paseo daemon: ${diagnostic(daemonStart)}`);
+        daemonStarted = true;
+        let postStartStatus;
+        try {
+            postStartStatus = await deps.run(daemonStatusCommand, { cwd: projectRoot, timeoutMs: 30_000 });
+        }
+        catch {
+            throw new Error("Paseo daemon start returned successfully, but a current status observation could not be obtained; the prior runtime service record was preserved.");
+        }
+        daemonObservation = observePaseoDaemonStatus(postStartStatus);
+        if (daemonObservation.state !== "healthy") {
+            throw new Error("Paseo daemon start returned successfully, but the supported status output did not confirm a healthy daemon; the prior runtime service record was preserved.");
+        }
+    }
+    if (daemonObservation.state !== "healthy")
+        throw new Error("Paseo daemon is not confirmed healthy; the prior runtime service record was preserved.");
+    await runtime.registerObservedPaseoDaemon({
+        serviceId: paseoServiceId,
+        aehVersion: VERSION,
+        paseoVersion: capabilities.version ?? "unknown",
+        ...(daemonObservation.serverId ? { observedServerId: daemonObservation.serverId } : {}),
+        ...(daemonObservation.pid ? { observedPid: daemonObservation.pid } : {}),
+        priorDaemonState
+    });
+    const provider = selection.paseoProvider;
+    const model = paseoModel(selection);
+    const title = options.title ?? settings?.title ?? `AEH Lead · ${config.project.name}`;
+    const aehCommand = options.aehCommand ?? "aeh";
+    const preferPaseoTools = settings?.usePaseoTools !== false;
+    const bootstrap = buildPaseoLeadBootstrap(config.project.name, projectRoot, aehCommand, preferPaseoTools, options.handoffPath);
+    await fs.mkdir(stateDir, { recursive: true });
+    await fs.writeFile(bootstrapFile, `${bootstrap}\n`);
+    const previous = await loadState(stateFile);
+    if (!options.forceNew && reuseRequested && !options.handoffPath && previous && compatibleState(previous, { projectRoot, leadName, provider, model, title, aehCommand })) {
+        if (await deps.probeAgent(projectRoot, previous.agentId)) {
+            return {
+                daemonStarted,
+                session: "reused",
+                agentId: previous.agentId,
+                title: previous.title,
+                leadAgent: previous.leadAgent,
+                provider: previous.provider,
+                model: previous.model,
+                aehVersion: VERSION,
+                aehCommand,
+                stateFile,
+                bootstrapFile,
+                paseoVersion: capabilities.version
+            };
+        }
+    }
+    const generation = (previous?.generation ?? 0) + 1;
+    const labels = {
+        "aeh.project": config.project.name,
+        "aeh.kind": "lead",
+        "aeh.role": leadName,
+        "aeh.provider": provider,
+        "aeh.workspace.id": projectRoot,
+        "aeh.generation": String(generation),
+        "aeh.version": VERSION,
+        "aeh.bootstrap": String(PASEO_BOOTSTRAP_VERSION)
+    };
+    if (options.handoffPath)
+        labels["aeh.handoff"] = options.handoffPath;
+    const operationControl = preferPaseoTools ? buildAehControlMcp(aehCommand, projectRoot) : {};
+    const launch = await deps.launchAgent(projectRoot, {
+        cwd: projectRoot,
+        title,
+        provider,
+        model,
+        systemPrompt: bootstrap,
+        env: buildManagedAgentEnvironment({
+            logicalAgent: leadName,
+            role: selection.role ?? "Lead/Director",
+            interactiveLead: true,
+            orchestrationAllowed: true
+        }),
+        labels,
+        waitForFinish: false,
+        timeoutSeconds: 300,
+        ...operationControl
+    });
+    if (launch.exitCode !== 0 || !launch.id) {
+        throw new Error(`Failed to create AEH lead in Paseo${capabilities.version ? ` ${capabilities.version}` : ""}: ${launch.stderr || launch.stdout || `exit code ${launch.exitCode}`}`);
+    }
+    const agentId = launch.id;
+    const state = {
+        version: 2,
+        bootstrapVersion: PASEO_BOOTSTRAP_VERSION,
+        aehVersion: VERSION,
+        aehCommand,
+        projectRoot,
+        projectName: config.project.name,
+        agentId,
+        title,
+        leadAgent: leadName,
+        provider,
+        model,
+        createdAt: new Date().toISOString(),
+        generation,
+        handoffPath: options.handoffPath
+    };
+    await fs.writeFile(stateFile, `${JSON.stringify(state, null, 2)}\n`);
+    return {
+        daemonStarted,
+        session: "created",
+        agentId,
+        title,
+        leadAgent: leadName,
+        provider,
+        model,
+        aehVersion: VERSION,
+        aehCommand,
+        stateFile,
+        bootstrapFile,
+        paseoVersion: capabilities.version,
+        transport: launch.transport
+    };
+}
+export function buildAehControlMcp(aehCommand, projectRoot) {
+    const argv = parseCommandVector(aehCommand);
+    if (!argv?.length)
+        return {};
+    const [command, ...baseArgs] = argv;
+    const server = "aeh-control";
+    const tools = [
+        "aeh_informational_context",
+        "aeh_informational_evidence",
+        "aeh_operation_start_audit",
+        "aeh_operation_start_run",
+        "aeh_operation_start_change",
+        "aeh_operation_digest",
+        "aeh_operation_status",
+        "aeh_operation_ack",
+        "aeh_operation_portfolio",
+        "aeh_operation_cancel",
+        "aeh_context_status"
+    ];
+    return {
+        mcpServers: {
+            [server]: {
+                type: "stdio",
+                command,
+                args: [...baseArgs, "operation", "mcp"],
+                env: { AEH_CONTROL_ROOT: path.resolve(projectRoot) },
+                alwaysLoad: true
+            }
+        },
+        toolPolicy: { preapproved: tools.map((tool) => ({ kind: "mcp", server, tool })) }
+    };
+}
+export function parseCommandVector(value) {
+    const trimmed = value.trim();
+    if (!trimmed)
+        return undefined;
+    if (trimmed.startsWith('"')) {
+        const matches = trimmed.match(/"(?:\\.|[^"\\])*"/g);
+        if (!matches?.length || matches.join(" ") !== trimmed)
+            return undefined;
+        try {
+            return matches.map((item) => JSON.parse(item)).filter(Boolean);
+        }
+        catch {
+            return undefined;
+        }
+    }
+    if (!/^[A-Za-z0-9_./:@+-]+(?:\s+[A-Za-z0-9_./:@+-]+)*$/.test(trimmed))
+        return undefined;
+    return trimmed.split(/\s+/);
+}
+export function buildPaseoLeadBootstrap(projectName, projectRoot, aehCommand, preferPaseoTools = true, handoffPath) {
+    const handoff = handoffPath
+        ? `\n\nThis lead was created by proactive context rotation. Read the deterministic handoff artifact ${JSON.stringify(handoffPath)} plus the active operation portfolio/compact digests before making a new engineering decision. Active operations are rebound to this lead generation automatically; do not ask the previous lead to replay child-agent transcripts.`
+        : "";
+    return `AEH thin-lead Paseo bootstrap v${PASEO_BOOTSTRAP_VERSION}; AEH runtime v${VERSION}.
+
+You are the top-level engineering lead for project ${JSON.stringify(projectName)} at ${JSON.stringify(projectRoot)}. Your role is the user/portfolio plane, not the worker plane.${handoff}
+
+This session carries explicit AEH lead identity (\`AEH_INTERACTIVE_LEAD=1\`). Paseo session identity alone does not grant orchestration authority. Harness-spawned operation supervisors/reviewers/workers/planners are already inside an AEH workflow and must not recursively invoke AEH entrypoints.
+
+Your exact AEH runtime invocation is \`${aehCommand}\`. This invocation and runtime version are part of the durable lead identity. Do not replace it with another global, cached, npx or guessed AEH executable.
+
+Before engineering work, read AGENTS.md and .harness/skills/engineering-workflow/SKILL.md when present. Those instructions plus resolved AEH topology are authoritative. Every engineering operation must enter through AEH; only purely informational questions may bypass.
+
+Translate each human turn by its primary requested outcome and conversational context. Resolve negation, references to prior findings or operations, constraints, and follow-up language semantically; do not use a keyword dictionary. Choose the corresponding AEH route (INFORMATIONAL, AUDIT, CHANGE, RUN, STATUS, or CANCEL) and call it with a versioned structured IntentDecisionV1 containing a compact requestedOutcome, effects, and userTurnId when available. The decision is descriptive of what the human means, not a permission grant. The controller validates that typed decision and then enforces its own TaskContract, scope, capabilities, permissions, validators, provenance, lifecycle, and delivery gates. Never place chain-of-thought in the decision. INFORMATIONAL uses \`aeh_informational_context\` for bounded read-only grounding and creates no operation, TaskContract, reviewer, validator, report, or delivery artifact. AUDIT remains read-only; CHANGE and RUN remain subject to their deterministic contracts. If a mutating referent is unresolved, return a clarification/unresolved decision rather than guessing a target.
+
+Operate as a thin portfolio orchestrator with interrupt-driven semantics. You may own multiple concurrent operations; use \`aeh_operation_portfolio\` only for portfolio-level decisions, never as a healthy-progress poll. Manage user intent, priorities, cross-operation dependencies, true exception decisions and final user-facing semantic acceptance. Do not directly multiplex planner/worker/reviewer timelines. Each non-trivial operation has an operation-supervisor responsible for operation-local semantic coordination/consolidation, while deterministic controller + OperationRecord remain lifecycle/gate authority.
+
+${preferPaseoTools ? `Use the injected aeh-control tools for detached AUDIT, CHANGE and prepared RUN operations. Start tools return a compact operation digest. Once an operation starts successfully, return idle: do not poll \`aeh_operation_status\`, \`aeh_operation_digest\`, child agents, or the portfolio merely to watch healthy progress. Healthy revisions are controller-owned and intentionally do not wake the lead.
+
+Use \`aeh_operation_digest\` only when a user explicitly asks for current operation status or after a blocked/stalled/terminal continuation event. \`aeh_operation_status\` defaults to the same compact view; request \`detail=full\` only for exceptional diagnostics or at most once when a terminal result cannot be consumed from the digest/result artifact. Reading status never acknowledges a revision. \`aeh_operation_ack\` is the separate exact-revision acknowledgement primitive.
+
+The detached liveness watchdog may inspect durable state every few seconds without LLM tokens. It wakes the operation-supervisor first for stalls and wakes this lead only for bounded unresolved stalls, blocked decisions, or terminal completion. Never manufacture periodic progress commentary. On a terminal continuation, consume the referenced durable result, complete the pending user request, then acknowledge exactly that revision with \`aeh_operation_ack\`. Never start a duplicate operation merely because a callback was lost.` : `Use AEH's configured Paseo adapter for delegation and lifecycle control.`}
+
+Before non-trivial work and at completed-turn boundaries, inspect context pressure with \`aeh_context_status\`. Honor HANDOFF_REQUIRED/HARD_HANDOFF and stop the old lead when replacement is created. Lead rotation automatically rebinds active OperationRecords and completion targets to the new lead generation; durable artifacts, not conversational replay, carry continuity.
+
+Evidence discipline is mandatory in user-facing answers. Label claims as (1) verified from durable operation evidence, (2) known from authoritative bootstrap/control-plane context, or (3) inferred/not yet verified. A failed or blocked operation with no result artifact, AuditReport or findings never verifies repository inspection or architectural claims. State the blocker and keep any pre-existing control-plane knowledge explicitly separate from operation-produced evidence.
+
+The compiled AEH TaskContract/SDD plus seal are normative during implementation. OpenSpec is authoring provenance before freeze, not a competing runtime authority. This bootstrap is session configuration, not a user task. Do not emit an initialization handshake; remain idle until the user's first real request.`;
+}
+export function resolveLeadAgent(topology, configured) {
+    if (configured) {
+        const selected = topology.agents[configured];
+        if (!selected || selected.disabled)
+            throw new Error(`Configured interactive lead agent '${configured}' is unavailable.`);
+        return configured;
+    }
+    if (topology.agents.lead && !topology.agents.lead.disabled)
+        return "lead";
+    const orchestrator = Object.values(topology.agents).find((agent) => agent.role === "Lead/Director" && !agent.disabled);
+    if (!orchestrator)
+        throw new Error("aeh start requires an enabled Lead/Director participant in the resolved topology.");
+    return orchestrator.name;
+}
+function runtimeExecutable(topology, leadName) {
+    const runtime = topology.agents[leadName].runtime;
+    return runtime.command?.trim().split(/\s+/, 1)[0] || runtime.adapter;
+}
+async function missingCommands(root, commands, deps) {
+    const result = [];
+    for (const command of [...new Set(commands.filter(Boolean))])
+        if (!(await deps.commandExists(command, root)))
+            result.push(command);
+    return result;
+}
+function paseoModel(selection) { return selection.runtimeAdapter === "codex" ? selection.modelName : selection.modelId; }
+async function loadState(file) { try {
+    return JSON.parse(await fs.readFile(file, "utf8"));
+}
+catch {
+    return undefined;
+} }
+function compatibleState(state, expected) {
+    return state.version === 2 && state.bootstrapVersion === PASEO_BOOTSTRAP_VERSION && state.aehVersion === VERSION && state.aehCommand === expected.aehCommand && state.projectRoot === expected.projectRoot && state.leadAgent === expected.leadName && state.provider === expected.provider && state.model === expected.model && state.title === expected.title;
+}
+function diagnostic(result) { return [result.stderr.trim(), result.stdout.trim()].filter(Boolean).join("\n") || `exit code ${result.exitCode}`; }
+//# sourceMappingURL=start.js.map

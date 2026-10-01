@@ -1,3 +1,4 @@
+import { saveOwnedOperation } from "./helpers/ownedOperation.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -9,9 +10,17 @@ const workers = vi.hoisted(() => ({
   executeAgentPrompt: vi.fn()
 }));
 vi.mock("../src/workers/agentPrompt.js", () => workers);
+const runtimeMocks = vi.hoisted(() => ({ archivePaseoSdkAgent: vi.fn(async () => undefined) }));
+vi.mock("../src/paseo/sdk.js", async (importOriginal) => ({ ...(await importOriginal<typeof import("../src/paseo/sdk.js")>()), archivePaseoSdkAgent: runtimeMocks.archivePaseoSdkAgent }));
+vi.mock("../src/paseo/context.js", () => ({ statusLeadContext: vi.fn(async () => ({ usage: { ratio: 0.01 }, state: "OK" })) }));
+vi.mock("../src/workers/resultGateway.js", () => ({ structuredResultProvenanceForAgent: vi.fn(async () => ({ status: "BOUND", candidate: { identityDigest: "candidate:OLD" } })) }));
 
-import { ensureOperationSupervisor, operationSupervisorInitializationTimeoutSeconds } from "../src/operations/supervisor.js";
-import { activeOperationSupervisor, bindOperationLead, initializingOperationSupervisor, loadOperation, saveOperation, type OperationRecordV2 } from "../src/operations/state.js";
+import { ensureOperationSupervisor, maybeRotateOperationSupervisor, operationSupervisorInitializationTimeoutSeconds } from "../src/operations/supervisor.js";
+import { activeOperationSupervisor, bindOperationLead, bindResolvedOperationPolicy, initializingOperationSupervisor, loadOperation, saveOperation, type OperationRecordV2 } from "../src/operations/state.js";
+import { compileResolvedOperationPolicy } from "../src/architecture/executionIdentity.js";
+import { computeWorktreeDigest } from "../src/core/git.js";
+import { createCandidateRevisionV1 } from "../src/operations/v2Contracts.js";
+import type { AgentExecutionSelection } from "../src/agents/types.js";
 
 let root = "";
 const originalEnv = snapshotEnv(["AEH_OPERATION_ID", "AEH_CONTROL_ROOT", "AEH_PARENT_OPERATION_ID"]);
@@ -27,22 +36,23 @@ afterEach(async () => {
 
 const config = { version: 1, project: { name: "demo" }, orchestration: { provider: "paseo" } } as never;
 const contract = { task: { id: "AUDIT-BOOT" }, routing: { intent: "audit" } } as never;
-const topology = {
-  profile: "test",
-  routing: [],
-  agents: {
-    "operation-supervisor": {
-      name: "operation-supervisor",
-      role: "supervisor",
-      runtime: { name: "opencode", adapter: "opencode", paseoProvider: "opencode", defaultArgs: [], capabilities: {} },
-      model: { alias: "test", id: "test/supervisor", model: "supervisor", provider: "test" },
-      execution: { transport: "paseo" },
-      permissions: {},
-      skills: ["finding-dedup", "acceptance-traceability", "recovery-classifier", "verification-planning"],
-      mcps: []
-    }
-  }
-} as never;
+const supervisorSelection: AgentExecutionSelection = {
+  logicalAgent: "operation-supervisor",
+  role: "Operation Supervisor",
+  domains: ["operations"],
+  runtimeName: "opencode",
+  runtimeAdapter: "opencode",
+  paseoProvider: "opencode",
+  modelAlias: "test",
+  modelId: "test/supervisor",
+  modelName: "supervisor",
+  transport: "paseo",
+  skills: ["finding-dedup", "acceptance-traceability", "recovery-classifier", "verification-planning"],
+  mcps: [],
+  permissions: {},
+  args: [],
+  runtimeCapabilities: {}
+};
 
 describe("supervisor bootstrap regression", () => {
   it("persists INITIALIZING before a compact skill-free turn barrier and activates only afterwards", async () => {
@@ -55,7 +65,7 @@ describe("supervisor bootstrap regression", () => {
       progress: { expected: 0, registered: 0, running: 0, completed: 0, failed: 0, blocked: 0 },
       notification: { lastLeadWakeRevision: 0, terminalDelivered: false, attempts: 0 }
     };
-    await saveOperation(root, record);
+    await saveOwnedOperation(root, record);
     await bindOperationLead(root, record.id, "lead-1", "test");
     process.env.AEH_OPERATION_ID = "AUDIT-BOOT";
     process.env.AEH_CONTROL_ROOT = root;
@@ -73,7 +83,7 @@ describe("supervisor bootstrap regression", () => {
         initializationAttempt: 1,
         initializationDispatchedAt: expect.any(String)
       }));
-      expect(effectiveConfig.orchestration.worker.timeoutSeconds).toBe(60);
+      expect(effectiveConfig.orchestration.worker.timeoutSeconds).toBe(120);
       expect(selection.skills).toEqual([]);
       expect(String(prompt)).toContain("[AEH_SUPERVISOR_INITIALIZE]");
       expect(String(prompt)).toContain("session-readiness turn barrier");
@@ -84,7 +94,7 @@ describe("supervisor bootstrap regression", () => {
       return { id: "supervisor-1", exitCode: 0, stdout: "initialized", stderr: "", status: "idle", transport: "paseo-sdk" };
     });
 
-    const handle = await ensureOperationSupervisor(root, config, contract, topology, { required: true, forceMaterialize: true });
+    const handle = await ensureOperationSupervisor(root, config, contract, supervisorSelection, { required: true, forceMaterialize: true });
     expect(handle?.agentId).toBe("supervisor-1");
     expect(workers.materializeAgentPrompt.mock.calls[0]?.[4]).toEqual(expect.objectContaining({ parentAgentId: "lead-1" }));
     const durable = await loadOperation(root, "AUDIT-BOOT");
@@ -100,11 +110,58 @@ describe("supervisor bootstrap regression", () => {
   });
 
   it("uses a bounded supervisor initialization timeout", () => {
-    expect(operationSupervisorInitializationTimeoutSeconds(config)).toBe(60);
+    expect(operationSupervisorInitializationTimeoutSeconds(config)).toBe(120);
     expect(operationSupervisorInitializationTimeoutSeconds({
       ...config,
       orchestration: { provider: "paseo", operations: { supervision: { initializationTimeoutSeconds: 25 } } }
     } as never)).toBe(25);
+  });
+
+  it("retries the candidate-drift replacement barrier once with a fresh session before failing closed", async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-supervisor-rotation-"));
+    const now = new Date().toISOString();
+    const candidate = createCandidateRevisionV1({
+      operationId: "AUDIT-ROTATE", candidateId: "candidate:AUDIT-ROTATE:r3", projectId: "project:demo", taskId: "AUDIT-ROTATE",
+      revision: 3, parentCandidateId: "candidate:AUDIT-ROTATE:r2", sourceDigest: await computeWorktreeDigest(root), worktree: root, createdAt: now
+    });
+    const record: OperationRecordV2 = {
+      version: 2, id: "AUDIT-ROTATE", kind: "audit", status: "RUNNING", phase: "consolidating", root,
+      payload: { request: "rotation" }, revision: 1, createdAt: now, updatedAt: now, lastProgressAt: now,
+      candidateRevision: candidate as never, operationExecutionRevision: 7,
+      supervision: { required: true, materialized: true, activeGeneration: 1, generations: [{ generation: 1, agentId: "old-supervisor", status: "ACTIVE", createdAt: now }] },
+      stages: {}, participants: {},
+      progress: { expected: 0, registered: 0, running: 0, completed: 0, failed: 0, blocked: 0 },
+      notification: { lastLeadWakeRevision: 0, terminalDelivered: false, attempts: 0 }
+    };
+    await saveOwnedOperation(root, record);
+    process.env.AEH_OPERATION_ID = "AUDIT-ROTATE";
+    process.env.AEH_CONTROL_ROOT = root;
+    const owned = await loadOperation(root, "AUDIT-ROTATE");
+    await bindResolvedOperationPolicy(root, "AUDIT-ROTATE", compileResolvedOperationPolicy({
+      projectId: "project:demo", operationId: "AUDIT-ROTATE", operationExecutionRevision: 7, candidateRevision: 3, candidateDigest: candidate.identityDigest,
+      controllerEpoch: owned.controller?.epoch ?? 1, intent: "rotation", route: "DELEGATED", minimumAssurance: "STANDARD",
+      policyVersions: { resolvedOperationPolicy: "1", roleInvocationPolicy: "1", executionBlueprint: "2", executionBinding: "2", skillManifest: "1" },
+      policyDigests: { validation: "v".repeat(64), delivery: "d".repeat(64), knowledge: "k".repeat(64), context: "c".repeat(64) },
+      validationPolicy: {}, reviewPolicy: { minimumAssurance: "STANDARD", independentReviewRequired: false, leadAcceptance: false }, deliveryPolicy: { githubEnabled: false, paseoEnabled: false, allowedExternalEffects: [] },
+      knowledgePolicy: { resolutions: [] }, contextPolicy: { mode: "disabled" }, allowedExternalEffects: [], humanDecisionRequirements: []
+    }));
+
+    workers.materializeAgentPrompt.mockResolvedValueOnce({ id: "replacement-1", exitCode: 0, stdout: "", stderr: "", status: "idle", transport: "paseo-sdk" });
+    workers.materializeAgentPrompt.mockResolvedValueOnce({ id: "replacement-2", exitCode: 0, stdout: "", stderr: "", status: "idle", transport: "paseo-sdk" });
+    workers.dispatchMaterializedAgentPrompt
+      .mockResolvedValueOnce({ id: "replacement-1", exitCode: 1, stdout: "Handoff acknowledged. I'll remain idle until the next operation turn.", stderr: "", status: "failed", transport: "paseo-sdk" })
+      .mockResolvedValueOnce({ id: "replacement-2", exitCode: 0, stdout: "ok", stderr: "", status: "idle", transport: "paseo-sdk" });
+
+    const rotated = await maybeRotateOperationSupervisor(root, config, contract, supervisorSelection);
+    expect(rotated?.agentId).toBe("replacement-2");
+    expect(workers.materializeAgentPrompt).toHaveBeenCalledTimes(2);
+    expect(workers.dispatchMaterializedAgentPrompt).toHaveBeenCalledTimes(2);
+    expect(runtimeMocks.archivePaseoSdkAgent).toHaveBeenCalledWith(root, "replacement-1");
+    const durable = await loadOperation(root, "AUDIT-ROTATE");
+    const generations = durable.supervision.generations;
+    expect(generations.find((generation) => generation.agentId === "replacement-1")).toMatchObject({ status: "FAILED" });
+    expect(generations.find((generation) => generation.agentId === "replacement-2")).toMatchObject({ status: "ACTIVE", initializationEvidence: "paseo-sdk-turn-barrier" });
+    expect(durable.supervision.activeGeneration).toBe(generations.find((generation) => generation.agentId === "replacement-2")?.generation);
   });
 });
 

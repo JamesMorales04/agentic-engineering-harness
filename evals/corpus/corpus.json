@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "corpusId": "aeh-core-v2-engineering-evals",
+  "description": "Versioned advisory engineering eval corpus over deterministic production subsystems. Eval output is an observation: it never mutates policy, authority, acceptance, permissions, or routing.",
+  "cases": [
+    { "id": "validation-gated-change", "domain": "deterministic-validation", "path": "validation-gated-change/eval.yaml", "scenario": "evals/scenarios/validationGatedChange.ts" },
+    { "id": "validation-fails-closed", "domain": "deterministic-validation", "path": "validation-fails-closed/eval.yaml", "scenario": "evals/scenarios/validationFailsClosed.ts" },
+    { "id": "scope-governance", "domain": "work-decomposition", "path": "scope-governance/eval.yaml", "scenario": "evals/scenarios/scopeGovernance.ts" },
+    { "id": "context-budget-projection", "domain": "progressive-context", "path": "context-budget-projection/eval.yaml", "scenario": "evals/scenarios/contextBudgetProjection.ts" },
+    { "id": "quality-convergence-thresholds", "domain": "review-convergence", "path": "quality-convergence-thresholds/eval.yaml", "scenario": "evals/scenarios/qualityConvergenceThresholds.ts" }
+  ]
+}

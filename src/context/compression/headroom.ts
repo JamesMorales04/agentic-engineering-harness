@@ -1,12 +1,12 @@
 import type { ContextCompressionProvider, ContextCompressionRequest, ContextCompressionResult, ProviderHealth } from "./types.js";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { estimateTokens } from "../estimator.js";
-import { runProcess, commandExists } from "../../utils/process.js";
+import { runShell, commandExists } from "../../utils/process.js";
 import { providerVersions } from "../../providers/versions.js";
+import { PACKAGE_ROOT } from "../../version.js";
 
-export interface HeadroomOptions { command?: string; version?: string; python?: string; bridge?: string; executor?: typeof runProcess; }
+export interface HeadroomOptions { command?: string; version?: string; python?: string; bridge?: string; executor?: typeof runShell; }
 export const HEADROOM_VERSION = providerVersions.headroom;
 
 /** AEH-owned adapter. It talks to a local Headroom executable and never starts an agent process. */
@@ -16,14 +16,14 @@ export class HeadroomCompressionProvider implements ContextCompressionProvider {
   private readonly expectedVersion?: string;
   private readonly python?: string;
   private readonly bridge?: string;
-  private readonly executor: typeof runProcess;
+  private readonly executor: typeof runShell;
 
   constructor(options: HeadroomOptions = {}) {
     this.command = options.command ?? "headroom";
     this.expectedVersion = options.version ?? HEADROOM_VERSION;
     this.python = options.python;
     this.bridge = options.bridge;
-    this.executor = options.executor ?? runProcess;
+    this.executor = options.executor ?? runShell;
   }
 
   async doctor(root: string): Promise<ProviderHealth> {
@@ -60,7 +60,7 @@ export class HeadroomCompressionProvider implements ContextCompressionProvider {
   }
 
   private async bridgeCommand(root: string): Promise<string> {
-    const bridge = this.bridge ?? fileURLToPath(new URL("../../../scripts/headroom-bridge.py", import.meta.url));
+    const bridge = this.bridge ?? path.join(PACKAGE_ROOT, "scripts", "headroom-bridge.py");
     await fs.access(bridge);
     const python = this.python ?? await resolveHeadroomPython(this.command, root, this.executor);
     return `${quote(python)} ${quote(bridge)}`;
@@ -78,7 +78,7 @@ function parseBridgeResponse(stdout: string): BridgeResponse | undefined {
   } catch { return undefined; }
 }
 
-async function resolveHeadroomPython(command: string, root: string, executor: typeof runProcess): Promise<string> {
+async function resolveHeadroomPython(command: string, root: string, executor: typeof runShell): Promise<string> {
   const located = await executor(`command -v ${quote(command)}`, { cwd: root, timeoutMs: 15_000 });
   if (located.exitCode !== 0) throw new Error(`Headroom executable '${command}' was not found.`);
   const executable = located.stdout.trim().split(/\r?\n/).at(-1)?.trim();
