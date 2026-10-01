@@ -6,6 +6,7 @@ import { AehError } from "../core/errors.js";
 import { computeWorktreeDigest, listWorktreeDigestPaths } from "../core/git.js";
 import {
   createSemanticEvidenceReceiptV1,
+  semanticAssessmentMaxCompactEvidenceBytesV1,
   semanticAssessmentBindingV1Schema,
   semanticAssessmentEvidenceDigest,
   semanticCapabilityPolicyRevisionV1,
@@ -310,31 +311,54 @@ function stackCorrectionGuidance(detail: string): string {
 }
 
 export function projectStackAssessmentRequest(packet: ProjectStackEvidencePacketV1, binding: SemanticAssessmentBindingV1, correction?: string): { request: SemanticAssessmentRequestV1; packet: ProjectStackEvidencePacketV1 } {
-  const evidenceRefs = packet.receipts.map((receipt) => receipt.ref);
-  const compactEvidence = packet.items.map((item) => ({ ref: `file:${item.path}`, content: item.content }));
-  const evidenceReceipts = [...packet.receipts];
+  let evidenceRefs = packet.receipts.map((receipt) => receipt.ref);
+  let compactEvidence = packet.items.map((item) => ({ ref: `file:${item.path}`, content: item.content }));
+  let evidenceReceipts = [...packet.receipts];
   let effectivePacket = packet;
   if (correction) {
     const correctionPath = "assessment.correction";
     const ref = `file:${correctionPath}`;
     const content = correction.slice(0, 1_000);
+    const correctionBytes = Buffer.byteLength(content, "utf8");
+    const baseEvidenceByteBudget = semanticAssessmentMaxCompactEvidenceBytesV1 - correctionBytes;
+    if (baseEvidenceByteBudget < 0) throw invalid("STACK correction evidence exceeds the semantic assessment byte bound.");
     const receipt = createSemanticEvidenceReceiptV1({ binding, ref, content, kind: "REQUEST", path: correctionPath });
     // The assessor request schema caps compactEvidence at 16 items. A full packet (16 files) plus
     // the correction item exceeded that cap and failed the whole STACK assessment
     // (SEMANTIC_ASSESSMENT_INVALID, formal lane r16-formal-6). The correction is the newest
-    // evidence, so it takes the last slot: the oldest bounded item is dropped from the correction
-    // turn only; the durable packet is never rewritten.
-    const baseCount = Math.min(compactEvidence.length, 15);
-    compactEvidence.length = baseCount;
-    evidenceRefs.length = baseCount;
-    evidenceReceipts.length = baseCount;
-    evidenceRefs.push(ref);
-    compactEvidence.push({ ref, content });
-    evidenceReceipts.push(receipt);
+    // evidence, so it takes the last slot. Keep at most 15 complete base items that fit the
+    // remaining UTF-8 byte budget; skip items that do not fit rather than truncating evidence.
+    // This effective correction packet is separate from the durable original packet.
+    const itemRefs = packet.items.map((item) => `file:${item.path}`);
+    const receiptRefs = packet.receipts.map((item) => item.ref);
+    const itemRefSet = new Set(itemRefs);
+    const receiptRefSet = new Set(receiptRefs);
+    if (
+      itemRefSet.size !== itemRefs.length || receiptRefSet.size !== receiptRefs.length ||
+      itemRefs.length !== receiptRefs.length || itemRefs.some((itemRef) => !receiptRefSet.has(itemRef))
+    ) throw invalid("STACK evidence packet items and receipts do not identify the same unique refs.");
+    const receiptsByRef = new Map(packet.receipts.map((item) => [item.ref, item]));
+    const baseItems: ProjectStackFileEvidenceV1[] = [];
+    const baseReceipts: SemanticEvidenceReceiptV1[] = [];
+    let baseBytes = 0;
+    for (const item of packet.items) {
+      if (baseItems.length >= 15) break;
+      const itemRef = `file:${item.path}`;
+      const itemBytes = Buffer.byteLength(item.content, "utf8");
+      if (itemBytes > baseEvidenceByteBudget - baseBytes) continue;
+      const itemReceipt = receiptsByRef.get(itemRef);
+      if (!itemReceipt) throw invalid(`STACK evidence packet is missing a receipt for ${itemRef}.`);
+      baseItems.push(item);
+      baseReceipts.push(itemReceipt);
+      baseBytes += itemBytes;
+    }
+    compactEvidence = [...baseItems.map((item) => ({ ref: `file:${item.path}`, content: item.content })), { ref, content }];
+    evidenceRefs = compactEvidence.map((item) => item.ref);
+    evidenceReceipts = [...baseReceipts, receipt];
     effectivePacket = {
       ...packet,
-      items: [...packet.items.slice(0, baseCount), { path: correctionPath, content }],
-      receipts: [...packet.receipts.slice(0, baseCount), receipt],
+      items: [...baseItems, { path: correctionPath, content }],
+      receipts: evidenceReceipts,
       digest: semanticAssessmentEvidenceDigest({ evidenceRefs, compactEvidence, evidenceReceipts })
     };
   }
