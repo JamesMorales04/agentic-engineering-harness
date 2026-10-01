@@ -4,30 +4,25 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { resolveTrivyPath } from "../../scripts/s10-trivy-resolver.mjs";
 
 const packageRoot = path.resolve(process.env.AEH_S10_PACKED_PACKAGE_ROOT ?? process.argv[2] ?? process.cwd());
 const dist = path.join(packageRoot, "dist");
 const releaseId = (await fs.readFile(path.join(dist, "current"), "utf8")).trim();
 const release = path.join(dist, "releases", releaseId);
+const buildIdentity = JSON.parse(await fs.readFile(path.join(release, "build-identity.json"), "utf8"));
 const isolation = await import(pathToFileURL(path.join(release, "security/isolation.js")));
 const sast = await import(pathToFileURL(path.join(release, "security/sastEvidence.js")));
 const external = await import(pathToFileURL(path.join(release, "validators/external.js")));
 const contracts = await import(pathToFileURL(path.join(release, "operations/v2Contracts.js")));
 const git = await import(pathToFileURL(path.join(release, "core/git.js")));
 
-function resolveTrivy() {
-  const configured = process.env.S10_TRIVY_BIN;
-  if (configured && configured.trim()) return configured.trim();
-  for (const directory of (process.env.PATH ?? "").split(path.delimiter).filter(Boolean)) {
-    const candidate = path.join(directory, "trivy");
-    try { if (fs.existsSync(candidate)) return candidate; } catch { /* next path */ }
-  }
-  return undefined;
-}
-
-const trivy = resolveTrivy();
+const trivy = resolveTrivyPath(process.env.S10_TRIVY_BIN, process.env.PATH);
 if (!trivy) {
-  console.error(JSON.stringify({ blocker: "SAST_PROVIDER_UNAVAILABLE", message: "trivy is not installed and S10_TRIVY_BIN is not set; the real SAST campaign fails closed instead of skipping." }, null, 2));
+  const message = process.env.S10_TRIVY_BIN?.trim()
+    ? `Configured S10_TRIVY_BIN is not an executable Trivy file: ${process.env.S10_TRIVY_BIN}`
+    : "trivy is not installed and S10_TRIVY_BIN is not set; the real SAST campaign fails closed instead of skipping.";
+  console.error(JSON.stringify({ blocker: "SAST_PROVIDER_UNAVAILABLE", message }, null, 2));
   process.exit(2);
 }
 process.env.PATH = `${path.dirname(trivy)}${path.delimiter}${process.env.PATH ?? ""}`;
@@ -75,6 +70,7 @@ try {
   const second = await scan(candidateTwo, "r2");
 
   const stale = await sast.verifySastEvidenceV1(root, config, first.evidence, candidateTwo);
+  const tampered = await sast.verifySastEvidenceV1(root, config, { ...second.evidence, status: "FAIL" }, candidateTwo);
 
   const assertions = {
     firstFailedWithFindings: first.check.status === "FAIL" && first.evidence.findingCount > 0,
@@ -83,12 +79,14 @@ try {
     isolationExercised: first.evidence.isolation?.provider === "bwrap" && first.evidence.isolation?.networkAccess === "none" && first.evidence.isolation?.namespaces.network === false,
     candidateBoundExactly: first.evidence.candidate.identityDigest === candidateOne.identityDigest && second.evidence.candidate.identityDigest === candidateTwo.identityDigest,
     firstEvidenceStaleForRevisionTwo: stale.ok === false && stale.blockers.some((blocker) => blocker.includes("SAST_EVIDENCE_STALE")),
+    tamperedEvidenceRejected: tampered.ok === false && tampered.blockers.some((blocker) => blocker.includes("SAST_EVIDENCE_TAMPERED")),
     noFabricatedPass: first.reference?.digest === first.evidence.digest && second.reference?.digest === second.evidence.digest
   };
   const failed = Object.entries(assertions).filter(([, value]) => value !== true).map(([name]) => name);
   const summary = {
     version: 1,
     lane: "REAL_PROVIDER (local OSS Trivy) + SYSTEM_DETERMINISTIC (real rootless bwrap execution)",
+    harnessBuild: buildIdentity,
     release: releaseId,
     tool: { name: "trivy", version: first.evidence.tool.version, binary: trivy, binarySha256: trivyDigest },
     isolation: { provider: first.evidence.isolation?.provider, providerVersion: first.evidence.isolation?.providerVersion, networkAccess: first.evidence.isolation?.networkAccess, namespaces: first.evidence.isolation?.namespaces, visibleReadOnlyPaths: first.evidence.isolation?.visibleReadOnlyPaths, maskedHostPaths: first.evidence.isolation?.maskedHostPaths, writablePaths: first.evidence.isolation?.writablePaths, environmentAllowlist: first.evidence.isolation?.environmentAllowlist },
@@ -97,13 +95,16 @@ try {
       { candidateId: candidateTwo.candidateId, revision: 2, identityDigest: candidateTwo.identityDigest, sourceDigest: candidateTwo.sourceDigest, scan: { status: second.evidence.status, findingCount: second.evidence.findingCount, artifact: second.evidence.artifact, digest: second.evidence.digest, rawArtifactDigest: second.evidence.rawArtifactDigest } }
     ],
     staleRevisionCheck: { ok: stale.ok, blockers: stale.blockers },
+    tamperedEvidenceCheck: { ok: tampered.ok, blockers: tampered.blockers },
     assertions,
     result: failed.length ? "FAIL" : "PASS"
   };
   const evidenceDir = path.join(packageRoot, "docs", "evidence", "s10");
   await fs.mkdir(evidenceDir, { recursive: true });
-  await fs.writeFile(path.join(evidenceDir, "real-sast-campaign.json"), `${JSON.stringify(summary, null, 2)}\n`);
-  console.log(JSON.stringify({ result: summary.result, failed, release: releaseId, tool: summary.tool, candidates: summary.candidates.map((entry) => ({ revision: entry.revision, status: entry.scan.status, findings: entry.scan.findingCount })) }, null, 2));
+  const sourceRevision = String(buildIdentity.gitSha ?? "unknown").replace(/[^A-Za-z0-9.-]/g, "_");
+  const evidenceFile = `real-sast-campaign-${sourceRevision}-${releaseId}.json`;
+  await fs.writeFile(path.join(evidenceDir, evidenceFile), `${JSON.stringify(summary, null, 2)}\n`);
+  console.log(JSON.stringify({ result: summary.result, failed, release: releaseId, evidence: path.join("docs", "evidence", "s10", evidenceFile), tool: summary.tool, candidates: summary.candidates.map((entry) => ({ revision: entry.revision, status: entry.scan.status, findings: entry.scan.findingCount })) }, null, 2));
   process.exit(failed.length ? 1 : 0);
 } finally {
   await fs.rm(root, { recursive: true, force: true });

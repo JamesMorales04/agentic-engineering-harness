@@ -688,7 +688,7 @@ export async function cancelOperation(
 
     await trace(absoluteRoot, "cleanup.cli.required", {
       operationId,
-      reason: "Paseo public SDK lacks cancel/kill parity for external controller cleanup",
+      reason: "the controller uses the Paseo CLI to stop exact operation-owned agents",
       agentCount: agentIds.length
     });
     for (const agentId of agentIds) {
@@ -980,7 +980,7 @@ async function ensureOperationWorkspace(
   const title = `AEH ${record.kind.toUpperCase()} · ${record.id}`;
   if (record.kind === "audit") {
     const command = `paseo workspace create --isolation local --path ${quote(root)} --title ${quote(title)} --json`;
-    await trace(root, "workspace.cli.required", { operationId: record.id, kind: record.kind, reason: "Paseo public SDK workspace create lacks isolation/title parity", isolation: "local" });
+    await trace(root, "workspace.cli.required", { operationId: record.id, kind: record.kind, reason: "the current integration creates operation workspaces through the Paseo CLI", isolation: "local" });
     let result: ProcessResult;
     try {
       result = await gatedWorkspaceCreate({ root, record, run, command, timeoutMs: 60_000, payload: { isolation: "local", path: root, title } });

@@ -1,83 +1,65 @@
 # Agentic Engineering Harness
 
-An **OSS-first, zero-mandatory-SaaS control plane** for agentic software engineering. AEH treats LLM output as untrusted until deterministic validation, evidence and quality gates accept it. Free, locally executable OSS capabilities may be mandatory; paid licenses and paid hosted services are not.
+AEH is an OSS-first control plane for governed software engineering with coding agents. It binds agent work to explicit user intent, frozen policy and scope, candidate identity, executable evidence, independent review, deterministic acceptance, and controlled delivery. No paid hosted service or paid license is mandatory.
 
-## Status: v0.8.4 — Core Architecture v2 in progress
+**Core Architecture v2 is the current, complete architecture.** The normative contract is [docs/CORE_ARCHITECTURE_V2.md](docs/CORE_ARCHITECTURE_V2.md); this README is the product entry point, not the full architecture specification.
 
-The current release retains the v0.6 detached-operation model while adding the Core Architecture v2 foundation: explicit `NO_AGENT | DIRECT | DELEGATED | FORMAL_SDD` implementation routing, independent assurance levels, candidate/receipt lifecycle gates, project identity and runtime ownership contracts, context shards/continuations, and a loopback Project Control Center/Home surface. The campaign ledger is maintained in [docs/ENGINEERING_LEDGER.md](docs/ENGINEERING_LEDGER.md).
+## How AEH works
 
 ```text
-User / Paseo
-    |
-    v
-fresh AEH Lead
-    |
-    +-- INFORMATIONAL -> direct answer
-    |
-    +-- AUDIT -> detached AEH operation
-    |               -> visible Paseo reviewers
-    |
-    `-- CHANGE
-          |
-          +-- explorer -> planner -> deterministic triage
-          |
-          +-- NO_AGENT | DIRECT | DELEGATED | FORMAL_SDD
-          |
-          `-- assurance NONE | STANDARD | ELEVATED | CRITICAL
-                  -> contract/candidate lifecycle
-                  -> spec-manager -> OpenSpec when FORMAL_SDD
-                                  -> aeh spec compile
-                                  -> sealed AEH SDD/TaskContract
-                          |
-                          `-> detached AEH run operation
-                                  -> visible Paseo workers/reviewers
-    |
-    v
-planner waves -> workers -> deterministic barriers
-    -> evidence graph -> validators -> reviewer convergence
-    -> final quality gate -> lead acceptance -> delivery
+human request
+  -> INFORMATIONAL | AUDIT | CHANGE
+  -> governed OperationRecord for engineering work
+  -> frozen policy, authority, route, and assurance
+  -> candidate identity + WorkGraph + compiled participants
+  -> deterministic validation + independent Reviewer assessment
+  -> AcceptanceOracle + ObjectiveCompletion
+  -> ToolActionGate + delivery
+  -> terminal resource reconciliation or explicit recovery
 ```
 
-See [docs/V0.6.md](docs/V0.6.md), [docs/PASEO.md](docs/PASEO.md), [docs/CONTEXT_EFFICIENCY.md](docs/CONTEXT_EFFICIENCY.md), and [ROADMAP.md](ROADMAP.md).
+The decision path is hybrid: the Lead interprets user intent and product semantics; deterministic controller rules freeze scope and authority, verify evidence, decide acceptance, and gate effects. Model output cannot choose tools or grant authority, change frozen requirements, accept a candidate, or bypass a gate.
 
-The superseded binary execution surface has been removed; current routing evidence is carried in the v2 route and assurance fields. See [docs/CORE_ARCHITECTURE_V2.md](docs/CORE_ARCHITECTURE_V2.md) for the current contract and runtime boundaries.
+Requests use three entry classes:
 
-The runtime-agnostic certification boundary is documented in [docs/CERTIFICATION.md](docs/CERTIFICATION.md). Its external self-dogfood lane is an isolated bootstrap path; Codex is only an adapter/provider, never certification authority.
+- **INFORMATIONAL** answers or looks up repository information without creating an engineering operation.
+- **AUDIT** performs governed, read-only engineering assessment with deterministic validators and independent reviewers.
+- **CHANGE** routes a requested mutation through `NO_AGENT`, `DIRECT`, `DELEGATED`, or `FORMAL_SDD`. Assurance (`NONE`, `STANDARD`, `ELEVATED`, or `CRITICAL`) is decided separately from the route.
 
-## Installation
+The Lead owns user intent, genuine product decisions, semantic ambiguity, and user-facing coordination. The Operation Supervisor owns bounded orchestration. Explorer discovers repository facts when needed; Planner decomposes non-trivial work; Spec Manager authors formal OpenSpec/SDD inputs; compiled Implementers execute assigned tasks; independent Reviewers assess evidence; compiled Repairers handle bounded remediation. Small read-only judgments use `SemanticAssessmentService` when a canonical participant is not needed.
 
-Pin AEH as a project development dependency:
+Formal SDD begins with OpenSpec authoring by the Spec Manager. The deterministic compiler validates and seals the executable TaskContract. After freeze, that compiled contract and seal govern implementation. The Lead does not certify deterministic gates: the AcceptanceOracle evaluates candidate-bound evidence, and ObjectiveCompletion checks the operation's required participants, artifacts, lifecycle, and terminal identity.
+
+The ToolActionGate checks authority and lifecycle before external effects such as pushes, pull requests, or other configured delivery actions. Terminal and recovery paths reconcile only resources proven to belong to the operation; live or unknown resources are preserved and reported.
+
+## Start a project
+
+Install AEH as a project development dependency, initialize its Harness files, and run the interactive entry point:
 
 ```bash
 npm install --save-dev agentic-engineering-harness
 npm exec aeh -- init --setup
 npm exec aeh -- doctor
+npm exec aeh -- start
 ```
 
-`aeh setup` provisions the project-selected engineering toolchain through mise/Aqua/OCI where configured. New projects provision the mandatory local Serena semantic provider and Headroom compression provider through the pinned Python/uv toolchain. There is no mutating npm `postinstall`.
+`aeh start` creates a fresh Lead by default. Use `aeh start --resume` to explicitly resume a compatible managed Lead. Setup provisions the project-selected toolchain; there is no mutating npm `postinstall`.
 
-A new project receives repository-owned declarative configuration plus generated local state:
+The initialized project includes declarative Harness configuration, the `engineering-workflow` skill, managed assets, and OpenSpec authoring configuration. `aeh init`, `aeh setup`, and `aeh start` reconcile packaged managed assets. Untouched managed files can be upgraded; locally modified files are preserved as project overrides.
 
-```text
-.harness/project.yaml
-.harness/agents.source.jsonc   -> extends aeh:orchestration
-.harness/toolchain.yaml
-.harness/otel-collector.yaml
-.harness/skills/
-.harness/managed-assets.json
-openspec/config.yaml
-AGENTS.md
-```
+## Operations and evidence
 
-`.harness` runtime state is ignored by default. Only repository-owned declarative files are explicitly allowlisted in `.gitignore`, so newly introduced generated state cannot be committed accidentally.
+Managed AUDIT, CHANGE, and RUN work can start as detached operations so the Lead can return promptly while the deterministic controller owns durable state. Use `aeh operation start`, `status`, `wait`, and `cancel` to control those operations. A local Paseo operation workspace groups sessions in the UI; it does not by itself create a Git branch or worktree.
 
-Packaged core skills and policies are reconciled by `aeh init`, `aeh setup`, and `aeh start`. Missing assets are restored, untouched managed assets can be upgraded with the installed AEH version, and locally modified copies are preserved as explicit overrides.
+The local Control Center presents operation, candidate, evidence, and human-decision state. It does not grant authority or replace controller checks. Context retrieval is controller-authorized, identity-bound, and budgeted; Graphify and memory provide advisory structural or historical context. Repository edits by Serena and model-written summaries do not control acceptance.
 
-### Developing AEH itself
+Isolation depends on the execution path and host: when Harness policy or a validator spec requires isolation, rootless bubblewrap isolates that validator or external tool; Podman/OCI worker paths are used when selected and provisioned. A required missing provider fails closed. No claim is made that every provider is installed on every host. See [docs/SECURITY.md](docs/SECURITY.md).
 
-When the target repository is **this AEH source checkout**, do not rely on an unqualified remote `npm exec aeh` as the runtime selector. npm may reuse an `_npx` cache copy that is older than the checked-out source.
+AEH self-hosting uses the same governed candidate and evidence model. The product cold-start trial should install a released package in a fresh environment and start it with `aeh start`; disposable self-modification fixtures keep campaign mutations out of the source checkout.
 
-Build and use the repository-local entrypoint:
+## Developing AEH itself
+
+When the target is this AEH source checkout, build and use the checkout's own entry point:
 
 ```bash
 npm ci
@@ -86,277 +68,19 @@ npm run aeh -- start
 # equivalent: node dist/main.js start
 ```
 
-AEH detects when an external/global/npm-exec runtime tries to start a lead for an `agentic-engineering-harness` checkout and re-enters that checkout's `dist/main.js`. If the local build is missing, startup fails closed with build instructions instead of creating a potentially stale lead.
-
-Every managed start prints the executing `aehRuntime` and `aehEntry`. Lead state also records the exact AEH version/invocation, and `--resume` rejects a lead created by a different runtime identity.
-
-Consumer repositories should continue to pin AEH as a dev dependency and use their project-local `npm exec aeh -- ...` binary normally.
-
-## Zero-friction Paseo entrypoint
-
-```bash
-aeh start
-# or
-npm exec aeh -- start
-```
-
-A normal start creates a **fresh lead conversation**. Reuse is explicit:
-
-```bash
-aeh start --resume
-```
-
-Before the agent topology is loaded, `aeh start` reconciles managed `.harness` assets. The lead is resolved from the active agent topology, Paseo and the configured lead runtime are reconciled, the daemon is started/recovered, and the lead is created through the Paseo SDK with its bootstrap as `systemPrompt`.
-
-When `orchestration.interactive.usePaseoTools` is enabled, AEH also injects an exact local `aeh-control` MCP server into the managed lead. The server runs through the same Node executable and packaged `aeh` entrypoint that created the lead and preapproves only these bounded controller tools:
-
-```text
-aeh_operation_start_audit
-aeh_operation_start_run
-aeh_operation_status
-aeh_operation_cancel
-```
-
-This lets the lead control long Harness workflows without sitting inside a blocking shell command. If the MCP cannot be represented safely, the short `aeh operation ...` CLI surface remains available.
-
-### Lead responsibilities
-
-The lead owns:
-
-- user intent and explicit product decisions;
-- high-level routing and true ambiguity;
-- deterministic state transitions;
-- final semantic acceptance.
-
-For managed conversational turns, routing is emitted as a typed,
-versioned `IntentDecisionV1`. The lead owns the meaning of the human request;
-AEH validates the decision's structure and effects, then enforces the
-TaskContract, permissions, capabilities, validators, lifecycle, provenance and
-delivery gates. AEH does not run a second regex/keyword interpretation of the
-original sentence. The heuristic intent classifier remains available only for
-the explicit diagnostic/evaluation command only.
-
-It delegates:
-
-```text
-Explorer                 -> repository discovery when needed
-Librarian                -> versioned knowledge gaps when needed
-Planner                  -> read-only decomposition and triage evidence
-Spec Manager             -> OpenSpec FORMAL_SDD authoring
-compiled Implementer     -> assigned code changes
-compiled Reviewer        -> independent evidence and quality assessment
-compiled Repairer        -> bounded remediation after a failed gate
-```
-
-Toolchain setup, environment recovery and deterministic validation remain
-Harness infrastructure. Domain technology is a specialization of a canonical
-role, never a permanent named agent class.
-
-Paseo native/MCP tools are preferred for bounded conversational delegation and `/paseo-handoff`. Deterministic multi-agent workflows use the AEH operation controller. The controller itself is **not** represented as an LLM agent.
-
-## Detached operations
-
-Interactive AUDIT/RUN work starts detached:
-
-```bash
-aeh operation start audit "review the repo and validate the code for improvements"
-aeh operation start run TASK-123
-```
-
-The start command returns promptly with a durable operation id. State is persisted under:
-
-```text
-.harness/operations/<operation-id>.json
-```
-
-Observe or control it with:
-
-```bash
-aeh operation status <operation-id>
-aeh operation wait <operation-id> --timeout 1800
-aeh operation cancel <operation-id>
-aeh paseo agents --operation <operation-id>
-aeh paseo agents --operation <operation-id> --phase review
-```
-
-Synchronous `aeh audit` and `aeh run` remain valid non-interactive/compatibility entrypoints. Inside a managed Paseo lead, AEH treats accidental synchronous `aeh audit` and standard `aeh run <taskId>` calls as compatibility syntax and **auto-promotes them to detached operations**. Complex synchronous shortcuts fail closed unless `AEH_ALLOW_SYNC_INTERACTIVE=1` is explicitly set for a bounded compatibility/recovery flow.
-
-For each detached operation AEH attempts to create a **local Paseo workspace** pointing at the existing repository. This is UI/execution grouping only; it does not create a Git branch/worktree. A delivery worktree workspace, when configured, remains a separate concern and takes precedence for implementation agents.
-
-## Visible Paseo agent lifecycle
-
-Real Harness LLM participants use a split lifecycle:
-
-```text
-materialize -> dispatch -> wait
-```
-
-This is especially useful for AUDIT. AEH first materializes the selected read-only reviewers so they appear immediately in Paseo, then runs deterministic validators, and only then dispatches the reviewers with the completed validator evidence.
-
-Agents carry durable correlation labels:
-
-```text
-aeh.project=<project>
-aeh.kind=lead|worker
-aeh.role=<logical-agent>
-aeh.task=<task-id>
-aeh.operation=<operation-id>
-aeh.operation.kind=audit|run|change
-aeh.operation.phase=planning|review|implementation|diagnosis|...
-aeh.workspace.kind=orchestration|delivery
-```
-
-Managed leads additionally carry `aeh.version=<runtime-version>` and `aeh.bootstrap=<bootstrap-version>`, making stale-session/runtime mismatches visible in Paseo metadata.
-
-Workers remain top-level Paseo agents rather than children owned by one lead conversation, so lead context rotation cannot terminate their workflow ownership.
-
-## Context lifecycle
-
-Default interactive thresholds:
-
-```text
-<70%     normal
-70-80%   pressure mode; stop exploratory work and increase delegation
->=80%    proactive handoff + fresh lead rotation
->=90%    mandatory handoff; old lead must not continue engineering work
-```
-
-Public guard:
-
-```bash
-aeh context guard --agent "$PASEO_AGENT_ID"
-```
-
-When Paseo exposes a usable context ratio, AEH persists:
-
-```text
-.harness/paseo/handoffs/lead-<timestamp>.json
-```
-
-The artifact carries prior/new lead IDs and durable branch/run/audit/operation/delivery references. Detached operations and their independent workers continue across lead rotation.
-
-## Intent model
-
-Every engineering request is classified as:
-
-```text
-INFORMATIONAL
-AUDIT
-CHANGE
-```
-
-Examples:
-
-```text
-"What does this class do?"
-  -> INFORMATIONAL
-
-"Review the repo and validate it for improvements"
-  -> AUDIT
-
-"Improve the code readability"
-  -> CHANGE -> NO_AGENT | DIRECT | DELEGATED | FORMAL_SDD
-```
-
-Repository-wide audits remain AUDIT operations; change routing is not inferred from a legacy workflow mode.
-
-## OpenSpec-backed formal SDD authoring
-
-For FORMAL_SDD work the lead does **not** write proposal/spec/design/tasks itself. The managed change controller delegates to `spec-manager` and accepts only its candidate-bound structured result. It persists validated READY content under canonical OpenSpec paths after that result is accepted, then performs deterministic OpenSpec validation and compilation. Preparing an authoring target does not write scaffold files into the frozen candidate workspace.
-
-Use the managed CHANGE workflow for FORMAL_SDD work. The standalone `aeh spec prepare <taskId> --title <title>` command reports the canonical authoring target without writing scaffold files; only the controller persists OpenSpec content after the Spec Manager result passes deterministic provenance and schema checks. Compilation and sealing remain controller-owned operation steps.
-
-Authority split:
-
-```text
-OpenSpec
-  = authoring source before freeze
-
-compiled AEH SDD + TaskContract + seal
-  = normative execution truth
-```
-
-The compiler maps OpenSpec requirements/scenarios/tasks into stable AEH requirement IDs, Gherkin and TaskContract traceability. It records OpenSpec SHA-256 provenance and refuses to emit a requirement backed only by a nonexistent validator. Configured validators are preferred; standard project test/typecheck/build commands are derived when safe.
-
-OpenSpec is provisioned automatically when `sdd.authoring.provider: openspec` is active.
-
-## Issue-driven execution
-
-```bash
-aeh issue inspect 142
-aeh issue import 142
-aeh issue implement 142
-# synchronous compatibility shortcut
-aeh run --issue 142
-```
-
-An issue is frozen as input, converted into routed contract/formal SDD artifacts, sealed, and executed through the same worker/validation/review lifecycle. `ISSUE_DRIFT` prevents silent reinterpretation after intake. Interactive leads use a detached `operation start run` once the derived task is ready.
-
-## AUDIT
-
-Interactive:
-
-```bash
-aeh operation start audit "review the repo and validate the code for improvements"
-```
-
-Synchronous compatibility:
-
-```bash
-aeh audit "review the repo and validate the code for improvements"
-```
-
-AUDIT is read-only but Harness-governed:
-
-- frozen control plane;
-- visible read-only Paseo reviewers materialized before validation;
-- deterministic validators;
-- explicit environment/sandbox/assertion/tool failure classification;
-- reviewer dispatch with validator evidence;
-- finding normalization/deduplication;
-- DebtScore/Quality Gate reporting;
-- worktree rollback preserving pre-existing dirty state.
-
-Reports live under `.harness/audits/`. A later `fix these` request becomes a new CHANGE using the AuditReport as evidence.
-
-## Implementation routes and formal SDD
-
-`DIRECT` is for concrete bounded implementation. `DELEGATED` is for coordinated specialist work. `FORMAL_SDD` is required when durable requirements/design/traceability must be authored before implementation. `NO_AGENT` answers or records work without an implementation participant. Assurance is independent of route.
-
-For `FORMAL_SDD`, OpenSpec authors the intent and AEH compiles/seals the executable contract. AEH then executes the planner-produced multi-worker DAG with isolated worktrees, deterministic wave barriers, requirement evidence, validators, review convergence and final lead acceptance.
-
-## Quality authority
-
-Default DebtPoints:
-
-```text
-critical = 300 = DebtScore 100
-high     =  75 = DebtScore 25
-medium   =  24 = DebtScore 8
-low      =   3 = DebtScore 1
-note     =   1 = DebtScore 1/3
-```
-
-Final acceptance requires critical/high/medium = 0, low <= 3 and DebtScore <= 3. Remediation has no arbitrary maximum round count; stagnation/regression/cycles trigger rollback, stronger agents/models, diagnosis and replanning.
-
-## Trust model
-
-1. User intent and genuine product decisions.
-2. Frozen TaskContract / compiled AEH SDD / issue snapshot as applicable.
-3. Deterministic validator and evidence output.
-4. Quality/review gates.
-5. LLM summaries, memory and structural/research tooling as advisory information.
-
-Workers never gain authority to weaken requirements or deterministic gates. Paseo improves orchestration; OpenSpec improves authoring; neither replaces AEH acceptance authority.
-
-## Build and distribution hygiene
-
-`dist/` is disposable repository state and a required npm artifact. Every `npm run build` deletes `dist` before TypeScript compilation, and npm `prepare` rebuilds it during local `npm ci`/packaging. This prevents stale generated JavaScript from surviving source updates.
-
-AEH is a development tool, not an application runtime dependency. The npm package contains CLI code, templates, presets, policies, schemas, skills and docs. CI validates `npm ci`, typecheck, tests, clean build, `npm pack --dry-run`, the operation MCP surface, and installs the generated tarball into an empty consumer project for smoke testing.
-
-Pushes to `main` can publish automatically through `.github/workflows/publish.yml`. `package.json` is the version source; if its current version has already shipped, Conventional Commit semantics select the next patch/minor/major version before publication. See [docs/PUBLISHING.md](docs/PUBLISHING.md) for authentication, retry and manual-release controls.
+An external or global AEH invocation targeting an AEH checkout re-enters that checkout's `dist/main.js`. If the local build is missing, start fails closed with build instructions. Consumer repositories should pin AEH as a development dependency and use their project-local `npm exec aeh -- ...` binary.
+
+## Further reading
+
+- [Architecture and authority](docs/ARCHITECTURE.md)
+- [Normative Core Architecture v2](docs/CORE_ARCHITECTURE_V2.md)
+- [Paseo integration](docs/PASEO.md) and [Paseo-native boundaries](docs/PASEO_NATIVE.md)
+- [SDD operating model](docs/SDD.md)
+- [Publishing and release behavior](docs/PUBLISHING.md)
+- [Certification](docs/CERTIFICATION.md), [security and isolation](docs/SECURITY.md), and [component maturity](docs/COMPONENT_MATURITY.md)
+- [Context efficiency](docs/CONTEXT_EFFICIENCY.md), [memory](docs/MEMORY.md), and [observability](docs/OBSERVABILITY.md)
+- [Roadmap history](ROADMAP.md) and [engineering evidence ledger](docs/ENGINEERING_LEDGER.md)
 
 ## License
 
-Apache-2.0.
+Apache-2.0

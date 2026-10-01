@@ -7,10 +7,10 @@ Reference components:
 | Concern | Default | Role |
 |---|---|---|
 | Agent runtime | Paseo | Cross-provider process/session/mobile control |
-| Lead agent | Codex | Requirements, architecture, planning, review |
+| Lead agent | Codex | User intent, product semantics, ambiguity, and user-facing coordination |
 | Worker | OpenCode | Routine implementation using the configured workhorse model |
 | Persistent memory | Engram | Advisory historical memory; adapter is replaceable |
-| Code topology | Graphify | Structural graph and future architecture/blast-radius gates |
+| Code topology | Graphify | Structural repository map and advisory dependency/impact context; only deterministic extracted facts enter gates |
 | Semantic code retrieval | Serena 1.6.1 (`serena-agent`) | Configured local OSS symbol lookup, references and targeted repository navigation; not memory authority |
 | Context compression | Headroom 0.28.0 | Configured local OSS selective compression after AEH projection; no hosted Headroom service required |
 | Specification | SDD + Git | Versioned normative intent |
@@ -22,7 +22,8 @@ Reference components:
 | Integration environments | Podman / OCI or project-native provider | Explicit ephemeral dependencies and readiness; Testcontainers is optional |
 | Web E2E | Playwright | Deterministic browser acceptance and traces |
 | Consumer contracts | ContractTestingProvider / Pact / OpenAPI checks | Local verifier-backed compatibility evidence |
-| Worker isolation | Podman rootless | Ephemeral least-privilege execution |
+| Validator/tool isolation | Bubblewrap (`bwrap`) | Rootless namespace isolation when Harness policy or a validator spec requires it; missing provider blocks |
+| Worker isolation | Podman / OCI where configured | Host-dependent isolated worker path; unavailable providers do not fall back silently |
 | Telemetry | OpenTelemetry | Portable traces/metrics/log semantics |
 | Provenance | Cosign + in-toto | Artifact signing and attestations |
 | Harness quality | Engineering eval corpus | Reproducible comparison of system variants |

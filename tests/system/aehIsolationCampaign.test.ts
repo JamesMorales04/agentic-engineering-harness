@@ -53,9 +53,11 @@ describe.sequential("real rootless isolation campaign", () => {
     await fs.writeFile(path.join(workspace, "input.txt"), "hello\n");
     const hostMarker = spawn("sleep", ["30"]);
     const secretName = "AEH_S10_HOST_SECRET_PROBE";
+    const originalSecret = process.env[secretName];
     process.env[secretName] = "host-secret-value";
     const originalHome = process.env.HOME;
     const originalPath = process.env.PATH;
+    const hostUserHome = os.homedir();
     const restoreHome = () => {
       if (originalHome === undefined) delete process.env.HOME;
       else process.env.HOME = originalHome;
@@ -69,7 +71,7 @@ describe.sequential("real rootless isolation campaign", () => {
     try {
       // Keep the probe outside /tmp and the isolated workspace: bwrap overlays
       // /tmp, so a fixture there would make a hidden-home check vacuous.
-      hostHome = await fs.mkdtemp(path.join(path.resolve(process.cwd()), ".aeh-isolation-host-home-"));
+      hostHome = await fs.mkdtemp(path.join(hostUserHome, ".aeh-isolation-host-home-"));
       process.env.HOME = hostHome;
       const syntheticHome = os.homedir();
       const sshDirectory = path.join(syntheticHome, ".ssh");
@@ -79,6 +81,7 @@ describe.sequential("real rootless isolation campaign", () => {
       await fs.writeFile(sentinelPath, "host-only\n");
       expect(pathsOverlap(os.tmpdir(), syntheticHome)).toBe(false);
       expect(pathsOverlap("/var/tmp", syntheticHome)).toBe(false);
+      expect(pathsOverlap(root, syntheticHome)).toBe(false);
       expect(pathsOverlap(workspace, syntheticHome)).toBe(false);
       await expect(fs.access(sshDirectory)).resolves.toBeUndefined();
       await expect(fs.readFile(sentinelPath, "utf8")).resolves.toBe("host-only\n");
@@ -136,7 +139,8 @@ describe.sequential("real rootless isolation campaign", () => {
       restoreHome();
       restorePath();
       hostMarker.kill("SIGKILL");
-      delete process.env[secretName];
+      if (originalSecret === undefined) delete process.env[secretName];
+      else process.env[secretName] = originalSecret;
       if (hostSentinel) await fs.rm(hostSentinel, { force: true });
       if (hostHome) await fs.rm(hostHome, { recursive: true, force: true });
       await fs.rm(root, { recursive: true, force: true });
