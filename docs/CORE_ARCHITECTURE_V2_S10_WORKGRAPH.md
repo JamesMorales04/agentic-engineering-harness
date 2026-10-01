@@ -102,3 +102,37 @@ Profiles listed with `list_profiles`: `DeepSeek V4.1 Flash Implementer` (`openco
 **Repair:** the probe now creates a host-only sentinel directly under the home root (`.aeh-s10-host-sentinel-<pid>`), asserts `host_home_sentinel=masked`, and removes it in `finally`; it no longer depends on bind-destination parent directories. The STATUS security row now documents the workspace exception consistently with SECURITY.md.
 
 **Re-verification:** `npm test -- tests/system/aehIsolationCampaign.test.ts` — 1 file / 3 tests passed; `npx vitest run tests/system/aehIsolationCampaign.test.ts` — 1 file / 3 tests passed; focused S10 set — 5 files / 30 tests passed; `npm run typecheck` exit 0; `git diff --check` clean. A fresh independent reviewer owns re-acceptance.
+
+## Final re-acceptance and acceptance-gap closure — 2026-10-01
+
+The historical rejection and repair above remain unchanged. A fresh independent S10 reviewer returned **`SLICE_ACCEPTED`** for reviewed head `87144f77a0c99088d385e848925643b5439422ea`. The canonical artifact is [review-s10-final.json](evidence/s10/review-s10-final.json), SHA-256 `f940aa6a72587bccf800ceade409de9b22c175af21fa83b2b99cd63e3362a9cc`. This closes the S10-specific acceptance-artifact gap; it is not a full historical S10 recertification and does not infer acceptance from S14 or closure.
+
+### Source-impact classification
+
+The reviewer compared S10 checkpoint `9b74c04167e79748312160b6476cc5050050b4e3` through the reviewed candidate and classified the relevant delta as follows:
+
+- **UNCHANGED_CORE_CONTRACT:** `docs/CORE_ARCHITECTURE_V2.md`, this WorkGraph's historical record, `src/security/isolation.ts`, `src/security/sastEvidence.ts`, `src/validators/commands.ts`, `src/validators/toolCommand.ts`, `tests/security/providerFailClosed.test.ts`, `tests/security/sastEvidence.test.ts`, and `tests/security/validatorIsolationFailClosed.test.ts`.
+- **TEST_FIXTURE_CHANGE:** the HOME/PATH/secret restoration and bind-overlap checks in `tests/system/aehIsolationCampaign.test.ts` and `tests/security/isolation.test.ts`; executable Trivy resolution/tamper evidence in `scripts/s10-trivy-resolver.mjs`, `tests/s10TrivyResolver.test.ts`, and `tests/packed/s10RealSastCampaign.mjs`; adjacent candidate/provider regressions remain fail-closed.
+- **INTEGRATION_EXTENSION_COMPATIBLE:** candidate requirement traceability and provider-lane additions in `src/core/run.ts`, `src/core/verify.ts`, `src/validators/external.ts`, `src/validators/registry.ts`, `src/architecture/{candidateAssurance,validationRequirements}.ts`, `src/validation/laneEvidence.ts`, associated schemas/config, and current evidence docs. SAST candidate binding and security/dependency assurance floors are retained.
+- **CI_ENVIRONMENT_CHANGE:** `.github/workflows/ci.yml`, `.harness/toolchain.yaml`, `package.json`/lock, `templates/provider-versions.json`, `templates/toolchain.yaml`, and provider setup scripts provision real rootless bwrap and pinned provider lanes. Existing required jobs remain; the rootless job has no skip or `continue-on-error` path.
+
+The fresh review found **no material S10 product-contract change** and **zero unknown classifications**. The source changes preserve the fail-closed behavior; adjacent integration additions strengthen candidate-bound verification.
+
+### Fresh deterministic, hosted rootless, and fail-closed evidence
+
+- Focused local S10 command passed **5 files / 30 tests**, including the actual system isolation campaign **3/3**; the Trivy resolver regression also passed **2/2**. The campaign creates HOME beneath the actual host home outside `/tmp`, `/var/tmp`, fixture/workspace roots, and explicit toolchain binds; proves the sentinel and SSH directory exist before sandboxing and are masked inside; verifies visible toolchain paths; and restores HOME, PATH, and the prior secret value.
+- Exact hosted rootless evidence is [CI run 36881830507](https://github.com/JamesMorales04/agentic-engineering-harness/actions/runs/36881830507), head `87144f77a0c99088d385e848925643b5439422ea`, job `110435254361` (`rootless-isolation`). Required bwrap `0.6.1` passed the non-root preflight (`CapEff=0`, `NoNewPrivs=1`) and all three real namespace, mutation, validator, and egress assertions. The job used `npm run test:rootless-isolation`; no skip/continue-on-error substituted for execution. The hosted merge tree equals the reviewed candidate tree (`13103c24b8bf0f7651baefc424d18dbf2bbf5af6`).
+- The exact-SHA CI run completed **13/13 jobs**. Its generic test job retained only the existing provider-gated skip; the dedicated `provider-contracts` job passed **17 tests across 4 files** with pinned tools and real Engram startup.
+- Current fail-closed regressions passed: `tests/security/validatorIsolationFailClosed.test.ts` (5), `tests/security/sastEvidence.test.ts` (8), `tests/security/providerFailClosed.test.ts` (4), `tests/security/isolation.test.ts` (10), and `tests/s10TrivyResolver.test.ts` (2). Required isolation or scanner absence fails explicitly; optionality is explicit and no missing provider is fabricated as PASS.
+
+### Clean candidate-bound real SAST
+
+The clean-build REAL_PROVIDER artifact is [real-sast-campaign-85877349558477e21386d6e076393d15e2a90e26-release-1790866583369-387000-cc8194fb.json](evidence/s10/real-sast-campaign-85877349558477e21386d6e076393d15e2a90e26-release-1790866583369-387000-cc8194fb.json), SHA-256 `36a871fd9c8fcafdbb4c116b1d2974fa385ab17e510ba74bdbbf6a430b8e3641`. `BuildIdentity` binds Git SHA `85877349558477e21386d6e076393d15e2a90e26`, release `release-1790866583369-387000-cc8194fb`, build digest `93fb2b413e748a3fdc9070a0cf6c0100facd37f15894dea7ce4904dacd258bbe`, and `dirty:false`. The pinned local OSS Trivy is v0.70.0, binary SHA-256 `379d59f24a4a828c55de5f0b91b6805cc35d13580180b658820e648611256166`; real bwrap 0.13.0 denied network and recorded namespace/isolation evidence.
+
+Candidate `CAND-S10-REAL` r1 identity `8648ef7b56d0ecab99eef2cbe33028c6696f4bb26fe11d86270f40de9a850e9b` and source/workspace digest `219debfd791e9a5c71a393f0934bdf57627dca92f583d2a7af59737c40b40a32` produced a real FAIL with one `github-pat` finding. Revision 2 identity `154b31f503fcf1da67b1eedbc336ff815a390c28d4beb89fc425231397651ff7` and source/workspace digest `621e7c4125bbe9fde0f3c97c4baee0ac14dd0298a2c5218a985dea0540b8ef2b` produced a clean PASS. The campaign asserted exact candidate binding, tool/version and raw-output digests, stale-revision rejection, tampered-evidence rejection, and no fabricated PASS; all assertions returned true.
+
+### S14 and closure staleness
+
+No S14 composite regeneration was required. The new S10 SAST artifact is additive and is not a composite input; the historical pinned SAST file remains byte-identical at SHA-256 `3a106006801c7b03e79795b8beedc4af240facd16ee78675d8f8194fd7848779`. S14 manifest `docs/evidence/s14/certification-evidence-manifest.json` remains SHA-256 `d8c4a69da36f0b7c29788380aaa6802b3ff1a0bc1346e7f1bb2f3019c7207d3c`; closure manifest `docs/evidence/closure/certification-evidence-manifest.json` remains SHA-256 `ff1b5b113adeae34c88abdd6aaa5c2a4770f98a8d3b47cb8dd521def4ea54b9a`. The reviewer confirmed exact composite input bytes unchanged and `s14RerunRequired:false`.
+
+The normative TARGET remains SHA-256 `4954b62bfb3a820fc6e5d0369b2d37bc35a94988d19e485f00d30675aafa555a`. S10 is **ACCEPTED** for its reviewed scope; OPA live evaluation and rootless Podman/OCI execution remain unclaimed provider lanes.

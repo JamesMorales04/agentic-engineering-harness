@@ -2,7 +2,7 @@
 
 AEH is an OSS-first control plane for governed software engineering with coding agents. It binds agent work to explicit user intent, frozen policy and scope, candidate identity, executable evidence, independent review, deterministic acceptance, and controlled delivery. No paid hosted service or paid license is mandatory.
 
-**Core Architecture v2 is the current architecture.** The normative contract is [docs/CORE_ARCHITECTURE_V2.md](docs/CORE_ARCHITECTURE_V2.md); this README is the product entry point, not the full architecture specification.
+**Core Architecture v2 is the current, complete architecture.** The normative contract is [docs/CORE_ARCHITECTURE_V2.md](docs/CORE_ARCHITECTURE_V2.md); this README is the product entry point, not the full architecture specification.
 
 ## How AEH works
 
