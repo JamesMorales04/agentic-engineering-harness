@@ -117,7 +117,8 @@ export class LocalControlCenterV1 {
   private readonly projectHome?: ProjectHomeBindingV1;
   private readonly paseoGateway?: PaseoGatewayV1;
   private readonly paseo?: LocalControlCenterOptionsV1["paseo"];
-  private readonly uiRoot?: string;
+  private uiRoot?: string;
+  private readonly uiRootExplicit: boolean;
   private readonly operationRootsProvider?: LocalControlCenterOptionsV1["operationRoots"];
   private readonly subscribers = new Map<ServerResponse, EventCursorV1>();
   private eventPollTimer?: NodeJS.Timeout;
@@ -141,6 +142,7 @@ export class LocalControlCenterV1 {
     this.projectHome = options.projectHome;
     this.paseoGateway = options.paseoGateway;
     this.paseo = options.paseo;
+    this.uiRootExplicit = options.uiRoot !== undefined;
     this.uiRoot = options.uiRoot ?? findBundledControlCenterUiRoot();
     this.operationRootsProvider = options.operationRoots;
     this.server = createServer((request, response) => void this.handle(request, response));
@@ -631,6 +633,13 @@ export class LocalControlCenterV1 {
   }
 
   private async frontend(response: ServerResponse, pathname: string, accept?: string): Promise<void> {
+    if (!this.uiRootExplicit) {
+      // A long-lived server may outlive the immutable release that supplied its
+      // frontend. Builds prune old releases, so follow the active release pointer
+      // again before serving each request.
+      const currentUiRoot = findBundledControlCenterUiRoot();
+      if (currentUiRoot) this.uiRoot = currentUiRoot;
+    }
     if (!this.uiRoot) return this.json(response, 503, { error: "Control Center frontend is not built. Run npm --prefix ui/control-center run build or configure uiRoot." });
     let relativePath: string;
     try { relativePath = pathname === "/" ? "index.html" : decodeURIComponent(pathname.replace(/^\/+/, "")); }
