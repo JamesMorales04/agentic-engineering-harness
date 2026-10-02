@@ -64,6 +64,26 @@ describe("LocalControlCenterV1", () => {
     }
   });
 
+  it("re-resolves the current bundled release when a long-lived server's UI release was pruned", async () => {
+    const previousUiDir = process.env.AEH_CONTROL_CENTER_UI_DIR;
+    delete process.env.AEH_CONTROL_CENTER_UI_DIR;
+    const center = new LocalControlCenterV1();
+    const started = await center.start();
+    try {
+      const state = center as unknown as { uiRoot?: string; uiRootExplicit: boolean };
+      expect(state.uiRootExplicit).toBe(false);
+      state.uiRoot = path.join(os.tmpdir(), `pruned-control-center-release-${process.pid}`, "ui", "control-center", "dist");
+      const document = await fetch(started.url);
+      expect(document.status).toBe(200);
+      expect(document.headers.get("content-type")).toContain("text/html");
+      expect(await document.text()).toContain("id=\"root\"");
+    } finally {
+      await center.close();
+      if (previousUiDir === undefined) delete process.env.AEH_CONTROL_CENTER_UI_DIR;
+      else process.env.AEH_CONTROL_CENTER_UI_DIR = previousUiDir;
+    }
+  });
+
   it("serves a loopback health endpoint and paired-session overview", async () => {
     const center = new LocalControlCenterV1({ snapshot: () => ({ quality: { status: "ready" } }) });
     const started = await center.start();

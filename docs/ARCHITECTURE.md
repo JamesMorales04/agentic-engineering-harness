@@ -54,7 +54,7 @@ The **ToolActionGate** checks authority, candidate, policy, and lifecycle before
 
 Paseo is the reference session, provider, and workspace adapter. It does not own AEH product semantics or acceptance. Managed AUDIT, CHANGE, and RUN work can start as durable detached operations; a worker is a real compiled participant, not a fake controller agent. Operation-local Paseo workspaces group sessions and do not imply a Git branch or worktree.
 
-The local Control Center presents operation, candidate, evidence, and human-decision state. Human decisions are consumed only when they match the exact current operation and candidate contract. The surface cannot grant capabilities, edit a frozen contract, or bypass controller gates.
+The local Control Center presents operation, candidate, evidence, and human-decision state. Human decisions are consumed only when they match the exact current operation and candidate contract. The surface cannot grant capabilities, edit a frozen contract, or bypass controller gates. A long-lived server re-resolves its bundled UI against the active immutable release when its startup release has been pruned; an explicitly configured `uiRoot` remains pinned.
 
 ## Isolation and security
 
