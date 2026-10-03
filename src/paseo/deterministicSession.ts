@@ -102,6 +102,7 @@ export async function runDeterministicPaseoTurn(root: string, config: HarnessPro
     entryFile: process.argv[1] ?? "aeh",
     completionAgentId: session.agentId,
     completionSource: "deterministic-paseo-sdk",
+    initiator: { kind: "LEAD", agentId: session.agentId, userTurnId, requestEventId: `${session.agentId}:deterministic-turn:${userTurnId}` },
     spawnProcess: (() => ({ pid: process.pid, unref: () => undefined }) as never) as never
   });
   let wakeMessage = "";

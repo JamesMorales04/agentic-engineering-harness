@@ -83,6 +83,10 @@ operation terminal
 
 The detached monitor continues until the terminal revision is acknowledged, and re-wakes the lead after the configured interval when necessary.
 
+Participant execution liveness, the Supervisor-to-Lead recovery path, and the
+independent operation hard deadline are specified in
+[`EXECUTION_LIVENESS.md`](./EXECUTION_LIVENESS.md).
+
 ## Layered liveness
 
 AEH deliberately does not depend on one messaging channel:

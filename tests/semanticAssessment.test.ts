@@ -19,8 +19,8 @@ describe("Paseo-backed semantic assessment contract", () => {
     for (const assessmentType of semanticAssessmentTypeValues) expect(semanticCapabilityPolicyV1[assessmentType].maxDeadlineMs).toBeGreaterThanOrEqual(60_000);
   });
 
-  it("supports the seven canonical assessment types", () => {
-    expect(semanticAssessmentTypeValues).toEqual(["INTENT", "ROUTE", "STACK", "ISSUE", "FAILURE", "CANDIDATE_IMPACT", "VALIDATION_NEED"]);
+  it("supports the canonical assessment types", () => {
+    expect(semanticAssessmentTypeValues).toEqual(["INTENT", "ROUTE", "STACK", "ISSUE", "FAILURE", "CANDIDATE_IMPACT", "VALIDATION_NEED", "OPERATIONS_ANALYSIS"]);
   });
 
   it("retries one hung real provider turn but not other provider unavailability", async () => {

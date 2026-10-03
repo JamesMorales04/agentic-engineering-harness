@@ -3,9 +3,9 @@ import { pathToFileURL } from "node:url";
 import { connectPaseoClient, PaseoSdkUnavailableError, type PaseoSdkPermissionStop } from "./sdk.js";
 import { resolvePaseoSdkFromCli } from "./sdkResolve.js";
 import { recordPaseoTrace } from "./trace.js";
-import { capturePaseoTimelineV1, type PaseoTimelineEventEnvelopeV1 } from "../telemetry/paseoTimeline.js";
-import type { ProviderTelemetryEvidenceV1 } from "../telemetry/efficiency.js";
-import { loadProjectConfig } from "../core/config.js";
+import { capturePaseoTimelineV2, type PaseoTimelineEventEnvelopeV1 } from "../telemetry/paseoTimeline.js";
+import type { ProviderTelemetryEvidenceV2 } from "../telemetry/efficiency.js";
+import { recordPaseoRuntimeActivityV1 } from "../operations/executionLiveness.js";
 
 export interface PaseoNativeUsage {
   inputTokens?: number;
@@ -54,7 +54,7 @@ export interface PaseoNativeWaitResult {
   lastMessage?: string;
   error?: string;
   permission?: PaseoSdkPermissionStop;
-  efficiencyTelemetry?: ProviderTelemetryEvidenceV1;
+  efficiencyTelemetry?: ProviderTelemetryEvidenceV2;
   source: "paseo-agent-subscription";
   updatesObserved: number;
 }
@@ -314,7 +314,6 @@ export async function waitForPaseoAgentNative(
   timeoutMs = 1_800_000,
   baseline?: PaseoTurnBaseline
 ): Promise<PaseoNativeWaitResult> {
-  const captureEfficiencyTelemetry = await loadProjectConfig(root).then((config) => config.telemetry?.enabled === true).catch(() => false);
   return withNativeClient(root, async (client) => {
     const handle = client.agents.ref(agentId);
     if (typeof handle.subscribe !== "function") {
@@ -323,7 +322,7 @@ export async function waitForPaseoAgentNative(
       );
     }
     const startedAt = Date.now();
-    const result = await waitForPaseoAgentHandle(handle, timeoutMs, baseline, 2_000, captureEfficiencyTelemetry);
+    const result = await waitForPaseoAgentHandle(handle, timeoutMs, baseline, 2_000, true, (sessionId, envelope) => recordPaseoRuntimeActivityV1(root, sessionId, envelope));
     await recordPaseoTrace(root, "agent.wait", {
       agentId,
       source: result.source,
@@ -342,7 +341,8 @@ export async function waitForPaseoAgentHandle(
   timeoutMs = 1_800_000,
   baseline?: PaseoTurnBaseline,
   pollIntervalMs = 2_000,
-  captureEfficiencyTelemetry = false
+  captureEfficiencyTelemetry = false,
+  onTimelineActivity?: (sessionId: string, envelope: PaseoTimelineEventEnvelopeV1) => Promise<void>
 ): Promise<PaseoNativeWaitResult> {
   let updatesObserved = 0;
   let sawActivity = false;
@@ -352,6 +352,7 @@ export async function waitForPaseoAgentHandle(
   let timelineSubscriptionReady = false;
   const timelineEvents: PaseoTimelineEventEnvelopeV1[] = [];
   let timelineEventsTruncated = false;
+  let latestAgentSnapshot: Record<string, unknown> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let poll: ReturnType<typeof setInterval> | undefined;
   let chain = Promise.resolve();
@@ -379,6 +380,7 @@ export async function waitForPaseoAgentHandle(
     const inspect = async (fromUpdate: boolean) => {
       const raw = await refetchAgent(handle);
       if (!raw || settled) return;
+      latestAgentSnapshot = raw;
       const status = statusText(raw.status);
       if (fromUpdate) updatesObserved += 1;
       if (isActiveStatus(status) || Boolean(raw.activeTurn)) sawActivity = true;
@@ -391,7 +393,7 @@ export async function waitForPaseoAgentHandle(
               .catch(() => undefined)
           : undefined;
       const normalizedTimeline = timeline;
-      const capture = captureEfficiencyTelemetry ? capturePaseoTimelineV1({
+      const capture = captureEfficiencyTelemetry ? capturePaseoTimelineV2({
         liveEvents: timelineEvents,
         liveEventsTruncated: timelineEventsTruncated,
         timelinePayload: normalizedTimeline,
@@ -439,20 +441,22 @@ export async function waitForPaseoAgentHandle(
     };
 
     try {
-      if (captureEfficiencyTelemetry && handle.timeline && typeof handle.timeline.subscribe === "function") {
+      if ((captureEfficiencyTelemetry || onTimelineActivity) && handle.timeline && typeof handle.timeline.subscribe === "function") {
         const timelineSubscription = handle.timeline.subscribe((value) => {
           if (!value || typeof value !== "object" || Array.isArray(value)) return;
           const record = value as Record<string, unknown>;
           const event = record.event && typeof record.event === "object" && !Array.isArray(record.event) ? record.event as Record<string, unknown> : undefined;
-          timelineEvents.push({
+          const envelope: PaseoTimelineEventEnvelopeV1 = {
             ...(typeof record.agentId === "string" ? { agentId: record.agentId } : {}),
             ...(event ? { event } : {}),
             receivedAt: new Date().toISOString()
-          });
-          if (timelineEvents.length > 4_096) {
+          };
+          if (captureEfficiencyTelemetry) timelineEvents.push(envelope);
+          if (captureEfficiencyTelemetry && timelineEvents.length > 4_096) {
             timelineEvents.shift();
             timelineEventsTruncated = true;
           }
+          if (onTimelineActivity) chain = chain.then(() => onTimelineActivity(handle.id, envelope)).catch(() => undefined);
         });
         unsubscribeTimeline = timelineSubscription;
         void timelineSubscription.ready?.then(() => { timelineSubscriptionReady = true; }).catch(() => { timelineSubscriptionReady = false; });
@@ -470,17 +474,23 @@ export async function waitForPaseoAgentHandle(
     // snapshot as a bounded fallback so a completed initial turn is observed even when the
     // subscription stream stays silent.
     if (pollIntervalMs > 0) poll = setInterval(() => { chain = chain.then(() => inspect(false)).catch(fail); }, pollIntervalMs);
-    timer = setTimeout(
-      () =>
-        finish({
-          id: handle.id,
-          status: "timeout",
-          error: `Timed out after ${timeoutMs}ms.`,
-          source: "paseo-agent-subscription",
-          updatesObserved
-        }),
-      timeoutMs
-    );
+    timer = setTimeout(() => {
+      const partial = captureEfficiencyTelemetry ? capturePaseoTimelineV2({
+        liveEvents: timelineEvents,
+        liveEventsTruncated: timelineEventsTruncated,
+        snapshotUsage: latestAgentSnapshot?.lastUsage,
+        subscriptionReady: timelineSubscriptionReady
+      }).evidence : undefined;
+      const timeoutResult: PaseoNativeWaitResult = {
+        id: handle.id,
+        status: "timeout",
+        error: `Provider turn deadline expired after ${timeoutMs}ms; partial runtime evidence was retained for Supervisor recovery.`,
+        ...(partial ? { efficiencyTelemetry: partial } : {}),
+        source: "paseo-agent-subscription",
+        updatesObserved
+      };
+      chain = chain.then(() => finish(timeoutResult), () => finish(timeoutResult));
+    }, timeoutMs);
   });
 }
 

@@ -212,3 +212,26 @@ describe("GitHub delivery action scope", () => {
     }
   });
 });
+
+describe("execution liveness configuration migration", () => {
+  it("removes the superseded worker timeout from the published JSON schema", async () => {
+    const schema = JSON.parse(await fs.readFile(schemaUrl, "utf8")) as JsonObject;
+    expect(schema.properties.orchestration.properties.worker.properties).not.toHaveProperty("timeoutSeconds");
+    expect(schema.properties.orchestration.properties.operations.properties.liveness).toBeDefined();
+  });
+
+  it("rejects the superseded global worker timeout with an explicit migration error", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-worker-timeout-migration-"));
+    tempRoots.push(root);
+    await fs.mkdir(path.join(root, ".harness"), { recursive: true });
+    await fs.writeFile(path.join(root, ".harness", "project.yaml"), [
+      "version: 1",
+      "project: { name: legacy-worker-timeout }",
+      "orchestration:",
+      "  provider: paseo",
+      "  worker: { timeoutSeconds: 1800 }",
+      ""
+    ].join("\n"));
+    await expect(loadProjectConfig(root)).rejects.toThrow("UNSUPPORTED_LEGACY_WORKER_TIMEOUT");
+  });
+});

@@ -48,6 +48,7 @@ describe("Paseo resumed-turn barrier", () => {
       "agent-1",
       "continue",
       120_000,
+      undefined,
       undefined
     );
     expect(runtime.native.capture).not.toHaveBeenCalled();

@@ -46,4 +46,16 @@ describe("bounded-agent CLI reentry guard", () => {
     expect(`${result.stdout}\n${result.stderr}`).toContain("AUDIT-REGRESSION");
     expect(result.stdout).not.toContain("interactivePromotion=detached-audit");
   });
+
+  it("does not let a bounded participant turn the Owner CLI boundary into operation-spawn authority", () => {
+    const result = spawnSync(tsx, [main, "operation", "start", "audit", "retry the Owner-boundary task"], {
+      cwd: root,
+      env: { ...boundedEnv, AEH_ALLOW_NESTED_OPERATION: "1" },
+      encoding: "utf8"
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toContain("AEH_CLI_OWNER_AUTHORITY_DENIED");
+    expect(`${result.stdout}\n${result.stderr}`).not.toContain("operationId=");
+  });
 });

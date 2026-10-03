@@ -50,7 +50,7 @@ vi.mock("../src/security/sandbox.js", async (importOriginal) => ({
 import type { AgentExecutionSelection } from "../src/agents/types.js";
 import type { HarnessProjectConfig, TaskContract } from "../src/core/types.js";
 import { sha256Canonical } from "../src/core/digest.js";
-import { createExecutionBlueprintV2, compileResolvedOperationPolicy, compileRoleInvocationPolicy, compileSkillManifest, type SkillManifestV1 } from "../src/architecture/executionIdentity.js";
+import { createExecutionBlueprintV3, compileResolvedOperationPolicy, compileRoleInvocationPolicy, compileSkillManifest, type SkillManifestV1 } from "../src/architecture/executionIdentity.js";
 import { createWorkGraph } from "../src/architecture/workGraph.js";
 import { applySkillTrustGate, knowledgePack } from "../src/knowledge/index.js";
 import { bindResolvedOperationPolicy, loadOperation, registerOperationAgent, saveOperation } from "../src/operations/state.js";
@@ -418,14 +418,14 @@ async function fixture(options: { skills?: Parameters<typeof compileSkillManifes
   await registerOperationAgent(root, operationId, { id: participantId, logicalAgent: selection.logicalAgent, role: selection.role, phase: "implementation" });
   const policy = compileResolvedOperationPolicy({ projectId: candidate.projectId!, operationId, operationExecutionRevision: 1, candidateRevision: candidate.revision,
     candidateDigest: candidate.identityDigest, controllerEpoch: operation.controller?.epoch ?? 0, intent: "implement bounded change", route: "DELEGATED", minimumAssurance: "STANDARD",
-    policyVersions: { resolvedOperationPolicy: "1" }, policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {}, allowedExternalEffects: [], humanDecisionRequirements: [] });
+    policyVersions: { resolvedOperationPolicy: "2" }, policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {}, allowedExternalEffects: [], humanDecisionRequirements: [] });
   await bindResolvedOperationPolicy(root, operationId, policy);
   const rolePolicy = compileRoleInvocationPolicy({ operationId, operationPolicyDigest: policy.digest, participantId, role: "Implementer", workUnitIds: ["work"],
     scope: ["src/**"], competencies: ["typescript"], toolPack: { version: 1, required: ["repository-read"], optional: [], forbidden: [] }, resourceClaims: [], outputContract: "implementer", constraints: {} });
   const skillManifest = compileSkillManifest({ scope: { operationId, operationExecutionRevision: 1, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch: operation.controller?.epoch ?? 0, participantId, workUnitIds: ["work"], competencies: ["typescript"] }, skills: options.skills ?? [] });
   const validationResolution = { version: 1 as const, requirements: [], actions: [], blocked: [], digest: sha256Canonical({ version: 1, requirements: [], actions: [], blocked: [] }) };
   const graph = createWorkGraph({ taskId: "TASK-DISTRIBUTED", objective: "implement", route: "DELEGATED", assurance: "STANDARD", requirementRefs: [], acceptanceRefs: [], units: [] });
-  const blueprint = createExecutionBlueprintV2({ projectId: candidate.projectId!, operationId, operationExecutionRevision: 1, candidateRevision: candidate.revision,
+  const blueprint = createExecutionBlueprintV3({ projectId: candidate.projectId!, operationId, operationExecutionRevision: 1, candidateRevision: candidate.revision,
     candidateDigest: candidate.identityDigest, controllerEpoch: operation.controller?.epoch ?? 0, resolvedOperationPolicy: policy, workGraph: graph,
     participantPlan: { version: 1, taskId: "TASK-DISTRIBUTED", assignments: [participantId] }, executionCatalog: { version: 1 },
     participants: [{ participantId, role: "Implementer", specialization: "typescript", roleInvocationPolicy: rolePolicy, toolPack: rolePolicy.toolPack, resourceClaims: [],

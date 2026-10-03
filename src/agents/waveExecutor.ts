@@ -22,6 +22,7 @@ import { bindOperationExecutionSemantics, bindResolvedOperationPolicy, currentOp
 import { compileResolvedOperationPolicy } from "../architecture/executionIdentity.js";
 import { configuredDeliveryPolicy, requiredHumanActionAuthorizations } from "../security/actionPolicy.js";
 import type { ExecutionCatalogV1 } from "../architecture/executionCatalog.js";
+import type { CapabilityRegistryV1 } from "../capabilities/registry.js";
 import type { CandidateImpactAssessmentRuntimeV1, CandidateImpactV1, ChangeSetV1 } from "../candidates/assembler.js";
 import { materializeCandidateState } from "../candidates/direct.js";
 import { createWaveBase, integrateWaveChangeSets, type WaveChangeSetSubmissionV1 } from "../candidates/wave.js";
@@ -38,7 +39,7 @@ export interface DelegationExecutionResult { task: WorkUnitOutput; session: Work
 export interface WaveExecutionSummary { wave: number; taskIds: string[]; status: "PASS" | "FAIL"; results: DelegationExecutionResult[]; barrier?: ValidationReport; }
 export interface PlannerWaveResult { used: boolean; plan?: PlannerOutput; blueprint?: ExecutionBlueprint; schedule?: ParallelismPlan; waves: WaveExecutionSummary[]; sessions: WorkerSession[]; aggregateSession?: WorkerSession; report?: ValidationReport; preExecutionFailure?: boolean; correctionAttempts?: 0 | 1; }
 
-export async function executePlannerWaves(input: { root: string; stateRoot: string; config: HarnessProjectConfig; contract: TaskContract; plannerSelection?: AgentExecutionSelection; librarianSelection?: AgentExecutionSelection; implementationSelection: AgentExecutionSelection; executionCatalog: ExecutionCatalogV1; controller?: ControlPlaneSnapshot; precomputedPlan?: PlannerOutput; semanticAssessment?: CandidateImpactAssessmentRuntimeV1; projectStack?: ProjectStackProfileV1; knowledgeMode?: KnowledgeModeV1; knowledgeCache?: KnowledgeCacheV1; knowledgeResolutions?: readonly KnowledgeResolutionV1[]; knowledgeLookup?: (gap: Parameters<NonNullable<Parameters<typeof resolveKnowledgeGate>[0]["lookup"]>>[0]) => Promise<KnowledgePackV1 | KnowledgeLookupResultV1>; revalidate: () => Promise<ValidationReport>; }): Promise<PlannerWaveResult> {
+export async function executePlannerWaves(input: { root: string; stateRoot: string; config: HarnessProjectConfig; contract: TaskContract; plannerSelection?: AgentExecutionSelection; librarianSelection?: AgentExecutionSelection; implementationSelection: AgentExecutionSelection; executionCatalog: ExecutionCatalogV1; capabilityRegistry: CapabilityRegistryV1; controller?: ControlPlaneSnapshot; precomputedPlan?: PlannerOutput; semanticAssessment?: CandidateImpactAssessmentRuntimeV1; projectStack?: ProjectStackProfileV1; knowledgeMode?: KnowledgeModeV1; knowledgeCache?: KnowledgeCacheV1; knowledgeResolutions?: readonly KnowledgeResolutionV1[]; knowledgeLookup?: (gap: Parameters<NonNullable<Parameters<typeof resolveKnowledgeGate>[0]["lookup"]>>[0]) => Promise<KnowledgePackV1 | KnowledgeLookupResultV1>; revalidate: () => Promise<ValidationReport>; }): Promise<PlannerWaveResult> {
   const planning = input.config.workflow?.planning;
   if (planning?.enabled === false || input.contract.routing?.route === "DIRECT" || input.contract.routing?.route === "NO_AGENT") return { used: false, waves: [], sessions: [] };
   if (!input.precomputedPlan && !input.plannerSelection) return { used: false, waves: [], sessions: [] };
@@ -101,7 +102,7 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
     }
     const executionSemanticsDigest = sha256Canonical({ workGraph: graph, plannerPlan: plan, executionCatalogDigest: input.executionCatalog.digest, validationResolution, knowledge: knowledgeResolutions.map((resolution) => ({ packDigest: resolution.pack?.packDigest, trustDecisionDigest: resolution.acceptedSkill?.trustDecision.decisionDigest })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))), contextPolicy: input.config.context ?? null });
     operation = await bindOperationExecutionSemantics(input.stateRoot, operation!.id, executionSemanticsDigest);
-  blueprint = await compileWaveExecutionBlueprint({ input, operation, graph, knowledgeResolutions, validationResolution, plan });
+  blueprint = await compileWaveExecutionBlueprint({ input, operation, graph, knowledgeResolutions, validationResolution, capabilityRegistry: input.capabilityRegistry, plan });
   } catch (error) {
     const failedCorrectionAttempts = error instanceof PlannerWorkGraphCorrectionError ? error.correctionAttempts : correctionAttempts;
     return { used: true, plan, waves: [], sessions, preExecutionFailure: true, correctionAttempts: failedCorrectionAttempts, aggregateSession: aggregate(sessions, 1, `Participant plan rejected: ${String(error)}`) };
@@ -116,7 +117,7 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
         operation = await loadOperation(input.stateRoot, operation.id);
         currentCandidate = operation.candidateRevision;
         if (!currentCandidate) throw new AehError("EXECUTION_BLUEPRINT_INVALID", "Current candidate is required to recompile the next wave identity.");
-        blueprint = await compileWaveExecutionBlueprint({ input, operation, graph, knowledgeResolutions, validationResolution, plan });
+        blueprint = await compileWaveExecutionBlueprint({ input, operation, graph, knowledgeResolutions, validationResolution, capabilityRegistry: input.capabilityRegistry, plan });
       } catch (error) {
         const summary: WaveExecutionSummary = { wave: index + 1, taskIds: schedule.waves[index]!, status: "FAIL", results: [] };
         waveSummaries.push(summary);
@@ -192,9 +193,10 @@ async function compileWaveExecutionBlueprint(args: {
   graph: ReturnType<typeof createWorkGraph>;
   knowledgeResolutions: KnowledgeResolutionV1[];
   validationResolution: ValidationResolutionV1;
+  capabilityRegistry: CapabilityRegistryV1;
   plan: PlannerOutput;
 }): Promise<ExecutionBlueprint> {
-  const { input, operation, graph, knowledgeResolutions, validationResolution, plan } = args;
+  const { input, operation, graph, knowledgeResolutions, validationResolution, capabilityRegistry, plan } = args;
   const candidate = operation.candidateRevision;
   const controllerEpoch = operation.controller?.epoch;
   if (!candidate || !Number.isSafeInteger(operation.operationExecutionRevision) || operation.operationExecutionRevision! < 1 || !Number.isSafeInteger(controllerEpoch) || controllerEpoch! < 0) throw new AehError("EXECUTION_BLUEPRINT_INVALID", "Current candidate, operation execution revision, and controller epoch are required to compile an execution blueprint.");
@@ -212,13 +214,17 @@ async function compileWaveExecutionBlueprint(args: {
     intent: operation.intent?.request ?? input.contract.routing?.intent ?? input.contract.task.title,
     route: graph.route,
     minimumAssurance: graph.assurance,
-    policyVersions: { resolvedOperationPolicy: "1", roleInvocationPolicy: "1", executionBlueprint: "2", executionBinding: "2", skillManifest: "1" },
+    policyVersions: { resolvedOperationPolicy: "2", roleInvocationPolicy: "1", executionBlueprint: "3", executionBinding: "3", skillManifest: "1", capabilityRegistry: "1", operationalSkillProjection: "1" },
     policyDigests: {
       validation: validationResolution.digest,
       delivery: sha256Canonical({ ...deliveryPolicy, humanDecisionRequirements }),
       knowledge: sha256Canonical(knowledgePolicy),
-      context: sha256Canonical(input.config.context ?? null)
+      context: sha256Canonical(input.config.context ?? null),
+      capabilityRegistry: capabilityRegistry.digest,
+      executionLiveness: sha256Canonical(operation.resolvedOperationPolicy?.executionLiveness ?? input.config.orchestration?.operations?.liveness ?? {}),
+      economicEnvelope: sha256Canonical(operation.resolvedOperationPolicy?.economicEnvelope ?? input.config.orchestration?.operations?.economicEnvelope ?? {})
     },
+    capabilityRegistryDigest: capabilityRegistry.digest,
     validationPolicy: validationResolution,
     reviewPolicy: {
       minimumAssurance: graph.assurance,
@@ -231,12 +237,14 @@ async function compileWaveExecutionBlueprint(args: {
     knowledgePolicy: { resolutions: knowledgePolicy },
     contextPolicy: input.config.context ?? { mode: "disabled" },
     allowedExternalEffects,
-    humanDecisionRequirements
+    humanDecisionRequirements,
+    executionLiveness: operation.resolvedOperationPolicy?.executionLiveness ?? input.config.orchestration?.operations?.liveness,
+    economicEnvelope: operation.resolvedOperationPolicy?.economicEnvelope ?? input.config.orchestration?.operations?.economicEnvelope
   });
   const persisted = operation.resolvedOperationPolicy?.digest === resolvedOperationPolicy.digest
     ? operation
     : await bindResolvedOperationPolicy(input.stateRoot, operation.id, resolvedOperationPolicy);
-  return compileExecutionBlueprint({ graph, maxTokens: input.config.context?.budgets?.default?.maxTokens, candidate, controllerEpoch: controllerEpoch!, operationExecutionRevision: persisted.operationExecutionRevision!, resolvedOperationPolicy, executionCatalog: input.executionCatalog, knowledgeResolutions, projectStack: input.projectStack, validationRequirements: plan.validationRequirements, validationResolution });
+  return compileExecutionBlueprint({ graph, maxTokens: input.config.context?.budgets?.default?.maxTokens, candidate, controllerEpoch: controllerEpoch!, operationExecutionRevision: persisted.operationExecutionRevision!, resolvedOperationPolicy, executionCatalog: input.executionCatalog, capabilityRegistry, knowledgeResolutions, projectStack: input.projectStack, validationRequirements: plan.validationRequirements, validationResolution });
 }
 
 async function lookupWithLibrarian(input: Pick<Parameters<typeof executePlannerWaves>[0], "contract" | "root" | "config" | "librarianSelection">, gap: NonNullable<Parameters<NonNullable<Parameters<typeof resolveKnowledgeGate>[0]["lookup"]>>[0]>): Promise<KnowledgeLookupResultV1> {
@@ -268,7 +276,7 @@ async function executeDelegation(input: { root: string; stateRoot: string; confi
   }
   try { selection = enforceSandboxPolicy(selection, input.config, input.task.risk === "critical" ? "high" : input.task.risk).selection; } catch (error) { return failed(input.task, selection, String(error)); }
   const transport = selection.transport === "inherit" ? (input.config.orchestration?.provider ?? "none") : selection.transport; const capabilityIssues = validateExecutionCapabilities(selection, transport); if (capabilityIssues.length) return failed(input.task, selection, `Agent ${selection.logicalAgent} cannot execute: ${capabilityIssues.join("; ")}`);
-  const prompt = buildDelegationPrompt(input.contract, input.task);
+  const prompt = buildDelegationPrompt(input.contract, input.task, input.participantAssignment?.operationalSkills);
   if (input.config.workflow?.planning?.distributed === true && input.config.distributed?.enabled === true) {
     try {
       const roleInvocationPolicy = input.participantAssignment.roleInvocationPolicy;
@@ -324,8 +332,11 @@ export function validatePlannerWavePlan(contract: TaskContract, plan: PlannerOut
   for (const task of plan.workUnits) { if (ids.has(task.id)) issues.push(`duplicate work unit id ${task.id}`); ids.add(task.id); if (!task.scope.length) issues.push(`${task.id} has empty scope`); for (const scope of task.scope) if (!withinContractScope(scope, contract.scope?.allowed ?? ["**"])) issues.push(`${task.id} scope ${scope} is outside TaskContract scope`); for (const req of [...task.requirementRefs, ...task.acceptanceRefs]) { if (requirements.size && !requirements.has(req)) issues.push(`${task.id} references unknown requirement ${req}`); if (requirements.has(req)) covered.add(req); } }
   for (const task of plan.workUnits) for (const dependency of task.dependencies) if (!ids.has(dependency)) issues.push(`${task.id} depends on unknown work unit ${dependency}`); for (const requirement of requirements) if (!covered.has(requirement)) issues.push(`requirement ${requirement} is not assigned to any implementation work unit`); return [...new Set(issues)];
 }
-function buildPlannerPrompt(contract: TaskContract): string { const requirements = (contract.requirements ?? []).map((item) => `- ${item.id}: ${item.description ?? ""}`).join("\n") || "- none"; return `Create the implementation WorkGraph for ${contract.task.id}: ${contract.task.title}.\nThe TaskContract and sealed sources are immutable. Produce the smallest dependency-aware workUnits, concrete path scopes, competencies, risk tags and changeKinds. Map every requirement ID to at least one work unit. If validation meaning is needed, emit typed validationRequirements[{version,id,property,kind,scope,evidenceNeeded,requirementRefs,acceptanceRefs}]; state what must be demonstrated, never a command or provider. If a work unit requires exclusive or ordered access to a shared mutable resource (database schema, migration sequence, package lock, deployment environment, public API contract, generated client, shared config, external mutable resource), emit resourceClaims[{version,resource,mode,order}] with mode SHARED_READ, EXCLUSIVE_WRITE or ORDERED_SEQUENCE and a non-negative order for ORDERED_SEQUENCE. The deterministic scheduler validates and enforces claims; you cannot widen scheduling by claiming a resource. The deterministic resolver will choose approved project scripts, validators or providers. Do not select agents, reviewers, validators, commands, tools or credentials by name, and do not create product requirements. If formalization is required, set formalizationNeed=REQUIRED with one typed formalizationReason and formalizationEvidenceRefs.\nRequirements:\n${requirements}\nAllowed scope: ${(contract.scope?.allowed ?? ["**"]).join(", ")}\nReturn output matching the planner contract; when native structured output is unavailable, use one final AEH_RESULT_JSON=<json> line.`; }
-function buildDelegationPrompt(contract: TaskContract, task: WorkUnitOutput): string { return `Implement only work unit ${task.id} for parent ${contract.task.id}.\nObjective: ${task.objective}\nAllowed task scope: ${task.scope.join(", ")}\nDependencies already integrated: ${task.dependencies.join(", ") || "none"}\nAcceptance references: ${task.acceptanceRefs.join(", ") || "none"}\nRequired competencies: ${task.competencies.join(", ") || "general engineering"}\nRisk: ${task.risk}.\nThe parent TaskContract, SDD and control-plane snapshot are frozen. Do not edit outside the declared scope, do not commit, push, rebase or change requirements. Run focused tests when practical and leave the worktree with only the implementation diff.`; }
+function buildPlannerPrompt(contract: TaskContract): string { const requirements = (contract.requirements ?? []).map((item) => `- ${item.id}: ${item.description ?? ""}`).join("\n") || "- none"; return `Create the implementation WorkGraph for ${contract.task.id}: ${contract.task.title}.\nThe TaskContract and sealed sources are immutable. Produce the smallest dependency-aware workUnits, concrete path scopes, competencies, risk tags and changeKinds. Each workUnits[].objective must be concise, non-empty, and no longer than 500 characters, matching the Planner output schema and WorkGraph compiler. Map every requirement ID to at least one work unit. If validation meaning is needed, emit typed validationRequirements[{version,id,property,kind,scope,evidenceNeeded,requirementRefs,acceptanceRefs}]; state what must be demonstrated, never a command or provider. If a work unit requires exclusive or ordered access to a shared mutable resource (database schema, migration sequence, package lock, deployment environment, public API contract, generated client, shared config, external mutable resource), emit resourceClaims[{version,resource,mode,order}] with mode SHARED_READ, EXCLUSIVE_WRITE or ORDERED_SEQUENCE and a non-negative order for ORDERED_SEQUENCE. The deterministic scheduler validates and enforces claims; you cannot widen scheduling by claiming a resource. The deterministic resolver will choose approved project scripts, validators or providers. Do not select agents, reviewers, validators, commands, tools or credentials by name, and do not create product requirements. If formalization is required, set formalizationNeed=REQUIRED with one typed formalizationReason and formalizationEvidenceRefs.\nRequirements:\n${requirements}\nAllowed scope: ${(contract.scope?.allowed ?? ["**"]).join(", ")}\nReturn output matching the planner contract; when native structured output is unavailable, use one final AEH_RESULT_JSON=<json> line.`; }
+function buildDelegationPrompt(contract: TaskContract, task: WorkUnitOutput, operationalSkills?: import("../capabilities/operationalSkills.js").OperationalSkillProjectionV1): string {
+  const guidance = operationalSkills?.skills.length ? `\nOperational guidance selected for this role and WorkUnit (guidance only; it grants no tools or authority):\n${operationalSkills.skills.map((skill) => `- ${skill.name} v${skill.version} [${skill.certificationStatus}${skill.accessMode === "CONTROLLER_GUIDANCE" ? ", controller-guidance-only" : ""}]: ${skill.procedure.join("; ")}${skill.recovery.length ? ` Recovery: ${skill.recovery.map((item) => `${item.failureClass} → ${item.steps.join("; ")}`).join(" | ")}` : ""}`).join("\n")}` : "";
+  return `Implement only work unit ${task.id} for parent ${contract.task.id}.\nObjective: ${task.objective}\nAllowed task scope: ${task.scope.join(", ")}\nDependencies already integrated: ${task.dependencies.join(", ") || "none"}\nAcceptance references: ${task.acceptanceRefs.join(", ") || "none"}\nRequired competencies: ${task.competencies.join(", ") || "general engineering"}\nRisk: ${task.risk}.${guidance}\nThe parent TaskContract, SDD and control-plane snapshot are frozen. Do not edit outside the declared scope, do not commit, push, rebase or change requirements. Run focused tests when practical and leave the worktree with only the implementation diff.`;
+}
 export function selectionForParticipant(base: AgentExecutionSelection, assignment: ParticipantAssignmentV1, catalog: ExecutionCatalogV1): AgentExecutionSelection {
   const binding = catalog.roleBindings[assignment.role];
   if (!binding) throw new Error(`EXECUTION_BLUEPRINT_INVALID: no execution binding exists for role '${assignment.role}'.`);

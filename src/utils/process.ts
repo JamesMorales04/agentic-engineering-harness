@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -7,6 +8,10 @@ export interface ProcessResult {
   stdout: string;
   stderr: string;
   durationMs: number;
+  stdoutDigest?: string;
+  stderrDigest?: string;
+  stdoutBytes?: number;
+  stderrBytes?: number;
   timedOut?: boolean;
 }
 
@@ -25,6 +30,8 @@ export interface ProcessOptions {
   toolchain?: boolean;
   stdin?: string | Buffer;
   signal?: AbortSignal;
+  /** Retain only the final N bytes per stream while hashing/counting the full output. */
+  captureOutputLimitBytes?: number;
 }
 
 /** Execute one program with literal argv boundaries and no shell parsing. */
@@ -78,10 +85,10 @@ async function runChild(
       stdio: [options.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"]
     });
 
-    let stdout = "";
-    let stderr = "";
-    child.stdout?.on("data", (chunk: { toString(): string }) => { stdout += chunk.toString(); });
-    child.stderr?.on("data", (chunk: { toString(): string }) => { stderr += chunk.toString(); });
+    const stdout = new BoundedOutput(options.captureOutputLimitBytes);
+    const stderr = new BoundedOutput(options.captureOutputLimitBytes);
+    child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk));
+    child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk));
     if (options.stdin !== undefined) {
       child.stdin?.on("error", (error: NodeJS.ErrnoException) => { if (error.code !== "EPIPE") reject(error); });
       child.stdin?.end(options.stdin);
@@ -158,13 +165,55 @@ async function runChild(
       }
       void unregister().finally(() => resolve({
         exitCode: code,
-        stdout,
-        stderr,
+        stdout: stdout.text(),
+        stderr: stderr.text(),
         durationMs: Date.now() - started,
+        stdoutDigest: stdout.digest(),
+        stderrDigest: stderr.digest(),
+        stdoutBytes: stdout.bytes,
+        stderrBytes: stderr.bytes,
         timedOut
       }));
     }
   });
+}
+
+class BoundedOutput {
+  private readonly hash = createHash("sha256");
+  private chunks: Buffer[] = [];
+  private retainedBytes = 0;
+  bytes = 0;
+
+  constructor(private readonly limit?: number) {}
+
+  push(chunk: Buffer): void {
+    this.hash.update(chunk);
+    this.bytes += chunk.byteLength;
+    if (this.limit === undefined || !Number.isFinite(this.limit) || this.limit < 0) {
+      this.chunks.push(Buffer.from(chunk));
+      this.retainedBytes += chunk.byteLength;
+      return;
+    }
+    const max = Math.floor(this.limit);
+    if (max === 0) return;
+    const value = chunk.byteLength > max ? chunk.subarray(chunk.byteLength - max) : chunk;
+    this.chunks.push(Buffer.from(value));
+    this.retainedBytes += value.byteLength;
+    while (this.retainedBytes > max && this.chunks.length) {
+      const excess = this.retainedBytes - max;
+      const first = this.chunks[0]!;
+      if (first.byteLength <= excess) {
+        this.chunks.shift();
+        this.retainedBytes -= first.byteLength;
+      } else {
+        this.chunks[0] = first.subarray(excess);
+        this.retainedBytes -= excess;
+      }
+    }
+  }
+
+  text(): string { return Buffer.concat(this.chunks).toString("utf8"); }
+  digest(): string { return this.hash.copy().digest("hex"); }
 }
 
 export async function listManagedProcessHandles(root: string, operationId: string): Promise<ManagedProcessHandle[]> {

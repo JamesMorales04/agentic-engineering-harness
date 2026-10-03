@@ -23,7 +23,7 @@ function policy(epoch: number, candidateRevision = candidate()) {
     intent: "S6 acceptance test",
     route: "DELEGATED",
     minimumAssurance: "STANDARD",
-    policyVersions: { resolvedOperationPolicy: "1" },
+    policyVersions: { resolvedOperationPolicy: "2" },
     policyDigests: {},
     validationPolicy: {},
     reviewPolicy: { leadAcceptance: true, leadAcceptanceDirect: false },

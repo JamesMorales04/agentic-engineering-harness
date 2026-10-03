@@ -6,7 +6,7 @@ import type { CapabilityLeaseV1 } from "../security/authorityV2.js";
 import type { OperationStatus } from "../operations/state.js";
 import type { BuildIdentityV1 } from "../build/identity.js";
 import type { DecisionRequestV1 } from "../security/humanDecision.js";
-import type { OperationEfficiencySummaryV1 } from "../telemetry/efficiency.js";
+import type { OperationEfficiencySummaryV2 } from "../telemetry/efficiency.js";
 
 export const CONTROL_CENTER_CONTRACT_VERSION = 1 as const;
 
@@ -91,7 +91,7 @@ export interface ControlCenterOperationProjectionV1 {
   startedAt?: string;
   finishedAt?: string;
   error?: string;
-  efficiency?: OperationEfficiencySummaryV1;
+  efficiency?: OperationEfficiencySummaryV2;
   decisionRequest?: ControlCenterDecisionRequestV1;
   pause?: ControlCenterOperationPauseProjectionV1;
   controls: ControlCenterOperationControlsV1;

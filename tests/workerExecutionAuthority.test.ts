@@ -61,7 +61,7 @@ const selection: AgentExecutionSelection = {
 const config: HarnessProjectConfig = {
   version: 1,
   project: { name: "worker-authority-test" },
-  orchestration: { provider: "direct", worker: { timeoutSeconds: 5 } }
+  orchestration: { provider: "direct", operations: { liveness: { providerTurnDeadlineMs: 5_000 } } }
 };
 
 const contract = {
@@ -95,7 +95,7 @@ describe("worker execution authority boundary", () => {
   it("rejects direct launches when topology permissions exceed the compiled role ceiling", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-worker-role-ceiling-"));
     roots.push(root);
-    const now = "2026-01-01T00:00:00.000Z";
+    const now = new Date().toISOString();
     await saveOwnedOperation(root, {
       version: 1,
       id: "RUN-ROLE-CEILING",
@@ -160,7 +160,7 @@ describe("worker execution authority boundary", () => {
   ] as const)("propagates prepared authority and output identity through the %s binding compiler", async (_name, create) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-worker-authority-"));
     roots.push(root);
-    const now = "2026-01-01T00:00:00.000Z";
+    const now = new Date().toISOString();
     await saveOwnedOperation(root, {
       version: 1,
       id: "RUN-AUTH",

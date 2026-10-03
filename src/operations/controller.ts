@@ -9,7 +9,7 @@ import { createControlPlaneSnapshot, materializeControlPlaneRuntimeSurface, mate
 import { operationFailureDetail, runTask } from "../core/run.js";
 import type { AssuranceLevel, ImplementationRoute } from "../architecture/contracts.js";
 import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
-import { assertResolvedOperationPolicyV1, compileResolvedOperationPolicy } from "../architecture/executionIdentity.js";
+import { assertResolvedOperationPolicyV2, compileResolvedOperationPolicy } from "../architecture/executionIdentity.js";
 import {
   deliveryWorkspaceId,
   deliveryWorkspacePath,
@@ -43,6 +43,7 @@ import { executeGatedAction } from "../security/gatedAction.js";
 import { reconcileToolAction } from "../security/actionReconciliation.js";
 import { controllerActorId, listUnresolvedToolActionIntents, type ToolActionAuthorityEvidenceV1 } from "../security/toolActionGate.js";
 import { writeOperationEfficiencySummary } from "../telemetry/efficiency.js";
+import { persistCandidateForensicsV1 } from "./forensics.js";
 import { configuredExternalEffects, requiredHumanActionAuthorizations } from "../security/actionPolicy.js";
 import {
   disableOperationCompletionTarget,
@@ -65,9 +66,11 @@ import {
   isTerminalOperation,
   loadOperation,
   patchOperation,
+  resolveOperationStateRoot,
   rebindPauseRecordToCurrentIdentity,
   saveOperation,
   transitionOperationToTerminal,
+  transitionOperationAtHardDeadlineV1,
   type AuditOperationPayload,
   type ChangeOperationPayload,
   type OperationKind,
@@ -79,6 +82,8 @@ import {
 import { candidateRevisionsEqual, createCandidateRevisionV1, type CandidateRevisionV1 } from "./v2Contracts.js";
 import { assertWorkspaceMatchesCandidate } from "../candidates/identity.js";
 import { bindBootstrapOperationPolicy } from "./bootstrapPolicy.js";
+import { compileOperationOriginV1, type OperationOwnerResolutionRefV1 } from "./operationProvenance.js";
+import { collectOperationEconomicUsageV1, remainingEconomicEnvelopeForRecoveryV1 } from "./economicUsage.js";
 
 export { bindBootstrapOperationPolicy };
 
@@ -88,6 +93,9 @@ export interface StartOperationOptions {
   spawnProcess?: typeof spawn;
   completionAgentId?: string;
   completionSource?: string;
+  initiator?: { kind: "LEAD" | "CLI"; agentId?: string; userTurnId?: string; requestEventId?: string };
+  /** Pending Owner boundaries/task chains this explicit CLI request resolves. */
+  ownerResolutionOperationIds?: string[];
   /** Test seam for deterministic preflight-ordering regressions; public callers use the semantic resolver. */
   resolveChangePreflight?: typeof resolveChangePreflightV1;
 }
@@ -126,12 +134,16 @@ export async function startDetachedOperation(
 ): Promise<OperationRecordV2> {
   const absoluteRoot = path.resolve(root);
   const config = await loadProjectConfigIfPresent(absoluteRoot);
+  const suppliedDecision = "intentDecision" in payload ? payload.intentDecision : undefined;
+  const initiator = options.initiator ?? (options.completionAgentId ? { kind: "LEAD" as const, agentId: options.completionAgentId } : { kind: "CLI" as const });
+  const leadInitiated = initiator.kind === "LEAD" || Boolean(suppliedDecision && suppliedDecision.source !== "explicit-cli");
+  await materializeOverdueOperationDeadlines(absoluteRoot, config);
+  if (leadInitiated && !suppliedDecision?.continuation?.operationId) await assertNoUnresolvedOwnerBoundaryForLead(absoluteRoot, config);
   // Restart recovery: any proven terminal operation in this control root with an
   // incomplete resource receipt is reconciled before new work starts.
   await reconcileTerminalOperationResources(absoluteRoot).catch(() => undefined);
-  if (config) await assertOperationCapacity(absoluteRoot, config, operationPriority(payload));
-  const suppliedDecision = "intentDecision" in payload ? payload.intentDecision : undefined;
   if (suppliedDecision) assertIntentDecisionForRoute(suppliedDecision, kind === "audit" ? "audit" : kind === "change" ? "change" : "run");
+  if (config) await assertOperationCapacity(absoluteRoot, config, operationPriority(payload));
 
   let changePreflight: ChangePreflightV1 | undefined;
   if (kind === "change" && !(payload as ChangeOperationPayload).issueIntake) {
@@ -141,6 +153,7 @@ export async function startDetachedOperation(
 
   const now = new Date().toISOString();
   const id = createOperationId(kind, JSON.stringify(payload));
+  const origin = await createOperationOrigin(absoluteRoot, kind, payload, initiator, now, config, options.ownerResolutionOperationIds);
   let record: OperationRecordV2 = {
     version: 2,
     id,
@@ -154,6 +167,7 @@ export async function startDetachedOperation(
     createdAt: now,
     updatedAt: now,
     lastProgressAt: now,
+    origin,
     intent: initialIntent(kind, payload, changePreflight),
     ...(changePreflight ? { changePreflight } : {}),
     supervision: {
@@ -326,12 +340,22 @@ async function executeOperationWithEnvironment(
   try {
     record = await patchOperation(absoluteRoot, operationId, {
       status: "RUNNING",
-      phase: record.pause ? "PAUSED" : record.continuation?.state === "WAITING" ? "HUMAN_REQUIRED" : "preparing",
+      phase: record.ownerEconomicBoundary ? "HUMAN_REQUIRED" : record.pause ? "PAUSED" : record.continuation?.state === "WAITING" ? "HUMAN_REQUIRED" : "preparing",
       startedAt: record.startedAt ?? new Date().toISOString(),
       pid: process.pid,
       error: undefined
     });
     process.env.AEH_OPERATION_ID = record.id;
+
+    if (record.ownerEconomicBoundary) {
+      config = await loadProjectConfigIfPresent(absoluteRoot);
+      return await terminalizeOperation(absoluteRoot, operationId, {
+        status: "FAILED",
+        phase: "HUMAN_REQUIRED",
+        error: `HUMAN_REQUIRED: ${record.ownerEconomicBoundary.reason}`,
+        finishedAt: new Date().toISOString()
+      }, deps, config);
+    }
 
     config = await loadProjectConfig(absoluteRoot);
     if (record.kind !== "audit") {
@@ -473,12 +497,14 @@ async function executeOperationWithEnvironment(
       const report = await (deps.runAudit ?? runAudit)(executionRoot, config, { ...payload, auditId: record.id });
       const current = await loadOperation(absoluteRoot, operationId);
       if (current.status === "CANCELLED") return current;
+      const ownerBoundary = current.ownerEconomicBoundary;
       return await terminalizeOperation(
         absoluteRoot,
         operationId,
         {
-          status: "SUCCEEDED",
-          phase: "finished",
+          status: ownerBoundary ? "FAILED" : "SUCCEEDED",
+          phase: ownerBoundary ? "HUMAN_REQUIRED" : "finished",
+          ...(ownerBoundary ? { error: `HUMAN_REQUIRED: ${ownerBoundary.reason}` } : {}),
           finishedAt: new Date().toISOString(),
           result: {
             auditId: report.auditId,
@@ -503,6 +529,7 @@ async function executeOperationWithEnvironment(
       );
       const current = await loadOperation(absoluteRoot, operationId);
       if (current.status === "CANCELLED") return current;
+      const ownerBoundary = current.ownerEconomicBoundary;
       // A FAILED change run must carry its owning failing checks in the durable operation record
       // instead of terminalizing with `error: null` (AEH-V2-0118).
       const runFailure = result.run.status === "PASS" ? undefined : operationFailureDetail(result.run);
@@ -510,9 +537,9 @@ async function executeOperationWithEnvironment(
         absoluteRoot,
         operationId,
         {
-          status: result.run.status === "PASS" ? "SUCCEEDED" : "FAILED",
-          phase: "finished",
-          ...(runFailure ? { error: runFailure } : {}),
+          status: !ownerBoundary && result.run.status === "PASS" ? "SUCCEEDED" : "FAILED",
+          phase: ownerBoundary ? "HUMAN_REQUIRED" : "finished",
+          ...(ownerBoundary ? { error: `HUMAN_REQUIRED: ${ownerBoundary.reason}` } : runFailure ? { error: runFailure } : {}),
           finishedAt: new Date().toISOString(),
           result: {
             taskId: result.taskId,
@@ -541,14 +568,15 @@ async function executeOperationWithEnvironment(
     const result = await (deps.runTask ?? runTask)(executionRoot, config, contract, { profile: payload.profile });
     const current = await loadOperation(absoluteRoot, operationId);
     if (current.status === "CANCELLED") return current;
+    const ownerBoundary = current.ownerEconomicBoundary;
     const runFailure = result.status === "PASS" ? undefined : operationFailureDetail(result);
     return await terminalizeOperation(
       absoluteRoot,
       operationId,
       {
-        status: result.status === "PASS" ? "SUCCEEDED" : "FAILED",
-        phase: "finished",
-        ...(runFailure ? { error: runFailure } : {}),
+        status: !ownerBoundary && result.status === "PASS" ? "SUCCEEDED" : "FAILED",
+        phase: ownerBoundary ? "HUMAN_REQUIRED" : "finished",
+        ...(ownerBoundary ? { error: `HUMAN_REQUIRED: ${ownerBoundary.reason}` } : runFailure ? { error: runFailure } : {}),
         finishedAt: new Date().toISOString(),
         result: {
           taskId: result.taskId,
@@ -567,13 +595,14 @@ async function executeOperationWithEnvironment(
   } catch (error) {
     const current = await loadOperation(absoluteRoot, operationId).catch(() => record);
     if (current.status === "CANCELLED") return current;
+    const ownerBoundary = current.ownerEconomicBoundary;
     return await terminalizeOperation(
       absoluteRoot,
       operationId,
       {
         status: "FAILED",
-        phase: "failed",
-        error: error instanceof Error ? error.stack ?? error.message : String(error),
+        phase: ownerBoundary ? "HUMAN_REQUIRED" : "failed",
+        error: ownerBoundary ? `HUMAN_REQUIRED: ${ownerBoundary.reason}` : error instanceof Error ? error.stack ?? error.message : String(error),
         finishedAt: new Date().toISOString()
       },
       deps,
@@ -802,7 +831,7 @@ function assertCurrentCancellationPolicy(record: OperationRecordV2) {
   if (!candidate || !policy || !Number.isSafeInteger(record.operationExecutionRevision)) {
     throw new Error("AEH_CANCELLATION_AUTHORITY_REQUIRED: cancellation requires current candidate, execution revision, and frozen policy identity.");
   }
-  assertResolvedOperationPolicyV1(policy);
+  assertResolvedOperationPolicyV2(policy);
   if (policy.operationId !== record.id || policy.operationExecutionRevision !== record.operationExecutionRevision
     || policy.candidateRevision !== candidate.revision || policy.candidateDigest !== candidate.identityDigest
     || policy.controllerEpoch !== currentControllerEpoch(record) || (candidate.projectId && policy.projectId !== candidate.projectId)) {
@@ -837,14 +866,266 @@ export function createOperationId(kind: OperationKind, seed: string): string {
   return `${kind.toUpperCase()}-${stamp}-${hash}`;
 }
 
-async function terminalizeOperation(
+async function createOperationOrigin(root: string, kind: OperationKind, payload: OperationPayload, initiator: StartOperationOptions["initiator"], createdAt: string, config?: HarnessProjectConfig, ownerResolutionOperationIds?: string[]) {
+  const decision = "intentDecision" in payload ? payload.intentDecision : undefined;
+  // A Lead's IntentDecision userTurnId is semantic model output, not trusted
+  // Owner provenance. Only a controller-supplied initiator identity may bind it.
+  const userTurnId = initiator?.userTurnId;
+  // `decision.userTurnId` is descriptive semantic output. Only the trusted
+  // controller initiator may supply a user-turn identity for durable origin.
+  const request = "request" in payload ? payload.request : "taskId" in payload ? payload.taskId : `${kind} operation`;
+  const requestDigest = sha256Canonical({ kind, request, userTurnId: userTurnId ?? null });
+  const authorizationDigest = sha256Canonical(decision ?? { initiator: initiator?.kind ?? "CLI", requestDigest });
+  const controllerOwnerId = `controller:${process.pid}`;
+  const parentOperationId = decision?.continuation?.operationId;
+  const leadInitiated = initiator?.kind === "LEAD" || Boolean(decision && decision.source !== "explicit-cli");
+  if (ownerResolutionOperationIds?.length && initiator?.kind !== "CLI") throw new Error("OWNER_RESOLUTION_AUTHORITY_DENIED: only an explicit Owner CLI start may resolve a pending boundary or failed task chain.");
+  if (parentOperationId && ownerResolutionOperationIds?.length) throw new Error("OWNER_RESOLUTION_TARGET_INVALID: a linked recovery cannot also resolve an Owner boundary.");
+  if (leadInitiated && !initiator?.requestEventId && !userTurnId) throw new Error("OPERATION_ORIGIN_CAUSAL_EVENT_REQUIRED: Lead-started operations require a durable MCP request event id or user-turn id.");
+  if (parentOperationId) {
+    const parent = await loadOperation(root, parentOperationId);
+    if (parent.status !== "FAILED") throw new Error("OPERATION_RECOVERY_PARENT_NOT_FAILED: only a terminal failed operation can authorize a recovery continuation.");
+    if (parent.ownerEconomicBoundary) throw new Error("OPERATION_RECOVERY_OWNER_BOUNDARY: a linked continuation cannot bypass an Owner economic boundary; the human Owner must authorize a fresh top-level request under a changed policy.");
+    if (parent.ownerContinuationBoundary) throw new Error("OPERATION_RECOVERY_OWNER_BOUNDARY: a hard-deadline operation cannot be continued as a linked child; a distinct new Owner request is required.");
+    const parentPolicy = parent.resolvedOperationPolicy;
+    if (!parentPolicy) throw new Error("OPERATION_RECOVERY_AUTHORITY_MISSING: failed parent has no frozen policy to inherit.");
+    assertResolvedOperationPolicyV2(parentPolicy);
+    const parentUsage = await collectOperationEconomicUsageV1(root, parent);
+    remainingEconomicEnvelopeForRecoveryV1(parentPolicy.economicEnvelope, parentUsage);
+    if (userTurnId && parent.origin?.userTurnId && userTurnId !== parent.origin.userTurnId) throw new Error("OPERATION_RECOVERY_USER_TURN_MISMATCH: continuation references another user turn and must be submitted as a new request.");
+    const recoveryDepth = (parent.origin?.recoveryDepth ?? 0) + 1;
+    if (recoveryDepth > 2) throw new Error("OPERATION_RECOVERY_BUDGET_EXHAUSTED: failed-operation recovery depth is limited to two linked continuations.");
+    const rootHardDeadlineAt = parent.origin?.rootHardDeadlineAt
+      ?? parentPolicy.economicEnvelope.hardDeadlineAt
+      ?? new Date(Date.parse(parent.createdAt) + parentPolicy.executionLiveness.hardDeadlineMs).toISOString();
+    return compileOperationOriginV1({
+      kind: "FAILED_OPERATION_RECOVERY",
+      ...(initiator?.agentId ? { leadAgentId: initiator.agentId } : {}),
+      controllerOwnerId,
+      ...(initiator?.requestEventId ? { requestEventId: initiator.requestEventId } : {}),
+      authorizationDigest,
+      ...(userTurnId ? { userTurnId } : parent.origin?.userTurnId ? { userTurnId: parent.origin.userTurnId } : {}),
+      parentOperationId: parent.id,
+      parentTerminalRevision: parent.revision,
+      triggerEventId: `operation.terminal:${parent.id}:${parent.revision}`,
+      requestDigest,
+      inheritedAuthorityDigest: sha256Canonical({ parentPolicyDigest: parentPolicy.digest, allowedExternalEffects: parentPolicy.allowedExternalEffects, parentOriginDigest: parent.origin?.digest ?? null, inheritedEconomicUsageDigest: parentUsage.digest }),
+      inheritedEconomicUsageDigest: parentUsage.digest,
+      recoveryDepth,
+      rootHardDeadlineAt,
+      reason: (decision?.requestedOutcome ?? request).slice(0, 1000),
+      createdAt
+    });
+  }
+  if (leadInitiated) await assertNoUnresolvedOwnerBoundaryForLead(root, config);
+  const ownerResolutionRefs = initiator?.kind === "CLI" ? await ownerResolutionRefsForCliStart(root, ownerResolutionOperationIds, config) : undefined;
+  const hardDeadlineMs = configLivenessHardDeadline(config);
+  return compileOperationOriginV1({
+    kind: initiator?.kind === "CLI" ? "EXPLICIT_CLI" : userTurnId ? "USER_REQUEST" : "LEAD_ACTION",
+    ...(initiator?.agentId ? { leadAgentId: initiator.agentId } : {}),
+    controllerOwnerId,
+    ...(initiator?.requestEventId ? { requestEventId: initiator.requestEventId } : {}),
+    ...(ownerResolutionRefs?.length ? { ownerResolutionRefs } : {}),
+    authorizationDigest,
+    ...(userTurnId ? { userTurnId } : {}),
+    triggerEventId: userTurnId ? `user.turn:${userTurnId}` : initiator?.requestEventId ? `aeh-control.request:${initiator.requestEventId}` : `cli.request:${requestDigest}`,
+    requestDigest,
+    recoveryDepth: 0,
+    rootHardDeadlineAt: new Date(Date.parse(createdAt) + hardDeadlineMs).toISOString(),
+    reason: (decision?.requestedOutcome ?? request).slice(0, 1000),
+    createdAt
+  });
+}
+
+async function readOperationRecords(stateRoot: string): Promise<OperationRecordV2[]> {
+  const directory = path.resolve(stateRoot, ".harness", "operations");
+  const entries = (await fs.readdir(directory).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? [] : Promise.reject(error)))
+    .filter((name) => name !== "portfolio.json" && /^[A-Z][A-Za-z0-9_-]+\.json$/.test(name));
+  return Promise.all(entries.map((entry) => loadOperation(stateRoot, entry.slice(0, -".json".length))));
+}
+
+async function materializeOverdueOperationDeadlines(root: string, config?: HarnessProjectConfig): Promise<void> {
+  const stateRoot = resolveOperationStateRoot(root);
+  for (const operation of await readOperationRecords(stateRoot)) {
+    if (operation.status !== "QUEUED" && operation.status !== "RUNNING") continue;
+    const createdAt = Date.parse(operation.createdAt);
+    const configuredDeadline = operation.resolvedOperationPolicy?.executionLiveness.hardDeadlineMs ?? configLivenessHardDeadline(config);
+    const operationDeadline = Number.isFinite(createdAt) && Number.isSafeInteger(configuredDeadline) && configuredDeadline > 0
+      ? createdAt + configuredDeadline : Number.POSITIVE_INFINITY;
+    const rootDeadline = operation.origin ? Date.parse(operation.origin.rootHardDeadlineAt) : Number.POSITIVE_INFINITY;
+    const deadline = Math.min(operationDeadline, rootDeadline);
+    if (Number.isFinite(deadline) && Date.now() >= deadline) {
+      await expireOperationAtHardDeadline(stateRoot, operation.id, new Date(), config);
+    }
+  }
+}
+
+function pendingOwnerResolutionRefs(records: OperationRecordV2[]): OperationOwnerResolutionRefV1[] {
+  const refs: OperationOwnerResolutionRefV1[] = [];
+  for (const operation of records) {
+    const economic = operation.ownerEconomicBoundary;
+    if (economic?.state === "WAITING") refs.push({ kind: "OWNER_ECONOMIC_BOUNDARY", operationId: operation.id, operationRevision: operation.revision, evidenceDigest: economic.digest });
+    const deadline = operation.ownerContinuationBoundary;
+    if (deadline?.state === "WAITING") refs.push({ kind: "OWNER_HARD_DEADLINE", operationId: operation.id, operationRevision: operation.revision, evidenceDigest: deadline.digest });
+  }
+  const children = new Map<string, OperationRecordV2[]>();
+  for (const operation of records) {
+    const parent = operation.origin?.parentOperationId;
+    if (parent) children.set(parent, [...(children.get(parent) ?? []), operation]);
+  }
+  const collectDescendants = (operationId: string, seen = new Set<string>()): OperationRecordV2[] => {
+    if (seen.has(operationId)) return [];
+    seen.add(operationId);
+    return (children.get(operationId) ?? []).flatMap((child) => [child, ...collectDescendants(child.id, seen)]);
+  };
+  for (const operation of records) {
+    if ((operation.status !== "FAILED" && operation.status !== "CANCELLED") || operation.origin?.parentOperationId) continue;
+    const chain = [operation, ...collectDescendants(operation.id)];
+    const leaves = chain.filter((item) => !(children.get(item.id)?.length));
+    const unresolvedLeaves = leaves.filter((item) => item.status !== "SUCCEEDED");
+    if (!unresolvedLeaves.length) continue;
+    const evidenceDigest = sha256Canonical(chain.map((item) => ({
+      operationId: item.id,
+      status: item.status,
+      finishedAt: item.finishedAt ?? null,
+      originDigest: item.origin?.digest ?? null,
+      parentOperationId: item.origin?.parentOperationId ?? null,
+      candidateDigest: item.candidateRevision?.identityDigest ?? null,
+      policyDigest: item.resolvedOperationPolicy?.digest ?? null
+    })).sort((left, right) => left.operationId.localeCompare(right.operationId)));
+    refs.push({
+      kind: operation.status === "CANCELLED" ? "CANCELLED_TASK_CHAIN" : "FAILED_TASK_CHAIN",
+      operationId: operation.id,
+      operationRevision: operation.revision,
+      evidenceDigest
+    });
+  }
+  return refs.sort((left, right) => left.operationId.localeCompare(right.operationId) || left.kind.localeCompare(right.kind));
+}
+
+async function ownerResolutionRefsForCliStart(root: string, operationIds: string[] | undefined, config?: HarnessProjectConfig): Promise<OperationOwnerResolutionRefV1[] | undefined> {
+  if (!operationIds?.length) return undefined;
+  const uniqueIds = [...new Set(operationIds)];
+  if (uniqueIds.length !== operationIds.length) throw new Error("OWNER_RESOLUTION_TARGET_INVALID: duplicate operation ids are not allowed.");
+  const stateRoot = resolveOperationStateRoot(root);
+  const records = await readOperationRecords(stateRoot);
+  const pending = pendingOwnerResolutionRefs(records);
+  const selected = pending.filter((reference) => uniqueIds.includes(reference.operationId));
+  const missing = uniqueIds.filter((operationId) => !selected.some((reference) => reference.operationId === operationId));
+  if (missing.length) throw new Error(`OWNER_RESOLUTION_TARGET_INVALID: operation(s) ${missing.join(", ")} have no current pending Owner boundary or failed task chain to resolve.`);
+
+  const byId = new Map(records.map((operation) => [operation.id, operation]));
+  const children = new Map<string, OperationRecordV2[]>();
+  for (const operation of records) {
+    const parent = operation.origin?.parentOperationId;
+    if (parent) children.set(parent, [...(children.get(parent) ?? []), operation]);
+  }
+  const chainMembers = new Map<string, OperationRecordV2>();
+  const addChain = (operationId: string, seen = new Set<string>()): void => {
+    if (seen.has(operationId)) return;
+    seen.add(operationId);
+    const operation = byId.get(operationId);
+    if (!operation) return;
+    chainMembers.set(operation.id, operation);
+    for (const child of children.get(operationId) ?? []) addChain(child.id, seen);
+  };
+  for (const operationId of uniqueIds) addChain(operationId);
+  const active = [...chainMembers.values()].filter((operation) => operation.status === "QUEUED" || operation.status === "RUNNING");
+  if (active.length) throw new Error(`OWNER_RESOLUTION_OPERATION_ACTIVE: cannot resolve ${uniqueIds.join(", ")} while operation(s) ${active.map((operation) => operation.id).join(", ")} still have active controllers or participants.`);
+  for (const operation of chainMembers.values()) {
+    const receipt = await reconcileOperationResources(stateRoot, operation.id);
+    if (!receipt.cleanupComplete || receipt.classification.liveOwned > 0) {
+      throw new Error(`OWNER_RESOLUTION_CLEANUP_REQUIRED: operation ${operation.id} must have zero live owned resources and a complete terminal cleanup receipt before Owner resolution.`);
+    }
+  }
+  const currentPending = pendingOwnerResolutionRefs(await readOperationRecords(stateRoot));
+  const currentSelected = currentPending.filter((reference) => uniqueIds.includes(reference.operationId));
+  if (selected.some((reference) => !currentSelected.some((current) => current.kind === reference.kind && current.operationId === reference.operationId
+    && current.evidenceDigest === reference.evidenceDigest && reference.operationRevision <= current.operationRevision))) {
+    throw new Error("OWNER_RESOLUTION_EVIDENCE_STALE: selected boundary/task-chain evidence changed during terminal resource reconciliation; inspect the current operation and retry with exact pending state.");
+  }
+  for (const reference of selected.filter((item) => item.kind === "OWNER_ECONOMIC_BOUNDARY")) {
+    const operation = await loadOperation(stateRoot, reference.operationId);
+    const boundary = operation.ownerEconomicBoundary;
+    const envelope = config?.orchestration?.operations?.economicEnvelope;
+    const newLimit = boundary?.budget === "HARD_COST_USD" ? envelope?.hardCostUsd
+      : boundary?.budget === "HARD_TOTAL_TOKENS" ? envelope?.hardTotalTokens
+        : envelope?.hardToolCalls;
+    if (!boundary || !envelope || Object.is(newLimit, boundary.configuredLimit)) {
+      throw new Error(`OWNER_POLICY_CHANGE_REQUIRED: resolving ${boundary?.budget ?? "an economic boundary"} on operation ${operation.id} requires a reviewed project economicEnvelope change before an explicit CLI start.`);
+    }
+  }
+  return selected;
+}
+
+async function assertNoUnresolvedOwnerBoundaryForLead(root: string, config?: HarnessProjectConfig): Promise<void> {
+  await materializeOverdueOperationDeadlines(root, config);
+  const records = await readOperationRecords(resolveOperationStateRoot(root));
+  const pending = pendingOwnerResolutionRefs(records);
+  const resolved = records.flatMap((operation) => operation.origin?.kind === "EXPLICIT_CLI" ? operation.origin.ownerResolutionRefs ?? [] : []);
+  for (const reference of pending.sort((left, right) => Number(!left.kind.startsWith("OWNER_")) - Number(!right.kind.startsWith("OWNER_")) || left.operationId.localeCompare(right.operationId))) {
+    const hasResolution = resolved.some((ownerResolution) => ownerResolution.kind === reference.kind
+      && ownerResolution.operationId === reference.operationId
+      && ownerResolution.evidenceDigest === reference.evidenceDigest
+      && ownerResolution.operationRevision <= reference.operationRevision);
+    if (hasResolution) continue;
+    if (reference.kind === "OWNER_ECONOMIC_BOUNDARY") {
+      const operation = records.find((item) => item.id === reference.operationId)!;
+      const boundary = operation.ownerEconomicBoundary!;
+      throw new Error(`OPERATION_OWNER_BOUNDARY_STILL_WAITING: operation ${operation.id} is reserved for an explicit Owner decision after ${boundary.budget}; run an Owner-authorized CLI start naming --resolve-operation ${operation.id} after reviewing the policy.`);
+    }
+    if (reference.kind === "OWNER_HARD_DEADLINE") throw new Error(`OPERATION_OWNER_BOUNDARY_STILL_WAITING: operation ${reference.operationId} reached its frozen hard deadline; run an Owner-authorized CLI start naming --resolve-operation ${reference.operationId}.`);
+    if (reference.kind === "CANCELLED_TASK_CHAIN") throw new Error(`OPERATION_OWNER_CANCELLATION_STILL_WAITING: operation chain ${reference.operationId} was explicitly cancelled. A Lead cannot restart it; an Owner-authorized CLI start must name --resolve-operation ${reference.operationId}.`);
+    throw new Error(`OPERATION_RECOVERY_PARENT_REQUIRED: failed operation chain ${reference.operationId} remains pending. Continue with a causally linked recovery child; if no bounded recovery remains, an Owner-authorized CLI start must name --resolve-operation ${reference.operationId}.`);
+  }
+}
+
+function configLivenessHardDeadline(config?: HarnessProjectConfig): number {
+  return config?.orchestration?.operations?.liveness?.hardDeadlineMs ?? 8 * 60 * 60_000;
+}
+
+export async function terminalizeOperation(
   root: string,
   operationId: string,
   patch: Partial<OperationRecordV2> & { status: "SUCCEEDED" | "FAILED" | "CANCELLED" },
   deps: OperationControllerDeps,
   config?: HarnessProjectConfig
 ): Promise<OperationRecordV2> {
-  const { record: terminal, transitioned } = await transitionOperationToTerminal(root, operationId, patch);
+  let transition: Awaited<ReturnType<typeof transitionOperationToTerminal>>;
+  const evaluateEconomicBoundary = async (operation: OperationRecordV2, targetStatus: "SUCCEEDED" | "FAILED") => {
+    const { inspectOwnerEconomicBoundaryAtTerminalV1 } = await import("./executionLiveness.js");
+    return inspectOwnerEconomicBoundaryAtTerminalV1(root, operation, targetStatus);
+  };
+  try { transition = await transitionOperationToTerminal(root, operationId, patch, evaluateEconomicBoundary); }
+  catch (error) {
+    const latest = await loadOperation(root, operationId).catch(() => undefined);
+    if (patch.status !== "SUCCEEDED" || !latest?.ownerEconomicBoundary || !(error instanceof Error && error.message.includes("OWNER_DECISION_REQUIRED"))) throw error;
+    transition = await transitionOperationToTerminal(root, operationId, {
+      status: "FAILED",
+      phase: "HUMAN_REQUIRED",
+      error: `HUMAN_REQUIRED: ${latest.ownerEconomicBoundary.reason}`,
+      finishedAt: patch.finishedAt ?? new Date().toISOString(),
+      result: { ...(patch.result ?? {}), economicBoundary: { budget: latest.ownerEconomicBoundary.budget, configuredLimit: latest.ownerEconomicBoundary.configuredLimit, observed: latest.ownerEconomicBoundary.observed, usageCoverage: latest.ownerEconomicBoundary.usageCoverage, evidenceRefs: latest.ownerEconomicBoundary.evidenceRefs } }
+    }, evaluateEconomicBoundary);
+  }
+  const { record: terminal, transitioned } = transition;
+  if (terminal.status === "FAILED") {
+    try {
+      const forensic = await persistCandidateForensicsV1(root, terminal);
+      await (deps.trace ?? recordPaseoTrace)(root, "operation.failure.forensics", {
+        operationId,
+        candidateId: terminal.candidateRevision?.candidateId ?? "",
+        artifact: forensic.path,
+        changedFileCount: forensic.artifact.changedFiles.length,
+        diffDigestCoverage: forensic.artifact.diffDigestCoverage
+      }).catch(() => undefined);
+    } catch (error) {
+      await (deps.trace ?? recordPaseoTrace)(root, "operation.failure.forensics-failed", {
+        operationId,
+        error: error instanceof Error ? error.message : String(error)
+      }).catch(() => undefined);
+    }
+  }
   if (config) await writeOperationEfficiencySummary(root, config, terminal).catch(() => undefined);
   if (config) await syncOperationPortfolio(root, config.project.name, terminal).catch(() => undefined);
   if (!transitioned) return terminal;
@@ -887,6 +1168,41 @@ async function terminalizeOperation(
       operationStatus: terminal.status,
       error: error instanceof Error ? error.message : String(error)
     }).catch(() => undefined);
+  }
+  return loadOperation(root, operationId).catch(() => terminal);
+}
+
+/** Enforce the frozen hard safety fuse from the detached watchdog. This path can only fail an
+ * operation after its immutable Owner deadline, so it does not borrow controller-token authority. */
+export async function expireOperationAtHardDeadline(root: string, operationId: string, at = new Date(), config?: HarnessProjectConfig, deps: OperationControllerDeps = {}): Promise<OperationRecordV2> {
+  const trace = deps.trace ?? recordPaseoTrace;
+  const transition = await transitionOperationAtHardDeadlineV1(root, operationId, at);
+  const terminal = transition.record;
+  if (!transition.transitioned) return terminal;
+  try {
+    const forensic = await persistCandidateForensicsV1(root, terminal);
+    await trace(root, "operation.failure.forensics", { operationId, candidateId: terminal.candidateRevision?.candidateId ?? "", artifact: forensic.path, diffDigestCoverage: forensic.artifact.diffDigestCoverage }).catch(() => undefined);
+  } catch (error) {
+    await trace(root, "operation.failure.forensics-failed", { operationId, error: error instanceof Error ? error.message : String(error) }).catch(() => undefined);
+  }
+  if (config) await writeOperationEfficiencySummary(root, config, terminal).catch(() => undefined);
+  if (config) await syncOperationPortfolio(root, config.project.name, terminal).catch(() => undefined);
+  if (terminal.pid && terminal.pid !== process.pid) await terminateManagedProcessGroup(terminal.pid).catch(() => undefined);
+  try {
+    if (deps.notifyCompletion) await deps.notifyCompletion(root, terminal);
+    else await notifyOperationCompletion(root, terminal, { trace });
+  } catch (error) {
+    await trace(root, "operation.callback.failed", { operationId, operationStatus: terminal.status, error: error instanceof Error ? error.message : String(error), boundary: "hard-deadline" }).catch(() => undefined);
+  }
+  try {
+    await reconcileOperationResources(root, operationId, {
+      ...(deps.run ? { run: deps.run } : {}),
+      ...(deps.trace ? { trace: deps.trace } : {}),
+      ...(deps.inspectProviderSession ? { inspectAgent: (cwd: string, agentId: string) => deps.inspectProviderSession!(cwd, "paseo", agentId) } : {}),
+      ...(deps.listOperationAgents ? { listOwnedAgents: deps.listOperationAgents } : {})
+    });
+  } catch (error) {
+    await trace(root, "operation.resource.reconciliation-failed", { operationId, operationStatus: terminal.status, error: error instanceof Error ? error.message : String(error) }).catch(() => undefined);
   }
   return loadOperation(root, operationId).catch(() => terminal);
 }

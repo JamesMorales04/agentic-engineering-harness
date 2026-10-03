@@ -38,6 +38,7 @@ import { ensureOperationSupervisor, maybeRotateOperationSupervisor, settleDraini
 import { createMemoryProvider } from "../providers/memory.js";
 import { buildAcceptedOperationCandidates } from "../memory/candidates.js";
 import { compileExecutionCatalog, type ExecutionCatalogV1 } from "../architecture/executionCatalog.js";
+import { assertCapabilityRegistryV1, discoverCapabilityRegistryV1, loadOperationCapabilityRegistryV1, persistOperationCapabilityRegistryV1, type CapabilityRegistryV1 } from "../capabilities/registry.js";
 import { assembleCandidateChangeSet, type CandidateImpactAssessmentRuntimeV1 } from "../candidates/assembler.js";
 import { executeIsolatedCandidateMutation } from "../candidates/direct.js";
 import { executeRepairerCandidateMutation } from "../candidates/repair.js";
@@ -51,7 +52,7 @@ import { requireProviderLaneEvidenceForActionV1, type ProviderEvidenceLaneV1 } f
 import type { CandidateImpactV1 } from "../candidates/assembler.js";
 import { candidateRevisionsEqual, type CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import { objectiveParticipantAccountingV1 } from "../operations/participantAccounting.js";
-import { assertResolvedOperationPolicyV1, compileResolvedOperationPolicy, type ResolvedOperationPolicyV1 } from "../architecture/executionIdentity.js";
+import { assertResolvedOperationPolicyV2, compileResolvedOperationPolicy, type ResolvedOperationPolicyV2 } from "../architecture/executionIdentity.js";
 import { bindResolvedOperationPolicy, currentControllerEpoch } from "../operations/state.js";
 import { runValidationCommand } from "../validators/commands.js";
 import { runConfiguredValidators } from "../validators/registry.js";
@@ -63,6 +64,7 @@ import { requestManagedLeadAcceptance } from "../agents/managedLeadAcceptance.js
 import { evaluateObjectiveCompletionV1, type ObjectiveCompletionInputV1 } from "../architecture/objectiveCompletion.js";
 import { setupToolchain } from "../toolchain/setup.js";
 import { sha256Canonical, sha256Utf8 } from "./digest.js";
+import { requireOwnerEconomicBoundaryBeforeExternalEffectV1 } from "../operations/executionLiveness.js";
 
 export interface CandidateAssuranceEvaluationV1 {
   compilation?: CandidateAssuranceCompilationV1;
@@ -102,6 +104,7 @@ interface FrozenExecutionBoundaryV1 {
   leadSelection?: AgentExecutionSelection;
   stageSelections?: Record<string, AgentExecutionSelection | undefined>;
   executionCatalog?: ExecutionCatalogV1;
+  capabilityRegistry?: CapabilityRegistryV1;
   recovery?: RecoveryMap;
 }
 
@@ -163,7 +166,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
   const librarianSelection = executionBoundary.librarianSelection;
   const supervisorSelection = executionBoundary.supervisorSelection;
   if (selection) selection = enforceSandboxPolicy(selection, effectiveConfig, effectiveContract.routing?.risk ?? "low").selection;
-  let assurancePolicySource: ResolvedOperationPolicyV1 | undefined = operationId
+  let assurancePolicySource: ResolvedOperationPolicyV2 | undefined = operationId
     ? (await loadOperation(operationStateRoot, operationId)).resolvedOperationPolicy
     : undefined;
 
@@ -194,11 +197,12 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
   let candidateImpact: CandidateImpactV1 | undefined;
   let assuranceEvaluation: CandidateAssuranceEvaluationV1 | undefined;
   const executionCatalog = executionBoundary.executionCatalog;
-  const planningEnabled = (implementationRoute === "DELEGATED" || implementationRoute === "FORMAL_SDD") && route && selection && executionCatalog && effectiveConfig.workflow?.planning?.enabled !== false;
-  if (planningEnabled && route && selection && executionCatalog) {
+  const capabilityRegistry = executionBoundary.capabilityRegistry;
+  const planningEnabled = (implementationRoute === "DELEGATED" || implementationRoute === "FORMAL_SDD") && route && selection && executionCatalog && capabilityRegistry && effectiveConfig.workflow?.planning?.enabled !== false;
+  if (planningEnabled && route && selection && executionCatalog && capabilityRegistry) {
     const planningSelection = selection;
     if (operationId) await runStage(operationStateRoot, operationId, "planning", "RUNNING");
-    waveResult = await executePlannerWaves({ root: workspaceRoot, stateRoot: controlRoot, config: effectiveConfig, contract: effectiveContract, plannerSelection, librarianSelection, implementationSelection: planningSelection, executionCatalog, controller, precomputedPlan: options?.planning, projectStack, semanticAssessment: impactAssessmentRuntime, revalidate: async () => { await prepareValidationWorkspace(); return verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, planningSelection); } });
+    waveResult = await executePlannerWaves({ root: workspaceRoot, stateRoot: controlRoot, config: effectiveConfig, contract: effectiveContract, plannerSelection, librarianSelection, implementationSelection: planningSelection, executionCatalog, capabilityRegistry, controller, precomputedPlan: options?.planning, projectStack, semanticAssessment: impactAssessmentRuntime, revalidate: async () => { await prepareValidationWorkspace(); return verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, planningSelection); } });
     executionSessions = [...waveResult.sessions];
     if (waveResult.blueprint?.resolvedOperationPolicy) assurancePolicySource = waveResult.blueprint.resolvedOperationPolicy;
     if (operationId) {
@@ -498,6 +502,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
   if (report.status === "PASS") {
     if (operationId) await runStage(operationStateRoot, operationId, "delivery", "RUNNING");
     try {
+      if (operationId) await requireOwnerEconomicBoundaryBeforeExternalEffectV1(controlRoot, await loadOperation(operationStateRoot, operationId));
       deliverySummary = await finalizeAcceptedIssue(workspaceRoot, effectiveConfig, effectiveContract, { candidate: report.candidate });
       if (deliverySummary.status !== "SKIPPED") await recordEvent(controlRoot, effectiveConfig, "harness.delivery.finalize", { taskId: effectiveContract.task.id, status: deliverySummary.status, commitSha: deliverySummary.commitSha, pullRequest: deliverySummary.pullRequest });
       if (operationId) await runStage(operationStateRoot, operationId, "delivery", "COMPLETED");
@@ -598,7 +603,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
   }
   const telemetryIdentity = await resolveTelemetryCorrelation(controlRoot, operationId ?? currentOperationContext().id);
   if (telemetryIdentity) await recordOperationTelemetry(controlRoot, effectiveConfig, telemetryIdentity, { kind: "run", route: implementationRoute, assurance, status: result.status, durationMs: metrics.durationMs, repairCount: metrics.repairCount, humanInterventions: metrics.humanInterventions });
-  await recordEvent(controlRoot, effectiveConfig, "harness.run.finish", { taskId: effectiveContract.task.id, status: result.status, attempts, route: implementationRoute, assurance, workspaceRoot: workspaceRoot === controlRoot ? undefined : workspaceRoot, agent: selection?.logicalAgent, runtime: selection?.runtimeName, model: selection?.modelId, profile: selection?.profile, waves: result.planning?.waves, controllerSha256: result.controlPlane?.sha256, controllerDrifted: result.controlPlane?.drifted, evidenceComplete: result.evidence?.complete, evidenceSha256: result.evidence?.sha256, reviewStatus: reviewSummary?.status, reviewFinalState: reviewSummary?.finalState, humanRequired: reviewSummary?.humanRequired ?? deliverySummary?.humanRequired, debtScore: reviewSummary?.debtScore, deliveryStatus: deliverySummary?.status, pullRequest: deliverySummary?.pullRequest, durationMs: metrics.durationMs, totalTokens: metrics.usage.totalTokens ?? 0, costUsd: metrics.usage.costUsd ?? 0 });
+  await recordEvent(controlRoot, effectiveConfig, "harness.run.finish", { taskId: effectiveContract.task.id, status: result.status, attempts, route: implementationRoute, assurance, workspaceRoot: workspaceRoot === controlRoot ? undefined : workspaceRoot, agent: selection?.logicalAgent, runtime: selection?.runtimeName, model: selection?.modelId, profile: selection?.profile, waves: result.planning?.waves, controllerSha256: result.controlPlane?.sha256, controllerDrifted: result.controlPlane?.drifted, evidenceComplete: result.evidence?.complete, evidenceSha256: result.evidence?.sha256, reviewStatus: reviewSummary?.status, reviewFinalState: reviewSummary?.finalState, humanRequired: reviewSummary?.humanRequired ?? deliverySummary?.humanRequired, debtScore: reviewSummary?.debtScore, deliveryStatus: deliverySummary?.status, pullRequest: deliverySummary?.pullRequest, durationMs: metrics.durationMs, totalTokens: metrics.usage.totalTokens ?? null, costUsd: metrics.usage.costUsd ?? null });
   return result;
 }
 
@@ -610,12 +615,12 @@ async function recompileCandidateAssurance(input: {
   operationId?: string;
   impact?: CandidateImpactV1;
   report: ValidationReport;
-  policySource?: ResolvedOperationPolicyV1;
+  policySource?: ResolvedOperationPolicyV2;
   reviewerSelections: Readonly<Record<string, AgentExecutionSelection>>;
   implementationSelection?: AgentExecutionSelection;
   baseValidationRequirements: readonly import("../architecture/validationRequirements.js").ValidationRequirementV1[];
   projectStack?: ProjectStackProfileV1;
-}): Promise<{ evaluation: CandidateAssuranceEvaluationV1; policySource?: ResolvedOperationPolicyV1 }> {
+}): Promise<{ evaluation: CandidateAssuranceEvaluationV1; policySource?: ResolvedOperationPolicyV2 }> {
   const failed = (message: string, details?: Record<string, unknown>): CandidateAssuranceEvaluationV1 => ({
     validationChecks: [],
     gateCheck: { id: "candidate.assurance.recompiled", category: "candidate-assurance", status: "FAIL", message, details }
@@ -746,8 +751,8 @@ async function recompileCandidateAssurance(input: {
   }
 }
 
-async function bindAssurancePolicyToCandidate(stateRoot: string, operationId: string, candidate: CandidateRevisionV1, source: ResolvedOperationPolicyV1): Promise<ResolvedOperationPolicyV1> {
-  assertResolvedOperationPolicyV1(source);
+async function bindAssurancePolicyToCandidate(stateRoot: string, operationId: string, candidate: CandidateRevisionV1, source: ResolvedOperationPolicyV2): Promise<ResolvedOperationPolicyV2> {
+  assertResolvedOperationPolicyV2(source);
   const operation = await loadOperation(stateRoot, operationId);
   if (operation.id !== candidate.operationId || !operation.candidateRevision
     || operation.candidateRevision.candidateId !== candidate.candidateId
@@ -771,7 +776,7 @@ async function bindAssurancePolicyToCandidate(stateRoot: string, operationId: st
   return policy;
 }
 
-function candidateAssurancePolicyFromFrozenPolicy(policy: ResolvedOperationPolicyV1): CandidateAssurancePolicyV1 {
+function candidateAssurancePolicyFromFrozenPolicy(policy: ResolvedOperationPolicyV2): CandidateAssurancePolicyV1 {
   const review = policy.reviewPolicy && typeof policy.reviewPolicy === "object" ? policy.reviewPolicy as Record<string, unknown> : {};
   const validation = policy.validationPolicy && typeof policy.validationPolicy === "object" ? policy.validationPolicy as Record<string, unknown> : {};
   const minimumRank = { NONE: 0, STANDARD: 1, ELEVATED: 2, CRITICAL: 3 } as const;
@@ -1001,7 +1006,15 @@ async function resolveExecutionBoundary(root: string, config: HarnessProjectConf
       ...(repairerSelection ? { Repairer: bindingForSelection(repairerSelection) } : {})
     };
     const executionCatalog = compileExecutionCatalog({ runtimes: topology.runtimes, models: topology.models, routeRuleIds: topology.routing.map((rule) => rule.id), roleBindings, policy: { maxConcurrent: config.workflow?.planning?.maxWaveConcurrency } });
-    return { route, selection, plannerSelection, librarianSelection, supervisorSelection, reviewerSelections, leadSelection, repairerSelection, stageSelections, executionCatalog, recovery: topology.recovery };
+    const operationId = currentOperationContext().id;
+    const currentOperation = operationId ? await loadOperation(root, operationId) : undefined;
+    let capabilityRegistry = operationId ? await loadOperationCapabilityRegistryV1(root, operationId) : undefined;
+    if (!capabilityRegistry && currentOperation?.resolvedOperationPolicy?.capabilityRegistryDigest) throw new Error("CAPABILITY_REGISTRY_ARTIFACT_MISSING: frozen operation policy references a registry artifact that cannot be read.");
+    if (!capabilityRegistry) capabilityRegistry = await discoverCapabilityRegistryV1(root, { operationId, config, executionCatalog, topology });
+    assertCapabilityRegistryV1(capabilityRegistry);
+    if (operationId) capabilityRegistry = await persistOperationCapabilityRegistryV1(root, capabilityRegistry);
+    if (currentOperation?.resolvedOperationPolicy?.capabilityRegistryDigest && currentOperation.resolvedOperationPolicy.capabilityRegistryDigest !== capabilityRegistry.digest) throw new Error("CAPABILITY_REGISTRY_STALE: current capability registry differs from the frozen operation policy.");
+    return { route, selection, plannerSelection, librarianSelection, supervisorSelection, reviewerSelections, leadSelection, repairerSelection, stageSelections, executionCatalog, capabilityRegistry, recovery: topology.recovery };
   } catch (error) {
     if (config.agents.required || contract.routing?.route === "DELEGATED" || contract.routing?.route === "FORMAL_SDD" || contract.routing?.assurance === "CRITICAL") throw error;
     await recordEvent(root, config, "harness.agent.topology-fallback", { taskId: contract.task.id, error: String(error) });

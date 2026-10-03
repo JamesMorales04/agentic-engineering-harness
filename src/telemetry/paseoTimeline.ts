@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { sha256Canonical } from "../core/digest.js";
-import type { ProviderTelemetryEvidenceV1, ProviderTurnUsageObservationV1 } from "./efficiency.js";
+import type { ProviderTelemetryEvidenceV2, ProviderTurnUsageObservationV2 } from "./efficiency.js";
 
 const toolCallItemSchema = z.object({
   type: z.literal("tool_call"),
@@ -38,13 +38,13 @@ export interface PaseoTimelineEventEnvelopeV1 {
 }
 
 export interface PaseoTimelineCaptureV1 {
-  evidence: ProviderTelemetryEvidenceV1;
+  evidence: ProviderTelemetryEvidenceV2;
   snapshotContext?: { usedTokens?: number; limitTokens?: number };
   completeness: "COMPLETE" | "PARTIAL" | "UNKNOWN";
 }
 
 /** Normalize the typed Paseo timeline contract; raw details never leave this function. */
-export function capturePaseoTimelineV1(input: {
+export function capturePaseoTimelineV2(input: {
   liveEvents: readonly PaseoTimelineEventEnvelopeV1[];
   liveEventsTruncated?: boolean;
   timelinePayload?: unknown;
@@ -52,7 +52,7 @@ export function capturePaseoTimelineV1(input: {
   subscriptionReady: boolean;
 }): PaseoTimelineCaptureV1 {
   const turnStarted: Array<{ turnId: string | null; provider: string; at: string | null; sequence: number }> = [];
-  const completed = new Map<string, { turnId: string | null; turnIndex: number | null; provider: string; at: string | null; usage: Record<string, unknown> }>();
+  const completed = new Map<string, { turnId: string | null; turnIndex: number | null; provider: string; startedAt: string | null; at: string | null; usage: Record<string, unknown> }>();
   const toolEvents: Array<{ provider: string; turnId: string | null; timestamp: string; sequence: number; item: z.infer<typeof toolCallItemSchema> }> = [];
   let liveCallsHaveIds = true;
 
@@ -66,7 +66,7 @@ export function capturePaseoTimelineV1(input: {
     if (event.type === "turn_started") turnStarted.push({ turnId, provider, at: timestamp, sequence: turnStarted.length });
     if (event.type === "turn_completed") {
       const usage = usageSchema.safeParse(event.usage);
-      completed.set(turnId ?? `no-turn-id:${timestamp ?? index}`, { turnId, turnIndex: indexOfTurn(turnStarted, turnId), provider, at: timestamp, usage: usage.success ? usage.data : {} });
+      completed.set(turnId ?? `no-turn-id:${timestamp ?? index}`, { turnId, turnIndex: indexOfTurn(turnStarted, turnId), provider, startedAt: turnStarted.find((turn) => turn.turnId === turnId)?.at ?? null, at: timestamp, usage: usage.success ? usage.data : {} });
     }
     if (event.type === "timeline" && event.item && typeof event.item === "object") {
       const item = toolCallItemSchema.safeParse(event.item);
@@ -109,6 +109,8 @@ export function capturePaseoTimelineV1(input: {
       runtimeSessionId: null,
       provider: item.provider,
       at: item.at,
+      startedAt: item.startedAt,
+      finishedAt: item.at,
       inputTokens,
       cachedInputTokens: finiteMetric(value.cachedInputTokens),
       outputTokens,
@@ -117,7 +119,7 @@ export function capturePaseoTimelineV1(input: {
       totalTokensBasis: totalTokens === null ? "UNKNOWN" as const : "INPUT_PLUS_OUTPUT" as const,
       costUsd: finiteMetric(value.totalCostUsd),
       usageKnown: inputTokens !== null || outputTokens !== null || finiteMetric(value.totalCostUsd) !== null
-    } satisfies ProviderTurnUsageObservationV1;
+    } satisfies ProviderTurnUsageObservationV2;
   });
   const toolCalls = normalizeToolCalls(toolEvents, turnsById);
   const snapshot = usageSchema.safeParse(input.snapshotUsage);
@@ -143,6 +145,7 @@ export function capturePaseoTimelineV1(input: {
   const source = turnUsage.length ? "PROVIDER_TURN_EVENTS" : snapshotUsage ? "PASEO_AGENT_SNAPSHOT" : "UNKNOWN";
   return {
     evidence: {
+      version: 2,
       source,
       coverage: completeness,
       turnCount: Math.max(turnStarted.length, turnUsage.length) || null,
@@ -200,8 +203,9 @@ function observationForToolCall(first: { provider: string; turnId: string | null
     provider: first.provider === "unknown" ? null : first.provider,
     toolName: first.item.name,
     callId: first.item.callId ?? null,
-    argumentsDigest: sha256Canonical(normalizedArguments),
-    argumentsByteLength: Buffer.byteLength(JSON.stringify(normalizedArguments), "utf8"),
+    ...(metadataText(first.item.metadata, ["retryOfCallId", "retry_of_call_id", "retriesCallId"]) ? { retryOfCallId: metadataText(first.item.metadata, ["retryOfCallId", "retry_of_call_id", "retriesCallId"])! } : {}),
+    argumentsDigest: normalizedArguments.argumentsDigest,
+    argumentsByteLength: normalizedArguments.argumentsByteLength,
     startedAt: started?.timestamp ?? null,
     finishedAt: final.item.status === "running" ? null : final.timestamp,
     durationMs: durationBetween(started?.timestamp, final.item.status === "running" ? undefined : final.timestamp),
@@ -219,21 +223,18 @@ function unboundCallIdentity(event: { provider: string; turnId: string | null; t
   return sha256Canonical({ call: unboundCallArgumentsKey(event), timestamp: event.timestamp, status: event.item.status, error: fingerprintError(event.item.error) });
 }
 
-export type ProviderTelemetryCaptureToolCall = ProviderTelemetryEvidenceV1["toolCalls"][number];
+export type ProviderTelemetryCaptureToolCall = ProviderTelemetryEvidenceV2["toolCalls"][number];
 
-function normalizedToolArguments(detail: unknown): unknown {
-  if (!detail || typeof detail !== "object" || Array.isArray(detail)) return { detailType: typeof detail };
-  const record = detail as Record<string, unknown>;
-  switch (record.type) {
-    case "shell": return { type: "shell", command: record.command, cwd: record.cwd };
-    case "read": return { type: "read", filePath: record.filePath, offset: record.offset, limit: record.limit };
-    case "edit": return { type: "edit", filePath: record.filePath, oldString: record.oldString, newString: record.newString, unifiedDiff: record.unifiedDiff };
-    case "write": return { type: "write" };
-    case "plain_text": return { type: "plain_text", label: record.label, text: record.text, icon: record.icon };
-    case "plan": return { type: "plan", text: record.text };
-    case "unknown": return { type: "unknown", input: record.input };
-    default: return { type: typeof record.type === "string" ? record.type : "untyped", value: record };
-  }
+function normalizedToolArguments(detail: unknown): { type: string; argumentsDigest: string; argumentsByteLength: number } {
+  const type = detail && typeof detail === "object" && !Array.isArray(detail) && typeof (detail as Record<string, unknown>).type === "string"
+    ? (detail as Record<string, unknown>).type as string : typeof detail;
+  const serialized = safeCanonicalString(detail);
+  return { type, argumentsDigest: sha256Canonical(detail), argumentsByteLength: Buffer.byteLength(serialized, "utf8") };
+}
+
+function safeCanonicalString(value: unknown): string {
+  try { return JSON.stringify(value) ?? "null"; }
+  catch { return "[unserializable]"; }
 }
 
 function resultByteLength(detail: unknown, error: unknown): number | null {
@@ -253,7 +254,7 @@ function fingerprintError(error: unknown): unknown {
   return { type: typeof error, messageDigest: typeof error === "string" ? sha256Canonical(error) : null };
 }
 
-function toolOutcome(status: string, error: unknown): ProviderTelemetryEvidenceV1["toolCalls"][number]["outcome"] {
+function toolOutcome(status: string, error: unknown): ProviderTelemetryEvidenceV2["toolCalls"][number]["outcome"] {
   if (status === "completed") return "SUCCESS";
   if (status === "canceled") return "CANCELLED";
   if (status === "running") return "UNKNOWN_ERROR";

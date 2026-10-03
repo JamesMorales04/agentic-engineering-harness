@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { TaskContract } from "../src/core/types.js";
-import { plannerOutputSchema, type PlannerOutput } from "../src/agents/outputContracts.js";
+import { outputJsonSchema, plannerOutputSchema, type PlannerOutput } from "../src/agents/outputContracts.js";
 import {
   compilePlannerWorkGraphWithOneCorrection,
   PlannerWorkGraphCorrectionError
@@ -30,6 +30,23 @@ function plan(objectives: string[]): PlannerOutput {
   });
 }
 
+function uncheckedPlan(objectives: string[]): PlannerOutput {
+  return {
+    workUnits: objectives.map((objective, index) => ({
+      id: `unit-${index + 1}`,
+      objective,
+      scope: ["src/**"],
+      dependencies: [],
+      requirementRefs: [],
+      acceptanceRefs: [],
+      competencies: [],
+      riskTags: [],
+      changeKinds: ["source"],
+      risk: "low"
+    }))
+  } as PlannerOutput;
+}
+
 describe("Planner WorkGraph bounded correction", () => {
   it("accepts an objective at exactly 500 characters without retry", async () => {
     const requestCorrection = vi.fn();
@@ -44,8 +61,15 @@ describe("Planner WorkGraph bounded correction", () => {
     expect(requestCorrection).not.toHaveBeenCalled();
   });
 
+  it("exposes the same 500-character objective bound in deterministic and provider schemas", () => {
+    expect(() => plannerOutputSchema.parse({ workUnits: [{ ...plan(["x"]).workUnits[0], objective: "x".repeat(501) }] }))
+      .toThrow();
+    const schema = outputJsonSchema("planner") as { properties?: { workUnits?: { items?: { properties?: { objective?: { maxLength?: number } } } } } };
+    expect(schema.properties?.workUnits?.items?.properties?.objective?.maxLength).toBe(500);
+  });
+
   it("recovers an overlong first objective with one concise, evidence-bound correction", async () => {
-    const initial = plan(["x".repeat(501)]);
+    const initial = uncheckedPlan(["x".repeat(501)]);
     let correctionPrompt = "";
     const result = await compilePlannerWorkGraphWithOneCorrection({
       contract,
@@ -57,6 +81,7 @@ describe("Planner WorkGraph bounded correction", () => {
     });
 
     expect(correctionPrompt).toContain("objective exceeds maximum 500 characters (received 501)");
+    expect(correctionPrompt).toContain("rewrite it concisely so it is at most 500 characters");
     expect(correctionPrompt).toContain(JSON.stringify(initial));
     expect(correctionPrompt).not.toContain(contract.task.title);
     expect(result.correctionAttempts).toBe(1);
@@ -65,23 +90,23 @@ describe("Planner WorkGraph bounded correction", () => {
   });
 
   it("fails closed when the single corrective output is still overlong", async () => {
-    const requestCorrection = vi.fn(async () => plan(["y".repeat(501)]));
+    const requestCorrection = vi.fn(async () => uncheckedPlan(["y".repeat(501)]));
 
     await expect(compilePlannerWorkGraphWithOneCorrection({
       contract,
-      plan: plan(["x".repeat(501)]),
+      plan: uncheckedPlan(["x".repeat(501)]),
       requestCorrection
     })).rejects.toMatchObject({
       name: "PlannerWorkGraphCorrectionError",
       correctionAttempts: 1,
-      validationIssues: [expect.stringContaining("objective exceeds maximum 500 characters")]
+      validationIssues: [expect.stringContaining("corrective Planner output did not satisfy plannerOutputSchema")]
     });
 
     expect(requestCorrection).toHaveBeenCalledTimes(1);
   });
 
-  it("reports every invalid WorkUnit and never silently truncates", async () => {
-    const invalid = plan(["x".repeat(501), "y".repeat(900)]);
+  it("preserves the invalid plan and fails closed when one correction still violates output bounds", async () => {
+    const invalid = uncheckedPlan(["x".repeat(501), "y".repeat(900)]);
     let correctionPrompt = "";
     let failure: unknown;
     try {
@@ -99,29 +124,28 @@ describe("Planner WorkGraph bounded correction", () => {
 
     expect(failure).toBeInstanceOf(PlannerWorkGraphCorrectionError);
     const issues = (failure as PlannerWorkGraphCorrectionError).validationIssues;
-    expect(issues).toHaveLength(2);
-    expect(issues[0]).toContain("workUnits[0]");
-    expect(issues[0]).toContain("received 501");
-    expect(issues[1]).toContain("workUnits[1]");
-    expect(issues[1]).toContain("received 900");
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toContain("workUnits");
+    expect(issues[0]).toContain("500 characters");
+    expect(correctionPrompt).toContain("rewrite it concisely so it is at most 500 characters");
     expect(correctionPrompt).toContain(JSON.stringify(invalid));
     expect(invalid.workUnits.map((unit) => unit.objective.length)).toEqual([501, 900]);
   });
 
   it("does not issue an unbounded second retry when corrective validation fails", async () => {
-    const requestCorrection = vi.fn(async () => plan(["z".repeat(700)]));
+    const requestCorrection = vi.fn(async () => uncheckedPlan(["z".repeat(700)]));
 
     try {
       await compilePlannerWorkGraphWithOneCorrection({
         contract,
-        plan: plan(["x".repeat(501), "y".repeat(501)]),
+        plan: uncheckedPlan(["x".repeat(501), "y".repeat(501)]),
         requestCorrection
       });
       throw new Error("expected correction to fail");
     } catch (error) {
       expect(error).toBeInstanceOf(PlannerWorkGraphCorrectionError);
       expect((error as PlannerWorkGraphCorrectionError).validationIssues).toHaveLength(1);
-      expect((error as PlannerWorkGraphCorrectionError).validationIssues[0]).toContain("maximum 500");
+      expect((error as PlannerWorkGraphCorrectionError).validationIssues[0]).toContain("corrective Planner output did not satisfy plannerOutputSchema");
     }
 
     expect(requestCorrection).toHaveBeenCalledTimes(1);

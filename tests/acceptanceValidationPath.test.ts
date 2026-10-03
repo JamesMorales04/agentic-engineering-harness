@@ -39,7 +39,7 @@ function frozenPolicy(current = candidate()) {
     intent: "0099 acceptance validation path",
     route: "DIRECT",
     minimumAssurance: "NONE",
-    policyVersions: { resolvedOperationPolicy: "1" },
+    policyVersions: { resolvedOperationPolicy: "2" },
     policyDigests: {},
     validationPolicy: {},
     reviewPolicy: { leadAcceptance: false, leadAcceptanceDirect: false, independentReviewRequired: false, minimumIndependentReviewers: 0, providerDiversity: false },

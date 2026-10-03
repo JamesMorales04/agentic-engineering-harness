@@ -80,7 +80,7 @@ export function buildPlannerWorkGraphCorrectionPrompt(plan: PlannerOutput, issue
   }
   return [
     "Correct this structured Planner result. It passed plannerOutputSchema but deterministic WorkGraph validation rejected it.",
-    "Fix only the listed validation errors. Preserve all other fields, IDs, dependencies, requirement references, acceptance references, scope and meaning. Do not truncate strings, widen scope, add requirements, or select agents, tools, validators or commands.",
+    "Fix only the listed validation errors. Preserve all other fields, IDs, dependencies, requirement references, acceptance references, scope and meaning. When an objective is over 500 characters, rewrite it concisely so it is at most 500 characters; remove redundant wording rather than truncating its meaning. Do not widen scope, add requirements, or select agents, tools, validators or commands.",
     "Return the complete Planner object in the existing schema. No repository discovery or request context is needed.",
     "Deterministic validation errors:",
     ...issues.map((issue) => `- ${issue}`),

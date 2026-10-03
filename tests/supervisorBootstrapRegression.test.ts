@@ -71,7 +71,7 @@ describe("supervisor bootstrap regression", () => {
     process.env.AEH_CONTROL_ROOT = root;
 
     workers.materializeAgentPrompt.mockResolvedValue({ id: "supervisor-1", exitCode: 0, stdout: "", stderr: "", status: "idle", transport: "paseo-sdk" });
-    workers.dispatchMaterializedAgentPrompt.mockImplementation(async (_root, effectiveConfig, _contract, selection, _materialized, prompt, options) => {
+    workers.dispatchMaterializedAgentPrompt.mockImplementation(async (_root, _effectiveConfig, _contract, selection, _materialized, prompt, options) => {
       const durable = await loadOperation(root, "AUDIT-BOOT");
       expect(durable.supervision.materialized).toBe(true);
       expect(durable.supervision.activeGeneration).toBeUndefined();
@@ -83,7 +83,7 @@ describe("supervisor bootstrap regression", () => {
         initializationAttempt: 1,
         initializationDispatchedAt: expect.any(String)
       }));
-      expect(effectiveConfig.orchestration.worker.timeoutSeconds).toBe(120);
+      expect(options.providerTurnDeadlineMs).toBe(120_000);
       expect(selection.skills).toEqual([]);
       expect(String(prompt)).toContain("[AEH_SUPERVISOR_INITIALIZE]");
       expect(String(prompt)).toContain("session-readiness turn barrier");
@@ -140,7 +140,7 @@ describe("supervisor bootstrap regression", () => {
     await bindResolvedOperationPolicy(root, "AUDIT-ROTATE", compileResolvedOperationPolicy({
       projectId: "project:demo", operationId: "AUDIT-ROTATE", operationExecutionRevision: 7, candidateRevision: 3, candidateDigest: candidate.identityDigest,
       controllerEpoch: owned.controller?.epoch ?? 1, intent: "rotation", route: "DELEGATED", minimumAssurance: "STANDARD",
-      policyVersions: { resolvedOperationPolicy: "1", roleInvocationPolicy: "1", executionBlueprint: "2", executionBinding: "2", skillManifest: "1" },
+      policyVersions: { resolvedOperationPolicy: "2", roleInvocationPolicy: "1", executionBlueprint: "3", executionBinding: "3", skillManifest: "1" },
       policyDigests: { validation: "v".repeat(64), delivery: "d".repeat(64), knowledge: "k".repeat(64), context: "c".repeat(64) },
       validationPolicy: {}, reviewPolicy: { minimumAssurance: "STANDARD", independentReviewRequired: false, leadAcceptance: false }, deliveryPolicy: { githubEnabled: false, paseoEnabled: false, allowedExternalEffects: [] },
       knowledgePolicy: { resolutions: [] }, contextPolicy: { mode: "disabled" }, allowedExternalEffects: [], humanDecisionRequirements: []

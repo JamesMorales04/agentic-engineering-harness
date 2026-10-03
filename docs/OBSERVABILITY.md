@@ -62,13 +62,15 @@ unresolvable.
 
 ## Efficiency observations (V2)
 
-When `telemetry.enabled` is true, AEH writes versioned participant, context,
-tool-call, and operation-summary JSON/NDJSON records under
-`.harness/telemetry/efficiency/`. This remains local and works with
-`telemetry.exporter: none`; no collector, hosted service, or paid dependency is
-required. Consumers may leave telemetry disabled.
+AEH always writes bounded, identity-bound participant, context, tool-call, and
+operation-summary JSON/NDJSON evidence under
+`.harness/telemetry/efficiency/`. The `telemetry.enabled` switch controls
+optional exporters and general event/span/metric emission; it does not suppress
+the local evidence required for liveness and failure analysis. Everything works
+with `telemetry.exporter: none`; no collector, hosted service, or paid
+dependency is required.
 
-`ParticipantUsageObservationV1` prefers per-turn structured provider usage,
+`ParticipantUsageObservationV2` prefers per-turn structured provider usage,
 then Paseo's structured agent usage snapshot/adapter data, then the existing
 AEH usage extractor. Missing fields remain `null`. `usageKnown` and
 `usageCoverage` distinguish a complete participant total from a partial
@@ -86,7 +88,7 @@ and marks coverage partial because the provider does not identify whether each
 snapshot is cumulative or incremental. `usage.byParticipant` retains the
 participant-level totals needed for token-share KPIs.
 
-`ContextAccountingObservationV1` joins the operation and participant identity
+`ContextAccountingObservationV2` joins the operation and participant identity
 to `rawContextTokens`, `projectedContextTokens`, `deliveredContextTokens`, and
 retrieval receipts. These are deterministic AEH estimator values. They are
 useful for comparison with provider input tokens, but the two measures are not
@@ -103,8 +105,9 @@ call ID, name, status, detail, provider, turn ID, timestamp, and sequence, plus
 only tool identity, normalized-argument digest/byte length, times, result byte
 length, error fingerprint, outcome, and a proven retry link. Raw arguments,
 tool output, prompts, and error text are not persisted. A retry is linked only
-when an earlier equivalent call failed in the same session, phase, and known
-provider turn with a call ID. Calls without IDs or known turn identity retain
+when the provider supplies an explicit retry-of call identity that points to a
+failed equivalent call. Similar arguments without that causal link are marked
+`EQUIVALENT_ONLY` or `UNKNOWN`, even within one turn. Calls without IDs retain
 `UNKNOWN` retry causality.
 
 `retryAssociatedInputTokens`, `retryAssociatedOutputTokens`, and
@@ -114,13 +117,18 @@ by the tool. A tool failure without a proven retry does not attribute usage to
 later turns. If per-turn provider usage is unavailable, these fields remain
 unknown.
 
-`OperationEfficiencySummaryV1` is derived from these local observations after
+`OperationEfficiencySummaryV2` is derived from these local observations after
 terminalization. It has no callers in routing, assurance, validation,
 acceptance, delivery, `ToolActionGate`, or `ObjectiveCompletion`. Recording or
 forging an observation cannot pass a gate or grant an effect. The Control
 Center's operation detail may expose this summary read-only; it adds no action
 surface. KPI denominators should use the explicit known-usage/causality coverage
 and leave cost-per-accepted-operation unavailable when provider cost is unknown.
+The provider-turn budget projection explicitly reports `scope: PER_PARTICIPANT`:
+initial, Supervisor, and hard ceilings are per participant, while their
+`*AggregateEquivalent` counterparts multiply by the captured participant count.
+Observed turns are summed for reporting and are not checked against a shared
+operation-wide ceiling.
 
 ## Export lanes
 

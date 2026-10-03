@@ -90,7 +90,20 @@ export interface HarnessProjectConfig {
   orchestration?: {
     provider: "paseo" | "podman" | "none" | string;
     required?: boolean;
-    worker?: { provider?: string; model?: string; maxRepairAttempts?: number; timeoutSeconds?: number; titlePrefix?: string; };
+    worker?: { provider?: string; model?: string; maxRepairAttempts?: number; titlePrefix?: string; };
+    operations?: {
+      supervision?: { initializationTimeoutSeconds?: number; turnTimeoutSeconds?: number; context?: { handoffThreshold?: number; hardHandoffThreshold?: number } };
+      liveness?: {
+        hardDeadlineMs?: number; progressLeaseMs?: number; stallWindowMs?: number; providerTurnDeadlineMs?: number;
+        defaultToolDeadlineMs?: number; maxNoProgressRenewals?: number; maxParticipantRestarts?: number;
+        maxLocalRetriesPerFailure?: number; softBudgetThreshold?: number; toolDeadlinesMs?: Record<string, number>;
+      };
+      economicEnvelope?: {
+        initialProviderTurns?: number; supervisorProviderTurns?: number; hardProviderTurns?: number; maxLocalRetries?: number;
+        maxParticipantRestarts?: number; softThreshold?: number; hardToolCalls?: number;
+        hardTotalTokens?: number; hardCostUsd?: number;
+      };
+    };
     interactive?: {
       autoSetup?: boolean;
       webUi?: boolean;
@@ -264,10 +277,10 @@ export interface WorkerSession {
   stderr: string;
   metrics?: UsageMetrics;
   /** Sanitized provider telemetry carried until the observation-only efficiency writer persists it. */
-  efficiencyTelemetry?: import("../telemetry/efficiency.js").ProviderTelemetryEvidenceV1;
+  efficiencyTelemetry?: import("../telemetry/efficiency.js").ProviderTelemetryEvidenceV2;
   participantId?: string;
   capabilityLeases?: import("../security/authorityV2.js").CapabilityLeaseV1[];
-  executionBinding?: import("../architecture/executionIdentity.js").ExecutionBindingV2;
+  executionBinding?: import("../architecture/executionIdentity.js").ExecutionBindingV3;
   /** Inert Paseo structured-result channel installed before its actual session is bound. */
   structuredResultChannelId?: string;
 }

@@ -1,5 +1,5 @@
 import path from "node:path";
-import { assertResolvedOperationPolicyV1 } from "../architecture/executionIdentity.js";
+import { assertResolvedOperationPolicyV2 } from "../architecture/executionIdentity.js";
 import { loadOperation, currentControllerEpoch } from "../operations/state.js";
 import { candidateRevisionsEqual } from "../operations/v2Contracts.js";
 import { assertDecisionBindingMatchesRequest, assertDecisionRequestV1, HumanDecisionLedgerV2 } from "../security/humanDecision.js";
@@ -40,7 +40,7 @@ export async function recordControlCenterDecision(root: string, ledger: HumanDec
     || !Number.isSafeInteger(operation.operationExecutionRevision)) {
     throw new Error("DECISION_AUTHORITY_REQUIRED: product choice requires the current operation, candidate, execution revision, frozen policy, and controller epoch.");
   }
-  assertResolvedOperationPolicyV1(policy);
+  assertResolvedOperationPolicyV2(policy);
   const binding = {
     operationId: operation.id,
     candidate,

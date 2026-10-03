@@ -8,6 +8,7 @@ import { assertHarnessWorkflowEntryAllowed, isSideEffectFreeMetaInvocation } fro
 import { promoteInteractiveOperation } from "./operations/interactive.js";
 import { monitorOperationLiveness } from "./operations/liveness.js";
 import { serveOperationMcp } from "./operations/mcp.js";
+import { serveSupervisorMcp } from "./operations/supervisorMcp.js";
 import { spawnOperationMonitor } from "./operations/monitorProcess.js";
 import { loadOperationPortfolio } from "./operations/portfolio.js";
 import { loadOperation, type AuditOperationPayload, type ChangeOperationPayload, type RunOperationPayload } from "./operations/state.js";
@@ -86,10 +87,15 @@ async function runOperationCommand(argv: string[]): Promise<void> {
   if (sub === "wait") return runOperationWait(argv.slice(1));
   if (sub === "cancel") return runOperationCancel(argv.slice(1));
   if (sub === "mcp") return serveOperationMcp();
+  if (sub === "supervisor-mcp") return serveSupervisorMcp();
   throw new Error("aeh operation requires start, status, portfolio, wait, cancel, mcp, or internal execute/monitor.");
 }
 
 async function runOperationStart(argv: string[]): Promise<void> {
+  if (process.env.AEH_MANAGED_AGENT === "1" && process.env.AEH_PARENT_OPERATION_ID?.trim()
+    || process.env.AEH_INTERACTIVE_LEAD === "1" || process.env.AEH_ORCHESTRATION_ALLOWED === "1") {
+    throw new Error("AEH_CLI_OWNER_AUTHORITY_DENIED: managed AEH sessions cannot turn a CLI call into Owner authorization; use the bound Lead route and escalate a hard Owner boundary to the human.");
+  }
   const kind = argv[0];
   if (kind !== "audit" && kind !== "run" && kind !== "change") {
     throw new Error("aeh operation start requires audit, run or change.");
@@ -101,6 +107,7 @@ async function runOperationStart(argv: string[]): Promise<void> {
         ? ["profile", "priority"]
         : ["file", "domain", "risk", "accept", "profile", "priority", "title", "task"]
   );
+  valueFlags.add("resolve-operation");
   const parsed = parseFlags(argv.slice(1), valueFlags, new Set());
   const subject = parsed.positional[0];
   if (!subject) throw new Error(`aeh operation start ${kind} requires ${kind === "run" ? "<taskId>" : "<request>"}.`);
@@ -138,7 +145,9 @@ async function runOperationStart(argv: string[]): Promise<void> {
 
   const record = await startDetachedOperation(root, kind, payload, {
     nodeExecutable: process.execPath,
-    entryFile: path.resolve(process.argv[1])
+    entryFile: path.resolve(process.argv[1]),
+    initiator: { kind: "CLI" },
+    ...(parsed.values("resolve-operation").length ? { ownerResolutionOperationIds: parsed.values("resolve-operation") } : {})
   });
   await spawnOperationMonitor(root, record, {
     nodeExecutable: process.execPath,
@@ -276,7 +285,7 @@ function printControlPlaneMetaHelp(argv: string[]): boolean {
     return true;
   }
   if (command === "operation") {
-    console.log("Usage: aeh operation start audit|run|change ... | status|portfolio|wait|cancel ...");
+  console.log("Usage: aeh operation start audit|run|change ... [--resolve-operation <operationId>] | status|portfolio|wait|cancel ...");
     console.log("Detached operation control. Internal execute/monitor processes own workflow execution and durable liveness.");
     return true;
   }
@@ -295,7 +304,7 @@ function printControlPlaneHelp(): void {
   console.log("  context retrieve <operationId> --ref <id> --participant <id> Retrieve a controller-authorized current-session context ref");
   console.log("  intent <request> [directory]                  Classify INFORMATIONAL/AUDIT/CHANGE intent");
   console.log("  audit <request> [directory]                   Synchronous audit compatibility entrypoint");
-  console.log("  operation start audit|run|change ...          Start a detached supervised operation");
+  console.log("  operation start audit|run|change ...          Start a detached supervised operation; --resolve-operation <id> explicitly resolves one pending failed chain or Owner boundary");
   console.log("  operation portfolio [directory]               Inspect the lead's operation portfolio");
   console.log("  operation status|wait|cancel <operationId>    Observe/control a detached operation");
   console.log("  paseo agents [directory]                      Inspect AEH-managed Paseo agents");

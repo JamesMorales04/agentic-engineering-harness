@@ -68,7 +68,7 @@ async function bindCancellationDecision(root: string, operationId: string, actor
     candidateDigest: candidate.identityDigest,
     controllerEpoch: currentControllerEpoch(current),
     intent: "lifecycle cancellation test", route: "DIRECT", minimumAssurance: "STANDARD",
-    policyVersions: { resolvedOperationPolicy: "1" }, policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {},
+    policyVersions: { resolvedOperationPolicy: "2" }, policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {},
     allowedExternalEffects: [], humanDecisionRequirements: []
   });
   const bound = await bindResolvedOperationPolicy(root, operationId, policy);

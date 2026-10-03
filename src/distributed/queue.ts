@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import type { HarnessProjectConfig } from "../core/types.js";
-import { assertExecutionBindingV2 } from "../architecture/executionIdentity.js";
+import { assertExecutionBindingV3 } from "../architecture/executionIdentity.js";
 import { sha256Canonical } from "../core/digest.js";
 import { createPromptManifest } from "../context/runtimeV2.js";
 import type { ClaimedJob, DistributedDelegationJob, DistributedDelegationResult, DistributedExecutionReleaseV1, DistributedSessionReadyV1 } from "./types.js";
@@ -39,7 +39,7 @@ export async function completeDistributedJob(root: string, config: HarnessProjec
 }
 
 export async function waitForDistributedResult(root: string, config: HarnessProjectConfig, jobId: string, timeoutMs?: number): Promise<DistributedDelegationResult> {
-  const timeout = timeoutMs ?? (config.orchestration?.worker?.timeoutSeconds ?? 1800) * 1000; const deadline = Date.now() + timeout; const interval = config.distributed?.pollIntervalMs ?? 1000;
+  const timeout = timeoutMs ?? config.orchestration?.operations?.liveness?.hardDeadlineMs ?? 8 * 60 * 60_000; const deadline = Date.now() + timeout; const interval = config.distributed?.pollIntervalMs ?? 1000;
   while (Date.now() < deadline) {
     const result = config.distributed?.provider === "http" ? await getHttpResult(config, jobId) : await getFilesystemResult(root, config, jobId);
     if (result) return result;
@@ -61,7 +61,7 @@ export async function publishDistributedSessionReady(root: string, config: Harne
 }
 
 export async function waitForDistributedSessionReady(root: string, config: HarnessProjectConfig, jobId: string, timeoutMs?: number): Promise<DistributedSessionReadyV1> {
-  const timeout = timeoutMs ?? (config.orchestration?.worker?.timeoutSeconds ?? 1800) * 1000;
+  const timeout = timeoutMs ?? config.orchestration?.operations?.liveness?.providerTurnDeadlineMs ?? 30 * 60_000;
   const deadline = Date.now() + timeout;
   const interval = config.distributed?.pollIntervalMs ?? 1000;
   while (Date.now() < deadline) {
@@ -86,7 +86,7 @@ export async function releaseDistributedExecutionBinding(root: string, config: H
 }
 
 export async function waitForDistributedExecutionRelease(root: string, config: HarnessProjectConfig, jobId: string, workerId: string, leaseId: string, timeoutMs?: number): Promise<DistributedExecutionReleaseV1> {
-  const timeout = timeoutMs ?? (config.orchestration?.worker?.timeoutSeconds ?? 1800) * 1000;
+  const timeout = timeoutMs ?? (config.distributed?.leaseSeconds ? config.distributed.leaseSeconds * 1000 : 30 * 60_000);
   const deadline = Date.now() + timeout;
   const interval = config.distributed?.pollIntervalMs ?? 1000;
   while (Date.now() < deadline) {
@@ -150,7 +150,7 @@ function assertJobSessionPreparation(job: DistributedDelegationJob): void {
   if (!/^[a-f0-9]{64}$/.test(job.sessionPreparation?.contextManifestDigest ?? "") || contextDigest !== job.sessionPreparation.contextManifestDigest || promptDigest !== job.sessionPreparation.promptManifestDigest) throw new Error("DISTRIBUTED_EXECUTION_IDENTITY_INVALID: distributed job manifests do not match the actual frozen context and prompt.");
 }
 function assertReleaseMatchesLease(release: DistributedExecutionReleaseV1, lease: LeaseEnvelope, ready: DistributedSessionReadyV1 | undefined): void {
-  assertExecutionBindingV2(release.executionBinding);
+  assertExecutionBindingV3(release.executionBinding);
   if (!ready) throw new Error("DISTRIBUTED_SESSION_PREPARATION_REQUIRED");
   assertReadyMatchesLease(ready, lease);
   const binding = release.executionBinding;

@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildAcceptanceEvidenceBundleV1, evaluateAcceptanceOracleV1, type EvidenceBundleV1 } from "../src/architecture/acceptanceOracle.js";
-import { compileExecutionBinding, compileResolvedOperationPolicy, type ExecutionBindingV2 } from "../src/architecture/executionIdentity.js";
+import { compileExecutionBinding, compileResolvedOperationPolicy, type ExecutionBindingV3 } from "../src/architecture/executionIdentity.js";
 import { sha256Canonical } from "../src/core/digest.js";
 import type { ValidationCheck, ValidationReport } from "../src/core/types.js";
 import { initializeProject } from "../src/core/init.js";
@@ -47,7 +47,7 @@ function policy(current: CandidateRevisionV1) {
     intent: "0100 review provenance",
     route: "DIRECT",
     minimumAssurance: "STANDARD",
-    policyVersions: { resolvedOperationPolicy: "1" },
+    policyVersions: { resolvedOperationPolicy: "2" },
     policyDigests: {},
     validationPolicy: {},
     reviewPolicy: { leadAcceptance: false, leadAcceptanceDirect: false, independentReviewRequired: true, minimumIndependentReviewers: 1, providerDiversity: false },
@@ -59,7 +59,7 @@ function policy(current: CandidateRevisionV1) {
   });
 }
 
-function bindingFor(current: CandidateRevisionV1, sessionId: string, overrides: Partial<Parameters<typeof compileExecutionBinding>[0]> = {}): ExecutionBindingV2 {
+function bindingFor(current: CandidateRevisionV1, sessionId: string, overrides: Partial<Parameters<typeof compileExecutionBinding>[0]> = {}): ExecutionBindingV3 {
   return compileExecutionBinding({
     operationId: current.operationId,
     operationExecutionRevision: 1,
@@ -153,7 +153,7 @@ function bundleFor(operation: OperationRecordV2, current = candidate(), sessionI
   return buildAcceptanceEvidenceBundleV1({ operation, compilation: reviewCompilation(current), report: reportFor(current, sessionId), implementationIdentity: "implementer" });
 }
 
-function reviewerParticipant(binding: ExecutionBindingV2, artifact?: string): OperationParticipantRecord {
+function reviewerParticipant(binding: ExecutionBindingV3, artifact?: string): OperationParticipantRecord {
   return { id: authorityId, logicalAgent: "reviewer", role: "Reviewer", status: "REGISTERED", phase: "review", registeredAt: "2026-01-01T00:00:00.000Z", executionBinding: binding, ...(artifact ? { resultArtifact: artifact } : {}) };
 }
 

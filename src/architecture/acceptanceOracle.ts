@@ -1,8 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { assertExecutionBindingV2 } from "./executionIdentity.js";
-import type { ResolvedOperationPolicyV1 } from "./executionIdentity.js";
-import { assertResolvedOperationPolicyV1 } from "./executionIdentity.js";
+import { assertExecutionBindingV3 } from "./executionIdentity.js";
+import type { ResolvedOperationPolicyV2 } from "./executionIdentity.js";
+import { assertResolvedOperationPolicyV2 } from "./executionIdentity.js";
 import type { CandidateAssuranceCompilationV1 } from "./candidateAssurance.js";
 import { candidateRevisionsEqual, type CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import type { OperationRecordV2 } from "../operations/state.js";
@@ -102,13 +102,13 @@ export function currentObjectiveIdentityV1(operation: OperationRecordV2): Object
   if (!candidate || !policy || !Number.isSafeInteger(executionRevision) || executionRevision! < 1) {
     throw new Error("ACCEPTANCE_IDENTITY_REQUIRED: current candidate, frozen policy, and operation execution revision are required.");
   }
-  assertResolvedOperationPolicyV1(policy);
+  assertResolvedOperationPolicyV2(policy);
   const controllerEpoch = operation.controller?.epoch ?? 0;
   assertPolicyMatchesOperation(policy, operation, candidate, executionRevision!, controllerEpoch);
   return { operationId: operation.id, candidate, policyDigest: policy.digest, operationExecutionRevision: executionRevision!, controllerEpoch };
 }
 
-function assertPolicyMatchesOperation(policy: ResolvedOperationPolicyV1, operation: OperationRecordV2, candidate: CandidateRevisionV1, executionRevision: number, controllerEpoch: number): void {
+function assertPolicyMatchesOperation(policy: ResolvedOperationPolicyV2, operation: OperationRecordV2, candidate: CandidateRevisionV1, executionRevision: number, controllerEpoch: number): void {
   if (policy.operationId !== operation.id || policy.candidateRevision !== candidate.revision || policy.candidateDigest !== candidate.identityDigest
     || policy.operationExecutionRevision !== executionRevision || policy.controllerEpoch !== controllerEpoch
     || (candidate.projectId && policy.projectId !== candidate.projectId)) {
@@ -116,7 +116,7 @@ function assertPolicyMatchesOperation(policy: ResolvedOperationPolicyV1, operati
   }
 }
 
-export function leadAcceptanceRequiredV1(policy: ResolvedOperationPolicyV1): boolean {
+export function leadAcceptanceRequiredV1(policy: ResolvedOperationPolicyV2): boolean {
   const review = policy.reviewPolicy;
   if (!review || typeof review !== "object") throw new Error("ACCEPTANCE_POLICY_INVALID: frozen reviewPolicy is required.");
   const values = review as Record<string, unknown>;
@@ -126,7 +126,7 @@ export function leadAcceptanceRequiredV1(policy: ResolvedOperationPolicyV1): boo
   return values.leadAcceptance && (policy.route !== "DIRECT" || values.leadAcceptanceDirect);
 }
 
-export function resolveVerificationRequirementsV1(compilation: CandidateAssuranceCompilationV1, policy: ResolvedOperationPolicyV1): VerificationRequirementV1[] {
+export function resolveVerificationRequirementsV1(compilation: CandidateAssuranceCompilationV1, policy: ResolvedOperationPolicyV2): VerificationRequirementV1[] {
   assertCompilationCurrent(compilation, policy);
   const leadRequired = leadAcceptanceRequiredV1(policy);
   const validations = compilation.validationRequirements;
@@ -149,7 +149,7 @@ export function resolveVerificationRequirementsV1(compilation: CandidateAssuranc
   }).sort((a, b) => a.assertionId.localeCompare(b.assertionId));
 }
 
-function assertCompilationCurrent(compilation: CandidateAssuranceCompilationV1, policy: ResolvedOperationPolicyV1): void {
+function assertCompilationCurrent(compilation: CandidateAssuranceCompilationV1, policy: ResolvedOperationPolicyV2): void {
   if (!compilation || compilation.version !== 1 || !Array.isArray(compilation.acceptanceAssertions) || !Array.isArray(compilation.validationRequirements)) {
     throw new Error("ACCEPTANCE_COMPILATION_INVALID: candidate assurance compilation is required.");
   }
@@ -289,7 +289,7 @@ function currentReviewEvidence(operation: OperationRecordV2, checks: ValidationC
     let bindingValid = false;
     try {
       if (participant?.executionBinding) {
-        assertExecutionBindingV2(participant.executionBinding);
+        assertExecutionBindingV3(participant.executionBinding);
         const binding = participant.executionBinding;
         bindingValid = binding.operationId === identity.operationId && binding.operationExecutionRevision === identity.operationExecutionRevision
           && binding.candidateRevision === identity.candidate.revision && binding.candidateDigest === identity.candidate.identityDigest

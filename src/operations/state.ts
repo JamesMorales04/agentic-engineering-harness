@@ -9,10 +9,12 @@ import { objectiveParticipantAccountingV1 } from "./participantAccounting.js";
 import { canonicalSerialize, sha256Canonical, sha256Utf8 } from "../core/digest.js";
 import { computeWorktreeDigest } from "../core/git.js";
 import { assertWorkspaceMatchesCandidate } from "../candidates/identity.js";
-import { assertExecutionBindingV2, assertResolvedOperationPolicyV1, type ExecutionBindingV2, type ResolvedOperationPolicyV1 } from "../architecture/executionIdentity.js";
+import { assertExecutionBindingV3, assertResolvedOperationPolicyV2, type ExecutionBindingV3, type ResolvedOperationPolicyV2 } from "../architecture/executionIdentity.js";
 import { evaluateObjectiveCompletionV1, type ObjectiveCompletionInputV1 } from "../architecture/objectiveCompletion.js";
 import { currentObjectiveIdentityV1, loadCurrentAcceptanceOracleArtifactV1, type AcceptanceOracleDispositionV1 } from "../architecture/acceptanceOracle.js";
 import { HumanDecisionLedgerV2, assertContinuationRecordV1, assertDecisionRequestV1, type ContinuationRecordV1, type DecisionRequestV1, type HumanDecisionBindingV2, type HumanDecisionV2, type OperationControlCommandV1 } from "../security/humanDecision.js";
+import type { OwnerEconomicBoundaryRequirementV1, OwnerEconomicBoundarySignalV1, ParticipantExecutionLivenessV1, SupervisorRecoveryDecisionV1 } from "./executionLiveness.js";
+import { assertOperationOriginV1, type OperationOriginV1 } from "./operationProvenance.js";
 
 export type OperationKind = "audit" | "run" | "change";
 export type OperationStatus = "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
@@ -55,7 +57,7 @@ export interface IssueIntakeTerminalEvidenceV1 {
 }
 export type OperationPayload = AuditOperationPayload | RunOperationPayload | ChangeOperationPayload;
 
-export interface OperationAgentRecord { id: string; role?: string; phase?: string; workspaceId?: string; transport?: string; registeredAt: string; executionBinding?: ExecutionBindingV2; }
+export interface OperationAgentRecord { id: string; role?: string; phase?: string; workspaceId?: string; transport?: string; registeredAt: string; executionBinding?: ExecutionBindingV3; }
 export interface OperationLeadBinding { agentId: string; source?: string; generation: number; boundAt: string; acknowledgedRevision: number; acknowledgedAt?: string; }
 export interface OperationSupervisorGeneration {
   generation: number;
@@ -75,11 +77,30 @@ export interface OperationSupervisorGeneration {
 }
 export interface OperationSupervisionState { required: boolean; materialized: boolean; activeGeneration?: number; generations: OperationSupervisorGeneration[]; latestConsolidationRevision?: number; latestConsolidationArtifact?: string; }
 export interface OperationStageRecord { name: string; status: OperationStageStatus; revision: number; startedAt?: string; finishedAt?: string; message?: string; artifact?: string; }
-export interface OperationParticipantRecord { id: string; logicalAgent?: string; role?: string; stage?: string; phase?: string; parentSupervisorGeneration?: number; parentAgentId?: string; workspaceId?: string; transport?: string; status: OperationParticipantStatus; registeredAt: string; startedAt?: string; finishedAt?: string; resultArtifact?: string; executionBinding?: ExecutionBindingV2; error?: string; }
+export interface OperationParticipantRecord { id: string; logicalAgent?: string; role?: string; stage?: string; phase?: string; parentSupervisorGeneration?: number; parentAgentId?: string; workspaceId?: string; transport?: string; status: OperationParticipantStatus; registeredAt: string; startedAt?: string; finishedAt?: string; resultArtifact?: string; executionBinding?: ExecutionBindingV3; executionLiveness?: ParticipantExecutionLivenessV1; error?: string; }
 export interface OperationProgress { expected: number; registered: number; running: number; completed: number; failed: number; blocked: number; }
 export interface OperationNotificationState { lastLeadWakeRevision: number; lastLeadWakeAt?: string; lastLeadWakeReason?: string; terminalDelivered: boolean; attempts: number; lastError?: string; }
 export interface OperationIntentState { request?: string; classification?: "AUDIT" | "CHANGE" | "RUN"; route?: "NO_AGENT" | "DIRECT" | "DELEGATED" | "FORMAL_SDD"; assurance?: "NONE" | "STANDARD" | "ELEVATED" | "CRITICAL"; risk?: "low" | "medium" | "high"; priority?: number; semanticDecision?: IntentDecisionV1; }
 export interface OperationControllerBinding { epoch: number; ownerId: string; claimedAt: string; previousOwnerId?: string; tokenDigest?: string; pid?: number; }
+
+/** A frozen Owner execution fuse has elapsed. A Lead may not restart this
+ * Owner turn; only a distinct new Owner request may authorize a fresh root. */
+export interface OwnerContinuationBoundaryV1 {
+  version: 1;
+  kind: "OWNER_CONTINUATION_BOUNDARY";
+  reasonCode: "HARD_OPERATION_DEADLINE";
+  operationId: string;
+  userTurnId?: string;
+  triggerEventId: string;
+  rootHardDeadlineAt: string;
+  candidateDigest: string;
+  policyDigest: string;
+  controllerEpoch: number;
+  state: "WAITING";
+  reason: string;
+  createdAt: string;
+  digest: string;
+}
 
 export const operationPauseRevalidationValuesV1 = [
   "candidate-current",
@@ -154,7 +175,11 @@ export interface OperationRecordV2 {
   /** Changes only when operation execution semantics change; record revision remains event/order identity. */
   operationExecutionRevision?: number;
   executionSemanticsDigest?: string;
-  resolvedOperationPolicy?: ResolvedOperationPolicyV1;
+  resolvedOperationPolicy?: ResolvedOperationPolicyV2;
+  origin?: OperationOriginV1;
+  latestRecoveryDecision?: SupervisorRecoveryDecisionV1;
+  ownerEconomicBoundary?: OwnerEconomicBoundaryRequirementV1;
+  ownerContinuationBoundary?: OwnerContinuationBoundaryV1;
   controller?: OperationControllerBinding;
   decisionRequest?: DecisionRequestV1;
   continuation?: ContinuationRecordV1;
@@ -164,6 +189,7 @@ export interface OperationRecordV2 {
 }
 export type OperationRecord = OperationRecordV1 | OperationRecordV2;
 export interface TerminalOperationTransition { record: OperationRecordV2; transitioned: boolean; }
+export type TerminalEconomicBoundaryEvaluatorV1 = (operation: OperationRecordV2, targetStatus: "SUCCEEDED" | "FAILED") => Promise<OwnerEconomicBoundarySignalV1 | undefined>;
 export interface OperationEvent { version: 1; operationId: string; revision: number; at: string; type: string; status: OperationStatus; phase: string; changed?: string[]; details?: Record<string, unknown>; }
 
 /** Private durable outbox field. It is removed when an operation is loaded. */
@@ -229,38 +255,199 @@ export async function saveOperation(root: string, record: OperationRecord): Prom
       throw new Error(`AEH_OPERATION_EXISTS: operation '${normalized.id}' is already durable; mutate it through its lifecycle API.`);
     }
     if (normalized.candidateRevision) await assertWorkspaceMatchesCandidate(normalized.candidateRevision.worktree ?? sourceRoot, normalized.candidateRevision);
-    await commitOperationRecord(stateRoot, file, normalized, "operation.created", ["status", "phase", "candidateRevision", "intent", "changePreflight"]);
+    if (normalized.origin) assertOperationOriginV1(normalized.origin);
+    await commitOperationRecord(stateRoot, file, normalized, "operation.created", ["status", "phase", "candidateRevision", "intent", "changePreflight", "origin"], normalized.origin ? {
+      originDigest: normalized.origin.digest,
+      originKind: normalized.origin.kind,
+      parentOperationId: normalized.origin.parentOperationId ?? null,
+      parentTerminalRevision: normalized.origin.parentTerminalRevision ?? null,
+      triggerEventId: normalized.origin.triggerEventId,
+      controllerOwnerId: normalized.origin.controllerOwnerId ?? null,
+      userTurnId: normalized.origin.userTurnId ?? null,
+      requestEventId: normalized.origin.requestEventId ?? null,
+      inheritedEconomicUsageDigest: normalized.origin.inheritedEconomicUsageDigest ?? null,
+      authorizationDigest: normalized.origin.authorizationDigest
+    } : undefined);
   });
 }
 export async function patchOperation(root: string, operationId: string, patch: Partial<OperationRecordV2>): Promise<OperationRecordV2> { return mutateOperation(root, operationId, patch, true, "operation.updated"); }
 export async function patchOperationMetadata(root: string, operationId: string, patch: Partial<OperationRecordV2>): Promise<OperationRecordV2> { return mutateOperation(root, operationId, patch, false, "operation.metadata"); }
-export async function updateOperationMetadata(root: string, operationId: string, update: (current: OperationRecordV2, now: string) => Partial<OperationRecordV2>): Promise<OperationRecordV2> {
-  return mutateOperation(root, operationId, {}, false, "operation.metadata", (current, _revision, now) => ({ ...current, ...update(current, now) }), true);
+export async function updateOperationMetadata(
+  root: string,
+  operationId: string,
+  update: (current: OperationRecordV2, now: string) => Partial<OperationRecordV2>,
+  options: { touchRevision?: boolean; eventType?: string } = {}
+): Promise<OperationRecordV2> {
+  const touchRevision = options.touchRevision === true;
+  return mutateOperation(root, operationId, {}, touchRevision, options.eventType ?? "operation.metadata", (current, revision, now) => ({
+    ...current,
+    ...update(current, now),
+    ...(touchRevision ? { revision, updatedAt: now, lastProgressAt: now } : {})
+  }), true);
 }
 
-export async function transitionOperationToTerminal(root: string, operationId: string, patch: Partial<OperationRecordV2> & { status: "SUCCEEDED" | "FAILED" | "CANCELLED" }): Promise<TerminalOperationTransition> {
+function createOwnerEconomicBoundaryRequirementV1(operation: OperationRecordV2, participant: OperationParticipantRecord | undefined, signal: OwnerEconomicBoundarySignalV1, at: Date): OwnerEconomicBoundaryRequirementV1 {
+  const binding = participant?.executionBinding;
+  const participantId = participant?.id ?? "controller:operation";
+  const participantGeneration = binding?.participantGeneration ?? "controller";
+  const executionBindingDigest = binding?.digest ?? sha256Canonical({ operationId: operation.id, candidateDigest: operation.candidateRevision?.identityDigest, policyDigest: operation.resolvedOperationPolicy?.digest, controllerEpoch: currentControllerEpoch(operation), scope: "OPERATION" });
+  const body: Omit<OwnerEconomicBoundaryRequirementV1, "digest"> = {
+    version: 1,
+    kind: "OWNER_ECONOMIC_BOUNDARY",
+    scope: participant ? "PARTICIPANT" : "OPERATION",
+    operationId: operation.id,
+    participantId,
+    participantGeneration,
+    executionBindingDigest,
+    candidateDigest: binding?.candidateDigest ?? operation.candidateRevision?.identityDigest ?? sha256Canonical({ operationId: operation.id, noCandidate: true }),
+    policyDigest: binding?.operationPolicyDigest ?? operation.resolvedOperationPolicy?.digest ?? sha256Canonical({ operationId: operation.id, noPolicy: true }),
+    controllerEpoch: binding?.controllerEpoch ?? currentControllerEpoch(operation),
+    budget: signal.budget,
+    configuredLimit: signal.configuredLimit,
+    observed: signal.observed,
+    usageCoverage: signal.usageCoverage,
+    evidenceRefs: [...new Set(signal.evidenceRefs)].slice(-16),
+    reason: signal.reason.slice(0, 2_000),
+    state: "WAITING",
+    createdAt: at.toISOString()
+  };
+  return { ...body, digest: sha256Canonical(body) };
+}
+
+function createOwnerContinuationBoundaryV1(operation: OperationRecordV2, deadline: number, at: Date, terminalRevision: number): OwnerContinuationBoundaryV1 {
+  const body: Omit<OwnerContinuationBoundaryV1, "digest"> = {
+    version: 1,
+    kind: "OWNER_CONTINUATION_BOUNDARY",
+    reasonCode: "HARD_OPERATION_DEADLINE",
+    operationId: operation.id,
+    ...(operation.origin?.userTurnId ? { userTurnId: operation.origin.userTurnId } : {}),
+    triggerEventId: `operation.hard-deadline:${operation.id}:${terminalRevision}`,
+    rootHardDeadlineAt: operation.origin?.rootHardDeadlineAt ?? new Date(deadline).toISOString(),
+    candidateDigest: operation.candidateRevision?.identityDigest ?? sha256Canonical({ operationId: operation.id, noCandidate: true }),
+    policyDigest: operation.resolvedOperationPolicy?.digest ?? sha256Canonical({ operationId: operation.id, noPolicy: true }),
+    controllerEpoch: currentControllerEpoch(operation),
+    state: "WAITING",
+    reason: `The frozen Owner hard operation deadline ${new Date(deadline).toISOString()} elapsed. A new execution root requires an explicit Owner-authorized CLI start.`,
+    createdAt: at.toISOString()
+  };
+  return { ...body, digest: sha256Canonical(body) };
+}
+
+function frozenOperationHardDeadlineAt(operation: OperationRecordV2): number | undefined {
+  const createdAt = Date.parse(operation.createdAt);
+  const policyDeadline = operation.resolvedOperationPolicy
+    ? createdAt + operation.resolvedOperationPolicy.executionLiveness.hardDeadlineMs
+    : Number.POSITIVE_INFINITY;
+  const rootDeadline = operation.origin ? Date.parse(operation.origin.rootHardDeadlineAt) : Number.POSITIVE_INFINITY;
+  const deadline = Math.min(policyDeadline, rootDeadline);
+  return Number.isFinite(deadline) ? deadline : undefined;
+}
+
+export async function transitionOperationToTerminal(
+  root: string,
+  operationId: string,
+  patch: Partial<OperationRecordV2> & { status: "SUCCEEDED" | "FAILED" | "CANCELLED" },
+  evaluateEconomicBoundary?: TerminalEconomicBoundaryEvaluatorV1
+): Promise<TerminalOperationTransition> {
   const stateRoot = resolveOperationStateRoot(root); const file = operationFile(stateRoot, operationId); await fs.mkdir(path.dirname(file), { recursive: true });
-  return withOperationLock(file, async () => {
+  return withOperationCoordinationLock(stateRoot, operationId, () => withOperationLock(file, async () => {
     const stored = await readStoredOperation(file);
     await recoverPendingOperationEvent(stateRoot, file, stored);
     let current = stored.record;
     if (isTerminal(current.status)) return { record: current, transitioned: false };
     assertCurrentControllerOwner(current, "terminal transition");
-    if (!isAllowedOperationStatusTransition(current.status, patch.status)) throw new Error(`Invalid operation status transition ${current.status} -> ${patch.status}.`);
-    if (patch.status === "SUCCEEDED") {
+    let effectivePatch: typeof patch = patch;
+    const hardDeadlineAt = frozenOperationHardDeadlineAt(current);
+    if (hardDeadlineAt !== undefined && Date.now() >= hardDeadlineAt) {
+      const boundary = current.ownerContinuationBoundary ?? createOwnerContinuationBoundaryV1(current, hardDeadlineAt, new Date(), current.revision + 1);
+      const deadlineError = `HUMAN_REQUIRED: OPERATION_HARD_DEADLINE_REACHED: frozen Owner deadline ${new Date(hardDeadlineAt).toISOString()} elapsed before terminal transition.`;
+      effectivePatch = patch.status === "CANCELLED"
+        ? { ...patch, ownerContinuationBoundary: boundary }
+        : { ...patch, status: "FAILED", phase: "HUMAN_REQUIRED", ownerContinuationBoundary: boundary, error: deadlineError };
+    }
+    if (effectivePatch.status === "SUCCEEDED" || effectivePatch.status === "FAILED") {
+      const economicTargetStatus = effectivePatch.status as "SUCCEEDED" | "FAILED";
+      if (effectivePatch.status === "SUCCEEDED" && current.ownerEconomicBoundary) {
+        effectivePatch = { ...effectivePatch, status: "FAILED", phase: "HUMAN_REQUIRED", error: `HUMAN_REQUIRED: ${current.ownerEconomicBoundary.reason}` };
+      }
+      if (effectivePatch.status === "FAILED" && current.ownerEconomicBoundary) effectivePatch = { ...effectivePatch, phase: "HUMAN_REQUIRED", error: effectivePatch.error ?? `HUMAN_REQUIRED: ${current.ownerEconomicBoundary.reason}` };
+      const economic = current.resolvedOperationPolicy?.economicEnvelope;
+      const needsEconomicAssessment = economic?.hardTotalTokens !== undefined || economic?.hardCostUsd !== undefined || economic?.hardToolCalls !== undefined;
+      if (!current.ownerEconomicBoundary && needsEconomicAssessment && !evaluateEconomicBoundary) throw new Error("OWNER_ECONOMIC_ASSESSMENT_REQUIRED: terminal success or failure under configured hard token, cost, or tool ceilings must be evaluated by the controller under the terminal coordination lock.");
+      const boundary = current.ownerEconomicBoundary || !evaluateEconomicBoundary ? undefined : await evaluateEconomicBoundary(current, economicTargetStatus);
+      if (boundary) {
+        const participant = Object.values(current.participants).filter((item) => item.executionBinding).sort((left, right) => {
+          const l = Date.parse(left.executionLiveness?.lastActivityAt ?? left.startedAt ?? left.registeredAt);
+          const r = Date.parse(right.executionLiveness?.lastActivityAt ?? right.startedAt ?? right.registeredAt);
+          return r - l;
+        })[0];
+        const ownerEconomicBoundary = createOwnerEconomicBoundaryRequirementV1(current, participant, boundary, effectivePatch.finishedAt ? new Date(effectivePatch.finishedAt) : new Date());
+        effectivePatch = {
+          ...effectivePatch,
+          status: "FAILED",
+          phase: "HUMAN_REQUIRED",
+          error: `HUMAN_REQUIRED: ${boundary.reason}`,
+          ownerEconomicBoundary,
+          result: { ...(effectivePatch.result ?? {}), economicBoundary: { budget: boundary.budget, configuredLimit: boundary.configuredLimit, observed: boundary.observed, usageCoverage: boundary.usageCoverage, evidenceRefs: boundary.evidenceRefs } }
+        };
+      }
+    }
+    if (!isAllowedOperationStatusTransition(current.status, effectivePatch.status)) throw new Error(`Invalid operation status transition ${current.status} -> ${effectivePatch.status}.`);
+    if (effectivePatch.status === "SUCCEEDED") {
       if (!current.candidateRevision) throw new Error("V2_TERMINAL_GATE_REJECTED: successful operations require a current candidate revision.");
       await assertWorkspaceMatchesCandidate(candidateWorkspaceRoot(current, current.candidateRevision), current.candidateRevision);
     }
-    if (patch.status === "SUCCEEDED" && Object.keys(current.participants).length === 0 && Object.keys(current.participantReceipts ?? {}).length === 0) {
-      current = await createControllerTerminalReceipt(stateRoot, current, patch);
+    if (effectivePatch.status === "SUCCEEDED" && Object.keys(current.participants).length === 0 && Object.keys(current.participantReceipts ?? {}).length === 0) {
+      current = await createControllerTerminalReceipt(stateRoot, current, effectivePatch);
     }
-    if (patch.status === "SUCCEEDED") await assertSuccessTerminalEvidence(stateRoot, current, patch.result);
-    const now = new Date().toISOString(); const revision = current.revision + 1; const participants = settleParticipants(current.participants, patch.status, now); const supervision = settleSupervision(current.supervision, now);
-    const stages = settleRunningStages(current.stages, patch.status, revision, now);
-    stages.finished = { name: "finished", status: terminalStageStatus(patch.status), revision, startedAt: now, finishedAt: now };
-    const next = normalizeOperationRecord({ ...current, ...patch, version: 2, id: current.id, kind: current.kind, revision, updatedAt: now, lastProgressAt: now, finishedAt: patch.finishedAt ?? now, participants, progress: deriveProgress(participants), supervision, decisionRequest: undefined, continuation: undefined, pause: undefined, stages } as OperationRecordV2);
-    if (patch.status === "SUCCEEDED" && next.candidateRevision) await assertWorkspaceMatchesCandidate(candidateWorkspaceRoot(next, next.candidateRevision), next.candidateRevision);
-    await commitOperationRecord(stateRoot, file, next, "operation.terminal", ["status", "phase", "participants", "progress", "supervision", "stages"]); return { record: next, transitioned: true };
+    if (effectivePatch.status === "SUCCEEDED") await assertSuccessTerminalEvidence(stateRoot, current, effectivePatch.result);
+    const now = new Date().toISOString(); const revision = current.revision + 1; const participants = settleParticipants(current.participants, effectivePatch.status, now); const supervision = settleSupervision(current.supervision, now);
+    const stages = settleRunningStages(current.stages, effectivePatch.status, revision, now);
+    stages.finished = { name: "finished", status: terminalStageStatus(effectivePatch.status), revision, startedAt: now, finishedAt: now };
+    const next = normalizeOperationRecord({ ...current, ...effectivePatch, version: 2, id: current.id, kind: current.kind, revision, updatedAt: now, lastProgressAt: now, finishedAt: effectivePatch.finishedAt ?? now, participants, progress: deriveProgress(participants), supervision, decisionRequest: undefined, continuation: undefined, pause: undefined, stages } as OperationRecordV2);
+    if (effectivePatch.status === "SUCCEEDED" && next.candidateRevision) await assertWorkspaceMatchesCandidate(candidateWorkspaceRoot(next, next.candidateRevision), next.candidateRevision);
+    await commitOperationRecord(stateRoot, file, next, "operation.terminal", ["status", "phase", "ownerEconomicBoundary", "ownerContinuationBoundary", "participants", "progress", "supervision", "stages"]); return { record: next, transitioned: true };
+  }));
+}
+
+/** Safety-only terminal transition used by the watchdog after the frozen hard deadline. */
+export async function transitionOperationAtHardDeadlineV1(root: string, operationId: string, at = new Date()): Promise<TerminalOperationTransition> {
+  const stateRoot = resolveOperationStateRoot(root);
+  const file = operationFile(stateRoot, operationId);
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  return withOperationLock(file, async () => {
+    const stored = await readStoredOperation(file);
+    await recoverPendingOperationEvent(stateRoot, file, stored);
+    const current = stored.record;
+    if (isTerminal(current.status)) return { record: current, transitioned: false };
+    if (current.resolvedOperationPolicy) assertResolvedOperationPolicyV2(current.resolvedOperationPolicy);
+    if (!Number.isFinite(Date.parse(current.createdAt))) throw new Error("OPERATION_HARD_DEADLINE_POLICY_MISSING: operation creation timestamp is invalid.");
+    const deadline = frozenOperationHardDeadlineAt(current) ?? Number.POSITIVE_INFINITY;
+    if (!Number.isFinite(deadline) || at.getTime() < deadline) throw new Error("OPERATION_HARD_DEADLINE_NOT_REACHED: watchdog terminalization requires the exact frozen deadline to have elapsed.");
+    const now = at.toISOString();
+    const revision = current.revision + 1;
+    const ownerContinuationBoundary = createOwnerContinuationBoundaryV1(current, deadline, at, revision);
+    const participants = settleParticipants(current.participants, "FAILED", now);
+    const supervision = settleSupervision(current.supervision, now);
+    const stages = settleRunningStages(current.stages, "FAILED", revision, now);
+    stages.finished = { name: "finished", status: "FAILED", revision, startedAt: now, finishedAt: now };
+    const next = normalizeOperationRecord({
+      ...current,
+      status: "FAILED",
+      phase: "HUMAN_REQUIRED",
+      ownerContinuationBoundary,
+      error: `HUMAN_REQUIRED: OPERATION_HARD_DEADLINE_REACHED: frozen owner deadline ${new Date(deadline).toISOString()} elapsed.`,
+      revision,
+      updatedAt: now,
+      lastProgressAt: now,
+      finishedAt: now,
+      participants,
+      progress: deriveProgress(participants),
+      supervision,
+      stages
+    } as OperationRecordV2);
+    await commitOperationRecord(stateRoot, file, next, "operation.hard-deadline", ["status", "phase", "ownerContinuationBoundary", "participants", "progress", "supervision", "stages"], { hardDeadlineAt: new Date(deadline).toISOString() });
+    return { record: next, transitioned: true };
   });
 }
 
@@ -349,7 +536,7 @@ async function consumeControllerCancellationDecision(root: string, current: Oper
   if (!candidate || !policy || !Number.isSafeInteger(current.operationExecutionRevision)) {
     throw new Error("AEH_CANCELLATION_AUTHORITY_REQUIRED: cancellation requires current candidate, execution revision, and frozen policy identity.");
   }
-  assertResolvedOperationPolicyV1(policy);
+  assertResolvedOperationPolicyV2(policy);
   if (policy.operationId !== current.id || policy.operationExecutionRevision !== current.operationExecutionRevision
     || policy.candidateRevision !== candidate.revision || policy.candidateDigest !== candidate.identityDigest
     || policy.controllerEpoch !== currentControllerEpoch(current) || (candidate.projectId && policy.projectId !== candidate.projectId)) {
@@ -447,8 +634,8 @@ export async function bindOperationCandidate(root: string, operationId: string, 
   }, true);
 }
 
-export async function bindResolvedOperationPolicy(root: string, operationId: string, policy: ResolvedOperationPolicyV1): Promise<OperationRecordV2> {
-  assertResolvedOperationPolicyV1(policy);
+export async function bindResolvedOperationPolicy(root: string, operationId: string, policy: ResolvedOperationPolicyV2): Promise<OperationRecordV2> {
+  assertResolvedOperationPolicyV2(policy);
   return mutateOperation(root, operationId, {}, true, "operation.policy.bound", async (current, revision, now) => {
     if (policy.operationId !== current.id) throw new Error("EXECUTION_POLICY_STALE: policy belongs to a different operation.");
     if (!current.candidateRevision || current.candidateRevision.identityDigest !== policy.candidateDigest || current.candidateRevision.revision !== policy.candidateRevision) throw new Error("EXECUTION_POLICY_STALE: policy does not bind the current candidate.");
@@ -1168,7 +1355,7 @@ export async function completeOperationProductChoice(root: string, operationId: 
  * participant bindings issued under it. Without this the compiled policy would collide with the
  * provisional body and fail closed with EXECUTION_POLICY_RECOMPILE_REQUIRED (AEH-V2-0110).
  */
-export function isProvisionalOperationPolicyV1(policy: ResolvedOperationPolicyV1 | undefined): boolean {
+export function isProvisionalOperationPolicyV1(policy: ResolvedOperationPolicyV2 | undefined): boolean {
   if (!policy || typeof policy.knowledgePolicy !== "object" || policy.knowledgePolicy === null || Array.isArray(policy.knowledgePolicy)) return false;
   return (policy.knowledgePolicy as Record<string, unknown>).bootstrap === true;
 }
@@ -1326,18 +1513,18 @@ export async function bindOperationParticipantExecution(root: string, operationI
   participantId: string;
   logicalAgent: string;
   role: string;
-  binding: ExecutionBindingV2;
+  binding: ExecutionBindingV3;
 }): Promise<OperationRecordV2> {
   return mutateOperation(root, operationId, {}, true, "operation.participant.execution-bound", (current, revision, now) => {
     const binding = input.binding;
-    assertExecutionBindingV2(binding);
+    assertExecutionBindingV3(binding);
     if (!current.resolvedOperationPolicy) throw new Error("EXECUTION_POLICY_REQUIRED: participant binding requires a frozen ResolvedOperationPolicy.");
-    assertResolvedOperationPolicyV1(current.resolvedOperationPolicy);
+    assertResolvedOperationPolicyV2(current.resolvedOperationPolicy);
     if (binding.operationPolicyDigest !== current.resolvedOperationPolicy.digest) throw new Error("EXECUTION_POLICY_MISMATCH: participant binding does not use the operation's frozen policy.");
     if (!current.candidateRevision || current.candidateRevision.identityDigest !== binding.candidateDigest || current.candidateRevision.revision !== binding.candidateRevision) {
       throw new Error("V2_RESULT_PROVENANCE: execution binding candidate is no longer current.");
     }
-    if (binding.version !== 2) throw new Error("UNSUPPORTED_EXECUTION_BINDING_VERSION: expected version 2; relaunch this participant with a current binding.");
+    if (binding.version !== 3) throw new Error("UNSUPPORTED_EXECUTION_BINDING_VERSION: expected version 3; relaunch this participant with a current binding.");
     if (current.operationExecutionRevision === undefined || current.operationExecutionRevision !== binding.operationExecutionRevision) throw new Error("V2_RESULT_PROVENANCE: execution binding operation execution revision is stale or unsupported.");
     if (currentControllerEpoch(current) !== binding.controllerEpoch) throw new Error("V2_RESULT_PROVENANCE: execution binding controller epoch is stale.");
     const previous = current.participants[input.participantId];
@@ -1382,11 +1569,14 @@ export async function updateCurrentOperationPhase(root: string, phase: string): 
 export function normalizeOperationRecord(record: OperationRecord): OperationRecordV2 {
   if (record.version === 2) {
     const participants = record.participants ?? {};
+    if (record.origin) assertOperationOriginV1(record.origin);
     if (record.decisionRequest) assertDecisionRequestV1(record.decisionRequest);
     if (record.continuation) assertContinuationRecordV1(record.continuation);
     if (record.decisionRequest && (!record.continuation || record.continuation.state !== "WAITING")) throw new Error("DECISION_CONTINUATION_STATE_INVALID: only a waiting continuation may expose its DecisionRequest.");
     if (record.continuation?.state === "WAITING" && !record.decisionRequest) throw new Error("DECISION_CONTINUATION_STATE_INVALID: a waiting continuation requires its DecisionRequest.");
-    if (record.phase === "HUMAN_REQUIRED" && (!record.decisionRequest || !record.continuation || record.continuation.state !== "WAITING")) throw new Error("DECISION_CONTINUATION_STATE_INVALID: HUMAN_REQUIRED requires a current waiting DecisionRequest and continuation.");
+    if (record.phase === "HUMAN_REQUIRED" && !record.ownerEconomicBoundary && !record.ownerContinuationBoundary && (!record.decisionRequest || !record.continuation || record.continuation.state !== "WAITING")) throw new Error("DECISION_CONTINUATION_STATE_INVALID: HUMAN_REQUIRED requires a current waiting decision, continuation, or typed Owner boundary.");
+    if (record.ownerEconomicBoundary) assertOwnerEconomicBoundaryRequirementV1(record.ownerEconomicBoundary, record);
+    if (record.ownerContinuationBoundary) assertOwnerContinuationBoundaryV1(record.ownerContinuationBoundary, record);
     return { ...record, version: 2 as const, revision: Math.max(1, record.revision || 1), lastProgressAt: record.lastProgressAt || record.updatedAt, supervision: record.supervision ?? defaultSupervision(record.kind), stages: record.stages ?? {}, participants, progress: record.progress ?? deriveProgress(participants), notification: record.notification ?? defaultNotification(), controller: record.controller ?? { epoch: 0, ownerId: "controller:none", claimedAt: record.createdAt } };
   }
   const participants: Record<string, OperationParticipantRecord> = {};
@@ -1395,11 +1585,48 @@ export function normalizeOperationRecord(record: OperationRecord): OperationReco
   return normalized;
 }
 
+function assertOwnerEconomicBoundaryRequirementV1(requirement: OwnerEconomicBoundaryRequirementV1, operation: OperationRecordV2): void {
+  const { digest, ...body } = requirement;
+  const participantScoped = requirement.scope === "PARTICIPANT" && Boolean(operation.participants[requirement.participantId]);
+  const operationScoped = requirement.scope === "OPERATION" && requirement.participantId === "controller:operation" && requirement.participantGeneration === "controller";
+  if (requirement.version !== 1 || requirement.kind !== "OWNER_ECONOMIC_BOUNDARY" || requirement.state !== "WAITING"
+    || requirement.operationId !== operation.id || operation.phase !== "HUMAN_REQUIRED" && operation.status !== "CANCELLED"
+    || !participantScoped && !operationScoped
+    || operation.candidateRevision?.identityDigest !== requirement.candidateDigest
+    || !/^[a-f0-9]{64}$/.test(requirement.executionBindingDigest) || !/^[a-f0-9]{64}$/.test(requirement.policyDigest)
+    || !Number.isSafeInteger(requirement.controllerEpoch) || requirement.controllerEpoch < 0 || requirement.controllerEpoch > currentControllerEpoch(operation)
+    || !Number.isFinite(requirement.configuredLimit) || requirement.configuredLimit < 0
+    || requirement.observed !== null && (!Number.isFinite(requirement.observed) || requirement.observed < 0)
+    || !["COMPLETE", "PARTIAL", "UNKNOWN"].includes(requirement.usageCoverage)
+    || !Array.isArray(requirement.evidenceRefs) || !requirement.evidenceRefs.length
+    || !requirement.reason.trim() || !Number.isFinite(Date.parse(requirement.createdAt))
+    || !/^[a-f0-9]{64}$/.test(digest) || sha256Canonical(body) !== digest) {
+    throw new Error("OWNER_ECONOMIC_BOUNDARY_INVALID: request must bind the current operation, participant, candidate, policy, epoch, evidence, and digest.");
+  }
+}
+
+function assertOwnerContinuationBoundaryV1(requirement: OwnerContinuationBoundaryV1, operation: OperationRecordV2): void {
+  const { digest, ...body } = requirement;
+  const terminalBoundaryState = operation.status === "FAILED" && operation.phase === "HUMAN_REQUIRED"
+    || operation.status === "CANCELLED" && operation.phase === "cancelled";
+  if (requirement.version !== 1 || requirement.kind !== "OWNER_CONTINUATION_BOUNDARY" || requirement.reasonCode !== "HARD_OPERATION_DEADLINE"
+    || requirement.operationId !== operation.id || !terminalBoundaryState
+    || requirement.state !== "WAITING" || !requirement.triggerEventId.startsWith(`operation.hard-deadline:${operation.id}:`)
+    || !Number.isSafeInteger(Number(requirement.triggerEventId.split(":").at(-1)))
+    || requirement.candidateDigest !== (operation.candidateRevision?.identityDigest ?? sha256Canonical({ operationId: operation.id, noCandidate: true }))
+    || requirement.policyDigest !== (operation.resolvedOperationPolicy?.digest ?? sha256Canonical({ operationId: operation.id, noPolicy: true }))
+    || !Number.isSafeInteger(requirement.controllerEpoch) || requirement.controllerEpoch < 0 || requirement.controllerEpoch > currentControllerEpoch(operation)
+    || !Number.isFinite(Date.parse(requirement.rootHardDeadlineAt)) || !Number.isFinite(Date.parse(requirement.createdAt))
+    || !requirement.reason.trim() || !/^[a-f0-9]{64}$/.test(digest) || sha256Canonical(body) !== digest) {
+    throw new Error("OWNER_CONTINUATION_BOUNDARY_INVALID: hard-deadline requirement must bind the failed operation, Owner turn, candidate, policy, epoch, and trigger event.");
+  }
+}
+
 function currentDecisionBinding(record: OperationRecordV2, action: string): HumanDecisionBindingV2 {
   const candidate = record.candidateRevision;
   const policy = record.resolvedOperationPolicy;
   if (!candidate || !policy || !Number.isSafeInteger(record.operationExecutionRevision)) throw new Error(`DECISION_AUTHORITY_REQUIRED: ${action} requires current candidate, execution revision, and frozen policy.`);
-  assertResolvedOperationPolicyV1(policy);
+  assertResolvedOperationPolicyV2(policy);
   const binding: HumanDecisionBindingV2 = {
     operationId: record.id,
     candidate,
@@ -1523,7 +1750,7 @@ function assertExecutionIdentityTransition(
   });
   if (bindingChanges.length && eventType === "operation.participant.execution-bound") {
     if (bindingChanges.length !== 1 || !bindingChanges[0].following) throw new Error("EXECUTION_BINDING_IMMUTABLE: participant binding lifecycle may only create or replace one execution binding.");
-    assertExecutionBindingV2(bindingChanges[0].following);
+    assertExecutionBindingV3(bindingChanges[0].following);
   } else if (bindingChanges.length && canInvalidate.has(eventType)) {
     if (bindingChanges.some(({ following }) => following !== undefined)) throw new Error("EXECUTION_BINDING_IMMUTABLE: candidate assembly, controller takeover, and execution-semantics recompilation may only invalidate execution bindings.");
   } else if (bindingChanges.length) {
@@ -1585,10 +1812,10 @@ function assertOperationExecutionRevisionTransition(
  * before any mutation callback could alter the loaded record, so a changed body
  * cannot hide behind a retained declared digest or an in-place mutation.
  */
-function assertOperationPolicyTransition(currentCanonical: string | undefined, next: ResolvedOperationPolicyV1 | undefined, eventType: string, invalidatingEvents: ReadonlySet<string>): void {
+function assertOperationPolicyTransition(currentCanonical: string | undefined, next: ResolvedOperationPolicyV2 | undefined, eventType: string, invalidatingEvents: ReadonlySet<string>): void {
   if (eventType === "operation.policy.bound") {
     if (next === undefined) throw new Error("EXECUTION_POLICY_IMMUTABLE: operation.policy.bound must persist a frozen ResolvedOperationPolicy.");
-    assertResolvedOperationPolicyV1(next);
+    assertResolvedOperationPolicyV2(next);
     const nextCanonical = canonicalSerialize(next);
     if (currentCanonical === undefined || currentCanonical === nextCanonical) return;
     throw new Error("EXECUTION_POLICY_IMMUTABLE: a bound ResolvedOperationPolicy may be rebound only with the complete unchanged canonical value.");

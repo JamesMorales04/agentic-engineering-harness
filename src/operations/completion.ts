@@ -129,14 +129,25 @@ export function completionPrompt(operation: OperationRecord): string {
   const artifact = resultPath(operation);
   const resultKeys = Object.keys(operation.result ?? {}).sort();
   const revision = operation.version === 2 ? operation.revision : undefined;
+  const structuredResult = operation.version === 2 ? operation.result as Record<string, unknown> | undefined : undefined;
+  const recoveryRequest = structuredResult?.recoveryRequest && typeof structuredResult.recoveryRequest === "object" ? structuredResult.recoveryRequest as Record<string, unknown> : undefined;
+  const ownerBoundary = operation.version === 2 ? operation.ownerEconomicBoundary : undefined;
+  const ownerContinuationBoundary = operation.version === 2 ? operation.ownerContinuationBoundary : undefined;
+  const failedRecoveryRequired = (operation.status === "FAILED" || operation.status === "CANCELLED") && !ownerBoundary && !ownerContinuationBoundary && !recoveryRequest;
   return [
     "[AEH_OPERATION_COMPLETED]",
     `Detached AEH operation ${operation.id} (${operation.kind}) reached terminal state ${operation.status}${revision ? ` at revision ${revision}` : ""}.`,
     "This is an internal AEH operation continuation event, not a new user task. Do not start a duplicate operation or restart the completed operation.",
     artifact ? `Authoritative result artifact: ${artifact}.` : `Durable result keys: ${resultKeys.length ? resultKeys.join(", ") : "none"}.`,
+    ...(ownerBoundary ? [`HUMAN_REQUIRED Owner economic boundary: ${ownerBoundary.budget}; observed=${ownerBoundary.observed ?? "unknown"}; configured limit=${ownerBoundary.configuredLimit}; usage coverage=${ownerBoundary.usageCoverage}; reason=${ownerBoundary.reason}. Tell the human Owner exactly this evidence and do not create a replacement operation automatically.`] : []),
+    ...(ownerContinuationBoundary ? [`HUMAN_REQUIRED hard execution deadline: ${ownerContinuationBoundary.reason} This internal callback and any Lead-supplied userTurnId are not new Owner authorization. Do not create a linked child or another Lead-started operation; wait for an explicit Owner-authorized CLI operation start.`] : []),
+    ...(recoveryRequest ? [`The controller applied ${String(recoveryRequest.actorRole ?? "Supervisor")} ${String(recoveryRequest.action)} for participant ${String(recoveryRequest.participantId)} by ending and cleaning this failed parent. If Lead analysis finds recovery is within inherited policy and deadline, start at most one explicitly linked child with intentDecision.continuation.operationId=${operation.id}; preserve userTurnId=${operation.version === 2 ? operation.origin?.userTurnId ?? "unknown" : "unknown"}. This is an explicit new Lead decision, never automatic.`] : []),
+    ...(failedRecoveryRequired ? [operation.status === "CANCELLED"
+      ? "This operation was explicitly cancelled. Do not restart it or create an unlinked replacement; wait for a new explicit Owner-authorized CLI start."
+      : `This failed operation remains the pending task. Any continued work must start as a causally linked child with intentDecision.continuation.operationId=${operation.id}; the controller enforces remaining policy, deadline, and economic allowance. Do not start an unlinked Lead root. If no bounded recovery remains, report the failure and wait for an explicit Owner-authorized CLI start.`] : []),
     "Use aeh_operation_digest for compact terminal state. Use aeh_operation_status with detail=full at most once only if the result cannot be consumed from the referenced artifact/digest.",
     revision ? `After consuming this terminal revision, call aeh_operation_ack for operation ${operation.id} and exactly revision ${revision}.` : undefined,
-    "Continue the original pending user-facing request using durable operation state as the source of truth.",
+    ...(!ownerBoundary && !ownerContinuationBoundary && !failedRecoveryRequired ? ["Continue the original pending user-facing request using durable operation state as the source of truth."] : []),
     operation.version === 2 ? evidenceDisciplineInstruction(operation) : "Evidence discipline: do not attribute claims to an operation unless its durable result artifact contains them.",
     operation.error ? `Operation error: ${operation.error.split("\n", 1)[0]}` : undefined
   ].filter(Boolean).join("\n");

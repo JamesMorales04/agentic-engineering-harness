@@ -357,4 +357,36 @@ describe("operation resource ownership and terminal/recovery reconciliation", ()
     expect(deps.removeStagingRoot).not.toHaveBeenCalled();
     expect(receipt.dispositions[0]?.alreadyReconciled).toBe(true);
   });
+
+  it("removes only the exact controller-owned participant scratch root and preserves an unregistered temp directory", async () => {
+    const root = await makeRoot();
+    const id = "CHANGE-PARTICIPANT-SCRATCH-CLEANUP";
+    await forceTerminal(root, id, "FAILED");
+    const owned = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-scratch-owned-"));
+    const unknown = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-scratch-unknown-"));
+    roots.push(owned, unknown);
+    await fs.chmod(owned, 0o700);
+    await registerOperationResource(root, id, {
+      kind: "staging-root",
+      identity: owned,
+      path: owned,
+      reclaim: "REMOVE_ON_TERMINAL",
+      label: "private participant scratch",
+      owner: { source: "controller-registration", participantId: "participant:owned", participantGeneration: "generation:owned", candidateDigest: "a".repeat(64), operationExecutionRevision: 1, controllerEpoch: 1 }
+    });
+
+    const deps = {
+      archiveWorkspace: vi.fn(async () => undefined),
+      archiveAgent: vi.fn(async () => undefined),
+      inspectAgent: vi.fn(async () => ({ status: "archived" })),
+      terminateProcess: vi.fn(async () => undefined),
+      listOwnedAgents: vi.fn(async () => [])
+    };
+    const receipt = await reconcileOperationResources(root, id, deps);
+
+    expect(receipt.cleanupComplete).toBe(true);
+    await expect(fs.access(owned)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.access(unknown)).resolves.toBeUndefined();
+    expect(receipt.dispositions).toEqual([expect.objectContaining({ identity: owned, kind: "staging-root", classification: "TERMINAL_ORPHAN", outcome: "reconciled" })]);
+  });
 });

@@ -148,7 +148,7 @@ describe("AEH-V2-0126 formal authoring candidate advance", () => {
       intent: "wave planning",
       route: "FORMAL_SDD",
       minimumAssurance: "ELEVATED",
-      policyVersions: { resolvedOperationPolicy: "1", roleInvocationPolicy: "1", executionBlueprint: "2", executionBinding: "2", skillManifest: "1" },
+      policyVersions: { resolvedOperationPolicy: "2", roleInvocationPolicy: "1", executionBlueprint: "3", executionBinding: "3", skillManifest: "1" },
       policyDigests: { validation: digest({ validation: "wave" }), delivery: digest({ delivery: "wave" }), knowledge: digest([]), context: digest(null) },
       validationPolicy: { wave: true },
       reviewPolicy: { minimumAssurance: "ELEVATED", independentReviewRequired: true, leadAcceptance: true },

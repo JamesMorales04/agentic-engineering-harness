@@ -291,7 +291,7 @@ async function fixture(): Promise<{ root: string; operationId: string; participa
     candidateDigest: candidate.identityDigest,
     controllerEpoch: operation.controller?.epoch ?? 0,
     intent: "test bounded context retrieval", route: "DIRECT", minimumAssurance: "STANDARD",
-    policyVersions: { resolvedOperationPolicy: "1" }, policyDigests: {},
+    policyVersions: { resolvedOperationPolicy: "2" }, policyDigests: {},
     validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {},
     allowedExternalEffects: [], humanDecisionRequirements: []
   });

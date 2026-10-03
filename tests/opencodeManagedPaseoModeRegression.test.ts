@@ -9,7 +9,7 @@ describe("AEH-managed OpenCode identity through Paseo", () => {
       project: { name: "agentic-engineering-harness" },
       orchestration: {
         provider: "paseo",
-        worker: { timeoutSeconds: 120, titlePrefix: "aeh" }
+        worker: { titlePrefix: "aeh" }, operations: { liveness: { providerTurnDeadlineMs: 120_000 } }
       },
       delivery: { paseo: { enabled: false } }
     } as never;

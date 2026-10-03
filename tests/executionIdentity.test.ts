@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
-  assertExecutionBindingV2,
-  assertExecutionBlueprintV2,
-  assertResolvedOperationPolicyV1,
+  assertExecutionBindingV3,
+  assertExecutionBlueprintV3,
+  assertResolvedOperationPolicyV2,
   assertRoleInvocationPolicyV1,
   assertSkillManifestV1,
   compileExecutionBinding,
   compileResolvedOperationPolicy,
   compileRoleInvocationPolicy,
   compileSkillManifest,
-  createExecutionBlueprintV2
+  createExecutionBlueprintV3
 } from "../src/architecture/executionIdentity.js";
 import { createWorkGraph } from "../src/architecture/workGraph.js";
 import { sha256Canonical } from "../src/core/digest.js";
@@ -21,7 +21,7 @@ function fixture() {
   const policy = compileResolvedOperationPolicy({
     projectId: "project:test", operationId: "RUN-IDENTITY", operationExecutionRevision: 1, candidateRevision: 1,
     candidateDigest: digest("candidate"), controllerEpoch: 2, intent: "review current candidate", route: "DIRECT", minimumAssurance: "STANDARD",
-    policyVersions: { resolvedOperationPolicy: "1" }, policyDigests: { validation: digest("validation") },
+    policyVersions: { resolvedOperationPolicy: "2" }, policyDigests: { validation: digest("validation") },
     validationPolicy: { required: ["unit"] }, reviewPolicy: { independent: false }, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {},
     allowedExternalEffects: [], humanDecisionRequirements: []
   });
@@ -33,7 +33,7 @@ function fixture() {
   });
   const skillManifest = compileSkillManifest({ scope: { operationId: policy.operationId, operationExecutionRevision: policy.operationExecutionRevision, candidateRevision: policy.candidateRevision, candidateDigest: policy.candidateDigest, controllerEpoch: policy.controllerEpoch, participantId: "participant:reviewer", workUnitIds: ["review"], competencies: ["review"] }, skills: [] });
   const validationResolution = { version: 1 as const, requirements: [], actions: [], blocked: [], digest: digest("resolution") };
-  const blueprint = createExecutionBlueprintV2({
+  const blueprint = createExecutionBlueprintV3({
     projectId: policy.projectId, operationId: policy.operationId, operationExecutionRevision: 1, candidateRevision: 1,
     candidateDigest: policy.candidateDigest, controllerEpoch: 2, resolvedOperationPolicy: policy,
     workGraph: createWorkGraph({ taskId: "TASK-IDENTITY", objective: "review", route: "DIRECT", assurance: "STANDARD", requirementRefs: [], acceptanceRefs: [], units: [] }),
@@ -60,11 +60,11 @@ describe("frozen execution identity contracts", () => {
     expect(Object.isFrozen(identities.rolePolicy.toolPack.required)).toBe(true);
     expect(Object.isFrozen(identities.blueprint.participants[0])).toBe(true);
     expect(Object.isFrozen(identities.binding.runtime)).toBe(true);
-    assertResolvedOperationPolicyV1(identities.policy);
+    assertResolvedOperationPolicyV2(identities.policy);
     assertRoleInvocationPolicyV1(identities.rolePolicy);
     assertSkillManifestV1(identities.skillManifest);
-    assertExecutionBlueprintV2(identities.blueprint);
-    assertExecutionBindingV2(identities.binding);
+    assertExecutionBlueprintV3(identities.blueprint);
+    assertExecutionBindingV3(identities.binding);
   });
 
   it("retains accepted ephemeral procedure text and rejects ID-only assignments", () => {
@@ -100,10 +100,10 @@ describe("frozen execution identity contracts", () => {
 
   it("rejects obsolete identity versions with migration errors", () => {
     const value = fixture();
-    expect(() => assertResolvedOperationPolicyV1({ ...value.policy, version: 0 })).toThrow(/UNSUPPORTED_RESOLVED_OPERATION_POLICY_VERSION/);
+    expect(() => assertResolvedOperationPolicyV2({ ...value.policy, version: 0 })).toThrow(/UNSUPPORTED_RESOLVED_OPERATION_POLICY_VERSION/);
     expect(() => assertRoleInvocationPolicyV1({ ...value.rolePolicy, version: 0 })).toThrow(/UNSUPPORTED_ROLE_INVOCATION_POLICY_VERSION/);
     expect(() => assertSkillManifestV1({ ...value.skillManifest, version: 0 })).toThrow(/UNSUPPORTED_SKILL_MANIFEST_VERSION/);
-    expect(() => assertExecutionBlueprintV2({ ...value.blueprint, version: 1 })).toThrow(/UNSUPPORTED_EXECUTION_BLUEPRINT_VERSION/);
-    expect(() => assertExecutionBindingV2({ ...value.binding, version: 1 })).toThrow(/UNSUPPORTED_EXECUTION_BINDING_VERSION/);
+    expect(() => assertExecutionBlueprintV3({ ...value.blueprint, version: 1 })).toThrow(/UNSUPPORTED_EXECUTION_BLUEPRINT_VERSION/);
+    expect(() => assertExecutionBindingV3({ ...value.binding, version: 1 })).toThrow(/UNSUPPORTED_EXECUTION_BINDING_VERSION/);
   });
 });

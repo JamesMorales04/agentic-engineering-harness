@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { compileExecutionBinding, compileResolvedOperationPolicy, type ExecutionBindingV2, type ResolvedOperationPolicyV1 } from "../src/architecture/executionIdentity.js";
+import { compileExecutionBinding, compileResolvedOperationPolicy, type ExecutionBindingV3, type ResolvedOperationPolicyV2 } from "../src/architecture/executionIdentity.js";
 import { sha256Canonical, sha256Utf8 } from "../src/core/digest.js";
 import {
   bindOperationLead,
@@ -60,13 +60,13 @@ interface LeaseFixture {
   provider: string;
   workspaceId: string;
   operation: OperationRecordV2;
-  policy: ResolvedOperationPolicyV1;
-  binding: ExecutionBindingV2;
+  policy: ResolvedOperationPolicyV2;
+  binding: ExecutionBindingV3;
 }
 
 type LeaseInputOverrides = Partial<Omit<OperationProviderLifecycleInputV1, "inspect" | "stop">> & Pick<OperationProviderLifecycleInputV1, "inspect" | "stop">;
 
-function compilePolicy(operation: OperationRecordV2): ResolvedOperationPolicyV1 {
+function compilePolicy(operation: OperationRecordV2): ResolvedOperationPolicyV2 {
   const candidate = operation.candidateRevision;
   if (!candidate) throw new Error("provider lease fixture requires a candidate revision");
   return compileResolvedOperationPolicy({
@@ -79,7 +79,7 @@ function compilePolicy(operation: OperationRecordV2): ResolvedOperationPolicyV1 
     intent: "provider lease lifecycle test",
     route: "DIRECT",
     minimumAssurance: "STANDARD",
-    policyVersions: { resolvedOperationPolicy: "1" },
+    policyVersions: { resolvedOperationPolicy: "2" },
     policyDigests: {},
     validationPolicy: {},
     reviewPolicy: {},
@@ -94,10 +94,10 @@ function compilePolicy(operation: OperationRecordV2): ResolvedOperationPolicyV1 
 function compileBinding(input: {
   operation: OperationRecordV2;
   participantId: string;
-  policy: ResolvedOperationPolicyV1;
+  policy: ResolvedOperationPolicyV2;
   sessionId: string;
   operationExecutionRevision?: number;
-}): ExecutionBindingV2 {
+}): ExecutionBindingV3 {
   const candidate = input.operation.candidateRevision;
   if (!candidate) throw new Error("provider lease fixture requires a candidate revision");
   const digest = (label: string) => sha256Canonical({ label, operationId: input.operation.id, participantId: input.participantId });

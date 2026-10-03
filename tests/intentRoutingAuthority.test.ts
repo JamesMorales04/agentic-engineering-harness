@@ -37,7 +37,7 @@ describe("semantic routing authority boundary", () => {
   it("persists the selected audit route while retaining controller ownership of policy", async () => {
     const root = await project();
     const decision = createIntentDecision("audit", "evaluate the repository", "lead-semantic", { userTurnId: "lead-1:turn-4" });
-    const record = await startDetachedOperation(root, "audit", { request: "explain how validation works", intentDecision: decision }, { nodeExecutable: process.execPath, entryFile: process.argv[1] ?? "aeh" });
+    const record = await startDetachedOperation(root, "audit", { request: "explain how validation works", intentDecision: decision }, { nodeExecutable: process.execPath, entryFile: process.argv[1] ?? "aeh", initiator: { kind: "LEAD", agentId: "lead-1", requestEventId: "jsonrpc:intent-routing-audit" } });
     const durable = await loadOperation(root, record.id);
     expect(durable.intent?.semanticDecision).toMatchObject({ intent: "audit", userTurnId: "lead-1:turn-4" });
     await expect(startDetachedOperation(root, "audit", { request: "anything", intentDecision: createIntentDecision("informational", "explain it", "lead-semantic") }, { nodeExecutable: process.execPath, entryFile: process.argv[1] ?? "aeh" })).rejects.toThrow("does not match");

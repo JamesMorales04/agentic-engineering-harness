@@ -4,6 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { compilePaseoAgentLaunchSpec } from "../src/paseo/launchSpec.js";
 import { saveOperation } from "../src/operations/state.js";
+import { createCandidateRevisionV1 } from "../src/operations/v2Contracts.js";
+import { compileParticipantScratchLease } from "../src/architecture/executionIdentity.js";
+import { operationResourceId } from "../src/runtime/operationResources.js";
+import type { CapabilityLeaseV1 } from "../src/security/authorityV2.js";
 
 const original = {
   id: process.env.AEH_OPERATION_ID,
@@ -56,7 +60,7 @@ describe("Paseo launch spec", () => {
       project: { name: "demo" },
       orchestration: {
         provider: "paseo",
-        worker: { timeoutSeconds: 90, titlePrefix: "aeh" }
+        worker: { titlePrefix: "aeh" }, operations: { liveness: { providerTurnDeadlineMs: 90_000 } }
       },
       delivery: { paseo: { enabled: false } }
     } as never;
@@ -149,7 +153,7 @@ describe("Paseo launch spec", () => {
       project: { name: "demo" },
       orchestration: {
         provider: "paseo",
-        worker: { timeoutSeconds: 120, titlePrefix: "aeh" }
+        worker: { titlePrefix: "aeh" }, operations: { liveness: { providerTurnDeadlineMs: 120_000 } }
       },
       delivery: { paseo: { enabled: false } }
     } as never;
@@ -380,10 +384,86 @@ describe("Paseo launch spec", () => {
     expect(mutating.providerOptions).toEqual({
       approval_policy: "never",
       sandbox_mode: "workspace-write",
-      sandbox_workspace_write: { writable_roots: ["/tmp/aeh-task-root"], network_access: false }
+      sandbox_workspace_write: { writable_roots: ["/tmp/aeh-task-root"], network_access: false, exclude_slash_tmp: true }
     });
     const readOnly = await compilePaseoAgentLaunchSpec("/tmp/aeh-task-root", config, contract, { selection: { ...base, role: "Reviewer", permissions: { read: "allow", write: "deny", shell: "deny", gitWrite: "deny", network: "deny" } }, phase: "review" });
     expect(readOnly.providerOptions).toEqual({ approval_policy: "never", sandbox_mode: "read-only" });
+  });
+
+  it("projects only the participant-owned scratch path and redirects provider temp variables", async () => {
+    const operationId = "CHANGE-SCRATCH-LAUNCH";
+    process.env.AEH_OPERATION_ID = operationId;
+    process.env.AEH_OPERATION_KIND = "change";
+    const participantId = "participant:home-content";
+    const contract = { version: 1, task: { id: operationId, title: "scratch launch" }, routing: { intent: "change" } } as never;
+    const config = { version: 1, project: { name: "demo" }, orchestration: { provider: "paseo", worker: {} } } as never;
+    const selection = { logicalAgent: "implementer", role: "Implementer", paseoProvider: "opencode", runtimeAdapter: "opencode", runtimeName: "opencode", modelName: "mimo", modelId: "opencode-go/mimo", runtimeCapabilities: {}, skills: [], mcps: [], permissions: { read: "allow", write: "allow", shell: "allow", network: "deny" } } as never;
+    const scratchPath = path.join(os.tmpdir(), "aeh-scratch-owned-launch-nonce");
+    const candidate = createCandidateRevisionV1({ operationId, candidateId: `${operationId}:r1`, taskId: operationId, revision: 1, sourceDigest: "a".repeat(64), projectId: "project:test" });
+    const scope = [scratchPath, `${scratchPath}/*`, `${scratchPath}/**`].sort();
+    const capabilityLeases: CapabilityLeaseV1[] = (["read", "write"] as const).map((capability) => ({
+      version: 1,
+      leaseId: `lease:${operationId}:${capability}:scratch`,
+      requestId: `request:${operationId}:${capability}:scratch`,
+      operationId,
+      participantId,
+      projectId: candidate.projectId,
+      candidate,
+      capability,
+      envelope: { version: 1, level: 50, capabilities: [capability], scope },
+      issuedAt: "2026-10-02T00:00:00.000Z",
+      expiresAt: "2026-10-02T01:00:00.000Z"
+    }));
+    const scratchLease = compileParticipantScratchLease({
+      resourceId: operationResourceId(operationId, "staging-root", scratchPath),
+      path: scratchPath,
+      operationId,
+      operationExecutionRevision: 1,
+      candidateRevision: candidate.revision,
+      candidateDigest: candidate.identityDigest,
+      controllerEpoch: 1,
+      participantId,
+      participantGeneration: "generation:launch",
+      capabilityLeases
+    });
+    const spec = await compilePaseoAgentLaunchSpec("/repo", config, contract, {
+      selection,
+      logicalAgent: "implementer",
+      participantId,
+      candidateDigest: candidate.identityDigest,
+      capabilityLeases,
+      scratchLease,
+      phase: "implementation"
+    });
+    const runtimeConfig = JSON.parse(spec.env!.OPENCODE_CONFIG_CONTENT) as { permission: { external_directory: Record<string, string> } };
+    const scopes = runtimeConfig.permission.external_directory;
+    const unrelated = path.join(os.tmpdir(), "unrelated-host-temp-file");
+
+    expect(spec.env).toMatchObject({ TMPDIR: scratchPath, TEMP: scratchPath, TMP: scratchPath, AEH_SCRATCH_RESOURCE: scratchLease.resourceId, AEH_SCRATCH_DIGEST: scratchLease.digest });
+    expect(scopes).toEqual(expect.objectContaining({
+      [scratchPath]: "allow",
+      [`${scratchPath}/*`]: "allow",
+      [`${scratchPath}/**`]: "allow"
+    }));
+    expect(Object.keys(scopes)).not.toContain("/tmp/*");
+    expect(Object.keys(scopes)).not.toContain(unrelated);
+    expect(Object.keys(scopes)).not.toContain(`${unrelated}/*`);
+    expect(Object.keys(scopes)).not.toContain(`${unrelated}/**`);
+
+    const codexSelection = { ...selection, paseoProvider: "codex", runtimeAdapter: "codex", runtimeName: "codex", modelName: "gpt-test", modelId: "gpt-test" } as never;
+    const codexSpec = await compilePaseoAgentLaunchSpec("/repo", config, contract, {
+      selection: codexSelection,
+      logicalAgent: "implementer",
+      participantId,
+      candidateDigest: candidate.identityDigest,
+      capabilityLeases,
+      scratchLease,
+      phase: "implementation"
+    });
+    const codexSandbox = codexSpec.providerOptions!.sandbox_workspace_write as { writable_roots: string[]; exclude_slash_tmp: boolean };
+    expect(codexSandbox.writable_roots).toContain(scratchPath);
+    expect(codexSandbox.writable_roots).not.toContain(path.resolve(os.tmpdir()));
+    expect(codexSandbox.exclude_slash_tmp).toBe(true);
   });
 });
 

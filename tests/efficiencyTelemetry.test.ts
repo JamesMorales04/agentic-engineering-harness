@@ -7,6 +7,7 @@ import { sha256Canonical, sha256Utf8 } from "../src/core/digest.js";
 import { evaluateObjectiveCompletionV1 } from "../src/architecture/objectiveCompletion.js";
 import { compileExecutionBinding, compileResolvedOperationPolicy } from "../src/architecture/executionIdentity.js";
 import { createCandidateRevisionV1 } from "../src/operations/v2Contracts.js";
+import type { ParticipantExecutionLivenessV1 } from "../src/operations/executionLiveness.js";
 import { bindOperationParticipantExecution, bindResolvedOperationPolicy, claimControllerEpoch, currentControllerEpoch, loadOperation, saveOperation, type OperationRecord } from "../src/operations/state.js";
 import { authorizeToolAction, controllerActorId, type ToolActionRequestV1 } from "../src/security/toolActionGate.js";
 import {
@@ -17,13 +18,13 @@ import {
   recordToolCallObservations,
   recordContextAccountingObservation,
   readOperationEfficiencySummary,
-  summarizeOperationEfficiencyV1,
+  summarizeOperationEfficiencyV2,
   writeOperationEfficiencySummary,
-  type ProviderTelemetryEvidenceV1,
-  contextRetrievalObservationV1Schema,
-  toolCallObservationV1Schema
+  type ProviderTelemetryEvidenceV2,
+  contextRetrievalObservationV2Schema,
+  toolCallObservationV2Schema
 } from "../src/telemetry/efficiency.js";
-import { capturePaseoTimelineV1 } from "../src/telemetry/paseoTimeline.js";
+import { capturePaseoTimelineV2 } from "../src/telemetry/paseoTimeline.js";
 import type { HarnessProjectConfig } from "../src/core/types.js";
 
 const roots: string[] = [];
@@ -147,7 +148,7 @@ function boundSession(input: {
   };
 }
 
-function toolCall(input: Partial<ProviderTelemetryEvidenceV1["toolCalls"][number]> & Pick<ProviderTelemetryEvidenceV1["toolCalls"][number], "callId" | "turnId" | "timelineSequence" | "argumentsDigest" | "toolName" | "outcome">): ProviderTelemetryEvidenceV1["toolCalls"][number] {
+function toolCall(input: Partial<ProviderTelemetryEvidenceV2["toolCalls"][number]> & Pick<ProviderTelemetryEvidenceV2["toolCalls"][number], "callId" | "turnId" | "timelineSequence" | "argumentsDigest" | "toolName" | "outcome">): ProviderTelemetryEvidenceV2["toolCalls"][number] {
   return {
     turnIndex: 0,
     toolServer: "mcp-test",
@@ -170,7 +171,7 @@ describe("Efficiency telemetry V2", () => {
   it("uses provider turn usage and keeps unsupported token fields unknown", async () => {
     const { root, operationId, candidate } = await fixture();
     const participantId = "participant:usage";
-    const telemetry: ProviderTelemetryEvidenceV1 = {
+    const telemetry: ProviderTelemetryEvidenceV2 = {
       source: "PROVIDER_TURN_EVENTS",
       coverage: "COMPLETE",
       turnCount: 2,
@@ -184,9 +185,9 @@ describe("Efficiency telemetry V2", () => {
     expect(observation).toMatchObject({ usageKnown: true, usageCoverage: "COMPLETE", turnCount: 2, inputTokens: 150, cachedInputTokens: 20, outputTokens: 40, reasoningOutputTokens: null, totalTokens: 190, totalTokensBasis: "INPUT_PLUS_OUTPUT", costUsd: 0.03, runtimeSessionId: "session:usage" });
     const toolCalls = correlateEquivalentToolCalls([
       toolCall({ callId: "tool-failed", turnId: "turn-1", turnIndex: 0, timelineSequence: 10, argumentsDigest: sha256Canonical({ path: "same" }), toolName: "read_file", outcome: "TOOL_ERROR" }),
-      toolCall({ callId: "tool-retry", turnId: "turn-1", turnIndex: 0, timelineSequence: 11, argumentsDigest: sha256Canonical({ path: "same" }), toolName: "read_file", outcome: "SUCCESS" })
-    ]).map((item) => toolCallObservationV1Schema.parse({
-      version: 1,
+      toolCall({ callId: "tool-retry", retryOfCallId: "tool-failed", turnId: "turn-1", turnIndex: 0, timelineSequence: 11, argumentsDigest: sha256Canonical({ path: "same" }), toolName: "read_file", outcome: "SUCCESS" })
+    ]).map((item) => toolCallObservationV2Schema.parse({
+      version: 2,
       observationId: sha256Canonical(item),
       operationId,
       candidateId: candidate.candidateId,
@@ -201,7 +202,7 @@ describe("Efficiency telemetry V2", () => {
       ...item
     }));
     const operation = await loadOperation(root, operationId);
-    const summary = summarizeOperationEfficiencyV1({ ...operation, status: "SUCCEEDED", startedAt: "2026-01-01T00:00:00.000Z", finishedAt: "2026-01-01T00:00:03.000Z", result: { status: "PASS", acceptanceOracle: { disposition: "ACCEPTED" }, delivery: { status: "FINALIZED" } } }, { participants: observation ? [observation] : [], tools: toolCalls, context: [], retrieval: [] });
+    const summary = summarizeOperationEfficiencyV2({ ...operation, status: "SUCCEEDED", startedAt: "2026-01-01T00:00:00.000Z", finishedAt: "2026-01-01T00:00:03.000Z", result: { status: "PASS", acceptanceOracle: { disposition: "ACCEPTED" }, delivery: { status: "FINALIZED" } } }, { participants: observation ? [observation] : [], tools: toolCalls, context: [], retrieval: [] });
     expect(summary.tools).toMatchObject({ retryCalls: 1, recoveredAfterRetry: 1, retryAssociatedInputTokens: 100, retryAssociatedOutputTokens: 30, retryAssociatedTotalTokens: 130, retryUsageCoverage: "COMPLETE" });
     expect(summary.outcome).toEqual({ accepted: true, delivered: true });
   });
@@ -210,7 +211,7 @@ describe("Efficiency telemetry V2", () => {
     const { root, operationId, candidate } = await fixture("CHANGE-EFFICIENCY-CUMULATIVE");
     const participantId = "participant:cumulative";
     const session = boundSession({ operationId, participantId, sessionId: "session:cumulative", candidate });
-    const turn = (turnId: string, inputTokens: number, outputTokens: number, at: string): ProviderTelemetryEvidenceV1["turns"][number] => ({
+    const turn = (turnId: string, inputTokens: number, outputTokens: number, at: string): ProviderTelemetryEvidenceV2["turns"][number] => ({
       turnId, turnIndex: Number(turnId.slice(-1)) - 1, runtimeSessionId: null, provider: "openai", at,
       inputTokens, cachedInputTokens: 0, outputTokens, reasoningOutputTokens: null, totalTokens: inputTokens + outputTokens,
       totalTokensBasis: "INPUT_PLUS_OUTPUT", costUsd: null, usageKnown: true
@@ -234,17 +235,60 @@ describe("Efficiency telemetry V2", () => {
       providerTelemetry: { source: "PASEO_AGENT_SNAPSHOT", coverage: "PARTIAL", turnCount: 3, turns: [], toolCalls: [], snapshotUsage: { inputTokens: 225, outputTokens: 45, totalTokens: 270 } }
     })!;
     const operation = await loadOperation(root, operationId);
-    const eventSummary = summarizeOperationEfficiencyV1({ ...operation, status: "SUCCEEDED" }, {
+    const eventSummary = summarizeOperationEfficiencyV2({ ...operation, status: "SUCCEEDED" }, {
       participants: [first, replayedHistory], tools: [], context: [], retrieval: []
     });
     expect(eventSummary.usage).toMatchObject({ inputTokens: 150, outputTokens: 30, totalTokens: 180, partialObservations: 1, participantCount: 1 });
     expect(eventSummary.providerTurns).toBe(2);
-    const snapshotSummary = summarizeOperationEfficiencyV1({ ...operation, status: "SUCCEEDED" }, {
+    const snapshotSummary = summarizeOperationEfficiencyV2({ ...operation, status: "SUCCEEDED" }, {
       participants: [priorSnapshot, latestSnapshot], tools: [], context: [], retrieval: []
     });
     expect(snapshotSummary.usage).toMatchObject({ inputTokens: 225, outputTokens: 45, totalTokens: 270, partialObservations: 1, participantCount: 1 });
     expect(snapshotSummary.usage.byParticipant).toEqual([expect.objectContaining({ participantId, inputTokens: 225, outputTokens: 45, totalTokens: 270, usageCoverage: "PARTIAL" })]);
     expect(snapshotSummary.providerTurns).toBe(3);
+  });
+
+  it("reports provider-turn ceilings per participant and their operation-wide aggregate equivalents", async () => {
+    const { root, operationId, candidate } = await fixture("CHANGE-EFFICIENCY-PER-PARTICIPANT-TURNS");
+    const base = await loadOperation(root, operationId);
+    const policy = compileResolvedOperationPolicy({
+      projectId: candidate.projectId!, operationId, operationExecutionRevision: 1,
+      candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch: 0,
+      intent: "verify provider-turn budget scope", route: "DIRECT", minimumAssurance: "STANDARD",
+      policyVersions: {}, policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {},
+      knowledgePolicy: {}, contextPolicy: {}, allowedExternalEffects: [], humanDecisionRequirements: [],
+      economicEnvelope: { initialProviderTurns: 8, supervisorProviderTurns: 12, hardProviderTurns: 16 }
+    });
+    const liveness = (providerTurns: number, currentProviderTurnBudget: number): ParticipantExecutionLivenessV1 => ({
+      version: 1, state: "ACTIVE", toolCallsBeforeFirstMutation: 0, turnsBeforeFirstMutation: null,
+      providerTurns, currentProviderTurnBudget, toolCallCount: 0, repositoryMutationCount: 0,
+      artifactCount: 0, validationCount: 0, noProgressRenewals: 0, localRetryCount: 0, participantRestarts: 0
+    });
+    const operation = {
+      ...base,
+      resolvedOperationPolicy: policy,
+      participants: {
+        "participant:one": { id: "participant:one", role: "Implementer", status: "RUNNING" as const, registeredAt: "2026-01-01T00:00:00.000Z", executionLiveness: liveness(10, 16) },
+        "participant:two": { id: "participant:two", role: "Reviewer", status: "RUNNING" as const, registeredAt: "2026-01-01T00:00:00.000Z", executionLiveness: liveness(10, 16) }
+      }
+    };
+
+    const summary = summarizeOperationEfficiencyV2(operation, { participants: [], tools: [], context: [], retrieval: [] });
+
+    expect(summary.providerTurns).toBe(20);
+    expect(summary.budgets.providerTurns).toEqual({
+      scope: "PER_PARTICIPANT",
+      participantCount: 2,
+      observed: 20,
+      initialPerParticipant: 8,
+      initialAggregateEquivalent: 16,
+      currentAllowanceAggregate: 32,
+      supervisorCeilingPerParticipant: 12,
+      supervisorCeilingAggregateEquivalent: 24,
+      hardCeilingPerParticipant: 16,
+      hardCeilingAggregateEquivalent: 32,
+      softThreshold: 0.8
+    });
   });
 
   it("keeps unknown provider usage unknown instead of estimating from context", async () => {
@@ -309,7 +353,7 @@ describe("Efficiency telemetry V2", () => {
 
     expect(await recordParticipantUsageObservation(root, config, observation)).toBe(true);
     expect(await recordParticipantUsageObservation(root, config, observation)).toBe(true);
-    const toolEvidence = capturePaseoTimelineV1({
+    const toolEvidence = capturePaseoTimelineV2({
       liveEvents: [],
       subscriptionReady: false,
       timelinePayload: {
@@ -336,7 +380,7 @@ describe("Efficiency telemetry V2", () => {
     expect(observations.tools).toHaveLength(1);
     expect(JSON.stringify(observations.tools)).not.toContain("PRIVATE_ARGUMENT");
     expect(JSON.stringify(observations.tools)).not.toContain("PRIVATE_RESULT");
-    expect(summarizeOperationEfficiencyV1(await loadOperation(root, operationId), observations)).toMatchObject({
+    expect(summarizeOperationEfficiencyV2(await loadOperation(root, operationId), observations)).toMatchObject({
       usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8, knownParticipants: 1, participantCount: 1 },
       tools: { toolCalls: 1, firstAttemptSuccesses: 1 }
     });
@@ -347,7 +391,7 @@ describe("Efficiency telemetry V2", () => {
   });
 
   it("captures canonical Paseo tool calls without persisting sensitive arguments or results", () => {
-    const evidence = capturePaseoTimelineV1({
+    const evidence = capturePaseoTimelineV2({
       liveEvents: [],
       subscriptionReady: false,
       timelinePayload: {
@@ -359,14 +403,14 @@ describe("Efficiency telemetry V2", () => {
     expect(evidence.evidence.toolCalls).toHaveLength(1);
     expect(evidence.evidence.toolCalls[0]).toMatchObject({ callId: "call-secret", toolName: "shell", toolServer: "local-shell", outcome: "SUCCESS" });
     expect(evidence.evidence.toolCalls[0]?.argumentsDigest).toMatch(/^[a-f0-9]{64}$/);
-    expect(evidence.evidence.toolCalls[0]?.argumentsByteLength).toBeGreaterThan(0);
+    expect(evidence.evidence.toolCalls[0]?.argumentsByteLength).toBe(Buffer.byteLength(JSON.stringify({ type: "shell", command: "echo PRIVATE_TOKEN", cwd: "/tmp", output: "PRIVATE_OUTPUT", exitCode: 0 }), "utf8"));
     expect(evidence.evidence.toolCalls[0]?.resultByteLength).toBe(Buffer.byteLength("PRIVATE_OUTPUT"));
     expect(serialized).not.toContain("PRIVATE_TOKEN");
     expect(serialized).not.toContain("PRIVATE_OUTPUT");
   });
 
   it("maps structured tool errors and leaves missing terminal events as unknown", () => {
-    const evidence = capturePaseoTimelineV1({
+    const evidence = capturePaseoTimelineV2({
       liveEvents: [],
       subscriptionReady: false,
       timelinePayload: {
@@ -384,7 +428,7 @@ describe("Efficiency telemetry V2", () => {
   });
 
   it("retains calls without provider call ids as unknown and does not infer retries", () => {
-    const evidence = capturePaseoTimelineV1({
+    const evidence = capturePaseoTimelineV2({
       liveEvents: [],
       subscriptionReady: false,
       timelinePayload: {
@@ -401,13 +445,13 @@ describe("Efficiency telemetry V2", () => {
     const digest = sha256Canonical({ path: "src/file.ts" });
     const correlated = correlateEquivalentToolCalls([
       toolCall({ callId: "fail-1", turnId: "turn-1", timelineSequence: 1, argumentsDigest: digest, toolName: "read_file", outcome: "TOOL_ERROR" }),
-      toolCall({ callId: "success-2", turnId: "turn-1", timelineSequence: 2, argumentsDigest: digest, toolName: "read_file", outcome: "SUCCESS" }),
+      toolCall({ callId: "success-2", retryOfCallId: "fail-1", turnId: "turn-1", timelineSequence: 2, argumentsDigest: digest, toolName: "read_file", outcome: "SUCCESS" }),
       toolCall({ callId: "legitimate-next-turn", turnId: "turn-2", turnIndex: 1, timelineSequence: 3, argumentsDigest: digest, toolName: "read_file", outcome: "SUCCESS" })
     ]);
     expect(correlated.map((item) => ({ attemptIndex: item.attemptIndex, retryOfCallId: item.retryOfCallId, causalStatus: item.causalStatus }))).toEqual([
-      { attemptIndex: 1, retryOfCallId: null, causalStatus: "PROVEN" },
+      { attemptIndex: 1, retryOfCallId: null, causalStatus: "UNKNOWN" },
       { attemptIndex: 2, retryOfCallId: "fail-1", causalStatus: "PROVEN" },
-      { attemptIndex: 1, retryOfCallId: null, causalStatus: "PROVEN" }
+      { attemptIndex: 1, retryOfCallId: null, causalStatus: "UNKNOWN" }
     ]);
     const withoutTurnIdentity = correlateEquivalentToolCalls([
       toolCall({ callId: "a", turnId: null, timelineSequence: 1, argumentsDigest: digest, toolName: "read_file", outcome: "TOOL_ERROR" }),
@@ -421,19 +465,19 @@ describe("Efficiency telemetry V2", () => {
     const digest = sha256Canonical({ path: "same" });
     const correlated = correlateEquivalentToolCalls([
       toolCall({ callId: "chain-fail-1", turnId: "turn-chain", timelineSequence: 1, argumentsDigest: digest, toolName: "read_file", outcome: "TOOL_ERROR" }),
-      toolCall({ callId: "chain-fail-2", turnId: "turn-chain", timelineSequence: 2, argumentsDigest: digest, toolName: "read_file", outcome: "TIMEOUT" }),
-      toolCall({ callId: "chain-success", turnId: "turn-chain", timelineSequence: 3, argumentsDigest: digest, toolName: "read_file", outcome: "SUCCESS" }),
+      toolCall({ callId: "chain-fail-2", retryOfCallId: "chain-fail-1", turnId: "turn-chain", timelineSequence: 2, argumentsDigest: digest, toolName: "read_file", outcome: "TIMEOUT" }),
+      toolCall({ callId: "chain-success", retryOfCallId: "chain-fail-2", turnId: "turn-chain", timelineSequence: 3, argumentsDigest: digest, toolName: "read_file", outcome: "SUCCESS" }),
       toolCall({ callId: "other-turn", turnId: "turn-other", turnIndex: 1, timelineSequence: 4, argumentsDigest: digest, toolName: "read_file", outcome: "SUCCESS" })
     ]);
-    const tools = correlated.map((item) => toolCallObservationV1Schema.parse({
-      version: 1, observationId: sha256Canonical(item), operationId, candidateId: candidate.candidateId,
+    const tools = correlated.map((item) => toolCallObservationV2Schema.parse({
+      version: 2, observationId: sha256Canonical(item), operationId, candidateId: candidate.candidateId,
       candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, operationExecutionRevision: 1,
       controllerEpoch: 0, participantId: "participant:retry-chain", sessionId: "session:retry-chain", role: "Implementer",
       phase: "implementation", ...item
     }));
     const operation = await loadOperation(root, operationId);
-    const summary = summarizeOperationEfficiencyV1({ ...operation, status: "FAILED" }, { participants: [], tools, context: [], retrieval: [] });
-    expect(summary.tools).toMatchObject({ toolCalls: 4, firstAttemptSuccesses: 1, failedFirstAttempts: 1, retryCalls: 2, recoveredAfterRetry: 1, repeatedEquivalentCalls: 2, unrecoveredToolFailures: 0 });
+    const summary = summarizeOperationEfficiencyV2({ ...operation, status: "FAILED" }, { participants: [], tools, context: [], retrieval: [] });
+    expect(summary.tools).toMatchObject({ toolCalls: 4, firstAttemptSuccesses: 1, failedFirstAttempts: 1, retryCalls: 2, recoveredAfterRetry: 1, repeatedEquivalentCalls: 0, unrecoveredToolFailures: 0 });
   });
 
   it("deduplicates context observations, derives cross-participant fragment reuse, and rejects stale correlation", async () => {
@@ -451,8 +495,8 @@ describe("Efficiency telemetry V2", () => {
     expect(await recordContextAccountingObservation(root, config, second)).toBe(true);
     const observations = await readOperationEfficiencyObservations(root, operationId);
     expect(observations.context).toHaveLength(2);
-    const retrieval = (participantId: string, requestId: string, fragmentId: string, contentDigest: string, estimatedTokens: number) => contextRetrievalObservationV1Schema.parse({
-      version: 1, operationId, candidateId: candidate.candidateId, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest,
+    const retrieval = (participantId: string, requestId: string, fragmentId: string, contentDigest: string, estimatedTokens: number) => contextRetrievalObservationV2Schema.parse({
+      version: 2, operationId, candidateId: candidate.candidateId, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest,
       operationExecutionRevision: 1, controllerEpoch: 0, participantId, generation: null, role: "Implementer", phase: "implementation",
       sessionId: `session:${participantId}`, requestId, fragmentId, contentDigest, estimatedTokens, repeated: false,
       retrievedAt: "2026-01-01T00:00:05.000Z", tokenBasis: "AEH_ESTIMATOR"
@@ -462,7 +506,7 @@ describe("Efficiency telemetry V2", () => {
       retrieval("participant:b", "request:b", "retrieved-fragment", digest, 9),
       retrieval("participant:b", "request:b", "another-fragment", sha256Utf8("different fragment"), 4)
     ] };
-    const summary = summarizeOperationEfficiencyV1({ ...before, status: "SUCCEEDED", finishedAt: "2026-01-01T00:01:00.000Z" }, withRetrieval);
+    const summary = summarizeOperationEfficiencyV2({ ...before, status: "SUCCEEDED", finishedAt: "2026-01-01T00:01:00.000Z" }, withRetrieval);
     expect(summary.context).toMatchObject({ rawContextTokens: 200, projectedContextTokens: 100, deliveredContextTokens: 40, retrievalRequestCount: 2, retrievalDeliveredTokens: 22, crossParticipantRepeatedFragmentTokens: 21, tokenBasis: "AEH_ESTIMATOR" });
     expect(JSON.stringify(observations)).not.toContain("fragment body");
 

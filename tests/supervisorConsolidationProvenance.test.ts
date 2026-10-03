@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SupervisorOutput } from "../src/agents/outputContracts.js";
 import type { WorkerSession } from "../src/core/types.js";
-import { handoffPrompt, operationSupervisorTurnTimeoutSeconds, supervisorConsolidationContractCorrectionPromptV1, supervisorConsolidationCorrectionPromptV1, supervisorGenerationCandidateCurrentV1, supervisorTurnConfig, supervisorTurnTimedOutV1, withBoundedSupervisorConsolidationCorrectionV1 } from "../src/operations/supervisor.js";
+import { handoffPrompt, operationSupervisorTurnTimeoutSeconds, supervisorConsolidationContractCorrectionPromptV1, supervisorConsolidationCorrectionPromptV1, supervisorGenerationCandidateCurrentV1, supervisorTurnTimedOutV1, withBoundedSupervisorConsolidationCorrectionV1 } from "../src/operations/supervisor.js";
 
 function output(sourceFindingIds: string[]): SupervisorOutput {
   return { summary: "consolidated", consolidatedFindings: [], sourceFindingIds, conflicts: [], missingEvidence: [], unresolved: [], roadmap: [], finalizationSafety: "SAFE" };
@@ -36,9 +36,9 @@ describe("AEH-V2-0120 supervisor candidate rotation", () => {
 
 describe("AEH-V2-0102/0105 supervisor consolidation correction", () => {
   it("bounds persistent supervisor continuation turns and identifies timeout outcomes explicitly", () => {
-    const config = { orchestration: { worker: { timeoutSeconds: 1800 }, operations: { supervision: { turnTimeoutSeconds: 900 } } } } as never;
+    const config = { orchestration: { operations: { supervision: { turnTimeoutSeconds: 900 } } } } as never;
     expect(operationSupervisorTurnTimeoutSeconds(config)).toBe(300);
-    expect(supervisorTurnConfig(config).orchestration?.worker?.timeoutSeconds).toBe(300);
+    expect(operationSupervisorTurnTimeoutSeconds(config) * 1000).toBe(300_000);
     expect(supervisorTurnTimedOutV1({ exitCode: 124, stdout: "", stderr: "" })).toBe(true);
     expect(supervisorTurnTimedOutV1({ exitCode: 1, stdout: "", stderr: "provider timed out" })).toBe(true);
     expect(supervisorTurnTimedOutV1({ exitCode: 1, stdout: "", stderr: "invalid response" })).toBe(false);
