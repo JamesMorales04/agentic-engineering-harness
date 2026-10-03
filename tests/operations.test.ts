@@ -50,6 +50,8 @@ import { sha256Canonical, sha256Utf8 } from "../src/core/digest.js";
 import { runShell } from "../src/utils/process.js";
 import { resolveBaseRef } from "../src/core/git.js";
 import { createIntentDecision } from "../src/audit/intentDecision.js";
+import { assertOperationCapacity, loadOperationPortfolio, syncOperationPortfolio } from "../src/operations/portfolio.js";
+import { compileOperationOriginV1 } from "../src/operations/operationProvenance.js";
 
 const roots: string[] = [];
 const previousControllerEnv = Object.fromEntries(["AEH_OPERATION_ID", "AEH_CONTROL_ROOT", "AEH_OPERATION_STATE_REDIRECT", "AEH_CONTROLLER_EPOCH", "AEH_CONTROLLER_TOKEN"].map((key) => [key, process.env[key]])) as Record<string, string | undefined>;
@@ -1014,21 +1016,29 @@ describe("operation controller state", () => {
     const root = await tempRoot();
     const parent = await seed(root, { id: "AUDIT-RECOVERY-PARENT", kind: "audit", status: "RUNNING", phase: "reviewing" });
     const frozen = await bindTestPolicyForCurrentIdentity(root, parent.id);
-    const terminal = await transitionOperationToTerminal(root, parent.id, { status: "FAILED", phase: "failed", error: "fixture failure" });
+    const parentOrigin = compileOperationOriginV1({
+        kind: "USER_REQUEST", leadAgentId: "lead-old", controllerOwnerId: "controller:test", userTurnId: "owner-turn-original",
+        authorizationDigest: sha256Canonical("owner-turn-original"), triggerEventId: "user.turn:owner-turn-original",
+        requestDigest: sha256Canonical({ request: "Continue the original failed review." }), recoveryDepth: 0,
+        rootHardDeadlineAt: new Date(Date.parse(frozen.createdAt) + frozen.resolvedOperationPolicy!.executionLiveness.hardDeadlineMs).toISOString(),
+        reason: "original failed review", createdAt: frozen.createdAt
+      });
+    const parentWithOrigin = await patchOperation(root, frozen.id, { origin: parentOrigin });
+    const terminal = await transitionOperationToTerminal(root, parentWithOrigin.id, { status: "FAILED", phase: "failed", error: "fixture failure" });
     const decision = createIntentDecision("audit", "Continue the failed review under its existing policy.", "lead-semantic", {
-      userTurnId: "user-turn:recovery-test",
+      userTurnId: "user-turn:recovery-owner-followup",
       continuation: { operationId: parent.id }
     });
     const child = await startDetachedOperation(root, "audit", { request: "Continue the failed review.", intentDecision: decision }, {
       nodeExecutable: "/usr/bin/node",
       entryFile: "/pkg/dist/main.js",
-      initiator: { kind: "LEAD", agentId: "lead-current", userTurnId: "user-turn:recovery-test", requestEventId: "jsonrpc:recovery-test" },
+      initiator: { kind: "LEAD", agentId: "lead-current", userTurnId: "user-turn:recovery-owner-followup", requestEventId: "jsonrpc:recovery-test" },
       spawnProcess: vi.fn(() => ({ pid: 5301, unref: vi.fn() })) as never
     });
     expect(child.origin).toMatchObject({
       kind: "FAILED_OPERATION_RECOVERY",
       leadAgentId: "lead-current",
-      userTurnId: "user-turn:recovery-test",
+      userTurnId: "user-turn:recovery-owner-followup",
       requestEventId: "jsonrpc:recovery-test",
       parentOperationId: parent.id,
       parentTerminalRevision: terminal.record.revision,
@@ -1040,10 +1050,49 @@ describe("operation controller state", () => {
     });
     const events = (await fs.readFile(operationEventsFile(root, child.id), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; details?: Record<string, unknown> });
     expect(events.find((event) => event.type === "operation.created")).toMatchObject({ details: expect.objectContaining({ originKind: "FAILED_OPERATION_RECOVERY", parentOperationId: parent.id, parentTerminalRevision: terminal.record.revision, triggerEventId: `operation.terminal:${parent.id}:${terminal.record.revision}`, requestEventId: "jsonrpc:recovery-test", inheritedEconomicUsageDigest: child.origin!.inheritedEconomicUsageDigest, authorizationDigest: child.origin!.authorizationDigest }) });
-    await expect(startDetachedOperation(root, "audit", { request: "Resolve the failed chain while its linked child is still running.", intentDecision: createIntentDecision("audit", "Owner resolution attempt.", "explicit-cli") }, {
+    await expect(startDetachedOperation(root, "audit", {
+      request: "Create a sibling recovery from the failed ancestor.",
+      intentDecision: createIntentDecision("audit", "Retry from the parent and reset recovery depth.", "lead-semantic", { continuation: { operationId: parent.id } })
+    }, {
+      nodeExecutable: "/usr/bin/node", entryFile: "/pkg/dist/main.js", initiator: { kind: "LEAD", agentId: "lead-current", userTurnId: "user-turn:recovery-owner-followup", requestEventId: "jsonrpc:recovery-sibling" },
+      spawnProcess: vi.fn(() => ({ pid: 5307, unref: vi.fn() })) as never
+    })).rejects.toThrow(/OPERATION_RECOVERY_PARENT_NOT_LEAF/);
+    await expect(startDetachedOperation(root, "audit", { request: "Resolve the failed chain while its linked child is active.", intentDecision: createIntentDecision("audit", "Owner resolution attempt.", "explicit-cli") }, {
       nodeExecutable: "/usr/bin/node", entryFile: "/pkg/dist/main.js", initiator: { kind: "CLI" }, ownerResolutionOperationIds: [parent.id],
       spawnProcess: vi.fn(() => ({ pid: 5306, unref: vi.fn() })) as never
     })).rejects.toThrow(/OWNER_RESOLUTION_OPERATION_ACTIVE/);
+    await transitionOperationToTerminal(root, child.id, { status: "FAILED", phase: "failed", error: "linked recovery failed" });
+    await expect(startDetachedOperation(root, "audit", {
+      request: "Disguise the failed child as an independent root on its Owner turn.",
+      intentDecision: createIntentDecision("audit", "Start a fresh chain after failed recovery.", "lead-semantic")
+    }, {
+      nodeExecutable: "/usr/bin/node", entryFile: "/pkg/dist/main.js", initiator: { kind: "LEAD", agentId: "lead-current", userTurnId: "user-turn:recovery-owner-followup", requestEventId: "jsonrpc:recovery-child-disguise" },
+      spawnProcess: vi.fn(() => ({ pid: 5308, unref: vi.fn() })) as never
+    })).rejects.toThrow(/OPERATION_RECOVERY_PARENT_REQUIRED/);
+  });
+
+  it("serializes concurrent recovery children on the failed parent and persists only one child", async () => {
+    const root = await tempRoot();
+    const parent = await seed(root, { id: "AUDIT-RECOVERY-CONCURRENCY", kind: "audit", status: "RUNNING", phase: "reviewing" });
+    await bindTestPolicyForCurrentIdentity(root, parent.id);
+    const terminal = await transitionOperationToTerminal(root, parent.id, { status: "FAILED", phase: "failed", error: "parent failed" });
+    const attempt = (label: string) => startDetachedOperation(root, "audit", {
+      request: `Continue recovery ${label}.`,
+      intentDecision: createIntentDecision("audit", `Continue the failed task for ${label}.`, "lead-semantic", { continuation: { operationId: parent.id } })
+    }, {
+      nodeExecutable: process.execPath, entryFile: "/pkg/dist/main.js",
+      initiator: { kind: "LEAD", agentId: `lead-${label}`, userTurnId: `turn-${label}`, requestEventId: `jsonrpc:${label}` },
+      spawnProcess: vi.fn(() => ({ pid: label === "one" ? 5311 : 5312, unref: vi.fn() })) as never
+    });
+
+    const outcomes = await Promise.allSettled([attempt("one"), attempt("two")]);
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+    const rejected = outcomes.find((outcome) => outcome.status === "rejected") as PromiseRejectedResult;
+    expect(String(rejected.reason)).toMatch(/OPERATION_RECOVERY_PARENT_NOT_LEAF/);
+    expect((await loadOperation(root, parent.id)).revision).toBe(terminal.record.revision);
+    const operationFiles = (await fs.readdir(path.join(root, ".harness", "operations"))).filter((file) => /^[A-Z][A-Za-z0-9_-]+\.json$/.test(file) && file !== "portfolio.json");
+    const children = await Promise.all(operationFiles.map(async (file) => loadOperation(root, file.slice(0, -5))));
+    expect(children.filter((operation) => operation.origin?.parentOperationId === parent.id)).toHaveLength(1);
   });
 
   it("classifies a Lead tool invocation without userTurnId as an explicit Lead action event", async () => {
@@ -1058,55 +1107,109 @@ describe("operation controller state", () => {
     expect(child.origin).toMatchObject({ kind: "LEAD_ACTION", requestEventId: "jsonrpc:lead-action", authorizationDigest: expect.stringMatching(/^[a-f0-9]{64}$/), triggerEventId: "aeh-control.request:jsonrpc:lead-action" });
   });
 
-  it("requires a failed task to continue through a linked recovery instead of an unlinked Lead root", async () => {
+  it("keeps failed-chain boundaries local while allowing a new Owner turn and exposing portfolio relationships", async () => {
     const root = await tempRoot();
-    await seed(root, { id: "AUDIT-FAILED-PENDING", status: "FAILED", phase: "failed" });
-    const leadRequest = createIntentDecision("audit", "Continue the failed task under a fresh operation.", "lead-semantic");
-    await expect(startDetachedOperation(root, "audit", { request: "Restart without linking the failed operation.", intentDecision: leadRequest }, {
+    const parent = await startDetachedOperation(root, "audit", {
+      request: "Review Owner request A.",
+      intentDecision: createIntentDecision("audit", "Review Owner request A.", "lead-semantic")
+    }, {
+      nodeExecutable: process.execPath, entryFile: "/pkg/dist/main.js", completionAgentId: "lead-old",
+      initiator: { kind: "LEAD", agentId: "lead-old", userTurnId: "owner-turn-A", requestEventId: "jsonrpc:failed-parent" },
+      spawnProcess: vi.fn(() => ({ pid: 4200, unref: vi.fn() })) as never
+    });
+    const terminal = await transitionOperationToTerminal(root, parent.id, { status: "FAILED", phase: "failed", error: "bounded Explorer failure" });
+    const sameTurnRequest = createIntentDecision("audit", "Retry the failed task in a new operation.", "lead-semantic");
+    await expect(startDetachedOperation(root, "audit", { request: "Retry the same Owner turn as an independent root.", intentDecision: sameTurnRequest }, {
       nodeExecutable: process.execPath, entryFile: "/pkg/dist/main.js",
-      initiator: { kind: "LEAD", agentId: "lead-current", requestEventId: "jsonrpc:unlinked-failed-task" },
+      initiator: { kind: "LEAD", agentId: "lead-current", userTurnId: "owner-turn-A", requestEventId: "jsonrpc:same-turn-disguise" },
       spawnProcess: vi.fn(() => ({ pid: 4201, unref: vi.fn() })) as never
     })).rejects.toThrow(/OPERATION_RECOVERY_PARENT_REQUIRED/);
 
-    const unrelatedOwnerRoot = await startDetachedOperation(root, "audit", {
-      request: "Owner-authorized fresh root after closing the failed task chain.",
-      intentDecision: createIntentDecision("audit", "Owner explicitly authorizes a fresh CLI root.", "explicit-cli")
+    const independent = await startDetachedOperation(root, "audit", {
+      request: "Owner request B is independent from failed task A.",
+      intentDecision: createIntentDecision("audit", "Review Owner request B independently.", "lead-semantic")
     }, {
-      nodeExecutable: process.execPath, entryFile: "/pkg/dist/main.js", initiator: { kind: "CLI" },
+      nodeExecutable: process.execPath, entryFile: "/pkg/dist/main.js",
+      completionAgentId: "lead-current",
+      initiator: { kind: "LEAD", agentId: "lead-current", userTurnId: "owner-turn-B", requestEventId: "jsonrpc:independent-owner-request" },
       spawnProcess: vi.fn(() => ({ pid: 4202, unref: vi.fn() })) as never
     });
-    expect(unrelatedOwnerRoot.origin?.kind).toBe("EXPLICIT_CLI");
-    await expect(startDetachedOperation(root, "audit", { request: "Unrelated CLI work did not resolve the failed chain.", intentDecision: createIntentDecision("audit", "Review a new request.", "lead-semantic") }, {
-      nodeExecutable: process.execPath, entryFile: "/pkg/dist/main.js",
-      initiator: { kind: "LEAD", agentId: "lead-current", requestEventId: "jsonrpc:still-pending-after-cli" },
-      spawnProcess: vi.fn(() => ({ pid: 4205, unref: vi.fn() })) as never
-    })).rejects.toThrow(/OPERATION_RECOVERY_PARENT_REQUIRED/);
+    expect(independent.origin).toMatchObject({ kind: "USER_REQUEST", userTurnId: "owner-turn-B", rootHardDeadlineAt: expect.any(String) });
+    expect(Date.parse(independent.origin!.rootHardDeadlineAt)).toBeGreaterThan(Date.parse(terminal.record.origin!.rootHardDeadlineAt));
+    expect((await loadOperation(root, parent.id)).revision).toBe(terminal.record.revision);
 
-    const ownerRoot = await startDetachedOperation(root, "audit", {
-      request: "Owner explicitly resolves the failed task chain.", intentDecision: createIntentDecision("audit", "Resolve the previous operation and start a fresh root.", "explicit-cli")
-    }, {
-      nodeExecutable: process.execPath, entryFile: "/pkg/dist/main.js", initiator: { kind: "CLI" },
-      ownerResolutionOperationIds: ["AUDIT-FAILED-PENDING"],
-      spawnProcess: vi.fn(() => ({ pid: 4206, unref: vi.fn() })) as never
-    });
-    expect(ownerRoot.origin?.kind).toBe("EXPLICIT_CLI");
-    expect(ownerRoot.origin?.ownerResolutionRefs).toContainEqual(expect.objectContaining({ kind: "FAILED_TASK_CHAIN", operationId: "AUDIT-FAILED-PENDING" }));
-    const nextLeadRoot = await startDetachedOperation(root, "audit", { request: "Start work under the latest Owner-authorized root.", intentDecision: createIntentDecision("audit", "Review a new request.", "lead-semantic") }, {
-      nodeExecutable: process.execPath, entryFile: "/pkg/dist/main.js",
-      initiator: { kind: "LEAD", agentId: "lead-current", requestEventId: "jsonrpc:new-root-after-owner-cli" },
-      spawnProcess: vi.fn(() => ({ pid: 4203, unref: vi.fn() })) as never
-    });
-    expect(nextLeadRoot.origin?.kind).toBe("LEAD_ACTION");
+    await syncOperationPortfolio(root, "demo", terminal.record);
+    await syncOperationPortfolio(root, "demo", independent);
+    const portfolio = await loadOperationPortfolio(root, "demo", { currentLeadAgentId: "lead-current", currentUserTurnId: "owner-turn-B" });
+    expect(portfolio.operations[parent.id]).toMatchObject({ leadRelationship: "BOUND_OTHER_LEAD", lineageRelationship: "HISTORICAL_UNRELATED", ownerAttention: "CHAIN_SCOPED_BOUNDARY" });
+    expect(portfolio.operations[independent.id]).toMatchObject({ leadRelationship: "BOUND_CURRENT_LEAD", lineageRelationship: "CURRENT_ROOT", ownerAttention: "NONE" });
   });
 
-  it("does not let a Lead restart a cancelled operation without a fresh Owner CLI start", async () => {
+  it("prevents the same trusted user turn from disguising a cancelled chain as a new root", async () => {
     const root = await tempRoot();
-    await seed(root, { id: "AUDIT-CANCELLED-PENDING", status: "CANCELLED", phase: "cancelled" });
+    const cancelled = await startDetachedOperation(root, "audit", { request: "Owner request to review.", intentDecision: createIntentDecision("audit", "Review the Owner request.", "lead-semantic") }, {
+      nodeExecutable: process.execPath, entryFile: "/pkg/dist/main.js", initiator: { kind: "LEAD", agentId: "lead-current", userTurnId: "owner-cancel-turn", requestEventId: "jsonrpc:cancelled-root" },
+      spawnProcess: vi.fn(() => ({ pid: 4203, unref: vi.fn() })) as never
+    });
+    await transitionOperationToTerminal(root, cancelled.id, { status: "CANCELLED", phase: "cancelled" });
     await expect(startDetachedOperation(root, "audit", { request: "Restart a cancelled operation.", intentDecision: createIntentDecision("audit", "Continue cancelled work.", "lead-semantic") }, {
       nodeExecutable: process.execPath, entryFile: "/pkg/dist/main.js",
-      initiator: { kind: "LEAD", agentId: "lead-current", requestEventId: "jsonrpc:restart-cancelled" },
+      initiator: { kind: "LEAD", agentId: "lead-current", userTurnId: "owner-cancel-turn", requestEventId: "jsonrpc:restart-cancelled" },
       spawnProcess: vi.fn(() => ({ pid: 4204, unref: vi.fn() })) as never
-    })).rejects.toThrow(/OPERATION_OWNER_CANCELLATION_STILL_WAITING/);
+    })).rejects.toThrow(/OPERATION_RECOVERY_PARENT_REQUIRED/);
+  });
+
+  it("requires explicit continuation when a later Owner turn reuses the same prepared task id", async () => {
+    const root = await tempRoot();
+    const failedTask = await startDetachedOperation(root, "run", {
+      taskId: "TASK-RETRY-EXACT",
+      intentDecision: createIntentDecision("run", "Run the prepared task.", "lead-semantic")
+    }, {
+      nodeExecutable: process.execPath, entryFile: "/pkg/dist/main.js", completionAgentId: "lead-old",
+      initiator: { kind: "LEAD", agentId: "lead-old", userTurnId: "owner-turn-first", requestEventId: "jsonrpc:task-first" },
+      spawnProcess: vi.fn(() => ({ pid: 4210, unref: vi.fn() })) as never
+    });
+    await transitionOperationToTerminal(root, failedTask.id, { status: "FAILED", phase: "failed", error: "prepared task failed" });
+
+    await expect(startDetachedOperation(root, "run", {
+      taskId: "TASK-RETRY-EXACT",
+      intentDecision: createIntentDecision("run", "Start a new operation for this prepared task.", "lead-semantic")
+    }, {
+      nodeExecutable: process.execPath, entryFile: "/pkg/dist/main.js",
+      initiator: { kind: "LEAD", agentId: "lead-new", userTurnId: "owner-turn-second", requestEventId: "jsonrpc:task-disguised" },
+      spawnProcess: vi.fn(() => ({ pid: 4211, unref: vi.fn() })) as never
+    })).rejects.toThrow(/OPERATION_RECOVERY_PARENT_REQUIRED/);
+
+    const independentTask = await startDetachedOperation(root, "run", {
+      taskId: "TASK-INDEPENDENT",
+      intentDecision: createIntentDecision("run", "Run a distinct prepared task.", "lead-semantic")
+    }, {
+      nodeExecutable: process.execPath, entryFile: "/pkg/dist/main.js",
+      initiator: { kind: "LEAD", agentId: "lead-new", userTurnId: "owner-turn-second", requestEventId: "jsonrpc:task-independent" },
+      spawnProcess: vi.fn(() => ({ pid: 4212, unref: vi.fn() })) as never
+    });
+    expect(independentTask.payload).toMatchObject({ taskId: "TASK-INDEPENDENT" });
+  });
+
+  it("does not retroactively expire active records that have no frozen hard deadline", async () => {
+    const root = await tempRoot();
+    const legacy = await seed(root, { id: "ACK-RACE", status: "RUNNING", phase: "running", createdAt: new Date(0).toISOString() });
+    await syncOperationPortfolio(root, "demo", legacy);
+    const portfolioFile = path.join(root, ".harness", "operations", "portfolio.json");
+    const legacyPortfolio = JSON.parse(await fs.readFile(portfolioFile, "utf8")) as { operations: Record<string, Record<string, unknown>> };
+    for (const field of ["deadlineDisposition", "deadlineDiagnosticCode", "boundLeadAgentId", "originKind", "parentOperationId", "userTurnDigest", "ownerBoundaryKinds"]) delete legacyPortfolio.operations[legacy.id]?.[field];
+    await fs.writeFile(portfolioFile, JSON.stringify(legacyPortfolio));
+    const portfolio = await loadOperationPortfolio(root, "demo");
+    expect(portfolio.operations[legacy.id]).toMatchObject({ deadlineDisposition: "UNFROZEN_UNSUPPORTED", deadlineDiagnosticCode: "OPERATION_UNSUPPORTED_UNFROZEN_DEADLINE" });
+    await assertOperationCapacity(root, { version: 1, project: { name: "demo" }, orchestration: { operations: { concurrency: { maxActiveOperations: 1 } } } } as never);
+    await fs.mkdir(path.join(root, ".harness"), { recursive: true });
+    await fs.writeFile(path.join(root, ".harness", "project.yaml"), "version: 1\nproject:\n  name: demo\norchestration:\n  provider: paseo\n");
+    const started = await startDetachedOperation(root, "audit", { request: "Start an independent operation." }, {
+      nodeExecutable: process.execPath, entryFile: "/pkg/dist/main.js", initiator: { kind: "CLI" },
+      spawnProcess: vi.fn(() => ({ pid: 4205, unref: vi.fn() })) as never
+    });
+    expect(started.status).toBe("QUEUED");
+    expect((await loadOperation(root, "ACK-RACE")).status).toBe("RUNNING");
   });
 
   it("accepts the exact durable user turn as Lead-start causality without requiring an MCP event", async () => {

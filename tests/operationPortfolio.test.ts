@@ -2,13 +2,15 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { sha256Canonical } from "../src/core/digest.js";
 import {
   assertOperationCapacity,
   bindPortfolioLead,
   loadOperationPortfolio,
   syncOperationPortfolio
 } from "../src/operations/portfolio.js";
-import type { OperationRecordV2 } from "../src/operations/state.js";
+import { claimControllerEpoch, loadOperation, saveOperation, transitionOperationToTerminal, type OperationRecordV2 } from "../src/operations/state.js";
+import { compileOperationOriginV1 } from "../src/operations/operationProvenance.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -35,6 +37,12 @@ function operation(root: string, id: string, priority: number): OperationRecordV
     createdAt: now,
     updatedAt: now,
     lastProgressAt: now,
+    origin: compileOperationOriginV1({
+      kind: "USER_REQUEST", leadAgentId: "lead-1", controllerOwnerId: "controller:portfolio-test", requestEventId: `request:${id}`,
+      authorizationDigest: sha256Canonical(`authorization:${id}`), userTurnId: `turn:${id}`, triggerEventId: `user.turn:turn:${id}`,
+      requestDigest: sha256Canonical({ request: id }), recoveryDepth: 0,
+      rootHardDeadlineAt: new Date(Date.parse(now) + 8 * 60 * 60_000).toISOString(), reason: id, createdAt: now
+    }),
     lead: {
       agentId: "lead-1",
       generation: 1,
@@ -84,6 +92,26 @@ describe("operation portfolio", () => {
     expect(rebound.leadAgentId).toBe("lead-2");
     expect(rebound.leadGeneration).toBe(2);
     expect(rebound.operations["CHANGE-A"].supervisorAgentId).toBe("supervisor-CHANGE-A");
+  });
+
+  it("hydrates stale portfolio status and lineage fields from durable OperationRecords", async () => {
+    const root = await tempRoot();
+    const record = operation(root, "CHANGE-DURABLE", 50);
+    await saveOperation(root, record);
+    await syncOperationPortfolio(root, "demo", record);
+    await claimControllerEpoch(root, record.id, "controller:portfolio-hydration", { pid: process.pid });
+    const terminal = await transitionOperationToTerminal(root, record.id, { status: "FAILED", phase: "failed", error: "terminal fixture" });
+
+    const portfolio = await loadOperationPortfolio(root, "demo", { currentLeadAgentId: "lead-2", currentUserTurnId: "another-turn" });
+    expect(portfolio.operations[record.id]).toMatchObject({
+      status: "FAILED",
+      revision: terminal.record.revision,
+      boundLeadAgentId: "lead-1",
+      leadRelationship: "BOUND_OTHER_LEAD",
+      lineageRelationship: "HISTORICAL_UNRELATED",
+      ownerAttention: "CHAIN_SCOPED_BOUNDARY"
+    });
+    expect((await loadOperation(root, record.id)).status).toBe("FAILED");
   });
 
   it("fails closed when the configured active-operation portfolio limit is exhausted", async () => {

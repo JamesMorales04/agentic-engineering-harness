@@ -9,7 +9,6 @@ import { estimateLegacyInformationalTokens, projectInformationalContext, type In
 import type { HarnessProjectConfig } from "../src/core/types.js";
 import { sha256 } from "../src/context/provenance.js";
 import { initializeProject } from "../src/core/init.js";
-import { createIntentDecision } from "../src/audit/intentDecision.js";
 import { handleOperationMcpRequest } from "../src/operations/mcp.js";
 import type { ContextCompressionProvider } from "../src/context/compression/types.js";
 
@@ -135,7 +134,7 @@ describe("repository-grounded informational projection", () => {
     await fs.writeFile(path.join(root, "src", "validation.ts"), "export const validation = true;\n");
     const before = await snapshot(root);
     vi.stubEnv("AEH_CONTROL_ROOT", root);
-    const context = await handleOperationMcpRequest({ method: "tools/call", params: { name: "aeh_informational_context", arguments: { request: "Explain validation", intentDecision: createIntentDecision("informational", "explain validation", "lead-semantic") } } });
+    const context = await handleOperationMcpRequest({ method: "tools/call", params: { name: "aeh_informational_context", arguments: { request: "Explain validation" } } });
     expect(await snapshot(root)).toEqual(before);
     const value = context.structuredContent as { sources: Array<Record<string, unknown>>; human: string };
     expect(value.sources[0]).not.toHaveProperty("excerpt");

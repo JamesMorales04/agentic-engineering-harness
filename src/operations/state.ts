@@ -210,6 +210,34 @@ export function operationFile(root: string, operationId: string): string { retur
 export function operationArtifactDir(root: string, operationId: string): string { return path.resolve(resolveOperationStateRoot(root), OPERATIONS_DIR, safeId(operationId)); }
 export function operationEventsFile(root: string, operationId: string): string { return path.join(operationArtifactDir(root, operationId), "events.ndjson"); }
 
+/** Serialize continuation creation against the failed parent until the child origin is durable. */
+export async function withOperationRecoveryParentLock<T>(
+  root: string,
+  parentOperationId: string,
+  action: (parent: OperationRecordV2, existingChildOperationId?: string) => Promise<T>
+): Promise<T> {
+  const stateRoot = resolveOperationStateRoot(root);
+  const parentFile = operationFile(stateRoot, parentOperationId);
+  await fs.mkdir(path.dirname(parentFile), { recursive: true });
+  return withOperationLock(parentFile, async () => {
+    const stored = await readStoredOperation(parentFile);
+    await recoverPendingOperationEvent(stateRoot, parentFile, stored);
+    const parent = stored.record;
+    const directory = path.resolve(stateRoot, OPERATIONS_DIR);
+    const entries = (await fs.readdir(directory).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? [] : Promise.reject(error)))
+      .filter((name) => name !== "portfolio.json" && /^[A-Z][A-Za-z0-9_-]+\.json$/.test(name) && name !== `${parentOperationId}.json`);
+    for (const entry of entries) {
+      const childId = entry.slice(0, -".json".length);
+      const childFile = operationFile(stateRoot, childId);
+      let child: { record: OperationRecordV2 } | undefined;
+      try { child = await readStoredOperation(childFile); }
+      catch (error) { if (!isNotFound(error)) throw error; }
+      if (child?.record.origin?.parentOperationId === parentOperationId) return action(parent, childId);
+    }
+    return action(parent);
+  });
+}
+
 export async function loadOperation(root: string, operationId: string): Promise<OperationRecordV2> {
   const stateRoot = resolveOperationStateRoot(root);
   const file = operationFile(stateRoot, operationId);
@@ -333,8 +361,9 @@ function createOwnerContinuationBoundaryV1(operation: OperationRecordV2, deadlin
   return { ...body, digest: sha256Canonical(body) };
 }
 
-function frozenOperationHardDeadlineAt(operation: OperationRecordV2): number | undefined {
+export function frozenOperationHardDeadlineAt(operation: OperationRecordV2): number | undefined {
   const createdAt = Date.parse(operation.createdAt);
+  if (!Number.isFinite(createdAt)) return undefined;
   const policyDeadline = operation.resolvedOperationPolicy
     ? createdAt + operation.resolvedOperationPolicy.executionLiveness.hardDeadlineMs
     : Number.POSITIVE_INFINITY;
@@ -1935,7 +1964,7 @@ export async function withOperationCoordinationLock<T>(root: string, operationId
   return withOperationLock(file, () => coordinationLockOwner.run(key, action));
 }
 async function withOperationLock<T>(file: string, action: () => Promise<T>): Promise<T> { const lock = `${file}.lock`; const deadline = Date.now() + LOCK_TIMEOUT_MS; for (;;) { let handle: Awaited<ReturnType<typeof fs.open>> | undefined; try { handle = await fs.open(lock, "wx"); try { await handle.writeFile(`${process.pid}\n`); return await action(); } finally { await handle.close().catch(() => undefined); await fs.rm(lock, { force: true }).catch(() => undefined); } } catch (error) { if (handle) { await handle.close().catch(() => undefined); await fs.rm(lock, { force: true }).catch(() => undefined); throw error; } if (!isAlreadyExists(error)) throw error; if (await canRecoverLock(lock)) { await fs.rm(lock, { force: true }).catch(() => undefined); continue; } if (Date.now() >= deadline) throw new Error(`Timed out acquiring operation state lock for ${path.basename(file)}.`); await delay(LOCK_RETRY_MS); } } }
-async function canRecoverLock(lock: string): Promise<boolean> { try { const [rawPid, stat] = await Promise.all([fs.readFile(lock, "utf8").catch(() => ""), fs.stat(lock)]); const ownerPid = Number.parseInt(rawPid.trim(), 10); if (Number.isInteger(ownerPid) && ownerPid > 0 && !processAlive(ownerPid)) return true; return Date.now() - stat.mtimeMs > STALE_LOCK_MS; } catch { return true; } }
+async function canRecoverLock(lock: string): Promise<boolean> { try { const [rawPid, stat] = await Promise.all([fs.readFile(lock, "utf8").catch(() => ""), fs.stat(lock)]); const ownerPid = Number.parseInt(rawPid.trim(), 10); if (Number.isInteger(ownerPid) && ownerPid > 0) return !processAlive(ownerPid); return Date.now() - stat.mtimeMs > STALE_LOCK_MS; } catch { return true; } }
 function processAlive(pid: number): boolean { try { process.kill(pid, 0); return true; } catch { return false; } }
 
 function guardTerminalTransition(current: OperationRecordV2, patch: Partial<OperationRecordV2>): Partial<OperationRecordV2> { if (!isTerminal(current.status)) return patch; const { status: _status, phase: _phase, result: _result, error: _error, finishedAt: _finishedAt, ...metadata } = patch; return metadata; }

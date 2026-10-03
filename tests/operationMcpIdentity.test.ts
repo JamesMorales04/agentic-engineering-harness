@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveContextAgentIdentity } from "../src/operations/mcp.js";
+import { handleOperationMcpRequest } from "../src/operations/mcp.js";
+import { saveOperation, type OperationRecordV2 } from "../src/operations/state.js";
 import { PASEO_BOOTSTRAP_VERSION } from "../src/paseo/start.js";
 import { VERSION } from "../src/version.js";
 
@@ -100,5 +102,41 @@ describe("aeh_context_status identity", () => {
   it("fails closed when neither environment nor compatible durable state exists", async () => {
     const root = await project();
     await expect(resolveContextAgentIdentity(root, undefined, {})).rejects.toThrow("could not resolve the current managed lead agent");
+  });
+});
+
+describe("operation ACK ownership", () => {
+  it("keeps ACK bound to the Lead that owns the terminal revision", async () => {
+    const root = await project();
+    const now = new Date().toISOString();
+    const operation: OperationRecordV2 = {
+      version: 2,
+      id: "CHANGE-ACK-OWNER",
+      kind: "change",
+      status: "FAILED",
+      phase: "failed",
+      root,
+      payload: { request: "failed task" },
+      revision: 7,
+      createdAt: now,
+      updatedAt: now,
+      lastProgressAt: now,
+      lead: { agentId: "lead-old", generation: 1, boundAt: now, acknowledgedRevision: 3, acknowledgedAt: now },
+      supervision: { required: false, materialized: false, generations: [] },
+      stages: {},
+      participants: {},
+      progress: { expected: 0, registered: 0, running: 0, completed: 0, failed: 0, blocked: 0 },
+      notification: { lastLeadWakeRevision: 3, terminalDelivered: false, attempts: 0 }
+    };
+    await saveOperation(root, operation);
+    process.env.AEH_CONTROL_ROOT = root;
+    process.env.PASEO_AGENT_ID = "lead-new";
+    const result = await handleOperationMcpRequest({
+      jsonrpc: "2.0", id: "foreign-ack", method: "tools/call",
+      params: { name: "aeh_operation_ack", arguments: { operationId: operation.id, revision: operation.revision } }
+    });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({ version: 1, code: "OPERATION_ACK_WRONG_LEAD", category: "AUTHORITY", operationCreated: false, retryDisposition: "DO_NOT_RETRY", relationship: "BOUND_OTHER_LEAD", relatedOperationId: operation.id });
+    await expect(fs.readFile(path.join(root, ".harness", "operations", `${operation.id}.json`), "utf8")).resolves.toContain('"acknowledgedRevision": 3');
   });
 });

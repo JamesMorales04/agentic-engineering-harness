@@ -97,7 +97,7 @@ AEH uses layered liveness:
 
 The detached monitor reads OperationRecord without consuming LLM tokens. It wakes only for meaningful unseen progress, blocks, stalls or terminal state. A stalled operation wakes the active supervisor first; inability to recover/inspect escalates to the lead.
 
-**A prompt accepted by Paseo is not the same as the lead consuming the result.** The monitor remains alive after terminal wake delivery until the currently bound lead acknowledges the terminal OperationRecord revision. Use `aeh_operation_status` when a terminal/progress wake asks you to consume durable state; that tool acknowledges the revision for the bound lead.
+**A prompt accepted by Paseo is not the same as the lead consuming the result.** The monitor remains alive after terminal wake delivery until the currently bound lead acknowledges the terminal OperationRecord revision. Use `aeh_operation_digest`/`aeh_operation_status` to read durable state, then `aeh_operation_ack` to acknowledge the exact consumed revision. Status reads never ACK.
 
 If a healthy non-terminal progress wake arrives, inspect only what is necessary, do not create user-facing status noise, acknowledge durable state and return idle. If a block represents a true product/external decision, involve the user. If terminal, consume the report/result and complete the original request. Never launch a duplicate operation merely because a wake was missed.
 
@@ -207,10 +207,13 @@ Lead handoff carries user/portfolio decisions and OperationRecord references. Su
 Prefer operation-level surfaces:
 
 - `aeh_operation_portfolio` — compact multi-operation lead view;
-- `aeh_operation_status` — authoritative snapshot + lead revision acknowledgement;
+- `aeh_operation_status` / `aeh_operation_digest` — read-only operation state;
+- `aeh_operation_ack` — exact revision ACK by the bound Lead;
 - `aeh paseo agents --operation <id>` — explicit diagnostic view of concrete agents;
 - `aeh operation wait` — synchronous compatibility/recovery only;
 - `aeh operation cancel` — explicit cancellation.
+
+The tool schema is the syntactic contract, CapabilityRegistry records available authority/capabilities, an operational skill is the procedure, and the deterministic controller is final lifecycle/security authority. Tool-start schemas derive route effects and prohibit caller-controlled delivery authority; consult `aeh-operation-control` for operation start, lineage, portfolio, recovery, ACK, and delivery procedure.
 
 Do not infer workflow completion from a reviewer looking idle in the UI. Do not infer liveness from a single callback. Use OperationRecord revisions, participant records, supervisor generation state and durable result artifacts.
 

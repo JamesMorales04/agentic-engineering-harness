@@ -20,6 +20,8 @@ export interface PaseoNativeAgentSnapshot {
   id: string;
   status?: string;
   workspaceId?: string;
+  /** Paseo's host-owned timestamp for the most recent inbound user turn. */
+  lastUserMessageAt?: string;
   labels?: Record<string, string>;
   lastUsage?: PaseoNativeUsage;
   raw: Record<string, unknown>;
@@ -126,6 +128,7 @@ export function normalizePaseoNativeAgent(
     id,
     status: statusText(raw.status),
     workspaceId: stringField(raw, ["workspaceId", "workspace_id"]),
+    lastUserMessageAt: stringField(raw, ["lastUserMessageAt", "last_user_message_at"]),
     labels: stringRecord(raw.labels),
     lastUsage: parseUsage(raw.lastUsage),
     raw

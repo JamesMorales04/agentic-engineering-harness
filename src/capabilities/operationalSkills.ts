@@ -75,6 +75,18 @@ const coordinatorRoles: CanonicalRole[] = ["Lead/Director", "Operation Superviso
 /** Small, versioned procedures. They are guidance only: this registry is never an authorization source. */
 export const OPERATIONAL_SKILLS_V1: readonly OperationalSkillV1[] = [
   skill({
+    id: "aeh-operation-control", name: "AEH Lead operation control", description: "Select a route, manage durable operation lineage, and act on compact portfolio/error metadata.",
+    capabilities: ["aeh:operation-control", "toolpack:Lead/Director:operation-control"], competencies: ["operation-control"], roles: ["Lead/Director"],
+    preconditions: ["This is the interactive Lead/Director session.", "Use the injected aeh-control tools and their syntactic schemas."],
+    procedure: ["Use the route-specific start tool and provide request plus version 1 requestedOutcome/constraints/continuation.", "Treat route effects, trusted user-turn identity, operation creation, recovery, deadlines, and delivery authority as controller-owned.", "Use portfolio relationships to separate current lineage from unrelated historical operations.", "Follow structured error retryDisposition and ACK only the exact consumed revision as its bound Lead."],
+    failures: [
+      { failureClass: "INVALID_INPUT", recovery: ["Correct caller-owned operation intent fields identified by structured error metadata.", "Do not retry malformed arguments as another route."] },
+      { failureClass: "PERMISSION_DENIED", recovery: ["Do not retry ACK from an unbound Lead.", "Use the portfolio relationship and continue only if the current Owner request is independent."] },
+      { failureClass: "OWNER_BOUNDARY", recovery: ["Preserve the exact failed chain and wait for its explicit continuation or configured Owner resolution path."] }
+    ],
+    evidence: ["route-specific MCP schema", "structured operation error v1", "compact portfolio relationship fields"], guidanceOnly: true
+  }),
+  skill({
     id: "aeh-context-retrieval", name: "AEH context retrieval", description: "Retrieve only authorized, task-relevant repository context.",
     capabilities: ["context:authorized-retrieval"], competencies: ["repository-navigation", "context-retrieval"], roles: readRoles,
     preconditions: ["The execution contract permits context retrieval.", "Use the scoped AEH context surface supplied to this participant."],

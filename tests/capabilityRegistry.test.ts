@@ -90,6 +90,9 @@ describe("CapabilityRegistryV1", () => {
     expect(byId.get("aeh:structured-result-submission")).toMatchObject({ availability: "CONFIGURED", audience: "PARTICIPANT" });
     expect(byId.get("aeh:supervisor-recovery")).toMatchObject({ availability: "CONFIGURED", audience: "PARTICIPANT", roles: ["Operation Supervisor"], sideEffectClass: "CONTROLLER_INTERNAL" });
     expect(byId.get("aeh:lead-recovery")).toMatchObject({ availability: "CONFIGURED", audience: "PARTICIPANT", roles: ["Lead/Director"], sideEffectClass: "CONTROLLER_INTERNAL" });
+    expect(byId.get("aeh:operation-control")).toMatchObject({ availability: "CONFIGURED", audience: "PARTICIPANT", roles: ["Lead/Director"], skillRefs: ["aeh-operation-control"] });
+    expect(byId.get("toolpack:Lead/Director:operation-control")).toMatchObject({ audience: "PARTICIPANT", roles: ["Lead/Director"], skillRefs: ["aeh-operation-control"] });
+    expect(byId.get("toolpack:Operation Supervisor:operation-control")).toBeUndefined();
     expect(byId.get("aeh:validation-invocation")).toMatchObject({ audience: "CONTROLLER_ONLY", roles: [] });
     expect(JSON.stringify(result)).not.toContain("https://example.invalid/mcp");
     expect(result.digest).toMatch(/^[a-f0-9]{64}$/);
@@ -176,6 +179,18 @@ describe("CapabilityRegistryV1", () => {
       capabilityRegistry: registry()
     });
     expect(deliverySkills.skills.map((item) => item.id)).toEqual(["aeh-delivery", "github-pr-delivery"]);
+  });
+
+  it("projects operation-control guidance to the interactive Lead role only", () => {
+    const registryValue = registry();
+    const lead = projectOperationalSkillsV1({ role: "Lead/Director", workUnitCapabilityIds: ["aeh:operation-control"], capabilityRegistry: registryValue });
+    const supervisor = projectOperationalSkillsV1({ role: "Operation Supervisor", workUnitCapabilityIds: ["aeh:operation-control"], capabilityRegistry: registryValue });
+    const explorer = projectOperationalSkillsV1({ role: "Explorer", workUnitCapabilityIds: ["aeh:operation-control"], capabilityRegistry: registryValue });
+
+    expect(lead.skills.map((item) => item.id)).toContain("aeh-operation-control");
+    expect(supervisor.skills.map((item) => item.id)).not.toContain("aeh-operation-control");
+    expect(explorer.skills.map((item) => item.id)).not.toContain("aeh-operation-control");
+    expect(lead.skills.find((item) => item.id === "aeh-operation-control")).toMatchObject({ accessMode: "CONTROLLER_GUIDANCE", capabilityRefs: ["aeh:operation-control", "toolpack:Lead/Director:operation-control"] });
   });
 
   it("uses observed failures for just-in-time recovery and exposes certification drift", () => {

@@ -92,6 +92,8 @@ export interface HarnessProjectConfig {
     required?: boolean;
     worker?: { provider?: string; model?: string; maxRepairAttempts?: number; titlePrefix?: string; };
     operations?: {
+      /** Scope of explicit Owner boundaries. Failed task chains remain chain-scoped in either mode. */
+      ownerBoundaryScope?: "CHAIN_SCOPED_BOUNDARY" | "PROJECT_OR_OWNER_GLOBAL_BOUNDARY";
       supervision?: { initializationTimeoutSeconds?: number; turnTimeoutSeconds?: number; context?: { handoffThreshold?: number; hardHandoffThreshold?: number } };
       liveness?: {
         hardDeadlineMs?: number; progressLeaseMs?: number; stallWindowMs?: number; providerTurnDeadlineMs?: number;

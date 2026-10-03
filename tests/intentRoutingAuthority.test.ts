@@ -19,19 +19,18 @@ describe("semantic routing authority boundary", () => {
   it("uses the lead-selected informational route without asking a heuristic to veto it", async () => {
     const root = await project();
     vi.stubEnv("AEH_CONTROL_ROOT", root);
-    const decision = createIntentDecision("informational", "explain existing security behavior", "lead-semantic");
-    const result = await handleOperationMcpRequest({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "aeh_informational_context", arguments: { request: "Find security problems in this repository, but only explain the existing evidence.", intentDecision: decision } } });
+    const result = await handleOperationMcpRequest({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "aeh_informational_context", arguments: { request: "Find security problems in this repository, but only explain the existing evidence." } } });
     expect(result.structuredContent).toMatchObject({ intent: "informational" });
     expect(await fs.readdir(path.join(root, ".harness", "operations"))).toEqual([]);
     expect(await fs.readFile(path.resolve(process.cwd(), "src/operations/mcp.ts"), "utf8")).not.toContain("classifyEngineeringIntent");
   });
 
-  it("rejects contradictory structured effects before the informational path can run", async () => {
-    const root = await project();
-    vi.stubEnv("AEH_CONTROL_ROOT", root);
-    const decision = { version: 1, source: "lead-semantic", intent: "informational", requestedOutcome: "explain existing behavior", effects: { evaluate: false, mutateRepository: true, executePreparedTask: false, deliver: false } };
-    await expect(handleOperationMcpRequest({ method: "tools/call", params: { name: "aeh_informational_context", arguments: { request: "explain this", intentDecision: decision } } })).rejects.toThrow("INVALID_INTENT_DECISION");
-    expect(await fs.readdir(path.join(root, ".harness", "operations"))).toEqual([]);
+  it("does not expose controller-owned effects in the informational provider schema", async () => {
+    const listed = await handleOperationMcpRequest({ method: "tools/list" });
+    const informational = (listed.tools as Array<{ name: string; inputSchema: { properties: Record<string, unknown>; additionalProperties: boolean } }>).find((tool) => tool.name === "aeh_informational_context")!;
+    expect(informational.inputSchema).toMatchObject({ additionalProperties: false, properties: { request: { type: "string" } } });
+    expect(informational.inputSchema.properties).not.toHaveProperty("intentDecision");
+    expect(informational.inputSchema.properties).not.toHaveProperty("effects");
   });
 
   it("persists the selected audit route while retaining controller ownership of policy", async () => {
