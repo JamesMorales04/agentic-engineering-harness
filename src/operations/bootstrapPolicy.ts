@@ -6,8 +6,7 @@ import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
 import { configuredDeliveryPolicy, requiredHumanActionAuthorizations } from "../security/actionPolicy.js";
 import { bindResolvedOperationPolicy, currentControllerEpoch, loadOperation, type OperationRecordV2 } from "./state.js";
 import { assertOperationOriginV1 } from "./operationProvenance.js";
-import { collectOperationEconomicUsageV1, remainingEconomicEnvelopeForRecoveryV1 } from "./economicUsage.js";
-import { createTrustedOperationToolError } from "./toolDiagnostics.js";
+import { resolveRecoveryAuthorityV1 } from "./recoveryAuthority.js";
 
 /**
  * DETERMINISTIC provisional bootstrap policy for a fresh candidate. It carries the
@@ -49,15 +48,12 @@ export async function bindBootstrapOperationPolicy(
   if (operation.origin) assertOperationOriginV1(operation.origin);
   if (operation.origin?.kind === "FAILED_OPERATION_RECOVERY") {
     const parent = await loadOperation(root, operation.origin.parentOperationId!);
-    if (parent.status !== "FAILED" || parent.revision !== operation.origin.parentTerminalRevision || !parent.resolvedOperationPolicy) throw new Error("OPERATION_RECOVERY_PARENT_STALE: the failed parent revision or frozen policy changed.");
-    if (parent.ownerEconomicBoundary || parent.ownerContinuationBoundary) throw createTrustedOperationToolError("OPERATION_RECOVERY_OWNER_BOUNDARY", "Linked recovery cannot continue through a hard Owner boundary.", undefined, parent.id);
-    const parentPolicy = parent.resolvedOperationPolicy;
-    const parentUsage = await collectOperationEconomicUsageV1(root, parent);
-    if (parentUsage.digest !== operation.origin.inheritedEconomicUsageDigest) throw new Error("OPERATION_RECOVERY_USAGE_STALE: parent economic-usage evidence changed after the recovery continuation was authorized.");
-    const expectedAuthorityDigest = sha256Canonical({ parentPolicyDigest: parentPolicy.digest, allowedExternalEffects: parentPolicy.allowedExternalEffects, parentOriginDigest: parent.origin?.digest ?? null, inheritedEconomicUsageDigest: parentUsage.digest });
-    if (expectedAuthorityDigest !== operation.origin.inheritedAuthorityDigest) throw new Error("OPERATION_RECOVERY_AUTHORITY_STALE: inherited Owner delegation no longer matches the failed parent.");
-    if (minimumAssuranceRank(minimumAssurance) < minimumAssuranceRank(parentPolicy.minimumAssurance)) throw new Error("OPERATION_RECOVERY_ASSURANCE_DOWNGRADE: recovery cannot lower the parent operation assurance.");
-    inheritedEconomic = remainingEconomicEnvelopeForRecoveryV1(parentPolicy.economicEnvelope, parentUsage);
+    if (parent.status !== "FAILED" || parent.revision !== operation.origin.parentTerminalRevision) throw new Error("OPERATION_RECOVERY_PARENT_STALE: the failed parent revision changed.");
+    const authority = await resolveRecoveryAuthorityV1(root, parent);
+    if (authority.parentUsage.digest !== operation.origin.inheritedEconomicUsageDigest) throw new Error("OPERATION_RECOVERY_USAGE_STALE: parent economic-usage evidence changed after the recovery continuation was authorized.");
+    if (authority.inheritedAuthorityDigest !== operation.origin.inheritedAuthorityDigest) throw new Error("OPERATION_RECOVERY_AUTHORITY_STALE: inherited Owner delegation no longer matches the failed parent chain.");
+    if (minimumAssuranceRank(minimumAssurance) < minimumAssuranceRank(authority.policy.minimumAssurance)) throw new Error("OPERATION_RECOVERY_ASSURANCE_DOWNGRADE: recovery cannot lower the inherited minimum assurance.");
+    inheritedEconomic = authority.remainingEconomicEnvelope;
   }
   const hardDeadlineMs = executionLiveness.hardDeadlineMs ?? 8 * 60 * 60_000;
   const hardDeadlineAt = operation.origin?.rootHardDeadlineAt ?? new Date(Date.parse(operation.createdAt) + hardDeadlineMs).toISOString();
@@ -98,7 +94,8 @@ export async function bindBootstrapOperationPolicy(
   });
   if (operation.origin?.kind === "FAILED_OPERATION_RECOVERY") {
     const parent = await loadOperation(root, operation.origin.parentOperationId!);
-    const extraEffects = policy.allowedExternalEffects.filter((effect) => !parent.resolvedOperationPolicy!.allowedExternalEffects.includes(effect));
+    const authority = await resolveRecoveryAuthorityV1(root, parent);
+    const extraEffects = policy.allowedExternalEffects.filter((effect) => !authority.policy.allowedExternalEffects.includes(effect));
     if (extraEffects.length) throw new Error(`OPERATION_RECOVERY_EXTERNAL_EFFECT_WIDENING: recovery adds owner-reserved effects ${extraEffects.join(", ")}.`);
   }
   return bindResolvedOperationPolicy(root, operation.id, policy);

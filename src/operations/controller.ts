@@ -85,7 +85,7 @@ import { candidateRevisionsEqual, createCandidateRevisionV1, type CandidateRevis
 import { assertWorkspaceMatchesCandidate } from "../candidates/identity.js";
 import { bindBootstrapOperationPolicy } from "./bootstrapPolicy.js";
 import { compileOperationOriginV1, type OperationOwnerResolutionRefV1 } from "./operationProvenance.js";
-import { collectOperationEconomicUsageV1, remainingEconomicEnvelopeForRecoveryV1 } from "./economicUsage.js";
+import { resolveRecoveryAuthorityV1 } from "./recoveryAuthority.js";
 import { createTrustedOperationToolError } from "./toolDiagnostics.js";
 
 export { bindBootstrapOperationPolicy };
@@ -894,13 +894,9 @@ async function createOperationOrigin(root: string, kind: OperationKind, payload:
   if (parentOperationId) {
     const parent = recoveryParent ?? await loadOperation(root, parentOperationId);
     if (parent.status !== "FAILED") throw createTrustedOperationToolError("OPERATION_RECOVERY_PARENT_NOT_FAILED", "Only a terminal failed operation can authorize a recovery continuation.");
-    if (parent.ownerEconomicBoundary) throw createTrustedOperationToolError("OPERATION_RECOVERY_OWNER_BOUNDARY", "A linked continuation cannot bypass an Owner economic boundary; the human Owner must authorize a fresh top-level request under a changed policy.", undefined, parent.id);
-    if (parent.ownerContinuationBoundary) throw createTrustedOperationToolError("OPERATION_RECOVERY_OWNER_BOUNDARY", "A hard-deadline operation cannot be continued as a linked child; a distinct new Owner request is required.", undefined, parent.id);
-    const parentPolicy = parent.resolvedOperationPolicy;
-    if (!parentPolicy) throw createTrustedOperationToolError("OPERATION_RECOVERY_AUTHORITY_MISSING", "Failed parent has no frozen policy to inherit.", undefined, parent.id);
-    assertResolvedOperationPolicyV2(parentPolicy);
-    const parentUsage = await collectOperationEconomicUsageV1(root, parent);
-    remainingEconomicEnvelopeForRecoveryV1(parentPolicy.economicEnvelope, parentUsage);
+    const authority = await resolveRecoveryAuthorityV1(root, parent);
+    const parentPolicy = authority.policy;
+    const parentUsage = authority.parentUsage;
     const recoveryDepth = (parent.origin?.recoveryDepth ?? 0) + 1;
     if (recoveryDepth > 2) throw createTrustedOperationToolError("OPERATION_RECOVERY_BUDGET_EXHAUSTED", "Failed-operation recovery depth is limited to two linked continuations.", undefined, parent.id);
     const rootHardDeadlineAt = parent.origin?.rootHardDeadlineAt
@@ -917,7 +913,7 @@ async function createOperationOrigin(root: string, kind: OperationKind, payload:
       parentTerminalRevision: parent.revision,
       triggerEventId: `operation.terminal:${parent.id}:${parent.revision}`,
       requestDigest,
-      inheritedAuthorityDigest: sha256Canonical({ parentPolicyDigest: parentPolicy.digest, allowedExternalEffects: parentPolicy.allowedExternalEffects, parentOriginDigest: parent.origin?.digest ?? null, inheritedEconomicUsageDigest: parentUsage.digest }),
+      inheritedAuthorityDigest: authority.inheritedAuthorityDigest,
       inheritedEconomicUsageDigest: parentUsage.digest,
       recoveryDepth,
       rootHardDeadlineAt,
