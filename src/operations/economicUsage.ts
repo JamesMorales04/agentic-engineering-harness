@@ -1,6 +1,7 @@
 import { sha256Canonical } from "../core/digest.js";
 import type { EconomicEnvelopeV1 } from "./executionLiveness.js";
 import type { OperationRecordV2 } from "./state.js";
+import { createTrustedOperationToolError } from "./toolDiagnostics.js";
 
 export interface OperationEconomicUsageSnapshotV1 {
   version: 1;
@@ -47,21 +48,21 @@ export async function collectOperationEconomicUsageV1(root: string, operation: O
 export function remainingEconomicEnvelopeForRecoveryV1(envelope: EconomicEnvelopeV1, usage: OperationEconomicUsageSnapshotV1): EconomicEnvelopeV1 {
   const remaining = { ...envelope };
   if (envelope.hardToolCalls !== undefined) {
-    if (usage.toolCalls.coverage !== "COMPLETE" || usage.toolCalls.observed === null) throw new Error("OPERATION_RECOVERY_OWNER_BOUNDARY_REQUIRED: parent tool-call usage is incomplete under a configured Owner hard ceiling.");
+    if (usage.toolCalls.coverage !== "COMPLETE" || usage.toolCalls.observed === null) throw createTrustedOperationToolError("OPERATION_RECOVERY_OWNER_BOUNDARY_REQUIRED", "Parent tool-call usage is incomplete under a configured Owner hard ceiling.", undefined, usage.operationId);
     const value = envelope.hardToolCalls - usage.toolCalls.observed;
-    if (value <= 0) throw new Error("OPERATION_RECOVERY_OWNER_BOUNDARY_REQUIRED: no Owner-authorized hard tool-call budget remains after the failed parent.");
+    if (value <= 0) throw createTrustedOperationToolError("OPERATION_RECOVERY_OWNER_BOUNDARY_REQUIRED", "No Owner-authorized hard tool-call budget remains after the failed parent.", undefined, usage.operationId);
     remaining.hardToolCalls = value;
   }
   if (envelope.hardTotalTokens !== undefined) {
-    if (usage.tokens.coverage !== "COMPLETE" || usage.tokens.observed === null) throw new Error("OPERATION_RECOVERY_OWNER_BOUNDARY_REQUIRED: parent provider token usage is incomplete under a configured Owner hard ceiling.");
+    if (usage.tokens.coverage !== "COMPLETE" || usage.tokens.observed === null) throw createTrustedOperationToolError("OPERATION_RECOVERY_OWNER_BOUNDARY_REQUIRED", "Parent provider token usage is incomplete under a configured Owner hard ceiling.", undefined, usage.operationId);
     const value = envelope.hardTotalTokens - usage.tokens.observed;
-    if (value <= 0) throw new Error("OPERATION_RECOVERY_OWNER_BOUNDARY_REQUIRED: no Owner-authorized hard token budget remains after the failed parent.");
+    if (value <= 0) throw createTrustedOperationToolError("OPERATION_RECOVERY_OWNER_BOUNDARY_REQUIRED", "No Owner-authorized hard token budget remains after the failed parent.", undefined, usage.operationId);
     remaining.hardTotalTokens = value;
   }
   if (envelope.hardCostUsd !== undefined) {
-    if (usage.costUsd.coverage !== "COMPLETE" || usage.costUsd.observed === null) throw new Error("OPERATION_RECOVERY_OWNER_BOUNDARY_REQUIRED: parent provider cost usage is incomplete under a configured Owner hard ceiling.");
+    if (usage.costUsd.coverage !== "COMPLETE" || usage.costUsd.observed === null) throw createTrustedOperationToolError("OPERATION_RECOVERY_OWNER_BOUNDARY_REQUIRED", "Parent provider cost usage is incomplete under a configured Owner hard ceiling.", undefined, usage.operationId);
     const value = envelope.hardCostUsd - usage.costUsd.observed;
-    if (value <= 0) throw new Error("OPERATION_RECOVERY_OWNER_BOUNDARY_REQUIRED: no Owner-authorized hard USD budget remains after the failed parent.");
+    if (value <= 0) throw createTrustedOperationToolError("OPERATION_RECOVERY_OWNER_BOUNDARY_REQUIRED", "No Owner-authorized hard USD budget remains after the failed parent.", undefined, usage.operationId);
     remaining.hardCostUsd = value;
   }
   return remaining;

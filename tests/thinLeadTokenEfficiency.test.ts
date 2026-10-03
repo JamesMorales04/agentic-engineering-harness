@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { completionPrompt } from "../src/operations/completion.js";
 import { buildOperationDigest } from "../src/operations/digest.js";
 import { evaluateOperationWake, operationLivenessPolicy, runOperationLivenessCheck } from "../src/operations/liveness.js";
-import { acknowledgeOperationRevision, operationToolResult, readOperationStatus } from "../src/operations/mcp.js";
+import { acknowledgeOperationRevision, handleOperationMcpRequest, operationToolResult, readOperationStatus } from "../src/operations/mcp.js";
 import { bindOperationLead, loadOperation, saveOperation, setOperationStage, type OperationRecordV2 } from "../src/operations/state.js";
 
 const roots: string[] = [];
@@ -118,6 +118,21 @@ describe("thin lead token efficiency", () => {
       AEH_INTERACTIVE_LEAD: "1"
     });
     expect(ack).toEqual(expect.objectContaining({ acknowledgedRevision: current.revision, currentRevisionAcknowledged: true }));
+
+    const priorRoot = process.env.AEH_CONTROL_ROOT;
+    const priorAgent = process.env.PASEO_AGENT_ID;
+    process.env.AEH_CONTROL_ROOT = root;
+    try {
+      process.env.PASEO_AGENT_ID = "worker-1";
+      const wrongLead = await handleOperationMcpRequest({ jsonrpc: "2.0", id: "ack-wrong-lead", method: "tools/call", params: { name: "aeh_operation_ack", arguments: { operationId: "AUDIT-THIN", revision: current.revision } } });
+      expect(wrongLead.structuredContent).toMatchObject({ code: "OPERATION_ACK_WRONG_LEAD", category: "AUTHORITY", relatedOperationId: "AUDIT-THIN", relationship: "BOUND_OTHER_LEAD" });
+      process.env.PASEO_AGENT_ID = "lead-1";
+      const staleRevision = await handleOperationMcpRequest({ jsonrpc: "2.0", id: "ack-stale-revision", method: "tools/call", params: { name: "aeh_operation_ack", arguments: { operationId: "AUDIT-THIN", revision: current.revision - 1 } } });
+      expect(staleRevision.structuredContent).toMatchObject({ code: "AEH_OPERATION_ACK_REVISION_MISMATCH", category: "CONTROLLER_STATE", relatedOperationId: "AUDIT-THIN", relationship: "CONTINUATION_RELEVANT" });
+    } finally {
+      if (priorRoot === undefined) delete process.env.AEH_CONTROL_ROOT; else process.env.AEH_CONTROL_ROOT = priorRoot;
+      if (priorAgent === undefined) delete process.env.PASEO_AGENT_ID; else process.env.PASEO_AGENT_ID = priorAgent;
+    }
   });
 
   it("does not duplicate large structured values into MCP text content", () => {

@@ -11,6 +11,7 @@ import {
 } from "../src/operations/portfolio.js";
 import { claimControllerEpoch, loadOperation, saveOperation, transitionOperationToTerminal, type OperationRecordV2 } from "../src/operations/state.js";
 import { compileOperationOriginV1 } from "../src/operations/operationProvenance.js";
+import { allowlistedOperationToolErrorCode } from "../src/operations/toolDiagnostics.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -118,6 +119,13 @@ describe("operation portfolio", () => {
     const root = await tempRoot();
     await syncOperationPortfolio(root, "demo", operation(root, "CHANGE-A", 80));
     await syncOperationPortfolio(root, "demo", operation(root, "CHANGE-B", 40));
-    await expect(assertOperationCapacity(root, config, 60)).rejects.toThrow("AEH_OPERATION_CAPACITY");
+    try {
+      await assertOperationCapacity(root, config, 60);
+      throw new Error("Expected active operation capacity to reject the request.");
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain("AEH_OPERATION_CAPACITY");
+      expect(allowlistedOperationToolErrorCode(error)).toBe("AEH_OPERATION_CAPACITY");
+    }
   });
 });

@@ -11,6 +11,7 @@ import { serveOperationMcp } from "./operations/mcp.js";
 import { serveSupervisorMcp } from "./operations/supervisorMcp.js";
 import { spawnOperationMonitor } from "./operations/monitorProcess.js";
 import { loadOperationPortfolio } from "./operations/portfolio.js";
+import { resolveOperationToolDiagnosticV2 } from "./operations/toolDiagnostics.js";
 import { loadOperation, type AuditOperationPayload, type ChangeOperationPayload, type RunOperationPayload } from "./operations/state.js";
 import { listManagedPaseoAgents } from "./paseo/runtime.js";
 import { planSelfCheckoutRuntime, resolveStartProjectRoot } from "./runtime/invocation.js";
@@ -83,12 +84,24 @@ async function runOperationCommand(argv: string[]): Promise<void> {
   if (sub === "execute") return runOperationExecute(argv.slice(1));
   if (sub === "monitor") return runOperationMonitor(argv.slice(1));
   if (sub === "status") return runOperationStatus(argv.slice(1));
+  if (sub === "diagnostic") return runOperationDiagnostic(argv.slice(1));
   if (sub === "portfolio") return runOperationPortfolio(argv.slice(1));
   if (sub === "wait") return runOperationWait(argv.slice(1));
   if (sub === "cancel") return runOperationCancel(argv.slice(1));
   if (sub === "mcp") return serveOperationMcp();
   if (sub === "supervisor-mcp") return serveSupervisorMcp();
   throw new Error("aeh operation requires start, status, portfolio, wait, cancel, mcp, or internal execute/monitor.");
+}
+
+async function runOperationDiagnostic(argv: string[]): Promise<void> {
+  const action = argv[0];
+  if (action !== "inspect") throw new Error("aeh operation diagnostic requires inspect <ref> [directory].");
+  const reference = argv[1];
+  if (!reference) throw new Error("aeh operation diagnostic inspect requires <ref>.");
+  if (argv.length > 3) throw new Error("aeh operation diagnostic inspect accepts <ref> and at most one project directory.");
+  const record = await resolveOperationToolDiagnosticV2(path.resolve(argv[2] ?? "."), reference);
+  if (!record) throw new Error("Operation diagnostic reference is invalid, unavailable, or belongs to a different control root.");
+  console.log(JSON.stringify(record, null, 2));
 }
 
 async function runOperationStart(argv: string[]): Promise<void> {
