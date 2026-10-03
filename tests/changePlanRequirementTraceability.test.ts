@@ -5,6 +5,7 @@ import path from "node:path";
 import YAML from "yaml";
 import { afterEach, describe, expect, it } from "vitest";
 import { initializeProject } from "../src/core/init.js";
+import { createIntentDecision } from "../src/audit/intentDecision.js";
 import { DETERMINISTIC_RUNTIME_ENV } from "../src/paseo/deterministicRuntime.js";
 import { executeOperation, startDetachedOperation } from "../src/operations/controller.js";
 
@@ -124,6 +125,7 @@ describe("DELEGATED planning derives from the sealed TaskContract (AEH-V2-0110)"
 
     const operation = await startDetachedOperation(root, "change", {
       request: "Extend the fixture greeting module.",
+      intentDecision: createIntentDecision("change", "Extend the fixture greeting module.", "explicit-cli"),
       taskId,
       files: ["src/greeting.mjs"],
       acceptance: ["node scripts/validate.mjs passes with the FAREWELL export available"],

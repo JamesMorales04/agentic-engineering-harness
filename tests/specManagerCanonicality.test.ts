@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { initializeProject } from "../src/core/init.js";
+import { createIntentDecision } from "../src/audit/intentDecision.js";
 import { DETERMINISTIC_RUNTIME_ENV } from "../src/paseo/deterministicRuntime.js";
 import { executeOperation, startDetachedOperation } from "../src/operations/controller.js";
 import { loadOperation, type OperationRecordV2 } from "../src/operations/state.js";
@@ -235,6 +236,7 @@ describe("SPEC_MANAGER_CONTENT_NOT_CANONICAL through the frozen controller path"
 
     const operation = await startDetachedOperation(root, "change", {
       request: "Extend the fixture greeting module.",
+      intentDecision: createIntentDecision("change", "Extend the fixture greeting module.", "explicit-cli"),
       taskId,
       files: ["src/greeting.mjs"],
       risk: "low"
