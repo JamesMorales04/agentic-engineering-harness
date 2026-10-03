@@ -15,7 +15,7 @@ import { claimDistributedJob, completeDistributedJob, publishDistributedSessionR
 import type { DistributedDelegationJob, DistributedDelegationResult, DistributedExecutionReleaseV1, DistributedSessionReadyV1, DistributedTransportResolutionV1 } from "./types.js";
 import { enforceSandboxPolicy, sandboxPolicyDigest } from "../security/sandbox.js";
 import type { ExecutionAuthorityV1 } from "../security/executionLease.js";
-import { assertExecutionBindingV2, assertExecutionBlueprintV2, type ExecutionBindingV2 } from "../architecture/executionIdentity.js";
+import { assertExecutionBindingV3, assertExecutionBlueprintV3, type ExecutionBindingV3 } from "../architecture/executionIdentity.js";
 import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import { assertWorkspaceMatchesCandidate } from "../candidates/identity.js";
 import { currentControllerEpoch, loadOperation, recordParticipantReceipt } from "../operations/state.js";
@@ -38,7 +38,7 @@ export async function dispatchDistributedDelegation(input: {
   if (!input.config.distributed?.enabled) throw new Error("Distributed execution is not enabled.");
   const identity = input.identity;
   assertExecutionAuthority(identity.authority);
-  assertExecutionBlueprintV2(identity.executionBlueprint);
+  assertExecutionBlueprintV3(identity.executionBlueprint);
   assertRoleInvocationPolicyV1(identity.roleInvocationPolicy);
   assertSkillManifestV1(identity.skillManifest);
   const assignment = identity.executionBlueprint.participants.find((participant) => participant.participantId === input.participantId);
@@ -116,7 +116,7 @@ async function recordDistributedParticipantReceipt(
   job: DistributedDelegationJob,
   selection: AgentExecutionSelection,
   result: DistributedDelegationResult,
-  binding: ExecutionBindingV2
+  binding: ExecutionBindingV3
 ): Promise<void> {
   const operationId = job.executionAuthority.operationId;
   const stateRoot = operationArtifactRoot(root);
@@ -242,7 +242,7 @@ export interface DistributedSandboxValidation {
 
 export function validateDistributedSandboxPolicy(job: DistributedDelegationJob, workerConfig: HarnessProjectConfig): DistributedSandboxValidation {
   if ((job as { version?: number }).version !== 2) throw new Error("UNSUPPORTED_DISTRIBUTED_JOB_VERSION: migrate this job to the two-phase ExecutionBinding session protocol.");
-  assertExecutionBlueprintV2(job.executionBlueprint);
+  assertExecutionBlueprintV3(job.executionBlueprint);
   assertRoleInvocationPolicyV1(job.roleInvocationPolicy);
   assertSkillManifestV1(job.skillManifest);
   if (!job.executionAuthority) throw new Error("DISTRIBUTED_EXECUTION_BINDING_INVALID: controller-issued execution authority is missing.");
@@ -282,7 +282,7 @@ async function executeClaimedJob(workerRoot: string, job: DistributedDelegationJ
     const baselineAdd = await runExecutable("git", ["add", "-A"], { cwd: worktree, timeoutMs: 30_000 });
     const baselineCommit = baselineAdd.exitCode === 0 ? await runExecutable("git", ["-c", "user.name=aeh", "-c", "user.email=aeh@localhost", "commit", "--no-gpg-sign", "--allow-empty", "-m", "aeh distributed baseline"], { cwd: worktree, timeoutMs: 60_000 }) : baselineAdd;
     if (baselineCommit.exitCode !== 0) return failure(job, workerId, startedAt, session, `baseline commit failed: ${baselineCommit.stderr || baselineCommit.stdout}`);
-    if (!job.executionAuthority || job.executionBlueprint.version !== 2 || job.roleInvocationPolicy.version !== 1 || job.skillManifest.version !== 1) return failure(job, workerId, startedAt, session, "EXECUTION_BINDING_REQUIRED: distributed job lacks a complete versioned identity envelope.");
+    if (!job.executionAuthority || job.executionBlueprint.version !== 3 || job.roleInvocationPolicy.version !== 1 || job.skillManifest.version !== 1) return failure(job, workerId, startedAt, session, "EXECUTION_BINDING_REQUIRED: distributed job lacks a complete versioned identity envelope.");
     const sessionPreparationOptions = { phase: "distributed", capabilityAuthority: job.executionAuthority, participantId: job.executionAuthority.participantId, outputContract: job.roleInvocationPolicy.outputContract, executionBlueprint: job.executionBlueprint, executionBlueprintDigest: job.executionBlueprint.digest, roleInvocationPolicy: job.roleInvocationPolicy, skillManifest: job.skillManifest, contextManifest: job.sessionPreparation.contextManifest, contextManifestDigest: job.sessionPreparation.contextManifestDigest, promptManifestDigest: job.sessionPreparation.promptManifestDigest };
     const sessionId = transport === "paseo"
       ? (materializedPaseoSession = await materializeAgentPrompt(worktree, sandbox.config, job.contract, sandbox.selection, sessionPreparationOptions))?.id
@@ -298,7 +298,7 @@ async function executeClaimedJob(workerRoot: string, job: DistributedDelegationJ
     await publishDistributedSessionReady(workerRoot, workerConfig, ready);
     const release = await waitForDistributedExecutionRelease(workerRoot, workerConfig, job.id, workerId, leaseId);
     const binding = release.executionBinding;
-    assertExecutionBindingV2(binding);
+    assertExecutionBindingV3(binding);
     if (binding.operationId !== job.executionAuthority.operationId || binding.participantId !== job.executionAuthority.participantId || binding.candidateDigest !== job.executionAuthority.candidateDigest || binding.controllerEpoch !== job.executionAuthority.controllerEpoch || binding.executionBlueprintDigest !== job.executionBlueprint.digest || binding.roleInvocationPolicyDigest !== job.roleInvocationPolicy.digest || binding.skillManifestDigest !== job.skillManifest.digest || binding.runtime.sessionId !== sessionId || binding.runtime.runtimeId !== ready.runtime.runtimeId || binding.runtime.provider !== ready.runtime.provider || binding.runtime.modelId !== ready.runtime.modelId || binding.runtime.model !== ready.runtime.model || binding.contextManifestDigest !== job.sessionPreparation.contextManifestDigest || binding.promptManifestDigest !== job.sessionPreparation.promptManifestDigest || binding.outputContract !== job.roleInvocationPolicy.outputContract || binding.leaseIdentities.join("\0") !== job.executionAuthority.leases.map((lease) => lease.leaseId).sort().join("\0")) return failure(job, workerId, startedAt, session, "DISTRIBUTED_EXECUTION_RELEASE_IDENTITY_MISMATCH: controller release changed the prepared runtime or frozen participant identity.");
     session = await executeAgentPrompt(worktree, sandbox.config, job.contract, sandbox.selection, job.prompt, {
       outputContract: job.roleInvocationPolicy.outputContract,

@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { sha256Canonical, sha256Utf8 } from "../core/digest.js";
 import type { ExecutionBlueprint } from "../architecture/participantPlan.js";
-import { assertExecutionBlueprintV2, assertResolvedOperationPolicyV1, type HumanDecisionRequirementV1, type ResolvedOperationPolicyV1 } from "../architecture/executionIdentity.js";
+import { assertExecutionBlueprintV3, assertResolvedOperationPolicyV2, type HumanDecisionRequirementV1, type ResolvedOperationPolicyV2 } from "../architecture/executionIdentity.js";
 import { candidateRevisionsEqual, assertCandidateRevisionV1, type CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import { currentOperationContext, controllerEpochFromEnvironment, currentControllerEpoch, loadOperation, resolveOperationStateRoot, assertCurrentControllerOwner, assertControllerEpoch, type OperationRecordV2 } from "../operations/state.js";
 import { isCanonicalRole, roleProfile, type CanonicalRole } from "../participants/index.js";
@@ -233,7 +233,7 @@ export async function recordToolActionReceipt(  root: string,
   assertCurrentControllerOwner(operation, "tool action receipt");
   const currentPolicy = operation.resolvedOperationPolicy;
   if (!currentPolicy) throw new Error("TOOL_ACTION_POLICY_REQUIRED: action receipts require the current frozen ResolvedOperationPolicy.");
-  assertResolvedOperationPolicyV1(currentPolicy);
+  assertResolvedOperationPolicyV2(currentPolicy);
   if (currentPolicy.digest !== intent.policyDigest || operation.operationExecutionRevision !== intent.operationExecutionRevision || currentControllerEpoch(operation) !== intent.controllerEpoch || !operation.candidateRevision || !candidateRevisionsEqual(operation.candidateRevision, intent.candidate)) {
     throw new Error("TOOL_ACTION_POLICY_STALE: action receipt no longer matches the current policy, candidate, execution revision, and epoch.");
   }
@@ -255,7 +255,7 @@ export async function recordReconciledToolActionReceipt(root: string, intent: Ac
     throw new Error("TOOL_ACTION_RECONCILIATION_STALE: action reconciliation requires the active operation's same current candidate.");
   }
   if (!operation.resolvedOperationPolicy) throw new Error("TOOL_ACTION_POLICY_REQUIRED: action reconciliation requires the current frozen ResolvedOperationPolicy.");
-  assertResolvedOperationPolicyV1(operation.resolvedOperationPolicy);
+  assertResolvedOperationPolicyV2(operation.resolvedOperationPolicy);
   if (operation.resolvedOperationPolicy.operationId !== operation.id
     || operation.resolvedOperationPolicy.operationExecutionRevision !== operation.operationExecutionRevision
     || operation.resolvedOperationPolicy.candidateRevision !== operation.candidateRevision.revision
@@ -304,7 +304,7 @@ async function persistActionReceipt(root: string, stored: ActionIntentV1, outcom
   }
 }
 
-async function assertCurrentActionAuthority(request: ToolActionRequestV1, impact: ToolActionImpactV1, operation: OperationRecordV2, policy: ResolvedOperationPolicyV1, consumeHumanDecision = true): Promise<void> {
+async function assertCurrentActionAuthority(request: ToolActionRequestV1, impact: ToolActionImpactV1, operation: OperationRecordV2, policy: ResolvedOperationPolicyV2, consumeHumanDecision = true): Promise<void> {
   if (!request.operationId.trim() || !request.participantId.trim() || !request.actionKey.trim()) throw new Error("TOOL_ACTION_IDENTITY_REQUIRED: operation, participant, and action key are required.");
   assertCandidateRevisionV1(request.candidate);
   if (request.candidate.operationId !== request.operationId) throw new Error("TOOL_ACTION_CANDIDATE_MISMATCH: action candidate belongs to another operation.");
@@ -384,7 +384,7 @@ async function assertCurrentActionAuthority(request: ToolActionRequestV1, impact
   if (consumeHumanDecision) await consumeRequiredHumanDecision(request, operation, policy, operationEpoch);
 }
 
-async function consumeRequiredHumanDecision(request: ToolActionRequestV1, operation: OperationRecordV2, policy: ResolvedOperationPolicyV1, operationEpoch: number): Promise<void> {
+async function consumeRequiredHumanDecision(request: ToolActionRequestV1, operation: OperationRecordV2, policy: ResolvedOperationPolicyV2, operationEpoch: number): Promise<void> {
   const requirement: HumanDecisionRequirementV1 | undefined = policy.humanDecisionRequirements.find((item) => item.kind === "ACTION_AUTHORIZATION" && item.action === request.action);
   if (requirement) {
     const ledger = new HumanDecisionLedgerV2(path.resolve(resolveOperationStateRoot(request.root), ".harness", "security", "human-decisions.json"));
@@ -403,9 +403,9 @@ async function consumeRequiredHumanDecision(request: ToolActionRequestV1, operat
   }
 }
 
-function currentResolvedPolicy(operation: OperationRecordV2, request: ToolActionRequestV1): ResolvedOperationPolicyV1 {
+function currentResolvedPolicy(operation: OperationRecordV2, request: ToolActionRequestV1): ResolvedOperationPolicyV2 {
   if (!operation.resolvedOperationPolicy) throw new Error("TOOL_ACTION_POLICY_REQUIRED: sensitive actions require a frozen ResolvedOperationPolicy.");
-  assertResolvedOperationPolicyV1(operation.resolvedOperationPolicy);
+  assertResolvedOperationPolicyV2(operation.resolvedOperationPolicy);
   const policy = operation.resolvedOperationPolicy;
   if (!operation.candidateRevision || !Number.isSafeInteger(operation.operationExecutionRevision)
     || policy.operationId !== operation.id
@@ -422,7 +422,7 @@ function currentResolvedPolicy(operation: OperationRecordV2, request: ToolAction
 
 function assertBlueprintBinding(blueprint: ExecutionBlueprint, request: ToolActionRequestV1, operationEpoch: number): void {
   if (!blueprint || !blueprint.candidate) throw new Error("TOOL_ACTION_BLUEPRINT_INVALID: blueprint is missing its current candidate binding.");
-  assertExecutionBlueprintV2(blueprint);
+  assertExecutionBlueprintV3(blueprint);
   if (!Number.isSafeInteger(blueprint.controllerEpoch) || blueprint.controllerEpoch < 0) throw new Error("TOOL_ACTION_BLUEPRINT_INVALID: blueprint has no controller epoch.");
   if (blueprint.controllerEpoch !== operationEpoch) throw new Error(`TOOL_ACTION_CONTROLLER_FENCED: blueprint was compiled under controller epoch ${blueprint.controllerEpoch}, but the operation is owned by controller epoch ${operationEpoch}.`);
   if (blueprint.taskId !== request.candidate.taskId || blueprint.candidateRevision !== request.candidate.revision || !candidateRevisionsEqual(blueprint.candidate, request.candidate)) {
@@ -436,7 +436,7 @@ function hasTool(pack: { required: readonly string[]; optional: readonly string[
   return pack.required.includes(tool) || pack.optional.includes(tool);
 }
 
-function createActionIdentity(request: ToolActionRequestV1, policy: ResolvedOperationPolicyV1): Omit<ActionIntentV1, "createdAt"> {
+function createActionIdentity(request: ToolActionRequestV1, policy: ResolvedOperationPolicyV2): Omit<ActionIntentV1, "createdAt"> {
   assertCandidateRevisionV1(request.candidate);
   if (!TOOL_ACTION_KINDS_V1.includes(request.action)) throw new Error(`TOOL_ACTION_KIND_INVALID: ${String(request.action)} is not registered.`);
   const impact = classifyToolActionImpact(request.action);

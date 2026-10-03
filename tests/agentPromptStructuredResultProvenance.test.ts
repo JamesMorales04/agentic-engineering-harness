@@ -19,7 +19,7 @@ import { outputJsonSchema } from "../src/agents/outputContracts.js";
 import type { AgentExecutionSelection } from "../src/agents/types.js";
 import { sha256Canonical } from "../src/core/digest.js";
 import type { HarnessProjectConfig, TaskContract } from "../src/core/types.js";
-import { compileExecutionBinding, compileResolvedOperationPolicy, compileSkillManifest, type ExecutionBindingV2, type SkillManifestScopeV1, type SkillManifestV1 } from "../src/architecture/executionIdentity.js";
+import { compileExecutionBinding, compileResolvedOperationPolicy, compileSkillManifest, type ExecutionBindingV3, type SkillManifestScopeV1, type SkillManifestV1 } from "../src/architecture/executionIdentity.js";
 import { applySkillTrustGate, knowledgePack, type KnowledgeGapV1 } from "../src/knowledge/index.js";
 import { bindResolvedOperationPolicy, currentControllerEpoch, loadOperation, registerOperationAgent } from "../src/operations/state.js";
 import { loadPaseoSessionBinding } from "../src/paseo/sessionBinding.js";
@@ -78,7 +78,7 @@ describe("public Paseo launch result provenance", () => {
       candidateRevision: operation.candidateRevision!.revision,
       candidateDigest: operation.candidateRevision!.identityDigest,
       controllerEpoch: currentControllerEpoch(operation), intent: "result provenance test", route: "DIRECT", minimumAssurance: "STANDARD",
-      policyVersions: { resolvedOperationPolicy: "1" }, policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {},
+      policyVersions: { resolvedOperationPolicy: "2" }, policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {},
       allowedExternalEffects: [], humanDecisionRequirements: []
     }));
     const candidate = operation.candidateRevision!;
@@ -141,7 +141,7 @@ describe("public Paseo launch result provenance", () => {
     expect(result?.id).toBe("paseo-actual-provider-agent");
     expect(runtime.materializeManagedPaseoAgent).toHaveBeenCalledBefore(runtime.continueManagedPaseoAgent);
     const provenance = await structuredResultProvenanceForAgent(root, "paseo-actual-provider-agent") as unknown as Record<string, unknown>;
-    const boundIdentity = provenance.executionBinding as ExecutionBindingV2;
+    const boundIdentity = provenance.executionBinding as ExecutionBindingV3;
     expect(provenance).toEqual(expect.objectContaining({
       status: "BOUND",
       projectId: candidate.projectId,
@@ -162,7 +162,7 @@ describe("public Paseo launch result provenance", () => {
       unsupported: []
     }));
     expect(provenance.executionBinding).toEqual(expect.objectContaining({
-      version: 2,
+      version: 3,
       operationId,
       operationExecutionRevision: 1,
       candidateDigest: candidate.identityDigest,
@@ -211,7 +211,7 @@ describe("public Paseo launch result provenance", () => {
       capabilityAuthority: { version: 1, operationId, participantId, projectId: candidate.projectId, candidateRevision: candidate, candidateDigest: candidate.identityDigest, controllerEpoch, leases: [] }
     });
     const binding = result.executionBinding as unknown as Record<string, unknown>;
-    expect(binding).toEqual(expect.objectContaining({ version: 2, operationId, participantId, candidateDigest: candidate.identityDigest, contextManifestDigest: expect.stringMatching(/^[a-f0-9]{64}$/), promptManifestDigest: expect.stringMatching(/^[a-f0-9]{64}$/) }));
+    expect(binding).toEqual(expect.objectContaining({ version: 3, operationId, participantId, candidateDigest: candidate.identityDigest, contextManifestDigest: expect.stringMatching(/^[a-f0-9]{64}$/), promptManifestDigest: expect.stringMatching(/^[a-f0-9]{64}$/) }));
     if (transport === "direct") {
       const env = runtime.runDirectWorkerProcess.mock.calls[0]?.[3]?.environment as Record<string, string>;
       expect(JSON.parse(env.AEH_EXECUTION_BINDING!)).toEqual(binding);
@@ -322,6 +322,61 @@ describe("public Paseo launch result provenance", () => {
     await expect(executeAgentPrompt(root, config, contract, selection, "Review this candidate.", { outputContract: "reviewer", participantId, skillManifest }))
       .rejects.toThrow("SKILL_MANIFEST_AUTHORITY_REQUIRED");
   });
+
+  it("runs an Implementer through the participant launch boundary with only its owned scratch mounted", async () => {
+    const { root, operationId, selection, config, contract, participantId } = await launchFixture("RUN-PASEO-PARTICIPANT-SCRATCH", "paseo", "Implementer");
+    selection.paseoProvider = "opencode";
+    selection.runtimeAdapter = "opencode";
+    selection.runtimeName = "opencode";
+    let scratchPath: string | undefined;
+    const result = { filesChanged: [], behaviorImplemented: [], decisions: [], assumptions: [], risks: [], validationCommands: [], followUp: [] };
+    runtime.materializeManagedPaseoAgent.mockImplementation(async (_root: string, launch: { env?: Record<string, string>; labels?: Record<string, string> }) => {
+      const env = launch.env ?? {};
+      scratchPath = env.TMPDIR;
+      expect(scratchPath).toBeTruthy();
+      expect(env.TEMP).toBe(scratchPath);
+      expect(env.TMP).toBe(scratchPath);
+      expect(env.AEH_SCRATCH_RESOURCE).toMatch(/^resource:/);
+      const providerConfig = JSON.parse(env.OPENCODE_CONFIG_CONTENT!) as { permission: { external_directory: Record<string, string> } };
+      const externalDirectories = providerConfig.permission.external_directory;
+      expect(externalDirectories).toMatchObject({
+        [scratchPath!]: "allow",
+        [`${scratchPath}/*`]: "allow",
+        [`${scratchPath}/**`]: "allow"
+      });
+      expect(Object.keys(externalDirectories)).not.toContain("/tmp/*");
+      expect(Object.keys(externalDirectories)).not.toContain("/tmp/aeh-unrelated-host-entry/**");
+      await fs.writeFile(path.join(scratchPath!, "provider-probe.txt"), "participant-owned");
+      return { id: "paseo-scratch-implementer", exitCode: 0, stdout: "", stderr: "", transport: "sdk", status: "idle" };
+    });
+    runtime.continueManagedPaseoAgent.mockImplementation(async (_root: string, agentId: string, prompt: string, _timeout: number, _deps: unknown, _schema: unknown, labels: Record<string, string>) => {
+      expect(agentId).toBe("paseo-scratch-implementer");
+      expect(prompt).toContain(`AEH private scratch directory: ${scratchPath}`);
+      const binding = JSON.parse(labels["aeh.execution.binding"]!) as ExecutionBindingV3;
+      expect(binding.scratchLease?.path).toBe(scratchPath);
+      expect(binding.scratchLease?.participantId).toBe(participantId);
+      expect(binding.scratchLease?.operationId).toBe(operationId);
+      return { id: agentId, exitCode: 0, stdout: `AEH_RESULT_JSON=${JSON.stringify(result)}`, stderr: "", transport: "sdk", status: "idle" };
+    });
+
+    try {
+      const session = await executeAgentPrompt(root, config, contract, selection, "Implement the bounded work unit.", {
+        outputContract: "implementer",
+        phase: "implementation",
+        participantId,
+        requireExecutionAuthority: true
+      });
+      expect(session.id).toBe("paseo-scratch-implementer");
+      expect(scratchPath).toBeTruthy();
+      expect(await fs.readFile(path.join(scratchPath!, "provider-probe.txt"), "utf8")).toBe("participant-owned");
+      const operation = await loadOperation(root, operationId);
+      const binding = operation.participants[participantId]?.executionBinding;
+      expect(binding?.scratchLease?.path).toBe(scratchPath);
+      expect(binding?.scratchLease?.participantGeneration).toBe(binding?.participantGeneration);
+    } finally {
+      if (scratchPath) await fs.rm(scratchPath, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("accepted ephemeral procedure transport projection", () => {
@@ -348,7 +403,7 @@ describe("accepted ephemeral procedure transport projection", () => {
       outputContract: "reviewer", phase: "review", participantId, skillManifest, capabilityAuthority
     });
 
-    const executionBinding = result.executionBinding as ExecutionBindingV2;
+    const executionBinding = result.executionBinding as ExecutionBindingV3;
     expect(executionBinding.skillManifestDigest).toBe(skillManifest.digest);
     expect(executionBinding.participantId).toBe(participantId);
     expect(executionBinding.operationId).toBe(operationId);
@@ -544,7 +599,7 @@ async function launchFixture(operationId: string, transport: "direct" | "podman"
     candidateRevision: operation.candidateRevision!.revision,
     candidateDigest: operation.candidateRevision!.identityDigest,
     controllerEpoch, intent: "result transport test", route: "DIRECT", minimumAssurance: "STANDARD",
-    policyVersions: { resolvedOperationPolicy: "1" }, policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {},
+    policyVersions: { resolvedOperationPolicy: "2" }, policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {},
     allowedExternalEffects: [], humanDecisionRequirements: []
   }));
   const selection: AgentExecutionSelection = {

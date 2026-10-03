@@ -100,6 +100,32 @@ describe("Paseo native observability", () => {
     expect(timelineRefetch).toHaveBeenCalledWith({ direction: "tail", limit: 50 });
   });
 
+  it("streams live timeline activity to liveness accounting even when efficiency export is disabled", async () => {
+    let status = "working";
+    let agentUpdate: (() => void) | undefined;
+    let timelineUpdate: ((value: unknown) => void) | undefined;
+    const activity = vi.fn(async (_sessionId: string, _envelope: unknown) => undefined);
+    const handle = {
+      id: "agent-liveness-events",
+      subscribe: vi.fn((handler: () => void) => { agentUpdate = handler; return vi.fn(); }),
+      refetch: vi.fn(async () => ({ agent: { id: "agent-liveness-events", status } })),
+      timeline: {
+        refetch: vi.fn(async () => ({ entries: [] })),
+        subscribe: vi.fn((handler: (value: unknown) => void) => { timelineUpdate = handler; return vi.fn(); })
+      }
+    };
+    const waiting = waitForPaseoAgentHandle(handle, 2_000, undefined, 0, false, activity);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    timelineUpdate?.({ agentId: "agent-liveness-events", event: { type: "timeline", item: { type: "tool_call", status: "running", callId: "call-1", name: "shell", detail: { type: "shell", command: "npm ci" } } } });
+    status = "idle";
+    agentUpdate?.();
+    const result = await waiting;
+    expect(result.efficiencyTelemetry).toBeUndefined();
+    expect(activity).toHaveBeenCalledTimes(1);
+    expect(activity.mock.calls[0]?.[0]).toBe("agent-liveness-events");
+    expect(activity.mock.calls[0]?.[1]).toMatchObject({ event: { type: "timeline", item: { callId: "call-1", status: "running" } } });
+  });
+
   it("captures provider turns and canonical tool calls when local efficiency telemetry is enabled", async () => {
     let status = "working";
     let agentUpdate: (() => void) | undefined;

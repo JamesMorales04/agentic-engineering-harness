@@ -112,7 +112,7 @@ describe("AEH runtime hotfix", () => {
       }
     });
     const policy = operationLivenessPolicy(config);
-    const now = Date.parse(current.lastProgressAt) + 300_000;
+    const now = Date.parse(current.lastProgressAt) + 15 * 60_000 + 1_000;
 
     let budget = await loadOperationWakeBudget(root, "AUDIT-HOTFIX", current.revision);
     expect(evaluateOperationWake(current, policy, now, budget.supervisorAccepted, budget.leadAccepted, budget.terminalLeadAccepted).target).toBe("supervisor");

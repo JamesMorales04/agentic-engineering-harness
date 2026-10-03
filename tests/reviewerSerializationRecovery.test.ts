@@ -17,6 +17,13 @@ const state = vi.hoisted(() => ({
   loadOperation: vi.fn(async () => state.operation),
   resolveOperationStateRoot: vi.fn((root: string) => root),
   currentControllerEpoch: vi.fn((operation: Record<string, any>) => operation.controller?.epoch ?? 0),
+  isTerminalOperation: vi.fn((status: string) => ["SUCCEEDED", "FAILED", "CANCELLED"].includes(status)),
+  withOperationCoordinationLock: vi.fn(async (_root: string, _operationId: string, action: () => Promise<unknown>) => action()),
+  updateOperationMetadata: vi.fn(async (_root: string, _operationId: string, update: (operation: Record<string, any>, now: string) => Record<string, any>) => {
+    const patch = update(state.operation!, new Date().toISOString());
+    state.operation = { ...state.operation!, ...patch };
+    return state.operation;
+  }),
   bindResolvedOperationPolicy: vi.fn(async (_root: string, _operationId: string, policy: Record<string, any>) => {
     state.operation!.resolvedOperationPolicy = policy;
     return state.operation;
@@ -77,7 +84,7 @@ const selection = {
   skills: [],
   args: []
 } as never;
-const config = { version: 1, project: { name: "demo" }, orchestration: { provider: "paseo", worker: { timeoutSeconds: 60 } } } as never;
+const config = { version: 1, project: { name: "demo" }, orchestration: { provider: "paseo", operations: { liveness: { providerTurnDeadlineMs: 60_000 } } } } as never;
 let testRoot = "";
 const contract = {
   version: 1,
@@ -183,6 +190,7 @@ beforeEach(async () => {
     status: "RUNNING",
     phase: "review",
     root: testRoot,
+    createdAt: new Date().toISOString(),
     payload: { request: "Audit the repository" },
     revision: 1,
     operationExecutionRevision: 1,

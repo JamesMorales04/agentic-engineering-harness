@@ -10,7 +10,7 @@ describe("operation stalled-supervisor escalation", () => {
     const record: OperationRecordV2 = {
       version: 2, id: "AUDIT-STALL", kind: "audit", status: "RUNNING", phase: "reviewing", root: "/repo",
       payload: { request: "review" }, revision: 7,
-      createdAt: new Date(now - 600_000).toISOString(), updatedAt: new Date(now - 300_000).toISOString(), lastProgressAt: new Date(now - 300_000).toISOString(),
+      createdAt: new Date(now - 60 * 60_000).toISOString(), updatedAt: new Date(now - 15 * 60_000 - 1_000).toISOString(), lastProgressAt: new Date(now - 15 * 60_000 - 1_000).toISOString(),
       lead: { agentId: "lead-1", generation: 1, boundAt: new Date(now - 600_000).toISOString(), acknowledgedRevision: 6 },
       supervision: { required: true, materialized: true, activeGeneration: 1, generations: [{ generation: 1, agentId: "supervisor-1", status: "ACTIVE", createdAt: new Date(now - 600_000).toISOString() }] },
       stages: {}, participants: {}, progress: { expected: 4, registered: 4, running: 1, completed: 3, failed: 0, blocked: 0 },

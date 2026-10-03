@@ -7,8 +7,9 @@ import { currentControllerEpoch, loadOperation, operationArtifactDir, resolveOpe
 import { sha256Canonical } from "../core/digest.js";
 import { assertCandidateRevisionV1, candidateRevisionsEqual, type CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import { assertWorkspaceMatchesCandidate } from "../candidates/identity.js";
-import { assertExecutionBindingV2, type ExecutionBindingV2 } from "../architecture/executionIdentity.js";
+import { assertExecutionBindingV3, type ExecutionBindingV3 } from "../architecture/executionIdentity.js";
 import { assertContextRetrievalEvidence, closeContextRetrievalForResult, contextRetrievalEvidenceForResult, type ContextRetrievalEvidenceV1 } from "../context/authorizationV2.js";
+import { recordParticipantExecutionActivityV1 } from "../operations/executionLiveness.js";
 
 export interface StructuredResultProvenanceV1 {
   version: 1;
@@ -28,7 +29,7 @@ export interface StructuredResultProvenanceV1 {
   runtime?: { provider: string; model?: string; runtimeId?: string; sessionId?: string };
   outputContract: string;
   outputSchemaDigest?: string;
-  executionBinding?: ExecutionBindingV2;
+  executionBinding?: ExecutionBindingV3;
   skillManifestDigest?: string;
   contextManifestDigest?: string;
   promptManifestDigest?: string;
@@ -342,7 +343,7 @@ export function assertStructuredResultProvenance(
   }
   for (const digest of [provenance.skillManifestDigest, provenance.contextManifestDigest, provenance.promptManifestDigest]) if (digest !== undefined && !/^[a-f0-9]{64}$/.test(digest)) throw new Error("AEH_RESULT_PROVENANCE: an execution manifest digest is malformed.");
   if (provenance.executionBinding) {
-    assertExecutionBindingV2(provenance.executionBinding);
+    assertExecutionBindingV3(provenance.executionBinding);
     if (provenance.executionBinding.operationId !== provenance.operationId || provenance.executionBinding.operationExecutionRevision !== provenance.operationExecutionRevision || provenance.executionBinding.candidateRevision !== provenance.candidate?.revision || provenance.executionBinding.candidateDigest !== provenance.candidate?.identityDigest || provenance.executionBinding.controllerEpoch !== provenance.controllerEpoch || provenance.executionBinding.participantId !== provenance.participantId || provenance.executionBinding.participantGeneration !== provenance.participantGeneration || provenance.executionBinding.executionBlueprintDigest !== provenance.executionBlueprintDigest || provenance.executionBinding.operationPolicyDigest !== provenance.resolvedOperationPolicyDigest || provenance.executionBinding.outputContract !== provenance.outputContract || provenance.executionBinding.skillManifestDigest !== provenance.skillManifestDigest || provenance.executionBinding.contextManifestDigest !== provenance.contextManifestDigest || provenance.executionBinding.promptManifestDigest !== provenance.promptManifestDigest || provenance.executionBinding.runtime.provider !== provenance.runtime?.provider || provenance.executionBinding.runtime.modelId !== provenance.runtime?.model || provenance.executionBinding.runtime.runtimeId !== provenance.runtime?.runtimeId || provenance.executionBinding.runtime.sessionId !== provenance.runtime?.sessionId) throw new Error("AEH_RESULT_PROVENANCE: complete binding does not match structured result identity.");
   }
   const { provenanceDigest, ...base } = provenance;
@@ -447,6 +448,12 @@ export async function acceptStructuredResult<T = unknown>(
     if (channel.agentId) {
       await updateRegisteredOperationParticipant(stateRoot, operationId, channel.agentId, { resultArtifact: artifact }).catch(() => undefined);
     }
+    const binding = channel.provenance.executionBinding;
+    if (binding) await recordParticipantExecutionActivityV1(stateRoot, operationId, binding.participantId, {
+      kind: "STRUCTURED_RESULT_ACCEPTED",
+      evidenceId: turn.id,
+      evidenceDigest: sha256
+    }).catch(() => undefined);
     return { artifact, sha256, payload: normalized, source, turnId: turn.id, channelId, provenance: channel.provenance, contextEvidence };
   });
 }

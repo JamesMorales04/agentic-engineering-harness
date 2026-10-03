@@ -81,6 +81,7 @@ export function semanticPayload(request: SemanticAssessmentRequestV1, override?:
       case "FAILURE": return { type: "FAILURE", classification: "AMBIGUOUS_OUTPUT", evidenceRefs: [refs[0]!] };
       case "CANDIDATE_IMPACT": return { type: "CANDIDATE_IMPACT", changedFiles: ["src/example.ts"], changeKinds: ["source"], reviewDimensions: [], requiresIndependentReview: true, evidenceRefs: [refs[0]!], unknowns: ["unknown downstream effect"] };
       case "VALIDATION_NEED": return { type: "VALIDATION_NEED", property: "Expected behavior is preserved", rationale: "The request changes behavior.", scope: ["src/**"], evidenceRefs: [refs[0]!], unknowns: ["unknown validator mapping"] };
+      case "OPERATIONS_ANALYSIS": return { type: "OPERATIONS_ANALYSIS", classification: "UNCERTAIN", probableCause: "UNKNOWN", suggestedSupervisorAction: "NONE", rationale: "The bounded evidence does not establish a specific operational cause.", evidenceRefs: [refs[0]!], unknowns: ["additional activity evidence is unavailable"] };
     }
   })();
   return {

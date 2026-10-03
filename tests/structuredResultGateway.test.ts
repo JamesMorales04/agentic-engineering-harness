@@ -7,7 +7,7 @@ import { outputJsonSchema } from "../src/agents/outputContracts.js";
 import { sha256Canonical } from "../src/core/digest.js";
 import { bindOperationCandidate, bindOperationParticipantExecution, bindResolvedOperationPolicy, claimControllerEpoch, loadOperation, registerOperationAgent, saveOperation, setOperationStage } from "../src/operations/state.js";
 import { createCandidateRevisionV1 } from "../src/operations/v2Contracts.js";
-import { compileExecutionBinding, compileResolvedOperationPolicy, compileRoleInvocationPolicy, compileSkillManifest, createExecutionBlueprintV2 } from "../src/architecture/executionIdentity.js";
+import { compileExecutionBinding, compileResolvedOperationPolicy, compileRoleInvocationPolicy, compileSkillManifest, createExecutionBlueprintV3 } from "../src/architecture/executionIdentity.js";
 import { createWorkGraph } from "../src/architecture/workGraph.js";
 import {
   activateStructuredResultTurn,
@@ -79,7 +79,7 @@ async function bindFullIdentity(root: string, operationId: string, participantId
   let operation = await loadOperation(root, operationId);
   const policy = operation.resolvedOperationPolicy ?? compileResolvedOperationPolicy({
     projectId: candidate.projectId!, operationId, operationExecutionRevision: operation.operationExecutionRevision!, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch: operation.controller?.epoch ?? 0,
-    intent: "review current candidate", route: "DIRECT", minimumAssurance: "STANDARD", policyVersions: { resolvedOperationPolicy: "1", roleInvocationPolicy: "1", executionBlueprint: "2", executionBinding: "2", skillManifest: "1" },
+    intent: "review current candidate", route: "DIRECT", minimumAssurance: "STANDARD", policyVersions: { resolvedOperationPolicy: "2", roleInvocationPolicy: "1", executionBlueprint: "3", executionBinding: "3", skillManifest: "1" },
     policyDigests: { validation: sha256Canonical({}), review: sha256Canonical({}), delivery: sha256Canonical({}), knowledge: sha256Canonical({}), context: sha256Canonical({}) },
     validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {}, allowedExternalEffects: [], humanDecisionRequirements: []
   });
@@ -88,7 +88,7 @@ async function bindFullIdentity(root: string, operationId: string, participantId
   const skillManifest = compileSkillManifest({ scope: { operationId, operationExecutionRevision: operation.operationExecutionRevision!, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch: operation.controller?.epoch ?? 0, participantId, workUnitIds: ["review"], competencies: ["review"] }, skills: [] });
   const workGraph = createWorkGraph({ taskId: candidate.taskId!, objective: "Review current candidate", route: "DIRECT", assurance: "STANDARD", requirementRefs: [], acceptanceRefs: [], units: [] });
   const validationResolution = { version: 1 as const, requirements: [], actions: [], blocked: [], digest: sha256Canonical({ version: 1, requirements: [], actions: [], blocked: [] }) };
-  const blueprint = createExecutionBlueprintV2({ projectId: candidate.projectId!, operationId, operationExecutionRevision: operation.operationExecutionRevision!, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch: operation.controller?.epoch ?? 0, resolvedOperationPolicy: policy, workGraph, participantPlan: { version: 1, taskId: candidate.taskId, assignments: [participantId] }, executionCatalog: { version: 1 }, participants: [{ participantId, role: "Reviewer", specialization: "review", roleInvocationPolicy, toolPack: roleInvocationPolicy.toolPack, resourceClaims: [], validationResolution, outputContract: "reviewer", skillManifestDigest: skillManifest.digest }], validationResolution });
+  const blueprint = createExecutionBlueprintV3({ projectId: candidate.projectId!, operationId, operationExecutionRevision: operation.operationExecutionRevision!, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch: operation.controller?.epoch ?? 0, resolvedOperationPolicy: policy, workGraph, participantPlan: { version: 1, taskId: candidate.taskId, assignments: [participantId] }, executionCatalog: { version: 1 }, participants: [{ participantId, role: "Reviewer", specialization: "review", roleInvocationPolicy, toolPack: roleInvocationPolicy.toolPack, resourceClaims: [], validationResolution, outputContract: "reviewer", skillManifestDigest: skillManifest.digest }], validationResolution });
   const binding = compileExecutionBinding({ operationId, operationExecutionRevision: operation.operationExecutionRevision!, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch: operation.controller?.epoch ?? 0, executionBlueprintDigest: blueprint.digest, operationPolicyDigest: policy.digest, participantId, participantGeneration, roleInvocationPolicyDigest: roleInvocationPolicy.digest, skillManifestDigest: skillManifest.digest, runtime: { runtimeId: "codex", provider: "openai", modelId: "test-model", model: "test-model", sessionId: `session-${participantGeneration}` }, contextManifestDigest: sha256Canonical({ context: participantId }), promptManifestDigest: sha256Canonical({ prompt: "review current candidate" }), outputContract: "reviewer", leaseIdentities: [] });
   await bindOperationParticipantExecution(root, operationId, { participantId, logicalAgent: "security-reviewer", role: "Reviewer", binding });
   operation = await loadOperation(root, operationId);
@@ -257,6 +257,16 @@ describe("StructuredResultGateway", () => {
   it("fails closed when a resumed turn has no bound result channel", async () => {
     const { root } = await fixture();
     await expect(activateStructuredResultTurnForAgent(root, "unbound-agent")).rejects.toThrow(/no structured result channel is bound/);
+  });
+
+  it("binds the requested phase to a resumed Paseo result turn", async () => {
+    const bound = await fixture();
+    const turn = await activateStructuredResultTurnForAgent(bound.root, "agent-1", "discovery");
+    expect(turn.phase).toBe("discovery");
+    await commitStructuredResult(bound.root, bound.operationId, bound.channelId, reviewerPayload(), "mcp");
+    await expect(acceptedStructuredResultForAgent(bound.root, "agent-1", { phase: "discovery" })).resolves.toMatchObject({
+      payload: reviewerPayload()
+    });
   });
 
   it("rejects schema-invalid submissions without losing the active turn", async () => {

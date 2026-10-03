@@ -64,6 +64,50 @@ describe("operation completion callbacks", () => {
     expect(claimFromOperation("The repository was inspected.", operation).verified).toBe(false);
   });
 
+  it("routes Owner-boundary and linked-recovery facts through the terminal callback without autonomous spawning", () => {
+    const ownerBoundaryPrompt = completionPrompt({
+      version: 2, id: "CHANGE-BOUNDARY", kind: "change", status: "FAILED", phase: "HUMAN_REQUIRED", root: "/repo", payload: { request: "implement" },
+      revision: 9, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), lastProgressAt: new Date().toISOString(),
+      supervision: { required: true, materialized: true, generations: [] }, stages: {}, participants: {}, progress: { expected: 1, registered: 1, running: 0, completed: 0, failed: 1, blocked: 0 }, notification: { lastLeadWakeRevision: 0, terminalDelivered: false, attempts: 0 },
+      origin: { userTurnId: "lead-session:turn-3" }, ownerEconomicBoundary: { budget: "HARD_COST_USD", configuredLimit: 1, observed: null, usageCoverage: "UNKNOWN", reason: "Cannot verify configured ceiling." }
+    } as never);
+    expect(ownerBoundaryPrompt).toContain("HUMAN_REQUIRED Owner economic boundary");
+    expect(ownerBoundaryPrompt).toContain("Tell the human Owner");
+    expect(ownerBoundaryPrompt).toContain("do not create a replacement operation automatically");
+    expect(ownerBoundaryPrompt).not.toContain("Continue the original pending user-facing request");
+
+    const hardDeadlinePrompt = completionPrompt({
+      version: 2, id: "AUDIT-DEADLINE", kind: "audit", status: "FAILED", phase: "HUMAN_REQUIRED", root: "/repo", payload: { request: "audit" },
+      revision: 11, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), lastProgressAt: new Date().toISOString(),
+      supervision: { required: true, materialized: true, generations: [] }, stages: {}, participants: {}, progress: { expected: 1, registered: 1, running: 0, completed: 0, failed: 1, blocked: 0 }, notification: { lastLeadWakeRevision: 0, terminalDelivered: false, attempts: 0 },
+      origin: { userTurnId: "lead-session:turn-5" },
+      ownerContinuationBoundary: { version: 1, kind: "OWNER_CONTINUATION_BOUNDARY", reasonCode: "HARD_OPERATION_DEADLINE", operationId: "AUDIT-DEADLINE", userTurnId: "lead-session:turn-5", triggerEventId: "operation.hard-deadline:AUDIT-DEADLINE:11", rootHardDeadlineAt: new Date().toISOString(), candidateDigest: "a".repeat(64), policyDigest: "b".repeat(64), controllerEpoch: 0, state: "WAITING", reason: "The frozen Owner hard deadline elapsed.", createdAt: new Date().toISOString(), digest: "c".repeat(64) }
+    } as never);
+    expect(hardDeadlinePrompt).toContain("HUMAN_REQUIRED hard execution deadline");
+    expect(hardDeadlinePrompt).toContain("explicit Owner-authorized CLI operation start");
+    expect(hardDeadlinePrompt).not.toContain("Continue the original pending user-facing request");
+
+    const recoveryPrompt = completionPrompt({
+      version: 2, id: "CHANGE-REPLAN", kind: "change", status: "FAILED", phase: "failed", root: "/repo", payload: { request: "implement" },
+      revision: 10, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), lastProgressAt: new Date().toISOString(),
+      supervision: { required: true, materialized: true, generations: [] }, stages: {}, participants: {}, progress: { expected: 1, registered: 1, running: 0, completed: 0, failed: 1, blocked: 0 }, notification: { lastLeadWakeRevision: 0, terminalDelivered: false, attempts: 0 },
+      origin: { userTurnId: "lead-session:turn-4" }, result: { recoveryRequest: { action: "REPLAN", participantId: "implementer-1" } }
+    } as never);
+    expect(recoveryPrompt).toContain("The controller applied Supervisor REPLAN");
+    expect(recoveryPrompt).toContain("intentDecision.continuation.operationId=CHANGE-REPLAN");
+    expect(recoveryPrompt).toContain("never automatic");
+
+    const failedOperationPrompt = completionPrompt({
+      version: 2, id: "CHANGE-FAILED-PENDING", kind: "change", status: "FAILED", phase: "failed", root: "/repo", payload: { request: "implement" },
+      revision: 12, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), lastProgressAt: new Date().toISOString(),
+      supervision: { required: true, materialized: true, generations: [] }, stages: {}, participants: {}, progress: { expected: 1, registered: 1, running: 0, completed: 0, failed: 1, blocked: 0 }, notification: { lastLeadWakeRevision: 0, terminalDelivered: false, attempts: 0 },
+      origin: { userTurnId: "lead-session:turn-6" }
+    } as never);
+    expect(failedOperationPrompt).toContain("This failed operation remains the pending task");
+    expect(failedOperationPrompt).toContain("intentDecision.continuation.operationId=CHANGE-FAILED-PENDING");
+    expect(failedOperationPrompt).toContain("Do not start an unlinked Lead root");
+  });
+
   it("sends exactly one continuation callback to the registered lead", async () => {
     const root = await tempRoot();
     await registerOperationCompletionTarget(root, "AUDIT-1", "lead-1", "lead-state", vi.fn(async () => undefined));
@@ -163,6 +207,7 @@ describe("operation completion callbacks", () => {
       entryFile: "/pkg/dist/main.js",
       completionAgentId: "lead-1",
       completionSource: "lead-state",
+      initiator: { kind: "LEAD", agentId: "lead-1", requestEventId: "test:spawn-callback" },
       spawnProcess: vi.fn(() => { throw new Error("spawn boom"); }) as never
     });
 
@@ -196,7 +241,7 @@ describe("operation completion callbacks", () => {
       candidateDigest: candidate.identityDigest,
       controllerEpoch: currentControllerEpoch(current),
       intent: "completion cancellation test", route: "DIRECT", minimumAssurance: "STANDARD",
-      policyVersions: { resolvedOperationPolicy: "1" }, policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {},
+      policyVersions: { resolvedOperationPolicy: "2" }, policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {},
       allowedExternalEffects: [], humanDecisionRequirements: []
     });
     const bound = await bindResolvedOperationPolicy(root, record.id, policy);

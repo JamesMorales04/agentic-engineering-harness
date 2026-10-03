@@ -4,20 +4,23 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { HarnessProjectConfig, UsageMetrics, WorkerSession } from "../core/types.js";
 import { sha256Canonical, sha256Utf8 } from "../core/digest.js";
-import { loadOperation, resolveOperationStateRoot, type OperationRecordV2 } from "../operations/state.js";
+import { isTerminalOperation, loadOperation, resolveOperationStateRoot, withOperationCoordinationLock, type OperationRecordV2 } from "../operations/state.js";
 import { extractUsageMetrics } from "../metrics/usage.js";
 import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
+import { readExecutionActivityEventsV1, type ExecutionActivityEventV1 } from "../operations/executionLiveness.js";
 
 const nullableCount = z.number().int().nonnegative().nullable();
 const nullableCost = z.number().finite().nonnegative().nullable();
 const nullableTime = z.string().datetime().nullable();
 
-export const providerTurnUsageObservationV1Schema = z.object({
+export const providerTurnUsageObservationV2Schema = z.object({
   turnId: z.string().min(1).nullable(),
   turnIndex: z.number().int().nonnegative().nullable(),
   runtimeSessionId: z.string().min(1).nullable(),
   provider: z.string().min(1),
   at: nullableTime,
+  startedAt: nullableTime.optional(),
+  finishedAt: nullableTime.optional(),
   inputTokens: nullableCount,
   cachedInputTokens: nullableCount,
   outputTokens: nullableCount,
@@ -27,10 +30,10 @@ export const providerTurnUsageObservationV1Schema = z.object({
   costUsd: nullableCost,
   usageKnown: z.boolean()
 }).strict();
-export type ProviderTurnUsageObservationV1 = z.infer<typeof providerTurnUsageObservationV1Schema>;
+export type ProviderTurnUsageObservationV2 = z.infer<typeof providerTurnUsageObservationV2Schema>;
 
-export const participantUsageObservationV1Schema = z.object({
-  version: z.literal(1),
+export const participantUsageObservationV2Schema = z.object({
+  version: z.literal(2),
   observationId: z.string().regex(/^[a-f0-9]{64}$/),
   operationId: z.string().min(1),
   candidateId: z.string().min(1),
@@ -57,15 +60,16 @@ export const participantUsageObservationV1Schema = z.object({
   usageSource: z.enum(["PROVIDER_TURN_EVENTS", "PASEO_AGENT_SNAPSHOT", "PASEO_ADAPTER", "AEH_TEXT_EXTRACTION", "UNKNOWN"]),
   usageCoverage: z.enum(["COMPLETE", "PARTIAL", "UNKNOWN"]),
   startedAt: nullableTime,
+  lastActivityAt: nullableTime,
   finishedAt: nullableTime,
   durationMs: nullableCount,
   resultStatus: z.enum(["SUCCEEDED", "FAILED", "BLOCKED", "UNKNOWN"]),
-  turnUsage: z.array(providerTurnUsageObservationV1Schema)
+  turnUsage: z.array(providerTurnUsageObservationV2Schema)
 }).strict();
-export type ParticipantUsageObservationV1 = z.infer<typeof participantUsageObservationV1Schema>;
+export type ParticipantUsageObservationV2 = z.infer<typeof participantUsageObservationV2Schema>;
 
-export const toolCallObservationV1Schema = z.object({
-  version: z.literal(1),
+export const toolCallObservationV2Schema = z.object({
+  version: z.literal(2),
   observationId: z.string().regex(/^[a-f0-9]{64}$/),
   operationId: z.string().min(1),
   candidateId: z.string().min(1),
@@ -96,10 +100,10 @@ export const toolCallObservationV1Schema = z.object({
   retryOfCallId: z.string().min(1).nullable(),
   causalStatus: z.enum(["PROVEN", "EQUIVALENT_ONLY", "UNKNOWN"])
 }).strict();
-export type ToolCallObservationV1 = z.infer<typeof toolCallObservationV1Schema>;
+export type ToolCallObservationV2 = z.infer<typeof toolCallObservationV2Schema>;
 
-export const contextAccountingObservationV1Schema = z.object({
-  version: z.literal(1),
+export const contextAccountingObservationV2Schema = z.object({
+  version: z.literal(2),
   observationId: z.string().regex(/^[a-f0-9]{64}$/),
   operationId: z.string().min(1),
   candidateId: z.string().min(1),
@@ -122,10 +126,10 @@ export const contextAccountingObservationV1Schema = z.object({
   fragmentIdentities: z.array(z.object({ fragmentId: z.string().min(1), contentDigest: z.string().regex(/^[a-f0-9]{64}$/), deliveredTokens: z.number().int().nonnegative() }).strict()),
   tokenBasis: z.literal("AEH_ESTIMATOR")
 }).strict();
-export type ContextAccountingObservationV1 = z.infer<typeof contextAccountingObservationV1Schema>;
+export type ContextAccountingObservationV2 = z.infer<typeof contextAccountingObservationV2Schema>;
 
-export const contextRetrievalObservationV1Schema = z.object({
-  version: z.literal(1),
+export const contextRetrievalObservationV2Schema = z.object({
+  version: z.literal(2),
   operationId: z.string().min(1),
   candidateId: z.string().min(1),
   candidateRevision: z.number().int().positive(),
@@ -145,10 +149,10 @@ export const contextRetrievalObservationV1Schema = z.object({
   retrievedAt: z.string().datetime(),
   tokenBasis: z.literal("AEH_ESTIMATOR")
 }).strict();
-export type ContextRetrievalObservationV1 = z.infer<typeof contextRetrievalObservationV1Schema>;
+export type ContextRetrievalObservationV2 = z.infer<typeof contextRetrievalObservationV2Schema>;
 
-export const operationEfficiencySummaryV1Schema = z.object({
-  version: z.literal(1),
+export const operationEfficiencySummaryV2Schema = z.object({
+  version: z.literal(2),
   operationId: z.string().min(1),
   terminalStatus: z.enum(["SUCCEEDED", "FAILED", "CANCELLED", "UNKNOWN"]),
   route: z.string().nullable(),
@@ -159,6 +163,26 @@ export const operationEfficiencySummaryV1Schema = z.object({
   participants: z.number().int().nonnegative(),
   participantGenerations: z.number().int().nonnegative(),
   providerTurns: z.number().int().nonnegative().nullable(),
+  budgets: z.object({
+    providerTurns: z.object({
+      scope: z.literal("PER_PARTICIPANT"),
+      participantCount: z.number().int().nonnegative(),
+      observed: nullableCount,
+      initialPerParticipant: nullableCount,
+      initialAggregateEquivalent: nullableCount,
+      currentAllowanceAggregate: nullableCount,
+      supervisorCeilingPerParticipant: nullableCount,
+      supervisorCeilingAggregateEquivalent: nullableCount,
+      hardCeilingPerParticipant: nullableCount,
+      hardCeilingAggregateEquivalent: nullableCount,
+      softThreshold: z.number().gt(0).lt(1).nullable()
+    }).strict(),
+    toolCalls: z.object({ observed: nullableCount, hardLimit: nullableCount }).strict(),
+    tokenUsage: z.object({ observed: nullableCount, hardLimit: nullableCount, coverage: z.enum(["COMPLETE", "PARTIAL", "UNKNOWN"]) }).strict(),
+    cost: z.object({ observedUsd: nullableCost, hardLimitUsd: nullableCost, coverage: z.enum(["COMPLETE", "PARTIAL", "UNKNOWN"]) }).strict(),
+    recovery: z.object({ localRetries: nullableCount, localRetryLimit: nullableCount, participantRestarts: nullableCount, participantRestartLimit: nullableCount, noProgressRenewals: nullableCount, progressLeaseRenewals: nullableCount }).strict(),
+    hardDeadlineAt: nullableTime
+  }).strict(),
   usage: z.object({
     inputTokens: nullableCount,
     cachedInputTokens: nullableCount,
@@ -211,21 +235,34 @@ export const operationEfficiencySummaryV1Schema = z.object({
     retryAssociatedTotalTokens: nullableCount,
     retryUsageCoverage: z.enum(["COMPLETE", "PARTIAL", "UNKNOWN"])
   }).strict(),
+  activity: z.object({
+    timeToFirstToolCallMs: nullableCount,
+    timeToFirstMutationMs: nullableCount,
+    timeSinceLastMeaningfulProgressMs: nullableCount,
+    toolCallsBeforeFirstMutation: nullableCount,
+    turnsBeforeFirstMutation: nullableCount,
+    tokensBeforeFirstMutation: nullableCount,
+    repositoryMutationCount: nullableCount,
+    artifactCount: nullableCount,
+    validationCount: nullableCount
+  }).strict(),
   workflow: z.object({ repairRounds: z.number().int().nonnegative(), candidateRevisions: z.number().int().nonnegative(), reviewRounds: z.number().int().nonnegative(), humanInterventions: z.number().int().nonnegative().nullable() }).strict(),
-  timing: z.object({ totalDurationMs: nullableCount, participantDurationMs: nullableCount }).strict(),
+  timing: z.object({ totalDurationMs: nullableCount, participantDurationMs: nullableCount, activeProviderDurationMs: nullableCount, toolWaitDurationMs: nullableCount }).strict(),
   outcome: z.object({ accepted: z.boolean().nullable(), delivered: z.boolean().nullable() }).strict(),
   generatedAt: z.string().datetime()
 }).strict();
-export type OperationEfficiencySummaryV1 = z.infer<typeof operationEfficiencySummaryV1Schema>;
+export type OperationEfficiencySummaryV2 = z.infer<typeof operationEfficiencySummaryV2Schema>;
 
-export interface ProviderTelemetryEvidenceV1 {
+export interface ProviderTelemetryEvidenceV2 {
+  version: 2;
   source: "PROVIDER_TURN_EVENTS" | "PASEO_AGENT_SNAPSHOT" | "PASEO_ADAPTER" | "UNKNOWN";
   coverage: "COMPLETE" | "PARTIAL" | "UNKNOWN";
   turnCount: number | null;
-  turns: ProviderTurnUsageObservationV1[];
-  toolCalls: Array<Omit<ToolCallObservationV1, "version" | "observationId" | "operationId" | "candidateId" | "candidateRevision" | "candidateDigest" | "operationExecutionRevision" | "controllerEpoch" | "participantId" | "sessionId" | "role" | "phase" | "attemptIndex" | "retryOfCallId" | "causalStatus">>;
+  turns: ProviderTurnUsageObservationV2[];
+  toolCalls: ProviderToolCallEvidenceV2[];
   snapshotUsage?: UsageMetrics;
 }
+export type ProviderToolCallEvidenceV2 = Omit<ToolCallObservationV2, "version" | "observationId" | "operationId" | "candidateId" | "candidateRevision" | "candidateDigest" | "operationExecutionRevision" | "controllerEpoch" | "participantId" | "sessionId" | "role" | "phase" | "attemptIndex" | "retryOfCallId" | "causalStatus"> & { retryOfCallId?: string | null };
 
 const EFFICIENCY_ROOT = path.join(".harness", "telemetry", "efficiency", "operations");
 
@@ -236,19 +273,20 @@ export function participantUsageObservationFromSession(input: {
   phase: string;
   candidate: CandidateRevisionV1;
   session: WorkerSession;
-  providerTelemetry?: ProviderTelemetryEvidenceV1;
-  resultStatus?: ParticipantUsageObservationV1["resultStatus"];
-}): ParticipantUsageObservationV1 | undefined {
+  providerTelemetry?: ProviderTelemetryEvidenceV2;
+  lastActivityAt?: string;
+  resultStatus?: ParticipantUsageObservationV2["resultStatus"];
+}): ParticipantUsageObservationV2 | undefined {
   const binding = input.session.executionBinding;
   if (!binding || binding.participantId !== input.participantId || binding.operationId !== input.operationId
     || binding.candidateRevision !== input.candidate.revision || binding.candidateDigest !== input.candidate.identityDigest) return undefined;
 
   const telemetry = input.providerTelemetry;
   const turns = (telemetry?.turns ?? []).map((turn) => ({ ...turn, runtimeSessionId: binding.runtime.sessionId }));
-  let usageSource: ParticipantUsageObservationV1["usageSource"] = "UNKNOWN";
-  let usageCoverage: ParticipantUsageObservationV1["usageCoverage"] = "UNKNOWN";
+  let usageSource: ParticipantUsageObservationV2["usageSource"] = "UNKNOWN";
+  let usageCoverage: ParticipantUsageObservationV2["usageCoverage"] = "UNKNOWN";
   let metrics: UsageMetrics = {};
-  let totalTokensBasis: ParticipantUsageObservationV1["totalTokensBasis"] = "UNKNOWN";
+  let totalTokensBasis: ParticipantUsageObservationV2["totalTokensBasis"] = "UNKNOWN";
   let turnCount: number | null = telemetry?.turnCount ?? null;
   if (turns.some((turn) => turn.usageKnown)) {
     usageSource = "PROVIDER_TURN_EVENTS";
@@ -278,11 +316,12 @@ export function participantUsageObservationFromSession(input: {
   }
 
   const startedAt = validTimestamp(input.session.startedAt);
+  const lastActivityAt = validTimestamp(input.lastActivityAt);
   const finishedAt = validTimestamp(input.session.finishedAt);
   const durationMs = startedAt && finishedAt ? Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt)) : null;
   const usageKnown = usageCoverage !== "UNKNOWN" && Object.values(metrics).some((value) => value !== undefined);
   const body = {
-    version: 1 as const,
+    version: 2 as const,
     operationId: input.operationId,
     candidateId: input.candidate.candidateId,
     candidateRevision: input.candidate.revision,
@@ -308,31 +347,36 @@ export function participantUsageObservationFromSession(input: {
     usageSource,
     usageCoverage,
     startedAt,
+    lastActivityAt,
     finishedAt,
     durationMs,
     resultStatus: input.resultStatus ?? (input.session.exitCode === 0 ? "SUCCEEDED" as const : "FAILED" as const),
     turnUsage: turns
   };
-  return participantUsageObservationV1Schema.parse({ ...body, observationId: sha256Canonical(body) });
+  return participantUsageObservationV2Schema.parse({ ...body, observationId: sha256Canonical(body) });
 }
 
-export async function recordParticipantUsageObservation(root: string, config: HarnessProjectConfig, observation: ParticipantUsageObservationV1): Promise<boolean> {
-  if (config.telemetry?.enabled !== true) return false;
-  const parsed = participantUsageObservationV1Schema.parse(observation);
-  if (!await currentEfficiencyBindingMatches(root, parsed)) return false;
-  return writeObservationOnce(root, parsed.operationId, "participants", parsed.observationId, parsed);
+export async function recordParticipantUsageObservation(root: string, config: HarnessProjectConfig, observation: ParticipantUsageObservationV2): Promise<boolean> {
+  void config; // Local observational artifacts are retained independently of optional external exporters.
+  const parsed = participantUsageObservationV2Schema.parse(observation);
+  const stateRoot = resolveOperationStateRoot(root);
+  return withOperationCoordinationLock(stateRoot, parsed.operationId, async () => {
+    const operation = await loadOperation(stateRoot, parsed.operationId);
+    if (isTerminalOperation(operation.status) || !await currentEfficiencyBindingMatches(stateRoot, parsed)) return false;
+    return writeObservationOnce(stateRoot, parsed.operationId, "participants", parsed.observationId, parsed);
+  });
 }
 
 export async function recordToolCallObservations(root: string, config: HarnessProjectConfig, input: {
   operationId: string; participantId: string; role: string; phase: string; candidate: CandidateRevisionV1;
   operationExecutionRevision: number; controllerEpoch: number; participantGeneration: string; sessionId: string;
-  observations: ProviderTelemetryEvidenceV1["toolCalls"];
+  observations: ProviderTelemetryEvidenceV2["toolCalls"];
 }): Promise<number> {
-  if (config.telemetry?.enabled !== true) return 0;
+  void config;
   const correlated = correlateEquivalentToolCalls(input.observations);
   const complete = correlated.map((observation) => {
     const base = {
-      version: 1 as const,
+      version: 2 as const,
       operationId: input.operationId,
       candidateId: input.candidate.candidateId,
       candidateRevision: input.candidate.revision,
@@ -346,7 +390,7 @@ export async function recordToolCallObservations(root: string, config: HarnessPr
       ...observation
     };
     const identity = sha256Canonical(base);
-    return toolCallObservationV1Schema.parse({ ...base, observationId: identity });
+    return toolCallObservationV2Schema.parse({ ...base, observationId: identity });
   });
   let stored = 0;
   for (const observation of complete) {
@@ -362,9 +406,10 @@ export async function recordContextAccountingObservation(root: string, config: H
   envelopeDigest: string; rawContextTokens: number; projectedContextTokens: number; deliveredContextTokens: number;
   fragmentIdentities: Array<{ fragmentId: string; contentDigest: string; deliveredTokens: number }>;
 }): Promise<boolean> {
-  if (config.telemetry?.enabled !== true || !input.participantId) return false;
+  void config;
+  if (!input.participantId) return false;
   const body = {
-    version: 1 as const,
+    version: 2 as const,
     operationId: input.operationId,
     candidateId: input.candidate.candidateId,
     candidateRevision: input.candidate.revision,
@@ -386,38 +431,37 @@ export async function recordContextAccountingObservation(root: string, config: H
     fragmentIdentities: input.fragmentIdentities,
     tokenBasis: "AEH_ESTIMATOR" as const
   };
-  const observation = contextAccountingObservationV1Schema.parse({ ...body, observationId: sha256Canonical(body) });
+  const observation = contextAccountingObservationV2Schema.parse({ ...body, observationId: sha256Canonical(body) });
   if (!await currentEfficiencyBindingMatches(root, observation)) return false;
   return writeObservationOnce(root, observation.operationId, "context", observation.observationId, observation);
 }
 
-export async function recordContextRetrievalObservation(root: string, config: HarnessProjectConfig, observation: ContextRetrievalObservationV1): Promise<boolean> {
-  if (config.telemetry?.enabled !== true) return false;
-  const parsed = contextRetrievalObservationV1Schema.parse(observation);
+export async function recordContextRetrievalObservation(root: string, observation: ContextRetrievalObservationV2): Promise<boolean> {
+  const parsed = contextRetrievalObservationV2Schema.parse(observation);
   if (!await currentEfficiencyBindingMatches(root, parsed)) return false;
   return writeObservationOnce(root, parsed.operationId, "retrieval", sha256Canonical(parsed), parsed);
 }
 
-export async function writeOperationEfficiencySummary(root: string, config: HarnessProjectConfig, operation: OperationRecordV2): Promise<OperationEfficiencySummaryV1 | undefined> {
-  if (config.telemetry?.enabled !== true) return undefined;
+export async function writeOperationEfficiencySummary(root: string, config: HarnessProjectConfig, operation: OperationRecordV2): Promise<OperationEfficiencySummaryV2 | undefined> {
+  void config;
   const observations = await readOperationEfficiencyObservations(root, operation.id);
-  const summary = summarizeOperationEfficiencyV1(operation, observations);
+  const summary = summarizeOperationEfficiencyV2(operation, observations);
   await writeJsonAtomic(summaryFile(root, operation.id), summary);
   return summary;
 }
 
-export async function readOperationEfficiencySummary(root: string, operation: OperationRecordV2): Promise<OperationEfficiencySummaryV1 | undefined> {
+export async function readOperationEfficiencySummary(root: string, operation: OperationRecordV2): Promise<OperationEfficiencySummaryV2 | undefined> {
   try {
-    const summary = operationEfficiencySummaryV1Schema.parse(JSON.parse(await fs.readFile(summaryFile(root, operation.id), "utf8")));
+    const summary = operationEfficiencySummaryV2Schema.parse(JSON.parse(await fs.readFile(summaryFile(root, operation.id), "utf8")));
     if (summary.operationId !== operation.id || summary.currentCandidateId !== (operation.candidateRevision?.candidateId ?? null)
       || summary.currentCandidateDigest !== (operation.candidateRevision?.identityDigest ?? null)) return undefined;
     return summary;
   } catch { return undefined; }
 }
 
-export function summarizeOperationEfficiencyV1(operation: OperationRecordV2, observations: {
-  participants: ParticipantUsageObservationV1[]; tools: ToolCallObservationV1[]; context: ContextAccountingObservationV1[]; retrieval: ContextRetrievalObservationV1[];
-}, generatedAt = new Date().toISOString()): OperationEfficiencySummaryV1 {
+export function summarizeOperationEfficiencyV2(operation: OperationRecordV2, observations: {
+  participants: ParticipantUsageObservationV2[]; tools: ToolCallObservationV2[]; context: ContextAccountingObservationV2[]; retrieval: ContextRetrievalObservationV2[]; activity?: ExecutionActivityEventV1[];
+}, generatedAt = new Date().toISOString()): OperationEfficiencySummaryV2 {
   const participants = deduplicateParticipantUsage(observations.participants.filter((item) => item.operationId === operation.id));
   const tools = observations.tools.filter((item) => item.operationId === operation.id);
   const contexts = observations.context.filter((item) => item.operationId === operation.id);
@@ -426,16 +470,44 @@ export function summarizeOperationEfficiencyV1(operation: OperationRecordV2, obs
     const known = items.map((item) => item[key]).filter((value): value is number => typeof value === "number");
     return known.length ? known.reduce((sum, value) => sum + value, 0) : null;
   };
+  const operationParticipants = Object.values(operation.participants ?? {});
+  const boundOperationParticipants = operationParticipants.filter((item) => item.executionBinding);
+  const boundOperationAgents = (operation.agents ?? []).filter((item) => item.executionBinding);
+  const expectedUsageIdentities = [
+    ...boundOperationParticipants.map((item) => ({ participantId: item.id, generation: item.executionBinding!.participantGeneration })),
+    ...boundOperationAgents.map((item) => ({ participantId: item.id, generation: item.executionBinding!.participantGeneration }))
+  ];
+  const operationParticipantIds = new Set(expectedUsageIdentities.map((item) => item.participantId));
+  const observedParticipantIds = new Set(participants.map((item) => item.participantId));
   const knownParticipants = new Set(participants.filter((item) => item.usageKnown).map((item) => item.participantId)).size;
   const costKnownParticipants = new Set(participants.filter((item) => item.costUsd !== null).map((item) => item.participantId)).size;
-  const totalParticipants = new Set(participants.map((item) => item.participantId)).size;
-  const usageComplete = participants.length > 0 && participants.every((item) => item.usageKnown && item.usageCoverage === "COMPLETE");
+  const totalParticipants = new Set([...operationParticipantIds, ...observedParticipantIds]).size;
+  const usageComplete = totalParticipants > 0 && (expectedUsageIdentities.length === 0
+    ? participants.length > 0 && participants.every((item) => item.usageKnown && item.usageCoverage === "COMPLETE")
+    : expectedUsageIdentities.every((identity) => {
+    const observation = participants.find((item) => item.participantId === identity.participantId && item.generation === identity.generation);
+    return Boolean(observation?.usageKnown && observation.usageCoverage === "COMPLETE");
+  }));
   const tokenBases = new Set(participants.filter((item) => item.totalTokens !== null).map((item) => item.totalTokensBasis));
   const totalTokenBasis = tokenBases.size === 1 ? [...tokenBases][0]! : "UNKNOWN" as const;
-  const distinctGenerations = new Set(participants.flatMap((item) => item.generation ? [`${item.participantId}:${item.generation}`] : [])).size;
-  const providerTurns = participants.every((item) => item.turnCount !== null)
-    ? participants.reduce((sum, item) => sum + (item.turnCount ?? 0), 0)
-    : null;
+  const providerBudgetParticipants = operationParticipants.filter((item) => item.role !== "Operation Supervisor" && item.logicalAgent !== "supervisor");
+  const providerTurnParticipantIds = new Set([
+    ...providerBudgetParticipants.map((item) => item.id),
+    ...participants.filter((item) => item.role !== "Operation Supervisor" && item.role !== "Lead/Director").map((item) => item.participantId)
+  ]);
+  const participantLiveness = providerBudgetParticipants.map((item) => item.executionLiveness).filter((item): item is NonNullable<typeof item> => Boolean(item));
+  const livenessCoverageComplete = providerBudgetParticipants.length > 0 && participantLiveness.length === providerBudgetParticipants.length;
+  const toolCallAccountingComplete = providerBudgetParticipants.length === 0 || livenessCoverageComplete;
+  const distinctGenerations = new Set([
+    ...participants.flatMap((item) => item.generation ? [`${item.participantId}:${item.generation}`] : []),
+    ...operationParticipants.flatMap((item) => item.executionBinding ? [`${item.id}:${item.executionBinding.participantGeneration}`] : []),
+    ...boundOperationAgents.map((item) => `${item.id}:${item.executionBinding!.participantGeneration}`)
+  ]).size;
+  const providerTurns = livenessCoverageComplete
+    ? participantLiveness.reduce((sum, item) => sum + item.providerTurns, 0)
+    : participants.length > 0 && participants.every((item) => item.turnCount !== null)
+      ? participants.reduce((sum, item) => sum + (item.turnCount ?? 0), 0)
+      : null;
   const repeatedFragmentTokens = repeatedCrossParticipantFragmentTokens(contexts, retrievals);
   const firstAttemptSuccesses = tools.filter((item) => item.attemptIndex === 1 && item.outcome === "SUCCESS").length;
   const failedFirstAttempts = tools.filter((item) => item.attemptIndex === 1 && item.outcome !== "SUCCESS").length;
@@ -444,7 +516,7 @@ export function summarizeOperationEfficiencyV1(operation: OperationRecordV2, obs
   const failureClasses = new Map<string, number>();
   for (const tool of tools) if (tool.outcome !== "SUCCESS") failureClasses.set(tool.outcome, (failureClasses.get(tool.outcome) ?? 0) + 1);
   const retryTurnIds = retryAssociatedTurnIds(tools);
-  const usageByTurn = new Map<string, ProviderTurnUsageObservationV1>();
+  const usageByTurn = new Map<string, ProviderTurnUsageObservationV2>();
   for (const participant of participants) for (const turn of participant.turnUsage) {
     if (turn.runtimeSessionId && turn.turnId) usageByTurn.set(`${turn.runtimeSessionId}\0${turn.turnId}`, turn);
   }
@@ -453,13 +525,48 @@ export function summarizeOperationEfficiencyV1(operation: OperationRecordV2, obs
     && retryTurnUsage.every((turn) => turn.inputTokens !== null && turn.outputTokens !== null && turn.totalTokens !== null)
     ? "COMPLETE" as const : "PARTIAL" as const;
   const durationMs = operation.startedAt && operation.finishedAt ? Math.max(0, Date.parse(operation.finishedAt) - Date.parse(operation.startedAt)) : null;
+  const economic = operation.resolvedOperationPolicy?.economicEnvelope;
+  const livenessPolicy = operation.resolvedOperationPolicy?.executionLiveness;
+  const observedTokenTotal = participants.length > 0 && participants.every((item) => item.usageKnown && item.totalTokens !== null) ? participants.reduce((sum, item) => sum + (item.totalTokens ?? 0), 0) : null;
+  const observedCostTotal = usageComplete && participants.length > 0 && participants.every((item) => item.usageCoverage === "COMPLETE" && item.costUsd !== null) ? participants.reduce((sum, item) => sum + (item.costUsd ?? 0), 0) : null;
+  const restartPolicyLimit = livenessPolicy && economic ? Math.min(livenessPolicy.maxParticipantRestarts, economic.maxParticipantRestarts) : livenessPolicy?.maxParticipantRestarts ?? economic?.maxParticipantRestarts ?? null;
+  const retryPolicyLimit = livenessPolicy && economic ? Math.min(livenessPolicy.maxLocalRetriesPerFailure, economic.maxLocalRetries) : livenessPolicy?.maxLocalRetriesPerFailure ?? economic?.maxLocalRetries ?? null;
+  const aggregateProviderTurnLimit = (perParticipant: number | undefined): number | null => {
+    if (perParticipant === undefined) return null;
+    const aggregate = perParticipant * providerTurnParticipantIds.size;
+    return Number.isSafeInteger(aggregate) ? aggregate : null;
+  };
+  const executionActivity = observations.activity ?? [];
+  const activityAt = (kind: ExecutionActivityEventV1["kind"]): number | undefined => executionActivity.filter((item) => item.kind === kind).map((item) => Date.parse(item.observedAt)).filter(Number.isFinite).sort((a, b) => a - b)[0];
+  const firstToolAt = Math.min(...[
+    ...participantLiveness.map((item) => item.firstToolCallAt ? Date.parse(item.firstToolCallAt) : Number.POSITIVE_INFINITY),
+    activityAt("TOOL_CALL_STARTED") ?? Number.POSITIVE_INFINITY
+  ]);
+  const firstMutationAt = Math.min(...[
+    ...participantLiveness.map((item) => item.firstMutationAt ? Date.parse(item.firstMutationAt) : Number.POSITIVE_INFINITY),
+    activityAt("SOURCE_MUTATION") ?? Number.POSITIVE_INFINITY
+  ]);
+  const lastMeaningfulProgressAt = Math.max(
+    ...participantLiveness.map((item) => item.lastMeaningfulProgressAt ? Date.parse(item.lastMeaningfulProgressAt) : Number.NEGATIVE_INFINITY),
+    ...executionActivity.filter((item) => item.level === "HIGH" || item.level === "MEDIUM").map((item) => Date.parse(item.observedAt)),
+    Number.NEGATIVE_INFINITY
+  );
+  const timeOrigin = operation.startedAt ? Date.parse(operation.startedAt) : Number.NaN;
+  const timeEnd = operation.finishedAt ? Date.parse(operation.finishedAt) : Date.parse(generatedAt);
+  const mutationParticipants = participantLiveness.filter((item) => item.firstMutationAt);
+  const turnsBeforeMutation = mutationParticipants.length && mutationParticipants.every((item) => item.turnsBeforeFirstMutation !== null)
+    ? mutationParticipants.reduce((sum, item) => sum + (item.turnsBeforeFirstMutation ?? 0), 0) : null;
+  const tokensBeforeMutation = mutationParticipants.length ? sumTokensBeforeMutation(participants, operation) : null;
+  const allToolDurationsKnown = tools.length > 0 && tools.every((item) => item.startedAt !== null && item.finishedAt !== null && item.durationMs !== null);
+  const activeProviderDurationMs = usageComplete ? sumTurnActiveDuration(participants) : null;
+  const toolWaitDurationMs = allToolDurationsKnown ? unionDuration(tools.flatMap((item) => item.startedAt && item.finishedAt ? [[Date.parse(item.startedAt), Date.parse(item.finishedAt)] as [number, number]] : [])) : null;
   const resultRecord = operation.result && typeof operation.result === "object" ? operation.result as Record<string, unknown> : undefined;
   const acceptanceValue = resultRecord?.acceptanceOracle;
   const acceptanceDisposition = acceptanceValue && typeof acceptanceValue === "object" ? (acceptanceValue as Record<string, unknown>).disposition : undefined;
   const deliveryValue = resultRecord?.delivery;
   const deliveryStatus = deliveryValue && typeof deliveryValue === "object" ? (deliveryValue as Record<string, unknown>).status : undefined;
   const summary = {
-    version: 1 as const,
+    version: 2 as const,
     operationId: operation.id,
     terminalStatus: operation.status === "SUCCEEDED" || operation.status === "FAILED" || operation.status === "CANCELLED" ? operation.status : "UNKNOWN" as const,
     route: operation.intent?.route ?? null,
@@ -470,6 +577,33 @@ export function summarizeOperationEfficiencyV1(operation: OperationRecordV2, obs
     participants: totalParticipants,
     participantGenerations: distinctGenerations,
     providerTurns,
+    budgets: {
+      providerTurns: {
+        scope: "PER_PARTICIPANT" as const,
+        participantCount: providerTurnParticipantIds.size,
+        observed: livenessCoverageComplete ? participantLiveness.reduce((sum, item) => sum + item.providerTurns, 0) : null,
+        initialPerParticipant: economic?.initialProviderTurns ?? null,
+        initialAggregateEquivalent: aggregateProviderTurnLimit(economic?.initialProviderTurns),
+        currentAllowanceAggregate: livenessCoverageComplete ? participantLiveness.reduce((sum, item) => sum + item.currentProviderTurnBudget, 0) : null,
+        supervisorCeilingPerParticipant: economic?.supervisorProviderTurns ?? null,
+        supervisorCeilingAggregateEquivalent: aggregateProviderTurnLimit(economic?.supervisorProviderTurns),
+        hardCeilingPerParticipant: economic?.hardProviderTurns ?? null,
+        hardCeilingAggregateEquivalent: aggregateProviderTurnLimit(economic?.hardProviderTurns),
+        softThreshold: economic?.softThreshold ?? null
+      },
+      toolCalls: { observed: toolCallAccountingComplete ? participantLiveness.reduce((sum, item) => sum + item.toolCallCount, 0) : null, hardLimit: economic?.hardToolCalls ?? null },
+      tokenUsage: { observed: observedTokenTotal, hardLimit: economic?.hardTotalTokens ?? null, coverage: observedTokenTotal === null ? "UNKNOWN" as const : usageComplete && participants.every((item) => item.totalTokens !== null) ? "COMPLETE" as const : "PARTIAL" as const },
+      cost: { observedUsd: observedCostTotal, hardLimitUsd: economic?.hardCostUsd ?? null, coverage: observedCostTotal === null ? "UNKNOWN" as const : "COMPLETE" as const },
+      recovery: {
+        localRetries: livenessCoverageComplete ? participantLiveness.reduce((sum, item) => sum + item.localRetryCount, 0) : null,
+        localRetryLimit: retryPolicyLimit,
+        participantRestarts: livenessCoverageComplete ? participantLiveness.reduce((sum, item) => sum + item.participantRestarts, 0) : null,
+        participantRestartLimit: restartPolicyLimit,
+        noProgressRenewals: livenessCoverageComplete ? participantLiveness.reduce((sum, item) => sum + item.noProgressRenewals, 0) : null,
+        progressLeaseRenewals: livenessCoverageComplete ? participantLiveness.reduce((sum, item) => sum + (item.progressLease?.renewalCount ?? 0), 0) : null
+      },
+      hardDeadlineAt: economic?.hardDeadlineAt ?? operation.origin?.rootHardDeadlineAt ?? null
+    },
     usage: {
       inputTokens: sumField(participants, "inputTokens"),
       cachedInputTokens: sumField(participants, "cachedInputTokens"),
@@ -483,7 +617,7 @@ export function summarizeOperationEfficiencyV1(operation: OperationRecordV2, obs
       costKnownParticipants,
       completeObservations: participants.filter((item) => item.usageCoverage === "COMPLETE").length,
       partialObservations: participants.filter((item) => item.usageCoverage === "PARTIAL").length,
-      unknownObservations: participants.filter((item) => item.usageCoverage === "UNKNOWN").length,
+      unknownObservations: participants.filter((item) => item.usageCoverage === "UNKNOWN").length + Math.max(0, totalParticipants - observedParticipantIds.size),
       byParticipant: participantUsageById(participants)
     },
     context: {
@@ -501,7 +635,7 @@ export function summarizeOperationEfficiencyV1(operation: OperationRecordV2, obs
       failedFirstAttempts,
       retryCalls,
       recoveredAfterRetry,
-      repeatedEquivalentCalls: tools.filter((item) => item.attemptIndex !== null && item.attemptIndex > 1 && item.causalStatus === "PROVEN").length,
+      repeatedEquivalentCalls: tools.filter((item) => item.attemptIndex !== null && item.attemptIndex > 1 && item.causalStatus === "EQUIVALENT_ONLY").length,
       unrecoveredToolFailures: tools.filter((item) => item.attemptIndex === 1 && item.outcome !== "SUCCESS" && !retrySequenceRecovered(item, tools)).length,
       unknownCausalRetries: tools.filter((item) => item.causalStatus === "UNKNOWN" && item.attemptIndex !== null && item.attemptIndex > 1).length,
       failuresByClass: Object.fromEntries([...failureClasses.entries()].sort(([a], [b]) => a.localeCompare(b))),
@@ -516,9 +650,22 @@ export function summarizeOperationEfficiencyV1(operation: OperationRecordV2, obs
       reviewRounds: new Set(participants.filter((item) => item.role === "Reviewer").map((item) => `${item.participantId}:${item.generation}`)).size,
       humanInterventions: null
     },
+    activity: {
+      timeToFirstToolCallMs: Number.isFinite(firstToolAt) && Number.isFinite(timeOrigin) ? Math.max(0, firstToolAt - timeOrigin) : null,
+      timeToFirstMutationMs: Number.isFinite(firstMutationAt) && Number.isFinite(timeOrigin) ? Math.max(0, firstMutationAt - timeOrigin) : null,
+      timeSinceLastMeaningfulProgressMs: Number.isFinite(lastMeaningfulProgressAt) ? Math.max(0, timeEnd - lastMeaningfulProgressAt) : null,
+      toolCallsBeforeFirstMutation: participantLiveness.reduce((sum, item) => sum + item.toolCallsBeforeFirstMutation, 0),
+      turnsBeforeFirstMutation: turnsBeforeMutation,
+      tokensBeforeFirstMutation: tokensBeforeMutation,
+      repositoryMutationCount: participantLiveness.reduce((sum, item) => sum + item.repositoryMutationCount, 0),
+      artifactCount: participantLiveness.reduce((sum, item) => sum + item.artifactCount, 0),
+      validationCount: participantLiveness.reduce((sum, item) => sum + item.validationCount, 0)
+    },
     timing: {
       totalDurationMs: durationMs,
-      participantDurationMs: participants.every((item) => item.durationMs !== null) ? participants.reduce((sum, item) => sum + (item.durationMs ?? 0), 0) : null
+      participantDurationMs: observedParticipantIds.size === totalParticipants && totalParticipants > 0 && participants.every((item) => item.durationMs !== null) ? participants.reduce((sum, item) => sum + (item.durationMs ?? 0), 0) : null,
+      activeProviderDurationMs,
+      toolWaitDurationMs
     },
     outcome: {
       accepted: typeof acceptanceDisposition === "string" ? acceptanceDisposition === "ACCEPTED" : null,
@@ -526,20 +673,56 @@ export function summarizeOperationEfficiencyV1(operation: OperationRecordV2, obs
     },
     generatedAt
   };
-  return operationEfficiencySummaryV1Schema.parse(summary);
+  return operationEfficiencySummaryV2Schema.parse(summary);
+}
+
+function sumTokensBeforeMutation(participants: ParticipantUsageObservationV2[], operation: OperationRecordV2): number | null {
+  const mutationParticipants = Object.values(operation.participants).filter((participant) => participant.executionLiveness?.firstMutationAt);
+  if (!mutationParticipants.length) return null;
+  let total = 0;
+  for (const participant of mutationParticipants) {
+    const binding = participant.executionBinding;
+    if (!binding) return null;
+    const observation = participants.find((item) => item.participantId === participant.id && item.generation === binding.participantGeneration);
+    if (!observation || observation.usageCoverage === "UNKNOWN") return null;
+    const mutationAt = Date.parse(participant.executionLiveness!.firstMutationAt!);
+    const priorTurns = observation.turnUsage.filter((turn) => turn.at && Date.parse(turn.at) <= mutationAt);
+    if (priorTurns.some((turn) => turn.totalTokens === null)) return null;
+    total += priorTurns.reduce((sum, turn) => sum + (turn.totalTokens ?? 0), 0);
+  }
+  return total;
+}
+
+function sumTurnActiveDuration(participants: ParticipantUsageObservationV2[]): number | null {
+  const turns = participants.flatMap((item) => item.turnUsage);
+  if (!turns.length || turns.some((turn) => !turn.startedAt || !turn.finishedAt || !Number.isFinite(Date.parse(turn.startedAt)) || !Number.isFinite(Date.parse(turn.finishedAt)))) return null;
+  return turns.reduce((sum, turn) => sum + Math.max(0, Date.parse(turn.finishedAt!) - Date.parse(turn.startedAt!)), 0);
+}
+
+function unionDuration(intervals: Array<[number, number]>): number {
+  const sorted = intervals.filter(([start, end]) => Number.isFinite(start) && Number.isFinite(end) && end >= start).sort(([a], [b]) => a - b);
+  if (!sorted.length) return 0;
+  let total = 0;
+  let [start, end] = sorted[0]!;
+  for (const [nextStart, nextEnd] of sorted.slice(1)) {
+    if (nextStart <= end) end = Math.max(end, nextEnd);
+    else { total += end - start; start = nextStart; end = nextEnd; }
+  }
+  return total + end - start;
 }
 
 export async function readOperationEfficiencyObservations(root: string, operationId: string): Promise<{
-  participants: ParticipantUsageObservationV1[]; tools: ToolCallObservationV1[]; context: ContextAccountingObservationV1[]; retrieval: ContextRetrievalObservationV1[];
+  participants: ParticipantUsageObservationV2[]; tools: ToolCallObservationV2[]; context: ContextAccountingObservationV2[]; retrieval: ContextRetrievalObservationV2[]; activity: ExecutionActivityEventV1[];
 }> {
   const directory = operationDirectory(root, operationId);
   const [participants, tools, context, retrieval] = await Promise.all([
-    readObservationDirectory(directory, "participants", participantUsageObservationV1Schema),
-    readObservationDirectory(directory, "tools", toolCallObservationV1Schema),
-    readObservationDirectory(directory, "context", contextAccountingObservationV1Schema),
-    readObservationDirectory(directory, "retrieval", contextRetrievalObservationV1Schema)
+    readObservationDirectory(directory, "participants", participantUsageObservationV2Schema),
+    readObservationDirectory(directory, "tools", toolCallObservationV2Schema),
+    readObservationDirectory(directory, "context", contextAccountingObservationV2Schema),
+    readObservationDirectory(directory, "retrieval", contextRetrievalObservationV2Schema)
   ]);
-  return { participants, tools, context, retrieval };
+  const activity = await readExecutionActivityEventsV1(root, operationId);
+  return { participants, tools, context, retrieval, activity };
 }
 
 async function currentEfficiencyBindingMatches(root: string, observation: {
@@ -565,9 +748,9 @@ async function currentEfficiencyBindingMatches(root: string, observation: {
   } catch { return false; }
 }
 
-function sumTurnUsage(turns: ProviderTurnUsageObservationV1[]): UsageMetrics {
+function sumTurnUsage(turns: ProviderTurnUsageObservationV2[]): UsageMetrics {
   const result: UsageMetrics = {};
-  const sum = (field: keyof Pick<ProviderTurnUsageObservationV1, "inputTokens" | "cachedInputTokens" | "outputTokens" | "reasoningOutputTokens" | "totalTokens" | "costUsd">): number | undefined => {
+  const sum = (field: keyof Pick<ProviderTurnUsageObservationV2, "inputTokens" | "cachedInputTokens" | "outputTokens" | "reasoningOutputTokens" | "totalTokens" | "costUsd">): number | undefined => {
     const values = turns.map((turn) => turn[field]).filter((value): value is number => typeof value === "number");
     return values.length ? values.reduce((total, value) => total + value, 0) : undefined;
   };
@@ -581,7 +764,7 @@ function sumTurnUsage(turns: ProviderTurnUsageObservationV1[]): UsageMetrics {
   return result;
 }
 
-function repeatedCrossParticipantFragmentTokens(contexts: ContextAccountingObservationV1[], retrievals: ContextRetrievalObservationV1[]): number {
+function repeatedCrossParticipantFragmentTokens(contexts: ContextAccountingObservationV2[], retrievals: ContextRetrievalObservationV2[]): number {
   const recipients = new Map<string, Map<string, number>>();
   const add = (participantId: string, fragmentId: string, contentDigest: string, deliveredTokens: number): void => {
     const key = `${fragmentId}\0${contentDigest}`;
@@ -601,12 +784,12 @@ function repeatedCrossParticipantFragmentTokens(contexts: ContextAccountingObser
   return repeated;
 }
 
-function retryAssociatedTurnIds(tools: ToolCallObservationV1[]): Set<string> {
+function retryAssociatedTurnIds(tools: ToolCallObservationV2[]): Set<string> {
   return new Set(tools.filter((item) => item.retryOfCallId !== null && item.causalStatus === "PROVEN" && item.turnId)
     .map((item) => `${item.sessionId}\0${item.turnId}`));
 }
 
-function retrySequenceRecovered(first: ToolCallObservationV1, tools: ToolCallObservationV1[]): boolean {
+function retrySequenceRecovered(first: ToolCallObservationV2, tools: ToolCallObservationV2[]): boolean {
   if (!first.callId) return false;
   const visited = new Set<string>();
   const pending = [first.callId];
@@ -622,8 +805,8 @@ function retrySequenceRecovered(first: ToolCallObservationV1, tools: ToolCallObs
   return false;
 }
 
-function deduplicateParticipantUsage(observations: ParticipantUsageObservationV1[]): ParticipantUsageObservationV1[] {
-  const groups = new Map<string, ParticipantUsageObservationV1[]>();
+function deduplicateParticipantUsage(observations: ParticipantUsageObservationV2[]): ParticipantUsageObservationV2[] {
+  const groups = new Map<string, ParticipantUsageObservationV2[]>();
   for (const item of observations) {
     const key = [item.participantId, item.generation ?? "", item.runtimeSessionId ?? "", item.provider, item.model ?? ""].join("\0");
     const group = groups.get(key) ?? [];
@@ -638,7 +821,7 @@ function deduplicateParticipantUsage(observations: ParticipantUsageObservationV1
       // make the loss of interval detail explicit instead of summing a snapshot twice.
       return { ...latest, usageCoverage: "PARTIAL", totalTokensBasis: latest.totalTokensBasis };
     }
-    const turns = new Map<string, ProviderTurnUsageObservationV1>();
+    const turns = new Map<string, ProviderTurnUsageObservationV2>();
     for (const item of group) for (const turn of item.turnUsage) {
       const prior = turns.get(turn.turnId!);
       if (!prior || (turn.at ?? "") > (prior.at ?? "")) turns.set(turn.turnId!, turn);
@@ -673,18 +856,18 @@ function deduplicateParticipantUsage(observations: ParticipantUsageObservationV1
   });
 }
 
-function participantUsageById(participants: ParticipantUsageObservationV1[]): Array<{
+function participantUsageById(participants: ParticipantUsageObservationV2[]): Array<{
   participantId: string; generations: number; roles: string[]; inputTokens: number | null; cachedInputTokens: number | null;
   outputTokens: number | null; reasoningOutputTokens: number | null; totalTokens: number | null; costUsd: number | null;
   usageKnown: boolean; usageCoverage: "COMPLETE" | "PARTIAL" | "UNKNOWN";
 }> {
-  const groups = new Map<string, ParticipantUsageObservationV1[]>();
+  const groups = new Map<string, ParticipantUsageObservationV2[]>();
   for (const item of participants) {
     const group = groups.get(item.participantId) ?? [];
     group.push(item);
     groups.set(item.participantId, group);
   }
-  const sum = (items: ParticipantUsageObservationV1[], field: "inputTokens" | "cachedInputTokens" | "outputTokens" | "reasoningOutputTokens" | "totalTokens"): number | null => {
+  const sum = (items: ParticipantUsageObservationV2[], field: "inputTokens" | "cachedInputTokens" | "outputTokens" | "reasoningOutputTokens" | "totalTokens"): number | null => {
     const known = items.map((item) => item[field]).filter((value): value is number => value !== null);
     return known.length ? known.reduce((total, value) => total + value, 0) : null;
   };
@@ -703,7 +886,7 @@ function participantUsageById(participants: ParticipantUsageObservationV1[]): Ar
   }));
 }
 
-export function correlateEquivalentToolCalls(observations: ProviderTelemetryEvidenceV1["toolCalls"]): Array<ProviderTelemetryEvidenceV1["toolCalls"][number] & { attemptIndex: number | null; retryOfCallId: string | null; causalStatus: "PROVEN" | "EQUIVALENT_ONLY" | "UNKNOWN" }> {
+export function correlateEquivalentToolCalls(observations: ProviderTelemetryEvidenceV2["toolCalls"]): Array<Omit<ProviderTelemetryEvidenceV2["toolCalls"][number], "retryOfCallId"> & { attemptIndex: number | null; retryOfCallId: string | null; causalStatus: "PROVEN" | "EQUIVALENT_ONLY" | "UNKNOWN" }> {
   const ordered = [...observations].sort((a, b) => (a.timelineSequence ?? Number.MAX_SAFE_INTEGER) - (b.timelineSequence ?? Number.MAX_SAFE_INTEGER) || (a.startedAt ?? "").localeCompare(b.startedAt ?? ""));
   const groups = new Map<string, number[]>();
   for (let index = 0; index < ordered.length; index += 1) {
@@ -723,9 +906,11 @@ export function correlateEquivalentToolCalls(observations: ProviderTelemetryEvid
     const position = group.indexOf(index);
     const prior = position > 0 ? ordered[group[position - 1]!] : undefined;
     const attemptIndex = position + 1;
-    const priorFailure = prior && prior.outcome !== "SUCCESS" && prior.outcome !== "CANCELLED";
-    const retryOfCallId = priorFailure && prior?.callId && item.turnId ? prior.callId : null;
-    const causalStatus = !item.turnId && group.length > 1 ? "UNKNOWN" as const : "PROVEN" as const;
+    const explicitPrior = item.retryOfCallId ? observations.find((candidate) => candidate.callId === item.retryOfCallId) : undefined;
+    const explicitRetryProven = Boolean(explicitPrior && explicitPrior.outcome !== "SUCCESS" && explicitPrior.outcome !== "CANCELLED" && explicitPrior.toolName === item.toolName && explicitPrior.argumentsDigest === item.argumentsDigest);
+    const equivalentPrior = prior && prior.outcome !== "SUCCESS" && prior.outcome !== "CANCELLED";
+    const retryOfCallId = explicitRetryProven ? item.retryOfCallId! : null;
+    const causalStatus = explicitRetryProven ? "PROVEN" as const : !item.turnId && group.length > 1 || item.retryOfCallId ? "UNKNOWN" as const : equivalentPrior || position > 0 ? "EQUIVALENT_ONLY" as const : "UNKNOWN" as const;
     return { ...item, attemptIndex, retryOfCallId, causalStatus };
   });
 }

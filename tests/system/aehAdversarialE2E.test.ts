@@ -28,7 +28,7 @@ const contract: TaskContract = { version: 1, task: { id: "SCN-FAULT", title: "fa
 function command(script: string): string { return `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`; }
 
 function operation(root: string, id: string, status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED" = "RUNNING"): OperationRecord {
-  const now = new Date(0).toISOString();
+  const now = new Date().toISOString();
   return { version: 2, id, kind: "run", status, phase: status.toLowerCase(), root, payload: { taskId: `TASK-${id}` }, revision: 1, createdAt: now, updatedAt: now, lastProgressAt: now, supervision: { required: false, materialized: false, generations: [] }, stages: {}, participants: {}, progress: { expected: 0, registered: 0, running: 0, completed: 0, failed: 0, blocked: 0 }, notification: { lastLeadWakeRevision: 0, terminalDelivered: false, attempts: 0 } };
 }
 
@@ -45,7 +45,7 @@ async function acceptedTerminalEvidence(root: string, id: string): Promise<Recor
     intent: "adversarial accepted terminal fixture",
     route: "DIRECT",
     minimumAssurance: "STANDARD",
-    policyVersions: { resolvedOperationPolicy: "1" },
+    policyVersions: { resolvedOperationPolicy: "2" },
     policyDigests: {},
     validationPolicy: {},
     reviewPolicy: { leadAcceptance: false, leadAcceptanceDirect: false },

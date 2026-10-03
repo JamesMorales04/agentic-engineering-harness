@@ -8,7 +8,8 @@ import { validateAcceptedEphemeralSkill, validateKnowledgePack, type AcceptedEph
 import type { ExecutionCatalogV1 } from "./executionCatalog.js";
 import { assertCandidateRevisionV1, type CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import type { ValidationResolutionV1, ValidationRequirementV1 } from "./validationRequirements.js";
-import { assertResolvedOperationPolicyV1, createExecutionBlueprintV2, compileRoleInvocationPolicy, compileSkillManifest, recompileSkillManifestScope, type ExecutionBlueprintV2, type ResolvedOperationPolicyV1, type RoleInvocationPolicyV1, type SkillManifestExecutionIdentityV1, type SkillManifestV1 } from "./executionIdentity.js";
+import { assertResolvedOperationPolicyV2, createExecutionBlueprintV3, compileRoleInvocationPolicy, compileSkillManifest, participantScratchClaim, participantScratchResourceName, recompileSkillManifestScope, type ExecutionBlueprintV3, type ResolvedOperationPolicyV2, type RoleInvocationPolicyV1, type SkillManifestExecutionIdentityV1, type SkillManifestV1 } from "./executionIdentity.js";
+import { projectOperationalSkillsV1, type CapabilityRegistryV1, type OperationalSkillProjectionV1 } from "../capabilities/index.js";
 
 export const participantRoleValues = canonicalRoleValues;
 export type ParticipantRole = CanonicalRole;
@@ -30,6 +31,7 @@ export interface ParticipantAssignmentV1 {
   budget: ParticipantBudgetV1;
   workUnitIds: string[];
   skillManifest: SkillManifestV1;
+  operationalSkills?: OperationalSkillProjectionV1;
   roleInvocationPolicy?: RoleInvocationPolicyV1;
 }
 
@@ -45,7 +47,7 @@ export interface ParticipantPlanV1 {
   compilerDigest: string;
 }
 
-export type ExecutionBlueprint = ExecutionBlueprintV2 & { taskId: string; plan: ParticipantPlanV1; waves: string[][]; deterministicGates: string[]; executionCatalog: ExecutionCatalogV1; validationRequirements: ValidationRequirementV1[]; candidate: CandidateRevisionV1 };
+export type ExecutionBlueprint = ExecutionBlueprintV3 & { taskId: string; plan: ParticipantPlanV1; waves: string[][]; deterministicGates: string[]; executionCatalog: ExecutionCatalogV1; validationRequirements: ValidationRequirementV1[]; candidate: CandidateRevisionV1 };
 
 export interface ParticipantCompilerInputV1 {
   graph: WorkGraphV1;
@@ -59,6 +61,7 @@ export interface ParticipantCompilerInputV1 {
   knowledgeResolution?: KnowledgeResolutionV1;
   knowledgeResolutions?: readonly KnowledgeResolutionV1[];
   executionCatalog?: ExecutionCatalogV1;
+  capabilityRegistry?: CapabilityRegistryV1;
   validationRequirements?: readonly ValidationRequirementV1[];
   validationResolution?: ValidationResolutionV1;
   maxParticipants?: number;
@@ -81,23 +84,41 @@ export function compileParticipantPlan(input: ParticipantCompilerInputV1): Parti
   }
   if (input.maxParticipants !== undefined && assignments.length > input.maxParticipants) throw new AehError("PARTICIPANT_PLAN_BUDGET_EXCEEDED", `${assignments.length} participants exceed the maximum of ${input.maxParticipants}.`);
   for (const assignment of assignments) assignment.skillManifest = recompileSkillManifestScope(assignment.skillManifest, { ...assignment.skillManifest.scope, workUnitIds: assignment.workUnitIds });
+  if (input.capabilityRegistry) {
+    for (const assignment of assignments) {
+      const assignedUnits = input.graph.units.filter((unit) => assignment.workUnitIds.includes(unit.id));
+      const workUnitCompetencies = [...new Set(assignedUnits.flatMap((unit) => unit.competencies))];
+      const workUnitCapabilityIds = [...new Set(assignedUnits.flatMap((unit) => [
+        ...unit.competencies,
+        ...unit.riskTags.map((tag) => `risk:${tag}`),
+        ...unit.changeKinds.map((kind) => `change:${kind}`)
+      ]))];
+      assignment.operationalSkills = projectOperationalSkillsV1({
+        role: assignment.role,
+        workUnitCapabilityIds,
+        workUnitCompetencies,
+        toolPack: [...assignment.toolPack.required, ...assignment.toolPack.optional],
+        capabilityRegistry: input.capabilityRegistry
+      });
+    }
+  }
   const reviewDimensions = [...new Set(input.graph.units.flatMap((unit) => [
     ...unit.changeKinds.map((kind) => `change:${kind}`),
     ...unit.riskTags.map((tag) => `risk:${tag}`)
   ]))].sort();
   const knowledgeRefs = [...new Set([...(input.knowledgeRefs ?? []), ...knowledgeResolutions.flatMap((resolution) => resolution.pack?.packDigest ? [resolution.pack.packDigest] : [])])].sort();
-  const planWithoutDigest = { version: 1 as const, taskId: input.graph.taskId, route: input.graph.route, assurance: input.graph.assurance, assignments, reviewDimensions, knowledgeRefs, ...(input.executionCatalog ? { executionCatalogDigest: input.executionCatalog.digest } : {}) };
+  const planWithoutDigest = { version: 1 as const, taskId: input.graph.taskId, route: input.graph.route, assurance: input.graph.assurance, assignments, reviewDimensions, knowledgeRefs, ...(input.executionCatalog ? { executionCatalogDigest: input.executionCatalog.digest } : {}), ...(input.capabilityRegistry ? { capabilityRegistryDigest: input.capabilityRegistry.digest } : {}) };
   return { ...planWithoutDigest, compilerDigest: digest(planWithoutDigest) };
 }
 
-export function compileExecutionBlueprint(input: Omit<ParticipantCompilerInputV1, "executionIdentity"> & { candidate: CandidateRevisionV1; executionCatalog: ExecutionCatalogV1; controllerEpoch: number; operationExecutionRevision: number; resolvedOperationPolicy: ResolvedOperationPolicyV1 }): ExecutionBlueprint {
+export function compileExecutionBlueprint(input: Omit<ParticipantCompilerInputV1, "executionIdentity"> & { candidate: CandidateRevisionV1; executionCatalog: ExecutionCatalogV1; capabilityRegistry?: CapabilityRegistryV1; controllerEpoch: number; operationExecutionRevision: number; resolvedOperationPolicy: ResolvedOperationPolicyV2 }): ExecutionBlueprint {
   if (!input.candidate) throw new AehError("EXECUTION_BLUEPRINT_INVALID", "ExecutionBlueprint requires an immutable CandidateRevision.");
   if (!input.executionCatalog) throw new AehError("EXECUTION_BLUEPRINT_INVALID", "ExecutionBlueprint requires a compiled ExecutionCatalog.");
   if (!Number.isSafeInteger(input.controllerEpoch) || input.controllerEpoch < 0) {
     throw new AehError("EXECUTION_BLUEPRINT_INVALID", "ExecutionBlueprint requires a valid controller epoch.");
   }
   if (!Number.isSafeInteger(input.operationExecutionRevision) || input.operationExecutionRevision < 1) throw new AehError("EXECUTION_BLUEPRINT_INVALID", "ExecutionBlueprint requires a supported operation execution revision.");
-  assertResolvedOperationPolicyV1(input.resolvedOperationPolicy);
+  assertResolvedOperationPolicyV2(input.resolvedOperationPolicy);
   if (input.resolvedOperationPolicy.operationId !== input.candidate.operationId || input.resolvedOperationPolicy.projectId !== (input.candidate.projectId ?? input.resolvedOperationPolicy.projectId) || input.resolvedOperationPolicy.candidateDigest !== input.candidate.identityDigest || input.resolvedOperationPolicy.candidateRevision !== input.candidate.revision || input.resolvedOperationPolicy.controllerEpoch !== input.controllerEpoch || input.resolvedOperationPolicy.operationExecutionRevision !== input.operationExecutionRevision) throw new AehError("EXECUTION_BLUEPRINT_INVALID", "ExecutionBlueprint policy does not bind the current operation, candidate, execution revision, and epoch.");
   try { assertCandidateRevisionV1(input.candidate); }
   catch (error) { throw new AehError("EXECUTION_BLUEPRINT_INVALID", "ExecutionBlueprint requires a valid immutable CandidateRevision.", { cause: error }); }
@@ -106,7 +127,7 @@ export function compileExecutionBlueprint(input: Omit<ParticipantCompilerInputV1
   if (input.executionCatalog.version !== 1 || !/^[a-f0-9]{64}$/.test(catalogDigest) || sha256Canonical(catalogBody) !== catalogDigest) {
     throw new AehError("EXECUTION_BLUEPRINT_INVALID", "ExecutionBlueprint execution catalog digest is invalid.");
   }
-  const initialPlan = compileParticipantPlan({ ...input, executionIdentity: { operationId: input.candidate.operationId, operationExecutionRevision: input.operationExecutionRevision, candidateRevision: input.candidate.revision, candidateDigest: input.candidate.identityDigest, controllerEpoch: input.controllerEpoch } });
+  const initialPlan = compileParticipantPlan({ ...input, capabilityRegistry: input.capabilityRegistry, executionIdentity: { operationId: input.candidate.operationId, operationExecutionRevision: input.operationExecutionRevision, candidateRevision: input.candidate.revision, candidateDigest: input.candidate.identityDigest, controllerEpoch: input.controllerEpoch } });
   const planAssignments = initialPlan.assignments.map((assignment) => {
     const units = input.graph.units.filter((unit) => assignment.workUnitIds.includes(unit.id));
     const workUnitIds = assignment.workUnitIds;
@@ -115,6 +136,11 @@ export function compileExecutionBlueprint(input: Omit<ParticipantCompilerInputV1
     // default, so the frozen role invocation policy must not silently disagree with the catalog the
     // participant is actually launched from (AEH-V2-0118).
     const outputContract = input.executionCatalog.roleBindings[assignment.role]?.outputContract ?? roleProfile(assignment.role).outputContract;
+    const resourceClaims = units.flatMap((unit) => unit.resourceClaims.map((claim) => ({ workUnitId: unit.id, claim })));
+    const scratchResource = participantScratchResourceName(assignment.role, assignment.participantId, assignment.toolPack);
+    if (scratchResource && resourceClaims.some((item) => item.claim.resource === scratchResource)) throw new AehError("PARTICIPANT_PLAN_INVALID", `work graph may not claim controller-owned participant scratch resource '${scratchResource}'.`);
+    const scratchClaim = participantScratchClaim(assignment.role, assignment.participantId, workUnitIds[0]!, assignment.toolPack);
+    if (scratchClaim) resourceClaims.push(scratchClaim);
     const roleInvocationPolicy = compileRoleInvocationPolicy({
       operationId: input.candidate.operationId,
       operationPolicyDigest: input.resolvedOperationPolicy.digest,
@@ -124,7 +150,7 @@ export function compileExecutionBlueprint(input: Omit<ParticipantCompilerInputV1
       scope: [...new Set(units.flatMap((unit) => unit.scope))],
       competencies: assignment.competencies,
       toolPack: assignment.toolPack,
-      resourceClaims: units.flatMap((unit) => unit.resourceClaims.map((claim) => ({ workUnitId: unit.id, claim }))),
+      resourceClaims,
       outputContract,
       constraints: { reviewerReadOnly: assignment.role === "Reviewer", workUnitIds }
     });
@@ -156,9 +182,10 @@ export function compileExecutionBlueprint(input: Omit<ParticipantCompilerInputV1
     resourceClaims: assignment.roleInvocationPolicy.resourceClaims,
     validationResolution,
     outputContract: assignment.roleInvocationPolicy.outputContract,
-    skillManifestDigest: assignment.skillManifest.digest
+    skillManifestDigest: assignment.skillManifest.digest,
+    operationalSkillProjectionDigest: assignment.operationalSkills?.digest ?? sha256Canonical({ version: 1, skills: [] })
   }));
-  const v2 = createExecutionBlueprintV2({
+  const v2 = createExecutionBlueprintV3({
     projectId: input.candidate.projectId ?? input.resolvedOperationPolicy.projectId,
     operationId: input.candidate.operationId,
     operationExecutionRevision: input.operationExecutionRevision,
@@ -170,7 +197,9 @@ export function compileExecutionBlueprint(input: Omit<ParticipantCompilerInputV1
     participantPlan: plan,
     executionCatalog,
     participants,
-    validationResolution
+    validationResolution,
+    capabilityRegistryDigest: input.capabilityRegistry?.digest ?? sha256Canonical(executionCatalog),
+    skillProjectionDigest: sha256Canonical(participants.map((participant) => participant.operationalSkillProjectionDigest).sort())
   });
   const { digest: _digest, ...v2Body } = v2;
   const expanded = { ...v2Body, taskId: input.graph.taskId, plan, waves, deterministicGates, validationRequirements, candidate: input.candidate };

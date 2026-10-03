@@ -70,7 +70,7 @@ async function acceptedChangeResult(root: string, operationId: string): Promise<
     operationExecutionRevision: current.operationExecutionRevision!, candidateRevision: candidate.revision,
     candidateDigest: candidate.identityDigest, controllerEpoch: currentControllerEpoch(current),
     intent: "operation supervision lifecycle test", route: "DIRECT", minimumAssurance: "STANDARD",
-    policyVersions: { resolvedOperationPolicy: "1" }, policyDigests: {}, validationPolicy: {},
+    policyVersions: { resolvedOperationPolicy: "2" }, policyDigests: {}, validationPolicy: {},
     reviewPolicy: { leadAcceptance: false, leadAcceptanceDirect: false }, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {},
     allowedExternalEffects: [], humanDecisionRequirements: []
   });

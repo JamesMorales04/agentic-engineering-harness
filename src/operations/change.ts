@@ -56,7 +56,7 @@ import { drainOperationWriters } from "./control.js";
 import { ensureOperationSupervisor, maybeRotateOperationSupervisor } from "./supervisor.js";
 import { createSemanticAssessmentRuntimeV1, createSemanticRepositoryBindingV1 } from "../semantic/runtime.js";
 import { launchManagedPaseoAgent } from "../paseo/runtime.js";
-import { assertResolvedOperationPolicyV1, compileResolvedOperationPolicy } from "../architecture/executionIdentity.js";
+import { assertResolvedOperationPolicyV2, compileResolvedOperationPolicy } from "../architecture/executionIdentity.js";
 import { sha256Canonical } from "../core/digest.js";
 import { HumanDecisionLedgerV2, type DecisionChoiceV1, type HumanDecisionBindingV2 } from "../security/humanDecision.js";
 import { deterministicParticipantId } from "../security/executionLease.js";
@@ -387,7 +387,7 @@ export async function rebindEscalatedChangePolicy(input: {
   const current = await loadOperation(input.controlRoot, input.operationId);
   const prior = current.resolvedOperationPolicy;
   if (!prior || !current.candidateRevision) throw new Error("EXECUTION_POLICY_INPUT_MISSING: spec escalation requires the current frozen policy and candidate to rebind.");
-  assertResolvedOperationPolicyV1(prior);
+  assertResolvedOperationPolicyV2(prior);
   const semanticsDigest = sha256Canonical({
     kind: "SPEC_ESCALATION",
     operationId: input.operationId,
@@ -613,7 +613,7 @@ export function buildPlannerPrompt(operationId: string, contract: TaskContract, 
     explorerContext,
     `Sealed TaskContract requirement ids (immutable; map every id to at least one work unit and use only these exact ids in requirementRefs and acceptanceRefs):\n${requirementLines}`,
     `Known competency ids (use only these controlled ids for workUnits[].competencies when the work matches; a competency outside this set must genuinely require researched knowledge and will be checked by the deterministic KnowledgeGate): ${knownCompetencyIds.join(", ")}`,
-    "Identify affected areas, dependencies, bounded implementer ownership, reviewers and deterministic validation gates. Keep normative requirements unchanged.",
+    "Identify affected areas, dependencies, bounded implementer ownership, reviewers and deterministic validation gates. Keep normative requirements unchanged. Every workUnits[].objective must be concise, non-empty, and no longer than 500 characters, matching the Planner output schema and WorkGraph compiler.",
     "Your final output MUST contain exactly one line beginning AEH_RESULT_JSON= followed by the JSON object matching the planner output contract; a turn without that marker is rejected as PLANNER_RESULT_ARTIFACT_MISSING."
   ].join("\n\n");
 }
@@ -876,7 +876,7 @@ function productChoiceBinding(operation: OperationRecordV2): HumanDecisionBindin
   const candidate = operation.candidateRevision;
   const policy = operation.resolvedOperationPolicy;
   if (!candidate || !policy || !Number.isSafeInteger(operation.operationExecutionRevision)) throw new Error("DECISION_AUTHORITY_REQUIRED: current candidate, operation revision, and policy are required.");
-  assertResolvedOperationPolicyV1(policy);
+  assertResolvedOperationPolicyV2(policy);
   if (policy.operationId !== operation.id || policy.candidateRevision !== candidate.revision || policy.candidateDigest !== candidate.identityDigest
     || policy.operationExecutionRevision !== operation.operationExecutionRevision || policy.controllerEpoch !== currentControllerEpoch(operation)) throw new Error("DECISION_BINDING_STALE: operation policy does not match the current candidate, revision, and epoch.");
   return { operationId: operation.id, candidate, operationExecutionRevision: operation.operationExecutionRevision!, policyDigest: policy.digest, controllerEpoch: currentControllerEpoch(operation) };

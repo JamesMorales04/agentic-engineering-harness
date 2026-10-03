@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { explorerOutputSchema, outputJsonSchema, specAuthoringOutputSchema } from "../src/agents/outputContracts.js";
 import type { WorkerSession } from "../src/core/types.js";
 import { sha256Canonical } from "../src/core/digest.js";
-import { compileExecutionBinding, compileResolvedOperationPolicy, compileRoleInvocationPolicy, compileSkillManifest, createExecutionBlueprintV2 } from "../src/architecture/executionIdentity.js";
+import { compileExecutionBinding, compileResolvedOperationPolicy, compileRoleInvocationPolicy, compileSkillManifest, createExecutionBlueprintV3 } from "../src/architecture/executionIdentity.js";
 import { createWorkGraph } from "../src/architecture/workGraph.js";
 import { roleProfile } from "../src/participants/index.js";
 import { bindOperationParticipantExecution, bindResolvedOperationPolicy, loadOperation, registerOperationAgent, saveOperation } from "../src/operations/state.js";
@@ -111,7 +111,7 @@ async function bindExplorerIdentity(root: string, operationId: string, participa
   await registerOperationAgent(root, operationId, { id: participantId, logicalAgent: "explorer", role: "Explorer", phase: "discovery" });
   const policy = compileResolvedOperationPolicy({ projectId: candidate.projectId!, operationId, operationExecutionRevision: operation.operationExecutionRevision!,
     candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch: operation.controller?.epoch ?? 0, intent: "discover the requested change",
-    route: "DELEGATED", minimumAssurance: "STANDARD", policyVersions: { resolvedOperationPolicy: "1" }, policyDigests: {}, validationPolicy: {}, reviewPolicy: {},
+    route: "DELEGATED", minimumAssurance: "STANDARD", policyVersions: { resolvedOperationPolicy: "2" }, policyDigests: {}, validationPolicy: {}, reviewPolicy: {},
     deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {}, allowedExternalEffects: [], humanDecisionRequirements: [] });
   operation = await bindResolvedOperationPolicy(root, operationId, policy);
   const toolPack = roleProfile("Explorer").toolPack;
@@ -119,7 +119,7 @@ async function bindExplorerIdentity(root: string, operationId: string, participa
     scope: ["src/**"], competencies: [], toolPack, resourceClaims: [], outputContract: "explorer", constraints: { readOnly: true } });
   const skillManifest = compileSkillManifest({ scope: { operationId, operationExecutionRevision: operation.operationExecutionRevision!, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch: operation.controller?.epoch ?? 0, participantId, workUnitIds: ["discovery"], competencies: [] }, skills: [] });
   const validationResolution = { version: 1 as const, requirements: [], actions: [], blocked: [], digest: sha256Canonical({ version: 1, requirements: [], actions: [], blocked: [] }) };
-  const blueprint = createExecutionBlueprintV2({ projectId: candidate.projectId!, operationId, operationExecutionRevision: operation.operationExecutionRevision!, candidateRevision: candidate.revision,
+  const blueprint = createExecutionBlueprintV3({ projectId: candidate.projectId!, operationId, operationExecutionRevision: operation.operationExecutionRevision!, candidateRevision: candidate.revision,
     candidateDigest: candidate.identityDigest, controllerEpoch: operation.controller?.epoch ?? 0, resolvedOperationPolicy: policy,
     workGraph: createWorkGraph({ taskId: "TASK-CHANGE", objective: "discover change impact", route: "DELEGATED", assurance: "STANDARD", requirementRefs: [], acceptanceRefs: [], units: [] }),
     participantPlan: { version: 1, taskId: "TASK-CHANGE", assignments: [participantId] }, executionCatalog: { version: 1 },

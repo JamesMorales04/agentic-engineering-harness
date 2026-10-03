@@ -17,6 +17,19 @@ const mcpServerSchema = z.object({ description: z.string().optional(), type: z.e
 const organizationPolicySourceSchema = z.object({ name: z.string().min(1), path: z.string().optional(), url: z.string().url().optional(), sha256: z.string().regex(/^[a-f0-9]{64}$/).optional(), required: z.boolean().optional(), publicKey: z.string().optional(), signature: z.string().optional() }).superRefine((value, ctx) => { if (!value.path && !value.url) ctx.addIssue({ code: "custom", message: "policy bundle source requires path or url" }); });
 const interactiveContextSchema = z.object({ pressureThreshold: z.number().min(0).max(1).optional(), handoffThreshold: z.number().min(0).max(1).optional(), hardHandoffThreshold: z.number().min(0).max(1).optional() }).superRefine((value, ctx) => { const pressure = value.pressureThreshold ?? 0.7; const handoff = value.handoffThreshold ?? 0.8; const hard = value.hardHandoffThreshold ?? 0.9; if (handoff < pressure) ctx.addIssue({ code: "custom", message: "handoffThreshold must be >= pressureThreshold" }); if (hard < handoff) ctx.addIssue({ code: "custom", message: "hardHandoffThreshold must be >= handoffThreshold" }); });
 const contextBudgetSchema = z.object({ inputTokens: z.number().int().positive().optional(), maxTokens: z.number().int().positive().optional(), reserved: z.object({ instructions: z.number().int().nonnegative().optional(), normative: z.number().int().nonnegative().optional(), evidence: z.number().int().nonnegative().optional(), response: z.number().int().nonnegative().optional() }).optional() });
+const executionLivenessSchema = z.object({
+  hardDeadlineMs: z.number().int().positive().optional(), progressLeaseMs: z.number().int().positive().optional(), stallWindowMs: z.number().int().positive().optional(),
+  providerTurnDeadlineMs: z.number().int().positive().optional(), defaultToolDeadlineMs: z.number().int().positive().optional(),
+  maxNoProgressRenewals: z.number().int().nonnegative().optional(), maxParticipantRestarts: z.number().int().nonnegative().optional(),
+  maxLocalRetriesPerFailure: z.number().int().nonnegative().optional(), softBudgetThreshold: z.number().gt(0).lt(1).optional(),
+  toolDeadlinesMs: z.record(z.string().min(1), z.number().int().positive()).optional()
+}).strict();
+const economicEnvelopeSchema = z.object({
+  initialProviderTurns: z.number().int().nonnegative().optional(), supervisorProviderTurns: z.number().int().nonnegative().optional(), hardProviderTurns: z.number().int().nonnegative().optional(),
+  maxLocalRetries: z.number().int().nonnegative().optional(), maxParticipantRestarts: z.number().int().nonnegative().optional(),
+  softThreshold: z.number().gt(0).lt(1).optional(), hardToolCalls: z.number().int().nonnegative().optional(),
+  hardTotalTokens: z.number().int().nonnegative().optional(), hardCostUsd: z.number().finite().nonnegative().optional()
+}).strict();
 function isNormalizedRootRelativePath(value: string): boolean { return Boolean(value.trim()) && value === value.trim() && !value.includes("\0") && !path.isAbsolute(value) && !/^[A-Za-z]:/.test(value) && !value.split(/[\\/]/).some((segment) => !segment || segment === "." || segment === ".."); }
 const contextSchema = z.object({
   mode: z.enum(["observe", "enforce"]).optional(),
@@ -61,7 +74,11 @@ const projectSchema = z.object({
   orchestration: z.object({
     provider: z.string(),
     required: z.boolean().optional(),
-    worker: z.object({ provider: z.string().optional(), model: z.string().optional(), maxRepairAttempts: z.number().int().nonnegative().optional(), timeoutSeconds: z.number().int().positive().optional(), titlePrefix: z.string().optional() }).optional(),
+    worker: z.object({ provider: z.string().optional(), model: z.string().optional(), maxRepairAttempts: z.number().int().nonnegative().optional(), titlePrefix: z.string().optional() }).optional(),
+    operations: z.object({
+      supervision: z.object({ initializationTimeoutSeconds: z.number().int().positive().optional(), turnTimeoutSeconds: z.number().int().positive().optional(), context: z.object({ handoffThreshold: z.number().gt(0).lt(1).optional(), hardHandoffThreshold: z.number().gt(0).lt(1).optional() }).optional() }).strict().optional(),
+      liveness: executionLivenessSchema.optional(), economicEnvelope: economicEnvelopeSchema.optional()
+    }).strict().optional(),
     interactive: z.object({ autoSetup: z.boolean().optional(), webUi: z.boolean().optional(), leadAgent: z.string().min(1).optional(), reuseSession: z.boolean().optional(), sessionPolicy: z.enum(["fresh-on-start", "reuse-compatible", "resume-explicit"]).optional(), usePaseoTools: z.boolean().optional(), context: interactiveContextSchema.optional(), stateDir: z.string().min(1).optional(), title: z.string().min(1).optional() }).optional()
   }).optional(),
   toolchain: z.object({ configPath: z.string().optional(), lockPath: z.string().optional(), statePath: z.string().optional(), generatedMisePath: z.string().optional() }).optional(),
@@ -108,5 +125,9 @@ const taskSchema = z.object({
   requirements: z.array(requirementSchema).optional(), constraints: z.object({ breakingApiChanges: z.boolean().optional(), newDependencies: z.boolean().optional(), schemaChanges: z.boolean().optional(), maxFilesChanged: z.number().int().positive().optional(), maxLinesAdded: z.number().int().nonnegative().optional(), maxLinesDeleted: z.number().int().nonnegative().optional() }).optional(),
   impact: z.object({ forbiddenEdges: z.array(z.string()).optional(), forbiddenNodes: z.array(z.string()).optional(), allowedCommunities: z.array(z.string()).optional() }).optional(), repair: z.object({ maxAttempts: z.number().int().nonnegative().optional() }).optional(), verification: z.object({ commands: z.array(validationCommandSchema).optional(), validators: z.array(validatorSpecSchema).optional(), capabilities: z.array(z.string().min(1)).optional() }).optional()
 }).strict();
-export async function loadProjectConfig(root: string): Promise<HarnessProjectConfig> { return projectSchema.parse(YAML.parse(await fs.readFile(path.join(root, ".harness", "project.yaml"), "utf8"))) as HarnessProjectConfig; }
+export async function loadProjectConfig(root: string): Promise<HarnessProjectConfig> {
+  const source = YAML.parse(await fs.readFile(path.join(root, ".harness", "project.yaml"), "utf8")) as { orchestration?: { worker?: { timeoutSeconds?: unknown } } };
+  if (source?.orchestration?.worker?.timeoutSeconds !== undefined) throw new Error("UNSUPPORTED_LEGACY_WORKER_TIMEOUT: remove orchestration.worker.timeoutSeconds and configure orchestration.operations.liveness providerTurnDeadlineMs, progressLeaseMs, and hardDeadlineMs.");
+  return projectSchema.parse(source) as HarnessProjectConfig;
+}
 export async function loadTaskContract(root: string, taskId: string, config: HarnessProjectConfig): Promise<TaskContract> { const file = path.join(root, config.sdd?.contractsDir ?? ".harness/contracts", `${taskId}.yaml`); return taskSchema.parse(YAML.parse(await fs.readFile(file, "utf8"))) as TaskContract; }

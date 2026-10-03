@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { CapabilityLeaseV1 } from "../security/authorityV2.js";
-import { assertExecutionBindingV2, type ExecutionBindingV2 } from "../architecture/executionIdentity.js";
+import { assertExecutionBindingV3, assertParticipantScratchLeaseV1, type ExecutionBindingV3, type ParticipantScratchLeaseV1 } from "../architecture/executionIdentity.js";
 
 export interface PaseoLaunchSpecOptions {
   selection?: AgentExecutionSelection;
@@ -29,10 +29,13 @@ export interface PaseoLaunchSpecOptions {
   parentAgentId?: string;
   supervisorAgent?: boolean;
   contextCapabilities?: EffectiveContextCapabilities;
+  providerTurnDeadlineMs?: number;
+  supervisorSessionId?: string;
   participantId?: string;
   candidateDigest?: string;
   capabilityLeases?: CapabilityLeaseV1[];
-  executionBinding?: ExecutionBindingV2;
+  executionBinding?: ExecutionBindingV3;
+  scratchLease?: ParticipantScratchLeaseV1;
   executionBlueprintDigest?: string;
   roleInvocationPolicyDigest?: string;
   skillManifestDigest?: string;
@@ -99,11 +102,19 @@ export async function compilePaseoAgentLaunchSpec(root: string, config: HarnessP
   const paseoParentAgentId = isolatedLaunch ? undefined : parentAgentId;
 
   const contextCapabilities = options.contextCapabilities ?? (selection ? staticContextCapabilities(config, selection) : undefined);
+  const scratchLease = options.scratchLease ?? options.executionBinding?.scratchLease;
+  if (scratchLease) {
+    assertParticipantScratchLeaseV1(scratchLease);
+    if (!selection || scratchLease.operationId !== operationId || scratchLease.participantId !== options.participantId || scratchLease.candidateDigest !== candidateDigestFrom(options) || (selection.permissions.write !== "allow" && selection.permissions.shell !== "allow") || options.capabilityLeases && scratchLease.capabilityLeases.some((lease) => !options.capabilityLeases!.some((candidate) => candidate.leaseId === lease.leaseId))) throw new Error("PASEO_SCRATCH_AUTHORITY_MISMATCH: exact scratch lease is outside the frozen participant operation or capability envelope.");
+    if (options.executionBinding && options.executionBinding.scratchLease?.digest !== scratchLease.digest) throw new Error("PASEO_SCRATCH_BINDING_MISMATCH: launch scratch differs from the frozen ExecutionBinding.");
+  } else if (options.executionBinding?.scratchLease) {
+    throw new Error("PASEO_SCRATCH_BINDING_MISMATCH: a binding with scratch authority requires the same launch resource.");
+  }
   // Provider sessions may be relocated by Paseo to the registered workspace root while the frozen
   // participant was launched against an isolated task worktree (AEH-V2-0116). The provider must be
   // able to reach exactly the roots the participant is authorized to use: the launch root and the
   // git metadata directories of that worktree. Nothing else is projected.
-  const authorizedRoots = selection ? [...new Set([root, ...(await gitRootsOrEmpty(root))])].sort() : undefined;
+  const authorizedRoots = selection ? [...new Set([root, ...(await gitRootsOrEmpty(root)), ...(scratchLease ? [scratchLease.path] : [])])].sort() : undefined;
   // The control root holds the operation's durable state (contract/seal copies, findings, reports,
   // operation record). Read-only participants (Reviewer/Planner/Explorer) verify their evidence
   // against those files, and Paseo may have relocated the provider project root, so those reads are
@@ -117,8 +128,21 @@ export async function compilePaseoAgentLaunchSpec(root: string, config: HarnessP
   const providerOptions = selection && provider === "codex" ? codexProviderOptions(selection, authorizedRoots) : undefined;
   const explicitOpenCodeMode = openCode && !openCode.binding.managed ? openCode.binding.agentId : undefined;
   const executionEnv = buildManagedAgentEnvironment({ logicalAgent, role: selection?.role ?? "worker", operationId, operationKind, phase, interactiveLead: false, orchestrationAllowed: false });
-  const mcpServers = contextMcpServers(root, config, selection, logicalAgent, operationId, phase, contextCapabilities, options.participantId, controlRoot);
-  const toolPolicy = mcpServers?.["aeh-context"] ? { preapproved: [{ kind: "mcp" as const, server: "aeh-context", tool: "aeh_context_retrieve" }] } : undefined;
+  const mcpEntry = process.env.AEH_ENTRY_FILE?.trim() || process.argv[1];
+  const mcpServers = contextMcpServers(root, config, selection, logicalAgent, operationId, phase, contextCapabilities, options.participantId, controlRoot) ?? {};
+  const preapprovedTools: PaseoSdkToolPolicy["preapproved"] = [];
+  if (mcpServers["aeh-context"]) preapprovedTools.push({ kind: "mcp", server: "aeh-context", tool: "aeh_context_retrieve" });
+  if (supervisorAgent && options.supervisorSessionId && mcpEntry) {
+    mcpServers["aeh-supervisor"] = {
+      type: "stdio",
+      command: process.execPath,
+      args: [mcpEntry, "operation", "supervisor-mcp"],
+      env: { AEH_CONTROL_ROOT: controlRoot, AEH_OPERATION_ID: operationId, AEH_OPERATION_SUPERVISOR: "1", AEH_SUPERVISOR_SESSION_ID: options.supervisorSessionId },
+      alwaysLoad: true
+    };
+    preapprovedTools.push({ kind: "mcp", server: "aeh-supervisor", tool: "aeh_supervisor_recovery_decide" });
+  }
+  const toolPolicy = preapprovedTools.length ? { preapproved: preapprovedTools } : undefined;
   // Paseo provider sessions stop on their own tool-approval prompt even when the AEH projection has
   // already decided the exact tool surface; a stalled session returns no structured result and used
   // to be reported as a successful empty turn (AEH-V2-0110). Auto-accept is enabled only when the
@@ -135,8 +159,15 @@ export async function compilePaseoAgentLaunchSpec(root: string, config: HarnessP
   const candidateDigest = options.candidateDigest ?? options.capabilityLeases?.[0]?.candidate.identityDigest;
   if (candidateDigest) executionEnv.AEH_CANDIDATE_DIGEST = candidateDigest;
   if (options.capabilityLeases?.length) executionEnv.AEH_CAPABILITY_LEASES = JSON.stringify(options.capabilityLeases);
+  if (scratchLease) {
+    executionEnv.TMPDIR = scratchLease.path;
+    executionEnv.TEMP = scratchLease.path;
+    executionEnv.TMP = scratchLease.path;
+    executionEnv.AEH_SCRATCH_RESOURCE = scratchLease.resourceId;
+    executionEnv.AEH_SCRATCH_DIGEST = scratchLease.digest;
+  }
   if (options.executionBinding) {
-    assertExecutionBindingV2(options.executionBinding);
+    assertExecutionBindingV3(options.executionBinding);
     if (options.executionBinding.operationId !== operationId || options.executionBinding.participantId !== options.participantId || options.executionBinding.candidateDigest !== candidateDigest || options.executionBinding.runtime.runtimeId !== selection?.runtimeName || options.executionBinding.runtime.modelId !== selection?.modelId) throw new Error("EXECUTION_BINDING_MISMATCH: Paseo launch spec does not match the frozen participant binding.");
     executionEnv.AEH_EXECUTION_BINDING = JSON.stringify(options.executionBinding);
     executionEnv.AEH_CONTEXT_MANIFEST_DIGEST = options.executionBinding.contextManifestDigest;
@@ -169,6 +200,7 @@ export async function compilePaseoAgentLaunchSpec(root: string, config: HarnessP
   if (options.skillManifestDigest) labels["aeh.skill.manifest.digest"] = options.skillManifestDigest;
   if (options.contextManifestDigest) labels["aeh.context.manifest.digest"] = options.contextManifestDigest;
   if (options.promptManifestDigest) labels["aeh.prompt.manifest.digest"] = options.promptManifestDigest;
+  if (scratchLease) labels["aeh.scratch.digest"] = scratchLease.digest;
   if (options.executionBinding) {
     labels["aeh.execution.binding"] = JSON.stringify(options.executionBinding);
     labels["aeh.execution.binding.digest"] = options.executionBinding.digest;
@@ -199,8 +231,8 @@ export async function compilePaseoAgentLaunchSpec(root: string, config: HarnessP
     paseoParentAgentId,
     supervisorGeneration,
     labels,
-    timeoutSeconds: worker?.timeoutSeconds ?? 1800,
-    ...(mcpServers ? { mcpServers } : {}),
+    timeoutSeconds: Math.max(1, Math.ceil((options.providerTurnDeadlineMs ?? durable?.resolvedOperationPolicy?.executionLiveness.providerTurnDeadlineMs ?? (config.orchestration as (HarnessProjectConfig["orchestration"] & { operations?: { liveness?: { providerTurnDeadlineMs?: number } } }) | undefined)?.operations?.liveness?.providerTurnDeadlineMs ?? 30 * 60_000) / 1000)),
+    ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
     ...(toolPolicy ? { toolPolicy } : {}),
     ...(providerOptions ? { providerOptions } : {}),
     ...(featureValues ? { featureValues } : {}),
@@ -208,6 +240,10 @@ export async function compilePaseoAgentLaunchSpec(root: string, config: HarnessP
     operationKind,
     phase
   };
+}
+
+function candidateDigestFrom(options: PaseoLaunchSpecOptions): string | undefined {
+  return options.executionBinding?.candidateDigest ?? options.candidateDigest ?? options.capabilityLeases?.[0]?.candidate.identityDigest;
 }
 
 function contextMcpServers(root: string, config: HarnessProjectConfig, selection: AgentExecutionSelection | undefined, logicalAgent: string, operationId: string, phase: string, capabilities?: EffectiveContextCapabilities, participantId?: string, controlRoot = root): Record<string, PaseoSdkMcpStdioServer> | undefined {
@@ -261,7 +297,7 @@ function codexProviderOptions(selection: AgentExecutionSelection, authorizedRoot
     approval_policy: "never",
     sandbox_mode: mutating ? "workspace-write" : "read-only",
     ...(mutating && authorizedRoots?.length
-      ? { sandbox_workspace_write: { writable_roots: authorizedRoots, network_access: p.network === "allow" } }
+      ? { sandbox_workspace_write: { writable_roots: authorizedRoots, network_access: p.network === "allow", exclude_slash_tmp: true } }
       : {})
   };
 }

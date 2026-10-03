@@ -130,7 +130,7 @@ describe("operation liveness", () => {
         lastLeadWakeAt: new Date().toISOString()
       }
     });
-    const stalledNow = Date.parse(current.lastProgressAt) + 300_000;
+    const stalledNow = Date.parse(current.lastProgressAt) + 15 * 60_000 + 1_000;
 
     const decision = evaluateOperationWake(current, operationLivenessPolicy(config), stalledNow);
     expect(decision).toEqual(expect.objectContaining({ reason: "stalled", target: "supervisor" }));

@@ -1,18 +1,21 @@
-import { sha256Canonical } from "../core/digest.js";
+import { sha256Canonical, sha256Utf8 } from "../core/digest.js";
+import path from "node:path";
+import type { CapabilityLeaseV1 } from "../security/authorityV2.js";
 import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import type { AssuranceLevel, ImplementationRoute } from "./contracts.js";
 import type { ResourceClaimV1, WorkGraphV1 } from "./workGraph.js";
 import { roleProfile, type CanonicalRole, type ToolPackV1 } from "../participants/index.js";
 import type { GroundedProcedureStepV1 } from "../knowledge/index.js";
 import { TOOL_ACTION_KINDS_V1, type ToolActionKindV1 } from "../security/actionKinds.js";
+import type { EconomicEnvelopeV1, ExecutionLivenessPolicyV1 } from "../operations/executionLiveness.js";
 
 export interface HumanDecisionRequirementV1 {
   kind: "ACTION_AUTHORIZATION";
   action: ToolActionKindV1;
 }
 
-export interface ResolvedOperationPolicyV1 {
-  version: 1;
+export interface ResolvedOperationPolicyV2 {
+  version: 2;
   projectId: string;
   operationId: string;
   operationExecutionRevision: number;
@@ -29,6 +32,9 @@ export interface ResolvedOperationPolicyV1 {
   deliveryPolicy: unknown;
   knowledgePolicy: unknown;
   contextPolicy: unknown;
+  executionLiveness: ExecutionLivenessPolicyV1;
+  economicEnvelope: EconomicEnvelopeV1;
+  capabilityRegistryDigest?: string;
   allowedExternalEffects: string[];
   humanDecisionRequirements: HumanDecisionRequirementV1[];
   digest: string;
@@ -74,6 +80,69 @@ export interface SkillManifestScopeV1 {
 
 export type SkillManifestExecutionIdentityV1 = Pick<SkillManifestScopeV1, "operationId" | "operationExecutionRevision" | "candidateRevision" | "candidateDigest" | "controllerEpoch">;
 
+/** One controller-created private temporary resource bound to a participant generation. */
+export interface ParticipantScratchLeaseV1 {
+  version: 1;
+  resourceId: string;
+  path: string;
+  operationId: string;
+  operationExecutionRevision: number;
+  candidateRevision: number;
+  candidateDigest: string;
+  controllerEpoch: number;
+  participantId: string;
+  participantGeneration: string;
+  capabilityLeases: CapabilityLeaseV1[];
+  digest: string;
+}
+
+/**
+ * Scratch entitlement is compiled from the canonical role ToolPack. Planner/model resource
+ * claims cannot request it or choose its path; the exact resource is bound later by the
+ * controller-issued participant scratch lease.
+ */
+export function participantScratchResourceName(role: CanonicalRole | "Semantic Assessor", participantId: string, toolPack?: ToolPackV1): string | undefined {
+  if (role === "Semantic Assessor") return undefined;
+  const profile = roleProfile(role);
+  const compiledToolPack = toolPack ?? profile.toolPack;
+  const requiresWritableWorkspace = profile.authority.canWrite
+    && compiledToolPack.required.includes("repository-write")
+    && compiledToolPack.required.includes("command-execute");
+  return requiresWritableWorkspace
+    ? `aeh-participant-scratch:${sha256Canonical({ participantId }).slice(0, 24)}`
+    : undefined;
+}
+
+export function participantScratchClaim(role: CanonicalRole | "Semantic Assessor", participantId: string, workUnitId: string, toolPack?: ToolPackV1): { workUnitId: string; claim: ResourceClaimV1 } | undefined {
+  const resource = participantScratchResourceName(role, participantId, toolPack);
+  return resource ? { workUnitId, claim: { version: 1, resource, mode: "EXCLUSIVE_WRITE" } } : undefined;
+}
+
+export function compileParticipantScratchLease(input: Omit<ParticipantScratchLeaseV1, "version" | "digest">): ParticipantScratchLeaseV1 {
+  const body = {
+    version: 1 as const,
+    ...input,
+    capabilityLeases: [...input.capabilityLeases].sort((a, b) => a.leaseId.localeCompare(b.leaseId))
+  };
+  assertParticipantScratchLeaseV1({ ...body, digest: sha256Canonical(body) });
+  return deepFreeze({ ...body, digest: sha256Canonical(body) });
+}
+
+export function assertParticipantScratchLeaseV1(value: unknown): asserts value is ParticipantScratchLeaseV1 {
+  if (!value || typeof value !== "object" || (value as { version?: unknown }).version !== 1) throw new Error("UNSUPPORTED_PARTICIPANT_SCRATCH_LEASE_VERSION: expected version 1; relaunch the participant.");
+  const lease = value as ParticipantScratchLeaseV1;
+  if (!lease.resourceId || !path.isAbsolute(lease.path) || !lease.operationId || !lease.participantId || !lease.participantGeneration || !Array.isArray(lease.capabilityLeases) || lease.capabilityLeases.length !== 2) throw new Error("PARTICIPANT_SCRATCH_LEASE_INVALID: scratch ownership or read/write capability identity is incomplete.");
+  if (!Number.isSafeInteger(lease.operationExecutionRevision) || lease.operationExecutionRevision < 1 || !Number.isSafeInteger(lease.candidateRevision) || lease.candidateRevision < 1 || !Number.isSafeInteger(lease.controllerEpoch) || lease.controllerEpoch < 0) throw new Error("PARTICIPANT_SCRATCH_LEASE_INVALID: operation execution identity is incomplete.");
+  requiredDigest(lease.candidateDigest, "candidateDigest");
+  const expectedResourceId = `resource:${sha256Utf8(`${lease.operationId}\u0000staging-root\u0000${lease.path}`).slice(0, 24)}`;
+  if (lease.resourceId !== expectedResourceId) throw new Error("PARTICIPANT_SCRATCH_LEASE_INVALID: resource ID is not bound to the exact operation-owned path.");
+  const scope = [lease.path, `${lease.path}/*`, `${lease.path}/**`].sort();
+  const capabilities = new Set(lease.capabilityLeases.map((capabilityLease) => capabilityLease.capability));
+  if (capabilities.size !== 2 || !capabilities.has("read") || !capabilities.has("write") || lease.capabilityLeases.some((capabilityLease) => capabilityLease.operationId !== lease.operationId || capabilityLease.participantId !== lease.participantId || capabilityLease.candidate.identityDigest !== lease.candidateDigest || capabilityLease.envelope.scope?.join("\0") !== scope.join("\0"))) throw new Error("PARTICIPANT_SCRATCH_LEASE_INVALID: path-scoped read/write capability leases do not match the owned scratch resource.");
+  const { digest, ...body } = lease;
+  if (!/^[a-f0-9]{64}$/.test(digest) || sha256Canonical(body) !== digest) throw new Error("PARTICIPANT_SCRATCH_LEASE_INVALID: scratch lease digest is inconsistent.");
+}
+
 export interface SkillManifestV1 {
   version: 1;
   lifetime: { kind: "operation"; operationId: string };
@@ -82,15 +151,15 @@ export interface SkillManifestV1 {
   digest: string;
 }
 
-export interface ExecutionBlueprintV2 {
-  version: 2;
+export interface ExecutionBlueprintV3 {
+  version: 3;
   projectId: string;
   operationId: string;
   operationExecutionRevision: number;
   candidateRevision: number;
   candidateDigest: string;
   controllerEpoch: number;
-  resolvedOperationPolicy: ResolvedOperationPolicyV1;
+  resolvedOperationPolicy: ResolvedOperationPolicyV2;
   workGraph: WorkGraphV1;
   participantPlan: unknown;
   executionCatalog: unknown;
@@ -104,13 +173,16 @@ export interface ExecutionBlueprintV2 {
     validationResolution: unknown;
     outputContract: string;
     skillManifestDigest: string;
+    operationalSkillProjectionDigest?: string;
   }>;
   validationResolution: unknown;
+  capabilityRegistryDigest: string;
+  skillProjectionDigest: string;
   digest: string;
 }
 
-export interface ExecutionBindingV2 {
-  version: 2;
+export interface ExecutionBindingV3 {
+  version: 3;
   operationId: string;
   operationExecutionRevision: number;
   candidateRevision: number;
@@ -127,18 +199,24 @@ export interface ExecutionBindingV2 {
   promptManifestDigest: string;
   outputContract: string;
   leaseIdentities: string[];
+  scratchLease?: ParticipantScratchLeaseV1;
   digest: string;
 }
 
-export function compileResolvedOperationPolicy(input: Omit<ResolvedOperationPolicyV1, "version" | "digest">): ResolvedOperationPolicyV1 {
+export function compileResolvedOperationPolicy(input: Omit<ResolvedOperationPolicyV2, "version" | "digest" | "executionLiveness" | "economicEnvelope"> & {
+  executionLiveness?: Partial<ExecutionLivenessPolicyV1>;
+  economicEnvelope?: Partial<EconomicEnvelopeV1>;
+}): ResolvedOperationPolicyV2 {
   assertRevision(input.operationExecutionRevision, "operationExecutionRevision");
   assertRevision(input.candidateRevision, "candidateRevision");
   assertRevision(input.controllerEpoch, "controllerEpoch");
   required(input.projectId, "projectId"); required(input.operationId, "operationId"); required(input.intent, "intent");
   requiredDigest(input.candidateDigest, "candidateDigest");
   const body = {
-    version: 1 as const,
+    version: 2 as const,
     ...input,
+    executionLiveness: normalizeExecutionLivenessPolicy(input.executionLiveness),
+    economicEnvelope: normalizeEconomicEnvelope(input.economicEnvelope),
     policyVersions: sortRecord(input.policyVersions),
     policyDigests: sortRecord(input.policyDigests),
     allowedExternalEffects: [...new Set(input.allowedExternalEffects)].sort(),
@@ -191,58 +269,132 @@ export function compileSkillManifest(input: { scope: SkillManifestScopeV1; skill
   return deepFreeze({ ...body, digest: sha256Canonical(body) });
 }
 
-export function compileExecutionBinding(input: Omit<ExecutionBindingV2, "version" | "digest">): ExecutionBindingV2 {
+export function compileExecutionBinding(input: Omit<ExecutionBindingV3, "version" | "digest">): ExecutionBindingV3 {
   for (const field of ["executionBlueprintDigest", "operationPolicyDigest", "roleInvocationPolicyDigest", "skillManifestDigest", "contextManifestDigest", "promptManifestDigest"] as const) requiredDigest(input[field], field);
   assertRevision(input.operationExecutionRevision, "operationExecutionRevision");
   assertRevision(input.candidateRevision, "candidateRevision");
   assertRevision(input.controllerEpoch, "controllerEpoch");
   required(input.operationId, "operationId"); required(input.participantId, "participantId"); required(input.participantGeneration, "participantGeneration"); required(input.outputContract, "outputContract");
   if (!input.runtime.runtimeId || !input.runtime.provider || !input.runtime.modelId || !input.runtime.model || !isActualSessionIdentity(input.runtime.sessionId)) throw new Error("EXECUTION_BINDING_SESSION_REQUIRED: approved runtime, model, and actual durable session identity are required; synthetic launch identities are unsupported.");
-  const body = { version: 2 as const, ...input, leaseIdentities: [...new Set(input.leaseIdentities)].sort() };
+  const body = { version: 3 as const, ...input, leaseIdentities: [...new Set(input.leaseIdentities)].sort() };
   return deepFreeze({ ...body, digest: sha256Canonical(body) });
 }
 
-export function assertExecutionBlueprintV2(value: unknown): asserts value is ExecutionBlueprintV2 {
-  if (!value || typeof value !== "object" || (value as { version?: unknown }).version !== 2) throw new Error(`UNSUPPORTED_EXECUTION_BLUEPRINT_VERSION: expected version 2; migrate and recompile this blueprint.`);
-  const blueprint = value as ExecutionBlueprintV2;
-  assertResolvedOperationPolicyV1(blueprint.resolvedOperationPolicy);
+export function assertExecutionBlueprintV3(value: unknown): asserts value is ExecutionBlueprintV3 {
+  if (!value || typeof value !== "object" || (value as { version?: unknown }).version !== 3) throw new Error(`UNSUPPORTED_EXECUTION_BLUEPRINT_VERSION: expected version 3; migrate and recompile this blueprint.`);
+  const blueprint = value as ExecutionBlueprintV3;
+  assertResolvedOperationPolicyV2(blueprint.resolvedOperationPolicy);
   if (!Number.isSafeInteger(blueprint.operationExecutionRevision) || blueprint.operationExecutionRevision < 1 || !Number.isSafeInteger(blueprint.candidateRevision) || blueprint.candidateRevision < 1 || !Number.isSafeInteger(blueprint.controllerEpoch) || blueprint.controllerEpoch < 0 || !blueprint.projectId || !blueprint.operationId || !/^[a-f0-9]{64}$/.test(blueprint.candidateDigest)) throw new Error("EXECUTION_BLUEPRINT_INVALID: blueprint execution identity is incomplete.");
   if (blueprint.resolvedOperationPolicy.operationId !== blueprint.operationId || blueprint.resolvedOperationPolicy.projectId !== blueprint.projectId || blueprint.resolvedOperationPolicy.operationExecutionRevision !== blueprint.operationExecutionRevision || blueprint.resolvedOperationPolicy.candidateRevision !== blueprint.candidateRevision || blueprint.resolvedOperationPolicy.candidateDigest !== blueprint.candidateDigest || blueprint.resolvedOperationPolicy.controllerEpoch !== blueprint.controllerEpoch) throw new Error("EXECUTION_BLUEPRINT_INVALID: blueprint policy does not bind the same operation, candidate, execution revision, project, and epoch.");
-  if (!Array.isArray(blueprint.participants) || !blueprint.participants.length) throw new Error("EXECUTION_BLUEPRINT_INVALID: blueprint must bind at least one compiled participant.");
+  if (blueprint.resolvedOperationPolicy.capabilityRegistryDigest && blueprint.resolvedOperationPolicy.capabilityRegistryDigest !== blueprint.capabilityRegistryDigest) throw new Error("EXECUTION_BLUEPRINT_CAPABILITY_REGISTRY_MISMATCH: blueprint registry digest differs from the frozen operation policy.");
+  if (!Array.isArray(blueprint.participants) || !blueprint.participants.length || !/^[a-f0-9]{64}$/.test(blueprint.capabilityRegistryDigest) || !/^[a-f0-9]{64}$/.test(blueprint.skillProjectionDigest)) throw new Error("EXECUTION_BLUEPRINT_INVALID: blueprint must bind participants and current capability/skill projection digests.");
   for (const participant of blueprint.participants) {
     assertRoleInvocationPolicyV1(participant.roleInvocationPolicy);
-    if (participant.roleInvocationPolicy.operationId !== blueprint.operationId || participant.roleInvocationPolicy.operationPolicyDigest !== blueprint.resolvedOperationPolicy.digest || participant.roleInvocationPolicy.participantId !== participant.participantId || participant.roleInvocationPolicy.role !== participant.role || sha256Canonical(participant.toolPack) !== sha256Canonical(participant.roleInvocationPolicy.toolPack) || sha256Canonical(participant.resourceClaims) !== sha256Canonical(participant.roleInvocationPolicy.resourceClaims) || participant.outputContract !== participant.roleInvocationPolicy.outputContract || !/^[a-f0-9]{64}$/.test(participant.skillManifestDigest)) throw new Error("EXECUTION_BLUEPRINT_INVALID: participant role, tool/resource ceiling, output, policy, or skill identity is inconsistent.");
+    if (participant.roleInvocationPolicy.operationId !== blueprint.operationId || participant.roleInvocationPolicy.operationPolicyDigest !== blueprint.resolvedOperationPolicy.digest || participant.roleInvocationPolicy.participantId !== participant.participantId || participant.roleInvocationPolicy.role !== participant.role || sha256Canonical(participant.toolPack) !== sha256Canonical(participant.roleInvocationPolicy.toolPack) || sha256Canonical(participant.resourceClaims) !== sha256Canonical(participant.roleInvocationPolicy.resourceClaims) || participant.outputContract !== participant.roleInvocationPolicy.outputContract || !/^[a-f0-9]{64}$/.test(participant.skillManifestDigest) || participant.operationalSkillProjectionDigest !== undefined && !/^[a-f0-9]{64}$/.test(participant.operationalSkillProjectionDigest)) throw new Error("EXECUTION_BLUEPRINT_INVALID: participant role, tool/resource ceiling, output, policy, or skill identity is inconsistent.");
+    const expectedScratch = participantScratchResourceName(participant.role, participant.participantId, participant.toolPack);
+    const scratchClaims = participant.resourceClaims.filter(({ claim }) => claim.resource.startsWith("aeh-participant-scratch:"));
+    if ((expectedScratch && (scratchClaims.length !== 1 || scratchClaims[0]?.claim.resource !== expectedScratch || scratchClaims[0]?.claim.mode !== "EXCLUSIVE_WRITE")) || (!expectedScratch && scratchClaims.length > 0)) throw new Error("EXECUTION_BLUEPRINT_INVALID: participant scratch resource claim does not match the controller-compiled role ceiling.");
   }
   const { digest, ...body } = blueprint;
   if (!/^[a-f0-9]{64}$/.test(digest) || sha256Canonical(body) !== digest) throw new Error("EXECUTION_BLUEPRINT_INVALID: blueprint digest is inconsistent.");
 }
 
-export function assertExecutionBindingV2(value: unknown): asserts value is ExecutionBindingV2 {
-  if (!value || typeof value !== "object" || (value as { version?: unknown }).version !== 2) throw new Error(`UNSUPPORTED_EXECUTION_BINDING_VERSION: expected version 2; relaunch this participant with a current binding.`);
-  const binding = value as ExecutionBindingV2;
+export function assertExecutionBindingV3(value: unknown): asserts value is ExecutionBindingV3 {
+  if (!value || typeof value !== "object" || (value as { version?: unknown }).version !== 3) throw new Error(`UNSUPPORTED_EXECUTION_BINDING_VERSION: expected version 3; relaunch this participant with a current binding.`);
+  const binding = value as ExecutionBindingV3;
   if (!Number.isSafeInteger(binding.operationExecutionRevision) || binding.operationExecutionRevision < 1 || !Number.isSafeInteger(binding.candidateRevision) || binding.candidateRevision < 1 || !Number.isSafeInteger(binding.controllerEpoch) || binding.controllerEpoch < 0 || !binding.operationId || !binding.participantId || !binding.participantGeneration || !binding.outputContract) throw new Error("EXECUTION_BINDING_INVALID: binding identity is incomplete.");
   for (const digest of [binding.candidateDigest, binding.executionBlueprintDigest, binding.operationPolicyDigest, binding.roleInvocationPolicyDigest, binding.skillManifestDigest, binding.contextManifestDigest, binding.promptManifestDigest]) requiredDigest(digest, "binding identity digest");
   if (!binding.runtime?.runtimeId || !binding.runtime.provider || !binding.runtime.modelId || !binding.runtime.model || !isActualSessionIdentity(binding.runtime.sessionId) || !Array.isArray(binding.leaseIdentities) || binding.leaseIdentities.some((id) => typeof id !== "string" || !id.trim())) throw new Error("EXECUTION_BINDING_SESSION_REQUIRED: approved runtime/model, actual durable session identity, and lease identity list are required.");
+  if (binding.scratchLease) {
+    assertParticipantScratchLeaseV1(binding.scratchLease);
+    if (binding.scratchLease.operationId !== binding.operationId || binding.scratchLease.operationExecutionRevision !== binding.operationExecutionRevision || binding.scratchLease.candidateRevision !== binding.candidateRevision || binding.scratchLease.candidateDigest !== binding.candidateDigest || binding.scratchLease.controllerEpoch !== binding.controllerEpoch || binding.scratchLease.participantId !== binding.participantId || binding.scratchLease.participantGeneration !== binding.participantGeneration || binding.scratchLease.capabilityLeases.some((lease) => !binding.leaseIdentities.includes(lease.leaseId))) throw new Error("EXECUTION_BINDING_SCRATCH_MISMATCH: scratch lease belongs to a different operation, participant, generation, candidate, or controller epoch.");
+  }
   const { digest, ...body } = binding;
   if (!/^[a-f0-9]{64}$/.test(digest) || sha256Canonical(body) !== digest) throw new Error("EXECUTION_BINDING_INVALID: binding digest is inconsistent.");
 }
 
-export function createExecutionBlueprintV2(input: Omit<ExecutionBlueprintV2, "version" | "digest">): ExecutionBlueprintV2 {
-  assertResolvedOperationPolicyV1(input.resolvedOperationPolicy);
+export function createExecutionBlueprintV3(input: Omit<ExecutionBlueprintV3, "version" | "digest" | "capabilityRegistryDigest" | "skillProjectionDigest"> & Partial<Pick<ExecutionBlueprintV3, "capabilityRegistryDigest" | "skillProjectionDigest">>): ExecutionBlueprintV3 {
+  assertResolvedOperationPolicyV2(input.resolvedOperationPolicy);
   for (const participant of input.participants) assertRoleInvocationPolicyV1(participant.roleInvocationPolicy);
-  const body = { version: 2 as const, ...input };
+  const body = {
+    version: 3 as const,
+    ...input,
+    capabilityRegistryDigest: input.capabilityRegistryDigest ?? input.resolvedOperationPolicy.capabilityRegistryDigest ?? sha256Canonical(input.executionCatalog),
+    skillProjectionDigest: input.skillProjectionDigest ?? sha256Canonical(input.participants.map((participant) => participant.skillManifestDigest).sort())
+  };
   return deepFreeze({ ...body, digest: sha256Canonical(body) });
 }
 
-export function assertResolvedOperationPolicyV1(value: unknown): asserts value is ResolvedOperationPolicyV1 {
-  if (!value || typeof value !== "object" || (value as { version?: unknown }).version !== 1) throw new Error("UNSUPPORTED_RESOLVED_OPERATION_POLICY_VERSION: expected version 1; recompile the operation policy.");
-  const policy = value as ResolvedOperationPolicyV1;
+export function assertResolvedOperationPolicyV2(value: unknown): asserts value is ResolvedOperationPolicyV2 {
+  if (!value || typeof value !== "object" || (value as { version?: unknown }).version !== 2) throw new Error("UNSUPPORTED_RESOLVED_OPERATION_POLICY_VERSION: expected version 2; recompile the operation policy.");
+  const policy = value as ResolvedOperationPolicyV2;
   if (!policy.projectId || !policy.operationId || !policy.intent || !Number.isSafeInteger(policy.operationExecutionRevision) || policy.operationExecutionRevision < 1 || !Number.isSafeInteger(policy.candidateRevision) || policy.candidateRevision < 1 || !Number.isSafeInteger(policy.controllerEpoch) || policy.controllerEpoch < 0) throw new Error("RESOLVED_OPERATION_POLICY_INVALID: frozen policy identity is incomplete.");
   requiredDigest(policy.candidateDigest, "candidateDigest");
+  assertExecutionLivenessPolicy(policy.executionLiveness);
+  assertEconomicEnvelope(policy.economicEnvelope);
   if (!Array.isArray(policy.allowedExternalEffects) || policy.allowedExternalEffects.some((action) => typeof action !== "string" || !TOOL_ACTION_KINDS_V1.includes(action as ToolActionKindV1))) throw new Error("RESOLVED_OPERATION_POLICY_INVALID: allowedExternalEffects must contain only registered tool action kinds.");
   if (!Array.isArray(policy.humanDecisionRequirements) || policy.humanDecisionRequirements.some((requirement) => !requirement || requirement.kind !== "ACTION_AUTHORIZATION" || !TOOL_ACTION_KINDS_V1.includes(requirement.action))) throw new Error("RESOLVED_OPERATION_POLICY_INVALID: humanDecisionRequirements must be typed exact action authorizations.");
   const { digest, ...body } = policy;
   if (!/^[a-f0-9]{64}$/.test(digest) || sha256Canonical(body) !== digest) throw new Error("RESOLVED_OPERATION_POLICY_INVALID: frozen policy digest is inconsistent.");
+}
+
+function normalizeExecutionLivenessPolicy(input?: Partial<ExecutionLivenessPolicyV1>): ExecutionLivenessPolicyV1 {
+  const defaults = {
+    version: 1 as const,
+    hardDeadlineMs: 8 * 60 * 60_000,
+    progressLeaseMs: 15 * 60_000,
+    stallWindowMs: 15 * 60_000,
+    providerTurnDeadlineMs: 30 * 60_000,
+    defaultToolDeadlineMs: 30 * 60_000,
+    maxNoProgressRenewals: 2,
+    maxParticipantRestarts: 2,
+    maxLocalRetriesPerFailure: 1,
+    softBudgetThreshold: 0.8,
+    toolDeadlinesMs: {} as Record<string, number>
+  };
+  const value = { ...defaults, ...(input ?? {}), toolDeadlinesMs: { ...defaults.toolDeadlinesMs, ...(input?.toolDeadlinesMs ?? {}) } };
+  assertExecutionLivenessPolicy(value);
+  return value;
+}
+
+function normalizeEconomicEnvelope(input?: Partial<EconomicEnvelopeV1>): EconomicEnvelopeV1 {
+  const value: EconomicEnvelopeV1 = {
+    version: 1,
+    initialProviderTurns: input?.initialProviderTurns ?? 8,
+    supervisorProviderTurns: input?.supervisorProviderTurns ?? 12,
+    hardProviderTurns: input?.hardProviderTurns ?? 16,
+    maxLocalRetries: input?.maxLocalRetries ?? 1,
+    maxParticipantRestarts: input?.maxParticipantRestarts ?? 2,
+    softThreshold: input?.softThreshold ?? 0.8,
+    ...(input?.hardToolCalls === undefined ? {} : { hardToolCalls: input.hardToolCalls }),
+    ...(input?.hardTotalTokens === undefined ? {} : { hardTotalTokens: input.hardTotalTokens }),
+    ...(input?.hardCostUsd === undefined ? {} : { hardCostUsd: input.hardCostUsd }),
+    ...(input?.hardDeadlineAt ? { hardDeadlineAt: input.hardDeadlineAt } : {})
+  };
+  assertEconomicEnvelope(value);
+  return value;
+}
+
+function assertExecutionLivenessPolicy(value: ExecutionLivenessPolicyV1): void {
+  if (!value || value.version !== 1) throw new Error("UNSUPPORTED_EXECUTION_LIVENESS_POLICY_VERSION: expected version 1.");
+  for (const key of ["hardDeadlineMs", "progressLeaseMs", "stallWindowMs", "providerTurnDeadlineMs", "defaultToolDeadlineMs", "maxNoProgressRenewals", "maxParticipantRestarts", "maxLocalRetriesPerFailure"] as const) {
+    if (!Number.isSafeInteger(value[key]) || value[key] < 1) throw new Error(`EXECUTION_LIVENESS_POLICY_INVALID: ${key} must be a positive safe integer.`);
+  }
+  if (!Number.isFinite(value.softBudgetThreshold) || value.softBudgetThreshold <= 0 || value.softBudgetThreshold >= 1) throw new Error("EXECUTION_LIVENESS_POLICY_INVALID: softBudgetThreshold must be between 0 and 1.");
+  if (!value.toolDeadlinesMs || Object.values(value.toolDeadlinesMs).some((ms) => !Number.isSafeInteger(ms) || ms < 1)) throw new Error("EXECUTION_LIVENESS_POLICY_INVALID: tool deadlines must be positive integers.");
+}
+
+function assertEconomicEnvelope(value: EconomicEnvelopeV1): void {
+  if (!value || value.version !== 1) throw new Error("UNSUPPORTED_ECONOMIC_ENVELOPE_VERSION: expected version 1.");
+  for (const key of ["initialProviderTurns", "supervisorProviderTurns", "hardProviderTurns", "maxLocalRetries", "maxParticipantRestarts"] as const) {
+    if (!Number.isSafeInteger(value[key]) || value[key] < 0) throw new Error(`ECONOMIC_ENVELOPE_INVALID: ${key} must be a non-negative safe integer.`);
+  }
+  if (value.initialProviderTurns > value.supervisorProviderTurns || value.supervisorProviderTurns > value.hardProviderTurns) throw new Error("ECONOMIC_ENVELOPE_INVALID: provider turn budgets must be ordered initial <= supervisor <= Owner hard limit.");
+  if (value.hardToolCalls !== undefined && (!Number.isSafeInteger(value.hardToolCalls) || value.hardToolCalls < 0)) throw new Error("ECONOMIC_ENVELOPE_INVALID: hardToolCalls must be a non-negative safe integer.");
+  if (value.hardTotalTokens !== undefined && (!Number.isSafeInteger(value.hardTotalTokens) || value.hardTotalTokens < 0)) throw new Error("ECONOMIC_ENVELOPE_INVALID: hardTotalTokens must be a non-negative safe integer.");
+  if (value.hardCostUsd !== undefined && (!Number.isFinite(value.hardCostUsd) || value.hardCostUsd < 0)) throw new Error("ECONOMIC_ENVELOPE_INVALID: hardCostUsd must be a non-negative finite number.");
+  if (!Number.isFinite(value.softThreshold) || value.softThreshold <= 0 || value.softThreshold >= 1) throw new Error("ECONOMIC_ENVELOPE_INVALID: softThreshold must be between 0 and 1.");
+  if (value.hardDeadlineAt && !Number.isFinite(Date.parse(value.hardDeadlineAt))) throw new Error("ECONOMIC_ENVELOPE_INVALID: hardDeadlineAt must be an ISO timestamp.");
 }
 
 export function assertRoleInvocationPolicyV1(value: unknown): asserts value is RoleInvocationPolicyV1 {

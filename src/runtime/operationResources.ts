@@ -24,6 +24,7 @@ import {
   type OperationStatus
 } from "../operations/state.js";
 import { readManagedRuntimeSnapshot } from "./managed.js";
+import { persistCandidateForensicsV1 } from "../operations/forensics.js";
 
 export const operationResourceKinds = [
   "paseo-workspace",
@@ -271,10 +272,25 @@ export async function reconcileOperationResources(
   const record = await loadOperation(root, operationId);
   const terminal = isTerminalOperation(record.status);
   const registry = await readRegistry(operationResourceRegistryFile(root, operationId), operationId);
-  const candidates = await collectResourceCandidates(root, record, registry, deps);
   const dispositions: OperationResourceDispositionV1[] = [];
   const errors: string[] = [];
   const updated: OperationResourceV1[] = [...registry.resources];
+  if (record.status === "FAILED") {
+    try {
+      const forensic = await persistCandidateForensicsV1(root, record);
+      await trace(root, "operation.candidate.forensics", {
+        operationId,
+        candidateId: record.candidateRevision?.candidateId ?? null,
+        artifact: forensic.path,
+        changedFiles: forensic.artifact.changedFiles.length,
+        diffDigestCoverage: forensic.artifact.diffDigestCoverage
+      }).catch(() => undefined);
+    } catch (error) {
+      errors.push(`candidate forensics capture failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 500));
+    }
+  }
+  // Capture failed-candidate facts before collecting/releasing operation-owned resources.
+  const candidates = await collectResourceCandidates(root, record, registry, deps);
 
   const upsert = (candidate: ResourceCandidate): OperationResourceV1 => {
     const resourceId = operationResourceId(operationId, candidate.kind, candidate.identity);

@@ -10,7 +10,7 @@ import { changeKindSchema } from "../architecture/workGraph.js";
 import { candidateReviewDimensionValues } from "../architecture/candidateAssurance.js";
 import { assertSemanticStructuredOutputCapabilityV1 } from "./structuredOutput.js";
 
-export const semanticAssessmentTypeValues = ["INTENT", "ROUTE", "STACK", "ISSUE", "FAILURE", "CANDIDATE_IMPACT", "VALIDATION_NEED"] as const;
+export const semanticAssessmentTypeValues = ["INTENT", "ROUTE", "STACK", "ISSUE", "FAILURE", "CANDIDATE_IMPACT", "VALIDATION_NEED", "OPERATIONS_ANALYSIS"] as const;
 export type SemanticAssessmentTypeV1 = (typeof semanticAssessmentTypeValues)[number];
 export const semanticAssessmentTypeSchema = z.enum(semanticAssessmentTypeValues);
 export const semanticAssessmentMaxCompactEvidenceBytesV1 = 24_000;
@@ -246,6 +246,16 @@ const semanticJudgmentSchema = z.discriminatedUnion("type", [
     scope: z.array(z.string().trim().min(1).max(500)).min(1).max(128),
     evidenceRefs: z.array(evidenceRefSchema).min(1).max(64),
     unknowns: z.array(z.string().trim().min(1).max(1_000)).max(32)
+  }).strict(),
+  z.object({
+    type: z.literal("OPERATIONS_ANALYSIS"),
+    classification: z.enum(["PROGRESSING", "POSSIBLE_STALL", "TOOL_MISUSE", "CONTEXT_CHURN", "RESOURCE_WAIT", "BLOCKED", "UNCERTAIN"]),
+    probableCause: z.enum(["PROVIDER_STALL", "TOOL_LOOP", "CONTEXT_CHURN", "BUILD_OR_VALIDATION_WAIT", "TOOL_KNOWLEDGE_GAP", "IMPLEMENTATION_COMPLEXITY", "EXTERNAL_BLOCKER", "UNKNOWN"]),
+    suggestedSupervisorAction: z.enum(["CONTINUE", "RESUME_SAME_SESSION", "ROTATE_SESSION", "RETRY_PARTICIPANT", "RETRIEVE_SKILL", "REPLAN", "SPLIT_WORK", "REASSIGN", "FAIL", "ESCALATE_TO_LEAD", "NONE"]),
+    rationale: z.string().trim().min(1).max(2_000),
+    skillOrToolPackSuggestion: z.object({ topic: z.string().trim().min(1).max(300), evidenceRefs: z.array(evidenceRefSchema).min(1).max(16) }).strict().optional(),
+    evidenceRefs: z.array(evidenceRefSchema).min(1).max(32),
+    unknowns: z.array(z.string().trim().min(1).max(1_000)).max(16)
   }).strict()
 ]);
 export type SemanticAssessmentJudgmentV1 = z.infer<typeof semanticJudgmentSchema>;
@@ -253,6 +263,7 @@ export type SemanticStackJudgmentV1 = Extract<SemanticAssessmentJudgmentV1, { ty
 export type SemanticIssueJudgmentV1 = Extract<SemanticAssessmentJudgmentV1, { type: "ISSUE" }>;
 export type SemanticCandidateImpactJudgmentV1 = Extract<SemanticAssessmentJudgmentV1, { type: "CANDIDATE_IMPACT" }>;
 export type SemanticValidationNeedJudgmentV1 = Extract<SemanticAssessmentJudgmentV1, { type: "VALIDATION_NEED" }>;
+export type SemanticOperationsAnalysisJudgmentV1 = Extract<SemanticAssessmentJudgmentV1, { type: "OPERATIONS_ANALYSIS" }>;
 export const semanticAssessmentPayloadV1Schema = z.object({
   judgment: semanticJudgmentSchema,
   claims: z.array(z.object({ id: z.string().trim().min(1).max(100), statement: z.string().trim().min(1).max(2_000), status: z.enum(claimStatusValues), evidenceRefs: z.array(evidenceRefSchema).max(32) }).strict()).max(64),
@@ -453,7 +464,8 @@ export const semanticCapabilityPolicyV1: Readonly<Record<SemanticAssessmentTypeV
   ISSUE: { maxInputTokens: 8_000, maxOutputTokens: 2_000, maxDeadlineMs: semanticModelDeadlineMsV1, maxReasoningClass: "STANDARD", maxContextClass: "STANDARD", maxRiskClass: "HIGH" },
   FAILURE: { maxInputTokens: 8_000, maxOutputTokens: 1_500, maxDeadlineMs: semanticModelDeadlineMsV1, maxReasoningClass: "STANDARD", maxContextClass: "STANDARD", maxRiskClass: "HIGH" },
   CANDIDATE_IMPACT: { maxInputTokens: 12_000, maxOutputTokens: 2_000, maxDeadlineMs: semanticModelDeadlineMsV1, maxReasoningClass: "DEEP", maxContextClass: "LARGE", maxRiskClass: "CRITICAL" },
-  VALIDATION_NEED: { maxInputTokens: 8_000, maxOutputTokens: 1_500, maxDeadlineMs: semanticModelDeadlineMsV1, maxReasoningClass: "STANDARD", maxContextClass: "STANDARD", maxRiskClass: "HIGH" }
+  VALIDATION_NEED: { maxInputTokens: 8_000, maxOutputTokens: 1_500, maxDeadlineMs: semanticModelDeadlineMsV1, maxReasoningClass: "STANDARD", maxContextClass: "STANDARD", maxRiskClass: "HIGH" },
+  OPERATIONS_ANALYSIS: { maxInputTokens: 8_000, maxOutputTokens: 1_500, maxDeadlineMs: semanticModelDeadlineMsV1, maxReasoningClass: "STANDARD", maxContextClass: "STANDARD", maxRiskClass: "HIGH" }
 };
 
 export function resolveSemanticAssessor(topology: ResolvedAgentTopology): ResolvedSemanticAssessorV1 {
@@ -663,6 +675,7 @@ function validateAssessmentPayload(payload: SemanticAssessmentPayloadV1, request
     ...payload.judgment.evidenceRefs,
     ...(payload.judgment.type === "STACK" ? payload.judgment.signals.map((signal) => signal.evidenceRef) : []),
     ...(payload.judgment.type === "ISSUE" ? payload.judgment.explicitRequirements.flatMap((requirement) => requirement.evidenceRefs) : []),
+    ...(payload.judgment.type === "OPERATIONS_ANALYSIS" && payload.judgment.skillOrToolPackSuggestion ? payload.judgment.skillOrToolPackSuggestion.evidenceRefs : []),
     ...payload.claims.flatMap((claim) => claim.evidenceRefs),
     ...payload.recommendations.flatMap((recommendation) => recommendation.evidenceRefs),
     ...payload.knowledgeGaps.flatMap((gap) => gap.evidenceRefs)
@@ -671,7 +684,8 @@ function validateAssessmentPayload(payload: SemanticAssessmentPayloadV1, request
   const judgmentRefs = new Set(payload.judgment.evidenceRefs);
   const nestedRefs = [
     ...(payload.judgment.type === "STACK" ? payload.judgment.signals.map((signal) => signal.evidenceRef) : []),
-    ...(payload.judgment.type === "ISSUE" ? payload.judgment.explicitRequirements.flatMap((requirement) => requirement.evidenceRefs) : [])
+    ...(payload.judgment.type === "ISSUE" ? payload.judgment.explicitRequirements.flatMap((requirement) => requirement.evidenceRefs) : []),
+    ...(payload.judgment.type === "OPERATIONS_ANALYSIS" && payload.judgment.skillOrToolPackSuggestion ? payload.judgment.skillOrToolPackSuggestion.evidenceRefs : [])
   ];
   if (nestedRefs.some((ref) => !judgmentRefs.has(ref))) throw new AehError("SEMANTIC_ASSESSMENT_INVALID", "nested typed judgments must list every evidence reference in their top-level evidenceRefs.");
 }

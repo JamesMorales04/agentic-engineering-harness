@@ -231,9 +231,10 @@ export async function runPaseoSdkAgent(
   agentId: string,
   prompt: string,
   timeoutMs?: number,
-  outputSchema?: Record<string, unknown>
+  outputSchema?: Record<string, unknown>,
+  phase?: string
 ): Promise<PaseoSdkAgentResult> {
-  if (outputSchema) await activateStructuredResultTurnForAgent(root, agentId);
+  if (outputSchema) await activateStructuredResultTurnForAgent(root, agentId, phase);
   const result = await withPaseoClient(root, async (client) =>
     runPaseoSdkAgentWithClient(client, agentId, prompt, timeoutMs, outputSchema)
   );

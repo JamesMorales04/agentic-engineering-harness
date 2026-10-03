@@ -1,4 +1,4 @@
-import { assertResolvedOperationPolicyV1 } from "../architecture/executionIdentity.js";
+import { assertResolvedOperationPolicyV2 } from "../architecture/executionIdentity.js";
 import { currentControllerEpoch, type OperationParticipantRecord, type OperationRecordV2 } from "../operations/state.js";
 import { candidateRevisionsEqual } from "../operations/v2Contracts.js";
 import type { HumanDecisionBindingV2 } from "../security/humanDecision.js";
@@ -11,9 +11,9 @@ import {
   type ControlCenterOperationPauseProjectionV1,
   type ControlCenterParticipantProjectionV1
 } from "./contracts.js";
-import type { OperationEfficiencySummaryV1 } from "../telemetry/efficiency.js";
+import type { OperationEfficiencySummaryV2 } from "../telemetry/efficiency.js";
 
-export function projectOperationRecordV1(record: OperationRecordV2, efficiency?: OperationEfficiencySummaryV1): ControlCenterOperationDetailProjectionV1 {
+export function projectOperationRecordV1(record: OperationRecordV2, efficiency?: OperationEfficiencySummaryV2): ControlCenterOperationDetailProjectionV1 {
   const participants = Object.values(record.participants).map((participant) => projectParticipant(record.id, participant));
   const stages = Object.values(record.stages).map((stage) => ({
     name: stage.name,
@@ -111,7 +111,7 @@ function projectDecisionRequest(record: OperationRecordV2): ControlCenterDecisio
   if (!request || !continuation || continuation.state !== "WAITING" || !candidate || !policy
     || typeof operationExecutionRevision !== "number" || !Number.isSafeInteger(operationExecutionRevision) || operationExecutionRevision < 1
     || request.requestId !== continuation.requestId) return undefined;
-  try { assertResolvedOperationPolicyV1(policy); } catch { return undefined; }
+  try { assertResolvedOperationPolicyV2(policy); } catch { return undefined; }
   const controllerEpoch = currentControllerEpoch(record);
   if (policy.operationId !== record.id || policy.operationExecutionRevision !== operationExecutionRevision
     || policy.candidateRevision !== candidate.revision || policy.candidateDigest !== candidate.identityDigest

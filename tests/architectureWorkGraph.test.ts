@@ -10,7 +10,7 @@ import { resolvePlannerKnowledge } from "../src/agents/waveExecutor.js";
 import { planParallelism } from "../src/agents/parallelism.js";
 import { InMemoryKnowledgeCacheV1, knowledgePack, resolveKnowledgeGate } from "../src/knowledge/index.js";
 import { resolveValidationRequirements, type ValidationRequirementV1 } from "../src/architecture/validationRequirements.js";
-import { compileResolvedOperationPolicy } from "../src/architecture/executionIdentity.js";
+import { compileResolvedOperationPolicy, participantScratchResourceName } from "../src/architecture/executionIdentity.js";
 
 function graph() {
   return createWorkGraph({
@@ -32,7 +32,7 @@ const planIdentity = () => ({ operationId: "operation:task-v2", operationExecuti
 const compileCriticalBlueprint = (validationRequirements: readonly ValidationRequirementV1[] = []) => {
   const workGraph = { ...graph(), assurance: "CRITICAL" as const };
   const candidate = createCandidateRevisionV1({ operationId: "operation:task-v2", candidateId: "candidate:task-v2:r4", taskId: workGraph.taskId, revision: 4, sourceDigest: "a".repeat(64) });
-  const resolvedOperationPolicy = compileResolvedOperationPolicy({ projectId: candidate.projectId ?? "project:task-v2", operationId: candidate.operationId, operationExecutionRevision: 1, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch: 1, intent: "compile test graph", route: workGraph.route, minimumAssurance: workGraph.assurance, policyVersions: { resolvedOperationPolicy: "1" }, policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {}, allowedExternalEffects: [], humanDecisionRequirements: [] });
+  const resolvedOperationPolicy = compileResolvedOperationPolicy({ projectId: candidate.projectId ?? "project:task-v2", operationId: candidate.operationId, operationExecutionRevision: 1, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch: 1, intent: "compile test graph", route: workGraph.route, minimumAssurance: workGraph.assurance, policyVersions: { resolvedOperationPolicy: "2" }, policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {}, allowedExternalEffects: [], humanDecisionRequirements: [] });
   return compileExecutionBlueprint({ graph: workGraph, candidate, controllerEpoch: 1, operationExecutionRevision: 1, resolvedOperationPolicy, executionCatalog: compileExecutionCatalog({ runtimes: {}, models: {} }), validationRequirements });
 };
 
@@ -52,6 +52,28 @@ describe("canonical WorkGraph and participant compiler", () => {
     expect(plan.assignments.map((entry) => entry.participantId)).toEqual(["participant:design", "participant:implement"]);
     expect(plan.assignments.every((entry) => !Object.hasOwn(entry, "agent"))).toBe(true);
     expect(plan.compilerDigest).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("compiles Paseo mutator scratch claims deterministically and rejects a model-shaped claim", () => {
+    const workGraph = graph();
+    const candidate = createCandidateRevisionV1({ operationId: "operation:task-v2", candidateId: "candidate:task-v2:r1", taskId: workGraph.taskId, revision: 1, sourceDigest: "a".repeat(64), projectId: "project:task-v2" });
+    const resolvedOperationPolicy = compileResolvedOperationPolicy({ projectId: candidate.projectId!, operationId: candidate.operationId, operationExecutionRevision: 1, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch: 1, intent: "compile participant scratch", route: workGraph.route, minimumAssurance: workGraph.assurance, policyVersions: { resolvedOperationPolicy: "2" }, policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {}, allowedExternalEffects: [], humanDecisionRequirements: [] });
+    const executionCatalog = compileExecutionCatalog({
+      runtimes: { opencode: { adapter: "opencode", paseoProvider: "opencode", capabilities: {} } },
+      models: { mimo: { alias: "mimo", id: "opencode-go/mimo", runtime: "opencode", model: "mimo" } },
+      roleBindings: { Implementer: { runtimeId: "opencode", modelAlias: "mimo", transport: "paseo" } }
+    });
+    const blueprint = compileExecutionBlueprint({ graph: workGraph, candidate, controllerEpoch: 1, operationExecutionRevision: 1, resolvedOperationPolicy, executionCatalog });
+    const implementer = blueprint.participants.find((participant) => participant.role === "Implementer")!;
+    const expectedResource = participantScratchResourceName("Implementer", implementer.participantId);
+    expect(implementer.resourceClaims.filter((item) => item.claim.resource === expectedResource)).toEqual([
+      expect.objectContaining({ claim: expect.objectContaining({ mode: "EXCLUSIVE_WRITE" }) })
+    ]);
+    expect(implementer.roleInvocationPolicy.resourceClaims.map((item) => item.claim.resource)).toContain(expectedResource);
+
+    const forgedResource = participantScratchResourceName("Implementer", "participant:design")!;
+    const forgedGraph = createWorkGraph({ ...workGraph, units: workGraph.units.map((unit) => unit.id === "design" ? { ...unit, resourceClaims: [{ version: 1 as const, resource: forgedResource, mode: "EXCLUSIVE_WRITE" as const }] } : unit) });
+    expect(() => compileExecutionBlueprint({ graph: forgedGraph, candidate, controllerEpoch: 1, operationExecutionRevision: 1, resolvedOperationPolicy, executionCatalog })).toThrow("work graph may not claim controller-owned participant scratch resource");
   });
 
   it("schedules dependencies into deterministic waves and adds critical gates", () => {

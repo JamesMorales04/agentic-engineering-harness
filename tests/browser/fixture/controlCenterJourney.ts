@@ -539,7 +539,7 @@ export class ControlCenterJourneyFixture {
       intent: "S9 browser journey controller fixture",
       route: "FORMAL_SDD",
       minimumAssurance: "STANDARD",
-      policyVersions: { resolvedOperationPolicy: "1" },
+      policyVersions: { resolvedOperationPolicy: "2" },
       policyDigests: {},
       validationPolicy: {},
       reviewPolicy: {},

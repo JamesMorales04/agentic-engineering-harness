@@ -3,8 +3,8 @@ import type { WorkUnitOutput } from "../agents/outputContracts.js";
 import type { HarnessProjectConfig, TaskContract, WorkerSession } from "../core/types.js";
 import type { ExecutionAuthorityV1 } from "../security/executionLease.js";
 import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
-import type { ExecutionBindingV2, SkillManifestV1, RoleInvocationPolicyV1 } from "../architecture/executionIdentity.js";
-import type { ExecutionBlueprintV2 } from "../architecture/executionIdentity.js";
+import type { ExecutionBindingV3, SkillManifestV1, RoleInvocationPolicyV1 } from "../architecture/executionIdentity.js";
+import type { ExecutionBlueprintV3 } from "../architecture/executionIdentity.js";
 
 export interface DistributedTransportResolutionV1 {
   /** The transport the local wave selection carried before inheritance ("inherit" when unset). */
@@ -32,7 +32,7 @@ export interface DistributedDelegationJob {
   transportResolution: DistributedTransportResolutionV1;
   sandboxPolicySha256: string;
   executionAuthority: ExecutionAuthorityV1;
-  executionBlueprint: ExecutionBlueprintV2;
+  executionBlueprint: ExecutionBlueprintV3;
   roleInvocationPolicy: RoleInvocationPolicyV1;
   skillManifest: SkillManifestV1;
   sessionPreparation: { contextManifest: Readonly<Record<string, unknown>>; contextManifestDigest: string; promptManifestDigest: string };
@@ -58,7 +58,7 @@ export interface DistributedExecutionReleaseV1 {
   workerId: string;
   leaseId: string;
   releasedAt: string;
-  executionBinding: ExecutionBindingV2;
+  executionBinding: ExecutionBindingV3;
 }
 
 export interface DistributedDelegationResult {

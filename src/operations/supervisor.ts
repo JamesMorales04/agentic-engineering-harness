@@ -131,16 +131,8 @@ export function operationSupervisorTurnTimeoutSeconds(config: HarnessProjectConf
   const value = (config.orchestration as (HarnessProjectConfig["orchestration"] & SupervisionConfigExtension) | undefined)?.operations?.supervision?.turnTimeoutSeconds;
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.min(Math.floor(value), DEFAULT_SUPERVISOR_TURN_TIMEOUT_SECONDS) : DEFAULT_SUPERVISOR_TURN_TIMEOUT_SECONDS;
 }
-export function supervisorTurnConfig(config: HarnessProjectConfig): HarnessProjectConfig {
-  if (!config.orchestration) return config;
-  return { ...config, orchestration: { ...config.orchestration, worker: { ...config.orchestration.worker, timeoutSeconds: operationSupervisorTurnTimeoutSeconds(config) } } };
-}
 export function supervisorTurnTimedOutV1(session: Pick<WorkerSession, "exitCode" | "stdout" | "stderr">): boolean {
   return session.exitCode === 124 || /timed out|timeout/i.test(`${session.stderr} ${session.stdout}`);
-}
-function supervisorInitializationConfig(config: HarnessProjectConfig): HarnessProjectConfig {
-  if (!config.orchestration) return config;
-  return { ...config, orchestration: { ...config.orchestration, worker: { ...config.orchestration.worker, timeoutSeconds: operationSupervisorInitializationTimeoutSeconds(config) } } };
 }
 
 export async function ensureOperationSupervisor(root: string, config: HarnessProjectConfig, contract: TaskContract, selection: AgentExecutionSelection | undefined, options: EnsureSupervisorOptions = {}): Promise<OperationSupervisorHandle | undefined> {
@@ -173,7 +165,7 @@ async function ensureOperationSupervisorUnlocked(root: string, config: HarnessPr
     await recordPaseoTrace(stateRoot, "operation.supervisor.materialized", { operationId, generation, agentId: materialized.id, revision: operation.revision, attempt, status: "INITIALIZING" });
     try {
       operation = await updateSupervisorGeneration(stateRoot, operationId, generation, { initializationDispatchedAt: new Date().toISOString(), error: undefined });
-      const session = await dispatchMaterializedAgentPrompt(root, supervisorInitializationConfig(config), contract, initSelection, materialized, initializationPrompt(operation, generation), { phase: "supervision", operationKind: operation.kind, supervisorAgent: true });
+      const session = await dispatchMaterializedAgentPrompt(root, config, contract, initSelection, materialized, initializationPrompt(operation, generation), { phase: "supervision", operationKind: operation.kind, supervisorAgent: true, providerTurnDeadlineMs: operationSupervisorInitializationTimeoutSeconds(config) * 1000 });
       if (session.exitCode !== 0 || !session.id) throw new Error(session.stderr || session.stdout || `exit ${session.exitCode}`);
       const completedAt = new Date().toISOString();
       const activated = await updateSupervisorGeneration(stateRoot, operationId, generation, { status: "ACTIVE", activatedAt: completedAt, initializationCompletedAt: completedAt, initializationEvidence: session.transport?.includes("paseo") ? "paseo-sdk-turn-barrier" : "turn-barrier", error: undefined });
@@ -226,7 +218,7 @@ export async function consolidateWithOperationSupervisor(root: string, config: H
     onCorrection: async (detail) => { await recordPaseoTrace(stateRoot, "operation.supervisor.consolidation-correction", { operationId: supervisor.operationId, generation: supervisor.generation, agentId: supervisor.agentId, expectedFindingIds: rawIds, receivedFindingIds: detail.receivedIds ?? [], failure: detail.failure ?? null }).catch(() => undefined); },
     requestTurn: async (turnPrompt) => {
       const turnTimeoutSeconds = operationSupervisorTurnTimeoutSeconds(config);
-      const turnSession = await executeAgentPrompt(root, supervisorTurnConfig(config), contract, selection, turnPrompt, {
+      const turnSession = await executeAgentPrompt(root, config, contract, selection, turnPrompt, {
         outputContract: "supervisor",
         resumeSessionId: supervisor.agentId,
         phase: "consolidating",
@@ -234,7 +226,8 @@ export async function consolidateWithOperationSupervisor(root: string, config: H
         supervisorAgent: true,
         requireExecutionAuthority: true,
         continueBoundSession: true,
-        participantId: provenance.participantId
+        participantId: provenance.participantId,
+        providerTurnDeadlineMs: turnTimeoutSeconds * 1000
       });
       if (turnSession.exitCode !== 0) {
         const timedOut = supervisorTurnTimedOutV1(turnSession);
@@ -331,7 +324,7 @@ async function maybeRotateOperationSupervisorUnlocked(root: string, config: Harn
     await recordPaseoTrace(stateRoot, "operation.supervisor.materialized", { operationId, generation: replacementGeneration, agentId: materialized.id, revision: registered.revision, replacementFor: active.generation, status: "INITIALIZING", attempt });
     try {
       await updateSupervisorGeneration(stateRoot, operationId, replacementGeneration, { initializationDispatchedAt: new Date().toISOString(), error: undefined });
-      const session = await dispatchMaterializedAgentPrompt(root, supervisorInitializationConfig(config), contract, handoffSelection, materialized, handoffPrompt(latest, replacementGeneration, checkpointArtifact), { phase: "supervision", operationKind: operation.kind, supervisorAgent: true });
+      const session = await dispatchMaterializedAgentPrompt(root, config, contract, handoffSelection, materialized, handoffPrompt(latest, replacementGeneration, checkpointArtifact), { phase: "supervision", operationKind: operation.kind, supervisorAgent: true, providerTurnDeadlineMs: operationSupervisorInitializationTimeoutSeconds(config) * 1000 });
       if (session.exitCode !== 0 || !session.id) throw new Error(session.stderr || session.stdout || `exit ${session.exitCode}`);
       const completedAt = new Date().toISOString();
       const activated = await updateSupervisorGeneration(stateRoot, operationId, replacementGeneration, { status: "ACTIVE", activatedAt: completedAt, initializationCompletedAt: completedAt, initializationEvidence: "paseo-sdk-turn-barrier", error: undefined });

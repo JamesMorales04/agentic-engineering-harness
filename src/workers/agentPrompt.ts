@@ -60,12 +60,13 @@ import { createDirectWorkerHome, removeDirectWorkerHome, type DirectWorkerHome, 
 import { prepareCodexThread, prepareOpenCodeSession } from "./runtimeSessions.js";
 import { recordEvent } from "../telemetry/events.js";
 import { participantUsageObservationFromSession, recordParticipantUsageObservation, recordToolCallObservations } from "../telemetry/efficiency.js";
+import { initializeParticipantLivenessV1, recordParticipantExecutionActivityV1 } from "../operations/executionLiveness.js";
 import { recordParticipantTelemetry } from "../telemetry/metrics.js";
 import { resolveTelemetryCorrelation } from "../telemetry/identity.js";
-import { assertExecutionAuthority, prepareExecutionAuthority, type ExecutionAuthorityV1 } from "../security/executionLease.js";
+import { assertExecutionAuthority, attachParticipantScratchAuthority, prepareExecutionAuthority, provisionParticipantScratch, type ExecutionAuthorityV1 } from "../security/executionLease.js";
 import { sha256Canonical } from "../core/digest.js";
 import { createPromptManifest } from "../context/runtimeV2.js";
-import { assertExecutionBindingV2, assertExecutionBlueprintV2, assertResolvedOperationPolicyV1, assertRoleInvocationPolicyV1, assertSkillManifestV1, compileExecutionBinding, compileResolvedOperationPolicy, compileRoleInvocationPolicy, compileSkillManifest, createExecutionBlueprintV2, type ExecutionBindingV2, type ExecutionBlueprintV2, type ResolvedOperationPolicyV1, type RoleInvocationPolicyV1, type SkillManifestV1 } from "../architecture/executionIdentity.js";
+import { assertExecutionBindingV3, assertExecutionBlueprintV3, assertParticipantScratchLeaseV1, assertResolvedOperationPolicyV2, assertRoleInvocationPolicyV1, assertSkillManifestV1, compileExecutionBinding, compileResolvedOperationPolicy, compileRoleInvocationPolicy, compileSkillManifest, createExecutionBlueprintV3, participantScratchClaim, participantScratchResourceName, type ExecutionBindingV3, type ExecutionBlueprintV3, type ParticipantScratchLeaseV1, type ResolvedOperationPolicyV2, type RoleInvocationPolicyV1, type SkillManifestV1 } from "../architecture/executionIdentity.js";
 import { configuredDeliveryPolicy, requiredHumanActionAuthorizations } from "../security/actionPolicy.js";
 import { compileExecutionCatalog } from "../architecture/executionCatalog.js";
 import { defaultSkillSeed, roleProfile } from "../participants/index.js";
@@ -103,8 +104,14 @@ export interface AgentPromptOptions {
   requireExecutionAuthority?: boolean;
   executionBlueprintDigest?: string;
   resolvedOperationPolicyDigest?: string;
-  executionBinding?: ExecutionBindingV2;
-  executionBlueprint?: ExecutionBlueprintV2;
+  executionBinding?: ExecutionBindingV3;
+  /** Controller-issued private scratch lease for the exact participant generation. */
+  scratchLease?: ParticipantScratchLeaseV1;
+  /** Frozen generation chosen by the controller before provider materialization. */
+  participantGeneration?: string;
+  /** Provider turn boundary, independently bounded from the operation hard deadline and progress lease. */
+  providerTurnDeadlineMs?: number;
+  executionBlueprint?: ExecutionBlueprintV3;
   roleInvocationPolicy?: RoleInvocationPolicyV1;
   skillManifest?: SkillManifestV1;
   contextManifest?: Readonly<Record<string, unknown>>;
@@ -169,19 +176,41 @@ export async function executeAgentPrompt(
   const transport = selection.transport === "inherit" ? (config.orchestration?.provider ?? "none") : selection.transport;
   if (options.requireExecutionAuthority && options.capabilityAuthority) assertExecutionAuthority(options.capabilityAuthority);
   if (options.skillManifest) assertSkillManifestV1(options.skillManifest);
-  const authority = options.capabilityAuthority ?? await prepareExecutionAuthority(root, selection, { participantId: options.participantId, phase: options.phase, required: options.requireExecutionAuthority });
+  let authority = options.capabilityAuthority ?? await prepareExecutionAuthority(root, selection, { participantId: options.participantId, phase: options.phase, required: options.requireExecutionAuthority });
   if (options.skillManifest?.entries.some((entry) => entry.kind === "ephemeral")) {
     if (!authority) throw new Error("SKILL_MANIFEST_AUTHORITY_REQUIRED: accepted ephemeral procedure content requires controller-issued participant authority.");
     assertExecutionAuthority(authority);
     if (authority.participantId !== options.skillManifest.scope.participantId) throw new Error("SKILL_MANIFEST_ASSIGNMENT_MISMATCH: accepted procedure content is available only to its assigned authorized participant.");
   }
-  const authorityOptions = authority ? { ...options, participantId: authority.participantId, capabilityAuthority: authority } : options;
+  const participantGeneration = options.executionBinding?.participantGeneration ?? options.participantGeneration ?? options.scratchLease?.participantGeneration ?? randomUUID();
+  let scratchLease = options.scratchLease ?? options.executionBinding?.scratchLease ?? authority?.scratchLease;
+  const participantIdForScratch = authority?.participantId ?? options.participantId;
+  const participantToolPack = selection.role === "Semantic Assessor" ? undefined : options.roleInvocationPolicy?.toolPack ?? options.executionBlueprint?.participants.find((participant) => participant.participantId === participantIdForScratch)?.toolPack ?? roleProfile(selection.role).toolPack;
+  const scratchClaim = participantIdForScratch ? participantScratchResourceName(selection.role, participantIdForScratch, participantToolPack) : undefined;
+  if (scratchLease && !scratchClaim) throw new Error("PARTICIPANT_SCRATCH_AUTHORITY_DENIED: this frozen role/transport has no participant scratch resource claim.");
+  if (scratchClaim && !scratchLease && !options.resumeSessionId && !options.executionBinding && authority) {
+    const provisioned = await provisionParticipantScratch(root, selection, authority, participantGeneration);
+    if (!provisioned) throw new Error("PARTICIPANT_SCRATCH_REQUIRED: the frozen blueprint requires private scratch but the controller did not provision it.");
+    authority = provisioned.authority;
+    scratchLease = provisioned.scratchLease;
+  }
+  if (scratchClaim && !scratchLease && currentOperationContext().id && !options.resumeSessionId) throw new Error("PARTICIPANT_SCRATCH_REQUIRED: a managed mutating participant must receive its controller-owned scratch lease before prompt preparation.");
+  if (authority && scratchLease && authority.scratchLease?.digest !== scratchLease.digest) authority = await attachParticipantScratchAuthority(root, authority, scratchLease);
+  if (authority && scratchLease) assertExecutionAuthority(authority);
+  const authorityOptions = {
+    ...options,
+    participantGeneration,
+    ...(scratchLease ? { scratchLease } : {}),
+    ...(authority ? { participantId: authority.participantId, capabilityAuthority: authority } : {})
+  };
   const effectiveOptions = authorityOptions.contextCapabilities
     ? authorityOptions
     : { ...authorityOptions, contextCapabilities: await resolveContextTransportCapabilities(root, config, selection, { mode: "live" }) };
+  const promptWithScratch = scratchLease ? scratchAwarePrompt(prompt, scratchLease) : prompt;
+  if (scratchLease && effectiveOptions.preparedPrompt && !effectiveOptions.preparedPrompt.includes(`AEH private scratch directory: ${scratchLease.path}`)) throw new Error("EXECUTION_BINDING_SCRATCH_MISMATCH: prepared prompt does not disclose the controller-owned scratch directory bound to this participant.");
   const projected = effectiveOptions.preparedPrompt
     ? verifyPreparedPrompt(effectiveOptions.preparedPrompt, effectiveOptions, selection)
-    : await buildEffectivePromptIdentity(root, config, contract, selection, prompt, effectiveOptions);
+    : await buildEffectivePromptIdentity(root, config, contract, selection, promptWithScratch, effectiveOptions);
   const identityOptions = { ...effectiveOptions, preparedPrompt: projected.prompt, contextManifest: projected.contextManifest, contextManifestDigest: projected.contextManifestDigest, promptManifestDigest: projected.promptManifestDigest };
   let directWorkerHome: DirectWorkerHome | undefined = identityOptions.directWorkerHome;
   let materializedPaseoSession = identityOptions.materializedPaseoSession;
@@ -257,12 +286,14 @@ export async function materializeAgentPrompt(
     parentAgentId: effectiveOptions.parentAgentId,
     supervisorAgent: effectiveOptions.supervisorAgent,
     contextCapabilities,
+    providerTurnDeadlineMs: effectiveOptions.providerTurnDeadlineMs,
     participantId: authority?.participantId,
     candidateDigest: authority?.candidateDigest,
     capabilityLeases: authority?.leases,
     executionBlueprintDigest: effectiveOptions.executionBlueprint?.digest ?? effectiveOptions.executionBlueprintDigest,
     roleInvocationPolicyDigest: effectiveOptions.roleInvocationPolicy?.digest,
     skillManifestDigest: effectiveOptions.skillManifest?.digest,
+    scratchLease: effectiveOptions.scratchLease,
     contextManifestDigest: effectiveOptions.contextManifestDigest,
     promptManifestDigest: effectiveOptions.promptManifestDigest
   });
@@ -386,9 +417,9 @@ export async function prepareAgentExecutionBinding(
   selection: AgentExecutionSelection,
   prompt: string,
   options: AgentPromptOptions
-): Promise<{ binding: ExecutionBindingV2; authority: ExecutionAuthorityV1; prompt: string; contextManifest: Readonly<Record<string, unknown>>; executionBlueprint: ExecutionBlueprintV2; roleInvocationPolicy: RoleInvocationPolicyV1; skillManifest: SkillManifestV1 }> {
+): Promise<{ binding: ExecutionBindingV3; authority: ExecutionAuthorityV1; prompt: string; contextManifest: Readonly<Record<string, unknown>>; executionBlueprint: ExecutionBlueprintV3; roleInvocationPolicy: RoleInvocationPolicyV1; skillManifest: SkillManifestV1 }> {
   const identity = await prepareAgentExecutionIdentity(root, config, contract, selection, prompt, options);
-  const boundOptions: AgentPromptOptions = { ...options, capabilityAuthority: identity.authority, participantId: identity.authority.participantId, preparedPrompt: identity.prompt, contextManifest: identity.contextManifest, contextManifestDigest: identity.contextManifestDigest, promptManifestDigest: identity.promptManifestDigest, executionBlueprint: identity.executionBlueprint, executionBlueprintDigest: identity.executionBlueprint.digest, roleInvocationPolicy: identity.roleInvocationPolicy, skillManifest: identity.skillManifest };
+  const boundOptions: AgentPromptOptions = { ...options, capabilityAuthority: identity.authority, participantId: identity.authority.participantId, participantGeneration: identity.participantGeneration, ...(identity.scratchLease ? { scratchLease: identity.scratchLease } : {}), preparedPrompt: identity.prompt, contextManifest: identity.contextManifest, contextManifestDigest: identity.contextManifestDigest, promptManifestDigest: identity.promptManifestDigest, executionBlueprint: identity.executionBlueprint, executionBlueprintDigest: identity.executionBlueprint.digest, roleInvocationPolicy: identity.roleInvocationPolicy, skillManifest: identity.skillManifest };
   const sessionId = boundOptions.executionSessionId ?? (boundOptions.resumeSessionId ? boundOptions.resumeSessionId : undefined);
   if (!sessionId) throw new Error("EXECUTION_BINDING_SESSION_REQUIRED: binding preparation requires an actual runtime session supplied by the selected adapter.");
   const binding = await resolveExecutionBinding(root, config, contract, selection, boundOptions, identity.authority, sessionId);
@@ -397,11 +428,13 @@ export async function prepareAgentExecutionBinding(
 
 export interface PreparedAgentExecutionIdentity {
   authority: ExecutionAuthorityV1;
+  participantGeneration: string;
+  scratchLease?: ParticipantScratchLeaseV1;
   prompt: string;
   contextManifest: Readonly<Record<string, unknown>>;
   contextManifestDigest: string;
   promptManifestDigest: string;
-  executionBlueprint: ExecutionBlueprintV2;
+  executionBlueprint: ExecutionBlueprintV3;
   roleInvocationPolicy: RoleInvocationPolicyV1;
   skillManifest: SkillManifestV1;
 }
@@ -415,13 +448,33 @@ export async function prepareAgentExecutionIdentity(
   prompt: string,
   options: AgentPromptOptions
 ): Promise<PreparedAgentExecutionIdentity> {
-  const authority = options.capabilityAuthority ?? await prepareExecutionAuthority(root, selection, { participantId: options.participantId, phase: options.phase, required: true });
-  if (!authority) throw new Error("V2_AUTHORITY_REQUIRED: execution identity compilation requires controller-issued capability authority evidence.");
+  if (selection.role === "Semantic Assessor") throw new Error("SEMANTIC_ASSESSOR_NOT_PARTICIPANT: bounded semantic assessments do not receive participant scratch resources.");
+  const initialAuthority = options.capabilityAuthority ?? await prepareExecutionAuthority(root, selection, { participantId: options.participantId, phase: options.phase, required: true });
+  if (!initialAuthority) throw new Error("V2_AUTHORITY_REQUIRED: execution identity compilation requires controller-issued capability authority evidence.");
+  let authority: ExecutionAuthorityV1 = initialAuthority;
+  const participantGeneration = options.executionBinding?.participantGeneration ?? options.participantGeneration ?? options.scratchLease?.participantGeneration ?? randomUUID();
+  let scratchLease = options.scratchLease ?? options.executionBinding?.scratchLease ?? authority.scratchLease;
+  const participantToolPack = options.roleInvocationPolicy?.toolPack ?? options.executionBlueprint?.participants.find((participant) => participant.participantId === authority.participantId)?.toolPack ?? roleProfile(selection.role).toolPack;
+  const scratchClaim = participantScratchResourceName(selection.role, authority.participantId, participantToolPack);
+  if (scratchLease && !scratchClaim) throw new Error("PARTICIPANT_SCRATCH_AUTHORITY_DENIED: this frozen role/transport has no participant scratch resource claim.");
+  if (scratchClaim && !scratchLease && !options.resumeSessionId && !options.executionBinding) {
+    const provisioned = await provisionParticipantScratch(root, selection, authority, participantGeneration);
+    if (!provisioned) throw new Error("PARTICIPANT_SCRATCH_REQUIRED: the frozen blueprint requires private scratch but the controller did not provision it.");
+    authority = provisioned.authority;
+    scratchLease = provisioned.scratchLease;
+  }
+  if (scratchClaim && !scratchLease && !options.resumeSessionId) throw new Error("PARTICIPANT_SCRATCH_REQUIRED: a managed mutating participant has no exact scratch lease.");
+  if (scratchLease && (scratchLease.participantGeneration !== participantGeneration || scratchLease.participantId !== authority.participantId || scratchLease.operationId !== authority.operationId || scratchLease.candidateDigest !== authority.candidateDigest || scratchLease.controllerEpoch !== authority.controllerEpoch)) throw new Error("PARTICIPANT_SCRATCH_IDENTITY_MISMATCH: scratch lease does not match the frozen participant generation.");
+  if (scratchLease && authority.scratchLease?.digest !== scratchLease.digest) authority = await attachParticipantScratchAuthority(root, authority, scratchLease);
+  if (scratchLease) assertExecutionAuthority(authority);
   const contextCapabilities = options.contextCapabilities ?? await resolveContextTransportCapabilities(root, config, selection, { mode: "live" });
+  const identityOptions: AgentPromptOptions = { ...options, capabilityAuthority: authority, participantId: authority.participantId, participantGeneration, ...(scratchLease ? { scratchLease } : {}), contextCapabilities };
+  const promptWithScratch = scratchLease ? scratchAwarePrompt(prompt, scratchLease) : prompt;
+  if (scratchLease && options.preparedPrompt && !options.preparedPrompt.includes(`AEH private scratch directory: ${scratchLease.path}`)) throw new Error("EXECUTION_BINDING_SCRATCH_MISMATCH: prepared prompt does not disclose the controller-owned scratch directory bound to this participant.");
   const projected = options.preparedPrompt
-    ? verifyPreparedPrompt(options.preparedPrompt, options, selection)
-    : await buildEffectivePromptIdentity(root, config, contract, selection, prompt, { ...options, capabilityAuthority: authority, participantId: authority.participantId, contextCapabilities });
-  const identityOptions: AgentPromptOptions = { ...options, capabilityAuthority: authority, participantId: authority.participantId, preparedPrompt: projected.prompt, contextCapabilities, contextManifest: projected.contextManifest, contextManifestDigest: projected.contextManifestDigest, promptManifestDigest: projected.promptManifestDigest };
+    ? verifyPreparedPrompt(options.preparedPrompt, identityOptions, selection)
+    : await buildEffectivePromptIdentity(root, config, contract, selection, promptWithScratch, identityOptions);
+  Object.assign(identityOptions, { preparedPrompt: projected.prompt, contextManifest: projected.contextManifest, contextManifestDigest: projected.contextManifestDigest, promptManifestDigest: projected.promptManifestDigest });
   // A detached distributed worker executes a propagated launch that already carries the frozen
   // blueprint, role policy, skill manifest and controller-issued authority; it has no operation
   // state root. The durable record is loaded when present and its equality checks are strictly
@@ -436,7 +489,7 @@ export async function prepareAgentExecutionIdentity(
   const operationIdentity: ParticipantInvocationOperationV1 = operation ?? { id: authority.operationId, operationExecutionRevision: options.executionBlueprint!.operationExecutionRevision, resolvedOperationPolicy: options.executionBlueprint!.resolvedOperationPolicy };
   const compiled = await compileParticipantInvocationIdentity(root, config, contract, selection, identityOptions, operationIdentity, candidate, authority.participantId, epoch);
   if (operation) await bindResolvedPolicyIfAbsent(stateRoot, authority.operationId, compiled.policy);
-  return { authority, prompt: projected.prompt, contextManifest: projected.contextManifest, contextManifestDigest: projected.contextManifestDigest, promptManifestDigest: projected.promptManifestDigest, executionBlueprint: compiled.blueprint, roleInvocationPolicy: compiled.rolePolicy, skillManifest: compiled.skillManifest };
+  return { authority, participantGeneration, ...(scratchLease ? { scratchLease } : {}), prompt: projected.prompt, contextManifest: projected.contextManifest, contextManifestDigest: projected.contextManifestDigest, promptManifestDigest: projected.promptManifestDigest, executionBlueprint: compiled.blueprint, roleInvocationPolicy: compiled.rolePolicy, skillManifest: compiled.skillManifest };
 }
 
 export async function dispatchMaterializedAgentPrompt(
@@ -495,7 +548,7 @@ export async function dispatchMaterializedAgentPrompt(
     transport: materialized.transport,
     phase: effectiveOptions.phase ?? materialized.phase
   });
-  const timeout = config.orchestration?.worker?.timeoutSeconds ?? 1800;
+  const timeout = Math.max(1, Math.ceil(providerTurnDeadlineMs(config, effectiveOptions) / 1000));
   const schema = effectiveOptions.outputContract ? outputJsonSchema(effectiveOptions.outputContract) : undefined;
   const executionLabels = boundPaseoExecutionLabels(effectiveOptions, selection.role, materialized.structuredResultChannelId);
   const continued = schema
@@ -631,15 +684,19 @@ async function executeViaPaseo(
     parentAgentId: options.parentAgentId,
     supervisorAgent: options.supervisorAgent,
     contextCapabilities: options.contextCapabilities,
+    providerTurnDeadlineMs: options.providerTurnDeadlineMs,
+    supervisorSessionId: options.supervisorAgent ? options.resumeSessionId ?? options.materializedPaseoSession?.id : undefined,
     participantId: options.participantId,
     candidateDigest: options.capabilityAuthority?.candidateDigest,
     capabilityLeases: options.capabilityAuthority?.leases,
-    executionBinding: options.executionBinding
+    executionBinding: options.executionBinding,
+    scratchLease: options.scratchLease ?? options.executionBinding?.scratchLease
   });
   attachStructuredResultProvenance(spec.labels, options.structuredResultProvenance, selection.role);
   const startedAt = new Date().toISOString();
   const schema = options.outputContract ? outputJsonSchema(options.outputContract) : undefined;
   if (options.resumeSessionId) {
+    await recordProviderTurnStarted(root, options, "paseo");
     const continued = await continueManagedPaseoAgent(root, options.resumeSessionId, prompt, spec.timeoutSeconds, undefined, schema, spec.labels);
     return session(selection, continued.exitCode, continued.stdout, continued.stderr, {
       id: options.resumeSessionId,
@@ -664,6 +721,7 @@ async function executeViaPaseo(
     const materialized = options.materializedPaseoSession;
     if (!materialized.id || materialized.id !== options.executionBinding?.runtime.sessionId) throw new Error("EXECUTION_BINDING_RUNTIME_SESSION_MISMATCH: materialized Paseo session does not match the frozen binding before first-turn dispatch.");
     const timeout = spec.timeoutSeconds;
+    await recordProviderTurnStarted(root, options, "paseo");
     const continued = await continueManagedPaseoAgent(root, materialized.id, prompt, timeout, undefined, schema, spec.labels);
     if (continued.id && continued.id !== materialized.id) throw new Error("EXECUTION_BINDING_RUNTIME_SESSION_MISMATCH: Paseo continuation returned a different provider agent id than the materialized session.");
     if (!options.supervisorAgent) await markOperationSessionRunning(root, materialized.id).catch(() => undefined);
@@ -724,21 +782,59 @@ async function executeViaPaseo(
 
 async function executeDirect(root: string, config: HarnessProjectConfig, selection: AgentExecutionSelection, prompt: string, options: AgentPromptOptions): Promise<WorkerSession> {
   const startedAt = new Date().toISOString();
+  await recordProviderTurnStarted(root, options, selection.runtimeAdapter);
   const executionEnv = boundedExecutionEnvironment(selection, options);
   if (selection.runtimeAdapter === "opencode") {
-    const projection = compileOpenCodeRuntimeProjection(selection, config, options.contextCapabilities, undefined, root);
+    const projection = compileOpenCodeRuntimeProjection(selection, config, options.contextCapabilities, options.scratchLease ? [options.scratchLease.path] : undefined, root);
     const args = ["opencode", "run", "--auto", "--format", "json", "--model", selection.modelId];
     const sessionId = options.resumeSessionId ?? options.executionSessionId;
     if (sessionId) args.push("--session", sessionId);
     if (selection.variant) args.push("--variant", selection.variant);
     args.push("--agent", projection.binding.agentId, ...selection.args, prompt);
-    const result = await runDirectWorkerProcess("opencode", args.slice(1), config, { cwd: root, timeoutMs: (config.orchestration?.worker?.timeoutSeconds ?? 1800) * 1000, environment: { ...withDirectContextIdentity(projection.env, root, selection, options), ...executionEnv }, homeDirectory: options.directWorkerHome?.directory });
+    const result = await runDirectWorkerProcess("opencode", args.slice(1), config, { cwd: root, timeoutMs: providerTurnDeadlineMs(config, options), environment: { ...withDirectContextIdentity(projection.env, root, selection, options), ...executionEnv }, homeDirectory: options.directWorkerHome?.directory });
     const observedSessionId = extractSessionId(result.stdout);
     if ((options.executionBinding || options.outputContract) && (!observedSessionId || observedSessionId !== sessionId)) throw new Error("EXECUTION_BINDING_RUNTIME_SESSION_MISMATCH: OpenCode result did not identify the exact durable session frozen in the binding.");
     return session(selection, result.exitCode, result.stdout, result.stderr, { id: observedSessionId ?? sessionId, nativeAgent: projection.binding.agentId, ...directMetadata(options, startedAt) });
   }
   if (selection.runtimeAdapter === "codex") return executeCodex(root, config, selection, prompt, options, startedAt, executionEnv);
   throw new Error(`No direct runtime adapter for ${selection.runtimeAdapter}`);
+}
+
+async function recordProviderTurnStarted(root: string, options: AgentPromptOptions, provider: string): Promise<void> {
+  const binding = options.executionBinding;
+  if (!binding) return;
+  const admittedUntil = Date.now() + Math.max(1, (await loadOperation(root, binding.operationId)).resolvedOperationPolicy?.executionLiveness.progressLeaseMs ?? 15 * 60_000);
+  for (;;) {
+    const operation = await loadOperation(root, binding.operationId);
+    if (operation.ownerEconomicBoundary) throw new Error(`OWNER_DECISION_REQUIRED: ${operation.ownerEconomicBoundary.reason}`);
+    const participant = operation.participants[binding.participantId];
+    const liveness = participant?.executionLiveness;
+    if (!participant?.executionBinding || participant.executionBinding.digest !== binding.digest || !liveness) throw new Error("PARTICIPANT_PROVIDER_TURN_START_REJECTED: the frozen participant binding is stale or terminal.");
+    if (["SUCCEEDED", "FAILED", "CANCELLED"].includes(operation.status) || ["COMPLETED", "FAILED", "BLOCKED", "CANCELLED"].includes(participant.status)) throw new Error("PARTICIPANT_PROVIDER_TURN_START_REJECTED: operation or participant reached a terminal state during bounded recovery.");
+    const hardDeadline = Date.parse(operation.origin?.rootHardDeadlineAt ?? new Date(Date.parse(operation.createdAt) + (operation.resolvedOperationPolicy?.executionLiveness.hardDeadlineMs ?? 8 * 60 * 60_000)).toISOString());
+    if (Date.now() >= hardDeadline) throw new Error("OPERATION_HARD_DEADLINE_REACHED: no provider turn may start beyond the Owner-delegated hard deadline.");
+    if (liveness.providerTurns >= operation.resolvedOperationPolicy!.economicEnvelope.hardProviderTurns) {
+      await recordParticipantExecutionActivityV1(root, binding.operationId, binding.participantId, {
+        kind: "PROVIDER_TURN_STARTED",
+        evidenceId: `provider-turn-attempt:${binding.runtime.sessionId}:${randomUUID()}`,
+        evidenceDigest: sha256Canonical({ provider, model: binding.runtime.model, sessionId: binding.runtime.sessionId, generation: binding.participantGeneration })
+      });
+      if (Date.now() >= admittedUntil) throw new Error("PARTICIPANT_PROVIDER_TURN_CEILING_REACHED: the per-participant hard turn ceiling remains exhausted after bounded Supervisor/Lead recovery.");
+      await new Promise((resolve) => setTimeout(resolve, Math.min(1_000, admittedUntil - Date.now())));
+      continue;
+    }
+    if (liveness.providerTurns >= liveness.currentProviderTurnBudget) {
+      if (Date.now() >= admittedUntil) throw new Error("SUPERVISOR_RECOVERY_WINDOW_EXPIRED: no authorized Supervisor or Lead renewed the participant provider-turn allowance within the current progress lease.");
+      await new Promise((resolve) => setTimeout(resolve, Math.min(1_000, admittedUntil - Date.now())));
+      continue;
+    }
+    const event = await recordParticipantExecutionActivityV1(root, binding.operationId, binding.participantId, {
+      kind: "PROVIDER_TURN_STARTED",
+      evidenceId: `provider-turn-attempt:${binding.runtime.sessionId}:${randomUUID()}`,
+      evidenceDigest: sha256Canonical({ provider, model: binding.runtime.model, sessionId: binding.runtime.sessionId, generation: binding.participantGeneration })
+    });
+    if (event) return;
+  }
 }
 
 async function executeCodex(
@@ -751,7 +847,7 @@ async function executeCodex(
   executionEnv: Record<string, string>
 ): Promise<WorkerSession> {
   const schema = options.outputContract ? outputJsonSchema(options.outputContract) : undefined;
-  const temp = schema ? await fs.mkdtemp(path.join(os.tmpdir(), "aeh-codex-schema-")) : undefined;
+  const temp = schema ? await fs.mkdtemp(path.join(options.scratchLease?.path ?? os.tmpdir(), "aeh-codex-schema-")) : undefined;
   try {
     const schemaFile = temp ? path.join(temp, "schema.json") : undefined;
     const outputFile = temp ? path.join(temp, "output.json") : undefined;
@@ -761,8 +857,8 @@ async function executeCodex(
       ? ["codex", "exec", "resume", sessionId, "--json", "--model", selection.modelName]
       : ["codex", "exec", "--json", "--model", selection.modelName];
     if (schemaFile && outputFile) args.push("--output-schema", schemaFile, "-o", outputFile);
-    args.push(...selection.args, ...codexPermissionArgs(selection), prompt);
-    const result = await runDirectWorkerProcess(args[0]!, args.slice(1), config, { cwd: root, timeoutMs: (config.orchestration?.worker?.timeoutSeconds ?? 1800) * 1000, environment: { ...executionEnv, ...(options.directWorkerHome ? { CODEX_HOME: options.directWorkerHome.directory } : {}) }, homeDirectory: options.directWorkerHome?.directory });
+    args.push(...selection.args, ...codexPermissionArgs(selection, options.scratchLease?.path), prompt);
+    const result = await runDirectWorkerProcess(args[0]!, args.slice(1), config, { cwd: root, timeoutMs: providerTurnDeadlineMs(config, options), environment: { ...executionEnv, ...(options.directWorkerHome ? { CODEX_HOME: options.directWorkerHome.directory } : {}) }, homeDirectory: options.directWorkerHome?.directory });
     let stdout = result.stdout;
     if (outputFile) { try { stdout = await fs.readFile(outputFile, "utf8"); } catch { /* event stream fallback */ } }
     const id = extractSessionId(result.stdout);
@@ -773,13 +869,22 @@ async function executeCodex(
   }
 }
 
-function codexPermissionArgs(selection: AgentExecutionSelection): string[] {
+function codexPermissionArgs(selection: AgentExecutionSelection, scratchPath?: string): string[] {
   const args: string[] = [];
   if (selection.permissions.write === "deny") args.push("--sandbox", "read-only");
-  else if (selection.permissions.write === "allow") args.push("--sandbox", "workspace-write");
+  else if (selection.permissions.write === "allow") {
+    args.push("--sandbox", "workspace-write");
+    if (scratchPath) args.push("-c", "sandbox_workspace_write.exclude_slash_tmp=true", "-c", `sandbox_workspace_write.writable_roots=${JSON.stringify([scratchPath])}`);
+  }
   if (selection.permissions.shell === "deny") args.push("--ask-for-approval", "never");
   if (selection.permissions.network === "deny") args.push("-c", "sandbox_workspace_write.network_access=false");
   return args;
+}
+
+function providerTurnDeadlineMs(config: HarnessProjectConfig, options: AgentPromptOptions): number {
+  const configured = options.providerTurnDeadlineMs ?? config.orchestration?.operations?.liveness?.providerTurnDeadlineMs ?? 30 * 60_000;
+  if (!Number.isSafeInteger(configured) || configured < 1) throw new Error("PROVIDER_TURN_DEADLINE_INVALID: provider-turn deadline must be a positive integer in milliseconds.");
+  return configured;
 }
 
 function withDirectContextIdentity(environment: Record<string, string>, root: string, selection: AgentExecutionSelection, options: AgentPromptOptions): Record<string, string> {
@@ -827,8 +932,9 @@ async function executePodman(
   const args: string[] = ["podman", "run", ...hardenedPodmanArgs(config, selection, writable, { persistentIsolatedHome: true })];
   args.push("-v", `${options.directWorkerHome.directory}:/home/aeh:rw`, "-e", "HOME=/home/aeh", "-e", "XDG_CONFIG_HOME=/home/aeh/.config", "-e", "XDG_CACHE_HOME=/home/aeh/.cache");
   args.push("-v", `${root}:/workspace:${writable ? "rw" : "ro"}`);
+  if (options.scratchLease) args.push("-v", `${options.scratchLease.path}:${options.scratchLease.path}:rw`);
   if (writable) for (const relative of sealedArtifacts(config, contract)) args.push("-v", `${repositoryPath(root, relative)}:/workspace/${relative}:ro`);
-  const projection = compileOpenCodeRuntimeProjection(selection, config, options.contextCapabilities, undefined, root);
+  const projection = compileOpenCodeRuntimeProjection(selection, config, options.contextCapabilities, options.scratchLease ? [options.scratchLease.path] : undefined, root);
   args.push("-e", `OPENCODE_CONFIG_CONTENT=${projection.env.OPENCODE_CONFIG_CONTENT}`);
   for (const [name, value] of Object.entries(boundedExecutionEnvironment(selection, options))) args.push("-e", `${name}=${value}`);
   for (const [name, value] of Object.entries(allowedSandboxEnvironment(config))) args.push("-e", `${name}=${value}`);
@@ -838,7 +944,7 @@ async function executePodman(
   if (selection.variant) runtimeArgs.push("--variant", selection.variant);
   runtimeArgs.push("--agent", projection.binding.agentId, ...selection.args, prompt);
   args.push(`cd /workspace && ${runtimeArgs.map(quote).join(" ")}`);
-  const result = await runExecutable(args[0]!, args.slice(1), { cwd: root, timeoutMs: (config.orchestration?.worker?.timeoutSeconds ?? 1800) * 1000 });
+    const result = await runExecutable(args[0]!, args.slice(1), { cwd: root, timeoutMs: providerTurnDeadlineMs(config, options) });
   const observedSessionId = extractSessionId(result.stdout);
   if ((options.executionBinding || options.outputContract) && (!observedSessionId || observedSessionId !== sessionId)) throw new Error("EXECUTION_BINDING_RUNTIME_SESSION_MISMATCH: Podman OpenCode result did not identify the exact durable provider session frozen in the binding.");
   return session(selection, result.exitCode, result.stdout, result.stderr, { id: observedSessionId ?? sessionId, nativeAgent: projection.binding.agentId, ...directMetadata(options, startedAt, "podman") });
@@ -1047,12 +1153,25 @@ function boundedExecutionEnvironment(selection: AgentExecutionSelection, options
     env.AEH_PROMPT_MANIFEST_DIGEST = options.executionBinding.promptManifestDigest;
     env.AEH_SKILL_MANIFEST_DIGEST = options.executionBinding.skillManifestDigest;
   }
+  if (options.scratchLease) {
+    env.TMPDIR = options.scratchLease.path;
+    env.TEMP = options.scratchLease.path;
+    env.TMP = options.scratchLease.path;
+    env.AEH_SCRATCH_RESOURCE = options.scratchLease.resourceId;
+    env.AEH_SCRATCH_DIGEST = options.scratchLease.digest;
+  }
   return env;
 }
 
 function directMetadata(options: AgentPromptOptions, startedAt: string, transport = "direct"): Partial<WorkerSession> {
   const operation = currentOperationContext();
   return { transport, operationId: operation.id, operationKind: operation.kind ?? options.operationKind, phase: options.phase ?? "work", status: "finished", startedAt, finishedAt: new Date().toISOString() };
+}
+
+function scratchAwarePrompt(prompt: string, lease: ParticipantScratchLeaseV1): string {
+  const marker = `AEH private scratch directory: ${lease.path}`;
+  if (prompt.includes(marker)) return prompt;
+  return `${prompt}\n\n${marker}\nUse TMPDIR, TEMP, or TMP for temporary files. Keep temporary output inside this directory.`;
 }
 
 async function markOperationSessionRunning(root: string, agentId: string): Promise<void> {
@@ -1151,7 +1270,7 @@ async function persistEfficiencyObservations(
   operationId: string,
   resultStatus?: "SUCCEEDED" | "FAILED" | "BLOCKED" | "UNKNOWN"
 ): Promise<void> {
-  if (config.telemetry?.enabled !== true || !session.executionBinding) return;
+  if (!session.executionBinding) return;
   try {
     const operation = await loadOperation(stateRoot, operationId);
     const candidate = operation.candidateRevision;
@@ -1426,14 +1545,14 @@ export async function prepareRuntimeSession(
     const explicit = boundedExecutionEnvironment(selection, { ...options, capabilityAuthority: authority });
     let environment = buildDirectWorkerEnvironment(config, explicit, home.directory);
     if (selection.runtimeAdapter === "opencode") {
-      const projection = compileOpenCodeRuntimeProjection(selection, config, options.contextCapabilities, undefined, root);
+      const projection = compileOpenCodeRuntimeProjection(selection, config, options.contextCapabilities, options.scratchLease ? [options.scratchLease.path] : undefined, root);
       environment = buildDirectWorkerEnvironment(config, { ...withDirectContextIdentity(projection.env, root, selection, options), ...explicit }, home.directory);
-      return await prepareOpenCodeSession({ cwd: root, environment, home, timeoutMs: (config.orchestration?.worker?.timeoutSeconds ?? 1800) * 1000 });
+      return await prepareOpenCodeSession({ cwd: root, environment, home, timeoutMs: providerTurnDeadlineMs(config, options) });
     }
     if (selection.runtimeAdapter === "codex") {
       const sandbox = selection.permissions.write === "deny" ? "read-only" : selection.permissions.write === "allow" ? "workspace-write" : "danger-full-access";
       const approvalPolicy = selection.permissions.shell === "deny" ? "never" : "on-request";
-      return await prepareCodexThread({ cwd: root, environment, home, timeoutMs: (config.orchestration?.worker?.timeoutSeconds ?? 1800) * 1000, model: selection.modelName, modelProvider: selection.modelProvider, sandbox, approvalPolicy });
+      return await prepareCodexThread({ cwd: root, environment, home, timeoutMs: providerTurnDeadlineMs(config, options), model: selection.modelName, modelProvider: selection.modelProvider, sandbox, approvalPolicy });
     }
     throw new Error(`EXECUTION_BINDING_SESSION_UNSUPPORTED: direct runtime '${selection.runtimeAdapter}' has no approved idle-session API.`);
   } catch (error) {
@@ -1455,7 +1574,7 @@ async function resolveStructuredResultProvenance(
   if (!operationId) throw new Error("AEH_RESULT_PROVENANCE_UNSUPPORTED: output-contract participants require a managed operation identity.");
   const stateRoot = context.controlRoot ?? root;
   // A detached distributed worker has no operation state root: the controller-issued
-  // ExecutionAuthorityV1 + released ExecutionBindingV2 are its complete launch identity. The
+  // ExecutionAuthorityV1 + released ExecutionBindingV3 are its complete launch identity. The
   // durable operation record is loaded when present (controller/isolated root) and its checks are
   // strictly applied; when absent the same binding/blueprint equality is validated against the
   // controller-issued authority and frozen blueprint instead (AEH-V2-0131).
@@ -1520,15 +1639,23 @@ async function resolveExecutionBinding(
   options: AgentPromptOptions,
   authority?: ExecutionAuthorityV1,
   actualSessionId?: string
-): Promise<ExecutionBindingV2> {
+): Promise<ExecutionBindingV3> {
   if (options.executionBinding) {
     const binding = options.executionBinding;
-    assertExecutionBindingV2(binding);
+    assertExecutionBindingV3(binding);
+    if (binding.scratchLease && authority?.scratchLease?.digest !== binding.scratchLease.digest) {
+      if (!authority) throw new Error("V2_AUTHORITY_REQUIRED: recovered participant scratch requires current controller-issued authority.");
+      authority = await attachParticipantScratchAuthority(root, authority, binding.scratchLease);
+      options.capabilityAuthority = authority;
+    }
     if (!options.executionBlueprint || !options.roleInvocationPolicy || !options.skillManifest) throw new Error("EXECUTION_BINDING_REQUIRED: propagated launch requires its complete blueprint, role policy, and skill manifest.");
-    assertExecutionBlueprintV2(options.executionBlueprint);
+    assertExecutionBlueprintV3(options.executionBlueprint);
     assertRoleInvocationPolicyV1(options.roleInvocationPolicy);
     assertSkillManifestV1(options.skillManifest);
     const blueprintParticipant = options.executionBlueprint.participants.find((participant) => participant.participantId === binding.participantId);
+    const expectedScratchResource = blueprintParticipant ? participantScratchResourceName(blueprintParticipant.role, blueprintParticipant.participantId, blueprintParticipant.toolPack) : undefined;
+    const boundScratchLease = options.scratchLease ?? binding.scratchLease;
+    if (Boolean(expectedScratchResource) !== Boolean(binding.scratchLease) || (options.scratchLease && options.scratchLease.digest !== binding.scratchLease?.digest) || (boundScratchLease && authority?.scratchLease?.digest !== boundScratchLease.digest)) throw new Error("EXECUTION_BINDING_SCRATCH_MISMATCH: frozen participant scratch claim, exact resource lease, and capability authority disagree.");
     if (!blueprintParticipant || blueprintParticipant.roleInvocationPolicy.digest !== options.roleInvocationPolicy.digest || options.skillManifest.scope.participantId !== binding.participantId || options.skillManifest.scope.operationId !== binding.operationId || options.skillManifest.scope.operationExecutionRevision !== binding.operationExecutionRevision || options.skillManifest.scope.candidateRevision !== binding.candidateRevision || options.skillManifest.scope.candidateDigest !== binding.candidateDigest || options.skillManifest.scope.controllerEpoch !== binding.controllerEpoch || sha256Canonical(options.skillManifest.scope.workUnitIds) !== sha256Canonical(options.roleInvocationPolicy.workUnitIds) || sha256Canonical(options.skillManifest.scope.competencies) !== sha256Canonical(options.roleInvocationPolicy.competencies) || blueprintParticipant.skillManifestDigest !== options.skillManifest.digest || binding.executionBlueprintDigest !== options.executionBlueprint.digest || binding.operationExecutionRevision !== options.executionBlueprint.operationExecutionRevision || binding.candidateRevision !== options.executionBlueprint.candidateRevision || binding.candidateDigest !== options.executionBlueprint.candidateDigest || binding.operationPolicyDigest !== options.executionBlueprint.resolvedOperationPolicy.digest || binding.roleInvocationPolicyDigest !== options.roleInvocationPolicy.digest || binding.skillManifestDigest !== options.skillManifest.digest || binding.outputContract !== options.roleInvocationPolicy.outputContract || binding.contextManifestDigest !== options.contextManifestDigest || binding.promptManifestDigest !== options.promptManifestDigest || binding.participantId !== (authority?.participantId ?? options.participantId) || binding.candidateDigest !== authority?.candidateDigest || binding.controllerEpoch !== authority?.controllerEpoch || binding.operationId !== authority?.operationId || binding.leaseIdentities.join("\0") !== (authority?.leases.map((lease) => lease.leaseId).sort() ?? []).join("\0")) throw new Error("EXECUTION_BINDING_MISMATCH: propagated binding does not match the approved remote launch and actual manifests.");
     if (binding.runtime.runtimeId !== selection.runtimeName || binding.runtime.modelId !== selection.modelId || binding.runtime.model !== selection.modelName || binding.runtime.provider !== (selection.modelProvider ?? selection.paseoProvider ?? selection.runtimeAdapter)) throw new Error("EXECUTION_BINDING_RUNTIME_MISMATCH: propagated binding does not match the approved runtime and model.");
     if (actualSessionId && binding.runtime.sessionId !== actualSessionId) throw new Error("EXECUTION_BINDING_RUNTIME_SESSION_MISMATCH: propagated binding session does not match the runtime session selected for this launch.");
@@ -1539,6 +1666,8 @@ async function resolveExecutionBinding(
       const durable = await loadOperation(propagatedStateRoot, current.id);
       const persisted = durable.participants[binding.participantId]?.executionBinding;
       if (!persisted || persisted.digest !== binding.digest || !durable.candidateRevision || durable.candidateRevision.identityDigest !== binding.candidateDigest || durable.operationExecutionRevision !== binding.operationExecutionRevision || durable.resolvedOperationPolicy?.digest !== binding.operationPolicyDigest || (durable.controller?.epoch ?? 0) !== binding.controllerEpoch) throw new Error("EXECUTION_BINDING_STALE: propagated binding is not the current durable participant execution identity.");
+      options.providerTurnDeadlineMs ??= durable.resolvedOperationPolicy?.executionLiveness.providerTurnDeadlineMs;
+      await initializeParticipantLivenessV1(propagatedStateRoot, durable.id, binding.participantId, binding);
       if (isPaseoExecution(selection, config)) {
         await assertPaseoSessionBinding(propagatedStateRoot, durable, binding, true);
         if (Array.isArray(options.contextManifest?.addressableRefs) && options.contextManifest.addressableRefs.length) await validateCurrentContextAuthorization(propagatedStateRoot, current.id, binding.participantId, actualSessionId);
@@ -1566,6 +1695,13 @@ async function resolveExecutionBinding(
       if (!prior.executionBinding) throw new Error("EXECUTION_BINDING_REQUIRED: resumed session has no full versioned binding.");
       if (prior.executionBinding.runtime.sessionId !== actualSessionId) throw new Error("EXECUTION_BINDING_RUNTIME_SESSION_MISMATCH: resumed result channel does not identify the actual runtime session being continued.");
       assertResultProvenanceMatchesExecution(prior, operation, contract, selection, options, continuation);
+      options.scratchLease = prior.executionBinding.scratchLease;
+      options.participantGeneration = prior.executionBinding.participantGeneration;
+      if (prior.executionBinding.scratchLease) {
+        if (!authority) throw new Error("V2_AUTHORITY_REQUIRED: recovered participant scratch requires current controller-issued authority.");
+        authority = await attachParticipantScratchAuthority(root, authority, prior.executionBinding.scratchLease);
+        options.capabilityAuthority = authority;
+      }
       options.executionBinding = prior.executionBinding;
       if (isPaseoExecution(selection, config)) await assertPaseoSessionBinding(stateRoot, operation, prior.executionBinding, true);
       if (Array.isArray(options.contextManifest?.addressableRefs) && options.contextManifest.addressableRefs.length) await validateCurrentContextAuthorization(stateRoot, operationId, participantId, actualSessionId);
@@ -1592,8 +1728,17 @@ async function resolveExecutionBinding(
   options.roleInvocationPolicy = identity.rolePolicy;
   options.skillManifest = identity.skillManifest;
   operation = await bindResolvedPolicyIfAbsent(stateRoot, operationId, identity.policy);
+  options.providerTurnDeadlineMs ??= operation.resolvedOperationPolicy?.executionLiveness.providerTurnDeadlineMs;
   if (options.executionBlueprintDigest && options.executionBlueprintDigest !== identity.blueprint.digest) throw new Error("EXECUTION_BLUEPRINT_MISMATCH: supplied digest does not match the frozen ExecutionBlueprint.");
-  const participantGeneration = randomUUID();
+  const participantGeneration = options.participantGeneration ?? options.scratchLease?.participantGeneration ?? randomUUID();
+  const blueprintParticipant = identity.blueprint.participants.find((participant) => participant.participantId === participantId);
+  const expectedScratchResource = blueprintParticipant ? participantScratchResourceName(blueprintParticipant.role, blueprintParticipant.participantId, blueprintParticipant.toolPack) : undefined;
+  const scratchLease = options.scratchLease ?? authority?.scratchLease;
+  if (Boolean(expectedScratchResource) !== Boolean(scratchLease)) throw new Error("EXECUTION_BINDING_SCRATCH_REQUIRED: frozen blueprint and controller-issued private scratch lease must agree.");
+  if (scratchLease) {
+    assertParticipantScratchLeaseV1(scratchLease);
+    if (!authority?.scratchLease || authority.scratchLease.digest !== scratchLease.digest || scratchLease.operationId !== operationId || scratchLease.operationExecutionRevision !== operation.operationExecutionRevision || scratchLease.candidateRevision !== candidate.revision || scratchLease.candidateDigest !== candidate.identityDigest || scratchLease.controllerEpoch !== controllerEpoch || scratchLease.participantId !== participantId || scratchLease.participantGeneration !== participantGeneration || scratchLease.capabilityLeases.some((scratchCapabilityLease) => !authority.leases.some((lease) => lease.leaseId === scratchCapabilityLease.leaseId))) throw new Error("EXECUTION_BINDING_SCRATCH_MISMATCH: scratch lease is not bound to this operation, participant generation, capability authority, and controller epoch.");
+  }
   const binding = options.executionBinding ?? compileExecutionBinding({
     operationId,
     operationExecutionRevision: operation.operationExecutionRevision!,
@@ -1616,11 +1761,13 @@ async function resolveExecutionBinding(
     contextManifestDigest: options.contextManifestDigest,
     promptManifestDigest: options.promptManifestDigest,
     outputContract: options.outputContract ?? identity.rolePolicy.outputContract,
-    leaseIdentities: authority?.leases.map((lease) => lease.leaseId) ?? []
+    leaseIdentities: authority?.leases.map((lease) => lease.leaseId) ?? [],
+    ...(scratchLease ? { scratchLease } : {})
   });
-  assertExecutionBindingV2(binding);
+  assertExecutionBindingV3(binding);
   if (binding.contextManifestDigest !== options.contextManifestDigest || binding.promptManifestDigest !== options.promptManifestDigest || binding.operationExecutionRevision !== operation.operationExecutionRevision || binding.candidateDigest !== candidate.identityDigest || binding.controllerEpoch !== controllerEpoch || binding.operationId !== operationId || binding.participantId !== participantId) throw new Error("EXECUTION_BINDING_MISMATCH: supplied binding does not match the actual launch identity.");
   operation = await bindOperationParticipantExecution(stateRoot, operationId, { participantId, logicalAgent: selection.logicalAgent, role: selection.role, binding });
+  await initializeParticipantLivenessV1(stateRoot, operationId, participantId, binding);
   if (isPaseoExecution(selection, config)) await assertPaseoSessionBinding(stateRoot, operation, binding, false);
   if (Array.isArray(options.contextManifest?.addressableRefs) && options.contextManifest.addressableRefs.length) {
     if (!authority) throw new Error("CONTEXT_RUNTIME_V2_AUTHORITY_REJECTED: a controller-issued read lease is required to authorize addressable context refs.");
@@ -1642,7 +1789,7 @@ function identityProjectId(operation: Awaited<ReturnType<typeof loadOperation>>)
   return operation.resolvedOperationPolicy.projectId;
 }
 
-async function assertPaseoSessionBinding(stateRoot: string, operation: Awaited<ReturnType<typeof loadOperation>>, binding: ExecutionBindingV2, reuseRequired: boolean): Promise<void> {
+async function assertPaseoSessionBinding(stateRoot: string, operation: Awaited<ReturnType<typeof loadOperation>>, binding: ExecutionBindingV3, reuseRequired: boolean): Promise<void> {
   if (operation.version !== 2 || !operation.resolvedOperationPolicy) throw new Error("PASEO_SESSION_BINDING_INVALID: current frozen operation policy is required.");
   const identity: PaseoSessionBindingIdentityV1 = {
     projectId: operation.resolvedOperationPolicy.projectId,
@@ -1691,7 +1838,7 @@ function freezeIdentityObject<T>(value: T): T {
   return value;
 }
 
-async function bindResolvedPolicyIfAbsent(root: string, operationId: string, policy: ResolvedOperationPolicyV1): Promise<Awaited<ReturnType<typeof loadOperation>>> {
+async function bindResolvedPolicyIfAbsent(root: string, operationId: string, policy: ResolvedOperationPolicyV2): Promise<Awaited<ReturnType<typeof loadOperation>>> {
   const current = await loadOperation(root, operationId);
   if (current.resolvedOperationPolicy?.digest === policy.digest) return current;
   if (current.resolvedOperationPolicy) throw new Error("EXECUTION_POLICY_RECOMPILE_REQUIRED: operation has a different frozen ResolvedOperationPolicy.");
@@ -1709,7 +1856,7 @@ interface ParticipantInvocationOperationV1 {
   kind?: OperationKind;
   intent?: { request?: string };
   operationExecutionRevision?: number;
-  resolvedOperationPolicy?: ResolvedOperationPolicyV1;
+  resolvedOperationPolicy?: ResolvedOperationPolicyV2;
 }
 
 async function compileParticipantInvocationIdentity(
@@ -1722,12 +1869,12 @@ async function compileParticipantInvocationIdentity(
   candidate: CandidateRevisionV1,
   participantId: string,
   controllerEpoch: number
-): Promise<{ policy: ResolvedOperationPolicyV1; blueprint: ExecutionBlueprintV2; rolePolicy: RoleInvocationPolicyV1; skillManifest: SkillManifestV1 }> {
+): Promise<{ policy: ResolvedOperationPolicyV2; blueprint: ExecutionBlueprintV3; rolePolicy: RoleInvocationPolicyV1; skillManifest: SkillManifestV1 }> {
   if (selection.role === "Semantic Assessor") throw new Error("SEMANTIC_ASSESSOR_NOT_PARTICIPANT: bounded semantic assessments execute through the controller-side Paseo gateway and do not receive WorkGraph Participant identity.");
   if (options.executionBlueprint) {
-    assertExecutionBlueprintV2(options.executionBlueprint);
+    assertExecutionBlueprintV3(options.executionBlueprint);
     const policy = operation.resolvedOperationPolicy ?? options.executionBlueprint.resolvedOperationPolicy;
-    assertResolvedOperationPolicyV1(policy);
+    assertResolvedOperationPolicyV2(policy);
     const participant = options.executionBlueprint.participants.find((item) => item.participantId === participantId);
     const rolePolicy = options.roleInvocationPolicy ?? participant?.roleInvocationPolicy;
     const skillManifest = options.skillManifest;
@@ -1767,7 +1914,7 @@ async function compileParticipantInvocationIdentity(
     intent: operation.intent?.request ?? contract.routing?.intent ?? contract.task.title,
     route,
     minimumAssurance: assurance,
-    policyVersions: { resolvedOperationPolicy: "1", roleInvocationPolicy: "1", executionBlueprint: "2", executionBinding: "2", skillManifest: "1" },
+    policyVersions: { resolvedOperationPolicy: "2", roleInvocationPolicy: "1", executionBlueprint: "3", executionBinding: "3", skillManifest: "1" },
     policyDigests: {
       validation: sha256Canonical(contract.verification ?? {}),
       delivery: sha256Canonical({ ...deliveryPolicy, humanDecisionRequirements }),
@@ -1787,8 +1934,9 @@ async function compileParticipantInvocationIdentity(
     allowedExternalEffects,
     humanDecisionRequirements
   });
-  assertResolvedOperationPolicyV1(policy);
-  if (policy.version !== 1 || policy.operationId !== operation.id || policy.projectId !== (candidate.projectId ?? config.project.name) || policy.operationExecutionRevision !== operation.operationExecutionRevision || policy.candidateRevision !== candidate.revision || policy.candidateDigest !== candidate.identityDigest || policy.controllerEpoch !== controllerEpoch || policy.route !== route || policy.minimumAssurance !== assurance) throw new Error("EXECUTION_POLICY_STALE: durable ResolvedOperationPolicy does not match the current execution inputs.");
+  assertResolvedOperationPolicyV2(policy);
+  if (policy.version !== 2 || policy.operationId !== operation.id || policy.projectId !== (candidate.projectId ?? config.project.name) || policy.operationExecutionRevision !== operation.operationExecutionRevision || policy.candidateRevision !== candidate.revision || policy.candidateDigest !== candidate.identityDigest || policy.controllerEpoch !== controllerEpoch || policy.route !== route || policy.minimumAssurance !== assurance) throw new Error("EXECUTION_POLICY_STALE: durable ResolvedOperationPolicy does not match the current execution inputs.");
+  const directScratchClaim = participantScratchClaim(selection.role, participantId, invocationWorkUnitIds[0]!, profile.toolPack);
   const rolePolicy = options.roleInvocationPolicy ?? compileRoleInvocationPolicy({
     operationId: operation.id,
     operationPolicyDigest: policy.digest,
@@ -1798,7 +1946,7 @@ async function compileParticipantInvocationIdentity(
     scope,
     competencies: invocationCompetencies,
     toolPack: profile.toolPack,
-    resourceClaims: [],
+    resourceClaims: directScratchClaim ? [directScratchClaim] : [],
     outputContract: options.outputContract ?? profile.outputContract,
     constraints: { maxCapabilities: [...profile.maxCapabilities].sort(), readOnly: selection.role === "Reviewer" }
   });
@@ -1823,7 +1971,7 @@ async function compileParticipantInvocationIdentity(
   const assignment = { participantId, role: selection.role, specialization: selection.specializations?.[0] ?? selection.role, competencies: invocationCompetencies, skills: [...selection.skills], toolPack: profile.toolPack, budget: { maxTokens: 1, reservedTokens: 0, maxConcurrent: 1 }, workUnitIds: invocationWorkUnitIds, skillManifest, roleInvocationPolicy: rolePolicy };
   const planBody = { version: 1 as const, taskId: contract.task.id, route, assurance, assignments: [assignment], reviewDimensions: [], knowledgeRefs: skillManifest.entries.flatMap((entry) => entry.sourcePackDigest ? [entry.sourcePackDigest] : []), executionCatalogDigest: catalog.digest };
   const participantPlan = { ...planBody, compilerDigest: sha256Canonical(planBody) };
-  const blueprint = createExecutionBlueprintV2({ projectId: policy.projectId, operationId: operation.id, operationExecutionRevision: policy.operationExecutionRevision, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch, resolvedOperationPolicy: policy, workGraph: graph, participantPlan, executionCatalog: catalog, participants: [{ participantId, role: selection.role, specialization: assignment.specialization, roleInvocationPolicy: rolePolicy, toolPack: rolePolicy.toolPack, resourceClaims: rolePolicy.resourceClaims, validationResolution, outputContract: rolePolicy.outputContract, skillManifestDigest: skillManifest.digest }], validationResolution });
+  const blueprint = createExecutionBlueprintV3({ projectId: policy.projectId, operationId: operation.id, operationExecutionRevision: policy.operationExecutionRevision, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch, resolvedOperationPolicy: policy, workGraph: graph, participantPlan, executionCatalog: catalog, participants: [{ participantId, role: selection.role, specialization: assignment.specialization, roleInvocationPolicy: rolePolicy, toolPack: rolePolicy.toolPack, resourceClaims: rolePolicy.resourceClaims, validationResolution, outputContract: rolePolicy.outputContract, skillManifestDigest: skillManifest.digest }], validationResolution });
   return { policy, blueprint, rolePolicy, skillManifest };
 }
 

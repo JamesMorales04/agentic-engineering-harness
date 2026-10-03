@@ -53,6 +53,7 @@ describe("change prompt contracts (AEH-V2-0125)", () => {
     expect(markerLines[0]).toContain("exactly one line beginning AEH_RESULT_JSON=");
     expect(prompt).toContain("PLANNER_RESULT_ARTIFACT_MISSING");
     expect(prompt).toContain("CHANGE-TEST-1-R1");
+    expect(prompt).toContain("no longer than 500 characters");
   });
 
   it("keeps the Spec Manager canonical OpenSpec and normative-language instruction", () => {

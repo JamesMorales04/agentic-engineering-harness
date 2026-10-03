@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { assertExecutionBindingV2, assertResolvedOperationPolicyV1, type ExecutionBindingV2 } from "../architecture/executionIdentity.js";
+import { assertExecutionBindingV3, assertResolvedOperationPolicyV2, type ExecutionBindingV3 } from "../architecture/executionIdentity.js";
 import { sha256Utf8 } from "../core/digest.js";
 import {
   assertCurrentControllerOwner,
@@ -28,7 +28,7 @@ export interface OperationProviderLifecycleInputV1 {
   leadAgentId?: string;
   leadGeneration?: number;
   sessionId?: string;
-  executionBinding?: ExecutionBindingV2;
+  executionBinding?: ExecutionBindingV3;
   ttlMs?: number;
   renewEveryMs?: number;
   inspect(sessionId: string): Promise<ProviderSessionObservationV1 | undefined>;
@@ -214,7 +214,7 @@ async function requireCurrentOperation(input: OperationProviderLifecycleInputV1,
   if (!operation.candidateRevision || !operation.resolvedOperationPolicy || !Number.isSafeInteger(operation.operationExecutionRevision)) {
     throw new Error("PASEO_PROVIDER_LEASE_IDENTITY_INCOMPLETE: current candidate, operation execution revision, and frozen policy are required.");
   }
-  assertResolvedOperationPolicyV1(operation.resolvedOperationPolicy);
+  assertResolvedOperationPolicyV2(operation.resolvedOperationPolicy);
   const policy = operation.resolvedOperationPolicy;
   if (policy.operationId !== operation.id || policy.operationExecutionRevision !== operation.operationExecutionRevision
     || policy.candidateRevision !== operation.candidateRevision.revision || policy.candidateDigest !== operation.candidateRevision.identityDigest
@@ -241,8 +241,8 @@ async function requireCurrentOperation(input: OperationProviderLifecycleInputV1,
   return operation;
 }
 
-function assertBindingCurrent(binding: ExecutionBindingV2, operation: OperationRecordV2, participantId: string, sessionId?: string): void {
-  assertExecutionBindingV2(binding);
+function assertBindingCurrent(binding: ExecutionBindingV3, operation: OperationRecordV2, participantId: string, sessionId?: string): void {
+  assertExecutionBindingV3(binding);
   if (!operation.candidateRevision || !operation.resolvedOperationPolicy
     || binding.operationId !== operation.id || binding.operationExecutionRevision !== operation.operationExecutionRevision
     || binding.candidateRevision !== operation.candidateRevision.revision || binding.candidateDigest !== operation.candidateRevision.identityDigest

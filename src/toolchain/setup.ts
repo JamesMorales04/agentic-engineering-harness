@@ -7,6 +7,8 @@ import { generatedMisePath, loadToolchainConfig, loadToolchainLock, toolchainLoc
 import { resolveToolchain } from "./resolve.js";
 import { installMiseTools, miseBinPaths, miseResolvedVersion, resolveMiseAdapter, writeMiseConfig } from "./mise.js";
 import type { ToolchainLock, ToolchainLockTool, ToolchainSetupOptions, ToolchainSetupResult, ToolchainState } from "./types.js";
+import { currentOperationContext } from "../operations/state.js";
+import { persistCommandDiagnosticV1 } from "../operations/forensics.js";
 
 export async function setupToolchain(root: string, project: HarnessProjectConfig, options: ToolchainSetupOptions = {}): Promise<ToolchainSetupResult> {
   await reconcileHarnessAssets(root);
@@ -60,8 +62,13 @@ export async function setupToolchain(root: string, project: HarnessProjectConfig
     const configuredImage = tool.container!.image;
     const lockedRef = !options.updateLock ? lock?.tools[tool.name]?.digestRef : undefined;
     const pullRef = lockedRef ?? configuredImage;
-    const pull = await runExecutable(engine, ["pull", pullRef], { cwd: root, timeoutMs: 900_000, toolchain: false });
-    if (pull.exitCode !== 0) throw new Error(`${engine} pull failed for ${pullRef}: ${pull.stderr || pull.stdout}`);
+    const command = `${engine} pull ${pullRef}`;
+    const startedAt = new Date().toISOString();
+    const pull = await runExecutable(engine, ["pull", pullRef], { cwd: root, timeoutMs: 900_000, toolchain: false, captureOutputLimitBytes: 128 * 1024 });
+    if (pull.exitCode !== 0) {
+      const diagnostic = await persistCommandDiagnosticV1({ root, operationId: currentOperationContext().id, command, cwd: root, result: pull, toolName: engine, startedAt }).catch(() => undefined);
+      throw new Error(`Container image pull failed (exitCode=${pull.exitCode}); diagnostic=${diagnostic ?? "unavailable"}.`);
+    }
     const digestRef = lockedRef ?? await inspectDigest(root, engine, configuredImage);
     await writeContainerWrapper(wrappersDir, tool.command, engine, digestRef);
     lockTools[tool.name] = { source: tool.source, requestedVersion: tool.version, command: tool.command, provisioning: "container", image: configuredImage, digestRef };
@@ -71,8 +78,14 @@ export async function setupToolchain(root: string, project: HarnessProjectConfig
   if (!options.skipProjectDependencies) {
     const env = { PATH: `${[wrappersDir, ...binPaths].join(path.delimiter)}${path.delimiter}${process.env.PATH ?? ""}` };
     for (const command of projectDependencyCommands) {
-      const result = await runShell(command, { cwd: root, timeoutMs: 1_800_000, env, toolchain: false });
-      if (result.exitCode !== 0) throw new Error(`Project dependency setup failed (${command}): ${result.stderr || result.stdout}`);
+      const toolName = command.trim().split(/\s+/, 1)[0] || "shell";
+      const toolVersion = await dependencyToolVersion(root, toolName, env).catch(() => undefined);
+      const startedAt = new Date().toISOString();
+      const result = await runShell(command, { cwd: root, timeoutMs: configuredToolDeadlineMs(project, command), env, toolchain: false, captureOutputLimitBytes: 128 * 1024 });
+      if (result.exitCode !== 0) {
+        const diagnostic = await persistCommandDiagnosticV1({ root, operationId: currentOperationContext().id, command, cwd: root, result, toolName, toolVersion, environment: env, startedAt }).catch(() => undefined);
+        throw new Error(`Project dependency setup failed (exitCode=${result.exitCode}); diagnostic=${diagnostic ?? "unavailable"}.`);
+      }
     }
   }
 
@@ -115,11 +128,28 @@ async function writeContainerWrapper(dir: string, command: string, engine: strin
   await fs.writeFile(file, script, { mode: 0o755 }); await fs.chmod(file, 0o755);
 }
 async function inspectDigest(root: string, engine: string, image: string): Promise<string> {
-  const inspect = await runExecutable(engine, ["image", "inspect", "--format", "{{index .RepoDigests 0}}", image], { cwd: root, timeoutMs: 60_000, toolchain: false });
-  if (inspect.exitCode !== 0 || !inspect.stdout.trim()) throw new Error(`Could not resolve immutable digest for ${image}: ${inspect.stderr || inspect.stdout}`);
+  const args = ["image", "inspect", "--format", "{{index .RepoDigests 0}}", image];
+  const command = [engine, ...args].join(" ");
+  const startedAt = new Date().toISOString();
+  const inspect = await runExecutable(engine, args, { cwd: root, timeoutMs: 60_000, toolchain: false, captureOutputLimitBytes: 128 * 1024 });
+  if (inspect.exitCode !== 0 || !inspect.stdout.trim()) {
+    const diagnostic = await persistCommandDiagnosticV1({ root, operationId: currentOperationContext().id, command, cwd: root, result: inspect, toolName: engine, startedAt }).catch(() => undefined);
+    throw new Error(`Container image digest inspection failed (exitCode=${inspect.exitCode}); diagnostic=${diagnostic ?? "unavailable"}.`);
+  }
   return inspect.stdout.trim();
 }
 async function commandVersion(root: string, command: string): Promise<string | undefined> { const result = await runExecutable(command, ["--version"], { cwd: root, timeoutMs: 15_000, toolchain: false }); return result.exitCode === 0 ? (result.stdout || result.stderr).split(/\r?\n/)[0]?.trim() : undefined; }
+async function dependencyToolVersion(root: string, command: string, env: Record<string, string | undefined>): Promise<string | undefined> {
+  if (!/^(npm|pnpm|yarn|bun|corepack|uv|dotnet)$/.test(command)) return undefined;
+  const result = await runExecutable(command, ["--version"], { cwd: root, timeoutMs: 15_000, env, toolchain: false, captureOutputLimitBytes: 2_000 });
+  return result.exitCode === 0 ? (result.stdout || result.stderr).split(/\r?\n/)[0]?.trim() : undefined;
+}
+function configuredToolDeadlineMs(project: HarnessProjectConfig, tool: string): number {
+  const policy = project.orchestration?.operations?.liveness;
+  const value = policy?.toolDeadlinesMs?.[tool] ?? policy?.defaultToolDeadlineMs ?? 30 * 60_000;
+  if (!Number.isSafeInteger(value) || value < 1) throw new Error(`TOOL_DEADLINE_INVALID: configured deadline for '${tool}' must be a positive integer in milliseconds.`);
+  return value;
+}
 async function rawCommandExists(root: string, command: string): Promise<boolean> { return commandExists(command, root); }
 async function exists(file: string): Promise<boolean> { try { await fs.access(file); return true; } catch { return false; } }
 function unique(values: string[]): string[] { return [...new Set(values)]; }

@@ -2,6 +2,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { ResolvedToolchain, ToolchainConfig, ToolchainLock } from "./types.js";
 import { runShell } from "../utils/process.js";
+import { currentOperationContext } from "../operations/state.js";
+import { persistCommandDiagnosticV1 } from "../operations/forensics.js";
 
 export interface MiseAdapter {
   command: string;
@@ -13,14 +15,22 @@ export async function resolveMiseAdapter(root: string, minimumVersion?: string):
     ? `npm exec --yes --package=mise@${shellBare(minimumVersion)} -- mise`
     : "npm exec --yes --package=mise -- mise";
   const candidates = ["mise", bootstrap];
+  const diagnostics: string[] = [];
   for (const command of candidates) {
-    const result = await runShell(`${command} --version`, { cwd: root, timeoutMs: 60_000, toolchain: false });
-    if (result.exitCode !== 0) continue;
+    const fullCommand = `${command} --version`;
+    const startedAt = new Date().toISOString();
+    const result = await runShell(fullCommand, { cwd: root, timeoutMs: 60_000, toolchain: false, captureOutputLimitBytes: 128 * 1024 });
+    if (result.exitCode !== 0) {
+      const failure = await safeToolchainCommandFailure(root, fullCommand, "mise", undefined, result, startedAt);
+      const diagnostic = failure.message.match(/diagnostic=(.*)\.$/)?.[1];
+      if (diagnostic && diagnostic !== "unavailable") diagnostics.push(diagnostic);
+      continue;
+    }
     const version = parseVersion(result.stdout || result.stderr);
     if (minimumVersion && version && compareVersions(version, minimumVersion) < 0) continue;
     return { command, version };
   }
-  throw new Error(`mise ${minimumVersion ? `>= ${minimumVersion} ` : ""}is required for toolchain setup. AEH attempted the configured/pinned npm bootstrap; install mise explicitly if that bootstrap is unavailable.`);
+  throw new Error(`mise ${minimumVersion ? `>= ${minimumVersion} ` : ""}is required for toolchain setup. AEH attempted the configured/pinned npm bootstrap; install mise explicitly if that bootstrap is unavailable.${diagnostics.length ? ` Diagnostics: ${diagnostics.join(", ")}.` : ""}`);
 }
 
 export async function writeMiseConfig(
@@ -42,23 +52,29 @@ export async function writeMiseConfig(
 }
 
 export async function installMiseTools(root: string, adapter: MiseAdapter, tools: string[], dryRun = false, updateLock = false): Promise<void> {
-  const trust = await runShell(`${adapter.command} trust`, { cwd: root, timeoutMs: 30_000, toolchain: false });
-  if (trust.exitCode !== 0 && !/already trusted/i.test(`${trust.stdout}\n${trust.stderr}`)) throw new Error(`mise trust failed: ${trust.stderr || trust.stdout}`);
+  const trustCommand = `${adapter.command} trust`;
+  const trustStartedAt = new Date().toISOString();
+  const trust = await runShell(trustCommand, { cwd: root, timeoutMs: 30_000, toolchain: false, captureOutputLimitBytes: 128 * 1024 });
+  if (trust.exitCode !== 0 && !/already trusted/i.test(`${trust.stdout}\n${trust.stderr}`)) throw await safeToolchainCommandFailure(root, trustCommand, "mise", adapter.version, trust, trustStartedAt);
   if (updateLock) {
     const targets = tools.map(shell).join(" ");
     // Python CLI transitive graphs are wheel-only in mise.lock; keep pipx on
     // version-only locking so source-only dependencies can use normal installs.
-    const bump = await runShell(`${adapter.command} lock --bump ${targets}`, {
+    const command = `${adapter.command} lock --bump ${targets}`;
+    const startedAt = new Date().toISOString();
+    const bump = await runShell(command, {
       cwd: root,
       timeoutMs: 1_800_000,
       env: { MISE_PIPX_UVX: "false", MISE_PYPI_UVX: "false" },
-      toolchain: false
+      toolchain: false,
+      captureOutputLimitBytes: 128 * 1024
     });
-    if (bump.exitCode !== 0) throw new Error(`mise lock --bump failed: ${bump.stderr || bump.stdout}`);
+    if (bump.exitCode !== 0) throw await safeToolchainCommandFailure(root, command, "mise", adapter.version, bump, startedAt, { MISE_PIPX_UVX: "false", MISE_PYPI_UVX: "false" });
   }
   const command = `${adapter.command} -y install${dryRun ? " --dry-run" : ""}`;
-  const result = await runShell(command, { cwd: root, timeoutMs: 1_800_000, toolchain: false });
-  if (result.exitCode !== 0) throw new Error(`mise install failed: ${result.stderr || result.stdout}`);
+  const startedAt = new Date().toISOString();
+  const result = await runShell(command, { cwd: root, timeoutMs: 1_800_000, toolchain: false, captureOutputLimitBytes: 128 * 1024 });
+  if (result.exitCode !== 0) throw await safeToolchainCommandFailure(root, command, "mise", adapter.version, result, startedAt);
 }
 
 export async function miseResolvedVersion(root: string, adapter: MiseAdapter, command: string): Promise<string | undefined> {
@@ -67,9 +83,26 @@ export async function miseResolvedVersion(root: string, adapter: MiseAdapter, co
 }
 
 export async function miseBinPaths(root: string, adapter: MiseAdapter): Promise<string[]> {
-  const result = await runShell(`${adapter.command} bin-paths`, { cwd: root, timeoutMs: 30_000, toolchain: false });
-  if (result.exitCode !== 0) throw new Error(`mise bin-paths failed: ${result.stderr || result.stdout}`);
+  const command = `${adapter.command} bin-paths`;
+  const startedAt = new Date().toISOString();
+  const result = await runShell(command, { cwd: root, timeoutMs: 30_000, toolchain: false, captureOutputLimitBytes: 128 * 1024 });
+  if (result.exitCode !== 0) throw await safeToolchainCommandFailure(root, command, "mise", adapter.version, result, startedAt);
   return [...new Set(result.stdout.split(/\r?\n/).map((value) => value.trim()).filter(Boolean))];
+}
+
+async function safeToolchainCommandFailure(root: string, command: string, toolName: string, toolVersion: string | undefined, result: Awaited<ReturnType<typeof runShell>>, startedAt: string, environment?: Record<string, string | undefined>): Promise<Error> {
+  const diagnostic = await persistCommandDiagnosticV1({
+    root,
+    operationId: currentOperationContext().id,
+    command,
+    cwd: root,
+    result,
+    toolName,
+    toolVersion,
+    ...(environment ? { environment } : {}),
+    startedAt
+  }).catch(() => undefined);
+  return new Error(`Toolchain command failed (exitCode=${result.exitCode}); diagnostic=${diagnostic ?? "unavailable"}.`);
 }
 
 function tomlKey(value: string): string { return /^[A-Za-z0-9_-]+$/.test(value) ? value : JSON.stringify(value); }

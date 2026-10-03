@@ -3,14 +3,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { estimateTokens } from "./estimator.js";
 import { sha256Canonical } from "../core/digest.js";
-import { assertExecutionBindingV2, assertResolvedOperationPolicyV1, type ExecutionBindingV2 } from "../architecture/executionIdentity.js";
+import { assertExecutionBindingV3, assertResolvedOperationPolicyV2, type ExecutionBindingV3 } from "../architecture/executionIdentity.js";
 import { assertCurrentControllerOwner, currentControllerEpoch, loadOperation, resolveOperationStateRoot, withOperationCoordinationLock, type OperationRecordV2 } from "../operations/state.js";
 import { assertExecutionAuthority, type ExecutionAuthorityV1 } from "../security/executionLease.js";
 import { assertContextEnvelope, type ContextEnvelope, type ContextFragmentProjection } from "./types.js";
 import { contextEnvelopePath } from "./gateway.js";
 import { verifyContextEnvelope } from "./envelope.js";
 import { sha256 as sha256Bytes } from "./provenance.js";
-import { loadProjectConfig } from "../core/config.js";
 import { recordContextRetrievalObservation } from "../telemetry/efficiency.js";
 import {
   assertContextRefAuthorization,
@@ -281,10 +280,9 @@ export async function retrieveAuthorizedContext(root: string, controlRoot: strin
     });
     await writeJsonAtomic(stateFile, nextState);
     await writeJsonAtomic(retrievalReceiptFile(stateRoot, operationId, participantId, current.binding.digest, retrievalReceipt.receiptId), retrievalReceipt);
-    const telemetryConfig = await loadProjectConfig(controlRoot).catch(() => undefined);
-    if (telemetryConfig?.telemetry?.enabled === true && operation.candidateRevision) {
-      await recordContextRetrievalObservation(stateRoot, telemetryConfig, {
-        version: 1,
+    if (operation.candidateRevision) {
+      await recordContextRetrievalObservation(stateRoot, {
+        version: 2,
         operationId,
         candidateId: operation.candidateRevision.candidateId,
         candidateRevision: current.binding.candidateRevision,
@@ -320,7 +318,7 @@ export async function validateCurrentContextAuthorization(controlRoot: string, o
   return receipt;
 }
 
-export async function loadContextRetrievalReceipts(controlRoot: string, operationId: string, participantId: string, binding: ExecutionBindingV2): Promise<ContextRetrievalReceiptV1[]> {
+export async function loadContextRetrievalReceipts(controlRoot: string, operationId: string, participantId: string, binding: ExecutionBindingV3): Promise<ContextRetrievalReceiptV1[]> {
   const stateRoot = resolveOperationStateRoot(controlRoot);
   const directory = retrievalReceiptsDirectory(stateRoot, operationId, participantId, binding.digest);
   const names = await fs.readdir(directory).catch((error) => isNotFound(error) ? [] : Promise.reject(error));
@@ -341,7 +339,7 @@ export async function loadContextRetrievalReceipts(controlRoot: string, operatio
   return receipts;
 }
 
-export async function contextRetrievalEvidenceForResult(controlRoot: string, binding: ExecutionBindingV2): Promise<ContextRetrievalEvidenceV1> {
+export async function contextRetrievalEvidenceForResult(controlRoot: string, binding: ExecutionBindingV3): Promise<ContextRetrievalEvidenceV1> {
   const receipts = await loadContextRetrievalReceipts(controlRoot, binding.operationId, binding.participantId, binding);
   const stateRoot = resolveOperationStateRoot(controlRoot);
   const authPath = authorizationFile(stateRoot, binding.operationId, binding.participantId, binding.digest);
@@ -353,14 +351,14 @@ export async function contextRetrievalEvidenceForResult(controlRoot: string, bin
   return contextEvidenceValue(binding, receipts, state);
 }
 
-export function assertContextRetrievalEvidence(evidence: ContextRetrievalEvidenceV1, binding: ExecutionBindingV2): void {
+export function assertContextRetrievalEvidence(evidence: ContextRetrievalEvidenceV1, binding: ExecutionBindingV3): void {
   const { evidenceDigest, progressiveManifestDigest, ...value } = evidence;
   const expectedProgressiveManifestDigest = sha256Canonical({ kind: "ProgressiveContextManifestV1", ...value });
   if (evidence.version !== 1 || evidenceDigest !== sha256Canonical({ ...value, progressiveManifestDigest }) || progressiveManifestDigest !== expectedProgressiveManifestDigest || evidence.executionBindingDigest !== binding.digest || evidence.contextManifestDigest !== binding.contextManifestDigest || evidence.promptManifestDigest !== binding.promptManifestDigest || evidence.receiptIds.length !== evidence.receiptDigests.length || evidence.receiptIds.some((id, index) => !id || !/^[a-f0-9]{64}$/.test(evidence.receiptDigests[index] ?? "")) || evidence.receiptsDigest !== sha256Canonical({ receiptIds: evidence.receiptIds, receiptDigests: evidence.receiptDigests }) || !Number.isSafeInteger(evidence.requests) || evidence.requests < 0 || !Number.isSafeInteger(evidence.totalTokens) || evidence.totalTokens < 0 || !/^[a-f0-9]{64}$/.test(evidence.retrievalStateDigest)) throw new Error("CONTEXT_RUNTIME_V2_RECEIPT_INVALID: StructuredResult context evidence is invalid or does not match its ExecutionBinding.");
 }
 
 /** Freeze the candidate/session retrieval receipt set atomically before accepting a StructuredResult. */
-export async function closeContextRetrievalForResult(controlRoot: string, binding: ExecutionBindingV2): Promise<ContextRetrievalEvidenceV1> {
+export async function closeContextRetrievalForResult(controlRoot: string, binding: ExecutionBindingV3): Promise<ContextRetrievalEvidenceV1> {
   const stateRoot = resolveOperationStateRoot(controlRoot);
   return withOperationCoordinationLock(stateRoot, binding.operationId, async () => {
     const operation = await loadOperation(stateRoot, binding.operationId);
@@ -454,22 +452,22 @@ export async function recordContextContinuation(controlRoot: string, operationId
   });
 }
 
-function currentExecution(operation: OperationRecordV2, participantId: string): { binding: ExecutionBindingV2; policy: NonNullable<OperationRecordV2["resolvedOperationPolicy"]> } {
+function currentExecution(operation: OperationRecordV2, participantId: string): { binding: ExecutionBindingV3; policy: NonNullable<OperationRecordV2["resolvedOperationPolicy"]> } {
   if (operation.version !== 2 || !operation.resolvedOperationPolicy || !operation.candidateRevision || !operation.operationExecutionRevision) throw new Error("CONTEXT_RUNTIME_V2_BINDING_REJECTED: current operation candidate, policy, and execution revision are required.");
   const participant = operation.participants[participantId];
   const agent = operation.agents?.find((item) => item.id === participantId);
   const binding = participant?.executionBinding ?? agent?.executionBinding;
   if (!binding) throw new Error("CONTEXT_RUNTIME_V2_BINDING_REJECTED: participant has no current durable ExecutionBinding.");
   if (participant && ["COMPLETED", "FAILED", "BLOCKED", "CANCELLED"].includes(participant.status)) throw new Error("CONTEXT_RUNTIME_V2_BINDING_REJECTED: context access is closed for a terminal participant execution.");
-  assertExecutionBindingV2(binding);
+  assertExecutionBindingV3(binding);
   const policy = operation.resolvedOperationPolicy;
-  assertResolvedOperationPolicyV1(policy);
+  assertResolvedOperationPolicyV2(policy);
   if (binding.operationId !== operation.id || binding.operationExecutionRevision !== operation.operationExecutionRevision || binding.candidateRevision !== operation.candidateRevision.revision || binding.candidateDigest !== operation.candidateRevision.identityDigest || binding.operationPolicyDigest !== policy.digest || binding.controllerEpoch !== currentControllerEpoch(operation) || policy.operationId !== operation.id || policy.operationExecutionRevision !== operation.operationExecutionRevision || policy.candidateRevision !== operation.candidateRevision.revision || policy.candidateDigest !== operation.candidateRevision.identityDigest || policy.controllerEpoch !== currentControllerEpoch(operation)) throw new Error("CONTEXT_RUNTIME_V2_BINDING_REJECTED: participant binding is stale for the current candidate, policy, execution revision, or controller epoch.");
   if (!binding.runtime.sessionId.trim() || binding.runtime.sessionId.startsWith("launch:")) throw new Error("CONTEXT_RUNTIME_V2_BINDING_REJECTED: context authorization requires an actual runtime session identity.");
   return { binding, policy };
 }
 
-function authorizationExpectation(binding: ExecutionBindingV2, projectId: string): Omit<ContextRefAuthorizationExpectationV1, "executionBindingDigest" | "contextManifestDigest" | "promptManifestDigest"> {
+function authorizationExpectation(binding: ExecutionBindingV3, projectId: string): Omit<ContextRefAuthorizationExpectationV1, "executionBindingDigest" | "contextManifestDigest" | "promptManifestDigest"> {
   return {
     operationId: binding.operationId,
     projectId,
@@ -485,7 +483,7 @@ function authorizationExpectation(binding: ExecutionBindingV2, projectId: string
   };
 }
 
-function assertCurrentReadAuthority(authority: ExecutionAuthorityV1, binding: ExecutionBindingV2, projectId: string, now: Date): void {
+function assertCurrentReadAuthority(authority: ExecutionAuthorityV1, binding: ExecutionBindingV3, projectId: string, now: Date): void {
   assertExecutionAuthority(authority, now);
   const authorityLeaseIds = authority.leases.map((lease) => lease.leaseId).sort();
   if (authority.operationId !== binding.operationId || authority.participantId !== binding.participantId || authority.projectId !== projectId || authority.candidateDigest !== binding.candidateDigest || authority.controllerEpoch !== binding.controllerEpoch || authorityLeaseIds.join("\0") !== binding.leaseIdentities.join("\0")) throw new Error("CONTEXT_RUNTIME_V2_AUTHORITY_REJECTED: controller read authority does not match the current execution binding.");
@@ -507,7 +505,7 @@ interface LaunchAddressableRefV1 {
 }
 
 /** Prove that the current durable envelope still describes the exact refs frozen into S1 identity. */
-function assertLaunchManifestMatchesEnvelope(manifest: Readonly<Record<string, unknown>>, binding: ExecutionBindingV2, envelope: ContextEnvelope): LaunchAddressableRefV1[] {
+function assertLaunchManifestMatchesEnvelope(manifest: Readonly<Record<string, unknown>>, binding: ExecutionBindingV3, envelope: ContextEnvelope): LaunchAddressableRefV1[] {
   if (sha256Canonical(manifest) !== binding.contextManifestDigest) throw new Error("CONTEXT_RUNTIME_V2_MANIFEST_REJECTED: launch ContextManifest does not match the current ExecutionBinding digest.");
   if (manifest.envelopeDigest !== envelope.provenance.sha256) throw new Error("CONTEXT_RUNTIME_V2_MANIFEST_REJECTED: durable ContextEnvelope digest does not match the frozen launch manifest.");
   if (!Array.isArray(manifest.addressableRefs)) throw new Error("CONTEXT_RUNTIME_V2_MANIFEST_REJECTED: launch ContextManifest has no addressable-ref set.");
@@ -539,7 +537,7 @@ function assertLaunchManifestMatchesEnvelope(manifest: Readonly<Record<string, u
   return envelopeRefs.sort((left, right) => left.refId.localeCompare(right.refId));
 }
 
-async function readAuthorizationReceipt(stateRoot: string, operationId: string, participantId: string, binding: ExecutionBindingV2): Promise<ContextRefAuthorizationReceiptV1> {
+async function readAuthorizationReceipt(stateRoot: string, operationId: string, participantId: string, binding: ExecutionBindingV3): Promise<ContextRefAuthorizationReceiptV1> {
   const file = authorizationFile(stateRoot, operationId, participantId, binding.digest);
   const receipt = JSON.parse(await fs.readFile(file, "utf8")) as ContextRefAuthorizationReceiptV1;
   const receiptKeys = ["version", "grant", "executionBindingDigest", "contextManifestDigest", "promptManifestDigest", "receiptDigest"].sort();
@@ -552,7 +550,7 @@ function authorizationReceiptDigest(receipt: ContextRefAuthorizationReceiptV1): 
   return sha256Canonical({ version: receipt.version, grantDigest: receipt.grant.grantDigest, executionBindingDigest: receipt.executionBindingDigest, contextManifestDigest: receipt.contextManifestDigest, promptManifestDigest: receipt.promptManifestDigest });
 }
 
-function assertRetrievalReceipt(receipt: ContextRetrievalReceiptV1, binding: ExecutionBindingV2): void {
+function assertRetrievalReceipt(receipt: ContextRetrievalReceiptV1, binding: ExecutionBindingV3): void {
   const keys = ["version", "receiptId", "requestId", "operationId", "projectId", "operationExecutionRevision", "candidateRevision", "candidateRevisionDigest", "participantId", "participantGeneration", "executionBindingDigest", "controllerEpoch", "sessionId", "authorizationReceiptDigest", "refId", "fragmentId", "artifactPath", "sourceDigest", "deliveredContentDigest", "estimatedTokens", "retrievedAt", "receiptDigest"].sort();
   if (!receipt || typeof receipt !== "object" || Object.keys(receipt).sort().join("\0") !== keys.join("\0")) throw new Error("CONTEXT_RUNTIME_V2_RECEIPT_INVALID: retrieval receipt shape is invalid.");
   const { receiptDigest, ...body } = receipt;
@@ -562,7 +560,7 @@ function assertRetrievalReceipt(receipt: ContextRetrievalReceiptV1, binding: Exe
   for (const digest of [receipt.sourceDigest, receipt.deliveredContentDigest, receipt.authorizationReceiptDigest]) if (!/^[a-f0-9]{64}$/.test(digest)) throw new Error("CONTEXT_RUNTIME_V2_RECEIPT_INVALID: retrieval receipt contains a malformed digest.");
 }
 
-function assertContinuationCurrent(continuation: ContextContinuationV1, binding: ExecutionBindingV2, projectId: string, refs: ReturnType<typeof createContextRef>[], receiptIds: string[]): void {
+function assertContinuationCurrent(continuation: ContextContinuationV1, binding: ExecutionBindingV3, projectId: string, refs: ReturnType<typeof createContextRef>[], receiptIds: string[]): void {
   assertContinuationBinding(continuation, {
     operationId: binding.operationId,
     projectId,
@@ -594,7 +592,7 @@ function retrievalReceiptFile(root: string, operationId: string, participantId: 
 function continuationStateFile(root: string, operationId: string, participantId: string, bindingDigest: string): string { return path.join(baseDir(root, operationId, participantId, bindingDigest), "continuation-state.json"); }
 function continuationFile(root: string, operationId: string, participantId: string, bindingDigest: string, continuationId: string): string { return path.join(baseDir(root, operationId, participantId, bindingDigest), "continuations", `${safeSegment(continuationId)}.json`); }
 
-async function readRetrievalState(file: string, binding: ExecutionBindingV2, retrievalBudget: ContextRetrievalBudgetV1 | null): Promise<DurableRetrievalStateV1> {
+async function readRetrievalState(file: string, binding: ExecutionBindingV3, retrievalBudget: ContextRetrievalBudgetV1 | null): Promise<DurableRetrievalStateV1> {
   const value = await readOptionalJson<DurableRetrievalStateV1>(file);
   if (!value) return withStateDigest({ version: 1 as const, executionBindingDigest: binding.digest, sessionId: binding.runtime.sessionId, retrievalBudget, requests: 0, totalTokens: 0, requestIds: [], receiptIds: [] });
   assertState(value, binding);
@@ -602,21 +600,21 @@ async function readRetrievalState(file: string, binding: ExecutionBindingV2, ret
   return value;
 }
 
-async function readContinuationState(file: string, binding: ExecutionBindingV2): Promise<DurableContinuationStateV1> {
+async function readContinuationState(file: string, binding: ExecutionBindingV3): Promise<DurableContinuationStateV1> {
   const value = await readOptionalJson<DurableContinuationStateV1>(file);
   if (!value) return withStateDigest({ version: 1 as const, executionBindingDigest: binding.digest, sessionId: binding.runtime.sessionId, sequence: 1, lastTurnId: `context-turn:${binding.digest}:1`, turnIds: [`context-turn:${binding.digest}:1`] });
   assertState(value, binding);
   return value;
 }
 
-function assertState<T extends { version: 1; executionBindingDigest: string; sessionId: string; stateDigest: string }>(value: T, binding: ExecutionBindingV2): void {
+function assertState<T extends { version: 1; executionBindingDigest: string; sessionId: string; stateDigest: string }>(value: T, binding: ExecutionBindingV3): void {
   const { stateDigest, ...body } = value;
   if (stateDigest !== sha256Canonical(body) || value.executionBindingDigest !== binding.digest || value.sessionId !== binding.runtime.sessionId) throw new Error("CONTEXT_RUNTIME_V2_STATE_INVALID: durable runtime state is corrupt or stale.");
 }
 
 function withStateDigest<T extends Record<string, unknown>>(body: T): T & { stateDigest: string } { return { ...body, stateDigest: sha256Canonical(body) }; }
 
-function contextEvidenceValue(binding: ExecutionBindingV2, receipts: ContextRetrievalReceiptV1[], state: DurableRetrievalStateV1): ContextRetrievalEvidenceV1 {
+function contextEvidenceValue(binding: ExecutionBindingV3, receipts: ContextRetrievalReceiptV1[], state: DurableRetrievalStateV1): ContextRetrievalEvidenceV1 {
   const receiptIds = receipts.map((receipt) => receipt.receiptId).sort();
   const receiptDigests = receipts.map((receipt) => receipt.receiptDigest).sort();
   const receiptsDigest = sha256Canonical({ receiptIds, receiptDigests });

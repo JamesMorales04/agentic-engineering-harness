@@ -80,6 +80,24 @@ orchestration:
   worker:
     provider: opencode
     maxRepairAttempts: 2
+  operations:
+    liveness:
+      hardDeadlineMs: 28800000
+      progressLeaseMs: 900000
+      stallWindowMs: 900000
+      providerTurnDeadlineMs: 1800000
+      defaultToolDeadlineMs: 1800000
+      maxNoProgressRenewals: 2
+      maxParticipantRestarts: 2
+      maxLocalRetriesPerFailure: 1
+      softBudgetThreshold: 0.8
+    economicEnvelope:
+      initialProviderTurns: 8
+      supervisorProviderTurns: 12
+      hardProviderTurns: 16
+      maxLocalRetries: 1
+      maxParticipantRestarts: 2
+      softThreshold: 0.8
   interactive:
     autoSetup: true
     webUi: true

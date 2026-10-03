@@ -3,13 +3,18 @@ import readline from "node:readline";
 import path from "node:path";
 import process from "node:process";
 import { loadProjectConfig } from "../core/config.js";
+import { sha256Canonical } from "../core/digest.js";
 import { assertIntentDecisionForRoute, InvalidIntentDecisionError, parseIntentDecision } from "../audit/intentDecision.js";
+import type { IntentDecisionV1 } from "../audit/intentDecision.js";
 import { answerInformationalRequest } from "../informational/answer.js";
 import { retrieveInformationalEvidence } from "../informational/evidence.js";
 import { statusLeadContext } from "../paseo/context.js";
 import { PASEO_BOOTSTRAP_VERSION } from "../paseo/start.js";
 import { recordPaseoTrace } from "../paseo/trace.js";
 import { VERSION } from "../version.js";
+import { decideParticipantRecoveryV1, readExecutionActivityEventsV1 } from "./executionLiveness.js";
+import { assertSameSessionResumeCompatibleV1 } from "./recoveryIdentity.js";
+import { dispatchSameSessionResumeV1 } from "./supervisorMcp.js";
 import { cancelOperation, startDetachedOperation } from "./controller.js";
 import { buildOperationDigest, operationDigestText, type OperationDigest } from "./digest.js";
 import { spawnOperationMonitor } from "./monitorProcess.js";
@@ -112,6 +117,19 @@ const tools = [
     }
   },
   {
+    name: "aeh_operation_recover_participant",
+    description: "As the bound Lead, continue or resume one participant or request a controller-owned rotation/replan/split/reassignment under the frozen Owner policy. Requires an exact binding digest and current durable activity evidence; it cannot widen policy or exceed an Owner hard boundary.",
+    inputSchema: {
+      type: "object", additionalProperties: false,
+      required: ["operationId", "participantId", "executionBindingDigest", "action", "evidenceIds", "reason"],
+      properties: {
+        operationId: { type: "string" }, participantId: { type: "string" }, executionBindingDigest: { type: "string", pattern: "^[a-f0-9]{64}$" },
+        action: { enum: ["CONTINUE", "RESUME_SAME_SESSION", "RETRY_PARTICIPANT", "ROTATE_SESSION", "REPLAN", "SPLIT_WORK", "REASSIGN", "FAIL"] }, evidenceIds: { type: "array", minItems: 1, maxItems: 12, items: { type: "string", minLength: 1 } },
+        reason: { type: "string", minLength: 1, maxLength: 2000 }
+      }
+    }
+  },
+  {
     name: "aeh_operation_ack",
     description: "Acknowledge exactly one current durable operation revision as the bound interactive lead without reading the full OperationRecord. Use after consuming a blocked/terminal continuation event; never use as a progress poll.",
     inputSchema: {
@@ -154,16 +172,16 @@ export async function handleOperationMcpRequest(request: OperationMcpRequest): P
     return {
       protocolVersion: typeof request.params?.protocolVersion === "string" ? request.params.protocolVersion : "2025-06-18",
       capabilities: { tools: {} },
-      serverInfo: { name: "aeh-operation-controller", version: "5" }
+      serverInfo: { name: "aeh-operation-controller", version: "6" }
     };
   }
   if (request.method === "ping") return {};
   if (request.method === "tools/list") return { tools };
-  if (request.method === "tools/call") return callTool(request.params ?? {});
+  if (request.method === "tools/call") return callTool(request.params ?? {}, request.id === undefined || request.id === null ? undefined : String(request.id));
   throw new Error(`Unsupported MCP method: ${request.method ?? "<missing>"}`);
 }
 
-async function callTool(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+async function callTool(params: Record<string, unknown>, requestEventId?: string): Promise<Record<string, unknown>> {
   const name = string(params.name, "tool name");
   const args = object(params.arguments);
   const root = controlRoot();
@@ -172,20 +190,20 @@ async function callTool(params: Record<string, unknown>): Promise<Record<string,
     const payload: AuditOperationPayload = {
       request: string(args.request, "request"), intentDecision: parseIntentDecision(args.intentDecision), files: stringArray(args.files), domains: stringArray(args.domains), risk: risk(args.risk), reviewers: stringArray(args.reviewers)
     };
-    return digestToolResult(await startManagedOperation(root, "audit", payload));
+    return digestToolResult(await startManagedOperation(root, "audit", payload, requestEventId));
   }
   if (name === "aeh_operation_start_run") {
     const payload: RunOperationPayload = {
       taskId: string(args.taskId, "taskId"), intentDecision: parseIntentDecision(args.intentDecision), profile: optionalString(args.profile), priority: priority(args.priority)
     };
-    return digestToolResult(await startManagedOperation(root, "run", payload));
+    return digestToolResult(await startManagedOperation(root, "run", payload, requestEventId));
   }
   if (name === "aeh_operation_start_change") {
     const payload: ChangeOperationPayload = {
       request: string(args.request, "request"), intentDecision: parseIntentDecision(args.intentDecision), title: optionalString(args.title), taskId: optionalString(args.taskId), files: stringArray(args.files),
       domains: stringArray(args.domains), acceptance: stringArray(args.acceptance), risk: risk(args.risk), profile: optionalString(args.profile), priority: priority(args.priority)
     };
-    return digestToolResult(await startManagedOperation(root, "change", payload));
+    return digestToolResult(await startManagedOperation(root, "change", payload, requestEventId));
   }
   if (name === "aeh_informational_context") {
     const request = string(args.request, "request");
@@ -210,6 +228,36 @@ async function callTool(params: Record<string, unknown>): Promise<Record<string,
     const status = await readOperationStatus(root, operationId, detail);
     if (detail === "full") return operationToolResult(status, `${operationId} full diagnostic OperationRecord available in structuredContent.`);
     return operationToolResult(status, operationDigestText(status as OperationDigest));
+  }
+  if (name === "aeh_operation_recover_participant") {
+    const operationId = string(args.operationId, "operationId");
+    const participantId = string(args.participantId, "participantId");
+    const expectedBindingDigest = string(args.executionBindingDigest, "executionBindingDigest");
+    const action = string(args.action, "action");
+    const allowedLeadRecoveryActions = ["CONTINUE", "RESUME_SAME_SESSION", "RETRY_PARTICIPANT", "ROTATE_SESSION", "REPLAN", "SPLIT_WORK", "REASSIGN", "FAIL"] as const;
+    if (!allowedLeadRecoveryActions.includes(action as (typeof allowedLeadRecoveryActions)[number])) throw new Error("LEAD_RECOVERY_ACTION_INVALID: action is not in the bounded Lead recovery contract.");
+    const reason = string(args.reason, "reason");
+    if (reason.length > 2_000) throw new Error("LEAD_RECOVERY_REASON_INVALID: reason exceeds 2000 characters.");
+    const evidenceIds = stringArray(args.evidenceIds) ?? [];
+    if (evidenceIds.length === 0 || evidenceIds.length > 12) throw new Error("LEAD_RECOVERY_EVIDENCE_REQUIRED: cite between 1 and 12 current activity events.");
+    const operation = await loadOperation(root, operationId);
+    const actor = await resolveContextAgentIdentity(root);
+    if (!operation.lead?.agentId || actor.agentId !== operation.lead.agentId) throw new Error("LEAD_RECOVERY_AUTHORITY_DENIED: only the current bound Lead may recover a participant at Lead authority.");
+    const participant = operation.participants[participantId];
+    const binding = participant?.executionBinding;
+    if (!participant || !binding || binding.digest !== expectedBindingDigest) throw new Error("LEAD_RECOVERY_BINDING_STALE: participant binding differs from the cited execution identity.");
+    if (action === "RESUME_SAME_SESSION" || action === "RETRY_PARTICIPANT") await assertSameSessionResumeCompatibleV1(root, operation, participantId);
+    const cited = (await readExecutionActivityEventsV1(root, operationId)).filter((event) => evidenceIds.includes(event.eventId));
+    if (cited.length !== new Set(evidenceIds).size || cited.some((event) => event.participantId !== participantId || event.participantGeneration !== binding.participantGeneration || event.executionBindingDigest !== binding.digest || event.candidateDigest !== binding.candidateDigest || event.policyDigest !== binding.operationPolicyDigest || event.controllerEpoch !== binding.controllerEpoch || event.sessionId !== binding.runtime.sessionId)) throw new Error("LEAD_RECOVERY_EVIDENCE_STALE: cited evidence does not match the current participant binding.");
+    const decision = await decideParticipantRecoveryV1(root, {
+      operationId, participantId, actorRole: "LEAD", actorSessionId: actor.agentId, action: action as (typeof allowedLeadRecoveryActions)[number],
+      expectedBindingDigest, evidenceIds, reason
+    });
+    const participantTurn = action === "RESUME_SAME_SESSION" || action === "RETRY_PARTICIPANT"
+      ? await dispatchSameSessionResumeV1(root, operationId, participantId, expectedBindingDigest, [], {}, action, { role: "LEAD", sessionId: actor.agentId })
+      : "NOT_REQUESTED" as const;
+    await recordPaseoTrace(root, "operation.participant.lead-recovery", { operationId, participantId, action, bindingDigest: binding.digest, evidenceDigest: sha256Canonical([...new Set(evidenceIds)].sort()), decisionDigest: decision.digest, reasonDigest: sha256Canonical(reason) });
+    return operationToolResult({ operationId, participantId, action, decision, participantTurn, application: decision.application }, `${action} recorded by the bound Lead under the frozen economic and liveness envelope; controller applies any replan or rotation request.`);
   }
   if (name === "aeh_operation_ack") {
     const acknowledgement = await acknowledgeOperationRevision(root, string(args.operationId, "operationId"), integer(args.revision, "revision"));
@@ -268,17 +316,18 @@ export async function acknowledgeOperationRevision(
   };
 }
 
-async function startManagedOperation(root: string, kind: OperationKind, payload: OperationPayload) {
+async function startManagedOperation(root: string, kind: OperationKind, payload: OperationPayload, requestEventId?: string) {
   const identity = await resolveContextAgentIdentity(root);
   const config = await loadProjectConfig(root);
   const decision = (payload as AuditOperationPayload | ChangeOperationPayload | RunOperationPayload).intentDecision;
-  assertManagedLeadDecision(decision, kind === "audit" ? "audit" : kind === "change" ? "change" : "run");
+  const validatedDecision = assertManagedLeadDecision(decision, kind === "audit" ? "audit" : kind === "change" ? "change" : "run");
   await recordPaseoTrace(root, "operation.lead.target", { kind, agentId: identity.agentId, source: identity.source });
   const record = await startDetachedOperation(root, kind, payload, {
     nodeExecutable: process.execPath,
     entryFile: path.resolve(process.argv[1]),
     completionAgentId: identity.agentId,
-    completionSource: identity.source
+    completionSource: identity.source,
+    initiator: { kind: "LEAD", agentId: identity.agentId, ...(requestEventId ? { requestEventId: `${identity.agentId}:jsonrpc:${requestEventId}` } : {}) }
   });
   await spawnOperationMonitor(root, record, {
     nodeExecutable: process.execPath,
@@ -287,9 +336,10 @@ async function startManagedOperation(root: string, kind: OperationKind, payload:
   return record;
 }
 
-function assertManagedLeadDecision(value: unknown, route: "informational" | "audit" | "change" | "run"): void {
+function assertManagedLeadDecision(value: unknown, route: "informational" | "audit" | "change" | "run"): IntentDecisionV1 {
   const decision = assertIntentDecisionForRoute(value, route);
   if (decision.source !== "lead-semantic") throw new InvalidIntentDecisionError(`managed conversational route requires source lead-semantic, received ${decision.source}`);
+  return decision;
 }
 
 export async function resolveContextAgentIdentity(

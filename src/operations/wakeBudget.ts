@@ -4,7 +4,7 @@ import path from "node:path";
 import { resolveOperationStateRoot } from "./state.js";
 
 export type DurableWakeTarget = "lead" | "supervisor";
-export type DurableWakeReason = "progress" | "blocked" | "stalled" | "terminal";
+export type DurableWakeReason = "progress" | "blocked" | "stalled" | "economic" | "owner-boundary" | "terminal";
 
 export interface OperationWakeBudget {
   version: 1;

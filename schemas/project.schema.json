@@ -26,7 +26,12 @@
     "orchestration": { "type": "object", "properties": {
       "provider": { "type": "string" },
       "required": { "type": "boolean" },
-      "worker": { "type": "object", "properties": { "provider": { "type": "string" }, "model": { "type": "string" }, "maxRepairAttempts": { "type": "integer", "minimum": 0 }, "timeoutSeconds": { "type": "integer", "minimum": 1 }, "titlePrefix": { "type": "string" } } },
+      "worker": { "type": "object", "properties": { "provider": { "type": "string" }, "model": { "type": "string" }, "maxRepairAttempts": { "type": "integer", "minimum": 0 }, "titlePrefix": { "type": "string" } } },
+      "operations": { "type": "object", "properties": {
+        "supervision": { "type": "object", "properties": { "initializationTimeoutSeconds": { "type": "integer", "minimum": 1 }, "turnTimeoutSeconds": { "type": "integer", "minimum": 1 }, "context": { "type": "object", "properties": { "handoffThreshold": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 }, "hardHandoffThreshold": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 } } } } },
+        "liveness": { "$ref": "#/$defs/executionLiveness" },
+        "economicEnvelope": { "$ref": "#/$defs/economicEnvelope" }
+      } },
       "interactive": { "type": "object", "properties": {
         "autoSetup": { "type": "boolean" },
         "webUi": { "type": "boolean" },
@@ -75,6 +80,8 @@
   "$defs": {
     "severityNumbers": { "type": "object", "properties": { "critical": { "type": "integer", "minimum": 0 }, "high": { "type": "integer", "minimum": 0 }, "medium": { "type": "integer", "minimum": 0 }, "low": { "type": "integer", "minimum": 0 }, "note": { "type": "integer", "minimum": 0 } } },
     "contextBudget": { "type": "object", "properties": { "inputTokens": { "type": "integer", "minimum": 1 }, "maxTokens": { "type": "integer", "minimum": 1 }, "reserved": { "type": "object", "properties": { "instructions": { "type": "integer", "minimum": 0 }, "normative": { "type": "integer", "minimum": 0 }, "evidence": { "type": "integer", "minimum": 0 }, "response": { "type": "integer", "minimum": 0 } } } } },
+    "executionLiveness": { "type": "object", "additionalProperties": false, "properties": { "hardDeadlineMs": { "type": "integer", "minimum": 1 }, "progressLeaseMs": { "type": "integer", "minimum": 1 }, "stallWindowMs": { "type": "integer", "minimum": 1 }, "providerTurnDeadlineMs": { "type": "integer", "minimum": 1 }, "defaultToolDeadlineMs": { "type": "integer", "minimum": 1 }, "maxNoProgressRenewals": { "type": "integer", "minimum": 0 }, "maxParticipantRestarts": { "type": "integer", "minimum": 0 }, "maxLocalRetriesPerFailure": { "type": "integer", "minimum": 0 }, "softBudgetThreshold": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 }, "toolDeadlinesMs": { "type": "object", "propertyNames": { "minLength": 1 }, "additionalProperties": { "type": "integer", "minimum": 1 } } } },
+    "economicEnvelope": { "type": "object", "additionalProperties": false, "properties": { "initialProviderTurns": { "type": "integer", "minimum": 0 }, "supervisorProviderTurns": { "type": "integer", "minimum": 0 }, "hardProviderTurns": { "type": "integer", "minimum": 0 }, "maxLocalRetries": { "type": "integer", "minimum": 0 }, "maxParticipantRestarts": { "type": "integer", "minimum": 0 }, "softThreshold": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 }, "hardToolCalls": { "type": "integer", "minimum": 0 }, "hardTotalTokens": { "type": "integer", "minimum": 0 }, "hardCostUsd": { "type": "number", "minimum": 0 } } },
     "policyBundleSource": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string", "minLength": 1 }, "path": { "type": "string" }, "url": { "type": "string", "format": "uri" }, "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }, "required": { "type": "boolean" }, "publicKey": { "type": "string" }, "signature": { "type": "string" } } }
   },
   "additionalProperties": false

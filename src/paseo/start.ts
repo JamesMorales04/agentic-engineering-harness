@@ -283,6 +283,7 @@ export function buildAehControlMcp(aehCommand: string, projectRoot: string): Pic
     "aeh_operation_start_change",
     "aeh_operation_digest",
     "aeh_operation_status",
+    "aeh_operation_recover_participant",
     "aeh_operation_ack",
     "aeh_operation_portfolio",
     "aeh_operation_cancel",

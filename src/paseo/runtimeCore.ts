@@ -1,7 +1,7 @@
 import process from "node:process";
 import type { OpenCodeAgentBindingSource } from "../agents/permissions.js";
 import { currentOperationContext, loadOperation, registerCurrentOperationAgent } from "../operations/state.js";
-import type { ExecutionBindingV2 } from "../architecture/executionIdentity.js";
+import type { ExecutionBindingV3 } from "../architecture/executionIdentity.js";
 import { providerLeaseWorkspaceKeyV1, runWithOperationProviderLease } from "../runtime/providerLifecycle.js";
 import { runExecutable, runShell } from "../utils/process.js";
 import {
@@ -49,7 +49,7 @@ export interface ManagedPaseoAgentResult {
   workspaceId?: string;
   transport: "sdk" | "cli";
   observation?: "subscription" | "sdk-run" | "sdk-wait" | "cli-wait";
-  efficiencyTelemetry?: import("../telemetry/efficiency.js").ProviderTelemetryEvidenceV1;
+  efficiencyTelemetry?: import("../telemetry/efficiency.js").ProviderTelemetryEvidenceV2;
 }
 
 export interface PaseoRuntimeDeps {
@@ -251,7 +251,7 @@ async function continueManagedPaseoAgentUnleased(
   if (!forceCli()) {
     try {
       const result = {
-        ...fromSdk(await deps.sdk.run(root, agentId, prompt, timeoutMs(timeoutSeconds), outputSchema)),
+        ...fromSdk(await deps.sdk.run(root, agentId, prompt, timeoutMs(timeoutSeconds), outputSchema, executionIdentityLabels?.["aeh.operation.phase"])),
         observation: "sdk-run" as const
       };
       await trace(root, "agent.turn.completed", {
@@ -340,7 +340,7 @@ async function withProviderSessionLease<T>(
   }, action).then((value) => value);
 }
 
-function executionBindingFromLabels(labels?: Record<string, string>): ExecutionBindingV2 | undefined {
+function executionBindingFromLabels(labels?: Record<string, string>): ExecutionBindingV3 | undefined {
   const raw = labels?.["aeh.execution.binding"];
   if (!raw) return undefined;
   const decoded = labels?.["aeh.execution.binding.encoding"] === "base64url"
@@ -349,7 +349,7 @@ function executionBindingFromLabels(labels?: Record<string, string>): ExecutionB
   try {
     const parsed: unknown = JSON.parse(decoded);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("expected a JSON object");
-    return parsed as ExecutionBindingV2;
+    return parsed as ExecutionBindingV3;
   } catch (error) {
     throw new Error(`PASEO_PROVIDER_LEASE_EXECUTION_BINDING_INVALID: ${String(error)}`);
   }

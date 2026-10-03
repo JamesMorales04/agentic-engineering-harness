@@ -8,7 +8,7 @@ import { compileExecutionCatalog } from "../../src/architecture/executionCatalog
 import { createWorkGraph } from "../../src/architecture/workGraph.js";
 import { bindOperationCandidate, bindOperationParticipantExecution, bindResolvedOperationPolicy, claimControllerEpoch, currentControllerEpoch, loadOperation, patchOperationMetadata, registerOperationAgent, saveOperation, transitionOperationToTerminal } from "../../src/operations/state.js";
 import { createCandidateRevisionV1 } from "../../src/operations/v2Contracts.js";
-import { compileExecutionBinding, compileResolvedOperationPolicy, compileRoleInvocationPolicy, compileSkillManifest, createExecutionBlueprintV2 } from "../../src/architecture/executionIdentity.js";
+import { compileExecutionBinding, compileResolvedOperationPolicy, compileRoleInvocationPolicy, compileSkillManifest, createExecutionBlueprintV3 } from "../../src/architecture/executionIdentity.js";
 import { prepareExecutionAuthority, type ExecutionAuthorityV1 } from "../../src/security/executionLease.js";
 import { HumanDecisionLedgerV2 } from "../../src/security/humanDecision.js";
 import { authorizeToolAction, controllerActorId, recordReconciledToolActionReceipt, recordToolActionReceipt, type ToolActionRequestV1 } from "../../src/security/toolActionGate.js";
@@ -107,7 +107,7 @@ describe("durable controller fencing", () => {
     process.env.AEH_CONTROLLER_EPOCH = "1";
     const graph = createWorkGraph({ taskId: context.candidate.taskId ?? "T-1", objective: "fence", route: "DELEGATED", assurance: "STANDARD", requirementRefs: [], acceptanceRefs: [], units: [{ version: 1, id: "fence-unit", objective: "fence", scope: ["src/**"], dependencies: [], requirementRefs: [], acceptanceRefs: [], competencies: [], riskTags: [], changeKinds: ["source"], risk: "low", status: "PENDING" }] });
     const operation = await loadOperation(context.root, context.operationId);
-    const resolvedOperationPolicy = compileResolvedOperationPolicy({ projectId: context.candidate.projectId!, operationId: context.operationId, operationExecutionRevision: operation.operationExecutionRevision!, candidateRevision: context.candidate.revision, candidateDigest: context.candidate.identityDigest, controllerEpoch: 1, intent: "fence blueprint", route: graph.route, minimumAssurance: graph.assurance, policyVersions: { resolvedOperationPolicy: "1" }, policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {}, allowedExternalEffects: [], humanDecisionRequirements: [] });
+    const resolvedOperationPolicy = compileResolvedOperationPolicy({ projectId: context.candidate.projectId!, operationId: context.operationId, operationExecutionRevision: operation.operationExecutionRevision!, candidateRevision: context.candidate.revision, candidateDigest: context.candidate.identityDigest, controllerEpoch: 1, intent: "fence blueprint", route: graph.route, minimumAssurance: graph.assurance, policyVersions: { resolvedOperationPolicy: "2" }, policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {}, allowedExternalEffects: [], humanDecisionRequirements: [] });
     const blueprint = compileExecutionBlueprint({
       graph,
       candidate: context.candidate,
@@ -138,7 +138,7 @@ describe("durable controller fencing", () => {
       resourceClaims: [], outputContract: "implementer", constraints: {} });
     const skillManifest = compileSkillManifest({ scope: { operationId: context.operationId, operationExecutionRevision: operation.operationExecutionRevision!, candidateRevision: context.candidate.revision, candidateDigest: context.candidate.identityDigest, controllerEpoch: 1, participantId: context.participantId, workUnitIds: ["work"], competencies: [] }, skills: [] });
     const resolution = { version: 1 as const, requirements: [], actions: [], blocked: [], digest: "a".repeat(64) };
-    const blueprint = createExecutionBlueprintV2({ projectId: policy.projectId, operationId: context.operationId, operationExecutionRevision: policy.operationExecutionRevision,
+    const blueprint = createExecutionBlueprintV3({ projectId: policy.projectId, operationId: context.operationId, operationExecutionRevision: policy.operationExecutionRevision,
       candidateRevision: context.candidate.revision, candidateDigest: context.candidate.identityDigest, controllerEpoch: 1, resolvedOperationPolicy: policy,
       workGraph: createWorkGraph({ taskId: context.candidate.taskId!, objective: "work", route: "DELEGATED", assurance: "STANDARD", requirementRefs: [], acceptanceRefs: [], units: [] }),
       participantPlan: { version: 1 }, executionCatalog: { version: 1 }, participants: [{ participantId: context.participantId, role: "Implementer", specialization: "typescript",
