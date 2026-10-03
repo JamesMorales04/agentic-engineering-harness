@@ -86,6 +86,7 @@ import { assertWorkspaceMatchesCandidate } from "../candidates/identity.js";
 import { bindBootstrapOperationPolicy } from "./bootstrapPolicy.js";
 import { compileOperationOriginV1, type OperationOwnerResolutionRefV1 } from "./operationProvenance.js";
 import { collectOperationEconomicUsageV1, remainingEconomicEnvelopeForRecoveryV1 } from "./economicUsage.js";
+import { createTrustedOperationToolError } from "./toolDiagnostics.js";
 
 export { bindBootstrapOperationPolicy };
 
@@ -189,8 +190,8 @@ export async function startDetachedOperation(
   let record: OperationRecordV2;
   if (parentOperationId) {
     record = await withOperationRecoveryParentLock(absoluteRoot, parentOperationId, async (parent, existingChildOperationId) => {
-      if (parent.status !== "FAILED") throw new Error("OPERATION_RECOVERY_PARENT_NOT_FAILED: only a terminal failed operation can authorize a recovery continuation.");
-      if (existingChildOperationId) throw Object.assign(new Error(`OPERATION_RECOVERY_PARENT_NOT_LEAF: operation ${parent.id} already has child ${existingChildOperationId}; continue only from the current failed leaf.`), { code: "OPERATION_RECOVERY_PARENT_NOT_LEAF", relatedOperationId: existingChildOperationId });
+      if (parent.status !== "FAILED") throw createTrustedOperationToolError("OPERATION_RECOVERY_PARENT_NOT_FAILED", "Only a terminal failed operation can authorize a recovery continuation.");
+      if (existingChildOperationId) throw createTrustedOperationToolError("OPERATION_RECOVERY_PARENT_NOT_LEAF", `Operation ${parent.id} already has child ${existingChildOperationId}; continue only from the current failed leaf.`, undefined, existingChildOperationId);
       return createAndPersistRecord(parent);
     });
   } else {
@@ -892,16 +893,16 @@ async function createOperationOrigin(root: string, kind: OperationKind, payload:
   if (leadInitiated && !initiator?.requestEventId && !userTurnId) throw new Error("OPERATION_ORIGIN_CAUSAL_EVENT_REQUIRED: Lead-started operations require a durable MCP request event id or user-turn id.");
   if (parentOperationId) {
     const parent = recoveryParent ?? await loadOperation(root, parentOperationId);
-    if (parent.status !== "FAILED") throw new Error("OPERATION_RECOVERY_PARENT_NOT_FAILED: only a terminal failed operation can authorize a recovery continuation.");
-    if (parent.ownerEconomicBoundary) throw new Error("OPERATION_RECOVERY_OWNER_BOUNDARY: a linked continuation cannot bypass an Owner economic boundary; the human Owner must authorize a fresh top-level request under a changed policy.");
-    if (parent.ownerContinuationBoundary) throw new Error("OPERATION_RECOVERY_OWNER_BOUNDARY: a hard-deadline operation cannot be continued as a linked child; a distinct new Owner request is required.");
+    if (parent.status !== "FAILED") throw createTrustedOperationToolError("OPERATION_RECOVERY_PARENT_NOT_FAILED", "Only a terminal failed operation can authorize a recovery continuation.");
+    if (parent.ownerEconomicBoundary) throw createTrustedOperationToolError("OPERATION_RECOVERY_OWNER_BOUNDARY", "A linked continuation cannot bypass an Owner economic boundary; the human Owner must authorize a fresh top-level request under a changed policy.", undefined, parent.id);
+    if (parent.ownerContinuationBoundary) throw createTrustedOperationToolError("OPERATION_RECOVERY_OWNER_BOUNDARY", "A hard-deadline operation cannot be continued as a linked child; a distinct new Owner request is required.", undefined, parent.id);
     const parentPolicy = parent.resolvedOperationPolicy;
-    if (!parentPolicy) throw new Error("OPERATION_RECOVERY_AUTHORITY_MISSING: failed parent has no frozen policy to inherit.");
+    if (!parentPolicy) throw createTrustedOperationToolError("OPERATION_RECOVERY_AUTHORITY_MISSING", "Failed parent has no frozen policy to inherit.", undefined, parent.id);
     assertResolvedOperationPolicyV2(parentPolicy);
     const parentUsage = await collectOperationEconomicUsageV1(root, parent);
     remainingEconomicEnvelopeForRecoveryV1(parentPolicy.economicEnvelope, parentUsage);
     const recoveryDepth = (parent.origin?.recoveryDepth ?? 0) + 1;
-    if (recoveryDepth > 2) throw new Error("OPERATION_RECOVERY_BUDGET_EXHAUSTED: failed-operation recovery depth is limited to two linked continuations.");
+    if (recoveryDepth > 2) throw createTrustedOperationToolError("OPERATION_RECOVERY_BUDGET_EXHAUSTED", "Failed-operation recovery depth is limited to two linked continuations.", undefined, parent.id);
     const rootHardDeadlineAt = parent.origin?.rootHardDeadlineAt
       ?? parentPolicy.economicEnvelope.hardDeadlineAt
       ?? new Date(Date.parse(parent.createdAt) + parentPolicy.executionLiveness.hardDeadlineMs).toISOString();
@@ -1080,9 +1081,9 @@ async function assertConfiguredGlobalOwnerBoundaryForLead(root: string, config?:
     if (reference.kind === "OWNER_ECONOMIC_BOUNDARY") {
       const operation = records.find((item) => item.id === reference.operationId)!;
       const boundary = operation.ownerEconomicBoundary!;
-      throw new Error(`PROJECT_OR_OWNER_GLOBAL_BOUNDARY_STILL_WAITING: operation ${operation.id} is reserved project-wide for an explicit Owner decision after ${boundary.budget}; run an Owner-authorized CLI start naming --resolve-operation ${operation.id} after reviewing the policy.`);
+      throw createTrustedOperationToolError("PROJECT_OR_OWNER_GLOBAL_BOUNDARY_STILL_WAITING", `Operation ${operation.id} is reserved project-wide for an explicit Owner decision after ${boundary.budget}; run an Owner-authorized CLI start naming --resolve-operation ${operation.id} after reviewing the policy.`, undefined, operation.id);
     }
-    throw new Error(`PROJECT_OR_OWNER_GLOBAL_BOUNDARY_STILL_WAITING: operation ${reference.operationId} reached its frozen hard deadline; run an Owner-authorized CLI start naming --resolve-operation ${reference.operationId}.`);
+    throw createTrustedOperationToolError("PROJECT_OR_OWNER_GLOBAL_BOUNDARY_STILL_WAITING", `Operation ${reference.operationId} reached its frozen hard deadline; run an Owner-authorized CLI start naming --resolve-operation ${reference.operationId}.`, undefined, reference.operationId);
   }
 }
 
@@ -1122,9 +1123,9 @@ async function assertNoImplicitLeadRecoveryForLineage(root: string, userTurnId?:
     const sameTask = Boolean(taskId && chain.some((operation) => operationTaskId(operation.payload) === taskId));
     if (!sameTurn && !sameTask) continue;
     if (reference.kind === "OWNER_ECONOMIC_BOUNDARY" || reference.kind === "OWNER_HARD_DEADLINE") {
-      throw new Error(`OPERATION_OWNER_BOUNDARY_STILL_WAITING: operation ${reference.operationId} has a chain-scoped Owner boundary for this lineage; continue only through its explicit linked path or wait for a distinct Owner request.`);
+      throw createTrustedOperationToolError("OPERATION_OWNER_BOUNDARY_STILL_WAITING", `Operation ${reference.operationId} has a chain-scoped Owner boundary for this lineage; continue only through its explicit linked path or wait for a distinct Owner request.`, undefined, reference.operationId);
     }
-    throw new Error(`OPERATION_RECOVERY_PARENT_REQUIRED: failed task chain ${reference.operationId} matches this trusted user turn or prepared task id. Continue it with an explicit continuation.operationId.`);
+    throw createTrustedOperationToolError("OPERATION_RECOVERY_PARENT_REQUIRED", `Failed task chain ${reference.operationId} matches this trusted user turn or prepared task id. Continue it with an explicit continuation.operationId.`, undefined, reference.operationId);
   }
 }
 

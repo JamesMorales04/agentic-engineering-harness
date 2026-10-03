@@ -7,6 +7,7 @@ import { configuredDeliveryPolicy, requiredHumanActionAuthorizations } from "../
 import { bindResolvedOperationPolicy, currentControllerEpoch, loadOperation, type OperationRecordV2 } from "./state.js";
 import { assertOperationOriginV1 } from "./operationProvenance.js";
 import { collectOperationEconomicUsageV1, remainingEconomicEnvelopeForRecoveryV1 } from "./economicUsage.js";
+import { createTrustedOperationToolError } from "./toolDiagnostics.js";
 
 /**
  * DETERMINISTIC provisional bootstrap policy for a fresh candidate. It carries the
@@ -49,7 +50,7 @@ export async function bindBootstrapOperationPolicy(
   if (operation.origin?.kind === "FAILED_OPERATION_RECOVERY") {
     const parent = await loadOperation(root, operation.origin.parentOperationId!);
     if (parent.status !== "FAILED" || parent.revision !== operation.origin.parentTerminalRevision || !parent.resolvedOperationPolicy) throw new Error("OPERATION_RECOVERY_PARENT_STALE: the failed parent revision or frozen policy changed.");
-    if (parent.ownerEconomicBoundary || parent.ownerContinuationBoundary) throw new Error("OPERATION_RECOVERY_OWNER_BOUNDARY: linked recovery cannot continue through a hard Owner boundary.");
+    if (parent.ownerEconomicBoundary || parent.ownerContinuationBoundary) throw createTrustedOperationToolError("OPERATION_RECOVERY_OWNER_BOUNDARY", "Linked recovery cannot continue through a hard Owner boundary.", undefined, parent.id);
     const parentPolicy = parent.resolvedOperationPolicy;
     const parentUsage = await collectOperationEconomicUsageV1(root, parent);
     if (parentUsage.digest !== operation.origin.inheritedEconomicUsageDigest) throw new Error("OPERATION_RECOVERY_USAGE_STALE: parent economic-usage evidence changed after the recovery continuation was authorized.");

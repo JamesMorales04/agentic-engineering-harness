@@ -4,6 +4,7 @@ import type { HarnessProjectConfig } from "../core/types.js";
 import { sha256Canonical } from "../core/digest.js";
 import type { OperationRecordV2, OperationStatus } from "./state.js";
 import { activeOperationSupervisor, frozenOperationHardDeadlineAt, loadOperation } from "./state.js";
+import { createTrustedOperationToolError } from "./toolDiagnostics.js";
 
 export interface OperationPortfolioEntry {
   operationId: string; kind: string; status: OperationStatus; phase: string; workspaceId?: string;
@@ -88,7 +89,7 @@ export async function assertOperationCapacity(root: string, config: HarnessProje
     const active = Object.values(portfolio.operations).filter((item) => (item.status === "QUEUED" || item.status === "RUNNING") && item.deadlineDisposition !== "UNFROZEN_UNSUPPORTED");
     if (active.length < policy.maxActiveOperations) return;
     const lowest = active.reduce((min, item) => Math.min(min, item.priority), Number.POSITIVE_INFINITY);
-    throw new Error(`AEH_OPERATION_CAPACITY: ${active.length} active operations already consume the configured lead/project limit ${policy.maxActiveOperations}. Requested priority=${requestedPriority}; current lowest priority=${Number.isFinite(lowest) ? lowest : "n/a"}. Wait, cancel, or raise the configured orchestration.operations.concurrency.maxActiveOperations limit.`);
+    throw createTrustedOperationToolError("AEH_OPERATION_CAPACITY", `${active.length} active operations already consume the configured lead/project limit ${policy.maxActiveOperations}. Requested priority=${requestedPriority}; current lowest priority=${Number.isFinite(lowest) ? lowest : "n/a"}. Wait, cancel, or raise the configured orchestration.operations.concurrency.maxActiveOperations limit.`);
   });
 }
 

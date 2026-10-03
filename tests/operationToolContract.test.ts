@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createIntentDecision, intentDecisionFromLeadOperationIntent } from "../src/audit/intentDecision.js";
 import { startDetachedOperation } from "../src/operations/controller.js";
 import { handleOperationMcpRequest } from "../src/operations/mcp.js";
+import { resolveOperationToolDiagnosticV2 } from "../src/operations/toolDiagnostics.js";
 
 const roots: string[] = [];
 const previousRoot = process.env.AEH_CONTROL_ROOT;
@@ -75,6 +76,8 @@ describe("Lead operation tool contract", () => {
     expect(result.isError).toBe(true);
     expect(structured).toMatchObject({ version: 1, category: "INPUT_CONTRACT", operationCreated: false, recoverable: true, retryDisposition: "CORRECT_INPUT", requiresHuman: false, skillRef: "aeh-operation-control#START" });
     expect(structured).toHaveProperty("path", "operationIntent");
+    const diagnostic = await resolveOperationToolDiagnosticV2(root, structured.diagnosticRef as string);
+    expect(diagnostic).toMatchObject({ errorCode: "INVALID_INTENT_DECISION", failureClass: "INPUT" });
     expect(result.content).toEqual(expect.arrayContaining([expect.objectContaining({ type: "text" })]));
     await expect(fs.readdir(path.join(root, ".harness", "operations"))).rejects.toMatchObject({ code: "ENOENT" });
 
@@ -128,5 +131,13 @@ describe("Lead operation tool contract", () => {
       params: { name: "aeh_operation_digest", arguments: { operationId: "CHANGE-MISSING" } }
     });
     expect(result.structuredContent).toMatchObject({ version: 1, code: "OPERATION_NOT_FOUND", category: "NOT_FOUND", path: "operationId", operationCreated: false });
+  });
+
+  it("classifies invalid status detail as a trusted input contract error", async () => {
+    const result = await handleOperationMcpRequest({
+      jsonrpc: "2.0", id: "invalid-detail", method: "tools/call",
+      params: { name: "aeh_operation_status", arguments: { operationId: "CHANGE-1", detail: "verbose" } }
+    });
+    expect(result.structuredContent).toMatchObject({ version: 1, code: "OPERATION_INPUT_INVALID", category: "INPUT_CONTRACT", path: "detail", operationCreated: false, recoverable: true, retryDisposition: "CORRECT_INPUT" });
   });
 });

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { compileExecutionBinding, compileResolvedOperationPolicy, compileRoleInvocationPolicy } from "../src/architecture/executionIdentity.js";
+import * as executionLivenessModule from "../src/operations/executionLiveness.js";
 import { sha256Canonical } from "../src/core/digest.js";
 import {
   hardDeadlineFor,
@@ -543,6 +544,86 @@ describe("execution liveness model", () => {
       expect((await loadOperation(fixture.root, fixture.operationId)).participants[fixture.participantId]!.executionLiveness!.progressLease)
         .toMatchObject({ renewedBy: "LEAD", renewedBySessionId: "session:lead-current" });
     } finally {
+      if (previous.root === undefined) delete process.env.AEH_CONTROL_ROOT; else process.env.AEH_CONTROL_ROOT = previous.root;
+      if (previous.agent === undefined) delete process.env.PASEO_AGENT_ID; else process.env.PASEO_AGENT_ID = previous.agent;
+    }
+  });
+
+  it("preserves the persisted Owner boundary classification on Lead recovery", async () => {
+    const fixture = await makeFixture({ economic: { hardCostUsd: 1 }, userTurnId: "lead-session:turn-owner-recovery" });
+    const at = new Date(fixture.executionStartedAt.getTime() + 20_000);
+    const evidence = await recordParticipantExecutionActivityV1(fixture.root, fixture.operationId, fixture.participantId, {
+      kind: "NEW_RETRIEVAL", evidenceId: "retrieval:owner-recovery", evidenceDigest: digest("retrieval"), observedAt: at
+    });
+    await expect(renewParticipantProgressLeaseV1(fixture.root, {
+      operationId: fixture.operationId, participantId: fixture.participantId, actorSessionId: "session:lead-current", at: new Date(at.getTime() + 1_000)
+    })).rejects.toThrow(/OWNER_DECISION_REQUIRED/);
+    expect(await loadOperation(fixture.root, fixture.operationId)).toMatchObject({ ownerEconomicBoundary: { state: "WAITING", budget: "HARD_COST_USD" } });
+
+    const previous = { root: process.env.AEH_CONTROL_ROOT, agent: process.env.PASEO_AGENT_ID };
+    process.env.AEH_CONTROL_ROOT = fixture.root;
+    process.env.PASEO_AGENT_ID = "session:lead-current";
+    try {
+      const result = await handleOperationMcpRequest({ method: "tools/call", params: { name: "aeh_operation_recover_participant", arguments: {
+        operationId: fixture.operationId, participantId: fixture.participantId, executionBindingDigest: fixture.participantBinding.digest,
+        action: "CONTINUE", evidenceIds: [evidence!.eventId], reason: "Continue within current policy after checking owner state."
+      } } });
+      expect(result.structuredContent).toMatchObject({ code: "OPERATION_RECOVERY_OWNER_BOUNDARY", category: "OWNER_BOUNDARY", requiresHuman: true, relationship: "OWNER_ATTENTION", relatedOperationId: fixture.operationId });
+    } finally {
+      if (previous.root === undefined) delete process.env.AEH_CONTROL_ROOT; else process.env.AEH_CONTROL_ROOT = previous.root;
+      if (previous.agent === undefined) delete process.env.PASEO_AGENT_ID; else process.env.PASEO_AGENT_ID = previous.agent;
+    }
+  });
+
+  it("preserves Owner classification when the hard tool boundary appears during recovery lease renewal", async () => {
+    const fixture = await makeFixture({ economic: { hardToolCalls: 1 }, userTurnId: "lead-session:turn-recovery-renewal-boundary" });
+    const evidence = await recordParticipantExecutionActivityV1(fixture.root, fixture.operationId, fixture.participantId, {
+      kind: "TOOL_CALL_FAILED", evidenceId: "tool-failure:renewal-boundary", evidenceDigest: digest("renewal-boundary"), toolName: "npm test", observedAt: new Date(fixture.executionStartedAt.getTime() + 20_000)
+    });
+    const previous = { root: process.env.AEH_CONTROL_ROOT, agent: process.env.PASEO_AGENT_ID };
+    process.env.AEH_CONTROL_ROOT = fixture.root;
+    process.env.PASEO_AGENT_ID = "session:lead-current";
+    try {
+      const result = await handleOperationMcpRequest({ method: "tools/call", params: { name: "aeh_operation_recover_participant", arguments: {
+        operationId: fixture.operationId, participantId: fixture.participantId, executionBindingDigest: fixture.participantBinding.digest,
+        action: "CONTINUE", evidenceIds: [evidence!.eventId], reason: "Continue within policy and renew the progress lease."
+      } } });
+      expect(await loadOperation(fixture.root, fixture.operationId)).toMatchObject({ ownerEconomicBoundary: { state: "WAITING", budget: "HARD_TOOL_CALLS" } });
+      expect(result.structuredContent).toMatchObject({ code: "OPERATION_RECOVERY_OWNER_BOUNDARY", category: "OWNER_BOUNDARY", requiresHuman: true, relationship: "OWNER_ATTENTION", relatedOperationId: fixture.operationId });
+      expect((await loadOperation(fixture.root, fixture.operationId)).participants[fixture.participantId]!.executionLiveness!.lastRecoveryDecision).toBeDefined();
+    } finally {
+      if (previous.root === undefined) delete process.env.AEH_CONTROL_ROOT; else process.env.AEH_CONTROL_ROOT = previous.root;
+      if (previous.agent === undefined) delete process.env.PASEO_AGENT_ID; else process.env.PASEO_AGENT_ID = previous.agent;
+    }
+  });
+
+  it("preserves Lead authority when its binding changes after the MCP precheck", async () => {
+    const fixture = await makeFixture({ supervisor: true });
+    const evidence = await recordParticipantExecutionActivityV1(fixture.root, fixture.operationId, fixture.participantId, {
+      kind: "NEW_RETRIEVAL", evidenceId: "retrieval:lead-race", evidenceDigest: digest("lead-race"), observedAt: new Date(fixture.executionStartedAt.getTime() + 20_000)
+    });
+    const previous = { root: process.env.AEH_CONTROL_ROOT, agent: process.env.PASEO_AGENT_ID };
+    process.env.AEH_CONTROL_ROOT = fixture.root;
+    process.env.PASEO_AGENT_ID = "session:lead-current";
+    const originalRead = executionLivenessModule.readExecutionActivityEventsV1;
+    let rebound = false;
+    const readSpy = vi.spyOn(executionLivenessModule, "readExecutionActivityEventsV1").mockImplementation(async (...args) => {
+      const events = await originalRead(...args);
+      if (!rebound) {
+        rebound = true;
+        await bindOperationLead(fixture.root, fixture.operationId, "session:lead-replaced", "race-test");
+      }
+      return events;
+    });
+    try {
+      const result = await handleOperationMcpRequest({ method: "tools/call", params: { name: "aeh_operation_recover_participant", arguments: {
+        operationId: fixture.operationId, participantId: fixture.participantId, executionBindingDigest: fixture.participantBinding.digest,
+        action: "CONTINUE", evidenceIds: [evidence!.eventId], reason: "Continue under the Lead that passed the initial binding check."
+      } } });
+      expect(rebound).toBe(true);
+      expect(result.structuredContent).toMatchObject({ code: "LEAD_RECOVERY_AUTHORITY_DENIED", category: "AUTHORITY", relationship: "BOUND_OTHER_LEAD", relatedOperationId: fixture.operationId });
+    } finally {
+      readSpy.mockRestore();
       if (previous.root === undefined) delete process.env.AEH_CONTROL_ROOT; else process.env.AEH_CONTROL_ROOT = previous.root;
       if (previous.agent === undefined) delete process.env.PASEO_AGENT_ID; else process.env.PASEO_AGENT_ID = previous.agent;
     }

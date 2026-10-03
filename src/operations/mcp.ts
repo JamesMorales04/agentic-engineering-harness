@@ -5,7 +5,7 @@ import path from "node:path";
 import process from "node:process";
 import { loadProjectConfig } from "../core/config.js";
 import { sha256Canonical } from "../core/digest.js";
-import { intentDecisionFromLeadOperationIntent, leadOperationIntentV1JsonSchema } from "../audit/intentDecision.js";
+import { intentDecisionFromLeadOperationIntent, InvalidIntentDecisionError, leadOperationIntentV1JsonSchema } from "../audit/intentDecision.js";
 import { answerInformationalRequest } from "../informational/answer.js";
 import { retrieveInformationalEvidence } from "../informational/evidence.js";
 import { statusLeadContext } from "../paseo/context.js";
@@ -21,6 +21,7 @@ import { buildOperationDigest, operationDigestText, type OperationDigest } from 
 import { spawnOperationMonitor } from "./monitorProcess.js";
 import { loadOperationPortfolio } from "./portfolio.js";
 import { acknowledgeOperationLead, currentControllerEpoch, loadOperation, type AuditOperationPayload, type ChangeOperationPayload, type OperationKind, type OperationPayload, type OperationRecordV2, type RunOperationPayload } from "./state.js";
+import { allowlistedOperationToolErrorCode, createTrustedOperationToolError, markTrustedOperationToolError, persistOperationToolDiagnosticV2, trustedOperationToolErrorRelatedId } from "./toolDiagnostics.js";
 
 export interface OperationMcpRequest { jsonrpc?: string; id?: string | number | null; method?: string; params?: Record<string, unknown>; }
 export type ContextAgentIdentitySource = "argument" | "environment" | "lead-state";
@@ -28,8 +29,7 @@ export interface ContextAgentIdentity { agentId: string; source: ContextAgentIde
 export type OperationStatusDetail = "compact" | "full";
 
 class OperationMcpInputError extends Error {
-  readonly code = "OPERATION_INPUT_INVALID";
-  constructor(readonly path: string, message: string) { super(`${path}: ${message}`); this.name = "OperationMcpInputError"; }
+  constructor(readonly path: string, message: string) { super(`${path}: ${message}`); this.name = "OperationMcpInputError"; markTrustedOperationToolError(this, "OPERATION_INPUT_INVALID"); }
 }
 
 export interface OperationToolErrorV1 {
@@ -45,6 +45,7 @@ export interface OperationToolErrorV1 {
   relationship: "NONE" | "CURRENT_OPERATION" | "CONTINUATION_RELEVANT" | "BOUND_OTHER_LEAD" | "OWNER_ATTENTION" | "HISTORICAL_UNRELATED";
   nextActions: string[];
   skillRef: string;
+  diagnosticRef?: string;
 }
 
 const boundedStringArray = { type: "array", maxItems: 64, items: { type: "string", minLength: 1, maxLength: 500, pattern: "\\S" } } as const;
@@ -245,21 +246,21 @@ async function callTool(params: Record<string, unknown>, requestEventId?: string
     if (!/^[a-f0-9]{64}$/.test(expectedBindingDigest)) throw new OperationMcpInputError("executionBindingDigest", "must be a SHA-256 digest.");
     const action = string(args.action, "action", 100);
     const allowedLeadRecoveryActions = ["CONTINUE", "RESUME_SAME_SESSION", "RETRY_PARTICIPANT", "ROTATE_SESSION", "REPLAN", "SPLIT_WORK", "REASSIGN", "FAIL"] as const;
-    if (!allowedLeadRecoveryActions.includes(action as (typeof allowedLeadRecoveryActions)[number])) throw new Error("LEAD_RECOVERY_ACTION_INVALID: action is not in the bounded Lead recovery contract.");
+    if (!allowedLeadRecoveryActions.includes(action as (typeof allowedLeadRecoveryActions)[number])) throw createTrustedOperationToolError("LEAD_RECOVERY_ACTION_INVALID", "action is not in the bounded Lead recovery contract.");
     const reason = string(args.reason, "reason", 2_000);
-    if (reason.length > 2_000) throw new Error("LEAD_RECOVERY_REASON_INVALID: reason exceeds 2000 characters.");
+    if (reason.length > 2_000) throw createTrustedOperationToolError("LEAD_RECOVERY_REASON_INVALID", "reason exceeds 2000 characters.");
     const evidenceIds = stringArray(args.evidenceIds, "evidenceIds", { minItems: 1, maxItems: 12, maxLength: 500 });
     if (!evidenceIds) throw new OperationMcpInputError("evidenceIds", "is required.");
-    if (evidenceIds.length === 0 || evidenceIds.length > 12) throw new Error("LEAD_RECOVERY_EVIDENCE_REQUIRED: cite between 1 and 12 current activity events.");
-    const operation = await loadOperation(root, operationId);
+    if (evidenceIds.length === 0 || evidenceIds.length > 12) throw createTrustedOperationToolError("LEAD_RECOVERY_EVIDENCE_REQUIRED", "cite between 1 and 12 current activity events.");
+    const operation = await loadOperationForTool(root, operationId);
     const actor = await resolveContextAgentIdentity(root);
-    if (!operation.lead?.agentId || actor.agentId !== operation.lead.agentId) throw new Error("LEAD_RECOVERY_AUTHORITY_DENIED: only the current bound Lead may recover a participant at Lead authority.");
+    if (!operation.lead?.agentId || actor.agentId !== operation.lead.agentId) throw createTrustedOperationToolError("LEAD_RECOVERY_AUTHORITY_DENIED", "Only the current bound Lead may recover a participant at Lead authority.", undefined, operation.id);
     const participant = operation.participants[participantId];
     const binding = participant?.executionBinding;
-    if (!participant || !binding || binding.digest !== expectedBindingDigest) throw new Error("LEAD_RECOVERY_BINDING_STALE: participant binding differs from the cited execution identity.");
+    if (!participant || !binding || binding.digest !== expectedBindingDigest) throw createTrustedOperationToolError("LEAD_RECOVERY_BINDING_STALE", "participant binding differs from the cited execution identity.", undefined, operation.id);
     if (action === "RESUME_SAME_SESSION" || action === "RETRY_PARTICIPANT") await assertSameSessionResumeCompatibleV1(root, operation, participantId);
     const cited = (await readExecutionActivityEventsV1(root, operationId)).filter((event) => evidenceIds.includes(event.eventId));
-    if (cited.length !== new Set(evidenceIds).size || cited.some((event) => event.participantId !== participantId || event.participantGeneration !== binding.participantGeneration || event.executionBindingDigest !== binding.digest || event.candidateDigest !== binding.candidateDigest || event.policyDigest !== binding.operationPolicyDigest || event.controllerEpoch !== binding.controllerEpoch || event.sessionId !== binding.runtime.sessionId)) throw new Error("LEAD_RECOVERY_EVIDENCE_STALE: cited evidence does not match the current participant binding.");
+    if (cited.length !== new Set(evidenceIds).size || cited.some((event) => event.participantId !== participantId || event.participantGeneration !== binding.participantGeneration || event.executionBindingDigest !== binding.digest || event.candidateDigest !== binding.candidateDigest || event.policyDigest !== binding.operationPolicyDigest || event.controllerEpoch !== binding.controllerEpoch || event.sessionId !== binding.runtime.sessionId)) throw createTrustedOperationToolError("LEAD_RECOVERY_EVIDENCE_STALE", "cited evidence does not match the current participant binding.", undefined, operation.id);
     const decision = await decideParticipantRecoveryV1(root, {
       operationId, participantId, actorRole: "LEAD", actorSessionId: actor.agentId, action: action as (typeof allowedLeadRecoveryActions)[number],
       expectedBindingDigest, evidenceIds, reason
@@ -286,7 +287,9 @@ async function callTool(params: Record<string, unknown>, requestEventId?: string
     return operationToolResult(portfolio, `${portfolio.project} operation portfolio: ${Object.keys(portfolio.operations).length} tracked operation(s).`);
   }
   if (name === "aeh_operation_cancel") {
-    return digestToolResult(await cancelOperation(root, string(args.operationId, "operationId", 200)));
+    const operationId = string(args.operationId, "operationId", 200);
+    await loadOperationForTool(root, operationId);
+    return digestToolResult(await cancelOperation(root, operationId));
   }
   if (name === "aeh_context_status") {
     const identity = await resolveContextAgentIdentity(root, optionalString(args.agentId, "agentId", 200));
@@ -298,12 +301,26 @@ async function callTool(params: Record<string, unknown>, requestEventId?: string
 }
 
 export async function readOperationDigest(root: string, operationId: string): Promise<OperationDigest> {
-  return buildOperationDigest(await loadOperation(root, operationId));
+  return buildOperationDigest(await loadOperationForTool(root, operationId));
 }
 
 export async function readOperationStatus(root: string, operationId: string, detail: OperationStatusDetail = "compact"): Promise<OperationDigest | OperationRecordV2> {
-  const operation = await loadOperation(root, operationId);
+  const operation = await loadOperationForTool(root, operationId);
   return detail === "full" ? operation : buildOperationDigest(operation);
+}
+
+async function loadOperationForTool(root: string, operationId: string): Promise<OperationRecordV2> {
+  if (!/^[A-Za-z0-9._-]+$/.test(operationId)) throw new OperationMcpInputError("operationId", "must contain only letters, numbers, dots, underscores, or hyphens.");
+  const file = path.resolve(root, ".harness", "operations", `${operationId}.json`);
+  try {
+    await fs.stat(file);
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "ENOENT") {
+      throw createTrustedOperationToolError("OPERATION_NOT_FOUND", "The requested operation does not exist.");
+    }
+    throw error;
+  }
+  return loadOperation(root, operationId);
 }
 
 export async function acknowledgeOperationRevision(
@@ -312,15 +329,15 @@ export async function acknowledgeOperationRevision(
   revision: number,
   env: NodeJS.ProcessEnv = process.env
 ): Promise<{ operationId: string; acknowledgedRevision: number; currentRevision: number; currentRevisionAcknowledged: boolean }> {
-  const operation = await loadOperation(root, operationId);
+  const operation = await loadOperationForTool(root, operationId);
   const boundedAgent = env.AEH_MANAGED_AGENT === "1" && env.AEH_INTERACTIVE_LEAD !== "1";
-  if (boundedAgent) throw new Error("Only the bound interactive lead may acknowledge an operation revision.");
+  if (boundedAgent) throw createTrustedOperationToolError("OPERATION_ACK_WRONG_LEAD", "Only the bound interactive lead may acknowledge an operation revision.", undefined, operation.id);
   const identity = await resolveContextAgentIdentity(root, undefined, env);
   if (!operation.lead?.agentId || identity.agentId !== operation.lead.agentId) {
-    throw new Error(`Agent ${identity.agentId} is not the bound lead for operation ${operationId}.`);
+    throw createTrustedOperationToolError("OPERATION_ACK_WRONG_LEAD", "The caller is not the bound Lead for this operation.", undefined, operation.id);
   }
   if (revision !== operation.revision) {
-    throw new Error(`AEH_OPERATION_ACK_REVISION_MISMATCH: requested revision ${revision}, current revision ${operation.revision}. Read the compact digest and acknowledge the exact current revision.`);
+    throw createTrustedOperationToolError("AEH_OPERATION_ACK_REVISION_MISMATCH", "The requested revision is not current.", undefined, operation.id);
   }
   const acknowledged = await acknowledgeOperationLead(root, operationId, revision, identity.agentId, currentControllerEpoch(operation), "operation-ack");
   const acknowledgedRevision = acknowledged.lead?.acknowledgedRevision ?? 0;
@@ -358,7 +375,7 @@ async function startManagedOperation(root: string, kind: OperationKind, payload:
 async function trustedLeadUserTurnId(root: string, agentId: string): Promise<string> {
   const timestamp = await readPaseoUserTurnId(root, agentId);
   if (!timestamp) {
-    throw new Error("OPERATION_LEAD_USER_TURN_UNAVAILABLE: Paseo did not provide a host-owned lastUserMessageAt for this Lead session.");
+    throw createTrustedOperationToolError("OPERATION_LEAD_USER_TURN_UNAVAILABLE", "Paseo did not provide a host-owned lastUserMessageAt for this Lead session.");
   }
   return timestamp;
 }
@@ -420,15 +437,9 @@ export function operationToolResult(value: unknown, text = "AEH tool result avai
 async function operationToolError(error: unknown, params: Record<string, unknown>, requestEventId?: string): Promise<Record<string, unknown>> {
   const name = typeof params.name === "string" ? params.name : "";
   const args = object(params.arguments);
-  const message = error instanceof Error ? error.message : "";
-  const errorObject = object(error);
-  const extractedCode = typeof errorObject.code === "string" ? String(errorObject.code) : /^([A-Z][A-Z0-9_]+):/.exec(message)?.[1];
-  const looksLikeInputError = error instanceof OperationMcpInputError || /(?: is required\.| must be |Expected an array)/i.test(message);
-  const code = extractedCode ?? (name === "aeh_operation_ack" && /not the bound lead/i.test(message) ? "OPERATION_ACK_WRONG_LEAD" : looksLikeInputError ? "OPERATION_INPUT_INVALID" : "OPERATION_TOOL_CALL_FAILED");
-  const relatedOperationId = safeOptionalString(errorObject.relatedOperationId)
-    ?? safeOptionalString(args.operationId)
-    ?? safeOptionalString(object(args.operationIntent).continuation && object(object(args.operationIntent).continuation).operationId)
-    ?? (/\b(?:operation|chain)\s+([A-Z][A-Za-z0-9_-]{2,})\b/.exec(message)?.[1]);
+  if (error instanceof InvalidIntentDecisionError) markTrustedOperationToolError(error, "INVALID_INTENT_DECISION");
+  const extractedCode = allowlistedOperationToolErrorCode(error);
+  let code = extractedCode ?? "OPERATION_TOOL_CALL_FAILED";
   const controlRootPath = controlRoot();
   const callerAgentId = isOperationStartTool(name) && requestEventId
     ? safeOptionalString(process.env.PASEO_AGENT_ID) ?? (await resolveContextAgentIdentity(controlRootPath).catch(() => undefined))?.agentId
@@ -436,28 +447,33 @@ async function operationToolError(error: unknown, params: Record<string, unknown
   const createdOperationId = callerAgentId && requestEventId
     ? await operationCreatedForRequest(controlRootPath, callerAgentId, requestEventId)
     : undefined;
+  if (createdOperationId && isOperationStartTool(name) && !extractedCode) code = "OPERATION_START_FAILED_AFTER_CREATE";
+  const diagnosticError = code === "OPERATION_START_FAILED_AFTER_CREATE" && !extractedCode
+    ? createTrustedOperationToolError(code, "Operation start failed after durable creation.", error)
+    : error;
+  const relatedOperationId = createdOperationId ?? trustedOperationToolErrorRelatedId(error);
   const operationCreated = createdOperationId !== undefined;
-  const publicCode = code === "ENOENT"
-    ? isOperationStartTool(name)
-      ? operationCreated ? "OPERATION_START_FAILED_AFTER_CREATE" : "OPERATION_START_FAILED"
-      : isOperationLookupTool(name) && safeOptionalString(args.operationId)
-        ? "OPERATION_NOT_FOUND"
-        : "OPERATION_TOOL_CALL_FAILED"
-    : code;
-  const errorPath = typeof errorObject.path === "string" ? errorObject.path : code === "OPERATION_INPUT_INVALID" ? extractInputPath(message) : undefined;
-  const structuredRelatedOperationId = isOperationStartTool(name) && createdOperationId
-    ? createdOperationId
-    : relatedOperationId ?? createdOperationId;
-  const baseMetadata = structuredOperationError(publicCode, message, structuredRelatedOperationId, operationCreated);
+  const publicCode = code;
+  const errorPath = error instanceof OperationMcpInputError
+    ? safeInputPath(error.path)
+    : undefined;
+  const structuredRelatedOperationId = isOperationStartTool(name) && createdOperationId ? createdOperationId : relatedOperationId;
+  const baseMetadata = structuredOperationError(publicCode, structuredRelatedOperationId, operationCreated);
   const operationMetadata = operationCreated && isOperationStartTool(name)
     ? { ...baseMetadata, relationship: "CURRENT_OPERATION" as const }
     : baseMetadata;
-  const metadata = operationMetadata.category === "INPUT_CONTRACT" && errorPath ? { ...operationMetadata, path: errorPath } : operationMetadata;
+  const diagnosticRef = requestEventId
+    ? await persistOperationToolDiagnosticV2({ root: controlRootPath, requestCorrelationId: requestEventId, tool: name, error: diagnosticError }).catch(() => undefined)
+    : undefined;
+  const metadata = {
+    ...(operationMetadata.category === "INPUT_CONTRACT" && errorPath ? { ...operationMetadata, path: errorPath } : operationMetadata),
+    ...(diagnosticRef ? { diagnosticRef } : {})
+  };
   const humanText = operationErrorText(metadata);
   return { content: [{ type: "text", text: humanText }], structuredContent: metadata, isError: true };
 }
 
-function structuredOperationError(code: string, message: string, relatedOperationId: string | undefined, operationCreated: boolean): OperationToolErrorV1 {
+function structuredOperationError(code: string, relatedOperationId: string | undefined, operationCreated: boolean): OperationToolErrorV1 {
   const common = { version: 1 as const, code, operationCreated, ...(relatedOperationId ? { relatedOperationId } : {}) };
   if (code === "INVALID_INTENT_DECISION" || code === "OPERATION_INPUT_INVALID") {
     return { ...common, category: "INPUT_CONTRACT", ...(code === "INVALID_INTENT_DECISION" ? { path: "operationIntent" } : {}), recoverable: true, retryDisposition: "CORRECT_INPUT", requiresHuman: false, relationship: "NONE", nextActions: ["Correct only the reported Lead-owned input field, then retry this call."], skillRef: "aeh-operation-control#START" };
@@ -474,13 +490,10 @@ function structuredOperationError(code: string, message: string, relatedOperatio
   if (code === "OPERATION_START_FAILED_AFTER_CREATE") {
     return { ...common, category: "CONTROLLER_STATE", path: "operationId", recoverable: false, retryDisposition: "DO_NOT_RETRY", requiresHuman: false, relationship: "CURRENT_OPERATION", nextActions: ["Do not repeat start; inspect the related operation's compact status and recover from its durable state."], skillRef: "aeh-operation-control#RECOVERY" };
   }
-  if (code === "OPERATION_START_FAILED") {
-    return { ...common, category: "INTERNAL", recoverable: false, retryDisposition: "DO_NOT_RETRY", requiresHuman: false, relationship: "NONE", nextActions: ["Do not repeat start automatically; surface this controller/runtime failure for diagnosis."], skillRef: "aeh-operation-control#RECOVERY" };
-  }
   if (code === "OPERATION_NOT_FOUND") {
     return { ...common, category: "NOT_FOUND", path: "operationId", recoverable: false, retryDisposition: "DO_NOT_RETRY", requiresHuman: false, relationship: "NONE", nextActions: ["Check the operationId in the compact portfolio before retrying."], skillRef: "aeh-operation-control#STATUS" };
   }
-  if (code === "OPERATION_ACK_WRONG_LEAD" || /not the bound lead/i.test(message)) {
+  if (code === "OPERATION_ACK_WRONG_LEAD") {
     return { ...common, code: "OPERATION_ACK_WRONG_LEAD", category: "AUTHORITY", recoverable: false, retryDisposition: "DO_NOT_RETRY", requiresHuman: false, relationship: "BOUND_OTHER_LEAD", nextActions: ["Do not retry ACK from this Lead.", "Treat an unbound historical operation as unrelated unless the Owner request explicitly continues it."], skillRef: "aeh-operation-control#ACK" };
   }
   if (code === "AEH_OPERATION_CAPACITY") {
@@ -491,6 +504,15 @@ function structuredOperationError(code: string, message: string, relatedOperatio
   }
   if (code === "LEAD_RECOVERY_AUTHORITY_DENIED") {
     return { ...common, category: "AUTHORITY", recoverable: false, retryDisposition: "DO_NOT_RETRY", requiresHuman: false, relationship: "BOUND_OTHER_LEAD", nextActions: ["Do not retry recovery from this Lead; use the bound Lead session or treat the operation as historical."], skillRef: "aeh-operation-control#RECOVERY" };
+  }
+  if (["LEAD_RECOVERY_ACTION_INVALID", "LEAD_RECOVERY_REASON_INVALID", "LEAD_RECOVERY_EVIDENCE_REQUIRED", "SUPERVISOR_RECOVERY_ACTION_REQUIRED", "SUPERVISOR_RECOVERY_EVIDENCE_REQUIRED"].includes(code)) {
+    return { ...common, category: "INPUT_CONTRACT", recoverable: true, retryDisposition: "CORRECT_INPUT", requiresHuman: false, relationship: relatedOperationId ? "CURRENT_OPERATION" : "NONE", nextActions: ["Correct the recovery action, reason, or cited current evidence, then retry against the same operation."], skillRef: "aeh-operation-control#RECOVERY" };
+  }
+  if (["LEAD_RECOVERY_BINDING_STALE", "LEAD_RECOVERY_EVIDENCE_STALE", "SAME_SESSION_RESUME_REJECTED", "SUPERVISOR_RECOVERY_STATE_STALE", "SUPERVISOR_RECOVERY_BINDING_STALE", "SUPERVISOR_RECOVERY_EVIDENCE_STALE", "AEH_OPERATION_ACK_EPOCH_MISMATCH"].includes(code)) {
+    return { ...common, category: "CONTROLLER_STATE", recoverable: true, retryDisposition: "RETRY_AFTER_CONTROLLER_RECOVERY", requiresHuman: false, relationship: relatedOperationId ? "CURRENT_OPERATION" : "NONE", nextActions: ["Re-read the operation digest and current participant or controller binding; retry only after deterministic recovery with current evidence."], skillRef: "aeh-operation-control#RECOVERY" };
+  }
+  if (code === "AEH_OPERATION_ACK_ACTOR_MISMATCH") {
+    return { ...common, category: "AUTHORITY", recoverable: false, retryDisposition: "DO_NOT_RETRY", requiresHuman: false, relationship: relatedOperationId ? "BOUND_OTHER_LEAD" : "NONE", nextActions: ["Do not retry ACK from this Lead; use the currently bound Lead session."], skillRef: "aeh-operation-control#ACK" };
   }
   return { ...common, category: "INTERNAL", recoverable: false, retryDisposition: "DO_NOT_RETRY", requiresHuman: false, relationship: relatedOperationId ? "CONTINUATION_RELEVANT" : "NONE", nextActions: ["Do not repeat the operation start automatically.", "Read the compact operation status or portfolio and surface the error code for deterministic repair."], skillRef: "aeh-operation-control#RECOVERY" };
 }
@@ -513,13 +535,15 @@ function isOperationStartTool(name: string): boolean {
   return name === "aeh_operation_start_audit" || name === "aeh_operation_start_change" || name === "aeh_operation_start_run";
 }
 
-function isOperationLookupTool(name: string): boolean {
-  return name === "aeh_operation_digest" || name === "aeh_operation_status" || name === "aeh_operation_recover_participant" || name === "aeh_operation_ack" || name === "aeh_operation_cancel";
-}
-
-function extractInputPath(message: string): string | undefined {
-  return /^([A-Za-z][A-Za-z0-9]*(?:\[[0-9]+\])?)\s*:/u.exec(message)?.[1]
-    ?? /^([A-Za-z][A-Za-z0-9]*)\s+(?:is required|must be)/iu.exec(message)?.[1];
+function safeInputPath(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const knownPaths = new Set([
+    "executionBindingDigest", "evidenceIds", "request", "taskId", "operationId", "operationIntent", "files", "domains",
+    "risk", "reviewers", "title", "acceptance", "profile", "priority", "revision", "agentId", "detail", "limit",
+    "since", "runId", "name", "evidenceId"
+  ]);
+  if (knownPaths.has(value)) return value;
+  return /^(?:files|domains|reviewers|acceptance)\[[0-9]+\]$/.test(value) ? value : undefined;
 }
 
 async function operationCreatedForRequest(root: string, callerAgentId: string, requestEventId: string): Promise<string | undefined> {
@@ -546,6 +570,7 @@ function optionalString(value: unknown, name = "value", maxLength = 200): string
   return value === undefined ? undefined : string(value, name, maxLength);
 }
 function safeOptionalString(value: unknown): string | undefined { return typeof value === "string" && value.trim() ? value.trim() : undefined; }
+
 function stringArray(value: unknown, name: string, limits: { minItems?: number; maxItems?: number; maxLength?: number } = {}): string[] | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value)) throw new OperationMcpInputError(name, "must be an array of strings.");
@@ -569,4 +594,4 @@ function integer(value: unknown, name: string): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value < 1) throw new OperationMcpInputError(name, "must be a positive integer.");
   return value;
 }
-function statusDetail(value: unknown): OperationStatusDetail { if (value === undefined) return "compact"; if (value === "compact" || value === "full") return value; throw new Error("detail must be compact or full."); }
+function statusDetail(value: unknown): OperationStatusDetail { if (value === undefined) return "compact"; if (value === "compact" || value === "full") return value; throw new OperationMcpInputError("detail", "must be compact or full."); }

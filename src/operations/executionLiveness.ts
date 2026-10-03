@@ -3,6 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import { sha256Canonical, sha256Utf8 } from "../core/digest.js";
 import { computeWorktreeDigest } from "../core/git.js";
+import { createTrustedOperationToolError } from "./toolDiagnostics.js";
 import type { ExecutionBindingV3 } from "../architecture/executionIdentity.js";
 import {
   activeOperationSupervisor,
@@ -864,25 +865,32 @@ export async function decideParticipantRecoveryV1(root: string, input: {
   const at = input.at ?? new Date();
   const decision = await withOperationCoordinationLock(stateRoot, input.operationId, async () => {
     const operation = await loadOperation(stateRoot, input.operationId);
-    if (isTerminalOperation(operation.status)) throw new Error("SUPERVISOR_RECOVERY_REJECTED: terminal operations cannot recover participants.");
-    if (operation.ownerEconomicBoundary) throw new OwnerEconomicBoundaryError(requirementSignal(operation.ownerEconomicBoundary));
+    if (isTerminalOperation(operation.status)) throw createTrustedOperationToolError("SUPERVISOR_RECOVERY_STATE_STALE", "terminal operations cannot recover participants.", undefined, operation.id);
+    if (operation.ownerEconomicBoundary) {
+      const boundary = new OwnerEconomicBoundaryError(requirementSignal(operation.ownerEconomicBoundary));
+      throw createTrustedOperationToolError("OPERATION_RECOVERY_OWNER_BOUNDARY", boundary.message, boundary, operation.id);
+    }
     const supervisor = input.actorRole === "SUPERVISOR" ? activeOperationSupervisor(operation) : undefined;
     const actorBound = input.actorRole === "SUPERVISOR" ? supervisor?.agentId === input.actorSessionId : operation.lead?.agentId === input.actorSessionId;
-    if (!actorBound) throw new Error(`${input.actorRole}_RECOVERY_AUTHORITY_DENIED: only the current bound ${input.actorRole === "SUPERVISOR" ? "Supervisor generation" : "Lead session"} may decide participant recovery.`);
+    if (!actorBound) {
+      const message = `only the current bound ${input.actorRole === "SUPERVISOR" ? "Supervisor generation" : "Lead session"} may decide participant recovery.`;
+      if (input.actorRole === "LEAD") throw createTrustedOperationToolError("LEAD_RECOVERY_AUTHORITY_DENIED", message, undefined, operation.id);
+      throw new Error(`SUPERVISOR_RECOVERY_AUTHORITY_DENIED: ${message}`);
+    }
     const participant = operation.participants[input.participantId];
     const binding = participant?.executionBinding;
-    if (!participant || !binding || !participant.executionLiveness) throw new Error("SUPERVISOR_RECOVERY_REJECTED: participant has no current bound execution and liveness state.");
-    if (["COMPLETED", "CANCELLED", "BLOCKED"].includes(participant.status)) throw new Error("SUPERVISOR_RECOVERY_REJECTED: completed, cancelled, or blocked participant work cannot be recovered.");
-    if (participant.status === "FAILED" && !["RESUME_SAME_SESSION", "RETRY_PARTICIPANT", "ROTATE_SESSION", "REPLAN", "SPLIT_WORK", "REASSIGN", "ESCALATE_TO_LEAD", "FAIL"].includes(input.action)) throw new Error("SUPERVISOR_RECOVERY_REJECTED: failed participant work requires an explicit retry or replan action.");
-    if (binding.digest !== input.expectedBindingDigest) throw new Error("SUPERVISOR_RECOVERY_BINDING_STALE: recovery request cites a different participant execution binding.");
+    if (!participant || !binding || !participant.executionLiveness) throw createTrustedOperationToolError("SUPERVISOR_RECOVERY_STATE_STALE", "participant has no current bound execution and liveness state.", undefined, operation.id);
+    if (["COMPLETED", "CANCELLED", "BLOCKED"].includes(participant.status)) throw createTrustedOperationToolError("SUPERVISOR_RECOVERY_STATE_STALE", "completed, cancelled, or blocked participant work cannot be recovered.", undefined, operation.id);
+    if (participant.status === "FAILED" && !["RESUME_SAME_SESSION", "RETRY_PARTICIPANT", "ROTATE_SESSION", "REPLAN", "SPLIT_WORK", "REASSIGN", "ESCALATE_TO_LEAD", "FAIL"].includes(input.action)) throw createTrustedOperationToolError("SUPERVISOR_RECOVERY_ACTION_REQUIRED", "failed participant work requires an explicit retry or replan action.", undefined, operation.id);
+    if (binding.digest !== input.expectedBindingDigest) throw createTrustedOperationToolError("SUPERVISOR_RECOVERY_BINDING_STALE", "recovery request cites a different participant execution binding.", undefined, operation.id);
     assertCurrentBinding(operation, participant, binding);
     const evidenceEvents = (await readRecentActivity(stateRoot, operation.id, participant.id, binding.participantGeneration))
       .filter((event) => input.evidenceIds.includes(event.eventId));
-    if (input.evidenceIds.length === 0 || evidenceEvents.length !== new Set(input.evidenceIds).size) throw new Error("SUPERVISOR_RECOVERY_EVIDENCE_REQUIRED: decision must cite current participant activity evidence.");
+    if (input.evidenceIds.length === 0 || evidenceEvents.length !== new Set(input.evidenceIds).size) throw createTrustedOperationToolError("SUPERVISOR_RECOVERY_EVIDENCE_REQUIRED", "decision must cite current participant activity evidence.", undefined, operation.id);
     const stale = evidenceEvents.some((event) => event.operationExecutionRevision !== binding.operationExecutionRevision
       || event.candidateDigest !== binding.candidateDigest || event.policyDigest !== binding.operationPolicyDigest
       || event.controllerEpoch !== binding.controllerEpoch || event.sessionId !== binding.runtime.sessionId);
-    if (stale) throw new Error("SUPERVISOR_RECOVERY_EVIDENCE_STALE: cited evidence belongs to a different participant execution identity.");
+    if (stale) throw createTrustedOperationToolError("SUPERVISOR_RECOVERY_EVIDENCE_STALE", "cited evidence belongs to a different participant execution identity.", undefined, operation.id);
     const now = at.toISOString();
     const policy = operation.resolvedOperationPolicy!.executionLiveness;
     const economic = operation.resolvedOperationPolicy!.economicEnvelope;
@@ -921,6 +929,7 @@ export async function decideParticipantRecoveryV1(root: string, input: {
       const latestActorBound = input.actorRole === "SUPERVISOR"
         ? activeOperationSupervisor(current)?.agentId === input.actorSessionId
         : current.lead?.agentId === input.actorSessionId;
+      if (!latestActorBound && input.actorRole === "LEAD") throw createTrustedOperationToolError("LEAD_RECOVERY_AUTHORITY_DENIED", "the bound Lead changed while recording the recovery decision.", undefined, operation.id);
       if (!latest?.executionBinding || latest.executionBinding.digest !== binding.digest || !latestActorBound) throw new Error(`${input.actorRole}_RECOVERY_IDENTITY_STALE: recovery actor or participant binding changed while recording the decision.`);
       return {
         participants: {
@@ -941,14 +950,21 @@ export async function decideParticipantRecoveryV1(root: string, input: {
     return result;
   });
   if (input.action === "CONTINUE" || input.action === "RESUME_SAME_SESSION" || input.action === "RETRY_PARTICIPANT") {
-    await renewParticipantProgressLeaseV1(stateRoot, {
-      operationId: input.operationId,
-      participantId: input.participantId,
-      actorSessionId: input.actorSessionId,
-      expectedBindingDigest: decision.executionBindingDigest,
-      allowFailedParticipant: input.action === "RESUME_SAME_SESSION" || input.action === "RETRY_PARTICIPANT",
-      at
-    });
+    try {
+      await renewParticipantProgressLeaseV1(stateRoot, {
+        operationId: input.operationId,
+        participantId: input.participantId,
+        actorSessionId: input.actorSessionId,
+        expectedBindingDigest: decision.executionBindingDigest,
+        allowFailedParticipant: input.action === "RESUME_SAME_SESSION" || input.action === "RETRY_PARTICIPANT",
+        at
+      });
+    } catch (error) {
+      if (input.actorRole === "LEAD" && error instanceof OwnerEconomicBoundaryError) {
+        throw createTrustedOperationToolError("OPERATION_RECOVERY_OWNER_BOUNDARY", error.message, error, input.operationId);
+      }
+      throw error;
+    }
   }
   if (input.action === "FAIL") {
     await updateOperationMetadata(stateRoot, input.operationId, (operation) => {

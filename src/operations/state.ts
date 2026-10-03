@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { createTrustedOperationToolError } from "./toolDiagnostics.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -452,7 +453,7 @@ export async function transitionOperationAtHardDeadlineV1(root: string, operatio
     if (current.resolvedOperationPolicy) assertResolvedOperationPolicyV2(current.resolvedOperationPolicy);
     if (!Number.isFinite(Date.parse(current.createdAt))) throw new Error("OPERATION_HARD_DEADLINE_POLICY_MISSING: operation creation timestamp is invalid.");
     const deadline = frozenOperationHardDeadlineAt(current) ?? Number.POSITIVE_INFINITY;
-    if (!Number.isFinite(deadline) || at.getTime() < deadline) throw new Error("OPERATION_HARD_DEADLINE_NOT_REACHED: watchdog terminalization requires the exact frozen deadline to have elapsed.");
+    if (!Number.isFinite(deadline) || at.getTime() < deadline) throw createTrustedOperationToolError("OPERATION_HARD_DEADLINE_NOT_REACHED", "Watchdog terminalization requires the exact frozen deadline to have elapsed.", undefined, operationId);
     const now = at.toISOString();
     const revision = current.revision + 1;
     const ownerContinuationBoundary = createOwnerContinuationBoundaryV1(current, deadline, at, revision);
@@ -630,9 +631,9 @@ export function assertControllerToken(record: OperationRecordV2, action: string)
 }
 export async function acknowledgeOperationLead(root: string, operationId: string, revision: number, actorId: string, expectedControllerEpoch: number, reason?: string): Promise<OperationRecordV2> {
   return mutateOperation(root, operationId, {}, false, "operation.lead.acknowledged", (current, _revision, now) => {
-    if (currentControllerEpoch(current) !== expectedControllerEpoch) throw new Error("AEH_OPERATION_ACK_EPOCH_MISMATCH: controller epoch changed before acknowledgement.");
-    if (!current.lead || current.lead.agentId !== requiredId(actorId)) throw new Error("AEH_OPERATION_ACK_ACTOR_MISMATCH: only the currently bound lead may acknowledge this operation.");
-    if (current.revision !== revision) throw new Error(`AEH_OPERATION_ACK_REVISION_MISMATCH: requested revision ${revision}, current revision ${current.revision}.`);
+    if (currentControllerEpoch(current) !== expectedControllerEpoch) throw createTrustedOperationToolError("AEH_OPERATION_ACK_EPOCH_MISMATCH", "controller epoch changed before acknowledgement.", undefined, current.id);
+    if (!current.lead || current.lead.agentId !== requiredId(actorId)) throw createTrustedOperationToolError("AEH_OPERATION_ACK_ACTOR_MISMATCH", "only the currently bound lead may acknowledge this operation.", undefined, current.id);
+    if (current.revision !== revision) throw createTrustedOperationToolError("AEH_OPERATION_ACK_REVISION_MISMATCH", `requested revision ${revision}, current revision ${current.revision}.`, undefined, current.id);
     return {
       ...current,
       lead: current.lead ? { ...current.lead, acknowledgedRevision: Math.max(current.lead.acknowledgedRevision, revision), acknowledgedAt: now } : undefined,

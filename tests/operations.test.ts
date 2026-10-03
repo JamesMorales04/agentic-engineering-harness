@@ -890,8 +890,24 @@ describe("operation controller state", () => {
     const staleRevision = bound.revision;
     const current = await setOperationStage(root, record.id, "review", "RUNNING");
     await expect(acknowledgeOperationLead(root, record.id, current.revision, "lead-2", currentControllerEpoch(current), "wrong-lead")).rejects.toThrow("AEH_OPERATION_ACK_ACTOR_MISMATCH");
-    await expect(acknowledgeOperationLead(root, record.id, current.revision, "lead-1", currentControllerEpoch(current) - 1, "stale-epoch")).rejects.toThrow("AEH_OPERATION_ACK_EPOCH_MISMATCH");
-    await expect(acknowledgeOperationLead(root, record.id, staleRevision, "lead-1", currentControllerEpoch(current), "stale-read")).rejects.toThrow("AEH_OPERATION_ACK_REVISION_MISMATCH");
+    try {
+      await acknowledgeOperationLead(root, record.id, current.revision, "lead-1", currentControllerEpoch(current) - 1, "stale-epoch");
+      throw new Error("Expected the durable acknowledgement boundary to reject a stale epoch.");
+    } catch (error) {
+      const diagnostics = await import("../src/operations/toolDiagnostics.js");
+      expect(diagnostics.allowlistedOperationToolErrorCode(error)).toBe("AEH_OPERATION_ACK_EPOCH_MISMATCH");
+      expect(diagnostics.trustedOperationToolErrorRelatedId(error)).toBe(record.id);
+    }
+    try {
+      await acknowledgeOperationLead(root, record.id, staleRevision, "lead-1", currentControllerEpoch(current), "stale-read");
+      throw new Error("Expected the durable acknowledgement boundary to reject a stale revision.");
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain("AEH_OPERATION_ACK_REVISION_MISMATCH");
+      const diagnostics = await import("../src/operations/toolDiagnostics.js");
+      expect(diagnostics.allowlistedOperationToolErrorCode(error)).toBe("AEH_OPERATION_ACK_REVISION_MISMATCH");
+      expect(diagnostics.trustedOperationToolErrorRelatedId(error)).toBe(record.id);
+    }
     expect((await loadOperation(root, record.id)).lead?.acknowledgedRevision).toBeLessThan(current.revision);
   });
 
