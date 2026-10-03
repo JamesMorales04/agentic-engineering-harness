@@ -21,6 +21,7 @@ import { compileOpenSpecChange, persistOpenSpecAuthoringContentV1, preflightOpen
 import { recordEvent } from "../telemetry/events.js";
 import { executeAgentPrompt } from "../workers/agentPrompt.js";
 import { bindBootstrapOperationPolicy } from "./bootstrapPolicy.js";
+import { resolveRecoveryAuthorityV1 } from "./recoveryAuthority.js";
 import { requireDurableChangeHandoff, type DurableAgentEvidence } from "./changeHandoff.js";
 import { changeInputsPrompt, resolveChangeInputs, type ChangeInputReference } from "./changeInputs.js";
 import {
@@ -171,11 +172,11 @@ async function recoveryAssuranceFloor(root: string, operation: OperationRecordV2
   if (operation.origin?.kind !== "FAILED_OPERATION_RECOVERY") return assurance;
   assertOperationOriginV1(operation.origin);
   const parent = await loadOperation(root, operation.origin.parentOperationId!);
-  if (parent.status !== "FAILED" || parent.revision !== operation.origin.parentTerminalRevision || !parent.resolvedOperationPolicy) {
+  if (parent.status !== "FAILED" || parent.revision !== operation.origin.parentTerminalRevision) {
     throw new Error("OPERATION_RECOVERY_PARENT_STALE: the failed parent revision or frozen policy changed.");
   }
-  assertResolvedOperationPolicyV2(parent.resolvedOperationPolicy);
-  return inheritAssuranceFloorV1(assurance, parent.resolvedOperationPolicy.minimumAssurance);
+  const authority = await resolveRecoveryAuthorityV1(root, parent);
+  return inheritAssuranceFloorV1(assurance, authority.policy.minimumAssurance);
 }
 
 export function inheritAssuranceFloorV1(assurance: AssuranceLevel, parentMinimum: AssuranceLevel): AssuranceLevel {

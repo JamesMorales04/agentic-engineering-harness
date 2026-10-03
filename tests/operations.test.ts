@@ -52,6 +52,7 @@ import { resolveBaseRef } from "../src/core/git.js";
 import { createIntentDecision } from "../src/audit/intentDecision.js";
 import { assertOperationCapacity, loadOperationPortfolio, syncOperationPortfolio } from "../src/operations/portfolio.js";
 import { compileOperationOriginV1 } from "../src/operations/operationProvenance.js";
+import { remainingEconomicEnvelopeForRecoveryV1 } from "../src/operations/economicUsage.js";
 
 const roots: string[] = [];
 const previousControllerEnv = Object.fromEntries(["AEH_OPERATION_ID", "AEH_CONTROL_ROOT", "AEH_OPERATION_STATE_REDIRECT", "AEH_CONTROLLER_EPOCH", "AEH_CONTROLLER_TOKEN"].map((key) => [key, process.env[key]])) as Record<string, string | undefined>;
@@ -193,6 +194,29 @@ async function bindTestPolicyForCurrentIdentity(root: string, operationId: strin
   const policy = await compilePolicyForCurrentIdentity(root, operationId);
   await bindResolvedOperationPolicy(root, operationId, policy);
   return loadOperation(root, operationId);
+}
+
+async function createPrePolicyFailedLeaf(root: string, suffix: string, finishLeaf = true) {
+  const ancestor = await seed(root, { id: `AUDIT-PREPOLICY-ROOT-${suffix}`, kind: "audit", status: "RUNNING", phase: "reviewing" });
+  const frozen = await bindTestPolicyForCurrentIdentity(root, ancestor.id);
+  const origin = compileOperationOriginV1({
+    kind: "USER_REQUEST", leadAgentId: "lead-original", controllerOwnerId: "controller:test", userTurnId: `owner-turn-${suffix}`,
+    authorizationDigest: sha256Canonical(`owner-turn-${suffix}`), triggerEventId: `user.turn:owner-turn-${suffix}`,
+    requestDigest: sha256Canonical({ request: `prepolicy ${suffix}` }), recoveryDepth: 0,
+    rootHardDeadlineAt: new Date(Date.parse(frozen.createdAt) + frozen.resolvedOperationPolicy!.executionLiveness.hardDeadlineMs).toISOString(),
+    reason: `prepolicy ${suffix}`, createdAt: frozen.createdAt
+  });
+  await patchOperation(root, ancestor.id, { origin });
+  await transitionOperationToTerminal(root, ancestor.id, { status: "FAILED", phase: "failed", error: "fixture ancestor failure" });
+  const decision = createIntentDecision("audit", "Continue the failed operation.", "lead-semantic", { continuation: { operationId: ancestor.id } });
+  const leaf = await startDetachedOperation(root, "audit", { request: "First linked continuation", intentDecision: decision }, {
+    nodeExecutable: process.execPath, entryFile: "/pkg/dist/main.js",
+    initiator: { kind: "LEAD", agentId: "lead-first", userTurnId: `turn-first-${suffix}`, requestEventId: `jsonrpc:first-${suffix}` },
+    spawnProcess: vi.fn(() => ({ pid: 5391, unref: vi.fn() })) as never
+  });
+  expect(leaf.resolvedOperationPolicy).toBeUndefined();
+  if (finishLeaf) await transitionOperationToTerminal(root, leaf.id, { status: "FAILED", phase: "failed", error: "pre-policy crash window" });
+  return { ancestor: await loadOperation(root, ancestor.id), leaf: await loadOperation(root, leaf.id) };
 }
 
 async function createConsumedTestProductChoice(root: string, operationId: string) {
@@ -1085,6 +1109,89 @@ describe("operation controller state", () => {
       nodeExecutable: "/usr/bin/node", entryFile: "/pkg/dist/main.js", initiator: { kind: "LEAD", agentId: "lead-current", userTurnId: "user-turn:recovery-owner-followup", requestEventId: "jsonrpc:recovery-child-disguise" },
       spawnProcess: vi.fn(() => ({ pid: 5308, unref: vi.fn() })) as never
     })).rejects.toThrow(/OPERATION_RECOVERY_PARENT_REQUIRED/);
+  });
+
+  it("continues a failed pre-policy leaf only through its verified frozen ancestor", async () => {
+    const root = await tempRoot();
+    const { leaf } = await createPrePolicyFailedLeaf(root, "allowed");
+    const child = await startDetachedOperation(root, "audit", {
+      request: "Continue after the pre-policy crash.",
+      intentDecision: createIntentDecision("audit", "Continue the failed leaf.", "lead-semantic", { continuation: { operationId: leaf.id } })
+    }, {
+      nodeExecutable: process.execPath, entryFile: "/pkg/dist/main.js",
+      initiator: { kind: "LEAD", agentId: "lead-recovery", userTurnId: "turn-recovery-allowed", requestEventId: "jsonrpc:recovery-allowed" },
+      spawnProcess: vi.fn(() => ({ pid: 5392, unref: vi.fn() })) as never
+    });
+    expect(child.origin).toMatchObject({ kind: "FAILED_OPERATION_RECOVERY", parentOperationId: leaf.id, parentTerminalRevision: leaf.revision, recoveryDepth: 2 });
+    expect(child.resolvedOperationPolicy).toBeUndefined();
+  });
+
+  it("rejects stale and tampered policy-less recovery ancestry", async () => {
+    const staleRoot = await tempRoot();
+    const stale = await createPrePolicyFailedLeaf(staleRoot, "stale");
+    const staleFile = operationFile(staleRoot, stale.ancestor.id);
+    const staleStored = JSON.parse(await fs.readFile(staleFile, "utf8")) as OperationRecord;
+    staleStored.revision += 1;
+    await fs.writeFile(staleFile, `${JSON.stringify(staleStored, null, 2)}\n`);
+    await expect(startDetachedOperation(staleRoot, "audit", {
+      request: "Continue stale lineage.",
+      intentDecision: createIntentDecision("audit", "Continue.", "lead-semantic", { continuation: { operationId: stale.leaf.id } })
+    }, {
+      nodeExecutable: process.execPath, entryFile: "/pkg/dist/main.js", initiator: { kind: "LEAD", agentId: "lead", userTurnId: "turn-stale", requestEventId: "jsonrpc:stale" },
+      spawnProcess: vi.fn(() => ({ pid: 5393, unref: vi.fn() })) as never
+    })).rejects.toThrow(/OPERATION_RECOVERY_PARENT_STALE/);
+
+    const tamperedRoot = await tempRoot();
+    const tampered = await createPrePolicyFailedLeaf(tamperedRoot, "tampered");
+    const file = operationFile(tamperedRoot, tampered.leaf.id);
+    const stored = JSON.parse(await fs.readFile(file, "utf8")) as OperationRecord;
+    stored.origin!.inheritedAuthorityDigest = "f".repeat(64);
+    await fs.writeFile(file, `${JSON.stringify(stored, null, 2)}\n`);
+    await expect(startDetachedOperation(tamperedRoot, "audit", {
+      request: "Continue tampered lineage.",
+      intentDecision: createIntentDecision("audit", "Continue.", "lead-semantic", { continuation: { operationId: tampered.leaf.id } })
+    }, {
+      nodeExecutable: process.execPath, entryFile: "/pkg/dist/main.js", initiator: { kind: "LEAD", agentId: "lead", userTurnId: "turn-tampered", requestEventId: "jsonrpc:tampered" },
+      spawnProcess: vi.fn(() => ({ pid: 5394, unref: vi.fn() })) as never
+    })).rejects.toThrow(/OPERATION_ORIGIN_INVALID/);
+
+    const corruptRoot = await tempRoot();
+    const corrupt = await createPrePolicyFailedLeaf(corruptRoot, "corrupt-policy");
+    const corruptFile = operationFile(corruptRoot, corrupt.ancestor.id);
+    const corruptStored = JSON.parse(await fs.readFile(corruptFile, "utf8")) as OperationRecord;
+    corruptStored.resolvedOperationPolicy!.version = 99 as never;
+    await fs.writeFile(corruptFile, `${JSON.stringify(corruptStored, null, 2)}\n`);
+    await expect(startDetachedOperation(corruptRoot, "audit", {
+      request: "Continue unsupported policy lineage.",
+      intentDecision: createIntentDecision("audit", "Continue.", "lead-semantic", { continuation: { operationId: corrupt.leaf.id } })
+    }, {
+      nodeExecutable: process.execPath, entryFile: "/pkg/dist/main.js", initiator: { kind: "LEAD", agentId: "lead", userTurnId: "turn-corrupt-policy", requestEventId: "jsonrpc:corrupt-policy" },
+      spawnProcess: vi.fn(() => ({ pid: 5396, unref: vi.fn() })) as never
+    })).rejects.toThrow(/UNSUPPORTED_RESOLVED_OPERATION_POLICY_VERSION/);
+  });
+
+  it("rejects a policy-less leaf at an Owner boundary and exhausted inherited envelope", async () => {
+    const root = await tempRoot();
+    const { leaf } = await createPrePolicyFailedLeaf(root, "boundary", false);
+    await transitionOperationAtHardDeadlineV1(root, leaf.id, new Date(leaf.origin!.rootHardDeadlineAt));
+    await expect(startDetachedOperation(root, "audit", {
+      request: "Continue past hard deadline.",
+      intentDecision: createIntentDecision("audit", "Continue.", "lead-semantic", { continuation: { operationId: leaf.id } })
+    }, {
+      nodeExecutable: process.execPath, entryFile: "/pkg/dist/main.js", initiator: { kind: "LEAD", agentId: "lead", userTurnId: "turn-boundary", requestEventId: "jsonrpc:boundary" },
+      spawnProcess: vi.fn(() => ({ pid: 5395, unref: vi.fn() })) as never
+    })).rejects.toThrow(/OPERATION_RECOVERY_OWNER_BOUNDARY/);
+
+    const exhausted = compileResolvedOperationPolicy({
+      projectId: "project", operationId: "AUDIT-EXHAUSTED", operationExecutionRevision: 1, candidateRevision: 1,
+      candidateDigest: "a".repeat(64), controllerEpoch: 0, intent: "budget fixture", route: "DIRECT", minimumAssurance: "STANDARD",
+      policyVersions: { resolvedOperationPolicy: "2" }, policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {},
+      knowledgePolicy: {}, contextPolicy: {}, allowedExternalEffects: [], humanDecisionRequirements: [], economicEnvelope: { hardToolCalls: 1 }
+    }).economicEnvelope;
+    await expect(Promise.resolve().then(() => remainingEconomicEnvelopeForRecoveryV1(exhausted, {
+      version: 1, operationId: "AUDIT-EXHAUSTED", providerTurnsPerParticipant: [], toolCalls: { observed: 1, coverage: "COMPLETE" },
+      tokens: { observed: 0, coverage: "COMPLETE" }, costUsd: { observed: 0, coverage: "COMPLETE" }, providerUsageEvidence: [], economicEvidenceDigest: "b".repeat(64), digest: "c".repeat(64)
+    }))).rejects.toThrow(/OPERATION_RECOVERY_OWNER_BOUNDARY_REQUIRED/);
   });
 
   it("serializes concurrent recovery children on the failed parent and persists only one child", async () => {
