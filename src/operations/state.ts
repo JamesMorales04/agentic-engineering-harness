@@ -363,6 +363,8 @@ function createOwnerContinuationBoundaryV1(operation: OperationRecordV2, deadlin
 }
 
 export function frozenOperationHardDeadlineAt(operation: OperationRecordV2): number | undefined {
+  if (isTerminal(operation.status)) return undefined;
+  if (operation.resolvedOperationPolicy) assertResolvedOperationPolicyV2(operation.resolvedOperationPolicy);
   const createdAt = Date.parse(operation.createdAt);
   if (!Number.isFinite(createdAt)) return undefined;
   const policyDeadline = operation.resolvedOperationPolicy

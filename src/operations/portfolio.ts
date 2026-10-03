@@ -96,7 +96,7 @@ export async function assertOperationCapacity(root: string, config: HarnessProje
 function portfolioEntryFromOperation(operation: OperationRecordV2): OperationPortfolioEntry {
   const supervisor = activeOperationSupervisor(operation);
   const active = operation.status === "QUEUED" || operation.status === "RUNNING";
-  const frozenDeadline = frozenOperationHardDeadlineAt(operation);
+  const frozenDeadline = active ? frozenOperationHardDeadlineAt(operation) : undefined;
   return {
     operationId: operation.id, kind: operation.kind, status: operation.status, phase: operation.phase,
     workspaceId: operation.workspaceId, supervisorAgentId: supervisor?.agentId, supervisorGeneration: supervisor?.generation,

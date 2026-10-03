@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { sha256Canonical } from "../src/core/digest.js";
 import {
@@ -9,7 +10,8 @@ import {
   loadOperationPortfolio,
   syncOperationPortfolio
 } from "../src/operations/portfolio.js";
-import { claimControllerEpoch, loadOperation, saveOperation, transitionOperationToTerminal, type OperationRecordV2 } from "../src/operations/state.js";
+import { claimControllerEpoch, frozenOperationHardDeadlineAt, loadOperation, saveOperation, transitionOperationToTerminal, type OperationRecordV2 } from "../src/operations/state.js";
+import { compileResolvedOperationPolicy } from "../src/architecture/executionIdentity.js";
 import { compileOperationOriginV1 } from "../src/operations/operationProvenance.js";
 import { allowlistedOperationToolErrorCode } from "../src/operations/toolDiagnostics.js";
 
@@ -70,6 +72,54 @@ const config = {
 } as never;
 
 describe("operation portfolio", () => {
+  it("hydrates a copied terminal v1 record without evaluating its obsolete deadline policy", async () => {
+    const root = await tempRoot();
+    const fixturePath = new URL("./fixtures/operations/terminal-change-v1.json", import.meta.url);
+    const fixtureBytes = await fs.readFile(fixturePath);
+    const record = JSON.parse(fixtureBytes.toString("utf8")) as OperationRecordV2;
+    expect(record.status).toBe("FAILED");
+    expect((record.resolvedOperationPolicy as unknown as { version: number }).version).toBe(1);
+    expect((record.resolvedOperationPolicy as unknown as { executionLiveness?: unknown }).executionLiveness).toBeUndefined();
+
+    const operationPath = path.join(root, ".harness/operations", `${record.id}.json`);
+    await fs.mkdir(path.dirname(operationPath), { recursive: true });
+    await fs.writeFile(operationPath, fixtureBytes);
+    const portfolioPath = path.join(root, ".harness/operations/portfolio.json");
+    await fs.writeFile(portfolioPath, JSON.stringify({ version: 1, project: "demo", leadGeneration: 0, updatedAt: record.updatedAt, operations: { [record.id]: { operationId: record.id, kind: record.kind, status: record.status, phase: record.phase, revision: record.revision, acknowledgedRevision: 0, priority: 50, updatedAt: record.updatedAt } } }));
+    const operationHash = crypto.createHash("sha256").update(await fs.readFile(operationPath)).digest("hex");
+    const portfolioHash = crypto.createHash("sha256").update(await fs.readFile(portfolioPath)).digest("hex");
+
+    const portfolio = await loadOperationPortfolio(root, "demo");
+    expect(portfolio.operations[record.id]).toMatchObject({ status: "FAILED", deadlineDisposition: "NOT_APPLICABLE" });
+    await assertOperationCapacity(root, config, 50);
+
+    expect(crypto.createHash("sha256").update(await fs.readFile(operationPath)).digest("hex")).toBe(operationHash);
+    expect(crypto.createHash("sha256").update(await fs.readFile(portfolioPath)).digest("hex")).toBe(portfolioHash);
+    expect(crypto.createHash("sha256").update(fixtureBytes).digest("hex")).toBe("9da8d59fe3e2ca5fc1e4ab466050cf682868534057da7c337a58ef39db36f910");
+  });
+
+  it("rejects active v1, corrupt v2, and unknown policy versions explicitly, and preserves exact v2 expiry", async () => {
+    const root = await tempRoot();
+    const fixture = JSON.parse(await fs.readFile(new URL("./fixtures/operations/terminal-change-v1.json", import.meta.url), "utf8")) as OperationRecordV2;
+    const activeV1 = { ...fixture, status: "RUNNING" as const };
+    expect(() => frozenOperationHardDeadlineAt(activeV1)).toThrow(/UNSUPPORTED_RESOLVED_OPERATION_POLICY_VERSION.*expected version 2/);
+
+    const base = operation(root, "CHANGE-V2-DEADLINE", 50);
+    const candidate = fixture.candidateRevision!;
+    const policy = compileResolvedOperationPolicy({
+      projectId: candidate.projectId!, operationId: base.id, operationExecutionRevision: 1,
+      candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest!, controllerEpoch: 0,
+      intent: "deadline regression", route: "DIRECT", minimumAssurance: "STANDARD", policyVersions: {}, policyDigests: {},
+      validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {},
+      executionLiveness: { hardDeadlineMs: 1000 }, allowedExternalEffects: [], humanDecisionRequirements: []
+    });
+    const exactExpiry = { ...base, createdAt: new Date(Date.now() - 1000).toISOString(), resolvedOperationPolicy: policy };
+    expect(frozenOperationHardDeadlineAt(exactExpiry)).toBe(Date.parse(exactExpiry.createdAt) + 1000);
+    expect(() => frozenOperationHardDeadlineAt({ ...activeV1, resolvedOperationPolicy: { ...policy, version: 9 } } as unknown as OperationRecordV2)).toThrow(/UNSUPPORTED_RESOLVED_OPERATION_POLICY_VERSION/);
+    const corrupt = { ...policy, executionLiveness: undefined };
+    expect(() => frozenOperationHardDeadlineAt({ ...activeV1, resolvedOperationPolicy: corrupt } as unknown as OperationRecordV2)).toThrow(/UNSUPPORTED_EXECUTION_LIVENESS_POLICY_VERSION/);
+  });
+
   it("tracks multiple concurrent workspaces and supervisors at operation granularity", async () => {
     const root = await tempRoot();
     await syncOperationPortfolio(root, "demo", operation(root, "CHANGE-A", 80));
