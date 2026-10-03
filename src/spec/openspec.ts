@@ -169,7 +169,7 @@ export async function persistOpenSpecAuthoringContentV1(root: string, changeName
   return files.map(([file]) => relative(root, file));
 }
 
-export async function compileOpenSpecChange(root: string, config: HarnessProjectConfig, taskId: string, title: string, changeName = openSpecChangeName(taskId), run = runShell): Promise<OpenSpecCompileResult> {
+export async function compileOpenSpecChange(root: string, config: HarnessProjectConfig, taskId: string, title: string, changeName = openSpecChangeName(taskId), run = runShell, request?: string): Promise<OpenSpecCompileResult> {
   const changeDir = path.join(root, "openspec", "changes", changeName);
   const validation = await run(`openspec validate ${quote(changeName)} --strict`, { cwd: root, timeoutMs: 60_000, env: OPENSPEC_ENV });
   if (validation.exitCode !== 0) throw new Error(`OpenSpec change '${changeName}' is not valid and cannot be compiled into AEH normative artifacts: ${validation.stderr || validation.stdout}`);
@@ -208,6 +208,7 @@ export async function compileOpenSpecChange(root: string, config: HarnessProject
   const contract: TaskContract = {
     version: 1,
     task: { id: taskId, title },
+    ...(request !== undefined ? { request } : {}),
     source: { proposal: relative(root, path.join(sddDir, "proposal.md")), spec: relative(root, path.join(sddDir, "spec.md")), design: relative(root, path.join(sddDir, "design.md")), tasks: relative(root, path.join(sddDir, "tasks.yaml")), acceptance: relative(root, path.join(sddDir, "acceptance.feature")) },
     authoring: { provider: "openspec", change: changeName, sourceSha256 },
     git: { baseRef: config.validation?.baseRef ?? "main", ...(originatingBranch ? { originatingBranch } : {}) },

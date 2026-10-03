@@ -118,10 +118,12 @@ describe("OpenSpec authoring bridge", () => {
       expect(command).not.toContain("--json");
       return command.startsWith("openspec validate") ? result(0, "valid") : result(1, "", `unexpected ${command}`);
     });
-    const compiled = await compileOpenSpecChange(root, config, taskId, "Improve code readability", change, run as never);
+    const originalRequest = "Refactor the readability helpers and preserve externally observable behavior.";
+    const compiled = await compileOpenSpecChange(root, config, taskId, "Improve code readability", change, run as never, originalRequest);
     expect(compiled.requirements).toEqual(["READABILITY-1-R1"]);
     expect(compiled.validatorId).toBe("test");
     const contract = YAML.parse(await fs.readFile(compiled.contractPath, "utf8")) as TaskContract;
+    expect(contract.request).toBe(originalRequest);
     expect(contract.authoring).toEqual(expect.objectContaining({ provider: "openspec", change }));
     expect(contract.requirements?.[0].validators).toContain("test");
     const acceptance = await fs.readFile(path.join(compiled.sddDirectory, "acceptance.feature"), "utf8");

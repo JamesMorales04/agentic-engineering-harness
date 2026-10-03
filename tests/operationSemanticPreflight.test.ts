@@ -220,4 +220,27 @@ describe("semantic route/assurance preflight before detached operation creation"
     expect(spawnProcess).not.toHaveBeenCalled();
     expect(await operationRecordFiles(root)).toEqual([]);
   });
+
+  it("rejects a delegated long request without a concise objective before durable creation or discovery", async () => {
+    const root = await tempRoot();
+    await initializeProject(root);
+    const config = await loadProjectConfig(root);
+    const payload: ChangeOperationPayload = { request: `Implement the repair. ${"Preserve the full user context. ".repeat(30)}` };
+    const spawnProcess = vi.fn(() => ({ pid: 4242, unref: vi.fn() }));
+    const resolveChangePreflight = vi.fn<ResolveChangePreflightV1>(async () => ({
+      version: 1,
+      triage: { route: "DELEGATED" } as TriageDecision,
+      binding: { projectId: "test", repositoryDigest: "test", repositoryRootDigest: "test", intentDigest: "test" }
+    }));
+
+    await expect(startDetachedOperation(root, "change", payload, {
+      nodeExecutable: "/usr/bin/node",
+      entryFile: "/pkg/dist/main.js",
+      spawnProcess: spawnProcess as never,
+      resolveChangePreflight
+    })).rejects.toThrow("DELEGATED_CAPSULE_OBJECTIVE_REQUIRED");
+
+    expect(await operationRecordFiles(root)).toEqual([]);
+    expect(spawnProcess).not.toHaveBeenCalled();
+  });
 });

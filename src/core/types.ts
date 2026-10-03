@@ -229,6 +229,8 @@ export interface TaskAuthoringMetadata { provider: string; change: string; sourc
 export interface TaskContract {
   version: 1;
   task: { id: string; title: string };
+  /** Original conversational request when one exists; standalone OpenSpec compilation is grounded by its authored proposal instead. */
+  request?: string;
   source?: { proposal?: string; spec?: string; design?: string; tasks?: string; acceptance?: string; issue?: string; };
   authoring?: TaskAuthoringMetadata;
   issue?: TaskIssueMetadata;

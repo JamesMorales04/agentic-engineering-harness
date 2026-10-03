@@ -32,7 +32,7 @@ import {
   terminateManagedProcessGroup,
   type ProcessResult
 } from "../utils/process.js";
-import { prepareChangeOperation, resolveChangePreflightV1, runChangeOperation, type PreparedChangeOperation } from "./change.js";
+import { delegatedCapsuleObjectiveV1, prepareChangeOperation, resolveChangePreflightV1, runChangeOperation, type PreparedChangeOperation } from "./change.js";
 import { prepareGithubIssueTask, type IssuePreparationResult } from "../issues/intake.js";
 import { createSemanticAssessmentRuntimeV1 } from "../semantic/runtime.js";
 import type { ChangePreflightV1 } from "../core/triage.js";
@@ -155,6 +155,7 @@ export async function startDetachedOperation(
   if (kind === "change" && !(payload as ChangeOperationPayload).issueIntake) {
     if (!config) throw new Error("CHANGE_PREFLIGHT_CONFIG_REQUIRED: project configuration must be loaded before resolving route and assurance.");
     changePreflight = await (options.resolveChangePreflight ?? resolveChangePreflightV1)(absoluteRoot, config, payload as ChangeOperationPayload);
+    if (changePreflight.triage.route === "DELEGATED") delegatedCapsuleObjectiveV1(payload as ChangeOperationPayload);
   }
 
   const now = new Date().toISOString();
