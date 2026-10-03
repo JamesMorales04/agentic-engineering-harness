@@ -62,6 +62,7 @@ import { sha256Canonical } from "../core/digest.js";
 import { HumanDecisionLedgerV2, type DecisionChoiceV1, type HumanDecisionBindingV2 } from "../security/humanDecision.js";
 import { deterministicParticipantId } from "../security/executionLease.js";
 import { assertOperationOriginV1 } from "./operationProvenance.js";
+import { assertIntentDecisionForRoute } from "../audit/intentDecision.js";
 
 export interface ChangeOperationResult {
   taskId: string;
@@ -92,7 +93,20 @@ export async function resolveChangePreflightV1(
     intentDigest: sha256Canonical({ request: payload.request, files: normalized.files, domains: normalized.domains, risk: normalized.risk, flags: normalized.flags })
   };
   const triage = await triageChangeWithSemanticAssessment(config, evidence, { service: semanticRuntime.service, binding, policyRevision: semanticRuntime.policyRevision });
+  if (triage.route === "DELEGATED") delegatedCapsuleObjectiveV1(payload);
   return { version: 1, triage, binding };
+}
+
+/** Select and validate the concise capsule objective before a CHANGE operation is persisted. */
+export function delegatedCapsuleObjectiveV1(payload: ChangeOperationPayload): string {
+  if (!payload.intentDecision) {
+    throw new Error("DELEGATED_CAPSULE_OBJECTIVE_REQUIRED: delegated changes require a validated operationIntent.requestedOutcome of 1–500 characters; the full request will remain in the TaskContract.");
+  }
+  const objective = assertIntentDecisionForRoute(payload.intentDecision, "change").requestedOutcome.trim();
+  if (!objective || objective.length > 500) {
+    throw new Error("DELEGATED_CAPSULE_OBJECTIVE_INVALID: operationIntent.requestedOutcome must be a concise, complete objective of 1–500 characters for a delegated change.");
+  }
+  return objective;
 }
 
 interface ProductChoiceDraftV1 {
@@ -165,6 +179,7 @@ export async function prepareChangeOperation(
     assurance,
     reasons: [...independentlyValidatedTriage.reasons, `linked failed-operation recovery inherits the parent minimum assurance ${assurance}`]
   };
+  if (triage.route === "DELEGATED") delegatedCapsuleObjectiveV1(payload);
   return { triage, semanticRuntime };
 }
 
@@ -199,6 +214,7 @@ export async function runChangeOperation(
   const semanticRuntime = preparation.semanticRuntime;
   let triage = preparation.triage;
   let route = triage.route;
+  if (route === "DELEGATED") delegatedCapsuleObjectiveV1(payload);
   const persisted = await loadOperation(controlRoot, operation.id);
   if (persisted.continuation) return resumeProductChoiceContinuation(root, controlRoot, config, persisted, payload, semanticRuntime);
   let bootstrapContract = operationBootstrapContract(taskId, title, payload, route, triage.assurance, triage.routeEvidence);
@@ -265,7 +281,7 @@ export async function runChangeOperation(
     // before the contract existed made every plan reference unknowable IDs and fail the WorkGraph
     // contract check (AEH-V2-0110).
     await setOperationStage(controlRoot, operation.id, "contract-authoring", "RUNNING");
-    const capsule = createDelegatedFeatureCapsule({ taskId, objective: payload.request, scope: { allowed: payload.files?.length ? payload.files : ["**"], forbidden: [] }, acceptance: payload.acceptance, assurance: triage.assurance, routeEvidence: triage.routeEvidence, candidateRevision: (await loadOperation(controlRoot, operation.id)).candidateRevision as unknown as Record<string, unknown> });
+    const capsule = createDelegatedFeatureCapsule({ taskId, objective: delegatedCapsuleObjectiveV1(payload), scope: { allowed: payload.files?.length ? payload.files : ["**"], forbidden: [] }, acceptance: payload.acceptance, assurance: triage.assurance, routeEvidence: triage.routeEvidence, candidateRevision: (await loadOperation(controlRoot, operation.id)).candidateRevision as unknown as Record<string, unknown> });
     const capsuleArtifact = await persistFeatureCapsule(root, capsule);
     const routed = await createRoutedContract(root, config, taskId, { title, request: payload.request, scope: capsule.scope?.allowed ?? ["**"], acceptance: payload.acceptance, domains: payload.domains, risk: payload.risk, profile: payload.profile, routeDecision: triage });
     contract = { ...routed.contract, scope: capsule.scope };
@@ -338,7 +354,7 @@ export async function runChangeOperation(
 
     await awaitChangeControlCheckpoint(controlRoot, operation.id);
     await setOperationStage(controlRoot, operation.id, "spec-compilation", "RUNNING");
-    await compileOpenSpecChange(root, config, taskId, title, preparedSpec.changeName);
+    await compileOpenSpecChange(root, config, taskId, title, preparedSpec.changeName, undefined, payload.request);
     const validation = await validateSddChange(root, taskId, config);
     if (!validation.ok) throw new Error(`SDD validation failed after OpenSpec compilation: ${[...validation.missing, ...validation.issues].join("; ")}`);
     contract = await loadTaskContract(root, taskId, config);
@@ -832,7 +848,7 @@ async function resumeProductChoiceContinuation(
 
   let contract: TaskContract;
   if (continuation.appliedRequirementDigest) {
-    await compileOpenSpecChange(root, config, taskId, title, preparedSpec.changeName);
+    await compileOpenSpecChange(root, config, taskId, title, preparedSpec.changeName, undefined, payload.request);
     const validation = await validateSddChange(root, taskId, config);
     if (!validation.ok) throw new Error(`DECISION_CONTINUATION_REVALIDATION_FAILED: ${[...validation.missing, ...validation.issues].join("; ")}`);
     contract = await loadTaskContract(root, taskId, config);
@@ -848,7 +864,7 @@ async function resumeProductChoiceContinuation(
       inputs: checkpoint.inputs, initialChoice: selected, priorSelections: checkpoint.priorSelections
     });
     await setOperationStage(controlRoot, operation.id, "spec-authoring", "COMPLETED", { artifact: specEvidence.artifact });
-    await compileOpenSpecChange(root, config, taskId, title, preparedSpec.changeName);
+    await compileOpenSpecChange(root, config, taskId, title, preparedSpec.changeName, undefined, payload.request);
     const validation = await validateSddChange(root, taskId, config);
     if (!validation.ok) throw new Error(`SDD validation failed after product-choice continuation: ${[...validation.missing, ...validation.issues].join("; ")}`);
     contract = await loadTaskContract(root, taskId, config);

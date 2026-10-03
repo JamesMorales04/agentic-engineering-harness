@@ -37,6 +37,7 @@ export async function createRoutedContract(root: string, config: HarnessProjectC
   const contract: TaskContract = {
     version: 1,
     task: { id: taskId, title: input.title },
+    request: input.request,
     git: { baseRef: config.validation?.baseRef ?? "main" },
     scope: { allowed: [...new Set(input.scope.length ? input.scope : ["**"])], forbidden: [], frozen: [] },
     routing: { intent: "implement", domains: [...new Set(input.domains ?? [])], risk: input.risk ?? "low", profile: input.profile, route: decision.route, assurance: decision.assurance, routeEvidence: decision.routeEvidence },

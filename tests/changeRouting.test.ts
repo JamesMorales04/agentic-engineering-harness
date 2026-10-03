@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { normalizeAgentProfile, requiresSpecEscalation, specEscalationConstraintV1, formalizeEscalatedTriage } from "../src/operations/change.js";
+import { delegatedCapsuleObjectiveV1, normalizeAgentProfile, requiresSpecEscalation, specEscalationConstraintV1, formalizeEscalatedTriage } from "../src/operations/change.js";
 import { triageChange, triageChangeWithSemanticAssessment } from "../src/core/triage.js";
 import { createRoutedContract } from "../src/core/contract.js";
 import { requiresDelegatedPlanningV1 } from "../src/agents/routingV2.js";
@@ -11,6 +11,41 @@ import { semanticPayload, semanticTestService } from "./semanticAssessmentSuppor
 import type { HarnessProjectConfig } from "../src/core/types.js";
 
 describe("natural-language change routing", () => {
+  it("uses a validated concise outcome while retaining the full request in the TaskContract", async () => {
+    const request = `Implement the user-requested repair while preserving every detail. ${"Additional acceptance context. ".repeat(40)}`;
+    const objective = "Repair the Home operation flow and preserve its authorization gates.";
+    const payload = { request, intentDecision: { version: 1, source: "lead-semantic", intent: "change", requestedOutcome: objective, effects: { evaluate: false, mutateRepository: true, executePreparedTask: false, deliver: false } } } as const;
+
+    expect(delegatedCapsuleObjectiveV1(payload as never)).toBe(objective);
+    expect(payload.request).toBe(request);
+    expect(request.length).toBeGreaterThan(500);
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-long-request-contract-"));
+    try {
+      const { contract } = await createRoutedContract(root, { version: 1, project: { name: "fixture" } }, "TASK-LONG-REQUEST", {
+        title: "Long request repair",
+        request,
+        scope: ["src/**"]
+      });
+      expect(contract.request).toBe(request);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails clearly when a delegated capsule has no usable concise objective", () => {
+    expect(() => delegatedCapsuleObjectiveV1({ request: "x".repeat(501) })).toThrow("DELEGATED_CAPSULE_OBJECTIVE_REQUIRED");
+    expect(() => delegatedCapsuleObjectiveV1({ request: "A short request", intentDecision: { version: 1, source: "lead-semantic", intent: "change", requestedOutcome: "x".repeat(501), effects: { evaluate: false, mutateRepository: true, executePreparedTask: false, deliver: false } } })).toThrow("DELEGATED_CAPSULE_OBJECTIVE_INVALID");
+  });
+
+  it("uses the validated outcome as the objective on the short request path", () => {
+    const request = "Repair the save button.";
+    expect(delegatedCapsuleObjectiveV1({ request, intentDecision: { version: 1, source: "explicit-cli", intent: "change", requestedOutcome: request, effects: { evaluate: false, mutateRepository: true, executePreparedTask: false, deliver: false } } })).toBe(request);
+  });
+
+  it("requires an operation intent even when the original request is short", () => {
+    expect(() => delegatedCapsuleObjectiveV1({ request: "Repair the save button." })).toThrow("DELEGATED_CAPSULE_OBJECTIVE_REQUIRED");
+  });
+
   it("binds configured project validators into deterministic contract requirement traceability", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-contract-validators-"));
     try {
