@@ -166,6 +166,55 @@ function impactValidationCheck(compilation: CandidateAssuranceCompilationV1, req
 }
 
 describe("AEH-V2-0099 base contract assertion validation path", () => {
+  it("resolves repository browser scripts and keeps their impact validations candidate-bound", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-browser-script-resolution-"));
+    roots.push(root);
+    await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ scripts: {
+      browser: "npm run generic-browser-check",
+      visual: "npm run generic-visual-check",
+      "test:browser-e2e": "npm run build && playwright test --config tests/browser/playwright.config.ts",
+      "test:browser-visual": "npm run build && tsx scripts/s11BrowserVisualCampaign.ts"
+    } }));
+
+    const current = candidate("browser-script-candidate");
+    const impactBody = impact(current, ["UI/browser", "UI/visual"]);
+    const requirements = candidateImpactValidationRequirementsV1(impactBody);
+    const resolution = await resolveValidationRequirements({ root, requirements });
+
+    expect(resolution.blocked).toEqual([]);
+    expect(resolution.actions.map(({ requirementId, selector, command }) => ({ requirementId, selector, command }))).toEqual([
+      { requirementId: "impact-review-ui-browser", selector: "test:browser-e2e", command: "npm run test:browser-e2e" },
+      { requirementId: "impact-review-ui-visual", selector: "test:browser-visual", command: "npm run test:browser-visual" }
+    ]);
+
+    const compilation = compileCandidateAssuranceV1({
+      candidate: current,
+      impact: impactBody,
+      policy: {
+        version: 1,
+        digest: digest("browser-script-policy"),
+        minimumAssurance: "NONE",
+        independentReviewRequired: false,
+        minimumIndependentReviewers: 0,
+        providerDiversity: false,
+        allowedValidationKinds: ["browser-test", "visual-test"],
+        evidenceStrength: "NONE"
+      },
+      implementationIdentity: "implementer",
+      risk: "low",
+      reviewerCandidates: [{ identity: "reviewer", role: "Reviewer", provider: "test", readOnly: true }],
+      baseValidationRequirements: [],
+      validationResolution: resolution,
+      acceptanceAssertions: []
+    });
+    expect(compilation.status).toBe("READY");
+    expect(compilation.candidate).toMatchObject({ candidateId: current.candidateId, revision: current.revision, identityDigest: current.identityDigest });
+    expect(compilation.validationRequirements.map(({ id, kind }) => [id, kind])).toEqual([
+      ["impact-review-ui-browser", "browser-test"],
+      ["impact-review-ui-visual", "visual-test"]
+    ]);
+  });
+
   it("reproduces the defect: a compilation without a base requirement leaves AC-1 unresolved and fails VERIFICATION_VALIDATION_PATH_MISSING", () => {
     const current = candidate();
     const compilation = compileCandidateAssuranceV1({
