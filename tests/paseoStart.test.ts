@@ -145,6 +145,10 @@ describe("Paseo Harness start", () => {
     expect(bootstrap).toContain("operation-supervisor");
     expect(bootstrap).toContain("OperationRecord");
     expect(bootstrap).toContain("aeh_operation_portfolio");
+    expect(bootstrap).toContain("aeh-operation-control/SKILL.md");
+    expect(bootstrap).toContain("LeadOperationIntentV1");
+    expect(bootstrap).toContain("Never construct controller-owned effects");
+    expect(bootstrap).not.toContain("IntentDecisionV1 containing a compact requestedOutcome, effects");
     expect(bootstrap).toContain("watchdog");
     expect(bootstrap).toContain("AUDIT, CHANGE and prepared RUN");
     expect(bootstrap).toContain(aehCommand);

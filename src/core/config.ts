@@ -76,6 +76,7 @@ const projectSchema = z.object({
     required: z.boolean().optional(),
     worker: z.object({ provider: z.string().optional(), model: z.string().optional(), maxRepairAttempts: z.number().int().nonnegative().optional(), titlePrefix: z.string().optional() }).optional(),
     operations: z.object({
+      ownerBoundaryScope: z.enum(["CHAIN_SCOPED_BOUNDARY", "PROJECT_OR_OWNER_GLOBAL_BOUNDARY"]).optional(),
       supervision: z.object({ initializationTimeoutSeconds: z.number().int().positive().optional(), turnTimeoutSeconds: z.number().int().positive().optional(), context: z.object({ handoffThreshold: z.number().gt(0).lt(1).optional(), hardHandoffThreshold: z.number().gt(0).lt(1).optional() }).optional() }).strict().optional(),
       liveness: executionLivenessSchema.optional(), economicEnvelope: economicEnvelopeSchema.optional()
     }).strict().optional(),

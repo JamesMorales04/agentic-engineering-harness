@@ -609,12 +609,14 @@ describe("execution liveness model", () => {
       spawnProcess: vi.fn(() => ({ pid: 9192, unref: vi.fn() })) as never
     })).rejects.toThrow(/OPERATION_OWNER_BOUNDARY_STILL_WAITING/);
 
-    const freshOwnerTurn = createIntentDecision("audit", "The Lead cannot infer that the Owner has resolved the boundary.", "lead-semantic", { userTurnId: "lead-session:turn-4" });
-    await expect(startDetachedOperation(fixture.root, "audit", { request: "A new Lead turn still cannot silently resolve the Owner boundary.", intentDecision: freshOwnerTurn }, {
+    const freshOwnerTurn = createIntentDecision("audit", "Start an independent review requested in a new Owner turn.", "lead-semantic", { userTurnId: "lead-session:turn-4" });
+    const independent = await startDetachedOperation(fixture.root, "audit", { request: "Independent Owner request; do not continue the boundary chain.", intentDecision: freshOwnerTurn }, {
       nodeExecutable: process.execPath, entryFile: "/pkg/dist/main.js",
       initiator: { kind: "LEAD", agentId: "session:lead-current", userTurnId: "lead-session:turn-4", requestEventId: "jsonrpc:boundary-fresh-turn" },
       spawnProcess: vi.fn(() => ({ pid: 9194, unref: vi.fn() })) as never
-    })).rejects.toThrow(/OPERATION_OWNER_BOUNDARY_STILL_WAITING/);
+    });
+    expect(independent.origin?.userTurnId).toBe("lead-session:turn-4");
+    expect(independent.origin?.rootHardDeadlineAt).not.toBe(boundaryParent.origin?.rootHardDeadlineAt);
 
     await fs.mkdir(path.join(fixture.root, ".harness"), { recursive: true });
     const projectConfigPath = path.join(fixture.root, ".harness", "project.yaml");
@@ -661,7 +663,7 @@ describe("execution liveness model", () => {
     })).rejects.toThrow(/OPERATION_OWNER_BOUNDARY_STILL_WAITING/);
   });
 
-  it("materializes expired deadlines before new roots and ignores Lead-supplied turn ids as Owner authority", async () => {
+  it("keeps an expired hard deadline on its chain and gives an independent Owner turn a new root deadline", async () => {
     const fixture = await makeFixture({ userTurnId: "lead-session:turn-deadline", liveness: { hardDeadlineMs: 1_000 } });
     await new Promise((resolve) => setTimeout(resolve, 1_100));
 
@@ -674,12 +676,21 @@ describe("execution liveness model", () => {
     const expired = await loadOperation(fixture.root, fixture.operationId);
     expect(expired).toMatchObject({ status: "FAILED", phase: "HUMAN_REQUIRED", ownerContinuationBoundary: { reasonCode: "HARD_OPERATION_DEADLINE", userTurnId: "lead-session:turn-deadline", state: "WAITING" } });
 
-    const fabricatedFreshTurn = createIntentDecision("audit", "Start a fresh request after reviewing the prior deadline.", "lead-semantic", { userTurnId: "lead-session:fabricated-turn-id" });
-    await expect(startDetachedOperation(fixture.root, "audit", { request: "Lead-supplied turn ids do not authorize a fresh root.", intentDecision: fabricatedFreshTurn }, {
+    const linkedContinuation = createIntentDecision("audit", "Try the same failed task as a linked continuation.", "lead-semantic", { userTurnId: "lead-session:continuation-turn", continuation: { operationId: fixture.operationId } });
+    await expect(startDetachedOperation(fixture.root, "audit", { request: "Continue the same expired task.", intentDecision: linkedContinuation }, {
       nodeExecutable: process.execPath, entryFile: "/pkg/dist/main.js",
-      initiator: { kind: "LEAD", agentId: "session:lead-current", userTurnId: "lead-session:fabricated-turn-id", requestEventId: "jsonrpc:deadline-fabricated-turn" },
+      initiator: { kind: "LEAD", agentId: "session:lead-current", userTurnId: "lead-session:continuation-turn", requestEventId: "jsonrpc:deadline-linked" },
       spawnProcess: vi.fn(() => ({ pid: 9198, unref: vi.fn() })) as never
-    })).rejects.toThrow(/OPERATION_OWNER_BOUNDARY_STILL_WAITING/);
+    })).rejects.toThrow(/OPERATION_RECOVERY_OWNER_BOUNDARY/);
+
+    const freshOwnerTurn = createIntentDecision("audit", "Start an independent request after the prior chain reached its deadline.", "lead-semantic", { userTurnId: "lead-session:fresh-owner-turn" });
+    const independent = await startDetachedOperation(fixture.root, "audit", { request: "This is a new Owner request, independent from the expired task.", intentDecision: freshOwnerTurn }, {
+      nodeExecutable: process.execPath, entryFile: "/pkg/dist/main.js",
+      initiator: { kind: "LEAD", agentId: "session:lead-current", userTurnId: "lead-session:fresh-owner-turn", requestEventId: "jsonrpc:deadline-independent" },
+      spawnProcess: vi.fn(() => ({ pid: 9203, unref: vi.fn() })) as never
+    });
+    expect(independent.origin).toMatchObject({ kind: "USER_REQUEST", userTurnId: "lead-session:fresh-owner-turn" });
+    expect(Date.parse(independent.origin!.rootHardDeadlineAt)).toBeGreaterThan(Date.parse(expired.origin!.rootHardDeadlineAt));
 
     const unrelatedOwner = await startDetachedOperation(fixture.root, "audit", {
       request: "Fresh explicitly Owner-authorized request.", intentDecision: createIntentDecision("audit", "Owner explicitly starts a new operation after reviewing the expired boundary.", "explicit-cli")
@@ -688,11 +699,12 @@ describe("execution liveness model", () => {
       spawnProcess: vi.fn(() => ({ pid: 9199, unref: vi.fn() })) as never
     });
     expect(unrelatedOwner.origin).toMatchObject({ kind: "EXPLICIT_CLI" });
-    await expect(startDetachedOperation(fixture.root, "audit", { request: "An unrelated CLI task does not resolve this boundary.", intentDecision: createIntentDecision("audit", "Review another request.", "lead-semantic") }, {
+    const afterUnrelatedTurn = await startDetachedOperation(fixture.root, "audit", { request: "Another independent Owner turn is not the old chain.", intentDecision: createIntentDecision("audit", "Review another request.", "lead-semantic") }, {
       nodeExecutable: process.execPath, entryFile: "/pkg/dist/main.js",
-      initiator: { kind: "LEAD", agentId: "session:lead-current", requestEventId: "jsonrpc:unresolved-deadline" },
+      initiator: { kind: "LEAD", agentId: "session:lead-current", userTurnId: "lead-session:another-independent-turn", requestEventId: "jsonrpc:unresolved-deadline" },
       spawnProcess: vi.fn(() => ({ pid: 9200, unref: vi.fn() })) as never
-    })).rejects.toThrow(/OPERATION_OWNER_BOUNDARY_STILL_WAITING/);
+    });
+    expect(afterUnrelatedTurn.origin?.userTurnId).toBe("lead-session:another-independent-turn");
 
     const ownerAuthorized = await startDetachedOperation(fixture.root, "audit", {
       request: "Owner explicitly resolves the expired operation boundary.", intentDecision: createIntentDecision("audit", "Resolve the expired operation and start a fresh root.", "explicit-cli")
@@ -708,6 +720,32 @@ describe("execution liveness model", () => {
       spawnProcess: vi.fn(() => ({ pid: 9202, unref: vi.fn() })) as never
     });
     expect(afterOwner.origin).toMatchObject({ kind: "LEAD_ACTION", requestEventId: "jsonrpc:after-owner-root" });
+  });
+
+  it("blocks unrelated starts only when project policy explicitly makes Owner boundaries global", async () => {
+    const fixture = await makeFixture({ economic: { hardCostUsd: 1 }, userTurnId: "lead-session:global-boundary-root" });
+    const at = new Date(fixture.executionStartedAt.getTime() + 20_000);
+    await recordParticipantExecutionActivityV1(fixture.root, fixture.operationId, fixture.participantId, {
+      kind: "NEW_RETRIEVAL", evidenceId: "retrieval:global-boundary", evidenceDigest: digest("global-boundary"), observedAt: at
+    });
+    await expect(renewParticipantProgressLeaseV1(fixture.root, {
+      operationId: fixture.operationId, participantId: fixture.participantId, actorSessionId: "session:lead-current", at: new Date(at.getTime() + 1_000)
+    })).rejects.toThrow(/OWNER_DECISION_REQUIRED/);
+    await terminalizeOperation(fixture.root, fixture.operationId, { status: "FAILED", phase: "HUMAN_REQUIRED", finishedAt: new Date(at.getTime() + 2_000).toISOString() }, { trace: vi.fn(async () => undefined) as never });
+
+    await fs.mkdir(path.join(fixture.root, ".harness"), { recursive: true });
+    await fs.writeFile(path.join(fixture.root, ".harness", "project.yaml"), [
+      "version: 1", "project:", "  name: liveness-test", "orchestration:", "  provider: paseo", "  operations:",
+      "    ownerBoundaryScope: PROJECT_OR_OWNER_GLOBAL_BOUNDARY", "    economicEnvelope:", "      hardCostUsd: 1", ""
+    ].join("\n"));
+    await expect(startDetachedOperation(fixture.root, "audit", {
+      request: "A separate Owner request while project-wide boundary policy is configured.",
+      intentDecision: createIntentDecision("audit", "Review a separate repository concern.", "lead-semantic")
+    }, {
+      nodeExecutable: process.execPath, entryFile: "/pkg/dist/main.js",
+      initiator: { kind: "LEAD", agentId: "session:lead-current", userTurnId: "lead-session:global-independent-turn", requestEventId: "jsonrpc:global-boundary" },
+      spawnProcess: vi.fn(() => ({ pid: 9290, unref: vi.fn() })) as never
+    })).rejects.toThrow(/PROJECT_OR_OWNER_GLOBAL_BOUNDARY_STILL_WAITING/);
   });
 
   it("does not automatically renew past a configured hard token boundary", async () => {

@@ -28,6 +28,7 @@
       "required": { "type": "boolean" },
       "worker": { "type": "object", "properties": { "provider": { "type": "string" }, "model": { "type": "string" }, "maxRepairAttempts": { "type": "integer", "minimum": 0 }, "titlePrefix": { "type": "string" } } },
       "operations": { "type": "object", "properties": {
+        "ownerBoundaryScope": { "enum": ["CHAIN_SCOPED_BOUNDARY", "PROJECT_OR_OWNER_GLOBAL_BOUNDARY"], "default": "CHAIN_SCOPED_BOUNDARY" },
         "supervision": { "type": "object", "properties": { "initializationTimeoutSeconds": { "type": "integer", "minimum": 1 }, "turnTimeoutSeconds": { "type": "integer", "minimum": 1 }, "context": { "type": "object", "properties": { "handoffThreshold": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 }, "hardHandoffThreshold": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 } } } } },
         "liveness": { "$ref": "#/$defs/executionLiveness" },
         "economicEnvelope": { "$ref": "#/$defs/economicEnvelope" }

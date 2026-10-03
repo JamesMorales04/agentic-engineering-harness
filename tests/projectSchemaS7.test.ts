@@ -214,6 +214,20 @@ describe("GitHub delivery action scope", () => {
 });
 
 describe("execution liveness configuration migration", () => {
+  it("documents and validates the chain-scoped default for Owner boundary scope", async () => {
+    const schema = JSON.parse(await fs.readFile(schemaUrl, "utf8")) as JsonObject;
+    const scope = schema.properties.orchestration.properties.operations.properties.ownerBoundaryScope;
+    expect(scope).toMatchObject({ enum: ["CHAIN_SCOPED_BOUNDARY", "PROJECT_OR_OWNER_GLOBAL_BOUNDARY"], default: "CHAIN_SCOPED_BOUNDARY" });
+    const template = YAML.parse(await fs.readFile(templateUrl, "utf8")) as JsonObject;
+    expect(template.orchestration.operations.ownerBoundaryScope).toBe("CHAIN_SCOPED_BOUNDARY");
+
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-owner-boundary-scope-"));
+    tempRoots.push(root);
+    await fs.mkdir(path.join(root, ".harness"), { recursive: true });
+    await fs.writeFile(path.join(root, ".harness", "project.yaml"), "version: 1\nproject:\n  name: scope-test\norchestration:\n  provider: paseo\n  operations:\n    ownerBoundaryScope: PROJECT_OR_OWNER_GLOBAL_BOUNDARY\n");
+    expect((await loadProjectConfig(root)).orchestration?.operations?.ownerBoundaryScope).toBe("PROJECT_OR_OWNER_GLOBAL_BOUNDARY");
+  });
+
   it("removes the superseded worker timeout from the published JSON schema", async () => {
     const schema = JSON.parse(await fs.readFile(schemaUrl, "utf8")) as JsonObject;
     expect(schema.properties.orchestration.properties.worker.properties).not.toHaveProperty("timeoutSeconds");

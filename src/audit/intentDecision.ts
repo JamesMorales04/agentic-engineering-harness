@@ -7,6 +7,43 @@ export type IntentDecisionSource = (typeof intentDecisionSourceValues)[number];
 export const intentDecisionResolutionValues = ["resolved", "ambiguous", "unresolved-reference"] as const;
 export type IntentDecisionResolution = (typeof intentDecisionResolutionValues)[number];
 
+/** The managed Lead supplies meaning and constraints; the tool name supplies the route,
+ * while trusted runtime metadata supplies the user-turn identity. */
+export const leadOperationIntentV1Schema = z.object({
+  version: z.literal(1),
+  requestedOutcome: z.string().trim().min(1).max(2_000),
+  continuation: z.object({
+    operationId: z.string().trim().min(1).max(200).regex(/^[A-Za-z0-9._-]+$/),
+    findingIds: z.array(z.string().trim().min(1).max(200)).max(100).optional(),
+    taskId: z.string().trim().min(1).max(200).optional()
+  }).strict().optional(),
+  constraints: z.array(z.string().trim().min(1).max(500)).max(32).optional()
+}).strict();
+
+export type LeadOperationIntentV1 = z.infer<typeof leadOperationIntentV1Schema>;
+
+/** Provider-facing JSON Schema kept beside the deterministic Zod contract. */
+export const leadOperationIntentV1JsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["version", "requestedOutcome"],
+  properties: {
+    version: { const: 1 },
+    requestedOutcome: { type: "string", minLength: 1, maxLength: 2_000, pattern: "\\S" },
+    continuation: {
+      type: "object",
+      additionalProperties: false,
+      required: ["operationId"],
+      properties: {
+        operationId: { type: "string", minLength: 1, maxLength: 200, pattern: "^[A-Za-z0-9._-]+$" },
+        findingIds: { type: "array", maxItems: 100, items: { type: "string", minLength: 1, maxLength: 200, pattern: "\\S" } },
+        taskId: { type: "string", minLength: 1, maxLength: 200, pattern: "\\S" }
+      }
+    },
+    constraints: { type: "array", maxItems: 32, items: { type: "string", minLength: 1, maxLength: 500, pattern: "\\S" } }
+  }
+} as const;
+
 const effectsSchema = z.object({
   evaluate: z.boolean(),
   mutateRepository: z.boolean(),
@@ -25,10 +62,10 @@ export const intentDecisionV1Schema = z.object({
   source: z.enum(intentDecisionSourceValues),
   userTurnId: z.string().min(1).max(200).optional(),
   intent: z.enum(semanticIntentValues),
-  requestedOutcome: z.string().min(1).max(2_000),
+  requestedOutcome: z.string().trim().min(1).max(2_000),
   effects: effectsSchema,
   continuation: continuationSchema.optional(),
-  constraints: z.array(z.string().min(1).max(500)).max(32).optional(),
+  constraints: z.array(z.string().trim().min(1).max(500)).max(32).optional(),
   confidence: z.number().min(0).max(1).optional(),
   resolution: z.enum(intentDecisionResolutionValues).default("resolved")
 }).strict();
@@ -93,6 +130,23 @@ export function createIntentDecision(
   });
 }
 
+/** Build an internal semantic decision from the route-specific MCP tool and bounded Lead intent. */
+export function intentDecisionFromLeadOperationIntent(
+  route: Extract<IntentDecisionRoute, "audit" | "change" | "run">,
+  value: unknown,
+  trustedUserTurnId?: string
+): IntentDecisionV1 {
+  const parsed = leadOperationIntentV1Schema.safeParse(value);
+  if (!parsed.success) {
+    throw new InvalidIntentDecisionError(parsed.error.issues.map((issue) => `${issue.path.join(".") || "operationIntent"}: ${issue.message}`).join("; "));
+  }
+  return createIntentDecision(route, parsed.data.requestedOutcome, "lead-semantic", {
+    ...(trustedUserTurnId ? { userTurnId: trustedUserTurnId } : {}),
+    ...(parsed.data.continuation ? { continuation: parsed.data.continuation } : {}),
+    ...(parsed.data.constraints ? { constraints: parsed.data.constraints } : {})
+  });
+}
+
 export function defaultEffects(intent: IntentDecisionRoute): IntentDecisionV1["effects"] {
   switch (intent) {
     case "informational": return { evaluate: false, mutateRepository: false, executePreparedTask: false, deliver: false };
@@ -106,11 +160,9 @@ export function defaultEffects(intent: IntentDecisionRoute): IntentDecisionV1["e
 
 function decisionInvariantIssues(decision: IntentDecisionV1): string[] {
   const issues: string[] = [];
-  if (decision.effects.deliver) issues.push("deliver must remain false; delivery is controller-owned");
-  if (decision.intent === "informational" && (decision.effects.evaluate || decision.effects.mutateRepository || decision.effects.executePreparedTask)) issues.push("informational decisions cannot evaluate, mutate, or execute prepared tasks");
-  if (decision.intent === "audit" && (!decision.effects.evaluate || decision.effects.mutateRepository || decision.effects.executePreparedTask)) issues.push("audit decisions require evaluate=true and mutation/execution=false");
-  if (decision.intent === "change" && !decision.effects.mutateRepository) issues.push("change decisions require mutateRepository=true");
-  if (decision.intent === "run" && !decision.effects.executePreparedTask) issues.push("run decisions require executePreparedTask=true");
-  if ((decision.intent === "status" || decision.intent === "cancel") && (decision.effects.evaluate || decision.effects.mutateRepository || decision.effects.executePreparedTask)) issues.push(`${decision.intent} decisions cannot request engineering effects`);
+  if (JSON.stringify(decision.effects) !== JSON.stringify(defaultEffects(decision.intent))) {
+    if (decision.effects.deliver) issues.push("effects.deliver must remain false; delivery is controller-owned");
+    issues.push(`${decision.intent} effects must exactly match the deterministic route contract`);
+  }
   return issues;
 }

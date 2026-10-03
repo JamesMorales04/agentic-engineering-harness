@@ -752,9 +752,10 @@ export async function requireOwnerEconomicBoundaryBeforeExternalEffectV1(root: s
   const liveness = operation.resolvedOperationPolicy?.executionLiveness;
   if (liveness) {
     const hardDeadline = hardDeadlineFor(operation, liveness.hardDeadlineMs);
-    if (Date.now() >= hardDeadline) {
+    const now = Date.now();
+    if (now >= hardDeadline) {
       const { expireOperationAtHardDeadline } = await import("./controller.js");
-      await expireOperationAtHardDeadline(root, operation.id, new Date());
+      await expireOperationAtHardDeadline(root, operation.id, new Date(now));
       throw new Error("OPERATION_HARD_DEADLINE_REACHED: controller expired and reconciled the operation before external-effect admission.");
     }
   }

@@ -35,6 +35,15 @@ describe("IntentDecisionV1", () => {
     expect(() => assertIntentDecisionForRoute(createIntentDecision("change", "fix that", "lead-semantic", { resolution: "unresolved-reference" }), "change")).toThrow(/resolved referent/);
   });
 
+  it.each([
+    ["audit", { evaluate: true, mutateRepository: true, executePreparedTask: false, deliver: false }],
+    ["change", { evaluate: true, mutateRepository: true, executePreparedTask: false, deliver: false }],
+    ["run", { evaluate: false, mutateRepository: true, executePreparedTask: true, deliver: false }]
+  ] as const)("rejects effects that do not exactly match the %s route", (intent, effects) => {
+    expect(() => parseIntentDecision({ version: 1, source: "lead-semantic", intent, requestedOutcome: "route outcome", effects }))
+      .toThrow(/exactly match the deterministic route contract/);
+  });
+
   it("does not let a route reinterpret the requested outcome", () => {
     const audit = createIntentDecision("audit", "explain why finding two matters", "lead-semantic");
     expect(() => assertIntentDecisionForRoute(audit, "informational")).toThrow(/does not match/);

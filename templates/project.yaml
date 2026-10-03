@@ -81,6 +81,7 @@ orchestration:
     provider: opencode
     maxRepairAttempts: 2
   operations:
+    ownerBoundaryScope: CHAIN_SCOPED_BOUNDARY
     liveness:
       hardDeadlineMs: 28800000
       progressLeaseMs: 900000
