@@ -60,6 +60,7 @@ import { assertResolvedOperationPolicyV2, compileResolvedOperationPolicy } from 
 import { sha256Canonical } from "../core/digest.js";
 import { HumanDecisionLedgerV2, type DecisionChoiceV1, type HumanDecisionBindingV2 } from "../security/humanDecision.js";
 import { deterministicParticipantId } from "../security/executionLease.js";
+import { assertOperationOriginV1 } from "./operationProvenance.js";
 
 export interface ChangeOperationResult {
   taskId: string;
@@ -153,12 +154,35 @@ export async function prepareChangeOperation(
   if (sha256Canonical(independentlyValidatedTriage) !== sha256Canonical(preflight.triage)) {
     throw new Error("CHANGE_PREFLIGHT_ASSESSMENT_STALE: recomputed current route/assurance triage does not match the persisted preflight result.");
   }
-  if (operation.intent?.route !== preflight.triage.route || operation.intent?.assurance !== preflight.triage.assurance) {
+  if (operation.intent?.route !== preflight.triage.route || (operation.intent?.assurance !== preflight.triage.assurance
+    && !(operation.origin?.kind === "FAILED_OPERATION_RECOVERY" && operation.intent?.assurance === (await recoveryAssuranceFloor(root, operation, preflight.triage.assurance))))) {
     throw new Error("CHANGE_PREFLIGHT_OPERATION_INTENT_MISMATCH: durable intent does not match the validated pre-operation triage.");
   }
-  const triage = independentlyValidatedTriage;
+  const assurance = await recoveryAssuranceFloor(root, operation, independentlyValidatedTriage.assurance);
+  const triage = assurance === independentlyValidatedTriage.assurance ? independentlyValidatedTriage : {
+    ...independentlyValidatedTriage,
+    assurance,
+    reasons: [...independentlyValidatedTriage.reasons, `linked failed-operation recovery inherits the parent minimum assurance ${assurance}`]
+  };
   return { triage, semanticRuntime };
 }
+
+async function recoveryAssuranceFloor(root: string, operation: OperationRecordV2, assurance: AssuranceLevel): Promise<AssuranceLevel> {
+  if (operation.origin?.kind !== "FAILED_OPERATION_RECOVERY") return assurance;
+  assertOperationOriginV1(operation.origin);
+  const parent = await loadOperation(root, operation.origin.parentOperationId!);
+  if (parent.status !== "FAILED" || parent.revision !== operation.origin.parentTerminalRevision || !parent.resolvedOperationPolicy) {
+    throw new Error("OPERATION_RECOVERY_PARENT_STALE: the failed parent revision or frozen policy changed.");
+  }
+  assertResolvedOperationPolicyV2(parent.resolvedOperationPolicy);
+  return inheritAssuranceFloorV1(assurance, parent.resolvedOperationPolicy.minimumAssurance);
+}
+
+export function inheritAssuranceFloorV1(assurance: AssuranceLevel, parentMinimum: AssuranceLevel): AssuranceLevel {
+  return minimumAssuranceRank(assurance) >= minimumAssuranceRank(parentMinimum) ? assurance : parentMinimum;
+}
+
+function minimumAssuranceRank(value: AssuranceLevel): number { return value === "NONE" ? 0 : value === "STANDARD" ? 1 : value === "ELEVATED" ? 2 : 3; }
 
 export async function runChangeOperation(
   root: string,
