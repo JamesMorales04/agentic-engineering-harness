@@ -54,8 +54,6 @@ export interface PaseoAgentLaunchSpec {
   nativeAgentId?: string;
   workspaceId?: string;
   parentAgentId?: string;
-  /** Paseo parent handle; omitted for isolated launches so the provider cannot relocate the cwd. */
-  paseoParentAgentId?: string;
   supervisorGeneration?: number;
   labels: Record<string, string>;
   timeoutSeconds: number;
@@ -94,12 +92,8 @@ export async function compilePaseoAgentLaunchSpec(root: string, config: HarnessP
   const supervisorAgent = options.supervisorAgent === true || logicalAgent === "operation-supervisor";
   const parentAgentId = options.parentAgentId ?? (supervisorAgent ? durable?.lead?.agentId : activeSupervisor?.agentId);
   const supervisorGeneration = supervisorAgent ? undefined : activeSupervisor?.generation;
-  // Paseo child agents inherit the parent agent's workspace AND run in the parent's cwd. An isolated
-  // launch (task worktree outside the durable operation workspace) must never carry the Paseo parent
-  // handle, or the provider silently executes the isolated turn inside the operation candidate
-  // workspace (AEH-V2-0117). Correlation stays in `aeh.parent-agent`; only the Paseo parent is dropped.
-  const isolatedLaunch = durableWorkspaceRoot !== undefined && launchRoot !== undefined && launchRoot !== durableWorkspaceRoot;
-  const paseoParentAgentId = isolatedLaunch ? undefined : parentAgentId;
+  // AEH participants are top-level Paseo agents. AEH records semantic parentage in durable state
+  // and correlation labels; Paseo parent handles couple creation to the parent's live session.
 
   const contextCapabilities = options.contextCapabilities ?? (selection ? staticContextCapabilities(config, selection) : undefined);
   const scratchLease = options.scratchLease ?? options.executionBinding?.scratchLease;
@@ -228,7 +222,6 @@ export async function compilePaseoAgentLaunchSpec(root: string, config: HarnessP
     nativeAgentId: openCode?.binding.agentId,
     workspaceId,
     parentAgentId,
-    paseoParentAgentId,
     supervisorGeneration,
     labels,
     timeoutSeconds: Math.max(1, Math.ceil((options.providerTurnDeadlineMs ?? durable?.resolvedOperationPolicy?.executionLiveness.providerTurnDeadlineMs ?? (config.orchestration as (HarnessProjectConfig["orchestration"] & { operations?: { liveness?: { providerTurnDeadlineMs?: number } } }) | undefined)?.operations?.liveness?.providerTurnDeadlineMs ?? 30 * 60_000) / 1000)),
