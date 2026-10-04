@@ -58,7 +58,7 @@ orchestration:
   required: false
   worker:
     provider: opencode
-    model: MiMo-V2.6-Flash
+    model: muse-spark-1.3-contributor
     maxRepairAttempts: 2
     titlePrefix: aeh-self
   operations:

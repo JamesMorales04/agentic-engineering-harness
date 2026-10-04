@@ -332,6 +332,14 @@ export interface SemanticAssessmentTelemetryV1 {
   evidenceDigest: string;
   assessmentDigest: string;
   cacheHit: boolean;
+  /** Observable model/provider/variant identity for the resolved assessor (registry-driven). */
+  modelId: string;
+  modelProvider?: string;
+  variant?: string;
+  runtimeName: string;
+  paseoProvider: string;
+  /** Semantic assessment never falls back; the observation is always fallbackUsed=false. */
+  fallbackUsed: boolean;
 }
 
 export interface SemanticAssessmentCacheV1 {
@@ -479,11 +487,16 @@ export function resolveSemanticAssessor(topology: ResolvedAgentTopology): Resolv
   const requiredDenied = ["read", "write", "shell", "network", "delegate", "review", "validate", "gitWrite"] as const;
   const permissionIssues = requiredDenied.filter((key) => permissions[key] !== "deny");
   if (permissionIssues.length) throw new AehError("SEMANTIC_ASSESSMENT_UNAVAILABLE", `Semantic Assessor permissions must explicitly deny ${permissionIssues.join(", ")}.`);
-  if (selection.transport !== "paseo" || selection.runtimeAdapter !== "opencode" || selection.paseoProvider !== "opencode") throw new AehError("SEMANTIC_ASSESSMENT_UNAVAILABLE", "Semantic Assessor requires the AEH-managed OpenCode runtime through Paseo.");
+  if (selection.transport !== "paseo" || selection.runtimeAdapter !== "codex" || selection.paseoProvider !== "codex") throw new AehError("SEMANTIC_ASSESSMENT_UNAVAILABLE", "Semantic Assessor requires the AEH-managed Codex runtime through Paseo (Luna via Codex). The superseded OpenCode-routed Luna pairing was removed; see UNSUPPORTED_LEGACY_ASSESSOR_ROUTING.");
   if (selection.runtimeCapabilities.runtimeConfigInjection !== true || selection.runtimeCapabilities.structuredOutput !== true || selection.runtimeCapabilities.modelSelection !== true) throw new AehError("SEMANTIC_ASSESSMENT_UNAVAILABLE", "Semantic Assessor runtime must support AEH permission projection, topology model selection, and structured output.");
+  // Explicit stale-pairing guard: fail with a migration error (not a silent capability
+  // refusal) when a stale topology still resolves the superseded OpenCode Luna pairing.
+  if (selection.modelId === "opencode-go/gpt-6-luna") throw new AehError("SEMANTIC_ASSESSMENT_UNAVAILABLE", "UNSUPPORTED_LEGACY_ASSESSOR_ROUTING: Semantic Assessor resolved opencode-go/gpt-6-luna. Migrate models.structured-assessor to runtime codex, provider openai, model gpt-6-luna, variant xhigh.");
   // Runtime-level `structuredOutput` is not proof for every model behind the runtime. The resolved
   // assessor model must hold a certified structured-output capability at the required level, so an
   // ineligible model fails closed before execution instead of silently falling back.
+  // Muse (opencode-go/muse-spark-1.3-contributor) is intentionally uncertified: failed Muse
+  // qualification evidence is preserved out-of-tree with a requalification path in docs/V0.4.13.md.
   assertSemanticStructuredOutputCapabilityV1(selection.modelId);
   if (selection.nativeAgent || selection.skills.length || selection.mcps.length || selection.args.length || agent.capabilities?.length || agent.orchestratorPromptPath) throw new AehError("SEMANTIC_ASSESSMENT_UNAVAILABLE", "Semantic Assessor topology cannot select external agents, tools, skills, capabilities, runtime arguments, or orchestrator prompts.");
   if (selection.outputContract !== "semantic-assessment") throw new AehError("SEMANTIC_ASSESSMENT_UNAVAILABLE", "Semantic Assessor topology must use the semantic-assessment output contract.");
@@ -641,7 +654,20 @@ export class SemanticAssessmentServiceV1 {
   }
 
   private async emitTelemetry(result: SemanticAssessmentV1, cacheHit: boolean): Promise<void> {
-    await this.options.onTelemetry?.({ assessmentType: result.assessmentType, assessorId: result.assessor.logicalAgent, paseoAgentId: result.paseoSession.agentId, evidenceDigest: result.evidenceDigest, assessmentDigest: result.assessmentDigest, cacheHit });
+    await this.options.onTelemetry?.({
+      assessmentType: result.assessmentType,
+      assessorId: result.assessor.logicalAgent,
+      paseoAgentId: result.paseoSession.agentId,
+      evidenceDigest: result.evidenceDigest,
+      assessmentDigest: result.assessmentDigest,
+      cacheHit,
+      modelId: result.assessor.modelId,
+      ...(result.assessor.modelProvider ? { modelProvider: result.assessor.modelProvider } : {}),
+      ...(result.assessor.variant ? { variant: result.assessor.variant } : {}),
+      runtimeName: result.assessor.runtimeName,
+      paseoProvider: result.assessor.paseoProvider,
+      fallbackUsed: false
+    });
   }
 }
 

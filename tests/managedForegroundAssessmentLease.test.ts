@@ -40,7 +40,7 @@ describe("managed foreground turn lifecycle selection", () => {
       cwd: "/tmp/aeh-assessment-lease",
       title: "assessor",
       provider: "opencode",
-      model: "opencode-go/mimo-v2.6-flash",
+      model: "opencode-go/muse-spark-1.3-contributor",
       prompt: "return a typed assessment",
       outputSchema: schema,
       waitForFinish: true,
@@ -66,7 +66,7 @@ describe("managed foreground turn lifecycle selection", () => {
       cwd: "/tmp/aeh-assessment-lease",
       title: "reviewer",
       provider: "opencode",
-      model: "opencode-go/mimo-v2.6-flash",
+      model: "opencode-go/muse-spark-1.3-contributor",
       prompt: "review the candidate",
       waitForFinish: true,
       labels: { "aeh.kind": "worker", "aeh.operation": "AUDIT-1", "aeh.role": "reviewer" }

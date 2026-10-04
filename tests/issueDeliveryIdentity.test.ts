@@ -43,7 +43,7 @@ function issueDependencies() {
       payload: request.assessmentType === "ISSUE"
         ? { judgment: { type: "ISSUE", classification: "ready", requestedOutcome: "Fix label", explicitRequirements: [{ statement: "Label reads Save", evidenceRefs: [request.evidenceRefs[0]!] }], evidenceRefs: [request.evidenceRefs[0]!], unknowns: [] }, claims: [], assumptions: [], unknowns: [], recommendations: [], knowledgeGaps: [] }
         : semanticPayload(request),
-      paseoSession: { provider: "opencode", agentId: `issue-identity-${request.assessmentType}`, transport: "sdk" }
+      paseoSession: { provider: "codex", agentId: `issue-identity-${request.assessmentType}`, transport: "sdk" }
     }) } })
   };
   return { semanticRuntime, planner: { plan: async (): Promise<IssueIntakePlan> => plan } };

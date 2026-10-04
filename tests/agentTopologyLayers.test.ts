@@ -93,13 +93,13 @@ describe("agent topology", () => {
     }
   });
 
-  it("gives OpenCode DeepSeek V4 Flash the max thinking variant and durable CHANGE contracts in the orchestration preset", async () => {
+  it("gives OpenCode Muse Spark the max thinking variant and durable CHANGE contracts in the orchestration preset", async () => {
     const root = await fixture('{"version":1,"extends":["aeh:orchestration"]}');
     const topology = resolveAgentTopology(await loadAgentTopologySource(root, config), "balanced");
     const selection = executionSelectionForAgent(topology, "reviewer");
     expect(selection.runtimeAdapter).toBe("opencode");
     expect(selection.modelAlias).toBe("workhorse");
-    expect(selection.modelName).toBe("mimo-v2.6-flash");
+    expect(selection.modelName).toBe("muse-spark-1.3-contributor");
     expect(selection.variant).toBe("max");
     expect(selection.runtimeCapabilities.variantSelection).toBe(true);
     expect(executionSelectionForAgent(topology, "explorer").outputContract).toBe("explorer");

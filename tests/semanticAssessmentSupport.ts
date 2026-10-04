@@ -15,13 +15,13 @@ import type { AgentTopologySource } from "../src/agents/types.js";
 export const semanticAssessorTopologySource: AgentTopologySource = {
   version: 1,
   runtimes: {
-    opencode: {
-      adapter: "opencode",
-      paseoProvider: "opencode",
-      capabilities: { modelSelection: true, structuredOutput: true, runtimeConfigInjection: true }
+    codex: {
+      adapter: "codex",
+      paseoProvider: "codex",
+      capabilities: { modelSelection: true, variantSelection: true, structuredOutput: true, runtimeConfigInjection: true, sessions: true }
     }
   },
-  models: { assessorModel: { runtime: "opencode", provider: "opencode-go", model: "gpt-6-luna" } },
+  models: { assessorModel: { runtime: "codex", provider: "openai", model: "gpt-6-luna", variant: "xhigh" } },
   agents: {
     assessor: {
       role: "Semantic Assessor",
@@ -104,7 +104,7 @@ export function semanticTestService(options: {
   const runner = options.runner ?? {
     assess: async ({ request: assessmentRequest }: { request: SemanticAssessmentRequestV1 }) => ({
       payload: options.payload?.(assessmentRequest) ?? semanticPayload(assessmentRequest),
-      paseoSession: { provider: "opencode", agentId: "paseo-semantic-session-1", workspaceId: "workspace-test", transport: "sdk" as const }
+      paseoSession: { provider: "codex", agentId: "paseo-semantic-session-1", workspaceId: "workspace-test", transport: "sdk" as const }
     })
   };
   return createSemanticAssessmentServiceV1({ assessor, runner, policyRevision: semanticCapabilityPolicyRevisionV1, ...(options.cache ? { cache: options.cache } : {}) });

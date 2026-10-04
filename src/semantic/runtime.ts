@@ -61,7 +61,10 @@ export class PaseoSemanticAssessmentRunnerV1 {
   async assess(input: { request: SemanticAssessmentRequestV1; assessor: ResolvedSemanticAssessorV1["identity"]; repair?: { attempt: number; reason: string } }): Promise<SemanticAssessmentRunnerResultV1> {
     if (input.assessor.identityDigest !== this.options.assessor.identity.identityDigest) throw new AehError("SEMANTIC_ASSESSMENT_INVALID", "semantic assessment runner identity changed after AgentTopology resolution.");
     const selection = this.options.assessor.selection;
-    const openCode = compileOpenCodeRuntimeProjection(selection);
+    // Codex assessor (canonical Luna via Codex) does not consume OpenCode runtime projection.
+    // OpenCode projection (including the StructuredOutput allow under the wildcard deny) applies
+    // only to OpenCode-routed participants; Codex turns carry no OPENCODE_CONFIG_CONTENT.
+    const env = selection.runtimeAdapter === "codex" ? {} : compileOpenCodeRuntimeProjection(selection).env;
     const outputSchema = outputJsonSchema("semantic-assessment");
     if (!outputSchema) throw new AehError("SEMANTIC_ASSESSMENT_INVALID", "semantic-assessment structured output schema is unavailable.");
     const binding = input.request.binding;
@@ -84,7 +87,7 @@ export class PaseoSemanticAssessmentRunnerV1 {
       provider: selection.paseoProvider,
       model: selection.modelId,
       ...(boundSemanticThinkingOptionV1(selection.variant, input.request.reasoningRequirement.reasoningClass) ? { thinkingOptionId: boundSemanticThinkingOptionV1(selection.variant, input.request.reasoningRequirement.reasoningClass)! } : {}),
-      env: openCode.env,
+      env,
       systemPrompt: SEMANTIC_ASSESSOR_SYSTEM_PROMPT,
       prompt,
       outputSchema,

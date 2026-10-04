@@ -56,7 +56,7 @@ export function validateExecutionCapabilities(
     const denied = ["read", "write", "shell", "network", "delegate", "review", "validate", "gitWrite"] as const;
     const opened = denied.filter((key) => selection.permissions[key] !== "deny");
     if (opened.length) issues.push(`Semantic Assessor ${selection.logicalAgent} must explicitly deny ${opened.join(", ")}.`);
-    if (transport !== "paseo" || selection.runtimeAdapter !== "opencode" || selection.paseoProvider !== "opencode") issues.push(`Semantic Assessor ${selection.logicalAgent} requires the AEH-managed OpenCode runtime through Paseo.`);
+    if (transport !== "paseo" || selection.runtimeAdapter !== "codex" || selection.paseoProvider !== "codex") issues.push(`Semantic Assessor ${selection.logicalAgent} requires the AEH-managed Codex runtime through Paseo (Luna via Codex).`);
     if (selection.runtimeCapabilities.runtimeConfigInjection !== true || selection.runtimeCapabilities.structuredOutput !== true || selection.runtimeCapabilities.modelSelection !== true) issues.push(`Semantic Assessor ${selection.logicalAgent} runtime must support AEH permission projection, topology model selection, and structured output.`);
     if (selection.nativeAgent || selection.skills.length || selection.mcps.length || selection.args.length) issues.push(`Semantic Assessor ${selection.logicalAgent} cannot select native agents, skills, MCP servers, or runtime arguments.`);
   }

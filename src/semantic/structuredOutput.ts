@@ -50,9 +50,17 @@ export const semanticStructuredOutputCapabilityEvidenceV1 = {
  * (`<provider>/<model>`). A model absent here is uncertified and cannot serve the Semantic
  * Assessor. Selection happens before execution and the resolved model remains part of the
  * assessor identity provenance.
+ *
+ * PARTIAL MODEL_ROUTING_MIGRATION (owner-approved): the canonical Semantic Assessor route is
+ * Luna via Codex (`openai/gpt-6-luna`, runtime codex). The superseded OpenCode-routed Luna
+ * pairing (`opencode-go/gpt-6-luna`) was removed: stale assessor topologies using it fail with
+ * UNSUPPORTED_LEGACY_ASSESSOR_ROUTING (see src/agents/config.ts). Muse
+ * (`opencode-go/muse-spark-1.3-contributor`) is intentionally NOT certified for semantic
+ * assessment (failed Muse qualification evidence is preserved out-of-tree; see
+ * docs/V0.4.13.md requalification path). No silent fallback is performed.
  */
 export const semanticStructuredOutputCapabilitiesV1: Readonly<Record<string, SemanticStructuredOutputCapabilityV1>> = {
-  "opencode-go/gpt-6-luna": { level: "SCHEMA_BOUND_TOOL_CALL", trials: 4, failures: 0, medianMs: 6_400 },
+  "openai/gpt-6-luna": { level: "SCHEMA_BOUND_TOOL_CALL", trials: 4, failures: 0, medianMs: 6_400, note: "Owner-approved Codex route. Probe basis: S13 OpenCode-channel matrix (4/4 canonical schema-valid) for gpt-6-luna; Codex-channel requalification is tracked as a bounded follow-up (see docs/V0.4.13.md). Fail-closed: uncertified models are refused." },
   "opencode-go/deepseek-v4.1-flash": { level: "SCHEMA_BOUND_TOOL_CALL", trials: 2, failures: 0, medianMs: 11_418 },
   "opencode-go/kimi-k3": { level: "SCHEMA_BOUND_TOOL_CALL", trials: 2, failures: 0, medianMs: 12_932 },
   "opencode-go/glm-5.3": { level: "SCHEMA_BOUND_TOOL_CALL", trials: 2, failures: 0, medianMs: 105_000, note: "slow (81-129 s per trial)" },

@@ -128,8 +128,9 @@ const taskSchema = z.object({
   impact: z.object({ forbiddenEdges: z.array(z.string()).optional(), forbiddenNodes: z.array(z.string()).optional(), allowedCommunities: z.array(z.string()).optional() }).optional(), repair: z.object({ maxAttempts: z.number().int().nonnegative().optional() }).optional(), verification: z.object({ commands: z.array(validationCommandSchema).optional(), validators: z.array(validatorSpecSchema).optional(), capabilities: z.array(z.string().min(1)).optional() }).optional()
 }).strict();
 export async function loadProjectConfig(root: string): Promise<HarnessProjectConfig> {
-  const source = YAML.parse(await fs.readFile(path.join(root, ".harness", "project.yaml"), "utf8")) as { orchestration?: { worker?: { timeoutSeconds?: unknown } } };
+  const source = YAML.parse(await fs.readFile(path.join(root, ".harness", "project.yaml"), "utf8")) as { orchestration?: { worker?: { timeoutSeconds?: unknown; model?: unknown } } };
   if (source?.orchestration?.worker?.timeoutSeconds !== undefined) throw new Error("UNSUPPORTED_LEGACY_WORKER_TIMEOUT: remove orchestration.worker.timeoutSeconds and configure orchestration.operations.liveness providerTurnDeadlineMs, progressLeaseMs, and hardDeadlineMs.");
+  if (typeof source?.orchestration?.worker?.model === "string" && source.orchestration.worker.model.toLowerCase().includes("mimo")) throw new Error("UNSUPPORTED_LEGACY_WORKER_MODEL: orchestration.worker.model still names MiMo-V2.6-Flash. Remove the override to inherit the canonical Muse workhorse (runtime opencode, provider opencode-go, model muse-spark-1.3-contributor) or set it explicitly. See docs/V0.4.13.md model-routing migration.");
   return projectSchema.parse(source) as HarnessProjectConfig;
 }
 export async function loadTaskContract(root: string, taskId: string, config: HarnessProjectConfig): Promise<TaskContract> { const file = path.join(root, config.sdd?.contractsDir ?? ".harness/contracts", `${taskId}.yaml`); return taskSchema.parse(YAML.parse(await fs.readFile(file, "utf8"))) as TaskContract; }

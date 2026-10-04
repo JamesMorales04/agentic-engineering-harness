@@ -18,6 +18,8 @@ export const providerTurnUsageObservationV2Schema = z.object({
   turnIndex: z.number().int().nonnegative().nullable(),
   runtimeSessionId: z.string().min(1).nullable(),
   provider: z.string().min(1),
+  model: z.string().min(1).nullable().optional(),
+  variant: z.string().min(1).nullable().optional(),
   at: nullableTime,
   startedAt: nullableTime.optional(),
   finishedAt: nullableTime.optional(),
@@ -31,6 +33,14 @@ export const providerTurnUsageObservationV2Schema = z.object({
   usageKnown: z.boolean()
 }).strict();
 export type ProviderTurnUsageObservationV2 = z.infer<typeof providerTurnUsageObservationV2Schema>;
+
+export const modelFallbackObservationV2Schema = z.object({
+  fallbackUsed: z.boolean(),
+  from: z.object({ modelAlias: z.string().min(1), modelId: z.string().min(1), runtimeName: z.string().min(1), paseoProvider: z.string().min(1), variant: z.string().min(1).nullable().optional() }).strict().optional(),
+  to: z.object({ modelAlias: z.string().min(1), modelId: z.string().min(1), runtimeName: z.string().min(1), paseoProvider: z.string().min(1), variant: z.string().min(1).nullable().optional() }).strict().optional(),
+  reason: z.string().min(1).optional()
+}).strict();
+export type ModelFallbackObservationV2 = z.infer<typeof modelFallbackObservationV2Schema>;
 
 export const participantUsageObservationV2Schema = z.object({
   version: z.literal(2),
@@ -47,6 +57,7 @@ export const participantUsageObservationV2Schema = z.object({
   phase: z.string().min(1),
   provider: z.string().min(1),
   model: z.string().min(1).nullable(),
+  variant: z.string().min(1).nullable().optional(),
   runtimeSessionId: z.string().min(1).nullable(),
   turnCount: z.number().int().nonnegative().nullable(),
   inputTokens: nullableCount,
@@ -64,7 +75,8 @@ export const participantUsageObservationV2Schema = z.object({
   finishedAt: nullableTime,
   durationMs: nullableCount,
   resultStatus: z.enum(["SUCCEEDED", "FAILED", "BLOCKED", "UNKNOWN"]),
-  turnUsage: z.array(providerTurnUsageObservationV2Schema)
+  turnUsage: z.array(providerTurnUsageObservationV2Schema),
+  fallback: modelFallbackObservationV2Schema.optional()
 }).strict();
 export type ParticipantUsageObservationV2 = z.infer<typeof participantUsageObservationV2Schema>;
 
@@ -276,13 +288,21 @@ export function participantUsageObservationFromSession(input: {
   providerTelemetry?: ProviderTelemetryEvidenceV2;
   lastActivityAt?: string;
   resultStatus?: ParticipantUsageObservationV2["resultStatus"];
+  variant?: string | null;
+  fallback?: ModelFallbackObservationV2;
 }): ParticipantUsageObservationV2 | undefined {
   const binding = input.session.executionBinding;
   if (!binding || binding.participantId !== input.participantId || binding.operationId !== input.operationId
     || binding.candidateRevision !== input.candidate.revision || binding.candidateDigest !== input.candidate.identityDigest) return undefined;
 
   const telemetry = input.providerTelemetry;
-  const turns = (telemetry?.turns ?? []).map((turn) => ({ ...turn, runtimeSessionId: binding.runtime.sessionId }));
+  const sessionModel = input.session.model ?? binding.runtime.model;
+  const turns = (telemetry?.turns ?? []).map((turn) => ({
+    ...turn,
+    runtimeSessionId: binding.runtime.sessionId,
+    ...(turn.model === undefined ? { model: sessionModel ?? null } : {}),
+    ...(turn.variant === undefined && input.variant !== undefined ? { variant: input.variant } : {})
+  }));
   let usageSource: ParticipantUsageObservationV2["usageSource"] = "UNKNOWN";
   let usageCoverage: ParticipantUsageObservationV2["usageCoverage"] = "UNKNOWN";
   let metrics: UsageMetrics = {};
@@ -320,6 +340,7 @@ export function participantUsageObservationFromSession(input: {
   const finishedAt = validTimestamp(input.session.finishedAt);
   const durationMs = startedAt && finishedAt ? Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt)) : null;
   const usageKnown = usageCoverage !== "UNKNOWN" && Object.values(metrics).some((value) => value !== undefined);
+  const fallback: ModelFallbackObservationV2 = input.fallback ?? { fallbackUsed: false };
   const body = {
     version: 2 as const,
     operationId: input.operationId,
@@ -334,6 +355,7 @@ export function participantUsageObservationFromSession(input: {
     phase: input.phase,
     provider: telemetry?.turns[0]?.provider ?? input.session.provider,
     model: input.session.model ?? binding.runtime.model,
+    ...(input.variant !== undefined ? { variant: input.variant } : {}),
     runtimeSessionId: input.session.id ?? binding.runtime.sessionId,
     turnCount,
     inputTokens: metrics.inputTokens ?? null,
@@ -351,7 +373,8 @@ export function participantUsageObservationFromSession(input: {
     finishedAt,
     durationMs,
     resultStatus: input.resultStatus ?? (input.session.exitCode === 0 ? "SUCCEEDED" as const : "FAILED" as const),
-    turnUsage: turns
+    turnUsage: turns,
+    fallback
   };
   return participantUsageObservationV2Schema.parse({ ...body, observationId: sha256Canonical(body) });
 }
@@ -808,7 +831,7 @@ function retrySequenceRecovered(first: ToolCallObservationV2, tools: ToolCallObs
 function deduplicateParticipantUsage(observations: ParticipantUsageObservationV2[]): ParticipantUsageObservationV2[] {
   const groups = new Map<string, ParticipantUsageObservationV2[]>();
   for (const item of observations) {
-    const key = [item.participantId, item.generation ?? "", item.runtimeSessionId ?? "", item.provider, item.model ?? ""].join("\0");
+    const key = [item.participantId, item.generation ?? "", item.runtimeSessionId ?? "", item.provider, item.model ?? "", item.variant ?? ""].join("\0");
     const group = groups.get(key) ?? [];
     group.push(item);
     groups.set(key, group);

@@ -178,7 +178,7 @@ describe("managed Paseo runtime", () => {
       {
         cwd: "/repo",
         provider: "opencode",
-        model: "opencode-go/MiMo-V2.6-Flash",
+        model: "opencode-go/muse-spark-1.3-contributor",
         modeId: "aeh-code-quality-reviewer",
         modeSource: "aeh-managed",
         env: { OPENCODE_CONFIG_CONTENT: "{\"default_agent\":\"aeh-code-quality-reviewer\"}" },
@@ -239,7 +239,7 @@ describe("managed Paseo runtime", () => {
         {
           cwd: "/repo",
           provider: "opencode",
-          model: "opencode-go/MiMo-V2.6-Flash",
+          model: "opencode-go/muse-spark-1.3-contributor",
           modeId: "company-reviewer",
           modeSource: "explicit",
           env: { OPENCODE_CONFIG_CONTENT: "{}" },

@@ -194,7 +194,7 @@ describe("Paseo SDK adapter", () => {
       cwd: "/repo",
       workspaceId: "workspace-op",
       provider: "opencode",
-      model: "opencode-go/MiMo-V2.6-Flash",
+      model: "opencode-go/muse-spark-1.3-contributor",
       modeId: "aeh-code-quality-reviewer",
       thinkingOptionId: "high",
       env: { OPENCODE_CONFIG_CONTENT: inline },
@@ -208,7 +208,7 @@ describe("Paseo SDK adapter", () => {
         workspaceId: "workspace-op",
         env: { OPENCODE_CONFIG_CONTENT: inline },
         config: {
-          provider: "opencode/opencode-go/MiMo-V2.6-Flash",
+          provider: "opencode/opencode-go/muse-spark-1.3-contributor",
           modeId: "aeh-code-quality-reviewer",
           thinkingOptionId: "high"
         }
@@ -243,7 +243,7 @@ describe("Paseo SDK adapter", () => {
     const result = await createPaseoSdkAgentWithClient(client as never, {
       cwd: "/repo",
       provider: "opencode",
-      model: "MiMo-V2.6-Flash",
+      model: "muse-spark-1.3-contributor",
       title: "worker",
       prompt: "Implement the bounded task",
       outputSchema: { type: "object" },
@@ -255,7 +255,7 @@ describe("Paseo SDK adapter", () => {
         cwd: "/repo",
         initialPrompt: "Implement the bounded task",
         outputSchema: { type: "object" },
-        config: { provider: "opencode/MiMo-V2.6-Flash" }
+        config: { provider: "opencode/muse-spark-1.3-contributor" }
       })
     );
     expect(received).not.toHaveProperty("prompt");

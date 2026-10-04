@@ -26,8 +26,9 @@ const routingSchema = z.object({ id: z.string().min(1), priority: z.number().opt
 const recoveryStepSchema = z.object({ action: z.enum(["same-agent", "reroute", "lead", "stop"]) }).strict();
 const councilSchema = z.object({ members: z.array(z.object({ model: z.string(), agent: z.string().optional() })), executionMode: z.enum(["parallel", "sequential"]).optional() });
 const removeSchema = z.object({ runtimes: z.array(z.string()).optional(), models: z.array(z.string()).optional(), agents: z.array(z.string()).optional(), profiles: z.array(z.string()).optional(), routing: z.array(z.string()).optional(), councils: z.array(z.string()).optional() });
-const layerSchema = z.object({ version: z.literal(1), extends: z.array(z.string().min(1)).optional(), activeProfile: z.string().optional(), skillRoots: z.array(z.string()).optional(), runtimes: z.record(z.string(), runtimeOverrideSchema).optional(), models: z.record(z.string(), modelOverrideSchema).optional(), agents: z.record(z.string(), agentOverrideSchema).optional(), profiles: z.record(z.string(), profileSchema).optional(), routing: z.array(routingSchema).optional(), recovery: z.record(z.string(), z.array(recoveryStepSchema)).optional(), councils: z.record(z.string(), councilSchema).optional(), remove: removeSchema.optional() });
-const sourceSchema = z.object({ version: z.literal(1), activeProfile: z.string().optional(), skillRoots: z.array(z.string()).optional(), runtimes: z.record(z.string(), runtimeSchema), models: z.record(z.string(), modelSchema), agents: z.record(z.string(), agentSchema), profiles: z.record(z.string(), profileSchema).optional(), routing: z.array(routingSchema).optional(), recovery: z.record(z.string(), z.array(recoveryStepSchema)).optional(), councils: z.record(z.string(), councilSchema).optional() });
+const modelFallbackSchema = z.object({ from: z.string().min(1), to: z.string().min(1), reason: z.string().min(1), when: z.array(z.string().min(1)).optional() }).strict();
+const layerSchema = z.object({ version: z.literal(1), extends: z.array(z.string().min(1)).optional(), activeProfile: z.string().optional(), skillRoots: z.array(z.string()).optional(), runtimes: z.record(z.string(), runtimeOverrideSchema).optional(), models: z.record(z.string(), modelOverrideSchema).optional(), agents: z.record(z.string(), agentOverrideSchema).optional(), profiles: z.record(z.string(), profileSchema).optional(), routing: z.array(routingSchema).optional(), recovery: z.record(z.string(), z.array(recoveryStepSchema)).optional(), councils: z.record(z.string(), councilSchema).optional(), modelFallback: z.record(z.string(), modelFallbackSchema).optional(), remove: removeSchema.optional() });
+const sourceSchema = z.object({ version: z.literal(1), activeProfile: z.string().optional(), skillRoots: z.array(z.string()).optional(), runtimes: z.record(z.string(), runtimeSchema), models: z.record(z.string(), modelSchema), agents: z.record(z.string(), agentSchema), profiles: z.record(z.string(), profileSchema).optional(), routing: z.array(routingSchema).optional(), recovery: z.record(z.string(), z.array(recoveryStepSchema)).optional(), councils: z.record(z.string(), councilSchema).optional(), modelFallback: z.record(z.string(), modelFallbackSchema).optional() });
 
 export async function loadAgentTopologySource(root: string, config: HarnessProjectConfig): Promise<AgentTopologySource> {
   const file = path.resolve(root, config.agents?.configPath ?? ".harness/agents.source.jsonc");
@@ -63,9 +64,47 @@ export function composeAgentTopologyLayers(base: AgentTopologyLayer, overlay: Ag
     profiles: mergeRecord(base.profiles, overlay.profiles, mergeProfile),
     routing: mergeRouting(base.routing ?? [], overlay.routing ?? []),
     recovery: { ...(base.recovery ?? {}), ...(overlay.recovery ?? {}) },
-    councils: { ...(base.councils ?? {}), ...(overlay.councils ?? {}) }
+    councils: { ...(base.councils ?? {}), ...(overlay.councils ?? {}) },
+    modelFallback: { ...(base.modelFallback ?? {}), ...(overlay.modelFallback ?? {}) }
   };
+  // A stale OpenCode-routed Luna assessor pairing (runtime opencode + provider opencode-go +
+  // model gpt-6-luna) is a hidden invalid default. Fail closed with an explicit migration error
+  // instead of silently accepting it: the canonical assessor is Luna via Codex
+  // (runtime codex + provider openai + model gpt-6-luna).
+  assertNoStaleAssessorPairing(merged.models);
+  assertNoStaleWorkhorseModel(merged.models);
   return applyRemovals(merged, overlay.remove);
+}
+
+function isStaleOpenCodeLunaModel(model: ModelOverride | undefined): boolean {
+  if (!model?.model) return false;
+  const name = String(model.model).toLowerCase();
+  const provider = String(model.provider ?? "").toLowerCase();
+  const runtime = String((model as { runtime?: unknown }).runtime ?? "").toLowerCase();
+  return name === "gpt-6-luna" && (provider === "opencode-go" || runtime === "opencode");
+}
+
+function isStaleMimoWorkhorseModel(model: ModelOverride | undefined): boolean {
+  if (!model?.model) return false;
+  return String(model.model).toLowerCase().includes("mimo");
+}
+
+function assertNoStaleAssessorPairing(models: Record<string, ModelOverride> | undefined): void {
+  const candidate = models?.["structured-assessor"];
+  if (isStaleOpenCodeLunaModel(candidate)) {
+    throw new Error(
+      "UNSUPPORTED_LEGACY_ASSESSOR_ROUTING: models.structured-assessor uses the superseded OpenCode-routed GPT-6 Luna pairing (runtime opencode + provider opencode-go + model gpt-6-luna). Migrate to the canonical Codex Luna routing (runtime codex, provider openai, model gpt-6-luna, variant xhigh). See docs/V0.4.13.md model-routing migration."
+    );
+  }
+}
+
+function assertNoStaleWorkhorseModel(models: Record<string, ModelOverride> | undefined): void {
+  const candidate = models?.["workhorse"];
+  if (isStaleMimoWorkhorseModel(candidate)) {
+    throw new Error(
+      "UNSUPPORTED_LEGACY_WORKHORSE_MODEL: models.workhorse still names MiMo-V2.6-Flash. Migrate to the canonical Muse workhorse (runtime opencode, provider opencode-go, model muse-spark-1.3-contributor). See docs/V0.4.13.md model-routing migration."
+    );
+  }
 }
 
 function mergeRuntime(base: RuntimeOverride | undefined, overlay: RuntimeOverride): RuntimeOverride { return { ...(base ?? {}), ...overlay, capabilities: { ...(base?.capabilities ?? {}), ...(overlay.capabilities ?? {}) } }; }
@@ -94,13 +133,35 @@ function matchesAny(value: string, patterns: string[]): boolean { return pattern
 
 export async function loadResolvedAgentTopology(root: string, config: HarnessProjectConfig, profileOverride?: string): Promise<ResolvedAgentTopology> { return resolveAgentTopology(await loadAgentTopologySource(root, config), profileOverride ?? config.agents?.activeProfile); }
 export function resolveAgentTopology(source: AgentTopologySource, profileOverride?: string): ResolvedAgentTopology {
+  // Fail closed on stale shipped pairings even when a project overlay bypasses layer composition
+  // (e.g. direct source fixtures in tests). No silent compat shims.
+  if (isStaleOpenCodeLunaModel(source.models?.["structured-assessor"])) {
+    throw new Error(
+      "UNSUPPORTED_LEGACY_ASSESSOR_ROUTING: models.structured-assessor uses the superseded OpenCode-routed GPT-6 Luna pairing (runtime opencode + provider opencode-go + model gpt-6-luna). Migrate to the canonical Codex Luna routing (runtime codex, provider openai, model gpt-6-luna, variant xhigh). See docs/V0.4.13.md model-routing migration."
+    );
+  }
+  if (isStaleMimoWorkhorseModel(source.models?.["workhorse"])) {
+    throw new Error(
+      "UNSUPPORTED_LEGACY_WORKHORSE_MODEL: models.workhorse still names MiMo-V2.6-Flash. Migrate to the canonical Muse workhorse (runtime opencode, provider opencode-go, model muse-spark-1.3-contributor). See docs/V0.4.13.md model-routing migration."
+    );
+  }
   const profileName = profileOverride ?? source.activeProfile; const profile = profileName ? source.profiles?.[profileName] : undefined; if (profileName && !profile) throw new Error(`Unknown agent profile: ${profileName}`);
   const models = structuredClone(source.models) as Record<string, ModelDefinition>; for (const [alias, override] of Object.entries(profile?.models ?? {})) { if (!models[alias]) throw new Error(`Profile ${profileName} overrides unknown model alias @${alias}`); models[alias] = { ...models[alias], ...override, options: { ...(models[alias].options ?? {}), ...(override.options ?? {}) } } as ModelDefinition; }
+  if (isStaleOpenCodeLunaModel(models["structured-assessor"])) {
+    throw new Error(
+      "UNSUPPORTED_LEGACY_ASSESSOR_ROUTING: models.structured-assessor uses the superseded OpenCode-routed GPT-6 Luna pairing (runtime opencode + provider opencode-go + model gpt-6-luna). Migrate to the canonical Codex Luna routing (runtime codex, provider openai, model gpt-6-luna, variant xhigh). See docs/V0.4.13.md model-routing migration."
+    );
+  }
+  if (isStaleMimoWorkhorseModel(models["workhorse"])) {
+    throw new Error(
+      "UNSUPPORTED_LEGACY_WORKHORSE_MODEL: models.workhorse still names MiMo-V2.6-Flash. Migrate to the canonical Muse workhorse (runtime opencode, provider opencode-go, model muse-spark-1.3-contributor). See docs/V0.4.13.md model-routing migration."
+    );
+  }
   const agents = structuredClone(source.agents) as Record<string, AgentDefinition>; const overrides = Object.entries(profile?.agents ?? {}).sort(([a], [b]) => wildcardCount(b) - wildcardCount(a)); for (const [pattern, override] of overrides) { const matched = Object.keys(agents).filter((name) => minimatch(name, pattern)); if (!matched.length && !/[?*\[]/.test(pattern)) throw new Error(`Profile ${profileName} overrides unknown agent ${pattern}`); for (const name of matched) agents[name] = mergeAgent(agents[name], override); }
   const resolvedModels: Record<string, ResolvedModelDefinition> = {}; for (const [alias, model] of Object.entries(models)) { if (!source.runtimes[model.runtime]) throw new Error(`Model @${alias} references unknown runtime ${model.runtime}`); const id = model.provider && !model.model.includes("/") ? `${model.provider}/${model.model}` : model.model; resolvedModels[alias] = { ...model, alias, id }; }
   const resolvedAgents: Record<string, ResolvedAgentDefinition> = {}; for (const [name, agent] of Object.entries(agents)) { const modelRef = agent.execution.model; let model: ResolvedModelDefinition; if (modelRef.startsWith("@")) { const alias = modelRef.slice(1); model = resolvedModels[alias]; if (!model) throw new Error(`Agent ${name} references unknown model alias ${modelRef}`); } else { const runtimeName = agent.execution.runtime; if (!runtimeName) throw new Error(`Agent ${name} uses direct model ${modelRef} and must set execution.runtime`); const provider = modelRef.includes("/") ? modelRef.split("/")[0] : undefined; model = { alias: modelRef, id: modelRef, runtime: runtimeName, provider, model: modelRef }; }
     const runtimeName = agent.execution.runtime ?? model.runtime; if (runtimeName !== model.runtime && modelRef.startsWith("@")) throw new Error(`Agent ${name} runtime ${runtimeName} conflicts with ${modelRef} runtime ${model.runtime}`); const runtime = source.runtimes[runtimeName]; if (!runtime) throw new Error(`Agent ${name} references unknown runtime ${runtimeName}`); if (agent.execution.nativeAgent && runtime.capabilities?.nativeAgent === false) throw new Error(`Runtime ${runtimeName} does not support nativeAgent but ${name} configures ${agent.execution.nativeAgent}`); resolvedAgents[name] = { ...agent, name, execution: { ...agent.execution, runtime: runtimeName, variant: agent.execution.variant ?? model.variant, transport: agent.execution.transport ?? "inherit" }, runtime: { ...runtime, name: runtimeName }, model }; }
-  return { version: 1, profile: profileName, skillRoots: source.skillRoots ?? [".harness/skills"], runtimes: source.runtimes, models: resolvedModels, agents: resolvedAgents, routing: source.routing ?? [], recovery: source.recovery ?? {}, councils: source.councils ?? {} };
+  return { version: 1, profile: profileName, skillRoots: source.skillRoots ?? [".harness/skills"], runtimes: source.runtimes, models: resolvedModels, agents: resolvedAgents, routing: source.routing ?? [], recovery: source.recovery ?? {}, councils: source.councils ?? {}, ...(source.modelFallback ? { modelFallback: structuredClone(source.modelFallback) } : {}) };
 }
 function mergeAgent(base: AgentDefinition, override: AgentOverride): AgentDefinition { return { ...base, ...override, execution: { ...base.execution, ...(override.execution ?? {}) }, permissions: { ...(base.permissions ?? {}), ...(override.permissions ?? {}) }, contextRequirements: { ...(base.contextRequirements ?? {}), ...(override.contextRequirements ?? {}) } } as AgentDefinition; }
 function wildcardCount(value: string): number { return [...value].filter((char) => char === "*" || char === "?").length; }

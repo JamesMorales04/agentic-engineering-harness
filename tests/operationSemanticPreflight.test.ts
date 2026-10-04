@@ -147,8 +147,9 @@ describe("semantic route/assurance preflight before detached operation creation"
     expect(prompt.binding).not.toHaveProperty("operationId");
     expect(prompt.binding).not.toHaveProperty("candidateDigest");
 
-    const runtimeConfig = JSON.parse(launchOptions.env?.OPENCODE_CONFIG_CONTENT ?? "{}") as { permission?: Record<string, string> };
-    expect(runtimeConfig.permission).toMatchObject({ "*": "deny", read: "deny", edit: "deny", webfetch: "deny", websearch: "deny", task: "deny" });
+    // Codex assessor carries no OpenCode runtime projection.
+    expect(launchOptions.provider).toBe("codex");
+    expect(launchOptions.env?.OPENCODE_CONFIG_CONTENT).toBeUndefined();
   });
 
   it("resolves the injected preflight before any operation record or spawn and persists the typed triage and binding", async () => {

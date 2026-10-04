@@ -25,8 +25,8 @@ describe("AEH-managed OpenCode identity through Paseo", () => {
       paseoProvider: "opencode",
       runtimeAdapter: "opencode",
       runtimeName: "opencode",
-      modelName: "MiMo-V2.6-Flash",
-      modelId: "opencode-go/MiMo-V2.6-Flash",
+      modelName: "muse-spark-1.3-contributor",
+      modelId: "opencode-go/muse-spark-1.3-contributor",
       profile: "balanced",
       skills: [],
       mcps: [],
@@ -98,7 +98,7 @@ describe("AEH-managed OpenCode identity through Paseo", () => {
           OPENCODE_CONFIG_CONTENT: expect.any(String)
         }),
         config: expect.objectContaining({
-          provider: "opencode/opencode-go/MiMo-V2.6-Flash"
+          provider: "opencode/opencode-go/muse-spark-1.3-contributor"
         })
       })
     );
@@ -123,8 +123,8 @@ describe("AEH-managed OpenCode identity through Paseo", () => {
       paseoProvider: "opencode",
       runtimeAdapter: "opencode",
       runtimeName: "opencode",
-      modelName: "MiMo-V2.6-Flash",
-      modelId: "opencode-go/MiMo-V2.6-Flash",
+      modelName: "muse-spark-1.3-contributor",
+      modelId: "opencode-go/muse-spark-1.3-contributor",
       nativeAgent: "company-backend-agent",
       skills: [],
       mcps: [],

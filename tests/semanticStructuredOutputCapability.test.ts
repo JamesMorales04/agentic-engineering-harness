@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { resolveAgentTopology } from "../src/agents/config.js";
-import { compileOpenCodeRuntimeProjection } from "../src/agents/permissions.js";
 import { resolveSemanticAssessor } from "../src/semantic/assessment.js";
 import { SEMANTIC_ASSESSOR_SYSTEM_PROMPT } from "../src/semantic/runtime.js";
 import {
@@ -21,34 +20,31 @@ describe("Semantic Assessor structured-output capability policy", () => {
 
   it("certifies only probe-verified models and never treats runtime flags as model proof", () => {
     const certified = certifiedSemanticStructuredOutputModelsV1();
-    expect(certified).toContain("opencode-go/gpt-6-luna");
+    expect(certified).toContain("openai/gpt-6-luna");
+    expect(certified).not.toContain("opencode-go/gpt-6-luna");
     expect(certified).not.toContain("opencode-go/mimo-v2.6-flash");
-    expect(assertSemanticStructuredOutputCapabilityV1("opencode-go/gpt-6-luna").level).toBe("SCHEMA_BOUND_TOOL_CALL");
+    expect(certified).not.toContain("opencode-go/muse-spark-1.3-contributor");
+    expect(assertSemanticStructuredOutputCapabilityV1("openai/gpt-6-luna").level).toBe("SCHEMA_BOUND_TOOL_CALL");
     expect(() => assertSemanticStructuredOutputCapabilityV1("opencode-go/mimo-v2.6-flash")).toThrow(/certified at TEXTUAL_JSON structured-output capability, below the required SCHEMA_BOUND_TOOL_CALL/);
     expect(() => assertSemanticStructuredOutputCapabilityV1("opencode-go/mimo-v2.6-flash")).toThrow(/No silent fallback/);
+    expect(() => assertSemanticStructuredOutputCapabilityV1("opencode-go/muse-spark-1.3-contributor")).toThrow(/UNCERTIFIED/);
     expect(() => assertSemanticStructuredOutputCapabilityV1("vendor/unknown-model")).toThrow(/UNCERTIFIED/);
   });
 
   it("fails assessor resolution closed for an ineligible model instead of falling back", () => {
     const ineligible = structuredClone(semanticAssessorTopologySource);
-    ineligible.models.assessorModel = { runtime: "opencode", provider: "opencode-go", model: "mimo-v2.6-flash" };
-    expect(() => resolveSemanticAssessor(resolveAgentTopology(ineligible))).toThrow(/mimo-v2.6-flash.*below the required SCHEMA_BOUND_TOOL_CALL/);
+    ineligible.models.assessorModel = { runtime: "codex", provider: "openai", model: "muse-spark-1.3-contributor", variant: "xhigh" };
+    expect(() => resolveSemanticAssessor(resolveAgentTopology(ineligible))).toThrow(/below the required SCHEMA_BOUND_TOOL_CALL/);
 
     const certified = resolveSemanticAssessor(resolveAgentTopology(structuredClone(semanticAssessorTopologySource)));
-    expect(certified.identity.modelId).toBe("opencode-go/gpt-6-luna");
+    expect(certified.identity.modelId).toBe("openai/gpt-6-luna");
   });
 
-  it("keeps the OpenCode structured-output tool allowed under the assessor wildcard deny", () => {
+  it("keeps the Codex assessor fail-closed with no OpenCode StructuredOutput projection", () => {
     const assessor = resolveSemanticAssessor(resolveAgentTopology(structuredClone(semanticAssessorTopologySource)));
-    const projection = compileOpenCodeRuntimeProjection(assessor.selection);
-    const permission = projection.config.permission as Record<string, unknown>;
-    expect(permission["*"]).toBe("deny");
-    expect(permission.StructuredOutput).toBe("allow");
-    expect(permission.read).toBe("deny");
-    expect(permission.edit).toBe("deny");
-    expect(permission.bash).toMatchObject({ "*": "deny" });
-    const managed = projection.config.agent as Record<string, { permission: Record<string, unknown> }>;
-    expect(Object.values(managed)[0]?.permission).toMatchObject({ "*": "deny", StructuredOutput: "allow" });
+    expect(assessor.selection.runtimeAdapter).toBe("codex");
+    expect(assessor.selection.paseoProvider).toBe("codex");
+    expect(assessor.identity.modelId).toBe("openai/gpt-6-luna");
   });
 
   it("carries the canonical output discipline in the assessor prompt builder", () => {

@@ -131,21 +131,19 @@ describe("Paseo Semantic Assessor runtime", () => {
     const options = launch.mock.calls[0]?.[1];
     expect(options).toBeDefined();
     expect(launch.mock.calls[0]?.[0]).toBe(root);
-    expect(options?.provider).toBe("opencode");
-    expect(options?.model).toBe("opencode-go/gpt-6-luna");
+    expect(options?.provider).toBe("codex");
+    expect(options?.model).toBe("openai/gpt-6-luna");
     expect(options?.outputSchema).toBeDefined();
     expect(options?.labels).toMatchObject({ "aeh.kind": "semantic-assessment", "aeh.role": "Semantic Assessor", "aeh.semantic.assessment.type": "STACK" });
     expect(options?.labels).not.toHaveProperty("aeh.task");
     expect(options?.labels).not.toHaveProperty("aeh.participant");
     expect(options?.labels).not.toHaveProperty("aeh.output.contract");
-    const runtimeConfig = JSON.parse(options?.env?.OPENCODE_CONFIG_CONTENT ?? "{}") as Record<string, unknown>;
-    expect(runtimeConfig.permission).toMatchObject({ "*": "deny", read: "deny", edit: "deny", webfetch: "deny", websearch: "deny", task: "deny", skill: "deny" });
-    expect(runtimeConfig.mcp).toBeUndefined();
-    expect(runtimeConfig.tools).toBeUndefined();
+    // Codex assessor carries no OpenCode runtime projection.
+    expect(options?.env?.OPENCODE_CONFIG_CONTENT).toBeUndefined();
     expect(assessment).toMatchObject({
       assessmentType: "STACK",
-      assessor: { logicalAgent: "assessor", modelId: "opencode-go/gpt-6-luna" },
-      paseoSession: { provider: "opencode", agentId: "paseo-actual-session-7", workspaceId: "paseo-workspace-4", transport: "sdk" },
+      assessor: { logicalAgent: "assessor", modelId: "openai/gpt-6-luna" },
+      paseoSession: { provider: "codex", agentId: "paseo-actual-session-7", workspaceId: "paseo-workspace-4", transport: "sdk" },
       cacheDisposition: "FRESH"
     });
     expect(await fs.readFile(path.join(root, ".harness", "cache", "semantic-assessments-v1", `${assessment.cacheIdentity}.json`), "utf8")).toContain("paseo-actual-session-7");

@@ -14,8 +14,13 @@ it("resolves balanced orchestration reviewers to the intended models", async () 
   const topology = resolveAgentTopology(await loadAgentTopologySource(root, config), "balanced");
   for (const name of ["reviewer", "implementer"]) {
     const selection = executionSelectionForAgent(topology, name);
-    expect([selection.runtimeAdapter, selection.modelName, selection.variant]).toEqual(["opencode", "mimo-v2.6-flash", "max"]);
+    expect([selection.runtimeAdapter, selection.modelName, selection.variant]).toEqual(["opencode", "muse-spark-1.3-contributor", "max"]);
   }
-  const architecture = executionSelectionForAgent(topology, "repairer");
+  // Normal repairer resolves to the Muse workhorse; difficult-diagnosis escalation and
+  // high-assurance review (maximum-quality) resolve to Luna via Codex.
+  const repairer = executionSelectionForAgent(topology, "repairer");
+  expect([repairer.runtimeAdapter, repairer.modelName]).toEqual(["opencode", "muse-spark-1.3-contributor"]);
+  const maxQuality = resolveAgentTopology(await loadAgentTopologySource(root, config), "maximum-quality");
+  const architecture = executionSelectionForAgent(maxQuality, "repairer");
   expect([architecture.runtimeAdapter, architecture.modelName, architecture.variant]).toEqual(["codex", "gpt-6-luna", "xhigh"]);
 });

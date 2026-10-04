@@ -55,9 +55,9 @@ function testAssessor(): ResolvedSemanticAssessorV1 {
     modelAlias: "test-model",
     modelId: "test-model-id",
     modelName: "Test Model",
-    runtimeName: "opencode",
-    runtimeAdapter: "opencode",
-    paseoProvider: "opencode"
+    runtimeName: "codex",
+    runtimeAdapter: "codex",
+    paseoProvider: "codex"
   };
   const selection: AgentExecutionSelection = {
     logicalAgent: identityBase.logicalAgent,
@@ -110,7 +110,7 @@ function runnerFor(payload: (request: SemanticAssessmentRequestV1) => unknown, o
   return {
     assess: async ({ request }) => {
       onRequest?.(request);
-      return { payload: payload(request), paseoSession: { provider: "opencode", agentId: "paseo-semantic-test-1", workspaceId: "workspace-test", transport: "sdk" } };
+      return { payload: payload(request), paseoSession: { provider: "codex", agentId: "paseo-semantic-test-1", workspaceId: "workspace-test", transport: "sdk" } };
     }
   };
 }
@@ -136,7 +136,7 @@ function stubAssessment(request: SemanticAssessmentRequestV1, judgment: Semantic
     evidenceReceipts: structuredClone(request.evidenceReceipts),
     evidenceDigest: semanticAssessmentEvidenceDigest(request),
     assessor: assessor.identity,
-    paseoSession: { provider: "opencode", agentId: "paseo-semantic-test-1", transport: "sdk" },
+    paseoSession: { provider: "codex", agentId: "paseo-semantic-test-1", transport: "sdk" },
     assessmentDigest: sha256Canonical({ stub: "assessment" }),
     cacheIdentity: sha256Canonical({ stub: "cache" }),
     cacheDisposition: "FRESH",

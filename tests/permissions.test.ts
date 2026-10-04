@@ -111,8 +111,8 @@ describe("OpenCode permission projection", () => {
       logicalAgent: "code-quality-reviewer",
       role: "reviewer",
       description: "Review bounded code quality findings.",
-      modelId: "opencode-go/MiMo-V2.6-Flash",
-      modelName: "MiMo-V2.6-Flash",
+      modelId: "opencode-go/muse-spark-1.3-contributor",
+      modelName: "muse-spark-1.3-contributor",
       variant: "high",
       permissions: {
         read: "allow",
@@ -139,7 +139,7 @@ describe("OpenCode permission projection", () => {
     expect(config.agent[binding.agentId]).toEqual(
       expect.objectContaining({
         mode: "primary",
-        model: "opencode-go/MiMo-V2.6-Flash",
+        model: "opencode-go/muse-spark-1.3-contributor",
         variant: "high",
         description: "Review bounded code quality findings.",
         permission: expect.objectContaining({ edit: "deny", read: "allow" })

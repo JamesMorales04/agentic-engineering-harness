@@ -40,6 +40,7 @@ export type FailureType = "PATCH_CONTEXT_MISMATCH" | "TOOL_FAILURE" | "MISSING_C
 export interface RecoveryStep { action: "same-agent" | "reroute" | "lead" | "stop"; }
 export type RecoveryMap = Partial<Record<FailureType, RecoveryStep[]>> & Record<string, RecoveryStep[] | undefined>;
 export interface CouncilDefinition { members: Array<{ model: string; agent?: string }>; executionMode?: "parallel" | "sequential"; }
+export interface ModelFallbackDefinition { from: string; to: string; reason: string; when?: string[]; }
 export interface AgentTopologyRemove { runtimes?: string[]; models?: string[]; agents?: string[]; profiles?: string[]; routing?: string[]; councils?: string[]; }
 export interface AgentTopologyLayer {
   version: 1;
@@ -53,12 +54,13 @@ export interface AgentTopologyLayer {
   routing?: RoutingRule[];
   recovery?: RecoveryMap;
   councils?: Record<string, CouncilDefinition>;
+  modelFallback?: Record<string, ModelFallbackDefinition>;
   remove?: AgentTopologyRemove;
 }
-export interface AgentTopologySource { version: 1; activeProfile?: string; skillRoots?: string[]; runtimes: Record<string, RuntimeDefinition>; models: Record<string, ModelDefinition>; agents: Record<string, AgentDefinition>; profiles?: Record<string, AgentProfile>; routing?: RoutingRule[]; recovery?: RecoveryMap; councils?: Record<string, CouncilDefinition>; }
+export interface AgentTopologySource { version: 1; activeProfile?: string; skillRoots?: string[]; runtimes: Record<string, RuntimeDefinition>; models: Record<string, ModelDefinition>; agents: Record<string, AgentDefinition>; profiles?: Record<string, AgentProfile>; routing?: RoutingRule[]; recovery?: RecoveryMap; councils?: Record<string, CouncilDefinition>; modelFallback?: Record<string, ModelFallbackDefinition>; }
 export interface ResolvedModelDefinition extends ModelDefinition { alias: string; id: string; }
 export interface ResolvedAgentDefinition extends Omit<AgentDefinition, "execution"> { name: string; execution: AgentExecutionDefinition; runtime: RuntimeDefinition & { name: string }; model: ResolvedModelDefinition; }
-export interface ResolvedAgentTopology { version: 1; profile?: string; skillRoots: string[]; runtimes: Record<string, RuntimeDefinition>; models: Record<string, ResolvedModelDefinition>; agents: Record<string, ResolvedAgentDefinition>; routing: RoutingRule[]; recovery: RecoveryMap; councils: Record<string, CouncilDefinition>; }
+export interface ResolvedAgentTopology { version: 1; profile?: string; skillRoots: string[]; runtimes: Record<string, RuntimeDefinition>; models: Record<string, ResolvedModelDefinition>; agents: Record<string, ResolvedAgentDefinition>; routing: RoutingRule[]; recovery: RecoveryMap; councils: Record<string, CouncilDefinition>; modelFallback?: Record<string, ModelFallbackDefinition>; }
 export interface AgentRouteContext { intent: string; domains?: string[]; files?: string[]; risk?: AgentRisk; }
 import type { AssuranceLevel, ImplementationRoute } from "../architecture/contracts.js";
 
