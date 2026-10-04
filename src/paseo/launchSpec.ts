@@ -64,6 +64,7 @@ export interface PaseoAgentLaunchSpec {
   toolPolicy?: PaseoSdkToolPolicy;
   providerOptions?: Record<string, unknown>;
   featureValues?: Record<string, unknown>;
+  permissionScopeRoots?: string[];
 }
 
 export async function compilePaseoAgentLaunchSpec(root: string, config: HarnessProjectConfig, contract: TaskContract, options: PaseoLaunchSpecOptions = {}): Promise<PaseoAgentLaunchSpec> {
@@ -228,6 +229,7 @@ export async function compilePaseoAgentLaunchSpec(root: string, config: HarnessP
     ...(providerOptions ? { providerOptions } : {}),
     ...(featureValues ? { featureValues } : {}),
     operationId,
+    ...(authorizedRoots ? { permissionScopeRoots: authorizedRoots } : {}),
     operationKind,
     phase
   };

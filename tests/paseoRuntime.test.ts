@@ -12,16 +12,16 @@ function result(exitCode: number, stdout = "", stderr = "") {
 }
 
 describe("permission stop diagnostics", () => {
-  it("retains bounded identity and scope digest without provider paths or descriptions", () => {
-    const diagnostic = permissionStopDiagnostic({ id: "turn-1", name: "external_directory", description: "private /home/user/secret", input: { patterns: ["/home/user/secret/*"] } }, "session-1");
+  it("retains bounded identity and scope digest without provider paths or descriptions", async () => {
+    const diagnostic = await permissionStopDiagnostic({ id: "turn-1", name: "external_directory", description: "private /home/user/secret", input: { patterns: ["/home/user/secret/*"] } }, "session-1");
     expect(diagnostic).toMatchObject({ name: "external_directory", scopeRelation: "UNKNOWN", sessionId: "session-1", turnId: "turn-1" });
     expect(diagnostic?.requestedScopeDigest).toMatch(/^[a-f0-9]{64}$/);
     expect(JSON.stringify(diagnostic)).not.toContain("/home/user/secret");
     expect(JSON.stringify(diagnostic)).not.toContain("private");
   });
 
-  it("keeps permission stops fail-closed when provider scope details are absent", () => {
-    expect(permissionStopDiagnostic({ name: "permission" }, "session-2")).toMatchObject({ scopeRelation: "UNKNOWN", sessionId: "session-2" });
+  it("keeps permission stops fail-closed when provider scope details are absent", async () => {
+    await expect(permissionStopDiagnostic({ name: "permission" }, "session-2")).resolves.toMatchObject({ scopeRelation: "UNKNOWN", sessionId: "session-2" });
   });
 });
 function capabilities() {
@@ -160,6 +160,7 @@ describe("managed Paseo runtime", () => {
       "/repo",
       "sdk-agent",
       1_800_000,
+      undefined,
       undefined
     );
     expect(run).not.toHaveBeenCalled();

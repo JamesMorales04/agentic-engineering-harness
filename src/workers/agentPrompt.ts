@@ -347,7 +347,8 @@ export async function materializeAgentPrompt(
       outputSchema: undefined,
       labels: spec.labels,
       waitForFinish: false,
-      timeoutSeconds: spec.timeoutSeconds
+      timeoutSeconds: spec.timeoutSeconds,
+      permissionScopeRoots: spec.permissionScopeRoots
     });
     if (structuredResultChannelId && materialized.id) {
       await bindStructuredResultChannel(currentOperationContext().controlRoot ?? root, spec.operationId, structuredResultChannelId, materialized.id);
@@ -696,7 +697,7 @@ async function executeViaPaseo(
   const schema = options.outputContract ? outputJsonSchema(options.outputContract) : undefined;
   if (options.resumeSessionId) {
     await recordProviderTurnStarted(root, options, "paseo");
-    const continued = await continueManagedPaseoAgent(root, options.resumeSessionId, prompt, spec.timeoutSeconds, undefined, schema, spec.labels);
+    const continued = await continueManagedPaseoAgent(root, options.resumeSessionId, prompt, spec.timeoutSeconds, undefined, schema, spec.labels, spec.permissionScopeRoots);
     return session(selection, continued.exitCode, continued.stdout, continued.stderr, {
       id: options.resumeSessionId,
       nativeAgent: spec.nativeAgentId ?? selection.nativeAgent,
@@ -722,7 +723,7 @@ async function executeViaPaseo(
     if (!materialized.id || materialized.id !== options.executionBinding?.runtime.sessionId) throw new Error("EXECUTION_BINDING_RUNTIME_SESSION_MISMATCH: materialized Paseo session does not match the frozen binding before first-turn dispatch.");
     const timeout = spec.timeoutSeconds;
     await recordProviderTurnStarted(root, options, "paseo");
-    const continued = await continueManagedPaseoAgent(root, materialized.id, prompt, timeout, undefined, schema, spec.labels);
+    const continued = await continueManagedPaseoAgent(root, materialized.id, prompt, timeout, undefined, schema, spec.labels, spec.permissionScopeRoots);
     if (continued.id && continued.id !== materialized.id) throw new Error("EXECUTION_BINDING_RUNTIME_SESSION_MISMATCH: Paseo continuation returned a different provider agent id than the materialized session.");
     if (!options.supervisorAgent) await markOperationSessionRunning(root, materialized.id).catch(() => undefined);
     return {
@@ -735,7 +736,8 @@ async function executeViaPaseo(
       status: continued.status,
       startedAt,
       finishedAt: new Date().toISOString(),
-      ...(continued.efficiencyTelemetry ? { efficiencyTelemetry: continued.efficiencyTelemetry } : {})
+      ...(continued.efficiencyTelemetry ? { efficiencyTelemetry: continued.efficiencyTelemetry } : {}),
+      ...(continued.permission ? { permissionStopDiagnostic: continued.permission } : {})
     };
   }
   if (options.executionBinding) throw new Error("PASEO_EXECUTION_SESSION_PREPARATION_REQUIRED: a fresh binding-bearing Paseo launch must continue an already materialized actual session.");
@@ -756,7 +758,8 @@ async function executeViaPaseo(
     prompt,
     outputSchema: schema,
     labels: spec.labels,
-    timeoutSeconds: spec.timeoutSeconds
+    timeoutSeconds: spec.timeoutSeconds,
+    permissionScopeRoots: spec.permissionScopeRoots
   });
   if (launched.id && !options.supervisorAgent) await markOperationSessionRunning(root, launched.id).catch(() => undefined);
   return session(selection, launched.exitCode, launched.stdout, launched.stderr, {

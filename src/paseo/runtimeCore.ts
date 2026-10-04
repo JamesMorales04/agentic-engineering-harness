@@ -118,7 +118,7 @@ export async function launchManagedPaseoAgent(
       await registerManagedAgent(root, options, created);
       await trace(root, "agent.launch", { transport: "sdk", agentId: created.id ?? "", provider: options.provider, model: options.model ?? "", modeId: options.modeId ?? "", modeSource: options.modeSource ?? "", status: created.status ?? "unknown" });
       if (!created.id || options.prompt === undefined || options.waitForFinish === false) return created;
-      return waitManagedPaseoAgent(root, created.id, options.timeoutSeconds ?? secondsFromMs(options.timeoutMs), deps);
+      return waitManagedPaseoAgent(root, created.id, options.timeoutSeconds ?? secondsFromMs(options.timeoutMs), deps, undefined, options.permissionScopeRoots);
     } catch (error) {
       if (!sdkCanFallback(error)) throw error;
       await trace(root, "fallback.cli", { operation: "launch", provider: options.provider, model: options.model ?? "", modeId: options.modeId ?? "", reason: errorMessage(error) });
@@ -169,13 +169,13 @@ export async function dispatchManagedPaseoAgent(root: string, agentId: string, p
   return { id: agentId, exitCode: send.exitCode, stdout: send.stdout, stderr: send.stderr, status: send.exitCode === 0 ? "working" : "failed", transport: "cli" };
 }
 
-export async function waitManagedPaseoAgent(root: string, agentId: string, timeoutSeconds?: number, deps: PaseoRuntimeDeps = defaultDeps(), baseline?: PaseoTurnBaseline): Promise<ManagedPaseoAgentResult> {
+export async function waitManagedPaseoAgent(root: string, agentId: string, timeoutSeconds?: number, deps: PaseoRuntimeDeps = defaultDeps(), baseline?: PaseoTurnBaseline, permissionScopeRoots?: string[]): Promise<ManagedPaseoAgentResult> {
   const timeout = timeoutMs(timeoutSeconds);
   const trace = deps.trace ?? defaultDeps().trace!;
   if (!forceCli()) {
     const native = deps.native ?? defaultDeps().native!;
     try {
-      const result = fromNativeWait(await native.wait(root, agentId, timeout, baseline));
+      const result = fromNativeWait(await native.wait(root, agentId, timeout, baseline, permissionScopeRoots));
       if (result.status === "timeout") {
         const stopped = await stopManagedPaseoAgent(root, agentId, deps);
         result.stderr = [result.stderr, stopped.stderr].filter(Boolean).join("\n");
@@ -186,7 +186,7 @@ export async function waitManagedPaseoAgent(root: string, agentId: string, timeo
       if (!sdkCanFallback(error)) throw error;
       await trace(root, "agent.wait.fallback", { agentId, from: "subscription", to: "sdk-wait", reason: errorMessage(error) });
       try {
-        const result = { ...fromSdk(await deps.sdk.wait(root, agentId, timeout)), observation: "sdk-wait" as const };
+        const result = { ...fromSdk(await deps.sdk.wait(root, agentId, timeout, permissionScopeRoots)), observation: "sdk-wait" as const };
         if (result.status === "timeout") {
           const stopped = await stopManagedPaseoAgent(root, agentId, deps);
           result.stderr = [result.stderr, stopped.stderr].filter(Boolean).join("\n");
@@ -227,10 +227,11 @@ export async function continueManagedPaseoAgent(
   timeoutSeconds?: number,
   deps: PaseoRuntimeDeps = defaultDeps(),
   outputSchema?: Record<string, unknown>,
-  executionIdentityLabels?: Record<string, string>
+  executionIdentityLabels?: Record<string, string>,
+  permissionScopeRoots?: string[]
 ): Promise<ManagedPaseoAgentResult> {
   return withProviderSessionLease(root, executionIdentityLabels?.["aeh.provider"] ?? "paseo", undefined, executionIdentityLabels, agentId, deps, async () => ({
-    value: await continueManagedPaseoAgentUnleased(root, agentId, prompt, timeoutSeconds, deps, outputSchema, executionIdentityLabels),
+    value: await continueManagedPaseoAgentUnleased(root, agentId, prompt, timeoutSeconds, deps, outputSchema, executionIdentityLabels, permissionScopeRoots),
     sessionId: agentId
   }));
 }
@@ -242,7 +243,8 @@ async function continueManagedPaseoAgentUnleased(
   timeoutSeconds?: number,
   deps: PaseoRuntimeDeps = defaultDeps(),
   outputSchema?: Record<string, unknown>,
-  executionIdentityLabels?: Record<string, string>
+  executionIdentityLabels?: Record<string, string>,
+  permissionScopeRoots?: string[]
 ): Promise<ManagedPaseoAgentResult> {
   const trace = deps.trace ?? defaultDeps().trace!;
   if (executionIdentityLabels?.["aeh.execution.binding"]) {
@@ -252,7 +254,7 @@ async function continueManagedPaseoAgentUnleased(
   if (!forceCli()) {
     try {
       const result = {
-        ...fromSdk(await deps.sdk.run(root, agentId, prompt, timeoutMs(timeoutSeconds), outputSchema, executionIdentityLabels?.["aeh.operation.phase"])),
+        ...fromSdk(await deps.sdk.run(root, agentId, prompt, timeoutMs(timeoutSeconds), outputSchema, executionIdentityLabels?.["aeh.operation.phase"], permissionScopeRoots)),
         observation: "sdk-run" as const
       };
       await trace(root, "agent.turn.completed", {
@@ -499,8 +501,8 @@ function providerStopDetail(status?: string, permission?: import("./sdk.js").Pas
     : undefined;
   return `provider session stopped on an unapproved '${status}' prompt${descriptor ? ` (${descriptor})` : ""}; the turn produced no result`;
 }
-function fromSdk(result: PaseoSdkAgentResult): ManagedPaseoAgentResult { return { id: result.id, exitCode: sdkExitCode(result.status, result.error), stdout: result.lastMessage ?? "", stderr: [result.error ?? "", providerStopDetail(result.status, result.permission)].filter(Boolean).join("\n"), status: result.status, workspaceId: result.workspaceId, transport: "sdk", ...(result.permission ? { permission: result.permission } : {}) }; }
-function fromNativeWait(result: PaseoNativeWaitResult): ManagedPaseoAgentResult { return { id: result.id, exitCode: sdkExitCode(result.status, result.error), stdout: result.lastMessage ?? "", stderr: [result.error ?? "", providerStopDetail(result.status, result.permission)].filter(Boolean).join("\n"), status: result.status, workspaceId: result.workspaceId, transport: "sdk", observation: "subscription", ...(result.permission ? { permission: result.permission } : {}), ...(result.efficiencyTelemetry ? { efficiencyTelemetry: result.efficiencyTelemetry } : {}) }; }
+function fromSdk(result: PaseoSdkAgentResult): ManagedPaseoAgentResult { return { id: result.id, exitCode: sdkExitCode(result.status, result.error), stdout: result.permission ? "" : result.lastMessage ?? "", stderr: [result.permission ? undefined : result.error, providerStopDetail(result.status, result.permission)].filter(Boolean).join("\n"), status: result.status, workspaceId: result.workspaceId, transport: "sdk", ...(result.permission ? { permission: result.permission } : {}) }; }
+function fromNativeWait(result: PaseoNativeWaitResult): ManagedPaseoAgentResult { return { id: result.id, exitCode: sdkExitCode(result.status, result.error), stdout: result.permission ? "" : result.lastMessage ?? "", stderr: [result.permission ? undefined : result.error, providerStopDetail(result.status, result.permission)].filter(Boolean).join("\n"), status: result.status, workspaceId: result.workspaceId, transport: "sdk", observation: "subscription", ...(result.permission ? { permission: result.permission } : {}), ...(result.efficiencyTelemetry ? { efficiencyTelemetry: result.efficiencyTelemetry } : {}) }; }
 function sdkExitCode(status?: string, error?: string): number { if (status === "timeout") return 124; if (error) return 1; if (status === "failed" || status === "error" || status === "cancelled" || status === "permission" || status === "waiting") return 1; return 0; }
 function firstString(record: Record<string, unknown>, keys: string[]): string | undefined { for (const key of keys) if (typeof record[key] === "string" && record[key]) return record[key] as string; return undefined; }
 function stringRecord(value: unknown): Record<string, string> | undefined { if (!value || typeof value !== "object" || Array.isArray(value)) return undefined; const result: Record<string, string> = {}; for (const [key, item] of Object.entries(value as Record<string, unknown>)) if (typeof item === "string") result[key] = item; return Object.keys(result).length ? result : undefined; }

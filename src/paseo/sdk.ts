@@ -1,6 +1,6 @@
 import process from "node:process";
-import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
+import { createPermissionStopDiagnostic } from "./permissionDiagnostic.js";
 import {
   acceptedStructuredResultForAgent,
   activateStructuredResultTurn,
@@ -53,6 +53,8 @@ export interface PaseoSdkAgentOptions {
   featureValues?: Record<string, unknown>;
   timeoutMs?: number;
   waitForFinish?: boolean;
+  /** Frozen provider permission projection used only to classify stop diagnostics. */
+  permissionScopeRoots?: string[];
 }
 
 export interface PaseoSdkPermissionStop {
@@ -175,24 +177,24 @@ export async function materializePaseoSdkAgent(root: string, options: PaseoSdkAg
 
 export async function materializePaseoSdkAgentWithClient(client: PaseoSdkClient, options: PaseoSdkAgentOptions): Promise<PaseoSdkAgentResult> {
   const handle = await client.agents.create(buildCreateOptions(options, false));
-  return handleResult(handle);
+  return handleResult(handle, options.permissionScopeRoots);
 }
 
 export async function createPaseoSdkAgentWithClient(client: PaseoSdkClient, options: PaseoSdkAgentOptions): Promise<PaseoSdkAgentResult> {
   const handle = await client.agents.create(buildCreateOptions(options, options.prompt !== undefined));
   if (options.prompt !== undefined && options.waitForFinish !== false) {
-    const result = await waitForHandle(handle, options.timeoutMs);
+    const result = await waitForHandle(handle, options.timeoutMs, options.permissionScopeRoots);
     if (result.status === "timeout") await stopPaseoSdkAgentHandle(handle);
     return result;
   }
-  return handleResult(handle);
+  return handleResult(handle, options.permissionScopeRoots);
 }
 
-export async function dispatchPaseoSdkAgent(root: string, agentId: string, prompt: string, timeoutMs?: number): Promise<PaseoSdkAgentResult> {
-  return withPaseoClient(root, (client) => dispatchPaseoSdkAgentWithClient(client, agentId, prompt, timeoutMs));
+export async function dispatchPaseoSdkAgent(root: string, agentId: string, prompt: string, timeoutMs?: number, permissionScopeRoots?: string[]): Promise<PaseoSdkAgentResult> {
+  return withPaseoClient(root, (client) => dispatchPaseoSdkAgentWithClient(client, agentId, prompt, timeoutMs, permissionScopeRoots));
 }
 
-export async function dispatchPaseoSdkAgentWithClient(client: PaseoSdkClient, agentId: string, prompt: string, timeoutMs?: number): Promise<PaseoSdkAgentResult> {
+export async function dispatchPaseoSdkAgentWithClient(client: PaseoSdkClient, agentId: string, prompt: string, timeoutMs?: number, permissionScopeRoots?: string[]): Promise<PaseoSdkAgentResult> {
   const handle = client.agents.ref(agentId);
   if (typeof handle.send === "function") {
     try {
@@ -201,20 +203,20 @@ export async function dispatchPaseoSdkAgentWithClient(client: PaseoSdkClient, ag
       if (error instanceof PaseoSdkTimeoutError) await stopPaseoSdkAgentHandle(handle);
       throw error;
     }
-    return { ...handleResult(handle), status: statusText(handle.status) ?? "working" };
+    return { ...(await handleResult(handle, permissionScopeRoots)), status: statusText(handle.status) ?? "working" };
   }
   if (typeof handle.run === "function") {
     const turn = await handle.run(prompt, { timeoutMs });
     if (turn.status === "timeout") await stopPaseoSdkAgentHandle(handle);
-    return turnResult(handle, turn);
+    return turnResult(handle, turn, permissionScopeRoots);
   }
   throw new PaseoSdkUnavailableError("The active @getpaseo/client agent handle exposes neither send() nor run(); cannot dispatch a turn through the SDK.");
 }
 
-export async function waitPaseoSdkAgent(root: string, agentId: string, timeoutMs?: number): Promise<PaseoSdkAgentResult> {
+export async function waitPaseoSdkAgent(root: string, agentId: string, timeoutMs?: number, permissionScopeRoots?: string[]): Promise<PaseoSdkAgentResult> {
   const result = await withPaseoClient(root, async (client) => {
     const handle = client.agents.ref(agentId);
-    const result = await waitForHandle(handle, timeoutMs);
+    const result = await waitForHandle(handle, timeoutMs, permissionScopeRoots);
     if (result.status === "timeout") await stopPaseoSdkAgentHandle(handle);
     return result;
   });
@@ -234,11 +236,12 @@ export async function runPaseoSdkAgent(
   prompt: string,
   timeoutMs?: number,
   outputSchema?: Record<string, unknown>,
-  phase?: string
+  phase?: string,
+  permissionScopeRoots?: string[]
 ): Promise<PaseoSdkAgentResult> {
   if (outputSchema) await activateStructuredResultTurnForAgent(root, agentId, phase);
   const result = await withPaseoClient(root, async (client) =>
-    runPaseoSdkAgentWithClient(client, agentId, prompt, timeoutMs, outputSchema)
+    runPaseoSdkAgentWithClient(client, agentId, prompt, timeoutMs, outputSchema, permissionScopeRoots)
   );
   let projected = await projectAcceptedPaseoResult(root, result, { requireBoundProvenance: true, verifyCurrentCandidate: true });
   if (!projected.lastMessage?.trim()) {
@@ -262,20 +265,21 @@ export async function runPaseoSdkAgentWithClient(
   agentId: string,
   prompt: string,
   timeoutMs?: number,
-  outputSchema?: Record<string, unknown>
+  outputSchema?: Record<string, unknown>,
+  permissionScopeRoots?: string[]
 ): Promise<PaseoSdkAgentResult> {
   const handle = client.agents.ref(agentId);
   if (typeof handle.run === "function") {
     const turn = await handle.run(prompt, { timeoutMs, ...(outputSchema ? { outputSchema } : {}) });
     if (turn.status === "timeout") await stopPaseoSdkAgentHandle(handle);
-    return turnResult(handle, turn);
+    return turnResult(handle, turn, permissionScopeRoots);
   }
   if (typeof handle.send === "function") {
     await withTimeout(handle.send(prompt, outputSchema ? { outputSchema } : undefined), timeoutMs, `Paseo agent ${agentId} turn dispatch timed out after ${timeoutMs ?? 1_800_000}ms.`).catch(async (error) => {
       if (error instanceof PaseoSdkTimeoutError) await stopPaseoSdkAgentHandle(handle);
       throw error;
     });
-    const result = await waitForHandle(handle, timeoutMs);
+    const result = await waitForHandle(handle, timeoutMs, permissionScopeRoots);
     if (result.status === "timeout") await stopPaseoSdkAgentHandle(handle);
     return result;
   }
@@ -473,10 +477,10 @@ function buildCreateOptions(options: PaseoSdkAgentOptions, includePrompt: boolea
   return createOptions;
 }
 
-async function waitForHandle(handle: PaseoSdkAgentHandle, timeoutMs = 1_800_000): Promise<PaseoSdkAgentResult> {
+async function waitForHandle(handle: PaseoSdkAgentHandle, timeoutMs = 1_800_000, permissionScopeRoots?: string[]): Promise<PaseoSdkAgentResult> {
   if (typeof handle.waitForFinish === "function") {
     const turn = await handle.waitForFinish(timeoutMs);
-    return turnResult(handle, turn);
+    return turnResult(handle, turn, permissionScopeRoots);
   }
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -486,13 +490,14 @@ async function waitForHandle(handle: PaseoSdkAgentHandle, timeoutMs = 1_800_000)
       const timeline = handle.timeline && typeof handle.timeline.refetch === "function"
         ? await handle.timeline.refetch({ direction: "tail", limit: 50 }).catch(() => undefined)
         : undefined;
+      const permission = await permissionStopDiagnostic(raw?.pendingPermissions ?? handle.pendingPermissions, handle.id, permissionScopeRoots);
       return {
         id: handle.id,
         workspaceId: handle.workspaceId ?? stringField(raw ?? {}, ["workspaceId", "workspace_id"]),
         status,
         lastMessage: stringField(raw ?? {}, ["lastMessage", "last_message"]) ?? extractLastAssistantText(timeline),
         error: stringField(raw ?? {}, ["error", "lastError", "last_error"]),
-        ...(permissionStopDiagnostic(raw?.pendingPermissions ?? handle.pendingPermissions) ? { permission: permissionStopDiagnostic(raw?.pendingPermissions ?? handle.pendingPermissions) } : {})
+        ...(permission ? { permission } : {})
       };
     }
     if (Date.now() >= deadline) return { id: handle.id, workspaceId: handle.workspaceId ?? undefined, status: "timeout", error: `Timed out after ${timeoutMs}ms.` };
@@ -523,8 +528,8 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs = 1_800_000, messag
   }
 }
 
-async function turnResult(handle: PaseoSdkAgentHandle, turn: PaseoSdkTurnResult): Promise<PaseoSdkAgentResult> {
-  const permission = permissionStopDiagnostic(turn.final?.pendingPermissions ?? handle.pendingPermissions, handle.id);
+async function turnResult(handle: PaseoSdkAgentHandle, turn: PaseoSdkTurnResult, permissionScopeRoots?: string[]): Promise<PaseoSdkAgentResult> {
+  const permission = await permissionStopDiagnostic(turn.final?.pendingPermissions ?? handle.pendingPermissions, handle.id, permissionScopeRoots);
   if (turn.lastMessage) {
     return {
       id: handle.id,
@@ -539,7 +544,7 @@ async function turnResult(handle: PaseoSdkAgentHandle, turn: PaseoSdkTurnResult)
   const timeline = handle.timeline && typeof handle.timeline.refetch === "function"
     ? await handle.timeline.refetch({ direction: "tail", limit: 50 }).catch(() => undefined)
     : undefined;
-  const observedPermission = permission ?? permissionStopDiagnostic(raw?.pendingPermissions, handle.id);
+  const observedPermission = permission ?? await permissionStopDiagnostic(raw?.pendingPermissions, handle.id, permissionScopeRoots);
   return {
     id: handle.id,
     workspaceId: handle.workspaceId ?? stringField(raw ?? {}, ["workspaceId", "workspace_id"]),
@@ -552,7 +557,7 @@ async function turnResult(handle: PaseoSdkAgentHandle, turn: PaseoSdkTurnResult)
   };
 }
 
-export function permissionStopDiagnostic(value: unknown, sessionId?: string): PaseoSdkPermissionStop | undefined {
+export async function permissionStopDiagnostic(value: unknown, sessionId?: string, permissionScopeRoots?: string[]): Promise<PaseoSdkPermissionStop | undefined> {
   const entries = Array.isArray(value) ? value : value && typeof value === "object" ? [value] : [];
   for (const entry of entries) {
     if (!entry || typeof entry !== "object") continue;
@@ -561,13 +566,7 @@ export function permissionStopDiagnostic(value: unknown, sessionId?: string): Pa
     const input = record.input && typeof record.input === "object" ? record.input as Record<string, unknown> : undefined;
     const patterns = boundedStringArray(input?.patterns);
     if (name || patterns?.length) {
-      const requestedScopeDigest = patterns?.length ? createHash("sha256").update(JSON.stringify(patterns)).digest("hex") : undefined;
-      return {
-        ...(name ? { name } : {}),
-        scopeRelation: "UNKNOWN",
-        ...(requestedScopeDigest ? { requestedScopeDigest } : {}),
-        ...(sessionId ? { sessionId: sessionId.slice(0, 120), turnId: typeof record.id === "string" ? record.id.slice(0, 120) : `${sessionId.slice(0, 100)}:pending` } : {})
-      };
+      return createPermissionStopDiagnostic(name, patterns, permissionScopeRoots, sessionId, typeof record.id === "string" ? record.id : `${sessionId ?? "session"}:pending`);
     }
   }
   return undefined;
@@ -591,9 +590,9 @@ async function refreshHandle(handle: PaseoSdkAgentHandle): Promise<Record<string
   return handle.latest?.() ?? undefined;
 }
 
-function handleResult(handle: PaseoSdkAgentHandle): PaseoSdkAgentResult {
+async function handleResult(handle: PaseoSdkAgentHandle, permissionScopeRoots?: string[]): Promise<PaseoSdkAgentResult> {
   const raw = handle.latest?.() ?? undefined;
-  const permission = permissionStopDiagnostic(raw?.pendingPermissions ?? handle.pendingPermissions);
+  const permission = await permissionStopDiagnostic(raw?.pendingPermissions ?? handle.pendingPermissions, handle.id, permissionScopeRoots);
   return {
     id: handle.id,
     workspaceId: handle.workspaceId ?? stringField(raw ?? {}, ["workspaceId", "workspace_id"]),
