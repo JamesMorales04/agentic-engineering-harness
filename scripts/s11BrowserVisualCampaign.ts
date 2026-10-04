@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { runExecutable } from "../src/utils/process.js";
 import { computeWorktreeDigest } from "../src/core/git.js";
-import { createCandidateRevisionV1 } from "../src/operations/v2Contracts.js";
+import { assertCandidateRevisionV1, createCandidateRevisionV1, type CandidateRevisionV1 } from "../src/operations/v2Contracts.js";
 import { runExternalToolValidator } from "../src/validators/external.js";
 import type { HarnessProjectConfig, TaskContract, ValidatorSpec } from "../src/core/types.js";
 import {
@@ -75,6 +76,11 @@ async function releaseIdentity(): Promise<Record<string, unknown> | undefined> {
 }
 
 async function main(): Promise<void> {
+  const boundCandidate = process.env.AEH_VALIDATION_CANDIDATE_JSON;
+  if (boundCandidate) {
+    await runBoundVisualProvider(boundCandidate);
+    return;
+  }
   const release = await releaseIdentity();
   if (!release) throw new Error("BROWSER_PROVIDER_UNAVAILABLE: no built candidate release exists (run `npm run build` first).");
   try {
@@ -189,6 +195,39 @@ async function main(): Promise<void> {
   // eslint-disable-next-line no-console
   console.log(JSON.stringify({ status: report.status, summary: path.relative(root, summaryPath), runs: report.runs }, null, 2));
   if (report.status !== "PASS") process.exit(1);
+}
+
+/** Provider mode is entered only by the configured visual adapter. It runs the
+ * real visual Playwright journey for the exact frozen candidate supplied by
+ * that adapter; the adapter persists its report as candidate-bound VISUAL evidence. */
+async function runBoundVisualProvider(rawCandidate: string): Promise<void> {
+  let candidate: CandidateRevisionV1;
+  try {
+    const parsed: unknown = JSON.parse(rawCandidate);
+    assertCandidateRevisionV1(parsed);
+    candidate = parsed;
+  } catch (error) {
+    throw new Error(`VISUAL_PROVIDER_CANDIDATE_INVALID: ${String(error)}`);
+  }
+  const build = await runExecutable("npm", ["run", "build"], { cwd: root, timeoutMs: 900_000 });
+  if (build.stdout) process.stderr.write(build.stdout);
+  if (build.stderr) process.stderr.write(build.stderr);
+  if (build.exitCode !== 0) throw new Error(`VISUAL_PROVIDER_BUILD_FAILED: candidate build exited with ${build.exitCode}.`);
+  const playwrightPath = path.join(root, "node_modules", ".bin", "playwright");
+  try { await fs.access(playwrightPath); } catch { throw new Error("VISUAL_PROVIDER_UNAVAILABLE: pinned candidate Playwright executable is absent."); }
+  const outputDirectory = path.join(
+    playwrightOutputRoot,
+    "visual",
+    `${candidate.candidateId}-r${candidate.revision}-${candidate.identityDigest.slice(0, 12)}`
+  );
+  await fs.rm(outputDirectory, { recursive: true, force: true });
+  const execution = await runExecutable(playwrightPath, [
+    "test", "--config", "tests/browser/playwright.config.ts", "--grep", "S11 visual",
+    "--output", outputDirectory, "--reporter=json"
+  ], { cwd: root, timeoutMs: 900_000 });
+  if (execution.stdout) process.stdout.write(execution.stdout);
+  if (execution.stderr) process.stderr.write(execution.stderr);
+  process.exitCode = execution.exitCode;
 }
 
 function quote(value: string): string {

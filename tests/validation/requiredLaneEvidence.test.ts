@@ -11,6 +11,8 @@ import { candidateImpactValidationRequirementsV1, compileCandidateAssuranceV1 } 
 import { resolveValidationRequirements, validationRequirementKindValues } from "../../src/architecture/validationRequirements.js";
 import { requireProviderLaneEvidenceV1 } from "../../src/validation/laneEvidence.js";
 import { runCandidateImpactValidations } from "../../src/core/run.js";
+import { runConfiguredValidators } from "../../src/validators/registry.js";
+import { loadProjectConfig } from "../../src/core/config.js";
 
 const config: HarnessProjectConfig = { version: 1, project: { name: "required-lane-fixture" }, evidence: { outputDir: ".harness/evidence" } };
 const contract: TaskContract = { version: 1, task: { id: "S11-REQUIRED-LANE", title: "required lane evidence" } };
@@ -151,11 +153,14 @@ describe("required specialized lanes are satisfied only by matching provider exe
   });
 
   it("passes the visual requirement only with a bound baseline and comparison through the visual provider", async () => {
-    const { root, candidate } = await fixture({ "baseline.png": "committed-baseline-bytes" });
+    const { root, candidate } = await fixture({
+      "baseline.png": "committed-baseline-bytes",
+      "visual-provider.mjs": `import fs from 'node:fs';\nimport { spawnSync } from 'node:child_process';\nconst candidate = JSON.parse(process.env.AEH_VALIDATION_CANDIDATE_JSON);\nfs.mkdirSync('.harness/evidence', { recursive: true });\nfs.writeFileSync('.harness/evidence/provider-candidate.json', JSON.stringify(candidate));\nconst result = spawnSync('./node_modules/.bin/playwright', ['test'], { encoding: 'utf8' });\nprocess.stdout.write(result.stdout);\nprocess.stderr.write(result.stderr);\nprocess.exitCode = result.status ?? 1;\n`
+    });
     await installFakePinnedPlaywright(root);
     const baseline = path.join(root, "baseline.png");
     const comparison = { tool: "playwright-toHaveScreenshot", name: "shot.png", options: { maxDiffPixelRatio: 0.05 } };
-    const configured: HarnessProjectConfig = { ...config, validation: { providers: [{ id: "visual-provider", capability: "visual-test", provider: "playwright", options: { referenceBaseline: baseline, comparison } }] } };
+    const configured: HarnessProjectConfig = { ...config, validation: { providers: [{ id: "visual-provider", capability: "visual-test", provider: "playwright", command: "node visual-provider.mjs", options: { referenceBaseline: baseline, comparison } }] } };
     const { checks } = await dispatch({ root, candidate, config: configured, dimension: "UI/visual" });
     const check = checks.find((item) => item.id === "candidate.assurance.validation.impact-review-ui-visual");
     expect(check, JSON.stringify(checks)).toBeDefined();
@@ -163,6 +168,44 @@ describe("required specialized lanes are satisfied only by matching provider exe
     const evidence = await requireProviderLaneEvidenceV1(root, configured, "VISUAL", candidate, "candidate-impact-impact-review-ui-visual");
     expect(evidence.comparison?.tool).toBe("playwright-toHaveScreenshot");
     expect(evidence.artifacts.some((artifact) => artifact.kind === "baseline")).toBe(true);
+    expect(evidence.candidate).toMatchObject({ candidateId: candidate.candidateId, revision: candidate.revision, identityDigest: candidate.identityDigest });
+    expect(JSON.parse(await fs.readFile(path.join(root, ".harness/evidence/provider-candidate.json"), "utf8"))).toMatchObject(candidate);
+    const otherCandidate = createCandidateRevisionV1({ operationId: candidate.operationId, candidateId: "CAND-S11-OTHER", revision: candidate.revision, sourceDigest: candidate.sourceDigest });
+    await expect(requireProviderLaneEvidenceV1(root, configured, "VISUAL", otherCandidate, "candidate-impact-impact-review-ui-visual")).rejects.toThrow("PROVIDER_LANE_EVIDENCE_REQUIRED");
+  });
+
+  it("uses the declared project visual provider for an auto-generated capability validator", async () => {
+    const actualProjectConfig = await loadProjectConfig(process.cwd());
+    const declaredProvider = actualProjectConfig.validation?.providers?.find((provider) => provider.id === "s11-visual-playwright");
+    expect(declaredProvider).toMatchObject({ capability: "visual-test", provider: "playwright" });
+    const { root, candidate } = await fixture({
+      "baseline.png": "committed-baseline-bytes",
+      "visual-provider.mjs": `import fs from 'node:fs';\nimport { spawnSync } from 'node:child_process';\nconst candidate = JSON.parse(process.env.AEH_VALIDATION_CANDIDATE_JSON);\nfs.mkdirSync('.harness/evidence', { recursive: true });\nfs.writeFileSync('.harness/evidence/provider-candidate.json', JSON.stringify(candidate));\nconst result = spawnSync('./node_modules/.bin/playwright', ['test'], { encoding: 'utf8' });\nprocess.stdout.write(result.stdout);\nprocess.stderr.write(result.stderr);\nprocess.exitCode = result.status ?? 1;\n`
+    });
+    await installFakePinnedPlaywright(root);
+    const baseline = path.join(root, "baseline.png");
+    const provider = {
+      ...declaredProvider!,
+      command: "node visual-provider.mjs",
+      options: { ...declaredProvider!.options, referenceBaseline: baseline }
+    };
+    const configured: HarnessProjectConfig = {
+      ...actualProjectConfig,
+      evidence: { outputDir: ".harness/evidence" },
+      validation: { ...actualProjectConfig.validation, providers: [provider] }
+    };
+    const generated = await runConfiguredValidators(root, configured, {
+      version: 1,
+      task: { id: "S11-GENERATED-VISUAL", title: "generated visual capability" },
+      verification: { capabilities: ["visual-test"] }
+    } as unknown as TaskContract, "HEAD", [], { candidate });
+    expect(generated).toHaveLength(1);
+    expect(generated[0]!.id).toBe("capability.visual-test");
+    expect(generated[0]!.status, JSON.stringify(generated[0])).toBe("PASS");
+    const evidence = await requireProviderLaneEvidenceV1(root, configured, "VISUAL", candidate, "capability.visual-test");
+    expect(evidence.comparison?.tool).toBe("playwright-toHaveScreenshot");
+    expect(evidence.candidate).toMatchObject({ candidateId: candidate.candidateId, identityDigest: candidate.identityDigest });
+    expect(JSON.parse(await fs.readFile(path.join(root, ".harness/evidence/provider-candidate.json"), "utf8"))).toMatchObject(candidate);
   });
 
   it("passes the contract requirement through the real OpenAPI provider instead of a project script", async () => {

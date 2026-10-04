@@ -203,6 +203,20 @@ sdd:
 validation:
   baseRef: main
   requireSeal: true
+  providers:
+    - id: s11-visual-playwright
+      capability: visual-test
+      provider: playwright
+      command: node_modules/.bin/tsx scripts/s11BrowserVisualCampaign.ts
+      timeoutSeconds: 900
+      options:
+        referenceBaseline: tests/browser/s11-control-center-browser-visual.e2e.ts-snapshots/s11-control-center-heading-chromium-linux.png
+        comparison:
+          tool: playwright-toHaveScreenshot
+          name: s11-control-center-heading.png
+          options:
+            animations: disabled
+            maxDiffPixelRatio: 0.05
   commands:
     - id: npm-check
       command: npm run check
