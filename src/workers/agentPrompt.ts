@@ -344,7 +344,6 @@ export async function materializeAgentPrompt(
       providerOptions: spec.providerOptions,
       featureValues: spec.featureValues,
       workspaceId: spec.workspaceId,
-      parentAgentId: spec.paseoParentAgentId,
       outputSchema: undefined,
       labels: spec.labels,
       waitForFinish: false,
@@ -753,7 +752,6 @@ async function executeViaPaseo(
     providerOptions: spec.providerOptions,
     featureValues: spec.featureValues,
     workspaceId: spec.workspaceId,
-    parentAgentId: spec.paseoParentAgentId,
     prompt,
     outputSchema: schema,
     labels: spec.labels,
@@ -979,7 +977,7 @@ export async function buildAgentContextFragments(
   };
   const hierarchy = [
     options.supervisorAgent ? "Operation Supervisor: semantic coordination only; deterministic controller authority remains authoritative." : undefined,
-    options.parentAgentId ? `Paseo parent=${options.parentAgentId}; OperationRecord remains lifecycle authority.` : undefined
+    options.parentAgentId ? `AEH semantic parent=${options.parentAgentId}; operation state remains lifecycle authority. This participant is an independent top-level Paseo session.` : undefined
   ].filter(Boolean).join("\n");
   const contextOutputPolicy = config.context ? outputPolicyInstruction(resolveContextPolicy(config), selection.role) : undefined;
   const transportCapabilities = options.contextCapabilities ?? await resolveContextTransportCapabilities(root, config, selection, { mode: "live" });

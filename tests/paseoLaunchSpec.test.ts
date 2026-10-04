@@ -294,13 +294,14 @@ describe("Paseo launch spec", () => {
       expect(isolated.workspaceId).toBeUndefined();
       expect(isolated.cwd).toBe(isolatedRoot);
       expect(isolated.labels).not.toHaveProperty("aeh.workspace.id");
-      // Paseo child agents inherit the parent's workspace and cwd; an isolated launch must keep the
-      // correlation label but must not carry the Paseo parent handle (AEH-V2-0117).
+      // AEH semantic parentage is retained as correlation, while both normal and isolated
+      // operation participants are independent top-level Paseo agents.
       expect(inWorkspace.parentAgentId).toBe("supervisor-agent");
-      expect(inWorkspace.paseoParentAgentId).toBe("supervisor-agent");
+      expect(inWorkspace.labels["aeh.parent-agent"]).toBe("supervisor-agent");
+      expect(inWorkspace).not.toHaveProperty("paseoParentAgentId");
       expect(isolated.parentAgentId).toBe("supervisor-agent");
       expect(isolated.labels["aeh.parent-agent"]).toBe("supervisor-agent");
-      expect(isolated.paseoParentAgentId).toBeUndefined();
+      expect(isolated).not.toHaveProperty("paseoParentAgentId");
     } finally {
       delete process.env.AEH_OPERATION_ID;
       delete process.env.AEH_OPERATION_KIND;
