@@ -49,6 +49,7 @@ describe("Paseo resumed-turn barrier", () => {
       "continue",
       120_000,
       undefined,
+      undefined,
       undefined
     );
     expect(runtime.native.capture).not.toHaveBeenCalled();
@@ -68,7 +69,8 @@ describe("Paseo resumed-turn barrier", () => {
       "/repo",
       "agent-1",
       120_000,
-      { lastAssistantMessage: "old answer" }
+      { lastAssistantMessage: "old answer" },
+      undefined
     );
   });
 });
