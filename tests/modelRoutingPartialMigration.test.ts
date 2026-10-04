@@ -64,18 +64,24 @@ describe("partial model-routing migration (owner-approved)", () => {
     expect(() => assertSemanticStructuredOutputCapabilityV1("opencode-go/muse-spark-1.3-contributor")).toThrow(/UNCERTIFIED/);
   });
 
-  it("(iv) resolves workhorse lanes to Muse via OpenCode Go", async () => {
+  it("(iv) resolves shipped balanced default: 7 workhorse lanes to Muse, control/assurance to Codex Luna", async () => {
     const topology = await defaultTopology();
+    expect(topology.profile).toBe("balanced");
     for (const lane of WORKHORSE_LANES) {
       const selection = executionSelectionForAgent(topology, lane);
       expect(selection.modelId).toBe("opencode-go/muse-spark-1.3-contributor");
       expect(selection.runtimeAdapter).toBe("opencode");
       expect(selection.paseoProvider).toBe("opencode");
     }
-    const lead = executionSelectionForAgent(topology, "lead");
-    expect(lead.modelId).toBe("openai/gpt-6-luna");
-    const supervisor = executionSelectionForAgent(topology, "operation-supervisor");
-    expect(supervisor.modelId).toBe("openai/gpt-6-luna");
+    for (const lane of ["lead", "operation-supervisor", "high-assurance-reviewer"] as const) {
+      const selection = executionSelectionForAgent(topology, lane);
+      expect(selection.modelId).toBe("openai/gpt-6-luna");
+      expect(selection.runtimeAdapter).toBe("codex");
+      expect(selection.paseoProvider).toBe("codex");
+    }
+    // Semantic assessor resolves to certified Codex-channel Luna (fail-closed, never falls back).
+    const assessor = resolveSemanticAssessor(topology);
+    expect(assessor.identity.modelId).toBe("openai/gpt-6-luna");
   });
 
   it("(v) fails stale configs with explicit migration errors", async () => {
@@ -185,5 +191,63 @@ describe("partial model-routing migration (owner-approved)", () => {
     const normal = resolveRoute(topology, { intent: "implement", domains: [], files: [] });
     const normalReviewers = new Set(normal.review.flatMap((selector) => selectAgentNames(topology, selector)));
     expect(normalReviewers).toEqual(new Set(["reviewer"]));
+  });
+
+  it("(x) keeps economy/maximum-quality Luna pins as explicit documented opt-ins, not hidden defaults", async () => {
+    // Shipped default is balanced; profile routing is DETERMINISTIC (static overlay merge, no model inference).
+    const presetRaw = await fs.readFile(path.join(PACKAGE_ROOT, "presets/agents/default.jsonc"), "utf8");
+    expect(presetRaw).toMatch(/"activeProfile"\s*:\s*"balanced"/);
+    // Descriptions state the opt-in scope explicitly.
+    expect(presetRaw).toContain("Explicit opt-in quality pin (NOT the shipped default)");
+    expect(presetRaw).toContain("Shipped default is balanced");
+    // Canonical mechanism: profile overlays pin via @brain/@workhorse aliases only (no hardcoded model strings).
+    const jsoncStripped = presetRaw
+      .split("\n")
+      .filter((line) => !line.trim().startsWith("//"))
+      .join("\n");
+    const preset = JSON.parse(jsoncStripped) as {
+      activeProfile: string;
+      profiles: Record<string, { description: string; agents?: Record<string, { execution?: { model?: string } }> }>;
+    };
+    expect(preset.activeProfile).toBe("balanced");
+    for (const name of ["economy", "maximum-quality"]) {
+      expect(preset.profiles[name].description).toContain("Explicit opt-in");
+      expect(preset.profiles[name].description).toContain("Shipped default is balanced");
+      for (const override of Object.values(preset.profiles[name].agents ?? {})) {
+        expect(["@brain", "@workhorse"]).toContain(override.execution?.model);
+      }
+    }
+    expect(preset.profiles["economy"].agents?.["planner"]?.execution?.model).toBe("@brain");
+    expect(preset.profiles["economy"].agents?.["spec-manager"]?.execution?.model).toBe("@brain");
+    expect(preset.profiles["economy"].agents?.["repairer"]?.execution?.model).toBe("@brain");
+    expect(preset.profiles["maximum-quality"].agents?.["reviewer"]?.execution?.model).toBe("@brain");
+
+    // economy: planner/spec/repair (+lead/high-assurance) pin to Luna; implementation lanes stay Muse.
+    const economy = await defaultTopology("economy");
+    expect(economy.profile).toBe("economy");
+    for (const lane of ["planner", "spec-manager", "repairer", "lead", "high-assurance-reviewer"] as const) {
+      expect(executionSelectionForAgent(economy, lane).modelId).toBe("openai/gpt-6-luna");
+    }
+    for (const lane of ["explorer", "librarian", "implementer", "reviewer"] as const) {
+      expect(executionSelectionForAgent(economy, lane).modelId).toBe("opencode-go/muse-spark-1.3-contributor");
+    }
+    // maximum-quality: planner/spec/normal-reviewer/repair (+high-assurance) pin to Luna; rest stay Muse.
+    const maxQuality = await defaultTopology("maximum-quality");
+    expect(maxQuality.profile).toBe("maximum-quality");
+    for (const lane of ["planner", "spec-manager", "reviewer", "repairer", "high-assurance-reviewer"] as const) {
+      expect(executionSelectionForAgent(maxQuality, lane).modelId).toBe("openai/gpt-6-luna");
+    }
+    for (const lane of ["explorer", "librarian", "implementer"] as const) {
+      expect(executionSelectionForAgent(maxQuality, lane).modelId).toBe("opencode-go/muse-spark-1.3-contributor");
+    }
+    // No hidden default: resolving without an explicit profile override lands on balanced.
+    const balanced = await defaultTopology("balanced");
+    for (const lane of WORKHORSE_LANES) {
+      expect(executionSelectionForAgent(balanced, lane).modelId).toBe("opencode-go/muse-spark-1.3-contributor");
+    }
+    // Documented opt-in, not hidden: docs state the shipped default plus opt-in pins.
+    const docs = await fs.readFile(path.join(PACKAGE_ROOT, "docs/V0.4.13.md"), "utf8");
+    expect(docs).toContain("Shipped default is `balanced`");
+    expect(docs).toContain("explicit opt-in quality pins");
   });
 });
