@@ -855,7 +855,7 @@ export async function runCandidateImpactValidations(input: {
           execution = configuredValidatorChecks.find((check) => check.id === action.selector);
           if (!execution) throw new Error(`configured validator '${action.selector}' produced no validation check`);
         } else if (action.source === "approved-provider") {
-          const provider = input.config.validation?.providers?.find((candidate) => candidate.id === action.selector || candidate.provider === action.provider || candidate.provider === action.selector);
+          const provider = input.config.validation?.providers?.find((candidate) => candidate.id === action.selector);
           const adapter = candidateAssuranceProviderAdapterV1(action.kind, action.provider ?? "");
           if (adapter) {
             execution = await runExternalToolValidator({
