@@ -282,6 +282,8 @@ export interface WorkerSession {
   metrics?: UsageMetrics;
   /** Sanitized provider telemetry carried until the observation-only efficiency writer persists it. */
   efficiencyTelemetry?: import("../telemetry/efficiency.js").ProviderTelemetryEvidenceV2;
+  /** Redacted provider approval-stop evidence; contains no raw scope paths or descriptions. */
+  permissionStopDiagnostic?: import("../paseo/sdk.js").PaseoSdkPermissionStop;
   participantId?: string;
   capabilityLeases?: import("../security/authorityV2.js").CapabilityLeaseV1[];
   executionBinding?: import("../architecture/executionIdentity.js").ExecutionBindingV3;

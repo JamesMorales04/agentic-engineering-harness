@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PaseoSdkUnavailableError } from "../src/paseo/sdk.js";
+import { PaseoSdkUnavailableError, permissionStopDiagnostic } from "../src/paseo/sdk.js";
 import {
   dispatchManagedPaseoAgent,
   launchManagedPaseoAgent,
@@ -10,6 +10,20 @@ import {
 function result(exitCode: number, stdout = "", stderr = "") {
   return { exitCode, stdout, stderr, durationMs: 1 };
 }
+
+describe("permission stop diagnostics", () => {
+  it("retains bounded identity and scope digest without provider paths or descriptions", () => {
+    const diagnostic = permissionStopDiagnostic({ id: "turn-1", name: "external_directory", description: "private /home/user/secret", input: { patterns: ["/home/user/secret/*"] } }, "session-1");
+    expect(diagnostic).toMatchObject({ name: "external_directory", scopeRelation: "UNKNOWN", sessionId: "session-1", turnId: "turn-1" });
+    expect(diagnostic?.requestedScopeDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(diagnostic)).not.toContain("/home/user/secret");
+    expect(JSON.stringify(diagnostic)).not.toContain("private");
+  });
+
+  it("keeps permission stops fail-closed when provider scope details are absent", () => {
+    expect(permissionStopDiagnostic({ name: "permission" }, "session-2")).toMatchObject({ scopeRelation: "UNKNOWN", sessionId: "session-2" });
+  });
+});
 function capabilities() {
   return {
     version: "0.6.0",
@@ -307,7 +321,7 @@ describe("managed Paseo runtime", () => {
       wait: vi.fn(async () => ({
         id: "agent-external-directory",
         status: "permission",
-        permission: { name: "external_directory", title: "Access external directory", patterns: ["/tmp/aeh-task-root/*"] },
+        permission: { name: "external_directory", scopeRelation: "UNKNOWN", requestedScopeDigest: "a".repeat(64), sessionId: "agent-external-directory", turnId: "turn-7" },
         source: "paseo-agent-subscription" as const,
         updatesObserved: 1
       }))
@@ -316,7 +330,9 @@ describe("managed Paseo runtime", () => {
     expect(waited).toEqual(expect.objectContaining({ status: "permission", exitCode: 1 }));
     expect(waited.stderr).toContain("unapproved 'permission' prompt");
     expect(waited.stderr).toContain("external_directory");
-    expect(waited.stderr).toContain("/tmp/aeh-task-root/*");
+    expect(waited.stderr).toContain("scope=UNKNOWN");
+    expect(waited.stderr).toContain("scopeDigest=");
+    expect(waited.stderr).not.toContain("/tmp/aeh-task-root");
   });
 
   it("fails before create when provider/model preflight is authoritative and negative", async () => {

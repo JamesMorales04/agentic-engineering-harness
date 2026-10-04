@@ -712,6 +712,7 @@ async function executeViaPaseo(
       startedAt,
       finishedAt: new Date().toISOString(),
       ...(continued.efficiencyTelemetry ? { efficiencyTelemetry: continued.efficiencyTelemetry } : {}),
+      ...(continued.permission ? { permissionStopDiagnostic: continued.permission } : {}),
       participantId: options.participantId,
       capabilityLeases: options.capabilityAuthority?.leases
     });
@@ -773,6 +774,7 @@ async function executeViaPaseo(
     startedAt,
     finishedAt: new Date().toISOString(),
     ...(launched.efficiencyTelemetry ? { efficiencyTelemetry: launched.efficiencyTelemetry } : {}),
+    ...(launched.permission ? { permissionStopDiagnostic: launched.permission } : {}),
     participantId: options.participantId,
     capabilityLeases: options.capabilityAuthority?.leases
   });

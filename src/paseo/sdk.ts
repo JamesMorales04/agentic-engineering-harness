@@ -1,4 +1,5 @@
 import process from "node:process";
+import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import {
   acceptedStructuredResultForAgent,
@@ -56,9 +57,10 @@ export interface PaseoSdkAgentOptions {
 
 export interface PaseoSdkPermissionStop {
   name?: string;
-  title?: string;
-  description?: string;
-  patterns?: string[];
+  scopeRelation: "OUTSIDE" | "INSIDE" | "UNKNOWN";
+  requestedScopeDigest?: string;
+  sessionId?: string;
+  turnId?: string;
 }
 
 export interface PaseoSdkAgentResult {
@@ -490,7 +492,7 @@ async function waitForHandle(handle: PaseoSdkAgentHandle, timeoutMs = 1_800_000)
         status,
         lastMessage: stringField(raw ?? {}, ["lastMessage", "last_message"]) ?? extractLastAssistantText(timeline),
         error: stringField(raw ?? {}, ["error", "lastError", "last_error"]),
-        ...(permissionStopDetail(raw?.pendingPermissions ?? handle.pendingPermissions) ? { permission: permissionStopDetail(raw?.pendingPermissions ?? handle.pendingPermissions) } : {})
+        ...(permissionStopDiagnostic(raw?.pendingPermissions ?? handle.pendingPermissions) ? { permission: permissionStopDiagnostic(raw?.pendingPermissions ?? handle.pendingPermissions) } : {})
       };
     }
     if (Date.now() >= deadline) return { id: handle.id, workspaceId: handle.workspaceId ?? undefined, status: "timeout", error: `Timed out after ${timeoutMs}ms.` };
@@ -522,7 +524,7 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs = 1_800_000, messag
 }
 
 async function turnResult(handle: PaseoSdkAgentHandle, turn: PaseoSdkTurnResult): Promise<PaseoSdkAgentResult> {
-  const permission = permissionStopDetail(turn.final?.pendingPermissions ?? handle.pendingPermissions);
+  const permission = permissionStopDiagnostic(turn.final?.pendingPermissions ?? handle.pendingPermissions, handle.id);
   if (turn.lastMessage) {
     return {
       id: handle.id,
@@ -537,7 +539,7 @@ async function turnResult(handle: PaseoSdkAgentHandle, turn: PaseoSdkTurnResult)
   const timeline = handle.timeline && typeof handle.timeline.refetch === "function"
     ? await handle.timeline.refetch({ direction: "tail", limit: 50 }).catch(() => undefined)
     : undefined;
-  const observedPermission = permission ?? permissionStopDetail(raw?.pendingPermissions);
+  const observedPermission = permission ?? permissionStopDiagnostic(raw?.pendingPermissions, handle.id);
   return {
     id: handle.id,
     workspaceId: handle.workspaceId ?? stringField(raw ?? {}, ["workspaceId", "workspace_id"]),
@@ -550,22 +552,21 @@ async function turnResult(handle: PaseoSdkAgentHandle, turn: PaseoSdkTurnResult)
   };
 }
 
-function permissionStopDetail(value: unknown): PaseoSdkPermissionStop | undefined {
+export function permissionStopDiagnostic(value: unknown, sessionId?: string): PaseoSdkPermissionStop | undefined {
   const entries = Array.isArray(value) ? value : value && typeof value === "object" ? [value] : [];
   for (const entry of entries) {
     if (!entry || typeof entry !== "object") continue;
     const record = entry as Record<string, unknown>;
     const name = boundedString(record.name ?? record.permission);
-    const title = boundedString(record.title);
-    const description = boundedString(record.description);
     const input = record.input && typeof record.input === "object" ? record.input as Record<string, unknown> : undefined;
     const patterns = boundedStringArray(input?.patterns);
-    if (name || title || patterns?.length) {
+    if (name || patterns?.length) {
+      const requestedScopeDigest = patterns?.length ? createHash("sha256").update(JSON.stringify(patterns)).digest("hex") : undefined;
       return {
         ...(name ? { name } : {}),
-        ...(title ? { title } : {}),
-        ...(description ? { description } : {}),
-        ...(patterns?.length ? { patterns } : {})
+        scopeRelation: "UNKNOWN",
+        ...(requestedScopeDigest ? { requestedScopeDigest } : {}),
+        ...(sessionId ? { sessionId: sessionId.slice(0, 120), turnId: typeof record.id === "string" ? record.id.slice(0, 120) : `${sessionId.slice(0, 100)}:pending` } : {})
       };
     }
   }
@@ -592,7 +593,7 @@ async function refreshHandle(handle: PaseoSdkAgentHandle): Promise<Record<string
 
 function handleResult(handle: PaseoSdkAgentHandle): PaseoSdkAgentResult {
   const raw = handle.latest?.() ?? undefined;
-  const permission = permissionStopDetail(raw?.pendingPermissions ?? handle.pendingPermissions);
+  const permission = permissionStopDiagnostic(raw?.pendingPermissions ?? handle.pendingPermissions);
   return {
     id: handle.id,
     workspaceId: handle.workspaceId ?? stringField(raw ?? {}, ["workspaceId", "workspace_id"]),

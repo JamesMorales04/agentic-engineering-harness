@@ -108,16 +108,14 @@ export async function compilePaseoAgentLaunchSpec(root: string, config: HarnessP
   // participant was launched against an isolated task worktree (AEH-V2-0116). The provider must be
   // able to reach exactly the roots the participant is authorized to use: the launch root and the
   // git metadata directories of that worktree. Nothing else is projected.
-  const authorizedRoots = selection ? [...new Set([root, ...(await gitRootsOrEmpty(root)), ...(scratchLease ? [scratchLease.path] : [])])].sort() : undefined;
+  const authorizedRoots = selection ? await projectedAuthorizedReadRoots(root, selection, controlRoot, scratchLease?.path) : undefined;
   // The control root holds the operation's durable state (contract/seal copies, findings, reports,
   // operation record). Read-only participants (Reviewer/Planner/Explorer) verify their evidence
   // against those files, and Paseo may have relocated the provider project root, so those reads are
   // otherwise gated behind `external_directory`. Only roles with denied write authority receive the
   // control root as an external read scope; mutating participants keep exactly their frozen launch
   // root plus git metadata so no provider write can reach the durable control plane (AEH-V2-0119).
-  const externalRoots = selection && selection.permissions?.write === "deny" && controlRoot && controlRoot !== root
-    ? [...new Set([...(authorizedRoots ?? []), path.resolve(controlRoot)])].sort()
-    : authorizedRoots;
+  const externalRoots = authorizedRoots;
   const openCode = selection?.runtimeAdapter === "opencode" && provider === "opencode" ? compileOpenCodeRuntimeProjection(selection, config, contextCapabilities, externalRoots, root, `${operationId}:${logicalAgent}`) : undefined;
   const providerOptions = selection && provider === "codex" ? codexProviderOptions(selection, authorizedRoots) : undefined;
   const explicitOpenCodeMode = openCode && !openCode.binding.managed ? openCode.binding.agentId : undefined;
@@ -275,6 +273,14 @@ function inferOperationKind(contract: TaskContract): string {
 
 async function gitRootsOrEmpty(root: string): Promise<string[]> {
   return worktreeGitRoots(root).catch(() => []);
+}
+
+/** Exact deterministic directory projection shared with prompts that explain the frozen read boundary. */
+export async function projectedAuthorizedReadRoots(root: string, selection: AgentExecutionSelection, controlRoot = root, scratchRoot?: string): Promise<string[]> {
+  const authorizedRoots = [...new Set([root, ...(await gitRootsOrEmpty(root)), ...(scratchRoot ? [scratchRoot] : [])])].sort();
+  return selection.permissions?.write === "deny" && controlRoot && controlRoot !== root
+    ? [...new Set([...authorizedRoots, path.resolve(controlRoot)])].sort()
+    : authorizedRoots;
 }
 
 /**

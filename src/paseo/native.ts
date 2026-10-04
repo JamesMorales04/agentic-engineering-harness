@@ -1,4 +1,5 @@
 import process from "node:process";
+import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { connectPaseoClient, PaseoSdkUnavailableError, type PaseoSdkPermissionStop } from "./sdk.js";
 import { resolvePaseoSdkFromCli } from "./sdkResolve.js";
@@ -436,7 +437,7 @@ export async function waitForPaseoAgentHandle(
         status,
         lastMessage,
         error: stringField(raw, ["error", "lastError", "last_error"]),
-        ...(permissionStopDetail(raw.pendingPermissions) ? { permission: permissionStopDetail(raw.pendingPermissions) } : {}),
+        ...(permissionStopDetail(raw.pendingPermissions, handle.id) ? { permission: permissionStopDetail(raw.pendingPermissions, handle.id) } : {}),
         ...(capture ? { efficiencyTelemetry: capture.evidence } : {}),
         source: "paseo-agent-subscription",
         updatesObserved
@@ -770,18 +771,17 @@ function stringField(record: Record<string, unknown>, keys: string[]): string | 
   }
   return undefined;
 }
-function permissionStopDetail(value: unknown): PaseoSdkPermissionStop | undefined {
+function permissionStopDetail(value: unknown, sessionId?: string): PaseoSdkPermissionStop | undefined {
   const entries = Array.isArray(value) ? value : value && typeof value === "object" ? [value] : [];
   for (const entry of entries) {
     if (!entry || typeof entry !== "object") continue;
     const record = entry as Record<string, unknown>;
     const name = typeof record.name === "string" && record.name.trim() ? record.name.trim().slice(0, 200) : undefined;
-    const title = typeof record.title === "string" && record.title.trim() ? record.title.trim().slice(0, 200) : undefined;
-    const description = typeof record.description === "string" && record.description.trim() ? record.description.trim().slice(0, 200) : undefined;
     const input = record.input && typeof record.input === "object" ? record.input as Record<string, unknown> : undefined;
-    const patterns = Array.isArray(input?.patterns) ? input.patterns.filter((item): item is string => typeof item === "string" && item.trim().length > 0).slice(0, 8).map((item) => item.slice(0, 300)) : undefined;
-    if (name || title || patterns?.length) {
-      return { ...(name ? { name } : {}), ...(title ? { title } : {}), ...(description ? { description } : {}), ...(patterns?.length ? { patterns } : {}) };
+    const patterns = Array.isArray(input?.patterns) ? input.patterns.filter((item): item is string => typeof item === "string" && item.trim().length > 0).slice(0, 8) : undefined;
+    if (name || patterns?.length) {
+      const requestedScopeDigest = patterns?.length ? createHash("sha256").update(JSON.stringify(patterns)).digest("hex") : undefined;
+      return { ...(name ? { name } : {}), scopeRelation: "UNKNOWN", ...(requestedScopeDigest ? { requestedScopeDigest } : {}), ...(sessionId ? { sessionId: sessionId.slice(0, 120), turnId: typeof record.id === "string" ? record.id.slice(0, 120) : `${sessionId.slice(0, 100)}:pending` } : {}) };
     }
   }
   return undefined;

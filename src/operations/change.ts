@@ -23,6 +23,7 @@ import { executeAgentPrompt } from "../workers/agentPrompt.js";
 import { bindBootstrapOperationPolicy } from "./bootstrapPolicy.js";
 import { resolveRecoveryAuthorityV1 } from "./recoveryAuthority.js";
 import { requireDurableChangeHandoff, type DurableAgentEvidence } from "./changeHandoff.js";
+import { projectedAuthorizedReadRoots } from "../paseo/launchSpec.js";
 import { changeInputsPrompt, resolveChangeInputs, type ChangeInputReference } from "./changeInputs.js";
 import {
   bindOperationCandidate,
@@ -610,13 +611,15 @@ export function normalizeAgentProfile(profile?: string): string | undefined {
 }
 
 /** Deterministic Explorer prompt contract (AEH-V2-0125 regression surface). */
-export function buildExplorerPrompt(operationId: string, payload: ChangeOperationPayload, inputs: ChangeInputReference[]): string {
+export function buildExplorerPrompt(operationId: string, payload: ChangeOperationPayload, inputs: ChangeInputReference[], readRoots: string[] = []): string {
   return [
     "Perform bounded repository discovery for this CHANGE operation.",
     `Operation: ${operationId}`,
     `Request: ${payload.request}`,
     `Explicit files: ${(payload.files ?? []).join(", ") || "none"}`,
     `Domains: ${(payload.domains ?? []).join(", ") || "unspecified"}`,
+    `Frozen readable roots (exact projection):\n${readRoots.length ? readRoots.map((root) => `- ${root}`).join("\n") : "- unavailable; do not search outside the current repository root"}`,
+    "Use repository-relative paths in evidence. Search only the frozen readable roots listed above. Do not search prior or sibling worktrees, home directories, /tmp, or any other path outside this lease. Symlinks do not grant access to their targets outside these roots. If a tool raises an out-of-scope permission prompt, discovery ends; do not approve it. Return BLOCKED when in-scope evidence is insufficient.",
     changeInputsPrompt(inputs),
     "Return the explorer output contract with only relevant files/symbols/tests/module boundaries, verified finding status and concrete evidence. Do not implement, author specs or start another AEH workflow.",
     "Your final output MUST contain exactly one line beginning AEH_RESULT_JSON= followed by the JSON object matching the explorer output contract; a turn without that marker is rejected as EXPLORER_RESULT_ARTIFACT_MISSING."
@@ -634,7 +637,8 @@ async function runDiscovery(
   inputs: ChangeInputReference[]
 ): Promise<DurableAgentEvidence<ExplorerOutput> | undefined> {
   if (!selection) return undefined;
-  const session = await executeAgentPrompt(root, config, contract, selection, buildExplorerPrompt(operationId, payload, inputs), { outputContract: "explorer", phase: "discovery", operationKind: "change", requireExecutionAuthority: true });
+  const readRoots = await projectedAuthorizedReadRoots(root, selection, controlRoot);
+  const session = await executeAgentPrompt(root, config, contract, selection, buildExplorerPrompt(operationId, payload, inputs, readRoots), { outputContract: "explorer", phase: "discovery", operationKind: "change", requireExecutionAuthority: true });
   return requireDurableChangeHandoff(root, "EXPLORER", session, explorerOutputSchema, controlRoot, { operationId: operationId, contract: "explorer", phase: "discovery" });
 }
 
