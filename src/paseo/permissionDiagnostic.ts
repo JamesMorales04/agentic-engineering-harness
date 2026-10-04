@@ -4,6 +4,21 @@ import os from "node:os";
 import path from "node:path";
 import type { PaseoSdkPermissionStop } from "./sdk.js";
 
+const safePermissionNames = new Set(["external_directory", "permission", "tool", "shell", "network", "read", "write", "command"]);
+
+/** Revalidate provider supplied structured diagnostics before they cross a persistence boundary. */
+export function redactPermissionStopDiagnostic(value: unknown, fallbackSessionId?: string): PaseoSdkPermissionStop {
+  const record = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const candidate = typeof record.name === "string" ? record.name : "";
+  const name = safePermissionNames.has(candidate) ? candidate : "UNKNOWN";
+  const relation = record.scopeRelation === "INSIDE" || record.scopeRelation === "OUTSIDE" ? record.scopeRelation : "UNKNOWN";
+  const requestedScopeDigest = typeof record.requestedScopeDigest === "string" && /^[a-f0-9]{64}$/i.test(record.requestedScopeDigest) ? record.requestedScopeDigest.toLowerCase() : undefined;
+  const safeId = (item: unknown): string | undefined => typeof item === "string" && /^[A-Za-z0-9._:-]{1,120}$/.test(item) ? item : undefined;
+  const sessionId = safeId(record.sessionId) ?? safeId(fallbackSessionId);
+  const turnId = safeId(record.turnId);
+  return { name, scopeRelation: relation, ...(requestedScopeDigest ? { requestedScopeDigest } : {}), ...(sessionId ? { sessionId } : {}), ...(turnId ? { turnId } : {}) };
+}
+
 /** Redact provider scope data while classifying it against the frozen launch projection. */
 export async function createPermissionStopDiagnostic(
   name: string | undefined,
@@ -15,13 +30,13 @@ export async function createPermissionStopDiagnostic(
   if (!name && !patterns?.length) return undefined;
   const requestedScopeDigest = patterns?.length ? createHash("sha256").update(JSON.stringify(patterns)).digest("hex") : undefined;
   const scopeRelation = await classifyPermissionScope(patterns, authorizedRoots);
-  return {
-    ...(name ? { name: name.slice(0, 120) } : {}),
+  return redactPermissionStopDiagnostic({
+    ...(name ? { name } : {}),
     scopeRelation,
     ...(requestedScopeDigest ? { requestedScopeDigest } : {}),
-    ...(sessionId ? { sessionId: sessionId.slice(0, 120) } : {}),
-    ...(turnId ? { turnId: turnId.slice(0, 120) } : {})
-  };
+    sessionId,
+    turnId
+  }, sessionId);
 }
 
 async function classifyPermissionScope(patterns: string[] | undefined, roots: string[] | undefined): Promise<PaseoSdkPermissionStop["scopeRelation"]> {

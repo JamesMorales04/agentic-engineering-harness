@@ -10,6 +10,7 @@ import {
   extractPaseoAgentId
 } from "./capabilities.js";
 import { preflightPaseoProviderMode } from "./modePreflight.js";
+import { redactPermissionStopDiagnostic } from "./permissionDiagnostic.js";
 import {
   capturePaseoAgentTurnBaseline,
   preflightPaseoProviderModel,
@@ -501,8 +502,15 @@ function providerStopDetail(status?: string, permission?: import("./sdk.js").Pas
     : undefined;
   return `provider session stopped on an unapproved '${status}' prompt${descriptor ? ` (${descriptor})` : ""}; the turn produced no result`;
 }
-function fromSdk(result: PaseoSdkAgentResult): ManagedPaseoAgentResult { return { id: result.id, exitCode: sdkExitCode(result.status, result.error), stdout: result.permission ? "" : result.lastMessage ?? "", stderr: [result.permission ? undefined : result.error, providerStopDetail(result.status, result.permission)].filter(Boolean).join("\n"), status: result.status, workspaceId: result.workspaceId, transport: "sdk", ...(result.permission ? { permission: result.permission } : {}) }; }
-function fromNativeWait(result: PaseoNativeWaitResult): ManagedPaseoAgentResult { return { id: result.id, exitCode: sdkExitCode(result.status, result.error), stdout: result.permission ? "" : result.lastMessage ?? "", stderr: [result.permission ? undefined : result.error, providerStopDetail(result.status, result.permission)].filter(Boolean).join("\n"), status: result.status, workspaceId: result.workspaceId, transport: "sdk", observation: "subscription", ...(result.permission ? { permission: result.permission } : {}), ...(result.efficiencyTelemetry ? { efficiencyTelemetry: result.efficiencyTelemetry } : {}) }; }
+function fromSdk(result: PaseoSdkAgentResult): ManagedPaseoAgentResult {
+  const permission = isPermissionStopStatus(result.status) ? redactPermissionStopDiagnostic(result.permission, result.id) : result.permission ? redactPermissionStopDiagnostic(result.permission, result.id) : undefined;
+  return { id: result.id, exitCode: sdkExitCode(result.status, result.error), stdout: permission ? "" : result.lastMessage ?? "", stderr: [permission ? undefined : result.error, providerStopDetail(result.status, permission)].filter(Boolean).join("\n"), status: result.status, workspaceId: result.workspaceId, transport: "sdk", ...(permission ? { permission } : {}) };
+}
+function fromNativeWait(result: PaseoNativeWaitResult): ManagedPaseoAgentResult {
+  const permission = isPermissionStopStatus(result.status) ? redactPermissionStopDiagnostic(result.permission, result.id) : result.permission ? redactPermissionStopDiagnostic(result.permission, result.id) : undefined;
+  return { id: result.id, exitCode: sdkExitCode(result.status, result.error), stdout: permission ? "" : result.lastMessage ?? "", stderr: [permission ? undefined : result.error, providerStopDetail(result.status, permission)].filter(Boolean).join("\n"), status: result.status, workspaceId: result.workspaceId, transport: "sdk", observation: "subscription", ...(permission ? { permission } : {}), ...(result.efficiencyTelemetry ? { efficiencyTelemetry: result.efficiencyTelemetry } : {}) };
+}
+function isPermissionStopStatus(status?: string): boolean { return status === "permission" || status === "waiting"; }
 function sdkExitCode(status?: string, error?: string): number { if (status === "timeout") return 124; if (error) return 1; if (status === "failed" || status === "error" || status === "cancelled" || status === "permission" || status === "waiting") return 1; return 0; }
 function firstString(record: Record<string, unknown>, keys: string[]): string | undefined { for (const key of keys) if (typeof record[key] === "string" && record[key]) return record[key] as string; return undefined; }
 function stringRecord(value: unknown): Record<string, string> | undefined { if (!value || typeof value !== "object" || Array.isArray(value)) return undefined; const result: Record<string, string> = {}; for (const [key, item] of Object.entries(value as Record<string, unknown>)) if (typeof item === "string") result[key] = item; return Object.keys(result).length ? result : undefined; }

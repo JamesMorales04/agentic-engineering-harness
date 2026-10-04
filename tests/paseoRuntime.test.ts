@@ -306,7 +306,8 @@ describe("managed Paseo runtime", () => {
       wait: vi.fn(async () => ({
         id: "agent-permission",
         status: "permission",
-        lastMessage: undefined,
+        lastMessage: "provider output mentions /home/private/secret",
+        error: "denied at /tmp/private description",
         source: "paseo-agent-subscription" as const,
         updatesObserved: 1
       }))
@@ -314,6 +315,29 @@ describe("managed Paseo runtime", () => {
     const waited = await waitManagedPaseoAgent("/repo", "agent-permission", 1, deps(run, sdk(), nativeDeps));
     expect(waited).toEqual(expect.objectContaining({ id: "agent-permission", status: "permission", exitCode: 1, stdout: "" }));
     expect(waited.stderr).toContain("unapproved 'permission' prompt");
+    expect(waited.stderr).not.toContain("/home/private");
+    expect(waited.stderr).not.toContain("/tmp/private");
+    expect(waited.permission).toMatchObject({ name: "UNKNOWN", scopeRelation: "UNKNOWN", sessionId: "agent-permission" });
+  });
+
+  it("redacts malformed diagnostic names before persistence", async () => {
+    const nativeDeps = native({
+      wait: vi.fn(async () => ({
+        id: "agent-malicious-name",
+        status: "permission",
+        lastMessage: "raw /home/private output",
+        error: "raw /tmp/private error",
+        permission: { name: "external_directory /home/private/secret", scopeRelation: "OUTSIDE", requestedScopeDigest: "b".repeat(64), sessionId: "agent-malicious-name", turnId: "turn-8" },
+        source: "paseo-agent-subscription" as const,
+        updatesObserved: 1
+      }))
+    });
+    const waited = await waitManagedPaseoAgent("/repo", "agent-malicious-name", 1, deps(vi.fn(async () => result(0, "")), sdk(), nativeDeps));
+    expect(waited.permission).toMatchObject({ name: "UNKNOWN", scopeRelation: "OUTSIDE" });
+    expect(waited.stderr).toContain("UNKNOWN");
+    expect(waited.stderr).not.toContain("/home/private");
+    expect(waited.stderr).not.toContain("/tmp/private");
+    expect(waited.stdout).toBe("");
   });
 
   it("retains the provider approval identity and scope in the failed-turn detail (AEH-V2-0116)", async () => {
