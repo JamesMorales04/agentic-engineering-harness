@@ -69,7 +69,7 @@ export async function runExternalToolValidator(context: ValidationContext): Prom
     visualBinding = resolved;
   }
   const command = configured ?? (lane && pinnedPlaywright ? `${quote(pinnedPlaywright)} test --grep "${context.contract.task.id}" --reporter=json` : definition.command!);
-  const providerVersion = lane ? await playwrightVersion(configured ?? pinnedPlaywright, context.root) : "unknown";
+  const providerVersion = lane ? await playwrightVersion(pinnedPlaywright, context.root) : "unknown";
   const rendered = command.replaceAll("{taskId}", context.contract.task.id).replaceAll("{baseRef}", context.baseRef).replaceAll("{acceptance}", context.contract.source?.acceptance ?? "");
   const cwd = path.resolve(context.root, context.spec.workingDirectory ?? ".");
   const timeoutMs = (context.spec.timeoutSeconds ?? 900) * 1000;
@@ -100,7 +100,11 @@ export async function runExternalToolValidator(context: ValidationContext): Prom
       return isolationFailure(context, definition.category, rendered, error);
     }
   } else {
-    result = await runShell(rendered, { cwd, timeoutMs });
+    result = await runShell(rendered, {
+      cwd,
+      timeoutMs,
+      ...(context.candidate ? { env: { AEH_VALIDATION_CANDIDATE_JSON: JSON.stringify(context.candidate) } } : {})
+    });
   }
   const evidenceFile = typeof context.spec.options?.evidenceFile === "string" ? path.resolve(cwd, context.spec.options.evidenceFile) : undefined;
   const evidenceText = evidenceFile ? await fs.readFile(evidenceFile, "utf8").catch(() => result.stdout) : result.stdout;
