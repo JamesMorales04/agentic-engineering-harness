@@ -107,18 +107,20 @@ function contractFor(validators: string[]): TaskContract {
   } as TaskContract;
 }
 
-async function compileFixture(input: { contractValidators: string[]; checks: ValidationCheck[]; current?: ReturnType<typeof candidate> }) {
+async function compileFixture(input: { contractValidators: string[]; checks: ValidationCheck[]; providers?: NonNullable<HarnessProjectConfig["validation"]>["providers"]; current?: ReturnType<typeof candidate> }) {
   const current = input.current ?? candidate();
   const contract = contractFor(input.contractValidators);
+  const config = input.providers ? { ...projectConfig, validation: { ...projectConfig.validation, providers: input.providers } } as HarnessProjectConfig : projectConfig;
   const derived = contractValidationRequirementsV1({
     requirements: contract.requirements!,
     scope: contract.scope?.allowed ?? ["**"],
     commands: configuredCommands,
-    validators: configuredValidators
+    validators: configuredValidators,
+    providers: input.providers
   });
   const impactBody = impact(current);
   const generated = candidateImpactValidationRequirementsV1(impactBody);
-  const resolution = await resolveValidationRequirements({ root: "/nonexistent-0099-root", requirements: [...derived, ...generated], config: projectConfig, contract });
+  const resolution = await resolveValidationRequirements({ root: "/nonexistent-0099-root", requirements: [...derived, ...generated], config, contract });
   const compilation = compileCandidateAssuranceV1({
     candidate: current,
     impact: impactBody,
@@ -252,6 +254,20 @@ describe("AEH-V2-0099 base contract assertion validation path", () => {
     expect(derived[0]?.requirementRefs).toEqual(["AC-1", "AC-2"]);
     expect(derived[0]?.acceptanceRefs).toEqual(["AC-1", "AC-2"]);
     expect(derived.every((item) => item.scope.length > 0 && item.evidenceNeeded.length > 0)).toBe(true);
+  });
+
+  it("resolves provider capability evidence onto the exact contract assertion in the AcceptanceOracle", async () => {
+    const providers = [{ id: "s11-visual-playwright", capability: "visual-test", provider: "playwright" }];
+    const passingId = "candidate.assurance.validation.capability:visual-test";
+    const passing = await compileFixture({ contractValidators: ["capability:visual-test"], providers, checks: [{ id: passingId, category: "candidate-impact-validation", status: "PASS", message: "visual evidence passed", details: { requirementId: "capability:visual-test", kind: "visual-test", candidate: candidate() } }] });
+    const passingBundle = bundleFor(passing.compilation, passing.report, passing.current);
+    expect(passingBundle.requirements.find((item) => item.assertionId === "AC-1")?.validationRequirementIds).toEqual(["capability:visual-test"]);
+    expect(passingBundle.evidence.find((item) => item.assertionId === "AC-1" && item.kind === "VALIDATION")).toMatchObject({ provenance: { sourceId: passingId }, status: "PASS" });
+
+    const failing = await compileFixture({ contractValidators: ["capability:visual-test"], providers, checks: [{ id: passingId, category: "candidate-impact-validation", status: "FAIL", message: "visual evidence failed", details: { requirementId: "capability:visual-test", kind: "visual-test", candidate: candidate() } }] });
+    const failingBundle = bundleFor(failing.compilation, failing.report, failing.current);
+    expect(failingBundle.evidence.find((item) => item.assertionId === "AC-1" && item.kind === "VALIDATION")).toMatchObject({ provenance: { sourceId: passingId }, status: "FAIL" });
+    expect(evaluateAcceptanceOracleV1(failingBundle, failing.compilation.evidenceStrength).blockers.map((item) => item.code)).toContain("VERIFICATION_VALIDATION_EVIDENCE_INSUFFICIENT");
   });
 
   it("replaces a plan requirement that names the same check id with the frozen contract-derived one (AEH-V2-0118)", () => {

@@ -5,7 +5,7 @@ import { sha256Canonical } from "../core/digest.js";
 import type { HarnessProjectConfig, TaskContract, ValidationCapability, ValidatorSpec } from "../core/types.js";
 import type { ProjectStackProfileV1 } from "../participants/stack.js";
 import type { ToolAvailabilityV1 } from "../participants/toolRegistry.js";
-import { validationCapabilityValues } from "../validation/capabilityCatalog.js";
+import { isValidationCapability, validationCapabilityValues } from "../validation/capabilityCatalog.js";
 
 export const validationRequirementKindValues = validationCapabilityValues;
 
@@ -42,9 +42,14 @@ export const validationRequirementSchema = z.object({
  */
 export function configuredValidationKindForCheckV1(
   checkId: string,
-  input: { commands?: readonly { id: string }[]; validators?: readonly { id: string; adapter: string }[] } = {}
+  input: { commands?: readonly { id: string }[]; validators?: readonly { id: string; adapter: string }[]; providers?: readonly { id: string; capability: ValidationCapability; provider: string }[] } = {}
 ): ValidationRequirementKindV1 | undefined {
   if (input.commands?.some((command) => `command.${command.id}` === checkId)) return "command";
+  if (checkId.startsWith("capability:")) {
+    const capability = checkId.slice("capability:".length);
+    if (!isValidationCapability(capability) || !input.providers?.some((provider) => provider.capability === capability)) return undefined;
+    return adapterKinds[capability];
+  }
   const validator = input.validators?.find((candidate) => candidate.id === checkId);
   if (validator) return adapterKinds[validator.adapter];
   return undefined;
@@ -63,6 +68,7 @@ export function contractValidationRequirementsV1(input: {
   scope: readonly string[];
   commands?: readonly { id: string }[];
   validators?: readonly { id: string; adapter: string }[];
+  providers?: readonly { id: string; capability: ValidationCapability; provider: string }[];
 }): ValidationRequirementV1[] {
   const scope = [...new Set(input.scope.map((entry) => entry.trim()).filter(Boolean))];
   const byCheckId = new Map<string, Set<string>>();
@@ -249,7 +255,9 @@ function resolveConfigured(
   const validator = validators.find((candidate) => adapterKinds[candidate.adapter] === requirement.kind && (candidate.id === requirement.id || candidate.id === requirement.kind || validators.length === 1));
   if (validator) return action(requirement, "configured-validator", validator.id, validator.command);
 
-  const provider = providers.find((candidate) => providerKind(candidate.capability) === requirement.kind && (candidate.id === requirement.id || candidate.provider === requirement.kind || providers.length === 1));
+  const matchingProviders = providers.filter((candidate) => providerKind(candidate.capability) === requirement.kind);
+  const provider = matchingProviders.find((candidate) => candidate.id === requirement.id || candidate.provider === requirement.kind)
+    ?? (matchingProviders.length === 1 ? matchingProviders[0] : undefined);
   if (!provider) return undefined;
   const requiredTool = typeof provider.options?.tool === "string" ? provider.options.tool : undefined;
   if (requiredTool && !availableTools?.some((tool) => tool.id === requiredTool && tool.available)) return undefined;

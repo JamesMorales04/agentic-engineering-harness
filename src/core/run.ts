@@ -640,7 +640,8 @@ async function recompileCandidateAssurance(input: {
     const candidateAssurancePolicy = candidateAssurancePolicyFromFrozenPolicy(policy);
     const impactRequirements = candidateImpactValidationRequirementsV1(input.impact);
     // Every frozen contract requirement deterministically binds its declared validation check ids
-    // (configured commands persist as `command.<id>`, configured validators under their own id) to
+    // (configured commands persist as `command.<id>`, configured validators under their own id, and
+    // configured provider-backed evidence as `capability:<kind>`) to
     // an explicit candidate-bound ValidationRequirement, so the AcceptanceOracle resolves the exact
     // evidence path instead of an empty DIRECT base set. No passing check satisfies an assertion it
     // was not declared for; unknown check ids are never fabricated.
@@ -648,7 +649,8 @@ async function recompileCandidateAssurance(input: {
       requirements: input.contract.requirements ?? [],
       scope: input.contract.scope?.allowed ?? ["**"],
       commands: [...(input.config.validation?.commands ?? []), ...(input.contract.verification?.commands ?? [])],
-      validators: [...(input.config.validation?.validators ?? []), ...(input.contract.verification?.validators ?? [])]
+      validators: [...(input.config.validation?.validators ?? []), ...(input.contract.verification?.validators ?? [])],
+      providers: input.config.validation?.providers ?? []
     });
     // A plan-declared validation requirement may name the same deterministic check id as a frozen
     // contract requirement (the plan observes the configured validator ids). The merged set keeps
