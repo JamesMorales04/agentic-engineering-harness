@@ -190,7 +190,23 @@ export const candidateReviewDimensionSchema = z.enum(candidateReviewDimensionVal
 const claimStatusValues = ["SUPPORTED", "UNCERTAIN", "CONFLICTING"] as const;
 const semanticFailureClassValues = ["PATCH_CONTEXT_MISMATCH", "TOOL_FAILURE", "MISSING_CONTEXT", "WRONG_AGENT", "VALIDATION_FAILURE", "REVIEW_FAILURE", "AMBIGUOUS_OUTPUT", "CONFLICTING_RESULTS"] as const;
 const evidenceRefSchema = z.string().trim().min(1).max(200);
-const semanticJudgmentSchema = z.discriminatedUnion("type", [
+/**
+ * Codex strict-mode reformulation of the STACK `versions` string map. Codex
+ * `response_format` (`json_schema strict:true`, reached via Paseo `--output-schema`)
+ * rejects `propertyNames` and schema-valued `additionalProperties`, so an arbitrary
+ * string map has no strict-safe object encoding. The entries array preserves the
+ * exact information content and key/value bounds (trimmed 1..200); the deterministic
+ * validator canonicalizes entries to record equivalence (sorted by key, last wins),
+ * and the stack projector consumes the same canonical form. No version data is
+ * dropped and no discriminator is loosened.
+ */
+const semanticVersionEntrySchema = z.object({ key: z.string().trim().min(1).max(200), value: z.string().trim().min(1).max(200) }).strict();
+/**
+ * The judgment union is a plain union (not a discriminated union) so the exported
+ * JSON Schema uses `anyOf`: Codex strict rejects `oneOf`. The eight variants remain
+ * disjoint on their `const` type discriminator, so the accepted language is unchanged.
+ */
+const semanticJudgmentSchema = z.union([
   z.object({ type: z.literal("INTENT"), intent: z.enum(["informational", "audit", "change"]), confidence: z.number().min(0).max(1), evidenceRefs: z.array(evidenceRefSchema).min(1).max(32) }).strict(),
   z.object({
     type: z.literal("ROUTE"),
@@ -217,7 +233,7 @@ const semanticJudgmentSchema = z.discriminatedUnion("type", [
     testFrameworks: z.array(z.string().trim().min(1).max(200)).max(32),
     migrationMechanisms: z.array(z.string().trim().min(1).max(200)).max(32),
     buildSystems: z.array(z.string().trim().min(1).max(200)).max(32),
-    versions: z.record(z.string().trim().min(1).max(200), z.string().trim().min(1).max(200)),
+    versions: z.array(semanticVersionEntrySchema),
     projectSkillRoots: z.array(z.string().min(1).max(200)).max(64),
     evidenceRefs: z.array(evidenceRefSchema).min(1).max(128),
     unknowns: z.array(z.string().trim().min(1).max(1_000)).max(32)
@@ -253,7 +269,7 @@ const semanticJudgmentSchema = z.discriminatedUnion("type", [
     probableCause: z.enum(["PROVIDER_STALL", "TOOL_LOOP", "CONTEXT_CHURN", "BUILD_OR_VALIDATION_WAIT", "TOOL_KNOWLEDGE_GAP", "IMPLEMENTATION_COMPLEXITY", "EXTERNAL_BLOCKER", "UNKNOWN"]),
     suggestedSupervisorAction: z.enum(["CONTINUE", "RESUME_SAME_SESSION", "ROTATE_SESSION", "RETRY_PARTICIPANT", "RETRIEVE_SKILL", "REPLAN", "SPLIT_WORK", "REASSIGN", "FAIL", "ESCALATE_TO_LEAD", "NONE"]),
     rationale: z.string().trim().min(1).max(2_000),
-    skillOrToolPackSuggestion: z.object({ topic: z.string().trim().min(1).max(300), evidenceRefs: z.array(evidenceRefSchema).min(1).max(16) }).strict().optional(),
+    skillOrToolPackSuggestion: z.object({ topic: z.string().trim().min(1).max(300), evidenceRefs: z.array(evidenceRefSchema).min(1).max(16) }).strict().nullable(),
     evidenceRefs: z.array(evidenceRefSchema).min(1).max(32),
     unknowns: z.array(z.string().trim().min(1).max(1_000)).max(16)
   }).strict()
@@ -332,6 +348,14 @@ export interface SemanticAssessmentTelemetryV1 {
   evidenceDigest: string;
   assessmentDigest: string;
   cacheHit: boolean;
+  /** Observable model/provider/variant identity for the resolved assessor (registry-driven). */
+  modelId: string;
+  modelProvider?: string;
+  variant?: string;
+  runtimeName: string;
+  paseoProvider: string;
+  /** Semantic assessment never falls back; the observation is always fallbackUsed=false. */
+  fallbackUsed: boolean;
 }
 
 export interface SemanticAssessmentCacheV1 {
@@ -479,11 +503,16 @@ export function resolveSemanticAssessor(topology: ResolvedAgentTopology): Resolv
   const requiredDenied = ["read", "write", "shell", "network", "delegate", "review", "validate", "gitWrite"] as const;
   const permissionIssues = requiredDenied.filter((key) => permissions[key] !== "deny");
   if (permissionIssues.length) throw new AehError("SEMANTIC_ASSESSMENT_UNAVAILABLE", `Semantic Assessor permissions must explicitly deny ${permissionIssues.join(", ")}.`);
-  if (selection.transport !== "paseo" || selection.runtimeAdapter !== "opencode" || selection.paseoProvider !== "opencode") throw new AehError("SEMANTIC_ASSESSMENT_UNAVAILABLE", "Semantic Assessor requires the AEH-managed OpenCode runtime through Paseo.");
+  if (selection.transport !== "paseo" || selection.runtimeAdapter !== "codex" || selection.paseoProvider !== "codex") throw new AehError("SEMANTIC_ASSESSMENT_UNAVAILABLE", "Semantic Assessor requires the AEH-managed Codex runtime through Paseo (Luna via Codex). The superseded OpenCode-routed Luna pairing was removed; see UNSUPPORTED_LEGACY_ASSESSOR_ROUTING.");
   if (selection.runtimeCapabilities.runtimeConfigInjection !== true || selection.runtimeCapabilities.structuredOutput !== true || selection.runtimeCapabilities.modelSelection !== true) throw new AehError("SEMANTIC_ASSESSMENT_UNAVAILABLE", "Semantic Assessor runtime must support AEH permission projection, topology model selection, and structured output.");
+  // Explicit stale-pairing guard: fail with a migration error (not a silent capability
+  // refusal) when a stale topology still resolves the superseded OpenCode Luna pairing.
+  if (selection.modelId === "opencode-go/gpt-6-luna") throw new AehError("SEMANTIC_ASSESSMENT_UNAVAILABLE", "UNSUPPORTED_LEGACY_ASSESSOR_ROUTING: Semantic Assessor resolved opencode-go/gpt-6-luna. Migrate models.structured-assessor to runtime codex, provider openai, model gpt-6-luna, variant xhigh.");
   // Runtime-level `structuredOutput` is not proof for every model behind the runtime. The resolved
   // assessor model must hold a certified structured-output capability at the required level, so an
   // ineligible model fails closed before execution instead of silently falling back.
+  // Muse (opencode-go/muse-spark-1.3-contributor) is intentionally uncertified: failed Muse
+  // qualification evidence is preserved out-of-tree with a requalification path in docs/V0.4.13.md.
   assertSemanticStructuredOutputCapabilityV1(selection.modelId);
   if (selection.nativeAgent || selection.skills.length || selection.mcps.length || selection.args.length || agent.capabilities?.length || agent.orchestratorPromptPath) throw new AehError("SEMANTIC_ASSESSMENT_UNAVAILABLE", "Semantic Assessor topology cannot select external agents, tools, skills, capabilities, runtime arguments, or orchestrator prompts.");
   if (selection.outputContract !== "semantic-assessment") throw new AehError("SEMANTIC_ASSESSMENT_UNAVAILABLE", "Semantic Assessor topology must use the semantic-assessment output contract.");
@@ -641,7 +670,20 @@ export class SemanticAssessmentServiceV1 {
   }
 
   private async emitTelemetry(result: SemanticAssessmentV1, cacheHit: boolean): Promise<void> {
-    await this.options.onTelemetry?.({ assessmentType: result.assessmentType, assessorId: result.assessor.logicalAgent, paseoAgentId: result.paseoSession.agentId, evidenceDigest: result.evidenceDigest, assessmentDigest: result.assessmentDigest, cacheHit });
+    await this.options.onTelemetry?.({
+      assessmentType: result.assessmentType,
+      assessorId: result.assessor.logicalAgent,
+      paseoAgentId: result.paseoSession.agentId,
+      evidenceDigest: result.evidenceDigest,
+      assessmentDigest: result.assessmentDigest,
+      cacheHit,
+      modelId: result.assessor.modelId,
+      ...(result.assessor.modelProvider ? { modelProvider: result.assessor.modelProvider } : {}),
+      ...(result.assessor.variant ? { variant: result.assessor.variant } : {}),
+      runtimeName: result.assessor.runtimeName,
+      paseoProvider: result.assessor.paseoProvider,
+      fallbackUsed: false
+    });
   }
 }
 
@@ -666,7 +708,22 @@ function validateSessionIdentity(session: SemanticPaseoSessionIdentityV1, assess
 
 function normalizePayloadUnknowns(payload: SemanticAssessmentPayloadV1): SemanticAssessmentPayloadV1 {
   const judgmentUnknowns = "unknowns" in payload.judgment ? payload.judgment.unknowns : [];
-  return { ...payload, unknowns: [...new Set([...payload.unknowns, ...judgmentUnknowns])].sort() };
+  const judgment = payload.judgment.type === "STACK"
+    ? { ...payload.judgment, versions: canonicalSemanticVersionEntries(payload.judgment.versions) }
+    : payload.judgment;
+  return { ...payload, judgment, unknowns: [...new Set([...payload.unknowns, ...judgmentUnknowns])].sort() };
+}
+
+/**
+ * Canonicalize STACK versions entries to record equivalence: sorted by key with
+ * last-wins on duplicates, exactly matching the superseded string-map semantics.
+ * Deterministic so digests and the stack projector stay stable regardless of the
+ * order the model emitted.
+ */
+function canonicalSemanticVersionEntries(entries: ReadonlyArray<{ key: string; value: string }>): Array<{ key: string; value: string }> {
+  const byKey = new Map<string, string>();
+  for (const entry of entries) byKey.set(entry.key, entry.value);
+  return [...byKey.entries()].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)).map(([key, value]) => ({ key, value }));
 }
 
 function validateAssessmentPayload(payload: SemanticAssessmentPayloadV1, request: SemanticAssessmentRequestV1): void {

@@ -2,13 +2,14 @@
   "version": 1,
   "extends": ["aeh:default"],
   "runtimes": { "opencode": { "capabilities": { "nativeAgentViaPaseo": true } } },
-  "models": { "workhorse": { "runtime": "opencode", "provider": "opencode-go", "model": "mimo-v2.6-flash", "variant": "max" } },
+  "models": { "workhorse": { "runtime": "opencode", "provider": "opencode-go", "model": "muse-spark-1.3-contributor", "variant": "max" } },
   "agents": {
     "lead": { "temperature": 0.1, "skills": ["engineering-workflow", "lead-engineer", "paseo-orchestration", "verification-planning", "worktree-lifecycle"] },
     "operation-supervisor": { "temperature": 0.1 },
     "planner": { "temperature": 0.05, "permissions": { "shell": "deny" } },
     "implementer": { "temperature": 0.1 },
     "reviewer": { "temperature": 0.1 },
+    "high-assurance-reviewer": { "temperature": 0.1 },
     "repairer": { "temperature": 0.1 },
     "spec-manager": { "temperature": 0.1 }
   },

@@ -15,13 +15,13 @@ import type { AgentTopologySource } from "../src/agents/types.js";
 export const semanticAssessorTopologySource: AgentTopologySource = {
   version: 1,
   runtimes: {
-    opencode: {
-      adapter: "opencode",
-      paseoProvider: "opencode",
-      capabilities: { modelSelection: true, structuredOutput: true, runtimeConfigInjection: true }
+    codex: {
+      adapter: "codex",
+      paseoProvider: "codex",
+      capabilities: { modelSelection: true, variantSelection: true, structuredOutput: true, runtimeConfigInjection: true, sessions: true }
     }
   },
-  models: { assessorModel: { runtime: "opencode", provider: "opencode-go", model: "gpt-6-luna" } },
+  models: { assessorModel: { runtime: "codex", provider: "openai", model: "gpt-6-luna", variant: "xhigh" } },
   agents: {
     assessor: {
       role: "Semantic Assessor",
@@ -76,12 +76,12 @@ export function semanticPayload(request: SemanticAssessmentRequestV1, override?:
     switch (request.assessmentType) {
       case "INTENT": return { type: "INTENT", intent: "change", confidence: 0.8, evidenceRefs: [refs[0]!] };
       case "ROUTE": return { type: "ROUTE", recommendedRoute: "DIRECT", scopeClarity: "HIGH", decompositionNeed: false, coordinationNeed: false, architectureUncertainty: false, productUncertainty: false, formalizationNeed: "NONE", semanticRiskSignals: [], evidenceRefs: [refs[0]!], unknowns: ["unknown route context"] };
-      case "STACK": return { type: "STACK", languages: ["Rust"], frameworks: [], packageManagers: [], databases: [], toolchains: [], signals: [{ id: "language", evidenceRef: refs[0]! }], testFrameworks: [], migrationMechanisms: [], buildSystems: [], versions: {}, projectSkillRoots: [], evidenceRefs: [refs[0]!], unknowns: ["unknown build tool"] };
+      case "STACK": return { type: "STACK", languages: ["Rust"], frameworks: [], packageManagers: [], databases: [], toolchains: [], signals: [{ id: "language", evidenceRef: refs[0]! }], testFrameworks: [], migrationMechanisms: [], buildSystems: [], versions: [], projectSkillRoots: [], evidenceRefs: [refs[0]!], unknowns: ["unknown build tool"] };
       case "ISSUE": return { type: "ISSUE", classification: "ready", requestedOutcome: "Implement the reported behavior", explicitRequirements: [], evidenceRefs: [refs[0]!], unknowns: ["unknown acceptance detail"] };
       case "FAILURE": return { type: "FAILURE", classification: "AMBIGUOUS_OUTPUT", evidenceRefs: [refs[0]!] };
       case "CANDIDATE_IMPACT": return { type: "CANDIDATE_IMPACT", changedFiles: ["src/example.ts"], changeKinds: ["source"], reviewDimensions: [], requiresIndependentReview: true, evidenceRefs: [refs[0]!], unknowns: ["unknown downstream effect"] };
       case "VALIDATION_NEED": return { type: "VALIDATION_NEED", property: "Expected behavior is preserved", rationale: "The request changes behavior.", scope: ["src/**"], evidenceRefs: [refs[0]!], unknowns: ["unknown validator mapping"] };
-      case "OPERATIONS_ANALYSIS": return { type: "OPERATIONS_ANALYSIS", classification: "UNCERTAIN", probableCause: "UNKNOWN", suggestedSupervisorAction: "NONE", rationale: "The bounded evidence does not establish a specific operational cause.", evidenceRefs: [refs[0]!], unknowns: ["additional activity evidence is unavailable"] };
+      case "OPERATIONS_ANALYSIS": return { type: "OPERATIONS_ANALYSIS", classification: "UNCERTAIN", probableCause: "UNKNOWN", suggestedSupervisorAction: "NONE", rationale: "The bounded evidence does not establish a specific operational cause.", skillOrToolPackSuggestion: null, evidenceRefs: [refs[0]!], unknowns: ["additional activity evidence is unavailable"] };
     }
   })();
   return {
@@ -100,11 +100,13 @@ export function semanticTestService(options: {
   runner?: SemanticAssessmentRunnerV1;
   cache?: Parameters<typeof createSemanticAssessmentServiceV1>[0]["cache"];
 }) {
+  // Service-logic coverage uses the gated resolver: the Codex-channel Luna model is
+  // certified (see docs/evidence/model-routing/codex-requalification-2026-10-04.json).
   const assessor = semanticTestAssessor();
   const runner = options.runner ?? {
     assess: async ({ request: assessmentRequest }: { request: SemanticAssessmentRequestV1 }) => ({
       payload: options.payload?.(assessmentRequest) ?? semanticPayload(assessmentRequest),
-      paseoSession: { provider: "opencode", agentId: "paseo-semantic-session-1", workspaceId: "workspace-test", transport: "sdk" as const }
+      paseoSession: { provider: "codex", agentId: "paseo-semantic-session-1", workspaceId: "workspace-test", transport: "sdk" as const }
     })
   };
   return createSemanticAssessmentServiceV1({ assessor, runner, policyRevision: semanticCapabilityPolicyRevisionV1, ...(options.cache ? { cache: options.cache } : {}) });

@@ -6,14 +6,12 @@ import { semanticAssessorTopologySource } from "./semanticAssessmentSupport.js";
 
 describe("Semantic Assessor topology resolution", () => {
   it("resolves model/profile selection only from AgentTopology", () => {
+    // Codex-channel Luna is certified, so the base and profile-overridden topologies
+    // resolve through the capability gate (profile model selection still applies first).
     const source = structuredClone(semanticAssessorTopologySource);
-    source.profiles = { high: { models: { assessorModel: { model: "deepseek-v4.1-flash" } } } };
-    const base = resolveSemanticAssessor(resolveAgentTopology(source));
-    const profile = resolveSemanticAssessor(resolveAgentTopology(source, "high"));
-
-    expect(base.identity).toMatchObject({ logicalAgent: "assessor", modelAlias: "assessorModel", modelId: "opencode-go/gpt-6-luna" });
-    expect(profile.identity).toMatchObject({ topologyProfile: "high", logicalAgent: "assessor", modelAlias: "assessorModel", modelId: "opencode-go/deepseek-v4.1-flash" });
-    expect(profile.identity.identityDigest).not.toBe(base.identity.identityDigest);
+    source.profiles = { high: { models: { assessorModel: { variant: "max" } } } };
+    expect(resolveSemanticAssessor(resolveAgentTopology(source)).identity.modelId).toBe("openai/gpt-6-luna");
+    expect(resolveSemanticAssessor(resolveAgentTopology(source, "high")).selection.variant).toBe("max");
   });
 
   it("fails closed when the topology has zero or multiple enabled assessors", () => {

@@ -169,8 +169,8 @@ describe("Paseo launch spec", () => {
       paseoProvider: "opencode",
       runtimeAdapter: "opencode",
       runtimeName: "opencode",
-      modelName: "MiMo-V2.6-Flash",
-      modelId: "opencode-go/MiMo-V2.6-Flash",
+      modelName: "muse-spark-1.3-contributor",
+      modelId: "opencode-go/muse-spark-1.3-contributor",
       profile: "balanced",
       variant: "high",
       skills: [],
@@ -190,7 +190,7 @@ describe("Paseo launch spec", () => {
     expect(spec).toEqual(
       expect.objectContaining({
         provider: "opencode",
-        model: "opencode-go/MiMo-V2.6-Flash",
+        model: "opencode-go/muse-spark-1.3-contributor",
         nativeAgentId: "aeh-code-quality-reviewer",
         thinkingOptionId: "high"
       })
@@ -209,7 +209,7 @@ describe("Paseo launch spec", () => {
     expect(inline.agent["aeh-code-quality-reviewer"]).toEqual(
       expect.objectContaining({
         mode: "primary",
-        model: "opencode-go/MiMo-V2.6-Flash"
+        model: "opencode-go/muse-spark-1.3-contributor"
       })
     );
     expect(spec.labels).toEqual(
@@ -238,8 +238,8 @@ describe("Paseo launch spec", () => {
       paseoProvider: "opencode",
       runtimeAdapter: "opencode",
       runtimeName: "opencode",
-      modelName: "MiMo-V2.6-Flash",
-      modelId: "opencode-go/MiMo-V2.6-Flash",
+      modelName: "muse-spark-1.3-contributor",
+      modelId: "opencode-go/muse-spark-1.3-contributor",
       nativeAgent: "company-backend-agent",
       skills: [],
       mcps: [],

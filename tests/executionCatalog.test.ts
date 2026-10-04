@@ -6,7 +6,7 @@ describe("execution catalog", () => {
   it("freezes runtime/model ingredients and canonical role/skill references", () => {
     const catalog = compileExecutionCatalog({
       runtimes: { opencode: { adapter: "opencode", paseoProvider: "opencode", capabilities: { structuredOutput: true } }, codex: { adapter: "codex" } },
-      models: { workhorse: { runtime: "opencode", provider: "opencode-go", model: "MiMo-V2.6-Flash" }, brain: { runtime: "codex", provider: "openai", model: "gpt-test", variant: "max" } },
+      models: { workhorse: { runtime: "opencode", provider: "opencode-go", model: "muse-spark-1.3-contributor" }, brain: { runtime: "codex", provider: "openai", model: "gpt-test", variant: "max" } },
       roleBindings: { Implementer: { runtimeId: "opencode", modelAlias: "workhorse", transport: "paseo" } },
       routeRuleIds: ["default", "default"]
     });

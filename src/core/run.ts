@@ -4,7 +4,7 @@ import type { AgentExecutionSelection, RecoveryMap, ResolvedRoute } from "../age
 import { auditAgentTopology } from "../agents/audit.js";
 import { loadResolvedAgentTopology } from "../agents/config.js";
 import { classifyFailureDecision, classifyFailureWithSemanticAssessment, formatRecoveryAction, resolveRecoveryStep } from "../agents/recovery.js";
-import { executionSelectionForAgent, selectExecutionForTask, selectAgentNames, selectionWithModelOverride } from "../agents/routing.js";
+import { executionSelectionForAgent, selectExecutionForTask, selectAgentNames, selectionWithModelOverride, selectModelFallbackExecutionV1 } from "../agents/routing.js";
 import { validateExecutionCapabilities } from "../agents/permissions.js";
 import { runReviewLifecycle } from "../agents/reviewLifecycle.js";
 import type { SeverityCounts } from "../agents/qualityConvergence.js";
@@ -999,7 +999,16 @@ async function resolveExecutionBoundary(root: string, config: HarnessProjectConf
         const roleSelection = stage.role ? selectAgentNames(topology, { role: stage.role }, 1)[0] : undefined;
         const roleExecution = roleSelection ? executionSelectionForAgent(topology, roleSelection) : undefined;
         const modelExecution = stage.model ? selectionWithModelOverride(topology, roleExecution ?? selection, stage.model) : undefined;
-        return [stage.name, selectionForStage(selection, stage, roleExecution, modelExecution)];
+        // Explicit fallback observability (PARTIAL MODEL_ROUTING_MIGRATION): tag the frozen
+        // escalation selection with the registry-checked observation ONLY when the registry
+        // fires for this exact override (difficult-diagnosis workhorse->brain). Configured
+        // overrides outside the registry stay untagged and record fallbackUsed=false
+        // downstream; selection behavior is unchanged and semantic assessment never falls back.
+        const fallback = stage.model && modelExecution ? selectModelFallbackExecutionV1(topology, roleExecution ?? selection, "difficult-diagnosis") : undefined;
+        const observedExecution = modelExecution && fallback?.observation.fallbackUsed === true && fallback.selection.modelId === modelExecution.modelId
+          ? { ...modelExecution, modelFallback: fallback.observation }
+          : modelExecution;
+        return [stage.name, selectionForStage(selection, stage, roleExecution, observedExecution)];
       }
       catch { return [stage.name, undefined]; }
     }));

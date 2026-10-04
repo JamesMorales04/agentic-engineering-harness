@@ -3,6 +3,7 @@ import type { TaskContract } from "../core/types.js";
 import type { ImplementationRoute } from "../architecture/contracts.js";
 import type { AgentExecutionSelection, AgentRouteContext, ResolvedAgentTopology, ResolvedRoute, RoutingRule } from "./types.js";
 import type { AgentSelector } from "./types.js";
+import { describeModelFallbackV1, modelFallbackRegistryV1, noModelFallbackV1, type ModelFallbackObservationV1 } from "./modelFallback.js";
 export function resolveRoute(topology: ResolvedAgentTopology, context: AgentRouteContext): ResolvedRoute { const matched = topology.routing.filter((rule) => matchesRule(rule, context)).sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0)); const review: AgentSelector[] = []; const reasons: string[] = []; let implementation: AgentSelector | undefined; for (const rule of matched) { if (!implementation && rule.select) implementation = rule.select; review.push(...(rule.review ?? [])); reasons.push(`${rule.id}: intent=${context.intent}, domains=${(context.domains ?? []).join(",") || "none"}, files=${(context.files ?? []).length}, risk=${context.risk ?? "unspecified"}`); } return { ruleIds: matched.map((rule) => rule.id), implementation, review, reviewers: [], reasons }; }
 export function executionSelectionForAgent(topology: ResolvedAgentTopology, agentName: string): AgentExecutionSelection { const agent = topology.agents[agentName]; if (!agent || agent.disabled) throw new Error(`Agent ${agentName} is unavailable.`); const model = agent.model; const runtime = agent.runtime; return { profile: topology.profile, logicalAgent: agent.name, role: agent.role, domains: agent.domains ?? [], specializations: agent.specializations ?? [], description: agent.description, contextRequirements: agent.contextRequirements, runtimeName: runtime.name, runtimeAdapter: runtime.adapter, paseoProvider: runtime.paseoProvider ?? runtime.adapter, modelAlias: model.alias, modelId: model.id, modelName: model.model, modelProvider: model.provider, variant: agent.execution.variant ?? model.variant, nativeAgent: agent.execution.nativeAgent, transport: agent.execution.transport ?? "inherit", temperature: agent.temperature ?? model.temperature, skills: [...new Set(agent.skills ?? [])], mcps: agent.mcps ?? [], permissions: agent.permissions ?? {}, outputContract: agent.outputContract, args: [...(runtime.defaultArgs ?? []), ...(agent.execution.args ?? [])], runtimeCapabilities: runtime.capabilities ?? {} }; }
 export function selectionWithModelOverride(topology: ResolvedAgentTopology, selection: AgentExecutionSelection, modelRef: string): AgentExecutionSelection {
@@ -14,7 +15,10 @@ export function selectionWithModelOverride(topology: ResolvedAgentTopology, sele
   if (!runtime) throw new Error(`Escalation model ${modelRef} references unavailable runtime ${model.runtime}.`);
   const agent = topology.agents[selection.logicalAgent];
   const runtimeChanged = selection.runtimeName !== model.runtime;
-  return { ...selection, runtimeName: model.runtime, runtimeAdapter: runtime.adapter, paseoProvider: runtime.paseoProvider ?? runtime.adapter, modelAlias: alias, modelId: model.id, modelName: model.model, modelProvider: model.provider, variant: model.variant, nativeAgent: runtimeChanged ? undefined : selection.nativeAgent, args: [...(runtime.defaultArgs ?? []), ...(agent?.execution.args ?? [])], runtimeCapabilities: runtime.capabilities ?? {} };
+  // A fresh model override invalidates any prior fallback observation; the caller attaches a
+  // new registry-checked observation (or none) explicitly. Stale observations must never ride along.
+  const { modelFallback: _droppedFallback, ...rest } = selection;
+  return { ...rest, runtimeName: model.runtime, runtimeAdapter: runtime.adapter, paseoProvider: runtime.paseoProvider ?? runtime.adapter, modelAlias: alias, modelId: model.id, modelName: model.model, modelProvider: model.provider, variant: model.variant, nativeAgent: runtimeChanged ? undefined : selection.nativeAgent, args: [...(runtime.defaultArgs ?? []), ...(agent?.execution.args ?? [])], runtimeCapabilities: runtime.capabilities ?? {} };
 }
 export function selectExecutionForTask(topology: ResolvedAgentTopology, contract: TaskContract): { route: ResolvedRoute; selection: AgentExecutionSelection } {
   const context: AgentRouteContext = { intent: contract.routing?.intent ?? "implement", domains: contract.routing?.domains ?? [], files: contract.scope?.allowed ?? [], risk: contract.routing?.risk };
@@ -45,6 +49,39 @@ function hasDeterministicAssurance(contract: TaskContract): boolean {
   );
 }
 export function selectFallbackExecution(topology: ResolvedAgentTopology, contract: TaskContract, currentAgent: string): AgentExecutionSelection | undefined { const desiredDomains = contract.routing?.domains ?? []; const candidates = Object.values(topology.agents).filter((agent) => agent.role === "Implementer" && !agent.disabled && agent.name !== currentAgent); const ranked = candidates.sort((a, b) => domainScore(b.domains ?? [], desiredDomains) - domainScore(a.domains ?? [], desiredDomains)); return ranked[0] ? executionSelectionForAgent(topology, ranked[0].name) : undefined; }
+
+export interface ModelFallbackSelectionV1 {
+  selection: AgentExecutionSelection;
+  observation: ModelFallbackObservationV1;
+}
+
+/**
+ * Resolve an explicit registry-driven model fallback (PARTIAL MODEL_ROUTING_MIGRATION).
+ *
+ * Mechanism: DETERMINISTIC. Takes the workhorseToBrain fallback ONLY when the registry
+ * holds a rule whose `from` matches the current selection's model alias and whose `when`
+ * includes the explicit reason, and the override actually changes the model id. Every
+ * other case returns the input selection with fallbackUsed=false. No silent fallback:
+ * callers must persist the returned observation (it rides AgentExecutionSelection.modelFallback
+ * into efficiency telemetry). Semantic assessment never calls this (fail-closed).
+ */
+export function selectModelFallbackExecutionV1(
+  topology: ResolvedAgentTopology,
+  selection: AgentExecutionSelection,
+  reason: string
+): ModelFallbackSelectionV1 {
+  const rule = Object.values(modelFallbackRegistryV1(topology)).find(
+    (candidate) => candidate.from === `@${selection.modelAlias}` && (candidate.when ?? []).includes(reason)
+  );
+  if (!rule) return { selection, observation: noModelFallbackV1() };
+  try {
+    const next = selectionWithModelOverride(topology, selection, rule.to);
+    if (next.modelId === selection.modelId) return { selection, observation: noModelFallbackV1() };
+    return { selection: next, observation: describeModelFallbackV1({ from: selection, to: next, reason: rule.reason, fallbackUsed: true }) };
+  } catch {
+    return { selection, observation: noModelFallbackV1() };
+  }
+}
 export function selectAgentName(topology: ResolvedAgentTopology, selector: AgentSelector): string { const name = selectAgentNames(topology, selector, 1)[0]; if (!name) throw new Error(`No enabled ${selector.role} participant matches the requested domains or specializations.`); return name; }
 export function selectAgentNames(topology: ResolvedAgentTopology, selector: AgentSelector, limit = Number.MAX_SAFE_INTEGER): string[] { return Object.values(topology.agents).filter((agent) => !agent.disabled && agent.role === selector.role && matchesValues(agent.domains ?? [], selector.domains ?? []) && matchesValues(agent.specializations ?? [], selector.specializations ?? [])).sort((a, b) => domainScore(b.domains ?? [], selector.domains ?? []) - domainScore(a.domains ?? [], selector.domains ?? []) || a.name.localeCompare(b.name)).slice(0, limit).map((agent) => agent.name); }
 function domainScore(agentDomains: string[], desired: string[]): number { if (!desired.length) return agentDomains.includes("*") ? 1 : 0; return desired.reduce((score, domain) => score + (agentDomains.some((pattern) => pattern === "*" || minimatch(domain, pattern) || minimatch(pattern, domain)) ? 1 : 0), 0); }

@@ -28,7 +28,7 @@ describe("Paseo-backed semantic assessment contract", () => {
     const timedOutOnce = semanticTestService({ runner: { assess: async ({ request, assessor }) => {
       timedOutCalls += 1;
       if (timedOutCalls === 1) throw new AehError("SEMANTIC_ASSESSMENT_UNAVAILABLE", "Paseo Semantic Assessor did not return a completed structured result (exit=124, status=timeout).", { details: { timeout: true, exitCode: 124, status: "timeout" } });
-      return { payload: semanticPayload(request), paseoSession: { provider: "opencode", agentId: "paseo-session-recovered", transport: "sdk" } };
+      return { payload: semanticPayload(request), paseoSession: { provider: "codex", agentId: "paseo-session-recovered", transport: "sdk" } };
     } } });
     const recovered = await timedOutOnce.assess(semanticTestRequest("ROUTE"));
     expect(timedOutCalls).toBe(2);
@@ -57,7 +57,7 @@ describe("Paseo-backed semantic assessment contract", () => {
     const retrying = semanticTestService({ runner: { assess: async ({ request, repair }) => {
       calls += 1;
       runnerInputs.push({ ...(repair ? { repair } : {}) });
-      return { payload: calls === 1 ? { judgment: { type: "STACK" } } : semanticPayload(request), paseoSession: { provider: "opencode", agentId: `paseo-session-${calls}`, transport: "sdk" } };
+      return { payload: calls === 1 ? { judgment: { type: "STACK" } } : semanticPayload(request), paseoSession: { provider: "codex", agentId: `paseo-session-${calls}`, transport: "sdk" } };
     } } });
     const recovered = await retrying.assess(semanticTestRequest("STACK"));
     expect(calls).toBe(2);
@@ -69,7 +69,7 @@ describe("Paseo-backed semantic assessment contract", () => {
     let failingCalls = 0;
     const failing = semanticTestService({ runner: { assess: async () => {
       failingCalls += 1;
-      return { payload: { judgment: { type: "STACK" } }, paseoSession: { provider: "opencode", agentId: "paseo-session-bad", transport: "sdk" } };
+      return { payload: { judgment: { type: "STACK" } }, paseoSession: { provider: "codex", agentId: "paseo-session-bad", transport: "sdk" } };
     } } });
     await expect(failing.assess(semanticTestRequest("STACK"))).rejects.toMatchObject({ code: "SEMANTIC_ASSESSMENT_INVALID" });
     expect(failingCalls).toBe(2);
@@ -79,7 +79,7 @@ describe("Paseo-backed semantic assessment contract", () => {
     let calls = 0;
     const capped = semanticTestService({ runner: { assess: async () => {
       calls += 1;
-      return { payload: { judgment: { type: "STACK" } }, paseoSession: { provider: "opencode", agentId: "paseo-session-capped", transport: "sdk" } };
+      return { payload: { judgment: { type: "STACK" } }, paseoSession: { provider: "codex", agentId: "paseo-session-capped", transport: "sdk" } };
     } } });
     await expect(capped.assess(semanticTestRequest("STACK"), { attemptBudget: 1 })).rejects.toMatchObject({ code: "SEMANTIC_ASSESSMENT_INVALID" });
     expect(calls).toBe(1);
@@ -103,7 +103,7 @@ describe("Paseo-backed semantic assessment contract", () => {
   it("attaches a bounded rejected-reply fingerprint and the assessor session id to invalid payload failures", async () => {
     const service = semanticTestService({ runner: { assess: async () => ({
       payload: { judgment: { type: "STACK" } },
-      paseoSession: { provider: "opencode", agentId: "paseo-session-invalid", transport: "sdk" },
+      paseoSession: { provider: "codex", agentId: "paseo-session-invalid", transport: "sdk" },
       rawReply: { version: 1, lengthBytes: 42, sha256: "a".repeat(64), head: '{"judgment":' }
     }) } });
     let failure: AehError | undefined;
@@ -122,8 +122,8 @@ describe("Paseo-backed semantic assessment contract", () => {
     const base = semanticTestService({ runner: { assess: async ({ request, assessor }) => {
       calls += 1;
       expect(assessor.logicalAgent).toBe("assessor");
-      expect(assessor.modelId).toBe("opencode-go/gpt-6-luna");
-      return { payload: semanticPayload(request), paseoSession: { provider: "opencode", agentId: `paseo-session-${calls}`, workspaceId: "workspace-test", transport: "sdk" } };
+      expect(assessor.modelId).toBe("openai/gpt-6-luna");
+      return { payload: semanticPayload(request), paseoSession: { provider: "codex", agentId: `paseo-session-${calls}`, workspaceId: "workspace-test", transport: "sdk" } };
     } }, cache });
     const request = semanticTestRequest("STACK");
     const first = await base.assess(request);
@@ -133,8 +133,8 @@ describe("Paseo-backed semantic assessment contract", () => {
     expect(first).toMatchObject({
       assessmentType: "STACK",
       mechanism: "MODEL",
-      assessor: { logicalAgent: "assessor", modelAlias: "assessorModel", modelId: "opencode-go/gpt-6-luna" },
-      paseoSession: { provider: "opencode", agentId: "paseo-session-1", workspaceId: "workspace-test", transport: "sdk" },
+      assessor: { logicalAgent: "assessor", modelAlias: "assessorModel", modelId: "openai/gpt-6-luna" },
+      paseoSession: { provider: "codex", agentId: "paseo-session-1", workspaceId: "workspace-test", transport: "sdk" },
       evidenceRefs: ["evidence"],
       policyRevision: semanticCapabilityPolicyRevisionV1,
       cacheDisposition: "FRESH",
@@ -174,14 +174,14 @@ describe("Paseo-backed semantic assessment contract", () => {
   });
 
   it("rejects a Paseo session whose provider does not match resolved topology", async () => {
-    const service = semanticTestService({ runner: { assess: async ({ request }) => ({ payload: semanticPayload(request), paseoSession: { provider: "codex", agentId: "wrong-session", transport: "sdk" } }) } });
+    const service = semanticTestService({ runner: { assess: async ({ request }) => ({ payload: semanticPayload(request), paseoSession: { provider: "opencode", agentId: "wrong-session", transport: "sdk" } }) } });
     await expect(service.assess(semanticTestRequest())).rejects.toMatchObject({ code: "SEMANTIC_ASSESSMENT_INVALID" });
   });
 
   it("invalidates by candidate identity and content evidence", async () => {
     let calls = 0;
     const cache = new InMemorySemanticAssessmentCacheV1();
-    const service = semanticTestService({ runner: { assess: async ({ request }) => { calls += 1; return { payload: semanticPayload(request), paseoSession: { provider: "opencode", agentId: `session-${calls}`, transport: "sdk" } }; } }, cache });
+    const service = semanticTestService({ runner: { assess: async ({ request }) => { calls += 1; return { payload: semanticPayload(request), paseoSession: { provider: "codex", agentId: `session-${calls}`, transport: "sdk" } }; } }, cache });
     const first = await service.assess(semanticTestRequest("CANDIDATE_IMPACT", { binding: { operationId: "op-1", candidateId: "candidate-1", candidateRevision: 1, candidateDigest: "candidate-digest-1" } }));
     const second = await service.assess(semanticTestRequest("CANDIDATE_IMPACT", { binding: { operationId: "op-1", candidateId: "candidate-2", candidateRevision: 2, candidateDigest: "candidate-digest-2" } }));
     const third = await service.assess(semanticTestRequest("CANDIDATE_IMPACT", { evidence: [{ ref: "evidence", content: "changed evidence" }], binding: { operationId: "op-1", candidateId: "candidate-2", candidateRevision: 2, candidateDigest: "candidate-digest-2" } }));
@@ -192,7 +192,7 @@ describe("Paseo-backed semantic assessment contract", () => {
   it("canonicalizes evidence order for cache identity without dropping receipts", async () => {
     let calls = 0;
     const cache = new InMemorySemanticAssessmentCacheV1();
-    const service = semanticTestService({ runner: { assess: async ({ request }) => { calls += 1; return { payload: semanticPayload(request), paseoSession: { provider: "opencode", agentId: "same-session", transport: "sdk" } }; } }, cache });
+    const service = semanticTestService({ runner: { assess: async ({ request }) => { calls += 1; return { payload: semanticPayload(request), paseoSession: { provider: "codex", agentId: "same-session", transport: "sdk" } }; } }, cache });
     const base = semanticTestRequest("STACK", { evidence: [{ ref: "z", content: "second" }, { ref: "a", content: "first" }] });
     const reordered = { ...base, evidenceRefs: [...base.evidenceRefs].reverse(), compactEvidence: [...base.compactEvidence].reverse(), evidenceReceipts: [...base.evidenceReceipts].reverse() };
     const first = await service.assess(base);

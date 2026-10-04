@@ -56,7 +56,7 @@ function semanticRuntime(input: { title: string; body: string }): SemanticAssess
     assessor,
     policyRevision: semanticCapabilityPolicyRevisionV1,
     runner: { assess: async ({ request }) => {
-      if (request.assessmentType !== "ISSUE") return { payload: semanticPayload(request), paseoSession: { provider: "opencode", agentId: "issue-test-route", transport: "sdk" } };
+      if (request.assessmentType !== "ISSUE") return { payload: semanticPayload(request), paseoSession: { provider: "codex", agentId: "issue-test-route", transport: "sdk" } };
       const body = request.compactEvidence.map((item) => item.content).join("\n");
       const explicitRequirements = body.split(/\r?\n/).map((line) => line.match(/^\s*[-*+]\s+(?:\[[ xX]\]\s*)?(.+?)\s*$/)?.[1]?.trim()).filter((value): value is string => Boolean(value)).map((statement) => ({ statement, evidenceRefs: [request.evidenceRefs[0]!] }));
       return {
@@ -64,7 +64,7 @@ function semanticRuntime(input: { title: string; body: string }): SemanticAssess
           judgment: { type: "ISSUE", classification: "ready", requestedOutcome: input.title, explicitRequirements, evidenceRefs: [request.evidenceRefs[0]!], unknowns: ["unknown issue detail"] },
           claims: [], assumptions: [], unknowns: [], recommendations: [], knowledgeGaps: []
         },
-        paseoSession: { provider: "opencode", agentId: "issue-test-session", transport: "sdk" }
+        paseoSession: { provider: "codex", agentId: "issue-test-session", transport: "sdk" }
       };
     } }
   });
@@ -161,7 +161,7 @@ describe("GitHub issue intake", () => {
       service: createSemanticAssessmentServiceV1({
         assessor,
         policyRevision: semanticCapabilityPolicyRevisionV1,
-        runner: { assess: async ({ request }) => ({ payload: { not: "an ISSUE judgment" }, paseoSession: { provider: "opencode", agentId: "invalid-issue-session", transport: "sdk" } }) }
+        runner: { assess: async ({ request }) => ({ payload: { not: "an ISSUE judgment" }, paseoSession: { provider: "codex", agentId: "invalid-issue-session", transport: "sdk" } }) }
       })
     };
     await expect(prepareGithubIssueTask(repo, config, 92, { semanticRuntime: invalidRuntime })).rejects.toMatchObject({ code: "ISSUE_NORMALIZATION_BLOCKED" });

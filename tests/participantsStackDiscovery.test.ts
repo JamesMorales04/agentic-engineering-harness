@@ -55,9 +55,9 @@ function testAssessor(): ResolvedSemanticAssessorV1 {
     modelAlias: "test-model",
     modelId: "test-model-id",
     modelName: "Test Model",
-    runtimeName: "opencode",
-    runtimeAdapter: "opencode",
-    paseoProvider: "opencode"
+    runtimeName: "codex",
+    runtimeAdapter: "codex",
+    paseoProvider: "codex"
   };
   const selection: AgentExecutionSelection = {
     logicalAgent: identityBase.logicalAgent,
@@ -94,7 +94,7 @@ function stackJudgment(request: SemanticAssessmentRequestV1, overrides: Partial<
     testFrameworks: [],
     migrationMechanisms: [],
     buildSystems: [],
-    versions: {},
+    versions: [],
     projectSkillRoots: [],
     evidenceRefs: [ref],
     unknowns: [],
@@ -110,7 +110,7 @@ function runnerFor(payload: (request: SemanticAssessmentRequestV1) => unknown, o
   return {
     assess: async ({ request }) => {
       onRequest?.(request);
-      return { payload: payload(request), paseoSession: { provider: "opencode", agentId: "paseo-semantic-test-1", workspaceId: "workspace-test", transport: "sdk" } };
+      return { payload: payload(request), paseoSession: { provider: "codex", agentId: "paseo-semantic-test-1", workspaceId: "workspace-test", transport: "sdk" } };
     }
   };
 }
@@ -136,7 +136,7 @@ function stubAssessment(request: SemanticAssessmentRequestV1, judgment: Semantic
     evidenceReceipts: structuredClone(request.evidenceReceipts),
     evidenceDigest: semanticAssessmentEvidenceDigest(request),
     assessor: assessor.identity,
-    paseoSession: { provider: "opencode", agentId: "paseo-semantic-test-1", transport: "sdk" },
+    paseoSession: { provider: "codex", agentId: "paseo-semantic-test-1", transport: "sdk" },
     assessmentDigest: sha256Canonical({ stub: "assessment" }),
     cacheIdentity: sha256Canonical({ stub: "cache" }),
     cacheDisposition: "FRESH",
@@ -232,7 +232,7 @@ describe("model-first project stack discovery", () => {
               testFrameworks: ["custom-tests"],
               migrationMechanisms: ["custom-migration"],
               buildSystems: ["custom-build"],
-              versions: { custom: "1.0.0" },
+              versions: [{ key: "custom", value: "1.0.0" }],
               projectSkillRoots: ["custom-skills"],
               signals: [{ id: "semantic:custom", evidenceRef: request.evidenceRefs[0]! }],
               evidenceRefs: [request.evidenceRefs[0]!],

@@ -23,9 +23,11 @@ describe("agent topology", () => {
   it("loads the built-in default pack and its useful cross-project roles", async () => {
     const root = await fixture('{"version":1,"extends":["aeh:default"]}');
     const source = await loadAgentTopologySource(root, config);
-    for (const name of ["lead", "operation-supervisor", "explorer", "librarian", "planner", "spec-manager", "implementer", "reviewer", "repairer"]) expect(source.agents[name]).toBeDefined();
+    for (const name of ["lead", "operation-supervisor", "explorer", "librarian", "planner", "spec-manager", "implementer", "reviewer", "high-assurance-reviewer", "repairer"]) expect(source.agents[name]).toBeDefined();
     expect(source.agents["oracle"]).toBeUndefined();
     expect(source.agents["environment-manager"]).toBeUndefined();
+    // High-assurance review is Luna-pinned at the base; every profile keeps it there.
+    expect(source.agents["high-assurance-reviewer"]?.execution.model).toBe("@brain");
   });
 
   it("supports partial override, addition and wildcard deletion in one project layer", async () => {
@@ -59,8 +61,13 @@ describe("agent topology", () => {
   it("keeps role selectors independent of runtime participant identities", async () => {
     const root = await fixture('{"version":1,"extends":["aeh:default"]}');
     const source = await loadAgentTopologySource(root, config);
+    // Canonical specialization scoping (no role-specific branches): normal implementation
+    // review resolves the workhorse reviewer, high-risk review resolves the Luna
+    // high-assurance reviewer.
     const generic = source.routing?.find((rule) => rule.id === "default-implementation");
-    expect(generic?.review).toEqual([{ role: "Reviewer", domains: ["*"] }]);
+    expect(generic?.review).toEqual([{ role: "Reviewer", specializations: ["cross-cutting"] }]);
+    const highRisk = source.routing?.find((rule) => rule.id === "high-risk-review");
+    expect(highRisk?.review).toEqual([{ role: "Reviewer", specializations: ["high-assurance"] }]);
   });
 
   it("rejects superseded lowercase roles and concrete routing fields instead of translating them", async () => {
@@ -93,15 +100,18 @@ describe("agent topology", () => {
     }
   });
 
-  it("gives OpenCode DeepSeek V4 Flash the max thinking variant and durable CHANGE contracts in the orchestration preset", async () => {
+  it("gives OpenCode Muse Spark the max thinking variant and durable CHANGE contracts in the orchestration preset", async () => {
     const root = await fixture('{"version":1,"extends":["aeh:orchestration"]}');
     const topology = resolveAgentTopology(await loadAgentTopologySource(root, config), "balanced");
     const selection = executionSelectionForAgent(topology, "reviewer");
     expect(selection.runtimeAdapter).toBe("opencode");
     expect(selection.modelAlias).toBe("workhorse");
-    expect(selection.modelName).toBe("mimo-v2.6-flash");
+    expect(selection.modelName).toBe("muse-spark-1.3-contributor");
     expect(selection.variant).toBe("max");
     expect(selection.runtimeCapabilities.variantSelection).toBe(true);
+    // High-assurance review stays Luna-pinned (Codex) in the orchestration preset.
+    const highAssurance = executionSelectionForAgent(topology, "high-assurance-reviewer");
+    expect([highAssurance.runtimeAdapter, highAssurance.modelName, highAssurance.variant]).toEqual(["codex", "gpt-6-luna", "xhigh"]);
     expect(executionSelectionForAgent(topology, "explorer").outputContract).toBe("explorer");
     expect(executionSelectionForAgent(topology, "librarian").outputContract).toBe("knowledge-pack");
     expect(executionSelectionForAgent(topology, "spec-manager").outputContract).toBe("spec-authoring");

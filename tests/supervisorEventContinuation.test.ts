@@ -29,7 +29,7 @@ function binding(overrides: Partial<Parameters<typeof compileExecutionBinding>[0
     participantGeneration: "generation-1",
     roleInvocationPolicyDigest: "d".repeat(64),
     skillManifestDigest: "e".repeat(64),
-    runtime: { runtimeId: "opencode", provider: "opencode", modelId: "opencode-go/mimo-v2.6-flash", model: "mimo-v2.6-flash", sessionId: "11111111-1111-4111-8111-111111111111" },
+    runtime: { runtimeId: "opencode", provider: "opencode", modelId: "opencode-go/muse-spark-1.3-contributor", model: "muse-spark-1.3-contributor", sessionId: "11111111-1111-4111-8111-111111111111" },
     contextManifestDigest: "f".repeat(64),
     promptManifestDigest: "0".repeat(64),
     outputContract: "supervisor",

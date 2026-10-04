@@ -7,7 +7,15 @@ import { computeWorktreeDigest } from "../src/core/git.js";
 import type { HarnessProjectConfig } from "../src/core/types.js";
 import { launchManagedPaseoAgent } from "../src/paseo/runtime.js";
 import { createSemanticAssessmentRuntimeV1, createSemanticRepositoryBindingV1, parseSemanticAssessmentOutputV1 } from "../src/semantic/runtime.js";
+import { semanticCapabilityPolicyRevisionV1 } from "../src/semantic/assessment.js";
 import { semanticPayload, semanticTestRequest, semanticAssessorTopologySource } from "./semanticAssessmentSupport.js";
+
+async function certifiedGatedRuntime(root: string, config: HarnessProjectConfig, launch?: typeof launchManagedPaseoAgent) {
+  // Production construction: the Codex-channel Luna model is certified (see
+  // docs/evidence/model-routing/codex-requalification-2026-10-04.json), so the gated
+  // constructor resolves instead of failing closed.
+  return createSemanticAssessmentRuntimeV1(root, config, ...(launch ? [{ launch }] : []));
+}
 
 describe("Paseo Semantic Assessor runtime", () => {
   it("extracts a typed assessment from a real provider reply that wraps its JSON", () => {
@@ -47,7 +55,7 @@ describe("Paseo Semantic Assessor runtime", () => {
         status: "timeout",
         transport: "sdk"
       }));
-      const runtime = await createSemanticAssessmentRuntimeV1(root, config, { launch });
+      const runtime = await certifiedGatedRuntime(root, config, launch);
 
       await expect(runtime.service.assess(semanticTestRequest("ROUTE"))).rejects.toMatchObject({
         code: "SEMANTIC_ASSESSMENT_UNAVAILABLE",
@@ -74,7 +82,7 @@ describe("Paseo Semantic Assessor runtime", () => {
         status: "completed",
         transport: "sdk"
       }));
-      const runtime = await createSemanticAssessmentRuntimeV1(root, config, { launch });
+      const runtime = await certifiedGatedRuntime(root, config, launch);
 
       let failure: { code?: string; message?: string; details?: Record<string, unknown> } | undefined;
       try { await runtime.service.assess(semanticTestRequest("ROUTE")); } catch (error) { failure = error as typeof failure; }
@@ -125,27 +133,27 @@ describe("Paseo Semantic Assessor runtime", () => {
       transport: "sdk"
     }));
 
-    const runtime = await createSemanticAssessmentRuntimeV1(root, config, { launch });
+    const runtime = await certifiedGatedRuntime(root, config, launch);
     const request = semanticTestRequest("STACK");
     const assessment = await runtime.service.assess(request);
     const options = launch.mock.calls[0]?.[1];
     expect(options).toBeDefined();
     expect(launch.mock.calls[0]?.[0]).toBe(root);
-    expect(options?.provider).toBe("opencode");
-    expect(options?.model).toBe("opencode-go/gpt-6-luna");
+    expect(options?.provider).toBe("codex");
+    // Codex launches carry the provider-native model name (Paseo catalog parity);
+    // the canonical model id stays in the assessor identity provenance below.
+    expect(options?.model).toBe("gpt-6-luna");
     expect(options?.outputSchema).toBeDefined();
     expect(options?.labels).toMatchObject({ "aeh.kind": "semantic-assessment", "aeh.role": "Semantic Assessor", "aeh.semantic.assessment.type": "STACK" });
     expect(options?.labels).not.toHaveProperty("aeh.task");
     expect(options?.labels).not.toHaveProperty("aeh.participant");
     expect(options?.labels).not.toHaveProperty("aeh.output.contract");
-    const runtimeConfig = JSON.parse(options?.env?.OPENCODE_CONFIG_CONTENT ?? "{}") as Record<string, unknown>;
-    expect(runtimeConfig.permission).toMatchObject({ "*": "deny", read: "deny", edit: "deny", webfetch: "deny", websearch: "deny", task: "deny", skill: "deny" });
-    expect(runtimeConfig.mcp).toBeUndefined();
-    expect(runtimeConfig.tools).toBeUndefined();
+    // Codex assessor carries no OpenCode runtime projection.
+    expect(options?.env?.OPENCODE_CONFIG_CONTENT).toBeUndefined();
     expect(assessment).toMatchObject({
       assessmentType: "STACK",
-      assessor: { logicalAgent: "assessor", modelId: "opencode-go/gpt-6-luna" },
-      paseoSession: { provider: "opencode", agentId: "paseo-actual-session-7", workspaceId: "paseo-workspace-4", transport: "sdk" },
+      assessor: { logicalAgent: "assessor", modelId: "openai/gpt-6-luna" },
+      paseoSession: { provider: "codex", agentId: "paseo-actual-session-7", workspaceId: "paseo-workspace-4", transport: "sdk" },
       cacheDisposition: "FRESH"
     });
     expect(await fs.readFile(path.join(root, ".harness", "cache", "semantic-assessments-v1", `${assessment.cacheIdentity}.json`), "utf8")).toContain("paseo-actual-session-7");
@@ -157,12 +165,34 @@ describe("Paseo Semantic Assessor runtime", () => {
     await fs.writeFile(path.join(root, ".harness", "agents.source.jsonc"), JSON.stringify(semanticAssessorTopologySource), "utf8");
     const config: HarnessProjectConfig = { version: 1, project: { name: "cache-test" }, agents: { configPath: ".harness/agents.source.jsonc" } };
     const launch = vi.fn<typeof launchManagedPaseoAgent>(async (_cwd, _options) => ({ id: "paseo-cache-session", exitCode: 0, stdout: JSON.stringify(semanticPayload(semanticTestRequest("STACK"))), stderr: "", transport: "cli" }));
-    const firstRuntime = await createSemanticAssessmentRuntimeV1(root, config, { launch });
+    const firstRuntime = await certifiedGatedRuntime(root, config, launch);
     const first = await firstRuntime.service.assess(semanticTestRequest("STACK"));
-    const secondRuntime = await createSemanticAssessmentRuntimeV1(root, config, { launch });
+    const secondRuntime = await certifiedGatedRuntime(root, config, launch);
     const second = await secondRuntime.service.assess(semanticTestRequest("STACK"));
     expect(launch).toHaveBeenCalledTimes(1);
     expect(second.cacheDisposition).toBe("HIT");
     expect(second.assessmentDigest).toBe(first.assessmentDigest);
+  });
+
+  it("resolves gated runtime construction for the certified Codex-channel Luna assessor and stays fail-closed on genuine errors", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-semantic-certified-"));
+    try {
+      await fs.mkdir(path.join(root, ".harness"), { recursive: true });
+      await fs.writeFile(path.join(root, ".harness", "agents.source.jsonc"), JSON.stringify(semanticAssessorTopologySource), "utf8");
+      const config: HarnessProjectConfig = { version: 1, project: { name: "runtime-test" }, agents: { configPath: ".harness/agents.source.jsonc" } };
+      const launch = vi.fn<typeof launchManagedPaseoAgent>(async () => ({ id: "paseo-certified-session", exitCode: 0, stdout: JSON.stringify(semanticPayload(semanticTestRequest("STACK"))), stderr: "", transport: "sdk" }));
+      const runtime = await createSemanticAssessmentRuntimeV1(root, config, { launch });
+      expect(runtime.assessor.identity.modelId).toBe("openai/gpt-6-luna");
+      expect(runtime.policyRevision).toBe(semanticCapabilityPolicyRevisionV1);
+      // Fail-closed is preserved for genuine errors: an uncertified model still refuses
+      // before any provider turn.
+      const ineligible = structuredClone(semanticAssessorTopologySource);
+      ineligible.models.assessorModel = { runtime: "codex", provider: "openai", model: "muse-spark-1.3-contributor", variant: "xhigh" };
+      await fs.writeFile(path.join(root, ".harness", "agents.source.jsonc"), JSON.stringify(ineligible), "utf8");
+      await expect(createSemanticAssessmentRuntimeV1(root, config, { launch })).rejects.toThrow(/below the required SCHEMA_BOUND_TOOL_CALL/);
+      expect(launch).toHaveBeenCalledTimes(0);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });
