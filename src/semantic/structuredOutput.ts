@@ -68,19 +68,20 @@ export const semanticStructuredOutputCapabilityEvidenceV1 = {
  * assessment (failed Muse qualification evidence is preserved out-of-tree; see
  * docs/V0.4.13.md requalification path). No silent fallback is performed.
  *
- * Codex-channel Luna honesty note: the S13 probe matrix certified gpt-6-luna ONLY via the
- * OpenCode channel (`opencode-go/gpt-6-luna` 4/4 schema-valid); the Codex channel entry below
- * is therefore marked pendingRequalification and is NOT certified. S13 could not exercise the
- * Codex channel at all (stored OAuth session expired, 401), and the bounded 2026-10-04
- * Codex-channel probe (docs/evidence/model-routing/codex-structured-output-probe-2026-10-04.json)
- * recorded 0 successful trials across 4 attempts (Paseo 0.9.1 rejects the canonical schema's
- * draft 2020-12 $schema dialect; Codex response_format rejects the judgment oneOf union).
- * Until a bounded Codex-channel probe with schema-valid trials lands, the assessor fails
- * closed for `openai/gpt-6-luna` with SEMANTIC_ASSESSMENT_UNAVAILABLE. The OpenCode-channel
+ * Codex-channel Luna certification note: the S13 probe matrix certified gpt-6-luna ONLY via the
+ * OpenCode channel (`opencode-go/gpt-6-luna` 4/4 schema-valid); the Codex channel initially
+ * recorded 0 successful trials (S13: 401 authorization-unavailable; 2026-10-04 round-1 bounded
+ * probe: 4 attempts, 0 schema-valid outputs across two channel barriers). The CODEX-CHANNEL
+ * SEMANTIC ASSESSOR REQUALIFICATION then reformulated the semantic-assessment schema to the
+ * Codex strict subset (anyOf union, strict entries array for STACK versions, required
+ * nullable suggestion, no $schema dialect) with semantics preserved, repaired the Codex
+ * launch-path model identifier, and certified the Codex channel on 2/2 schema-valid STACK
+ * trials through the production path (see
+ * docs/evidence/model-routing/codex-requalification-2026-10-04.json). The OpenCode-channel
  * S13 evidence is cited for provenance only and never transfers across channels.
  */
 export const semanticStructuredOutputCapabilitiesV1: Readonly<Record<string, SemanticStructuredOutputCapabilityV1>> = {
-  "openai/gpt-6-luna": { level: "TEXTUAL_JSON", trials: 0, failures: 0, pendingRequalification: true, note: "PENDING Codex-channel requalification: NOT certified for semantic assessment. Zero successful Codex-channel trials (S13: 401 authorization-unavailable; 2026-10-04 bounded probe: 4 attempts, 0 schema-valid outputs, see docs/evidence/model-routing/codex-structured-output-probe-2026-10-04.json). The S13 4/4 schema-valid matrix belongs to the OpenCode channel (opencode-go/gpt-6-luna) and does not transfer. Fail-closed: the capability gate refuses this model." },
+  "openai/gpt-6-luna": { level: "SCHEMA_BOUND_TOOL_CALL", trials: 2, failures: 0, medianMs: 15_085, note: "Codex-channel certified 2026-10-04: 2/2 schema-valid STACK trials via the production path (Paseo SDK, deny-all, semantic-assessment contract). Report docs/evidence/model-routing/codex-requalification-2026-10-04.json sha256 b9e6b5b1837ffef40e9f59ef3e5aaa3e1931216e20bd4520a540f921a860983f (schema sha256 f6f206c204a5f13075344c1b8f29401e950d999be11ca29f3ae3e2881b9073a2, prompt sha256 3d78118898276107fffdc6500e50c592136cab6f4e3ef5c06ead509e297be936). Scoped to that schema sha; any schema change re-opens requalification." },
   "opencode-go/deepseek-v4.1-flash": { level: "SCHEMA_BOUND_TOOL_CALL", trials: 2, failures: 0, medianMs: 11_418 },
   "opencode-go/kimi-k3": { level: "SCHEMA_BOUND_TOOL_CALL", trials: 2, failures: 0, medianMs: 12_932 },
   "opencode-go/glm-5.3": { level: "SCHEMA_BOUND_TOOL_CALL", trials: 2, failures: 0, medianMs: 105_000, note: "slow (81-129 s per trial)" },

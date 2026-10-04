@@ -85,7 +85,10 @@ export class PaseoSemanticAssessmentRunnerV1 {
       cwd: this.root,
       title: `aeh-semantic-assessor-${input.request.assessmentType.toLowerCase()}`,
       provider: selection.paseoProvider,
-      model: selection.modelId,
+      // Codex launches carry the provider-native model name (parity with
+      // compilePaseoAgentLaunchSpec): the canonical `openai/gpt-6-luna` id fails
+      // Paseo provider-catalog preflight, which lists bare model names.
+      model: selection.runtimeAdapter === "codex" ? selection.modelName : selection.modelId,
       ...(boundSemanticThinkingOptionV1(selection.variant, input.request.reasoningRequirement.reasoningClass) ? { thinkingOptionId: boundSemanticThinkingOptionV1(selection.variant, input.request.reasoningRequirement.reasoningClass)! } : {}),
       env,
       systemPrompt: SEMANTIC_ASSESSOR_SYSTEM_PROMPT,

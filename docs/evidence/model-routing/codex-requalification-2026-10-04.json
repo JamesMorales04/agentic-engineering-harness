@@ -1,0 +1,123 @@
+{
+  "version": 1,
+  "slice": "model-routing-migration",
+  "round": 2,
+  "artifact": "codex-requalification",
+  "generatedAt": "2026-10-04",
+  "purpose": "Bounded real-provider requalification of GPT-6 Luna via the Codex channel for the Semantic Assessor SCHEMA_BOUND_TOOL_CALL requirement. Follow-up to round 1 (codex-structured-output-probe-2026-10-04.json: 4 attempts, 0 schema-valid outputs, two channel barriers). This round lands the strict-mode schema reformulation plus the Codex launch-path repair, then certifies on 2/2 schema-valid STACK trials through the AEH production path. The round-1 file is frozen and untouched.",
+  "forensics": {
+    "method": "Deterministic audit of outputJsonSchema('semantic-assessment') plus minimal schema-gate calls (schema rejections fail before any model turn, so forensics cost no model turns). Forensics driver: /tmp/aeh-codex-probe (out-of-tree).",
+    "failureClasses": [
+      {
+        "id": "F1",
+        "gate": "paseo-run agent creation",
+        "repro": "paseo run --provider codex --model gpt-6-luna --thinking low --output-schema <canonical-schema>",
+        "elapsedMs": 931,
+        "error": "AGENT_CREATE_FAILED: Failed to create agent: no schema with key or ref \"https://json-schema.org/draft/2020-12/schema\"",
+        "classification": "channel barrier (Paseo 0.9.1 rejects the zod-emitted draft 2020-12 $schema dialect before any provider turn)"
+      },
+      {
+        "id": "F2",
+        "gate": "codex response_format",
+        "repro": "codex exec -m gpt-6-luna -s read-only --output-schema <canonical-schema>",
+        "elapsedMs": 2924,
+        "error": "invalid_request_error 400 invalid_json_schema: Invalid schema for response_format 'codex_output_schema': In context=('properties', 'judgment'), 'oneOf' is not permitted.",
+        "classification": "channel barrier (Codex strict rejects the zod discriminated-union oneOf emission before any model turn)"
+      },
+      {
+        "id": "F3",
+        "gate": "codex response_format",
+        "repro": "codex exec -m gpt-6-luna -s read-only --output-schema <canonical-schema with oneOf renamed to anyOf, all else identical>",
+        "elapsedMs": 2867,
+        "error": "invalid_request_error 400 invalid_json_schema: In context=('properties', 'judgment', 'anyOf', '3', 'properties', 'versions'), 'propertyNames' is not permitted.",
+        "classification": "channel barrier (Codex strict rejects the zod record emission for STACK versions: propertyNames plus schema-valued additionalProperties). anyOf itself passed the gate at this point, confirming the OpenAI-documented oneOf->anyOf workaround."
+      },
+      {
+        "id": "F4",
+        "gate": "codex response_format",
+        "repro": "codex exec -m gpt-6-luna -s read-only --output-schema <anyOf schema with versions as strict entries array, all else identical>",
+        "elapsedMs": 2657,
+        "error": "invalid_request_error 400 invalid_json_schema: In context=('properties', 'judgment', 'anyOf', '7'), 'required' is required to be supplied and to be an array including every key in properties. Missing 'skillOrToolPackSuggestion'.",
+        "classification": "channel barrier (Codex strict requires every property key in required; the optional OPERATIONS_ANALYSIS skillOrToolPackSuggestion failed). String/enum/array-bound constraints (minLength, maxLength, minItems, maxItems, minimum, maximum, const) passed the gate unchallenged."
+      },
+      {
+        "id": "L1",
+        "gate": "AEH Paseo provider-catalog preflight (harness-side, found by the first production-path attempt)",
+        "repro": "PaseoSemanticAssessmentRunnerV1 with model selection.modelId ('openai/gpt-6-luna')",
+        "elapsedMs": 1019,
+        "error": "Paseo provider preflight failed: Model codex/openai/gpt-6-luna is not present in Paseo's current provider catalog. Available models include bare 'gpt-6-luna'.",
+        "classification": "harness launch-path defect (not a model result): the semantic runner sent the canonical model id where the Codex channel requires the provider-native model name. compilePaseoAgentLaunchSpec already used selection.modelName for codex; the assessor runner now matches it. Fixed in src/semantic/runtime.ts, pinned by tests/semanticAssessmentRuntime.test.ts. The 2 preflight failures are harness misconfiguration, not model capability, and are excluded from the certification trial count."
+      }
+    ]
+  },
+  "fix": {
+    "approach": "Single source of truth at the zod schema (wire schema tracks the deterministic validator; no post-processing divergence except the $schema strip): (1) semanticJudgmentSchema z.discriminatedUnion -> z.union, so the exported schema uses anyOf with the same eight const-discriminated variants (disjoint discriminators => accepted language unchanged); (2) STACK versions z.record -> z.array of strict {key,value} entries preserving the trimmed 1..200 bounds, canonicalized to record equivalence (sorted by key, last wins) in normalization and consumed the same way by the stack projector; (3) OPERATIONS_ANALYSIS skillOrToolPackSuggestion .optional() -> .nullable() (explicit null is equivalent to absent; required key satisfies strict); (4) outputJsonSchema strips the zod-emitted $schema dialect marker (missing $schema is valid; deterministic validation unaffected). No keys dropped, no discriminators loosened, no free-text substitute, no encoded strings, no fallback. OpenCode channel untouched (Muse stays uncertified, Luna OpenCode entry stays removed).",
+    "schemaBytes": 9483,
+    "schemaSha256": "f6f206c204a5f13075344c1b8f29401e950d999be11ca29f3ae3e2881b9073a2",
+    "promptBytes": 1073,
+    "promptSha256": "3d78118898276107fffdc6500e50c592136cab6f4e3ef5c06ead509e297be936",
+    "schemaNote": "Schema bytes/sha differ from round 1 (9413 / 4757b1cf...) for two honest reasons: the strict reformulation above, and zod 4.4.3 toJSONSchema emission (package.json allows ^4.0.17). Round-1 bytes are frozen with round 1.",
+    "promptNote": "Production SEMANTIC_ASSESSOR_SYSTEM_PROMPT sent natively as systemPrompt through the Paseo SDK (round 1 inlined it as a user-prompt prefix because neither paseo run nor codex exec accepts a system-prompt flag; that deviation is removed on the production path)."
+  },
+  "method": {
+    "matrix": "STACK assessment x2, each a genuine provider turn (fresh InMemory cache per trial, distinct evidence, cacheDisposition FRESH both times)",
+    "path": "AEH production path: deny-all permissions (read/write/shell/network/delegate/review/validate/gitWrite), codex runtime with structuredOutput capability, openai/gpt-6-luna variant xhigh, paseo transport (SDK), semantic-assessment outputContract, production prompt builder, production SemanticAssessmentServiceV1 gates (zod payload, evidence, binding, provenance). The single documented non-production element is the assessor identity construction, which mirrors resolveSemanticAssessor exactly (same fields, same canonical digest) but bypasses the capability gate being requalified; the turn, parse, and validation path is 100% production code. Certification driver: /tmp/aeh-codex-probe/run-certification.mts (out-of-tree).",
+    "reasoningRequirement": "LIGHT, bounded by variant xhigh -> thinking 'low' (same binding as production boundSemanticThinkingOptionV1)",
+    "budget": "deadlineMs 300000 per trial (semanticModelDeadlineMsV1, unchanged); MAX_ATTEMPTS 2 per assessment (unchanged, unneeded: both trials passed on attempt 1)"
+  },
+  "environment": {
+    "codexCliVersion": "0.156.1",
+    "paseoVersion": "0.9.1",
+    "zodVersion": "4.4.3",
+    "provider": "codex (Paseo SDK) -> Codex provider, model gpt-6-luna",
+    "date": "2026-10-04"
+  },
+  "trials": [
+    {
+      "trial": 1,
+      "channel": "paseo-sdk-production-runner",
+      "assessmentType": "STACK",
+      "elapsedMs": 13750,
+      "exitCode": 0,
+      "structuredPresent": true,
+      "schemaValid": true,
+      "judgmentType": "STACK",
+      "assessmentDigest": "7218adc3a685ab71bb4cf31f49a3defac83c8bd005ed09cacca8142d6b0625d5",
+      "evidenceDigest": "531428fbe9b32248e0e3e603f9146ae3f80c8439e04e2c1a8251b4e778156f5d",
+      "paseoSession": {
+        "provider": "codex",
+        "transport": "sdk",
+        "agentId": "c2ecabc6-eb04-40a5-b3dd-a8f200afbec4"
+      },
+      "cacheDisposition": "FRESH",
+      "classification": "certification trial: schema-valid STACK assessment through the production service gates"
+    },
+    {
+      "trial": 2,
+      "channel": "paseo-sdk-production-runner",
+      "assessmentType": "STACK",
+      "elapsedMs": 16420,
+      "exitCode": 0,
+      "structuredPresent": true,
+      "schemaValid": true,
+      "judgmentType": "STACK",
+      "assessmentDigest": "ae3ccb8312ef13ffda2addffc5b9b0890f182b3905bfd8a12e266f66b85a6bea",
+      "evidenceDigest": "0620134b442c6ae5177786a195f8100f15c9c6f784295e524a548556655d78a8",
+      "paseoSession": {
+        "provider": "codex",
+        "transport": "sdk",
+        "agentId": "2bed62b4-2fc2-46fe-ad4e-1ae34e1d2420"
+      },
+      "cacheDisposition": "FRESH",
+      "classification": "certification trial: schema-valid STACK assessment through the production service gates"
+    }
+  ],
+  "summary": {
+    "attempts": 2,
+    "successes": 2,
+    "failures": 0,
+    "medianMs": 15085,
+    "certified": true,
+    "conclusion": "openai/gpt-6-luna is CERTIFIED at SCHEMA_BOUND_TOOL_CALL via the Codex channel on the strict-reformulated schema: 2/2 schema-valid STACK trials through the AEH production path (Paseo SDK, deny-all, semantic-assessment contract), median 15085ms. Certification is scoped to this schema sha; any schema change re-opens requalification. Fail-closed behavior is preserved for genuine errors (capability gate, unavailability, invalid payloads)."
+  }
+}

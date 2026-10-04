@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { AehError } from "../src/core/errors.js";
 import { InMemorySemanticAssessmentCacheV1, SemanticAssessmentServiceV1, createSemanticEvidenceReceiptV1, semanticAssessmentTypeValues, semanticCapabilityPolicyRevisionV1, semanticCapabilityPolicyV1, semanticModelDeadlineMsV1, boundSemanticThinkingOptionV1, type SemanticAssessmentCacheV1, type SemanticAssessmentRequestV1, type SemanticAssessmentV1 } from "../src/semantic/assessment.js";
 import { candidateReviewDimensionValues } from "../src/architecture/candidateAssurance.js";
-import { semanticPendingRequalificationStubAssessor, semanticTestRequest, semanticTestService, semanticPayload } from "./semanticAssessmentSupport.js";
+import { semanticTestAssessor, semanticTestRequest, semanticTestService, semanticPayload } from "./semanticAssessmentSupport.js";
 
 describe("Paseo-backed semantic assessment contract", () => {
   it("bounds the Paseo thinking option by the request reasoning class", () => {
@@ -222,7 +222,7 @@ describe("Paseo-backed semantic assessment contract", () => {
   });
 
   it("keeps Semantic Assessor outside WorkGraph participant roles", () => {
-    expect(semanticPendingRequalificationStubAssessor().selection.role).toBe("Semantic Assessor");
-    expect((semanticPendingRequalificationStubAssessor().selection.role as string)).not.toBe("Implementer");
+    expect(semanticTestAssessor().selection.role).toBe("Semantic Assessor");
+    expect((semanticTestAssessor().selection.role as string)).not.toBe("Implementer");
   });
 });

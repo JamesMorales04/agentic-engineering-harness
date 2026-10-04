@@ -98,7 +98,7 @@ function routeLaunch(recommendedRoute: "DIRECT" | "DELEGATED" | "FORMAL_SDD" = "
 }
 
 describe("semantic route/assurance preflight before detached operation creation", () => {
-  it("fails the route preflight closed without a provider turn while Codex-channel Luna is pending requalification", async () => {
+  it("resolves the route preflight through the certified Codex-channel Luna assessor", async () => {
     const root = await tempRoot();
     await fs.mkdir(path.join(root, ".harness"), { recursive: true });
     await fs.writeFile(path.join(root, ".harness", "agents.source.jsonc"), JSON.stringify(semanticAssessorTopologySource), "utf8");
@@ -107,12 +107,14 @@ describe("semantic route/assurance preflight before detached operation creation"
     const launch = routeLaunch("DIRECT");
     const resolveChangePreflightV1 = resolveChangePreflightV1Export();
 
-    // No certified assessor exists on the Codex channel (OpenCode-channel S13 evidence does
-    // not transfer; see docs/evidence/model-routing/codex-structured-output-probe-2026-10-04.json),
-    // so the production preflight fails closed before any provider turn: no silent fallback,
-    // no fabricated assessment.
-    await expect(resolveChangePreflightV1(root, config, payload, { launch })).rejects.toThrow(/PENDING_REQUALIFICATION/);
-    expect(launch).not.toHaveBeenCalled();
+    // The Codex-channel assessor is certified (see
+    // docs/evidence/model-routing/codex-requalification-2026-10-04.json), so the
+    // production preflight executes provider turns and returns typed triage instead
+    // of failing closed.
+    const preflight = await resolveChangePreflightV1(root, config, payload, { launch });
+    expect(launch).toHaveBeenCalled();
+    expect(preflight.triage.route).toBe("DIRECT");
+    expect(preflight.binding.projectId).toBeTruthy();
   });
 
   it("resolves the injected preflight before any operation record or spawn and persists the typed triage and binding", async () => {

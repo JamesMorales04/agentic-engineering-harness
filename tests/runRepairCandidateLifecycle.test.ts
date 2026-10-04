@@ -41,7 +41,7 @@ import type { HarnessProjectConfig, TaskContract, WorkerSession } from "../src/c
 import { computeWorktreeDigest } from "../src/core/git.js";
 import { loadOperation, saveOperation } from "../src/operations/state.js";
 import { runShell } from "../src/utils/process.js";
-import { semanticPayload, semanticPendingRequalificationStubAssessor, semanticTestService } from "./semanticAssessmentSupport.js";
+import { semanticPayload, semanticTestAssessor, semanticTestService } from "./semanticAssessmentSupport.js";
 import { semanticCapabilityPolicyRevisionV1, type SemanticAssessmentRequestV1 } from "../src/semantic/assessment.js";
 import { compileResolvedOperationPolicy } from "../src/architecture/executionIdentity.js";
 import { bindResolvedOperationPolicy, currentControllerEpoch } from "../src/operations/state.js";
@@ -295,7 +295,7 @@ function testSemanticRuntime() {
       }
     };
   } });
-  return { service, policyRevision: semanticCapabilityPolicyRevisionV1, assessor: semanticPendingRequalificationStubAssessor() };
+  return { service, policyRevision: semanticCapabilityPolicyRevisionV1, assessor: semanticTestAssessor() };
 }
 
 async function createProject(): Promise<string> {

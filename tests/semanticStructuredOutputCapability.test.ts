@@ -21,33 +21,37 @@ describe("Semantic Assessor structured-output capability policy", () => {
 
   it("certifies only probe-verified models and never treats runtime flags as model proof", () => {
     const certified = certifiedSemanticStructuredOutputModelsV1();
-    // Codex-channel Luna is PENDING requalification (OpenCode-channel S13 evidence does not
-    // transfer; 2026-10-04 bounded Codex probe recorded 0 successful trials): excluded.
-    expect(certified).not.toContain("openai/gpt-6-luna");
+    // Codex-channel Luna is certified at SCHEMA_BOUND_TOOL_CALL on the strict-reformulated
+    // schema (2/2 schema-valid STACK trials through the production path; see
+    // docs/evidence/model-routing/codex-requalification-2026-10-04.json).
+    expect(certified).toContain("openai/gpt-6-luna");
     expect(certified).not.toContain("opencode-go/gpt-6-luna");
     expect(certified).not.toContain("opencode-go/mimo-v2.6-flash");
     expect(certified).not.toContain("opencode-go/muse-spark-1.3-contributor");
-    expect(semanticStructuredOutputCapabilityForModelV1("openai/gpt-6-luna")?.pendingRequalification).toBe(true);
-    expect(() => assertSemanticStructuredOutputCapabilityV1("openai/gpt-6-luna")).toThrow(/PENDING_REQUALIFICATION/);
-    expect(() => assertSemanticStructuredOutputCapabilityV1("openai/gpt-6-luna")).toThrow(/No silent fallback/);
+    expect(semanticStructuredOutputCapabilityForModelV1("openai/gpt-6-luna")).toMatchObject({ level: "SCHEMA_BOUND_TOOL_CALL", trials: 2, failures: 0, medianMs: 15_085 });
+    expect(semanticStructuredOutputCapabilityForModelV1("openai/gpt-6-luna")?.pendingRequalification).not.toBe(true);
+    expect(() => assertSemanticStructuredOutputCapabilityV1("openai/gpt-6-luna")).not.toThrow();
     expect(() => assertSemanticStructuredOutputCapabilityV1("opencode-go/mimo-v2.6-flash")).toThrow(/certified at TEXTUAL_JSON structured-output capability, below the required SCHEMA_BOUND_TOOL_CALL/);
     expect(() => assertSemanticStructuredOutputCapabilityV1("opencode-go/mimo-v2.6-flash")).toThrow(/No silent fallback/);
     expect(() => assertSemanticStructuredOutputCapabilityV1("opencode-go/muse-spark-1.3-contributor")).toThrow(/UNCERTIFIED/);
     expect(() => assertSemanticStructuredOutputCapabilityV1("vendor/unknown-model")).toThrow(/UNCERTIFIED/);
   });
 
-  it("fails assessor resolution closed for an ineligible model instead of falling back", () => {
+  it("resolves the certified Codex-channel Luna assessor and stays fail-closed for ineligible models", () => {
     const ineligible = structuredClone(semanticAssessorTopologySource);
     ineligible.models.assessorModel = { runtime: "codex", provider: "openai", model: "muse-spark-1.3-contributor", variant: "xhigh" };
     expect(() => resolveSemanticAssessor(resolveAgentTopology(ineligible))).toThrow(/below the required SCHEMA_BOUND_TOOL_CALL/);
 
-    // The canonical Codex-channel Luna fixture is pending requalification: the real resolver
-    // fails closed instead of certifying on transferred OpenCode-channel evidence.
-    expect(() => resolveSemanticAssessor(resolveAgentTopology(structuredClone(semanticAssessorTopologySource)))).toThrow(/PENDING_REQUALIFICATION/);
+    // The canonical Codex-channel Luna fixture is certified: the real resolver accepts it.
+    const assessor = resolveSemanticAssessor(resolveAgentTopology(structuredClone(semanticAssessorTopologySource)));
+    expect(assessor.identity.modelId).toBe("openai/gpt-6-luna");
+    expect(assessor.selection.paseoProvider).toBe("codex");
   });
 
-  it("keeps the Codex assessor fail-closed with no OpenCode StructuredOutput projection", () => {
-    expect(() => resolveSemanticAssessor(resolveAgentTopology(structuredClone(semanticAssessorTopologySource)))).toThrow(/SEMANTIC_ASSESSMENT_UNAVAILABLE/);
+  it("keeps assessor resolution fail-closed with no silent fallback for ineligible models", () => {
+    const uncertified = structuredClone(semanticAssessorTopologySource);
+    uncertified.models.assessorModel = { runtime: "codex", provider: "openai", model: "muse-spark-1.3-contributor", variant: "xhigh" };
+    expect(() => resolveSemanticAssessor(resolveAgentTopology(uncertified))).toThrow(/SEMANTIC_ASSESSMENT_UNAVAILABLE/);
   });
 
   it("carries the canonical output discipline in the assessor prompt builder", () => {

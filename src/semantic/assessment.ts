@@ -190,7 +190,23 @@ export const candidateReviewDimensionSchema = z.enum(candidateReviewDimensionVal
 const claimStatusValues = ["SUPPORTED", "UNCERTAIN", "CONFLICTING"] as const;
 const semanticFailureClassValues = ["PATCH_CONTEXT_MISMATCH", "TOOL_FAILURE", "MISSING_CONTEXT", "WRONG_AGENT", "VALIDATION_FAILURE", "REVIEW_FAILURE", "AMBIGUOUS_OUTPUT", "CONFLICTING_RESULTS"] as const;
 const evidenceRefSchema = z.string().trim().min(1).max(200);
-const semanticJudgmentSchema = z.discriminatedUnion("type", [
+/**
+ * Codex strict-mode reformulation of the STACK `versions` string map. Codex
+ * `response_format` (`json_schema strict:true`, reached via Paseo `--output-schema`)
+ * rejects `propertyNames` and schema-valued `additionalProperties`, so an arbitrary
+ * string map has no strict-safe object encoding. The entries array preserves the
+ * exact information content and key/value bounds (trimmed 1..200); the deterministic
+ * validator canonicalizes entries to record equivalence (sorted by key, last wins),
+ * and the stack projector consumes the same canonical form. No version data is
+ * dropped and no discriminator is loosened.
+ */
+const semanticVersionEntrySchema = z.object({ key: z.string().trim().min(1).max(200), value: z.string().trim().min(1).max(200) }).strict();
+/**
+ * The judgment union is a plain union (not a discriminated union) so the exported
+ * JSON Schema uses `anyOf`: Codex strict rejects `oneOf`. The eight variants remain
+ * disjoint on their `const` type discriminator, so the accepted language is unchanged.
+ */
+const semanticJudgmentSchema = z.union([
   z.object({ type: z.literal("INTENT"), intent: z.enum(["informational", "audit", "change"]), confidence: z.number().min(0).max(1), evidenceRefs: z.array(evidenceRefSchema).min(1).max(32) }).strict(),
   z.object({
     type: z.literal("ROUTE"),
@@ -217,7 +233,7 @@ const semanticJudgmentSchema = z.discriminatedUnion("type", [
     testFrameworks: z.array(z.string().trim().min(1).max(200)).max(32),
     migrationMechanisms: z.array(z.string().trim().min(1).max(200)).max(32),
     buildSystems: z.array(z.string().trim().min(1).max(200)).max(32),
-    versions: z.record(z.string().trim().min(1).max(200), z.string().trim().min(1).max(200)),
+    versions: z.array(semanticVersionEntrySchema),
     projectSkillRoots: z.array(z.string().min(1).max(200)).max(64),
     evidenceRefs: z.array(evidenceRefSchema).min(1).max(128),
     unknowns: z.array(z.string().trim().min(1).max(1_000)).max(32)
@@ -253,7 +269,7 @@ const semanticJudgmentSchema = z.discriminatedUnion("type", [
     probableCause: z.enum(["PROVIDER_STALL", "TOOL_LOOP", "CONTEXT_CHURN", "BUILD_OR_VALIDATION_WAIT", "TOOL_KNOWLEDGE_GAP", "IMPLEMENTATION_COMPLEXITY", "EXTERNAL_BLOCKER", "UNKNOWN"]),
     suggestedSupervisorAction: z.enum(["CONTINUE", "RESUME_SAME_SESSION", "ROTATE_SESSION", "RETRY_PARTICIPANT", "RETRIEVE_SKILL", "REPLAN", "SPLIT_WORK", "REASSIGN", "FAIL", "ESCALATE_TO_LEAD", "NONE"]),
     rationale: z.string().trim().min(1).max(2_000),
-    skillOrToolPackSuggestion: z.object({ topic: z.string().trim().min(1).max(300), evidenceRefs: z.array(evidenceRefSchema).min(1).max(16) }).strict().optional(),
+    skillOrToolPackSuggestion: z.object({ topic: z.string().trim().min(1).max(300), evidenceRefs: z.array(evidenceRefSchema).min(1).max(16) }).strict().nullable(),
     evidenceRefs: z.array(evidenceRefSchema).min(1).max(32),
     unknowns: z.array(z.string().trim().min(1).max(1_000)).max(16)
   }).strict()
@@ -692,7 +708,22 @@ function validateSessionIdentity(session: SemanticPaseoSessionIdentityV1, assess
 
 function normalizePayloadUnknowns(payload: SemanticAssessmentPayloadV1): SemanticAssessmentPayloadV1 {
   const judgmentUnknowns = "unknowns" in payload.judgment ? payload.judgment.unknowns : [];
-  return { ...payload, unknowns: [...new Set([...payload.unknowns, ...judgmentUnknowns])].sort() };
+  const judgment = payload.judgment.type === "STACK"
+    ? { ...payload.judgment, versions: canonicalSemanticVersionEntries(payload.judgment.versions) }
+    : payload.judgment;
+  return { ...payload, judgment, unknowns: [...new Set([...payload.unknowns, ...judgmentUnknowns])].sort() };
+}
+
+/**
+ * Canonicalize STACK versions entries to record equivalence: sorted by key with
+ * last-wins on duplicates, exactly matching the superseded string-map semantics.
+ * Deterministic so digests and the stack projector stay stable regardless of the
+ * order the model emitted.
+ */
+function canonicalSemanticVersionEntries(entries: ReadonlyArray<{ key: string; value: string }>): Array<{ key: string; value: string }> {
+  const byKey = new Map<string, string>();
+  for (const entry of entries) byKey.set(entry.key, entry.value);
+  return [...byKey.entries()].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)).map(([key, value]) => ({ key, value }));
 }
 
 function validateAssessmentPayload(payload: SemanticAssessmentPayloadV1, request: SemanticAssessmentRequestV1): void {

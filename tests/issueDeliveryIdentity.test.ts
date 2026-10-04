@@ -6,7 +6,7 @@ import type { HarnessProjectConfig } from "../src/core/types.js";
 import { loadDeliveryRecord } from "../src/delivery/handoff.js";
 import { prepareGithubIssueTask, type IssueIntakePlan } from "../src/issues/intake.js";
 import { createSemanticAssessmentServiceV1, semanticCapabilityPolicyRevisionV1 } from "../src/semantic/assessment.js";
-import { semanticPendingRequalificationStubAssessor, semanticPayload } from "./semanticAssessmentSupport.js";
+import { semanticTestAssessor, semanticPayload } from "./semanticAssessmentSupport.js";
 
 const config: HarnessProjectConfig = {
   version: 1,
@@ -35,7 +35,7 @@ function issueDependencies() {
     tasks: [{ title: "Fix label", requirementIndexes: [1], scope: ["src/Button.tsx"] }],
     nonGoals: [], unresolved: []
   };
-  const assessor = semanticPendingRequalificationStubAssessor();
+  const assessor = semanticTestAssessor();
   const semanticRuntime = {
     assessor,
     policyRevision: semanticCapabilityPolicyRevisionV1,

@@ -460,7 +460,7 @@ async function projectStackProfileFromAssessment(root: string, request: Semantic
     testFrameworks: dedupeExact(judgment.testFrameworks),
     migrationMechanisms: dedupeExact(judgment.migrationMechanisms),
     buildSystems: dedupeExact(judgment.buildSystems),
-    versions: Object.fromEntries(Object.entries(judgment.versions).sort(([left], [right]) => compareStrings(left, right))),
+    versions: Object.fromEntries(judgment.versions.map((entry) => [entry.key, entry.value] as const).sort(([left], [right]) => compareStrings(left, right))),
     projectSkillRoots,
     unknowns: [...new Set([
       ...assessment.unknowns,

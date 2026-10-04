@@ -63,6 +63,7 @@ describe("Operations Analyst advisory", () => {
         probableCause: "EXTERNAL_BLOCKER",
         suggestedSupervisorAction: "ESCALATE_TO_LEAD",
         rationale: "The evidence mentions an external blocker.",
+        skillOrToolPackSuggestion: null,
         evidenceRefs: ["activity:participant-1"],
         unknowns: [],
         authority: "HUMAN_REQUIRED",
@@ -82,8 +83,7 @@ describe("Operations Analyst advisory", () => {
         probableCause: "TOOL_KNOWLEDGE_GAP",
         suggestedSupervisorAction: "RETRIEVE_SKILL",
         rationale: "A tool recovery skill may help.",
-        skillOrToolPackSuggestion: { topic: "browser startup", evidenceRefs: ["unprovided:browser-log"] },
-        evidenceRefs: ["activity:participant-1"],
+        skillOrToolPackSuggestion: { topic: "browser startup", evidenceRefs: ["unprovided:browser-log"] },        evidenceRefs: ["activity:participant-1"],
         unknowns: []
       }
     }) });

@@ -8,7 +8,7 @@ import type { HarnessProjectConfig } from "../src/core/types.js";
 import { loadDeliveryRecord } from "../src/delivery/handoff.js";
 import { inspectGithubIssue, issueContentSha256, prepareGithubIssueTask, verifyGithubIssueDrift, type IssueIntakePlan } from "../src/issues/intake.js";
 import { createSemanticAssessmentServiceV1, semanticCapabilityPolicyRevisionV1, type SemanticAssessmentRuntimeV1 } from "../src/semantic/assessment.js";
-import { semanticPendingRequalificationStubAssessor, semanticPayload } from "./semanticAssessmentSupport.js";
+import { semanticTestAssessor, semanticPayload } from "./semanticAssessmentSupport.js";
 
 const config: HarnessProjectConfig = {
   version: 1,
@@ -51,7 +51,7 @@ function issuePlan(input: { number: number; title: string; body: string; labels?
 }
 
 function semanticRuntime(input: { title: string; body: string }): SemanticAssessmentRuntimeV1 {
-  const assessor = semanticPendingRequalificationStubAssessor();
+  const assessor = semanticTestAssessor();
   const service = createSemanticAssessmentServiceV1({
     assessor,
     policyRevision: semanticCapabilityPolicyRevisionV1,
@@ -154,7 +154,7 @@ describe("GitHub issue intake", () => {
     const repo = await root();
     const input = { number: 92, title: "Change access contract", body: "## Acceptance Criteria\n- Access is checked", labels: ["security"] };
     mockIssue(input);
-    const assessor = semanticPendingRequalificationStubAssessor();
+    const assessor = semanticTestAssessor();
     const invalidRuntime: SemanticAssessmentRuntimeV1 = {
       assessor,
       policyRevision: semanticCapabilityPolicyRevisionV1,

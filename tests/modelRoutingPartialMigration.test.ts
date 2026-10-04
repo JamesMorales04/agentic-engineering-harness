@@ -49,16 +49,19 @@ describe("partial model-routing migration (owner-approved)", () => {
     expect(topology.models["structured-assessor"]).toMatchObject({ runtime: "codex", provider: "openai", model: "gpt-6-luna", variant: "xhigh" });
   });
 
-  it("(iii) fails the Semantic Assessor closed while Codex-channel Luna is pending requalification", async () => {
+  it("(iii) resolves the Semantic Assessor to certified Codex-channel Luna and stays fail-closed on genuine errors", async () => {
     const topology = await defaultTopology();
     expect(topology.models["structured-assessor"]).toMatchObject({ runtime: "codex", provider: "openai", model: "gpt-6-luna", variant: "xhigh" });
-    // No silent certification on transferred OpenCode-channel evidence: the canonical Codex
-    // route fails closed until a bounded Codex-channel probe lands (see
-    // docs/evidence/model-routing/codex-structured-output-probe-2026-10-04.json).
-    expect(() => resolveSemanticAssessor(topology)).toThrow(/PENDING_REQUALIFICATION/);
-    expect(() => assertSemanticStructuredOutputCapabilityV1("openai/gpt-6-luna")).toThrow(/PENDING_REQUALIFICATION/);
-    expect(certifiedSemanticStructuredOutputModelsV1()).not.toContain("openai/gpt-6-luna");
+    // Certified on the strict-reformulated schema by the bounded Codex-channel probe (see
+    // docs/evidence/model-routing/codex-requalification-2026-10-04.json): the canonical
+    // Codex route resolves instead of failing closed.
+    const assessor = resolveSemanticAssessor(topology);
+    expect(assessor.identity.modelId).toBe("openai/gpt-6-luna");
+    expect(() => assertSemanticStructuredOutputCapabilityV1("openai/gpt-6-luna")).not.toThrow();
+    expect(certifiedSemanticStructuredOutputModelsV1()).toContain("openai/gpt-6-luna");
     expect(certifiedSemanticStructuredOutputModelsV1()).not.toContain("opencode-go/muse-spark-1.3-contributor");
+    // Fail-closed is preserved for genuine errors: uncertified models still refuse.
+    expect(() => assertSemanticStructuredOutputCapabilityV1("opencode-go/muse-spark-1.3-contributor")).toThrow(/UNCERTIFIED/);
   });
 
   it("(iv) resolves workhorse lanes to Muse via OpenCode Go", async () => {
