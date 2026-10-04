@@ -135,6 +135,12 @@ export function supervisorTurnTimedOutV1(session: Pick<WorkerSession, "exitCode"
   return session.exitCode === 124 || /timed out|timeout/i.test(`${session.stderr} ${session.stdout}`);
 }
 
+/** A provider lifecycle failure leaves a durable lease fenced; retrying with a new session
+ * at the same controller epoch cannot make progress and must not create another actor. */
+export function supervisorInitializationRetryBlockedByProviderLeaseV1(error: string): boolean {
+  return /PASEO_PROVIDER_LIFECYCLE_UNCERTAIN|PASEO_PROVIDER_LEASE_TAKEOVER_BLOCKED/.test(error);
+}
+
 export async function ensureOperationSupervisor(root: string, config: HarnessProjectConfig, contract: TaskContract, selection: AgentExecutionSelection | undefined, options: EnsureSupervisorOptions = {}): Promise<OperationSupervisorHandle | undefined> {
   const operationId = currentOperationContext().id;
   if (!operationId) return undefined;
@@ -154,7 +160,9 @@ async function ensureOperationSupervisorUnlocked(root: string, config: HarnessPr
   if (active?.agentId) return { operationId, generation: active.generation, agentId: active.agentId, materialized: true, selection };
 
   let lastError: string | undefined;
+  let attempts = 0;
   for (let attempt = 1; attempt <= SUPERVISOR_INITIALIZATION_ATTEMPTS; attempt += 1) {
+    attempts = attempt;
     operation = await loadOperation(stateRoot, operationId);
     const initSelection = eventSelection(selection, contract, "initialize", operation.kind);
     const materialized = await materializeAgentPrompt(root, config, contract, initSelection, { phase: "supervision", operationKind: operation.kind, parentAgentId: operation.lead?.agentId, supervisorAgent: true });
@@ -175,11 +183,15 @@ async function ensureOperationSupervisorUnlocked(root: string, config: HarnessPr
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
       await updateSupervisorGeneration(stateRoot, operationId, generation, { status: "FAILED", error: `initialization failed: ${lastError}` }).catch(() => undefined);
-      await archivePaseoSdkAgent(root, materialized.id).catch(() => undefined);
+      const providerLeaseFenced = supervisorInitializationRetryBlockedByProviderLeaseV1(lastError);
+      // Keep an uncertain provider session untouched: archiving it could change the lifecycle
+      // whose quiescence has not been established.
+      if (!providerLeaseFenced) await archivePaseoSdkAgent(root, materialized.id).catch(() => undefined);
       await recordPaseoTrace(stateRoot, "operation.supervisor.initialization-failed", { operationId, generation, agentId: materialized.id, attempt, error: lastError, timeoutSeconds: operationSupervisorInitializationTimeoutSeconds(config) }).catch(() => undefined);
+      if (providerLeaseFenced) break;
     }
   }
-  throw new Error(`AEH_OPERATION_SUPERVISOR_UNAVAILABLE: initialization failed after ${SUPERVISOR_INITIALIZATION_ATTEMPTS} bounded attempt(s): ${lastError ?? "unknown error"}`);
+  throw new Error(`AEH_OPERATION_SUPERVISOR_UNAVAILABLE: initialization failed after ${attempts} bounded attempt(s): ${lastError ?? "unknown error"}`);
 }
 
 export async function consolidateWithOperationSupervisor(root: string, config: HarnessProjectConfig, contract: TaskContract, supervisorSelection: AgentExecutionSelection | undefined, input: SupervisorConsolidationInput): Promise<SupervisorConsolidationResult> {

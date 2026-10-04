@@ -15,7 +15,7 @@ vi.mock("../src/paseo/sdk.js", async (importOriginal) => ({ ...(await importOrig
 vi.mock("../src/paseo/context.js", () => ({ statusLeadContext: vi.fn(async () => ({ usage: { ratio: 0.01 }, state: "OK" })) }));
 vi.mock("../src/workers/resultGateway.js", () => ({ structuredResultProvenanceForAgent: vi.fn(async () => ({ status: "BOUND", candidate: { identityDigest: "candidate:OLD" } })) }));
 
-import { ensureOperationSupervisor, maybeRotateOperationSupervisor, operationSupervisorInitializationTimeoutSeconds } from "../src/operations/supervisor.js";
+import { ensureOperationSupervisor, maybeRotateOperationSupervisor, operationSupervisorInitializationTimeoutSeconds, supervisorInitializationRetryBlockedByProviderLeaseV1 } from "../src/operations/supervisor.js";
 import { activeOperationSupervisor, bindOperationLead, bindResolvedOperationPolicy, initializingOperationSupervisor, loadOperation, saveOperation, type OperationRecordV2 } from "../src/operations/state.js";
 import { compileResolvedOperationPolicy } from "../src/architecture/executionIdentity.js";
 import { computeWorktreeDigest } from "../src/core/git.js";
@@ -115,6 +115,62 @@ describe("supervisor bootstrap regression", () => {
       ...config,
       orchestration: { provider: "paseo", operations: { supervision: { initializationTimeoutSeconds: 25 } } }
     } as never)).toBe(25);
+  });
+
+  it("does not rematerialize after an uncertain fenced provider lease and preserves the provider failure", async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-supervisor-uncertain-"));
+    const now = new Date().toISOString();
+    const record: OperationRecordV2 = {
+      version: 2, id: "AUDIT-UNCERTAIN", kind: "audit", status: "RUNNING", phase: "supervision", root,
+      payload: { request: "provider lifecycle uncertainty" }, revision: 1, createdAt: now, updatedAt: now, lastProgressAt: now,
+      supervision: { required: true, materialized: false, generations: [] }, stages: {}, participants: {},
+      progress: { expected: 0, registered: 0, running: 0, completed: 0, failed: 0, blocked: 0 },
+      notification: { lastLeadWakeRevision: 0, terminalDelivered: false, attempts: 0 }
+    };
+    await saveOwnedOperation(root, record);
+    await bindOperationLead(root, record.id, "lead-1", "test");
+    process.env.AEH_OPERATION_ID = record.id;
+    process.env.AEH_CONTROL_ROOT = root;
+
+    workers.materializeAgentPrompt.mockResolvedValue({ id: "supervisor-uncertain", exitCode: 0, stdout: "", stderr: "", status: "idle", transport: "paseo-sdk" });
+    workers.dispatchMaterializedAgentPrompt.mockRejectedValue(new Error("PASEO_PROVIDER_LIFECYCLE_UNCERTAIN: provider call failed: You've hit your usage limit; lease lease:uncertain remains durable and fenced."));
+
+    await expect(ensureOperationSupervisor(root, config, contract, supervisorSelection, { required: true, forceMaterialize: true }))
+      .rejects.toThrow(/AEH_OPERATION_SUPERVISOR_UNAVAILABLE: initialization failed after 1 bounded attempt\(s\): PASEO_PROVIDER_LIFECYCLE_UNCERTAIN:.*usage limit/);
+    expect(workers.materializeAgentPrompt).toHaveBeenCalledTimes(1);
+    expect(workers.dispatchMaterializedAgentPrompt).toHaveBeenCalledTimes(1);
+    expect(runtimeMocks.archivePaseoSdkAgent).not.toHaveBeenCalled();
+    expect(supervisorInitializationRetryBlockedByProviderLeaseV1("PASEO_PROVIDER_LEASE_TAKEOVER_BLOCKED: prior session remains active or uncertain.")).toBe(true);
+    const durable = await loadOperation(root, record.id);
+    expect(durable.supervision.generations).toHaveLength(1);
+    expect(durable.supervision.generations[0]).toMatchObject({ generation: 1, agentId: "supervisor-uncertain", status: "FAILED", error: expect.stringContaining("usage limit") });
+  });
+
+  it("still retries an ordinary transient supervisor initialization failure", async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-supervisor-retryable-"));
+    const now = new Date().toISOString();
+    const record: OperationRecordV2 = {
+      version: 2, id: "AUDIT-RETRY", kind: "audit", status: "RUNNING", phase: "supervision", root,
+      payload: { request: "retryable initialization" }, revision: 1, createdAt: now, updatedAt: now, lastProgressAt: now,
+      supervision: { required: true, materialized: false, generations: [] }, stages: {}, participants: {},
+      progress: { expected: 0, registered: 0, running: 0, completed: 0, failed: 0, blocked: 0 },
+      notification: { lastLeadWakeRevision: 0, terminalDelivered: false, attempts: 0 }
+    };
+    await saveOwnedOperation(root, record);
+    await bindOperationLead(root, record.id, "lead-1", "test");
+    process.env.AEH_OPERATION_ID = record.id;
+    process.env.AEH_CONTROL_ROOT = root;
+    workers.materializeAgentPrompt
+      .mockResolvedValueOnce({ id: "supervisor-transient", exitCode: 0, stdout: "", stderr: "", status: "idle", transport: "paseo-sdk" })
+      .mockResolvedValueOnce({ id: "supervisor-retry", exitCode: 0, stdout: "", stderr: "", status: "idle", transport: "paseo-sdk" });
+    workers.dispatchMaterializedAgentPrompt
+      .mockRejectedValueOnce(new Error("temporary transport failure"))
+      .mockResolvedValueOnce({ id: "supervisor-retry", exitCode: 0, stdout: "initialized", stderr: "", status: "idle", transport: "paseo-sdk" });
+
+    const handle = await ensureOperationSupervisor(root, config, contract, supervisorSelection, { required: true, forceMaterialize: true });
+    expect(handle?.agentId).toBe("supervisor-retry");
+    expect(workers.materializeAgentPrompt).toHaveBeenCalledTimes(2);
+    expect(workers.dispatchMaterializedAgentPrompt).toHaveBeenCalledTimes(2);
   });
 
   it("retries the candidate-drift replacement barrier once with a fresh session before failing closed", async () => {
