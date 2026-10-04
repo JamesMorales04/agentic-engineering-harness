@@ -39,11 +39,17 @@ const explorerEvidence: DurableAgentEvidence<ExplorerOutput> = {
 
 describe("change prompt contracts (AEH-V2-0125)", () => {
   it("requires exactly one AEH_RESULT_JSON= final line in the Explorer prompt", () => {
-    const prompt = buildExplorerPrompt("CHANGE-TEST-1", payload, []);
+    const prompt = buildExplorerPrompt("CHANGE-TEST-1", payload, [], ["/work/tree with spaces", "/work/tree/.git"]);
     const markerLines = prompt.split("\n").filter((line) => line.includes("AEH_RESULT_JSON="));
     expect(markerLines).toHaveLength(1);
     expect(markerLines[0]).toContain("exactly one line beginning AEH_RESULT_JSON=");
     expect(prompt).toContain("EXPLORER_RESULT_ARTIFACT_MISSING");
+    expect(prompt).toContain("/work/tree with spaces");
+    expect(prompt).toContain("/work/tree/.git");
+    expect(prompt).toContain("Do not search prior or sibling worktrees");
+    expect(prompt).toContain("Symlinks do not grant access");
+    expect(prompt).toContain("Return BLOCKED");
+    expect(prompt).not.toContain("/work/sibling");
   });
 
   it("requires exactly one AEH_RESULT_JSON= final line in the Planner prompt", () => {

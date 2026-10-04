@@ -1,4 +1,5 @@
 import process from "node:process";
+import { createPermissionStopDiagnostic } from "./permissionDiagnostic.js";
 import { pathToFileURL } from "node:url";
 import { connectPaseoClient, PaseoSdkUnavailableError, type PaseoSdkPermissionStop } from "./sdk.js";
 import { resolvePaseoSdkFromCli } from "./sdkResolve.js";
@@ -315,7 +316,8 @@ export async function waitForPaseoAgentNative(
   root: string,
   agentId: string,
   timeoutMs = 1_800_000,
-  baseline?: PaseoTurnBaseline
+  baseline?: PaseoTurnBaseline,
+  permissionScopeRoots?: string[]
 ): Promise<PaseoNativeWaitResult> {
   return withNativeClient(root, async (client) => {
     const handle = client.agents.ref(agentId);
@@ -325,7 +327,7 @@ export async function waitForPaseoAgentNative(
       );
     }
     const startedAt = Date.now();
-    const result = await waitForPaseoAgentHandle(handle, timeoutMs, baseline, 2_000, true, (sessionId, envelope) => recordPaseoRuntimeActivityV1(root, sessionId, envelope));
+    const result = await waitForPaseoAgentHandle(handle, timeoutMs, baseline, 2_000, true, (sessionId, envelope) => recordPaseoRuntimeActivityV1(root, sessionId, envelope), permissionScopeRoots);
     await recordPaseoTrace(root, "agent.wait", {
       agentId,
       source: result.source,
@@ -345,7 +347,8 @@ export async function waitForPaseoAgentHandle(
   baseline?: PaseoTurnBaseline,
   pollIntervalMs = 2_000,
   captureEfficiencyTelemetry = false,
-  onTimelineActivity?: (sessionId: string, envelope: PaseoTimelineEventEnvelopeV1) => Promise<void>
+  onTimelineActivity?: (sessionId: string, envelope: PaseoTimelineEventEnvelopeV1) => Promise<void>,
+  permissionScopeRoots?: string[]
 ): Promise<PaseoNativeWaitResult> {
   let updatesObserved = 0;
   let sawActivity = false;
@@ -430,13 +433,14 @@ export async function waitForPaseoAgentHandle(
         return;
       }
 
+      const permission = await permissionStopDiagnostic(raw.pendingPermissions, handle.id, permissionScopeRoots);
       finish({
         id: handle.id,
         workspaceId: stringField(raw, ["workspaceId", "workspace_id"]),
         status,
         lastMessage,
         error: stringField(raw, ["error", "lastError", "last_error"]),
-        ...(permissionStopDetail(raw.pendingPermissions) ? { permission: permissionStopDetail(raw.pendingPermissions) } : {}),
+        ...(permission ? { permission } : {}),
         ...(capture ? { efficiencyTelemetry: capture.evidence } : {}),
         source: "paseo-agent-subscription",
         updatesObserved
@@ -770,18 +774,16 @@ function stringField(record: Record<string, unknown>, keys: string[]): string | 
   }
   return undefined;
 }
-function permissionStopDetail(value: unknown): PaseoSdkPermissionStop | undefined {
+async function permissionStopDiagnostic(value: unknown, sessionId: string, permissionScopeRoots?: string[]): Promise<PaseoSdkPermissionStop | undefined> {
   const entries = Array.isArray(value) ? value : value && typeof value === "object" ? [value] : [];
   for (const entry of entries) {
     if (!entry || typeof entry !== "object") continue;
     const record = entry as Record<string, unknown>;
-    const name = typeof record.name === "string" && record.name.trim() ? record.name.trim().slice(0, 200) : undefined;
-    const title = typeof record.title === "string" && record.title.trim() ? record.title.trim().slice(0, 200) : undefined;
-    const description = typeof record.description === "string" && record.description.trim() ? record.description.trim().slice(0, 200) : undefined;
+    const name = typeof (record.name ?? record.permission) === "string" && String(record.name ?? record.permission).trim() ? String(record.name ?? record.permission).trim().slice(0, 120) : undefined;
     const input = record.input && typeof record.input === "object" ? record.input as Record<string, unknown> : undefined;
     const patterns = Array.isArray(input?.patterns) ? input.patterns.filter((item): item is string => typeof item === "string" && item.trim().length > 0).slice(0, 8).map((item) => item.slice(0, 300)) : undefined;
-    if (name || title || patterns?.length) {
-      return { ...(name ? { name } : {}), ...(title ? { title } : {}), ...(description ? { description } : {}), ...(patterns?.length ? { patterns } : {}) };
+    if (name || patterns?.length) {
+      return createPermissionStopDiagnostic(name, patterns, permissionScopeRoots, sessionId, typeof record.id === "string" ? record.id : `${sessionId}:pending`);
     }
   }
   return undefined;

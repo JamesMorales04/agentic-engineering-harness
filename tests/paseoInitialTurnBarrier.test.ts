@@ -34,7 +34,7 @@ describe("Paseo initial-turn barrier", () => {
     }, runtime as never);
     expect(result).toEqual(expect.objectContaining({ id: "fast-agent", stdout: "done", observation: "sdk-run" }));
     expect(runtime.sdk.materialize).toHaveBeenCalledBefore(runtime.sdk.run);
-    expect(runtime.sdk.run).toHaveBeenCalledWith("/repo", "fast-agent", "discover", 30_000, undefined, "discovery");
+    expect(runtime.sdk.run).toHaveBeenCalledWith("/repo", "fast-agent", "discover", 30_000, undefined, "discovery", undefined);
     expect(runtime.sdk.create).not.toHaveBeenCalled();
     expect(runtime.sdk.wait).not.toHaveBeenCalled();
     expect(runtime.native.wait).not.toHaveBeenCalled();
@@ -46,7 +46,7 @@ describe("Paseo initial-turn barrier", () => {
     await launchManagedPaseoAgent("/repo", {
       cwd: "/repo", title: "typed", provider: "opencode", prompt: "work", outputSchema: schema, timeoutSeconds: 45, labels: managedLabels
     }, runtime as never);
-    expect(runtime.sdk.run).toHaveBeenCalledWith("/repo", "fast-agent", "work", 45_000, schema, "discovery");
+    expect(runtime.sdk.run).toHaveBeenCalledWith("/repo", "fast-agent", "work", 45_000, schema, "discovery", undefined);
     expect(runtime.sdk.create).not.toHaveBeenCalled();
   });
 
@@ -58,7 +58,7 @@ describe("Paseo initial-turn barrier", () => {
     }, runtime as never);
     expect(runtime.sdk.materialize).toHaveBeenCalledWith("/repo", expect.objectContaining({ agentId: "binding-session-id", waitForFinish: false }));
     expect(runtime.sdk.materialize).toHaveBeenCalledBefore(runtime.sdk.run);
-    expect(runtime.sdk.run).toHaveBeenCalledWith("/repo", "binding-session-id", "work", 1_800_000, undefined, "discovery");
+    expect(runtime.sdk.run).toHaveBeenCalledWith("/repo", "binding-session-id", "work", 1_800_000, undefined, "discovery", undefined);
     expect(runtime.sdk.create).not.toHaveBeenCalled();
   });
 
@@ -68,7 +68,7 @@ describe("Paseo initial-turn barrier", () => {
     await continueManagedPaseoAgent("/repo", "actual-session", "work", 30, runtime as never, { type: "object" }, labels);
     expect(runtime.updateLabels).toHaveBeenCalledWith("/repo", "actual-session", labels);
     expect(runtime.updateLabels).toHaveBeenCalledBefore(runtime.sdk.run);
-    expect(runtime.sdk.run).toHaveBeenCalledWith("/repo", "actual-session", "work", 30_000, { type: "object" }, undefined);
+    expect(runtime.sdk.run).toHaveBeenCalledWith("/repo", "actual-session", "work", 30_000, { type: "object" }, undefined, undefined);
   });
 
   it("fails closed before a Paseo turn when binding-label persistence fails", async () => {
