@@ -5,20 +5,9 @@ import { sha256Canonical } from "../core/digest.js";
 import type { HarnessProjectConfig, TaskContract, ValidationCapability, ValidatorSpec } from "../core/types.js";
 import type { ProjectStackProfileV1 } from "../participants/stack.js";
 import type { ToolAvailabilityV1 } from "../participants/toolRegistry.js";
+import { validationCapabilityValues } from "../validation/capabilityCatalog.js";
 
-export const validationRequirementKindValues = [
-  "unit-test",
-  "integration-test",
-  "bdd",
-  "contract-test",
-  "browser-test",
-  "visual-test",
-  "static-security",
-  "dependency-security",
-  "architecture",
-  "policy",
-  "command"
-] as const;
+export const validationRequirementKindValues = validationCapabilityValues;
 
 export type ValidationRequirementKindV1 = (typeof validationRequirementKindValues)[number];
 

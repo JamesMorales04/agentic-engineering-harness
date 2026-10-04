@@ -6,6 +6,7 @@ import type { HarnessProjectConfig, TaskContract, ValidationCommand } from "../c
 import { getCurrentBranch } from "../core/git.js";
 import { AehError } from "../core/errors.js";
 import { runShell } from "../utils/process.js";
+import { isValidationCapability } from "../validation/capabilityCatalog.js";
 
 export interface OpenSpecAuthoringConfig { provider?: "openspec" | "native" | string; schema?: string; managerAgent?: string; }
 export interface OpenSpecPreparedChange { taskId: string; changeName: string; directory: string; schema: string; managerAgent: string; }
@@ -266,7 +267,10 @@ async function resolveRequirementValidation(root: string, config: HarnessProject
   const validator = config.validation?.validators?.find((item) => item.required !== false);
   if (validator) return { id: validator.id, capability: capabilityForAdapter(validator.adapter) };
   const provider = config.validation?.providers?.find((item) => item.required !== false);
-  if (provider) return { id: provider.id, capability: provider.capability };
+  if (provider) {
+    if (!isValidationCapability(provider.capability)) throw new Error(`OpenSpec provider '${provider.id}' declares unsupported requirement capability '${provider.capability}'.`);
+    return { id: `capability:${provider.capability}`, capability: provider.capability };
+  }
   const command = config.validation?.commands?.find((item) => item.required !== false);
   if (command) return { id: command.id };
 
