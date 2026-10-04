@@ -8,7 +8,7 @@ import { sha256Canonical } from "../../src/core/digest.js";
 import { createCandidateRevisionV1, type CandidateRevisionV1 } from "../../src/operations/v2Contracts.js";
 import type { CandidateImpactV1 } from "../../src/candidates/assembler.js";
 import { candidateImpactValidationRequirementsV1, compileCandidateAssuranceV1 } from "../../src/architecture/candidateAssurance.js";
-import { resolveValidationRequirements, validationRequirementKindValues } from "../../src/architecture/validationRequirements.js";
+import { contractValidationRequirementsV1, resolveValidationRequirements, validationRequirementKindValues } from "../../src/architecture/validationRequirements.js";
 import { requireProviderLaneEvidenceV1 } from "../../src/validation/laneEvidence.js";
 import { runCandidateImpactValidations } from "../../src/core/run.js";
 import { runConfiguredValidators } from "../../src/validators/registry.js";
@@ -172,6 +172,69 @@ describe("required specialized lanes are satisfied only by matching provider exe
     expect(JSON.parse(await fs.readFile(path.join(root, ".harness/evidence/provider-candidate.json"), "utf8"))).toMatchObject(candidate);
     const otherCandidate = createCandidateRevisionV1({ operationId: candidate.operationId, candidateId: "CAND-S11-OTHER", revision: candidate.revision, sourceDigest: candidate.sourceDigest });
     await expect(requireProviderLaneEvidenceV1(root, configured, "VISUAL", otherCandidate, "candidate-impact-impact-review-ui-visual")).rejects.toThrow("PROVIDER_LANE_EVIDENCE_REQUIRED");
+  });
+
+  it("binds a provider capability trace to the exact frozen requirement through candidate assurance", async () => {
+    const { root, candidate } = await fixture({
+      "baseline.png": "committed-baseline-bytes",
+      "visual-provider.mjs": `import { spawnSync } from 'node:child_process';\nconst result = spawnSync('./node_modules/.bin/playwright', ['test'], { encoding: 'utf8' });\nprocess.stdout.write(result.stdout);\nprocess.stderr.write(result.stderr);\nprocess.exitCode = result.status ?? 1;\n`
+    });
+    await installFakePinnedPlaywright(root);
+    const baseline = path.join(root, "baseline.png");
+    const comparison = { tool: "playwright-toHaveScreenshot", name: "shot.png", options: { maxDiffPixelRatio: 0.05 } };
+    const providerConfig: HarnessProjectConfig = { ...config, validation: { providers: [{ id: "visual-provider", capability: "visual-test", provider: "playwright", command: "node visual-provider.mjs", options: { referenceBaseline: baseline, comparison } }] } };
+    const frozenContract: TaskContract = { ...contract, requirements: [{ id: "R1", description: "visual assertion passes", validators: ["capability:visual-test"] }], scope: { allowed: ["**"], forbidden: [], frozen: [] } };
+    const derived = contractValidationRequirementsV1({ requirements: frozenContract.requirements!, scope: ["**"], providers: providerConfig.validation?.providers });
+    expect(derived).toMatchObject([{ id: "capability:visual-test", kind: "visual-test", requirementRefs: ["R1"], acceptanceRefs: ["R1"] }]);
+    const impact = impactFor(candidate, "UI/visual");
+    const resolution = await resolveValidationRequirements({ root, requirements: derived, config: providerConfig, contract: frozenContract, allowedKinds: validationRequirementKindValues });
+    expect(resolution.actions).toMatchObject([{ requirementId: "capability:visual-test", source: "approved-provider", selector: "visual-provider", kind: "visual-test" }]);
+    const compilation = compileCandidateAssuranceV1({
+      candidate, impact,
+      policy: { version: 1, digest: sha256Canonical("provider-contract-policy"), minimumAssurance: "STANDARD", independentReviewRequired: false, minimumIndependentReviewers: 0, providerDiversity: false, allowedValidationKinds: [...validationRequirementKindValues], evidenceStrength: "STANDARD" },
+      implementationIdentity: "implementer-1", risk: "low", reviewerCandidates: [], baseValidationRequirements: derived, validationResolution: resolution,
+      acceptanceAssertions: [{ id: "ASSERT-R1", statement: "R1 visual assertion passes", requirementRefs: ["R1"] }]
+    });
+    expect(compilation.validationRequirements).toContainEqual(expect.objectContaining({ id: "capability:visual-test", requirementRefs: ["R1"] }));
+    const report: ValidationReport = { version: 1, taskId: frozenContract.task.id, status: "PASS", startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), checks: [], changedFiles: ["src/app.ts"], candidate, metadata: { project: "required-lane-fixture", baseRef: "HEAD" } };
+    const passing = await runCandidateImpactValidations({ root, config: providerConfig, contract: frozenContract, report, impact, compilation, resolution, requirements: derived });
+    expect(passing).toMatchObject([{ id: "candidate.assurance.validation.capability:visual-test", status: "PASS", details: { requirementId: "capability:visual-test", kind: "visual-test", underlyingStatus: "PASS", laneEvidence: { lane: "VISUAL" } } }]);
+
+    const failedProviderConfig: HarnessProjectConfig = { ...providerConfig, validation: { providers: [{ ...providerConfig.validation!.providers![0]!, command: "node -e \\\"process.exit(1)\\\"" }] } };
+    const failedResolution = await resolveValidationRequirements({ root, requirements: derived, config: failedProviderConfig, contract: frozenContract, allowedKinds: validationRequirementKindValues });
+    const failing = await runCandidateImpactValidations({ root, config: failedProviderConfig, contract: frozenContract, report, impact, compilation, resolution: failedResolution, requirements: derived });
+    expect(failing).toMatchObject([{ id: "candidate.assurance.validation.capability:visual-test", status: "FAIL", details: { requirementId: "capability:visual-test", kind: "visual-test", underlyingStatus: "FAIL" } }]);
+  });
+
+  it("executes the exact selected provider ID and blocks ambiguous same-capability providers", async () => {
+    const { root, candidate } = await fixture({
+      "baseline.png": "committed-baseline-bytes",
+      "early.mjs": `import fs from 'node:fs';\nimport { spawnSync } from 'node:child_process';\nfs.mkdirSync('.harness/evidence', { recursive: true });\nfs.writeFileSync('.harness/evidence/early-ran.txt', 'yes');\nconst r = spawnSync('./node_modules/.bin/playwright', ['test'], { encoding: 'utf8' });\nprocess.stdout.write(r.stdout);\nprocess.stderr.write(r.stderr);\nprocess.exitCode = r.status ?? 1;\n`,
+      "later.mjs": `import fs from 'node:fs';\nimport { spawnSync } from 'node:child_process';\nfs.mkdirSync('.harness/evidence', { recursive: true });\nfs.writeFileSync('.harness/evidence/later-ran.txt', 'yes');\nconst r = spawnSync('./node_modules/.bin/playwright', ['test'], { encoding: 'utf8' });\nprocess.stdout.write(r.stdout);\nprocess.stderr.write(r.stderr);\nprocess.exitCode = r.status ?? 1;\n`
+    });
+    await installFakePinnedPlaywright(root);
+    const comparison = { tool: "playwright-toHaveScreenshot", name: "shot.png", options: { maxDiffPixelRatio: 0.05 } };
+    const providers = [
+      { id: "visual-provider-early", capability: "visual-test" as const, provider: "playwright", command: "node early.mjs", options: { referenceBaseline: path.join(root, "baseline.png"), comparison } },
+      { id: "visual-provider-later", capability: "visual-test" as const, provider: "playwright", command: "node later.mjs", options: { referenceBaseline: path.join(root, "baseline.png"), comparison } }
+    ];
+    const configured: HarnessProjectConfig = { ...config, validation: { providers } };
+    const requirement = { version: 1 as const, id: "visual-provider-later", property: "R1 visual result passes", kind: "visual-test" as const, scope: ["**"], evidenceNeeded: ["visual provider evidence"], requirementRefs: ["R1"], acceptanceRefs: ["R1"] };
+    const resolution = await resolveValidationRequirements({ root, requirements: [requirement], config: configured, contract, allowedKinds: validationRequirementKindValues });
+    expect(resolution.actions).toMatchObject([{ requirementId: "visual-provider-later", selector: "visual-provider-later", source: "approved-provider" }]);
+    const impact = impactFor(candidate, "UI/visual");
+    const compilation = compileCandidateAssuranceV1({ candidate, impact, policy: { version: 1, digest: sha256Canonical("provider-selector-policy"), minimumAssurance: "STANDARD", independentReviewRequired: false, minimumIndependentReviewers: 0, providerDiversity: false, allowedValidationKinds: [...validationRequirementKindValues], evidenceStrength: "STANDARD" }, implementationIdentity: "implementer-1", risk: "low", reviewerCandidates: [], baseValidationRequirements: [requirement], validationResolution: resolution, acceptanceAssertions: [{ id: "ASSERT-R1", statement: "R1 visual result passes", requirementRefs: ["R1"] }] });
+    const report: ValidationReport = { version: 1, taskId: contract.task.id, status: "PASS", startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), checks: [], changedFiles: ["src/app.ts"], candidate, metadata: { project: "required-lane-fixture", baseRef: "HEAD" } };
+    const checks = await runCandidateImpactValidations({ root, config: configured, contract, report, impact, compilation, resolution, requirements: [requirement] });
+    expect(checks, JSON.stringify(checks)).toMatchObject([{ status: "PASS", details: { selector: "visual-provider-later", underlyingStatus: "PASS" } }]);
+    await expect(fs.access(path.join(root, ".harness/evidence/later-ran.txt"))).resolves.toBeUndefined();
+    await expect(fs.access(path.join(root, ".harness/evidence/early-ran.txt"))).rejects.toThrow();
+
+    await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ name: "required-lane-fixture", version: "1.0.0", scripts: {} }));
+    const ambiguousRequirement = { ...requirement, id: "visual-check" };
+    const ambiguous = await resolveValidationRequirements({ root, requirements: [ambiguousRequirement], config: configured, contract, allowedKinds: validationRequirementKindValues });
+    expect(ambiguous.actions).toEqual([]);
+    expect(ambiguous.blocked).toContainEqual(expect.objectContaining({ requirementId: "visual-check" }));
   });
 
   it("uses the declared project visual provider for an auto-generated capability validator", async () => {

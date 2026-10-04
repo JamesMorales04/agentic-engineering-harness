@@ -161,6 +161,44 @@ describe("OpenSpec authoring bridge", () => {
     expect((await validateSddChange(root, taskId, noValidationConfig)).ok).toBe(true);
   });
 
+  it("compiles configured provider evidence as an exact capability trace and rejects provider IDs as validators", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-openspec-provider-trace-"));
+    const taskId = "VISUAL-1"; const change = openSpecChangeName(taskId); const dir = path.join(root, "openspec/changes", change);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, "proposal.md"), "# Visual check\n\n## Desired outcome\nVerify the visual result.\n");
+    await fs.writeFile(path.join(dir, "tasks.md"), "- [ ] Verify the visual result\n");
+    const providerConfig = { ...config, validation: { baseRef: "main", commands: [], validators: [], providers: [{ id: "s11-visual-playwright", capability: "visual-test", provider: "playwright", required: true }] } } as HarnessProjectConfig;
+    const compiled = await compileOpenSpecChange(root, providerConfig, taskId, "Visual check", change, vi.fn(async () => result(0, "valid")) as never);
+    const contract = YAML.parse(await fs.readFile(compiled.contractPath, "utf8")) as TaskContract;
+    expect(compiled.validatorId).toBe("capability:visual-test");
+    expect(contract.requirements?.[0]).toMatchObject({ validators: ["capability:visual-test"], capabilities: ["visual-test"] });
+    expect((await validateSddChange(root, taskId, providerConfig)).ok).toBe(true);
+
+    contract.requirements![0]!.validators = ["s11-visual-playwright"];
+    delete contract.requirements![0]!.capabilities;
+    await fs.writeFile(compiled.contractPath, YAML.stringify(contract));
+    const providerIdAsValidator = await validateSddChange(root, taskId, providerConfig);
+    expect(providerIdAsValidator.ok).toBe(false);
+    expect(providerIdAsValidator.issues.join("\n")).toContain("unknown validator 's11-visual-playwright'");
+  });
+
+  it("fails closed for unknown and unconfigured capability traces", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-openspec-provider-capability-"));
+    const taskId = "CAPABILITY-1"; const change = openSpecChangeName(taskId); const dir = path.join(root, "openspec/changes", change);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, "proposal.md"), "# Check\n\n## Desired outcome\nRun checks.\n");
+    await fs.writeFile(path.join(dir, "tasks.md"), "- [ ] Run checks\n");
+    const withUnknown = { ...config, validation: { baseRef: "main", commands: [], validators: [], providers: [{ id: "unknown-provider", capability: "made-up" as never, provider: "custom", required: true }] } } as HarnessProjectConfig;
+    await expect(compileOpenSpecChange(root, withUnknown, taskId, "Check", change, vi.fn(async () => result(0, "valid")) as never)).rejects.toThrow(/unsupported requirement capability 'made-up'/i);
+
+    const withCapability = { ...config, validation: { baseRef: "main", commands: [], validators: [], providers: [{ id: "visual-provider", capability: "visual-test", provider: "playwright", required: true }] } } as HarnessProjectConfig;
+    await compileOpenSpecChange(root, withCapability, taskId, "Check", change, vi.fn(async () => result(0, "valid")) as never);
+    const unconfigured = { ...withCapability, validation: { baseRef: "main", commands: [], validators: [], providers: [] } } as HarnessProjectConfig;
+    const validation = await validateSddChange(root, taskId, unconfigured);
+    expect(validation.ok).toBe(false);
+    expect(validation.issues.join("\n")).toContain("unconfigured validation capability 'visual-test'");
+  });
+
   it("fails compilation when no deterministic requirement evidence can be derived", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-openspec-no-validator-"));
     const taskId = "NO-VALIDATOR-1"; const change = openSpecChangeName(taskId); const dir = path.join(root, "openspec/changes", change);
