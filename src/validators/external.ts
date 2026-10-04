@@ -42,7 +42,8 @@ interface VisualComparisonBinding {
 export async function runExternalToolValidator(context: ValidationContext): Promise<ValidationCheck> {
   const adapter = context.spec.adapter;
   const lane = browserLanes[adapter];
-  const configured = context.spec.command?.trim();
+  const options = { ...(context.providerSpec?.options ?? {}), ...(context.spec.options ?? {}) };
+  const configured = (context.providerSpec?.command ?? context.spec.command)?.trim();
   const defaults: Record<string, { tool: string; command?: string; category: string }> = {
     opengrep: { tool: "opengrep", command: "opengrep scan --json --error .", category: "security" },
     trivy: { tool: "trivy", command: "trivy fs --format json --exit-code 1 --severity HIGH,CRITICAL --scanners vuln,misconfig,secret .", category: "security" },
@@ -62,7 +63,7 @@ export async function runExternalToolValidator(context: ValidationContext): Prom
   }
   let visualBinding: VisualComparisonBinding | undefined;
   if (lane === "VISUAL") {
-    const resolved = await resolveVisualComparisonBinding(context);
+    const resolved = await resolveVisualComparisonBinding(context, options);
     if ("blocker" in resolved) {
       return { id: context.spec.id, category: definition.category, status: context.spec.required === false ? "SKIP" : "FAIL", message: `${resolved.blocker}: ${resolved.message}`, details: { blocker: resolved.blocker, lane, referenceRequired: true } };
     }
@@ -71,8 +72,8 @@ export async function runExternalToolValidator(context: ValidationContext): Prom
   const command = configured ?? (lane && pinnedPlaywright ? `${quote(pinnedPlaywright)} test --grep "${context.contract.task.id}" --reporter=json` : definition.command!);
   const providerVersion = lane ? await playwrightVersion(pinnedPlaywright, context.root) : "unknown";
   const rendered = command.replaceAll("{taskId}", context.contract.task.id).replaceAll("{baseRef}", context.baseRef).replaceAll("{acceptance}", context.contract.source?.acceptance ?? "");
-  const cwd = path.resolve(context.root, context.spec.workingDirectory ?? ".");
-  const timeoutMs = (context.spec.timeoutSeconds ?? 900) * 1000;
+  const cwd = path.resolve(context.root, context.providerSpec?.workingDirectory ?? context.spec.workingDirectory ?? ".");
+  const timeoutMs = (context.spec.timeoutSeconds ?? context.providerSpec?.timeoutSeconds ?? 900) * 1000;
   const isolationRequired = validatorIsolationRequired(context.config, context.spec);
   if (isolationRequired) {
     try {
@@ -106,7 +107,7 @@ export async function runExternalToolValidator(context: ValidationContext): Prom
       ...(context.candidate ? { env: { AEH_VALIDATION_CANDIDATE_JSON: JSON.stringify(context.candidate) } } : {})
     });
   }
-  const evidenceFile = typeof context.spec.options?.evidenceFile === "string" ? path.resolve(cwd, context.spec.options.evidenceFile) : undefined;
+  const evidenceFile = typeof options.evidenceFile === "string" ? path.resolve(cwd, options.evidenceFile) : undefined;
   const evidenceText = evidenceFile ? await fs.readFile(evidenceFile, "utf8").catch(() => result.stdout) : result.stdout;
   const parsedEvidence = parseToolEvidenceResult(adapter, evidenceText);
   const findings = parsedEvidence.findings;
@@ -121,7 +122,7 @@ export async function runExternalToolValidator(context: ValidationContext): Prom
   const malformedEvidence = ["opengrep", "trivy", "playwright", "visual", "pact"].includes(adapter) && !parsedEvidence.valid;
   const failed = result.exitCode !== 0 || failedByEvidence || malformedEvidence;
   const status = failed ? context.spec.required === false ? "WARN" : "FAIL" : "PASS";
-  if (lane && !context.candidate && context.spec.required === true && context.spec.options?.requireCandidateBoundEvidence === true) {
+  if (lane && !context.candidate && context.spec.required === true && options.requireCandidateBoundEvidence === true) {
     return { id: context.spec.id, category: definition.category, status: "FAIL", message: `${PROVIDER_LANE_CANDIDATE_BINDING_REQUIRED}: required ${adapter} validator ran without a current CandidateRevision binding.`, details: { command: rendered, blocker: PROVIDER_LANE_CANDIDATE_BINDING_REQUIRED, lane, candidateBoundRequired: true } };
   }
   let laneEvidence: { artifact: string; digest: string; candidate: string; lane: ProviderEvidenceLaneV1 } | undefined;
@@ -152,7 +153,7 @@ export async function runExternalToolValidator(context: ValidationContext): Prom
     }
   }
   const sastAdapter = SAST_ADAPTERS.includes(adapter as SastAdapterV1) ? adapter as SastAdapterV1 : undefined;
-  if (sastAdapter && !context.candidate && context.spec.required === true && context.spec.options?.requireCandidateBoundEvidence === true) {
+  if (sastAdapter && !context.candidate && context.spec.required === true && options.requireCandidateBoundEvidence === true) {
     return { id: context.spec.id, category: definition.category, status: "FAIL", message: `${SAST_CANDIDATE_BINDING_REQUIRED}: required ${adapter} validator ran without a current CandidateRevision binding.`, details: { command: rendered, blocker: SAST_CANDIDATE_BINDING_REQUIRED, candidateBoundRequired: true } };
   }
   let sastEvidence: { artifact: string; digest: string; candidate: string } | undefined;
@@ -188,7 +189,7 @@ export async function runExternalToolValidator(context: ValidationContext): Prom
     details: {
       command: rendered,
       rawArtifact: path.relative(context.root, rawPath).replaceAll("\\", "/"),
-      evidenceFormat: evidenceFile ? context.spec.options?.evidenceFormat ?? "json-or-junit" : "stdout-json",
+      evidenceFormat: evidenceFile ? options.evidenceFormat ?? "json-or-junit" : "stdout-json",
       exitCode: result.exitCode,
       stderr: boundedDiagnostic(result.stderr),
       findings,
@@ -245,8 +246,7 @@ function playwrightUnavailableReason(output: string): string | undefined {
  * comparison configuration into its lane evidence. A missing or malformed
  * binding fails closed and never generates a baseline from the candidate.
  */
-async function resolveVisualComparisonBinding(context: ValidationContext): Promise<VisualComparisonBinding | { blocker: string; message: string }> {
-  const options = context.spec.options ?? {};
+async function resolveVisualComparisonBinding(context: ValidationContext, options: Record<string, unknown>): Promise<VisualComparisonBinding | { blocker: string; message: string }> {
   const configured = typeof options.referenceBaseline === "string" ? options.referenceBaseline.trim() : "";
   if (!configured) return { blocker: VISUAL_REFERENCE_BASELINE_REQUIRED, message: "a required VISUAL check must declare options.referenceBaseline naming the committed baseline image it compares against; a baseline is never auto-generated from the candidate under validation." };
   const absolute = path.resolve(context.root, configured);
@@ -331,7 +331,8 @@ function validatorWritablePaths(context: ValidationContext, cwd: string): string
   const paths = new Set<string>();
   const evidenceDir = path.resolve(context.root, context.config.evidence?.outputDir ?? ".harness/evidence");
   paths.add(evidenceDir);
-  const evidenceFile = typeof context.spec.options?.evidenceFile === "string" ? path.resolve(cwd, context.spec.options.evidenceFile) : undefined;
+  const options = { ...(context.providerSpec?.options ?? {}), ...(context.spec.options ?? {}) };
+  const evidenceFile = typeof options.evidenceFile === "string" ? path.resolve(cwd, options.evidenceFile) : undefined;
   if (evidenceFile && path.resolve(evidenceFile).startsWith(`${path.resolve(context.root)}${path.sep}`)) paths.add(path.dirname(evidenceFile));
   return [...paths].sort();
 }
