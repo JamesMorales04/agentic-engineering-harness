@@ -9,6 +9,7 @@
     "planner": { "temperature": 0.05, "permissions": { "shell": "deny" } },
     "implementer": { "temperature": 0.1 },
     "reviewer": { "temperature": 0.1 },
+    "high-assurance-reviewer": { "temperature": 0.1 },
     "repairer": { "temperature": 0.1 },
     "spec-manager": { "temperature": 0.1 }
   },

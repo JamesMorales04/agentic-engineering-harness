@@ -42,6 +42,23 @@ export const modelFallbackObservationV2Schema = z.object({
 }).strict();
 export type ModelFallbackObservationV2 = z.infer<typeof modelFallbackObservationV2Schema>;
 
+/**
+ * Map the canonical registry observation (ModelFallbackObservationV1, versioned) onto the
+ * efficiency-telemetry observation (ModelFallbackObservationV2, strict). The V1 `version`
+ * discriminator is telemetry-envelope metadata, not fallback evidence, and is dropped here;
+ * every other field (fallbackUsed/from/to/reason) is preserved exactly. Absent input means
+ * no fallback was taken (fail-closed, no silent fallback).
+ */
+export function modelFallbackObservationV2FromV1(observation?: import("../agents/modelFallback.js").ModelFallbackObservationV1): ModelFallbackObservationV2 {
+  if (!observation) return { fallbackUsed: false };
+  return {
+    fallbackUsed: observation.fallbackUsed,
+    ...(observation.from ? { from: { ...observation.from } } : {}),
+    ...(observation.to ? { to: { ...observation.to } } : {}),
+    ...(observation.reason ? { reason: observation.reason } : {})
+  };
+}
+
 export const participantUsageObservationV2Schema = z.object({
   version: z.literal(2),
   observationId: z.string().regex(/^[a-f0-9]{64}$/),

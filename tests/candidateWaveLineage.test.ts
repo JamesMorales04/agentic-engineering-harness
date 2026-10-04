@@ -11,7 +11,7 @@ import { sha256Utf8 } from "../src/core/digest.js";
 import { bindOperationCandidate, loadOperation, saveOperation } from "../src/operations/state.js";
 import { createCandidateRevisionV1, type CandidateRevisionV1 } from "../src/operations/v2Contracts.js";
 import { runExecutable, runShell } from "../src/utils/process.js";
-import { semanticPayload, semanticTestAssessor, semanticTestService } from "./semanticAssessmentSupport.js";
+import { semanticPayload, semanticTestService } from "./semanticAssessmentSupport.js";
 import { semanticCapabilityPolicyRevisionV1, type SemanticAssessmentRequestV1 } from "../src/semantic/assessment.js";
 
 const roots: string[] = [];

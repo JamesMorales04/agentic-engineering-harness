@@ -31,6 +31,15 @@ export interface SemanticStructuredOutputCapabilityV1 {
   failures: number;
   medianMs?: number;
   note?: string;
+  /**
+   * Pending channel requalification. While true the entry is documentary only: it records
+   * a KNOWN evidence gap for this exact `<provider>/<model>` channel without granting
+   * certification. certifiedSemanticStructuredOutputModelsV1() excludes pending entries and
+   * assertSemanticStructuredOutputCapabilityV1() rejects them fail-closed. Flip to false (or
+   * remove) only with bounded real-provider probe evidence on the model's own channel:
+   * trials/failures/medianMs plus the probe report sha256 recorded in the note.
+   */
+  pendingRequalification?: boolean;
 }
 
 /**
@@ -58,9 +67,20 @@ export const semanticStructuredOutputCapabilityEvidenceV1 = {
  * (`opencode-go/muse-spark-1.3-contributor`) is intentionally NOT certified for semantic
  * assessment (failed Muse qualification evidence is preserved out-of-tree; see
  * docs/V0.4.13.md requalification path). No silent fallback is performed.
+ *
+ * Codex-channel Luna honesty note: the S13 probe matrix certified gpt-6-luna ONLY via the
+ * OpenCode channel (`opencode-go/gpt-6-luna` 4/4 schema-valid); the Codex channel entry below
+ * is therefore marked pendingRequalification and is NOT certified. S13 could not exercise the
+ * Codex channel at all (stored OAuth session expired, 401), and the bounded 2026-10-04
+ * Codex-channel probe (docs/evidence/model-routing/codex-structured-output-probe-2026-10-04.json)
+ * recorded 0 successful trials across 4 attempts (Paseo 0.9.1 rejects the canonical schema's
+ * draft 2020-12 $schema dialect; Codex response_format rejects the judgment oneOf union).
+ * Until a bounded Codex-channel probe with schema-valid trials lands, the assessor fails
+ * closed for `openai/gpt-6-luna` with SEMANTIC_ASSESSMENT_UNAVAILABLE. The OpenCode-channel
+ * S13 evidence is cited for provenance only and never transfers across channels.
  */
 export const semanticStructuredOutputCapabilitiesV1: Readonly<Record<string, SemanticStructuredOutputCapabilityV1>> = {
-  "openai/gpt-6-luna": { level: "SCHEMA_BOUND_TOOL_CALL", trials: 4, failures: 0, medianMs: 6_400, note: "Owner-approved Codex route. Probe basis: S13 OpenCode-channel matrix (4/4 canonical schema-valid) for gpt-6-luna; Codex-channel requalification is tracked as a bounded follow-up (see docs/V0.4.13.md). Fail-closed: uncertified models are refused." },
+  "openai/gpt-6-luna": { level: "TEXTUAL_JSON", trials: 0, failures: 0, pendingRequalification: true, note: "PENDING Codex-channel requalification: NOT certified for semantic assessment. Zero successful Codex-channel trials (S13: 401 authorization-unavailable; 2026-10-04 bounded probe: 4 attempts, 0 schema-valid outputs, see docs/evidence/model-routing/codex-structured-output-probe-2026-10-04.json). The S13 4/4 schema-valid matrix belongs to the OpenCode channel (opencode-go/gpt-6-luna) and does not transfer. Fail-closed: the capability gate refuses this model." },
   "opencode-go/deepseek-v4.1-flash": { level: "SCHEMA_BOUND_TOOL_CALL", trials: 2, failures: 0, medianMs: 11_418 },
   "opencode-go/kimi-k3": { level: "SCHEMA_BOUND_TOOL_CALL", trials: 2, failures: 0, medianMs: 12_932 },
   "opencode-go/glm-5.3": { level: "SCHEMA_BOUND_TOOL_CALL", trials: 2, failures: 0, medianMs: 105_000, note: "slow (81-129 s per trial)" },
@@ -83,7 +103,7 @@ export function semanticStructuredOutputCapabilityForModelV1(modelId: string): S
 export function certifiedSemanticStructuredOutputModelsV1(required: SemanticStructuredOutputLevelV1 = requiredSemanticStructuredOutputLevelV1): string[] {
   const minimum = semanticStructuredOutputLevelRank(required);
   return Object.entries(semanticStructuredOutputCapabilitiesV1)
-    .filter(([, capability]) => semanticStructuredOutputLevelRank(capability.level) >= minimum)
+    .filter(([, capability]) => !capability.pendingRequalification && semanticStructuredOutputLevelRank(capability.level) >= minimum)
     .map(([model]) => model)
     .sort();
 }
@@ -91,8 +111,8 @@ export function certifiedSemanticStructuredOutputModelsV1(required: SemanticStru
 /** Fail-closed capability assertion: no silent fallback and no runtime-level trust. */
 export function assertSemanticStructuredOutputCapabilityV1(modelId: string, required: SemanticStructuredOutputLevelV1 = requiredSemanticStructuredOutputLevelV1): SemanticStructuredOutputCapabilityV1 {
   const capability = semanticStructuredOutputCapabilityForModelV1(modelId);
-  if (capability && semanticStructuredOutputLevelRank(capability.level) >= semanticStructuredOutputLevelRank(required)) return capability;
-  const actual = capability ? capability.level : "UNCERTIFIED";
+  if (capability && !capability.pendingRequalification && semanticStructuredOutputLevelRank(capability.level) >= semanticStructuredOutputLevelRank(required)) return capability;
+  const actual = capability?.pendingRequalification ? "PENDING_REQUALIFICATION" : capability ? capability.level : "UNCERTIFIED";
   const certified = certifiedSemanticStructuredOutputModelsV1(required);
   throw new AehError(
     "SEMANTIC_ASSESSMENT_UNAVAILABLE",

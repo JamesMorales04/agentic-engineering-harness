@@ -7,10 +7,18 @@ import type { AgentExecutionSelection, ResolvedAgentTopology } from "./types.js"
  * provider fallback from the Muse workhorse (OpenCode Go) to the Luna brain (Codex).
  * Semantic assessment is fail-closed and never falls back (see resolveSemanticAssessor).
  *
+ * The registry is WIRED (not inert): selectModelFallbackExecutionV1 (src/agents/routing.ts)
+ * resolves an explicit fallback selection from this registry; the escalation path
+ * (src/core/run.ts stageSelections) attaches the resulting observation to the frozen
+ * AgentExecutionSelection, and efficiency telemetry persists it
+ * (participantUsageObservationV2Schema.fallback). A fallback is taken ONLY on an explicit
+ * registry rule match (from alias + reason in `when` + changed model id); every other case
+ * returns fallbackUsed=false. Silent fallback is forbidden.
+ *
  * Workhorse lanes (planner, spec-manager, explorer, librarian, implementer, normal
  * reviewer, repairer) resolve to Muse Spark 1.3 Contributor via OpenCode Go
  * (runtime opencode, provider opencode-go, model muse-spark-1.3-contributor).
- * Lead, Operation Supervisor, high-assurance/Harness Reviewer, difficult-diagnosis
+ * Lead, Operation Supervisor, high-assurance reviewer, difficult-diagnosis
  * escalation and explicit provider fallback resolve to GPT-6 Luna via Codex
  * (runtime codex, provider openai, model gpt-6-luna, variant xhigh).
  */

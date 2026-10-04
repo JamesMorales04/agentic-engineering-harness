@@ -59,7 +59,8 @@ import { runDirectWorkerProcess } from "./directProcess.js";
 import { createDirectWorkerHome, removeDirectWorkerHome, type DirectWorkerHome, buildDirectWorkerEnvironment } from "./directProcess.js";
 import { prepareCodexThread, prepareOpenCodeSession } from "./runtimeSessions.js";
 import { recordEvent } from "../telemetry/events.js";
-import { participantUsageObservationFromSession, recordParticipantUsageObservation, recordToolCallObservations } from "../telemetry/efficiency.js";
+import { participantUsageObservationFromSession, recordParticipantUsageObservation, recordToolCallObservations, modelFallbackObservationV2FromV1 } from "../telemetry/efficiency.js";
+import { noModelFallbackV1 } from "../agents/modelFallback.js";
 import { initializeParticipantLivenessV1, recordParticipantExecutionActivityV1 } from "../operations/executionLiveness.js";
 import { recordParticipantTelemetry } from "../telemetry/metrics.js";
 import { resolveTelemetryCorrelation } from "../telemetry/identity.js";
@@ -1289,7 +1290,10 @@ async function persistEfficiencyObservations(
       candidate,
       session,
       providerTelemetry: session.efficiencyTelemetry,
-      resultStatus
+      resultStatus,
+      // Registry-driven fallback observation rides the frozen selection; untagged selections
+      // record fallbackUsed=false (fail-closed, no silent fallback).
+      fallback: modelFallbackObservationV2FromV1(selection.modelFallback ?? noModelFallbackV1())
     });
     if (usage) await recordParticipantUsageObservation(stateRoot, config, usage).catch(() => false);
     const providerTelemetry = session.efficiencyTelemetry;

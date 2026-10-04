@@ -1,4 +1,5 @@
 import type { CanonicalAgentRole, CanonicalRole } from "../participants/index.js";
+import type { ModelFallbackObservationV1 } from "./modelFallback.js";
 
 export type AgentRole = CanonicalAgentRole;
 export type AgentRisk = "low" | "medium" | "high";
@@ -74,4 +75,11 @@ export interface ResolvedRoute {
   implementationRoute?: ImplementationRoute;
   assurance?: AssuranceLevel;
 }
-export interface AgentExecutionSelection { profile?: string; logicalAgent: string; role: AgentRole; domains: string[]; specializations?: string[]; description?: string; contextRequirements?: ContextCapabilityRequirements; runtimeName: string; runtimeAdapter: string; paseoProvider: string; modelAlias: string; modelId: string; modelName: string; modelProvider?: string; variant?: string; nativeAgent?: string; transport: AgentTransport; temperature?: number; skills: string[]; mcps: string[]; permissions: AgentPermissions; outputContract?: string; args: string[]; runtimeCapabilities: RuntimeCapabilities; }
+export interface AgentExecutionSelection { profile?: string; logicalAgent: string; role: AgentRole; domains: string[]; specializations?: string[]; description?: string; contextRequirements?: ContextCapabilityRequirements; runtimeName: string; runtimeAdapter: string; paseoProvider: string; modelAlias: string; modelId: string; modelName: string; modelProvider?: string; variant?: string; nativeAgent?: string; transport: AgentTransport; temperature?: number; skills: string[]; mcps: string[]; permissions: AgentPermissions; outputContract?: string; args: string[]; runtimeCapabilities: RuntimeCapabilities;
+  /**
+   * Explicit registry-driven model-fallback observation (PARTIAL MODEL_ROUTING_MIGRATION).
+   * Set ONLY by the escalation path via selectModelFallbackExecutionV1 when a registry rule
+   * fires; absent means no fallback was taken (efficiency telemetry records fallbackUsed=false).
+   * Never set for semantic assessment (fail-closed, no fallback).
+   */
+  modelFallback?: ModelFallbackObservationV1; }

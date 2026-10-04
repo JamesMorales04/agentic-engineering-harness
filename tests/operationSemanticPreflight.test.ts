@@ -4,7 +4,6 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadProjectConfig } from "../src/core/config.js";
 import { sha256Canonical } from "../src/core/digest.js";
-import { computeWorktreeDigest } from "../src/core/git.js";
 import { initializeProject } from "../src/core/init.js";
 import { triageChange, type TriageDecision } from "../src/core/triage.js";
 import type { HarnessProjectConfig } from "../src/core/types.js";
@@ -99,7 +98,7 @@ function routeLaunch(recommendedRoute: "DIRECT" | "DELEGATED" | "FORMAL_SDD" = "
 }
 
 describe("semantic route/assurance preflight before detached operation creation", () => {
-  it("resolves a repository/request-bound route preflight through a read-only semantic assessor launch", async () => {
+  it("fails the route preflight closed without a provider turn while Codex-channel Luna is pending requalification", async () => {
     const root = await tempRoot();
     await fs.mkdir(path.join(root, ".harness"), { recursive: true });
     await fs.writeFile(path.join(root, ".harness", "agents.source.jsonc"), JSON.stringify(semanticAssessorTopologySource), "utf8");
@@ -108,48 +107,12 @@ describe("semantic route/assurance preflight before detached operation creation"
     const launch = routeLaunch("DIRECT");
     const resolveChangePreflightV1 = resolveChangePreflightV1Export();
 
-    const preflight = await resolveChangePreflightV1(root, config, payload, { launch });
-
-    expect(preflight.version).toBe(1);
-    expect(preflight.triage).toMatchObject({ route: "DIRECT", assurance: "NONE", mechanism: "HYBRID" });
-    expect(preflight.triage.assessmentDigest).toMatch(/^[a-f0-9]{64}$/);
-    expect(preflight.triage.routeEvidence.length).toBeGreaterThan(0);
-
-    const canonicalRoot = await fs.realpath(root);
-    const expectedIntentDigest = sha256Canonical({ request: payload.request, files: payload.files, domains: payload.domains, risk: payload.risk, flags: [] });
-    expect(preflight.binding).toMatchObject({
-      projectId: `project:${sha256Canonical({ root: canonicalRoot, name: config.project.name }).slice(0, 24)}`,
-      repositoryDigest: await computeWorktreeDigest(canonicalRoot),
-      repositoryRootDigest: sha256Canonical(canonicalRoot),
-      intentDigest: expectedIntentDigest
-    });
-    expect(preflight.binding).not.toHaveProperty("operationId");
-    expect(preflight.binding).not.toHaveProperty("candidateId");
-    expect(preflight.binding).not.toHaveProperty("candidateRevision");
-    expect(preflight.binding).not.toHaveProperty("candidateDigest");
-
-    const routeCall = launch.mock.calls.find(([, options]) => options.labels?.["aeh.semantic.assessment.type"] === "ROUTE");
-    expect(routeCall, "preflight must invoke the injected launch with a ROUTE assessment").toBeDefined();
-    const [launchRoot, launchOptions] = routeCall!;
-    expect(launchRoot).toBe(root);
-    expect(launchOptions.labels).toMatchObject({
-      "aeh.kind": "semantic-assessment",
-      "aeh.role": "Semantic Assessor",
-      "aeh.project": "preflight-test",
-      "aeh.semantic.assessment.type": "ROUTE"
-    });
-    for (const key of Object.keys(launchOptions.labels ?? {})) expect(key).not.toMatch(/aeh\.(operation|candidate|participant|task|lead)(\.|$)/);
-    expect(launchOptions.title ?? "").not.toMatch(/lead/i);
-
-    const prompt = JSON.parse(launchOptions.prompt ?? "{}") as { assessmentType?: string; binding?: Record<string, unknown> };
-    expect(prompt.assessmentType).toBe("ROUTE");
-    expect(prompt.binding).toMatchObject({ ...preflight.binding });
-    expect(prompt.binding).not.toHaveProperty("operationId");
-    expect(prompt.binding).not.toHaveProperty("candidateDigest");
-
-    // Codex assessor carries no OpenCode runtime projection.
-    expect(launchOptions.provider).toBe("codex");
-    expect(launchOptions.env?.OPENCODE_CONFIG_CONTENT).toBeUndefined();
+    // No certified assessor exists on the Codex channel (OpenCode-channel S13 evidence does
+    // not transfer; see docs/evidence/model-routing/codex-structured-output-probe-2026-10-04.json),
+    // so the production preflight fails closed before any provider turn: no silent fallback,
+    // no fabricated assessment.
+    await expect(resolveChangePreflightV1(root, config, payload, { launch })).rejects.toThrow(/PENDING_REQUALIFICATION/);
+    expect(launch).not.toHaveBeenCalled();
   });
 
   it("resolves the injected preflight before any operation record or spawn and persists the typed triage and binding", async () => {

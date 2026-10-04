@@ -24,3 +24,14 @@ it("resolves balanced orchestration reviewers to the intended models", async () 
   const architecture = executionSelectionForAgent(maxQuality, "repairer");
   expect([architecture.runtimeAdapter, architecture.modelName, architecture.variant]).toEqual(["codex", "gpt-6-luna", "xhigh"]);
 });
+
+it("pins high-assurance review to Luna via Codex in every profile", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-routing-"));
+  await fs.mkdir(path.join(root, ".harness"), { recursive: true });
+  await fs.writeFile(path.join(root, ".harness", "agents.source.jsonc"), '{"version":1,"extends":["aeh:orchestration"]}');
+  for (const profile of ["economy", "balanced", "maximum-quality"]) {
+    const topology = resolveAgentTopology(await loadAgentTopologySource(root, config), profile);
+    const highAssurance = executionSelectionForAgent(topology, "high-assurance-reviewer");
+    expect([highAssurance.runtimeAdapter, highAssurance.modelName, highAssurance.variant]).toEqual(["codex", "gpt-6-luna", "xhigh"]);
+  }
+});

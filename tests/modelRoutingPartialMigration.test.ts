@@ -2,8 +2,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { loadAgentTopologySource, resolveAgentTopology } from "../src/agents/config.js";
-import { executionSelectionForAgent } from "../src/agents/routing.js";
+import { executionSelectionForAgent, resolveRoute, selectAgentNames, selectModelFallbackExecutionV1 } from "../src/agents/routing.js";
 import { describeModelFallbackV1, modelFallbackRegistryV1, noModelFallbackV1 } from "../src/agents/modelFallback.js";
+import { modelFallbackObservationV2FromV1, modelFallbackObservationV2Schema } from "../src/telemetry/efficiency.js";
 import { resolveSemanticAssessor } from "../src/semantic/assessment.js";
 import {
   assertSemanticStructuredOutputCapabilityV1,
@@ -48,16 +49,15 @@ describe("partial model-routing migration (owner-approved)", () => {
     expect(topology.models["structured-assessor"]).toMatchObject({ runtime: "codex", provider: "openai", model: "gpt-6-luna", variant: "xhigh" });
   });
 
-  it("(iii) resolves the Semantic Assessor to Luna via Codex", async () => {
+  it("(iii) fails the Semantic Assessor closed while Codex-channel Luna is pending requalification", async () => {
     const topology = await defaultTopology();
-    const resolved = resolveSemanticAssessor(topology);
-    expect(resolved.selection.runtimeAdapter).toBe("codex");
-    expect(resolved.selection.paseoProvider).toBe("codex");
-    expect(resolved.identity.modelId).toBe("openai/gpt-6-luna");
-    expect(resolved.identity.modelProvider).toBe("openai");
-    expect(resolved.identity.variant).toBe("xhigh");
-    expect(assertSemanticStructuredOutputCapabilityV1(resolved.identity.modelId).level).toBe("SCHEMA_BOUND_TOOL_CALL");
-    expect(certifiedSemanticStructuredOutputModelsV1()).toContain("openai/gpt-6-luna");
+    expect(topology.models["structured-assessor"]).toMatchObject({ runtime: "codex", provider: "openai", model: "gpt-6-luna", variant: "xhigh" });
+    // No silent certification on transferred OpenCode-channel evidence: the canonical Codex
+    // route fails closed until a bounded Codex-channel probe lands (see
+    // docs/evidence/model-routing/codex-structured-output-probe-2026-10-04.json).
+    expect(() => resolveSemanticAssessor(topology)).toThrow(/PENDING_REQUALIFICATION/);
+    expect(() => assertSemanticStructuredOutputCapabilityV1("openai/gpt-6-luna")).toThrow(/PENDING_REQUALIFICATION/);
+    expect(certifiedSemanticStructuredOutputModelsV1()).not.toContain("openai/gpt-6-luna");
     expect(certifiedSemanticStructuredOutputModelsV1()).not.toContain("opencode-go/muse-spark-1.3-contributor");
   });
 
@@ -126,5 +126,61 @@ describe("partial model-routing migration (owner-approved)", () => {
     expect(used.from?.modelId).toBe("opencode-go/muse-spark-1.3-contributor");
     expect(used.to?.modelId).toBe("openai/gpt-6-luna");
     expect(noModelFallbackV1()).toEqual({ version: 1, fallbackUsed: false });
+  });
+
+  it("(vii) wires workhorseToBrain through the escalation selector with observable fallbackUsed/from/to/reason", async () => {
+    const topology = await defaultTopology();
+    const base = executionSelectionForAgent(topology, "implementer");
+    expect(base.modelId).toBe("opencode-go/muse-spark-1.3-contributor");
+    const fired = selectModelFallbackExecutionV1(topology, base, "difficult-diagnosis");
+    expect(fired.observation).toMatchObject({ version: 1, fallbackUsed: true, reason: "explicit-provider-fallback" });
+    expect(fired.observation.from?.modelId).toBe("opencode-go/muse-spark-1.3-contributor");
+    expect(fired.observation.to?.modelId).toBe("openai/gpt-6-luna");
+    expect(fired.selection.modelId).toBe("openai/gpt-6-luna");
+    expect(fired.selection.runtimeAdapter).toBe("codex");
+    expect(fired.selection.paseoProvider).toBe("codex");
+    // Efficiency telemetry carries the observation (the V1 version discriminator is dropped).
+    const mapped = modelFallbackObservationV2FromV1(fired.observation);
+    expect(mapped).toMatchObject({ fallbackUsed: true, reason: "explicit-provider-fallback" });
+    expect(mapped.from?.modelId).toBe("opencode-go/muse-spark-1.3-contributor");
+    expect(mapped.to?.modelId).toBe("openai/gpt-6-luna");
+    expect(() => modelFallbackObservationV2Schema.parse(mapped)).not.toThrow();
+  });
+
+  it("(viii) stays fail-closed with no silent fallback outside explicit registry matches", async () => {
+    const topology = await defaultTopology();
+    const base = executionSelectionForAgent(topology, "implementer");
+    const unknownReason = selectModelFallbackExecutionV1(topology, base, "not-a-registry-reason");
+    expect(unknownReason.observation).toEqual({ version: 1, fallbackUsed: false });
+    expect(unknownReason.selection).toBe(base);
+    const brain = executionSelectionForAgent(topology, "lead");
+    expect(brain.modelId).toBe("openai/gpt-6-luna");
+    const alreadyBrain = selectModelFallbackExecutionV1(topology, brain, "difficult-diagnosis");
+    expect(alreadyBrain.observation).toEqual({ version: 1, fallbackUsed: false });
+    expect(alreadyBrain.selection).toBe(brain);
+    expect(modelFallbackObservationV2FromV1(undefined)).toEqual({ fallbackUsed: false });
+    expect(modelFallbackObservationV2FromV1(noModelFallbackV1())).toEqual({ fallbackUsed: false });
+  });
+
+  it("(ix) routes high-risk review to the Luna high-assurance reviewer while normal review stays workhorse", async () => {
+    for (const profile of ["economy", "balanced", "maximum-quality"]) {
+      const topology = await defaultTopology(profile);
+      const highAssurance = executionSelectionForAgent(topology, "high-assurance-reviewer");
+      expect(highAssurance.role).toBe("Reviewer");
+      expect(highAssurance.modelId).toBe("openai/gpt-6-luna");
+      expect(highAssurance.runtimeAdapter).toBe("codex");
+      expect(highAssurance.paseoProvider).toBe("codex");
+    }
+    const topology = await defaultTopology();
+    const highRisk = resolveRoute(topology, { intent: "implement", domains: [], files: [], risk: "high" });
+    expect(highRisk.ruleIds).toContain("high-risk-review");
+    expect(highRisk.ruleIds).toContain("default-implementation");
+    // Canonical rule composition: high-risk tasks carry the Luna high-assurance review plus
+    // the normal workhorse review; normal tasks carry only the workhorse review.
+    const highRiskReviewers = new Set(highRisk.review.flatMap((selector) => selectAgentNames(topology, selector)));
+    expect(highRiskReviewers).toEqual(new Set(["high-assurance-reviewer", "reviewer"]));
+    const normal = resolveRoute(topology, { intent: "implement", domains: [], files: [] });
+    const normalReviewers = new Set(normal.review.flatMap((selector) => selectAgentNames(topology, selector)));
+    expect(normalReviewers).toEqual(new Set(["reviewer"]));
   });
 });

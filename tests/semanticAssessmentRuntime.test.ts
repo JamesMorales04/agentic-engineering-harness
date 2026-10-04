@@ -6,8 +6,21 @@ import { sha256Canonical } from "../src/core/digest.js";
 import { computeWorktreeDigest } from "../src/core/git.js";
 import type { HarnessProjectConfig } from "../src/core/types.js";
 import { launchManagedPaseoAgent } from "../src/paseo/runtime.js";
-import { createSemanticAssessmentRuntimeV1, createSemanticRepositoryBindingV1, parseSemanticAssessmentOutputV1 } from "../src/semantic/runtime.js";
-import { semanticPayload, semanticTestRequest, semanticAssessorTopologySource } from "./semanticAssessmentSupport.js";
+import { createSemanticAssessmentRuntimeV1, createSemanticRepositoryBindingV1, parseSemanticAssessmentOutputV1, PaseoSemanticAssessmentRunnerV1 } from "../src/semantic/runtime.js";
+import { createSemanticAssessmentServiceV1, FileSemanticAssessmentCacheV1, semanticCapabilityPolicyRevisionV1 } from "../src/semantic/assessment.js";
+import { semanticPayload, semanticTestRequest, semanticAssessorTopologySource, semanticPendingRequalificationStubAssessor } from "./semanticAssessmentSupport.js";
+
+async function stubGatedRuntime(root: string, config: HarnessProjectConfig, launch?: typeof launchManagedPaseoAgent) {
+  // Mirrors createSemanticAssessmentRuntimeV1 construction (same runner/service/cache wiring)
+  // with the pending-requalification stub assessor, because the gated constructor currently
+  // fails closed for the uncertified Codex-channel Luna model. Runner mechanics coverage
+  // (retry, reply rejection, launch options, caching) is preserved here; the gate itself is
+  // pinned by the fail-closed test below. Delete this mirror once the model is certified.
+  const assessor = semanticPendingRequalificationStubAssessor();
+  const runner = new PaseoSemanticAssessmentRunnerV1({ root, assessor, projectName: config.project.name, ...(launch ? { launch } : {}) });
+  const service = createSemanticAssessmentServiceV1({ assessor, runner, policyRevision: semanticCapabilityPolicyRevisionV1, cache: new FileSemanticAssessmentCacheV1(root) });
+  return { service, policyRevision: semanticCapabilityPolicyRevisionV1, assessor };
+}
 
 describe("Paseo Semantic Assessor runtime", () => {
   it("extracts a typed assessment from a real provider reply that wraps its JSON", () => {
@@ -47,7 +60,7 @@ describe("Paseo Semantic Assessor runtime", () => {
         status: "timeout",
         transport: "sdk"
       }));
-      const runtime = await createSemanticAssessmentRuntimeV1(root, config, { launch });
+      const runtime = await stubGatedRuntime(root, config, launch);
 
       await expect(runtime.service.assess(semanticTestRequest("ROUTE"))).rejects.toMatchObject({
         code: "SEMANTIC_ASSESSMENT_UNAVAILABLE",
@@ -74,7 +87,7 @@ describe("Paseo Semantic Assessor runtime", () => {
         status: "completed",
         transport: "sdk"
       }));
-      const runtime = await createSemanticAssessmentRuntimeV1(root, config, { launch });
+      const runtime = await stubGatedRuntime(root, config, launch);
 
       let failure: { code?: string; message?: string; details?: Record<string, unknown> } | undefined;
       try { await runtime.service.assess(semanticTestRequest("ROUTE")); } catch (error) { failure = error as typeof failure; }
@@ -125,7 +138,7 @@ describe("Paseo Semantic Assessor runtime", () => {
       transport: "sdk"
     }));
 
-    const runtime = await createSemanticAssessmentRuntimeV1(root, config, { launch });
+    const runtime = await stubGatedRuntime(root, config, launch);
     const request = semanticTestRequest("STACK");
     const assessment = await runtime.service.assess(request);
     const options = launch.mock.calls[0]?.[1];
@@ -155,12 +168,26 @@ describe("Paseo Semantic Assessor runtime", () => {
     await fs.writeFile(path.join(root, ".harness", "agents.source.jsonc"), JSON.stringify(semanticAssessorTopologySource), "utf8");
     const config: HarnessProjectConfig = { version: 1, project: { name: "cache-test" }, agents: { configPath: ".harness/agents.source.jsonc" } };
     const launch = vi.fn<typeof launchManagedPaseoAgent>(async (_cwd, _options) => ({ id: "paseo-cache-session", exitCode: 0, stdout: JSON.stringify(semanticPayload(semanticTestRequest("STACK"))), stderr: "", transport: "cli" }));
-    const firstRuntime = await createSemanticAssessmentRuntimeV1(root, config, { launch });
+    const firstRuntime = await stubGatedRuntime(root, config, launch);
     const first = await firstRuntime.service.assess(semanticTestRequest("STACK"));
-    const secondRuntime = await createSemanticAssessmentRuntimeV1(root, config, { launch });
+    const secondRuntime = await stubGatedRuntime(root, config, launch);
     const second = await secondRuntime.service.assess(semanticTestRequest("STACK"));
     expect(launch).toHaveBeenCalledTimes(1);
     expect(second.cacheDisposition).toBe("HIT");
     expect(second.assessmentDigest).toBe(first.assessmentDigest);
+  });
+
+  it("fails gated runtime construction closed before any provider turn while Codex-channel Luna is pending", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-semantic-pending-"));
+    try {
+      await fs.mkdir(path.join(root, ".harness"), { recursive: true });
+      await fs.writeFile(path.join(root, ".harness", "agents.source.jsonc"), JSON.stringify(semanticAssessorTopologySource), "utf8");
+      const config: HarnessProjectConfig = { version: 1, project: { name: "runtime-test" }, agents: { configPath: ".harness/agents.source.jsonc" } };
+      const launch = vi.fn<typeof launchManagedPaseoAgent>(async () => { throw new Error("must not execute"); });
+      await expect(createSemanticAssessmentRuntimeV1(root, config, { launch })).rejects.toThrow(/PENDING_REQUALIFICATION/);
+      expect(launch).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });

@@ -6,14 +6,13 @@ import { semanticAssessorTopologySource } from "./semanticAssessmentSupport.js";
 
 describe("Semantic Assessor topology resolution", () => {
   it("resolves model/profile selection only from AgentTopology", () => {
+    // Codex-channel Luna is pending requalification, so both the base and profile-overridden
+    // topologies fail closed at the capability gate (after profile model selection, which is
+    // why both reach PENDING_REQUALIFICATION instead of an earlier topology error).
     const source = structuredClone(semanticAssessorTopologySource);
     source.profiles = { high: { models: { assessorModel: { variant: "max" } } } };
-    const base = resolveSemanticAssessor(resolveAgentTopology(source));
-    const profile = resolveSemanticAssessor(resolveAgentTopology(source, "high"));
-
-    expect(base.identity).toMatchObject({ logicalAgent: "assessor", modelAlias: "assessorModel", modelId: "openai/gpt-6-luna" });
-    expect(profile.identity).toMatchObject({ topologyProfile: "high", logicalAgent: "assessor", modelAlias: "assessorModel", modelId: "openai/gpt-6-luna", variant: "max" });
-    expect(profile.identity.identityDigest).not.toBe(base.identity.identityDigest);
+    expect(() => resolveSemanticAssessor(resolveAgentTopology(source))).toThrow(/PENDING_REQUALIFICATION/);
+    expect(() => resolveSemanticAssessor(resolveAgentTopology(source, "high"))).toThrow(/PENDING_REQUALIFICATION/);
   });
 
   it("fails closed when the topology has zero or multiple enabled assessors", () => {

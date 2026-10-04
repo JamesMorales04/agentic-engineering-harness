@@ -10,6 +10,8 @@ import {
   type SemanticEvidenceItemV1
 } from "../src/semantic/assessment.js";
 import { resolveAgentTopology } from "../src/agents/config.js";
+import { executionSelectionForAgent } from "../src/agents/routing.js";
+import { sha256Canonical } from "../src/core/digest.js";
 import type { AgentTopologySource } from "../src/agents/types.js";
 
 export const semanticAssessorTopologySource: AgentTopologySource = {
@@ -37,6 +39,45 @@ export const semanticAssessorTopologySource: AgentTopologySource = {
 
 export function semanticTestAssessor() {
   return resolveSemanticAssessor(resolveAgentTopology(semanticAssessorTopologySource));
+}
+
+/**
+ * Test-only assessor identity while the Codex-channel Luna certification is PENDING
+ * (see semanticStructuredOutputCapabilitiesV1 pendingRequalification and
+ * docs/evidence/model-routing/codex-structured-output-probe-2026-10-04.json).
+ *
+ * It mirrors resolveSemanticAssessor's identity construction EXACTLY (same fields, same
+ * canonical digest) but bypasses the structured-output capability gate, which currently
+ * fails closed for openai/gpt-6-luna. Service-logic tests (assessment validation, caching,
+ * retry, telemetry) use this stub so their coverage survives the honest uncertification;
+ * production NEVER uses this path. The gate itself is pinned by the capability/topology/
+ * migration tests, which assert the real resolver refuses with SEMANTIC_ASSESSMENT_UNAVAILABLE.
+ * Delete this stub and restore the gated resolver once bounded Codex-channel probe evidence
+ * certifies the model.
+ */
+export function semanticPendingRequalificationStubAssessor() {
+  const topology = resolveAgentTopology(semanticAssessorTopologySource);
+  const configured = Object.values(topology.agents)
+    .filter((agent) => agent.role === "Semantic Assessor" && !agent.disabled)
+    .sort((left, right) => left.name.localeCompare(right.name));
+  if (configured.length !== 1) throw new Error(`AgentTopology must resolve exactly one enabled Semantic Assessor; found ${configured.length}.`);
+  const agent = configured[0]!;
+  const selection = executionSelectionForAgent(topology, agent.name);
+  const identityBase = {
+    version: 1 as const,
+    role: "Semantic Assessor" as const,
+    logicalAgent: agent.name,
+    ...(topology.profile ? { topologyProfile: topology.profile } : {}),
+    modelAlias: selection.modelAlias,
+    modelId: selection.modelId,
+    modelName: selection.modelName,
+    ...(selection.modelProvider ? { modelProvider: selection.modelProvider } : {}),
+    runtimeName: selection.runtimeName,
+    runtimeAdapter: selection.runtimeAdapter,
+    paseoProvider: selection.paseoProvider,
+    ...(selection.variant ? { variant: selection.variant } : {})
+  };
+  return { identity: { ...identityBase, identityDigest: sha256Canonical(identityBase) }, selection };
 }
 
 export function semanticTestRequest(
@@ -100,7 +141,9 @@ export function semanticTestService(options: {
   runner?: SemanticAssessmentRunnerV1;
   cache?: Parameters<typeof createSemanticAssessmentServiceV1>[0]["cache"];
 }) {
-  const assessor = semanticTestAssessor();
+  // Service-logic coverage uses the pending-requalification stub (see above): the gated
+  // resolver currently fails closed for the uncertified Codex-channel Luna model.
+  const assessor = semanticPendingRequalificationStubAssessor();
   const runner = options.runner ?? {
     assess: async ({ request: assessmentRequest }: { request: SemanticAssessmentRequestV1 }) => ({
       payload: options.payload?.(assessmentRequest) ?? semanticPayload(assessmentRequest),

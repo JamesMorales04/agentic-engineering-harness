@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "slice": "model-routing-migration",
+  "round": 1,
+  "artifact": "codex-structured-output-probe",
+  "generatedAt": "2026-10-04",
+  "purpose": "Bounded real-provider probe of GPT-6 Luna via the Codex channel for the Semantic Assessor SCHEMA_BOUND_TOOL_CALL requirement. Follow-up to S13, which certified gpt-6-luna ONLY via the OpenCode channel (opencode-go/gpt-6-luna 4/4 schema-valid) while the Codex channel (openai/gpt-6-luna) was authorization-unavailable (401). This probe does NOT certify: 0 successful trials. Recorded honestly per Luna independent review REPAIR_REQUIRED.",
+  "method": {
+    "matrix": "STACK assessment, canonical semantic-assessment JSON Schema exported from src (outputJsonSchema), production SEMANTIC_ASSESSOR_SYSTEM_PROMPT inlined as user-prompt prefix (neither paseo run nor codex exec accepts a separate system-prompt flag; recorded deviation, same instruction text)",
+    "reasoningRequirement": "LIGHT (STACK) bounded by variant xhigh -> thinking 'low' for the Paseo-channel trials (same binding as production boundSemanticThinkingOptionV1); direct codex-exec trials ran under the local config default reasoning effort xhigh (recorded deviation)",
+    "schemaBytes": 9413,
+    "schemaSha256": "4757b1cffb8de7d6f9d75dc20049cfcd97a24f8f85b2cc4a67806cc770c32c6a",
+    "promptBytes": 11130,
+    "promptSha256": "90410ffab476d4e7dc845ec39c998c8118bc76c99068042cc4202db541de98bf",
+    "s13SchemaSha256": "654622f9b3c12ab97fd70df07a9f19c6b3df66c3e231aef07c18f5f74b181c5c",
+    "schemaNote": "Schema bytes/sha differ from S13 because the semantic-assessment payload schema evolved since 2026-09-27; both are the canonical schema of their date. No schema was modified for this probe."
+  },
+  "environment": {
+    "codexCliVersion": "0.156.1",
+    "paseoVersion": "0.9.1",
+    "provider": "codex (Paseo) -> Codex provider, model gpt-6-luna",
+    "date": "2026-10-04"
+  },
+  "trials": [
+    {
+      "trial": 1,
+      "channel": "paseo-run",
+      "command": "paseo run --provider codex --model gpt-6-luna --thinking low --output-schema <canonical-schema> --wait-timeout 10m",
+      "elapsedMs": 960,
+      "exitCode": 1,
+      "structuredPresent": false,
+      "schemaValid": null,
+      "error": "AGENT_CREATE_FAILED: Failed to create agent: no schema with key or ref \"https://json-schema.org/draft/2020-12/schema\"",
+      "classification": "channel barrier (Paseo 0.9.1 rejects the canonical schema's draft 2020-12 $schema dialect before any provider turn), not a model capability result"
+    },
+    {
+      "trial": 2,
+      "channel": "paseo-run",
+      "command": "paseo run --provider codex --model gpt-6-luna --thinking low --output-schema <canonical-schema> --wait-timeout 10m",
+      "elapsedMs": 952,
+      "exitCode": 1,
+      "structuredPresent": false,
+      "schemaValid": null,
+      "error": "AGENT_CREATE_FAILED: Failed to create agent: no schema with key or ref \"https://json-schema.org/draft/2020-12/schema\"",
+      "classification": "channel barrier (repeat of trial 1; deterministic rejection), not a model capability result"
+    },
+    {
+      "trial": 3,
+      "channel": "codex-exec-direct",
+      "command": "codex exec --output-schema <canonical-schema> (model gpt-6-luna, provider openai, sandbox read-only, reasoning effort xhigh)",
+      "exitCode": 1,
+      "structuredPresent": false,
+      "schemaValid": null,
+      "error": "invalid_request_error 400 invalid_json_schema: Invalid schema for response_format 'codex_output_schema': In context=('properties', 'judgment'), 'oneOf' is not permitted.",
+      "classification": "channel barrier (Codex response_format rejects the canonical schema's judgment oneOf union before any model turn), not a model capability result"
+    },
+    {
+      "trial": 4,
+      "channel": "codex-exec-direct",
+      "command": "codex exec --output-schema <minimal-anyOf-schema> (reduced diagnostic schema with anyOf union; NOT the canonical schema, exploratory only)",
+      "elapsedMs": 3260,
+      "exitCode": 1,
+      "structuredPresent": false,
+      "schemaValid": null,
+      "error": "invalid_request_error 400 invalid_json_schema: In context=('properties', 'judgment', 'anyOf', '0'), 'additionalProperties' is required to be supplied and to be false.",
+      "classification": "exploratory: Codex response_format accepts anyOf structurally but enforces strict-mode (additionalProperties:false required). Suggests a strict-mode reformulation of the canonical schema could pass the channel gate; that reformulation is contract work and is NOT claimed here."
+    }
+  ],
+  "summary": {
+    "attempts": 4,
+    "successes": 0,
+    "failures": 4,
+    "medianMs": null,
+    "certified": false,
+    "conclusion": "openai/gpt-6-luna has zero successful Codex-channel structured-output trials and is NOT certified at any level. Two independent channel barriers were observed (Paseo 0.9.1 draft-2020-12 dialect rejection; Codex response_format oneOf rejection), either of which fails the production assessor turn before model capability is exercised. The S13 OpenCode-channel evidence (opencode-go/gpt-6-luna 4/4) does not transfer across channels. Bounded follow-ups: (1) strict-mode reformulation of the semantic-assessment schema (contract change, requires revalidation, no silent weakening); (2) Paseo draft-2020-12 support or AEH-side dialect handling (out of scope for the model-routing repair); (3) rerun this matrix once (1)+(2) land, then certify on N>=2 schema-valid trials."
+  }
+}
