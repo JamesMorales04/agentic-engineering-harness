@@ -255,7 +255,11 @@ describe("required specialized lanes are satisfied only by matching provider exe
     const configured: HarnessProjectConfig = {
       ...actualProjectConfig,
       evidence: { outputDir: ".harness/evidence" },
-      validation: { ...actualProjectConfig.validation, providers: [provider] }
+      // Isolate the auto-generated capability path under test: overlay commands
+      // and validators provisioned for other dimensions (architecture, SAST)
+      // are covered by their own inventory/execution tests and must not run in
+      // this visual-provider fixture.
+      validation: { ...actualProjectConfig.validation, commands: [], validators: [], providers: [provider] }
     };
     const generated = await runConfiguredValidators(root, configured, {
       version: 1,

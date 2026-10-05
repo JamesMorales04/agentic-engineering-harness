@@ -431,6 +431,8 @@ Each ValidationRequirement names the property, scope, evidence needed, and requi
 
 PASS means only that the resolved validation requirements passed. Missing required tools/providers block; they do not silently become SKIP. Validation does not imply review or semantic acceptance.
 
+The development checkout provisions its own impact-review overlay in `.harness/project.yaml` (shipped defaults stay empty; consumers opt in): an `architecture` configured command (`scripts/architecture.mjs`, export-surface plus directional module-boundary checks ported from the S13 fixture pattern), a `static-security` OpenGrep validator over the versioned `policies/opengrep` ruleset, `trivy-vuln` / `trivy-secret-misconfig` Trivy validators as separate assurance dimensions, and a `trivy-dependency-security` approved provider so the generic dependency dimension resolves through the deterministic provider path. All three scanners run through pinned wrappers (`scripts/security/`) that fail closed on missing binaries, tool-version drift, or ruleset-digest mismatch against `templates/provider-versions.json`; SAST evidence carries the exact observed tool version.
+
 ### 9.2 Review and quality convergence
 
 Review requirements compile from route, assurance, CandidateImpact, and policy. Reviewers are independent, read-only participants and return typed engineering findings. Policy may require provider diversity; model agreement alone has no authority.

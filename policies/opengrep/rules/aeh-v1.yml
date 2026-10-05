@@ -1,0 +1,82 @@
+# AEH curated OpenGrep ruleset v1.
+#
+# Scope (enforced by scripts/security/opengrep.mjs, not by this file):
+#   src/ scripts/ ui/control-center/src/
+# Generated, vendored and fixture trees (dist/, node_modules/, docs/evidence/,
+# tests/fixtures/) are never scanned: findings there cannot be repaired by a
+# candidate and would either mask real findings or block on unowned code.
+#
+# Every rule below is calibrated to zero findings on the main tree at
+# provisioning time. A finding is therefore a genuine regression, never
+# baseline noise: the validator fails closed and AEH repairs the code, never
+# the rule. Rules carry CWE references so normalized evidence keeps its
+# category/cwe fields for the AcceptanceOracle.
+
+rules:
+  - id: aeh-no-eval
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: "AEH forbids eval(): dynamically evaluated code bypasses deterministic review and validation."
+    metadata:
+      category: security
+      cwe: ["CWE-95"]
+      confidence: HIGH
+      impact: HIGH
+    pattern: eval(...)
+
+  - id: aeh-no-new-function
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: "AEH forbids the Function constructor: it is dynamic code evaluation with the same authority risks as eval()."
+    metadata:
+      category: security
+      cwe: ["CWE-95"]
+      confidence: HIGH
+      impact: HIGH
+    pattern: new Function(...)
+
+  - id: aeh-no-debugger
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: "AEH forbids debugger statements in shipped source: they halt deterministic validation runs."
+    metadata:
+      category: correctness
+      confidence: HIGH
+      impact: LOW
+    pattern: debugger;
+
+  - id: aeh-no-github-token
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: "AEH forbids hardcoded GitHub tokens in source: credentials must arrive through the credential allowlist, never literals."
+    metadata:
+      category: secrets
+      cwe: ["CWE-798"]
+      confidence: HIGH
+      impact: HIGH
+    pattern-regex: (ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22,}|gho_[A-Za-z0-9_]{36})
+
+  - id: aeh-no-aws-key
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: "AEH forbids hardcoded AWS access key IDs in source: credentials must arrive through the credential allowlist, never literals."
+    metadata:
+      category: secrets
+      cwe: ["CWE-798"]
+      confidence: HIGH
+      impact: HIGH
+    pattern-regex: AKIA[0-9A-Z]{16}
+
+  - id: aeh-no-dangerous-html
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: "AEH forbids raw HTML sinks in shipped source: the Home/Control Center surface must not bypass React escaping."
+    metadata:
+      category: security
+      cwe: ["CWE-79"]
+      confidence: HIGH
+      impact: HIGH
+    patterns:
+      - pattern-either:
+          - pattern: $EL.innerHTML = ...
+          - pattern: dangerouslySetInnerHTML

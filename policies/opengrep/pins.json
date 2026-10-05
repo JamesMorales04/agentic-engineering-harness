@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "ruleset": {
+    "name": "aeh-opengrep-ruleset",
+    "version": "1.0.0",
+    "digest": "96a5e7b2fbbe053015d7f5d37e9f7641436707821cdc669d9d2e92a6624faf3c",
+    "files": {
+      "VERSION": "59854984853104df5c353e2f681a15fc7924742f9a2e468c29af248dce45ce03",
+      "rules/aeh-v1.yml": "62c7dcb8f1c0814795d0ed1025c6a319166d49612eeaaf1abcc41aecdf413c73"
+    }
+  },
+  "tool": "1.22.0"
+}

@@ -217,9 +217,34 @@ validation:
           options:
             animations: disabled
             maxDiffPixelRatio: 0.05
+    - id: trivy-dependency-security
+      capability: dependency-security
+      provider: trivy
+      command: node scripts/security/trivy-vuln.mjs
+      timeoutSeconds: 900
   commands:
     - id: npm-check
       command: npm run check
+      required: true
+      timeoutSeconds: 900
+    - id: architecture
+      command: node scripts/architecture.mjs
+      required: true
+      timeoutSeconds: 900
+  validators:
+    - id: static-security
+      adapter: opengrep
+      command: node scripts/security/opengrep.mjs
+      required: true
+      timeoutSeconds: 900
+    - id: trivy-vuln
+      adapter: trivy
+      command: node scripts/security/trivy-vuln.mjs
+      required: true
+      timeoutSeconds: 900
+    - id: trivy-secret-misconfig
+      adapter: trivy
+      command: node scripts/security/trivy-secret-misconfig.mjs
       required: true
       timeoutSeconds: 900
 
@@ -236,6 +261,9 @@ security:
     forceForRisks: []
     environmentAllowlist: []
     credentialEnvAllowlist: []
+  tools:
+    - opengrep
+    - trivy
 
 telemetry:
   enabled: true
