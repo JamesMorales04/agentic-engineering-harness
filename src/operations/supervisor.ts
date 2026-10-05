@@ -132,7 +132,7 @@ export function operationSupervisorTurnTimeoutSeconds(config: HarnessProjectConf
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.min(Math.floor(value), DEFAULT_SUPERVISOR_TURN_TIMEOUT_SECONDS) : DEFAULT_SUPERVISOR_TURN_TIMEOUT_SECONDS;
 }
 export function supervisorTurnTimedOutV1(session: Pick<WorkerSession, "exitCode" | "stdout" | "stderr">): boolean {
-  return session.exitCode === 124 || /timed out|timeout/i.test(`${session.stderr} ${session.stdout}`);
+  return session.exitCode === 124 || /timed out|timeout|stalled_first_activity/i.test(`${session.stderr} ${session.stdout}`);
 }
 
 /** A provider lifecycle failure leaves a durable lease fenced; retrying with a new session

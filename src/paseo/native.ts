@@ -6,6 +6,12 @@ import { resolvePaseoSdkFromCli } from "./sdkResolve.js";
 import { recordPaseoTrace } from "./trace.js";
 import { capturePaseoTimelineV2, type PaseoTimelineEventEnvelopeV1 } from "../telemetry/paseoTimeline.js";
 import type { ProviderTelemetryEvidenceV2 } from "../telemetry/efficiency.js";
+import {
+  FIRST_ACTIVITY_DEADLINE_MS,
+  stalledFirstActivityError,
+  type ProviderTurnActivityCounts,
+  type ProviderTurnKillReason
+} from "./firstActivityDeadline.js";
 import { recordPaseoRuntimeActivityV1 } from "../operations/executionLiveness.js";
 
 export interface PaseoNativeUsage {
@@ -60,6 +66,10 @@ export interface PaseoNativeWaitResult {
   efficiencyTelemetry?: ProviderTelemetryEvidenceV2;
   source: "paseo-agent-subscription";
   updatesObserved: number;
+  /** Deadline-vs-stall-vs-error kill reason; present only on killed turns. */
+  killReason?: ProviderTurnKillReason;
+  /** Bounded provider-visible activity counts; refs-only, no provider content. */
+  activity?: ProviderTurnActivityCounts;
 }
 
 export interface PaseoTurnBaseline {
@@ -332,7 +342,9 @@ export async function waitForPaseoAgentNative(
       agentId,
       source: result.source,
       status: result.status ?? "unknown",
+      killReason: result.killReason ?? "none",
       updatesObserved: result.updatesObserved,
+      toolEvents: result.activity?.toolEvents ?? 0,
       baselineAssistant: baseline?.lastAssistantMessage ? "present" : "absent",
       baselineUserMessageAt: baseline?.lastUserMessageAt ?? "absent",
       durationMs: Date.now() - startedAt
@@ -348,10 +360,18 @@ export async function waitForPaseoAgentHandle(
   pollIntervalMs = 2_000,
   captureEfficiencyTelemetry = false,
   onTimelineActivity?: (sessionId: string, envelope: PaseoTimelineEventEnvelopeV1) => Promise<void>,
-  permissionScopeRoots?: string[]
+  permissionScopeRoots?: string[],
+  firstActivityMs = FIRST_ACTIVITY_DEADLINE_MS
 ): Promise<PaseoNativeWaitResult> {
   let updatesObserved = 0;
   let sawActivity = false;
+  // First-activity tracking is content-based only: tool-call/starred timeline
+  // content or new assistant stream output. Bare subscription updates, raw
+  // working/running status, and turn acceptance alone never satisfy it, so a
+  // provider that emits zero tool calls/output is killed at the bound while
+  // every turn with steady output is untouched.
+  let contentEventCount = 0;
+  let assistantDeltaObserved = false;
   let settled = false;
   let unsubscribe: () => void = () => {};
   let unsubscribeTimeline: () => void = () => {};
@@ -360,14 +380,23 @@ export async function waitForPaseoAgentHandle(
   let timelineEventsTruncated = false;
   let latestAgentSnapshot: Record<string, unknown> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let stallTimer: ReturnType<typeof setTimeout> | undefined;
   let poll: ReturnType<typeof setInterval> | undefined;
   let chain = Promise.resolve();
 
   return new Promise<PaseoNativeWaitResult>((resolve, reject) => {
+    const activityCounts = (): ProviderTurnActivityCounts => ({
+      updatesObserved,
+      toolEvents: contentEventCount,
+      assistantDelta: assistantDeltaObserved
+    });
+    const firstActivityObserved = (): boolean =>
+      contentEventCount > 0 || assistantDeltaObserved;
     const finish = (value: PaseoNativeWaitResult) => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
+      if (stallTimer) clearTimeout(stallTimer);
       if (poll) clearInterval(poll);
       unsubscribe();
       unsubscribeTimeline();
@@ -377,6 +406,7 @@ export async function waitForPaseoAgentHandle(
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
+      if (stallTimer) clearTimeout(stallTimer);
       if (poll) clearInterval(poll);
       unsubscribe();
       unsubscribeTimeline();
@@ -390,6 +420,8 @@ export async function waitForPaseoAgentHandle(
       const status = statusText(raw.status);
       if (fromUpdate) updatesObserved += 1;
       if (isActiveStatus(status) || Boolean(raw.activeTurn)) sawActivity = true;
+      const interimAssistant = stringField(raw, ["lastMessage", "last_message"]);
+      if (interimAssistant && interimAssistant !== baseline?.lastAssistantMessage) assistantDeltaObserved = true;
       if (!isTerminalStatus(status)) return;
 
       const timeline =
@@ -443,13 +475,26 @@ export async function waitForPaseoAgentHandle(
         ...(permission ? { permission } : {}),
         ...(capture ? { efficiencyTelemetry: capture.evidence } : {}),
         source: "paseo-agent-subscription",
-        updatesObserved
+        updatesObserved,
+        activity: activityCounts()
       });
     };
 
     try {
+      // A timeline subscription is attached whenever the caller observes
+      // activity or captures telemetry. Content events counted here are the
+      // deterministic first-activity signal; the wrapped activity callback
+      // still receives every envelope for liveness accounting. Only envelopes
+      // carrying provider-visible content (tool-call items or assistant
+      // output) count — bare timeline pings, turn_completed markers, and
+      // metadata-only envelopes never satisfy the bound, so an
+      // empty-timeline flood cannot reset a genuine stall.
+      const observeTimelineEnvelope = (value: unknown): void => {
+        if (isContentTimelineEnvelope(value)) contentEventCount += 1;
+      };
       if ((captureEfficiencyTelemetry || onTimelineActivity) && handle.timeline && typeof handle.timeline.subscribe === "function") {
         const timelineSubscription = handle.timeline.subscribe((value) => {
+          observeTimelineEnvelope(value);
           if (!value || typeof value !== "object" || Array.isArray(value)) return;
           const record = value as Record<string, unknown>;
           const event = record.event && typeof record.event === "object" && !Array.isArray(record.event) ? record.event as Record<string, unknown> : undefined;
@@ -494,10 +539,41 @@ export async function waitForPaseoAgentHandle(
         error: `Provider turn deadline expired after ${timeoutMs}ms; partial runtime evidence was retained for Supervisor recovery.`,
         ...(partial ? { efficiencyTelemetry: partial } : {}),
         source: "paseo-agent-subscription",
-        updatesObserved
+        updatesObserved,
+        killReason: "DEADLINE",
+        activity: activityCounts()
       };
       chain = chain.then(() => finish(timeoutResult), () => finish(timeoutResult));
     }, timeoutMs);
+    // First-activity deadline: terminate turns with zero provider-visible
+    // activity strictly before the provider turn deadline. Any tool-call
+    // event or assistant stream output satisfies the bound, so legitimate
+    // slow turns are never killed. The settled shape reuses the existing
+    // timeout contract (status timeout, exit 124 downstream) with an explicit
+    // STALLED_FIRST_ACTIVITY kill reason routed into the same recovery paths.
+    if (firstActivityMs < timeoutMs) {
+      stallTimer = setTimeout(() => {
+        if (firstActivityObserved()) return;
+        const partial = captureEfficiencyTelemetry ? capturePaseoTimelineV2({
+          liveEvents: timelineEvents,
+          liveEventsTruncated: timelineEventsTruncated,
+          snapshotUsage: latestAgentSnapshot?.lastUsage,
+          subscriptionReady: timelineSubscriptionReady
+        }).evidence : undefined;
+        const counts = activityCounts();
+        const stalledResult: PaseoNativeWaitResult = {
+          id: handle.id,
+          status: "timeout",
+          error: stalledFirstActivityError(firstActivityMs, timeoutMs, counts),
+          ...(partial ? { efficiencyTelemetry: partial } : {}),
+          source: "paseo-agent-subscription",
+          updatesObserved,
+          killReason: "STALLED_FIRST_ACTIVITY",
+          activity: counts
+        };
+        chain = chain.then(() => finish(stalledResult), () => finish(stalledResult));
+      }, firstActivityMs);
+    }
   });
 }
 
@@ -716,6 +792,57 @@ function normalizeProviderModel(
     throw new Error(`Conflicting Paseo model '${explicit}' versus embedded '${embedded}'.`);
   }
   return { provider: providerId, model: explicit || embedded };
+}
+
+/**
+ * Content-tied first-activity test for one live timeline envelope.
+ *
+ * DETERMINISTIC. Only envelopes carrying provider-visible content count:
+ * a `timeline` event whose item is a tool call, or an envelope carrying
+ * assistant text/output. Bare `timeline` pings without an item,
+ * `turn_completed`/`turn_started` markers, and metadata-only envelopes never
+ * count, so an empty-timeline flood cannot satisfy the bound or reset a
+ * genuine stall. Assistant stream output observed via the agent snapshot
+ * (`assistantDeltaObserved`) is tracked separately and OR-ed at the call site.
+ */
+export function isContentTimelineEnvelope(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  const event =
+    record.event && typeof record.event === "object" && !Array.isArray(record.event)
+      ? (record.event as Record<string, unknown>)
+      : undefined;
+  const candidate =
+    event && typeof event.type === "string" && event.type === "timeline"
+      ? event.item
+      : undefined;
+  if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+    const item = candidate as Record<string, unknown>;
+    if (String(item.type ?? item.kind ?? "") === "tool_call") return true;
+    if (envelopeAssistantText(item) !== undefined) return true;
+  }
+  const fallback =
+    event && typeof event.type === "string" && event.type === "timeline" ? event : undefined;
+  if (fallback && envelopeAssistantText(fallback) !== undefined) return true;
+  return false;
+}
+
+function envelopeAssistantText(record: Record<string, unknown>): string | undefined {
+  const role = String(record.role ?? record.author ?? "").toLowerCase();
+  const type = String(record.type ?? record.kind ?? "").toLowerCase();
+  const assistant =
+    role === "assistant" ||
+    role.endsWith("/assistant") ||
+    role.includes("assistant") ||
+    type === "assistant_message" ||
+    type === "assistant-message" ||
+    type === "assistant";
+  if (!assistant) return undefined;
+  for (const key of ["text", "content", "message"]) {
+    const text = record[key];
+    if (typeof text === "string" && text.trim()) return text;
+  }
+  return undefined;
 }
 
 function extractLastAssistantText(value: unknown): string | undefined {
