@@ -69,6 +69,16 @@ export const OPENSPEC_CAPABILITY_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const OPENSPEC_DELTA_HEADER_PATTERN = /^##\s+(ADDED|MODIFIED|REMOVED|RENAMED)\s+Requirements\s*$/;
 const OPENSPEC_REQUIREMENT_PATTERN = /^###\s+Requirement:\s*(.+?)\s*$/;
 const OPENSPEC_SCENARIO_PATTERN = /^####\s+Scenario:\s*(.+?)\s*$/;
+/**
+ * DETERMINISTIC canonical tasks checkbox shape. `openspec validate --strict` counts a
+ * change as 0 tasks when no line in its task files is a checkbox (`- [ ] 1.1 Description`);
+ * dash bullets without checkboxes, numbered lists and prose all fail compilation. The
+ * pre-persistence gate mirrors that exact rule so a READY result without a checkbox fails
+ * here with the exact artifact instead of inside the compiler (CHANGE-20261005T060646Z rev61).
+ * Shared with `parseTasks` below; do not diverge the pattern without updating the drift-guard
+ * cross-test (`tests/specContentGate.test.ts` mirror==compiler).
+ */
+export const OPENSPEC_TASK_CHECKBOX_PATTERN = /^\s*-\s*\[( |x|X)\]/m;
 
 function specDeltaArtifactLabel(changeName: string, index: number, capability: string): string {
   return `openspec/changes/${changeName}/specs/${capability || `<capability-${index + 1}>`}/spec.md (artifacts.specs[${index}])`;
@@ -149,10 +159,24 @@ export function validateOpenSpecAuthoringContentCanonicalityV1(changeName: strin
   });
 }
 
+/**
+ * DETERMINISTIC pre-persistence canonicality gate for `tasks.md` (CHANGE-20261005T060646Z rev61).
+ * Mirrors the exact `openspec validate --strict` rule: the change must contain at least one
+ * checkbox task line (`- [ ] 1.1 Description`). Dash bullets without checkboxes, numbered
+ * lists and prose count as 0 tasks and fail compilation; they are rejected here with a typed
+ * `SPEC_MANAGER_CONTENT_NOT_CANONICAL` error naming `tasks.md (artifacts.tasks)`.
+ */
+export function validateOpenSpecTasksCanonicalityV1(changeName: string, tasks: string | undefined): void {
+  const artifact = `openspec/changes/${changeName}/tasks.md (artifacts.tasks)`;
+  if (typeof tasks !== "string" || !tasks.trim()) throw notCanonical(artifact, "tasks.md content is empty; the change must have at least one checkbox task.");
+  if (!OPENSPEC_TASK_CHECKBOX_PATTERN.test(tasks)) throw notCanonical(artifact, "tasks.md counts as 0 tasks: no line is a checkbox task. Write each task as '- [ ] 1.1 Description'; dash bullets without checkboxes, numbered lists and prose are rejected before persistence.");
+}
+
 /** Persist the validated Spec Manager's structured authoring content using controller-owned writes. */
 export async function persistOpenSpecAuthoringContentV1(root: string, changeName: string, content: OpenSpecAuthoringContentV1): Promise<string[]> {
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(changeName)) throw new Error("OPENSPEC_CHANGE_NAME_INVALID: authoring output can only be persisted under a canonical change name.");
   if (!content.proposal.trim() || !content.tasks.trim()) throw new Error("OPENSPEC_AUTHORING_CONTENT_INCOMPLETE: proposal and tasks content are required.");
+  validateOpenSpecTasksCanonicalityV1(changeName, content.tasks);
   validateOpenSpecAuthoringContentCanonicalityV1(changeName, content);
   const directory = path.join(root, "openspec", "changes", changeName);
   const files: Array<[string, string]> = [

@@ -17,7 +17,7 @@ import type { AssuranceLevel, ImplementationRoute, RouteEvidence } from "../arch
 import { createRouteEvidence } from "../architecture/contracts.js";
 import { createDelegatedFeatureCapsule, persistFeatureCapsule } from "../architecture/featureCapsule.js";
 import { defaultSkillSeed } from "../participants/skills.js";
-import { compileOpenSpecChange, persistOpenSpecAuthoringContentV1, preflightOpenSpec, prepareOpenSpecChange, validateOpenSpecAuthoringContentCanonicalityV1, type OpenSpecPreflightResult } from "../spec/openspec.js";
+import { compileOpenSpecChange, persistOpenSpecAuthoringContentV1, preflightOpenSpec, prepareOpenSpecChange, validateOpenSpecAuthoringContentCanonicalityV1, validateOpenSpecTasksCanonicalityV1, type OpenSpecPreflightResult } from "../spec/openspec.js";
 import { recordEvent } from "../telemetry/events.js";
 import { executeAgentPrompt } from "../workers/agentPrompt.js";
 import { bindBootstrapOperationPolicy } from "./bootstrapPolicy.js";
@@ -738,6 +738,37 @@ export function buildSpecManagerIncompleteRetryNote(changeName: string): string 
   return `Previous Spec Manager turn failed with SPEC_MANAGER_INCOMPLETE_RESULT: a READY result for '${changeName}' must identify both artifacts.proposal (the complete proposal.md content) and artifacts.tasks (the complete tasks.md content); both must be non-empty. Retry with status READY and both artifacts present.`;
 }
 
+/**
+ * DETERMINISTIC bounded retry budget for non-canonical READY content
+ * (CHANGE-20261005T060646Z-be9f5ac1 rev61: `SPEC_MANAGER_CONTENT_NOT_CANONICAL` when the
+ * model returns READY with tasks.md containing no checkbox line, or specs without delta
+ * headers/scenarios/normative keywords). Mirrors the mismatch/incomplete mechanisms with an
+ * independent counter: exactly one retry is allowed per `runSpecManagerUntilReady`
+ * invocation; a second non-canonical result still throws the exact typed error. No weakening,
+ * no default artifacts invented, no content fabricated. Covers both the long-standing specs
+ * canonicality gate (AEH-V2-0115, previously terminal) and the new tasks checkbox gate so
+ * every content-validity failure surfaces inside the handoff retry loop instead of dying at
+ * `compileOpenSpecChange` (`openspec validate --strict`) with no retry.
+ */
+export const SPEC_MANAGER_CONTENT_MAX_RETRIES = 1;
+
+export function isSpecManagerContentNotCanonical(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if (error.message.startsWith("SPEC_MANAGER_CONTENT_NOT_CANONICAL:")) return true;
+  // Same wrapping discipline as the incomplete gate: retry only when the durable-handoff
+  // wrapper carries the content marker, never for unrelated schema rejections.
+  return error.message.startsWith("SPEC_MANAGER_RESULT_INVALID:")
+    && error.message.includes("SPEC_MANAGER_CONTENT_NOT_CANONICAL:");
+}
+
+export function shouldRetrySpecManagerContent(error: unknown, retriesSoFar: number): boolean {
+  return isSpecManagerContentNotCanonical(error) && retriesSoFar < SPEC_MANAGER_CONTENT_MAX_RETRIES;
+}
+
+export function buildSpecManagerContentRetryNote(changeName: string): string {
+  return `Previous Spec Manager turn failed with SPEC_MANAGER_CONTENT_NOT_CANONICAL for '${changeName}': artifacts.tasks (the complete tasks.md content) MUST contain at least one checkbox task line '- [ ] 1.1 Description' (dash bullets without checkboxes, numbered lists and prose count as 0 tasks and are rejected); every artifacts.specs entry MUST be a canonical OpenSpec delta with a '## ADDED Requirements' (or MODIFIED/REMOVED/RENAMED) section, every '### Requirement:' inside a delta with at least one '#### Scenario:' block, and every requirement containing SHALL or MUST. Retry with status READY, checkbox tasks, delta headers and Scenario blocks.`;
+}
+
 async function runSpecManagerUntilReady(input: {
   root: string;
   controlRoot: string;
@@ -759,18 +790,22 @@ async function runSpecManagerUntilReady(input: {
   let selectedChoice = input.initialChoice;
   let changeMismatchRetries = 0;
   let incompleteRetries = 0;
+  let contentRetries = 0;
   let mismatchRetryPending = false;
   let incompleteRetryPending = false;
+  let contentRetryPending = false;
   for (;;) {
     await awaitChangeControlCheckpoint(input.controlRoot, input.operationId);
     const basePrompt = buildSpecManagerPrompt(input.payload, input.changeName, input.explorerEvidence, input.plannerEvidence, input.inputs, selectedChoice);
     const retryNotes = [
       mismatchRetryPending ? buildSpecManagerMismatchRetryNote(input.changeName) : "",
-      incompleteRetryPending ? buildSpecManagerIncompleteRetryNote(input.changeName) : ""
+      incompleteRetryPending ? buildSpecManagerIncompleteRetryNote(input.changeName) : "",
+      contentRetryPending ? buildSpecManagerContentRetryNote(input.changeName) : ""
     ].filter((note) => note.length > 0);
     const prompt = retryNotes.length > 0 ? `${basePrompt}\n\n${retryNotes.join("\n\n")}` : basePrompt;
     mismatchRetryPending = false;
     incompleteRetryPending = false;
+    contentRetryPending = false;
     let evidence: DurableAgentEvidence<SpecAuthoringOutput>;
     try {
       const specSession = await executeAgentPrompt(
@@ -783,6 +818,11 @@ async function runSpecManagerUntilReady(input: {
       if (shouldRetrySpecManagerIncomplete(error, incompleteRetries)) {
         incompleteRetries += 1;
         incompleteRetryPending = true;
+        continue;
+      }
+      if (shouldRetrySpecManagerContent(error, contentRetries)) {
+        contentRetries += 1;
+        contentRetryPending = true;
         continue;
       }
       throw error;
@@ -798,6 +838,11 @@ async function runSpecManagerUntilReady(input: {
       if (shouldRetrySpecManagerIncomplete(error, incompleteRetries)) {
         incompleteRetries += 1;
         incompleteRetryPending = true;
+        continue;
+      }
+      if (shouldRetrySpecManagerContent(error, contentRetries)) {
+        contentRetries += 1;
+        contentRetryPending = true;
         continue;
       }
       throw error;
@@ -1080,6 +1125,12 @@ export function validateSpecAuthoringResult(expectedChange: string, result: Spec
   // DETERMINISTIC pre-persistence gate: the typed READY result must already be a canonical
   // OpenSpec change delta. A non-canonical result is rejected here, before any controller-owned
   // write, with a typed error naming the exact artifact (AEH-V2-0115).
+  // CHANGE-20261005T060646Z rev61: tasks.md without a checkbox (`- [ ]`) counts as 0 tasks and
+  // fails `openspec validate --strict` at compile with no bounded retry there. The same canonical
+  // tasks rule is enforced here (canonical reuse via `validateOpenSpecTasksCanonicalityV1`, the
+  // exact check `persistOpenSpecAuthoringContentV1` applies) so the failure surfaces as a typed
+  // handoff error inside `runSpecManagerUntilReady` where the content retry budget exists.
+  validateOpenSpecTasksCanonicalityV1(expectedChange, result.artifacts.tasks);
   validateOpenSpecAuthoringContentCanonicalityV1(expectedChange, { specs: result.artifacts.specs });
 }
 
@@ -1109,8 +1160,8 @@ export function buildSpecManagerPrompt(
     changeInputsPrompt(inputs),
     explorerEvidence ? `Explorer durable result: ${explorerEvidence.artifact}\n${compactJson(explorerEvidence.payload, 10_000)}` : "Explorer result: not expected by topology.",
     plannerEvidence ? `Planner durable result: ${plannerEvidence.artifact}\n${compactJson(plannerEvidence.payload, 12_000)}` : "Planner result: not expected by topology.",
-    "Return complete authored file contents in artifacts.proposal, artifacts.tasks, optional artifacts.design, and artifacts.specs. artifacts.specs is one entry per capability: { capability: \"<kebab-case-capability>\", content: \"<complete OpenSpec change spec delta markdown>\" }. Every content value MUST be a canonical OpenSpec change spec delta: it starts with (or contains) a '## ADDED Requirements', '## MODIFIED Requirements', '## REMOVED Requirements' or '## RENAMED Requirements' section; every requirement is written as '### Requirement: <name>' inside a delta section; every requirement has at least one '#### Scenario: <name>' block; and every requirement statement MUST contain the normative keyword SHALL or MUST (OpenSpec strict validation rejects non-normative requirements). Flat requirement documents without delta headers, requirements without scenarios, requirements without SHALL/MUST and non-kebab-case capability names are rejected before persistence. Do not write files or request repository-write access; the deterministic controller persists these validated contents into the prepared OpenSpec change directory (openspec/changes/<change>/proposal.md, openspec/changes/<change>/tasks.md, openspec/changes/<change>/specs/<capability>/spec.md) before OpenSpec validation and compilation.",
-    "When status is READY, artifacts.proposal (the complete proposal.md content) and artifacts.tasks (the complete tasks.md content) are REQUIRED and must both be non-empty; a READY result that omits or empties either is rejected as SPEC_MANAGER_INCOMPLETE_RESULT.",
+    "Return complete authored file contents in artifacts.proposal, artifacts.tasks, optional artifacts.design, and artifacts.specs. artifacts.specs is one entry per capability: { capability: \"<kebab-case-capability>\", content: \"<complete OpenSpec change spec delta markdown>\" }. Every content value MUST be a canonical OpenSpec change spec delta: it starts with (or contains) a '## ADDED Requirements', '## MODIFIED Requirements', '## REMOVED Requirements' or '## RENAMED Requirements' section; every requirement is written as '### Requirement: <name>' inside a delta section; every requirement has at least one '#### Scenario: <name>' block; and every requirement statement MUST contain the normative keyword SHALL or MUST (OpenSpec strict validation rejects non-normative requirements). Flat requirement documents without delta headers, requirements without scenarios, requirements without SHALL/MUST and non-kebab-case capability names are rejected before persistence. artifacts.tasks MUST contain at least one checkbox task line '- [ ] 1.1 Description' (for example '- [ ] 1.1 Redesign Home'); dash bullets without checkboxes ('- ...'), numbered lists ('1. ...') and prose without checkboxes count as 0 tasks and are rejected before persistence as SPEC_MANAGER_CONTENT_NOT_CANONICAL. Do not write files or request repository-write access; the deterministic controller persists these validated contents into the prepared OpenSpec change directory (openspec/changes/<change>/proposal.md, openspec/changes/<change>/tasks.md, openspec/changes/<change>/specs/<capability>/spec.md) before OpenSpec validation and compilation.",
+    "When status is READY, artifacts.proposal (the complete proposal.md content) and artifacts.tasks (the complete tasks.md content) are REQUIRED and must both be non-empty; a READY result that omits or empties either is rejected as SPEC_MANAGER_INCOMPLETE_RESULT. A READY tasks.md without a '- [ ]' checkbox line is rejected as SPEC_MANAGER_CONTENT_NOT_CANONICAL.",
     selectedChoice ? [
       "Resume the saved SPEC_AUTHORING stage using this paired human product choice as requirement input only:",
       JSON.stringify({ requestId: selectedChoice.requestId, issue: selectedChoice.choice.description, choiceId: selectedChoice.choiceId, label: selectedChoice.choice.label, consequences: selectedChoice.choice.consequences }, null, 2),

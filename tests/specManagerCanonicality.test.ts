@@ -231,6 +231,20 @@ describe("SPEC_MANAGER_CONTENT_NOT_CANONICAL through the frozen controller path"
         unresolvedDecisions: [],
         decisionRequests: [],
         validationReady: true
+      },
+      {
+        // Bounded content retry (max-1): second identical non-canonical READY still fails closed.
+        change: changeName,
+        status: "READY",
+        artifacts: {
+          proposal: "# Proposal\n\nAdd the bounded behavior.\n",
+          tasks: "## Tasks\n\n- [ ] 1.1 Apply the bounded behavior.\n",
+          specs: [{ capability: "greeting-extension", content: "### Requirement: Flat\n\n#### Scenario: Flat\n" }]
+        },
+        requirements: ["R1"],
+        unresolvedDecisions: [],
+        decisionRequests: [],
+        validationReady: true
       }]
     });
 
@@ -278,6 +292,23 @@ describe("SPEC_MANAGER_CONTENT_NOT_CANONICAL through the frozen controller path"
         formalizationReason: "REQUIREMENT_CONTRADICTION"
       }],
       "spec-authoring": [{
+        change: changeName,
+        status: "READY",
+        artifacts: {
+          proposal: "# Proposal\n\nAdd the bounded behavior.\n",
+          tasks: "## Tasks\n\n- [ ] 1.1 Apply the bounded behavior.\n",
+          specs: [{
+            capability: "greeting-extension",
+            content: "### Requirement: Flat requirement\n\nThe module SHALL be extended.\n\n#### Scenario: Flat scenario\n\n- **WHEN** applied\n- **THEN** extended\n"
+          }]
+        },
+        requirements: ["R1"],
+        unresolvedDecisions: [],
+        decisionRequests: [],
+        validationReady: true
+      },
+      {
+        // Bounded content retry (max-1): second identical non-canonical READY still fails closed.
         change: changeName,
         status: "READY",
         artifacts: {
