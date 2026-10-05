@@ -25,10 +25,10 @@ export async function runConfiguredValidators(root: string, config: HarnessProje
     if (specs.some((spec) => capabilityForAdapter(spec.adapter) === capability)) continue;
     const adapter = capabilityAdapter(capability);
     if (!adapter) {
-      checks.push({ id: `capability.${capability}`, category: "capability", status: "FAIL", message: `UNSUPPORTED_VALIDATION_CAPABILITY: no approved validator or provider resolves the declared '${capability}' capability.` });
+      checks.push({ id: `capability:${capability}`, category: "capability", status: "FAIL", message: `UNSUPPORTED_VALIDATION_CAPABILITY: no approved validator or provider resolves the declared '${capability}' capability.` });
       continue;
     }
-    const spec: ValidatorSpec = { id: `capability.${capability}`, adapter, required: true };
+    const spec: ValidatorSpec = { id: `capability:${capability}`, adapter, required: true };
     const context: ValidationContext = { root, config, contract, spec, providerSpec: providerSpecFor(config, capability), baseRef, changedFiles, ...(options.candidate ? { candidate: options.candidate } : {}) };
     try { checks.push(await runValidator(context)); }
     catch (error) { checks.push({ id: spec.id, category: "capability", status: "FAIL", message: `${capability} capability crashed: ${String(error)}` }); }

@@ -49,7 +49,7 @@ describe("specialized validation capabilities fail closed instead of falling thr
     const root = await fixture();
     const contract: TaskContract = { version: 1, task: { id: "FC-1", title: "browser" }, verification: { capabilities: ["browser-test"] } };
     const checks = await runConfiguredValidators(root, config, contract, "HEAD", []);
-    const check = checks.find((item) => item.id === "capability.browser-test");
+    const check = checks.find((item) => item.id === "capability:browser-test");
     expect(check).toBeDefined();
     expect(check!.status).toBe("FAIL");
     expect(check!.details?.blocker).toBe("BROWSER_PROVIDER_UNAVAILABLE");
@@ -60,7 +60,7 @@ describe("specialized validation capabilities fail closed instead of falling thr
     const root = await fixture();
     const contract: TaskContract = { version: 1, task: { id: "FC-2", title: "visual" }, verification: { capabilities: ["visual-test"] } };
     const checks = await runConfiguredValidators(root, config, contract, "HEAD", []);
-    const check = checks.find((item) => item.id === "capability.visual-test");
+    const check = checks.find((item) => item.id === "capability:visual-test");
     expect(check).toBeDefined();
     expect(check!.status).toBe("FAIL");
     expect(check!.details?.blocker).toBe("VISUAL_PROVIDER_UNAVAILABLE");
@@ -70,7 +70,7 @@ describe("specialized validation capabilities fail closed instead of falling thr
     const root = await fixture();
     const contract: TaskContract = { version: 1, task: { id: "FC-3", title: "unsupported" }, verification: { capabilities: ["policy"] } };
     const checks = await runConfiguredValidators(root, config, contract, "HEAD", []);
-    const check = checks.find((item) => item.id === "capability.policy");
+    const check = checks.find((item) => item.id === "capability:policy");
     expect(check).toBeDefined();
     expect(check!.status).toBe("FAIL");
     expect(check!.message).toContain("UNSUPPORTED_VALIDATION_CAPABILITY");
@@ -174,7 +174,7 @@ describe("specialized validation capabilities fail closed instead of falling thr
     const root = await fixture();
     const contract: TaskContract = { version: 1, task: { id: "FC-10", title: "bdd" }, verification: { capabilities: ["bdd"] } };
     const checks = await runConfiguredValidators(root, config, contract, "HEAD", []);
-    const check = checks.find((item) => item.id === "capability.bdd");
+    const check = checks.find((item) => item.id === "capability:bdd");
     expect(check).toBeDefined();
     expect(check!.status).toBe("FAIL");
     expect(check!.details?.blocker).toBe("CONTRACT_PROVIDER_UNAVAILABLE");
@@ -190,12 +190,12 @@ describe("specialized validation capabilities fail closed instead of falling thr
     };
     const contract: TaskContract = { version: 1, task: { id: "FC-11", title: "bdd configured" }, verification: { capabilities: ["bdd"] } };
     const checks = await runConfiguredValidators(root, configured, contract, "HEAD", [], { candidate });
-    const check = checks.find((item) => item.id === "capability.bdd");
+    const check = checks.find((item) => item.id === "capability:bdd");
     expect(check, JSON.stringify(checks)).toBeDefined();
     expect(check!.status, JSON.stringify(check)).toBe("PASS");
     await expect(fs.access(path.join(root, ".harness", "configured-bdd", "ran.txt"))).resolves.toBeUndefined();
     await expect(fs.access(path.join(root, ".harness", "package-bdd", "ran.txt"))).rejects.toThrow();
-    const evidence = await requireProviderLaneEvidenceV1(root, configured, "CONTRACT", candidate, "capability.bdd");
+    const evidence = await requireProviderLaneEvidenceV1(root, configured, "CONTRACT", candidate, "capability:bdd");
     expect(evidence.status).toBe("PASS");
     expect(evidence.provider.name).toBe("configured-bdd-fixture");
   });
@@ -208,7 +208,7 @@ describe("specialized validation capabilities fail closed instead of falling thr
     };
     const contract: TaskContract = { version: 1, task: { id: "FC-12", title: "bdd failing" }, verification: { capabilities: ["bdd"] } };
     const checks = await runConfiguredValidators(root, configured, contract, "HEAD", [], { candidate });
-    const check = checks.find((item) => item.id === "capability.bdd");
+    const check = checks.find((item) => item.id === "capability:bdd");
     expect(check, JSON.stringify(checks)).toBeDefined();
     expect(check!.status, JSON.stringify(check)).toBe("FAIL");
   });
