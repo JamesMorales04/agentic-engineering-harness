@@ -192,6 +192,20 @@ describe("impact-review validator wrappers (hermetic tool stubs)", () => {
     }
   });
 
+  it("fails closed when the reported version merely extends the pin (substring bypass)", async () => {
+    const root = await fixture({ "src/clean.js": "const a = 1;\n" });
+    await stubBinary("opengrep", "1.22.0-unpinned", OPENGRP_ZERO);
+    const opengrepRun = runWrapper(WRAPPERS.opengrep, root);
+    expect(opengrepRun.status).not.toBe(0);
+    expect(opengrepRun.stderr).toContain("TOOL_VERSION_MISMATCH");
+    await stubBinary("trivy", "Version: 0.70.0-unpinned", TRIVY_ZERO);
+    for (const wrapper of [WRAPPERS.trivyVuln, WRAPPERS.trivySecret]) {
+      const run = runWrapper(wrapper, root);
+      expect(run.status).not.toBe(0);
+      expect(run.stderr).toContain("TOOL_VERSION_MISMATCH");
+    }
+  });
+
   it("fails closed when no trivy binary is resolvable", async () => {
     const root = await fixture();
     process.env.PATH = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-empty-path-")).then((dir) => (roots.push(dir), dir));

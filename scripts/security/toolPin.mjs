@@ -120,12 +120,22 @@ export function toolVersionOutput(binary, args = ["--version"]) {
   }
 }
 
-/** Fail closed unless the observed tool version line contains the pinned version. */
+/**
+ * Parse the first tool version token out of `--version` output. The match
+ * includes any attached pre-release suffix so `1.22.0-unpinned` parses as
+ * `1.22.0-unpinned`, never as `1.22.0`. Returns null when no token is found.
+ */
+export function extractReportedVersion(observed) {
+  const match = String(observed ?? "").match(/(?<![0-9A-Za-z.])v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)(?![0-9A-Za-z.-])/);
+  return match ? match[1] : null;
+}
+
+/** Fail closed unless the parsed reported version equals the pinned version exactly. */
 export function assertToolVersion(tool, pinned, observed) {
   if (!pinned || typeof pinned !== "string") {
     throw new Error(`TOOL_PIN_INVALID: no pinned version for '${tool}' in templates/provider-versions.json.`);
   }
-  if (!observed.includes(pinned)) {
+  if (extractReportedVersion(observed) !== pinned) {
     throw new Error(`TOOL_VERSION_MISMATCH: ${tool} version pin is '${pinned}' but the resolved binary reported '${observed}'.`);
   }
   return pinned;
