@@ -1109,14 +1109,13 @@ function providerEvidenceLaneForKind(kind: ValidationRequirementKindV1): Provide
  * stdout/stderr; the lane wrapper previously dropped those details, hiding
  * assertion/selector/timeout root causes behind `exit code 1`. Mechanism is
  * DETERMINISTIC: fixed 4_000-char bound per stream, no model judgment.
+ * The validator command itself is never copied: configured commands may embed
+ * inline credentials/secrets.
  */
 function underlyingFailureEvidence(execution: { details?: unknown }): Record<string, unknown> {
   const details = (execution.details ?? {}) as Record<string, unknown>;
   const out: Record<string, unknown> = {};
   if (typeof details.exitCode === "number") out.underlyingExitCode = details.exitCode;
-  if (typeof details.command === "string" && details.command.trim()) {
-    out.underlyingCommand = details.command.length <= 1000 ? details.command : `${details.command.slice(0, 1000)}\n...[truncated]`;
-  }
   const stdout = boundedFailureText(details.stdout);
   if (stdout) out.underlyingStdout = stdout;
   const stderr = boundedFailureText(details.stderr);

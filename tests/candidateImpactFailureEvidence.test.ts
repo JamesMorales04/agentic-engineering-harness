@@ -126,5 +126,9 @@ describe("candidate-impact lane preserves bounded failure output", () => {
     const stderr = typeof details.underlyingStderr === "string" ? details.underlyingStderr : "";
     expect(`${stdout}\n${stderr}`).toContain("section.decision-request");
     expect(details.underlyingExitCode).toBe(1);
+    // Configured validator commands may embed inline credentials/secrets:
+    // lane evidence must never copy the raw command.
+    expect(details).not.toHaveProperty("underlyingCommand");
+    expect(details).not.toHaveProperty("command");
   });
 });
