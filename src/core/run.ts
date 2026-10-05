@@ -44,6 +44,7 @@ import { executeIsolatedCandidateMutation } from "../candidates/direct.js";
 import { executeRepairerCandidateMutation } from "../candidates/repair.js";
 import { bindAssembledCandidate } from "../candidates/binding.js";
 import { createSemanticAssessmentRuntimeV1, createSemanticRepositoryBindingV1, type SemanticAssessmentRuntimeV1 } from "../semantic/runtime.js";
+import { recordPaseoTrace } from "../paseo/trace.js";
 import { discoverProjectStackProfile, type ProjectStackProfileV1 } from "../participants/stack.js";
 import { compileCandidateAssuranceV1, candidateImpactValidationRequirementsV1, candidateAssuranceProviderAdapterV1, type CandidateAssuranceCompilationV1, type CandidateAssurancePolicyV1 } from "../architecture/candidateAssurance.js";
 import { requireSastEvidenceV1 } from "../security/sastEvidence.js";
@@ -125,7 +126,34 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     await recordEvent(controlRoot, effectiveConfig, "harness.semantic.stack-assessed", { taskId: effectiveContract.task.id, inputDigest: projectStack.inputDigest, assessmentDigest: projectStack.assessmentDigest, bindingDigest: projectStack.bindingDigest, policyRevision: projectStack.policyRevision, unknowns: projectStack.unknowns });
   }
   const impactAssessmentRuntime: CandidateImpactAssessmentRuntimeV1 | undefined = operationId && semanticRuntime
-    ? { service: semanticRuntime.service, policyRevision: semanticRuntime.policyRevision, repositoryBinding: await createSemanticRepositoryBindingV1(workspaceRoot, effectiveConfig, { operationId }) }
+    ? {
+        service: semanticRuntime.service,
+        policyRevision: semanticRuntime.policyRevision,
+        repositoryBinding: await createSemanticRepositoryBindingV1(workspaceRoot, effectiveConfig, { operationId }),
+        // Persist the rejected-judgment receipt in the same trace shape family
+        // as `semantic.assessor.reply.rejected` (agentId/assessmentType plus
+        // bounded file-diff lists) so forensics can cite exact lists.
+        // Best-effort only; never masks the fail-closed rejection.
+        onRejectedJudgment: async (rejected) => {
+          await recordPaseoTrace(workspaceRoot, "candidate.impact.judgment.rejected", {
+            ...(rejected.sessionId ? { agentId: rejected.sessionId } : {}),
+            assessmentType: rejected.assessmentType,
+            ...(rejected.transport ? { transport: rejected.transport } : {}),
+            ...(rejected.candidateId ? { candidateId: rejected.candidateId } : {}),
+            ...(rejected.candidateRevision !== undefined ? { candidateRevision: rejected.candidateRevision } : {}),
+            ...(rejected.candidateDigest ? { candidateDigest: rejected.candidateDigest } : {}),
+            declared: [...rejected.declared],
+            declaredCount: rejected.declaredCount,
+            observed: [...rejected.observed],
+            observedCount: rejected.observedCount,
+            missing: [...rejected.missing],
+            missingCount: rejected.missingCount,
+            extra: [...rejected.extra],
+            extraCount: rejected.extraCount,
+            assessmentDigest: rejected.assessmentDigest
+          }).catch(() => undefined);
+        }
+      }
     : undefined;
   const implementationRoute = effectiveContract.routing?.route ?? "DIRECT";
   const assurance = effectiveContract.routing?.assurance ?? "STANDARD";
