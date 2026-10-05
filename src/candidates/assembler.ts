@@ -101,6 +101,15 @@ export interface CandidateImpactAssessmentRuntimeV1 {
    * failures are swallowed so the fail-closed rejection still throws.
    */
   onRejectedJudgment?: (record: CandidateImpactRejectedJudgmentV1) => Promise<void> | void;
+  /**
+   * Best-effort forensic hook for a launch-level SEMANTIC_ASSESSMENT_UNAVAILABLE
+   * observed inside `assessCandidateImpact` (exit/status/stderr-tail, no session
+   * when the launch never materialized). The production wiring persists
+   * `candidate.impact.assessor.unavailable` via recordPaseoTrace in the same
+   * shape family as the rejected-judgment trace. Never authority; failures are
+   * swallowed so the fail-closed rejection still throws.
+   */
+  onAssessorUnavailable?: (record: CandidateImpactAssessorUnavailableV1) => Promise<void> | void;
 }
 
 /** Bounded forensic record for a rejected candidate-impact judgment. */
@@ -122,6 +131,23 @@ export interface CandidateImpactRejectedJudgmentV1 {
   transport?: string;
 }
 
+/** Bounded forensic record for a launch-level assessor UNAVAILABLE observed during impact assessment. */
+export interface CandidateImpactAssessorUnavailableV1 {
+  assessmentType: "CANDIDATE_IMPACT";
+  candidateId?: string;
+  candidateRevision?: number;
+  candidateDigest?: string;
+  exitCode?: number;
+  status?: string;
+  transport?: string;
+  sessionId?: string;
+  /** Bounded launch-transport stderr tail (last 500 chars, refs-only, no secret expansion). */
+  stderrTail?: string;
+  /** Mismatch-attempt number during which the UNAVAILABLE was observed (1-based). */
+  attempt?: number;
+  willRetry?: boolean;
+}
+
 /**
  * Bound for the file-diff lists attached to impact-mismatch rejections.
  * Paths are already bounded (1-500 chars); ten capped entries keep the
@@ -129,6 +155,19 @@ export interface CandidateImpactRejectedJudgmentV1 {
  * Mirrors MAX_OFFENDING_EVIDENCE_REFS_V1 (PR88) with total counts preserved.
  */
 export const MAX_CANDIDATE_IMPACT_FILE_DIFF_V1 = 10;
+
+/** Bound for the launch-transport stderr tail persisted in the unavailable trace. */
+export const MAX_CANDIDATE_IMPACT_STDERR_TAIL_V1 = 500;
+
+/**
+ * Independent bound for transient launch-level non-timeout UNAVAILABLE retries
+ * inside `assessCandidateImpact`: at most 1 extra fresh turn. Timeout-class
+ * UNAVAILABLE never retries here (behavior unchanged).
+ */
+export const MAX_CANDIDATE_IMPACT_UNAVAILABLE_RETRIES = 1;
+
+/** Bounded backoff ceiling for the unavailable retry (small backoff+jitter, ≤5s). */
+export const MAX_CANDIDATE_IMPACT_UNAVAILABLE_BACKOFF_MS_V1 = 5_000;
 
 /**
  * Deterministic declared-vs-observed file diff: dedupe, locale-sort, cap at
@@ -302,15 +341,51 @@ async function assessCandidateImpact(root: string, changeSet: ChangeSetV1, chang
     policyRevision: runtime.policyRevision
   };
   let lastMismatch: AehError | undefined;
-  for (let attempt = 1; attempt <= MAX_CANDIDATE_IMPACT_ASSESSMENT_ATTEMPTS; attempt += 1) {
+  let unavailableRetries = 0;
+  let attempt = 1;
+  while (attempt <= MAX_CANDIDATE_IMPACT_ASSESSMENT_ATTEMPTS) {
     // IDENTICAL inputs: same request object, no repair hint, no correction
     // evidence, no list re-assertion. Re-asserting the exact list would lead
     // the semantic judgment and compromise independence. The service
-    // normalizes internally without mutating this object. The retry skips the
-    // cache read (bypassCache) so the identical cache identity cannot return
-    // the same cached wrong judgment as a HIT; the fresh result is still
-    // stored under that identity with normal provider-turn accounting.
-    const assessment: SemanticAssessmentV1 = await runtime.service.assess(request, attempt === 1 ? { attemptBudget: 1 } : { attemptBudget: 1, bypassCache: true });
+    // normalizes internally without mutating this object. Any retry (mismatch
+    // or unavailable) skips the cache read (bypassCache) so the identical
+    // cache identity cannot return the same cached wrong judgment as a HIT;
+    // the fresh result is still stored under that identity with normal
+    // provider-turn accounting (no envelope bypass).
+    const bypassCache = attempt > 1 || unavailableRetries > 0;
+    let assessment: SemanticAssessmentV1;
+    try {
+      assessment = await runtime.service.assess(request, bypassCache ? { attemptBudget: 1, bypassCache: true } : { attemptBudget: 1 });
+    } catch (error) {
+      if (error instanceof AehError && error.code === "SEMANTIC_ASSESSMENT_UNAVAILABLE") {
+        const details = (error.details ?? {}) as { timeout?: unknown; exitCode?: unknown; status?: unknown; transport?: unknown; sessionId?: unknown; stderrTail?: unknown };
+        const isTimeout = details.timeout === true;
+        const canRetry = !isTimeout && unavailableRetries < MAX_CANDIDATE_IMPACT_UNAVAILABLE_RETRIES;
+        await emitCandidateImpactAssessorUnavailable(runtime, {
+          assessmentType: "CANDIDATE_IMPACT",
+          ...(candidate.candidateId ? { candidateId: candidate.candidateId } : {}),
+          ...(candidate.revision !== undefined ? { candidateRevision: candidate.revision } : {}),
+          ...(candidate.identityDigest ? { candidateDigest: candidate.identityDigest } : {}),
+          ...(typeof details.exitCode === "number" ? { exitCode: details.exitCode } : {}),
+          ...(typeof details.status === "string" ? { status: details.status } : {}),
+          ...(typeof details.transport === "string" ? { transport: details.transport } : {}),
+          ...(typeof details.sessionId === "string" ? { sessionId: details.sessionId } : {}),
+          ...(typeof details.stderrTail === "string" && details.stderrTail ? { stderrTail: details.stderrTail.slice(-MAX_CANDIDATE_IMPACT_STDERR_TAIL_V1) } : {}),
+          attempt,
+          willRetry: canRetry,
+        });
+        if (canRetry) {
+          unavailableRetries += 1;
+          await backoffCandidateImpactUnavailableRetry();
+          // Retry the same mismatch attempt with a fresh turn (bypassCache now true).
+          continue;
+        }
+        // Timeout-class behavior unchanged (no retry); second non-timeout
+        // failure rethrows with the runner-threaded diagnostics preserved.
+        throw error;
+      }
+      throw error;
+    }
     if (assessment.assessmentType !== "CANDIDATE_IMPACT" || assessment.mechanism !== "MODEL" || assessment.judgment.type !== "CANDIDATE_IMPACT") throw new AehError("CANDIDATE_IMPACT_INVALID", "candidate impact requires a canonical MODEL CANDIDATE_IMPACT judgment.");
     if (assessment.policyRevision !== runtime.policyRevision || sha256Canonical(assessment.binding) !== sha256Canonical(binding)) throw new AehError("CANDIDATE_IMPACT_INVALID", "candidate impact assessment policy or candidate binding is stale.");
     const expectedRefs = [...request.evidenceRefs].sort();
@@ -334,7 +409,7 @@ async function assessCandidateImpact(root: string, changeSet: ChangeSetV1, chang
         ...(assessment.paseoSession?.agentId ? { sessionId: assessment.paseoSession.agentId } : {}),
         ...(assessment.paseoSession?.transport ? { transport: assessment.paseoSession.transport } : {})
       });
-      if (attempt < MAX_CANDIDATE_IMPACT_ASSESSMENT_ATTEMPTS) { lastMismatch = error; continue; }
+      if (attempt < MAX_CANDIDATE_IMPACT_ASSESSMENT_ATTEMPTS) { lastMismatch = error; attempt += 1; continue; }
       throw error;
     }
     const fileRefs = changedFiles.map((file) => `file:${file}`);
@@ -357,24 +432,33 @@ async function assessCandidateImpact(root: string, changeSet: ChangeSetV1, chang
 }
 
 /**
- * Bounded retry-once for the non-authoritative CANDIDATE_IMPACT judgment.
- * The first assessment runs against the frozen evidence packet; if the
- * deterministic exact-match gate rejects its changedFiles, one retry runs
- * with IDENTICAL inputs (same request object, fresh turn, no hints, no list
- * re-assertion — re-asserting the exact list would lead the semantic judgment
- * and compromise independence). The retry passes `bypassCache: true` so the
- * identical cache identity cannot return the same cached wrong judgment as a
- * HIT; the fresh result is still stored under that identity. A second
- * mismatch rethrows with details.
+ * Bounded retry-once for the non-authoritative CANDIDATE_IMPACT judgment plus
+ * an independent bounded retry-once for transient launch-level non-timeout
+ * UNAVAILABLE. The first assessment runs against the frozen evidence packet;
+ * if the deterministic exact-match gate rejects its changedFiles, one retry
+ * runs with IDENTICAL inputs (same request object, fresh turn, no hints, no
+ * list re-assertion — re-asserting the exact list would lead the semantic
+ * judgment and compromise independence). The retry passes `bypassCache: true`
+ * so the identical cache identity cannot return the same cached wrong
+ * judgment as a HIT; the fresh result is still stored under that identity. A
+ * second mismatch rethrows with details.
  *
- * This loop is the single owner of the retry bound: every `service.assess`
+ * A transient launch-level SEMANTIC_ASSESSMENT_UNAVAILABLE with
+ * `details.timeout !== true` (e.g. exit=1, empty result id, tiny payload,
+ * ample envelope/deadline) retries once with IDENTICAL inputs, fresh turn,
+ * `bypassCache: true`, `attemptBudget: 1`, normal envelope/provider-turn
+ * accounting, after a small bounded backoff+jitter (≤5s). The second failure
+ * rethrows with the runner-threaded diagnostics preserved. Timeout-class
+ * UNAVAILABLE never retries here (behavior unchanged).
+ *
+ * This loop is the single owner of the retry bounds: every `service.assess`
  * call passes `attemptBudget: 1`, so the service's own bounded retry cannot
  * compose with this loop. One impact assessment therefore launches at most
- * MAX_CANDIDATE_IMPACT_ASSESSMENT_ATTEMPTS real model turns (no envelope
- * bypass; counts against normal provider-turn accounting). All other gates
- * (type, policy/binding, evidence receipts) fail closed immediately with no
- * retry. Fail-closed is preserved; no fuzzy matching, no normalization
- * widening, no evidence rewrite.
+ * MAX_CANDIDATE_IMPACT_ASSESSMENT_ATTEMPTS + MAX_CANDIDATE_IMPACT_UNAVAILABLE_RETRIES
+ * real model turns (no envelope bypass; counts against normal provider-turn
+ * accounting). All other gates (type, policy/binding, evidence receipts) fail
+ * closed immediately with no retry. Fail-closed is preserved; no fuzzy
+ * matching, no normalization widening, no evidence rewrite.
  */
 
 function buildCandidateImpactMismatchError(
@@ -402,6 +486,28 @@ async function emitCandidateImpactRejectedJudgment(
   try {
     await hook(record);
   } catch { /* forensic hook never masks the fail-closed rejection */ }
+}
+
+async function emitCandidateImpactAssessorUnavailable(
+  runtime: CandidateImpactAssessmentRuntimeV1,
+  record: CandidateImpactAssessorUnavailableV1
+): Promise<void> {
+  const hook = runtime.onAssessorUnavailable;
+  if (!hook) return;
+  try {
+    await hook(record);
+  } catch { /* forensic hook never masks the fail-closed rejection */ }
+}
+
+/**
+ * Small bounded backoff+jitter before the transient UNAVAILABLE retry:
+ * ~200ms base + 0-200ms jitter, capped at MAX_CANDIDATE_IMPACT_UNAVAILABLE_BACKOFF_MS_V1.
+ */
+async function backoffCandidateImpactUnavailableRetry(): Promise<void> {
+  const baseMs = 200;
+  const jitterMs = Math.floor(Math.random() * 200);
+  const delayMs = Math.min(baseMs + jitterMs, MAX_CANDIDATE_IMPACT_UNAVAILABLE_BACKOFF_MS_V1);
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
 async function readCandidateFile(root: string, relative: string, maxBytes: number): Promise<{ content: string; truncated: boolean } | undefined> {

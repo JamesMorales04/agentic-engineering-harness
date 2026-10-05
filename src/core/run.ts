@@ -152,6 +152,24 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
             extraCount: rejected.extraCount,
             assessmentDigest: rejected.assessmentDigest
           }).catch(() => undefined);
+        },
+        // Persist launch-level UNAVAILABLE forensics (exit/status/bounded
+        // stderr-tail, refs-only) in the same trace shape family. Best-effort
+        // only; never masks the fail-closed rejection.
+        onAssessorUnavailable: async (unavailable) => {
+          await recordPaseoTrace(workspaceRoot, "candidate.impact.assessor.unavailable", {
+            assessmentType: unavailable.assessmentType,
+            ...(unavailable.candidateId ? { candidateId: unavailable.candidateId } : {}),
+            ...(unavailable.candidateRevision !== undefined ? { candidateRevision: unavailable.candidateRevision } : {}),
+            ...(unavailable.candidateDigest ? { candidateDigest: unavailable.candidateDigest } : {}),
+            ...(unavailable.exitCode !== undefined ? { exitCode: unavailable.exitCode } : {}),
+            ...(unavailable.status ? { status: unavailable.status } : {}),
+            ...(unavailable.transport ? { transport: unavailable.transport } : {}),
+            ...(unavailable.sessionId ? { agentId: unavailable.sessionId } : {}),
+            ...(unavailable.stderrTail ? { stderrTail: unavailable.stderrTail } : {}),
+            ...(unavailable.attempt !== undefined ? { attempt: unavailable.attempt } : {}),
+            ...(unavailable.willRetry !== undefined ? { willRetry: unavailable.willRetry } : {}),
+          }).catch(() => undefined);
         }
       }
     : undefined;
