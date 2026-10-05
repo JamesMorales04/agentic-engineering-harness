@@ -33,6 +33,13 @@ import {
 } from "./assessment.js";
 
 /**
+ * Bound for the launch-transport stderr tail threaded through UNAVAILABLE errors
+ * and persisted in the candidate-impact unavailable trace. Stderr may contain
+ * paths; cap length, refs-only, no secret expansion.
+ */
+export const MAX_SEMANTIC_ASSESSOR_STDERR_TAIL_V1 = 500;
+
+/**
  * Canonical Semantic Assessor output discipline. This is an error-reduction mechanism only: the
  * deterministic schema/evidence/binding/provenance validation remains the acceptance gate, and the
  * discipline never grants authority or relaxes a requirement.
@@ -117,7 +124,15 @@ export class PaseoSemanticAssessmentRunnerV1 {
       // Typed, deterministic timeout classification: a real provider turn that exceeded its
       // deadline is retryable once; every other unavailability failure is not.
       const timedOut = result.exitCode === 124 || result.status === "timeout";
-      throw new AehError("SEMANTIC_ASSESSMENT_UNAVAILABLE", `Paseo Semantic Assessor did not return a completed structured result (exit=${result.exitCode}, status=${result.status ?? "unknown"})${semanticReplyDiagnosticV1(result.id ? { sessionId: result.id } : {})}.`, { details: { timeout: timedOut, exitCode: result.exitCode, status: result.status ?? "unknown", ...(result.id ? { sessionId: result.id } : {}) } });
+      // Forensic tail: the launch transport stderr is discarded by the runner today,
+      // which makes transient launch-level failures unprovable. Thread through what
+      // the launch returned (exit/status/stderr-tail/transport/session) without
+      // inventing: bounded last-500 chars, refs-only (may contain paths; cap length,
+      // no secret expansion). Timeout classification stays typed in details.timeout;
+      // message text is never parsed for control.
+      const rawStderr = typeof result.stderr === "string" ? result.stderr : "";
+      const stderrTail = rawStderr.slice(-MAX_SEMANTIC_ASSESSOR_STDERR_TAIL_V1);
+      throw new AehError("SEMANTIC_ASSESSMENT_UNAVAILABLE", `Paseo Semantic Assessor did not return a completed structured result (exit=${result.exitCode}, status=${result.status ?? "unknown"})${semanticReplyDiagnosticV1(result.id ? { sessionId: result.id } : {})}.`, { details: { timeout: timedOut, exitCode: result.exitCode, status: result.status ?? "unknown", ...(result.id ? { sessionId: result.id } : {}), ...(result.transport ? { transport: result.transport } : {}), ...(stderrTail ? { stderrTail } : {}) } });
     }
     const paseoSession = {
       provider: selection.paseoProvider,
