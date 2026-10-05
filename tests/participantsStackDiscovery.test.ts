@@ -207,8 +207,8 @@ async function temporaryRoot(prefix: string): Promise<string> {
 function isGitDaemonSocketArtifact(child: string): boolean {
   if (child === ".git/fsmonitor--daemon.ipc" || child === ".git/fsmonitor--daemon" || child.startsWith(".git/fsmonitor--daemon/")) return true;
   if (child.startsWith(".git/")) {
-    const base = child.split("/").pop() ?? "";
-    if (base.endsWith(".ipc") || base.endsWith(".sock")) return true;
+    const rest = child.slice(".git/".length);
+    if (!rest.includes("/") && (rest.endsWith(".ipc") || rest.endsWith(".sock"))) return true;
   }
   return false;
 }
@@ -512,7 +512,12 @@ describe("model-first project stack discovery", () => {
       expect(withExtra).not.toEqual(before);
       expect(withExtra).toContain("src/extra.txt");
       expect(withExtra).toContain(".git/HEAD");
-      await fs.writeFile(path.join(root, ".git", "HEAD"), await fs.readFile(path.join(root, ".git", "HEAD"), "utf8"));
+      // Suffix filter is direct-children only: a nested `.ipc` file remains listed.
+      await fs.mkdir(path.join(root, ".git", "custom-subdir"), { recursive: true });
+      await fs.writeFile(path.join(root, ".git", "custom-subdir", "nested.ipc"), "nested payload\n");
+      expect(await listTree(root)).toContain(".git/custom-subdir/nested.ipc");
+      // listTree is path-only: it proves the HEAD path remains listed after
+      // filtering, not content-change detection.
       expect(await listTree(root)).toContain(".git/HEAD");
     } finally {
       await fs.rm(root, { recursive: true, force: true });
