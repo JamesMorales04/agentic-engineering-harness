@@ -1070,13 +1070,14 @@ export async function runCandidateImpactValidations(input: {
         });
         laneEvidence = { lane: requiredLane, artifact: evidence.artifact, digest: evidence.digest };
       }
+      const failureEvidence = execution.status === "PASS" ? {} : underlyingFailureEvidence(execution);
       output.push({
         id: `candidate.assurance.validation.${requirement.id}`,
         category: "candidate-impact-validation",
         status: execution.status === "PASS" ? "PASS" : "FAIL",
         message: execution.status === "PASS" ? `Required ${requirement.kind} evidence passed: ${requirement.property}` : `Required ${requirement.kind} validation for requirement '${requirement.id}' returned ${execution.status}: ${execution.message}`,
         durationMs: execution.durationMs,
-        details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, ...(sastEvidence ? { sastEvidence, artifact: sastEvidence.artifact } : {}), ...(laneEvidence ? { laneEvidence, artifact: laneEvidence.artifact } : {}) }
+        details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, ...failureEvidence, ...(sastEvidence ? { sastEvidence, artifact: sastEvidence.artifact } : {}), ...(laneEvidence ? { laneEvidence, artifact: laneEvidence.artifact } : {}) }
       });
     } catch (error) {
       const message = String(error);
@@ -1099,6 +1100,37 @@ function providerEvidenceLaneForKind(kind: ValidationRequirementKindV1): Provide
   if (kind === "browser-test") return "BROWSER";
   if (kind === "visual-test") return "VISUAL";
   return undefined;
+}
+
+/**
+ * Thread the failing validator's bounded raw output into the candidate-impact
+ * lane evidence. `runValidationCommand` reports failures as a bare
+ * `failed with exit code N` message while its details carry the trimmed
+ * stdout/stderr; the lane wrapper previously dropped those details, hiding
+ * assertion/selector/timeout root causes behind `exit code 1`. Mechanism is
+ * DETERMINISTIC: fixed 4_000-char bound per stream, no model judgment.
+ * The validator command itself is never copied: configured commands may embed
+ * inline credentials/secrets.
+ */
+function underlyingFailureEvidence(execution: { details?: unknown }): Record<string, unknown> {
+  const details = (execution.details ?? {}) as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  if (typeof details.exitCode === "number") out.underlyingExitCode = details.exitCode;
+  const stdout = boundedFailureText(details.stdout);
+  if (stdout) out.underlyingStdout = stdout;
+  const stderr = boundedFailureText(details.stderr);
+  if (stderr) out.underlyingStderr = stderr;
+  if (Array.isArray(details.findings) && details.findings.length) {
+    out.underlyingFindingCount = details.findings.length;
+  }
+  return out;
+}
+
+function boundedFailureText(value: unknown, max = 4000): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max)}\n...[truncated]`;
 }
 
 const providerLaneBlockerPattern = /(PROVIDER_LANE_EVIDENCE_(?:REQUIRED|STALE|TAMPERED|PERSIST_FAILED)|PROVIDER_LANE_REFERENCE_REQUIRED|PROVIDER_LANE_CANDIDATE_BINDING_REQUIRED|(?:CONTRACT|INTEGRATION|BROWSER|VISUAL)_PROVIDER_UNAVAILABLE)/;
