@@ -4,7 +4,7 @@ import { resourceClaimConflicts, type ResourceClaimV1 } from "../architecture/wo
 import { candidateRevisionsEqual, type CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import { loadOperation } from "../operations/state.js";
 import { runExecutable } from "../utils/process.js";
-import { assembleCandidateChangeSet, changeSetDigest, type CandidateImpactAssessmentRuntimeV1, type CandidateImpactV1, type ChangeSetV1 } from "./assembler.js";
+import { assembleCandidateChangeSet, changeSetDigest, type CandidateImpactAssessmentRuntimeV1, type CandidateImpactV1, type CandidateScopeEscapeV1, type ChangeSetV1 } from "./assembler.js";
 import { assertWorkspaceMatchesCandidate } from "./identity.js";
 import { bindAssembledCandidate } from "./binding.js";
 
@@ -85,6 +85,12 @@ export async function integrateWaveChangeSets(input: {
   submissions: readonly WaveChangeSetSubmissionV1[];
   semanticAssessment?: CandidateImpactAssessmentRuntimeV1;
   now?: Date;
+  /**
+   * Best-effort forensic hook for a scope-escape rejection (observability
+   * only, never authority). Failures are swallowed so the fail-closed
+   * rejection still throws.
+   */
+  onScopeEscape?: (record: CandidateScopeEscapeV1) => Promise<void> | void;
 }): Promise<WaveIntegrationResultV1> {
   if (input.wave.operationId !== input.operationId || input.wave.taskId !== input.taskId) {
     throw new AehError("CANDIDATE_STALE", "Wave base belongs to another operation or task.");
@@ -159,7 +165,8 @@ export async function integrateWaveChangeSets(input: {
         candidateId: `candidate:${input.operationId}:r${activeCandidate.revision + 1}`,
         workspace: activeCandidate.workspace,
         worktree: activeCandidate.worktree ?? input.root,
-        semanticAssessment: input.semanticAssessment
+        semanticAssessment: input.semanticAssessment,
+        ...(input.onScopeEscape ? { onScopeEscape: input.onScopeEscape } : {})
       });
       activeCandidate = await bindAssembledCandidate({ root: input.root, stateRoot: input.stateRoot, operationId: input.operationId, baseCandidate: activeCandidate, candidate: assembled.candidate, changeSet: effective });
     } catch (error) {

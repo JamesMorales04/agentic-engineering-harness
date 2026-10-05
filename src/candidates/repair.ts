@@ -10,7 +10,7 @@ import { recordEvent } from "../telemetry/events.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { minimatch } from "minimatch";
-import { assembleCandidateChangeSet, type CandidateImpactAssessmentRuntimeV1, type ChangeSetV1 } from "./assembler.js";
+import { assembleCandidateChangeSet, type CandidateImpactAssessmentRuntimeV1, type CandidateScopeEscapeV1, type ChangeSetV1 } from "./assembler.js";
 import { captureInverseCandidateChangeSet, executeIsolatedCandidateMutation } from "./direct.js";
 import { bindAssembledCandidate } from "./binding.js";
 import {
@@ -88,6 +88,12 @@ export async function executeRepairerCandidateMutation(input: {
    * is unchanged and all other protected paths still fail closed.
    */
   scopeAmendment?: RepairScopeAmendmentV1;
+  /**
+   * Best-effort forensic hook for a scope-escape rejection (observability
+   * only, never authority). Failures are swallowed so the fail-closed
+   * rejection still throws; no blocker routing for silent expansion.
+   */
+  onScopeEscape?: (record: CandidateScopeEscapeV1) => Promise<void> | void;
 }): Promise<RepairCandidateMutationResultV1> {
   assertCompiledRepairer(input.selection, input.executionCatalog);
   const operation = await loadOperation(input.stateRoot, input.operationId);
@@ -162,7 +168,8 @@ export async function executeRepairerCandidateMutation(input: {
     candidateId: `candidate:${input.operationId}:r${currentCandidate.revision + 1}`,
     workspace: currentCandidate.workspace,
     worktree: input.root,
-    semanticAssessment: input.semanticAssessment
+    semanticAssessment: input.semanticAssessment,
+    ...(input.onScopeEscape ? { onScopeEscape: input.onScopeEscape } : {})
   });
   await bindAssembledCandidate({ root: input.root, stateRoot: input.stateRoot, operationId: input.operationId, baseCandidate: currentCandidate, candidate: assembled.candidate, changeSet: isolated.changeSet });
   await recordEvent(input.stateRoot, input.config, "harness.candidate.repair-assembled", {
@@ -191,6 +198,7 @@ export async function rejectRepairCandidateChangeSet(input: {
   prepareWorkspace?: (isolatedRoot: string) => Promise<void>;
   semanticAssessment?: CandidateImpactAssessmentRuntimeV1;
   scopeAmendment?: RepairScopeAmendmentV1;
+  onScopeEscape?: (record: CandidateScopeEscapeV1) => Promise<void> | void;
 }): Promise<{ candidate: CandidateRevisionV1; impact: import("./assembler.js").CandidateImpactV1 }> {
   const operation = await loadOperation(input.stateRoot, input.operationId);
   const currentCandidate = operation.candidateRevision;
@@ -222,7 +230,8 @@ export async function rejectRepairCandidateChangeSet(input: {
     candidateId: `candidate:${input.operationId}:r${currentCandidate.revision + 1}`,
     workspace: currentCandidate.workspace,
     worktree: input.root,
-    semanticAssessment: input.semanticAssessment
+    semanticAssessment: input.semanticAssessment,
+    ...(input.onScopeEscape ? { onScopeEscape: input.onScopeEscape } : {})
   });
   await bindAssembledCandidate({ root: input.root, stateRoot: input.stateRoot, operationId: input.operationId, baseCandidate: currentCandidate, candidate: assembled.candidate, changeSet: inverse });
   await recordEvent(input.stateRoot, input.config, "harness.candidate.repair-rejected", {

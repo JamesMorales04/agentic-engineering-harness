@@ -12,6 +12,7 @@ import { assertWorkspaceMatchesCandidate } from "./identity.js";
 import { runExecutable } from "../utils/process.js";
 import { changeKindSchema, changeKindValues, type ChangeKind } from "../architecture/workGraph.js";
 import { createSemanticEvidenceReceiptV1, semanticAssessmentEvidenceDigest, semanticEvidenceBoundaryDigest, semanticModelDeadlineMsV1, type SemanticAssessmentBindingV1, type SemanticAssessmentServiceV1, type SemanticAssessmentV1 } from "../semantic/assessment.js";
+import { REPAIR_AMENDABLE_MANIFEST_PATHS } from "./repairScope.js";
 
 export interface ChangeSetV1 {
   version: 1;
@@ -202,6 +203,62 @@ export function candidateImpactFileDiffV1(declared: readonly string[], observed:
   };
 }
 
+/**
+ * Bound for the scope-escape file lists attached to PARTICIPANT_PLAN_INVALID
+ * escape rejections. Ten capped entries keep the message and trace bounded
+ * while preserving exact strings for forensics. Mirrors
+ * MAX_CANDIDATE_IMPACT_FILE_DIFF_V1 (PR88) with total counts preserved.
+ */
+export const MAX_ASSEMBLER_SCOPE_ESCAPE_FILES_V1 = 10;
+
+/** Bounded forensic record for a ChangeSet scope escape (observability only). */
+export interface CandidateScopeEscapeV1 {
+  operationId: string;
+  taskId: string;
+  escapedFiles: string[];
+  escapedCount: number;
+  amendableManifests: string[];
+  amendableCount: number;
+  hardProtected: string[];
+  hardProtectedCount: number;
+}
+
+/**
+ * Deterministic scope-escape split: dedupe, locale-sort, cap at
+ * MAX_ASSEMBLER_SCOPE_ESCAPE_FILES_V1 with total unique counts preserved.
+ * The amendable subset reuses REPAIR_AMENDABLE_MANIFEST_PATHS from
+ * repairScope.ts (dependency manifests that a ledger-approved amendment may
+ * exempt); everything else is hard-protected for observability (frozen
+ * TaskContract, seal, validators, acceptance/spec, policy). Exact-match
+ * fail-closed semantics are unchanged; this only bounds diagnostics.
+ */
+export function assemblerScopeEscapeDiffV1(escaped: readonly string[]): {
+  escapedFiles: string[];
+  escapedCount: number;
+  amendableManifests: string[];
+  amendableCount: number;
+  hardProtected: string[];
+  hardProtectedCount: number;
+} {
+  const unique = [...new Set(escaped.map(normalizePath))].sort((left, right) => left.localeCompare(right));
+  const amendablePatterns: string[] = [];
+  for (const raw of REPAIR_AMENDABLE_MANIFEST_PATHS) {
+    const value = raw.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/$/, "");
+    if (!value) continue;
+    amendablePatterns.push(value, `${value}/**`);
+  }
+  const amendableUnique = unique.filter((file) => matchesAny(file, amendablePatterns));
+  const hardUnique = unique.filter((file) => !matchesAny(file, amendablePatterns));
+  return {
+    escapedFiles: unique.slice(0, MAX_ASSEMBLER_SCOPE_ESCAPE_FILES_V1),
+    escapedCount: unique.length,
+    amendableManifests: amendableUnique.slice(0, MAX_ASSEMBLER_SCOPE_ESCAPE_FILES_V1),
+    amendableCount: amendableUnique.length,
+    hardProtected: hardUnique.slice(0, MAX_ASSEMBLER_SCOPE_ESCAPE_FILES_V1),
+    hardProtectedCount: hardUnique.length
+  };
+}
+
 export interface CandidateAssemblyInputV1 {
   root: string;
   operationId: string;
@@ -215,6 +272,15 @@ export interface CandidateAssemblyInputV1 {
   semanticAssessment?: CandidateImpactAssessmentRuntimeV1;
   workspace?: string;
   worktree?: string;
+  /**
+   * Best-effort forensic hook for a scope-escape rejection
+   * (out-of-scope or forbidden ChangeSet paths). The production wiring
+   * persists the same `candidate.scope.escape.rejected` trace shape family
+   * used for `candidate.impact.judgment.rejected`, extended with the bounded
+   * hard/amendable split. Never authority; failures are swallowed so the
+   * fail-closed rejection still throws.
+   */
+  onScopeEscape?: (record: CandidateScopeEscapeV1) => Promise<void> | void;
 }
 
 /**
@@ -253,7 +319,29 @@ export async function assembleCandidateChangeSet(input: CandidateAssemblyInputV1
   }
   const outOfScope = changedFiles.filter((file) => !matchesAny(file, input.allowedScope));
   const forbidden = changedFiles.filter((file) => matchesAny(file, input.forbiddenScope ?? []));
-  if (outOfScope.length || forbidden.length) throw new AehError("PARTICIPANT_PLAN_INVALID", `ChangeSet escaped its assigned scope: ${[...new Set([...outOfScope, ...forbidden])].join(", ")}.`);
+  if (outOfScope.length || forbidden.length) {
+    // Observability-only enrichment (fail-closed preserved): attach the
+    // bounded hard/amendable split to the error details and emit a
+    // best-effort forensic trace. Still throws terminal; no blocker routing
+    // for silent expansion (preserves declare-first incentives).
+    // PR88 convention: message prefix stays stable, details appended.
+    const escapeDiff = assemblerScopeEscapeDiffV1([...outOfScope, ...forbidden]);
+    const base = `ChangeSet escaped its assigned scope: ${[...new Set([...outOfScope, ...forbidden])].join(", ")}.`;
+    const suffix = ` escaped=${JSON.stringify(escapeDiff.escapedFiles)} escapedCount=${escapeDiff.escapedCount} amendableManifests=${JSON.stringify(escapeDiff.amendableManifests)} amendableCount=${escapeDiff.amendableCount} hardProtected=${JSON.stringify(escapeDiff.hardProtected)} hardProtectedCount=${escapeDiff.hardProtectedCount}`;
+    const error = new AehError("PARTICIPANT_PLAN_INVALID", `${base}${suffix}`, {
+      details: {
+        ...escapeDiff,
+        operationId: input.operationId,
+        taskId: input.taskId
+      }
+    });
+    await emitCandidateScopeEscape(input, {
+      operationId: input.operationId,
+      taskId: input.taskId,
+      ...escapeDiff
+    });
+    throw error;
+  }
   if (!changeSet.patch.trim()) throw new AehError("PARTICIPANT_PLAN_INVALID", "ChangeSet patch is empty.");
 
   await assertWorkspaceMatchesCandidate(input.root, input.currentCandidate);
@@ -482,6 +570,17 @@ async function emitCandidateImpactRejectedJudgment(
   record: CandidateImpactRejectedJudgmentV1
 ): Promise<void> {
   const hook = runtime.onRejectedJudgment;
+  if (!hook) return;
+  try {
+    await hook(record);
+  } catch { /* forensic hook never masks the fail-closed rejection */ }
+}
+
+async function emitCandidateScopeEscape(
+  input: CandidateAssemblyInputV1,
+  record: CandidateScopeEscapeV1
+): Promise<void> {
+  const hook = input.onScopeEscape;
   if (!hook) return;
   try {
     await hook(record);

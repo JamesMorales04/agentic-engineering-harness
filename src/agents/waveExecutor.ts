@@ -23,7 +23,7 @@ import { compileResolvedOperationPolicy } from "../architecture/executionIdentit
 import { configuredDeliveryPolicy, requiredHumanActionAuthorizations } from "../security/actionPolicy.js";
 import type { ExecutionCatalogV1 } from "../architecture/executionCatalog.js";
 import type { CapabilityRegistryV1 } from "../capabilities/registry.js";
-import type { CandidateImpactAssessmentRuntimeV1, CandidateImpactV1, ChangeSetV1 } from "../candidates/assembler.js";
+import type { CandidateImpactAssessmentRuntimeV1, CandidateImpactV1, CandidateScopeEscapeV1, ChangeSetV1 } from "../candidates/assembler.js";
 import { materializeCandidateState } from "../candidates/direct.js";
 import { createWaveBase, integrateWaveChangeSets, type WaveChangeSetSubmissionV1 } from "../candidates/wave.js";
 import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
@@ -39,7 +39,7 @@ export interface DelegationExecutionResult { task: WorkUnitOutput; session: Work
 export interface WaveExecutionSummary { wave: number; taskIds: string[]; status: "PASS" | "FAIL"; results: DelegationExecutionResult[]; barrier?: ValidationReport; }
 export interface PlannerWaveResult { used: boolean; plan?: PlannerOutput; blueprint?: ExecutionBlueprint; schedule?: ParallelismPlan; waves: WaveExecutionSummary[]; sessions: WorkerSession[]; aggregateSession?: WorkerSession; report?: ValidationReport; preExecutionFailure?: boolean; correctionAttempts?: 0 | 1; }
 
-export async function executePlannerWaves(input: { root: string; stateRoot: string; config: HarnessProjectConfig; contract: TaskContract; plannerSelection?: AgentExecutionSelection; librarianSelection?: AgentExecutionSelection; implementationSelection: AgentExecutionSelection; executionCatalog: ExecutionCatalogV1; capabilityRegistry: CapabilityRegistryV1; controller?: ControlPlaneSnapshot; precomputedPlan?: PlannerOutput; semanticAssessment?: CandidateImpactAssessmentRuntimeV1; projectStack?: ProjectStackProfileV1; knowledgeMode?: KnowledgeModeV1; knowledgeCache?: KnowledgeCacheV1; knowledgeResolutions?: readonly KnowledgeResolutionV1[]; knowledgeLookup?: (gap: Parameters<NonNullable<Parameters<typeof resolveKnowledgeGate>[0]["lookup"]>>[0]) => Promise<KnowledgePackV1 | KnowledgeLookupResultV1>; revalidate: () => Promise<ValidationReport>; }): Promise<PlannerWaveResult> {
+export async function executePlannerWaves(input: { root: string; stateRoot: string; config: HarnessProjectConfig; contract: TaskContract; plannerSelection?: AgentExecutionSelection; librarianSelection?: AgentExecutionSelection; implementationSelection: AgentExecutionSelection; executionCatalog: ExecutionCatalogV1; capabilityRegistry: CapabilityRegistryV1; controller?: ControlPlaneSnapshot; precomputedPlan?: PlannerOutput; semanticAssessment?: CandidateImpactAssessmentRuntimeV1; projectStack?: ProjectStackProfileV1; knowledgeMode?: KnowledgeModeV1; knowledgeCache?: KnowledgeCacheV1; knowledgeResolutions?: readonly KnowledgeResolutionV1[]; knowledgeLookup?: (gap: Parameters<NonNullable<Parameters<typeof resolveKnowledgeGate>[0]["lookup"]>>[0]) => Promise<KnowledgePackV1 | KnowledgeLookupResultV1>; revalidate: () => Promise<ValidationReport>; onScopeEscape?: (record: CandidateScopeEscapeV1) => Promise<void> | void }): Promise<PlannerWaveResult> {
   const planning = input.config.workflow?.planning;
   if (planning?.enabled === false || input.contract.routing?.route === "DIRECT" || input.contract.routing?.route === "NO_AGENT") return { used: false, waves: [], sessions: [] };
   if (!input.precomputedPlan && !input.plannerSelection) return { used: false, waves: [], sessions: [] };
@@ -145,7 +145,7 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
       });
     }
     if (submissions.length) {
-      const integration = await integrateWaveChangeSets({ root: input.root, stateRoot: input.stateRoot, operationId: operation.id, taskId: input.contract.task.id, wave: waveBase, submissions, semanticAssessment: input.semanticAssessment });
+      const integration = await integrateWaveChangeSets({ root: input.root, stateRoot: input.stateRoot, operationId: operation.id, taskId: input.contract.task.id, wave: waveBase, submissions, semanticAssessment: input.semanticAssessment, ...(input.onScopeEscape ? { onScopeEscape: input.onScopeEscape } : {}) });
       for (const step of integration.integrated) {
         const result = resultByWorkUnit.get(step.workUnitId);
         if (result) { result.candidate = step.candidate; result.impact = step.impact; }

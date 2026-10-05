@@ -39,7 +39,7 @@ import { createMemoryProvider } from "../providers/memory.js";
 import { buildAcceptedOperationCandidates } from "../memory/candidates.js";
 import { compileExecutionCatalog, type ExecutionCatalogV1 } from "../architecture/executionCatalog.js";
 import { assertCapabilityRegistryV1, discoverCapabilityRegistryV1, loadOperationCapabilityRegistryV1, persistOperationCapabilityRegistryV1, type CapabilityRegistryV1 } from "../capabilities/registry.js";
-import { assembleCandidateChangeSet, type CandidateImpactAssessmentRuntimeV1 } from "../candidates/assembler.js";
+import { assembleCandidateChangeSet, type CandidateImpactAssessmentRuntimeV1, type CandidateScopeEscapeV1 } from "../candidates/assembler.js";
 import { executeIsolatedCandidateMutation } from "../candidates/direct.js";
 import { executeRepairerCandidateMutation } from "../candidates/repair.js";
 import {
@@ -178,6 +178,22 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
         }
       }
     : undefined;
+  // Observability-only forensic hook for scope escapes (same best-effort
+  // pattern as candidate.impact.judgment.rejected). Attaches the bounded
+  // hard/amendable split; still throws terminal fail-closed with no blocker
+  // routing for silent expansion (preserves declare-first incentives).
+  const onScopeEscape = async (escape: CandidateScopeEscapeV1): Promise<void> => {
+    await recordPaseoTrace(workspaceRoot, "candidate.scope.escape.rejected", {
+      operationId: escape.operationId,
+      taskId: escape.taskId,
+      escapedFiles: [...escape.escapedFiles],
+      escapedCount: escape.escapedCount,
+      amendableManifests: [...escape.amendableManifests],
+      amendableCount: escape.amendableCount,
+      hardProtected: [...escape.hardProtected],
+      hardProtectedCount: escape.hardProtectedCount,
+    }).catch(() => undefined);
+  };
   const implementationRoute = effectiveContract.routing?.route ?? "DIRECT";
   const assurance = effectiveContract.routing?.assurance ?? "STANDARD";
   if (implementationRoute === "NO_AGENT") throw new Error(`NO_AGENT_ROUTE: task ${effectiveContract.task.id} is explicitly non-mutating and cannot enter implementation execution.`);
@@ -253,7 +269,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
   if (planningEnabled && route && selection && executionCatalog && capabilityRegistry) {
     const planningSelection = selection;
     if (operationId) await runStage(operationStateRoot, operationId, "planning", "RUNNING");
-    waveResult = await executePlannerWaves({ root: workspaceRoot, stateRoot: controlRoot, config: effectiveConfig, contract: effectiveContract, plannerSelection, librarianSelection, implementationSelection: planningSelection, executionCatalog, capabilityRegistry, controller, precomputedPlan: options?.planning, projectStack, semanticAssessment: impactAssessmentRuntime, revalidate: async () => { await prepareValidationWorkspace(); return verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, planningSelection); } });
+    waveResult = await executePlannerWaves({ root: workspaceRoot, stateRoot: controlRoot, config: effectiveConfig, contract: effectiveContract, plannerSelection, librarianSelection, implementationSelection: planningSelection, executionCatalog, capabilityRegistry, controller, precomputedPlan: options?.planning, projectStack, semanticAssessment: impactAssessmentRuntime, onScopeEscape, revalidate: async () => { await prepareValidationWorkspace(); return verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, planningSelection); } });
     executionSessions = [...waveResult.sessions];
     if (waveResult.blueprint?.resolvedOperationPolicy) assurancePolicySource = waveResult.blueprint.resolvedOperationPolicy;
     if (operationId) {
@@ -339,7 +355,8 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
           candidateId: `candidate:${operationId}:r${currentCandidate.revision + 1}`,
           workspace: currentCandidate.workspace,
           worktree: workspaceRoot,
-          semanticAssessment: impactAssessmentRuntime
+          semanticAssessment: impactAssessmentRuntime,
+          onScopeEscape
         });
         const boundCandidate = await bindAssembledCandidate({ root: workspaceRoot, stateRoot: controlRoot, operationId, baseCandidate: currentCandidate, candidate: assembled.candidate, changeSet: isolated.changeSet });
         candidateImpact = assembled.impact;
@@ -442,7 +459,8 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
       prompt: repairPrompt,
       prepareWorkspace: controller ? async (isolatedRoot) => { await materializeControlPlaneSnapshot(controller!, isolatedRoot, effectiveConfig); } : undefined,
       execute: (isolatedRoot, participantId) => executeAgentPrompt(isolatedRoot, effectiveConfig, effectiveContract, repairerSelection, repairPrompt, { outputContract: repairerSelection.outputContract ?? "implementer", phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true }),
-      semanticAssessment: impactAssessmentRuntime
+      semanticAssessment: impactAssessmentRuntime,
+      onScopeEscape
     });
     // Repair-scope blocker → bounded ledger-gated replan (the single production
     // amendment path). On a scopeBlocker outcome the controller suspends for a
@@ -519,7 +537,8 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
         prompt: repairPrompt,
         prepareWorkspace: controller ? async (isolatedRoot) => { await materializeControlPlaneSnapshot(controller!, isolatedRoot, effectiveConfig); } : undefined,
         execute: (isolatedRoot, participantId) => executeAgentPrompt(isolatedRoot, effectiveConfig, effectiveContract, repairerSelection, repairPrompt, { outputContract: repairerSelection.outputContract ?? "implementer", phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true }),
-        semanticAssessment: impactAssessmentRuntime
+        semanticAssessment: impactAssessmentRuntime,
+        onScopeEscape
       });
       worker = amendedRetry.session;
       executionSessions.push(worker);

@@ -547,6 +547,17 @@ export class ControlCenterJourneyFixture {
     for (;;) {
       const api = await this.api();
       const record = await api.state.loadOperation(this.consumerRoot, operationId);
+      // Transient QUEUED tolerance (genuine race): `operation start` persists
+      // QUEUED/dispatched and returns before the detached controller flips to
+      // RUNNING. QUEUED is non-terminal (see cleanup's RUNNING||QUEUED check
+      // and OperationStatus lifecycle) so keep polling until the deadline.
+      // Terminal SUCCEEDED/FAILED/CANCELLED still throw fail-closed; a stuck
+      // QUEUED still times out below with no weakening.
+      if (record.status === "QUEUED") {
+        if (Date.now() >= deadline) throw new JourneySetupError("PRODUCT_DEFECT", `timed out waiting for ${previousRequestId ? "the controller to consume the decision and reach the next" : "the first"} product-choice suspension (phase ${String(record.phase)}).`);
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        continue;
+      }
       if (record.status !== "RUNNING") {
         throw new JourneySetupError("PRODUCT_DEFECT", `operation ${operationId} reached ${record.status} before the expected product-choice suspension: ${sanitizeText(String(record.error ?? ""))}`);
       }
@@ -561,7 +572,11 @@ export class ControlCenterJourneyFixture {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       const record = await this.readOperation();
-      if (record.status !== "RUNNING" && record.status !== "CANCELLED") throw new JourneySetupError("PRODUCT_DEFECT", `operation ${operation.operationId} reached ${record.status} while waiting for ${label}: ${sanitizeText(String(record.error ?? ""))}`);
+      // Same transient QUEUED tolerance as waitForProductChoice: QUEUED is a
+      // non-terminal pre-RUNNING state, not a failure. CANCELLED tolerance is
+      // preserved as-is; SUCCEEDED/FAILED still throw fail-closed and a stuck
+      // QUEUED still times out below.
+      if (record.status !== "RUNNING" && record.status !== "CANCELLED" && record.status !== "QUEUED") throw new JourneySetupError("PRODUCT_DEFECT", `operation ${operation.operationId} reached ${record.status} while waiting for ${label}: ${sanitizeText(String(record.error ?? ""))}`);
       if (predicate(record)) return record;
       if (Date.now() >= deadline) throw new JourneySetupError("PRODUCT_DEFECT", `timed out waiting for ${label} (status ${String(record.status)}, phase ${String(record.phase)}).`);
       await new Promise((resolve) => setTimeout(resolve, 250));
