@@ -24,6 +24,7 @@ const WRAPPERS = {
   trivySecret: path.join(REPO_ROOT, "scripts", "security", "trivy-secret-misconfig.mjs")
 };
 const ARCHITECTURE = path.join(REPO_ROOT, "scripts", "architecture.mjs");
+const PUBLIC_API_CONTRACT = path.join(REPO_ROOT, "scripts", "publicApiContract.mjs");
 
 const realTools = process.env.AEH_RUN_REAL_PROVIDERS === "1";
 const describeReal = realTools ? describe : describe.skip;
@@ -366,6 +367,7 @@ describe("impact-review validation resolution order", () => {
       commands: [{ id: "architecture", command: "node scripts/architecture.mjs", required: true }],
       validators: [
         { id: "static-security", adapter: "opengrep", command: "node scripts/security/opengrep.mjs", required: true },
+        { id: "contract-test", adapter: "contract-test", command: "node scripts/publicApiContract.mjs", required: true },
         { id: "trivy-vuln", adapter: "trivy", command: "node scripts/security/trivy-vuln.mjs", required: true },
         { id: "trivy-secret-misconfig", adapter: "trivy", command: "node scripts/security/trivy-secret-misconfig.mjs", required: true }
       ],
@@ -414,6 +416,19 @@ describe("impact-review validation resolution order", () => {
     ]);
   });
 
+  it("resolves the public-api contract-test dimension through its configured validator instead of BLOCKED", async () => {
+    const root = await fixture();
+    const resolution = await resolveValidationRequirements({
+      root,
+      requirements: [requirement("impact-review-public-api", "contract-test")],
+      config: overlayLikeConfig
+    });
+    expect(resolution.blocked).toEqual([]);
+    expect(resolution.actions).toMatchObject([
+      { requirementId: "impact-review-public-api", source: "configured-validator", selector: "contract-test", kind: "contract-test" }
+    ]);
+  });
+
   it("ignores Planner-named commands and keeps unresolvable kinds blocked", async () => {
     const root = await fixture();
     const resolution = await resolveValidationRequirements({
@@ -432,6 +447,7 @@ describe("impact-review validation resolution order", () => {
     expect(commands).toContainEqual(expect.objectContaining({ id: "architecture", command: "node scripts/architecture.mjs", required: true }));
     expect(commands).toContainEqual(expect.objectContaining({ id: "npm-check", required: true }));
     expect(validators).toContainEqual(expect.objectContaining({ id: "static-security", adapter: "opengrep", command: "node scripts/security/opengrep.mjs", required: true }));
+    expect(validators).toContainEqual(expect.objectContaining({ id: "contract-test", adapter: "contract-test", command: "node scripts/publicApiContract.mjs", required: true }));
     expect(validators).toContainEqual(expect.objectContaining({ id: "trivy-vuln", adapter: "trivy", command: "node scripts/security/trivy-vuln.mjs", required: true }));
     expect(validators).toContainEqual(expect.objectContaining({ id: "trivy-secret-misconfig", adapter: "trivy", command: "node scripts/security/trivy-secret-misconfig.mjs", required: true }));
     const providers = config.validation?.providers ?? [];
@@ -499,6 +515,137 @@ describe("project architecture validator", () => {
   });
 });
 
+describe("project public-api contract validator", () => {
+  it("passes on the current checkout with versioned output", () => {
+    const run = spawnSync(process.execPath, [PUBLIC_API_CONTRACT, REPO_ROOT], { encoding: "utf8", timeout: 60_000 });
+    expect(run.status).toBe(0);
+    expect(run.stdout).toMatch(/^PUBLIC_API_CONTRACT_PASS \d+ checks \(tool=node .* ruleset=aeh-public-api-contract-v1\)\./);
+  });
+
+  it("fails closed on an incomplete tree", async () => {
+    const root = await fixture();
+    const run = spawnSync(process.execPath, [PUBLIC_API_CONTRACT, root], { encoding: "utf8", timeout: 60_000 });
+    expect(run.status).not.toBe(0);
+    expect(run.stderr).toContain("PUBLIC_API_CONTRACT_FAILED");
+  });
+
+  async function skeleton(): Promise<string> {
+    const root = await fixture();
+    await fs.mkdir(path.join(root, "src", "architecture"), { recursive: true });
+    await fs.mkdir(path.join(root, "src", "control-center"), { recursive: true });
+    await fs.mkdir(path.join(root, "ui", "control-center", "src"), { recursive: true });
+    for (const file of ["src/architecture/candidateAssurance.ts", "src/control-center/contracts.ts", "src/control-center/server.ts", "src/control-center/operationProjection.ts", "ui/control-center/src/api.ts", "package.json"]) {
+      await fs.writeFile(path.join(root, file), await fs.readFile(path.join(REPO_ROOT, file), "utf8"), "utf8");
+    }
+    return root;
+  }
+
+  it("does not weaken: a removed server route still fails", async () => {
+    const root = await skeleton();
+    const file = path.join(root, "src", "control-center", "server.ts");
+    await fs.writeFile(file, (await fs.readFile(file, "utf8")).replace("/api/v1/overview", "/api/v1/removed-overview"), "utf8");
+    const run = spawnSync(process.execPath, [PUBLIC_API_CONTRACT, root], { encoding: "utf8", timeout: 60_000 });
+    expect(run.status).not.toBe(0);
+    expect(run.stderr).toContain("PUBLIC-API-SERVER-ROUTES");
+  });
+
+  it("does not weaken: a removed UI contract enforcement still fails", async () => {
+    const root = await skeleton();
+    const file = path.join(root, "ui", "control-center", "src", "api.ts");
+    await fs.writeFile(file, (await fs.readFile(file, "utf8")).replace('resumeTarget !== "SPEC_AUTHORING"', 'resumeTarget !== "REMOVED"'), "utf8");
+    const run = spawnSync(process.execPath, [PUBLIC_API_CONTRACT, root], { encoding: "utf8", timeout: 60_000 });
+    expect(run.status).not.toBe(0);
+    expect(run.stderr).toContain("PUBLIC-API-UI-CONTRACT");
+  });
+
+  it("does not weaken: a changed public-api dimension mapping still fails", async () => {
+    const root = await skeleton();
+    const file = path.join(root, "src", "architecture", "candidateAssurance.ts");
+    await fs.writeFile(file, (await fs.readFile(file, "utf8")).replace('"public API": { kind: "contract-test", floor: "ELEVATED" }', '"public API": { kind: "unit-test", floor: "STANDARD" }'), "utf8");
+    const run = spawnSync(process.execPath, [PUBLIC_API_CONTRACT, root], { encoding: "utf8", timeout: 60_000 });
+    expect(run.status).not.toBe(0);
+    expect(run.stderr).toContain("PUBLIC-API-DIMENSION-MAPPING");
+  });
+
+  it("does not weaken: a removed contract fallback script still fails", async () => {
+    const root = await skeleton();
+    const file = path.join(root, "package.json");
+    const pkg = JSON.parse(await fs.readFile(file, "utf8")) as { scripts: Record<string, string> };
+    delete pkg.scripts["test:contract"];
+    await fs.writeFile(file, JSON.stringify(pkg, null, 2), "utf8");
+    const run = spawnSync(process.execPath, [PUBLIC_API_CONTRACT, root], { encoding: "utf8", timeout: 60_000 });
+    expect(run.status).not.toBe(0);
+    expect(run.stderr).toContain("PUBLIC-API-FALLBACK-COVERAGE");
+  });
+
+  it("executes the public-api dimension through the approved contract-test validator with CONTRACT evidence", async () => {
+    const root = await skeleton();
+    const sourceDigest = await computeWorktreeDigest(root);
+    const candidate = createCandidateRevisionV1({ operationId: "OP-PUBLIC-API", candidateId: "CAND-PUBLIC-API", revision: 1, sourceDigest });
+    const config: HarnessProjectConfig = {
+      version: 1,
+      project: { name: "public-api-fixture" },
+      evidence: { outputDir: ".harness/evidence" },
+      validation: {
+        validators: [{ id: "contract-test", adapter: "contract-test", command: `node ${PUBLIC_API_CONTRACT} ${root}`, required: true }]
+      }
+    };
+    const contract: TaskContract = { version: 1, task: { id: "PUBLIC-API-PROVIDER", title: "provider path" } };
+    const impactBody = {
+      version: 1 as const,
+      candidate: { candidateId: candidate.candidateId, revision: candidate.revision, identityDigest: candidate.identityDigest },
+      baseCandidate: { candidateId: candidate.candidateId, revision: candidate.revision, identityDigest: candidate.identityDigest },
+      patchDigest: sha256Canonical("public-api-patch"),
+      changedFiles: ["src/control-center/server.ts"],
+      changeKinds: ["source"],
+      reviewDimensions: ["public API"],
+      requiresIndependentReview: false,
+      interpretation: "MODEL" as const,
+      unknowns: [] as string[]
+    };
+    const impact = { ...impactBody, digest: sha256Canonical(impactBody) };
+    const requirements = candidateImpactValidationRequirementsV1(impact);
+    expect(requirements).toMatchObject([{ id: "impact-review-public-api", kind: "contract-test" }]);
+    const resolution = await resolveValidationRequirements({ root, requirements, config, contract, allowedKinds: validationRequirementKindValues });
+    expect(resolution.blocked).toEqual([]);
+    expect(resolution.actions).toMatchObject([{ requirementId: "impact-review-public-api", source: "configured-validator", selector: "contract-test" }]);
+    const compilation = compileCandidateAssuranceV1({
+      candidate,
+      impact,
+      policy: {
+        version: 1,
+        digest: sha256Canonical("public-api-policy"),
+        minimumAssurance: "STANDARD",
+        independentReviewRequired: false,
+        minimumIndependentReviewers: 0,
+        providerDiversity: false,
+        allowedValidationKinds: [...validationRequirementKindValues],
+        evidenceStrength: "STANDARD"
+      },
+      implementationIdentity: "implementer-1",
+      risk: "low",
+      reviewerCandidates: [{ identity: "reviewer-a", role: "Reviewer", provider: "provider-a", readOnly: true }],
+      baseValidationRequirements: [],
+      validationResolution: resolution,
+      acceptanceAssertions: []
+    });
+    expect(compilation.status).toBe("READY");
+    const report = {
+      version: 1,
+      taskId: contract.task.id,
+      status: "PASS",
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      checks: [],
+      changedFiles: ["src/control-center/server.ts"],
+      candidate,
+      metadata: { project: "public-api-fixture", baseRef: "HEAD" }
+    } as Parameters<typeof runCandidateImpactValidations>[0]["report"];
+    const checks = await runCandidateImpactValidations({ root, config, contract, report, impact, compilation, resolution });
+    expect(checks).toMatchObject([{ id: "candidate.assurance.validation.impact-review-public-api", status: "PASS" }]);
+  });
+});
+
 describeReal("impact-review validators against the real pinned tools", () => {
   it("passes a clean tree through the real opengrep ruleset with the exact version", async () => {
     const root = await fixture({ "src/clean.js": "const a = 1;\n" });
@@ -554,6 +701,7 @@ describe("impact-review validator digests", () => {
       "scripts/security/trivy-secret-misconfig.mjs",
       "scripts/security/toolPin.mjs",
       "scripts/architecture.mjs",
+      "scripts/publicApiContract.mjs",
       "policies/opengrep/VERSION",
       "policies/opengrep/rules/aeh-v1.yml",
       "policies/opengrep/pins.json"

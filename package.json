@@ -49,6 +49,9 @@
     "release:resolve": "node scripts/release-version.mjs",
     "architecture": "node scripts/architecture.mjs",
     "check:architecture": "node scripts/architecture.mjs",
+    "contract": "node scripts/publicApiContract.mjs",
+    "test:contract": "node scripts/publicApiContract.mjs",
+    "check:public-api": "node scripts/publicApiContract.mjs",
     "audit": "npm run security:dependencies",
     "security:dependencies": "node scripts/security/trivy-vuln.mjs && node scripts/security/trivy-secret-misconfig.mjs",
     "security:sast": "node scripts/security/opengrep.mjs"
