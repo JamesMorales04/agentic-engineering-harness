@@ -15,16 +15,37 @@
  * working/running status, and turn acceptance alone never count: the
  * observed stall signature is zero tool calls/output for the full budget.
  *
- * BOUND JUSTIFICATION (all numbers verified in-tree):
+ * BOUND JUSTIFICATION (all numbers verified in-tree + durable telemetry):
  * - Provider turn hard cap: 30min (`providerTurnDeadlineMs` default
  *   30*60_000; templates/project.yaml, src/architecture/executionIdentity.ts,
  *   src/paseo/launchSpec.ts). Hard caps are unchanged; this bound only
- *   terminates strictly earlier (20min < 30min).
- * - Deepest bounded semantic reasoning: STANDARD/DEEP map to medium/high
- *   thinking with at most 12k input tokens and a 300s model deadline
- *   (src/semantic/assessment.ts `boundSemanticThinkingOptionV1`,
- *   `semanticModelDeadlineMsV1`, `semanticCapabilityPolicyV1`); observed
- *   LIGHT turns settle in 2-6 minutes. 20min is 4x that ceiling.
+ *   terminates strictly earlier (25min < 30min, 5min saved per stall).
+ * - Durable subscription-path evidence (`.harness/telemetry/paseo.ndjson`,
+ *   193 `agent.wait` traces): 179 successful waits settle in max 90.2s
+ *   (median 12s, p90 20.1s); 14 timeouts all hit the full 30min with
+ *   `updatesObserved=0` — the exact zero-activity stall signature. 25min is
+ *   16.6x the max observed successful subscription wait.
+ * - Durable SDK-run evidence (126 `PROVIDER_TURN_STARTED`→`ACCEPTED/COMPLETED`
+ *   pairs across `.harness/operations/<op>/execution/activity.ndjson`): median
+ *   137s, p90 527s, max 1733s (27.7min Implementer COMPLETED + 21.2min
+ *   Implementer COMPLETED). Liveness `toolCallCount` is always 0 for SDK runs
+ *   (opaque atomic path records no mid-turn tool events), so
+ *   time-to-first-tool-call is unmeasurable from durable sources; total turn
+ *   time is the only durable bound. 20min therefore has NO margin on total
+ *   duration (two healthy Implementer completions exceed it), so CONSERVATISM
+ *   requires 25min: it preserves 125/126 completions by total duration,
+ *   exceeds the single-journey browser Playwright budget (20min per journey,
+ *   `tests/browser/playwright.config.ts`) with 5min margin, and is 5x the
+ *   300s semantic model deadline below.
+ * - Per-role totals: Planner max 5.9min, Spec Manager 5.7min, Repairer 11.3min
+ *   (all under 25min with 2x+ margin); Explorer/Implementer long tails
+ *   (28.9min FAILED, 27.7min COMPLETED) need the bound most — role scoping was
+ *   rejected because the observed Implementer stall (30min timeout, zero
+ *   activity) is the expensive case this bound saves. Any tool call or stream
+ *   output satisfies the bound, so long turns with steady output are never
+ *   killed; the residual silent->25min risk is closed by the SDK stop-then-read
+ *   ordering invariant (post-stop authoritative read classifies late activity
+ *   as DEADLINE with forensics, never as STALLED).
  * - Production workhorse (Muse via OpenCode) carries no thinking variant,
  *   so it runs provider-default reasoning; xhigh thinking is reserved for
  *   the Luna brain lanes, which never show the zero-activity signature.
@@ -34,7 +55,7 @@
  */
 
 export const PROVIDER_TURN_DEADLINE_MS = 30 * 60_000;
-export const FIRST_ACTIVITY_DEADLINE_MS = 20 * 60_000;
+export const FIRST_ACTIVITY_DEADLINE_MS = 25 * 60_000;
 export const SEMANTIC_MODEL_DEADLINE_MS_V1 = 300_000;
 
 /** Default poll cadence while racing an opaque provider run for first activity. */

@@ -484,12 +484,13 @@ export async function waitForPaseoAgentHandle(
       // A timeline subscription is attached whenever the caller observes
       // activity or captures telemetry. Content events counted here are the
       // deterministic first-activity signal; the wrapped activity callback
-      // still receives every envelope for liveness accounting.
+      // still receives every envelope for liveness accounting. Only envelopes
+      // carrying provider-visible content (tool-call items or assistant
+      // output) count — bare timeline pings, turn_completed markers, and
+      // metadata-only envelopes never satisfy the bound, so an
+      // empty-timeline flood cannot reset a genuine stall.
       const observeTimelineEnvelope = (value: unknown): void => {
-        if (!value || typeof value !== "object" || Array.isArray(value)) return;
-        const record = value as Record<string, unknown>;
-        const event = record.event && typeof record.event === "object" && !Array.isArray(record.event) ? record.event as Record<string, unknown> : undefined;
-        if (event && typeof event.type === "string" && (event.type === "turn_completed" || event.type === "timeline")) contentEventCount += 1;
+        if (isContentTimelineEnvelope(value)) contentEventCount += 1;
       };
       if ((captureEfficiencyTelemetry || onTimelineActivity) && handle.timeline && typeof handle.timeline.subscribe === "function") {
         const timelineSubscription = handle.timeline.subscribe((value) => {
@@ -791,6 +792,57 @@ function normalizeProviderModel(
     throw new Error(`Conflicting Paseo model '${explicit}' versus embedded '${embedded}'.`);
   }
   return { provider: providerId, model: explicit || embedded };
+}
+
+/**
+ * Content-tied first-activity test for one live timeline envelope.
+ *
+ * DETERMINISTIC. Only envelopes carrying provider-visible content count:
+ * a `timeline` event whose item is a tool call, or an envelope carrying
+ * assistant text/output. Bare `timeline` pings without an item,
+ * `turn_completed`/`turn_started` markers, and metadata-only envelopes never
+ * count, so an empty-timeline flood cannot satisfy the bound or reset a
+ * genuine stall. Assistant stream output observed via the agent snapshot
+ * (`assistantDeltaObserved`) is tracked separately and OR-ed at the call site.
+ */
+export function isContentTimelineEnvelope(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  const event =
+    record.event && typeof record.event === "object" && !Array.isArray(record.event)
+      ? (record.event as Record<string, unknown>)
+      : undefined;
+  const candidate =
+    event && typeof event.type === "string" && event.type === "timeline"
+      ? event.item
+      : undefined;
+  if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+    const item = candidate as Record<string, unknown>;
+    if (String(item.type ?? item.kind ?? "") === "tool_call") return true;
+    if (envelopeAssistantText(item) !== undefined) return true;
+  }
+  const fallback =
+    event && typeof event.type === "string" && event.type === "timeline" ? event : undefined;
+  if (fallback && envelopeAssistantText(fallback) !== undefined) return true;
+  return false;
+}
+
+function envelopeAssistantText(record: Record<string, unknown>): string | undefined {
+  const role = String(record.role ?? record.author ?? "").toLowerCase();
+  const type = String(record.type ?? record.kind ?? "").toLowerCase();
+  const assistant =
+    role === "assistant" ||
+    role.endsWith("/assistant") ||
+    role.includes("assistant") ||
+    type === "assistant_message" ||
+    type === "assistant-message" ||
+    type === "assistant";
+  if (!assistant) return undefined;
+  for (const key of ["text", "content", "message"]) {
+    const text = record[key];
+    if (typeof text === "string" && text.trim()) return text;
+  }
+  return undefined;
 }
 
 function extractLastAssistantText(value: unknown): string | undefined {

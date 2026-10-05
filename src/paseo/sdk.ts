@@ -1,5 +1,6 @@
 import process from "node:process";
 import { pathToFileURL } from "node:url";
+import { sha256Canonical } from "../core/digest.js";
 import { createPermissionStopDiagnostic } from "./permissionDiagnostic.js";
 import {
   acceptedStructuredResultForAgent,
@@ -303,6 +304,18 @@ export async function runPaseoSdkAgentWithClient(
         ...(turn.activity ? { activity: turn.activity } : {})
       };
     }
+    // Late-activity stop (stop-then-read invariant): the turn still failed by
+    // stop, but the post-stop read proved provider-visible content. Preserve
+    // the completed turn text for forensics via turnResult while keeping the
+    // correct DEADLINE classification and activity counts.
+    if (turn.killReason || turn.activity) {
+      const base = await turnResult(handle, turn, permissionScopeRoots);
+      return {
+        ...base,
+        ...(turn.killReason ? { killReason: turn.killReason } : {}),
+        ...(turn.activity ? { activity: turn.activity } : {})
+      };
+    }
     return turnResult(handle, turn, permissionScopeRoots);
   }
   if (typeof handle.send === "function") {
@@ -555,6 +568,24 @@ async function stopPaseoSdkAgentHandle(handle: PaseoSdkAgentHandle): Promise<voi
  * reuses the existing timeout contract (status timeout, downstream exit
  * 124) with the explicit STALLED_FIRST_ACTIVITY reason. Poll failures are
  * best-effort and never fail the turn; the hard turn deadline is unchanged.
+ *
+ * ORDERING INVARIANT (stop-then-read): the stall verdict is always made on a
+ * post-stop authoritative read. When the bound fires with no observed
+ * activity, the handle is stopped FIRST — freezing the provider turn so no
+ * new activity can appear — and only then is the timeline/snapshot
+ * re-read. A stopped-then-read cannot gain new activity, so the post-stop
+ * read is authoritative: if it shows qualifying content, the turn still
+ * failed (it was stopped) but is classified as a regular DEADLINE timeout
+ * with activity counts and flows through `turnResult` so content is preserved
+ * for forensics, never as STALLED_FIRST_ACTIVITY. If the post-stop read is
+ * still empty, the stall kill stands.
+ *
+ * GROWTH TRACKING (saturation-free): activity is compared as monotonic set
+ * growth against the fixed pre-run baseline — new tool-call keys (callId or
+ * content digest), a higher content sequence id, or new assistant/snapshot
+ * text. A fixed tail window is only the fetch size; the comparison never
+ * saturates: 21+ tool calls still show new keys versus baseline, and an
+ * empty-timeline flood carries no new keys and never resets observed state.
  */
 async function runWithFirstActivityWatch(
   handle: PaseoSdkAgentHandle,
@@ -569,9 +600,7 @@ async function runWithFirstActivityWatch(
   const baseline = await captureRunActivityBaseline(handle);
   let observed = false;
   const hasGrown = (current: RunActivityBaseline): boolean =>
-    current.toolCallCount > baseline.toolCallCount
-    || (current.assistantText !== undefined && current.assistantText !== baseline.assistantText)
-    || (current.lastMessage !== undefined && current.lastMessage !== baseline.lastMessage);
+    runActivityHasGrown(baseline, current);
   let pollTimer: ReturnType<typeof setInterval> | undefined;
   let stallTimer: ReturnType<typeof setTimeout> | undefined;
   const stopPolling = (): void => {
@@ -581,8 +610,9 @@ async function runWithFirstActivityWatch(
     stallTimer = undefined;
   };
   // The run is in flight for the whole race; polling only observes it and
-  // never interferes. A final synchronous check at the bound closes the
-  // poll-cadence window so late activity always wins over the kill.
+  // never interferes. A final stop-then-read at the bound (see invariant
+  // above) closes the poll-cadence window so late activity always wins over
+  // the stall classification.
   const runPromise = run();
   try {
     pollTimer = setInterval(() => {
@@ -607,12 +637,37 @@ async function runWithFirstActivityWatch(
     if (outcome.kind === "run") return outcome.turn;
     if (outcome.kind === "runError") throw outcome.error;
     if (observed) return runPromise;
-    const final = await captureRunActivityBaseline(handle).catch(() => undefined);
-    if (final && hasGrown(final)) return runPromise;
+    // Bound fired with no observed activity: stop FIRST to freeze the turn,
+    // then take the authoritative post-stop read (ordering invariant).
+    await stopPaseoSdkAgentHandle(handle).catch(() => undefined);
     void runPromise.then(() => undefined, () => undefined);
+    const final = await captureRunActivityBaseline(handle).catch(() => undefined);
+    if (final && hasGrown(final)) {
+      // Late content arrived before the stop took effect. The turn still
+      // failed (it was stopped) but it is NOT a stall: report a regular
+      // DEADLINE timeout with activity so downstream `turnResult` preserves
+      // the content for forensics instead of recording zero activity.
+      const lateCounts: ProviderTurnActivityCounts = {
+        updatesObserved: 0,
+        toolEvents: countNewRunToolKeys(baseline, final),
+        assistantDelta:
+          (final.assistantText !== undefined && final.assistantText !== baseline.assistantText) ||
+          (final.lastMessage !== undefined && final.lastMessage !== baseline.lastMessage)
+      };
+      return {
+        status: "timeout",
+        error:
+          `Provider turn stopped at the first-activity bound after ${firstActivityMs}ms ` +
+          `with late provider-visible activity (turn deadline ${effectiveTimeout}ms retained; ` +
+          `updates=0 toolEvents=${lateCounts.toolEvents} assistantDelta=${lateCounts.assistantDelta}); ` +
+          `turn stopped and existing retry budgets apply.`,
+        killReason: "DEADLINE",
+        activity: lateCounts
+      };
+    }
     const counts: ProviderTurnActivityCounts = {
       updatesObserved: 0,
-      toolEvents: final?.toolCallCount ?? baseline.toolCallCount,
+      toolEvents: final ? countNewRunToolKeys(baseline, final) : 0,
       assistantDelta: false
     };
     return {
@@ -628,10 +683,49 @@ async function runWithFirstActivityWatch(
 }
 
 interface RunActivityBaseline {
-  toolCallCount: number;
+  /** Sorted unique content keys for tool-call entries in the fetched tail. */
+  toolKeys: string[];
+  /** Highest content sequence id observed (canonical seqStart/seqEnd), if any. */
+  maxContentSeq?: number;
   assistantText?: string;
   lastMessage?: string;
   observed: boolean;
+}
+
+/**
+ * Monotonic growth test: true when `current` carries provider-visible content
+ * absent from the fixed pre-run `baseline`. Set-difference on tool keys plus
+ * sequence/text comparison never saturates no matter how many tool calls the
+ * tail window holds, and an empty flood (no new keys/text) is never growth.
+ */
+export function runActivityHasGrown(baseline: RunActivityBaseline, current: RunActivityBaseline): boolean {
+  const known = new Set(baseline.toolKeys);
+  for (const key of current.toolKeys) {
+    if (!known.has(key)) return true;
+  }
+  if (
+    current.maxContentSeq !== undefined &&
+    baseline.maxContentSeq !== undefined &&
+    current.maxContentSeq > baseline.maxContentSeq
+  ) {
+    return true;
+  }
+  if (current.maxContentSeq !== undefined && baseline.maxContentSeq === undefined && current.toolKeys.length > 0 && baseline.toolKeys.length === 0) {
+    return true;
+  }
+  if (current.assistantText !== undefined && current.assistantText !== baseline.assistantText) return true;
+  if (current.lastMessage !== undefined && current.lastMessage !== baseline.lastMessage) return true;
+  return false;
+}
+
+/** Turn-scoped new tool events: keys in `current` absent from `baseline`. */
+export function countNewRunToolKeys(baseline: RunActivityBaseline, current: RunActivityBaseline): number {
+  const known = new Set(baseline.toolKeys);
+  let count = 0;
+  for (const key of current.toolKeys) {
+    if (!known.has(key)) count += 1;
+  }
+  return count;
 }
 
 async function captureRunActivityBaseline(handle: PaseoSdkAgentHandle): Promise<RunActivityBaseline> {
@@ -639,7 +733,7 @@ async function captureRunActivityBaseline(handle: PaseoSdkAgentHandle): Promise<
     ? await handle.timeline.refetch({ direction: "tail", limit: 20 }).catch(() => undefined)
     : undefined;
   const entries = extractTimelineEntries(timeline);
-  const toolCallCount = countToolCallEntries(entries);
+  const toolKeys = extractRunToolKeys(entries);
   let assistantText: string | undefined;
   for (const entry of entries) {
     const text = assistantEntryText(entry);
@@ -647,25 +741,69 @@ async function captureRunActivityBaseline(handle: PaseoSdkAgentHandle): Promise<
   }
   const raw = await refreshHandle(handle).catch(() => undefined);
   const lastMessage = raw ? stringField(raw, ["lastMessage", "last_message"]) : undefined;
+  const maxContentSeq = maxRunContentSeq(entries);
   return {
-    toolCallCount,
+    toolKeys,
+    ...(maxContentSeq !== undefined ? { maxContentSeq } : {}),
     ...(assistantText !== undefined ? { assistantText } : {}),
     ...(lastMessage !== undefined ? { lastMessage } : {}),
-    observed: toolCallCount > 0 || assistantText !== undefined || lastMessage !== undefined
+    observed: toolKeys.length > 0 || assistantText !== undefined || lastMessage !== undefined
   };
 }
 
-function countToolCallEntries(entries: unknown[]): number {
-  let count = 0;
+/**
+ * Saturation-free content keys for one timeline tail. Each tool-call entry
+ * contributes a stable identity (callId when present, otherwise a bounded
+ * content digest), so set-difference against the pre-run baseline detects new
+ * activity no matter how many entries the fixed tail window holds.
+ */
+export function extractRunToolKeys(entries: unknown[]): string[] {
+  const keys = new Set<string>();
+  for (const entry of entries) {
+    const key = runToolCallKey(entry);
+    if (key !== undefined) keys.add(key);
+  }
+  return [...keys].sort();
+}
+
+function runToolCallKey(entry: unknown): string | undefined {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return undefined;
+  const record = entry as Record<string, unknown>;
+  const item =
+    record.item && typeof record.item === "object" && !Array.isArray(record.item)
+      ? (record.item as Record<string, unknown>)
+      : record;
+  if (String(item.type ?? item.kind ?? "") !== "tool_call") return undefined;
+  const callId = typeof item.callId === "string" && item.callId ? item.callId : typeof record.callId === "string" && record.callId ? (record.callId as string) : undefined;
+  if (callId) return `id:${callId}`;
+  const name = typeof item.name === "string" && item.name ? item.name : "unknown-tool";
+  const status = typeof item.status === "string" && item.status ? item.status : "unknown-status";
+  return `digest:${sha256Canonical({ name, status, detail: item.detail ?? null }).slice(0, 32)}`;
+}
+
+/** Highest content sequence id among tool/assistant entries, if the shape carries one. */
+function maxRunContentSeq(entries: unknown[]): number | undefined {
+  let max: number | undefined;
   for (const entry of entries) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
     const record = entry as Record<string, unknown>;
-    const item = record.item && typeof record.item === "object" && !Array.isArray(record.item)
-      ? record.item as Record<string, unknown>
-      : record;
-    if (String(item.type ?? item.kind ?? "") === "tool_call") count += 1;
+    const item =
+      record.item && typeof record.item === "object" && !Array.isArray(record.item)
+        ? (record.item as Record<string, unknown>)
+        : record;
+    const isTool = String(item.type ?? item.kind ?? "") === "tool_call";
+    const isAssistant = assistantEntryText(entry) !== undefined;
+    if (!isTool && !isAssistant) continue;
+    for (const source of [record, item]) {
+      for (const key of ["seqEnd", "seqStart", "sequence", "seq"]) {
+        const value = source[key];
+        if (typeof value === "number" && Number.isFinite(value)) {
+          if (max === undefined || value > max) max = value;
+        }
+      }
+    }
   }
-  return count;
+  return max;
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs = 1_800_000, message: string): Promise<T> {
