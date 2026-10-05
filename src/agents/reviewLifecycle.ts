@@ -11,6 +11,7 @@ import { detectHumanException, detectRuntimeExternalException, diagnosisToExcept
 import type { HarnessProjectConfig, ReviewEscalationStage, TaskContract, ValidationCheck, ValidationReport, WorkerSession } from "../core/types.js";
 import { executeAgentPrompt } from "../workers/agentPrompt.js";
 import { executeRepairerCandidateMutation, rejectRepairCandidateChangeSet } from "../candidates/repair.js";
+import { repairScopeBlockerValidationCheck } from "../candidates/repairScope.js";
 import { executeIsolatedCandidateMutation } from "../candidates/direct.js";
 import { assertWorkspaceMatchesCandidate, type CandidateWorkspaceIdentityEvidenceV1 } from "../candidates/identity.js";
 import type { ExecutionCatalogV1 } from "../architecture/executionCatalog.js";
@@ -201,7 +202,7 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
     remediationRounds += 1;
     const operationId = currentOperationContext().id;
     if (!operationId) throw new Error("REPAIR_AUTHORITY_REQUIRED: quality remediation requires a managed operation.");
-    const repairPrompt = `${buildRemediationPrompt(contract, stage, state, deduped.findings, replanContext)}\n\nYou are the canonical Repairer. Change implementation only within the frozen task scope. Do not change requirements, acceptance, validators, policy, or review outcomes. You cannot approve or accept the candidate.`;
+    const repairPrompt = `${buildRemediationPrompt(contract, stage, state, deduped.findings, replanContext)}\n\nYou are the canonical Repairer. Change implementation only within the frozen task scope. Do not change requirements, acceptance, validators, policy, or review outcomes. You cannot approve or accept the candidate. Out-of-scope blocker path (report, don't expand): if the fix needs files outside scope, return no changes and declare them via AEH_RESULT_JSON filesNeededOutsideScope[{path, reason}].`;
     const mutation = await executeRepairerCandidateMutation({
       root,
       stateRoot,
@@ -222,6 +223,36 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
     });
     const remediation = mutation.session;
     sessions.push(remediation);
+    // Review-remediation scopeBlocker: explicitly scoped OUT of amendment
+    // ownership (tested rationale). The bounded ledger-gated amendment
+    // (suspend + approve/deny product choice + reseal + single retry, max
+    // 1/task) is owned solely by the run.ts validation-repair loop. A second
+    // amendment path here would risk dual suspensions, budget overruns, and
+    // stage confusion. This path therefore propagates BLOCKED fail-closed
+    // citing the exact blocker (no amendment, no retry, no silent ignore) so
+    // the canonical channel remains the sole writer.
+    if (mutation.scopeBlocker) {
+      const blockerCheck = repairScopeBlockerValidationCheck(mutation.scopeBlocker);
+      checks.push(blockerCheck);
+      await recordEvent(stateRoot, config, "harness.quality.repair-scope-blocked", {
+        taskId: contract.task.id,
+        round: remediationRounds,
+        blockerDigest: mutation.scopeBlocker.digest,
+        filesNeededOutsideScope: mutation.scopeBlocker.filesNeededOutsideScope,
+      }).catch(() => undefined);
+      return {
+        status: "FAIL",
+        finalState: "REQUIRES_PRODUCT_DECISION",
+        humanRequired: true,
+        rounds: remediationRounds,
+        report,
+        findings: deduped,
+        checks,
+        sessions,
+        qualityHistory,
+        leadAccepted: false,
+      };
+    }
     const rejectMutation = async (reason: string): Promise<void> => {
       let restoredImpact = candidateImpact;
       if (mutation.changeSet) {
@@ -504,7 +535,7 @@ function buildReviewerPrompt(contract: TaskContract, reviewer: string, report: V
   return `You are reviewer ${reviewer} for ${contract.task.id}. Inspect the assembled candidate against the sealed task contract, including the diff from ${contract.git?.baseRef ?? "main"} where a read-only command is available.${changedLine}${requirementsLine}${boundary} Deterministic validation currently reports ${report.status}.${assignment} Return findings with requiredCompetencies and reviewDimensions; never select a concrete agent or reviewer. Use exceptionType only when the issue cannot be resolved from the sealed requirements/repository without an external human decision or resource. Your final output MUST contain exactly one line beginning AEH_RESULT_JSON= followed by the JSON object.`;
 }
 function buildRemediationPrompt(contract: TaskContract, stage: ReviewEscalationStage, state: QualityState, findings: NormalizedFinding[], replan?: PlannerOutput): string {
-  return `Autonomously remediate review debt for ${contract.task.id}. Stage=${stage.name}. Current DebtScore=${formatDebtScore(state.debtScore)}; final gate requires critical=0, high=0, medium=0, low<=3 and DebtScore<=3. Three notes equal one low. Do not change sealed contracts/specs/acceptance. Critical/high/medium findings are mandatory. Resolve low/note findings as needed to reach the final debt budget without broadening scope or creating regressions. ${replan ? `A stronger planner produced this advisory remediation plan (it does not override the sealed contract):\n${JSON.stringify(replan, null, 2)}\n` : ""}Findings:\n${JSON.stringify(findings, null, 2)}\nMake the smallest coherent changes and run focused checks. Do not ask the user unless a sealed requirement is contradictory, a product decision is genuinely missing, or an external credential/permission is required.`;
+  return `Autonomously remediate review debt for ${contract.task.id}. Stage=${stage.name}. Current DebtScore=${formatDebtScore(state.debtScore)}; final gate requires critical=0, high=0, medium=0, low<=3 and DebtScore<=3. Three notes equal one low. Do not change sealed contracts/specs/acceptance. Critical/high/medium findings are mandatory. Resolve low/note findings as needed to reach the final debt budget without broadening scope or creating regressions. ${replan ? `A stronger planner produced this advisory remediation plan (it does not override the sealed contract):\n${JSON.stringify(replan, null, 2)}\n` : ""}Findings:\n${JSON.stringify(findings, null, 2)}\nMake the smallest coherent changes and run focused checks. Do not ask the user unless a sealed requirement is contradictory, a product decision is genuinely missing, or an external credential/permission is required. Out-of-scope blocker path (report, don't expand): if the fix needs files outside the frozen scope, return no changes and declare them via AEH_RESULT_JSON filesNeededOutsideScope[{path, reason}]; silent expansion is rejected.`;
 }
 function buildDiagnosisPrompt(contract: TaskContract, state: QualityState, findings: DedupedFindings): string {
   return `Diagnose why quality remediation for ${contract.task.id} is not converging. Current convergence=${state.convergence}, DebtScore=${formatDebtScore(state.debtScore)}. Inspect the sealed contract/spec, actual diff, tests and findings. Classify ONLY as IMPLEMENTATION_DEFECT, SPEC_CONTRADICTION, REQUIRES_PRODUCT_DECISION, BLOCKED_EXTERNAL, or SYSTEM_FAILURE. Prefer IMPLEMENTATION_DEFECT when the repository/spec already determines the answer. Human intervention is justified only for true contradictions, missing product decisions, or unavailable external credentials/permissions. Return {"classification":"...","rationale":"...","recommendedAction":"..."}. Final line: AEH_RESULT_JSON=<json>. Findings=${JSON.stringify(findings.findings)}`;
