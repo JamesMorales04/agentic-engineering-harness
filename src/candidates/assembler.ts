@@ -326,7 +326,7 @@ export async function assembleCandidateChangeSet(input: CandidateAssemblyInputV1
     // for silent expansion (preserves declare-first incentives).
     // PR88 convention: message prefix stays stable, details appended.
     const escapeDiff = assemblerScopeEscapeDiffV1([...outOfScope, ...forbidden]);
-    const base = `ChangeSet escaped its assigned scope: ${[...new Set([...outOfScope, ...forbidden])].join(", ")}.`;
+    const base = `ChangeSet escaped its assigned scope: ${escapeDiff.escapedFiles.join(", ")} (escapedCount=${escapeDiff.escapedCount}).`;
     const suffix = ` escaped=${JSON.stringify(escapeDiff.escapedFiles)} escapedCount=${escapeDiff.escapedCount} amendableManifests=${JSON.stringify(escapeDiff.amendableManifests)} amendableCount=${escapeDiff.amendableCount} hardProtected=${JSON.stringify(escapeDiff.hardProtected)} hardProtectedCount=${escapeDiff.hardProtectedCount}`;
     const error = new AehError("PARTICIPANT_PLAN_INVALID", `${base}${suffix}`, {
       details: {
