@@ -1,7 +1,6 @@
 import type { Dirent } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { createRequire } from "node:module";
 import { runShell, type ProcessResult } from "../utils/process.js";
 
 const PASEO_CLIENT_PACKAGE = "@getpaseo/client";
@@ -51,7 +50,7 @@ export async function resolvePaseoSdkFromCli(root: string, runner: ProcessRunner
   }
 
   for (const start of starts) {
-    const resolved = resolvePackageWalkingUp(start, PASEO_CLIENT_PACKAGE);
+    const resolved = await resolvePackageWalkingUp(start, PASEO_CLIENT_PACKAGE);
     if (resolved) {
       diagnostics.push(`node resolution: ${resolved}`);
       return { resolved, diagnostics };
@@ -97,13 +96,17 @@ function inferMiseInstallRoot(executable: string): string | undefined {
   return absolute.slice(0, versionStart + versionOrAlias.length);
 }
 
-function resolvePackageWalkingUp(start: string, packageName: string): string | undefined {
+async function resolvePackageWalkingUp(start: string, packageName: string): Promise<string | undefined> {
+  // DETERMINISTIC: hermetic ancestor node_modules check only. Never consult
+  // NODE_PATH, global folders, or provider-installed locations outside the
+  // supplied starts: host mise activation (NODE_PATH) otherwise leaks the host
+  // @getpaseo/client into isolated fixtures and operation worktrees.
+  const segments = packageName.split("/").filter(Boolean);
   let current = path.resolve(start);
   for (let depth = 0; depth < 12; depth += 1) {
-    try {
-      const resolver = createRequire(path.join(current, "__aeh_paseo_sdk_loader__.cjs"));
-      return resolver.resolve(packageName);
-    } catch { /* keep walking toward the npm synthetic-project root */ }
+    const manifest = path.join(current, "node_modules", ...segments, "package.json");
+    const entry = await entryFromPackageManifest(manifest);
+    if (entry) return entry;
     const parent = path.dirname(current);
     if (parent === current) break;
     current = parent;
