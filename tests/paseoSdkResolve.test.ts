@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import Module from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -81,5 +82,59 @@ describe("Paseo SDK resolution", () => {
     const resolution = await resolvePaseoSdkFromCli(root, runner as never);
     expect(resolution.resolved).toBeUndefined();
     expect(resolution.diagnostics.some((item) => item.startsWith("mise which paseo: unavailable"))).toBe(true);
+  });
+
+  it("resolves require-condition exports without host NODE_PATH leakage", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-paseo-sdk-conditional-"));
+    const install = path.join(root, "mise", "installs", "npm-getpaseo-cli", "0.2.3");
+    const client = path.join(install, "node_modules", "@getpaseo", "client");
+    const requireEntry = path.join(client, "dist", "require-entry.js");
+    const importEntry = path.join(client, "dist", "import-entry.js");
+    await fs.mkdir(path.dirname(requireEntry), { recursive: true });
+    await fs.writeFile(path.join(client, "package.json"), JSON.stringify({
+      name: "@getpaseo/client",
+      version: "0.2.3",
+      type: "module",
+      exports: { ".": { require: "./dist/require-entry.js", import: "./dist/import-entry.js", default: "./dist/import-entry.js" } }
+    }));
+    await fs.writeFile(requireEntry, "module.exports = { kind: 'require' };\n");
+    await fs.writeFile(importEntry, "export const kind = 'import';\n");
+
+    // Hostile client reachable only via NODE_PATH: naive require resolution
+    // from the shim start would leak it instead of the CLI-matched fixture.
+    const decoy = path.join(root, "decoy", "node_modules", "@getpaseo", "client");
+    const decoyEntry = path.join(decoy, "dist", "index.js");
+    await fs.mkdir(path.dirname(decoyEntry), { recursive: true });
+    await fs.writeFile(path.join(decoy, "package.json"), JSON.stringify({
+      name: "@getpaseo/client",
+      version: "9.9.9",
+      main: "./dist/index.js"
+    }));
+    await fs.writeFile(decoyEntry, "module.exports = {};\n");
+
+    const shim = path.join(root, "mise", "shims", "paseo");
+    const binary = path.join(install, "bin", "paseo");
+    const runner = vi.fn(async (command: string) => {
+      if (command === "command -v paseo") return processResult(0, `${shim}\n`);
+      if (command === "mise which paseo") return processResult(0, `${binary}\n`);
+      if (command === "mise where 'npm:@getpaseo/cli'") return processResult(0, `${install}\n`);
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    const hadNodePath = "NODE_PATH" in process.env;
+    const savedNodePath = process.env.NODE_PATH;
+    process.env.NODE_PATH = path.join(root, "decoy", "node_modules") + path.delimiter + (savedNodePath ?? "");
+    (Module as unknown as { _initPaths(): void })._initPaths();
+    try {
+      const resolution = await resolvePaseoSdkFromCli(root, runner as never);
+      expect(path.resolve(resolution.resolved!)).toBe(path.resolve(requireEntry));
+      expect(path.resolve(resolution.resolved!)).not.toBe(path.resolve(decoyEntry));
+      expect(resolution.resolved!).not.toContain("decoy");
+      expect(resolution.diagnostics.some((item) => item.startsWith("node resolution:"))).toBe(true);
+    } finally {
+      if (hadNodePath) process.env.NODE_PATH = savedNodePath;
+      else delete process.env.NODE_PATH;
+      (Module as unknown as { _initPaths(): void })._initPaths();
+    }
   });
 });

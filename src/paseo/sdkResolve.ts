@@ -1,5 +1,6 @@
 import type { Dirent } from "node:fs";
 import fs from "node:fs/promises";
+import Module, { createRequire } from "node:module";
 import path from "node:path";
 import { runShell, type ProcessResult } from "../utils/process.js";
 
@@ -50,7 +51,7 @@ export async function resolvePaseoSdkFromCli(root: string, runner: ProcessRunner
   }
 
   for (const start of starts) {
-    const resolved = await resolvePackageWalkingUp(start, PASEO_CLIENT_PACKAGE);
+    const resolved = resolvePackageWalkingUp(start, PASEO_CLIENT_PACKAGE);
     if (resolved) {
       diagnostics.push(`node resolution: ${resolved}`);
       return { resolved, diagnostics };
@@ -96,22 +97,39 @@ function inferMiseInstallRoot(executable: string): string | undefined {
   return absolute.slice(0, versionStart + versionOrAlias.length);
 }
 
-async function resolvePackageWalkingUp(start: string, packageName: string): Promise<string | undefined> {
-  // DETERMINISTIC: hermetic ancestor node_modules check only. Never consult
-  // NODE_PATH, global folders, or provider-installed locations outside the
-  // supplied starts: host mise activation (NODE_PATH) otherwise leaks the host
-  // @getpaseo/client into isolated fixtures and operation worktrees.
-  const segments = packageName.split("/").filter(Boolean);
+function resolvePackageWalkingUp(start: string, packageName: string): string | undefined {
+  // DETERMINISTIC: restore Node's exact require semantics (require-condition
+  // conditional exports) while eliminating host leakage. Scrub NODE_PATH and
+  // recompute internal module paths around each resolve so host mise entries
+  // can never leak into isolated fixtures/worktrees; explicit `paths` scoping
+  // keeps lookup anchored at the fixture/worktree scope.
   let current = path.resolve(start);
   for (let depth = 0; depth < 12; depth += 1) {
-    const manifest = path.join(current, "node_modules", ...segments, "package.json");
-    const entry = await entryFromPackageManifest(manifest);
-    if (entry) return entry;
+    const resolved = resolveWithScrubbedNodePath(current, packageName);
+    if (resolved) return resolved;
     const parent = path.dirname(current);
     if (parent === current) break;
     current = parent;
   }
   return undefined;
+}
+
+function resolveWithScrubbedNodePath(containingDir: string, packageName: string): string | undefined {
+  const hadNodePath = "NODE_PATH" in process.env;
+  const savedNodePath = process.env.NODE_PATH;
+  if (hadNodePath) delete process.env.NODE_PATH;
+  (Module as unknown as { _initPaths(): void })._initPaths();
+  try {
+    const resolver = createRequire(path.join(containingDir, "__aeh_paseo_sdk_loader__.cjs"));
+    try {
+      return resolver.resolve(packageName, { paths: [containingDir] });
+    } catch {
+      return undefined;
+    }
+  } finally {
+    if (hadNodePath) process.env.NODE_PATH = savedNodePath;
+    (Module as unknown as { _initPaths(): void })._initPaths();
+  }
 }
 
 async function resolvePackagePhysically(installRoot: string, diagnostics: string[]): Promise<string | undefined> {
