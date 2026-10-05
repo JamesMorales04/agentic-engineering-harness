@@ -118,8 +118,8 @@ function resolveWithScrubbedNodePath(containingDir: string, packageName: string)
   const hadNodePath = "NODE_PATH" in process.env;
   const savedNodePath = process.env.NODE_PATH;
   if (hadNodePath) delete process.env.NODE_PATH;
-  (Module as unknown as { _initPaths(): void })._initPaths();
   try {
+    (Module as unknown as { _initPaths(): void })._initPaths();
     const resolver = createRequire(path.join(containingDir, "__aeh_paseo_sdk_loader__.cjs"));
     try {
       return resolver.resolve(packageName, { paths: [containingDir] });
