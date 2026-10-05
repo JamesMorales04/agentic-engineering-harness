@@ -1,7 +1,7 @@
 import type { Dirent } from "node:fs";
 import fs from "node:fs/promises";
+import Module, { createRequire } from "node:module";
 import path from "node:path";
-import { createRequire } from "node:module";
 import { runShell, type ProcessResult } from "../utils/process.js";
 
 const PASEO_CLIENT_PACKAGE = "@getpaseo/client";
@@ -98,17 +98,38 @@ function inferMiseInstallRoot(executable: string): string | undefined {
 }
 
 function resolvePackageWalkingUp(start: string, packageName: string): string | undefined {
+  // DETERMINISTIC: restore Node's exact require semantics (require-condition
+  // conditional exports) while eliminating host leakage. Scrub NODE_PATH and
+  // recompute internal module paths around each resolve so host mise entries
+  // can never leak into isolated fixtures/worktrees; explicit `paths` scoping
+  // keeps lookup anchored at the fixture/worktree scope.
   let current = path.resolve(start);
   for (let depth = 0; depth < 12; depth += 1) {
-    try {
-      const resolver = createRequire(path.join(current, "__aeh_paseo_sdk_loader__.cjs"));
-      return resolver.resolve(packageName);
-    } catch { /* keep walking toward the npm synthetic-project root */ }
+    const resolved = resolveWithScrubbedNodePath(current, packageName);
+    if (resolved) return resolved;
     const parent = path.dirname(current);
     if (parent === current) break;
     current = parent;
   }
   return undefined;
+}
+
+function resolveWithScrubbedNodePath(containingDir: string, packageName: string): string | undefined {
+  const hadNodePath = "NODE_PATH" in process.env;
+  const savedNodePath = process.env.NODE_PATH;
+  if (hadNodePath) delete process.env.NODE_PATH;
+  try {
+    (Module as unknown as { _initPaths(): void })._initPaths();
+    const resolver = createRequire(path.join(containingDir, "__aeh_paseo_sdk_loader__.cjs"));
+    try {
+      return resolver.resolve(packageName, { paths: [containingDir] });
+    } catch {
+      return undefined;
+    }
+  } finally {
+    if (hadNodePath) process.env.NODE_PATH = savedNodePath;
+    (Module as unknown as { _initPaths(): void })._initPaths();
+  }
 }
 
 async function resolvePackagePhysically(installRoot: string, diagnostics: string[]): Promise<string | undefined> {
