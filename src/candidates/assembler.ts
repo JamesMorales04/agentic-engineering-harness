@@ -93,6 +93,74 @@ export interface CandidateImpactAssessmentRuntimeV1 {
   service: SemanticAssessmentServiceV1;
   policyRevision: string;
   repositoryBinding: Omit<SemanticAssessmentBindingV1, "candidateId" | "candidateRevision" | "candidateDigest">;
+  /**
+   * Best-effort forensic hook for a rejected CANDIDATE_IMPACT judgment
+   * (declared-vs-observed file diff). The production wiring persists the same
+   * `semantic.assessor.reply.rejected` trace shape family used for unparseable
+   * replies, extended with the bounded file-diff lists. Never authority;
+   * failures are swallowed so the fail-closed rejection still throws.
+   */
+  onRejectedJudgment?: (record: CandidateImpactRejectedJudgmentV1) => Promise<void> | void;
+}
+
+/** Bounded forensic record for a rejected candidate-impact judgment. */
+export interface CandidateImpactRejectedJudgmentV1 {
+  assessmentType: "CANDIDATE_IMPACT";
+  candidateId?: string;
+  candidateRevision?: number;
+  candidateDigest?: string;
+  declared: string[];
+  declaredCount: number;
+  observed: string[];
+  observedCount: number;
+  missing: string[];
+  missingCount: number;
+  extra: string[];
+  extraCount: number;
+  assessmentDigest: string;
+  sessionId?: string;
+  transport?: string;
+}
+
+/**
+ * Bound for the file-diff lists attached to impact-mismatch rejections.
+ * Paths are already bounded (1-500 chars); ten capped entries keep the
+ * message and trace bounded while preserving exact strings for forensics.
+ * Mirrors MAX_OFFENDING_EVIDENCE_REFS_V1 (PR88) with total counts preserved.
+ */
+export const MAX_CANDIDATE_IMPACT_FILE_DIFF_V1 = 10;
+
+/**
+ * Deterministic declared-vs-observed file diff: dedupe, locale-sort, cap at
+ * MAX_CANDIDATE_IMPACT_FILE_DIFF_V1 with total unique counts preserved.
+ * Exact-match semantics are unchanged; this only bounds diagnostics.
+ */
+export function candidateImpactFileDiffV1(declared: readonly string[], observed: readonly string[]): {
+  declared: string[];
+  declaredCount: number;
+  observed: string[];
+  observedCount: number;
+  missing: string[];
+  missingCount: number;
+  extra: string[];
+  extraCount: number;
+} {
+  const declaredUnique = [...new Set(declared.map(normalizePath))].sort((left, right) => left.localeCompare(right));
+  const observedUnique = [...new Set(observed.map(normalizePath))].sort((left, right) => left.localeCompare(right));
+  const observedSet = new Set(observedUnique);
+  const declaredSet = new Set(declaredUnique);
+  const missingUnique = declaredUnique.filter((file) => !observedSet.has(file));
+  const extraUnique = observedUnique.filter((file) => !declaredSet.has(file));
+  return {
+    declared: declaredUnique.slice(0, MAX_CANDIDATE_IMPACT_FILE_DIFF_V1),
+    declaredCount: declaredUnique.length,
+    observed: observedUnique.slice(0, MAX_CANDIDATE_IMPACT_FILE_DIFF_V1),
+    observedCount: observedUnique.length,
+    missing: missingUnique.slice(0, MAX_CANDIDATE_IMPACT_FILE_DIFF_V1),
+    missingCount: missingUnique.length,
+    extra: extraUnique.slice(0, MAX_CANDIDATE_IMPACT_FILE_DIFF_V1),
+    extraCount: extraUnique.length
+  };
 }
 
 export interface CandidateAssemblyInputV1 {
@@ -109,6 +177,14 @@ export interface CandidateAssemblyInputV1 {
   workspace?: string;
   worktree?: string;
 }
+
+/**
+ * Single owner of the impact-assessment retry bound: at most 2 service turns
+ * (1 initial + 1 retry on changedFiles mismatch only), each with
+ * `attemptBudget: 1` so the service's own retry cannot compose (no envelope
+ * bypass; counts against normal provider-turn accounting).
+ */
+const MAX_CANDIDATE_IMPACT_ASSESSMENT_ATTEMPTS = 2;
 
 export interface CandidateAssemblyResultV1 {
   version: 1;
@@ -225,31 +301,101 @@ async function assessCandidateImpact(root: string, changeSet: ChangeSetV1, chang
     budget: { maxInputTokens: 8_000, maxOutputTokens: 2_000, deadlineMs: semanticModelDeadlineMsV1 },
     policyRevision: runtime.policyRevision
   };
-  const assessment: SemanticAssessmentV1 = await runtime.service.assess(request);
-  if (assessment.assessmentType !== "CANDIDATE_IMPACT" || assessment.mechanism !== "MODEL" || assessment.judgment.type !== "CANDIDATE_IMPACT") throw new AehError("CANDIDATE_IMPACT_INVALID", "candidate impact requires a canonical MODEL CANDIDATE_IMPACT judgment.");
-  if (assessment.policyRevision !== runtime.policyRevision || sha256Canonical(assessment.binding) !== sha256Canonical(binding)) throw new AehError("CANDIDATE_IMPACT_INVALID", "candidate impact assessment policy or candidate binding is stale.");
-  const expectedRefs = [...request.evidenceRefs].sort();
-  const actualRefs = [...assessment.evidenceRefs].sort();
-  const expectedReceipts = [...request.evidenceReceipts].sort((left, right) => left.ref.localeCompare(right.ref));
-  const actualReceipts = [...assessment.evidenceReceipts].sort((left, right) => left.ref.localeCompare(right.ref));
-  if (assessment.evidenceDigest !== semanticAssessmentEvidenceDigest(request) || new Set(actualRefs).size !== actualRefs.length || sha256Canonical(actualRefs) !== sha256Canonical(expectedRefs) || sha256Canonical(actualReceipts) !== sha256Canonical(expectedReceipts)) throw new AehError("CANDIDATE_IMPACT_INVALID", "candidate impact assessment evidence receipts or digest do not match the assembled candidate.");
-  const judgment = assessment.judgment;
-  if (sha256Canonical([...new Set(judgment.changedFiles.map(normalizePath))].sort()) !== sha256Canonical(changedFiles)) throw new AehError("CANDIDATE_IMPACT_INVALID", "candidate impact judgment changedFiles do not exactly match the assembled ChangeSet.");
-  const fileRefs = changedFiles.map((file) => `file:${file}`);
-  if (fileRefs.some((ref) => !judgment.evidenceRefs.includes(ref))) throw new AehError("CANDIDATE_IMPACT_INVALID", "candidate impact judgment must cite receipted evidence for every changed file.");
-  if (judgment.evidenceRefs.some((ref) => !request.evidenceRefs.includes(ref))) throw new AehError("CANDIDATE_IMPACT_INVALID", "candidate impact judgment cited evidence outside the current candidate receipts.");
-  const valueWithoutDigest = {
-    version: 1 as const,
-    mechanism: "MODEL" as const,
-    changedFiles: [...changedFiles],
-    evidenceRefs: changedFiles.map((file) => `candidate:file:${file}`),
-    changeKinds: judgment.changeKinds,
-    reviewDimensions: judgment.reviewDimensions,
-    requiresIndependentReview: true,
-    unknowns: [...new Set([...assessment.unknowns, ...judgment.unknowns, ...unknowns])].sort(),
-    semanticAssessmentDigest: assessment.assessmentDigest
-  };
-  return { ...valueWithoutDigest, assessmentDigest: candidateImpactProjectionDigest(valueWithoutDigest) };
+  let lastMismatch: AehError | undefined;
+  for (let attempt = 1; attempt <= MAX_CANDIDATE_IMPACT_ASSESSMENT_ATTEMPTS; attempt += 1) {
+    // IDENTICAL inputs: same request object, no repair hint, no correction
+    // evidence, no list re-assertion. Re-asserting the exact list would lead
+    // the semantic judgment and compromise independence. The service
+    // normalizes internally without mutating this object.
+    const assessment: SemanticAssessmentV1 = await runtime.service.assess(request, { attemptBudget: 1 });
+    if (assessment.assessmentType !== "CANDIDATE_IMPACT" || assessment.mechanism !== "MODEL" || assessment.judgment.type !== "CANDIDATE_IMPACT") throw new AehError("CANDIDATE_IMPACT_INVALID", "candidate impact requires a canonical MODEL CANDIDATE_IMPACT judgment.");
+    if (assessment.policyRevision !== runtime.policyRevision || sha256Canonical(assessment.binding) !== sha256Canonical(binding)) throw new AehError("CANDIDATE_IMPACT_INVALID", "candidate impact assessment policy or candidate binding is stale.");
+    const expectedRefs = [...request.evidenceRefs].sort();
+    const actualRefs = [...assessment.evidenceRefs].sort();
+    const expectedReceipts = [...request.evidenceReceipts].sort((left, right) => left.ref.localeCompare(right.ref));
+    const actualReceipts = [...assessment.evidenceReceipts].sort((left, right) => left.ref.localeCompare(right.ref));
+    if (assessment.evidenceDigest !== semanticAssessmentEvidenceDigest(request) || new Set(actualRefs).size !== actualRefs.length || sha256Canonical(actualRefs) !== sha256Canonical(expectedRefs) || sha256Canonical(actualReceipts) !== sha256Canonical(expectedReceipts)) throw new AehError("CANDIDATE_IMPACT_INVALID", "candidate impact assessment evidence receipts or digest do not match the assembled candidate.");
+    const judgment = assessment.judgment;
+    // Frozen exact-match authority: normalized sorted-unique comparison only.
+    // Details are appended (PR88 convention); the message prefix stays stable.
+    if (sha256Canonical([...new Set(judgment.changedFiles.map(normalizePath))].sort()) !== sha256Canonical(changedFiles)) {
+      const diff = candidateImpactFileDiffV1(changedFiles, judgment.changedFiles);
+      const error = buildCandidateImpactMismatchError(diff, assessment);
+      await emitCandidateImpactRejectedJudgment(runtime, {
+        assessmentType: "CANDIDATE_IMPACT",
+        candidateId: candidate.candidateId,
+        candidateRevision: candidate.revision,
+        candidateDigest: candidate.identityDigest,
+        ...diff,
+        assessmentDigest: assessment.assessmentDigest,
+        ...(assessment.paseoSession?.agentId ? { sessionId: assessment.paseoSession.agentId } : {}),
+        ...(assessment.paseoSession?.transport ? { transport: assessment.paseoSession.transport } : {})
+      });
+      if (attempt < MAX_CANDIDATE_IMPACT_ASSESSMENT_ATTEMPTS) { lastMismatch = error; continue; }
+      throw error;
+    }
+    const fileRefs = changedFiles.map((file) => `file:${file}`);
+    if (fileRefs.some((ref) => !judgment.evidenceRefs.includes(ref))) throw new AehError("CANDIDATE_IMPACT_INVALID", "candidate impact judgment must cite receipted evidence for every changed file.");
+    if (judgment.evidenceRefs.some((ref) => !request.evidenceRefs.includes(ref))) throw new AehError("CANDIDATE_IMPACT_INVALID", "candidate impact judgment cited evidence outside the current candidate receipts.");
+    const valueWithoutDigest = {
+      version: 1 as const,
+      mechanism: "MODEL" as const,
+      changedFiles: [...changedFiles],
+      evidenceRefs: changedFiles.map((file) => `candidate:file:${file}`),
+      changeKinds: judgment.changeKinds,
+      reviewDimensions: judgment.reviewDimensions,
+      requiresIndependentReview: true,
+      unknowns: [...new Set([...assessment.unknowns, ...judgment.unknowns, ...unknowns])].sort(),
+      semanticAssessmentDigest: assessment.assessmentDigest
+    };
+    return { ...valueWithoutDigest, assessmentDigest: candidateImpactProjectionDigest(valueWithoutDigest) };
+  }
+  throw lastMismatch ?? new AehError("CANDIDATE_IMPACT_INVALID", "candidate impact assessment failed after bounded attempts.");
+}
+
+/**
+ * Bounded retry-once for the non-authoritative CANDIDATE_IMPACT judgment.
+ * The first assessment runs against the frozen evidence packet; if the
+ * deterministic exact-match gate rejects its changedFiles, one retry runs
+ * with IDENTICAL inputs (same request object, fresh turn, no hints, no list
+ * re-assertion — re-asserting the exact list would lead the semantic judgment
+ * and compromise independence). A second mismatch rethrows with details.
+ *
+ * This loop is the single owner of the retry bound: every `service.assess`
+ * call passes `attemptBudget: 1`, so the service's own bounded retry cannot
+ * compose with this loop. One impact assessment therefore launches at most
+ * MAX_CANDIDATE_IMPACT_ASSESSMENT_ATTEMPTS real model turns (no envelope
+ * bypass; counts against normal provider-turn accounting). All other gates
+ * (type, policy/binding, evidence receipts) fail closed immediately with no
+ * retry. Fail-closed is preserved; no fuzzy matching, no normalization
+ * widening, no evidence rewrite.
+ */
+
+function buildCandidateImpactMismatchError(
+  diff: ReturnType<typeof candidateImpactFileDiffV1>,
+  assessment: SemanticAssessmentV1
+): AehError {
+  const base = "candidate impact judgment changedFiles do not exactly match the assembled ChangeSet.";
+  const suffix = ` declared=${JSON.stringify(diff.declared)} observed=${JSON.stringify(diff.observed)} missing=${JSON.stringify(diff.missing)} extra=${JSON.stringify(diff.extra)} declaredCount=${diff.declaredCount} observedCount=${diff.observedCount} missingCount=${diff.missingCount} extraCount=${diff.extraCount} assessmentDigest=${assessment.assessmentDigest}${assessment.paseoSession?.agentId ? ` assessorSession=${assessment.paseoSession.agentId}` : ""}`;
+  return new AehError("CANDIDATE_IMPACT_INVALID", `${base}${suffix}`, {
+    details: {
+      ...diff,
+      assessmentDigest: assessment.assessmentDigest,
+      ...(assessment.paseoSession?.agentId ? { sessionId: assessment.paseoSession.agentId } : {}),
+      ...(assessment.paseoSession?.transport ? { transport: assessment.paseoSession.transport } : {})
+    }
+  });
+}
+
+async function emitCandidateImpactRejectedJudgment(
+  runtime: CandidateImpactAssessmentRuntimeV1,
+  record: CandidateImpactRejectedJudgmentV1
+): Promise<void> {
+  const hook = runtime.onRejectedJudgment;
+  if (!hook) return;
+  try {
+    await hook(record);
+  } catch { /* forensic hook never masks the fail-closed rejection */ }
 }
 
 async function readCandidateFile(root: string, relative: string, maxBytes: number): Promise<{ content: string; truncated: boolean } | undefined> {
@@ -341,7 +487,14 @@ function projectCandidateImpact(changedFiles: readonly string[], assessment: Can
   if (!parsed.success) throw new AehError("CANDIDATE_IMPACT_INVALID", parsed.error.issues.map((issue) => `${issue.path.join(".") || "assessment"}: ${issue.message}`).join("; "));
   const value = parsed.data;
   const assessedFiles = [...new Set(value.changedFiles.map(normalizePath))].sort();
-  if (JSON.stringify(assessedFiles) !== JSON.stringify(normalized)) throw new AehError("CANDIDATE_IMPACT_INVALID", "candidate impact changedFiles do not match the observed ChangeSet paths.");
+  if (JSON.stringify(assessedFiles) !== JSON.stringify(normalized)) {
+    const diff = candidateImpactFileDiffV1(normalized, value.changedFiles);
+    const base = "candidate impact changedFiles do not match the observed ChangeSet paths.";
+    const suffix = ` declared=${JSON.stringify(diff.declared)} observed=${JSON.stringify(diff.observed)} missing=${JSON.stringify(diff.missing)} extra=${JSON.stringify(diff.extra)} declaredCount=${diff.declaredCount} observedCount=${diff.observedCount} missingCount=${diff.missingCount} extraCount=${diff.extraCount} assessmentDigest=${value.assessmentDigest}`;
+    throw new AehError("CANDIDATE_IMPACT_INVALID", `${base}${suffix}`, {
+      details: { ...diff, assessmentDigest: value.assessmentDigest }
+    });
+  }
   const allowedRefs = new Set(normalized.map((file) => `candidate:file:${file}`));
   if (value.evidenceRefs.some((ref) => !allowedRefs.has(ref)) || normalized.some((file) => !value.evidenceRefs.includes(`candidate:file:${file}`))) throw new AehError("CANDIDATE_IMPACT_INVALID", "candidate impact evidenceRefs are not bound to every observed changed file.");
   if (value.assessmentDigest !== candidateImpactProjectionDigest(value)) throw new AehError("CANDIDATE_IMPACT_INVALID", "candidate impact projection digest does not match its typed claims.");
