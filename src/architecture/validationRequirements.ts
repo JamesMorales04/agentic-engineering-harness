@@ -55,6 +55,48 @@ export function configuredValidationKindForCheckV1(
   return undefined;
 }
 
+// Schema caps mirrored from validationRequirementSchema below (property max 500,
+// evidence entry max 300). Mechanism=DETERMINISTIC: pure string-length bound, no model judgment.
+const CONTRACT_PROPERTY_MAX = 500;
+const CONTRACT_EVIDENCE_MAX = 300;
+
+function truncateCheckIdDisplay(checkId: string, budget: number): string {
+  if (budget <= 0) return "";
+  if (checkId.length <= budget) return checkId;
+  if (budget === 1) return "…";
+  return `${checkId.slice(0, budget - 1)}…`;
+}
+
+/**
+ * Deterministic bound for contract-derived validation text. The full binding stays
+ * recoverable via requirement.id (check id) plus requirementRefs/acceptanceRefs and the
+ * validation-resolution/assurance digests; the 500/300-char display fields carry a
+ * bounded summary when the detailed join would overflow. Refs are never truncated or
+ * dropped; only the human-readable summary falls back to a count.
+ */
+function contractValidationTextV1(checkId: string, requirementRefs: readonly string[]): { property: string; evidence: string } {
+  const detailedProperty = `Frozen contract requirement(s) ${requirementRefs.join(", ")} must be validated by '${checkId}'.`;
+  const detailedEvidence = `passing '${checkId}' validation evidence for the frozen contract requirement(s) ${requirementRefs.join(", ")}.`;
+  if (detailedProperty.length <= CONTRACT_PROPERTY_MAX && detailedEvidence.length <= CONTRACT_EVIDENCE_MAX) {
+    return { property: detailedProperty, evidence: detailedEvidence };
+  }
+  const count = requirementRefs.length;
+  const propertyOverhead = `Frozen contract requirement(s) (${count}) must be validated by ''.`.length;
+  const evidenceOverhead = `passing '' validation evidence for ${count} frozen contract requirement(s).`.length;
+  const propertyBudget = Math.max(0, CONTRACT_PROPERTY_MAX - propertyOverhead);
+  const evidenceBudget = Math.max(0, CONTRACT_EVIDENCE_MAX - evidenceOverhead);
+  return {
+    property:
+      detailedProperty.length <= CONTRACT_PROPERTY_MAX
+        ? detailedProperty
+        : `Frozen contract requirement(s) (${count}) must be validated by '${truncateCheckIdDisplay(checkId, propertyBudget)}'.`,
+    evidence:
+      detailedEvidence.length <= CONTRACT_EVIDENCE_MAX
+        ? detailedEvidence
+        : `passing '${truncateCheckIdDisplay(checkId, evidenceBudget)}' validation evidence for ${count} frozen contract requirement(s).`
+  };
+}
+
 /**
  * Compile the frozen contract requirements' bound validators into explicit candidate-bound
  * ValidationRequirements. Each distinct validator check id becomes exactly one requirement whose
@@ -85,15 +127,16 @@ export function contractValidationRequirementsV1(input: {
     const kind = configuredValidationKindForCheckV1(checkId, input);
     if (!kind) continue;
     const requirementRefs = [...refs].sort();
+    const text = contractValidationTextV1(checkId, requirementRefs);
     output.push({
       version: 1,
       id: checkId,
-      property: `Frozen contract requirement(s) ${requirementRefs.join(", ")} must be validated by '${checkId}'.`,
+      property: text.property,
       kind,
       scope: scope.length ? scope : ["**"],
-      evidenceNeeded: [`passing '${checkId}' validation evidence for the frozen contract requirement(s) ${requirementRefs.join(", ")}.`],
+      evidenceNeeded: [text.evidence],
       requirementRefs,
-      acceptanceRefs: requirementRefs
+      acceptanceRefs: [...requirementRefs]
     });
   }
   return output;
