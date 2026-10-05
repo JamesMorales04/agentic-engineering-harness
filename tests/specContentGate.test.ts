@@ -13,6 +13,7 @@ import {
 } from "../src/operations/change.js";
 import {
   validateOpenSpecTasksCanonicalityV1,
+  parseTasks,
 } from "../src/spec/openspec.js";
 import type { ChangeOperationPayload } from "../src/operations/state.js";
 
@@ -108,6 +109,48 @@ describe("spec content gate (CHANGE-20261005T060646Z rev61)", () => {
     expect(prompt).toContain("## ADDED Requirements");
     expect(prompt).toContain("#### Scenario:");
   });
+});
+
+describe("gate==parser agreement (single canonical matcher)", () => {
+  const IDS = ["T-R1", "T-R2"];
+  const TITLES = ["First requirement", "Second requirement"];
+  const FALLBACK = TITLES.map((title) => `Implement ${title}`);
+
+  function gateAccepts(tasks: string): boolean {
+    try {
+      validateOpenSpecTasksCanonicalityV1("change-1", tasks);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // Canonical = gate and parseTasks consume OPENSPEC_TASK_CHECKBOX_PATTERN, so the
+  // gate accepts exactly when parseTasks finds checkbox lines (no fallback titles).
+  const cases: Array<{ name: string; tasks: string; canonical: boolean; parsed?: Array<{ title: string; status: string }> }> = [
+    { name: "unchecked checkbox", tasks: "- [ ] 1.1 Do the work\n", canonical: true, parsed: [{ title: "1.1 Do the work", status: "pending" }] },
+    { name: "checked checkbox", tasks: "- [x] 1.1 Done work\n", canonical: true, parsed: [{ title: "1.1 Done work", status: "done" }] },
+    { name: "uppercase [X]", tasks: "- [X] 1.1 Done work\n", canonical: true, parsed: [{ title: "1.1 Done work", status: "done" }] },
+    { name: "nested/indented checkboxes", tasks: "  - [ ] nested task\n    - [x] deep done\n", canonical: true, parsed: [{ title: "nested task", status: "pending" }, { title: "deep done", status: "done" }] },
+    { name: "trailing spaces", tasks: "- [ ] 1.1 Do the work   \n", canonical: true, parsed: [{ title: "1.1 Do the work", status: "pending" }] },
+    { name: "mixed bullet + checkbox", tasks: "- Just a bullet\n- [ ] 1.1 Real task\n", canonical: true, parsed: [{ title: "1.1 Real task", status: "pending" }] },
+    { name: "dash bullets without checkboxes", tasks: "- Do the work\n- Do more\n", canonical: false },
+    { name: "numbered list", tasks: "1. Do the work\n2. Do more\n", canonical: false },
+    { name: "plain-text prose", tasks: "Do the work soon.\nMore prose here.\n", canonical: false },
+  ];
+
+  for (const shape of cases) {
+    it(`${shape.name}: gate and parseTasks agree`, () => {
+      const parsed = parseTasks(shape.tasks, IDS, TITLES);
+      expect(gateAccepts(shape.tasks)).toBe(shape.canonical);
+      if (shape.canonical) {
+        expect(parsed.map((item) => ({ title: item.title, status: item.status }))).toEqual(shape.parsed);
+      } else {
+        // Parser falls back to one placeholder per requirement: compiler counts 0 tasks.
+        expect(parsed.map((item) => item.title)).toEqual(FALLBACK);
+      }
+    });
+  }
 });
 
 describe("mirror==compiler cross-check (drift guard)", () => {

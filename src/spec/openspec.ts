@@ -75,8 +75,10 @@ const OPENSPEC_SCENARIO_PATTERN = /^####\s+Scenario:\s*(.+?)\s*$/;
  * dash bullets without checkboxes, numbered lists and prose all fail compilation. The
  * pre-persistence gate mirrors that exact rule so a READY result without a checkbox fails
  * here with the exact artifact instead of inside the compiler (CHANGE-20261005T060646Z rev61).
- * Shared with `parseTasks` below; do not diverge the pattern without updating the drift-guard
- * cross-test (`tests/specContentGate.test.ts` mirror==compiler).
+ * Single canonical matcher: both the gate (`validateOpenSpecTasksCanonicalityV1`) and the
+ * compiler-side parser (`parseTasks` below, which derives its global capture form from
+ * `.source`) consume this pattern. Do not introduce a second checkbox literal; extend the
+ * gate==parser agreement matrix in `tests/specContentGate.test.ts` instead.
  */
 export const OPENSPEC_TASK_CHECKBOX_PATTERN = /^\s*-\s*\[( |x|X)\]/m;
 
@@ -265,8 +267,11 @@ function parseScenarios(section: string): ParsedRequirement["scenarios"] {
   return matches.map((match, index) => { const start = (match.index ?? 0) + match[0].length; const end = matches[index + 1]?.index ?? section.length; const body = section.slice(start, end); return { title: match[1].trim(), given: bullet(body, "GIVEN"), when: bullet(body, "WHEN"), then: bullet(body, "THEN") }; });
 }
 function bullet(body: string, keyword: string): string | undefined { return body.match(new RegExp(`^-\\s*\\*\\*${keyword}\\*\\*\\s*(.+)$`, "im"))?.[1]?.trim(); }
-function parseTasks(markdown: string, requirementIds: string[], titles: string[]): Array<{ id: number; title: string; status: string; requirements: string[] }> {
-  const matches = [...markdown.matchAll(/^\s*-\s*\[( |x|X)\]\s*(.+?)\s*$/gm)];
+export function parseTasks(markdown: string, requirementIds: string[], titles: string[]): Array<{ id: number; title: string; status: string; requirements: string[] }> {
+  // DETERMINISTIC single-matcher derivation: the line-capture form is built from
+  // OPENSPEC_TASK_CHECKBOX_PATTERN.source so gate and parser cannot drift apart.
+  const linePattern = new RegExp(`${OPENSPEC_TASK_CHECKBOX_PATTERN.source}\\s*(.+?)\\s*$`, "gm");
+  const matches = [...markdown.matchAll(linePattern)];
   if (!matches.length) return requirementIds.map((id, index) => ({ id: index + 1, title: `Implement ${titles[index]}`, status: "pending", requirements: [id] }));
   return matches.map((match, index) => ({ id: index + 1, title: match[2].trim(), status: /x/i.test(match[1]) ? "done" : "pending", requirements: [...requirementIds] }));
 }
