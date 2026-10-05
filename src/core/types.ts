@@ -178,7 +178,7 @@ export interface HarnessProjectConfig {
     runsDir?: string;
     authoring?: { provider?: "openspec" | "native" | string; schema?: string; managerAgent?: string; };
   };
-  validation?: { baseRef?: string; commands?: ValidationCommand[]; validators?: ValidatorSpec[]; providers?: ValidationProviderSpec[]; frozenPaths?: string[]; requireSeal?: boolean; opa?: { enabled?: boolean; policyDirs?: string[]; }; };
+  validation?: { baseRef?: string; commands?: ValidationCommand[]; validators?: ValidatorSpec[]; providers?: ValidationProviderSpec[]; testAttribution?: Record<string, string[]>; frozenPaths?: string[]; requireSeal?: boolean; opa?: { enabled?: boolean; policyDirs?: string[]; }; };
   security?: {
     sandbox?: {
       provider?: "podman" | "docker" | "none" | string;

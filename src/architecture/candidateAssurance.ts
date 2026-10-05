@@ -326,7 +326,8 @@ function cloneRequirement(requirement: ValidationRequirementV1): ValidationRequi
     scope: [...requirement.scope],
     evidenceNeeded: [...requirement.evidenceNeeded],
     requirementRefs: [...requirement.requirementRefs],
-    acceptanceRefs: [...requirement.acceptanceRefs]
+    acceptanceRefs: [...requirement.acceptanceRefs],
+    ...(requirement.testSelectors ? { testSelectors: [...requirement.testSelectors] } : {})
   };
 }
 

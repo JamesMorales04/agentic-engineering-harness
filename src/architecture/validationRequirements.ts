@@ -20,6 +20,7 @@ export interface ValidationRequirementV1 {
   evidenceNeeded: string[];
   requirementRefs: string[];
   acceptanceRefs: string[];
+  testSelectors?: string[];
 }
 
 export const validationRequirementSchema = z.object({
@@ -30,7 +31,8 @@ export const validationRequirementSchema = z.object({
   scope: z.array(z.string().trim().min(1).max(500)).min(1).max(128),
   evidenceNeeded: z.array(z.string().trim().min(1).max(300)).min(1).max(64),
   requirementRefs: z.array(z.string().trim().min(1).max(120)).max(128),
-  acceptanceRefs: z.array(z.string().trim().min(1).max(120)).max(128)
+  acceptanceRefs: z.array(z.string().trim().min(1).max(120)).max(128),
+  testSelectors: z.array(z.string().trim().min(1).max(300)).min(1).max(64).optional()
 }).strict();
 
 /**
@@ -160,7 +162,12 @@ export function mergeContractValidationRequirementsV1(
     if (existing && existing.kind !== derived.kind) {
       throw new Error(`VALIDATION_REQUIREMENT_ID_CONFLICT: plan requirement '${derived.id}' declares kind '${existing.kind}' but the frozen contract-derived requirement declares '${derived.kind}'.`);
     }
-    byId.set(derived.id, derived);
+    // Preserve plan-declared test attribution when the normative contract-derived
+    // requirement carries none; union is fail-closed (more selectors = more evidence required).
+    const preserved = existing?.testSelectors?.length
+      ? [...new Set([...(existing.testSelectors ?? []), ...(derived.testSelectors ?? [])])]
+      : derived.testSelectors;
+    byId.set(derived.id, preserved?.length ? { ...derived, testSelectors: preserved } : derived);
   }
   return [...byId.values()];
 }

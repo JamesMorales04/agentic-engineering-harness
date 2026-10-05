@@ -55,6 +55,11 @@ import { compileCandidateAssuranceV1, candidateImpactValidationRequirementsV1, c
 import { requireSastEvidenceV1 } from "../security/sastEvidence.js";
 import { contractValidationRequirementsV1, mergeContractValidationRequirementsV1, resolveValidationRequirements, validationRequirementKindValues, type ResolvedValidationActionV1, type ValidationRequirementKindV1, type ValidationResolutionV1 } from "../architecture/validationRequirements.js";
 import { requireProviderLaneEvidenceForActionV1, type ProviderEvidenceLaneV1 } from "../validation/laneEvidence.js";
+import {
+  effectiveTestSelectorsV1,
+  evaluateTestAttributionV1,
+  extractReporterTestsFromExecutionV1,
+} from "../validation/testAttribution.js";
 import type { CandidateImpactV1 } from "../candidates/assembler.js";
 import { candidateRevisionsEqual, type CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import { objectiveParticipantAccountingV1 } from "../operations/participantAccounting.js";
@@ -1069,35 +1074,114 @@ export async function runCandidateImpactValidations(input: {
         if (!execution) throw new Error("resolved validation action has no executable implementation");
         executedActions.set(actionKey, execution);
       }
-      let sastEvidence: { artifact: string; digest: string } | undefined;
-      if (execution.status === "PASS" && requiresCandidateBoundSastEvidence(requirement.kind, action, input.config)) {
-        const evidence = await requireSastEvidenceV1(input.root, input.config, input.report.candidate!, execution.id);
-        sastEvidence = { artifact: evidence.artifact, digest: evidence.digest };
-      }
-      let laneEvidence: { lane: ProviderEvidenceLaneV1; artifact: string; digest: string } | undefined;
-      const requiredLane = providerEvidenceLaneForKind(requirement.kind);
-      if (execution.status === "PASS" && requiredLane) {
-        const evidence = await requireProviderLaneEvidenceForActionV1({
-          root: input.root,
-          config: input.config,
-          lane: requiredLane,
-          candidate: input.report.candidate!,
-          checkId: execution.id,
-          kind: requirement.kind,
-          actionSource: action.source,
-          actionSelector: action.selector
+      const selectors = effectiveTestSelectorsV1(requirement, input.config);
+      if (!selectors.length) {
+        let sastEvidence: { artifact: string; digest: string } | undefined;
+        if (execution.status === "PASS" && requiresCandidateBoundSastEvidence(requirement.kind, action, input.config)) {
+          const evidence = await requireSastEvidenceV1(input.root, input.config, input.report.candidate!, execution.id);
+          sastEvidence = { artifact: evidence.artifact, digest: evidence.digest };
+        }
+        let laneEvidence: { lane: ProviderEvidenceLaneV1; artifact: string; digest: string } | undefined;
+        const requiredLane = providerEvidenceLaneForKind(requirement.kind);
+        if (execution.status === "PASS" && requiredLane) {
+          const evidence = await requireProviderLaneEvidenceForActionV1({
+            root: input.root,
+            config: input.config,
+            lane: requiredLane,
+            candidate: input.report.candidate!,
+            checkId: execution.id,
+            kind: requirement.kind,
+            actionSource: action.source,
+            actionSelector: action.selector
+          });
+          laneEvidence = { lane: requiredLane, artifact: evidence.artifact, digest: evidence.digest };
+        }
+        const failureEvidence = execution.status === "PASS" ? {} : underlyingFailureEvidence(execution);
+        output.push({
+          id: `candidate.assurance.validation.${requirement.id}`,
+          category: "candidate-impact-validation",
+          status: execution.status === "PASS" ? "PASS" : "FAIL",
+          message: execution.status === "PASS" ? `Required ${requirement.kind} evidence passed: ${requirement.property}` : `Required ${requirement.kind} validation for requirement '${requirement.id}' returned ${execution.status}: ${execution.message}`,
+          durationMs: execution.durationMs,
+          details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, ...failureEvidence, ...(sastEvidence ? { sastEvidence, artifact: sastEvidence.artifact } : {}), ...(laneEvidence ? { laneEvidence, artifact: laneEvidence.artifact } : {}) }
         });
-        laneEvidence = { lane: requiredLane, artifact: evidence.artifact, digest: evidence.digest };
+        continue;
       }
-      const failureEvidence = execution.status === "PASS" ? {} : underlyingFailureEvidence(execution);
-      output.push({
-        id: `candidate.assurance.validation.${requirement.id}`,
-        category: "candidate-impact-validation",
-        status: execution.status === "PASS" ? "PASS" : "FAIL",
-        message: execution.status === "PASS" ? `Required ${requirement.kind} evidence passed: ${requirement.property}` : `Required ${requirement.kind} validation for requirement '${requirement.id}' returned ${execution.status}: ${execution.message}`,
-        durationMs: execution.durationMs,
-        details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, ...failureEvidence, ...(sastEvidence ? { sastEvidence, artifact: sastEvidence.artifact } : {}), ...(laneEvidence ? { laneEvidence, artifact: laneEvidence.artifact } : {}) }
+      // Mapped requirement: verdict reflects ITS attributed tests, not the bundle exit code.
+      // Fail-closed: missing reporter, parse errors, and unknown titles FAIL.
+      const reporterTests = await extractReporterTestsFromExecutionV1(input.root, execution);
+      if (!reporterTests) {
+        const blocker = "TEST_ATTRIBUTION_REPORTER_MISSING";
+        const failureEvidence = underlyingFailureEvidence(execution);
+        output.push({
+          id: `candidate.assurance.validation.${requirement.id}`,
+          category: "candidate-impact-validation",
+          status: "FAIL",
+          message: `Required ${requirement.kind} validation for requirement '${requirement.id}' did not produce attributable test evidence: ${blocker}: no parseable Playwright reporter JSON for '${execution.id}'.`,
+          durationMs: execution.durationMs,
+          details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, blocker, testAttribution: { verdict: "FAIL", selectors, matched: 0, total: 0, failedTitles: [], reason: blocker }, ...failureEvidence }
+        });
+        continue;
+      }
+      const evaluation = evaluateTestAttributionV1({
+        requirementId: requirement.id,
+        selectors,
+        tests: reporterTests,
       });
+      if (evaluation.verdict !== "PASS") {
+        const failureEvidence = underlyingFailureEvidence(execution);
+        output.push({
+          id: `candidate.assurance.validation.${requirement.id}`,
+          category: "candidate-impact-validation",
+          status: "FAIL",
+          message: `Required ${requirement.kind} validation for requirement '${requirement.id}' failed its attributed tests: ${evaluation.reason}`,
+          durationMs: execution.durationMs,
+          details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, blocker: evaluation.blocker ?? "TEST_ATTRIBUTION_TEST_FAILED", testAttribution: { verdict: evaluation.verdict, selectors: evaluation.selectors, matched: evaluation.matched, total: evaluation.total, failedTitles: evaluation.failedTitles, reason: evaluation.reason }, ...failureEvidence }
+        });
+        continue;
+      }
+      // Attributed tests passed: still require lane/SAST evidence when the kind demands it.
+      try {
+        let sastEvidence: { artifact: string; digest: string } | undefined;
+        if (requiresCandidateBoundSastEvidence(requirement.kind, action, input.config)) {
+          const evidence = await requireSastEvidenceV1(input.root, input.config, input.report.candidate!, execution.id);
+          sastEvidence = { artifact: evidence.artifact, digest: evidence.digest };
+        }
+        let laneEvidence: { lane: ProviderEvidenceLaneV1; artifact: string; digest: string } | undefined;
+        const requiredLane = providerEvidenceLaneForKind(requirement.kind);
+        if (requiredLane) {
+          const evidence = await requireProviderLaneEvidenceForActionV1({
+            root: input.root,
+            config: input.config,
+            lane: requiredLane,
+            candidate: input.report.candidate!,
+            checkId: execution.id,
+            kind: requirement.kind,
+            actionSource: action.source,
+            actionSelector: action.selector
+          });
+          laneEvidence = { lane: requiredLane, artifact: evidence.artifact, digest: evidence.digest };
+        }
+        output.push({
+          id: `candidate.assurance.validation.${requirement.id}`,
+          category: "candidate-impact-validation",
+          status: "PASS",
+          message: `Required ${requirement.kind} evidence passed for '${requirement.id}': ${evaluation.matched}/${evaluation.total} attributed tests passed (bundle '${execution.id}' ${execution.status}).`,
+          durationMs: execution.durationMs,
+          details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, testAttribution: { verdict: evaluation.verdict, selectors: evaluation.selectors, matched: evaluation.matched, total: evaluation.total, failedTitles: evaluation.failedTitles, reason: evaluation.reason }, ...(sastEvidence ? { sastEvidence, artifact: sastEvidence.artifact } : {}), ...(laneEvidence ? { laneEvidence, artifact: laneEvidence.artifact } : {}) }
+        });
+      } catch (error) {
+        const message = String(error);
+        const blocker = providerLaneBlockerFromMessage(message) ?? "TEST_ATTRIBUTION_EVIDENCE_REQUIRED";
+        output.push({
+          id: `candidate.assurance.validation.${requirement.id}`,
+          category: "candidate-impact-validation",
+          status: "FAIL",
+          message: `Required ${requirement.kind} validation for requirement '${requirement.id}' passed its attributed tests but lane evidence is missing: ${message}`,
+          durationMs: execution.durationMs,
+          details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, blocker, testAttribution: { verdict: evaluation.verdict, selectors: evaluation.selectors, matched: evaluation.matched, total: evaluation.total, failedTitles: evaluation.failedTitles, reason: evaluation.reason } }
+        });
+      }
     } catch (error) {
       const message = String(error);
       const blocker = providerLaneBlockerFromMessage(message);
