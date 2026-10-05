@@ -263,9 +263,9 @@ describe("required specialized lanes are satisfied only by matching provider exe
       verification: { capabilities: ["visual-test"] }
     } as unknown as TaskContract, "HEAD", [], { candidate });
     expect(generated).toHaveLength(1);
-    expect(generated[0]!.id).toBe("capability.visual-test");
+    expect(generated[0]!.id).toBe("capability:visual-test");
     expect(generated[0]!.status, JSON.stringify(generated[0])).toBe("PASS");
-    const evidence = await requireProviderLaneEvidenceV1(root, configured, "VISUAL", candidate, "capability.visual-test");
+    const evidence = await requireProviderLaneEvidenceV1(root, configured, "VISUAL", candidate, "capability:visual-test");
     expect(evidence.comparison?.tool).toBe("playwright-toHaveScreenshot");
     expect(evidence.candidate).toMatchObject({ candidateId: candidate.candidateId, identityDigest: candidate.identityDigest });
     expect(JSON.parse(await fs.readFile(path.join(root, ".harness/evidence/provider-candidate.json"), "utf8"))).toMatchObject(candidate);
