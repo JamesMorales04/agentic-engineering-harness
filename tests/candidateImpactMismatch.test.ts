@@ -6,8 +6,8 @@ import { assembleCandidateChangeSet } from "../src/candidates/assembler.js";
 import { computeWorktreeDigest } from "../src/core/git.js";
 import { createCandidateRevisionV1 } from "../src/operations/v2Contracts.js";
 import { runShell } from "../src/utils/process.js";
-import { sha256Utf8 } from "../src/core/digest.js";
-import { semanticCapabilityPolicyRevisionV1, type SemanticAssessmentRequestV1 } from "../src/semantic/assessment.js";
+import { sha256Canonical, sha256Utf8 } from "../src/core/digest.js";
+import { InMemorySemanticAssessmentCacheV1, semanticCapabilityPolicyRevisionV1, type SemanticAssessmentAttemptOptionsV1, type SemanticAssessmentRequestV1, type SemanticAssessmentV1 } from "../src/semantic/assessment.js";
 import { semanticPayload, semanticTestService } from "./semanticAssessmentSupport.js";
 import type { AehError } from "../src/core/errors.js";
 
@@ -91,6 +91,88 @@ describe("candidate impact mismatch diagnostics + bounded retry", () => {
       expect(runnerAttempts).toBe(2);
       // Fail-closed: workspace rolled back, no unbound mutation survives.
       for (const file of FIVE) expect(await fs.readFile(path.join(root, file), "utf8")).toBe("export const v = 1;\n");
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it("retry bypasses the production cache for a fresh provider turn (cached-wrong then fresh-right passes)", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-impact-cache-"));
+    try {
+      await fs.mkdir(path.join(root, "src"), { recursive: true });
+      for (const file of FIVE) await fs.writeFile(path.join(root, file), `export const v = 1;\n`);
+      await runShell("git init -q && git add -A && git -c user.name=test -c user.email=test@example.com commit -qm initial", { cwd: root });
+      const current = createCandidateRevisionV1({ operationId: "OP-MISMATCH-CACHE", candidateId: "candidate:OP-MISMATCH-CACHE:r1", projectId: "project-mismatch", taskId: "TASK-MISMATCH-CACHE", revision: 1, sourceDigest: await computeWorktreeDigest(root) });
+
+      for (const file of FIVE) await fs.writeFile(path.join(root, file), `export const v = 2;\n`);
+      const patch = (await runShell("git diff --binary HEAD --", { cwd: root })).stdout;
+      expect(patch.trim()).not.toBe("");
+      for (const file of FIVE) await fs.writeFile(path.join(root, file), `export const v = 1;\n`);
+
+      const changeSet = { version: 1 as const, operationId: current.operationId, taskId: "TASK-MISMATCH-CACHE", workUnitId: "WU-1", participantId: "participant-1", baseCandidateRevision: current.revision, baseCandidateDigest: current.identityDigest, changedFiles: [...FIVE], patch, patchDigest: sha256Utf8(patch) };
+
+      let runnerAttempts = 0;
+      let serviceAttempts = 0;
+      const attemptOptions: Array<SemanticAssessmentAttemptOptionsV1 | undefined> = [];
+      const requestDigests: string[] = [];
+      const dispositions: string[] = [];
+      const runnerRepairs: unknown[] = [];
+      // Production-shaped cache: identical request identity would HIT without a retry bypass.
+      const cache = new InMemorySemanticAssessmentCacheV1();
+      const inner = semanticTestService({
+        cache,
+        runner: {
+          assess: async ({ request, repair }: { request: SemanticAssessmentRequestV1; repair?: { attempt: number; reason: string } }) => {
+            runnerAttempts += 1;
+            runnerRepairs.push(repair);
+            const payload = semanticPayload(request);
+            const changedFiles = runnerAttempts === 1 ? [...FOUR] : [...FIVE];
+            return {
+              payload: {
+                ...payload,
+                judgment: { type: "CANDIDATE_IMPACT", changedFiles, changeKinds: ["source"], reviewDimensions: [], requiresIndependentReview: false, evidenceRefs: request.evidenceRefs, unknowns: [] }
+              },
+              paseoSession: { provider: "codex", agentId: `paseo-impact-cache-${runnerAttempts}`, workspaceId: "workspace-test", transport: "sdk" as const }
+            };
+          }
+        }
+      });
+      const originalAssess = inner.assess.bind(inner);
+      const countingService = Object.create(Object.getPrototypeOf(inner), Object.getOwnPropertyDescriptors(inner)) as typeof inner;
+      countingService.assess = (async (request: SemanticAssessmentRequestV1, options?: SemanticAssessmentAttemptOptionsV1) => {
+        serviceAttempts += 1;
+        attemptOptions.push(options);
+        requestDigests.push(sha256Canonical(request));
+        const result: SemanticAssessmentV1 = await originalAssess(request, options);
+        dispositions.push(result.cacheDisposition);
+        return result;
+      }) as typeof inner.assess;
+
+      const rejected: unknown[] = [];
+      const result = await assembleCandidateChangeSet({
+        root, operationId: current.operationId, taskId: "TASK-MISMATCH-CACHE", currentCandidate: current, changeSet,
+        allowedScope: ["src/**"], candidateId: "candidate:OP-MISMATCH-CACHE:r2",
+        semanticAssessment: {
+          service: countingService, policyRevision: semanticCapabilityPolicyRevisionV1,
+          repositoryBinding: { projectId: "project-mismatch", repositoryDigest: "repository-mismatch", operationId: current.operationId },
+          onRejectedJudgment: (record) => { rejected.push(record); }
+        }
+      });
+
+      // Fresh-right retry recovers: exact-match passes with identical inputs.
+      expect(result.impact.changedFiles).toEqual([...FIVE].sort());
+      // Two real provider turns: the retry was NOT a cache HIT of the wrong judgment.
+      expect(serviceAttempts).toBe(2);
+      expect(runnerAttempts).toBe(2);
+      expect(dispositions).toEqual(["FRESH", "FRESH"]);
+      // Identical semantic inputs, no hints; only the cache-bypass transport flag differs.
+      expect(requestDigests).toHaveLength(2);
+      expect(requestDigests[0]).toBe(requestDigests[1]);
+      expect(runnerRepairs).toEqual([undefined, undefined]);
+      expect(attemptOptions[0]).toMatchObject({ attemptBudget: 1 });
+      expect(attemptOptions[0]?.bypassCache).toBeFalsy();
+      expect(attemptOptions[1]).toMatchObject({ attemptBudget: 1, bypassCache: true });
+      // First wrong judgment still persisted its forensic receipt.
+      expect(rejected).toHaveLength(1);
+      expect(rejected[0]).toMatchObject({ assessmentType: "CANDIDATE_IMPACT", missing: ["src/e.ts"] });
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 });

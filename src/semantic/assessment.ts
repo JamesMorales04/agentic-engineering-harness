@@ -490,6 +490,16 @@ export interface SemanticAssessmentAttemptOptionsV1 {
    * passes 1 so nested retries cannot multiply real-model attempts.
    */
   attemptBudget?: number;
+  /**
+   * Skips the cache read for this call while still storing the fresh result
+   * under the same canonical cache identity. Reserved for the bounded
+   * changedFiles-mismatch retry, where identical semantic inputs would
+   * otherwise return the same cached (wrong) judgment as a HIT instead of a
+   * fresh provider turn. Never part of the cache identity; semantic inputs
+   * stay identical and provider-turn accounting is unchanged. All other
+   * callers must omit it.
+   */
+  bypassCache?: boolean;
 }
 
 export const semanticCapabilityPolicyRevisionV1 = "core-semantic-capability-policy-v1";
@@ -633,7 +643,8 @@ export class SemanticAssessmentServiceV1 {
     validateEvidenceReceipts(normalizedRequest);
     const evidenceDigest = semanticAssessmentEvidenceDigest(normalizedRequest);
     const cacheIdentity = sha256Canonical({ version: 1, assessmentType: normalizedRequest.assessmentType, evidenceDigest, binding: normalizedRequest.binding, policyRevision: normalizedRequest.policyRevision, assessorDigest: this.options.assessor.identity.identityDigest, requirement: normalizedRequest.reasoningRequirement, budget: normalizedRequest.budget });
-    const cached = await this.cache.get(cacheIdentity);
+    const bypassCache = options.bypassCache ?? false;
+    const cached = bypassCache ? undefined : await this.cache.get(cacheIdentity);
     if (cached) {
       const validated = validateCachedAssessment(cached, normalizedRequest, this.options.assessor.identity, evidenceDigest, cacheIdentity);
       const result = { ...validated, cacheDisposition: "HIT" as const };

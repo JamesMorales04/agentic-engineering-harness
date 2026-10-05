@@ -306,8 +306,11 @@ async function assessCandidateImpact(root: string, changeSet: ChangeSetV1, chang
     // IDENTICAL inputs: same request object, no repair hint, no correction
     // evidence, no list re-assertion. Re-asserting the exact list would lead
     // the semantic judgment and compromise independence. The service
-    // normalizes internally without mutating this object.
-    const assessment: SemanticAssessmentV1 = await runtime.service.assess(request, { attemptBudget: 1 });
+    // normalizes internally without mutating this object. The retry skips the
+    // cache read (bypassCache) so the identical cache identity cannot return
+    // the same cached wrong judgment as a HIT; the fresh result is still
+    // stored under that identity with normal provider-turn accounting.
+    const assessment: SemanticAssessmentV1 = await runtime.service.assess(request, attempt === 1 ? { attemptBudget: 1 } : { attemptBudget: 1, bypassCache: true });
     if (assessment.assessmentType !== "CANDIDATE_IMPACT" || assessment.mechanism !== "MODEL" || assessment.judgment.type !== "CANDIDATE_IMPACT") throw new AehError("CANDIDATE_IMPACT_INVALID", "candidate impact requires a canonical MODEL CANDIDATE_IMPACT judgment.");
     if (assessment.policyRevision !== runtime.policyRevision || sha256Canonical(assessment.binding) !== sha256Canonical(binding)) throw new AehError("CANDIDATE_IMPACT_INVALID", "candidate impact assessment policy or candidate binding is stale.");
     const expectedRefs = [...request.evidenceRefs].sort();
@@ -359,7 +362,10 @@ async function assessCandidateImpact(root: string, changeSet: ChangeSetV1, chang
  * deterministic exact-match gate rejects its changedFiles, one retry runs
  * with IDENTICAL inputs (same request object, fresh turn, no hints, no list
  * re-assertion — re-asserting the exact list would lead the semantic judgment
- * and compromise independence). A second mismatch rethrows with details.
+ * and compromise independence). The retry passes `bypassCache: true` so the
+ * identical cache identity cannot return the same cached wrong judgment as a
+ * HIT; the fresh result is still stored under that identity. A second
+ * mismatch rethrows with details.
  *
  * This loop is the single owner of the retry bound: every `service.assess`
  * call passes `attemptBudget: 1`, so the service's own bounded retry cannot
