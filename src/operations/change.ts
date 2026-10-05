@@ -11,7 +11,9 @@ import { runTask, type TaskRunResult } from "../core/run.js";
 import { validateSddChange } from "../core/sdd.js";
 import { sealTask } from "../core/seal.js";
 import { assertChangePreflightV1, normalizeTriageEvidence, triageChangeWithSemanticAssessment, type ChangePreflightV1, type TriageDecision } from "../core/triage.js";
-import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
+import type { HarnessProjectConfig, TaskContract, WorkerSession } from "../core/types.js";
+import { AehError } from "../core/errors.js";
+import { isStalledFirstActivityText } from "../paseo/firstActivityDeadline.js";
 import type { AgentExecutionSelection } from "../agents/types.js";
 import type { AssuranceLevel, ImplementationRoute, RouteEvidence } from "../architecture/contracts.js";
 import { createRouteEvidence } from "../architecture/contracts.js";
@@ -55,7 +57,7 @@ import {
 } from "./state.js";
 import { candidateRevisionsEqual, createCandidateRevisionV1 } from "./v2Contracts.js";
 import { drainOperationWriters } from "./control.js";
-import { ensureOperationSupervisor, maybeRotateOperationSupervisor } from "./supervisor.js";
+import { ensureOperationSupervisor, maybeRotateOperationSupervisor, supervisorTurnTimedOutV1 } from "./supervisor.js";
 import { createSemanticAssessmentRuntimeV1, createSemanticRepositoryBindingV1 } from "../semantic/runtime.js";
 import { launchManagedPaseoAgent } from "../paseo/runtime.js";
 import { assertResolvedOperationPolicyV2, compileResolvedOperationPolicy } from "../architecture/executionIdentity.js";
@@ -626,7 +628,71 @@ export function buildExplorerPrompt(operationId: string, payload: ChangeOperatio
   ].join("\n\n");
 }
 
-async function runDiscovery(
+/**
+ * DETERMINISTIC bounded retry budget for discovery/planning participant stall kills
+ * (CHANGE-20261005T223430Z-be9f5ac1 rev42: a STALLED_FIRST_ACTIVITY/timeout-killed
+ * explorer turn was terminal for the whole operation). Exactly one retry is allowed
+ * per phase with a fresh session and IDENTICAL inputs (no hints, no prompt changes);
+ * a second stall/timeout kill rethrows the original class. INVALID payload rejections
+ * (schema/contract failures via requireDurableChangeHandoff) stay terminal and are
+ * never retried. Mirrors the repair maxAttempts=2 budget language: max 2 attempts
+ * total per phase.
+ */
+export const DISCOVERY_PLANNING_STALL_MAX_ATTEMPTS = 2;
+export const DISCOVERY_PLANNING_STALL_MAX_RETRIES = 1;
+
+type DiscoveryPlanningTurnShape = Pick<WorkerSession, "exitCode" | "stdout" | "stderr"> & {
+  killReason?: WorkerSession["killReason"];
+  status?: WorkerSession["status"];
+};
+
+/**
+ * DETERMINISTIC kill classification for discovery/planning turns. Reuses the existing
+ * killReason/timeout taxonomy only: STALLED_FIRST_ACTIVITY marker
+ * (isStalledFirstActivityText), the supervisor timeout classifier
+ * (supervisorTurnTimedOutV1: exit 124 / timed out|timeout|stalled_first_activity),
+ * typed killReason (STALLED_FIRST_ACTIVITY / DEADLINE), status timeout, exit 124,
+ * and typed transport-timeout UNAVAILABLE (details.timeout === true). No new error
+ * classes are introduced. INVALID payload rejections (RESULT_INVALID,
+ * RESULT_ARTIFACT_MISSING, RESULT_ID_MISSING, AEH_RESULT_PROVENANCE,
+ * CANDIDATE_WORKSPACE_MISMATCH) always return false so contract failures stay
+ * terminal with their own semantics.
+ */
+export function isDiscoveryPlanningStallKill(
+  error: unknown,
+  session?: DiscoveryPlanningTurnShape | undefined
+): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  if (/RESULT_INVALID|RESULT_ARTIFACT_MISSING|RESULT_ID_MISSING|AEH_RESULT_PROVENANCE|CANDIDATE_WORKSPACE_MISMATCH/.test(message)) return false;
+  if (session) {
+    if (session.killReason === "STALLED_FIRST_ACTIVITY" || session.killReason === "DEADLINE") return true;
+    if (session.status === "timeout") return true;
+    if (session.exitCode === 124) return true;
+    try {
+      if (supervisorTurnTimedOutV1(session)) return true;
+    } catch {
+      // Classifier is total over the picked shape; a malformed shape is not a stall.
+    }
+    if (isStalledFirstActivityText(`${session.stderr ?? ""} ${session.stdout ?? ""}`)) return true;
+  }
+  if (error instanceof AehError && error.code === "SEMANTIC_ASSESSMENT_UNAVAILABLE") {
+    if ((error.details as { timeout?: unknown } | undefined)?.timeout === true) return true;
+  }
+  if (isStalledFirstActivityText(message)) return true;
+  if (/exit[^0-9]*124|exitCode[^0-9]*124|exit=124/.test(message)) return true;
+  if (/timed out|timeout/i.test(message)) return true;
+  return false;
+}
+
+export function shouldRetryDiscoveryPlanningStall(
+  error: unknown,
+  retriesSoFar: number,
+  session?: DiscoveryPlanningTurnShape | undefined
+): boolean {
+  return isDiscoveryPlanningStallKill(error, session) && retriesSoFar < DISCOVERY_PLANNING_STALL_MAX_RETRIES;
+}
+
+export async function runDiscovery(
   root: string,
   controlRoot: string,
   config: HarnessProjectConfig,
@@ -638,8 +704,24 @@ async function runDiscovery(
 ): Promise<DurableAgentEvidence<ExplorerOutput> | undefined> {
   if (!selection) return undefined;
   const readRoots = await projectedAuthorizedReadRoots(root, selection, controlRoot);
-  const session = await executeAgentPrompt(root, config, contract, selection, buildExplorerPrompt(operationId, payload, inputs, readRoots), { outputContract: "explorer", phase: "discovery", operationKind: "change", requireExecutionAuthority: true });
-  return requireDurableChangeHandoff(root, "EXPLORER", session, explorerOutputSchema, controlRoot, { operationId: operationId, contract: "explorer", phase: "discovery" });
+  // Frozen identical inputs across the bounded retry: the prompt is built once so the
+  // fresh-session retry carries no hints and no prompt changes.
+  const prompt = buildExplorerPrompt(operationId, payload, inputs, readRoots);
+  let retries = 0;
+  for (;;) {
+    let session: WorkerSession | undefined;
+    try {
+      // No resumeSessionId: every attempt (including the retry) launches a fresh session.
+      session = await executeAgentPrompt(root, config, contract, selection, prompt, { outputContract: "explorer", phase: "discovery", operationKind: "change", requireExecutionAuthority: true });
+      return await requireDurableChangeHandoff(root, "EXPLORER", session, explorerOutputSchema, controlRoot, { operationId: operationId, contract: "explorer", phase: "discovery" });
+    } catch (error) {
+      if (shouldRetryDiscoveryPlanningStall(error, retries, session)) {
+        retries += 1;
+        continue;
+      }
+      throw error;
+    }
+  }
 }
 
 /** Deterministic Planner prompt contract (AEH-V2-0125 regression surface). */
@@ -663,7 +745,7 @@ export function buildPlannerPrompt(operationId: string, contract: TaskContract, 
   ].join("\n\n");
 }
 
-async function runPlanning(
+export async function runPlanning(
   root: string,
   controlRoot: string,
   config: HarnessProjectConfig,
@@ -675,8 +757,24 @@ async function runPlanning(
   inputs: ChangeInputReference[]
 ): Promise<DurableAgentEvidence<PlannerOutput> | undefined> {
   if (!selection) return undefined;
-  const session = await executeAgentPrompt(root, config, contract, selection, buildPlannerPrompt(operationId, contract, payload, explorerEvidence, inputs), { outputContract: "planner", phase: "planning", operationKind: "change", requireExecutionAuthority: true });
-  return requireDurableChangeHandoff(root, "PLANNER", session, plannerOutputSchema, controlRoot, { operationId, contract: "planner", phase: "planning" });
+  // Frozen identical inputs across the bounded retry: the prompt is built once so the
+  // fresh-session retry carries no hints and no prompt changes.
+  const prompt = buildPlannerPrompt(operationId, contract, payload, explorerEvidence, inputs);
+  let retries = 0;
+  for (;;) {
+    let session: WorkerSession | undefined;
+    try {
+      // No resumeSessionId: every attempt (including the retry) launches a fresh session.
+      session = await executeAgentPrompt(root, config, contract, selection, prompt, { outputContract: "planner", phase: "planning", operationKind: "change", requireExecutionAuthority: true });
+      return await requireDurableChangeHandoff(root, "PLANNER", session, plannerOutputSchema, controlRoot, { operationId, contract: "planner", phase: "planning" });
+    } catch (error) {
+      if (shouldRetryDiscoveryPlanningStall(error, retries, session)) {
+        retries += 1;
+        continue;
+      }
+      throw error;
+    }
+  }
 }
 
 /**
