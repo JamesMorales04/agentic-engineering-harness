@@ -710,6 +710,34 @@ export function buildSpecManagerMismatchRetryNote(changeName: string): string {
   return `Previous Spec Manager turn failed with SPEC_MANAGER_CHANGE_MISMATCH: output field "change" must be exactly '${changeName}' (the OpenSpec change ID); it is an identifier, not a title. Retry with the exact identifier.`;
 }
 
+/**
+ * DETERMINISTIC bounded retry budget for the Spec Manager incomplete-READY defect
+ * (CHANGE-20261005T053426Z-be9f5ac1 rev57: `SPEC_MANAGER_INCOMPLETE_RESULT` when the
+ * model returns READY without tasks). Mirrors the change-mismatch mechanism with an
+ * independent counter: exactly one retry is allowed per `runSpecManagerUntilReady`
+ * invocation; a second incomplete still throws the exact error. No weakening, no
+ * default artifacts invented, no content fabricated.
+ */
+export const SPEC_MANAGER_INCOMPLETE_MAX_RETRIES = 1;
+
+export function isSpecManagerIncompleteResult(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if (error.message.startsWith("SPEC_MANAGER_INCOMPLETE_RESULT:")) return true;
+  // The deterministic durable-handoff gate wraps the refined-schema rejection as
+  // `SPEC_MANAGER_RESULT_INVALID`; retry only when the wrapped cause is the
+  // incomplete-READY marker, never for unrelated schema rejections.
+  return error.message.startsWith("SPEC_MANAGER_RESULT_INVALID:")
+    && error.message.includes("SPEC_MANAGER_INCOMPLETE_RESULT:");
+}
+
+export function shouldRetrySpecManagerIncomplete(error: unknown, retriesSoFar: number): boolean {
+  return isSpecManagerIncompleteResult(error) && retriesSoFar < SPEC_MANAGER_INCOMPLETE_MAX_RETRIES;
+}
+
+export function buildSpecManagerIncompleteRetryNote(changeName: string): string {
+  return `Previous Spec Manager turn failed with SPEC_MANAGER_INCOMPLETE_RESULT: a READY result for '${changeName}' must identify both artifacts.proposal (the complete proposal.md content) and artifacts.tasks (the complete tasks.md content); both must be non-empty. Retry with status READY and both artifacts present.`;
+}
+
 async function runSpecManagerUntilReady(input: {
   root: string;
   controlRoot: string;
@@ -730,24 +758,46 @@ async function runSpecManagerUntilReady(input: {
 }): Promise<DurableAgentEvidence<SpecAuthoringOutput>> {
   let selectedChoice = input.initialChoice;
   let changeMismatchRetries = 0;
+  let incompleteRetries = 0;
   let mismatchRetryPending = false;
+  let incompleteRetryPending = false;
   for (;;) {
     await awaitChangeControlCheckpoint(input.controlRoot, input.operationId);
     const basePrompt = buildSpecManagerPrompt(input.payload, input.changeName, input.explorerEvidence, input.plannerEvidence, input.inputs, selectedChoice);
-    const prompt = mismatchRetryPending ? `${basePrompt}\n\n${buildSpecManagerMismatchRetryNote(input.changeName)}` : basePrompt;
+    const retryNotes = [
+      mismatchRetryPending ? buildSpecManagerMismatchRetryNote(input.changeName) : "",
+      incompleteRetryPending ? buildSpecManagerIncompleteRetryNote(input.changeName) : ""
+    ].filter((note) => note.length > 0);
+    const prompt = retryNotes.length > 0 ? `${basePrompt}\n\n${retryNotes.join("\n\n")}` : basePrompt;
     mismatchRetryPending = false;
-    const specSession = await executeAgentPrompt(
-      input.root, input.config, input.bootstrapContract, input.selection,
-      prompt,
-      { outputContract: "spec-authoring", phase: "spec-authoring", operationKind: "change", requireExecutionAuthority: true }
-    );
-    const evidence = await requireDurableChangeHandoff(input.root, "SPEC_MANAGER", specSession, specAuthoringOutputSchema, input.controlRoot, { operationId: input.operationId, contract: "spec-authoring", phase: "spec-authoring" });
+    incompleteRetryPending = false;
+    let evidence: DurableAgentEvidence<SpecAuthoringOutput>;
+    try {
+      const specSession = await executeAgentPrompt(
+        input.root, input.config, input.bootstrapContract, input.selection,
+        prompt,
+        { outputContract: "spec-authoring", phase: "spec-authoring", operationKind: "change", requireExecutionAuthority: true }
+      );
+      evidence = await requireDurableChangeHandoff(input.root, "SPEC_MANAGER", specSession, specAuthoringOutputSchema, input.controlRoot, { operationId: input.operationId, contract: "spec-authoring", phase: "spec-authoring" });
+    } catch (error) {
+      if (shouldRetrySpecManagerIncomplete(error, incompleteRetries)) {
+        incompleteRetries += 1;
+        incompleteRetryPending = true;
+        continue;
+      }
+      throw error;
+    }
     try {
       validateSpecAuthoringResult(input.changeName, evidence.payload);
     } catch (error) {
       if (shouldRetrySpecManagerChangeMismatch(error, changeMismatchRetries)) {
         changeMismatchRetries += 1;
         mismatchRetryPending = true;
+        continue;
+      }
+      if (shouldRetrySpecManagerIncomplete(error, incompleteRetries)) {
+        incompleteRetries += 1;
+        incompleteRetryPending = true;
         continue;
       }
       throw error;
@@ -1059,7 +1109,8 @@ export function buildSpecManagerPrompt(
     changeInputsPrompt(inputs),
     explorerEvidence ? `Explorer durable result: ${explorerEvidence.artifact}\n${compactJson(explorerEvidence.payload, 10_000)}` : "Explorer result: not expected by topology.",
     plannerEvidence ? `Planner durable result: ${plannerEvidence.artifact}\n${compactJson(plannerEvidence.payload, 12_000)}` : "Planner result: not expected by topology.",
-    "Return complete authored file contents in artifacts.proposal, artifacts.tasks, optional artifacts.design, and artifacts.specs. artifacts.specs is one entry per capability: { capability: \"<kebab-case-capability>\", content: \"<complete OpenSpec change spec delta markdown>\" }. Every content value MUST be a canonical OpenSpec change spec delta: it starts with (or contains) a '## ADDED Requirements', '## MODIFIED Requirements', '## REMOVED Requirements' or '## RENAMED Requirements' section; every requirement is written as '### Requirement: <name>' inside a delta section; every requirement has at least one '#### Scenario: <name>' block; and every requirement statement MUST contain the normative keyword SHALL or MUST (OpenSpec strict validation rejects non-normative requirements). Flat requirement documents without delta headers, requirements without scenarios, requirements without SHALL/MUST and non-kebab-case capability names are rejected before persistence. Do not write files or request repository-write access; the deterministic controller persists these validated contents into the prepared OpenSpec change directory (openspec/changes/<change>/specs/<capability>/spec.md) before OpenSpec validation and compilation.",
+    "Return complete authored file contents in artifacts.proposal, artifacts.tasks, optional artifacts.design, and artifacts.specs. artifacts.specs is one entry per capability: { capability: \"<kebab-case-capability>\", content: \"<complete OpenSpec change spec delta markdown>\" }. Every content value MUST be a canonical OpenSpec change spec delta: it starts with (or contains) a '## ADDED Requirements', '## MODIFIED Requirements', '## REMOVED Requirements' or '## RENAMED Requirements' section; every requirement is written as '### Requirement: <name>' inside a delta section; every requirement has at least one '#### Scenario: <name>' block; and every requirement statement MUST contain the normative keyword SHALL or MUST (OpenSpec strict validation rejects non-normative requirements). Flat requirement documents without delta headers, requirements without scenarios, requirements without SHALL/MUST and non-kebab-case capability names are rejected before persistence. Do not write files or request repository-write access; the deterministic controller persists these validated contents into the prepared OpenSpec change directory (openspec/changes/<change>/proposal.md, openspec/changes/<change>/tasks.md, openspec/changes/<change>/specs/<capability>/spec.md) before OpenSpec validation and compilation.",
+    "When status is READY, artifacts.proposal (the complete proposal.md content) and artifacts.tasks (the complete tasks.md content) are REQUIRED and must both be non-empty; a READY result that omits or empties either is rejected as SPEC_MANAGER_INCOMPLETE_RESULT.",
     selectedChoice ? [
       "Resume the saved SPEC_AUTHORING stage using this paired human product choice as requirement input only:",
       JSON.stringify({ requestId: selectedChoice.requestId, issue: selectedChoice.choice.description, choiceId: selectedChoice.choiceId, label: selectedChoice.choice.label, consequences: selectedChoice.choice.consequences }, null, 2),
