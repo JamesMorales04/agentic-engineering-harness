@@ -14,6 +14,13 @@ import {
 } from "../workers/resultGateway.js";
 import { resolvePaseoSdkFromCli } from "./sdkResolve.js";
 import { recordPaseoTrace } from "./trace.js";
+import {
+  FIRST_ACTIVITY_DEADLINE_MS,
+  FIRST_ACTIVITY_POLL_MS,
+  stalledFirstActivityError,
+  type ProviderTurnActivityCounts,
+  type ProviderTurnKillReason
+} from "./firstActivityDeadline.js";
 
 export interface PaseoSdkMcpStdioServer {
   type: "stdio";
@@ -73,6 +80,10 @@ export interface PaseoSdkAgentResult {
   error?: string;
   /** Bounded identity of the provider approval prompt that stopped the turn (AEH-V2-0116). */
   permission?: PaseoSdkPermissionStop;
+  /** Deadline-vs-stall-vs-error kill reason; present only on killed turns. */
+  killReason?: ProviderTurnKillReason;
+  /** Bounded provider-visible activity counts; refs-only, no provider content. */
+  activity?: ProviderTurnActivityCounts;
 }
 
 export interface PaseoSdkAgentRecord {
@@ -89,6 +100,8 @@ interface PaseoSdkTurnResult {
   lastMessage?: string;
   error?: string;
   final?: { pendingPermissions?: unknown } | null;
+  killReason?: ProviderTurnKillReason;
+  activity?: ProviderTurnActivityCounts;
 }
 
 interface PaseoSdkAgentHandle {
@@ -230,6 +243,12 @@ export async function waitPaseoSdkAgent(root: string, agentId: string, timeoutMs
  * when provided. When the session has an AEH structured-result capability, the
  * accepted durable result artifact is projected back into lastMessage so legacy
  * consumers remain compatible without making transcript text lifecycle authority. */
+/** First-activity bound for one atomic SDK run. Disabled when at/above the turn deadline. */
+export interface PaseoSdkRunActivityOptions {
+  firstActivityMs?: number;
+  pollMs?: number;
+}
+
 export async function runPaseoSdkAgent(
   root: string,
   agentId: string,
@@ -237,11 +256,12 @@ export async function runPaseoSdkAgent(
   timeoutMs?: number,
   outputSchema?: Record<string, unknown>,
   phase?: string,
-  permissionScopeRoots?: string[]
+  permissionScopeRoots?: string[],
+  activityOptions?: PaseoSdkRunActivityOptions
 ): Promise<PaseoSdkAgentResult> {
   if (outputSchema) await activateStructuredResultTurnForAgent(root, agentId, phase);
   const result = await withPaseoClient(root, async (client) =>
-    runPaseoSdkAgentWithClient(client, agentId, prompt, timeoutMs, outputSchema, permissionScopeRoots)
+    runPaseoSdkAgentWithClient(client, agentId, prompt, timeoutMs, outputSchema, permissionScopeRoots, activityOptions)
   );
   let projected = await projectAcceptedPaseoResult(root, result, { requireBoundProvenance: true, verifyCurrentCandidate: true });
   if (!projected.lastMessage?.trim()) {
@@ -266,12 +286,23 @@ export async function runPaseoSdkAgentWithClient(
   prompt: string,
   timeoutMs?: number,
   outputSchema?: Record<string, unknown>,
-  permissionScopeRoots?: string[]
+  permissionScopeRoots?: string[],
+  activityOptions?: PaseoSdkRunActivityOptions
 ): Promise<PaseoSdkAgentResult> {
   const handle = client.agents.ref(agentId);
   if (typeof handle.run === "function") {
-    const turn = await handle.run(prompt, { timeoutMs, ...(outputSchema ? { outputSchema } : {}) });
+    const turn = await runWithFirstActivityWatch(handle, () => handle.run!(prompt, { timeoutMs, ...(outputSchema ? { outputSchema } : {}) }), timeoutMs, activityOptions);
     if (turn.status === "timeout") await stopPaseoSdkAgentHandle(handle);
+    if (turn.killReason === "STALLED_FIRST_ACTIVITY") {
+      return {
+        id: handle.id,
+        workspaceId: handle.workspaceId ?? undefined,
+        status: turn.status,
+        error: turn.error,
+        killReason: turn.killReason,
+        ...(turn.activity ? { activity: turn.activity } : {})
+      };
+    }
     return turnResult(handle, turn, permissionScopeRoots);
   }
   if (typeof handle.send === "function") {
@@ -511,6 +542,130 @@ async function stopPaseoSdkAgentHandle(handle: PaseoSdkAgentHandle): Promise<voi
     await method.call(handle);
     return;
   }
+}
+
+/**
+ * Race one opaque atomic SDK run against the first-activity deadline.
+ *
+ * DETERMINISTIC mechanism: the SDK `run()` primitive exposes no interim
+ * progress, so the controller polls the canonical timeline (tool-call
+ * entries) and the agent snapshot (new assistant text) for provider-visible
+ * content. Any tool call or stream output wins the race and the run settles
+ * normally; zero content for `firstActivityMs` settles as a stall kill that
+ * reuses the existing timeout contract (status timeout, downstream exit
+ * 124) with the explicit STALLED_FIRST_ACTIVITY reason. Poll failures are
+ * best-effort and never fail the turn; the hard turn deadline is unchanged.
+ */
+async function runWithFirstActivityWatch(
+  handle: PaseoSdkAgentHandle,
+  run: () => Promise<PaseoSdkTurnResult>,
+  timeoutMs: number | undefined,
+  options: PaseoSdkRunActivityOptions | undefined
+): Promise<PaseoSdkTurnResult> {
+  const effectiveTimeout = timeoutMs ?? 1_800_000;
+  const firstActivityMs = options?.firstActivityMs ?? FIRST_ACTIVITY_DEADLINE_MS;
+  const pollMs = Math.max(1, options?.pollMs ?? FIRST_ACTIVITY_POLL_MS);
+  if (!(firstActivityMs < effectiveTimeout)) return run();
+  const baseline = await captureRunActivityBaseline(handle);
+  let observed = false;
+  const hasGrown = (current: RunActivityBaseline): boolean =>
+    current.toolCallCount > baseline.toolCallCount
+    || (current.assistantText !== undefined && current.assistantText !== baseline.assistantText)
+    || (current.lastMessage !== undefined && current.lastMessage !== baseline.lastMessage);
+  let pollTimer: ReturnType<typeof setInterval> | undefined;
+  let stallTimer: ReturnType<typeof setTimeout> | undefined;
+  const stopPolling = (): void => {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = undefined;
+    if (stallTimer) clearTimeout(stallTimer);
+    stallTimer = undefined;
+  };
+  // The run is in flight for the whole race; polling only observes it and
+  // never interferes. A final synchronous check at the bound closes the
+  // poll-cadence window so late activity always wins over the kill.
+  const runPromise = run();
+  try {
+    pollTimer = setInterval(() => {
+      void captureRunActivityBaseline(handle).then((current) => {
+        if (hasGrown(current)) {
+          observed = true;
+          if (pollTimer) clearInterval(pollTimer);
+          pollTimer = undefined;
+        }
+      }).catch(() => undefined);
+    }, pollMs);
+    const outcome = await Promise.race([
+      runPromise.then(
+        (turn) => ({ kind: "run" as const, turn }),
+        (error) => ({ kind: "runError" as const, error })
+      ),
+      new Promise<{ kind: "stall" }>((resolve) => {
+        stallTimer = setTimeout(() => resolve({ kind: "stall" }), firstActivityMs);
+      })
+    ]);
+    stopPolling();
+    if (outcome.kind === "run") return outcome.turn;
+    if (outcome.kind === "runError") throw outcome.error;
+    if (observed) return runPromise;
+    const final = await captureRunActivityBaseline(handle).catch(() => undefined);
+    if (final && hasGrown(final)) return runPromise;
+    void runPromise.then(() => undefined, () => undefined);
+    const counts: ProviderTurnActivityCounts = {
+      updatesObserved: 0,
+      toolEvents: final?.toolCallCount ?? baseline.toolCallCount,
+      assistantDelta: false
+    };
+    return {
+      status: "timeout",
+      error: stalledFirstActivityError(firstActivityMs, effectiveTimeout, counts),
+      killReason: "STALLED_FIRST_ACTIVITY",
+      activity: counts
+    };
+  } catch (error) {
+    stopPolling();
+    throw error;
+  }
+}
+
+interface RunActivityBaseline {
+  toolCallCount: number;
+  assistantText?: string;
+  lastMessage?: string;
+  observed: boolean;
+}
+
+async function captureRunActivityBaseline(handle: PaseoSdkAgentHandle): Promise<RunActivityBaseline> {
+  const timeline = handle.timeline && typeof handle.timeline.refetch === "function"
+    ? await handle.timeline.refetch({ direction: "tail", limit: 20 }).catch(() => undefined)
+    : undefined;
+  const entries = extractTimelineEntries(timeline);
+  const toolCallCount = countToolCallEntries(entries);
+  let assistantText: string | undefined;
+  for (const entry of entries) {
+    const text = assistantEntryText(entry);
+    if (text !== undefined) assistantText = text;
+  }
+  const raw = await refreshHandle(handle).catch(() => undefined);
+  const lastMessage = raw ? stringField(raw, ["lastMessage", "last_message"]) : undefined;
+  return {
+    toolCallCount,
+    ...(assistantText !== undefined ? { assistantText } : {}),
+    ...(lastMessage !== undefined ? { lastMessage } : {}),
+    observed: toolCallCount > 0 || assistantText !== undefined || lastMessage !== undefined
+  };
+}
+
+function countToolCallEntries(entries: unknown[]): number {
+  let count = 0;
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    const item = record.item && typeof record.item === "object" && !Array.isArray(record.item)
+      ? record.item as Record<string, unknown>
+      : record;
+    if (String(item.type ?? item.kind ?? "") === "tool_call") count += 1;
+  }
+  return count;
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs = 1_800_000, message: string): Promise<T> {

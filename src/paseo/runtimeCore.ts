@@ -35,6 +35,7 @@ import {
 } from "./sdk.js";
 import { recordPaseoTrace } from "./trace.js";
 import { deterministicPaseoRuntimeDeps, isDeterministicPaseoRuntimeEnabled } from "./deterministicRuntime.js";
+import type { ProviderTurnActivityCounts, ProviderTurnKillReason } from "./firstActivityDeadline.js";
 
 export interface ManagedPaseoAgentOptions extends PaseoSdkAgentOptions {
   timeoutSeconds?: number;
@@ -52,6 +53,10 @@ export interface ManagedPaseoAgentResult {
   observation?: "subscription" | "sdk-run" | "sdk-wait" | "cli-wait";
   efficiencyTelemetry?: import("../telemetry/efficiency.js").ProviderTelemetryEvidenceV2;
   permission?: import("./sdk.js").PaseoSdkPermissionStop;
+  /** Deadline-vs-stall-vs-error kill reason; present only on killed turns. */
+  killReason?: ProviderTurnKillReason;
+  /** Bounded provider-visible activity counts; refs-only, no provider content. */
+  activity?: ProviderTurnActivityCounts;
 }
 
 export interface PaseoRuntimeDeps {
@@ -159,7 +164,7 @@ export async function dispatchManagedPaseoAgent(root: string, agentId: string, p
     } catch (error) {
       if (error instanceof PaseoSdkTimeoutError || (error instanceof Error && error.name === "PaseoSdkTimeoutError")) {
         const stopped = await stopManagedPaseoAgent(root, agentId, deps);
-        return { id: agentId, exitCode: 124, stdout: "", stderr: [errorMessage(error), stopped.stderr].filter(Boolean).join("\n"), status: "timeout", transport: "sdk" };
+        return { id: agentId, exitCode: 124, stdout: "", stderr: [errorMessage(error), stopped.stderr].filter(Boolean).join("\n"), status: "timeout", transport: "sdk", killReason: "DEADLINE" as ProviderTurnKillReason };
       }
       if (!sdkCanFallback(error)) throw error;
       await trace(root, "fallback.cli", { operation: "dispatch", agentId, reason: errorMessage(error) });
@@ -181,7 +186,7 @@ export async function waitManagedPaseoAgent(root: string, agentId: string, timeo
         const stopped = await stopManagedPaseoAgent(root, agentId, deps);
         result.stderr = [result.stderr, stopped.stderr].filter(Boolean).join("\n");
       }
-      await trace(root, "agent.wait.completed", { transport: "sdk", observation: "subscription", agentId, status: result.status ?? "unknown" });
+      await trace(root, "agent.wait.completed", { transport: "sdk", observation: "subscription", agentId, status: result.status ?? "unknown", killReason: result.killReason ?? "none", toolEvents: result.activity?.toolEvents ?? 0 });
       return result;
     } catch (error) {
       if (!sdkCanFallback(error)) throw error;
@@ -191,8 +196,9 @@ export async function waitManagedPaseoAgent(root: string, agentId: string, timeo
         if (result.status === "timeout") {
           const stopped = await stopManagedPaseoAgent(root, agentId, deps);
           result.stderr = [result.stderr, stopped.stderr].filter(Boolean).join("\n");
+          result.killReason ??= "DEADLINE";
         }
-        await trace(root, "agent.wait.completed", { transport: "sdk", observation: "sdk-wait", agentId, status: result.status ?? "unknown" });
+        await trace(root, "agent.wait.completed", { transport: "sdk", observation: "sdk-wait", agentId, status: result.status ?? "unknown", killReason: result.killReason ?? "none" });
         return result;
       } catch (sdkError) {
         if (!sdkCanFallback(sdkError)) throw sdkError;
@@ -207,8 +213,8 @@ export async function waitManagedPaseoAgent(root: string, agentId: string, timeo
     cleanupStderr = (await stopManagedPaseoAgent(root, agentId, deps)).stderr;
   }
   const logs = await deps.run(`paseo logs ${quote(agentId)} --tail 200`, { cwd: root, timeoutMs: 60_000 });
-  const result: ManagedPaseoAgentResult = { id: agentId, exitCode: wait.exitCode, stdout: logs.stdout || wait.stdout, stderr: [wait.stderr, cleanupStderr, logs.stderr].filter(Boolean).join("\n"), status: wait.exitCode === 0 ? "idle" : "failed", transport: "cli", observation: "cli-wait" };
-  await trace(root, "agent.wait.completed", { transport: "cli", observation: "cli-wait", agentId, status: result.status ?? "unknown" });
+  const result: ManagedPaseoAgentResult = { id: agentId, exitCode: wait.exitCode, stdout: logs.stdout || wait.stdout, stderr: [wait.stderr, cleanupStderr, logs.stderr].filter(Boolean).join("\n"), status: wait.exitCode === 0 ? "idle" : "failed", transport: "cli", observation: "cli-wait", ...(wait.timedOut ? { killReason: "DEADLINE" as ProviderTurnKillReason } : {}) };
+  await trace(root, "agent.wait.completed", { transport: "cli", observation: "cli-wait", agentId, status: result.status ?? "unknown", killReason: result.killReason ?? "none" });
   return result;
 }
 
@@ -263,6 +269,8 @@ async function continueManagedPaseoAgentUnleased(
         observation: "sdk-run",
         agentId,
         status: result.status ?? "unknown",
+        killReason: result.killReason ?? "none",
+        toolEvents: result.activity?.toolEvents ?? 0,
         structured: Boolean(outputSchema),
         payloadCaptured: Boolean(result.stdout)
       });
@@ -504,11 +512,11 @@ function providerStopDetail(status?: string, permission?: import("./sdk.js").Pas
 }
 function fromSdk(result: PaseoSdkAgentResult): ManagedPaseoAgentResult {
   const permission = isPermissionStopStatus(result.status) ? redactPermissionStopDiagnostic(result.permission, result.id) : result.permission ? redactPermissionStopDiagnostic(result.permission, result.id) : undefined;
-  return { id: result.id, exitCode: sdkExitCode(result.status, result.error), stdout: permission ? "" : result.lastMessage ?? "", stderr: [permission ? undefined : result.error, providerStopDetail(result.status, permission)].filter(Boolean).join("\n"), status: result.status, workspaceId: result.workspaceId, transport: "sdk", ...(permission ? { permission } : {}) };
+  return { id: result.id, exitCode: sdkExitCode(result.status, result.error), stdout: permission ? "" : result.lastMessage ?? "", stderr: [permission ? undefined : result.error, providerStopDetail(result.status, permission)].filter(Boolean).join("\n"), status: result.status, workspaceId: result.workspaceId, transport: "sdk", ...(permission ? { permission } : {}), ...(result.killReason ? { killReason: result.killReason } : result.status === "timeout" ? { killReason: "DEADLINE" as ProviderTurnKillReason } : {}), ...(result.activity ? { activity: result.activity } : {}) };
 }
 function fromNativeWait(result: PaseoNativeWaitResult): ManagedPaseoAgentResult {
   const permission = isPermissionStopStatus(result.status) ? redactPermissionStopDiagnostic(result.permission, result.id) : result.permission ? redactPermissionStopDiagnostic(result.permission, result.id) : undefined;
-  return { id: result.id, exitCode: sdkExitCode(result.status, result.error), stdout: permission ? "" : result.lastMessage ?? "", stderr: [permission ? undefined : result.error, providerStopDetail(result.status, permission)].filter(Boolean).join("\n"), status: result.status, workspaceId: result.workspaceId, transport: "sdk", observation: "subscription", ...(permission ? { permission } : {}), ...(result.efficiencyTelemetry ? { efficiencyTelemetry: result.efficiencyTelemetry } : {}) };
+  return { id: result.id, exitCode: sdkExitCode(result.status, result.error), stdout: permission ? "" : result.lastMessage ?? "", stderr: [permission ? undefined : result.error, providerStopDetail(result.status, permission)].filter(Boolean).join("\n"), status: result.status, workspaceId: result.workspaceId, transport: "sdk", observation: "subscription", ...(permission ? { permission } : {}), ...(result.killReason ? { killReason: result.killReason } : result.status === "timeout" ? { killReason: "DEADLINE" as ProviderTurnKillReason } : {}), ...(result.activity ? { activity: result.activity } : {}), ...(result.efficiencyTelemetry ? { efficiencyTelemetry: result.efficiencyTelemetry } : {}) };
 }
 function isPermissionStopStatus(status?: string): boolean { return status === "permission" || status === "waiting"; }
 function sdkExitCode(status?: string, error?: string): number { if (status === "timeout") return 124; if (error) return 1; if (status === "failed" || status === "error" || status === "cancelled" || status === "permission" || status === "waiting") return 1; return 0; }

@@ -23,6 +23,7 @@ import {
   updateOperationParticipant,
   updateRegisteredOperationParticipant, type OperationKind } from "../operations/state.js";
 import { compilePaseoAgentLaunchSpec } from "../paseo/launchSpec.js";
+import { classifyProviderTurnKillReason } from "../paseo/firstActivityDeadline.js";
 import {
   continueManagedPaseoAgent,
   launchManagedPaseoAgent,
@@ -566,7 +567,8 @@ export async function dispatchMaterializedAgentPrompt(
     phase: effectiveOptions.phase ?? materialized.phase,
     participantId: authority?.participantId ?? materialized.participantId,
     capabilityLeases: authority?.leases ?? materialized.capabilityLeases,
-    finishedAt: new Date().toISOString()
+    finishedAt: new Date().toISOString(),
+    ...turnKillMetadata(continued)
   };
   await recordAgentLifecycle(root, config, "runtime.terminal.observed", {
     operationId: result.operationId ?? currentOperationContext().id ?? contract.task.id,
@@ -575,6 +577,7 @@ export async function dispatchMaterializedAgentPrompt(
     transport: result.transport,
     status: result.status,
     exitCode: result.exitCode,
+    killReason: result.killReason ?? "none",
     stdoutBytes: Buffer.byteLength(result.stdout),
     stderrBytes: Buffer.byteLength(result.stderr)
   });
@@ -620,7 +623,8 @@ export async function dispatchMaterializedAgentPrompt(
     workspaceId: repaired.workspaceId ?? materialized.workspaceId,
     status: repaired.status,
     phase: repairPhase,
-    finishedAt: new Date().toISOString()
+    finishedAt: new Date().toISOString(),
+    ...turnKillMetadata(repaired)
   };
   return finalizeOperationSession(root, config, contract, selection, repairedResult, repairOptions);
 }
@@ -715,6 +719,7 @@ async function executeViaPaseo(
       finishedAt: new Date().toISOString(),
       ...(continued.efficiencyTelemetry ? { efficiencyTelemetry: continued.efficiencyTelemetry } : {}),
       ...(continued.permission ? { permissionStopDiagnostic: continued.permission } : {}),
+      ...turnKillMetadata(continued),
       participantId: options.participantId,
       capabilityLeases: options.capabilityAuthority?.leases
     });
@@ -738,7 +743,8 @@ async function executeViaPaseo(
       startedAt,
       finishedAt: new Date().toISOString(),
       ...(continued.efficiencyTelemetry ? { efficiencyTelemetry: continued.efficiencyTelemetry } : {}),
-      ...(continued.permission ? { permissionStopDiagnostic: continued.permission } : {})
+      ...(continued.permission ? { permissionStopDiagnostic: continued.permission } : {}),
+      ...turnKillMetadata(continued)
     };
   }
   if (options.executionBinding) throw new Error("PASEO_EXECUTION_SESSION_PREPARATION_REQUIRED: a fresh binding-bearing Paseo launch must continue an already materialized actual session.");
@@ -779,6 +785,7 @@ async function executeViaPaseo(
     finishedAt: new Date().toISOString(),
     ...(launched.efficiencyTelemetry ? { efficiencyTelemetry: launched.efficiencyTelemetry } : {}),
     ...(launched.permission ? { permissionStopDiagnostic: launched.permission } : {}),
+    ...turnKillMetadata(launched),
     participantId: options.participantId,
     capabilityLeases: options.capabilityAuthority?.leases
   });
@@ -1466,6 +1473,13 @@ async function finalizeOperationSession(
     ? contractDelivery.failure ?? `invalid ${options.outputContract ?? "agent"} output contract`
     : undefined;
   const failed = observed.exitCode !== 0 || Boolean(contractFailure);
+  // Killed turns keep the existing FAILED shape so the unchanged retry and
+  // recovery paths engage; the bounded kill marker distinguishes deadline
+  // from stall kills in the participant record (refs-only, no content).
+  const killReason = failed ? (observed.killReason ?? classifyProviderTurnKillReason(observed)) : undefined;
+  const killMarker = killReason === "STALLED_FIRST_ACTIVITY" || killReason === "DEADLINE"
+    ? `[turn-kill=${killReason}${observed.activityCounts ? ` updates=${observed.activityCounts.updatesObserved} toolEvents=${observed.activityCounts.toolEvents}` : ""}]`
+    : undefined;
   await persistEfficiencyObservations(root, config, selection, result, options, operationStateRoot, operationId, failed ? "FAILED" : "SUCCEEDED");
   await updateOperationParticipant(operationStateRoot, operationId, sessionParticipantId, {
     logicalAgent: selection.logicalAgent,
@@ -1478,7 +1492,7 @@ async function finalizeOperationSession(
     transport: observed.transport,
     status: failed ? "FAILED" : "COMPLETED",
     resultArtifact: accepted?.artifact ?? transcriptArtifact,
-    error: failed ? ((contractFailure ?? observed.stderr) || `agent exited with ${observed.exitCode}`) : undefined
+    error: failed ? ([killMarker, contractFailure ?? observed.stderr].filter(Boolean).join(" ") || `agent exited with ${observed.exitCode}`) : undefined
   }).catch(() => undefined);
   const afterParticipant = await loadOperation(operationStateRoot, operationId).catch(() => undefined);
   const receiptArtifact = accepted?.artifact ?? transcriptArtifact;
@@ -1525,6 +1539,7 @@ async function finalizeOperationSession(
     participantId: observed.id,
     logicalAgent: selection.logicalAgent,
     status: failed ? "FAILED" : "COMPLETED",
+    killReason: killReason ?? "none",
     artifact: accepted?.artifact ?? transcriptArtifact,
     contractValid: !contractFailure
   });
@@ -1535,6 +1550,7 @@ async function finalizeOperationSession(
     participantId: observed.id,
     logicalAgent: selection.logicalAgent,
     transport: observed.transport,
+    killReason: killReason ?? "none",
     participantStatus: settled?.participants[observed.id]?.status,
     operationStatus: settled?.status,
     operationRevision: settled?.revision,
@@ -2075,6 +2091,14 @@ function boundPaseoExecutionLabels(options: AgentPromptOptions, role: string, ch
 
 function session(selection: AgentExecutionSelection, exitCode: number, stdout: string, stderr: string, metadata: Partial<WorkerSession> = {}): WorkerSession {
   return { provider: selection.runtimeAdapter, model: selection.modelName, logicalAgent: selection.logicalAgent, nativeAgent: selection.nativeAgent, runtime: selection.runtimeName, profile: selection.profile, exitCode, stdout, stderr, ...metadata };
+}
+
+/** Propagate the settled provider-turn kill reason and bounded activity counts (refs-only). */
+function turnKillMetadata(turn: { killReason?: WorkerSession["killReason"]; activity?: WorkerSession["activityCounts"] }): Partial<WorkerSession> {
+  return {
+    ...(turn.killReason ? { killReason: turn.killReason } : {}),
+    ...(turn.activity ? { activityCounts: turn.activity } : {})
+  };
 }
 
 function withAgentCharter(

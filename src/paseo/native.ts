@@ -6,6 +6,12 @@ import { resolvePaseoSdkFromCli } from "./sdkResolve.js";
 import { recordPaseoTrace } from "./trace.js";
 import { capturePaseoTimelineV2, type PaseoTimelineEventEnvelopeV1 } from "../telemetry/paseoTimeline.js";
 import type { ProviderTelemetryEvidenceV2 } from "../telemetry/efficiency.js";
+import {
+  FIRST_ACTIVITY_DEADLINE_MS,
+  stalledFirstActivityError,
+  type ProviderTurnActivityCounts,
+  type ProviderTurnKillReason
+} from "./firstActivityDeadline.js";
 import { recordPaseoRuntimeActivityV1 } from "../operations/executionLiveness.js";
 
 export interface PaseoNativeUsage {
@@ -60,6 +66,10 @@ export interface PaseoNativeWaitResult {
   efficiencyTelemetry?: ProviderTelemetryEvidenceV2;
   source: "paseo-agent-subscription";
   updatesObserved: number;
+  /** Deadline-vs-stall-vs-error kill reason; present only on killed turns. */
+  killReason?: ProviderTurnKillReason;
+  /** Bounded provider-visible activity counts; refs-only, no provider content. */
+  activity?: ProviderTurnActivityCounts;
 }
 
 export interface PaseoTurnBaseline {
@@ -332,7 +342,9 @@ export async function waitForPaseoAgentNative(
       agentId,
       source: result.source,
       status: result.status ?? "unknown",
+      killReason: result.killReason ?? "none",
       updatesObserved: result.updatesObserved,
+      toolEvents: result.activity?.toolEvents ?? 0,
       baselineAssistant: baseline?.lastAssistantMessage ? "present" : "absent",
       baselineUserMessageAt: baseline?.lastUserMessageAt ?? "absent",
       durationMs: Date.now() - startedAt
@@ -348,10 +360,18 @@ export async function waitForPaseoAgentHandle(
   pollIntervalMs = 2_000,
   captureEfficiencyTelemetry = false,
   onTimelineActivity?: (sessionId: string, envelope: PaseoTimelineEventEnvelopeV1) => Promise<void>,
-  permissionScopeRoots?: string[]
+  permissionScopeRoots?: string[],
+  firstActivityMs = FIRST_ACTIVITY_DEADLINE_MS
 ): Promise<PaseoNativeWaitResult> {
   let updatesObserved = 0;
   let sawActivity = false;
+  // First-activity tracking is content-based only: tool-call/starred timeline
+  // content or new assistant stream output. Bare subscription updates, raw
+  // working/running status, and turn acceptance alone never satisfy it, so a
+  // provider that emits zero tool calls/output is killed at the bound while
+  // every turn with steady output is untouched.
+  let contentEventCount = 0;
+  let assistantDeltaObserved = false;
   let settled = false;
   let unsubscribe: () => void = () => {};
   let unsubscribeTimeline: () => void = () => {};
@@ -360,14 +380,23 @@ export async function waitForPaseoAgentHandle(
   let timelineEventsTruncated = false;
   let latestAgentSnapshot: Record<string, unknown> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let stallTimer: ReturnType<typeof setTimeout> | undefined;
   let poll: ReturnType<typeof setInterval> | undefined;
   let chain = Promise.resolve();
 
   return new Promise<PaseoNativeWaitResult>((resolve, reject) => {
+    const activityCounts = (): ProviderTurnActivityCounts => ({
+      updatesObserved,
+      toolEvents: contentEventCount,
+      assistantDelta: assistantDeltaObserved
+    });
+    const firstActivityObserved = (): boolean =>
+      contentEventCount > 0 || assistantDeltaObserved;
     const finish = (value: PaseoNativeWaitResult) => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
+      if (stallTimer) clearTimeout(stallTimer);
       if (poll) clearInterval(poll);
       unsubscribe();
       unsubscribeTimeline();
@@ -377,6 +406,7 @@ export async function waitForPaseoAgentHandle(
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
+      if (stallTimer) clearTimeout(stallTimer);
       if (poll) clearInterval(poll);
       unsubscribe();
       unsubscribeTimeline();
@@ -390,6 +420,8 @@ export async function waitForPaseoAgentHandle(
       const status = statusText(raw.status);
       if (fromUpdate) updatesObserved += 1;
       if (isActiveStatus(status) || Boolean(raw.activeTurn)) sawActivity = true;
+      const interimAssistant = stringField(raw, ["lastMessage", "last_message"]);
+      if (interimAssistant && interimAssistant !== baseline?.lastAssistantMessage) assistantDeltaObserved = true;
       if (!isTerminalStatus(status)) return;
 
       const timeline =
@@ -443,13 +475,25 @@ export async function waitForPaseoAgentHandle(
         ...(permission ? { permission } : {}),
         ...(capture ? { efficiencyTelemetry: capture.evidence } : {}),
         source: "paseo-agent-subscription",
-        updatesObserved
+        updatesObserved,
+        activity: activityCounts()
       });
     };
 
     try {
+      // A timeline subscription is attached whenever the caller observes
+      // activity or captures telemetry. Content events counted here are the
+      // deterministic first-activity signal; the wrapped activity callback
+      // still receives every envelope for liveness accounting.
+      const observeTimelineEnvelope = (value: unknown): void => {
+        if (!value || typeof value !== "object" || Array.isArray(value)) return;
+        const record = value as Record<string, unknown>;
+        const event = record.event && typeof record.event === "object" && !Array.isArray(record.event) ? record.event as Record<string, unknown> : undefined;
+        if (event && typeof event.type === "string" && (event.type === "turn_completed" || event.type === "timeline")) contentEventCount += 1;
+      };
       if ((captureEfficiencyTelemetry || onTimelineActivity) && handle.timeline && typeof handle.timeline.subscribe === "function") {
         const timelineSubscription = handle.timeline.subscribe((value) => {
+          observeTimelineEnvelope(value);
           if (!value || typeof value !== "object" || Array.isArray(value)) return;
           const record = value as Record<string, unknown>;
           const event = record.event && typeof record.event === "object" && !Array.isArray(record.event) ? record.event as Record<string, unknown> : undefined;
@@ -494,10 +538,41 @@ export async function waitForPaseoAgentHandle(
         error: `Provider turn deadline expired after ${timeoutMs}ms; partial runtime evidence was retained for Supervisor recovery.`,
         ...(partial ? { efficiencyTelemetry: partial } : {}),
         source: "paseo-agent-subscription",
-        updatesObserved
+        updatesObserved,
+        killReason: "DEADLINE",
+        activity: activityCounts()
       };
       chain = chain.then(() => finish(timeoutResult), () => finish(timeoutResult));
     }, timeoutMs);
+    // First-activity deadline: terminate turns with zero provider-visible
+    // activity strictly before the provider turn deadline. Any tool-call
+    // event or assistant stream output satisfies the bound, so legitimate
+    // slow turns are never killed. The settled shape reuses the existing
+    // timeout contract (status timeout, exit 124 downstream) with an explicit
+    // STALLED_FIRST_ACTIVITY kill reason routed into the same recovery paths.
+    if (firstActivityMs < timeoutMs) {
+      stallTimer = setTimeout(() => {
+        if (firstActivityObserved()) return;
+        const partial = captureEfficiencyTelemetry ? capturePaseoTimelineV2({
+          liveEvents: timelineEvents,
+          liveEventsTruncated: timelineEventsTruncated,
+          snapshotUsage: latestAgentSnapshot?.lastUsage,
+          subscriptionReady: timelineSubscriptionReady
+        }).evidence : undefined;
+        const counts = activityCounts();
+        const stalledResult: PaseoNativeWaitResult = {
+          id: handle.id,
+          status: "timeout",
+          error: stalledFirstActivityError(firstActivityMs, timeoutMs, counts),
+          ...(partial ? { efficiencyTelemetry: partial } : {}),
+          source: "paseo-agent-subscription",
+          updatesObserved,
+          killReason: "STALLED_FIRST_ACTIVITY",
+          activity: counts
+        };
+        chain = chain.then(() => finish(stalledResult), () => finish(stalledResult));
+      }, firstActivityMs);
+    }
   });
 }
 

@@ -289,4 +289,8 @@ export interface WorkerSession {
   executionBinding?: import("../architecture/executionIdentity.js").ExecutionBindingV3;
   /** Inert Paseo structured-result channel installed before its actual session is bound. */
   structuredResultChannelId?: string;
+  /** Deadline-vs-stall-vs-error kill reason for the settled provider turn. */
+  killReason?: import("../paseo/firstActivityDeadline.js").ProviderTurnKillReason;
+  /** Bounded provider-visible activity counts for the settled turn (refs-only). */
+  activityCounts?: import("../paseo/firstActivityDeadline.js").ProviderTurnActivityCounts;
 }
