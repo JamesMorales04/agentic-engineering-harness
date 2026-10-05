@@ -16,6 +16,7 @@ import { runConfiguredValidators } from "../../src/validators/registry.js";
 import { runExternalToolValidator } from "../../src/validators/external.js";
 import { createCandidateRevisionV1 } from "../../src/operations/v2Contracts.js";
 import { providerVersions, readRulesetPins, verifyRulesetPins } from "../../scripts/security/toolPin.mjs";
+import { loadProviderLaneEvidenceV1, verifyProviderLaneEvidenceV1 } from "../../src/validation/laneEvidence.js";
 
 const REPO_ROOT = path.resolve(process.cwd());
 const WRAPPERS = {
@@ -578,6 +579,42 @@ describe("project public-api contract validator", () => {
     expect(run.stderr).toContain("PUBLIC-API-FALLBACK-COVERAGE");
   });
 
+  it("does not weaken: a field removed from both overview and snapshot interfaces still fails", async () => {
+    const root = await skeleton();
+    const file = path.join(root, "src", "control-center", "contracts.ts");
+    const source = await fs.readFile(file, "utf8");
+    expect(source).toContain("evidence: ControlCenterEvidenceProjectionV1[];");
+    await fs.writeFile(file, source.replace("  evidence: ControlCenterEvidenceProjectionV1[];\n", ""), "utf8");
+    const run = spawnSync(process.execPath, [PUBLIC_API_CONTRACT, root], { encoding: "utf8", timeout: 60_000 });
+    expect(run.status).not.toBe(0);
+    expect(run.stderr).toContain("PUBLIC-API-OVERVIEW-SHAPE");
+  });
+
+  it("does not weaken: an extra resource kind still fails", async () => {
+    const root = await skeleton();
+    const file = path.join(root, "src", "control-center", "contracts.ts");
+    const source = await fs.readFile(file, "utf8");
+    await fs.writeFile(file, source.replace('| "event";', '| "event"\n  | "extra";'), "utf8");
+    const run = spawnSync(process.execPath, [PUBLIC_API_CONTRACT, root], { encoding: "utf8", timeout: 60_000 });
+    expect(run.status).not.toBe(0);
+    expect(run.stderr).toContain("PUBLIC-API-RESOURCE-KINDS");
+  });
+
+  it("does not weaken: UI/server resource vocabulary drift still fails", async () => {
+    const uiRoot = await skeleton();
+    const uiFile = path.join(uiRoot, "ui", "control-center", "src", "api.ts");
+    await fs.writeFile(uiFile, (await fs.readFile(uiFile, "utf8")).replace("/api/v1/evidence", "/api/v1/removed-evidence"), "utf8");
+    const uiRun = spawnSync(process.execPath, [PUBLIC_API_CONTRACT, uiRoot], { encoding: "utf8", timeout: 60_000 });
+    expect(uiRun.status).not.toBe(0);
+    expect(uiRun.stderr).toContain("PUBLIC-API-RESOURCE-KINDS");
+    const serverRoot = await skeleton();
+    const serverFile = path.join(serverRoot, "src", "control-center", "server.ts");
+    await fs.writeFile(serverFile, (await fs.readFile(serverFile, "utf8")).replace('this.collection("evidence"', 'this.collection("extra"'), "utf8");
+    const serverRun = spawnSync(process.execPath, [PUBLIC_API_CONTRACT, serverRoot], { encoding: "utf8", timeout: 60_000 });
+    expect(serverRun.status).not.toBe(0);
+    expect(serverRun.stderr).toContain("PUBLIC-API-RESOURCE-KINDS");
+  });
+
   it("executes the public-api dimension through the approved contract-test validator with CONTRACT evidence", async () => {
     const root = await skeleton();
     const sourceDigest = await computeWorktreeDigest(root);
@@ -643,6 +680,25 @@ describe("project public-api contract validator", () => {
     } as Parameters<typeof runCandidateImpactValidations>[0]["report"];
     const checks = await runCandidateImpactValidations({ root, config, contract, report, impact, compilation, resolution });
     expect(checks).toMatchObject([{ id: "candidate.assurance.validation.impact-review-public-api", status: "PASS" }]);
+    const laneEvidence = (checks[0].details as { laneEvidence?: { artifact: string; digest: string } }).laneEvidence;
+    expect(laneEvidence?.artifact).toMatch(/\.json$/);
+    expect(laneEvidence?.digest).toMatch(/^[a-f0-9]{64}$/);
+    const evidence = await loadProviderLaneEvidenceV1(root, config, "CONTRACT", candidate, "contract-test");
+    expect(evidence).toBeDefined();
+    expect(evidence!.lane).toBe("CONTRACT");
+    expect(evidence!.checkId).toBe("contract-test");
+    expect(evidence!.candidate).toMatchObject({ candidateId: candidate.candidateId, revision: candidate.revision, identityDigest: candidate.identityDigest });
+    expect(typeof evidence!.provider.name).toBe("string");
+    expect(evidence!.provider.name.length).toBeGreaterThan(0);
+    expect(typeof evidence!.provider.version).toBe("string");
+    expect(evidence!.provider.version.length).toBeGreaterThan(0);
+    expect(evidence!.digest).toMatch(/^[a-f0-9]{64}$/);
+    expect(evidence!.digest).toBe(laneEvidence?.digest);
+    expect(evidence!.artifact).toBe(laneEvidence?.artifact);
+    expect(evidence!.commandDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(evidence!.rawArtifactDigest).toMatch(/^[a-f0-9]{64}$/);
+    const verification = await verifyProviderLaneEvidenceV1(root, config, evidence!, candidate);
+    expect(verification.ok).toBe(true);
   });
 });
 

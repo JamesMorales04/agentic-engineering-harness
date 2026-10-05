@@ -114,20 +114,46 @@ function checkContractVersion(checks, root) {
 }
 
 function checkResourceKinds(checks, root) {
-  const source = read(root, "src/control-center/contracts.ts");
-  if (source === undefined) {
-    fail(checks, "PUBLIC-API-RESOURCE-KINDS", "src/control-center/contracts.ts is missing.");
+  const contracts = read(root, "src/control-center/contracts.ts");
+  const server = read(root, "src/control-center/server.ts");
+  const api = read(root, "ui/control-center/src/api.ts");
+  const projection = read(root, "src/control-center/operationProjection.ts");
+  if (contracts === undefined || server === undefined || api === undefined || projection === undefined) {
+    fail(checks, "PUBLIC-API-RESOURCE-KINDS", "contracts.ts, server.ts, ui api.ts and operationProjection.ts must all exist.");
     return;
   }
   const expected = ["project", "operation", "participant", "candidate", "context", "authority", "evidence", "services", "knowledge", "event"];
-  const block = source.match(/export type ControlCenterResourceKindV1\s*=\s*([\s\S]*?);/);
+  const block = contracts.match(/export type ControlCenterResourceKindV1\s*=\s*([\s\S]*?);/);
   if (!block) {
     fail(checks, "PUBLIC-API-RESOURCE-KINDS", "ControlCenterResourceKindV1 declaration not found.");
     return;
   }
-  const missing = expected.filter((kind) => !block[1].includes(`"${kind}"`));
-  if (missing.length) {
-    fail(checks, "PUBLIC-API-RESOURCE-KINDS", `resource kinds missing from the contract: ${missing.join(", ")}.`);
+  const observed = [...block[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+  if (JSON.stringify(observed) !== JSON.stringify(expected)) {
+    fail(checks, "PUBLIC-API-RESOURCE-KINDS", `resource-kind union is [${observed.join(", ")}] but must be exactly [${expected.join(", ")}] (no extras, no omissions, stable order).`);
+    return;
+  }
+  const serverKinds = [...new Set([...server.matchAll(/(?:collection|detail)\(\s*"([^"]+)"/g)].map((match) => match[1]))];
+  const serverMissing = expected.filter((kind) => !serverKinds.includes(kind));
+  const serverExtra = serverKinds.filter((kind) => !expected.includes(kind));
+  const projectionKinds = [...projection.matchAll(/controlCenterResourceId\(\s*"([^"]+)"/g)].map((match) => match[1]);
+  const projectionExtra = [...new Set(projectionKinds)].filter((kind) => !expected.includes(kind));
+  const projectionCore = ["operation", "project", "candidate", "participant"];
+  const projectionMissingCore = projectionCore.filter((kind) => !projectionKinds.includes(kind));
+  const routeFor = { project: "/api/v1/projects", operation: "/api/v1/operations", participant: "/api/v1/participants", candidate: "/api/v1/candidates", context: "/api/v1/context", authority: "/api/v1/authority", evidence: "/api/v1/evidence", services: "/api/v1/services", knowledge: "/api/v1/knowledge", event: "/api/v1/events" };
+  const uiMissing = expected.filter((kind) => !api.includes(routeFor[kind]));
+  const problems = [];
+  if (serverMissing.length || serverExtra.length) {
+    problems.push(`server vocabulary [${serverKinds.join(", ")}] diverges (missing: ${serverMissing.join(", ") || "none"}; extra: ${serverExtra.join(", ") || "none"})`);
+  }
+  if (projectionExtra.length || projectionMissingCore.length) {
+    problems.push(`projection vocabulary diverges (extra: ${projectionExtra.join(", ") || "none"}; missing core: ${projectionMissingCore.join(", ") || "none"})`);
+  }
+  if (uiMissing.length) {
+    problems.push(`ui vocabulary missing routes for: ${uiMissing.map((kind) => `${kind} (${routeFor[kind]})`).join(", ")}`);
+  }
+  if (problems.length) {
+    fail(checks, "PUBLIC-API-RESOURCE-KINDS", problems.join("; "));
   } else {
     pass(checks, "PUBLIC-API-RESOURCE-KINDS");
   }
@@ -149,12 +175,18 @@ function checkOverviewShape(checks, root) {
     return;
   }
   const overviewInterface = contracts.match(/export interface ControlCenterOverviewV1 extends ControlCenterSnapshotV1 \{([\s\S]*?)\n\}/);
-  if (!overviewInterface) {
-    fail(checks, "PUBLIC-API-OVERVIEW-SHAPE", "ControlCenterOverviewV1 declaration not found.");
+  const snapshotInterface = contracts.match(/export interface ControlCenterSnapshotV1 \{([\s\S]*?)\n\}/);
+  if (!overviewInterface || !snapshotInterface) {
+    fail(checks, "PUBLIC-API-OVERVIEW-SHAPE", "ControlCenterOverviewV1/ControlCenterSnapshotV1 declarations not found.");
     return;
   }
-  const missingInterface = required.filter((field) => !overviewInterface[1].includes(field) && !contracts.includes(`export interface ControlCenterSnapshotV1`));
-  if (missingInterface.length && !required.every((field) => contracts.includes(field))) {
+  const snapshotFields = ["projects", "operations", "participants", "candidates", "context", "authority", "evidence", "services", "knowledge", "quality", "certification"];
+  const overviewOwnFields = ["version", "generatedAt", "buildIdentity", "security", "pairing"];
+  const hasField = (body, field) => new RegExp(`\\b${field}\\s*[?:]`).test(body);
+  const missingSnapshot = snapshotFields.filter((field) => !hasField(snapshotInterface[1], field));
+  const missingOverview = overviewOwnFields.filter((field) => !hasField(overviewInterface[1], field));
+  const missingInterface = [...missingSnapshot, ...missingOverview];
+  if (missingInterface.length) {
     fail(checks, "PUBLIC-API-OVERVIEW-SHAPE", `ControlCenterOverviewV1/snapshot missing fields: ${missingInterface.join(", ")}.`);
   } else if (!server.includes("version: CONTROL_CENTER_CONTRACT_VERSION") || !server.includes("generatedAt") || !server.includes("buildIdentity")) {
     fail(checks, "PUBLIC-API-OVERVIEW-SHAPE", "server overview() must stamp version, generatedAt and buildIdentity.");
