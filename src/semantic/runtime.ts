@@ -221,7 +221,25 @@ export async function createSemanticAssessmentRuntimeV1(
   const policyRevision = options.policyRevision ?? semanticCapabilityPolicyRevisionV1;
   if (policyRevision !== semanticCapabilityPolicyRevisionV1) throw new AehError("SEMANTIC_ASSESSMENT_INVALID", `unsupported semantic capability policy revision '${policyRevision}'.`);
   const runner = new PaseoSemanticAssessmentRunnerV1({ root, assessor, projectName: config.project.name, ...(options.launch ? { launch: options.launch } : {}) });
-  const service = createSemanticAssessmentServiceV1({ assessor, runner, policyRevision, cache: new FileSemanticAssessmentCacheV1(root), ...(options.onTelemetry ? { onTelemetry: options.onTelemetry } : {}) });
+  const service = createSemanticAssessmentServiceV1({
+    assessor,
+    runner,
+    policyRevision,
+    cache: new FileSemanticAssessmentCacheV1(root),
+    ...(options.onTelemetry ? { onTelemetry: options.onTelemetry } : {}),
+    // Persist the same rejected-reply record shape used for unparseable replies
+    // (lengthBytes/sha256/head), extended with the bounded offending-refs list,
+    // so evidence-gate forensics can cite exact strings. Best-effort only.
+    onRejectedReply: async (rejected) => {
+      await recordPaseoTrace(root, "semantic.assessor.reply.rejected", {
+        ...(rejected.sessionId ? { agentId: rejected.sessionId } : {}),
+        assessmentType: rejected.assessmentType,
+        ...(rejected.transport ? { transport: rejected.transport } : {}),
+        ...(rejected.fingerprint ? { lengthBytes: rejected.fingerprint.lengthBytes, sha256: rejected.fingerprint.sha256, head: rejected.fingerprint.head } : {}),
+        ...(rejected.offendingEvidenceRefs !== undefined && rejected.offendingEvidenceRefCount !== undefined ? { offendingEvidenceRefs: rejected.offendingEvidenceRefs, offendingEvidenceRefCount: rejected.offendingEvidenceRefCount } : {})
+      }).catch(() => undefined);
+    }
+  });
   return { service, policyRevision, assessor };
 }
 

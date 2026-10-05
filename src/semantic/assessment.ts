@@ -444,6 +444,43 @@ export interface SemanticAssessmentServiceOptionsV1 {
   policyRevision: string;
   cache?: SemanticAssessmentCacheV1;
   onTelemetry?: (event: SemanticAssessmentTelemetryV1) => Promise<void> | void;
+  /**
+   * Best-effort forensic hook for schema-valid payloads rejected after the
+   * runner returned (evidence-membership, nested-refs, session identity).
+   * The production runtime wires it to the same `semantic.assessor.reply.rejected`
+   * trace shape used for unparseable replies, extended with the bounded
+   * offending-refs list. Never authority; failures are swallowed so the
+   * fail-closed rejection still throws.
+   */
+  onRejectedReply?: (record: SemanticAssessmentRejectedReplyV1) => Promise<void> | void;
+}
+
+/** Bounded forensic record for a rejected but parsed assessment payload. */
+export interface SemanticAssessmentRejectedReplyV1 {
+  assessmentType: string;
+  sessionId?: string;
+  transport?: string;
+  fingerprint?: SemanticReplyFingerprintV1;
+  offendingEvidenceRefs?: string[];
+  offendingEvidenceRefCount?: number;
+}
+
+/**
+ * Bound for the offending-refs list attached to evidence-gate rejections.
+ * Refs are already schema-bounded (1-200 chars); ten capped refs keep the
+ * message and trace bounded while preserving exact strings for forensics.
+ */
+export const MAX_OFFENDING_EVIDENCE_REFS_V1 = 10;
+
+/**
+ * Deterministic offending-refs computation: reply refs not in the request
+ * set, deduplicated, locale-sorted, capped at MAX_OFFENDING_EVIDENCE_REFS_V1
+ * with the total unique count preserved.
+ */
+export function offendingEvidenceRefsV1(allRefs: readonly string[], allowedRefs: readonly string[]): { offending: string[]; total: number } {
+  const allowed = new Set(allowedRefs);
+  const unique = [...new Set(allRefs.filter((ref) => !allowed.has(ref)))].sort((left, right) => left.localeCompare(right));
+  return { offending: unique.slice(0, MAX_OFFENDING_EVIDENCE_REFS_V1), total: unique.length };
 }
 
 export interface SemanticAssessmentAttemptOptionsV1 {
@@ -640,6 +677,7 @@ export class SemanticAssessmentServiceV1 {
       } catch (error) {
         if (error instanceof AehError && error.code === "SEMANTIC_ASSESSMENT_INVALID") {
           const diagnosed = attachReplyDiagnostics(error, run);
+          await this.emitRejectedReply(normalizedRequest.assessmentType, run, diagnosed);
           if (attempt < attemptBudget) { lastInvalid = diagnosed; continue; }
           throw diagnosed;
         }
@@ -684,6 +722,23 @@ export class SemanticAssessmentServiceV1 {
       paseoProvider: result.assessor.paseoProvider,
       fallbackUsed: false
     });
+  }
+
+  private async emitRejectedReply(assessmentType: string, run: SemanticAssessmentRunnerResultV1, diagnosed: AehError): Promise<void> {
+    const hook = this.options.onRejectedReply;
+    if (!hook) return;
+    const details = diagnosed.details as { offendingEvidenceRefs?: unknown; offendingEvidenceRefCount?: unknown } | undefined;
+    const offending = Array.isArray(details?.offendingEvidenceRefs) ? (details.offendingEvidenceRefs as string[]) : undefined;
+    const count = typeof details?.offendingEvidenceRefCount === "number" ? (details.offendingEvidenceRefCount as number) : undefined;
+    try {
+      await hook({
+        assessmentType,
+        ...(run.paseoSession?.agentId ? { sessionId: run.paseoSession.agentId } : {}),
+        ...(run.paseoSession?.transport ? { transport: run.paseoSession.transport } : {}),
+        ...(run.rawReply ? { fingerprint: run.rawReply } : {}),
+        ...(offending !== undefined && count !== undefined ? { offendingEvidenceRefs: [...offending], offendingEvidenceRefCount: count } : {})
+      });
+    } catch { /* forensic hook never masks the fail-closed rejection */ }
   }
 }
 
@@ -737,7 +792,19 @@ function validateAssessmentPayload(payload: SemanticAssessmentPayloadV1, request
     ...payload.recommendations.flatMap((recommendation) => recommendation.evidenceRefs),
     ...payload.knowledgeGaps.flatMap((gap) => gap.evidenceRefs)
   ];
-  if (!refs.length || refs.some((ref) => !request.evidenceRefs.includes(ref))) throw new AehError("SEMANTIC_ASSESSMENT_INVALID", "typed judgment or assessment payload referenced evidence outside the request evidence.");
+  // Evidence-membership gate: reply refs must be a subset of the request set.
+  // On rejection, attach the bounded offending-refs list (reply minus request,
+  // capped at MAX_OFFENDING_EVIDENCE_REFS_V1 with total count) alongside the
+  // existing fingerprint diagnostics. The message prefix stays stable so
+  // existing message-match tests keep passing; the offending strings are
+  // appended where cheap. Still throws fail-closed with no fallback.
+  const { offending, total } = offendingEvidenceRefsV1(refs, request.evidenceRefs);
+  if (!refs.length || total > 0) {
+    const suffix = total > 0 ? ` offendingEvidenceRefs=${JSON.stringify(offending)} offendingEvidenceRefCount=${total}` : "";
+    throw new AehError("SEMANTIC_ASSESSMENT_INVALID", `typed judgment or assessment payload referenced evidence outside the request evidence.${suffix}`, {
+      ...(total > 0 ? { details: { offendingEvidenceRefs: offending, offendingEvidenceRefCount: total } } : {})
+    });
+  }
   const judgmentRefs = new Set(payload.judgment.evidenceRefs);
   const nestedRefs = [
     ...(payload.judgment.type === "STACK" ? payload.judgment.signals.map((signal) => signal.evidenceRef) : []),
