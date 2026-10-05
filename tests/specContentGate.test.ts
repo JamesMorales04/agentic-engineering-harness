@@ -65,6 +65,22 @@ function readyWithTasks(change: string, tasks: string) {
 const CONTENT_POOR_TASKS = "# Tasks\n- Redesign Home and ProjectCenter.\n- Wire decisions.\n- Add S9/S11 evidence.\n- Pass gates and open PR.\n";
 const CANONICAL_TASKS = "# Tasks\n- [ ] 1.1 Redesign Home.\n- [ ] 1.2 Wire decisions.\n";
 
+// Drift-guard compiler cross-check shells out to `openspec` via PATH. CI `test`
+// job (setup-node + npm ci, no mise) has no openspec binary: execFileSync
+// throws ENOENT. Detect once; skip the compiler block with an explicit reason
+// when absent. Mirror (gate==parser) assertions stay unconditional (no binary).
+export function isOpenspecCompilerAvailable(binary = "openspec"): boolean {
+  try {
+    execFileSync(binary, ["--version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const hasOpenspecCompiler = isOpenspecCompilerAvailable();
+const OPENSPEC_ABSENT_REASON = "openspec binary absent from PATH — compiler cross-check skipped";
+
 describe("spec content gate (CHANGE-20261005T060646Z rev61)", () => {
   it("rejects dash-bullet tasks with 0 checkboxes at the handoff gate", () => {
     expect(() => validateOpenSpecTasksCanonicalityV1("change-1", CONTENT_POOR_TASKS)).toThrow(
@@ -153,7 +169,7 @@ describe("gate==parser agreement (single canonical matcher)", () => {
   }
 });
 
-describe("mirror==compiler cross-check (drift guard)", () => {
+describe.skipIf(!hasOpenspecCompiler)(`mirror==compiler cross-check (drift guard)${hasOpenspecCompiler ? "" : ` [SKIPPED: ${OPENSPEC_ABSENT_REASON}]`}`, () => {
   async function validateWithCompiler(tasks: string, specContent: string): Promise<{ exitCode: number; output: string }> {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-spec-content-mirror-"));
     try {
