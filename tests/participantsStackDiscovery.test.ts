@@ -481,6 +481,13 @@ describe("model-first project stack discovery", () => {
     }
   });
 
+  // Bounded 15s budget (vitest default is 5s): this read-only discovery drives
+  // real git init, real worktree-digest computation, and multiple recursive
+  // tree snapshots, so parallel CI/worktree load (e.g. full-suite contention
+  // with concurrent op worktrees) can push the normal ~1s run past 5s. 15s
+  // matches the repo's deterministic 15s/30s process-timeout conventions
+  // (same class as the runRepair 5s->20s rationale) while still failing
+  // closed on hangs. Assertions below are unchanged in strength.
   it("ignores git fsmonitor daemon socket artifacts when verifying read-only discovery", async () => {
     const root = await temporaryRoot("aeh-stack-readonly-daemon-");
     try {
@@ -522,7 +529,7 @@ describe("model-first project stack discovery", () => {
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 
   it("reuses the injected semantic service cache and invalidates it when repository evidence changes", async () => {
     const root = await temporaryRoot("aeh-stack-cache-");

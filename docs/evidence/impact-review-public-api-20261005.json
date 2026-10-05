@@ -1,0 +1,114 @@
+{
+  "version": 1,
+  "record": "impact-review-public-api-provisioning",
+  "date": "2026-10-05",
+  "checkout": "agentic-engineering-harness",
+  "baseCommit": "390216748feff73c2a4f1163a7a2e6497726d85d",
+  "branch": "fix/public-api-validator",
+  "mechanism": "DETERMINISTIC",
+  "note": "Fresh Muse worker, direct edits plus npm validation only, no AEH operations. Overlay-first (.harness/project.yaml + package.json scripts); shipped templates untouched; docs/evidence append-only (this file is new); no Sol/MiMo; fail-closed everywhere. No gate was weakened to make any current or future finding pass. Genuine trivy-vuln findings below remain findings for AEH to repair itself.",
+  "backgroundVerification": {
+    "homeOp": "CHANGE-20261005T191544Z-be9f5ac1 rev147 (reported; not independently re-executed from this worker)",
+    "repairer1": "Correctly used the scope-blocker channel declaring .harness/project.yaml need: frozen validation config lacks an approved contract-test validator for the impact-review-public-api dimension. Confirmed by this worker: on main, candidateImpactValidationRequirementsV1 for reviewDimensions ['public API'] compiles to [{id:'impact-review-public-api', kind:'contract-test'}] and resolveValidationRequirements returns blocked ['impact-review-public-api'] (no configured validator/provider with contract-test kind, no contract/test:contract project script).",
+    "repairer2": "Silently added a test:contract npm script plus touched a hard-protected test. Correct terminal escape per repairHardProtectedPaths (tests/ and configured validator sources are HARD-protected, never exemptible). This change provisions the validator properly via overlay + versioned project script + inventory tests, without touching hard-protected paths outside the implementer role.",
+    "pr87Class": "Same provisioning-gap class as PR87 (architecture/dependency-security): canonical dimension without an approved validator/provider fails closed as UNRESOLVED_VALIDATION_REQUIREMENT. PR87 added scripts/architecture.mjs + trivy/opengrep validators; this change adds scripts/publicApiContract.mjs + contract-test validator."
+  },
+  "investigation": {
+    "dimension": "candidateReviewDimensionValues 'public API' -> kind 'contract-test', floor 'ELEVATED' (src/architecture/candidateAssurance.ts:141). Slug 'public-api' gives requirement id 'impact-review-public-api' with scope=changedFiles and evidenceNeeded contract-test evidence.",
+    "resolution": "contract-test kind resolves via configured-validator (adapter contract-test/pact/openapi), approved-provider (capability contract-test), or project script (contract, test:contract). Configured-command resolves only when id matches requirement id or kind. Plain project-script execution cannot satisfy the CONTRACT lane (PROVIDER_LANE_EVIDENCE_REQUIRED); only provider/adapter execution persists candidate-bound CONTRACT evidence (src/validation/laneEvidence.ts, src/core/run.ts providerEvidenceLaneForKind).",
+    "existingSuites": "Control Center overview/API contract suites: tests/controlCenter.test.ts (loopback health + paired-session overview + project selection + operation pause/resume/cancel + decision submission), tests/browser/s9-control-center-journey.e2e.ts (authenticated overview projection), ui/control-center/src/api.ts (strict version/required-field/buildIdentity/decisionRequest validation), src/control-center/contracts.ts (CONTROL_CENTER_CONTRACT_VERSION=1, 10 resource kinds, Overview/Snapshot/Projection interfaces), src/control-center/server.ts (GET/POST route inventory), src/control-center/operationProjection.ts (version + controlCenterResourceId binding + controls gating). No existing suite provided the contract-test validator the resolver needs; tests/validation/requiredLaneEvidence.test.ts proves a bare project script FAILs the CONTRACT lane and the openapi/pact provider path PASSes.",
+    "requirementIds": ["impact-review-public-api (kind contract-test, from 'public API' dimension)", "capability:contract-test (frozen-contract capability trace, when declared)", "contract-test (configured validator id, equals the kind, S13-fixture pattern)"]
+  },
+  "validators": [
+    {
+      "id": "contract-test",
+      "kind": "contract-test",
+      "source": "configured-validator",
+      "adapter": "contract-test",
+      "command": "node scripts/publicApiContract.mjs",
+      "required": true,
+      "pins": { "tool": "node v22.23.2", "ruleset": "aeh-public-api-contract-v1" },
+      "realRun": { "exitCode": 0, "stdout": "PUBLIC_API_CONTRACT_PASS 10 checks (tool=node v22.23.2, ruleset=aeh-public-api-contract-v1)." }
+    },
+    {
+      "id": "architecture",
+      "kind": "architecture",
+      "source": "configured-command",
+      "command": "node scripts/architecture.mjs",
+      "required": true,
+      "pins": { "tool": "node v22.23.2", "ruleset": "aeh-architecture-v1" },
+      "realRun": { "exitCode": 0, "stdout": "ARCHITECTURE_PASS 12 checks (tool=node v22.23.2, ruleset=aeh-architecture-v1)." }
+    },
+    {
+      "id": "static-security",
+      "kind": "static-security",
+      "source": "configured-validator",
+      "adapter": "opengrep",
+      "command": "node scripts/security/opengrep.mjs",
+      "required": true,
+      "pins": { "tool": "1.22.0", "ruleset": "aeh-opengrep-ruleset v1.0.0", "rulesetDigest": "96a5e7b2fbbe053015d7f5d37e9f7641436707821cdc669d9d2e92a6624faf3c" },
+      "realRun": { "exitCode": 0, "toolVersion": "1.22.0", "findingCount": 0, "outputSha256": "58aa9be63bc4b5394ba2a1860fb9fe4f93b27b24fd42349488eb043d3c53d9ed", "warnings": "6 PartialParsing notes on valid TypeScript (preserved in raw artifact, verdict unaffected)" }
+    },
+    {
+      "id": "trivy-vuln",
+      "kind": "dependency-security",
+      "source": "configured-validator",
+      "adapter": "trivy",
+      "command": "node scripts/security/trivy-vuln.mjs",
+      "required": true,
+      "pins": { "tool": "0.70.0", "scanners": "vuln", "severity": "HIGH,CRITICAL" },
+      "realRun": {
+        "exitCode": 1,
+        "toolVersion": "0.70.0",
+        "findingCount": 152,
+        "outputSha256": "a4ec11df1813417939d47ac52f9ab81ee40420e3a696bb6e67faca55ca362f40",
+        "disposition": "GENUINE_FINDING_REMAINS: gate fails closed; dependency upgrade belongs to a future AEH repair operation, not to this provisioning change."
+      }
+    },
+    {
+      "id": "trivy-secret-misconfig",
+      "kind": "dependency-security",
+      "source": "configured-validator",
+      "adapter": "trivy",
+      "command": "node scripts/security/trivy-secret-misconfig.mjs",
+      "required": true,
+      "pins": { "tool": "0.70.0", "scanners": "misconfig,secret", "severity": "HIGH,CRITICAL" },
+      "realRun": { "exitCode": 0, "toolVersion": "0.70.0", "outputSha256": "ec255af4d4801baadcab5bc3b8e8dca15a4eb7d2ca170353c0ebb5382b6751ff" }
+    }
+  ],
+  "toolchain": {
+    "node": "v22.23.2",
+    "opengrep": { "version": "1.22.0", "source": "aqua:opengrep/opengrep" },
+    "trivy": { "version": "0.70.0", "source": "aqua:aquasecurity/trivy" }
+  },
+  "sourceDigests": {
+    "scripts/publicApiContract.mjs": "7163e5c012dc09ee44c2eae32502e7221f6b84f422101fafc8d2eda5b7a8b1e2",
+    "scripts/architecture.mjs": "b4ffe805535b71f5a68c23c88d1bbc85700bd75a9aab65081c0ac7b1762971e6",
+    "package.json": "6b6483ba37397e9da76ab11a32604995846dff9303aa028bb5c2e4dbac05d18e",
+    ".harness/project.yaml": "0ceb61a99e30c3acbb84a34df72d689ed389dd8f8b298f5cc3c0e91d859f4a96",
+    "tests/validation/impactReviewValidators.test.ts": "7d9807cb00a67bad5594127a1dd4433231d624bb1b2b35b4a239bb69bc99c0b8",
+    "tests/participantsStackDiscovery.test.ts": "55989ff8e78f34c9ba1475ada5a2b008303638502a6ffb0ac7faf25623d401f6"
+  },
+  "validation": {
+    "typecheck": "PASS exit 0",
+    "build": "PASS",
+    "newSuiteHermetic": "tests/validation/impactReviewValidators.test.ts 35 passed, 4 skipped (was 26 passed on main; +8 new public-api tests +1 resolution test, existing assertions untouched)",
+    "participantsStackDiscovery": "33 passed (slowest: fsmonitor-daemon test ~1.1s in isolation; 15s budget added with rationale, assertions untouched)",
+    "npmTest": "FLAKE_UNDER_CONTENTION (honest): full runs showed 2 failed/1669 passed then 1 failed/1670 passed (232 files); the failing test is tests/runRepairCandidateLifecycle.test.ts 'resolves a base contract assertion...' timing out at the 5s default (5018ms) under full-suite load. In isolation it PASSes (1286ms). Same contention class as the 20s rationale; out of scope for this change (left untouched). Clean-tree compare: stashed tree runs the same 2 files with 31 passed/4 skipped; our branch adds only new passing tests.",
+    "testSystemAll": "PASS 67/67",
+    "testPackagedConsumer": "PASS 1/1 (18 skipped)",
+    "gitDiffCheck": "PASS clean except intended files (see git status)",
+    "realValidatorRuns": "publicApiContract PASS 10 checks; architecture PASS 12 checks; opengrep PASS 0 findings; trivy-vuln FAIL 152 genuine findings (gate fails closed); trivy-secret PASS"
+  },
+  "partB": {
+    "verdict": "JUSTIFIED_AND_RAISED",
+    "test": "tests/participantsStackDiscovery.test.ts 'ignores git fsmonitor daemon socket artifacts when verifying read-only discovery'",
+    "change": "Added bounded 15s budget (vitest default 5s) with rationale comment; timeout param 15_000; assertions untouched.",
+    "rationale": "Same class as runRepair 5s->20s: real git init + worktree-digest + multiple recursive tree snapshots; parallel CI/worktree load can push the normal ~1s run (1099ms in isolation, 22% of budget) past 5s. 15s is bounded (3x default, below runRepair 20s) and matches the repo 15s/30s process-timeout conventions while still failing closed on hangs."
+  },
+  "unknowns": [
+    "Trivy vulnerability count drifted 138 (PR87) -> 152; connected runs refresh the DB, which can only add findings. The two recorded CVE families (brace-expansion via minimatch) remain; full CVE list is in the raw artifact.",
+    "OpenGrep reports 6 PartialParsing warnings on valid TypeScript dynamic-import type syntax; warnings preserved in raw artifact, verdict unaffected. A finding hidden in an unparsed region would be missed until the parser improves.",
+    "The trivy-vuln gate FAILs on this checkout until AEH repairs the dependency itself; this provisioning change does not (and must not) silence it."
+  ]
+}

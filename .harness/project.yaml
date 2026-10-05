@@ -237,6 +237,11 @@ validation:
       command: node scripts/security/opengrep.mjs
       required: true
       timeoutSeconds: 900
+    - id: contract-test
+      adapter: contract-test
+      command: node scripts/publicApiContract.mjs
+      required: true
+      timeoutSeconds: 900
     - id: trivy-vuln
       adapter: trivy
       command: node scripts/security/trivy-vuln.mjs
