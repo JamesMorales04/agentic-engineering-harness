@@ -1027,7 +1027,26 @@ export async function buildAgentContextFragments(
   if (stateOperation) add("operation-state", "operation", "PROJECTABLE", 80, JSON.stringify(stateOperation), { authoritative: "deterministic-controller" });
   if (options.parentAgentId) add("structured-handoff-input", "handoff", "PROJECTABLE", 78, JSON.stringify({ parentAgentId: options.parentAgentId, operationId: identity.operationId, phase: identity.phase }), { authoritative: "operation-record" });
   const validationArtifact = await readOptionalText(root, path.posix.join(config.sdd?.reportsDir ?? ".harness/reports", `${contract.task.id}.json`));
-  if (validationArtifact) add("validation-evidence", "validation", "COMPRESSIBLE", 75, validationArtifact, { artifact: path.posix.join(config.sdd?.reportsDir ?? ".harness/reports", `${contract.task.id}.json`) });
+  if (validationArtifact) {
+    // DETERMINISTIC: coordinator/supervision contexts forbid authorized retrieval by
+    // frozen contract, so reversible Headroom compression is unavailable by design.
+    // Emit a deterministic PROJECTABLE validation summary with a durable artifact
+    // receipt instead of COMPRESSIBLE, preserving evidence without requiring a
+    // live recovery surface. When the execution contract requires compression while
+    // forbidding retrieval, keep COMPRESSIBLE so the gateway fails closed with an
+    // explicit incoherent-contract error instead of silently downgrading.
+    const forbidsRetrieval = transportCapabilities.requirements.rawRetrieval === "FORBIDDEN";
+    const requiresCompression = transportCapabilities.requirements.compression === "REQUIRED";
+    const supervisionDeterministicProjection = forbidsRetrieval && !requiresCompression;
+    if (supervisionDeterministicProjection) {
+      add("validation-evidence", "validation", "PROJECTABLE", 75, validationArtifact, {
+        artifact: path.posix.join(config.sdd?.reportsDir ?? ".harness/reports", `${contract.task.id}.json`),
+        preservationReason: "supervision-phase-deterministic: reversible compression unavailable without authorized retrieval; deterministic validation projection with durable artifact receipt",
+      });
+    } else {
+      add("validation-evidence", "validation", "COMPRESSIBLE", 75, validationArtifact, { artifact: path.posix.join(config.sdd?.reportsDir ?? ".harness/reports", `${contract.task.id}.json`) });
+    }
+  }
   const auditArtifact = await latestJsonArtifact(root, ".harness/audits");
   if (auditArtifact) add("audit-evidence", "audit", "PROJECTABLE", 72, auditArtifact.content, { artifact: auditArtifact.path });
   const hasGit = await fs.access(path.join(root, ".git")).then(() => true).catch(() => false);
