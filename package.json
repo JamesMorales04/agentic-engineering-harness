@@ -46,7 +46,12 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "check": "npm run typecheck && npm run build && npm test",
     "release:check": "npm run check && npm pack --dry-run",
-    "release:resolve": "node scripts/release-version.mjs"
+    "release:resolve": "node scripts/release-version.mjs",
+    "architecture": "node scripts/architecture.mjs",
+    "check:architecture": "node scripts/architecture.mjs",
+    "audit": "npm run security:dependencies",
+    "security:dependencies": "node scripts/security/trivy-vuln.mjs && node scripts/security/trivy-secret-misconfig.mjs",
+    "security:sast": "node scripts/security/opengrep.mjs"
   },
   "engines": {
     "node": ">=22"

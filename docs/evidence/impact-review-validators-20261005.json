@@ -1,0 +1,102 @@
+{
+  "version": 1,
+  "record": "impact-review-validators-provisioning",
+  "date": "2026-10-05",
+  "checkout": "agentic-engineering-harness",
+  "baseCommit": "c6a1754",
+  "branch": "fix/impact-review-validators",
+  "mechanism": "DETERMINISTIC",
+  "note": "Owner-approved hybrid provisioning. Fresh worker, direct edits plus npm validation only, no AEH operations. No gate was weakened to make any current or future finding pass. Genuine findings below remain findings for AEH to repair itself.",
+  "validators": [
+    {
+      "id": "architecture",
+      "kind": "architecture",
+      "source": "configured-command",
+      "command": "node scripts/architecture.mjs",
+      "required": true,
+      "pins": { "tool": "node v22.23.2", "ruleset": "aeh-architecture-v1" },
+      "realRun": { "exitCode": 0, "stdout": "ARCHITECTURE_PASS 12 checks (tool=node v22.23.2, ruleset=aeh-architecture-v1)." }
+    },
+    {
+      "id": "static-security",
+      "kind": "static-security",
+      "source": "configured-validator",
+      "adapter": "opengrep",
+      "command": "node scripts/security/opengrep.mjs",
+      "required": true,
+      "pins": { "tool": "1.22.0", "ruleset": "aeh-opengrep-ruleset v1.0.0", "rulesetDigest": "96a5e7b2fbbe053015d7f5d37e9f7641436707821cdc669d9d2e92a6624faf3c" },
+      "realRun": { "exitCode": 0, "toolVersion": "1.22.0", "findingCount": 0, "outputSha256": "c59688b112a35fb0cb880926ef5561e445769366093122e79901744d7019ddb1" }
+    },
+    {
+      "id": "trivy-vuln",
+      "kind": "dependency-security",
+      "source": "configured-validator",
+      "adapter": "trivy",
+      "command": "node scripts/security/trivy-vuln.mjs",
+      "required": true,
+      "pins": { "tool": "0.70.0", "scanners": "vuln", "severity": "HIGH,CRITICAL" },
+      "realRun": {
+        "exitCode": 1,
+        "toolVersion": "0.70.0",
+        "findingCount": 138,
+        "outputSha256": "53fefdf2ad76d9e3e4f1ca1d97f1198807d665cb6ef9e7c49a1717780954abe0",
+        "genuineFindings": [
+          "CVE-2026-102276 HIGH brace-expansion@5.0.9 (via minimatch@10.2.6), fixed in 5.0.10",
+          "CVE-2026-102278 HIGH brace-expansion@5.0.9 (via minimatch@10.2.6), fixed in 5.0.11"
+        ],
+        "disposition": "GENUINE_FINDING_REMAINS: gate fails closed; dependency upgrade belongs to a future AEH repair operation, not to this provisioning change."
+      }
+    },
+    {
+      "id": "trivy-secret-misconfig",
+      "kind": "dependency-security",
+      "source": "configured-validator",
+      "adapter": "trivy",
+      "command": "node scripts/security/trivy-secret-misconfig.mjs",
+      "required": true,
+      "pins": { "tool": "0.70.0", "scanners": "misconfig,secret", "severity": "HIGH,CRITICAL" },
+      "realRun": { "exitCode": 0, "toolVersion": "0.70.0", "findingCount": 0, "outputSha256": "190debcddc486a037e60d5319d93a7696ca476e2c244db6f047c56fab3161a43" }
+    },
+    {
+      "id": "trivy-dependency-security",
+      "kind": "dependency-security",
+      "source": "approved-provider",
+      "capability": "dependency-security",
+      "provider": "trivy",
+      "command": "node scripts/security/trivy-vuln.mjs",
+      "note": "Resolves the generic dependency/supply-chain impact dimension; explicit trivy-vuln / trivy-secret-misconfig check ids resolve to their own configured validators."
+    }
+  ],
+  "toolchain": {
+    "opengrep": { "version": "1.22.0", "source": "aqua:opengrep/opengrep", "binarySha256": "45bcd58440e397ed52c50e953ccf5948909ea77087c9186fc7d277216f62e319" },
+    "trivy": { "version": "0.70.0", "source": "aqua:aquasecurity/trivy", "binarySha256": "379d59f24a4a828c55de5f0b91b6805cc35d13580180b658820e648611256166" },
+    "activation": "aeh toolchain setup resolves both through validator-adapter plus security-tool signals; .config/mise/mise.lock records the aqua pins."
+  },
+  "sourceDigests": {
+    "scripts/architecture.mjs": "b4ffe805535b71f5a68c23c88d1bbc85700bd75a9aab65081c0ac7b1762971e6",
+    "scripts/security/opengrep.mjs": "9d3bc902d667311054f12df926b7fc659130543d551e1f88eb719d3925683217",
+    "scripts/security/toolPin.mjs": "fe5afb72cb9deca65a58414679e09411dc828cc3e57ca2df6a34a50d815fa765",
+    "scripts/security/trivy-secret-misconfig.mjs": "5ee225cc97f4e75453c34009171e9d2394962ab321f94eb56cf84b37c2533bef",
+    "scripts/security/trivy-vuln.mjs": "22271a6ebe6d8fbc00325c324c9ebb4f0077430bac5b5d4218e614ec000f219b",
+    "policies/opengrep/VERSION": "59854984853104df5c353e2f681a15fc7924742f9a2e468c29af248dce45ce03",
+    "policies/opengrep/rules/aeh-v1.yml": "62c7dcb8f1c0814795d0ed1025c6a319166d49612eeaaf1abcc41aecdf413c73",
+    "policies/opengrep/pins.json": "fb02d314190db3387507bb515356f8d8352b5a0ecad5a6d677b308929246e204"
+  },
+  "validation": {
+    "npmCi": "PASS",
+    "typecheck": "PASS exit 0",
+    "build": "PASS",
+    "npmTest": "1588 passed, 11 skipped, 3 failed — all 3 are the pre-existing local-only tests/paseoSdkResolve.test.ts mise drift, byte-identical failures on the clean tree (verified via git stash)",
+    "releaseCheck": "BLOCKED only by the same 3 pre-existing drift failures; npm pack --dry-run standalone PASS (4133 files)",
+    "testSystemAll": "PASS 67/67",
+    "testPackagedConsumer": "PASS 1/1 (18 skipped)",
+    "gitDiffCheck": "PASS clean",
+    "newSuiteHermetic": "tests/validation/impactReviewValidators.test.ts 26 passed, 4 skipped",
+    "newSuiteRealTools": "AEH_RUN_REAL_PROVIDERS=1: 30 passed, 0 failed"
+  },
+  "unknowns": [
+    "Trivy vulnerability DB in this environment is cached at 2026-09-23; connected runs will refresh it, which can only add findings, never remove the two recorded CVEs.",
+    "OpenGrep reports 6 PartialParsing warnings on valid TypeScript dynamic-import type syntax; warnings are preserved in the raw artifact and do not affect the verdict. A finding hidden in an unparsed region would be missed until the parser improves.",
+    "The trivy-vuln gate FAILs on main (138 instances of 2 HIGH CVEs in brace-expansion@5.0.9 via minimatch@10.2.6) until AEH repairs the dependency itself."
+  ]
+}
