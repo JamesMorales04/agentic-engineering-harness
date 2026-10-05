@@ -8,6 +8,7 @@ import { sha256Canonical } from "../../src/core/digest.js";
 import { createCandidateRevisionV1, type CandidateRevisionV1 } from "../../src/operations/v2Contracts.js";
 import type { CandidateImpactV1 } from "../../src/candidates/assembler.js";
 import { compileCandidateAssuranceV1 } from "../../src/architecture/candidateAssurance.js";
+import { evaluateTestAttributionV1 } from "../../src/validation/testAttribution.js";
 import { resolveValidationRequirements, validationRequirementKindValues } from "../../src/architecture/validationRequirements.js";
 import { runCandidateImpactValidations } from "../../src/core/run.js";
 
@@ -535,5 +536,21 @@ describe("requirement test attribution for shared bundles (fail-closed)", () => 
     expect(String((checks[0]?.details as Record<string, unknown>)?.blocker ?? "")).toMatch(
       /TEST_ATTRIBUTION/,
     );
+  });
+
+  it("boundary-safe matching: S1 does not match S11, S11 matches, S9-journey matches space variant", () => {
+    const tests = [
+      { title: "S11-title", fullTitle: "suite > S11-title", status: "passed", passed: true },
+      { title: "S9 journey title", fullTitle: "suite > S9 journey title", status: "passed", passed: true },
+    ];
+    const s1 = evaluateTestAttributionV1({ requirementId: "REQ-S1", selectors: ["S1"], tests });
+    expect(s1.matched).toBe(0);
+    expect(s1.verdict).toBe("FAIL");
+    const s11 = evaluateTestAttributionV1({ requirementId: "REQ-S11", selectors: ["S11"], tests });
+    expect(s11.matched).toBe(1);
+    expect(s11.verdict).toBe("PASS");
+    const s9 = evaluateTestAttributionV1({ requirementId: "REQ-S9", selectors: ["S9-journey"], tests });
+    expect(s9.matched).toBe(1);
+    expect(s9.verdict).toBe("PASS");
   });
 });

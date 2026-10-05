@@ -6,8 +6,9 @@ import type { ValidationRequirementV1 } from "../architecture/validationRequirem
 /**
  * Per-requirement test attribution for shared validation bundles.
  *
- * Mechanism=DETERMINISTIC: substring matching against Playwright JSON reporter
- * titles, fail-closed on unknown titles, missing reporter, or parse errors.
+ * Mechanism=DETERMINISTIC: boundary-safe token/phrase matching against Playwright
+ * JSON reporter titles (case-sensitive, separator-insensitive), fail-closed on
+ * unknown titles, missing reporter, or parse errors.
  * Requirements without declared mapping keep the bundle verdict (no change).
  */
 
@@ -135,6 +136,31 @@ export function effectiveTestSelectorsV1(
   return output;
 }
 
+/**
+ * Boundary-safe selector matching (Mechanism=DETERMINISTIC).
+ *
+ * A selector matches a title only as a standalone token/phrase: every
+ * non-alphanumeric run (spaces, hyphens, underscores, colons, ">", etc.) is
+ * normalized to a single space, then the normalized selector must appear as a
+ * contiguous substring bounded by token edges (implemented via space-padding).
+ * This prevents selector 'S1' from matching title 'S11' (false PASS risk)
+ * while still allowing separator variants such as 'S9-journey' to match
+ * 'S9 journey title'.
+ *
+ * Case behavior: case-SENSITIVE (unchanged from the previous raw `includes`),
+ * to avoid widening matches; only separator/boundary handling changed.
+ */
+function normalizeAttributionTextV1(text: string): string {
+  return text.replace(/[^A-Za-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function matchesAttributionSelectorV1(haystack: string, selector: string): boolean {
+  const normalizedHaystack = normalizeAttributionTextV1(haystack);
+  const normalizedSelector = normalizeAttributionTextV1(selector);
+  if (!normalizedHaystack || !normalizedSelector) return false;
+  return ` ${normalizedHaystack} `.includes(` ${normalizedSelector} `);
+}
+
 export function evaluateTestAttributionV1(input: {
   requirementId: string;
   selectors: readonly string[];
@@ -153,7 +179,11 @@ export function evaluateTestAttributionV1(input: {
     };
   }
   const matched = input.tests.filter((test) =>
-    selectors.some((selector) => test.fullTitle.includes(selector) || test.title.includes(selector)),
+    selectors.some(
+      (selector) =>
+        matchesAttributionSelectorV1(test.fullTitle, selector) ||
+        matchesAttributionSelectorV1(test.title, selector),
+    ),
   );
   if (!matched.length) {
     return {
