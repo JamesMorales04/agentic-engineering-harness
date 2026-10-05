@@ -689,6 +689,27 @@ async function awaitChangeControlCheckpoint(controlRoot: string, operationId: st
   await operationControlCheckpoint(controlRoot, operationId, receipt);
 }
 
+/**
+ * DETERMINISTIC bounded retry budget for the Spec Manager change-echo defect
+ * (CHANGE-20261005T033416Z-be9f5ac1 rev57: `SPEC_MANAGER_CHANGE_MISMATCH` when the
+ * model echoes a title string instead of the exact OpenSpec change slug). Exactly one
+ * retry is allowed per `runSpecManagerUntilReady` invocation; a second mismatch still
+ * throws the exact-equality error. No normalization or fuzzy-match is applied.
+ */
+export const SPEC_MANAGER_CHANGE_MISMATCH_MAX_RETRIES = 1;
+
+export function isSpecManagerChangeMismatch(error: unknown): boolean {
+  return error instanceof Error && error.message.startsWith("SPEC_MANAGER_CHANGE_MISMATCH:");
+}
+
+export function shouldRetrySpecManagerChangeMismatch(error: unknown, retriesSoFar: number): boolean {
+  return isSpecManagerChangeMismatch(error) && retriesSoFar < SPEC_MANAGER_CHANGE_MISMATCH_MAX_RETRIES;
+}
+
+export function buildSpecManagerMismatchRetryNote(changeName: string): string {
+  return `Previous Spec Manager turn failed with SPEC_MANAGER_CHANGE_MISMATCH: output field "change" must be exactly '${changeName}' (the OpenSpec change ID); it is an identifier, not a title. Retry with the exact identifier.`;
+}
+
 async function runSpecManagerUntilReady(input: {
   root: string;
   controlRoot: string;
@@ -708,15 +729,29 @@ async function runSpecManagerUntilReady(input: {
   priorSelections?: ProductChoiceSelectionV1[];
 }): Promise<DurableAgentEvidence<SpecAuthoringOutput>> {
   let selectedChoice = input.initialChoice;
+  let changeMismatchRetries = 0;
+  let mismatchRetryPending = false;
   for (;;) {
     await awaitChangeControlCheckpoint(input.controlRoot, input.operationId);
+    const basePrompt = buildSpecManagerPrompt(input.payload, input.changeName, input.explorerEvidence, input.plannerEvidence, input.inputs, selectedChoice);
+    const prompt = mismatchRetryPending ? `${basePrompt}\n\n${buildSpecManagerMismatchRetryNote(input.changeName)}` : basePrompt;
+    mismatchRetryPending = false;
     const specSession = await executeAgentPrompt(
       input.root, input.config, input.bootstrapContract, input.selection,
-      buildSpecManagerPrompt(input.payload, input.changeName, input.explorerEvidence, input.plannerEvidence, input.inputs, selectedChoice),
+      prompt,
       { outputContract: "spec-authoring", phase: "spec-authoring", operationKind: "change", requireExecutionAuthority: true }
     );
     const evidence = await requireDurableChangeHandoff(input.root, "SPEC_MANAGER", specSession, specAuthoringOutputSchema, input.controlRoot, { operationId: input.operationId, contract: "spec-authoring", phase: "spec-authoring" });
-    validateSpecAuthoringResult(input.changeName, evidence.payload);
+    try {
+      validateSpecAuthoringResult(input.changeName, evidence.payload);
+    } catch (error) {
+      if (shouldRetrySpecManagerChangeMismatch(error, changeMismatchRetries)) {
+        changeMismatchRetries += 1;
+        mismatchRetryPending = true;
+        continue;
+      }
+      throw error;
+    }
     if (evidence.payload.status === "READY") {
       await persistOpenSpecAuthoringContentV1(input.root, input.changeName, { ...evidence.payload.artifacts, proposal: evidence.payload.artifacts.proposal!, tasks: evidence.payload.artifacts.tasks! });
       return evidence;
@@ -978,7 +1013,7 @@ function parseCheckpointEvidence<T>(value: unknown, schema: { parse(value: unkno
   return { artifact: evidence.artifact, sha256: evidence.sha256, payload: schema.parse(evidence.payload) };
 }
 
-function validateSpecAuthoringResult(expectedChange: string, result: SpecAuthoringOutput): void {
+export function validateSpecAuthoringResult(expectedChange: string, result: SpecAuthoringOutput): void {
   if (result.change !== expectedChange) throw new Error(`SPEC_MANAGER_CHANGE_MISMATCH: expected '${expectedChange}', received '${result.change}'.`);
   if (result.status === "BLOCKED") {
     if (result.validationReady || result.decisionRequests.length !== 1) {
@@ -1018,6 +1053,7 @@ export function buildSpecManagerPrompt(
 ): string {
   return [
     `Author OpenSpec change '${changeName}' for the existing durable CHANGE operation.`,
+    `Set output field "change" to exactly '${changeName}' (the OpenSpec change ID); it is an identifier, not a title.`,
     `User request: ${payload.request}`,
     `Explicit acceptance: ${JSON.stringify(payload.acceptance ?? [])}`,
     changeInputsPrompt(inputs),
