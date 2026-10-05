@@ -116,6 +116,30 @@ export const specAuthoringOutputSchema = z.object({
 });
 
 export const implementerOutputSchema = z.object({ filesChanged: z.array(z.string()), behaviorImplemented: z.array(z.string()), decisions: z.array(z.string()).default([]), assumptions: z.array(z.string()).default([]), risks: z.array(z.string()).default([]), validationCommands: z.array(z.string()).default([]), followUp: z.array(z.string()).default([]), contractSync: z.array(z.string()).optional() });
+/**
+ * Canonical Repairer output contract (DETERMINISTIC schema, MODEL content).
+ * The no-mutation blocker path is `filesNeededOutsideScope[]` with a per-file
+ * reason: when the required fix lies outside the frozen scope the Repairer
+ * returns NO file changes and declares the needed files. The deterministic
+ * repair controller validates the declaration, surfaces it as a typed BLOCKED
+ * receipt, and never treats the declaration as authority to widen scope.
+ * Silent scope expansion is still rejected by the candidate assembler.
+ */
+export const repairResultNeededFileSchema = z.object({
+  path: z.string().trim().min(1).max(500),
+  reason: z.string().trim().min(1).max(1_000)
+}).strict();
+export const repairResultOutputSchema = z.object({
+  filesChanged: z.array(z.string()).default([]),
+  behaviorRepaired: z.array(z.string()).default([]),
+  validationCommands: z.array(z.string()).default([]),
+  filesNeededOutsideScope: z.array(repairResultNeededFileSchema).max(8).default([]),
+  followUp: z.array(z.string()).default([])
+}).strict().superRefine((value, ctx) => {
+  if (value.filesNeededOutsideScope.length > 0 && value.filesChanged.length > 0) {
+    ctx.addIssue({ code: "custom", message: "REPAIR_SCOPE_BLOCKER_CONFLICT: filesNeededOutsideScope is a no-mutation report path; filesChanged must be empty when needed files are declared.", path: ["filesChanged"] });
+  }
+});
 export const findingSchema = z.object({ id: z.string().min(1), severity: z.enum(["critical", "high", "medium", "low", "note"]), category: z.string().min(1), location: z.object({ file: z.string().min(1), startLine: z.number().int().positive().optional(), endLine: z.number().int().positive().optional() }), evidence: z.string().min(1), impact: z.string().min(1), recommendedFix: z.string().min(1), requiredCompetencies: z.array(z.string()).min(1), reviewDimensions: z.array(z.string()).default([]), exceptionType: exceptionTypeSchema.optional() });
 export const reviewerOutputSchema = z.object({ verdict: z.enum(["PASS", "FAIL", "PASS_WITH_WARNINGS"]), findings: z.array(findingSchema), finalizationSafety: z.enum(["SAFE", "BLOCKED", "RISK_KNOWN"]), confidence: z.string().optional(), followUp: z.array(z.string()).default([]) });
 export const validatorOutputSchema = z.object({ verdict: z.enum(["PASS", "FAIL", "WARN"]), checks: z.array(z.object({ id: z.string(), status: z.enum(["PASS", "FAIL", "WARN", "SKIP"]), evidence: z.string().optional() })) });
@@ -140,6 +164,7 @@ export type SpecAuthoringOutput = z.infer<typeof specAuthoringOutputSchema>;
 export type NormalizedFinding = z.infer<typeof findingSchema>;
 export type ReviewerOutput = z.infer<typeof reviewerOutputSchema>;
 export type SupervisorOutput = z.infer<typeof supervisorOutputSchema>;
+export type RepairResultOutput = z.infer<typeof repairResultOutputSchema>;
 
 const schemas: Record<string, z.ZodType> = {
   explorer: explorerOutputSchema,
@@ -147,6 +172,7 @@ const schemas: Record<string, z.ZodType> = {
   "knowledge-pack": knowledgePackOutputSchema,
   "spec-authoring": specAuthoringOutputSchema,
   implementer: implementerOutputSchema,
+  "repair-result": repairResultOutputSchema,
   reviewer: reviewerOutputSchema,
   validator: validatorOutputSchema,
   recovery: recoveryOutputSchema,
@@ -184,6 +210,7 @@ const jsonSchemas: Record<string, Record<string, unknown>> = {  explorer: { type
   "knowledge-pack": { type: "object", additionalProperties: false, required: ["pack"], properties: { pack: { type: "object", additionalProperties: false, required: ["version", "cacheKey", "topic", "claims", "sources", "retrievedAt", "packDigest"], properties: { version: { const: 1 }, cacheKey: { type: "string" }, topic: { type: "string" }, claims: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "statement", "competency", "confidence"], properties: { id: { type: "string" }, statement: { type: "string" }, competency: { type: "string" }, confidence: { enum: ["high", "medium", "low"] } } } }, sources: { type: "array", items: { type: "object", additionalProperties: false, required: ["uri", "kind"], properties: { uri: { type: "string" }, kind: { enum: ["official", "repository", "public-code", "unknown"] }, version: { type: "string" } } } }, retrievedAt: { type: "string" }, packDigest: { type: "string" } } }, skillCandidate: skillCandidateJson } },
   "spec-authoring": { type: "object", additionalProperties: false, required: ["change", "status", "artifacts", "requirements", "unresolvedDecisions", "decisionRequests", "validationReady"], properties: { change: { type: "string", pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }, status: { enum: ["READY", "BLOCKED"] }, artifacts: { type: "object", additionalProperties: false, required: ["specs"], properties: { proposal: { type: "string" }, design: { type: "string" }, tasks: { type: "string" }, specs: { type: "array", items: specDeltaJson } } }, requirements: stringArray, unresolvedDecisions: stringArray, decisionRequests: { type: "array", maxItems: 8, items: { type: "object", additionalProperties: false, required: ["issue", "whatTried", "whyUnresolvable", "choices", "workThatCanContinue"], properties: { issue: { type: "string", minLength: 1, maxLength: 4000 }, whatTried: { type: "array", minItems: 1, maxItems: 16, items: { type: "string", minLength: 1, maxLength: 1000 } }, whyUnresolvable: { type: "string", minLength: 1, maxLength: 4000 }, choices: { type: "array", minItems: 1, maxItems: 12, items: { type: "object", additionalProperties: false, required: ["choiceId", "label", "description", "consequences"], properties: { choiceId: { type: "string", minLength: 1, maxLength: 120 }, label: { type: "string", minLength: 1, maxLength: 200 }, description: { type: "string", minLength: 1, maxLength: 2000 }, consequences: { type: "array", minItems: 1, maxItems: 8, items: { type: "string", minLength: 1, maxLength: 1000 } } } } }, workThatCanContinue: { type: "array", maxItems: 32, items: { type: "string", minLength: 1, maxLength: 1000 } } } } }, validationReady: { type: "boolean" } } },
   implementer: { type: "object", additionalProperties: false, required: ["filesChanged", "behaviorImplemented", "decisions", "assumptions", "risks", "validationCommands", "followUp"], properties: { filesChanged: stringArray, behaviorImplemented: stringArray, decisions: stringArray, assumptions: stringArray, risks: stringArray, validationCommands: stringArray, followUp: stringArray, contractSync: stringArray } },
+  "repair-result": { type: "object", additionalProperties: false, required: [], properties: { filesChanged: stringArray, behaviorRepaired: stringArray, validationCommands: stringArray, filesNeededOutsideScope: { type: "array", maxItems: 8, items: { type: "object", additionalProperties: false, required: ["path", "reason"], properties: { path: { type: "string", minLength: 1, maxLength: 500 }, reason: { type: "string", minLength: 1, maxLength: 1000 } } } }, followUp: stringArray } },
   reviewer: { type: "object", additionalProperties: false, required: ["verdict", "findings", "finalizationSafety", "followUp"], properties: { verdict: { enum: ["PASS", "FAIL", "PASS_WITH_WARNINGS"] }, findings: { type: "array", items: findingJson }, finalizationSafety: { enum: ["SAFE", "BLOCKED", "RISK_KNOWN"] }, confidence: { type: "string" }, followUp: stringArray } },
   validator: { type: "object", additionalProperties: false, required: ["verdict", "checks"], properties: { verdict: { enum: ["PASS", "FAIL", "WARN"] }, checks: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "status"], properties: { id: { type: "string" }, status: { enum: ["PASS", "FAIL", "WARN", "SKIP"] }, evidence: { type: "string" } } } } } },
   recovery: { type: "object", additionalProperties: false, required: ["failureType", "rationale", "nextAction"], properties: { failureType: { enum: ["PATCH_CONTEXT_MISMATCH", "TOOL_FAILURE", "MISSING_CONTEXT", "WRONG_AGENT", "VALIDATION_FAILURE", "REVIEW_FAILURE", "AMBIGUOUS_OUTPUT", "CONFLICTING_RESULTS"] }, rationale: { type: "string" }, nextAction: { type: "string" } } },

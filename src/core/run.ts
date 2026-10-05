@@ -420,7 +420,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     const repairerTransport = repairerSelection.transport === "inherit" ? (effectiveConfig.orchestration?.provider ?? "none") : repairerSelection.transport;
     const repairerIssues = validateExecutionCapabilities(repairerSelection, repairerTransport);
     if (repairerIssues.length) throw new Error(`Repairer ${repairerSelection.logicalAgent} is not executable: ${repairerIssues.join("; ")}`);
-    const repairPrompt = `${buildRepairPrompt(packet)}\n\nYou are the canonical Repairer for this operation. Repair only the implementation within the frozen task scope. Do not change requirements, acceptance assertions, validators, policy, or this repair packet. You cannot approve or accept the candidate.`;
+    const repairPrompt = `${buildRepairPrompt(packet)}\n\nYou are the canonical Repairer for this operation. Repair only the implementation within the frozen task scope. Do not change requirements, acceptance assertions, validators, policy, or this repair packet. You cannot approve or accept the candidate. Out-of-scope blocker path (report, don't expand): if the fix needs files outside scope, return no changes and declare them via AEH_RESULT_JSON filesNeededOutsideScope[{path, reason}].`;
     const repair = await executeRepairerCandidateMutation({
       root: workspaceRoot,
       stateRoot: controlRoot,
