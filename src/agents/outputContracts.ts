@@ -101,7 +101,19 @@ export const specAuthoringOutputSchema = z.object({
   unresolvedDecisions: z.array(z.string()).default([]),
   decisionRequests: z.array(productChoiceDraftSchema).max(8),
   validationReady: z.boolean()
-}).strict();
+}).strict().superRefine((value, ctx) => {
+  // DETERMINISTIC READY artifact gate (CHANGE-20261005T053426Z-be9f5ac1 rev57:
+  // `SPEC_MANAGER_INCOMPLETE_RESULT` when the model returns READY without tasks).
+  // The durable-handoff gate rejects a READY result that omits proposal/tasks here,
+  // before `validateSpecAuthoringResult`; BLOCKED shape is unchanged.
+  if (value.status !== "READY") return;
+  if (!value.artifacts.proposal?.trim()) {
+    ctx.addIssue({ code: "custom", message: "SPEC_MANAGER_INCOMPLETE_RESULT: READY spec authoring must identify proposal.md and tasks.md artifacts (artifacts.proposal is missing or empty).", path: ["artifacts", "proposal"] });
+  }
+  if (!value.artifacts.tasks?.trim()) {
+    ctx.addIssue({ code: "custom", message: "SPEC_MANAGER_INCOMPLETE_RESULT: READY spec authoring must identify proposal.md and tasks.md artifacts (artifacts.tasks is missing or empty).", path: ["artifacts", "tasks"] });
+  }
+});
 
 export const implementerOutputSchema = z.object({ filesChanged: z.array(z.string()), behaviorImplemented: z.array(z.string()), decisions: z.array(z.string()).default([]), assumptions: z.array(z.string()).default([]), risks: z.array(z.string()).default([]), validationCommands: z.array(z.string()).default([]), followUp: z.array(z.string()).default([]), contractSync: z.array(z.string()).optional() });
 export const findingSchema = z.object({ id: z.string().min(1), severity: z.enum(["critical", "high", "medium", "low", "note"]), category: z.string().min(1), location: z.object({ file: z.string().min(1), startLine: z.number().int().positive().optional(), endLine: z.number().int().positive().optional() }), evidence: z.string().min(1), impact: z.string().min(1), recommendedFix: z.string().min(1), requiredCompetencies: z.array(z.string()).min(1), reviewDimensions: z.array(z.string()).default([]), exceptionType: exceptionTypeSchema.optional() });

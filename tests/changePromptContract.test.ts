@@ -4,9 +4,13 @@ import {
   buildPlannerPrompt,
   buildSpecManagerPrompt,
   buildSpecManagerMismatchRetryNote,
+  buildSpecManagerIncompleteRetryNote,
   isSpecManagerChangeMismatch,
+  isSpecManagerIncompleteResult,
   shouldRetrySpecManagerChangeMismatch,
+  shouldRetrySpecManagerIncomplete,
   SPEC_MANAGER_CHANGE_MISMATCH_MAX_RETRIES,
+  SPEC_MANAGER_INCOMPLETE_MAX_RETRIES,
   validateSpecAuthoringResult,
 } from "../src/operations/change.js";
 import { outputJsonSchema, specAuthoringOutputSchema } from "../src/agents/outputContracts.js";
@@ -177,5 +181,159 @@ describe("spec-manager change echo (CHANGE-20261005T033416Z-be9f5ac1 rev57)", ()
       }
     }).toThrow(/SPEC_MANAGER_CHANGE_MISMATCH: expected 'change-test-1', received 'another-slug'/);
     expect(secondRetries).toBe(1);
+  });
+});
+
+describe("spec-manager incomplete READY retry (CHANGE-20261005T053426Z-be9f5ac1 rev57)", () => {
+  const canonicalSpecs = [{
+    capability: "greeting",
+    content: "## ADDED Requirements\n### Requirement: Greet\nThe system SHALL greet.\n#### Scenario: greet\n- **GIVEN** a user\n- **WHEN** greeted\n- **THEN** hello"
+  }];
+
+  function readyWithArtifacts(change: string, artifacts: Record<string, unknown>) {
+    return {
+      change,
+      status: "READY" as const,
+      artifacts: { specs: [], ...artifacts },
+      requirements: [],
+      unresolvedDecisions: [],
+      decisionRequests: [],
+      validationReady: true
+    };
+  }
+
+  function blockedWithoutArtifacts(change: string) {    return {
+      change,
+      status: "BLOCKED" as const,
+      artifacts: { specs: [] },
+      requirements: [],
+      unresolvedDecisions: [],
+      decisionRequests: [{
+        issue: "A genuine product decision is required.",
+        whatTried: ["derived everything derivable from inputs"],
+        whyUnresolvable: "Two viable options remain with different consequences.",
+        choices: [{ choiceId: "a", label: "Option A", description: "First option.", consequences: ["ships A"] }],
+        workThatCanContinue: []
+      }],
+      validationReady: false
+    };
+  }
+
+  it("prompt states the explicit READY proposal/tasks requirement", () => {
+    const prompt = buildSpecManagerPrompt(payload, "change-test-1", undefined, undefined, []);
+    expect(prompt).toContain("proposal.md");
+    expect(prompt).toContain("tasks.md");
+    expect(prompt).toContain("SPEC_MANAGER_INCOMPLETE_RESULT");
+    expect(prompt).toContain("are REQUIRED");
+  });
+
+  it("schema rejects READY without proposal/tasks but accepts BLOCKED without them", () => {
+    // Exact failed-op shape: proposal + design present, tasks key absent, specs empty.
+    const missingTasks = readyWithArtifacts("change-test-1", { proposal: "# Proposal" });
+    const missingTasksParse = specAuthoringOutputSchema.safeParse(missingTasks);
+    expect(missingTasksParse.success).toBe(false);
+    if (!missingTasksParse.success) {
+      expect(JSON.stringify(missingTasksParse.error.issues)).toContain("SPEC_MANAGER_INCOMPLETE_RESULT");
+    }
+    const missingProposal = readyWithArtifacts("change-test-1", { tasks: "- [ ] work" });
+    expect(specAuthoringOutputSchema.safeParse(missingProposal).success).toBe(false);
+    const whitespaceTasks = readyWithArtifacts("change-test-1", { proposal: "# Proposal", tasks: "   " });
+    expect(specAuthoringOutputSchema.safeParse(whitespaceTasks).success).toBe(false);
+    // BLOCKED shape is unchanged: no proposal/tasks required.
+    expect(specAuthoringOutputSchema.safeParse(blockedWithoutArtifacts("change-test-1")).success).toBe(true);
+  });
+
+  it("validator still rejects READY without tasks with the exact INCOMPLETE error (no weakening)", () => {
+    const missingTasks = readyWithArtifacts("change-test-1", { proposal: "# Proposal" });
+    expect(() => validateSpecAuthoringResult("change-test-1", missingTasks as never))
+      .toThrow("SPEC_MANAGER_INCOMPLETE_RESULT: READY spec authoring must identify proposal.md and tasks.md artifacts.");
+  });
+
+  it("retry-once cures a first incomplete then throws on second", () => {
+    expect(SPEC_MANAGER_INCOMPLETE_MAX_RETRIES).toBe(1);
+    const firstIncomplete = (() => {
+      try {
+        validateSpecAuthoringResult("change-test-1", readyWithArtifacts("change-test-1", { proposal: "# Proposal" }) as never);
+      } catch (error) {
+        return error;
+      }
+      throw new Error("expected SPEC_MANAGER_INCOMPLETE_RESULT");
+    })();
+    expect(isSpecManagerIncompleteResult(firstIncomplete)).toBe(true);
+    expect(isSpecManagerIncompleteResult(new Error("SPEC_MANAGER_READY_INVALID: nope"))).toBe(false);
+    expect(isSpecManagerIncompleteResult(new Error("SPEC_MANAGER_CHANGE_MISMATCH: expected 'a', received 'b'"))).toBe(false);
+
+    // Deterministic counter-bounded gate: exactly one retry.
+    expect(shouldRetrySpecManagerIncomplete(firstIncomplete, 0)).toBe(true);
+    expect(shouldRetrySpecManagerIncomplete(firstIncomplete, 1)).toBe(false);
+    expect(shouldRetrySpecManagerIncomplete(new Error("SPEC_MANAGER_READY_INVALID: nope"), 0)).toBe(false);
+
+    // Retry note re-asserts both required artifacts deterministically.
+    const note = buildSpecManagerIncompleteRetryNote("change-test-1");
+    expect(note).toContain("SPEC_MANAGER_INCOMPLETE_RESULT");
+    expect(note).toContain("artifacts.proposal");
+    expect(note).toContain("artifacts.tasks");
+    expect(note).toContain("proposal.md");
+    expect(note).toContain("tasks.md");
+
+    // Simulate the production retry loop: first incomplete retries and cures.
+    let retriesSoFar = 0;
+    const attempts = [
+      readyWithArtifacts("change-test-1", { proposal: "# Proposal" }),
+      readyWithArtifacts("change-test-1", { proposal: "# Proposal", tasks: "- [ ] work", specs: canonicalSpecs })
+    ];
+    let cured = false;
+    for (const attempt of attempts) {
+      try {
+        validateSpecAuthoringResult("change-test-1", attempt as never);
+        cured = true;
+        break;
+      } catch (error) {
+        if (!shouldRetrySpecManagerIncomplete(error, retriesSoFar)) throw error;
+        retriesSoFar += 1;
+      }
+    }
+    expect(cured).toBe(true);
+    expect(retriesSoFar).toBe(1);
+
+    // A second incomplete still throws the exact error.
+    let secondRetries = 0;
+    expect(() => {
+      for (const attempt of [
+        readyWithArtifacts("change-test-1", { proposal: "# Proposal" }),
+        readyWithArtifacts("change-test-1", { proposal: "# Proposal" })
+      ]) {
+        try {
+          validateSpecAuthoringResult("change-test-1", attempt as never);
+        } catch (error) {
+          if (!shouldRetrySpecManagerIncomplete(error, secondRetries)) throw error;
+          secondRetries += 1;
+        }
+      }
+    }).toThrow(/SPEC_MANAGER_INCOMPLETE_RESULT: READY spec authoring must identify proposal\.md and tasks\.md artifacts\./);
+    expect(secondRetries).toBe(1);
+  });
+
+  it("recognizes the handoff-wrapped incomplete but not unrelated handoff rejections", () => {
+    const wrapped = new Error(
+      "SPEC_MANAGER_RESULT_INVALID: Error: [{ path: artifacts.tasks, message: 'SPEC_MANAGER_INCOMPLETE_RESULT: READY spec authoring must identify proposal.md and tasks.md artifacts.' }]"
+    );
+    expect(isSpecManagerIncompleteResult(wrapped)).toBe(true);
+    expect(shouldRetrySpecManagerIncomplete(wrapped, 0)).toBe(true);
+    expect(shouldRetrySpecManagerIncomplete(wrapped, 1)).toBe(false);
+    const unrelated = new Error("SPEC_MANAGER_RESULT_INVALID: Error: [{ path: change, message: 'Invalid string' }]");
+    expect(isSpecManagerIncompleteResult(unrelated)).toBe(false);
+    expect(shouldRetrySpecManagerIncomplete(unrelated, 0)).toBe(false);
+  });
+
+  it("keeps mismatch and incomplete retry budgets independent", () => {
+    expect(SPEC_MANAGER_CHANGE_MISMATCH_MAX_RETRIES).toBe(1);
+    expect(SPEC_MANAGER_INCOMPLETE_MAX_RETRIES).toBe(1);
+    const mismatch = new Error("SPEC_MANAGER_CHANGE_MISMATCH: expected 'change-test-1', received 'other-slug'.");
+    const incomplete = new Error("SPEC_MANAGER_INCOMPLETE_RESULT: READY spec authoring must identify proposal.md and tasks.md artifacts.");
+    expect(shouldRetrySpecManagerChangeMismatch(mismatch, 1)).toBe(false);
+    expect(shouldRetrySpecManagerIncomplete(incomplete, 0)).toBe(true);
+    expect(isSpecManagerChangeMismatch(incomplete)).toBe(false);
+    expect(isSpecManagerIncompleteResult(mismatch)).toBe(false);
   });
 });
