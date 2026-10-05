@@ -20,6 +20,9 @@ import {
   writeRepairScopeBlockerReceipt,
   filterForbiddenScopeForAmendment,
   assertRepairScopeAmendment,
+  repairHardProtectedPaths,
+  findRepairHardProtectedViolations,
+  REPAIR_AMENDABLE_MANIFEST_PATHS,
   type RepairScopeAmendmentV1,
   type RepairScopeBlockerReceiptV1,
 } from "./repairScope.js";
@@ -146,7 +149,7 @@ export async function executeRepairerCandidateMutation(input: {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "REPAIR_SCOPE_BLOCKER_CONFLICT: Repairer declared filesNeededOutsideScope while also producing a ChangeSet; the no-mutation blocker path requires no file changes.");
   }
 
-  const { allowedScope, forbiddenScope } = effectiveRepairScope(input.allowedScope, [...input.forbiddenScope, ...repairProtectedPaths(input.config, input.contract)], input.contract, input.scopeAmendment);
+  const { allowedScope, forbiddenScope } = effectiveRepairScope(input.allowedScope, [...input.forbiddenScope, ...repairProtectedPaths(input.config, input.contract)], input.config, input.contract, input.scopeAmendment);
   const assembled = await assembleCandidateChangeSet({
     root: input.root,
     operationId: input.operationId,
@@ -206,7 +209,7 @@ export async function rejectRepairCandidateChangeSet(input: {
     prepareWorkspace: input.prepareWorkspace
   });
   if (!inverse) throw new AehError("CANDIDATE_STALE", "Rejected repair has no reversible source changes.");
-  const rejectedScope = effectiveRepairScope(input.allowedScope, [...input.forbiddenScope, ...repairProtectedPaths(input.config, input.contract)], input.contract, input.scopeAmendment);
+  const rejectedScope = effectiveRepairScope(input.allowedScope, [...input.forbiddenScope, ...repairProtectedPaths(input.config, input.contract)], input.config, input.contract, input.scopeAmendment);
   const assembled = await assembleCandidateChangeSet({
     root: input.root,
     operationId: input.operationId,
@@ -234,64 +237,18 @@ export async function rejectRepairCandidateChangeSet(input: {
 
 /** Files that define the frozen task, validation policy, or runtime policy cannot be changed by repair. */
 export function repairProtectedPaths(config: HarnessProjectConfig, contract: TaskContract): string[] {
-  const paths = new Set<string>([
-    `${config.sdd?.contractsDir ?? ".harness/contracts"}/${contract.task.id}.yaml`,
-    `.harness/seals/${contract.task.id}.json`,
-    ".harness/project.yaml",
-    "package.json",
-    "package-lock.json",
-    "pnpm-lock.yaml",
-    "yarn.lock",
-    "tests",
-    "test",
-    "specs",
-    "acceptance",
-    "features",
-    "src/validators",
-    ...(contract.scope?.frozen ?? []),
-    ...(config.validation?.frozenPaths ?? []),
-    ...configuredValidatorSourcePaths(config, contract),
-    ...Object.values(contract.source ?? {}).filter((value): value is string => Boolean(value)),
-    ...(contract.issue?.snapshotPath ? [contract.issue.snapshotPath] : []),
-    ...(config.agents?.configPath ? [config.agents.configPath] : []),
-    ...(config.agents?.generatedPath ? [config.agents.generatedPath] : []),
-    ...(config.toolchain?.configPath ? [config.toolchain.configPath] : []),
-    ...(config.toolchain?.lockPath ? [config.toolchain.lockPath] : []),
-    ...(config.validation?.opa?.policyDirs ?? []),
-    ...(config.organization?.policyBundles?.cacheDir ? [config.organization.policyBundles.cacheDir] : []),
-    ...(config.controlPlane?.include ?? [])
-  ]);
-  const normalized = new Set<string>();
-  for (const raw of paths) {
+  // Canonical default-deny source: HARD-protected (never exemptible) plus the
+  // amendable dependency-manifest denials. HARD is owned by repairScope.ts so
+  // the exemption gates cannot drift from the deny source.
+  const hard = repairHardProtectedPaths(config, contract);
+  const amendable = new Set<string>();
+  for (const raw of REPAIR_AMENDABLE_MANIFEST_PATHS) {
     const value = raw.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/$/, "");
     if (!value || path.isAbsolute(value) || value.split("/").includes("..")) continue;
-    normalized.add(value);
-    normalized.add(`${value}/**`);
+    amendable.add(value);
+    amendable.add(`${value}/**`);
   }
-  return [...normalized].sort();
-}
-
-function configuredValidatorSourcePaths(config: HarnessProjectConfig, contract: TaskContract): string[] {
-  const commands = [
-    ...(config.validation?.commands ?? []),
-    ...(config.validation?.validators ?? []),
-    ...(config.validation?.providers ?? []),
-    ...(contract.verification?.commands ?? []),
-    ...(contract.verification?.validators ?? [])
-  ];
-  const references = new Set<string>();
-  const sourceArgument = /(?:^|[\s"'=])((?:\/|\.{1,2}\/)?(?:[A-Za-z0-9_.@-]+\/)*[A-Za-z0-9_.@-]+\.(?:[cm]?[jt]sx?|py|sh|bash|ps1|rb|pl|rego|feature|json|ya?ml|toml))(?=$|[\s"'#])/g;
-  for (const command of commands) {
-    if (!command.command) continue;
-    sourceArgument.lastIndex = 0;
-    for (const match of command.command.matchAll(sourceArgument)) {
-      const value = match[1];
-      if (!value || path.posix.isAbsolute(value)) continue;
-      const reference = path.posix.normalize(path.posix.join(command.workingDirectory ?? ".", value)).replace(/^\.\//, "");
-      if (reference !== ".." && !reference.startsWith("../")) references.add(reference);
-    }
-  }
-  return [...references];
+  return [...new Set([...hard, ...amendable])].sort();
 }
 
 /**
@@ -365,10 +322,13 @@ function assertBlockerFilesAreActuallyBlocked(
  * amendment-exempted paths are removed from the forbidden list. The amended
  * contract must already allow every exempted path (persisted allowlist
  * amendment + reseal); otherwise the retry fails closed with no auto-allow.
+ * HARD-protected paths (frozen TaskContract, seal, validators,
+ * acceptance/spec, policy) are never exemptible even with an approval.
  */
 function effectiveRepairScope(
   allowedScope: readonly string[],
   forbiddenScope: readonly string[],
+  config: HarnessProjectConfig,
   contract: TaskContract,
   amendment: RepairScopeAmendmentV1 | undefined,
 ): { allowedScope: readonly string[]; forbiddenScope: readonly string[] } {
@@ -386,7 +346,17 @@ function effectiveRepairScope(
       );
     }
   }
-  return { allowedScope, forbiddenScope: filterForbiddenScopeForAmendment(forbiddenScope, amendment) };
+  // HARD-protection gate (never exemptible): an approved blocker cannot make
+  // frozen TaskContract/seal/validators/acceptance/spec/policy paths writable.
+  const hardViolations = findRepairHardProtectedViolations(amendment.exemptedPaths, config, contract);
+  if (hardViolations.length) {
+    throw new AehError(
+      "PARTICIPANT_PLAN_INVALID",
+      `REPAIR_SCOPE_AMENDMENT_NON_EXEMPTIBLE: exempted path(s) are never exemptible (frozen TaskContract, seal, validators, acceptance/spec, policy): ${hardViolations.join(", ")}.`,
+    );
+  }
+  const hardProtected = repairHardProtectedPaths(config, contract);
+  return { allowedScope, forbiddenScope: filterForbiddenScopeForAmendment(forbiddenScope, amendment, hardProtected) };
 }
 
 function matchesAnyRepairScope(file: string, patterns: readonly string[]): boolean {

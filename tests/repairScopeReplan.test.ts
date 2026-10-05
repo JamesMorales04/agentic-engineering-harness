@@ -10,8 +10,11 @@ import {
   REPAIR_SCOPE_APPROVE_CHOICE_ID,
   REPAIR_SCOPE_DENY_CHOICE_ID,
   applyRepairScopeAmendment,
+  createRepairScopeBlockerReceipt,
   filterForbiddenScopeForAmendment,
+  findRepairHardProtectedViolations,
   listRepairScopeAmendments,
+  repairHardProtectedPaths,
   repairScopeBlockerValidationCheck,
   repairScopeProductChoices,
   resolveRepairScopeBlockerViaProductChoice,
@@ -629,6 +632,115 @@ describe("repair out-of-scope blocker → bounded replan channel", () => {
     const cleared = await loadOperation(root, operationId);
     expect(cleared.continuation).toBeUndefined();
     expect(cleared.decisionRequest).toBeUndefined();
+  });
+
+  it("hard-protected blocker paths are non-exemptible (no suspend/approve); manifests stay amendable", async () => {
+    const root = await createRepo();
+    const operationId = "CHANGE-REPAIR-HARD-1";
+    const task = contract();
+    const config = projectConfig();
+    await writeContractAndSeal(root, config, task);
+    const now = "2026-01-01T00:00:00.000Z";
+    await saveOwnedOperation(root, {
+      version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "repair",
+      root, payload: { taskId: task.task.id }, createdAt: now, updatedAt: now,
+    } as never);
+    bindEnv(operationId, root);
+    await bindPolicyForCurrentIdentity(root, operationId);
+    const selection = repairerSelection();
+    const catalog = compileExecutionCatalog({
+      runtimes: { test: { adapter: "codex" } },
+      models: { test: { runtime: "test", model: "fake" } },
+      roleBindings: { Repairer: { runtimeId: "test", modelAlias: "test", transport: "direct", outputContract: "repair-result", args: [] } },
+    });
+    const sealPath = `.harness/seals/${task.task.id}.json`;
+    const hardBlocker = await executeRepairerCandidateMutation({
+      root, stateRoot: root, operationId, taskId: task.task.id,
+      workUnitId: "validation-repair:blocker-hard", phase: "validation-repair",
+      config, contract: task, selection, executionCatalog: catalog,
+      allowedScope: ["src/**"], forbiddenScope: [],
+      prompt: buildRepairPrompt(packet(task.task.id)),
+      execute: async (_ir, participantId) => ({
+        provider: "test", logicalAgent: "repairer", participantId, exitCode: 0,
+        stdout: `AEH_RESULT_JSON=${JSON.stringify({
+          filesChanged: [], behaviorRepaired: [], validationCommands: [],
+          filesNeededOutsideScope: [{ path: sealPath, reason: "needs seal tweak" }],
+        })}`,
+        stderr: "",
+      }),
+    });
+    expect(hardBlocker.scopeBlocker).toBeDefined();
+    // HARD subset owns the seal; the amendable manifest is denied but exemptible.
+    expect(repairHardProtectedPaths(config, task).some((p) => p === sealPath)).toBe(true);
+    expect(findRepairHardProtectedViolations([sealPath], config, task)).toEqual([sealPath]);
+    expect(findRepairHardProtectedViolations(["package-lock.json"], config, task)).toEqual([]);
+    expect(repairHardProtectedPaths(config, task).some((p) => p === "package-lock.json")).toBe(false);
+    expect(repairProtectedPaths(config, task).some((p) => p === "package-lock.json")).toBe(true);
+    // Resolver rejects without suspending: no HUMAN_REQUIRED, no amendment.
+    const resolved = await resolveRepairScopeBlockerViaProductChoice({
+      root, controlRoot: root, operationId, config, contract: task,
+      blocker: hardBlocker.scopeBlocker!, timeoutMs: 500, pollMs: 25,
+    });
+    expect(resolved.status).toBe("BLOCKED");
+    if (resolved.status !== "BLOCKED") throw new Error("expected BLOCKED");
+    expect(resolved.check.message).toMatch(/non-exemptible/i);
+    expect(resolved.check.message).toContain(sealPath);
+    expect(await listRepairScopeAmendments(root, config, task.task.id)).toHaveLength(0);
+    const after = await loadOperation(root, operationId);
+    expect(after.phase).not.toBe("HUMAN_REQUIRED");
+    expect(after.decisionRequest).toBeUndefined();
+    // Direct apply with a consumed ledger approval still throws (never exemptible).
+    {
+      const binding = syntheticBinding(hardBlocker.scopeBlocker!.operationId);
+      const ledgerDir = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-repair-ledger-hard-"));
+      roots.push(ledgerDir);
+      const ledger = new HumanDecisionLedgerV2(ledgerDir);
+      const requestId = "request:repair-scope-hard-1";
+      const decision = await ledger.recordProductChoice({
+        ...binding,
+        purpose: { kind: "PRODUCT_CHOICE", requestId, choiceId: REPAIR_SCOPE_APPROVE_CHOICE_ID },
+        kind: "CHOOSE", actorId: "human:control-center:test", reason: "attempt seal exemption",
+      }, requestId);
+      await ledger.consumeExact(binding, decision.purpose, decision.decisionId, decision.actorId);
+      await expect(
+        applyRepairScopeAmendment({
+          root, config, contract: task, blocker: hardBlocker.scopeBlocker!,
+          authorization: { decision, binding, requestId }, ledger,
+        }),
+      ).rejects.toThrow(/NON_EXEMPTIBLE/i);
+      expect(await listRepairScopeAmendments(root, config, task.task.id)).toHaveLength(0);
+    }
+    // Manifest path keeps the existing approve flow: ledger approve → AMENDED.
+    {
+      const manifestBlocker = createRepairScopeBlockerReceipt({
+        operationId, taskId: task.task.id, workUnitId: "validation-repair:blocker-manifest",
+        filesNeededOutsideScope: [{ path: "package-lock.json", reason: "trivy bump" }],
+      });
+      const binding = syntheticBinding(operationId);
+      const ledgerDir = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-repair-ledger-manifest-"));
+      roots.push(ledgerDir);
+      const ledger = new HumanDecisionLedgerV2(ledgerDir);
+      const requestId = "request:repair-scope-manifest-1";
+      const decision = await ledger.recordProductChoice({
+        ...binding,
+        purpose: { kind: "PRODUCT_CHOICE", requestId, choiceId: REPAIR_SCOPE_APPROVE_CHOICE_ID },
+        kind: "CHOOSE", actorId: "human:control-center:test", reason: "approve lockfile",
+      }, requestId);
+      await ledger.consumeExact(binding, decision.purpose, decision.decisionId, decision.actorId);
+      const amended = await applyRepairScopeAmendment({
+        root, config, contract: task, blocker: manifestBlocker,
+        authorization: { decision, binding, requestId }, ledger,
+      });
+      expect(amended.status).toBe("AMENDED");
+      if (amended.status !== "AMENDED") throw new Error("expected AMENDED");
+      expect(amended.amendment.exemptedPaths).toEqual(["package-lock.json"]);
+      const effectiveForbidden = filterForbiddenScopeForAmendment(
+        [...repairProtectedPaths(config, task)],
+        amended.amendment,
+        repairHardProtectedPaths(config, task),
+      );
+      expect(effectiveForbidden.some((p) => p === "package-lock.json")).toBe(false);
+    }
   });
 
   it("repair prompt states the blocker path explicitly (report, don't expand)", async () => {
