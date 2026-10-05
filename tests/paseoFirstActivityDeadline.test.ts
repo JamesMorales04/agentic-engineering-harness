@@ -18,19 +18,29 @@ import {
 
 describe("first-activity deadline constants", () => {
   it("holds a conservative bound strictly under the provider turn deadline", () => {
-    // CONSERVATISM (Luna finding 1): durable telemetry cannot measure
-    // time-to-first-tool-call for opaque SDK runs (liveness toolCallCount is
-    // always 0), while total turn time reaches 27.7min healthy — so 20min has
-    // no margin and the bound is 25min: strictly under the 30min cap (5min
-    // saved per stall), 5x the 300s semantic deadline, 16.6x the max observed
-    // successful subscription wait (90.2s), and above the 20min single-journey
-    // browser Playwright budget with 5min margin. Per-role totals (Planner
-    // 5.9min, Spec Manager 5.7min, Repairer 11.3min) all clear 25min with 2x+
-    // margin; role scoping was rejected because the observed Implementer
-    // stall is the expensive case this bound saves.
+    // TRADEOFF (not closure): residual false-stall risk is real — the SDK
+    // path cannot measure time-to-first-activity and a healthy 27.7min
+    // completion was observed, so a healthy-but-silent-past-25min turn is
+    // still stopped. Accepted because all 14 observed timeouts were
+    // zero-activity stalls, the kill routes into existing bounded retry
+    // (fresh turns median ~2min), the 30min hard cap is unchanged, and
+    // STALLED stays distinguishable from DEADLINE for forensics.
+    // Stop-then-read guarantees correct CLASSIFICATION + content
+    // preservation, not turn preservation.
     expect(FIRST_ACTIVITY_DEADLINE_MS).toBe(25 * 60_000);
     expect(PROVIDER_TURN_DEADLINE_MS).toBe(30 * 60_000);
     expect(FIRST_ACTIVITY_DEADLINE_MS).toBeLessThan(PROVIDER_TURN_DEADLINE_MS);
+    // Retry-recovery existence: stall text routes into existing budgets.
+    expect(
+      stalledFirstActivityError(1_500_000, 1_800_000, { updatesObserved: 0, toolEventCount: 0, assistantDelta: false })
+    ).toContain("existing retry budgets apply");
+    // Forensics: STALLED stays distinguishable from DEADLINE.
+    expect(
+      classifyProviderTurnKillReason({ exitCode: 124, stderr: stalledFirstActivityError(1_500_000, 1_800_000, { updatesObserved: 0, toolEventCount: 0, assistantDelta: false }) })
+    ).toBe("STALLED_FIRST_ACTIVITY");
+    expect(
+      classifyProviderTurnKillReason({ exitCode: 124, stderr: "Provider turn deadline expired after 1800000ms" })
+    ).toBe("DEADLINE");
   });
 
   it("stays far above the semantic model deadline so bounded reasoning is never cut", () => {

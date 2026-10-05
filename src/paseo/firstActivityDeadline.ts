@@ -43,9 +43,15 @@
  *   rejected because the observed Implementer stall (30min timeout, zero
  *   activity) is the expensive case this bound saves. Any tool call or stream
  *   output satisfies the bound, so long turns with steady output are never
- *   killed; the residual silent->25min risk is closed by the SDK stop-then-read
- *   ordering invariant (post-stop authoritative read classifies late activity
- *   as DEADLINE with forensics, never as STALLED).
+ *   killed. Residual false-stall risk is REAL: a healthy-but-silent-past-25min
+ *   turn is still stopped (healthy 27.7min completion observed; SDK path
+ *   cannot measure first-activity). Accepted because all 14 observed timeouts
+ *   were zero-activity stalls, the kill routes into existing bounded retry
+ *   (fresh turns median ~2min), the 30min hard cap is unchanged, and
+ *   killReason distinguishes STALLED_FIRST_ACTIVITY from DEADLINE for
+ *   forensics. The SDK stop-then-read ordering invariant guarantees correct
+ *   CLASSIFICATION + content preservation (late activity reads as DEADLINE
+ *   with forensics, never as STALLED), not turn preservation.
  * - Production workhorse (Muse via OpenCode) carries no thinking variant,
  *   so it runs provider-default reasoning; xhigh thinking is reserved for
  *   the Luna brain lanes, which never show the zero-activity signature.
