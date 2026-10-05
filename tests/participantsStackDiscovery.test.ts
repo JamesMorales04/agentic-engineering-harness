@@ -198,11 +198,27 @@ async function temporaryRoot(prefix: string): Promise<string> {
   return root;
 }
 
+// Git fsmonitor daemon state (`.git/fsmonitor--daemon.ipc` Unix socket and
+// `.git/fsmonitor--daemon/` runtime directory) can appear asynchronously in
+// worktrees when core.fsmonitor=true. These are non-versioned daemon runtime
+// artifacts, not repository mutations. Exclude only this narrow daemon/socket
+// prefix (plus similar `*.ipc`/`*.sock` sockets directly under `.git`) so all
+// other `.git` contents remain compared.
+function isGitDaemonSocketArtifact(child: string): boolean {
+  if (child === ".git/fsmonitor--daemon.ipc" || child === ".git/fsmonitor--daemon" || child.startsWith(".git/fsmonitor--daemon/")) return true;
+  if (child.startsWith(".git/")) {
+    const rest = child.slice(".git/".length);
+    if (!rest.includes("/") && (rest.endsWith(".ipc") || rest.endsWith(".sock"))) return true;
+  }
+  return false;
+}
+
 async function listTree(root: string, relative = ""): Promise<string[]> {
   const entries = await fs.readdir(path.join(root, relative), { withFileTypes: true });
   const result: string[] = [];
   for (const entry of entries.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))) {
     const child = relative ? `${relative}/${entry.name}` : entry.name;
+    if (isGitDaemonSocketArtifact(child)) continue;
     result.push(entry.isDirectory() ? `${child}/` : child);
     if (entry.isDirectory()) result.push(...(await listTree(root, child)));
   }
@@ -460,6 +476,49 @@ describe("model-first project stack discovery", () => {
       await discoverProjectStackProfile(root, { semanticAssessment: { service, binding } });
       await discoverProjectStackProfile(root, { semanticAssessment: { service, binding } });
       expect(await listTree(root)).toEqual(before);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores git fsmonitor daemon socket artifacts when verifying read-only discovery", async () => {
+    const root = await temporaryRoot("aeh-stack-readonly-daemon-");
+    try {
+      await fs.mkdir(path.join(root, "src"), { recursive: true });
+      await fs.writeFile(path.join(root, "src", "file.txt"), "content\n");
+      const binding = await repositoryBinding(root);
+      const before = await listTree(root);
+      expect(before).toContain(".git/HEAD");
+      expect(before.some((entry) => entry.includes("fsmonitor--daemon"))).toBe(false);
+      // Simulate the fsmonitor daemon socket appearing asynchronously after the
+      // baseline snapshot (regular files stand in for the Unix socket; the
+      // filter is name-scoped so file kind does not matter and the real repo
+      // `.git` is untouched because this fixture is an isolated tmp root).
+      // Remove any real daemon socket first: `git` may have auto-started the
+      // daemon during binding and a Unix socket cannot be overwritten with a
+      // regular write (ENXIO).
+      await fs.rm(path.join(root, ".git", "fsmonitor--daemon.ipc"), { force: true });
+      await fs.writeFile(path.join(root, ".git", "fsmonitor--daemon.ipc"), "simulated daemon socket payload\n");
+      await fs.mkdir(path.join(root, ".git", "fsmonitor--daemon", "cookies"), { recursive: true });
+      await fs.writeFile(path.join(root, ".git", "fsmonitor--daemon", "cookies", "simulated-cookie"), "cookie\n");
+      const service = canonicalService((request) => stackPayload(request));
+      await discoverProjectStackProfile(root, { semanticAssessment: { service, binding } });
+      // Daemon/socket artifacts are excluded: the filtered tree still matches.
+      expect(await listTree(root)).toEqual(before);
+      // Real tree semantics are unchanged: versioned files and other `.git`
+      // contents remain compared (no blanket `.git` ignore).
+      await fs.writeFile(path.join(root, "src", "extra.txt"), "extra content\n");
+      const withExtra = await listTree(root);
+      expect(withExtra).not.toEqual(before);
+      expect(withExtra).toContain("src/extra.txt");
+      expect(withExtra).toContain(".git/HEAD");
+      // Suffix filter is direct-children only: a nested `.ipc` file remains listed.
+      await fs.mkdir(path.join(root, ".git", "custom-subdir"), { recursive: true });
+      await fs.writeFile(path.join(root, ".git", "custom-subdir", "nested.ipc"), "nested payload\n");
+      expect(await listTree(root)).toContain(".git/custom-subdir/nested.ipc");
+      // listTree is path-only: it proves the HEAD path remains listed after
+      // filtering, not content-change detection.
+      expect(await listTree(root)).toContain(".git/HEAD");
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

@@ -129,6 +129,12 @@ describe("public runTask Repairer candidate lifecycle", () => {
     expect(mocks.legacyRepair).not.toHaveBeenCalled();
   });
 
+  // Bounded 20s budget (vitest default is 5s): this lifecycle drives real git
+  // init/commit, real `node check.mjs` validator spawns, and operation-state
+  // IO, so parallel CI/worktree load (e.g. npm-check + concurrent repair
+  // sessions) can push the normal ~1s run past 5s. 20s matches the repo's
+  // deterministic 15s/30s process-timeout conventions while still failing
+  // closed on hangs. Assertions below are unchanged in strength.
   it("repairs validation failures but rejects acceptance without Reviewer execution provenance", async () => {
     const root = await createProject();
     const task = taskContract();
@@ -196,7 +202,7 @@ describe("public runTask Repairer candidate lifecycle", () => {
     expect(result.acceptanceOracle?.blockers.map((item) => item.code)).toContain("VERIFICATION_REVIEW_STRENGTH_INSUFFICIENT");
     expect(result.report.checks.find((check) => check.id === "acceptance.oracle")?.status).toBe("FAIL");
     expect(mocks.legacyRepair).not.toHaveBeenCalled();
-  });
+  }, 20_000);
 
   it("resolves a base contract assertion to its declared configured validation check through the acceptance bundle", async () => {
     const root = await createProject();
