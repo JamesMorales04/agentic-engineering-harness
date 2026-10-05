@@ -42,6 +42,11 @@ import { assertCapabilityRegistryV1, discoverCapabilityRegistryV1, loadOperation
 import { assembleCandidateChangeSet, type CandidateImpactAssessmentRuntimeV1 } from "../candidates/assembler.js";
 import { executeIsolatedCandidateMutation } from "../candidates/direct.js";
 import { executeRepairerCandidateMutation } from "../candidates/repair.js";
+import {
+  listRepairScopeAmendments,
+  repairScopeBlockerValidationCheck,
+  resolveRepairScopeBlockerViaProductChoice,
+} from "../candidates/repairScope.js";
 import { bindAssembledCandidate } from "../candidates/binding.js";
 import { createSemanticAssessmentRuntimeV1, createSemanticRepositoryBindingV1, type SemanticAssessmentRuntimeV1 } from "../semantic/runtime.js";
 import { recordPaseoTrace } from "../paseo/trace.js";
@@ -116,7 +121,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
   const policyResolution = await resolveOrganizationPolicyBundles(controlRoot, config);
   const effectiveConfig = withOrganizationPolicies(config, policyResolution);
   const workspaceRoot = path.resolve(await deliveryWorkspacePath(controlRoot, effectiveConfig, contract.task.id) ?? controlRoot);
-  const effectiveContract = workspaceRoot === controlRoot ? contract : await loadTaskContract(workspaceRoot, contract.task.id, effectiveConfig);
+  let effectiveContract = workspaceRoot === controlRoot ? contract : await loadTaskContract(workspaceRoot, contract.task.id, effectiveConfig);
   const semanticRuntime = options?.semanticRuntime ?? (operationId ? await createSemanticAssessmentRuntimeV1(workspaceRoot, effectiveConfig, { profile: options?.profile }) : undefined);
   let projectStack: ProjectStackProfileV1 | undefined;
   if (operationId && semanticRuntime) {
@@ -439,6 +444,109 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
       execute: (isolatedRoot, participantId) => executeAgentPrompt(isolatedRoot, effectiveConfig, effectiveContract, repairerSelection, repairPrompt, { outputContract: repairerSelection.outputContract ?? "implementer", phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true }),
       semanticAssessment: impactAssessmentRuntime
     });
+    // Repair-scope blocker → bounded ledger-gated replan (the single production
+    // amendment path). On a scopeBlocker outcome the controller suspends for a
+    // bounded approve/deny product choice over the exact blocker files +
+    // reasons; on a ledger-approved decision it applies the amendment + reseals
+    // and runs a single retry; on deny/timeout/stale it returns BLOCKED citing
+    // the blocker (fail closed, no retry). Max 1 amendment/task is enforced in
+    // the resolver and the apply gate; a second blocker goes BLOCKED without a
+    // second suspension (no unbounded loops).
+    if (repair.scopeBlocker) {
+      const blocker = repair.scopeBlocker;
+      worker = repair.session;
+      executionSessions.push(worker);
+      let resolution: Awaited<ReturnType<typeof resolveRepairScopeBlockerViaProductChoice>>;
+      try {
+        resolution = await resolveRepairScopeBlockerViaProductChoice({
+          root: workspaceRoot,
+          controlRoot,
+          operationId: activeOperationId,
+          config: effectiveConfig,
+          contract: effectiveContract,
+          blocker,
+        });
+      } catch (error) {
+        // Fail closed: any resolver throw (suspend/apply/budget) is BLOCKED
+        // citing the blocker, never a silent pass and never an expansion.
+        const check = repairScopeBlockerValidationCheck(blocker);
+        await recordEvent(controlRoot, effectiveConfig, "harness.repair.scope-blocked", {
+          taskId: effectiveContract.task.id, attempt: attempts, status: "BLOCKED",
+          blockerDigest: blocker.digest, filesNeededOutsideScope: blocker.filesNeededOutsideScope,
+          error: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
+        }).catch(() => undefined);
+        report = mergeChecks(report, [check]);
+        await recordEvent(controlRoot, effectiveConfig, "harness.repair.finish", { taskId: effectiveContract.task.id, attempt: attempts, status: report.status, agent: selection?.logicalAgent, scopeBlocked: true }).catch(() => undefined);
+        break;
+      }
+      if (resolution.status === "BLOCKED") {
+        await recordEvent(controlRoot, effectiveConfig, "harness.repair.scope-blocked", {
+          taskId: effectiveContract.task.id, attempt: attempts, status: "BLOCKED",
+          blockerDigest: blocker.digest, filesNeededOutsideScope: blocker.filesNeededOutsideScope,
+          choiceId: resolution.choiceId ?? "denied-or-timed-out",
+        }).catch(() => undefined);
+        report = mergeChecks(report, [resolution.check]);
+        await recordEvent(controlRoot, effectiveConfig, "harness.repair.finish", { taskId: effectiveContract.task.id, attempt: attempts, status: report.status, agent: selection?.logicalAgent, scopeBlocked: true }).catch(() => undefined);
+        break;
+      }
+      // AMENDED: adopt the resealed contract, restore the remediation stage
+      // (the canonical suspend/resume channel briefly parks the operation in
+      // its SPEC_AUTHORING continuation target), and run the single retry
+      // against the amended scope. The amendment cites the exact ledger
+      // decision; all other protected paths remain denied.
+      effectiveContract = resolution.contract;
+      const amendment = resolution.amendment;
+      await runStage(operationStateRoot, activeOperationId, "remediation", "RUNNING").catch(() => undefined);
+      await recordEvent(controlRoot, effectiveConfig, "harness.repair.scope-amended", {
+        taskId: effectiveContract.task.id, attempt: attempts, blockerDigest: blocker.digest,
+        exemptedPaths: amendment.exemptedPaths, decisionId: amendment.decisionId,
+        requestId: amendment.requestId, decidedActor: amendment.decidedActor,
+      }).catch(() => undefined);
+      const amendedRetry = await executeRepairerCandidateMutation({
+        root: workspaceRoot,
+        stateRoot: controlRoot,
+        operationId: activeOperationId,
+        taskId: effectiveContract.task.id,
+        workUnitId: `repair:${effectiveContract.task.id}:${attempts}:scope-amended-retry`,
+        phase: "validation-repair",
+        config: effectiveConfig,
+        contract: effectiveContract,
+        selection: repairerSelection,
+        executionCatalog: executionBoundary.executionCatalog,
+        allowedScope: effectiveContract.scope?.allowed ?? ["**"],
+        forbiddenScope: [...(effectiveContract.scope?.forbidden ?? []), ...(effectiveContract.scope?.frozen ?? []), ...(effectiveConfig.validation?.frozenPaths ?? [])],
+        scopeAmendment: amendment,
+        prompt: repairPrompt,
+        prepareWorkspace: controller ? async (isolatedRoot) => { await materializeControlPlaneSnapshot(controller!, isolatedRoot, effectiveConfig); } : undefined,
+        execute: (isolatedRoot, participantId) => executeAgentPrompt(isolatedRoot, effectiveConfig, effectiveContract, repairerSelection, repairPrompt, { outputContract: repairerSelection.outputContract ?? "implementer", phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true }),
+        semanticAssessment: impactAssessmentRuntime
+      });
+      worker = amendedRetry.session;
+      executionSessions.push(worker);
+      if (amendedRetry.scopeBlocker) {
+        // A second blocker after the single amendment means the retry still
+        // needs scope outside the amended allowlist: BLOCKED (no second
+        // suspension, max 1/task preserved). Fail closed citing the new blocker.
+        const secondCheck = repairScopeBlockerValidationCheck(amendedRetry.scopeBlocker);
+        await recordEvent(controlRoot, effectiveConfig, "harness.repair.scope-blocked", {
+          taskId: effectiveContract.task.id, attempt: attempts, status: "BLOCKED",
+          blockerDigest: amendedRetry.scopeBlocker.digest, filesNeededOutsideScope: amendedRetry.scopeBlocker.filesNeededOutsideScope,
+          amendments: (await listRepairScopeAmendments(workspaceRoot, effectiveConfig, effectiveContract.task.id).catch(() => [])).length,
+        }).catch(() => undefined);
+        report = mergeChecks(report, [secondCheck]);
+        await recordEvent(controlRoot, effectiveConfig, "harness.repair.finish", { taskId: effectiveContract.task.id, attempt: attempts, status: report.status, agent: selection?.logicalAgent, scopeBlocked: true }).catch(() => undefined);
+        break;
+      }
+      if (amendedRetry.candidate) candidateImpact = amendedRetry.impact;
+      await prepareValidationWorkspace();
+      report = withWorkerExecutionCheck(await verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, selection), worker);
+      assuranceEvaluation = await recompileAssuranceForReport(candidateImpact, report);
+      report = mergeChecks(report, [...assuranceEvaluation.validationChecks, assuranceEvaluation.gateCheck]);
+      report = await attachEvidence(report);
+      await recordEvent(controlRoot, effectiveConfig, "harness.repair.finish", { taskId: effectiveContract.task.id, attempt: attempts, status: report.status, agent: selection?.logicalAgent, scopeAmended: true }).catch(() => undefined);
+      if (operationId && supervisorSelection) await maybeRotateOperationSupervisor(workspaceRoot, effectiveConfig, effectiveContract, supervisorSelection);
+      continue;
+    }
     worker = repair.session;
     executionSessions.push(worker);
     if (repair.candidate) candidateImpact = repair.impact;

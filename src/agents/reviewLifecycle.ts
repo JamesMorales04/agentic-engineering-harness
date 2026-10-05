@@ -11,6 +11,7 @@ import { detectHumanException, detectRuntimeExternalException, diagnosisToExcept
 import type { HarnessProjectConfig, ReviewEscalationStage, TaskContract, ValidationCheck, ValidationReport, WorkerSession } from "../core/types.js";
 import { executeAgentPrompt } from "../workers/agentPrompt.js";
 import { executeRepairerCandidateMutation, rejectRepairCandidateChangeSet } from "../candidates/repair.js";
+import { repairScopeBlockerValidationCheck } from "../candidates/repairScope.js";
 import { executeIsolatedCandidateMutation } from "../candidates/direct.js";
 import { assertWorkspaceMatchesCandidate, type CandidateWorkspaceIdentityEvidenceV1 } from "../candidates/identity.js";
 import type { ExecutionCatalogV1 } from "../architecture/executionCatalog.js";
@@ -222,6 +223,36 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
     });
     const remediation = mutation.session;
     sessions.push(remediation);
+    // Review-remediation scopeBlocker: explicitly scoped OUT of amendment
+    // ownership (tested rationale). The bounded ledger-gated amendment
+    // (suspend + approve/deny product choice + reseal + single retry, max
+    // 1/task) is owned solely by the run.ts validation-repair loop. A second
+    // amendment path here would risk dual suspensions, budget overruns, and
+    // stage confusion. This path therefore propagates BLOCKED fail-closed
+    // citing the exact blocker (no amendment, no retry, no silent ignore) so
+    // the canonical channel remains the sole writer.
+    if (mutation.scopeBlocker) {
+      const blockerCheck = repairScopeBlockerValidationCheck(mutation.scopeBlocker);
+      checks.push(blockerCheck);
+      await recordEvent(stateRoot, config, "harness.quality.repair-scope-blocked", {
+        taskId: contract.task.id,
+        round: remediationRounds,
+        blockerDigest: mutation.scopeBlocker.digest,
+        filesNeededOutsideScope: mutation.scopeBlocker.filesNeededOutsideScope,
+      }).catch(() => undefined);
+      return {
+        status: "FAIL",
+        finalState: "REQUIRES_PRODUCT_DECISION",
+        humanRequired: true,
+        rounds: remediationRounds,
+        report,
+        findings: deduped,
+        checks,
+        sessions,
+        qualityHistory,
+        leadAccepted: false,
+      };
+    }
     const rejectMutation = async (reason: string): Promise<void> => {
       let restoredImpact = candidateImpact;
       if (mutation.changeSet) {

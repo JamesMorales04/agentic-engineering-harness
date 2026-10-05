@@ -7,12 +7,14 @@ import { loadOperation } from "../operations/state.js";
 import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import { deterministicParticipantId } from "../security/executionLease.js";
 import { recordEvent } from "../telemetry/events.js";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { minimatch } from "minimatch";
 import { assembleCandidateChangeSet, type CandidateImpactAssessmentRuntimeV1, type ChangeSetV1 } from "./assembler.js";
 import { captureInverseCandidateChangeSet, executeIsolatedCandidateMutation } from "./direct.js";
 import { bindAssembledCandidate } from "./binding.js";
 import {
+  assertRepairScopeBlockerReceipt,
   createRepairScopeBlockerReceipt,
   parseRepairScopeBlockerFromSession,
   writeRepairScopeBlockerReceipt,
@@ -123,7 +125,11 @@ export async function executeRepairerCandidateMutation(input: {
       participantId,
       filesNeededOutsideScope: needed,
     });
-    await writeRepairScopeBlockerReceipt(input.stateRoot, input.config, blocker).catch(() => undefined);
+    // Fail closed: the BLOCKED outcome is only valid with a durable receipt.
+    // A receipt write failure throws (no suppression); write-then-verify reads
+    // the receipt back and re-validates digest + schema before surfacing.
+    const receiptFile = await writeRepairScopeBlockerReceipt(input.stateRoot, input.config, blocker);
+    await verifyRepairScopeBlockerReceipt(receiptFile, blocker);
     await recordEvent(input.stateRoot, input.config, "harness.candidate.repair-scope-blocked", {
       taskId: input.taskId,
       workUnitId: input.workUnitId,
@@ -286,6 +292,44 @@ function configuredValidatorSourcePaths(config: HarnessProjectConfig, contract: 
     }
   }
   return [...references];
+}
+
+/**
+ * DETERMINISTIC write-then-verify for the blocker receipt. The BLOCKED outcome
+ * is only valid with a durable, schema-valid, digest-matching receipt. Read
+ * the persisted file back and re-validate before surfacing; any mismatch
+ * throws fail-closed (no suppression, no best-effort).
+ */
+async function verifyRepairScopeBlockerReceipt(
+  receiptFile: string,
+  blocker: RepairScopeBlockerReceiptV1,
+): Promise<void> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(receiptFile, "utf8");
+  } catch (error) {
+    throw new AehError(
+      "PARTICIPANT_PLAN_INVALID",
+      `REPAIR_SCOPE_RECEIPT_NOT_DURABLE: blocker receipt could not be read back from ${receiptFile}: ${error instanceof Error ? error.message : String(error)}.`,
+    );
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch (error) {
+    throw new AehError(
+      "PARTICIPANT_PLAN_INVALID",
+      `REPAIR_SCOPE_RECEIPT_NOT_DURABLE: blocker receipt at ${receiptFile} is not valid JSON: ${error instanceof Error ? error.message : String(error)}.`,
+    );
+  }
+  assertRepairScopeBlockerReceipt(parsed);
+  const persisted = parsed as RepairScopeBlockerReceiptV1;
+  if (persisted.digest !== blocker.digest) {
+    throw new AehError(
+      "PARTICIPANT_PLAN_INVALID",
+      `REPAIR_SCOPE_RECEIPT_NOT_DURABLE: persisted blocker receipt digest does not match the declared blocker (${receiptFile}).`,
+    );
+  }
 }
 
 /**
