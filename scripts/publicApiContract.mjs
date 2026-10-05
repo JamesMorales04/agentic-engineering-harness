@@ -142,7 +142,45 @@ function checkResourceKinds(checks, root) {
   const projectionMissingCore = projectionCore.filter((kind) => !projectionKinds.includes(kind));
   const routeFor = { project: "/api/v1/projects", operation: "/api/v1/operations", participant: "/api/v1/participants", candidate: "/api/v1/candidates", context: "/api/v1/context", authority: "/api/v1/authority", evidence: "/api/v1/evidence", services: "/api/v1/services", knowledge: "/api/v1/knowledge", event: "/api/v1/events" };
   const uiMissing = expected.filter((kind) => !api.includes(routeFor[kind]));
+  // Exact UI route inventory: the 10 resource routes above plus the contract
+  // auxiliaries the UI legitimately calls (pair/session/overview, paseo +
+  // timeline + lead messages, project select, decisions, operation
+  // detail/cancel/pause/resume). Any addition or removal changes the public
+  // surface, so extras fail alongside omissions.
+  const expectedUiRoutes = [
+    "/api/v1/pair",
+    "/api/v1/session",
+    "/api/v1/overview",
+    "/api/v1/projects",
+    "/api/v1/operations",
+    "/api/v1/operations/{id}",
+    "/api/v1/operations/{id}/cancel",
+    "/api/v1/operations/{id}/pause",
+    "/api/v1/operations/{id}/resume",
+    "/api/v1/participants",
+    "/api/v1/candidates",
+    "/api/v1/context",
+    "/api/v1/authority",
+    "/api/v1/evidence",
+    "/api/v1/services",
+    "/api/v1/knowledge",
+    "/api/v1/events/history",
+    "/api/v1/paseo",
+    "/api/v1/paseo/participants/{id}/timeline",
+    "/api/v1/paseo/lead/messages",
+    "/api/v1/projects/{id}/select",
+    "/api/v1/decisions"
+  ];
+  const observedUiRoutes = [...new Set(
+    [...api.matchAll(/["`]\/api\/v1\/[^"`]*["`]/g)]
+      .map((match) => match[0].slice(1, -1).replace(/\$\{[^}]*\}/g, "{id}"))
+  )];
+  const uiRouteMissing = expectedUiRoutes.filter((route) => !observedUiRoutes.includes(route));
+  const uiRouteExtra = observedUiRoutes.filter((route) => !expectedUiRoutes.includes(route));
   const problems = [];
+  if (uiRouteMissing.length || uiRouteExtra.length) {
+    problems.push(`ui route set [${observedUiRoutes.sort().join(", ")}] must be exactly [${expectedUiRoutes.slice().sort().join(", ")}] (missing: ${uiRouteMissing.join(", ") || "none"}; extra: ${uiRouteExtra.join(", ") || "none"})`);
+  }
   if (serverMissing.length || serverExtra.length) {
     problems.push(`server vocabulary [${serverKinds.join(", ")}] diverges (missing: ${serverMissing.join(", ") || "none"}; extra: ${serverExtra.join(", ") || "none"})`);
   }

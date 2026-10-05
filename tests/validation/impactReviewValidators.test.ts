@@ -615,6 +615,15 @@ describe("project public-api contract validator", () => {
     expect(serverRun.stderr).toContain("PUBLIC-API-RESOURCE-KINDS");
   });
 
+  it("does not weaken: an extra UI route still fails", async () => {
+    const root = await skeleton();
+    const file = path.join(root, "ui", "control-center", "src", "api.ts");
+    await fs.writeFile(file, `${await fs.readFile(file, "utf8")}\nconst __extraRouteProbe = "/api/v1/extra-route";\n`, "utf8");
+    const run = spawnSync(process.execPath, [PUBLIC_API_CONTRACT, root], { encoding: "utf8", timeout: 60_000 });
+    expect(run.status).not.toBe(0);
+    expect(run.stderr).toContain("PUBLIC-API-RESOURCE-KINDS");
+  });
+
   it("executes the public-api dimension through the approved contract-test validator with CONTRACT evidence", async () => {
     const root = await skeleton();
     const sourceDigest = await computeWorktreeDigest(root);
