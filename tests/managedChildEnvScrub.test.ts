@@ -3,13 +3,17 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
+  AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV,
   HERMITIC_SYSTEM_PATH_DIRS,
   MANAGED_CHILD_ENV_SCRUB_KEYS,
   MANAGED_CHILD_ENV_SCRUB_PREFIXES,
   MANAGED_CHILD_ENV_SCRUB_XDG_SHIM_KEYS,
   buildHermeticChildPath,
+  controllerStartupExtraBinPaths,
   explicitExtraBinPaths,
+  normalizeControllerExtraBinPaths,
   managedChildEnvScrubEvidence,
+  resolveControllerExtraBinPaths,
   resolveExecutable,
   runExecutable,
   sanitizeManagedChildEnvironment,
@@ -47,6 +51,7 @@ describe("canonical managed child env scrub (C6)", () => {
     expect(MANAGED_CHILD_ENV_SCRUB_KEYS).toContain("AEH_PARTICIPANT_ID");
     expect(MANAGED_CHILD_ENV_SCRUB_KEYS).toContain("PASEO_AGENT_ID");
     expect(MANAGED_CHILD_ENV_SCRUB_KEYS).toContain("NODE_PATH");
+    expect(MANAGED_CHILD_ENV_SCRUB_KEYS).toContain(AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV);
     expect(MANAGED_CHILD_ENV_SCRUB_PREFIXES).toContain("MISE_");
     expect(MANAGED_CHILD_ENV_SCRUB_PREFIXES).toContain("ASDF_");
     expect(MANAGED_CHILD_ENV_SCRUB_XDG_SHIM_KEYS).toContain("XDG_DATA_HOME");
@@ -64,7 +69,7 @@ describe("canonical managed child env scrub (C6)", () => {
     parent["XDG_CONFIG_HOME"] = "/tmp/evil-xdg-config";
     parent.PATH = "/tmp/decoy:/usr/bin";
     const prod = sanitizeManagedChildEnvironment(parent);
-    const fixture = sanitizeFixtureChildEnvironment(parent);
+    const fixture = sanitizeFixtureChildEnvironment(parent, []);
     for (const key of MANAGED_CHILD_ENV_SCRUB_KEYS) {
       expect(prod[key], `prod leaked ${key}`).toBeUndefined();
       expect(fixture[key], `fixture leaked ${key}`).toBeUndefined();
@@ -74,10 +79,18 @@ describe("canonical managed child env scrub (C6)", () => {
       expect(fixture[key], `fixture leaked shim var ${key}`).toBeUndefined();
     }
     // Prod sync sanitize preserves PATH (hermetic applied async in runChild);
-    // fixture is hermetic minimal sync (no ambient tail, fail-closed).
+    // fixture is hermetic minimal sync (no ambient tail, fail-closed) when
+    // controller extra is empty. Parent EXTRA absolute decoy is scrubbed and
+    // never flows into fixture PATH.
     expect(prod.PATH).toBe("/tmp/decoy:/usr/bin");
     expect(fixture.PATH).not.toContain("/tmp/decoy");
     expect(fixture.PATH).toBe([...HERMITIC_SYSTEM_PATH_DIRS].join(path.delimiter));
+    const withDecoyParent = sanitizeFixtureChildEnvironment(
+      { ...parent, [AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV]: "/tmp/evil-decoy" },
+      [],
+    );
+    expect(withDecoyParent[AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV]).toBeUndefined();
+    expect(withDecoyParent.PATH).not.toContain("/tmp/evil-decoy");
   });
 
   it("does not leak the canonical envelope into real runChild processes", async () => {
@@ -205,55 +218,99 @@ describe("canonical managed child env scrub (C6)", () => {
     expect(evidence.pinned.entryExplicit).toContain("argv");
   });
 
-  it("honors explicitly-marked extra bin paths for CI mise shape while blocking unmarked ambient (CI regression)", async () => {
-    // CI shape: missing .harness/toolchain.state.json + ambient mise-style bin dir
-    // (mise bin-paths >> GITHUB_PATH, ~/.local/bin for uv tools). Hermetic blocks
-    // silent ambient; explicitly-marked dirs via AEH_TOOLCHAIN_EXTRA_BIN_PATHS
-    // restore CI providers without reopening decoy-shim leakage.
-    // MECHANISM: DETERMINISTIC (explicit allowlist + pinned prefix + minimal).
+  it("controller-input-only extra bins: model env decoy blocked, controller options resolves, three CI jobs simulated", async () => {
+    // Controller-input-only trust: outer trusted env -> controller startup ->
+    // options (never per-turn env). No .harness/toolchain.state.json (no-state).
+    // MECHANISM: DETERMINISTIC (scrubbed per-turn env + explicit options/snapshot).
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-ci-mise-"));
     const miseBins = path.join(tmp, "mise-bins");
-    await fs.mkdir(miseBins, { recursive: true });
-    await fs.writeFile(path.join(miseBins, "aeh-ci-tool"), "#!/bin/sh\necho ci-pinned\n");
-    await fs.chmod(path.join(miseBins, "aeh-ci-tool"), 0o755);
+    const localBin = path.join(tmp, "local-bin");
+    const npmBin = path.join(tmp, "npm-bin");
+    const cosignBin = path.join(tmp, "cosign-bin");
     const decoyDir = path.join(tmp, "decoy-ambient");
-    await fs.mkdir(decoyDir, { recursive: true });
-    await fs.writeFile(path.join(decoyDir, "aeh-ci-tool"), "#!/bin/sh\necho decoy-shadow\n");
-    await fs.chmod(path.join(decoyDir, "aeh-ci-tool"), 0o755);
-    await fs.writeFile(path.join(decoyDir, "aeh-decoy-only"), "#!/bin/sh\necho decoy\n");
-    await fs.chmod(path.join(decoyDir, "aeh-decoy-only"), 0o755);
+    for (const dir of [miseBins, localBin, npmBin, cosignBin, decoyDir]) await fs.mkdir(dir, { recursive: true });
+    const stub = async (dir: string, name: string, body: string): Promise<void> => {
+      await fs.writeFile(path.join(dir, name), `#!/bin/sh\necho ${body}\n`);
+      await fs.chmod(path.join(dir, name), 0o755);
+    };
+    await stub(miseBins, "aeh-ci-tool", "ci-pinned");
+    await stub(localBin, "aeh-local-tool", "local-pinned");
+    await stub(npmBin, "aeh-npm-tool", "npm-pinned");
+    await stub(cosignBin, "aeh-cosign-tool", "cosign-pinned");
+    await stub(decoyDir, "aeh-ci-tool", "decoy-shadow");
+    await stub(decoyDir, "aeh-decoy-only", "decoy");
     const savedPath = process.env.PATH;
-    const savedExtra = process.env.AEH_TOOLCHAIN_EXTRA_BIN_PATHS;
-    // Ambient order puts decoy first to prove explicit wins, not PATH order.
+    const savedExtra = process.env[AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV];
+    // Ambient order puts decoy first to prove controller input wins, not PATH order.
     process.env.PATH = `${decoyDir}${path.delimiter}${miseBins}${path.delimiter}${savedPath ?? ""}`;
     const { clearToolchainEnvCache } = await import("../src/utils/process.js");
     try {
-      delete process.env.AEH_TOOLCHAIN_EXTRA_BIN_PATHS;
       clearToolchainEnvCache();
-      // Missing state + no explicit marking: CI ambient tools do NOT resolve
-      // (proves the CI failure shape before the fix).
-      expect(await resolveExecutable("aeh-ci-tool", tmp), "unmarked ambient must not resolve without state").toBeUndefined();
-      expect(await resolveExecutable("aeh-decoy-only", tmp), "decoy must never resolve").toBeUndefined();
-      // Explicitly mark only the mise-style dir (CI workflow marks mise
-      // bin-paths + ~/.local/bin via AEH_TOOLCHAIN_EXTRA_BIN_PATHS).
-      process.env.AEH_TOOLCHAIN_EXTRA_BIN_PATHS = miseBins;
+      const none = { toolchainExtraBinPaths: [] as const };
+      // Missing state + empty controller input: nothing resolves (fail-closed).
+      expect(await resolveExecutable("aeh-ci-tool", tmp, none), "unmarked ambient must not resolve without state").toBeUndefined();
+      expect(await resolveExecutable("aeh-decoy-only", tmp, none), "decoy must never resolve").toBeUndefined();
+      // Trusted startup parser still works for controller startup (outer env once).
+      expect(explicitExtraBinPaths({ [AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV]: miseBins })).toEqual([miseBins]);
+      expect(normalizeControllerExtraBinPaths(`${miseBins}${path.delimiter}relative-dir${path.delimiter}${miseBins}`)).toEqual([miseBins]);
+      // Model-influenced env: options.env EXTRA decoy must NOT resolve, even with
+      // live process.env mutation (frozen startup snapshot ignores per-turn env).
+      process.env[AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV] = decoyDir;
       clearToolchainEnvCache();
-      expect(explicitExtraBinPaths()).toEqual([miseBins]);
-      expect(await resolveExecutable("aeh-ci-tool", tmp), "explicitly-marked CI tool must resolve").toBe(path.join(miseBins, "aeh-ci-tool"));
-      expect(await resolveExecutable("aeh-decoy-only", tmp), "unmarked decoy stays unresolved with explicit set").toBeUndefined();
-      const run = await runExecutable("aeh-ci-tool", [], { cwd: tmp, timeoutMs: 2_000 });
+      expect(await resolveExecutable("aeh-decoy-only", tmp, none), "live process.env decoy must be ignored").toBeUndefined();
+      const decoyProbe = await runExecutable(
+        process.execPath,
+        ["-e", `process.stdout.write(process.env.PATH ?? "")`],
+        { cwd: tmp, timeoutMs: 2_000, toolchainExtraBinPaths: [], env: { [AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV]: decoyDir } },
+      );
+      expect(decoyProbe.exitCode).toBe(0);
+      expect(decoyProbe.stdout.split(path.delimiter)).not.toContain(decoyDir);
+      const decoyRun = await runExecutable("aeh-decoy-only", [], {
+        cwd: tmp, timeoutMs: 2_000, toolchainExtraBinPaths: [], env: { [AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV]: decoyDir },
+      }).then(
+        () => { throw new Error("model-influenced decoy must not resolve"); },
+        (error: unknown) => error,
+      );
+      expect(String((decoyRun as Error)?.message ?? decoyRun)).toMatch(/AEH_TOOLCHAIN_NOT_CONFIGURED|ENOENT/);
+      // Controller-supplied options path resolves correctly (decoy shadow loses).
+      const trustedFullStack = resolveControllerExtraBinPaths({
+        [AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV]: [localBin, miseBins, npmBin].join(path.delimiter),
+      });
+      expect(trustedFullStack).toEqual([localBin, miseBins, npmBin]);
+      const fullStackOpt = { toolchainExtraBinPaths: trustedFullStack };
+      expect(await resolveExecutable("aeh-ci-tool", tmp, fullStackOpt), "controller mise tool must resolve").toBe(path.join(miseBins, "aeh-ci-tool"));
+      expect(await resolveExecutable("aeh-local-tool", tmp, fullStackOpt), "controller local tool must resolve").toBe(path.join(localBin, "aeh-local-tool"));
+      expect(await resolveExecutable("aeh-npm-tool", tmp, fullStackOpt), "controller npm tool must resolve").toBe(path.join(npmBin, "aeh-npm-tool"));
+      expect(await resolveExecutable("aeh-decoy-only", tmp, fullStackOpt), "unmarked decoy stays unresolved").toBeUndefined();
+      // Controller options wins even when per-turn env carries a decoy shadow.
+      const shadowOpt = {
+        toolchainExtraBinPaths: trustedFullStack,
+        env: { [AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV]: decoyDir },
+      };
+      const run = await runExecutable("aeh-ci-tool", [], { cwd: tmp, timeoutMs: 2_000, ...shadowOpt });
       expect(run.exitCode).toBe(0);
-      expect(run.stdout, "explicit prefix must win over ambient decoy shadow").toBe("ci-pinned\n");
-      const probe = await runExecutable(process.execPath, ["-e", `process.stdout.write(process.env.PATH ?? "")`], { cwd: tmp, timeoutMs: 2_000 });
-      expect(probe.exitCode).toBe(0);
-      const dirs = probe.stdout.split(path.delimiter);
-      expect(dirs).toContain(miseBins);
-      expect(dirs).not.toContain(decoyDir);
+      expect(run.stdout, "controller input must win over per-turn decoy shadow").toBe("ci-pinned\n");
+      // Three CI jobs simulated via outer trusted env -> controller -> options.
+      const jobs: Array<{ name: string; trusted: string; tools: Array<[string, string]> }> = [
+        { name: "full-stack-contract", trusted: [localBin, miseBins, npmBin].join(path.delimiter), tools: [["aeh-ci-tool", miseBins], ["aeh-local-tool", localBin], ["aeh-npm-tool", npmBin]] },
+        { name: "provider-contracts", trusted: [localBin, miseBins, npmBin].join(path.delimiter), tools: [["aeh-ci-tool", miseBins], ["aeh-local-tool", localBin], ["aeh-npm-tool", npmBin]] },
+        { name: "supply-chain", trusted: [localBin, miseBins, cosignBin].join(path.delimiter), tools: [["aeh-ci-tool", miseBins], ["aeh-local-tool", localBin], ["aeh-cosign-tool", cosignBin]] },
+      ];
+      for (const job of jobs) {
+        const controllerInput = resolveControllerExtraBinPaths({ [AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV]: job.trusted });
+        const opt = { toolchainExtraBinPaths: controllerInput };
+        for (const [tool, dir] of job.tools) {
+          expect(await resolveExecutable(tool, tmp, opt), `${job.name}: ${tool} must resolve`).toBe(path.join(dir, tool));
+        }
+        expect(await resolveExecutable("aeh-decoy-only", tmp, opt), `${job.name}: decoy stays blocked`).toBeUndefined();
+      }
+      // Frozen startup snapshot exists and never equals live per-turn mutation.
+      expect(controllerStartupExtraBinPaths()).not.toContain(decoyDir);
     } finally {
       if (savedPath === undefined) delete process.env.PATH;
       else process.env.PATH = savedPath;
-      if (savedExtra === undefined) delete process.env.AEH_TOOLCHAIN_EXTRA_BIN_PATHS;
-      else process.env.AEH_TOOLCHAIN_EXTRA_BIN_PATHS = savedExtra;
+      if (savedExtra === undefined) delete process.env[AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV];
+      else process.env[AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV] = savedExtra;
       clearToolchainEnvCache();
       await fs.rm(tmp, { recursive: true, force: true });
     }

@@ -140,7 +140,8 @@ function safeDetails(value: unknown, depth = 0): unknown {
  * controller envelope so the executionContext recursion guard cannot mistake
  * them for nested-operation re-entry. Uses the single canonical scrub
  * (src/utils/process.ts MANAGED_CHILD_ENV_SCRUB_KEYS plus MISE_* and ASDF_*
- * prefixes plus XDG shim keys) shared with prod runChild, plus pinned SDK/entry
+ * prefixes plus XDG shim keys plus AEH_TOOLCHAIN_EXTRA_BIN_PATHS) shared with
+ * prod runChild, plus pinned SDK/entry
  * resolution
  * evidence (toolchain.state.json, resolvePaseoSdkFromCli diagnostics, candidate
  * build-identity.json; AEH_ENTRY_FILE stripped fail-closed so entry must be
@@ -158,19 +159,27 @@ export {
 } from "../../../src/utils/process.js";
 import {
   buildHermeticChildPath,
-  explicitExtraBinPaths,
+  controllerStartupExtraBinPaths,
   HERMITIC_SYSTEM_PATH_DIRS,
+  normalizeControllerExtraBinPaths,
   sanitizeManagedChildEnvironment,
 } from "../../../src/utils/process.js";
 import { readFileSync } from "node:fs";
 
-export function sanitizeFixtureChildEnvironment(parent: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+export function sanitizeFixtureChildEnvironment(
+  parent: NodeJS.ProcessEnv = process.env,
+  extraBinPaths?: readonly string[] | string,
+): NodeJS.ProcessEnv {
   const env = sanitizeManagedChildEnvironment(parent);
-  // Hermetic minimal + explicit extra (no ambient tail, fail-closed). The fixture
-  // method below prepends the pinned prefix when toolchain.state.json exists.
-  // Explicit CI marking via AEH_TOOLCHAIN_EXTRA_BIN_PATHS is honored; unmarked
-  // ambient stays blocked.
-  env.PATH = buildHermeticChildPath(undefined, explicitExtraBinPaths(parent));
+  // Hermetic minimal + controller-supplied extra (no ambient tail, fail-closed).
+  // The fixture method below prepends the pinned prefix when
+  // toolchain.state.json exists. Parent AEH_TOOLCHAIN_EXTRA_BIN_PATHS is
+  // scrubbed and never trusted (model-influenced env cannot inject); only
+  // explicit controller input or the frozen startup snapshot flows.
+  env.PATH = buildHermeticChildPath(
+    undefined,
+    normalizeControllerExtraBinPaths(extraBinPaths ?? controllerStartupExtraBinPaths()),
+  );
   return env;
 }
 
@@ -327,11 +336,12 @@ export class ControlCenterJourneyFixture {
 
   private childEnvironment(): NodeJS.ProcessEnv {
     const env = sanitizeFixtureChildEnvironment(process.env);
-    // Hermetic: pinned prefix (when toolchain.state.json exists) + explicit
-    // extra + minimal, no ambient tail. Fail-closed to minimal when both are
-    // missing (fallback `aeh setup` or explicit CI marking, never silent ambient).
+    // Hermetic: pinned prefix (when toolchain.state.json exists) +
+    // controller-supplied extra + minimal, no ambient tail. Fail-closed to
+    // minimal when both are missing (fallback `aeh setup` or controller
+    // startup -> options, never silent ambient nor per-turn env).
     const prefix = fixtureToolchainPrefixSync(this.candidate.repoRoot);
-    env.PATH = buildHermeticChildPath(prefix, explicitExtraBinPaths(process.env));
+    env.PATH = buildHermeticChildPath(prefix, normalizeControllerExtraBinPaths(controllerStartupExtraBinPaths()));
     return env;
   }
 
