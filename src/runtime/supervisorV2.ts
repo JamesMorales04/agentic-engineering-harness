@@ -58,6 +58,49 @@ export interface ProviderLeaseQuiescenceV1 {
   observedAt: string;
 }
 
+/**
+ * Provider backpressure QUEUE disposition (Unit 3).
+ *
+ * MECHANISM: DETERMINISTIC. The same write-write conflict predicate as
+ * `acquireProviderLease` is evaluated, but a conflict returns a bounded QUEUED
+ * disposition instead of throwing. Caps are unchanged; waits are bounded
+ * (`PROVIDER_LEASE_QUEUE_MAX_WAIT_MS_V1`); an exhausted wait budget is
+ * terminal (caller treats QUEUED-wait-exhausted as FAIL, never as silent
+ * progress). Telemetry is observation-only via the returned counters.
+ */
+export const PROVIDER_LEASE_QUEUE_MAX_WAIT_MS_V1 = 30_000;
+export const PROVIDER_LEASE_QUEUE_POLL_MS_V1 = 50;
+export const PROVIDER_LEASE_QUEUE_DEFAULT_WAIT_MS_V1 = 250;
+
+export type ProviderLeaseQueueStatusV1 = "ACQUIRED" | "QUEUED";
+
+export interface ProviderLeaseQueuedV1 {
+  status: "QUEUED";
+  /** Bounded WAIT hint before re-attempting acquisition (never extends caps). */
+  retryAfterMs: number;
+  /** Number of active conflicting leases in the same provider/workspace scope. */
+  queueDepth: number;
+  reason: string;
+}
+
+export interface ProviderLeaseAcquiredV1 {
+  status: "ACQUIRED";
+  lease: ProviderLeaseV1;
+}
+
+export type ProviderLeaseAcquireResultV1 = ProviderLeaseAcquiredV1 | ProviderLeaseQueuedV1;
+
+export interface ProviderLeaseBackpressureSignalV1 {
+  /** Active leases observed in the conflicting scope (counter). */
+  active: number;
+  /** Queued waiters implied by this disposition (counter). */
+  queued: number;
+  /** Configured ceiling when known (gauge denominator); undefined when unknown. */
+  ceiling?: number;
+  /** True when active meets or exceeds the known ceiling. */
+  saturated: boolean;
+}
+
 export interface RuntimeSnapshotV1 {
   version: 1;
   capturedAt: string;
@@ -216,6 +259,18 @@ export class RuntimeSupervisorV1 {
     return this.updateService(serviceId, ownerId, { status });
   }
 
+  /**
+   * Atomic within one process only (synchronous check-then-insert, no await
+   * between conflict test and insert, so concurrent async callers in the same
+   * event loop cannot interleave). NOT atomic w.r.t. the shared durable
+   * snapshot file across waves/operations/processes: a fresh in-memory
+   * supervisor per wave is blind by construction. Cross-process atomicity
+   * requires the file-locked reload→check→write transact
+   * (`ManagedRuntimeSupervisorV1.transact` for provider lifecycle;
+   * `tryAcquireDurableWaveSlotAtomic`/`acquireDurableWaveSlotOrQueue` in
+   * `operationResources.ts` for wave admission). Luna F3: wave dispatch must
+   * use the durable transact end-to-end, never this alone for shared scopes.
+   */
   acquireProviderLease(input: Omit<ProviderLeaseV1, "version" | "leaseId" | "acquiredAt" | "expiresAt"> & { ttlMs?: number }): ProviderLeaseV1 {
     requireText(input.provider, "provider");
     requireText(input.projectId, "projectId");
@@ -245,6 +300,52 @@ export class RuntimeSupervisorV1 {
     };
     this.leases.set(lease.leaseId, lease);
     return clone(lease);
+  }
+
+  /**
+   * Non-throwing lease acquisition for backpressure-aware callers. Success
+   * returns ACQUIRED with the new lease; a write-write conflict returns QUEUED
+   * with a bounded WAIT hint instead of throwing. All other validation still
+   * throws fail-closed (empty identity, non-positive ttl). Callers honor the
+   * WAIT against their existing deadline budget and treat an exhausted budget
+   * as terminal.
+   */
+  tryAcquireProviderLease(input: Omit<ProviderLeaseV1, "version" | "leaseId" | "acquiredAt" | "expiresAt"> & { ttlMs?: number }): ProviderLeaseAcquireResultV1 {
+    requireText(input.provider, "provider");
+    requireText(input.projectId, "projectId");
+    requireText(input.ownerId, "ownerId");
+    requireText(input.workspaceId, "workspaceId");
+    const now = this.clock();
+    this.expireLeases(now);
+    const root = normalizeRoot(input.canonicalRoot);
+    const conflicting = findConflictingProviderLeases([...this.leases.values()], {
+      provider: input.provider,
+      projectId: input.projectId,
+      canonicalRoot: root,
+      workspaceId: input.workspaceId,
+      ownerId: input.ownerId,
+      mode: input.mode,
+    });
+    if (conflicting.length) {
+      return queuedForConflictingLeases(input.provider, input.workspaceId, conflicting, now.getTime());
+    }
+    const ttlMs = input.ttlMs ?? this.leaseTtlMs;
+    if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0) throw new RuntimeOwnershipError("provider lease ttl must be a positive integer.");
+    const lease: ProviderLeaseV1 = {
+      version: 1,
+      leaseId: `lease:${randomUUID()}`,
+      provider: input.provider,
+      projectId: input.projectId,
+      canonicalRoot: root,
+      workspaceId: input.workspaceId,
+      mode: input.mode,
+      ownerId: input.ownerId,
+      acquiredAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + ttlMs).toISOString(),
+      ...(input.lifecycle ? { lifecycle: validateProviderLeaseLifecycle(input.lifecycle) } : {})
+    };
+    this.leases.set(lease.leaseId, lease);
+    return { status: "ACQUIRED", lease: clone(lease) };
   }
 
   renewProviderLease(leaseId: string, ownerId: string, ttlMs = this.leaseTtlMs): ProviderLeaseV1 {
@@ -394,4 +495,100 @@ function serviceOwnerProcessAlive(service: RuntimeServiceV1): boolean {
   if (!Number.isSafeInteger(service.pid) || (service.pid ?? 0) <= 0) return true;
   try { process.kill(service.pid!, 0); return true; }
   catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
+/** DETERMINISTIC classifier: true when the error is the write-write lease conflict (QUEUE, not FAIL). */
+export function isProviderLeaseConflictError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return message.includes("already leased in");
+}
+
+/**
+ * Build the observation-only backpressure signal for telemetry (counter/gauge).
+ * No gate consumes it; it only describes active load vs the known ceiling.
+ */
+export function providerLeaseBackpressureSignal(
+  active: number,
+  queued: number,
+  ceiling?: number
+): ProviderLeaseBackpressureSignalV1 {
+  const safeActive = Number.isFinite(active) && active >= 0 ? Math.floor(active) : 0;
+  const safeQueued = Number.isFinite(queued) && queued >= 0 ? Math.floor(queued) : 0;
+  const safeCeiling = ceiling !== undefined && Number.isFinite(ceiling) && ceiling > 0 ? Math.floor(ceiling) : undefined;
+  return {
+    active: safeActive,
+    queued: safeQueued,
+    ...(safeCeiling !== undefined ? { ceiling: safeCeiling } : {}),
+    saturated: safeCeiling !== undefined ? safeActive >= safeCeiling : safeActive > 0
+  };
+}
+
+/**
+ * Honor a QUEUED WAIT against an existing deadline budget. Never extends caps:
+ * returns `min(retryAfterMs, remainingBudgetMs)`, or 0 when exhausted (terminal).
+ */
+export function providerLeaseQueueWaitMs(queued: ProviderLeaseQueuedV1 | undefined, remainingBudgetMs?: number): number {
+  if (!queued || queued.status !== "QUEUED") return 0;
+  const bounded = Math.max(0, Math.min(PROVIDER_LEASE_QUEUE_MAX_WAIT_MS_V1, Math.floor(queued.retryAfterMs)));
+  if (remainingBudgetMs === undefined) return bounded;
+  if (!Number.isFinite(remainingBudgetMs) || remainingBudgetMs <= 0) return 0;
+  return Math.min(bounded, Math.floor(remainingBudgetMs));
+}
+
+/**
+ * Shared durable-lease conflict predicate (Luna F2).
+ *
+ * MECHANISM: DETERMINISTIC. This is the exact write-write conflict predicate
+ * that `acquireProviderLease`/`tryAcquireProviderLease` enforce: same
+ * provider/project/normalized-root/workspace scope, different owner, and at
+ * least one side holds write. Both the in-memory supervisor and the durable
+ * snapshot gate (operationResources provider-session leases persisted via the
+ * managed runtime snapshot — the same lease store `acquireProviderLease`
+ * persists to) must evaluate this predicate, never a divergent local rule.
+ * Expired leases never conflict; empty identity never matches.
+ */
+export function findConflictingProviderLeases(
+  leases: readonly ProviderLeaseV1[],
+  input: { provider: string; projectId: string; canonicalRoot: string; workspaceId: string; ownerId: string; mode: ProviderLeaseModeV1 }
+): ProviderLeaseV1[] {
+  if (!input.provider.trim() || !input.projectId.trim() || !input.ownerId.trim() || !input.workspaceId.trim()) return [];
+  let root: string;
+  try {
+    root = normalizeRoot(input.canonicalRoot);
+  } catch {
+    return [];
+  }
+  const wanted = key(input.provider, input.projectId, root, input.workspaceId);
+  return leases.filter(
+    (lease) =>
+      key(lease.provider, lease.projectId, lease.canonicalRoot, lease.workspaceId) === wanted &&
+      lease.ownerId !== input.ownerId &&
+      (lease.mode === "write" || input.mode === "write")
+  );
+}
+
+/**
+ * Build the bounded QUEUED disposition for a set of conflicting durable or
+ * in-memory leases. Same WAIT-hint rule as `tryAcquireProviderLease`:
+ * min(positive expiresAt-now) else the stampede-avoidance default, clamped to
+ * the queue cap. Pure and clock-injectable (`nowMs`) for deterministic fixtures.
+ */
+export function queuedForConflictingLeases(
+  provider: string,
+  workspaceId: string,
+  conflicting: readonly ProviderLeaseV1[],
+  nowMs: number
+): ProviderLeaseQueuedV1 {
+  const waits = conflicting
+    .map((lease) => Date.parse(lease.expiresAt) - nowMs)
+    .filter((ms) => Number.isFinite(ms) && ms > 0);
+  const hint = waits.length ? Math.min(...waits) : PROVIDER_LEASE_QUEUE_DEFAULT_WAIT_MS_V1;
+  const retryAfterMs = Math.max(0, Math.min(PROVIDER_LEASE_QUEUE_MAX_WAIT_MS_V1, Math.floor(hint)));
+  const owners = [...new Set(conflicting.map((lease) => lease.ownerId))].slice(0, 3).join(",");
+  return {
+    status: "QUEUED",
+    retryAfterMs,
+    queueDepth: conflicting.length,
+    reason: `provider ${provider} is already leased in ${workspaceId} by ${owners || "another owner"}; QUEUED (wait ${retryAfterMs}ms, depth ${conflicting.length}).`
+  };
 }

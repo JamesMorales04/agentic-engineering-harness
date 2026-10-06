@@ -25,6 +25,15 @@ import {
 } from "../operations/state.js";
 import { readManagedRuntimeSnapshot } from "./managed.js";
 import { persistCandidateForensicsV1 } from "../operations/forensics.js";
+import {
+  RuntimeSupervisorV1,
+  findConflictingProviderLeases,
+  queuedForConflictingLeases,
+  type ProviderLeaseQueuedV1,
+  type ProviderLeaseV1,
+  type RuntimeSnapshotV1,
+} from "./supervisorV2.js";
+import { randomUUID } from "node:crypto";
 
 export const operationResourceKinds = [
   "paseo-workspace",
@@ -92,6 +101,34 @@ export const DEFAULT_OPERATION_RESOURCE_POLICY: OperationResourcePolicyV1 = {
   maxOwnedResourcesPerOperation: 64,
   maxConcurrentProviderSessionsPerOperation: 16
 };
+
+/**
+ * Provider backpressure QUEUE helpers (Unit 3).
+ *
+ * MECHANISM: DETERMINISTIC for classification; bounded polling for waits.
+ * `assertProviderSessionCapacity` keeps its throwing fail-closed contract.
+ * `checkProviderSessionBackpressure` is the pure QUEUE classifier; waits are
+ * bounded (`PROVIDER_BACKPRESSURE_MAX_WAIT_MS_V1`) and always count against
+ * the caller's existing deadline (never extend caps; exhausted waits are
+ * terminal). Telemetry attributes follow existing `recordEvent` conventions
+ * (bounded counter/gauge observation, never a gate).
+ */
+export const PROVIDER_BACKPRESSURE_MAX_WAIT_MS_V1 = 30_000;
+export const PROVIDER_BACKPRESSURE_POLL_MS_V1 = 50;
+export const PROVIDER_BACKPRESSURE_EVENT_V1 = "harness.provider.backpressure";
+
+export type ProviderSessionBackpressureV1 =
+  | { allowed: true; active: number; ceiling: number }
+  | { allowed: false; disposition: "QUEUE"; active: number; ceiling: number; retryAfterMs: number };
+
+export interface ProviderBackpressureTelemetryV1 {
+  operationId: string;
+  active: number;
+  ceiling: number;
+  queued: number;
+  retryAfterMs: number;
+  disposition: "QUEUE" | "PROCEED";
+}
 
 export interface OperationResourceReconcileDeps {
   run?: typeof runShell;
@@ -459,13 +496,476 @@ export async function reconcileTerminalOperationResources(root: string, deps: Op
 /** Capacity check for concurrent provider sessions of one operation (policy-driven, generic). */
 export async function assertProviderSessionCapacity(root: string, operationId: string, ceiling?: number): Promise<void> {
   const policy = ceiling ?? (await loadResourcePolicy(root)).maxConcurrentProviderSessionsPerOperation;
-  const snapshot = await readManagedRuntimeSnapshot(root).catch(() => undefined);
-  const active = snapshot?.providerLeases.filter((lease) => lease.lifecycle?.operationId === operationId).length ?? 0;
+  // Fail-closed: unreadable durable state BLOCKS (throws), never passes as clear.
+  // Missing file means no leases yet (empty snapshot, proceed); corrupt/unreadable throws.
+  const snapshot = await readManagedRuntimeSnapshot(root);
+  const active = snapshot.providerLeases.filter((lease) => lease.lifecycle?.operationId === operationId).length;
   if (active >= policy) {
     throw new AehError("RESOURCE_CEILING_EXHAUSTED", `operation ${operationId} already holds ${active} active provider sessions; configured ceiling ${policy}.`, {
       details: { operationId, active, ceiling: policy, disposition: "WAIT_OR_RAISE" }
     });
   }
+}
+
+/**
+ * Pure QUEUE classifier for provider session capacity. Returns QUEUE (not
+ * throw) when `active` meets or exceeds `ceiling`; callers honor the bounded
+ * WAIT against their existing deadline and treat exhaustion as terminal.
+ */
+export function checkProviderSessionBackpressure(active: number, ceiling?: number): ProviderSessionBackpressureV1 {
+  const safeCeiling = typeof ceiling === "number" && Number.isFinite(ceiling) && ceiling > 0
+    ? Math.floor(ceiling)
+    : DEFAULT_OPERATION_RESOURCE_POLICY.maxConcurrentProviderSessionsPerOperation;
+  const safeActive = typeof active === "number" && Number.isFinite(active) && active >= 0 ? Math.floor(active) : 0;
+  if (safeActive < safeCeiling) return { allowed: true, active: safeActive, ceiling: safeCeiling };
+  return {
+    allowed: false,
+    disposition: "QUEUE",
+    active: safeActive,
+    ceiling: safeCeiling,
+    retryAfterMs: PROVIDER_BACKPRESSURE_POLL_MS_V1
+  };
+}
+
+/** DETERMINISTIC classifier: true when the error is provider capacity/lease backpressure (QUEUE, not FAIL). */
+export function isProviderCapacityError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  if (message.includes("RESOURCE_CEILING_EXHAUSTED") && message.includes("active provider sessions")) return true;
+  if (message.includes("already leased in")) return true;
+  if (message.includes("PASEO_PROVIDER_LEASE_TAKEOVER_BLOCKED")) return true;
+  if (error && typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    if ((record as { code?: unknown }).code === "RESOURCE_CEILING_EXHAUSTED") {
+      const details = (record as { details?: unknown }).details;
+      if (details && typeof details === "object" && (details as Record<string, unknown>).disposition === "WAIT_OR_RAISE") return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Bounded QUEUE wait for provider session capacity. Polls the durable lease
+ * snapshot without widening any ceiling; the total wait never exceeds
+ * `min(maxWaitMs, deadlineAtMs - now)` and an exhausted budget returns
+ * `acquired: false` (terminal, fail-closed). Injectable clock/sleep/snapshot
+ * keeps fixtures scripted with no network.
+ *
+ * MECHANISM: DETERMINISTIC. Never mints fresh time: when `deadlineAtMs` is
+ * undefined (no existing wave/operation deadline can be established) the wait
+ * does a single immediate check only (no sleep, no fresh 30s budget). Allowed
+ * headroom proceeds immediately (no wait needed); saturation returns terminal
+ * `acquired: false` with zero waits. Unreadable durability BLOCKS (terminal
+ * false, never passes as clear with active=0).
+ */
+export async function waitForProviderSessionCapacity(
+  root: string,
+  operationId: string,
+  options: {
+    ceiling?: number;
+    deadlineAtMs?: number;
+    maxWaitMs?: number;
+    pollMs?: number;
+    now?: () => number;
+    sleep?: (ms: number) => Promise<void>;
+    countActive?: () => Promise<number> | number;
+  } = {}
+): Promise<{ acquired: boolean; waitedMs: number; active: number; ceiling: number }> {
+  const now = options.now ?? Date.now;
+  const sleep = options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const pollMs = options.pollMs !== undefined && Number.isFinite(options.pollMs) && options.pollMs > 0
+    ? Math.min(PROVIDER_BACKPRESSURE_MAX_WAIT_MS_V1, Math.floor(options.pollMs))
+    : PROVIDER_BACKPRESSURE_POLL_MS_V1;
+  const maxWaitMs = options.maxWaitMs !== undefined && Number.isFinite(options.maxWaitMs) && options.maxWaitMs >= 0
+    ? Math.min(PROVIDER_BACKPRESSURE_MAX_WAIT_MS_V1, Math.floor(options.maxWaitMs))
+    : PROVIDER_BACKPRESSURE_MAX_WAIT_MS_V1;
+  const startedAt = now();
+  // Luna F1: never mint fresh `now+maxWait` when no operation deadline exists.
+  // Undefined deadline means no wait budget: single immediate check only.
+  const hasDeadline = options.deadlineAtMs !== undefined && Number.isFinite(options.deadlineAtMs);
+  const deadlineAt = hasDeadline ? Math.floor(options.deadlineAtMs!) : undefined;
+  const effectiveDeadline = deadlineAt !== undefined ? Math.min(deadlineAt, startedAt + maxWaitMs) : undefined;
+  const countActive = options.countActive ?? (async (): Promise<number> => {
+    // Fail-closed: unreadable throws (caught below as BLOCKED terminal false);
+    // missing file returns empty snapshot (active 0, proceed). Never swallow
+    // corrupt into 0 (fail-open).
+    const snapshot = await readManagedRuntimeSnapshot(root);
+    return snapshot.providerLeases.filter((lease) => lease.lifecycle?.operationId === operationId).length;
+  });
+  const loadCeiling = async (): Promise<number> =>
+    options.ceiling ?? (await loadResourcePolicy(root).catch(() => DEFAULT_OPERATION_RESOURCE_POLICY)).maxConcurrentProviderSessionsPerOperation;
+  const ceilingForTerminal = await loadCeiling().catch(() => DEFAULT_OPERATION_RESOURCE_POLICY.maxConcurrentProviderSessionsPerOperation);
+  for (;;) {
+    let active: number;
+    try {
+      active = await countActive();
+    } catch {
+      // Fail-closed on unreadable durability: BLOCK (terminal false, no wait, no sleep).
+      return { acquired: false, waitedMs: Math.max(0, now() - startedAt), active: ceilingForTerminal, ceiling: ceilingForTerminal };
+    }
+    const verdict = checkProviderSessionBackpressure(active, await loadCeiling().catch(() => DEFAULT_OPERATION_RESOURCE_POLICY.maxConcurrentProviderSessionsPerOperation));
+    if (verdict.allowed) return { acquired: true, waitedMs: Math.max(0, now() - startedAt), active: verdict.active, ceiling: verdict.ceiling };
+    // No existing deadline: immediate terminal, never mint a fresh wait (zero sleeps).
+    if (effectiveDeadline === undefined) {
+      return { acquired: false, waitedMs: Math.max(0, now() - startedAt), active: verdict.active, ceiling: verdict.ceiling };
+    }
+    const elapsed = now() - startedAt;
+    const remainingBudget = effectiveDeadline - now();
+    if (remainingBudget <= 0 || elapsed >= maxWaitMs) {
+      return { acquired: false, waitedMs: Math.max(0, elapsed), active: verdict.active, ceiling: verdict.ceiling };
+    }
+    await sleep(Math.min(pollMs, remainingBudget, maxWaitMs - elapsed));
+  }
+}
+
+/**
+ * Durable atomic wave-slot acquire-or-queue (Luna F2+F3, fail-closed).
+ *
+ * MECHANISM: DETERMINISTIC + file-locked transact (atomic w.r.t. shared store).
+ * ATOMICITY NOTE: `RuntimeSupervisorV1.acquire/tryAcquireProviderLease` is
+ * synchronous and therefore atomic within one process, but it is NOT atomic
+ * w.r.t. the shared durable snapshot file across waves/operations/processes
+ * (each wave used a fresh in-memory supervisor, blind by construction). The
+ * previous `checkDurableWaveSlotConflict` was read-only check-then-proceed
+ * (TOCTOU): two racers could both read empty and both proceed. It is deleted.
+ * This primitive is the REAL atomic lease path: one root-scoped `.lock` file
+ * serializes reload→check→write so concurrent callers never both proceed.
+ * The same `findConflictingProviderLeases` predicate as `tryAcquireProviderLease`
+ * is evaluated inside the lock; ACQUIRED persists the new lease atomically,
+ * QUEUED persists nothing.
+ *
+ * Fail-closed: missing file means no leases yet (empty snapshot, may ACQUIRE);
+ * corrupt/unreadable/invalid snapshot never proceeds (QUEUED-terminal, no write,
+ * no wait when retryAfter is 0). Missing/empty identity throws (never ACQUIRE).
+ * No fresh time: `remainingBudgetMs` undefined means single immediate attempt
+ * only (no sleep, no fresh 30s); defined budget bounds total WAIT via
+ * `min(retryAfter, remaining)`; exhaustion is terminal QUEUED (caller FAILs).
+ * Deterministic clocks via `nowMs`/`sleepMs`; observation-only telemetry via
+ * existing `recordEvent` conventions (callers emit, never gate on it).
+ */
+export interface DurableWaveSlotInputV1 {
+  provider: string;
+  projectId: string;
+  canonicalRoot: string;
+  workspaceId: string;
+  ownerId: string;
+  mode?: "read" | "write";
+  ttlMs?: number;
+}
+
+export interface DurableWaveSlotAcquiredV1 {
+  acquired: true;
+  leaseId: string;
+  retryAfterMs: number;
+  queueDepth: number;
+  scope: "shared-durable";
+}
+
+export interface DurableWaveSlotQueuedV1 {
+  acquired: false;
+  retryAfterMs: number;
+  queueDepth: number;
+  scope: "shared-durable";
+  reason: string;
+}
+
+export type DurableWaveSlotResultV1 = DurableWaveSlotAcquiredV1 | DurableWaveSlotQueuedV1;
+
+function durableWaveSlotFile(snapshotRoot: string): string {
+  return path.resolve(path.join(snapshotRoot, ".harness", "runtime", "snapshot.json"));
+}
+
+async function writeRuntimeSnapshotAtomic(file: string, snapshot: RuntimeSnapshotV1): Promise<void> {
+  await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+  const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  await fs.writeFile(temporary, `${JSON.stringify(snapshot, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  try {
+    await fs.rename(temporary, file);
+  } finally {
+    await fs.rm(temporary, { force: true }).catch(() => undefined);
+  }
+}
+
+async function withDurableSlotLock<T>(
+  file: string,
+  action: () => Promise<T>,
+  options: {
+    remainingBudgetMs?: number;
+    nowMs?: () => number;
+    sleepMs?: (ms: number) => Promise<void>;
+  } = {}
+): Promise<T> {
+  const lockPath = `${file}.lock`;
+  await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+  const now = options.nowMs ?? Date.now;
+  const sleep = options.sleepMs ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const remaining = options.remainingBudgetMs;
+  // Same pattern as capacity WAIT: min(requested 10s, remaining);
+  // exhausted/undefined → terminal FAIL, no wait (never mint fresh 10s).
+  const hasBudget = remaining !== undefined && Number.isFinite(remaining) && remaining > 0;
+  const effectiveMaxWaitMs = hasBudget ? Math.min(10_000, Math.floor(remaining!)) : 0;
+  const startedAt = now();
+  const deadline = startedAt + effectiveMaxWaitMs;
+  for (;;) {
+    let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+    try {
+      handle = await fs.open(lockPath, "wx", 0o600);
+      try {
+        await handle.writeFile(`${process.pid}\n`);
+        return await action();
+      } finally {
+        await handle.close().catch(() => undefined);
+        await fs.rm(lockPath, { force: true }).catch(() => undefined);
+      }
+    } catch (error) {
+      if (handle) {
+        await handle.close().catch(() => undefined);
+        await fs.rm(lockPath, { force: true }).catch(() => undefined);
+        throw error;
+      }
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      // Stale lock recovery (dead owner pid or >30s old), else bounded wait.
+      try {
+        const [rawPid, stat] = await Promise.all([
+          fs.readFile(lockPath, "utf8").catch(() => ""),
+          fs.stat(lockPath).catch(() => undefined),
+        ]);
+        const pid = Number.parseInt(rawPid.trim(), 10);
+        let recoverable = false;
+        if (Number.isInteger(pid) && pid > 0) {
+          try {
+            process.kill(pid, 0);
+            recoverable = false;
+          } catch (killError) {
+            recoverable = (killError as NodeJS.ErrnoException).code === "ESRCH";
+          }
+        } else if (stat) {
+          recoverable = Date.now() - stat.mtimeMs > 30_000;
+        } else {
+          recoverable = true;
+        }
+        if (recoverable) {
+          await fs.rm(lockPath, { force: true }).catch(() => undefined);
+          continue;
+        }
+      } catch {
+        // Best-effort stale check never fails acquisition; fall through to wait.
+      }
+      // Exhausted budget → terminal FAIL, no wait (no sleep, no fresh time).
+      if (effectiveMaxWaitMs <= 0 || now() >= deadline) {
+        throw new Error(`Timed out acquiring durable wave-slot lock for ${path.basename(file)}.`);
+      }
+      await sleep(Math.min(20, Math.max(0, deadline - now())));
+    }
+  }
+}
+
+/**
+ * Single atomic attempt (lock → reload → check → write): lock wait honors the
+ * caller's remaining budget (`min(10s requested, remaining)`; exhausted or
+ * undefined → single immediate attempt, no wait, terminal on contention).
+ * Returns ACQUIRED with durable leaseId (persisted) or QUEUED (persisted nothing).
+ * Unreadable/invalid durability returns QUEUED-terminal (BLOCKED, retryAfter 0).
+ */
+export async function tryAcquireDurableWaveSlotAtomic(
+  snapshotRoot: string,
+  input: DurableWaveSlotInputV1,
+  options: { nowMs?: () => number; leaseTtlMs?: number; remainingBudgetMs?: number; sleepMs?: (ms: number) => Promise<void> } = {}
+): Promise<DurableWaveSlotResultV1> {
+  const nowMs = options.nowMs ?? Date.now;
+  const file = durableWaveSlotFile(snapshotRoot);
+  try {
+    return await withDurableSlotLock(
+      file,
+      async () => {
+      let snapshot: RuntimeSnapshotV1;
+      try {
+        snapshot = await readManagedRuntimeSnapshot(snapshotRoot);
+      } catch {
+        return {
+          acquired: false,
+          retryAfterMs: 0,
+          queueDepth: 1,
+          scope: "shared-durable",
+          reason: "durable provider lease snapshot unreadable; fail-closed QUEUED.",
+        } satisfies DurableWaveSlotQueuedV1;
+      }
+      const supervisor = new RuntimeSupervisorV1({
+        clock: () => new Date(nowMs()),
+        ...(options.leaseTtlMs !== undefined ? { leaseTtlMs: options.leaseTtlMs } : {}),
+      });
+      try {
+        supervisor.restoreSnapshot(snapshot);
+      } catch {
+        return {
+          acquired: false,
+          retryAfterMs: 0,
+          queueDepth: 1,
+          scope: "shared-durable",
+          reason: "durable provider lease snapshot invalid; fail-closed QUEUED.",
+        } satisfies DurableWaveSlotQueuedV1;
+      }
+      let result: ReturnType<RuntimeSupervisorV1["tryAcquireProviderLease"]>;
+      try {
+        result = supervisor.tryAcquireProviderLease({
+          provider: input.provider,
+          projectId: input.projectId,
+          canonicalRoot: input.canonicalRoot,
+          workspaceId: input.workspaceId,
+          mode: input.mode ?? "write",
+          ownerId: input.ownerId,
+          ...(input.ttlMs !== undefined ? { ttlMs: input.ttlMs } : {}),
+        });
+      } catch (error) {
+        // Invalid identity/ttl: fail-closed throw (BLOCKS caller, never ACQUIRE).
+        throw error;
+      }
+      if (result.status === "QUEUED") {
+        return {
+          acquired: false,
+          retryAfterMs: result.retryAfterMs,
+          queueDepth: result.queueDepth,
+          scope: "shared-durable",
+          reason: result.reason,
+        } satisfies DurableWaveSlotQueuedV1;
+      }
+      // ACQUIRED: persist atomically under the same lock before returning.
+      await writeRuntimeSnapshotAtomic(file, supervisor.snapshot());
+      return {
+        acquired: true,
+        leaseId: result.lease.leaseId,
+        retryAfterMs: 0,
+        queueDepth: 0,
+        scope: "shared-durable",
+      } satisfies DurableWaveSlotAcquiredV1;
+      },
+      {
+        ...(options.remainingBudgetMs !== undefined ? { remainingBudgetMs: options.remainingBudgetMs } : {}),
+        nowMs,
+        ...(options.sleepMs ? { sleepMs: options.sleepMs } : {}),
+      }
+    );
+  } catch (error) {
+    // Lock timeout or validation throw: fail-closed QUEUED-terminal (no proceed).
+    // Preserve validation throws (empty identity) as throws for callers that
+    // must not swallow programming errors? No: wave path treats any throw as
+    // FAIL, but acquire-or-queue contract returns QUEUED for contention and
+    // throws only for invalid input. Distinguish by message.
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("must not be empty") || message.includes("ttl must be")) throw error;
+    return {
+      acquired: false,
+      retryAfterMs: 0,
+      queueDepth: 1,
+      scope: "shared-durable",
+      reason: `durable wave-slot lock unavailable; fail-closed QUEUED: ${message.slice(0, 200)}`,
+    } satisfies DurableWaveSlotQueuedV1;
+  }
+}
+
+/**
+ * Atomic release (lock → reload → delete → write). Idempotent: missing lease
+ * returns silently. Owner mismatch throws fail-closed (caller treats as FAIL,
+ * best-effort in wave finally blocks).
+ */
+export async function releaseDurableWaveSlot(
+  snapshotRoot: string,
+  leaseId: string,
+  ownerId: string,
+  options: { nowMs?: () => number; remainingBudgetMs?: number; sleepMs?: (ms: number) => Promise<void> } = {}
+): Promise<void> {
+  const nowMs = options.nowMs ?? Date.now;
+  const file = durableWaveSlotFile(snapshotRoot);
+  await withDurableSlotLock(
+    file,
+    async () => {
+    let snapshot: RuntimeSnapshotV1;
+    try {
+      snapshot = await readManagedRuntimeSnapshot(snapshotRoot);
+    } catch {
+      // Unreadable on release: fail-closed throw (caller best-effort catches).
+      throw new Error("durable provider lease snapshot unreadable; fail-closed release BLOCKED.");
+    }
+    const supervisor = new RuntimeSupervisorV1({ clock: () => new Date(nowMs()) });
+    supervisor.restoreSnapshot(snapshot);
+    // Best-effort idempotent: missing lease is already released.
+    const existing = supervisor.snapshot().providerLeases.find((lease) => lease.leaseId === leaseId);
+    if (!existing) return;
+    supervisor.releaseProviderLease(leaseId, ownerId);
+    await writeRuntimeSnapshotAtomic(file, supervisor.snapshot());
+    },
+    {
+      // Cleanup defaults to the historical 10s patience when the caller has no
+      // budget; an explicitly exhausted budget (<=0) still means no wait.
+      remainingBudgetMs: options.remainingBudgetMs ?? 10_000,
+      nowMs,
+      ...(options.sleepMs ? { sleepMs: options.sleepMs } : {}),
+    }
+  );
+}
+
+/**
+ * Bounded atomic acquire-or-wait-or-fail (production wave path).
+ * Single immediate attempt when `remainingBudgetMs` is undefined or <=0 (never
+ * mints fresh 30s); otherwise single bounded WAIT (`min(retryAfter, remaining)`)
+ * then one atomic re-attempt; exhaustion on second QUEUED is terminal (caller
+ * FAILs). Single-retry bound keeps waits deterministic with pinned clocks
+ * (tests pin `nowMs`/`sleepMs` with no clock advance; infinite polling would
+ * hang). Unreadable (retryAfter 0) never sleeps.
+ */
+export async function acquireDurableWaveSlotOrQueue(
+  snapshotRoot: string,
+  input: DurableWaveSlotInputV1,
+  options: {
+    remainingBudgetMs?: number;
+    sleepMs?: (ms: number) => Promise<void>;
+    nowMs?: () => number;
+    leaseTtlMs?: number;
+  } = {}
+): Promise<DurableWaveSlotResultV1> {
+  const nowMs = options.nowMs ?? Date.now;
+  const sleepMs = options.sleepMs ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const remaining = options.remainingBudgetMs;
+  const hasBudget = remaining !== undefined && Number.isFinite(remaining) && remaining > 0;
+
+  // Thread the caller's remaining budget into the lock itself (same pattern as
+  // capacity WAIT: min(requested 10s, remaining); exhausted → terminal, no wait).
+  // The first attempt gets the full remaining; the re-attempt after WAIT gets
+  // the leftover (remaining - waitMs) so the lock never exceeds the budget.
+  const attempt = (budgetMs?: number) =>
+    tryAcquireDurableWaveSlotAtomic(snapshotRoot, input, {
+      nowMs,
+      ...(options.leaseTtlMs !== undefined ? { leaseTtlMs: options.leaseTtlMs } : {}),
+      ...(budgetMs !== undefined ? { remainingBudgetMs: budgetMs } : { remainingBudgetMs: 0 }),
+      sleepMs,
+    });
+
+  const first = await attempt(remaining);
+  if (first.acquired) return first;
+  // No existing budget: immediate terminal, never mint a fresh wait (zero sleeps).
+  if (!hasBudget) return first;
+  // Exhausted/invalid QUEUED (retryAfter 0 on unreadable): immediate terminal, no sleep.
+  if (first.retryAfterMs <= 0) return first;
+
+  const waitMs = Math.min(first.retryAfterMs, Math.floor(remaining!));
+  if (waitMs <= 0) return first;
+  await sleepMs(waitMs);
+  const second = await attempt(Math.max(0, Math.floor(remaining!) - waitMs));
+  if (second.acquired) return { ...second, retryAfterMs: waitMs };
+  return second;
+}
+
+/**
+ * Bounded backpressure telemetry attributes for existing `recordEvent`
+ * conventions (counter: queued/active observations; gauge: ceiling). Refs-only,
+ * never provider content; observation only, never a gate.
+ */
+export function providerBackpressureAttributes(signal: ProviderBackpressureTelemetryV1): Record<string, unknown> {
+  const operationId = signal.operationId.slice(0, 200);
+  const active = Math.max(0, Math.floor(signal.active));
+  const ceiling = Math.max(1, Math.floor(signal.ceiling));
+  const queued = Math.max(0, Math.floor(signal.queued));
+  const retryAfterMs = Math.max(0, Math.min(PROVIDER_BACKPRESSURE_MAX_WAIT_MS_V1, Math.floor(signal.retryAfterMs)));
+  return { operationId, active, ceiling, queued, retryAfterMs, disposition: signal.disposition };
 }
 
 export async function loadResourcePolicy(root: string): Promise<OperationResourcePolicyV1> {
