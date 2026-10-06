@@ -26,11 +26,14 @@ import {
 import { readManagedRuntimeSnapshot } from "./managed.js";
 import { persistCandidateForensicsV1 } from "../operations/forensics.js";
 import {
+  RuntimeSupervisorV1,
   findConflictingProviderLeases,
   queuedForConflictingLeases,
   type ProviderLeaseQueuedV1,
+  type ProviderLeaseV1,
   type RuntimeSnapshotV1,
 } from "./supervisorV2.js";
+import { randomUUID } from "node:crypto";
 
 export const operationResourceKinds = [
   "paseo-workspace",
@@ -493,8 +496,10 @@ export async function reconcileTerminalOperationResources(root: string, deps: Op
 /** Capacity check for concurrent provider sessions of one operation (policy-driven, generic). */
 export async function assertProviderSessionCapacity(root: string, operationId: string, ceiling?: number): Promise<void> {
   const policy = ceiling ?? (await loadResourcePolicy(root)).maxConcurrentProviderSessionsPerOperation;
-  const snapshot = await readManagedRuntimeSnapshot(root).catch(() => undefined);
-  const active = snapshot?.providerLeases.filter((lease) => lease.lifecycle?.operationId === operationId).length ?? 0;
+  // Fail-closed: unreadable durable state BLOCKS (throws), never passes as clear.
+  // Missing file means no leases yet (empty snapshot, proceed); corrupt/unreadable throws.
+  const snapshot = await readManagedRuntimeSnapshot(root);
+  const active = snapshot.providerLeases.filter((lease) => lease.lifecycle?.operationId === operationId).length;
   if (active >= policy) {
     throw new AehError("RESOURCE_CEILING_EXHAUSTED", `operation ${operationId} already holds ${active} active provider sessions; configured ceiling ${policy}.`, {
       details: { operationId, active, ceiling: policy, disposition: "WAIT_OR_RAISE" }
@@ -544,6 +549,13 @@ export function isProviderCapacityError(error: unknown): boolean {
  * `min(maxWaitMs, deadlineAtMs - now)` and an exhausted budget returns
  * `acquired: false` (terminal, fail-closed). Injectable clock/sleep/snapshot
  * keeps fixtures scripted with no network.
+ *
+ * MECHANISM: DETERMINISTIC. Never mints fresh time: when `deadlineAtMs` is
+ * undefined (no existing wave/operation deadline can be established) the wait
+ * does a single immediate check only (no sleep, no fresh 30s budget). Allowed
+ * headroom proceeds immediately (no wait needed); saturation returns terminal
+ * `acquired: false` with zero waits. Unreadable durability BLOCKS (terminal
+ * false, never passes as clear with active=0).
  */
 export async function waitForProviderSessionCapacity(
   root: string,
@@ -567,16 +579,35 @@ export async function waitForProviderSessionCapacity(
     ? Math.min(PROVIDER_BACKPRESSURE_MAX_WAIT_MS_V1, Math.floor(options.maxWaitMs))
     : PROVIDER_BACKPRESSURE_MAX_WAIT_MS_V1;
   const startedAt = now();
-  const deadlineAt = options.deadlineAtMs ?? startedAt + maxWaitMs;
-  const effectiveDeadline = Math.min(deadlineAt, startedAt + maxWaitMs);
+  // Luna F1: never mint fresh `now+maxWait` when no operation deadline exists.
+  // Undefined deadline means no wait budget: single immediate check only.
+  const hasDeadline = options.deadlineAtMs !== undefined && Number.isFinite(options.deadlineAtMs);
+  const deadlineAt = hasDeadline ? Math.floor(options.deadlineAtMs!) : undefined;
+  const effectiveDeadline = deadlineAt !== undefined ? Math.min(deadlineAt, startedAt + maxWaitMs) : undefined;
   const countActive = options.countActive ?? (async (): Promise<number> => {
-    const snapshot = await readManagedRuntimeSnapshot(root).catch(() => undefined);
-    return snapshot?.providerLeases.filter((lease) => lease.lifecycle?.operationId === operationId).length ?? 0;
+    // Fail-closed: unreadable throws (caught below as BLOCKED terminal false);
+    // missing file returns empty snapshot (active 0, proceed). Never swallow
+    // corrupt into 0 (fail-open).
+    const snapshot = await readManagedRuntimeSnapshot(root);
+    return snapshot.providerLeases.filter((lease) => lease.lifecycle?.operationId === operationId).length;
   });
+  const loadCeiling = async (): Promise<number> =>
+    options.ceiling ?? (await loadResourcePolicy(root).catch(() => DEFAULT_OPERATION_RESOURCE_POLICY)).maxConcurrentProviderSessionsPerOperation;
+  const ceilingForTerminal = await loadCeiling().catch(() => DEFAULT_OPERATION_RESOURCE_POLICY.maxConcurrentProviderSessionsPerOperation);
   for (;;) {
-    const active = await countActive();
-    const verdict = checkProviderSessionBackpressure(active, options.ceiling ?? (await loadResourcePolicy(root).catch(() => DEFAULT_OPERATION_RESOURCE_POLICY)).maxConcurrentProviderSessionsPerOperation);
+    let active: number;
+    try {
+      active = await countActive();
+    } catch {
+      // Fail-closed on unreadable durability: BLOCK (terminal false, no wait, no sleep).
+      return { acquired: false, waitedMs: Math.max(0, now() - startedAt), active: ceilingForTerminal, ceiling: ceilingForTerminal };
+    }
+    const verdict = checkProviderSessionBackpressure(active, await loadCeiling().catch(() => DEFAULT_OPERATION_RESOURCE_POLICY.maxConcurrentProviderSessionsPerOperation));
     if (verdict.allowed) return { acquired: true, waitedMs: Math.max(0, now() - startedAt), active: verdict.active, ceiling: verdict.ceiling };
+    // No existing deadline: immediate terminal, never mint a fresh wait (zero sleeps).
+    if (effectiveDeadline === undefined) {
+      return { acquired: false, waitedMs: Math.max(0, now() - startedAt), active: verdict.active, ceiling: verdict.ceiling };
+    }
     const elapsed = now() - startedAt;
     const remainingBudget = effectiveDeadline - now();
     if (remainingBudget <= 0 || elapsed >= maxWaitMs) {
@@ -587,53 +618,297 @@ export async function waitForProviderSessionCapacity(
 }
 
 /**
- * Shared durable per-workspace lease conflict check (Luna F2).
+ * Durable atomic wave-slot acquire-or-queue (Luna F2+F3, fail-closed).
  *
- * MECHANISM: DETERMINISTIC read of the SHARED durable lease authority — the
- * same managed-runtime snapshot file (`readManagedRuntimeSnapshot`, the store
- * `acquireProviderLease` persists to via `ManagedRuntimeSupervisorV1`) —
- * evaluated with the exact `findConflictingProviderLeases` predicate that
- * `tryAcquireProviderLease` enforces. Returns a bounded QUEUED disposition
- * when another wave/operation holds the same provider/project/root/workspace
- * scope in write-write conflict; returns undefined when the durable store
- * shows no conflict (proceed to intra-wave admission).
+ * MECHANISM: DETERMINISTIC + file-locked transact (atomic w.r.t. shared store).
+ * ATOMICITY NOTE: `RuntimeSupervisorV1.acquire/tryAcquireProviderLease` is
+ * synchronous and therefore atomic within one process, but it is NOT atomic
+ * w.r.t. the shared durable snapshot file across waves/operations/processes
+ * (each wave used a fresh in-memory supervisor, blind by construction). The
+ * previous `checkDurableWaveSlotConflict` was read-only check-then-proceed
+ * (TOCTOU): two racers could both read empty and both proceed. It is deleted.
+ * This primitive is the REAL atomic lease path: one root-scoped `.lock` file
+ * serializes reload→check→write so concurrent callers never both proceed.
+ * The same `findConflictingProviderLeases` predicate as `tryAcquireProviderLease`
+ * is evaluated inside the lock; ACQUIRED persists the new lease atomically,
+ * QUEUED persists nothing.
  *
- * Fail-closed: a missing snapshot file means no durable leases yet (proceed);
- * a corrupt/unsupported snapshot never proceeds on uncertain durability —
- * callers treat it as QUEUED-terminal (acquired false, no wait). Injectable
- * `nowMs`/`snapshotReader` keep fixtures scripted with no filesystem.
+ * Fail-closed: missing file means no leases yet (empty snapshot, may ACQUIRE);
+ * corrupt/unreadable/invalid snapshot never proceeds (QUEUED-terminal, no write,
+ * no wait when retryAfter is 0). Missing/empty identity throws (never ACQUIRE).
+ * No fresh time: `remainingBudgetMs` undefined means single immediate attempt
+ * only (no sleep, no fresh 30s); defined budget bounds total WAIT via
+ * `min(retryAfter, remaining)`; exhaustion is terminal QUEUED (caller FAILs).
+ * Deterministic clocks via `nowMs`/`sleepMs`; observation-only telemetry via
+ * existing `recordEvent` conventions (callers emit, never gate on it).
  */
-export async function checkDurableWaveSlotConflict(
-  root: string,
-  input: { provider: string; projectId: string; canonicalRoot: string; workspaceId: string; ownerId: string; mode?: "read" | "write" },
-  options: {
-    nowMs?: () => number;
-    snapshotReader?: (snapshotRoot: string) => Promise<RuntimeSnapshotV1 | undefined> | RuntimeSnapshotV1 | undefined;
-  } = {}
-): Promise<ProviderLeaseQueuedV1 | undefined> {
-  const nowMs = options.nowMs ?? Date.now;
-  let snapshot: RuntimeSnapshotV1 | undefined;
+export interface DurableWaveSlotInputV1 {
+  provider: string;
+  projectId: string;
+  canonicalRoot: string;
+  workspaceId: string;
+  ownerId: string;
+  mode?: "read" | "write";
+  ttlMs?: number;
+}
+
+export interface DurableWaveSlotAcquiredV1 {
+  acquired: true;
+  leaseId: string;
+  retryAfterMs: number;
+  queueDepth: number;
+  scope: "shared-durable";
+}
+
+export interface DurableWaveSlotQueuedV1 {
+  acquired: false;
+  retryAfterMs: number;
+  queueDepth: number;
+  scope: "shared-durable";
+  reason: string;
+}
+
+export type DurableWaveSlotResultV1 = DurableWaveSlotAcquiredV1 | DurableWaveSlotQueuedV1;
+
+function durableWaveSlotFile(snapshotRoot: string): string {
+  return path.resolve(path.join(snapshotRoot, ".harness", "runtime", "snapshot.json"));
+}
+
+async function writeRuntimeSnapshotAtomic(file: string, snapshot: RuntimeSnapshotV1): Promise<void> {
+  await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+  const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  await fs.writeFile(temporary, `${JSON.stringify(snapshot, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   try {
-    const reader = options.snapshotReader ?? ((snapshotRoot: string) => readManagedRuntimeSnapshot(snapshotRoot).catch(() => undefined));
-    snapshot = await reader(root);
-  } catch {
-    // Fail-closed on unreadable durability: never proceed on uncertain state.
-    return { status: "QUEUED", retryAfterMs: 0, queueDepth: 1, reason: "durable provider lease snapshot unreadable; fail-closed QUEUED." };
+    await fs.rename(temporary, file);
+  } finally {
+    await fs.rm(temporary, { force: true }).catch(() => undefined);
   }
-  if (!snapshot) return undefined;
-  if (snapshot.version !== 1 || !Array.isArray(snapshot.providerLeases)) {
-    return { status: "QUEUED", retryAfterMs: 0, queueDepth: 1, reason: "durable provider lease snapshot invalid; fail-closed QUEUED." };
+}
+
+async function withDurableSlotLock<T>(file: string, action: () => Promise<T>): Promise<T> {
+  const lockPath = `${file}.lock`;
+  await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+    try {
+      handle = await fs.open(lockPath, "wx", 0o600);
+      try {
+        await handle.writeFile(`${process.pid}\n`);
+        return await action();
+      } finally {
+        await handle.close().catch(() => undefined);
+        await fs.rm(lockPath, { force: true }).catch(() => undefined);
+      }
+    } catch (error) {
+      if (handle) {
+        await handle.close().catch(() => undefined);
+        await fs.rm(lockPath, { force: true }).catch(() => undefined);
+        throw error;
+      }
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      // Stale lock recovery (dead owner pid or >30s old), else bounded wait.
+      try {
+        const [rawPid, stat] = await Promise.all([
+          fs.readFile(lockPath, "utf8").catch(() => ""),
+          fs.stat(lockPath).catch(() => undefined),
+        ]);
+        const pid = Number.parseInt(rawPid.trim(), 10);
+        let recoverable = false;
+        if (Number.isInteger(pid) && pid > 0) {
+          try {
+            process.kill(pid, 0);
+            recoverable = false;
+          } catch (killError) {
+            recoverable = (killError as NodeJS.ErrnoException).code === "ESRCH";
+          }
+        } else if (stat) {
+          recoverable = Date.now() - stat.mtimeMs > 30_000;
+        } else {
+          recoverable = true;
+        }
+        if (recoverable) {
+          await fs.rm(lockPath, { force: true }).catch(() => undefined);
+          continue;
+        }
+      } catch {
+        // Best-effort stale check never fails acquisition; fall through to wait.
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out acquiring durable wave-slot lock for ${path.basename(file)}.`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
   }
-  const conflicting = findConflictingProviderLeases(snapshot.providerLeases, {
-    provider: input.provider,
-    projectId: input.projectId,
-    canonicalRoot: input.canonicalRoot,
-    workspaceId: input.workspaceId,
-    ownerId: input.ownerId,
-    mode: input.mode ?? "write",
+}
+
+/**
+ * Single atomic attempt (no wait, no sleep): lock → reload → check → write.
+ * Returns ACQUIRED with durable leaseId (persisted) or QUEUED (persisted nothing).
+ * Unreadable/invalid durability returns QUEUED-terminal (BLOCKED, retryAfter 0).
+ */
+export async function tryAcquireDurableWaveSlotAtomic(
+  snapshotRoot: string,
+  input: DurableWaveSlotInputV1,
+  options: { nowMs?: () => number; leaseTtlMs?: number } = {}
+): Promise<DurableWaveSlotResultV1> {
+  const nowMs = options.nowMs ?? Date.now;
+  const file = durableWaveSlotFile(snapshotRoot);
+  try {
+    return await withDurableSlotLock(file, async () => {
+      let snapshot: RuntimeSnapshotV1;
+      try {
+        snapshot = await readManagedRuntimeSnapshot(snapshotRoot);
+      } catch {
+        return {
+          acquired: false,
+          retryAfterMs: 0,
+          queueDepth: 1,
+          scope: "shared-durable",
+          reason: "durable provider lease snapshot unreadable; fail-closed QUEUED.",
+        } satisfies DurableWaveSlotQueuedV1;
+      }
+      const supervisor = new RuntimeSupervisorV1({
+        clock: () => new Date(nowMs()),
+        ...(options.leaseTtlMs !== undefined ? { leaseTtlMs: options.leaseTtlMs } : {}),
+      });
+      try {
+        supervisor.restoreSnapshot(snapshot);
+      } catch {
+        return {
+          acquired: false,
+          retryAfterMs: 0,
+          queueDepth: 1,
+          scope: "shared-durable",
+          reason: "durable provider lease snapshot invalid; fail-closed QUEUED.",
+        } satisfies DurableWaveSlotQueuedV1;
+      }
+      let result: ReturnType<RuntimeSupervisorV1["tryAcquireProviderLease"]>;
+      try {
+        result = supervisor.tryAcquireProviderLease({
+          provider: input.provider,
+          projectId: input.projectId,
+          canonicalRoot: input.canonicalRoot,
+          workspaceId: input.workspaceId,
+          mode: input.mode ?? "write",
+          ownerId: input.ownerId,
+          ...(input.ttlMs !== undefined ? { ttlMs: input.ttlMs } : {}),
+        });
+      } catch (error) {
+        // Invalid identity/ttl: fail-closed throw (BLOCKS caller, never ACQUIRE).
+        throw error;
+      }
+      if (result.status === "QUEUED") {
+        return {
+          acquired: false,
+          retryAfterMs: result.retryAfterMs,
+          queueDepth: result.queueDepth,
+          scope: "shared-durable",
+          reason: result.reason,
+        } satisfies DurableWaveSlotQueuedV1;
+      }
+      // ACQUIRED: persist atomically under the same lock before returning.
+      await writeRuntimeSnapshotAtomic(file, supervisor.snapshot());
+      return {
+        acquired: true,
+        leaseId: result.lease.leaseId,
+        retryAfterMs: 0,
+        queueDepth: 0,
+        scope: "shared-durable",
+      } satisfies DurableWaveSlotAcquiredV1;
+    });
+  } catch (error) {
+    // Lock timeout or validation throw: fail-closed QUEUED-terminal (no proceed).
+    // Preserve validation throws (empty identity) as throws for callers that
+    // must not swallow programming errors? No: wave path treats any throw as
+    // FAIL, but acquire-or-queue contract returns QUEUED for contention and
+    // throws only for invalid input. Distinguish by message.
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("must not be empty") || message.includes("ttl must be")) throw error;
+    return {
+      acquired: false,
+      retryAfterMs: 0,
+      queueDepth: 1,
+      scope: "shared-durable",
+      reason: `durable wave-slot lock unavailable; fail-closed QUEUED: ${message.slice(0, 200)}`,
+    } satisfies DurableWaveSlotQueuedV1;
+  }
+}
+
+/**
+ * Atomic release (lock → reload → delete → write). Idempotent: missing lease
+ * returns silently. Owner mismatch throws fail-closed (caller treats as FAIL,
+ * best-effort in wave finally blocks).
+ */
+export async function releaseDurableWaveSlot(
+  snapshotRoot: string,
+  leaseId: string,
+  ownerId: string,
+  options: { nowMs?: () => number } = {}
+): Promise<void> {
+  const nowMs = options.nowMs ?? Date.now;
+  const file = durableWaveSlotFile(snapshotRoot);
+  await withDurableSlotLock(file, async () => {
+    let snapshot: RuntimeSnapshotV1;
+    try {
+      snapshot = await readManagedRuntimeSnapshot(snapshotRoot);
+    } catch {
+      // Unreadable on release: fail-closed throw (caller best-effort catches).
+      throw new Error("durable provider lease snapshot unreadable; fail-closed release BLOCKED.");
+    }
+    const supervisor = new RuntimeSupervisorV1({ clock: () => new Date(nowMs()) });
+    supervisor.restoreSnapshot(snapshot);
+    // Best-effort idempotent: missing lease is already released.
+    const existing = supervisor.snapshot().providerLeases.find((lease) => lease.leaseId === leaseId);
+    if (!existing) return;
+    supervisor.releaseProviderLease(leaseId, ownerId);
+    await writeRuntimeSnapshotAtomic(file, supervisor.snapshot());
   });
-  if (!conflicting.length) return undefined;
-  return queuedForConflictingLeases(input.provider, input.workspaceId, conflicting, nowMs());
+}
+
+/**
+ * Bounded atomic acquire-or-wait-or-fail (production wave path).
+ * Single immediate attempt when `remainingBudgetMs` is undefined or <=0 (never
+ * mints fresh 30s); otherwise single bounded WAIT (`min(retryAfter, remaining)`)
+ * then one atomic re-attempt; exhaustion on second QUEUED is terminal (caller
+ * FAILs). Single-retry bound keeps waits deterministic with pinned clocks
+ * (tests pin `nowMs`/`sleepMs` with no clock advance; infinite polling would
+ * hang). Unreadable (retryAfter 0) never sleeps.
+ */
+export async function acquireDurableWaveSlotOrQueue(
+  snapshotRoot: string,
+  input: DurableWaveSlotInputV1,
+  options: {
+    remainingBudgetMs?: number;
+    sleepMs?: (ms: number) => Promise<void>;
+    nowMs?: () => number;
+    leaseTtlMs?: number;
+  } = {}
+): Promise<DurableWaveSlotResultV1> {
+  const nowMs = options.nowMs ?? Date.now;
+  const sleepMs = options.sleepMs ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const remaining = options.remainingBudgetMs;
+  const hasBudget = remaining !== undefined && Number.isFinite(remaining) && remaining > 0;
+
+  const attempt = () =>
+    tryAcquireDurableWaveSlotAtomic(snapshotRoot, input, {
+      nowMs,
+      ...(options.leaseTtlMs !== undefined ? { leaseTtlMs: options.leaseTtlMs } : {}),
+    });
+
+  const first = await attempt();
+  if (first.acquired) return first;
+  // No existing budget: immediate terminal, never mint a fresh wait (zero sleeps).
+  if (!hasBudget) return first;
+  // Exhausted/invalid QUEUED (retryAfter 0 on unreadable): immediate terminal, no sleep.
+  if (first.retryAfterMs <= 0) return first;
+
+  const waitMs = Math.min(first.retryAfterMs, Math.floor(remaining!));
+  if (waitMs <= 0) return first;
+  await sleepMs(waitMs);
+  const second = await attempt();
+  if (second.acquired) return { ...second, retryAfterMs: waitMs };
+  return second;
 }
 
 /**

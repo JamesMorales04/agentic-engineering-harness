@@ -414,17 +414,19 @@ describe("provider backpressure (Unit 3)", () => {
   describe("Luna RED: budget-exhaustion, shared-contention, create-bound", () => {
     it("F1 budget-exhaustion: wave capacity WAIT honors remaining wave/operation budget (zero-remaining → immediate terminal, no wait)", async () => {
       const { resolveWaveCapacityDeadlineAtMs, remainingWaveBudgetMs } = await import("../src/agents/waveExecutor.js");
-      // WAIT = min(requested, remaining). Operation deadline earlier than fresh 30s budget wins.
+      // WAIT = min(requested, remaining) when a finite operation deadline exists.
+      // No operation deadline (undefined) mints NO fresh time (fail-closed, undefined).
       const now = 1_000_000;
       const maxWait = 30_000;
       const opDeadline = now + 5_000;
       expect(resolveWaveCapacityDeadlineAtMs(now, opDeadline, maxWait)).toBe(opDeadline);
-      expect(resolveWaveCapacityDeadlineAtMs(now, undefined, maxWait)).toBe(now + maxWait);
+      expect(resolveWaveCapacityDeadlineAtMs(now, undefined, maxWait)).toBeUndefined();
       expect(resolveWaveCapacityDeadlineAtMs(now, now + 60_000, maxWait)).toBe(now + maxWait);
-      // Exhausted/expired → terminal 0, no wait.
+      // Exhausted/expired → terminal 0, no wait. Undefined deadline → 0 (no wait budget).
       expect(remainingWaveBudgetMs(now + 5_000, now)).toBe(5_000);
       expect(remainingWaveBudgetMs(now, now)).toBe(0);
       expect(remainingWaveBudgetMs(now - 1, now)).toBe(0);
+      expect(remainingWaveBudgetMs(undefined, now)).toBe(0);
       // Zero-remaining capacity wait is immediate terminal with no sleep.
       const sleeps: number[] = [];
       const zero = await waitForProviderSessionCapacity("/root", "op-zero", {
@@ -438,34 +440,59 @@ describe("provider backpressure (Unit 3)", () => {
       });
       expect(zero.acquired).toBe(false);
       expect(sleeps).toEqual([]);
+      // No deadline + saturated: immediate terminal with zero sleeps (never mints fresh 30s).
+      const noDeadlineSleeps: number[] = [];
+      const noDeadline = await waitForProviderSessionCapacity("/root", "op-zero", {
+        ceiling: 1,
+        maxWaitMs: 30_000,
+        pollMs: 10,
+        now: () => now,
+        sleep: async (ms) => { noDeadlineSleeps.push(ms); },
+        countActive: () => 1,
+      });
+      expect(noDeadline.acquired).toBe(false);
+      expect(noDeadlineSleeps).toEqual([]);
     });
 
-    it("F2 shared-contention: wave slot gates on SHARED durable lease authority, not a fresh wave-local supervisor", async () => {
+    it("F2 shared-contention: wave slot gates on SHARED durable atomic lease, not a fresh wave-local supervisor", async () => {
       const waveMod = await import("../src/agents/waveExecutor.js");
       const shared = (waveMod as unknown as Record<string, unknown>).acquireWaveProviderSlotSharedOrQueue as
-        | ((root: string, input: { provider: string; projectId: string; canonicalRoot: string; workspaceId: string; ownerId: string; mode?: "read" | "write" }, options?: { remainingBudgetMs?: number; sleepMs?: (ms: number) => Promise<void>; nowMs?: () => number; countDurableConflicts?: () => Promise<{ queueDepth: number; retryAfterMs: number }> | { queueDepth: number; retryAfterMs: number } }) => Promise<{ acquired: boolean; retryAfterMs: number; queueDepth: number; scope: string }>)
+        | ((root: string, input: { provider: string; projectId: string; canonicalRoot: string; workspaceId: string; ownerId: string; mode?: "read" | "write" }, options?: { remainingBudgetMs?: number; sleepMs?: (ms: number) => Promise<void>; nowMs?: () => number }) => Promise<{ acquired: boolean; retryAfterMs: number; queueDepth: number; scope: string; leaseId?: string }>)
         | undefined;
       expect(typeof shared).toBe("function");
-      // Durable authority reports a cross-wave conflict (another wave/operation holds the scope).
-      const sleeps: number[] = [];
-      const queued = await shared!("/root", { provider: "wave", projectId: "p", canonicalRoot: "/r", workspaceId: "shared", ownerId: "task-b", mode: "write" }, {
-        remainingBudgetMs: 0,
-        sleepMs: async (ms) => { sleeps.push(ms); },
-        nowMs: () => 0,
-        countDurableConflicts: async () => ({ queueDepth: 1, retryAfterMs: 250 }),
-      });
-      expect(queued.acquired).toBe(false);
-      expect(queued.queueDepth).toBe(1);
-      expect(sleeps).toEqual([]);
-      expect(queued.scope).toMatch(/shared|durable/i);
-      // No durable conflict + no intra-wave conflict → ACQUIRED.
-      const free = await shared!("/root", { provider: "wave", projectId: "p", canonicalRoot: "/r", workspaceId: "free", ownerId: "task-c", mode: "write" }, {
-        remainingBudgetMs: 1000,
-        sleepMs: async () => undefined,
-        nowMs: () => 0,
-        countDurableConflicts: async () => ({ queueDepth: 0, retryAfterMs: 0 }),
-      });
-      expect(free.acquired).toBe(true);
+      const fs = await import("node:fs/promises");
+      const os = await import("node:os");
+      const path = await import("node:path");
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-f2-"));
+      try {
+        // Durable holder acquires first (persists lease).
+        const holder = await shared!(dir, { provider: "wave", projectId: "p", canonicalRoot: "/r", workspaceId: "shared", ownerId: "task-a", mode: "write" }, {
+          remainingBudgetMs: 1000,
+          sleepMs: async () => undefined,
+          nowMs: () => 0,
+        });
+        expect(holder.acquired).toBe(true);
+        // Second writer to same scope QUEUES (not throw) with bounded hint, zero sleeps on 0 budget.
+        const sleeps: number[] = [];
+        const queued = await shared!(dir, { provider: "wave", projectId: "p", canonicalRoot: "/r", workspaceId: "shared", ownerId: "task-b", mode: "write" }, {
+          remainingBudgetMs: 0,
+          sleepMs: async (ms) => { sleeps.push(ms); },
+          nowMs: () => 0,
+        });
+        expect(queued.acquired).toBe(false);
+        expect(queued.queueDepth).toBe(1);
+        expect(sleeps).toEqual([]);
+        expect(queued.scope).toMatch(/shared|durable/i);
+        // Distinct workspace never contends (ACQUIRED).
+        const free = await shared!(dir, { provider: "wave", projectId: "p", canonicalRoot: "/r", workspaceId: "free", ownerId: "task-c", mode: "write" }, {
+          remainingBudgetMs: 1000,
+          sleepMs: async () => undefined,
+          nowMs: () => 0,
+        });
+        expect(free.acquired).toBe(true);
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true });
+      }
       // Fresh wave-local supervisor alone is blind to the durable conflict (documents why local-only is insufficient).
       const fresh = new RuntimeSupervisorV1({ leaseTtlMs: 60_000 });
       const blind = await acquireWaveProviderSlotOrQueue(

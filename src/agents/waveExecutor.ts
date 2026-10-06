@@ -37,9 +37,10 @@ import { compilePlannerWorkGraphWithOneCorrection, PlannerWorkGraphCorrectionErr
 import {
   DEFAULT_OPERATION_RESOURCE_POLICY,
   PROVIDER_BACKPRESSURE_EVENT_V1,
-  checkDurableWaveSlotConflict,
+  acquireDurableWaveSlotOrQueue,
   isProviderCapacityError,
   providerBackpressureAttributes,
+  releaseDurableWaveSlot,
   waitForProviderSessionCapacity
 } from "../runtime/operationResources.js";
 import {
@@ -155,11 +156,14 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
     // Operation-wide provider-session QUEUE gate (durable equivalent of
     // tryAcquireProviderLease; production caller of waitForProviderSessionCapacity).
     // Luna F1: bounded WAIT against the wave's EXISTING budget — WAIT =
-    // min(requested 30s, remaining wave/operation budget); exhausted/expired →
-    // terminal FAIL, fail-closed, never a fresh 30s unbounded by the deadline.
+    // min(requested 30s, remaining wave/operation budget) when a finite frozen
+    // Owner hard deadline exists; when none can be established (undefined),
+    // mint NO fresh 30s (single immediate check only: headroom proceeds,
+    // saturation is terminal FAIL with zero sleeps, fail-closed).
     // MECHANISM: DETERMINISTIC. Wave budget deadline = min(now + 30s, frozen
-    // Owner hard deadline when present); threaded as deadlineAtMs so the wait
-    // never extends caps. Deterministic clocks via pure helpers (tests pin it).
+    // Owner hard deadline) when present, else undefined (no fresh); threaded
+    // as deadlineAtMs so the wait never extends caps. Deterministic clocks via
+    // pure helpers (tests pin it).
     const waveStartedAtMs = Date.now();
     const operationDeadlineAtMs = operation ? frozenOperationHardDeadlineAt(operation) : undefined;
     const waveCapacityDeadlineAtMs = resolveWaveCapacityDeadlineAtMs(waveStartedAtMs, operationDeadlineAtMs, WAVE_BACKPRESSURE_MAX_WAIT_MS_V1);
@@ -205,22 +209,22 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
       await recordEvent(input.stateRoot, input.config, "harness.wave.finish", { taskId: input.contract.task.id, wave: index + 1, status: "FAIL", tasks: ids });
       return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, aggregateSession: aggregate(sessions, 1, `Wave ${index + 1} provider capacity QUEUE exhausted.`) };
     }
-    // Per-workspace write-lease admission (Luna F2: SHARED durable gate, not
-    // wave-local only; non-throwing QUEUE, never throw-on-conflict on the wired
-    // path). Isolated tasks use distinct workspace keys (ACQUIRED);
-    // shared-workspace waves share one key (second writer QUEUES, serializing
-    // to 1). The durable check (`acquireWaveProviderSlotSharedOrQueue` over
-    // `checkDurableWaveSlotConflict`, same store/predicate as
-    // `acquireProviderLease`) sees cross-wave/operation contention; the
-    // intra-wave in-memory supervisor only serializes concurrent tasks within
-    // this wave/process and never claims shared enforcement. Residual
-    // 429/lease conflicts RETRY via bounded `withWaveBackpressureRetry` within
-    // the REMAINING wave budget (Luna F1: WAIT is not an attempt; exhaustion
-    // terminal; never a fresh 30s unbounded by the wave/operation deadline).
-    const waveSupervisor = new RuntimeSupervisorV1();
+    // Per-workspace write-lease admission (Luna F2+F3: SHARED durable atomic
+    // acquire, not wave-local check-then-proceed; non-throwing QUEUE, never
+    // throw-on-conflict on the wired path). Isolated tasks use distinct
+    // workspace keys (ACQUIRED); shared-workspace waves share one key (second
+    // writer QUEUES, serializing to 1). The durable atomic acquire
+    // (`acquireWaveProviderSlotSharedOrQueue` → `acquireDurableWaveSlotOrQueue`
+    // file-locked transact, same store/predicate as `acquireProviderLease`)
+    // sees cross-wave/operation/process contention end-to-end (acquire-or-wait-
+    // or-fail, never both proceed). Residual 429/lease conflicts RETRY via
+    // bounded `withWaveBackpressureRetry` within the REMAINING wave budget
+    // (Luna F1: WAIT is not an attempt; exhaustion terminal; never a fresh 30s
+    // unbounded by the wave/operation deadline).
     const waveProjectId = input.config.project.name;
     // Luna F1 (continued): per-slot retries share the wave's remaining budget,
-    // not a fresh 30s. Remaining = waveCapacityDeadline - now (0 → terminal).
+    // not a fresh 30s. Remaining = waveCapacityDeadline - now (0/undefined →
+    // terminal, no fresh). Undefined deadline means no wait budget (immediate).
     const waveSlotTimeoutMs = Math.max(0, remainingWaveBudgetMs(waveCapacityDeadlineAtMs, Date.now()));
     const executeWithQueue = (task: (typeof tasks)[number]): Promise<DelegationExecutionResult> =>
       withWaveBackpressureRetry(
@@ -231,8 +235,7 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
             input.stateRoot,
             { provider: "wave", projectId: waveProjectId, canonicalRoot: input.root, workspaceId, ownerId: task.id, mode: "write" },
             {
-              ...(remaining !== undefined ? { remainingBudgetMs: remaining } : {}),
-              intraWaveSupervisor: waveSupervisor,
+              ...(remaining !== undefined ? { remainingBudgetMs: remaining } : { remainingBudgetMs: 0 }),
             }
           );
           if (!slot.acquired) {
@@ -256,13 +259,11 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
             }
             return result;
           } finally {
-            // Release intra-wave slot for the next QUEUED waiter (best-effort, in-memory only;
-            // durable leases remain owned by providerLifecycle via the managed runtime snapshot).
+            // Release durable wave slot for the next QUEUED waiter (best-effort
+            // atomic release under the same snapshot lock; never fails delegation).
+            // LeaseId is present on ACQUIRED (atomic path); missing means nothing to release.
             try {
-              const snapshot = waveSupervisor.snapshot();
-              for (const lease of snapshot.providerLeases) {
-                if (lease.ownerId === task.id) waveSupervisor.releaseProviderLease(lease.leaseId, task.id);
-              }
+              if (slot.leaseId) await releaseDurableWaveSlot(input.stateRoot, slot.leaseId, task.id);
             } catch { /* best-effort slot release never fails the delegation */ }
           }
         },
@@ -596,27 +597,35 @@ export function waveConcurrencyV1(planning: { worktreeIsolation?: boolean; maxWa
  *
  * The operation capacity WAIT must never start a fresh 30s budget unbounded
  * by the existing wave/operation deadline. `resolveWaveCapacityDeadlineAtMs`
- * returns `min(now + maxWaitMs, operationDeadlineAtMs)` — WAIT = min(requested,
- * remaining). `remainingWaveBudgetMs` returns `max(0, deadline - now)`; 0
- * means exhausted/expired → terminal FAIL with no wait (fail-closed).
- * Deterministic clocks: callers pass `nowMs`; tests pin it.
+ * returns `min(now + maxWaitMs, operationDeadlineAtMs)` when a finite
+ * operation deadline exists, and `undefined` when none can be established
+ * (never mints fresh `now+30s`). Callers treat `undefined` as no-wait budget:
+ * single immediate capacity check only (headroom proceeds, saturation is
+ * terminal FAIL with zero sleeps). `remainingWaveBudgetMs` returns
+ * `max(0, deadline - now)`; 0 or undefined deadline means exhausted → terminal
+ * FAIL with no wait (fail-closed). Deterministic clocks: callers pass `nowMs`;
+ * tests pin it.
  */
 export function resolveWaveCapacityDeadlineAtMs(
   nowMs: number,
   operationDeadlineAtMs?: number,
   maxWaitMs: number = WAVE_BACKPRESSURE_MAX_WAIT_MS_V1
-): number {
+): number | undefined {
   const safeNow = Number.isFinite(nowMs) ? Math.floor(nowMs) : 0;
   const safeMax = Number.isFinite(maxWaitMs) && maxWaitMs >= 0
     ? Math.min(WAVE_BACKPRESSURE_MAX_WAIT_MS_V1, Math.floor(maxWaitMs))
     : WAVE_BACKPRESSURE_MAX_WAIT_MS_V1;
+  if (operationDeadlineAtMs === undefined || !Number.isFinite(operationDeadlineAtMs)) {
+    // Fail-closed: no existing wave/operation deadline can be established, so
+    // mint no fresh time. Callers do immediate-check-only (no wait).
+    return undefined;
+  }
   const freshDeadline = safeNow + safeMax;
-  if (operationDeadlineAtMs === undefined || !Number.isFinite(operationDeadlineAtMs)) return freshDeadline;
   return Math.min(freshDeadline, Math.floor(operationDeadlineAtMs));
 }
 
-export function remainingWaveBudgetMs(deadlineAtMs: number, nowMs: number): number {
-  if (!Number.isFinite(deadlineAtMs) || !Number.isFinite(nowMs)) return 0;
+export function remainingWaveBudgetMs(deadlineAtMs: number | undefined, nowMs: number): number {
+  if (deadlineAtMs === undefined || !Number.isFinite(deadlineAtMs) || !Number.isFinite(nowMs)) return 0;
   return Math.max(0, Math.floor(deadlineAtMs) - Math.floor(nowMs));
 }
 
@@ -702,8 +711,11 @@ export async function withWaveBackpressureRetry<T>(
   const nowMs = options.nowMs ?? Date.now;
   const sleepMs = options.sleepMs ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const startedAt = nowMs();
+  // Luna F1: never mint fresh `now+30s` when the caller has no deadline.
+  // Undefined timeout means no wait budget: single attempt, backpressure is
+  // terminal immediately (no implicit wait). Defined timeout bounds WAIT via
+  // min(bounded, remaining); exhaustion is terminal rethrow (fail-closed).
   const deadlineAt = options.timeoutMs !== undefined ? startedAt + options.timeoutMs : undefined;
-  const implicitDeadlineAt = deadlineAt ?? startedAt + WAVE_BACKPRESSURE_MAX_WAIT_MS_V1;
   for (;;) {
     const remaining = deadlineAt !== undefined ? deadlineAt - nowMs() : undefined;
     try {
@@ -719,7 +731,8 @@ export async function withWaveBackpressureRetry<T>(
       // never bare retry-after); lease-conflict path uses bounded queue WAIT.
       // SDK 60s hints clamp into the wave 30s ceiling via waveRateLimitWaitMs.
       const rateDetail = parseProviderRateLimitDetail(error, nowMs);
-      const effectiveRemaining = deadlineAt !== undefined ? deadlineAt - nowMs() : implicitDeadlineAt - nowMs();
+      // No existing deadline: immediate terminal, never mint fresh wait.
+      const effectiveRemaining = deadlineAt !== undefined ? deadlineAt - nowMs() : 0;
       let waitMs: number;
       if (rateDetail) {
         waitMs = waveRateLimitWaitMs(rateDetail.retryAfterMs, effectiveRemaining);
@@ -788,30 +801,25 @@ export async function acquireWaveProviderSlotOrQueue(
 }
 
 /**
- * Shared durable per-workspace gate for wave dispatch (Luna F2).
+ * Shared durable per-workspace gate for wave dispatch (Luna F2+F3, fail-closed).
  *
- * MECHANISM: HYBRID (deterministic gate over shared durable state; no model
- * reasoning). Gates on the SHARED durable lease authority — the same
- * managed-runtime snapshot file `acquireProviderLease` persists to
- * (`checkDurableWaveSlotConflict` over `readManagedRuntimeSnapshot` with the
- * exact `findConflictingProviderLeases` predicate) — not a wave-local
- * supervisor. A wave-local supervisor is still used *after* the durable check
- * for intra-wave serialization of concurrent tasks in one process (it cannot
- * and does not claim cross-wave enforcement; see above).
+ * MECHANISM: DETERMINISTIC atomic acquire-or-wait-or-fail via the REAL
+ * `acquireProviderLease` store path (`acquireDurableWaveSlotOrQueue` over the
+ * file-locked managed-runtime snapshot, same `findConflictingProviderLeases`
+ * predicate as `tryAcquireProviderLease`). Check-then-proceed is deleted: the
+ * previous read-only `checkDurableWaveSlotConflict` + proceed-without-acquire
+ * (TOCTOU, two racers both proceeding) cannot be made atomic and is removed
+ * (no dead code). ATOMICITY: in-memory `tryAcquireProviderLease` is atomic
+ * within one process only; cross-wave/operation/process atomicity comes from
+ * the snapshot `.lock` transact in `operationResources.ts` (reload→check→write
+ * under one lock, never both proceed).
  *
- * Why not a full durable acquire here: a durable provider-lifecycle lease
- * requires the current controller ExecutionBinding/participant identity,
- * token, and session observation (`runWithOperationProviderLease`), which do
- * not exist at pre-dispatch wave admission time. The closest correct option
- * is: durable conflict observation (fail-closed QUEUE) + intra-wave local
- * admission + operation-wide durable capacity gate + real durable lifecycle
- * acquire at provider-call time. This function never claims local-only
- * enforcement as shared.
- *
- * Bounded WAIT (`providerLeaseQueueWaitMs`) against the caller's existing
- * deadline (never extends caps; exhausted → terminal false, FAIL).
- * Deterministic clocks: injectable `nowMs`/`sleepMs`/`countDurableConflicts`
- * keep fixtures scripted with no filesystem.
+ * Bounded WAIT (`min(retryAfter, remainingBudget)`) against the caller's
+ * existing deadline (never mints fresh; undefined/0 budget means single
+ * immediate attempt only, exhaustion → terminal false, FAIL). Unreadable
+ * durability BLOCKS (acquired false, retryAfter 0, no wait). Deterministic
+ * clocks via `nowMs`/`sleepMs`. Returns durable `leaseId` on ACQUIRED for
+ * explicit `releaseDurableWaveSlot` (callers release in finally, best-effort).
  */
 export async function acquireWaveProviderSlotSharedOrQueue(
   root: string,
@@ -820,56 +828,17 @@ export async function acquireWaveProviderSlotSharedOrQueue(
     remainingBudgetMs?: number;
     sleepMs?: (ms: number) => Promise<void>;
     nowMs?: () => number;
-    countDurableConflicts?: () => Promise<{ queueDepth: number; retryAfterMs: number }> | { queueDepth: number; retryAfterMs: number };
-    intraWaveSupervisor?: RuntimeSupervisorV1;
   } = {}
-): Promise<{ acquired: boolean; retryAfterMs: number; queueDepth: number; scope: "shared-durable" | "intra-wave" | "free" }> {
-  const nowMs = options.nowMs ?? Date.now;
-  const sleepMs = options.sleepMs ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  const readDurable = async (): Promise<{ queueDepth: number; retryAfterMs: number }> => {
-    if (options.countDurableConflicts) return options.countDurableConflicts();
-    const queued = await checkDurableWaveSlotConflict(root, input, { nowMs });
-    if (!queued) return { queueDepth: 0, retryAfterMs: 0 };
-    return { queueDepth: queued.queueDepth, retryAfterMs: queued.retryAfterMs };
-  };
-  const first = await readDurable();
-  if (first.queueDepth > 0) {
-    const waitMs = providerLeaseQueueWaitMs(
-      { status: "QUEUED", retryAfterMs: first.retryAfterMs, queueDepth: first.queueDepth, reason: "durable conflict" },
-      options.remainingBudgetMs
-    );
-    if (waitMs <= 0) {
-      return { acquired: false, retryAfterMs: first.retryAfterMs, queueDepth: first.queueDepth, scope: "shared-durable" };
-    }
-    await sleepMs(waitMs);
-    const second = await readDurable();
-    if (second.queueDepth > 0) {
-      return { acquired: false, retryAfterMs: second.retryAfterMs, queueDepth: second.queueDepth, scope: "shared-durable" };
-    }
-    const remainingAfter = options.remainingBudgetMs !== undefined ? Math.max(0, options.remainingBudgetMs - waitMs) : undefined;
-    if (options.intraWaveSupervisor) {
-      const local = await acquireWaveProviderSlotOrQueue(
-        options.intraWaveSupervisor,
-        input,
-        { ...(remainingAfter !== undefined ? { remainingBudgetMs: remainingAfter } : {}), sleepMs }
-      );
-      return local.acquired
-        ? { acquired: true, retryAfterMs: waitMs, queueDepth: 0, scope: "shared-durable" }
-        : { ...local, scope: "intra-wave" as const };
-    }
-    return { acquired: true, retryAfterMs: waitMs, queueDepth: 0, scope: "shared-durable" };
+): Promise<{ acquired: boolean; retryAfterMs: number; queueDepth: number; scope: "shared-durable"; leaseId?: string }> {
+  const result = await acquireDurableWaveSlotOrQueue(root, input, {
+    ...(options.remainingBudgetMs !== undefined ? { remainingBudgetMs: options.remainingBudgetMs } : {}),
+    ...(options.sleepMs ? { sleepMs: options.sleepMs } : {}),
+    ...(options.nowMs ? { nowMs: options.nowMs } : {}),
+  });
+  if (result.acquired) {
+    return { acquired: true, retryAfterMs: 0, queueDepth: 0, scope: "shared-durable", leaseId: result.leaseId };
   }
-  if (options.intraWaveSupervisor) {
-    const local = await acquireWaveProviderSlotOrQueue(
-      options.intraWaveSupervisor,
-      input,
-      { ...(options.remainingBudgetMs !== undefined ? { remainingBudgetMs: options.remainingBudgetMs } : {}), sleepMs }
-    );
-    return local.acquired
-      ? { ...local, scope: "free" as const }
-      : { ...local, scope: "intra-wave" as const };
-  }
-  return { acquired: true, retryAfterMs: 0, queueDepth: 0, scope: "shared-durable" };
+  return { acquired: false, retryAfterMs: result.retryAfterMs, queueDepth: result.queueDepth, scope: "shared-durable" };
 }
 async function mapLimit<T, R>(values: T[], limit: number, fn: (value: T) => Promise<R>): Promise<R[]> { if (!values.length) return []; const result = new Array<R>(values.length); let cursor = 0; const workers = Array.from({ length: Math.max(1, Math.min(limit, values.length)) }, async () => { while (true) { const index = cursor++; if (index >= values.length) return; result[index] = await fn(values[index]); } }); await Promise.all(workers); return result; }
 function safe(value: string): string { return value.replace(/[^A-Za-z0-9._-]/g, "-"); }

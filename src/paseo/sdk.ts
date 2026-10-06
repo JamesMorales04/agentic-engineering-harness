@@ -279,8 +279,10 @@ export async function withProviderRateLimitRetry<T>(
   const startedAt = nowMs();
   const timeoutMs = options.timeoutMs;
   const deadlineAt = timeoutMs !== undefined ? startedAt + timeoutMs : undefined;
-  // Fail-closed implicit cap when the caller has no deadline: one bounded WAIT window.
-  const implicitDeadlineAt = deadlineAt ?? startedAt + PROVIDER_RATE_LIMIT_MAX_WAIT_MS_V1;
+  // Luna F1: never mint fresh time when the caller has no deadline. Undefined
+  // timeout means no wait budget: single attempt, 429 is terminal immediately
+  // (no implicit 60s WAIT). Defined timeout bounds WAIT via min(bounded,
+  // remaining); exhaustion is terminal fail-closed. MECHANISM: DETERMINISTIC.
   for (;;) {
     const now = nowMs();
     const remaining = deadlineAt !== undefined ? deadlineAt - now : undefined;
@@ -289,7 +291,7 @@ export async function withProviderRateLimitRetry<T>(
     } catch (error) {
       const detail = parseProviderRateLimitDetail(error, nowMs);
       if (!detail) throw error;
-      const effectiveRemaining = deadlineAt !== undefined ? deadlineAt - nowMs() : implicitDeadlineAt - nowMs();
+      const effectiveRemaining = deadlineAt !== undefined ? deadlineAt - nowMs() : 0;
       const waitMs = providerRateLimitWaitMs(detail, effectiveRemaining);
       if (waitMs <= 0) {
         if (error instanceof PaseoSdkRateLimitedError) throw error;

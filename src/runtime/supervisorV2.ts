@@ -259,6 +259,18 @@ export class RuntimeSupervisorV1 {
     return this.updateService(serviceId, ownerId, { status });
   }
 
+  /**
+   * Atomic within one process only (synchronous check-then-insert, no await
+   * between conflict test and insert, so concurrent async callers in the same
+   * event loop cannot interleave). NOT atomic w.r.t. the shared durable
+   * snapshot file across waves/operations/processes: a fresh in-memory
+   * supervisor per wave is blind by construction. Cross-process atomicity
+   * requires the file-locked reload→check→write transact
+   * (`ManagedRuntimeSupervisorV1.transact` for provider lifecycle;
+   * `tryAcquireDurableWaveSlotAtomic`/`acquireDurableWaveSlotOrQueue` in
+   * `operationResources.ts` for wave admission). Luna F3: wave dispatch must
+   * use the durable transact end-to-end, never this alone for shared scopes.
+   */
   acquireProviderLease(input: Omit<ProviderLeaseV1, "version" | "leaseId" | "acquiredAt" | "expiresAt"> & { ttlMs?: number }): ProviderLeaseV1 {
     requireText(input.provider, "provider");
     requireText(input.projectId, "projectId");
