@@ -566,23 +566,98 @@ export async function listManagedProcessHandles(root: string, operationId: strin
   return handles;
 }
 
+/**
+ * Strict managed-process handle pid listing for sibling-ownership fencing.
+ * MECHANISM: DETERMINISTIC gate. Unlike listManagedProcessHandles (which serves
+ * this operation's own best-effort cleanup), an unreadable or unprovable
+ * sibling handle file cannot be skipped: skipping would shrink the exclusion
+ * set and re-open cross-kill on pid reuse. A missing handles directory proves
+ * "no handles" (empty); any other listing failure, unreadable file, or file
+ * that does not name a provable positive pid THROWS so the caller fails closed.
+ */
+export async function listManagedProcessHandlePidsStrict(root: string, operationId: string): Promise<number[]> {
+  const directory = managedProcessDirectory(root, operationId);
+  let entries: string[];
+  try {
+    entries = await fs.readdir(directory);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return [];
+    throw error;
+  }
+  const pids: number[] = [];
+  for (const entry of entries) {
+    if (!entry.endsWith(".json")) continue;
+    let value: Partial<ManagedProcessHandle>;
+    try {
+      value = JSON.parse(await fs.readFile(path.join(directory, entry), "utf8")) as Partial<ManagedProcessHandle>;
+    } catch (error) {
+      throw new Error(`managed-process handle ${entry} for operation ${operationId} is unreadable and sibling ownership cannot be proven: ${String(error)}`);
+    }
+    const pid = Number(value.pid);
+    if (!Number.isInteger(pid) || pid <= 0) {
+      throw new Error(`managed-process handle ${entry} for operation ${operationId} does not name a provable pid and sibling ownership cannot be proven`);
+    }
+    pids.push(pid);
+    const processGroupId = Number(value.processGroupId);
+    if (Number.isInteger(processGroupId) && processGroupId > 0) pids.push(processGroupId);
+  }
+  return pids;
+}
+
 export async function clearManagedProcessHandles(root: string, operationId: string): Promise<void> {
   await fs.rm(managedProcessDirectory(root, operationId), { recursive: true, force: true }).catch(() => undefined);
 }
 
+/**
+ * Signal a managed process group with honest delivery confirmation.
+ * MECHANISM: DETERMINISTIC. Resolves ONLY when at least one kill() call
+ * succeeded (signal delivery confirmed). When no signal could be delivered
+ * because the target is already gone, rejects with a code-ESRCH error (the
+ * caller records already-dead, never signaled). When the target is alive but
+ * no signal could be delivered (for example EPERM), rejects with the delivery
+ * error preserving its code (the caller records failed, never signaled).
+ * Callers must not record a pid as signaled from a swallowing terminator.
+ */
 export async function terminateManagedProcessGroup(pid: number, graceMs = 250): Promise<void> {
   if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return;
-  const signal = (value: NodeJS.Signals): void => {
+  let delivered = false;
+  let lastError: unknown;
+  const attempt = (target: number, value: NodeJS.Signals): void => {
     try {
-      if (process.platform !== "win32") {
-        try { process.kill(-pid, value); }
-        catch { process.kill(pid, value); }
-      } else process.kill(pid, value);
-    } catch { /* process already exited */ }
+      process.kill(target, value);
+      delivered = true;
+    } catch (error) {
+      lastError = error;
+    }
+  };
+  const signal = (value: NodeJS.Signals): void => {
+    if (process.platform !== "win32") {
+      attempt(-pid, value);
+      if (!delivered) attempt(pid, value);
+    } else attempt(pid, value);
   };
   signal("SIGTERM");
   await new Promise((resolve) => setTimeout(resolve, graceMs));
   signal("SIGKILL");
+  if (delivered) return;
+  // Neither SIGTERM nor SIGKILL was delivered. Distinguish honestly: an
+  // already-gone target is already-dead (never signaled); a live target is a
+  // delivery failure (never signaled).
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+      throw Object.assign(
+        new Error(`terminateManagedProcessGroup: process group ${pid} already exited (ESRCH); no signal was delivered`),
+        { code: "ESRCH" }
+      );
+    }
+  }
+  const failure = new Error(`terminateManagedProcessGroup: signal delivery failed for process group ${pid}: ${String(lastError)}`);
+  const code = (lastError as NodeJS.ErrnoException | undefined)?.code;
+  if (typeof code === "string" && code) Object.assign(failure, { code });
+  throw failure;
 }
 
 export async function registerManagedProcessHandle(pid: number | undefined): Promise<() => Promise<void>> {

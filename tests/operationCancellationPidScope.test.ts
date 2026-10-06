@@ -4,11 +4,12 @@ import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { saveOwnedOperation } from "./helpers/ownedOperation.js";
-import { cancelOperation, listSiblingOwnedProcessIds as realListSiblingOwnedProcessIds } from "../src/operations/controller.js";
+import { cancelOperation, expireOperationAtHardDeadline, listSiblingOwnedProcessIds as realListSiblingOwnedProcessIds } from "../src/operations/controller.js";
 import {
   buildCancellationPidSet,
   findDescendantProcessIds
 } from "../src/operations/controller.js";
+import { terminateManagedProcessGroup } from "../src/utils/process.js";
 import { compileResolvedOperationPolicy } from "../src/architecture/executionIdentity.js";
 import { HumanDecisionLedgerV2 } from "../src/security/humanDecision.js";
 import {
@@ -16,6 +17,7 @@ import {
   currentControllerEpoch,
   loadOperation,
   patchOperation,
+  updateOperationMetadata,
   type OperationRecordV2
 } from "../src/operations/state.js";
 
@@ -326,4 +328,359 @@ describe("cancellation pid scope (A-NEW-4)", () => {
       (process as { kill: typeof process.kill }).kill = originalKill;
     }
   });
+});
+
+async function writeManagedHandle(root: string, operationId: string, pid: number): Promise<void> {
+  const safeId = operationId.replace(/[^A-Za-z0-9._-]/g, "_");
+  const handlesDir = path.join(root, ".harness", "operations", `${safeId}.processes`);
+  await fs.mkdir(handlesDir, { recursive: true });
+  await fs.writeFile(
+    path.join(handlesDir, `${pid}.json`),
+    JSON.stringify({ pid, processGroupId: pid, startedAt: new Date().toISOString() })
+  );
+}
+
+async function waitUntilDead(pid: number, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try { process.kill(pid, 0); }
+    catch { return; }
+    if (Date.now() >= deadline) throw new Error(`pid ${pid} remained live`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+describe("cancellation sibling managed-handle fencing (Luna-a)", () => {
+  it("includes sibling managed-handle pids in the exclusion set", async () => {
+    const root = await tempRoot();
+    await saveOwnedOperation(root, operation(root, "OP-A"));
+    await saveOwnedOperation(root, operation(root, "OP-B"));
+    await writeManagedHandle(root, "OP-B", 48891);
+    const owned = await realListSiblingOwnedProcessIds(root, "OP-A");
+    expect(owned.has(48891)).toBe(true);
+  });
+
+  it("throws fencing-required when a sibling handle file is unreadable", async () => {
+    const root = await tempRoot();
+    await saveOwnedOperation(root, operation(root, "OP-A"));
+    await saveOwnedOperation(root, operation(root, "OP-C"));
+    const safeId = "OP-C".replace(/[^A-Za-z0-9._-]/g, "_");
+    const handlesDir = path.join(root, ".harness", "operations", `${safeId}.processes`);
+    await fs.mkdir(handlesDir, { recursive: true });
+    await fs.writeFile(path.join(handlesDir, "999.json"), "corrupt{{{not-json");
+    await expect(realListSiblingOwnedProcessIds(root, "OP-A")).rejects.toThrow(
+      /AEH_CANCELLATION_FENCING_REQUIRED/
+    );
+  });
+
+  it("does not signal a pid owned via a sibling's stale managed handle (reuse)", async () => {
+    const root = await tempRoot();
+    const id = "CANCEL-SIBLING-HANDLE";
+    await saveOwnedOperation(root, operation(root, id));
+    await bindCancellationDecision(root, id, "human:pid-scope-test");
+    // The sibling exited long ago leaving a stale handle; its pid number has
+    // since been reused by this live process (the reuse shape). Our operation
+    // also names it through its own managed handle, which authorizes signaling
+    // via managedPidSet unless the sibling exclusion proves otherwise.
+    const reused = spawnSleeper(root);
+    expect(reused.pid).toBeDefined();
+    await writeManagedHandle(root, id, reused.pid!);
+    await saveOwnedOperation(root, operation(root, "SIBLING-STALE"));
+    await writeManagedHandle(root, "SIBLING-STALE", reused.pid!);
+
+    const run = vi.fn(async () => ({ exitCode: 0, stdout: "stopped", stderr: "", durationMs: 1 }));
+    await cancelOperation(root, id, {
+      run: run as never,
+      trace: vi.fn(async () => undefined) as never,
+      humanActorId: "human:pid-scope-test"
+    });
+
+    expect((await loadOperation(root, id)).status).toBe("CANCELLED");
+    expect(alive(reused.pid!)).toBe(true);
+  }, 30_000);
+
+  it("fails closed with zero signals when a sibling handle file is unreadable", async () => {
+    const root = await tempRoot();
+    const id = "CANCEL-SIBLING-HANDLE-CORRUPT";
+    await saveOwnedOperation(root, operation(root, id));
+    await bindCancellationDecision(root, id, "human:pid-scope-test");
+    const target = spawnSleeper(root);
+    expect(target.pid).toBeDefined();
+    await writeManagedHandle(root, id, target.pid!);
+    await saveOwnedOperation(root, operation(root, "SIBLING-CORRUPT"));
+    const safeId = "SIBLING-CORRUPT".replace(/[^A-Za-z0-9._-]/g, "_");
+    const handlesDir = path.join(root, ".harness", "operations", `${safeId}.processes`);
+    await fs.mkdir(handlesDir, { recursive: true });
+    await fs.writeFile(path.join(handlesDir, "999.json"), "corrupt{{{not-json");
+
+    const signals: number[] = [];
+    const run = vi.fn(async () => ({ exitCode: 0, stdout: "stopped", stderr: "", durationMs: 1 }));
+    await expect(cancelOperation(root, id, {
+      run: run as never,
+      trace: vi.fn(async () => undefined) as never,
+      humanActorId: "human:pid-scope-test",
+      terminateProcessGroup: async (pid: number) => { signals.push(pid); }
+    })).rejects.toThrow(/AEH_CANCELLATION_FENCING_REQUIRED/);
+
+    expect(signals).toEqual([]);
+    expect(alive(target.pid!)).toBe(true);
+    expect((await loadOperation(root, id)).phase).toBe("cancellation-fencing-required");
+  }, 30_000);
+});
+
+describe("honest signal confirmation (Luna-b)", () => {
+  it("reports an already-dead pid as ESRCH instead of confirmed delivery", async () => {
+    const victim = spawnSleeper(await tempRoot());
+    const deadPid = victim.pid!;
+    victim.kill("SIGKILL");
+    await waitUntilDead(deadPid);
+    await expect(terminateManagedProcessGroup(deadPid)).rejects.toMatchObject({ code: "ESRCH" });
+  }, 30_000);
+
+  it("confirms delivery for a live process", async () => {
+    await tempRoot();
+    const victim = spawnSleeper(os.tmpdir());
+    const pid = victim.pid!;
+    await terminateManagedProcessGroup(pid);
+    expect(alive(pid)).toBe(false);
+  }, 30_000);
+
+  it("records delivery failure as failed (not signaled) in the kill-time abort", async () => {
+    const root = await tempRoot();
+    const id = "CANCEL-SIGNAL-FAILED";
+    await saveOwnedOperation(root, operation(root, id));
+    await bindCancellationDecision(root, id, "human:pid-scope-test");
+    const first = 48781;
+    const second = 48782;
+    await patchOperation(root, id, { pid: second });
+    await writeManagedHandle(root, id, first);
+    const live = new Set([first, second]);
+    const originalKill = process.kill;
+    (process as { kill: typeof process.kill }).kill = ((pid: number, signal?: number | NodeJS.Signals) => {
+      if (signal === undefined || signal === 0) {
+        if (!live.has(pid)) throw Object.assign(new Error("ESRCH"), { code: "ESRCH" });
+        return true;
+      }
+      live.delete(pid);
+      return true;
+    }) as typeof process.kill;
+    try {
+      // Call 1 is the initial scan (clean); call 2 is the first target's
+      // recheck (clean, but delivery fails); call 3 fails — the abort must
+      // report the first target as failed, never as signaled.
+      let calls = 0;
+      const signals: number[] = [];
+      const run = vi.fn(async () => ({ exitCode: 0, stdout: "stopped", stderr: "", durationMs: 1 }));
+      let message = "";
+      try {
+        await cancelOperation(root, id, {
+          run: run as never,
+          trace: vi.fn(async () => undefined) as never,
+          humanActorId: "human:pid-scope-test",
+          listSiblingOwnedProcessIds: async () => {
+            calls += 1;
+            if (calls === 3) throw new Error("EIO: kill-time scan unavailable");
+            return new Set<number>();
+          },
+          terminateProcessGroup: async (pid: number) => {
+            if (pid === first) throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+            signals.push(pid);
+          }
+        });
+      } catch (error) {
+        message = String(error);
+      }
+      expect(message).toMatch(/AEH_CANCELLATION_FENCING_REQUIRED/);
+      expect(signals).toEqual([]);
+      // The failed target is reported as failed — never as signaled.
+      expect(message).toContain(String(first));
+      expect(message).toMatch(/failed/);
+      expect(message).toMatch(/0 pid\(s\) with confirmed signal delivery/);
+      expect((await loadOperation(root, id)).phase).toBe("cancellation-fencing-required");
+    } finally {
+      (process as { kill: typeof process.kill }).kill = originalKill;
+    }
+  });
+
+  it("records a race-exited pid as already-dead (not signaled) in the kill-time abort", async () => {
+    const root = await tempRoot();
+    const id = "CANCEL-SIGNAL-DEAD";
+    await saveOwnedOperation(root, operation(root, id));
+    await bindCancellationDecision(root, id, "human:pid-scope-test");
+    const first = 48783;
+    const second = 48784;
+    await patchOperation(root, id, { pid: second });
+    await writeManagedHandle(root, id, first);
+    const live = new Set([first, second]);
+    const originalKill = process.kill;
+    (process as { kill: typeof process.kill }).kill = ((pid: number, signal?: number | NodeJS.Signals) => {
+      if (signal === undefined || signal === 0) {
+        if (!live.has(pid)) throw Object.assign(new Error("ESRCH"), { code: "ESRCH" });
+        return true;
+      }
+      live.delete(pid);
+      return true;
+    }) as typeof process.kill;
+    try {
+      let calls = 0;
+      const signals: number[] = [];
+      const run = vi.fn(async () => ({ exitCode: 0, stdout: "stopped", stderr: "", durationMs: 1 }));
+      let message = "";
+      try {
+        await cancelOperation(root, id, {
+          run: run as never,
+          trace: vi.fn(async () => undefined) as never,
+          humanActorId: "human:pid-scope-test",
+          listSiblingOwnedProcessIds: async () => {
+            calls += 1;
+            if (calls === 3) throw new Error("EIO: kill-time scan unavailable");
+            return new Set<number>();
+          },
+          terminateProcessGroup: async (pid: number) => {
+            if (pid === first) throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH" });
+            signals.push(pid);
+          }
+        });
+      } catch (error) {
+        message = String(error);
+      }
+      expect(message).toMatch(/AEH_CANCELLATION_FENCING_REQUIRED/);
+      expect(signals).toEqual([]);
+      expect(message).toContain(String(first));
+      expect(message).toMatch(/already-dead/);
+      expect(message).toMatch(/0 pid\(s\) with confirmed signal delivery/);
+      expect((await loadOperation(root, id)).phase).toBe("cancellation-fencing-required");
+    } finally {
+      (process as { kill: typeof process.kill }).kill = originalKill;
+    }
+  });
+});
+
+describe("hard-deadline watchdog pid ownership (Luna-c)", () => {
+  async function bindExpiredLiveness(root: string, operationId: string): Promise<void> {
+    const current = await loadOperation(root, operationId);
+    const candidate = current.candidateRevision!;
+    const policy = compileResolvedOperationPolicy({
+      projectId: candidate.projectId!, operationId,
+      operationExecutionRevision: current.operationExecutionRevision!,
+      candidateRevision: candidate.revision,
+      candidateDigest: candidate.identityDigest,
+      controllerEpoch: currentControllerEpoch(current),
+      intent: "watchdog pid ownership test", route: "DIRECT", minimumAssurance: "STANDARD",
+      policyVersions: { resolvedOperationPolicy: "2" }, policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {},
+      allowedExternalEffects: [], humanDecisionRequirements: []
+    });
+    await bindResolvedOperationPolicy(root, operationId, policy);
+    const bound = await loadOperation(root, operationId);
+    const hardDeadlineMs = bound.resolvedOperationPolicy!.executionLiveness.hardDeadlineMs;
+    await updateOperationMetadata(root, operationId, () => ({
+      createdAt: new Date(Date.now() - hardDeadlineMs - 1_000).toISOString()
+    }));
+  }
+
+  it("does not signal record.pid when it is a live foreign-cwd process", async () => {
+    const root = await tempRoot();
+    const foreign = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-watchdog-foreign-"));
+    roots.push(foreign);
+    const id = "WATCHDOG-FOREIGN";
+    await saveOwnedOperation(root, operation(root, id));
+    await bindExpiredLiveness(root, id);
+    const stranger = spawnSleeper(foreign);
+    expect(stranger.pid).toBeDefined();
+    await patchOperation(root, id, { pid: stranger.pid! });
+
+    const signals: number[] = [];
+    const traces: Array<[string, unknown]> = [];
+    const terminal = await expireOperationAtHardDeadline(root, id, new Date(), undefined, {
+      run: vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "", durationMs: 1 })) as never,
+      trace: (async (_root: string, type: string, detail?: unknown) => { traces.push([type, detail]); }) as never,
+      notifyCompletion: async () => undefined,
+      terminateProcessGroup: async (pid: number) => { signals.push(pid); }
+    });
+
+    expect(terminal.status).toBe("FAILED");
+    expect(signals).toEqual([]);
+    expect(alive(stranger.pid!)).toBe(true);
+    expect(traces.some(([type]) => type === "operation.hard-deadline.pid-skipped")).toBe(true);
+  }, 30_000);
+
+  it("sends no signal for a dead record.pid and still terminalizes", async () => {
+    const root = await tempRoot();
+    const id = "WATCHDOG-DEAD";
+    await saveOwnedOperation(root, operation(root, id));
+    await bindExpiredLiveness(root, id);
+    const victim = spawnSleeper(root);
+    const deadPid = victim.pid!;
+    victim.kill("SIGKILL");
+    await waitUntilDead(deadPid);
+    await patchOperation(root, id, { pid: deadPid });
+
+    const deliveries: number[] = [];
+    const originalKill = process.kill;
+    (process as { kill: typeof process.kill }).kill = ((pid: number, signal?: number | NodeJS.Signals) => {
+      if (signal !== undefined && signal !== 0) {
+        deliveries.push(Math.abs(pid));
+        throw Object.assign(new Error("ESRCH"), { code: "ESRCH" });
+      }
+      return (originalKill as typeof process.kill)(pid, signal as never);
+    }) as typeof process.kill;
+    try {
+      const traces: Array<[string, unknown]> = [];
+      const terminal = await expireOperationAtHardDeadline(root, id, new Date(), undefined, {
+        run: vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "", durationMs: 1 })) as never,
+        trace: (async (_root: string, type: string, detail?: unknown) => { traces.push([type, detail]); }) as never,
+        notifyCompletion: async () => undefined,
+        terminateProcessGroup: async (pid: number) => { deliveries.push(pid); }
+      });
+      expect(terminal.status).toBe("FAILED");
+      expect(deliveries).toEqual([]);
+      expect(traces.some(([type]) => type === "operation.hard-deadline.pid-skipped")).toBe(true);
+    } finally {
+      (process as { kill: typeof process.kill }).kill = originalKill;
+    }
+  }, 30_000);
+
+  it("still signals record.pid when cwd matches the control root", async () => {
+    const root = await tempRoot();
+    const id = "WATCHDOG-OWN";
+    await saveOwnedOperation(root, operation(root, id));
+    await bindExpiredLiveness(root, id);
+    const owned = spawnSleeper(root);
+    expect(owned.pid).toBeDefined();
+    await patchOperation(root, id, { pid: owned.pid! });
+
+    const signals: number[] = [];
+    const terminal = await expireOperationAtHardDeadline(root, id, new Date(), undefined, {
+      run: vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "", durationMs: 1 })) as never,
+      trace: vi.fn(async () => undefined) as never,
+      notifyCompletion: async () => undefined,
+      terminateProcessGroup: async (pid: number) => { signals.push(pid); }
+    });
+
+    expect(terminal.status).toBe("FAILED");
+    expect(signals).toEqual([owned.pid!]);
+  }, 30_000);
+
+  it("still signals record.pid when cwd matches the operation workspace root", async () => {
+    const root = await tempRoot();
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-watchdog-workspace-"));
+    roots.push(workspace);
+    const id = "WATCHDOG-WORKSPACE";
+    await saveOwnedOperation(root, operation(root, id));
+    await bindExpiredLiveness(root, id);
+    const worker = spawnSleeper(workspace);
+    expect(worker.pid).toBeDefined();
+    await patchOperation(root, id, { pid: worker.pid!, workspaceRoot: workspace });
+
+    const signals: number[] = [];
+    const terminal = await expireOperationAtHardDeadline(root, id, new Date(), undefined, {
+      run: vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "", durationMs: 1 })) as never,
+      trace: vi.fn(async () => undefined) as never,
+      notifyCompletion: async () => undefined,
+      terminateProcessGroup: async (pid: number) => { signals.push(pid); }
+    });
+
+    expect(terminal.status).toBe("FAILED");
+    expect(signals).toEqual([worker.pid!]);
+  }, 30_000);
 });

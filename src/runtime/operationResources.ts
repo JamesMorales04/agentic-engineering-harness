@@ -1178,7 +1178,16 @@ async function releaseResource(
       const pid = Number.parseInt(resource.identity, 10);
       if (!Number.isInteger(pid) || pid <= 0) throw new Error(`invalid managed process identity '${resource.identity}'`);
       const terminate = deps.terminateProcess ?? ((value: number) => terminateManagedProcessGroup(value));
-      await terminate(pid);
+      try {
+        await terminate(pid);
+      } catch (error) {
+        // Honest terminators reject with ESRCH when the target is already
+        // gone: the goal is achieved, so this reconciles as already-exited
+        // instead of failing (and being retried forever). Any other delivery
+        // failure still throws and stays visible in the receipt.
+        if ((error as NodeJS.ErrnoException)?.code !== "ESRCH") throw error;
+        return { action: "already-exited", pid };
+      }
       return { action: "process.terminate", pid };
     }
     case "staging-root": {
