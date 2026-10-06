@@ -105,7 +105,7 @@ export async function runExternalToolValidator(context: ValidationContext): Prom
         : undefined;
       const environmentAllowlist = candidateEnvironment
         ? [...new Set([...validatorIsolationEnvironmentAllowlist(context.config), VALIDATION_CANDIDATE_ENVIRONMENT_VARIABLE])]
-        : validatorIsolationEnvironmentAllowlist(context.config);
+        : validatorIsolationEnvironmentAllowlist(context.config).filter((name) => name !== VALIDATION_CANDIDATE_ENVIRONMENT_VARIABLE);
       const isolated = await runIsolatedCommand({
         root: context.root,
         command: rendered,
@@ -357,15 +357,36 @@ function quote(value: string): string {
 }
 
 /**
- * Bounded process stdout for check details. The 200_000-character ceiling
+ * Bounded process stdout for check details. The 200_000 UTF-8 byte ceiling
  * preserves realistic reporter payloads (Playwright JSON, pact JUnit) for
  * direct extraction while keeping details bounded; the complete stdout+stderr
  * is always persisted to the raw artifact file. Truncated output keeps its
- * head so embedded-JSON scanners still see the report start.
+ * head so embedded-JSON scanners still see the report start. Truncation cuts
+ * at a UTF-16 code-point boundary within the byte budget so multi-byte UTF-8
+ * sequences are never split and no replacement characters are introduced;
+ * length is measured with Buffer.byteLength(value, "utf8").
  */
 function boundedReporterText(value: string): string {
-  const max = 200_000;
-  return value.length <= max ? value : `${value.slice(0, max)}\n… truncated …`;
+  const maxBytes = 200_000;
+  if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
+  return `${truncateUtf8ToBytes(value, maxBytes)}\n… truncated …`;
+}
+
+function truncateUtf8ToBytes(value: string, maxBytes: number): string {
+  let low = 0;
+  let high = value.length;
+  while (low < high) {
+    const mid = Math.floor((low + high + 1) / 2);
+    if (Buffer.byteLength(value.slice(0, mid), "utf8") <= maxBytes) low = mid;
+    else high = mid - 1;
+  }
+  let end = low;
+  if (end > 0 && end < value.length) {
+    const prev = value.charCodeAt(end - 1);
+    const next = value.charCodeAt(end);
+    if (prev >= 0xd800 && prev <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) end -= 1;
+  }
+  return value.slice(0, end);
 }
 
 function isolationFailure(context: ValidationContext, category: string, command: string, error: unknown): ValidationCheck {

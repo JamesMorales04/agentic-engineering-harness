@@ -15,6 +15,14 @@ export type IsolationProviderIdV1 = "bwrap" | "none";
 
 export const DEFAULT_ISOLATION_ENVIRONMENT_ALLOWLIST = ["PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TZ", "TMPDIR", "SHELL", "USER"] as const;
 
+/**
+ * Request-scoped candidate binding for isolated validator commands. It must
+ * only ever come from an explicit IsolatedCommandRequestV1.environment entry;
+ * a stale host process.env value must never leak in via the allowlist when
+ * no candidate is present.
+ */
+const VALIDATION_CANDIDATE_ENVIRONMENT_VARIABLE = "AEH_VALIDATION_CANDIDATE_JSON" as const;
+
 export const DEFAULT_MASKED_HOST_PATHS = [
   "/root (host)",
   "/run (host)",
@@ -313,6 +321,9 @@ export function isolationEnvironment(request: IsolatedCommandRequestV1, allowlis
     if (name === "PATH" || name === "HOME" || name === "TMPDIR") continue;
     const value = request.environment?.[name] ?? process.env[name];
     if (value !== undefined) environment[name] = value;
+  }
+  if (request.environment?.[VALIDATION_CANDIDATE_ENVIRONMENT_VARIABLE] === undefined) {
+    delete environment[VALIDATION_CANDIDATE_ENVIRONMENT_VARIABLE];
   }
   return environment;
 }
