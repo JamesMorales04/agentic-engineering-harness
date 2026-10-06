@@ -1252,12 +1252,15 @@ export async function runCandidateImpactValidations(input: {
         continue;
       }
       // Mapped requirement: a PASS verdict requires (i) exactly one authentic
-      // reporter document, (ii) ALL attributed tests passed, and (iii) every
-      // failure recorded in THAT reporter to be outside the attributed set
-      // (Mechanism=DETERMINISTIC). An unattributed failure (e.g. gamma) may
-      // fail the shared bundle while a mapped requirement (e.g. alpha/beta)
-      // still PASSes — partial-green is a supported flow. The bundle failure
-      // stays on the honest record as underlying failure evidence in details.
+      // reporter document, (ii) every attributed test passed under the outcome
+      // model — test-level `unexpected` never passes, flaky ultimate-pass
+      // passes with an explicit flakyTitles record, skipped/missing never
+      // pass — and (iii) every failure recorded in THAT reporter to be outside
+      // the attributed set (Mechanism=DETERMINISTIC). An unattributed failure
+      // (e.g. gamma) may fail the shared bundle while a mapped requirement
+      // (e.g. alpha/beta) still PASSes — partial-green is a supported flow.
+      // The bundle failure stays on the honest record as underlying failure
+      // evidence in details.
       // Fail-closed: missing reporter, ambiguous reporters, parse errors,
       // unknown titles, and attributed test failures all FAIL. Forgery
       // closure comes from (i): code under test shares the bundle's stdout
@@ -1273,17 +1276,19 @@ export async function runCandidateImpactValidations(input: {
           status: "FAIL",
           message: `Required ${requirement.kind} validation for requirement '${requirement.id}' did not produce attributable test evidence: ${blocker}: no parseable Playwright reporter JSON for '${execution.id}'.`,
           durationMs: execution.durationMs,
-          details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, blocker, testAttribution: { verdict: "FAIL", selectors, matched: 0, total: 0, failedTitles: [], reason: blocker }, ...failureEvidence }
+          details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, blocker, testAttribution: { verdict: "FAIL", selectors, matched: 0, total: 0, failedTitles: [], flakyTitles: [], skippedTitles: [], reason: blocker }, ...failureEvidence }
         });
         continue;
       }
       // Reporter-must-explain-the-bundle rule: a non-passing bundle must have
-      // at least one EXPLICIT failure status (failed/timedOut/interrupted)
-      // recorded in its own single reporter document
-      // (Mechanism=DETERMINISTIC). A zero-failure reporter alongside a failed
-      // bundle is incomplete — or a forged all-green document injected into
-      // shared stdout while the real failure went elsewhere — and fails
-      // closed with TEST_ATTRIBUTION_REPORTER_INCOMPLETE.
+      // at least one outcome-model failure recorded in its own single
+      // reporter document (Mechanism=DETERMINISTIC): test-level `unexpected`
+      // (even with all-passing results), or an explicit failed/timedOut/
+      // interrupted result on a test whose outcome is not expected/flaky/
+      // skipped. A zero-failure reporter alongside a failed bundle is
+      // incomplete — or a forged all-green document injected into shared
+      // stdout while the real failure went elsewhere — and fails closed with
+      // TEST_ATTRIBUTION_REPORTER_INCOMPLETE.
       if (execution.status !== "PASS" && !reporterHasAnyFailureV1(reporterTests)) {
         const blocker = TEST_ATTRIBUTION_REPORTER_INCOMPLETE;
         const failureEvidence = underlyingFailureEvidence(execution);
@@ -1293,7 +1298,7 @@ export async function runCandidateImpactValidations(input: {
           status: "FAIL",
           message: `Required ${requirement.kind} validation for requirement '${requirement.id}' produced an incomplete reporter: bundle '${execution.id}' returned ${execution.status} but the single reporter records ${reporterTests.length} test(s) with zero failures.`,
           durationMs: execution.durationMs,
-          details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, blocker, testAttribution: { verdict: "FAIL", selectors, matched: 0, total: reporterTests.length, failedTitles: [], reason: blocker }, ...failureEvidence }
+          details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, blocker, testAttribution: { verdict: "FAIL", selectors, matched: 0, total: reporterTests.length, failedTitles: [], flakyTitles: [], skippedTitles: [], reason: blocker }, ...failureEvidence }
         });
         continue;
       }
@@ -1310,16 +1315,18 @@ export async function runCandidateImpactValidations(input: {
           status: "FAIL",
           message: `Required ${requirement.kind} validation for requirement '${requirement.id}' failed its attributed tests: ${evaluation.reason}`,
           durationMs: execution.durationMs,
-          details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, blocker: evaluation.blocker ?? "TEST_ATTRIBUTION_TEST_FAILED", testAttribution: { verdict: evaluation.verdict, selectors: evaluation.selectors, matched: evaluation.matched, total: evaluation.total, failedTitles: evaluation.failedTitles, reason: evaluation.reason }, ...failureEvidence }
+          details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, blocker: evaluation.blocker ?? "TEST_ATTRIBUTION_TEST_FAILED", testAttribution: { verdict: evaluation.verdict, selectors: evaluation.selectors, matched: evaluation.matched, total: evaluation.total, failedTitles: evaluation.failedTitles, flakyTitles: evaluation.flakyTitles, skippedTitles: evaluation.skippedTitles, reason: evaluation.reason }, ...failureEvidence }
         });
         continue;
       }
       // Refined partial-green rule (iii): every failure recorded in the single
-      // authentic reporter must be outside the attributed set. Computed from
-      // the reporter's own per-test failure list — never from bundle stderr
-      // text. Unreachable when evaluation above is correct (same matcher),
-      // kept as an explicit deterministic gate so a future evaluation
-      // regression cannot silently widen a failing bundle into a PASS.
+      // authentic reporter must be outside the attributed set, under the
+      // outcome model (unexpected counts; flaky/expected/skipped do not).
+      // Computed from the reporter's own per-test failure list — never from
+      // bundle stderr text. Unreachable when evaluation above is correct (same
+      // matcher), kept as an explicit deterministic gate so a future
+      // evaluation regression cannot silently widen a failing bundle into a
+      // PASS.
       const failuresInsideAttribution = attributedReporterFailuresV1({ selectors, tests: reporterTests });
       if (failuresInsideAttribution.length) {
         const blocker = "TEST_ATTRIBUTION_TEST_FAILED";
@@ -1330,7 +1337,7 @@ export async function runCandidateImpactValidations(input: {
           status: "FAIL",
           message: `Required ${requirement.kind} validation for requirement '${requirement.id}' has ${failuresInsideAttribution.length} failing attributed test(s) in the reporter: ${failuresInsideAttribution.slice(0, 5).map((t) => `'${t.fullTitle}' (${t.status})`).join("; ")}.`,
           durationMs: execution.durationMs,
-          details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, blocker, testAttribution: { verdict: "FAIL", selectors: evaluation.selectors, matched: evaluation.matched, total: evaluation.total, failedTitles: failuresInsideAttribution.map((t) => t.fullTitle), reason: blocker }, ...failureEvidence }
+          details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, blocker, testAttribution: { verdict: "FAIL", selectors: evaluation.selectors, matched: evaluation.matched, total: evaluation.total, failedTitles: failuresInsideAttribution.map((t) => t.fullTitle), flakyTitles: evaluation.flakyTitles, skippedTitles: evaluation.skippedTitles, reason: blocker }, ...failureEvidence }
         });
         continue;
       }
@@ -1374,7 +1381,7 @@ export async function runCandidateImpactValidations(input: {
           status: "PASS",
           message: `Required ${requirement.kind} evidence passed for '${requirement.id}': ${evaluation.matched}/${evaluation.total} attributed tests passed (bundle '${execution.id}' ${execution.status}).`,
           durationMs: execution.durationMs,
-          details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, testAttribution: { verdict: evaluation.verdict, selectors: evaluation.selectors, matched: evaluation.matched, total: evaluation.total, failedTitles: evaluation.failedTitles, reason: evaluation.reason }, ...(execution.status === "PASS" ? {} : underlyingFailureEvidence(execution)), ...(sastEvidence ? { sastEvidence, artifact: sastEvidence.artifact } : {}), ...(laneEvidence ? { laneEvidence, artifact: laneEvidence.artifact } : {}) }
+          details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, testAttribution: { verdict: evaluation.verdict, selectors: evaluation.selectors, matched: evaluation.matched, total: evaluation.total, failedTitles: evaluation.failedTitles, flakyTitles: evaluation.flakyTitles, skippedTitles: evaluation.skippedTitles, reason: evaluation.reason }, ...(execution.status === "PASS" ? {} : underlyingFailureEvidence(execution)), ...(sastEvidence ? { sastEvidence, artifact: sastEvidence.artifact } : {}), ...(laneEvidence ? { laneEvidence, artifact: laneEvidence.artifact } : {}) }
         });
       } catch (error) {
         const message = String(error);
@@ -1385,7 +1392,7 @@ export async function runCandidateImpactValidations(input: {
           status: "FAIL",
           message: `Required ${requirement.kind} validation for requirement '${requirement.id}' passed its attributed tests but lane evidence is missing or unsuitable: ${message}`,
           durationMs: execution.durationMs,
-          details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, blocker, testAttribution: { verdict: evaluation.verdict, selectors: evaluation.selectors, matched: evaluation.matched, total: evaluation.total, failedTitles: evaluation.failedTitles, reason: evaluation.reason } }
+          details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, blocker, testAttribution: { verdict: evaluation.verdict, selectors: evaluation.selectors, matched: evaluation.matched, total: evaluation.total, failedTitles: evaluation.failedTitles, flakyTitles: evaluation.flakyTitles, skippedTitles: evaluation.skippedTitles, reason: evaluation.reason } }
         });
       }
     } catch (error) {

@@ -18,6 +18,9 @@ export const TEST_ATTRIBUTION_BLOCKER_PREFIX = "TEST_ATTRIBUTION" as const;
 export const TEST_ATTRIBUTION_REPORTER_INCOMPLETE =
   `${TEST_ATTRIBUTION_BLOCKER_PREFIX}_REPORTER_INCOMPLETE` as const;
 
+export const TEST_ATTRIBUTION_SKIPPED =
+  `${TEST_ATTRIBUTION_BLOCKER_PREFIX}_SKIPPED` as const;
+
 export interface AttributedPlaywrightTestV1 {
   title: string;
   fullTitle: string;
@@ -31,6 +34,17 @@ export interface AttributedPlaywrightTestV1 {
    * failure even though its final status is passing.
    */
   hasFailedResult?: boolean;
+  /**
+   * Normalized test-level outcome (`JSONReportTest.status`: expected |
+   * unexpected | flaky | skipped), lowercased; "" when the document omits it
+   * (legacy reporter shapes / hand-constructed literals). Distinct from
+   * `status`, which remains the LAST RESULT status for display and
+   * back-compat. The outcome model reads THIS field: `unexpected` is always
+   * a failure (it fails the bundle even when every result passed);
+   * expected/flaky/skipped are never failures (Playwright pass semantics
+   * for flaky); unknown/"" falls back to the explicit-failed-result rule.
+   */
+  testStatus?: string;
 }
 
 export interface TestAttributionEvaluationV1 {
@@ -41,6 +55,18 @@ export interface TestAttributionEvaluationV1 {
   total: number;
   failedTitles: string[];
   selectors: string[];
+  /**
+   * Full titles of matched tests whose test-level outcome is `flaky`
+   * (ultimate pass after a retry). Recorded on PASS so the flakiness is
+   * explicit in the details, never silent; also present on FAIL paths that
+   * evaluated the attribution.
+   */
+  flakyTitles: string[];
+  /**
+   * Full titles of attributed-but-skipped tests. Non-empty exactly when the
+   * blocker is TEST_ATTRIBUTION_SKIPPED.
+   */
+  skippedTitles: string[];
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -66,7 +92,9 @@ function isPassingResultStatus(status: string): boolean {
  * Per-result status (`TestStatus`: passed | failed | timedOut | skipped |
  * interrupted — see playwright `JSONReportTestResult.status`) is lowercased
  * by `normalizeStatus`, so `timedOut` arrives as `timedout`. Only failed,
- * timedout, and interrupted explain a bundle failure. There is no `error`
+ * timedout, and interrupted explain a bundle failure at RESULT level; the
+ * TEST-level `unexpected` outcome additionally explains one (handled by the
+ * outcome model, not here). There is no `error`
  * status in the schema (errors are a result payload, not a status);
  * `expected`/`unexpected`/`flaky` are test-level (`JSONReportTest.status`),
  * never result-level, and this parser emits only last-result statuses (or
@@ -90,9 +118,79 @@ function hasExplicitFailure(test: AttributedPlaywrightTestV1): boolean {
 }
 
 /**
+ * Normalized test-level outcome for a reporter test
+ * (Mechanism=DETERMINISTIC).
+ *
+ * Reads the test-level `testStatus` (`JSONReportTest.status`: expected |
+ * unexpected | flaky | skipped). Hand-constructed literals and legacy
+ * reporter documents omit it (""); callers treat "" as unknown and fall
+ * back to the explicit-failed-result rule (back-compat).
+ */
+function testOutcomeStatus(test: AttributedPlaywrightTestV1): string {
+  return typeof test.testStatus === "string" ? normalizeStatus(test.testStatus) : "";
+}
+
+/**
+ * Test-level outcomes that are never failures even when a recorded result
+ * carries an explicit failure status (Mechanism=DETERMINISTIC):
+ * - `expected`: the outcome matched the declared expectation (including an
+ *   expected-to-fail test that failed as declared — the bundle stays green);
+ * - `flaky`: the test passed on retry — Playwright pass semantics, reported
+ *   separately via flakyTitles, never a requirement failure absent an
+ *   explicit anti-flake policy;
+ * - `skipped`: the test did not run — unevaluated, never a TEST_FAILED.
+ */
+const NON_FAILURE_OUTCOMES_V1 = new Set(["expected", "flaky", "skipped"]);
+
+/**
+ * Whether a reporter test counts as a failure for attribution
+ * (Mechanism=DETERMINISTIC):
+ *
+ * failurePresent(test) = test-level `unexpected`
+ *   OR (explicit failed result AND test-level NOT IN {expected, flaky, skipped}).
+ *
+ * `unexpected` fails the bundle even when every result passed (an
+ * expected-to-fail test that PASSES is an anomaly the reporter DOES
+ * explain). Unknown/missing test-level status falls back to the
+ * explicit-failed-result rule (back-compat for legacy documents and
+ * hand-constructed literals); unknown with no failed result is no failure.
+ */
+function isAttributionFailurePresent(test: AttributedPlaywrightTestV1): boolean {
+  const outcome = testOutcomeStatus(test);
+  if (outcome === "unexpected") return true;
+  const explicitFailed = hasExplicitFailure(test);
+  if (!outcome || outcome === "missing" || outcome === "unknown") return explicitFailed;
+  if (NON_FAILURE_OUTCOMES_V1.has(outcome)) return false;
+  return explicitFailed;
+}
+
+/**
+ * Whether a reporter test is skipped for attribution (Mechanism=DETERMINISTIC):
+ * explicit test-level `skipped`, or — for legacy inputs without a test-level
+ * outcome — a skipped last-result status. Missing-result tests are NOT
+ * skipped (they stay on the NO_MATCH path).
+ */
+function isSkippedAttributionTest(test: AttributedPlaywrightTestV1): boolean {
+  const outcome = testOutcomeStatus(test);
+  if (outcome === "skipped") return true;
+  if (outcome) return false;
+  return normalizeStatus(test.status) === "skipped";
+}
+
+function isFlakyAttributionTest(test: AttributedPlaywrightTestV1): boolean {
+  return testOutcomeStatus(test) === "flaky";
+}
+
+/**
  * Parse a Playwright JSON reporter document into per-test verdicts.
- * Traverses nested suites/specs/tests/results; a test passes only when it has
- * at least one result and every result is passed/expected.
+ * Traverses nested suites/specs/tests/results. Records BOTH the test-level
+ * outcome (`JSONReportTest.status`: expected | unexpected | flaky | skipped)
+ * and the last-result status: a test passes only when its outcome is not an
+ * anomaly — `unexpected`/`skipped` never pass; `expected` passes when it ran;
+ * `flaky` passes when its final result passed (Playwright pass semantics;
+ * the retry failure stays visible via hasFailedResult and flakyTitles).
+ * Documents without a test-level status keep the legacy rule (at least one
+ * result and every result passed/expected).
  */
 export function parsePlaywrightReporterTestsV1(value: unknown): AttributedPlaywrightTestV1[] {
   const root = asRecord(value);
@@ -116,14 +214,21 @@ export function parsePlaywrightReporterTestsV1(value: unknown): AttributedPlaywr
         const fullTitle = [...nextAncestors, specTitle, testTitle].filter(Boolean).join(" > ");
         const results = Array.isArray(testRecord.results) ? testRecord.results : [];
         const statuses = results.map((result) => normalizeStatus(asRecord(result).status));
-        const passed = results.length > 0 && statuses.every(isPassingResultStatus);
-        const status = statuses.length ? statuses[statuses.length - 1]! : "missing";
+        const outcome = normalizeStatus(testRecord.status);
+        const lastStatus = statuses.length ? statuses[statuses.length - 1]! : "missing";
+        let passed: boolean;
+        if (outcome === "unexpected" || outcome === "skipped") passed = false;
+        else if (outcome === "expected") passed = results.length > 0;
+        else if (outcome === "flaky") passed = statuses.length > 0 && isPassingResultStatus(lastStatus);
+        else passed = results.length > 0 && statuses.every(isPassingResultStatus);
+        const status = lastStatus;
         output.push({
           title: specTitle || testTitle,
           fullTitle: fullTitle || specTitle || testTitle || "(untitled)",
           status,
           passed,
           hasFailedResult: statuses.some(isFailedResultStatus),
+          testStatus: outcome,
         });
       }
     }
@@ -218,6 +323,8 @@ export function evaluateTestAttributionV1(input: {
       matched: 0,
       total: input.tests.length,
       failedTitles: [],
+      flakyTitles: [],
+      skippedTitles: [],
       selectors,
     };
   }
@@ -236,10 +343,16 @@ export function evaluateTestAttributionV1(input: {
       matched: 0,
       total: input.tests.length,
       failedTitles: [],
+      flakyTitles: [],
+      skippedTitles: [],
       selectors,
     };
   }
-  const failed = matched.filter((test) => hasExplicitFailure(test));
+  // Outcome-model failures (Mechanism=DETERMINISTIC): test-level `unexpected`
+  // (even with all-passing results), or an explicit failed result on a test
+  // whose outcome is not expected/flaky/skipped. Attributed flaky-pass and
+  // expected-outcome tests are NOT failures.
+  const failed = matched.filter((test) => isAttributionFailurePresent(test));
   if (failed.length) {
     return {
       verdict: "FAIL",
@@ -251,16 +364,38 @@ export function evaluateTestAttributionV1(input: {
       matched: matched.length,
       total: input.tests.length,
       failedTitles: failed.map((t) => t.fullTitle),
+      flakyTitles: matched.filter((test) => isFlakyAttributionTest(test)).map((t) => t.fullTitle),
+      skippedTitles: [],
       selectors,
     };
   }
+  const flakyTitles = matched.filter((test) => isFlakyAttributionTest(test)).map((t) => t.fullTitle);
   // Attributed-but-unevaluated (Mechanism=DETERMINISTIC): an attributed test
-  // that neither passed nor explicitly failed (skipped, missing result) is
-  // not evidence of passing and can never PASS — but it is not a test
-  // failure either, so it fails via the NO_MATCH blocker path, never
-  // TEST_FAILED.
+  // that neither passed nor counts as a failure (skipped, missing result) is
+  // not evidence of passing and can never PASS — but a skipped test is not a
+  // test failure either, so it fails via the distinct TEST_ATTRIBUTION_SKIPPED
+  // blocker (the selector DID match), never TEST_FAILED and never NO_MATCH.
+  // Missing-result tests stay on the NO_MATCH path.
   const unevaluated = matched.filter((test) => !test.passed);
   if (unevaluated.length) {
+    const skipped = unevaluated.filter((test) => isSkippedAttributionTest(test));
+    if (skipped.length) {
+      const others = unevaluated.length - skipped.length;
+      return {
+        verdict: "FAIL",
+        reason: `Requirement '${input.requirementId}' has ${skipped.length}/${matched.length} attributed tests skipped without passing evidence: ${skipped
+          .slice(0, 5)
+          .map((t) => `'${t.fullTitle}' (${t.status})`)
+          .join("; ")}${skipped.length > 5 ? ` (+${skipped.length - 5} more)` : ""}${others ? ` (+${others} other attributed test(s) without passing evidence)` : ""}. Skipped tests cannot PASS.`,
+        blocker: TEST_ATTRIBUTION_SKIPPED,
+        matched: matched.length,
+        total: input.tests.length,
+        failedTitles: [],
+        flakyTitles,
+        skippedTitles: skipped.map((t) => t.fullTitle),
+        selectors,
+      };
+    }
     return {
       verdict: "FAIL",
       reason: `Requirement '${input.requirementId}' has ${unevaluated.length}/${matched.length} attributed tests without passing evidence (no explicit failure): ${unevaluated
@@ -271,15 +406,19 @@ export function evaluateTestAttributionV1(input: {
       matched: matched.length,
       total: input.tests.length,
       failedTitles: [],
+      flakyTitles,
+      skippedTitles: [],
       selectors,
     };
   }
   return {
     verdict: "PASS",
-    reason: `Requirement '${input.requirementId}' has ${matched.length}/${matched.length} attributed tests passing.`,
+    reason: `Requirement '${input.requirementId}' has ${matched.length}/${matched.length} attributed tests passing${flakyTitles.length ? ` (including ${flakyTitles.length} flaky ultimate-pass: ${flakyTitles.slice(0, 5).map((t) => `'${t}'`).join("; ")}${flakyTitles.length > 5 ? ` (+${flakyTitles.length - 5} more)` : ""})` : ""}.`,
     matched: matched.length,
     total: input.tests.length,
     failedTitles: [],
+    flakyTitles,
+    skippedTitles: [],
     selectors,
   };
 }
@@ -288,17 +427,18 @@ export function evaluateTestAttributionV1(input: {
  * Reporter failures inside a requirement's attributed set
  * (Mechanism=DETERMINISTIC).
  *
- * Computed from the single authentic reporter's OWN per-test failure list:
- * every reporter test with an EXPLICIT failure status (failed/timedOut/
- * interrupted on any result) is checked against the requirement selectors
- * with the same boundary-safe matching as evaluation. Bundle stderr text is
- * never consulted — stderr carries untrusted process output, while the
- * reporter document is the authentic per-test record. An attributed SKIPPED
- * (or missing-result) test is unevaluated, not failed: it is excluded here
- * (evaluation already FAILs it via NO_MATCH, never TEST_FAILED). A mapped
- * PASS requires this list to be empty (every recorded failure is outside
- * the attributed set); a non-empty list FAILs the requirement even if the
- * bundle exit code looks healthy.
+ * Computed from the single authentic reporter's OWN per-test failure list
+ * under the outcome model: test-level `unexpected`, or an explicit failure
+ * status (failed/timedOut/interrupted on any result) on a test whose outcome
+ * is not expected/flaky/skipped. Bundle stderr text is never consulted —
+ * stderr carries untrusted process output, while the reporter document is
+ * the authentic per-test record. An attributed SKIPPED test is unevaluated,
+ * not failed: it is excluded here (evaluation already FAILs it via
+ * TEST_ATTRIBUTION_SKIPPED, never TEST_FAILED), as is an attributed
+ * flaky-pass (Playwright pass semantics). A mapped PASS requires this list
+ * to be empty (every recorded failure is outside the attributed set); a
+ * non-empty list FAILs the requirement even if the bundle exit code looks
+ * healthy.
  */
 export function attributedReporterFailuresV1(input: {
   selectors: readonly string[];
@@ -308,7 +448,7 @@ export function attributedReporterFailuresV1(input: {
   if (!selectors.length) return [];
   return input.tests.filter(
     (test) =>
-      hasExplicitFailure(test) &&
+      isAttributionFailurePresent(test) &&
       selectors.some(
         (selector) =>
           matchesAttributionSelectorV1(test.fullTitle, selector) ||
@@ -321,10 +461,14 @@ export function attributedReporterFailuresV1(input: {
  * Reporter failures anywhere in the single authentic reporter
  * (Mechanism=DETERMINISTIC).
  *
- * A non-passing bundle must be explained by at least one EXPLICIT failure
- * status (failed/timedOut/interrupted on any result) recorded in its own
- * reporter document. Skipped and missing-result tests are non-passing but
- * explain nothing — a bundle that fails with zero failed-status tests
+ * A non-passing bundle must be explained by at least one failure under the
+ * outcome model recorded in its own reporter document: test-level
+ * `unexpected` (even with all-passing results — an expected-to-fail test
+ * that PASSES fails the bundle and the reporter DOES explain the anomaly),
+ * or an EXPLICIT failure status (failed/timedOut/interrupted on any result)
+ * on a test whose outcome is not expected/flaky/skipped. Skipped,
+ * flaky-ultimate-pass, expected-outcome, and missing-result tests explain
+ * nothing — a bundle that fails with zero outcome-model failures
  * (all-skipped + teardown crash, empty run + nonzero exit) is incomplete
  * (or forged: code under test shares the bundle's stdout and can inject an
  * all-green document while the real failure goes elsewhere) and must fail
@@ -334,7 +478,7 @@ export function attributedReporterFailuresV1(input: {
  * honest outcome.
  */
 export function reporterHasAnyFailureV1(tests: readonly AttributedPlaywrightTestV1[]): boolean {
-  return tests.some((test) => hasExplicitFailure(test));
+  return tests.some((test) => isAttributionFailurePresent(test));
 }
 
 /**
