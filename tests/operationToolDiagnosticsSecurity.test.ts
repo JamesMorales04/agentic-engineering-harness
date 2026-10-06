@@ -126,6 +126,11 @@ describe("operation MCP diagnostic security", () => {
     }
   });
 
+  // Bounded 20s budget (vitest default is 5s): passes quickly in isolation
+  // but flakes at ~5010ms under full-suite parallel load (same class as
+  // runRepair/fsmonitor/OCI bumps). Spawns real `tsx src/main.ts operation
+  // diagnostic inspect` subprocesses with their own I/O handling, so no
+  // sleep/poll to mock — budget-only, assertions/body unchanged.
   it("records bounded, distinct stages and supports the read-only CLI inspector", async () => {
     const { root, base } = await makeWorkspace();
     const stateHome = path.join(base, "state");
@@ -149,7 +154,7 @@ describe("operation MCP diagnostic security", () => {
     expect(JSON.parse(valid.stdout)).toMatchObject({ stage: "START" });
     expect((await run(startRef, base)).code).not.toBe(0);
     expect((await run("aeh-diagnostic:v2/../../etc/passwd")).code).not.toBe(0);
-  });
+  }, 20_000);
 
   it("does not follow a writable control-root ancestor replacement during diagnostic persistence", async () => {
     if (process.platform !== "linux") return;

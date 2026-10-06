@@ -204,6 +204,11 @@ validation:
   baseRef: main
   requireSeal: true
   providers:
+    - id: s9-browser-playwright
+      capability: browser-test
+      provider: playwright
+      command: "npm run build 1>&2 && node_modules/.bin/playwright test --config tests/browser/playwright.config.ts --grep 'S9 browser' --reporter=json"
+      timeoutSeconds: 900
     - id: s11-visual-playwright
       capability: visual-test
       provider: playwright
