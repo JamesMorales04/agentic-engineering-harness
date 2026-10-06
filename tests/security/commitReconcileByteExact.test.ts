@@ -99,6 +99,58 @@ describe("LUNA BLOCKER (a): commit-tree digest must hash raw blob bytes", () => 
   });
 });
 
+describe("LUNA BLOCKER (c): commit-tree digest must hash blob bytes with no trailing-newline strip", () => {
+  const LINK_NAME = "link";
+  // A trailing-LF symlink target is legal bytes on Linux. `git show
+  // <ref>:<path>` returns these blob bytes RAW with no framing newline, so
+  // the digest path must hash them exactly as returned.
+  const TARGET_NL = "target\n";
+  const TARGET_BARE = "target";
+  const NL_SUBJECT = "T-NL: symlink target with trailing newline";
+
+  async function initNewlineSymlinkRepo(): Promise<string> {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-nl-digest-"));
+    roots.push(root);
+    git(root, ["init", "-b", "main"]);
+    git(root, ["config", "user.name", "AEH Test"]);
+    git(root, ["config", "user.email", "aeh@example.invalid"]);
+    await fs.symlink(TARGET_NL, path.join(root, LINK_NAME));
+    git(root, ["add", LINK_NAME]);
+    git(root, ["commit", "-m", NL_SUBJECT]);
+    return root;
+  }
+
+  /** Canonical single-entry symlink combiner over caller-supplied target bytes (mirrors git.ts). */
+  function symlinkCombinerDigest(target: string): string {
+    const hash = crypto.createHash("sha256");
+    hash.update(`path\0${LINK_NAME}\0`);
+    hash.update(`symlink\0${target}\0`);
+    return hash.digest("hex");
+  }
+
+  it("committed `target\\n` symlink target digests differently from bare `target` (no normalization)", async () => {
+    const root = await initNewlineSymlinkRepo();
+    const commitDigest = await computeCommitTreeDigest(root, "HEAD");
+    // Byte-exactness: the committed blob is the raw `target\n` bytes.
+    expect(commitDigest).toBe(symlinkCombinerDigest(TARGET_NL));
+    // No normalization: must NOT equal the digest over stripped `target`.
+    expect(commitDigest).not.toBe(symlinkCombinerDigest(TARGET_BARE));
+    // Both paths hash identical inputs identically.
+    expect(await computeWorktreeDigest(root)).toBe(commitDigest);
+  });
+
+  it("a contentDigest over stripped `target` must never reconcile SUCCEEDED against committed `target\\n`", async () => {
+    const root = await initNewlineSymlinkRepo();
+    const payload = { taskId: "T-NL", message: NL_SUBJECT, contentDigest: symlinkCombinerDigest(TARGET_BARE) };
+    const result = await reconcileToolAction(root, makeIntent("git.commit", payload), payload, {
+      now: new Date(FIXED_NOW)
+    });
+    expect(result.outcome).not.toBe("SUCCEEDED");
+    expect(result.outcome).toBe("UNKNOWN");
+    expect(result.detail).toBe("commit-content-mismatch");
+  });
+});
+
 describe("LUNA BLOCKER (b): unreadable-candidate outcomes carry scan observability", () => {
   function stubHistory(): typeof runExecutable {
     return (async (_command: string, args: readonly string[]) => {

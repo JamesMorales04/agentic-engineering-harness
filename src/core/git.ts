@@ -128,10 +128,12 @@ function updateDigestWithSymlinkTarget(hash: crypto.Hash, target: string): void 
  * Blob bytes are hashed RAW from `ProcessResult.stdoutBuffer` (opted in via
  * `rawStdout`): they never pass through the lossy UTF-8 `stdout` decode, so
  * a non-UTF-8 byte such as 0xFF cannot hash like the valid UTF-8 U+FFFD
- * sequence and falsely match a contentDigest. `computeWorktreeDigest`
- * already hashes raw `fs.readFile` Buffers, so both paths are byte-exact
- * and agree on identical content. Symlink targets are stripped of a single
- * trailing newline from `git show` to match `readlink`.
+ * sequence and falsely match a contentDigest. Symlink targets hash exactly
+ * as returned: `git show <ref>:<path>` emits the raw blob with no framing
+ * newline (matching `readlink`), so no trailing-newline strip is applied and
+ * a target of `target\n` never digests like `target`. Both digest paths
+ * consume the same ls-tree enumeration inputs through the same combiner; no
+ * cross-encoding comparison is performed.
  */
 export async function computeCommitTreeDigest(cwd: string, ref = "HEAD"): Promise<string> {
   const entries = await listCommitTreeEntries(cwd, ref);
@@ -145,20 +147,10 @@ export async function computeCommitTreeDigest(cwd: string, ref = "HEAD"): Promis
     // lossy `stdout` text would reintroduce the UTF-8 collision (never a
     // false SUCCEEDED from a decode round-trip).
     if (!shown.stdoutBuffer) throw new Error(`Git committed blob bytes unavailable for '${file}' at ${ref}.`);
-    if (mode === "120000") updateDigestWithSymlinkTarget(hash, stripSingleTrailingNewline(shown.stdoutBuffer).toString("utf8"));
+    if (mode === "120000") updateDigestWithSymlinkTarget(hash, shown.stdoutBuffer.toString("utf8"));
     else hash.update(shown.stdoutBuffer);
   }
   return hash.digest("hex");
-}
-
-/** Strip one trailing `\n` (plus an optional preceding `\r`) from raw bytes, matching the `git show` text trim. */
-function stripSingleTrailingNewline(value: Buffer): Buffer {
-  if (value.length > 0 && value[value.length - 1] === 0x0a) {
-    let end = value.length - 1;
-    if (end > 0 && value[end - 1] === 0x0d) end -= 1;
-    return value.subarray(0, end);
-  }
-  return value;
 }
 
 interface CommitTreeEntry {
