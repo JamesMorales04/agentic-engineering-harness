@@ -48,11 +48,13 @@ function uncheckedPlan(objectives: string[]): PlannerOutput {
 }
 
 describe("Planner WorkGraph bounded correction", () => {
+  const root = process.cwd();
   it("accepts an objective at exactly 500 characters without retry", async () => {
     const requestCorrection = vi.fn();
     const result = await compilePlannerWorkGraphWithOneCorrection({
       contract,
       plan: plan(["x".repeat(500)]),
+      root,
       requestCorrection
     });
 
@@ -74,6 +76,7 @@ describe("Planner WorkGraph bounded correction", () => {
     const result = await compilePlannerWorkGraphWithOneCorrection({
       contract,
       plan: initial,
+      root,
       requestCorrection: async (prompt) => {
         correctionPrompt = prompt;
         return plan(["rewrite the objective within the schema"]);
@@ -95,6 +98,7 @@ describe("Planner WorkGraph bounded correction", () => {
     await expect(compilePlannerWorkGraphWithOneCorrection({
       contract,
       plan: uncheckedPlan(["x".repeat(501)]),
+      root,
       requestCorrection
     })).rejects.toMatchObject({
       name: "PlannerWorkGraphCorrectionError",
@@ -113,6 +117,7 @@ describe("Planner WorkGraph bounded correction", () => {
       await compilePlannerWorkGraphWithOneCorrection({
         contract,
         plan: invalid,
+        root,
         requestCorrection: async (prompt) => {
           correctionPrompt = prompt;
           return invalid;
@@ -139,6 +144,7 @@ describe("Planner WorkGraph bounded correction", () => {
       await compilePlannerWorkGraphWithOneCorrection({
         contract,
         plan: uncheckedPlan(["x".repeat(501), "y".repeat(501)]),
+        root,
         requestCorrection
       });
       throw new Error("expected correction to fail");
