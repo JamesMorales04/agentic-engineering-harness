@@ -364,12 +364,16 @@ function quote(value: string): string {
  * head so embedded-JSON scanners still see the report start. Truncation cuts
  * at a UTF-16 code-point boundary within the byte budget so multi-byte UTF-8
  * sequences are never split and no replacement characters are introduced;
- * length is measured with Buffer.byteLength(value, "utf8").
+ * length is measured with Buffer.byteLength(value, "utf8"). The truncation
+ * marker is included INSIDE the byte budget: content is cut to
+ * (cap − marker bytes) then the marker is appended so total bytes ≤ cap.
  */
 function boundedReporterText(value: string): string {
   const maxBytes = 200_000;
   if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
-  return `${truncateUtf8ToBytes(value, maxBytes)}\n… truncated …`;
+  const marker = "\n… truncated …";
+  const markerBytes = Buffer.byteLength(marker, "utf8");
+  return `${truncateUtf8ToBytes(value, maxBytes - markerBytes)}${marker}`;
 }
 
 function truncateUtf8ToBytes(value: string, maxBytes: number): string {
