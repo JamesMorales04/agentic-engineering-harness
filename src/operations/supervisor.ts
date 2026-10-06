@@ -6,6 +6,7 @@ import type { HarnessProjectConfig, TaskContract, WorkerSession } from "../core/
 import { statusLeadContext } from "../paseo/context.js";
 import { archivePaseoSdkAgent } from "../paseo/sdk.js";
 import { stopManagedPaseoAgent } from "../paseo/runtimeCore.js";
+import { isUncertainProviderTurn } from "../paseo/firstActivityDeadline.js";
 import { recordPaseoTrace } from "../paseo/trace.js";
 import { structuredResultProvenanceForAgent } from "../workers/resultGateway.js";
 import { dispatchMaterializedAgentPrompt, executeAgentPrompt, materializeAgentPrompt } from "../workers/agentPrompt.js";
@@ -160,6 +161,8 @@ export function shouldRetrySupervisorConsolidationStall(
   retriesSoFar: number,
   session?: SupervisorConsolidationStallSessionShape | undefined
 ): boolean {
+  // E-NEW-9: never fresh-generation retry an unverified stop (twin-writer risk).
+  if (isUncertainProviderTurn(session, error)) return false;
   return isSupervisorConsolidationStallKill(error, session) && retriesSoFar < SUPERVISOR_CONSOLIDATION_STALL_MAX_RETRIES;
 }
 

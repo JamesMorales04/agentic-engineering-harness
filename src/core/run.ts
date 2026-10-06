@@ -35,6 +35,7 @@ import { buildRequirementEvidenceGraph, evidenceValidationCheck, type Requiremen
 import { enforceSandboxPolicy } from "../security/sandbox.js";
 import { assertCurrentControllerOwner, bindOperationCandidate, currentOperationContext, loadOperation, resolveOperationStateRoot, setOperationStage, type OperationParticipantStatus, type OperationRecordV2 } from "../operations/state.js";
 import { ensureOperationSupervisor, maybeRotateOperationSupervisor, settleDrainingSupervisorGenerations, supervisorTurnTimedOutV1 } from "../operations/supervisor.js";
+import { isUncertainProviderTurn } from "../paseo/firstActivityDeadline.js";
 import { createMemoryProvider } from "../providers/memory.js";
 import { buildAcceptedOperationCandidates } from "../memory/candidates.js";
 import { compileExecutionCatalog, type ExecutionCatalogV1 } from "../architecture/executionCatalog.js";
@@ -174,6 +175,11 @@ export function shouldRetryRepairStall(
   retriesSoFar: number,
   session?: RepairStallSessionShape | undefined
 ): boolean {
+  // E-NEW-9: an unverified stop (session may still be RUNNING) is never
+  // fresh-session retried — that would spawn a twin writer. The UNCERTAIN
+  // turn still classifies as a stall kill (failure recognized); only the
+  // retry is refused, preserving the same session id for same-session resume.
+  if (isUncertainProviderTurn(session, error)) return false;
   return isRepairStallKill(error, session) && retriesSoFar < REPAIR_STALL_MAX_RETRIES;
 }
 
@@ -214,6 +220,13 @@ export async function withBoundedRepairStallRetryV1<T extends { session: WorkerS
     }
     const session = result.session as RepairStallSessionShape;
     if (isRepairStallKill(undefined, session) || isRepairStallKill(new Error(`${session.stderr ?? ""} ${session.stdout ?? ""}`), session)) {
+      // E-NEW-9: the returned-session path carries the session (unlike the
+      // throw path), so refuse the fresh retry here fail-closed instead of
+      // spawning a twin writer next to the still-RUNNING session. The same
+      // session id is preserved for same-session resume.
+      if (isUncertainProviderTurn(session, undefined)) {
+        throw new Error(`PASEO_PROVIDER_LIFECYCLE_UNCERTAIN: repair turn stop unverified; same-session resume of '${result.session.id ?? "unknown-session"}' is required, fresh-session retry refused; ${repairStallDiagnostics(session)}`);
+      }
       if (retries < REPAIR_STALL_MAX_RETRIES) {
         retries += 1;
         continue;

@@ -2093,11 +2093,12 @@ function session(selection: AgentExecutionSelection, exitCode: number, stdout: s
   return { provider: selection.runtimeAdapter, model: selection.modelName, logicalAgent: selection.logicalAgent, nativeAgent: selection.nativeAgent, runtime: selection.runtimeName, profile: selection.profile, exitCode, stdout, stderr, ...metadata };
 }
 
-/** Propagate the settled provider-turn kill reason and bounded activity counts (refs-only). */
-function turnKillMetadata(turn: { killReason?: WorkerSession["killReason"]; activity?: WorkerSession["activityCounts"] }): Partial<WorkerSession> {
+/** Propagate the settled provider-turn kill reason, bounded activity counts (refs-only) and stop verification. */
+function turnKillMetadata(turn: { killReason?: WorkerSession["killReason"]; activity?: WorkerSession["activityCounts"]; providerQuiescence?: WorkerSession["providerQuiescence"] }): Partial<WorkerSession> {
   return {
     ...(turn.killReason ? { killReason: turn.killReason } : {}),
-    ...(turn.activity ? { activityCounts: turn.activity } : {})
+    ...(turn.activity ? { activityCounts: turn.activity } : {}),
+    ...(turn.providerQuiescence ? { providerQuiescence: turn.providerQuiescence } : {})
   };
 }
 
