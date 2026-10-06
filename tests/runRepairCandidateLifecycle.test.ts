@@ -204,6 +204,10 @@ describe("public runTask Repairer candidate lifecycle", () => {
     expect(mocks.legacyRepair).not.toHaveBeenCalled();
   }, 20_000);
 
+  // Bounded 20s budget (same rationale as the sibling repair lifecycle above):
+  // identical real git init/commit + real `node check.mjs` validator spawns
+  // (initial + post-repair) + Repairer/Reviewer turns + operation-state IO,
+  // flaked at the 5s default under parallel CI/worktree load.
   it("resolves a base contract assertion to its declared configured validation check through the acceptance bundle", async () => {
     const root = await createProject();
     const task = taskContractWithRequirements();
@@ -258,7 +262,7 @@ describe("public runTask Repairer candidate lifecycle", () => {
     const ac1Validation = (result.evidenceBundle?.evidence ?? []).filter((item) => item.assertionId === "AC-1" && item.kind === "VALIDATION");
     expect(ac1Validation.map((item) => [item.provenance.sourceId, item.status])).toEqual([["command.candidate-check", "PASS"]]);
     expect(result.acceptanceOracle?.blockers.map((item) => item.code)).toContain("VERIFICATION_REVIEW_STRENGTH_INSUFFICIENT");
-  });
+  }, 20_000);
 
   it("fails closed when candidate repair has no compiled Repairer authority", async () => {
     const root = await createProject();
