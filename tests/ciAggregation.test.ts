@@ -56,4 +56,41 @@ describe("release CI gating (K-NEW-1 / K-NEW-6)", () => {
       expect(value).toBe("error");
     }
   });
+
+  it("publish.yml verifies the published bits before creating the GitHub Release", async () => {
+    const text = await fs.readFile(new URL("../.github/workflows/publish.yml", import.meta.url), "utf8");
+    const workflow = parse(text) as Record<string, any>;
+    const jobs = workflow.jobs as Record<string, any>;
+    const entries = Object.entries(jobs);
+    const verifyEntry = entries.find(([name]) => /verify/i.test(name));
+    expect(verifyEntry).toBeDefined();
+    const [verifyName, verifyJob] = verifyEntry!;
+    const verifyNeeds = Array.isArray(verifyJob.needs) ? verifyJob.needs : verifyJob.needs ? [verifyJob.needs] : [];
+    expect(verifyNeeds).toContain("publish");
+    const verifySerialized = JSON.stringify(verifyJob.steps ?? verifyJob);
+    expect(verifySerialized).toContain("npm view");
+    expect(verifySerialized).toContain("toolchain compile");
+    expect(verifySerialized).toContain("policy sync");
+    expect(verifySerialized).toContain("test:packaged-consumer");
+    const releaseCandidates = entries.filter(([, job]) => JSON.stringify(job).includes("gh release create"));
+    expect(releaseCandidates.length).toBeGreaterThan(0);
+    const releaseEntry = releaseCandidates.find(([, job]) => {
+      const needs = Array.isArray(job.needs) ? job.needs : job.needs ? [job.needs] : [];
+      return needs.includes(verifyName);
+    });
+    expect(releaseEntry).toBeDefined();
+    const [releaseName, releaseJob] = releaseEntry!;
+    expect(releaseName).not.toBe("publish");
+    const releaseNeeds = Array.isArray(releaseJob.needs)
+      ? releaseJob.needs
+      : releaseJob.needs
+        ? [releaseJob.needs]
+        : [];
+    expect(releaseNeeds).toContain(verifyName);
+  });
+
+  it("docs/PUBLISHING.md no longer documents [skip ci]", async () => {
+    const text = await fs.readFile(new URL("../docs/PUBLISHING.md", import.meta.url), "utf8");
+    expect(text).not.toContain("[skip ci]");
+  });
 });

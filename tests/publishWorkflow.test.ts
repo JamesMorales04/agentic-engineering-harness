@@ -16,17 +16,37 @@ describe("automatic publish workflow", () => {
     expect(serialized).toContain("npm version");
     expect(serialized).toContain("npm run release:check");
     expect(serialized).toContain("npm publish");
-    expect(serialized).toContain("gh release create");
+    expect(JSON.stringify(workflow.jobs)).toContain("gh release create");
     const synchronizeIndex = steps.findIndex((step) => step.name === "Synchronize package metadata");
     const validationIndex = steps.findIndex((step) => step.name === "Validate release candidate");
     const commitIndex = steps.findIndex((step) => step.name === "Commit version and create tag");
     const publishIndex = steps.findIndex((step) => step.name === "Publish to npm");
-    const githubReleaseIndex = steps.findIndex((step) => step.name === "Create GitHub Release");
     expect(steps[validationIndex]?.run).toBe("npm run release:check");
     expect(synchronizeIndex).toBeLessThan(validationIndex);
     expect(validationIndex).toBeLessThan(commitIndex);
     expect(commitIndex).toBeLessThan(publishIndex);
-    expect(publishIndex).toBeLessThan(githubReleaseIndex);
+    // GITHUB_TOKEN pushes do not trigger push workflows, so the GitHub
+    // Release must be gated by in-workflow verification of the published bits.
+    const verifyEntry = Object.entries(workflow.jobs as Record<string, any>).find(([name]) =>
+      /verify/i.test(name),
+    );
+    expect(verifyEntry).toBeDefined();
+    const [verifyName, verifyJob] = verifyEntry! as [string, any];
+    const verifyNeeds = Array.isArray(verifyJob.needs) ? verifyJob.needs : [verifyJob.needs];
+    expect(verifyNeeds).toContain("publish");
+    const releaseEntry = Object.entries(workflow.jobs as Record<string, any>).find(([, job]) =>
+      JSON.stringify(job).includes("gh release create"),
+    );
+    // The gated release job (not the legacy repair step) must need verification.
+    const gatedRelease = (Object.entries(workflow.jobs as Record<string, any>) as Array<[string, any]>)
+      .filter(([, job]) => JSON.stringify(job).includes("gh release create"))
+      .find(([, job]) => {
+        const needs = Array.isArray(job.needs) ? job.needs : job.needs ? [job.needs] : [];
+        return needs.includes(verifyName);
+      });
+    expect(gatedRelease).toBeDefined();
+    expect(JSON.stringify(gatedRelease![1])).toContain("--verify-tag");
+    expect(releaseEntry).toBeDefined();
     await expect(fs.access(new URL("../.github/workflows/release.yml", import.meta.url))).rejects.toThrow();
   });
 });

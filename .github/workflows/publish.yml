@@ -24,6 +24,9 @@ jobs:
   publish:
     if: github.event_name == 'workflow_dispatch' || vars.AEH_AUTO_PUBLISH != 'false'
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      should_publish: ${{ steps.version.outputs.should_publish }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -86,15 +89,6 @@ jobs:
           fi
           npm publish --provenance
 
-      - name: Create GitHub Release
-        if: steps.version.outputs.should_publish == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          gh release view "v${RELEASE_VERSION}" >/dev/null 2>&1 || \
-            gh release create "v${RELEASE_VERSION}" --verify-tag --generate-notes --title "v${RELEASE_VERSION}"
-
       - name: Repair missing GitHub Release for current version
         if: steps.version.outputs.should_publish != 'true' && github.event_name == 'workflow_dispatch' && inputs.bump == 'current'
         shell: bash
@@ -113,3 +107,139 @@ jobs:
       - name: Nothing to publish
         if: steps.version.outputs.should_publish != 'true'
         run: echo "Current package version is already published and bump=current was requested."
+
+  verify-published:
+    name: verify-published
+    needs: publish
+    if: needs.publish.outputs.should_publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: v${{ needs.publish.outputs.version }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - run: npm ci
+
+      - name: Confirm published version is on npm and tag matches
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          set -euo pipefail
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          npm view "$PACKAGE_NAME@$RELEASE_VERSION" version --json
+          test "$(npm view "$PACKAGE_NAME@$RELEASE_VERSION" version)" = "$RELEASE_VERSION"
+          git describe --tags --exact-match HEAD
+          test "$(git describe --tags --exact-match HEAD)" = "v$RELEASE_VERSION"
+
+      - name: Provision the required consumer toolchain provider
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y podman
+          podman --version
+
+      - name: Run packaged build and hygiene contracts
+        run: npm run test:packaged-consumer
+
+      - name: Smoke packaged CLI from consumer install
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED_VERSION="$(node -p "require('./package.json').version")"
+          npm run build
+          PACKAGE_NAME="$(node -p "require('./package.json').name.replace(/^@/, '').replaceAll('/', '-')")"
+          PACK_DESTINATION="$(mktemp -d "$RUNNER_TEMP/aeh-packaged-consumer.XXXXXX")"
+          AEH_PACK_DESTINATION="$PACK_DESTINATION" node scripts/ci/packCandidate.mjs
+          TGZ="$PACK_DESTINATION/$PACKAGE_NAME-$EXPECTED_VERSION.tgz"
+          test -s "$TGZ"
+          sha256sum "$TGZ"
+          TMP="$(mktemp -d)"
+          mkdir -p "$TMP/consumer"
+          cd "$TMP/consumer"
+          npm init -y >/dev/null
+          npm install "$TGZ" >/dev/null
+          ./node_modules/.bin/aeh --version | grep -Fx "$EXPECTED_VERSION"
+          TOOLS="$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | ./node_modules/.bin/aeh operation mcp)"
+          printf '%s\n' "$TOOLS" | grep -q 'aeh_operation_start_audit'
+          printf '%s\n' "$TOOLS" | grep -q 'aeh_context_status'
+          mkdir repo
+          ./node_modules/.bin/aeh init repo
+          test -f repo/.harness/project.yaml
+          test -f repo/.harness/toolchain.yaml
+          test -f repo/.harness/provider-versions.json
+          test -f repo/.harness/agents.source.jsonc
+          test -f repo/.harness/skills/engineering-workflow/SKILL.md
+          test -f repo/.harness/managed-assets.json
+          test -f repo/openspec/config.yaml
+          grep -q '"aeh:orchestration"' repo/.harness/agents.source.jsonc
+          grep -q '^    sessionPolicy: fresh-on-start$' repo/.harness/project.yaml
+          grep -q '^    provider: openspec$' repo/.harness/project.yaml
+          grep -q 'npm:@fission-ai/openspec' repo/.harness/toolchain.yaml
+          test -d repo/.harness/paseo
+          test -d repo/.harness/paseo/handoffs
+          test -d repo/.harness/audits
+          test -d repo/.harness/operations
+          grep -q '^\.harness/\*$' repo/.gitignore
+          grep -q '^!\.harness/project.yaml$' repo/.gitignore
+          grep -q '^!\.harness/toolchain.yaml$' repo/.gitignore
+          grep -q '^!\.harness/agents.source.jsonc$' repo/.gitignore
+          grep -q '^!\.harness/otel-collector.yaml$' repo/.gitignore
+          ./node_modules/.bin/aeh toolchain compile repo
+          test -f repo/.config/mise/conf.d/aeh.toml
+          grep -q 'openspec' repo/.config/mise/conf.d/aeh.toml
+          rm repo/.harness/skills/engineering-workflow/SKILL.md
+          ./node_modules/.bin/aeh setup --dry-run repo
+          test -f repo/.harness/skills/engineering-workflow/SKILL.md
+          ./node_modules/.bin/aeh policy sync repo >/dev/null
+          mkdir -p repo/.harness/fixtures
+          cat > repo/.harness/fixtures/deterministic-paseo-runtime.json <<'EOF'
+          {
+            "version": 1,
+            "responses": {
+              "semantic-assessment:INTENT": [
+                {
+                  "judgment": {
+                    "type": "INTENT",
+                    "intent": "audit",
+                    "confidence": 1,
+                    "evidenceRefs": ["request"]
+                  },
+                  "claims": [],
+                  "assumptions": [],
+                  "unknowns": [],
+                  "recommendations": [],
+                  "knowledgeGaps": []
+                }
+              ]
+            }
+          }
+          EOF
+          AEH_DETERMINISTIC_PASEO_RUNTIME=1 AEH_PASEO_FORCE_CLI=0 ./node_modules/.bin/aeh intent 'review the repo and validate the code for improvements' repo | grep -q '^AUDIT'
+          ./node_modules/.bin/aeh operation status DOES-NOT-EXIST repo >/dev/null 2>&1 && exit 1 || true
+
+  release:
+    name: release
+    needs: [publish, verify-published]
+    if: needs.publish.outputs.should_publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: v${{ needs.publish.outputs.version }}
+          fetch-depth: 0
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          gh release view "v${RELEASE_VERSION}" >/dev/null 2>&1 || \
+            gh release create "v${RELEASE_VERSION}" --verify-tag --generate-notes --title "v${RELEASE_VERSION}"

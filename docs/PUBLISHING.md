@@ -33,7 +33,7 @@ The workflow performs the following steps:
    - every other change -> patch;
 5. synchronizes `package.json` and `package-lock.json` with `npm version --no-git-tag-version`;
 6. runs `npm run release:check` on the exact candidate;
-7. commits the version metadata as `chore(release): vX.Y.Z [skip ci]` and creates the matching Git tag;
+7. commits the version metadata as `chore(release): vX.Y.Z` and creates the matching Git tag;
 8. publishes the package to npm with provenance;
 9. creates the GitHub Release for the tag.
 
