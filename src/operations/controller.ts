@@ -19,11 +19,15 @@ import { inspectManagedPaseoAgent, listManagedPaseoAgents } from "../paseo/runti
 import { isDeterministicPaseoRuntimeEnabled, isDeterministicPaseoSessionId } from "../paseo/deterministicRuntime.js";
 import { createManagedRuntime, readManagedRuntimeSnapshot, runtimeProjectId } from "../runtime/index.js";
 import {
+  clearOperationWorkspaceIntent,
   operationResourcePolicy,
+  operationWorkspaceName,
   operationWorkspaceTitle,
   reconcileOperationResources,
   reconcileTerminalOperationResources,
-  registerOperationResource
+  registerOperationResource,
+  upgradeOperationWorkspaceIntent,
+  writeOperationWorkspaceIntent
 } from "../runtime/operationResources.js";
 import { recordPaseoTrace } from "../paseo/trace.js";
 import {
@@ -491,6 +495,13 @@ async function executeOperationWithEnvironment(
       workspaceWarning: workspace.warning,
       ...(workspace.disposition ? { workspaceDisposition: workspace.disposition } : {})
     });
+    if (workspace.disposition === "OPERATION_OWNED" && workspace.workspaceId) {
+      // Full registration supersedes the create-started intent: the record now
+      // durably proves ownership, so the intent is removed and triple-bound
+      // discovery stays scoped to the crash window. Best-effort: a leftover
+      // intent only causes an extra listing, never a false claim.
+      await clearOperationWorkspaceIntent(absoluteRoot, operationId).catch(() => undefined);
+    }
     if (workspace.disposition && workspace.workspaceId) {
       const workspaceIdentity = workspace.workspaceId;
       await registerOperationResource(absoluteRoot, operationId, {
@@ -1647,10 +1658,17 @@ async function ensureOperationWorkspace(
     }
   }
 
-  // The title is the durable ownership signal: the Paseo workspace CLI offers
-  // no label surface, so recovery matches this exact minted title
-  // (operationWorkspaceTitle). Never rename it without updating discovery.
+  // The title plus the pre-registered deterministic name are the durable
+  // ownership signals: the Paseo workspace CLI offers no label surface
+  // (--label is absent in 0.10.3), so recovery triple-binds the exact minted
+  // title (operationWorkspaceTitle) + the pre-registered name
+  // (operationWorkspaceName, carried as --worktree-slug for worktree
+  // isolation) + a managed cwd. Never rename them without updating discovery.
   const title = operationWorkspaceTitle(record.kind, record.id);
+  const name = operationWorkspaceName(record.kind, record.id);
+  // Pre-register the name BEFORE the CLI create so a crash between create and
+  // the durable record/registry writes stays recoverable via triple binding.
+  await writeOperationWorkspaceIntent(root, record.id, { kind: record.kind, title, name });
   if (record.kind === "audit") {
     const command = `paseo workspace create --isolation local --path ${quote(root)} --title ${quote(title)} --json`;
     await trace(root, "workspace.cli.required", { operationId: record.id, kind: record.kind, reason: "the current integration creates operation workspaces through the Paseo CLI", isolation: "local" });
@@ -1658,21 +1676,28 @@ async function ensureOperationWorkspace(
     try {
       result = await gatedWorkspaceCreate({ root, record, run, command, timeoutMs: 60_000, payload: { isolation: "local", path: root, title } });
     } catch (error) {
+      // No workspace was proven created: leave no claimable intent behind.
+      await clearOperationWorkspaceIntent(root, record.id).catch(() => undefined);
       const warning = `Paseo audit workspace could not be created: ${String(error)}`;
       await trace(root, "workspace.cli.error", { operationId: record.id, error: warning });
       return { workspaceRoot: root, warning };
     }
     if (result.exitCode !== 0) {
+      await clearOperationWorkspaceIntent(root, record.id).catch(() => undefined);
       const warning = `Paseo audit workspace could not be created: ${result.stderr || result.stdout || `exit ${result.exitCode}`}`;
       await trace(root, "workspace.cli.error", { operationId: record.id, error: warning });
       // AUDIT is read-only, so a local workspace failure does not create a
       // write race; execution may continue at the repository root.
       return { workspaceRoot: root, warning };
     }
-    return { workspaceId: extractWorkspaceId(result.stdout), workspaceRoot: root, disposition: "OPERATION_OWNED" };
+    const workspaceId = extractWorkspaceId(result.stdout);
+    // Best-effort upgrade: the started intent already binds the name, so a
+    // crash before or during this write stays recoverable.
+    await upgradeOperationWorkspaceIntent(root, record.id, { workspaceId, workspaceRoot: root }).catch(() => undefined);
+    return { workspaceId, workspaceRoot: root, disposition: "OPERATION_OWNED" };
   }
 
-  const slug = `aeh-${record.id.toLowerCase().replace(/[^a-z0-9-]+/g, "-").slice(0, 80)}`;
+  const slug = name;
   const branch = `aeh/op-${record.id.toLowerCase().replace(/[^a-z0-9-]+/g, "-").slice(0, 96)}`;
   const base = config.validation?.baseRef ?? "HEAD";
   const command = [
@@ -1689,6 +1714,8 @@ async function ensureOperationWorkspace(
   await trace(root, "workspace.cli.required", { operationId: record.id, kind: record.kind, reason: "mutating operations require isolated worktree execution", isolation: "worktree", branch, base });
   const result = await gatedWorkspaceCreate({ root, record, run, command, timeoutMs: 180_000, payload: { isolation: "worktree", path: root, title, branch, base, slug } });
   if (result.exitCode !== 0) {
+    // Paseo reported failure: leave no claimable intent behind.
+    await clearOperationWorkspaceIntent(root, record.id).catch(() => undefined);
     throw new Error(`AEH_OPERATION_WORKTREE_REQUIRED: unable to create isolated worktree for ${record.id}: ${result.stderr || result.stdout || `exit ${result.exitCode}`}`);
   }
   let workspaceId = extractWorkspaceId(result.stdout);
@@ -1701,8 +1728,11 @@ async function ensureOperationWorkspace(
     }
   }
   if (!workspaceRoot) {
+    // Exit 0 but no resolvable path: an orphan may exist, so the started
+    // intent stays for triple-bound recovery.
     throw new Error(`AEH_OPERATION_WORKTREE_REQUIRED: Paseo created a worktree workspace for ${record.id} but did not expose a resolvable worktree path.`);
   }
+  await upgradeOperationWorkspaceIntent(root, record.id, { workspaceId, workspaceRoot }).catch(() => undefined);
   await trace(root, "workspace.cli.created", { operationId: record.id, workspaceId: workspaceId ?? "", workspaceRoot, isolation: "worktree", branch });
   return { workspaceId, workspaceRoot, disposition: "OPERATION_OWNED" };
 }
