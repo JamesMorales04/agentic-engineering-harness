@@ -158,6 +158,7 @@ export {
 } from "../../../src/utils/process.js";
 import {
   buildHermeticChildPath,
+  explicitExtraBinPaths,
   HERMITIC_SYSTEM_PATH_DIRS,
   sanitizeManagedChildEnvironment,
 } from "../../../src/utils/process.js";
@@ -165,9 +166,11 @@ import { readFileSync } from "node:fs";
 
 export function sanitizeFixtureChildEnvironment(parent: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env = sanitizeManagedChildEnvironment(parent);
-  // Hermetic minimal (no ambient tail, fail-closed). The fixture method below
-  // prepends the pinned prefix when toolchain.state.json exists.
-  env.PATH = [...HERMITIC_SYSTEM_PATH_DIRS].join(process.platform === "win32" ? ";" : ":");
+  // Hermetic minimal + explicit extra (no ambient tail, fail-closed). The fixture
+  // method below prepends the pinned prefix when toolchain.state.json exists.
+  // Explicit CI marking via AEH_TOOLCHAIN_EXTRA_BIN_PATHS is honored; unmarked
+  // ambient stays blocked.
+  env.PATH = buildHermeticChildPath(undefined, explicitExtraBinPaths(parent));
   return env;
 }
 
@@ -324,11 +327,11 @@ export class ControlCenterJourneyFixture {
 
   private childEnvironment(): NodeJS.ProcessEnv {
     const env = sanitizeFixtureChildEnvironment(process.env);
-    // Hermetic: pinned prefix (when toolchain.state.json exists) + minimal,
-    // no ambient tail. Fail-closed to minimal when state missing (fallback
-    // `aeh setup`, never silent ambient).
+    // Hermetic: pinned prefix (when toolchain.state.json exists) + explicit
+    // extra + minimal, no ambient tail. Fail-closed to minimal when both are
+    // missing (fallback `aeh setup` or explicit CI marking, never silent ambient).
     const prefix = fixtureToolchainPrefixSync(this.candidate.repoRoot);
-    env.PATH = buildHermeticChildPath(prefix);
+    env.PATH = buildHermeticChildPath(prefix, explicitExtraBinPaths(process.env));
     return env;
   }
 

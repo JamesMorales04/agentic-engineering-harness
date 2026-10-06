@@ -51,34 +51,44 @@ export function clearToolchainEnvCache(): void { toolchainPathCache.clear(); }
  *   Other XDG_* (SESSION/DESKTOP/etc.) are not shim-resolving and are preserved.
  *
  * PATH is hermetic (no ambient tail, not even filtered): managed children
- * (toolchain !== false) get `pinned prefix + minimal system dirs` when
- * `.harness/toolchain.state.json` exists, and minimal system dirs ONLY when
- * state is missing. Ambient PATH is never consulted: mise-provisioned tools,
- * `~/.local/bin`, `/opt/homebrew/bin`, temp-dir test stubs, and every other
- * ambient-only directory do NOT resolve in the missing-state case. The pinned
- * prefix comes from `.harness/toolchain.state.json` (toolchainPathPrefix); the
- * Paseo SDK via `resolvePaseoSdkFromCli` diagnostics; the candidate release via
+ * (toolchain !== false) get `pinned prefix + explicit extra + minimal system
+ * dirs` when `.harness/toolchain.state.json` exists and/or
+ * `AEH_TOOLCHAIN_EXTRA_BIN_PATHS` explicitly marks dirs, and minimal system
+ * dirs ONLY when both are missing. Ambient PATH is never consulted:
+ * mise-provisioned tools, `~/.local/bin`, `/opt/homebrew/bin`, temp-dir test
+ * stubs, and every other ambient-only directory do NOT resolve in the
+ * missing-state-and-unmarked case. Explicit marking is not ambient: only
+ * absolute dirs listed in AEH_TOOLCHAIN_EXTRA_BIN_PATHS (CI mise bin-paths +
+ * ~/.local/bin + npm-global/cosign dirs, set explicitly via GITHUB_ENV) are
+ * honored beyond the pinned prefix. The pinned prefix comes from
+ * `.harness/toolchain.state.json` (toolchainPathPrefix); the Paseo SDK via
+ * `resolvePaseoSdkFromCli` diagnostics; the candidate release via
  * `dist/releases/<id>/build-identity.json` plus AEH_S9_REPO_ROOT. AEH_ENTRY_FILE
  * is stripped fail-closed so entry resolution must be explicit (argv[1]).
  *
  * Hermetic PATH breakage (fail-closed, never silent ambient):
- * - When toolchain.state.json is missing (fresh checkout, disposable fixture
- *   root, CI without setup): mise-provisioned `node/npm/paseo/opencode/codex/
- *   python/uv/...` are NOT in minimal system dirs and will NOT be found.
- *   Direct spawns reject with AEH_TOOLCHAIN_NOT_CONFIGURED (run `aeh setup`
- *   to generate `.harness/toolchain.state.json`, then retry); shell commands
- *   fail visibly (127/command-not-found); resolveExecutable/commandExists
- *   report unresolved so callers surface missing-tool errors. Never falls back
- *   to ambient, not even filtered ambient.
+ * - When toolchain.state.json is missing and no explicit marking exists
+ *   (fresh checkout, disposable fixture root, CI without setup/marking):
+ *   mise-provisioned `node/npm/paseo/opencode/codex/python/uv/...` are NOT in
+ *   minimal system dirs and will NOT be found. Direct spawns reject with
+ *   AEH_TOOLCHAIN_NOT_CONFIGURED (run `aeh setup` to generate
+ *   `.harness/toolchain.state.json`, or explicitly mark CI mise bins via
+ *   AEH_TOOLCHAIN_EXTRA_BIN_PATHS, then retry); shell commands fail visibly
+ *   (127/command-not-found); resolveExecutable/commandExists report unresolved
+ *   so callers surface missing-tool errors. Never falls back to ambient, not
+ *   even filtered ambient.
  * - When a system tool lives only in a non-standard ambient dir (e.g.
  *   ~/.local/bin, /opt/homebrew/bin, ~/.bun/bin, flatpak exports): it will NOT
- *   be found in hermetic minimal. Fallback: install via standard system dirs
- *   (/usr/local/bin:/usr/bin:/bin) or declare via toolchain config and run
- *   `aeh setup`; fail-closed with missing-command error, never silent ambient
- *   resolution.
+ *   be found in hermetic minimal unless explicitly marked. Fallback: install
+ *   via standard system dirs (/usr/local/bin:/usr/bin:/bin), declare via
+ *   toolchain config and run `aeh setup`, or explicitly mark the dir via
+ *   AEH_TOOLCHAIN_EXTRA_BIN_PATHS; fail-closed with missing-command error,
+ *   never silent ambient resolution.
  * - Migration (stale/missing state): run `aeh setup` to (re)generate
- *   `.harness/toolchain.state.json`, then retry. Tests that stub executables
- *   via ambient PATH must pin the stub dir in the state binPaths (or use
+ *   `.harness/toolchain.state.json`, then retry; CI ambient mise shapes set
+ *   AEH_TOOLCHAIN_EXTRA_BIN_PATHS explicitly instead of relying on ambient.
+ *   Tests that stub executables via ambient PATH must pin the stub dir in the
+ *   state binPaths (or mark via AEH_TOOLCHAIN_EXTRA_BIN_PATHS, or use
  *   toolchain:false / absolute executable paths) instead of relying on ambient
  *   resolution.
  * - toolchain:false (mise internal: `mise --version`, trust, install, bin-paths,
@@ -129,9 +139,43 @@ export const HERMITIC_SYSTEM_PATH_DIRS: readonly string[] = process.platform ===
   ? ["C:\\Windows\\System32", "C:\\Windows"]
   : ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"];
 
-/** Build hermetic PATH: pinned prefix + minimal system dirs, no ambient tail. */
-export function buildHermeticChildPath(prefix?: string): string {
-  return [prefix, ...HERMITIC_SYSTEM_PATH_DIRS].filter(Boolean).join(path.delimiter);
+/**
+ * Explicitly-marked extra toolchain bin paths (DETERMINISTIC).
+ *
+ * CI provider jobs (full-stack-contract, provider-contracts, supply-chain)
+ * provision real providers via ambient `mise bin-paths >> GITHUB_PATH` plus
+ * `~/.local/bin` (uv tools) and npm-global/cosign dirs, without running
+ * `aeh setup` and without a `.harness/toolchain.state.json` under isolated
+ * temp-dir fixture roots. Hermetic blocks silent ambient, so those jobs fail
+ * with reconciled-PATH misses. This allowlist restores them explicitly:
+ * only dirs listed in `AEH_TOOLCHAIN_EXTRA_BIN_PATHS` (path.delimiter-joined,
+ * absolute only) are appended after the pinned prefix and before minimal.
+ * Unlisted ambient dirs (decoy shims, host farms) stay blocked. Unset/empty
+ * preserves the prior fail-closed minimal-only behavior, so the decoy-shim
+ * regression still passes.
+ */
+export const AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV = "AEH_TOOLCHAIN_EXTRA_BIN_PATHS";
+
+export function explicitExtraBinPaths(env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): string[] {
+  const raw = (env as Record<string, unknown>)[AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV];
+  if (typeof raw !== "string" || !raw.trim()) return [];
+  const seen = new Set<string>();
+  for (const part of raw.split(path.delimiter)) {
+    const trimmed = part.trim();
+    if (!trimmed || !path.isAbsolute(trimmed)) continue;
+    const normalized = path.normalize(trimmed);
+    if (!seen.has(normalized)) seen.add(normalized);
+  }
+  return [...seen];
+}
+
+/** Build hermetic PATH: pinned prefix + explicit extra + minimal system dirs, no ambient tail. */
+export function buildHermeticChildPath(prefix?: string, explicitExtra?: readonly string[] | string): string {
+  const explicit = typeof explicitExtra === "string"
+    ? explicitExtra.split(path.delimiter).map((part) => part.trim()).filter(Boolean)
+    : (explicitExtra ?? []);
+  const parts = [prefix, ...explicit, ...HERMITIC_SYSTEM_PATH_DIRS].filter(Boolean);
+  return parts.join(path.delimiter);
 }
 
 export function sanitizeManagedChildEnvironment(parent: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): NodeJS.ProcessEnv {
@@ -207,19 +251,23 @@ async function runChild(
   // controller, or observe another operation's routing state.
   // Canonical scrub: MANAGED_CHILD_ENV_SCRUB_KEYS plus MISE_* and ASDF_*
   // prefixes plus XDG shim keys (single source; fixture shares it). PATH for
-  // managed children is hermetic ALWAYS: pinned prefix + minimal when state
-  // exists, minimal ONLY when state is missing (no ambient tail, not even
-  // filtered). Missing pinned/ambient-only tools fail VISIBLY (ENOENT carries
-  // the `aeh setup` direction; shell 127s surface unmodified); stale state
-  // migrates via `aeh setup`.
+  // managed children is hermetic ALWAYS: pinned prefix + explicit extra +
+  // minimal when state and/or explicit marking exists, minimal ONLY when both
+  // are missing (no ambient tail, not even filtered). Missing pinned and
+  // unmarked ambient-only tools fail VISIBLY (ENOENT carries the `aeh setup`
+  // direction when neither prefix nor explicit marking exists; shell 127s
+  // surface unmodified); stale state migrates via `aeh setup`, CI ambient
+  // mise shapes migrate via AEH_TOOLCHAIN_EXTRA_BIN_PATHS explicit marking.
   // NODE_PATH and MISE_* and related shim vars stripped.
   let toolchainPrefixMissing = false;
   if (options.toolchain !== false) {
     const prefix = await toolchainPathPrefix(options.cwd);
     // Hermetic: ignore ambient AND explicit PATH tails (fail-closed, no silent
-    // ambient). See HERMITIC_SYSTEM_PATH_DIRS breakage docs above.
-    inherited.PATH = buildHermeticChildPath(prefix);
-    toolchainPrefixMissing = !prefix;
+    // ambient). Only AEH_TOOLCHAIN_EXTRA_BIN_PATHS explicit marking is honored
+    // beyond the pinned prefix. See HERMITIC_SYSTEM_PATH_DIRS breakage docs above.
+    const explicit = explicitExtraBinPaths(inherited);
+    inherited.PATH = buildHermeticChildPath(prefix, explicit);
+    toolchainPrefixMissing = !prefix && explicit.length === 0;
   } else {
     // toolchain:false (mise internal, container pulls, explicit-PATH setup):
     // keep ambient/explicit PATH to locate `mise` itself, but ambient MISE_*
@@ -341,17 +389,19 @@ async function runChild(
  * Fail VISIBLE when pinned tools are unavailable (DETERMINISTIC).
  *
  * A managed child (toolchain !== false) whose working directory has no pinned
- * prefix runs with minimal system dirs only. When the OS cannot spawn the
- * executable at all (ENOENT: ambient-only tool, mise install, or stub with no
- * state), surface an explicit error directing to `aeh setup` instead of a bare
- * spawn ENOENT. All other errors pass through unmodified; shell 127s
+ * prefix and no explicitly-marked extra bin paths runs with minimal system
+ * dirs only. When the OS cannot spawn the executable at all (ENOENT:
+ * ambient-only tool, mise install, or stub with neither state nor explicit
+ * marking), surface an explicit error directing to `aeh setup` (or explicit
+ * CI marking via AEH_TOOLCHAIN_EXTRA_BIN_PATHS) instead of a bare spawn
+ * ENOENT. All other errors pass through unmodified; shell 127s
  * (command-not-found inside sh) already fail visibly via exit code.
  */
 function missingToolchainError(error: unknown, options: ProcessOptions, prefixMissing: boolean): unknown {
   if (!prefixMissing || options.toolchain === false) return error;
   if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") return error;
   const message = error instanceof Error ? error.message : String(error);
-  return new Error(`${message} (AEH_TOOLCHAIN_NOT_CONFIGURED: no pinned toolchain prefix for '${options.cwd}', so the managed PATH is minimal system dirs only with no ambient fallback. Run \`aeh setup\` to generate .harness/toolchain.state.json, then retry.)`);
+  return new Error(`${message} (AEH_TOOLCHAIN_NOT_CONFIGURED: no pinned toolchain prefix nor AEH_TOOLCHAIN_EXTRA_BIN_PATHS marking for '${options.cwd}', so the managed PATH is minimal system dirs only with no ambient fallback. Run \`aeh setup\` to generate .harness/toolchain.state.json (or explicitly mark CI mise bins via AEH_TOOLCHAIN_EXTRA_BIN_PATHS), then retry.)`);
 }
 
 class BoundedOutput {
@@ -456,12 +506,15 @@ export async function resolveExecutable(command: string, cwd: string): Promise<s
   if (!command.trim()) return undefined;
   const directPath = path.isAbsolute(command) || command.includes(path.sep) || (path.sep === "/" && command.includes("\\"));
   const prefix = await toolchainPathPrefix(cwd);
-  // Hermetic always: pinned prefix + minimal when state exists, minimal ONLY
-  // when state is missing (no ambient tail, not even filtered). Ambient-only
-  // executables (mise installs, ~/.local/bin, temp-dir stubs) do NOT resolve:
-  // callers surface missing-tool errors visibly instead of silently running an
-  // unpinned binary. Migration: run `aeh setup`, then retry.
-  const searchPath = buildHermeticChildPath(prefix);
+  // Hermetic always: pinned prefix + explicit extra + minimal when state and/or
+  // explicit marking exists, minimal ONLY when both are missing (no ambient
+  // tail, not even filtered). Unmarked ambient-only executables (decoy shims,
+  // host farms, unmarked mise installs, ~/.local/bin, temp-dir stubs) do NOT
+  // resolve: callers surface missing-tool errors visibly instead of silently
+  // running an unpinned binary. Migration: run `aeh setup` for pinned state,
+  // or explicitly mark CI mise bins via AEH_TOOLCHAIN_EXTRA_BIN_PATHS.
+  const explicit = explicitExtraBinPaths();
+  const searchPath = buildHermeticChildPath(prefix, explicit);
   const directories = directPath ? [path.dirname(path.resolve(cwd, command))] : searchPath.split(path.delimiter).filter(Boolean);
   const baseName = directPath ? path.basename(command) : command;
   const extensions = process.platform === "win32"

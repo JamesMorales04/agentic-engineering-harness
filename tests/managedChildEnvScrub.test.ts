@@ -8,6 +8,7 @@ import {
   MANAGED_CHILD_ENV_SCRUB_PREFIXES,
   MANAGED_CHILD_ENV_SCRUB_XDG_SHIM_KEYS,
   buildHermeticChildPath,
+  explicitExtraBinPaths,
   managedChildEnvScrubEvidence,
   resolveExecutable,
   runExecutable,
@@ -202,5 +203,59 @@ describe("canonical managed child env scrub (C6)", () => {
     expect(evidence.pinned.sdkDiagnostics).toContain("resolvePaseoSdkFromCli");
     expect(evidence.pinned.candidateIdentity).toContain("build-identity.json");
     expect(evidence.pinned.entryExplicit).toContain("argv");
+  });
+
+  it("honors explicitly-marked extra bin paths for CI mise shape while blocking unmarked ambient (CI regression)", async () => {
+    // CI shape: missing .harness/toolchain.state.json + ambient mise-style bin dir
+    // (mise bin-paths >> GITHUB_PATH, ~/.local/bin for uv tools). Hermetic blocks
+    // silent ambient; explicitly-marked dirs via AEH_TOOLCHAIN_EXTRA_BIN_PATHS
+    // restore CI providers without reopening decoy-shim leakage.
+    // MECHANISM: DETERMINISTIC (explicit allowlist + pinned prefix + minimal).
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-ci-mise-"));
+    const miseBins = path.join(tmp, "mise-bins");
+    await fs.mkdir(miseBins, { recursive: true });
+    await fs.writeFile(path.join(miseBins, "aeh-ci-tool"), "#!/bin/sh\necho ci-pinned\n");
+    await fs.chmod(path.join(miseBins, "aeh-ci-tool"), 0o755);
+    const decoyDir = path.join(tmp, "decoy-ambient");
+    await fs.mkdir(decoyDir, { recursive: true });
+    await fs.writeFile(path.join(decoyDir, "aeh-ci-tool"), "#!/bin/sh\necho decoy-shadow\n");
+    await fs.chmod(path.join(decoyDir, "aeh-ci-tool"), 0o755);
+    await fs.writeFile(path.join(decoyDir, "aeh-decoy-only"), "#!/bin/sh\necho decoy\n");
+    await fs.chmod(path.join(decoyDir, "aeh-decoy-only"), 0o755);
+    const savedPath = process.env.PATH;
+    const savedExtra = process.env.AEH_TOOLCHAIN_EXTRA_BIN_PATHS;
+    // Ambient order puts decoy first to prove explicit wins, not PATH order.
+    process.env.PATH = `${decoyDir}${path.delimiter}${miseBins}${path.delimiter}${savedPath ?? ""}`;
+    const { clearToolchainEnvCache } = await import("../src/utils/process.js");
+    try {
+      delete process.env.AEH_TOOLCHAIN_EXTRA_BIN_PATHS;
+      clearToolchainEnvCache();
+      // Missing state + no explicit marking: CI ambient tools do NOT resolve
+      // (proves the CI failure shape before the fix).
+      expect(await resolveExecutable("aeh-ci-tool", tmp), "unmarked ambient must not resolve without state").toBeUndefined();
+      expect(await resolveExecutable("aeh-decoy-only", tmp), "decoy must never resolve").toBeUndefined();
+      // Explicitly mark only the mise-style dir (CI workflow marks mise
+      // bin-paths + ~/.local/bin via AEH_TOOLCHAIN_EXTRA_BIN_PATHS).
+      process.env.AEH_TOOLCHAIN_EXTRA_BIN_PATHS = miseBins;
+      clearToolchainEnvCache();
+      expect(explicitExtraBinPaths()).toEqual([miseBins]);
+      expect(await resolveExecutable("aeh-ci-tool", tmp), "explicitly-marked CI tool must resolve").toBe(path.join(miseBins, "aeh-ci-tool"));
+      expect(await resolveExecutable("aeh-decoy-only", tmp), "unmarked decoy stays unresolved with explicit set").toBeUndefined();
+      const run = await runExecutable("aeh-ci-tool", [], { cwd: tmp, timeoutMs: 2_000 });
+      expect(run.exitCode).toBe(0);
+      expect(run.stdout, "explicit prefix must win over ambient decoy shadow").toBe("ci-pinned\n");
+      const probe = await runExecutable(process.execPath, ["-e", `process.stdout.write(process.env.PATH ?? "")`], { cwd: tmp, timeoutMs: 2_000 });
+      expect(probe.exitCode).toBe(0);
+      const dirs = probe.stdout.split(path.delimiter);
+      expect(dirs).toContain(miseBins);
+      expect(dirs).not.toContain(decoyDir);
+    } finally {
+      if (savedPath === undefined) delete process.env.PATH;
+      else process.env.PATH = savedPath;
+      if (savedExtra === undefined) delete process.env.AEH_TOOLCHAIN_EXTRA_BIN_PATHS;
+      else process.env.AEH_TOOLCHAIN_EXTRA_BIN_PATHS = savedExtra;
+      clearToolchainEnvCache();
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
   });
 });
