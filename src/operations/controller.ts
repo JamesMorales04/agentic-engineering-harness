@@ -20,6 +20,7 @@ import { isDeterministicPaseoRuntimeEnabled, isDeterministicPaseoSessionId } fro
 import { createManagedRuntime, readManagedRuntimeSnapshot, runtimeProjectId } from "../runtime/index.js";
 import {
   operationResourcePolicy,
+  operationWorkspaceTitle,
   reconcileOperationResources,
   reconcileTerminalOperationResources,
   registerOperationResource
@@ -1646,7 +1647,10 @@ async function ensureOperationWorkspace(
     }
   }
 
-  const title = `AEH ${record.kind.toUpperCase()} · ${record.id}`;
+  // The title is the durable ownership signal: the Paseo workspace CLI offers
+  // no label surface, so recovery matches this exact minted title
+  // (operationWorkspaceTitle). Never rename it without updating discovery.
+  const title = operationWorkspaceTitle(record.kind, record.id);
   if (record.kind === "audit") {
     const command = `paseo workspace create --isolation local --path ${quote(root)} --title ${quote(title)} --json`;
     await trace(root, "workspace.cli.required", { operationId: record.id, kind: record.kind, reason: "the current integration creates operation workspaces through the Paseo CLI", isolation: "local" });

@@ -77,7 +77,7 @@ export interface OperationResourceV1 {
     participantGeneration?: string;
     supervisorAgentId?: string;
     leaseId?: string;
-    source: "controller-registration" | "operation-record" | "provider-lease" | "managed-process-handle";
+    source: "controller-registration" | "operation-record" | "provider-lease" | "managed-process-handle" | "workspace-title-discovery";
   };
   createdAt: string;
   state: OperationResourceStateV1;
@@ -139,6 +139,11 @@ export interface OperationResourceReconcileDeps {
   removeStagingRoot?: (target: string) => Promise<void>;
   /** Durable label-bound ownership discovery (`aeh.operation` is minted only by this product). */
   listOwnedAgents?: (root: string, operationId: string) => Promise<Array<{ id?: string; workspaceId?: string }>>;
+  /**
+   * Unbounded Paseo workspace listing for title-anchored discovery. The caller
+   * filters by exact minted title; entries carry no trust until matched.
+   */
+  listOwnedWorkspaces?: (root: string) => Promise<OwnedWorkspaceRecord[]>;
   trace?: typeof recordPaseoTrace;
   now?: () => Date;
 }
@@ -201,6 +206,81 @@ export function operationResourceReceiptFile(root: string, operationId: string):
 
 export function operationResourceId(operationId: string, kind: OperationResourceKindV1, identity: string): string {
   return `resource:${sha256Utf8(`${operationId}\u0000${kind}\u0000${identity}`).slice(0, 24)}`;
+}
+
+export interface OwnedWorkspaceRecord {
+  workspaceId: string;
+  title?: string;
+  path?: string;
+}
+
+/**
+ * Canonical operation workspace title minted at `paseo workspace create`
+ * (E-NEW-3). The Paseo workspace CLI offers no label surface, so this title —
+ * which embeds the operation id — is the durable ownership signal a recovery
+ * sweep can match. Create and discovery must share this exact function.
+ */
+export function operationWorkspaceTitle(kind: string, operationId: string): string {
+  return `AEH ${kind.toUpperCase()} · ${operationId}`;
+}
+
+/**
+ * DETERMINISTIC ownership filter: keeps only workspaces whose title is
+ * exactly this operation's minted title. Substring/prefix matching is refused
+ * so a sibling id (for example `OP-1` vs `OP-10`) can never be claimed.
+ */
+export function selectOwnedWorkspaces(
+  workspaces: Array<{ workspaceId: string; title?: string; path?: string }>,
+  kind: string,
+  operationId: string
+): OwnedWorkspaceRecord[] {
+  const minted = operationWorkspaceTitle(kind, operationId);
+  const selected = new Map<string, OwnedWorkspaceRecord>();
+  for (const workspace of workspaces) {
+    if (!workspace.workspaceId || workspace.title !== minted) continue;
+    const existing = selected.get(workspace.workspaceId);
+    if (!existing) selected.set(workspace.workspaceId, { workspaceId: workspace.workspaceId, ...(workspace.title ? { title: workspace.title } : {}), ...(workspace.path ? { path: workspace.path } : {}) });
+    else if (!existing.path && workspace.path) existing.path = workspace.path;
+  }
+  return [...selected.values()];
+}
+
+/** Default unbounded workspace listing (`paseo workspace ls --json`); unfiltered, untrusted until title-matched. */
+export function defaultListOwnedWorkspaces(run: typeof runShell): (root: string) => Promise<OwnedWorkspaceRecord[]> {
+  return async (root) => {
+    if (isDeterministicPaseoRuntimeEnabled()) return [];
+    const result = await run("paseo workspace ls --json", { cwd: root, timeoutMs: 60_000 }).catch(() => undefined);
+    if (!result || result.exitCode !== 0 || !result.stdout.trim()) return [];
+    let value: unknown;
+    try { value = JSON.parse(result.stdout); }
+    catch { return []; }
+    const collected: OwnedWorkspaceRecord[] = [];
+    collectWorkspaceRecords(value, collected);
+    const deduped = new Map<string, OwnedWorkspaceRecord>();
+    for (const workspace of collected) {
+      if (!workspace.workspaceId || deduped.has(workspace.workspaceId)) continue;
+      deduped.set(workspace.workspaceId, workspace);
+    }
+    return [...deduped.values()];
+  };
+}
+
+function collectWorkspaceRecords(value: unknown, out: OwnedWorkspaceRecord[]): void {
+  if (Array.isArray(value)) { for (const item of value) collectWorkspaceRecords(item, out); return; }
+  if (!value || typeof value !== "object") return;
+  const record = value as Record<string, unknown>;
+  const workspaceId = typeof record.workspaceId === "string" && record.workspaceId
+    ? record.workspaceId
+    : typeof record.workspace_id === "string" && record.workspace_id ? record.workspace_id : undefined;
+  const title = typeof record.name === "string" && record.name
+    ? record.name
+    : typeof record.title === "string" && record.title ? record.title : undefined;
+  if (workspaceId) {
+    const workspacePath = [record.cwd, record.path, record.worktreePath, record.worktree_path, record.checkoutPath]
+      .find((item): item is string => typeof item === "string" && item.length > 0);
+    out.push({ workspaceId, ...(title ? { title } : {}), ...(workspacePath ? { path: workspacePath } : {}) });
+  }
+  for (const child of Object.values(record)) collectWorkspaceRecords(child, out);
 }
 
 /**
@@ -576,7 +656,14 @@ export async function reconcileTerminalOperationResources(root: string, deps: Op
       const resources = await listOperationResources(root, operationId);
       const handles = await listManagedProcessHandles(root, operationId);
       const recordOwned = Boolean(record.workspaceId || record.agents?.length || Object.keys(record.participants ?? {}).length);
-      if (!resources.length && !handles.length && !recordOwned) { sweep.terminalOperationsCurrent += 1; continue; }
+      if (!resources.length && !handles.length && !recordOwned) {
+        // E-NEW-3: a crash between workspace create and durable registration
+        // leaves zero local surface. Consult title-anchored discovery before
+        // declaring the operation current so the orphaned worktree is swept.
+        const listWorkspaces = deps.listOwnedWorkspaces ?? defaultListOwnedWorkspaces(deps.run ?? runShell);
+        const listed = await listWorkspaces(root).catch(() => [] as OwnedWorkspaceRecord[]);
+        if (selectOwnedWorkspaces(listed, record.kind, record.id).length === 0) { sweep.terminalOperationsCurrent += 1; continue; }
+      }
       const result = await reconcileOperationResources(root, operationId, deps);
       if (result.cleanupComplete) sweep.terminalOperationsReconciled += 1;
       else sweep.failures.push({ operationId, error: result.errors.join("; ") || "terminal orphaned resources remain" });
@@ -1145,9 +1232,33 @@ async function collectResourceCandidates(
     }
   }
 
+  // E-NEW-3 crash-window discovery: a worktree created between `paseo
+  // workspace create` and the durable record/registry writes carries no local
+  // ownership proof. The title minted at create is the durable signal; only an
+  // exact title match proves ownership. This runs before the surface gate so a
+  // surfaceless crashed operation stays recoverable.
+  let discoveredWorkspaceCount = 0;
+  if (!isDeterministicPaseoRuntimeEnabled()) {
+    const listWorkspaces = deps.listOwnedWorkspaces ?? defaultListOwnedWorkspaces(deps.run ?? runShell);
+    const listed = await listWorkspaces(root).catch(() => [] as OwnedWorkspaceRecord[]);
+    for (const workspace of selectOwnedWorkspaces(listed, record.kind, record.id)) {
+      discoveredWorkspaceCount += 1;
+      add({
+        kind: "paseo-workspace",
+        identity: workspace.workspaceId,
+        reclaim: "ARCHIVE_ON_TERMINAL",
+        ...(workspace.path ? { path: workspace.path } : {}),
+        label: "operation workspace (title discovery)",
+        owner: { ...ownerBase, source: "workspace-title-discovery" },
+        classification: "TERMINAL_ORPHAN"
+      });
+    }
+  }
+
   const hasDurableOwnershipSurface = registry.resources.length > 0
     || Boolean(record.workspaceDisposition)
-    || (await listManagedProcessHandles(root, record.id)).length > 0;
+    || (await listManagedProcessHandles(root, record.id)).length > 0
+    || discoveredWorkspaceCount > 0;
   if (!hasDurableOwnershipSurface || isDeterministicPaseoRuntimeEnabled()) return [...candidates.values()];
 
   // Participant and supervisor agent sessions are proven by the operation record.
