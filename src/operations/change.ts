@@ -867,7 +867,35 @@ export function buildSpecManagerContentRetryNote(changeName: string): string {
   return `Previous Spec Manager turn failed with SPEC_MANAGER_CONTENT_NOT_CANONICAL for '${changeName}': artifacts.tasks (the complete tasks.md content) MUST contain at least one checkbox task line '- [ ] 1.1 Description' (dash bullets without checkboxes, numbered lists and prose count as 0 tasks and are rejected); every artifacts.specs entry MUST be a canonical OpenSpec delta with a '## ADDED Requirements' (or MODIFIED/REMOVED/RENAMED) section, every '### Requirement:' inside a delta with at least one '#### Scenario:' block, and every requirement containing SHALL or MUST. Retry with status READY, checkbox tasks, delta headers and Scenario blocks.`;
 }
 
-async function runSpecManagerUntilReady(input: {
+/**
+ * DETERMINISTIC bounded retry budget for Spec Manager stall/timeout kills (A1 stall-retry
+ * parity: `runSpecManagerUntilReady` had no stall/timeout retry while discovery/planning
+ * got `isDiscoveryPlanningStallKill` treatment in PR104). Exactly one retry is allowed per
+ * `runSpecManagerUntilReady` invocation with a fresh session and IDENTICAL inputs (no hints,
+ * no prompt changes); a second stall/timeout kill rethrows the original class. Reuses the
+ * existing killReason/timeout taxonomy via `isDiscoveryPlanningStallKill`
+ * (`supervisorTurnTimedOutV1`, STALLED_FIRST_ACTIVITY, exit 124, typed timeout) — no new
+ * error classes. INVALID/schema/contract/provenance always terminal (the shared classifier
+ * returns false for RESULT_INVALID/ARTIFACT_MISSING/ID_MISSING/PROVENANCE/CANDIDATE_MISMATCH).
+ * Mirrors the repair maxAttempts=2 budget language: max 2 attempts total. Structured
+ * diagnostics (exitCode/killReason/status/activityCounts) are preserved via the session
+ * passed to the classifier and by rethrowing the original error on the second kill.
+ */
+export const SPEC_MANAGER_STALL_MAX_ATTEMPTS = 2;
+export const SPEC_MANAGER_STALL_MAX_RETRIES = 1;
+
+export function shouldRetrySpecManagerStall(
+  error: unknown,
+  retriesSoFar: number,
+  session?: Pick<WorkerSession, "exitCode" | "stdout" | "stderr"> & {
+    killReason?: WorkerSession["killReason"];
+    status?: WorkerSession["status"];
+  } | undefined
+): boolean {
+  return isDiscoveryPlanningStallKill(error, session) && retriesSoFar < SPEC_MANAGER_STALL_MAX_RETRIES;
+}
+
+export async function runSpecManagerUntilReady(input: {
   root: string;
   controlRoot: string;
   config: HarnessProjectConfig;
@@ -889,6 +917,7 @@ async function runSpecManagerUntilReady(input: {
   let changeMismatchRetries = 0;
   let incompleteRetries = 0;
   let contentRetries = 0;
+  let stallRetries = 0;
   let mismatchRetryPending = false;
   let incompleteRetryPending = false;
   let contentRetryPending = false;
@@ -905,14 +934,23 @@ async function runSpecManagerUntilReady(input: {
     incompleteRetryPending = false;
     contentRetryPending = false;
     let evidence: DurableAgentEvidence<SpecAuthoringOutput>;
+    // Fresh-session identical-inputs stall retry: no resumeSessionId, so every attempt
+    // (including the stall retry) launches a fresh session with the identical prompt.
+    // The session is hoisted so structured diagnostics (exitCode/killReason/status/
+    // activityCounts) reach the stall classifier; a stall retry sets no retry notes.
+    let specSession: WorkerSession | undefined;
     try {
-      const specSession = await executeAgentPrompt(
+      specSession = await executeAgentPrompt(
         input.root, input.config, input.bootstrapContract, input.selection,
         prompt,
         { outputContract: "spec-authoring", phase: "spec-authoring", operationKind: "change", requireExecutionAuthority: true }
       );
       evidence = await requireDurableChangeHandoff(input.root, "SPEC_MANAGER", specSession, specAuthoringOutputSchema, input.controlRoot, { operationId: input.operationId, contract: "spec-authoring", phase: "spec-authoring" });
     } catch (error) {
+      if (shouldRetrySpecManagerStall(error, stallRetries, specSession)) {
+        stallRetries += 1;
+        continue;
+      }
       if (shouldRetrySpecManagerIncomplete(error, incompleteRetries)) {
         incompleteRetries += 1;
         incompleteRetryPending = true;

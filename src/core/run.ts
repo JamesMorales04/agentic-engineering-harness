@@ -34,7 +34,7 @@ import { resolveOrganizationPolicyBundles, withOrganizationPolicies } from "../p
 import { buildRequirementEvidenceGraph, evidenceValidationCheck, type RequirementEvidenceGraph } from "../evidence/graph.js";
 import { enforceSandboxPolicy } from "../security/sandbox.js";
 import { assertCurrentControllerOwner, bindOperationCandidate, currentOperationContext, loadOperation, resolveOperationStateRoot, setOperationStage, type OperationParticipantStatus, type OperationRecordV2 } from "../operations/state.js";
-import { ensureOperationSupervisor, maybeRotateOperationSupervisor, settleDrainingSupervisorGenerations } from "../operations/supervisor.js";
+import { ensureOperationSupervisor, maybeRotateOperationSupervisor, settleDrainingSupervisorGenerations, supervisorTurnTimedOutV1 } from "../operations/supervisor.js";
 import { createMemoryProvider } from "../providers/memory.js";
 import { buildAcceptedOperationCandidates } from "../memory/candidates.js";
 import { compileExecutionCatalog, type ExecutionCatalogV1 } from "../architecture/executionCatalog.js";
@@ -117,6 +117,106 @@ interface FrozenExecutionBoundaryV1 {
   executionCatalog?: ExecutionCatalogV1;
   capabilityRegistry?: CapabilityRegistryV1;
   recovery?: RecoveryMap;
+}
+
+/**
+ * DETERMINISTIC bounded retry budget for repair-loop stall/timeout kills (A6 stall-retry
+ * parity: the repair loop `run.ts:416-466` and its impact path had no stall-kill retry,
+ * only content retries via `maxRepairs`). Exactly one retry is allowed per repair turn with
+ * a fresh session and IDENTICAL inputs (same prompt, same scope, no hints); a second
+ * stall/timeout kill rethrows/throws the original stall class fail-closed (never consuming
+ * content budget as a silent FAIL). Reuses the existing killReason/timeout taxonomy
+ * (`supervisorTurnTimedOutV1`: exit 124 / timed out|timeout|stalled_first_activity,
+ * STALLED_FIRST_ACTIVITY/DEADLINE killReason, timeout status) — no new error classes.
+ * INVALID/schema/contract/provenance always terminal. Mirrors the repair maxAttempts=2
+ * budget language: max 2 attempts total per repair turn. Structured diagnostics
+ * (exitCode/killReason/status/activityCounts) are preserved via the session passed to the
+ * classifier and in the fail-closed throw. REPAIR LOOP ONLY — do not touch assembly sites.
+ */
+export const REPAIR_STALL_MAX_ATTEMPTS = 2;
+export const REPAIR_STALL_MAX_RETRIES = 1;
+
+type RepairStallSessionShape = Pick<WorkerSession, "exitCode" | "stdout" | "stderr"> & {
+  killReason?: WorkerSession["killReason"];
+  status?: WorkerSession["status"];
+};
+
+export function isRepairStallKill(
+  error: unknown,
+  session?: RepairStallSessionShape | undefined
+): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  if (/RESULT_INVALID|RESULT_ARTIFACT_MISSING|RESULT_ID_MISSING|AEH_RESULT_PROVENANCE|CANDIDATE_WORKSPACE_MISMATCH|AEH_OPERATION_SUPERVISOR_CONTRACT|AEH_OPERATION_SUPERVISOR_PROVENANCE|PARTICIPANT_PLAN_INVALID|REPAIR_SCOPE_BLOCKER_CONFLICT|REPAIR_SCOPE_BLOCKER_NOT_BLOCKED|REPAIR_SCOPE_AMENDMENT|CANDIDATE_STALE/.test(message)) return false;
+  if (session) {
+    if ((session as { killReason?: string }).killReason === "STALLED_FIRST_ACTIVITY" || (session as { killReason?: string }).killReason === "DEADLINE") return true;
+    if (session.status === "timeout") return true;
+    if (session.exitCode === 124) return true;
+    try {
+      if (supervisorTurnTimedOutV1(session)) return true;
+    } catch {
+      // Classifier is total over the picked shape; a malformed shape is not a stall.
+    }
+  }
+  if (error === undefined || error === null) return false;
+  if (/exit[^0-9]*124|exitCode[^0-9]*124|exit=124/.test(message)) return true;
+  if (/STALLED_FIRST_ACTIVITY|stalled_first_activity/.test(message)) return true;
+  if (/timed out|timeout/i.test(message)) return true;
+  return false;
+}
+
+export function shouldRetryRepairStall(
+  error: unknown,
+  retriesSoFar: number,
+  session?: RepairStallSessionShape | undefined
+): boolean {
+  return isRepairStallKill(error, session) && retriesSoFar < REPAIR_STALL_MAX_RETRIES;
+}
+
+function repairStallDiagnostics(session: RepairStallSessionShape): string {
+  const killReason = (session as { killReason?: unknown }).killReason ?? null;
+  const status = (session as { status?: unknown }).status ?? null;
+  const activityCounts = (session as { activityCounts?: unknown }).activityCounts ?? null;
+  return `exitCode=${session.exitCode} killReason=${String(killReason)} status=${String(status)} activityCounts=${JSON.stringify(activityCounts)} stderrTail=${String(session.stderr ?? "").slice(-500)}`;
+}
+
+/**
+ * DETERMINISTIC testable stall-retry wrapper for a single repair turn (REPAIR LOOP ONLY).
+ * Retries once with IDENTICAL inputs (the same frozen prompt, no hints) on STALL/timeout
+ * kill classes only — whether the stall surfaces as a thrown error or as a stall-killed
+ * returned session (exit 124 / timeout / STALLED_FIRST_ACTIVITY, the repair-mutation
+ * return-rather-than-throw path). INVALID/schema/contract/provenance always terminal (no
+ * retry). Second stall failure throws fail-closed preserving structured diagnostics
+ * (exitCode/killReason/status/activityCounts) and reusing the existing stall taxonomy (no
+ * new classes). No Paseo: stub `execute`. The impact path is covered because a fresh repair
+ * turn produces a fresh candidate impact; no assembly sites are touched.
+ */
+export async function withBoundedRepairStallRetryV1<T extends { session: WorkerSession }>(input: {
+  prompt: string;
+  execute: (prompt: string) => Promise<T>;
+}): Promise<T> {
+  const frozenPrompt = input.prompt;
+  let retries = 0;
+  for (;;) {
+    let result: T;
+    try {
+      result = await input.execute(frozenPrompt);
+    } catch (error) {
+      if (shouldRetryRepairStall(error, retries, undefined)) {
+        retries += 1;
+        continue;
+      }
+      throw error;
+    }
+    const session = result.session as RepairStallSessionShape;
+    if (isRepairStallKill(undefined, session) || isRepairStallKill(new Error(`${session.stderr ?? ""} ${session.stdout ?? ""}`), session)) {
+      if (retries < REPAIR_STALL_MAX_RETRIES) {
+        retries += 1;
+        continue;
+      }
+      throw new Error(`STALLED_FIRST_ACTIVITY: repair turn stall-killed after ${REPAIR_STALL_MAX_ATTEMPTS} bounded attempts (fresh-session identical-inputs retry exhausted); ${repairStallDiagnostics(session)}`);
+    }
+    return result;
+  }
 }
 
 export async function runTask(root: string, config: HarnessProjectConfig, contract: TaskContract, options?: { profile?: string; planning?: PlannerOutput; semanticRuntime?: SemanticAssessmentRuntimeV1 }): Promise<TaskRunResult> {
@@ -448,24 +548,32 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     const repairerIssues = validateExecutionCapabilities(repairerSelection, repairerTransport);
     if (repairerIssues.length) throw new Error(`Repairer ${repairerSelection.logicalAgent} is not executable: ${repairerIssues.join("; ")}`);
     const repairPrompt = `${buildRepairPrompt(packet)}\n\nYou are the canonical Repairer for this operation. Repair only the implementation within the frozen task scope. Do not change requirements, acceptance assertions, validators, policy, or this repair packet. You cannot approve or accept the candidate. Out-of-scope blocker path (report, don't expand): if the fix needs files outside scope, return no changes and declare them via AEH_RESULT_JSON filesNeededOutsideScope[{path, reason}].`;
-    const repair = await executeRepairerCandidateMutation({
-      root: workspaceRoot,
-      stateRoot: controlRoot,
-      operationId: activeOperationId,
-      taskId: effectiveContract.task.id,
-      workUnitId: `repair:${effectiveContract.task.id}:${attempts}`,
-      phase: "validation-repair",
-      config: effectiveConfig,
-      contract: effectiveContract,
-      selection: repairerSelection,
-      executionCatalog: executionBoundary.executionCatalog,
-      allowedScope: effectiveContract.scope?.allowed ?? ["**"],
-      forbiddenScope: [...(effectiveContract.scope?.forbidden ?? []), ...(effectiveContract.scope?.frozen ?? []), ...(effectiveConfig.validation?.frozenPaths ?? [])],
+    // Bounded fresh-session identical-inputs stall retry for the repair turn (A6 parity).
+    // Same frozen prompt/scope/workUnitId each attempt; fresh isolated mutation each time.
+    // STALL/timeout kills only; INVALID/schema/contract/provenance terminal; second stall
+    // throws fail-closed preserving diagnostics (never consumes content budget silently).
+    // The impact path is covered because a fresh repair turn produces a fresh impact.
+    const repair = await withBoundedRepairStallRetryV1({
       prompt: repairPrompt,
-      prepareWorkspace: controller ? async (isolatedRoot) => { await materializeControlPlaneSnapshot(controller!, isolatedRoot, effectiveConfig); } : undefined,
-      execute: (isolatedRoot, participantId) => executeAgentPrompt(isolatedRoot, effectiveConfig, effectiveContract, repairerSelection, repairPrompt, { outputContract: repairerSelection.outputContract ?? "implementer", phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true }),
-      semanticAssessment: impactAssessmentRuntime,
-      onScopeEscape
+      execute: () => executeRepairerCandidateMutation({
+        root: workspaceRoot,
+        stateRoot: controlRoot,
+        operationId: activeOperationId,
+        taskId: effectiveContract.task.id,
+        workUnitId: `repair:${effectiveContract.task.id}:${attempts}`,
+        phase: "validation-repair",
+        config: effectiveConfig,
+        contract: effectiveContract,
+        selection: repairerSelection,
+        executionCatalog: executionBoundary.executionCatalog,
+        allowedScope: effectiveContract.scope?.allowed ?? ["**"],
+        forbiddenScope: [...(effectiveContract.scope?.forbidden ?? []), ...(effectiveContract.scope?.frozen ?? []), ...(effectiveConfig.validation?.frozenPaths ?? [])],
+        prompt: repairPrompt,
+        prepareWorkspace: controller ? async (isolatedRoot) => { await materializeControlPlaneSnapshot(controller!, isolatedRoot, effectiveConfig); } : undefined,
+        execute: (isolatedRoot, participantId) => executeAgentPrompt(isolatedRoot, effectiveConfig, effectiveContract, repairerSelection, repairPrompt, { outputContract: repairerSelection.outputContract ?? "implementer", phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true }),
+        semanticAssessment: impactAssessmentRuntime,
+        onScopeEscape
+      }),
     });
     // Repair-scope blocker → bounded ledger-gated replan (the single production
     // amendment path). On a scopeBlocker outcome the controller suspends for a
@@ -525,25 +633,28 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
         exemptedPaths: amendment.exemptedPaths, decisionId: amendment.decisionId,
         requestId: amendment.requestId, decidedActor: amendment.decidedActor,
       }).catch(() => undefined);
-      const amendedRetry = await executeRepairerCandidateMutation({
-        root: workspaceRoot,
-        stateRoot: controlRoot,
-        operationId: activeOperationId,
-        taskId: effectiveContract.task.id,
-        workUnitId: `repair:${effectiveContract.task.id}:${attempts}:scope-amended-retry`,
-        phase: "validation-repair",
-        config: effectiveConfig,
-        contract: effectiveContract,
-        selection: repairerSelection,
-        executionCatalog: executionBoundary.executionCatalog,
-        allowedScope: effectiveContract.scope?.allowed ?? ["**"],
-        forbiddenScope: [...(effectiveContract.scope?.forbidden ?? []), ...(effectiveContract.scope?.frozen ?? []), ...(effectiveConfig.validation?.frozenPaths ?? [])],
-        scopeAmendment: amendment,
+      const amendedRetry = await withBoundedRepairStallRetryV1({
         prompt: repairPrompt,
-        prepareWorkspace: controller ? async (isolatedRoot) => { await materializeControlPlaneSnapshot(controller!, isolatedRoot, effectiveConfig); } : undefined,
-        execute: (isolatedRoot, participantId) => executeAgentPrompt(isolatedRoot, effectiveConfig, effectiveContract, repairerSelection, repairPrompt, { outputContract: repairerSelection.outputContract ?? "implementer", phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true }),
-        semanticAssessment: impactAssessmentRuntime,
-        onScopeEscape
+        execute: () => executeRepairerCandidateMutation({
+          root: workspaceRoot,
+          stateRoot: controlRoot,
+          operationId: activeOperationId,
+          taskId: effectiveContract.task.id,
+          workUnitId: `repair:${effectiveContract.task.id}:${attempts}:scope-amended-retry`,
+          phase: "validation-repair",
+          config: effectiveConfig,
+          contract: effectiveContract,
+          selection: repairerSelection,
+          executionCatalog: executionBoundary.executionCatalog,
+          allowedScope: effectiveContract.scope?.allowed ?? ["**"],
+          forbiddenScope: [...(effectiveContract.scope?.forbidden ?? []), ...(effectiveContract.scope?.frozen ?? []), ...(effectiveConfig.validation?.frozenPaths ?? [])],
+          scopeAmendment: amendment,
+          prompt: repairPrompt,
+          prepareWorkspace: controller ? async (isolatedRoot) => { await materializeControlPlaneSnapshot(controller!, isolatedRoot, effectiveConfig); } : undefined,
+          execute: (isolatedRoot, participantId) => executeAgentPrompt(isolatedRoot, effectiveConfig, effectiveContract, repairerSelection, repairPrompt, { outputContract: repairerSelection.outputContract ?? "implementer", phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true }),
+          semanticAssessment: impactAssessmentRuntime,
+          onScopeEscape
+        }),
       });
       worker = amendedRetry.session;
       executionSessions.push(worker);
