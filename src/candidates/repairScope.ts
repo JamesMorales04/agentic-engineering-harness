@@ -102,6 +102,7 @@ export function repairHardProtectedPaths(
 function expandRepairScopePatterns(paths: Set<string> | Iterable<string>): string[] {
   const normalized = new Set<string>();
   for (const raw of paths) {
+    if (typeof raw !== "string" || hasUnsafeRawRepairScopeInput(raw)) continue;
     const value = normalizeRepairScopePath(raw);
     if (!value || path.isAbsolute(value) || value.split("/").includes("..")) continue;
     normalized.add(value);
@@ -271,11 +272,33 @@ const blockerReceiptBodySchema = z.object({
   digest: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
 
+/**
+ * DETERMINISTIC raw-input traversal gate (Luna traversal-hiding fix).
+ * Returns true when the RAW scope string hides traversal that
+ * posix-normalize would resolve away (e.g. `src/../.harness/seals/U2.json`
+ * -> `.harness/seals/U2.json`). Rejects any `..` segment, drive prefix, or
+ * absolute form in the raw input BEFORE normalization. Called by
+ * `isSafeRepairScopePath` and by pattern-expansion deny sources so hidden
+ * traversal never becomes a 'safe' relative path.
+ */
+function hasUnsafeRawRepairScopeInput(value: string): boolean {
+  const slashedRaw = value.replaceAll("\\", "/");
+  if (path.isAbsolute(value) || path.posix.isAbsolute(slashedRaw) || path.win32.isAbsolute(value)) return true;
+  if (slashedRaw.startsWith("/")) return true;
+  if (/^[A-Za-z]:/.test(value) || /^[A-Za-z]:/.test(slashedRaw)) return true;
+  if (slashedRaw.split("/").includes("..")) return true;
+  return false;
+}
+
 export function isSafeRepairScopePath(value: string): boolean {
   if (!value || !value.trim() || value !== value.trim()) return false;
   if (value.includes("\0")) return false;
   if (path.isAbsolute(value)) return false;
   if (/^[A-Za-z]:/.test(value)) return false;
+  // Raw-input traversal rejection BEFORE normalization: even a resolvable
+  // `..` (e.g. `src/../.harness/seals/U2.json`) or drive/absolute form
+  // rejects here so normalization cannot hide it as a safe relative path.
+  if (hasUnsafeRawRepairScopeInput(value)) return false;
   const normalized = normalizeRepairScopePath(value);
   if (!normalized || normalized.startsWith("/") || normalized === ".." || normalized.startsWith("../")) return false;
   if (/^[A-Za-z]:/.test(normalized)) return false;
@@ -350,7 +373,11 @@ export function parseRepairScopeBlockerFromSession(session: Pick<WorkerSession, 
   const normalized: RepairScopeNeededFileV1[] = [];
   for (const entry of needed) {
     if (typeof entry?.path !== "string" || typeof entry?.reason !== "string") return undefined;
-    const filePath = normalizeRepairScopePath(entry.path.trim());
+    const rawPath = entry.path.trim();
+    // Raw traversal gate BEFORE normalization so `src/../...` cannot hide
+    // as a safe relative path; normalize only the raw-safe remainder.
+    if (!isSafeRepairScopePath(rawPath)) return undefined;
+    const filePath = normalizeRepairScopePath(rawPath);
     const reason = entry.reason.trim();
     if (!filePath || !reason || !isSafeRepairScopePath(filePath)) return undefined;
     if (reason.length > 1_000) return undefined;
@@ -379,6 +406,7 @@ export function createRepairScopeBlockerReceipt(input: {
   filesNeededOutsideScope: RepairScopeNeededFileV1[];
 }): RepairScopeBlockerReceiptV1 {
   const files = [...input.filesNeededOutsideScope]
+    .filter((entry) => typeof entry?.path === "string" && isSafeRepairScopePath(entry.path.trim()))
     .map((entry) => ({ path: normalizeRepairScopePath(entry.path.trim()), reason: entry.reason.trim() }))
     .filter((entry) => entry.path && entry.reason && isSafeRepairScopePath(entry.path))
     .sort((a, b) => a.path.localeCompare(b.path));
@@ -487,7 +515,10 @@ export function assertRepairScopeAmendment(value: unknown): asserts value is Rep
   if (typeof record["taskId"] !== "string" || !record["taskId"].trim()) throw new AehError("PARTICIPANT_PLAN_INVALID", "Amendment taskId is required.");
   if (!Array.isArray(record["exemptedPaths"]) || record["exemptedPaths"].length === 0) throw new AehError("PARTICIPANT_PLAN_INVALID", "Amendment exemptedPaths must be non-empty.");
   for (const entry of record["exemptedPaths"] as unknown[]) {
-    if (typeof entry !== "string" || !isSafeRepairScopePath(normalizeRepairScopePath(entry))) {
+    if (typeof entry !== "string" || !isSafeRepairScopePath(entry)) {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", `Amendment exempted path '${String(entry)}' is not a safe repository-relative path.`);
+    }
+    if (!isSafeRepairScopePath(normalizeRepairScopePath(entry))) {
       throw new AehError("PARTICIPANT_PLAN_INVALID", `Amendment exempted path '${String(entry)}' is not a safe repository-relative path.`);
     }
   }

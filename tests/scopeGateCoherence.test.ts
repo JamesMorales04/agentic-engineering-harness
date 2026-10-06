@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   filterForbiddenScopeForAmendment,
   findRepairHardProtectedViolations,
+  isSafeRepairScopePath,
   normalizeRepairScopePath,
   parseRepairScopeBlockerFromSession,
   repairHardProtectedPaths,
@@ -121,6 +122,48 @@ describe("Unit 2 scope-gate coherence", () => {
       expect(
         filterForbiddenScopeForAmendment(["./src/a.ts", "src//a.ts/**", "src/b.ts"], amendment),
       ).toEqual(["src/b.ts"]);
+    });
+
+    it("rejects raw traversal before normalization (../, drive, absolute, nested)", () => {
+      // Luna traversal-hiding: `src/../.harness/seals/U2.json` normalizes to
+      // `.harness/seals/U2.json` but must reject on the RAW `..` segment
+      // before normalization, as must drive-prefixed, absolute, and nested
+      // variants — even when the normalized remainder looks benign.
+      const traversal = [
+        "..",
+        "../",
+        "../src/a.ts",
+        "src/../.harness/seals/U2.json",
+        "src/a/../../.harness/seals/U2.json",
+        "src/a/../b.ts",
+        "src/b/../a.ts",
+        "a/../../b",
+        "C:/src/a.ts",
+        "C:\\src\\a.ts",
+        "c:src/a.ts",
+        "D:/a.ts",
+        "/absolute/a.ts",
+        "\\absolute\\a.ts",
+        "//server/share/a.ts",
+      ];
+      for (const input of traversal) {
+        expect(isSafeRepairScopePath(input)).toBe(false);
+      }
+      // Benign drifted equivalents without `..`/drive/absolute remain safe.
+      for (const input of ["src/a.ts", "./src/a.ts", "src//a.ts", "src/./a.ts", "src\\a.ts"]) {
+        expect(isSafeRepairScopePath(input)).toBe(true);
+      }
+      // Traversal-hiding blocker declarations never parse as a blocker.
+      const session = {
+        stdout: `AEH_RESULT_JSON=${JSON.stringify({
+          filesChanged: [],
+          behaviorRepaired: [],
+          validationCommands: [],
+          filesNeededOutsideScope: [{ path: "src/../.harness/seals/U2.json", reason: "needs seal" }],
+        })}`,
+        stderr: "",
+      };
+      expect(parseRepairScopeBlockerFromSession(session)).toBeUndefined();
     });
   });
 
