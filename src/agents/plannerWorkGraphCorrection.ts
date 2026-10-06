@@ -1,5 +1,5 @@
 import type { TaskContract } from "../core/types.js";
-import { createWorkGraph, type WorkGraphV1 } from "../architecture/workGraph.js";
+import { assertNoBareDirectoryScopes, createWorkGraph, type WorkGraphV1 } from "../architecture/workGraph.js";
 import { plannerOutputSchema, type PlannerOutput } from "./outputContracts.js";
 
 const MAX_CORRECTION_PAYLOAD_BYTES = 24_000;
@@ -28,9 +28,20 @@ export async function compilePlannerWorkGraphWithOneCorrection(input: {
   contract: TaskContract;
   plan: PlannerOutput;
   requestCorrection?: (prompt: string) => Promise<unknown>;
+  /**
+   * Repository root for plan-time scope-shape validation. When provided,
+   * bare directory scopes (exist-on-disk directory without trailing `/**`)
+   * are rejected fail-closed before execution. When omitted, only pure
+   * WorkGraph validation runs (no filesystem access).
+   */
+  root?: string;
 }): Promise<{ plan: PlannerOutput; graph: WorkGraphV1; correctionAttempts: 0 | 1 }> {
   try {
-    return { plan: input.plan, graph: compilePlannerWorkGraph(input.contract, input.plan), correctionAttempts: 0 };
+    const graph = compilePlannerWorkGraph(input.contract, input.plan);
+    if (input.root !== undefined) {
+      await assertNoBareDirectoryScopes(input.root, graph.units);
+    }
+    return { plan: input.plan, graph, correctionAttempts: 0 };
   } catch (firstError) {
     const firstIssues = plannerWorkGraphValidationIssues(firstError, input.plan);
     if (!input.requestCorrection) {
@@ -47,7 +58,11 @@ export async function compilePlannerWorkGraphWithOneCorrection(input: {
     }
 
     try {
-      return { plan: corrected, graph: compilePlannerWorkGraph(input.contract, corrected), correctionAttempts: 1 };
+      const correctedGraph = compilePlannerWorkGraph(input.contract, corrected);
+      if (input.root !== undefined) {
+        await assertNoBareDirectoryScopes(input.root, correctedGraph.units);
+      }
+      return { plan: corrected, graph: correctedGraph, correctionAttempts: 1 };
     } catch (secondError) {
       const issues = plannerWorkGraphValidationIssues(secondError, corrected);
       throw new PlannerWorkGraphCorrectionError(`Planner WorkGraph remained invalid after one corrective retry: ${issues.join("; ")}`, issues, 1);

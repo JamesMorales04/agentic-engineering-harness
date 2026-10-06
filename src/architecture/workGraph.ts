@@ -1,3 +1,5 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import { z } from "zod";
 import type { AssuranceLevel, ImplementationRoute } from "./contracts.js";
 import { assuranceLevelSchema, implementationRouteSchema } from "./contracts.js";
@@ -198,4 +200,62 @@ export function createWorkGraph(input: Omit<WorkGraphV1, "version">): WorkGraphV
   const graph = validateWorkGraph({ version: 1, ...input });
   assertAcyclicWorkGraph(graph);
   return graph;
+}
+
+/**
+ * Plan-time scope-shape validation (fail-closed, no broadening).
+ *
+ * MECHANISM: DETERMINISTIC. A WorkUnit scope entry that is an exist-on-disk
+ * directory without a trailing `/**` and without being an exact file never
+ * matches children at assembly (the candidate assembler matches with exact
+ * minimatch, so `docs/evidence/s9` never matches
+ * `docs/evidence/s9/evidence.md`). Accepting it silently at plan time only
+ * explodes later as PARTICIPANT_PLAN_INVALID. Reject it here, before
+ * execution, with a typed error naming the unit + scope entry + required
+ * form. Bare directories never gain `/**` semantics silently.
+ *
+ * Valid: `**`, any explicit glob (`*?[]{}!()` etc, including `dir/*` and
+ * `dir/**`), and exact file paths (exist-on-disk file, or non-existent
+ * future file path). Rejected: exist-on-disk directory without trailing
+ * `/**` (including trailing-slash form `dir/`).
+ */
+export function normalizeScopeEntry(scope: string): string {
+  return scope.trim().replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/+$/, "");
+}
+
+export function isExplicitGlobScope(scope: string): boolean {
+  const trimmed = scope.trim();
+  if (trimmed === "**" || trimmed.endsWith("/**")) return true;
+  return /[*?[\]{}!()+@]/.test(trimmed);
+}
+
+export async function assertNoBareDirectoryScopes(
+  root: string,
+  units: readonly { id: string; scope: readonly string[] }[]
+): Promise<void> {
+  const resolvedRoot = path.resolve(root);
+  for (const unit of units) {
+    for (const rawScope of unit.scope) {
+      const scope = rawScope.trim();
+      if (!scope) continue;
+      if (scope === "**" || scope.endsWith("/**")) continue;
+      if (isExplicitGlobScope(scope)) continue;
+      const normalized = normalizeScopeEntry(scope);
+      if (!normalized || normalized === "**") continue;
+      const candidate = path.isAbsolute(normalized)
+        ? path.normalize(normalized)
+        : path.join(resolvedRoot, normalized);
+      let stat: import("node:fs").Stats;
+      try {
+        stat = await fs.stat(candidate);
+      } catch {
+        continue;
+      }
+      if (stat.isDirectory()) {
+        throw new Error(
+          `WORK_GRAPH_INVALID: '${unit.id}' declares bare directory scope '${rawScope}'. Use an exact file path or '${normalized}/**'.`
+        );
+      }
+    }
+  }
 }
