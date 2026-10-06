@@ -8,7 +8,6 @@ import { createCandidateRevisionV1, type CandidateRevisionV1 } from "../../src/o
 import {
   PROVIDER_LANE_EVIDENCE_REQUIRED,
   PROVIDER_LANE_EVIDENCE_STALE,
-  PROVIDER_LANE_EVIDENCE_STATUS,
   PROVIDER_LANE_EVIDENCE_TAMPERED,
   PROVIDER_LANE_REFERENCE_REQUIRED,
   loadProviderLaneEvidenceV1,
@@ -181,7 +180,11 @@ describe("candidate-bound provider lane evidence", () => {
     expect((await verifyProviderLaneEvidenceV1(root, config, evidence, candidate)).blockers.some((blocker) => blocker.includes(PROVIDER_LANE_EVIDENCE_TAMPERED))).toBe(true);
   });
 
-  it("rejects non-PASS evidence status for PASS claims (D-NEW-1)", async () => {
+  it("verify stays integrity-only: non-PASS evidence status still verifies when binding is valid", async () => {
+    // Partial-green support: a FAIL bundle's lane evidence honestly records
+    // its FAIL outcome; verify must not turn that record into an integrity
+    // blocker. Per-requirement verdicts are decided by test attribution in
+    // run.ts, with the bundle failure kept as underlying failure evidence.
     for (const status of ["FAIL", "WARN"] as const) {
       const { root, candidate } = await fixture();
       const evidence = await persistProviderLaneEvidenceV1({
@@ -191,15 +194,15 @@ describe("candidate-bound provider lane evidence", () => {
         startedAt: new Date().toISOString(), finishedAt: new Date().toISOString()
       });
       const verification = await verifyProviderLaneEvidenceV1(root, config, evidence, candidate);
-      expect(verification.ok).toBe(false);
-      expect(verification.blockers.some((blocker) => blocker.includes(PROVIDER_LANE_EVIDENCE_STATUS))).toBe(true);
-      await expect(requireProviderLaneEvidenceV1(root, config, "BROWSER", candidate, "status-check")).rejects.toThrow(
-        PROVIDER_LANE_EVIDENCE_STATUS,
-      );
+      expect(verification.blockers).toEqual([]);
+      expect(verification.ok).toBe(true);
+      await expect(requireProviderLaneEvidenceV1(root, config, "BROWSER", candidate, "status-check")).resolves.toMatchObject({
+        status,
+      });
       await expect(requireProviderLaneEvidenceForActionV1({
         root, config, lane: "BROWSER", candidate, checkId: "status-check",
         kind: "browser-test", actionSource: "approved-provider", actionSelector: "shared-browser"
-      })).rejects.toThrow(PROVIDER_LANE_EVIDENCE_STATUS);
+      })).resolves.toMatchObject({ status });
     }
   });
 

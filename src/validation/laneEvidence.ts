@@ -10,7 +10,6 @@ export const PROVIDER_LANE_EVIDENCE_VERSION = 1 as const;
 export const PROVIDER_LANE_EVIDENCE_REQUIRED = "PROVIDER_LANE_EVIDENCE_REQUIRED" as const;
 export const PROVIDER_LANE_EVIDENCE_STALE = "PROVIDER_LANE_EVIDENCE_STALE" as const;
 export const PROVIDER_LANE_EVIDENCE_TAMPERED = "PROVIDER_LANE_EVIDENCE_TAMPERED" as const;
-export const PROVIDER_LANE_EVIDENCE_STATUS = "PROVIDER_LANE_EVIDENCE_STATUS" as const;
 export const PROVIDER_LANE_CANDIDATE_BINDING_REQUIRED = "PROVIDER_LANE_CANDIDATE_BINDING_REQUIRED" as const;
 export const PROVIDER_LANE_REFERENCE_REQUIRED = "PROVIDER_LANE_REFERENCE_REQUIRED" as const;
 export const VISUAL_REFERENCE_BASELINE_REQUIRED = "VISUAL_REFERENCE_BASELINE_REQUIRED" as const;
@@ -253,13 +252,6 @@ export async function verifyProviderLaneEvidenceV1(root: string, config: Harness
   if (sha256Canonical(payload) !== digest) blockers.push(`${PROVIDER_LANE_EVIDENCE_TAMPERED}: evidence digest does not match its content.`);
   if (evidence.candidate.candidateId !== expected.candidateId || evidence.candidate.revision !== expected.revision || evidence.candidate.identityDigest !== expected.identityDigest) {
     blockers.push(`${PROVIDER_LANE_EVIDENCE_STALE}: ${evidence.lane} evidence is bound to ${evidence.candidate.candidateId} r${evidence.candidate.revision} (${evidence.candidate.identityDigest.slice(0, 12)}) but the current candidate is ${expected.candidateId} r${expected.revision} (${expected.identityDigest.slice(0, 12)}).`);
-  }
-  // Fail-closed (Mechanism=DETERMINISTIC): lane evidence records the outcome
-  // of the provider check that produced it. Non-PASS evidence must never
-  // satisfy a PASS claim — a FAIL bundle's evidence cannot corroborate a
-  // forged or mistaken PASS attribution. Workspace binding above is untouched.
-  if (evidence.status !== "PASS") {
-    blockers.push(`${PROVIDER_LANE_EVIDENCE_STATUS}: ${evidence.lane} evidence for '${evidence.checkId}' records status '${evidence.status}'; only PASS evidence can satisfy a PASS claim.`);
   }
   const artifactPath = path.resolve(root, evidence.artifact);
   if (artifactPath !== path.join(providerLaneEvidenceDirectory(root, config, evidence.lane, expected), `${sanitizeSegment(evidence.checkId)}.json`)) blockers.push(`${PROVIDER_LANE_EVIDENCE_TAMPERED}: evidence artifact path '${evidence.artifact}' is not the candidate-scoped path for '${evidence.checkId}'.`);

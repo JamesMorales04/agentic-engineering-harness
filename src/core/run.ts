@@ -58,6 +58,7 @@ import { requireSastEvidenceV1 } from "../security/sastEvidence.js";
 import { contractValidationRequirementsV1, mergeContractValidationRequirementsV1, resolveValidationRequirements, validationRequirementKindValues, type ResolvedValidationActionV1, type ValidationRequirementKindV1, type ValidationResolutionV1 } from "../architecture/validationRequirements.js";
 import { requireProviderLaneEvidenceForActionV1, type ProviderEvidenceLaneV1 } from "../validation/laneEvidence.js";
 import {
+  attributedReporterFailuresV1,
   effectiveTestSelectorsV1,
   evaluateTestAttributionV1,
   extractReporterTestsFromExecutionV1,
@@ -1248,13 +1249,18 @@ export async function runCandidateImpactValidations(input: {
         });
         continue;
       }
-      // Mapped requirement: a PASS verdict requires BOTH its attributed tests
-      // to pass AND the underlying bundle to pass (Mechanism=DETERMINISTIC).
+      // Mapped requirement: a PASS verdict requires (i) exactly one authentic
+      // reporter document, (ii) ALL attributed tests passed, and (iii) every
+      // failure recorded in THAT reporter to be outside the attributed set
+      // (Mechanism=DETERMINISTIC). An unattributed failure (e.g. gamma) may
+      // fail the shared bundle while a mapped requirement (e.g. alpha/beta)
+      // still PASSes — partial-green is a supported flow. The bundle failure
+      // stays on the honest record as underlying failure evidence in details.
       // Fail-closed: missing reporter, ambiguous reporters, parse errors,
-      // unknown titles, and a non-passing bundle all FAIL. Attribution
-      // narrows a passing bundle; it never widens a failing one, because
-      // code under test shares the bundle's stdout and can inject a forged
-      // all-green reporter document.
+      // unknown titles, and attributed test failures all FAIL. Forgery
+      // closure comes from (i): code under test shares the bundle's stdout
+      // and can inject a forged all-green reporter document, so two reporter
+      // documents mean no attribution at all (never largest-wins).
       const reporterTests = await extractReporterTestsFromExecutionV1(input.root, execution);
       if (!reporterTests) {
         const blocker = "TEST_ATTRIBUTION_REPORTER_MISSING";
@@ -1286,20 +1292,30 @@ export async function runCandidateImpactValidations(input: {
         });
         continue;
       }
-      if (execution.status !== "PASS") {
-        const blocker = "TEST_ATTRIBUTION_BUNDLE_FAILED";
+      // Refined partial-green rule (iii): every failure recorded in the single
+      // authentic reporter must be outside the attributed set. Computed from
+      // the reporter's own per-test failure list — never from bundle stderr
+      // text. Unreachable when evaluation above is correct (same matcher),
+      // kept as an explicit deterministic gate so a future evaluation
+      // regression cannot silently widen a failing bundle into a PASS.
+      const failuresInsideAttribution = attributedReporterFailuresV1({ selectors, tests: reporterTests });
+      if (failuresInsideAttribution.length) {
+        const blocker = "TEST_ATTRIBUTION_TEST_FAILED";
         const failureEvidence = underlyingFailureEvidence(execution);
         output.push({
           id: `candidate.assurance.validation.${requirement.id}`,
           category: "candidate-impact-validation",
           status: "FAIL",
-          message: `Required ${requirement.kind} validation for requirement '${requirement.id}' passed its attributed tests but the underlying bundle '${execution.id}' returned ${execution.status}: fail-closed, a mapped PASS requires a passing bundle.`,
+          message: `Required ${requirement.kind} validation for requirement '${requirement.id}' has ${failuresInsideAttribution.length} failing attributed test(s) in the reporter: ${failuresInsideAttribution.slice(0, 5).map((t) => `'${t.fullTitle}' (${t.status})`).join("; ")}.`,
           durationMs: execution.durationMs,
-          details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, blocker, testAttribution: { verdict: evaluation.verdict, selectors: evaluation.selectors, matched: evaluation.matched, total: evaluation.total, failedTitles: evaluation.failedTitles, reason: evaluation.reason }, ...failureEvidence }
+          details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, blocker, testAttribution: { verdict: "FAIL", selectors: evaluation.selectors, matched: evaluation.matched, total: evaluation.total, failedTitles: failuresInsideAttribution.map((t) => t.fullTitle), reason: blocker }, ...failureEvidence }
         });
         continue;
       }
-      // Attributed tests passed: still require lane/SAST evidence when the kind demands it.
+      // Attributed tests passed and every reporter failure is unattributed:
+      // still require lane/SAST evidence when the kind demands it. The bundle
+      // failure (if any) is recorded explicitly as underlying failure
+      // evidence on the PASS — the honest record is kept, not hidden.
       try {
         let sastEvidence: { artifact: string; digest: string } | undefined;
         if (requiresCandidateBoundSastEvidence(requirement.kind, action, input.config)) {
@@ -1327,7 +1343,7 @@ export async function runCandidateImpactValidations(input: {
           status: "PASS",
           message: `Required ${requirement.kind} evidence passed for '${requirement.id}': ${evaluation.matched}/${evaluation.total} attributed tests passed (bundle '${execution.id}' ${execution.status}).`,
           durationMs: execution.durationMs,
-          details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, testAttribution: { verdict: evaluation.verdict, selectors: evaluation.selectors, matched: evaluation.matched, total: evaluation.total, failedTitles: evaluation.failedTitles, reason: evaluation.reason }, ...(sastEvidence ? { sastEvidence, artifact: sastEvidence.artifact } : {}), ...(laneEvidence ? { laneEvidence, artifact: laneEvidence.artifact } : {}) }
+          details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, testAttribution: { verdict: evaluation.verdict, selectors: evaluation.selectors, matched: evaluation.matched, total: evaluation.total, failedTitles: evaluation.failedTitles, reason: evaluation.reason }, ...(execution.status === "PASS" ? {} : underlyingFailureEvidence(execution)), ...(sastEvidence ? { sastEvidence, artifact: sastEvidence.artifact } : {}), ...(laneEvidence ? { laneEvidence, artifact: laneEvidence.artifact } : {}) }
         });
       } catch (error) {
         const message = String(error);
@@ -1395,7 +1411,7 @@ function boundedFailureText(value: unknown, max = 4000): string | undefined {
   return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max)}\n...[truncated]`;
 }
 
-const providerLaneBlockerPattern = /(PROVIDER_LANE_EVIDENCE_(?:REQUIRED|STALE|TAMPERED|STATUS|PERSIST_FAILED)|PROVIDER_LANE_REFERENCE_REQUIRED|PROVIDER_LANE_CANDIDATE_BINDING_REQUIRED|(?:CONTRACT|INTEGRATION|BROWSER|VISUAL)_PROVIDER_UNAVAILABLE)/;
+const providerLaneBlockerPattern = /(PROVIDER_LANE_EVIDENCE_(?:REQUIRED|STALE|TAMPERED|PERSIST_FAILED)|PROVIDER_LANE_REFERENCE_REQUIRED|PROVIDER_LANE_CANDIDATE_BINDING_REQUIRED|(?:CONTRACT|INTEGRATION|BROWSER|VISUAL)_PROVIDER_UNAVAILABLE)/;
 
 function providerLaneBlockerFromMessage(message: string): string | undefined {
   return message.match(providerLaneBlockerPattern)?.[1];

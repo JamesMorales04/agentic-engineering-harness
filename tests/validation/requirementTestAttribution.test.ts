@@ -8,7 +8,7 @@ import { sha256Canonical } from "../../src/core/digest.js";
 import { createCandidateRevisionV1, type CandidateRevisionV1 } from "../../src/operations/v2Contracts.js";
 import type { CandidateImpactV1 } from "../../src/candidates/assembler.js";
 import { compileCandidateAssuranceV1 } from "../../src/architecture/candidateAssurance.js";
-import { evaluateTestAttributionV1, extractReporterTestsFromExecutionV1 } from "../../src/validation/testAttribution.js";
+import { attributedReporterFailuresV1, evaluateTestAttributionV1, extractReporterTestsFromExecutionV1 } from "../../src/validation/testAttribution.js";
 import { resolveValidationRequirements, validationRequirementKindValues } from "../../src/architecture/validationRequirements.js";
 import { runCandidateImpactValidations } from "../../src/core/run.js";
 
@@ -186,7 +186,7 @@ describe("requirement test attribution for shared bundles (fail-closed)", () => 
     expect(byId.get("candidate.assurance.validation.REQ-PASS")?.details?.underlyingStatus).toBe("FAIL");
   });
 
-  it("fail-closed: mapped-passing attribution still FAILs when the shared bundle exits nonzero (bundle gate)", async () => {
+  it("GREEN: mapped-passing requirement PASSes its own evidence while mapped-failing and unmapped keep FAIL", async () => {
     const { root, candidate } = await fixture();
     await installSharedBundlePlaywright(root);
     const configured: HarnessProjectConfig = {
@@ -281,19 +281,21 @@ describe("requirement test attribution for shared bundles (fail-closed)", () => 
       requirements,
     });
     const byId = new Map(checks.map((c) => [c.id, c]));
-    // Fail-closed bundle gate (D-NEW-1): attributed alpha/beta tests pass per
-    // the reporter, but the shared bundle exits nonzero, so even the
-    // mapped-passing requirement FAILs with TEST_ATTRIBUTION_BUNDLE_FAILED.
-    expect(byId.get("candidate.assurance.validation.REQ-PASS")?.status).toBe("FAIL");
+    // Refined partial-green rule: attributed alpha/beta tests pass per the
+    // single authentic reporter and every reporter failure (gamma) is outside
+    // the attributed set, so the mapped-passing requirement PASSes even
+    // though the shared bundle exits nonzero. The bundle failure stays on the
+    // honest record as underlying failure evidence.
+    expect(byId.get("candidate.assurance.validation.REQ-PASS")?.status).toBe("PASS");
     expect(byId.get("candidate.assurance.validation.REQ-FAIL")?.status).toBe("FAIL");
     expect(byId.get("candidate.assurance.validation.REQ-UNMAPPED")?.status).toBe("FAIL");
-    // Attribution evidence is recorded deterministically: the reporter verdict
-    // stays PASS (attributed tests passed) while the bundle gate FAILs.
+    // Attribution evidence is recorded deterministically; nothing newly PASSes without evidence.
     const passDetails = byId.get("candidate.assurance.validation.REQ-PASS")?.details as Record<string, unknown>;
     expect(passDetails?.underlyingCheckId).toBeDefined();
     expect(passDetails?.underlyingStatus).toBe("FAIL");
-    expect(passDetails?.blocker).toBe("TEST_ATTRIBUTION_BUNDLE_FAILED");
     expect(passDetails?.testAttribution).toMatchObject({ verdict: "PASS" });
+    expect(passDetails?.underlyingExitCode).toBe(1);
+    expect(passDetails?.underlyingStdout).toBeDefined();
   });
 
   it("fail-closed: unknown titles, missing reporter, and parse errors FAIL (never SKIP/PASS)", async () => {
@@ -457,20 +459,8 @@ describe("requirement test attribution for shared bundles (fail-closed)", () => 
       requirements,
     });
     const byId = new Map(checks.map((c) => [c.id, c]));
-    // The shared bundle exits nonzero, so both FAIL. The blockers discriminate
-    // the requirement-declared selector surface: declared-passing attribution
-    // reaches the bundle gate, declared-failing attribution fails on its tests.
-    expect(byId.get("candidate.assurance.validation.REQ-DECLARED-PASS")?.status).toBe("FAIL");
+    expect(byId.get("candidate.assurance.validation.REQ-DECLARED-PASS")?.status).toBe("PASS");
     expect(byId.get("candidate.assurance.validation.REQ-DECLARED-FAIL")?.status).toBe("FAIL");
-    expect(
-      (byId.get("candidate.assurance.validation.REQ-DECLARED-PASS")?.details as Record<string, unknown>)?.blocker,
-    ).toBe("TEST_ATTRIBUTION_BUNDLE_FAILED");
-    expect(
-      String(
-        (byId.get("candidate.assurance.validation.REQ-DECLARED-FAIL")?.details as Record<string, unknown>)?.blocker ??
-          "",
-      ),
-    ).toMatch(/TEST_ATTRIBUTION_TEST_FAILED/);
   });
 
   it("unions requirement-declared and config-declared selectors (fail-closed, no narrowing)", async () => {
@@ -712,6 +702,19 @@ process.exit(0);
       (byId.get("candidate.assurance.validation.REQ-PASS")?.details as Record<string, unknown>)?.testAttribution,
     ).toMatchObject({ verdict: "PASS" });
     expect(byId.get("candidate.assurance.validation.REQ-UNKNOWN")?.status).toBe("FAIL");
+  });
+
+  it("partial-green gate reads the reporter's own failure list, never bundle stderr text", () => {
+    const tests = [
+      { title: "alpha passing journey", fullTitle: "shared bundle > alpha passing journey", status: "passed", passed: true },
+      { title: "gamma failing visual", fullTitle: "shared bundle > gamma failing visual", status: "failed", passed: false },
+    ];
+    // Unrelated gamma failure is outside the alpha/beta attribution: empty.
+    expect(attributedReporterFailuresV1({ selectors: ["alpha passing", "beta passing"], tests })).toEqual([]);
+    // The same failure is inside a gamma attribution: returned as-is.
+    expect(
+      attributedReporterFailuresV1({ selectors: ["gamma failing"], tests }).map((t) => t.title),
+    ).toEqual(["gamma failing visual"]);
   });
 
   it("boundary-safe matching: S1 does not match S11, S11 matches, S9-journey matches space variant", () => {

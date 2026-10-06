@@ -221,6 +221,36 @@ export function evaluateTestAttributionV1(input: {
   };
 }
 
+/**
+ * Reporter failures inside a requirement's attributed set
+ * (Mechanism=DETERMINISTIC).
+ *
+ * Computed from the single authentic reporter's OWN per-test failure list:
+ * every reporter test with a non-passing result is checked against the
+ * requirement selectors with the same boundary-safe matching as evaluation.
+ * Bundle stderr text is never consulted — stderr carries untrusted process
+ * output, while the reporter document is the authentic per-test record.
+ * A mapped PASS requires this list to be empty (every recorded failure is
+ * outside the attributed set); a non-empty list FAILs the requirement even
+ * if the bundle exit code looks healthy.
+ */
+export function attributedReporterFailuresV1(input: {
+  selectors: readonly string[];
+  tests: readonly AttributedPlaywrightTestV1[];
+}): AttributedPlaywrightTestV1[] {
+  const selectors = [...new Set(input.selectors.map((s) => s.trim()).filter(Boolean))];
+  if (!selectors.length) return [];
+  return input.tests.filter(
+    (test) =>
+      !test.passed &&
+      selectors.some(
+        (selector) =>
+          matchesAttributionSelectorV1(test.fullTitle, selector) ||
+          matchesAttributionSelectorV1(test.title, selector),
+      ),
+  );
+}
+
 function tryParseReporterFromText(
   text: unknown,
 ): AttributedPlaywrightTestV1[] | undefined {
