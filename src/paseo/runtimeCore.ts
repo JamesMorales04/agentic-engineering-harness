@@ -37,6 +37,7 @@ import {
 import { recordPaseoTrace } from "./trace.js";
 import { deterministicPaseoRuntimeDeps, isDeterministicPaseoRuntimeEnabled } from "./deterministicRuntime.js";
 import type { ProviderTurnActivityCounts, ProviderTurnKillReason } from "./firstActivityDeadline.js";
+import { isStalledFirstActivityText } from "./firstActivityDeadline.js";
 
 export interface ManagedPaseoAgentOptions extends PaseoSdkAgentOptions {
   timeoutSeconds?: number;
@@ -171,7 +172,9 @@ export async function dispatchManagedPaseoAgent(root: string, agentId: string, p
     } catch (error) {
       if (error instanceof PaseoSdkTimeoutError || (error instanceof Error && error.name === "PaseoSdkTimeoutError")) {
         const stopped = await stopManagedPaseoAgent(root, agentId, deps);
-        return { id: agentId, exitCode: 124, stdout: "", stderr: [errorMessage(error), stopped.stderr].filter(Boolean).join("\n"), status: "timeout", transport: "sdk", killReason: "DEADLINE" as ProviderTurnKillReason };
+        // Sibling kill-reason propagation (E-NEW-2): preserve a STALLED marker
+        // when the dispatch timeout text carries one; otherwise DEADLINE.
+        return { id: agentId, exitCode: 124, stdout: "", stderr: [errorMessage(error), stopped.stderr].filter(Boolean).join("\n"), status: "timeout", transport: "sdk", killReason: (isStalledFirstActivityText(errorMessage(error)) ? "STALLED_FIRST_ACTIVITY" : "DEADLINE") as ProviderTurnKillReason };
       }
       if (!sdkCanFallback(error)) throw error;
       await trace(root, "fallback.cli", { operation: "dispatch", agentId, reason: errorMessage(error) });
@@ -220,7 +223,12 @@ export async function waitManagedPaseoAgent(root: string, agentId: string, timeo
     cleanupStderr = (await stopManagedPaseoAgent(root, agentId, deps)).stderr;
   }
   const logs = await deps.run(`paseo logs ${quote(agentId)} --tail 200`, { cwd: root, timeoutMs: 60_000 });
-  const result: ManagedPaseoAgentResult = { id: agentId, exitCode: wait.exitCode, stdout: logs.stdout || wait.stdout, stderr: [wait.stderr, cleanupStderr, logs.stderr].filter(Boolean).join("\n"), status: wait.exitCode === 0 ? "idle" : "failed", transport: "cli", observation: "cli-wait", ...(wait.timedOut ? { killReason: "DEADLINE" as ProviderTurnKillReason } : {}) };
+  // Kill-reason propagation (E-NEW-2 floor): a CLI-observed stall keeps its
+  // STALLED marker when the daemon output carries one; otherwise a CLI wait
+  // timeout stays the existing generic DEADLINE. Never invents activity the
+  // CLI wait cannot observe.
+  const cliOutputText = [wait.stdout, wait.stderr, logs.stdout, logs.stderr].join("\n");
+  const result: ManagedPaseoAgentResult = { id: agentId, exitCode: wait.exitCode, stdout: logs.stdout || wait.stdout, stderr: [wait.stderr, cleanupStderr, logs.stderr].filter(Boolean).join("\n"), status: wait.exitCode === 0 ? "idle" : "failed", transport: "cli", observation: "cli-wait", ...(wait.timedOut ? { killReason: (isStalledFirstActivityText(cliOutputText) ? "STALLED_FIRST_ACTIVITY" : "DEADLINE") as ProviderTurnKillReason } : {}) };
   await trace(root, "agent.wait.completed", { transport: "cli", observation: "cli-wait", agentId, status: result.status ?? "unknown", killReason: result.killReason ?? "none" });
   return result;
 }

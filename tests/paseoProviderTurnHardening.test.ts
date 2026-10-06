@@ -116,7 +116,9 @@ describe("E-NEW-2: sdk-wait fallback carries the first-activity stall bound", ()
     expect(result.killReason).toBe("STALLED_FIRST_ACTIVITY");
     expect(result.error).toContain("STALLED_FIRST_ACTIVITY");
     expect(result.activity?.toolEvents).toBe(0);
-    expect(handle.stop).toHaveBeenCalled();
+    // stopPaseoSdkAgentHandle freezes via the first available handle method
+    // (cancel before stop); either proves the turn was stopped at the bound.
+    expect(handle.cancel.mock.calls.length + handle.stop.mock.calls.length).toBeGreaterThan(0);
   });
 });
 

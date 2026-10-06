@@ -601,10 +601,10 @@ export async function dispatchPaseoSdkAgentWithClient(
   return lastDetail && !result.rateLimited ? { ...result, rateLimited: lastDetail } : result;
 }
 
-export async function waitPaseoSdkAgent(root: string, agentId: string, timeoutMs?: number, permissionScopeRoots?: string[]): Promise<PaseoSdkAgentResult> {
+export async function waitPaseoSdkAgent(root: string, agentId: string, timeoutMs?: number, permissionScopeRoots?: string[], activityOptions?: PaseoSdkRunActivityOptions): Promise<PaseoSdkAgentResult> {
   const result = await withPaseoClient(root, async (client) => {
     const handle = client.agents.ref(agentId);
-    const result = await waitForHandle(handle, timeoutMs, permissionScopeRoots);
+    const result = await waitForHandle(handle, timeoutMs, permissionScopeRoots, activityOptions);
     if (result.status === "timeout") await stopPaseoSdkAgentHandle(handle);
     return result;
   });
@@ -702,7 +702,7 @@ export async function runPaseoSdkAgentWithClient(
           if (error instanceof PaseoSdkTimeoutError) await stopPaseoSdkAgentHandle(handle);
           throw error;
         });
-        const waited = await waitForHandle(handle, attemptTimeout, permissionScopeRoots);
+        const waited = await waitForHandle(handle, attemptTimeout, permissionScopeRoots, activityOptions);
         if (waited.status === "timeout") await stopPaseoSdkAgentHandle(handle);
         return waited;
       }
@@ -912,12 +912,44 @@ function buildCreateOptions(options: PaseoSdkAgentOptions, includePrompt: boolea
   return createOptions;
 }
 
-async function waitForHandle(handle: PaseoSdkAgentHandle, timeoutMs = 1_800_000, permissionScopeRoots?: string[]): Promise<PaseoSdkAgentResult> {
+/**
+ * First-activity stall bound for the subscription-less wait fallbacks
+ * (DETERMINISTIC, same contract as runWithFirstActivityWatch).
+ *
+ * `waitForHandle` covers two opaque waits: `waitForFinish()` on newer SDKs
+ * and a bare status poll on older ones. Neither exposes interim progress, so
+ * without a stall bound a zero-activity hang wastes the full turn deadline
+ * and settles as a bare DEADLINE with no activity counts. With the bound
+ * armed (`firstActivityMs < timeoutMs`), timeline/snapshot growth is polled
+ * while the wait is in flight; zero content for the bound settles as
+ * STALLED_FIRST_ACTIVITY with activity counts via the same stop-then-read
+ * ordering invariant (stop FIRST, then the authoritative post-stop read, so
+ * late activity still wins as DEADLINE with counts). Completed terminal
+ * turns never stall even with zero activity. Poll/capture failures are
+ * best-effort and never fail the wait; the hard turn deadline is unchanged.
+ */
+async function waitForHandle(
+  handle: PaseoSdkAgentHandle,
+  timeoutMs = 1_800_000,
+  permissionScopeRoots?: string[],
+  activityOptions?: PaseoSdkRunActivityOptions
+): Promise<PaseoSdkAgentResult> {
+  const firstActivityMs = activityOptions?.firstActivityMs ?? FIRST_ACTIVITY_DEADLINE_MS;
+  const pollMs = Math.max(1, activityOptions?.pollMs ?? FIRST_ACTIVITY_POLL_MS);
+  const stallArmed = firstActivityMs < timeoutMs;
   if (typeof handle.waitForFinish === "function") {
-    const turn = await handle.waitForFinish(timeoutMs);
-    return turnResult(handle, turn, permissionScopeRoots);
+    if (!stallArmed) {
+      const turn = await handle.waitForFinish(timeoutMs);
+      return turnResult(handle, turn, permissionScopeRoots);
+    }
+    return waitForFinishWithFirstActivityWatch(handle, timeoutMs, firstActivityMs, pollMs, permissionScopeRoots);
   }
   const deadline = Date.now() + timeoutMs;
+  const stallAt = stallArmed ? Date.now() + firstActivityMs : Number.POSITIVE_INFINITY;
+  const baseline = stallArmed ? await captureRunActivityBaseline(handle).catch(() => undefined) : undefined;
+  let observed = false;
+  let lastActivity: RunActivityBaseline | undefined;
+  let lastActivityCheck = 0;
   for (;;) {
     const raw = await refreshHandle(handle);
     const status = statusText(raw?.status ?? handle.status);
@@ -935,9 +967,149 @@ async function waitForHandle(handle: PaseoSdkAgentHandle, timeoutMs = 1_800_000,
         ...(permission ? { permission } : {})
       };
     }
-    if (Date.now() >= deadline) return { id: handle.id, workspaceId: handle.workspaceId ?? undefined, status: "timeout", error: `Timed out after ${timeoutMs}ms.` };
+    const now = Date.now();
+    if (baseline && now - lastActivityCheck >= pollMs) {
+      lastActivityCheck = now;
+      const current = await captureRunActivityBaseline(handle).catch(() => undefined);
+      if (current) {
+        lastActivity = current;
+        if (runActivityHasGrown(baseline, current)) observed = true;
+      }
+    }
+    if (baseline && !observed && now >= stallAt) {
+      return stallVerdictAfterStop(handle, baseline, firstActivityMs, timeoutMs);
+    }
+    if (Date.now() >= deadline) {
+      if (baseline && observed && lastActivity) {
+        // The turn showed provider-visible activity but still hit the hard
+        // deadline: regular DEADLINE with counts, never STALLED.
+        const activity: ProviderTurnActivityCounts = {
+          updatesObserved: 0,
+          toolEvents: countNewRunToolKeys(baseline, lastActivity),
+          assistantDelta:
+            (lastActivity.assistantText !== undefined && lastActivity.assistantText !== baseline.assistantText) ||
+            (lastActivity.lastMessage !== undefined && lastActivity.lastMessage !== baseline.lastMessage)
+        };
+        return {
+          id: handle.id,
+          workspaceId: handle.workspaceId ?? undefined,
+          status: "timeout",
+          error: `Timed out after ${timeoutMs}ms with provider-visible activity (updates=0 toolEvents=${activity.toolEvents} assistantDelta=${activity.assistantDelta}); turn stopped and existing retry budgets apply.`,
+          killReason: "DEADLINE",
+          activity
+        };
+      }
+      return { id: handle.id, workspaceId: handle.workspaceId ?? undefined, status: "timeout", error: `Timed out after ${timeoutMs}ms.` };
+    }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
+}
+
+/** Race one opaque `waitForFinish()` against the first-activity bound. */
+async function waitForFinishWithFirstActivityWatch(
+  handle: PaseoSdkAgentHandle,
+  timeoutMs: number,
+  firstActivityMs: number,
+  pollMs: number,
+  permissionScopeRoots?: string[]
+): Promise<PaseoSdkAgentResult> {
+  const baseline = await captureRunActivityBaseline(handle).catch(() => undefined);
+  if (!baseline) {
+    const turn = await handle.waitForFinish!(timeoutMs);
+    return turnResult(handle, turn, permissionScopeRoots);
+  }
+  let observed = false;
+  let pollTimer: ReturnType<typeof setInterval> | undefined;
+  let stallTimer: ReturnType<typeof setTimeout> | undefined;
+  const stopTimers = (): void => {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = undefined;
+    if (stallTimer) clearTimeout(stallTimer);
+    stallTimer = undefined;
+  };
+  const waitPromise = handle.waitForFinish!(timeoutMs);
+  try {
+    pollTimer = setInterval(() => {
+      void captureRunActivityBaseline(handle).then((current) => {
+        if (runActivityHasGrown(baseline, current)) {
+          observed = true;
+          if (pollTimer) clearInterval(pollTimer);
+          pollTimer = undefined;
+        }
+      }).catch(() => undefined);
+    }, pollMs);
+    const outcome = await Promise.race([
+      waitPromise.then(
+        (turn) => ({ kind: "wait" as const, turn }),
+        (error) => ({ kind: "waitError" as const, error })
+      ),
+      new Promise<{ kind: "stall" }>((resolve) => {
+        stallTimer = setTimeout(() => resolve({ kind: "stall" }), firstActivityMs);
+      })
+    ]);
+    stopTimers();
+    if (outcome.kind === "wait") return turnResult(handle, outcome.turn, permissionScopeRoots);
+    if (outcome.kind === "waitError") throw outcome.error;
+    if (observed) return waitPromise.then((turn) => turnResult(handle, turn, permissionScopeRoots));
+    const stalled = await stallVerdictAfterStop(handle, baseline, firstActivityMs, timeoutMs);
+    void waitPromise.then(() => undefined, () => undefined);
+    return stalled;
+  } catch (error) {
+    stopTimers();
+    throw error;
+  }
+}
+
+/**
+ * Stop-then-read stall verdict shared by the sdk-wait fallbacks. The handle
+ * is stopped FIRST to freeze the turn; only then is the timeline/snapshot
+ * re-read, so the post-stop read is authoritative: still-empty reads settle
+ * as STALLED_FIRST_ACTIVITY, while late content settles as a regular
+ * DEADLINE with counts (same shapes as runWithFirstActivityWatch so
+ * downstream classification is identical).
+ */
+async function stallVerdictAfterStop(
+  handle: PaseoSdkAgentHandle,
+  baseline: RunActivityBaseline,
+  firstActivityMs: number,
+  timeoutMs: number
+): Promise<PaseoSdkAgentResult> {
+  await stopPaseoSdkAgentHandle(handle).catch(() => undefined);
+  const final = await captureRunActivityBaseline(handle).catch(() => undefined);
+  if (final && runActivityHasGrown(baseline, final)) {
+    const lateCounts: ProviderTurnActivityCounts = {
+      updatesObserved: 0,
+      toolEvents: countNewRunToolKeys(baseline, final),
+      assistantDelta:
+        (final.assistantText !== undefined && final.assistantText !== baseline.assistantText) ||
+        (final.lastMessage !== undefined && final.lastMessage !== baseline.lastMessage)
+    };
+    return {
+      id: handle.id,
+      workspaceId: handle.workspaceId ?? undefined,
+      status: "timeout",
+      error:
+        `Provider turn stopped at the first-activity bound after ${firstActivityMs}ms ` +
+        `with late provider-visible activity (turn deadline ${timeoutMs}ms retained; ` +
+        `updates=0 toolEvents=${lateCounts.toolEvents} assistantDelta=${lateCounts.assistantDelta}); ` +
+        `turn stopped and existing retry budgets apply.`,
+      killReason: "DEADLINE",
+      activity: lateCounts
+    };
+  }
+  const counts: ProviderTurnActivityCounts = {
+    updatesObserved: 0,
+    toolEvents: final ? countNewRunToolKeys(baseline, final) : 0,
+    assistantDelta: false
+  };
+  return {
+    id: handle.id,
+    workspaceId: handle.workspaceId ?? undefined,
+    status: "timeout",
+    error: stalledFirstActivityError(firstActivityMs, timeoutMs, counts),
+    killReason: "STALLED_FIRST_ACTIVITY",
+    activity: counts
+  };
 }
 
 async function stopPaseoSdkAgentHandle(handle: PaseoSdkAgentHandle): Promise<void> {
@@ -1221,7 +1393,12 @@ async function turnResult(handle: PaseoSdkAgentHandle, turn: PaseoSdkTurnResult,
       status: turn.status,
       lastMessage: turn.lastMessage,
       error: turn.error,
-      ...(permission ? { permission } : {})
+      ...(permission ? { permission } : {}),
+      // The stall watch classifies kills on the turn; dropping killReason/
+      // activity here would downgrade STALLED_FIRST_ACTIVITY to bare DEADLINE
+      // downstream (fromSdk defaults timeout kills to DEADLINE).
+      ...(turn.killReason ? { killReason: turn.killReason } : {}),
+      ...(turn.activity ? { activity: turn.activity } : {})
     };
   }
   const raw = await refreshHandle(handle).catch(() => undefined);
@@ -1237,7 +1414,9 @@ async function turnResult(handle: PaseoSdkAgentHandle, turn: PaseoSdkTurnResult,
       stringField(raw ?? {}, ["lastMessage", "last_message"]) ??
       extractLastAssistantText(timeline),
     error: turn.error ?? stringField(raw ?? {}, ["error", "lastError", "last_error"]),
-    ...(observedPermission ? { permission: observedPermission } : {})
+    ...(observedPermission ? { permission: observedPermission } : {}),
+    ...(turn.killReason ? { killReason: turn.killReason } : {}),
+    ...(turn.activity ? { activity: turn.activity } : {})
   };
 }
 
