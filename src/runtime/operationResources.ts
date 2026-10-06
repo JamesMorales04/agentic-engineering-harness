@@ -93,6 +93,34 @@ export const DEFAULT_OPERATION_RESOURCE_POLICY: OperationResourcePolicyV1 = {
   maxConcurrentProviderSessionsPerOperation: 16
 };
 
+/**
+ * Provider backpressure QUEUE helpers (Unit 3).
+ *
+ * MECHANISM: DETERMINISTIC for classification; bounded polling for waits.
+ * `assertProviderSessionCapacity` keeps its throwing fail-closed contract.
+ * `checkProviderSessionBackpressure` is the pure QUEUE classifier; waits are
+ * bounded (`PROVIDER_BACKPRESSURE_MAX_WAIT_MS_V1`) and always count against
+ * the caller's existing deadline (never extend caps; exhausted waits are
+ * terminal). Telemetry attributes follow existing `recordEvent` conventions
+ * (bounded counter/gauge observation, never a gate).
+ */
+export const PROVIDER_BACKPRESSURE_MAX_WAIT_MS_V1 = 30_000;
+export const PROVIDER_BACKPRESSURE_POLL_MS_V1 = 50;
+export const PROVIDER_BACKPRESSURE_EVENT_V1 = "harness.provider.backpressure";
+
+export type ProviderSessionBackpressureV1 =
+  | { allowed: true; active: number; ceiling: number }
+  | { allowed: false; disposition: "QUEUE"; active: number; ceiling: number; retryAfterMs: number };
+
+export interface ProviderBackpressureTelemetryV1 {
+  operationId: string;
+  active: number;
+  ceiling: number;
+  queued: number;
+  retryAfterMs: number;
+  disposition: "QUEUE" | "PROCEED";
+}
+
 export interface OperationResourceReconcileDeps {
   run?: typeof runShell;
   inspectAgent?: (root: string, agentId: string) => Promise<{ status?: string; workspaceId?: string } | undefined>;
@@ -466,6 +494,104 @@ export async function assertProviderSessionCapacity(root: string, operationId: s
       details: { operationId, active, ceiling: policy, disposition: "WAIT_OR_RAISE" }
     });
   }
+}
+
+/**
+ * Pure QUEUE classifier for provider session capacity. Returns QUEUE (not
+ * throw) when `active` meets or exceeds `ceiling`; callers honor the bounded
+ * WAIT against their existing deadline and treat exhaustion as terminal.
+ */
+export function checkProviderSessionBackpressure(active: number, ceiling?: number): ProviderSessionBackpressureV1 {
+  const safeCeiling = typeof ceiling === "number" && Number.isFinite(ceiling) && ceiling > 0
+    ? Math.floor(ceiling)
+    : DEFAULT_OPERATION_RESOURCE_POLICY.maxConcurrentProviderSessionsPerOperation;
+  const safeActive = typeof active === "number" && Number.isFinite(active) && active >= 0 ? Math.floor(active) : 0;
+  if (safeActive < safeCeiling) return { allowed: true, active: safeActive, ceiling: safeCeiling };
+  return {
+    allowed: false,
+    disposition: "QUEUE",
+    active: safeActive,
+    ceiling: safeCeiling,
+    retryAfterMs: PROVIDER_BACKPRESSURE_POLL_MS_V1
+  };
+}
+
+/** DETERMINISTIC classifier: true when the error is provider capacity/lease backpressure (QUEUE, not FAIL). */
+export function isProviderCapacityError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  if (message.includes("RESOURCE_CEILING_EXHAUSTED") && message.includes("active provider sessions")) return true;
+  if (message.includes("already leased in")) return true;
+  if (message.includes("PASEO_PROVIDER_LEASE_TAKEOVER_BLOCKED")) return true;
+  if (error && typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    if ((record as { code?: unknown }).code === "RESOURCE_CEILING_EXHAUSTED") {
+      const details = (record as { details?: unknown }).details;
+      if (details && typeof details === "object" && (details as Record<string, unknown>).disposition === "WAIT_OR_RAISE") return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Bounded QUEUE wait for provider session capacity. Polls the durable lease
+ * snapshot without widening any ceiling; the total wait never exceeds
+ * `min(maxWaitMs, deadlineAtMs - now)` and an exhausted budget returns
+ * `acquired: false` (terminal, fail-closed). Injectable clock/sleep/snapshot
+ * keeps fixtures scripted with no network.
+ */
+export async function waitForProviderSessionCapacity(
+  root: string,
+  operationId: string,
+  options: {
+    ceiling?: number;
+    deadlineAtMs?: number;
+    maxWaitMs?: number;
+    pollMs?: number;
+    now?: () => number;
+    sleep?: (ms: number) => Promise<void>;
+    countActive?: () => Promise<number> | number;
+  } = {}
+): Promise<{ acquired: boolean; waitedMs: number; active: number; ceiling: number }> {
+  const now = options.now ?? Date.now;
+  const sleep = options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const pollMs = options.pollMs !== undefined && Number.isFinite(options.pollMs) && options.pollMs > 0
+    ? Math.min(PROVIDER_BACKPRESSURE_MAX_WAIT_MS_V1, Math.floor(options.pollMs))
+    : PROVIDER_BACKPRESSURE_POLL_MS_V1;
+  const maxWaitMs = options.maxWaitMs !== undefined && Number.isFinite(options.maxWaitMs) && options.maxWaitMs >= 0
+    ? Math.min(PROVIDER_BACKPRESSURE_MAX_WAIT_MS_V1, Math.floor(options.maxWaitMs))
+    : PROVIDER_BACKPRESSURE_MAX_WAIT_MS_V1;
+  const startedAt = now();
+  const deadlineAt = options.deadlineAtMs ?? startedAt + maxWaitMs;
+  const effectiveDeadline = Math.min(deadlineAt, startedAt + maxWaitMs);
+  const countActive = options.countActive ?? (async (): Promise<number> => {
+    const snapshot = await readManagedRuntimeSnapshot(root).catch(() => undefined);
+    return snapshot?.providerLeases.filter((lease) => lease.lifecycle?.operationId === operationId).length ?? 0;
+  });
+  for (;;) {
+    const active = await countActive();
+    const verdict = checkProviderSessionBackpressure(active, options.ceiling ?? (await loadResourcePolicy(root).catch(() => DEFAULT_OPERATION_RESOURCE_POLICY)).maxConcurrentProviderSessionsPerOperation);
+    if (verdict.allowed) return { acquired: true, waitedMs: Math.max(0, now() - startedAt), active: verdict.active, ceiling: verdict.ceiling };
+    const elapsed = now() - startedAt;
+    const remainingBudget = effectiveDeadline - now();
+    if (remainingBudget <= 0 || elapsed >= maxWaitMs) {
+      return { acquired: false, waitedMs: Math.max(0, elapsed), active: verdict.active, ceiling: verdict.ceiling };
+    }
+    await sleep(Math.min(pollMs, remainingBudget, maxWaitMs - elapsed));
+  }
+}
+
+/**
+ * Bounded backpressure telemetry attributes for existing `recordEvent`
+ * conventions (counter: queued/active observations; gauge: ceiling). Refs-only,
+ * never provider content; observation only, never a gate.
+ */
+export function providerBackpressureAttributes(signal: ProviderBackpressureTelemetryV1): Record<string, unknown> {
+  const operationId = signal.operationId.slice(0, 200);
+  const active = Math.max(0, Math.floor(signal.active));
+  const ceiling = Math.max(1, Math.floor(signal.ceiling));
+  const queued = Math.max(0, Math.floor(signal.queued));
+  const retryAfterMs = Math.max(0, Math.min(PROVIDER_BACKPRESSURE_MAX_WAIT_MS_V1, Math.floor(signal.retryAfterMs)));
+  return { operationId, active, ceiling, queued, retryAfterMs, disposition: signal.disposition };
 }
 
 export async function loadResourcePolicy(root: string): Promise<OperationResourcePolicyV1> {

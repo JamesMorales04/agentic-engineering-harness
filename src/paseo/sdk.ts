@@ -85,6 +85,8 @@ export interface PaseoSdkAgentResult {
   killReason?: ProviderTurnKillReason;
   /** Bounded provider-visible activity counts; refs-only, no provider content. */
   activity?: ProviderTurnActivityCounts;
+  /** Typed 429/Retry-After detail parsed at the SDK boundary only; WAIT hint, never an attempt. */
+  rateLimited?: ProviderRateLimitDetailV1;
 }
 
 export interface PaseoSdkAgentRecord {
@@ -150,6 +152,221 @@ export class PaseoSdkTimeoutError extends Error {
     super(message);
     this.name = "PaseoSdkTimeoutError";
   }
+}
+
+/**
+ * Provider backpressure detail parsed at the SDK boundary only (Unit 3).
+ *
+ * MECHANISM: DETERMINISTIC. Pure inspection of the settled SDK error shape:
+ * numeric 429 status fields plus case-insensitive 429/rate-limit/Too Many
+ * Requests text. No network, no retry, no clock except for HTTP-date delta.
+ * The parsed `retryAfterMs` is the bounded WAIT hint (not an attempt): callers
+ * honor it via `providerRateLimitWaitMs` against their existing deadline
+ * budget, never extending caps. Waits are fail-closed (capped, zero on
+ * exhausted budget, terminal when the budget cannot fit the wait).
+ */
+export const PROVIDER_RATE_LIMIT_STATUS_V1 = 429 as const;
+export const PROVIDER_RATE_LIMIT_MAX_WAIT_MS_V1 = 60_000;
+export const PROVIDER_RATE_LIMIT_DEFAULT_WAIT_MS_V1 = 1_000;
+
+export type ProviderRateLimitRetryAfterSourceV1 =
+  | "retry-after-seconds"
+  | "retry-after-http-date"
+  | "retry-after-ms"
+  | "none";
+
+export interface ProviderRateLimitDetailV1 {
+  version: 1;
+  status: 429;
+  /** Bounded WAIT hint in ms, already clamped to 0..PROVIDER_RATE_LIMIT_MAX_WAIT_MS_V1. */
+  retryAfterMs: number;
+  retryAfterSource: ProviderRateLimitRetryAfterSourceV1;
+  /** Bounded provider message excerpt (refs-only, ≤500 chars); present when parsed from text. */
+  message?: string;
+}
+
+export class PaseoSdkRateLimitedError extends Error {
+  readonly detail: ProviderRateLimitDetailV1;
+  readonly status = PROVIDER_RATE_LIMIT_STATUS_V1;
+  constructor(detail: ProviderRateLimitDetailV1, message?: string) {
+    super(message ?? `Provider rate limited (429); retry after ${detail.retryAfterMs}ms.`);
+    this.name = "PaseoSdkRateLimitedError";
+    this.detail = detail;
+  }
+}
+
+/** True when the settled value carries a 429/rate-limit signature (SDK boundary only). */
+export function isProviderRateLimited(error: unknown): boolean {
+  return parseProviderRateLimitDetail(error) !== undefined;
+}
+
+/**
+ * Parse a settled SDK failure into typed rate-limit detail. Returns undefined
+ * when the value carries no 429/rate-limit signature. Retry-After is read from
+ * (in priority order): explicit `retryAfterMs`/`retryAfter` numeric fields,
+ * case-insensitive `headers["retry-after"]` (seconds or HTTP-date), then
+ * `Retry-After: <n>` / `retry after <n><unit>` message patterns. All waits are
+ * clamped to 0..MAX; a bare 429 without a hint defaults to the bounded
+ * stampede-avoidance wait (1s) so immediate retries never hammer one window.
+ */
+export function parseProviderRateLimitDetail(error: unknown): ProviderRateLimitDetailV1 | undefined {
+  if (error instanceof PaseoSdkRateLimitedError) return error.detail;
+  const status = readRateLimitStatus(error);
+  const message = readRateLimitMessage(error);
+  const headers = readRateLimitHeaders(error);
+  const hasStatus = status === PROVIDER_RATE_LIMIT_STATUS_V1;
+  const hasMarker = message !== undefined && RATE_LIMIT_MARKER_RE.test(message);
+  if (!hasStatus && !hasMarker) return undefined;
+  const parsed = readRetryAfterMs(error, headers, message);
+  const retryAfterMs = clampRateLimitWaitMs(parsed?.ms ?? PROVIDER_RATE_LIMIT_DEFAULT_WAIT_MS_V1);
+  return {
+    version: 1,
+    status: PROVIDER_RATE_LIMIT_STATUS_V1,
+    retryAfterMs,
+    retryAfterSource: parsed?.source ?? "none",
+    ...(message ? { message: message.slice(0, 500) } : {})
+  };
+}
+
+/**
+ * Honor a parsed Retry-After as WAIT against an existing deadline budget.
+ * Never extends caps: returns `min(boundedWait, remainingBudget)`, or 0 when
+ * the detail is missing or the budget is exhausted (terminal, fail-closed).
+ * A WAIT is not an attempt: callers must not increment retry counters for it.
+ */
+export function providerRateLimitWaitMs(
+  detail: ProviderRateLimitDetailV1 | undefined,
+  remainingBudgetMs?: number
+): number {
+  if (!detail) return 0;
+  const bounded = clampRateLimitWaitMs(detail.retryAfterMs);
+  if (remainingBudgetMs === undefined) return bounded;
+  if (!Number.isFinite(remainingBudgetMs) || remainingBudgetMs <= 0) return 0;
+  return Math.min(bounded, Math.floor(remainingBudgetMs));
+}
+
+const RATE_LIMIT_MARKER_RE = /(?:\b429\b|rate[\s_\-]*limit|too many requests|retry[\s_\-]*after)/i;
+const RETRY_AFTER_MESSAGE_RE = /retry[\s_\-]*after\s*[:=]?\s*(\d+(?:\.\d+)?)\s*(ms|s(?:ec(?:ond)?s?)?|m(?:in(?:ute)?s?)?)?/i;
+
+function clampRateLimitWaitMs(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.min(PROVIDER_RATE_LIMIT_MAX_WAIT_MS_V1, Math.floor(value));
+}
+
+function readRateLimitStatus(error: unknown): number | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const record = error as Record<string, unknown>;
+  for (const key of ["statusCode", "status", "code"]) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isSafeInteger(value)) return value;
+    if (typeof value === "string" && /^\d+$/.test(value.trim())) return Number.parseInt(value.trim(), 10);
+  }
+  const detail = record.detail;
+  if (detail && typeof detail === "object") {
+    const nested = (detail as Record<string, unknown>).status;
+    if (typeof nested === "number" && Number.isSafeInteger(nested)) return nested;
+  }
+  const cause = (error as { cause?: unknown }).cause;
+  if (cause && typeof cause === "object") {
+    const nested = (cause as Record<string, unknown>).status ?? (cause as Record<string, unknown>).statusCode;
+    if (typeof nested === "number" && Number.isSafeInteger(nested)) return nested;
+  }
+  return undefined;
+}
+
+function readRateLimitMessage(error: unknown): string | undefined {
+  if (typeof error === "string") return error;
+  if (error instanceof Error) {
+    const parts = [error.message, (error as { cause?: unknown }).cause instanceof Error ? String((error.cause as Error).message) : undefined];
+    const joined = parts.filter(Boolean).join(" ").trim();
+    return joined ? joined : undefined;
+  }
+  if (error && typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    for (const key of ["message", "error", "lastError"]) {
+      const value = record[key];
+      if (typeof value === "string" && value.trim()) return value;
+    }
+  }
+  return undefined;
+}
+
+function readRateLimitHeaders(error: unknown): Record<string, unknown> | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const record = error as Record<string, unknown>;
+  const direct = record.headers;
+  if (direct && typeof direct === "object" && !Array.isArray(direct)) return direct as Record<string, unknown>;
+  const response = record.response;
+  if (response && typeof response === "object" && !Array.isArray(response)) {
+    const nested = (response as Record<string, unknown>).headers;
+    if (nested && typeof nested === "object" && !Array.isArray(nested)) return nested as Record<string, unknown>;
+  }
+  return undefined;
+}
+
+function readRetryAfterMs(
+  error: unknown,
+  headers: Record<string, unknown> | undefined,
+  message: string | undefined
+): { ms: number; source: ProviderRateLimitRetryAfterSourceV1 } | undefined {
+  const record = (error && typeof error === "object" ? error as Record<string, unknown> : undefined);
+  if (record) {
+    const explicitMs = record.retryAfterMs ?? record.retry_after_ms;
+    if (typeof explicitMs === "number" && Number.isFinite(explicitMs)) {
+      return { ms: explicitMs, source: "retry-after-ms" };
+    }
+    for (const key of ["retryAfter", "retry_after", "retryAfterSeconds", "retry_after_seconds"]) {
+      const value = record[key];
+      if (typeof value === "number" && Number.isFinite(value)) {
+        return { ms: value * 1_000, source: "retry-after-seconds" };
+      }
+      if (typeof value === "string" && value.trim()) {
+        const parsed = parseRetryAfterHeaderValue(value.trim());
+        if (parsed) return parsed;
+      }
+    }
+  }
+  if (headers) {
+    for (const [key, value] of Object.entries(headers)) {
+      if (key.toLowerCase() !== "retry-after") continue;
+      if (typeof value === "number" && Number.isFinite(value)) {
+        return { ms: value * 1_000, source: "retry-after-seconds" };
+      }
+      if (typeof value === "string" && value.trim()) {
+        const parsed = parseRetryAfterHeaderValue(value.trim());
+        if (parsed) return parsed;
+      }
+    }
+  }
+  if (message) {
+    const match = RETRY_AFTER_MESSAGE_RE.exec(message);
+    if (match) {
+      const amount = Number.parseFloat(match[1]!);
+      if (Number.isFinite(amount) && amount >= 0) {
+        const unit = (match[2] ?? "s").toLowerCase();
+        const ms = unit.startsWith("ms") ? amount : unit.startsWith("m") ? amount * 60_000 : amount * 1_000;
+        return { ms, source: "retry-after-seconds" };
+      }
+    }
+  }
+  return undefined;
+}
+
+function parseRetryAfterHeaderValue(value: string): { ms: number; source: ProviderRateLimitRetryAfterSourceV1 } | undefined {
+  if (/^\d+(?:\.\d+)?$/.test(value)) {
+    return { ms: Number.parseFloat(value) * 1_000, source: "retry-after-seconds" };
+  }
+  const withUnit = /^(\d+(?:\.\d+)?)\s*(ms|s|m)$/i.exec(value);
+  if (withUnit) {
+    const amount = Number.parseFloat(withUnit[1]!);
+    const unit = withUnit[2]!.toLowerCase();
+    return { ms: unit === "ms" ? amount : unit === "m" ? amount * 60_000 : amount * 1_000, source: "retry-after-seconds" };
+  }
+  const dateMs = Date.parse(value);
+  if (Number.isFinite(dateMs)) {
+    return { ms: Math.max(0, dateMs - Date.now()), source: "retry-after-http-date" };
+  }
+  return undefined;
 }
 
 export async function connectPaseoClient(

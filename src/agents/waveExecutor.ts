@@ -131,7 +131,11 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
     const waveOperationId = operation.id;
     const waveBlueprint = blueprint;
     const waveBase = createWaveBase({ operationId: waveOperationId, taskId: input.contract.task.id, waveIndex: index, candidate: currentCandidate });
-    const results = await mapLimit(tasks, waveConcurrencyV1(planning, tasks.length), (task) => executeDelegation({ ...input, operationId: waveOperationId, task, participantAssignment: participantByWorkUnit.get(task.id), executionBlueprint: waveBlueprint, waveBase: waveBase.candidate })); sessions.push(...results.map((result) => result.session));
+    const concurrency = waveConcurrencyV1(planning, tasks.length);
+    if (tasks.length > concurrency || (planning?.maxWaveConcurrency ?? 0) > WAVE_CONCURRENCY_LEASE_CAP_V1) {
+      await recordEvent(input.stateRoot, input.config, WAVE_BACKPRESSURE_EVENT_V1, waveBackpressureAttributes({ wave: index + 1, taskId: input.contract.task.id, active: tasks.length, ceiling: WAVE_CONCURRENCY_LEASE_CAP_V1, queued: Math.max(0, tasks.length - concurrency), retryAfterMs: 0, disposition: "CLAMPED" }));
+    }
+    const results = await mapLimit(tasks, concurrency, (task) => executeDelegation({ ...input, operationId: waveOperationId, task, participantAssignment: participantByWorkUnit.get(task.id), executionBlueprint: waveBlueprint, waveBase: waveBase.candidate })); sessions.push(...results.map((result) => result.session));
     if (results.some((result) => result.status === "FAIL")) { const summary: WaveExecutionSummary = { wave: index + 1, taskIds: ids, status: "FAIL", results }; waveSummaries.push(summary); await recordEvent(input.stateRoot, input.config, "harness.wave.finish", { taskId: input.contract.task.id, wave: index + 1, status: "FAIL", tasks: ids }); return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, aggregateSession: aggregate(sessions, 1, `Wave ${index + 1} failed.`) }; }
     const resultByWorkUnit = new Map(results.map((result) => [result.task.id, result] as const));
     const submissions: WaveChangeSetSubmissionV1[] = [];
@@ -397,10 +401,94 @@ function aggregate(sessions: WorkerSession[], exitCode: number, message: string)
  * candidate worktrees. When it is explicitly disabled, same-workspace writers are serialized
  * deterministically (one work unit at a time) instead of running parallel writers, because
  * DELEGATED candidate assembly always captures one ChangeSet per unit.
+ *
+ * Unit 3 provider backpressure (DETERMINISTIC): wave fan-out never widens the
+ * provider-session lease ceiling (`DEFAULT_OPERATION_RESOURCE_POLICY.
+ * maxConcurrentProviderSessionsPerOperation = 16`; caps unchanged). The default
+ * concurrency is `min(taskCount, lease cap)` and any configured
+ * `maxWaveConcurrency` above the cap is clamped down (fail-closed). Excess
+ * work waits in the bounded `mapLimit` worker queue (QUEUE, never throw);
+ * residual lease/rate-limit conflicts classify via `isWaveBackpressureError`
+ * and wait via bounded `waveRateLimitWaitMs`/`waveQueueWaitMs` against the
+ * caller's existing deadline (WAIT is not an attempt; exhausted budgets are
+ * terminal). Telemetry is observation-only `harness.wave.backpressure`
+ * counter/gauge attributes via existing `recordEvent` conventions.
  */
+export const WAVE_CONCURRENCY_LEASE_CAP_V1 = 16;
+export const WAVE_BACKPRESSURE_MAX_WAIT_MS_V1 = 30_000;
+export const WAVE_BACKPRESSURE_EVENT_V1 = "harness.wave.backpressure";
+
+export interface WaveBackpressureTelemetryV1 {
+  wave: number;
+  taskId: string;
+  active: number;
+  ceiling: number;
+  queued: number;
+  retryAfterMs: number;
+  disposition: "QUEUE" | "PROCEED" | "CLAMPED";
+  rateLimited?: boolean;
+}
+
 export function waveConcurrencyV1(planning: { worktreeIsolation?: boolean; maxWaveConcurrency?: number } | undefined, taskCount: number): number {
   if (planning?.worktreeIsolation === false) return 1;
-  return Math.max(1, Math.min(planning?.maxWaveConcurrency ?? taskCount, taskCount));
+  const requested = planning?.maxWaveConcurrency ?? taskCount;
+  const boundedRequested = Number.isFinite(requested) ? Math.floor(requested) : taskCount;
+  return Math.max(1, Math.min(boundedRequested, taskCount, WAVE_CONCURRENCY_LEASE_CAP_V1));
+}
+
+/**
+ * Bounded backpressure telemetry attributes for existing `recordEvent`
+ * conventions (counter: queued/active; gauge: ceiling/concurrency). Refs-only,
+ * never provider content; observation only, never a gate.
+ */
+export function waveBackpressureAttributes(signal: WaveBackpressureTelemetryV1): Record<string, unknown> {
+  return {
+    wave: Math.max(0, Math.floor(signal.wave)),
+    taskId: signal.taskId.slice(0, 200),
+    active: Math.max(0, Math.floor(signal.active)),
+    ceiling: Math.max(1, Math.floor(signal.ceiling)),
+    queued: Math.max(0, Math.floor(signal.queued)),
+    retryAfterMs: Math.max(0, Math.min(WAVE_BACKPRESSURE_MAX_WAIT_MS_V1, Math.floor(signal.retryAfterMs))),
+    disposition: signal.disposition,
+    ...(signal.rateLimited !== undefined ? { rateLimited: signal.rateLimited } : {})
+  };
+}
+
+/** DETERMINISTIC classifier: true when the failure is backpressure (QUEUE/WAIT, not FAIL). */
+export function isWaveBackpressureError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  if (!message) return false;
+  if (message.includes("RESOURCE_CEILING_EXHAUSTED") && message.includes("active provider sessions")) return true;
+  if (message.includes("already leased in")) return true;
+  if (message.includes("PASEO_PROVIDER_LEASE_TAKEOVER_BLOCKED")) return true;
+  return /(?:\b429\b|rate[\s_\-]*limit|too many requests|retry[\s_\-]*after)/i.test(message);
+}
+
+/** Alias for wave callers: backpressure failures queue; all other failures are terminal. */
+export function shouldQueueWaveWork(error: unknown): boolean {
+  return isWaveBackpressureError(error);
+}
+
+/**
+ * Honor a Retry-After/queue WAIT against an existing deadline budget. Never
+ * extends caps: returns `min(boundedWait, remainingBudget)`, or 0 when
+ * exhausted (terminal, fail-closed). A WAIT is not an attempt.
+ */
+export function waveRateLimitWaitMs(
+  retryAfterMs: number | { retryAfterMs: number } | undefined,
+  remainingBudgetMs?: number
+): number {
+  const raw = typeof retryAfterMs === "number" ? retryAfterMs : retryAfterMs?.retryAfterMs;
+  if (raw === undefined || !Number.isFinite(raw) || raw <= 0) return 0;
+  const bounded = Math.min(WAVE_BACKPRESSURE_MAX_WAIT_MS_V1, Math.floor(raw));
+  if (remainingBudgetMs === undefined) return bounded;
+  if (!Number.isFinite(remainingBudgetMs) || remainingBudgetMs <= 0) return 0;
+  return Math.min(bounded, Math.floor(remainingBudgetMs));
+}
+
+/** Bounded QUEUE wait alias (lease-conflict path shares the same budget rule as rate-limit WAIT). */
+export function waveQueueWaitMs(retryAfterMs: number | undefined, remainingBudgetMs?: number): number {
+  return waveRateLimitWaitMs(retryAfterMs, remainingBudgetMs);
 }
 async function mapLimit<T, R>(values: T[], limit: number, fn: (value: T) => Promise<R>): Promise<R[]> { if (!values.length) return []; const result = new Array<R>(values.length); let cursor = 0; const workers = Array.from({ length: Math.max(1, Math.min(limit, values.length)) }, async () => { while (true) { const index = cursor++; if (index >= values.length) return; result[index] = await fn(values[index]); } }); await Promise.all(workers); return result; }
 function safe(value: string): string { return value.replace(/[^A-Za-z0-9._-]/g, "-"); }
