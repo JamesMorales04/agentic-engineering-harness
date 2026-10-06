@@ -6,7 +6,7 @@ import { assembleCandidateChangeSet } from "../src/candidates/assembler.js";
 import { materializeCandidateState } from "../src/candidates/direct.js";
 import { computeWorktreeDigest } from "../src/core/git.js";
 import { createCandidateRevisionV1 } from "../src/operations/v2Contracts.js";
-import { runShell } from "../src/utils/process.js";
+import { runExecutable, runShell } from "../src/utils/process.js";
 import { sha256Utf8 } from "../src/core/digest.js";
 import type { AehError } from "../src/core/errors.js";
 import type { HarnessProjectConfig, TaskContract } from "../src/core/types.js";
@@ -334,6 +334,100 @@ describe("candidate symlink escape gate (C-NEW-4)", () => {
       expect(result.candidate.revision).toBe(2);
       expect(await fs.readlink(path.join(root, "src", "link"))).toBe("../payload");
       await expect(fs.lstat(path.join(root, "src", "deep", "link"))).rejects.toThrow();
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it("RED-QUOTE-RENAME: rejects a C-quoted newline rename moving a symlink shallow so its target escapes", async () => {
+    const root = await initRepo();
+    // Newline in the rename source: git emits `rename from "src/we\nird/link"`
+    // (C-quoted, core.quotePath). A partial decoder that only expands \\ and
+    // \" leaves a literal backslash-n, so the pre-image lstat misses (ENOENT
+    // -> skip) and the shallow move goes undetected.
+    const weirdDir = "src/we\nird";
+    const from = `${weirdDir}/link`;
+    try {
+      await fs.mkdir(path.join(root, weirdDir), { recursive: true });
+      await fs.writeFile(path.join(root, "src", "payload"), "payload\n");
+      // Pre-image src/we<NL>ird/link -> ../payload resolves to src/payload
+      // (inside), so the tree itself is legitimate.
+      await fs.symlink("../payload", path.join(root, from));
+      await runShell("git add -A && git -c user.name=test -c user.email=test@example.com commit -qm deep-link", { cwd: root });
+      const current = createCandidateRevisionV1({ operationId: "OP-SYMLINK-QUOTE-RENAME", candidateId: "candidate:OP-SYMLINK-QUOTE-RENAME:r1", taskId: "TASK-SYMLINK-QUOTE-RENAME", revision: 1, sourceDigest: await computeWorktreeDigest(root) });
+      // argv-based git mv: shell-quoted JSON.stringify would not preserve the
+      // real newline in the source path.
+      expect((await runExecutable("git", ["mv", from, "link"], { cwd: root, timeoutMs: 30_000 })).exitCode).toBe(0);
+      const patch = (await runExecutable("git", ["diff", "--cached", "--binary", "HEAD", "--", "."], { cwd: root, timeoutMs: 30_000 })).stdout;
+      // Genuine git C-quoting: backslash-n is two patch-text chars here.
+      expect(patch).toContain('rename from "src/we\\nird/link"');
+      expect(patch).not.toMatch(/^\+\+\+ /m);
+      await runExecutable("git", ["reset", "-q", "--hard", "HEAD"], { cwd: root, timeoutMs: 30_000 });
+      // Post-image link -> ../payload resolves to <parent-of-root>/payload
+      // (outside): the same shallow-escape shape as RED-RENAME, reached
+      // through a C-quoted pre-image.
+      const changeSet = { version: 1 as const, operationId: current.operationId, taskId: "TASK-SYMLINK-QUOTE-RENAME", workUnitId: "WU-1", participantId: "participant-1", baseCandidateRevision: current.revision, baseCandidateDigest: current.identityDigest, changedFiles: [from, "link"], patch, patchDigest: sha256Utf8(patch) };
+      let failure: AehError | undefined;
+      try {
+        await assembleCandidateChangeSet({ root, operationId: current.operationId, taskId: "TASK-SYMLINK-QUOTE-RENAME", currentCandidate: current, changeSet, allowedScope: ["**"], candidateId: "candidate:OP-SYMLINK-QUOTE-RENAME:r2" });
+      } catch (error) { failure = error as AehError; }
+      expect(failure?.code).toBe("PARTICIPANT_PLAN_INVALID");
+      expect(failure?.message).toMatch(/symlink/i);
+      // Fail-closed: the escaping rename was never applied.
+      expect(await fs.readlink(path.join(root, from))).toBe("../payload");
+      await expect(fs.lstat(path.join(root, "link"))).rejects.toThrow();
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it("assembles a C-quoted newline rename keeping symlink resolution inside (no false positive)", async () => {
+    const root = await initRepo();
+    const weirdDir = "src/we\nird";
+    const from = `${weirdDir}/link`;
+    try {
+      await fs.mkdir(path.join(root, weirdDir), { recursive: true });
+      await fs.writeFile(path.join(root, "src", "payload"), "payload\n");
+      await fs.writeFile(path.join(root, "payload"), "payload\n");
+      await fs.symlink("../payload", path.join(root, from));
+      await runShell("git add -A && git -c user.name=test -c user.email=test@example.com commit -qm deep-link", { cwd: root });
+      const current = createCandidateRevisionV1({ operationId: "OP-SYMLINK-QUOTE-RENAME-OK", candidateId: "candidate:OP-SYMLINK-QUOTE-RENAME-OK:r1", taskId: "TASK-SYMLINK-QUOTE-RENAME-OK", revision: 1, sourceDigest: await computeWorktreeDigest(root) });
+      expect((await runExecutable("git", ["mv", from, "src/link"], { cwd: root, timeoutMs: 30_000 })).exitCode).toBe(0);
+      const patch = (await runExecutable("git", ["diff", "--cached", "--binary", "HEAD", "--", "."], { cwd: root, timeoutMs: 30_000 })).stdout;
+      expect(patch).toContain('rename from "src/we\\nird/link"');
+      expect(patch).not.toMatch(/^\+\+\+ /m);
+      await runExecutable("git", ["reset", "-q", "--hard", "HEAD"], { cwd: root, timeoutMs: 30_000 });
+      // Post-image src/link -> ../payload resolves to the committed root
+      // payload (inside): the C-quoted move changes resolution but stays
+      // contained.
+      const changeSet = { version: 1 as const, operationId: current.operationId, taskId: "TASK-SYMLINK-QUOTE-RENAME-OK", workUnitId: "WU-1", participantId: "participant-1", baseCandidateRevision: current.revision, baseCandidateDigest: current.identityDigest, changedFiles: [from, "src/link"], patch, patchDigest: sha256Utf8(patch) };
+      const result = await assembleCandidateChangeSet({ root, operationId: current.operationId, taskId: "TASK-SYMLINK-QUOTE-RENAME-OK", currentCandidate: current, changeSet, allowedScope: ["src/**"], candidateId: "candidate:OP-SYMLINK-QUOTE-RENAME-OK:r2" });
+      expect(result.candidate.revision).toBe(2);
+      expect(await fs.readlink(path.join(root, "src", "link"))).toBe("../payload");
+      await expect(fs.lstat(path.join(root, from))).rejects.toThrow();
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it("assembles a C-quoted +++ symlink path with a contained target (no false positive on quoted post-image)", async () => {
+    const root = await initRepo();
+    // Quoted post-image: git emits `+++ "b/src/we\nird/link"` for a newline
+    // path. Exercises the stripDiffPathPrefix side of the shared decoder.
+    const linkRel = "src/we\nird/link";
+    try {
+      await fs.writeFile(path.join(root, "src", "payload"), "payload\n");
+      await runShell("git add -A && git -c user.name=test -c user.email=test@example.com commit -qm payload", { cwd: root });
+      const current = createCandidateRevisionV1({ operationId: "OP-SYMLINK-QUOTE-PLUS-OK", candidateId: "candidate:OP-SYMLINK-QUOTE-PLUS-OK:r1", taskId: "TASK-SYMLINK-QUOTE-PLUS-OK", revision: 1, sourceDigest: await computeWorktreeDigest(root) });
+      await fs.mkdir(path.dirname(path.join(root, linkRel)), { recursive: true });
+      // link -> ../payload resolves to src/payload (inside).
+      await fs.symlink("../payload", path.join(root, linkRel));
+      expect((await runExecutable("git", ["add", "--", linkRel], { cwd: root, timeoutMs: 30_000 })).exitCode).toBe(0);
+      const patch = (await runExecutable("git", ["diff", "--cached", "--binary", "HEAD", "--", linkRel], { cwd: root, timeoutMs: 30_000 })).stdout;
+      expect(patch).toContain("120000");
+      expect(patch).toContain('+++ "b/src/we\\nird/link"');
+      await runExecutable("git", ["rm", "--cached", "-q", "--", linkRel], { cwd: root, timeoutMs: 30_000 });
+      await fs.rm(path.join(root, linkRel), { force: true });
+      expect((await runShell("git status --porcelain", { cwd: root })).stdout).toBe("");
+      const changeSet = { version: 1 as const, operationId: current.operationId, taskId: "TASK-SYMLINK-QUOTE-PLUS-OK", workUnitId: "WU-1", participantId: "participant-1", baseCandidateRevision: current.revision, baseCandidateDigest: current.identityDigest, changedFiles: [linkRel], patch, patchDigest: sha256Utf8(patch) };
+      const result = await assembleCandidateChangeSet({ root, operationId: current.operationId, taskId: "TASK-SYMLINK-QUOTE-PLUS-OK", currentCandidate: current, changeSet, allowedScope: ["src/**"], candidateId: "candidate:OP-SYMLINK-QUOTE-PLUS-OK:r2" });
+      expect(result.candidate.revision).toBe(2);
+      expect((await fs.lstat(path.join(root, linkRel))).isSymbolicLink()).toBe(true);
+      expect(await fs.readlink(path.join(root, linkRel))).toBe("../payload");
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 });

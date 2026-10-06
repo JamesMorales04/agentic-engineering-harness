@@ -933,11 +933,7 @@ async function resolveRenamedSymlinkPostImages(root: string, renames: readonly P
 
 function renamePathFromLine(line: string | undefined, prefix: "rename from " | "rename to "): string | undefined {
   if (line === undefined) return undefined;
-  let value = line.slice(prefix.length).trim();
-  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
-    value = value.slice(1, -1).replace(/\\(\\|")/g, "$1");
-  }
-  return value;
+  return unquoteDiffPath(line.slice(prefix.length));
 }
 
 function recordPatchRename(renames: PatchRenameV1[], unverifiable: string[], from: string, to: string): void {
@@ -960,12 +956,92 @@ function isPostImageSymlinkBlock(lines: readonly string[]): boolean {
 }
 
 function stripDiffPathPrefix(raw: string): string {
-  let value = raw.trim();
-  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
-    value = value.slice(1, -1).replace(/\\(\\|")/g, "$1");
-  }
+  const value = unquoteDiffPath(raw);
   if (value.startsWith("b/")) return value.slice(2);
   return value;
+}
+
+/**
+ * Shared C-style unquoting for diff paths (Git core.quotePath quoting).
+ *
+ * Git emits `"..."`-quoted paths with C escapes when a path contains
+ * "unusual" bytes (newline, tab, quote, backslash, non-ASCII, ...): `\"`,
+ * `\\`, `\n`, `\t` (plus the remaining C controls) and octal `\NNN` byte
+ * escapes (three octal digits per byte, e.g. `\303\251` for U+00E9). The
+ * previous decoder only expanded `\\` and `\"`, so a C-quoted rename source
+ * such as `"src/we\nird/link"` decoded to a literal backslash-n path: the
+ * pre-image lstat missed (ENOENT -> skip) and a shallow rename that
+ * re-resolved an unchanged relative symlink target outside the root went
+ * undetected. The same gap applied to `+++` post-image paths.
+ *
+ * Both the `rename from/to` parser and the `+++` post-image parser funnel
+ * through this helper, so the fix closes both exposure classes at once.
+ * Octal escapes decode as raw bytes re-assembled as UTF-8 so multi-byte
+ * sequences survive; unknown escapes are preserved literally (fail-closed:
+ * never silently drop the backslash).
+ */
+function unquoteDiffPath(raw: string): string {
+  const value = raw.trim();
+  if (value.length < 2 || !value.startsWith('"') || !value.endsWith('"')) return value;
+  return decodeCQuotedPathInner(value.slice(1, -1));
+}
+
+function decodeCQuotedPathInner(inner: string): string {
+  const bytes: number[] = [];
+  let literalStart = 0;
+  const flushLiteral = (end: number): void => {
+    if (end > literalStart) {
+      for (const byte of Buffer.from(inner.slice(literalStart, end), "utf8")) bytes.push(byte);
+    }
+  };
+  let index = 0;
+  while (index < inner.length) {
+    if (inner[index] !== "\\") {
+      index += 1;
+      continue;
+    }
+    flushLiteral(index);
+    const next = inner[index + 1];
+    if (next === undefined) {
+      bytes.push(0x5c);
+      index += 1;
+      literalStart = index;
+      continue;
+    }
+    switch (next) {
+      case "a": bytes.push(0x07); index += 2; break;
+      case "b": bytes.push(0x08); index += 2; break;
+      case "f": bytes.push(0x0c); index += 2; break;
+      case "n": bytes.push(0x0a); index += 2; break;
+      case "r": bytes.push(0x0d); index += 2; break;
+      case "t": bytes.push(0x09); index += 2; break;
+      case "v": bytes.push(0x0b); index += 2; break;
+      case "\\": bytes.push(0x5c); index += 2; break;
+      case '"': bytes.push(0x22); index += 2; break;
+      default: {
+        if (next >= "0" && next <= "7") {
+          let cursor = index + 1;
+          let octal = "";
+          while (cursor < inner.length && octal.length < 3 && inner[cursor]! >= "0" && inner[cursor]! <= "7") {
+            octal += inner[cursor];
+            cursor += 1;
+          }
+          bytes.push(parseInt(octal, 8) & 0xff);
+          index = cursor;
+        } else {
+          bytes.push(0x5c);
+          const codePoint = inner.codePointAt(index + 1)!;
+          const text = String.fromCodePoint(codePoint);
+          for (const byte of Buffer.from(text, "utf8")) bytes.push(byte);
+          index += 1 + text.length;
+        }
+        break;
+      }
+    }
+    literalStart = index;
+  }
+  flushLiteral(index);
+  return Buffer.from(bytes).toString("utf8");
 }
 
 async function pathsTouchedByPatch(root: string, patch: string): Promise<string[]> {
