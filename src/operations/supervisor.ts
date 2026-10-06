@@ -109,6 +109,89 @@ export interface EnsureSupervisorOptions { required?: boolean; forceMaterialize?
 export interface OperationSupervisorHandle { operationId: string; generation: number; agentId?: string; materialized: boolean; selection: AgentExecutionSelection; session?: WorkerSession; }
 export interface SupervisorConsolidationInput { key: string; purpose: string; findings: NormalizedFinding[]; sourceArtifacts?: string[]; deterministicEvidence?: unknown; }
 export interface SupervisorConsolidationResult { output: SupervisorOutput; artifact: string; session: WorkerSession; }
+
+/**
+ * DETERMINISTIC bounded retry budget for supervisor consolidation stall/timeout kills (A3
+ * stall-retry parity: consolidation turn timeout `AEH_OPERATION_SUPERVISOR_TURN_TIMEOUT`
+ * was terminal while init/rotation have 2 attempts). Exactly one retry is allowed per
+ * consolidation with a fresh generation and IDENTICAL inputs (same finding-set, same prompt
+ * content, no hints); a second stall/timeout kill rethrows the original class. Reuses the
+ * existing timeout taxonomy (`supervisorTurnTimedOutV1`: exit 124 / timed out|timeout|
+ * stalled_first_activity) — no new error classes. INVALID/schema/contract/provenance always
+ * terminal. Mirrors the repair maxAttempts=2 budget language: max 2 attempts total.
+ * Consolidation retry is idempotent (no artifact persisted until success; fresh generation,
+ * same finding-set; never silently retry semantic content — same inputs, fresh turn).
+ * Structured diagnostics (exitCode/killReason/status/activityCounts) are preserved via the
+ * session passed to the classifier and in the turn-timeout trace.
+ */
+export const SUPERVISOR_CONSOLIDATION_STALL_MAX_ATTEMPTS = 2;
+export const SUPERVISOR_CONSOLIDATION_STALL_MAX_RETRIES = 1;
+
+type SupervisorConsolidationStallSessionShape = Pick<WorkerSession, "exitCode" | "stdout" | "stderr"> & {
+  killReason?: WorkerSession["killReason"];
+  status?: WorkerSession["status"];
+};
+
+export function isSupervisorConsolidationStallKill(
+  error: unknown,
+  session?: SupervisorConsolidationStallSessionShape | undefined
+): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  if (/AEH_OPERATION_SUPERVISOR_CONTRACT|AEH_OPERATION_SUPERVISOR_PROVENANCE|AEH_OPERATION_SUPERVISOR_FAILED|AEH_OPERATION_SUPERVISOR_BINDING|AEH_OPERATION_SUPERVISOR_UNAVAILABLE|AEH_OPERATION_SUPERVISOR_ROTATION_FAILED|RESULT_INVALID|RESULT_ARTIFACT_MISSING|RESULT_ID_MISSING|AEH_RESULT_PROVENANCE|CANDIDATE_WORKSPACE_MISMATCH/.test(message)) return false;
+  if (/AEH_OPERATION_SUPERVISOR_TURN_TIMEOUT/.test(message)) return true;
+  if (session) {
+    if (session.killReason === "STALLED_FIRST_ACTIVITY" || (session as { killReason?: string }).killReason === "DEADLINE") return true;
+    if (session.status === "timeout") return true;
+    if (session.exitCode === 124) return true;
+    try {
+      if (supervisorTurnTimedOutV1(session)) return true;
+    } catch {
+      // Classifier is total over the picked shape; a malformed shape is not a stall.
+    }
+  }
+  if (/exit[^0-9]*124|exitCode[^0-9]*124|exit=124/.test(message)) return true;
+  if (/STALLED_FIRST_ACTIVITY|stalled_first_activity/.test(message)) return true;
+  if (/timed out|timeout/i.test(message)) return true;
+  return false;
+}
+
+export function shouldRetrySupervisorConsolidationStall(
+  error: unknown,
+  retriesSoFar: number,
+  session?: SupervisorConsolidationStallSessionShape | undefined
+): boolean {
+  return isSupervisorConsolidationStallKill(error, session) && retriesSoFar < SUPERVISOR_CONSOLIDATION_STALL_MAX_RETRIES;
+}
+
+/**
+ * DETERMINISTIC testable stall-retry wrapper for consolidation attempts. Retries once with
+ * IDENTICAL inputs (the same frozen prompt, no hints) on STALL/timeout kill classes only;
+ * INVALID/schema/contract/provenance always terminal; second failure rethrows. Preserves
+ * structured diagnostics by forwarding the session when the attempt failure carries one.
+ * Production `consolidateWithOperationSupervisor` uses the same classifier with fresh
+ * generation re-materialization; this wrapper covers the identical-inputs fresh-turn
+ * contract in isolation (No Paseo: stub `requestAttempt`).
+ */
+export async function withBoundedSupervisorConsolidationStallRetryV1<T>(input: {
+  prompt: string;
+  requestAttempt: (prompt: string) => Promise<T>;
+  sessionOf?: (error: unknown) => SupervisorConsolidationStallSessionShape | undefined;
+}): Promise<T> {
+  const frozenPrompt = input.prompt;
+  let retries = 0;
+  for (;;) {
+    try {
+      return await input.requestAttempt(frozenPrompt);
+    } catch (error) {
+      const session = input.sessionOf?.(error);
+      if (shouldRetrySupervisorConsolidationStall(error, retries, session)) {
+        retries += 1;
+        continue;
+      }
+      throw error;
+    }
+  }
+}
 interface SupervisorContextPolicy { handoffThreshold: number; hardHandoffThreshold: number; }
 interface SupervisionConfigExtension { operations?: { supervision?: { initializationTimeoutSeconds?: number; turnTimeoutSeconds?: number; context?: { handoffThreshold?: number; hardHandoffThreshold?: number; }; }; }; }
 const SUPERVISOR_INITIALIZATION_ATTEMPTS = 2;
@@ -196,84 +279,108 @@ async function ensureOperationSupervisorUnlocked(root: string, config: HarnessPr
 
 export async function consolidateWithOperationSupervisor(root: string, config: HarnessProjectConfig, contract: TaskContract, supervisorSelection: AgentExecutionSelection | undefined, input: SupervisorConsolidationInput): Promise<SupervisorConsolidationResult> {
   const stateRoot = resolveOperationStateRoot(root);
-  let supervisor = await ensureOperationSupervisor(root, config, contract, supervisorSelection, { required: true, forceMaterialize: true });
-  if (!supervisor?.agentId) throw new Error("AEH_OPERATION_SUPERVISOR_UNAVAILABLE: semantic consolidation requires a materialized supervisor session.");
-  let operation = await loadOperation(stateRoot, supervisor.operationId);
-  let provenance = await structuredResultProvenanceForAgent(stateRoot, supervisor.agentId).catch(() => undefined);
-  // Safety net: the active generation's structured-result binding must belong to the current
-  // candidate. If a rotation call site was missed, force one here instead of failing the
-  // operation on a stale continuation (AEH-V2-0120).
-  if (!supervisorGenerationCandidateCurrentV1(provenance, operation)) {
-    const rotated = await maybeRotateOperationSupervisor(root, config, contract, supervisorSelection);
-    if (!rotated?.agentId) throw new Error("AEH_OPERATION_SUPERVISOR_UNAVAILABLE: candidate-advanced supervisor generation could not be replaced for consolidation.");
-    supervisor = rotated;
-    operation = await loadOperation(stateRoot, rotated.operationId);
-    provenance = await structuredResultProvenanceForAgent(stateRoot, rotated.agentId).catch(() => undefined);
-  }
+  // Frozen finding-set for idempotent stall retry: the same sorted raw ids across attempts.
+  // No artifact is persisted until success, so a stall retry with a fresh generation and the
+  // same finding-set is idempotent; semantic content is never retried with hints (same inputs,
+  // fresh turn).
   const rawIds = [...new Set(input.findings.map((finding) => finding.id))].sort();
-  const generation = activeOperationSupervisor(operation);
-  const selection = eventSelection(supervisor.selection, contract, "consolidate", operation.kind);
-  const prompt = consolidationPrompt(operation, input, generation?.checkpointArtifact);
-  if (!provenance || provenance.status !== "BOUND" || !provenance.participantId) {
-    throw new Error(`AEH_OPERATION_SUPERVISOR_BINDING: active supervisor session '${supervisor.agentId}' has no complete bound structured-result identity for a continuation event.`);
-  }
-  // Consolidation is a continuation turn on the supervisor's already-bound generation session:
-  // the event prompt/context changes but the session binding (candidate, policy, blueprint, epoch,
-  // participant generation, runtime session) must remain exactly the one materialized for the
-  // generation. The activated structured-result turn and persisted consolidation artifact carry
-  // the delivered event evidence.
-  const turn = await withBoundedSupervisorConsolidationCorrectionV1({
-    expectedFindingIds: rawIds,
-    initialPrompt: prompt,
-    provenanceCorrectionPrompt: (receivedIds) => supervisorConsolidationCorrectionPromptV1(input, rawIds, receivedIds),
-    contractCorrectionPrompt: (failure) => supervisorConsolidationContractCorrectionPromptV1(input, rawIds, failure),
-    onCorrection: async (detail) => { await recordPaseoTrace(stateRoot, "operation.supervisor.consolidation-correction", { operationId: supervisor.operationId, generation: supervisor.generation, agentId: supervisor.agentId, expectedFindingIds: rawIds, receivedFindingIds: detail.receivedIds ?? [], failure: detail.failure ?? null }).catch(() => undefined); },
-    requestTurn: async (turnPrompt) => {
-      const turnTimeoutSeconds = operationSupervisorTurnTimeoutSeconds(config);
-      const turnSession = await executeAgentPrompt(root, config, contract, selection, turnPrompt, {
-        outputContract: "supervisor",
-        resumeSessionId: supervisor.agentId,
-        phase: "consolidating",
-        operationKind: operation.kind,
-        supervisorAgent: true,
-        requireExecutionAuthority: true,
-        continueBoundSession: true,
-        participantId: provenance.participantId,
-        providerTurnDeadlineMs: turnTimeoutSeconds * 1000
-      });
-      if (turnSession.exitCode !== 0) {
-        const timedOut = supervisorTurnTimedOutV1(turnSession);
-        if (timedOut) {
-          await stopManagedPaseoAgent(root, supervisor.agentId!).catch(() => undefined);
-          await updateSupervisorGeneration(stateRoot, supervisor.operationId, supervisor.generation, { status: "FAILED", error: `consolidation turn timed out after ${turnTimeoutSeconds}s; persistent session stopped` }).catch(() => undefined);
-          await recordPaseoTrace(stateRoot, "operation.supervisor.turn-timeout", { operationId: supervisor.operationId, generation: supervisor.generation, agentId: supervisor.agentId, timeoutSeconds: turnTimeoutSeconds, outcome: "FAILED_CLOSED_SESSION_STOPPED" }).catch(() => undefined);
-          throw new Error(`AEH_OPERATION_SUPERVISOR_TURN_TIMEOUT: consolidation turn exceeded ${turnTimeoutSeconds}s; session stopped and generation failed closed`);
+  let stallRetries = 0;
+  for (;;) {
+    let supervisor = await ensureOperationSupervisor(root, config, contract, supervisorSelection, { required: true, forceMaterialize: true });
+    if (!supervisor?.agentId) throw new Error("AEH_OPERATION_SUPERVISOR_UNAVAILABLE: semantic consolidation requires a materialized supervisor session.");
+    let operation = await loadOperation(stateRoot, supervisor.operationId);
+    let provenance = await structuredResultProvenanceForAgent(stateRoot, supervisor.agentId).catch(() => undefined);
+    // Safety net: the active generation's structured-result binding must belong to the current
+    // candidate. If a rotation call site was missed, force one here instead of failing the
+    // operation on a stale continuation (AEH-V2-0120).
+    if (!supervisorGenerationCandidateCurrentV1(provenance, operation)) {
+      const rotated = await maybeRotateOperationSupervisor(root, config, contract, supervisorSelection);
+      if (!rotated?.agentId) throw new Error("AEH_OPERATION_SUPERVISOR_UNAVAILABLE: candidate-advanced supervisor generation could not be replaced for consolidation.");
+      supervisor = rotated;
+      operation = await loadOperation(stateRoot, rotated.operationId);
+      provenance = await structuredResultProvenanceForAgent(stateRoot, rotated.agentId).catch(() => undefined);
+    }
+    const generation = activeOperationSupervisor(operation);
+    const selection = eventSelection(supervisor.selection, contract, "consolidate", operation.kind);
+    const prompt = consolidationPrompt(operation, input, generation?.checkpointArtifact);
+    if (!provenance || provenance.status !== "BOUND" || !provenance.participantId) {
+      throw new Error(`AEH_OPERATION_SUPERVISOR_BINDING: active supervisor session '${supervisor.agentId}' has no complete bound structured-result identity for a continuation event.`);
+    }
+    // Consolidation is a continuation turn on the supervisor's already-bound generation session:
+    // the event prompt/context changes but the session binding (candidate, policy, blueprint, epoch,
+    // participant generation, runtime session) must remain exactly the one materialized for the
+    // generation. The activated structured-result turn and persisted consolidation artifact carry
+    // the delivered event evidence.
+    // Stall-retry diagnostics: the last turn session is hoisted so structured diagnostics
+    // (exitCode/killReason/status/activityCounts) reach the stall classifier.
+    let lastTurnSession: SupervisorConsolidationStallSessionShape | undefined;
+    try {
+      const turn = await withBoundedSupervisorConsolidationCorrectionV1({
+        expectedFindingIds: rawIds,
+        initialPrompt: prompt,
+        provenanceCorrectionPrompt: (receivedIds) => supervisorConsolidationCorrectionPromptV1(input, rawIds, receivedIds),
+        contractCorrectionPrompt: (failure) => supervisorConsolidationContractCorrectionPromptV1(input, rawIds, failure),
+        onCorrection: async (detail) => { await recordPaseoTrace(stateRoot, "operation.supervisor.consolidation-correction", { operationId: supervisor.operationId, generation: supervisor.generation, agentId: supervisor.agentId, expectedFindingIds: rawIds, receivedFindingIds: detail.receivedIds ?? [], failure: detail.failure ?? null }).catch(() => undefined); },
+        requestTurn: async (turnPrompt) => {
+          const turnTimeoutSeconds = operationSupervisorTurnTimeoutSeconds(config);
+          const turnSession = await executeAgentPrompt(root, config, contract, selection, turnPrompt, {
+            outputContract: "supervisor",
+            resumeSessionId: supervisor.agentId,
+            phase: "consolidating",
+            operationKind: operation.kind,
+            supervisorAgent: true,
+            requireExecutionAuthority: true,
+            continueBoundSession: true,
+            participantId: provenance.participantId,
+            providerTurnDeadlineMs: turnTimeoutSeconds * 1000
+          });
+          lastTurnSession = turnSession;
+          if (turnSession.exitCode !== 0) {
+            const timedOut = supervisorTurnTimedOutV1(turnSession);
+            if (timedOut) {
+              await stopManagedPaseoAgent(root, supervisor.agentId!).catch(() => undefined);
+              await updateSupervisorGeneration(stateRoot, supervisor.operationId, supervisor.generation, { status: "FAILED", error: `consolidation turn timed out after ${turnTimeoutSeconds}s; persistent session stopped` }).catch(() => undefined);
+              await recordPaseoTrace(stateRoot, "operation.supervisor.turn-timeout", { operationId: supervisor.operationId, generation: supervisor.generation, agentId: supervisor.agentId, timeoutSeconds: turnTimeoutSeconds, outcome: "FAILED_CLOSED_SESSION_STOPPED", exitCode: turnSession.exitCode, killReason: (turnSession as { killReason?: unknown }).killReason ?? null, status: (turnSession as { status?: unknown }).status ?? null, activityCounts: (turnSession as { activityCounts?: unknown }).activityCounts ?? null }).catch(() => undefined);
+              throw new Error(`AEH_OPERATION_SUPERVISOR_TURN_TIMEOUT: consolidation turn exceeded ${turnTimeoutSeconds}s; session stopped and generation failed closed`);
+            }
+            throw new Error(`AEH_OPERATION_SUPERVISOR_FAILED: supervisor exited with ${turnSession.exitCode}: ${turnSession.stderr || turnSession.stdout}`);
+          }
+          try {
+            return { session: turnSession, output: supervisorOutputSchema.parse(extractMarkedJson(turnSession.stdout, turnSession.stderr)) };
+          } catch (error) {
+            return { session: turnSession, failure: String(error) };
+          }
         }
-        throw new Error(`AEH_OPERATION_SUPERVISOR_FAILED: supervisor exited with ${turnSession.exitCode}: ${turnSession.stderr || turnSession.stdout}`);
+      });
+      const artifact = await persistOperationConsolidation(stateRoot, supervisor.operationId, input.key, {
+        generation: supervisor.generation,
+        sourceArtifacts: input.sourceArtifacts ?? [],
+        rawFindingIds: rawIds,
+        output: turn.output,
+        deliveredTurn: {
+          sessionId: supervisor.agentId,
+          participantId: provenance.participantId,
+          event: "consolidate",
+          promptDigest: sha256Utf8(turn.prompt),
+          bindingDigest: provenance.executionBinding?.digest ?? provenance.provenanceDigest
+        }
+      });
+      const current = await loadOperation(stateRoot, supervisor.operationId);
+      await patchOperation(stateRoot, supervisor.operationId, { supervision: { ...current.supervision, latestConsolidationRevision: current.revision + 1, latestConsolidationArtifact: artifact } });
+      return { output: turn.output, artifact, session: turn.session };
+    } catch (error) {
+      // Bounded fresh-generation identical-inputs retry for STALL/timeout kill classes ONLY.
+      // The failed generation was already stopped and marked FAILED closed; the retry
+      // re-materializes a fresh generation with the same frozen finding-set and same inputs.
+      // INVALID/schema/contract/provenance always terminal; second failure rethrows original.
+      if (shouldRetrySupervisorConsolidationStall(error, stallRetries, lastTurnSession)) {
+        stallRetries += 1;
+        await recordPaseoTrace(stateRoot, "operation.supervisor.consolidation-stall-retry", { operationId: supervisor.operationId, generation: supervisor.generation, agentId: supervisor.agentId, attempt: stallRetries, maxAttempts: SUPERVISOR_CONSOLIDATION_STALL_MAX_ATTEMPTS, expectedFindingIds: rawIds }).catch(() => undefined);
+        continue;
       }
-      try {
-        return { session: turnSession, output: supervisorOutputSchema.parse(extractMarkedJson(turnSession.stdout, turnSession.stderr)) };
-      } catch (error) {
-        return { session: turnSession, failure: String(error) };
-      }
+      throw error;
     }
-  });
-  const artifact = await persistOperationConsolidation(stateRoot, supervisor.operationId, input.key, {
-    generation: supervisor.generation,
-    sourceArtifacts: input.sourceArtifacts ?? [],
-    rawFindingIds: rawIds,
-    output: turn.output,
-    deliveredTurn: {
-      sessionId: supervisor.agentId,
-      participantId: provenance.participantId,
-      event: "consolidate",
-      promptDigest: sha256Utf8(turn.prompt),
-      bindingDigest: provenance.executionBinding?.digest ?? provenance.provenanceDigest
-    }
-  });
-  const current = await loadOperation(stateRoot, supervisor.operationId);
-  await patchOperation(stateRoot, supervisor.operationId, { supervision: { ...current.supervision, latestConsolidationRevision: current.revision + 1, latestConsolidationArtifact: artifact } });
-  return { output: turn.output, artifact, session: turn.session };
+  }
 }
 
 export async function maybeRotateOperationSupervisor(root: string, config: HarnessProjectConfig, contract: TaskContract, selection: AgentExecutionSelection | undefined): Promise<OperationSupervisorHandle | undefined> {
