@@ -736,28 +736,50 @@ export async function cancelOperation(
       selfPid: process.pid
     });
     const terminateGroup = deps.terminateProcessGroup ?? terminateManagedProcessGroup;
+    // Fail-closed kill loop: a kill-time scan failure aborts the WHOLE
+    // cancellation (never skip-and-continue — signaling the remaining targets
+    // with an unproven exclusion set would be fail-open). Pids already
+    // signaled are reported honestly in the abort error; no further signals
+    // are sent. MECHANISM: DETERMINISTIC gate.
+    const signaledPids: number[] = [];
     for (const pid of processGroups) {
       const latest = await loadOperation(absoluteRoot, operationId);
       assertCancellationFence(latest, cancellationFence, "operation cancellation process fencing");
       // Kill-time revalidation (PID-reuse TOCTOU): the scan-time snapshot can
       // go stale before signaling (the OS may reuse a pid for a sibling after
       // the scan), so each target is re-proven immediately before signaling.
-      const verdict = await verifyPidBeforeSignal(pid, {
-        operationRoot: absoluteRoot,
-        recordPid: record.pid,
-        managedPidSet,
-        selfPid: process.pid,
-        stateRoot: siblingStateRoot,
-        operationId,
-        listSiblings
-      });
+      let verdict: { signal: boolean; reason: string };
+      try {
+        verdict = await verifyPidBeforeSignal(pid, {
+          operationRoot: absoluteRoot,
+          recordPid: record.pid,
+          managedPidSet,
+          selfPid: process.pid,
+          stateRoot: siblingStateRoot,
+          operationId,
+          listSiblings
+        });
+      } catch (error) {
+        const abortMessage = `AEH_CANCELLATION_FENCING_REQUIRED: cancellation aborted at kill-time revalidation of process group ${pid} because sibling ownership could not be re-proven (${String(error)}); ${signaledPids.length} pid(s) already signaled before the failure [${signaledPids.join(", ")}] and no further signals were sent; retry or operator intervention is required.`;
+        try { await trace(absoluteRoot, "cleanup.sibling-rescan.failed", { operationId, pid, signaledPids: [...signaledPids], error: String(error) }); } catch { /* observability only */ }
+        try {
+          const fenced = await loadOperation(absoluteRoot, operationId);
+          assertCancellationFence(fenced, cancellationFence, "operation cancellation kill-time fencing");
+          await patchOperation(absoluteRoot, operationId, {
+            phase: "cancellation-fencing-required",
+            error: abortMessage,
+            cleanupWarnings: [...cleanupWarnings, abortMessage]
+          });
+        } catch { /* fencing state is best-effort; the throw below is the fail-closed gate */ }
+        throw new Error(abortMessage);
+      }
       if (!verdict.signal) {
         // An already-exited pid needs no signal: the goal is achieved.
         if (verdict.reason === "already-exited") continue;
         cleanupWarnings.push(`process group ${pid}: not signaled (${verdict.reason})`);
         continue;
       }
-      try { await terminateGroup(pid); }
+      try { await terminateGroup(pid); signaledPids.push(pid); }
       catch (error) { cleanupWarnings.push(`process group ${pid}: ${String(error)}`); }
       if (!(await waitForProcessExit(pid, 1_000))) cleanupWarnings.push(`process group ${pid}: process remained live after termination signals`);
     }
@@ -1335,6 +1357,22 @@ export async function expireOperationAtHardDeadline(root: string, operationId: s
   }
   if (config) await writeOperationEfficiencySummary(root, config, terminal).catch(() => undefined);
   if (config) await syncOperationPortfolio(root, config.project.name, terminal).catch(() => undefined);
+  // FOLLOW-UP (watchdog pid-reuse hardening, NOT fixed here):
+  // expireOperationAtHardDeadline terminates terminal.pid — this operation's OWN
+  // recorded controller pid (durable record identity, not a cwd/descendant
+  // heuristic) — without a sibling-ownership recheck. Threat: pid-reuse
+  // cross-kill — the recorded controller may have exited and its number been
+  // reused by a sibling operation's controller/worker before the fuse fires;
+  // signaling it would kill a sibling (safety), while skipping on an unproven
+  // scan would leave a wedged controller alive past its hard Owner deadline
+  // (the fuse must fire — availability). The cancellation kill-time helper
+  // (verifyPidBeforeSignal) does not transfer trivially (more than a few
+  // lines in this same function): its contract throws fencing-required with
+  // cancel-loop abort semantics (signaled-pid tracking plus a
+  // cancellation-fence patch), and this path has no cancellation fence, no
+  // managed-handle set, and no signaled-tracking context — mapping a scan
+  // failure to skip-vs-kill here needs an explicit product decision first.
+  // Do NOT extend this line without that decision.
   if (terminal.pid && terminal.pid !== process.pid) await terminateManagedProcessGroup(terminal.pid).catch(() => undefined);
   try {
     if (deps.notifyCompletion) await deps.notifyCompletion(root, terminal);
@@ -1740,11 +1778,36 @@ export function buildCancellationPidSet(input: {
   return selected;
 }
 
-/** Pids currently owned as another operation's record/controller pid. */
+/** Pids currently owned as another operation's record/controller pid.
+ *
+ * Fail-closed sibling scan: cancellation already loaded the target record, so
+ * a missing or unreadable operations directory cannot prove "no siblings" —
+ * it proves the scan failed. This returns empty ONLY after a proven listing;
+ * any listing or sibling-load failure throws AEH_CANCELLATION_FENCING_REQUIRED
+ * (never empty-success). Terminal operations' pids stay in the set: a dead
+ * pid number may be reused by a live sibling, and filtering terminals out
+ * would re-open cross-kill on reuse (see verifyPidBeforeSignal).
+ * MECHANISM: DETERMINISTIC gate.
+ */
 export async function listSiblingOwnedProcessIds(stateRoot: string, operationId: string): Promise<Set<number>> {
+  const directory = path.resolve(stateRoot, ".harness", "operations");
+  let entries: string[];
+  try {
+    entries = (await fs.readdir(directory))
+      .filter((name) => name !== "portfolio.json" && /^[A-Z][A-Za-z0-9_-]+\.json$/.test(name));
+  } catch (error) {
+    throw new Error(`AEH_CANCELLATION_FENCING_REQUIRED: sibling-ownership scan could not list ${directory} and therefore cannot prove no sibling owns a target pid: ${String(error)}`);
+  }
   const owned = new Set<number>();
-  for (const operation of await readOperationRecords(stateRoot)) {
-    if (operation.id === operationId) continue;
+  for (const entry of entries) {
+    const siblingId = entry.slice(0, -".json".length);
+    if (siblingId === operationId) continue;
+    let operation: OperationRecordV2;
+    try {
+      operation = await loadOperation(stateRoot, siblingId);
+    } catch (error) {
+      throw new Error(`AEH_CANCELLATION_FENCING_REQUIRED: sibling-ownership scan could not load sibling record ${siblingId} and therefore cannot prove no sibling owns a target pid: ${String(error)}`);
+    }
     for (const pid of [operation.pid, operation.controller?.pid]) {
       if (typeof pid === "number" && Number.isInteger(pid) && pid > 0 && pid !== process.pid) owned.add(pid);
     }
@@ -1760,6 +1823,10 @@ export async function listSiblingOwnedProcessIds(stateRoot: string, operationId:
  * sibling after the scan), liveness, and — for pids without durable ownership
  * (not the record controller pid nor a managed handle) — a fresh cwd or
  * descendant proof. Returns signal:false to skip without signaling.
+ *
+ * A failed fresh scan THROWS AEH_CANCELLATION_FENCING_REQUIRED (never
+ * skip-and-continue): the caller must abort the whole cancellation, because
+ * every remaining target would be signaled with an unproven exclusion set.
  *
  * Residual /proc race: between this recheck and process.kill the OS may still
  * exit and reuse the pid. The window is narrowed from the whole scan-to-signal
@@ -1783,12 +1850,21 @@ async function verifyPidBeforeSignal(
   let fresh: Set<number>;
   try {
     fresh = await input.listSiblings(input.stateRoot, input.operationId);
-  } catch {
-    return { signal: false, reason: "sibling ownership could not be re-proven at signal time" };
+  } catch (error) {
+    throw new Error(`AEH_CANCELLATION_FENCING_REQUIRED: sibling ownership could not be re-proven at signal time for process group ${pid}: ${String(error)}`);
   }
   if (fresh.has(pid)) return { signal: false, reason: "pid is currently owned as another operation's record/controller pid" };
   try { process.kill(pid, 0); }
   catch (error) {
+    // Stale-pid safety: a dead pid (ESRCH) is SKIPPED, never signaled, and
+    // skipping is the safe direction. Signaling a possibly-reused pid risks
+    // cross-kill of a sibling that inherited the number; skipping a dead pid
+    // is harmless (the goal — that pid being gone — is already achieved); and
+    // skipping a pid reused by this operation's own child is at most a bounded
+    // leak (availability-only: the child keeps running until the reconciler or
+    // operator retries, never a safety violation). That is why terminal
+    // operations' pids stay in the sibling exclusion set — filtering them out
+    // would re-open cross-kill as soon as a dead number is reused.
     if ((error as NodeJS.ErrnoException).code === "ESRCH") return { signal: false, reason: "already-exited" };
     // EPERM and friends prove the pid exists; fall through to the proofs below.
   }

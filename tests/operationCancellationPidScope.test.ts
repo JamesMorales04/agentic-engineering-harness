@@ -4,7 +4,7 @@ import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { saveOwnedOperation } from "./helpers/ownedOperation.js";
-import { cancelOperation } from "../src/operations/controller.js";
+import { cancelOperation, listSiblingOwnedProcessIds as realListSiblingOwnedProcessIds } from "../src/operations/controller.js";
 import {
   buildCancellationPidSet,
   findDescendantProcessIds
@@ -219,5 +219,111 @@ describe("cancellation pid scope (A-NEW-4)", () => {
 
     expect(signals).not.toContain(targetPid);
     expect(signals).toEqual([]);
+  });
+
+  it("fails closed (never empty-success) when the operations directory is missing", async () => {
+    // Cancellation already loaded the target record, so a missing operations
+    // directory cannot prove "no siblings" — the scan must throw instead of
+    // reporting an empty (unproven) exclusion set.
+    const ghost = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-cancel-ghost-"));
+    roots.push(ghost);
+    await expect(realListSiblingOwnedProcessIds(ghost, "CANCEL-KNOWN-OP")).rejects.toThrow(
+      /AEH_CANCELLATION_FENCING_REQUIRED/
+    );
+  });
+
+  it("aborts cancellation with zero signals when the sibling scan observes a missing operations directory", async () => {
+    const root = await tempRoot();
+    const id = "CANCEL-PID-MISSING-DIR";
+    await saveOwnedOperation(root, operation(root, id));
+    await bindCancellationDecision(root, id, "human:pid-scope-test");
+    const targetPid = 48883;
+    await patchOperation(root, id, { pid: targetPid });
+    // The scan observes a state root with no operations directory (the
+    // concurrent-disappearance shape); the target record is already loaded by
+    // cancellation, so empty-success would bypass the fail-closed gate.
+    const ghost = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-cancel-ghost-"));
+    roots.push(ghost);
+
+    const signals: number[] = [];
+    const run = vi.fn(async () => ({ exitCode: 0, stdout: "stopped", stderr: "", durationMs: 1 }));
+    await expect(cancelOperation(root, id, {
+      run: run as never,
+      trace: vi.fn(async () => undefined) as never,
+      humanActorId: "human:pid-scope-test",
+      listSiblingOwnedProcessIds: async (_stateRoot: string, operationId: string) =>
+        realListSiblingOwnedProcessIds(ghost, operationId),
+      terminateProcessGroup: async (pid: number) => { signals.push(pid); }
+    })).rejects.toThrow(/AEH_CANCELLATION_FENCING_REQUIRED/);
+
+    expect(signals).toEqual([]);
+    expect((await loadOperation(root, id)).phase).toBe("cancellation-fencing-required");
+  });
+
+  it("aborts the whole cancellation when a kill-time sibling rescan fails (later targets unsignaled)", async () => {
+    const root = await tempRoot();
+    const id = "CANCEL-KILL-ABORT";
+    await saveOwnedOperation(root, operation(root, id));
+    await bindCancellationDecision(root, id, "human:pid-scope-test");
+    const pids = [48771, 48772, 48773];
+    await patchOperation(root, id, { pid: pids[0] });
+    // Two additional durable targets via managed-process handles; all three
+    // pids are durable (record pid + managed set) so the kill-time recheck
+    // reaches the sibling rescan before any liveness short-circuit.
+    const safeId = id.replace(/[^A-Za-z0-9._-]/g, "_");
+    const handlesDir = path.join(root, ".harness", "operations", `${safeId}.processes`);
+    await fs.mkdir(handlesDir, { recursive: true });
+    for (const pid of pids.slice(1)) {
+      await fs.writeFile(
+        path.join(handlesDir, `${pid}.json`),
+        JSON.stringify({ pid, processGroupId: pid, startedAt: new Date().toISOString() })
+      );
+    }
+    // Fake liveness: the targets are "alive" until the test seam "kills" them.
+    const live = new Set(pids);
+    const originalKill = process.kill;
+    (process as { kill: typeof process.kill }).kill = ((pid: number, signal?: number | NodeJS.Signals) => {
+      if (signal === undefined || signal === 0) {
+        if (!live.has(pid)) throw Object.assign(new Error("ESRCH"), { code: "ESRCH" });
+        return true;
+      }
+      live.delete(pid);
+      return true;
+    }) as typeof process.kill;
+    try {
+      // Call 1 is the initial scan (clean); call 2 is the first target's
+      // recheck (clean, so it is signaled); call 3 fails — every later target
+      // must remain unsignaled after the abort.
+      let calls = 0;
+      const signals: number[] = [];
+      const run = vi.fn(async () => ({ exitCode: 0, stdout: "stopped", stderr: "", durationMs: 1 }));
+      let message = "";
+      try {
+        await cancelOperation(root, id, {
+          run: run as never,
+          trace: vi.fn(async () => undefined) as never,
+          humanActorId: "human:pid-scope-test",
+          listSiblingOwnedProcessIds: async () => {
+            calls += 1;
+            if (calls === 3) throw new Error("EIO: kill-time scan unavailable");
+            return new Set<number>();
+          },
+          terminateProcessGroup: async (pid: number) => { signals.push(pid); live.delete(pid); }
+        });
+      } catch (error) {
+        message = String(error);
+      }
+      expect(message).toMatch(/AEH_CANCELLATION_FENCING_REQUIRED/);
+      // Exactly one target was signaled before the abort; no further signals.
+      expect(signals).toHaveLength(1);
+      for (const pid of pids) {
+        if (pid !== signals[0]) expect(signals).not.toContain(pid);
+      }
+      // Honest partial record: the error names the already-signaled target.
+      expect(message).toContain(String(signals[0]));
+      expect((await loadOperation(root, id)).phase).toBe("cancellation-fencing-required");
+    } finally {
+      (process as { kill: typeof process.kill }).kill = originalKill;
+    }
   });
 });
