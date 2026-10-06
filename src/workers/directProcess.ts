@@ -65,10 +65,29 @@ export async function runDirectWorkerProcess(
       let exitCode: number | null = null;
       let unregister: () => Promise<void> = async () => undefined;
       const registered = registerManagedProcessHandle(child.pid);
-      void registered.then((cleanup) => {
-        unregister = cleanup;
-        if (settled) void unregister();
-      });
+      void registered.then(
+        (cleanup) => {
+          unregister = cleanup;
+          if (settled) void unregister();
+        },
+        (error) => {
+          // Same fail-loud contract as runChild (Luna-b): never leave a
+          // live-but-unregistered direct worker. Best-effort stop, then throw.
+          if (settled) return;
+          settled = true;
+          if (timer) clearTimeout(timer);
+          if (killTimer) clearTimeout(killTimer);
+          if (forceSettleTimer) clearTimeout(forceSettleTimer);
+          try {
+            if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
+            else child.kill("SIGKILL");
+          } catch { /* already exited */ }
+          try { child.kill("SIGKILL"); } catch { /* already exited */ }
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          reject(error);
+        }
+      );
 
       const kill = (signal: NodeJS.Signals): void => {
         try {

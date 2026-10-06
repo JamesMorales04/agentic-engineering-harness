@@ -416,10 +416,34 @@ async function runChild(
     let exitSignal: NodeJS.Signals | null = null;
     let unregister: () => Promise<void> = async () => undefined;
     const registered = registerManagedProcessHandle(child.pid);
-    void registered.then((cleanup) => {
-      unregister = cleanup;
-      if (settled) void unregister();
-    });
+    void registered.then(
+      (cleanup) => {
+        unregister = cleanup;
+        if (settled) void unregister();
+      },
+      (error) => {
+        // Registration persistence failed: never leave a live-but-unregistered
+        // (unfenced) child. Best-effort STOP the just-spawned process, then
+        // throw spawn failure so the caller retries cleanly. If the child
+        // already settled, it is already dead — no live child to stop and the
+        // outer result already resolved.
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        if (killTimer) clearTimeout(killTimer);
+        if (forceSettleTimer) clearTimeout(forceSettleTimer);
+        options.signal?.removeEventListener("abort", onAbort);
+        try {
+          if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
+          else child.kill("SIGKILL");
+        } catch { /* already exited */ }
+        try { child.kill("SIGKILL"); } catch { /* already exited */ }
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        child.stdin?.destroy();
+        reject(error);
+      }
+    );
     const kill = (signal: NodeJS.Signals): void => {
       try {
         if (process.platform !== "win32" && child.pid) process.kill(-child.pid, signal);
@@ -666,12 +690,25 @@ export async function registerManagedProcessHandle(pid: number | undefined): Pro
   if (!pid || !operationId || !controlRoot || process.env.AEH_OPERATION_STATE_REDIRECT !== "1") return async () => undefined;
   const directory = managedProcessDirectory(controlRoot, operationId);
   const file = path.join(directory, `${pid}.json`);
+  // FAIL LOUDLY (Luna-b): an unpersisted live child is exactly what later
+  // causes cross-kill ambiguity (empty handle dir reads as "no workers" while
+  // live workers exist). Killing a bookkeeping-failed spawn is availability
+  // cost, the correct safety choice over an unfenced live child. Callers must
+  // best-effort STOP the just-spawned process and throw spawn failure; they
+  // must never continue with a live-but-unregistered child.
   try {
     await fs.mkdir(directory, { recursive: true });
-    await fs.writeFile(file, `${JSON.stringify({ pid, processGroupId: pid, startedAt: new Date().toISOString() })}\n`, { flag: "wx" });
+    try {
+      await fs.writeFile(file, `${JSON.stringify({ pid, processGroupId: pid, startedAt: new Date().toISOString() })}\n`, { flag: "wx" });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") throw error;
+      // Same-pid re-registration (pid reuse while a stale handle file lingers):
+      // overwrite idempotently — the file names this pid either way.
+      await fs.writeFile(file, `${JSON.stringify({ pid, processGroupId: pid, startedAt: new Date().toISOString() })}\n`);
+    }
     return async () => { await fs.rm(file, { force: true }).catch(() => undefined); };
-  } catch {
-    return async () => undefined;
+  } catch (error) {
+    throw new Error(`AEH_MANAGED_PROCESS_HANDLE_REGISTER_FAILED: could not persist handle for pid ${pid} of operation ${operationId}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 

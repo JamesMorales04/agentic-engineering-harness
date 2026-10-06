@@ -810,7 +810,12 @@ export async function cancelOperation(
     }
     const beforeHandleCleanup = await loadOperation(absoluteRoot, operationId);
     assertCancellationFence(beforeHandleCleanup, cancellationFence, "operation cancellation handle cleanup");
-    await clearManagedProcessHandles(absoluteRoot, operationId);
+    // EVIDENCE PRESERVATION (Luna-a): the handle directory is the durable
+    // truth a retry/rescan needs. It is cleared ONLY on the full-success path
+    // below (all targets signaled-or-already-dead and every later fencing
+    // check passed). Any failed signal, kill-loop warning, or later fencing
+    // state must leave it intact — clearing it here unconditionally destroyed
+    // the failed-PID evidence the fencing-required state cannot restore.
 
     let agentIds = [...new Set([
       ...(record.agents ?? []).map((agent) => agent.id),
@@ -963,6 +968,16 @@ export async function cancelOperation(
         error: `Cancellation is fenced pending reconciliation of ${unresolvedActions.length} action intent(s): ${unresolvedActions.map((intent) => intent.actionKey).join(", ")}.`
       });
       throw new Error(`AEH_CANCELLATION_RECONCILIATION_REQUIRED: unresolved action intents must be reconciled before cancellation can become terminal: ${unresolvedActions.map((intent) => intent.actionKey).join(", ")}.`);
+    }
+    // Full-success handle cleanup (Luna-a): every fencing gate above passed
+    // (kill loop, agent/lease cleanup, reconciliation), so all targets were
+    // signaled-or-already-dead with no fencing. Only now is it safe to clear
+    // the handle directory; every fencing-required throw above preserves it
+    // for retry/rescan.
+    {
+      const preClear = await loadOperation(absoluteRoot, operationId);
+      assertCancellationFence(preClear, cancellationFence, "operation cancellation handle cleanup");
+      await clearManagedProcessHandles(absoluteRoot, operationId);
     }
     return await terminalizeOperation(
       absoluteRoot,
@@ -1398,26 +1413,67 @@ export async function expireOperationAtHardDeadline(root: string, operationId: s
   if (terminal.pid && terminal.pid !== process.pid) {
     const expectedRoots = [path.resolve(terminal.root ?? root), ...(terminal.workspaceRoot ? [terminal.workspaceRoot] : [])];
     const listSiblings = deps.listSiblingOwnedProcessIds ?? listSiblingOwnedProcessIds;
-    let watchdogVerdict: { signal: boolean; reason: string };
+    const terminate = deps.terminateProcessGroup ?? terminateManagedProcessGroup;
+    const stateRoot = resolveOperationStateRoot(root);
+    // UNIFICATION (Luna-c): the watchdog kill uses the SAME exclusion builder
+    // (buildCancellationPidSet over the sibling-owned set) plus the shared
+    // verifyPidBeforeSignal, and RECORDS termination errors instead of
+    // swallowing them. A failed sibling scan maps to skip-with-warning: the
+    // fuse already fired above (terminalization), so only the signal is
+    // skipped — killing is what gets skipped, not terminalization.
+    let siblingOwned: Set<number>;
+    let initialScanFailed = false;
     try {
-      watchdogVerdict = await verifyPidBeforeSignal(terminal.pid, {
-        operationRoot: path.resolve(terminal.root ?? root),
-        recordPid: terminal.pid,
-        managedPidSet: new Set<number>([terminal.pid]),
-        selfPid: process.pid,
-        stateRoot: resolveOperationStateRoot(root),
-        operationId,
-        listSiblings,
-        expectedRoots
-      });
-    } catch {
-      watchdogVerdict = { signal: false, reason: "sibling ownership could not be re-proven" };
+      siblingOwned = await listSiblings(stateRoot, operationId);
+    } catch (error) {
+      await trace(root, "operation.hard-deadline.pid-skipped", { operationId, pid: terminal.pid, reason: "sibling ownership could not be proven", error: String(error) }).catch(() => undefined);
+      siblingOwned = new Set<number>();
+      initialScanFailed = true;
     }
-    if (watchdogVerdict.signal) {
-      const terminate = deps.terminateProcessGroup ?? terminateManagedProcessGroup;
-      await terminate(terminal.pid).catch(() => undefined);
+    if (initialScanFailed) {
+      // Skip-with-warning already traced; fuse already fired. No signal.
     } else {
-      await trace(root, "operation.hard-deadline.pid-skipped", { operationId, pid: terminal.pid, reason: watchdogVerdict.reason }).catch(() => undefined);
+    const candidates = buildCancellationPidSet({
+      managedPids: [terminal.pid],
+      descendantPids: [],
+      recordPid: terminal.pid,
+      siblingOwnedPids: siblingOwned,
+      selfPid: process.pid
+    });
+    if (!candidates.includes(terminal.pid)) {
+      await trace(root, "operation.hard-deadline.pid-skipped", { operationId, pid: terminal.pid, reason: "pid is currently owned as another operation's record/controller pid" }).catch(() => undefined);
+    } else {
+      let watchdogVerdict: { signal: boolean; reason: string };
+      try {
+        watchdogVerdict = await verifyPidBeforeSignal(terminal.pid, {
+          operationRoot: path.resolve(terminal.root ?? root),
+          recordPid: terminal.pid,
+          managedPidSet: new Set<number>([terminal.pid]),
+          selfPid: process.pid,
+          stateRoot,
+          operationId,
+          listSiblings,
+          expectedRoots
+        });
+      } catch (error) {
+        await trace(root, "operation.hard-deadline.pid-skipped", { operationId, pid: terminal.pid, reason: "sibling ownership could not be re-proven", error: String(error) }).catch(() => undefined);
+        watchdogVerdict = { signal: false, reason: "sibling ownership could not be re-proven" };
+      }
+      if (watchdogVerdict.signal) {
+        try {
+          await terminate(terminal.pid);
+          await trace(root, "operation.hard-deadline.pid-signaled", { operationId, pid: terminal.pid }).catch(() => undefined);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException)?.code === "ESRCH") {
+            await trace(root, "operation.hard-deadline.pid-skipped", { operationId, pid: terminal.pid, reason: "already-exited" }).catch(() => undefined);
+          } else {
+            await trace(root, "operation.hard-deadline.terminate-failed", { operationId, pid: terminal.pid, error: String(error) }).catch(() => undefined);
+          }
+        }
+      } else if (watchdogVerdict.reason !== "sibling ownership could not be re-proven") {
+        await trace(root, "operation.hard-deadline.pid-skipped", { operationId, pid: terminal.pid, reason: watchdogVerdict.reason }).catch(() => undefined);
+      }
+    }
     }
   }
   try {
