@@ -211,11 +211,16 @@ async function reconcileGitCommit(root: string, intent: ActionIntentV1, payload:
     if (candidates.length === 0) {
       return buildResult(intent, "FAILED", "commit-subject-mismatch", { expectedSubject: message, observedSubject: subject, scannedCommits: entries.length, scanLimit: COMMIT_HISTORY_SCAN_LIMIT }, dependencies.now);
     }
-    let observedHeadDigest: string | undefined;
+    // An unverifiable HEAD (oversize/unreadable/cap-invalid digest throw)
+    // must never be bypassed by stale history: history proves an older
+    // same-subject commit matches, never that the present HEAD is correct.
+    // Digest ERROR -> UNKNOWN immediately without consulting history;
+    // digest MISMATCH (computed, differs) -> history fallback below.
+    let observedHeadDigest: string;
     try {
       observedHeadDigest = (await dependencies.computeCommitTreeDigest(root, "HEAD")).trim().toLowerCase();
-    } catch {
-      observedHeadDigest = undefined;
+    } catch (error) {
+      return buildResult(intent, "UNKNOWN", "commit-content-unreadable", { expectedSubject: message, observedSubject: subject, expectedContentDigest, error: errorMessage(error), scannedCommits: entries.length, scanLimit: COMMIT_HISTORY_SCAN_LIMIT }, dependencies.now);
     }
     for (const candidate of candidates) {
       let candidateDigest: string;
