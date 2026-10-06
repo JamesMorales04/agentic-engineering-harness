@@ -29,19 +29,55 @@ export function clearToolchainEnvCache(): void { toolchainPathCache.clear(); }
  * MECHANISM: DETERMINISTIC. Single source shared by prod runChild and the
  * browser fixture sanitizer. Strips controller identity, the managed-agent
  * envelope, participant/candidate/lease/binding/scratch authority, deterministic
- * Paseo markers, S9 roots, Paseo session binding, context extras, and NODE_PATH
- * host leakage (consistent with sdkResolve's NODE_PATH scrub during resolve).
+ * Paseo markers, S9 roots, Paseo session binding, context extras, NODE_PATH
+ * host leakage (consistent with sdkResolve's NODE_PATH scrub during resolve),
+ * all MISE_* and ASDF_* shim configuration, and XDG shim-directory overrides.
  *
- * PATH/MISE_* are intentionally NOT stripped: the toolchain prefix is pinned via
- * `.harness/toolchain.state.json` (toolchainPathPrefix) and the Paseo SDK via
- * `resolvePaseoSdkFromCli` diagnostics; the candidate release is pinned via
- * `dist/releases/<id>/build-identity.json` plus AEH_S9_REPO_ROOT. Both prod and
- * fixture record that pinned resolution evidence instead of inheriting ambient
- * SDK/entry locations. AEH_ENTRY_FILE is stripped fail-closed so entry resolution
- * must be explicit (argv[1]), never inherited.
+ * Shim-var enumeration (mise docs/behavior in-repo):
+ * - MISE_* prefix: covers MISE_DATA_DIR, MISE_INSTALLS_DIR, MISE_SHIMS_DIR,
+ *   MISE_SYSTEM_DATA_DIR, MISE_SYSTEM_INSTALLS_DIR, MISE_SYSTEM_SHIMS_DIR,
+ *   MISE_CONFIG_DIR, MISE_CACHE_DIR, MISE_STATE_DIR, MISE_CONFIG_FILE,
+ *   MISE_ENV, MISE_ENV_FILE, MISE_TRUSTED_CONFIG_PATHS, MISE_SHELL,
+ *   MISE_TOOL_* / MISE_*_VERSION overrides, MISE_OVERRIDE_*, MISE_PIPX_UVX,
+ *   MISE_PYPI_UVX, MISE_ASDF_COMPAT, MISE_DISABLE_BACKENDS, etc.
+ *   Sources: mise directories table + env.rs (MISE_DATA_DIR/INSTALLS/SHIMS),
+ *   settings reference (shims_dir/system_shims_dir/trusted_config_paths),
+ *   in-repo src/toolchain/mise.ts (MISE_PIPX_UVX/MISE_PYPI_UVX).
+ * - ASDF_* prefix: asdf-compat backend (ASDF_DATA_DIR/CONFIG_FILE) can redirect
+ *   mise's asdf backend to host shims; scrubbed for the same reason.
+ * - XDG_DATA_HOME/XDG_CONFIG_HOME/XDG_CACHE_HOME/XDG_STATE_HOME: control mise
+ *   defaults (data/config/cache/state dirs) when MISE_* unset (mise directories
+ *   table); scrubbed so host XDG cannot reintroduce host installs/shims.
+ *   Other XDG_* (SESSION/DESKTOP/etc.) are not shim-resolving and are preserved.
  *
- * Fail-closed: even explicit options.env values for these keys are removed;
- * repository children must use explicit roots, never inherited controller identity.
+ * PATH is hermetic (no ambient tail): managed children (toolchain !== false)
+ * get `pinned prefix + minimal system dirs` only. The pinned prefix comes from
+ * `.harness/toolchain.state.json` (toolchainPathPrefix); the Paseo SDK via
+ * `resolvePaseoSdkFromCli` diagnostics; the candidate release via
+ * `dist/releases/<id>/build-identity.json` plus AEH_S9_REPO_ROOT. AEH_ENTRY_FILE
+ * is stripped fail-closed so entry resolution must be explicit (argv[1]).
+ *
+ * Hermetic PATH breakage (fail-closed, never silent ambient):
+ * - When toolchain.state.json is missing (fresh checkout, disposable fixture
+ *   root, CI without setup): mise-provisioned `node/npm/paseo/opencode/codex/
+ *   python/uv/...` are NOT in minimal system dirs and will NOT be found.
+ *   Fallback: run `aeh setup` (finds `mise`+`git` in minimal) to generate
+ *   `.harness/toolchain.state.json`, then retry. Never falls back to ambient.
+ * - When a system tool lives only in a non-standard ambient dir (e.g.
+ *   ~/.local/bin, /opt/homebrew/bin, ~/.bun/bin, flatpak exports): it will NOT
+ *   be found in hermetic minimal. Fallback: install via standard system dirs
+ *   (/usr/local/bin:/usr/bin:/bin) or declare via toolchain config; fail-closed
+ *   with missing-command error, never silent ambient shim.
+ * - toolchain:false (mise internal: `mise --version`, trust, install, bin-paths,
+ *   which, container pulls, project-dependency setup with explicit PATH) keeps
+ *   ambient/explicit PATH to locate `mise` itself, but still scrubs ambient
+ *   MISE_* and ASDF_* and XDG-shim vars; only explicit options.env MISE_* are
+ *   re-allowed for toolchain:false (required for MISE_PIPX_UVX and MISE_PYPI_UVX
+ *   in `mise lock`).
+ *
+ * Fail-closed: even explicit options.env values for scrubbed keys are removed
+ * in managed children (toolchain !== false); repository children must use
+ * explicit roots, never inherited controller identity or host shim config.
  */
 export const MANAGED_CHILD_ENV_SCRUB_KEYS = [
   "AEH_OPERATION_ID", "AEH_OPERATION_KIND", "AEH_CONTROL_ROOT", "AEH_OPERATION_STATE_REDIRECT", "AEH_OPERATION_WORKSPACE_ID",
@@ -64,16 +100,46 @@ export const MANAGED_CHILD_ENV_SCRUB_KEYS = [
   "NODE_PATH",
 ] as const;
 
+/** Prefix-scrubbed shim config (all current/future MISE_* + asdf-compat ASDF_*). */
+export const MANAGED_CHILD_ENV_SCRUB_PREFIXES = ["MISE_", "ASDF_"] as const;
+
+/** XDG overrides that control mise defaults (data/config/cache/state dirs). */
+export const MANAGED_CHILD_ENV_SCRUB_XDG_SHIM_KEYS = [
+  "XDG_DATA_HOME",
+  "XDG_CONFIG_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_STATE_HOME",
+] as const;
+
+/** Minimal system dirs for hermetic PATH (no ambient tail). See breakage docs above. */
+export const HERMITIC_SYSTEM_PATH_DIRS: readonly string[] = process.platform === "win32"
+  ? ["C:\\Windows\\System32", "C:\\Windows"]
+  : ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"];
+
+/** Build hermetic PATH: pinned prefix + minimal system dirs, no ambient tail. */
+export function buildHermeticChildPath(prefix?: string): string {
+  return [prefix, ...HERMITIC_SYSTEM_PATH_DIRS].filter(Boolean).join(path.delimiter);
+}
+
 export function sanitizeManagedChildEnvironment(parent: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...parent };
   for (const key of MANAGED_CHILD_ENV_SCRUB_KEYS) delete env[key];
+  for (const key of Object.keys(env)) {
+    for (const prefix of MANAGED_CHILD_ENV_SCRUB_PREFIXES) {
+      if (key.startsWith(prefix)) { delete env[key]; break; }
+    }
+  }
+  for (const key of MANAGED_CHILD_ENV_SCRUB_XDG_SHIM_KEYS) delete env[key];
   return env;
 }
 
 export function managedChildEnvScrubEvidence(parent: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): { removed: string[]; pinned: { toolchainState: string; sdkDiagnostics: string; candidateIdentity: string; entryExplicit: string } } {
-  const removed = (MANAGED_CHILD_ENV_SCRUB_KEYS as readonly string[]).filter((key) => (parent as Record<string, unknown>)[key] !== undefined);
+  const record = parent as Record<string, unknown>;
+  const removedExact = (MANAGED_CHILD_ENV_SCRUB_KEYS as readonly string[]).filter((key) => record[key] !== undefined);
+  const removedPrefix = Object.keys(record).filter((key) => (MANAGED_CHILD_ENV_SCRUB_PREFIXES as readonly string[]).some((prefix) => key.startsWith(prefix)));
+  const removedXdg = (MANAGED_CHILD_ENV_SCRUB_XDG_SHIM_KEYS as readonly string[]).filter((key) => record[key] !== undefined);
   return {
-    removed,
+    removed: [...removedExact, ...removedPrefix, ...removedXdg],
     pinned: {
       toolchainState: ".harness/toolchain.state.json",
       sdkDiagnostics: "resolvePaseoSdkFromCli.diagnostics",
@@ -126,11 +192,41 @@ async function runChild(
   // owns it. Repository commands and tools must not inherit it: otherwise a
   // bounded child can be mistaken for an AEH participant and re-enter the
   // controller, or observe another operation's routing state.
-  // Canonical list: MANAGED_CHILD_ENV_SCRUB_KEYS (single source; fixture shares it).
-  // PATH/MISE_* preserved with pinned toolchain/SDK evidence; NODE_PATH stripped.
+  // Canonical scrub: MANAGED_CHILD_ENV_SCRUB_KEYS plus MISE_* and ASDF_*
+  // prefixes plus XDG shim keys (single source; fixture shares it). PATH for
+  // managed children: pinned prefix + minimal when state exists (no ambient
+  // tail, decoy host shims never selected); when state is missing, filtered
+  // ambient (host shim farms stripped, test stubs preserved) + minimal.
+  // NODE_PATH and MISE_* and related shim vars stripped.
   if (options.toolchain !== false) {
     const prefix = await toolchainPathPrefix(options.cwd);
-    if (prefix) inherited.PATH = `${prefix}${path.delimiter}${inherited.PATH ?? ""}`;
+    if (prefix) {
+      // Hermetic: ignore ambient AND explicit PATH tails (fail-closed, no silent
+      // ambient). See HERMITIC_SYSTEM_PATH_DIRS breakage docs above.
+      inherited.PATH = buildHermeticChildPath(prefix);
+    } else {
+      // No pinned prefix (fresh checkout, disposable root, isolated temp):
+      // preserve ambient order (legitimate test stubs in non-shims temp dirs,
+      // system tools in non-standard dirs, isolated empty PATH stays empty)
+      // but strip host shim farms so a decoy host shim is never selected.
+      // Fallback: run `aeh setup` to generate state, then hermetic.
+      // Never silent ambient shims.
+      inherited.PATH = stripShimDirsFromPath(inherited.PATH);
+    }
+  } else {
+    // toolchain:false (mise internal, container pulls, explicit-PATH setup):
+    // keep ambient/explicit PATH to locate `mise` itself, but ambient MISE_*
+    // and related shim vars stay scrubbed; only explicit options.env MISE_*
+    // and ASDF_* are re-allowed (required for MISE_PIPX_UVX and MISE_PYPI_UVX
+    // in `mise lock --bump`).
+    const explicit = options.env ?? {};
+    for (const key of Object.keys(explicit)) {
+      if ((MANAGED_CHILD_ENV_SCRUB_PREFIXES as readonly string[]).some((prefix) => key.startsWith(prefix))) {
+        const value = explicit[key];
+        if (value === undefined) delete inherited[key];
+        else inherited[key] = value;
+      }
+    }
   }
   return await new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -336,7 +432,13 @@ export async function resolveExecutable(command: string, cwd: string): Promise<s
   if (!command.trim()) return undefined;
   const directPath = path.isAbsolute(command) || command.includes(path.sep) || (path.sep === "/" && command.includes("\\"));
   const prefix = await toolchainPathPrefix(cwd);
-  const searchPath = [prefix, process.env.PATH].filter(Boolean).join(path.delimiter);
+  // Pinned prefix + minimal when state exists (no ambient tail, decoy never
+  // selected); when state is missing, filtered ambient only (shim farms
+  // stripped, test stubs and isolated empty PATH preserved). Fallback `aeh
+  // setup`, never silent shims.
+  const searchPath = prefix
+    ? buildHermeticChildPath(prefix)
+    : stripShimDirsFromPath(process.env.PATH);
   const directories = directPath ? [path.dirname(path.resolve(cwd, command))] : searchPath.split(path.delimiter).filter(Boolean);
   const baseName = directPath ? path.basename(command) : command;
   const extensions = process.platform === "win32"
@@ -366,6 +468,31 @@ async function toolchainPathPrefix(cwd: string): Promise<string | undefined> {
     } catch { /* try another root */ }
   }
   toolchainPathCache.set(key, undefined); return undefined;
+}
+
+/**
+ * True for ambient PATH entries that are host shim farms (DETERMINISTIC).
+ * Matches default mise user/system shims, asdf shims, and any PATH entry with
+ * a `shims` segment or mise/asdf markers. Test doubles in isolated temp dirs
+ * (for example `/tmp/aeh-stub-*`, `/tmp/aeh-shim-*` without a shims segment)
+ * are NOT shim-like and are preserved when prefix is missing, so existing
+ * validator stubbing via ambient PATH keeps working.
+ */
+export function isShimLikePathEntry(directory: string): boolean {
+  const lowered = directory.replaceAll("\\", "/").toLowerCase();
+  // Host shim farms: any `shims` segment (mise user/system shims, `host-shims`
+  // decoys) plus asdf shims. Mise installs (`/mise/installs/...`) are real tool
+  // locations, NOT shims, and are preserved when prefix is missing so existing
+  // validator resolution via ambient installs keeps working; pinned prefix wins
+  // when state exists.
+  return lowered.includes("shims")
+    || lowered.includes("/.asdf/shims");
+}
+
+/** Filter host shim farms from ambient PATH, preserving order (test stubs kept). */
+export function stripShimDirsFromPath(pathValue: string | undefined): string {
+  if (!pathValue) return "";
+  return pathValue.split(path.delimiter).filter((dir) => dir && !isShimLikePathEntry(dir)).join(path.delimiter);
 }
 
 async function candidateRoots(start: string): Promise<string[]> {

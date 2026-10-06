@@ -9,6 +9,7 @@ import { loadOperationCompletionTarget, registerOperationCompletionTarget } from
 import { loadOperationPortfolio, syncOperationPortfolio } from "../src/operations/portfolio.js";
 import { currentControllerEpoch, loadOperation, type OperationRecordV2 } from "../src/operations/state.js";
 import { PASEO_BOOTSTRAP_VERSION, buildAehControlMcp, buildPaseoLeadBootstrap, parseCommandVector, resolveLeadAgent, startPaseoHarness } from "../src/paseo/start.js";
+import { probeManagedPaseoAgent } from "../src/paseo/runtimeCore.js";
 import { createManagedRuntime, readManagedRuntimeSnapshot, RuntimeOwnershipError, runtimeProjectId, type RuntimeServiceV1 } from "../src/runtime/index.js";
 import { VERSION } from "../src/version.js";
 import { saveOwnedOperation } from "./helpers/ownedOperation.js";
@@ -386,5 +387,53 @@ describe("Paseo Harness start", () => {
     expect(preserved).toEqual(unresolvedPrior.record);
     const snapshot = await readManagedRuntimeSnapshot(unresolvedRoot);
     expect(snapshot.services.filter((service) => service.ownerId === unresolvedPrior.transientOwner)).toEqual([]);
+  });
+
+  it("CLI resume checks status positively (logs success alone never reuses dead sessions)", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-paseo-cli-resume-"));
+    tempRoots.push(root);
+    let launchCount = 0;
+    const launchAgent = vi.fn(async () => { launchCount += 1; return managed(`agent-cli-${launchCount}`); });
+    const previousForceCli = process.env.AEH_PASEO_FORCE_CLI;
+    process.env.AEH_PASEO_FORCE_CLI = "1";
+    try {
+      const baseRun = vi.fn(async (command: string) => {
+        if (command === "paseo daemon status --json") return processResult(0, healthyDaemonStatus());
+        if (command.startsWith("paseo ls")) return processResult(0, JSON.stringify([{ id: "agent-cli-1", status: "failed" }]));
+        if (command.includes("paseo logs")) return processResult(0, "retained logs");
+        throw new Error(`unexpected command: ${command}`);
+      });
+      // Real probe (CLI status check) wired into start resume path.
+      const cliProbeDeps = {
+        run: baseRun as never,
+        sdk: { create: vi.fn(), materialize: vi.fn(), dispatch: vi.fn(), wait: vi.fn(), run: vi.fn(), probe: vi.fn(), inspect: vi.fn(), list: vi.fn() } as never,
+      } as never;
+      const probeAgent = vi.fn(async (probeRoot: string, agentId: string) => probeManagedPaseoAgent(probeRoot, agentId, cliProbeDeps));
+      const deps = { run: baseRun as never, commandExists: vi.fn(async () => true) as never, setupToolchain: vi.fn(async () => ({} as never)) as never, loadTopology: vi.fn(async () => topology()) as never, detectCapabilities: vi.fn(async () => capabilities()) as never, launchAgent: launchAgent as never, probeAgent: probeAgent as never };
+      const created = await startPaseoHarness(root, config, { aehCommand: '"/usr/bin/node" "/pkg/dist/main.js"' }, deps);
+      expect(created.session).toBe("created");
+      expect(created.agentId).toBe("agent-cli-1");
+      // Resume with dead status (logs succeed but status failed): must NOT reuse.
+      const resumedDead = await startPaseoHarness(root, config, { resume: true, aehCommand: '"/usr/bin/node" "/pkg/dist/main.js"' }, deps);
+      expect(resumedDead.session).toBe("created");
+      expect(resumedDead.agentId).toBe("agent-cli-2");
+      expect(launchCount).toBe(2);
+      expect(probeAgent).toHaveBeenCalledWith(root, "agent-cli-1");
+
+      // Resume with live status: must reuse.
+      baseRun.mockImplementation(async (command: string) => {
+        if (command === "paseo daemon status --json") return processResult(0, healthyDaemonStatus());
+        if (command.startsWith("paseo ls")) return processResult(0, JSON.stringify([{ id: "agent-cli-2", status: "working" }]));
+        if (command.includes("paseo logs")) return processResult(0, "logs");
+        throw new Error(`unexpected command: ${command}`);
+      });
+      const resumedLive = await startPaseoHarness(root, config, { resume: true, aehCommand: '"/usr/bin/node" "/pkg/dist/main.js"' }, deps);
+      expect(resumedLive.session).toBe("reused");
+      expect(resumedLive.agentId).toBe("agent-cli-2");
+      expect(launchCount).toBe(2);
+    } finally {
+      if (previousForceCli === undefined) delete process.env.AEH_PASEO_FORCE_CLI;
+      else process.env.AEH_PASEO_FORCE_CLI = previousForceCli;
+    }
   });
 });

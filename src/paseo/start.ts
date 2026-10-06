@@ -185,9 +185,10 @@ export async function startPaseoHarness(
   const previous = await loadState(stateFile);
   if (!options.forceNew && reuseRequested && !options.handoffPath && previous && compatibleState(previous, { projectRoot, leadName, provider, model, title, aehCommand })) {
     // D5: resume verifies liveness before reuse (fail-closed). probeAgent now
-    // positively verifies live status (idle/working/running) via inspect; unknown,
-    // terminal, dead, or unverifiable sessions never reuse. Probe errors never
-    // reattach: fall through to create-new.
+    // positively verifies live status (idle/working/running) via SDK inspect or
+    // CLI `paseo ls --json` status (never logs-only); unknown, terminal, dead,
+    // or unverifiable sessions never reuse. Probe errors never reattach:
+    // fall through to create-new.
     let live = false;
     try {
       live = (await deps.probeAgent(projectRoot, previous.agentId)) === true;

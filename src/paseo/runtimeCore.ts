@@ -408,8 +408,16 @@ export async function probeManagedPaseoAgent(root: string, agentId: string, deps
       }
     } catch (error) { if (!sdkCanFallback(error)) return false; }
   }
-  const probe = await deps.run(`paseo logs ${quote(agentId)} --tail 1`, { cwd: root, timeoutMs: 30_000 });
-  return probe.exitCode === 0;
+  // CLI resume: check status positively via `paseo ls --json`, never logs-only.
+  // `paseo logs` success alone is insufficient (dead sessions retain logs);
+  // unknown/missing/unverifiable status is fail-closed to false (never reuse).
+  try {
+    const record = (await listCliAgents(root, deps)).find((agent) => agent.id === agentId);
+    if (!record) return false;
+    return isLivePaseoAgentStatus(record.status);
+  } catch {
+    return false;
+  }
 }
 
 export async function inspectManagedPaseoAgent(root: string, agentId: string, deps: PaseoRuntimeDeps = defaultDeps()): Promise<PaseoSdkAgentRecord | undefined> {
@@ -522,10 +530,14 @@ function collectCliAgents(value: unknown, out: Map<string, PaseoSdkAgentRecord>)
  * Orphan/duplicate-turn guards (D5).
  *
  * MECHANISM: DETERMINISTIC. Idempotency key derived from frozen operation labels
- * plus prompt/provider/model (sha256, no model reasoning, no clock). Orphan reaper
- * lists by `aeh.operation` (+ idempotency) before create/retry; best-effort, never
- * throws (fail-closed to create-new on list failure, never blocks launch). Liveness
- * is positive-only (idle/working/running); unknown/terminal/dead never reuses.
+ * plus prompt/provider/model (sha256, no model reasoning, no clock). Encoding is
+ * length-prefixed (byte-length + ":" + field + "\0" concatenated) so NUL- or
+ * separator-containing fields cannot collide (unlike naive "\0"-join, where
+ * ["a\0b","c"] and ["a","b\0c"] hash identically). Orphan reaper lists by
+ * `aeh.operation` (+ idempotency) before create/retry; best-effort, never
+ * throws (fail-closed to create-new on list failure, never blocks launch).
+ * Liveness is positive-only (idle/working/running); unknown/terminal/dead never
+ * reuses. Reaper reaps only positively-dead statuses; unknown is left alone.
  * No retry budgets, leases authority, or vagueness gates touched.
  */
 export function derivePaseoTurnIdempotencyKey(options: ManagedPaseoAgentOptions): string | undefined {
@@ -538,7 +550,17 @@ export function derivePaseoTurnIdempotencyKey(options: ManagedPaseoAgentOptions)
   const model = options.model ?? "";
   const prompt = options.prompt ?? "";
   const title = options.title ?? "";
-  return createHash("sha256").update([operation, task, role, phase, provider, model, title, prompt].join("\0")).digest("hex");
+  return createHash("sha256").update(encodeIdempotencyFields([operation, task, role, phase, provider, model, title, prompt])).digest("hex");
+}
+
+/**
+ * Length-prefixed unambiguous field encoding (DETERMINISTIC).
+ * Each field as `<utf8-byte-length>:<field>\0`, concatenated. The byte length
+ * makes parsing unambiguous even when fields contain NUL, colons, digits, or
+ * any other bytes: distinct field tuples always produce distinct encodings.
+ */
+export function encodeIdempotencyFields(fields: string[]): string {
+  return fields.map((field) => `${Buffer.byteLength(field, "utf8")}:${field}\0`).join("");
 }
 
 function withTurnIdempotencyKey(options: ManagedPaseoAgentOptions): ManagedPaseoAgentOptions {
@@ -550,6 +572,24 @@ function withTurnIdempotencyKey(options: ManagedPaseoAgentOptions): ManagedPaseo
 
 function isLivePaseoAgentStatus(status?: string): boolean {
   return status === "idle" || status === "working" || status === "running";
+}
+
+/**
+ * Positively-dead statuses only (DETERMINISTIC, fail-closed the other direction).
+ * Unknown (undefined/empty/unrecognized, including permission/waiting approval
+ * prompts whose session may still be resumable) is NEVER dead: reaper leaves it
+ * alone. Only statuses that definitively mean a dead/terminal session are reaped.
+ */
+export function isPositivelyDeadPaseoAgentStatus(status?: string): boolean {
+  return status === "failed"
+    || status === "error"
+    || status === "cancelled"
+    || status === "timeout"
+    || status === "finished"
+    || status === "completed"
+    || status === "dead"
+    || status === "exited"
+    || status === "stopped";
 }
 
 async function reuseLiveIdempotentTurn(
@@ -578,9 +618,15 @@ async function reuseLiveIdempotentTurn(
     }
     return waitManagedPaseoAgent(root, found.id, options.timeoutSeconds ?? secondsFromMs(options.timeoutMs), deps, undefined, options.permissionScopeRoots);
   }
-  // Ambiguous or dead orphans: reap dead best-effort, never throw, then create-new.
+  // Ambiguous or dead orphans: reap ONLY positively-dead best-effort, never throw,
+  // then create-new. Unknown (undefined/empty/unrecognized) is left alone
+  // fail-closed (never counted as dead, never reaped).
   for (const agent of candidates) {
     if (isLivePaseoAgentStatus(agent.status)) continue;
+    if (!isPositivelyDeadPaseoAgentStatus(agent.status)) {
+      await trace(root, "agent.launch.left-alone", { transport: "sdk", agentId: agent.id, operation, idempotency, status: agent.status ?? "unknown", reason: "unknown-status-not-dead" });
+      continue;
+    }
     try {
       await stopManagedPaseoAgent(root, agent.id, deps);
       await trace(root, "agent.launch.reaped", { transport: "sdk", agentId: agent.id, operation, idempotency, status: agent.status ?? "unknown" });

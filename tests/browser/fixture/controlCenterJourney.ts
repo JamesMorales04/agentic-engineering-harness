@@ -138,20 +138,48 @@ function safeDetails(value: unknown, depth = 0): unknown {
  * Detached fixture children (`aeh init/start/operation start` on a disposable
  * tmpdir root) are never AEH participants: strip the full managed-agent and
  * controller envelope so the executionContext recursion guard cannot mistake
- * them for nested-operation re-entry. Uses the single canonical scrub list
- * shared with prod runChild (src/utils/process.ts MANAGED_CHILD_ENV_SCRUB_KEYS)
- * plus pinned SDK/entry resolution evidence (toolchain.state.json,
- * resolvePaseoSdkFromCli diagnostics, candidate build-identity.json;
- * AEH_ENTRY_FILE stripped fail-closed so entry must be explicit). The guard
- * itself is unchanged: a raw bounded env without this sanitization is still
- * denied, and REAL nested `aeh operation start` inside an operation remains
- * AEH_RECURSIVE_OPERATION_DENIED.
+ * them for nested-operation re-entry. Uses the single canonical scrub
+ * (src/utils/process.ts MANAGED_CHILD_ENV_SCRUB_KEYS plus MISE_* and ASDF_*
+ * prefixes plus XDG shim keys) shared with prod runChild, plus pinned SDK/entry
+ * resolution
+ * evidence (toolchain.state.json, resolvePaseoSdkFromCli diagnostics, candidate
+ * build-identity.json; AEH_ENTRY_FILE stripped fail-closed so entry must be
+ * explicit). PATH hermetic (pinned prefix + minimal system dirs, no ambient
+ * tail; fail-closed to minimal when state missing, fallback `aeh setup`, never
+ * silent ambient). The guard itself is unchanged: a raw bounded env without
+ * this sanitization is still denied, and REAL nested `aeh operation start`
+ * inside an operation remains AEH_RECURSIVE_OPERATION_DENIED.
  */
-export { MANAGED_CHILD_ENV_SCRUB_KEYS as FIXTURE_MANAGED_ENVELOPE_KEYS } from "../../../src/utils/process.js";
-import { sanitizeManagedChildEnvironment } from "../../../src/utils/process.js";
+export {
+  MANAGED_CHILD_ENV_SCRUB_KEYS as FIXTURE_MANAGED_ENVELOPE_KEYS,
+  MANAGED_CHILD_ENV_SCRUB_PREFIXES as FIXTURE_MANAGED_ENVELOPE_PREFIXES,
+  MANAGED_CHILD_ENV_SCRUB_XDG_SHIM_KEYS as FIXTURE_MANAGED_ENVELOPE_XDG_KEYS,
+  HERMITIC_SYSTEM_PATH_DIRS as FIXTURE_HERMITIC_SYSTEM_PATH_DIRS,
+} from "../../../src/utils/process.js";
+import {
+  buildHermeticChildPath,
+  HERMITIC_SYSTEM_PATH_DIRS,
+  sanitizeManagedChildEnvironment,
+} from "../../../src/utils/process.js";
+import { readFileSync } from "node:fs";
 
 export function sanitizeFixtureChildEnvironment(parent: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  return sanitizeManagedChildEnvironment(parent);
+  const env = sanitizeManagedChildEnvironment(parent);
+  // Hermetic minimal (no ambient tail, fail-closed). The fixture method below
+  // prepends the pinned prefix when toolchain.state.json exists.
+  env.PATH = [...HERMITIC_SYSTEM_PATH_DIRS].join(process.platform === "win32" ? ";" : ":");
+  return env;
+}
+
+function fixtureToolchainPrefixSync(repoRoot: string): string | undefined {
+  try {
+    const raw = readFileSync(path.join(repoRoot, ".harness", "toolchain.state.json"), "utf8");
+    const state = JSON.parse(raw) as { binPaths?: string[] };
+    const paths = (state.binPaths ?? []).map((item) => String(item).trim()).filter(Boolean);
+    // Stale machine-local entries are harmless: exec lookup skips missing dirs
+    // fail-closed to the next PATH entry (prod async version filters via access).
+    return paths.length ? paths.join(process.platform === "win32" ? ";" : ":") : undefined;
+  } catch { return undefined; }
 }
 
 export interface StartResult {
@@ -295,7 +323,13 @@ export class ControlCenterJourneyFixture {
   get start(): StartResult | undefined { return this.startResultCache; }
 
   private childEnvironment(): NodeJS.ProcessEnv {
-    return sanitizeFixtureChildEnvironment(process.env);
+    const env = sanitizeFixtureChildEnvironment(process.env);
+    // Hermetic: pinned prefix (when toolchain.state.json exists) + minimal,
+    // no ambient tail. Fail-closed to minimal when state missing (fallback
+    // `aeh setup`, never silent ambient).
+    const prefix = fixtureToolchainPrefixSync(this.candidate.repoRoot);
+    env.PATH = buildHermeticChildPath(prefix);
+    return env;
   }
 
   async api(): Promise<ReleaseApi> {
