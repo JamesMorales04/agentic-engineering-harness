@@ -218,6 +218,14 @@ export function createWorkGraph(input: Omit<WorkGraphV1, "version">): WorkGraphV
  * `dir/**`), and exact file paths (exist-on-disk file, or non-existent
  * future file path). Rejected: exist-on-disk directory without trailing
  * `/**` (including trailing-slash form `dir/`).
+ *
+ * Traversal: `..` segments, absolute paths, and drive prefixes are rejected
+ * on the RAW input before normalization or fs.stat (never stripped or
+ * resolved away), including inside glob scopes (`../outside/**`,
+ * `/etc/**`). After join, lexical containment within the symlink-resolved
+ * root is verified. Symlink-target policy: fail closed on escape — a scope
+ * whose realpath (or nearest existing ancestor's realpath for future
+ * paths) leaves the resolved root is rejected as out-of-root.
  */
 export function normalizeScopeEntry(scope: string): string {
   return scope.trim().replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/+$/, "");
@@ -229,22 +237,96 @@ export function isExplicitGlobScope(scope: string): boolean {
   return /[*?[\]{}!()+@]/.test(trimmed);
 }
 
+/**
+ * DETERMINISTIC raw-input traversal gate (same theme as prior Luna scope
+ * fixes). Returns true when the RAW scope string hides traversal that
+ * join/normalize would resolve away. Rejects any `..` segment, absolute
+ * form, or drive prefix in the raw input BEFORE normalization, so
+ * normalization can never hide it as a safe relative path.
+ */
+function hasUnsafeRawScopeInput(value: string): boolean {
+  const slashedRaw = value.replaceAll("\\", "/");
+  if (path.isAbsolute(value) || path.posix.isAbsolute(slashedRaw) || path.win32.isAbsolute(value)) return true;
+  if (slashedRaw.startsWith("/")) return true;
+  if (/^[A-Za-z]:/.test(value) || /^[A-Za-z]:/.test(slashedRaw)) return true;
+  if (slashedRaw.split("/").includes("..")) return true;
+  return false;
+}
+
+function isWithinRoot(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+}
+
+/** Nearest existing ancestor's realpath, for symlink-escape detection on not-yet-existing paths. */
+async function realpathNearestExisting(candidate: string): Promise<{ realBase: string; remainder: string } | undefined> {
+  let current = candidate;
+  const suffix: string[] = [];
+  for (;;) {
+    try {
+      const realBase = await fs.realpath(current);
+      return { realBase, remainder: suffix.length ? path.join(...suffix) : "" };
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return undefined;
+      suffix.unshift(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+function throwOutOfRoot(unitId: string, rawScope: string, symlinkEscape: boolean): never {
+  throw new Error(
+    symlinkEscape
+      ? `WORK_GRAPH_INVALID: '${unitId}' declares out-of-root scope '${rawScope}' (symlink target escapes the repository root). Scopes must resolve inside the repository root.`
+      : `WORK_GRAPH_INVALID: '${unitId}' declares out-of-root scope '${rawScope}'. Scopes must be root-relative paths without '..', absolute, or drive-prefix forms.`
+  );
+}
+
 export async function assertNoBareDirectoryScopes(
   root: string,
   units: readonly { id: string; scope: readonly string[] }[]
 ): Promise<void> {
-  const resolvedRoot = path.resolve(root);
+  const rootResolved = path.resolve(root);
+  const resolvedRoot = await fs.realpath(rootResolved).catch(() => rootResolved);
   for (const unit of units) {
     for (const rawScope of unit.scope) {
       const scope = rawScope.trim();
       if (!scope) continue;
-      if (scope === "**" || scope.endsWith("/**")) continue;
-      if (isExplicitGlobScope(scope)) continue;
+      // Traversal gate BEFORE any glob/`/**` shortcut or fs.stat: `..`
+      // segments, absolute paths, and drive prefixes are rejected here, not
+      // normalized away. This also closes the `../outside/**` and `/etc/**`
+      // bypass where a glob suffix previously skipped validation entirely.
+      if (hasUnsafeRawScopeInput(scope)) throwOutOfRoot(unit.id, rawScope, false);
+      if (scope === "**") continue;
+      if (scope.endsWith("/**") || isExplicitGlobScope(scope)) {
+        // Glob scopes perform no fs.stat, but the literal base must still be
+        // contained. Lexical containment first, then symlink-target check on
+        // the nearest existing ancestor of the base (fail-closed on escape).
+        const globIndex = scope.search(/[*?[\]{}!()+@]/);
+        const baseRaw = (globIndex === -1 ? scope : scope.slice(0, globIndex)).replace(/\/+$/, "");
+        const baseNormalized = baseRaw ? normalizeScopeEntry(baseRaw) : "";
+        if (!baseNormalized || baseNormalized === "**") continue;
+        if (baseNormalized.split("/").includes("..")) throwOutOfRoot(unit.id, rawScope, false);
+        const baseCandidate = path.join(resolvedRoot, baseNormalized);
+        if (!isWithinRoot(resolvedRoot, baseCandidate)) throwOutOfRoot(unit.id, rawScope, false);
+        const resolved = await realpathNearestExisting(baseCandidate);
+        if (resolved && !isWithinRoot(resolvedRoot, resolved.realBase)) throwOutOfRoot(unit.id, rawScope, true);
+        continue;
+      }
       const normalized = normalizeScopeEntry(scope);
       if (!normalized || normalized === "**") continue;
-      const candidate = path.isAbsolute(normalized)
-        ? path.normalize(normalized)
-        : path.join(resolvedRoot, normalized);
+      // Defense in depth: normalization must never reintroduce `..`.
+      if (normalized.split("/").includes("..")) throwOutOfRoot(unit.id, rawScope, false);
+      const candidate = path.join(resolvedRoot, normalized);
+      // Lexical containment after join (defense in depth: raw gate above
+      // already rejected every `..`/absolute/drive form).
+      if (!isWithinRoot(resolvedRoot, candidate)) throwOutOfRoot(unit.id, rawScope, false);
+      // Symlink-target policy: fail closed on escape. Resolve the candidate
+      // (or its nearest existing ancestor for future file paths) and reject
+      // when the real target leaves the symlink-resolved root.
+      const resolved = await realpathNearestExisting(candidate);
+      if (resolved && !isWithinRoot(resolvedRoot, resolved.realBase)) throwOutOfRoot(unit.id, rawScope, true);
       let stat: import("node:fs").Stats;
       try {
         stat = await fs.stat(candidate);

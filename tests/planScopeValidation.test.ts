@@ -70,4 +70,57 @@ describe("plan-time scope-shape validation (fail-closed, no broadening)", () => 
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it.each([
+    ["parent traversal", "../../outside"],
+    ["nested traversal", "docs/../../outside"],
+    ["resolvable traversal", "src/../outside"],
+    ["absolute path", "/etc/passwd"],
+    ["drive prefix", "C:/Windows/System32"],
+    ["backslash drive", "C:\\Windows\\System32"],
+    ["traversal glob", "../outside/**"],
+    ["absolute glob", "/etc/**"]
+  ])("rejects out-of-root scope before fs.stat: %s", async (_label, scope) => {
+    const root = await makeRoot();
+    try {
+      const plan = planWithScopes([[scope]]);
+      await expect(
+        compilePlannerWorkGraphWithOneCorrection({ contract, plan, root })
+      ).rejects.toThrow(/WORK_GRAPH_INVALID.*out-of-root scope/is);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a symlink scope whose target escapes the root (fail-closed)", async () => {
+    const root = await makeRoot();
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-plan-scope-outside-"));
+    try {
+      await fs.writeFile(path.join(outside, "secret.md"), "# secret\n");
+      await fs.symlink(outside, path.join(root, "link-outside"));
+      const plan = planWithScopes([["link-outside"]]);
+      await expect(
+        compilePlannerWorkGraphWithOneCorrection({ contract, plan, root })
+      ).rejects.toThrow(/WORK_GRAPH_INVALID.*out-of-root scope.*symlink/is);
+    } finally {
+      await fs.rm(path.join(root, "link-outside"), { force: true });
+      await fs.rm(root, { recursive: true, force: true });
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts a benign nested glob alongside an inside symlink file", async () => {
+    const root = await makeRoot();
+    try {
+      await fs.symlink(
+        path.join(root, "src", "value.ts"),
+        path.join(root, "src", "link-inside.ts")
+      );
+      const plan = planWithScopes([["src/nested/**", "src/link-inside.ts"]]);
+      const result = await compilePlannerWorkGraphWithOneCorrection({ contract, plan, root });
+      expect(result.graph.units).toHaveLength(1);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });

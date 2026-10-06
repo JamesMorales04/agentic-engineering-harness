@@ -29,18 +29,15 @@ export async function compilePlannerWorkGraphWithOneCorrection(input: {
   plan: PlannerOutput;
   requestCorrection?: (prompt: string) => Promise<unknown>;
   /**
-   * Repository root for plan-time scope-shape validation. When provided,
-   * bare directory scopes (exist-on-disk directory without trailing `/**`)
-   * are rejected fail-closed before execution. When omitted, only pure
-   * WorkGraph validation runs (no filesystem access).
+   * Repository root for plan-time scope-shape validation. REQUIRED:
+   * bare-directory and out-of-root scope checks always run (fail-closed
+   * before execution). There is no filesystem-free silent-skip path.
    */
-  root?: string;
+  root: string;
 }): Promise<{ plan: PlannerOutput; graph: WorkGraphV1; correctionAttempts: 0 | 1 }> {
   try {
     const graph = compilePlannerWorkGraph(input.contract, input.plan);
-    if (input.root !== undefined) {
-      await assertNoBareDirectoryScopes(input.root, graph.units);
-    }
+    await assertNoBareDirectoryScopes(input.root, graph.units);
     return { plan: input.plan, graph, correctionAttempts: 0 };
   } catch (firstError) {
     const firstIssues = plannerWorkGraphValidationIssues(firstError, input.plan);
@@ -59,9 +56,7 @@ export async function compilePlannerWorkGraphWithOneCorrection(input: {
 
     try {
       const correctedGraph = compilePlannerWorkGraph(input.contract, corrected);
-      if (input.root !== undefined) {
-        await assertNoBareDirectoryScopes(input.root, correctedGraph.units);
-      }
+      await assertNoBareDirectoryScopes(input.root, correctedGraph.units);
       return { plan: corrected, graph: correctedGraph, correctionAttempts: 1 };
     } catch (secondError) {
       const issues = plannerWorkGraphValidationIssues(secondError, corrected);
