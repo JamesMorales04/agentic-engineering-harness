@@ -11,6 +11,7 @@ import { markOperationResourceReleased, registerOperationResource } from "../run
 import { existingRepositoryPath, repositoryPath } from "../utils/repositoryPath.js";
 import { assertWorkspaceMatchesCandidate } from "./identity.js";
 import type { ChangeSetV1 } from "./assembler.js";
+import { symlinkTargetEscapesRoot } from "./assembler.js";
 
 export interface IsolatedCandidateExecutionV1 {
   session: WorkerSession;
@@ -159,11 +160,49 @@ export async function captureInverseCandidateChangeSet(input: {
 async function copyUntrackedCandidateFiles(root: string, target: string): Promise<void> {
   const result = await runExecutable("git", ["ls-files", "--others", "--exclude-standard", "-z"], { cwd: root, timeoutMs: 30_000 });
   if (result.exitCode !== 0) throw new AehError("CANDIDATE_STALE", `Unable to snapshot untracked candidate files: ${result.stderr || result.stdout}`);
+  // C-NEW-4 (fail-closed consistency with the assembly patch gate): an
+  // untracked entry can be a symlink whose target escapes the candidate root.
+  // Absolute targets survive Node's fs.cp byte-identical, and relative
+  // targets are resolved against the source tree, so every entry is gated
+  // before copying, including links nested inside untracked directories.
+  const canonicalRoot = await fs.realpath(path.resolve(root)).catch(() => path.resolve(root));
   for (const relative of result.stdout.split("\0").filter(Boolean)) {
     const source = repositoryPath(root, relative);
     const destination = repositoryPath(target, relative);
+    await assertUntrackedEntryHasNoEscapingSymlink(canonicalRoot, source, relative);
     await fs.mkdir(path.dirname(destination), { recursive: true });
     await fs.cp(source, destination, { recursive: true, force: true, dereference: false });
+  }
+}
+
+async function assertUntrackedEntryHasNoEscapingSymlink(canonicalRoot: string, absolute: string, relative: string): Promise<void> {
+  const stat = await fs.lstat(absolute);
+  if (stat.isSymbolicLink()) {
+    await assertUntrackedSymlinkTargetContained(canonicalRoot, absolute, relative);
+    return;
+  }
+  if (stat.isDirectory()) {
+    for (const entry of await fs.readdir(absolute)) {
+      await assertUntrackedEntryHasNoEscapingSymlink(canonicalRoot, path.join(absolute, entry), `${relative.replaceAll("\\", "/")}/${entry}`);
+    }
+  }
+}
+
+async function assertUntrackedSymlinkTargetContained(canonicalRoot: string, absolute: string, relative: string): Promise<void> {
+  const displayRelative = relative.replaceAll("\\", "/");
+  const target = await fs.readlink(absolute);
+  if (symlinkTargetEscapesRoot(displayRelative, target)) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", `Untracked candidate entry is a symlink escaping the candidate root: ${displayRelative} -> ${target}.`);
+  }
+  // Nearest-existing realpath augmentation (best-effort, mirrors the assembly
+  // gate): a lexically contained target still escapes when an intermediate
+  // directory component of the link path is itself an outward symlink.
+  const realDirectory = await fs.realpath(path.dirname(absolute)).catch(() => undefined);
+  if (!realDirectory) return;
+  const resolved = path.resolve(realDirectory, target);
+  const within = path.relative(canonicalRoot, resolved);
+  if (within === ".." || within.startsWith(`..${path.sep}`) || path.isAbsolute(within)) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", `Untracked candidate entry is a symlink escaping the candidate root: ${displayRelative} -> ${target}.`);
   }
 }
 

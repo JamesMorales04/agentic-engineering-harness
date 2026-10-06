@@ -317,6 +317,16 @@ export async function assembleCandidateChangeSet(input: CandidateAssemblyInputV1
   if (JSON.stringify(changedFiles) !== JSON.stringify(patchFiles)) {
     throw new AehError("CANDIDATE_STALE", "ChangeSet changedFiles do not exactly match the paths touched by its patch.", { details: { declared: changedFiles, observed: patchFiles } });
   }
+  // C-NEW-4 (fail-closed): a mode-120000 patch entry whose *string* path is
+  // in-scope (e.g. `src/link`) can still point its link target outside the
+  // candidate root (`../../outside`, `/etc/passwd`). The scope gate below only
+  // matches path strings, so the patch-introduced link target must be gated
+  // here, before any `git apply` touches the worktree. This is the single
+  // assembly choke point: repair, wave and direct-assemble all funnel through
+  // this function. Residual (not covered here): patch-scope is not a sandbox;
+  // worker off-patch filesystem writes are only observed through the captured
+  // diff, never scope-checked live.
+  await assertPatchSymlinksContained(input.root, changeSet.patch);
   const outOfScope = changedFiles.filter((file) => !matchesAny(file, input.allowedScope));
   const forbidden = changedFiles.filter((file) => matchesAny(file, input.forbiddenScope ?? []));
   if (outOfScope.length || forbidden.length) {
@@ -660,6 +670,109 @@ function isInsideRoot(root: string, candidate: string): boolean {
 
 function isSafeRepositoryPath(value: string): boolean {
   return Boolean(value) && !path.isAbsolute(value) && !value.split("/").some((part) => !part || part === "." || part === "..");
+}
+
+/**
+ * Pure lexical rule shared by the assembly patch gate and the DIRECT
+ * materialize gate (direct.ts): a patch-introduced or untracked symlink must
+ * not point at an absolute/drive target and must not lexically resolve outside
+ * the repository root. Fail-closed: unsafe link paths, empty targets and
+ * unparseable inputs count as escapes.
+ */
+export function symlinkTargetEscapesRoot(linkPath: string, target: string): boolean {
+  if (!isSafeRepositoryPath(linkPath)) return true;
+  if (!target || target.includes("\0")) return true;
+  if (target.startsWith("/") || target.startsWith("\\")) return true;
+  if (/^[A-Za-z]:([\\/]|$)/.test(target)) return true;
+  const directory = path.posix.dirname(linkPath);
+  const joined = directory === "." ? target : `${directory}/${target}`;
+  const normalized = path.posix.normalize(joined);
+  return normalized === ".." || normalized.startsWith("../") || path.posix.isAbsolute(normalized);
+}
+
+interface PatchSymlinkV1 {
+  path: string;
+  target: string;
+}
+
+/**
+ * Fail-closed choke point for patch-introduced symlinks (C-NEW-4). Parses the
+ * patch text for entries whose post-image is a symlink (`new file mode
+ * 120000`, `new mode 120000`, or an `index <old>..<new> 120000` retarget) and
+ * rejects lexically escaping, absolute/drive, or unverifiable targets before
+ * any `git apply` touches the worktree. Pure deletions (`+++ /dev/null`) carry
+ * no post-image link and are skipped; a pure rename (no hunks) introduces no
+ * new target and is skipped. A nearest-existing realpath check augments the
+ * lexical verdict where the link dirname already exists on disk.
+ */
+async function assertPatchSymlinksContained(root: string, patch: string): Promise<void> {
+  const { links, unverifiable } = patchSymlinksWithPostImageLink(patch);
+  const lexicalOffense = links.find((link) => symlinkTargetEscapesRoot(link.path, link.target));
+  if (lexicalOffense || unverifiable.length > 0) {
+    const detail = lexicalOffense ? `${lexicalOffense.path} -> ${lexicalOffense.target}` : `${unverifiable[0]} -> <unverifiable link target>`;
+    throw new AehError("PARTICIPANT_PLAN_INVALID", `ChangeSet patch creates a symlink escaping the candidate root: ${detail}.`);
+  }
+  if (links.length === 0) return;
+  const resolvedRoot = await fs.realpath(path.resolve(root)).catch(() => undefined);
+  if (!resolvedRoot) return;
+  for (const link of links) {
+    const directory = path.posix.dirname(link.path);
+    const absoluteDirectory = directory === "." ? resolvedRoot : path.join(resolvedRoot, ...directory.split("/"));
+    const realDirectory = await fs.realpath(absoluteDirectory).catch(() => undefined);
+    if (!realDirectory) continue;
+    const resolved = path.resolve(realDirectory, link.target);
+    if (!isInsideRoot(resolvedRoot, resolved)) {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", `ChangeSet patch creates a symlink escaping the candidate root: ${link.path} -> ${link.target}.`);
+    }
+  }
+}
+
+function patchSymlinksWithPostImageLink(patch: string): { links: PatchSymlinkV1[]; unverifiable: string[] } {
+  const links: PatchSymlinkV1[] = [];
+  const unverifiable: string[] = [];
+  for (const block of patch.split(/^diff --git /m).slice(1)) {
+    const lines = block.split("\n").map((line) => line.replace(/\r$/, ""));
+    const postMarker = lines.find((line) => line.startsWith("+++ "));
+    if (!postMarker) continue;
+    const rawPost = postMarker.slice("+++ ".length).trim();
+    if (rawPost === "/dev/null") continue;
+    if (!isPostImageSymlinkBlock(lines)) continue;
+    const postPath = stripDiffPathPrefix(rawPost);
+    if (!postPath || !isSafeRepositoryPath(postPath)) {
+      unverifiable.push(postPath || rawPost);
+      continue;
+    }
+    const added = lines
+      .filter((line) => line.startsWith("+") && !line.startsWith("+++ "))
+      .map((line) => line.slice(1).replace(/\r$/, ""));
+    if (added.length === 0) {
+      if (lines.some((line) => line.startsWith("rename from "))) continue;
+      unverifiable.push(postPath);
+      continue;
+    }
+    for (const target of added) links.push({ path: postPath, target });
+  }
+  return { links, unverifiable };
+}
+
+function isPostImageSymlinkBlock(lines: readonly string[]): boolean {
+  if (lines.some((line) => /^new file mode 120000$/.test(line))) return true;
+  if (lines.some((line) => /^new mode 120000$/.test(line))) return true;
+  if (lines.some((line) => /^new mode /.test(line))) return false;
+  if (lines.some((line) => /^deleted file mode /.test(line))) return false;
+  // The index-mode form covers retargets of an already-committed link. The
+  // hash shape is deliberately loose (`\S+`): a hand-crafted patch with
+  // non-hex placeholders must still be recognized, never skipped.
+  return lines.some((line) => /^index \S+\.\.\S+ 120000(?: |$)/.test(line));
+}
+
+function stripDiffPathPrefix(raw: string): string {
+  let value = raw.trim();
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+    value = value.slice(1, -1).replace(/\\(\\|")/g, "$1");
+  }
+  if (value.startsWith("b/")) return value.slice(2);
+  return value;
 }
 
 async function pathsTouchedByPatch(root: string, patch: string): Promise<string[]> {
