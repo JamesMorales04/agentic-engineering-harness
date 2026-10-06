@@ -9,6 +9,7 @@ import {
   validatorIsolationNetwork,
   validatorIsolationRequired
 } from "../security/isolation.js";
+import { validatorEvidenceWritablePaths } from "./toolCommand.js";
 
 export async function runValidationCommand(root: string, command: ValidationCommand, options: { config?: HarnessProjectConfig } = {}): Promise<ValidationCheck> {
   const cwd = path.resolve(root, command.workingDirectory ?? ".");
@@ -24,7 +25,10 @@ export async function runValidationCommand(root: string, command: ValidationComm
         command: command.command,
         cwd,
         workspaceRoot: root,
-        writablePaths: [root],
+        // Unified with external/toolCommand validators: read-only workspace,
+        // only the evidence directory is writable. The previous `[root]`
+        // binding made the whole candidate tree writable inside the sandbox.
+        writablePaths: validatorEvidenceWritablePaths(root, options.config),
         network: validatorIsolationNetwork(options.config),
         timeoutMs
       }, { environmentAllowlist: validatorIsolationEnvironmentAllowlist(options.config) });

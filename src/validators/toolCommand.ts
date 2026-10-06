@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { ValidationCheck, ValidatorSpec } from "../core/types.js";
+import type { HarnessProjectConfig, ValidationCheck, ValidatorSpec } from "../core/types.js";
 import { runShell, type ProcessResult } from "../utils/process.js";
 import type { ValidationContext } from "./types.js";
 import {
@@ -11,6 +11,25 @@ import {
   validatorIsolationRequired
 } from "../security/isolation.js";
 
+/**
+ * Unified validator sandbox writable policy (Mechanism=DETERMINISTIC).
+ *
+ * Validators run with a read-only workspace and may persist only to the
+ * configured evidence directory plus the directory of a declared evidenceFile
+ * that lives inside the workspace. Anything else fails closed inside the
+ * sandbox. Single owner for every validator kind: external.ts and commands.ts
+ * reuse this helper so isolation means the same thing everywhere.
+ */
+export function validatorEvidenceWritablePaths(root: string, config: HarnessProjectConfig, options: { cwd?: string; evidenceFile?: string } = {}): string[] {
+  const paths = new Set<string>();
+  paths.add(path.resolve(root, config.evidence?.outputDir ?? ".harness/evidence"));
+  if (typeof options.evidenceFile === "string" && options.evidenceFile.trim()) {
+    const resolved = path.resolve(options.cwd ?? root, options.evidenceFile);
+    if (resolved.startsWith(`${path.resolve(root)}${path.sep}`)) paths.add(path.dirname(resolved));
+  }
+  return [...paths].sort();
+}
+
 export async function runSpecCommand(context: ValidationContext, command: string, category: string, details: Record<string, unknown> = {}): Promise<ValidationCheck> {
   const rendered = renderTokens(command, context);
   const cwd = path.resolve(context.root, context.spec.workingDirectory ?? ".");
@@ -20,13 +39,14 @@ export async function runSpecCommand(context: ValidationContext, command: string
   if (validatorIsolationRequired(context.config, context.spec)) {
     try {
       assertSupportedIsolationProvider(context.config);
-      const evidenceDir = path.resolve(context.root, context.config.evidence?.outputDir ?? ".harness/evidence");
+      const specOptions = (context.spec.options ?? {}) as Record<string, unknown>;
+      const evidenceFileOption = typeof specOptions.evidenceFile === "string" ? specOptions.evidenceFile : undefined;
       const isolated = await runIsolatedCommand({
         root: context.root,
         command: rendered,
         cwd,
         workspaceRoot: context.root,
-        writablePaths: [evidenceDir],
+        writablePaths: validatorEvidenceWritablePaths(context.root, context.config, { cwd, evidenceFile: evidenceFileOption }),
         network: validatorIsolationNetwork(context.config),
         timeoutMs
       }, { environmentAllowlist: validatorIsolationEnvironmentAllowlist(context.config) });
