@@ -7,6 +7,7 @@ import { minimatch } from "minimatch";
 import { sha256Canonical } from "../core/digest.js";
 import { AehError } from "../core/errors.js";
 import { sealTask } from "../core/seal.js";
+import { extractMarkedJson, StructuredOutputError } from "../agents/structuredOutput.js";
 import { validateAgentOutput } from "../agents/outputContracts.js";
 import type { HarnessProjectConfig, TaskContract, ValidationCheck, WorkerSession } from "../core/types.js";
 import { assertResolvedOperationPolicyV2 } from "../architecture/executionIdentity.js";
@@ -337,8 +338,11 @@ export function normalizeRepairScopePath(value: string): string {
  * undefined. Throws REPAIR_SCOPE_BLOCKER_CONFLICT fail-closed when a
  * schema-valid (or zod-flagged) payload declares needed files AND file changes
  * (the no-mutation invariant); conflict is never swallowed as undefined.
- * Never throws for absent/invalid markers; the caller decides the typed
- * outcome for those. Model content, deterministic validation.
+ * Throws REPAIR_SCOPE_BLOCKER_INVALID fail-closed when a marker is observed
+ * but its payload is not valid JSON (MARKER_INVALID_JSON / NATIVE_JSON_INVALID
+ * via the canonical extractor); truncation is never swallowed as undefined.
+ * Returns undefined ONLY for absent markers (EMPTY_OUTPUT / NO_MARKER).
+ * Model content, deterministic validation.
  */
 export function parseRepairScopeBlockerFromSession(session: Pick<WorkerSession, "stdout" | "stderr">): RepairScopeNeededFileV1[] | undefined {
   const marker = extractMarkedRepairResult(session.stdout, session.stderr ?? "");
@@ -1047,35 +1051,25 @@ export function filterForbiddenScopeForAmendment(
 }
 
 function extractMarkedRepairResult(stdout: string, stderr: string): unknown | undefined {
-  const sources = [stdout, stderr];
-  for (let index = sources.length - 1; index >= 0; index -= 1) {
-    const text = sources[index] ?? "";
-    const lines = text.split(/\r?\n/);
-    for (let line = lines.length - 1; line >= 0; line -= 1) {
-      const trimmed = lines[line]?.trim() ?? "";
-      const prefix = "AEH_RESULT_JSON=";
-      if (!trimmed.startsWith(prefix)) continue;
-      const raw = trimmed.slice(prefix.length).trim();
-      if (!raw) continue;
-      try {
-        return JSON.parse(raw) as unknown;
-      } catch {
-        continue;
+  // Canonical marker path: fenced blocks, smart quotes, trailing logs,
+  // JSON-in-JSON, and prefix-shrink are handled by extractMarkedJson.
+  // Absent markers (EMPTY_OUTPUT / NO_MARKER) map to undefined ("no blocker");
+  // observed-but-invalid markers (MARKER_INVALID_JSON / NATIVE_JSON_INVALID,
+  // including tail truncation) throw fail-closed and are never undefined.
+  try {
+    return extractMarkedJson(stdout, stderr);
+  } catch (error) {
+    if (error instanceof StructuredOutputError) {
+      if (error.reason === "MARKER_INVALID_JSON" || error.reason === "NATIVE_JSON_INVALID") {
+        throw new AehError(
+          "PARTICIPANT_PLAN_INVALID",
+          `REPAIR_SCOPE_BLOCKER_INVALID: MARKER_INVALID_JSON: agent output contained AEH_RESULT_JSON= but the marker payload was not valid JSON (${error.reason}).`,
+        );
       }
+      return undefined;
     }
+    throw error;
   }
-  // Fallback: a bare JSON object payload (no marker) is also accepted when it
-  // schema-validates as repair-result; anything else is ignored (no blocker).
-  for (let index = sources.length - 1; index >= 0; index -= 1) {
-    const text = (sources[index] ?? "").trim();
-    if (!text.startsWith("{") || !text.endsWith("}")) continue;
-    try {
-      return JSON.parse(text) as unknown;
-    } catch {
-      continue;
-    }
-  }
-  return undefined;
 }
 
 function safe(value: string): string {
