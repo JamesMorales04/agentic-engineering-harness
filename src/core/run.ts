@@ -56,12 +56,14 @@ import { discoverProjectStackProfile, type ProjectStackProfileV1 } from "../part
 import { compileCandidateAssuranceV1, candidateImpactValidationRequirementsV1, candidateAssuranceProviderAdapterV1, type CandidateAssuranceCompilationV1, type CandidateAssurancePolicyV1 } from "../architecture/candidateAssurance.js";
 import { requireSastEvidenceV1 } from "../security/sastEvidence.js";
 import { contractValidationRequirementsV1, mergeContractValidationRequirementsV1, resolveValidationRequirements, validationRequirementKindValues, type ResolvedValidationActionV1, type ValidationRequirementKindV1, type ValidationResolutionV1 } from "../architecture/validationRequirements.js";
-import { requireProviderLaneEvidenceForActionV1, type ProviderEvidenceLaneV1 } from "../validation/laneEvidence.js";
+import { PROVIDER_LANE_EVIDENCE_STATUS, requireProviderLaneEvidenceForActionV1, type ProviderEvidenceLaneV1 } from "../validation/laneEvidence.js";
 import {
   attributedReporterFailuresV1,
   effectiveTestSelectorsV1,
   evaluateTestAttributionV1,
   extractReporterTestsFromExecutionV1,
+  reporterHasAnyFailureV1,
+  TEST_ATTRIBUTION_REPORTER_INCOMPLETE,
 } from "../validation/testAttribution.js";
 import type { CandidateImpactV1 } from "../candidates/assembler.js";
 import { candidateRevisionsEqual, type CandidateRevisionV1 } from "../operations/v2Contracts.js";
@@ -1275,6 +1277,25 @@ export async function runCandidateImpactValidations(input: {
         });
         continue;
       }
+      // Reporter-must-explain-the-bundle rule: a non-passing bundle must have
+      // at least one failure recorded in its own single reporter document
+      // (Mechanism=DETERMINISTIC). A zero-failure reporter alongside a failed
+      // bundle is incomplete — or a forged all-green document injected into
+      // shared stdout while the real failure went elsewhere — and fails
+      // closed with TEST_ATTRIBUTION_REPORTER_INCOMPLETE.
+      if (execution.status !== "PASS" && !reporterHasAnyFailureV1(reporterTests)) {
+        const blocker = TEST_ATTRIBUTION_REPORTER_INCOMPLETE;
+        const failureEvidence = underlyingFailureEvidence(execution);
+        output.push({
+          id: `candidate.assurance.validation.${requirement.id}`,
+          category: "candidate-impact-validation",
+          status: "FAIL",
+          message: `Required ${requirement.kind} validation for requirement '${requirement.id}' produced an incomplete reporter: bundle '${execution.id}' returned ${execution.status} but the single reporter records ${reporterTests.length} test(s) with zero failures.`,
+          durationMs: execution.durationMs,
+          details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, blocker, testAttribution: { verdict: "FAIL", selectors, matched: 0, total: reporterTests.length, failedTitles: [], reason: blocker }, ...failureEvidence }
+        });
+        continue;
+      }
       const evaluation = evaluateTestAttributionV1({
         requirementId: requirement.id,
         selectors,
@@ -1322,7 +1343,7 @@ export async function runCandidateImpactValidations(input: {
           const evidence = await requireSastEvidenceV1(input.root, input.config, input.report.candidate!, execution.id);
           sastEvidence = { artifact: evidence.artifact, digest: evidence.digest };
         }
-        let laneEvidence: { lane: ProviderEvidenceLaneV1; artifact: string; digest: string } | undefined;
+        let laneEvidence: { lane: ProviderEvidenceLaneV1; artifact: string; digest: string; status: string } | undefined;
         const requiredLane = providerEvidenceLaneForKind(requirement.kind);
         if (requiredLane) {
           const evidence = await requireProviderLaneEvidenceForActionV1({
@@ -1335,7 +1356,16 @@ export async function runCandidateImpactValidations(input: {
             actionSource: action.source,
             actionSelector: action.selector
           });
-          laneEvidence = { lane: requiredLane, artifact: evidence.artifact, digest: evidence.digest };
+          // FAIL-only tolerance scope (Mechanism=DETERMINISTIC): a
+          // non-passing bundle's mapped PASS is corroborated only by
+          // FAIL-status lane evidence whose integrity verifies. WARN (or any
+          // other) lane evidence — e.g. an optional validator's degraded
+          // outcome — must never satisfy a mapped PASS and fails closed via
+          // the STATUS error below.
+          if (execution.status !== "PASS" && evidence.status !== "FAIL") {
+            throw new Error(`${PROVIDER_LANE_EVIDENCE_STATUS}: ${requiredLane} evidence for '${execution.id}' records status '${evidence.status}'; only FAIL-status lane evidence can corroborate a mapped PASS over a non-passing bundle.`);
+          }
+          laneEvidence = { lane: requiredLane, artifact: evidence.artifact, digest: evidence.digest, status: evidence.status };
         }
         output.push({
           id: `candidate.assurance.validation.${requirement.id}`,
@@ -1352,7 +1382,7 @@ export async function runCandidateImpactValidations(input: {
           id: `candidate.assurance.validation.${requirement.id}`,
           category: "candidate-impact-validation",
           status: "FAIL",
-          message: `Required ${requirement.kind} validation for requirement '${requirement.id}' passed its attributed tests but lane evidence is missing: ${message}`,
+          message: `Required ${requirement.kind} validation for requirement '${requirement.id}' passed its attributed tests but lane evidence is missing or unsuitable: ${message}`,
           durationMs: execution.durationMs,
           details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, blocker, testAttribution: { verdict: evaluation.verdict, selectors: evaluation.selectors, matched: evaluation.matched, total: evaluation.total, failedTitles: evaluation.failedTitles, reason: evaluation.reason } }
         });
@@ -1411,7 +1441,7 @@ function boundedFailureText(value: unknown, max = 4000): string | undefined {
   return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max)}\n...[truncated]`;
 }
 
-const providerLaneBlockerPattern = /(PROVIDER_LANE_EVIDENCE_(?:REQUIRED|STALE|TAMPERED|PERSIST_FAILED)|PROVIDER_LANE_REFERENCE_REQUIRED|PROVIDER_LANE_CANDIDATE_BINDING_REQUIRED|(?:CONTRACT|INTEGRATION|BROWSER|VISUAL)_PROVIDER_UNAVAILABLE)/;
+const providerLaneBlockerPattern = /(PROVIDER_LANE_EVIDENCE_(?:REQUIRED|STALE|TAMPERED|STATUS|PERSIST_FAILED)|SAST_EVIDENCE_STATUS|PROVIDER_LANE_REFERENCE_REQUIRED|PROVIDER_LANE_CANDIDATE_BINDING_REQUIRED|(?:CONTRACT|INTEGRATION|BROWSER|VISUAL)_PROVIDER_UNAVAILABLE)/;
 
 function providerLaneBlockerFromMessage(message: string): string | undefined {
   return message.match(providerLaneBlockerPattern)?.[1];

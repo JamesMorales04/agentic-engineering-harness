@@ -10,6 +10,13 @@ export const PROVIDER_LANE_EVIDENCE_VERSION = 1 as const;
 export const PROVIDER_LANE_EVIDENCE_REQUIRED = "PROVIDER_LANE_EVIDENCE_REQUIRED" as const;
 export const PROVIDER_LANE_EVIDENCE_STALE = "PROVIDER_LANE_EVIDENCE_STALE" as const;
 export const PROVIDER_LANE_EVIDENCE_TAMPERED = "PROVIDER_LANE_EVIDENCE_TAMPERED" as const;
+// FAIL-only tolerance scope marker for the run.ts partial-green path: a
+// non-passing bundle's mapped PASS is corroborated only by FAIL-status lane
+// evidence. This constant is intentionally NOT enforced by
+// verifyProviderLaneEvidenceV1 (integrity-only, so a FAIL bundle's honestly
+// recorded FAIL evidence still verifies); run.ts applies the status check.
+// Do not re-add a status gate to verify() — that would break partial-green.
+export const PROVIDER_LANE_EVIDENCE_STATUS = "PROVIDER_LANE_EVIDENCE_STATUS" as const;
 export const PROVIDER_LANE_CANDIDATE_BINDING_REQUIRED = "PROVIDER_LANE_CANDIDATE_BINDING_REQUIRED" as const;
 export const PROVIDER_LANE_REFERENCE_REQUIRED = "PROVIDER_LANE_REFERENCE_REQUIRED" as const;
 export const VISUAL_REFERENCE_BASELINE_REQUIRED = "VISUAL_REFERENCE_BASELINE_REQUIRED" as const;

@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { sha256Canonical } from "../core/digest.js";
 import type { HarnessProjectConfig, ValidationCheck } from "../core/types.js";
 import type { ValidationRequirementV1 } from "../architecture/validationRequirements.js";
 
@@ -13,6 +14,9 @@ import type { ValidationRequirementV1 } from "../architecture/validationRequirem
  */
 
 export const TEST_ATTRIBUTION_BLOCKER_PREFIX = "TEST_ATTRIBUTION" as const;
+
+export const TEST_ATTRIBUTION_REPORTER_INCOMPLETE =
+  `${TEST_ATTRIBUTION_BLOCKER_PREFIX}_REPORTER_INCOMPLETE` as const;
 
 export interface AttributedPlaywrightTestV1 {
   title: string;
@@ -251,26 +255,44 @@ export function attributedReporterFailuresV1(input: {
   );
 }
 
-function tryParseReporterFromText(
+/**
+ * Reporter failures anywhere in the single authentic reporter
+ * (Mechanism=DETERMINISTIC).
+ *
+ * A non-passing bundle must be explained by at least one failure recorded in
+ * its own reporter document. A zero-failure reporter alongside a failed
+ * bundle is incomplete (or forged: code under test shares the bundle's
+ * stdout and can inject an all-green document while the real failure goes
+ * elsewhere) and must fail closed. Forgery cannot escape by inventing
+ * failures either: an invented failure inside the attribution fails rule
+ * (iii), and one outside the attribution is consistent with the real bundle
+ * failure, which is the honest outcome.
+ */
+export function reporterHasAnyFailureV1(tests: readonly AttributedPlaywrightTestV1[]): boolean {
+  return tests.some((test) => !test.passed);
+}
+
+/**
+ * Collect every Playwright reporter document embedded in a text,
+ * deduplicated by canonical content digest (Mechanism=DETERMINISTIC).
+ *
+ * Reporter stdout may be embedded in `stdout\n--- stderr ---\n stderr` raw
+ * files or have trailing logs. The incremental brace scan finds `{` ... `}`
+ * slices that parse with a suites array. Identical documents observed more
+ * than once (the provider flow duplicates bounded stdout into the raw
+ * artifact file) are one provenance, not ambiguity; distinct documents mean
+ * the output is ambiguous — model-authored code under test can console.log a
+ * second all-green reporter to forge a PASS — so callers must refuse
+ * attribution. Never largest-wins, never first-parseable-wins, and no
+ * whole-text fast path that could bypass the count.
+ */
+function collectReporterDocumentsFromText(
   text: unknown,
-): AttributedPlaywrightTestV1[] | undefined {
-  if (typeof text !== "string" || !text.trim()) return undefined;
+): Array<{ digest: string; tests: AttributedPlaywrightTestV1[] }> {
+  if (typeof text !== "string" || !text.trim()) return [];
   const trimmed = text.trim();
-  // Fast path: whole stdout is JSON.
-  try {
-    return parsePlaywrightReporterTextV1(trimmed);
-  } catch {
-    // Fall through to embedded-JSON scan below.
-  }
-  // Reporter stdout may be embedded in `stdout\n--- stderr ---\n stderr`
-  // raw files or have trailing logs. Scan for embedded JSON objects with suites.
-  // Fail-closed (Mechanism=DETERMINISTIC): exactly one depth-0 reporter
-  // document must be present. Zero means no attributable reporter; more than
-  // one means the output is ambiguous — model-authored code under test can
-  // console.log a second, larger all-green reporter to forge a PASS — so
-  // attribution is refused. Never largest-wins.
-  let candidateCount = 0;
-  let single: AttributedPlaywrightTestV1[] | undefined;
+  const documents: Array<{ digest: string; tests: AttributedPlaywrightTestV1[] }> = [];
+  const seen = new Set<string>();
   // Try incremental brace scan: find `{` ... `}` slices that parse with suites.
   let start = -1;
   let depth = 0;
@@ -295,9 +317,10 @@ function tryParseReporterFromText(
         try {
           const parsed = JSON.parse(slice) as Record<string, unknown>;
           if (Array.isArray(parsed.suites)) {
-            candidateCount++;
-            if (candidateCount === 1) {
-              single = parsePlaywrightReporterTestsV1(parsed);
+            const digest = sha256Canonical(parsed);
+            if (!seen.has(digest)) {
+              seen.add(digest);
+              documents.push({ digest, tests: parsePlaywrightReporterTestsV1(parsed) });
             }
           }
         } catch {
@@ -311,39 +334,40 @@ function tryParseReporterFromText(
       }
     }
   }
-  if (candidateCount !== 1) return undefined;
-  return single;
+  return documents;
 }
 
 /**
  * Extract Playwright reporter tests from a bundle execution check.
- * Reads (in order): details.stdout, rawArtifact file, details.stderr.
- * Returns undefined when no parseable reporter is available, or when more
- * than one reporter document is present (ambiguous output fails closed).
- * Callers fail closed on undefined.
+ * Reads details.stdout, the rawArtifact file, and details.stderr together.
+ * Returns the reporter tests only when exactly one DISTINCT reporter
+ * document is present across every source. Zero means no attributable
+ * reporter; more than one means the output is ambiguous and attribution is
+ * refused. Callers fail closed on undefined. No path returns a reporter
+ * without the count check.
  */
 export async function extractReporterTestsFromExecutionV1(
   root: string,
   execution: ValidationCheck,
 ): Promise<AttributedPlaywrightTestV1[] | undefined> {
   const details = (execution.details ?? {}) as Record<string, unknown>;
-  const directTexts: unknown[] = [details.stdout];
-  for (const text of directTexts) {
-    const parsed = tryParseReporterFromText(text);
-    if (parsed) return parsed;
-  }
+  const sources: unknown[] = [details.stdout];
   const rawArtifact = details.rawArtifact;
   if (typeof rawArtifact === "string" && rawArtifact.trim()) {
     try {
       const absolute = path.resolve(root, rawArtifact);
-      const content = await fs.readFile(absolute, "utf8");
-      const parsed = tryParseReporterFromText(content);
-      if (parsed) return parsed;
+      sources.push(await fs.readFile(absolute, "utf8"));
     } catch {
-      // Missing/unreadable artifact falls through to stderr/fail-closed.
+      // Missing/unreadable artifact contributes no reporter document.
     }
   }
-  const stderrParsed = tryParseReporterFromText(details.stderr);
-  if (stderrParsed) return stderrParsed;
-  return undefined;
+  sources.push(details.stderr);
+  const documents = new Map<string, AttributedPlaywrightTestV1[]>();
+  for (const text of sources) {
+    for (const document of collectReporterDocumentsFromText(text)) {
+      if (!documents.has(document.digest)) documents.set(document.digest, document.tests);
+    }
+  }
+  if (documents.size !== 1) return undefined;
+  return [...documents.values()][0];
 }
