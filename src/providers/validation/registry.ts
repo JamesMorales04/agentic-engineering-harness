@@ -41,7 +41,18 @@ export class ValidationCapabilityRegistry {
 
   async resolve(context: ValidationProviderContext): Promise<CapabilityResolution | undefined> {
     const candidates = this.providers.filter((candidate) => candidate.capabilities.includes(context.capability));
-    const provider = (context.providerSpec?.provider ? candidates.find((candidate) => candidate.id === context.providerSpec?.provider) : undefined) ?? candidates[0];
+    const requested = context.providerSpec?.provider;
+    if (requested) {
+      // Fail closed: an explicit provider name that matches nothing must never
+      // silently fall back to another provider (whose PASS would satisfy the
+      // requirement with no warning). Callers map `undefined` to a
+      // provider-unavailable FAIL (UNKNOWN_PROVIDER class).
+      const provider = candidates.find((candidate) => candidate.id === requested);
+      if (!provider) return undefined;
+      const detection = await provider.detect(context); if (!detection) return undefined;
+      return { capability: context.capability, provider: detection.provider, source: "explicit", command: detection.command };
+    }
+    const provider = candidates[0];
     if (!provider) return undefined;
     const detection = await provider.detect(context); if (!detection) return undefined;
     return { capability: context.capability, provider: detection.provider, source: context.providerSpec || context.spec?.command ? "explicit" : "detected", command: detection.command };

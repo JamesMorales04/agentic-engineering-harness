@@ -687,7 +687,7 @@ describe("project public-api contract validator", () => {
     expect(run.stderr).toContain("PUBLIC-API-RESOURCE-KINDS");
   });
 
-  it("executes the public-api dimension through the approved contract-test validator with CONTRACT evidence", async () => {
+  it("rejects a text-only contract-test command with EMPTY_TEST_EVIDENCE instead of a silent zero-interaction PASS", async () => {
     const root = await skeleton();
     const sourceDigest = await computeWorktreeDigest(root);
     const candidate = createCandidateRevisionV1({ operationId: "OP-PUBLIC-API", candidateId: "CAND-PUBLIC-API", revision: 1, sourceDigest });
@@ -751,8 +751,18 @@ describe("project public-api contract validator", () => {
       metadata: { project: "public-api-fixture", baseRef: "HEAD" }
     } as Parameters<typeof runCandidateImpactValidations>[0]["report"];
     const checks = await runCandidateImpactValidations({ root, config, contract, report, impact, compilation, resolution });
-    expect(checks).toMatchObject([{ id: "candidate.assurance.validation.impact-review-public-api", status: "PASS" }]);
-    const laneEvidence = (checks[0].details as { laneEvidence?: { artifact: string; digest: string } }).laneEvidence;
+    // Fail-closed (I-NEW-1): the fixture script prints a human-readable PASS
+    // line but no pact interaction evidence, so the contract-test normalizer
+    // must FAIL with EMPTY_TEST_EVIDENCE instead of a total:0 PASS.
+    expect(checks).toMatchObject([{ id: "candidate.assurance.validation.impact-review-public-api", status: "FAIL" }]);
+    expect(checks[0].message).toContain("returned FAIL");
+    // The underlying configured-validator check carries the machine-readable blocker.
+    const underlying = await runConfiguredValidators(root, config, contract, "HEAD", [], { candidate });
+    const contractCheck = underlying.find((item) => item.id === "contract-test");
+    expect(contractCheck?.status).toBe("FAIL");
+    const normalized = (contractCheck?.details as { result?: { failures?: Array<{ message?: string }> } }).result;
+    expect(JSON.stringify(normalized?.failures)).toContain("EMPTY_TEST_EVIDENCE");
+    const laneEvidence = (contractCheck?.details as { laneEvidence?: { artifact: string; digest: string } }).laneEvidence;
     expect(laneEvidence?.artifact).toMatch(/\.json$/);
     expect(laneEvidence?.digest).toMatch(/^[a-f0-9]{64}$/);
     const evidence = await loadProviderLaneEvidenceV1(root, config, "CONTRACT", candidate, "contract-test");

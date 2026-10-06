@@ -39,6 +39,10 @@ export class GenericBddExecutionProvider implements ValidationProvider<BddExecut
 
   async normalize(context: ValidationProviderContext, execution: ProviderExecution): Promise<BddExecutionResult> {
     const parsed = parseJson(execution.stdout); const scenarios = normalizeScenarios(parsed, execution, context);
+    if (scenarios.length === 0) {
+      const blocker: BddScenarioResult = { feature: "evidence", scenario: "EMPTY_TEST_EVIDENCE", tags: [], status: "FAIL", error: "EMPTY_TEST_EVIDENCE: the BDD command exited successfully but produced no parseable scenarios (no scenarios ran or output was empty); a silent zero-scenario run must never satisfy a requirement.", requirementIds: requirementIds(context) };
+      return { version: 1, provider: execution.plan.provider, capability: "bdd", command: execution.plan.command, runtime: execution.plan.runtime, status: "FAIL", scenarios: [blocker], summary: { total: 1, passed: 0, failed: 1, skipped: 0, durationMs: execution.durationMs }, rawArtifact: execution.rawArtifact };
+    }
     const failed = scenarios.filter((item) => item.status === "FAIL").length; const skipped = scenarios.filter((item) => item.status === "SKIP").length; const passed = scenarios.filter((item) => item.status === "PASS").length;
     return { version: 1, provider: execution.plan.provider, capability: "bdd", command: execution.plan.command, runtime: execution.plan.runtime, status: execution.exitCode === 0 && failed === 0 ? "PASS" : "FAIL", scenarios, summary: { total: scenarios.length, passed, failed, skipped, durationMs: execution.durationMs }, rawArtifact: execution.rawArtifact };
   }
