@@ -1,5 +1,6 @@
 import { sha256Canonical } from "../core/digest.js";
 import { resolveGithubTokenOptional } from "../delivery/handoff.js";
+import { computeWorktreeDigest as defaultComputeWorktreeDigest } from "../core/git.js";
 import { runExecutable, type ProcessOptions, type ProcessResult } from "../utils/process.js";
 import type { ActionIntentV1, ToolActionKindV1 } from "./toolActionGate.js";
 
@@ -50,6 +51,8 @@ export interface ActionReconciliationDependenciesV1 {
   /** Explicit GitHub token; when omitted the standard delivery token environment is consulted. */
   token?: string;
   now?: Date;
+  /** Worktree contentDigest observation for `git.commit`; defaults to `computeWorktreeDigest`. */
+  computeWorktreeDigest?: (root: string) => Promise<string>;
 }
 
 interface ResolvedDependenciesV1 {
@@ -57,6 +60,7 @@ interface ResolvedDependenciesV1 {
   fetchJson: NonNullable<ActionReconciliationDependenciesV1["fetchJson"]>;
   token?: string;
   now: Date;
+  computeWorktreeDigest: (root: string) => Promise<string>;
 }
 
 type PayloadRecord = Record<string, unknown>;
@@ -164,7 +168,28 @@ async function reconcileGitCommit(root: string, intent: ActionIntentV1, payload:
     if (observed.kind === "error") return buildResult(intent, "UNKNOWN", "git-unavailable", { message, error: observed.message }, dependencies.now);
     if (observed.result.exitCode !== 0) return buildResult(intent, "UNKNOWN", "commit-unreadable", { message, exitCode: observed.result.exitCode, stderr: snippet(observed.result.stderr) }, dependencies.now);
     const subject = observed.result.stdout.trim();
-    return buildResult(intent, subject === message ? "SUCCEEDED" : "FAILED", "commit-subject-observed", { expectedSubject: message, observedSubject: subject }, dependencies.now);
+    if (subject !== message) return buildResult(intent, "FAILED", "commit-subject-mismatch", { expectedSubject: message, observedSubject: subject }, dependencies.now);
+    // The commit subject is `${taskId}: ${title}`-shaped and therefore
+    // identical across retries with different content. A subject match alone
+    // can describe a stale commit from an earlier attempt, so it is never
+    // sufficient for SUCCEEDED: the observed tree content must also match the
+    // intent's contentDigest before success is reported.
+    const contentDigest = nonEmptyString(record.contentDigest);
+    if (!contentDigest || !/^[a-f0-9]{64}$/i.test(contentDigest)) {
+      return buildResult(intent, "UNKNOWN", "commit-content-unverified", { expectedSubject: message, observedSubject: subject, contentDigestPresent: contentDigest !== undefined }, dependencies.now);
+    }
+    let observedDigest: string;
+    try {
+      observedDigest = await dependencies.computeWorktreeDigest(root);
+    } catch (error) {
+      return buildResult(intent, "UNKNOWN", "commit-content-unreadable", { expectedSubject: message, observedSubject: subject, error: errorMessage(error) }, dependencies.now);
+    }
+    if (!/^[a-f0-9]{64}$/i.test(observedDigest.trim())) {
+      return buildResult(intent, "UNKNOWN", "commit-content-unreadable", { expectedSubject: message, observedSubject: subject }, dependencies.now);
+    }
+    const evidence = { expectedSubject: message, observedSubject: subject, expectedContentDigest: contentDigest.toLowerCase(), observedContentDigest: observedDigest.trim().toLowerCase() };
+    const matched = evidence.observedContentDigest === evidence.expectedContentDigest;
+    return buildResult(intent, matched ? "SUCCEEDED" : "UNKNOWN", matched ? "commit-content-compared" : "commit-content-mismatch", evidence, dependencies.now);
   }
   const expectedHead = nonEmptyString(record.expectedHead);
   if (!expectedHead || !GIT_COMMIT_PATTERN.test(expectedHead)) {
@@ -406,7 +431,8 @@ function resolveDependenciesV1(dependencies: ActionReconciliationDependenciesV1)
     run: dependencies.runExecutable ?? runExecutable,
     fetchJson: dependencies.fetchJson ?? defaultFetchJson,
     token: providedToken || resolveGithubTokenOptional(),
-    now: dependencies.now ?? new Date()
+    now: dependencies.now ?? new Date(),
+    computeWorktreeDigest: dependencies.computeWorktreeDigest ?? defaultComputeWorktreeDigest
   };
 }
 
