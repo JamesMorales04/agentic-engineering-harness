@@ -6,7 +6,7 @@ import { minimatch } from "minimatch";
 import { z } from "zod";
 import { sha256Canonical, sha256Utf8 } from "../core/digest.js";
 import { AehError } from "../core/errors.js";
-import { computeWorktreeDigest } from "../core/git.js";
+import { computeWorktreeDigest, providerGeneratedPathspecExcludes } from "../core/git.js";
 import { createCandidateRevisionV1, type CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import { assertWorkspaceMatchesCandidate } from "./identity.js";
 import { runExecutable } from "../utils/process.js";
@@ -675,7 +675,10 @@ async function pathsTouchedByPatch(root: string, patch: string): Promise<string[
     if (baseTree.exitCode !== 0 || !baseTree.stdout.trim()) throw new AehError("CANDIDATE_STALE", `Unable to identify the patch validation base: ${baseTree.stderr || baseTree.stdout}`);
     const applied = await runExecutable("git", ["apply", "--cached", "--binary", "-"], { cwd: root, timeoutMs: 60_000, stdin: patch, env });
     if (applied.exitCode !== 0) throw new AehError("CANDIDATE_STALE", `ChangeSet patch cannot be applied to the current candidate: ${applied.stderr || applied.stdout}`);
-    const changed = await runExecutable("git", ["diff", "--cached", "--name-only", "--no-renames", "-z", baseTree.stdout.trim(), "--"], { cwd: root, timeoutMs: 30_000, env });
+    // Provider-owned scratch (.serena/, graphify-out/) never enters candidate
+    // accounting: the same shared pathspec excludes direct.ts uses for DIRECT
+    // ChangeSets, so both assembly paths observe identical patch paths.
+    const changed = await runExecutable("git", ["diff", "--cached", "--name-only", "--no-renames", "-z", baseTree.stdout.trim(), "--", ...providerGeneratedPathspecExcludes()], { cwd: root, timeoutMs: 30_000, env });
     if (changed.exitCode !== 0) throw new AehError("CANDIDATE_STALE", `Unable to derive paths touched by ChangeSet patch: ${changed.stderr || changed.stdout}`);
     return [...new Set(changed.stdout.split("\0").filter(Boolean).map(normalizePath))].sort();
   } finally {

@@ -3,7 +3,7 @@ import path from "node:path";
 import type { ValidationCheck } from "../core/types.js";
 import { commandExists, runShell, type ProcessResult } from "../utils/process.js";
 import type { ValidationContext } from "./types.js";
-import { missingTool } from "./toolCommand.js";
+import { missingTool, validatorEvidenceWritablePaths } from "./toolCommand.js";
 import { parseToolEvidenceResult } from "./toolEvidence.js";
 import {
   ISOLATION_PROVIDER_UNAVAILABLE,
@@ -33,6 +33,15 @@ import {
 } from "../validation/laneEvidence.js";
 
 const browserLanes: Readonly<Record<string, ProviderEvidenceLaneV1>> = { playwright: "BROWSER", visual: "VISUAL" };
+
+/**
+ * Environment binding carrying the current CandidateRevision to the validator
+ * process. The non-isolated path sets it directly; the isolated path threads
+ * the identical value through the sandbox environment allowlist. Missing or
+ * unknown still fails closed downstream (evidence persistence requires an
+ * explicit candidate binding).
+ */
+const VALIDATION_CANDIDATE_ENVIRONMENT_VARIABLE = "AEH_VALIDATION_CANDIDATE_JSON" as const;
 
 interface VisualComparisonBinding {
   baseline: string;
@@ -86,15 +95,30 @@ export async function runExternalToolValidator(context: ValidationContext): Prom
   let isolation: IsolationExecutionEvidenceV1 | undefined;
   if (isolationRequired) {
     try {
+      // Candidate binding must survive isolation: the non-isolated path below
+      // exposes the current CandidateRevision via AEH_VALIDATION_CANDIDATE_JSON,
+      // so the isolated path threads the identical binding through the
+      // sandbox environment (allowlisted only when a candidate is present,
+      // so no stale process environment can leak in when there is none).
+      const candidateEnvironment = context.candidate
+        ? { [VALIDATION_CANDIDATE_ENVIRONMENT_VARIABLE]: JSON.stringify(context.candidate) }
+        : undefined;
+      const environmentAllowlist = candidateEnvironment
+        ? [...new Set([...validatorIsolationEnvironmentAllowlist(context.config), VALIDATION_CANDIDATE_ENVIRONMENT_VARIABLE])]
+        : validatorIsolationEnvironmentAllowlist(context.config).filter((name) => name !== VALIDATION_CANDIDATE_ENVIRONMENT_VARIABLE);
       const isolated = await runIsolatedCommand({
         root: context.root,
         command: rendered,
         cwd,
         workspaceRoot: context.root,
-        writablePaths: validatorWritablePaths(context, cwd),
+        writablePaths: validatorEvidenceWritablePaths(context.root, context.config, {
+          cwd,
+          evidenceFile: typeof options.evidenceFile === "string" ? options.evidenceFile : undefined
+        }),
         network: validatorIsolationNetwork(context.config),
-        timeoutMs
-      }, { environmentAllowlist: validatorIsolationEnvironmentAllowlist(context.config) });
+        timeoutMs,
+        ...(candidateEnvironment ? { environment: candidateEnvironment } : {})
+      }, { environmentAllowlist });
       result = { exitCode: isolated.exitCode, stdout: isolated.stdout, stderr: isolated.stderr, durationMs: isolated.durationMs, timedOut: isolated.timedOut };
       isolation = isolated.isolation;
     } catch (error) {
@@ -104,7 +128,7 @@ export async function runExternalToolValidator(context: ValidationContext): Prom
     result = await runShell(rendered, {
       cwd,
       timeoutMs,
-      ...(context.candidate ? { env: { AEH_VALIDATION_CANDIDATE_JSON: JSON.stringify(context.candidate) } } : {})
+      ...(context.candidate ? { env: { [VALIDATION_CANDIDATE_ENVIRONMENT_VARIABLE]: JSON.stringify(context.candidate) } } : {})
     });
   }
   const evidenceFile = typeof options.evidenceFile === "string" ? path.resolve(cwd, options.evidenceFile) : undefined;
@@ -191,6 +215,11 @@ export async function runExternalToolValidator(context: ValidationContext): Prom
       rawArtifact: path.relative(context.root, rawPath).replaceAll("\\", "/"),
       evidenceFormat: evidenceFile ? options.evidenceFormat ?? "json-or-junit" : "stdout-json",
       exitCode: result.exitCode,
+      // Bounded process stdout is persisted explicitly so reporter-text
+      // extractors (test attribution) do not depend on file I/O alone. The
+      // full stdout+stderr always lives in rawArtifact; this bound keeps
+      // check details bounded while preserving realistic reporter payloads.
+      stdout: boundedReporterText(result.stdout),
       stderr: boundedDiagnostic(result.stderr),
       findings,
       findingCount: findings.length,
@@ -327,14 +356,41 @@ function quote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-function validatorWritablePaths(context: ValidationContext, cwd: string): string[] {
-  const paths = new Set<string>();
-  const evidenceDir = path.resolve(context.root, context.config.evidence?.outputDir ?? ".harness/evidence");
-  paths.add(evidenceDir);
-  const options = { ...(context.providerSpec?.options ?? {}), ...(context.spec.options ?? {}) };
-  const evidenceFile = typeof options.evidenceFile === "string" ? path.resolve(cwd, options.evidenceFile) : undefined;
-  if (evidenceFile && path.resolve(evidenceFile).startsWith(`${path.resolve(context.root)}${path.sep}`)) paths.add(path.dirname(evidenceFile));
-  return [...paths].sort();
+/**
+ * Bounded process stdout for check details. The 200_000 UTF-8 byte ceiling
+ * preserves realistic reporter payloads (Playwright JSON, pact JUnit) for
+ * direct extraction while keeping details bounded; the complete stdout+stderr
+ * is always persisted to the raw artifact file. Truncated output keeps its
+ * head so embedded-JSON scanners still see the report start. Truncation cuts
+ * at a UTF-16 code-point boundary within the byte budget so multi-byte UTF-8
+ * sequences are never split and no replacement characters are introduced;
+ * length is measured with Buffer.byteLength(value, "utf8"). The truncation
+ * marker is included INSIDE the byte budget: content is cut to
+ * (cap − marker bytes) then the marker is appended so total bytes ≤ cap.
+ */
+function boundedReporterText(value: string): string {
+  const maxBytes = 200_000;
+  if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
+  const marker = "\n… truncated …";
+  const markerBytes = Buffer.byteLength(marker, "utf8");
+  return `${truncateUtf8ToBytes(value, maxBytes - markerBytes)}${marker}`;
+}
+
+function truncateUtf8ToBytes(value: string, maxBytes: number): string {
+  let low = 0;
+  let high = value.length;
+  while (low < high) {
+    const mid = Math.floor((low + high + 1) / 2);
+    if (Buffer.byteLength(value.slice(0, mid), "utf8") <= maxBytes) low = mid;
+    else high = mid - 1;
+  }
+  let end = low;
+  if (end > 0 && end < value.length) {
+    const prev = value.charCodeAt(end - 1);
+    const next = value.charCodeAt(end);
+    if (prev >= 0xd800 && prev <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) end -= 1;
+  }
+  return value.slice(0, end);
 }
 
 function isolationFailure(context: ValidationContext, category: string, command: string, error: unknown): ValidationCheck {
