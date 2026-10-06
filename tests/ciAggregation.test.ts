@@ -57,7 +57,7 @@ describe("release CI gating (K-NEW-1 / K-NEW-6)", () => {
     }
   });
 
-  it("publish.yml verifies the published bits before creating the GitHub Release", async () => {
+  it("publish.yml verifies the tag before npm publish and gates the GitHub Release", async () => {
     const text = await fs.readFile(new URL("../.github/workflows/publish.yml", import.meta.url), "utf8");
     const workflow = parse(text) as Record<string, any>;
     const jobs = workflow.jobs as Record<string, any>;
@@ -68,10 +68,37 @@ describe("release CI gating (K-NEW-1 / K-NEW-6)", () => {
     const verifyNeeds = Array.isArray(verifyJob.needs) ? verifyJob.needs : verifyJob.needs ? [verifyJob.needs] : [];
     expect(verifyNeeds).toContain("publish");
     const verifySerialized = JSON.stringify(verifyJob.steps ?? verifyJob);
-    expect(verifySerialized).toContain("npm view");
+    // Pre-publish tag verification: SHA equality against the prepare release SHA
+    // plus the packaged-consumer contracts (no npm view here: nothing is public yet).
+    expect(verifySerialized).toMatch(/needs\.publish\.outputs\.release_sha/);
+    expect(verifySerialized).toContain("exact-match");
     expect(verifySerialized).toContain("toolchain compile");
     expect(verifySerialized).toContain("policy sync");
     expect(verifySerialized).toContain("test:packaged-consumer");
+    // The prepare job exposes the release SHA and refuses stale tags without force-moving.
+    expect(JSON.stringify(jobs.publish.outputs ?? {})).toMatch(/release_sha/);
+    const prepareSerialized = JSON.stringify(jobs.publish.steps);
+    expect(prepareSerialized).toMatch(/TAG_SHA/);
+    expect(prepareSerialized).toMatch(/refusing.*stale|stale.*refus/i);
+    const prepareSteps = jobs.publish.steps as Array<{ name?: string; run?: string }>;
+    expect(prepareSteps.some((step) => step.name === "Publish to npm")).toBe(false);
+    expect(prepareSteps.some((step) => (step.run ?? "").includes("npm publish --provenance"))).toBe(false);
+    expect(prepareSteps.some((step) => (step.run ?? "").includes("gh release create"))).toBe(false);
+    // npm publish runs only after verification: its job must need the verify job.
+    const publishers = entries.filter(([, job]) => {
+      const steps = ((job as any).steps ?? []) as Array<{ name?: string; run?: string }>;
+      return steps.some(
+        (step) => step.name === "Publish to npm" || (step.run ?? "").includes("npm publish --provenance"),
+      );
+    });
+    expect(publishers.length).toBeGreaterThan(0);
+    for (const [, job] of publishers) {
+      const needs = Array.isArray(job.needs) ? job.needs : job.needs ? [job.needs] : [];
+      expect(needs).toContain(verifyName);
+    }
+    // Post-publish confirmation lives in the gated publisher, not the pre-publish verifier.
+    const publisherSerialized = publishers.map(([, job]) => JSON.stringify(job.steps ?? job)).join("\n");
+    expect(publisherSerialized).toContain("npm view");
     const releaseCandidates = entries.filter(([, job]) => JSON.stringify(job).includes("gh release create"));
     expect(releaseCandidates.length).toBeGreaterThan(0);
     const releaseEntry = releaseCandidates.find(([, job]) => {
@@ -87,6 +114,14 @@ describe("release CI gating (K-NEW-1 / K-NEW-6)", () => {
         ? [releaseJob.needs]
         : [];
     expect(releaseNeeds).toContain(verifyName);
+    // Release runs only after the gated publisher.
+    const publisherNames = publishers.map(([name]) => name as string);
+    expect(publisherNames.some((name) => releaseNeeds.includes(name))).toBe(true);
+    // Every Release path is verification-gated: no verification-skipped repair Release.
+    for (const [, job] of releaseCandidates) {
+      const needs = Array.isArray(job.needs) ? job.needs : job.needs ? [job.needs] : [];
+      expect(needs).toContain(verifyName);
+    }
   });
 
   it("docs/PUBLISHING.md no longer documents [skip ci]", async () => {

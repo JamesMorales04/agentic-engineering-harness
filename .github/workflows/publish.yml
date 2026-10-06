@@ -27,6 +27,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       should_publish: ${{ steps.version.outputs.should_publish }}
+      release_sha: ${{ steps.release-commit.outputs.release_sha }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -36,7 +37,6 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
           package-manager-cache: false
 
       - run: npm ci
@@ -59,6 +59,7 @@ jobs:
         run: npm run release:check
 
       - name: Commit version and create tag
+        id: release-commit
         if: steps.version.outputs.should_publish == 'true'
         shell: bash
         env:
@@ -72,37 +73,37 @@ jobs:
             git commit -m "chore(release): v${RELEASE_VERSION}"
             git push origin HEAD:main
           fi
-          if ! git rev-parse -q --verify "refs/tags/v${RELEASE_VERSION}" >/dev/null; then
-            git tag -a "v${RELEASE_VERSION}" -m "v${RELEASE_VERSION}"
+          git fetch origin --tags --force
+          RELEASE_SHA="$(git rev-parse HEAD)"
+          echo "release_sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
+          TAG_REF="refs/tags/v${RELEASE_VERSION}"
+          if git rev-parse -q --verify "$TAG_REF" >/dev/null; then
+            TAG_SHA="$(git rev-list -n 1 "$TAG_REF")"
+            if [ "$TAG_SHA" != "$RELEASE_SHA" ]; then
+              echo "Tag v${RELEASE_VERSION} already exists at $TAG_SHA but release commit is $RELEASE_SHA; refusing to reuse a stale tag (never force-move)." >&2
+              exit 1
+            fi
+            echo "Tag v${RELEASE_VERSION} already points at release commit $RELEASE_SHA."
+          else
+            git tag -a "v${RELEASE_VERSION}" -m "v${RELEASE_VERSION}" "$RELEASE_SHA"
             git push origin "v${RELEASE_VERSION}"
+            TAG_SHA="$(git rev-list -n 1 "$TAG_REF")"
+            if [ "$TAG_SHA" != "$RELEASE_SHA" ]; then
+              echo "Tag v${RELEASE_VERSION} verification failed: expected $RELEASE_SHA but got $TAG_SHA." >&2
+              exit 1
+            fi
           fi
-
-      - name: Publish to npm
-        if: steps.version.outputs.should_publish == 'true'
-        shell: bash
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ -n "${NPM_TOKEN:-}" ]; then
-            export NODE_AUTH_TOKEN="$NPM_TOKEN"
-          fi
-          npm publish --provenance
 
       - name: Repair missing GitHub Release for current version
         if: steps.version.outputs.should_publish != 'true' && github.event_name == 'workflow_dispatch' && inputs.bump == 'current'
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          if git rev-parse -q --verify "refs/tags/v${RELEASE_VERSION}" >/dev/null; then
-            gh release view "v${RELEASE_VERSION}" >/dev/null 2>&1 || \
-              gh release create "v${RELEASE_VERSION}" --verify-tag --generate-notes --title "v${RELEASE_VERSION}"
-          else
-            echo "Current npm version is already published, but tag v${RELEASE_VERSION} is absent; refusing to fabricate a release tag."
-          fi
+          echo "Refusing to create GitHub Release for v${RELEASE_VERSION} without in-workflow verification." >&2
+          echo "The bump=current repair path cannot skip verification: re-run the full release pipeline so commit+tag -> verify -> npm publish -> release all succeed in one workflow run." >&2
+          exit 1
 
       - name: Nothing to publish
         if: steps.version.outputs.should_publish != 'true'
@@ -126,17 +127,19 @@ jobs:
 
       - run: npm ci
 
-      - name: Confirm published version is on npm and tag matches
+      - name: Confirm tag matches release commit
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+          RELEASE_SHA: ${{ needs.publish.outputs.release_sha }}
         run: |
           set -euo pipefail
-          PACKAGE_NAME="$(node -p "require('./package.json').name")"
-          npm view "$PACKAGE_NAME@$RELEASE_VERSION" version --json
-          test "$(npm view "$PACKAGE_NAME@$RELEASE_VERSION" version)" = "$RELEASE_VERSION"
+          test -n "$RELEASE_SHA"
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          test "$(git rev-list -n 1 "v$RELEASE_VERSION")" = "$RELEASE_SHA"
           git describe --tags --exact-match HEAD
           test "$(git describe --tags --exact-match HEAD)" = "v$RELEASE_VERSION"
+          test "$(node -p "require('./package.json').version")" = "$RELEASE_VERSION"
 
       - name: Provision the required consumer toolchain provider
         shell: bash
@@ -225,9 +228,62 @@ jobs:
           AEH_DETERMINISTIC_PASEO_RUNTIME=1 AEH_PASEO_FORCE_CLI=0 ./node_modules/.bin/aeh intent 'review the repo and validate the code for improvements' repo | grep -q '^AUDIT'
           ./node_modules/.bin/aeh operation status DOES-NOT-EXIST repo >/dev/null 2>&1 && exit 1 || true
 
+  publish-npm:
+    name: publish-npm
+    needs: [publish, verify-published]
+    if: needs.publish.outputs.should_publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: v${{ needs.publish.outputs.version }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - run: npm ci
+
+      - name: Confirm verified tag before publishing
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+          RELEASE_SHA: ${{ needs.publish.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_SHA"
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          test "$(git describe --tags --exact-match HEAD)" = "v$RELEASE_VERSION"
+
+      - run: npm run build
+
+      - name: Publish to npm
+        shell: bash
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -n "${NPM_TOKEN:-}" ]; then
+            export NODE_AUTH_TOKEN="$NPM_TOKEN"
+          fi
+          npm publish --provenance
+
+      - name: Confirm published version is on npm
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          set -euo pipefail
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          npm view "$PACKAGE_NAME@$RELEASE_VERSION" version --json
+          test "$(npm view "$PACKAGE_NAME@$RELEASE_VERSION" version)" = "$RELEASE_VERSION"
+
   release:
     name: release
-    needs: [publish, verify-published]
+    needs: [publish, verify-published, publish-npm]
     if: needs.publish.outputs.should_publish == 'true'
     runs-on: ubuntu-latest
     steps:
