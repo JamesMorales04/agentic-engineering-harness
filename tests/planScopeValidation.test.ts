@@ -92,6 +92,49 @@ describe("plan-time scope-shape validation (fail-closed, no broadening)", () => 
     }
   });
 
+  // Regression for 4aeb0ba strip-then-reject: hasUnsafeRawScopeInput in
+  // src/architecture/workGraph.ts (via assertNoBareDirectoryScopes <-
+  // compilePlannerWorkGraphWithOneCorrection) strips leading `./` (incl.
+  // redundant `././` and `.//` forms, backslash variants) FIRST, then rejects
+  // drive/`..`/absolute. Without the strip, `./C:/...` looked relative and was accepted.
+  it.each([
+    ["dot-drive", "./C:/outside"],
+    ["dot-traversal", "./../x"],
+    ["dot-backslash-drive", ".\\C:\\x"],
+    ["redundant-dot-drive", "././C:/outside"],
+    ["dot-double-slash-drive", ".//C:/outside"],
+    ["redundant-dot-traversal", "././../x"],
+    ["dot-double-slash-traversal", ".//../x"],
+    ["dot-traversal-glob", "./../outside/**"],
+    ["dot-drive-glob", "./C:/outside/**"],
+    ["dot-backslash-drive-glob", ".\\C:\\outside\\**"],
+  ])("rejects dot-prefixed bypass before fs.stat: %s", async (_label, scope) => {
+    const root = await makeRoot();
+    try {
+      const plan = planWithScopes([[scope]]);
+      await expect(
+        compilePlannerWorkGraphWithOneCorrection({ contract, plan, root })
+      ).rejects.toThrow(/WORK_GRAPH_INVALID.*out-of-root scope/is);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts dot-prefixed benign scopes", async () => {
+    const root = await makeRoot();
+    try {
+      const plan = planWithScopes([["./src/**", "./src/value.ts"]]);
+      const result = await compilePlannerWorkGraphWithOneCorrection({
+        contract,
+        plan,
+        root
+      });
+      expect(result.graph.units).toHaveLength(1);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a symlink scope whose target escapes the root (fail-closed)", async () => {
     const root = await makeRoot();
     const outside = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-plan-scope-outside-"));
