@@ -298,18 +298,32 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
       });
     }
     if (submissions.length) {
-      const integration = await integrateWaveChangeSets({ root: input.root, stateRoot: input.stateRoot, operationId: operation.id, taskId: input.contract.task.id, wave: waveBase, submissions, semanticAssessment: input.semanticAssessment, ...(input.onScopeEscape ? { onScopeEscape: input.onScopeEscape } : {}) });
-      for (const step of integration.integrated) {
-        const result = resultByWorkUnit.get(step.workUnitId);
-        if (result) { result.candidate = step.candidate; result.impact = step.impact; }
-        await recordEvent(input.stateRoot, input.config, "harness.candidate.assembled", { taskId: input.contract.task.id, workUnitId: step.workUnitId, participantId: step.changeSet.participantId, candidateRevision: step.candidate.revision, candidateDigest: step.candidate.sourceDigest, impactDigest: step.impact.digest, changeKinds: step.impact.changeKinds, reviewDimensions: step.impact.reviewDimensions, requiresIndependentReview: step.impact.requiresIndependentReview, waveBaseRevision: waveBase.candidate.revision, derivedRebase: step.derived });
+      try {
+        const integration = await integrateWaveChangeSets({ root: input.root, stateRoot: input.stateRoot, operationId: operation.id, taskId: input.contract.task.id, wave: waveBase, submissions, semanticAssessment: input.semanticAssessment, ...(input.onScopeEscape ? { onScopeEscape: input.onScopeEscape } : {}) });
+        for (const step of integration.integrated) {
+          const result = resultByWorkUnit.get(step.workUnitId);
+          if (result) { result.candidate = step.candidate; result.impact = step.impact; }
+          await recordEvent(input.stateRoot, input.config, "harness.candidate.assembled", { taskId: input.contract.task.id, workUnitId: step.workUnitId, participantId: step.changeSet.participantId, candidateRevision: step.candidate.revision, candidateDigest: step.candidate.sourceDigest, impactDigest: step.impact.digest, changeKinds: step.impact.changeKinds, reviewDimensions: step.impact.reviewDimensions, requiresIndependentReview: step.impact.requiresIndependentReview, waveBaseRevision: waveBase.candidate.revision, derivedRebase: step.derived });
+        }
+        for (const requirement of integration.reconciliationRequired) {
+          const result = resultByWorkUnit.get(requirement.workUnitId);
+          if (result) { result.status = "FAIL"; result.message = `WAVE_RECONCILIATION_REQUIRED: ${requirement.reason}`; }
+        }
+        const last = integration.integrated.at(-1);
+        if (last) currentCandidate = last.candidate;
+      } catch (error) {
+        // Wave-level integration failure (stale base, wrong operation, or an
+        // unrestorable workspace): no structured result exists, so mark every
+        // submitted sibling as unintegrated and fall through to the shared
+        // FAIL summary below, which emits `harness.wave.finish` FAIL and the
+        // aggregate session the throw would otherwise skip. Earlier-sibling
+        // binds, if any, remain durable on the operation candidate.
+        const detail = (error instanceof Error ? error.message : String(error)).split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0]?.slice(0, 500) ?? "wave integration failed";
+        for (const submission of submissions) {
+          const result = resultByWorkUnit.get(submission.workUnitId);
+          if (result && result.status !== "FAIL") { result.status = "FAIL"; result.message = `WAVE_INTEGRATION_FAILED: ${detail}`; }
+        }
       }
-      for (const requirement of integration.reconciliationRequired) {
-        const result = resultByWorkUnit.get(requirement.workUnitId);
-        if (result) { result.status = "FAIL"; result.message = `WAVE_RECONCILIATION_REQUIRED: ${requirement.reason}`; }
-      }
-      const last = integration.integrated.at(-1);
-      if (last) currentCandidate = last.candidate;
     }
     if (results.some((result) => result.status === "FAIL")) { const summary: WaveExecutionSummary = { wave: index + 1, taskIds: ids, status: "FAIL", results }; waveSummaries.push(summary); await recordEvent(input.stateRoot, input.config, "harness.wave.finish", { taskId: input.contract.task.id, wave: index + 1, status: "FAIL", tasks: ids, reconciliationRequired: results.filter((result) => result.message?.startsWith("WAVE_RECONCILIATION_REQUIRED")).map((result) => result.task.id) }); return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, aggregateSession: aggregate(sessions, 1, `Wave ${index + 1} candidate assembly failed.`) }; }
     finalReport = planning?.barrierValidation === false ? undefined : await input.revalidate(); const status = finalReport?.status === "FAIL" ? "FAIL" : "PASS"; const summary: WaveExecutionSummary = { wave: index + 1, taskIds: ids, status, results, barrier: finalReport }; waveSummaries.push(summary); await recordEvent(input.stateRoot, input.config, "harness.wave.finish", { taskId: input.contract.task.id, wave: index + 1, status, tasks: ids, checks: finalReport?.checks.length }); if (status === "FAIL") return { used: true, plan, schedule, waves: waveSummaries, sessions, aggregateSession: aggregate(sessions, 1, `Wave ${index + 1} deterministic barrier failed.`), report: finalReport };
