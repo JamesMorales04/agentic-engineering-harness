@@ -4,19 +4,23 @@ import {
   PROVIDER_RATE_LIMIT_MAX_WAIT_MS_V1,
   isProviderRateLimited,
   parseProviderRateLimitDetail,
+  parseRetryAfterHeaderValue,
   providerRateLimitWaitMs,
+  withProviderRateLimitRetry,
   type ProviderRateLimitDetailV1,
 } from "../src/paseo/sdk.js";
 import {
   WAVE_BACKPRESSURE_EVENT_V1,
   WAVE_BACKPRESSURE_MAX_WAIT_MS_V1,
   WAVE_CONCURRENCY_LEASE_CAP_V1,
+  acquireWaveProviderSlotOrQueue,
   isWaveBackpressureError,
   shouldQueueWaveWork,
   waveBackpressureAttributes,
   waveConcurrencyV1,
   waveQueueWaitMs,
   waveRateLimitWaitMs,
+  withWaveBackpressureRetry,
 } from "../src/agents/waveExecutor.js";
 import {
   DEFAULT_OPERATION_RESOURCE_POLICY,
@@ -109,20 +113,91 @@ describe("provider backpressure (Unit 3)", () => {
       expect(providerRateLimitWaitMs(huge, 30_000)).toBeLessThanOrEqual(30_000);
       expect(providerRateLimitWaitMs(huge)).toBe(PROVIDER_RATE_LIMIT_MAX_WAIT_MS_V1);
     });
+
+    it("narrow marker: bare retry-after without 429/rate-limit never labels rate-limited (regression)", () => {
+      expect(parseProviderRateLimitDetail(new Error("retry-after: 5"))).toBeUndefined();
+      expect(parseProviderRateLimitDetail(new Error("Retry-After: 120"))).toBeUndefined();
+      expect(parseProviderRateLimitDetail({ headers: { "retry-after": "5" } })).toBeUndefined();
+      expect(isProviderRateLimited(new Error("retry-after: 5"))).toBe(false);
+      // With a real signal, the Retry-After hint is still honored.
+      expect(parseProviderRateLimitDetail(new Error("rate limited, retry-after: 5"))?.retryAfterMs).toBe(5000);
+      expect(parseProviderRateLimitDetail(rateLimitError("429", { statusCode: 429, headers: { "retry-after": "5" } }))?.retryAfterMs).toBe(5000);
+    });
+
+    it("deterministic time: HTTP-date Retry-After uses injectable clock (tests pin it, no Date.now)", () => {
+      const date = "Wed, 21 Oct 2015 07:28:00 GMT";
+      const dateMs = Date.parse(date);
+      // Clock pinned 5s before the date → 5000ms WAIT.
+      const early = parseProviderRateLimitDetail(
+        rateLimitError("429 Too Many Requests", { statusCode: 429, headers: { "retry-after": date } }),
+        () => dateMs - 5000
+      );
+      expect(early?.retryAfterSource).toBe("retry-after-http-date");
+      expect(early?.retryAfterMs).toBe(5000);
+      // Clock pinned after the date → 0 (already elapsed, fail-closed, never negative).
+      const late = parseProviderRateLimitDetail(
+        rateLimitError("429 Too Many Requests", { statusCode: 429, headers: { "retry-after": date } }),
+        () => dateMs + 10_000
+      );
+      expect(late?.retryAfterMs).toBe(0);
+      // Direct header parser pins the same clock.
+      expect(parseRetryAfterHeaderValue(date, () => dateMs - 2000)?.ms).toBe(2000);
+      expect(parseRetryAfterHeaderValue(date, () => dateMs + 1000)?.ms).toBe(0);
+    });
+
+    it("SDK 429 → WAIT honored → retry succeeds within budget (no network, scripted clock/sleep)", async () => {
+      let attempts = 0;
+      const sleeps: number[] = [];
+      const result = await withProviderRateLimitRetry(
+        async () => {
+          attempts += 1;
+          if (attempts === 1) {
+            throw rateLimitError("429 Too Many Requests", { statusCode: 429, headers: { "retry-after": "2" } });
+          }
+          return "ok";
+        },
+        {
+          timeoutMs: 30_000,
+          nowMs: () => 0,
+          sleepMs: async (ms) => {
+            sleeps.push(ms);
+          }
+        }
+      );
+      expect(result).toBe("ok");
+      expect(attempts).toBe(2);
+      expect(sleeps).toEqual([2000]);
+    });
+
+    it("SDK 429 with exhausted budget is terminal (never extends caps)", async () => {
+      let attempts = 0;
+      await expect(
+        withProviderRateLimitRetry(
+          async () => {
+            attempts += 1;
+            throw rateLimitError("429 rate limited", { statusCode: 429, headers: { "retry-after": "5" } });
+          },
+          { timeoutMs: 0, nowMs: () => 0, sleepMs: async () => undefined }
+        )
+      ).rejects.toMatchObject({ name: "PaseoSdkRateLimitedError" });
+      expect(attempts).toBe(1);
+    });
   });
 
   describe("D2: bounded wave fan-out (QUEUE, never throw)", () => {
-    it("caps default fan-out at the lease ceiling and clamps configured excess", () => {
-      expect(WAVE_CONCURRENCY_LEASE_CAP_V1).toBe(16);
+    it("caps default fan-out at the lease ceiling and clamps configured excess (single cap source, derived)", () => {
+      // Single source: literal 16 lives only in DEFAULT_OPERATION_RESOURCE_POLICY;
+      // WAVE_CONCURRENCY_LEASE_CAP_V1 derives from it (never duplicated).
+      expect(DEFAULT_OPERATION_RESOURCE_POLICY.maxConcurrentProviderSessionsPerOperation).toBe(16);
       expect(WAVE_CONCURRENCY_LEASE_CAP_V1).toBe(DEFAULT_OPERATION_RESOURCE_POLICY.maxConcurrentProviderSessionsPerOperation);
-      expect(waveConcurrencyV1(undefined, 100)).toBe(16);
-      expect(waveConcurrencyV1({ maxWaveConcurrency: 64 }, 64)).toBe(16);
+      expect(waveConcurrencyV1(undefined, 100)).toBe(DEFAULT_OPERATION_RESOURCE_POLICY.maxConcurrentProviderSessionsPerOperation);
+      expect(waveConcurrencyV1({ maxWaveConcurrency: 64 }, 64)).toBe(DEFAULT_OPERATION_RESOURCE_POLICY.maxConcurrentProviderSessionsPerOperation);
       expect(waveConcurrencyV1({ worktreeIsolation: true, maxWaveConcurrency: 2 }, 3)).toBe(2);
       expect(waveConcurrencyV1({ worktreeIsolation: false, maxWaveConcurrency: 4 }, 3)).toBe(1);
       expect(waveConcurrencyV1(undefined, 2)).toBe(2);
     });
 
-    it("classifies backpressure as QUEUE and terminal failures as FAIL", () => {
+    it("classifies backpressure as QUEUE and terminal failures as FAIL (narrow marker: bare retry-after never QUEUEs)", () => {
       expect(isWaveBackpressureError(new Error("RESOURCE_CEILING_EXHAUSTED: operation holds 16 active provider sessions"))).toBe(true);
       expect(isWaveBackpressureError(new Error("provider opencode is already leased in ws by owner-a."))).toBe(true);
       expect(isWaveBackpressureError(new Error("PASEO_PROVIDER_LEASE_TAKEOVER_BLOCKED: prior session active"))).toBe(true);
@@ -131,6 +206,11 @@ describe("provider backpressure (Unit 3)", () => {
       expect(isWaveBackpressureError(new Error("Delegation escaped scope"))).toBe(false);
       expect(shouldQueueWaveWork(new Error("429 rate limited"))).toBe(true);
       expect(shouldQueueWaveWork(new Error("INVALID"))).toBe(false);
+      // Narrow marker regression: bare retry-after without 429/rate-limit is not backpressure.
+      expect(isWaveBackpressureError(new Error("retry-after: 5"))).toBe(false);
+      expect(isWaveBackpressureError(new Error("Retry-After: 120"))).toBe(false);
+      expect(shouldQueueWaveWork(new Error("retry-after: 5"))).toBe(false);
+      expect(isProviderCapacityError(new Error("retry-after: 5"))).toBe(false);
     });
 
     it("bounds wave WAITs and reports terminal 0 on exhausted budgets", () => {
@@ -247,12 +327,87 @@ describe("provider backpressure (Unit 3)", () => {
       expect(isWaveBackpressureError(new Error("429 Too Many Requests"))).toBe(true);
     });
 
-    it("fail-closed invariants: caps unchanged, waits bounded, exhausted budgets terminal", () => {
+    it("fail-closed invariants: caps unchanged (single source), waits bounded, exhausted budgets terminal", () => {
+      // Single cap source: literal 16 only in DEFAULT_OPERATION_RESOURCE_POLICY; wave derives.
       expect(DEFAULT_OPERATION_RESOURCE_POLICY).toMatchObject({ maxOwnedResourcesPerOperation: 64, maxConcurrentProviderSessionsPerOperation: 16 });
-      expect(WAVE_CONCURRENCY_LEASE_CAP_V1).toBeLessThanOrEqual(DEFAULT_OPERATION_RESOURCE_POLICY.maxConcurrentProviderSessionsPerOperation);
+      expect(WAVE_CONCURRENCY_LEASE_CAP_V1).toBe(DEFAULT_OPERATION_RESOURCE_POLICY.maxConcurrentProviderSessionsPerOperation);
       expect(PROVIDER_RATE_LIMIT_MAX_WAIT_MS_V1).toBe(60_000);
       expect(providerRateLimitWaitMs({ version: 1, status: 429, retryAfterMs: 999_999, retryAfterSource: "none" })).toBe(PROVIDER_RATE_LIMIT_MAX_WAIT_MS_V1);
       expect(waveRateLimitWaitMs(999_999)).toBe(WAVE_BACKPRESSURE_MAX_WAIT_MS_V1);
+    });
+  });
+
+  describe("integration (no network): wired QUEUE paths proceed, never throw-on-conflict", () => {
+    it("lease conflict → QUEUED → proceeds (not throw) via withWaveBackpressureRetry", async () => {
+      let attempts = 0;
+      const sleeps: number[] = [];
+      const result = await withWaveBackpressureRetry(
+        async () => {
+          attempts += 1;
+          if (attempts === 1) {
+            throw new Error("provider opencode is already leased in w by owner-a.");
+          }
+          return "proceeded";
+        },
+        { timeoutMs: 5000, nowMs: () => 0, sleepMs: async (ms) => { sleeps.push(ms); } }
+      );
+      expect(result).toBe("proceeded");
+      expect(attempts).toBe(2);
+      expect(sleeps.length).toBe(1);
+      expect(sleeps[0]).toBeGreaterThanOrEqual(0);
+      expect(sleeps[0]).toBeLessThanOrEqual(WAVE_BACKPRESSURE_MAX_WAIT_MS_V1);
+    });
+
+    it("wave 429 → WAIT honored → retry succeeds (typed Retry-After, narrow marker)", async () => {
+      let attempts = 0;
+      const sleeps: number[] = [];
+      const result = await withWaveBackpressureRetry(
+        async () => {
+          attempts += 1;
+          if (attempts === 1) {
+            throw rateLimitError("429 Too Many Requests", { statusCode: 429, headers: { "retry-after": "1" } });
+          }
+          return "ok";
+        },
+        { timeoutMs: 30_000, nowMs: () => 0, sleepMs: async (ms) => { sleeps.push(ms); } }
+      );
+      expect(result).toBe("ok");
+      expect(attempts).toBe(2);
+      expect(sleeps).toEqual([1000]);
+    });
+
+    it("wave QUEUE budget exhaustion is terminal FAIL (never extends caps)", async () => {
+      let attempts = 0;
+      await expect(
+        withWaveBackpressureRetry(
+          async () => {
+            attempts += 1;
+            throw new Error("429 Too Many Requests");
+          },
+          { timeoutMs: 0, nowMs: () => 0, sleepMs: async () => undefined }
+        )
+      ).rejects.toThrow("429");
+      expect(attempts).toBe(1);
+    });
+
+    it("acquireWaveProviderSlotOrQueue QUEUES on conflict then ACQUIRES after release (not throw)", async () => {
+      const supervisor = new RuntimeSupervisorV1({ leaseTtlMs: 60_000 });
+      supervisor.acquireProviderLease({ provider: "wave", projectId: "p", canonicalRoot: "/r", workspaceId: "shared", mode: "write", ownerId: "task-a" });
+      // Second writer QUEUES (not throw) with bounded WAIT hint.
+      const queued = await acquireWaveProviderSlotOrQueue(
+        supervisor,
+        { provider: "wave", projectId: "p", canonicalRoot: "/r", workspaceId: "shared", ownerId: "task-b", mode: "write" },
+        { remainingBudgetMs: 0 }
+      );
+      expect(queued.acquired).toBe(false);
+      expect(queued.queueDepth).toBe(1);
+      // Isolated workspace keys never contend (ACQUIRED).
+      const isolated = await acquireWaveProviderSlotOrQueue(
+        supervisor,
+        { provider: "wave", projectId: "p", canonicalRoot: "/r", workspaceId: "isolated-task-c", ownerId: "task-c", mode: "write" },
+        { remainingBudgetMs: 1000 }
+      );
+      expect(isolated.acquired).toBe(true);
     });
   });
 });

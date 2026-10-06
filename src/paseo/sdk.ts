@@ -159,7 +159,9 @@ export class PaseoSdkTimeoutError extends Error {
  *
  * MECHANISM: DETERMINISTIC. Pure inspection of the settled SDK error shape:
  * numeric 429 status fields plus case-insensitive 429/rate-limit/Too Many
- * Requests text. No network, no retry, no clock except for HTTP-date delta.
+ * Requests text. A bare `retry-after` hint without a 429/rate-limit signal is
+ * never sufficient (narrow marker). No network, no retry, no clock except for
+ * HTTP-date delta (injectable `nowMs` for deterministic tests).
  * The parsed `retryAfterMs` is the bounded WAIT hint (not an attempt): callers
  * honor it via `providerRateLimitWaitMs` against their existing deadline
  * budget, never extending caps. Waits are fail-closed (capped, zero on
@@ -196,20 +198,22 @@ export class PaseoSdkRateLimitedError extends Error {
 }
 
 /** True when the settled value carries a 429/rate-limit signature (SDK boundary only). */
-export function isProviderRateLimited(error: unknown): boolean {
-  return parseProviderRateLimitDetail(error) !== undefined;
+export function isProviderRateLimited(error: unknown, nowMs?: () => number): boolean {
+  return parseProviderRateLimitDetail(error, nowMs) !== undefined;
 }
 
 /**
  * Parse a settled SDK failure into typed rate-limit detail. Returns undefined
- * when the value carries no 429/rate-limit signature. Retry-After is read from
+ * when the value carries no 429/rate-limit signature (a bare `retry-after`
+ * hint alone is not a signal). Retry-After is read from
  * (in priority order): explicit `retryAfterMs`/`retryAfter` numeric fields,
  * case-insensitive `headers["retry-after"]` (seconds or HTTP-date), then
  * `Retry-After: <n>` / `retry after <n><unit>` message patterns. All waits are
  * clamped to 0..MAX; a bare 429 without a hint defaults to the bounded
  * stampede-avoidance wait (1s) so immediate retries never hammer one window.
+ * `nowMs` is the injectable clock for HTTP-date deltas (defaults to Date.now).
  */
-export function parseProviderRateLimitDetail(error: unknown): ProviderRateLimitDetailV1 | undefined {
+export function parseProviderRateLimitDetail(error: unknown, nowMs?: () => number): ProviderRateLimitDetailV1 | undefined {
   if (error instanceof PaseoSdkRateLimitedError) return error.detail;
   const status = readRateLimitStatus(error);
   const message = readRateLimitMessage(error);
@@ -217,7 +221,7 @@ export function parseProviderRateLimitDetail(error: unknown): ProviderRateLimitD
   const hasStatus = status === PROVIDER_RATE_LIMIT_STATUS_V1;
   const hasMarker = message !== undefined && RATE_LIMIT_MARKER_RE.test(message);
   if (!hasStatus && !hasMarker) return undefined;
-  const parsed = readRetryAfterMs(error, headers, message);
+  const parsed = readRetryAfterMs(error, headers, message, nowMs);
   const retryAfterMs = clampRateLimitWaitMs(parsed?.ms ?? PROVIDER_RATE_LIMIT_DEFAULT_WAIT_MS_V1);
   return {
     version: 1,
@@ -245,7 +249,62 @@ export function providerRateLimitWaitMs(
   return Math.min(bounded, Math.floor(remainingBudgetMs));
 }
 
-const RATE_LIMIT_MARKER_RE = /(?:\b429\b|rate[\s_\-]*limit|too many requests|retry[\s_\-]*after)/i;
+/**
+ * SDK-boundary 429/Retry-After WAIT+retry within an existing deadline.
+ *
+ * MECHANISM: DETERMINISTIC classification + bounded WAIT. The settled error is
+ * parsed via `parseProviderRateLimitDetail` (narrow 429/rate-limit marker, never
+ * bare `retry-after`); non-rate-limit failures rethrow immediately. A
+ * rate-limit WAIT is honored via `providerRateLimitWaitMs` against the
+ * caller's existing `timeoutMs` budget (never extends caps; `min(bounded,
+ * remaining)`; 0 when exhausted → terminal `PaseoSdkRateLimitedError`).
+ * A WAIT is not an attempt: retry counters must not increment for it; the
+ * loop is bounded by the deadline so exhaustion is terminal fail-closed.
+ * Injectable `nowMs`/`sleepMs` keep fixtures scripted with no network (same
+ * pattern as `waitForProviderSessionCapacity`).
+ */
+export interface ProviderRateLimitRetryOptionsV1 {
+  timeoutMs?: number;
+  nowMs?: () => number;
+  sleepMs?: (ms: number) => Promise<void>;
+  onWait?: (waitMs: number, detail: ProviderRateLimitDetailV1) => void;
+}
+
+export async function withProviderRateLimitRetry<T>(
+  action: (remainingBudgetMs: number | undefined) => Promise<T>,
+  options: ProviderRateLimitRetryOptionsV1 = {}
+): Promise<T> {
+  const nowMs = options.nowMs ?? Date.now;
+  const sleepMs = options.sleepMs ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const startedAt = nowMs();
+  const timeoutMs = options.timeoutMs;
+  const deadlineAt = timeoutMs !== undefined ? startedAt + timeoutMs : undefined;
+  // Fail-closed implicit cap when the caller has no deadline: one bounded WAIT window.
+  const implicitDeadlineAt = deadlineAt ?? startedAt + PROVIDER_RATE_LIMIT_MAX_WAIT_MS_V1;
+  for (;;) {
+    const now = nowMs();
+    const remaining = deadlineAt !== undefined ? deadlineAt - now : undefined;
+    try {
+      return await action(remaining);
+    } catch (error) {
+      const detail = parseProviderRateLimitDetail(error, nowMs);
+      if (!detail) throw error;
+      const effectiveRemaining = deadlineAt !== undefined ? deadlineAt - nowMs() : implicitDeadlineAt - nowMs();
+      const waitMs = providerRateLimitWaitMs(detail, effectiveRemaining);
+      if (waitMs <= 0) {
+        if (error instanceof PaseoSdkRateLimitedError) throw error;
+        const message = error instanceof Error ? error.message : String(error);
+        const typed = new PaseoSdkRateLimitedError(detail, message);
+        (typed as unknown as { cause: unknown }).cause = error;
+        throw typed;
+      }
+      options.onWait?.(waitMs, detail);
+      await sleepMs(waitMs);
+    }
+  }
+}
+
+const RATE_LIMIT_MARKER_RE = /(?:\b429\b|rate[\s_\-]*limit|too many requests)/i;
 const RETRY_AFTER_MESSAGE_RE = /retry[\s_\-]*after\s*[:=]?\s*(\d+(?:\.\d+)?)\s*(ms|s(?:ec(?:ond)?s?)?|m(?:in(?:ute)?s?)?)?/i;
 
 function clampRateLimitWaitMs(value: number): number {
@@ -307,7 +366,8 @@ function readRateLimitHeaders(error: unknown): Record<string, unknown> | undefin
 function readRetryAfterMs(
   error: unknown,
   headers: Record<string, unknown> | undefined,
-  message: string | undefined
+  message: string | undefined,
+  nowMs?: () => number
 ): { ms: number; source: ProviderRateLimitRetryAfterSourceV1 } | undefined {
   const record = (error && typeof error === "object" ? error as Record<string, unknown> : undefined);
   if (record) {
@@ -321,7 +381,7 @@ function readRetryAfterMs(
         return { ms: value * 1_000, source: "retry-after-seconds" };
       }
       if (typeof value === "string" && value.trim()) {
-        const parsed = parseRetryAfterHeaderValue(value.trim());
+        const parsed = parseRetryAfterHeaderValue(value.trim(), nowMs);
         if (parsed) return parsed;
       }
     }
@@ -333,7 +393,7 @@ function readRetryAfterMs(
         return { ms: value * 1_000, source: "retry-after-seconds" };
       }
       if (typeof value === "string" && value.trim()) {
-        const parsed = parseRetryAfterHeaderValue(value.trim());
+        const parsed = parseRetryAfterHeaderValue(value.trim(), nowMs);
         if (parsed) return parsed;
       }
     }
@@ -352,7 +412,10 @@ function readRetryAfterMs(
   return undefined;
 }
 
-function parseRetryAfterHeaderValue(value: string): { ms: number; source: ProviderRateLimitRetryAfterSourceV1 } | undefined {
+export function parseRetryAfterHeaderValue(
+  value: string,
+  nowMs?: () => number
+): { ms: number; source: ProviderRateLimitRetryAfterSourceV1 } | undefined {
   if (/^\d+(?:\.\d+)?$/.test(value)) {
     return { ms: Number.parseFloat(value) * 1_000, source: "retry-after-seconds" };
   }
@@ -364,7 +427,8 @@ function parseRetryAfterHeaderValue(value: string): { ms: number; source: Provid
   }
   const dateMs = Date.parse(value);
   if (Number.isFinite(dateMs)) {
-    return { ms: Math.max(0, dateMs - Date.now()), source: "retry-after-http-date" };
+    const now = (nowMs ?? Date.now)();
+    return { ms: Math.max(0, dateMs - now), source: "retry-after-http-date" };
   }
   return undefined;
 }
@@ -406,42 +470,104 @@ export async function materializePaseoSdkAgent(root: string, options: PaseoSdkAg
   return result;
 }
 
-export async function materializePaseoSdkAgentWithClient(client: PaseoSdkClient, options: PaseoSdkAgentOptions): Promise<PaseoSdkAgentResult> {
-  const handle = await client.agents.create(buildCreateOptions(options, false));
-  return handleResult(handle, options.permissionScopeRoots);
+export async function materializePaseoSdkAgentWithClient(
+  client: PaseoSdkClient,
+  options: PaseoSdkAgentOptions,
+  retryOptions: ProviderRateLimitRetryOptionsV1 = {}
+): Promise<PaseoSdkAgentResult> {
+  let lastDetail: ProviderRateLimitDetailV1 | undefined;
+  const result = await withProviderRateLimitRetry(
+    async (remaining) => {
+      const handle = await client.agents.create(buildCreateOptions(options, false));
+      return handleResult(handle, options.permissionScopeRoots);
+    },
+    {
+      ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+      ...(retryOptions.nowMs ? { nowMs: retryOptions.nowMs } : {}),
+      ...(retryOptions.sleepMs ? { sleepMs: retryOptions.sleepMs } : {}),
+      onWait: (waitMs, detail) => {
+        lastDetail = detail;
+        retryOptions.onWait?.(waitMs, detail);
+      }
+    }
+  );
+  return lastDetail && !result.rateLimited ? { ...result, rateLimited: lastDetail } : result;
 }
 
-export async function createPaseoSdkAgentWithClient(client: PaseoSdkClient, options: PaseoSdkAgentOptions): Promise<PaseoSdkAgentResult> {
-  const handle = await client.agents.create(buildCreateOptions(options, options.prompt !== undefined));
-  if (options.prompt !== undefined && options.waitForFinish !== false) {
-    const result = await waitForHandle(handle, options.timeoutMs, options.permissionScopeRoots);
-    if (result.status === "timeout") await stopPaseoSdkAgentHandle(handle);
-    return result;
-  }
-  return handleResult(handle, options.permissionScopeRoots);
+export async function createPaseoSdkAgentWithClient(
+  client: PaseoSdkClient,
+  options: PaseoSdkAgentOptions,
+  retryOptions: ProviderRateLimitRetryOptionsV1 = {}
+): Promise<PaseoSdkAgentResult> {
+  let lastDetail: ProviderRateLimitDetailV1 | undefined;
+  const result = await withProviderRateLimitRetry(
+    async (remaining) => {
+      const handle = await client.agents.create(buildCreateOptions(options, options.prompt !== undefined));
+      if (options.prompt !== undefined && options.waitForFinish !== false) {
+        const effectiveTimeout = remaining ?? options.timeoutMs;
+        const waited = await waitForHandle(handle, effectiveTimeout, options.permissionScopeRoots);
+        if (waited.status === "timeout") await stopPaseoSdkAgentHandle(handle);
+        return waited;
+      }
+      return handleResult(handle, options.permissionScopeRoots);
+    },
+    {
+      ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+      ...(retryOptions.nowMs ? { nowMs: retryOptions.nowMs } : {}),
+      ...(retryOptions.sleepMs ? { sleepMs: retryOptions.sleepMs } : {}),
+      onWait: (waitMs, detail) => {
+        lastDetail = detail;
+        retryOptions.onWait?.(waitMs, detail);
+      }
+    }
+  );
+  return lastDetail && !result.rateLimited ? { ...result, rateLimited: lastDetail } : result;
 }
 
 export async function dispatchPaseoSdkAgent(root: string, agentId: string, prompt: string, timeoutMs?: number, permissionScopeRoots?: string[]): Promise<PaseoSdkAgentResult> {
   return withPaseoClient(root, (client) => dispatchPaseoSdkAgentWithClient(client, agentId, prompt, timeoutMs, permissionScopeRoots));
 }
 
-export async function dispatchPaseoSdkAgentWithClient(client: PaseoSdkClient, agentId: string, prompt: string, timeoutMs?: number, permissionScopeRoots?: string[]): Promise<PaseoSdkAgentResult> {
-  const handle = client.agents.ref(agentId);
-  if (typeof handle.send === "function") {
-    try {
-      await withTimeout(handle.send(prompt), timeoutMs, `Paseo agent ${agentId} dispatch timed out after ${timeoutMs ?? 1_800_000}ms.`);
-    } catch (error) {
-      if (error instanceof PaseoSdkTimeoutError) await stopPaseoSdkAgentHandle(handle);
-      throw error;
+export async function dispatchPaseoSdkAgentWithClient(
+  client: PaseoSdkClient,
+  agentId: string,
+  prompt: string,
+  timeoutMs?: number,
+  permissionScopeRoots?: string[],
+  retryOptions: ProviderRateLimitRetryOptionsV1 = {}
+): Promise<PaseoSdkAgentResult> {
+  let lastDetail: ProviderRateLimitDetailV1 | undefined;
+  const result = await withProviderRateLimitRetry(
+    async (remaining) => {
+      const attemptTimeout = remaining ?? timeoutMs;
+      const handle = client.agents.ref(agentId);
+      if (typeof handle.send === "function") {
+        try {
+          await withTimeout(handle.send(prompt), attemptTimeout, `Paseo agent ${agentId} dispatch timed out after ${attemptTimeout ?? 1_800_000}ms.`);
+        } catch (error) {
+          if (error instanceof PaseoSdkTimeoutError) await stopPaseoSdkAgentHandle(handle);
+          throw error;
+        }
+        return { ...(await handleResult(handle, permissionScopeRoots)), status: statusText(handle.status) ?? "working" };
+      }
+      if (typeof handle.run === "function") {
+        const turn = await handle.run(prompt, { timeoutMs: attemptTimeout });
+        if (turn.status === "timeout") await stopPaseoSdkAgentHandle(handle);
+        return turnResult(handle, turn, permissionScopeRoots);
+      }
+      throw new PaseoSdkUnavailableError("The active @getpaseo/client agent handle exposes neither send() nor run(); cannot dispatch a turn through the SDK.");
+    },
+    {
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      ...(retryOptions.nowMs ? { nowMs: retryOptions.nowMs } : {}),
+      ...(retryOptions.sleepMs ? { sleepMs: retryOptions.sleepMs } : {}),
+      onWait: (waitMs, detail) => {
+        lastDetail = detail;
+        retryOptions.onWait?.(waitMs, detail);
+      }
     }
-    return { ...(await handleResult(handle, permissionScopeRoots)), status: statusText(handle.status) ?? "working" };
-  }
-  if (typeof handle.run === "function") {
-    const turn = await handle.run(prompt, { timeoutMs });
-    if (turn.status === "timeout") await stopPaseoSdkAgentHandle(handle);
-    return turnResult(handle, turn, permissionScopeRoots);
-  }
-  throw new PaseoSdkUnavailableError("The active @getpaseo/client agent handle exposes neither send() nor run(); cannot dispatch a turn through the SDK.");
+  );
+  return lastDetail && !result.rateLimited ? { ...result, rateLimited: lastDetail } : result;
 }
 
 export async function waitPaseoSdkAgent(root: string, agentId: string, timeoutMs?: number, permissionScopeRoots?: string[]): Promise<PaseoSdkAgentResult> {
@@ -505,46 +631,63 @@ export async function runPaseoSdkAgentWithClient(
   timeoutMs?: number,
   outputSchema?: Record<string, unknown>,
   permissionScopeRoots?: string[],
-  activityOptions?: PaseoSdkRunActivityOptions
+  activityOptions?: PaseoSdkRunActivityOptions,
+  retryOptions: ProviderRateLimitRetryOptionsV1 = {}
 ): Promise<PaseoSdkAgentResult> {
-  const handle = client.agents.ref(agentId);
-  if (typeof handle.run === "function") {
-    const turn = await runWithFirstActivityWatch(handle, () => handle.run!(prompt, { timeoutMs, ...(outputSchema ? { outputSchema } : {}) }), timeoutMs, activityOptions);
-    if (turn.status === "timeout") await stopPaseoSdkAgentHandle(handle);
-    if (turn.killReason === "STALLED_FIRST_ACTIVITY") {
-      return {
-        id: handle.id,
-        workspaceId: handle.workspaceId ?? undefined,
-        status: turn.status,
-        error: turn.error,
-        killReason: turn.killReason,
-        ...(turn.activity ? { activity: turn.activity } : {})
-      };
+  let lastDetail: ProviderRateLimitDetailV1 | undefined;
+  const result = await withProviderRateLimitRetry(
+    async (remaining) => {
+      const attemptTimeout = remaining ?? timeoutMs;
+      const handle = client.agents.ref(agentId);
+      if (typeof handle.run === "function") {
+        const turn = await runWithFirstActivityWatch(handle, () => handle.run!(prompt, { timeoutMs: attemptTimeout, ...(outputSchema ? { outputSchema } : {}) }), attemptTimeout, activityOptions);
+        if (turn.status === "timeout") await stopPaseoSdkAgentHandle(handle);
+        if (turn.killReason === "STALLED_FIRST_ACTIVITY") {
+          return {
+            id: handle.id,
+            workspaceId: handle.workspaceId ?? undefined,
+            status: turn.status,
+            error: turn.error,
+            killReason: turn.killReason,
+            ...(turn.activity ? { activity: turn.activity } : {})
+          };
+        }
+        // Late-activity stop (stop-then-read invariant): the turn still failed by
+        // stop, but the post-stop read proved provider-visible content. Preserve
+        // the completed turn text for forensics via turnResult while keeping the
+        // correct DEADLINE classification and activity counts.
+        if (turn.killReason || turn.activity) {
+          const base = await turnResult(handle, turn, permissionScopeRoots);
+          return {
+            ...base,
+            ...(turn.killReason ? { killReason: turn.killReason } : {}),
+            ...(turn.activity ? { activity: turn.activity } : {})
+          };
+        }
+        return turnResult(handle, turn, permissionScopeRoots);
+      }
+      if (typeof handle.send === "function") {
+        await withTimeout(handle.send(prompt, outputSchema ? { outputSchema } : undefined), attemptTimeout, `Paseo agent ${agentId} turn dispatch timed out after ${attemptTimeout ?? 1_800_000}ms.`).catch(async (error) => {
+          if (error instanceof PaseoSdkTimeoutError) await stopPaseoSdkAgentHandle(handle);
+          throw error;
+        });
+        const waited = await waitForHandle(handle, attemptTimeout, permissionScopeRoots);
+        if (waited.status === "timeout") await stopPaseoSdkAgentHandle(handle);
+        return waited;
+      }
+      throw new PaseoSdkUnavailableError("The active @getpaseo/client agent handle exposes neither run() nor send(); cannot execute an atomic resumed turn through the SDK.");
+    },
+    {
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      ...(retryOptions.nowMs ? { nowMs: retryOptions.nowMs } : {}),
+      ...(retryOptions.sleepMs ? { sleepMs: retryOptions.sleepMs } : {}),
+      onWait: (waitMs, detail) => {
+        lastDetail = detail;
+        retryOptions.onWait?.(waitMs, detail);
+      }
     }
-    // Late-activity stop (stop-then-read invariant): the turn still failed by
-    // stop, but the post-stop read proved provider-visible content. Preserve
-    // the completed turn text for forensics via turnResult while keeping the
-    // correct DEADLINE classification and activity counts.
-    if (turn.killReason || turn.activity) {
-      const base = await turnResult(handle, turn, permissionScopeRoots);
-      return {
-        ...base,
-        ...(turn.killReason ? { killReason: turn.killReason } : {}),
-        ...(turn.activity ? { activity: turn.activity } : {})
-      };
-    }
-    return turnResult(handle, turn, permissionScopeRoots);
-  }
-  if (typeof handle.send === "function") {
-    await withTimeout(handle.send(prompt, outputSchema ? { outputSchema } : undefined), timeoutMs, `Paseo agent ${agentId} turn dispatch timed out after ${timeoutMs ?? 1_800_000}ms.`).catch(async (error) => {
-      if (error instanceof PaseoSdkTimeoutError) await stopPaseoSdkAgentHandle(handle);
-      throw error;
-    });
-    const result = await waitForHandle(handle, timeoutMs, permissionScopeRoots);
-    if (result.status === "timeout") await stopPaseoSdkAgentHandle(handle);
-    return result;
-  }
-  throw new PaseoSdkUnavailableError("The active @getpaseo/client agent handle exposes neither run() nor send(); cannot execute an atomic resumed turn through the SDK.");
+  );
+  return lastDetail && !result.rateLimited ? { ...result, rateLimited: lastDetail } : result;
 }
 
 export async function archivePaseoSdkAgent(root: string, agentId: string): Promise<void> {
