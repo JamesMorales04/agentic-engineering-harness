@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { sha256Canonical } from "../../src/core/digest.js";
-import { computeCommitTreeDigest, computeWorktreeDigest } from "../../src/core/git.js";
+import { computeCommitTreeDigest, computeWorktreeDigest, TREE_DIGEST_SCHEME } from "../../src/core/git.js";
 import { createCandidateRevisionV1 } from "../../src/operations/v2Contracts.js";
 import { reconcileToolAction } from "../../src/security/actionReconciliation.js";
 import { classifyToolActionImpact, type ActionIntentV1, type ToolActionKindV1 } from "../../src/security/toolActionGate.js";
@@ -41,11 +41,33 @@ async function initBinaryRepo(): Promise<string> {
   return root;
 }
 
-/** Canonical single-entry combiner over caller-supplied bytes (mirrors git.ts). */
+/** Canonical single-entry combiner over caller-supplied bytes (mirrors git.ts `aeh-tree-v2` framing). */
+function framedField(hash: crypto.Hash, bytes: Buffer): void {
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(bytes.length);
+  hash.update(length);
+  hash.update(bytes);
+}
+
+function framedEntry(hash: crypto.Hash, type: "file" | "symlink" | "missing", entryPath: string, mode: string, content: Buffer | null): void {
+  framedField(hash, Buffer.from(type, "utf8"));
+  framedField(hash, Buffer.from(entryPath, "utf8"));
+  framedField(hash, Buffer.from(mode, "utf8"));
+  const contentLength = Buffer.alloc(8);
+  if (content === null) {
+    contentLength.writeBigUInt64BE(0n);
+    hash.update(contentLength);
+    return;
+  }
+  contentLength.writeBigUInt64BE(BigInt(content.length));
+  hash.update(contentLength);
+  hash.update(content);
+}
+
 function combinerDigest(fileBytes: Buffer): string {
   const hash = crypto.createHash("sha256");
-  hash.update(`path\0${FILE_NAME}\0`);
-  hash.update(fileBytes);
+  hash.update(Buffer.from(`${TREE_DIGEST_SCHEME}\0`, "utf8"));
+  framedEntry(hash, "file", FILE_NAME, "100644", fileBytes);
   return hash.digest("hex");
 }
 
@@ -120,11 +142,11 @@ describe("LUNA BLOCKER (c): commit-tree digest must hash blob bytes with no trai
     return root;
   }
 
-  /** Canonical single-entry symlink combiner over caller-supplied target bytes (mirrors git.ts). */
+  /** Canonical single-entry symlink combiner over caller-supplied target bytes (mirrors git.ts `aeh-tree-v2` framing). */
   function symlinkCombinerDigest(target: string): string {
     const hash = crypto.createHash("sha256");
-    hash.update(`path\0${LINK_NAME}\0`);
-    hash.update(`symlink\0${target}\0`);
+    hash.update(Buffer.from(`${TREE_DIGEST_SCHEME}\0`, "utf8"));
+    framedEntry(hash, "symlink", LINK_NAME, "120000", Buffer.from(target, "utf8"));
     return hash.digest("hex");
   }
 
@@ -174,13 +196,11 @@ describe("LUNA BLOCKER (d): symlink targets hash by raw bytes, not UTF-8 strings
     return root;
   }
 
-  /** Canonical single-entry symlink combiner over raw target BYTES (mirrors git.ts). */
+  /** Canonical single-entry symlink combiner over raw target BYTES (mirrors git.ts `aeh-tree-v2` framing). */
   function symlinkCombinerDigestBytes(target: Buffer): string {
     const hash = crypto.createHash("sha256");
-    hash.update(`path\0${LINK_NAME}\0`);
-    hash.update("symlink\0");
-    hash.update(target);
-    hash.update("\0");
+    hash.update(Buffer.from(`${TREE_DIGEST_SCHEME}\0`, "utf8"));
+    framedEntry(hash, "symlink", LINK_NAME, "120000", target);
     return hash.digest("hex");
   }
 
@@ -277,5 +297,95 @@ describe("LUNA BLOCKER (b): unreadable-candidate outcomes carry scan observabili
     expect(result.detail).toBe("commit-content-unreadable");
     expect(result.evidence["scannedCommits"]).toBe(2);
     expect(result.evidence["scanLimit"]).toBe(20);
+  });
+});
+
+describe("LUNA BLOCKER (e): combiner framing is unambiguous (aeh-tree-v2)", () => {
+  const FRAMING_NAME = "p";
+
+  async function initFramingRepo(): Promise<string> {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-framing-"));
+    roots.push(root);
+    git(root, ["init", "-b", "main"]);
+    git(root, ["config", "user.name", "AEH Test"]);
+    git(root, ["config", "user.email", "aeh@example.invalid"]);
+    return root;
+  }
+
+  /** Superseded pre-framing combiner (no scheme tag, no type/length frame). */
+  function legacyFileDigest(entryPath: string, fileBytes: Buffer): string {
+    const hash = crypto.createHash("sha256");
+    hash.update(`path\0${entryPath}\0`);
+    hash.update(fileBytes);
+    return hash.digest("hex");
+  }
+
+  it("scheme tag constant exists and both digest paths digest identically under it", async () => {
+    expect(TREE_DIGEST_SCHEME).toBe("aeh-tree-v2");
+    const root = await initFramingRepo();
+    await fs.writeFile(path.join(root, FRAMING_NAME), "framing-probe");
+    git(root, ["add", FRAMING_NAME]);
+    git(root, ["commit", "-m", "T-FRAME: probe"]);
+    // Both paths agree (same framed inputs), and the agreed digest is NOT
+    // the legacy untagged/unframed vector for the same bytes.
+    expect(await computeWorktreeDigest(root)).toBe(await computeCommitTreeDigest(root, "HEAD"));
+    expect(await computeWorktreeDigest(root)).not.toBe(legacyFileDigest(FRAMING_NAME, Buffer.from("framing-probe", "utf8")));
+  });
+
+  it("file content mimicking a symlink framed stream digests differently from that symlink", async () => {
+    const symlinkRoot = await initFramingRepo();
+    await fs.symlink("target", path.join(symlinkRoot, FRAMING_NAME));
+    git(symlinkRoot, ["add", FRAMING_NAME]);
+    git(symlinkRoot, ["commit", "-m", "T-FRAME: symlink"]);
+
+    const aliasRoot = await initFramingRepo();
+    await fs.writeFile(
+      path.join(aliasRoot, FRAMING_NAME),
+      Buffer.concat([Buffer.from("symlink\0", "utf8"), Buffer.from("target", "utf8"), Buffer.from("\0", "utf8")])
+    );
+    git(aliasRoot, ["add", FRAMING_NAME]);
+    git(aliasRoot, ["commit", "-m", "T-FRAME: alias"]);
+
+    // Pre-fix both digests were the identical `path\0p\0symlink\0target\0` stream.
+    expect(await computeWorktreeDigest(aliasRoot)).not.toBe(await computeWorktreeDigest(symlinkRoot));
+    expect(await computeCommitTreeDigest(aliasRoot, "HEAD")).not.toBe(await computeCommitTreeDigest(symlinkRoot, "HEAD"));
+  });
+
+  it("file content mimicking the missing marker digests differently from a missing entry", async () => {
+    // Deterministic missing entry: staged path deleted from the worktree
+    // before digest time (still in ls-files --cached -> ENOENT race branch).
+    const missingRoot = await initFramingRepo();
+    await fs.writeFile(path.join(missingRoot, FRAMING_NAME), "irrelevant");
+    git(missingRoot, ["add", FRAMING_NAME]);
+    await fs.rm(path.join(missingRoot, FRAMING_NAME));
+
+    const aliasRoot = await initFramingRepo();
+    await fs.writeFile(path.join(aliasRoot, FRAMING_NAME), Buffer.from("missing\0", "utf8"));
+    git(aliasRoot, ["add", FRAMING_NAME]);
+    git(aliasRoot, ["commit", "-m", "T-FRAME: missing-alias"]);
+
+    // Pre-fix both digests were the identical `path\0p\0missing\0` stream.
+    expect(await computeWorktreeDigest(aliasRoot)).not.toBe(await computeWorktreeDigest(missingRoot));
+  });
+
+  it("executable-bit difference is a distinguished framed input and clean trees still agree", async () => {
+    const execRoot = await initFramingRepo();
+    await fs.writeFile(path.join(execRoot, FRAMING_NAME), "run-me");
+    await fs.chmod(path.join(execRoot, FRAMING_NAME), 0o755);
+    git(execRoot, ["add", FRAMING_NAME]);
+    git(execRoot, ["commit", "-m", "T-FRAME: exec"]);
+
+    const plainRoot = await initFramingRepo();
+    await fs.writeFile(path.join(plainRoot, FRAMING_NAME), "run-me");
+    await fs.chmod(path.join(plainRoot, FRAMING_NAME), 0o644);
+    git(plainRoot, ["add", FRAMING_NAME]);
+    git(plainRoot, ["commit", "-m", "T-FRAME: plain"]);
+
+    // Same bytes, different modes: 100755 must never digest like 100644.
+    expect(await computeWorktreeDigest(execRoot)).not.toBe(await computeWorktreeDigest(plainRoot));
+    expect(await computeCommitTreeDigest(execRoot, "HEAD")).not.toBe(await computeCommitTreeDigest(plainRoot, "HEAD"));
+    // Mode agreement on clean trees: worktree exec bit matches committed mode.
+    expect(await computeWorktreeDigest(execRoot)).toBe(await computeCommitTreeDigest(execRoot, "HEAD"));
+    expect(await computeWorktreeDigest(plainRoot)).toBe(await computeCommitTreeDigest(plainRoot, "HEAD"));
   });
 });
