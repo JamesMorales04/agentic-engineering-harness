@@ -46,9 +46,9 @@ function stubSubjectMatch(): typeof runExecutable {
 
 function withDigest(digest: string): ActionReconciliationDependenciesV1 {
   return {
-    // `computeWorktreeDigest` is the post-fix injection port; cast so this
-    // reproducer typechecks RED (pre-fix) and binds GREEN (post-fix).
-    ...( { computeWorktreeDigest: async (_root: string) => digest } as unknown as ActionReconciliationDependenciesV1)
+    // `computeCommitTreeDigest` is the HEAD-tree injection port: reconciliation
+    // compares contentDigest against the COMMITTED tree, never the worktree.
+    ...( { computeCommitTreeDigest: async (_root: string, _ref: string) => digest } as unknown as ActionReconciliationDependenciesV1)
   };
 }
 

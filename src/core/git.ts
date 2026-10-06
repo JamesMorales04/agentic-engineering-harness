@@ -100,7 +100,7 @@ export async function computeWorktreeDigest(cwd: string): Promise<string> {
     hash.update(`path\0${normalized}\0`);
     try {
       const stat = await fs.lstat(path.resolve(cwd, file));
-      if (stat.isSymbolicLink()) hash.update(`symlink\0${await fs.readlink(path.resolve(cwd, file))}\0`);
+      if (stat.isSymbolicLink()) updateDigestWithSymlinkTarget(hash, await fs.readlink(path.resolve(cwd, file)));
       else hash.update(await fs.readFile(path.resolve(cwd, file)));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -108,6 +108,70 @@ export async function computeWorktreeDigest(cwd: string): Promise<string> {
     }
   }
   return hash.digest("hex");
+}
+
+/** Canonical per-entry combiner shared by worktree and commit-tree digests. */
+function updateDigestWithSymlinkTarget(hash: crypto.Hash, target: string): void {
+  hash.update(`symlink\0${target}\0`);
+}
+
+/**
+ * Digest the COMMITTED tree at `ref` (default HEAD), not the live worktree.
+ *
+ * Decision mechanism: DETERMINISTIC. Enumerates `git ls-tree -r --name-only`
+ * and reads each blob via `git show <ref>:<path>`, applying the SAME
+ * canonical per-file combiner `computeWorktreeDigest` uses
+ * (`path\0<normalized>\0` + file bytes, `symlink\0<target>\0` for mode
+ * 120000 entries). A stale HEAD subject with a dirty worktree therefore
+ * cannot masquerade as the intended commit: only committed bytes match.
+ *
+ * Binary blobs travel through the managed `runExecutable` UTF-8 boundary, so
+ * non-UTF-8 content may hash differently than the worktree Buffer path and
+ * fail closed to UNKNOWN (never a false SUCCEEDED). Symlink targets are
+ * trimmed of a single trailing newline from `git show` to match `readlink`.
+ */
+export async function computeCommitTreeDigest(cwd: string, ref = "HEAD"): Promise<string> {
+  const entries = await listCommitTreeEntries(cwd, ref);
+  const hash = crypto.createHash("sha256");
+  for (const { path: file, mode } of entries) {
+    const normalized = file.replaceAll("\\", "/");
+    hash.update(`path\0${normalized}\0`);
+    const shown = await runExecutable("git", ["show", `${ref}:${file}`], { cwd, timeoutMs: 15_000 });
+    if (shown.exitCode !== 0) throw new Error(`Git could not read committed blob '${file}' at ${ref}.`);
+    if (mode === "120000") updateDigestWithSymlinkTarget(hash, shown.stdout.replace(/\r?\n$/, ""));
+    else hash.update(Buffer.from(shown.stdout, "utf8"));
+  }
+  return hash.digest("hex");
+}
+
+interface CommitTreeEntry {
+  path: string;
+  mode: string;
+}
+
+async function listCommitTreeEntries(cwd: string, ref: string): Promise<CommitTreeEntry[]> {
+  const listed = await runExecutable("git", ["ls-tree", "-r", "-z", ref, "--"], { cwd, timeoutMs: 15_000 });
+  if (listed.exitCode !== 0) throw new Error(`Git could not enumerate the committed tree at ${ref}.`);
+  const entries: CommitTreeEntry[] = [];
+  for (const record of listed.stdout.split("\0")) {
+    if (!record) continue;
+    // Format: "<mode> <type> <sha>\t<path>"
+    const tab = record.indexOf("\t");
+    if (tab < 0) continue;
+    const meta = record.slice(0, tab).split(/\s+/);
+    const file = record.slice(tab + 1);
+    if (!meta[0] || !file) continue;
+    entries.push({ path: file, mode: meta[0] });
+  }
+  return entries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+}
+
+/**
+ * Return the committed path inventory hashed by `computeCommitTreeDigest`.
+ * Fails closed when Git cannot establish the tree.
+ */
+export async function listCommitTreePaths(cwd: string, ref = "HEAD"): Promise<string[]> {
+  return (await listCommitTreeEntries(cwd, ref)).map((entry) => entry.path);
 }
 
 /**
