@@ -25,6 +25,17 @@ function execution(command: string, capability: ValidationProviderContext["capab
   };
 }
 
+function structuredExecution(stdout: string, capability: ValidationProviderContext["capability"]): ProviderExecution {
+  return {
+    plan: { provider: "structured-fixture", capability, command: "true", cwd: os.tmpdir() },
+    exitCode: 0,
+    stdout,
+    stderr: "",
+    durationMs: 1,
+    rawArtifact: "",
+  };
+}
+
 describe("empty output fails closed (I-NEW-1)", () => {
   it("test normalizer fails closed on empty output with exit 0", async () => {
     const result = await new ProjectNativeTestExecutionProvider().normalize(context("unit-test"), execution("true", "unit-test"));
@@ -45,6 +56,38 @@ describe("empty output fails closed (I-NEW-1)", () => {
     expect(result.status).toBe("FAIL");
     expect(result.summary.total).toBe(0);
     expect(JSON.stringify(result.failures)).toContain("EMPTY_TEST_EVIDENCE");
+  });
+});
+
+describe("structured zero-test evidence fails closed (Luna blocker)", () => {
+  it("test normalizer fails closed on structured PASS with total:0 and nonempty failures", async () => {
+    const stdout = JSON.stringify({ version: 1, provider: "structured-fixture", status: "PASS", summary: { total: 0, passed: 0, failed: 0, skipped: 0, durationMs: 1 }, failures: [{ message: "boom" }] });
+    const result = await new ProjectNativeTestExecutionProvider().normalize(context("unit-test"), structuredExecution(stdout, "unit-test"));
+    expect(result.status).toBe("FAIL");
+    expect(result.summary.total).toBe(0);
+    expect(JSON.stringify(result.failures)).toContain("EMPTY_TEST_EVIDENCE");
+  });
+
+  it("test normalizer fails closed on structured PASS with total:0 and empty failures", async () => {
+    const stdout = JSON.stringify({ version: 1, provider: "structured-fixture", status: "PASS", summary: { total: 0, passed: 0, failed: 0, skipped: 0, durationMs: 1 }, failures: [] });
+    const result = await new ProjectNativeTestExecutionProvider().normalize(context("unit-test"), structuredExecution(stdout, "unit-test"));
+    expect(result.status).toBe("FAIL");
+    expect(result.summary.total).toBe(0);
+    expect(JSON.stringify(result.failures)).toContain("EMPTY_TEST_EVIDENCE");
+  });
+
+  it("pact normalizer fails closed on a total:0 claim with failures present", async () => {
+    const stdout = JSON.stringify({ total: 0, failures: [{ message: "boom" }] });
+    const result = await new PactContractTestingProvider().normalize(context("contract-test"), structuredExecution(stdout, "contract-test"));
+    expect(result.status).toBe("FAIL");
+    expect(JSON.stringify(result.failures)).toContain("boom");
+  });
+
+  it("bdd normalizer fails closed on a structured PASS claim with zero scenarios", async () => {
+    const stdout = JSON.stringify({ version: 1, status: "PASS", summary: { total: 0 }, scenarios: [] });
+    const result = await new GenericBddExecutionProvider().normalize(context("bdd"), structuredExecution(stdout, "bdd"));
+    expect(result.status).toBe("FAIL");
+    expect(JSON.stringify(result)).toContain("EMPTY_TEST_EVIDENCE");
   });
 });
 

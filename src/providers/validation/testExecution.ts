@@ -48,7 +48,7 @@ export class ProjectNativeTestExecutionProvider implements ValidationProvider<Te
     const result = structured ?? normalizeText(execution.stdout, execution.stderr, execution, context.capability);
     result.requirements = requirementIds(context);
     result.rawArtifact = execution.rawArtifact;
-    if (result.status !== "SKIP" && result.summary.total === 0 && result.failures.length === 0) {
+    if (result.status !== "SKIP" && result.summary.total === 0) {
       result.status = "FAIL";
       result.failures = [{ message: "EMPTY_TEST_EVIDENCE: the test command exited successfully but produced no parseable test evidence (no tests ran or output was empty); a silent zero-test run must never satisfy a requirement." }];
     }
