@@ -43,6 +43,7 @@ import { assembleCandidateChangeSet, type CandidateImpactAssessmentRuntimeV1, ty
 import { executeIsolatedCandidateMutation } from "../candidates/direct.js";
 import { executeRepairerCandidateMutation, repairProtectedPaths } from "../candidates/repair.js";
 import {
+  isSafeRepairScopePath,
   listRepairScopeAmendments,
   normalizeRepairScopePath,
   repairScopeBlockerValidationCheck,
@@ -458,18 +459,25 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
         // deny source plus explicit frozen/globalFrozen (already contained in
         // the canonical set; listed for defense-in-depth) into this assembly
         // site, normalized through the single `normalizeRepairScopePath`
-        // identity (C4). Fail-closed: any protected mutation throws in the
-        // assembler; post-hoc `validateDiffScope` (frozen only) is not relied
+        // identity (C4) with raw-traversal rejection BEFORE normalization
+        // (Luna broadening fix: `src/../**` would posix-normalize to `**`).
+        // Fail-closed: unsafe scope inputs are rejected (filtered) so they
+        // never broaden allowed scope; legitimate patterns are unaffected.
+        // Post-hoc `validateDiffScope` (frozen only) is not relied
         // upon for seal/validator/policy denial.
-        const directAllowedScope = (effectiveContract.scope?.allowed ?? ["**"]).map((entry) =>
-          normalizeRepairScopePath(entry.trim()),
-        );
+        const directAllowedScope = (effectiveContract.scope?.allowed ?? ["**"])
+          .map((entry) => entry.trim())
+          .filter((entry) => isSafeRepairScopePath(entry))
+          .map((entry) => normalizeRepairScopePath(entry));
         const directForbiddenScope = [
           ...(effectiveContract.scope?.forbidden ?? []),
           ...(effectiveContract.scope?.frozen ?? []),
           ...(effectiveConfig.validation?.frozenPaths ?? []),
           ...repairProtectedPaths(effectiveConfig, effectiveContract),
-        ].map((entry) => normalizeRepairScopePath(entry.trim()));
+        ]
+          .map((entry) => entry.trim())
+          .filter((entry) => isSafeRepairScopePath(entry))
+          .map((entry) => normalizeRepairScopePath(entry));
         const assembled = await assembleCandidateChangeSet({
           root: workspaceRoot,
           operationId,

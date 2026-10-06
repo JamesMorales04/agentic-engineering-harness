@@ -1,11 +1,17 @@
 import { minimatch } from "minimatch";
 import type { TaskContract, ValidationCheck } from "../core/types.js";
-import { normalizeRepairScopePath } from "../candidates/repairScope.js";
+import { isSafeRepairScopePath, normalizeRepairScopePath } from "../candidates/repairScope.js";
 
 function matches(file: string, patterns: string[]): boolean {
   const normalizedFile = normalizeRepairScopePath(file.trim());
   return patterns.some((raw) => {
-    const pattern = normalizeRepairScopePath(raw.trim());
+    const trimmed = raw.trim();
+    // DETERMINISTIC raw-traversal rejection BEFORE normalization (Luna
+    // broadening fix): `src/../**` posix-normalizes to `**`; reject the raw
+    // input so it never broadens to open scope. Fail-closed: an unsafe
+    // pattern never matches (grants nothing, denies nothing via broadening).
+    if (!isSafeRepairScopePath(trimmed)) return false;
+    const pattern = normalizeRepairScopePath(trimmed);
     if (!pattern) return false;
     if (pattern === "**") return true;
     if (!normalizedFile) return false;
