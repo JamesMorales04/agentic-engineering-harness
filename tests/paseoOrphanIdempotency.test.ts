@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { PaseoSdkUnavailableError } from "../src/paseo/sdk.js";
 import {
   derivePaseoTurnIdempotencyKey,
   encodeIdempotencyFields,
@@ -200,6 +201,99 @@ describe("orphan/duplicate turns + resume liveness (D5)", () => {
         native: undefined as never,
       } as never;
       await expect(probeManagedPaseoAgent("/repo", "a1", missingCliDeps)).resolves.toBe(false);
+    } finally {
+      if (previousForceCli === undefined) delete process.env.AEH_PASEO_FORCE_CLI;
+      else process.env.AEH_PASEO_FORCE_CLI = previousForceCli;
+    }
+  });
+});
+
+describe("CLI-path idempotency (Luna CLI bypass)", () => {
+  const cliLabels = { "aeh.operation": "OP-CLI", "aeh.task": "T-1", "aeh.role": "worker" };
+  const cliOptions = {
+    cwd: "/repo", provider: "codex", model: "gpt-test", title: "worker", prompt: "do work", labels: cliLabels,
+  } as never;
+
+  function cliOnlyDeps(run: unknown) {
+    return {
+      run: run as never,
+      detectCapabilities: vi.fn(async () => capabilities()) as never,
+      trace: vi.fn(async () => undefined) as never,
+      sdk: { create: vi.fn(), materialize: vi.fn(), dispatch: vi.fn(), wait: vi.fn(), run: vi.fn(), probe: vi.fn(), inspect: vi.fn(), list: vi.fn() } as never,
+      native: undefined as never,
+    } as never;
+  }
+
+  it("CLI launch propagates the idempotency filter labels so a retry can match (SDK-fallback path)", async () => {
+    const commands: string[] = [];
+    const run = vi.fn(async (command: string) => {
+      commands.push(command);
+      if (command.startsWith("paseo ls")) return { exitCode: 0, stdout: "[]", stderr: "", durationMs: 1 };
+      if (command.startsWith("paseo run --background")) return { exitCode: 0, stdout: "agent-cli-1\n", stderr: "", durationMs: 1 };
+      throw new Error(`unexpected CLI command: ${command}`);
+    });
+    const deps = baseDeps({
+      create: vi.fn(async () => { throw new PaseoSdkUnavailableError("sdk down"); }),
+    }) as unknown as { run: unknown };
+    (deps as unknown as { run: unknown }).run = run as never;
+    const result = await launchManagedPaseoAgent("/repo", { ...cliOptions, waitForFinish: false } as never, deps as never);
+    expect(result.id).toBe("agent-cli-1");
+    expect(result.transport).toBe("cli");
+    const launched = commands.find((command) => command.startsWith("paseo run --background"));
+    expect(launched, "CLI launch must run paseo run exactly once").toBeDefined();
+    const key = derivePaseoTurnIdempotencyKey(cliOptions as never)!;
+    expect(key).toMatch(/^[a-f0-9]{64}$/);
+    expect(launched).toContain("--label 'aeh.operation=OP-CLI'");
+    expect(launched).toContain(`--label 'aeh.turn.idempotency=${key}'`);
+  });
+
+  it("CLI path reuses a live idempotent orphan instead of creating a duplicate (RED: second launch ran paseo run again)", async () => {
+    const previousForceCli = process.env.AEH_PASEO_FORCE_CLI;
+    process.env.AEH_PASEO_FORCE_CLI = "1";
+    try {
+      const key = derivePaseoTurnIdempotencyKey(cliOptions as never)!;
+      const orphan = { id: "agent-cli-orphan", status: "working", workspaceId: "ws", labels: { "aeh.operation": "OP-CLI", "aeh.turn.idempotency": key }, raw: {} };
+      const commands: string[] = [];
+      const run = vi.fn(async (command: string) => {
+        commands.push(command);
+        if (command.startsWith("paseo ls")) return { exitCode: 0, stdout: JSON.stringify([orphan]), stderr: "", durationMs: 1 };
+        if (command.startsWith("paseo wait")) return { exitCode: 0, stdout: "idle", stderr: "", durationMs: 1 };
+        if (command.startsWith("paseo logs")) return { exitCode: 0, stdout: "cli resumed", stderr: "", durationMs: 1 };
+        throw new Error(`CLI must not create a duplicate (unexpected ${command})`);
+      });
+      const result = await launchManagedPaseoAgent("/repo", cliOptions, cliOnlyDeps(run));
+      expect(result.id).toBe("agent-cli-orphan");
+      expect(result.transport).toBe("cli");
+      expect(commands.some((command) => command.startsWith("paseo run")), "live CLI orphan must be reused, never relaunched").toBe(false);
+    } finally {
+      if (previousForceCli === undefined) delete process.env.AEH_PASEO_FORCE_CLI;
+      else process.env.AEH_PASEO_FORCE_CLI = previousForceCli;
+    }
+  });
+
+  it("CLI path reaps positively-dead orphans and leaves unknown alone before create-new", async () => {
+    const previousForceCli = process.env.AEH_PASEO_FORCE_CLI;
+    process.env.AEH_PASEO_FORCE_CLI = "1";
+    try {
+      const key = derivePaseoTurnIdempotencyKey(cliOptions as never)!;
+      const matchLabels = { "aeh.operation": "OP-CLI", "aeh.turn.idempotency": key };
+      const orphans = [
+        { id: "cli-dead", status: "failed", workspaceId: "ws", labels: matchLabels, raw: {} },
+        { id: "cli-unknown", status: "mystery", workspaceId: "ws", labels: matchLabels, raw: {} },
+      ];
+      const commands: string[] = [];
+      const run = vi.fn(async (command: string) => {
+        commands.push(command);
+        if (command.startsWith("paseo ls")) return { exitCode: 0, stdout: JSON.stringify(orphans), stderr: "", durationMs: 1 };
+        if (command.startsWith("paseo stop")) return { exitCode: 0, stdout: "stopped", stderr: "", durationMs: 1 };
+        if (command.startsWith("paseo run --background")) return { exitCode: 0, stdout: "agent-cli-new\n", stderr: "", durationMs: 1 };
+        throw new Error(`unexpected CLI command: ${command}`);
+      });
+      const result = await launchManagedPaseoAgent("/repo", { ...cliOptions, waitForFinish: false } as never, cliOnlyDeps(run));
+      expect(result.id).toBe("agent-cli-new");
+      const stops = commands.filter((command) => command.startsWith("paseo stop"));
+      expect(stops.join("\n")).toContain("cli-dead");
+      expect(stops.join("\n")).not.toContain("cli-unknown");
     } finally {
       if (previousForceCli === undefined) delete process.env.AEH_PASEO_FORCE_CLI;
       else process.env.AEH_PASEO_FORCE_CLI = previousForceCli;

@@ -31,6 +31,7 @@ const realTools = process.env.AEH_RUN_REAL_PROVIDERS === "1";
 const describeReal = realTools ? describe : describe.skip;
 
 const roots: string[] = [];
+const stubDirs: string[] = [];
 const savedPath = process.env.PATH ?? "";
 const savedPins = process.env.AEH_OPENGREP_PINS;
 const savedVersions = process.env.AEH_PROVIDER_VERSIONS;
@@ -50,6 +51,9 @@ afterEach(async () => {
   if (savedVersions === undefined) delete process.env.AEH_PROVIDER_VERSIONS; else process.env.AEH_PROVIDER_VERSIONS = savedVersions;
   if (savedBinaries.opengrep === undefined) delete process.env.AEH_OPENGREP_BINARY; else process.env.AEH_OPENGREP_BINARY = savedBinaries.opengrep;
   if (savedBinaries.trivy === undefined) delete process.env.AEH_TRIVY_BINARY; else process.env.AEH_TRIVY_BINARY = savedBinaries.trivy;
+  stubDirs.splice(0);
+  const { clearToolchainEnvCache } = await import("../../src/utils/process.js");
+  clearToolchainEnvCache();
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
 });
 
@@ -69,6 +73,7 @@ async function fixture(files: Record<string, string> = {}): Promise<string> {
 async function stubBinary(name: string, versionLine: string, scanJson: string, scanExit = 0): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), `aeh-stub-${name}-`));
   roots.push(dir);
+  stubDirs.push(dir);
   const file = path.join(dir, name);
   await fs.writeFile(file, `#!/usr/bin/env node
 if (process.argv.includes("--version")) { process.stdout.write(${JSON.stringify(versionLine)} + "\\n"); process.exit(0); }
@@ -78,6 +83,25 @@ process.exit(${scanExit});
   await fs.chmod(file, 0o755);
   process.env.PATH = `${dir}${path.delimiter}${process.env.PATH ?? ""}`;
   return file;
+}
+
+/**
+ * Hermetic migration: ambient PATH no longer reaches managed children, so
+ * stub dirs created above must be pinned via toolchain state on the fixture
+ * root before running validators through the Harness execution path (plus the
+ * node dir: stubs and `node <wrapper>` invocations resolve on
+ * `#!/usr/bin/env node`). Stale/missing state migrates the same way: run
+ * `aeh setup`, then retry. Call after stubBinary, before computeWorktreeDigest
+ * so the pinned state is part of the fixture digest consistently.
+ */
+async function pinStubs(root: string): Promise<void> {
+  const { clearToolchainEnvCache } = await import("../../src/utils/process.js");
+  await fs.mkdir(path.join(root, ".harness"), { recursive: true });
+  await fs.writeFile(
+    path.join(root, ".harness", "toolchain.state.json"),
+    JSON.stringify({ version: 1, binPaths: [path.dirname(process.execPath), ...stubDirs] })
+  );
+  clearToolchainEnvCache();
 }
 
 const OPENGRP_ZERO = JSON.stringify({ version: "1.22.0", results: [], errors: [] });
@@ -221,6 +245,7 @@ describe("impact-review validators through the Harness execution path", () => {
   it("passes a clean tree through the opengrep validator with zero normalized findings", async () => {
     const root = await fixture({ "src/clean.js": "const a = 1;\n" });
     await stubBinary("opengrep", "1.22.0", OPENGRP_ZERO);
+    await pinStubs(root);
     const check = await runExternalToolValidator(validatorContext(root, { id: "static-security", adapter: "opengrep", command: `node ${WRAPPERS.opengrep}` }));
     expect(check.status).toBe("PASS");
     expect(check.details?.findingCount).toBe(0);
@@ -229,6 +254,7 @@ describe("impact-review validators through the Harness execution path", () => {
   it("does not weaken: an opengrep finding still fails the validator", async () => {
     const root = await fixture({ "src/bad.js": "eval('x');\n" });
     await stubBinary("opengrep", "1.22.0", OPENGRP_FINDING);
+    await pinStubs(root);
     const check = await runExternalToolValidator(validatorContext(root, { id: "static-security", adapter: "opengrep", command: `node ${WRAPPERS.opengrep}` }));
     expect(check.status).toBe("FAIL");
     expect(check.details?.findingCount).toBe(1);
@@ -240,6 +266,7 @@ describe("impact-review validators through the Harness execution path", () => {
   it("does not weaken: a trivy vulnerability finding still fails the validator", async () => {
     const root = await fixture();
     await stubBinary("trivy", "Version: 0.70.0", TRIVY_VULN, 1);
+    await pinStubs(root);
     const check = await runExternalToolValidator(validatorContext(root, { id: "dependency-security", adapter: "trivy", command: `node ${WRAPPERS.trivyVuln}` }));
     expect(check.status).toBe("FAIL");
     expect(check.details?.findingCount).toBe(1);
@@ -248,6 +275,7 @@ describe("impact-review validators through the Harness execution path", () => {
   it("persists candidate-bound SAST evidence with exact tool versions", async () => {
     const root = await fixture({ "src/clean.js": "const a = 1;\n" });
     await stubBinary("opengrep", "1.22.0", OPENGRP_ZERO);
+    await pinStubs(root);
     const sourceDigest = await computeWorktreeDigest(root);
     const candidate = createCandidateRevisionV1({ operationId: "OP-IMPACT-REVIEW", candidateId: "CAND-IMPACT-REVIEW", revision: 1, sourceDigest });
     const config: HarnessProjectConfig = {
@@ -269,6 +297,7 @@ describe("impact-review validators through the Harness execution path", () => {
   it("persists candidate-bound trivy evidence with the exact pinned version", async () => {
     const root = await fixture();
     await stubBinary("trivy", "Version: 0.70.0", TRIVY_ZERO);
+    await pinStubs(root);
     const sourceDigest = await computeWorktreeDigest(root);
     const candidate = createCandidateRevisionV1({ operationId: "OP-IMPACT-TRIVY", candidateId: "CAND-IMPACT-TRIVY", revision: 1, sourceDigest });
     const config: HarnessProjectConfig = {
@@ -288,6 +317,7 @@ describe("impact-review validators through the Harness execution path", () => {
   it("executes the generic dependency dimension through the approved trivy provider with SAST evidence", async () => {
     const root = await fixture();
     await stubBinary("trivy", "Version: 0.70.0", TRIVY_ZERO);
+    await pinStubs(root);
     const sourceDigest = await computeWorktreeDigest(root);
     const candidate = createCandidateRevisionV1({ operationId: "OP-IMPACT-PROVIDER", candidateId: "CAND-IMPACT-PROVIDER", revision: 1, sourceDigest });
     const config: HarnessProjectConfig = {

@@ -136,68 +136,59 @@ describe("canonical managed child env scrub (C6)", () => {
     expect(buildHermeticChildPath("/pinned")).not.toContain("/tmp/decoy");
   });
 
-  it("never selects a decoy host shim earlier in ambient PATH (RED decoy selected before, not after)", async () => {
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-shim-"));
-    // Host-shim farm simulation (mise shims dir shape: contains a `shims` segment).
-    const decoyShimsDir = path.join(tmp, "host-shims");
-    await fs.mkdir(decoyShimsDir, { recursive: true });
-    await fs.writeFile(path.join(decoyShimsDir, "aeh-decoy-tool"), "#!/bin/sh\necho decoy\n");
-    await fs.chmod(path.join(decoyShimsDir, "aeh-decoy-tool"), 0o755);
-    // Legitimate test stub (isolated temp, no `shims` segment) must be preserved
-    // when prefix is missing, so existing validator stubbing keeps working.
+  it("no-prefix state fails visibly with no ambient resolution; pinned state restores it (RED: ambient stub resolved before)", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-hermetic-"));
+    // Ambient-only tools: a host-style dir (~/.local/bin shape, no `shims`
+    // segment so the old filtered-ambient fallback kept it) and a test stub.
+    const ambientDir = path.join(tmp, "ambient-tools");
+    await fs.mkdir(ambientDir, { recursive: true });
+    await fs.writeFile(path.join(ambientDir, "aeh-ambient-tool"), "#!/bin/sh\necho ambient\n");
+    await fs.chmod(path.join(ambientDir, "aeh-ambient-tool"), 0o755);
+    // Same-name shadow: ambient comes first in PATH to prove the pinned prefix
+    // wins even when ambient would shadow by order.
+    await fs.writeFile(path.join(ambientDir, "aeh-stub-tool"), "#!/bin/sh\necho ambient-shadow\n");
+    await fs.chmod(path.join(ambientDir, "aeh-stub-tool"), 0o755);
     const stubDir = path.join(tmp, "aeh-stub-xyz");
     await fs.mkdir(stubDir, { recursive: true });
     await fs.writeFile(path.join(stubDir, "aeh-stub-tool"), "#!/bin/sh\necho stub\n");
     await fs.chmod(path.join(stubDir, "aeh-stub-tool"), 0o755);
     const savedPath = process.env.PATH;
-    // Decoy shims earlier in ambient PATH (simulates host shims shadowing).
-    process.env.PATH = `${decoyShimsDir}${path.delimiter}${stubDir}${path.delimiter}${savedPath ?? ""}`;
+    process.env.PATH = `${ambientDir}${path.delimiter}${stubDir}${path.delimiter}${savedPath ?? ""}`;
+    const { clearToolchainEnvCache } = await import("../src/utils/process.js");
     try {
-      // Prefix undefined in isolated tmp (no toolchain.state): shim farms stripped,
-      // non-shims stubs preserved. Decoy must NOT resolve; stub must resolve.
-      const resolvedDecoy = await resolveExecutable("aeh-decoy-tool", tmp);
-      expect(resolvedDecoy, "host shim farm must never be selected").toBeUndefined();
-      const resolvedStub = await resolveExecutable("aeh-stub-tool", tmp);
-      expect(resolvedStub, "legitimate non-shims stub must still resolve when prefix is missing").toBe(path.join(stubDir, "aeh-stub-tool"));
-      // Real child with managed toolchain (default, prefix missing): decoy shims
-      // stripped, stub preserved, isolated empty stays empty (no minimal injection
-      // when prefix is missing, to respect isolated PATH and existing stubs).
+      clearToolchainEnvCache();
+      // No toolchain.state.json under tmp: ambient-only tools do NOT resolve
+      // (no silent ambient fallback, not even filtered).
+      expect(await resolveExecutable("aeh-ambient-tool", tmp), "ambient-only tool must not resolve without pinned state").toBeUndefined();
+      expect(await resolveExecutable("aeh-stub-tool", tmp), "ambient stub must not resolve without pinned state").toBeUndefined();
+      // Managed child PATH is hermetic minimal only: no ambient dirs at all.
       const probe = await runExecutable(
         process.execPath,
         ["-e", `process.stdout.write(process.env.PATH ?? "")`],
         { cwd: tmp, timeoutMs: 2_000 }
       );
       expect(probe.exitCode).toBe(0);
+      expect(probe.stdout).toBe(buildHermeticChildPath(undefined));
       const dirs = probe.stdout.split(path.delimiter);
-      expect(dirs).not.toContain(decoyShimsDir);
-      expect(dirs).toContain(stubDir);
-
-      // Pinned prefix wins over ambient decoy (even non-shims) when state exists.
-      const pinnedDir = path.join(tmp, "pinned");
-      await fs.mkdir(pinnedDir, { recursive: true });
-      await fs.writeFile(path.join(pinnedDir, "aeh-pinned-tool"), "#!/bin/sh\necho pinned\n");
-      await fs.chmod(path.join(pinnedDir, "aeh-pinned-tool"), 0o755);
-      const ambientDecoyDir = path.join(tmp, "ambient-decoy");
-      await fs.mkdir(ambientDecoyDir, { recursive: true });
-      await fs.writeFile(path.join(ambientDecoyDir, "aeh-pinned-tool"), "#!/bin/sh\necho decoy\n");
-      await fs.chmod(path.join(ambientDecoyDir, "aeh-pinned-tool"), 0o755);
+      expect(dirs).not.toContain(ambientDir);
+      expect(dirs).not.toContain(stubDir);
+      // Direct spawn of an ambient-only tool fails VISIBLY with the setup
+      // direction instead of silently succeeding via ambient.
+      await expect(runExecutable("aeh-stub-tool", [], { cwd: tmp, timeoutMs: 2_000 }), "missing pinned state must fail visibly").rejects.toThrow(/AEH_TOOLCHAIN_NOT_CONFIGURED.*aeh setup/);
+      // Migration: pin the stub dir via `aeh setup` state, then retry (GREEN).
+      // Stale state migrates the same way: re-run setup, then retry.
       await fs.mkdir(path.join(tmp, ".harness"), { recursive: true });
-      await fs.writeFile(path.join(tmp, ".harness", "toolchain.state.json"), JSON.stringify({ version: 1, binPaths: [pinnedDir] }));
-      const { clearToolchainEnvCache } = await import("../src/utils/process.js");
+      await fs.writeFile(path.join(tmp, ".harness", "toolchain.state.json"), JSON.stringify({ version: 1, binPaths: [stubDir] }));
       clearToolchainEnvCache();
-      const savedPath2 = process.env.PATH;
-      process.env.PATH = `${ambientDecoyDir}${path.delimiter}${savedPath2 ?? ""}`;
-      try {
-        const resolvedPinned = await resolveExecutable("aeh-pinned-tool", tmp);
-        expect(resolvedPinned, "pinned prefix must win over ambient decoy").toBe(path.join(pinnedDir, "aeh-pinned-tool"));
-      } finally {
-        if (savedPath2 === undefined) delete process.env.PATH;
-        else process.env.PATH = savedPath2;
-        clearToolchainEnvCache();
-      }
+      expect(await resolveExecutable("aeh-stub-tool", tmp), "pinned stub must resolve after setup").toBe(path.join(stubDir, "aeh-stub-tool"));
+      expect(await resolveExecutable("aeh-ambient-tool", tmp), "unpinned ambient dir stays unresolved after setup").toBeUndefined();
+      const runPinned = await runExecutable("aeh-stub-tool", [], { cwd: tmp, timeoutMs: 2_000 });
+      expect(runPinned.exitCode).toBe(0);
+      expect(runPinned.stdout, "pinned prefix must win over the ambient shadow").toBe("stub\n");
     } finally {
       if (savedPath === undefined) delete process.env.PATH;
       else process.env.PATH = savedPath;
+      clearToolchainEnvCache();
       await fs.rm(tmp, { recursive: true, force: true });
     }
   });

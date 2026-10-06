@@ -117,11 +117,14 @@ export async function launchManagedPaseoAgent(
   deps: PaseoRuntimeDeps = defaultDeps()
 ): Promise<ManagedPaseoAgentResult> {
   const trace = deps.trace ?? defaultDeps().trace!;
+  // Idempotency key derivation is transport-agnostic (DETERMINISTIC frozen-label
+  // hash): derive once so the SDK and CLI launch paths share the same guard and
+  // the CLI fallback can never silently duplicate a turn the SDK path would reuse.
+  const idempotentOptions = withTurnIdempotencyKey(options);
   if (!forceCli()) {
-    await ensurePreflight(root, options, deps);
-    await traceResolvedIdentity(root, options, trace);
+    await ensurePreflight(root, idempotentOptions, deps);
+    await traceResolvedIdentity(root, idempotentOptions, trace);
     try {
-      const idempotentOptions = withTurnIdempotencyKey(options);
       const reused = await reuseLiveIdempotentTurn(root, idempotentOptions, deps, trace);
       if (reused) return reused;
       const created = fromSdk(await deps.sdk.create(root, { ...idempotentOptions, waitForFinish: false }));
@@ -132,11 +135,11 @@ export async function launchManagedPaseoAgent(
     } catch (error) {
       if (!sdkCanFallback(error)) throw error;
       await trace(root, "fallback.cli", { operation: "launch", provider: options.provider, model: options.model ?? "", modeId: options.modeId ?? "", reason: errorMessage(error) });
-      return launchCli(root, options, deps, `SDK unavailable: ${errorMessage(error)}`);
+      return launchCli(root, idempotentOptions, deps, `SDK unavailable: ${errorMessage(error)}`);
     }
   }
   await trace(root, "fallback.cli", { operation: "launch", provider: options.provider, model: options.model ?? "", modeId: options.modeId ?? "", reason: "AEH_PASEO_FORCE_CLI=1" });
-  return launchCli(root, options, deps, "AEH_PASEO_FORCE_CLI=1 forced the compatibility lifecycle.");
+  return launchCli(root, idempotentOptions, deps, "AEH_PASEO_FORCE_CLI=1 forced the compatibility lifecycle.");
 }
 
 export async function materializeManagedPaseoAgent(root: string, options: ManagedPaseoAgentOptions, deps: PaseoRuntimeDeps = defaultDeps()): Promise<ManagedPaseoAgentResult> {
@@ -471,20 +474,38 @@ async function launchCli(root: string, options: ManagedPaseoAgentOptions, deps: 
   if (options.prompt === undefined && options.systemPrompt !== undefined) throw new PaseoSdkUnavailableError(`Paseo SDK is required to create an idle systemPrompt-only agent. Refusing CLI fallback because it would expose session instructions as a user turn. ${fallbackReason}`);
   if (options.env && Object.keys(options.env).length) throw new PaseoSdkUnavailableError(`Paseo SDK is required for session-scoped launch environment used by provider ${options.provider}${options.modeId ? ` mode ${options.modeId}` : ""}. Refusing CLI fallback because dropping that environment could change the native execution identity or permissions. ${fallbackReason}`);
   if (options.providerOptions && Object.keys(options.providerOptions).length) throw new PaseoSdkUnavailableError(`Paseo SDK is required for provider-native options used by provider ${options.provider}. Refusing CLI fallback because dropping the projected sandbox policy could change the participant's execution authority. ${fallbackReason}`);
+  const trace = deps.trace ?? defaultDeps().trace!;
+  // CLI idempotency guard: same key derivation (applied by the caller), same
+  // reuse-live/reap-dead semantics adapted to CLI handles (`paseo ls --json`
+  // records + `paseo stop`). A retry after SDK fallback or under
+  // AEH_PASEO_FORCE_CLI=1 reuses the live CLI orphan instead of silently
+  // creating a duplicate.
+  const reused = await reuseLiveIdempotentCliTurn(root, options, deps, trace, fallbackReason);
+  if (reused) return reused;
   const capabilities = await deps.detectCapabilities(root, deps.run);
   const prompt = options.prompt;
   if (prompt === undefined) throw new Error("Paseo CLI fallback requires a prompt.");
   const timeout = options.timeoutSeconds ?? Math.max(1, Math.ceil((options.timeoutMs ?? 1_800_000) / 1000));
+  // Propagate the idempotency filter labels onto the CLI agent so a later retry
+  // can match this launch. Task/role/phase ride along for observability; large
+  // JSON labels (execution binding, provenance) are never propagated to CLI.
+  const labelArgs = cliIdempotencyLabels(options).map(([key, value]) => `--label ${quote(`${key}=${value}`)}`);
   if (options.outputSchema) {
     if (!capabilities.outputSchema) throw new Error(`Installed Paseo${capabilities.version ? ` ${capabilities.version}` : ""} does not advertise --output-schema required by this agent.`);
     const parts = ["paseo run --quiet", `--title ${quote(options.title)}`, `--provider ${quote(options.provider)}`];
     if (options.workspaceId) parts.push(`--workspace ${quote(options.workspaceId)}`);
     if (options.model) parts.push(`--model ${quote(options.model)}`);
-    parts.push(`--output-schema ${quote(JSON.stringify(options.outputSchema))}`, quote(prompt));
+    parts.push(`--output-schema ${quote(JSON.stringify(options.outputSchema))}`, ...labelArgs, quote(prompt));
     const result = await deps.run(parts.join(" "), { cwd: root, timeoutMs: timeout * 1000 });
     return { exitCode: result.exitCode, stdout: result.stdout, stderr: [fallbackReason, result.stderr].filter(Boolean).join("\n"), status: result.exitCode === 0 ? "idle" : "failed", transport: "cli" };
   }
-  const command = buildPaseoBackgroundRunCommand({ title: options.title, provider: options.provider, model: options.model, workspaceId: options.workspaceId, prompt }, capabilities);
+  const base = buildPaseoBackgroundRunCommand({ title: options.title, provider: options.provider, model: options.model, workspaceId: options.workspaceId, prompt }, capabilities);
+  const quotedPrompt = quote(prompt);
+  // buildPaseoBackgroundRunCommand always appends the quoted prompt last; the
+  // labels must precede it. Fail-closed: never launch unlabeled when the shape
+  // is unexpected (that would silently reintroduce the duplicate-create bypass).
+  if (!base.endsWith(quotedPrompt)) throw new Error(`PASEO_CLI_IDEMPOTENCY_LABEL_FAILED: background run command does not end with the quoted prompt; refusing to launch without idempotency labels. ${fallbackReason}`);
+  const command = labelArgs.length ? `${base.slice(0, base.length - quotedPrompt.length)}${labelArgs.join(" ")} ${quotedPrompt}` : base;
   const launch = await deps.run(command, { cwd: root, timeoutMs: 60_000 });
   if (launch.exitCode !== 0) return { exitCode: launch.exitCode, stdout: launch.stdout, stderr: [fallbackReason, launch.stderr].filter(Boolean).join("\n"), status: "failed", transport: "cli" };
   const id = extractPaseoAgentId(launch.stdout);
@@ -539,6 +560,14 @@ function collectCliAgents(value: unknown, out: Map<string, PaseoSdkAgentRecord>)
  * Liveness is positive-only (idle/working/running); unknown/terminal/dead never
  * reuses. Reaper reaps only positively-dead statuses; unknown is left alone.
  * No retry budgets, leases authority, or vagueness gates touched.
+ *
+ * CLI parity: the SDK-fallback and AEH_PASEO_FORCE_CLI=1 launch paths share the
+ * same derived key (derived once, transport-agnostic) and run the same
+ * reuse-live/reap-dead guard adapted to CLI handles (`paseo ls --json` records
+ * filtered client-side + `paseo stop`). CLI launches propagate the
+ * `aeh.operation` + `aeh.turn.idempotency` filter labels via `paseo run
+ * --label` so a retry can match the orphan; without them the CLI path would
+ * silently duplicate every retried turn.
  */
 export function derivePaseoTurnIdempotencyKey(options: ManagedPaseoAgentOptions): string | undefined {
   const operation = options.labels?.["aeh.operation"]?.trim();
@@ -641,6 +670,84 @@ async function reuseLiveIdempotentTurn(
     }
     return waitManagedPaseoAgent(root, found.id, options.timeoutSeconds ?? secondsFromMs(options.timeoutMs), deps, undefined, options.permissionScopeRoots);
   }
+  return undefined;
+}
+
+/**
+ * CLI idempotency filter labels (DETERMINISTIC).
+ *
+ * `aeh.operation` + `aeh.turn.idempotency` are the reuse filter keys: they must
+ * be present on the CLI agent or a retry cannot match it. Task/role/phase ride
+ * along for observability when present. Large JSON labels (execution binding,
+ * result provenance) are never propagated to CLI launch: they are bound through
+ * the verified `agent update` path, not the create command line.
+ */
+function cliIdempotencyLabels(options: ManagedPaseoAgentOptions): Array<[string, string]> {
+  const labels = options.labels ?? {};
+  const result: Array<[string, string]> = [];
+  for (const key of ["aeh.operation", "aeh.turn.idempotency", "aeh.task", "aeh.role", "aeh.operation.phase"] as const) {
+    const value = labels[key]?.trim();
+    if (value) result.push([key, value]);
+  }
+  return result;
+}
+
+/**
+ * CLI-adapted idempotent-turn reuse (DETERMINISTIC, best-effort, never throws).
+ *
+ * Same contract as reuseLiveIdempotentTurn: exactly one live match (idle/
+ * working/running, positive-only) is reused; otherwise positively-dead matches
+ * are reaped best-effort, unknown statuses are left alone with a trace, and a
+ * missing/unlistable CLI daemon fails closed to create-new (returns undefined).
+ * Matching is client-side over `paseo ls --json` records because the CLI has
+ * no server-side label query.
+ */
+async function reuseLiveIdempotentCliTurn(
+  root: string,
+  options: ManagedPaseoAgentOptions,
+  deps: PaseoRuntimeDeps,
+  trace: (root: string, event: string, details: Record<string, unknown>) => Promise<void>,
+  fallbackReason: string
+): Promise<ManagedPaseoAgentResult | undefined> {
+  const operation = options.labels?.["aeh.operation"]?.trim();
+  const idempotency = options.labels?.["aeh.turn.idempotency"]?.trim();
+  if (!operation || !idempotency) return undefined;
+  let candidates: PaseoSdkAgentRecord[];
+  try {
+    candidates = (await listCliAgents(root, deps)).filter(
+      (agent) => agent.labels?.["aeh.operation"] === operation && agent.labels?.["aeh.turn.idempotency"] === idempotency
+    );
+  } catch {
+    return undefined;
+  }
+  if (candidates.length === 0) return undefined;
+  const reuse = async (found: PaseoSdkAgentRecord): Promise<ManagedPaseoAgentResult> => {
+    await trace(root, "agent.launch.reused", { transport: "cli", agentId: found.id, operation, idempotency });
+    await registerManagedAgent(root, options, { id: found.id, exitCode: 0, stdout: "", stderr: "", status: found.status, workspaceId: found.workspaceId, transport: "cli" });
+    if (!found.id || options.prompt === undefined || options.waitForFinish === false) {
+      return { id: found.id, exitCode: 0, stdout: "", stderr: fallbackReason, status: found.status, workspaceId: found.workspaceId, transport: "cli" };
+    }
+    const waited = await waitManagedPaseoAgent(root, found.id, options.timeoutSeconds ?? secondsFromMs(options.timeoutMs), deps);
+    return { ...waited, stderr: [fallbackReason, waited.stderr].filter(Boolean).join("\n") };
+  };
+  const live = candidates.filter((agent) => isLivePaseoAgentStatus(agent.status));
+  if (live.length === 1) return reuse(live[0]!);
+  // Ambiguous or dead orphans: reap ONLY positively-dead best-effort, never throw,
+  // then create-new. Unknown (undefined/empty/unrecognized) is left alone
+  // fail-closed (never counted as dead, never reaped).
+  for (const agent of candidates) {
+    if (isLivePaseoAgentStatus(agent.status)) continue;
+    if (!isPositivelyDeadPaseoAgentStatus(agent.status)) {
+      await trace(root, "agent.launch.left-alone", { transport: "cli", agentId: agent.id, operation, idempotency, status: agent.status ?? "unknown", reason: "unknown-status-not-dead" });
+      continue;
+    }
+    try {
+      await stopManagedPaseoAgent(root, agent.id, deps);
+      await trace(root, "agent.launch.reaped", { transport: "cli", agentId: agent.id, operation, idempotency, status: agent.status ?? "unknown" });
+    } catch { /* best-effort reaper never blocks launch */ }
+  }
+  const stillLive = candidates.filter((agent) => isLivePaseoAgentStatus(agent.status));
+  if (stillLive.length === 1) return reuse(stillLive[0]!);
   return undefined;
 }
 
