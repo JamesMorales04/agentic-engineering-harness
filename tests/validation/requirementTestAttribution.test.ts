@@ -8,7 +8,7 @@ import { sha256Canonical } from "../../src/core/digest.js";
 import { createCandidateRevisionV1, type CandidateRevisionV1 } from "../../src/operations/v2Contracts.js";
 import type { CandidateImpactV1 } from "../../src/candidates/assembler.js";
 import { compileCandidateAssuranceV1 } from "../../src/architecture/candidateAssurance.js";
-import { attributedReporterFailuresV1, evaluateTestAttributionV1, extractReporterTestsFromExecutionV1 } from "../../src/validation/testAttribution.js";
+import { attributedReporterFailuresV1, evaluateTestAttributionV1, extractReporterTestsFromExecutionV1, parsePlaywrightReporterTestsV1, reporterHasAnyFailureV1 } from "../../src/validation/testAttribution.js";
 import { resolveValidationRequirements, validationRequirementKindValues } from "../../src/architecture/validationRequirements.js";
 import { runCandidateImpactValidations } from "../../src/core/run.js";
 
@@ -969,5 +969,163 @@ process.exit(1);
     expect(
       String((byId.get("candidate.assurance.validation.REQ-WARN")?.details as Record<string, unknown>)?.blocker ?? ""),
     ).toMatch(/PROVIDER_LANE_EVIDENCE_STATUS/);
+  });
+
+  it("RED-D skipped-does-not-explain-bundle-failure: attributed PASS + unrelated SKIPPED + exit 1 FAILs incomplete", async () => {
+    const { root, candidate } = await fixture();
+    // Luna bypass shape: reporter records alpha passed and beta SKIPPED —
+    // no explicit failed-status test — while the bundle exits 1 (e.g.
+    // teardown crash). The skipped test must NOT satisfy completeness.
+    const executable = path.join(root, "node_modules", ".bin", "playwright");
+    await fs.mkdir(path.dirname(executable), { recursive: true });
+    await fs.writeFile(
+      executable,
+      `#!/usr/bin/env node
+if (process.argv.includes("--version")) { process.stdout.write("Version 1.62.1-fixture\\n"); process.exit(0); }
+const report = { suites: [{ title: "shared bundle", specs: [
+  { title: "alpha passing journey", tests: [{ results: [{ status: "passed" }] }] },
+  { title: "beta skipped journey", tests: [{ results: [{ status: "skipped" }] }] }
+]}] };
+process.stdout.write(JSON.stringify(report));
+process.exit(1);
+`,
+      "utf8",
+    );
+    await fs.chmod(executable, 0o755);
+    const configured: HarnessProjectConfig = {
+      ...baseConfig,
+      validation: {
+        providers: [{ id: "shared-browser", capability: "browser-test", provider: "playwright" }],
+        testAttribution: {
+          "REQ-SKIP": ["alpha passing"],
+        },
+      },
+    };
+    const requirements = [
+      {
+        version: 1 as const,
+        id: "REQ-SKIP",
+        property: "Passing journey demonstrates behavior.",
+        kind: "browser-test" as const,
+        scope: ["src/app.ts"],
+        evidenceNeeded: ["browser evidence for passing journeys."],
+        requirementRefs: [],
+        acceptanceRefs: [],
+      },
+    ];
+    const resolution = await resolveValidationRequirements({
+      root,
+      requirements,
+      config: configured,
+      contract,
+      allowedKinds: validationRequirementKindValues,
+    });
+    const impact = impactFor(candidate);
+    const compilation = compileCandidateAssuranceV1({
+      candidate,
+      impact,
+      policy: {
+        version: 1,
+        digest: sha256Canonical("test-attribution-policy"),
+        minimumAssurance: "STANDARD",
+        independentReviewRequired: false,
+        minimumIndependentReviewers: 0,
+        providerDiversity: false,
+        allowedValidationKinds: [...validationRequirementKindValues],
+        evidenceStrength: "STANDARD",
+      },
+      implementationIdentity: "implementer-1",
+      risk: "low",
+      reviewerCandidates: [],
+      baseValidationRequirements: [],
+      validationResolution: resolution,
+      acceptanceAssertions: [],
+    });
+    const report: ValidationReport = {
+      version: 1,
+      taskId: contract.task.id,
+      status: "PASS",
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      checks: [],
+      changedFiles: ["src/app.ts"],
+      candidate,
+      metadata: { project: "test-attribution-fixture", baseRef: "HEAD" },
+    };
+    const checks = await runCandidateImpactValidations({
+      root,
+      config: configured,
+      contract,
+      report,
+      impact,
+      compilation,
+      resolution,
+      requirements,
+    });
+    const byId = new Map(checks.map((c) => [c.id, c]));
+    expect(byId.get("candidate.assurance.validation.REQ-SKIP")?.status).toBe("FAIL");
+    expect(
+      (byId.get("candidate.assurance.validation.REQ-SKIP")?.details as Record<string, unknown>)?.blocker,
+    ).toBe("TEST_ATTRIBUTION_REPORTER_INCOMPLETE");
+  });
+
+  it("explicit-failure vocabulary: failed/timedOut/interrupted explain the bundle; skipped/missing do not", () => {
+    const skipped = [
+      { title: "alpha passing journey", fullTitle: "shared bundle > alpha passing journey", status: "passed", passed: true },
+      { title: "beta skipped journey", fullTitle: "shared bundle > beta skipped journey", status: "skipped", passed: false },
+    ];
+    // Completeness: skipped is non-passing but explains nothing.
+    expect(reporterHasAnyFailureV1(skipped)).toBe(false);
+    expect(reporterHasAnyFailureV1([])).toBe(false);
+    expect(
+      reporterHasAnyFailureV1([{ title: "t", fullTitle: "s > t", status: "missing", passed: false }]),
+    ).toBe(false);
+    // Explicit failure statuses satisfy completeness (any casing the
+    // reporter schema uses: timedOut arrives lowercased as timedout).
+    for (const status of ["failed", "timedOut", "TIMEDOUT", "interrupted"]) {
+      expect(reporterHasAnyFailureV1([{ title: "t", fullTitle: "s > t", status, passed: false }])).toBe(true);
+    }
+    // Rule (iii): an attributed SKIPPED test is unevaluated, not failed.
+    expect(attributedReporterFailuresV1({ selectors: ["beta skipped"], tests: skipped })).toEqual([]);
+    expect(
+      attributedReporterFailuresV1({ selectors: ["alpha passing"], tests: skipped }),
+    ).toEqual([]);
+    // Evaluation: attributed-skipped FAILs via NO_MATCH, never TEST_FAILED;
+    // attributed-failed still FAILs via TEST_FAILED.
+    const skippedEval = evaluateTestAttributionV1({ requirementId: "REQ-SKIP", selectors: ["beta skipped"], tests: skipped });
+    expect(skippedEval.verdict).toBe("FAIL");
+    expect(skippedEval.blocker).toBe("TEST_ATTRIBUTION_NO_MATCH");
+    const failedTests = [
+      ...skipped,
+      { title: "gamma failing visual", fullTitle: "shared bundle > gamma failing visual", status: "failed", passed: false },
+    ];
+    expect(reporterHasAnyFailureV1(failedTests)).toBe(true);
+    expect(
+      attributedReporterFailuresV1({ selectors: ["gamma failing"], tests: failedTests }).map((t) => t.title),
+    ).toEqual(["gamma failing visual"]);
+    const failedEval = evaluateTestAttributionV1({ requirementId: "REQ-G", selectors: ["gamma failing"], tests: failedTests });
+    expect(failedEval.verdict).toBe("FAIL");
+    expect(failedEval.blocker).toBe("TEST_ATTRIBUTION_TEST_FAILED");
+  });
+
+  it("parser marks retry-aware explicit failures (flaky failed-then-passed still recorded a failure)", () => {
+    const parsed = parsePlaywrightReporterTestsV1({
+      suites: [{
+        title: "shared bundle",
+        specs: [
+          { title: "flaky journey", tests: [{ results: [{ status: "failed" }, { status: "passed" }] }] },
+          { title: "skipped journey", tests: [{ results: [{ status: "skipped" }] }] },
+          { title: "empty journey", tests: [{ results: [] }] },
+        ],
+      }],
+    });
+    const byTitle = new Map(parsed.map((t) => [t.title, t]));
+    expect(byTitle.get("flaky journey")).toMatchObject({ passed: false, hasFailedResult: true });
+    expect(byTitle.get("skipped journey")).toMatchObject({ passed: false, status: "skipped", hasFailedResult: false });
+    expect(byTitle.get("empty journey")).toMatchObject({ passed: false, status: "missing", hasFailedResult: false });
+    // The flaky test's recorded failure explains a bundle failure;
+    // skipped/missing-only reporters do not.
+    expect(reporterHasAnyFailureV1(parsed)).toBe(true);
+    expect(reporterHasAnyFailureV1(parsed.filter((t) => t.title !== "flaky journey"))).toBe(false);
   });
 });

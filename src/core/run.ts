@@ -1278,7 +1278,8 @@ export async function runCandidateImpactValidations(input: {
         continue;
       }
       // Reporter-must-explain-the-bundle rule: a non-passing bundle must have
-      // at least one failure recorded in its own single reporter document
+      // at least one EXPLICIT failure status (failed/timedOut/interrupted)
+      // recorded in its own single reporter document
       // (Mechanism=DETERMINISTIC). A zero-failure reporter alongside a failed
       // bundle is incomplete — or a forged all-green document injected into
       // shared stdout while the real failure went elsewhere — and fails

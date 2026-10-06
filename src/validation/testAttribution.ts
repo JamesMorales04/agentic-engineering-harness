@@ -23,6 +23,14 @@ export interface AttributedPlaywrightTestV1 {
   fullTitle: string;
   status: string;
   passed: boolean;
+  /**
+   * True when ANY recorded result carries an explicit failure status
+   * (failed/timedOut/interrupted). Present on parser output; absent on
+   * hand-constructed literals, where callers fall back to `status`.
+   * Tracks retries: a flaky test (failed then passed) still recorded a
+   * failure even though its final status is passing.
+   */
+  hasFailedResult?: boolean;
 }
 
 export interface TestAttributionEvaluationV1 {
@@ -49,6 +57,36 @@ function isPassingResultStatus(status: string): boolean {
   // Fail-closed: only explicit pass/expected count as passing evidence.
   // Skipped, flaky, timedOut, interrupted, etc. are not passing evidence.
   return status === "passed" || status === "expected";
+}
+
+/**
+ * Explicit failure statuses from the Playwright reporter vocabulary
+ * (Mechanism=DETERMINISTIC).
+ *
+ * Per-result status (`TestStatus`: passed | failed | timedOut | skipped |
+ * interrupted — see playwright `JSONReportTestResult.status`) is lowercased
+ * by `normalizeStatus`, so `timedOut` arrives as `timedout`. Only failed,
+ * timedout, and interrupted explain a bundle failure. There is no `error`
+ * status in the schema (errors are a result payload, not a status);
+ * `expected`/`unexpected`/`flaky` are test-level (`JSONReportTest.status`),
+ * never result-level, and this parser emits only last-result statuses (or
+ * `missing` for zero results). Skipped, missing-result, passing, and unknown
+ * statuses are NOT failures: a bundle that fails with zero failed-status
+ * tests (all-skipped + crash, empty run + nonzero exit) has an incomplete
+ * reporter and must fail closed.
+ */
+function isFailedResultStatus(status: string): boolean {
+  return status === "failed" || status === "timedout" || status === "interrupted";
+}
+
+/**
+ * Whether a reporter test records an explicit failure. Prefers the
+ * parser-computed per-result flag (retry-aware); falls back to the final
+ * status for hand-constructed literals.
+ */
+function hasExplicitFailure(test: AttributedPlaywrightTestV1): boolean {
+  if (typeof test.hasFailedResult === "boolean") return test.hasFailedResult;
+  return isFailedResultStatus(normalizeStatus(test.status));
 }
 
 /**
@@ -85,6 +123,7 @@ export function parsePlaywrightReporterTestsV1(value: unknown): AttributedPlaywr
           fullTitle: fullTitle || specTitle || testTitle || "(untitled)",
           status,
           passed,
+          hasFailedResult: statuses.some(isFailedResultStatus),
         });
       }
     }
@@ -200,7 +239,7 @@ export function evaluateTestAttributionV1(input: {
       selectors,
     };
   }
-  const failed = matched.filter((test) => !test.passed);
+  const failed = matched.filter((test) => hasExplicitFailure(test));
   if (failed.length) {
     return {
       verdict: "FAIL",
@@ -212,6 +251,26 @@ export function evaluateTestAttributionV1(input: {
       matched: matched.length,
       total: input.tests.length,
       failedTitles: failed.map((t) => t.fullTitle),
+      selectors,
+    };
+  }
+  // Attributed-but-unevaluated (Mechanism=DETERMINISTIC): an attributed test
+  // that neither passed nor explicitly failed (skipped, missing result) is
+  // not evidence of passing and can never PASS — but it is not a test
+  // failure either, so it fails via the NO_MATCH blocker path, never
+  // TEST_FAILED.
+  const unevaluated = matched.filter((test) => !test.passed);
+  if (unevaluated.length) {
+    return {
+      verdict: "FAIL",
+      reason: `Requirement '${input.requirementId}' has ${unevaluated.length}/${matched.length} attributed tests without passing evidence (no explicit failure): ${unevaluated
+        .slice(0, 5)
+        .map((t) => `'${t.fullTitle}' (${t.status})`)
+        .join("; ")}${unevaluated.length > 5 ? ` (+${unevaluated.length - 5} more)` : ""}. Skipped or missing results cannot PASS.`,
+      blocker: `${TEST_ATTRIBUTION_BLOCKER_PREFIX}_NO_MATCH`,
+      matched: matched.length,
+      total: input.tests.length,
+      failedTitles: [],
       selectors,
     };
   }
@@ -230,13 +289,16 @@ export function evaluateTestAttributionV1(input: {
  * (Mechanism=DETERMINISTIC).
  *
  * Computed from the single authentic reporter's OWN per-test failure list:
- * every reporter test with a non-passing result is checked against the
- * requirement selectors with the same boundary-safe matching as evaluation.
- * Bundle stderr text is never consulted — stderr carries untrusted process
- * output, while the reporter document is the authentic per-test record.
- * A mapped PASS requires this list to be empty (every recorded failure is
- * outside the attributed set); a non-empty list FAILs the requirement even
- * if the bundle exit code looks healthy.
+ * every reporter test with an EXPLICIT failure status (failed/timedOut/
+ * interrupted on any result) is checked against the requirement selectors
+ * with the same boundary-safe matching as evaluation. Bundle stderr text is
+ * never consulted — stderr carries untrusted process output, while the
+ * reporter document is the authentic per-test record. An attributed SKIPPED
+ * (or missing-result) test is unevaluated, not failed: it is excluded here
+ * (evaluation already FAILs it via NO_MATCH, never TEST_FAILED). A mapped
+ * PASS requires this list to be empty (every recorded failure is outside
+ * the attributed set); a non-empty list FAILs the requirement even if the
+ * bundle exit code looks healthy.
  */
 export function attributedReporterFailuresV1(input: {
   selectors: readonly string[];
@@ -246,7 +308,7 @@ export function attributedReporterFailuresV1(input: {
   if (!selectors.length) return [];
   return input.tests.filter(
     (test) =>
-      !test.passed &&
+      hasExplicitFailure(test) &&
       selectors.some(
         (selector) =>
           matchesAttributionSelectorV1(test.fullTitle, selector) ||
@@ -259,17 +321,20 @@ export function attributedReporterFailuresV1(input: {
  * Reporter failures anywhere in the single authentic reporter
  * (Mechanism=DETERMINISTIC).
  *
- * A non-passing bundle must be explained by at least one failure recorded in
- * its own reporter document. A zero-failure reporter alongside a failed
- * bundle is incomplete (or forged: code under test shares the bundle's
- * stdout and can inject an all-green document while the real failure goes
- * elsewhere) and must fail closed. Forgery cannot escape by inventing
- * failures either: an invented failure inside the attribution fails rule
- * (iii), and one outside the attribution is consistent with the real bundle
- * failure, which is the honest outcome.
+ * A non-passing bundle must be explained by at least one EXPLICIT failure
+ * status (failed/timedOut/interrupted on any result) recorded in its own
+ * reporter document. Skipped and missing-result tests are non-passing but
+ * explain nothing — a bundle that fails with zero failed-status tests
+ * (all-skipped + teardown crash, empty run + nonzero exit) is incomplete
+ * (or forged: code under test shares the bundle's stdout and can inject an
+ * all-green document while the real failure goes elsewhere) and must fail
+ * closed. Forgery cannot escape by inventing failures either: an invented
+ * failure inside the attribution fails rule (iii), and one outside the
+ * attribution is consistent with the real bundle failure, which is the
+ * honest outcome.
  */
 export function reporterHasAnyFailureV1(tests: readonly AttributedPlaywrightTestV1[]): boolean {
-  return tests.some((test) => !test.passed);
+  return tests.some((test) => hasExplicitFailure(test));
 }
 
 /**
