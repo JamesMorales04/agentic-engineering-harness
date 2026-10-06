@@ -138,50 +138,20 @@ function safeDetails(value: unknown, depth = 0): unknown {
  * Detached fixture children (`aeh init/start/operation start` on a disposable
  * tmpdir root) are never AEH participants: strip the full managed-agent and
  * controller envelope so the executionContext recursion guard cannot mistake
- * them for nested-operation re-entry. Mirrors the canonical stripping in
- * src/utils/process.ts runChild (which sanitizes all validator shells) plus
- * fixture-specific isolation (controller epoch/token, deterministic Paseo
- * markers, S9 roots, Paseo session binding). The guard itself is unchanged:
- * a raw bounded env without this sanitization is still denied, and REAL nested
- * `aeh operation start` inside an operation remains AEH_RECURSIVE_OPERATION_DENIED.
+ * them for nested-operation re-entry. Uses the single canonical scrub list
+ * shared with prod runChild (src/utils/process.ts MANAGED_CHILD_ENV_SCRUB_KEYS)
+ * plus pinned SDK/entry resolution evidence (toolchain.state.json,
+ * resolvePaseoSdkFromCli diagnostics, candidate build-identity.json;
+ * AEH_ENTRY_FILE stripped fail-closed so entry must be explicit). The guard
+ * itself is unchanged: a raw bounded env without this sanitization is still
+ * denied, and REAL nested `aeh operation start` inside an operation remains
+ * AEH_RECURSIVE_OPERATION_DENIED.
  */
-const FIXTURE_MANAGED_ENVELOPE_KEYS = [
-  "AEH_OPERATION_ID",
-  "AEH_OPERATION_KIND",
-  "AEH_CONTROL_ROOT",
-  "AEH_OPERATION_STATE_REDIRECT",
-  "AEH_OPERATION_WORKSPACE_ID",
-  "AEH_MANAGED_AGENT",
-  "AEH_LOGICAL_AGENT",
-  "AEH_AGENT_ROLE",
-  "AEH_PARENT_OPERATION_ID",
-  "AEH_PARENT_OPERATION_KIND",
-  "AEH_AGENT_PHASE",
-  "AEH_INTERACTIVE_LEAD",
-  "AEH_ORCHESTRATION_ALLOWED",
-  "AEH_ALLOW_NESTED_OPERATION",
-  "AEH_OPERATION_SUPERVISOR",
-  "AEH_PARENT_AGENT_ID",
-  "AEH_SUPERVISOR_GENERATION",
-  "AEH_CONTEXT_OPERATION_ID",
-  "AEH_CONTEXT_PHASE",
-  "AEH_CONTEXT_ROOT",
-  "AEH_ENTRY_FILE",
-  "AEH_SELF_REEXEC",
-  "AEH_CONTROLLER_EPOCH",
-  "AEH_CONTROLLER_TOKEN",
-  "AEH_DETERMINISTIC_PASEO",
-  "AEH_DETERMINISTIC_PASEO_RUNTIME",
-  "AEH_S9_REPO_ROOT",
-  "PASEO_AGENT_ID",
-  "PASEO_PARENT_AGENT_ID",
-  "PASEO_SESSION_ID"
-] as const;
+export { MANAGED_CHILD_ENV_SCRUB_KEYS as FIXTURE_MANAGED_ENVELOPE_KEYS } from "../../../src/utils/process.js";
+import { sanitizeManagedChildEnvironment } from "../../../src/utils/process.js";
 
 export function sanitizeFixtureChildEnvironment(parent: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...parent };
-  for (const key of FIXTURE_MANAGED_ENVELOPE_KEYS) delete env[key];
-  return env;
+  return sanitizeManagedChildEnvironment(parent);
 }
 
 export interface StartResult {

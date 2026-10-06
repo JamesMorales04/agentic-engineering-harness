@@ -23,6 +23,66 @@ export interface ManagedProcessHandle {
 const toolchainPathCache = new Map<string, string | undefined>();
 export function clearToolchainEnvCache(): void { toolchainPathCache.clear(); }
 
+/**
+ * Canonical managed-envelope scrub list (C6).
+ *
+ * MECHANISM: DETERMINISTIC. Single source shared by prod runChild and the
+ * browser fixture sanitizer. Strips controller identity, the managed-agent
+ * envelope, participant/candidate/lease/binding/scratch authority, deterministic
+ * Paseo markers, S9 roots, Paseo session binding, context extras, and NODE_PATH
+ * host leakage (consistent with sdkResolve's NODE_PATH scrub during resolve).
+ *
+ * PATH/MISE_* are intentionally NOT stripped: the toolchain prefix is pinned via
+ * `.harness/toolchain.state.json` (toolchainPathPrefix) and the Paseo SDK via
+ * `resolvePaseoSdkFromCli` diagnostics; the candidate release is pinned via
+ * `dist/releases/<id>/build-identity.json` plus AEH_S9_REPO_ROOT. Both prod and
+ * fixture record that pinned resolution evidence instead of inheriting ambient
+ * SDK/entry locations. AEH_ENTRY_FILE is stripped fail-closed so entry resolution
+ * must be explicit (argv[1]), never inherited.
+ *
+ * Fail-closed: even explicit options.env values for these keys are removed;
+ * repository children must use explicit roots, never inherited controller identity.
+ */
+export const MANAGED_CHILD_ENV_SCRUB_KEYS = [
+  "AEH_OPERATION_ID", "AEH_OPERATION_KIND", "AEH_CONTROL_ROOT", "AEH_OPERATION_STATE_REDIRECT", "AEH_OPERATION_WORKSPACE_ID",
+  "AEH_MANAGED_AGENT", "AEH_LOGICAL_AGENT", "AEH_AGENT_ROLE", "AEH_PARENT_OPERATION_ID", "AEH_PARENT_OPERATION_KIND", "AEH_AGENT_PHASE",
+  "AEH_INTERACTIVE_LEAD", "AEH_ORCHESTRATION_ALLOWED", "AEH_ALLOW_NESTED_OPERATION", "AEH_OPERATION_SUPERVISOR", "AEH_PARENT_AGENT_ID",
+  "AEH_SUPERVISOR_GENERATION", "AEH_CONTEXT_OPERATION_ID", "AEH_CONTEXT_PHASE", "AEH_CONTEXT_ROOT", "AEH_ENTRY_FILE",
+  "AEH_SELF_REEXEC",
+  "AEH_CONTROLLER_EPOCH", "AEH_CONTROLLER_TOKEN",
+  "AEH_DETERMINISTIC_PASEO", "AEH_DETERMINISTIC_PASEO_RUNTIME",
+  "AEH_S9_REPO_ROOT",
+  "PASEO_AGENT_ID", "PASEO_PARENT_AGENT_ID", "PASEO_SESSION_ID",
+  "AEH_PARTICIPANT_ID",
+  "AEH_CANDIDATE_DIGEST",
+  "AEH_CAPABILITY_LEASES",
+  "AEH_EXECUTION_BINDING",
+  "AEH_CONTEXT_MANIFEST_DIGEST", "AEH_PROMPT_MANIFEST_DIGEST", "AEH_SKILL_MANIFEST_DIGEST",
+  "AEH_SCRATCH_RESOURCE", "AEH_SCRATCH_DIGEST",
+  "AEH_CONTEXT_CONTROL_ROOT", "AEH_CONTEXT_PARTICIPANT_ID", "AEH_CONTEXT_SESSION_ID",
+  "AEH_SUPERVISOR_SESSION_ID",
+  "NODE_PATH",
+] as const;
+
+export function sanitizeManagedChildEnvironment(parent: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...parent };
+  for (const key of MANAGED_CHILD_ENV_SCRUB_KEYS) delete env[key];
+  return env;
+}
+
+export function managedChildEnvScrubEvidence(parent: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): { removed: string[]; pinned: { toolchainState: string; sdkDiagnostics: string; candidateIdentity: string; entryExplicit: string } } {
+  const removed = (MANAGED_CHILD_ENV_SCRUB_KEYS as readonly string[]).filter((key) => (parent as Record<string, unknown>)[key] !== undefined);
+  return {
+    removed,
+    pinned: {
+      toolchainState: ".harness/toolchain.state.json",
+      sdkDiagnostics: "resolvePaseoSdkFromCli.diagnostics",
+      candidateIdentity: "dist/releases/<id>/build-identity.json",
+      entryExplicit: "process.argv[1] (AEH_ENTRY_FILE stripped fail-closed)",
+    },
+  };
+}
+
 export interface ProcessOptions {
   cwd: string;
   timeoutMs?: number;
@@ -58,7 +118,7 @@ async function runChild(
   options: ProcessOptions
 ): Promise<ProcessResult> {
   const started = Date.now();
-  const inherited = { ...process.env, ...(options.env ?? {}) };
+  const inherited = sanitizeManagedChildEnvironment({ ...process.env, ...(options.env ?? {}) });
   // Controller identity is authoritative only inside the controller/AEH
   // process itself. Never leak it into arbitrary shell commands such as
   // npm test, whose explicit repository root must remain authoritative.
@@ -66,12 +126,8 @@ async function runChild(
   // owns it. Repository commands and tools must not inherit it: otherwise a
   // bounded child can be mistaken for an AEH participant and re-enter the
   // controller, or observe another operation's routing state.
-  for (const name of [
-    "AEH_OPERATION_ID", "AEH_OPERATION_KIND", "AEH_CONTROL_ROOT", "AEH_OPERATION_STATE_REDIRECT", "AEH_OPERATION_WORKSPACE_ID",
-    "AEH_MANAGED_AGENT", "AEH_LOGICAL_AGENT", "AEH_AGENT_ROLE", "AEH_PARENT_OPERATION_ID", "AEH_PARENT_OPERATION_KIND", "AEH_AGENT_PHASE",
-    "AEH_INTERACTIVE_LEAD", "AEH_ORCHESTRATION_ALLOWED", "AEH_ALLOW_NESTED_OPERATION", "AEH_OPERATION_SUPERVISOR", "AEH_PARENT_AGENT_ID",
-    "AEH_SUPERVISOR_GENERATION", "AEH_CONTEXT_OPERATION_ID", "AEH_CONTEXT_PHASE", "AEH_CONTEXT_ROOT", "AEH_ENTRY_FILE"
-  ]) delete inherited[name];
+  // Canonical list: MANAGED_CHILD_ENV_SCRUB_KEYS (single source; fixture shares it).
+  // PATH/MISE_* preserved with pinned toolchain/SDK evidence; NODE_PATH stripped.
   if (options.toolchain !== false) {
     const prefix = await toolchainPathPrefix(options.cwd);
     if (prefix) inherited.PATH = `${prefix}${path.delimiter}${inherited.PATH ?? ""}`;
