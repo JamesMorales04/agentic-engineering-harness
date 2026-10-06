@@ -41,9 +41,10 @@ import { compileExecutionCatalog, type ExecutionCatalogV1 } from "../architectur
 import { assertCapabilityRegistryV1, discoverCapabilityRegistryV1, loadOperationCapabilityRegistryV1, persistOperationCapabilityRegistryV1, type CapabilityRegistryV1 } from "../capabilities/registry.js";
 import { assembleCandidateChangeSet, type CandidateImpactAssessmentRuntimeV1, type CandidateScopeEscapeV1 } from "../candidates/assembler.js";
 import { executeIsolatedCandidateMutation } from "../candidates/direct.js";
-import { executeRepairerCandidateMutation } from "../candidates/repair.js";
+import { executeRepairerCandidateMutation, repairProtectedPaths } from "../candidates/repair.js";
 import {
   listRepairScopeAmendments,
+  normalizeRepairScopePath,
   repairScopeBlockerValidationCheck,
   resolveRepairScopeBlockerViaProductChoice,
 } from "../candidates/repairScope.js";
@@ -448,6 +449,27 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
       worker = isolated.session;
       executionSessions.push(worker);
       if (isolated.changeSet) {
+        // C1 scope-gate coherence: the normal Implementer assembly must deny
+        // the same default-deny protected set as repair
+        // (`repairProtectedPaths`: frozen TaskContract, seal, validators,
+        // acceptance/spec, policy + amendable manifests). Previously only
+        // `scope.forbidden` was denied here while repair appended
+        // `repairProtectedPaths` (repair.ts canonical). Thread the canonical
+        // deny source plus explicit frozen/globalFrozen (already contained in
+        // the canonical set; listed for defense-in-depth) into this assembly
+        // site, normalized through the single `normalizeRepairScopePath`
+        // identity (C4). Fail-closed: any protected mutation throws in the
+        // assembler; post-hoc `validateDiffScope` (frozen only) is not relied
+        // upon for seal/validator/policy denial.
+        const directAllowedScope = (effectiveContract.scope?.allowed ?? ["**"]).map((entry) =>
+          normalizeRepairScopePath(entry.trim()),
+        );
+        const directForbiddenScope = [
+          ...(effectiveContract.scope?.forbidden ?? []),
+          ...(effectiveContract.scope?.frozen ?? []),
+          ...(effectiveConfig.validation?.frozenPaths ?? []),
+          ...repairProtectedPaths(effectiveConfig, effectiveContract),
+        ].map((entry) => normalizeRepairScopePath(entry.trim()));
         const assembled = await assembleCandidateChangeSet({
           root: workspaceRoot,
           operationId,
@@ -455,8 +477,8 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
           taskId: effectiveContract.task.id,
           currentCandidate,
           changeSet: isolated.changeSet,
-          allowedScope: effectiveContract.scope?.allowed ?? ["**"],
-          forbiddenScope: effectiveContract.scope?.forbidden ?? [],
+          allowedScope: directAllowedScope,
+          forbiddenScope: [...new Set(directForbiddenScope)].sort(),
           candidateId: `candidate:${operationId}:r${currentCandidate.revision + 1}`,
           workspace: currentCandidate.workspace,
           worktree: workspaceRoot,

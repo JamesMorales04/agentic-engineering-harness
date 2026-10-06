@@ -1,8 +1,16 @@
 import { minimatch } from "minimatch";
 import type { TaskContract, ValidationCheck } from "../core/types.js";
+import { normalizeRepairScopePath } from "../candidates/repairScope.js";
 
 function matches(file: string, patterns: string[]): boolean {
-  return patterns.some((pattern) => minimatch(file, pattern, { dot: true, matchBase: false }));
+  const normalizedFile = normalizeRepairScopePath(file.trim());
+  return patterns.some((raw) => {
+    const pattern = normalizeRepairScopePath(raw.trim());
+    if (!pattern) return false;
+    if (pattern === "**") return true;
+    if (!normalizedFile) return false;
+    return minimatch(normalizedFile, pattern, { dot: true, matchBase: false });
+  });
 }
 
 export function validateDiffScope(changedFiles: string[], contract: TaskContract, globalFrozen: string[] = []): ValidationCheck[] {
@@ -11,7 +19,16 @@ export function validateDiffScope(changedFiles: string[], contract: TaskContract
   const forbidden = contract.scope?.forbidden ?? [];
   const frozen = [...globalFrozen, ...(contract.scope?.frozen ?? [])];
 
-  const outsideAllowed = allowed.length > 0 ? changedFiles.filter((f) => !matches(f, allowed)) : [];
+  // Fail-closed empty allowlist (C2): an empty/missing `allowed` denies all
+  // changes (outsideAllowed = all changed files). Only an explicit `["**"]`
+  // allowlist opens scope. This mirrors repair-scope fail-closed defaults:
+  // `run.ts` assembly defaults to `["**"]` only when `scope.allowed` is
+  // undefined, but validation treats missing/empty as closed so an
+  // unscoped contract cannot silently pass. Documented: closed by default,
+  // open only via explicit `["**"]`.
+  const outsideAllowed = allowed.length > 0
+    ? changedFiles.filter((f) => !matches(f, allowed))
+    : [...changedFiles];
   checks.push({
     id: "diff.allowed-scope",
     category: "diff",

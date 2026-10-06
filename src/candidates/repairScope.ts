@@ -102,7 +102,7 @@ export function repairHardProtectedPaths(
 function expandRepairScopePatterns(paths: Set<string> | Iterable<string>): string[] {
   const normalized = new Set<string>();
   for (const raw of paths) {
-    const value = raw.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/$/, "");
+    const value = normalizeRepairScopePath(raw);
     if (!value || path.isAbsolute(value) || value.split("/").includes("..")) continue;
     normalized.add(value);
     normalized.add(`${value}/**`);
@@ -138,7 +138,13 @@ function configuredValidatorSourcePathsForScope(
 }
 
 function matchesAnyHardProtectedPattern(file: string, patterns: readonly string[]): boolean {
-  return patterns.some((pattern) => pattern === "**" || minimatch(file, pattern, { dot: true }));
+  const normalizedFile = normalizeRepairScopePath(file);
+  return patterns.some((pattern) => {
+    const normalizedPattern = normalizeRepairScopePath(pattern);
+    // Preserve the exact `**` open pattern through normalization.
+    if (normalizedPattern === "**" || pattern === "**") return true;
+    return minimatch(normalizedFile, normalizedPattern, { dot: true });
+  });
 }
 
 /**
@@ -270,36 +276,77 @@ export function isSafeRepairScopePath(value: string): boolean {
   if (value.includes("\0")) return false;
   if (path.isAbsolute(value)) return false;
   if (/^[A-Za-z]:/.test(value)) return false;
-  const normalized = value.replaceAll("\\", "/").replace(/^\.\//, "");
+  const normalized = normalizeRepairScopePath(value);
   if (!normalized || normalized.startsWith("/") || normalized === ".." || normalized.startsWith("../")) return false;
+  if (/^[A-Za-z]:/.test(normalized)) return false;
   const segments = normalized.split("/");
   if (segments.some((segment) => !segment || segment === "." || segment === "..")) return false;
   return true;
 }
 
 export function normalizeRepairScopePath(value: string): string {
-  return value.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/$/, "");
+  // DETERMINISTIC single scope-string identity (C4): posix separators, collapse
+  // redundant `//`, `./`, and resolvable `../`, strip a single leading `./`,
+  // strip trailing `/` (except root `/`). Preserves `**` globs (`src/**`
+  // stays `src/**`; `**` stays `**`). Empty/`.` maps to `""` (rejected by
+  // isSafe). All scope gates (hard-protected expansion, violation search,
+  // blocker parse, amendment filter, diffScope, run assembly) must route
+  // through this function so `./src//a.ts`, `src/./a.ts`, and `src/a/../b.ts`
+  // share one identity (`src/a.ts` / `src/b.ts`). Fail-closed: unresolvable
+  // `..` (e.g. `a/../../b` -> `../b`) is preserved for isSafe to reject.
+  const slashed = value.replaceAll("\\", "/");
+  let normalized: string;
+  try {
+    normalized = path.posix.normalize(slashed);
+  } catch {
+    normalized = slashed;
+  }
+  if (normalized === "." || normalized === "./") return "";
+  if (normalized.startsWith("./")) normalized = normalized.slice(2);
+  if (normalized.length > 1 && normalized.endsWith("/")) normalized = normalized.slice(0, -1);
+  return normalized;
 }
 
 /**
  * DETERMINISTIC parse of the Repairer `repair-result` no-mutation report.
  * Returns the declared needed files when stdout/stderr carries a schema-valid
  * `repair-result` payload with a non-empty `filesNeededOutsideScope`, else
- * undefined. Never throws for absent/invalid markers; the caller decides the
- * typed outcome. Model content, deterministic validation.
+ * undefined. Throws REPAIR_SCOPE_BLOCKER_CONFLICT fail-closed when a
+ * schema-valid (or zod-flagged) payload declares needed files AND file changes
+ * (the no-mutation invariant); conflict is never swallowed as undefined.
+ * Never throws for absent/invalid markers; the caller decides the typed
+ * outcome for those. Model content, deterministic validation.
  */
 export function parseRepairScopeBlockerFromSession(session: Pick<WorkerSession, "stdout" | "stderr">): RepairScopeNeededFileV1[] | undefined {
   const marker = extractMarkedRepairResult(session.stdout, session.stderr ?? "");
   if (!marker) return undefined;
   const validation = validateAgentOutput("repair-result", marker);
-  if (!validation.ok) return undefined;
+  if (!validation.ok) {
+    // Distinct conflict diagnostic: zod already enforces no-mutation via
+    // superRefine, so a REPAIR_SCOPE_BLOCKER_CONFLICT issue means the payload
+    // is a forged/conflicting report, not an absent marker. Fail closed
+    // instead of returning undefined (which callers treat as "no blocker").
+    if (validation.issues.some((issue) => issue.includes("REPAIR_SCOPE_BLOCKER_CONFLICT"))) {
+      throw new AehError(
+        "PARTICIPANT_PLAN_INVALID",
+        "REPAIR_SCOPE_BLOCKER_CONFLICT: filesNeededOutsideScope is a no-mutation report path; filesChanged must be empty when needed files are declared.",
+      );
+    }
+    return undefined;
+  }
   const value = validation.value as { filesChanged?: string[]; filesNeededOutsideScope?: RepairScopeNeededFileV1[] };
   const needed = value.filesNeededOutsideScope ?? [];
   if (!needed.length) return undefined;
   // The output-contract schema already enforces no-mutation (filesChanged empty
   // when needed files are declared); re-check here so a forged payload that
-  // bypassed schema registration cannot slip through.
-  if ((value.filesChanged ?? []).length > 0) return undefined;
+  // bypassed schema registration cannot slip through. Fail closed with a
+  // distinct conflict diagnostic instead of undefined.
+  if ((value.filesChanged ?? []).length > 0) {
+    throw new AehError(
+      "PARTICIPANT_PLAN_INVALID",
+      "REPAIR_SCOPE_BLOCKER_CONFLICT: filesNeededOutsideScope is a no-mutation report path; filesChanged must be empty when needed files are declared.",
+    );
+  }
   const normalized: RepairScopeNeededFileV1[] = [];
   for (const entry of needed) {
     if (typeof entry?.path !== "string" || typeof entry?.reason !== "string") return undefined;
@@ -957,10 +1004,15 @@ export function filterForbiddenScopeForAmendment(
   }
   const exempted = new Set<string>();
   for (const filePath of amendment.exemptedPaths) {
-    exempted.add(filePath);
-    exempted.add(`${filePath}/**`);
+    const normalized = normalizeRepairScopePath(filePath.trim());
+    if (!normalized) continue;
+    exempted.add(normalized);
+    exempted.add(`${normalized}/**`);
   }
-  return forbiddenScope.filter((entry) => !exempted.has(entry));
+  return forbiddenScope
+    .map((entry) => ({ raw: entry, normalized: normalizeRepairScopePath(entry.trim()) }))
+    .filter(({ normalized }) => !exempted.has(normalized))
+    .map(({ raw }) => raw);
 }
 
 function extractMarkedRepairResult(stdout: string, stderr: string): unknown | undefined {
