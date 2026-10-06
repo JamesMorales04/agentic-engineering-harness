@@ -16,7 +16,7 @@ import { runConfiguredValidators } from "../../src/validators/registry.js";
 import { runExternalToolValidator } from "../../src/validators/external.js";
 import { createCandidateRevisionV1 } from "../../src/operations/v2Contracts.js";
 import { providerVersions, readRulesetPins, verifyRulesetPins } from "../../scripts/security/toolPin.mjs";
-import { loadProviderLaneEvidenceV1, verifyProviderLaneEvidenceV1 } from "../../src/validation/laneEvidence.js";
+import { loadProviderLaneEvidenceV1, requireProviderLaneEvidenceV1, verifyProviderLaneEvidenceV1 } from "../../src/validation/laneEvidence.js";
 
 const REPO_ROOT = path.resolve(process.cwd());
 const WRAPPERS = {
@@ -460,6 +460,38 @@ describe("impact-review validation resolution order", () => {
     ]);
   });
 
+  it("resolves the UI/browser dimension through the configured s9 browser provider instead of BLOCKED", async () => {
+    const config = await loadProjectConfig(REPO_ROOT);
+    const declared = config.validation?.providers?.find((provider) => provider.id === "s9-browser-playwright");
+    expect(declared).toMatchObject({ capability: "browser-test", provider: "playwright", timeoutSeconds: 900 });
+    expect(String(declared?.command)).toContain("--grep");
+    expect(String(declared?.command)).toContain("S9 browser");
+    expect(String(declared?.command)).toContain("--reporter=json");
+    // Build output must stay out of stdout so the Playwright JSON report stays pure.
+    expect(String(declared?.command)).toContain("1>&2");
+    const root = await fixture();
+    const resolution = await resolveValidationRequirements({
+      root,
+      requirements: [requirement("impact-review-ui-browser", "browser-test")],
+      config
+    });
+    expect(resolution.blocked).toEqual([]);
+    expect(resolution.actions).toMatchObject([
+      { requirementId: "impact-review-ui-browser", source: "approved-provider", selector: "s9-browser-playwright", kind: "browser-test" }
+    ]);
+  });
+
+  it("keeps the UI/browser dimension blocked when the browser provider is missing", async () => {
+    const root = await fixture();
+    const resolution = await resolveValidationRequirements({
+      root,
+      requirements: [requirement("impact-review-ui-browser", "browser-test")],
+      config: { version: 1, project: { name: "empty" } }
+    });
+    expect(resolution.actions).toEqual([]);
+    expect(resolution.blocked).toContainEqual(expect.objectContaining({ requirementId: "impact-review-ui-browser" }));
+  });
+
   it("ignores Planner-named commands and keeps unresolvable kinds blocked", async () => {
     const root = await fixture();
     const resolution = await resolveValidationRequirements({
@@ -484,6 +516,7 @@ describe("impact-review validation resolution order", () => {
     const providers = config.validation?.providers ?? [];
     expect(providers).toContainEqual(expect.objectContaining({ id: "trivy-dependency-security", capability: "dependency-security", provider: "trivy", command: "node scripts/security/trivy-vuln.mjs" }));
     expect(providers).toContainEqual(expect.objectContaining({ id: "s11-visual-playwright", capability: "visual-test", provider: "playwright" }));
+    expect(providers).toContainEqual(expect.objectContaining({ id: "s9-browser-playwright", capability: "browser-test", provider: "playwright" }));
     expect(config.security?.tools).toEqual(expect.arrayContaining(["opengrep", "trivy"]));
   });
 });
@@ -738,6 +771,130 @@ describe("project public-api contract validator", () => {
     expect(evidence!.rawArtifactDigest).toMatch(/^[a-f0-9]{64}$/);
     const verification = await verifyProviderLaneEvidenceV1(root, config, evidence!, candidate);
     expect(verification.ok).toBe(true);
+  });
+});
+
+describe("project s9 browser provider", () => {
+  async function installFakePinnedPlaywright(root: string): Promise<void> {
+    const executable = path.join(root, "node_modules", ".bin", "playwright");
+    await fs.mkdir(path.dirname(executable), { recursive: true });
+    await fs.writeFile(executable, `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+if (process.argv.includes("--version")) { process.stdout.write("Version 1.62.1-fixture\\n"); process.exit(0); }
+const file = path.join(process.cwd(), ".harness", "evidence", "fake-playwright", "screenshot.png");
+fs.mkdirSync(path.dirname(file), { recursive: true });
+fs.writeFileSync(file, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+const report = { suites: [{ title: "fixture suite", specs: [{ title: "fixture spec", tests: [{ results: [{ status: "passed", attachments: [{ name: "screenshot", contentType: "image/png", path: file }] }] }] }] }] };
+process.stdout.write(JSON.stringify(report));
+`, "utf8");
+    await fs.chmod(executable, 0o755);
+  }
+
+  const S9_PROVIDER_SCRIPT = `import fs from 'node:fs';\nimport { spawnSync } from 'node:child_process';\nconst candidate = JSON.parse(process.env.AEH_VALIDATION_CANDIDATE_JSON);\nfs.mkdirSync('.harness/evidence', { recursive: true });\nfs.writeFileSync('.harness/evidence/provider-candidate.json', JSON.stringify(candidate));\nconst result = spawnSync('./node_modules/.bin/playwright', ['test'], { encoding: 'utf8' });\nprocess.stdout.write(result.stdout);\nprocess.stderr.write(result.stderr);\nprocess.exitCode = result.status ?? 1;\n`;
+
+  async function s9Fixture(): Promise<{ root: string; candidate: ReturnType<typeof createCandidateRevisionV1> }> {
+    const root = await fixture({ "s9-provider.mjs": S9_PROVIDER_SCRIPT });
+    await installFakePinnedPlaywright(root);
+    const sourceDigest = await computeWorktreeDigest(root);
+    const candidate = createCandidateRevisionV1({ operationId: "OP-S9-BROWSER", candidateId: "CAND-S9-BROWSER", revision: 1, sourceDigest });
+    return { root, candidate };
+  }
+
+  function s9Config(): HarnessProjectConfig {
+    return {
+      version: 1,
+      project: { name: "s9-browser-fixture" },
+      evidence: { outputDir: ".harness/evidence" },
+      validation: {
+        providers: [{ id: "s9-browser-playwright", capability: "browser-test", provider: "playwright", command: "node s9-provider.mjs", timeoutSeconds: 900 }]
+      }
+    };
+  }
+
+  async function dispatchUiBrowser(root: string, candidate: ReturnType<typeof createCandidateRevisionV1>, config: HarnessProjectConfig) {
+    const contract: TaskContract = { version: 1, task: { id: "S9-BROWSER-PROVIDER", title: "s9 provider path" } };
+    const impactBody = {
+      version: 1 as const,
+      candidate: { candidateId: candidate.candidateId, revision: candidate.revision, identityDigest: candidate.identityDigest },
+      baseCandidate: { candidateId: candidate.candidateId, revision: candidate.revision, identityDigest: candidate.identityDigest },
+      patchDigest: sha256Canonical("s9-browser-patch"),
+      changedFiles: ["src/control-center/server.ts"],
+      changeKinds: ["source"],
+      reviewDimensions: ["UI/browser"],
+      requiresIndependentReview: false,
+      interpretation: "MODEL" as const,
+      unknowns: [] as string[]
+    };
+    const impact = { ...impactBody, digest: sha256Canonical(impactBody) };
+    const requirements = candidateImpactValidationRequirementsV1(impact);
+    expect(requirements).toMatchObject([{ id: "impact-review-ui-browser", kind: "browser-test" }]);
+    const resolution = await resolveValidationRequirements({ root, requirements, config, contract, allowedKinds: validationRequirementKindValues });
+    return { contract, impact, requirements, resolution };
+  }
+
+  it("persists candidate-bound BROWSER evidence through the s9 provider path", async () => {
+    const { root, candidate } = await s9Fixture();
+    const config = s9Config();
+    const { contract, impact, resolution } = await dispatchUiBrowser(root, candidate, config);
+    expect(resolution.blocked).toEqual([]);
+    expect(resolution.actions).toMatchObject([{ requirementId: "impact-review-ui-browser", source: "approved-provider", selector: "s9-browser-playwright", kind: "browser-test" }]);
+    const compilation = compileCandidateAssuranceV1({
+      candidate,
+      impact,
+      policy: {
+        version: 1, digest: sha256Canonical("s9-browser-policy"), minimumAssurance: "STANDARD",
+        independentReviewRequired: false, minimumIndependentReviewers: 0, providerDiversity: false,
+        allowedValidationKinds: [...validationRequirementKindValues], evidenceStrength: "STANDARD"
+      },
+      implementationIdentity: "implementer-1", risk: "low",
+      reviewerCandidates: [{ identity: "reviewer-a", role: "Reviewer", provider: "provider-a", readOnly: true }],
+      baseValidationRequirements: [], validationResolution: resolution, acceptanceAssertions: []
+    });
+    expect(compilation.status).toBe("READY");
+    const report = {
+      version: 1, taskId: contract.task.id, status: "PASS",
+      startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(),
+      checks: [], changedFiles: ["src/control-center/server.ts"], candidate,
+      metadata: { project: "s9-browser-fixture", baseRef: "HEAD" }
+    } as Parameters<typeof runCandidateImpactValidations>[0]["report"];
+    const checks = await runCandidateImpactValidations({ root, config, contract, report, impact, compilation, resolution });
+    expect(checks).toMatchObject([{ id: "candidate.assurance.validation.impact-review-ui-browser", status: "PASS" }]);
+    const evidence = await requireProviderLaneEvidenceV1(root, config, "BROWSER", candidate, "candidate-impact-impact-review-ui-browser");
+    expect(evidence.provider.name).toBe("playwright");
+    expect(evidence.artifacts.some((artifact) => artifact.kind === "screenshot")).toBe(true);
+    expect(evidence.candidate).toMatchObject({ candidateId: candidate.candidateId, revision: candidate.revision, identityDigest: candidate.identityDigest });
+    expect(JSON.parse(await fs.readFile(path.join(root, ".harness/evidence/provider-candidate.json"), "utf8"))).toMatchObject(candidate);
+    const otherCandidate = createCandidateRevisionV1({ operationId: candidate.operationId, candidateId: "CAND-S9-OTHER", revision: candidate.revision, sourceDigest: candidate.sourceDigest });
+    await expect(requireProviderLaneEvidenceV1(root, config, "BROWSER", otherCandidate, "candidate-impact-impact-review-ui-browser")).rejects.toThrow("PROVIDER_LANE_EVIDENCE_REQUIRED");
+  });
+
+  it("does not weaken: a failing s9 provider still fails without BROWSER evidence", async () => {
+    const { root, candidate } = await s9Fixture();
+    const config: HarnessProjectConfig = {
+      version: 1, project: { name: "s9-browser-fixture" }, evidence: { outputDir: ".harness/evidence" },
+      validation: { providers: [{ id: "s9-browser-playwright", capability: "browser-test", provider: "playwright", command: `node -e "process.exit(1)"`, timeoutSeconds: 900 }] }
+    };
+    const { contract, impact, resolution } = await dispatchUiBrowser(root, candidate, config);
+    expect(resolution.blocked).toEqual([]);
+    const compilation = compileCandidateAssuranceV1({
+      candidate, impact,
+      policy: {
+        version: 1, digest: sha256Canonical("s9-browser-fail-policy"), minimumAssurance: "STANDARD",
+        independentReviewRequired: false, minimumIndependentReviewers: 0, providerDiversity: false,
+        allowedValidationKinds: [...validationRequirementKindValues], evidenceStrength: "STANDARD"
+      },
+      implementationIdentity: "implementer-1", risk: "low", reviewerCandidates: [],
+      baseValidationRequirements: [], validationResolution: resolution, acceptanceAssertions: []
+    });
+    const report = {
+      version: 1, taskId: contract.task.id, status: "PASS",
+      startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(),
+      checks: [], changedFiles: ["src/control-center/server.ts"], candidate,
+      metadata: { project: "s9-browser-fixture", baseRef: "HEAD" }
+    } as Parameters<typeof runCandidateImpactValidations>[0]["report"];
+    const checks = await runCandidateImpactValidations({ root, config, contract, report, impact, compilation, resolution });
+    expect(checks).toMatchObject([{ id: "candidate.assurance.validation.impact-review-ui-browser", status: "FAIL" }]);
   });
 });
 

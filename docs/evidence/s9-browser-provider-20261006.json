@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "record": "s9-browser-provider-provisioning",
+  "date": "2026-10-06",
+  "checkout": "agentic-engineering-harness",
+  "baseCommit": "e688d885f9bcdda5fbe2bfc77c0fe91ed34e1383",
+  "branch": "fix/browser-provider-timeout",
+  "mechanism": "DETERMINISTIC",
+  "note": "Fresh Muse worker, direct edits plus npm validation only, no AEH operations. Overlay-first (.harness/project.yaml only); shipped templates untouched; docs behavior-change paragraph only (docs/CORE_ARCHITECTURE_V2.md); evidence append-only (this file is new); no Sol/MiMo; fail-closed everywhere. No gate was weakened to make any current or future finding pass.",
+  "backgroundVerification": {
+    "homeOp": "Home op rev173 FAILED (reported; not independently re-executed from this worker)",
+    "gapA": "Confirmed by inspection: .harness/project.yaml validation.providers (lines 207-224 on main) listed only s11-visual-playwright (visual-test) plus trivy-dependency-security. The UI/browser dimension maps to kind browser-test (src/architecture/candidateAssurance.ts:144) with requirement id impact-review-ui-browser; the only resolution on main is the test:browser-e2e project script (src/architecture/validationRequirements.ts:228, package.json). A passing project script cannot satisfy the BROWSER lane: src/validation/laneEvidence.ts requireProviderLaneEvidenceForActionV1 fails closed with PROVIDER_LANE_EVIDENCE_REQUIRED unless the matching browser-test provider execution persisted candidate-bound evidence. Hence impact-review-ui-browser (VR-S9) stays BLOCKED/FAIL on main.",
+    "gapB": "Confirmed by inspection: tests/operationToolDiagnosticsSecurity.test.ts 'records bounded, distinct stages and supports the read-only CLI inspector' had no explicit timeout, so the vitest 5s default applied; it spawns real `tsx src/main.ts operation diagnostic inspect` subprocesses and flaked at ~5010ms under full-suite parallel load. Same contention class as the runRepair 5s->20s, fsmonitor-daemon 15s, and OCI 20s bumps. Verified no sleep/poll in the test to mock (only spawn + I/O); budget-only change, assertions/body unchanged."
+  },
+  "provider": {
+    "id": "s9-browser-playwright",
+    "capability": "browser-test",
+    "provider": "playwright",
+    "command": "npm run build 1>&2 && node_modules/.bin/playwright test --config tests/browser/playwright.config.ts --grep 'S9 browser' --reporter=json",
+    "timeoutSeconds": 900,
+    "structure": "Mirrors the s11-visual-playwright entry field-for-field (id/capability/provider/command/timeoutSeconds); no options block because the BROWSER lane needs no reference baseline/comparison (VISUAL-only). Pinned node_modules/.bin/playwright only, no bare npx fallback. Build stdout is redirected to stderr so stdout stays pure Playwright JSON for lane-evidence parsing.",
+    "resolution": "browser-test kind resolves via approved-provider (capability browser-test) before the test:browser-e2e project-script fallback (src/architecture/validationRequirements.ts:308-321). UI/browser impact-review-ui-browser now resolves to approved-provider s9-browser-playwright; provider execution persists candidate-bound BROWSER evidence via src/validators/external.ts runExternalToolValidator."
+  },
+  "tests": {
+    "resolution": "tests/validation/impactReviewValidators.test.ts: 'resolves the UI/browser dimension through the configured s9 browser provider instead of BLOCKED' loads the real overlay config, asserts the provider shape (capability/provider/timeout/command contains --grep, S9 browser, --reporter=json, 1>&2), then resolves impact-review-ui-browser to approved-provider s9-browser-playwright with empty blocked.",
+    "failClosed": "'keeps the UI/browser dimension blocked when the browser provider is missing' resolves the same requirement against an empty config and asserts zero actions plus blocked contains impact-review-ui-browser. Project-script-only BROWSER remains FAIL with PROVIDER_LANE_EVIDENCE_REQUIRED per the existing tests/validation/requiredLaneEvidence.test.ts adversarial suite (unchanged).",
+    "candidateBinding": "'persists candidate-bound BROWSER evidence through the s9 provider path' uses a hermetic fake pinned playwright (Version 1.62.1-fixture, JSON report with screenshot attachment) plus a minimal s9-provider.mjs that forwards AEH_VALIDATION_CANDIDATE_JSON and the playwright JSON; dispatches the real UI/browser impact path and asserts PASS, BROWSER evidence with screenshot artifact, exact candidate binding, provider-candidate env echo, and wrong-candidate rejection with PROVIDER_LANE_EVIDENCE_REQUIRED.",
+    "noWeakening": "'does not weaken: a failing s9 provider still fails without BROWSER evidence' runs the same dispatch with command `node -e \"process.exit(1)\"` and asserts FAIL. Inventory test 'provisions the overlay inventory' extended to require s9-browser-playwright alongside trivy-dependency-security and s11-visual-playwright.",
+    "partB": "tests/operationToolDiagnosticsSecurity.test.ts inspector test carries a rationale comment and `}, 20_000);` budget (was implicit 5s). Assertions/body unchanged; verified no sleep/poll to mock."
+  },
+  "realRuns": {
+    "playwrightVersion": "Version 1.62.1",
+    "node": "v22.23.2",
+    "build": "npm run build exit 0 (release-1791297554149-995505-0580e638 and release-1791297634996-1000510-a7134239 observed across runs)",
+    "journeyDiscovery": "node_modules/.bin/playwright test --config tests/browser/playwright.config.ts --grep 'S9 browser' --reporter=json --list exits 0 with 1 spec: 'S9 browser E2E | real Control Center journey: pairing, decision, continuation, controls, cancellation, final projection' (s9-control-center-journey.e2e.ts:79). Proves grep + JSON-reporter wiring discovers the S9 journey.",
+    "fullJourney": {
+      "command": "npm run build 1>&2 && node_modules/.bin/playwright test --config tests/browser/playwright.config.ts --grep 'S9 browser' --reporter=json",
+      "exitCode": 1,
+      "durationMs": 54909,
+      "stdoutBytes": 8994,
+      "stdoutSha256": "af771a63223b218e2666cd0388dd3c91dfa2a8c4395815a16a85645306810921",
+      "stdoutPureJson": true,
+      "stats": { "expected": 0, "skipped": 0, "unexpected": 1, "flaky": 0 },
+      "failure": "PRODUCT_DEFECT :: rejection.durable-state-unchanged :: expect(received).toBe(expected): Expected 'HUMAN_REQUIRED', Received 'spec-authoring' at tests/browser/s9-control-center-journey.e2e.ts:321 via fixture/controlCenterJourney.ts:44.",
+      "disposition": "HONEST_FAIL: the provider command executes structurally (build OK, pinned Playwright 1.62.1 runs, stdout is pure parseable JSON), but the S9 journey itself FAILS on this checkout with the above PRODUCT_DEFECT. No BROWSER PASS is claimed from this run. CI must confirm on a green checkout; the journey failure belongs to a separate product repair operation, not to this provisioning change."
+    }
+  },
+  "toolchain": {
+    "node": "v22.23.2",
+    "playwright": "1.62.1"
+  },
+  "sourceDigests": {
+    ".harness/project.yaml": "16a176192777468c1279b2473e568b6011d6e82919325f7d00311c157fb055b7",
+    "tests/validation/impactReviewValidators.test.ts": "6a0a2d5532eecdb710211b249e680f03a42a8f8f3322e5883dba4b994f5443d9",
+    "tests/operationToolDiagnosticsSecurity.test.ts": "0d30a8c4f97743f5e65baed6e0b9e7d1f406a284b1c112298bc91e73ec0f2e63",
+    "docs/CORE_ARCHITECTURE_V2.md": "cfee95a456c829cd9bf119cf8a60b5033b7848c83f01fd207a9d531402b021f8"
+  },
+  "validation": {
+    "typecheck": "PASS exit 0",
+    "build": "PASS (release-1791297554149-995505-0580e638)",
+    "focused": "tests/validation/impactReviewValidators.test.ts 43 passed / 4 skipped; tests/operationToolDiagnosticsSecurity.test.ts 6 passed; tests/validation/requiredLaneEvidence.test.ts + failClosedProviders + acceptanceValidationPath 37 passed",
+    "npmTest": "PASS 243 files / 1803 tests passed, 1 file / 11 tests skipped (npm run test:deterministic incl. packed policy 3/3)",
+    "testSystemAll": "PASS 5 files / 67 tests",
+    "testPackagedConsumer": "PASS (buildHygiene 6/6; human black-box packaged-tarball 1/1)",
+    "gitDiffCheck": "PASS clean",
+    "cleanTreeCompare": "Stashed (main e688d88) tree runs diagnostics + requiredLaneEvidence + failClosedProviders 29 passed; branch adds only new passing s9/inspector tests with no regressions. Isolated-worktree attempt skipped (no node_modules in fresh worktree); stash compare used instead on the provisioned checkout."
+  },
+  "partB": {
+    "verdict": "JUSTIFIED_AND_RAISED",
+    "test": "tests/operationToolDiagnosticsSecurity.test.ts 'records bounded, distinct stages and supports the read-only CLI inspector'",
+    "change": "Implicit 5s vitest default -> explicit 20_000ms budget with rationale comment; assertions/body unchanged; verified no sleep/poll to mock (spawn + pipe I/O only).",
+    "class": "Same contention class as runRepair 5s->20s, fsmonitor-daemon 15s, OCI 20s bumps."
+  }
+}
