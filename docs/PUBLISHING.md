@@ -33,9 +33,9 @@ The workflow performs the following steps:
    - every other change -> patch;
 5. synchronizes `package.json` and `package-lock.json` with `npm version --no-git-tag-version`;
 6. runs `npm run release:check` on the exact candidate;
-7. commits the version metadata as `chore(release): vX.Y.Z`, pushes it, then creates the matching Git tag only if absent and verifies the tag points at the pushed release commit SHA (a pre-existing tag pointing elsewhere fails loudly and is never force-moved), exposing the release SHA as a job output;
-8. verifies the tag checkout (tag SHA equals the release SHA, exact-match, packaged-consumer contracts) before anything is published;
-9. publishes the package to npm with provenance only if tag verification is green, then confirms the version is on npm;
+7. commits the version metadata as `chore(release): vX.Y.Z`, pushes it, exposing the release SHA as a job output (no tag is created here);
+8. verifies the release COMMIT SHA checkout directly (detached `git fetch origin <sha>` + `checkout <sha>`, package version, packaged-consumer contracts) before anything is published — no tag exists at verify time, so a verify failure leaves NO tag behind;
+9. creates the matching Git tag only if absent (`git ls-remote --tags` check; a pre-existing tag fails loudly and is never force-moved, with nothing public yet) and verifies the tag points at the pushed release commit SHA, then publishes the package to npm with provenance only if commit verification is green, then confirms the version is on npm;
 10. creates the GitHub Release for the verified and published tag.
 
 The release commit/tag is pushed with GitHub's repository token. GitHub does not recursively trigger ordinary push workflows for pushes created with that `GITHUB_TOKEN`, so the version commit does not create an infinite publish loop.
@@ -54,7 +54,7 @@ minor
 major
 ```
 
-Manual dispatch is useful for retrying an external npm/OIDC failure or deliberately overriding the automatic bump classification. A `current` retry never creates a GitHub Release without in-workflow verification: the repair path refuses with a clear error instead of creating a verification-skipped Release. A missing Release is only (re)created by the gated `release` job after commit+tag, tag verification, and npm publication all succeed in one workflow run; it will not fabricate a missing tag for an already-published package.
+Manual dispatch is useful for retrying an external npm/OIDC failure or deliberately overriding the automatic bump classification. A `current` retry never creates a GitHub Release without in-workflow verification: the repair path refuses with a clear error instead of creating a verification-skipped Release. A missing Release is only (re)created by the gated `release` job after commit, commit verification (by SHA), tag creation, and npm publication all succeed in one workflow run; it will not fabricate a missing tag for an already-published package. Tag-after-verify lifecycle: a verify failure leaves NO tag (only the bump commit persists, which later runs handle); a pre-existing tag blocks loudly at tag creation pre-publish with nothing public.
 
 ## npm authentication
 
@@ -131,5 +131,5 @@ reconciles managed Harness assets before loading the agent topology and starting
 
 ## Failure policy
 
-A registry/OIDC/permission failure is an external delivery failure, not a reason to rewrite validated engineering history. The release workflow is retry-safe: if the version commit/tag exists but npm publication failed, a manual rerun will attempt the same unpublished version rather than incrementing it again. If npm publication succeeded but GitHub Release creation failed, the gated `release` job recreates it from the verified tag. The `bump=current` repair path never creates a verification-skipped Release; it refuses with a clear error when verification did not run in the same workflow.
-If tag verification fails, the workflow deletes only its just-created tag (SHA-guarded) so a later run recreates cleanly, and the gated publisher/release jobs assert checkout HEAD and tag SHA both equal release_sha.
+A registry/OIDC/permission failure is an external delivery failure, not a reason to rewrite validated engineering history. The release workflow is retry-safe: if the version commit exists but npm publication failed, a manual rerun will attempt the same unpublished version rather than incrementing it again. If npm publication succeeded but GitHub Release creation failed, the gated `release` job recreates it from the verified tag. The `bump=current` repair path never creates a verification-skipped Release; it refuses with a clear error when verification did not run in the same workflow.
+Tag-after-verify lifecycle: the version tag is created only after commit verification greens (absent-only, never force-moved). If commit verification fails, no tag exists to delete — only the bump commit persists, which later runs handle. If a tag already exists on origin at tag-creation time, the run blocks loudly pre-publish with nothing public, and the gated publisher/release jobs assert checkout HEAD and tag SHA both equal release_sha.

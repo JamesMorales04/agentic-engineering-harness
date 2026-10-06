@@ -58,7 +58,7 @@ jobs:
         if: steps.version.outputs.should_publish == 'true'
         run: npm run release:check
 
-      - name: Commit version and create tag
+      - name: Commit version
         id: release-commit
         if: steps.version.outputs.should_publish == 'true'
         shell: bash
@@ -73,26 +73,8 @@ jobs:
             git commit -m "chore(release): v${RELEASE_VERSION}"
             git push origin HEAD:main
           fi
-          git fetch origin --tags --force
           RELEASE_SHA="$(git rev-parse HEAD)"
           echo "release_sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
-          TAG_REF="refs/tags/v${RELEASE_VERSION}"
-          if git rev-parse -q --verify "$TAG_REF" >/dev/null; then
-            TAG_SHA="$(git rev-list -n 1 "$TAG_REF")"
-            if [ "$TAG_SHA" != "$RELEASE_SHA" ]; then
-              echo "Tag v${RELEASE_VERSION} already exists at $TAG_SHA but release commit is $RELEASE_SHA; refusing to reuse a stale tag (never force-move)." >&2
-              exit 1
-            fi
-            echo "Tag v${RELEASE_VERSION} already points at release commit $RELEASE_SHA."
-          else
-            git tag -a "v${RELEASE_VERSION}" -m "v${RELEASE_VERSION}" "$RELEASE_SHA"
-            git push origin "v${RELEASE_VERSION}"
-            TAG_SHA="$(git rev-list -n 1 "$TAG_REF")"
-            if [ "$TAG_SHA" != "$RELEASE_SHA" ]; then
-              echo "Tag v${RELEASE_VERSION} verification failed: expected $RELEASE_SHA but got $TAG_SHA." >&2
-              exit 1
-            fi
-          fi
 
       - name: Repair missing GitHub Release for current version
         if: steps.version.outputs.should_publish != 'true' && github.event_name == 'workflow_dispatch' && inputs.bump == 'current'
@@ -102,7 +84,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "Refusing to create GitHub Release for v${RELEASE_VERSION} without in-workflow verification." >&2
-          echo "The bump=current repair path cannot skip verification: re-run the full release pipeline so commit+tag -> verify -> npm publish -> release all succeed in one workflow run." >&2
+          echo "The bump=current repair path cannot skip verification: re-run the full release pipeline so commit -> verify (by SHA) -> tag + npm publish -> release all succeed in one workflow run." >&2
           exit 1
 
       - name: Nothing to publish
@@ -117,7 +99,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: v${{ needs.publish.outputs.version }}
+          ref: ${{ needs.publish.outputs.release_sha }}
           fetch-depth: 0
 
       - uses: actions/setup-node@v6
@@ -127,7 +109,7 @@ jobs:
 
       - run: npm ci
 
-      - name: Confirm tag matches release commit
+      - name: Confirm release commit
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.publish.outputs.version }}
@@ -135,10 +117,9 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$RELEASE_SHA"
+          git fetch origin "$RELEASE_SHA"
+          git checkout --detach "$RELEASE_SHA"
           test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
-          test "$(git rev-list -n 1 "v$RELEASE_VERSION")" = "$RELEASE_SHA"
-          git describe --tags --exact-match HEAD
-          test "$(git describe --tags --exact-match HEAD)" = "v$RELEASE_VERSION"
           test "$(node -p "require('./package.json').version")" = "$RELEASE_VERSION"
 
       - name: Provision the required consumer toolchain provider
@@ -228,29 +209,6 @@ jobs:
           AEH_DETERMINISTIC_PASEO_RUNTIME=1 AEH_PASEO_FORCE_CLI=0 ./node_modules/.bin/aeh intent 'review the repo and validate the code for improvements' repo | grep -q '^AUDIT'
           ./node_modules/.bin/aeh operation status DOES-NOT-EXIST repo >/dev/null 2>&1 && exit 1 || true
 
-      - name: Delete unverified tag on verification failure
-        if: failure()
-        shell: bash
-        env:
-          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
-          RELEASE_SHA: ${{ needs.publish.outputs.release_sha }}
-        run: |
-          set -euo pipefail
-          TAG="v${RELEASE_VERSION}"
-          git fetch origin --tags --force
-          if ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-            echo "Tag ${TAG} does not exist; nothing to clean up. Re-run the workflow to retry." >&2
-            exit 1
-          fi
-          TAG_SHA="$(git rev-list -n 1 "refs/tags/${TAG}")"
-          if [ "$TAG_SHA" != "$RELEASE_SHA" ]; then
-            echo "Tag ${TAG} points at ${TAG_SHA}, not this run's release commit ${RELEASE_SHA}; refusing to delete a tag this run did not create (never force-move or delete foreign tags)." >&2
-            exit 1
-          fi
-          git push --delete origin "${TAG}"
-          echo "Deleted unverified tag ${TAG} at ${RELEASE_SHA} so a later run can recreate it cleanly. The bump commit stays on main (harmless). Re-run the workflow to retry." >&2
-          exit 1
-
   publish-npm:
     name: publish-npm
     needs: [publish, verify-published]
@@ -259,7 +217,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: v${{ needs.publish.outputs.version }}
+          ref: ${{ needs.publish.outputs.release_sha }}
           fetch-depth: 0
 
       - uses: actions/setup-node@v6
@@ -269,6 +227,28 @@ jobs:
           package-manager-cache: false
 
       - run: npm ci
+
+      - name: Create version tag after verification
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+          RELEASE_SHA: ${{ needs.publish.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_SHA"
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          TAG="v${RELEASE_VERSION}"
+          if git ls-remote --tags origin | grep -q "refs/tags/${TAG}$"; then
+            echo "Tag ${TAG} already exists on origin; refusing to reuse a stale tag (never force-move). Nothing has been published by this run." >&2
+            exit 1
+          fi
+          git tag -a "${TAG}" -m "${TAG}" "$RELEASE_SHA"
+          git push origin "${TAG}"
+          TAG_SHA="$(git rev-list -n 1 "refs/tags/${TAG}")"
+          if [ "$TAG_SHA" != "$RELEASE_SHA" ]; then
+            echo "Tag ${TAG} verification failed: expected $RELEASE_SHA but got $TAG_SHA." >&2
+            exit 1
+          fi
 
       - name: Confirm verified tag before publishing
         shell: bash

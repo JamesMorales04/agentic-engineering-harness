@@ -22,36 +22,43 @@ describe("automatic publish workflow", () => {
     expect(JSON.stringify(workflow.jobs)).toContain("gh release create");
     const synchronizeIndex = steps.findIndex((step) => step.name === "Synchronize package metadata");
     const validationIndex = steps.findIndex((step) => step.name === "Validate release candidate");
-    const commitIndex = steps.findIndex((step) => step.name === "Commit version and create tag");
+    const commitIndex = steps.findIndex((step) => step.name === "Commit version");
     expect(steps[validationIndex]?.run).toBe("npm run release:check");
     expect(synchronizeIndex).toBeLessThan(validationIndex);
     expect(validationIndex).toBeLessThan(commitIndex);
 
-    // (a) STALE TAG: prepare exposes the release SHA and never reuses a stale tag.
+    // (a) TAG-AFTER-VERIFY: prepare exposes the release SHA and creates NO tag.
+    // Tag creation lives after verification (publish-npm), so `git tag` must be
+    // absent from the publish job entirely.
     expect(JSON.stringify(workflow.jobs.publish.outputs ?? {})).toMatch(/release_sha/);
-    const commitStep = steps.find((step) => step.name === "Commit version and create tag");
+    const commitStep = steps.find((step) => step.name === "Commit version");
+    expect(commitStep).toBeDefined();
     expect(commitStep?.id).toBe("release-commit");
     const commitSerialized = JSON.stringify(commitStep);
     expect(commitSerialized).toMatch(/RELEASE_SHA/);
-    expect(commitSerialized).toMatch(/TAG_SHA/);
-    expect(commitSerialized).toMatch(/refusing.*stale|stale.*refus/i);
-    expect(commitSerialized).not.toMatch(/git tag -f|tag --force/);
-    // GITHUB_OUTPUT wiring for the release SHA.
     expect(commitSerialized).toContain("release_sha=");
+    expect(JSON.stringify(steps)).not.toContain("git tag");
+    // No tag-delete recovery anywhere: no tag exists before verify, so there is
+    // nothing to delete and no conditional delete by name.
+    expect(text).not.toContain("push --delete");
 
     // GITHUB_TOKEN pushes do not trigger push workflows, so the GitHub
-    // Release must be gated by in-workflow verification of the tag bits.
+    // Release must be gated by in-workflow verification of the release bits.
     const entries = Object.entries(workflow.jobs as Record<string, any>) as Array<[string, any]>;
     const verifyEntry = entries.find(([name]) => /verify/i.test(name));
     expect(verifyEntry).toBeDefined();
     const [verifyName, verifyJob] = verifyEntry! as [string, any];
     const verifyNeeds = Array.isArray(verifyJob.needs) ? verifyJob.needs : [verifyJob.needs];
     expect(verifyNeeds).toContain("publish");
-    // (a) verify asserts the checked-out tag SHA equals the prepare release SHA.
+    // (a) verify checks out the release COMMIT SHA directly (never a tag name).
     const verifySerialized = JSON.stringify(verifyJob.steps ?? verifyJob);
     expect(verifySerialized).toMatch(/needs\.publish\.outputs\.release_sha/);
     expect(verifySerialized).toContain("git rev-parse HEAD");
-    expect(verifySerialized).toContain("exact-match");
+    expect(verifySerialized).toContain("git fetch origin");
+    expect(verifySerialized).toContain("checkout --detach");
+    expect(verifySerialized).not.toContain("tags/v");
+    expect(verifySerialized).not.toContain("push --delete");
+    expect(verifySerialized).not.toContain("git tag");
 
     // (b) PUBLISH-BEFORE-VERIFY is forbidden: the job containing `npm publish`
     // must need the verify job, so consumer verification runs before anything public.
@@ -101,33 +108,63 @@ describe("automatic publish workflow", () => {
     await expect(fs.access(new URL("../.github/workflows/release.yml", import.meta.url))).rejects.toThrow();
   });
 
-  it("binds release/npm-publish checkouts to release_sha and recovers unverified tags", async () => {
+  it("creates the version tag only after verification, bound to release_sha", async () => {
     const text = await fs.readFile(new URL("../.github/workflows/publish.yml", import.meta.url), "utf8");
     const workflow = parse(text) as Record<string, any>;
     const jobs = workflow.jobs as Record<string, any>;
-    // (a) TAG-DRIFT: release checkout asserts HEAD == release_sha AND tag == release_sha.
+    const entries = Object.entries(jobs) as Array<[string, any]>;
+    const verifyEntry = entries.find(([name]) => /verify/i.test(name));
+    expect(verifyEntry).toBeDefined();
+    const [verifyName] = verifyEntry!;
+    // (i) publish job MUST NOT contain tag creation.
+    const publishSerialized = JSON.stringify(jobs.publish.steps ?? jobs.publish);
+    expect(publishSerialized).not.toContain("git tag");
+    // (ii) verify-published MUST check out by SHA (never a tag name).
+    const verifyJob = jobs["verify-published"];
+    expect(verifyJob).toBeDefined();
+    const verifySerialized = JSON.stringify(verifyJob.steps ?? verifyJob);
+    expect(verifySerialized).toMatch(/needs\.publish\.outputs\.release_sha/);
+    expect(verifySerialized).toContain("git fetch origin");
+    expect(verifySerialized).toContain("checkout --detach");
+    expect(verifySerialized).toContain("git rev-parse HEAD");
+    expect(verifySerialized).not.toContain("tags/v");
+    expect(verifySerialized).not.toContain("git tag");
+    // No verify-failure tag delete: no tag exists at verify time, so the
+    // check-then-delete-by-name race disappears by construction.
+    expect(verifySerialized).not.toContain("failure()");
+    expect(verifySerialized).not.toContain("push --delete");
+    expect(text).not.toContain("push --delete");
+    // (iii) tag creation MUST live in a job needing verify, with absent-only semantics.
+    const taggers = entries.filter(([, job]) =>
+      JSON.stringify(job.steps ?? job).includes("git tag"),
+    );
+    expect(taggers.length).toBeGreaterThan(0);
+    for (const [, job] of taggers) {
+      const needs = Array.isArray(job.needs) ? job.needs : job.needs ? [job.needs] : [];
+      expect(needs).toContain(verifyName);
+    }
+    const taggerSerialized = taggers.map(([, job]) => JSON.stringify(job.steps ?? job)).join("\n");
+    expect(taggerSerialized).toContain("ls-remote");
+    expect(taggerSerialized).toMatch(/TAG_SHA/);
+    expect(taggerSerialized).toMatch(/RELEASE_SHA/);
+    expect(taggerSerialized).toMatch(/refusing.*stale|stale.*refus/i);
+    expect(taggerSerialized).not.toMatch(/git tag -f|tag --force/);
+    // The gated publisher owns the post-verify tag.
+    const publisher = jobs["publish-npm"];
+    expect(publisher).toBeDefined();
+    const pubNeeds = Array.isArray(publisher.needs) ? publisher.needs : [publisher.needs];
+    expect(pubNeeds).toContain(verifyName);
+    expect(JSON.stringify(publisher.steps ?? publisher)).toContain("git tag");
+    // (iv) TAG-DRIFT: release + publisher checkouts assert HEAD == release_sha AND tag == release_sha.
     const releaseJob = jobs.release;
     expect(releaseJob).toBeDefined();
     const releaseSerialized = JSON.stringify(releaseJob.steps ?? releaseJob);
     expect(releaseSerialized).toMatch(/needs\.publish\.outputs\.release_sha/);
     expect(releaseSerialized).toContain("git rev-parse HEAD");
     expect(releaseSerialized).toContain("rev-list");
-    // publish-npm asserts the same before `npm publish`.
-    const publisher = jobs["publish-npm"];
-    expect(publisher).toBeDefined();
     const pubSerialized = JSON.stringify(publisher.steps ?? publisher);
     expect(pubSerialized).toMatch(/needs\.publish\.outputs\.release_sha/);
     expect(pubSerialized).toContain("git rev-parse HEAD");
     expect(pubSerialized).toContain("rev-list");
-    // (b) RECOVERY: verify failure deletes only its own unverified tag, guarded by SHA.
-    const verifyJob = jobs["verify-published"];
-    expect(verifyJob).toBeDefined();
-    const verifySerialized = JSON.stringify(verifyJob.steps ?? verifyJob);
-    expect(verifySerialized).toContain("failure()");
-    expect(verifySerialized).toContain("push --delete");
-    expect(verifySerialized).toMatch(/TAG_SHA/);
-    expect(verifySerialized).toMatch(/RELEASE_SHA/);
-    expect(verifySerialized).toMatch(/refusing.*delete|did not create/i);
-    expect(verifySerialized).not.toMatch(/git tag -f|tag --force/);
   });
 });
