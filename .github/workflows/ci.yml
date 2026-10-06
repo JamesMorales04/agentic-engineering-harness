@@ -141,7 +141,7 @@ jobs:
         with:
           name: scenario-matrix-evidence
           path: .aeh-test-results/
-          if-no-files-found: ignore
+          if-no-files-found: error
 
   adversarial-system:
     name: adversarial-system
@@ -160,7 +160,7 @@ jobs:
         with:
           name: adversarial-system-evidence
           path: .aeh-test-results/
-          if-no-files-found: ignore
+          if-no-files-found: error
 
   human-e2e:
     name: human-e2e
@@ -179,7 +179,7 @@ jobs:
         with:
           name: human-e2e-evidence
           path: .aeh-test-results/
-          if-no-files-found: ignore
+          if-no-files-found: error
 
   system-reliability:
     name: system reliability campaign
@@ -199,7 +199,7 @@ jobs:
         with:
           name: complete-reliability-report
           path: .aeh-test-results/
-          if-no-files-found: ignore
+          if-no-files-found: error
 
   rootless-isolation:
     name: rootless-isolation
@@ -527,3 +527,26 @@ jobs:
       - name: Run the capability-gated OCI fixture
         run: docker run --rm --network none alpine:3.20 sh -c 'test "$(printf ready)" = ready'
       - run: npx vitest run tests/validationProviders.test.ts
+
+  all-green:
+    name: all-green required gate
+    runs-on: ubuntu-latest
+    needs:
+      - test
+      - packaged-consumer
+      - scenario-matrix
+      - adversarial-system
+      - human-e2e
+      - system-reliability
+      - rootless-isolation
+      - full-stack-contract
+      - provider-contracts
+      - supply-chain
+      - validation-contracts
+      - contract-testing
+      - integration-environment
+    if: always()
+    steps:
+      - name: Fail when any required job failed or was cancelled
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
