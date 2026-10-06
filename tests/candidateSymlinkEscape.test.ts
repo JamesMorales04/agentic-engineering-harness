@@ -43,6 +43,17 @@ async function symlinkPatch(root: string, linkRel: string, target: string): Prom
   return patch;
 }
 
+/** Build a real git-generated hunkless rename patch, then restore the baseline. */
+async function renamePatch(root: string, from: string, to: string): Promise<string> {
+  await runShell(`git mv ${JSON.stringify(from)} ${JSON.stringify(to)}`, { cwd: root });
+  const patch = (await runShell("git diff --cached --binary HEAD -- .", { cwd: root })).stdout;
+  expect(patch).toContain(`rename from ${from}`);
+  expect(patch).toContain(`rename to ${to}`);
+  await runShell("git reset -q --hard HEAD", { cwd: root });
+  expect((await runShell("git status --porcelain", { cwd: root })).stdout).toBe("");
+  return patch;
+}
+
 describe("candidate symlink escape gate (C-NEW-4)", () => {
   it("RED: rejects a mode-120000 patch entry whose target escapes the root under scope src/**", async () => {
     const root = await initRepo();
@@ -274,6 +285,55 @@ describe("candidate symlink escape gate (C-NEW-4)", () => {
         // Fail-closed: the unverifiable link was never applied.
         await expect(fs.lstat(path.join(root, "src", "link"))).rejects.toThrow();
       } finally { spy.mockRestore(); }
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it("RED-RENAME: rejects a hunkless rename moving a symlink so its target resolves outside", async () => {
+    const root = await initRepo();
+    try {
+      // Committed baseline: src/deep/link -> ../payload resolves to
+      // src/payload (inside), so the tree itself is legitimate.
+      await fs.mkdir(path.join(root, "src", "deep"), { recursive: true });
+      await fs.writeFile(path.join(root, "src", "payload"), "payload\n");
+      await fs.symlink("../payload", path.join(root, "src", "deep", "link"));
+      await runShell("git add -A && git -c user.name=test -c user.email=test@example.com commit -qm deep-link", { cwd: root });
+      const current = createCandidateRevisionV1({ operationId: "OP-SYMLINK-RENAME", candidateId: "candidate:OP-SYMLINK-RENAME:r1", taskId: "TASK-SYMLINK-RENAME", revision: 1, sourceDigest: await computeWorktreeDigest(root) });
+      // Hunkless rename: no +++/mode/hunk lines, so the patch text carries no
+      // evidence that either side is a symlink. Post-image link -> ../payload
+      // resolves to <parent-of-root>/payload (outside).
+      const patch = await renamePatch(root, "src/deep/link", "link");
+      expect(patch).not.toMatch(/^\+\+\+ /m);
+      const changeSet = { version: 1 as const, operationId: current.operationId, taskId: "TASK-SYMLINK-RENAME", workUnitId: "WU-1", participantId: "participant-1", baseCandidateRevision: current.revision, baseCandidateDigest: current.identityDigest, changedFiles: ["link", "src/deep/link"], patch, patchDigest: sha256Utf8(patch) };
+      let failure: AehError | undefined;
+      try {
+        await assembleCandidateChangeSet({ root, operationId: current.operationId, taskId: "TASK-SYMLINK-RENAME", currentCandidate: current, changeSet, allowedScope: ["**"], candidateId: "candidate:OP-SYMLINK-RENAME:r2" });
+      } catch (error) { failure = error as AehError; }
+      expect(failure?.code).toBe("PARTICIPANT_PLAN_INVALID");
+      expect(failure?.message).toMatch(/symlink/i);
+      // Fail-closed: the escaping rename was never applied.
+      expect(await fs.readlink(path.join(root, "src", "deep", "link"))).toBe("../payload");
+      await expect(fs.lstat(path.join(root, "link"))).rejects.toThrow();
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it("assembles a hunkless rename keeping symlink resolution inside (no false positive)", async () => {
+    const root = await initRepo();
+    try {
+      await fs.mkdir(path.join(root, "src", "deep"), { recursive: true });
+      await fs.writeFile(path.join(root, "src", "payload"), "payload\n");
+      await fs.writeFile(path.join(root, "payload"), "payload\n");
+      await fs.symlink("../payload", path.join(root, "src", "deep", "link"));
+      await runShell("git add -A && git -c user.name=test -c user.email=test@example.com commit -qm deep-link", { cwd: root });
+      const current = createCandidateRevisionV1({ operationId: "OP-SYMLINK-RENAME-OK", candidateId: "candidate:OP-SYMLINK-RENAME-OK:r1", taskId: "TASK-SYMLINK-RENAME-OK", revision: 1, sourceDigest: await computeWorktreeDigest(root) });
+      // Post-image src/link -> ../payload resolves to the committed root
+      // payload (inside): the move changes resolution but stays contained.
+      const patch = await renamePatch(root, "src/deep/link", "src/link");
+      expect(patch).not.toMatch(/^\+\+\+ /m);
+      const changeSet = { version: 1 as const, operationId: current.operationId, taskId: "TASK-SYMLINK-RENAME-OK", workUnitId: "WU-1", participantId: "participant-1", baseCandidateRevision: current.revision, baseCandidateDigest: current.identityDigest, changedFiles: ["src/deep/link", "src/link"], patch, patchDigest: sha256Utf8(patch) };
+      const result = await assembleCandidateChangeSet({ root, operationId: current.operationId, taskId: "TASK-SYMLINK-RENAME-OK", currentCandidate: current, changeSet, allowedScope: ["src/**"], candidateId: "candidate:OP-SYMLINK-RENAME-OK:r2" });
+      expect(result.candidate.revision).toBe(2);
+      expect(await fs.readlink(path.join(root, "src", "link"))).toBe("../payload");
+      await expect(fs.lstat(path.join(root, "src", "deep", "link"))).rejects.toThrow();
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 });

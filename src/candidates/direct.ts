@@ -165,7 +165,14 @@ async function copyUntrackedCandidateFiles(root: string, target: string): Promis
   // Absolute targets survive Node's fs.cp byte-identical, and relative
   // targets are resolved against the source tree, so every entry is gated
   // before copying, including links nested inside untracked directories.
-  const canonicalRoot = await fs.realpath(path.resolve(root)).catch(() => path.resolve(root));
+  const canonicalRoot = await fs.realpath(path.resolve(root)).catch((error) => {
+    // Fail-closed (C-NEW-4): without a canonical root, containment of the
+    // entries below cannot be verified. A preceding git success says nothing
+    // about this later lookup (TOCTOU, permissions, mount changes), so an
+    // unresolvable root rejects instead of falling back to an unverified
+    // path -- however unlikely the failure.
+    throw new AehError("PARTICIPANT_PLAN_INVALID", `copyUntrackedCandidateFiles: containment cannot be verified for '${root}': ${String(error)}`);
+  });
   for (const relative of result.stdout.split("\0").filter(Boolean)) {
     const source = repositoryPath(root, relative);
     const destination = repositoryPath(target, relative);

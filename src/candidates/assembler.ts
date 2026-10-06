@@ -697,6 +697,8 @@ export function symlinkTargetEscapesRoot(linkPath: string, target: string): bool
 interface PatchSymlinkV1 {
   path: string;
   target: string;
+  /** Rename source path when the entry was resolved from a pre-image rename (gates post-image only). */
+  prePath?: string;
 }
 
 /**
@@ -781,14 +783,25 @@ export async function resolveAbsoluteWithExistingSymlinks(lexicalAbsolute: strin
  * 120000`, `new mode 120000`, or an `index <old>..<new> 120000` retarget) and
  * rejects lexically escaping, absolute/drive, or unverifiable targets before
  * any `git apply` touches the worktree. Pure deletions (`+++ /dev/null`) carry
- * no post-image link and are skipped; a pure rename (no hunks) introduces no
- * new target and is skipped. A chain-aware resolution step
+ * no post-image link and are skipped. Hunkless renames (`rename from` /
+ * `rename to` with no `+++`/mode/hunk lines) carry no in-patch evidence of
+ * symlink involvement, yet moving a symlink re-resolves its unchanged
+ * relative target against the new dirname -- which can escape even when the
+ * pre-image resolved inside. Rename blocks that yield no post-image link
+ * entry are therefore resolved against the pre-patch worktree (below): when
+ * the rename source is a mode-120000 symlink, its stored target becomes a
+ * post-image entry at the rename destination and flows through the same
+ * lexical + chain gates. Pure renames of non-symlinks stay skipped. A
+ * chain-aware resolution step
  * (resolveAbsoluteWithExistingSymlinks) augments the lexical verdict: targets
  * that traverse an existing in-repo symlink pointing outside the root are
  * rejected even when the link dirname itself is a plain directory.
  */
 async function assertPatchSymlinksContained(root: string, patch: string): Promise<void> {
-  const { links, unverifiable } = patchSymlinksWithPostImageLink(patch);
+  const { links, unverifiable, renames } = patchSymlinksWithPostImageLink(patch);
+  const renamed = await resolveRenamedSymlinkPostImages(root, renames);
+  links.push(...renamed.links);
+  unverifiable.push(...renamed.unverifiable);
   const lexicalOffense = links.find((link) => symlinkTargetEscapesRoot(link.path, link.target));
   if (lexicalOffense || unverifiable.length > 0) {
     const detail = lexicalOffense ? `${lexicalOffense.path} -> ${lexicalOffense.target}` : `${unverifiable[0]} -> <unverifiable link target>`;
@@ -814,19 +827,51 @@ async function assertPatchSymlinksContained(root: string, patch: string): Promis
     if (!isInsideRoot(resolvedRoot, resolved)) {
       throw new AehError("PARTICIPANT_PLAN_INVALID", `ChangeSet patch creates a symlink escaping the candidate root: ${link.path} -> ${link.target}.`);
     }
+    if (link.prePath !== undefined) {
+      // Rename pre-image resolution: computed through the same chain
+      // resolver for completeness but deliberately NOT gated. A pre-image
+      // escape is the tree's existing problem (out of scope here); only the
+      // new post-image resolution the patch introduces is gated above.
+      const preDirectory = path.posix.dirname(link.prePath);
+      const preAbsoluteDirectory = preDirectory === "." ? resolvedRoot : path.join(resolvedRoot, ...preDirectory.split("/"));
+      const preLexicalAbsolute = path.isAbsolute(link.target) || link.target.startsWith("/")
+        ? link.target
+        : `${preAbsoluteDirectory}/${link.target}`;
+      await resolveAbsoluteWithExistingSymlinks(preLexicalAbsolute);
+    }
   }
 }
 
-function patchSymlinksWithPostImageLink(patch: string): { links: PatchSymlinkV1[]; unverifiable: string[] } {
+interface PatchRenameV1 {
+  from: string;
+  to: string;
+}
+
+function patchSymlinksWithPostImageLink(patch: string): { links: PatchSymlinkV1[]; unverifiable: string[]; renames: PatchRenameV1[] } {
   const links: PatchSymlinkV1[] = [];
   const unverifiable: string[] = [];
+  const renames: PatchRenameV1[] = [];
   for (const block of patch.split(/^diff --git /m).slice(1)) {
     const lines = block.split("\n").map((line) => line.replace(/\r$/, ""));
+    const renameFrom = renamePathFromLine(lines.find((line) => line.startsWith("rename from ")), "rename from ");
+    const renameTo = renamePathFromLine(lines.find((line) => line.startsWith("rename to ")), "rename to ");
     const postMarker = lines.find((line) => line.startsWith("+++ "));
-    if (!postMarker) continue;
+    if (!postMarker) {
+      // A hunkless rename carries no +++/mode/hunk lines, so the patch text
+      // cannot show symlink involvement; the pre-image worktree lookup below
+      // decides instead of this parser silently skipping the block.
+      if (renameFrom !== undefined && renameTo !== undefined) recordPatchRename(renames, unverifiable, renameFrom, renameTo);
+      continue;
+    }
     const rawPost = postMarker.slice("+++ ".length).trim();
     if (rawPost === "/dev/null") continue;
-    if (!isPostImageSymlinkBlock(lines)) continue;
+    if (!isPostImageSymlinkBlock(lines)) {
+      // A rename block whose post-image markers do not claim mode-120000 can
+      // still move a committed symlink (e.g. hand-stripped markers): fall
+      // back to the pre-image lookup instead of silently skipping.
+      if (renameFrom !== undefined && renameTo !== undefined) recordPatchRename(renames, unverifiable, renameFrom, renameTo);
+      continue;
+    }
     const postPath = stripDiffPathPrefix(rawPost);
     if (!postPath || !isSafeRepositoryPath(postPath)) {
       unverifiable.push(postPath || rawPost);
@@ -836,7 +881,13 @@ function patchSymlinksWithPostImageLink(patch: string): { links: PatchSymlinkV1[
       .filter((line) => line.startsWith("+") && !line.startsWith("+++ "))
       .map((line) => line.slice(1).replace(/\r$/, ""));
     if (added.length !== 1) {
-      if (added.length === 0 && lines.some((line) => line.startsWith("rename from "))) continue;
+      if (added.length === 0 && renameFrom !== undefined && renameTo !== undefined) {
+        // A rename with no added lines keeps the stored blob: resolve the
+        // target from the pre-image instead of silently skipping (the rename
+        // escape). Any other shape stays fail-closed malformed below.
+        recordPatchRename(renames, unverifiable, renameFrom, renameTo);
+        continue;
+      }
       // Fail-closed malformed: a symlink post-image blob carries exactly one
       // target line. A multi-line block is either a parser artifact or an
       // attack (e.g. a joint `portal\nfile` target that a split-and-check
@@ -847,7 +898,54 @@ function patchSymlinksWithPostImageLink(patch: string): { links: PatchSymlinkV1[
     }
     links.push({ path: postPath, target: added[0] });
   }
+  return { links, unverifiable, renames };
+}
+
+/**
+ * Pre-patch worktree lookup for rename blocks the patch parser cannot decide
+ * (fail-closed delete+add treatment for gate purposes). A pure rename
+ * preserves blob and mode, so a non-symlink (or missing) pre-image cannot
+ * yield a symlink post-image and stays skipped; a mode-120000 pre-image
+ * contributes its stored target as a post-image entry at the rename
+ * destination, which the caller gates through the shared lexical + chain
+ * checks (post-image resolution only).
+ */
+async function resolveRenamedSymlinkPostImages(root: string, renames: readonly PatchRenameV1[]): Promise<{ links: PatchSymlinkV1[]; unverifiable: string[] }> {
+  const links: PatchSymlinkV1[] = [];
+  const unverifiable: string[] = [];
+  for (const rename of renames) {
+    const oldAbsolute = path.join(root, ...rename.from.split("/"));
+    const stat = await fs.lstat(oldAbsolute).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw new AehError("PARTICIPANT_PLAN_INVALID", `Unable to verify renamed symlink containment for '${rename.from} -> ${rename.to}'.`, { cause: error });
+    });
+    // Missing pre-image cannot apply; the later `git apply --check` rejects
+    // it as CANDIDATE_STALE. A non-symlink pre-image cannot rename into a
+    // symlink (blob and mode preserved): no behavior change, still skipped.
+    if (!stat?.isSymbolicLink()) continue;
+    const target = await fs.readlink(oldAbsolute).catch((error: unknown) => {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", `Unable to verify renamed symlink containment for '${rename.from} -> ${rename.to}'.`, { cause: error });
+    });
+    links.push({ path: rename.to, target, prePath: rename.from });
+  }
   return { links, unverifiable };
+}
+
+function renamePathFromLine(line: string | undefined, prefix: "rename from " | "rename to "): string | undefined {
+  if (line === undefined) return undefined;
+  let value = line.slice(prefix.length).trim();
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+    value = value.slice(1, -1).replace(/\\(\\|")/g, "$1");
+  }
+  return value;
+}
+
+function recordPatchRename(renames: PatchRenameV1[], unverifiable: string[], from: string, to: string): void {
+  if (!isSafeRepositoryPath(from) || !isSafeRepositoryPath(to)) {
+    unverifiable.push(`rename ${from || "?"} -> ${to || "?"}`);
+    return;
+  }
+  renames.push({ from, to });
 }
 
 function isPostImageSymlinkBlock(lines: readonly string[]): boolean {
