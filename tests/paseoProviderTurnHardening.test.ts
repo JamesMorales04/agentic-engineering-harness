@@ -169,4 +169,26 @@ describe("E-NEW-9: post-timeout stop is verified; unverified stops never fresh-r
     await expect(withBoundedRepairStallRetryV1({ prompt: "p", execute })).rejects.toThrow(/PASEO_PROVIDER_LIFECYCLE_UNCERTAIN/);
     expect(execute).toHaveBeenCalledTimes(1);
   });
+
+  it("CLI wait timeout with failed stop and live session marks UNCERTAIN", async () => {
+    process.env.AEH_PASEO_FORCE_CLI = "1";
+    const run = vi.fn(async (command: string) => {
+      if (command.startsWith("paseo wait")) return { exitCode: 1, stdout: "", stderr: "wait timed out", durationMs: 1, timedOut: true };
+      if (command.startsWith("paseo stop")) return { exitCode: 1, stdout: "", stderr: "stop failed", durationMs: 1 };
+      if (command.startsWith("paseo ls")) return { exitCode: 0, stdout: JSON.stringify([{ id: "agent-cli-uncertain", status: "working" }]), stderr: "", durationMs: 1 };
+      if (command.startsWith("paseo logs")) return { exitCode: 0, stdout: "", stderr: "", durationMs: 1 };
+      throw new Error(`unexpected CLI command: ${command}`);
+    });
+    const deps = {
+      run: run as never,
+      detectCapabilities: vi.fn(async () => capabilities()) as never,
+      trace: vi.fn(async () => undefined) as never,
+      sdk: { create: vi.fn(), materialize: vi.fn(), dispatch: vi.fn(), wait: vi.fn(), run: vi.fn(), probe: vi.fn(), inspect: vi.fn(), list: vi.fn() } as never,
+      native: undefined as never,
+    } as never;
+    const waited = await waitManagedPaseoAgent("/repo", "agent-cli-uncertain", 60, deps);
+    expect(waited.killReason).toBe("DEADLINE");
+    expect((waited as unknown as { providerQuiescence?: string }).providerQuiescence).toBe("uncertain");
+    expect(waited.stderr).toMatch(/PASEO_PROVIDER_LIFECYCLE_UNCERTAIN/);
+  });
 });
