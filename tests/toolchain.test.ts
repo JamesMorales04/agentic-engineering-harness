@@ -22,7 +22,7 @@ const project: HarnessProjectConfig = {
 async function fixture(): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-toolchain-"));
   await fs.mkdir(path.join(root, ".harness"), { recursive: true });
-  await fs.writeFile(path.join(root, ".harness", "toolchain.yaml"), `version: 1\nmanager:\n  provider: mise\n  generatedConfig: .config/mise/conf.d/aeh.toml\n  lockFile: .harness/toolchain.lock.json\n  stateFile: .harness/toolchain.state.json\n  minimumVersion: \"2026.7.0\"\nprofiles:\n  core:\n    tools: [git, node]\n  agents:\n    extends: [core]\n    tools: [paseo]\ntools:\n  git:\n    kind: system\n    command: git\n    activateWhen: [always]\n  node:\n    kind: mise\n    command: node\n    source: node\n    version: \"22\"\n    activateWhen: [always]\n  paseo:\n    kind: mise\n    command: paseo\n    source: \"npm:@getpaseo/cli\"\n    version: latest\n    activateWhen: [orchestration:paseo]\n  uv:\n    kind: mise\n    command: uv\n    source: uv\n    version: latest\n    activateWhen: [code-intelligence:graphify]\n  graphify:\n    kind: mise\n    command: graphify\n    source: \"pipx:graphifyy\"\n    version: latest\n    dependsOn: [uv]\n    activateWhen: [code-intelligence:graphify]\n  opa:\n    kind: mise\n    command: opa\n    source: \"github:open-policy-agent/opa\"\n    version: latest\n    activateWhen: [validation:opa]\n  opengrep:\n    kind: mise\n    command: opengrep\n    source: \"github:opengrep/opengrep\"\n    version: latest\n    activateWhen: [security-tool:opengrep]\n  trivy:\n    kind: mise\n    command: trivy\n    source: \"github:aquasecurity/trivy\"\n    version: latest\n    activateWhen: [validator:trivy]\nprojectDependencies:\n  autoDetect: false\n`);
+  await fs.writeFile(path.join(root, ".harness", "toolchain.yaml"), `version: 1\nmanager:\n  provider: mise\n  generatedConfig: .config/mise/conf.d/aeh.toml\n  lockFile: .harness/toolchain.lock.json\n  stateFile: .harness/toolchain.state.json\n  minimumVersion: \"2026.7.0\"\nprofiles:\n  core:\n    tools: [git, node]\n  agents:\n    extends: [core]\n    tools: [paseo]\ntools:\n  git:\n    kind: system\n    command: git\n    activateWhen: [always]\n  node:\n    kind: mise\n    command: node\n    source: node\n    version: \"22.23.1\"\n    activateWhen: [always]\n  paseo:\n    kind: mise\n    command: paseo\n    source: \"npm:@getpaseo/cli\"\n    version: \"1.4.0\"\n    activateWhen: [orchestration:paseo]\n  uv:\n    kind: mise\n    command: uv\n    source: uv\n    version: \"0.8.12\"\n    activateWhen: [code-intelligence:graphify]\n  graphify:\n    kind: mise\n    command: graphify\n    source: \"pipx:graphifyy\"\n    version: \"0.3.0\"\n    dependsOn: [uv]\n    activateWhen: [code-intelligence:graphify]\n  opa:\n    kind: mise\n    command: opa\n    source: \"github:open-policy-agent/opa\"\n    version: \"1.7.1\"\n    activateWhen: [validation:opa]\n  opengrep:\n    kind: mise\n    command: opengrep\n    source: \"github:opengrep/opengrep\"\n    version: \"1.12.0\"\n    activateWhen: [security-tool:opengrep]\n  trivy:\n    kind: mise\n    command: trivy\n    source: \"github:aquasecurity/trivy\"\n    version: \"0.66.0\"\n    activateWhen: [validator:trivy]\nprojectDependencies:\n  autoDetect: false\n`);
   return root;
 }
 
@@ -48,7 +48,7 @@ describe("toolchain", () => {
   });
 
   it("compiles locked exact versions into the generated mise layer", async () => {
-    const root = await fixture(); await fs.writeFile(path.join(root, ".harness", "toolchain.lock.json"), JSON.stringify({ version: 1, generatedAt: new Date().toISOString(), profile: "auto", tools: { node: { command: "node", provisioning: "mise", source: "node", requestedVersion: "22", resolvedVersion: "22.99.1" }, paseo: { command: "paseo", provisioning: "mise", source: "npm:@getpaseo/cli", requestedVersion: "latest", resolvedVersion: "9.9.9" } } }));
+    const root = await fixture(); await fs.writeFile(path.join(root, ".harness", "toolchain.lock.json"), JSON.stringify({ version: 1, generatedAt: new Date().toISOString(), profile: "auto", tools: { node: { command: "node", provisioning: "mise", source: "node", requestedVersion: "22.23.1", resolvedVersion: "22.99.1" }, paseo: { command: "paseo", provisioning: "mise", source: "npm:@getpaseo/cli", requestedVersion: "1.4.0", resolvedVersion: "9.9.9" } } }));
     await compileToolchain(root, project);
     const generated = await fs.readFile(path.join(root, ".config", "mise", "conf.d", "aeh.toml"), "utf8");
     expect(generated).toContain('node = "22.99.1"');
@@ -91,19 +91,19 @@ describe("toolchain", () => {
     }
   });
 
-  it("preserves fuzzy selectors by default and bumps only active mise tools for update-lock", async () => {
+  it("preserves locked exact versions by default and bumps only active mise tools for update-lock", async () => {
     const root = await fixture();
     const minimalProject: HarnessProjectConfig = {
       version: 1,
       project: { name: "mise-bump-contract" },
       toolchain: { configPath: ".harness/toolchain.yaml", lockPath: ".harness/toolchain.lock.json", statePath: ".harness/toolchain.state.json", generatedMisePath: ".config/mise/conf.d/aeh.toml" }
     };
-    await fs.writeFile(path.join(root, ".harness", "toolchain.yaml"), `version: 1\nmanager:\n  provider: mise\n  generatedConfig: .config/mise/conf.d/aeh.toml\n  lockFile: .harness/toolchain.lock.json\n  stateFile: .harness/toolchain.state.json\n  minimumVersion: "2026.7.0"\nprofiles:\n  core:\n    tools: [node]\ntools:\n  node:\n    kind: mise\n    command: node\n    source: node\n    version: latest\n    activateWhen: [always]\n  serena:\n    kind: mise\n    command: serena\n    source: "pipx:serena-agent"\n    version: "1.6.1"\n    activateWhen: [semantic-retrieval:serena]\nprojectDependencies:\n  autoDetect: false\n`);
+    await fs.writeFile(path.join(root, ".harness", "toolchain.yaml"), `version: 1\nmanager:\n  provider: mise\n  generatedConfig: .config/mise/conf.d/aeh.toml\n  lockFile: .harness/toolchain.lock.json\n  stateFile: .harness/toolchain.state.json\n  minimumVersion: "2026.7.0"\nprofiles:\n  core:\n    tools: [node]\ntools:\n  node:\n    kind: mise\n    command: node\n    source: node\n    version: \"22.1.0\"\n    activateWhen: [always]\n  serena:\n    kind: mise\n    command: serena\n    source: "pipx:serena-agent"\n    version: "1.6.1"\n    activateWhen: [semantic-retrieval:serena]\nprojectDependencies:\n  autoDetect: false\n`);
     await fs.writeFile(path.join(root, ".harness", "toolchain.lock.json"), JSON.stringify({
       version: 1,
       generatedAt: new Date().toISOString(),
       profile: "auto",
-      tools: { node: { source: "node", requestedVersion: "latest", resolvedVersion: "22.1.0", command: "node", provisioning: "mise" } }
+      tools: { node: { source: "node", requestedVersion: "22.1.0", resolvedVersion: "22.1.0", command: "node", provisioning: "mise" } }
     }));
 
     const fakeSystem = path.join(root, "fake-system");
@@ -158,7 +158,7 @@ esac
       await setupToolchain(root, minimalProject, { skipProjectDependencies: true, updateLock: true });
       generated = await fs.readFile(path.join(root, ".config", "mise", "conf.d", "aeh.toml"), "utf8");
       lock = JSON.parse(await fs.readFile(path.join(root, ".harness", "toolchain.lock.json"), "utf8")) as { tools: Record<string, { resolvedVersion?: string }> };
-      expect(generated).toContain('node = "latest"');
+      expect(generated).toContain('node = "22.1.0"');
       expect(lock.tools.node.resolvedVersion).toBe("22.2.0");
       expect(await fs.readFile(callsFile, "utf8")).toBe("trust\nlock --bump node python-version-only\ninstall\n");
     } finally {

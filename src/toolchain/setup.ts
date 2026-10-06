@@ -7,6 +7,7 @@ import { generatedMisePath, loadToolchainConfig, loadToolchainLock, toolchainLoc
 import { resolveToolchain } from "./resolve.js";
 import { installMiseTools, miseBinPaths, miseResolvedVersion, resolveMiseAdapter, writeMiseConfig } from "./mise.js";
 import type { ToolchainLock, ToolchainLockTool, ToolchainSetupOptions, ToolchainSetupResult, ToolchainState } from "./types.js";
+import { assertNoLatestPins } from "./pinning.js";
 import { currentOperationContext } from "../operations/state.js";
 import { persistCommandDiagnosticV1 } from "../operations/forensics.js";
 
@@ -17,6 +18,7 @@ export async function setupToolchain(root: string, project: HarnessProjectConfig
   const engine = toolchain.strategy?.containerEngine ?? "podman";
   const engineAvailable = await rawCommandExists(root, engine);
   const resolved = await resolveToolchain(root, project, toolchain, { profile: options.profile, preferContainers: options.preferContainers, containerAvailable: engineAvailable });
+  assertNoLatestPins(resolved.tools);
   const generatedConfig = generatedMisePath(project, toolchain);
   const lockFile = toolchainLockPath(project, toolchain);
   const stateFile = toolchainStatePath(project, toolchain);

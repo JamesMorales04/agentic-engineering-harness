@@ -41,8 +41,8 @@ export async function loadToolchainConfig(root: string, config: HarnessProjectCo
 
 function addMandatoryContextTools(config: ToolchainConfig): ToolchainConfig {
   const tools = { ...config.tools };
-  tools.python ??= { kind: "mise", command: "python", source: "python", version: "3.13", required: true, activateWhen: ["semantic-retrieval:serena", "compression:headroom"] };
-  tools.uv ??= { kind: "mise", command: "uv", source: "uv", version: "latest", activateWhen: ["semantic-retrieval:serena", "compression:headroom"] };
+  tools.python ??= { kind: "mise", command: "python", source: "python", version: "3.13.15", required: true, activateWhen: ["semantic-retrieval:serena", "compression:headroom"] };
+  tools.uv ??= { kind: "mise", command: "uv", source: "uv", version: "0.12.18", activateWhen: ["semantic-retrieval:serena", "compression:headroom"] };
   tools.serena ??= { kind: "mise", command: "serena", source: "pipx:serena-agent", version: providerVersions.serena, required: true, dependsOn: ["uv", "python"], activateWhen: ["semantic-retrieval:serena"] };
   tools.headroom ??= { kind: "mise", command: "headroom", source: "pipx:headroom-ai[all]", version: providerVersions.headroom, required: true, dependsOn: ["uv", "python"], activateWhen: ["compression:headroom"] };
   return { ...config, tools };

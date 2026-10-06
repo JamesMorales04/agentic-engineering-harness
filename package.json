@@ -127,5 +127,6 @@
     "engineering-harness",
     "slsa",
     "opentelemetry"
-  ]
+  ],
+  "packageManager": "npm@12.1.0"
 }

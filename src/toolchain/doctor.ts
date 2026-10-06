@@ -3,6 +3,13 @@ import { commandExists, runExecutable, runShell } from "../utils/process.js";
 import { loadToolchainConfig, loadToolchainLock, loadToolchainState } from "./config.js";
 import { resolveToolchain } from "./resolve.js";
 import type { ResolvedToolchainTool, ToolchainLock } from "./types.js";
+import {
+  checkToolchainLockConsistency,
+  findLatestVersionPins,
+  findUnpinnedActiveContainerImages,
+  loadMiseLockForDoctor,
+  reportedVersionsEqual,
+} from "./pinning.js";
 
 export interface ToolchainDoctorResult {
   component: string;
@@ -169,6 +176,59 @@ export async function runToolchainDoctor(root: string, project: HarnessProjectCo
     results.push(...projectChecks);
   }
 
+  const unionByName = new Map<string, ResolvedToolchainTool>();
+  for (const tool of [...profileTools, ...projectTools]) unionByName.set(tool.name, tool);
+  const unionTools = [...unionByName.values()];
+  if (unionTools.length) {
+    const unpinned = findLatestVersionPins(unionTools);
+    results.push({
+      component: "toolchain-pinning",
+      required: true,
+      ok: unpinned.length === 0,
+      scope: "SUMMARY",
+      state: unpinned.length ? "INVALID" : "COMPLIANT",
+      message: unpinned.length
+        ? `TOOLCHAIN_UNPINNED_VERSION: toolchain tools request unpinned version 'latest': ${unpinned.join(", ")}. Pin exact versions in .harness/toolchain.yaml.`
+        : `Toolchain versions are pinned (${unionTools.length} resolved tool(s) checked).`
+    });
+    const unpinnedImages = findUnpinnedActiveContainerImages(unionTools);
+    results.push({
+      component: "toolchain-container-pins",
+      required: true,
+      ok: unpinnedImages.length === 0,
+      scope: "SUMMARY",
+      state: unpinnedImages.length ? "INVALID" : "COMPLIANT",
+      message: unpinnedImages.length
+        ? `TOOLCHAIN_UNPINNED_IMAGE: container tools use unpinned ':latest' images: ${unpinnedImages.join(", ")}. Pin image@sha256 digests in .harness/toolchain.yaml.`
+        : "Container image pins are compliant (no active container tool uses a ':latest' tag)."
+    });
+  }
+  try {
+    const miseLock = await loadMiseLockForDoctor(root);
+    const consistency = checkToolchainLockConsistency(toolchain, lock, miseLock?.parsed);
+    results.push({
+      component: "toolchain-lock-consistency",
+      required: true,
+      ok: consistency.ok,
+      scope: "SUMMARY",
+      state: consistency.ok ? "COMPLIANT" : "DRIFT",
+      message: consistency.ok
+        ? miseLock
+          ? `Toolchain locks are consistent (toolchain.yaml vs toolchain.lock.json vs ${miseLock.file}).`
+          : "No mise.lock present; lock-consistency check skipped."
+        : `Toolchain lock drift: ${consistency.divergences.join("; ")}.`
+    });
+  } catch (error) {
+    results.push({
+      component: "toolchain-lock-consistency",
+      required: true,
+      ok: false,
+      scope: "SUMMARY",
+      state: "INVALID",
+      message: `Toolchain lock-consistency check failed: ${error instanceof Error ? error.message : String(error)}.`
+    });
+  }
+
   return results;
 }
 
@@ -177,7 +237,7 @@ async function inspectTool(root: string, tool: ResolvedToolchainTool, lock: Tool
   const available = await commandExists(tool.command, root);
   const expected = locked?.resolvedVersion;
   const actual = available ? await exactToolVersion(root, tool.command, locked?.provisioning, managerCommand) : undefined;
-  const versionOk = !expected || !actual || normalizeVersion(actual) === normalizeVersion(expected);
+  const versionOk = reportedVersionsEqual(expected, actual);
   if (!locked) return { ok: false, state: "MISSING", message: "not present in toolchain lock." };
   if (!available) return { ok: false, state: "MISSING", message: "command missing from reconciled PATH." };
   if (!versionOk) return { ok: false, state: "DRIFT", message: `version drift locked=${expected} actual=${actual}.` };
@@ -197,5 +257,10 @@ async function exactToolVersion(root: string, command: string, provisioning: str
   const result = await runExecutable(command, ["--version"], { cwd: root, timeoutMs: 15_000 });
   return result.exitCode === 0 ? (result.stdout || result.stderr).split(/\r?\n/)[0]?.trim() : undefined;
 }
+// Display-only normalization (never used for compliance decisions).
+// Compliance uses exact-equality via reportedVersionsEqual (see pinning.ts),
+// mirroring scripts/security/toolPin.mjs assertToolVersion semantics so
+// pre-release suffixes such as `-unpinned` are never stripped.
 function normalizeVersion(value: string): string { return value.trim().replace(/^v/, "").replace(/^.*?((?:\d{4}|\d+)\.\d+(?:\.\d+)?).*$/, "$1"); }
+export { normalizeVersion as displayNormalizeVersion };
 function shell(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }
