@@ -682,6 +682,10 @@ function isSafeRepositoryPath(value: string): boolean {
 export function symlinkTargetEscapesRoot(linkPath: string, target: string): boolean {
   if (!isSafeRepositoryPath(linkPath)) return true;
   if (!target || target.includes("\0")) return true;
+  // Fail-closed: a legitimate single-line link target never spans lines. A
+  // newline/CR inside the target is either a parser artifact or an attack, so
+  // it counts as an escape (also shields the direct.ts readlink gates).
+  if (target.includes("\n") || target.includes("\r")) return true;
   if (target.startsWith("/") || target.startsWith("\\")) return true;
   if (/^[A-Za-z]:([\\/]|$)/.test(target)) return true;
   const directory = path.posix.dirname(linkPath);
@@ -791,8 +795,12 @@ async function assertPatchSymlinksContained(root: string, patch: string): Promis
     throw new AehError("PARTICIPANT_PLAN_INVALID", `ChangeSet patch creates a symlink escaping the candidate root: ${detail}.`);
   }
   if (links.length === 0) return;
-  const resolvedRoot = await fs.realpath(path.resolve(root)).catch(() => undefined);
-  if (!resolvedRoot) return;
+  // Fail-closed: without the canonical root the chain resolution below cannot
+  // prove containment, so an unresolvable root rejects instead of silently
+  // skipping verification (fail-open).
+  const resolvedRoot = await fs.realpath(path.resolve(root)).catch((error: unknown) => {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", `ChangeSet patch creates a symlink whose containment cannot be verified for candidate root '${root}'.`, { cause: error });
+  });
   for (const link of links) {
     const directory = path.posix.dirname(link.path);
     const absoluteDirectory = directory === "." ? resolvedRoot : path.join(resolvedRoot, ...directory.split("/"));
@@ -827,12 +835,17 @@ function patchSymlinksWithPostImageLink(patch: string): { links: PatchSymlinkV1[
     const added = lines
       .filter((line) => line.startsWith("+") && !line.startsWith("+++ "))
       .map((line) => line.slice(1).replace(/\r$/, ""));
-    if (added.length === 0) {
-      if (lines.some((line) => line.startsWith("rename from "))) continue;
-      unverifiable.push(postPath);
+    if (added.length !== 1) {
+      if (added.length === 0 && lines.some((line) => line.startsWith("rename from "))) continue;
+      // Fail-closed malformed: a symlink post-image blob carries exactly one
+      // target line. A multi-line block is either a parser artifact or an
+      // attack (e.g. a joint `portal\nfile` target that a split-and-check
+      // loop would verify piecemeal while the applied link resolves through
+      // the full string outside the root). Never split; reject as malformed.
+      unverifiable.push(added.length === 0 ? postPath : `${postPath} (malformed multi-line symlink target)`);
       continue;
     }
-    for (const target of added) links.push({ path: postPath, target });
+    links.push({ path: postPath, target: added[0] });
   }
   return { links, unverifiable };
 }

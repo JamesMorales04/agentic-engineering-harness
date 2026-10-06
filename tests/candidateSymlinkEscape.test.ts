@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { assembleCandidateChangeSet } from "../src/candidates/assembler.js";
 import { materializeCandidateState } from "../src/candidates/direct.js";
 import { computeWorktreeDigest } from "../src/core/git.js";
@@ -210,6 +210,70 @@ describe("candidate symlink escape gate (C-NEW-4)", () => {
       const result = await assembleCandidateChangeSet({ root, operationId: current.operationId, taskId: "TASK-SYMLINK-CHAIN-OK", currentCandidate: current, changeSet, allowedScope: ["src/**"], candidateId: "candidate:OP-SYMLINK-CHAIN-OK:r2" });
       expect(result.candidate.revision).toBe(2);
       expect((await fs.lstat(path.join(root, "src", "link"))).isSymbolicLink()).toBe(true);
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it("RED-MULTILINE: rejects a symlink patch whose target block spans multiple added lines (fail-closed malformed)", async () => {
+    const root = await initRepo();
+    try {
+      // Committed outward symlink whose name contains a newline: the joint
+      // multi-line target `portal\nfile` resolves through it outside the root,
+      // while a piecemeal gate only ever sees dangling `portal` / `file`.
+      await fs.symlink("../../outside", path.join(root, "src", "portal\nfile"));
+      await runShell("git add -A && git -c user.name=test -c user.email=test@example.com commit -qm evil", { cwd: root });
+      const current = createCandidateRevisionV1({ operationId: "OP-SYMLINK-MULTILINE", candidateId: "candidate:OP-SYMLINK-MULTILINE:r1", taskId: "TASK-SYMLINK-MULTILINE", revision: 1, sourceDigest: await computeWorktreeDigest(root) });
+      // Hand-crafted mode-120000 block with a two-line link body. git apply
+      // accepts it and materializes a link whose target is `portal\nfile`.
+      const patch = [
+        "diff --git a/src/link b/src/link",
+        "new file mode 120000",
+        "index 0000000..0000000",
+        "--- /dev/null",
+        "+++ b/src/link",
+        "@@ -0,0 +1,2 @@",
+        "+portal",
+        "+file",
+        "\\ No newline at end of file",
+        ""
+      ].join("\n");
+      const changeSet = { version: 1 as const, operationId: current.operationId, taskId: "TASK-SYMLINK-MULTILINE", workUnitId: "WU-1", participantId: "participant-1", baseCandidateRevision: current.revision, baseCandidateDigest: current.identityDigest, changedFiles: ["src/link"], patch, patchDigest: sha256Utf8(patch) };
+      let failure: AehError | undefined;
+      try {
+        await assembleCandidateChangeSet({ root, operationId: current.operationId, taskId: "TASK-SYMLINK-MULTILINE", currentCandidate: current, changeSet, allowedScope: ["src/**"], candidateId: "candidate:OP-SYMLINK-MULTILINE:r2" });
+      } catch (error) { failure = error as AehError; }
+      expect(failure?.code).toBe("PARTICIPANT_PLAN_INVALID");
+      expect(failure?.message).toMatch(/symlink|malformed/i);
+      // Fail-closed: the multi-line link was never applied.
+      await expect(fs.lstat(path.join(root, "src", "link"))).rejects.toThrow();
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it("RED-REALPATH: realpath(root) failure rejects fail-closed instead of skipping containment", async () => {
+    const root = await initRepo();
+    try {
+      await fs.symlink("../../outside", path.join(root, "src", "portal"));
+      await runShell("git add -A && git -c user.name=test -c user.email=test@example.com commit -qm portal", { cwd: root });
+      const current = createCandidateRevisionV1({ operationId: "OP-SYMLINK-REALPATH", candidateId: "candidate:OP-SYMLINK-REALPATH:r1", taskId: "TASK-SYMLINK-REALPATH", revision: 1, sourceDigest: await computeWorktreeDigest(root) });
+      // Lexically contained (`src/portal/file`) but resolves outside via
+      // portal, so the verdict depends entirely on the chain check that
+      // needs realpath(root). Force exactly that lookup to fail.
+      const patch = await symlinkPatch(root, "src/link", "portal/file");
+      const changeSet = { version: 1 as const, operationId: current.operationId, taskId: "TASK-SYMLINK-REALPATH", workUnitId: "WU-1", participantId: "participant-1", baseCandidateRevision: current.revision, baseCandidateDigest: current.identityDigest, changedFiles: ["src/link"], patch, patchDigest: sha256Utf8(patch) };
+      const originalRealpath = fs.realpath;
+      const spy = vi.spyOn(fs, "realpath").mockImplementation((async (...args: unknown[]) => {
+        if (String(args[0]) === path.resolve(root)) throw Object.assign(new Error("mocked realpath(root) failure"), { code: "EACCES" });
+        return (originalRealpath as (...inner: unknown[]) => Promise<string>)(...args);
+      }) as typeof fs.realpath);
+      try {
+        let failure: AehError | undefined;
+        try {
+          await assembleCandidateChangeSet({ root, operationId: current.operationId, taskId: "TASK-SYMLINK-REALPATH", currentCandidate: current, changeSet, allowedScope: ["src/**"], candidateId: "candidate:OP-SYMLINK-REALPATH:r2" });
+        } catch (error) { failure = error as AehError; }
+        expect(failure?.code).toBe("PARTICIPANT_PLAN_INVALID");
+        expect(failure?.message).toMatch(/symlink|contain|verify/i);
+        // Fail-closed: the unverifiable link was never applied.
+        await expect(fs.lstat(path.join(root, "src", "link"))).rejects.toThrow();
+      } finally { spy.mockRestore(); }
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 });
