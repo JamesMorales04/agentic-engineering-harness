@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { AssuranceLevel, ImplementationRoute } from "./contracts.js";
 import type { WorkGraphV1, WorkRisk, WorkUnitV1 } from "./workGraph.js";
+import { planWorkUnitWaves } from "./workGraph.js";
 import { canonicalRoleValues, compileSkillSet, defaultSkillSeed, roleProfile, type CanonicalRole, type ProjectStackProfileV1, type ToolPackV1 } from "../participants/index.js";
 import { sha256Canonical } from "../core/digest.js";
 import { AehError } from "../core/errors.js";
@@ -159,14 +160,15 @@ export function compileExecutionBlueprint(input: Omit<ParticipantCompilerInputV1
   const planWithoutDigest = { ...initialPlan, assignments: planAssignments };
   const { compilerDigest: _oldCompilerDigest, ...planBody } = planWithoutDigest;
   const plan = { ...planBody, compilerDigest: sha256Canonical(planBody) } as ParticipantPlanV1;
-  const remaining = new Map(input.graph.units.map((unit) => [unit.id, unit]));
-  const completed = new Set<string>();
-  const waves: string[][] = [];
-  while (remaining.size) {
-    const wave = [...remaining.values()].filter((unit) => unit.dependencies.every((dependency) => completed.has(dependency))).map((unit) => unit.id);
-    if (!wave.length) throw new AehError("EXECUTION_BLUEPRINT_INVALID", "work graph cannot be scheduled.");
-    waves.push(wave.sort());
-    wave.forEach((id) => { completed.add(id); remaining.delete(id); });
+  // Frozen blueprint waves use the single conflict-aware scheduler shared with
+  // planParallelism (scope overlap, resource claims, ORDERED_SEQUENCE), not a
+  // dependency-only pass: any consumer trusting blueprint.waves must never
+  // co-place conflicting writers. MECHANISM: DETERMINISTIC.
+  let waves: string[][];
+  try {
+    waves = planWorkUnitWaves(input.graph.units);
+  } catch (error) {
+    throw new AehError("EXECUTION_BLUEPRINT_INVALID", error instanceof Error ? error.message : String(error), { cause: error });
   }
   const deterministicGates = ["work-graph-valid", "participant-plan-valid", "candidate-revision-bound", ...(input.graph.assurance === "CRITICAL" ? ["deterministic-evidence", "review-required"] : [])];
   const executionCatalog = input.executionCatalog;
