@@ -119,6 +119,17 @@ export interface OperationControllerDeps {
   inspectProviderSession?: (root: string, provider: string, sessionId: string) => Promise<{ status?: string } | undefined>;
   /** Deterministic seam for durable label-bound agent discovery during resource reconciliation. */
   listOperationAgents?: (root: string, operationId: string) => Promise<Array<{ id?: string; workspaceId?: string }>>;
+  /**
+   * Sibling-owned pid scan seam for cancellation fencing. Defaults to the
+   * durable operation-record scan. A throwing scan must fail closed (callers
+   * never proceed with an unproven exclusion set).
+   */
+  listSiblingOwnedProcessIds?: (stateRoot: string, operationId: string) => Promise<Set<number>>;
+  /**
+   * Process-group termination seam for cancellation. Defaults to
+   * terminateManagedProcessGroup. Lets tests prove zero signals were sent.
+   */
+  terminateProcessGroup?: (pid: number) => Promise<void>;
 }
 
 interface OperationWorkspace {
@@ -694,13 +705,29 @@ export async function cancelOperation(
       if (Number.isInteger(handle.processGroupId) && handle.processGroupId > 0) managedPidSet.add(handle.processGroupId);
     }
     const descendantPids = record.pid ? await findDescendantProcessIds(record.pid, absoluteRoot, { allowedCwdPids: managedPidSet }) : [];
-    // Defense in depth against pid reuse: never signal a pid currently owned
-    // as another operation's record/controller pid, even if it appears in this
-    // operation's handle or descendant sets.
-    const siblingOwnedPids = await listSiblingOwnedProcessIds(resolveOperationStateRoot(absoluteRoot), operationId).catch((error) => {
-      cleanupWarnings.push(`sibling process ownership scan: ${String(error)}`);
-      return new Set<number>();
-    });
+    // Fail-closed sibling fencing: this scan is the check that prevents
+    // sibling signaling. An unproven (failed) scan aborts the cancellation
+    // before any signal is built or sent — never proceed with an empty
+    // exclusion set. MECHANISM: DETERMINISTIC gate.
+    const listSiblings = deps.listSiblingOwnedProcessIds ?? listSiblingOwnedProcessIds;
+    const siblingStateRoot = resolveOperationStateRoot(absoluteRoot);
+    let siblingOwnedPids: Set<number>;
+    try {
+      siblingOwnedPids = await listSiblings(siblingStateRoot, operationId);
+    } catch (error) {
+      const fencingMessage = `AEH_CANCELLATION_FENCING_REQUIRED: cancellation cannot proceed because sibling process ownership could not be proven; retry or operator intervention is required: ${String(error)}`;
+      try { await trace(absoluteRoot, "cleanup.sibling-scan.failed", { operationId, error: String(error) }); } catch { /* observability only */ }
+      try {
+        const fenced = await loadOperation(absoluteRoot, operationId);
+        assertCancellationFence(fenced, cancellationFence, "operation cancellation sibling fencing");
+        await patchOperation(absoluteRoot, operationId, {
+          phase: "cancellation-fencing-required",
+          error: fencingMessage,
+          cleanupWarnings: [fencingMessage]
+        });
+      } catch { /* fencing state is best-effort; the throw below is the fail-closed gate */ }
+      throw new Error(fencingMessage);
+    }
     const processGroups = buildCancellationPidSet({
       managedPids: processHandles.flatMap((handle) => [handle.processGroupId, handle.pid]),
       descendantPids,
@@ -708,10 +735,29 @@ export async function cancelOperation(
       siblingOwnedPids,
       selfPid: process.pid
     });
+    const terminateGroup = deps.terminateProcessGroup ?? terminateManagedProcessGroup;
     for (const pid of processGroups) {
       const latest = await loadOperation(absoluteRoot, operationId);
       assertCancellationFence(latest, cancellationFence, "operation cancellation process fencing");
-      try { await terminateManagedProcessGroup(pid); }
+      // Kill-time revalidation (PID-reuse TOCTOU): the scan-time snapshot can
+      // go stale before signaling (the OS may reuse a pid for a sibling after
+      // the scan), so each target is re-proven immediately before signaling.
+      const verdict = await verifyPidBeforeSignal(pid, {
+        operationRoot: absoluteRoot,
+        recordPid: record.pid,
+        managedPidSet,
+        selfPid: process.pid,
+        stateRoot: siblingStateRoot,
+        operationId,
+        listSiblings
+      });
+      if (!verdict.signal) {
+        // An already-exited pid needs no signal: the goal is achieved.
+        if (verdict.reason === "already-exited") continue;
+        cleanupWarnings.push(`process group ${pid}: not signaled (${verdict.reason})`);
+        continue;
+      }
+      try { await terminateGroup(pid); }
       catch (error) { cleanupWarnings.push(`process group ${pid}: ${String(error)}`); }
       if (!(await waitForProcessExit(pid, 1_000))) cleanupWarnings.push(`process group ${pid}: process remained live after termination signals`);
     }
@@ -1669,6 +1715,9 @@ export async function findDescendantProcessIds(
  * scoped descendant scan, and the operation controller pid; drops anything
  * that is not a positive integer, the cancelling process itself, or a pid
  * currently owned as another operation's record/controller pid.
+ *
+ * The caller must only pass a proven sibling set: a failed scan is never
+ * represented as an empty set (cancel fails closed before this is built).
  */
 export function buildCancellationPidSet(input: {
   managedPids: Array<number | undefined>;
@@ -1692,7 +1741,7 @@ export function buildCancellationPidSet(input: {
 }
 
 /** Pids currently owned as another operation's record/controller pid. */
-async function listSiblingOwnedProcessIds(stateRoot: string, operationId: string): Promise<Set<number>> {
+export async function listSiblingOwnedProcessIds(stateRoot: string, operationId: string): Promise<Set<number>> {
   const owned = new Set<number>();
   for (const operation of await readOperationRecords(stateRoot)) {
     if (operation.id === operationId) continue;
@@ -1701,6 +1750,79 @@ async function listSiblingOwnedProcessIds(stateRoot: string, operationId: string
     }
   }
   return owned;
+}
+
+/**
+ * Kill-time pid revalidation for cancellation signaling.
+ * MECHANISM: DETERMINISTIC. Re-proves immediately before signaling that a
+ * target pid is still cancellable: a fresh sibling-ownership scan (the
+ * scan-time snapshot is never trusted — the OS may have reused the pid for a
+ * sibling after the scan), liveness, and — for pids without durable ownership
+ * (not the record controller pid nor a managed handle) — a fresh cwd or
+ * descendant proof. Returns signal:false to skip without signaling.
+ *
+ * Residual /proc race: between this recheck and process.kill the OS may still
+ * exit and reuse the pid. The window is narrowed from the whole scan-to-signal
+ * loop to microseconds per pid; sibling exclusion, managed-set scoping, and
+ * ESRCH-tolerant signaling bound the residual. Pid-based signaling on Linux
+ * cannot close this fully without pidfds; this documents that limit.
+ */
+async function verifyPidBeforeSignal(
+  pid: number,
+  input: {
+    operationRoot: string;
+    recordPid?: number;
+    managedPidSet: Set<number>;
+    selfPid: number;
+    stateRoot: string;
+    operationId: string;
+    listSiblings: (stateRoot: string, operationId: string) => Promise<Set<number>>;
+  }
+): Promise<{ signal: boolean; reason: string }> {
+  if (!Number.isInteger(pid) || pid <= 0 || pid === input.selfPid) return { signal: false, reason: "self-or-invalid" };
+  let fresh: Set<number>;
+  try {
+    fresh = await input.listSiblings(input.stateRoot, input.operationId);
+  } catch {
+    return { signal: false, reason: "sibling ownership could not be re-proven at signal time" };
+  }
+  if (fresh.has(pid)) return { signal: false, reason: "pid is currently owned as another operation's record/controller pid" };
+  try { process.kill(pid, 0); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return { signal: false, reason: "already-exited" };
+    // EPERM and friends prove the pid exists; fall through to the proofs below.
+  }
+  if (pid === input.recordPid || input.managedPidSet.has(pid)) {
+    return { signal: true, reason: "durable ownership with fresh sibling exclusion" };
+  }
+  try {
+    const cwd = await fs.realpath(`/proc/${pid}/cwd`);
+    if (cwd === input.operationRoot) return { signal: true, reason: "fresh cwd proof" };
+  } catch { /* fall through to the descendant proof */ }
+  if (typeof input.recordPid === "number" && await isDescendantOfPid(pid, input.recordPid)) {
+    return { signal: true, reason: "fresh descendant proof" };
+  }
+  return { signal: false, reason: "heuristic pid ownership could not be re-proven at signal time" };
+}
+
+/** Walk the live /proc ppid chain to prove pid still descends from ancestor. */
+async function isDescendantOfPid(pid: number, ancestor: number): Promise<boolean> {
+  let current = pid;
+  const seen = new Set<number>([current]);
+  for (let depth = 0; depth < 1024; depth += 1) {
+    let stat: string;
+    try { stat = await fs.readFile(`/proc/${current}/stat`, "utf8"); }
+    catch { return false; }
+    const closing = stat.lastIndexOf(")");
+    if (closing < 0) return false;
+    const parentPid = Number(stat.slice(closing + 2).trim().split(/\s+/)[1]);
+    if (!Number.isInteger(parentPid) || parentPid <= 0) return false;
+    if (parentPid === ancestor) return true;
+    if (parentPid === 1 || seen.has(parentPid)) return false;
+    seen.add(parentPid);
+    current = parentPid;
+  }
+  return false;
 }
 
 async function waitForProcessExit(pid: number, timeoutMs: number): Promise<boolean> {

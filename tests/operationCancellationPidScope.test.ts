@@ -170,4 +170,54 @@ describe("cancellation pid scope (A-NEW-4)", () => {
     expect(set).not.toContain(siblingPid);
     expect(set).toContain(4343);
   });
+
+  it("fails closed with zero signals when the sibling-ownership scan fails", async () => {
+    const root = await tempRoot();
+    const id = "CANCEL-PID-FENCE";
+    await saveOwnedOperation(root, operation(root, id));
+    await bindCancellationDecision(root, id, "human:pid-scope-test");
+    const targetPid = 48881;
+    await patchOperation(root, id, { pid: targetPid });
+
+    const signals: number[] = [];
+    const run = vi.fn(async () => ({ exitCode: 0, stdout: "stopped", stderr: "", durationMs: 1 }));
+    await expect(cancelOperation(root, id, {
+      run: run as never,
+      trace: vi.fn(async () => undefined) as never,
+      humanActorId: "human:pid-scope-test",
+      listSiblingOwnedProcessIds: async () => { throw new Error("EIO: sibling scan unavailable"); },
+      terminateProcessGroup: async (pid: number) => { signals.push(pid); }
+    })).rejects.toThrow(/AEH_CANCELLATION_FENCING_REQUIRED/);
+
+    expect(signals).toEqual([]);
+    expect((await loadOperation(root, id)).phase).toBe("cancellation-fencing-required");
+  });
+
+  it("does not signal a pid that became sibling-owned between scan and signal", async () => {
+    const root = await tempRoot();
+    const id = "CANCEL-PID-TOCTOU";
+    await saveOwnedOperation(root, operation(root, id));
+    await bindCancellationDecision(root, id, "human:pid-scope-test");
+    const targetPid = 48882;
+    await patchOperation(root, id, { pid: targetPid });
+
+    // Scan-time snapshot is clean; at signal time the pid is sibling-owned
+    // (pid reuse after the scan). The kill-time recheck must refuse to signal.
+    let calls = 0;
+    const signals: number[] = [];
+    const run = vi.fn(async () => ({ exitCode: 0, stdout: "stopped", stderr: "", durationMs: 1 }));
+    await expect(cancelOperation(root, id, {
+      run: run as never,
+      trace: vi.fn(async () => undefined) as never,
+      humanActorId: "human:pid-scope-test",
+      listSiblingOwnedProcessIds: async () => {
+        calls += 1;
+        return calls === 1 ? new Set<number>() : new Set<number>([targetPid]);
+      },
+      terminateProcessGroup: async (pid: number) => { signals.push(pid); }
+    })).rejects.toThrow(/AEH_CANCELLATION_FENCING_REQUIRED/);
+
+    expect(signals).not.toContain(targetPid);
+    expect(signals).toEqual([]);
+  });
 });
