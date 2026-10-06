@@ -22,6 +22,7 @@ import {
   assertRepairScopeAmendment,
   repairHardProtectedPaths,
   findRepairHardProtectedViolations,
+  normalizeRepairScopePath,
   REPAIR_AMENDABLE_MANIFEST_PATHS,
   type RepairScopeAmendmentV1,
   type RepairScopeBlockerReceiptV1,
@@ -252,7 +253,7 @@ export function repairProtectedPaths(config: HarnessProjectConfig, contract: Tas
   const hard = repairHardProtectedPaths(config, contract);
   const amendable = new Set<string>();
   for (const raw of REPAIR_AMENDABLE_MANIFEST_PATHS) {
-    const value = raw.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/$/, "");
+    const value = normalizeRepairScopePath(raw);
     if (!value || path.isAbsolute(value) || value.split("/").includes("..")) continue;
     amendable.add(value);
     amendable.add(`${value}/**`);
@@ -312,7 +313,7 @@ function assertBlockerFilesAreActuallyBlocked(
   forbiddenScope: readonly string[],
 ): void {
   const invalid = files.filter((file) => {
-    const normalized = file.replaceAll("\\", "/").replace(/^\.\//, "");
+    const normalized = normalizeRepairScopePath(file);
     const outOfAllowed = !matchesAnyRepairScope(normalized, allowedScope);
     const denied = matchesAnyRepairScope(normalized, forbiddenScope);
     return !outOfAllowed && !denied;
@@ -369,5 +370,12 @@ function effectiveRepairScope(
 }
 
 function matchesAnyRepairScope(file: string, patterns: readonly string[]): boolean {
-  return patterns.some((pattern) => pattern === "**" || minimatch(file, pattern, { dot: true }));
+  const normalizedFile = normalizeRepairScopePath(file);
+  return patterns.some((raw) => {
+    const pattern = normalizeRepairScopePath(raw);
+    if (!pattern) return false;
+    if (pattern === "**" || raw === "**") return true;
+    if (!normalizedFile) return false;
+    return minimatch(normalizedFile, pattern, { dot: true });
+  });
 }

@@ -102,7 +102,8 @@ export function repairHardProtectedPaths(
 function expandRepairScopePatterns(paths: Set<string> | Iterable<string>): string[] {
   const normalized = new Set<string>();
   for (const raw of paths) {
-    const value = raw.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/$/, "");
+    if (typeof raw !== "string" || hasUnsafeRawRepairScopeInput(raw)) continue;
+    const value = normalizeRepairScopePath(raw);
     if (!value || path.isAbsolute(value) || value.split("/").includes("..")) continue;
     normalized.add(value);
     normalized.add(`${value}/**`);
@@ -138,7 +139,13 @@ function configuredValidatorSourcePathsForScope(
 }
 
 function matchesAnyHardProtectedPattern(file: string, patterns: readonly string[]): boolean {
-  return patterns.some((pattern) => pattern === "**" || minimatch(file, pattern, { dot: true }));
+  const normalizedFile = normalizeRepairScopePath(file);
+  return patterns.some((pattern) => {
+    const normalizedPattern = normalizeRepairScopePath(pattern);
+    // Preserve the exact `**` open pattern through normalization.
+    if (normalizedPattern === "**" || pattern === "**") return true;
+    return minimatch(normalizedFile, normalizedPattern, { dot: true });
+  });
 }
 
 /**
@@ -265,45 +272,112 @@ const blockerReceiptBodySchema = z.object({
   digest: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
 
+/**
+ * DETERMINISTIC raw-input traversal gate (Luna traversal-hiding fix).
+ * Returns true when the RAW scope string hides traversal that
+ * posix-normalize would resolve away (e.g. `src/../.harness/seals/U2.json`
+ * -> `.harness/seals/U2.json`). Rejects any `..` segment, drive prefix, or
+ * absolute form in the raw input BEFORE normalization. Called by
+ * `isSafeRepairScopePath` and by pattern-expansion deny sources so hidden
+ * traversal never becomes a 'safe' relative path.
+ */
+function hasUnsafeRawRepairScopeInput(value: string): boolean {
+  const slashedRaw = value.replaceAll("\\", "/");
+  if (path.isAbsolute(value) || path.posix.isAbsolute(slashedRaw) || path.win32.isAbsolute(value)) return true;
+  if (slashedRaw.startsWith("/")) return true;
+  if (/^[A-Za-z]:/.test(value) || /^[A-Za-z]:/.test(slashedRaw)) return true;
+  if (slashedRaw.split("/").includes("..")) return true;
+  return false;
+}
+
 export function isSafeRepairScopePath(value: string): boolean {
   if (!value || !value.trim() || value !== value.trim()) return false;
   if (value.includes("\0")) return false;
   if (path.isAbsolute(value)) return false;
   if (/^[A-Za-z]:/.test(value)) return false;
-  const normalized = value.replaceAll("\\", "/").replace(/^\.\//, "");
+  // Raw-input traversal rejection BEFORE normalization: even a resolvable
+  // `..` (e.g. `src/../.harness/seals/U2.json`) or drive/absolute form
+  // rejects here so normalization cannot hide it as a safe relative path.
+  if (hasUnsafeRawRepairScopeInput(value)) return false;
+  const normalized = normalizeRepairScopePath(value);
   if (!normalized || normalized.startsWith("/") || normalized === ".." || normalized.startsWith("../")) return false;
+  if (/^[A-Za-z]:/.test(normalized)) return false;
   const segments = normalized.split("/");
   if (segments.some((segment) => !segment || segment === "." || segment === "..")) return false;
   return true;
 }
 
 export function normalizeRepairScopePath(value: string): string {
-  return value.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/$/, "");
+  // DETERMINISTIC single scope-string identity (C4): posix separators, collapse
+  // redundant `//`, `./`, and resolvable `../`, strip a single leading `./`,
+  // strip trailing `/` (except root `/`). Preserves `**` globs (`src/**`
+  // stays `src/**`; `**` stays `**`). Empty/`.` maps to `""` (rejected by
+  // isSafe). All scope gates (hard-protected expansion, violation search,
+  // blocker parse, amendment filter, diffScope, run assembly) must route
+  // through this function so `./src//a.ts`, `src/./a.ts`, and `src/a/../b.ts`
+  // share one identity (`src/a.ts` / `src/b.ts`). Fail-closed: unresolvable
+  // `..` (e.g. `a/../../b` -> `../b`) is preserved for isSafe to reject.
+  const slashed = value.replaceAll("\\", "/");
+  let normalized: string;
+  try {
+    normalized = path.posix.normalize(slashed);
+  } catch {
+    normalized = slashed;
+  }
+  if (normalized === "." || normalized === "./") return "";
+  if (normalized.startsWith("./")) normalized = normalized.slice(2);
+  if (normalized.length > 1 && normalized.endsWith("/")) normalized = normalized.slice(0, -1);
+  return normalized;
 }
 
 /**
  * DETERMINISTIC parse of the Repairer `repair-result` no-mutation report.
  * Returns the declared needed files when stdout/stderr carries a schema-valid
  * `repair-result` payload with a non-empty `filesNeededOutsideScope`, else
- * undefined. Never throws for absent/invalid markers; the caller decides the
- * typed outcome. Model content, deterministic validation.
+ * undefined. Throws REPAIR_SCOPE_BLOCKER_CONFLICT fail-closed when a
+ * schema-valid (or zod-flagged) payload declares needed files AND file changes
+ * (the no-mutation invariant); conflict is never swallowed as undefined.
+ * Never throws for absent/invalid markers; the caller decides the typed
+ * outcome for those. Model content, deterministic validation.
  */
 export function parseRepairScopeBlockerFromSession(session: Pick<WorkerSession, "stdout" | "stderr">): RepairScopeNeededFileV1[] | undefined {
   const marker = extractMarkedRepairResult(session.stdout, session.stderr ?? "");
   if (!marker) return undefined;
   const validation = validateAgentOutput("repair-result", marker);
-  if (!validation.ok) return undefined;
+  if (!validation.ok) {
+    // Distinct conflict diagnostic: zod already enforces no-mutation via
+    // superRefine, so a REPAIR_SCOPE_BLOCKER_CONFLICT issue means the payload
+    // is a forged/conflicting report, not an absent marker. Fail closed
+    // instead of returning undefined (which callers treat as "no blocker").
+    if (validation.issues.some((issue) => issue.includes("REPAIR_SCOPE_BLOCKER_CONFLICT"))) {
+      throw new AehError(
+        "PARTICIPANT_PLAN_INVALID",
+        "REPAIR_SCOPE_BLOCKER_CONFLICT: filesNeededOutsideScope is a no-mutation report path; filesChanged must be empty when needed files are declared.",
+      );
+    }
+    return undefined;
+  }
   const value = validation.value as { filesChanged?: string[]; filesNeededOutsideScope?: RepairScopeNeededFileV1[] };
   const needed = value.filesNeededOutsideScope ?? [];
   if (!needed.length) return undefined;
   // The output-contract schema already enforces no-mutation (filesChanged empty
   // when needed files are declared); re-check here so a forged payload that
-  // bypassed schema registration cannot slip through.
-  if ((value.filesChanged ?? []).length > 0) return undefined;
+  // bypassed schema registration cannot slip through. Fail closed with a
+  // distinct conflict diagnostic instead of undefined.
+  if ((value.filesChanged ?? []).length > 0) {
+    throw new AehError(
+      "PARTICIPANT_PLAN_INVALID",
+      "REPAIR_SCOPE_BLOCKER_CONFLICT: filesNeededOutsideScope is a no-mutation report path; filesChanged must be empty when needed files are declared.",
+    );
+  }
   const normalized: RepairScopeNeededFileV1[] = [];
   for (const entry of needed) {
     if (typeof entry?.path !== "string" || typeof entry?.reason !== "string") return undefined;
-    const filePath = normalizeRepairScopePath(entry.path.trim());
+    const rawPath = entry.path.trim();
+    // Raw traversal gate BEFORE normalization so `src/../...` cannot hide
+    // as a safe relative path; normalize only the raw-safe remainder.
+    if (!isSafeRepairScopePath(rawPath)) return undefined;
+    const filePath = normalizeRepairScopePath(rawPath);
     const reason = entry.reason.trim();
     if (!filePath || !reason || !isSafeRepairScopePath(filePath)) return undefined;
     if (reason.length > 1_000) return undefined;
@@ -332,6 +406,7 @@ export function createRepairScopeBlockerReceipt(input: {
   filesNeededOutsideScope: RepairScopeNeededFileV1[];
 }): RepairScopeBlockerReceiptV1 {
   const files = [...input.filesNeededOutsideScope]
+    .filter((entry) => typeof entry?.path === "string" && isSafeRepairScopePath(entry.path.trim()))
     .map((entry) => ({ path: normalizeRepairScopePath(entry.path.trim()), reason: entry.reason.trim() }))
     .filter((entry) => entry.path && entry.reason && isSafeRepairScopePath(entry.path))
     .sort((a, b) => a.path.localeCompare(b.path));
@@ -440,7 +515,10 @@ export function assertRepairScopeAmendment(value: unknown): asserts value is Rep
   if (typeof record["taskId"] !== "string" || !record["taskId"].trim()) throw new AehError("PARTICIPANT_PLAN_INVALID", "Amendment taskId is required.");
   if (!Array.isArray(record["exemptedPaths"]) || record["exemptedPaths"].length === 0) throw new AehError("PARTICIPANT_PLAN_INVALID", "Amendment exemptedPaths must be non-empty.");
   for (const entry of record["exemptedPaths"] as unknown[]) {
-    if (typeof entry !== "string" || !isSafeRepairScopePath(normalizeRepairScopePath(entry))) {
+    if (typeof entry !== "string" || !isSafeRepairScopePath(entry)) {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", `Amendment exempted path '${String(entry)}' is not a safe repository-relative path.`);
+    }
+    if (!isSafeRepairScopePath(normalizeRepairScopePath(entry))) {
       throw new AehError("PARTICIPANT_PLAN_INVALID", `Amendment exempted path '${String(entry)}' is not a safe repository-relative path.`);
     }
   }
@@ -957,10 +1035,15 @@ export function filterForbiddenScopeForAmendment(
   }
   const exempted = new Set<string>();
   for (const filePath of amendment.exemptedPaths) {
-    exempted.add(filePath);
-    exempted.add(`${filePath}/**`);
+    const normalized = normalizeRepairScopePath(filePath.trim());
+    if (!normalized) continue;
+    exempted.add(normalized);
+    exempted.add(`${normalized}/**`);
   }
-  return forbiddenScope.filter((entry) => !exempted.has(entry));
+  return forbiddenScope
+    .map((entry) => ({ raw: entry, normalized: normalizeRepairScopePath(entry.trim()) }))
+    .filter(({ normalized }) => !exempted.has(normalized))
+    .map(({ raw }) => raw);
 }
 
 function extractMarkedRepairResult(stdout: string, stderr: string): unknown | undefined {
