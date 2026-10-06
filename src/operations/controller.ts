@@ -684,13 +684,30 @@ export async function cancelOperation(
     const config = await loadProjectConfigIfPresent(absoluteRoot);
 
     const processHandles = await listManagedProcessHandles(absoluteRoot, operationId);
-    const descendantPids = record.pid ? await findDescendantProcessIds(record.pid, absoluteRoot) : [];
-    const processGroups = [...new Set(([
-      ...processHandles.map((handle) => handle.processGroupId),
-      ...processHandles.map((handle) => handle.pid),
-      ...descendantPids,
-      record.pid
-    ] as Array<number | undefined>).filter((pid): pid is number => typeof pid === "number" && Number.isInteger(pid) && pid > 0 && pid !== process.pid))];
+    // A-NEW-4: the /proc cwd heuristic may only confirm pids this operation
+    // durably owns (its managed-process handles). Any process that merely
+    // shares the control-root cwd — for example a sibling operation's
+    // controller/worker — must never be signaled through this path.
+    const managedPidSet = new Set<number>();
+    for (const handle of processHandles) {
+      if (Number.isInteger(handle.pid) && handle.pid > 0) managedPidSet.add(handle.pid);
+      if (Number.isInteger(handle.processGroupId) && handle.processGroupId > 0) managedPidSet.add(handle.processGroupId);
+    }
+    const descendantPids = record.pid ? await findDescendantProcessIds(record.pid, absoluteRoot, { allowedCwdPids: managedPidSet }) : [];
+    // Defense in depth against pid reuse: never signal a pid currently owned
+    // as another operation's record/controller pid, even if it appears in this
+    // operation's handle or descendant sets.
+    const siblingOwnedPids = await listSiblingOwnedProcessIds(resolveOperationStateRoot(absoluteRoot), operationId).catch((error) => {
+      cleanupWarnings.push(`sibling process ownership scan: ${String(error)}`);
+      return new Set<number>();
+    });
+    const processGroups = buildCancellationPidSet({
+      managedPids: processHandles.flatMap((handle) => [handle.processGroupId, handle.pid]),
+      descendantPids,
+      recordPid: record.pid,
+      siblingOwnedPids,
+      selfPid: process.pid
+    });
     for (const pid of processGroups) {
       const latest = await loadOperation(absoluteRoot, operationId);
       assertCancellationFence(latest, cancellationFence, "operation cancellation process fencing");
@@ -1575,20 +1592,40 @@ function quote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-async function findDescendantProcessIds(rootPid: number, operationRoot: string): Promise<number[]> {
+export async function findDescendantProcessIds(
+  rootPid: number,
+  operationRoot: string,
+  options: {
+    /**
+     * Pids this operation durably owns (its managed-process handles). A
+     * process that merely shares the operation-root cwd is reported only when
+     * it is a member of this set. Defaults to empty (deny): the cwd heuristic
+     * never implicates an unregistered pid.
+     */
+    allowedCwdPids?: Set<number>;
+    /** Injectable /proc surface for unit tests; defaults to node:fs/promises. */
+    procfs?: {
+      readdir(dir: string): Promise<string[]>;
+      readFile(file: string, encoding: "utf8"): Promise<string>;
+      realpath(p: string): Promise<string>;
+    };
+  } = {}
+): Promise<number[]> {
   if (process.platform !== "linux" || !Number.isInteger(rootPid) || rootPid <= 0 || rootPid === process.pid) return [];
+  const procfs = options.procfs ?? fs;
+  const allowedCwdPids = options.allowedCwdPids ?? new Set<number>();
   try { process.kill(rootPid, 0); }
   catch { return []; }
 
   let entries: string[];
-  try { entries = await fs.readdir("/proc"); }
+  try { entries = await procfs.readdir("/proc"); }
   catch { return []; }
 
   const children = new Map<number, number[]>();
   await Promise.all(entries.filter((entry) => /^\d+$/.test(entry)).map(async (entry) => {
     const pid = Number(entry);
     try {
-      const stat = await fs.readFile(`/proc/${pid}/stat`, "utf8");
+      const stat = await procfs.readFile(`/proc/${pid}/stat`, "utf8");
       const closingParen = stat.lastIndexOf(")");
       if (closingParen < 0) return;
       const fields = stat.slice(closingParen + 2).trim().split(/\s+/);
@@ -1614,12 +1651,56 @@ async function findDescendantProcessIds(rootPid: number, operationRoot: string):
   const related = await Promise.all(entries.filter((entry) => /^\d+$/.test(entry)).map(async (entry) => {
     const pid = Number(entry);
     if (pid === process.pid || pid === rootPid || descendants.includes(pid)) return undefined;
+    // A-NEW-4: cwd equality alone proves nothing — the control root is shared
+    // by sibling operations. Only a pid registered in this operation's
+    // managed-process handles may be confirmed through this heuristic.
+    if (!allowedCwdPids.has(pid)) return undefined;
     try {
-      const cwd = await fs.realpath(`/proc/${pid}/cwd`);
+      const cwd = await procfs.realpath(`/proc/${pid}/cwd`);
       return cwd === operationRoot ? pid : undefined;
     } catch { return undefined; }
   }));
   return [...new Set([...descendants, ...related.filter((pid): pid is number => pid !== undefined)])];
+}
+
+/**
+ * Pure pid-set construction for operation cancellation (A-NEW-4).
+ * MECHANISM: DETERMINISTIC. Unions this operation's managed-handle pids, the
+ * scoped descendant scan, and the operation controller pid; drops anything
+ * that is not a positive integer, the cancelling process itself, or a pid
+ * currently owned as another operation's record/controller pid.
+ */
+export function buildCancellationPidSet(input: {
+  managedPids: Array<number | undefined>;
+  descendantPids: Array<number | undefined>;
+  recordPid?: number;
+  siblingOwnedPids?: Set<number>;
+  selfPid: number;
+}): number[] {
+  const siblingOwned = input.siblingOwnedPids ?? new Set<number>();
+  const selected: number[] = [];
+  const seen = new Set<number>();
+  for (const pid of [...input.managedPids, ...input.descendantPids, input.recordPid]) {
+    if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) continue;
+    if (pid === input.selfPid) continue;
+    if (siblingOwned.has(pid)) continue;
+    if (seen.has(pid)) continue;
+    seen.add(pid);
+    selected.push(pid);
+  }
+  return selected;
+}
+
+/** Pids currently owned as another operation's record/controller pid. */
+async function listSiblingOwnedProcessIds(stateRoot: string, operationId: string): Promise<Set<number>> {
+  const owned = new Set<number>();
+  for (const operation of await readOperationRecords(stateRoot)) {
+    if (operation.id === operationId) continue;
+    for (const pid of [operation.pid, operation.controller?.pid]) {
+      if (typeof pid === "number" && Number.isInteger(pid) && pid > 0 && pid !== process.pid) owned.add(pid);
+    }
+  }
+  return owned;
 }
 
 async function waitForProcessExit(pid: number, timeoutMs: number): Promise<boolean> {
