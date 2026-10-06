@@ -158,4 +158,58 @@ describe("candidate symlink escape gate (C-NEW-4)", () => {
       await expect(executeIsolatedCandidateMutation({ root, operationId: candidate.operationId, taskId: "REF", workUnitId: "direct:REF", candidate, config, contract, execute: async () => { throw new Error("must not run"); } })).rejects.toMatchObject({ code: "PARTICIPANT_PLAN_INVALID" });
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
+
+  it("RED-CHAIN: rejects a patch link whose target traverses an existing outward in-repo symlink", async () => {
+    const root = await initRepo();
+    try {
+      // Pre-existing in-repo symlink escaping the root (committed baseline).
+      await fs.symlink("../../outside", path.join(root, "src", "portal"));
+      await runShell("git add -A && git -c user.name=test -c user.email=test@example.com commit -qm portal", { cwd: root });
+      const current = createCandidateRevisionV1({ operationId: "OP-SYMLINK-CHAIN", candidateId: "candidate:OP-SYMLINK-CHAIN:r1", taskId: "TASK-SYMLINK-CHAIN", revision: 1, sourceDigest: await computeWorktreeDigest(root) });
+      // Lexically contained (`src/portal/file`) but resolves outside via portal.
+      const patch = await symlinkPatch(root, "src/link", "portal/file");
+      const changeSet = { version: 1 as const, operationId: current.operationId, taskId: "TASK-SYMLINK-CHAIN", workUnitId: "WU-1", participantId: "participant-1", baseCandidateRevision: current.revision, baseCandidateDigest: current.identityDigest, changedFiles: ["src/link"], patch, patchDigest: sha256Utf8(patch) };
+      let failure: AehError | undefined;
+      try {
+        await assembleCandidateChangeSet({ root, operationId: current.operationId, taskId: "TASK-SYMLINK-CHAIN", currentCandidate: current, changeSet, allowedScope: ["src/**"], candidateId: "candidate:OP-SYMLINK-CHAIN:r2" });
+      } catch (error) { failure = error as AehError; }
+      expect(failure?.code).toBe("PARTICIPANT_PLAN_INVALID");
+      expect(failure?.message).toMatch(/symlink/i);
+      await expect(fs.lstat(path.join(root, "src", "link"))).rejects.toThrow();
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it("RED-CHAIN: materializing an untracked link through an outward in-repo symlink is rejected", async () => {
+    const root = await initRepo();
+    const target = path.join(os.tmpdir(), `aeh-symlink-chain-${process.pid}-${Date.now()}`);
+    try {
+      await fs.symlink("../../outside", path.join(root, "src", "portal"));
+      await runShell("git add -A && git -c user.name=test -c user.email=test@example.com commit -qm portal", { cwd: root });
+      // Untracked chained link: lexically `src/portal/file`, effectively outside.
+      await fs.symlink("portal/file", path.join(root, "src", "link"));
+      const current = createCandidateRevisionV1({ operationId: "OP-SYMLINK-CHAIN-MAT", candidateId: "candidate:OP-SYMLINK-CHAIN-MAT:r1", taskId: "TASK-SYMLINK-CHAIN-MAT", revision: 1, sourceDigest: await computeWorktreeDigest(root) });
+      await runShell(`git worktree add --detach ${JSON.stringify(target)} HEAD`, { cwd: root });
+      try {
+        await expect(materializeCandidateState(root, target, current)).rejects.toMatchObject({ code: "PARTICIPANT_PLAN_INVALID" });
+      } finally {
+        await runShell(`git worktree remove --force ${JSON.stringify(target)}`, { cwd: root });
+      }
+    } finally { await fs.rm(root, { recursive: true, force: true }); await fs.rm(target, { recursive: true, force: true }); }
+  });
+
+  it("assembles a link through a contained in-repo symlink (no false positive on chains)", async () => {
+    const root = await initRepo();
+    try {
+      await fs.mkdir(path.join(root, "src", "realdir"), { recursive: true });
+      await fs.writeFile(path.join(root, "src", "realdir", "value.ts"), "export const v = 1;\n");
+      await fs.symlink("realdir", path.join(root, "src", "portal"));
+      await runShell("git add -A && git -c user.name=test -c user.email=test@example.com commit -qm portal", { cwd: root });
+      const current = createCandidateRevisionV1({ operationId: "OP-SYMLINK-CHAIN-OK", candidateId: "candidate:OP-SYMLINK-CHAIN-OK:r1", taskId: "TASK-SYMLINK-CHAIN-OK", revision: 1, sourceDigest: await computeWorktreeDigest(root) });
+      const patch = await symlinkPatch(root, "src/link", "portal/value.ts");
+      const changeSet = { version: 1 as const, operationId: current.operationId, taskId: "TASK-SYMLINK-CHAIN-OK", workUnitId: "WU-1", participantId: "participant-1", baseCandidateRevision: current.revision, baseCandidateDigest: current.identityDigest, changedFiles: ["src/link"], patch, patchDigest: sha256Utf8(patch) };
+      const result = await assembleCandidateChangeSet({ root, operationId: current.operationId, taskId: "TASK-SYMLINK-CHAIN-OK", currentCandidate: current, changeSet, allowedScope: ["src/**"], candidateId: "candidate:OP-SYMLINK-CHAIN-OK:r2" });
+      expect(result.candidate.revision).toBe(2);
+      expect((await fs.lstat(path.join(root, "src", "link"))).isSymbolicLink()).toBe(true);
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
 });

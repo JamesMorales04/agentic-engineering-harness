@@ -11,7 +11,7 @@ import { markOperationResourceReleased, registerOperationResource } from "../run
 import { existingRepositoryPath, repositoryPath } from "../utils/repositoryPath.js";
 import { assertWorkspaceMatchesCandidate } from "./identity.js";
 import type { ChangeSetV1 } from "./assembler.js";
-import { symlinkTargetEscapesRoot } from "./assembler.js";
+import { resolveAbsoluteWithExistingSymlinks, symlinkTargetEscapesRoot } from "./assembler.js";
 
 export interface IsolatedCandidateExecutionV1 {
   session: WorkerSession;
@@ -194,12 +194,12 @@ async function assertUntrackedSymlinkTargetContained(canonicalRoot: string, abso
   if (symlinkTargetEscapesRoot(displayRelative, target)) {
     throw new AehError("PARTICIPANT_PLAN_INVALID", `Untracked candidate entry is a symlink escaping the candidate root: ${displayRelative} -> ${target}.`);
   }
-  // Nearest-existing realpath augmentation (best-effort, mirrors the assembly
-  // gate): a lexically contained target still escapes when an intermediate
-  // directory component of the link path is itself an outward symlink.
-  const realDirectory = await fs.realpath(path.dirname(absolute)).catch(() => undefined);
-  if (!realDirectory) return;
-  const resolved = path.resolve(realDirectory, target);
+  // Chain-aware augmentation (mirrors the assembly gate): a lexically
+  // contained target still escapes when an intermediate component of the
+  // resolved path is an existing in-repo symlink pointing outside the root.
+  // Unnormalized join: `..` resolves against the symlink-resolved prefix.
+  const lexicalAbsolute = path.isAbsolute(target) ? target : `${path.dirname(absolute)}/${target}`;
+  const resolved = await resolveAbsoluteWithExistingSymlinks(lexicalAbsolute);
   const within = path.relative(canonicalRoot, resolved);
   if (within === ".." || within.startsWith(`..${path.sep}`) || path.isAbsolute(within)) {
     throw new AehError("PARTICIPANT_PLAN_INVALID", `Untracked candidate entry is a symlink escaping the candidate root: ${displayRelative} -> ${target}.`);
@@ -234,8 +234,8 @@ async function assertContainedSourceSymlinks(root: string): Promise<void> {
     const stat = await fs.lstat(absolute).catch(() => undefined);
     if (!stat?.isSymbolicLink()) continue;
     const target = await fs.readlink(absolute);
-    const resolved = path.resolve(path.dirname(absolute), target);
-    const realTarget = await fs.realpath(resolved).catch(() => resolved);
+    const lexicalAbsolute = path.isAbsolute(target) ? target : `${path.dirname(absolute)}/${target}`;
+    const realTarget = await resolveAbsoluteWithExistingSymlinks(lexicalAbsolute);
     const rel = path.relative(canonicalRoot, realTarget);
     if (rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
       throw new AehError("PARTICIPANT_PLAN_INVALID", `Isolated DIRECT workspace contains a source symlink outside its root: ${relative}`);

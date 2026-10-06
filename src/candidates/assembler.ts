@@ -696,14 +696,92 @@ interface PatchSymlinkV1 {
 }
 
 /**
+ * Chain-aware absolute-path resolution for symlink containment gates.
+ *
+ * Walks a lexical absolute path component-by-component from the filesystem
+ * root, following on-disk symlinks via lstat/readlink as the kernel would:
+ * `..` pops the *resolved* prefix (not the lexical one), relative readlink
+ * targets splice into the pending components, and absolute readlink targets
+ * re-anchor at their own root. Components that do not exist (including the
+ * link target itself) are appended lexically -- nearest-existing-ancestor
+ * semantics -- so dangling targets still get a containment verdict.
+ *
+ * Shared by the assembly patch gate (below) and the direct.ts untracked /
+ * source gates: a lexically contained target such as `portal/file` still
+ * escapes when the existing in-repo `portal` symlink points outside the root.
+ *
+ * Fail-closed: symlink loops (>MAX_SYMLINK_CHAIN_FOLLOWS_V1 follows) and
+ * unexpected filesystem errors throw PARTICIPANT_PLAN_INVALID instead of
+ * returning an unverified path.
+ */
+export const MAX_SYMLINK_CHAIN_FOLLOWS_V1 = 40;
+
+export async function resolveAbsoluteWithExistingSymlinks(lexicalAbsolute: string): Promise<string> {
+  const root = path.parse(lexicalAbsolute).root || path.sep;
+  let current = root;
+  const pending: string[] = lexicalAbsolute
+    .slice(root.length)
+    .split("/")
+    .flatMap((part) => (path.sep === "\\" ? part.split("\\") : [part]))
+    .filter((part) => part.length > 0);
+  let follows = 0;
+  let lexicalOnly = false;
+  while (pending.length > 0) {
+    const component = pending.shift()!;
+    if (component === "." || component === "") continue;
+    if (component === "..") {
+      current = path.dirname(current);
+      continue;
+    }
+    current = path.join(current, component);
+    if (lexicalOnly) continue;
+    let stat;
+    try {
+      stat = await fs.lstat(current);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR") {
+        // No deeper path can exist through a missing/non-directory prefix;
+        // the remainder resolves lexically (dangling target stays verdictable).
+        lexicalOnly = true;
+        continue;
+      }
+      throw new AehError("PARTICIPANT_PLAN_INVALID", `Unable to verify symlink containment for '${lexicalAbsolute}'.`, { cause: error });
+    }
+    if (!stat.isSymbolicLink()) continue;
+    follows += 1;
+    if (follows > MAX_SYMLINK_CHAIN_FOLLOWS_V1) {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", `Unable to verify symlink containment for '${lexicalAbsolute}': too many nested symlinks.`);
+    }
+    const linkTarget = await fs.readlink(current).catch((error: unknown) => {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", `Unable to verify symlink containment for '${lexicalAbsolute}'.`, { cause: error });
+    });
+    const targetParts = linkTarget
+      .split("/")
+      .flatMap((part) => (path.sep === "\\" ? part.split("\\") : [part]))
+      .filter((part) => part.length > 0);
+    if (path.isAbsolute(linkTarget)) {
+      current = path.parse(linkTarget).root || path.sep;
+      pending.unshift(...targetParts);
+    } else {
+      current = path.dirname(current);
+      pending.unshift(...targetParts);
+    }
+  }
+  return path.normalize(current);
+}
+
+/**
  * Fail-closed choke point for patch-introduced symlinks (C-NEW-4). Parses the
  * patch text for entries whose post-image is a symlink (`new file mode
  * 120000`, `new mode 120000`, or an `index <old>..<new> 120000` retarget) and
  * rejects lexically escaping, absolute/drive, or unverifiable targets before
  * any `git apply` touches the worktree. Pure deletions (`+++ /dev/null`) carry
  * no post-image link and are skipped; a pure rename (no hunks) introduces no
- * new target and is skipped. A nearest-existing realpath check augments the
- * lexical verdict where the link dirname already exists on disk.
+ * new target and is skipped. A chain-aware resolution step
+ * (resolveAbsoluteWithExistingSymlinks) augments the lexical verdict: targets
+ * that traverse an existing in-repo symlink pointing outside the root are
+ * rejected even when the link dirname itself is a plain directory.
  */
 async function assertPatchSymlinksContained(root: string, patch: string): Promise<void> {
   const { links, unverifiable } = patchSymlinksWithPostImageLink(patch);
@@ -718,9 +796,13 @@ async function assertPatchSymlinksContained(root: string, patch: string): Promis
   for (const link of links) {
     const directory = path.posix.dirname(link.path);
     const absoluteDirectory = directory === "." ? resolvedRoot : path.join(resolvedRoot, ...directory.split("/"));
-    const realDirectory = await fs.realpath(absoluteDirectory).catch(() => undefined);
-    if (!realDirectory) continue;
-    const resolved = path.resolve(realDirectory, link.target);
+    // Unnormalized join: `..` inside the target must resolve against the
+    // symlink-resolved prefix (kernel semantics), never lexically collapsed
+    // before existing in-repo symlinks are followed.
+    const lexicalAbsolute = path.isAbsolute(link.target) || link.target.startsWith("/")
+      ? link.target
+      : `${absoluteDirectory}/${link.target}`;
+    const resolved = await resolveAbsoluteWithExistingSymlinks(lexicalAbsolute);
     if (!isInsideRoot(resolvedRoot, resolved)) {
       throw new AehError("PARTICIPANT_PLAN_INVALID", `ChangeSet patch creates a symlink escaping the candidate root: ${link.path} -> ${link.target}.`);
     }
