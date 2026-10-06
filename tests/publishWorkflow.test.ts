@@ -100,4 +100,34 @@ describe("automatic publish workflow", () => {
     }
     await expect(fs.access(new URL("../.github/workflows/release.yml", import.meta.url))).rejects.toThrow();
   });
+
+  it("binds release/npm-publish checkouts to release_sha and recovers unverified tags", async () => {
+    const text = await fs.readFile(new URL("../.github/workflows/publish.yml", import.meta.url), "utf8");
+    const workflow = parse(text) as Record<string, any>;
+    const jobs = workflow.jobs as Record<string, any>;
+    // (a) TAG-DRIFT: release checkout asserts HEAD == release_sha AND tag == release_sha.
+    const releaseJob = jobs.release;
+    expect(releaseJob).toBeDefined();
+    const releaseSerialized = JSON.stringify(releaseJob.steps ?? releaseJob);
+    expect(releaseSerialized).toMatch(/needs\.publish\.outputs\.release_sha/);
+    expect(releaseSerialized).toContain("git rev-parse HEAD");
+    expect(releaseSerialized).toContain("rev-list");
+    // publish-npm asserts the same before `npm publish`.
+    const publisher = jobs["publish-npm"];
+    expect(publisher).toBeDefined();
+    const pubSerialized = JSON.stringify(publisher.steps ?? publisher);
+    expect(pubSerialized).toMatch(/needs\.publish\.outputs\.release_sha/);
+    expect(pubSerialized).toContain("git rev-parse HEAD");
+    expect(pubSerialized).toContain("rev-list");
+    // (b) RECOVERY: verify failure deletes only its own unverified tag, guarded by SHA.
+    const verifyJob = jobs["verify-published"];
+    expect(verifyJob).toBeDefined();
+    const verifySerialized = JSON.stringify(verifyJob.steps ?? verifyJob);
+    expect(verifySerialized).toContain("failure()");
+    expect(verifySerialized).toContain("push --delete");
+    expect(verifySerialized).toMatch(/TAG_SHA/);
+    expect(verifySerialized).toMatch(/RELEASE_SHA/);
+    expect(verifySerialized).toMatch(/refusing.*delete|did not create/i);
+    expect(verifySerialized).not.toMatch(/git tag -f|tag --force/);
+  });
 });

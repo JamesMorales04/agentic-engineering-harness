@@ -128,4 +128,22 @@ describe("release CI gating (K-NEW-1 / K-NEW-6)", () => {
     const text = await fs.readFile(new URL("../docs/PUBLISHING.md", import.meta.url), "utf8");
     expect(text).not.toContain("[skip ci]");
   });
+
+  it("release checkout is SHA-bound and verify failure cleans up its own tag", async () => {
+    const text = await fs.readFile(new URL("../.github/workflows/publish.yml", import.meta.url), "utf8");
+    const workflow = parse(text) as Record<string, any>;
+    const jobs = workflow.jobs as Record<string, any>;
+    // (a) TAG-DRIFT: gated release asserts HEAD == release_sha AND tag == release_sha.
+    const releaseSerialized = JSON.stringify(jobs.release?.steps ?? jobs.release);
+    expect(releaseSerialized).toMatch(/needs\.publish\.outputs\.release_sha/);
+    expect(releaseSerialized).toContain("git rev-parse HEAD");
+    expect(releaseSerialized).toContain("rev-list");
+    // (b) RECOVERY: verify failure deletes only the just-created tag (SHA-guarded).
+    const verifySerialized = JSON.stringify(jobs["verify-published"]?.steps ?? jobs["verify-published"]);
+    expect(verifySerialized).toContain("failure()");
+    expect(verifySerialized).toContain("push --delete");
+    expect(verifySerialized).toMatch(/TAG_SHA/);
+    expect(verifySerialized).toMatch(/RELEASE_SHA/);
+    expect(verifySerialized).toMatch(/refusing.*delete|did not create/i);
+  });
 });

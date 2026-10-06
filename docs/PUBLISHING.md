@@ -132,3 +132,4 @@ reconciles managed Harness assets before loading the agent topology and starting
 ## Failure policy
 
 A registry/OIDC/permission failure is an external delivery failure, not a reason to rewrite validated engineering history. The release workflow is retry-safe: if the version commit/tag exists but npm publication failed, a manual rerun will attempt the same unpublished version rather than incrementing it again. If npm publication succeeded but GitHub Release creation failed, the gated `release` job recreates it from the verified tag. The `bump=current` repair path never creates a verification-skipped Release; it refuses with a clear error when verification did not run in the same workflow.
+If tag verification fails, the workflow deletes only its just-created tag (SHA-guarded) so a later run recreates cleanly, and the gated publisher/release jobs assert checkout HEAD and tag SHA both equal release_sha.

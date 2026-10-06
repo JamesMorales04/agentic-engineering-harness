@@ -228,6 +228,29 @@ jobs:
           AEH_DETERMINISTIC_PASEO_RUNTIME=1 AEH_PASEO_FORCE_CLI=0 ./node_modules/.bin/aeh intent 'review the repo and validate the code for improvements' repo | grep -q '^AUDIT'
           ./node_modules/.bin/aeh operation status DOES-NOT-EXIST repo >/dev/null 2>&1 && exit 1 || true
 
+      - name: Delete unverified tag on verification failure
+        if: failure()
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+          RELEASE_SHA: ${{ needs.publish.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+          TAG="v${RELEASE_VERSION}"
+          git fetch origin --tags --force
+          if ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "Tag ${TAG} does not exist; nothing to clean up. Re-run the workflow to retry." >&2
+            exit 1
+          fi
+          TAG_SHA="$(git rev-list -n 1 "refs/tags/${TAG}")"
+          if [ "$TAG_SHA" != "$RELEASE_SHA" ]; then
+            echo "Tag ${TAG} points at ${TAG_SHA}, not this run's release commit ${RELEASE_SHA}; refusing to delete a tag this run did not create (never force-move or delete foreign tags)." >&2
+            exit 1
+          fi
+          git push --delete origin "${TAG}"
+          echo "Deleted unverified tag ${TAG} at ${RELEASE_SHA} so a later run can recreate it cleanly. The bump commit stays on main (harmless). Re-run the workflow to retry." >&2
+          exit 1
+
   publish-npm:
     name: publish-npm
     needs: [publish, verify-published]
@@ -256,6 +279,7 @@ jobs:
           set -euo pipefail
           test -n "$RELEASE_SHA"
           test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          test "$(git rev-list -n 1 "v$RELEASE_VERSION")" = "$RELEASE_SHA"
           test "$(git describe --tags --exact-match HEAD)" = "v$RELEASE_VERSION"
 
       - run: npm run build
@@ -291,6 +315,18 @@ jobs:
         with:
           ref: v${{ needs.publish.outputs.version }}
           fetch-depth: 0
+
+      - name: Confirm verified tag before release
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+          RELEASE_SHA: ${{ needs.publish.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_SHA"
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          test "$(git rev-list -n 1 "v$RELEASE_VERSION")" = "$RELEASE_SHA"
+          test "$(git describe --tags --exact-match HEAD)" = "v$RELEASE_VERSION"
 
       - name: Create GitHub Release
         env:
