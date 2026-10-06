@@ -222,10 +222,10 @@ async function reconcileGitCommit(root: string, intent: ActionIntentV1, payload:
       try {
         candidateDigest = (await dependencies.computeCommitTreeDigest(root, candidate.sha)).trim().toLowerCase();
       } catch (error) {
-        return buildResult(intent, "UNKNOWN", "commit-content-unreadable", { expectedSubject: message, observedSubject: subject, expectedContentDigest, matchedCommit: candidate.sha.toLowerCase(), error: errorMessage(error) }, dependencies.now);
+        return buildResult(intent, "UNKNOWN", "commit-content-unreadable", { expectedSubject: message, observedSubject: subject, expectedContentDigest, matchedCommit: candidate.sha.toLowerCase(), error: errorMessage(error), scannedCommits: entries.length, scanLimit: COMMIT_HISTORY_SCAN_LIMIT }, dependencies.now);
       }
       if (!/^[a-f0-9]{64}$/.test(candidateDigest)) {
-        return buildResult(intent, "UNKNOWN", "commit-content-unreadable", { expectedSubject: message, observedSubject: subject, expectedContentDigest, matchedCommit: candidate.sha.toLowerCase() }, dependencies.now);
+        return buildResult(intent, "UNKNOWN", "commit-content-unreadable", { expectedSubject: message, observedSubject: subject, expectedContentDigest, matchedCommit: candidate.sha.toLowerCase(), scannedCommits: entries.length, scanLimit: COMMIT_HISTORY_SCAN_LIMIT }, dependencies.now);
       }
       if (candidateDigest === expectedContentDigest) {
         return buildResult(intent, "SUCCEEDED", "commit-content-compared-history", { expectedSubject: message, observedSubject: subject, expectedContentDigest, observedContentDigest: candidateDigest, matchedCommit: candidate.sha.toLowerCase(), scannedCommits: entries.length, scanLimit: COMMIT_HISTORY_SCAN_LIMIT }, dependencies.now);

@@ -1,0 +1,146 @@
+import crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { sha256Canonical } from "../../src/core/digest.js";
+import { computeCommitTreeDigest, computeWorktreeDigest } from "../../src/core/git.js";
+import { createCandidateRevisionV1 } from "../../src/operations/v2Contracts.js";
+import { reconcileToolAction } from "../../src/security/actionReconciliation.js";
+import { classifyToolActionImpact, type ActionIntentV1, type ToolActionKindV1 } from "../../src/security/toolActionGate.js";
+import type { runExecutable } from "../../src/utils/process.js";
+
+const FIXED_NOW = "2026-03-04T05:06:07.000Z";
+const SUBJECT = "T-BIN: binary content commit";
+const STALE_SUBJECT = "T-OLD: unrelated";
+// Committed blob bytes that are NOT valid UTF-8. Lossy UTF-8 decode/re-encode
+// maps 0xFF -> U+FFFD (EF BF BD), so the lossy path hashes different bytes
+// than the raw blob and collides with a digest over the replacement sequence.
+const RAW_BLOB = Buffer.from([0x68, 0x65, 0x6c, 0x6c, 0x6f, 0xff]);
+const FILE_NAME = "bin.dat";
+
+const roots: string[] = [];
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
+});
+
+function git(root: string, args: readonly string[]): void {
+  execFileSync("git", [...args], { cwd: root, stdio: "ignore" });
+}
+
+async function initBinaryRepo(): Promise<string> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-bin-digest-"));
+  roots.push(root);
+  git(root, ["init", "-b", "main"]);
+  git(root, ["config", "user.name", "AEH Test"]);
+  git(root, ["config", "user.email", "aeh@example.invalid"]);
+  await fs.writeFile(path.join(root, FILE_NAME), RAW_BLOB);
+  git(root, ["add", FILE_NAME]);
+  git(root, ["commit", "-m", SUBJECT]);
+  return root;
+}
+
+/** Canonical single-entry combiner over caller-supplied bytes (mirrors git.ts). */
+function combinerDigest(fileBytes: Buffer): string {
+  const hash = crypto.createHash("sha256");
+  hash.update(`path\0${FILE_NAME}\0`);
+  hash.update(fileBytes);
+  return hash.digest("hex");
+}
+
+function makeIntent(action: ToolActionKindV1, payload: unknown): ActionIntentV1 {
+  return {
+    version: 2,
+    intentId: `action-intent:${action.replace(/[^a-z]+/g, "-")}-binexact`,
+    actionKey: `delivery:${action}-binexact`,
+    operationId: "RUN-BIN-1",
+    participantId: "participant:lead",
+    role: "Lead/Director",
+    candidate: createCandidateRevisionV1({ operationId: "RUN-BIN-1", candidateId: "candidate:bin", projectId: "project-test", taskId: "T-BIN", revision: 1, sourceDigest: "a".repeat(64), createdAt: FIXED_NOW }),
+    operationExecutionRevision: 1,
+    policyDigest: "d".repeat(64),
+    action,
+    impact: classifyToolActionImpact(action),
+    controllerEpoch: 1,
+    payloadDigest: sha256Canonical(payload),
+    authorityBindingDigest: "b".repeat(64),
+    requestDigest: "c".repeat(64),
+    createdAt: FIXED_NOW
+  };
+}
+
+describe("LUNA BLOCKER (a): commit-tree digest must hash raw blob bytes", () => {
+  it("same non-UTF8 blob hashes identically via worktree-read and git-show-read, and differs from the lossy-decoded hash", async () => {
+    const root = await initBinaryRepo();
+    const worktreeDigest = await computeWorktreeDigest(root);
+    const commitDigest = await computeCommitTreeDigest(root, "HEAD");
+    // Byte-exactness: the committed blob is the same bytes as the worktree file.
+    expect(commitDigest).toBe(worktreeDigest);
+    // The lossy UTF-8 decode/re-encode round-trip must NOT be what is hashed.
+    const lossyDigest = combinerDigest(Buffer.from(RAW_BLOB.toString("utf8"), "utf8"));
+    expect(lossyDigest).not.toBe(worktreeDigest);
+    expect(commitDigest).not.toBe(lossyDigest);
+  });
+
+  it("a contentDigest crafted over the lossy-normalized bytes must never reconcile SUCCEEDED", async () => {
+    const root = await initBinaryRepo();
+    // Attacker-observable collision: bytes that Unicode-normalize identically
+    // through the lossy path (0xFF -> U+FFFD). Pre-fix this digest equals the
+    // commit-tree digest and falsely reconciles SUCCEEDED.
+    const lossyDigest = combinerDigest(Buffer.from(RAW_BLOB.toString("utf8"), "utf8"));
+    const payload = { taskId: "T-BIN", message: SUBJECT, contentDigest: lossyDigest };
+    const result = await reconcileToolAction(root, makeIntent("git.commit", payload), payload, {
+      now: new Date(FIXED_NOW)
+    });
+    expect(result.outcome).not.toBe("SUCCEEDED");
+    expect(result.outcome).toBe("UNKNOWN");
+    expect(result.detail).toBe("commit-content-mismatch");
+  });
+});
+
+describe("LUNA BLOCKER (b): unreadable-candidate outcomes carry scan observability", () => {
+  function stubHistory(): typeof runExecutable {
+    return (async (_command: string, args: readonly string[]) => {
+      const argv = args.join(" ");
+      if (args.includes("-1")) {
+        return { exitCode: 0, stdout: `${STALE_SUBJECT}\n`, stderr: "", durationMs: 1 };
+      }
+      if (argv.includes("log")) {
+        return {
+          exitCode: 0,
+          stdout: `${"1".repeat(40)}\x1f${STALE_SUBJECT}\n${"2".repeat(40)}\x1f${SUBJECT}\n`,
+          stderr: "",
+          durationMs: 1
+        };
+      }
+      return { exitCode: 1, stdout: "", stderr: "unexpected", durationMs: 1 };
+    }) as unknown as typeof runExecutable;
+  }
+
+  it("commit-content-unreadable (throw) carries scannedCommits and scanLimit", async () => {
+    const payload = { taskId: "T-BIN", message: SUBJECT, contentDigest: "b".repeat(64) };
+    const result = await reconcileToolAction("/tmp/aeh-repro-root", makeIntent("git.commit", payload), payload, {
+      runExecutable: stubHistory(),
+      computeCommitTreeDigest: async () => { throw new Error("blob unavailable"); },
+      now: new Date(FIXED_NOW)
+    });
+    expect(result.outcome).toBe("UNKNOWN");
+    expect(result.detail).toBe("commit-content-unreadable");
+    expect(result.evidence["scannedCommits"]).toBe(2);
+    expect(result.evidence["scanLimit"]).toBe(20);
+  });
+
+  it("commit-content-unreadable (non-hex digest) carries scannedCommits and scanLimit", async () => {
+    const payload = { taskId: "T-BIN", message: SUBJECT, contentDigest: "b".repeat(64) };
+    const result = await reconcileToolAction("/tmp/aeh-repro-root", makeIntent("git.commit", payload), payload, {
+      runExecutable: stubHistory(),
+      computeCommitTreeDigest: async () => "not-a-hex-digest",
+      now: new Date(FIXED_NOW)
+    });
+    expect(result.outcome).toBe("UNKNOWN");
+    expect(result.detail).toBe("commit-content-unreadable");
+    expect(result.evidence["scannedCommits"]).toBe(2);
+    expect(result.evidence["scanLimit"]).toBe(20);
+  });
+});
