@@ -239,17 +239,19 @@ export function isExplicitGlobScope(scope: string): boolean {
 
 /**
  * DETERMINISTIC raw-input traversal gate (same theme as prior Luna scope
- * fixes). Returns true when the RAW scope string hides traversal that
- * join/normalize would resolve away. Rejects any `..` segment, absolute
- * form, or drive prefix in the raw input BEFORE normalization, so
- * normalization can never hide it as a safe relative path.
+ * fixes). Strips leading `./` segments (including redundant `././`, `.//`
+ * forms) FIRST, then rejects any `..` segment, absolute form, or drive
+ * prefix on the stripped form BEFORE normalization, so a `./C:/...` prefix
+ * can never hide a drive as a safe relative path. Order: strip → reject →
+ * normalize → contain.
  */
 function hasUnsafeRawScopeInput(value: string): boolean {
   const slashedRaw = value.replaceAll("\\", "/");
-  if (path.isAbsolute(value) || path.posix.isAbsolute(slashedRaw) || path.win32.isAbsolute(value)) return true;
-  if (slashedRaw.startsWith("/")) return true;
-  if (/^[A-Za-z]:/.test(value) || /^[A-Za-z]:/.test(slashedRaw)) return true;
-  if (slashedRaw.split("/").includes("..")) return true;
+  const stripped = slashedRaw.replace(/^(?:\.\/+)+/, "");
+  if (path.isAbsolute(stripped) || path.posix.isAbsolute(stripped) || path.win32.isAbsolute(stripped)) return true;
+  if (stripped.startsWith("/")) return true;
+  if (/^[A-Za-z]:/.test(stripped)) return true;
+  if (stripped.split("/").includes("..")) return true;
   return false;
 }
 
