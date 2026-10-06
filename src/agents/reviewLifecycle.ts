@@ -431,7 +431,6 @@ async function runReviewer(root: string, config: HarnessProjectConfig, contract:
   }
   try {
     const output = reviewerOutputSchema.parse(extractMarkedJson(session.stdout, session.stderr));
-    if (output.verdict === "FAIL" && output.findings.length === 0) return { reviewer: name, session, findings: [syntheticFinding(name, "Reviewer returned FAIL without a structured finding.")], valid: false };
     return { reviewer: name, session, findings: output.findings, valid: true };
   } catch (error) {
     const detail = `Invalid reviewer output contract: ${String(error)}`;

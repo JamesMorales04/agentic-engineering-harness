@@ -169,7 +169,8 @@ describe("v0.5 scale and governance", () => {
   });
 
   it("prefers explicit structured markers over runtime event JSON and exposes JSON schemas", () => {
-    const payload = { workUnits: [], affectedAreas: [], reviewDimensions: [], validationRequirements: [], outOfScopeImprovements: [] };
+    const workUnit = { id: "wu-1", objective: "Decompose the change", scope: ["src/**"], dependencies: [], requirementRefs: [], acceptanceRefs: [], competencies: [], riskTags: [], changeKinds: ["source"], risk: "low", resourceClaims: [] };
+    const payload = { workUnits: [workUnit], affectedAreas: [], reviewDimensions: [], validationRequirements: [], outOfScopeImprovements: [] };
     const stdout = `${JSON.stringify({ type: "event", session_id: "s1" })}\nAEH_RESULT_JSON=${JSON.stringify(payload)}\n`;
     expect(plannerOutputSchema.parse(extractMarkedJson(stdout))).toEqual(payload); expect(outputJsonSchema("planner")?.type).toBe("object");
   });
@@ -177,8 +178,9 @@ describe("v0.5 scale and governance", () => {
   it("keeps planner native required fields aligned with Zod defaults", () => {
     const schema = outputJsonSchema("planner");
     expect(schema?.required).toEqual(["workUnits", "affectedAreas", "reviewDimensions", "validationRequirements", "outOfScopeImprovements"]);
-    expect(plannerOutputSchema.parse({ workUnits: [] })).toEqual({
-      workUnits: [],
+    const workUnit = { id: "wu-1", objective: "Decompose the change", scope: ["src/**"], dependencies: [], requirementRefs: [], acceptanceRefs: [], competencies: [], riskTags: [], changeKinds: ["source"], risk: "low", resourceClaims: [] };
+    expect(plannerOutputSchema.parse({ workUnits: [{ id: "wu-1", objective: "Decompose the change", scope: ["src/**"], dependencies: [], requirementRefs: [], acceptanceRefs: [], competencies: [], riskTags: [], changeKinds: ["source"], risk: "low" }] })).toEqual({
+      workUnits: [workUnit],
       affectedAreas: [],
       reviewDimensions: [],
       validationRequirements: [],

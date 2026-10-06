@@ -422,18 +422,6 @@ async function runPreparedAuditReviewer(
   }
   try {
     const output = reviewerOutputSchema.parse(extractMarkedJson(session.stdout, session.stderr));
-    if (output.verdict === "FAIL" && output.findings.length === 0) {
-      return {
-        reviewer: prepared.reviewer,
-        session,
-        findings: [
-          syntheticFinding(
-            prepared.reviewer,
-            "Audit reviewer returned FAIL without a structured finding."
-          )
-        ]
-      };
-    }
     return { reviewer: prepared.reviewer, session, findings: output.findings };
   } catch (error) {
     return {

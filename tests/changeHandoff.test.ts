@@ -83,7 +83,7 @@ describe("CHANGE durable handoff", () => {
     await activateStructuredResultTurn(controlRoot, operationId, channel.channelId, "discovery");
     await acceptStructuredResult(controlRoot, operationId, channel.channelId, {
       summary: "Control-root discovery",
-      relevantFiles: [],
+      relevantFiles: [{ path: "src/operations/change.ts", symbols: [], reason: "control-root entry point" }],
       findings: [],
       moduleBoundaries: [],
       tests: [],
