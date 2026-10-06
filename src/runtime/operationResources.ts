@@ -25,6 +25,12 @@ import {
 } from "../operations/state.js";
 import { readManagedRuntimeSnapshot } from "./managed.js";
 import { persistCandidateForensicsV1 } from "../operations/forensics.js";
+import {
+  findConflictingProviderLeases,
+  queuedForConflictingLeases,
+  type ProviderLeaseQueuedV1,
+  type RuntimeSnapshotV1,
+} from "./supervisorV2.js";
 
 export const operationResourceKinds = [
   "paseo-workspace",
@@ -578,6 +584,56 @@ export async function waitForProviderSessionCapacity(
     }
     await sleep(Math.min(pollMs, remainingBudget, maxWaitMs - elapsed));
   }
+}
+
+/**
+ * Shared durable per-workspace lease conflict check (Luna F2).
+ *
+ * MECHANISM: DETERMINISTIC read of the SHARED durable lease authority — the
+ * same managed-runtime snapshot file (`readManagedRuntimeSnapshot`, the store
+ * `acquireProviderLease` persists to via `ManagedRuntimeSupervisorV1`) —
+ * evaluated with the exact `findConflictingProviderLeases` predicate that
+ * `tryAcquireProviderLease` enforces. Returns a bounded QUEUED disposition
+ * when another wave/operation holds the same provider/project/root/workspace
+ * scope in write-write conflict; returns undefined when the durable store
+ * shows no conflict (proceed to intra-wave admission).
+ *
+ * Fail-closed: a missing snapshot file means no durable leases yet (proceed);
+ * a corrupt/unsupported snapshot never proceeds on uncertain durability —
+ * callers treat it as QUEUED-terminal (acquired false, no wait). Injectable
+ * `nowMs`/`snapshotReader` keep fixtures scripted with no filesystem.
+ */
+export async function checkDurableWaveSlotConflict(
+  root: string,
+  input: { provider: string; projectId: string; canonicalRoot: string; workspaceId: string; ownerId: string; mode?: "read" | "write" },
+  options: {
+    nowMs?: () => number;
+    snapshotReader?: (snapshotRoot: string) => Promise<RuntimeSnapshotV1 | undefined> | RuntimeSnapshotV1 | undefined;
+  } = {}
+): Promise<ProviderLeaseQueuedV1 | undefined> {
+  const nowMs = options.nowMs ?? Date.now;
+  let snapshot: RuntimeSnapshotV1 | undefined;
+  try {
+    const reader = options.snapshotReader ?? ((snapshotRoot: string) => readManagedRuntimeSnapshot(snapshotRoot).catch(() => undefined));
+    snapshot = await reader(root);
+  } catch {
+    // Fail-closed on unreadable durability: never proceed on uncertain state.
+    return { status: "QUEUED", retryAfterMs: 0, queueDepth: 1, reason: "durable provider lease snapshot unreadable; fail-closed QUEUED." };
+  }
+  if (!snapshot) return undefined;
+  if (snapshot.version !== 1 || !Array.isArray(snapshot.providerLeases)) {
+    return { status: "QUEUED", retryAfterMs: 0, queueDepth: 1, reason: "durable provider lease snapshot invalid; fail-closed QUEUED." };
+  }
+  const conflicting = findConflictingProviderLeases(snapshot.providerLeases, {
+    provider: input.provider,
+    projectId: input.projectId,
+    canonicalRoot: input.canonicalRoot,
+    workspaceId: input.workspaceId,
+    ownerId: input.ownerId,
+    mode: input.mode ?? "write",
+  });
+  if (!conflicting.length) return undefined;
+  return queuedForConflictingLeases(input.provider, input.workspaceId, conflicting, nowMs());
 }
 
 /**

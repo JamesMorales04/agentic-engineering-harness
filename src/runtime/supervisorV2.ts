@@ -306,24 +306,16 @@ export class RuntimeSupervisorV1 {
     const now = this.clock();
     this.expireLeases(now);
     const root = normalizeRoot(input.canonicalRoot);
-    const leaseKey = key(input.provider, input.projectId, root, input.workspaceId);
-    const conflicting = [...this.leases.values()].filter(
-      (lease) =>
-        key(lease.provider, lease.projectId, lease.canonicalRoot, lease.workspaceId) === leaseKey &&
-        lease.ownerId !== input.ownerId &&
-        (lease.mode === "write" || input.mode === "write")
-    );
+    const conflicting = findConflictingProviderLeases([...this.leases.values()], {
+      provider: input.provider,
+      projectId: input.projectId,
+      canonicalRoot: root,
+      workspaceId: input.workspaceId,
+      ownerId: input.ownerId,
+      mode: input.mode,
+    });
     if (conflicting.length) {
-      const waits = conflicting.map((lease) => Date.parse(lease.expiresAt) - now.getTime()).filter((ms) => Number.isFinite(ms) && ms > 0);
-      const hint = waits.length ? Math.min(...waits) : PROVIDER_LEASE_QUEUE_DEFAULT_WAIT_MS_V1;
-      const retryAfterMs = Math.max(0, Math.min(PROVIDER_LEASE_QUEUE_MAX_WAIT_MS_V1, Math.floor(hint)));
-      const owners = [...new Set(conflicting.map((lease) => lease.ownerId))].slice(0, 3).join(",");
-      return {
-        status: "QUEUED",
-        retryAfterMs,
-        queueDepth: conflicting.length,
-        reason: `provider ${input.provider} is already leased in ${input.workspaceId} by ${owners || "another owner"}; QUEUED (wait ${retryAfterMs}ms, depth ${conflicting.length}).`
-      };
+      return queuedForConflictingLeases(input.provider, input.workspaceId, conflicting, now.getTime());
     }
     const ttlMs = input.ttlMs ?? this.leaseTtlMs;
     if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0) throw new RuntimeOwnershipError("provider lease ttl must be a positive integer.");
@@ -529,4 +521,62 @@ export function providerLeaseQueueWaitMs(queued: ProviderLeaseQueuedV1 | undefin
   if (remainingBudgetMs === undefined) return bounded;
   if (!Number.isFinite(remainingBudgetMs) || remainingBudgetMs <= 0) return 0;
   return Math.min(bounded, Math.floor(remainingBudgetMs));
+}
+
+/**
+ * Shared durable-lease conflict predicate (Luna F2).
+ *
+ * MECHANISM: DETERMINISTIC. This is the exact write-write conflict predicate
+ * that `acquireProviderLease`/`tryAcquireProviderLease` enforce: same
+ * provider/project/normalized-root/workspace scope, different owner, and at
+ * least one side holds write. Both the in-memory supervisor and the durable
+ * snapshot gate (operationResources provider-session leases persisted via the
+ * managed runtime snapshot — the same lease store `acquireProviderLease`
+ * persists to) must evaluate this predicate, never a divergent local rule.
+ * Expired leases never conflict; empty identity never matches.
+ */
+export function findConflictingProviderLeases(
+  leases: readonly ProviderLeaseV1[],
+  input: { provider: string; projectId: string; canonicalRoot: string; workspaceId: string; ownerId: string; mode: ProviderLeaseModeV1 }
+): ProviderLeaseV1[] {
+  if (!input.provider.trim() || !input.projectId.trim() || !input.ownerId.trim() || !input.workspaceId.trim()) return [];
+  let root: string;
+  try {
+    root = normalizeRoot(input.canonicalRoot);
+  } catch {
+    return [];
+  }
+  const wanted = key(input.provider, input.projectId, root, input.workspaceId);
+  return leases.filter(
+    (lease) =>
+      key(lease.provider, lease.projectId, lease.canonicalRoot, lease.workspaceId) === wanted &&
+      lease.ownerId !== input.ownerId &&
+      (lease.mode === "write" || input.mode === "write")
+  );
+}
+
+/**
+ * Build the bounded QUEUED disposition for a set of conflicting durable or
+ * in-memory leases. Same WAIT-hint rule as `tryAcquireProviderLease`:
+ * min(positive expiresAt-now) else the stampede-avoidance default, clamped to
+ * the queue cap. Pure and clock-injectable (`nowMs`) for deterministic fixtures.
+ */
+export function queuedForConflictingLeases(
+  provider: string,
+  workspaceId: string,
+  conflicting: readonly ProviderLeaseV1[],
+  nowMs: number
+): ProviderLeaseQueuedV1 {
+  const waits = conflicting
+    .map((lease) => Date.parse(lease.expiresAt) - nowMs)
+    .filter((ms) => Number.isFinite(ms) && ms > 0);
+  const hint = waits.length ? Math.min(...waits) : PROVIDER_LEASE_QUEUE_DEFAULT_WAIT_MS_V1;
+  const retryAfterMs = Math.max(0, Math.min(PROVIDER_LEASE_QUEUE_MAX_WAIT_MS_V1, Math.floor(hint)));
+  const owners = [...new Set(conflicting.map((lease) => lease.ownerId))].slice(0, 3).join(",");
+  return {
+    status: "QUEUED",
+    retryAfterMs,
+    queueDepth: conflicting.length,
+    reason: `provider ${provider} is already leased in ${workspaceId} by ${owners || "another owner"}; QUEUED (wait ${retryAfterMs}ms, depth ${conflicting.length}).`
+  };
 }

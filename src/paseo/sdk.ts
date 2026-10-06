@@ -478,7 +478,23 @@ export async function materializePaseoSdkAgentWithClient(
   let lastDetail: ProviderRateLimitDetailV1 | undefined;
   const result = await withProviderRateLimitRetry(
     async (remaining) => {
-      const handle = await client.agents.create(buildCreateOptions(options, false));
+      // Luna F3: remaining budget threads into the create attempt (WAIT = min,
+      // terminal on exhaustion). A create is an attempt: it never runs past the
+      // caller's existing deadline and never starts when the budget is exhausted.
+      // MECHANISM: DETERMINISTIC. attemptTimeout = remaining ?? options.timeoutMs;
+      // exhausted (<=0, non-finite when a budget exists) fails closed with no
+      // create call; otherwise create races the same bounded timeout.
+      const attemptTimeout = remaining ?? options.timeoutMs;
+      if (attemptTimeout !== undefined && (!Number.isFinite(attemptTimeout) || attemptTimeout <= 0)) {
+        throw new PaseoSdkTimeoutError(
+          `Paseo agent materialize timed out after ${options.timeoutMs ?? 0}ms (budget exhausted before create; fail-closed, no attempt).`
+        );
+      }
+      const handle = await withTimeout(
+        client.agents.create(buildCreateOptions(options, false)),
+        attemptTimeout,
+        `Paseo agent materialize timed out after ${attemptTimeout ?? 1_800_000}ms.`
+      );
       return handleResult(handle, options.permissionScopeRoots);
     },
     {
@@ -502,7 +518,20 @@ export async function createPaseoSdkAgentWithClient(
   let lastDetail: ProviderRateLimitDetailV1 | undefined;
   const result = await withProviderRateLimitRetry(
     async (remaining) => {
-      const handle = await client.agents.create(buildCreateOptions(options, options.prompt !== undefined));
+      // Same remaining-budget bound as materialize: create never outlives the
+      // caller's existing deadline; exhausted budget fails closed with no attempt.
+      // MECHANISM: DETERMINISTIC (same rule as materialize; caps unchanged).
+      const attemptTimeout = remaining ?? options.timeoutMs;
+      if (attemptTimeout !== undefined && (!Number.isFinite(attemptTimeout) || attemptTimeout <= 0)) {
+        throw new PaseoSdkTimeoutError(
+          `Paseo agent create timed out after ${options.timeoutMs ?? 0}ms (budget exhausted before create; fail-closed, no attempt).`
+        );
+      }
+      const handle = await withTimeout(
+        client.agents.create(buildCreateOptions(options, options.prompt !== undefined)),
+        attemptTimeout,
+        `Paseo agent create timed out after ${attemptTimeout ?? 1_800_000}ms.`
+      );
       if (options.prompt !== undefined && options.waitForFinish !== false) {
         const effectiveTimeout = remaining ?? options.timeoutMs;
         const waited = await waitForHandle(handle, effectiveTimeout, options.permissionScopeRoots);
