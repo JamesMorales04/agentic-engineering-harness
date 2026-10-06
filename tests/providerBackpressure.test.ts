@@ -527,5 +527,41 @@ describe("provider backpressure (Unit 3)", () => {
       expect(creates).toBe(0);
       expect(sleeps).toEqual([]);
     });
+
+    it("F1 lock-budget: contended durable lock with zero-remaining is terminal with no wait (no fresh 10s)", async () => {
+      const { acquireDurableWaveSlotOrQueue, tryAcquireDurableWaveSlotAtomic } = await import("../src/runtime/operationResources.js");
+      const fs = await import("node:fs/promises");
+      const os = await import("node:os");
+      const path = await import("node:path");
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-lock-budget-"));
+      try {
+        const snapFile = path.join(dir, ".harness", "runtime", "snapshot.json");
+        await fs.mkdir(path.dirname(snapFile), { recursive: true });
+        await fs.writeFile(snapFile, JSON.stringify({ version: 1, providerLeases: [] }), "utf8");
+        // Contend the lock with a live owner (current pid → not stale, no recovery).
+        await fs.writeFile(`${snapFile}.lock`, `${process.pid}\n`, { mode: 0o600 });
+        const sleeps: number[] = [];
+        const start = Date.now();
+        const blocked = await tryAcquireDurableWaveSlotAtomic(
+          dir,
+          { provider: "wave", projectId: "p", canonicalRoot: "/r", workspaceId: "w", ownerId: "o", mode: "write" },
+          { nowMs: Date.now, remainingBudgetMs: 0, sleepMs: async (ms) => { sleeps.push(ms); } }
+        );
+        expect(blocked.acquired).toBe(false);
+        if (!blocked.acquired) expect(blocked.retryAfterMs).toBe(0);
+        expect(sleeps).toEqual([]);
+        expect(Date.now() - start).toBeLessThan(5000);
+        const sleeps2: number[] = [];
+        const queued = await acquireDurableWaveSlotOrQueue(
+          dir,
+          { provider: "wave", projectId: "p", canonicalRoot: "/r", workspaceId: "w", ownerId: "o2", mode: "write" },
+          { remainingBudgetMs: 0, sleepMs: async (ms) => { sleeps2.push(ms); }, nowMs: Date.now }
+        );
+        expect(queued.acquired).toBe(false);
+        expect(sleeps2).toEqual([]);
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true });
+      }
+    });
   });
 });

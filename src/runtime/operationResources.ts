@@ -685,10 +685,26 @@ async function writeRuntimeSnapshotAtomic(file: string, snapshot: RuntimeSnapsho
   }
 }
 
-async function withDurableSlotLock<T>(file: string, action: () => Promise<T>): Promise<T> {
+async function withDurableSlotLock<T>(
+  file: string,
+  action: () => Promise<T>,
+  options: {
+    remainingBudgetMs?: number;
+    nowMs?: () => number;
+    sleepMs?: (ms: number) => Promise<void>;
+  } = {}
+): Promise<T> {
   const lockPath = `${file}.lock`;
   await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-  const deadline = Date.now() + 10_000;
+  const now = options.nowMs ?? Date.now;
+  const sleep = options.sleepMs ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const remaining = options.remainingBudgetMs;
+  // Same pattern as capacity WAIT: min(requested 10s, remaining);
+  // exhausted/undefined → terminal FAIL, no wait (never mint fresh 10s).
+  const hasBudget = remaining !== undefined && Number.isFinite(remaining) && remaining > 0;
+  const effectiveMaxWaitMs = hasBudget ? Math.min(10_000, Math.floor(remaining!)) : 0;
+  const startedAt = now();
+  const deadline = startedAt + effectiveMaxWaitMs;
   for (;;) {
     let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
     try {
@@ -734,28 +750,33 @@ async function withDurableSlotLock<T>(file: string, action: () => Promise<T>): P
       } catch {
         // Best-effort stale check never fails acquisition; fall through to wait.
       }
-      if (Date.now() >= deadline) {
+      // Exhausted budget → terminal FAIL, no wait (no sleep, no fresh time).
+      if (effectiveMaxWaitMs <= 0 || now() >= deadline) {
         throw new Error(`Timed out acquiring durable wave-slot lock for ${path.basename(file)}.`);
       }
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await sleep(Math.min(20, Math.max(0, deadline - now())));
     }
   }
 }
 
 /**
- * Single atomic attempt (no wait, no sleep): lock → reload → check → write.
+ * Single atomic attempt (lock → reload → check → write): lock wait honors the
+ * caller's remaining budget (`min(10s requested, remaining)`; exhausted or
+ * undefined → single immediate attempt, no wait, terminal on contention).
  * Returns ACQUIRED with durable leaseId (persisted) or QUEUED (persisted nothing).
  * Unreadable/invalid durability returns QUEUED-terminal (BLOCKED, retryAfter 0).
  */
 export async function tryAcquireDurableWaveSlotAtomic(
   snapshotRoot: string,
   input: DurableWaveSlotInputV1,
-  options: { nowMs?: () => number; leaseTtlMs?: number } = {}
+  options: { nowMs?: () => number; leaseTtlMs?: number; remainingBudgetMs?: number; sleepMs?: (ms: number) => Promise<void> } = {}
 ): Promise<DurableWaveSlotResultV1> {
   const nowMs = options.nowMs ?? Date.now;
   const file = durableWaveSlotFile(snapshotRoot);
   try {
-    return await withDurableSlotLock(file, async () => {
+    return await withDurableSlotLock(
+      file,
+      async () => {
       let snapshot: RuntimeSnapshotV1;
       try {
         snapshot = await readManagedRuntimeSnapshot(snapshotRoot);
@@ -816,7 +837,13 @@ export async function tryAcquireDurableWaveSlotAtomic(
         queueDepth: 0,
         scope: "shared-durable",
       } satisfies DurableWaveSlotAcquiredV1;
-    });
+      },
+      {
+        ...(options.remainingBudgetMs !== undefined ? { remainingBudgetMs: options.remainingBudgetMs } : {}),
+        nowMs,
+        ...(options.sleepMs ? { sleepMs: options.sleepMs } : {}),
+      }
+    );
   } catch (error) {
     // Lock timeout or validation throw: fail-closed QUEUED-terminal (no proceed).
     // Preserve validation throws (empty identity) as throws for callers that
@@ -844,11 +871,13 @@ export async function releaseDurableWaveSlot(
   snapshotRoot: string,
   leaseId: string,
   ownerId: string,
-  options: { nowMs?: () => number } = {}
+  options: { nowMs?: () => number; remainingBudgetMs?: number; sleepMs?: (ms: number) => Promise<void> } = {}
 ): Promise<void> {
   const nowMs = options.nowMs ?? Date.now;
   const file = durableWaveSlotFile(snapshotRoot);
-  await withDurableSlotLock(file, async () => {
+  await withDurableSlotLock(
+    file,
+    async () => {
     let snapshot: RuntimeSnapshotV1;
     try {
       snapshot = await readManagedRuntimeSnapshot(snapshotRoot);
@@ -863,7 +892,15 @@ export async function releaseDurableWaveSlot(
     if (!existing) return;
     supervisor.releaseProviderLease(leaseId, ownerId);
     await writeRuntimeSnapshotAtomic(file, supervisor.snapshot());
-  });
+    },
+    {
+      // Cleanup defaults to the historical 10s patience when the caller has no
+      // budget; an explicitly exhausted budget (<=0) still means no wait.
+      remainingBudgetMs: options.remainingBudgetMs ?? 10_000,
+      nowMs,
+      ...(options.sleepMs ? { sleepMs: options.sleepMs } : {}),
+    }
+  );
 }
 
 /**
@@ -890,13 +927,19 @@ export async function acquireDurableWaveSlotOrQueue(
   const remaining = options.remainingBudgetMs;
   const hasBudget = remaining !== undefined && Number.isFinite(remaining) && remaining > 0;
 
-  const attempt = () =>
+  // Thread the caller's remaining budget into the lock itself (same pattern as
+  // capacity WAIT: min(requested 10s, remaining); exhausted → terminal, no wait).
+  // The first attempt gets the full remaining; the re-attempt after WAIT gets
+  // the leftover (remaining - waitMs) so the lock never exceeds the budget.
+  const attempt = (budgetMs?: number) =>
     tryAcquireDurableWaveSlotAtomic(snapshotRoot, input, {
       nowMs,
       ...(options.leaseTtlMs !== undefined ? { leaseTtlMs: options.leaseTtlMs } : {}),
+      ...(budgetMs !== undefined ? { remainingBudgetMs: budgetMs } : { remainingBudgetMs: 0 }),
+      sleepMs,
     });
 
-  const first = await attempt();
+  const first = await attempt(remaining);
   if (first.acquired) return first;
   // No existing budget: immediate terminal, never mint a fresh wait (zero sleeps).
   if (!hasBudget) return first;
@@ -906,7 +949,7 @@ export async function acquireDurableWaveSlotOrQueue(
   const waitMs = Math.min(first.retryAfterMs, Math.floor(remaining!));
   if (waitMs <= 0) return first;
   await sleepMs(waitMs);
-  const second = await attempt();
+  const second = await attempt(Math.max(0, Math.floor(remaining!) - waitMs));
   if (second.acquired) return { ...second, retryAfterMs: waitMs };
   return second;
 }
