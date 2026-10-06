@@ -240,19 +240,41 @@ function updateDigestWithEntry(hash: crypto.Hash, entry: TreeDigestEntry): void 
  * share the identical backslash path-key normalization, so no asymmetric
  * false-accept exists there; changing path-key encoding would migrate every
  * historical identity digest.
+ *
+ * Resource bound (DETERMINISTIC fail-closed): each blob is read with
+ * `captureOutputLimitBytes: maxBlobBytes` so a huge historical blob cannot
+ * exhaust controller memory via full `stdoutBuffer` retention. Truncation is
+ * detected via the total-vs-retained signal (`ProcessResult.stdoutBytes` is
+ * the TOTAL streamed byte count; `stdoutBuffer.length` is the RETAINED
+ * count): `BoundedOutput` retains the TAIL when limited, so truncated bytes
+ * must NEVER be hashed. An oversize/truncated blob throws `COMMIT_BLOB_TOO_LARGE`
+ * (naming path + total size vs cap); callers map this to UNKNOWN, never SUCCEEDED.
  */
-export async function computeCommitTreeDigest(cwd: string, ref = "HEAD"): Promise<string> {
+export const COMMIT_TREE_MAX_BLOB_BYTES = 32 * 1024 * 1024;
+
+export async function computeCommitTreeDigest(cwd: string, ref = "HEAD", maxBlobBytes = COMMIT_TREE_MAX_BLOB_BYTES): Promise<string> {
+  const cap = Math.floor(maxBlobBytes);
+  if (!Number.isFinite(cap) || cap <= 0) throw new Error(`COMMIT_BLOB_CAP_INVALID: maxBlobBytes must be a positive finite byte count (got ${String(maxBlobBytes)}).`);
   const entries = await listCommitTreeEntries(cwd, ref);
   const hash = crypto.createHash("sha256");
   hash.update(TREE_DIGEST_SCHEME_TAG);
   for (const { path: file, mode } of entries) {
     const normalized = file.replaceAll("\\", "/");
-    const shown = await runExecutable("git", ["show", `${ref}:${file}`], { cwd, timeoutMs: 15_000, rawStdout: true });
+    const shown = await runExecutable("git", ["show", `${ref}:${file}`], { cwd, timeoutMs: 15_000, rawStdout: true, captureOutputLimitBytes: cap });
     if (shown.exitCode !== 0) throw new Error(`Git could not read committed blob '${file}' at ${ref}.`);
     // Fail closed when the raw bytes are unavailable: falling back to the
     // lossy `stdout` text would reintroduce the UTF-8 collision (never a
     // false SUCCEEDED from a decode round-trip).
     if (!shown.stdoutBuffer) throw new Error(`Git committed blob bytes unavailable for '${file}' at ${ref}.`);
+    // Fail closed on oversize/truncation: `stdoutBytes` is the TOTAL streamed
+    // count while `stdoutBuffer.length` is RETAINED (capped tail). NEVER hash
+    // partial bytes: `BoundedOutput` keeps the TAIL when limited, so hashing
+    // the retained buffer would hash the wrong bytes.
+    const retained = shown.stdoutBuffer.length;
+    const total = shown.stdoutBytes ?? retained;
+    if (total > retained || total > cap || retained > cap) {
+      throw new Error(`COMMIT_BLOB_TOO_LARGE: committed blob '${file}' at ${ref} is ${total} bytes (cap ${cap} bytes).`);
+    }
     // The Git mode is a framed digest input, not just a symlink probe: an
     // unsupported mode (e.g. gitlink 160000) has no defined content encoding
     // and fails closed instead of hashing an ambiguous projection.
