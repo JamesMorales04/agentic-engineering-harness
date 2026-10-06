@@ -354,6 +354,10 @@ async function withProviderSessionLease<T>(
     stop,
     discoverSession: async () => {
       const found = await deps.sdk.list(root, labels).catch(() => []);
+      // Same fail-closed contract as the launch-path reuse guards: more than
+      // one match is ambiguous and must never silently resolve to undefined
+      // (which reads as "no session" and invites a duplicate create-new).
+      if (found.length > 1) throw new Error(`PASEO_TURN_IDEMPOTENCY_AMBIGUOUS: ${found.length} sessions match the provider-lease labels for this operation; refusing to select one. Resolve the duplicate sessions explicitly.`);
       return found.length === 1 ? found[0]!.id : undefined;
     }
   }, action).then((value) => value);
@@ -555,8 +559,9 @@ function collectCliAgents(value: unknown, out: Map<string, PaseoSdkAgentRecord>)
  * length-prefixed (byte-length + ":" + field + "\0" concatenated) so NUL- or
  * separator-containing fields cannot collide (unlike naive "\0"-join, where
  * ["a\0b","c"] and ["a","b\0c"] hash identically). Orphan reaper lists by
- * `aeh.operation` (+ idempotency) before create/retry; best-effort, never
- * throws (fail-closed to create-new on list failure, never blocks launch).
+ * `aeh.operation` (+ idempotency) before create/retry; best-effort, throws
+ * only on ambiguous live matches (fail-closed to THROW, never create-new)
+ * and fails closed to create-new on list failure (never blocks launch).
  * Liveness is positive-only (idle/working/running); unknown/terminal/dead never
  * reuses. Reaper reaps only positively-dead statuses; unknown is left alone.
  * No retry budgets, leases authority, or vagueness gates touched.
@@ -638,6 +643,12 @@ async function reuseLiveIdempotentTurn(
   }
   if (!Array.isArray(candidates) || candidates.length === 0) return undefined;
   const live = candidates.filter((agent) => isLivePaseoAgentStatus(agent.status));
+  if (live.length > 1) {
+    // Ambiguous live orphans: fail-closed THROW, never create-new (a create
+    // here would turn the duplicate into a triplicate with two live writers).
+    await trace(root, "agent.launch.ambiguous", { transport: "sdk", operation, idempotency, live: live.map((agent) => agent.id) });
+    throw new Error(`PASEO_TURN_IDEMPOTENCY_AMBIGUOUS: ${live.length} live sessions share idempotency key '${idempotency}' for operation '${operation}'; refusing create-new. Resume one of [${live.map((agent) => agent.id).join(", ")}] explicitly.`);
+  }
   if (live.length === 1) {
     const found = live[0]!;
     await trace(root, "agent.launch.reused", { transport: "sdk", agentId: found.id, operation, idempotency });
@@ -647,9 +658,10 @@ async function reuseLiveIdempotentTurn(
     }
     return waitManagedPaseoAgent(root, found.id, options.timeoutSeconds ?? secondsFromMs(options.timeoutMs), deps, undefined, options.permissionScopeRoots);
   }
-  // Ambiguous or dead orphans: reap ONLY positively-dead best-effort, never throw,
-  // then create-new. Unknown (undefined/empty/unrecognized) is left alone
-  // fail-closed (never counted as dead, never reaped).
+  // Dead orphans only (ambiguity already threw above): reap ONLY
+  // positively-dead best-effort, never throw, then create-new. Unknown
+  // (undefined/empty/unrecognized) is left alone fail-closed (never counted
+  // as dead, never reaped).
   for (const agent of candidates) {
     if (isLivePaseoAgentStatus(agent.status)) continue;
     if (!isPositivelyDeadPaseoAgentStatus(agent.status)) {
@@ -662,6 +674,10 @@ async function reuseLiveIdempotentTurn(
     } catch { /* best-effort reaper never blocks launch */ }
   }
   const stillLive = candidates.filter((agent) => isLivePaseoAgentStatus(agent.status));
+  if (stillLive.length > 1) {
+    await trace(root, "agent.launch.ambiguous", { transport: "sdk", operation, idempotency, live: stillLive.map((agent) => agent.id) });
+    throw new Error(`PASEO_TURN_IDEMPOTENCY_AMBIGUOUS: ${stillLive.length} live sessions share idempotency key '${idempotency}' for operation '${operation}' after reaping; refusing create-new. Resume one of [${stillLive.map((agent) => agent.id).join(", ")}] explicitly.`);
+  }
   if (stillLive.length === 1) {
     const found = stillLive[0]!;
     await registerManagedAgent(root, options, { id: found.id, exitCode: 0, stdout: "", stderr: "", status: found.status, workspaceId: found.workspaceId, transport: "sdk" });
@@ -731,10 +747,17 @@ async function reuseLiveIdempotentCliTurn(
     return { ...waited, stderr: [fallbackReason, waited.stderr].filter(Boolean).join("\n") };
   };
   const live = candidates.filter((agent) => isLivePaseoAgentStatus(agent.status));
+  if (live.length > 1) {
+    // Ambiguous live orphans: fail-closed THROW, never create-new (same
+    // contract as the SDK path; a CLI create here would triplicate writers).
+    await trace(root, "agent.launch.ambiguous", { transport: "cli", operation, idempotency, live: live.map((agent) => agent.id) });
+    throw new Error(`PASEO_TURN_IDEMPOTENCY_AMBIGUOUS: ${live.length} live CLI sessions share idempotency key '${idempotency}' for operation '${operation}'; refusing create-new. Resume one of [${live.map((agent) => agent.id).join(", ")}] explicitly.`);
+  }
   if (live.length === 1) return reuse(live[0]!);
-  // Ambiguous or dead orphans: reap ONLY positively-dead best-effort, never throw,
-  // then create-new. Unknown (undefined/empty/unrecognized) is left alone
-  // fail-closed (never counted as dead, never reaped).
+  // Dead orphans only (ambiguity already threw above): reap ONLY
+  // positively-dead best-effort, never throw, then create-new. Unknown
+  // (undefined/empty/unrecognized) is left alone fail-closed (never counted
+  // as dead, never reaped).
   for (const agent of candidates) {
     if (isLivePaseoAgentStatus(agent.status)) continue;
     if (!isPositivelyDeadPaseoAgentStatus(agent.status)) {
@@ -747,6 +770,10 @@ async function reuseLiveIdempotentCliTurn(
     } catch { /* best-effort reaper never blocks launch */ }
   }
   const stillLive = candidates.filter((agent) => isLivePaseoAgentStatus(agent.status));
+  if (stillLive.length > 1) {
+    await trace(root, "agent.launch.ambiguous", { transport: "cli", operation, idempotency, live: stillLive.map((agent) => agent.id) });
+    throw new Error(`PASEO_TURN_IDEMPOTENCY_AMBIGUOUS: ${stillLive.length} live CLI sessions share idempotency key '${idempotency}' for operation '${operation}' after reaping; refusing create-new. Resume one of [${stillLive.map((agent) => agent.id).join(", ")}] explicitly.`);
+  }
   if (stillLive.length === 1) return reuse(stillLive[0]!);
   return undefined;
 }
