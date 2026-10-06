@@ -430,4 +430,45 @@ describe("candidate symlink escape gate (C-NEW-4)", () => {
       expect(await fs.readlink(path.join(root, linkRel))).toBe("../payload");
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
+
+  it("RED-MISS: rejects a rename whose pre-image lookup misses (fail-closed unverifiable, never skip)", async () => {
+    const root = await initRepo();
+    try {
+      // Invalid-UTF-8 byte in the name: git quotes it as octal \377, which
+      // the gate decodes to U+FFFD while git resolves the raw byte. The
+      // pre-image lstat therefore misses even though the committed path
+      // exists; skipping that miss would assemble the escaping move
+      // unchecked (miss-and-skip).
+      await fs.mkdir(path.join(root, "src", "deep"), { recursive: true });
+      await fs.writeFile(path.join(root, "src", "payload"), "payload\n");
+      const rawFrom = Buffer.concat([Buffer.from(`${path.join(root, "src", "deep")}/`), Buffer.from([0xff]), Buffer.from("-link")]);
+      // Pre-image src/deep/<0xFF>-link -> ../payload resolves to src/payload
+      // (inside), so the tree itself is legitimate.
+      await fs.symlink("../payload", rawFrom);
+      await runShell("git add -A && git -c user.name=test -c user.email=test@example.com commit -qm deep-link", { cwd: root });
+      const current = createCandidateRevisionV1({ operationId: "OP-SYMLINK-RENAME-MISS", candidateId: "candidate:OP-SYMLINK-RENAME-MISS:r1", taskId: "TASK-SYMLINK-RENAME-MISS", revision: 1, sourceDigest: await computeWorktreeDigest(root) });
+      // Genuine git quoting for the raw-byte name (pure ASCII patch text,
+      // byte-identical to `git mv` + `git diff` output): post-image
+      // link -> ../payload resolves outside the root.
+      const patch = [
+        'diff --git "a/src/deep/\\377-link" b/link',
+        "similarity index 100%",
+        'rename from "src/deep/\\377-link"',
+        "rename to link",
+        ""
+      ].join("\n");
+      // The harness observes the decoded (U+FFFD) form via `git diff -z`.
+      const from = "src/deep/\uFFFD-link";
+      const changeSet = { version: 1 as const, operationId: current.operationId, taskId: "TASK-SYMLINK-RENAME-MISS", workUnitId: "WU-1", participantId: "participant-1", baseCandidateRevision: current.revision, baseCandidateDigest: current.identityDigest, changedFiles: [from, "link"], patch, patchDigest: sha256Utf8(patch) };
+      let failure: AehError | undefined;
+      try {
+        await assembleCandidateChangeSet({ root, operationId: current.operationId, taskId: "TASK-SYMLINK-RENAME-MISS", currentCandidate: current, changeSet, allowedScope: ["**"], candidateId: "candidate:OP-SYMLINK-RENAME-MISS:r2" });
+      } catch (error) { failure = error as AehError; }
+      expect(failure?.code).toBe("PARTICIPANT_PLAN_INVALID");
+      expect(failure?.message).toMatch(/symlink|unverifiable|verify/i);
+      // Fail-closed: the escaping rename was never applied.
+      expect(await fs.readlink(rawFrom)).toBe("../payload");
+      await expect(fs.lstat(path.join(root, "link"))).rejects.toThrow();
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
 });

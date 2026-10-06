@@ -904,25 +904,32 @@ function patchSymlinksWithPostImageLink(patch: string): { links: PatchSymlinkV1[
 /**
  * Pre-patch worktree lookup for rename blocks the patch parser cannot decide
  * (fail-closed delete+add treatment for gate purposes). A pure rename
- * preserves blob and mode, so a non-symlink (or missing) pre-image cannot
- * yield a symlink post-image and stays skipped; a mode-120000 pre-image
- * contributes its stored target as a post-image entry at the rename
- * destination, which the caller gates through the shared lexical + chain
- * checks (post-image resolution only).
+ * preserves blob and mode, so a non-symlink pre-image cannot yield a symlink
+ * post-image and stays skipped; a mode-120000 pre-image contributes its
+ * stored target as a post-image entry at the rename destination, which the
+ * caller gates through the shared lexical + chain checks (post-image
+ * resolution only). A missing pre-image is never skipped (see below).
  */
 async function resolveRenamedSymlinkPostImages(root: string, renames: readonly PatchRenameV1[]): Promise<{ links: PatchSymlinkV1[]; unverifiable: string[] }> {
   const links: PatchSymlinkV1[] = [];
   const unverifiable: string[] = [];
   for (const rename of renames) {
     const oldAbsolute = path.join(root, ...rename.from.split("/"));
+    // Fail-closed pre-image lookup: this gate runs after
+    // assertWorkspaceMatchesCandidate, so the workspace agrees with the base
+    // candidate and a rename pre-image (a committed path) MUST exist. A
+    // lookup miss therefore proves decoder mismatch (an unhandled C escape
+    // or an invalid-UTF-8 octal that decoded to replacement chars while git
+    // resolves the raw bytes), a race, or tampering — in every case the
+    // gate cannot prove what moved. Reject as unverifiable instead of
+    // skipping, so every present-or-future decoding gap becomes at most an
+    // availability rejection, never a gate bypass (miss-and-skip).
     const stat = await fs.lstat(oldAbsolute).catch((error: unknown) => {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw new AehError("PARTICIPANT_PLAN_INVALID", `Unable to verify renamed symlink containment for '${rename.from} -> ${rename.to}'.`, { cause: error });
     });
-    // Missing pre-image cannot apply; the later `git apply --check` rejects
-    // it as CANDIDATE_STALE. A non-symlink pre-image cannot rename into a
-    // symlink (blob and mode preserved): no behavior change, still skipped.
-    if (!stat?.isSymbolicLink()) continue;
+    // A non-symlink pre-image cannot rename into a symlink (blob and mode
+    // preserved): no behavior change, still skipped.
+    if (!stat.isSymbolicLink()) continue;
     const target = await fs.readlink(oldAbsolute).catch((error: unknown) => {
       throw new AehError("PARTICIPANT_PLAN_INVALID", `Unable to verify renamed symlink containment for '${rename.from} -> ${rename.to}'.`, { cause: error });
     });
