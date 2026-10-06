@@ -100,7 +100,7 @@ export async function computeWorktreeDigest(cwd: string): Promise<string> {
     hash.update(`path\0${normalized}\0`);
     try {
       const stat = await fs.lstat(path.resolve(cwd, file));
-      if (stat.isSymbolicLink()) updateDigestWithSymlinkTarget(hash, await fs.readlink(path.resolve(cwd, file)));
+      if (stat.isSymbolicLink()) updateDigestWithSymlinkTarget(hash, await fs.readlink(path.resolve(cwd, file), { encoding: "buffer" }));
       else hash.update(await fs.readFile(path.resolve(cwd, file)));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -111,8 +111,10 @@ export async function computeWorktreeDigest(cwd: string): Promise<string> {
 }
 
 /** Canonical per-entry combiner shared by worktree and commit-tree digests. */
-function updateDigestWithSymlinkTarget(hash: crypto.Hash, target: string): void {
-  hash.update(`symlink\0${target}\0`);
+function updateDigestWithSymlinkTarget(hash: crypto.Hash, target: Buffer): void {
+  hash.update("symlink\0");
+  hash.update(target);
+  hash.update("\0");
 }
 
 /**
@@ -128,12 +130,19 @@ function updateDigestWithSymlinkTarget(hash: crypto.Hash, target: string): void 
  * Blob bytes are hashed RAW from `ProcessResult.stdoutBuffer` (opted in via
  * `rawStdout`): they never pass through the lossy UTF-8 `stdout` decode, so
  * a non-UTF-8 byte such as 0xFF cannot hash like the valid UTF-8 U+FFFD
- * sequence and falsely match a contentDigest. Symlink targets hash exactly
- * as returned: `git show <ref>:<path>` emits the raw blob with no framing
- * newline (matching `readlink`), so no trailing-newline strip is applied and
- * a target of `target\n` never digests like `target`. Both digest paths
- * consume the same ls-tree enumeration inputs through the same combiner; no
- * cross-encoding comparison is performed.
+ * sequence and falsely match a contentDigest. Symlink targets hash as RAW BYTES on both paths — the
+ * worktree via `readlink` with `buffer` encoding and the committed tree via
+ * `git show` `stdoutBuffer` fed directly to the combiner with no
+ * `toString("utf8")` on either side — so distinct invalid sequences such as
+ * 0xFF vs 0xFE (both decoding to U+FFFD as strings) digest distinctly.
+ * `git show <ref>:<path>` emits the raw blob with no framing newline (matching
+ * `readlink`), so no trailing-newline strip is applied and a target of
+ * `target\n` never digests like `target`. Both digest paths consume the same
+ * ls-tree enumeration inputs through the same combiner; no cross-encoding
+ * comparison is performed. NOTE (documented only, out of scope): both paths
+ * share the identical backslash path-key normalization, so no asymmetric
+ * false-accept exists there; changing path-key encoding would migrate every
+ * historical identity digest.
  */
 export async function computeCommitTreeDigest(cwd: string, ref = "HEAD"): Promise<string> {
   const entries = await listCommitTreeEntries(cwd, ref);
@@ -147,7 +156,7 @@ export async function computeCommitTreeDigest(cwd: string, ref = "HEAD"): Promis
     // lossy `stdout` text would reintroduce the UTF-8 collision (never a
     // false SUCCEEDED from a decode round-trip).
     if (!shown.stdoutBuffer) throw new Error(`Git committed blob bytes unavailable for '${file}' at ${ref}.`);
-    if (mode === "120000") updateDigestWithSymlinkTarget(hash, shown.stdoutBuffer.toString("utf8"));
+    if (mode === "120000") updateDigestWithSymlinkTarget(hash, shown.stdoutBuffer);
     else hash.update(shown.stdoutBuffer);
   }
   return hash.digest("hex");

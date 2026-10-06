@@ -151,6 +151,89 @@ describe("LUNA BLOCKER (c): commit-tree digest must hash blob bytes with no trai
   });
 });
 
+describe("LUNA BLOCKER (d): symlink targets hash by raw bytes, not UTF-8 strings", () => {
+  const LINK_NAME = "link";
+  // Two DISTINCT invalid-UTF-8 byte sequences that decode to the SAME
+  // replacement string via toString("utf8"): both become U+FFFD. Pre-fix both
+  // digest paths decoded to strings before hashing, so these collided to the
+  // same digest (false match / false SUCCEEDED).
+  const TARGET_FF = Buffer.from([0xff]);
+  const TARGET_FE = Buffer.from([0xfe]);
+  const SYM_SUBJECT = "T-SYM: invalid-UTF8 symlink target";
+  const VALID_TARGET = "valid-target";
+
+  async function initSymlinkRepo(target: Buffer, subject = SYM_SUBJECT): Promise<string> {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-sym-digest-"));
+    roots.push(root);
+    git(root, ["init", "-b", "main"]);
+    git(root, ["config", "user.name", "AEH Test"]);
+    git(root, ["config", "user.email", "aeh@example.invalid"]);
+    await fs.symlink(target, path.join(root, LINK_NAME));
+    git(root, ["add", LINK_NAME]);
+    git(root, ["commit", "-m", subject]);
+    return root;
+  }
+
+  /** Canonical single-entry symlink combiner over raw target BYTES (mirrors git.ts). */
+  function symlinkCombinerDigestBytes(target: Buffer): string {
+    const hash = crypto.createHash("sha256");
+    hash.update(`path\0${LINK_NAME}\0`);
+    hash.update("symlink\0");
+    hash.update(target);
+    hash.update("\0");
+    return hash.digest("hex");
+  }
+
+  it("decodes to the same replacement string (precondition: string path collides)", async () => {
+    expect(TARGET_FF.toString("utf8")).toBe(TARGET_FE.toString("utf8"));
+    expect(TARGET_FF.toString("utf8")).toBe("\uFFFD");
+  });
+
+  it("same invalid bytes agree worktree==commit (byte-exact positive)", async () => {
+    const root = await initSymlinkRepo(TARGET_FF);
+    const commitDigest = await computeCommitTreeDigest(root, "HEAD");
+    expect(commitDigest).toBe(symlinkCombinerDigestBytes(TARGET_FF));
+    expect(await computeWorktreeDigest(root)).toBe(commitDigest);
+  });
+
+  it("distinct invalid bytes decoding to the same string digest distinctly (no false match)", async () => {
+    const root = await initSymlinkRepo(TARGET_FF);
+    const commitDigestFF = await computeCommitTreeDigest(root, "HEAD");
+    // Swap the worktree link to the colliding 0xFE target without committing.
+    await fs.rm(path.join(root, LINK_NAME));
+    await fs.symlink(TARGET_FE, path.join(root, LINK_NAME));
+    const worktreeDigestFE = await computeWorktreeDigest(root);
+    expect(worktreeDigestFE).toBe(symlinkCombinerDigestBytes(TARGET_FE));
+    // Post-fix the digests MUST differ; pre-fix both were the FFFD-string digest.
+    expect(worktreeDigestFE).not.toBe(commitDigestFF);
+  });
+
+  it("a contentDigest over the colliding 0xFE target must never reconcile SUCCEEDED against committed 0xFF", async () => {
+    const root = await initSymlinkRepo(TARGET_FF);
+    const payload = { taskId: "T-SYM", message: SYM_SUBJECT, contentDigest: symlinkCombinerDigestBytes(TARGET_FE) };
+    const result = await reconcileToolAction(root, makeIntent("git.commit", payload), payload, {
+      now: new Date(FIXED_NOW)
+    });
+    expect(result.outcome).not.toBe("SUCCEEDED");
+    expect(result.outcome).toBe("UNKNOWN");
+    expect(result.detail).toBe("commit-content-mismatch");
+  });
+
+  it("valid-UTF8 targets still agree worktree==commit (positive control)", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-sym-valid-"));
+    roots.push(root);
+    git(root, ["init", "-b", "main"]);
+    git(root, ["config", "user.name", "AEH Test"]);
+    git(root, ["config", "user.email", "aeh@example.invalid"]);
+    await fs.symlink(VALID_TARGET, path.join(root, LINK_NAME));
+    git(root, ["add", LINK_NAME]);
+    git(root, ["commit", "-m", SYM_SUBJECT]);
+    const commitDigest = await computeCommitTreeDigest(root, "HEAD");
+    expect(commitDigest).toBe(symlinkCombinerDigestBytes(Buffer.from(VALID_TARGET, "utf8")));
+    expect(await computeWorktreeDigest(root)).toBe(commitDigest);
+  });
+});
+
 describe("LUNA BLOCKER (b): unreadable-candidate outcomes carry scan observability", () => {
   function stubHistory(): typeof runExecutable {
     return (async (_command: string, args: readonly string[]) => {
