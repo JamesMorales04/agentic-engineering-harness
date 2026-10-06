@@ -112,30 +112,40 @@ describe.sequential("rootless isolation provider contract", () => {
     expect(validatorIsolationRequired({ version: 1, project: { name: "x" } } as HarnessProjectConfig)).toBe(false);
   });
 
-  it("reports missing providers from an isolated executable search path", async () => {
+  it("ignores ambient PATH manipulation when detecting providers (hermetic minimal applies)", async () => {
+    // Hermetic migration: managed resolution is pinned-prefix + minimal system
+    // dirs, never ambient. Emptying or stuffing ambient PATH must not change
+    // detection: a fake ambient `bwrap` is never selected, and an emptied PATH
+    // does not hide the hermetic minimal providers. The old "isolated search
+    // path via PATH override" technique is superseded by design; stale state
+    // migrates via `aeh setup`, never via ambient.
     const isolatedRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-isolation-provider-contract-"));
     const emptyPath = path.join(isolatedRoot, "empty-bin");
     await fs.mkdir(emptyPath);
+    const decoyDir = path.join(isolatedRoot, "decoy-bin");
+    await fs.mkdir(decoyDir);
+    await fs.writeFile(path.join(decoyDir, "bwrap"), "#!/bin/sh\necho decoy-bwrap\n", { mode: 0o755 });
+    await fs.chmod(path.join(decoyDir, "bwrap"), 0o755);
     const originalPath = process.env.PATH;
     try {
+      clearIsolationCapabilityCache();
+      const baseline = await detectIsolationCapabilities(isolatedRoot);
       process.env.PATH = emptyPath;
       clearIsolationCapabilityCache();
-      const detected = await detectIsolationCapabilities(isolatedRoot);
-      expect(detected).toMatchObject({
-        version: 1,
-        provider: "none",
-        available: false,
-        rootless: true,
-        podman: { available: false, rootless: null },
-        buildah: { available: false }
-      });
-      expect(detected.executable).toBeUndefined();
-      expect(detected.details).toEqual(expect.arrayContaining([
-        "bwrap: missing",
-        "podman: missing",
-        "buildah: missing",
-        "no rootless isolation provider is currently executable"
-      ]));
+      const emptied = await detectIsolationCapabilities(isolatedRoot);
+      expect(emptied, "emptied ambient PATH must not change managed detection").toEqual(baseline);
+      process.env.PATH = `${decoyDir}${path.delimiter}${originalPath ?? ""}`;
+      clearIsolationCapabilityCache();
+      const withDecoy = await detectIsolationCapabilities(isolatedRoot);
+      expect(withDecoy, "ambient decoy provider must never be selected").toEqual(baseline);
+      expect(withDecoy.executable ?? "", "resolved provider must never come from the ambient decoy dir").not.toContain(decoyDir);
+      // Hermetic shape: a real minimal-path provider or an explicit missing
+      // report, identical regardless of ambient PATH.
+      expect(baseline.version).toBe(1);
+      expect(["bwrap", "none"]).toContain(baseline.provider);
+      expect(baseline.available).toBe(baseline.provider === "bwrap");
+      expect(baseline.details.length).toBeGreaterThan(0);
+      expect(baseline.details.join("\n")).toMatch(/bwrap: /);
     } finally {
       if (originalPath === undefined) delete process.env.PATH;
       else process.env.PATH = originalPath;

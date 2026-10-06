@@ -89,6 +89,11 @@ describe("specialized validation capabilities fail closed instead of falling thr
     expect(check!.status).not.toBe("SKIP");
   });
 
+  // Bounded 20s budget (vitest default is 5s): passes locally in ~5ms but
+  // full-suite parallel load starves it in CI (same class as runRepair 5s->20s
+  // and participantsStackDiscovery 15s). Waits on real subprocesses with their
+  // own timeouts (container-runtime probe, worktree digest), so no sleep/poll
+  // to mock — budget-only, assertions unchanged.
   it("blocks a required OCI integration environment when no container runtime is available", async () => {
     const root = await fixture();
     const configured: HarnessProjectConfig = { ...config, validation: { validators: [{ id: "oci-integration", adapter: "integration-environment", required: true, options: { image: "docker.io/library/alpine:3.20", testCommand: "true" } }] } };
@@ -111,7 +116,7 @@ describe("specialized validation capabilities fail closed instead of falling thr
       else process.env.PATH = previousPath;
       await fs.rm(emptyProviderPath, { recursive: true, force: true });
     }
-  });
+  }, 20_000);
 
   it("fails an integration lifecycle that has no explicit readiness step", async () => {
     const root = await fixture();

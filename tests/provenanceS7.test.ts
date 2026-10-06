@@ -399,6 +399,14 @@ async function createEvidenceFixture(options: { policy?: ProvenancePolicy } = {}
   await fs.mkdir(binDir, { recursive: true });
   await fs.writeFile(path.join(binDir, "cosign"), FAKE_COSIGN_SCRIPT, { mode: 0o755 });
   await fs.chmod(path.join(binDir, "cosign"), 0o755);
+  // Hermetic migration: ambient PATH no longer reaches managed children, so the
+  // deterministic fake cosign is pinned via toolchain state (plus the node dir,
+  // because the fixture script runs on `#!/usr/bin/env node`). Stale/missing
+  // state migrates the same way: run `aeh setup`, then retry.
+  await fs.writeFile(
+    path.join(root, ".harness", "toolchain.state.json"),
+    JSON.stringify({ version: 1, binPaths: [binDir, path.dirname(process.execPath)] })
+  );
 
   const artifactFile = path.join(root, ARTIFACT);
   await fs.writeFile(artifactFile, "packed-aeh-fixture-v1\n");
@@ -519,13 +527,10 @@ async function rewriteStatementAndBundle(fixture: EvidenceFixture): Promise<void
 }
 
 async function runGate(fixture: EvidenceFixture, options: { config?: HarnessProjectConfig; candidate?: CandidateRevisionV1; artifactPath?: string } = {}): Promise<{ ok: boolean; failures: string[] }> {
-  const previous = process.env.PATH;
-  process.env.PATH = `${fixture.binDir}${path.delimiter}${previous ?? ""}`;
-  try {
-    return await verifySupplyChainGate(fixture.root, options.config ?? fixture.config, { candidate: options.candidate ?? fixture.candidate, artifactPath: options.artifactPath ?? fixture.artifactRelative });
-  } finally {
-    process.env.PATH = previous;
-  }
+  // Managed resolution is hermetic: the fixture pins its fake cosign via
+  // toolchain.state.json, so no ambient PATH manipulation is needed (or
+  // honored). An ambient-only cosign here must NOT be selected.
+  return verifySupplyChainGate(fixture.root, options.config ?? fixture.config, { candidate: options.candidate ?? fixture.candidate, artifactPath: options.artifactPath ?? fixture.artifactRelative });
 }
 
 function expectBlocked(result: { ok: boolean; failures: string[] }, pattern: RegExp): void {

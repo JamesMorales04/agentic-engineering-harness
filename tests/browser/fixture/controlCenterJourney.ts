@@ -138,50 +138,60 @@ function safeDetails(value: unknown, depth = 0): unknown {
  * Detached fixture children (`aeh init/start/operation start` on a disposable
  * tmpdir root) are never AEH participants: strip the full managed-agent and
  * controller envelope so the executionContext recursion guard cannot mistake
- * them for nested-operation re-entry. Mirrors the canonical stripping in
- * src/utils/process.ts runChild (which sanitizes all validator shells) plus
- * fixture-specific isolation (controller epoch/token, deterministic Paseo
- * markers, S9 roots, Paseo session binding). The guard itself is unchanged:
- * a raw bounded env without this sanitization is still denied, and REAL nested
- * `aeh operation start` inside an operation remains AEH_RECURSIVE_OPERATION_DENIED.
+ * them for nested-operation re-entry. Uses the single canonical scrub
+ * (src/utils/process.ts MANAGED_CHILD_ENV_SCRUB_KEYS plus MISE_* and ASDF_*
+ * prefixes plus XDG shim keys plus AEH_TOOLCHAIN_EXTRA_BIN_PATHS) shared with
+ * prod runChild, plus pinned SDK/entry
+ * resolution
+ * evidence (toolchain.state.json, resolvePaseoSdkFromCli diagnostics, candidate
+ * build-identity.json; AEH_ENTRY_FILE stripped fail-closed so entry must be
+ * explicit). PATH hermetic (pinned prefix + minimal system dirs, no ambient
+ * tail; fail-closed to minimal when state missing, fallback `aeh setup`, never
+ * silent ambient). The guard itself is unchanged: a raw bounded env without
+ * this sanitization is still denied, and REAL nested `aeh operation start`
+ * inside an operation remains AEH_RECURSIVE_OPERATION_DENIED.
  */
-const FIXTURE_MANAGED_ENVELOPE_KEYS = [
-  "AEH_OPERATION_ID",
-  "AEH_OPERATION_KIND",
-  "AEH_CONTROL_ROOT",
-  "AEH_OPERATION_STATE_REDIRECT",
-  "AEH_OPERATION_WORKSPACE_ID",
-  "AEH_MANAGED_AGENT",
-  "AEH_LOGICAL_AGENT",
-  "AEH_AGENT_ROLE",
-  "AEH_PARENT_OPERATION_ID",
-  "AEH_PARENT_OPERATION_KIND",
-  "AEH_AGENT_PHASE",
-  "AEH_INTERACTIVE_LEAD",
-  "AEH_ORCHESTRATION_ALLOWED",
-  "AEH_ALLOW_NESTED_OPERATION",
-  "AEH_OPERATION_SUPERVISOR",
-  "AEH_PARENT_AGENT_ID",
-  "AEH_SUPERVISOR_GENERATION",
-  "AEH_CONTEXT_OPERATION_ID",
-  "AEH_CONTEXT_PHASE",
-  "AEH_CONTEXT_ROOT",
-  "AEH_ENTRY_FILE",
-  "AEH_SELF_REEXEC",
-  "AEH_CONTROLLER_EPOCH",
-  "AEH_CONTROLLER_TOKEN",
-  "AEH_DETERMINISTIC_PASEO",
-  "AEH_DETERMINISTIC_PASEO_RUNTIME",
-  "AEH_S9_REPO_ROOT",
-  "PASEO_AGENT_ID",
-  "PASEO_PARENT_AGENT_ID",
-  "PASEO_SESSION_ID"
-] as const;
+export {
+  MANAGED_CHILD_ENV_SCRUB_KEYS as FIXTURE_MANAGED_ENVELOPE_KEYS,
+  MANAGED_CHILD_ENV_SCRUB_PREFIXES as FIXTURE_MANAGED_ENVELOPE_PREFIXES,
+  MANAGED_CHILD_ENV_SCRUB_XDG_SHIM_KEYS as FIXTURE_MANAGED_ENVELOPE_XDG_KEYS,
+  HERMITIC_SYSTEM_PATH_DIRS as FIXTURE_HERMITIC_SYSTEM_PATH_DIRS,
+} from "../../../src/utils/process.js";
+import {
+  buildHermeticChildPath,
+  controllerStartupExtraBinPaths,
+  HERMITIC_SYSTEM_PATH_DIRS,
+  normalizeControllerExtraBinPaths,
+  sanitizeManagedChildEnvironment,
+} from "../../../src/utils/process.js";
+import { readFileSync } from "node:fs";
 
-export function sanitizeFixtureChildEnvironment(parent: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...parent };
-  for (const key of FIXTURE_MANAGED_ENVELOPE_KEYS) delete env[key];
+export function sanitizeFixtureChildEnvironment(
+  parent: NodeJS.ProcessEnv = process.env,
+  extraBinPaths?: readonly string[] | string,
+): NodeJS.ProcessEnv {
+  const env = sanitizeManagedChildEnvironment(parent);
+  // Hermetic minimal + controller-supplied extra (no ambient tail, fail-closed).
+  // The fixture method below prepends the pinned prefix when
+  // toolchain.state.json exists. Parent AEH_TOOLCHAIN_EXTRA_BIN_PATHS is
+  // scrubbed and never trusted (model-influenced env cannot inject); only
+  // explicit controller input or the frozen startup snapshot flows.
+  env.PATH = buildHermeticChildPath(
+    undefined,
+    normalizeControllerExtraBinPaths(extraBinPaths ?? controllerStartupExtraBinPaths()),
+  );
   return env;
+}
+
+function fixtureToolchainPrefixSync(repoRoot: string): string | undefined {
+  try {
+    const raw = readFileSync(path.join(repoRoot, ".harness", "toolchain.state.json"), "utf8");
+    const state = JSON.parse(raw) as { binPaths?: string[] };
+    const paths = (state.binPaths ?? []).map((item) => String(item).trim()).filter(Boolean);
+    // Stale machine-local entries are harmless: exec lookup skips missing dirs
+    // fail-closed to the next PATH entry (prod async version filters via access).
+    return paths.length ? paths.join(process.platform === "win32" ? ";" : ":") : undefined;
+  } catch { return undefined; }
 }
 
 export interface StartResult {
@@ -325,7 +335,14 @@ export class ControlCenterJourneyFixture {
   get start(): StartResult | undefined { return this.startResultCache; }
 
   private childEnvironment(): NodeJS.ProcessEnv {
-    return sanitizeFixtureChildEnvironment(process.env);
+    const env = sanitizeFixtureChildEnvironment(process.env);
+    // Hermetic: pinned prefix (when toolchain.state.json exists) +
+    // controller-supplied extra + minimal, no ambient tail. Fail-closed to
+    // minimal when both are missing (fallback `aeh setup` or controller
+    // startup -> options, never silent ambient nor per-turn env).
+    const prefix = fixtureToolchainPrefixSync(this.candidate.repoRoot);
+    env.PATH = buildHermeticChildPath(prefix, normalizeControllerExtraBinPaths(controllerStartupExtraBinPaths()));
+    return env;
   }
 
   async api(): Promise<ReleaseApi> {

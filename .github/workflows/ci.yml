@@ -270,6 +270,13 @@ jobs:
           npm install --global "@engram-ai-memory/cli@$ENGRAM_VERSION"
           test "$(cd "$RUNNER_TEMP/aeh-provider-tools" && mise exec -- pnpm --version)" = "$PNPM_VERSION"
           (cd "$RUNNER_TEMP/aeh-provider-tools" && mise exec -- trivy --version) | grep -F "Version: $TRIVY_VERSION"
+          # Hermetic toolchain (src/utils/process.ts) blocks silent ambient PATH.
+          # Explicitly mark the CI-provisioned dirs so reconciled PATH resolves
+          # serena/headroom/graphify (uv ~/.local/bin), trivy/pnpm (mise
+          # bin-paths) and engram (npm global) without reopening decoy-shim leakage.
+          MISE_BINS="$(cd "$RUNNER_TEMP/aeh-provider-tools" && mise bin-paths | paste -sd: -)"
+          NPM_BIN="$(npm config get prefix)/bin"
+          printf 'AEH_TOOLCHAIN_EXTRA_BIN_PATHS=%s:%s:%s\n' "$HOME/.local/bin" "$MISE_BINS" "$NPM_BIN" >> "$GITHUB_ENV"
       - name: Start Engram local server
         shell: bash
         run: |
@@ -329,6 +336,13 @@ jobs:
           (cd "$RUNNER_TEMP/aeh-provider-tools" && mise exec -- opengrep --version) | grep -F "$OPENGREP_VERSION"
           test "$(cd "$RUNNER_TEMP/aeh-provider-tools" && mise exec -- openspec --version)" = "$OPENSPEC_VERSION"
           npx playwright install --with-deps chromium
+          # Hermetic toolchain blocks silent ambient PATH. Explicitly mark the
+          # CI-provisioned dirs so reconciled PATH resolves serena/headroom/
+          # graphify (uv), openspec/trivy/opengrep/pnpm (mise) and engram (npm
+          # global) without reopening decoy-shim leakage.
+          MISE_BINS="$(cd "$RUNNER_TEMP/aeh-provider-tools" && mise bin-paths | paste -sd: -)"
+          NPM_BIN="$(npm config get prefix)/bin"
+          printf 'AEH_TOOLCHAIN_EXTRA_BIN_PATHS=%s:%s:%s\n' "$HOME/.local/bin" "$MISE_BINS" "$NPM_BIN" >> "$GITHUB_ENV"
       - name: Start Engram local server
         shell: bash
         run: |
@@ -373,6 +387,12 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           (cd "$RUNNER_TEMP/aeh-provider-tools" && mise bin-paths) >> "$GITHUB_PATH"
           (cd "$RUNNER_TEMP/aeh-provider-tools" && mise exec -- trivy --version) | grep -F "Version: $TRIVY_VERSION"
+          # Hermetic toolchain blocks silent ambient PATH (disposable worktree has
+          # no state). Explicitly mark mise bins + cosign so SBOM generation
+          # resolves trivy/cosign without reopening decoy-shim leakage.
+          MISE_BINS="$(cd "$RUNNER_TEMP/aeh-provider-tools" && mise bin-paths | paste -sd: -)"
+          COSIGN_BIN="$(dirname "$(command -v cosign)")"
+          printf 'AEH_TOOLCHAIN_EXTRA_BIN_PATHS=%s:%s:%s\n' "$HOME/.local/bin" "$MISE_BINS" "$COSIGN_BIN" >> "$GITHUB_ENV"
       - name: Create disposable candidate worktree
         shell: bash
         run: |

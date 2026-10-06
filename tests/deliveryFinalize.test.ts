@@ -143,16 +143,22 @@ describe("accepted issue delivery finalization", () => {
     const wrapper = path.join(fakeBin, "git");
     await fs.writeFile(wrapper, `#!/bin/sh\nif [ "${"$1"}" = "add" ]; then printf 'raced mutation\\n' > "${"$AEH_FINALIZE_REPO"}/README.md"; fi\nexec "${realGit}" "${"$@"}"\n`, { mode: 0o755 });
     await fs.chmod(wrapper, 0o755);
-    const previousPath = process.env.PATH;
-    process.env.PATH = `${fakeBin}${path.delimiter}${previousPath ?? ""}`;
+    // Hermetic migration: ambient PATH no longer reaches managed children, so
+    // the fake git is pinned via toolchain state at the fixture parent (kept
+    // out of the repo tree so the candidate worktree digest is untouched).
+    // Stale/missing state migrates the same way: run `aeh setup`, then retry.
+    const { clearToolchainEnvCache } = await import("../src/utils/process.js");
+    await fs.mkdir(path.join(path.dirname(context.repo), ".harness"), { recursive: true });
+    await fs.writeFile(path.join(path.dirname(context.repo), ".harness", "toolchain.state.json"), JSON.stringify({ version: 1, binPaths: [fakeBin] }));
+    clearToolchainEnvCache();
     process.env.AEH_FINALIZE_REPO = context.repo;
     try {
       await expect(finalizeAcceptedIssue(context.repo, context.config, context.contract, { candidate: context.candidate })).rejects.toThrow("git commit failed");
       expect(await git(context.repo, "log", "-1", "--pretty=%s")).toBe("base");
       expect(context.requests).toHaveLength(0);
     } finally {
-      process.env.PATH = previousPath;
       delete process.env.AEH_FINALIZE_REPO;
+      clearToolchainEnvCache();
       await fs.rm(fakeBin, { recursive: true, force: true });
     }
   });

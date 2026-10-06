@@ -23,6 +23,261 @@ export interface ManagedProcessHandle {
 const toolchainPathCache = new Map<string, string | undefined>();
 export function clearToolchainEnvCache(): void { toolchainPathCache.clear(); }
 
+/**
+ * Canonical managed-envelope scrub list (C6).
+ *
+ * MECHANISM: DETERMINISTIC. Single source shared by prod runChild and the
+ * browser fixture sanitizer. Strips controller identity, the managed-agent
+ * envelope, participant/candidate/lease/binding/scratch authority, deterministic
+ * Paseo markers, S9 roots, Paseo session binding, context extras, NODE_PATH
+ * host leakage (consistent with sdkResolve's NODE_PATH scrub during resolve),
+ * all MISE_* and ASDF_* shim configuration, XDG shim-directory overrides,
+ * and AEH_TOOLCHAIN_EXTRA_BIN_PATHS (controller-input-only; never from
+ * merged per-turn env).
+ *
+ * Shim-var enumeration (mise docs/behavior in-repo):
+ * - MISE_* prefix: covers MISE_DATA_DIR, MISE_INSTALLS_DIR, MISE_SHIMS_DIR,
+ *   MISE_SYSTEM_DATA_DIR, MISE_SYSTEM_INSTALLS_DIR, MISE_SYSTEM_SHIMS_DIR,
+ *   MISE_CONFIG_DIR, MISE_CACHE_DIR, MISE_STATE_DIR, MISE_CONFIG_FILE,
+ *   MISE_ENV, MISE_ENV_FILE, MISE_TRUSTED_CONFIG_PATHS, MISE_SHELL,
+ *   MISE_TOOL_* / MISE_*_VERSION overrides, MISE_OVERRIDE_*, MISE_PIPX_UVX,
+ *   MISE_PYPI_UVX, MISE_ASDF_COMPAT, MISE_DISABLE_BACKENDS, etc.
+ *   Sources: mise directories table + env.rs (MISE_DATA_DIR/INSTALLS/SHIMS),
+ *   settings reference (shims_dir/system_shims_dir/trusted_config_paths),
+ *   in-repo src/toolchain/mise.ts (MISE_PIPX_UVX/MISE_PYPI_UVX).
+ * - ASDF_* prefix: asdf-compat backend (ASDF_DATA_DIR/CONFIG_FILE) can redirect
+ *   mise's asdf backend to host shims; scrubbed for the same reason.
+ * - XDG_DATA_HOME/XDG_CONFIG_HOME/XDG_CACHE_HOME/XDG_STATE_HOME: control mise
+ *   defaults (data/config/cache/state dirs) when MISE_* unset (mise directories
+ *   table); scrubbed so host XDG cannot reintroduce host installs/shims.
+ *   Other XDG_* (SESSION/DESKTOP/etc.) are not shim-resolving and are preserved.
+ * - AEH_TOOLCHAIN_EXTRA_BIN_PATHS: controller-input-only extra bins. Scrubbed
+ *   so a model-influenced merged parent env (options.env + live process.env)
+ *   can never inject absolute shim dirs. The only inflow is explicit
+ *   ProcessOptions.toolchainExtraBinPaths from the operation controller's
+ *   startup-resolved config (outer trusted env read once, or project config),
+ *   plus the frozen startup snapshot for static/CI contexts. Never per-turn env.
+ *
+ * PATH is hermetic (no ambient tail, not even filtered): managed children
+ * (toolchain !== false) get `pinned prefix + explicit extra + minimal system
+ * dirs` when `.harness/toolchain.state.json` exists and/or controller-supplied
+ * extra bins exist, and minimal system dirs ONLY when both are missing.
+ * Ambient PATH is never consulted:
+ * mise-provisioned tools, `~/.local/bin`, `/opt/homebrew/bin`, temp-dir test
+ * stubs, and every other ambient-only directory do NOT resolve in the
+ * missing-state-and-unmarked case. Explicit marking is controller-input-only:
+ * only absolute dirs supplied via ProcessOptions.toolchainExtraBinPaths (or
+ * the frozen controller startup snapshot fed from outer trusted env) are
+ * honored beyond the pinned prefix (CI mise bin-paths + ~/.local/bin +
+ * npm-global/cosign dirs flow outer trusted env -> controller startup ->
+ * options). Merged per-turn env (options.env + live process.env) never flows.
+ * The pinned prefix comes from
+ * `.harness/toolchain.state.json` (toolchainPathPrefix); the Paseo SDK via
+ * `resolvePaseoSdkFromCli` diagnostics; the candidate release via
+ * `dist/releases/<id>/build-identity.json` plus AEH_S9_REPO_ROOT. AEH_ENTRY_FILE
+ * is stripped fail-closed so entry resolution must be explicit (argv[1]).
+ *
+ * Hermetic PATH breakage (fail-closed, never silent ambient):
+ * - When toolchain.state.json is missing and no explicit marking exists
+ *   (fresh checkout, disposable fixture root, CI without setup/marking):
+ *   mise-provisioned `node/npm/paseo/opencode/codex/python/uv/...` are NOT in
+ *   minimal system dirs and will NOT be found. Direct spawns reject with
+ *   AEH_TOOLCHAIN_NOT_CONFIGURED (run `aeh setup` to generate
+ *   `.harness/toolchain.state.json`, or explicitly mark CI mise bins via
+ *   AEH_TOOLCHAIN_EXTRA_BIN_PATHS, then retry); shell commands fail visibly
+ *   (127/command-not-found); resolveExecutable/commandExists report unresolved
+ *   so callers surface missing-tool errors. Never falls back to ambient, not
+ *   even filtered ambient.
+ * - When a system tool lives only in a non-standard ambient dir (e.g.
+ *   ~/.local/bin, /opt/homebrew/bin, ~/.bun/bin, flatpak exports): it will NOT
+ *   be found in hermetic minimal unless explicitly marked. Fallback: install
+ *   via standard system dirs (/usr/local/bin:/usr/bin:/bin), declare via
+ *   toolchain config and run `aeh setup`, or explicitly mark the dir via
+ *   AEH_TOOLCHAIN_EXTRA_BIN_PATHS; fail-closed with missing-command error,
+ *   never silent ambient resolution.
+ * - Migration (stale/missing state): run `aeh setup` to (re)generate
+ *   `.harness/toolchain.state.json`, then retry; CI ambient mise shapes set
+ *   AEH_TOOLCHAIN_EXTRA_BIN_PATHS explicitly instead of relying on ambient.
+ *   Tests that stub executables via ambient PATH must pin the stub dir in the
+ *   state binPaths (or mark via AEH_TOOLCHAIN_EXTRA_BIN_PATHS, or use
+ *   toolchain:false / absolute executable paths) instead of relying on ambient
+ *   resolution.
+ * - toolchain:false (mise internal: `mise --version`, trust, install, bin-paths,
+ *   which, container pulls, project-dependency setup with explicit PATH) keeps
+ *   ambient/explicit PATH to locate `mise` itself, but still scrubs ambient
+ *   MISE_* and ASDF_* and XDG-shim vars; only explicit options.env MISE_* are
+ *   re-allowed for toolchain:false (required for MISE_PIPX_UVX and MISE_PYPI_UVX
+ *   in `mise lock`).
+ *
+ * Fail-closed: even explicit options.env values for scrubbed keys are removed
+ * in managed children (toolchain !== false); repository children must use
+ * explicit roots, never inherited controller identity or host shim config.
+ */
+export const MANAGED_CHILD_ENV_SCRUB_KEYS = [
+  "AEH_OPERATION_ID", "AEH_OPERATION_KIND", "AEH_CONTROL_ROOT", "AEH_OPERATION_STATE_REDIRECT", "AEH_OPERATION_WORKSPACE_ID",
+  "AEH_MANAGED_AGENT", "AEH_LOGICAL_AGENT", "AEH_AGENT_ROLE", "AEH_PARENT_OPERATION_ID", "AEH_PARENT_OPERATION_KIND", "AEH_AGENT_PHASE",
+  "AEH_INTERACTIVE_LEAD", "AEH_ORCHESTRATION_ALLOWED", "AEH_ALLOW_NESTED_OPERATION", "AEH_OPERATION_SUPERVISOR", "AEH_PARENT_AGENT_ID",
+  "AEH_SUPERVISOR_GENERATION", "AEH_CONTEXT_OPERATION_ID", "AEH_CONTEXT_PHASE", "AEH_CONTEXT_ROOT", "AEH_ENTRY_FILE",
+  "AEH_SELF_REEXEC",
+  "AEH_CONTROLLER_EPOCH", "AEH_CONTROLLER_TOKEN",
+  "AEH_DETERMINISTIC_PASEO", "AEH_DETERMINISTIC_PASEO_RUNTIME",
+  "AEH_S9_REPO_ROOT",
+  "PASEO_AGENT_ID", "PASEO_PARENT_AGENT_ID", "PASEO_SESSION_ID",
+  "AEH_PARTICIPANT_ID",
+  "AEH_CANDIDATE_DIGEST",
+  "AEH_CAPABILITY_LEASES",
+  "AEH_EXECUTION_BINDING",
+  "AEH_CONTEXT_MANIFEST_DIGEST", "AEH_PROMPT_MANIFEST_DIGEST", "AEH_SKILL_MANIFEST_DIGEST",
+  "AEH_SCRATCH_RESOURCE", "AEH_SCRATCH_DIGEST",
+  "AEH_CONTEXT_CONTROL_ROOT", "AEH_CONTEXT_PARTICIPANT_ID", "AEH_CONTEXT_SESSION_ID",
+  "AEH_SUPERVISOR_SESSION_ID",
+  "NODE_PATH",
+  "AEH_TOOLCHAIN_EXTRA_BIN_PATHS",
+] as const;
+
+/** Prefix-scrubbed shim config (all current/future MISE_* + asdf-compat ASDF_*). */
+export const MANAGED_CHILD_ENV_SCRUB_PREFIXES = ["MISE_", "ASDF_"] as const;
+
+/** XDG overrides that control mise defaults (data/config/cache/state dirs). */
+export const MANAGED_CHILD_ENV_SCRUB_XDG_SHIM_KEYS = [
+  "XDG_DATA_HOME",
+  "XDG_CONFIG_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_STATE_HOME",
+] as const;
+
+/** Minimal system dirs for hermetic PATH (no ambient tail). See breakage docs above. */
+export const HERMITIC_SYSTEM_PATH_DIRS: readonly string[] = process.platform === "win32"
+  ? ["C:\\Windows\\System32", "C:\\Windows"]
+  : ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"];
+
+/**
+ * Explicitly-marked extra toolchain bin paths (DETERMINISTIC, controller-input-only).
+ *
+ * CI provider jobs (full-stack-contract, provider-contracts, supply-chain)
+ * provision real providers via ambient `mise bin-paths >> GITHUB_PATH` plus
+ * `~/.local/bin` (uv tools) and npm-global/cosign dirs, without running
+ * `aeh setup` and without a `.harness/toolchain.state.json` under isolated
+ * temp-dir fixture roots. Hermetic blocks silent ambient, so those jobs fail
+ * with reconciled-PATH misses. This allowlist restores them explicitly, but
+ * ONLY as controller input:
+ *
+ *   outer trusted env (CI GITHUB_ENV exports) -> controller startup (trusted
+ *   context, read once) -> ProcessOptions.toolchainExtraBinPaths (or the frozen
+ *   startup snapshot below for static contexts) -> hermetic PATH.
+ *
+ * Per-turn env is NEVER trusted: AEH_TOOLCHAIN_EXTRA_BIN_PATHS is in the
+ * canonical SCRUB list, so merged `process.env + options.env` never flows to
+ * managed children. Only absolute dirs are honored; unlisted ambient dirs
+ * (decoy shims, host farms) stay blocked. Unset/empty preserves fail-closed
+ * minimal-only behavior.
+ */
+export const AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV = "AEH_TOOLCHAIN_EXTRA_BIN_PATHS";
+
+/**
+ * Parse a trusted controller startup env record (DETERMINISTIC).
+ *
+ * TRUST BOUNDARY: call ONLY with the controller's own startup-resolved env
+ * (outer trusted env read once in trusted context, or project config derived
+ * input). NEVER call with merged per-turn env (`{...process.env, ...options.env}`,
+ * sanitized `inherited`, or live `process.env` at call time): that path lets a
+ * model-influenced env inject absolute shim dirs. runChild/resolveExecutable
+ * never call this on untrusted env; they use explicit options or the frozen
+ * startup snapshot.
+ */
+export function explicitExtraBinPaths(env: NodeJS.ProcessEnv | Record<string, string | undefined>): string[] {
+  const raw = (env as Record<string, unknown>)[AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV];
+  return normalizeControllerExtraBinPaths(typeof raw === "string" ? raw : undefined);
+}
+
+/** Normalize explicit controller extra-bin input (absolute-only, deduped). */
+export function normalizeControllerExtraBinPaths(value: readonly string[] | string | undefined): string[] {
+  if (value === undefined) return [];
+  const parts = typeof value === "string" ? value.split(path.delimiter) : value;
+  const seen = new Set<string>();
+  for (const part of parts) {
+    const trimmed = String(part).trim();
+    if (!trimmed || !path.isAbsolute(trimmed)) continue;
+    const normalized = path.normalize(trimmed);
+    if (!seen.has(normalized)) seen.add(normalized);
+  }
+  return [...seen];
+}
+
+/**
+ * Frozen controller startup snapshot (DETERMINISTIC).
+ *
+ * Captured once at module load from the outer trusted env, before any
+ * per-turn model-influenced mutation. This is the static/CI inflow that keeps
+ * `.github/workflows/ci.yml` GITHUB_ENV exports working: the CI controller
+ * process starts with AEH_TOOLCHAIN_EXTRA_BIN_PATHS set, the snapshot freezes
+ * it, and runChild/resolveExecutable fall back to it when the caller does not
+ * supply explicit `toolchainExtraBinPaths`. Live `process.env` mutations and
+ * `options.env` values after startup are ignored.
+ */
+const CONTROLLER_STARTUP_EXTRA_BIN_PATHS: readonly string[] = Object.freeze(
+  normalizeControllerExtraBinPaths(
+    typeof process.env[AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV] === "string"
+      ? process.env[AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV]
+      : undefined,
+  ),
+);
+
+/** Read-only accessor for the frozen controller startup extra bins. */
+export function controllerStartupExtraBinPaths(): readonly string[] {
+  return CONTROLLER_STARTUP_EXTRA_BIN_PATHS;
+}
+
+/**
+ * Resolve trusted outer env -> controller options input (DETERMINISTIC).
+ *
+ * Helper for the operation controller (and tests simulating it): parse a
+ * trusted startup env record once, then thread the result via
+ * `ProcessOptions.toolchainExtraBinPaths`. Never pass per-turn merged env here.
+ */
+export function resolveControllerExtraBinPaths(
+  trustedEnv: NodeJS.ProcessEnv | Record<string, string | undefined>,
+): string[] {
+  return explicitExtraBinPaths(trustedEnv);
+}
+
+/** Build hermetic PATH: pinned prefix + explicit extra + minimal system dirs, no ambient tail. */
+export function buildHermeticChildPath(prefix?: string, explicitExtra?: readonly string[] | string): string {
+  const explicit = typeof explicitExtra === "string"
+    ? explicitExtra.split(path.delimiter).map((part) => part.trim()).filter(Boolean)
+    : (explicitExtra ?? []);
+  const parts = [prefix, ...explicit, ...HERMITIC_SYSTEM_PATH_DIRS].filter(Boolean);
+  return parts.join(path.delimiter);
+}
+
+export function sanitizeManagedChildEnvironment(parent: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...parent };
+  for (const key of MANAGED_CHILD_ENV_SCRUB_KEYS) delete env[key];
+  for (const key of Object.keys(env)) {
+    for (const prefix of MANAGED_CHILD_ENV_SCRUB_PREFIXES) {
+      if (key.startsWith(prefix)) { delete env[key]; break; }
+    }
+  }
+  for (const key of MANAGED_CHILD_ENV_SCRUB_XDG_SHIM_KEYS) delete env[key];
+  return env;
+}
+
+export function managedChildEnvScrubEvidence(parent: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): { removed: string[]; pinned: { toolchainState: string; sdkDiagnostics: string; candidateIdentity: string; entryExplicit: string } } {
+  const record = parent as Record<string, unknown>;
+  const removedExact = (MANAGED_CHILD_ENV_SCRUB_KEYS as readonly string[]).filter((key) => record[key] !== undefined);
+  const removedPrefix = Object.keys(record).filter((key) => (MANAGED_CHILD_ENV_SCRUB_PREFIXES as readonly string[]).some((prefix) => key.startsWith(prefix)));
+  const removedXdg = (MANAGED_CHILD_ENV_SCRUB_XDG_SHIM_KEYS as readonly string[]).filter((key) => record[key] !== undefined);
+  return {
+    removed: [...removedExact, ...removedPrefix, ...removedXdg],
+    pinned: {
+      toolchainState: ".harness/toolchain.state.json",
+      sdkDiagnostics: "resolvePaseoSdkFromCli.diagnostics",
+      candidateIdentity: "dist/releases/<id>/build-identity.json",
+      entryExplicit: "process.argv[1] (AEH_ENTRY_FILE stripped fail-closed)",
+    },
+  };
+}
+
 export interface ProcessOptions {
   cwd: string;
   timeoutMs?: number;
@@ -32,6 +287,16 @@ export interface ProcessOptions {
   signal?: AbortSignal;
   /** Retain only the final N bytes per stream while hashing/counting the full output. */
   captureOutputLimitBytes?: number;
+  /**
+   * Controller-input-only extra toolchain bin dirs (DETERMINISTIC).
+   *
+   * The operation controller supplies this from its startup-resolved config
+   * (outer trusted env read once, or project config), never from per-turn
+   * env. `options.env[AEH_TOOLCHAIN_EXTRA_BIN_PATHS]` is scrubbed and ignored:
+   * a model-influenced env cannot inject shim dirs. When omitted, the frozen
+   * controller startup snapshot applies (keeps CI GITHUB_ENV exports working).
+   */
+  toolchainExtraBinPaths?: readonly string[] | string;
 }
 
 /** Execute one program with literal argv boundaries and no shell parsing. */
@@ -58,7 +323,7 @@ async function runChild(
   options: ProcessOptions
 ): Promise<ProcessResult> {
   const started = Date.now();
-  const inherited = { ...process.env, ...(options.env ?? {}) };
+  const inherited = sanitizeManagedChildEnvironment({ ...process.env, ...(options.env ?? {}) });
   // Controller identity is authoritative only inside the controller/AEH
   // process itself. Never leak it into arbitrary shell commands such as
   // npm test, whose explicit repository root must remain authoritative.
@@ -66,15 +331,43 @@ async function runChild(
   // owns it. Repository commands and tools must not inherit it: otherwise a
   // bounded child can be mistaken for an AEH participant and re-enter the
   // controller, or observe another operation's routing state.
-  for (const name of [
-    "AEH_OPERATION_ID", "AEH_OPERATION_KIND", "AEH_CONTROL_ROOT", "AEH_OPERATION_STATE_REDIRECT", "AEH_OPERATION_WORKSPACE_ID",
-    "AEH_MANAGED_AGENT", "AEH_LOGICAL_AGENT", "AEH_AGENT_ROLE", "AEH_PARENT_OPERATION_ID", "AEH_PARENT_OPERATION_KIND", "AEH_AGENT_PHASE",
-    "AEH_INTERACTIVE_LEAD", "AEH_ORCHESTRATION_ALLOWED", "AEH_ALLOW_NESTED_OPERATION", "AEH_OPERATION_SUPERVISOR", "AEH_PARENT_AGENT_ID",
-    "AEH_SUPERVISOR_GENERATION", "AEH_CONTEXT_OPERATION_ID", "AEH_CONTEXT_PHASE", "AEH_CONTEXT_ROOT", "AEH_ENTRY_FILE"
-  ]) delete inherited[name];
+  // Canonical scrub: MANAGED_CHILD_ENV_SCRUB_KEYS plus MISE_* and ASDF_*
+  // prefixes plus XDG shim keys plus AEH_TOOLCHAIN_EXTRA_BIN_PATHS (single
+  // source; fixture shares it). PATH for managed children is hermetic ALWAYS:
+  // pinned prefix + controller-supplied extra + minimal when state and/or
+  // controller extra exists, minimal ONLY when both are missing (no ambient
+  // tail, not even filtered). Missing pinned and unmarked ambient-only tools
+  // fail VISIBLY (ENOENT carries the `aeh setup` direction when neither prefix
+  // nor controller extra exists; shell 127s surface unmodified); stale state
+  // migrates via `aeh setup`, CI ambient mise shapes flow outer trusted env ->
+  // controller startup -> options/snapshot, never per-turn env.
+  // NODE_PATH and MISE_* and related shim vars stripped.
+  let toolchainPrefixMissing = false;
   if (options.toolchain !== false) {
     const prefix = await toolchainPathPrefix(options.cwd);
-    if (prefix) inherited.PATH = `${prefix}${path.delimiter}${inherited.PATH ?? ""}`;
+    // Hermetic: ignore ambient AND explicit PATH tails AND merged per-turn
+    // AEH_TOOLCHAIN_EXTRA_BIN_PATHS (scrubbed above, fail-closed). Only
+    // controller input is honored: explicit options.toolchainExtraBinPaths,
+    // else the frozen controller startup snapshot. See trust docs above.
+    const explicit = normalizeControllerExtraBinPaths(
+      options.toolchainExtraBinPaths ?? controllerStartupExtraBinPaths(),
+    );
+    inherited.PATH = buildHermeticChildPath(prefix, explicit);
+    toolchainPrefixMissing = !prefix && explicit.length === 0;
+  } else {
+    // toolchain:false (mise internal, container pulls, explicit-PATH setup):
+    // keep ambient/explicit PATH to locate `mise` itself, but ambient MISE_*
+    // and related shim vars stay scrubbed; only explicit options.env MISE_*
+    // and ASDF_* are re-allowed (required for MISE_PIPX_UVX and MISE_PYPI_UVX
+    // in `mise lock --bump`).
+    const explicit = options.env ?? {};
+    for (const key of Object.keys(explicit)) {
+      if ((MANAGED_CHILD_ENV_SCRUB_PREFIXES as readonly string[]).some((prefix) => key.startsWith(prefix))) {
+        const value = explicit[key];
+        if (value === undefined) delete inherited[key];
+        else inherited[key] = value;
+      }
+    }
   }
   return await new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -136,7 +429,7 @@ async function runChild(
       if (killTimer) clearTimeout(killTimer);
       if (forceSettleTimer) clearTimeout(forceSettleTimer);
       options.signal?.removeEventListener("abort", onAbort);
-      void unregister().finally(() => reject(error));
+      void unregister().finally(() => reject(missingToolchainError(error, options, toolchainPrefixMissing)));
     });
     child.on("exit", (code, signal) => {
       exited = true;
@@ -176,6 +469,25 @@ async function runChild(
       }));
     }
   });
+}
+
+/**
+ * Fail VISIBLE when pinned tools are unavailable (DETERMINISTIC).
+ *
+ * A managed child (toolchain !== false) whose working directory has no pinned
+ * prefix and no explicitly-marked extra bin paths runs with minimal system
+ * dirs only. When the OS cannot spawn the executable at all (ENOENT:
+ * ambient-only tool, mise install, or stub with neither state nor explicit
+ * marking), surface an explicit error directing to `aeh setup` (or explicit
+ * CI marking via AEH_TOOLCHAIN_EXTRA_BIN_PATHS) instead of a bare spawn
+ * ENOENT. All other errors pass through unmodified; shell 127s
+ * (command-not-found inside sh) already fail visibly via exit code.
+ */
+function missingToolchainError(error: unknown, options: ProcessOptions, prefixMissing: boolean): unknown {
+  if (!prefixMissing || options.toolchain === false) return error;
+  if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") return error;
+  const message = error instanceof Error ? error.message : String(error);
+  return new Error(`${message} (AEH_TOOLCHAIN_NOT_CONFIGURED: no pinned toolchain prefix nor AEH_TOOLCHAIN_EXTRA_BIN_PATHS marking for '${options.cwd}', so the managed PATH is minimal system dirs only with no ambient fallback. Run \`aeh setup\` to generate .harness/toolchain.state.json (or explicitly mark CI mise bins via AEH_TOOLCHAIN_EXTRA_BIN_PATHS), then retry.)`);
 }
 
 class BoundedOutput {
@@ -272,15 +584,35 @@ function managedProcessDirectory(root: string, operationId: string): string {
   return path.resolve(root, ".harness", "operations", `${safeOperationId}.processes`);
 }
 
-export async function commandExists(command: string, cwd: string): Promise<boolean> {
-  return (await resolveExecutable(command, cwd)) !== undefined;
+export async function commandExists(
+  command: string,
+  cwd: string,
+  options?: Pick<ProcessOptions, "toolchainExtraBinPaths">,
+): Promise<boolean> {
+  return (await resolveExecutable(command, cwd, options)) !== undefined;
 }
 
-export async function resolveExecutable(command: string, cwd: string): Promise<string | undefined> {
+export async function resolveExecutable(
+  command: string,
+  cwd: string,
+  options?: Pick<ProcessOptions, "toolchainExtraBinPaths">,
+): Promise<string | undefined> {
   if (!command.trim()) return undefined;
   const directPath = path.isAbsolute(command) || command.includes(path.sep) || (path.sep === "/" && command.includes("\\"));
   const prefix = await toolchainPathPrefix(cwd);
-  const searchPath = [prefix, process.env.PATH].filter(Boolean).join(path.delimiter);
+  // Hermetic always: pinned prefix + controller-supplied extra + minimal when
+  // state and/or controller extra exists, minimal ONLY when both are missing
+  // (no ambient tail, not even filtered). Unmarked ambient-only executables
+  // (decoy shims, host farms, unmarked mise installs, ~/.local/bin, temp-dir
+  // stubs) do NOT resolve: callers surface missing-tool errors visibly instead
+  // of silently running an unpinned binary. Migration: run `aeh setup` for
+  // pinned state, or supply controller extra bins via
+  // ProcessOptions.toolchainExtraBinPaths (outer trusted env -> controller
+  // startup -> options; never per-turn env).
+  const explicit = normalizeControllerExtraBinPaths(
+    options?.toolchainExtraBinPaths ?? controllerStartupExtraBinPaths(),
+  );
+  const searchPath = buildHermeticChildPath(prefix, explicit);
   const directories = directPath ? [path.dirname(path.resolve(cwd, command))] : searchPath.split(path.delimiter).filter(Boolean);
   const baseName = directPath ? path.basename(command) : command;
   const extensions = process.platform === "win32"

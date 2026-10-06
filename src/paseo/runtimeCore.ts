@@ -1,4 +1,5 @@
 import process from "node:process";
+import { createHash } from "node:crypto";
 import type { OpenCodeAgentBindingSource } from "../agents/permissions.js";
 import { currentOperationContext, loadOperation, registerCurrentOperationAgent } from "../operations/state.js";
 import type { ExecutionBindingV3 } from "../architecture/executionIdentity.js";
@@ -116,23 +117,29 @@ export async function launchManagedPaseoAgent(
   deps: PaseoRuntimeDeps = defaultDeps()
 ): Promise<ManagedPaseoAgentResult> {
   const trace = deps.trace ?? defaultDeps().trace!;
+  // Idempotency key derivation is transport-agnostic (DETERMINISTIC frozen-label
+  // hash): derive once so the SDK and CLI launch paths share the same guard and
+  // the CLI fallback can never silently duplicate a turn the SDK path would reuse.
+  const idempotentOptions = withTurnIdempotencyKey(options);
   if (!forceCli()) {
-    await ensurePreflight(root, options, deps);
-    await traceResolvedIdentity(root, options, trace);
+    await ensurePreflight(root, idempotentOptions, deps);
+    await traceResolvedIdentity(root, idempotentOptions, trace);
     try {
-      const created = fromSdk(await deps.sdk.create(root, { ...options, waitForFinish: false }));
-      await registerManagedAgent(root, options, created);
-      await trace(root, "agent.launch", { transport: "sdk", agentId: created.id ?? "", provider: options.provider, model: options.model ?? "", modeId: options.modeId ?? "", modeSource: options.modeSource ?? "", status: created.status ?? "unknown" });
-      if (!created.id || options.prompt === undefined || options.waitForFinish === false) return created;
-      return waitManagedPaseoAgent(root, created.id, options.timeoutSeconds ?? secondsFromMs(options.timeoutMs), deps, undefined, options.permissionScopeRoots);
+      const reused = await reuseLiveIdempotentTurn(root, idempotentOptions, deps, trace);
+      if (reused) return reused;
+      const created = fromSdk(await deps.sdk.create(root, { ...idempotentOptions, waitForFinish: false }));
+      await registerManagedAgent(root, idempotentOptions, created);
+      await trace(root, "agent.launch", { transport: "sdk", agentId: created.id ?? "", provider: idempotentOptions.provider, model: idempotentOptions.model ?? "", modeId: idempotentOptions.modeId ?? "", modeSource: idempotentOptions.modeSource ?? "", status: created.status ?? "unknown" });
+      if (!created.id || idempotentOptions.prompt === undefined || idempotentOptions.waitForFinish === false) return created;
+      return waitManagedPaseoAgent(root, created.id, idempotentOptions.timeoutSeconds ?? secondsFromMs(idempotentOptions.timeoutMs), deps, undefined, idempotentOptions.permissionScopeRoots);
     } catch (error) {
       if (!sdkCanFallback(error)) throw error;
       await trace(root, "fallback.cli", { operation: "launch", provider: options.provider, model: options.model ?? "", modeId: options.modeId ?? "", reason: errorMessage(error) });
-      return launchCli(root, options, deps, `SDK unavailable: ${errorMessage(error)}`);
+      return launchCli(root, idempotentOptions, deps, `SDK unavailable: ${errorMessage(error)}`);
     }
   }
   await trace(root, "fallback.cli", { operation: "launch", provider: options.provider, model: options.model ?? "", modeId: options.modeId ?? "", reason: "AEH_PASEO_FORCE_CLI=1" });
-  return launchCli(root, options, deps, "AEH_PASEO_FORCE_CLI=1 forced the compatibility lifecycle.");
+  return launchCli(root, idempotentOptions, deps, "AEH_PASEO_FORCE_CLI=1 forced the compatibility lifecycle.");
 }
 
 export async function materializeManagedPaseoAgent(root: string, options: ManagedPaseoAgentOptions, deps: PaseoRuntimeDeps = defaultDeps()): Promise<ManagedPaseoAgentResult> {
@@ -388,9 +395,32 @@ async function updatePaseoExecutionLabels(root: string, agentId: string, labels:
 }
 
 export async function probeManagedPaseoAgent(root: string, agentId: string, deps: PaseoRuntimeDeps = defaultDeps()): Promise<boolean> {
-  if (!forceCli()) { try { return await deps.sdk.probe(root, agentId); } catch (error) { if (!sdkCanFallback(error)) return false; } }
-  const probe = await deps.run(`paseo logs ${quote(agentId)} --tail 1`, { cwd: root, timeoutMs: 30_000 });
-  return probe.exitCode === 0;
+  if (!forceCli()) {
+    try {
+      const inspected = await deps.sdk.inspect(root, agentId);
+      if (inspected) return isLivePaseoAgentStatus(inspected.status);
+      // Fall back to legacy boolean probe only when inspect is unavailable (no status):
+      // fail-closed to false when liveness cannot be positively verified.
+      try {
+        const legacy = await deps.sdk.probe(root, agentId);
+        if (!legacy) return false;
+        const verified = await deps.sdk.inspect(root, agentId).catch(() => undefined);
+        return verified ? isLivePaseoAgentStatus(verified.status) : false;
+      } catch {
+        return false;
+      }
+    } catch (error) { if (!sdkCanFallback(error)) return false; }
+  }
+  // CLI resume: check status positively via `paseo ls --json`, never logs-only.
+  // `paseo logs` success alone is insufficient (dead sessions retain logs);
+  // unknown/missing/unverifiable status is fail-closed to false (never reuse).
+  try {
+    const record = (await listCliAgents(root, deps)).find((agent) => agent.id === agentId);
+    if (!record) return false;
+    return isLivePaseoAgentStatus(record.status);
+  } catch {
+    return false;
+  }
 }
 
 export async function inspectManagedPaseoAgent(root: string, agentId: string, deps: PaseoRuntimeDeps = defaultDeps()): Promise<PaseoSdkAgentRecord | undefined> {
@@ -444,20 +474,38 @@ async function launchCli(root: string, options: ManagedPaseoAgentOptions, deps: 
   if (options.prompt === undefined && options.systemPrompt !== undefined) throw new PaseoSdkUnavailableError(`Paseo SDK is required to create an idle systemPrompt-only agent. Refusing CLI fallback because it would expose session instructions as a user turn. ${fallbackReason}`);
   if (options.env && Object.keys(options.env).length) throw new PaseoSdkUnavailableError(`Paseo SDK is required for session-scoped launch environment used by provider ${options.provider}${options.modeId ? ` mode ${options.modeId}` : ""}. Refusing CLI fallback because dropping that environment could change the native execution identity or permissions. ${fallbackReason}`);
   if (options.providerOptions && Object.keys(options.providerOptions).length) throw new PaseoSdkUnavailableError(`Paseo SDK is required for provider-native options used by provider ${options.provider}. Refusing CLI fallback because dropping the projected sandbox policy could change the participant's execution authority. ${fallbackReason}`);
+  const trace = deps.trace ?? defaultDeps().trace!;
+  // CLI idempotency guard: same key derivation (applied by the caller), same
+  // reuse-live/reap-dead semantics adapted to CLI handles (`paseo ls --json`
+  // records + `paseo stop`). A retry after SDK fallback or under
+  // AEH_PASEO_FORCE_CLI=1 reuses the live CLI orphan instead of silently
+  // creating a duplicate.
+  const reused = await reuseLiveIdempotentCliTurn(root, options, deps, trace, fallbackReason);
+  if (reused) return reused;
   const capabilities = await deps.detectCapabilities(root, deps.run);
   const prompt = options.prompt;
   if (prompt === undefined) throw new Error("Paseo CLI fallback requires a prompt.");
   const timeout = options.timeoutSeconds ?? Math.max(1, Math.ceil((options.timeoutMs ?? 1_800_000) / 1000));
+  // Propagate the idempotency filter labels onto the CLI agent so a later retry
+  // can match this launch. Task/role/phase ride along for observability; large
+  // JSON labels (execution binding, provenance) are never propagated to CLI.
+  const labelArgs = cliIdempotencyLabels(options).map(([key, value]) => `--label ${quote(`${key}=${value}`)}`);
   if (options.outputSchema) {
     if (!capabilities.outputSchema) throw new Error(`Installed Paseo${capabilities.version ? ` ${capabilities.version}` : ""} does not advertise --output-schema required by this agent.`);
     const parts = ["paseo run --quiet", `--title ${quote(options.title)}`, `--provider ${quote(options.provider)}`];
     if (options.workspaceId) parts.push(`--workspace ${quote(options.workspaceId)}`);
     if (options.model) parts.push(`--model ${quote(options.model)}`);
-    parts.push(`--output-schema ${quote(JSON.stringify(options.outputSchema))}`, quote(prompt));
+    parts.push(`--output-schema ${quote(JSON.stringify(options.outputSchema))}`, ...labelArgs, quote(prompt));
     const result = await deps.run(parts.join(" "), { cwd: root, timeoutMs: timeout * 1000 });
     return { exitCode: result.exitCode, stdout: result.stdout, stderr: [fallbackReason, result.stderr].filter(Boolean).join("\n"), status: result.exitCode === 0 ? "idle" : "failed", transport: "cli" };
   }
-  const command = buildPaseoBackgroundRunCommand({ title: options.title, provider: options.provider, model: options.model, workspaceId: options.workspaceId, prompt }, capabilities);
+  const base = buildPaseoBackgroundRunCommand({ title: options.title, provider: options.provider, model: options.model, workspaceId: options.workspaceId, prompt }, capabilities);
+  const quotedPrompt = quote(prompt);
+  // buildPaseoBackgroundRunCommand always appends the quoted prompt last; the
+  // labels must precede it. Fail-closed: never launch unlabeled when the shape
+  // is unexpected (that would silently reintroduce the duplicate-create bypass).
+  if (!base.endsWith(quotedPrompt)) throw new Error(`PASEO_CLI_IDEMPOTENCY_LABEL_FAILED: background run command does not end with the quoted prompt; refusing to launch without idempotency labels. ${fallbackReason}`);
+  const command = labelArgs.length ? `${base.slice(0, base.length - quotedPrompt.length)}${labelArgs.join(" ")} ${quotedPrompt}` : base;
   const launch = await deps.run(command, { cwd: root, timeoutMs: 60_000 });
   if (launch.exitCode !== 0) return { exitCode: launch.exitCode, stdout: launch.stdout, stderr: [fallbackReason, launch.stderr].filter(Boolean).join("\n"), status: "failed", transport: "cli" };
   const id = extractPaseoAgentId(launch.stdout);
@@ -497,6 +545,210 @@ function collectCliAgents(value: unknown, out: Map<string, PaseoSdkAgentRecord>)
   const id = firstString(record, ["id", "agentId", "agent_id"]);
   if (id && ("status" in record || "title" in record || "labels" in record)) out.set(id, { id, title: firstString(record, ["title", "name"]), status: statusText(record.status), workspaceId: firstString(record, ["workspaceId", "workspace_id"]), labels: stringRecord(record.labels), raw: record });
   for (const child of Object.values(record)) collectCliAgents(child, out);
+}
+
+/**
+ * Orphan/duplicate-turn guards (D5).
+ *
+ * MECHANISM: DETERMINISTIC. Idempotency key derived from frozen operation labels
+ * plus prompt/provider/model (sha256, no model reasoning, no clock). Encoding is
+ * length-prefixed (byte-length + ":" + field + "\0" concatenated) so NUL- or
+ * separator-containing fields cannot collide (unlike naive "\0"-join, where
+ * ["a\0b","c"] and ["a","b\0c"] hash identically). Orphan reaper lists by
+ * `aeh.operation` (+ idempotency) before create/retry; best-effort, never
+ * throws (fail-closed to create-new on list failure, never blocks launch).
+ * Liveness is positive-only (idle/working/running); unknown/terminal/dead never
+ * reuses. Reaper reaps only positively-dead statuses; unknown is left alone.
+ * No retry budgets, leases authority, or vagueness gates touched.
+ *
+ * CLI parity: the SDK-fallback and AEH_PASEO_FORCE_CLI=1 launch paths share the
+ * same derived key (derived once, transport-agnostic) and run the same
+ * reuse-live/reap-dead guard adapted to CLI handles (`paseo ls --json` records
+ * filtered client-side + `paseo stop`). CLI launches propagate the
+ * `aeh.operation` + `aeh.turn.idempotency` filter labels via `paseo run
+ * --label` so a retry can match the orphan; without them the CLI path would
+ * silently duplicate every retried turn.
+ */
+export function derivePaseoTurnIdempotencyKey(options: ManagedPaseoAgentOptions): string | undefined {
+  const operation = options.labels?.["aeh.operation"]?.trim();
+  if (!operation) return undefined;
+  const task = options.labels?.["aeh.task"]?.trim() ?? "";
+  const role = options.labels?.["aeh.role"]?.trim() ?? "";
+  const phase = options.labels?.["aeh.operation.phase"]?.trim() ?? "";
+  const provider = options.provider ?? "";
+  const model = options.model ?? "";
+  const prompt = options.prompt ?? "";
+  const title = options.title ?? "";
+  return createHash("sha256").update(encodeIdempotencyFields([operation, task, role, phase, provider, model, title, prompt])).digest("hex");
+}
+
+/**
+ * Length-prefixed unambiguous field encoding (DETERMINISTIC).
+ * Each field as `<utf8-byte-length>:<field>\0`, concatenated. The byte length
+ * makes parsing unambiguous even when fields contain NUL, colons, digits, or
+ * any other bytes: distinct field tuples always produce distinct encodings.
+ */
+export function encodeIdempotencyFields(fields: string[]): string {
+  return fields.map((field) => `${Buffer.byteLength(field, "utf8")}:${field}\0`).join("");
+}
+
+function withTurnIdempotencyKey(options: ManagedPaseoAgentOptions): ManagedPaseoAgentOptions {
+  const key = derivePaseoTurnIdempotencyKey(options);
+  if (!key) return options;
+  if (options.labels?.["aeh.turn.idempotency"] === key) return options;
+  return { ...options, labels: { ...(options.labels ?? {}), "aeh.turn.idempotency": key } };
+}
+
+function isLivePaseoAgentStatus(status?: string): boolean {
+  return status === "idle" || status === "working" || status === "running";
+}
+
+/**
+ * Positively-dead statuses only (DETERMINISTIC, fail-closed the other direction).
+ * Unknown (undefined/empty/unrecognized, including permission/waiting approval
+ * prompts whose session may still be resumable) is NEVER dead: reaper leaves it
+ * alone. Only statuses that definitively mean a dead/terminal session are reaped.
+ */
+export function isPositivelyDeadPaseoAgentStatus(status?: string): boolean {
+  return status === "failed"
+    || status === "error"
+    || status === "cancelled"
+    || status === "timeout"
+    || status === "finished"
+    || status === "completed"
+    || status === "dead"
+    || status === "exited"
+    || status === "stopped";
+}
+
+async function reuseLiveIdempotentTurn(
+  root: string,
+  options: ManagedPaseoAgentOptions,
+  deps: PaseoRuntimeDeps,
+  trace: (root: string, event: string, details: Record<string, unknown>) => Promise<void>
+): Promise<ManagedPaseoAgentResult | undefined> {
+  const operation = options.labels?.["aeh.operation"]?.trim();
+  const idempotency = options.labels?.["aeh.turn.idempotency"]?.trim();
+  if (!operation || !idempotency) return undefined;
+  let candidates: PaseoSdkAgentRecord[];
+  try {
+    candidates = await deps.sdk.list(root, { "aeh.operation": operation, "aeh.turn.idempotency": idempotency });
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(candidates) || candidates.length === 0) return undefined;
+  const live = candidates.filter((agent) => isLivePaseoAgentStatus(agent.status));
+  if (live.length === 1) {
+    const found = live[0]!;
+    await trace(root, "agent.launch.reused", { transport: "sdk", agentId: found.id, operation, idempotency });
+    await registerManagedAgent(root, options, { id: found.id, exitCode: 0, stdout: "", stderr: "", status: found.status, workspaceId: found.workspaceId, transport: "sdk" });
+    if (!found.id || options.prompt === undefined || options.waitForFinish === false) {
+      return { id: found.id, exitCode: 0, stdout: "", stderr: "", status: found.status, workspaceId: found.workspaceId, transport: "sdk" };
+    }
+    return waitManagedPaseoAgent(root, found.id, options.timeoutSeconds ?? secondsFromMs(options.timeoutMs), deps, undefined, options.permissionScopeRoots);
+  }
+  // Ambiguous or dead orphans: reap ONLY positively-dead best-effort, never throw,
+  // then create-new. Unknown (undefined/empty/unrecognized) is left alone
+  // fail-closed (never counted as dead, never reaped).
+  for (const agent of candidates) {
+    if (isLivePaseoAgentStatus(agent.status)) continue;
+    if (!isPositivelyDeadPaseoAgentStatus(agent.status)) {
+      await trace(root, "agent.launch.left-alone", { transport: "sdk", agentId: agent.id, operation, idempotency, status: agent.status ?? "unknown", reason: "unknown-status-not-dead" });
+      continue;
+    }
+    try {
+      await stopManagedPaseoAgent(root, agent.id, deps);
+      await trace(root, "agent.launch.reaped", { transport: "sdk", agentId: agent.id, operation, idempotency, status: agent.status ?? "unknown" });
+    } catch { /* best-effort reaper never blocks launch */ }
+  }
+  const stillLive = candidates.filter((agent) => isLivePaseoAgentStatus(agent.status));
+  if (stillLive.length === 1) {
+    const found = stillLive[0]!;
+    await registerManagedAgent(root, options, { id: found.id, exitCode: 0, stdout: "", stderr: "", status: found.status, workspaceId: found.workspaceId, transport: "sdk" });
+    if (!found.id || options.prompt === undefined || options.waitForFinish === false) {
+      return { id: found.id, exitCode: 0, stdout: "", stderr: "", status: found.status, workspaceId: found.workspaceId, transport: "sdk" };
+    }
+    return waitManagedPaseoAgent(root, found.id, options.timeoutSeconds ?? secondsFromMs(options.timeoutMs), deps, undefined, options.permissionScopeRoots);
+  }
+  return undefined;
+}
+
+/**
+ * CLI idempotency filter labels (DETERMINISTIC).
+ *
+ * `aeh.operation` + `aeh.turn.idempotency` are the reuse filter keys: they must
+ * be present on the CLI agent or a retry cannot match it. Task/role/phase ride
+ * along for observability when present. Large JSON labels (execution binding,
+ * result provenance) are never propagated to CLI launch: they are bound through
+ * the verified `agent update` path, not the create command line.
+ */
+function cliIdempotencyLabels(options: ManagedPaseoAgentOptions): Array<[string, string]> {
+  const labels = options.labels ?? {};
+  const result: Array<[string, string]> = [];
+  for (const key of ["aeh.operation", "aeh.turn.idempotency", "aeh.task", "aeh.role", "aeh.operation.phase"] as const) {
+    const value = labels[key]?.trim();
+    if (value) result.push([key, value]);
+  }
+  return result;
+}
+
+/**
+ * CLI-adapted idempotent-turn reuse (DETERMINISTIC, best-effort, never throws).
+ *
+ * Same contract as reuseLiveIdempotentTurn: exactly one live match (idle/
+ * working/running, positive-only) is reused; otherwise positively-dead matches
+ * are reaped best-effort, unknown statuses are left alone with a trace, and a
+ * missing/unlistable CLI daemon fails closed to create-new (returns undefined).
+ * Matching is client-side over `paseo ls --json` records because the CLI has
+ * no server-side label query.
+ */
+async function reuseLiveIdempotentCliTurn(
+  root: string,
+  options: ManagedPaseoAgentOptions,
+  deps: PaseoRuntimeDeps,
+  trace: (root: string, event: string, details: Record<string, unknown>) => Promise<void>,
+  fallbackReason: string
+): Promise<ManagedPaseoAgentResult | undefined> {
+  const operation = options.labels?.["aeh.operation"]?.trim();
+  const idempotency = options.labels?.["aeh.turn.idempotency"]?.trim();
+  if (!operation || !idempotency) return undefined;
+  let candidates: PaseoSdkAgentRecord[];
+  try {
+    candidates = (await listCliAgents(root, deps)).filter(
+      (agent) => agent.labels?.["aeh.operation"] === operation && agent.labels?.["aeh.turn.idempotency"] === idempotency
+    );
+  } catch {
+    return undefined;
+  }
+  if (candidates.length === 0) return undefined;
+  const reuse = async (found: PaseoSdkAgentRecord): Promise<ManagedPaseoAgentResult> => {
+    await trace(root, "agent.launch.reused", { transport: "cli", agentId: found.id, operation, idempotency });
+    await registerManagedAgent(root, options, { id: found.id, exitCode: 0, stdout: "", stderr: "", status: found.status, workspaceId: found.workspaceId, transport: "cli" });
+    if (!found.id || options.prompt === undefined || options.waitForFinish === false) {
+      return { id: found.id, exitCode: 0, stdout: "", stderr: fallbackReason, status: found.status, workspaceId: found.workspaceId, transport: "cli" };
+    }
+    const waited = await waitManagedPaseoAgent(root, found.id, options.timeoutSeconds ?? secondsFromMs(options.timeoutMs), deps);
+    return { ...waited, stderr: [fallbackReason, waited.stderr].filter(Boolean).join("\n") };
+  };
+  const live = candidates.filter((agent) => isLivePaseoAgentStatus(agent.status));
+  if (live.length === 1) return reuse(live[0]!);
+  // Ambiguous or dead orphans: reap ONLY positively-dead best-effort, never throw,
+  // then create-new. Unknown (undefined/empty/unrecognized) is left alone
+  // fail-closed (never counted as dead, never reaped).
+  for (const agent of candidates) {
+    if (isLivePaseoAgentStatus(agent.status)) continue;
+    if (!isPositivelyDeadPaseoAgentStatus(agent.status)) {
+      await trace(root, "agent.launch.left-alone", { transport: "cli", agentId: agent.id, operation, idempotency, status: agent.status ?? "unknown", reason: "unknown-status-not-dead" });
+      continue;
+    }
+    try {
+      await stopManagedPaseoAgent(root, agent.id, deps);
+      await trace(root, "agent.launch.reaped", { transport: "cli", agentId: agent.id, operation, idempotency, status: agent.status ?? "unknown" });
+    } catch { /* best-effort reaper never blocks launch */ }
+  }
+  const stillLive = candidates.filter((agent) => isLivePaseoAgentStatus(agent.status));
+  if (stillLive.length === 1) return reuse(stillLive[0]!);
+  return undefined;
 }
 
 function forceCli(): boolean { return process.env.AEH_PASEO_FORCE_CLI === "1"; }

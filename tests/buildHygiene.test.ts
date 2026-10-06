@@ -226,15 +226,20 @@ esac
   await fs.chmod(fakePython, 0o755);
   await fs.writeFile(headroom, `#!${fakePython}\nexit 22\n`, { mode: 0o755 });
   await fs.chmod(headroom, 0o755);
-  const previousPath = process.env.PATH;
-  process.env.PATH = `${fakeBin}${path.delimiter}${previousPath ?? ""}`;
+  // Hermetic migration: ambient PATH no longer reaches managed children, so
+  // the fake headroom is pinned via toolchain state at the consumer root.
+  // Stale/missing state migrates the same way: run `aeh setup`, then retry.
+  const { clearToolchainEnvCache } = await import("../src/utils/process.js");
+  await fs.mkdir(path.join(consumerRoot, ".harness"), { recursive: true });
+  await fs.writeFile(path.join(consumerRoot, ".harness", "toolchain.state.json"), JSON.stringify({ version: 1, binPaths: [fakeBin] }));
+  clearToolchainEnvCache();
   try {
     const doctor = await new HeadroomCompressionProvider().doctor(consumerRoot);
     expect(doctor.ok).toBe(true);
     expect(doctor.version).toContain(HEADROOM_VERSION);
     expect(doctor.message).toContain("Headroom local compressor ready");
   } finally {
-    process.env.PATH = previousPath;
+    clearToolchainEnvCache();
   }
 }
 
