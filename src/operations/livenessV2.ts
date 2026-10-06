@@ -190,6 +190,9 @@ export function evaluateOperationWake(
       };
     }
     if (leadWakeCount >= policy.leadWakeLimit) {
+      if (stalledParticipants.length > 0) {
+        return { reason: "stalled", target: "controller", revision: operation.revision, message: `STALL_WAKE_EXHAUSTED: stalled revision wake budget exhausted with no durable progress: supervisor=${stallSupervisorWakeCount}/${policy.supervisorStallWakeLimit}, lead=${leadWakeCount}/${policy.leadWakeLimit}; stalled=${stalledParticipants.map((participant) => participant.id).join(", ")}` };
+      }
       return { target: "none", revision: operation.revision, message: `stalled revision wake budget exhausted: supervisor=${stallSupervisorWakeCount}/${policy.supervisorStallWakeLimit}, lead=${leadWakeCount}/${policy.leadWakeLimit}` };
     }
     return {
@@ -310,6 +313,19 @@ export async function runOperationLivenessCheck(root: string, config: HarnessPro
     await expireOperationAtHardDeadline(root, operationId, new Date(now), config, { trace });
     await trace(root, "operation.watchdog.hard-deadline", { operationId, revision: operation.revision, deadlineMs: policy.hardDeadlineMs });
     return decision;
+  }
+
+  if (decision.reason === "stalled" && decision.target === "controller" && decision.message.includes("STALL_WAKE_EXHAUSTED")) {
+    const { terminalizeOperation } = await import("./controller.js");
+    const terminal = await terminalizeOperation(root, operationId, {
+      status: "FAILED",
+      phase: "failed",
+      error: `${decision.message}. The controller ended and cleaned this execution so the bound Lead can choose an explicit linked recovery operation under inherited Owner policy.`,
+      finishedAt: new Date(now).toISOString(),
+      result: { stallWakeExhausted: { code: "STALL_WAKE_EXHAUSTED", revision: operation.revision, message: decision.message } }
+    }, { trace: deps.trace }, config);
+    await trace(root, "operation.watchdog.stall-wake-exhausted", { operationId, revision: operation.revision, message: decision.message }).catch(() => undefined);
+    return { reason: "terminal", target: "none", revision: terminal.revision, message: decision.message };
   }
 
   if (controllerRecovery) {

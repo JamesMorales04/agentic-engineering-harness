@@ -751,6 +751,7 @@ export async function cancelOperation(
       cleanupWarnings.push(`provider runtime snapshot: ${String(error)}`);
       return undefined;
     });
+    const fencedLeases: Array<{ leaseId: string; provider: string; sessionId: string; observedStatus: string; stopAttempts: number }> = [];
     for (const lease of runtimeSnapshot?.providerLeases.filter((item) => item.lifecycle?.operationId === operationId) ?? []) {
       const current = await loadOperation(absoluteRoot, operationId);
       assertCancellationFence(current, cancellationFence, "operation cancellation provider lease cleanup");
@@ -772,17 +773,21 @@ export async function cancelOperation(
       // session ID is still a Paseo-managed session and must be inspected at
       // that runtime boundary.
       const inspect = deps.inspectProviderSession ?? (async (cwd: string, _provider: string, id: string) => inspectManagedPaseoAgent(cwd, id));
+      const CANCELLATION_PROVIDER_STOP_ATTEMPTS = 3;
       let observed = await inspect(absoluteRoot, lease.provider, sessionId).catch(() => undefined);
       let status = observed?.status?.toLowerCase();
-      if (!isProviderSessionQuiescent(status)) {
+      let stopAttempts = 0;
+      while (!isProviderSessionQuiescent(status) && stopAttempts < CANCELLATION_PROVIDER_STOP_ATTEMPTS) {
         const stopped = await run(`paseo stop ${quote(sessionId)}`, { cwd: absoluteRoot, timeoutMs: 30_000 }).catch((error) => ({ exitCode: 1, stdout: "", stderr: String(error), durationMs: 0 }));
-        await trace(absoluteRoot, "cleanup.provider.stop", { operationId, provider: lease.provider, sessionId, exitCode: stopped.exitCode });
+        await trace(absoluteRoot, "cleanup.provider.stop", { operationId, provider: lease.provider, sessionId, exitCode: stopped.exitCode, attempt: stopAttempts + 1 });
         if (stopped.exitCode !== 0) cleanupWarnings.push(`provider session ${sessionId}: ${stopped.stderr || stopped.stdout || `stop exited ${stopped.exitCode}`}`);
         observed = await inspect(absoluteRoot, lease.provider, sessionId).catch(() => undefined);
         status = observed?.status?.toLowerCase();
+        stopAttempts += 1;
       }
       if (!isProviderSessionQuiescent(status)) {
-        cleanupWarnings.push(`provider session ${sessionId}: lifecycle remains uncertain after stop (status ${status ?? "unavailable"}); lease ${lease.leaseId} remains fenced`);
+        fencedLeases.push({ leaseId: lease.leaseId, provider: lease.provider, sessionId, observedStatus: status ?? "unavailable", stopAttempts });
+        cleanupWarnings.push(`provider session ${sessionId}: lifecycle remains uncertain after ${stopAttempts} bounded stop(s) (status ${status ?? "unavailable"}); lease ${lease.leaseId} remains fenced`);
         continue;
       }
       const latest = await loadOperation(absoluteRoot, operationId);
@@ -790,6 +795,40 @@ export async function cancelOperation(
       const leaseOwner = await createManagedRuntime({ root: absoluteRoot, projectId: runtimeProjectId(absoluteRoot), ownerId: lease.ownerId });
       await leaseOwner.releaseProviderLease(lease.leaseId);
       await trace(absoluteRoot, "cleanup.provider.lease.released", { operationId, provider: lease.provider, sessionId, leaseId: lease.leaseId, observedStatus: status });
+    }
+
+    if (fencedLeases.length > 0 && cleanupWarnings.every((warning) => warning.startsWith("provider session"))) {
+      const receiptBody = {
+        version: 1 as const,
+        kind: "cancellation-uncertain-external-effects" as const,
+        operationId,
+        controllerEpoch: cancellationFence.controllerEpoch,
+        operationExecutionRevision: cancellationFence.operationExecutionRevision,
+        candidateDigest: cancellationFence.candidate.identityDigest,
+        policyDigest: cancellationFence.policyDigest,
+        leases: fencedLeases,
+        cleanupWarnings: [...cleanupWarnings],
+        observedAt: new Date().toISOString()
+      };
+      const digest = sha256Canonical(receiptBody);
+      const receipt = { ...receiptBody, digest };
+      const fenced = await loadOperation(absoluteRoot, operationId);
+      assertCancellationFence(fenced, cancellationFence, "operation cancellation uncertain external effects");
+      await trace(absoluteRoot, "cleanup.provider.uncertain-external-effects", { operationId, digest, fencedLeases: fencedLeases.length, cleanupWarnings: cleanupWarnings.length });
+      return await terminalizeOperation(
+        absoluteRoot,
+        operationId,
+        {
+          status: "FAILED",
+          phase: "UNCERTAIN_EXTERNAL_EFFECTS",
+          error: `UNCERTAIN_EXTERNAL_EFFECTS: cancellation could not prove provider quiescence after bounded stop→inspect retries; ${fencedLeases.length} lease(s) remain fenced; digest ${digest}; ${cleanupWarnings.join("; ")}.`,
+          finishedAt: new Date().toISOString(),
+          result: { uncertainExternalEffects: receipt },
+          cleanupWarnings
+        },
+        deps,
+        config
+      );
     }
 
     if (cleanupWarnings.length) {
