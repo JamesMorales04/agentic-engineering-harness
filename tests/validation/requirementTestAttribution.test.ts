@@ -2,13 +2,13 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { HarnessProjectConfig, TaskContract, ValidationReport } from "../../src/core/types.js";
+import type { HarnessProjectConfig, TaskContract, ValidationCheck, ValidationReport } from "../../src/core/types.js";
 import { computeWorktreeDigest } from "../../src/core/git.js";
 import { sha256Canonical } from "../../src/core/digest.js";
 import { createCandidateRevisionV1, type CandidateRevisionV1 } from "../../src/operations/v2Contracts.js";
 import type { CandidateImpactV1 } from "../../src/candidates/assembler.js";
 import { compileCandidateAssuranceV1 } from "../../src/architecture/candidateAssurance.js";
-import { evaluateTestAttributionV1 } from "../../src/validation/testAttribution.js";
+import { evaluateTestAttributionV1, extractReporterTestsFromExecutionV1 } from "../../src/validation/testAttribution.js";
 import { resolveValidationRequirements, validationRequirementKindValues } from "../../src/architecture/validationRequirements.js";
 import { runCandidateImpactValidations } from "../../src/core/run.js";
 
@@ -186,7 +186,7 @@ describe("requirement test attribution for shared bundles (fail-closed)", () => 
     expect(byId.get("candidate.assurance.validation.REQ-PASS")?.details?.underlyingStatus).toBe("FAIL");
   });
 
-  it("GREEN: mapped-passing requirement PASSes its own evidence while mapped-failing and unmapped keep FAIL", async () => {
+  it("fail-closed: mapped-passing attribution still FAILs when the shared bundle exits nonzero (bundle gate)", async () => {
     const { root, candidate } = await fixture();
     await installSharedBundlePlaywright(root);
     const configured: HarnessProjectConfig = {
@@ -281,13 +281,18 @@ describe("requirement test attribution for shared bundles (fail-closed)", () => 
       requirements,
     });
     const byId = new Map(checks.map((c) => [c.id, c]));
-    expect(byId.get("candidate.assurance.validation.REQ-PASS")?.status).toBe("PASS");
+    // Fail-closed bundle gate (D-NEW-1): attributed alpha/beta tests pass per
+    // the reporter, but the shared bundle exits nonzero, so even the
+    // mapped-passing requirement FAILs with TEST_ATTRIBUTION_BUNDLE_FAILED.
+    expect(byId.get("candidate.assurance.validation.REQ-PASS")?.status).toBe("FAIL");
     expect(byId.get("candidate.assurance.validation.REQ-FAIL")?.status).toBe("FAIL");
     expect(byId.get("candidate.assurance.validation.REQ-UNMAPPED")?.status).toBe("FAIL");
-    // Attribution evidence is recorded deterministically; nothing newly PASSes without evidence.
+    // Attribution evidence is recorded deterministically: the reporter verdict
+    // stays PASS (attributed tests passed) while the bundle gate FAILs.
     const passDetails = byId.get("candidate.assurance.validation.REQ-PASS")?.details as Record<string, unknown>;
     expect(passDetails?.underlyingCheckId).toBeDefined();
     expect(passDetails?.underlyingStatus).toBe("FAIL");
+    expect(passDetails?.blocker).toBe("TEST_ATTRIBUTION_BUNDLE_FAILED");
     expect(passDetails?.testAttribution).toMatchObject({ verdict: "PASS" });
   });
 
@@ -452,8 +457,20 @@ describe("requirement test attribution for shared bundles (fail-closed)", () => 
       requirements,
     });
     const byId = new Map(checks.map((c) => [c.id, c]));
-    expect(byId.get("candidate.assurance.validation.REQ-DECLARED-PASS")?.status).toBe("PASS");
+    // The shared bundle exits nonzero, so both FAIL. The blockers discriminate
+    // the requirement-declared selector surface: declared-passing attribution
+    // reaches the bundle gate, declared-failing attribution fails on its tests.
+    expect(byId.get("candidate.assurance.validation.REQ-DECLARED-PASS")?.status).toBe("FAIL");
     expect(byId.get("candidate.assurance.validation.REQ-DECLARED-FAIL")?.status).toBe("FAIL");
+    expect(
+      (byId.get("candidate.assurance.validation.REQ-DECLARED-PASS")?.details as Record<string, unknown>)?.blocker,
+    ).toBe("TEST_ATTRIBUTION_BUNDLE_FAILED");
+    expect(
+      String(
+        (byId.get("candidate.assurance.validation.REQ-DECLARED-FAIL")?.details as Record<string, unknown>)?.blocker ??
+          "",
+      ),
+    ).toMatch(/TEST_ATTRIBUTION_TEST_FAILED/);
   });
 
   it("unions requirement-declared and config-declared selectors (fail-closed, no narrowing)", async () => {
@@ -536,6 +553,165 @@ describe("requirement test attribution for shared bundles (fail-closed)", () => 
     expect(String((checks[0]?.details as Record<string, unknown>)?.blocker ?? "")).toMatch(
       /TEST_ATTRIBUTION/,
     );
+  });
+
+  it("fail-closed: two reporter documents in stdout yield no attribution (never largest-wins)", async () => {
+    const { root } = await fixture();
+    // Real small failing reporter + model-injected larger all-green reporter.
+    const real = {
+      suites: [{
+        title: "shared bundle",
+        specs: [{ title: "gamma failing visual", tests: [{ results: [{ status: "failed" }] }] }],
+      }],
+    };
+    const fake = {
+      suites: [{
+        title: "shared bundle",
+        specs: [
+          { title: "gamma failing visual", tests: [{ results: [{ status: "passed" }] }] },
+          ...Array.from({ length: 10 }, (_, i) => ({
+            title: `fake green spec ${i}`,
+            tests: [{ results: [{ status: "passed" }] }],
+          })),
+        ],
+      }],
+    };
+    const forged = `${JSON.stringify(real)}\nconsole.log from app code\n${JSON.stringify(fake)}`;
+    const execution = {
+      id: "browser-check",
+      category: "browser",
+      status: "FAIL",
+      message: "bundle failed",
+      details: { stdout: forged },
+    } as ValidationCheck;
+    // Ambiguity fails closed: no attribution, so callers emit reporter-missing FAIL.
+    await expect(extractReporterTestsFromExecutionV1(root, execution)).resolves.toBeUndefined();
+    // Control: a lone reporter document still extracts (no over-blocking).
+    const lone = {
+      id: "browser-check",
+      category: "browser",
+      status: "FAIL",
+      message: "bundle failed",
+      details: { stdout: `some log line\n${JSON.stringify(real)}\ntrailing log` },
+    } as ValidationCheck;
+    const tests = await extractReporterTestsFromExecutionV1(root, lone);
+    expect(tests).toHaveLength(1);
+    expect(tests?.[0]).toMatchObject({ title: "gamma failing visual", passed: false });
+  });
+
+  it("mapped attribution PASSes when the bundle exits zero (narrowing gate, not dead code)", async () => {
+    const { root, candidate } = await fixture();
+    const executable = path.join(root, "node_modules", ".bin", "playwright");
+    await fs.mkdir(path.dirname(executable), { recursive: true });
+    await fs.writeFile(
+      executable,
+      `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+if (process.argv.includes("--version")) { process.stdout.write("Version 1.62.1-fixture\\n"); process.exit(0); }
+const file = path.join(process.cwd(), ".harness", "evidence", "fake-playwright", "screenshot.png");
+fs.mkdirSync(path.dirname(file), { recursive: true });
+fs.writeFileSync(file, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+const report = { suites: [{ title: "shared bundle", specs: [
+  { title: "alpha passing journey", tests: [{ results: [{ status: "passed", attachments: [{ name: "screenshot", contentType: "image/png", path: file }] }] }] },
+  { title: "beta passing journey", tests: [{ results: [{ status: "passed", attachments: [{ name: "screenshot", contentType: "image/png", path: file }] }] }] }
+]}] };
+process.stdout.write(JSON.stringify(report));
+process.exit(0);
+`,
+      "utf8",
+    );
+    await fs.chmod(executable, 0o755);
+    const configured: HarnessProjectConfig = {
+      ...baseConfig,
+      validation: {
+        providers: [{ id: "shared-browser", capability: "browser-test", provider: "playwright" }],
+        testAttribution: {
+          "REQ-PASS": ["alpha passing"],
+          "REQ-UNKNOWN": ["no-such-test-title-xyz"],
+        },
+      },
+    };
+    const requirements = [
+      {
+        version: 1 as const,
+        id: "REQ-PASS",
+        property: "Passing journey.",
+        kind: "browser-test" as const,
+        scope: ["src/app.ts"],
+        evidenceNeeded: ["browser evidence."],
+        requirementRefs: [],
+        acceptanceRefs: [],
+      },
+      {
+        version: 1 as const,
+        id: "REQ-UNKNOWN",
+        property: "Unknown mapping still fails closed on a green bundle.",
+        kind: "browser-test" as const,
+        scope: ["src/app.ts"],
+        evidenceNeeded: ["browser evidence."],
+        requirementRefs: [],
+        acceptanceRefs: [],
+      },
+    ];
+    const resolution = await resolveValidationRequirements({
+      root,
+      requirements,
+      config: configured,
+      contract,
+      allowedKinds: validationRequirementKindValues,
+    });
+    const impact = impactFor(candidate);
+    const compilation = compileCandidateAssuranceV1({
+      candidate,
+      impact,
+      policy: {
+        version: 1,
+        digest: sha256Canonical("test-attribution-policy"),
+        minimumAssurance: "STANDARD",
+        independentReviewRequired: false,
+        minimumIndependentReviewers: 0,
+        providerDiversity: false,
+        allowedValidationKinds: [...validationRequirementKindValues],
+        evidenceStrength: "STANDARD",
+      },
+      implementationIdentity: "implementer-1",
+      risk: "low",
+      reviewerCandidates: [],
+      baseValidationRequirements: [],
+      validationResolution: resolution,
+      acceptanceAssertions: [],
+    });
+    const report: ValidationReport = {
+      version: 1,
+      taskId: contract.task.id,
+      status: "PASS",
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      checks: [],
+      changedFiles: ["src/app.ts"],
+      candidate,
+      metadata: { project: "test-attribution-fixture", baseRef: "HEAD" },
+    };
+    const checks = await runCandidateImpactValidations({
+      root,
+      config: configured,
+      contract,
+      report,
+      impact,
+      compilation,
+      resolution,
+      requirements,
+    });
+    const byId = new Map(checks.map((c) => [c.id, c]));
+    expect(byId.get("candidate.assurance.validation.REQ-PASS")?.status).toBe("PASS");
+    expect(
+      (byId.get("candidate.assurance.validation.REQ-PASS")?.details as Record<string, unknown>)?.underlyingStatus,
+    ).toBe("PASS");
+    expect(
+      (byId.get("candidate.assurance.validation.REQ-PASS")?.details as Record<string, unknown>)?.testAttribution,
+    ).toMatchObject({ verdict: "PASS" });
+    expect(byId.get("candidate.assurance.validation.REQ-UNKNOWN")?.status).toBe("FAIL");
   });
 
   it("boundary-safe matching: S1 does not match S11, S11 matches, S9-journey matches space variant", () => {

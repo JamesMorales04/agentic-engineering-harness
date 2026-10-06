@@ -233,8 +233,14 @@ function tryParseReporterFromText(
     // Fall through to embedded-JSON scan below.
   }
   // Reporter stdout may be embedded in `stdout\n--- stderr ---\n stderr`
-  // raw files or have trailing logs. Scan for the largest JSON object with suites.
-  const candidates: AttributedPlaywrightTestV1[][] = [];
+  // raw files or have trailing logs. Scan for embedded JSON objects with suites.
+  // Fail-closed (Mechanism=DETERMINISTIC): exactly one depth-0 reporter
+  // document must be present. Zero means no attributable reporter; more than
+  // one means the output is ambiguous — model-authored code under test can
+  // console.log a second, larger all-green reporter to forge a PASS — so
+  // attribution is refused. Never largest-wins.
+  let candidateCount = 0;
+  let single: AttributedPlaywrightTestV1[] | undefined;
   // Try incremental brace scan: find `{` ... `}` slices that parse with suites.
   let start = -1;
   let depth = 0;
@@ -259,7 +265,10 @@ function tryParseReporterFromText(
         try {
           const parsed = JSON.parse(slice) as Record<string, unknown>;
           if (Array.isArray(parsed.suites)) {
-            candidates.push(parsePlaywrightReporterTestsV1(parsed));
+            candidateCount++;
+            if (candidateCount === 1) {
+              single = parsePlaywrightReporterTestsV1(parsed);
+            }
           }
         } catch {
           // Not JSON; continue scanning.
@@ -272,15 +281,16 @@ function tryParseReporterFromText(
       }
     }
   }
-  if (!candidates.length) return undefined;
-  // Prefer the candidate with the most tests (fullest report).
-  return candidates.sort((a, b) => b.length - a.length)[0];
+  if (candidateCount !== 1) return undefined;
+  return single;
 }
 
 /**
  * Extract Playwright reporter tests from a bundle execution check.
  * Reads (in order): details.stdout, rawArtifact file, details.stderr.
- * Returns undefined when no parseable reporter is available (caller fails closed).
+ * Returns undefined when no parseable reporter is available, or when more
+ * than one reporter document is present (ambiguous output fails closed).
+ * Callers fail closed on undefined.
  */
 export async function extractReporterTestsFromExecutionV1(
   root: string,

@@ -1248,8 +1248,13 @@ export async function runCandidateImpactValidations(input: {
         });
         continue;
       }
-      // Mapped requirement: verdict reflects ITS attributed tests, not the bundle exit code.
-      // Fail-closed: missing reporter, parse errors, and unknown titles FAIL.
+      // Mapped requirement: a PASS verdict requires BOTH its attributed tests
+      // to pass AND the underlying bundle to pass (Mechanism=DETERMINISTIC).
+      // Fail-closed: missing reporter, ambiguous reporters, parse errors,
+      // unknown titles, and a non-passing bundle all FAIL. Attribution
+      // narrows a passing bundle; it never widens a failing one, because
+      // code under test shares the bundle's stdout and can inject a forged
+      // all-green reporter document.
       const reporterTests = await extractReporterTestsFromExecutionV1(input.root, execution);
       if (!reporterTests) {
         const blocker = "TEST_ATTRIBUTION_REPORTER_MISSING";
@@ -1278,6 +1283,19 @@ export async function runCandidateImpactValidations(input: {
           message: `Required ${requirement.kind} validation for requirement '${requirement.id}' failed its attributed tests: ${evaluation.reason}`,
           durationMs: execution.durationMs,
           details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, blocker: evaluation.blocker ?? "TEST_ATTRIBUTION_TEST_FAILED", testAttribution: { verdict: evaluation.verdict, selectors: evaluation.selectors, matched: evaluation.matched, total: evaluation.total, failedTitles: evaluation.failedTitles, reason: evaluation.reason }, ...failureEvidence }
+        });
+        continue;
+      }
+      if (execution.status !== "PASS") {
+        const blocker = "TEST_ATTRIBUTION_BUNDLE_FAILED";
+        const failureEvidence = underlyingFailureEvidence(execution);
+        output.push({
+          id: `candidate.assurance.validation.${requirement.id}`,
+          category: "candidate-impact-validation",
+          status: "FAIL",
+          message: `Required ${requirement.kind} validation for requirement '${requirement.id}' passed its attributed tests but the underlying bundle '${execution.id}' returned ${execution.status}: fail-closed, a mapped PASS requires a passing bundle.`,
+          durationMs: execution.durationMs,
+          details: { requirementId: requirement.id, kind: requirement.kind, selector: action.selector, source: action.source, underlyingCheckId: execution.id, underlyingStatus: execution.status, candidate: input.compilation.candidate, impactDigest: input.compilation.impactDigest, policyDigest: input.compilation.policyDigest, blocker, testAttribution: { verdict: evaluation.verdict, selectors: evaluation.selectors, matched: evaluation.matched, total: evaluation.total, failedTitles: evaluation.failedTitles, reason: evaluation.reason }, ...failureEvidence }
         });
         continue;
       }
@@ -1377,7 +1395,7 @@ function boundedFailureText(value: unknown, max = 4000): string | undefined {
   return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max)}\n...[truncated]`;
 }
 
-const providerLaneBlockerPattern = /(PROVIDER_LANE_EVIDENCE_(?:REQUIRED|STALE|TAMPERED|PERSIST_FAILED)|PROVIDER_LANE_REFERENCE_REQUIRED|PROVIDER_LANE_CANDIDATE_BINDING_REQUIRED|(?:CONTRACT|INTEGRATION|BROWSER|VISUAL)_PROVIDER_UNAVAILABLE)/;
+const providerLaneBlockerPattern = /(PROVIDER_LANE_EVIDENCE_(?:REQUIRED|STALE|TAMPERED|STATUS|PERSIST_FAILED)|PROVIDER_LANE_REFERENCE_REQUIRED|PROVIDER_LANE_CANDIDATE_BINDING_REQUIRED|(?:CONTRACT|INTEGRATION|BROWSER|VISUAL)_PROVIDER_UNAVAILABLE)/;
 
 function providerLaneBlockerFromMessage(message: string): string | undefined {
   return message.match(providerLaneBlockerPattern)?.[1];
