@@ -114,14 +114,20 @@ jobs:
           fi
           # Existence is not identity: the registry tarball must byte-match a
           # fresh build of this revision (integrity mismatch fails closed —
-          # never release foreign same-version content).
+          # never release foreign same-version content). Single pack, retained
+          # tarball reuse: never repack for the compare (rebuild-nondeterminism safe).
           npm run build --silent
-          if node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION"; then
+          RETAIN_TMP="$(mktemp -d)"
+          npm pack --pack-destination "$RETAIN_TMP" --silent >/dev/null
+          RETAIN_TARBALL="$(ls "$RETAIN_TMP"/*.tgz | head -n 1)"
+          if node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --tarball "$RETAIN_TARBALL"; then
             echo "Repair eligible: tag ${TAG} at ${PEELED_SHA} == HEAD, version ${RELEASE_VERSION} verified identical on npm. The repair-release job will create the SHA-bound Release (no rebuild/republish)."
           else
             code=$?
             if [ "$code" -eq 2 ]; then
               echo "Refusing to create GitHub Release for v${RELEASE_VERSION}: version is not on npm (nothing published to repair)." >&2
+            elif [ "$code" -eq 3 ]; then
+              echo "Refusing to create GitHub Release for v${RELEASE_VERSION}: registry lookup UNKNOWN (network/auth/parse, fail closed, never release on UNKNOWN)." >&2
             else
               echo "Refusing to create GitHub Release for v${RELEASE_VERSION}: registry tarball content differs from this revision (integrity mismatch, fail closed)." >&2
             fi
@@ -348,6 +354,47 @@ jobs:
 
       - run: npm run build
 
+      - name: Restore retained release tarball (retry reuse)
+        uses: actions/download-artifact@v4
+        with:
+          name: aeh-npm-tarball
+          path: ${{ runner.temp }}/aeh-npm-retained
+          if-no-files-found: warn
+        continue-on-error: true
+
+      - name: Pack release tarball (reuse retained on retry)
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          set -euo pipefail
+          # N1: single pack per attempt, retained for retry+publish+confirm.
+          # Retry downloads THE SAME tarball above and skips repacking, so a
+          # publish-then-fail-later retry never repacks differently (exit 1 forever).
+          RETAIN_DIR="${RUNNER_TEMP:-$PWD}/aeh-npm-retained"
+          mkdir -p "$RETAIN_DIR"
+          if ls "$RETAIN_DIR"/*.tgz >/dev/null 2>&1; then
+            echo "Reusing retained tarball (no repack; rebuild-nondeterminism safe): $(ls "$RETAIN_DIR"/*.tgz | head -n 1)"
+          else
+            PACK_OUT="$(npm pack --pack-destination "$RETAIN_DIR" --silent)"
+            echo "Packed first tarball for retain+reuse: $PACK_OUT"
+          fi
+          TARBALL="$(ls "$RETAIN_DIR"/*.tgz | head -n 1)"
+          test -s "$TARBALL"
+          # Digest-only fallback: record the first-pack digest; retry compares the
+          # registry integrity against the RECORDED digest when tarball reuse is infeasible.
+          node -e "const fs=require('node:fs'),crypto=require('node:crypto');const b=fs.readFileSync(process.argv[1]);process.stdout.write('sha512-'+crypto.createHash('sha512').update(b).digest('base64')+'\n')" "$TARBALL" > "$RETAIN_DIR/npm-identity.digest"
+          test -s "$RETAIN_DIR/npm-identity.digest"
+          echo "Retained $TARBALL + digest for retry."
+
+      - name: Retain release tarball for retry
+        uses: actions/upload-artifact@v4
+        with:
+          name: aeh-npm-tarball
+          path: ${{ runner.temp }}/aeh-npm-retained/
+          if-no-files-found: error
+          overwrite: true
+
       - name: Publish to npm
         shell: bash
         env:
@@ -356,15 +403,37 @@ jobs:
         run: |
           set -euo pipefail
           PACKAGE_NAME="$(node -p "require('./package.json').name")"
-          if node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION"; then
-            echo "Version $RELEASE_VERSION verified identical on npm; skipping publish (idempotent resume, nothing to republish)."
+          # Reuse THE SAME retained tarball (no repack); pack fresh only when no
+          # retained artifact exists (first attempt / offline). Never repack for compare.
+          RETAIN_DIR="${RUNNER_TEMP:-$PWD}/aeh-npm-retained"
+          mkdir -p "$RETAIN_DIR"
+          if ls "$RETAIN_DIR"/*.tgz >/dev/null 2>&1; then
+            TARBALL="$(ls "$RETAIN_DIR"/*.tgz | head -n 1)"
+            echo "Reusing retained tarball $TARBALL (no repack)."
+          else
+            PACK_OUT="$(npm pack --pack-destination "$RETAIN_DIR" --silent)"
+            if [ -n "${PACK_OUT:-}" ] && [ -f "$RETAIN_DIR/$PACK_OUT" ]; then
+              TARBALL="$RETAIN_DIR/$PACK_OUT"
+            else
+              TARBALL="$(ls "$RETAIN_DIR"/*.tgz | head -n 1)"
+            fi
+            node -e "const fs=require('node:fs'),crypto=require('node:crypto');const b=fs.readFileSync(process.argv[1]);process.stdout.write('sha512-'+crypto.createHash('sha512').update(b).digest('base64')+'\n')" "$TARBALL" > "$RETAIN_DIR/npm-identity.digest" || true
+            echo "Packed $TARBALL (first pack retained for retry)."
+          fi
+          test -s "$TARBALL"
+          # Canonical identity gate against THE SAME bytes (mismatch fails closed).
+          if node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --tarball "$TARBALL"; then
+            echo "Version $RELEASE_VERSION verified identical on npm; skipping publish (idempotent resume, nothing to republish, already on npm)."
           else
             code=$?
             if [ "$code" -eq 2 ]; then
               if [ -n "${NPM_TOKEN:-}" ]; then
                 export NODE_AUTH_TOKEN="$NPM_TOKEN"
               fi
-              npm publish --provenance
+              npm publish "$TARBALL" --provenance
+            elif [ "$code" -eq 3 ]; then
+              echo "Refusing to publish $PACKAGE_NAME@$RELEASE_VERSION: registry lookup UNKNOWN (network/auth/parse, fail closed, never publish on UNKNOWN)." >&2
+              exit 1
             else
               echo "Refusing to publish $PACKAGE_NAME@$RELEASE_VERSION: registry tarball content differs from the local build (integrity mismatch, fail closed)." >&2
               exit 1
@@ -381,8 +450,19 @@ jobs:
           npm view "$PACKAGE_NAME@$RELEASE_VERSION" version --json
           test "$(npm view "$PACKAGE_NAME@$RELEASE_VERSION" version)" = "$RELEASE_VERSION"
           # Existence is not identity: fail closed unless the registry tarball
-          # byte-matches the just-built local tarball (integrity mismatch).
-          node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION"
+          # byte-matches THE SAME retained tarball (integrity mismatch).
+          RETAIN_DIR="${RUNNER_TEMP:-$PWD}/aeh-npm-retained"
+          TARBALL="$(ls "$RETAIN_DIR"/*.tgz 2>/dev/null | head -n 1 || true)"
+          if [ -z "${TARBALL:-}" ]; then
+            echo "Missing retained tarball for confirm (fail closed; refusing to repack)." >&2
+            exit 1
+          fi
+          node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --tarball "$TARBALL"
+          # Digest-only fallback: registry integrity must also match the RECORDED first-pack digest.
+          if [ -f "$RETAIN_DIR/npm-identity.digest" ]; then
+            RECORDED="$(cat "$RETAIN_DIR/npm-identity.digest")"
+            node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --local-digest "$RECORDED"
+          fi
 
   release:
     name: release
@@ -459,9 +539,14 @@ jobs:
           test "$(npm view "$PACKAGE_NAME@$RELEASE_VERSION" version)" = "$RELEASE_VERSION"
           test "$(git describe --tags --exact-match HEAD)" = "$TAG"
           # Existence is not identity: fail closed unless the registry tarball
-          # byte-matches a fresh build of this revision (integrity mismatch).
+          # byte-matches THE SAME retained tarball of this revision (integrity
+          # mismatch). Single pack, retained reuse: never repack for the compare.
+          # UNKNOWN registry lookups (exit 3) fail loudly and never release.
           npm run build --silent
-          node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION"
+          RETAIN_TMP="$(mktemp -d)"
+          npm pack --pack-destination "$RETAIN_TMP" --silent >/dev/null
+          RETAIN_TARBALL="$(ls "$RETAIN_TMP"/*.tgz | head -n 1)"
+          node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --tarball "$RETAIN_TARBALL"
 
       - name: Create GitHub Release
         env:

@@ -25,12 +25,17 @@ describe("publish retry resume (idempotent same-SHA)", () => {
     const publisher = (workflow.jobs as Record<string, any>)["publish-npm"];
     expect(publisher).toBeDefined();
     const steps = publisher.steps as Array<{ name?: string; run?: string }>;
-    const pubStep = steps.find((step) => (step.run ?? "").includes("npm publish --provenance"));
+    const pubStep = steps.find((step) => (step.run ?? "").includes("npm publish"));
     expect(pubStep).toBeDefined();
     // Identity, not existence: skip only after the canonical tarball-digest
     // gate verifies registry content == local build (fail closed on mismatch).
+    // Retain+reuse: gate compares THE SAME tarball; publish emits THE SAME file.
     expect(pubStep!.run).toContain("verify-npm-identity.mjs");
+    expect(pubStep!.run).toContain("--tarball");
+    expect(pubStep!.run).toMatch(/npm publish .*TARBALL|npm publish "\$/i);
     expect(pubStep!.run).toMatch(/skipping publish|already on npm/i);
+    // UNKNOWN registry lookups never publish.
+    expect(pubStep!.run).toMatch(/-eq 3|UNKNOWN/);
   });
 
   it("(iii) repair in published-but-unreleased state reaches SHA-bound Release", async () => {
