@@ -130,7 +130,11 @@ interface PaseoSdkClient {
   readonly agents: {
     create(options: Record<string, unknown>): Promise<PaseoSdkAgentHandle>;
     ref(agentId: string): PaseoSdkAgentHandle;
-    list(options?: Record<string, unknown>): Promise<{ entries: Array<{ agent: Record<string, unknown> }> }>;
+    list(options?: Record<string, unknown>): Promise<{
+      entries: Array<{ agent: Record<string, unknown> }>;
+      nextCursor?: unknown;
+      nextPageToken?: unknown;
+    }>;
   };
   connect(): Promise<void>;
   close(): Promise<void>;
@@ -781,14 +785,53 @@ export async function probePaseoSdkAgent(root: string, agentId: string): Promise
   return Boolean(await inspectPaseoSdkAgent(root, agentId));
 }
 
+/**
+ * Safety bound for SDK agent-listing pagination. Pages are consumed until the
+ * server stops returning a continuation cursor; the cap only fires on a
+ * pathological server that mints fresh cursors forever (fail-closed, keep
+ * what was listed). Single-page servers behave exactly as before.
+ */
+export const MAX_PASEO_SDK_AGENT_LIST_PAGES_V1 = 50;
+
 export async function listPaseoSdkAgents(root: string, labels: Record<string, string> = {}): Promise<PaseoSdkAgentRecord[]> {
-  return withPaseoClient(root, async (client) => {
-    const filter: Record<string, unknown> = { includeArchived: false };
-    if (Object.keys(labels).length) filter.labels = labels;
-    if (typeof client.agents.list !== "function") throw new PaseoSdkUnavailableError("The active @getpaseo/client does not expose agents.list().");
-    const page = await client.agents.list({ filter });
-    return page.entries.map((entry) => normalizeRecord(entry.agent)).filter((agent) => labelsMatch(agent.labels, labels));
-  });
+  return withPaseoClient(root, (client) => listPaseoSdkAgentsWithClient(client, labels));
+}
+
+/**
+ * List agents matching `labels` across ALL server pages (loop until
+ * exhausted). MECHANISM: DETERMINISTIC. The cursor is opaque pass-through;
+ * listing stops at the first page without a fresh non-empty string cursor.
+ */
+export async function listPaseoSdkAgentsWithClient(
+  client: PaseoSdkClient,
+  labels: Record<string, string> = {}
+): Promise<PaseoSdkAgentRecord[]> {
+  const filter: Record<string, unknown> = { includeArchived: false };
+  if (Object.keys(labels).length) filter.labels = labels;
+  if (typeof client.agents.list !== "function") throw new PaseoSdkUnavailableError("The active @getpaseo/client does not expose agents.list().");
+  const out: PaseoSdkAgentRecord[] = [];
+  let cursor: string | undefined;
+  const seenCursors = new Set<string>();
+  for (let page = 0; page < MAX_PASEO_SDK_AGENT_LIST_PAGES_V1; page += 1) {
+    const response = await client.agents.list(cursor ? { filter, cursor } : { filter });
+    for (const entry of response.entries) {
+      const record = normalizeRecord(entry.agent);
+      if (labelsMatch(record.labels, labels)) out.push(record);
+    }
+    const next = listContinuationCursor(response);
+    if (!next || seenCursors.has(next)) break;
+    seenCursors.add(next);
+    cursor = next;
+  }
+  return out;
+}
+
+function listContinuationCursor(response: { nextCursor?: unknown; nextPageToken?: unknown }): string | undefined {
+  for (const key of ["nextCursor", "nextPageToken"] as const) {
+    const value = response[key];
+    if (typeof value === "string" && value) return value;
+  }
+  return undefined;
 }
 
 async function withStructuredResultSink(root: string, options: PaseoSdkAgentOptions, activateInitialTurn: boolean): Promise<PaseoSdkAgentOptions> {

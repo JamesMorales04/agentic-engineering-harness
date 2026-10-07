@@ -56,6 +56,9 @@ export const MAX_SEMANTIC_ASSESSOR_STDERR_TAIL_V1 = 500;
 export const MAX_SEMANTIC_ASSESSOR_CLEANUP_SWEEP_V1 = 10;
 export const MAX_SEMANTIC_ASSESSOR_CLEANUP_ATTEMPTS_V1 = 3;
 
+/** Max skipped-live ids carried in one `cleanup-skipped-live` trace (count is always exact). */
+export const MAX_SEMANTIC_ASSESSOR_CLEANUP_SKIP_TRACE_IDS_V1 = 20;
+
 /**
  * Overflow threshold for the durable cleanup ledger (not an eviction cap).
  * The ledger is never pruned for size while entries are live: one entry per
@@ -445,9 +448,14 @@ async function defaultArchiveAssessorWorkspace(root: string, workspaceId: string
  * exhaustion is traced persistently. Progress across sweeps is deterministic:
  * orphans are sorted by id and each sweep resumes after the durable ledger
  * cursor (wrap-around), so a stable list ordering can never starve orphans
- * past the first window. The ledger is never pruned for size while entries
+ * past the first window; a cursor pointing at a gone id resumes from the
+ * first greater id (head wrap only after a full pass). The gone-proof runs
+ * against the complete unfiltered listing (any status, all pages), never the
+ * filtered orphan set. The ledger is never pruned for size while entries
  * are live; overflow past MAX_LEDGER keeps every limit and traces
- * `semantic.assessor.cleanup-ledger-overflow`. Best-effort: list/ledger
+ * `semantic.assessor.cleanup-ledger-overflow`. Skipped live turns are traced
+ * (`semantic.assessor.cleanup-skipped-live`) without behavior change.
+ * Best-effort: list/ledger
  * failures never throw, per-orphan failures are counted, and the caller never
  * blocks a launch on this path.
  */
@@ -477,12 +485,37 @@ export async function retryOrphanedAssessorCleanupV1(
   const ledger = await loadSemanticAssessorCleanupLedger(root).catch(() => ({ version: 1, attempts: {} }) as SemanticAssessorCleanupLedgerV1);
   // Durable cursor rotation (DETERMINISTIC): resume after the last-processed
   // id in stable id order, wrapping around. A cursor pointing at a gone id
-  // restarts from the head. Every sweep advances across the set instead of
-  // re-serving the same first window under a stable SDK ordering.
-  const cursorIndex = ledger.cursor ? preOp.findIndex((agent) => agent.id === ledger.cursor) : -1;
-  const rotated = cursorIndex < 0 ? preOp : [...preOp.slice(cursorIndex + 1), ...preOp.slice(0, cursorIndex + 1)];
+  // resumes from the first id GREATER than the cursor (forward progress —
+  // never restarts from head mid-pass). Head wrap happens only when no id is
+  // greater than the cursor, i.e. the cursor had reached the end of the set
+  // (a full pass completed).
+  const resumeIndex = ledger.cursor ? preOp.findIndex((agent) => agent.id > ledger.cursor!) : -1;
+  const resumeAt = resumeIndex < 0 ? 0 : resumeIndex;
+  const rotated = [...preOp.slice(resumeAt), ...preOp.slice(0, resumeAt)];
   if (preOp.length > MAX_SEMANTIC_ASSESSOR_CLEANUP_SWEEP_V1) {
     await trace(root, "semantic.assessor.cleanup-sweep-capped", { found: preOp.length, swept: MAX_SEMANTIC_ASSESSOR_CLEANUP_SWEEP_V1, ...(ledger.cursor ? { resumedAfter: ledger.cursor } : {}) }).catch(() => undefined);
+  }
+  // Skipped live turns are observable (DETERMINISTIC, trace-only, no behavior
+  // change): pre-op sessions in `working`/`running` are still skipped to avoid
+  // racing a concurrent triage, but each sweep reports how many were skipped
+  // and which ids, so an indefinite skip is visible instead of silent.
+  const skippedLiveIds = listed
+    .filter((agent) => {
+      if (!agent || typeof agent.id !== "string" || !agent.id) return false;
+      if (isDeterministicPaseoSessionId(agent.id)) return false;
+      const operation = agent.labels?.["aeh.operation"]?.trim();
+      if (operation) return false;
+      return agent.status === "working" || agent.status === "running";
+    })
+    .map((agent) => agent.id)
+    .sort();
+  if (skippedLiveIds.length > 0) {
+    const shown = skippedLiveIds.slice(0, MAX_SEMANTIC_ASSESSOR_CLEANUP_SKIP_TRACE_IDS_V1);
+    await trace(root, "semantic.assessor.cleanup-skipped-live", {
+      skipped: skippedLiveIds.length,
+      agentIds: shown,
+      ...(skippedLiveIds.length > shown.length ? { truncated: true } : {})
+    }).catch(() => undefined);
   }
   const candidates = rotated.slice(0, MAX_SEMANTIC_ASSESSOR_CLEANUP_SWEEP_V1);
   const nextCursor = candidates.length > 0 ? candidates[candidates.length - 1]!.id : undefined;
@@ -568,15 +601,24 @@ export async function retryOrphanedAssessorCleanupV1(
       }
     }
   }
-  // Prune ONLY entries proven gone: absent on re-list with no pending
-  // workspace left. Live entries are never evicted for size — eviction would
+  // Prune ONLY entries proven gone: absent from the complete UNFILTERED
+  // listing (any status, including live `working`/`running` turns and
+  // operation-owned sessions) with no pending workspace left. The filtered
+  // orphan set must never serve as the gone-proof: a live working agent
+  // without a workspace would otherwise lose its retry count. The listing is
+  // consumed across ALL pages (loop until exhausted), so a live-but-unlisted
+  // id is never pruned; listing errors return early above without pruning.
+  // Live entries are never evicted for size — eviction would
   // reset their attempt count to zero and let retries exceed the 3-attempt
   // cap. If live entries push the ledger past MAX_LEDGER, keep them all and
   // trace an overflow warning instead (bounded in practice: at most one entry
   // per failed cleanup id).
-  const liveIds = new Set(preOp.map((agent) => agent.id));
+  const listedIds = new Set<string>();
+  for (const agent of listed) {
+    if (agent && typeof agent.id === "string" && agent.id) listedIds.add(agent.id);
+  }
   for (const id of Object.keys(ledger.attempts)) {
-    if (!liveIds.has(id) && !ledger.attempts[id]?.workspaceId) {
+    if (!listedIds.has(id) && !ledger.attempts[id]?.workspaceId) {
       delete ledger.attempts[id];
       mutated = true;
     }
