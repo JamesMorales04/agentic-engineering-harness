@@ -27,7 +27,9 @@ describe("publish retry resume (idempotent same-SHA)", () => {
     const steps = publisher.steps as Array<{ name?: string; run?: string }>;
     const pubStep = steps.find((step) => (step.run ?? "").includes("npm publish --provenance"));
     expect(pubStep).toBeDefined();
-    expect(pubStep!.run).toContain("npm view");
+    // Identity, not existence: skip only after the canonical tarball-digest
+    // gate verifies registry content == local build (fail closed on mismatch).
+    expect(pubStep!.run).toContain("verify-npm-identity.mjs");
     expect(pubStep!.run).toMatch(/skipping publish|already on npm/i);
   });
 
@@ -48,13 +50,14 @@ describe("publish retry resume (idempotent same-SHA)", () => {
     expect(needs).toContain(verifyName);
     const serialized = JSON.stringify(repairJob);
     expect(serialized).toContain("--verify-tag");
-    expect(serialized).toContain("npm view");
+    // Identity, not existence: repair Release requires the canonical digest gate.
+    expect(serialized).toContain("verify-npm-identity.mjs");
     expect(serialized).toMatch(/TAG_SHA|rev-list/);
     // Publish-job repair gate must still refuse non-eligible states but allow eligible.
     const publishSteps = jobs.publish.steps as Array<{ name?: string; run?: string }>;
     const gate = publishSteps.find((step) => step.name === "Repair missing GitHub Release for current version");
     expect(gate).toBeDefined();
-    expect(gate!.run).toContain("npm view");
+    expect(gate!.run).toContain("verify-npm-identity.mjs");
     expect(gate!.run).toContain("ls-remote");
     expect(gate!.run).toMatch(/Refusing|exit 1/);
   });

@@ -112,11 +112,21 @@ jobs:
             echo "Refusing to create GitHub Release for v${RELEASE_VERSION}: HEAD version does not match (SHA-binding failed)." >&2
             exit 1
           fi
-          if ! npm view "$PACKAGE_NAME@$RELEASE_VERSION" version --json >/dev/null 2>&1; then
-            echo "Refusing to create GitHub Release for v${RELEASE_VERSION}: version is not on npm (nothing published to repair)." >&2
+          # Existence is not identity: the registry tarball must byte-match a
+          # fresh build of this revision (integrity mismatch fails closed —
+          # never release foreign same-version content).
+          npm run build --silent
+          if node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION"; then
+            echo "Repair eligible: tag ${TAG} at ${PEELED_SHA} == HEAD, version ${RELEASE_VERSION} verified identical on npm. The repair-release job will create the SHA-bound Release (no rebuild/republish)."
+          else
+            code=$?
+            if [ "$code" -eq 2 ]; then
+              echo "Refusing to create GitHub Release for v${RELEASE_VERSION}: version is not on npm (nothing published to repair)." >&2
+            else
+              echo "Refusing to create GitHub Release for v${RELEASE_VERSION}: registry tarball content differs from this revision (integrity mismatch, fail closed)." >&2
+            fi
             exit 1
           fi
-          echo "Repair eligible: tag ${TAG} at ${PEELED_SHA} == HEAD, version ${RELEASE_VERSION} is on npm. The repair-release job will create the SHA-bound Release (no rebuild/republish)."
 
       - name: Nothing to publish
         if: steps.version.outputs.should_publish != 'true'
@@ -346,13 +356,19 @@ jobs:
         run: |
           set -euo pipefail
           PACKAGE_NAME="$(node -p "require('./package.json').name")"
-          if npm view "$PACKAGE_NAME@$RELEASE_VERSION" version --json >/dev/null 2>&1; then
-            echo "Version $RELEASE_VERSION already on npm; skipping publish (idempotent resume, nothing to republish)."
+          if node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION"; then
+            echo "Version $RELEASE_VERSION verified identical on npm; skipping publish (idempotent resume, nothing to republish)."
           else
-            if [ -n "${NPM_TOKEN:-}" ]; then
-              export NODE_AUTH_TOKEN="$NPM_TOKEN"
+            code=$?
+            if [ "$code" -eq 2 ]; then
+              if [ -n "${NPM_TOKEN:-}" ]; then
+                export NODE_AUTH_TOKEN="$NPM_TOKEN"
+              fi
+              npm publish --provenance
+            else
+              echo "Refusing to publish $PACKAGE_NAME@$RELEASE_VERSION: registry tarball content differs from the local build (integrity mismatch, fail closed)." >&2
+              exit 1
             fi
-            npm publish --provenance
           fi
 
       - name: Confirm published version is on npm
@@ -364,6 +380,9 @@ jobs:
           PACKAGE_NAME="$(node -p "require('./package.json').name")"
           npm view "$PACKAGE_NAME@$RELEASE_VERSION" version --json
           test "$(npm view "$PACKAGE_NAME@$RELEASE_VERSION" version)" = "$RELEASE_VERSION"
+          # Existence is not identity: fail closed unless the registry tarball
+          # byte-matches the just-built local tarball (integrity mismatch).
+          node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION"
 
   release:
     name: release
@@ -415,6 +434,8 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
+      - run: npm ci
+
       - name: Confirm published-but-unreleased state (SHA-bound)
         shell: bash
         env:
@@ -437,6 +458,10 @@ jobs:
           PACKAGE_NAME="$(node -p "require('./package.json').name")"
           test "$(npm view "$PACKAGE_NAME@$RELEASE_VERSION" version)" = "$RELEASE_VERSION"
           test "$(git describe --tags --exact-match HEAD)" = "$TAG"
+          # Existence is not identity: fail closed unless the registry tarball
+          # byte-matches a fresh build of this revision (integrity mismatch).
+          npm run build --silent
+          node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION"
 
       - name: Create GitHub Release
         env:

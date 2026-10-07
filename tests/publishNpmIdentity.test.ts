@@ -1,0 +1,131 @@
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { parse } from "yaml";
+import { describe, expect, it } from "vitest";
+
+const REPO = path.resolve(import.meta.dirname, "..");
+const WRONG_INTEGRITY = "sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
+
+async function fixture(stub: { absent?: boolean; integrity?: string }) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-npmid-"));
+  await fs.writeFile(path.join(dir, "package.json"), JSON.stringify({ name: "aeh-test-pkg", version: "9.9.9" }));
+  // Local tarball = what `npm pack` would upload; its real digest is ground truth.
+  const pack = spawnSync("npm", ["pack", "--pack-destination", dir, "--silent"], { cwd: dir, encoding: "utf8" });
+  if (pack.status !== 0) throw new Error(`npm pack failed offline: ${pack.stderr}`);
+  const tgz = (await fs.readdir(dir)).find((f) => f.endsWith(".tgz"))!;
+  const bytes = await fs.readFile(path.join(dir, tgz));
+  const localIntegrity = `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
+  const bin = path.join(dir, "stubbin");
+  await fs.mkdir(bin);
+  const publishCalled = path.join(dir, "publish-called");
+  await fs.writeFile(
+    path.join(bin, "npm"),
+    `#!/bin/sh\n` +
+      `if [ "$1" = "view" ]; then\n` +
+      `  if [ -n "$STUB_ABSENT" ]; then echo "404" >&2; exit 1; fi\n` +
+      `  case "$3" in version) echo "$STUB_VERSION";; dist.integrity) echo "$STUB_INTEGRITY";; *) exit 1;; esac\n` +
+      `  exit 0\nfi\n` +
+      `if [ "$1" = "pack" ]; then DEST=""; PREV=""; for a in "$@"; do if [ "$PREV" = "--pack-destination" ]; then DEST="$a"; fi; PREV="$a"; done; cp "${path.join(dir, tgz)}" "$DEST/"; echo "${tgz}"; exit 0; fi\n` +
+      `if [ "$1" = "publish" ]; then touch "${publishCalled}"; exit 0; fi\n` +
+      `echo "stub: unsupported npm $*" >&2; exit 1\n`,
+  );
+  await fs.chmod(path.join(bin, "npm"), 0o755);
+  // Helper resolves `scripts/ci/...` relative to cwd: link repo scripts into fixture.
+  await fs.symlink(path.join(REPO, "scripts"), path.join(dir, "scripts"));
+  return {
+    dir,
+    bin,
+    publishCalled,
+    localIntegrity,
+    env: {
+      ...process.env,
+      PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+      RELEASE_VERSION: "9.9.9",
+      STUB_VERSION: "9.9.9",
+      STUB_INTEGRITY: stub.integrity ?? localIntegrity,
+      ...(stub.absent ? { STUB_ABSENT: "1" } : {}),
+    } as NodeJS.ProcessEnv,
+  };
+}
+
+async function publishStepRun(fx: Awaited<ReturnType<typeof fixture>>) {
+  const text = await fs.readFile(path.join(REPO, ".github/workflows/publish.yml"), "utf8");
+  const workflow = parse(text) as Record<string, any>;
+  const steps = (workflow.jobs as Record<string, any>)["publish-npm"].steps as Array<{ name?: string; run?: string }>;
+  const pubStep = steps.find((s) => (s.run ?? "").includes("npm publish --provenance"))!;
+  const sh = path.join(fx.dir, "publish-step.sh");
+  await fs.writeFile(sh, `set -euo pipefail\n${pubStep.run}\n`);
+  const r = spawnSync("bash", [sh], { cwd: fx.dir, env: fx.env, encoding: "utf8" });
+  let published = false;
+  try {
+    await fs.access(fx.publishCalled);
+    published = true;
+  } catch {}
+  return { code: r.status ?? -1, out: `${r.stdout ?? ""}\n${r.stderr ?? ""}`, published };
+}
+
+describe("npm resume identity (fail closed on content mismatch)", () => {
+  it("mismatched registry content must NOT skip-publish / release (fail closed)", async () => {
+    const fx = await fixture({ integrity: WRONG_INTEGRITY });
+    const r = await publishStepRun(fx);
+    expect(r.published).toBe(false); // never publish OVER a foreign tarball
+    expect(r.code).not.toBe(0); // FAILS pre-repair: existence-only logic exits 0 (gap)
+    expect(r.out).toMatch(/mismatch|refus|fail/i);
+  });
+
+  it("identical integrity resumes idempotently (skip, no publish)", async () => {
+    const fx = await fixture({});
+    const r = await publishStepRun(fx);
+    expect(r.code).toBe(0);
+    expect(r.published).toBe(false);
+    expect(r.out).toMatch(/skipping publish|idempotent|verified identical/i);
+  });
+
+  it("absent version still publishes", async () => {
+    const fx = await fixture({ absent: true });
+    const r = await publishStepRun(fx);
+    expect(r.code).toBe(0);
+    expect(r.published).toBe(true);
+  });
+
+  it("all resume/release gates delegate to the canonical identity gate (fail closed)", async () => {
+    const text = await fs.readFile(path.join(REPO, ".github/workflows/publish.yml"), "utf8");
+    const workflow = parse(text) as Record<string, any>;
+    const jobs = workflow.jobs as Record<string, any>;
+    const runs = (steps: Array<{ run?: string }>) => (steps ?? []).map((s) => s.run ?? "").join("\n");
+    const publishGate = (jobs.publish.steps as Array<{ name?: string; run?: string }>).find(
+      (s) => s.name === "Repair missing GitHub Release for current version",
+    )!.run!;
+    const pubSteps = jobs["publish-npm"].steps as Array<{ name?: string; run?: string }>;
+    const publishRun = pubSteps.find((s) => (s.run ?? "").includes("npm publish --provenance"))!.run!;
+    const confirmRun = pubSteps.find((s) => s.name === "Confirm published version is on npm")!.run!;
+    const repairRun = runs(jobs["repair-release"].steps);
+    for (const [site, run] of Object.entries({ publishGate, publishRun, confirmRun, repairRun })) {
+      // Same check everywhere: canonical gate (which compares dist.integrity /
+      // dist.shasum against the local tarball), never bare existence.
+      expect(run, site).toContain("verify-npm-identity.mjs");
+      expect(run, site).toMatch(/mismatch/i);
+    }
+    // The gate itself compares digests, never mere existence.
+    const gate = await fs.readFile(path.join(REPO, "scripts/ci/verify-npm-identity.mjs"), "utf8");
+    expect(gate).toContain("dist.integrity");
+    expect(gate).toContain("dist.shasum");
+    expect(gate).toContain('"pack"');
+    expect(gate).toMatch(/process\.exit\(1\)/);
+  });
+
+  it("identity helper exit codes: 0 identical, 1 mismatch, 2 absent", async () => {
+    const gate = path.join(REPO, "scripts/ci/verify-npm-identity.mjs");
+    const run = (fx: Awaited<ReturnType<typeof fixture>>) =>
+      spawnSync(process.execPath, [gate, "aeh-test-pkg", "9.9.9"], { cwd: fx.dir, env: fx.env, encoding: "utf8" });
+    const same = run(await fixture({}));
+    expect(same.status).toBe(0);
+    const diff = run(await fixture({ integrity: WRONG_INTEGRITY }));
+    expect(diff.status).toBe(1);
+    expect(diff.stderr).toMatch(/mismatch/i);
+    expect(run(await fixture({ absent: true })).status).toBe(2);
+  });
+});
