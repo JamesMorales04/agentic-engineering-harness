@@ -180,6 +180,32 @@ describe("candidate-bound provider lane evidence", () => {
     expect((await verifyProviderLaneEvidenceV1(root, config, evidence, candidate)).blockers.some((blocker) => blocker.includes(PROVIDER_LANE_EVIDENCE_TAMPERED))).toBe(true);
   });
 
+  it("verify stays integrity-only: non-PASS evidence status still verifies when binding is valid", async () => {
+    // Partial-green support: a FAIL bundle's lane evidence honestly records
+    // its FAIL outcome; verify must not turn that record into an integrity
+    // blocker. Per-requirement verdicts are decided by test attribution in
+    // run.ts, with the bundle failure kept as underlying failure evidence.
+    for (const status of ["FAIL", "WARN"] as const) {
+      const { root, candidate } = await fixture();
+      const evidence = await persistProviderLaneEvidenceV1({
+        root, config, lane: "BROWSER", checkId: "status-check", candidate,
+        provider: { name: "playwright", version: "1.62.1" }, command: "playwright test",
+        status, summary: `browser ${status.toLowerCase()}`, findings: [], rawArtifactText: "{}",
+        startedAt: new Date().toISOString(), finishedAt: new Date().toISOString()
+      });
+      const verification = await verifyProviderLaneEvidenceV1(root, config, evidence, candidate);
+      expect(verification.blockers).toEqual([]);
+      expect(verification.ok).toBe(true);
+      await expect(requireProviderLaneEvidenceV1(root, config, "BROWSER", candidate, "status-check")).resolves.toMatchObject({
+        status,
+      });
+      await expect(requireProviderLaneEvidenceForActionV1({
+        root, config, lane: "BROWSER", candidate, checkId: "status-check",
+        kind: "browser-test", actionSource: "approved-provider", actionSelector: "shared-browser"
+      })).resolves.toMatchObject({ status });
+    }
+  });
+
   it("refuses to persist evidence for a workspace that does not match the candidate", async () => {
     const { root, candidate } = await fixture();
     await fs.writeFile(path.join(root, "drift.txt"), "drift");

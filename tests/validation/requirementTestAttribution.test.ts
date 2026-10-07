@@ -2,13 +2,13 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { HarnessProjectConfig, TaskContract, ValidationReport } from "../../src/core/types.js";
+import type { HarnessProjectConfig, TaskContract, ValidationCheck, ValidationReport } from "../../src/core/types.js";
 import { computeWorktreeDigest } from "../../src/core/git.js";
 import { sha256Canonical } from "../../src/core/digest.js";
 import { createCandidateRevisionV1, type CandidateRevisionV1 } from "../../src/operations/v2Contracts.js";
 import type { CandidateImpactV1 } from "../../src/candidates/assembler.js";
 import { compileCandidateAssuranceV1 } from "../../src/architecture/candidateAssurance.js";
-import { evaluateTestAttributionV1 } from "../../src/validation/testAttribution.js";
+import { attributedReporterFailuresV1, evaluateTestAttributionV1, extractReporterTestsFromExecutionV1, parsePlaywrightReporterTestsV1, reporterHasAnyFailureV1 } from "../../src/validation/testAttribution.js";
 import { resolveValidationRequirements, validationRequirementKindValues } from "../../src/architecture/validationRequirements.js";
 import { runCandidateImpactValidations } from "../../src/core/run.js";
 
@@ -281,6 +281,11 @@ describe("requirement test attribution for shared bundles (fail-closed)", () => 
       requirements,
     });
     const byId = new Map(checks.map((c) => [c.id, c]));
+    // Refined partial-green rule: attributed alpha/beta tests pass per the
+    // single authentic reporter and every reporter failure (gamma) is outside
+    // the attributed set, so the mapped-passing requirement PASSes even
+    // though the shared bundle exits nonzero. The bundle failure stays on the
+    // honest record as underlying failure evidence.
     expect(byId.get("candidate.assurance.validation.REQ-PASS")?.status).toBe("PASS");
     expect(byId.get("candidate.assurance.validation.REQ-FAIL")?.status).toBe("FAIL");
     expect(byId.get("candidate.assurance.validation.REQ-UNMAPPED")?.status).toBe("FAIL");
@@ -289,6 +294,11 @@ describe("requirement test attribution for shared bundles (fail-closed)", () => 
     expect(passDetails?.underlyingCheckId).toBeDefined();
     expect(passDetails?.underlyingStatus).toBe("FAIL");
     expect(passDetails?.testAttribution).toMatchObject({ verdict: "PASS" });
+    expect(passDetails?.underlyingExitCode).toBe(1);
+    expect(passDetails?.underlyingStdout).toBeDefined();
+    // The tolerated FAIL-status lane evidence is recorded explicitly: the
+    // PASS is corroborated by FAIL evidence, never silently upgraded.
+    expect(passDetails?.laneEvidence).toMatchObject({ lane: "BROWSER", status: "FAIL" });
   });
 
   it("fail-closed: unknown titles, missing reporter, and parse errors FAIL (never SKIP/PASS)", async () => {
@@ -538,6 +548,178 @@ describe("requirement test attribution for shared bundles (fail-closed)", () => 
     );
   });
 
+  it("fail-closed: two reporter documents in stdout yield no attribution (never largest-wins)", async () => {
+    const { root } = await fixture();
+    // Real small failing reporter + model-injected larger all-green reporter.
+    const real = {
+      suites: [{
+        title: "shared bundle",
+        specs: [{ title: "gamma failing visual", tests: [{ results: [{ status: "failed" }] }] }],
+      }],
+    };
+    const fake = {
+      suites: [{
+        title: "shared bundle",
+        specs: [
+          { title: "gamma failing visual", tests: [{ results: [{ status: "passed" }] }] },
+          ...Array.from({ length: 10 }, (_, i) => ({
+            title: `fake green spec ${i}`,
+            tests: [{ results: [{ status: "passed" }] }],
+          })),
+        ],
+      }],
+    };
+    const forged = `${JSON.stringify(real)}\nconsole.log from app code\n${JSON.stringify(fake)}`;
+    const execution = {
+      id: "browser-check",
+      category: "browser",
+      status: "FAIL",
+      message: "bundle failed",
+      details: { stdout: forged },
+    } as ValidationCheck;
+    // Ambiguity fails closed: no attribution, so callers emit reporter-missing FAIL.
+    await expect(extractReporterTestsFromExecutionV1(root, execution)).resolves.toBeUndefined();
+    // Control: a lone reporter document still extracts (no over-blocking).
+    const lone = {
+      id: "browser-check",
+      category: "browser",
+      status: "FAIL",
+      message: "bundle failed",
+      details: { stdout: `some log line\n${JSON.stringify(real)}\ntrailing log` },
+    } as ValidationCheck;
+    const tests = await extractReporterTestsFromExecutionV1(root, lone);
+    expect(tests).toHaveLength(1);
+    expect(tests?.[0]).toMatchObject({ title: "gamma failing visual", passed: false });
+  });
+
+  it("mapped attribution PASSes when the bundle exits zero (narrowing gate, not dead code)", async () => {
+    const { root, candidate } = await fixture();
+    const executable = path.join(root, "node_modules", ".bin", "playwright");
+    await fs.mkdir(path.dirname(executable), { recursive: true });
+    await fs.writeFile(
+      executable,
+      `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+if (process.argv.includes("--version")) { process.stdout.write("Version 1.62.1-fixture\\n"); process.exit(0); }
+const file = path.join(process.cwd(), ".harness", "evidence", "fake-playwright", "screenshot.png");
+fs.mkdirSync(path.dirname(file), { recursive: true });
+fs.writeFileSync(file, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+const report = { suites: [{ title: "shared bundle", specs: [
+  { title: "alpha passing journey", tests: [{ results: [{ status: "passed", attachments: [{ name: "screenshot", contentType: "image/png", path: file }] }] }] },
+  { title: "beta passing journey", tests: [{ results: [{ status: "passed", attachments: [{ name: "screenshot", contentType: "image/png", path: file }] }] }] }
+]}] };
+process.stdout.write(JSON.stringify(report));
+process.exit(0);
+`,
+      "utf8",
+    );
+    await fs.chmod(executable, 0o755);
+    const configured: HarnessProjectConfig = {
+      ...baseConfig,
+      validation: {
+        providers: [{ id: "shared-browser", capability: "browser-test", provider: "playwright" }],
+        testAttribution: {
+          "REQ-PASS": ["alpha passing"],
+          "REQ-UNKNOWN": ["no-such-test-title-xyz"],
+        },
+      },
+    };
+    const requirements = [
+      {
+        version: 1 as const,
+        id: "REQ-PASS",
+        property: "Passing journey.",
+        kind: "browser-test" as const,
+        scope: ["src/app.ts"],
+        evidenceNeeded: ["browser evidence."],
+        requirementRefs: [],
+        acceptanceRefs: [],
+      },
+      {
+        version: 1 as const,
+        id: "REQ-UNKNOWN",
+        property: "Unknown mapping still fails closed on a green bundle.",
+        kind: "browser-test" as const,
+        scope: ["src/app.ts"],
+        evidenceNeeded: ["browser evidence."],
+        requirementRefs: [],
+        acceptanceRefs: [],
+      },
+    ];
+    const resolution = await resolveValidationRequirements({
+      root,
+      requirements,
+      config: configured,
+      contract,
+      allowedKinds: validationRequirementKindValues,
+    });
+    const impact = impactFor(candidate);
+    const compilation = compileCandidateAssuranceV1({
+      candidate,
+      impact,
+      policy: {
+        version: 1,
+        digest: sha256Canonical("test-attribution-policy"),
+        minimumAssurance: "STANDARD",
+        independentReviewRequired: false,
+        minimumIndependentReviewers: 0,
+        providerDiversity: false,
+        allowedValidationKinds: [...validationRequirementKindValues],
+        evidenceStrength: "STANDARD",
+      },
+      implementationIdentity: "implementer-1",
+      risk: "low",
+      reviewerCandidates: [],
+      baseValidationRequirements: [],
+      validationResolution: resolution,
+      acceptanceAssertions: [],
+    });
+    const report: ValidationReport = {
+      version: 1,
+      taskId: contract.task.id,
+      status: "PASS",
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      checks: [],
+      changedFiles: ["src/app.ts"],
+      candidate,
+      metadata: { project: "test-attribution-fixture", baseRef: "HEAD" },
+    };
+    const checks = await runCandidateImpactValidations({
+      root,
+      config: configured,
+      contract,
+      report,
+      impact,
+      compilation,
+      resolution,
+      requirements,
+    });
+    const byId = new Map(checks.map((c) => [c.id, c]));
+    expect(byId.get("candidate.assurance.validation.REQ-PASS")?.status).toBe("PASS");
+    expect(
+      (byId.get("candidate.assurance.validation.REQ-PASS")?.details as Record<string, unknown>)?.underlyingStatus,
+    ).toBe("PASS");
+    expect(
+      (byId.get("candidate.assurance.validation.REQ-PASS")?.details as Record<string, unknown>)?.testAttribution,
+    ).toMatchObject({ verdict: "PASS" });
+    expect(byId.get("candidate.assurance.validation.REQ-UNKNOWN")?.status).toBe("FAIL");
+  });
+
+  it("partial-green gate reads the reporter's own failure list, never bundle stderr text", () => {
+    const tests = [
+      { title: "alpha passing journey", fullTitle: "shared bundle > alpha passing journey", status: "passed", passed: true },
+      { title: "gamma failing visual", fullTitle: "shared bundle > gamma failing visual", status: "failed", passed: false },
+    ];
+    // Unrelated gamma failure is outside the alpha/beta attribution: empty.
+    expect(attributedReporterFailuresV1({ selectors: ["alpha passing", "beta passing"], tests })).toEqual([]);
+    // The same failure is inside a gamma attribution: returned as-is.
+    expect(
+      attributedReporterFailuresV1({ selectors: ["gamma failing"], tests }).map((t) => t.title),
+    ).toEqual(["gamma failing visual"]);
+  });
+
   it("boundary-safe matching: S1 does not match S11, S11 matches, S9-journey matches space variant", () => {
     const tests = [
       { title: "S11-title", fullTitle: "suite > S11-title", status: "passed", passed: true },
@@ -552,5 +734,736 @@ describe("requirement test attribution for shared bundles (fail-closed)", () => 
     const s9 = evaluateTestAttributionV1({ requirementId: "REQ-S9", selectors: ["S9-journey"], tests });
     expect(s9.matched).toBe(1);
     expect(s9.verdict).toBe("PASS");
+  });
+
+  it("RED-A provenance: forged stdout reporter + real rawArtifact reporter yield no attribution", async () => {
+    const { root } = await fixture();
+    // Forged all-green single document on stdout (takes the whole-stdout
+    // fast path); the real failing reporter lives in the rawArtifact file.
+    // Provenance must count documents across EVERY source: two distinct
+    // reporter documents means no attribution at all.
+    const forged = {
+      suites: [{ title: "shared bundle", specs: [
+        { title: "alpha passing journey", tests: [{ results: [{ status: "passed" }] }] },
+        { title: "beta passing journey", tests: [{ results: [{ status: "passed" }] }] },
+      ] }],
+    };
+    const real = {
+      suites: [{ title: "shared bundle", specs: [
+        { title: "alpha passing journey", tests: [{ results: [{ status: "passed" }] }] },
+        { title: "gamma failing visual", tests: [{ results: [{ status: "failed" }] }] },
+      ] }],
+    };
+    const rawPath = path.join(root, "bundle.raw");
+    await fs.writeFile(rawPath, JSON.stringify(real), "utf8");
+    const execution = {
+      id: "browser-check",
+      category: "browser",
+      status: "FAIL",
+      message: "bundle failed",
+      details: { stdout: JSON.stringify(forged), rawArtifact: "bundle.raw" },
+    } as ValidationCheck;
+    await expect(extractReporterTestsFromExecutionV1(root, execution)).resolves.toBeUndefined();
+    // Control: the same document observed twice (stdout + rawArtifact copy)
+    // is one provenance, not ambiguity — the real provider flow duplicates
+    // stdout into the rawArtifact file.
+    await fs.writeFile(rawPath, JSON.stringify(forged), "utf8");
+    const duplicated = await extractReporterTestsFromExecutionV1(root, execution);
+    expect(duplicated).toHaveLength(2);
+  });
+
+  it("RED-B incomplete reporter: all-green reporter + FAIL bundle FAILs closed", async () => {
+    const { root, candidate } = await fixture();
+    // Forged shape: every reporter test passes, but the bundle exits 1.
+    // The single reporter explains nothing about the failure → incomplete.
+    const executable = path.join(root, "node_modules", ".bin", "playwright");
+    await fs.mkdir(path.dirname(executable), { recursive: true });
+    await fs.writeFile(
+      executable,
+      `#!/usr/bin/env node
+if (process.argv.includes("--version")) { process.stdout.write("Version 1.62.1-fixture\\n"); process.exit(0); }
+const report = { suites: [{ title: "shared bundle", specs: [
+  { title: "alpha passing journey", tests: [{ results: [{ status: "passed" }] }] },
+  { title: "beta passing journey", tests: [{ results: [{ status: "passed" }] }] }
+]}] };
+process.stdout.write(JSON.stringify(report));
+process.exit(1);
+`,
+      "utf8",
+    );
+    await fs.chmod(executable, 0o755);
+    const configured: HarnessProjectConfig = {
+      ...baseConfig,
+      validation: {
+        providers: [{ id: "shared-browser", capability: "browser-test", provider: "playwright" }],
+        testAttribution: {
+          "REQ-GREEN": ["alpha passing", "beta passing"],
+        },
+      },
+    };
+    const requirements = [
+      {
+        version: 1 as const,
+        id: "REQ-GREEN",
+        property: "Passing journeys demonstrate behavior.",
+        kind: "browser-test" as const,
+        scope: ["src/app.ts"],
+        evidenceNeeded: ["browser evidence for passing journeys."],
+        requirementRefs: [],
+        acceptanceRefs: [],
+      },
+    ];
+    const resolution = await resolveValidationRequirements({
+      root,
+      requirements,
+      config: configured,
+      contract,
+      allowedKinds: validationRequirementKindValues,
+    });
+    const impact = impactFor(candidate);
+    const compilation = compileCandidateAssuranceV1({
+      candidate,
+      impact,
+      policy: {
+        version: 1,
+        digest: sha256Canonical("test-attribution-policy"),
+        minimumAssurance: "STANDARD",
+        independentReviewRequired: false,
+        minimumIndependentReviewers: 0,
+        providerDiversity: false,
+        allowedValidationKinds: [...validationRequirementKindValues],
+        evidenceStrength: "STANDARD",
+      },
+      implementationIdentity: "implementer-1",
+      risk: "low",
+      reviewerCandidates: [],
+      baseValidationRequirements: [],
+      validationResolution: resolution,
+      acceptanceAssertions: [],
+    });
+    const report: ValidationReport = {
+      version: 1,
+      taskId: contract.task.id,
+      status: "PASS",
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      checks: [],
+      changedFiles: ["src/app.ts"],
+      candidate,
+      metadata: { project: "test-attribution-fixture", baseRef: "HEAD" },
+    };
+    const checks = await runCandidateImpactValidations({
+      root,
+      config: configured,
+      contract,
+      report,
+      impact,
+      compilation,
+      resolution,
+      requirements,
+    });
+    const byId = new Map(checks.map((c) => [c.id, c]));
+    expect(byId.get("candidate.assurance.validation.REQ-GREEN")?.status).toBe("FAIL");
+    expect(
+      (byId.get("candidate.assurance.validation.REQ-GREEN")?.details as Record<string, unknown>)?.blocker,
+    ).toBe("TEST_ATTRIBUTION_REPORTER_INCOMPLETE");
+  });
+
+  it("RED-C WARN lane evidence + partial-green FAILs (FAIL-only tolerance scope)", async () => {
+    const { root, candidate } = await fixture();
+    // Optional (required:false) validator: partial-green reporter, exit 1.
+    // Execution status WARN + WARN-status lane evidence must NOT satisfy a
+    // mapped PASS — tolerance covers FAIL-status lane evidence only.
+    // The script lives under node_modules (digest-ignored) so candidate
+    // workspace binding still matches, exactly like the provider fixtures.
+    const scriptDir = path.join(root, "node_modules", ".bin");
+    await fs.mkdir(scriptDir, { recursive: true });
+    const script = path.join(scriptDir, "partial-green-warn.mjs");
+    await fs.writeFile(
+      script,
+      `const report = { suites: [{ title: "shared bundle", specs: [
+  { title: "alpha passing journey", tests: [{ results: [{ status: "passed" }] }] },
+  { title: "beta passing journey", tests: [{ results: [{ status: "passed" }] }] },
+  { title: "gamma failing visual", tests: [{ results: [{ status: "failed", error: { message: "width drift" } }] }] }
+]}] };
+process.stdout.write(JSON.stringify(report));
+process.exit(1);
+`,
+      "utf8",
+    );
+    const configured: HarnessProjectConfig = {
+      ...baseConfig,
+      validation: {
+        validators: [{ id: "browser-warn", adapter: "playwright", required: false, command: `node ${script}` }],
+        testAttribution: {
+          "REQ-WARN": ["alpha passing", "beta passing"],
+        },
+      },
+    };
+    const requirements = [
+      {
+        version: 1 as const,
+        id: "REQ-WARN",
+        property: "Passing journeys demonstrate behavior.",
+        kind: "browser-test" as const,
+        scope: ["src/app.ts"],
+        evidenceNeeded: ["browser evidence for passing journeys."],
+        requirementRefs: [],
+        acceptanceRefs: [],
+      },
+    ];
+    const resolution = await resolveValidationRequirements({
+      root,
+      requirements,
+      config: configured,
+      contract,
+      allowedKinds: validationRequirementKindValues,
+    });
+    expect(resolution.actions.map((a) => `${a.source}:${a.selector}`)).toEqual([
+      "configured-validator:browser-warn",
+    ]);
+    const impact = impactFor(candidate);
+    const compilation = compileCandidateAssuranceV1({
+      candidate,
+      impact,
+      policy: {
+        version: 1,
+        digest: sha256Canonical("test-attribution-policy"),
+        minimumAssurance: "STANDARD",
+        independentReviewRequired: false,
+        minimumIndependentReviewers: 0,
+        providerDiversity: false,
+        allowedValidationKinds: [...validationRequirementKindValues],
+        evidenceStrength: "STANDARD",
+      },
+      implementationIdentity: "implementer-1",
+      risk: "low",
+      reviewerCandidates: [],
+      baseValidationRequirements: [],
+      validationResolution: resolution,
+      acceptanceAssertions: [],
+    });
+    const report: ValidationReport = {
+      version: 1,
+      taskId: contract.task.id,
+      status: "PASS",
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      checks: [],
+      changedFiles: ["src/app.ts"],
+      candidate,
+      metadata: { project: "test-attribution-fixture", baseRef: "HEAD" },
+    };
+    const checks = await runCandidateImpactValidations({
+      root,
+      config: configured,
+      contract,
+      report,
+      impact,
+      compilation,
+      resolution,
+      requirements,
+    });
+    const byId = new Map(checks.map((c) => [c.id, c]));
+    expect(byId.get("candidate.assurance.validation.REQ-WARN")?.status).toBe("FAIL");
+    expect(
+      String((byId.get("candidate.assurance.validation.REQ-WARN")?.details as Record<string, unknown>)?.blocker ?? ""),
+    ).toMatch(/PROVIDER_LANE_EVIDENCE_STATUS/);
+  });
+
+  it("RED-D skipped-does-not-explain-bundle-failure: attributed PASS + unrelated SKIPPED + exit 1 FAILs incomplete", async () => {
+    const { root, candidate } = await fixture();
+    // Luna bypass shape: reporter records alpha passed and beta SKIPPED —
+    // no explicit failed-status test — while the bundle exits 1 (e.g.
+    // teardown crash). The skipped test must NOT satisfy completeness.
+    const executable = path.join(root, "node_modules", ".bin", "playwright");
+    await fs.mkdir(path.dirname(executable), { recursive: true });
+    await fs.writeFile(
+      executable,
+      `#!/usr/bin/env node
+if (process.argv.includes("--version")) { process.stdout.write("Version 1.62.1-fixture\\n"); process.exit(0); }
+const report = { suites: [{ title: "shared bundle", specs: [
+  { title: "alpha passing journey", tests: [{ results: [{ status: "passed" }] }] },
+  { title: "beta skipped journey", tests: [{ results: [{ status: "skipped" }] }] }
+]}] };
+process.stdout.write(JSON.stringify(report));
+process.exit(1);
+`,
+      "utf8",
+    );
+    await fs.chmod(executable, 0o755);
+    const configured: HarnessProjectConfig = {
+      ...baseConfig,
+      validation: {
+        providers: [{ id: "shared-browser", capability: "browser-test", provider: "playwright" }],
+        testAttribution: {
+          "REQ-SKIP": ["alpha passing"],
+        },
+      },
+    };
+    const requirements = [
+      {
+        version: 1 as const,
+        id: "REQ-SKIP",
+        property: "Passing journey demonstrates behavior.",
+        kind: "browser-test" as const,
+        scope: ["src/app.ts"],
+        evidenceNeeded: ["browser evidence for passing journeys."],
+        requirementRefs: [],
+        acceptanceRefs: [],
+      },
+    ];
+    const resolution = await resolveValidationRequirements({
+      root,
+      requirements,
+      config: configured,
+      contract,
+      allowedKinds: validationRequirementKindValues,
+    });
+    const impact = impactFor(candidate);
+    const compilation = compileCandidateAssuranceV1({
+      candidate,
+      impact,
+      policy: {
+        version: 1,
+        digest: sha256Canonical("test-attribution-policy"),
+        minimumAssurance: "STANDARD",
+        independentReviewRequired: false,
+        minimumIndependentReviewers: 0,
+        providerDiversity: false,
+        allowedValidationKinds: [...validationRequirementKindValues],
+        evidenceStrength: "STANDARD",
+      },
+      implementationIdentity: "implementer-1",
+      risk: "low",
+      reviewerCandidates: [],
+      baseValidationRequirements: [],
+      validationResolution: resolution,
+      acceptanceAssertions: [],
+    });
+    const report: ValidationReport = {
+      version: 1,
+      taskId: contract.task.id,
+      status: "PASS",
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      checks: [],
+      changedFiles: ["src/app.ts"],
+      candidate,
+      metadata: { project: "test-attribution-fixture", baseRef: "HEAD" },
+    };
+    const checks = await runCandidateImpactValidations({
+      root,
+      config: configured,
+      contract,
+      report,
+      impact,
+      compilation,
+      resolution,
+      requirements,
+    });
+    const byId = new Map(checks.map((c) => [c.id, c]));
+    expect(byId.get("candidate.assurance.validation.REQ-SKIP")?.status).toBe("FAIL");
+    expect(
+      (byId.get("candidate.assurance.validation.REQ-SKIP")?.details as Record<string, unknown>)?.blocker,
+    ).toBe("TEST_ATTRIBUTION_REPORTER_INCOMPLETE");
+  });
+
+  it("explicit-failure vocabulary: failed/timedOut/interrupted explain the bundle; skipped/missing do not", () => {
+    const skipped = [
+      { title: "alpha passing journey", fullTitle: "shared bundle > alpha passing journey", status: "passed", passed: true },
+      { title: "beta skipped journey", fullTitle: "shared bundle > beta skipped journey", status: "skipped", passed: false },
+    ];
+    // Completeness: skipped is non-passing but explains nothing.
+    expect(reporterHasAnyFailureV1(skipped)).toBe(false);
+    expect(reporterHasAnyFailureV1([])).toBe(false);
+    expect(
+      reporterHasAnyFailureV1([{ title: "t", fullTitle: "s > t", status: "missing", passed: false }]),
+    ).toBe(false);
+    // Explicit failure statuses satisfy completeness (any casing the
+    // reporter schema uses: timedOut arrives lowercased as timedout).
+    for (const status of ["failed", "timedOut", "TIMEDOUT", "interrupted"]) {
+      expect(reporterHasAnyFailureV1([{ title: "t", fullTitle: "s > t", status, passed: false }])).toBe(true);
+    }
+    // Rule (iii): an attributed SKIPPED test is unevaluated, not failed.
+    expect(attributedReporterFailuresV1({ selectors: ["beta skipped"], tests: skipped })).toEqual([]);
+    expect(
+      attributedReporterFailuresV1({ selectors: ["alpha passing"], tests: skipped }),
+    ).toEqual([]);
+    // Evaluation: attributed-skipped FAILs via the distinct
+    // TEST_ATTRIBUTION_SKIPPED blocker (the selector DID match, so NO_MATCH
+    // is misleading), never TEST_FAILED; attributed-failed still FAILs via
+    // TEST_FAILED.
+    const skippedEval = evaluateTestAttributionV1({ requirementId: "REQ-SKIP", selectors: ["beta skipped"], tests: skipped });
+    expect(skippedEval.verdict).toBe("FAIL");
+    expect(skippedEval.blocker).toBe("TEST_ATTRIBUTION_SKIPPED");
+    expect(skippedEval.skippedTitles).toEqual(["shared bundle > beta skipped journey"]);
+    const failedTests = [
+      ...skipped,
+      { title: "gamma failing visual", fullTitle: "shared bundle > gamma failing visual", status: "failed", passed: false },
+    ];
+    expect(reporterHasAnyFailureV1(failedTests)).toBe(true);
+    expect(
+      attributedReporterFailuresV1({ selectors: ["gamma failing"], tests: failedTests }).map((t) => t.title),
+    ).toEqual(["gamma failing visual"]);
+    const failedEval = evaluateTestAttributionV1({ requirementId: "REQ-G", selectors: ["gamma failing"], tests: failedTests });
+    expect(failedEval.verdict).toBe("FAIL");
+    expect(failedEval.blocker).toBe("TEST_ATTRIBUTION_TEST_FAILED");
+  });
+
+  it("parser marks retry-aware explicit failures (legacy doc without test-level status falls back to failed-result)", () => {
+    const parsed = parsePlaywrightReporterTestsV1({
+      suites: [{
+        title: "shared bundle",
+        specs: [
+          { title: "flaky journey", tests: [{ results: [{ status: "failed" }, { status: "passed" }] }] },
+          { title: "skipped journey", tests: [{ results: [{ status: "skipped" }] }] },
+          { title: "empty journey", tests: [{ results: [] }] },
+        ],
+      }],
+    });
+    const byTitle = new Map(parsed.map((t) => [t.title, t]));
+    expect(byTitle.get("flaky journey")).toMatchObject({ passed: false, hasFailedResult: true });
+    expect(byTitle.get("skipped journey")).toMatchObject({ passed: false, status: "skipped", hasFailedResult: false });
+    expect(byTitle.get("empty journey")).toMatchObject({ passed: false, status: "missing", hasFailedResult: false });
+    // Back-compat: a doc WITHOUT test-level status cannot claim flaky/expected
+    // semantics, so the failed result still explains a bundle failure (legacy
+    // fail-closed); skipped/missing-only reporters do not.
+    expect(reporterHasAnyFailureV1(parsed)).toBe(true);
+    expect(reporterHasAnyFailureV1(parsed.filter((t) => t.title !== "flaky journey"))).toBe(false);
+  });
+});
+
+describe("Luna outcome classification: unexpected / flaky / skipped (RED FIRST)", () => {
+  async function runMappedRequirement(input: {
+    reportJson: string;
+    exitCode: number;
+    requirementId: string;
+    selectors: string[];
+    withScreenshotOnPassing?: boolean;
+  }): Promise<{ status: string | undefined; details: Record<string, unknown> }> {
+    const { root, candidate } = await fixture();
+    const executable = path.join(root, "node_modules", ".bin", "playwright");
+    await fs.mkdir(path.dirname(executable), { recursive: true });
+    await fs.writeFile(
+      executable,
+      `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+if (process.argv.includes("--version")) { process.stdout.write("Version 1.62.1-fixture\\n"); process.exit(0); }
+const file = path.join(process.cwd(), ".harness", "evidence", "fake-playwright", "screenshot.png");
+fs.mkdirSync(path.dirname(file), { recursive: true });
+fs.writeFileSync(file, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+const screenshot = [{ name: "screenshot", contentType: "image/png", path: file }];
+const withShot = ${input.withScreenshotOnPassing === false ? "false" : "true"};
+const raw = ${JSON.stringify(input.reportJson)};
+const report = JSON.parse(raw, (key, value) => {
+  if (key === "attachments" && value === "@SCREENSHOT@" && withShot) return screenshot;
+  if (key === "attachments" && value === "@SCREENSHOT@") return [];
+  return value;
+});
+process.stdout.write(JSON.stringify(report));
+process.exit(${input.exitCode});
+`,
+      "utf8",
+    );
+    await fs.chmod(executable, 0o755);
+    const configured: HarnessProjectConfig = {
+      ...baseConfig,
+      validation: {
+        providers: [{ id: "shared-browser", capability: "browser-test", provider: "playwright" }],
+        testAttribution: {
+          [input.requirementId]: input.selectors,
+        },
+      },
+    };
+    const requirements = [
+      {
+        version: 1 as const,
+        id: input.requirementId,
+        property: "Luna outcome fixture requirement.",
+        kind: "browser-test" as const,
+        scope: ["src/app.ts"],
+        evidenceNeeded: ["browser evidence."],
+        requirementRefs: [],
+        acceptanceRefs: [],
+      },
+    ];
+    const resolution = await resolveValidationRequirements({
+      root,
+      requirements,
+      config: configured,
+      contract,
+      allowedKinds: validationRequirementKindValues,
+    });
+    const impact = impactFor(candidate);
+    const compilation = compileCandidateAssuranceV1({
+      candidate,
+      impact,
+      policy: {
+        version: 1,
+        digest: sha256Canonical("test-attribution-policy"),
+        minimumAssurance: "STANDARD",
+        independentReviewRequired: false,
+        minimumIndependentReviewers: 0,
+        providerDiversity: false,
+        allowedValidationKinds: [...validationRequirementKindValues],
+        evidenceStrength: "STANDARD",
+      },
+      implementationIdentity: "implementer-1",
+      risk: "low",
+      reviewerCandidates: [],
+      baseValidationRequirements: [],
+      validationResolution: resolution,
+      acceptanceAssertions: [],
+    });
+    const report: ValidationReport = {
+      version: 1,
+      taskId: contract.task.id,
+      status: "PASS",
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      checks: [],
+      changedFiles: ["src/app.ts"],
+      candidate,
+      metadata: { project: "test-attribution-fixture", baseRef: "HEAD" },
+    };
+    const checks = await runCandidateImpactValidations({
+      root,
+      config: configured,
+      contract,
+      report,
+      impact,
+      compilation,
+      resolution,
+      requirements,
+    });
+    const check = checks.find((c) => c.id === `candidate.assurance.validation.${input.requirementId}`);
+    return { status: check?.status, details: (check?.details ?? {}) as Record<string, unknown> };
+  }
+
+  function reporterDoc(specs: unknown[]): string {
+    return JSON.stringify({ suites: [{ title: "shared bundle", specs }] });
+  }
+
+  it("RED-i unexpected-pass explains the bundle: attributed alpha PASSes mapped PASS over a FAIL bundle", async () => {
+    // Genuine Playwright shape: beta is expected-to-fail (expectedStatus
+    // failed) but PASSED, so its test-level status is `unexpected` while its
+    // only result status is `passed`. The bundle exits 1 because of it.
+    const doc = reporterDoc([
+      {
+        title: "alpha passing journey",
+        tests: [{
+          status: "expected",
+          expectedStatus: "passed",
+          results: [{ status: "passed", attachments: "@SCREENSHOT@" }],
+        }],
+      },
+      {
+        title: "beta unexpected pass",
+        tests: [{
+          status: "unexpected",
+          expectedStatus: "failed",
+          results: [{ status: "passed" }],
+        }],
+      },
+    ]);
+    const { status, details } = await runMappedRequirement({
+      reportJson: doc,
+      exitCode: 1,
+      requirementId: "REQ-UNEXPECTED",
+      selectors: ["alpha passing"],
+    });
+    // Completeness must be satisfied by the unexpected anomaly (not
+    // REPORTER_INCOMPLETE), and alpha's own attribution holds while every
+    // recorded failure is outside it → mapped PASS with the bundle failure
+    // kept as underlying evidence.
+    expect(status).toBe("PASS");
+    expect(details.underlyingStatus).toBe("FAIL");
+    expect(details.testAttribution).toMatchObject({ verdict: "PASS" });
+  });
+
+  it("RED-ii attributed flaky-pass over a FAIL bundle explained elsewhere maps to PASS with a flaky record", async () => {
+    // The (b) blocker shape: the shared bundle fails because of an
+    // unattributed gamma failure (which satisfies completeness), while the
+    // attributed alpha test is a flaky ultimate-pass. The failed retry must
+    // not fail the requirement absent an explicit anti-flake policy: the
+    // mapped requirement PASSes with the flakiness recorded explicitly and
+    // the bundle failure kept as underlying evidence.
+    // NOTE: a bundle-PASS variant is unreachable through production paths —
+    // the provider findings layer marks any bundle containing a failed retry
+    // result FAIL before attribution runs — so partial-green is the honest
+    // production shape for flaky.
+    const doc = reporterDoc([
+      {
+        title: "alpha flaky journey",
+        tests: [{
+          status: "flaky",
+          expectedStatus: "passed",
+          results: [
+            { status: "failed", error: { message: "first attempt timeout" } },
+            { status: "passed", attachments: "@SCREENSHOT@" },
+          ],
+        }],
+      },
+      {
+        title: "gamma failing visual",
+        tests: [{
+          status: "unexpected",
+          expectedStatus: "passed",
+          results: [{ status: "failed", error: { message: "width drift" } }],
+        }],
+      },
+    ]);
+    const { status, details } = await runMappedRequirement({
+      reportJson: doc,
+      exitCode: 1,
+      requirementId: "REQ-FLAKY-GREEN",
+      selectors: ["alpha flaky"],
+    });
+    expect(status).toBe("PASS");
+    expect(details.underlyingStatus).toBe("FAIL");
+    const attribution = details.testAttribution as Record<string, unknown>;
+    expect(attribution).toMatchObject({ verdict: "PASS" });
+    // Parser composes fullTitle as suite > spec > test; these fixtures (like
+    // all pre-existing ones) carry the name at spec level with no distinct
+    // test title, hence the doubled segment — pre-existing composition, not
+    // part of this change.
+    expect(attribution.flakyTitles).toEqual(["shared bundle > alpha flaky journey > alpha flaky journey"]);
+  });
+
+  it("flaky-only bundle failure stays fail-closed: reporter explains nothing, INCOMPLETE (never silent PASS)", async () => {
+    // Mechanical consequence of the outcome model: a bundle that fails while
+    // its single reporter records only a flaky ultimate-pass (Playwright
+    // pass semantics) has zero outcome-model failures, so completeness fails
+    // closed with REPORTER_INCOMPLETE — flaky can never silently PASS a
+    // failed bundle, nor is it misreported as TEST_FAILED.
+    const doc = reporterDoc([
+      {
+        title: "alpha flaky journey",
+        tests: [{
+          status: "flaky",
+          expectedStatus: "passed",
+          results: [
+            { status: "failed", error: { message: "first attempt timeout" } },
+            { status: "passed", attachments: "@SCREENSHOT@" },
+          ],
+        }],
+      },
+    ]);
+    const { status, details } = await runMappedRequirement({
+      reportJson: doc,
+      exitCode: 1,
+      requirementId: "REQ-FLAKY-ONLY",
+      selectors: ["alpha flaky"],
+    });
+    expect(status).toBe("FAIL");
+    expect(details.blocker).toBe("TEST_ATTRIBUTION_REPORTER_INCOMPLETE");
+  });
+
+  it("RED-iii attributed skipped fails with the distinct TEST_ATTRIBUTION_SKIPPED blocker", async () => {
+    const doc = reporterDoc([
+      {
+        title: "alpha skipped journey",
+        tests: [{ status: "skipped", expectedStatus: "skipped", results: [{ status: "skipped" }] }],
+      },
+    ]);
+    const { status, details } = await runMappedRequirement({
+      reportJson: doc,
+      exitCode: 0,
+      requirementId: "REQ-SKIPPED",
+      selectors: ["alpha skipped"],
+    });
+    expect(status).toBe("FAIL");
+    expect(details.blocker).toBe("TEST_ATTRIBUTION_SKIPPED");
+    expect(String((details.testAttribution as Record<string, unknown>)?.reason ?? "")).toMatch(
+      /alpha skipped journey/,
+    );
+  });
+
+  it("parser records the test-level outcome status alongside the last-result status", () => {
+    const parsed = parsePlaywrightReporterTestsV1({
+      suites: [{
+        title: "shared bundle",
+        specs: [
+          {
+            title: "unexpected pass",
+            tests: [{ status: "unexpected", expectedStatus: "failed", results: [{ status: "passed" }] }],
+          },
+          {
+            title: "flaky journey",
+            tests: [{
+              status: "flaky",
+              results: [{ status: "failed" }, { status: "passed" }],
+            }],
+          },
+          { title: "legacy journey", tests: [{ results: [{ status: "passed" }] }] },
+        ],
+      }],
+    });
+    const byTitle = new Map(parsed.map((t) => [t.title, t]));
+    expect(byTitle.get("unexpected pass")).toMatchObject({ status: "passed", testStatus: "unexpected" });
+    expect(byTitle.get("flaky journey")).toMatchObject({ testStatus: "flaky", hasFailedResult: true });
+    // Legacy doc without test-level status keeps the back-compat empty marker.
+    expect(byTitle.get("legacy journey")).toMatchObject({ status: "passed", testStatus: "" });
+  });
+
+  it("outcome model: unexpected is a failure, flaky/expected pass, skipped is distinct", () => {
+    const unexpectedPass = {
+      title: "beta unexpected pass",
+      fullTitle: "shared bundle > beta unexpected pass",
+      status: "passed",
+      passed: false,
+      testStatus: "unexpected",
+    };
+    // (a) An expected-to-fail test that PASSES explains a bundle failure.
+    expect(reporterHasAnyFailureV1([unexpectedPass])).toBe(true);
+    expect(
+      attributedReporterFailuresV1({ selectors: ["beta unexpected"], tests: [unexpectedPass] }).map((t) => t.title),
+    ).toEqual(["beta unexpected pass"]);
+    const unexpectedEval = evaluateTestAttributionV1({
+      requirementId: "REQ-U",
+      selectors: ["beta unexpected"],
+      tests: [unexpectedPass],
+    });
+    expect(unexpectedEval.verdict).toBe("FAIL");
+    expect(unexpectedEval.blocker).toBe("TEST_ATTRIBUTION_TEST_FAILED");
+
+    // (b) An attributed flaky-pass is a Playwright pass, recorded honestly.
+    const flakyPass = {
+      title: "alpha flaky journey",
+      fullTitle: "shared bundle > alpha flaky journey",
+      status: "passed",
+      passed: true,
+      hasFailedResult: true,
+      testStatus: "flaky",
+    };
+    expect(reporterHasAnyFailureV1([flakyPass])).toBe(false);
+    expect(attributedReporterFailuresV1({ selectors: ["alpha flaky"], tests: [flakyPass] })).toEqual([]);
+    const flakyEval = evaluateTestAttributionV1({
+      requirementId: "REQ-F",
+      selectors: ["alpha flaky"],
+      tests: [flakyPass],
+    });
+    expect(flakyEval.verdict).toBe("PASS");
+    expect(flakyEval.flakyTitles).toEqual(["shared bundle > alpha flaky journey"]);
+
+    // (c) An attributed skipped test fails with its own blocker, never
+    // TEST_FAILED and never NO_MATCH.
+    const skipped = {
+      title: "alpha skipped journey",
+      fullTitle: "shared bundle > alpha skipped journey",
+      status: "skipped",
+      passed: false,
+      testStatus: "skipped",
+    };
+    const skippedEval = evaluateTestAttributionV1({
+      requirementId: "REQ-S",
+      selectors: ["alpha skipped"],
+      tests: [skipped],
+    });
+    expect(skippedEval.verdict).toBe("FAIL");
+    expect(skippedEval.blocker).toBe("TEST_ATTRIBUTION_SKIPPED");
+    expect(skippedEval.reason).toMatch(/alpha skipped journey/);
   });
 });
