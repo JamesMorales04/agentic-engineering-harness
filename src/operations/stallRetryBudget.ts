@@ -638,14 +638,26 @@ export async function claimStallRetryAttempt(
             );
           }
           // Stale well-formed → reconcile-as-consumed first (existing stale
-          // logic: durable +1, never free), then write the new claim.
+          // logic: durable +1, never free), then write the new claim — but
+          // only when the post-increment count is still under cap. An
+          // increment-to-cap consumes the budget: fail closed with phase
+          // EXHAUSTED and do NOT write the fresh claim (no launch).
+          // MECHANISM: DETERMINISTIC (durable count comparison under lock).
           const previous = await loadUnlocked(file, operationId, phase);
+          const reconciled = Math.floor(previous.stalls[phase]) + 1;
           const next: StallRetryBudgetV1 = {
             ...previous,
-            stalls: { ...previous.stalls, [phase]: Math.floor(previous.stalls[phase]) + 1 },
+            stalls: { ...previous.stalls, [phase]: reconciled },
             updatedAt: new Date().toISOString()
           };
           await writeAtomic(file, next);
+          if (reconciled >= STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
+            throw ledgerUnknownExhaustedError(
+              phase,
+              operationId,
+              `budget exhausted by stale reconcile (${reconciled}/${STALL_RETRY_MAX_ATTEMPTS_PER_PHASE}), caller attempt ${ownedAttempt}`
+            );
+          }
           // Replacement guard (non-lock writers only; harness well-formed
           // writers all hold this lock): a replacement during the increment
           // must survive — fail closed without overwriting.
