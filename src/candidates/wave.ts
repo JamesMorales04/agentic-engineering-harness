@@ -75,6 +75,10 @@ export function waveBaseDigest(wave: WaveBaseV1): string {
  * base. Integration is a truthful prefix: steps already integrated remain
  * bound as candidate revisions, and units that cannot be integrated without an
  * explicit rebase are reported for re-execution against the new candidate.
+ * Per-submission assembly failures (scope escape, impact rejection, bind
+ * failure, ...) are reported the same way, as typed reconciliation
+ * requirements. Only wave-level preconditions (wrong operation, stale base)
+ * and an unrestorable workspace throw out of this function.
  */
 export async function integrateWaveChangeSets(input: {
   root: string;
@@ -171,15 +175,21 @@ export async function integrateWaveChangeSets(input: {
       activeCandidate = await bindAssembledCandidate({ root: input.root, stateRoot: input.stateRoot, operationId: input.operationId, baseCandidate: activeCandidate, candidate: assembled.candidate, changeSet: effective });
     } catch (error) {
       // The patch may already be applied while the candidate could not be
-      // bound; restore the workspace to the last bound candidate before failing
-      // so no unbound mutation survives.
+      // bound; restore the workspace to the last bound candidate before
+      // recording the per-submission failure so no unbound mutation survives.
       const baseTreeIsPresent = await assertWorkspaceMatchesCandidate(input.root, activeCandidate).then(() => true, () => false);
       if (!baseTreeIsPresent) {
         const reverse = await runExecutable("git", ["apply", "--reverse", "--binary", "-"], { cwd: input.root, timeoutMs: 60_000, stdin: effective.patch });
         if (reverse.exitCode !== 0) throw new AehError("CANDIDATE_STALE", `Wave integration failed and the unbound ChangeSet could not be reverted: ${reverse.stderr || reverse.stdout}`, { cause: error });
         await assertWorkspaceMatchesCandidate(input.root, activeCandidate).catch((rollbackError) => { throw new AehError("CANDIDATE_STALE", "Wave integration failed and the reverted workspace no longer matches its base candidate.", { cause: rollbackError }); });
       }
-      throw error;
+      // Per-submission assembly failures are typed reconciliation requirements,
+      // not wave-level throws: earlier siblings stay bound as a truthful prefix
+      // and the caller emits a structured FAIL wave summary with those binds
+      // recorded. The worker-observed base is reported (not the derived rebase
+      // base) so re-execution can target the exact stale candidate.
+      reconciliationRequired.push({ workUnitId: submission.workUnitId, reason: `assembly-failed:${firstLine(error instanceof Error ? error.message : String(error))}`, observedBaseRevision: original.baseCandidateRevision, observedBaseDigest: original.baseCandidateDigest });
+      continue;
     }
     integrated.push({ workUnitId: submission.workUnitId, changeSet: effective, candidate: assembled.candidate, impact: assembled.impact, derived: integrated.length > 0 });
   }

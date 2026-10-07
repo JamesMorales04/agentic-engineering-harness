@@ -230,7 +230,7 @@ describe("truthful parallel wave candidate lineage", () => {
     expect(await fs.readFile(path.join(root, "src", "a.ts"), "utf8")).toBe("export const a = 3;\n");
   });
 
-  it("restores the bound candidate when assembly fails after applying a patch", async () => {
+  it("records a typed per-submission failure and restores the bound candidate when assembly fails after applying a patch", async () => {
     const root = await createRepo();
     const operationId = "RUN-WAVE-ROLLBACK";
     const base = await createOperation(root, operationId);
@@ -252,12 +252,17 @@ describe("truthful parallel wave candidate lineage", () => {
       };
     } });
 
-    await expect(integrateWaveChangeSets({ root, stateRoot: root, operationId, taskId: TASK, wave, submissions: [submission(change)], semanticAssessment: {
+    const result = await integrateWaveChangeSets({ root, stateRoot: root, operationId, taskId: TASK, wave, submissions: [submission(change)], semanticAssessment: {
       service,
       policyRevision: semanticCapabilityPolicyRevisionV1,
       repositoryBinding: { projectId: base.projectId!, repositoryDigest: "wave-repository-digest", operationId }
-    } }))
-      .rejects.toThrow("CANDIDATE_IMPACT_INVALID");
+    } });
+
+    // Per-submission assembly failure: typed failure, not a throw.
+    expect(result.integrated).toEqual([]);
+    expect(result.reconciliationRequired).toHaveLength(1);
+    expect(result.reconciliationRequired[0]).toEqual(expect.objectContaining({ workUnitId: "wu-a" }));
+    expect(result.reconciliationRequired[0]?.reason).toMatch(/^assembly-failed:.*CANDIDATE_IMPACT_INVALID/);
 
     // No unbound mutation may survive a failed integration.
     expect(await computeWorktreeDigest(root)).toBe(base.sourceDigest);
