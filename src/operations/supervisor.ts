@@ -15,7 +15,7 @@ import { persistOperationConsolidation, persistSupervisorCheckpoint } from "./ar
 import { supervisorEventSkills, type SupervisorSemanticEvent } from "./supervisorEventPolicy.js";
 import { compactDeterministicEvidence, supervisorCheckpointProjection, supervisorConsolidationProjection, supervisorHandoffProjection, supervisorInitializationProjection } from "./supervisorPrompt.js";
 import { activeOperationSupervisor, currentOperationContext, loadOperation, patchOperation, registerSupervisorGeneration, resolveOperationStateRoot, updateSupervisorGeneration, withOperationCoordinationLock, type OperationRecordV2 } from "./state.js";
-import { STALL_RETRY_MAX_ATTEMPTS_PER_PHASE, claimStallRetryAttempt, clearStallRetryClaim, isStallKilledProviderTurn, loadStallRetryStalls, recordStallRetryStall, stallRetryEffectiveDeadlineMs } from "./stallRetryBudget.js";
+import { STALL_RETRY_MAX_ATTEMPTS_PER_PHASE, claimStallRetryAttempt, clearStallRetryClaim, isCleanSuccessfulProviderTurn, isStallKilledProviderTurn, loadStallRetryStalls, recordStallRetryStall, stallRetryEffectiveDeadlineMs } from "./stallRetryBudget.js";
 
 /**
  * A supervisor generation's structured-result channel is bound to the candidate digest it was
@@ -410,8 +410,8 @@ export async function consolidateWithOperationSupervisor(root: string, config: H
       // decision so the cross-invocation total stays bounded even when this
       // drive ends here; a ledger write failure throws coded and consumes no
       // retry, and the pre-attempt claim marker is retained (no clear on the
-      // record path). A non-stall failure reconciles without consuming unless
-      // the turn itself was stall-killed (recorded, still terminal).
+      // record path). A non-stall failure reconciles fail-closed 3-way
+      // (stall → record; clean → clear; ambiguous → record, never regain).
       if (isUncertainProviderTurn(lastTurnSession, error)) {
         throw new Error(`PASEO_PROVIDER_LIFECYCLE_UNCERTAIN: consolidation turn stop unverified for session '${(lastTurnSession as { id?: unknown } | undefined)?.id ?? supervisor.agentId ?? "unknown-session"}'; same-session resume is required, fresh-generation retry refused (twin-writer risk). ${String(error instanceof Error ? error.message : error)}`);
       }
@@ -425,10 +425,14 @@ export async function consolidateWithOperationSupervisor(root: string, config: H
         throw error;
       }
       if (consolidationOperationId) {
+        // Fail-closed 3-way reconcile: stall → record; clean → clear;
+        // ambiguous (neither proof) → record, never regain.
         if (isStallKilledProviderTurn(lastTurnSession)) {
           await recordStallRetryStall(stateRoot, consolidationOperationId, "consolidation", consolidationAttempt, consolidationDeadlineMs);
-        } else {
+        } else if (isCleanSuccessfulProviderTurn(lastTurnSession)) {
           await clearStallRetryClaim(stateRoot, consolidationOperationId, "consolidation", consolidationAttempt);
+        } else {
+          await recordStallRetryStall(stateRoot, consolidationOperationId, "consolidation", consolidationAttempt, consolidationDeadlineMs);
         }
       }
       throw error;

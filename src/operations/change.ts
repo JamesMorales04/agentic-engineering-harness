@@ -62,6 +62,7 @@ import {
   STALL_RETRY_MAX_ATTEMPTS_PER_PHASE,
   claimStallRetryAttempt,
   clearStallRetryClaim,
+  isCleanSuccessfulProviderTurn,
   isStallKilledProviderTurn,
   loadStallRetryStalls,
   recordStallRetryStall,
@@ -772,14 +773,16 @@ export async function runDiscovery(
         }
         throw error;
       }
-      // Non-stall terminal failure: reconcile without consuming — unless the
-      // provider turn itself was stall-killed (isStallKilledProviderTurn), in
-      // which case the kill is recorded even though the handoff error stays
-      // retry-terminal. INVALID on a clean turn never touches the ledger.
+      // Non-stall terminal failure: fail-closed 3-way reconcile. STALL needs
+      // structured evidence (recorded, still retry-terminal); CLEAN needs
+      // affirmative clean-success evidence (cleared, consumes nothing);
+      // AMBIGUOUS (neither proof) COUNTS — never clear, never regain.
       if (isStallKilledProviderTurn(session)) {
         await recordStallRetryStall(controlRoot, operationId, "discovery", discoveryAttempt, discoveryDeadlineMs);
-      } else {
+      } else if (isCleanSuccessfulProviderTurn(session)) {
         await clearStallRetryClaim(controlRoot, operationId, "discovery", discoveryAttempt);
+      } else {
+        await recordStallRetryStall(controlRoot, operationId, "discovery", discoveryAttempt, discoveryDeadlineMs);
       }
       throw error;
     }
@@ -856,12 +859,14 @@ export async function runPlanning(
         }
         throw error;
       }
-      // Non-stall terminal: reconcile without consuming unless the provider
-      // turn itself was stall-killed (recorded, still retry-terminal).
+      // Non-stall terminal: fail-closed 3-way reconcile (stall → record;
+      // clean → clear; ambiguous → record, never regain).
       if (isStallKilledProviderTurn(session)) {
         await recordStallRetryStall(controlRoot, operationId, "planning", planningAttempt, planningDeadlineMs);
-      } else {
+      } else if (isCleanSuccessfulProviderTurn(session)) {
         await clearStallRetryClaim(controlRoot, operationId, "planning", planningAttempt);
+      } else {
+        await recordStallRetryStall(controlRoot, operationId, "planning", planningAttempt, planningDeadlineMs);
       }
       throw error;
     }
@@ -1069,13 +1074,15 @@ export async function runSpecManagerUntilReady(input: {
         }
         throw error;
       }
-      // Non-stall agent failure: reconcile without consuming unless the
-      // provider turn itself was stall-killed (recorded, still
-      // retry-terminal), before the hinted-retry branches below.
+      // Non-stall agent failure: fail-closed 3-way reconcile (stall → record;
+      // clean → clear; ambiguous → record, never regain), before the
+      // hinted-retry branches below.
       if (isStallKilledProviderTurn(specSession)) {
         await recordStallRetryStall(input.controlRoot, input.operationId, "spec-manager", specManagerAttempt, specManagerDeadlineMs);
-      } else {
+      } else if (isCleanSuccessfulProviderTurn(specSession)) {
         await clearStallRetryClaim(input.controlRoot, input.operationId, "spec-manager", specManagerAttempt);
+      } else {
+        await recordStallRetryStall(input.controlRoot, input.operationId, "spec-manager", specManagerAttempt, specManagerDeadlineMs);
       }
       if (shouldRetrySpecManagerIncomplete(error, incompleteRetries)) {
         incompleteRetries += 1;

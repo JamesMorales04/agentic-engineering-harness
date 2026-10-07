@@ -1,7 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { isStalledFirstActivityText } from "../paseo/firstActivityDeadline.js";
 import { resolveOperationStateRoot } from "./state.js";
 
 /**
@@ -315,16 +314,28 @@ function ledgerWriteFailedError(phase: StallRetryPhase, operationId: string, rea
  * DETERMINISTIC provider-turn stall-kill probe on the session shape alone
  * (integration reconciliation for the main-B2 / ru-INVALID coexistence).
  *
+ * FAIL-CLOSED evidence rule (round-11): every direction consumes budget
+ * except affirmative clean success — never grant a free retry, never regain.
+ * - STALL requires STRUCTURED evidence only: typed killReason
+ *   STALLED_FIRST_ACTIVITY (DEADLINE is the same structured timeout-kill
+ *   family and also counts), status timeout, or exit 124. Stdout/stderr
+ *   text mentions alone (timed out/timeout/stalled_first_activity) are NEVER
+ *   sufficient — a clean turn merely mentioning "timeout" must not consume.
+ * - CLEAN requires affirmative clean-success evidence
+ *   (`isCleanSuccessfulProviderTurn`: exit 0, no killReason, success status).
+ * - AMBIGUOUS terminal failure (neither stall proof nor clean proof) COUNTS
+ *   the attempt (record/consume), never clears. The four non-stall branches
+ *   implement this 3-way verdict: stall → record; clean → clear; else record.
+ *
  * The shared stall classifiers (`isDiscoveryPlanningStallKill`,
  * `isSupervisorConsolidationStallKill`) deliberately return false for
  * INVALID/schema/contract/provenance handoff errors even when the provider
  * turn itself was stall-killed — INVALID must stay retry-terminal. Ledger
  * COUNTING is a separate question from retry-terminality: a provider turn
- * that was itself stall-killed (typed killReason, timeout status, exit 124,
- * stalled-output text) consumed a stall kill at the provider level even when
- * the handoff error is otherwise terminal, so the non-stall branches of the
- * four call sites record it instead of clearing it. A clean turn
- * (exit 0, no kill, no stall text) with a terminal handoff error never
+ * that was itself stall-killed consumed a stall kill at the provider level
+ * even when the handoff error is otherwise terminal, so the non-stall
+ * branches of the four call sites record it instead of clearing it. A clean
+ * turn (exit 0, no kill, success status) with a terminal handoff error never
  * counted a stall and reconciles without consuming. This rule satisfies both
  * pinned contracts: main's "non-stall terminal failure still counts as spent
  * (stall-killed session)" and ru's "INVALID on a clean turn never touches
@@ -335,17 +346,39 @@ export function isStallKilledProviderTurn(session: unknown): boolean {
   if (!session || typeof session !== "object") return false;
   const shape = session as {
     exitCode?: unknown;
-    stdout?: unknown;
-    stderr?: unknown;
     killReason?: unknown;
     status?: unknown;
   };
   if (shape.killReason === "STALLED_FIRST_ACTIVITY" || shape.killReason === "DEADLINE") return true;
   if (shape.status === "timeout") return true;
   if (shape.exitCode === 124) return true;
-  const text = `${typeof shape.stderr === "string" ? shape.stderr : ""} ${typeof shape.stdout === "string" ? shape.stdout : ""}`;
-  if (isStalledFirstActivityText(text)) return true;
-  return /timed out|timeout|stalled_first_activity/i.test(text);
+  return false;
+}
+
+/**
+ * DETERMINISTIC affirmative clean-success probe on the session shape alone.
+ * Clean requires ALL of: exitCode 0, no killReason, and a success status
+ * (idle/finished/completed/complete/success/succeeded/ok, case-insensitive —
+ * the statuses successful provider turns settle with in-tree: materialized
+ * `idle`, direct `finished`, SDK-run `idle`). Any killReason disqualifies;
+ * a `timeout` status disqualifies; an unknown/missing status is NOT clean
+ * proof (fail closed → ambiguous → count). Stdout/stderr text is never
+ * consulted: mentions of "timeout" in output cannot dirty a clean turn.
+ * MECHANISM: DETERMINISTIC (observable session fields only, no model judgment).
+ */
+export function isCleanSuccessfulProviderTurn(session: unknown): boolean {
+  if (!session || typeof session !== "object") return false;
+  const shape = session as {
+    exitCode?: unknown;
+    killReason?: unknown;
+    status?: unknown;
+  };
+  if (shape.killReason !== undefined && shape.killReason !== null) return false;
+  if (shape.exitCode !== 0) return false;
+  if (typeof shape.status !== "string") return false;
+  const normalized = shape.status.toLowerCase();
+  if (normalized === "timeout") return false;
+  return ["idle", "finished", "completed", "complete", "success", "succeeded", "ok"].includes(normalized);
 }
 
 function errnoCode(error: unknown): string {
