@@ -50,6 +50,7 @@ import {
   suspendOperationForProductChoice,
   assertCurrentControllerOwner,
   currentOperationContext,
+  withOperationCoordinationLock,
   setOperationStage,
   type ChangeOperationPayload,
   type OperationRecordV2
@@ -497,6 +498,11 @@ export async function advanceCandidateForControllerAuthoring(input: {
   assurance: AssuranceLevel;
   contract?: TaskContract;
 }): Promise<{ advanced: boolean; revision: number; identityDigest: string }> {
+  // Serialized under the per-operation coordination lock: the worktree digest
+  // read, the atomic bind + assembly receipt, and the bootstrap policy
+  // re-bind observe one stable candidate, so a concurrent assembly cannot
+  // interleave a second advance or a torn workspace between them.
+  return withOperationCoordinationLock(input.controlRoot, input.operationId, async () => {
   const current = await loadOperation(input.controlRoot, input.operationId);
   const base = current.candidateRevision;
   if (!base) throw new Error("CANDIDATE_BINDING_REQUIRED: controller authoring cannot advance without a current CandidateRevision.");
@@ -534,6 +540,7 @@ export async function advanceCandidateForControllerAuthoring(input: {
   // EXECUTION_POLICY_RECOMPILE_REQUIRED.
   await bindBootstrapOperationPolicy(input.controlRoot, input.config, await loadOperation(input.controlRoot, input.operationId), input.route, input.assurance, input.contract);
   return { advanced: true, revision: advanced.revision, identityDigest: advanced.identityDigest };
+  });
 }
 
 function controllerAuthoringParticipantId(operation: OperationRecordV2, operationId: string): string {

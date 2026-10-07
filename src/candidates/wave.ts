@@ -4,9 +4,9 @@ import { resourceClaimConflicts, type ResourceClaimV1 } from "../architecture/wo
 import { candidateRevisionsEqual, type CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import { loadOperation } from "../operations/state.js";
 import { runExecutable } from "../utils/process.js";
-import { assembleCandidateChangeSet, changeSetDigest, type CandidateImpactAssessmentRuntimeV1, type CandidateImpactV1, type CandidateScopeEscapeV1, type ChangeSetV1 } from "./assembler.js";
+import { changeSetDigest, type CandidateImpactAssessmentRuntimeV1, type CandidateImpactV1, type CandidateScopeEscapeV1, type ChangeSetV1 } from "./assembler.js";
 import { assertWorkspaceMatchesCandidate } from "./identity.js";
-import { bindAssembledCandidate } from "./binding.js";
+import { assembleAndBindCandidateChangeSet } from "./binding.js";
 
 /**
  * A wave base is the frozen candidate every worker in one parallel wave
@@ -157,12 +157,17 @@ export async function integrateWaveChangeSets(input: {
     }
     let assembled;
     try {
-      assembled = await assembleCandidateChangeSet({
+      // Serialized under the per-operation coordination lock (re-validated
+      // inside): a concurrent assembly that advanced the candidate first
+      // surfaces here as a clean per-submission stale signal, never a torn
+      // workspace or mixed-tree bind.
+      const locked = await assembleAndBindCandidateChangeSet({
         root: input.root,
+        stateRoot: input.stateRoot,
         operationId: input.operationId,
         projectId: activeCandidate.projectId,
         taskId: input.taskId,
-        currentCandidate: activeCandidate,
+        baseCandidate: activeCandidate,
         changeSet: effective,
         allowedScope: submission.allowedScope,
         forbiddenScope: submission.forbiddenScope,
@@ -172,7 +177,8 @@ export async function integrateWaveChangeSets(input: {
         semanticAssessment: input.semanticAssessment,
         ...(input.onScopeEscape ? { onScopeEscape: input.onScopeEscape } : {})
       });
-      activeCandidate = await bindAssembledCandidate({ root: input.root, stateRoot: input.stateRoot, operationId: input.operationId, baseCandidate: activeCandidate, candidate: assembled.candidate, changeSet: effective });
+      assembled = { changeSet: effective, candidate: locked.candidate, impact: locked.impact };
+      activeCandidate = locked.candidate;
     } catch (error) {
       // The patch may already be applied while the candidate could not be
       // bound; restore the workspace to the last bound candidate before
@@ -180,8 +186,22 @@ export async function integrateWaveChangeSets(input: {
       const baseTreeIsPresent = await assertWorkspaceMatchesCandidate(input.root, activeCandidate).then(() => true, () => false);
       if (!baseTreeIsPresent) {
         const reverse = await runExecutable("git", ["apply", "--reverse", "--binary", "-"], { cwd: input.root, timeoutMs: 60_000, stdin: effective.patch });
-        if (reverse.exitCode !== 0) throw new AehError("CANDIDATE_STALE", `Wave integration failed and the unbound ChangeSet could not be reverted: ${reverse.stderr || reverse.stdout}`, { cause: error });
-        await assertWorkspaceMatchesCandidate(input.root, activeCandidate).catch((rollbackError) => { throw new AehError("CANDIDATE_STALE", "Wave integration failed and the reverted workspace no longer matches its base candidate.", { cause: rollbackError }); });
+        if (reverse.exitCode !== 0) {
+          // The reverse failed, so this submission's patch is NOT applied.
+          // Under the coordination lock a pre-apply STALE leaves the shared
+          // workspace on a newer bound candidate (a concurrent assembly won);
+          // that is a clean stale-retry signal, not a torn workspace — but it
+          // is only safe to reconcile when the workspace provably materializes
+          // the durable current candidate. Anything else is still torn and
+          // must throw fail-closed.
+          const durable = await loadOperation(input.stateRoot, input.operationId).catch(() => undefined);
+          const durableTreeIsPresent = durable?.candidateRevision
+            ? await assertWorkspaceMatchesCandidate(input.root, durable.candidateRevision).then(() => true, () => false)
+            : false;
+          if (!durableTreeIsPresent) throw new AehError("CANDIDATE_STALE", `Wave integration failed and the unbound ChangeSet could not be reverted: ${reverse.stderr || reverse.stdout}`, { cause: error });
+        } else {
+          await assertWorkspaceMatchesCandidate(input.root, activeCandidate).catch((rollbackError) => { throw new AehError("CANDIDATE_STALE", "Wave integration failed and the reverted workspace no longer matches its base candidate.", { cause: rollbackError }); });
+        }
       }
       // Per-submission assembly failures are typed reconciliation requirements,
       // not wave-level throws: earlier siblings stay bound as a truthful prefix

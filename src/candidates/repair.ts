@@ -10,9 +10,9 @@ import { recordEvent } from "../telemetry/events.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { minimatch } from "minimatch";
-import { assembleCandidateChangeSet, type CandidateImpactAssessmentRuntimeV1, type CandidateScopeEscapeV1, type ChangeSetV1 } from "./assembler.js";
+import type { CandidateImpactAssessmentRuntimeV1, CandidateScopeEscapeV1, ChangeSetV1 } from "./assembler.js";
 import { captureInverseCandidateChangeSet, executeIsolatedCandidateMutation } from "./direct.js";
-import { bindAssembledCandidate } from "./binding.js";
+import { assembleAndBindCandidateChangeSet } from "./binding.js";
 import {
   assertRepairScopeBlockerReceipt,
   createRepairScopeBlockerReceipt,
@@ -157,12 +157,16 @@ export async function executeRepairerCandidateMutation(input: {
   }
 
   const { allowedScope, forbiddenScope } = effectiveRepairScope(input.allowedScope, [...input.forbiddenScope, ...repairProtectedPaths(input.config, input.contract)], input.config, input.contract, input.scopeAmendment);
-  const assembled = await assembleCandidateChangeSet({
+  // Serialized under the per-operation coordination lock (re-validated inside):
+  // a concurrent assembly that advanced the candidate first turns this into a
+  // clean CANDIDATE_STALE instead of tearing the shared workspace.
+  const assembled = await assembleAndBindCandidateChangeSet({
     root: input.root,
+    stateRoot: input.stateRoot,
     operationId: input.operationId,
     projectId: currentCandidate.projectId,
     taskId: input.taskId,
-    currentCandidate,
+    baseCandidate: currentCandidate,
     changeSet: isolated.changeSet,
     allowedScope,
     forbiddenScope,
@@ -172,7 +176,6 @@ export async function executeRepairerCandidateMutation(input: {
     semanticAssessment: input.semanticAssessment,
     ...(input.onScopeEscape ? { onScopeEscape: input.onScopeEscape } : {})
   });
-  await bindAssembledCandidate({ root: input.root, stateRoot: input.stateRoot, operationId: input.operationId, baseCandidate: currentCandidate, candidate: assembled.candidate, changeSet: isolated.changeSet });
   await recordEvent(input.stateRoot, input.config, "harness.candidate.repair-assembled", {
     taskId: input.taskId,
     workUnitId: isolated.changeSet.workUnitId,
@@ -219,12 +222,14 @@ export async function rejectRepairCandidateChangeSet(input: {
   });
   if (!inverse) throw new AehError("CANDIDATE_STALE", "Rejected repair has no reversible source changes.");
   const rejectedScope = effectiveRepairScope(input.allowedScope, [...input.forbiddenScope, ...repairProtectedPaths(input.config, input.contract)], input.config, input.contract, input.scopeAmendment);
-  const assembled = await assembleCandidateChangeSet({
+  // Same per-operation serialization as the apply path above.
+  const assembled = await assembleAndBindCandidateChangeSet({
     root: input.root,
+    stateRoot: input.stateRoot,
     operationId: input.operationId,
     projectId: currentCandidate.projectId,
     taskId: input.taskId,
-    currentCandidate,
+    baseCandidate: currentCandidate,
     changeSet: inverse,
     allowedScope: rejectedScope.allowedScope,
     forbiddenScope: rejectedScope.forbiddenScope,
@@ -234,7 +239,6 @@ export async function rejectRepairCandidateChangeSet(input: {
     semanticAssessment: input.semanticAssessment,
     ...(input.onScopeEscape ? { onScopeEscape: input.onScopeEscape } : {})
   });
-  await bindAssembledCandidate({ root: input.root, stateRoot: input.stateRoot, operationId: input.operationId, baseCandidate: currentCandidate, candidate: assembled.candidate, changeSet: inverse });
   await recordEvent(input.stateRoot, input.config, "harness.candidate.repair-rejected", {
     taskId: input.taskId,
     workUnitId: input.workUnitId,

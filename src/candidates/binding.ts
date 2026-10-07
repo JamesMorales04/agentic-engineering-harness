@@ -1,9 +1,9 @@
 import { AehError } from "../core/errors.js";
 import { assertWorkspaceMatchesCandidate } from "./identity.js";
-import { bindOperationCandidateWithAssemblyReceipt, loadOperation, recordCandidateAssemblyReceipt } from "../operations/state.js";
+import { bindOperationCandidateWithAssemblyReceipt, loadOperation, recordCandidateAssemblyReceipt, withOperationCoordinationLock } from "../operations/state.js";
 import { candidateRevisionsEqual, type CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import { runExecutable } from "../utils/process.js";
-import type { ChangeSetV1 } from "./assembler.js";
+import { assembleCandidateChangeSet, type CandidateAssemblyInputV1, type CandidateImpactV1, type ChangeSetV1 } from "./assembler.js";
 
 /**
  * Bind an assembled tree and record the deterministic ASSEMBLING receipt
@@ -54,4 +54,34 @@ export async function bindAssembledCandidate(input: {
     }
   }
   return bound;
+}
+
+/**
+ * Assemble a ChangeSet and bind the resulting candidate while holding the
+ * per-operation coordination lock (DETERMINISTIC serialization mechanism).
+ * The current candidate is re-loaded and re-validated INSIDE the lock before
+ * any `git apply` touches the shared workspace: a concurrent assembly that
+ * already advanced the candidate turns this call into a clean, retryable
+ * CANDIDATE_STALE instead of a torn workspace or a mixed-tree bind.
+ *
+ * This is the single choke point every in-repo assembly path must use
+ * (repair apply/reject, wave integration, DIRECT assembly). The lock also
+ * narrows the workspace check-vs-apply TOCTOU between concurrent assemblies
+ * to worker filesystem writes, which remain out of scope (off-patch worker
+ * writes are only observed through the captured diff, never live-gated).
+ */
+export async function assembleAndBindCandidateChangeSet(
+  input: Omit<CandidateAssemblyInputV1, "currentCandidate"> & { stateRoot: string; baseCandidate: CandidateRevisionV1 }
+): Promise<{ candidate: CandidateRevisionV1; impact: CandidateImpactV1 }> {
+  const { stateRoot, baseCandidate, ...assemblyInput } = input;
+  return withOperationCoordinationLock(stateRoot, input.operationId, async () => {
+    const latest = await loadOperation(stateRoot, input.operationId);
+    const current = latest.candidateRevision;
+    if (!current || !candidateRevisionsEqual(current, baseCandidate)) {
+      throw new AehError("CANDIDATE_STALE", `ChangeSet is based on revision ${baseCandidate.revision}, current candidate is revision ${current?.revision ?? "none"}.`);
+    }
+    const assembled = await assembleCandidateChangeSet({ ...assemblyInput, currentCandidate: current });
+    const bound = await bindAssembledCandidate({ root: input.root, stateRoot, operationId: input.operationId, baseCandidate: current, candidate: assembled.candidate, changeSet: input.changeSet });
+    return { candidate: bound, impact: assembled.impact };
+  });
 }
