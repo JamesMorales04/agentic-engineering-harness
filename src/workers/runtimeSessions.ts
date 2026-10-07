@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import net from "node:net";
 import readline from "node:readline";
 import type { DirectWorkerHome } from "./directProcess.js";
-import { orphanUnkillableError, registerManagedProcessHandle } from "../utils/process.js";
+import { orphanUnkillableError, registerManagedProcessHandle, verifyProcessGroupExit } from "../utils/process.js";
 
 export interface RuntimeSessionPreparation {
   cwd: string;
@@ -159,41 +159,41 @@ export type RuntimeSessionStopEscalation = "already-exited" | "sigterm" | "sigki
 /**
  * Stop a preparation server with CONFIRMED KILL (Luna confirmed-kill).
  *
- * The TERM→KILL escalation is unchanged; the fix adds exit verification plus
- * force-escalation RESULT reporting: the resolved escalation names the signal
- * level that ended the process, and a process that is still live after the
- * bounded SIGKILL wait throws AEH_ORPHAN_UNKILLABLE (code + pid + reason)
- * instead of succeeding silently. A dead-but-unreaped (ESRCH) target reports
- * already-exited, never failure.
+ * The TERM→KILL escalation is unchanged; the fix adds GROUP exit
+ * verification plus force-escalation RESULT reporting: the resolved
+ * escalation names the signal level that ended the process GROUP, and a
+ * group that is still live after the bounded SIGKILL wait throws
+ * AEH_ORPHAN_UNKILLABLE (code + pid + reason) instead of succeeding
+ * silently. A dead group (ESRCH) reports already-exited, never failure.
+ * A leader that exits while a member survives never returns early: the live
+ * group escalates instead.
  */
 export async function stopProcess(child: ReturnType<typeof spawn>): Promise<{ escalation: RuntimeSessionStopEscalation }> {
-  if (child.exitCode !== null || child.signalCode !== null) return { escalation: "already-exited" };
-  const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+  // GROUP death (Luna B2): every success path below proves the whole signaled
+  // group is gone, never just the leader. Without a known pid there is no
+  // group to prove, so the observed exit decides exactly as before.
+  const groupDead = async (budgetMs: number): Promise<boolean> =>
+    child.pid === undefined
+      ? child.exitCode !== null || child.signalCode !== null
+      : verifyProcessGroupExit(child.pid, budgetMs);
+  const exited = (): boolean => child.exitCode !== null || child.signalCode !== null;
+  if (await groupDead(0)) return { escalation: "already-exited" };
+  const exitEvent = new Promise<void>((resolve) => child.once("exit", () => resolve()));
   try {
     if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGTERM");
     else child.kill("SIGTERM");
   } catch { child.kill("SIGTERM"); }
-  await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, 500))]);
-  if (child.exitCode !== null || child.signalCode !== null) return { escalation: "sigterm" };
+  await Promise.race([exitEvent, new Promise<void>((resolve) => setTimeout(resolve, 500))]);
+  if (await groupDead(0)) return { escalation: exited() ? "sigterm" : "already-exited" };
   try {
     if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
     else child.kill("SIGKILL");
   } catch { child.kill("SIGKILL"); }
-  await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, 500))]);
-  if (child.exitCode !== null || child.signalCode !== null) return { escalation: "sigkill" };
-  // Exit codes are still unset: re-probe liveness before declaring the
-  // orphan. An ESRCH target died without the exit event landing yet (already
-  // exited); anything else is a surviving, unfenced process.
-  if (child.pid) {
-    try {
-      process.kill(child.pid, 0);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException)?.code === "ESRCH") return { escalation: "already-exited" };
-    }
-  }
+  await Promise.race([exitEvent, new Promise<void>((resolve) => setTimeout(resolve, 500))]);
+  if (await groupDead(500)) return { escalation: exited() ? "sigkill" : "already-exited" };
   throw orphanUnkillableError(
     child.pid ?? -1,
-    "runtime session preparation server survived SIGTERM→SIGKILL escalation and the bounded exit wait"
+    "runtime session preparation server group survived SIGTERM→SIGKILL escalation and the bounded exit wait"
   );
 }
 

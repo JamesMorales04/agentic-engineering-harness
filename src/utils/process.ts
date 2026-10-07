@@ -435,15 +435,15 @@ async function runChild(
         // (unfenced) child. Start the SIGKILL arrangement UNCONDITIONALLY and
         // immediately — output may already have force-settled while the child
         // is still live. finish() performs the verified settle below.
-        // CONFIRMED KILL: delivery is best-effort — death is VERIFIED with a
-        // bounded poll there; a still-live child rejects as ORPHAN_UNKILLABLE.
-        void (async () => {
-          killProcessGroupBestEffort(child, "SIGKILL");
-          child.stdout?.destroy();
-          child.stderr?.destroy();
-          child.stdin?.destroy();
-          await verifyProcessExit(child.pid, 500);
-        })().catch(() => undefined);
+          // CONFIRMED KILL: delivery is best-effort — death is VERIFIED with a
+          // bounded GROUP poll there; a still-live group rejects as ORPHAN_UNKILLABLE.
+          void (async () => {
+            killProcessGroupBestEffort(child, "SIGKILL");
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+            child.stdin?.destroy();
+            await verifyProcessGroupExit(child.pid, 500);
+          })().catch(() => undefined);
       }
     );
     const kill = (signal: NodeJS.Signals): void => {
@@ -505,7 +505,7 @@ async function runChild(
           child.stdout?.destroy();
           child.stderr?.destroy();
           child.stdin?.destroy();
-          const dead = await verifyProcessExit(child.pid, 500);
+          const dead = await verifyProcessGroupExit(child.pid, 500);
           if (!dead) {
             reject(orphanUnkillableError(
               child.pid!,
@@ -519,17 +519,20 @@ async function runChild(
         }
         if (!exited) {
           // CONFIRMED KILL: the child may still be live (forced settle or no
-          // exit observed). SIGKILL best-effort runs unconditionally, then death
-          // is VERIFIED with a bounded poll before the output is reported. A
-          // still-live child rejects with ORPHAN_UNKILLABLE (never silent
+          // exit observed). SIGKILL best-effort runs unconditionally, then
+          // GROUP death is VERIFIED with a bounded poll before the output is
+          // reported: the signal went to the whole group, so a leader-only
+          // probe would pass while a descendant survives and lose the
+          // durable handle for an unfenced live process. A still-live group
+          // rejects with ORPHAN_UNKILLABLE (never silent
           // success); the reported output is attached for diagnosis. The handle
           // stays registered until death is proven (unregister runs after the
-          // verdict), so a live child is never unfenced-and-reported-dead.
+          // verdict), so a live group is never unfenced-and-reported-dead.
           killProcessGroupBestEffort(child, "SIGKILL");
           child.stdout?.destroy();
           child.stderr?.destroy();
           child.stdin?.destroy();
-          const dead = await verifyProcessExit(child.pid, 500);
+          const dead = await verifyProcessGroupExit(child.pid, 500);
           if (!dead) {
             const output = {
               exitCode: code,
@@ -729,6 +732,44 @@ export async function verifyProcessExit(pid: number | undefined, timeoutMs = 500
 }
 
 /**
+ * Bounded GROUP death verification for confirmed kill (Luna B1).
+ * MECHANISM: DETERMINISTIC. Termination signals the whole process group
+ * (kill(-pgid)), so death must be proven at group scope: only ESRCH on BOTH
+ * the group probe (kill(-pid, 0)) and the leader probe (kill(pid, 0)) proves
+ * death. A leader that exits while a same-group descendant survives passes a
+ * leader-only probe and would lose its durable handle -> unfenced live
+ * process. Any other outcome (alive, EPERM, unknown) counts as still-live
+ * until the bounded budget expires. Never signals. Win32 has no process
+ * groups and falls back to the leader probe.
+ */
+export async function verifyProcessGroupExit(pid: number | undefined, timeoutMs = 500): Promise<boolean> {
+  if (!Number.isInteger(pid) || (pid as number) <= 0 || (pid as number) === process.pid) return true;
+  if (process.platform === "win32") return verifyProcessExit(pid, timeoutMs);
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  for (;;) {
+    if (isProcessGroupDead(pid as number)) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+/** Dead only when neither the group nor the leader answers the probe. */
+function isProcessGroupDead(pid: number): boolean {
+  try {
+    process.kill(-pid, 0);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== "ESRCH") return false;
+    try {
+      process.kill(pid, 0);
+    } catch (leaderError) {
+      return (leaderError as NodeJS.ErrnoException)?.code === "ESRCH";
+    }
+    return false;
+  }
+  return false;
+}
+
+/**
  * Fencing error for a process that survived SIGKILL + bounded verification.
  * Carries the explicit ORPHAN_UNKILLABLE record (code + pid + reason) so the
  * unfenced orphan is never a silent success.
@@ -744,7 +785,7 @@ export function orphanUnkillableError(pid: number, reason: string, cause?: unkno
 
 /**
  * Best-effort SIGKILL of a process group plus the direct child. Every attempt
- * is swallowed: delivery success is decided ONLY by verifyProcessExit, never
+ * is swallowed: delivery success is decided ONLY by verifyProcessGroupExit, never
  * by the absence of a throw here.
  */
 function killProcessGroupBestEffort(child: { pid?: number; kill: (signal: NodeJS.Signals) => unknown }, signal: NodeJS.Signals): void {

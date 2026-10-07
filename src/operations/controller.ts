@@ -31,7 +31,8 @@ import {
   listManagedProcessHandlePidsStrict,
   runShell,
   terminateManagedProcessGroup,
-  type ProcessResult
+  type ProcessResult,
+  verifyProcessGroupExit
 } from "../utils/process.js";
 import { delegatedCapsuleObjectiveV1, prepareChangeOperation, resolveChangePreflightV1, runChangeOperation, type PreparedChangeOperation } from "./change.js";
 import { prepareGithubIssueTask, type IssuePreparationResult } from "../issues/intake.js";
@@ -845,7 +846,13 @@ export async function cancelOperation(
         cleanupWarnings.push(`process group ${pid}: signal delivery failed (${String(error)})`);
         continue;
       }
-      if (!(await waitForProcessExit(pid, 1_000))) cleanupWarnings.push(`process group ${pid}: process remained live after termination signals`);
+      // GROUP death (Luna B1): termination signals the whole group, so the
+      // bounded wait must prove the GROUP is gone — a leader-only probe
+      // passes when the leader exits while a descendant survives, clearing
+      // the durable handle for an unfenced live process. A surviving group
+      // carries the ORPHAN_UNKILLABLE vocabulary into the fail-closed
+      // fencing-required path below (handles preserved for retry/rescan).
+      if (!(await verifyProcessGroupExit(pid, 1_000))) cleanupWarnings.push(`AEH_ORPHAN_UNKILLABLE: process group ${pid} remains live after termination signals and bounded death verification; it is an unfenced orphan; operator intervention required.`);
     }
     const beforeHandleCleanup = await loadOperation(absoluteRoot, operationId);
     assertCancellationFence(beforeHandleCleanup, cancellationFence, "operation cancellation handle cleanup");
@@ -2101,17 +2108,4 @@ async function isDescendantOfPid(pid: number, ancestor: number): Promise<boolean
     current = parentPid;
   }
   return false;
-}
-
-async function waitForProcessExit(pid: number, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    try { process.kill(pid, 0); }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ESRCH") return true;
-      return false;
-    }
-    if (Date.now() >= deadline) return false;
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
 }

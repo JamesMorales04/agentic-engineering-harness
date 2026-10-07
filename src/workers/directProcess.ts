@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { HarnessProjectConfig } from "../core/types.js";
-import { orphanUnkillableError, registerManagedProcessHandle, verifyProcessExit } from "../utils/process.js";
+import { orphanUnkillableError, registerManagedProcessHandle, verifyProcessGroupExit } from "../utils/process.js";
 
 const SAFE_RUNTIME_ENVIRONMENT = ["PATH", "NODE_PATH", "LANG", "LC_ALL", "CI", "TERM"] as const;
 
@@ -29,7 +29,7 @@ export interface DirectWorkerProcessResult {
 
 /**
  * Best-effort SIGKILL of a direct worker group plus the direct child.
- * Delivery success is decided ONLY by verifyProcessExit, never here.
+ * Delivery success is decided ONLY by verifyProcessGroupExit, never here.
  */
 function killDirectBestEffort(child: { pid?: number; kill: (signal: NodeJS.Signals) => unknown }): void {
   try {
@@ -95,14 +95,14 @@ export async function runDirectWorkerProcess(
           // live-but-unregistered direct worker. Start the SIGKILL
           // arrangement UNCONDITIONALLY and immediately; finish() performs
           // the verified settle below.
-          // CONFIRMED KILL: delivery is best-effort — death is VERIFIED with
-          // a bounded poll there; a still-live child rejects as
+          // CONFIRMED KILL: delivery is best-effort — GROUP death is VERIFIED
+          // with a bounded poll there; a still-live group rejects as
           // ORPHAN_UNKILLABLE, never a silent success.
           void (async () => {
             killDirectBestEffort(child);
             child.stdout?.destroy();
             child.stderr?.destroy();
-            await verifyProcessExit(child.pid, 500);
+            await verifyProcessGroupExit(child.pid, 500);
           })().catch(() => undefined);
         }
       );
@@ -170,7 +170,7 @@ export async function runDirectWorkerProcess(
             killDirectBestEffort(child);
             child.stdout?.destroy();
             child.stderr?.destroy();
-            const dead = await verifyProcessExit(child.pid, 500);
+            const dead = await verifyProcessGroupExit(child.pid, 500);
             if (!dead) {
               reject(orphanUnkillableError(
                 child.pid!,
@@ -184,13 +184,14 @@ export async function runDirectWorkerProcess(
           }
           if (!exited) {
             // CONFIRMED KILL (same contract as runChild): a possibly-live
-            // child is SIGKILLed best-effort and death is verified before the
-            // output is reported; a survivor rejects as ORPHAN_UNKILLABLE.
+            // child is SIGKILLed best-effort and GROUP death is verified
+            // before the output is reported; a surviving group rejects as
+            // ORPHAN_UNKILLABLE.
             killDirectBestEffort(child);
             child.stdout?.destroy();
             child.stderr?.destroy();
             const output = { exitCode: outputLimit || timedOut ? 124 : code, stdout, stderr, durationMs: Date.now() - started };
-            const dead = await verifyProcessExit(child.pid, 500);
+            const dead = await verifyProcessGroupExit(child.pid, 500);
             if (!dead) {
               const orphan = orphanUnkillableError(
                 child.pid!,
