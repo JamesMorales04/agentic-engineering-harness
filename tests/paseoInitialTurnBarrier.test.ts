@@ -94,9 +94,20 @@ describe("Paseo initial-turn barrier", () => {
     await launchManagedPaseoAgent("/repo", {
       cwd: "/repo", title: "detached", provider: "opencode", prompt: "work", waitForFinish: false, labels: managedLabels
     }, runtime as never);
+    // The proven-empty list is what permits creation: the fixture's [] is load-bearing.
+    expect(runtime.sdk.list).toHaveBeenCalled();
     expect(runtime.sdk.create).toHaveBeenCalledTimes(1);
     expect(runtime.sdk.materialize).not.toHaveBeenCalled();
     expect(runtime.sdk.run).not.toHaveBeenCalled();
+  });
+
+  it("refuses detached launch when the session list is unavailable (fail-closed)", async () => {
+    const runtime = deps();
+    runtime.sdk.list.mockRejectedValueOnce(new Error("list endpoint down"));
+    await expect(launchManagedPaseoAgent("/repo", {
+      cwd: "/repo", title: "detached", provider: "opencode", prompt: "work", waitForFinish: false, labels: managedLabels
+    }, runtime as never)).rejects.toThrow("PASEO_TURN_IDEMPOTENCY_AMBIGUOUS");
+    expect(runtime.sdk.create).not.toHaveBeenCalled();
   });
 
   it("never creates a second agent after a managed materialized turn has started", async () => {
