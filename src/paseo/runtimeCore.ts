@@ -37,7 +37,7 @@ import {
 import { recordPaseoTrace } from "./trace.js";
 import { deterministicPaseoRuntimeDeps, isDeterministicPaseoRuntimeEnabled } from "./deterministicRuntime.js";
 import type { ProviderTurnActivityCounts, ProviderTurnKillReason, ProviderTurnQuiescence } from "./firstActivityDeadline.js";
-import { isStalledFirstActivityText } from "./firstActivityDeadline.js";
+import { isStalledFirstActivityText, stalledFirstActivityError, FIRST_ACTIVITY_DEADLINE_MS } from "./firstActivityDeadline.js";
 
 export interface ManagedPaseoAgentOptions extends PaseoSdkAgentOptions {
   timeoutSeconds?: number;
@@ -257,12 +257,34 @@ export async function waitManagedPaseoAgent(root: string, agentId: string, timeo
     }
   }
   const logs = await deps.run(`paseo logs ${quote(agentId)} --tail 200`, { cwd: root, timeoutMs: 60_000 });
-  // Kill-reason propagation (E-NEW-2 floor): a CLI-observed stall keeps its
-  // STALLED marker when the daemon output carries one; otherwise a CLI wait
-  // timeout stays the existing generic DEADLINE. Never invents activity the
-  // CLI wait cannot observe.
+  // Kill-reason reconciliation (E-NEW-2 floor + A4 stop-then-read verdict).
+  // Sibling E-NEW-2 (inner gate, normative): a CLI timeout without a STALLED
+  // marker in the daemon output stays the existing generic DEADLINE — never
+  // invents a stall the CLI wait cannot observe. Failclosed A4 (outer): once
+  // the post-timeout stop is VERIFIED quiescent the post-stop logs are final,
+  // so still-empty readable logs settle as STALLED_FIRST_ACTIVITY with the
+  // same marker text as the SDK paths. An unverified stop keeps DEADLINE
+  // (its logs are not final) and an unreadable logs read keeps DEADLINE with
+  // an explicit activity-unobserved marker — never a silent DEADLINE.
   const cliOutputText = [wait.stdout, wait.stderr, logs.stdout, logs.stderr].join("\n");
-  const result: ManagedPaseoAgentResult = { id: agentId, exitCode: wait.exitCode, stdout: logs.stdout || wait.stdout, stderr: [wait.stderr, cleanupStderr, logs.stderr].filter(Boolean).join("\n"), status: wait.exitCode === 0 ? "idle" : "failed", transport: "cli", observation: "cli-wait", ...(wait.timedOut ? { killReason: (isStalledFirstActivityText(cliOutputText) ? "STALLED_FIRST_ACTIVITY" : "DEADLINE") as ProviderTurnKillReason } : {}), ...(cliQuiescence ? { providerQuiescence: cliQuiescence } : {}) };
+  const cliLogsReadable = logs.exitCode === 0;
+  const cliObservedActivity = isStalledFirstActivityText(cliOutputText)
+    ? false
+    : cliLogsReadable && logs.stdout.trim().length > 0;
+  const cliKillReason: ProviderTurnKillReason | undefined = !wait.timedOut
+    ? undefined
+    : isStalledFirstActivityText(cliOutputText) || (!cliObservedActivity && cliLogsReadable && cliQuiescence === "quiescent")
+      ? "STALLED_FIRST_ACTIVITY"
+      : "DEADLINE";
+  const cliActivityMarker = wait.timedOut && !cliLogsReadable && !isStalledFirstActivityText(cliOutputText)
+    ? "CLI_ACTIVITY_UNOBSERVED: post-stop logs could not be read; activity unproven (killReason DEADLINE preserved, quiescence carried separately)."
+    : undefined;
+  // The stall verdict carries the same marker text as the SDK paths so
+  // downstream classifiers recognize it identically.
+  const cliStallMarker = cliKillReason === "STALLED_FIRST_ACTIVITY" && !isStalledFirstActivityText(cliOutputText)
+    ? stalledFirstActivityError(FIRST_ACTIVITY_DEADLINE_MS, timeoutSec * 1000, { updatesObserved: 0, toolEvents: 0, assistantDelta: false })
+    : undefined;
+  const result: ManagedPaseoAgentResult = { id: agentId, exitCode: wait.exitCode, stdout: logs.stdout || wait.stdout, stderr: [wait.stderr, cleanupStderr, logs.stderr, cliActivityMarker, cliStallMarker].filter(Boolean).join("\n"), status: wait.exitCode === 0 ? "idle" : "failed", transport: "cli", observation: "cli-wait", ...(cliKillReason ? { killReason: cliKillReason } : {}), ...(cliQuiescence ? { providerQuiescence: cliQuiescence } : {}) };
   await trace(root, "agent.wait.completed", { transport: "cli", observation: "cli-wait", agentId, status: result.status ?? "unknown", killReason: result.killReason ?? "none" });
   return result;
 }
@@ -277,28 +299,37 @@ export async function stopManagedPaseoAgent(root: string, agentId: string, deps:
 }
 
 /**
- * Post-timeout stop verification for the turn path (E-NEW-9).
+ * Post-timeout stop verification for the turn path (A1, subsuming E-NEW-9).
  *
- * MECHANISM: DETERMINISTIC. Reuses stopAndObserveQuiescence semantics from
- * the provider-lease path (src/runtime/providerLifecycle.ts): positive
- * liveness (working/running) after stop is UNCERTAIN — the session may still
- * be RUNNING while the caller fresh-session-retries (twin writers). A
- * positively quiescent observation (idle or any positively-dead status) is
- * verified. A missing/unknown observation trusts a successful stop ack and
- * distrusts a failed one (a failed stop with no observation cannot prove
- * quiescence). Never throws: verification failure degrades to UNCERTAIN.
- */
+ * MECHANISM: DETERMINISTIC. Verified against the installed Paseo CLI
+ * (`@getpaseo/cli` `commands/agent/stop.js`: `stop` interrupts a RUNNING
+ * agent and is a successful NO-OP for any non-running status), so a stop
+ * exit code of 0 proves nothing by itself: it is returned for idle, dead,
+ * missing, and unknown sessions alike. Quiescence therefore requires a
+ * POSITIVE dead observation post-stop (idle or `isPositivelyDeadPaseoAgentStatus`
+ * semantics). Positive liveness (working/running) after stop is UNCERTAIN.
+ * Unknown-before AND unknown-after (missing/unparseable/unrecognized status)
+ * is UNCERTAIN, period — regardless of exit code. Never throws:
+ * verification failure degrades to UNCERTAIN (availability cost accepted:
+  * flaky-inspect flows go operator-driven via the UNCERTAIN marker).
+  */
 async function observeTurnQuiescenceAfterStop(
   root: string,
   agentId: string,
   stopExitCode: number,
   deps: PaseoRuntimeDeps
 ): Promise<{ quiescence: ProviderTurnQuiescence; status: string }> {
+  void stopExitCode;
   const observed = await inspectManagedPaseoAgent(root, agentId, deps).catch(() => undefined);
   const status = observed?.status?.toLowerCase() ?? "unknown";
   if (status === "working" || status === "running") return { quiescence: "uncertain", status };
   if (status === "idle" || isPositivelyDeadPaseoAgentStatus(status)) return { quiescence: "quiescent", status };
-  return { quiescence: stopExitCode === 0 ? "quiescent" : "uncertain", status };
+  // A1 (strict, subsuming E-NEW-9): unknown-before AND unknown-after is
+  // UNCERTAIN regardless of the stop exit code — `paseo stop` is a successful
+  // no-op for any non-running status, so exit 0 proves nothing. This corner
+  // is untested by the merged E-NEW-9 suite; the strict verdict preserves
+  // every E-NEW-9-tested behavior while keeping the A1 fail-closed bound.
+  return { quiescence: "uncertain", status };
 }
 
 /**
@@ -432,11 +463,28 @@ async function withProviderSessionLease<T>(
     stop,
     discoverSession: async () => {
       const found = await deps.sdk.list(root, labels).catch(() => []);
-      // Same fail-closed contract as the launch-path reuse guards: more than
-      // one match is ambiguous and must never silently resolve to undefined
-      // (which reads as "no session" and invites a duplicate create-new).
-      if (found.length > 1) throw new Error(`PASEO_TURN_IDEMPOTENCY_AMBIGUOUS: ${found.length} sessions match the provider-lease labels for this operation; refusing to select one. Resolve the duplicate sessions explicitly.`);
-      return found.length === 1 ? found[0]!.id : undefined;
+      if (found.length === 1) return found[0]!.id;
+      if (found.length === 0) return undefined;
+      // Lease-level ambiguous discovery (A3, same contract as the turn
+      // path): same-operation duplicates are stopped and re-discovered
+      // (empty ⇒ proceed fresh); still-ambiguous or cross-operation matches
+      // throw fenced via resolveAmbiguousIdempotentTurns. Never swallows
+      // into a silent undefined (which reads as "no session" and invites a
+      // duplicate).
+      const leaseOperation = labels?.["aeh.operation"]?.trim() ?? "";
+      const leaseIdempotency = labels?.["aeh.turn.idempotency"]?.trim();
+      const trace = deps.trace ?? defaultDeps().trace!;
+      await resolveAmbiguousIdempotentTurns({
+        root,
+        operation: leaseOperation,
+        ...(leaseIdempotency ? { idempotency: leaseIdempotency } : {}),
+        candidates: found,
+        transport: "lease",
+        trace,
+        stopAgent: (id) => stopManagedPaseoAgent(root, id, deps),
+        relist: () => deps.sdk.list(root, labels).catch(() => []),
+      });
+      return undefined;
     }
   }, action).then((value) => value);
 }
@@ -637,9 +685,12 @@ function collectCliAgents(value: unknown, out: Map<string, PaseoSdkAgentRecord>)
  * length-prefixed (byte-length + ":" + field + "\0" concatenated) so NUL- or
  * separator-containing fields cannot collide (unlike naive "\0"-join, where
  * ["a\0b","c"] and ["a","b\0c"] hash identically). Orphan reaper lists by
- * `aeh.operation` (+ idempotency) before create/retry; best-effort, throws
- * only on ambiguous live matches (fail-closed to THROW, never create-new)
- * and fails closed to create-new on list failure (never blocks launch).
+ * `aeh.operation` (+ idempotency) before create/retry; best-effort.
+ * Ambiguous live matches self-heal first (A3 outer: stop-all same-operation
+ * duplicates + re-verify empty, then create-new; cross-operation matches
+ * fence, stop-failure/survivors throw AMBIGUOUS — the E-NEW-1 inner
+ * fail-closed contract: no create-new ever runs next to live survivors).
+ * List failure fails closed to create-new (never blocks launch).
  * Liveness is positive-only (idle/working/running); unknown/terminal/dead never
  * reuses. Reaper reaps only positively-dead statuses; unknown is left alone.
  * No retry budgets, leases authority, or vagueness gates touched.
@@ -704,6 +755,61 @@ export function isPositivelyDeadPaseoAgentStatus(status?: string): boolean {
     || status === "stopped";
 }
 
+/**
+ * Self-healing resolution for ambiguous live idempotent turns (A3).
+ *
+ * MECHANISM: DETERMINISTIC. The idempotency key binds matches to one
+ * operation: `derivePaseoTurnIdempotencyKey` hashes the operation id as its
+ * first field, so same-key matches are same-operation duplicates by
+ * construction. The binding is asserted in code, not assumed:
+ * - missing operation/idempotency binding ⇒ fail closed (fencing throw);
+ * - any candidate whose labels do NOT carry our operation key (matches span
+ *   operations — shouldn't happen through server-side filters, but coded
+ *   anyway) ⇒ PASEO_TURN_FENCING_REQUIRED throw, and foreign sessions are
+ *   never stopped;
+ * - all matches share our operation key ⇒ STOP-ALL matching + re-verify
+ *   empty + proceed fresh (self-healing: no operator, no permanent fence).
+ * A stop failure or a still-nonempty re-list ⇒ PASEO_TURN_IDEMPOTENCY_AMBIGUOUS
+ * throw (never silently create-new next to survivors).
+ */
+export async function resolveAmbiguousIdempotentTurns(input: {
+  root: string;
+  operation: string;
+  idempotency?: string;
+  candidates: PaseoSdkAgentRecord[];
+  transport: "sdk" | "cli" | "lease";
+  trace: (root: string, event: string, details: Record<string, unknown>) => Promise<void>;
+  stopAgent: (id: string) => Promise<{ exitCode: number; stderr: string }>;
+  relist: () => Promise<PaseoSdkAgentRecord[]>;
+}): Promise<void> {
+  const { root, operation, idempotency, candidates, transport, trace } = input;
+  if (!operation || !idempotency) {
+    await trace(root, "agent.launch.ambiguous", { transport, operation: operation || "missing", idempotency: "missing", live: candidates.map((agent) => agent.id) });
+    throw new Error(`PASEO_TURN_FENCING_REQUIRED: ${candidates.length} sessions match without a complete operation-bound idempotency key; refusing to select or stop. Resolve the duplicate sessions explicitly.`);
+  }
+  const foreign = candidates.filter(
+    (agent) => agent.labels?.["aeh.operation"] !== operation || agent.labels?.["aeh.turn.idempotency"] !== idempotency
+  );
+  if (foreign.length > 0) {
+    await trace(root, "agent.launch.ambiguous", { transport, operation, idempotency, live: candidates.map((agent) => agent.id), foreign: foreign.map((agent) => agent.id) });
+    throw new Error(`PASEO_TURN_FENCING_REQUIRED: ${candidates.length} sessions share idempotency key '${idempotency}' across operations [${foreign.map((agent) => agent.id).join(", ")} not bound to '${operation}']; refusing to stop or reuse. Fence and resolve explicitly.`);
+  }
+  await trace(root, "agent.launch.ambiguous-self-heal", { transport, operation, idempotency, live: candidates.map((agent) => agent.id) });
+  for (const agent of candidates) {
+    const stopped = await input.stopAgent(agent.id);
+    if (stopped.exitCode !== 0) {
+      await trace(root, "agent.launch.ambiguous-stop-failed", { transport, operation, idempotency, agentId: agent.id, stopExitCode: stopped.exitCode });
+      throw new Error(`PASEO_TURN_IDEMPOTENCY_AMBIGUOUS: could not stop duplicate session '${agent.id}' (stop exit ${stopped.exitCode}: ${stopped.stderr}); refusing create-new next to survivors. Resume one of [${candidates.map((item) => item.id).join(", ")}] explicitly.`);
+    }
+    await trace(root, "agent.launch.ambiguous-stopped", { transport, operation, idempotency, agentId: agent.id });
+  }
+  const remaining = (await input.relist()).filter((agent) => isLivePaseoAgentStatus(agent.status));
+  if (remaining.length > 0) {
+    await trace(root, "agent.launch.ambiguous", { transport, operation, idempotency, live: remaining.map((agent) => agent.id) });
+    throw new Error(`PASEO_TURN_IDEMPOTENCY_AMBIGUOUS: ${remaining.length} live sessions still share idempotency key '${idempotency}' for operation '${operation}' after stop-all; refusing create-new. Resume one of [${remaining.map((agent) => agent.id).join(", ")}] explicitly.`);
+  }
+}
+
 async function reuseLiveIdempotentTurn(
   root: string,
   options: ManagedPaseoAgentOptions,
@@ -713,6 +819,15 @@ async function reuseLiveIdempotentTurn(
   const operation = options.labels?.["aeh.operation"]?.trim();
   const idempotency = options.labels?.["aeh.turn.idempotency"]?.trim();
   if (!operation || !idempotency) return undefined;
+  const listMatching = async (): Promise<PaseoSdkAgentRecord[]> => {
+    try {
+      return await deps.sdk.list(root, { "aeh.operation": operation, "aeh.turn.idempotency": idempotency });
+    } catch {
+      return [];
+    }
+  };
+  // List failure reads as "no session" and fails closed to create-new (never
+  // blocks launch); an empty list below is the verified-empty signal.
   let candidates: PaseoSdkAgentRecord[];
   try {
     candidates = await deps.sdk.list(root, { "aeh.operation": operation, "aeh.turn.idempotency": idempotency });
@@ -722,10 +837,14 @@ async function reuseLiveIdempotentTurn(
   if (!Array.isArray(candidates) || candidates.length === 0) return undefined;
   const live = candidates.filter((agent) => isLivePaseoAgentStatus(agent.status));
   if (live.length > 1) {
-    // Ambiguous live orphans: fail-closed THROW, never create-new (a create
-    // here would turn the duplicate into a triplicate with two live writers).
-    await trace(root, "agent.launch.ambiguous", { transport: "sdk", operation, idempotency, live: live.map((agent) => agent.id) });
-    throw new Error(`PASEO_TURN_IDEMPOTENCY_AMBIGUOUS: ${live.length} live sessions share idempotency key '${idempotency}' for operation '${operation}'; refusing create-new. Resume one of [${live.map((agent) => agent.id).join(", ")}] explicitly.`);
+    // Ambiguous live orphans: self-heal first (A3 outer — stop-all
+    // same-operation duplicates + re-verify empty, then create-new).
+    // Healing-impossible shapes throw fenced from inside the resolver
+    // (cross-operation PASEO_TURN_FENCING_REQUIRED; stop-failure/survivors
+    // PASEO_TURN_IDEMPOTENCY_AMBIGUOUS) — the E-NEW-1 inner fail-closed
+    // contract: no create-new ever runs next to live survivors.
+    await resolveAmbiguousIdempotentTurns({ root, operation, idempotency, candidates, transport: "sdk", trace, stopAgent: (id) => stopManagedPaseoAgent(root, id, deps), relist: listMatching });
+    return undefined;
   }
   if (live.length === 1) {
     const found = live[0]!;
@@ -736,7 +855,7 @@ async function reuseLiveIdempotentTurn(
     }
     return waitManagedPaseoAgent(root, found.id, options.timeoutSeconds ?? secondsFromMs(options.timeoutMs), deps, undefined, options.permissionScopeRoots);
   }
-  // Dead orphans only (ambiguity already threw above): reap ONLY
+  // Dead orphans only (ambiguity self-healed above): reap ONLY
   // positively-dead best-effort, never throw, then create-new. Unknown
   // (undefined/empty/unrecognized) is left alone fail-closed (never counted
   // as dead, never reaped).
@@ -806,6 +925,15 @@ async function reuseLiveIdempotentCliTurn(
   const operation = options.labels?.["aeh.operation"]?.trim();
   const idempotency = options.labels?.["aeh.turn.idempotency"]?.trim();
   if (!operation || !idempotency) return undefined;
+  const listMatching = async (): Promise<PaseoSdkAgentRecord[]> => {
+    try {
+      return (await listCliAgents(root, deps)).filter(
+        (agent) => agent.labels?.["aeh.operation"] === operation && agent.labels?.["aeh.turn.idempotency"] === idempotency
+      );
+    } catch {
+      return [];
+    }
+  };
   let candidates: PaseoSdkAgentRecord[];
   try {
     candidates = (await listCliAgents(root, deps)).filter(
@@ -826,13 +954,16 @@ async function reuseLiveIdempotentCliTurn(
   };
   const live = candidates.filter((agent) => isLivePaseoAgentStatus(agent.status));
   if (live.length > 1) {
-    // Ambiguous live orphans: fail-closed THROW, never create-new (same
-    // contract as the SDK path; a CLI create here would triplicate writers).
-    await trace(root, "agent.launch.ambiguous", { transport: "cli", operation, idempotency, live: live.map((agent) => agent.id) });
-    throw new Error(`PASEO_TURN_IDEMPOTENCY_AMBIGUOUS: ${live.length} live CLI sessions share idempotency key '${idempotency}' for operation '${operation}'; refusing create-new. Resume one of [${live.map((agent) => agent.id).join(", ")}] explicitly.`);
+    // Same self-healing contract as the SDK path (A3 outer): stop-all
+    // same-key matches, re-verify empty, then create-new. Healing-impossible
+    // shapes throw fenced from inside the resolver (cross-operation matches
+    // fence; stop-failure/survivors throw AMBIGUOUS) — the E-NEW-1 inner
+    // fail-closed contract: no CLI create ever runs next to live survivors.
+    await resolveAmbiguousIdempotentTurns({ root, operation, idempotency, candidates, transport: "cli", trace, stopAgent: (id) => stopManagedPaseoAgent(root, id, deps), relist: listMatching });
+    return undefined;
   }
   if (live.length === 1) return reuse(live[0]!);
-  // Dead orphans only (ambiguity already threw above): reap ONLY
+  // Dead orphans only (ambiguity self-healed above): reap ONLY
   // positively-dead best-effort, never throw, then create-new. Unknown
   // (undefined/empty/unrecognized) is left alone fail-closed (never counted
   // as dead, never reaped).

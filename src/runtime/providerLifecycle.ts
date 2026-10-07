@@ -108,7 +108,11 @@ export async function runWithOperationProviderLease<T>(
         } catch { /* A stale owner must leave provider cleanup to the current controller. */ }
       }
       if (stillOwner) {
-        if (!knownSessionId && input.discoverSession) knownSessionId = await input.discoverSession().catch(() => undefined);
+        // Lease-level rediscovery (A3): ambiguous duplicates self-heal
+        // (stop-all + re-discover) inside discoverSession; a still-ambiguous
+        // or fencing-required result throws fenced. The throw propagates —
+        // never swallowed into permanent uncertainty.
+        if (!knownSessionId && input.discoverSession) knownSessionId = await input.discoverSession();
         const quiescence = knownSessionId ? await stopAndObserveQuiescence(input, knownSessionId).catch(() => undefined) : undefined;
         if (quiescence) {
           const latest = await requireCurrentOperation(input, operationRoot).catch(() => undefined);
