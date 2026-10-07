@@ -35,6 +35,77 @@ import {
 } from "./supervisorV2.js";
 import { randomUUID } from "node:crypto";
 
+/**
+ * Structured workspace-listing incomplete classification for S1 startup gating.
+ *
+ * MECHANISM: DETERMINISTIC (coded class identity, never a message substring).
+ * Produced ONLY by the workspace-listing path (`defaultListOwnedWorkspaces`);
+ * the S1 startup gate checks this classification, so an unrelated error that
+ * merely embeds the marker text can never block startup.
+ */
+export const WORKSPACE_SWEEP_INCOMPLETE_CODE = "AEH_WORKSPACE_SWEEP_INCOMPLETE" as const;
+
+/**
+ * Module-private provenance brand. Set ONLY in the
+ * `WorkspaceSweepIncompleteError` constructor (the dedicated workspace-listing
+ * path `defaultListOwnedWorkspaces` is the sole production constructor caller;
+ * the controller re-mints only from already-proven failures). Never exported,
+ * never serialized (non-enumerable), never derived from the `code` string.
+ * Spread/JSON copies lose it by construction.
+ */
+const WORKSPACE_SWEEP_INCOMPLETE_BRAND = Symbol("aeh.workspaceSweepIncomplete");
+
+export class WorkspaceSweepIncompleteError extends Error {
+  readonly code: typeof WORKSPACE_SWEEP_INCOMPLETE_CODE = WORKSPACE_SWEEP_INCOMPLETE_CODE;
+  constructor(detail: string, options?: { cause?: unknown }) {
+    super(`${WORKSPACE_SWEEP_INCOMPLETE_CODE}: ${detail}`, options);
+    this.name = "WorkspaceSweepIncompleteError";
+    Object.defineProperty(this, WORKSPACE_SWEEP_INCOMPLETE_BRAND, {
+      value: true,
+      enumerable: false,
+      writable: false,
+      configurable: false,
+    });
+  }
+}
+
+/**
+ * DETERMINISTIC classifier: true only for a genuine branded instance.
+ * MECHANISM: DETERMINISTIC (`instanceof` AND module-private brand).
+ * A plain object with a matching `code` string, a message-substring match, or
+ * a cross-realm/JSON/spread copy without the brand NEVER classifies. `code`
+ * is kept for diagnostics/serialization but is NEVER gated on.
+ */
+export function isWorkspaceSweepIncompleteError(error: unknown): error is WorkspaceSweepIncompleteError {
+  return (
+    error instanceof WorkspaceSweepIncompleteError &&
+    (error as unknown as Record<symbol, unknown>)[WORKSPACE_SWEEP_INCOMPLETE_BRAND] === true
+  );
+}
+
+/**
+ * Typed sweep failure. `code` is diagnostics/serialization only and is NEVER
+ * gated on. In-memory provenance for the S1 gate is carried by `cause`: the
+ * genuine branded error instance from the workspace-listing path. Plain
+ * `{code}` objects without a branded `cause` never classify.
+ */
+export interface OperationResourceSweepFailureV1 {
+  operationId: string;
+  error: string;
+  code?: typeof WORKSPACE_SWEEP_INCOMPLETE_CODE;
+  cause?: unknown;
+}
+
+/**
+ * DETERMINISTIC classifier for sweep failures: true only when the failure
+ * carries a genuine branded `cause` (provenance via `isWorkspaceSweepIncompleteError`).
+ * Never gates on the `code` string from arbitrary objects.
+ */
+export function isWorkspaceSweepIncompleteFailure(failure: unknown): boolean {
+  if (typeof failure !== "object" || failure === null) return false;
+  return isWorkspaceSweepIncompleteError((failure as { cause?: unknown }).cause);
+}
+
 export const operationResourceKinds = [
   "paseo-workspace",
   "paseo-agent",
@@ -77,7 +148,7 @@ export interface OperationResourceV1 {
     participantGeneration?: string;
     supervisorAgentId?: string;
     leaseId?: string;
-    source: "controller-registration" | "operation-record" | "provider-lease" | "managed-process-handle";
+    source: "controller-registration" | "operation-record" | "provider-lease" | "managed-process-handle" | "workspace-title-discovery";
   };
   createdAt: string;
   state: OperationResourceStateV1;
@@ -139,6 +210,11 @@ export interface OperationResourceReconcileDeps {
   removeStagingRoot?: (target: string) => Promise<void>;
   /** Durable label-bound ownership discovery (`aeh.operation` is minted only by this product). */
   listOwnedAgents?: (root: string, operationId: string) => Promise<Array<{ id?: string; workspaceId?: string }>>;
+  /**
+   * Unbounded Paseo workspace listing for title-anchored discovery. The caller
+   * filters by exact minted title; entries carry no trust until matched.
+   */
+  listOwnedWorkspaces?: (root: string) => Promise<OwnedWorkspaceRecord[]>;
   trace?: typeof recordPaseoTrace;
   now?: () => Date;
 }
@@ -179,7 +255,7 @@ export interface OperationResourceSweepResultV1 {
   terminalOperationsReconciled: number;
   terminalOperationsCurrent: number;
   liveOperationsPreserved: number;
-  failures: Array<{ operationId: string; error: string }>;
+  failures: OperationResourceSweepFailureV1[];
 }
 
 export function operationResourcePolicy(config: { orchestration?: unknown } | undefined): OperationResourcePolicyV1 {
@@ -201,6 +277,377 @@ export function operationResourceReceiptFile(root: string, operationId: string):
 
 export function operationResourceId(operationId: string, kind: OperationResourceKindV1, identity: string): string {
   return `resource:${sha256Utf8(`${operationId}\u0000${kind}\u0000${identity}`).slice(0, 24)}`;
+}
+
+export interface OwnedWorkspaceRecord {
+  workspaceId: string;
+  title?: string;
+  path?: string;
+}
+
+/**
+ * Canonical operation workspace title minted at `paseo workspace create`
+ * (E-NEW-3). The Paseo workspace CLI offers no label surface, so this title —
+ * which embeds the operation id — is one of three recovery bindings. Create
+ * and discovery must share this exact function.
+ */
+export function operationWorkspaceTitle(kind: string, operationId: string): string {
+  return `AEH ${kind.toUpperCase()} · ${operationId}`;
+}
+
+/**
+ * Deterministic pre-registered workspace name for one operation (E-NEW-3
+ * triple binding). Written to a create-started intent record BEFORE `paseo
+ * workspace create` runs and carried as `--worktree-slug` for worktree
+ * isolation (the CLI offers no separate name surface: `--label` does not
+ * exist in 0.10.3, verified against `paseo workspace create --help`). For
+ * worktree workspaces the slug surfaces as the cwd leaf in
+ * `paseo workspace ls --json`; for local isolation the cwd IS the control
+ * root and the intent record alone carries the name binding.
+ */
+export function operationWorkspaceName(kind: string, operationId: string): string {
+  const slug = `aeh-${kind}-${operationId}`.toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug.slice(0, 80) || "aeh-workspace";
+}
+
+/** Triple-binding expectations for workspace discovery (all three required). */
+export interface OperationWorkspaceBinding {
+  title: string;
+  name: string;
+  root: string;
+}
+
+export function operationWorkspaceBinding(kind: string, operationId: string, root: string): OperationWorkspaceBinding {
+  return { title: operationWorkspaceTitle(kind, operationId), name: operationWorkspaceName(kind, operationId), root };
+}
+
+export interface OperationWorkspaceIntentV1 {
+  version: 1;
+  operationId: string;
+  kind: string;
+  title: string;
+  name: string;
+  createdAt: string;
+  workspaceId?: string;
+  workspaceRoot?: string;
+  upgradedAt?: string;
+}
+
+/** Create-started intent record: written before the CLI create, upgraded after. */
+export function operationWorkspaceIntentFile(root: string, operationId: string): string {
+  const safe = operationId.replace(/[^A-Za-z0-9._-]/g, "_");
+  return path.resolve(root, ".harness", "operations", `${safe}.workspace-intent.json`);
+}
+
+function parseWorkspaceIntent(raw: string, operationId: string): OperationWorkspaceIntentV1 | undefined {
+  let value: unknown;
+  try { value = JSON.parse(raw); }
+  catch { return undefined; }
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  if (record.version !== 1 || record.operationId !== operationId) return undefined;
+  if (typeof record.name !== "string" || !record.name || typeof record.title !== "string" || !record.title) return undefined;
+  if (typeof record.kind !== "string" || !record.kind || typeof record.createdAt !== "string" || !record.createdAt) return undefined;
+  return {
+    version: 1,
+    operationId,
+    kind: record.kind,
+    title: record.title,
+    name: record.name,
+    createdAt: record.createdAt,
+    ...(typeof record.workspaceId === "string" && record.workspaceId ? { workspaceId: record.workspaceId } : {}),
+    ...(typeof record.workspaceRoot === "string" && record.workspaceRoot ? { workspaceRoot: record.workspaceRoot } : {}),
+    ...(typeof record.upgradedAt === "string" && record.upgradedAt ? { upgradedAt: record.upgradedAt } : {})
+  };
+}
+
+/** Pre-register the deterministic workspace name before the CLI create. Never downgrades an upgraded record. */
+export async function writeOperationWorkspaceIntent(
+  root: string,
+  operationId: string,
+  input: { kind: string; title: string; name: string }
+): Promise<OperationWorkspaceIntentV1> {
+  const file = operationWorkspaceIntentFile(root, operationId);
+  const existing = await readOperationWorkspaceIntent(root, operationId);
+  if (existing?.workspaceId) return existing;
+  const intent: OperationWorkspaceIntentV1 = {
+    version: 1, operationId, kind: input.kind, title: input.title, name: input.name,
+    createdAt: existing?.createdAt ?? new Date().toISOString()
+  };
+  await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+  await fs.writeFile(file, `${JSON.stringify(intent, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  return intent;
+}
+
+/** Upgrade the intent with the created workspace identity (best-effort recovery aid). */
+export async function upgradeOperationWorkspaceIntent(
+  root: string,
+  operationId: string,
+  input: { workspaceId?: string; workspaceRoot?: string }
+): Promise<OperationWorkspaceIntentV1 | undefined> {
+  const current = await readOperationWorkspaceIntent(root, operationId);
+  if (!current) return undefined;
+  const upgraded: OperationWorkspaceIntentV1 = {
+    ...current,
+    ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+    ...(input.workspaceRoot ? { workspaceRoot: input.workspaceRoot } : {}),
+    upgradedAt: new Date().toISOString()
+  };
+  await fs.writeFile(operationWorkspaceIntentFile(root, operationId), `${JSON.stringify(upgraded, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  return upgraded;
+}
+
+/** Read the pre-registered intent. Missing or corrupt reads as no binding (never throw: discovery fails closed to ignore). */
+export async function readOperationWorkspaceIntent(root: string, operationId: string): Promise<OperationWorkspaceIntentV1 | undefined> {
+  let raw: string;
+  try { raw = await fs.readFile(operationWorkspaceIntentFile(root, operationId), "utf8"); }
+  catch { return undefined; }
+  return parseWorkspaceIntent(raw, operationId);
+}
+
+/** Best-effort intent removal (failed creates must leave no claimable intent; full registration supersedes it). */
+export async function clearOperationWorkspaceIntent(root: string, operationId: string): Promise<void> {
+  await fs.rm(operationWorkspaceIntentFile(root, operationId), { force: true }).catch(() => undefined);
+}
+
+/** Paseo-managed worktrees root (`~/.paseo/worktrees`; custom `--home` daemon homes are not covered — recovery stays conservative there). */
+export function paseoManagedWorktreesRoot(): string {
+  return path.resolve(os.homedir(), ".paseo", "worktrees");
+}
+
+/**
+ * DETERMINISTIC managed-path check: a discovered workspace cwd is managed
+ * only inside the control root (local isolation, whose cwd IS the root) or
+ * inside the Paseo-managed worktrees root. Pure string containment, no I/O.
+ */
+export function isWorkspacePathManaged(root: string, workspacePath: string | undefined): boolean {
+  if (typeof workspacePath !== "string" || !workspacePath.trim()) return false;
+  const resolvedRoot = path.resolve(root);
+  const resolvedPath = path.resolve(workspacePath);
+  if (resolvedPath === resolvedRoot || !path.relative(resolvedRoot, resolvedPath).startsWith("..")) return true;
+  const worktrees = paseoManagedWorktreesRoot();
+  return resolvedPath === worktrees || !path.relative(worktrees, resolvedPath).startsWith("..");
+}
+
+/**
+ * DETERMINISTIC triple-binding ownership filter: claims a discovered
+ * workspace ONLY when (a) the canonical exact title matches AND (b) the
+ * deterministic pre-registered name matches (worktree slug surfacing as the
+ * cwd leaf; vacuous for local isolation whose cwd is the control root) AND
+ * (c) the workspace cwd sits under a managed root. Title-only — or any 2 of
+ * 3 — is ignored (reported via onIgnored) and never archived. Substring/prefix
+ * matching is refused so a sibling id can never be claimed.
+ *
+ * Callers must additionally gate on the local intent record
+ * (readOperationWorkspaceIntent): without a pre-registered intent for this
+ * operation nothing is claimed even if the three listed bindings match. See
+ * selectTripleBoundWorkspaces.
+ */
+export function selectOwnedWorkspaces(
+  workspaces: Array<{ workspaceId: string; title?: string; path?: string }>,
+  binding: OperationWorkspaceBinding,
+  opts?: { onIgnored?: (workspace: { workspaceId: string }, missing: Array<"title" | "name" | "path">) => void }
+): OwnedWorkspaceRecord[] {
+  const resolvedRoot = path.resolve(binding.root);
+  const selected = new Map<string, OwnedWorkspaceRecord>();
+  for (const workspace of workspaces) {
+    if (!workspace.workspaceId) continue;
+    const missing: Array<"title" | "name" | "path"> = [];
+    if (workspace.title !== binding.title) missing.push("title");
+    const resolvedPath = typeof workspace.path === "string" && workspace.path.trim() ? path.resolve(workspace.path) : undefined;
+    if (!resolvedPath || !isWorkspacePathManaged(binding.root, resolvedPath)) {
+      missing.push("path");
+    } else if (resolvedPath !== resolvedRoot && path.basename(resolvedPath) !== binding.name) {
+      // CLI-visible name binding for worktree isolation (slug === cwd leaf).
+      // A user-created same-title workspace elsewhere keeps its own leaf and
+      // is refused here even when its title matches.
+      missing.push("name");
+    }
+    if (missing.length > 0) {
+      opts?.onIgnored?.({ workspaceId: workspace.workspaceId }, missing);
+      continue;
+    }
+    const existing = selected.get(workspace.workspaceId);
+    if (!existing) selected.set(workspace.workspaceId, { workspaceId: workspace.workspaceId, ...(workspace.title ? { title: workspace.title } : {}), ...(workspace.path ? { path: workspace.path } : {}) });
+    else if (!existing.path && workspace.path) existing.path = workspace.path;
+  }
+  return [...selected.values()];
+}
+
+/**
+ * Intent-gated workspace discovery: no pre-registered create-started intent
+ * for this operation means no claim, even if a listed workspace matches the
+ * title. Title-only (or any 2-of-3) matches are ignored with a trace log and
+ * never archived. Live operations keep their candidates preserved-live by the
+ * caller; this only decides the candidate set.
+ *
+ * CONTRACT: `listed` must be an exhaustive listing (callers use the throwing
+ * `defaultListOwnedWorkspaces`, which raises WorkspaceSweepIncompleteError on
+ * any incomplete transport/exit/parse; injected stub listers in tests are
+ * exhaustive by contract). A `[]` return therefore means proven absence only
+ * when the listing succeeded. Skipping the listing entirely (returning []
+ * without proof) is allowed only when NO intent attempt exists — callers skip
+ * the CLI in exactly that case because no create was ever attempted.
+ */
+export async function selectTripleBoundWorkspaces(
+  root: string,
+  record: OperationRecordV2,
+  listed: OwnedWorkspaceRecord[],
+  deps: OperationResourceReconcileDeps
+): Promise<OwnedWorkspaceRecord[]> {
+  const binding = operationWorkspaceBinding(record.kind, record.id, root);
+  const intent = await readOperationWorkspaceIntent(root, record.id);
+  const trace = deps.trace ?? recordPaseoTrace;
+  const ignored: Array<{ workspaceId: string; missing: string[] }> = [];
+  if (!intent || intent.name !== binding.name) {
+    const titleOnly = listed.filter((workspace) => workspace.title === binding.title);
+    if (titleOnly.length > 0) {
+      try {
+        await trace(root, "operation.workspace.discovery-ignored", {
+          operationId: record.id,
+          reason: "title match without pre-registered workspace intent",
+          workspaceIds: titleOnly.map((workspace) => workspace.workspaceId)
+        });
+      } catch { /* observability only */ }
+    }
+    return [];
+  }
+  // W1: an intent ATTEMPT without the create-recorded workspace ID is UNKNOWN.
+  // The CLI create may have succeeded but the synchronous ID upgrade never
+  // landed (crash in the residual CLI-return → intent-write window, or the
+  // upgrade was skipped). Title/name/path fallback matching is FORBIDDEN here:
+  // without the exact ID no listed workspace is claimable, even when all three
+  // bindings match. The caller must have provided an exhaustive listing (see
+  // CONTRACT above); only that proof lets a [] return mean proven absence.
+  // Fallback to [] without exhaustive proof is allowed only when NO intent
+  // attempt exists (the early return above), never here.
+  if (!intent.workspaceId) {
+    const titleMatches = listed.filter((workspace) => workspace.title === binding.title);
+    if (titleMatches.length > 0) {
+      try {
+        await trace(root, "operation.workspace.discovery-ignored", {
+          operationId: record.id,
+          reason: "intent attempt without workspace ID cannot prove ownership; title fallback forbidden (UNKNOWN, requires exhaustive-listing proof)",
+          workspaceIds: titleMatches.map((workspace) => workspace.workspaceId)
+        });
+      } catch { /* observability only */ }
+    }
+    // R3/R2: a no-ID attempt is ALWAYS UNKNOWN — never auto-clear here. An
+    // unknown-ID workspace may be renamed or title-less, so zero title
+    // matches do NOT prove absence. No operator-confirmed-absent vocabulary
+    // exists; the only affirmative positive that supersedes this sidecar is
+    // the successful create receipt path (intent upgrade + full registration
+    // clear in the controller). Retaining leaks at most one extra listing per
+    // future sweep (bounded leak); the discovery-ignored trace below keeps the
+    // leak sweep-visible. Never fallback-match here.
+    if (titleMatches.length === 0) {
+      try {
+        await trace(root, "operation.workspace.discovery-ignored", {
+          operationId: record.id,
+          reason: "intent attempt without workspace ID retained UNKNOWN; zero title matches prove nothing (renamed/title-less orphan possible; bounded leak, superseded only by create receipt)",
+          workspaceIds: []
+        });
+      } catch { /* observability only */ }
+    }
+    return [];
+  }
+  // ID-decisive: when the create recorded its CLI-returned workspace ID in the
+  // intent, only that exact ID is claimable. Title+slug remain as defense (the
+  // triple filter below still applies); a competing claimant with the same
+  // title/slug but a different ID never satisfies this gate.
+  const expectedId = intent.workspaceId;
+  const idScoped = listed.filter((workspace) => workspace.workspaceId === expectedId);
+  const idMismatched = listed.filter((workspace) => workspace.workspaceId !== expectedId && workspace.title === binding.title);
+  if (idMismatched.length > 0) {
+    try {
+      await trace(root, "operation.workspace.discovery-ignored", {
+        operationId: record.id,
+        reason: "workspace ID does not match create-recorded intent workspace ID",
+        workspaceIds: idMismatched.map((workspace) => workspace.workspaceId)
+      });
+    } catch { /* observability only */ }
+  }
+  const selected = selectOwnedWorkspaces(idScoped, binding, {
+    onIgnored: (workspace, missing) => { ignored.push({ workspaceId: workspace.workspaceId, missing }); }
+  });
+  if (ignored.length > 0) {
+    try {
+      await trace(root, "operation.workspace.discovery-ignored", {
+        operationId: record.id,
+        reason: "workspace failed triple-binding ownership",
+        ignored
+      });
+    } catch { /* observability only */ }
+  }
+  // R3/R1: clear ONLY when the exact ID is absent from the exhaustive listing
+  // entirely. An ID-present workspace that fails the triple-binding selection
+  // (renamed title / moved path) is NOT proven absence — it is UNKNOWN/retry,
+  // so the intent is retained, never cleared, and never fallback-matched to a
+  // same-title/different-ID competitor. Clearing is best-effort: a leftover
+  // intent only causes an extra listing, never a false claim.
+  if (selected.length === 0) {
+    const idPresent = listed.some((workspace) => workspace.workspaceId === expectedId);
+    if (!idPresent) {
+      await clearOperationWorkspaceIntent(root, record.id).catch(() => undefined);
+    } else {
+      try {
+        await trace(root, "operation.workspace.discovery-ignored", {
+          operationId: record.id,
+          reason: "workspace ID present but failed triple-binding ownership; intent retained UNKNOWN for retry (never clear, never fallback-match)",
+          workspaceIds: [expectedId]
+        });
+      } catch { /* observability only */ }
+    }
+  }
+  return selected;
+}
+
+/** Default unbounded workspace listing (`paseo workspace ls --json`); unfiltered, untrusted until title-matched. Fail-closed: any CLI transport failure, nonzero exit, empty output, or invalid JSON throws WorkspaceSweepIncompleteError so callers can never mark current/complete without proving no workspace exists. Explicit empty-list success (`[]`) still returns []. */
+export function defaultListOwnedWorkspaces(run: typeof runShell): (root: string) => Promise<OwnedWorkspaceRecord[]> {
+  return async (root) => {
+    if (isDeterministicPaseoRuntimeEnabled()) return [];
+    let result: { exitCode: number; stdout: string; stderr: string } | undefined;
+    try {
+      result = await run("paseo workspace ls --json", { cwd: root, timeoutMs: 60_000 });
+    } catch (error) {
+      throw new WorkspaceSweepIncompleteError(`workspace listing transport failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+    }
+    if (!result) throw new WorkspaceSweepIncompleteError("workspace listing produced no result.");
+    if (result.exitCode !== 0) throw new WorkspaceSweepIncompleteError(`workspace listing exited ${result.exitCode}: ${(result.stderr || result.stdout || "").slice(0, 500)}`);
+    if (!result.stdout.trim()) throw new WorkspaceSweepIncompleteError("workspace listing returned empty output; cannot prove no workspace exists.");
+    let value: unknown;
+    try { value = JSON.parse(result.stdout); }
+    catch { throw new WorkspaceSweepIncompleteError("workspace listing returned invalid JSON; cannot prove no workspace exists."); }
+    const collected: OwnedWorkspaceRecord[] = [];
+    collectWorkspaceRecords(value, collected);
+    const deduped = new Map<string, OwnedWorkspaceRecord>();
+    for (const workspace of collected) {
+      if (!workspace.workspaceId || deduped.has(workspace.workspaceId)) continue;
+      deduped.set(workspace.workspaceId, workspace);
+    }
+    return [...deduped.values()];
+  };
+}
+
+function collectWorkspaceRecords(value: unknown, out: OwnedWorkspaceRecord[]): void {
+  if (Array.isArray(value)) { for (const item of value) collectWorkspaceRecords(item, out); return; }
+  if (!value || typeof value !== "object") return;
+  const record = value as Record<string, unknown>;
+  const workspaceId = typeof record.workspaceId === "string" && record.workspaceId
+    ? record.workspaceId
+    : typeof record.workspace_id === "string" && record.workspace_id ? record.workspace_id : undefined;
+  const title = typeof record.name === "string" && record.name
+    ? record.name
+    : typeof record.title === "string" && record.title ? record.title : undefined;
+  if (workspaceId) {
+    const workspacePath = [record.cwd, record.path, record.worktreePath, record.worktree_path, record.checkoutPath]
+      .find((item): item is string => typeof item === "string" && item.length > 0);
+    out.push({ workspaceId, ...(title ? { title } : {}), ...(workspacePath ? { path: workspacePath } : {}) });
+  }
+  for (const child of Object.values(record)) collectWorkspaceRecords(child, out);
 }
 
 /**
@@ -576,12 +1023,39 @@ export async function reconcileTerminalOperationResources(root: string, deps: Op
       const resources = await listOperationResources(root, operationId);
       const handles = await listManagedProcessHandles(root, operationId);
       const recordOwned = Boolean(record.workspaceId || record.agents?.length || Object.keys(record.participants ?? {}).length);
-      if (!resources.length && !handles.length && !recordOwned) { sweep.terminalOperationsCurrent += 1; continue; }
+      if (!resources.length && !handles.length && !recordOwned) {
+        // DETERMINISTIC: deterministic journeys never touch real Paseo state.
+        // Proven-absence without listing (mirrors defaultListOwnedWorkspaces
+        // and reconcileOperationResources deterministic early-returns).
+        // MECHANISM: DETERMINISTIC (env flag, not semantics).
+        if (isDeterministicPaseoRuntimeEnabled()) { sweep.terminalOperationsCurrent += 1; continue; }
+        // E-NEW-3: a crash between workspace create and durable registration
+        // leaves zero local surface. Consult triple-bound discovery before
+        // declaring the operation current so the orphaned worktree is swept.
+        // Without a pre-registered intent nothing is claimed (fail-closed), so
+        // the CLI is skipped. With an intent a listing failure throws
+        // WorkspaceSweepIncompleteError into sweep.failures — never []/current.
+        const preIntent = await readOperationWorkspaceIntent(root, record.id).catch(() => undefined);
+        if (!preIntent && !deps.listOwnedWorkspaces) { sweep.terminalOperationsCurrent += 1; continue; }
+        const listWorkspaces = deps.listOwnedWorkspaces ?? defaultListOwnedWorkspaces(deps.run ?? runShell);
+        const listed = await listWorkspaces(root);
+        if ((await selectTripleBoundWorkspaces(root, record, listed, deps)).length === 0) { sweep.terminalOperationsCurrent += 1; continue; }
+      }
       const result = await reconcileOperationResources(root, operationId, deps);
       if (result.cleanupComplete) sweep.terminalOperationsReconciled += 1;
       else sweep.failures.push({ operationId, error: result.errors.join("; ") || "terminal orphaned resources remain" });
     } catch (error) {
-      sweep.failures.push({ operationId, error: error instanceof Error ? error.message : String(error) });
+      // Structured propagation with unforgeable provenance: ONLY a genuine
+      // branded workspace-listing error carries INCOMPLETE into the failure
+      // record (as `code` for diagnostics plus `cause` for gating). Any other
+      // error — even one embedding the marker text or a forged `{code}` —
+      // stays causeless and can never trip the S1 startup gate.
+      const message = error instanceof Error ? error.message : String(error);
+      if (isWorkspaceSweepIncompleteError(error)) {
+        sweep.failures.push({ operationId, error: message, code: WORKSPACE_SWEEP_INCOMPLETE_CODE, cause: error });
+      } else {
+        sweep.failures.push({ operationId, error: message });
+      }
     }
   }
   return sweep;
@@ -1145,9 +1619,49 @@ async function collectResourceCandidates(
     }
   }
 
+  // E-NEW-3 crash-window discovery: a worktree created between `paseo
+  // workspace create` and the durable record/registry writes carries no local
+  // ownership proof. The triple binding (exact minted title + pre-registered
+  // deterministic name + managed cwd) proves ownership; title-only or any
+  // 2-of-3 is ignored and never archived. This runs before the surface gate so
+  // a surfaceless crashed operation stays recoverable. A workspace renamed
+  // after creation escapes title matching and leaks (accepted residual: never
+  // claim what cannot be proven).
+  let discoveredWorkspaceCount = 0;
+  if (!isDeterministicPaseoRuntimeEnabled()) {
+    // Fail-closed: without a pre-registered intent nothing is claimable, so the
+    // CLI is skipped entirely (no external proof needed). With an intent the
+    // listing failure throws WorkspaceSweepIncompleteError and aborts
+    // reconciliation (blocking current/complete) — never silently [].
+    const preIntent = await readOperationWorkspaceIntent(root, record.id).catch(() => undefined);
+    const preBinding = operationWorkspaceBinding(record.kind, record.id, root);
+    // An explicitly injected lister is cheap/proven: always consult it so the
+    // discovery-ignored trace stays observable. The default CLI is consulted
+    // only when an intent makes a claim possible (avoids spurious CLI
+    // failures when the outcome is already predetermined []).
+    const needsListing = Boolean(deps.listOwnedWorkspaces) || Boolean(preIntent && preIntent.name === preBinding.name);
+    if (needsListing) {
+      const listWorkspaces = deps.listOwnedWorkspaces ?? defaultListOwnedWorkspaces(deps.run ?? runShell);
+      const listed = await listWorkspaces(root);
+      for (const workspace of await selectTripleBoundWorkspaces(root, record, listed, deps)) {
+        discoveredWorkspaceCount += 1;
+        add({
+          kind: "paseo-workspace",
+          identity: workspace.workspaceId,
+          reclaim: "ARCHIVE_ON_TERMINAL",
+          ...(workspace.path ? { path: workspace.path } : {}),
+          label: "operation workspace (title discovery)",
+          owner: { ...ownerBase, source: "workspace-title-discovery" },
+          classification: "TERMINAL_ORPHAN"
+        });
+      }
+    }
+  }
+
   const hasDurableOwnershipSurface = registry.resources.length > 0
     || Boolean(record.workspaceDisposition)
-    || (await listManagedProcessHandles(root, record.id)).length > 0;
+    || (await listManagedProcessHandles(root, record.id)).length > 0
+    || discoveredWorkspaceCount > 0;
   if (!hasDurableOwnershipSurface || isDeterministicPaseoRuntimeEnabled()) return [...candidates.values()];
 
   // Participant and supervisor agent sessions are proven by the operation record.
@@ -1400,9 +1914,10 @@ async function listOperationIds(root: string): Promise<string[]> {
   let entries: string[];
   try { entries = await fs.readdir(directory); } catch { return []; }
   return entries
-    .filter((entry) => entry.endsWith(".json"))
+    // Strict operation-id shape (mirrors the controller record scan): sidecar
+    // files such as `<id>.workspace-intent.json` contain dots and never match.
+    .filter((entry) => entry !== "portfolio.json" && /^[A-Z][A-Za-z0-9_-]+\.json$/.test(entry))
     .map((entry) => entry.slice(0, -".json".length))
-    .filter((entry) => entry !== "portfolio")
     .sort()
     .slice(0, 200);
 }

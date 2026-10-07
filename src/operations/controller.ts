@@ -19,10 +19,18 @@ import { inspectManagedPaseoAgent, listManagedPaseoAgents } from "../paseo/runti
 import { isDeterministicPaseoRuntimeEnabled, isDeterministicPaseoSessionId } from "../paseo/deterministicRuntime.js";
 import { createManagedRuntime, readManagedRuntimeSnapshot, runtimeProjectId } from "../runtime/index.js";
 import {
+  clearOperationWorkspaceIntent,
+  isWorkspaceSweepIncompleteError,
+  isWorkspaceSweepIncompleteFailure,
   operationResourcePolicy,
+  operationWorkspaceName,
+  operationWorkspaceTitle,
   reconcileOperationResources,
   reconcileTerminalOperationResources,
-  registerOperationResource
+  registerOperationResource,
+  upgradeOperationWorkspaceIntent,
+  WorkspaceSweepIncompleteError,
+  writeOperationWorkspaceIntent
 } from "../runtime/operationResources.js";
 import { recordPaseoTrace } from "../paseo/trace.js";
 import {
@@ -176,7 +184,40 @@ export async function startDetachedOperation(
   await materializeOverdueOperationDeadlines(absoluteRoot, config);
   // Restart recovery: any proven terminal operation in this control root with an
   // incomplete resource receipt is reconciled before new work starts.
-  await reconcileTerminalOperationResources(absoluteRoot).catch(() => undefined);
+  // Fail-closed ONLY for the workspace-listing proof
+  // (WorkspaceSweepIncompleteError): an unprovable workspace sweep blocks
+  // startup rather than dispatching new work over unreconciled orphans. All
+  // other terminal-resource failures restore the pre-round-2 behavior —
+  // swallowed, never blocking startup. Both the thrown path and the
+  // per-operation sweep.failures path are narrowed identically via the
+  // structured classification (code field / error class produced ONLY by the
+  // workspace-listing path); message-substring matching is refused so an
+  // unrelated error embedding the marker text can never block startup.
+  // MECHANISM: DETERMINISTIC (coded classification, not semantic string match).
+  // DETERMINISTIC: deterministic journeys never touch real Paseo state. The
+  // fake SDK boundary (runDeterministicPaseoTurn) enables the deterministic
+  // runtime flag, so the preliminary sweep resolves proven-absence locally
+  // without shelling to a real `paseo` CLI. Mirrors the deterministic
+  // early-returns in ensureOperationWorkspace/defaultListOwnedWorkspaces.
+  // MECHANISM: DETERMINISTIC (env flag, not semantics).
+  let preliminarySweep;
+  if (isDeterministicPaseoRuntimeEnabled()) {
+    preliminarySweep = undefined;
+  } else {
+  try {
+    preliminarySweep = await reconcileTerminalOperationResources(absoluteRoot);
+  } catch (error) {
+    if (isWorkspaceSweepIncompleteError(error)) throw error;
+    preliminarySweep = undefined;
+  }
+  if (preliminarySweep && preliminarySweep.failures.length > 0) {
+    const workspaceFailures = preliminarySweep.failures.filter((failure) => isWorkspaceSweepIncompleteFailure(failure));
+    if (workspaceFailures.length > 0) {
+      const detail = workspaceFailures.map((failure) => `${failure.operationId}: ${failure.error}`).join("; ").slice(0, 2000);
+      throw new WorkspaceSweepIncompleteError(`preliminary terminal-resource reconciliation failed: ${detail}`);
+    }
+  }
+  }
   if (suppliedDecision) assertIntentDecisionForRoute(suppliedDecision, kind === "audit" ? "audit" : kind === "change" ? "change" : "run");
   if (leadInitiated) {
     if (!suppliedDecision?.continuation?.operationId) await assertNoImplicitLeadRecoveryForLineage(absoluteRoot, initiator.userTurnId, operationTaskId(payload));
@@ -490,6 +531,13 @@ async function executeOperationWithEnvironment(
       workspaceWarning: workspace.warning,
       ...(workspace.disposition ? { workspaceDisposition: workspace.disposition } : {})
     });
+    if (workspace.disposition === "OPERATION_OWNED" && workspace.workspaceId) {
+      // Full registration supersedes the create-started intent: the record now
+      // durably proves ownership, so the intent is removed and triple-bound
+      // discovery stays scoped to the crash window. Best-effort: a leftover
+      // intent only causes an extra listing, never a false claim.
+      await clearOperationWorkspaceIntent(absoluteRoot, operationId).catch(() => undefined);
+    }
     if (workspace.disposition && workspace.workspaceId) {
       const workspaceIdentity = workspace.workspaceId;
       await registerOperationResource(absoluteRoot, operationId, {
@@ -1617,7 +1665,7 @@ async function executeIssueIntakeOperation(root: string, config: HarnessProjectC
   }, deps, config);
 }
 
-async function ensureOperationWorkspace(
+export async function ensureOperationWorkspace(
   root: string,
   record: OperationRecordV2,
   config: HarnessProjectConfig,
@@ -1646,7 +1694,26 @@ async function ensureOperationWorkspace(
     }
   }
 
-  const title = `AEH ${record.kind.toUpperCase()} · ${record.id}`;
+  // The title plus the pre-registered deterministic name are the durable
+  // ownership signals: the Paseo workspace CLI offers no label surface
+  // (--label is absent in 0.10.3), so recovery triple-binds the exact minted
+  // title (operationWorkspaceTitle) + the pre-registered name
+  // (operationWorkspaceName, carried as --worktree-slug for worktree
+  // isolation) + a managed cwd. Never rename them without updating discovery.
+  const title = operationWorkspaceTitle(record.kind, record.id);
+  const name = operationWorkspaceName(record.kind, record.id);
+  // DETERMINISTIC: deterministic runtime must not touch real Paseo state.
+  // Defense-in-depth alongside the top-of-function early-return: never write
+  // the real no-ID intent sidecar when the deterministic flag is set, so a
+  // faked CLI failure cannot leave a sidecar that later blocks startup.
+  // MECHANISM: DETERMINISTIC (env flag, not semantics).
+  if (isDeterministicPaseoRuntimeEnabled()) {
+    await trace(root, "workspace.deterministic.local-root", { operationId: record.id, kind: record.kind });
+    return { workspaceRoot: root };
+  }
+  // Pre-register the name BEFORE the CLI create so a crash between create and
+  // the durable record/registry writes stays recoverable via triple binding.
+  await writeOperationWorkspaceIntent(root, record.id, { kind: record.kind, title, name });
   if (record.kind === "audit") {
     const command = `paseo workspace create --isolation local --path ${quote(root)} --title ${quote(title)} --json`;
     await trace(root, "workspace.cli.required", { operationId: record.id, kind: record.kind, reason: "the current integration creates operation workspaces through the Paseo CLI", isolation: "local" });
@@ -1654,21 +1721,38 @@ async function ensureOperationWorkspace(
     try {
       result = await gatedWorkspaceCreate({ root, record, run, command, timeoutMs: 60_000, payload: { isolation: "local", path: root, title } });
     } catch (error) {
+      // Uncertain effect: a thrown gate/transport does NOT prove no workspace
+      // was created, so the started intent is retained for ID-bound recovery.
+      // Intent is cleared only on proven no-create (explicit empty-list
+      // success) or when full registration supersedes it - never here.
       const warning = `Paseo audit workspace could not be created: ${String(error)}`;
       await trace(root, "workspace.cli.error", { operationId: record.id, error: warning });
       return { workspaceRoot: root, warning };
     }
     if (result.exitCode !== 0) {
+      // Nonzero does NOT prove no workspace was created (orphan possible), so
+      // retain the started intent for recovery. Clear only on proven absence,
+      // never on command failure/nonzero.
       const warning = `Paseo audit workspace could not be created: ${result.stderr || result.stdout || `exit ${result.exitCode}`}`;
       await trace(root, "workspace.cli.error", { operationId: record.id, error: warning });
       // AUDIT is read-only, so a local workspace failure does not create a
       // write race; execution may continue at the repository root.
       return { workspaceRoot: root, warning };
     }
-    return { workspaceId: extractWorkspaceId(result.stdout), workspaceRoot: root, disposition: "OPERATION_OWNED" };
+    const workspaceId = extractWorkspaceId(result.stdout);
+    // Record the CLI-returned ID into the intent synchronously with the create
+    // receipt (the returned {workspaceId, workspaceRoot} below): the upgrade is
+    // awaited without swallowing so a failed intent write fails loudly instead
+    // of leaving an ID-absent attempt that later reads as UNKNOWN. Residual
+    // window, documented honestly: a crash between the CLI success and this
+    // write completing still leaves the attempt without an ID; recovery then
+    // treats it as UNKNOWN (title fallback forbidden, exhaustive listing
+    // required) so the orphan leaks but is never mis-claimed.
+    await upgradeOperationWorkspaceIntent(root, record.id, { workspaceId, workspaceRoot: root });
+    return { workspaceId, workspaceRoot: root, disposition: "OPERATION_OWNED" };
   }
 
-  const slug = `aeh-${record.id.toLowerCase().replace(/[^a-z0-9-]+/g, "-").slice(0, 80)}`;
+  const slug = name;
   const branch = `aeh/op-${record.id.toLowerCase().replace(/[^a-z0-9-]+/g, "-").slice(0, 96)}`;
   const base = config.validation?.baseRef ?? "HEAD";
   const command = [
@@ -1685,6 +1769,8 @@ async function ensureOperationWorkspace(
   await trace(root, "workspace.cli.required", { operationId: record.id, kind: record.kind, reason: "mutating operations require isolated worktree execution", isolation: "worktree", branch, base });
   const result = await gatedWorkspaceCreate({ root, record, run, command, timeoutMs: 180_000, payload: { isolation: "worktree", path: root, title, branch, base, slug } });
   if (result.exitCode !== 0) {
+    // Nonzero does NOT prove no workspace was created: retain the started
+    // intent for ID-bound recovery. Clear only on proven no-create, never here.
     throw new Error(`AEH_OPERATION_WORKTREE_REQUIRED: unable to create isolated worktree for ${record.id}: ${result.stderr || result.stdout || `exit ${result.exitCode}`}`);
   }
   let workspaceId = extractWorkspaceId(result.stdout);
@@ -1697,8 +1783,19 @@ async function ensureOperationWorkspace(
     }
   }
   if (!workspaceRoot) {
+    // Exit 0 but no resolvable path: an orphan may exist, so the started
+    // intent stays for triple-bound recovery.
     throw new Error(`AEH_OPERATION_WORKTREE_REQUIRED: Paseo created a worktree workspace for ${record.id} but did not expose a resolvable worktree path.`);
   }
+  // Record the CLI-returned ID into the intent synchronously with the create
+  // receipt (the returned {workspaceId, workspaceRoot} below): awaited without
+  // swallowing so a failed intent write fails loudly instead of leaving an
+  // ID-absent attempt that later reads as UNKNOWN. Residual window, documented
+  // honestly: a crash between the CLI success (including the fallback `ls`
+  // above) and this write completing still leaves the attempt without an ID;
+  // recovery then treats it as UNKNOWN (title fallback forbidden, exhaustive
+  // listing required) so the orphan leaks but is never mis-claimed.
+  await upgradeOperationWorkspaceIntent(root, record.id, { workspaceId, workspaceRoot });
   await trace(root, "workspace.cli.created", { operationId: record.id, workspaceId: workspaceId ?? "", workspaceRoot, isolation: "worktree", branch });
   return { workspaceId, workspaceRoot, disposition: "OPERATION_OWNED" };
 }

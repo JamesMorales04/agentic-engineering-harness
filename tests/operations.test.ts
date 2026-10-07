@@ -969,7 +969,11 @@ describe("operation controller state", () => {
       trace: trace as never
     });
     expect(cancelled.status).toBe("CANCELLED");
-    expect(run).toHaveBeenCalledTimes(2);
+    // E-NEW-3 recovery lists workspaces by exact minted title to catch a
+    // worktree orphaned between create and durable registration; agent cleanup
+    // itself must still use only the operation record (no agent list discovery).
+    const stopCalls = run.mock.calls.filter(([command]) => String(command).startsWith("paseo stop "));
+    expect(stopCalls).toHaveLength(2);
     expect(run.mock.calls.some(([command]) => String(command).includes("paseo ls"))).toBe(false);
     expect(trace).toHaveBeenCalledWith(
       root,
