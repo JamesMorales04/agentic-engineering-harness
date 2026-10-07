@@ -141,7 +141,9 @@ jobs:
         with:
           name: scenario-matrix-evidence
           path: .aeh-test-results/
-          if-no-files-found: error
+          # Absence is legitimate: per-slice runs report INCOMPLETE and write
+          # nothing. Job results (judged by the all-green gate) carry the signal.
+          if-no-files-found: ignore
 
   adversarial-system:
     name: adversarial-system
@@ -160,7 +162,9 @@ jobs:
         with:
           name: adversarial-system-evidence
           path: .aeh-test-results/
-          if-no-files-found: error
+          # Absence is legitimate: per-slice runs report INCOMPLETE and write
+          # nothing. Job results (judged by the all-green gate) carry the signal.
+          if-no-files-found: ignore
 
   human-e2e:
     name: human-e2e
@@ -179,7 +183,9 @@ jobs:
         with:
           name: human-e2e-evidence
           path: .aeh-test-results/
-          if-no-files-found: error
+          # Absence is legitimate: per-slice runs report INCOMPLETE and write
+          # nothing. Job results (judged by the all-green gate) carry the signal.
+          if-no-files-found: ignore
 
   system-reliability:
     name: system reliability campaign
@@ -199,7 +205,9 @@ jobs:
         with:
           name: complete-reliability-report
           path: .aeh-test-results/
-          if-no-files-found: error
+          # Absence is legitimate: per-slice runs report INCOMPLETE and write
+          # nothing. Job results (judged by the all-green gate) carry the signal.
+          if-no-files-found: ignore
 
   rootless-isolation:
     name: rootless-isolation
