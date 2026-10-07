@@ -793,37 +793,65 @@ export async function probePaseoSdkAgent(root: string, agentId: string): Promise
  */
 export const MAX_PASEO_SDK_AGENT_LIST_PAGES_V1 = 50;
 
-export async function listPaseoSdkAgents(root: string, labels: Record<string, string> = {}): Promise<PaseoSdkAgentRecord[]> {
+/**
+ * Honest result of SDK agent-listing pagination. `exhausted` is true ONLY
+ * when the server cursor is genuinely exhausted (a page arrived with no fresh
+ * continuation cursor). Hitting the 50-page safety cap or observing a
+ * repeated cursor yields `exhausted: false` with the stop reason recorded, so
+ * callers doing gone-proof work (e.g. ledger pruning) can fail closed instead
+ * of treating a possibly-partial accumulation as complete.
+ * MECHANISM: DETERMINISTIC.
+ */
+export interface PaseoSdkAgentListingV1 {
+  agents: PaseoSdkAgentRecord[];
+  exhausted: boolean;
+  /** Pages consumed (bounded by MAX_PASEO_SDK_AGENT_LIST_PAGES_V1). */
+  pages: number;
+  stopReason: "exhausted" | "page-cap" | "repeated-cursor";
+}
+
+export async function listPaseoSdkAgents(root: string, labels: Record<string, string> = {}): Promise<PaseoSdkAgentListingV1> {
   return withPaseoClient(root, (client) => listPaseoSdkAgentsWithClient(client, labels));
 }
 
 /**
- * List agents matching `labels` across ALL server pages (loop until
- * exhausted). MECHANISM: DETERMINISTIC. The cursor is opaque pass-through;
- * listing stops at the first page without a fresh non-empty string cursor.
+ * List agents matching `labels` across server pages (bounded loop; the cursor
+ * is opaque pass-through). MECHANISM: DETERMINISTIC. The listing stops at the
+ * first page without a fresh non-empty string cursor (`exhausted: true`); a
+ * repeated cursor or the page cap stops early with `exhausted: false`.
  */
 export async function listPaseoSdkAgentsWithClient(
   client: PaseoSdkClient,
   labels: Record<string, string> = {}
-): Promise<PaseoSdkAgentRecord[]> {
+): Promise<PaseoSdkAgentListingV1> {
   const filter: Record<string, unknown> = { includeArchived: false };
   if (Object.keys(labels).length) filter.labels = labels;
   if (typeof client.agents.list !== "function") throw new PaseoSdkUnavailableError("The active @getpaseo/client does not expose agents.list().");
   const out: PaseoSdkAgentRecord[] = [];
   let cursor: string | undefined;
   const seenCursors = new Set<string>();
+  let stopReason: PaseoSdkAgentListingV1["stopReason"] = "page-cap";
+  let pages = 0;
   for (let page = 0; page < MAX_PASEO_SDK_AGENT_LIST_PAGES_V1; page += 1) {
     const response = await client.agents.list(cursor ? { filter, cursor } : { filter });
+    pages += 1;
     for (const entry of response.entries) {
       const record = normalizeRecord(entry.agent);
       if (labelsMatch(record.labels, labels)) out.push(record);
     }
     const next = listContinuationCursor(response);
-    if (!next || seenCursors.has(next)) break;
+    if (!next) {
+      stopReason = "exhausted";
+      break;
+    }
+    if (seenCursors.has(next)) {
+      stopReason = "repeated-cursor";
+      break;
+    }
     seenCursors.add(next);
     cursor = next;
   }
-  return out;
+  return { agents: out, exhausted: stopReason === "exhausted", pages, stopReason };
 }
 
 function listContinuationCursor(response: { nextCursor?: unknown; nextPageToken?: unknown }): string | undefined {

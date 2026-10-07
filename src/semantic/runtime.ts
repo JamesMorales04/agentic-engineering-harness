@@ -11,7 +11,7 @@ import { AehError } from "../core/errors.js";
 import { currentOperationContext } from "../operations/state.js";
 import { isDeterministicPaseoRuntimeEnabled, isDeterministicPaseoSessionId } from "../paseo/deterministicRuntime.js";
 import { launchManagedPaseoAgent, type ManagedPaseoAgentOptions } from "../paseo/runtime.js";
-import { archivePaseoSdkAgent, listPaseoSdkAgents, type PaseoSdkAgentRecord } from "../paseo/sdk.js";
+import { archivePaseoSdkAgent, listPaseoSdkAgents, type PaseoSdkAgentListingV1, type PaseoSdkAgentRecord } from "../paseo/sdk.js";
 import { recordPaseoTrace } from "../paseo/trace.js";
 import { runShell, type ProcessResult } from "../utils/process.js";
 import {
@@ -70,7 +70,14 @@ export const MAX_SEMANTIC_ASSESSOR_CLEANUP_SKIP_TRACE_IDS_V1 = 20;
 export const MAX_SEMANTIC_ASSESSOR_CLEANUP_LEDGER_V1 = 50;
 
 export interface SemanticAssessorCleanupRetryDepsV1 {
-  list?: (root: string, labels: Record<string, string>) => Promise<PaseoSdkAgentRecord[]>;
+  /**
+   * Listing source for the sweep. A plain array is a single proven-complete
+   * page (the historical single-page-server / test-double shape); a listing
+   * object carries pagination honesty (`exhausted: false` on page-cap or
+   * repeated-cursor stops). The gone-proof prune runs ONLY on proven-complete
+   * listings and refuses (fail closed) otherwise. MECHANISM: DETERMINISTIC.
+   */
+  list?: (root: string, labels: Record<string, string>) => Promise<PaseoSdkAgentRecord[] | PaseoSdkAgentListingV1>;
   archiveAgent?: (root: string, agentId: string) => Promise<void>;
   archiveWorkspace?: (root: string, workspaceId: string) => Promise<void>;
   trace?: typeof recordPaseoTrace;
@@ -450,8 +457,11 @@ async function defaultArchiveAssessorWorkspace(root: string, workspaceId: string
  * cursor (wrap-around), so a stable list ordering can never starve orphans
  * past the first window; a cursor pointing at a gone id resumes from the
  * first greater id (head wrap only after a full pass). The gone-proof runs
- * against the complete unfiltered listing (any status, all pages), never the
- * filtered orphan set. The ledger is never pruned for size while entries
+ * against a proven-complete unfiltered listing (any status, genuinely
+ * exhausted pagination), never the filtered orphan set; on an incomplete
+ * listing (page-cap or repeated-cursor stop) pruning refuses fail-closed and
+ * traces `semantic.assessor.cleanup-incomplete-sweep` for the next sweep.
+ * The ledger is never pruned for size while entries
  * are live; overflow past MAX_LEDGER keeps every limit and traces
  * `semantic.assessor.cleanup-ledger-overflow`. Skipped live turns are traced
  * (`semantic.assessor.cleanup-skipped-live`) without behavior change.
@@ -468,8 +478,25 @@ export async function retryOrphanedAssessorCleanupV1(
   const trace = deps.trace ?? recordPaseoTrace;
   const list = deps.list ?? ((cwd: string, labels: Record<string, string>) => listPaseoSdkAgents(cwd, labels));
   let listed: PaseoSdkAgentRecord[];
+  let listingExhausted: boolean;
+  let listingStopReason: PaseoSdkAgentListingV1["stopReason"];
+  let listingPages: number;
   try {
-    listed = await list(root, { "aeh.kind": "semantic-assessment" });
+    const result = await list(root, { "aeh.kind": "semantic-assessment" });
+    // Plain arrays are single proven-complete pages; listing objects carry
+    // pagination honesty. Only a proven-complete listing may feed the
+    // gone-proof prune below. MECHANISM: DETERMINISTIC.
+    if (Array.isArray(result)) {
+      listed = result;
+      listingExhausted = true;
+      listingStopReason = "exhausted";
+      listingPages = 1;
+    } else {
+      listed = result.agents;
+      listingExhausted = result.exhausted;
+      listingStopReason = result.stopReason;
+      listingPages = result.pages;
+    }
   } catch {
     return empty;
   }
@@ -601,26 +628,33 @@ export async function retryOrphanedAssessorCleanupV1(
       }
     }
   }
-  // Prune ONLY entries proven gone: absent from the complete UNFILTERED
+  // Prune ONLY entries proven gone: absent from a PROVEN-COMPLETE unfiltered
   // listing (any status, including live `working`/`running` turns and
   // operation-owned sessions) with no pending workspace left. The filtered
   // orphan set must never serve as the gone-proof: a live working agent
-  // without a workspace would otherwise lose its retry count. The listing is
-  // consumed across ALL pages (loop until exhausted), so a live-but-unlisted
-  // id is never pruned; listing errors return early above without pruning.
+  // without a workspace would otherwise lose its retry count. On an
+  // INCOMPLETE listing (page-cap or repeated-cursor stop) the prune REFUSES
+  // to run (fail closed): absent ids may simply sit on unlisted pages, so the
+  // entries are kept for the next sweep and an incomplete-sweep trace marks
+  // the gap instead of silently treating partial data as complete. Listing
+  // errors return early above without pruning.
   // Live entries are never evicted for size — eviction would
   // reset their attempt count to zero and let retries exceed the 3-attempt
   // cap. If live entries push the ledger past MAX_LEDGER, keep them all and
   // trace an overflow warning instead (bounded in practice: at most one entry
   // per failed cleanup id).
-  const listedIds = new Set<string>();
-  for (const agent of listed) {
-    if (agent && typeof agent.id === "string" && agent.id) listedIds.add(agent.id);
-  }
-  for (const id of Object.keys(ledger.attempts)) {
-    if (!listedIds.has(id) && !ledger.attempts[id]?.workspaceId) {
-      delete ledger.attempts[id];
-      mutated = true;
+  if (!listingExhausted) {
+    await trace(root, "semantic.assessor.cleanup-incomplete-sweep", { stopReason: listingStopReason, pages: listingPages, listed: listed.length }).catch(() => undefined);
+  } else {
+    const listedIds = new Set<string>();
+    for (const agent of listed) {
+      if (agent && typeof agent.id === "string" && agent.id) listedIds.add(agent.id);
+    }
+    for (const id of Object.keys(ledger.attempts)) {
+      if (!listedIds.has(id) && !ledger.attempts[id]?.workspaceId) {
+        delete ledger.attempts[id];
+        mutated = true;
+      }
     }
   }
   const ledgerSize = Object.keys(ledger.attempts).length;

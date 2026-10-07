@@ -60,7 +60,7 @@ export class PaseoGatewayV1 {
   constructor(deps: PaseoGatewayDeps = {}) {
     this.deps = {
       inspectLead: deps.inspectLead ?? inspectPaseoSdkAgent,
-      listParticipants: deps.listParticipants ?? listPaseoSdkAgents,
+      listParticipants: deps.listParticipants ?? ((root, labels) => listPaseoSdkAgents(root, labels).then((listing) => listing.agents)),
       readTimeline: deps.readTimeline ?? inspectPaseoSdkAgentTimeline,
       dispatchLead: deps.dispatchLead ?? dispatchPaseoSdkAgent,
       preflight: deps.preflight ?? preflightPaseoProviderModel

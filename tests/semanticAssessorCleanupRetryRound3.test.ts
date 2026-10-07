@@ -63,8 +63,9 @@ describe("P-NEW-3 round-3 RED", () => {
       return { entries: [{ agent: sdkAgent("page1-a") }], nextCursor: "page-2" };
     });
     const client = { agents: { create: vi.fn(), ref: vi.fn(), list }, connect: vi.fn(), close: vi.fn() };
-    const records = await listPaseoSdkAgentsWithClient(client as never, { "aeh.kind": "semantic-assessment" });
-    expect(records.map((r) => r.id).sort()).toEqual(["page1-a", "page2-b"]);
+    const listing = await listPaseoSdkAgentsWithClient(client as never, { "aeh.kind": "semantic-assessment" });
+    expect(listing.agents.map((r) => r.id).sort()).toEqual(["page1-a", "page2-b"]);
+    expect(listing.exhausted).toBe(true);
     expect(list).toHaveBeenCalledTimes(2);
     expect(list.mock.calls[1]?.[0]).toEqual(expect.objectContaining({ cursor: "page-2" }));
   });
