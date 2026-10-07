@@ -925,8 +925,14 @@ function buildCreateOptions(options: PaseoSdkAgentOptions, includePrompt: boolea
  * STALLED_FIRST_ACTIVITY with activity counts via the same stop-then-read
  * ordering invariant (stop FIRST, then the authoritative post-stop read, so
  * late activity still wins as DEADLINE with counts). Completed terminal
- * turns never stall even with zero activity. Poll/capture failures are
- * best-effort and never fail the wait; the hard turn deadline is unchanged.
+ * turns never stall even with zero activity. The hard turn deadline is unchanged.
+ *
+ * BASELINE-FAILURE CONTRACT: when baseline capture throws, pre-fallback
+ * activity is unobserved, so a zero-activity baseline is synthesized at
+ * fallback entry and the bound applies from entry — the stall deadline stays
+ * armed on every fallback wait. Monitor (poll/final-read) errors fail
+ * closed: failed reads never count as activity and a failed final read keeps
+ * the STALLED verdict with zero counts.
  */
 async function waitForHandle(
   handle: PaseoSdkAgentHandle,
@@ -946,7 +952,11 @@ async function waitForHandle(
   }
   const deadline = Date.now() + timeoutMs;
   const stallAt = stallArmed ? Date.now() + firstActivityMs : Number.POSITIVE_INFINITY;
-  const baseline = stallArmed ? await captureRunActivityBaseline(handle).catch(() => undefined) : undefined;
+  const captured = stallArmed ? await captureRunActivityBaseline(handle).catch(() => undefined) : undefined;
+  // Baseline capture can throw (sync-throwing refetch, malformed timeline):
+  // pre-fallback activity is then unobserved, so synthesize a zero-activity
+  // baseline at fallback entry and keep the stall deadline armed from entry.
+  const baseline = stallArmed ? (captured ?? syntheticZeroActivityBaseline()) : undefined;
   let observed = false;
   let lastActivity: RunActivityBaseline | undefined;
   let lastActivityCheck = 0;
@@ -1005,7 +1015,14 @@ async function waitForHandle(
   }
 }
 
-/** Race one opaque `waitForFinish()` against the first-activity bound. */
+/** Race one opaque `waitForFinish()` against the first-activity bound.
+ *
+ * BASELINE-FAILURE CONTRACT: when baseline capture throws, pre-fallback
+ * activity is unobserved, so a zero-activity baseline is synthesized at
+ * fallback entry and the bound applies from entry — the stall deadline stays
+ * armed. Monitor (poll/final-read) errors fail closed: failed reads never
+ * count as activity and a failed final read keeps the STALLED verdict.
+ */
 async function waitForFinishWithFirstActivityWatch(
   handle: PaseoSdkAgentHandle,
   timeoutMs: number,
@@ -1013,11 +1030,8 @@ async function waitForFinishWithFirstActivityWatch(
   pollMs: number,
   permissionScopeRoots?: string[]
 ): Promise<PaseoSdkAgentResult> {
-  const baseline = await captureRunActivityBaseline(handle).catch(() => undefined);
-  if (!baseline) {
-    const turn = await handle.waitForFinish!(timeoutMs);
-    return turnResult(handle, turn, permissionScopeRoots);
-  }
+  const captured = await captureRunActivityBaseline(handle).catch(() => undefined);
+  const baseline = captured ?? syntheticZeroActivityBaseline();
   let observed = false;
   let pollTimer: ReturnType<typeof setInterval> | undefined;
   let stallTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1253,6 +1267,17 @@ interface RunActivityBaseline {
   assistantText?: string;
   lastMessage?: string;
   observed: boolean;
+}
+
+/**
+ * Zero-activity baseline synthesized at fallback entry when baseline capture
+ * throws. Pre-fallback activity is unobserved by construction, so the stall
+ * bound applies from entry: any provider-visible content observed after entry
+ * counts as growth, while monitor errors fail closed (never observed, stall
+ * stands with zero counts on a failed final read).
+ */
+function syntheticZeroActivityBaseline(): RunActivityBaseline {
+  return { toolKeys: [], observed: false };
 }
 
 /**
