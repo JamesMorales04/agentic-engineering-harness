@@ -13,7 +13,7 @@ import { sealTask } from "../core/seal.js";
 import { assertChangePreflightV1, normalizeTriageEvidence, triageChangeWithSemanticAssessment, type ChangePreflightV1, type TriageDecision } from "../core/triage.js";
 import type { HarnessProjectConfig, TaskContract, WorkerSession } from "../core/types.js";
 import { AehError } from "../core/errors.js";
-import { isStalledFirstActivityText } from "../paseo/firstActivityDeadline.js";
+import { isStalledFirstActivityText, isUncertainProviderTurn } from "../paseo/firstActivityDeadline.js";
 import type { AgentExecutionSelection } from "../agents/types.js";
 import type { AssuranceLevel, ImplementationRoute, RouteEvidence } from "../architecture/contracts.js";
 import { createRouteEvidence } from "../architecture/contracts.js";
@@ -694,6 +694,8 @@ export function shouldRetryDiscoveryPlanningStall(
   retriesSoFar: number,
   session?: DiscoveryPlanningTurnShape | undefined
 ): boolean {
+  // E-NEW-9: never fresh-session retry an unverified stop (twin-writer risk).
+  if (isUncertainProviderTurn(session, error)) return false;
   return isDiscoveryPlanningStallKill(error, session) && retriesSoFar < DISCOVERY_PLANNING_STALL_MAX_RETRIES;
 }
 
@@ -897,6 +899,8 @@ export function shouldRetrySpecManagerStall(
     status?: WorkerSession["status"];
   } | undefined
 ): boolean {
+  // E-NEW-9: never fresh-session retry an unverified stop (twin-writer risk).
+  if (isUncertainProviderTurn(session, error)) return false;
   return isDiscoveryPlanningStallKill(error, session) && retriesSoFar < SPEC_MANAGER_STALL_MAX_RETRIES;
 }
 

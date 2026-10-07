@@ -601,10 +601,10 @@ export async function dispatchPaseoSdkAgentWithClient(
   return lastDetail && !result.rateLimited ? { ...result, rateLimited: lastDetail } : result;
 }
 
-export async function waitPaseoSdkAgent(root: string, agentId: string, timeoutMs?: number, permissionScopeRoots?: string[]): Promise<PaseoSdkAgentResult> {
+export async function waitPaseoSdkAgent(root: string, agentId: string, timeoutMs?: number, permissionScopeRoots?: string[], activityOptions?: PaseoSdkRunActivityOptions): Promise<PaseoSdkAgentResult> {
   const result = await withPaseoClient(root, async (client) => {
     const handle = client.agents.ref(agentId);
-    const result = await waitForHandle(handle, timeoutMs, permissionScopeRoots);
+    const result = await waitForHandle(handle, timeoutMs, permissionScopeRoots, activityOptions);
     if (result.status === "timeout") await stopPaseoSdkAgentHandle(handle);
     return result;
   });
@@ -702,7 +702,7 @@ export async function runPaseoSdkAgentWithClient(
           if (error instanceof PaseoSdkTimeoutError) await stopPaseoSdkAgentHandle(handle);
           throw error;
         });
-        const waited = await waitForHandle(handle, attemptTimeout, permissionScopeRoots);
+        const waited = await waitForHandle(handle, attemptTimeout, permissionScopeRoots, activityOptions);
         if (waited.status === "timeout") await stopPaseoSdkAgentHandle(handle);
         return waited;
       }
@@ -912,12 +912,63 @@ function buildCreateOptions(options: PaseoSdkAgentOptions, includePrompt: boolea
   return createOptions;
 }
 
-async function waitForHandle(handle: PaseoSdkAgentHandle, timeoutMs = 1_800_000, permissionScopeRoots?: string[]): Promise<PaseoSdkAgentResult> {
+/**
+ * First-activity stall bound for the subscription-less wait fallbacks
+ * (DETERMINISTIC, same contract as runWithFirstActivityWatch).
+ *
+ * `waitForHandle` covers two opaque waits: `waitForFinish()` on newer SDKs
+ * and a bare status poll on older ones. Neither exposes interim progress, so
+ * without a stall bound a zero-activity hang wastes the full turn deadline
+ * and settles as a bare DEADLINE with no activity counts. With the bound
+ * armed (`firstActivityMs < timeoutMs`), timeline/snapshot growth is polled
+ * while the wait is in flight; zero content for the bound settles as
+ * STALLED_FIRST_ACTIVITY with activity counts via the same stop-then-read
+ * ordering invariant (stop FIRST, then the authoritative post-stop read, so
+ * late activity still wins as DEADLINE with counts). Completed terminal
+ * turns never stall even with zero activity. The hard turn deadline is unchanged.
+ *
+ * BASELINE-FAILURE CONTRACT: when baseline capture throws, pre-fallback
+ * activity is unobserved, so a zero-activity baseline is synthesized at
+ * fallback entry and the bound applies from entry — the stall deadline stays
+ * armed on every fallback wait. SYNTHETIC-BASELINE MODE IS DEADLINE-ONLY:
+ * a synthesized baseline proves nothing about pre-entry content, so any
+ * content observed after entry may pre-date entry and `observed` must NOT
+ * suppress the stall verdict — timer expiry always settles
+ * STALLED_FIRST_ACTIVITY with zero (unprovable) counts. Monitor
+ * (poll/final-read) errors fail closed: failed reads never count as
+ * activity and a failed final read keeps the STALLED verdict with zero
+ * counts.
+ */
+async function waitForHandle(
+  handle: PaseoSdkAgentHandle,
+  timeoutMs = 1_800_000,
+  permissionScopeRoots?: string[],
+  activityOptions?: PaseoSdkRunActivityOptions
+): Promise<PaseoSdkAgentResult> {
+  const firstActivityMs = activityOptions?.firstActivityMs ?? FIRST_ACTIVITY_DEADLINE_MS;
+  const pollMs = Math.max(1, activityOptions?.pollMs ?? FIRST_ACTIVITY_POLL_MS);
+  const stallArmed = firstActivityMs < timeoutMs;
   if (typeof handle.waitForFinish === "function") {
-    const turn = await handle.waitForFinish(timeoutMs);
-    return turnResult(handle, turn, permissionScopeRoots);
+    if (!stallArmed) {
+      const turn = await handle.waitForFinish(timeoutMs);
+      return turnResult(handle, turn, permissionScopeRoots);
+    }
+    return waitForFinishWithFirstActivityWatch(handle, timeoutMs, firstActivityMs, pollMs, permissionScopeRoots);
   }
   const deadline = Date.now() + timeoutMs;
+  const stallAt = stallArmed ? Date.now() + firstActivityMs : Number.POSITIVE_INFINITY;
+  const captured = stallArmed ? await captureRunActivityBaseline(handle).catch(() => undefined) : undefined;
+  // Baseline capture can throw (sync-throwing refetch, malformed timeline):
+  // pre-fallback activity is then unobserved, so synthesize a zero-activity
+  // baseline at fallback entry and keep the stall deadline armed from entry.
+  // Synthetic mode is deadline-ONLY: the empty baseline proves nothing about
+  // pre-entry content, so later growth may pre-date entry and `observed` must
+  // not suppress the stall verdict (progress unprovable).
+  const baseline = stallArmed ? (captured ?? syntheticZeroActivityBaseline()) : undefined;
+  const synthetic = stallArmed && captured === undefined;
+  let observed = false;
+  let lastActivity: RunActivityBaseline | undefined;
+  let lastActivityCheck = 0;
   for (;;) {
     const raw = await refreshHandle(handle);
     const status = statusText(raw?.status ?? handle.status);
@@ -935,9 +986,189 @@ async function waitForHandle(handle: PaseoSdkAgentHandle, timeoutMs = 1_800_000,
         ...(permission ? { permission } : {})
       };
     }
-    if (Date.now() >= deadline) return { id: handle.id, workspaceId: handle.workspaceId ?? undefined, status: "timeout", error: `Timed out after ${timeoutMs}ms.` };
+    const now = Date.now();
+    if (baseline && now - lastActivityCheck >= pollMs) {
+      lastActivityCheck = now;
+      const current = await captureRunActivityBaseline(handle).catch(() => undefined);
+      if (current) {
+        lastActivity = current;
+        if (runActivityHasGrown(baseline, current)) observed = true;
+      }
+    }
+    if (baseline && now >= stallAt && (synthetic || !observed)) {
+      return stallVerdictAfterStop(handle, baseline, firstActivityMs, timeoutMs, synthetic);
+    }
+    if (Date.now() >= deadline) {
+      if (baseline && observed && !synthetic && lastActivity) {
+        // The turn showed provider-visible activity but still hit the hard
+        // deadline: regular DEADLINE with counts, never STALLED.
+        const activity: ProviderTurnActivityCounts = {
+          updatesObserved: 0,
+          toolEvents: countNewRunToolKeys(baseline, lastActivity),
+          assistantDelta:
+            (lastActivity.assistantText !== undefined && lastActivity.assistantText !== baseline.assistantText) ||
+            (lastActivity.lastMessage !== undefined && lastActivity.lastMessage !== baseline.lastMessage)
+        };
+        return {
+          id: handle.id,
+          workspaceId: handle.workspaceId ?? undefined,
+          status: "timeout",
+          error: `Timed out after ${timeoutMs}ms with provider-visible activity (updates=0 toolEvents=${activity.toolEvents} assistantDelta=${activity.assistantDelta}); turn stopped and existing retry budgets apply.`,
+          killReason: "DEADLINE",
+          activity
+        };
+      }
+      return { id: handle.id, workspaceId: handle.workspaceId ?? undefined, status: "timeout", error: `Timed out after ${timeoutMs}ms.` };
+    }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
+}
+
+/** Race one opaque `waitForFinish()` against the first-activity bound.
+ *
+ * BASELINE-FAILURE CONTRACT: when baseline capture throws, pre-fallback
+ * activity is unobserved, so a zero-activity baseline is synthesized at
+ * fallback entry and the bound applies from entry — the stall deadline stays
+ * armed. SYNTHETIC-BASELINE MODE IS DEADLINE-ONLY: a synthesized baseline
+ * proves nothing about pre-entry content, so `observed` must NOT defer to
+ * the provider wait — timer expiry always settles STALLED_FIRST_ACTIVITY
+ * with zero (unprovable) counts. Monitor (poll/final-read) errors fail
+ * closed: failed reads never count as activity and a failed final read keeps
+ * the STALLED verdict.
+ */
+async function waitForFinishWithFirstActivityWatch(
+  handle: PaseoSdkAgentHandle,
+  timeoutMs: number,
+  firstActivityMs: number,
+  pollMs: number,
+  permissionScopeRoots?: string[]
+): Promise<PaseoSdkAgentResult> {
+  const captured = await captureRunActivityBaseline(handle).catch(() => undefined);
+  // Synthetic mode is deadline-ONLY (see waitForHandle): the empty baseline
+  // proves nothing about pre-entry content, so `observed` must not defer to
+  // the provider wait — timer expiry always stalls (progress unprovable).
+  const synthetic = captured === undefined;
+  const baseline = captured ?? syntheticZeroActivityBaseline();
+  let observed = false;
+  let pollTimer: ReturnType<typeof setInterval> | undefined;
+  let stallTimer: ReturnType<typeof setTimeout> | undefined;
+  const stopTimers = (): void => {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = undefined;
+    if (stallTimer) clearTimeout(stallTimer);
+    stallTimer = undefined;
+  };
+  const waitPromise = handle.waitForFinish!(timeoutMs);
+  try {
+    pollTimer = setInterval(() => {
+      void captureRunActivityBaseline(handle).then((current) => {
+        if (runActivityHasGrown(baseline, current)) {
+          observed = true;
+          if (pollTimer) clearInterval(pollTimer);
+          pollTimer = undefined;
+        }
+      }).catch(() => undefined);
+    }, pollMs);
+    const outcome = await Promise.race([
+      waitPromise.then(
+        (turn) => ({ kind: "wait" as const, turn }),
+        (error) => ({ kind: "waitError" as const, error })
+      ),
+      new Promise<{ kind: "stall" }>((resolve) => {
+        stallTimer = setTimeout(() => resolve({ kind: "stall" }), firstActivityMs);
+      })
+    ]);
+    stopTimers();
+    if (outcome.kind === "wait") return turnResult(handle, outcome.turn, permissionScopeRoots);
+    if (outcome.kind === "waitError") throw outcome.error;
+    if (observed && !synthetic) return waitPromise.then((turn) => turnResult(handle, turn, permissionScopeRoots));
+    const stalled = await stallVerdictAfterStop(handle, baseline, firstActivityMs, timeoutMs, synthetic);
+    void waitPromise.then(() => undefined, () => undefined);
+    return stalled;
+  } catch (error) {
+    stopTimers();
+    throw error;
+  }
+}
+
+/**
+ * Stop-then-read stall verdict shared by the sdk-wait fallbacks. The handle
+ * is stopped FIRST to freeze the turn; only then is the timeline/snapshot
+ * re-read, so the post-stop read is authoritative: still-empty reads settle
+ * as STALLED_FIRST_ACTIVITY, while late content settles as a regular
+ * DEADLINE with counts (same shapes as runWithFirstActivityWatch so
+ * downstream classification is identical).
+ *
+ * SYNTHETIC-BASELINE MODE IS DEADLINE-ONLY: when `synthetic` is true the
+ * baseline was synthesized after a capture failure, so the empty baseline
+ * proves nothing about pre-entry content — any post-stop content may pre-date
+ * fallback entry and progress is unprovable. The verdict is therefore always
+ * STALLED_FIRST_ACTIVITY with zero counts, never DEADLINE, even if the final
+ * read shows content. This is fail-closed: crediting unprovable growth as
+ * genuine progress would let a zero-activity hang ride the full turn deadline
+ * as a bare DEADLINE with no actionable stall signal.
+ */
+async function stallVerdictAfterStop(
+  handle: PaseoSdkAgentHandle,
+  baseline: RunActivityBaseline,
+  firstActivityMs: number,
+  timeoutMs: number,
+  synthetic = false
+): Promise<PaseoSdkAgentResult> {
+  await stopPaseoSdkAgentHandle(handle).catch(() => undefined);
+  if (synthetic) {
+    // Deadline-ONLY: progress unprovable, so the stall stands with zero
+    // counts without consulting the final read (any content may pre-date
+    // fallback entry). The handle was still stopped above to freeze the turn.
+    const unprovable: ProviderTurnActivityCounts = {
+      updatesObserved: 0,
+      toolEvents: 0,
+      assistantDelta: false
+    };
+    return {
+      id: handle.id,
+      workspaceId: handle.workspaceId ?? undefined,
+      status: "timeout",
+      error: stalledFirstActivityError(firstActivityMs, timeoutMs, unprovable),
+      killReason: "STALLED_FIRST_ACTIVITY",
+      activity: unprovable
+    };
+  }
+  const final = await captureRunActivityBaseline(handle).catch(() => undefined);
+  if (final && runActivityHasGrown(baseline, final)) {
+    const lateCounts: ProviderTurnActivityCounts = {
+      updatesObserved: 0,
+      toolEvents: countNewRunToolKeys(baseline, final),
+      assistantDelta:
+        (final.assistantText !== undefined && final.assistantText !== baseline.assistantText) ||
+        (final.lastMessage !== undefined && final.lastMessage !== baseline.lastMessage)
+    };
+    return {
+      id: handle.id,
+      workspaceId: handle.workspaceId ?? undefined,
+      status: "timeout",
+      error:
+        `Provider turn stopped at the first-activity bound after ${firstActivityMs}ms ` +
+        `with late provider-visible activity (turn deadline ${timeoutMs}ms retained; ` +
+        `updates=0 toolEvents=${lateCounts.toolEvents} assistantDelta=${lateCounts.assistantDelta}); ` +
+        `turn stopped and existing retry budgets apply.`,
+      killReason: "DEADLINE",
+      activity: lateCounts
+    };
+  }
+  const counts: ProviderTurnActivityCounts = {
+    updatesObserved: 0,
+    toolEvents: final ? countNewRunToolKeys(baseline, final) : 0,
+    assistantDelta: false
+  };
+  return {
+    id: handle.id,
+    workspaceId: handle.workspaceId ?? undefined,
+    status: "timeout",
+    error: stalledFirstActivityError(firstActivityMs, timeoutMs, counts),
+    killReason: "STALLED_FIRST_ACTIVITY",
+    activity: counts
+  };
 }
 
 async function stopPaseoSdkAgentHandle(handle: PaseoSdkAgentHandle): Promise<void> {
@@ -1084,6 +1315,20 @@ interface RunActivityBaseline {
 }
 
 /**
+ * Zero-activity baseline synthesized at fallback entry when baseline capture
+ * throws. Pre-fallback activity is unobserved by construction, so the stall
+ * bound applies from entry as deadline-ONLY: `runActivityHasGrown` may still
+ * report growth versus this empty baseline, but callers must NOT treat that
+ * growth as proven turn progress — it may pre-date entry — and the stall
+ * verdict always settles STALLED_FIRST_ACTIVITY with zero counts. Monitor
+ * errors fail closed (never observed, stall stands with zero counts on a
+ * failed final read).
+ */
+function syntheticZeroActivityBaseline(): RunActivityBaseline {
+  return { toolKeys: [], observed: false };
+}
+
+/**
  * Monotonic growth test: true when `current` carries provider-visible content
  * absent from the fixed pre-run `baseline`. Set-difference on tool keys plus
  * sequence/text comparison never saturates no matter how many tool calls the
@@ -1221,7 +1466,12 @@ async function turnResult(handle: PaseoSdkAgentHandle, turn: PaseoSdkTurnResult,
       status: turn.status,
       lastMessage: turn.lastMessage,
       error: turn.error,
-      ...(permission ? { permission } : {})
+      ...(permission ? { permission } : {}),
+      // The stall watch classifies kills on the turn; dropping killReason/
+      // activity here would downgrade STALLED_FIRST_ACTIVITY to bare DEADLINE
+      // downstream (fromSdk defaults timeout kills to DEADLINE).
+      ...(turn.killReason ? { killReason: turn.killReason } : {}),
+      ...(turn.activity ? { activity: turn.activity } : {})
     };
   }
   const raw = await refreshHandle(handle).catch(() => undefined);
@@ -1237,7 +1487,9 @@ async function turnResult(handle: PaseoSdkAgentHandle, turn: PaseoSdkTurnResult,
       stringField(raw ?? {}, ["lastMessage", "last_message"]) ??
       extractLastAssistantText(timeline),
     error: turn.error ?? stringField(raw ?? {}, ["error", "lastError", "last_error"]),
-    ...(observedPermission ? { permission: observedPermission } : {})
+    ...(observedPermission ? { permission: observedPermission } : {}),
+    ...(turn.killReason ? { killReason: turn.killReason } : {}),
+    ...(turn.activity ? { activity: turn.activity } : {})
   };
 }
 

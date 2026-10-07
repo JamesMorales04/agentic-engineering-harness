@@ -119,6 +119,30 @@ export function classifyProviderTurnKillReason(turn: { exitCode: number; stderr?
   return "ERROR";
 }
 
+/** Post-timeout stop verification for a provider turn (E-NEW-9). */
+export type ProviderTurnQuiescence = "quiescent" | "uncertain";
+
+/**
+ * DETERMINISTIC uncertain-turn gate for fresh-session stall retries.
+ *
+ * MECHANISM: DETERMINISTIC. A turn whose post-timeout stop could not prove
+ * quiescence (the session may still be RUNNING) must never be fresh-session
+ * retried — the retry would spawn a twin writer alongside the orphan. The
+ * typed `providerQuiescence` field wins; the stderr marker covers turns that
+ * only carry text (CLI path, older producers). Callers fail closed on true
+ * (surface UNCERTAIN, keep the same session id for same-session resume) and
+ * leave failure recognition to the existing stall classifiers.
+ */
+export function isUncertainProviderTurn(session: unknown, error: unknown): boolean {
+  const record = (session && typeof session === "object" ? session : undefined) as
+    | { providerQuiescence?: unknown; stderr?: unknown; stdout?: unknown }
+    | undefined;
+  if (record?.providerQuiescence === "uncertain") return true;
+  const sessionText = record ? `${String(record.stderr ?? "")} ${String(record.stdout ?? "")}` : "";
+  const errorText = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return /PASEO_PROVIDER_LIFECYCLE_UNCERTAIN|UNCERTAIN_EXTERNAL_EFFECTS/.test(`${sessionText} ${errorText}`);
+}
+
 /** True when the settled text carries the stall marker (used to widen existing timeout classifiers). */
 export function isStalledFirstActivityText(value: string): boolean {
   return value.includes(STALLED_FIRST_ACTIVITY_MARKER);

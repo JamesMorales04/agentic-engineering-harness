@@ -293,4 +293,6 @@ export interface WorkerSession {
   killReason?: import("../paseo/firstActivityDeadline.js").ProviderTurnKillReason;
   /** Bounded provider-visible activity counts for the settled turn (refs-only). */
   activityCounts?: import("../paseo/firstActivityDeadline.js").ProviderTurnActivityCounts;
+  /** Post-timeout stop verification; "uncertain" means the session may still be RUNNING (same-session resume only, never fresh retry). */
+  providerQuiescence?: import("../paseo/firstActivityDeadline.js").ProviderTurnQuiescence;
 }
