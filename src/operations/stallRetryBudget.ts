@@ -11,25 +11,37 @@ import { resolveOperationStateRoot } from "./state.js";
  * per-phase stall-killed attempt counts under the operation state root
  * (wakeBudget.ts ledger pattern: atomic write + file lock).
  *
-  * UNIFIED saturate+tombstone (ru/ledger-saturate-15, Luna round-16):
-  * 1. TOMBSTONE every reconciled marker: whenever any path counts an orphan
-  *   (claim-stale, claim-legacy, loader-reconcile stale/legacy), it atomically
-  *   (same ledger lock) records the marker identity (sha256 of raw bytes) in
-  *   the ledger `consumed` set AND removes the live bytes (stale: delete the
-  *   marker; legacy: destroy the taken grave). Deletion alone is NOT a
-  *   tombstone — replay would see ENOENT-as-zero — so the positive record is
-  *   the ledger set itself (the +1 IS the tombstone; replay of identical bytes
-  *   is detected via the set and skips the increment). Kept: fd-bound
-  *   identity, grave/quarantine for mismatches, binding, evidence rule, CAS,
-  *   post-increment gates (now backstops).
-  * 2. SATURATE at cap: NO increment when count >= cap, on EVERY path including
-  *   loader reconciliations — tombstone WITHOUT incrementing (record the hash
-  *   + delete/destroy) and throw/return EXHAUSTED. Rationale: count==cap
-  *   already refuses all launches, so saturation loses nothing; it preserves
-  *   the never-exceeds-cap invariant and prevents double-count replay from
-  *   ever pushing past cap.
-  * Guarantees: replay same marker 3x → counted exactly once; reconcile at cap
-  * → no increment + tombstoned + EXHAUSTED; loader-reconcile at cap → same.
+ * BOUNDED tombstone (ru/ledger-tombstone-16, Luna round-17 T1+T2 fix):
+ * 1. TOMBSTONE ONLY on real increment: whenever any path counts an orphan
+ *   (claim-stale, claim-legacy, loader-reconcile stale/legacy) with count < cap
+ *   pre-increment, it atomically (same ledger lock) records the marker identity
+ *   in the ledger `consumed` set AND removes the live bytes (stale: delete the
+ *   marker; legacy: destroy the taken grave). Per-phase entries <= cap BY
+ *   CONSTRUCTION (each entry accompanies a real increment; count never exceeds
+ *   cap). A fail-closed bound assertion (consumed[phase].length never exceeds
+ *   cap) guards the invariant defense-in-depth (not reachable).
+ * 2. SATURATE at cap: NO increment AND NO tombstone record when count >= cap,
+ *   on EVERY path including loader reconciliations — DESTROY the marker/grave
+ *   WITHOUT recording and throw/return EXHAUSTED. Replay is safe because load
+ *   refuses at count>=cap regardless of marker state. This bounds the map:
+ *   saturation paths never append distinct hashes past cap.
+ * 3. IDENTITY tuple (T2): well-formed markers use
+ *   sha256(phase + attempt + claimedAt + raw); unparseable markers use
+ *   sha256(path + raw). Bytes-only sha256(raw) collides for distinct
+ *   generations with identical bytes (undercount). Proof: harness claim sites
+ *   pass monotonically increasing 1-indexed attempt numbers per phase and
+ *   writePendingAtomic stamps a fresh claimedAt per claim, so two distinct
+ *   generations cannot share identical (phase, attempt, claimedAt, raw) —
+ *   identical tuples ARE the same orphan (replay, QED). For unparseable
+ *   markers (no parsed attempt/claimedAt to bind) the pending path binds the
+ *   location: identical (path, raw) at the same pending file IS the same
+ *   orphan bytes (legacy markers are one-time; new claims are always
+ *   new-format), so replay skips correctly and cross-file same-bytes aliasing
+ *   is impossible. Kept: fd-bound identity, grave/quarantine for mismatches,
+ *   binding, evidence rule, CAS, post-increment backstops.
+ * Guarantees: replay same marker 3x → counted exactly once; reconcile at cap
+ * → no increment + destroyed (no record) + EXHAUSTED; per-phase consumed
+ * length <= cap always.
   *
   * FAIL-CLOSED contract (Luna L1/L2):
  * - Affirmative-zero (file present, valid v1, operationId matches, requested
@@ -247,18 +259,22 @@ export interface StallRetryBudgetV1 {
   stalls: Record<StallRetryPhase, number>;
   updatedAt: string;
   /**
-   * UNIFIED saturate+tombstone (ru/ledger-saturate-15, Luna round-16):
-   * consumed marker identities per phase (sha256 hex of the reconciled
-   * marker raw bytes). Every orphan count (claim-stale, claim-legacy,
-   * loader-reconcile stale/legacy) AND every saturate-tombstone (count >=
-   * cap, no increment) records its marker hash here atomically under the
-   * same ledger lock as the count write. Replay of identical bytes skips
-   * the increment (already-consumed) but still tombstones (deletes the
-   * marker / destroys the grave) so no live bytes remain for a third
-   * replay. Optional for backward compat: pre-saturate ledgers omit it
-   * (reads normalize to empty; writes always persist it).
-   * Bound: at most a handful per phase (cap is 2; only distinct orphans
-   * ever append); append-only, never pruned, never read as budget.
+   * BOUNDED tombstone (ru/ledger-tombstone-16, Luna round-17 T1+T2):
+   * consumed marker identities per phase. Well-formed markers use the identity
+   * tuple sha256(phase + attempt + claimedAt + raw); unparseable/legacy markers
+   * use sha256(pendingPath + raw) (see wellFormedMarkerIdentity /
+   * legacyMarkerIdentity + proofs). Every REAL orphan count (claim-stale,
+   * claim-legacy, loader-reconcile stale/legacy with count < cap pre-increment)
+   * records its tuple hash here atomically under the same ledger lock as the
+   * count write. Replay of an identical tuple skips the increment (already
+   * consumed) but still destroys the live bytes so no third replay. Saturation
+   * (count >= cap) NEVER records: the marker/grave is destroyed WITHOUT a
+   * tombstone (replay safe: load refuses at count>=cap regardless of marker
+   * state). Hence per-phase entries <= cap BY CONSTRUCTION; a fail-closed
+   * bound assertion (see assertValidBudgetShape + withMarkerConsumed) enforces
+   * consumed[phase].length <= STALL_RETRY_MAX_ATTEMPTS_PER_PHASE defense in
+   * depth. Optional for backward compat: pre-tombstone ledgers omit it (reads
+   * normalize to empty; writes always persist it).
    * MECHANISM: DETERMINISTIC (durable set comparison under lock).
    */
   consumed?: Record<StallRetryPhase, string[]>;
@@ -449,16 +465,54 @@ function assertValidBudgetShape(parsed: unknown, operationId: string): asserts p
       if (!Array.isArray(list) || !list.every((h) => typeof h === "string" && /^[0-9a-f]{64}$/.test(h))) {
         throw new Error(`malformed consumed.${phase}`);
       }
+      // BOUND (ru/ledger-tombstone-16 T1, defense in depth, fail-closed):
+      // per-phase tombstones never exceed cap BY CONSTRUCTION (recorded ONLY
+      // on real increment when count < cap). A violating ledger (e.g. written
+      // by the unbounded ru/ledger-saturate-15 saturate path) fails closed as
+      // CORRUPT -> loader refuses EXHAUSTED, never zero.
+      if ((list as unknown[]).length > STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
+        throw new Error(
+          `consumed.${phase} exceeds cap (${(list as unknown[]).length} > ${STALL_RETRY_MAX_ATTEMPTS_PER_PHASE})`
+        );
+      }
     }
   }
 }
 
 /**
- * UNIFIED saturate+tombstone helpers (ru/ledger-saturate-15).
- * Identity = sha256 hex of the marker raw bytes (markerContentHash).
- * The raw already binds operation/phase/attempt/claimedAt/deadlineMs for
- * well-formed markers, so the hash alone distinguishes generations; for
- * legacy markers the hash distinguishes byte-identical replays.
+ * BOUNDED tombstone identity (ru/ledger-tombstone-16 T2).
+ * Bytes-only sha256(raw) collides: distinct generations with identical bytes
+ * map to one entry (undercount). Tuple binding fixes the class:
+ * - Well-formed: sha256(phase + attempt + claimedAt + raw). PROOF: harness
+ *   claim sites pass monotonically increasing 1-indexed attempt numbers per
+ *   phase and stamp a fresh claimedAt per claim (writePendingAtomic Date.now),
+ *   so two distinct generations cannot share identical
+ *   (phase, attempt, claimedAt, raw) — identical tuples ARE the same orphan
+ *   (replay, QED). The raw already carries the fields; hashing them explicitly
+ *   makes the binding auditable and prevents bytes-only aliasing.
+ * - Unparseable/legacy: sha256(pendingPath + raw). PROOF: no parsed
+ *   attempt/claimedAt exists to bind, so bind the location. Legacy markers are
+ *   one-time (new claims are always new-format; migration drains stranded
+ *   files), so identical (path, raw) at the same pending file IS the same
+ *   orphan bytes — replay, QED — while same raw bytes at different pending
+ *   paths (different operation/phase files) never alias the same consumed set
+ *   entry. Null (\\0) separators make the tuple unambiguous.
+ * MECHANISM: DETERMINISTIC (sha256, no model judgment).
+ */
+function wellFormedMarkerIdentity(phase: StallRetryPhase, attempt: number, claimedAt: string, raw: string): string {
+  return crypto.createHash("sha256").update(`${phase}\0${attempt}\0${claimedAt}\0${raw}`, "utf8").digest("hex");
+}
+
+function legacyMarkerIdentity(pendingPath: string, raw: string): string {
+  return crypto.createHash("sha256").update(`${pendingPath}\0${raw}`, "utf8").digest("hex");
+}
+
+/**
+ * BOUNDED tombstone helpers (ru/ledger-tombstone-16).
+ * Identity = wellFormedMarkerIdentity (tuple) for well-formed markers,
+ * legacyMarkerIdentity (path-bound) for unparseable/legacy markers (see above).
+ * Tombstones are recorded ONLY on a real increment (count < cap pre-increment),
+ * so per-phase entries <= cap BY CONSTRUCTION.
  */
 function emptyConsumed(): Record<StallRetryPhase, string[]> {
   return { discovery: [], planning: [], "spec-manager": [], consolidation: [] };
@@ -476,6 +530,15 @@ function isMarkerConsumed(budget: StallRetryBudgetV1, phase: StallRetryPhase, ha
 function withMarkerConsumed(budget: StallRetryBudgetV1, phase: StallRetryPhase, hash: string): StallRetryBudgetV1 {
   const existing = getConsumedList(budget, phase);
   if (existing.includes(hash)) return budget;
+  // BOUND enforcement (T1, defense in depth, fail-closed internal error, not
+  // reachable): callers record ONLY when count < cap pre-increment, and entries
+  // <= count BY CONSTRUCTION, so appending when existing.length >= cap means
+  // the invariant is broken — fail closed, never silently grow past cap.
+  if (existing.length >= STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
+    throw new Error(
+      `STALL_RETRY_LEDGER_WRITE_FAILED: consumed tombstone bound violated for phase '${phase}' (${existing.length} >= cap ${STALL_RETRY_MAX_ATTEMPTS_PER_PHASE}); refusing to grow past cap fail-closed.`
+    );
+  }
   const consumed: Record<StallRetryPhase, string[]> = {
     ...(budget.consumed ?? emptyConsumed()),
     [phase]: [...existing, hash],
@@ -730,23 +793,25 @@ export async function claimStallRetryAttempt(
             );
           }
           // Stale well-formed → reconcile-as-consumed first (durable +1, never
-          // free), then write the new claim — with UNIFIED saturate+tombstone
-          // (ru/ledger-saturate-15, Luna round-16):
-          // - replay (marker hash already in consumed set): NO increment,
-          //   tombstone (delete identical bytes) so no third replay, then
-          //   write the new claim iff still under cap, else EXHAUSTED;
-          // - saturate (count >= cap): NO increment, tombstone WITHOUT
-          //   incrementing (record hash + delete identical bytes) and throw
-          //   phase EXHAUSTED (no launch). Rationale: count==cap already
-          //   refuses all launches, so saturation loses nothing; it preserves
-          //   never-exceeds-cap and prevents double-count replay from ever
-          //   pushing past cap;
-          // - normal (under cap, not consumed): +1 + record hash, then if
-          //   post-count >= cap tombstone (delete identical bytes) WITHOUT
-          //   the fresh claim and throw (backstop post-increment gate, kept);
-          //   else replacement guard + fresh claim.
-          // MECHANISM: DETERMINISTIC (durable count + set comparison under lock).
-          const staleHash = markerContentHash(snapshot.raw);
+          // free), then write the new claim — with BOUNDED tombstone
+          // (ru/ledger-tombstone-16, Luna round-17 T1+T2):
+          // - replay (tuple already in consumed set): NO increment, destroy the
+          //   identical bytes so no third replay, then write the new claim iff
+          //   still under cap, else EXHAUSTED;
+          // - saturate (count >= cap): NO increment AND NO record — DESTROY the
+          //   marker WITHOUT recording a tombstone and throw phase EXHAUSTED
+          //   (no launch). Replay safe: load refuses at count>=cap regardless
+          //   of marker state, so saturation loses nothing and the map stays
+          //   bounded (per-phase entries <= cap BY CONSTRUCTION);
+          // - normal (under cap, not consumed): +1 + record the TUPLE hash,
+          //   then if post-count >= cap destroy WITHOUT the fresh claim and
+          //   throw (backstop post-increment gate, kept); else replacement
+          //   guard + fresh claim.
+          // Identity tuple = sha256(phase + attempt + claimedAt + raw):
+          // attempt monotonic per phase => identical tuples ARE the same orphan
+          // (replay, QED). MECHANISM: DETERMINISTIC (count + set under lock).
+          const staleWellFormed = parsed as StallRetryPendingV1;
+          const staleHash = wellFormedMarkerIdentity(phase, staleWellFormed.attempt, staleWellFormed.claimedAt, snapshot.raw);
           const stalePrevious = await loadUnlocked(file, operationId, phase);
           const staleCurrent = Math.floor(stalePrevious.stalls[phase]);
           if (isMarkerConsumed(stalePrevious, phase, staleHash)) {
@@ -779,12 +844,9 @@ export async function claimStallRetryAttempt(
             return;
           }
           if (staleCurrent >= STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
-            // Saturate: tombstone WITHOUT incrementing (positive record + delete).
-            const saturated: StallRetryBudgetV1 = {
-              ...withMarkerConsumed(stalePrevious, phase, staleHash),
-              updatedAt: new Date().toISOString(),
-            };
-            await writeAtomic(file, saturated);
+            // Saturate (T1 bounded): DESTROY WITHOUT recording — no ledger
+            // write, no tombstone append. Replay safe: count>=cap refuses
+            // regardless of marker state.
             let satPostRaw: string | undefined;
             try {
               satPostRaw = await fs.readFile(pending, "utf8");
@@ -877,7 +939,10 @@ export async function claimStallRetryAttempt(
         // Old legacy → grave take + verify (preserve quarantine/binding), then
         // +1 + destroy, then write the new claim. Mismatch → quarantine + fail
         // closed (no increment, marker path untouched, no overwrite).
-        const legacyPreHash = markerContentHash(snapshot.raw);
+        // Tombstone identity (T2) is path-bound sha256(path+raw); VERIFY stays
+        // bytes-only (grave bytes vs decided snapshot bytes) — distinct roles.
+        const legacyPreContentHash = markerContentHash(snapshot.raw);
+        const legacyPreHash = legacyMarkerIdentity(pending, snapshot.raw);
         const legacyPreMtimeMs = snapshot.mtimeMs;
         const legacyPreDev = snapshot.dev;
         const legacyPreIno = snapshot.ino;
@@ -911,7 +976,7 @@ export async function claimStallRetryAttempt(
         }
         const inodeMatch = graveDev === legacyPreDev && graveIno === legacyPreIno;
         const mtimeMatch = graveMtimeMs === legacyPreMtimeMs;
-        if (graveRaw === undefined || !inodeMatch || !mtimeMatch || markerContentHash(graveRaw) !== legacyPreHash) {
+        if (graveRaw === undefined || !inodeMatch || !mtimeMatch || markerContentHash(graveRaw) !== legacyPreContentHash) {
           const reason =
             graveRaw === undefined
               ? "grave-unreadable"
@@ -929,14 +994,15 @@ export async function claimStallRetryAttempt(
             `pending claim conflict (CLAIM-CONFLICT: legacy quarantine ${reason}, caller attempt ${ownedAttempt})`
           );
         }
-        // +1 + destroy (+ tombstone), then write the new claim — with UNIFIED
-        // saturate+tombstone (ru/ledger-saturate-15, Luna round-16), mirroring
-        // the stale path: replay skips the increment (tombstone only);
-        // saturate (count >= cap) tombstones WITHOUT incrementing and throws
-        // EXHAUSTED (no launch; count==cap already refuses all launches);
-        // normal +1 records the hash, then the backstop post-increment gate
-        // destroys the grave WITHOUT the fresh claim on increment-to-cap.
-        // MECHANISM: DETERMINISTIC (durable count + set comparison under lock).
+        // +1 + destroy (+ tombstone), then write the new claim — with BOUNDED
+        // tombstone (ru/ledger-tombstone-16), mirroring the stale path: replay
+        // skips the increment (destroy only); saturate (count >= cap) DESTROYS
+        // WITHOUT recording and throws EXHAUSTED (no launch; count==cap already
+        // refuses all launches); normal +1 records the PATH-BOUND tuple hash,
+        // then the backstop post-increment gate destroys the grave WITHOUT the
+        // fresh claim on increment-to-cap.
+        // Identity sha256(path+raw): identical (path, raw) IS the same orphan
+        // (legacy one-time; replay, QED). MECHANISM: DETERMINISTIC (lock+set).
         const legacyPrevious = await loadUnlocked(file, operationId, phase);
         const legacyCurrent = Math.floor(legacyPrevious.stalls[phase]);
         if (isMarkerConsumed(legacyPrevious, phase, legacyPreHash)) {
@@ -954,13 +1020,9 @@ export async function claimStallRetryAttempt(
           return;
         }
         if (legacyCurrent >= STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
-          // Saturate: record hash WITHOUT incrementing, destroy the grave
-          // (tombstone; marker path already empty from the take), no launch.
-          const saturated: StallRetryBudgetV1 = {
-            ...withMarkerConsumed(legacyPrevious, phase, legacyPreHash),
-            updatedAt: new Date().toISOString(),
-          };
-          await writeAtomic(file, saturated);
+          // Saturate (T1 bounded): DESTROY the grave WITHOUT recording — no
+          // ledger write. Marker path already empty from the take. Replay safe:
+          // count>=cap refuses regardless.
           await fs.rm(grave, { force: true }).catch(() => undefined);
           throw ledgerUnknownExhaustedError(
             phase,
@@ -1168,7 +1230,8 @@ async function readPendingMarker(pending: string, operationId: string, phase: St
     return undefined;
   }
   if (!isWellFormedPendingMarker(parsed, operationId, phase)) return undefined;
-  return { raw, parsed, hash: markerContentHash(raw) };
+  const wellFormed = parsed as StallRetryPendingV1;
+  return { raw, parsed: wellFormed, hash: wellFormedMarkerIdentity(phase, wellFormed.attempt, wellFormed.claimedAt, raw) };
 }
 
 /** Legacy helper: best-effort read of an existing marker's attempt number (same operation/phase only). */
@@ -1190,6 +1253,8 @@ function isWellFormedPendingMarker(marker: unknown, operationId: string, phase: 
 }
 
 function markerContentHash(raw: string): string {
+  // Content-equality only (fd-bound VERIFY: grave bytes vs decided snapshot).
+  // Tombstone-set identity uses wellFormedMarkerIdentity / legacyMarkerIdentity.
   return crypto.createHash("sha256").update(raw, "utf8").digest("hex");
 }
 
@@ -1476,11 +1541,14 @@ async function reconcileStalePendingClaim(
     }
     if (!preParseFailed && isStalePendingMarker(preParsed, operationId, phase)) {
       const wellFormed = preParsed as StallRetryPendingV1;
+      // Tuple identity (T2): sha256(phase + attempt + claimedAt + raw).
+      // Identical tuples ARE the same orphan (attempt monotonic per phase =>
+      // distinct generations cannot share the tuple; replay, QED).
       const preIdentity = {
         attempt: wellFormed.attempt,
         claimedAt: wellFormed.claimedAt,
         deadlineMs: wellFormed.deadlineMs,
-        hash: markerContentHash(preRaw),
+        hash: wellFormedMarkerIdentity(phase, wellFormed.attempt, wellFormed.claimedAt, preRaw),
         raw: preRaw,
       };
       type LockOutcome =
@@ -1512,17 +1580,22 @@ async function reconcileStalePendingClaim(
             (curParsed as StallRetryPendingV1).attempt !== preIdentity.attempt ||
             (curParsed as StallRetryPendingV1).claimedAt !== preIdentity.claimedAt ||
             (curParsed as StallRetryPendingV1).deadlineMs !== preIdentity.deadlineMs ||
-            markerContentHash(curRaw) !== preIdentity.hash
+            wellFormedMarkerIdentity(
+              phase,
+              (curParsed as StallRetryPendingV1).attempt,
+              (curParsed as StallRetryPendingV1).claimedAt,
+              curRaw
+            ) !== preIdentity.hash
           ) {
             return { status: "replaced" };
           }
           if (!isStalePendingMarker(curParsed, operationId, phase)) return { status: "fresh-or-malformed" };
-          // UNIFIED saturate+tombstone (ru/ledger-saturate-15): replay skips
-          // the increment (already in consumed set) but still tombstones;
-          // saturate (count >= cap) tombstones WITHOUT incrementing and
-          // fails closed (saturated → caller throws EXHAUSTED). Rationale:
-          // count==cap already refuses all launches. NEVER exceeds cap;
-          // no orphan counted twice. DETERMINISTIC (lock + set).
+          // BOUNDED tombstone (ru/ledger-tombstone-16 T1): replay skips the
+          // increment (already in consumed set) but still destroys; saturate
+          // (count >= cap) DESTROYS WITHOUT recording and fails closed
+          // (saturated → caller throws EXHAUSTED). Replay safe: count>=cap
+          // refuses regardless of marker state. NEVER exceeds cap; no orphan
+          // counted twice. DETERMINISTIC (lock + set).
           const previous = await loadUnlocked(file, operationId, phase);
           const current = Math.floor(previous.stalls[phase]);
           if (isMarkerConsumed(previous, phase, preIdentity.hash)) {
@@ -1538,11 +1611,8 @@ async function reconcileStalePendingClaim(
             return { status: "reconciled" };
           }
           if (current >= STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
-            const saturated: StallRetryBudgetV1 = {
-              ...withMarkerConsumed(previous, phase, preIdentity.hash),
-              updatedAt: new Date().toISOString(),
-            };
-            await writeAtomic(file, saturated);
+            // Saturate (T1 bounded): DESTROY WITHOUT recording — no ledger
+            // write. Replay safe (count>=cap refuses regardless).
             let postRaw: string | undefined;
             try {
               postRaw = await fs.readFile(pending, "utf8");
@@ -1593,7 +1663,11 @@ async function reconcileStalePendingClaim(
     // Decided snapshot: hash(THAT content) plus decided (dev, ino) plus
     // decided mtime tripwire. Mtime serves the age decision above AND the
     // post-take tripwire (round-12 R2b); inode+hash remain the identity.
-    const legacyPreHash = markerContentHash(preRaw);
+    // Tombstone identity (T2) is path-bound sha256(path+raw); VERIFY stays
+    // bytes-only (see below) — identical (path, raw) IS the same orphan
+    // (legacy one-time; replay, QED).
+    const legacyPreContentHash = markerContentHash(preRaw);
+    const legacyPreHash = legacyMarkerIdentity(pending, preRaw);
     const legacyPreMtimeMs = preMtimeMs;
     type LegacyOutcome =
       | { status: "reconciled" }
@@ -1659,7 +1733,7 @@ async function reconcileStalePendingClaim(
         // files remain).
         const inodeMatch = graveDev === preDev && graveIno === preIno;
         const mtimeMatch = graveMtimeMs === legacyPreMtimeMs;
-        if (graveRaw === undefined || !inodeMatch || !mtimeMatch || markerContentHash(graveRaw) !== legacyPreHash) {
+        if (graveRaw === undefined || !inodeMatch || !mtimeMatch || markerContentHash(graveRaw) !== legacyPreContentHash) {
           const reason =
             graveRaw === undefined
               ? "grave-unreadable"
@@ -1674,24 +1748,21 @@ async function reconcileStalePendingClaim(
         }
         const previous = await loadUnlocked(file, operationId, phase);
         const current = Math.floor(previous.stalls[phase]);
-        // UNIFIED saturate+tombstone (ru/ledger-saturate-15): replay (hash
-        // already consumed) destroys the grave without incrementing; saturate
-        // (count >= cap) records the hash WITHOUT incrementing, destroys the
-        // grave, and fails closed (saturated → caller throws). Normal path
-        // +1s with the hash and destroys. NEVER exceeds cap; no orphan
-        // counted twice. Grave/quarantine, fd-bound identity, and tripwires
-        // above are unchanged. DETERMINISTIC (lock + set).
+        // BOUNDED tombstone (ru/ledger-tombstone-16 T1): replay (path-bound
+        // hash already consumed) destroys the grave without incrementing;
+        // saturate (count >= cap) DESTROYS WITHOUT recording and fails closed
+        // (saturated → caller throws). Replay safe: count>=cap refuses
+        // regardless of marker state. Normal path +1s with the path-bound hash
+        // and destroys. NEVER exceeds cap; no orphan counted twice.
+        // Grave/quarantine, fd-bound identity, and tripwires above are
+        // unchanged. DETERMINISTIC (lock + set).
         if (isMarkerConsumed(previous, phase, legacyPreHash)) {
           await fs.rm(grave, { force: true }).catch(() => undefined);
           if (current >= STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) return { status: "saturated" };
           return { status: "reconciled" };
         }
         if (current >= STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
-          const saturated: StallRetryBudgetV1 = {
-            ...withMarkerConsumed(previous, phase, legacyPreHash),
-            updatedAt: new Date().toISOString(),
-          };
-          await writeAtomic(file, saturated);
+          // Saturate (T1 bounded): DESTROY WITHOUT recording — no ledger write.
           await fs.rm(grave, { force: true }).catch(() => undefined);
           return { status: "saturated" };
         }
@@ -1885,9 +1956,9 @@ function parseTransactBudget(raw: string, file: string, operationId: string): St
     }
     stalls[phase] = value;
   }
-  // Preserve the consumed-markers tombstone set (ru/ledger-saturate-15):
+  // Preserve the consumed-markers tombstone set (ru/ledger-tombstone-16 bounded):
   // transact spends never add hashes, but must not wipe tombstones written
-  // by reconcile paths. Validate when present; old files omit it.
+  // by reconcile paths. Validate when present (incl. cap bound); old files omit it.
   const base = normalizeConsumed({ version: 1, operationId, stalls, updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : new Date().toISOString() });
   const consumedRaw = (record as Record<string, unknown>).consumed;
   if (consumedRaw !== undefined) {
