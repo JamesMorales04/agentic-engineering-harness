@@ -85,6 +85,17 @@ describe("toolchain", () => {
       const state = JSON.parse(await fs.readFile(path.join(root, ".harness", "toolchain.state.json"), "utf8")) as { binPaths: string[] };
       expect(state.binPaths).toContain(fakeBins);
       const launched = await runShell("graphify --version", { cwd: root }); expect(launched.stdout).toContain("graphify 0.3.0");
+      // A real `mise install` maintains mise.lock on disk; the fake mise above
+      // does not, so simulate its lock output. Without a mise.lock, the
+      // lock-consistency gate correctly reports DRIFT (unverifiable mise
+      // pins), which would fail the every-ok assertion below.
+      const miseSources: Record<string, string> = { node: "node", paseo: "npm:@getpaseo/cli", uv: "uv", graphify: "pipx:graphifyy", opa: "github:open-policy-agent/opa", opengrep: "github:opengrep/opengrep", trivy: "github:aquasecurity/trivy" };
+      const miseLock = [`lockfile_version = 2`, ""];
+      for (const [command, version] of Object.entries(versions)) {
+        miseLock.push(`[[tools."${miseSources[command]}"]]`, `version = "${version}"`, `backend = "${miseSources[command]}"`, `specifiers = ["${version}"]`, "");
+      }
+      await fs.mkdir(path.join(root, ".config", "mise"), { recursive: true });
+      await fs.writeFile(path.join(root, ".config", "mise", "mise.lock"), miseLock.join("\n"));
       const doctor = await runToolchainDoctor(root, project); expect(doctor.every((item) => item.ok)).toBe(true);
     } finally {
       process.env.PATH = previousPath; if (previousFake === undefined) delete process.env.FAKE_MISE_BIN; else process.env.FAKE_MISE_BIN = previousFake; clearToolchainEnvCache();

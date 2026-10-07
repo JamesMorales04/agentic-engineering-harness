@@ -258,6 +258,76 @@ describe("toolchain pinning (L-NEW-1/L-NEW-2/L-NEW-3/L-NEW-4/L-NEW-6/L-NEW-7)", 
     expect(aligned.divergences.join("\n")).toMatch(/INCONCLUSIVE/);
   });
 
+  it("missing mise.lock with mise-provisioned locked tools is DRIFT (cannot verify, not skip)", () => {
+    // Luna re-review blocker (a) RED: pinning.ts returns ok:true when
+    // toolchain.lock.json exists but no mise lock was found, skipping the
+    // missing-entry check even when a locked tool uses mise. Missing mise
+    // lock + toolchain lock containing mise-provisioned tools must be DRIFT.
+    const toolchain = { version: 1, manager: { provider: "mise" }, tools: { node: { kind: "mise", command: "node", source: "node", version: "22.23.2" } } };
+    const lock = { version: 1, generatedAt: new Date().toISOString(), profile: "auto", tools: { node: { command: "node", provisioning: "mise", source: "node", requestedVersion: "22.23.2", resolvedVersion: "22.23.2" } } };
+    const result = checkToolchainLockConsistency(
+      toolchain as never,
+      lock as never,
+      undefined
+    );
+    expect(result.ok).toBe(false);
+    expect(result.divergences.join("\n")).toMatch(/node/);
+    expect(result.divergences.join("\n")).toMatch(/mise\.lock/);
+  });
+
+  it("missing mise.lock with zero mise-provisioned tools stays ok (distinguished, not blanket)", () => {
+    // Companion guard for blocker (a): when NO locked tool uses mise (all
+    // non-mise-provisioned), ok:true remains correct. The fix must read the
+    // tools' backends, not apply a blanket missing-file failure.
+    const toolchain = { version: 1, manager: { provider: "mise" }, tools: { rg: { kind: "system", command: "rg", version: "14.0.0" } } };
+    const lock = { version: 1, generatedAt: new Date().toISOString(), profile: "auto", tools: { rg: { command: "rg", provisioning: "system", requestedVersion: "14.0.0", resolvedVersion: "14.0.0" } } };
+    const result = checkToolchainLockConsistency(
+      toolchain as never,
+      lock as never,
+      undefined
+    );
+    expect(result.ok).toBe(true);
+    expect(result.divergences).toEqual([]);
+  });
+
+  it("mise.lock uv-sidecar and options fields stay conclusive (documented tool-entry fields)", async () => {
+    // Luna re-review blocker (b) RED: valid mise metadata fails doctor —
+    // fields other than version/backend/specifiers under a tool entry become
+    // unparsed lines → INCONCLUSIVE-fail. Mise documents `uv` (Python sidecar
+    // `{ path, digest }`, same inline-table shape as the repo's own `aube`
+    // lines) and `options` (backend artifact identity, e.g.
+    // `options = { swift_platform = "ubuntu24.04" }`) as valid tool-entry
+    // fields. They must be known-opaque, not unparsed.
+    const { parseMiseLockDetailed } = await import("../src/toolchain/pinning.js");
+    const parse = parseMiseLockDetailed as (
+      content: string
+    ) => { entries: Record<string, { version?: string }>; unparsedInScope: string[] };
+    const content = `lockfile_version = 2
+
+[[tools."pypi:black"]]
+version = "24.10.0"
+backend = "pypi:black"
+uv = { path = "locks/pypi-black/24.10.0", digest = "sha256:3dd5bf5f76026adff7b5a63ed3ac4e42f650b8b7e9b18191049f71c1a7db8158" }
+specifiers = ["24.10.0"]
+
+[[tools.swift]]
+version = "6.3.1"
+backend = "core:swift"
+options = { swift_platform = "ubuntu24.04" }
+specifiers = ["6.3.1"]
+`;
+    const detailed = parse(content);
+    expect(detailed.unparsedInScope).toEqual([]);
+    const aligned = checkToolchainLockConsistency(
+      { version: 1, manager: { provider: "mise" }, tools: { black: { kind: "mise", command: "black", source: "pypi:black", version: "24.10.0" }, swift: { kind: "mise", command: "swift", source: "core:swift", version: "6.3.1" } } },
+      { version: 1, generatedAt: new Date().toISOString(), profile: "auto", tools: { black: { command: "black", provisioning: "mise", source: "pypi:black", requestedVersion: "24.10.0", resolvedVersion: "24.10.0" }, swift: { command: "swift", provisioning: "mise", source: "core:swift", requestedVersion: "6.3.1", resolvedVersion: "6.3.1" } } },
+      parseMiseLock(content),
+      { miseLockUnparsedInScope: detailed.unparsedInScope }
+    );
+    expect(aligned.ok).toBe(true);
+    expect(aligned.divergences).toEqual([]);
+  });
+
   it("fresh-machine doctor reports lock-consistency uninitialized instead of consistent", async () => {
     // Luna blocker (b) doctor integration: no toolchain.lock.json on disk
     // (fresh checkout, lock path is gitignored) must surface a non-ok

@@ -120,15 +120,30 @@ export function resolveMiseEntryForTool(
  * `specifiers` fields; all other TOML (platform checksums, aube digests) is
  * ignored. Multi-line `specifiers = [...]` arrays are supported.
  *
+ * KNOWN-OPAQUE TOOL-ENTRY FIELDS: mise documents `uv` (Python sidecar
+ * `{ path, digest }`, same inline-table shape as the `aube` npm sidecar) and
+ * `options` (backend-specific artifact identity, e.g.
+ * `options = { swift_platform = "ubuntu24.04" }`) as valid fields under a
+ * `[[tools.*]]` entry. Their values are integrity/identity evidence
+ * orthogonal to this gate's version-consistency claim, so `aube = ...`,
+ * `uv = ...`, and `options = ...` lines (including dotted-key forms such as
+ * `options.foo = ...`, and multi-line inline tables consumed until brackets
+ * balance) are skipped as known-opaque rather than counted. Single-bracket
+ * nested tables under a known field (e.g. `[tools.<entry>.uv]`) end the
+ * current entry section like every other single-bracket section and are never
+ * counted (documented out-of-scope subset, same as platform blocks).
+ *
  * FAIL-CLOSED ACCOUNTING (parseMiseLockDetailed): constructs in
  * `[[tools.*]]` scope that this subset parser cannot parse are counted in
  * `unparsedInScope` instead of being silently skipped:
  * - `[[tools.*]]` header attempts the header pattern cannot match (trailing
  *   inline comments) or cannot attribute (dotted keys);
  * - non-empty, non-comment field lines under a valid `[[tools.*]]` entry that
- *   are not `version`/`backend`/`specifiers` (including dotted keys and field
- *   values with trailing inline comments, which are never stripped-and-
- *   reparsed as clean values);
+ *   are not `version`/`backend`/`specifiers` or a known-opaque field
+ *   (`aube`/`uv`/`options`, including dotted-key forms and multi-line inline
+ *   tables consumed until brackets balance, which are skipped, never counted;
+ *   this includes dotted keys and field values with trailing inline comments,
+ *   which are never stripped-and-reparsed as clean values);
  * - any section header ends the current entry section, so fields under an
  *   unparseable header are never misattributed to the previous tool.
  * Single-bracket sections (`[tools."<source>"."platforms.<p>"]` checksum /
@@ -156,9 +171,21 @@ export function parseMiseLockDetailed(content: string): DetailedMiseLockParse {
   let inEntrySection = false;
   let inSpecifiers = false;
   let specBuffer = "";
+  let inOpaqueKnown = false;
+  let opaqueDepth = 0;
   for (const raw of lines) {
     const line = raw.trim();
     if (!line || line.startsWith("#")) continue;
+    if (inOpaqueKnown) {
+      // Multi-line inline table under a known-opaque field (aube/uv/options):
+      // consumed until brackets balance, never counted.
+      opaqueDepth += bracketDepthDelta(line);
+      if (opaqueDepth <= 0) {
+        inOpaqueKnown = false;
+        opaqueDepth = 0;
+      }
+      continue;
+    }
     if (line.startsWith("[")) {
       const headerMatch = line.match(MISE_TOOLS_HEADER);
       if (headerMatch) {
@@ -169,6 +196,8 @@ export function parseMiseLockDetailed(content: string): DetailedMiseLockParse {
           inEntrySection = true;
           inSpecifiers = false;
           specBuffer = "";
+          inOpaqueKnown = false;
+          opaqueDepth = 0;
           continue;
         }
       }
@@ -179,6 +208,8 @@ export function parseMiseLockDetailed(content: string): DetailedMiseLockParse {
       inEntrySection = false;
       inSpecifiers = false;
       specBuffer = "";
+      inOpaqueKnown = false;
+      opaqueDepth = 0;
       continue;
     }
     if (!inEntrySection || !current) continue;
@@ -214,9 +245,22 @@ export function parseMiseLockDetailed(content: string): DetailedMiseLockParse {
       }
       continue;
     }
-    // `aube = {...}` digest evidence is named ignored-subset (see contract
-    // above): integrity evidence orthogonal to version consistency.
-    if (/^aube\s*=/.test(line)) continue;
+    // Known-opaque tool-entry fields (see contract above): integrity/identity
+    // evidence orthogonal to version consistency (`aube`/`uv` sidecar
+    // `{ path, digest }` references, `options` backend artifact identity).
+    // Skipped, never counted — including dotted-key forms (`options.foo`,
+    // `uv.path`, ...) and multi-line inline tables (consumed until brackets
+    // balance so continuation lines are never misread as unparsed fields).
+    if (/^(aube|uv|options)\s*=/.test(line)) {
+      const value = line.slice(line.indexOf("=") + 1);
+      const depth = bracketDepthDelta(value);
+      if (depth > 0) {
+        inOpaqueKnown = true;
+        opaqueDepth = depth;
+      }
+      continue;
+    }
+    if (/^(aube|uv|options)\./.test(line)) continue;
     unparsedInScope.push(raw);
   }
   return { entries, unparsedInScope };
@@ -235,6 +279,23 @@ function unquoteTomlKey(key: string): string {
     }
   }
   return key;
+}
+
+/** Net `{`/`[` minus `}`/`]` outside quoted strings (`#` starts a comment). */
+function bracketDepthDelta(line: string): number {
+  let depth = 0;
+  let quote: string | undefined;
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (quote) {
+      if (char === "\\") i++;
+      else if (char === quote) quote = undefined;
+    } else if (char === '"' || char === "'") quote = char;
+    else if (char === "#") break;
+    else if (char === "{" || char === "[") depth++;
+    else if (char === "}" || char === "]") depth--;
+  }
+  return depth;
 }
 
 /** True when a TOML scalar carries a `#` comment outside quoted strings. */
@@ -319,7 +380,24 @@ export function checkToolchainLockConsistency(
       `INCONCLUSIVE: mise.lock has ${unparsed.length} unparsed in-scope line(s) (e.g. ${preview}); lock consistency cannot be verified. Regenerate locks with 'aeh setup' using supported constructs.`
     );
   }
-  if (!miseLock) return { ok: divergences.length === 0, divergences };
+  if (!miseLock) {
+    // Fail-closed: with no mise.lock on disk, every mise-provisioned locked
+    // tool is unverifiable → DRIFT (cannot verify, never skipped). Tools with
+    // no mise backend (all non-mise-provisioned) need no mise entry, so a
+    // lock with zero mise-provisioned tools stays ok — distinguished by
+    // reading each tool's backend, not by blanket rule. Same
+    // expects-mise-entry predicate as the per-tool missing-entry check below.
+    for (const [name, entry] of Object.entries(lock.tools)) {
+      const definition = toolchain.tools[name];
+      const expectsMiseEntry = entry.provisioning === "mise" || (entry.provisioning === undefined && definition?.kind === "mise");
+      if (expectsMiseEntry) {
+        divergences.push(
+          `tool '${name}' has no mise.lock to verify against (missing mise.lock; cannot verify, not skipped; run \`aeh setup\` to regenerate locks).`
+        );
+      }
+    }
+    return { ok: divergences.length === 0, divergences };
+  }
   for (const [name, entry] of Object.entries(lock.tools)) {
     const definition = toolchain.tools[name];
     if (definition?.version && entry.requestedVersion !== undefined && entry.requestedVersion !== definition.version) {
