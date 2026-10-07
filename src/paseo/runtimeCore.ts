@@ -834,6 +834,12 @@ async function reuseLiveIdempotentTurn(
 ): Promise<ManagedPaseoAgentResult | undefined> {
   const operation = options.labels?.["aeh.operation"]?.trim();
   const idempotency = options.labels?.["aeh.turn.idempotency"]?.trim();
+  // No-token first-create path (NOT ambiguous): without an operation label no
+  // idempotency key is derivable (see withTurnIdempotencyKey/derive: key is
+  // undefined iff operation is missing), so no retry can match under a key
+  // and no duplicate-writer hazard exists under any key. Only this path may
+  // fall through to create-new without a list proof. When in doubt, fail
+  // closed: any present operation+idempotency pair must prove empty below.
   if (!operation || !idempotency) return undefined;
   const listMatching = async (): Promise<PaseoSdkAgentRecord[]> => {
     // Re-list failure must throw (the ambiguity resolver converts it to
@@ -841,15 +847,24 @@ async function reuseLiveIdempotentTurn(
     // fresh-create beside a possible live writer).
     return deps.sdk.list(root, { "aeh.operation": operation, "aeh.turn.idempotency": idempotency });
   };
-  // List failure reads as "no session" and fails closed to create-new (never
-  // blocks launch); an empty list below is the verified-empty signal.
+  // Initial-list failure on this guarded path throws AMBIGUOUS (fail closed):
+  // an unobserved matching live writer may exist, so returning undefined
+  // (then sdk.create) would duplicate the turn. An empty list below is the
+  // only verified-empty signal.
   let candidates: PaseoSdkAgentRecord[];
   try {
     candidates = await deps.sdk.list(root, { "aeh.operation": operation, "aeh.turn.idempotency": idempotency });
-  } catch {
-    return undefined;
+  } catch (error) {
+    await trace(root, "agent.launch.ambiguous-list-failed", { transport: "sdk", operation, idempotency, error: errorMessage(error) });
+    throw new Error(`PASEO_TURN_IDEMPOTENCY_AMBIGUOUS: could not list sessions for idempotency key '${idempotency}' for operation '${operation}' (${errorMessage(error)}); refusing create-new without proof of empty. Resume explicitly once the list endpoint recovers.`);
   }
-  if (!Array.isArray(candidates) || candidates.length === 0) return undefined;
+  // Non-array initial list is unverified (same hazard as a list failure):
+  // fail closed, never read as verified-empty. Only [] proves empty.
+  if (!Array.isArray(candidates)) {
+    await trace(root, "agent.launch.ambiguous-list-failed", { transport: "sdk", operation, idempotency, error: "non-array initial list result" });
+    throw new Error(`PASEO_TURN_IDEMPOTENCY_AMBIGUOUS: could not list sessions for idempotency key '${idempotency}' for operation '${operation}' (non-array initial list result); refusing create-new without proof of empty. Resume explicitly once the list endpoint recovers.`);
+  }
+  if (candidates.length === 0) return undefined;
   const live = candidates.filter((agent) => isLivePaseoAgentStatus(agent.status));
   if (live.length > 1) {
     // Ambiguous live orphans: self-heal first (A3 outer — stop-all
@@ -921,14 +936,17 @@ function cliIdempotencyLabels(options: ManagedPaseoAgentOptions): Array<[string,
 }
 
 /**
- * CLI-adapted idempotent-turn reuse (DETERMINISTIC, best-effort, never throws).
+ * CLI-adapted idempotent-turn reuse (DETERMINISTIC, initial-list fail-closed).
  *
  * Same contract as reuseLiveIdempotentTurn: exactly one live match (idle/
  * working/running, positive-only) is reused; otherwise positively-dead matches
- * are reaped best-effort, unknown statuses are left alone with a trace, and a
- * missing/unlistable CLI daemon fails closed to create-new (returns undefined).
- * Matching is client-side over `paseo ls --json` records because the CLI has
- * no server-side label query.
+ * are reaped best-effort, unknown statuses are left alone with a trace, and an
+ * initial `paseo ls` failure throws PASEO_TURN_IDEMPOTENCY_AMBIGUOUS (never
+ * undefined-then-`paseo run`: an unobserved matching live writer may exist).
+ * The only create-without-proof path is the no-token path (missing operation
+ * or idempotency label — no key, no retry can match, no duplicate hazard;
+ * see the SDK guard for the proof). Matching is client-side over
+ * `paseo ls --json` records because the CLI has no server-side label query.
  */
 async function reuseLiveIdempotentCliTurn(
   root: string,
@@ -939,6 +957,10 @@ async function reuseLiveIdempotentCliTurn(
 ): Promise<ManagedPaseoAgentResult | undefined> {
   const operation = options.labels?.["aeh.operation"]?.trim();
   const idempotency = options.labels?.["aeh.turn.idempotency"]?.trim();
+  // No-token first-create path (NOT ambiguous): same proof as the SDK guard —
+  // without operation+idempotency there is no key a retry could match, so no
+  // duplicate-writer hazard exists under any key. Only this path may fall
+  // through to `paseo run` without a list proof.
   if (!operation || !idempotency) return undefined;
   const listMatching = async (): Promise<PaseoSdkAgentRecord[]> => {
     // Re-list failure must throw (the ambiguity resolver converts it to
@@ -948,13 +970,17 @@ async function reuseLiveIdempotentCliTurn(
       (agent) => agent.labels?.["aeh.operation"] === operation && agent.labels?.["aeh.turn.idempotency"] === idempotency
     );
   };
+  // Initial-list failure throws AMBIGUOUS (fail closed): an unobserved
+  // matching live writer may exist, so undefined-then-`paseo run` would
+  // duplicate the turn. Only a verified empty list below permits create-new.
   let candidates: PaseoSdkAgentRecord[];
   try {
     candidates = (await listCliAgents(root, deps)).filter(
       (agent) => agent.labels?.["aeh.operation"] === operation && agent.labels?.["aeh.turn.idempotency"] === idempotency
     );
-  } catch {
-    return undefined;
+  } catch (error) {
+    await trace(root, "agent.launch.ambiguous-list-failed", { transport: "cli", operation, idempotency, error: errorMessage(error) });
+    throw new Error(`PASEO_TURN_IDEMPOTENCY_AMBIGUOUS: could not list CLI sessions for idempotency key '${idempotency}' for operation '${operation}' (${errorMessage(error)}); refusing create-new without proof of empty. Resume explicitly once the list endpoint recovers.`);
   }
   if (candidates.length === 0) return undefined;
   const reuse = async (found: PaseoSdkAgentRecord): Promise<ManagedPaseoAgentResult> => {
