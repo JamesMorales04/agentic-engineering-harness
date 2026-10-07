@@ -89,7 +89,7 @@ export async function finalizeAcceptedIssue(root: string, config: HarnessProject
         const commit = await commitWithConfiguredOrHarnessIdentity(root, commitMessage);
         return { outcome: commit.exitCode === 0 ? "SUCCEEDED" as const : "FAILED" as const, evidence: { step: "commit", exitCode: commit.exitCode, stderr: commit.stderr.slice(-2000) } };
       },
-      reconcile: (intent) => reconcileToolAction(root, intent, { taskId: contract.task.id, message: commitMessage })
+      reconcile: (intent) => reconcileToolAction(root, intent, { taskId: contract.task.id, message: commitMessage, contentDigest })
     });
     assertDeliveryGateProgress(commitGate, "git.commit");
     if (commitGate.receipt?.outcome === "FAILED") throw new Error(`SYSTEM_FAILURE: git commit failed during deterministic finalization: ${commitGate.detail}`);
@@ -278,7 +278,7 @@ export async function finalizeAcceptedChange(root: string, config: HarnessProjec
       const commit = await commitWithConfiguredOrHarnessIdentity(root, commitMessage);
       return { outcome: commit.exitCode === 0 ? "SUCCEEDED" as const : "FAILED" as const, evidence: { step: "commit", exitCode: commit.exitCode, stderr: commit.stderr.slice(-2000) } };
     },
-    reconcile: (intent) => reconcileToolAction(root, intent, { taskId: contract.task.id, message: commitMessage })
+    reconcile: (intent) => reconcileToolAction(root, intent, commitPayload)
   });
   assertDeliveryGateProgress(commitGate, "git.commit");
   if (commitGate.receipt?.outcome === "FAILED") throw new Error(`SYSTEM_FAILURE: gated git commit failed: ${commitGate.detail}`);

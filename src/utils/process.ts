@@ -13,6 +13,15 @@ export interface ProcessResult {
   stdoutBytes?: number;
   stderrBytes?: number;
   timedOut?: boolean;
+  /**
+   * Raw stdout bytes (no UTF-8 decode). Present only when the caller opted in
+   * via `ProcessOptions.rawStdout`. Callers hashing content that may not be
+   * valid UTF-8 (e.g. `git show` blob bytes) must use this buffer: `stdout`
+   * decodes with replacement characters and re-encoding it hashes different
+   * bytes. When `captureOutputLimitBytes` truncates retention, this buffer is
+   * truncated to the retained tail the same way `stdout` is.
+   */
+  stdoutBuffer?: Buffer;
 }
 
 export interface ManagedProcessHandle {
@@ -288,6 +297,15 @@ export interface ProcessOptions {
   /** Retain only the final N bytes per stream while hashing/counting the full output. */
   captureOutputLimitBytes?: number;
   /**
+   * Retain the raw stdout bytes (no UTF-8 decode/re-encode round-trip) on
+   * `ProcessResult.stdoutBuffer`. Required for hashing content that may not
+   * be valid UTF-8: `stdout` decodes with replacement characters, so a raw
+   * byte such as 0xFF hashes like the valid UTF-8 U+FFFD sequence when read
+   * back from `stdout`. Binary callers must hash `stdoutBuffer`, never
+   * `Buffer.from(stdout, "utf8")`.
+   */
+  rawStdout?: boolean;
+  /**
    * Controller-input-only extra toolchain bin dirs (DETERMINISTIC).
    *
    * The operation controller supplies this from its startup-resolved config
@@ -465,7 +483,8 @@ async function runChild(
         stderrDigest: stderr.digest(),
         stdoutBytes: stdout.bytes,
         stderrBytes: stderr.bytes,
-        timedOut
+        timedOut,
+        ...(options.rawStdout ? { stdoutBuffer: stdout.buffer() } : {})
       }));
     }
   });
@@ -526,6 +545,8 @@ class BoundedOutput {
 
   text(): string { return Buffer.concat(this.chunks).toString("utf8"); }
   digest(): string { return this.hash.copy().digest("hex"); }
+  /** Raw retained bytes (no UTF-8 decode); truncated to the retained tail when a limit is set. */
+  buffer(): Buffer { return Buffer.concat(this.chunks); }
 }
 
 export async function listManagedProcessHandles(root: string, operationId: string): Promise<ManagedProcessHandle[]> {

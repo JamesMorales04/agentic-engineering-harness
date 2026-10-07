@@ -1,5 +1,6 @@
 import { sha256Canonical } from "../core/digest.js";
 import { resolveGithubTokenOptional } from "../delivery/handoff.js";
+import { computeCommitTreeDigest as defaultComputeCommitTreeDigest } from "../core/git.js";
 import { runExecutable, type ProcessOptions, type ProcessResult } from "../utils/process.js";
 import type { ActionIntentV1, ToolActionKindV1 } from "./toolActionGate.js";
 
@@ -50,6 +51,8 @@ export interface ActionReconciliationDependenciesV1 {
   /** Explicit GitHub token; when omitted the standard delivery token environment is consulted. */
   token?: string;
   now?: Date;
+  /** Committed-tree contentDigest observation for `git.commit`; defaults to `computeCommitTreeDigest`. */
+  computeCommitTreeDigest?: (root: string, ref: string) => Promise<string>;
 }
 
 interface ResolvedDependenciesV1 {
@@ -57,6 +60,7 @@ interface ResolvedDependenciesV1 {
   fetchJson: NonNullable<ActionReconciliationDependenciesV1["fetchJson"]>;
   token?: string;
   now: Date;
+  computeCommitTreeDigest: (root: string, ref: string) => Promise<string>;
 }
 
 type PayloadRecord = Record<string, unknown>;
@@ -78,6 +82,8 @@ const GITHUB_REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const GIT_COMMIT_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const GIT_TIMEOUT_MS = 30_000;
 const MAX_SNIPPET_LENGTH = 500;
+/** Bounded history window for same-subject commit lookup when HEAD moved on. */
+const COMMIT_HISTORY_SCAN_LIMIT = 20;
 
 /**
  * Reconcile one tool action against observable state.
@@ -164,7 +170,73 @@ async function reconcileGitCommit(root: string, intent: ActionIntentV1, payload:
     if (observed.kind === "error") return buildResult(intent, "UNKNOWN", "git-unavailable", { message, error: observed.message }, dependencies.now);
     if (observed.result.exitCode !== 0) return buildResult(intent, "UNKNOWN", "commit-unreadable", { message, exitCode: observed.result.exitCode, stderr: snippet(observed.result.stderr) }, dependencies.now);
     const subject = observed.result.stdout.trim();
-    return buildResult(intent, subject === message ? "SUCCEEDED" : "FAILED", "commit-subject-observed", { expectedSubject: message, observedSubject: subject }, dependencies.now);
+    // The commit subject is `${taskId}: ${title}`-shaped and therefore
+    // identical across retries with different content. A subject match alone
+    // can describe a stale commit from an earlier attempt, so it is never
+    // sufficient for SUCCEEDED: the COMMITTED tree content must also match
+    // the intent's contentDigest before success is reported. The live
+    // worktree is never consulted: a dirty worktree holding the intended new
+    // content above a stale HEAD must not reconcile as SUCCEEDED.
+    const contentDigest = nonEmptyString(record.contentDigest);
+    if (!contentDigest || !/^[a-f0-9]{64}$/i.test(contentDigest)) {
+      if (subject !== message) return buildResult(intent, "FAILED", "commit-subject-mismatch", { expectedSubject: message, observedSubject: subject }, dependencies.now);
+      return buildResult(intent, "UNKNOWN", "commit-content-unverified", { expectedSubject: message, observedSubject: subject, contentDigestPresent: contentDigest !== undefined }, dependencies.now);
+    }
+    const expectedContentDigest = contentDigest.toLowerCase();
+    if (subject === message) {
+      let observedDigest: string;
+      try {
+        observedDigest = await dependencies.computeCommitTreeDigest(root, "HEAD");
+      } catch (error) {
+        return buildResult(intent, "UNKNOWN", "commit-content-unreadable", { expectedSubject: message, observedSubject: subject, error: errorMessage(error) }, dependencies.now);
+      }
+      if (!/^[a-f0-9]{64}$/i.test(observedDigest.trim())) {
+        return buildResult(intent, "UNKNOWN", "commit-content-unreadable", { expectedSubject: message, observedSubject: subject }, dependencies.now);
+      }
+      const evidence = { expectedSubject: message, observedSubject: subject, expectedContentDigest, observedContentDigest: observedDigest.trim().toLowerCase() };
+      const matched = evidence.observedContentDigest === evidence.expectedContentDigest;
+      return buildResult(intent, matched ? "SUCCEEDED" : "UNKNOWN", matched ? "commit-content-compared" : "commit-content-mismatch", evidence, dependencies.now);
+    }
+    // HEAD subject mismatches: the intended commit may sit one or more steps
+    // back (a follow-up commit moved HEAD, or HEAD is stale). Scan a bounded
+    // history window for a matching-subject commit whose COMMITTED tree also
+    // matches. SUCCEEDED only on subject + tree match; FAILED when the
+    // subject is absent; UNKNOWN when the subject is present without a tree
+    // match (human-resolved content ambiguity).
+    const history = await tryExecutable(dependencies.run, "git", ["log", `-${COMMIT_HISTORY_SCAN_LIMIT}`, `--format=%H%x1f%s`, "--no-decorate"], { cwd: root, timeoutMs: GIT_TIMEOUT_MS });
+    if (history.kind === "error") return buildResult(intent, "UNKNOWN", "commit-history-unreadable", { expectedSubject: message, observedSubject: subject, error: history.message }, dependencies.now);
+    if (history.result.exitCode !== 0) return buildResult(intent, "UNKNOWN", "commit-history-unreadable", { expectedSubject: message, observedSubject: subject, exitCode: history.result.exitCode, stderr: snippet(history.result.stderr) }, dependencies.now);
+    const entries = parseCommitHistory(history.result.stdout).filter((entry) => GIT_COMMIT_PATTERN.test(entry.sha));
+    const candidates = entries.filter((entry) => entry.subject === message);
+    if (candidates.length === 0) {
+      return buildResult(intent, "FAILED", "commit-subject-mismatch", { expectedSubject: message, observedSubject: subject, scannedCommits: entries.length, scanLimit: COMMIT_HISTORY_SCAN_LIMIT }, dependencies.now);
+    }
+    // An unverifiable HEAD (oversize/unreadable/cap-invalid digest throw)
+    // must never be bypassed by stale history: history proves an older
+    // same-subject commit matches, never that the present HEAD is correct.
+    // Digest ERROR -> UNKNOWN immediately without consulting history;
+    // digest MISMATCH (computed, differs) -> history fallback below.
+    let observedHeadDigest: string;
+    try {
+      observedHeadDigest = (await dependencies.computeCommitTreeDigest(root, "HEAD")).trim().toLowerCase();
+    } catch (error) {
+      return buildResult(intent, "UNKNOWN", "commit-content-unreadable", { expectedSubject: message, observedSubject: subject, expectedContentDigest, error: errorMessage(error), scannedCommits: entries.length, scanLimit: COMMIT_HISTORY_SCAN_LIMIT }, dependencies.now);
+    }
+    for (const candidate of candidates) {
+      let candidateDigest: string;
+      try {
+        candidateDigest = (await dependencies.computeCommitTreeDigest(root, candidate.sha)).trim().toLowerCase();
+      } catch (error) {
+        return buildResult(intent, "UNKNOWN", "commit-content-unreadable", { expectedSubject: message, observedSubject: subject, expectedContentDigest, matchedCommit: candidate.sha.toLowerCase(), error: errorMessage(error), scannedCommits: entries.length, scanLimit: COMMIT_HISTORY_SCAN_LIMIT }, dependencies.now);
+      }
+      if (!/^[a-f0-9]{64}$/.test(candidateDigest)) {
+        return buildResult(intent, "UNKNOWN", "commit-content-unreadable", { expectedSubject: message, observedSubject: subject, expectedContentDigest, matchedCommit: candidate.sha.toLowerCase(), scannedCommits: entries.length, scanLimit: COMMIT_HISTORY_SCAN_LIMIT }, dependencies.now);
+      }
+      if (candidateDigest === expectedContentDigest) {
+        return buildResult(intent, "SUCCEEDED", "commit-content-compared-history", { expectedSubject: message, observedSubject: subject, expectedContentDigest, observedContentDigest: candidateDigest, matchedCommit: candidate.sha.toLowerCase(), scannedCommits: entries.length, scanLimit: COMMIT_HISTORY_SCAN_LIMIT }, dependencies.now);
+      }
+    }
+    return buildResult(intent, "UNKNOWN", "commit-content-mismatch", { expectedSubject: message, observedSubject: subject, expectedContentDigest, observedContentDigest: observedHeadDigest, matchingSubjects: candidates.length, scannedCommits: entries.length, scanLimit: COMMIT_HISTORY_SCAN_LIMIT }, dependencies.now);
   }
   const expectedHead = nonEmptyString(record.expectedHead);
   if (!expectedHead || !GIT_COMMIT_PATTERN.test(expectedHead)) {
@@ -406,7 +478,8 @@ function resolveDependenciesV1(dependencies: ActionReconciliationDependenciesV1)
     run: dependencies.runExecutable ?? runExecutable,
     fetchJson: dependencies.fetchJson ?? defaultFetchJson,
     token: providedToken || resolveGithubTokenOptional(),
-    now: dependencies.now ?? new Date()
+    now: dependencies.now ?? new Date(),
+    computeCommitTreeDigest: dependencies.computeCommitTreeDigest ?? ((root: string, ref: string) => defaultComputeCommitTreeDigest(root, ref))
   };
 }
 
@@ -521,6 +594,19 @@ function parseLsRemote(output: string): Array<{ sha: string; ref: string }> {
     if (!trimmed) continue;
     const [sha, ref] = trimmed.split(/\s+/);
     if (sha && ref) entries.push({ sha, ref });
+  }
+  return entries;
+}
+
+function parseCommitHistory(output: string): Array<{ sha: string; subject: string }> {
+  const entries: Array<{ sha: string; subject: string }> = [];
+  for (const line of output.split("\n")) {
+    if (!line) continue;
+    const separator = line.indexOf("\x1f");
+    if (separator < 0) continue;
+    const sha = line.slice(0, separator).trim();
+    const subject = line.slice(separator + 1).trim();
+    if (sha) entries.push({ sha, subject });
   }
   return entries;
 }
