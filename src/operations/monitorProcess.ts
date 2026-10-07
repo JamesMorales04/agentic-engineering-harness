@@ -49,13 +49,21 @@ export async function spawnOperationMonitor(
       // Durable operation ownership: the detached liveness monitor is
       // terminated by the operation's terminal/recovery resource reconciliation
       // instead of lingering after the operation is terminal.
-      await registerOperationResource(absoluteRoot, operation.id, {
-        kind: "managed-process",
-        identity: String(child.pid),
-        reclaim: "TERMINATE_ON_TERMINAL",
-        label: "operation liveness monitor",
-        owner: { source: "controller-registration", controllerEpoch: operation.controller?.epoch }
-      }).catch(() => undefined);
+      try {
+        await registerOperationResource(absoluteRoot, operation.id, {
+          kind: "managed-process",
+          identity: String(child.pid),
+          reclaim: "TERMINATE_ON_TERMINAL",
+          label: "operation liveness monitor",
+          owner: { source: "controller-registration", controllerEpoch: operation.controller?.epoch }
+        });
+      } catch (registerError) {
+        const current = await loadOperation(absoluteRoot, operation.id).catch(() => operation);
+        const warning = `liveness monitor: resource registration failed (${registerError instanceof Error ? registerError.message : String(registerError)})`;
+        await patchOperationMetadata(absoluteRoot, operation.id, {
+          cleanupWarnings: [...new Set([...(current.cleanupWarnings ?? []), warning])]
+        }).catch(() => undefined);
+      }
     }
     return child.pid;
   } catch (error) {
