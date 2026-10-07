@@ -131,13 +131,38 @@ export async function runExternalToolValidator(context: ValidationContext): Prom
       ...(context.candidate ? { env: { [VALIDATION_CANDIDATE_ENVIRONMENT_VARIABLE]: JSON.stringify(context.candidate) } } : {})
     });
   }
-  const evidenceFile = typeof options.evidenceFile === "string" ? path.resolve(cwd, options.evidenceFile) : undefined;
-  const evidenceText = evidenceFile ? await fs.readFile(evidenceFile, "utf8").catch(() => result.stdout) : result.stdout;
-  const parsedEvidence = parseToolEvidenceResult(adapter, evidenceText);
-  const findings = parsedEvidence.findings;
+  const evidenceFileOption = typeof options.evidenceFile === "string" ? options.evidenceFile : undefined;
+  const evidenceFileDeclared = typeof evidenceFileOption === "string" && evidenceFileOption.trim() !== "";
+  const evidenceFile = evidenceFileDeclared ? path.resolve(cwd, evidenceFileOption!.trim()) : undefined;
+  const evidenceFileRel = evidenceFile ? path.relative(context.root, evidenceFile).replaceAll("\\", "/") : undefined;
   const rawPath = path.resolve(context.root, context.config.evidence?.outputDir ?? ".harness/evidence", `${context.spec.id.replace(/[^A-Za-z0-9._-]/g, "-")}.raw`);
   await fs.mkdir(path.dirname(rawPath), { recursive: true });
   await fs.writeFile(rawPath, `${result.stdout}${result.stderr ? `\n--- stderr ---\n${result.stderr}` : ""}`, "utf8");
+  const rawArtifactRel = path.relative(context.root, rawPath).replaceAll("\\", "/");
+  const evidenceFormat = evidenceFile ? options.evidenceFormat ?? "json-or-junit" : "stdout-json";
+  // R-NEW-1 (Mechanism=DETERMINISTIC): when evidenceFile is declared, reporter
+  // JSON is read ONLY from that file — never stdout/stderr. Missing/unreadable
+  // fails closed with coded TEST_ATTRIBUTION_REPORTER_MISSING (no silent
+  // stdout fallback).
+  let evidenceText: string;
+  if (evidenceFile) {
+    try {
+      evidenceText = await fs.readFile(evidenceFile, "utf8");
+    } catch {
+      return { id: context.spec.id, category: definition.category, status: context.spec.required === false ? "WARN" : "FAIL", message: `TEST_ATTRIBUTION_REPORTER_MISSING: declared evidenceFile '${evidenceFileOption!.trim()}' is missing or unreadable; reporter JSON is read ONLY from that file, never stdout/stderr.`, durationMs: result.durationMs, details: { command: rendered, blocker: "TEST_ATTRIBUTION_REPORTER_MISSING", evidenceFile: evidenceFileRel, rawArtifact: rawArtifactRel, evidenceFormat, exitCode: result.exitCode, stdout: boundedReporterText(result.stdout), stderr: boundedDiagnostic(result.stderr), isolationRequired } };
+    }
+  } else {
+    evidenceText = result.stdout;
+  }
+  const parsedEvidence = parseToolEvidenceResult(adapter, evidenceText);
+  // R-NEW-1 (Mechanism=DETERMINISTIC): malformed declared file fails closed
+  // with coded TEST_ATTRIBUTION_REPORTER_INVALID, never stdout fallback.
+  // Default (no evidenceFile) discovery behavior is unchanged: stdout parsing
+  // still flows through the existing malformedEvidence gate below.
+  if (evidenceFile && !parsedEvidence.valid) {
+    return { id: context.spec.id, category: definition.category, status: context.spec.required === false ? "WARN" : "FAIL", message: `TEST_ATTRIBUTION_REPORTER_INVALID: declared evidenceFile '${evidenceFileOption!.trim()}' is malformed; reporter JSON is read ONLY from that file, never stdout/stderr.`, durationMs: result.durationMs, details: { command: rendered, blocker: "TEST_ATTRIBUTION_REPORTER_INVALID", evidenceFile: evidenceFileRel, rawArtifact: rawArtifactRel, evidenceFormat, exitCode: result.exitCode, stdout: boundedReporterText(result.stdout), stderr: boundedDiagnostic(result.stderr), isolationRequired } };
+  }
+  const findings = parsedEvidence.findings;
   const providerUnavailable = lane ? playwrightUnavailableReason(`${result.stdout}\n${result.stderr}`) : undefined;
   if (lane && providerUnavailable) {
     return laneUnavailable(context, lane, definition.category, `${providerLaneUnavailableBlocker(lane)}: the real browser provider did not run: ${providerUnavailable}`, { command: rendered, exitCode: result.exitCode });
@@ -212,8 +237,9 @@ export async function runExternalToolValidator(context: ValidationContext): Prom
     durationMs: result.durationMs,
     details: {
       command: rendered,
-      rawArtifact: path.relative(context.root, rawPath).replaceAll("\\", "/"),
-      evidenceFormat: evidenceFile ? options.evidenceFormat ?? "json-or-junit" : "stdout-json",
+      rawArtifact: rawArtifactRel,
+      ...(evidenceFileRel ? { evidenceFile: evidenceFileRel } : {}),
+      evidenceFormat,
       exitCode: result.exitCode,
       // Bounded process stdout is persisted explicitly so reporter-text
       // extractors (test attribution) do not depend on file I/O alone. The

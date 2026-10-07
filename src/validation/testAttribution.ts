@@ -548,9 +548,18 @@ function collectReporterDocumentsFromText(
 
 /**
  * Extract Playwright reporter tests from a bundle execution check.
- * Reads details.stdout, the rawArtifact file, and details.stderr together.
- * Returns the reporter tests only when exactly one DISTINCT reporter
- * document is present across every source. Zero means no attributable
+ *
+ * File-only mode (R-NEW-1, Mechanism=DETERMINISTIC): when
+ * `details.evidenceFile` declares a reporter file (propagated from
+ * `spec.options.evidenceFile` by the external validator), reporter JSON is
+ * read ONLY from that file — never stdout/stderr/rawArtifact. Missing,
+ * unreadable, malformed, or ambiguous declared files yield undefined so
+ * callers fail closed with a coded TEST_ATTRIBUTION_REPORTER_MISSING.
+ *
+ * Default (no evidenceFile) discovery behavior is UNCHANGED: reads
+ * details.stdout, the rawArtifact file, and details.stderr together. Returns
+ * the reporter tests only when exactly one DISTINCT reporter document is
+ * present across every consulted source. Zero means no attributable
  * reporter; more than one means the output is ambiguous and attribution is
  * refused. Callers fail closed on undefined. No path returns a reporter
  * without the count check.
@@ -560,6 +569,25 @@ export async function extractReporterTestsFromExecutionV1(
   execution: ValidationCheck,
 ): Promise<AttributedPlaywrightTestV1[] | undefined> {
   const details = (execution.details ?? {}) as Record<string, unknown>;
+  const declaredEvidenceFile =
+    typeof details.evidenceFile === "string" && details.evidenceFile.trim()
+      ? details.evidenceFile.trim()
+      : undefined;
+  if (declaredEvidenceFile) {
+    let text: string;
+    try {
+      text = await fs.readFile(path.resolve(root, declaredEvidenceFile), "utf8");
+    } catch {
+      // Missing/unreadable declared file contributes no reporter document.
+      return undefined;
+    }
+    const documents = new Map<string, AttributedPlaywrightTestV1[]>();
+    for (const document of collectReporterDocumentsFromText(text)) {
+      if (!documents.has(document.digest)) documents.set(document.digest, document.tests);
+    }
+    if (documents.size !== 1) return undefined;
+    return [...documents.values()][0];
+  }
   const sources: unknown[] = [details.stdout];
   const rawArtifact = details.rawArtifact;
   if (typeof rawArtifact === "string" && rawArtifact.trim()) {
