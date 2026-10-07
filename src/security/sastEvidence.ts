@@ -11,6 +11,7 @@ export const SAST_EVIDENCE_VERSION = 1 as const;
 export const SAST_EVIDENCE_REQUIRED = "SAST_EVIDENCE_REQUIRED" as const;
 export const SAST_EVIDENCE_STALE = "SAST_EVIDENCE_STALE" as const;
 export const SAST_EVIDENCE_TAMPERED = "SAST_EVIDENCE_TAMPERED" as const;
+export const SAST_EVIDENCE_STATUS = "SAST_EVIDENCE_STATUS" as const;
 export const SAST_PROVIDER_UNAVAILABLE = "SAST_PROVIDER_UNAVAILABLE" as const;
 export const SAST_CANDIDATE_BINDING_REQUIRED = "SAST_CANDIDATE_BINDING_REQUIRED" as const;
 
@@ -238,6 +239,12 @@ export async function requireSastEvidenceV1(root: string, config: HarnessProject
   if (!evidence) throw new Error(`${SAST_EVIDENCE_REQUIRED}: required candidate-bound SAST evidence '${checkId}' is absent for ${candidate.candidateId} r${candidate.revision}.`);
   const verification = await verifySastEvidenceV1(root, config, evidence, candidate);
   if (!verification.ok) throw new Error(verification.blockers.join("; "));
+  // Fail-closed (D-NEW-1 sibling, Mechanism=DETERMINISTIC): require*() satisfies
+  // PASS claims, so non-PASS SAST evidence must never pass this gate. SAST
+  // findings are not partitioned by test selectors, so unlike the lane-evidence
+  // partial-green fallback in run.ts there is no scoped tolerance here: FAIL or
+  // WARN SAST evidence fails the requirement.
+  if (evidence.status !== "PASS") throw new Error(`${SAST_EVIDENCE_STATUS}: SAST evidence for '${checkId}' records status '${evidence.status}'; only PASS evidence can satisfy a PASS claim.`);
   return evidence;
 }
 

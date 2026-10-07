@@ -1238,6 +1238,16 @@ export async function runCandidateImpactValidations(input: {
             actionSource: action.source,
             actionSelector: action.selector
           });
+          // Agreement gate (D-NEW-1, Mechanism=DETERMINISTIC): an unmapped PASS
+          // inherits the passing bundle, so the lane evidence for that same
+          // passing bundle must agree. A FAIL/WARN lane record against a PASS
+          // bundle is contradictory and fails closed (the mapped path's
+          // partial-green tolerance does not apply: there is no attribution
+          // partitioning an unmapped verdict). Defense-in-depth: validator-
+          // produced evidence shares one status variable with the execution,
+          // so disagreement is reachable only via direct FS manipulation —
+          // this gate turns that tamper into FAIL instead of silent PASS.
+          if (evidence.status !== "PASS") throw new Error(`${PROVIDER_LANE_EVIDENCE_STATUS}: ${requiredLane} evidence for '${execution.id}' records status '${evidence.status}'; an unmapped PASS requires agreeing PASS lane evidence.`);
           laneEvidence = { lane: requiredLane, artifact: evidence.artifact, digest: evidence.digest };
         }
         const failureEvidence = execution.status === "PASS" ? {} : underlyingFailureEvidence(execution);
