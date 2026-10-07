@@ -42,7 +42,15 @@ export const plannerOutputSchema = z.object({
   formalizationNeed: z.enum(["NONE", "RECOMMENDED", "REQUIRED"]).optional(),
   formalizationReason: z.enum(["PRODUCT_UNCERTAINTY", "ARCHITECTURE_UNCERTAINTY", "REQUIREMENT_CONTRADICTION", "CROSS_COMPONENT_DESIGN", "OTHER"]).optional(),
   formalizationEvidenceRefs: z.array(z.string()).max(64).optional()
-}).strict();
+}).strict().superRefine((value, ctx) => {
+  // DETERMINISTIC non-vacuous-plan gate (H-NEW-2): the planner is only invoked
+  // when planning is required (DIRECT/NO_AGENT and planning-disabled flows
+  // short-circuit in waveExecutor before invocation), so an empty workUnits
+  // array is a silent planning bypass, not a legitimate result.
+  if (value.workUnits.length === 0) {
+    ctx.addIssue({ code: "custom", message: "PLANNER_EMPTY_RESULT: planner output must contain at least one work unit when planning is invoked.", path: ["workUnits"] });
+  }
+});
 
 const knowledgePackSchema = z.object({
   version: z.literal(1),
@@ -69,6 +77,21 @@ export const explorerOutputSchema = z.object({
   dependencies: z.array(z.string()).default([]),
   risks: z.array(z.string()).default([]),
   openQuestions: z.array(z.string()).default([])
+}).superRefine((value, ctx) => {
+  // DETERMINISTIC non-vacuous-discovery gate (H-NEW-2): a summary alone with
+  // every evidence array empty records no discovery; a genuine empty result
+  // must say so in findings risks or openQuestions.
+  if (
+    value.relevantFiles.length === 0 &&
+    value.findings.length === 0 &&
+    value.moduleBoundaries.length === 0 &&
+    value.tests.length === 0 &&
+    value.dependencies.length === 0 &&
+    value.risks.length === 0 &&
+    value.openQuestions.length === 0
+  ) {
+    ctx.addIssue({ code: "custom", message: "EXPLORER_EMPTY_RESULT: explorer output must populate at least one of relevantFiles, findings, moduleBoundaries, tests, dependencies, risks or openQuestions.", path: ["relevantFiles"] });
+  }
 });
 
 const productChoiceDraftSchema = z.object({
@@ -116,7 +139,14 @@ export const specAuthoringOutputSchema = z.object({
   }
 });
 
-export const implementerOutputSchema = z.object({ filesChanged: z.array(z.string()), behaviorImplemented: z.array(z.string()), decisions: z.array(z.string()).default([]), assumptions: z.array(z.string()).default([]), risks: z.array(z.string()).default([]), validationCommands: z.array(z.string()).default([]), followUp: z.array(z.string()).default([]), contractSync: z.array(z.string()).optional() });
+export const implementerOutputSchema = z.object({ filesChanged: z.array(z.string()), behaviorImplemented: z.array(z.string()), decisions: z.array(z.string()).default([]), assumptions: z.array(z.string()).default([]), risks: z.array(z.string()).default([]), validationCommands: z.array(z.string()).default([]), followUp: z.array(z.string()).default([]), contractSync: z.array(z.string()).optional() }).superRefine((value, ctx) => {
+  // DETERMINISTIC non-vacuous-implementation gate (H-NEW-2): an implementer
+  // result naming no changed files and no implemented behavior is vacuous;
+  // metadata arrays alone (decisions/assumptions/risks) are not evidence of work.
+  if (value.filesChanged.length === 0 && value.behaviorImplemented.length === 0) {
+    ctx.addIssue({ code: "custom", message: "IMPLEMENTER_EMPTY_RESULT: implementer output must name at least one changed file or one implemented behavior.", path: ["behaviorImplemented"] });
+  }
+});
 /**
  * Canonical Repairer output contract (DETERMINISTIC schema, MODEL content).
  * The no-mutation blocker path is `filesNeededOutsideScope[]` with a per-file
@@ -142,7 +172,22 @@ export const repairResultOutputSchema = z.object({
   }
 });
 export const findingSchema = z.object({ id: z.string().min(1), severity: z.enum(["critical", "high", "medium", "low", "note"]), category: z.string().min(1), location: z.object({ file: z.string().min(1), startLine: z.number().int().positive().optional(), endLine: z.number().int().positive().optional() }), evidence: z.string().min(1), impact: z.string().min(1), recommendedFix: z.string().min(1), requiredCompetencies: z.array(z.string()).min(1), reviewDimensions: z.array(z.string()).default([]), exceptionType: exceptionTypeSchema.optional() });
-export const reviewerOutputSchema = z.object({ verdict: z.enum(["PASS", "FAIL", "PASS_WITH_WARNINGS"]), findings: z.array(findingSchema), finalizationSafety: z.enum(["SAFE", "BLOCKED", "RISK_KNOWN"]), confidence: z.string().optional(), followUp: z.array(z.string()).default([]) });
+export const reviewerOutputSchema = z.object({ verdict: z.enum(["PASS", "FAIL", "PASS_WITH_WARNINGS"]), findings: z.array(findingSchema), finalizationSafety: z.enum(["SAFE", "BLOCKED", "RISK_KNOWN"]), confidence: z.string().optional(), followUp: z.array(z.string()).default([]) }).superRefine((value, ctx) => {
+  // DETERMINISTIC reviewer coherence gates (H-NEW-2, hoisted from the change
+  // and audit lane inline checks so every schema consumer agrees): a FAIL
+  // verdict requires at least one structured finding, and a passing verdict
+  // with critical/high findings must not declare finalization SAFE.
+  if (value.verdict === "FAIL" && value.findings.length === 0) {
+    ctx.addIssue({ code: "custom", message: "REVIEWER_FAIL_WITHOUT_FINDING: reviewer verdict FAIL requires at least one structured finding.", path: ["findings"] });
+  }
+  if (
+    (value.verdict === "PASS" || value.verdict === "PASS_WITH_WARNINGS") &&
+    value.finalizationSafety === "SAFE" &&
+    value.findings.some((finding) => finding.severity === "critical" || finding.severity === "high")
+  ) {
+    ctx.addIssue({ code: "custom", message: "REVIEWER_UNSAFE_PASS: reviewer verdict PASS with critical/high findings must not declare finalizationSafety SAFE.", path: ["finalizationSafety"] });
+  }
+});
 export const validatorOutputSchema = z.object({ verdict: z.enum(["PASS", "FAIL", "WARN"]), checks: z.array(z.object({ id: z.string(), status: z.enum(["PASS", "FAIL", "WARN", "SKIP"]), evidence: z.string().optional() })) });
 export const recoveryOutputSchema = z.object({ failureType: z.enum(["PATCH_CONTEXT_MISMATCH", "TOOL_FAILURE", "MISSING_CONTEXT", "WRONG_AGENT", "VALIDATION_FAILURE", "REVIEW_FAILURE", "AMBIGUOUS_OUTPUT", "CONFLICTING_RESULTS"]), rationale: z.string(), nextAction: z.string() });
 export const orchestratorOutputSchema = z.object({ summary: z.string(), delegatedAgents: z.array(z.string()).default([]), validationStatus: z.string().optional(), unresolved: z.array(z.string()).default([]), finalizationSafe: z.boolean().optional() });
@@ -156,6 +201,17 @@ export const supervisorOutputSchema = z.object({
   unresolved: z.array(z.string()).default([]),
   roadmap: z.array(supervisorRoadmapItemSchema).default([]),
   finalizationSafety: z.enum(["SAFE", "BLOCKED", "RISK_KNOWN"])
+}).superRefine((value, ctx) => {
+  // DETERMINISTIC supervisor coherence gate (H-NEW-2): SAFE finalization is
+  // contradictory while unresolved items or missing evidence remain declared.
+  if (value.finalizationSafety === "SAFE") {
+    if (value.unresolved.length > 0) {
+      ctx.addIssue({ code: "custom", message: "SUPERVISOR_UNSAFE_SAFE: supervisor finalizationSafety SAFE requires unresolved to be empty.", path: ["unresolved"] });
+    }
+    if (value.missingEvidence.length > 0) {
+      ctx.addIssue({ code: "custom", message: "SUPERVISOR_UNSAFE_SAFE: supervisor finalizationSafety SAFE requires missingEvidence to be empty.", path: ["missingEvidence"] });
+    }
+  }
 });
 
 export type WorkUnitOutput = z.infer<typeof workUnitOutputSchema>;

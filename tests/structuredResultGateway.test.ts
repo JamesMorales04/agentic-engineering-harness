@@ -44,7 +44,7 @@ afterEach(async () => {
 });
 
 function reviewerPayload(verdict: "PASS" | "FAIL" = "PASS") {
-  return { verdict, findings: [], finalizationSafety: verdict === "PASS" ? "SAFE" : "RISK_KNOWN", followUp: [] };
+  return { verdict, findings: verdict === "FAIL" ? [{ id: "F1", severity: "high", category: "correctness", location: { file: "source.ts" }, evidence: "failing check", impact: "blocks finalization", recommendedFix: "fix it", requiredCompetencies: ["general-engineering"], reviewDimensions: [] }] : [], finalizationSafety: verdict === "PASS" ? "SAFE" : "RISK_KNOWN", followUp: [] };
 }
 
 async function fixture(options: { supervisorGeneration?: number } = {}) {
