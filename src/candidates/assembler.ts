@@ -317,6 +317,16 @@ export async function assembleCandidateChangeSet(input: CandidateAssemblyInputV1
   if (JSON.stringify(changedFiles) !== JSON.stringify(patchFiles)) {
     throw new AehError("CANDIDATE_STALE", "ChangeSet changedFiles do not exactly match the paths touched by its patch.", { details: { declared: changedFiles, observed: patchFiles } });
   }
+  // C-NEW-4 (fail-closed): a mode-120000 patch entry whose *string* path is
+  // in-scope (e.g. `src/link`) can still point its link target outside the
+  // candidate root (`../../outside`, `/etc/passwd`). The scope gate below only
+  // matches path strings, so the patch-introduced link target must be gated
+  // here, before any `git apply` touches the worktree. This is the single
+  // assembly choke point: repair, wave and direct-assemble all funnel through
+  // this function. Residual (not covered here): patch-scope is not a sandbox;
+  // worker off-patch filesystem writes are only observed through the captured
+  // diff, never scope-checked live.
+  await assertPatchSymlinksContained(input.root, changeSet.patch);
   const outOfScope = changedFiles.filter((file) => !matchesAny(file, input.allowedScope));
   const forbidden = changedFiles.filter((file) => matchesAny(file, input.forbiddenScope ?? []));
   if (outOfScope.length || forbidden.length) {
@@ -660,6 +670,385 @@ function isInsideRoot(root: string, candidate: string): boolean {
 
 function isSafeRepositoryPath(value: string): boolean {
   return Boolean(value) && !path.isAbsolute(value) && !value.split("/").some((part) => !part || part === "." || part === "..");
+}
+
+/**
+ * Pure lexical rule shared by the assembly patch gate and the DIRECT
+ * materialize gate (direct.ts): a patch-introduced or untracked symlink must
+ * not point at an absolute/drive target and must not lexically resolve outside
+ * the repository root. Fail-closed: unsafe link paths, empty targets and
+ * unparseable inputs count as escapes.
+ */
+export function symlinkTargetEscapesRoot(linkPath: string, target: string): boolean {
+  if (!isSafeRepositoryPath(linkPath)) return true;
+  if (!target || target.includes("\0")) return true;
+  // Fail-closed: a legitimate single-line link target never spans lines. A
+  // newline/CR inside the target is either a parser artifact or an attack, so
+  // it counts as an escape (also shields the direct.ts readlink gates).
+  if (target.includes("\n") || target.includes("\r")) return true;
+  if (target.startsWith("/") || target.startsWith("\\")) return true;
+  if (/^[A-Za-z]:([\\/]|$)/.test(target)) return true;
+  const directory = path.posix.dirname(linkPath);
+  const joined = directory === "." ? target : `${directory}/${target}`;
+  const normalized = path.posix.normalize(joined);
+  return normalized === ".." || normalized.startsWith("../") || path.posix.isAbsolute(normalized);
+}
+
+interface PatchSymlinkV1 {
+  path: string;
+  target: string;
+  /** Rename source path when the entry was resolved from a pre-image rename (gates post-image only). */
+  prePath?: string;
+}
+
+/**
+ * Chain-aware absolute-path resolution for symlink containment gates.
+ *
+ * Walks a lexical absolute path component-by-component from the filesystem
+ * root, following on-disk symlinks via lstat/readlink as the kernel would:
+ * `..` pops the *resolved* prefix (not the lexical one), relative readlink
+ * targets splice into the pending components, and absolute readlink targets
+ * re-anchor at their own root. Components that do not exist (including the
+ * link target itself) are appended lexically -- nearest-existing-ancestor
+ * semantics -- so dangling targets still get a containment verdict.
+ *
+ * Shared by the assembly patch gate (below) and the direct.ts untracked /
+ * source gates: a lexically contained target such as `portal/file` still
+ * escapes when the existing in-repo `portal` symlink points outside the root.
+ *
+ * Fail-closed: symlink loops (>MAX_SYMLINK_CHAIN_FOLLOWS_V1 follows) and
+ * unexpected filesystem errors throw PARTICIPANT_PLAN_INVALID instead of
+ * returning an unverified path.
+ */
+export const MAX_SYMLINK_CHAIN_FOLLOWS_V1 = 40;
+
+export async function resolveAbsoluteWithExistingSymlinks(lexicalAbsolute: string): Promise<string> {
+  const root = path.parse(lexicalAbsolute).root || path.sep;
+  let current = root;
+  const pending: string[] = lexicalAbsolute
+    .slice(root.length)
+    .split("/")
+    .flatMap((part) => (path.sep === "\\" ? part.split("\\") : [part]))
+    .filter((part) => part.length > 0);
+  let follows = 0;
+  let lexicalOnly = false;
+  while (pending.length > 0) {
+    const component = pending.shift()!;
+    if (component === "." || component === "") continue;
+    if (component === "..") {
+      current = path.dirname(current);
+      continue;
+    }
+    current = path.join(current, component);
+    if (lexicalOnly) continue;
+    let stat;
+    try {
+      stat = await fs.lstat(current);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR") {
+        // No deeper path can exist through a missing/non-directory prefix;
+        // the remainder resolves lexically (dangling target stays verdictable).
+        lexicalOnly = true;
+        continue;
+      }
+      throw new AehError("PARTICIPANT_PLAN_INVALID", `Unable to verify symlink containment for '${lexicalAbsolute}'.`, { cause: error });
+    }
+    if (!stat.isSymbolicLink()) continue;
+    follows += 1;
+    if (follows > MAX_SYMLINK_CHAIN_FOLLOWS_V1) {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", `Unable to verify symlink containment for '${lexicalAbsolute}': too many nested symlinks.`);
+    }
+    const linkTarget = await fs.readlink(current).catch((error: unknown) => {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", `Unable to verify symlink containment for '${lexicalAbsolute}'.`, { cause: error });
+    });
+    const targetParts = linkTarget
+      .split("/")
+      .flatMap((part) => (path.sep === "\\" ? part.split("\\") : [part]))
+      .filter((part) => part.length > 0);
+    if (path.isAbsolute(linkTarget)) {
+      current = path.parse(linkTarget).root || path.sep;
+      pending.unshift(...targetParts);
+    } else {
+      current = path.dirname(current);
+      pending.unshift(...targetParts);
+    }
+  }
+  return path.normalize(current);
+}
+
+/**
+ * Fail-closed choke point for patch-introduced symlinks (C-NEW-4). Parses the
+ * patch text for entries whose post-image is a symlink (`new file mode
+ * 120000`, `new mode 120000`, or an `index <old>..<new> 120000` retarget) and
+ * rejects lexically escaping, absolute/drive, or unverifiable targets before
+ * any `git apply` touches the worktree. Pure deletions (`+++ /dev/null`) carry
+ * no post-image link and are skipped. Hunkless renames (`rename from` /
+ * `rename to` with no `+++`/mode/hunk lines) carry no in-patch evidence of
+ * symlink involvement, yet moving a symlink re-resolves its unchanged
+ * relative target against the new dirname -- which can escape even when the
+ * pre-image resolved inside. Rename blocks that yield no post-image link
+ * entry are therefore resolved against the pre-patch worktree (below): when
+ * the rename source is a mode-120000 symlink, its stored target becomes a
+ * post-image entry at the rename destination and flows through the same
+ * lexical + chain gates. Pure renames of non-symlinks stay skipped. A
+ * chain-aware resolution step
+ * (resolveAbsoluteWithExistingSymlinks) augments the lexical verdict: targets
+ * that traverse an existing in-repo symlink pointing outside the root are
+ * rejected even when the link dirname itself is a plain directory.
+ */
+async function assertPatchSymlinksContained(root: string, patch: string): Promise<void> {
+  const { links, unverifiable, renames } = patchSymlinksWithPostImageLink(patch);
+  const renamed = await resolveRenamedSymlinkPostImages(root, renames);
+  links.push(...renamed.links);
+  unverifiable.push(...renamed.unverifiable);
+  const lexicalOffense = links.find((link) => symlinkTargetEscapesRoot(link.path, link.target));
+  if (lexicalOffense || unverifiable.length > 0) {
+    const detail = lexicalOffense ? `${lexicalOffense.path} -> ${lexicalOffense.target}` : `${unverifiable[0]} -> <unverifiable link target>`;
+    throw new AehError("PARTICIPANT_PLAN_INVALID", `ChangeSet patch creates a symlink escaping the candidate root: ${detail}.`);
+  }
+  if (links.length === 0) return;
+  // Fail-closed: without the canonical root the chain resolution below cannot
+  // prove containment, so an unresolvable root rejects instead of silently
+  // skipping verification (fail-open).
+  const resolvedRoot = await fs.realpath(path.resolve(root)).catch((error: unknown) => {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", `ChangeSet patch creates a symlink whose containment cannot be verified for candidate root '${root}'.`, { cause: error });
+  });
+  for (const link of links) {
+    const directory = path.posix.dirname(link.path);
+    const absoluteDirectory = directory === "." ? resolvedRoot : path.join(resolvedRoot, ...directory.split("/"));
+    // Unnormalized join: `..` inside the target must resolve against the
+    // symlink-resolved prefix (kernel semantics), never lexically collapsed
+    // before existing in-repo symlinks are followed.
+    const lexicalAbsolute = path.isAbsolute(link.target) || link.target.startsWith("/")
+      ? link.target
+      : `${absoluteDirectory}/${link.target}`;
+    const resolved = await resolveAbsoluteWithExistingSymlinks(lexicalAbsolute);
+    if (!isInsideRoot(resolvedRoot, resolved)) {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", `ChangeSet patch creates a symlink escaping the candidate root: ${link.path} -> ${link.target}.`);
+    }
+    if (link.prePath !== undefined) {
+      // Rename pre-image resolution: computed through the same chain
+      // resolver for completeness but deliberately NOT gated. A pre-image
+      // escape is the tree's existing problem (out of scope here); only the
+      // new post-image resolution the patch introduces is gated above.
+      const preDirectory = path.posix.dirname(link.prePath);
+      const preAbsoluteDirectory = preDirectory === "." ? resolvedRoot : path.join(resolvedRoot, ...preDirectory.split("/"));
+      const preLexicalAbsolute = path.isAbsolute(link.target) || link.target.startsWith("/")
+        ? link.target
+        : `${preAbsoluteDirectory}/${link.target}`;
+      await resolveAbsoluteWithExistingSymlinks(preLexicalAbsolute);
+    }
+  }
+}
+
+interface PatchRenameV1 {
+  from: string;
+  to: string;
+}
+
+function patchSymlinksWithPostImageLink(patch: string): { links: PatchSymlinkV1[]; unverifiable: string[]; renames: PatchRenameV1[] } {
+  const links: PatchSymlinkV1[] = [];
+  const unverifiable: string[] = [];
+  const renames: PatchRenameV1[] = [];
+  for (const block of patch.split(/^diff --git /m).slice(1)) {
+    const lines = block.split("\n").map((line) => line.replace(/\r$/, ""));
+    const renameFrom = renamePathFromLine(lines.find((line) => line.startsWith("rename from ")), "rename from ");
+    const renameTo = renamePathFromLine(lines.find((line) => line.startsWith("rename to ")), "rename to ");
+    const postMarker = lines.find((line) => line.startsWith("+++ "));
+    if (!postMarker) {
+      // A hunkless rename carries no +++/mode/hunk lines, so the patch text
+      // cannot show symlink involvement; the pre-image worktree lookup below
+      // decides instead of this parser silently skipping the block.
+      if (renameFrom !== undefined && renameTo !== undefined) recordPatchRename(renames, unverifiable, renameFrom, renameTo);
+      continue;
+    }
+    const rawPost = postMarker.slice("+++ ".length).trim();
+    if (rawPost === "/dev/null") continue;
+    if (!isPostImageSymlinkBlock(lines)) {
+      // A rename block whose post-image markers do not claim mode-120000 can
+      // still move a committed symlink (e.g. hand-stripped markers): fall
+      // back to the pre-image lookup instead of silently skipping.
+      if (renameFrom !== undefined && renameTo !== undefined) recordPatchRename(renames, unverifiable, renameFrom, renameTo);
+      continue;
+    }
+    const postPath = stripDiffPathPrefix(rawPost);
+    if (!postPath || !isSafeRepositoryPath(postPath)) {
+      unverifiable.push(postPath || rawPost);
+      continue;
+    }
+    const added = lines
+      .filter((line) => line.startsWith("+") && !line.startsWith("+++ "))
+      .map((line) => line.slice(1).replace(/\r$/, ""));
+    if (added.length !== 1) {
+      if (added.length === 0 && renameFrom !== undefined && renameTo !== undefined) {
+        // A rename with no added lines keeps the stored blob: resolve the
+        // target from the pre-image instead of silently skipping (the rename
+        // escape). Any other shape stays fail-closed malformed below.
+        recordPatchRename(renames, unverifiable, renameFrom, renameTo);
+        continue;
+      }
+      // Fail-closed malformed: a symlink post-image blob carries exactly one
+      // target line. A multi-line block is either a parser artifact or an
+      // attack (e.g. a joint `portal\nfile` target that a split-and-check
+      // loop would verify piecemeal while the applied link resolves through
+      // the full string outside the root). Never split; reject as malformed.
+      unverifiable.push(added.length === 0 ? postPath : `${postPath} (malformed multi-line symlink target)`);
+      continue;
+    }
+    links.push({ path: postPath, target: added[0] });
+  }
+  return { links, unverifiable, renames };
+}
+
+/**
+ * Pre-patch worktree lookup for rename blocks the patch parser cannot decide
+ * (fail-closed delete+add treatment for gate purposes). A pure rename
+ * preserves blob and mode, so a non-symlink pre-image cannot yield a symlink
+ * post-image and stays skipped; a mode-120000 pre-image contributes its
+ * stored target as a post-image entry at the rename destination, which the
+ * caller gates through the shared lexical + chain checks (post-image
+ * resolution only). A missing pre-image is never skipped (see below).
+ */
+async function resolveRenamedSymlinkPostImages(root: string, renames: readonly PatchRenameV1[]): Promise<{ links: PatchSymlinkV1[]; unverifiable: string[] }> {
+  const links: PatchSymlinkV1[] = [];
+  const unverifiable: string[] = [];
+  for (const rename of renames) {
+    const oldAbsolute = path.join(root, ...rename.from.split("/"));
+    // Fail-closed pre-image lookup: this gate runs after
+    // assertWorkspaceMatchesCandidate, so the workspace agrees with the base
+    // candidate and a rename pre-image (a committed path) MUST exist. A
+    // lookup miss therefore proves decoder mismatch (an unhandled C escape
+    // or an invalid-UTF-8 octal that decoded to replacement chars while git
+    // resolves the raw bytes), a race, or tampering — in every case the
+    // gate cannot prove what moved. Reject as unverifiable instead of
+    // skipping, so every present-or-future decoding gap becomes at most an
+    // availability rejection, never a gate bypass (miss-and-skip).
+    const stat = await fs.lstat(oldAbsolute).catch((error: unknown) => {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", `Unable to verify renamed symlink containment for '${rename.from} -> ${rename.to}'.`, { cause: error });
+    });
+    // A non-symlink pre-image cannot rename into a symlink (blob and mode
+    // preserved): no behavior change, still skipped.
+    if (!stat.isSymbolicLink()) continue;
+    const target = await fs.readlink(oldAbsolute).catch((error: unknown) => {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", `Unable to verify renamed symlink containment for '${rename.from} -> ${rename.to}'.`, { cause: error });
+    });
+    links.push({ path: rename.to, target, prePath: rename.from });
+  }
+  return { links, unverifiable };
+}
+
+function renamePathFromLine(line: string | undefined, prefix: "rename from " | "rename to "): string | undefined {
+  if (line === undefined) return undefined;
+  return unquoteDiffPath(line.slice(prefix.length));
+}
+
+function recordPatchRename(renames: PatchRenameV1[], unverifiable: string[], from: string, to: string): void {
+  if (!isSafeRepositoryPath(from) || !isSafeRepositoryPath(to)) {
+    unverifiable.push(`rename ${from || "?"} -> ${to || "?"}`);
+    return;
+  }
+  renames.push({ from, to });
+}
+
+function isPostImageSymlinkBlock(lines: readonly string[]): boolean {
+  if (lines.some((line) => /^new file mode 120000$/.test(line))) return true;
+  if (lines.some((line) => /^new mode 120000$/.test(line))) return true;
+  if (lines.some((line) => /^new mode /.test(line))) return false;
+  if (lines.some((line) => /^deleted file mode /.test(line))) return false;
+  // The index-mode form covers retargets of an already-committed link. The
+  // hash shape is deliberately loose (`\S+`): a hand-crafted patch with
+  // non-hex placeholders must still be recognized, never skipped.
+  return lines.some((line) => /^index \S+\.\.\S+ 120000(?: |$)/.test(line));
+}
+
+function stripDiffPathPrefix(raw: string): string {
+  const value = unquoteDiffPath(raw);
+  if (value.startsWith("b/")) return value.slice(2);
+  return value;
+}
+
+/**
+ * Shared C-style unquoting for diff paths (Git core.quotePath quoting).
+ *
+ * Git emits `"..."`-quoted paths with C escapes when a path contains
+ * "unusual" bytes (newline, tab, quote, backslash, non-ASCII, ...): `\"`,
+ * `\\`, `\n`, `\t` (plus the remaining C controls) and octal `\NNN` byte
+ * escapes (three octal digits per byte, e.g. `\303\251` for U+00E9). The
+ * previous decoder only expanded `\\` and `\"`, so a C-quoted rename source
+ * such as `"src/we\nird/link"` decoded to a literal backslash-n path: the
+ * pre-image lstat missed (ENOENT -> skip) and a shallow rename that
+ * re-resolved an unchanged relative symlink target outside the root went
+ * undetected. The same gap applied to `+++` post-image paths.
+ *
+ * Both the `rename from/to` parser and the `+++` post-image parser funnel
+ * through this helper, so the fix closes both exposure classes at once.
+ * Octal escapes decode as raw bytes re-assembled as UTF-8 so multi-byte
+ * sequences survive; unknown escapes are preserved literally (fail-closed:
+ * never silently drop the backslash).
+ */
+function unquoteDiffPath(raw: string): string {
+  const value = raw.trim();
+  if (value.length < 2 || !value.startsWith('"') || !value.endsWith('"')) return value;
+  return decodeCQuotedPathInner(value.slice(1, -1));
+}
+
+function decodeCQuotedPathInner(inner: string): string {
+  const bytes: number[] = [];
+  let literalStart = 0;
+  const flushLiteral = (end: number): void => {
+    if (end > literalStart) {
+      for (const byte of Buffer.from(inner.slice(literalStart, end), "utf8")) bytes.push(byte);
+    }
+  };
+  let index = 0;
+  while (index < inner.length) {
+    if (inner[index] !== "\\") {
+      index += 1;
+      continue;
+    }
+    flushLiteral(index);
+    const next = inner[index + 1];
+    if (next === undefined) {
+      bytes.push(0x5c);
+      index += 1;
+      literalStart = index;
+      continue;
+    }
+    switch (next) {
+      case "a": bytes.push(0x07); index += 2; break;
+      case "b": bytes.push(0x08); index += 2; break;
+      case "f": bytes.push(0x0c); index += 2; break;
+      case "n": bytes.push(0x0a); index += 2; break;
+      case "r": bytes.push(0x0d); index += 2; break;
+      case "t": bytes.push(0x09); index += 2; break;
+      case "v": bytes.push(0x0b); index += 2; break;
+      case "\\": bytes.push(0x5c); index += 2; break;
+      case '"': bytes.push(0x22); index += 2; break;
+      default: {
+        if (next >= "0" && next <= "7") {
+          let cursor = index + 1;
+          let octal = "";
+          while (cursor < inner.length && octal.length < 3 && inner[cursor]! >= "0" && inner[cursor]! <= "7") {
+            octal += inner[cursor];
+            cursor += 1;
+          }
+          bytes.push(parseInt(octal, 8) & 0xff);
+          index = cursor;
+        } else {
+          bytes.push(0x5c);
+          const codePoint = inner.codePointAt(index + 1)!;
+          const text = String.fromCodePoint(codePoint);
+          for (const byte of Buffer.from(text, "utf8")) bytes.push(byte);
+          index += 1 + text.length;
+        }
+        break;
+      }
+    }
+    literalStart = index;
+  }
+  flushLiteral(index);
+  return Buffer.from(bytes).toString("utf8");
 }
 
 async function pathsTouchedByPatch(root: string, patch: string): Promise<string[]> {
