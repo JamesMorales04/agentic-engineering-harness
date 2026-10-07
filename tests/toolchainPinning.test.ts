@@ -47,12 +47,64 @@ describe("toolchain pinning (L-NEW-1/L-NEW-2/L-NEW-3/L-NEW-4/L-NEW-6/L-NEW-7)", 
     }
   });
 
-  it("ships .npmrc with ignore-scripts=true and a pinned packageManager", async () => {
-    const npmrc = await fs.readFile(path.join(REPO_ROOT, ".npmrc"), "utf8");
-    expect(npmrc).toMatch(/^\s*ignore-scripts\s*=\s*true\s*$/m);
+  it("has NO global .npmrc ignore-scripts so the repo's own prepare keeps working", async () => {
+    // INVERSION JUSTIFICATION (Luna blocker a): the previous revision shipped
+    // `.npmrc` with `ignore-scripts=true`. That breaks this repo's own first CI
+    // job: `npm ci` would skip the root `prepare` script (which builds dist and
+    // links the self CLI via scripts/link-self-bin.mjs), yet CI then requires
+    // `node_modules/.bin/aeh` before `release:check` builds. Lifecycle-script
+    // protection was moved to its true scope instead: project-dependency
+    // installs in src/toolchain/setup.ts run with a HERMITIC PATH (pinned
+    // prefix only, no ambient-PATH tail), which closes the L6 decoy-shim vector
+    // while keeping scripts functional. A global ignore-scripts must never
+    // return: the file must be absent, or contain no active ignore-scripts
+    // directive (commented rationale lines are allowed).
+    const npmrcPath = path.join(REPO_ROOT, ".npmrc");
+    const npmrc = await fs.readFile(npmrcPath, "utf8").catch(() => undefined);
+    if (npmrc !== undefined) {
+      const active = npmrc.split(/\r?\n/).filter((line) => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith(";")) return false;
+        return /^\s*ignore-scripts\s*=/m.test(line);
+      });
+      expect(active).toEqual([]);
+    }
     const pkg = JSON.parse(await fs.readFile(path.join(REPO_ROOT, "package.json"), "utf8")) as { packageManager?: string };
     expect(typeof pkg.packageManager).toBe("string");
     expect(pkg.packageManager).toMatch(/^(npm|pnpm|yarn)@\d+\.\d+\.\d+(-.+)?$/);
+  });
+
+  it("builds a hermetic install env for project dependencies (no ambient-PATH tail)", async () => {
+    // Luna blocker (a) RED: setup.ts project-dependency installs must run with
+    // a HERMITIC PATH (pinned prefix only). An ambient PATH containing a decoy
+    // shim dir must NOT leak into the install env PATH (L6 decoy-shim vector).
+    const { buildProjectDependencyInstallEnv } = await import("../src/toolchain/setup.js");
+    const { buildHermeticChildPath } = await import("../src/utils/process.js");
+    expect(typeof buildProjectDependencyInstallEnv).toBe("function");
+    const decoy = path.join(os.tmpdir(), "aeh-decoy-shim-red");
+    const ambient = `${decoy}${path.delimiter}/usr/local/bin${path.delimiter}/usr/bin${path.delimiter}/bin`;
+    const previousPath = process.env.PATH;
+    process.env.PATH = ambient;
+    try {
+      const env = (buildProjectDependencyInstallEnv as (w: string, b: readonly string[]) => Record<string, string>)(
+        "/repo/.harness/bin",
+        ["/repo/.config/mise/shims"]
+      );
+      const entries = String(env.PATH).split(path.delimiter);
+      expect(entries).toContain("/repo/.harness/bin");
+      expect(entries).toContain("/repo/.config/mise/shims");
+      expect(String(env.PATH)).not.toContain(decoy);
+      // Exact hermetic construction: pinned prefix + minimal system dirs, and
+      // nothing else (no ambient tail even though ambient PATH has the decoy).
+      expect(String(env.PATH)).toBe(
+        (buildHermeticChildPath as (p?: string) => string)(
+          ["/repo/.harness/bin", "/repo/.config/mise/shims"].join(path.delimiter)
+        )
+      );
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+    }
   });
 
   it("uses exact-equality version semantics (pre-release suffixes never strip)", () => {
@@ -136,6 +188,96 @@ describe("toolchain pinning (L-NEW-1/L-NEW-2/L-NEW-3/L-NEW-4/L-NEW-6/L-NEW-7)", 
     );
     expect(result.ok).toBe(true);
     expect(result.divergences).toEqual([]);
+  });
+
+  it("shipped mise.lock parses with zero unparsed in-scope lines (gate stays conclusive)", async () => {
+    // Regression guard for the fail-closed parser: the repo's own committed
+    // mise.lock (platform checksum blocks + aube digest lines) must remain in
+    // the documented ignored subset, so doctor on this repo never reports a
+    // spurious INCONCLUSIVE.
+    const { parseMiseLockDetailed } = await import("../src/toolchain/pinning.js");
+    const content = await fs.readFile(path.join(REPO_ROOT, ".config", "mise", "mise.lock"), "utf8");
+    const detailed = (parseMiseLockDetailed as (c: string) => { entries: Record<string, unknown>; unparsedInScope: string[] })(content);
+    expect(detailed.unparsedInScope).toEqual([]);
+    expect(Object.keys(detailed.entries).length).toBeGreaterThan(0);
+  });
+
+  it("fails closed when toolchain.lock.json is absent (uninitialized, never consistent)", () => {
+    // Luna blocker (b) RED 1: toolchain.lock.json is gitignored machine-local
+    // state that `aeh setup` always writes. Absence means uninitialized — the
+    // old code returned ok:true ("consistent"), a lie on fresh checkouts.
+    const result = checkToolchainLockConsistency(
+      { version: 1, manager: { provider: "mise" }, tools: { node: { kind: "mise", command: "node", source: "node", version: "22.23.2" } } },
+      undefined,
+      {}
+    );
+    expect(result.ok).toBe(false);
+    expect(result.divergences.join("\n")).toMatch(/toolchain-lock-uninitialized/);
+    expect(result.divergences.join("\n")).toMatch(/aeh setup/);
+  });
+
+  it("treats a missing mise entry for a pinned tool as DRIFT (cannot verify, not skip)", () => {
+    // Luna blocker (b) RED 2: the old code silently skipped tools with no
+    // mise.lock entry. A pinned mise-provisioned tool with no entry cannot be
+    // verified and must fail closed.
+    const result = checkToolchainLockConsistency(
+      { version: 1, manager: { provider: "mise" }, tools: { node: { kind: "mise", command: "node", source: "node", version: "22.23.2" } } },
+      { version: 1, generatedAt: new Date().toISOString(), profile: "auto", tools: { node: { command: "node", provisioning: "mise", source: "node", requestedVersion: "22.23.2", resolvedVersion: "22.23.2" } } },
+      {}
+    );
+    expect(result.ok).toBe(false);
+    expect(result.divergences.join("\n")).toMatch(/node/);
+    expect(result.divergences.join("\n")).toMatch(/mise\.lock/);
+  });
+
+  it("counts unparseable in-scope mise.lock constructs instead of false-complying", async () => {
+    // Luna blocker (b) RED 3: inline comments on [[tools.*]] headers and
+    // dotted-key headers are constructs the subset parser cannot parse. They
+    // must be counted fail-closed (INCONCLUSIVE), never silently skipped —
+    // and following fields must not be misattributed to the previous tool.
+    const { parseMiseLockDetailed } = await import("../src/toolchain/pinning.js");
+    expect(typeof parseMiseLockDetailed).toBe("function");
+    const parse = parseMiseLockDetailed as (
+      content: string
+    ) => { entries: Record<string, { version?: string }>; unparsedInScope: string[] };
+    const content = `lockfile_version = 2\n\n[[tools.node]]\nversion = "22.23.2"\nbackend = "core:node"\nspecifiers = ["22.23.2"]\n\n[[tools.node.extra]]\nversion = "9.9.9"\n\n[[tools.python]] # trailing comment\nversion = "3.13.15"\n`;
+    const detailed = parse(content);
+    expect(detailed.unparsedInScope.length).toBeGreaterThanOrEqual(2);
+    // Fail-closed non-attribution: fields under unparseable headers never land
+    // on another tool (dotted header must not clobber node; commented header
+    // yields no python entry at all).
+    expect(detailed.entries["node"]?.version).toBe("22.23.2");
+    expect(detailed.entries["python"]).toBeUndefined();
+    const aligned = checkToolchainLockConsistency(
+      { version: 1, manager: { provider: "mise" }, tools: { node: { kind: "mise", command: "node", source: "node", version: "22.23.2" } } },
+      { version: 1, generatedAt: new Date().toISOString(), profile: "auto", tools: { node: { command: "node", provisioning: "mise", source: "node", requestedVersion: "22.23.2", resolvedVersion: "22.23.2" } } },
+      parseMiseLock(content),
+      { miseLockUnparsedInScope: detailed.unparsedInScope }
+    );
+    expect(aligned.ok).toBe(false);
+    expect(aligned.divergences.join("\n")).toMatch(/INCONCLUSIVE/);
+  });
+
+  it("fresh-machine doctor reports lock-consistency uninitialized instead of consistent", async () => {
+    // Luna blocker (b) doctor integration: no toolchain.lock.json on disk
+    // (fresh checkout, lock path is gitignored) must surface a non-ok
+    // toolchain-lock-uninitialized diagnostic, not ok:true "consistent".
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-pinning-uninit-"));
+    await fs.mkdir(path.join(root, ".harness"), { recursive: true });
+    await fs.writeFile(
+      path.join(root, ".harness", "toolchain.yaml"),
+      `version: 1\nmanager:\n  provider: mise\ntools:\n  node:\n    kind: mise\n    command: node\n    source: node\n    version: "22.23.2"\n    activateWhen: [always]\nprojectDependencies:\n  autoDetect: false\n`
+    );
+    const project: HarnessProjectConfig = {
+      version: 1,
+      project: { name: "pinning-uninit" },
+      toolchain: { configPath: ".harness/toolchain.yaml", lockPath: ".harness/toolchain.lock.json", statePath: ".harness/toolchain.state.json", generatedMisePath: ".config/mise/conf.d/aeh.toml" }
+    };
+    const doctor = await runToolchainDoctor(root, project);
+    const consistency = doctor.find((item) => item.component === "toolchain-lock-consistency");
+    expect(consistency?.ok).toBe(false);
+    expect(consistency?.message).toMatch(/toolchain-lock-uninitialized/);
+    expect(consistency?.message).toMatch(/aeh setup/);
   });
 
   it("setup refuses version:latest requested pins (fail-closed)", async () => {

@@ -119,40 +119,73 @@ export function resolveMiseEntryForTool(
  * Parses only `[[tools.*]]` headers plus `version`, `backend`, and
  * `specifiers` fields; all other TOML (platform checksums, aube digests) is
  * ignored. Multi-line `specifiers = [...]` arrays are supported.
+ *
+ * FAIL-CLOSED ACCOUNTING (parseMiseLockDetailed): constructs in
+ * `[[tools.*]]` scope that this subset parser cannot parse are counted in
+ * `unparsedInScope` instead of being silently skipped:
+ * - `[[tools.*]]` header attempts the header pattern cannot match (trailing
+ *   inline comments) or cannot attribute (dotted keys);
+ * - non-empty, non-comment field lines under a valid `[[tools.*]]` entry that
+ *   are not `version`/`backend`/`specifiers` (including dotted keys and field
+ *   values with trailing inline comments, which are never stripped-and-
+ *   reparsed as clean values);
+ * - any section header ends the current entry section, so fields under an
+ *   unparseable header are never misattributed to the previous tool.
+ * Single-bracket sections (`[tools."<source>"."platforms.<p>"]` checksum /
+ * digest blocks) and the file preamble are the documented out-of-scope
+ * subset: they end the current entry section but are never counted, so real
+ * mise.lock files with platform blocks stay conclusive. The same holds for
+ * `aube = {...}` digest-evidence lines under an entry: integrity evidence
+ * orthogonal to this gate's version-consistency claim (named in the original
+ * subset contract), explicitly ignored rather than counted. A non-empty
+ * `unparsedInScope` makes checkToolchainLockConsistency INCONCLUSIVE-fail
+ * (never false-comply).
  */
-export function parseMiseLock(content: string): Record<string, ParsedMiseLockEntry> {
-  const result: Record<string, ParsedMiseLockEntry> = {};
+export interface DetailedMiseLockParse {
+  entries: Record<string, ParsedMiseLockEntry>;
+  unparsedInScope: string[];
+}
+
+const MISE_TOOLS_HEADER = /^\s*\[\[tools\.(.+)\]\]\s*$/;
+
+export function parseMiseLockDetailed(content: string): DetailedMiseLockParse {
+  const entries: Record<string, ParsedMiseLockEntry> = {};
+  const unparsedInScope: string[] = [];
   const lines = content.split(/\r?\n/);
   let current: string | undefined;
+  let inEntrySection = false;
   let inSpecifiers = false;
   let specBuffer = "";
-  const header = /^\s*\[\[tools\.(.+)\]\]\s*$/;
   for (const raw of lines) {
     const line = raw.trim();
     if (!line || line.startsWith("#")) continue;
-    const headerMatch = line.match(header);
-    if (headerMatch) {
-      let key = headerMatch[1].trim();
-      if ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'"))) {
-        try {
-          key = JSON.parse(key);
-        } catch {
-          key = key.slice(1, -1);
+    if (line.startsWith("[")) {
+      const headerMatch = line.match(MISE_TOOLS_HEADER);
+      if (headerMatch) {
+        const key = unquoteTomlKey(headerMatch[1].trim());
+        if (!key.includes(".")) {
+          current = key;
+          entries[current] ??= {};
+          inEntrySection = true;
+          inSpecifiers = false;
+          specBuffer = "";
+          continue;
         }
       }
-      if (key.includes(".")) continue;
-      current = key;
-      result[current] ??= {};
+      // In-scope-but-unparseable header attempt: double-bracket tools headers
+      // with dotted keys or trailing inline comments. Counted fail-closed.
+      if (/^\[\[\s*tools\./.test(line)) unparsedInScope.push(raw);
+      current = undefined;
+      inEntrySection = false;
       inSpecifiers = false;
       specBuffer = "";
       continue;
     }
-    if (!current) continue;
-    if (current.includes(".")) continue;
+    if (!inEntrySection || !current) continue;
     if (inSpecifiers) {
       specBuffer += ` ${line}`;
       if (line.includes("]")) {
-        result[current].specifiers = parseStringArray(specBuffer);
+        entries[current].specifiers = parseStringArray(specBuffer);
         inSpecifiers = false;
         specBuffer = "";
       }
@@ -160,26 +193,62 @@ export function parseMiseLock(content: string): Record<string, ParsedMiseLockEnt
     }
     const versionMatch = line.match(/^version\s*=\s*(.+)\s*$/);
     if (versionMatch) {
-      result[current].version = parseTomlString(versionMatch[1]);
+      if (hasTrailingComment(versionMatch[1])) { unparsedInScope.push(raw); continue; }
+      entries[current].version = parseTomlString(versionMatch[1]);
       continue;
     }
     const backendMatch = line.match(/^backend\s*=\s*(.+)\s*$/);
     if (backendMatch) {
-      result[current].backend = parseTomlString(backendMatch[1]);
+      if (hasTrailingComment(backendMatch[1])) { unparsedInScope.push(raw); continue; }
+      entries[current].backend = parseTomlString(backendMatch[1]);
       continue;
     }
     const specifiersMatch = line.match(/^specifiers\s*=\s*(.+)\s*$/);
     if (specifiersMatch) {
       const rest = specifiersMatch[1].trim();
       if (rest.includes("]")) {
-        result[current].specifiers = parseStringArray(rest);
+        entries[current].specifiers = parseStringArray(rest);
       } else {
         inSpecifiers = true;
         specBuffer = rest;
       }
+      continue;
+    }
+    // `aube = {...}` digest evidence is named ignored-subset (see contract
+    // above): integrity evidence orthogonal to version consistency.
+    if (/^aube\s*=/.test(line)) continue;
+    unparsedInScope.push(raw);
+  }
+  return { entries, unparsedInScope };
+}
+
+export function parseMiseLock(content: string): Record<string, ParsedMiseLockEntry> {
+  return parseMiseLockDetailed(content).entries;
+}
+
+function unquoteTomlKey(key: string): string {
+  if ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'"))) {
+    try {
+      return JSON.parse(key);
+    } catch {
+      return key.slice(1, -1);
     }
   }
-  return result;
+  return key;
+}
+
+/** True when a TOML scalar carries a `#` comment outside quoted strings. */
+function hasTrailingComment(value: string): boolean {
+  let quote: string | undefined;
+  for (let i = 0; i < value.length; i++) {
+    const char = value[i];
+    if (quote) {
+      if (char === "\\") i++;
+      else if (char === quote) quote = undefined;
+    } else if (char === '"' || char === "'") quote = char;
+    else if (char === "#") return true;
+  }
+  return false;
 }
 
 function parseTomlString(value: string): string | undefined {
@@ -209,13 +278,14 @@ function parseStringArray(value: string): string[] {
   });
 }
 
-export async function loadMiseLockForDoctor(root: string): Promise<{ parsed: Record<string, ParsedMiseLockEntry>; file: string } | undefined> {
+export async function loadMiseLockForDoctor(root: string): Promise<{ parsed: Record<string, ParsedMiseLockEntry>; file: string; unparsedInScope: string[] } | undefined> {
   const candidates = [".config/mise/mise.lock", "mise.lock", ".mise.lock"];
   for (const candidate of candidates) {
     try {
       const file = path.resolve(root, candidate);
       const content = await fs.readFile(file, "utf8");
-      return { parsed: parseMiseLock(content), file: candidate };
+      const detailed = parseMiseLockDetailed(content);
+      return { parsed: detailed.entries, file: candidate, unparsedInScope: detailed.unparsedInScope };
     } catch {
       continue;
     }
@@ -231,10 +301,24 @@ export interface LockConsistencyResult {
 export function checkToolchainLockConsistency(
   toolchain: ToolchainConfig,
   lock: ToolchainLock | undefined,
-  miseLock: Record<string, ParsedMiseLockEntry> | undefined
+  miseLock: Record<string, ParsedMiseLockEntry> | undefined,
+  options: { miseLockUnparsedInScope?: readonly string[] } = {}
 ): LockConsistencyResult {
   const divergences: string[] = [];
-  if (!lock) return { ok: true, divergences };
+  if (!lock) {
+    // Fail-closed: toolchain.lock.json is gitignored machine-local state that
+    // `aeh setup` always writes. Absence means uninitialized — never "ok".
+    return { ok: false, divergences: ["toolchain-lock-uninitialized: no toolchain.lock.json found; run `aeh setup` to generate it (post-setup it always exists)."] };
+  }
+  const unparsed = options.miseLockUnparsedInScope ?? [];
+  if (unparsed.length) {
+    // INCONCLUSIVE-fail: the subset parser could not parse in-scope mise.lock
+    // constructs, so consistency cannot be verified. Never false-comply.
+    const preview = unparsed.slice(0, 3).map((line) => line.trim().slice(0, 80)).join(" | ");
+    divergences.push(
+      `INCONCLUSIVE: mise.lock has ${unparsed.length} unparsed in-scope line(s) (e.g. ${preview}); lock consistency cannot be verified. Regenerate locks with 'aeh setup' using supported constructs.`
+    );
+  }
   if (!miseLock) return { ok: divergences.length === 0, divergences };
   for (const [name, entry] of Object.entries(lock.tools)) {
     const definition = toolchain.tools[name];
@@ -244,7 +328,18 @@ export function checkToolchainLockConsistency(
       );
     }
     const miseEntry = resolveMiseEntryForTool(miseLock, name, definition?.source ?? entry.source);
-    if (miseEntry && entry.resolvedVersion && miseEntry.version && entry.resolvedVersion !== miseEntry.version) {
+    if (!miseEntry) {
+      // Fail-closed: a mise-provisioned pinned tool with no mise.lock entry
+      // cannot be verified. Missing entries are DRIFT, never skipped.
+      const expectsMiseEntry = entry.provisioning === "mise" || (entry.provisioning === undefined && definition?.kind === "mise");
+      if (expectsMiseEntry) {
+        divergences.push(
+          `tool '${name}' has no entry in mise.lock (cannot verify, not skipped; run \`aeh setup\` to regenerate locks).`
+        );
+      }
+      continue;
+    }
+    if (entry.resolvedVersion && miseEntry.version && entry.resolvedVersion !== miseEntry.version) {
       divergences.push(
         `tool '${name}' version divergence: toolchain.lock resolved='${entry.resolvedVersion}' vs mise.lock version='${miseEntry.version}'`
       );

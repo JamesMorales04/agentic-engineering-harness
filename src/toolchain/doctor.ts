@@ -205,7 +205,7 @@ export async function runToolchainDoctor(root: string, project: HarnessProjectCo
   }
   try {
     const miseLock = await loadMiseLockForDoctor(root);
-    const consistency = checkToolchainLockConsistency(toolchain, lock, miseLock?.parsed);
+    const consistency = checkToolchainLockConsistency(toolchain, lock, miseLock?.parsed, { miseLockUnparsedInScope: miseLock?.unparsedInScope });
     results.push({
       component: "toolchain-lock-consistency",
       required: true,
