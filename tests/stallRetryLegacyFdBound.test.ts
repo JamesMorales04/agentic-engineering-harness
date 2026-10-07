@@ -100,23 +100,46 @@ describe("stall-retry legacy migration fd-bound decision (round-12 R1)", () => {
       await fs.writeFile(pending, bytes);
       const oldMs = Date.now() - 3 * 60 * 60_000;
       await fs.utimes(pending, new Date(oldMs), new Date(oldMs));
-      const decidedIno = (await fs.stat(pending)).ino;
+      const decidedStat = await fs.stat(pending);
+      const decidedIno = decidedStat.ino;
+      const decidedMtimeMs = decidedStat.mtimeMs;
 
       // Post-snapshot rename replacement (new inode) with old mtime restored:
       // identical bytes, stale mtime — the pre-fix read(old)/stat(new) split
       // hashed the old read but bound the new identity and passed both.
       // FD-bound snapshot pins the old inode, so the take sweeps the new one
-      // and the inode check quarantines.
+      // and the inode check quarantines. Production sequencing (rename-first):
+      // the decided marker is renamed aside to a holding grave BEFORE the
+      // replacement is created, so the old inode stays allocated and the
+      // replacement necessarily carries a different inode on ANY filesystem
+      // (delete-then-recreate `rm + writeFile` lets some filesystems, e.g.
+      // the CI runner's, reuse the freed inode number — collapsing the setup
+      // into a full match that counts instead of quarantining). Both the
+      // decided marker and the replacement derive their mtime from the same
+      // `oldMs` utimes input, so mtime equality survives any filesystem
+      // timestamp granularity by construction (identical input ⇒ identical
+      // stored value); only the inode differs, isolating the inode check.
       const origOpen = fs.open;
       let fired = false;
       let replacementIno = -1;
+      let replacementMtimeMs = Number.NaN;
+      const holding = `${pending}.test-holding-fdbound`;
       const spy = vi.spyOn(fs, "open").mockImplementation((async (p: unknown, ...rest: unknown[]) => {
         if (!fired && String(p) === lockPath) {
           fired = true;
-          await fs.rm(pending, { force: true });
-          await fs.writeFile(pending, bytes);
-          await fs.utimes(pending, new Date(oldMs), new Date(oldMs));
-          replacementIno = (await fs.stat(pending)).ino;
+          await fs.rename(pending, holding);
+          try {
+            await fs.writeFile(pending, bytes);
+            await fs.utimes(pending, new Date(oldMs), new Date(oldMs));
+            const st = await fs.stat(pending);
+            replacementIno = st.ino;
+            replacementMtimeMs = st.mtimeMs;
+          } finally {
+            // Safe to release now: the replacement's inode number was
+            // assigned at creation while the old inode was still allocated,
+            // so freeing the holding grave cannot retroactively alias them.
+            await fs.rm(holding, { force: true });
+          }
         }
         return (origOpen as (...a: unknown[]) => Promise<unknown>)(p, ...rest);
       }) as typeof fs.open);
@@ -131,6 +154,13 @@ describe("stall-retry legacy migration fd-bound decision (round-12 R1)", () => {
       expect(fired).toBe(true);
       expect(replacementIno).not.toBe(-1);
       expect(replacementIno).not.toBe(decidedIno);
+      // Setup validity: mtime preserved (same `oldMs` input ⇒ same stored
+      // value on any granularity), so the ONLY decided-vs-grave divergence
+      // is the inode — the quarantine below is load-bearing on the inode
+      // check specifically, not the mtime tripwire. Tolerance (2s) covers
+      // the coarsest real-world timestamp granularities (FAT 2s); a fresh
+      // mtime would differ by ~3h, so this still isolates the inode arm.
+      expect(Math.abs(replacementMtimeMs - decidedMtimeMs)).toBeLessThanOrEqual(2000);
 
       await expect(fs.stat(pending)).rejects.toMatchObject({ code: "ENOENT" });
       const entries = await fs.readdir(path.dirname(pending));

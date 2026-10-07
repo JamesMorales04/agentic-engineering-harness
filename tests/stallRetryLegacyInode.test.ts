@@ -25,9 +25,19 @@ import {
  *
  * Deterministic injection (no timing): hook the ledger-lock acquisition —
  * strictly after the decision (read + stat + staleness evaluation) and
- * strictly before the take — and atomically replace the marker (rm +
- * rewrite, the harness temp+rename idiom) with byte-identical content. The
- * replacement is a fresh file: new inode, fresh mtime.
+ * strictly before the take — and replace the marker with byte-identical
+ * content using PRODUCTION sequencing: rename-first. The decided marker is
+ * renamed aside to a holding grave BEFORE the replacement is created at the
+ * marker path, exactly as production's take detaches to
+ * `<pending>.grave-<uuid>` before verifying. The old inode stays allocated
+ * in the holding grave, so the kernel cannot reuse its number for the
+ * replacement — inode divergence holds on ANY filesystem. (A delete-then-
+ * recreate `rm + writeFile` here is load-bearing-brittle: some filesystems,
+ * e.g. the CI runner's, immediately reuse the freed inode number, so the
+ * "different file" setup silently collapses into the same inode and the
+ * setup-validity assertion below fails.) The replacement is a fresh file:
+ * new inode, fresh mtime (~3h newer than the decided mtime — far apart, so
+ * the mtime arm is granularity-robust too).
  */
 describe("stall-retry legacy migration inode binding (round-11 G1)", () => {
   it("fresh identical-bytes replacement (different inode) between decision and take is NOT counted", async () => {
@@ -54,16 +64,27 @@ describe("stall-retry legacy migration inode binding (round-11 G1)", () => {
       await fs.utimes(pending, new Date(oldMs), new Date(oldMs));
       const decidedIno = (await fs.stat(pending)).ino;
 
-      // Atomic replacement (rm + rewrite ⇒ new inode), byte-identical.
+      // Rename-first replacement (production sequencing): detach the decided
+      // marker to a holding grave BEFORE creating the replacement at the
+      // marker path. The old inode stays allocated, so the replacement is
+      // necessarily a different file on any filesystem. Byte-identical.
       const origOpen = fs.open;
       let fired = false;
       let replacementIno = -1;
+      const holding = `${pending}.test-holding-inode`;
       const spy = vi.spyOn(fs, "open").mockImplementation((async (p: unknown, ...rest: unknown[]) => {
         if (!fired && String(p) === lockPath) {
           fired = true;
-          await fs.rm(pending, { force: true });
-          await fs.writeFile(pending, bytes);
-          replacementIno = (await fs.stat(pending)).ino;
+          await fs.rename(pending, holding);
+          try {
+            await fs.writeFile(pending, bytes);
+            replacementIno = (await fs.stat(pending)).ino;
+          } finally {
+            // Safe to release now: the replacement's inode number was
+            // assigned at creation while the old inode was still allocated,
+            // so freeing the holding grave cannot retroactively alias them.
+            await fs.rm(holding, { force: true });
+          }
         }
         return (origOpen as (...a: unknown[]) => Promise<unknown>)(p, ...rest);
       }) as typeof fs.open);
@@ -77,6 +98,8 @@ describe("stall-retry legacy migration inode binding (round-11 G1)", () => {
       }
       expect(fired).toBe(true);
       // Setup validity: the replacement really is a different file.
+      // Kernel-guaranteed by rename-first (the old inode was still allocated
+      // when the replacement was created), on any filesystem.
       expect(replacementIno).not.toBe(-1);
       expect(replacementIno).not.toBe(decidedIno);
 
