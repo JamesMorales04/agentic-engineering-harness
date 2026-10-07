@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { ResolvedToolchainTool, ToolchainConfig, ToolchainLock } from "./types.js";
+import type { ResolvedToolchainTool, ToolchainConfig, ToolchainLock, ToolchainLockTool, ToolchainToolDefinition } from "./types.js";
 
 export function isLatestVersion(version: string | undefined): boolean {
   if (!version) return true;
@@ -154,7 +154,13 @@ export function resolveMiseEntryForTool(
  * orthogonal to this gate's version-consistency claim (named in the original
  * subset contract), explicitly ignored rather than counted. A non-empty
  * `unparsedInScope` makes checkToolchainLockConsistency INCONCLUSIVE-fail
- * (never false-comply).
+ * (never false-comply). Two opaque-run truncation rules close the
+ * swallow-through-EOF gap: a section-header line (`[`-leading) while inside a
+ * known-opaque run ends the run — the opener never balanced, so it is counted
+ * and the header is processed normally (headers are structural and cannot
+ * occur inside a valid inline table, so later tool sections are never
+ * swallowed); EOF with a still-open opaque run (unbalanced table, truncated
+ * lock) counts the opener the same way.
  */
 export interface DetailedMiseLockParse {
   entries: Record<string, ParsedMiseLockEntry>;
@@ -173,16 +179,29 @@ export function parseMiseLockDetailed(content: string): DetailedMiseLockParse {
   let specBuffer = "";
   let inOpaqueKnown = false;
   let opaqueDepth = 0;
+  let opaqueOpener: string | undefined;
   for (const raw of lines) {
     const line = raw.trim();
     if (!line || line.startsWith("#")) continue;
-    if (inOpaqueKnown) {
+    if (inOpaqueKnown && line.startsWith("[")) {
+      // Section headers are structural: they cannot occur inside a valid
+      // inline table, so a header line ends the opaque run and is processed
+      // as a header normally. The table that opened the run never balanced
+      // (truncated lock): record the opener fail-closed (INCONCLUSIVE) so a
+      // truncated `uv = { ...` can never swallow following tool sections
+      // into false compliance.
+      if (opaqueOpener !== undefined) unparsedInScope.push(opaqueOpener);
+      inOpaqueKnown = false;
+      opaqueDepth = 0;
+      opaqueOpener = undefined;
+    } else if (inOpaqueKnown) {
       // Multi-line inline table under a known-opaque field (aube/uv/options):
       // consumed until brackets balance, never counted.
       opaqueDepth += bracketDepthDelta(line);
       if (opaqueDepth <= 0) {
         inOpaqueKnown = false;
         opaqueDepth = 0;
+        opaqueOpener = undefined;
       }
       continue;
     }
@@ -198,6 +217,7 @@ export function parseMiseLockDetailed(content: string): DetailedMiseLockParse {
           specBuffer = "";
           inOpaqueKnown = false;
           opaqueDepth = 0;
+          opaqueOpener = undefined;
           continue;
         }
       }
@@ -210,6 +230,7 @@ export function parseMiseLockDetailed(content: string): DetailedMiseLockParse {
       specBuffer = "";
       inOpaqueKnown = false;
       opaqueDepth = 0;
+      opaqueOpener = undefined;
       continue;
     }
     if (!inEntrySection || !current) continue;
@@ -257,11 +278,17 @@ export function parseMiseLockDetailed(content: string): DetailedMiseLockParse {
       if (depth > 0) {
         inOpaqueKnown = true;
         opaqueDepth = depth;
+        opaqueOpener = raw;
       }
       continue;
     }
     if (/^(aube|uv|options)\./.test(line)) continue;
     unparsedInScope.push(raw);
+  }
+  if (inOpaqueKnown) {
+    // Unbalanced opaque table through EOF: truncated lock — the swallowed
+    // tail cannot be verified, so INCONCLUSIVE-fail (never false-comply).
+    unparsedInScope.push(opaqueOpener ?? "<truncated known-opaque table at EOF>");
   }
   return { entries, unparsedInScope };
 }
@@ -359,6 +386,37 @@ export interface LockConsistencyResult {
   divergences: string[];
 }
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function describeJsonShape(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return `array[${value.length}]`;
+  if (typeof value === "object") return "object";
+  return typeof value;
+}
+
+/**
+ * DRIFT-safe expects-mise predicate (default-true, DETERMINISTIC).
+ *
+ * Returns false ONLY on positive proof of non-mise provisioning: the lock
+ * entry explicitly names another provisioner (`system`/`container`), or the
+ * matched toolchain.yaml definition has a non-mise kind. Every ambiguous
+ * case — orphan entries with no `provisioning` and no matching tool
+ * definition, malformed entries, unknown provisioner names — returns true:
+ * when the provisioner cannot be proven non-mise, assume mise-provisioned so
+ * unverifiable tools drift instead of passing silently.
+ */
+function expectsMiseEntry(
+  entry: Pick<ToolchainLockTool, "provisioning"> | null | undefined,
+  definition: Pick<ToolchainToolDefinition, "kind"> | undefined
+): boolean {
+  if (entry?.provisioning === "system" || entry?.provisioning === "container") return false;
+  if (definition?.kind !== undefined && definition.kind !== "mise") return false;
+  return true;
+}
+
 export function checkToolchainLockConsistency(
   toolchain: ToolchainConfig,
   lock: ToolchainLock | undefined,
@@ -370,6 +428,14 @@ export function checkToolchainLockConsistency(
     // Fail-closed: toolchain.lock.json is gitignored machine-local state that
     // `aeh setup` always writes. Absence means uninitialized — never "ok".
     return { ok: false, divergences: ["toolchain-lock-uninitialized: no toolchain.lock.json found; run `aeh setup` to generate it (post-setup it always exists)."] };
+  }
+  if (!isPlainRecord(lock.tools)) {
+    // Fail-closed: the config loader passes raw lock JSON through without
+    // validation, so a syntactically valid but wrong-shaped lock reaches this
+    // gate. Name the malformation explicitly (collapsing to
+    // "uninitialized" would mask a corrupt-but-present lock). Never silent ok.
+    const shape = describeJsonShape(lock.tools);
+    return { ok: false, divergences: [`toolchain-lock-malformed: 'tools' in toolchain.lock.json is not an object (got ${shape}); delete the lock and run \`aeh setup\` to regenerate it.`] };
   }
   const unparsed = options.miseLockUnparsedInScope ?? [];
   if (unparsed.length) {
@@ -388,9 +454,14 @@ export function checkToolchainLockConsistency(
     // reading each tool's backend, not by blanket rule. Same
     // expects-mise-entry predicate as the per-tool missing-entry check below.
     for (const [name, entry] of Object.entries(lock.tools)) {
+      if (!isPlainRecord(entry)) {
+        divergences.push(
+          `tool '${name}' lock entry is malformed (expected an object with provisioning/source/version fields, got ${describeJsonShape(entry)}); delete the lock and run \`aeh setup\` to regenerate it.`
+        );
+        continue;
+      }
       const definition = toolchain.tools[name];
-      const expectsMiseEntry = entry.provisioning === "mise" || (entry.provisioning === undefined && definition?.kind === "mise");
-      if (expectsMiseEntry) {
+      if (expectsMiseEntry(entry, definition)) {
         divergences.push(
           `tool '${name}' has no mise.lock to verify against (missing mise.lock; cannot verify, not skipped; run \`aeh setup\` to regenerate locks).`
         );
@@ -399,6 +470,12 @@ export function checkToolchainLockConsistency(
     return { ok: divergences.length === 0, divergences };
   }
   for (const [name, entry] of Object.entries(lock.tools)) {
+    if (!isPlainRecord(entry)) {
+      divergences.push(
+        `tool '${name}' lock entry is malformed (expected an object with provisioning/source/version fields, got ${describeJsonShape(entry)}); delete the lock and run \`aeh setup\` to regenerate it.`
+      );
+      continue;
+    }
     const definition = toolchain.tools[name];
     if (definition?.version && entry.requestedVersion !== undefined && entry.requestedVersion !== definition.version) {
       divergences.push(
@@ -409,8 +486,8 @@ export function checkToolchainLockConsistency(
     if (!miseEntry) {
       // Fail-closed: a mise-provisioned pinned tool with no mise.lock entry
       // cannot be verified. Missing entries are DRIFT, never skipped.
-      const expectsMiseEntry = entry.provisioning === "mise" || (entry.provisioning === undefined && definition?.kind === "mise");
-      if (expectsMiseEntry) {
+      // Default-true: only positive proof of non-mise provisioning opts out.
+      if (expectsMiseEntry(entry, definition)) {
         divergences.push(
           `tool '${name}' has no entry in mise.lock (cannot verify, not skipped; run \`aeh setup\` to regenerate locks).`
         );

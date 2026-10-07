@@ -290,6 +290,86 @@ describe("toolchain pinning (L-NEW-1/L-NEW-2/L-NEW-3/L-NEW-4/L-NEW-6/L-NEW-7)", 
     expect(result.divergences).toEqual([]);
   });
 
+  it("orphan lock entry with missing mise.lock is DRIFT (default-true expects-mise)", () => {
+    // Luna re-review blocker (a) RED 1: expectsMiseEntry returned false on
+    // ambiguous metadata (lock entry with no `provisioning` and no matching
+    // tool definition), so the missing-lock branch returned ok:true and the
+    // missing-entry check added no divergence. Default-true: only positive
+    // proof of non-mise provisioning opts out; ambiguity drifts.
+    const result = checkToolchainLockConsistency(
+      { version: 1, manager: { provider: "mise" }, tools: {} } as never,
+      { version: 1, generatedAt: new Date().toISOString(), profile: "auto", tools: { orphan: { command: "orphan", requestedVersion: "1.0.0", resolvedVersion: "1.0.0" } } } as never,
+      undefined
+    );
+    expect(result.ok).toBe(false);
+    expect(result.divergences.join("\n")).toMatch(/orphan/);
+    expect(result.divergences.join("\n")).toMatch(/mise\.lock/);
+  });
+
+  it("malformed lock JSON (tools not an object) is DRIFT naming the malformation", () => {
+    // Luna re-review blocker (a) RED 2: the config loader type-casts lock
+    // JSON without validation, so a wrong-shaped lock was cast-accepted into
+    // silent ok. The gate validates shape: malformed → DRIFT diagnostic
+    // naming the malformation, never silent ok.
+    const result = checkToolchainLockConsistency(
+      { version: 1, manager: { provider: "mise" }, tools: {} } as never,
+      { version: 1, generatedAt: new Date().toISOString(), profile: "auto", tools: "not-an-object" } as never,
+      {}
+    );
+    expect(result.ok).toBe(false);
+    expect(result.divergences.join("\n")).toMatch(/toolchain-lock-malformed/);
+  });
+
+  it("truncated opaque table cannot swallow later sections (header-first INCONCLUSIVE)", async () => {
+    // Luna re-review blocker (b) RED 1: an unbalanced opaque run consumed
+    // through EOF, swallowing following tool headers with no EOF check, so a
+    // truncated `uv = { ...` hid a divergent [tools.next] section behind
+    // false compliance. Headers are structural: a `[`-leading line ends the
+    // opaque run (the unbalanced opener is counted) and is processed as a
+    // header normally, so the swallowed section is attributed again — and the
+    // truncation itself stays INCONCLUSIVE.
+    const { parseMiseLockDetailed } = await import("../src/toolchain/pinning.js");
+    const content = `lockfile_version = 2\n\n[[tools.node]]\nversion = "22.23.2"\nbackend = "core:node"\nuv = { path = "locks/node/22.23.2", digest = "sha256:abc"\nspecifiers = ["22.23.2"]\n\n[[tools.next]]\nversion = "9.9.9"\nbackend = "core:next"\nspecifiers = ["9.9.9"]\n`;
+    const detailed = parseMiseLockDetailed(content);
+    expect(detailed.entries["next"]?.version).toBe("9.9.9");
+    const result = checkToolchainLockConsistency(
+      { version: 1, manager: { provider: "mise" }, tools: { node: { kind: "mise", command: "node", source: "node", version: "22.23.2" }, next: { kind: "mise", command: "next", source: "core:next", version: "1.0.0" } } } as never,
+      { version: 1, generatedAt: new Date().toISOString(), profile: "auto", tools: { node: { command: "node", provisioning: "mise", source: "node", requestedVersion: "22.23.2", resolvedVersion: "22.23.2" }, next: { command: "next", provisioning: "mise", source: "core:next", requestedVersion: "1.0.0", resolvedVersion: "1.0.0" } } } as never,
+      parseMiseLock(content),
+      { miseLockUnparsedInScope: detailed.unparsedInScope }
+    );
+    expect(result.ok).toBe(false);
+    expect(result.divergences.join("\n")).toMatch(/INCONCLUSIVE/);
+  });
+
+  it("unbalanced opaque table through EOF is INCONCLUSIVE (truncated lock)", async () => {
+    // Luna re-review blocker (b) companion: unbalanced opaque run with no
+    // later header — the EOF check alone must fail closed, never comply on a
+    // tail it could not parse.
+    const { parseMiseLockDetailed } = await import("../src/toolchain/pinning.js");
+    const content = `lockfile_version = 2\n\n[[tools.node]]\nversion = "22.23.2"\nbackend = "core:node"\nuv = { path = "locks/node/22.23.2", digest = "sha256:abc"\n`;
+    const detailed = parseMiseLockDetailed(content);
+    expect(detailed.unparsedInScope.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("balanced multiline opaque table + valid rest still complies", async () => {
+    // Luna re-review blocker (b) positive guard: the header-first/EOF fix must
+    // not turn balanced multiline `uv`/`options` tables (valid mise metadata)
+    // into spurious INCONCLUSIVE.
+    const { parseMiseLockDetailed } = await import("../src/toolchain/pinning.js");
+    const content = `lockfile_version = 2\n\n[[tools.black]]\nversion = "24.10.0"\nbackend = "pypi:black"\nuv = { path = "locks/pypi-black/24.10.0",\n  digest = "sha256:abc" }\nspecifiers = ["24.10.0"]\n`;
+    const detailed = parseMiseLockDetailed(content);
+    expect(detailed.unparsedInScope).toEqual([]);
+    const result = checkToolchainLockConsistency(
+      { version: 1, manager: { provider: "mise" }, tools: { black: { kind: "mise", command: "black", source: "pypi:black", version: "24.10.0" } } } as never,
+      { version: 1, generatedAt: new Date().toISOString(), profile: "auto", tools: { black: { command: "black", provisioning: "mise", source: "pypi:black", requestedVersion: "24.10.0", resolvedVersion: "24.10.0" } } } as never,
+      parseMiseLock(content),
+      { miseLockUnparsedInScope: detailed.unparsedInScope }
+    );
+    expect(result.ok).toBe(true);
+    expect(result.divergences).toEqual([]);
+  });
+
   it("mise.lock uv-sidecar and options fields stay conclusive (documented tool-entry fields)", async () => {
     // Luna re-review blocker (b) RED: valid mise metadata fails doctor —
     // fields other than version/backend/specifiers under a tool entry become
