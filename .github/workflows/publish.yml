@@ -24,6 +24,10 @@ jobs:
   publish:
     if: github.event_name == 'workflow_dispatch' || vars.AEH_AUTO_PUBLISH != 'false'
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      should_publish: ${{ steps.version.outputs.should_publish }}
+      release_sha: ${{ steps.release-commit.outputs.release_sha }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -33,7 +37,6 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
           package-manager-cache: false
 
       - run: npm ci
@@ -55,7 +58,8 @@ jobs:
         if: steps.version.outputs.should_publish == 'true'
         run: npm run release:check
 
-      - name: Commit version and create tag
+      - name: Commit version
+        id: release-commit
         if: steps.version.outputs.should_publish == 'true'
         shell: bash
         env:
@@ -66,50 +70,526 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add package.json package-lock.json
           if ! git diff --cached --quiet; then
-            git commit -m "chore(release): v${RELEASE_VERSION} [skip ci]"
+            git commit -m "chore(release): v${RELEASE_VERSION}"
             git push origin HEAD:main
           fi
-          if ! git rev-parse -q --verify "refs/tags/v${RELEASE_VERSION}" >/dev/null; then
-            git tag -a "v${RELEASE_VERSION}" -m "v${RELEASE_VERSION}"
-            git push origin "v${RELEASE_VERSION}"
-          fi
-
-      - name: Publish to npm
-        if: steps.version.outputs.should_publish == 'true'
-        shell: bash
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ -n "${NPM_TOKEN:-}" ]; then
-            export NODE_AUTH_TOKEN="$NPM_TOKEN"
-          fi
-          npm publish --provenance
-
-      - name: Create GitHub Release
-        if: steps.version.outputs.should_publish == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          gh release view "v${RELEASE_VERSION}" >/dev/null 2>&1 || \
-            gh release create "v${RELEASE_VERSION}" --verify-tag --generate-notes --title "v${RELEASE_VERSION}"
+          RELEASE_SHA="$(git rev-parse HEAD)"
+          echo "release_sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Repair missing GitHub Release for current version
         if: steps.version.outputs.should_publish != 'true' && github.event_name == 'workflow_dispatch' && inputs.bump == 'current'
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          if git rev-parse -q --verify "refs/tags/v${RELEASE_VERSION}" >/dev/null; then
-            gh release view "v${RELEASE_VERSION}" >/dev/null 2>&1 || \
-              gh release create "v${RELEASE_VERSION}" --verify-tag --generate-notes --title "v${RELEASE_VERSION}"
+          # Narrow repair gate: pre-screen for exactly the published-but-unreleased
+          # state. A tag proves NOTHING about verification (manual or legacy tags
+          # predate tag-after-verify) — trust is established only by the
+          # verify-published job re-running verification for R in THIS run, which
+          # the repair-release job needs for success. SHA-binding (tag == HEAD ==
+          # version commit) proves identity; npm-confirms-published proves
+          # publicity. All other states refuse as before (no
+          # verification-skipped Release, no rebuild/republish here — the
+          # repair-release job owns the SHA-bound Release creation after verify).
+          TAG="v${RELEASE_VERSION}"
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          if ! git ls-remote --tags origin | grep -q "refs/tags/${TAG}$"; then
+            echo "Refusing to create GitHub Release for v${RELEASE_VERSION} without in-workflow verification." >&2
+            echo "The bump=current repair path cannot skip verification: re-run the full release pipeline so commit -> verify (by SHA) -> tag + npm publish -> release all succeed in one workflow run." >&2
+            exit 1
+          fi
+          PEELED_SHA="$(git ls-remote origin "refs/tags/${TAG}^{}" | awk '{print $1}')"
+          if [ -z "$PEELED_SHA" ]; then
+            PEELED_SHA="$(git ls-remote origin "refs/tags/${TAG}" | awk '{print $1}')"
+          fi
+          HEAD_SHA="$(git rev-parse HEAD)"
+          if [ "$PEELED_SHA" != "$HEAD_SHA" ]; then
+            echo "Refusing to create GitHub Release for v${RELEASE_VERSION}: tag ${TAG} at ${PEELED_SHA} does not match HEAD ${HEAD_SHA} (never force-move)." >&2
+            exit 1
+          fi
+          if [ "$(node -p "require('./package.json').version")" != "$RELEASE_VERSION" ]; then
+            echo "Refusing to create GitHub Release for v${RELEASE_VERSION}: HEAD version does not match (SHA-binding failed)." >&2
+            exit 1
+          fi
+          # Existence is not identity: the registry tarball must byte-match a
+          # fresh build of this revision (integrity mismatch fails closed —
+          # never release foreign same-version content). Single pack, retained
+          # tarball reuse: never repack for the compare (rebuild-nondeterminism safe).
+          npm run build --silent
+          RETAIN_TMP="$(mktemp -d)"
+          npm pack --pack-destination "$RETAIN_TMP" --silent >/dev/null
+          RETAIN_TARBALL="$(ls "$RETAIN_TMP"/*.tgz | head -n 1)"
+          if node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --tarball "$RETAIN_TARBALL"; then
+            echo "Repair eligible: tag ${TAG} at ${PEELED_SHA} == HEAD, version ${RELEASE_VERSION} verified identical on npm. The repair-release job will create the SHA-bound Release (no rebuild/republish)."
           else
-            echo "Current npm version is already published, but tag v${RELEASE_VERSION} is absent; refusing to fabricate a release tag."
+            code=$?
+            if [ "$code" -eq 2 ]; then
+              echo "Refusing to create GitHub Release for v${RELEASE_VERSION}: version is not on npm (nothing published to repair)." >&2
+            elif [ "$code" -eq 3 ]; then
+              echo "Refusing to create GitHub Release for v${RELEASE_VERSION}: registry lookup UNKNOWN (network/auth/parse, fail closed, never release on UNKNOWN)." >&2
+            else
+              echo "Refusing to create GitHub Release for v${RELEASE_VERSION}: registry tarball content differs from this revision (integrity mismatch, fail closed)." >&2
+            fi
+            exit 1
           fi
 
       - name: Nothing to publish
         if: steps.version.outputs.should_publish != 'true'
         run: echo "Current package version is already published and bump=current was requested."
+
+  verify-published:
+    name: verify-published
+    needs: publish
+    # Normal path (should_publish) AND repair path (manual dispatch bump=current
+    # with nothing to publish): a manually created or legacy tag at R proves
+    # nothing, so the repair leg must EXECUTE verification for R in this run —
+    # the repair Release job needs this job's success. No Release without it.
+    if: needs.publish.outputs.should_publish == 'true' || (needs.publish.outputs.should_publish != 'true' && github.event_name == 'workflow_dispatch' && inputs.bump == 'current')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        if: needs.publish.outputs.should_publish == 'true'
+        with:
+          ref: ${{ needs.publish.outputs.release_sha }}
+          fetch-depth: 0
+
+      - uses: actions/checkout@v6
+        if: needs.publish.outputs.should_publish != 'true'
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - run: npm ci
+
+      - name: Confirm release commit
+        if: needs.publish.outputs.should_publish == 'true'
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+          RELEASE_SHA: ${{ needs.publish.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_SHA"
+          git fetch origin "$RELEASE_SHA"
+          git checkout --detach "$RELEASE_SHA"
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          test "$(node -p "require('./package.json').version")" = "$RELEASE_VERSION"
+
+      - name: Confirm repair revision R (tag-bound, SHA-verified)
+        if: needs.publish.outputs.should_publish != 'true'
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Repair leg: resolve R as HEAD and bind it by SHA. The tag is NOT
+          # trusted as proof of verification — it is only an identity claim
+          # (tag == HEAD, version matches) checked BEFORE the verification steps
+          # below execute against these exact bits.
+          TAG="v${RELEASE_VERSION}"
+          git fetch origin "refs/tags/${TAG}:refs/tags/${TAG}"
+          TAG_SHA="$(git rev-list -n 1 "refs/tags/${TAG}")"
+          HEAD_SHA="$(git rev-parse HEAD)"
+          test -n "$TAG_SHA"
+          test "$TAG_SHA" = "$HEAD_SHA"
+          test "$(node -p "require('./package.json').version")" = "$RELEASE_VERSION"
+          test "$(git describe --tags --exact-match HEAD)" = "$TAG"
+          echo "Repair verification target R=$HEAD_SHA bound to ${TAG}."
+
+      - name: Provision the required consumer toolchain provider
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y podman
+          podman --version
+
+      - name: Run packaged build and hygiene contracts
+        run: npm run test:packaged-consumer
+
+      - name: Smoke packaged CLI from consumer install
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED_VERSION="$(node -p "require('./package.json').version")"
+          npm run build
+          PACKAGE_NAME="$(node -p "require('./package.json').name.replace(/^@/, '').replaceAll('/', '-')")"
+          PACK_DESTINATION="$(mktemp -d "$RUNNER_TEMP/aeh-packaged-consumer.XXXXXX")"
+          AEH_PACK_DESTINATION="$PACK_DESTINATION" node scripts/ci/packCandidate.mjs
+          TGZ="$PACK_DESTINATION/$PACKAGE_NAME-$EXPECTED_VERSION.tgz"
+          test -s "$TGZ"
+          sha256sum "$TGZ"
+          TMP="$(mktemp -d)"
+          mkdir -p "$TMP/consumer"
+          cd "$TMP/consumer"
+          npm init -y >/dev/null
+          npm install "$TGZ" >/dev/null
+          ./node_modules/.bin/aeh --version | grep -Fx "$EXPECTED_VERSION"
+          TOOLS="$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | ./node_modules/.bin/aeh operation mcp)"
+          printf '%s\n' "$TOOLS" | grep -q 'aeh_operation_start_audit'
+          printf '%s\n' "$TOOLS" | grep -q 'aeh_context_status'
+          mkdir repo
+          ./node_modules/.bin/aeh init repo
+          test -f repo/.harness/project.yaml
+          test -f repo/.harness/toolchain.yaml
+          test -f repo/.harness/provider-versions.json
+          test -f repo/.harness/agents.source.jsonc
+          test -f repo/.harness/skills/engineering-workflow/SKILL.md
+          test -f repo/.harness/managed-assets.json
+          test -f repo/openspec/config.yaml
+          grep -q '"aeh:orchestration"' repo/.harness/agents.source.jsonc
+          grep -q '^    sessionPolicy: fresh-on-start$' repo/.harness/project.yaml
+          grep -q '^    provider: openspec$' repo/.harness/project.yaml
+          grep -q 'npm:@fission-ai/openspec' repo/.harness/toolchain.yaml
+          test -d repo/.harness/paseo
+          test -d repo/.harness/paseo/handoffs
+          test -d repo/.harness/audits
+          test -d repo/.harness/operations
+          grep -q '^\.harness/\*$' repo/.gitignore
+          grep -q '^!\.harness/project.yaml$' repo/.gitignore
+          grep -q '^!\.harness/toolchain.yaml$' repo/.gitignore
+          grep -q '^!\.harness/agents.source.jsonc$' repo/.gitignore
+          grep -q '^!\.harness/otel-collector.yaml$' repo/.gitignore
+          ./node_modules/.bin/aeh toolchain compile repo
+          test -f repo/.config/mise/conf.d/aeh.toml
+          grep -q 'openspec' repo/.config/mise/conf.d/aeh.toml
+          rm repo/.harness/skills/engineering-workflow/SKILL.md
+          ./node_modules/.bin/aeh setup --dry-run repo
+          test -f repo/.harness/skills/engineering-workflow/SKILL.md
+          ./node_modules/.bin/aeh policy sync repo >/dev/null
+          mkdir -p repo/.harness/fixtures
+          cat > repo/.harness/fixtures/deterministic-paseo-runtime.json <<'EOF'
+          {
+            "version": 1,
+            "responses": {
+              "semantic-assessment:INTENT": [
+                {
+                  "judgment": {
+                    "type": "INTENT",
+                    "intent": "audit",
+                    "confidence": 1,
+                    "evidenceRefs": ["request"]
+                  },
+                  "claims": [],
+                  "assumptions": [],
+                  "unknowns": [],
+                  "recommendations": [],
+                  "knowledgeGaps": []
+                }
+              ]
+            }
+          }
+          EOF
+          AEH_DETERMINISTIC_PASEO_RUNTIME=1 AEH_PASEO_FORCE_CLI=0 ./node_modules/.bin/aeh intent 'review the repo and validate the code for improvements' repo | grep -q '^AUDIT'
+          ./node_modules/.bin/aeh operation status DOES-NOT-EXIST repo >/dev/null 2>&1 && exit 1 || true
+
+  publish-npm:
+    name: publish-npm
+    needs: [publish, verify-published]
+    if: needs.publish.outputs.should_publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.publish.outputs.release_sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - run: npm ci
+
+      - name: Create version tag after verification
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+          RELEASE_SHA: ${{ needs.publish.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_SHA"
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          TAG="v${RELEASE_VERSION}"
+          if git ls-remote --tags origin | grep -q "refs/tags/${TAG}$"; then
+            PEELED_SHA="$(git ls-remote origin "refs/tags/${TAG}^{}" | awk '{print $1}')"
+            if [ -z "$PEELED_SHA" ]; then
+              PEELED_SHA="$(git ls-remote origin "refs/tags/${TAG}" | awk '{print $1}')"
+            fi
+            if [ "$PEELED_SHA" = "$RELEASE_SHA" ]; then
+              echo "Tag ${TAG} already points at $RELEASE_SHA; resuming idempotently (no recreation, never force-move)."
+              git fetch origin "refs/tags/${TAG}:refs/tags/${TAG}" || git fetch origin tag "${TAG}"
+            else
+              echo "Tag ${TAG} already exists on origin at ${PEELED_SHA}, expected $RELEASE_SHA; refusing to reuse a stale tag (never force-move). Nothing has been published by this run." >&2
+              exit 1
+            fi
+          else
+            git tag -a "${TAG}" -m "${TAG}" "$RELEASE_SHA"
+            git push origin "${TAG}"
+          fi
+          TAG_SHA="$(git rev-list -n 1 "refs/tags/${TAG}")"
+          if [ "$TAG_SHA" != "$RELEASE_SHA" ]; then
+            echo "Tag ${TAG} verification failed: expected $RELEASE_SHA but got $TAG_SHA." >&2
+            exit 1
+          fi
+
+      - name: Confirm verified tag before publishing
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+          RELEASE_SHA: ${{ needs.publish.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_SHA"
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          test "$(git rev-list -n 1 "v$RELEASE_VERSION")" = "$RELEASE_SHA"
+          test "$(git describe --tags --exact-match HEAD)" = "v$RELEASE_VERSION"
+
+      - run: npm run build
+
+      - name: Restore retained release tarball (retry reuse)
+        uses: actions/download-artifact@v4
+        with:
+          name: aeh-npm-tarball
+          path: ${{ runner.temp }}/aeh-npm-retained
+          if-no-files-found: warn
+        continue-on-error: true
+
+      - name: Pack release tarball (reuse retained on retry)
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          set -euo pipefail
+          # N1: single pack per attempt, retained for retry+publish+confirm.
+          # Retry downloads THE SAME tarball above and skips repacking, so a
+          # publish-then-fail-later retry never repacks differently (exit 1 forever).
+          RETAIN_DIR="${RUNNER_TEMP:-$PWD}/aeh-npm-retained"
+          mkdir -p "$RETAIN_DIR"
+          if ls "$RETAIN_DIR"/*.tgz >/dev/null 2>&1; then
+            echo "Reusing retained tarball (no repack; rebuild-nondeterminism safe): $(ls "$RETAIN_DIR"/*.tgz | head -n 1)"
+          else
+            PACK_OUT="$(npm pack --pack-destination "$RETAIN_DIR" --silent)"
+            echo "Packed first tarball for retain+reuse: $PACK_OUT"
+          fi
+          TARBALL="$(ls "$RETAIN_DIR"/*.tgz | head -n 1)"
+          test -s "$TARBALL"
+          # Digest-only fallback: record the first-pack digest; retry compares the
+          # registry integrity against the RECORDED digest when tarball reuse is infeasible.
+          node -e "const fs=require('node:fs'),crypto=require('node:crypto');const b=fs.readFileSync(process.argv[1]);process.stdout.write('sha512-'+crypto.createHash('sha512').update(b).digest('base64')+'\n')" "$TARBALL" > "$RETAIN_DIR/npm-identity.digest"
+          test -s "$RETAIN_DIR/npm-identity.digest"
+          echo "Retained $TARBALL + digest for retry."
+
+      - name: Retain release tarball for retry
+        uses: actions/upload-artifact@v4
+        with:
+          name: aeh-npm-tarball
+          path: ${{ runner.temp }}/aeh-npm-retained/
+          if-no-files-found: error
+          overwrite: true
+
+      - name: Publish to npm
+        shell: bash
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          set -euo pipefail
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          # Reuse THE SAME retained tarball (no repack); pack fresh only when no
+          # retained artifact exists (first attempt / offline). Never repack for compare.
+          RETAIN_DIR="${RUNNER_TEMP:-$PWD}/aeh-npm-retained"
+          mkdir -p "$RETAIN_DIR"
+          if ls "$RETAIN_DIR"/*.tgz >/dev/null 2>&1; then
+            TARBALL="$(ls "$RETAIN_DIR"/*.tgz | head -n 1)"
+            echo "Reusing retained tarball $TARBALL (no repack)."
+          else
+            PACK_OUT="$(npm pack --pack-destination "$RETAIN_DIR" --silent)"
+            if [ -n "${PACK_OUT:-}" ] && [ -f "$RETAIN_DIR/$PACK_OUT" ]; then
+              TARBALL="$RETAIN_DIR/$PACK_OUT"
+            else
+              TARBALL="$(ls "$RETAIN_DIR"/*.tgz | head -n 1)"
+            fi
+            node -e "const fs=require('node:fs'),crypto=require('node:crypto');const b=fs.readFileSync(process.argv[1]);process.stdout.write('sha512-'+crypto.createHash('sha512').update(b).digest('base64')+'\n')" "$TARBALL" > "$RETAIN_DIR/npm-identity.digest" || true
+            echo "Packed $TARBALL (first pack retained for retry)."
+          fi
+          test -s "$TARBALL"
+          # Canonical identity gate against THE SAME bytes (mismatch fails closed).
+          if node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --tarball "$TARBALL"; then
+            echo "Version $RELEASE_VERSION verified identical on npm; skipping publish (idempotent resume, nothing to republish, already on npm)."
+          else
+            code=$?
+            if [ "$code" -eq 2 ]; then
+              if [ -n "${NPM_TOKEN:-}" ]; then
+                export NODE_AUTH_TOKEN="$NPM_TOKEN"
+              fi
+              npm publish "$TARBALL" --provenance
+            elif [ "$code" -eq 3 ]; then
+              echo "Refusing to publish $PACKAGE_NAME@$RELEASE_VERSION: registry lookup UNKNOWN (network/auth/parse, fail closed, never publish on UNKNOWN)." >&2
+              exit 1
+            else
+              echo "Refusing to publish $PACKAGE_NAME@$RELEASE_VERSION: registry tarball content differs from the local build (integrity mismatch, fail closed)." >&2
+              exit 1
+            fi
+          fi
+
+      - name: Confirm published version is on npm
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          set -euo pipefail
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          npm view "$PACKAGE_NAME@$RELEASE_VERSION" version --json
+          test "$(npm view "$PACKAGE_NAME@$RELEASE_VERSION" version)" = "$RELEASE_VERSION"
+          # Existence is not identity: fail closed unless the registry tarball
+          # byte-matches THE SAME retained tarball (integrity mismatch).
+          RETAIN_DIR="${RUNNER_TEMP:-$PWD}/aeh-npm-retained"
+          TARBALL="$(ls "$RETAIN_DIR"/*.tgz 2>/dev/null | head -n 1 || true)"
+          if [ -z "${TARBALL:-}" ]; then
+            echo "Missing retained tarball for confirm (fail closed; refusing to repack)." >&2
+            exit 1
+          fi
+          node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --tarball "$TARBALL"
+          # Digest-only fallback: registry integrity must also match the RECORDED first-pack digest.
+          if [ -f "$RETAIN_DIR/npm-identity.digest" ]; then
+            RECORDED="$(cat "$RETAIN_DIR/npm-identity.digest")"
+            node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --local-digest "$RECORDED"
+          fi
+
+  release:
+    name: release
+    needs: [publish, verify-published, publish-npm]
+    if: needs.publish.outputs.should_publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: v${{ needs.publish.outputs.version }}
+          fetch-depth: 0
+
+      - name: Confirm verified tag before release
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+          RELEASE_SHA: ${{ needs.publish.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_SHA"
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          test "$(git rev-list -n 1 "v$RELEASE_VERSION")" = "$RELEASE_SHA"
+          test "$(git describe --tags --exact-match HEAD)" = "v$RELEASE_VERSION"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          gh release view "v${RELEASE_VERSION}" >/dev/null 2>&1 || \
+            gh release create "v${RELEASE_VERSION}" --verify-tag --generate-notes --title "v${RELEASE_VERSION}"
+
+  repair-release:
+    name: repair-release
+    needs: [publish, verify-published]
+    # No always(): with verify-published SKIPPED this job is skipped by needs
+    # semantics, and the explicit success requirement chains the repair Release
+    # on verification evidence for R in THIS run — never on tag existence.
+    if: needs.publish.result == 'success' && needs['verify-published'].result == 'success' && needs.publish.outputs.should_publish != 'true' && github.event_name == 'workflow_dispatch' && inputs.bump == 'current'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - run: npm ci
+
+      - name: Restore retained release tarball (retry reuse)
+        uses: actions/download-artifact@v4
+        with:
+          name: aeh-npm-tarball
+          path: ${{ runner.temp }}/aeh-npm-retained
+          if-no-files-found: warn
+        continue-on-error: true
+
+      - name: Confirm published-but-unreleased state (SHA-bound)
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Rationale: verification RE-RAN for R in verify-published this run
+          # (this job needs its success — a manual/legacy tag alone authorizes
+          # nothing). Tag == HEAD plus version match re-establishes identity;
+          # npm-confirms-published proves publicity. Proceed ONLY to SHA-bound
+          # Release creation (no rebuild/republish); all other states were
+          # already refused by the repair gate or failed verification.
+          TAG="v${RELEASE_VERSION}"
+          git fetch origin "refs/tags/${TAG}:refs/tags/${TAG}"
+          TAG_SHA="$(git rev-list -n 1 "refs/tags/${TAG}")"
+          HEAD_SHA="$(git rev-parse HEAD)"
+          test -n "$TAG_SHA"
+          test "$TAG_SHA" = "$HEAD_SHA"
+          test "$(node -p "require('./package.json').version")" = "$RELEASE_VERSION"
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          test "$(npm view "$PACKAGE_NAME@$RELEASE_VERSION" version)" = "$RELEASE_VERSION"
+          test "$(git describe --tags --exact-match HEAD)" = "$TAG"
+          # Existence is not identity: fail closed unless the registry tarball
+          # byte-matches THE SAME retained tarball (retain+reuse, integrity
+          # mismatch). Repair reuses the retained aeh-npm-tarball artifact
+          # (same as publish-npm restore above); it never repacks when the
+          # artifact exists. Residual case: no artifact -> pack fresh ONLY when
+          # the registry proves absent (exit 2); otherwise fail closed without
+          # packing (fresh repacks can differ across retries and would mismatch
+          # forever; UNKNOWN exit 3 never releases). Fresh-pack residual is
+          # rebuild-nondeterminism-exposed and only for diagnostic when nothing
+          # is published (still refuses Release because not published).
+          RETAIN_DIR="${RUNNER_TEMP:-$PWD}/aeh-npm-retained"
+          mkdir -p "$RETAIN_DIR"
+          if ls "$RETAIN_DIR"/*.tgz >/dev/null 2>&1; then
+            RETAIN_TARBALL="$(ls "$RETAIN_DIR"/*.tgz | head -n 1)"
+            echo "Reusing retained tarball $RETAIN_TARBALL (no repack; rebuild-nondeterminism safe)."
+          else
+            echo "No retained tarball artifact; probing registry before any fresh pack (residual case)." >&2
+            set +e
+            node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --local-digest "sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==" >/dev/null 2>&1
+            probe=$?
+            set -e
+            if [ "$probe" -eq 2 ]; then
+              echo "Registry proves $PACKAGE_NAME@$RELEASE_VERSION absent (exit 2); packing fresh for diagnostic only (residual case: fresh pack is rebuild-nondeterminism-exposed; repair Release requires published bytes, so refusing)." >&2
+              npm run build --silent
+              RETAIN_TMP="$(mktemp -d)"
+              npm pack --pack-destination "$RETAIN_TMP" --silent >/dev/null
+              RETAIN_TARBALL="$(ls "$RETAIN_TMP"/*.tgz | head -n 1)"
+              echo "Refusing repair Release: $PACKAGE_NAME@$RELEASE_VERSION is absent from npm (nothing published)." >&2
+              exit 1
+            elif [ "$probe" -eq 3 ]; then
+              echo "Refusing repair Release: registry lookup UNKNOWN (fail closed, never release on UNKNOWN)." >&2
+              exit 1
+            else
+              echo "Missing retained tarball for repair (fail closed; refusing to repack over published bytes)." >&2
+              exit 1
+            fi
+          fi
+          test -s "$RETAIN_TARBALL"
+          node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --tarball "$RETAIN_TARBALL"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          gh release view "v${RELEASE_VERSION}" >/dev/null 2>&1 || \
+            gh release create "v${RELEASE_VERSION}" --verify-tag --generate-notes --title "v${RELEASE_VERSION}"
