@@ -8,6 +8,7 @@ import { notifyOperationCompletion } from "../operations/completion.js";
 import { runExternalToolValidator } from "../validators/external.js";
 import type { AuditReport, AuditRequest } from "../audit/run.js";
 import { startPaseoHarness, type PaseoStartOptions, type PaseoStartResult } from "./start.js";
+import { DETERMINISTIC_RUNTIME_ENV } from "./deterministicRuntime.js";
 import { loadResolvedAgentTopology } from "../agents/config.js";
 import { intentDecisionFromHeuristic, type EngineeringIntent } from "../audit/intent.js";
 import { assertIntentDecisionForRoute, parseIntentDecision, type IntentDecisionV1 } from "../audit/intentDecision.js";
@@ -68,6 +69,15 @@ export async function runDeterministicPaseoTurn(root: string, config: HarnessPro
   if (!session) throw new Error(`No deterministic Paseo lead session exists at ${sessionFile}. Run aeh start --deterministic first.`);
   const userTurnId = `${session.agentId}:turn-${session.turns.filter((turn) => turn.role === "user").length + 1}`;
 
+  // DETERMINISTIC: the fake SDK boundary must never touch real Paseo state.
+  // Mirror the deterministic-runtime early-returns elsewhere (controller
+  // workspace intent, operationResources listing): enable the runtime flag for
+  // the duration of this turn so startDetachedOperation preliminary sweep and
+  // ensureOperationWorkspace resolve proven-absence locally instead of shelling
+  // to a real `paseo` CLI. MECHANISM: DETERMINISTIC (env flag, not semantics).
+  const previousDeterministicRuntime = process.env[DETERMINISTIC_RUNTIME_ENV];
+  process.env[DETERMINISTIC_RUNTIME_ENV] = "1";
+  try {
   // Deterministic journeys must normally receive a scripted lead decision. The
   // lexical fallback is retained only for old compatibility callers and is
   // explicitly marked non-authoritative in the resulting durable decision.
@@ -140,6 +150,10 @@ export async function runDeterministicPaseoTurn(root: string, config: HarnessPro
     human: `DETERMINISTIC PASEO: user turn accepted; operation ${current.id} ${current.status}; validation ${validationStatus}; completion ${completion.status}; lead ${wakeMessage ? "received terminal wake" : "not woken"}.`
   };
   return result;
+  } finally {
+    if (previousDeterministicRuntime === undefined) delete process.env[DETERMINISTIC_RUNTIME_ENV];
+    else process.env[DETERMINISTIC_RUNTIME_ENV] = previousDeterministicRuntime;
+  }
 }
 
 async function deterministicAudit(root: string, config: HarnessProjectConfig, input: AuditRequest): Promise<AuditReport> {

@@ -1024,6 +1024,11 @@ export async function reconcileTerminalOperationResources(root: string, deps: Op
       const handles = await listManagedProcessHandles(root, operationId);
       const recordOwned = Boolean(record.workspaceId || record.agents?.length || Object.keys(record.participants ?? {}).length);
       if (!resources.length && !handles.length && !recordOwned) {
+        // DETERMINISTIC: deterministic journeys never touch real Paseo state.
+        // Proven-absence without listing (mirrors defaultListOwnedWorkspaces
+        // and reconcileOperationResources deterministic early-returns).
+        // MECHANISM: DETERMINISTIC (env flag, not semantics).
+        if (isDeterministicPaseoRuntimeEnabled()) { sweep.terminalOperationsCurrent += 1; continue; }
         // E-NEW-3: a crash between workspace create and durable registration
         // leaves zero local surface. Consult triple-bound discovery before
         // declaring the operation current so the orphaned worktree is swept.

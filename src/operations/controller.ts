@@ -194,7 +194,16 @@ export async function startDetachedOperation(
   // workspace-listing path); message-substring matching is refused so an
   // unrelated error embedding the marker text can never block startup.
   // MECHANISM: DETERMINISTIC (coded classification, not semantic string match).
+  // DETERMINISTIC: deterministic journeys never touch real Paseo state. The
+  // fake SDK boundary (runDeterministicPaseoTurn) enables the deterministic
+  // runtime flag, so the preliminary sweep resolves proven-absence locally
+  // without shelling to a real `paseo` CLI. Mirrors the deterministic
+  // early-returns in ensureOperationWorkspace/defaultListOwnedWorkspaces.
+  // MECHANISM: DETERMINISTIC (env flag, not semantics).
   let preliminarySweep;
+  if (isDeterministicPaseoRuntimeEnabled()) {
+    preliminarySweep = undefined;
+  } else {
   try {
     preliminarySweep = await reconcileTerminalOperationResources(absoluteRoot);
   } catch (error) {
@@ -207,6 +216,7 @@ export async function startDetachedOperation(
       const detail = workspaceFailures.map((failure) => `${failure.operationId}: ${failure.error}`).join("; ").slice(0, 2000);
       throw new WorkspaceSweepIncompleteError(`preliminary terminal-resource reconciliation failed: ${detail}`);
     }
+  }
   }
   if (suppliedDecision) assertIntentDecisionForRoute(suppliedDecision, kind === "audit" ? "audit" : kind === "change" ? "change" : "run");
   if (leadInitiated) {
@@ -1692,6 +1702,15 @@ export async function ensureOperationWorkspace(
   // isolation) + a managed cwd. Never rename them without updating discovery.
   const title = operationWorkspaceTitle(record.kind, record.id);
   const name = operationWorkspaceName(record.kind, record.id);
+  // DETERMINISTIC: deterministic runtime must not touch real Paseo state.
+  // Defense-in-depth alongside the top-of-function early-return: never write
+  // the real no-ID intent sidecar when the deterministic flag is set, so a
+  // faked CLI failure cannot leave a sidecar that later blocks startup.
+  // MECHANISM: DETERMINISTIC (env flag, not semantics).
+  if (isDeterministicPaseoRuntimeEnabled()) {
+    await trace(root, "workspace.deterministic.local-root", { operationId: record.id, kind: record.kind });
+    return { workspaceRoot: root };
+  }
   // Pre-register the name BEFORE the CLI create so a crash between create and
   // the durable record/registry writes stays recoverable via triple binding.
   await writeOperationWorkspaceIntent(root, record.id, { kind: record.kind, title, name });
