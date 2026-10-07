@@ -258,6 +258,14 @@ export function deterministicSchedulingConflicts(left: SchedulableWorkUnitV1, ri
  * pairwise conflict-free. Graph-snapshot (graphify) conflicts are a
  * planParallelism-only refinement passed via areMutuallyExclusive.
  *
+ * Monotonic blueprint lower bound: planParallelism passes each unit's frozen
+ * blueprint wave index via blueprintWaveIndex, and a unit is never placed
+ * before it (runtimeWave >= blueprintWave always). Graphify refinement may
+ * only SPLIT waves (push units later), never pull a unit across a blueprint
+ * boundary earlier. When every dependency/ordering-ready unit is still
+ * bound-blocked, an empty wave is emitted and the index advances (the bound,
+ * not the plan, is waiting); genuine deadlocks still throw below.
+ *
  * Failure codes are distinct: ORDERING_BLOCKED for duplicate
  * ORDERED_SEQUENCE positions or ordering deadlocks, UNKNOWN_DEPENDENCY for
  * references outside the scheduled set, DEPENDENCY_CYCLE when every
@@ -265,11 +273,12 @@ export function deterministicSchedulingConflicts(left: SchedulableWorkUnitV1, ri
  */
 export function planWorkUnitWaves(
   units: readonly SchedulableWorkUnitV1[],
-  options?: { areMutuallyExclusive?: (leftId: string, rightId: string) => boolean }
+  options?: { areMutuallyExclusive?: (leftId: string, rightId: string) => boolean; blueprintWaveIndex?: (id: string) => number }
 ): string[][] {
   const byId = new Map(units.map((unit) => [unit.id, unit]));
   const mutuallyExclusive = options?.areMutuallyExclusive
     ?? ((leftId: string, rightId: string) => deterministicSchedulingConflicts(byId.get(leftId)!, byId.get(rightId)!).length > 0);
+  const blueprintWaveOf = options?.blueprintWaveIndex ?? (() => 0);
   const orderingViolations = resourceClaimOrderingViolations(units.map((unit) => ({ id: unit.id, resourceClaims: unit.resourceClaims ?? [] })));
   if (orderingViolations.length) throw new Error(`Cannot schedule delegation plan [ORDERING_BLOCKED]: ${orderingViolations.join(", ")}`);
   const orderedClaims = new Map<string, Array<{ resource: string; order?: number }>>(units.map((unit) => [unit.id, (unit.resourceClaims ?? []).filter((claim) => claim.mode === "ORDERED_SEQUENCE").map((claim) => ({ resource: claim.resource, order: claim.order }))]));
@@ -292,10 +301,24 @@ export function planWorkUnitWaves(
     for (const unit of remaining.values()) {
       if (!unit.dependencies.every((dependency) => completed.has(dependency))) continue;
       if (!orderedReadinessSatisfied(unit)) continue;
+      if (blueprintWaveOf(unit.id) > waves.length) continue;
       if (wave.some((other) => mutuallyExclusive(unit.id, other.id))) continue;
       wave.push(unit);
     }
-    if (!wave.length) throw classifySchedulingBlockage([...remaining.values()], completed);
+    if (!wave.length) {
+      // Bound stall, not a deadlock: some unit is dependency/ordering-ready
+      // but its blueprint lower bound lies ahead. Emit an empty wave so the
+      // runtime index advances toward the bound without pulling anything
+      // earlier. When nothing is even dependency/ordering-ready the blockage
+      // below still classifies the genuine UNKNOWN_DEPENDENCY /
+      // ORDERING_BLOCKED / DEPENDENCY_CYCLE failure.
+      const boundStalled = [...remaining.values()].some((unit) => {
+        if (!unit.dependencies.every((dependency) => completed.has(dependency))) return false;
+        return orderedReadinessSatisfied(unit);
+      });
+      if (boundStalled) { waves.push([]); continue; }
+      throw classifySchedulingBlockage([...remaining.values()], completed);
+    }
     waves.push(wave.map((unit) => unit.id));
     for (const unit of wave) { completed.add(unit.id); remaining.delete(unit.id); }
   }

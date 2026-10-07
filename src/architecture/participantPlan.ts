@@ -163,7 +163,9 @@ export function compileExecutionBlueprint(input: Omit<ParticipantCompilerInputV1
   // Frozen blueprint waves use the single conflict-aware scheduler shared with
   // planParallelism (scope overlap, resource claims, ORDERED_SEQUENCE), not a
   // dependency-only pass: any consumer trusting blueprint.waves must never
-  // co-place conflicting writers. MECHANISM: DETERMINISTIC.
+  // co-place conflicting writers. MECHANISM: DETERMINISTIC. The runtime
+  // schedule treats these frozen indices as per-unit lower bounds (graphify
+  // refinement may only split waves, never pull a unit earlier).
   let waves: string[][];
   try {
     waves = planWorkUnitWaves(input.graph.units);

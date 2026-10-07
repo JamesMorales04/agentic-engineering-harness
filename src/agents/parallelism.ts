@@ -17,15 +17,26 @@ interface GraphSnapshot {
 export interface TaskConflict { a: string; b: string; reasons: string[]; }
 export interface ParallelismPlan { taskId: string; waves: string[][]; conflicts: TaskConflict[]; graphUsed: boolean; taskNodes?: Record<string, string[]>; }
 
-export async function planParallelism(root: string, config: HarnessProjectConfig, taskId: string, tasks: WorkUnitOutput[]): Promise<ParallelismPlan> {
+export async function planParallelism(root: string, config: HarnessProjectConfig, taskId: string, tasks: WorkUnitOutput[], options?: { blueprintWaves?: readonly (readonly string[])[] }): Promise<ParallelismPlan> {
   const graph = await loadBeforeGraph(root, config, taskId); const conflicts: TaskConflict[] = []; const taskNodes: Record<string, string[]> = {};
   if (graph) for (const task of tasks) taskNodes[task.id] = [...nodesForScopes(task.scope, graph)].sort();
   for (let i = 0; i < tasks.length; i += 1) for (let j = i + 1; j < tasks.length; j += 1) {
     const reasons = conflictReasons(tasks[i], tasks[j], graph, taskNodes, config);
     if (reasons.length) conflicts.push({ a: tasks[i].id, b: tasks[j].id, reasons });
   }
+  // Monotonic lower bound (DETERMINISTIC, enforced where schedule waves are
+  // BUILT, not just derived): the frozen blueprint wave index is a per-unit
+  // lower bound on runtime placement. Explicit blueprintWaves (the frozen
+  // contract, wired by the executor) win; otherwise the bound is derived via
+  // the shared deterministic core (the same routine compileExecutionBlueprint
+  // uses), so graphify refinement inside areMutuallyExclusive may only SPLIT
+  // waves, never pull a unit earlier than planned.
+  const blueprintWaves = options?.blueprintWaves ?? planWorkUnitWaves(tasks);
+  const blueprintWaveIndex = new Map<string, number>();
+  blueprintWaves.forEach((wave, waveIndex) => { for (const id of wave) if (!blueprintWaveIndex.has(id)) blueprintWaveIndex.set(id, waveIndex); });
   const waves = planWorkUnitWaves(tasks, {
-    areMutuallyExclusive: (leftId, rightId) => conflicts.some((conflict) => (conflict.a === leftId && conflict.b === rightId) || (conflict.b === leftId && conflict.a === rightId))
+    areMutuallyExclusive: (leftId, rightId) => conflicts.some((conflict) => (conflict.a === leftId && conflict.b === rightId) || (conflict.b === leftId && conflict.a === rightId)),
+    blueprintWaveIndex: (id) => blueprintWaveIndex.get(id) ?? 0
   });
   return { taskId, waves, conflicts, graphUsed: Boolean(graph), taskNodes: graph ? taskNodes : undefined };
 }

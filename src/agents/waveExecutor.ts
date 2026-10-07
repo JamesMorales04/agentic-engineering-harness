@@ -126,7 +126,12 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
     const failedCorrectionAttempts = error instanceof PlannerWorkGraphCorrectionError ? error.correctionAttempts : correctionAttempts;
     return { used: true, plan, waves: [], sessions, preExecutionFailure: true, correctionAttempts: failedCorrectionAttempts, aggregateSession: aggregate(sessions, 1, `Participant plan rejected: ${String(error)}`) };
   }
-  const schedule = await planParallelism(input.root, input.config, input.contract.task.id, plan.workUnits);
+  // The executor consumes schedule.waves (built below), never blueprint.waves
+  // directly: the frozen blueprint is the serialization contract (its wave
+  // index is the per-unit lower bound), while the graphify-refined schedule
+  // is the enforced execution order. Passing blueprint.waves here makes the
+  // bound earnest at the single place schedule waves are built.
+  const schedule = await planParallelism(input.root, input.config, input.contract.task.id, plan.workUnits, { blueprintWaves: blueprint.waves });
   const worktreeIsolation = planning?.worktreeIsolation !== false;
   await recordEvent(input.stateRoot, input.config, "harness.plan.ready", { taskId: input.contract.task.id, workUnits: plan.workUnits.length, waves: schedule.waves.length, conflicts: schedule.conflicts.length, graphUsed: schedule.graphUsed, compilerDigest: blueprint.plan.compilerDigest, worktreeIsolation, distributed: planning?.distributed === true && input.config.distributed?.enabled === true });
   const waveSummaries: WaveExecutionSummary[] = []; let finalReport: ValidationReport | undefined; let currentCandidate = operation?.candidateRevision;
