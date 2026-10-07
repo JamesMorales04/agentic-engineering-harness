@@ -769,8 +769,10 @@ export function isPositivelyDeadPaseoAgentStatus(status?: string): boolean {
  *   never stopped;
  * - all matches share our operation key ⇒ STOP-ALL matching + re-verify
  *   empty + proceed fresh (self-healing: no operator, no permanent fence).
- * A stop failure or a still-nonempty re-list ⇒ PASEO_TURN_IDEMPOTENCY_AMBIGUOUS
- * throw (never silently create-new next to survivors).
+ * A stop failure, a re-list failure, or a still-unresolved re-list (live OR
+ * unknown/unrecognized — only positively-dead reads as resolved) ⇒
+ * PASEO_TURN_IDEMPOTENCY_AMBIGUOUS throw (never silently create-new next
+ * to survivors or unverified sessions).
  */
 export async function resolveAmbiguousIdempotentTurns(input: {
   root: string;
@@ -803,10 +805,24 @@ export async function resolveAmbiguousIdempotentTurns(input: {
     }
     await trace(root, "agent.launch.ambiguous-stopped", { transport, operation, idempotency, agentId: agent.id });
   }
-  const remaining = (await input.relist()).filter((agent) => isLivePaseoAgentStatus(agent.status));
-  if (remaining.length > 0) {
-    await trace(root, "agent.launch.ambiguous", { transport, operation, idempotency, live: remaining.map((agent) => agent.id) });
-    throw new Error(`PASEO_TURN_IDEMPOTENCY_AMBIGUOUS: ${remaining.length} live sessions still share idempotency key '${idempotency}' for operation '${operation}' after stop-all; refusing create-new. Resume one of [${remaining.map((agent) => agent.id).join(", ")}] explicitly.`);
+  let relisted: PaseoSdkAgentRecord[];
+  try {
+    relisted = await input.relist();
+  } catch (error) {
+    await trace(root, "agent.launch.ambiguous-relist-failed", { transport, operation, idempotency, error: errorMessage(error) });
+    throw new Error(`PASEO_TURN_IDEMPOTENCY_AMBIGUOUS: could not re-verify idempotency key '${idempotency}' for operation '${operation}' after stop-all (${errorMessage(error)}); refusing create-new without proof of empty. Resume one of [${candidates.map((item) => item.id).join(", ")}] explicitly.`);
+  }
+  if (!Array.isArray(relisted)) {
+    await trace(root, "agent.launch.ambiguous-relist-failed", { transport, operation, idempotency, error: "non-array re-list result" });
+    throw new Error(`PASEO_TURN_IDEMPOTENCY_AMBIGUOUS: could not re-verify idempotency key '${idempotency}' for operation '${operation}' after stop-all (non-array re-list result); refusing create-new without proof of empty. Resume one of [${candidates.map((item) => item.id).join(", ")}] explicitly.`);
+  }
+  // Fail-closed re-verify: the re-list must establish NO UNRESOLVED matching
+  // sessions. Unknown/unrecognized statuses count as unresolved (a possible
+  // live writer we could not read) — only positively-dead reads as resolved.
+  const unresolved = relisted.filter((agent) => !isPositivelyDeadPaseoAgentStatus(agent.status));
+  if (unresolved.length > 0) {
+    await trace(root, "agent.launch.ambiguous", { transport, operation, idempotency, live: unresolved.map((agent) => agent.id), unresolved: unresolved.map((agent) => `${agent.id}:${agent.status ?? "unknown"}`) });
+    throw new Error(`PASEO_TURN_IDEMPOTENCY_AMBIGUOUS: ${unresolved.length} unresolved sessions still share idempotency key '${idempotency}' for operation '${operation}' after stop-all; refusing create-new. Resume one of [${unresolved.map((agent) => agent.id).join(", ")}] explicitly.`);
   }
 }
 
@@ -820,11 +836,10 @@ async function reuseLiveIdempotentTurn(
   const idempotency = options.labels?.["aeh.turn.idempotency"]?.trim();
   if (!operation || !idempotency) return undefined;
   const listMatching = async (): Promise<PaseoSdkAgentRecord[]> => {
-    try {
-      return await deps.sdk.list(root, { "aeh.operation": operation, "aeh.turn.idempotency": idempotency });
-    } catch {
-      return [];
-    }
+    // Re-list failure must throw (the ambiguity resolver converts it to
+    // AMBIGUOUS) — never [] (that would read as verified-empty and
+    // fresh-create beside a possible live writer).
+    return deps.sdk.list(root, { "aeh.operation": operation, "aeh.turn.idempotency": idempotency });
   };
   // List failure reads as "no session" and fails closed to create-new (never
   // blocks launch); an empty list below is the verified-empty signal.
@@ -926,13 +941,12 @@ async function reuseLiveIdempotentCliTurn(
   const idempotency = options.labels?.["aeh.turn.idempotency"]?.trim();
   if (!operation || !idempotency) return undefined;
   const listMatching = async (): Promise<PaseoSdkAgentRecord[]> => {
-    try {
-      return (await listCliAgents(root, deps)).filter(
-        (agent) => agent.labels?.["aeh.operation"] === operation && agent.labels?.["aeh.turn.idempotency"] === idempotency
-      );
-    } catch {
-      return [];
-    }
+    // Re-list failure must throw (the ambiguity resolver converts it to
+    // AMBIGUOUS) — never [] (that would read as verified-empty and
+    // fresh-create beside a possible live writer).
+    return (await listCliAgents(root, deps)).filter(
+      (agent) => agent.labels?.["aeh.operation"] === operation && agent.labels?.["aeh.turn.idempotency"] === idempotency
+    );
   };
   let candidates: PaseoSdkAgentRecord[];
   try {
