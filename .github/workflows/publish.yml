@@ -83,9 +83,38 @@ jobs:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          echo "Refusing to create GitHub Release for v${RELEASE_VERSION} without in-workflow verification." >&2
-          echo "The bump=current repair path cannot skip verification: re-run the full release pipeline so commit -> verify (by SHA) -> tag + npm publish -> release all succeed in one workflow run." >&2
-          exit 1
+          # Narrow repair gate: refuse UNLESS exactly the published-but-unreleased state.
+          # Rationale: tag-at-R proves verify passed (tags are created post-verify only);
+          # npm-confirms-published proves publicity; SHA-binding (tag == HEAD == version
+          # commit) proves identity. Together they re-establish the full verified chain
+          # without re-running it. All other states refuse as before (no
+          # verification-skipped Release, no rebuild/republish here — the
+          # repair-release job owns the SHA-bound Release creation).
+          TAG="v${RELEASE_VERSION}"
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          if ! git ls-remote --tags origin | grep -q "refs/tags/${TAG}$"; then
+            echo "Refusing to create GitHub Release for v${RELEASE_VERSION} without in-workflow verification." >&2
+            echo "The bump=current repair path cannot skip verification: re-run the full release pipeline so commit -> verify (by SHA) -> tag + npm publish -> release all succeed in one workflow run." >&2
+            exit 1
+          fi
+          PEELED_SHA="$(git ls-remote origin "refs/tags/${TAG}^{}" | awk '{print $1}')"
+          if [ -z "$PEELED_SHA" ]; then
+            PEELED_SHA="$(git ls-remote origin "refs/tags/${TAG}" | awk '{print $1}')"
+          fi
+          HEAD_SHA="$(git rev-parse HEAD)"
+          if [ "$PEELED_SHA" != "$HEAD_SHA" ]; then
+            echo "Refusing to create GitHub Release for v${RELEASE_VERSION}: tag ${TAG} at ${PEELED_SHA} does not match HEAD ${HEAD_SHA} (never force-move)." >&2
+            exit 1
+          fi
+          if [ "$(node -p "require('./package.json').version")" != "$RELEASE_VERSION" ]; then
+            echo "Refusing to create GitHub Release for v${RELEASE_VERSION}: HEAD version does not match (SHA-binding failed)." >&2
+            exit 1
+          fi
+          if ! npm view "$PACKAGE_NAME@$RELEASE_VERSION" version --json >/dev/null 2>&1; then
+            echo "Refusing to create GitHub Release for v${RELEASE_VERSION}: version is not on npm (nothing published to repair)." >&2
+            exit 1
+          fi
+          echo "Repair eligible: tag ${TAG} at ${PEELED_SHA} == HEAD, version ${RELEASE_VERSION} is on npm. The repair-release job will create the SHA-bound Release (no rebuild/republish)."
 
       - name: Nothing to publish
         if: steps.version.outputs.should_publish != 'true'
@@ -239,11 +268,21 @@ jobs:
           test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
           TAG="v${RELEASE_VERSION}"
           if git ls-remote --tags origin | grep -q "refs/tags/${TAG}$"; then
-            echo "Tag ${TAG} already exists on origin; refusing to reuse a stale tag (never force-move). Nothing has been published by this run." >&2
-            exit 1
+            PEELED_SHA="$(git ls-remote origin "refs/tags/${TAG}^{}" | awk '{print $1}')"
+            if [ -z "$PEELED_SHA" ]; then
+              PEELED_SHA="$(git ls-remote origin "refs/tags/${TAG}" | awk '{print $1}')"
+            fi
+            if [ "$PEELED_SHA" = "$RELEASE_SHA" ]; then
+              echo "Tag ${TAG} already points at $RELEASE_SHA; resuming idempotently (no recreation, never force-move)."
+              git fetch origin "refs/tags/${TAG}:refs/tags/${TAG}" || git fetch origin tag "${TAG}"
+            else
+              echo "Tag ${TAG} already exists on origin at ${PEELED_SHA}, expected $RELEASE_SHA; refusing to reuse a stale tag (never force-move). Nothing has been published by this run." >&2
+              exit 1
+            fi
+          else
+            git tag -a "${TAG}" -m "${TAG}" "$RELEASE_SHA"
+            git push origin "${TAG}"
           fi
-          git tag -a "${TAG}" -m "${TAG}" "$RELEASE_SHA"
-          git push origin "${TAG}"
           TAG_SHA="$(git rev-list -n 1 "refs/tags/${TAG}")"
           if [ "$TAG_SHA" != "$RELEASE_SHA" ]; then
             echo "Tag ${TAG} verification failed: expected $RELEASE_SHA but got $TAG_SHA." >&2
@@ -268,12 +307,18 @@ jobs:
         shell: bash
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
         run: |
           set -euo pipefail
-          if [ -n "${NPM_TOKEN:-}" ]; then
-            export NODE_AUTH_TOKEN="$NPM_TOKEN"
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          if npm view "$PACKAGE_NAME@$RELEASE_VERSION" version --json >/dev/null 2>&1; then
+            echo "Version $RELEASE_VERSION already on npm; skipping publish (idempotent resume, nothing to republish)."
+          else
+            if [ -n "${NPM_TOKEN:-}" ]; then
+              export NODE_AUTH_TOKEN="$NPM_TOKEN"
+            fi
+            npm publish --provenance
           fi
-          npm publish --provenance
 
       - name: Confirm published version is on npm
         shell: bash
@@ -307,6 +352,52 @@ jobs:
           test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
           test "$(git rev-list -n 1 "v$RELEASE_VERSION")" = "$RELEASE_SHA"
           test "$(git describe --tags --exact-match HEAD)" = "v$RELEASE_VERSION"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          gh release view "v${RELEASE_VERSION}" >/dev/null 2>&1 || \
+            gh release create "v${RELEASE_VERSION}" --verify-tag --generate-notes --title "v${RELEASE_VERSION}"
+
+  repair-release:
+    name: repair-release
+    needs: [publish, verify-published]
+    if: always() && needs.publish.result == 'success' && needs.publish.outputs.should_publish != 'true' && github.event_name == 'workflow_dispatch' && inputs.bump == 'current'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Confirm published-but-unreleased state (SHA-bound)
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Rationale: tag-at-R proves verify passed (tags are created post-verify only);
+          # npm-confirms-published proves publicity; SHA-binding (tag == HEAD, version
+          # matches) proves identity. Together they re-establish the full verified chain
+          # without re-running it. Proceed ONLY to SHA-bound Release creation (no
+          # rebuild/republish); all other states were already refused by the repair gate.
+          TAG="v${RELEASE_VERSION}"
+          git fetch origin "refs/tags/${TAG}:refs/tags/${TAG}"
+          TAG_SHA="$(git rev-list -n 1 "refs/tags/${TAG}")"
+          HEAD_SHA="$(git rev-parse HEAD)"
+          test -n "$TAG_SHA"
+          test "$TAG_SHA" = "$HEAD_SHA"
+          test "$(node -p "require('./package.json').version")" = "$RELEASE_VERSION"
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          test "$(npm view "$PACKAGE_NAME@$RELEASE_VERSION" version)" = "$RELEASE_VERSION"
+          test "$(git describe --tags --exact-match HEAD)" = "$TAG"
 
       - name: Create GitHub Release
         env:
