@@ -746,13 +746,26 @@ export async function claimStallRetryAttempt(
             `pending claim conflict (CLAIM-CONFLICT: legacy quarantine ${reason}, caller attempt ${ownedAttempt})`
           );
         }
+        // +1 + destroy, then write the new claim — but only when the
+        // post-increment count is still under cap. An increment-to-cap
+        // consumes the budget: fail closed with phase EXHAUSTED and do NOT
+        // write the fresh claim (no launch). Mirrors the stale-claim cap gate.
+        // MECHANISM: DETERMINISTIC (durable count comparison under lock).
         const previous = await loadUnlocked(file, operationId, phase);
+        const reconciled = Math.floor(previous.stalls[phase]) + 1;
         const next: StallRetryBudgetV1 = {
           ...previous,
-          stalls: { ...previous.stalls, [phase]: Math.floor(previous.stalls[phase]) + 1 },
+          stalls: { ...previous.stalls, [phase]: reconciled },
           updatedAt: new Date().toISOString()
         };
         await writeAtomic(file, next);
+        if (reconciled >= STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
+          throw ledgerUnknownExhaustedError(
+            phase,
+            operationId,
+            `budget exhausted by legacy reconcile (${reconciled}/${STALL_RETRY_MAX_ATTEMPTS_PER_PHASE}), caller attempt ${ownedAttempt}`
+          );
+        }
         await fs.rm(grave, { force: true }).catch(() => undefined);
         await writePendingAtomic(pending, operationId, phase, ownedAttempt, ownedDeadline);
       });
