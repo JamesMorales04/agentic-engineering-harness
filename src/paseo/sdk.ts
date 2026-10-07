@@ -930,9 +930,14 @@ function buildCreateOptions(options: PaseoSdkAgentOptions, includePrompt: boolea
  * BASELINE-FAILURE CONTRACT: when baseline capture throws, pre-fallback
  * activity is unobserved, so a zero-activity baseline is synthesized at
  * fallback entry and the bound applies from entry — the stall deadline stays
- * armed on every fallback wait. Monitor (poll/final-read) errors fail
- * closed: failed reads never count as activity and a failed final read keeps
- * the STALLED verdict with zero counts.
+ * armed on every fallback wait. SYNTHETIC-BASELINE MODE IS DEADLINE-ONLY:
+ * a synthesized baseline proves nothing about pre-entry content, so any
+ * content observed after entry may pre-date entry and `observed` must NOT
+ * suppress the stall verdict — timer expiry always settles
+ * STALLED_FIRST_ACTIVITY with zero (unprovable) counts. Monitor
+ * (poll/final-read) errors fail closed: failed reads never count as
+ * activity and a failed final read keeps the STALLED verdict with zero
+ * counts.
  */
 async function waitForHandle(
   handle: PaseoSdkAgentHandle,
@@ -956,7 +961,11 @@ async function waitForHandle(
   // Baseline capture can throw (sync-throwing refetch, malformed timeline):
   // pre-fallback activity is then unobserved, so synthesize a zero-activity
   // baseline at fallback entry and keep the stall deadline armed from entry.
+  // Synthetic mode is deadline-ONLY: the empty baseline proves nothing about
+  // pre-entry content, so later growth may pre-date entry and `observed` must
+  // not suppress the stall verdict (progress unprovable).
   const baseline = stallArmed ? (captured ?? syntheticZeroActivityBaseline()) : undefined;
+  const synthetic = stallArmed && captured === undefined;
   let observed = false;
   let lastActivity: RunActivityBaseline | undefined;
   let lastActivityCheck = 0;
@@ -986,11 +995,11 @@ async function waitForHandle(
         if (runActivityHasGrown(baseline, current)) observed = true;
       }
     }
-    if (baseline && !observed && now >= stallAt) {
-      return stallVerdictAfterStop(handle, baseline, firstActivityMs, timeoutMs);
+    if (baseline && now >= stallAt && (synthetic || !observed)) {
+      return stallVerdictAfterStop(handle, baseline, firstActivityMs, timeoutMs, synthetic);
     }
     if (Date.now() >= deadline) {
-      if (baseline && observed && lastActivity) {
+      if (baseline && observed && !synthetic && lastActivity) {
         // The turn showed provider-visible activity but still hit the hard
         // deadline: regular DEADLINE with counts, never STALLED.
         const activity: ProviderTurnActivityCounts = {
@@ -1020,8 +1029,12 @@ async function waitForHandle(
  * BASELINE-FAILURE CONTRACT: when baseline capture throws, pre-fallback
  * activity is unobserved, so a zero-activity baseline is synthesized at
  * fallback entry and the bound applies from entry — the stall deadline stays
- * armed. Monitor (poll/final-read) errors fail closed: failed reads never
- * count as activity and a failed final read keeps the STALLED verdict.
+ * armed. SYNTHETIC-BASELINE MODE IS DEADLINE-ONLY: a synthesized baseline
+ * proves nothing about pre-entry content, so `observed` must NOT defer to
+ * the provider wait — timer expiry always settles STALLED_FIRST_ACTIVITY
+ * with zero (unprovable) counts. Monitor (poll/final-read) errors fail
+ * closed: failed reads never count as activity and a failed final read keeps
+ * the STALLED verdict.
  */
 async function waitForFinishWithFirstActivityWatch(
   handle: PaseoSdkAgentHandle,
@@ -1031,6 +1044,10 @@ async function waitForFinishWithFirstActivityWatch(
   permissionScopeRoots?: string[]
 ): Promise<PaseoSdkAgentResult> {
   const captured = await captureRunActivityBaseline(handle).catch(() => undefined);
+  // Synthetic mode is deadline-ONLY (see waitForHandle): the empty baseline
+  // proves nothing about pre-entry content, so `observed` must not defer to
+  // the provider wait — timer expiry always stalls (progress unprovable).
+  const synthetic = captured === undefined;
   const baseline = captured ?? syntheticZeroActivityBaseline();
   let observed = false;
   let pollTimer: ReturnType<typeof setInterval> | undefined;
@@ -1064,8 +1081,8 @@ async function waitForFinishWithFirstActivityWatch(
     stopTimers();
     if (outcome.kind === "wait") return turnResult(handle, outcome.turn, permissionScopeRoots);
     if (outcome.kind === "waitError") throw outcome.error;
-    if (observed) return waitPromise.then((turn) => turnResult(handle, turn, permissionScopeRoots));
-    const stalled = await stallVerdictAfterStop(handle, baseline, firstActivityMs, timeoutMs);
+    if (observed && !synthetic) return waitPromise.then((turn) => turnResult(handle, turn, permissionScopeRoots));
+    const stalled = await stallVerdictAfterStop(handle, baseline, firstActivityMs, timeoutMs, synthetic);
     void waitPromise.then(() => undefined, () => undefined);
     return stalled;
   } catch (error) {
@@ -1081,14 +1098,42 @@ async function waitForFinishWithFirstActivityWatch(
  * as STALLED_FIRST_ACTIVITY, while late content settles as a regular
  * DEADLINE with counts (same shapes as runWithFirstActivityWatch so
  * downstream classification is identical).
+ *
+ * SYNTHETIC-BASELINE MODE IS DEADLINE-ONLY: when `synthetic` is true the
+ * baseline was synthesized after a capture failure, so the empty baseline
+ * proves nothing about pre-entry content — any post-stop content may pre-date
+ * fallback entry and progress is unprovable. The verdict is therefore always
+ * STALLED_FIRST_ACTIVITY with zero counts, never DEADLINE, even if the final
+ * read shows content. This is fail-closed: crediting unprovable growth as
+ * genuine progress would let a zero-activity hang ride the full turn deadline
+ * as a bare DEADLINE with no actionable stall signal.
  */
 async function stallVerdictAfterStop(
   handle: PaseoSdkAgentHandle,
   baseline: RunActivityBaseline,
   firstActivityMs: number,
-  timeoutMs: number
+  timeoutMs: number,
+  synthetic = false
 ): Promise<PaseoSdkAgentResult> {
   await stopPaseoSdkAgentHandle(handle).catch(() => undefined);
+  if (synthetic) {
+    // Deadline-ONLY: progress unprovable, so the stall stands with zero
+    // counts without consulting the final read (any content may pre-date
+    // fallback entry). The handle was still stopped above to freeze the turn.
+    const unprovable: ProviderTurnActivityCounts = {
+      updatesObserved: 0,
+      toolEvents: 0,
+      assistantDelta: false
+    };
+    return {
+      id: handle.id,
+      workspaceId: handle.workspaceId ?? undefined,
+      status: "timeout",
+      error: stalledFirstActivityError(firstActivityMs, timeoutMs, unprovable),
+      killReason: "STALLED_FIRST_ACTIVITY",
+      activity: unprovable
+    };
+  }
   const final = await captureRunActivityBaseline(handle).catch(() => undefined);
   if (final && runActivityHasGrown(baseline, final)) {
     const lateCounts: ProviderTurnActivityCounts = {
@@ -1272,9 +1317,12 @@ interface RunActivityBaseline {
 /**
  * Zero-activity baseline synthesized at fallback entry when baseline capture
  * throws. Pre-fallback activity is unobserved by construction, so the stall
- * bound applies from entry: any provider-visible content observed after entry
- * counts as growth, while monitor errors fail closed (never observed, stall
- * stands with zero counts on a failed final read).
+ * bound applies from entry as deadline-ONLY: `runActivityHasGrown` may still
+ * report growth versus this empty baseline, but callers must NOT treat that
+ * growth as proven turn progress — it may pre-date entry — and the stall
+ * verdict always settles STALLED_FIRST_ACTIVITY with zero counts. Monitor
+ * errors fail closed (never observed, stall stands with zero counts on a
+ * failed final read).
  */
 function syntheticZeroActivityBaseline(): RunActivityBaseline {
   return { toolKeys: [], observed: false };
