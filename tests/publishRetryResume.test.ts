@@ -58,6 +58,18 @@ describe("publish retry resume (idempotent same-SHA)", () => {
     // Identity, not existence: repair Release requires the canonical digest gate.
     expect(serialized).toContain("verify-npm-identity.mjs");
     expect(serialized).toMatch(/TAG_SHA|rev-list/);
+    // R3: repair reuses the retained tarball artifact (same as publish-npm),
+    // never an unconditional fresh repack. Fresh pack only when no artifact
+    // AND registry proves absent (exit 2); residual documented.
+    expect(serialized).toMatch(/download-artifact/);
+    expect(serialized).toMatch(/aeh-npm-tarball/);
+    expect(serialized).toMatch(/--tarball/);
+    expect(serialized).toMatch(/Reusing retained tarball/);
+    expect(serialized).toMatch(/No retained tarball artifact/);
+    expect(serialized).toMatch(/-eq 2/);
+    expect(serialized).toMatch(/residual/i);
+    expect(serialized).toMatch(/mismatch/i);
+    expect(serialized).toMatch(/UNKNOWN/);
     // Publish-job repair gate must still refuse non-eligible states but allow eligible.
     const publishSteps = jobs.publish.steps as Array<{ name?: string; run?: string }>;
     const gate = publishSteps.find((step) => step.name === "Repair missing GitHub Release for current version");

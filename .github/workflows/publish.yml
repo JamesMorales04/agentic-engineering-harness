@@ -516,6 +516,14 @@ jobs:
 
       - run: npm ci
 
+      - name: Restore retained release tarball (retry reuse)
+        uses: actions/download-artifact@v4
+        with:
+          name: aeh-npm-tarball
+          path: ${{ runner.temp }}/aeh-npm-retained
+          if-no-files-found: warn
+        continue-on-error: true
+
       - name: Confirm published-but-unreleased state (SHA-bound)
         shell: bash
         env:
@@ -539,13 +547,43 @@ jobs:
           test "$(npm view "$PACKAGE_NAME@$RELEASE_VERSION" version)" = "$RELEASE_VERSION"
           test "$(git describe --tags --exact-match HEAD)" = "$TAG"
           # Existence is not identity: fail closed unless the registry tarball
-          # byte-matches THE SAME retained tarball of this revision (integrity
-          # mismatch). Single pack, retained reuse: never repack for the compare.
-          # UNKNOWN registry lookups (exit 3) fail loudly and never release.
-          npm run build --silent
-          RETAIN_TMP="$(mktemp -d)"
-          npm pack --pack-destination "$RETAIN_TMP" --silent >/dev/null
-          RETAIN_TARBALL="$(ls "$RETAIN_TMP"/*.tgz | head -n 1)"
+          # byte-matches THE SAME retained tarball (retain+reuse, integrity
+          # mismatch). Repair reuses the retained aeh-npm-tarball artifact
+          # (same as publish-npm restore above); it never repacks when the
+          # artifact exists. Residual case: no artifact -> pack fresh ONLY when
+          # the registry proves absent (exit 2); otherwise fail closed without
+          # packing (fresh repacks can differ across retries and would mismatch
+          # forever; UNKNOWN exit 3 never releases). Fresh-pack residual is
+          # rebuild-nondeterminism-exposed and only for diagnostic when nothing
+          # is published (still refuses Release because not published).
+          RETAIN_DIR="${RUNNER_TEMP:-$PWD}/aeh-npm-retained"
+          mkdir -p "$RETAIN_DIR"
+          if ls "$RETAIN_DIR"/*.tgz >/dev/null 2>&1; then
+            RETAIN_TARBALL="$(ls "$RETAIN_DIR"/*.tgz | head -n 1)"
+            echo "Reusing retained tarball $RETAIN_TARBALL (no repack; rebuild-nondeterminism safe)."
+          else
+            echo "No retained tarball artifact; probing registry before any fresh pack (residual case)." >&2
+            set +e
+            node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --local-digest "sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==" >/dev/null 2>&1
+            probe=$?
+            set -e
+            if [ "$probe" -eq 2 ]; then
+              echo "Registry proves $PACKAGE_NAME@$RELEASE_VERSION absent (exit 2); packing fresh for diagnostic only (residual case: fresh pack is rebuild-nondeterminism-exposed; repair Release requires published bytes, so refusing)." >&2
+              npm run build --silent
+              RETAIN_TMP="$(mktemp -d)"
+              npm pack --pack-destination "$RETAIN_TMP" --silent >/dev/null
+              RETAIN_TARBALL="$(ls "$RETAIN_TMP"/*.tgz | head -n 1)"
+              echo "Refusing repair Release: $PACKAGE_NAME@$RELEASE_VERSION is absent from npm (nothing published)." >&2
+              exit 1
+            elif [ "$probe" -eq 3 ]; then
+              echo "Refusing repair Release: registry lookup UNKNOWN (fail closed, never release on UNKNOWN)." >&2
+              exit 1
+            else
+              echo "Missing retained tarball for repair (fail closed; refusing to repack over published bytes)." >&2
+              exit 1
+            fi
+          fi
+          test -s "$RETAIN_TARBALL"
           node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --tarball "$RETAIN_TARBALL"
 
       - name: Create GitHub Release

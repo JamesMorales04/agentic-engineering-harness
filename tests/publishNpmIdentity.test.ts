@@ -241,4 +241,181 @@ describe("npm resume identity (fail closed on content mismatch)", () => {
     const yml = await fs.readFile(path.join(REPO, ".github/workflows/publish.yml"), "utf8");
     expect(yml).toMatch(/-eq 3|exit 3|UNKNOWN/);
   });
+
+  // R3 (Luna round-3): mixed-lookup absence is unsafe unless the VERSION query
+  // itself is authoritative. Digest 404s must not contribute; any version-query
+  // transport/auth/parse failure is UNKNOWN (exit 3, never publish).
+  async function fixtureMixed(opts: {
+    integrityMode: "e404" | "network" | "value";
+    shasumMode: "e404" | "network" | "value";
+    versionMode: "e404" | "network" | "empty" | "value";
+    integrityValue?: string;
+  }) {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-npmid-r3-"));
+    await fs.writeFile(path.join(dir, "package.json"), JSON.stringify({ name: "aeh-test-pkg", version: "9.9.9" }));
+    const pack = spawnSync("npm", ["pack", "--pack-destination", dir, "--silent"], { cwd: dir, encoding: "utf8" });
+    if (pack.status !== 0) throw new Error(`npm pack failed offline: ${pack.stderr}`);
+    const tgz = (await fs.readdir(dir)).find((f) => f.endsWith(".tgz"))!;
+    const bytes = await fs.readFile(path.join(dir, tgz));
+    const localIntegrity = `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
+    const bin = path.join(dir, "stubbin");
+    await fs.mkdir(bin);
+    const publishCalled = path.join(dir, "publish-called");
+    const viewImpl = (mode: string, field: string, fallback: string) => {
+      if (mode === "e404")
+        return `echo "npm error code E404" >&2; echo "npm error 404 Not Found - GET ${field}" >&2; exit 1`;
+      if (mode === "network")
+        return `echo "npm error code ENETUNREACH" >&2; echo "npm error network ENETUNREACH" >&2; exit 1`;
+      if (mode === "empty") return `exit 0`;
+      return `echo "${fallback}"; exit 0`;
+    };
+    const integrityFallback = opts.integrityValue ?? localIntegrity;
+    await fs.writeFile(
+      path.join(bin, "npm"),
+      `#!/bin/sh\n` +
+        `if [ "$1" = "view" ]; then\n` +
+        `  FIELD="$3"\n` +
+        `  if [ "$FIELD" = "dist.integrity" ]; then ${viewImpl(opts.integrityMode, "integrity", integrityFallback)}; fi\n` +
+        `  if [ "$FIELD" = "dist.shasum" ]; then ${viewImpl(opts.shasumMode, "shasum", "")}; fi\n` +
+        `  if [ "$FIELD" = "version" ]; then ${viewImpl(opts.versionMode, "version", "9.9.9")}; fi\n` +
+        `  exit 1\nfi\n` +
+        `if [ "$1" = "pack" ]; then DEST=""; PREV=""; for a in "$@"; do if [ "$PREV" = "--pack-destination" ]; then DEST="$a"; fi; PREV="$a"; done; cp "${path.join(dir, tgz)}" "$DEST/"; echo "${tgz}"; exit 0; fi\n` +
+        `if [ "$1" = "publish" ]; then touch "${publishCalled}"; echo "$@" > "${publishCalled}.args"; exit 0; fi\n` +
+        `echo "stub: unsupported npm $*" >&2; exit 1\n`,
+    );
+    await fs.chmod(path.join(bin, "npm"), 0o755);
+    await fs.symlink(path.join(REPO, "scripts"), path.join(dir, "scripts"));
+    return {
+      dir,
+      bin,
+      publishCalled,
+      localIntegrity,
+      env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}` } as NodeJS.ProcessEnv,
+    };
+  }
+
+  it("R1: digest-E404 + failed version query is UNKNOWN (exit 3), never absent", async () => {
+    // Luna blocker: E404 from a DIGEST-field lookup combined with a FAILED
+    // (network-error, no-output) version lookup must NOT yield exit 2.
+    const fx = await fixtureMixed({ integrityMode: "e404", shasumMode: "e404", versionMode: "network" });
+    const gate = path.join(REPO, "scripts/ci/verify-npm-identity.mjs");
+    const r = spawnSync(process.execPath, [gate, "aeh-test-pkg", "9.9.9"], {
+      cwd: fx.dir,
+      env: fx.env,
+      encoding: "utf8",
+    });
+    expect(r.status).toBe(3);
+    expect(`${r.stdout}\n${r.stderr}`).toMatch(/unknown/i);
+    // Publish path must NOT publish on this UNKNOWN.
+    const step = await publishStepRun({ ...fx, env: { ...fx.env, RELEASE_VERSION: "9.9.9" } } as any);
+    expect(step.published).toBe(false);
+    expect(step.code).not.toBe(0);
+    expect(step.out).toMatch(/unknown/i);
+    // Helper must not use digest 404s for the absence decision.
+    const src = await fs.readFile(path.join(REPO, "scripts/ci/verify-npm-identity.mjs"), "utf8");
+    expect(src).not.toMatch(/const combined|let combined|const any404|let any404/);
+    expect(src).toMatch(/VERSION query ONLY|VERSION-query|versionText/);
+    expect(src).toMatch(/isTransportFailure/);
+  });
+
+  it("R1: authoritative VERSION-query absence (empty success) is exit 2 without digest 404s", async () => {
+    // Successful query proving version absent: clean empty on VERSION with
+    // transport success, even when digest fields show network errors.
+    const fx = await fixtureMixed({ integrityMode: "network", shasumMode: "network", versionMode: "empty" });
+    const gate = path.join(REPO, "scripts/ci/verify-npm-identity.mjs");
+    const r = spawnSync(process.execPath, [gate, "aeh-test-pkg", "9.9.9"], {
+      cwd: fx.dir,
+      env: fx.env,
+      encoding: "utf8",
+    });
+    expect(r.status).toBe(2);
+    // Version E404 with transport success is also authoritative, independent of digests.
+    const fx2 = await fixtureMixed({ integrityMode: "e404", shasumMode: "network", versionMode: "e404" });
+    const r2 = spawnSync(process.execPath, [gate, "aeh-test-pkg", "9.9.9"], {
+      cwd: fx2.dir,
+      env: fx2.env,
+      encoding: "utf8",
+    });
+    expect(r2.status).toBe(2);
+    // Version present but digest unreadable stays UNKNOWN.
+    const fx3 = await fixtureMixed({ integrityMode: "network", shasumMode: "network", versionMode: "value" });
+    const r3 = spawnSync(process.execPath, [gate, "aeh-test-pkg", "9.9.9"], {
+      cwd: fx3.dir,
+      env: fx3.env,
+      encoding: "utf8",
+    });
+    expect(r3.status).toBe(3);
+  });
+
+  it("R2: repair-release reuses the retained tarball artifact (no fresh repack)", async () => {
+    const text = await fs.readFile(path.join(REPO, ".github/workflows/publish.yml"), "utf8");
+    const workflow = parse(text) as Record<string, any>;
+    const jobs = workflow.jobs as Record<string, any>;
+    const pubSteps = (jobs["publish-npm"].steps as Array<any>).map((s) => JSON.stringify(s)).join("\n");
+    const repairSteps = jobs["repair-release"].steps as Array<{ name?: string; uses?: string; with?: any; run?: string }>;
+    const repairSer = JSON.stringify(repairSteps);
+    // Same retained-artifact restore as publish-npm (~L357-396).
+    expect(repairSer).toMatch(/download-artifact/);
+    expect(repairSer).toMatch(/aeh-npm-tarball/);
+    const restore = repairSteps.find((s) => (s.uses ?? "").includes("download-artifact"));
+    expect(restore).toBeDefined();
+    expect((restore!.with as any).name).toBe("aeh-npm-tarball");
+    // Publish-npm restore parity: same artifact name/path.
+    expect(pubSteps).toMatch(/aeh-npm-tarball/);
+    const confirm = repairSteps.find((s) => s.name === "Confirm published-but-unreleased state (SHA-bound)")!;
+    expect(confirm).toBeDefined();
+    expect(confirm.run!).toContain("verify-npm-identity.mjs");
+    expect(confirm.run!).toContain("--tarball");
+    expect(confirm.run!).toMatch(/Reusing retained tarball/);
+    expect(confirm.run!).toMatch(/mismatch/i);
+    // Fresh pack is gated: only when no artifact AND registry proves absent (exit 2).
+    expect(confirm.run!).toMatch(/No retained tarball artifact/);
+    expect(confirm.run!).toMatch(/-eq 2/);
+    expect(confirm.run!).toMatch(/residual/i);
+    expect(confirm.run!).toMatch(/UNKNOWN|UNKNOWN.*never release|Refusing.*UNKNOWN/i);
+    // Fresh pack appears only inside the gated residual branch (after the
+    // no-artifact probe and the exit-2 check), never as an unconditional repack.
+    expect(confirm.run!).toMatch(/if ls.*\.tgz[\s\S]*Reusing retained[\s\S]*else[\s\S]*probe[\s\S]*-eq 2[\s\S]*npm pack/);
+    expect(confirm.run!).not.toMatch(/# UNKNOWN registry lookups \(exit 3\) fail loudly and never release\.\nnpm run build/);
+    // Functional retain+reuse: retained bytes verify (exit 0), fresh repack mismatches (exit 1).
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-npmid-r2-"));
+    await fs.writeFile(path.join(dir, "package.json"), JSON.stringify({ name: "aeh-test-pkg", version: "9.9.9" }));
+    const basePack = spawnSync("npm", ["pack", "--pack-destination", dir, "--silent"], { cwd: dir, encoding: "utf8" });
+    if (basePack.status !== 0) throw new Error(`npm pack failed offline: ${basePack.stderr}`);
+    const baseTgz = (await fs.readdir(dir)).find((f) => f.endsWith(".tgz"))!;
+    const bin = path.join(dir, "stubbin");
+    await fs.mkdir(bin);
+    const firstOut = path.join(dir, "firstpack");
+    await fs.mkdir(firstOut);
+    // Nondeterministic stub pack appends nanoseconds.
+    await fs.writeFile(
+      path.join(bin, "npm"),
+      `#!/bin/sh\n` +
+        `if [ "$1" = "view" ]; then case "$3" in version) echo "9.9.9";; dist.integrity) echo "$STUB_INTEGRITY";; *) exit 1;; esac; exit 0; fi\n` +
+        `if [ "$1" = "pack" ]; then DEST=""; PREV=""; for a in "$@"; do if [ "$PREV" = "--pack-destination" ]; then DEST="$a"; fi; PREV="$a"; done; cp "${path.join(dir, baseTgz)}" "$DEST/${baseTgz}"; date +%s%N >> "$DEST/${baseTgz}"; echo "${baseTgz}"; exit 0; fi\n` +
+        `if [ "$1" = "publish" ]; then exit 0; fi\n` +
+        `echo "stub: unsupported npm $*" >&2; exit 1\n`,
+    );
+    await fs.chmod(path.join(bin, "npm"), 0o755);
+    await fs.symlink(path.join(REPO, "scripts"), path.join(dir, "scripts"));
+    const p1 = spawnSync("npm", ["pack", "--pack-destination", firstOut], {
+      cwd: dir,
+      env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}` },
+      encoding: "utf8",
+    });
+    if (p1.status !== 0) throw new Error(`stub pack failed: ${p1.stderr}`);
+    const firstTgz = path.join(firstOut, (await fs.readdir(firstOut)).find((f) => f.endsWith(".tgz"))!);
+    const firstBytes = await fs.readFile(firstTgz);
+    const firstIntegrity = `sha512-${createHash("sha512").update(firstBytes).digest("base64")}`;
+    const env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, STUB_INTEGRITY: firstIntegrity } as any;
+    const gate = path.join(REPO, "scripts/ci/verify-npm-identity.mjs");
+    const reused = spawnSync(process.execPath, [gate, "aeh-test-pkg", "9.9.9", "--tarball", firstTgz], {
+      cwd: dir,
+      env,
+      encoding: "utf8",
+    });
+    expect(reused.status).toBe(0);
+    const repacked = spawnSync(process.execPath, [gate, "aeh-test-pkg", "9.9.9"], { cwd: dir, env, encoding: "utf8" });
+    expect(repacked.status).toBe(1);
+  });
 });

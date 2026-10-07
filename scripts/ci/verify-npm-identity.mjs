@@ -62,10 +62,25 @@ const view = (field) => {
 const is404 = (text) => /E404|\b404\b/i.test(text ?? "");
 const isValidSha512 = (s) => /^sha512-[A-Za-z0-9+/]+={0,2}$/.test(s ?? "");
 const isValidSha1 = (s) => /^[a-f0-9]{40}$/i.test((s ?? "").trim());
+// Transport/auth failure markers force UNKNOWN (exit 3) even when a 404
+// string is also present (fail closed, never publish on UNKNOWN).
+const isTransportFailure = (t) =>
+  /ENET|EAI_AGAIN|ETIMEDOUT|ECONN|ENOTFOUND|EACCES|E401|E403|EAUTH|ENEEDAUTH|EOTP|E500|E502|E503|socket|timeout|\bnetwork\b|\bauth\b|unauthorized|forbidden/i.test(
+    t ?? "",
+  );
 
 // Registry lookup: distinguish proven-absent (exit 2) from UNKNOWN (exit 3).
-// Exit 2 requires a clean 404/E404 for the requested version; any other
-// failure (network/auth/parse, empty without 404, malformed digest) is exit 3.
+// R3: exit 2 requires an AUTHORITATIVE absence result for the VERSION query
+// itself. Digest-field lookups (dist.integrity/dist.shasum) MUST NOT contribute
+// to the absence decision: an E404 on a digest field combined with a FAILED
+// version query (network/auth error, empty output) is UNKNOWN (exit 3), never
+// absent. Authoritative absent is EITHER:
+//   (a) version query fails (non-zero) with E404/404 ON THE VERSION QUERY with
+//       transport success (no transport/auth failure markers), OR
+//   (b) version query succeeds (zero) with clean empty output (successful query
+//       proving the version is absent).
+// ANY version-query transport/auth/parse failure (non-zero without a clean
+// version-query E404, empty failure, auth/network markers) is exit 3 UNKNOWN.
 let algo = "sha512";
 let expected = "";
 const rIntegrity = view("dist.integrity");
@@ -78,12 +93,17 @@ if (rIntegrity.status === 0 && rIntegrity.out) {
     expected = rShasum.out;
     algo = "sha1";
   } else {
-    // No usable digest from either field: prove absence or fail UNKNOWN.
+    // No usable digest from either field: prove absence via the VERSION query
+    // ONLY. Digest-field 404s are ignored for the absence decision (R3).
     const rVersion = view("version");
-    const combined = [rIntegrity.out, rIntegrity.err, rShasum.out, rShasum.err, rVersion.out, rVersion.err].join("\n");
-    const versionSays404 = rVersion.status !== 0 && is404(`${rVersion.out}\n${rVersion.err}`);
-    const any404 = is404(combined);
-    if (versionSays404 || (any404 && rVersion.status !== 0 && !rVersion.out)) {
+    const versionText = `${rVersion.out}\n${rVersion.err}`;
+    const versionSays404 = rVersion.status !== 0 && is404(versionText);
+    if (versionSays404 && !isTransportFailure(versionText)) {
+      console.error(`npm identity: ${spec} is NOT on the registry (nothing to resume).`);
+      process.exit(2);
+    }
+    if (rVersion.status === 0 && !rVersion.out && !isTransportFailure(versionText)) {
+      // Successful query with clean empty output proves absence (transport success).
       console.error(`npm identity: ${spec} is NOT on the registry (nothing to resume).`);
       process.exit(2);
     }
@@ -92,13 +112,9 @@ if (rIntegrity.status === 0 && rIntegrity.out) {
       console.error(`npm identity UNKNOWN for ${spec}: version is present but dist.integrity/dist.shasum is missing or unreadable (fail closed, never publish).`);
       process.exit(3);
     }
-    if (any404 && rVersion.status === 0 && !rVersion.out) {
-      console.error(`npm identity: ${spec} is NOT on the registry (nothing to resume).`);
-      process.exit(2);
-    }
     console.error(
       `npm identity UNKNOWN for ${spec}: registry lookup failed (network/auth/parse). Failing closed; never publish on UNKNOWN. ` +
-        `integrity(status=${rIntegrity.status}) shasum lookup failed without a clean 404.`,
+        `integrity(status=${rIntegrity.status}) shasum lookup failed without an authoritative VERSION-query absence.`,
     );
     process.exit(3);
   }
