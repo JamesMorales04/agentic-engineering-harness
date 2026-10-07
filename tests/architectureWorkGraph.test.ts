@@ -282,7 +282,152 @@ describe("WorkUnit logical resource claims", () => {
       await expect(planParallelism(root, {} as never, "T", [
         task("A", "src/a.ts", [claim("migrations", "ORDERED_SEQUENCE", 0)]),
         task("B", "src/b.ts", [claim("migrations", "ORDERED_SEQUENCE", 0)])
-      ])).rejects.toThrow(/Cannot schedule delegation plan: resource:migrations:duplicate-order:0/);
+      ])).rejects.toThrow(/Cannot schedule delegation plan \[ORDERING_BLOCKED\]: resource:migrations:duplicate-order:0/);
     } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it("reports ordering deadlocks, unknown dependencies, and cycles with distinct codes", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-scheduler-codes-"));
+    try {
+      await expect(planParallelism(root, {} as never, "T", [
+        task("A", "src/a.ts", [claim("r1", "ORDERED_SEQUENCE", 1), claim("r2", "ORDERED_SEQUENCE", 0)]),
+        task("B", "src/b.ts", [claim("r1", "ORDERED_SEQUENCE", 0), claim("r2", "ORDERED_SEQUENCE", 1)])
+      ])).rejects.toThrow(/Cannot schedule delegation plan \[ORDERING_BLOCKED\]/);
+      await expect(planParallelism(root, {} as never, "T", [
+        { ...task("A", "src/a.ts", []), dependencies: ["missing-unit"] },
+        task("B", "src/b.ts", [])
+      ])).rejects.toThrow(/Cannot schedule delegation plan \[UNKNOWN_DEPENDENCY\]: 'A' depends on unknown unit 'missing-unit'/);
+      await expect(planParallelism(root, {} as never, "T", [
+        { ...task("A", "src/a.ts", []), dependencies: ["B"] },
+        { ...task("B", "src/b.ts", []), dependencies: ["A"] }
+      ])).rejects.toThrow(/Cannot schedule delegation plan \[DEPENDENCY_CYCLE\]: dependency cycle among A, B/);
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it("rejects dependency cycles at the validation boundary", () => {
+    const cyclic = {
+      version: 1 as const, taskId: "task-cyclic", objective: "cyclic", route: "DELEGATED" as const, assurance: "STANDARD" as const,
+      requirementRefs: ["req-1"], acceptanceRefs: [],
+      units: [
+        { version: 1 as const, id: "A", objective: "a", scope: ["src/a.ts"], dependencies: ["B"], requirementRefs: ["req-1"], acceptanceRefs: [], competencies: [], riskTags: [], changeKinds: ["source" as const], risk: "low" as const, status: "PENDING" as const, resourceClaims: [] },
+        { version: 1 as const, id: "B", objective: "b", scope: ["src/b.ts"], dependencies: ["A"], requirementRefs: ["req-1"], acceptanceRefs: [], competencies: [], riskTags: [], changeKinds: ["source" as const], risk: "low" as const, status: "PENDING" as const, resourceClaims: [] }
+      ]
+    };
+    expect(() => validateWorkGraph(cyclic)).toThrow(/WORK_GRAPH_INVALID \[DEPENDENCY_CYCLE\]: dependency cycle includes/);
+    expect(() => createWorkGraph(cyclic)).toThrow(/WORK_GRAPH_INVALID \[DEPENDENCY_CYCLE\]/);
+  });
+});
+
+describe("ExecutionBlueprint conflict-aware waves", () => {
+  const blueprintForUnits = (units: ReturnType<typeof createWorkGraph>["units"]) => {
+    const workGraph = createWorkGraph({
+      taskId: "task-waves", objective: "conflict-aware waves", route: "DELEGATED", assurance: "STANDARD",
+      requirementRefs: ["req-1"], acceptanceRefs: [],
+      units: units as never
+    });
+    const candidate = createCandidateRevisionV1({ operationId: "operation:task-waves", candidateId: "candidate:task-waves:r1", taskId: workGraph.taskId, revision: 1, sourceDigest: "a".repeat(64) });
+    const resolvedOperationPolicy = compileResolvedOperationPolicy({ projectId: candidate.projectId ?? "project:task-waves", operationId: candidate.operationId, operationExecutionRevision: 1, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch: 1, intent: "wave coherence", route: workGraph.route, minimumAssurance: workGraph.assurance, policyVersions: { resolvedOperationPolicy: "2" }, policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {}, allowedExternalEffects: [], humanDecisionRequirements: [] });
+    return compileExecutionBlueprint({ graph: workGraph, candidate, controllerEpoch: 1, operationExecutionRevision: 1, resolvedOperationPolicy, executionCatalog: compileExecutionCatalog({ runtimes: {}, models: {} }) });
+  };
+  const unit = (id: string, scope: string, resourceClaims: ResourceClaimV1[]) => ({
+    version: 1 as const, id, objective: `objective ${id}`, scope: [scope], dependencies: [] as string[],
+    requirementRefs: ["req-1"], acceptanceRefs: [], competencies: ["typescript"], riskTags: [],
+    changeKinds: ["source" as const], risk: "medium" as const, status: "PENDING" as const, resourceClaims
+  });
+
+  it("serializes same-scope exclusive writers instead of co-placing them", () => {
+    const exclusive = (resource: string, mode: ResourceClaimV1["mode"]): ResourceClaimV1 => ({ version: 1, resource, mode });
+    const blueprint = blueprintForUnits([
+      unit("A", "src/shared.ts", [exclusive("db-schema", "EXCLUSIVE_WRITE")]),
+      unit("B", "src/shared.ts", [exclusive("db-schema", "EXCLUSIVE_WRITE")])
+    ]);
+    expect(blueprint.waves).toEqual([["A"], ["B"]]);
+  });
+
+  it("co-schedules shared reads and orders ORDERED_SEQUENCE claims", () => {
+    const shared = blueprintForUnits([
+      unit("A", "src/a.ts", [{ version: 1, resource: "api-contract", mode: "SHARED_READ" }]),
+      unit("B", "src/b.ts", [{ version: 1, resource: "api-contract", mode: "SHARED_READ" }])
+    ]);
+    expect(shared.waves).toEqual([["A", "B"]]);
+    const ordered = blueprintForUnits([
+      unit("B", "src/b.ts", [{ version: 1, resource: "migrations", mode: "ORDERED_SEQUENCE", order: 1 }]),
+      unit("A", "src/a.ts", [{ version: 1, resource: "migrations", mode: "ORDERED_SEQUENCE", order: 0 }])
+    ]);
+    expect(ordered.waves).toEqual([["A"], ["B"]]);
+  });
+});
+
+describe("graphify refinement respects blueprint waves (monotonic lower bound)", () => {
+  // Luna counterexample fixture: A/B share no deterministic conflict, B/C
+  // share a scope. The deterministic blueprint is wave1=[A,B], wave2=[C].
+  // An injected graphify A/B conflict must only SPLIT waves (delay B), never
+  // pull C across the blueprint boundary beside A.
+  const lunaScopes: Record<"A" | "B" | "C", string[]> = { A: ["src/a.ts"], B: ["src/b.ts", "src/shared.ts"], C: ["src/shared.ts"] };
+  const lunaBlueprintUnits = () => (["A", "B", "C"] as const).map((id) => ({
+    version: 1 as const, id, objective: `objective ${id}`, scope: [...lunaScopes[id]], dependencies: [] as string[],
+    requirementRefs: ["req-1"], acceptanceRefs: [], competencies: ["typescript"], riskTags: [],
+    changeKinds: ["source" as const], risk: "medium" as const, status: "PENDING" as const, resourceClaims: []
+  }));
+  const lunaTasks = () => (["A", "B", "C"] as const).map((id) => ({
+    id, objective: `objective ${id}`, scope: [...lunaScopes[id]], dependencies: [] as string[],
+    requirementRefs: [] as string[], acceptanceRefs: [] as string[], competencies: ["typescript"], riskTags: [] as string[],
+    changeKinds: ["source" as const], risk: "medium" as const, resourceClaims: []
+  }));
+  const writeLunaSnapshot = async (root: string) => {
+    const dir = path.join(root, ".harness", "graph", "T");
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, "before.json"), JSON.stringify({
+      nodes: ["node-a", "node-b", "node-c"],
+      nodeFiles: { "node-a": "src/a.ts", "node-b": "src/b.ts", "node-c": "src/shared.ts" },
+      communities: { "node-a": "group-1", "node-b": "group-1", "node-c": "group-2" }
+    }));
+  };
+  const waveIndexOf = (waves: string[][]): Map<string, number> => {
+    const index = new Map<string, number>();
+    waves.forEach((wave, waveIndex) => { for (const id of wave) index.set(id, waveIndex); });
+    return index;
+  };
+
+  it("keeps every runtime wave at or after its blueprint wave ([A] then [B] then [C])", async () => {
+    const workGraph = createWorkGraph({
+      taskId: "task-luna", objective: "luna boundary", route: "DELEGATED" as const, assurance: "STANDARD" as const,
+      requirementRefs: ["req-1"], acceptanceRefs: [],
+      units: lunaBlueprintUnits() as never
+    });
+    const candidate = createCandidateRevisionV1({ operationId: "operation:task-luna", candidateId: "candidate:task-luna:r1", taskId: workGraph.taskId, revision: 1, sourceDigest: "a".repeat(64) });
+    const resolvedOperationPolicy = compileResolvedOperationPolicy({ projectId: candidate.projectId ?? "project:task-luna", operationId: candidate.operationId, operationExecutionRevision: 1, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch: 1, intent: "luna bound", route: workGraph.route, minimumAssurance: workGraph.assurance, policyVersions: { resolvedOperationPolicy: "2" }, policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {}, contextPolicy: {}, allowedExternalEffects: [], humanDecisionRequirements: [] });
+    const blueprint = compileExecutionBlueprint({ graph: workGraph, candidate, controllerEpoch: 1, operationExecutionRevision: 1, resolvedOperationPolicy, executionCatalog: compileExecutionCatalog({ runtimes: {}, models: {} }) });
+    expect(blueprint.waves).toEqual([["A", "B"], ["C"]]);
+
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-luna-bound-"));
+    try {
+      await writeLunaSnapshot(root);
+      const schedule = await planParallelism(root, {} as never, "T", lunaTasks() as never);
+      expect(schedule.graphUsed).toBe(true);
+      expect(schedule.conflicts.some((conflict) => conflict.reasons.includes("graphify-community-overlap"))).toBe(true);
+      // Monotonic lower bound: nothing executes earlier than planned; extra
+      // graphify serialization may only split waves (push units later).
+      const blueprintIndex = waveIndexOf(blueprint.waves);
+      const runtimeIndex = waveIndexOf(schedule.waves);
+      for (const id of ["A", "B", "C"]) {
+        expect(runtimeIndex.get(id)! >= blueprintIndex.get(id)!).toBe(true);
+      }
+      expect(schedule.waves).toEqual([["A"], ["B"], ["C"]]);
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("scheduler deletion hygiene", () => {
+  it("removes the superseded assertAcyclicWorkGraph surface", async () => {
+    // Deletion-hygiene claim is scoped to ACTIVE authoring paths
+    // (src/tests/evals/scripts) by policy: docs/evidence/** holds frozen
+    // archival snapshots (e.g. the s13 round-22 frozen-release keeps the old
+    // export) that are never edited, so their historical references are
+    // excluded from the claim rather than rewritten. Verified separately:
+    // repo grep finds zero assertAcyclicWorkGraph refs under
+    // src/tests/evals/scripts and zero active-code imports of docs/evidence.
+    const workGraphModule = await import("../src/architecture/workGraph.js");
+    expect("assertAcyclicWorkGraph" in workGraphModule).toBe(false);
   });
 });

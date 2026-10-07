@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { minimatch } from "minimatch";
-import { resourceClaimConflicts, resourceClaimOrderingViolations } from "../architecture/workGraph.js";
+import { deterministicSchedulingConflicts, planWorkUnitWaves, scopeStaticPrefix } from "../architecture/workGraph.js";
 import type { HarnessProjectConfig } from "../core/types.js";
 import type { WorkUnitOutput } from "./outputContracts.js";
 
@@ -17,47 +17,33 @@ interface GraphSnapshot {
 export interface TaskConflict { a: string; b: string; reasons: string[]; }
 export interface ParallelismPlan { taskId: string; waves: string[][]; conflicts: TaskConflict[]; graphUsed: boolean; taskNodes?: Record<string, string[]>; }
 
-export async function planParallelism(root: string, config: HarnessProjectConfig, taskId: string, tasks: WorkUnitOutput[]): Promise<ParallelismPlan> {
+export async function planParallelism(root: string, config: HarnessProjectConfig, taskId: string, tasks: WorkUnitOutput[], options?: { blueprintWaves?: readonly (readonly string[])[] }): Promise<ParallelismPlan> {
   const graph = await loadBeforeGraph(root, config, taskId); const conflicts: TaskConflict[] = []; const taskNodes: Record<string, string[]> = {};
   if (graph) for (const task of tasks) taskNodes[task.id] = [...nodesForScopes(task.scope, graph)].sort();
   for (let i = 0; i < tasks.length; i += 1) for (let j = i + 1; j < tasks.length; j += 1) {
     const reasons = conflictReasons(tasks[i], tasks[j], graph, taskNodes, config);
     if (reasons.length) conflicts.push({ a: tasks[i].id, b: tasks[j].id, reasons });
   }
-  const waves: string[][] = []; const remaining = new Map(tasks.map((task) => [task.id, task])); const completed = new Set<string>();
-  const orderingViolations = resourceClaimOrderingViolations(tasks.map((task) => ({ id: task.id, resourceClaims: task.resourceClaims ?? [] })));
-  if (orderingViolations.length) throw new Error(`Cannot schedule delegation plan: ${orderingViolations.join(", ")}`);
-  const orderedClaims = new Map<string, Array<{ resource: string; order?: number }>>(tasks.map((task) => [task.id, (task.resourceClaims ?? []).filter((claim) => claim.mode === "ORDERED_SEQUENCE").map((claim) => ({ resource: claim.resource, order: claim.order }))]));
-  const orderedReadinessSatisfied = (task: WorkUnitOutput): boolean => {
-    for (const claim of orderedClaims.get(task.id) ?? []) {
-      const order = claim.order;
-      if (order === undefined) continue;
-      for (const [otherId, otherClaims] of orderedClaims) {
-        if (otherId === task.id || completed.has(otherId)) continue;
-        if (otherClaims.some((other) => other.resource === claim.resource && other.order !== undefined && other.order < order)) return false;
-      }
-    }
-    return true;
-  };
-  while (remaining.size) {
-    const wave: WorkUnitOutput[] = [];
-    for (const task of remaining.values()) {
-      if (!task.dependencies.every((dep) => completed.has(dep))) continue;
-      if (!orderedReadinessSatisfied(task)) continue;
-      if (wave.some((other) => conflicts.some((conflict) => ((conflict.a === task.id && conflict.b === other.id) || (conflict.b === task.id && conflict.a === other.id))))) continue;
-      wave.push(task);
-    }
-    if (!wave.length) throw new Error(`Cannot schedule delegation plan: dependency cycle or unresolved dependency among ${[...remaining.keys()].join(", ")}`);
-    waves.push(wave.map((task) => task.id)); for (const task of wave) { completed.add(task.id); remaining.delete(task.id); }
-  }
+  // Monotonic lower bound (DETERMINISTIC, enforced where schedule waves are
+  // BUILT, not just derived): the frozen blueprint wave index is a per-unit
+  // lower bound on runtime placement. Explicit blueprintWaves (the frozen
+  // contract, wired by the executor) win; otherwise the bound is derived via
+  // the shared deterministic core (the same routine compileExecutionBlueprint
+  // uses), so graphify refinement inside areMutuallyExclusive may only SPLIT
+  // waves, never pull a unit earlier than planned.
+  const blueprintWaves = options?.blueprintWaves ?? planWorkUnitWaves(tasks);
+  const blueprintWaveIndex = new Map<string, number>();
+  blueprintWaves.forEach((wave, waveIndex) => { for (const id of wave) if (!blueprintWaveIndex.has(id)) blueprintWaveIndex.set(id, waveIndex); });
+  const waves = planWorkUnitWaves(tasks, {
+    areMutuallyExclusive: (leftId, rightId) => conflicts.some((conflict) => (conflict.a === leftId && conflict.b === rightId) || (conflict.b === leftId && conflict.a === rightId)),
+    blueprintWaveIndex: (id) => blueprintWaveIndex.get(id) ?? 0
+  });
   return { taskId, waves, conflicts, graphUsed: Boolean(graph), taskNodes: graph ? taskNodes : undefined };
 }
 
 function conflictReasons(a: WorkUnitOutput, b: WorkUnitOutput, graph: GraphSnapshot | undefined, taskNodes: Record<string, string[]>, config: HarnessProjectConfig): string[] {
-  const reasons: string[] = [];
+  const reasons = [...deterministicSchedulingConflicts(a, b)];
   if (a.dependencies.includes(b.id) || b.dependencies.includes(a.id)) reasons.push("dependency");
-  if (scopesOverlap(a.scope, b.scope)) reasons.push("scope-overlap");
-  for (const conflict of resourceClaimConflicts(a.resourceClaims ?? [], b.resourceClaims ?? [])) reasons.push(`resource-claim:${conflict}`);
   if (!graph) return reasons;
   if (shareCommunity(new Set(taskNodes[a.id] ?? []), new Set(taskNodes[b.id] ?? []), graph)) reasons.push("graphify-community-overlap");
   const scheduling = config.codeIntelligence?.scheduling;
@@ -74,21 +60,16 @@ function conflictReasons(a: WorkUnitOutput, b: WorkUnitOutput, graph: GraphSnaps
   return [...new Set(reasons)];
 }
 
-function scopesOverlap(a: string[], b: string[]): boolean { return a.some((left) => b.some((right) => left === right || minimatch(left, right, { dot: true }) || minimatch(right, left, { dot: true }) || nonEmptyPrefixOverlap(staticPrefix(left), staticPrefix(right)))); }
-function nonEmptyPrefixOverlap(left: string, right: string): boolean { return Boolean(left && right) && (pathWithin(left, right) || pathWithin(right, left)); }
-function pathWithin(candidate: string, parent: string): boolean { return candidate === parent || candidate.startsWith(`${parent}/`); }
-function staticPrefix(pattern: string): string { return pattern.split(/[?*\[]/, 1)[0].replace(/\/+$/, ""); }
-
 function nodesForScopes(scopes: string[], graph: GraphSnapshot): Set<string> {
   const result = new Set<string>(); const files = graph.nodeFiles ?? {};
   for (const node of graph.nodes ?? []) {
     const file = files[node];
     if (file && scopes.some((scope) => pathMatches(file, scope))) { result.add(node); continue; }
-    if (scopes.some((scope) => { const prefix = staticPrefix(scope); return Boolean(prefix) && node.toLowerCase().includes(prefix.toLowerCase()); })) result.add(node);
+    if (scopes.some((scope) => { const prefix = scopeStaticPrefix(scope); return Boolean(prefix) && node.toLowerCase().includes(prefix.toLowerCase()); })) result.add(node);
   }
   return result;
 }
-function pathMatches(file: string, scope: string): boolean { const prefix = staticPrefix(scope); return minimatch(file, scope, { dot: true }) || (Boolean(prefix) && (file === prefix || file.startsWith(`${prefix}/`))); }
+function pathMatches(file: string, scope: string): boolean { const prefix = scopeStaticPrefix(scope); return minimatch(file, scope, { dot: true }) || (Boolean(prefix) && (file === prefix || file.startsWith(`${prefix}/`))); }
 function shareCommunity(a: Set<string>, b: Set<string>, graph: GraphSnapshot): boolean { const communities = graph.communities ?? {}; const left = new Set([...a].map((node) => communities[node]).filter(Boolean)); return [...b].some((node) => Boolean(communities[node] && left.has(communities[node]))); }
 function adjacency(graph: GraphSnapshot): Map<string, Set<string>> {
   const map = new Map<string, Set<string>>();

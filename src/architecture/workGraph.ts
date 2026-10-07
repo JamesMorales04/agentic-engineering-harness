@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { minimatch } from "minimatch";
 import { z } from "zod";
 import type { AssuranceLevel, ImplementationRoute } from "./contracts.js";
 import { assuranceLevelSchema, implementationRouteSchema } from "./contracts.js";
@@ -122,10 +123,25 @@ export function validateWorkGraph(value: unknown): WorkGraphV1 {
   }
   for (const unit of parsed.units) {
     for (const dependency of unit.dependencies) {
-      if (!ids.has(dependency)) throw new Error(`WORK_GRAPH_INVALID: '${unit.id}' depends on unknown unit '${dependency}'.`);
-      if (dependency === unit.id) throw new Error(`WORK_GRAPH_INVALID: '${unit.id}' cannot depend on itself.`);
+      if (!ids.has(dependency)) throw new Error(`WORK_GRAPH_INVALID [UNKNOWN_DEPENDENCY]: '${unit.id}' depends on unknown unit '${dependency}'.`);
+      if (dependency === unit.id) throw new Error(`WORK_GRAPH_INVALID [DEPENDENCY_CYCLE]: '${unit.id}' cannot depend on itself.`);
     }
   }
+  // Cycle rejection is unconditional at this validation boundary: standalone
+  // validateWorkGraph callers get the same fail-closed graph as createWorkGraph.
+  // MECHANISM: DETERMINISTIC. Finite DAGs always expose a dependency-ready
+  // node, so the iterative visit below reports the first re-entered unit.
+  const visitState = new Map<string, "visiting" | "visited">();
+  const visit = (id: string): void => {
+    if (visitState.get(id) === "visiting") throw new Error(`WORK_GRAPH_INVALID [DEPENDENCY_CYCLE]: dependency cycle includes '${id}'.`);
+    if (visitState.get(id) === "visited") return;
+    visitState.set(id, "visiting");
+    const unit = parsed.units.find((candidate) => candidate.id === id);
+    if (!unit) throw new Error(`WORK_GRAPH_INVALID [UNKNOWN_DEPENDENCY]: unknown unit '${id}'.`);
+    unit.dependencies.forEach(visit);
+    visitState.set(id, "visited");
+  };
+  parsed.units.forEach((unit) => visit(unit.id));
   const coveredRequirements = new Set(parsed.units.flatMap((unit) => unit.requirementRefs));
   const coveredAcceptance = new Set(parsed.units.flatMap((unit) => unit.acceptanceRefs));
   const missingRequirements = parsed.requirementRefs.filter((id) => !coveredRequirements.has(id));
@@ -182,24 +198,165 @@ export function resourceClaimOrderingViolations(units: ReadonlyArray<{ id: strin
   return violations;
 }
 
-export function assertAcyclicWorkGraph(graph: WorkGraphV1): void {
-  const state = new Map<string, "visiting" | "visited">();
-  const visit = (id: string): void => {
-    if (state.get(id) === "visiting") throw new Error(`WORK_GRAPH_INVALID: dependency cycle includes '${id}'.`);
-    if (state.get(id) === "visited") return;
-    state.set(id, "visiting");
-    const unit = graph.units.find((candidate) => candidate.id === id);
-    if (!unit) throw new Error(`WORK_GRAPH_INVALID: unknown unit '${id}'.`);
-    unit.dependencies.forEach(visit);
-    state.set(id, "visited");
-  };
-  graph.units.forEach((unit) => visit(unit.id));
+export function createWorkGraph(input: Omit<WorkGraphV1, "version">): WorkGraphV1 {
+  return validateWorkGraph({ version: 1, ...input });
 }
 
-export function createWorkGraph(input: Omit<WorkGraphV1, "version">): WorkGraphV1 {
-  const graph = validateWorkGraph({ version: 1, ...input });
-  assertAcyclicWorkGraph(graph);
-  return graph;
+/**
+ * Minimal structural surface the deterministic scheduler needs. Both
+ * WorkUnitV1 and planner WorkUnitOutput satisfy it.
+ */
+export interface SchedulableWorkUnitV1 {
+  id: string;
+  scope: readonly string[];
+  dependencies: readonly string[];
+  resourceClaims?: readonly ResourceClaimV1[];
+}
+
+/** Static (glob-free) leading path of a scope pattern. */
+export function scopeStaticPrefix(pattern: string): string {
+  return pattern.split(/[?*\[]/, 1)[0]!.replace(/\/+$/, "");
+}
+
+function pathWithin(candidate: string, parent: string): boolean {
+  return candidate === parent || candidate.startsWith(`${parent}/`);
+}
+
+function nonEmptyPrefixOverlap(left: string, right: string): boolean {
+  return Boolean(left && right) && (pathWithin(left, right) || pathWithin(right, left));
+}
+
+/**
+ * MECHANISM: DETERMINISTIC. Scope overlap shared by every scheduler: exact,
+ * glob, or directory-prefix overlap on either side.
+ */
+export function workUnitScopesOverlap(left: readonly string[], right: readonly string[]): boolean {
+  return left.some((leftScope) => right.some((rightScope) =>
+    leftScope === rightScope
+    || minimatch(leftScope, rightScope, { dot: true })
+    || minimatch(rightScope, leftScope, { dot: true })
+    || nonEmptyPrefixOverlap(scopeStaticPrefix(leftScope), scopeStaticPrefix(rightScope))));
+}
+
+/**
+ * MECHANISM: DETERMINISTIC. Scheduling conflicts observable from the frozen
+ * graph alone: scope overlap plus logical resource-claim conflicts
+ * (exclusive-exclusive, write-read, and any ORDERED_SEQUENCE sharing).
+ */
+export function deterministicSchedulingConflicts(left: SchedulableWorkUnitV1, right: SchedulableWorkUnitV1): string[] {
+  const reasons: string[] = [];
+  if (workUnitScopesOverlap(left.scope, right.scope)) reasons.push("scope-overlap");
+  for (const conflict of resourceClaimConflicts(left.resourceClaims ?? [], right.resourceClaims ?? [])) reasons.push(`resource-claim:${conflict}`);
+  return [...new Set(reasons)];
+}
+
+/**
+ * MECHANISM: DETERMINISTIC. Single conflict-aware wave scheduler shared by
+ * compileExecutionBlueprint (frozen blueprint.waves) and planParallelism
+ * (runtime schedule.waves). A wave holds only units whose dependencies are
+ * complete, whose ORDERED_SEQUENCE predecessors are complete, and which are
+ * pairwise conflict-free. Graph-snapshot (graphify) conflicts are a
+ * planParallelism-only refinement passed via areMutuallyExclusive.
+ *
+ * Monotonic blueprint lower bound: planParallelism passes each unit's frozen
+ * blueprint wave index via blueprintWaveIndex, and a unit is never placed
+ * before it (runtimeWave >= blueprintWave always). Graphify refinement may
+ * only SPLIT waves (push units later), never pull a unit across a blueprint
+ * boundary earlier. When every dependency/ordering-ready unit is still
+ * bound-blocked, an empty wave is emitted and the index advances (the bound,
+ * not the plan, is waiting); genuine deadlocks still throw below.
+ *
+ * Failure codes are distinct: ORDERING_BLOCKED for duplicate
+ * ORDERED_SEQUENCE positions or ordering deadlocks, UNKNOWN_DEPENDENCY for
+ * references outside the scheduled set, DEPENDENCY_CYCLE when every
+ * remaining unit waits on another remaining unit, INVALID_SCHEDULING_BOUND
+ * for a non-finite, negative, or out-of-range blueprintWaveIndex value
+ * (validated before scheduling; only finite bounds in [0, unitCount] ever
+ * reach the loop).
+ */
+export function planWorkUnitWaves(
+  units: readonly SchedulableWorkUnitV1[],
+  options?: { areMutuallyExclusive?: (leftId: string, rightId: string) => boolean; blueprintWaveIndex?: (id: string) => number }
+): string[][] {
+  const byId = new Map(units.map((unit) => [unit.id, unit]));
+  const mutuallyExclusive = options?.areMutuallyExclusive
+    ?? ((leftId: string, rightId: string) => deterministicSchedulingConflicts(byId.get(leftId)!, byId.get(rightId)!).length > 0);
+  const blueprintWaveOf = options?.blueprintWaveIndex ?? (() => 0);
+  // Fail-closed bound on the exported callback surface (DETERMINISTIC):
+  // frozen blueprint waves always yield finite indices in [0, unitCount],
+  // so a non-finite, negative, or out-of-range (> unitCount) bound is a
+  // malformed caller. Without this gate, an Infinity bound stalls every
+  // unit at the eligibility check below while the empty-wave branch emits
+  // forever, and a huge finite bound pre-allocates that many empty waves.
+  // Validated once, up front, into a frozen snapshot: the loop below must
+  // observe fixed bounds, never a live callback.
+  const blueprintWaveBounds = new Map<string, number>(units.map((unit) => {
+    const bound = blueprintWaveOf(unit.id);
+    if (typeof bound !== "number" || !Number.isFinite(bound) || bound < 0 || bound > units.length) {
+      throw new Error(`Cannot schedule delegation plan [INVALID_SCHEDULING_BOUND]: '${unit.id}' declares invalid blueprint wave bound ${String(bound)} (expected a finite number in [0, ${units.length}]).`);
+    }
+    return [unit.id, bound] as [string, number];
+  }));
+  const orderingViolations = resourceClaimOrderingViolations(units.map((unit) => ({ id: unit.id, resourceClaims: unit.resourceClaims ?? [] })));
+  if (orderingViolations.length) throw new Error(`Cannot schedule delegation plan [ORDERING_BLOCKED]: ${orderingViolations.join(", ")}`);
+  const orderedClaims = new Map<string, Array<{ resource: string; order?: number }>>(units.map((unit) => [unit.id, (unit.resourceClaims ?? []).filter((claim) => claim.mode === "ORDERED_SEQUENCE").map((claim) => ({ resource: claim.resource, order: claim.order }))]));
+  const remaining = new Map(units.map((unit) => [unit.id, unit]));
+  const completed = new Set<string>();
+  const orderedReadinessSatisfied = (unit: SchedulableWorkUnitV1): boolean => {
+    for (const claim of orderedClaims.get(unit.id) ?? []) {
+      const order = claim.order;
+      if (order === undefined) continue;
+      for (const [otherId, otherClaims] of orderedClaims) {
+        if (otherId === unit.id || completed.has(otherId)) continue;
+        if (otherClaims.some((other) => other.resource === claim.resource && other.order !== undefined && other.order < order)) return false;
+      }
+    }
+    return true;
+  };
+  const waves: string[][] = [];
+  while (remaining.size) {
+    const wave: SchedulableWorkUnitV1[] = [];
+    for (const unit of remaining.values()) {
+      if (!unit.dependencies.every((dependency) => completed.has(dependency))) continue;
+      if (!orderedReadinessSatisfied(unit)) continue;
+      if (blueprintWaveBounds.get(unit.id)! > waves.length) continue;
+      if (wave.some((other) => mutuallyExclusive(unit.id, other.id))) continue;
+      wave.push(unit);
+    }
+    if (!wave.length) {
+      // Bound stall, not a deadlock: some unit is dependency/ordering-ready
+      // but its blueprint lower bound lies ahead. Emit an empty wave so the
+      // runtime index advances toward the bound without pulling anything
+      // earlier. When nothing is even dependency/ordering-ready the blockage
+      // below still classifies the genuine UNKNOWN_DEPENDENCY /
+      // ORDERING_BLOCKED / DEPENDENCY_CYCLE failure.
+      const boundStalled = [...remaining.values()].some((unit) => {
+        if (!unit.dependencies.every((dependency) => completed.has(dependency))) return false;
+        return orderedReadinessSatisfied(unit);
+      });
+      if (boundStalled) { waves.push([]); continue; }
+      throw classifySchedulingBlockage([...remaining.values()], completed);
+    }
+    waves.push(wave.map((unit) => unit.id));
+    for (const unit of wave) { completed.add(unit.id); remaining.delete(unit.id); }
+  }
+  return waves;
+}
+
+function classifySchedulingBlockage(remaining: SchedulableWorkUnitV1[], completed: ReadonlySet<string>): Error {
+  const remainingIds = new Set(remaining.map((unit) => unit.id));
+  for (const unit of remaining) {
+    for (const dependency of unit.dependencies) {
+      if (!completed.has(dependency) && !remainingIds.has(dependency)) {
+        return new Error(`Cannot schedule delegation plan [UNKNOWN_DEPENDENCY]: '${unit.id}' depends on unknown unit '${dependency}'.`);
+      }
+    }
+  }
+  const dependencyReady = remaining.filter((unit) => unit.dependencies.every((dependency) => completed.has(dependency)));
+  if (dependencyReady.length) {
+    return new Error(`Cannot schedule delegation plan [ORDERING_BLOCKED]: ordering deadlock among ${remaining.map((unit) => unit.id).join(", ")}; '${dependencyReady[0]!.id}' is dependency-ready but waits for an ORDERED_SEQUENCE predecessor that can never complete first.`);
+  }
+  return new Error(`Cannot schedule delegation plan [DEPENDENCY_CYCLE]: dependency cycle among ${remaining.map((unit) => unit.id).join(", ")}.`);
 }
 
 /**
