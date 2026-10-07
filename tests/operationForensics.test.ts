@@ -16,7 +16,7 @@ import type { HarnessProjectConfig } from "../src/core/types.js";
 import { saveOwnedOperation } from "./helpers/ownedOperation.js";
 
 const roots: string[] = [];
-const envNames = ["AEH_OPERATION_ID", "AEH_CONTROL_ROOT", "AEH_OPERATION_STATE_REDIRECT", "NPM_TOKEN", "PATH"] as const;
+const envNames = ["AEH_OPERATION_ID", "AEH_CONTROL_ROOT", "AEH_OPERATION_STATE_REDIRECT", "NPM_TOKEN", "PATH", "FAKE_MISE_BIN"] as const;
 const oldEnv = new Map<string, string | undefined>();
 
 afterEach(async () => {
@@ -73,7 +73,7 @@ describe("durable command and candidate forensics", () => {
     const operationId = "CHANGE-NPM-DIAGNOSTIC";
     await fs.mkdir(path.join(workspace, ".harness"), { recursive: true });
     await fs.writeFile(path.join(workspace, ".harness", "toolchain.yaml"), [
-      "version: 1", "manager:", "  provider: mise", "profiles:", "  core:", "    tools: []", "tools: {}", "projectDependencies:", "  autoDetect: false", "  commands:", "    - npm ci --token=command-secret-token", ""
+      "version: 1", "manager:", "  provider: mise", "profiles:", "  core:", "    tools: []", "tools:", "  node:", "    kind: mise", "    command: node", "    source: node", "    version: \"22.23.1\"", "    activateWhen: [always]", "projectDependencies:", "  autoDetect: false", "  commands:", "    - npm ci --token=command-secret-token", ""
     ].join("\n"));
     await fs.mkdir(path.join(root, ".harness", "operations"), { recursive: true });
     await fs.writeFile(path.join(workspace, "package-lock.json"), "{}\n");
@@ -88,7 +88,17 @@ describe("durable command and candidate forensics", () => {
     const npm = path.join(bin, "npm");
     await fs.writeFile(npm, "#!/bin/sh\nif [ \"${1:-}\" = --version ]; then echo '10.8.2'; exit 0; fi\nprintf '%s\\n' 'src/App.tsx(12,3): error TS2322: Type string is not assignable to number' 'NPM_TOKEN=must-not-be-persisted' 'Authorization: Bearer sk-secret-bearer-value'\nprintf '%s\\n' 'npm error code EUSAGE' 'Authorization: Bearer sk-secret-stderr-value' 'npm error `npm ci` can only install packages when your package.json and package-lock.json are in sync' >&2\nexit 2\n", { mode: 0o755 });
     await fs.chmod(npm, 0o755);
-    saveEnv("PATH"); process.env.PATH = `${bin}${path.delimiter}${process.env.PATH ?? ""}`;
+    // Hermetic stub pinning: the stub npm dir is deliberately NOT on ambient
+    // PATH. Project-dependency installs run with a hermetic PATH (pinned
+    // prefix only, no ambient tail), so the stub must resolve via the pinned
+    // prefix — here through a fake mise whose `bin-paths` reports the stub
+    // dir. Only the fake mise itself lives on ambient PATH (mise internals run
+    // with toolchain:false and locate `mise` ambiently).
+    const fakeSystem = path.join(root, "fake-system"); await fs.mkdir(fakeSystem, { recursive: true });
+    await fs.writeFile(path.join(fakeSystem, "mise"), "#!/bin/sh\nset -eu\ncase \"${1:-}\" in\n  --version) echo \"mise 2026.7.0\" ;;\n  trust) exit 0 ;;\n  -y) [ \"${2:-}\" = install ] && exit 0; exit 2 ;;\n  bin-paths) printf '%s\\n' \"$FAKE_MISE_BIN\" ;;\n  which) echo \"22.23.1\" ;;\n  *) exit 4 ;;\nesac\n", { mode: 0o755 });
+    await fs.chmod(path.join(fakeSystem, "mise"), 0o755);
+    saveEnv("PATH"); process.env.PATH = `${fakeSystem}${path.delimiter}${process.env.PATH ?? ""}`;
+    saveEnv("FAKE_MISE_BIN"); process.env.FAKE_MISE_BIN = bin;
     saveEnv("AEH_OPERATION_ID"); process.env.AEH_OPERATION_ID = operationId;
     saveEnv("AEH_CONTROL_ROOT"); process.env.AEH_CONTROL_ROOT = root;
     saveEnv("AEH_OPERATION_STATE_REDIRECT"); process.env.AEH_OPERATION_STATE_REDIRECT = "1";

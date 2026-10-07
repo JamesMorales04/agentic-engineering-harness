@@ -2,11 +2,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { reconcileHarnessAssets } from "../core/assets.js";
 import type { HarnessProjectConfig } from "../core/types.js";
-import { commandExists, runExecutable, runShell, clearToolchainEnvCache } from "../utils/process.js";
+import { commandExists, runExecutable, runShell, clearToolchainEnvCache, buildHermeticChildPath } from "../utils/process.js";
 import { generatedMisePath, loadToolchainConfig, loadToolchainLock, toolchainLockPath, toolchainStatePath, writeJsonFile } from "./config.js";
 import { resolveToolchain } from "./resolve.js";
 import { installMiseTools, miseBinPaths, miseResolvedVersion, resolveMiseAdapter, writeMiseConfig } from "./mise.js";
 import type { ToolchainLock, ToolchainLockTool, ToolchainSetupOptions, ToolchainSetupResult, ToolchainState } from "./types.js";
+import { assertNoLatestPins, assertNoUnpinnedDefinitions } from "./pinning.js";
 import { currentOperationContext } from "../operations/state.js";
 import { persistCommandDiagnosticV1 } from "../operations/forensics.js";
 
@@ -17,6 +18,11 @@ export async function setupToolchain(root: string, project: HarnessProjectConfig
   const engine = toolchain.strategy?.containerEngine ?? "podman";
   const engineAvailable = await rawCommandExists(root, engine);
   const resolved = await resolveToolchain(root, project, toolchain, { profile: options.profile, preferContainers: options.preferContainers, containerAvailable: engineAvailable });
+  assertNoLatestPins(resolved.tools);
+  // Full-config gate (T1): resolved-active pins alone let inactive `latest`
+  // definitions bypass until activation. Enumerating all defined tools closes
+  // activation-introduced unpinned tools.
+  assertNoUnpinnedDefinitions(toolchain.tools);
   const generatedConfig = generatedMisePath(project, toolchain);
   const lockFile = toolchainLockPath(project, toolchain);
   const stateFile = toolchainStatePath(project, toolchain);
@@ -76,7 +82,20 @@ export async function setupToolchain(root: string, project: HarnessProjectConfig
   }
 
   if (!options.skipProjectDependencies) {
-    const env = { PATH: `${[wrappersDir, ...binPaths].join(path.delimiter)}${path.delimiter}${process.env.PATH ?? ""}` };
+    // Hermetic install PATH (DETERMINISTIC): pinned prefix only (container
+    // wrappers + mise bin-paths) plus minimal system dirs, NO ambient-PATH
+    // tail. Lifecycle scripts of our own pinned tree (root `prepare`,
+    // postinstalls) keep running because node/npm resolve from the pinned
+    // prefix, while host decoy-shim dirs shadowing node/npm/compilers (L6)
+    // cannot leak in via ambient PATH. This replaces the previous global
+    // `.npmrc ignore-scripts=true`, which broke this repo's own first CI job
+    // (`npm ci` skipped root `prepare`, yet CI requires node_modules/.bin/aeh
+    // before release:check builds).
+    //
+    // Accepted residual: postinstall arbitrary code in LOCKED deps still runs.
+    // That code is reviewed-via-lockfile + PR review; it cannot be closed
+    // generally without breaking the repo's own install.
+    const env = buildProjectDependencyInstallEnv(wrappersDir, binPaths);
     for (const command of projectDependencyCommands) {
       const toolName = command.trim().split(/\s+/, 1)[0] || "shell";
       const toolVersion = await dependencyToolVersion(root, toolName, env).catch(() => undefined);
@@ -116,6 +135,22 @@ async function resolveProjectDependencyCommands(root: string, autoDetect: boolea
   const entries = await fs.readdir(root).catch(() => [] as string[]);
   if (entries.some((name) => name.endsWith(".sln") || name.endsWith(".slnx") || name.endsWith(".csproj")) || await exists(path.join(root, "global.json"))) commands.push("dotnet restore");
   return unique(commands);
+}
+
+/**
+ * Build the env for project-dependency installs (npm ci / pnpm / yarn / bun /
+ * uv / dotnet branches) — DETERMINISTIC.
+ *
+ * Hermetic PATH: pinned prefix (container wrappers dir + mise bin-paths) plus
+ * minimal system dirs via buildHermeticChildPath semantics. The ambient-PATH
+ * tail must not leak: ambient PATH is never read here, so host decoy-shim
+ * dirs shadowing node/npm/compilers used by lifecycle scripts (L6) cannot
+ * enter the install env. Run with `toolchain: false` (explicit-PATH setup) so
+ * this exact PATH is the child PATH.
+ */
+export function buildProjectDependencyInstallEnv(wrappersDir: string, binPaths: readonly string[]): Record<string, string> {
+  const prefix = [wrappersDir, ...binPaths].filter(Boolean).join(path.delimiter);
+  return { PATH: buildHermeticChildPath(prefix) };
 }
 
 async function packageManagerDeclaration(root: string): Promise<string | undefined> {

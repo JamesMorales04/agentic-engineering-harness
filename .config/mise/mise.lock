@@ -5,10 +5,7 @@ lockfile_version = 2
 [[tools."aqua:anomalyco/opencode"]]
 version = "1.18.32"
 backend = "aqua:anomalyco/opencode"
-specifiers = [
-    "1.18.32",
-    "latest",
-]
+specifiers = ["1.18.32"]
 
 [tools."aqua:anomalyco/opencode"."platforms.linux-arm64"]
 checksum = "sha256:568461b7d4d8c19865c97e9a1102e613049c6039d01fe772154de873c1865840"
@@ -101,10 +98,7 @@ specifiers = ["1.13.2"]
 version = "0.9.1"
 aube = { path = "locks/npm-getpaseo-cli/0.9.1", digest = "sha256:847c942403f4194cb592b8c2eb2d4693d64257d2157e1496b1a9710b56f5c86c" }
 backend = "npm:@getpaseo/cli"
-specifiers = [
-    "0.9.1",
-    "latest",
-]
+specifiers = ["0.9.1"]
 
 [[tools."npm:@openai/codex"]]
 version = "0.156.1"
@@ -168,10 +162,7 @@ provenance = "github-attestations"
 [[tools.uv]]
 version = "0.12.18"
 backend = "aqua:astral-sh/uv"
-specifiers = [
-    "0.12.18",
-    "latest",
-]
+specifiers = ["0.12.18"]
 
 [tools.uv."platforms.linux-arm64"]
 checksum = "sha256:afb6291f3f0a6b4521fc67b947822506c41dde5b60d2189dd8f3695b2ac8c9e7"
