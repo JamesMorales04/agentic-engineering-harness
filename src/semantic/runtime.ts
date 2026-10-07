@@ -48,10 +48,23 @@ export const MAX_SEMANTIC_ASSESSOR_STDERR_TAIL_V1 = 500;
  * permanent orphan unless a later triage retries it by label. The retry sweeps
  * `aeh.kind=semantic-assessment` sessions without an `aeh.operation` label
  * before creating a new assessor session. Both the per-sweep fan-out and the
- * per-orphan attempts are capped; exhaustion is traced persistently.
+ * per-orphan attempts are capped; exhaustion is traced persistently. Sweeps
+ * rotate across the orphan set via a durable ledger cursor (no starvation
+ * under stable ordering), and the ledger never evicts live entries for size
+ * (overflow is traced, limits preserved).
  */
 export const MAX_SEMANTIC_ASSESSOR_CLEANUP_SWEEP_V1 = 10;
 export const MAX_SEMANTIC_ASSESSOR_CLEANUP_ATTEMPTS_V1 = 3;
+
+/**
+ * Overflow threshold for the durable cleanup ledger (not an eviction cap).
+ * The ledger is never pruned for size while entries are live: one entry per
+ * failed cleanup id is bounded in practice (one failed cleanup per triage at
+ * most), so exceeding the threshold keeps every live limit and traces
+ * `semantic.assessor.cleanup-ledger-overflow` instead. Only orphans proven
+ * gone (absent on re-list with no pending workspace) are ever deleted.
+ */
+export const MAX_SEMANTIC_ASSESSOR_CLEANUP_LEDGER_V1 = 50;
 
 export interface SemanticAssessorCleanupRetryDepsV1 {
   list?: (root: string, labels: Record<string, string>) => Promise<PaseoSdkAgentRecord[]>;
@@ -333,6 +346,8 @@ async function cleanupAssessorSession(root: string, result: { id?: string; works
 interface SemanticAssessorCleanupLedgerV1 {
   version: 1;
   attempts: Record<string, { attempts: number; updatedAt: string; workspaceId?: string }>;
+  /** Durable sweep cursor: id of the last-processed orphan; next sweep resumes after it (wrap-around). */
+  cursor?: string;
 }
 
 function semanticAssessorCleanupLedgerFile(root: string): string {
@@ -364,10 +379,15 @@ async function loadSemanticAssessorCleanupLedger(root: string): Promise<Semantic
         ...(typeof workspaceId === "string" && workspaceId ? { workspaceId } : {})
       };
     }
-    return { version: 1, attempts };
+    const cursor = ledgerCursor(parsed.cursor);
+    return { version: 1, attempts, ...(cursor ? { cursor } : {}) };
   } catch {
     return empty;
   }
+}
+
+function ledgerCursor(value: unknown): string | undefined {
+  return typeof value === "string" && value && value.length <= 200 ? value : undefined;
 }
 
 async function saveSemanticAssessorCleanupLedger(root: string, ledger: SemanticAssessorCleanupLedgerV1): Promise<void> {
@@ -418,10 +438,18 @@ async function defaultArchiveAssessorWorkspace(root: string, workspaceId: string
  * retries only those without an `aeh.operation` label (pre-operation triage
  * orphans, correctly unregistered). Operation-owned sessions are never
  * claimed. Live `working`/`running` turns are skipped to avoid racing a
- * concurrent triage. Both the per-sweep fan-out (MAX_SWEEP) and the per-orphan
- * attempts (MAX_ATTEMPTS, durable ledger) are capped; exhaustion is traced
- * persistently. Best-effort: list/ledger failures never throw, per-orphan
- * failures are counted, and the caller never blocks a launch on this path.
+ * concurrent triage (stale-working reaping is an explicit follow-up, not
+ * attempted here: misclassifying a live turn as stale would archive a session
+ * a concurrent triage still owns). Both the per-sweep fan-out (MAX_SWEEP) and
+ * the per-orphan attempts (MAX_ATTEMPTS, durable ledger) are capped;
+ * exhaustion is traced persistently. Progress across sweeps is deterministic:
+ * orphans are sorted by id and each sweep resumes after the durable ledger
+ * cursor (wrap-around), so a stable list ordering can never starve orphans
+ * past the first window. The ledger is never pruned for size while entries
+ * are live; overflow past MAX_LEDGER keeps every limit and traces
+ * `semantic.assessor.cleanup-ledger-overflow`. Best-effort: list/ledger
+ * failures never throw, per-orphan failures are counted, and the caller never
+ * blocks a launch on this path.
  */
 export async function retryOrphanedAssessorCleanupV1(
   root: string,
@@ -445,15 +473,24 @@ export async function retryOrphanedAssessorCleanupV1(
     if (operation) return false;
     if (agent.status === "working" || agent.status === "running") return false;
     return true;
-  });
-  if (preOp.length > MAX_SEMANTIC_ASSESSOR_CLEANUP_SWEEP_V1) {
-    await trace(root, "semantic.assessor.cleanup-sweep-capped", { found: preOp.length, swept: MAX_SEMANTIC_ASSESSOR_CLEANUP_SWEEP_V1 }).catch(() => undefined);
-  }
-  const candidates = preOp.slice(0, MAX_SEMANTIC_ASSESSOR_CLEANUP_SWEEP_V1);
+  }).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const ledger = await loadSemanticAssessorCleanupLedger(root).catch(() => ({ version: 1, attempts: {} }) as SemanticAssessorCleanupLedgerV1);
+  // Durable cursor rotation (DETERMINISTIC): resume after the last-processed
+  // id in stable id order, wrapping around. A cursor pointing at a gone id
+  // restarts from the head. Every sweep advances across the set instead of
+  // re-serving the same first window under a stable SDK ordering.
+  const cursorIndex = ledger.cursor ? preOp.findIndex((agent) => agent.id === ledger.cursor) : -1;
+  const rotated = cursorIndex < 0 ? preOp : [...preOp.slice(cursorIndex + 1), ...preOp.slice(0, cursorIndex + 1)];
+  if (preOp.length > MAX_SEMANTIC_ASSESSOR_CLEANUP_SWEEP_V1) {
+    await trace(root, "semantic.assessor.cleanup-sweep-capped", { found: preOp.length, swept: MAX_SEMANTIC_ASSESSOR_CLEANUP_SWEEP_V1, ...(ledger.cursor ? { resumedAfter: ledger.cursor } : {}) }).catch(() => undefined);
+  }
+  const candidates = rotated.slice(0, MAX_SEMANTIC_ASSESSOR_CLEANUP_SWEEP_V1);
+  const nextCursor = candidates.length > 0 ? candidates[candidates.length - 1]!.id : undefined;
+  const cursorChanged = nextCursor !== undefined && ledger.cursor !== nextCursor;
+  if (cursorChanged) ledger.cursor = nextCursor;
   const archiveAgent = deps.archiveAgent ?? defaultArchiveAssessorAgent;
   const archiveWorkspace = deps.archiveWorkspace ?? defaultArchiveAssessorWorkspace;
-  let mutated = false;
+  let mutated = cursorChanged;
   let retried = 0;
   let failed = 0;
   let exhausted = 0;
@@ -509,6 +546,7 @@ export async function retryOrphanedAssessorCleanupV1(
   if (remaining > 0) {
     const workspaceOnly = Object.entries(ledger.attempts)
       .filter(([id, entry]) => !seen.has(id) && entry.workspaceId && entry.attempts < MAX_SEMANTIC_ASSESSOR_CLEANUP_ATTEMPTS_V1)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
       .slice(0, remaining);
     for (const [id, entry] of workspaceOnly) {
       try {
@@ -530,8 +568,12 @@ export async function retryOrphanedAssessorCleanupV1(
       }
     }
   }
-  // Prune stale ledger entries (agent gone, no workspace left) and cap the
-  // ledger size so the retry state itself cannot grow without bound.
+  // Prune ONLY entries proven gone: absent on re-list with no pending
+  // workspace left. Live entries are never evicted for size — eviction would
+  // reset their attempt count to zero and let retries exceed the 3-attempt
+  // cap. If live entries push the ledger past MAX_LEDGER, keep them all and
+  // trace an overflow warning instead (bounded in practice: at most one entry
+  // per failed cleanup id).
   const liveIds = new Set(preOp.map((agent) => agent.id));
   for (const id of Object.keys(ledger.attempts)) {
     if (!liveIds.has(id) && !ledger.attempts[id]?.workspaceId) {
@@ -539,12 +581,9 @@ export async function retryOrphanedAssessorCleanupV1(
       mutated = true;
     }
   }
-  const keys = Object.keys(ledger.attempts).sort((a, b) => (ledger.attempts[a]!.updatedAt < ledger.attempts[b]!.updatedAt ? -1 : 1));
-  if (keys.length > 50) {
-    for (const id of keys.slice(0, keys.length - 50)) {
-      delete ledger.attempts[id];
-      mutated = true;
-    }
+  const ledgerSize = Object.keys(ledger.attempts).length;
+  if (ledgerSize > MAX_SEMANTIC_ASSESSOR_CLEANUP_LEDGER_V1) {
+    await trace(root, "semantic.assessor.cleanup-ledger-overflow", { entries: ledgerSize, cap: MAX_SEMANTIC_ASSESSOR_CLEANUP_LEDGER_V1 }).catch(() => undefined);
   }
   if (mutated) await saveSemanticAssessorCleanupLedger(root, ledger).catch(() => undefined);
   return { swept: candidates.length, retried, failed, exhausted };
