@@ -45,36 +45,65 @@ import { randomUUID } from "node:crypto";
  */
 export const WORKSPACE_SWEEP_INCOMPLETE_CODE = "AEH_WORKSPACE_SWEEP_INCOMPLETE" as const;
 
+/**
+ * Module-private provenance brand. Set ONLY in the
+ * `WorkspaceSweepIncompleteError` constructor (the dedicated workspace-listing
+ * path `defaultListOwnedWorkspaces` is the sole production constructor caller;
+ * the controller re-mints only from already-proven failures). Never exported,
+ * never serialized (non-enumerable), never derived from the `code` string.
+ * Spread/JSON copies lose it by construction.
+ */
+const WORKSPACE_SWEEP_INCOMPLETE_BRAND = Symbol("aeh.workspaceSweepIncomplete");
+
 export class WorkspaceSweepIncompleteError extends Error {
   readonly code: typeof WORKSPACE_SWEEP_INCOMPLETE_CODE = WORKSPACE_SWEEP_INCOMPLETE_CODE;
   constructor(detail: string, options?: { cause?: unknown }) {
     super(`${WORKSPACE_SWEEP_INCOMPLETE_CODE}: ${detail}`, options);
     this.name = "WorkspaceSweepIncompleteError";
+    Object.defineProperty(this, WORKSPACE_SWEEP_INCOMPLETE_BRAND, {
+      value: true,
+      enumerable: false,
+      writable: false,
+      configurable: false,
+    });
   }
 }
 
-/** DETERMINISTIC classifier: true only for the dedicated workspace-listing failure type. */
+/**
+ * DETERMINISTIC classifier: true only for a genuine branded instance.
+ * MECHANISM: DETERMINISTIC (`instanceof` AND module-private brand).
+ * A plain object with a matching `code` string, a message-substring match, or
+ * a cross-realm/JSON/spread copy without the brand NEVER classifies. `code`
+ * is kept for diagnostics/serialization but is NEVER gated on.
+ */
 export function isWorkspaceSweepIncompleteError(error: unknown): error is WorkspaceSweepIncompleteError {
-  if (error instanceof WorkspaceSweepIncompleteError) return true;
   return (
-    typeof error === "object" &&
-    error !== null &&
-    (error as { code?: unknown }).code === WORKSPACE_SWEEP_INCOMPLETE_CODE
+    error instanceof WorkspaceSweepIncompleteError &&
+    (error as unknown as Record<symbol, unknown>)[WORKSPACE_SWEEP_INCOMPLETE_BRAND] === true
   );
 }
 
-/** Typed sweep failure: `code` is present ONLY when produced by the workspace-listing path. */
+/**
+ * Typed sweep failure. `code` is diagnostics/serialization only and is NEVER
+ * gated on. In-memory provenance for the S1 gate is carried by `cause`: the
+ * genuine branded error instance from the workspace-listing path. Plain
+ * `{code}` objects without a branded `cause` never classify.
+ */
 export interface OperationResourceSweepFailureV1 {
   operationId: string;
   error: string;
   code?: typeof WORKSPACE_SWEEP_INCOMPLETE_CODE;
+  cause?: unknown;
 }
 
-/** DETERMINISTIC classifier for sweep failures: true only when the failure carries the workspace-listing code. */
-export function isWorkspaceSweepIncompleteFailure(
-  failure: Pick<OperationResourceSweepFailureV1, "code">
-): boolean {
-  return failure.code === WORKSPACE_SWEEP_INCOMPLETE_CODE;
+/**
+ * DETERMINISTIC classifier for sweep failures: true only when the failure
+ * carries a genuine branded `cause` (provenance via `isWorkspaceSweepIncompleteError`).
+ * Never gates on the `code` string from arbitrary objects.
+ */
+export function isWorkspaceSweepIncompleteFailure(failure: unknown): boolean {
+  if (typeof failure !== "object" || failure === null) return false;
+  return isWorkspaceSweepIncompleteError((failure as { cause?: unknown }).cause);
 }
 
 export const operationResourceKinds = [
@@ -1011,13 +1040,14 @@ export async function reconcileTerminalOperationResources(root: string, deps: Op
       if (result.cleanupComplete) sweep.terminalOperationsReconciled += 1;
       else sweep.failures.push({ operationId, error: result.errors.join("; ") || "terminal orphaned resources remain" });
     } catch (error) {
-      // Structured propagation: ONLY the dedicated workspace-listing failure
-      // type carries the INCOMPLETE code into the failure record. Any other
-      // error — even one embedding the marker text — stays code-less and can
-      // never trip the S1 startup gate.
+      // Structured propagation with unforgeable provenance: ONLY a genuine
+      // branded workspace-listing error carries INCOMPLETE into the failure
+      // record (as `code` for diagnostics plus `cause` for gating). Any other
+      // error — even one embedding the marker text or a forged `{code}` —
+      // stays causeless and can never trip the S1 startup gate.
       const message = error instanceof Error ? error.message : String(error);
       if (isWorkspaceSweepIncompleteError(error)) {
-        sweep.failures.push({ operationId, error: message, code: WORKSPACE_SWEEP_INCOMPLETE_CODE });
+        sweep.failures.push({ operationId, error: message, code: WORKSPACE_SWEEP_INCOMPLETE_CODE, cause: error });
       } else {
         sweep.failures.push({ operationId, error: message });
       }

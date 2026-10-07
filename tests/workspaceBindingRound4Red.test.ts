@@ -95,8 +95,11 @@ describe("ROUND4 workspace binding S1 structured gating (Luna blocker)", () => {
     }
   });
 
-  it("S1-structured-genuine-failures: genuine workspace-listing INCOMPLETE sweep failure (code field) must still block startup", async () => {
+  it("S1-structured-genuine-failures: genuine workspace-listing INCOMPLETE sweep failure (branded cause) must still block startup", async () => {
     const resources = await import("../src/runtime/operationResources.js");
+    // Unforgeable provenance: bare `{code}` without a branded `cause` is forged
+    // and must NOT block; only a failure carrying the genuine branded error does.
+    const genuineCause = new WorkspaceSweepIncompleteError("workspace listing transport failed: boom");
     const spy = vi.spyOn(resources, "reconcileTerminalOperationResources").mockResolvedValueOnce({
       version: 1,
       sweptAt: new Date().toISOString(),
@@ -104,7 +107,7 @@ describe("ROUND4 workspace binding S1 structured gating (Luna blocker)", () => {
       terminalOperationsReconciled: 0,
       terminalOperationsCurrent: 0,
       liveOperationsPreserved: 0,
-      failures: [{ operationId: "AUDIT-OLD", error: `${WORKSPACE_SWEEP_INCOMPLETE_CODE}: workspace listing transport failed: boom`, code: WORKSPACE_SWEEP_INCOMPLETE_CODE }],
+      failures: [{ operationId: "AUDIT-OLD", error: `${WORKSPACE_SWEEP_INCOMPLETE_CODE}: workspace listing transport failed: boom`, code: WORKSPACE_SWEEP_INCOMPLETE_CODE, cause: genuineCause }],
     } as never);
     const { startDetachedOperation } = await import("../src/operations/controller.js");
     const root = await makeRoot();
@@ -124,7 +127,7 @@ describe("ROUND4 workspace binding S1 structured gating (Luna blocker)", () => {
     }
   });
 
-  it("S1-structured-producer: defaultListOwnedWorkspaces throws ONLY the coded class (never a bare substring)", async () => {
+  it("S1-structured-producer: defaultListOwnedWorkspaces throws ONLY the branded class (never a bare substring)", async () => {
     const failingRun = vi.fn(async () => ({ exitCode: 1, stdout: "", stderr: "ls failed", durationMs: 1 }));
     const error = await defaultListOwnedWorkspaces(failingRun as never)("root").then(() => undefined, (caught) => caught);
     expect(error).toBeInstanceOf(WorkspaceSweepIncompleteError);
@@ -132,8 +135,12 @@ describe("ROUND4 workspace binding S1 structured gating (Luna blocker)", () => {
     expect((error as WorkspaceSweepIncompleteError).code).toBe(WORKSPACE_SWEEP_INCOMPLETE_CODE);
     // The marker stays in the message for observability, but gating never reads it.
     expect(String((error as Error).message)).toMatch(/AEH_WORKSPACE_SWEEP_INCOMPLETE/);
-    expect(isWorkspaceSweepIncompleteFailure({ code: (error as WorkspaceSweepIncompleteError).code })).toBe(true);
+    // Unforgeable provenance: bare `{code}` never classifies; only a failure
+    // carrying the genuine branded `cause` does. `code` stays for diagnostics.
+    expect(isWorkspaceSweepIncompleteFailure({ code: (error as WorkspaceSweepIncompleteError).code } as never)).toBe(false);
+    expect(isWorkspaceSweepIncompleteFailure({ operationId: "AUDIT-OLD", error: String((error as Error).message), code: WORKSPACE_SWEEP_INCOMPLETE_CODE, cause: error } as never)).toBe(true);
     expect(isWorkspaceSweepIncompleteFailure({})).toBe(false);
     expect(isWorkspaceSweepIncompleteError(new Error("unrelated AEH_WORKSPACE_SWEEP_INCOMPLETE embedding"))).toBe(false);
+    expect(isWorkspaceSweepIncompleteError({ code: WORKSPACE_SWEEP_INCOMPLETE_CODE } as unknown)).toBe(false);
   });
 });
