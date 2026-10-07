@@ -412,6 +412,14 @@ export function selectOwnedWorkspaces(
  * title. Title-only (or any 2-of-3) matches are ignored with a trace log and
  * never archived. Live operations keep their candidates preserved-live by the
  * caller; this only decides the candidate set.
+ *
+ * CONTRACT: `listed` must be an exhaustive listing (callers use the throwing
+ * `defaultListOwnedWorkspaces`, which raises AEH_WORKSPACE_SWEEP_INCOMPLETE on
+ * any incomplete transport/exit/parse; injected stub listers in tests are
+ * exhaustive by contract). A `[]` return therefore means proven absence only
+ * when the listing succeeded. Skipping the listing entirely (returning []
+ * without proof) is allowed only when NO intent attempt exists — callers skip
+ * the CLI in exactly that case because no create was ever attempted.
  */
 export async function selectTripleBoundWorkspaces(
   root: string,
@@ -436,13 +444,42 @@ export async function selectTripleBoundWorkspaces(
     }
     return [];
   }
+  // W1: an intent ATTEMPT without the create-recorded workspace ID is UNKNOWN.
+  // The CLI create may have succeeded but the synchronous ID upgrade never
+  // landed (crash in the residual CLI-return → intent-write window, or the
+  // upgrade was skipped). Title/name/path fallback matching is FORBIDDEN here:
+  // without the exact ID no listed workspace is claimable, even when all three
+  // bindings match. The caller must have provided an exhaustive listing (see
+  // CONTRACT above); only that proof lets a [] return mean proven absence.
+  // Fallback to [] without exhaustive proof is allowed only when NO intent
+  // attempt exists (the early return above), never here.
+  if (!intent.workspaceId) {
+    const titleMatches = listed.filter((workspace) => workspace.title === binding.title);
+    if (titleMatches.length > 0) {
+      try {
+        await trace(root, "operation.workspace.discovery-ignored", {
+          operationId: record.id,
+          reason: "intent attempt without workspace ID cannot prove ownership; title fallback forbidden (UNKNOWN, requires exhaustive-listing proof)",
+          workspaceIds: titleMatches.map((workspace) => workspace.workspaceId)
+        });
+      } catch { /* observability only */ }
+    }
+    // W2: proven absence clears the stale attempt sidecar. With no ID the only
+    // provable absence is zero title matches in the exhaustive listing; any
+    // title match stays UNKNOWN (possible orphan with unknown ID) so the
+    // intent is retained fail-closed and never cleared here.
+    if (titleMatches.length === 0) {
+      await clearOperationWorkspaceIntent(root, record.id).catch(() => undefined);
+    }
+    return [];
+  }
   // ID-decisive: when the create recorded its CLI-returned workspace ID in the
   // intent, only that exact ID is claimable. Title+slug remain as defense (the
   // triple filter below still applies); a competing claimant with the same
   // title/slug but a different ID never satisfies this gate.
   const expectedId = intent.workspaceId;
-  const idScoped = expectedId ? listed.filter((workspace) => workspace.workspaceId === expectedId) : listed;
-  const idMismatched = expectedId ? listed.filter((workspace) => workspace.workspaceId !== expectedId && workspace.title === binding.title) : [];
+  const idScoped = listed.filter((workspace) => workspace.workspaceId === expectedId);
+  const idMismatched = listed.filter((workspace) => workspace.workspaceId !== expectedId && workspace.title === binding.title);
   if (idMismatched.length > 0) {
     try {
       await trace(root, "operation.workspace.discovery-ignored", {
@@ -463,6 +500,15 @@ export async function selectTripleBoundWorkspaces(
         ignored
       });
     } catch { /* observability only */ }
+  }
+  // W2: successful exhaustive listing proving no match clears the stale intent
+  // sidecar. With an ID the absence of that exact ID in the exhaustive listing
+  // proves no orphan exists (competing same-title/different-ID workspaces are
+  // not ours by the ID-decisive gate above), so the attempt record is removed
+  // and future sweeps skip the CLI. Clearing is best-effort: a leftover intent
+  // only causes an extra listing, never a false claim.
+  if (selected.length === 0) {
+    await clearOperationWorkspaceIntent(root, record.id).catch(() => undefined);
   }
   return selected;
 }

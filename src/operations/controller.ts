@@ -181,7 +181,23 @@ export async function startDetachedOperation(
   await materializeOverdueOperationDeadlines(absoluteRoot, config);
   // Restart recovery: any proven terminal operation in this control root with an
   // incomplete resource receipt is reconciled before new work starts.
-  await reconcileTerminalOperationResources(absoluteRoot).catch(() => undefined);
+  // Fail-closed: preliminary reconciliation errors propagate — startup fails
+  // loudly with a coded error (AEH_WORKSPACE_SWEEP_INCOMPLETE vocabulary)
+  // rather than dispatching new work over unreconciled orphans or an
+  // unprovable sweep. Both a thrown reconciliation error and a sweep that
+  // reports per-operation failures block startup.
+  let preliminarySweep;
+  try {
+    preliminarySweep = await reconcileTerminalOperationResources(absoluteRoot);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/AEH_[A-Z_]+/.test(message)) throw error;
+    throw new Error(`AEH_WORKSPACE_SWEEP_INCOMPLETE: preliminary terminal-resource reconciliation failed: ${message}`);
+  }
+  if (preliminarySweep.failures.length > 0) {
+    const detail = preliminarySweep.failures.map((failure) => `${failure.operationId}: ${failure.error}`).join("; ").slice(0, 2000);
+    throw new Error(`AEH_WORKSPACE_SWEEP_INCOMPLETE: preliminary terminal-resource reconciliation failed: ${detail}`);
+  }
   if (suppliedDecision) assertIntentDecisionForRoute(suppliedDecision, kind === "audit" ? "audit" : kind === "change" ? "change" : "run");
   if (leadInitiated) {
     if (!suppliedDecision?.continuation?.operationId) await assertNoImplicitLeadRecoveryForLineage(absoluteRoot, initiator.userTurnId, operationTaskId(payload));
@@ -1695,9 +1711,15 @@ export async function ensureOperationWorkspace(
       return { workspaceRoot: root, warning };
     }
     const workspaceId = extractWorkspaceId(result.stdout);
-    // Best-effort upgrade: the started intent already binds the name, so a
-    // crash before or during this write stays recoverable.
-    await upgradeOperationWorkspaceIntent(root, record.id, { workspaceId, workspaceRoot: root }).catch(() => undefined);
+    // Record the CLI-returned ID into the intent synchronously with the create
+    // receipt (the returned {workspaceId, workspaceRoot} below): the upgrade is
+    // awaited without swallowing so a failed intent write fails loudly instead
+    // of leaving an ID-absent attempt that later reads as UNKNOWN. Residual
+    // window, documented honestly: a crash between the CLI success and this
+    // write completing still leaves the attempt without an ID; recovery then
+    // treats it as UNKNOWN (title fallback forbidden, exhaustive listing
+    // required) so the orphan leaks but is never mis-claimed.
+    await upgradeOperationWorkspaceIntent(root, record.id, { workspaceId, workspaceRoot: root });
     return { workspaceId, workspaceRoot: root, disposition: "OPERATION_OWNED" };
   }
 
@@ -1736,7 +1758,15 @@ export async function ensureOperationWorkspace(
     // intent stays for triple-bound recovery.
     throw new Error(`AEH_OPERATION_WORKTREE_REQUIRED: Paseo created a worktree workspace for ${record.id} but did not expose a resolvable worktree path.`);
   }
-  await upgradeOperationWorkspaceIntent(root, record.id, { workspaceId, workspaceRoot }).catch(() => undefined);
+  // Record the CLI-returned ID into the intent synchronously with the create
+  // receipt (the returned {workspaceId, workspaceRoot} below): awaited without
+  // swallowing so a failed intent write fails loudly instead of leaving an
+  // ID-absent attempt that later reads as UNKNOWN. Residual window, documented
+  // honestly: a crash between the CLI success (including the fallback `ls`
+  // above) and this write completing still leaves the attempt without an ID;
+  // recovery then treats it as UNKNOWN (title fallback forbidden, exhaustive
+  // listing required) so the orphan leaks but is never mis-claimed.
+  await upgradeOperationWorkspaceIntent(root, record.id, { workspaceId, workspaceRoot });
   await trace(root, "workspace.cli.created", { operationId: record.id, workspaceId: workspaceId ?? "", workspaceRoot, isolation: "worktree", branch });
   return { workspaceId, workspaceRoot, disposition: "OPERATION_OWNED" };
 }

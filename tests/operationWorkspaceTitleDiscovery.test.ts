@@ -10,6 +10,7 @@ import {
   reconcileOperationResources,
   reconcileTerminalOperationResources,
   selectOwnedWorkspaces,
+  upgradeOperationWorkspaceIntent,
   writeOperationWorkspaceIntent
 } from "../src/runtime/operationResources.js";
 import { loadOperation, type OperationRecordV2 } from "../src/operations/state.js";
@@ -102,8 +103,12 @@ describe("operation workspace title discovery (E-NEW-3)", () => {
     const root = await makeRoot();
     const id = "AUDIT-E3";
     await forceSurfacelessTerminal(root, id);
-    // Crash-window orphan: name pre-registered, title + managed cwd matching.
+    // Crash-window orphan: ID recorded synchronously with the create receipt,
+    // but the durable record/registry writes never landed (post-upgrade crash
+    // is the only recoverable window; a pre-upgrade attempt without an ID is
+    // UNKNOWN and never claimed).
     await writeIntent(root, "audit", id);
+    await upgradeOperationWorkspaceIntent(root, id, { workspaceId: "wks-orphan", workspaceRoot: worktreeOrphanPath("audit", id) });
     const deps = passThroughDeps();
     deps.listOwnedWorkspaces.mockResolvedValue([
       { workspaceId: "wks-orphan", title: operationWorkspaceTitle("audit", id), path: worktreeOrphanPath("audit", id) }
@@ -121,6 +126,7 @@ describe("operation workspace title discovery (E-NEW-3)", () => {
     const id = "AUDIT-E3";
     await forceSurfacelessTerminal(root, id);
     await writeIntent(root, "audit", id);
+    await upgradeOperationWorkspaceIntent(root, id, { workspaceId: "wks-orphan", workspaceRoot: worktreeOrphanPath("audit", id) });
     const deps = passThroughDeps();
     deps.listOwnedWorkspaces.mockResolvedValue([
       { workspaceId: "wks-orphan", title: operationWorkspaceTitle("audit", id), path: worktreeOrphanPath("audit", id) },
@@ -139,6 +145,7 @@ describe("operation workspace title discovery (E-NEW-3)", () => {
     const id = "AUDIT-E3-SWEEP";
     await forceSurfacelessTerminal(root, id);
     await writeIntent(root, "audit", id);
+    await upgradeOperationWorkspaceIntent(root, id, { workspaceId: "wks-sweep-orphan", workspaceRoot: root });
     const deps = passThroughDeps();
     deps.listOwnedWorkspaces.mockResolvedValue([
       { workspaceId: "wks-sweep-orphan", title: operationWorkspaceTitle("audit", id), path: root }
@@ -243,6 +250,7 @@ describe("operation workspace title discovery (E-NEW-3)", () => {
     const id = "AUDIT-E3-LIVE";
     await forceLiveRunning(root, id);
     await writeIntent(root, "audit", id);
+    await upgradeOperationWorkspaceIntent(root, id, { workspaceId: "wks-live", workspaceRoot: root });
     const deps = passThroughDeps();
     deps.listOwnedWorkspaces.mockResolvedValue([
       { workspaceId: "wks-live", title: operationWorkspaceTitle("audit", id), path: root }
