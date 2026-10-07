@@ -455,7 +455,15 @@ function scanMultilineStringState(raw: string, incoming: '"""' | "'''" | null): 
 
 function parseTomlString(value: string): string | undefined {
   const trimmed = value.trim().replace(/,+\s*$/, "").trim();
-  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+  if (trimmed.startsWith("'")) {
+    // Strict single-line literal only: exactly `^'[^']*$` (no interior
+    // quote, nothing after the closing quote, single-line). Triple-quote
+    // openers (`'''...`) fail this gate → undefined → unparsedInScope, so
+    // the existing multiline tracker owns them.
+    if (/^'[^'\n\r]*'$/.test(trimmed)) return trimmed.slice(1, -1);
+    return undefined;
+  }
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
     try {
       return JSON.parse(trimmed);
     } catch {
@@ -463,10 +471,7 @@ function parseTomlString(value: string): string | undefined {
       // like `"aqua:bad\q"`) yields undefined so the caller records the
       // line in unparsedInScope (INCONCLUSIVE). NEVER return raw contents:
       // raw is a nonempty string that passes the present-backend check
-      // and evades INCONCLUSIVE. Single-quoted TOML literal strings carry
-      // no escapes (JSON cannot parse single quotes), so the inner content
-      // IS the parsed value — not a raw fallback.
-      if (trimmed.startsWith("'")) return trimmed.slice(1, -1);
+      // and evades INCONCLUSIVE.
       return undefined;
     }
   }
