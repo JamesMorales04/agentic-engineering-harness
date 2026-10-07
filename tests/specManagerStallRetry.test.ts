@@ -1,4 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 const mocks = vi.hoisted(() => ({
   executeAgentPrompt: vi.fn(),
@@ -40,11 +43,14 @@ import {
 import { stalledFirstActivityError } from "../src/paseo/firstActivityDeadline.js";
 import type { WorkerSession } from "../src/core/types.js";
 
-const baseInput = {
+/** Fail-closed ledger needs a real writable control root per drive (never a shared fake). */
+async function specInput(operationId: string) {
+  const controlRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-stall-migrate-"));
+  return {
   root: "/root",
-  controlRoot: "/control",
+  controlRoot,
   config: {},
-  operationId: "CHANGE-1",
+  operationId,
   payload: { request: "Add FAREWELL export.", files: [], domains: [], risk: "low" },
   bootstrapContract: {
     version: 1,
@@ -60,6 +66,7 @@ const baseInput = {
   triageReasons: ["formal"],
   inputs: [],
 } as never;
+}
 
 function stallSession(id: string): WorkerSession {
   return {
@@ -135,7 +142,7 @@ describe("spec-manager stall-kill bounded retry (A1)", () => {
     mocks.requireDurableChangeHandoff
       .mockRejectedValueOnce(new Error("SPEC_MANAGER_FAILED: STALLED_FIRST_ACTIVITY: zero activity"))
       .mockResolvedValueOnce(readyEvidence());
-    const result = await runSpecManagerUntilReady(baseInput);
+    const result = await runSpecManagerUntilReady(await specInput("CHANGE-SM1"));
     expect(result.payload.status).toBe("READY");
     expect(mocks.executeAgentPrompt).toHaveBeenCalledTimes(2);
     const firstPrompt = mocks.executeAgentPrompt.mock.calls[0]?.[4] as string;
@@ -151,7 +158,7 @@ describe("spec-manager stall-kill bounded retry (A1)", () => {
     mocks.requireDurableChangeHandoff
       .mockRejectedValueOnce(new Error("SPEC_MANAGER_FAILED: STALLED_FIRST_ACTIVITY: zero activity"))
       .mockRejectedValueOnce(new Error("SPEC_MANAGER_FAILED: STALLED_FIRST_ACTIVITY: zero activity"));
-    await expect(runSpecManagerUntilReady(baseInput)).rejects.toThrow(/STALLED_FIRST_ACTIVITY/);
+    await expect(runSpecManagerUntilReady(await specInput("CHANGE-SM2"))).rejects.toThrow(/STALLED_FIRST_ACTIVITY/);
     expect(mocks.executeAgentPrompt).toHaveBeenCalledTimes(2);
   });
 
@@ -160,7 +167,7 @@ describe("spec-manager stall-kill bounded retry (A1)", () => {
     mocks.requireDurableChangeHandoff.mockRejectedValueOnce(
       new Error("SPEC_MANAGER_RESULT_INVALID: schema rejected payload"),
     );
-    await expect(runSpecManagerUntilReady(baseInput)).rejects.toThrow(/SPEC_MANAGER_RESULT_INVALID/);
+    await expect(runSpecManagerUntilReady(await specInput("CHANGE-SM3"))).rejects.toThrow(/SPEC_MANAGER_RESULT_INVALID/);
     expect(mocks.executeAgentPrompt).toHaveBeenCalledTimes(1);
   });
 });

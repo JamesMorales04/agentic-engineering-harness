@@ -58,6 +58,10 @@ import {
 import { candidateRevisionsEqual, createCandidateRevisionV1 } from "./v2Contracts.js";
 import { drainOperationWriters } from "./control.js";
 import { ensureOperationSupervisor, maybeRotateOperationSupervisor, supervisorTurnTimedOutV1 } from "./supervisor.js";
+import {
+  STALL_RETRY_MAX_ATTEMPTS_PER_PHASE,
+  transactStallRetrySpend,
+} from "./stallRetryBudget.js";
 import { createSemanticAssessmentRuntimeV1, createSemanticRepositoryBindingV1 } from "../semantic/runtime.js";
 import { launchManagedPaseoAgent } from "../paseo/runtime.js";
 import { assertResolvedOperationPolicyV2, compileResolvedOperationPolicy } from "../architecture/executionIdentity.js";
@@ -714,15 +718,27 @@ export async function runDiscovery(
   // Frozen identical inputs across the bounded retry: the prompt is built once so the
   // fresh-session retry carries no hints and no prompt changes.
   const prompt = buildExplorerPrompt(operationId, payload, inputs, readRoots);
+  // Durable stall budget (fail-closed): every attempt — including the first —
+  // is spent upfront through a single locked transact BEFORE acting, so the
+  // persisted total stays bounded across controller takeover / watchdog
+  // re-wake / phase re-entry. A ledger failure throws fail-closed with zero
+  // attempts (never masks into an unbounded local retry).
   let retries = 0;
   for (;;) {
+    const spentTotal = await transactStallRetrySpend(controlRoot, operationId, "discovery");
     let session: WorkerSession | undefined;
     try {
       // No resumeSessionId: every attempt (including the retry) launches a fresh session.
       session = await executeAgentPrompt(root, config, contract, selection, prompt, { outputContract: "explorer", phase: "discovery", operationKind: "change", requireExecutionAuthority: true });
       return await requireDurableChangeHandoff(root, "EXPLORER", session, explorerOutputSchema, controlRoot, { operationId: operationId, contract: "explorer", phase: "discovery" });
     } catch (error) {
-      if (shouldRetryDiscoveryPlanningStall(error, retries, session)) {
+      // UNCERTAIN first: the turn's stop is unverified (may still be RUNNING),
+      // so no fresh session ever — same-session resume or fail-closed error.
+      // The attempt was already spent upfront (safe direction).
+      if (isUncertainProviderTurn(session, error)) {
+        throw new Error(`PASEO_PROVIDER_LIFECYCLE_UNCERTAIN: discovery turn stop unverified for session '${session?.id ?? "unknown-session"}'; same-session resume is required, fresh-session retry refused (twin-writer risk). ${String(error instanceof Error ? error.message : error)}`);
+      }
+      if (isDiscoveryPlanningStallKill(error, session) && retries < DISCOVERY_PLANNING_STALL_MAX_RETRIES && spentTotal < STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
         retries += 1;
         continue;
       }
@@ -767,15 +783,23 @@ export async function runPlanning(
   // Frozen identical inputs across the bounded retry: the prompt is built once so the
   // fresh-session retry carries no hints and no prompt changes.
   const prompt = buildPlannerPrompt(operationId, contract, payload, explorerEvidence, inputs);
+  // Durable stall budget (fail-closed): spend upfront through a single locked
+  // transact BEFORE acting; ledger failure throws with zero attempts.
   let retries = 0;
   for (;;) {
+    const spentTotal = await transactStallRetrySpend(controlRoot, operationId, "planning");
     let session: WorkerSession | undefined;
     try {
       // No resumeSessionId: every attempt (including the retry) launches a fresh session.
       session = await executeAgentPrompt(root, config, contract, selection, prompt, { outputContract: "planner", phase: "planning", operationKind: "change", requireExecutionAuthority: true });
       return await requireDurableChangeHandoff(root, "PLANNER", session, plannerOutputSchema, controlRoot, { operationId, contract: "planner", phase: "planning" });
     } catch (error) {
-      if (shouldRetryDiscoveryPlanningStall(error, retries, session)) {
+      // UNCERTAIN first: no fresh session ever — same-session resume or
+      // fail-closed error. The attempt was already spent upfront.
+      if (isUncertainProviderTurn(session, error)) {
+        throw new Error(`PASEO_PROVIDER_LIFECYCLE_UNCERTAIN: planning turn stop unverified for session '${session?.id ?? "unknown-session"}'; same-session resume is required, fresh-session retry refused (twin-writer risk). ${String(error instanceof Error ? error.message : error)}`);
+      }
+      if (isDiscoveryPlanningStallKill(error, session) && retries < DISCOVERY_PLANNING_STALL_MAX_RETRIES && spentTotal < STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
         retries += 1;
         continue;
       }
@@ -927,6 +951,15 @@ export async function runSpecManagerUntilReady(input: {
   let incompleteRetries = 0;
   let contentRetries = 0;
   let stallRetries = 0;
+  // Fail-closed spend flags (B2): the first attempt and each stall retry are
+  // spent upfront through a single locked transact BEFORE acting. Content /
+  // mismatch / product-choice continuations are bounded by their own local
+  // budgets and human gates and do not spend stall budget (spending would
+  // conflate independent bounds); stall-driven attempts are the only
+  // unbounded-across-drives dimension this ledger closes.
+  let firstAttempt = true;
+  let stallSpendPending = false;
+  let spentTotal = 0;
   let mismatchRetryPending = false;
   let incompleteRetryPending = false;
   let contentRetryPending = false;
@@ -949,6 +982,11 @@ export async function runSpecManagerUntilReady(input: {
     // activityCounts) reach the stall classifier; a stall retry sets no retry notes.
     let specSession: WorkerSession | undefined;
     try {
+      if (firstAttempt || stallSpendPending) {
+        spentTotal = await transactStallRetrySpend(input.controlRoot, input.operationId, "spec-manager");
+        firstAttempt = false;
+        stallSpendPending = false;
+      }
       specSession = await executeAgentPrompt(
         input.root, input.config, input.bootstrapContract, input.selection,
         prompt,
@@ -956,8 +994,14 @@ export async function runSpecManagerUntilReady(input: {
       );
       evidence = await requireDurableChangeHandoff(input.root, "SPEC_MANAGER", specSession, specAuthoringOutputSchema, input.controlRoot, { operationId: input.operationId, contract: "spec-authoring", phase: "spec-authoring" });
     } catch (error) {
-      if (shouldRetrySpecManagerStall(error, stallRetries, specSession)) {
+      // UNCERTAIN first: no fresh session ever — same-session resume or
+      // fail-closed error. The attempt was already spent upfront.
+      if (isUncertainProviderTurn(specSession, error)) {
+        throw new Error(`PASEO_PROVIDER_LIFECYCLE_UNCERTAIN: spec-manager turn stop unverified for session '${specSession?.id ?? "unknown-session"}'; same-session resume is required, fresh-session retry refused (twin-writer risk). ${String(error instanceof Error ? error.message : error)}`);
+      }
+      if (isDiscoveryPlanningStallKill(error, specSession) && stallRetries < SPEC_MANAGER_STALL_MAX_RETRIES && spentTotal < STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
         stallRetries += 1;
+        stallSpendPending = true;
         continue;
       }
       if (shouldRetrySpecManagerIncomplete(error, incompleteRetries)) {

@@ -83,18 +83,19 @@ describe("orphan/duplicate turns + resume liveness (D5)", () => {
     expect(result.id).toBe("agent-orphan-1");
   });
 
-  it("reaps dead orphans best-effort and never blocks launch on list failure", async () => {
+  it("initial list failure on a guarded turn throws AMBIGUOUS (never create-new next to an unobserved writer)", async () => {
     const run = vi.fn(async (command: string) => ({ exitCode: 0, stdout: "stopped", stderr: "", durationMs: 1 }));
+    const create = vi.fn(async () => ({ id: "sdk-new", status: "working", lastMessage: "created" }));
     const deps = baseDeps({
       list: vi.fn(async () => { throw new Error("list unavailable"); }),
-      create: vi.fn(async () => ({ id: "sdk-new", status: "working", lastMessage: "created" })),
+      create,
     }) as unknown as { run: ReturnType<typeof vi.fn>; sdk: { create: ReturnType<typeof vi.fn>; list: ReturnType<typeof vi.fn> } };
     (deps as unknown as { run: unknown }).run = run as never;
-    const result = await launchManagedPaseoAgent("/repo", {
+    await expect(launchManagedPaseoAgent("/repo", {
       cwd: "/repo", provider: "codex", model: "gpt-test", title: "worker", prompt: "do work",
       labels: { "aeh.operation": "OP-1", "aeh.task": "T-1", "aeh.role": "worker" },
-    }, deps as never);
-    expect(result.id).toBe("sdk-new");
+    }, deps as never)).rejects.toThrow(/PASEO_TURN_IDEMPOTENCY_AMBIGUOUS/);
+    expect(create).not.toHaveBeenCalled();
   });
 
   it("probe verifies liveness: live idle/working true, dead/unknown false (fail-closed)", async () => {

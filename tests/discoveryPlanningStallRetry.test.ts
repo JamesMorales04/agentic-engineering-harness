@@ -1,4 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 const mocks = vi.hoisted(() => ({
   executeAgentPrompt: vi.fn(),
@@ -31,6 +34,11 @@ import {
 } from "../src/operations/change.js";
 import { stalledFirstActivityError } from "../src/paseo/firstActivityDeadline.js";
 import type { TaskContract, WorkerSession } from "../src/core/types.js";
+
+/** Fail-closed ledger needs a real writable control root per test (never a shared fake). */
+async function freshControlRoot(): Promise<string> {
+  return fs.mkdtemp(path.join(os.tmpdir(), "aeh-stall-migrate-"));
+}
 
 const contract = {
   version: 1,
@@ -137,7 +145,8 @@ describe("discovery/planning stall-kill bounded retry", () => {
     mocks.requireDurableChangeHandoff
       .mockRejectedValueOnce(new Error("EXPLORER_FAILED: STALLED_FIRST_ACTIVITY: zero activity"))
       .mockResolvedValueOnce({ payload: { version: 1 }, artifact: "a", sha256: "b" });
-    const result = await runDiscovery("/root", "/control", {} as never, contract, selection, "CHANGE-1", payload, []);
+    const controlRoot = await freshControlRoot();
+    const result = await runDiscovery("/root", controlRoot, {} as never, contract, selection, "CHANGE-DR1", payload, []);
     expect(result).toEqual({ payload: { version: 1 }, artifact: "a", sha256: "b" });
     expect(mocks.executeAgentPrompt).toHaveBeenCalledTimes(2);
     const firstPrompt = mocks.executeAgentPrompt.mock.calls[0]?.[4] as string;
@@ -154,7 +163,7 @@ describe("discovery/planning stall-kill bounded retry", () => {
       .mockRejectedValueOnce(new Error("EXPLORER_FAILED: STALLED_FIRST_ACTIVITY: zero activity"))
       .mockRejectedValueOnce(new Error("EXPLORER_FAILED: STALLED_FIRST_ACTIVITY: zero activity"));
     await expect(
-      runDiscovery("/root", "/control", {} as never, contract, selection, "CHANGE-1", payload, []),
+      runDiscovery("/root", await freshControlRoot(), {} as never, contract, selection, "CHANGE-DR2", payload, []),
     ).rejects.toThrow(/EXPLORER_FAILED/);
     expect(mocks.executeAgentPrompt).toHaveBeenCalledTimes(2);
   });
@@ -165,7 +174,7 @@ describe("discovery/planning stall-kill bounded retry", () => {
       new Error("EXPLORER_RESULT_INVALID: schema rejected payload"),
     );
     await expect(
-      runDiscovery("/root", "/control", {} as never, contract, selection, "CHANGE-1", payload, []),
+      runDiscovery("/root", await freshControlRoot(), {} as never, contract, selection, "CHANGE-DR2", payload, []),
     ).rejects.toThrow(/EXPLORER_RESULT_INVALID/);
     expect(mocks.executeAgentPrompt).toHaveBeenCalledTimes(1);
   });
@@ -179,11 +188,11 @@ describe("discovery/planning stall-kill bounded retry", () => {
       .mockResolvedValueOnce({ payload: { version: 1 }, artifact: "a", sha256: "b" });
     const result = await runPlanning(
       "/root",
-      "/control",
+      await freshControlRoot(),
       {} as never,
       contract,
       plannerSelection,
-      "CHANGE-1",
+      "CHANGE-DR4",
       payload,
       undefined,
       [],
@@ -203,7 +212,7 @@ describe("discovery/planning stall-kill bounded retry", () => {
       .mockRejectedValueOnce(new Error("PLANNER_FAILED: STALLED_FIRST_ACTIVITY"))
       .mockRejectedValueOnce(new Error("PLANNER_FAILED: STALLED_FIRST_ACTIVITY"));
     await expect(
-      runPlanning("/root", "/control", {} as never, contract, plannerSelection, "CHANGE-1", payload, undefined, []),
+      runPlanning("/root", await freshControlRoot(), {} as never, contract, plannerSelection, "CHANGE-DR5", payload, undefined, []),
     ).rejects.toThrow(/PLANNER_FAILED/);
     expect(mocks.executeAgentPrompt).toHaveBeenCalledTimes(2);
 
@@ -214,7 +223,7 @@ describe("discovery/planning stall-kill bounded retry", () => {
       new Error("PLANNER_RESULT_INVALID: schema rejected payload"),
     );
     await expect(
-      runPlanning("/root", "/control", {} as never, contract, plannerSelection, "CHANGE-1", payload, undefined, []),
+      runPlanning("/root", await freshControlRoot(), {} as never, contract, plannerSelection, "CHANGE-DR5b", payload, undefined, []),
     ).rejects.toThrow(/PLANNER_RESULT_INVALID/);
     expect(mocks.executeAgentPrompt).toHaveBeenCalledTimes(1);
   });

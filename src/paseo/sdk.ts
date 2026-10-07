@@ -565,6 +565,7 @@ export async function dispatchPaseoSdkAgentWithClient(
   prompt: string,
   timeoutMs?: number,
   permissionScopeRoots?: string[],
+  activityOptions?: PaseoSdkRunActivityOptions,
   retryOptions: ProviderRateLimitRetryOptionsV1 = {}
 ): Promise<PaseoSdkAgentResult> {
   let lastDetail: ProviderRateLimitDetailV1 | undefined;
@@ -573,6 +574,13 @@ export async function dispatchPaseoSdkAgentWithClient(
       const attemptTimeout = remaining ?? timeoutMs;
       const handle = client.agents.ref(agentId);
       if (typeof handle.send === "function") {
+        // A4 structural fallback (proven): `send()` is fire-and-forget — it
+        // returns once the turn is accepted, before any provider-visible
+        // activity could exist, so no interim-progress handle exists to watch.
+        // The bound is carried by the subsequent `waitManagedPaseoAgent`
+        // (first-activity watch on the wait + post-timeout stop verification
+        // with quiescence), never by this dispatch result (status working,
+        // no kill verdict — correctly unmarked).
         try {
           await withTimeout(handle.send(prompt), attemptTimeout, `Paseo agent ${agentId} dispatch timed out after ${attemptTimeout ?? 1_800_000}ms.`);
         } catch (error) {
@@ -582,8 +590,32 @@ export async function dispatchPaseoSdkAgentWithClient(
         return { ...(await handleResult(handle, permissionScopeRoots)), status: statusText(handle.status) ?? "working" };
       }
       if (typeof handle.run === "function") {
-        const turn = await handle.run(prompt, { timeoutMs: attemptTimeout });
+        // A4: the atomic dispatch-run carries the same first-activity watch
+        // as the resumed-turn run path (same stop-then-read verdicts).
+        const turn = await runWithFirstActivityWatch(handle, () => handle.run!(prompt, { timeoutMs: attemptTimeout }), attemptTimeout, activityOptions);
         if (turn.status === "timeout") await stopPaseoSdkAgentHandle(handle);
+        if (turn.killReason === "STALLED_FIRST_ACTIVITY") {
+          return {
+            id: handle.id,
+            workspaceId: handle.workspaceId ?? undefined,
+            status: turn.status,
+            error: turn.error,
+            killReason: turn.killReason,
+            ...(turn.activity ? { activity: turn.activity } : {})
+          };
+        }
+        // Late-activity stop (stop-then-read invariant): the turn still failed by
+        // stop, but the post-stop read proved provider-visible content. Preserve
+        // the completed turn text for forensics via turnResult while keeping the
+        // correct DEADLINE classification and activity counts.
+        if (turn.killReason || turn.activity) {
+          const base = await turnResult(handle, turn, permissionScopeRoots);
+          return {
+            ...base,
+            ...(turn.killReason ? { killReason: turn.killReason } : {}),
+            ...(turn.activity ? { activity: turn.activity } : {})
+          };
+        }
         return turnResult(handle, turn, permissionScopeRoots);
       }
       throw new PaseoSdkUnavailableError("The active @getpaseo/client agent handle exposes neither send() nor run(); cannot dispatch a turn through the SDK.");
@@ -938,7 +970,7 @@ function buildCreateOptions(options: PaseoSdkAgentOptions, includePrompt: boolea
  * (poll/final-read) errors fail closed: failed reads never count as
  * activity and a failed final read keeps the STALLED verdict with zero
  * counts.
- */
+  */
 async function waitForHandle(
   handle: PaseoSdkAgentHandle,
   timeoutMs = 1_800_000,
@@ -1035,7 +1067,7 @@ async function waitForHandle(
  * with zero (unprovable) counts. Monitor (poll/final-read) errors fail
  * closed: failed reads never count as activity and a failed final read keeps
  * the STALLED verdict.
- */
+  */
 async function waitForFinishWithFirstActivityWatch(
   handle: PaseoSdkAgentHandle,
   timeoutMs: number,
@@ -1097,7 +1129,7 @@ async function waitForFinishWithFirstActivityWatch(
  * re-read, so the post-stop read is authoritative: still-empty reads settle
  * as STALLED_FIRST_ACTIVITY, while late content settles as a regular
  * DEADLINE with counts (same shapes as runWithFirstActivityWatch so
- * downstream classification is identical).
+  * downstream classification is identical).
  *
  * SYNTHETIC-BASELINE MODE IS DEADLINE-ONLY: when `synthetic` is true the
  * baseline was synthesized after a capture failure, so the empty baseline

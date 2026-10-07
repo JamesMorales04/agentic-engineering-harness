@@ -15,6 +15,7 @@ import { persistOperationConsolidation, persistSupervisorCheckpoint } from "./ar
 import { supervisorEventSkills, type SupervisorSemanticEvent } from "./supervisorEventPolicy.js";
 import { compactDeterministicEvidence, supervisorCheckpointProjection, supervisorConsolidationProjection, supervisorHandoffProjection, supervisorInitializationProjection } from "./supervisorPrompt.js";
 import { activeOperationSupervisor, currentOperationContext, loadOperation, patchOperation, registerSupervisorGeneration, resolveOperationStateRoot, updateSupervisorGeneration, withOperationCoordinationLock, type OperationRecordV2 } from "./state.js";
+import { STALL_RETRY_MAX_ATTEMPTS_PER_PHASE, transactStallRetrySpend } from "./stallRetryBudget.js";
 
 /**
  * A supervisor generation's structured-result channel is bound to the candidate digest it was
@@ -187,6 +188,8 @@ export async function withBoundedSupervisorConsolidationStallRetryV1<T>(input: {
       return await input.requestAttempt(frozenPrompt);
     } catch (error) {
       const session = input.sessionOf?.(error);
+      // UNCERTAIN turns never fresh-turn retry (twin-writer risk).
+      if (isUncertainProviderTurn(session, error)) throw error;
       if (shouldRetrySupervisorConsolidationStall(error, retries, session)) {
         retries += 1;
         continue;
@@ -287,7 +290,15 @@ export async function consolidateWithOperationSupervisor(root: string, config: H
   // same finding-set is idempotent; semantic content is never retried with hints (same inputs,
   // fresh turn).
   const rawIds = [...new Set(input.findings.map((finding) => finding.id))].sort();
+  // Durable stall budget (fail-closed): without an operation context there is
+  // no ledger key, so only the local budget applies. With a context, the
+  // first attempt and each stall retry are spent upfront through a single
+  // locked transact BEFORE acting; ledger failure throws with zero attempts.
+  const consolidationOperationId = currentOperationContext().id;
   let stallRetries = 0;
+  let firstAttempt = true;
+  let stallSpendPending = false;
+  let spentTotal = 0;
   for (;;) {
     let supervisor = await ensureOperationSupervisor(root, config, contract, supervisorSelection, { required: true, forceMaterialize: true });
     if (!supervisor?.agentId) throw new Error("AEH_OPERATION_SUPERVISOR_UNAVAILABLE: semantic consolidation requires a materialized supervisor session.");
@@ -318,6 +329,11 @@ export async function consolidateWithOperationSupervisor(root: string, config: H
     // (exitCode/killReason/status/activityCounts) reach the stall classifier.
     let lastTurnSession: SupervisorConsolidationStallSessionShape | undefined;
     try {
+      if (consolidationOperationId && (firstAttempt || stallSpendPending)) {
+        spentTotal = await transactStallRetrySpend(stateRoot, consolidationOperationId, "consolidation");
+        firstAttempt = false;
+        stallSpendPending = false;
+      }
       const turn = await withBoundedSupervisorConsolidationCorrectionV1({
         expectedFindingIds: rawIds,
         initialPrompt: prompt,
@@ -375,9 +391,15 @@ export async function consolidateWithOperationSupervisor(root: string, config: H
       // Bounded fresh-generation identical-inputs retry for STALL/timeout kill classes ONLY.
       // The failed generation was already stopped and marked FAILED closed; the retry
       // re-materializes a fresh generation with the same frozen finding-set and same inputs.
+      // UNCERTAIN first: the turn's stop is unverified (may still be RUNNING),
+      // so no fresh generation ever — same-session resume or fail-closed error.
       // INVALID/schema/contract/provenance always terminal; second failure rethrows original.
-      if (shouldRetrySupervisorConsolidationStall(error, stallRetries, lastTurnSession)) {
+      if (isUncertainProviderTurn(lastTurnSession, error)) {
+        throw new Error(`PASEO_PROVIDER_LIFECYCLE_UNCERTAIN: consolidation turn stop unverified for session '${(lastTurnSession as { id?: unknown } | undefined)?.id ?? supervisor.agentId ?? "unknown-session"}'; same-session resume is required, fresh-generation retry refused (twin-writer risk). ${String(error instanceof Error ? error.message : error)}`);
+      }
+      if (isSupervisorConsolidationStallKill(error, lastTurnSession) && stallRetries < SUPERVISOR_CONSOLIDATION_STALL_MAX_RETRIES && (spentTotal < STALL_RETRY_MAX_ATTEMPTS_PER_PHASE || !consolidationOperationId)) {
         stallRetries += 1;
+        stallSpendPending = true;
         await recordPaseoTrace(stateRoot, "operation.supervisor.consolidation-stall-retry", { operationId: supervisor.operationId, generation: supervisor.generation, agentId: supervisor.agentId, attempt: stallRetries, maxAttempts: SUPERVISOR_CONSOLIDATION_STALL_MAX_ATTEMPTS, expectedFindingIds: rawIds }).catch(() => undefined);
         continue;
       }
