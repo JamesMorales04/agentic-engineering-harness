@@ -145,6 +145,7 @@ describe("ROUND3 RED workspace binding (Luna R1/R2/S1)", () => {
 
   it("S1c: workspace-listing INCOMPLETE sweep failures MUST still block startup", async () => {
     const resources = await import("../src/runtime/operationResources.js");
+    const { WORKSPACE_SWEEP_INCOMPLETE_CODE } = await import("../src/runtime/operationResources.js");
     const spy = vi.spyOn(resources, "reconcileTerminalOperationResources").mockResolvedValueOnce({
       version: 1,
       sweptAt: new Date().toISOString(),
@@ -152,7 +153,7 @@ describe("ROUND3 RED workspace binding (Luna R1/R2/S1)", () => {
       terminalOperationsReconciled: 0,
       terminalOperationsCurrent: 0,
       liveOperationsPreserved: 0,
-      failures: [{ operationId: "AUDIT-OLD", error: "AEH_WORKSPACE_SWEEP_INCOMPLETE: workspace listing transport failed: boom" }],
+      failures: [{ operationId: "AUDIT-OLD", error: "AEH_WORKSPACE_SWEEP_INCOMPLETE: workspace listing transport failed: boom", code: WORKSPACE_SWEEP_INCOMPLETE_CODE }],
     } as never);
     const { startDetachedOperation } = await import("../src/operations/controller.js");
     const root = await makeRoot();

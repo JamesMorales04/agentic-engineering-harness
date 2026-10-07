@@ -35,6 +35,48 @@ import {
 } from "./supervisorV2.js";
 import { randomUUID } from "node:crypto";
 
+/**
+ * Structured workspace-listing incomplete classification for S1 startup gating.
+ *
+ * MECHANISM: DETERMINISTIC (coded class identity, never a message substring).
+ * Produced ONLY by the workspace-listing path (`defaultListOwnedWorkspaces`);
+ * the S1 startup gate checks this classification, so an unrelated error that
+ * merely embeds the marker text can never block startup.
+ */
+export const WORKSPACE_SWEEP_INCOMPLETE_CODE = "AEH_WORKSPACE_SWEEP_INCOMPLETE" as const;
+
+export class WorkspaceSweepIncompleteError extends Error {
+  readonly code: typeof WORKSPACE_SWEEP_INCOMPLETE_CODE = WORKSPACE_SWEEP_INCOMPLETE_CODE;
+  constructor(detail: string, options?: { cause?: unknown }) {
+    super(`${WORKSPACE_SWEEP_INCOMPLETE_CODE}: ${detail}`, options);
+    this.name = "WorkspaceSweepIncompleteError";
+  }
+}
+
+/** DETERMINISTIC classifier: true only for the dedicated workspace-listing failure type. */
+export function isWorkspaceSweepIncompleteError(error: unknown): error is WorkspaceSweepIncompleteError {
+  if (error instanceof WorkspaceSweepIncompleteError) return true;
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { code?: unknown }).code === WORKSPACE_SWEEP_INCOMPLETE_CODE
+  );
+}
+
+/** Typed sweep failure: `code` is present ONLY when produced by the workspace-listing path. */
+export interface OperationResourceSweepFailureV1 {
+  operationId: string;
+  error: string;
+  code?: typeof WORKSPACE_SWEEP_INCOMPLETE_CODE;
+}
+
+/** DETERMINISTIC classifier for sweep failures: true only when the failure carries the workspace-listing code. */
+export function isWorkspaceSweepIncompleteFailure(
+  failure: Pick<OperationResourceSweepFailureV1, "code">
+): boolean {
+  return failure.code === WORKSPACE_SWEEP_INCOMPLETE_CODE;
+}
+
 export const operationResourceKinds = [
   "paseo-workspace",
   "paseo-agent",
@@ -184,7 +226,7 @@ export interface OperationResourceSweepResultV1 {
   terminalOperationsReconciled: number;
   terminalOperationsCurrent: number;
   liveOperationsPreserved: number;
-  failures: Array<{ operationId: string; error: string }>;
+  failures: OperationResourceSweepFailureV1[];
 }
 
 export function operationResourcePolicy(config: { orchestration?: unknown } | undefined): OperationResourcePolicyV1 {
@@ -414,7 +456,7 @@ export function selectOwnedWorkspaces(
  * caller; this only decides the candidate set.
  *
  * CONTRACT: `listed` must be an exhaustive listing (callers use the throwing
- * `defaultListOwnedWorkspaces`, which raises AEH_WORKSPACE_SWEEP_INCOMPLETE on
+ * `defaultListOwnedWorkspaces`, which raises WorkspaceSweepIncompleteError on
  * any incomplete transport/exit/parse; injected stub listers in tests are
  * exhaustive by contract). A `[]` return therefore means proven absence only
  * when the listing succeeded. Skipping the listing entirely (returning []
@@ -534,7 +576,7 @@ export async function selectTripleBoundWorkspaces(
   return selected;
 }
 
-/** Default unbounded workspace listing (`paseo workspace ls --json`); unfiltered, untrusted until title-matched. Fail-closed: any CLI transport failure, nonzero exit, empty output, or invalid JSON throws AEH_WORKSPACE_SWEEP_INCOMPLETE so callers can never mark current/complete without proving no workspace exists. Explicit empty-list success (`[]`) still returns []. */
+/** Default unbounded workspace listing (`paseo workspace ls --json`); unfiltered, untrusted until title-matched. Fail-closed: any CLI transport failure, nonzero exit, empty output, or invalid JSON throws WorkspaceSweepIncompleteError so callers can never mark current/complete without proving no workspace exists. Explicit empty-list success (`[]`) still returns []. */
 export function defaultListOwnedWorkspaces(run: typeof runShell): (root: string) => Promise<OwnedWorkspaceRecord[]> {
   return async (root) => {
     if (isDeterministicPaseoRuntimeEnabled()) return [];
@@ -542,14 +584,14 @@ export function defaultListOwnedWorkspaces(run: typeof runShell): (root: string)
     try {
       result = await run("paseo workspace ls --json", { cwd: root, timeoutMs: 60_000 });
     } catch (error) {
-      throw new Error(`AEH_WORKSPACE_SWEEP_INCOMPLETE: workspace listing transport failed: ${error instanceof Error ? error.message : String(error)}`);
+      throw new WorkspaceSweepIncompleteError(`workspace listing transport failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
     }
-    if (!result) throw new Error("AEH_WORKSPACE_SWEEP_INCOMPLETE: workspace listing produced no result.");
-    if (result.exitCode !== 0) throw new Error(`AEH_WORKSPACE_SWEEP_INCOMPLETE: workspace listing exited ${result.exitCode}: ${(result.stderr || result.stdout || "").slice(0, 500)}`);
-    if (!result.stdout.trim()) throw new Error("AEH_WORKSPACE_SWEEP_INCOMPLETE: workspace listing returned empty output; cannot prove no workspace exists.");
+    if (!result) throw new WorkspaceSweepIncompleteError("workspace listing produced no result.");
+    if (result.exitCode !== 0) throw new WorkspaceSweepIncompleteError(`workspace listing exited ${result.exitCode}: ${(result.stderr || result.stdout || "").slice(0, 500)}`);
+    if (!result.stdout.trim()) throw new WorkspaceSweepIncompleteError("workspace listing returned empty output; cannot prove no workspace exists.");
     let value: unknown;
     try { value = JSON.parse(result.stdout); }
-    catch { throw new Error("AEH_WORKSPACE_SWEEP_INCOMPLETE: workspace listing returned invalid JSON; cannot prove no workspace exists."); }
+    catch { throw new WorkspaceSweepIncompleteError("workspace listing returned invalid JSON; cannot prove no workspace exists."); }
     const collected: OwnedWorkspaceRecord[] = [];
     collectWorkspaceRecords(value, collected);
     const deduped = new Map<string, OwnedWorkspaceRecord>();
@@ -958,7 +1000,7 @@ export async function reconcileTerminalOperationResources(root: string, deps: Op
         // declaring the operation current so the orphaned worktree is swept.
         // Without a pre-registered intent nothing is claimed (fail-closed), so
         // the CLI is skipped. With an intent a listing failure throws
-        // AEH_WORKSPACE_SWEEP_INCOMPLETE into sweep.failures — never []/current.
+        // WorkspaceSweepIncompleteError into sweep.failures — never []/current.
         const preIntent = await readOperationWorkspaceIntent(root, record.id).catch(() => undefined);
         if (!preIntent && !deps.listOwnedWorkspaces) { sweep.terminalOperationsCurrent += 1; continue; }
         const listWorkspaces = deps.listOwnedWorkspaces ?? defaultListOwnedWorkspaces(deps.run ?? runShell);
@@ -969,7 +1011,16 @@ export async function reconcileTerminalOperationResources(root: string, deps: Op
       if (result.cleanupComplete) sweep.terminalOperationsReconciled += 1;
       else sweep.failures.push({ operationId, error: result.errors.join("; ") || "terminal orphaned resources remain" });
     } catch (error) {
-      sweep.failures.push({ operationId, error: error instanceof Error ? error.message : String(error) });
+      // Structured propagation: ONLY the dedicated workspace-listing failure
+      // type carries the INCOMPLETE code into the failure record. Any other
+      // error — even one embedding the marker text — stays code-less and can
+      // never trip the S1 startup gate.
+      const message = error instanceof Error ? error.message : String(error);
+      if (isWorkspaceSweepIncompleteError(error)) {
+        sweep.failures.push({ operationId, error: message, code: WORKSPACE_SWEEP_INCOMPLETE_CODE });
+      } else {
+        sweep.failures.push({ operationId, error: message });
+      }
     }
   }
   return sweep;
@@ -1545,7 +1596,7 @@ async function collectResourceCandidates(
   if (!isDeterministicPaseoRuntimeEnabled()) {
     // Fail-closed: without a pre-registered intent nothing is claimable, so the
     // CLI is skipped entirely (no external proof needed). With an intent the
-    // listing failure throws AEH_WORKSPACE_SWEEP_INCOMPLETE and aborts
+    // listing failure throws WorkspaceSweepIncompleteError and aborts
     // reconciliation (blocking current/complete) — never silently [].
     const preIntent = await readOperationWorkspaceIntent(root, record.id).catch(() => undefined);
     const preBinding = operationWorkspaceBinding(record.kind, record.id, root);

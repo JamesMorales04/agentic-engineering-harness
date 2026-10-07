@@ -20,6 +20,8 @@ import { isDeterministicPaseoRuntimeEnabled, isDeterministicPaseoSessionId } fro
 import { createManagedRuntime, readManagedRuntimeSnapshot, runtimeProjectId } from "../runtime/index.js";
 import {
   clearOperationWorkspaceIntent,
+  isWorkspaceSweepIncompleteError,
+  isWorkspaceSweepIncompleteFailure,
   operationResourcePolicy,
   operationWorkspaceName,
   operationWorkspaceTitle,
@@ -27,6 +29,7 @@ import {
   reconcileTerminalOperationResources,
   registerOperationResource,
   upgradeOperationWorkspaceIntent,
+  WorkspaceSweepIncompleteError,
   writeOperationWorkspaceIntent
 } from "../runtime/operationResources.js";
 import { recordPaseoTrace } from "../paseo/trace.js";
@@ -182,24 +185,27 @@ export async function startDetachedOperation(
   // Restart recovery: any proven terminal operation in this control root with an
   // incomplete resource receipt is reconciled before new work starts.
   // Fail-closed ONLY for the workspace-listing proof
-  // (AEH_WORKSPACE_SWEEP_INCOMPLETE): an unprovable workspace sweep blocks
+  // (WorkspaceSweepIncompleteError): an unprovable workspace sweep blocks
   // startup rather than dispatching new work over unreconciled orphans. All
   // other terminal-resource failures restore the pre-round-2 behavior —
   // swallowed, never blocking startup. Both the thrown path and the
-  // per-operation sweep.failures path are narrowed identically.
+  // per-operation sweep.failures path are narrowed identically via the
+  // structured classification (code field / error class produced ONLY by the
+  // workspace-listing path); message-substring matching is refused so an
+  // unrelated error embedding the marker text can never block startup.
+  // MECHANISM: DETERMINISTIC (coded classification, not semantic string match).
   let preliminarySweep;
   try {
     preliminarySweep = await reconcileTerminalOperationResources(absoluteRoot);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message.includes("AEH_WORKSPACE_SWEEP_INCOMPLETE")) throw error;
+    if (isWorkspaceSweepIncompleteError(error)) throw error;
     preliminarySweep = undefined;
   }
   if (preliminarySweep && preliminarySweep.failures.length > 0) {
-    const workspaceFailures = preliminarySweep.failures.filter((failure) => failure.error.includes("AEH_WORKSPACE_SWEEP_INCOMPLETE"));
+    const workspaceFailures = preliminarySweep.failures.filter((failure) => isWorkspaceSweepIncompleteFailure(failure));
     if (workspaceFailures.length > 0) {
       const detail = workspaceFailures.map((failure) => `${failure.operationId}: ${failure.error}`).join("; ").slice(0, 2000);
-      throw new Error(`AEH_WORKSPACE_SWEEP_INCOMPLETE: preliminary terminal-resource reconciliation failed: ${detail}`);
+      throw new WorkspaceSweepIncompleteError(`preliminary terminal-resource reconciliation failed: ${detail}`);
     }
   }
   if (suppliedDecision) assertIntentDecisionForRoute(suppliedDecision, kind === "audit" ? "audit" : kind === "change" ? "change" : "run");

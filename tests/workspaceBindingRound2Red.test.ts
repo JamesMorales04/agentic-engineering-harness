@@ -98,8 +98,9 @@ describe("ROUND2 RED workspace binding (Luna re-review W1/W2/W3)", () => {
 
   it("W3: startDetachedOperation MUST propagate preliminary reconciliation failures (coded error)", async () => {
     const resources = await import("../src/runtime/operationResources.js");
+    const { WorkspaceSweepIncompleteError } = await import("../src/runtime/operationResources.js");
     const spy = vi.spyOn(resources, "reconcileTerminalOperationResources").mockRejectedValueOnce(
-      new Error("AEH_WORKSPACE_SWEEP_INCOMPLETE: workspace listing transport failed: boom")
+      new WorkspaceSweepIncompleteError("workspace listing transport failed: boom")
     );
     const { startDetachedOperation } = await import("../src/operations/controller.js");
     const root = await makeRoot();
