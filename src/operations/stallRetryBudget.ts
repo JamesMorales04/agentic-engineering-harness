@@ -559,24 +559,37 @@ export async function recordStallRetryStall(
 
 /**
  * Durably claims a counted retry attempt before it is consumed. Atomic temp+rename,
- * same idiom as ledger writes, serialized through the ledger lock (B1-race: all
- * marker access goes through the lock so a concurrent clear/supersede check+delete
- * cannot interleave with this replace). Throws `STALL_RETRY_LEDGER_WRITE_FAILED`
- * on failure without consuming a retry. Callers that claim before running an
- * attempt must reconcile via `recordStallRetryStall` (stall, supersedes own claim)
- * or `clearStallRetryClaim` (success/non-stall, clears own claim); until then
- * `loadStallRetryStalls` refuses EXHAUSTED for fresh markers and reconciles stale
- * markers as a durable +1.
+ * same idiom as ledger writes, serialized through the ledger lock.
+ *
+ * ATOMIC CHECK-AND-SET (ru/ledger-claim-cas-13, Luna round-14 race): under a SINGLE
+ * ledger-lock critical section — read marker; if a marker exists AND is live (not
+ * stale per the configured-deadline staleness rule) → throw the phase's
+ * EXHAUSTED-coded CLAIM-CONFLICT (fail closed, no launch, no overwrite); if the
+ * existing marker is stale → reconcile-as-consumed first (durable +1, never free,
+ * existing stale logic incl. legacy grave take/verify/destroy-or-quarantine), then
+ * write the new claim; if none → write. The loser of a concurrent claim race fails
+ * closed, never launches. MECHANISM: DETERMINISTIC (file-backed marker + lock).
+ *
+ * Throws `STALL_RETRY_LEDGER_WRITE_FAILED` on failure without consuming a retry,
+ * or the phase's `*_STALL_BUDGET_EXHAUSTED` CLAIM-CONFLICT when a live marker is
+ * present (coded, terminal, never stall-classified). Callers that claim before
+ * running an attempt must reconcile via `recordStallRetryStall` (stall, supersedes
+ * own claim) or `clearStallRetryClaim` (success/non-stall, clears own claim); until
+ * then `loadStallRetryStalls` refuses EXHAUSTED for fresh markers and reconciles
+ * stale markers as a durable +1.
  * `attempt` is the 1-indexed counted attempt number (ownership identity, B1).
  * `deadlineMs` is the attempt's effective provider-turn deadline, recorded for
  * per-marker staleness (B3); callers pass their effective deadline.
+ * `options` carries the legacy-migration bound (config / legacyMaxDeadlineMs /
+ * nowMs); defaults mirror `loadStallRetryStalls` (30min default, no config).
  */
 export async function claimStallRetryAttempt(
   controlRoot: string,
   operationId: string,
   phase: StallRetryPhase,
   attempt?: number,
-  deadlineMs?: number
+  deadlineMs?: number,
+  options?: StallRetryLoadOptions
 ): Promise<void> {
   const file = stallRetryBudgetFile(controlRoot, operationId);
   const pending = stallRetryPendingFile(controlRoot, operationId, phase);
@@ -584,9 +597,164 @@ export async function claimStallRetryAttempt(
     await fs.mkdir(path.dirname(pending), { recursive: true });
     const ownedAttempt = normalizeAttemptNumber(attempt ?? 1);
     const ownedDeadline = normalizeDeadlineMs(deadlineMs ?? DEFAULT_STALL_RETRY_DEADLINE_MS);
-    await withLock(file, async () => {
-      await writePendingAtomic(pending, operationId, phase, ownedAttempt, ownedDeadline);
-    });
+    const nowMs = options?.nowMs ?? Date.now();
+    let quarantineToTrace: { quarantine: string; reason: string } | undefined;
+    try {
+      await withLock(file, async () => {
+        // FD-BOUND DECISION SNAPSHOT (round-12 R1, reused for claim CAS): open()
+        // first, then fstat(fd) + read(fd) through the same handle — content +
+        // identity from ONE file object, never a path-based read-then-stat split.
+        const snapshot = await readMarkerDecisionSnapshot(pending);
+        if (!snapshot) {
+          try {
+            await fs.stat(pending);
+          } catch (error) {
+            if (isMissing(error)) {
+              await writePendingAtomic(pending, operationId, phase, ownedAttempt, ownedDeadline);
+              return;
+            }
+          }
+          // Present but unreadable (open failed) → fail closed, no overwrite.
+          throw ledgerUnknownExhaustedError(
+            phase,
+            operationId,
+            `pending claim conflict (CLAIM-CONFLICT: marker unreadable, another attempt may own it, caller attempt ${ownedAttempt})`
+          );
+        }
+        let parsed: unknown;
+        let parseFailed = false;
+        try {
+          parsed = JSON.parse(snapshot.raw);
+        } catch {
+          parseFailed = true;
+        }
+        if (!parseFailed && isWellFormedPendingMarker(parsed, operationId, phase)) {
+          if (!isStalePendingMarker(parsed, operationId, phase, nowMs)) {
+            const owner = (parsed as StallRetryPendingV1).attempt;
+            throw ledgerUnknownExhaustedError(
+              phase,
+              operationId,
+              `pending claim conflict (CLAIM-CONFLICT: live marker owned by attempt ${owner}, caller attempt ${ownedAttempt})`
+            );
+          }
+          // Stale well-formed → reconcile-as-consumed first (existing stale
+          // logic: durable +1, never free), then write the new claim.
+          const previous = await loadUnlocked(file, operationId, phase);
+          const next: StallRetryBudgetV1 = {
+            ...previous,
+            stalls: { ...previous.stalls, [phase]: Math.floor(previous.stalls[phase]) + 1 },
+            updatedAt: new Date().toISOString()
+          };
+          await writeAtomic(file, next);
+          // Replacement guard (non-lock writers only; harness well-formed
+          // writers all hold this lock): a replacement during the increment
+          // must survive — fail closed without overwriting.
+          let postRaw: string | undefined;
+          try {
+            postRaw = await fs.readFile(pending, "utf8");
+          } catch {
+            postRaw = undefined;
+          }
+          if (postRaw === undefined) {
+            await writePendingAtomic(pending, operationId, phase, ownedAttempt, ownedDeadline);
+            return;
+          }
+          if (postRaw !== snapshot.raw) {
+            throw ledgerUnknownExhaustedError(
+              phase,
+              operationId,
+              `pending claim conflict (CLAIM-CONFLICT: marker replaced during stale reconcile, caller attempt ${ownedAttempt})`
+            );
+          }
+          await writePendingAtomic(pending, operationId, phase, ownedAttempt, ownedDeadline);
+          return;
+        }
+        // Legacy candidate (unparseable or new-format-invalid for this
+        // operation/phase, incl. foreign): fail closed unless provably old via
+        // file mtime under the CURRENT max bound (existing legacy rule).
+        if (!isOldLegacyMarkerByMtime(snapshot.mtimeMs, options, nowMs)) {
+          throw ledgerUnknownExhaustedError(
+            phase,
+            operationId,
+            `pending claim conflict (CLAIM-CONFLICT: live legacy/foreign marker, caller attempt ${ownedAttempt})`
+          );
+        }
+        // Old legacy → grave take + verify (preserve quarantine/binding), then
+        // +1 + destroy, then write the new claim. Mismatch → quarantine + fail
+        // closed (no increment, marker path untouched, no overwrite).
+        const legacyPreHash = markerContentHash(snapshot.raw);
+        const legacyPreMtimeMs = snapshot.mtimeMs;
+        const legacyPreDev = snapshot.dev;
+        const legacyPreIno = snapshot.ino;
+        const grave = `${pending}.grave-${crypto.randomUUID()}`;
+        try {
+          await fs.rename(pending, grave);
+        } catch (error) {
+          if (isMissing(error)) {
+            await writePendingAtomic(pending, operationId, phase, ownedAttempt, ownedDeadline);
+            return;
+          }
+          throw error;
+        }
+        let graveRaw: string | undefined;
+        let graveDev = -1;
+        let graveIno = -1;
+        let graveMtimeMs = Number.NaN;
+        try {
+          const handle = await fs.open(grave, "r");
+          try {
+            const graveStat = await handle.stat();
+            graveDev = graveStat.dev;
+            graveIno = graveStat.ino;
+            graveMtimeMs = graveStat.mtimeMs;
+            graveRaw = await handle.readFile("utf8");
+          } finally {
+            await handle.close().catch(() => undefined);
+          }
+        } catch {
+          graveRaw = undefined;
+        }
+        const inodeMatch = graveDev === legacyPreDev && graveIno === legacyPreIno;
+        const mtimeMatch = graveMtimeMs === legacyPreMtimeMs;
+        if (graveRaw === undefined || !inodeMatch || !mtimeMatch || markerContentHash(graveRaw) !== legacyPreHash) {
+          const reason =
+            graveRaw === undefined
+              ? "grave-unreadable"
+              : !inodeMatch
+                ? "inode-mismatch"
+                : !mtimeMatch
+                  ? "mtime-mismatch"
+                  : "content-mismatch";
+          const quarantine = `${pending}.quarantine-${crypto.randomUUID()}`;
+          await fs.rename(grave, quarantine).catch(() => undefined);
+          quarantineToTrace = { quarantine, reason };
+          throw ledgerUnknownExhaustedError(
+            phase,
+            operationId,
+            `pending claim conflict (CLAIM-CONFLICT: legacy quarantine ${reason}, caller attempt ${ownedAttempt})`
+          );
+        }
+        const previous = await loadUnlocked(file, operationId, phase);
+        const next: StallRetryBudgetV1 = {
+          ...previous,
+          stalls: { ...previous.stalls, [phase]: Math.floor(previous.stalls[phase]) + 1 },
+          updatedAt: new Date().toISOString()
+        };
+        await writeAtomic(file, next);
+        await fs.rm(grave, { force: true }).catch(() => undefined);
+        await writePendingAtomic(pending, operationId, phase, ownedAttempt, ownedDeadline);
+      });
+    } finally {
+      if (quarantineToTrace) {
+        await traceLegacyQuarantine(
+          controlRoot,
+          operationId,
+          phase,
+          quarantineToTrace.quarantine,
+          quarantineToTrace.reason
+        ).catch(() => undefined);
+      }
+    }
   } catch (error) {
     if (isCodedLedgerError(error)) throw error;
     throw ledgerWriteFailedError(phase, operationId, `code=${errnoCode(error)}`);

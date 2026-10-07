@@ -14,21 +14,23 @@ import {
 /**
  * RED for Luna round-7 B1: cross-attempt clear erases another attempt's marker.
  *
- * Scenario: attempt 1 claims (marker attempt=1), then attempt 2 claims
- * (marker attempt=2, overwrites — second attempt starts). Attempt 1 finishes
+ * Scenario: attempt 2 holds a live claim (marker attempt=2). Attempt 1 finishes
  * (success/non-stall) and calls clear with ITS attempt number (1). Correct
  * behavior: leave marker attempt=2 alone (another live attempt owns it) +
  * trace. Buggy behavior: unconditionally removes marker, erasing live claim.
+ *
+ * NOTE (ru/ledger-claim-cas-13): claim is atomic check-and-set — a second live
+ * claim throws CLAIM-CONFLICT instead of overwriting, so this setup uses a
+ * single live claim (no claim-then-overwrite sequence).
  */
 describe("stall-retry binding B1: clear bound to (phase, attempt)", () => {
   it("clear with stale attempt number leaves live marker alone", async () => {
     const controlRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-bind-b1-"));
     const operationId = "BIND-B1-1";
     try {
-      // Attempt 1 claims, then attempt 2 claims (live).
-      await (claimStallRetryAttempt as (...args: unknown[]) => Promise<void>)(
-        controlRoot, operationId, "discovery", 1, 30 * 60_000,
-      );
+      // Single live claim (attempt 2). A second live claim would throw
+      // CLAIM-CONFLICT under atomic check-and-set (ru/ledger-claim-cas-13),
+      // never overwrite — so no claim-then-overwrite setup here.
       await (claimStallRetryAttempt as (...args: unknown[]) => Promise<void>)(
         controlRoot, operationId, "discovery", 2, 30 * 60_000,
       );
