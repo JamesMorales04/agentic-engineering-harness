@@ -49,14 +49,14 @@ tools:
     kind: mise
     command: bun
     source: bun
-    version: latest
+    version: "1.4.2"
     activateWhen: [project:bun]
 
   dotnet:
     kind: mise
     command: dotnet
     source: dotnet
-    version: latest
+    version: "9.0.318"
     activateWhen: [project:dotnet]
 
   codex:
@@ -140,10 +140,10 @@ tools:
     kind: mise
     command: opa
     source: "aqua:open-policy-agent/opa"
-    version: latest
+    version: "1.10.1"
     activateWhen: [validation:opa]
     container:
-      image: docker.io/openpolicyagent/opa:latest-static
+      image: docker.io/openpolicyagent/opa:1.10.1-static
 
   opengrep:
     kind: mise
@@ -159,7 +159,7 @@ tools:
     version: "0.70.0"
     activateWhen: [security-tool:trivy, validator:trivy]
     container:
-      image: ghcr.io/aquasecurity/trivy:latest
+      image: ghcr.io/aquasecurity/trivy:0.70.0
 
   cosign:
     kind: mise

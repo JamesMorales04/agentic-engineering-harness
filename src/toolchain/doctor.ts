@@ -6,7 +6,9 @@ import type { ResolvedToolchainTool, ToolchainLock } from "./types.js";
 import {
   checkToolchainLockConsistency,
   findLatestVersionPins,
+  findLatestVersionPinsInDefinitions,
   findUnpinnedActiveContainerImages,
+  findUnpinnedImagesInDefinitions,
   loadMiseLockForDoctor,
   reportedVersionsEqual,
 } from "./pinning.js";
@@ -179,8 +181,14 @@ export async function runToolchainDoctor(root: string, project: HarnessProjectCo
   const unionByName = new Map<string, ResolvedToolchainTool>();
   for (const tool of [...profileTools, ...projectTools]) unionByName.set(tool.name, tool);
   const unionTools = [...unionByName.values()];
-  if (unionTools.length) {
-    const unpinned = findLatestVersionPins(unionTools);
+  // Full-config pin gates (T1): unionTools covers only ACTIVE tools — an
+  // inactive `latest` definition bypasses until activation. Enumerate the FULL
+  // tool configuration (all defined tools incl. inactive) so activation can
+  // never introduce an unpinned tool.
+  const definedUnpinned = findLatestVersionPinsInDefinitions(toolchain.tools);
+  const definedUnpinnedImages = findUnpinnedImagesInDefinitions(toolchain.tools);
+  if (unionTools.length || definedUnpinned.length || definedUnpinnedImages.length) {
+    const unpinned = [...new Set([...findLatestVersionPins(unionTools), ...definedUnpinned])].sort();
     results.push({
       component: "toolchain-pinning",
       required: true,
@@ -189,9 +197,9 @@ export async function runToolchainDoctor(root: string, project: HarnessProjectCo
       state: unpinned.length ? "INVALID" : "COMPLIANT",
       message: unpinned.length
         ? `TOOLCHAIN_UNPINNED_VERSION: toolchain tools request unpinned version 'latest': ${unpinned.join(", ")}. Pin exact versions in .harness/toolchain.yaml.`
-        : `Toolchain versions are pinned (${unionTools.length} resolved tool(s) checked).`
+        : `Toolchain versions are pinned (${unionTools.length} resolved tool(s) + ${Object.keys(toolchain.tools).length} defined tool(s) checked).`
     });
-    const unpinnedImages = findUnpinnedActiveContainerImages(unionTools);
+    const unpinnedImages = [...new Set([...findUnpinnedActiveContainerImages(unionTools), ...definedUnpinnedImages])].sort();
     results.push({
       component: "toolchain-container-pins",
       required: true,
@@ -200,7 +208,7 @@ export async function runToolchainDoctor(root: string, project: HarnessProjectCo
       state: unpinnedImages.length ? "INVALID" : "COMPLIANT",
       message: unpinnedImages.length
         ? `TOOLCHAIN_UNPINNED_IMAGE: container tools use unpinned ':latest' images: ${unpinnedImages.join(", ")}. Pin image@sha256 digests in .harness/toolchain.yaml.`
-        : "Container image pins are compliant (no active container tool uses a ':latest' tag)."
+        : "Container image pins are compliant (no defined container tool uses a ':latest' tag)."
     });
   }
   try {

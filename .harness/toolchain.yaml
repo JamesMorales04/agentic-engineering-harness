@@ -47,9 +47,9 @@ tools:
     kind: mise
     command: opa
     source: "aqua:open-policy-agent/opa"
-    version: latest
+    version: "1.10.1"
     activateWhen: [validation:opa]
-    container: { image: docker.io/openpolicyagent/opa:latest-static }
+    container: { image: docker.io/openpolicyagent/opa:1.10.1-static }
   opengrep: { kind: mise, command: opengrep, source: "aqua:opengrep/opengrep", version: "1.22.0", activateWhen: [security-tool:opengrep, validator:opengrep] }
   trivy:
     kind: mise
@@ -57,7 +57,7 @@ tools:
     source: "aqua:aquasecurity/trivy"
     version: "0.70.0"
     activateWhen: [security-tool:trivy, validator:trivy]
-    container: { image: ghcr.io/aquasecurity/trivy:latest }
+    container: { image: ghcr.io/aquasecurity/trivy:0.70.0 }
   cosign: { kind: mise, command: cosign, source: "aqua:sigstore/cosign", version: "2.6.5", activateWhen: [organization:signed-policy] }
   podman: { kind: system, command: podman, activateWhen: [orchestration:podman, sandbox:podman] }
   pnpm: { kind: mise, command: pnpm, source: "npm:pnpm", version: "10.15.0", activateWhen: [memory:engram, project:pnpm] }

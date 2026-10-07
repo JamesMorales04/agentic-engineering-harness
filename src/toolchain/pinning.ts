@@ -65,6 +65,44 @@ export function findUnpinnedDefinedImages(tools: ResolvedToolchainTool[]): strin
     .sort();
 }
 
+/**
+ * Full-configuration pin scan (DETERMINISTIC, T1).
+ *
+ * Resolved-tool scans (findLatestVersionPins / findUnpinnedActiveContainerImages)
+ * cover only ACTIVE tools: an inactive `latest` definition bypasses until
+ * activation selects it. These definition-level scans enumerate the FULL tool
+ * configuration (all defined tools incl. inactive) so activation can never
+ * introduce an unpinned tool. Gates call both: resolved-active AND full-config.
+ */
+export function findLatestVersionPinsInDefinitions(tools: Record<string, ToolchainToolDefinition>): string[] {
+  return Object.entries(tools)
+    .filter(([, def]) => def.kind === "mise" && isLatestVersion(def.version))
+    .map(([name]) => name)
+    .sort();
+}
+
+export function findUnpinnedImagesInDefinitions(tools: Record<string, ToolchainToolDefinition>): string[] {
+  return Object.entries(tools)
+    .filter(([, def]) => def.container?.image && isUnpinnedImage(def.container.image))
+    .map(([name]) => name)
+    .sort();
+}
+
+export function assertNoUnpinnedDefinitions(tools: Record<string, ToolchainToolDefinition>): void {
+  const unpinned = findLatestVersionPinsInDefinitions(tools);
+  if (unpinned.length) {
+    throw new Error(
+      `TOOLCHAIN_UNPINNED_VERSION: toolchain tools request unpinned version 'latest': ${unpinned.join(", ")}. Pin exact versions in .harness/toolchain.yaml.`
+    );
+  }
+  const images = findUnpinnedImagesInDefinitions(tools);
+  if (images.length) {
+    throw new Error(
+      `TOOLCHAIN_UNPINNED_IMAGE: container tools use unpinned ':latest' images: ${images.join(", ")}. Pin image@sha256 digests in .harness/toolchain.yaml.`
+    );
+  }
+}
+
 export function assertNoLatestPins(tools: ResolvedToolchainTool[]): void {
   const unpinned = findLatestVersionPins(tools);
   if (unpinned.length) {
@@ -262,13 +300,22 @@ export function parseMiseLockDetailed(content: string): DetailedMiseLockParse {
     const versionMatch = line.match(/^version\s*=\s*(.+)\s*$/);
     if (versionMatch) {
       if (hasTrailingComment(versionMatch[1])) { unparsedInScope.push(raw); continue; }
-      entries[current].version = parseTomlString(versionMatch[1]);
+      const parsed = parseTomlString(versionMatch[1]);
+      // Fail-closed (T2): an unparseable version value (unquoted, non-string)
+      // yields undefined — counting it as unparsed (INCONCLUSIVE) instead of
+      // assigning undefined silently so malformed entries never pass.
+      if (parsed === undefined) { unparsedInScope.push(raw); continue; }
+      entries[current].version = parsed;
       continue;
     }
     const backendMatch = line.match(/^backend\s*=\s*(.+)\s*$/);
     if (backendMatch) {
       if (hasTrailingComment(backendMatch[1])) { unparsedInScope.push(raw); continue; }
-      entries[current].backend = parseTomlString(backendMatch[1]);
+      const parsed = parseTomlString(backendMatch[1]);
+      // Fail-closed (T2): same as version — unparseable backend never passes
+      // silently.
+      if (parsed === undefined) { unparsedInScope.push(raw); continue; }
+      entries[current].backend = parsed;
       continue;
     }
     const specifiersMatch = line.match(/^specifiers\s*=\s*(.+)\s*$/);
@@ -559,6 +606,24 @@ export function checkToolchainLockConsistency(
           `tool '${name}' has no entry in mise.lock (cannot verify, not skipped; run \`aeh setup\` to regenerate locks).`
         );
       }
+      continue;
+    }
+    // Fail-closed (T2): a matched mise.lock entry without a parsed version or
+    // backend is unverifiable and never passes. Known-opaque vocabulary check:
+    // the documented opaque fields are entry-LEVEL lines (`aube`/`uv`/`options`
+    // values orthogonal to version consistency), never a substitute for the
+    // entry's own `version`/`backend` — no versionless entry shape is
+    // allowlisted, so every versionless/backendless entry is DRIFT.
+    if (!miseEntry.version) {
+      divergences.push(
+        `tool '${name}' mise.lock entry has no version (unverifiable, not skipped; run \`aeh setup\` to regenerate locks).`
+      );
+      continue;
+    }
+    if (!miseEntry.backend) {
+      divergences.push(
+        `tool '${name}' mise.lock entry has no backend (unverifiable, not skipped; run \`aeh setup\` to regenerate locks).`
+      );
       continue;
     }
     if (entry.resolvedVersion && miseEntry.version && entry.resolvedVersion !== miseEntry.version) {
