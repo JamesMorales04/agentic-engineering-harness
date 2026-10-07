@@ -416,34 +416,34 @@ async function runChild(
     let exitSignal: NodeJS.Signals | null = null;
     let unregister: () => Promise<void> = async () => undefined;
     const registered = registerManagedProcessHandle(child.pid);
+    // Reified registration outcome. finish() is the SOLE settler and awaits
+    // this before reporting anything, so a failed registration can never lose
+    // a race to a normal resolve (the close→finish path cannot slip in during
+    // a kill+verify window). The rejection callback below only starts killing
+    // immediately (finish may never fire without it); it never settles.
+    let resolveRegistrationOutcome: (outcome: { cleanup?: () => Promise<void>; error?: unknown }) => void = () => undefined;
+    const registrationOutcome = new Promise<{ cleanup?: () => Promise<void>; error?: unknown }>((resolve) => { resolveRegistrationOutcome = resolve; });
     void registered.then(
       (cleanup) => {
         unregister = cleanup;
         if (settled) void unregister();
+        resolveRegistrationOutcome({ cleanup });
       },
       (error) => {
+        resolveRegistrationOutcome({ error });
         // Registration persistence failed: never leave a live-but-unregistered
-        // (unfenced) child. The SIGKILL arrangement runs UNCONDITIONALLY first:
-        // output may already have force-settled (settled, result reported)
-        // while the child is still live (signal delivery failed), and the
-        // early settled return below must never skip the kill. Settle reports
-        // output; kill guarantees death; both happen. When the child already
-        // settled, its output stays reported and only the kill above runs.
-        try {
-          if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
-          else child.kill("SIGKILL");
-        } catch { /* already exited */ }
-        try { child.kill("SIGKILL"); } catch { /* already exited */ }
-        child.stdout?.destroy();
-        child.stderr?.destroy();
-        child.stdin?.destroy();
-        if (settled) return;
-        settled = true;
-        if (timer) clearTimeout(timer);
-        if (killTimer) clearTimeout(killTimer);
-        if (forceSettleTimer) clearTimeout(forceSettleTimer);
-        options.signal?.removeEventListener("abort", onAbort);
-        reject(error);
+        // (unfenced) child. Start the SIGKILL arrangement UNCONDITIONALLY and
+        // immediately — output may already have force-settled while the child
+        // is still live. finish() performs the verified settle below.
+        // CONFIRMED KILL: delivery is best-effort — death is VERIFIED with a
+        // bounded poll there; a still-live child rejects as ORPHAN_UNKILLABLE.
+        void (async () => {
+          killProcessGroupBestEffort(child, "SIGKILL");
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          child.stdin?.destroy();
+          await verifyProcessExit(child.pid, 500);
+        })().catch(() => undefined);
       }
     );
     const kill = (signal: NodeJS.Signals): void => {
@@ -495,23 +495,91 @@ async function runChild(
       if (killTimer) clearTimeout(killTimer);
       if (forceSettleTimer) clearTimeout(forceSettleTimer);
       options.signal?.removeEventListener("abort", onAbort);
-      if (forced || !exited) {
+      // Sole settler: the registration outcome is awaited first so a failed
+      // registration deterministically rejects (kill+verify, ORPHAN_UNKILLABLE
+      // when the child survives) instead of racing a normal resolve.
+      void (async () => {
+        const outcome = await registrationOutcome;
+        if (outcome.error !== undefined) {
+          killProcessGroupBestEffort(child, "SIGKILL");
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          child.stdin?.destroy();
+          const dead = await verifyProcessExit(child.pid, 500);
+          if (!dead) {
+            reject(orphanUnkillableError(
+              child.pid!,
+              `registration persistence failed for operation ${process.env.AEH_OPERATION_ID ?? "unknown"} and SIGKILL could not be verified`,
+              outcome.error
+            ));
+            return;
+          }
+          reject(outcome.error);
+          return;
+        }
+        if (!exited) {
+          // CONFIRMED KILL: the child may still be live (forced settle or no
+          // exit observed). SIGKILL best-effort runs unconditionally, then death
+          // is VERIFIED with a bounded poll before the output is reported. A
+          // still-live child rejects with ORPHAN_UNKILLABLE (never silent
+          // success); the reported output is attached for diagnosis. The handle
+          // stays registered until death is proven (unregister runs after the
+          // verdict), so a live child is never unfenced-and-reported-dead.
+          killProcessGroupBestEffort(child, "SIGKILL");
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          child.stdin?.destroy();
+          const dead = await verifyProcessExit(child.pid, 500);
+          if (!dead) {
+            const output = {
+              exitCode: code,
+              stdout: stdout.text(),
+              stderr: stderr.text(),
+              durationMs: Date.now() - started,
+              stdoutDigest: stdout.digest(),
+              stderrDigest: stderr.digest(),
+              stdoutBytes: stdout.bytes,
+              stderrBytes: stderr.bytes,
+              timedOut
+            };
+            const orphan = orphanUnkillableError(
+              child.pid!,
+              `force-settled output could not prove child death (exit ${code}${signal ? ` via ${signal}` : ""})`
+            );
+            Object.assign(orphan, { output });
+            reject(orphan);
+            return;
+          }
+          void unregister().finally(() => resolve({
+            exitCode: code,
+            stdout: stdout.text(),
+            stderr: stderr.text(),
+            durationMs: Date.now() - started,
+            stdoutDigest: stdout.digest(),
+            stderrDigest: stderr.digest(),
+            stdoutBytes: stdout.bytes,
+            stderrBytes: stderr.bytes,
+            timedOut,
+            ...(options.rawStdout ? { stdoutBuffer: stdout.buffer() } : {})
+          }));
+          return;
+        }
         child.stdout?.destroy();
         child.stderr?.destroy();
         child.stdin?.destroy();
-      }
-      void unregister().finally(() => resolve({
-        exitCode: code,
-        stdout: stdout.text(),
-        stderr: stderr.text(),
-        durationMs: Date.now() - started,
-        stdoutDigest: stdout.digest(),
-        stderrDigest: stderr.digest(),
-        stdoutBytes: stdout.bytes,
-        stderrBytes: stderr.bytes,
-        timedOut,
-        ...(options.rawStdout ? { stdoutBuffer: stdout.buffer() } : {})
-      }));
+        void unregister().finally(() => resolve({
+          exitCode: code,
+          stdout: stdout.text(),
+          stderr: stderr.text(),
+          durationMs: Date.now() - started,
+          stdoutDigest: stdout.digest(),
+          stderrDigest: stderr.digest(),
+          stdoutBytes: stdout.bytes,
+          stderrBytes: stderr.bytes,
+          timedOut,
+          ...(options.rawStdout ? { stdoutBuffer: stdout.buffer() } : {})
+        }));
+      })().catch(() => undefined);
     }
   });
 }
@@ -632,7 +700,59 @@ export async function listManagedProcessHandlePidsStrict(root: string, operation
 }
 
 export async function clearManagedProcessHandles(root: string, operationId: string): Promise<void> {
-  await fs.rm(managedProcessDirectory(root, operationId), { recursive: true, force: true }).catch(() => undefined);
+  // Fail LOUD (Luna durable-handoff): a failed clear must propagate
+  // (throw) so the terminal hook and recovery reconciliation observe it.
+  // Callers that tolerate best-effort cleanup report explicitly; no silent
+  // swallow here — a swallowed failure reads as "no workers" while live
+  // workers exist and re-opens cross-kill on pid reuse.
+  await fs.rm(managedProcessDirectory(root, operationId), { recursive: true, force: true });
+}
+
+/**
+ * Bounded death verification for confirmed kill (Luna confirmed-kill).
+ * MECHANISM: DETERMINISTIC. Polls kill(pid, 0) until ESRCH (proven dead) or
+ * the bounded budget expires. Only ESRCH proves death; any other outcome
+ * (alive, EPERM, unknown) counts as still-live. Never signals.
+ */
+export async function verifyProcessExit(pid: number | undefined, timeoutMs = 500): Promise<boolean> {
+  if (!Number.isInteger(pid) || (pid as number) <= 0 || (pid as number) === process.pid) return true;
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  for (;;) {
+    try {
+      process.kill(pid as number, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === "ESRCH") return true;
+    }
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+/**
+ * Fencing error for a process that survived SIGKILL + bounded verification.
+ * Carries the explicit ORPHAN_UNKILLABLE record (code + pid + reason) so the
+ * unfenced orphan is never a silent success.
+ */
+export function orphanUnkillableError(pid: number, reason: string, cause?: unknown): Error {
+  const failure = new Error(
+    `AEH_ORPHAN_UNKILLABLE: managed child process group ${pid} remains live after SIGKILL and bounded death verification (${reason}); it is an unfenced orphan; operator intervention required.`
+  );
+  Object.assign(failure, { code: "AEH_ORPHAN_UNKILLABLE", pid, reason });
+  if (cause !== undefined) (failure as { cause?: unknown }).cause = cause;
+  return failure;
+}
+
+/**
+ * Best-effort SIGKILL of a process group plus the direct child. Every attempt
+ * is swallowed: delivery success is decided ONLY by verifyProcessExit, never
+ * by the absence of a throw here.
+ */
+function killProcessGroupBestEffort(child: { pid?: number; kill: (signal: NodeJS.Signals) => unknown }, signal: NodeJS.Signals): void {
+  try {
+    if (process.platform !== "win32" && child.pid) process.kill(-child.pid, signal);
+    else child.kill(signal);
+  } catch { /* already exited or undeliverable; verification decides */ }
+  try { child.kill(signal); } catch { /* already exited or undeliverable */ }
 }
 
 /**

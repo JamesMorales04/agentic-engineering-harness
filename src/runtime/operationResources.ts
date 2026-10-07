@@ -328,6 +328,18 @@ export async function reconcileOperationResources(
   }
   // Capture failed-candidate facts before collecting/releasing operation-owned resources.
   const candidates = await collectResourceCandidates(root, record, registry, deps);
+  // Luna durable-handoff: a cancel-terminal operation (CANCELLED or
+  // UNCERTAIN_EXTERNAL_EFFECTS) with leftover handles and WITHOUT the hook's
+  // durable cleanup flag is a transition→hook crash-window orphan. Its pids
+  // were already fenced by the cancellation kill loop; the numbers may since
+  // have been reused. Recovery must re-run FENCED cleanup (revalidate +
+  // clear, never blind-signal) instead of terminating the pids.
+  // MECHANISM: DETERMINISTIC gate. Non-cancel terminals (whose handles were
+  // never hook-cleared) keep the normal terminate path.
+  const cancelTerminalWithoutCleanupFlag = terminal
+    && (record.status === "CANCELLED" || record.phase === "UNCERTAIN_EXTERNAL_EFFECTS")
+    && !record.processHandlesCleanupCompletedAt;
+  const fencedManagedResources: OperationResourceV1[] = [];
 
   const upsert = (candidate: ResourceCandidate): OperationResourceV1 => {
     const resourceId = operationResourceId(operationId, candidate.kind, candidate.identity);
@@ -392,6 +404,11 @@ export async function reconcileOperationResources(
       });
       continue;
     }
+    if (candidate.kind === "managed-process" && cancelTerminalWithoutCleanupFlag) {
+      // Deferred to the fenced cleanup below: observe, never signal.
+      fencedManagedResources.push(resource);
+      continue;
+    }
     try {
       const evidence = await releaseResource(root, record, resource, deps);
       resource.state = terminalStateFor(resource.kind);
@@ -431,7 +448,82 @@ export async function reconcileOperationResources(
   const failed = dispositions.filter((item) => item.outcome === "failed").length;
   const liveOwned = dispositions.filter((item) => item.classification === "LIVE_OWNED").length;
   const unknownOrUnowned = dispositions.filter((item) => item.classification === "UNKNOWN_OR_UNOWNED").length;
+  // FENCED cleanup for crash-window handles: revalidate each pid by
+  // observation only (liveness probe, no signal), then clear the stale handle
+  // files. Clearing is reported, never swallowed: a failed clear keeps the
+  // dispositions failed so the next sweep retries instead of proceeding.
+  let fencedClearError: string | undefined;
+  if (terminal && fencedManagedResources.length) {
+    const aliveness = new Map<string, boolean>();
+    for (const resource of fencedManagedResources) {
+      aliveness.set(resource.resourceId, await probeManagedPidAlive(Number.parseInt(resource.identity, 10)));
+    }
+    try {
+      await clearManagedProcessHandles(root, operationId);
+    } catch (error) {
+      fencedClearError = `managed-process fenced handle clear failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 500);
+    }
+    for (const resource of fencedManagedResources) {
+      const alive = aliveness.get(resource.resourceId) ?? false;
+      const evidence = {
+        action: "fenced-handle-clear",
+        pid: Number.parseInt(resource.identity, 10),
+        alive,
+        fenced: true,
+        reason: "cancel-terminal operation without the durable handle-cleanup flag: crash-window handles cleared without signaling (pids were already fenced by cancellation; numbers may be reused)"
+      };
+      if (fencedClearError) {
+        const message = `${resource.kind} ${resource.identity}: ${fencedClearError}`.slice(0, 500);
+        errors.push(message);
+        dispositions.push({
+          resourceId: resource.resourceId,
+          kind: resource.kind,
+          identity: resource.identity,
+          classification: "TERMINAL_ORPHAN",
+          reclaim: resource.reclaim,
+          action: "none",
+          outcome: "failed",
+          alreadyReconciled: false,
+          error: message
+        });
+      } else {
+        resource.state = terminalStateFor(resource.kind);
+        resource.releasedAt = now().toISOString();
+        resource.releaseEvidence = evidence;
+        dispositions.push({
+          resourceId: resource.resourceId,
+          kind: resource.kind,
+          identity: resource.identity,
+          classification: "TERMINAL_ORPHAN",
+          reclaim: resource.reclaim,
+          action: "none",
+          outcome: "reconciled",
+          alreadyReconciled: false
+        });
+      }
+    }
+    await trace(root, "operation.resource.fenced-handle-clear", {
+      operationId,
+      pids: fencedManagedResources.map((resource) => resource.identity),
+      alive: [...aliveness.entries()].filter(([, value]) => value).map(([key]) => fencedManagedResources.find((resource) => resource.resourceId === key)?.identity),
+      cleared: !fencedClearError,
+      ...(fencedClearError ? { error: fencedClearError } : {})
+    }).catch(() => undefined);
+  }
+
   const terminalOrphansRemaining = dispositions.filter((item) => item.classification === "TERMINAL_ORPHAN" && item.outcome === "failed").length;
+  // Handle-dir clear failures are REPORTED, never swallowed: the clear runs
+  // before the receipt is built so a failed clear keeps cleanupComplete false
+  // and the next sweep retries instead of proceeding with stale handles.
+  let handleClearError: string | undefined;
+  if (terminal && deps.archiveWorkspace === undefined && deps.archiveAgent === undefined) {
+    try {
+      await clearManagedProcessHandles(root, operationId);
+    } catch (error) {
+      handleClearError = `managed-process handle clear failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 500);
+      errors.push(handleClearError);
+    }
+  }
   const receipt: OperationResourceReconciliationReceiptV1 = {
     version: 1,
     kind: "operation-resource-reconciliation",
@@ -445,14 +537,16 @@ export async function reconcileOperationResources(
     classification: { liveOwned, terminalOrphans: dispositions.filter((item) => item.classification === "TERMINAL_ORPHAN").length, unknownOrUnowned },
     dispositions,
     terminalOrphansRemaining,
-    cleanupComplete: terminal && terminalOrphansRemaining === 0,
+    cleanupComplete: terminal && terminalOrphansRemaining === 0 && !handleClearError,
     errors
   };
 
   if (terminal) {
     await writeRegistry(fileFor(root, operationId), { version: 1, operationId, updatedAt: now().toISOString(), resources: updated }, deps.now);
     await writeJsonAtomic(operationResourceReceiptFile(root, operationId), receipt);
-    if (deps.archiveWorkspace === undefined && deps.archiveAgent === undefined) await clearManagedProcessHandles(root, operationId).catch(() => undefined);
+    if (handleClearError) {
+      await trace(root, "operation.resource.handle-clear-failed", { operationId, error: handleClearError }).catch(() => undefined);
+    }
   }
   return receipt;
 }
@@ -1140,6 +1234,21 @@ async function collectResourceCandidates(
     });
   }
   return [...candidates.values()];
+}
+
+/**
+ * Best-effort liveness observation for fenced handle cleanup (Luna
+ * durable-handoff). Observation ONLY — never signals. ESRCH proves death;
+ * anything else (alive, EPERM, unknown) counts as alive for the trace record.
+ */
+async function probeManagedPidAlive(pid: number): Promise<boolean> {
+  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code !== "ESRCH";
+  }
 }
 
 async function releaseResource(

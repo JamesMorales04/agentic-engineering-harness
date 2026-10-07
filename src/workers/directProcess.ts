@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { HarnessProjectConfig } from "../core/types.js";
-import { registerManagedProcessHandle } from "../utils/process.js";
+import { orphanUnkillableError, registerManagedProcessHandle, verifyProcessExit } from "../utils/process.js";
 
 const SAFE_RUNTIME_ENVIRONMENT = ["PATH", "NODE_PATH", "LANG", "LC_ALL", "CI", "TERM"] as const;
 
@@ -25,6 +25,18 @@ export interface DirectWorkerProcessResult {
   stdout: string;
   stderr: string;
   durationMs: number;
+}
+
+/**
+ * Best-effort SIGKILL of a direct worker group plus the direct child.
+ * Delivery success is decided ONLY by verifyProcessExit, never here.
+ */
+function killDirectBestEffort(child: { pid?: number; kill: (signal: NodeJS.Signals) => unknown }): void {
+  try {
+    if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
+    else child.kill("SIGKILL");
+  } catch { /* already exited or undeliverable; verification decides */ }
+  try { child.kill("SIGKILL"); } catch { /* already exited or undeliverable */ }
 }
 
 /**
@@ -65,31 +77,33 @@ export async function runDirectWorkerProcess(
       let exitCode: number | null = null;
       let unregister: () => Promise<void> = async () => undefined;
       const registered = registerManagedProcessHandle(child.pid);
+      // Reified registration outcome (same contract as runChild): finish() is
+      // the SOLE settler and awaits this, so a failed registration can never
+      // lose a race to a normal resolve. This callback only starts killing
+      // immediately; it never settles.
+      let resolveRegistrationOutcome: (outcome: { error?: unknown }) => void = () => undefined;
+      const registrationOutcome = new Promise<{ error?: unknown }>((resolve) => { resolveRegistrationOutcome = resolve; });
       void registered.then(
         (cleanup) => {
           unregister = cleanup;
           if (settled) void unregister();
+          resolveRegistrationOutcome({});
         },
         (error) => {
+          resolveRegistrationOutcome({ error });
           // Same fail-loud contract as runChild: never leave a
-          // live-but-unregistered direct worker. The SIGKILL arrangement runs
-          // UNCONDITIONALLY first: output may already have force-settled
-          // (settled, result reported) while the child is still live, and the
-          // early settled return below must never skip the kill. Settle
-          // reports output; kill guarantees death; both happen.
-          try {
-            if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
-            else child.kill("SIGKILL");
-          } catch { /* already exited */ }
-          try { child.kill("SIGKILL"); } catch { /* already exited */ }
-          child.stdout?.destroy();
-          child.stderr?.destroy();
-          if (settled) return;
-          settled = true;
-          if (timer) clearTimeout(timer);
-          if (killTimer) clearTimeout(killTimer);
-          if (forceSettleTimer) clearTimeout(forceSettleTimer);
-          reject(error);
+          // live-but-unregistered direct worker. Start the SIGKILL
+          // arrangement UNCONDITIONALLY and immediately; finish() performs
+          // the verified settle below.
+          // CONFIRMED KILL: delivery is best-effort — death is VERIFIED with
+          // a bounded poll there; a still-live child rejects as
+          // ORPHAN_UNKILLABLE, never a silent success.
+          void (async () => {
+            killDirectBestEffort(child);
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+            await verifyProcessExit(child.pid, 500);
+          })().catch(() => undefined);
         }
       );
 
@@ -148,11 +162,53 @@ export async function runDirectWorkerProcess(
         if (timer) clearTimeout(timer);
         if (killTimer) clearTimeout(killTimer);
         if (forceSettleTimer) clearTimeout(forceSettleTimer);
-        if (forced || !exited) {
-          child.stdout?.destroy();
-          child.stderr?.destroy();
-        }
-        void unregister().finally(() => resolve({ exitCode: outputLimit || timedOut ? 124 : code, stdout, stderr, durationMs: Date.now() - started }));
+        // Sole settler: the registration outcome is awaited first so a failed
+        // registration deterministically rejects instead of racing resolve.
+        void (async () => {
+          const outcome = await registrationOutcome;
+          if (outcome.error !== undefined) {
+            killDirectBestEffort(child);
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+            const dead = await verifyProcessExit(child.pid, 500);
+            if (!dead) {
+              reject(orphanUnkillableError(
+                child.pid!,
+                "direct worker registration persistence failed and SIGKILL could not be verified",
+                outcome.error
+              ));
+              return;
+            }
+            reject(outcome.error);
+            return;
+          }
+          if (!exited) {
+            // CONFIRMED KILL (same contract as runChild): a possibly-live
+            // child is SIGKILLed best-effort and death is verified before the
+            // output is reported; a survivor rejects as ORPHAN_UNKILLABLE.
+            killDirectBestEffort(child);
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+            const output = { exitCode: outputLimit || timedOut ? 124 : code, stdout, stderr, durationMs: Date.now() - started };
+            const dead = await verifyProcessExit(child.pid, 500);
+            if (!dead) {
+              const orphan = orphanUnkillableError(
+                child.pid!,
+                `force-settled direct worker output could not prove child death (exit ${output.exitCode})`
+              );
+              Object.assign(orphan, { output });
+              reject(orphan);
+              return;
+            }
+            void unregister().finally(() => resolve(output));
+            return;
+          }
+          if (forced) {
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+          }
+          void unregister().finally(() => resolve({ exitCode: outputLimit || timedOut ? 124 : code, stdout, stderr, durationMs: Date.now() - started }));
+        })().catch(() => undefined);
       }
     });
   } finally {

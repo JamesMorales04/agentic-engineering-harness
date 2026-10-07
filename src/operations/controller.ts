@@ -138,12 +138,17 @@ export interface OperationControllerDeps {
   terminateProcessGroup?: (pid: number) => Promise<void>;
   /**
    * Post-terminal-transition hook for cancellation handle cleanup
-   * (CLEAR-AFTER-FENCE-RACE). terminalizeOperation awaits it after a
-   * successful terminal transition (transitioned) and before the durable
-   * terminal reconciliation, which would otherwise observe the still-present
-   * handles through its unfenced managed-process terminator. Fires only on
-   * transition success: any transition throw skips it, preserving the
-   * handles for retry/rescan.
+   * (CLEAR-AFTER-FENCE-RACE + Luna durable-handoff). terminalizeOperation
+   * awaits it after a successful terminal transition (transitioned) and
+   * before the durable terminal reconciliation, which would otherwise observe
+   * the still-present handles through its unfenced managed-process
+   * terminator. Fires only on transition success: any transition throw skips
+   * it, preserving the handles for retry/rescan. The hook MUST run on every
+   * cancel terminal path (CANCELLED and UNCERTAIN_EXTERNAL_EFFECTS): it
+   * clears the handle directory (failures propagate, never swallowed) and
+   * sets the durable processHandlesCleanupCompletedAt flag that recovery
+   * reconciliation uses to distinguish a clean handoff from a
+   * transition→hook crash window.
    */
   onTerminalTransition?: (terminal: OperationRecordV2) => Promise<unknown>;
 }
@@ -665,6 +670,30 @@ export async function waitForOperation(
   }
 }
 
+/**
+ * Cancellation terminal hook (Luna durable-handoff).
+ *
+ * Clears the managed-process handle directory and then sets the durable
+ * processHandlesCleanupCompletedAt flag on the terminal record. Clear
+ * failures PROPAGATE (the helper throws): a swallowed clear would read as
+ * "no workers" while live workers exist. Flag-patch failures propagate too —
+ * the handles are already gone, so recovery trivially converges (no handles
+ * to fence), but the caller must observe the incomplete handoff.
+ * MECHANISM: DETERMINISTIC handoff. Recovery reconciliation checks the flag.
+ */
+async function clearCancelProcessHandles(
+  root: string,
+  operationId: string,
+  trace: typeof recordPaseoTrace
+): Promise<void> {
+  await clearManagedProcessHandles(root, operationId);
+  const completedAt = new Date().toISOString();
+  await patchOperation(root, operationId, { processHandlesCleanupCompletedAt: completedAt });
+  try {
+    await trace(root, "cleanup.handles.cleared", { operationId, completedAt });
+  } catch { /* observability only; the durable clear+flag above already propagated */ }
+}
+
 export async function cancelOperation(
   root: string,
   operationId: string,
@@ -951,7 +980,16 @@ export async function cancelOperation(
           result: { uncertainExternalEffects: receipt },
           cleanupWarnings
         },
-        deps,
+        {
+          ...deps,
+          // Luna durable-handoff: the uncertain-effects terminal path clears
+          // handles exactly like the normal CANCELLED path. Without this, the
+          // handles remain and the later unfenced reconciliation re-signals
+          // possibly-reused pids.
+          onTerminalTransition: async () => {
+            await clearCancelProcessHandles(absoluteRoot, operationId, trace);
+          }
+        },
         config
       );
     }
@@ -987,7 +1025,8 @@ export async function cancelOperation(
     // hook — after the transition succeeds but before the durable terminal
     // reconciliation, whose unfenced managed-process terminator must never
     // observe these handles. Every fencing throw — from any gate above or
-    // from terminalize itself — preserves the dir for retry/rescan.
+    // from terminalize itself — preserves the dir for retry/rescan. The hook
+    // also sets the durable cleanup flag read by recovery reconciliation.
     return await terminalizeOperation(
       absoluteRoot,
       operationId,
@@ -1000,7 +1039,7 @@ export async function cancelOperation(
       {
         ...deps,
         onTerminalTransition: async () => {
-          await clearManagedProcessHandles(absoluteRoot, operationId);
+          await clearCancelProcessHandles(absoluteRoot, operationId, trace);
         }
       },
       config

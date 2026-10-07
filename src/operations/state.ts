@@ -187,6 +187,15 @@ export interface OperationRecordV2 {
   pause?: OperationPauseRecordV1;
   /** How the operation workspace is owned: operation-owned resources are terminal-reconciled, delivery workspaces are retained. */
   workspaceDisposition?: "OPERATION_OWNED" | "DELIVERY_REUSED";
+  /**
+   * Durable managed-process handle cleanup flag (Luna durable-handoff).
+   * Set by the cancellation terminal hook AFTER the handle directory was
+   * removed. Recovery reconciliation treats a cancel-terminal operation
+   * (CANCELLED or UNCERTAIN_EXTERNAL_EFFECTS) with leftover handles and NO
+   * flag as a crash-window orphan: it re-runs FENCED cleanup (revalidate +
+   * clear, never blind-signal) instead of terminating the pids.
+   */
+  processHandlesCleanupCompletedAt?: string;
 }
 export type OperationRecord = OperationRecordV1 | OperationRecordV2;
 export interface TerminalOperationTransition { record: OperationRecordV2; transitioned: boolean; }

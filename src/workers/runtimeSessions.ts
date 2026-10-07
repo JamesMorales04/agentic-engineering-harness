@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import net from "node:net";
 import readline from "node:readline";
 import type { DirectWorkerHome } from "./directProcess.js";
-import { registerManagedProcessHandle } from "../utils/process.js";
+import { orphanUnkillableError, registerManagedProcessHandle } from "../utils/process.js";
 
 export interface RuntimeSessionPreparation {
   cwd: string;
@@ -154,21 +154,47 @@ async function reserveLoopbackPort(): Promise<number> {
   return address.port;
 }
 
-async function stopProcess(child: ReturnType<typeof spawn>): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) return;
+export type RuntimeSessionStopEscalation = "already-exited" | "sigterm" | "sigkill";
+
+/**
+ * Stop a preparation server with CONFIRMED KILL (Luna confirmed-kill).
+ *
+ * The TERM→KILL escalation is unchanged; the fix adds exit verification plus
+ * force-escalation RESULT reporting: the resolved escalation names the signal
+ * level that ended the process, and a process that is still live after the
+ * bounded SIGKILL wait throws AEH_ORPHAN_UNKILLABLE (code + pid + reason)
+ * instead of succeeding silently. A dead-but-unreaped (ESRCH) target reports
+ * already-exited, never failure.
+ */
+export async function stopProcess(child: ReturnType<typeof spawn>): Promise<{ escalation: RuntimeSessionStopEscalation }> {
+  if (child.exitCode !== null || child.signalCode !== null) return { escalation: "already-exited" };
   const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
   try {
     if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGTERM");
     else child.kill("SIGTERM");
   } catch { child.kill("SIGTERM"); }
   await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, 500))]);
-  if (child.exitCode === null && child.signalCode === null) {
+  if (child.exitCode !== null || child.signalCode !== null) return { escalation: "sigterm" };
+  try {
+    if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
+    else child.kill("SIGKILL");
+  } catch { child.kill("SIGKILL"); }
+  await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, 500))]);
+  if (child.exitCode !== null || child.signalCode !== null) return { escalation: "sigkill" };
+  // Exit codes are still unset: re-probe liveness before declaring the
+  // orphan. An ESRCH target died without the exit event landing yet (already
+  // exited); anything else is a surviving, unfenced process.
+  if (child.pid) {
     try {
-      if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
-      else child.kill("SIGKILL");
-    } catch { child.kill("SIGKILL"); }
-    await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, 500))]);
+      process.kill(child.pid, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === "ESRCH") return { escalation: "already-exited" };
+    }
   }
+  throw orphanUnkillableError(
+    child.pid ?? -1,
+    "runtime session preparation server survived SIGTERM→SIGKILL escalation and the bounded exit wait"
+  );
 }
 
 function recordString(value: unknown, key: string): string | undefined {
