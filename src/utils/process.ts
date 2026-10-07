@@ -423,16 +423,12 @@ async function runChild(
       },
       (error) => {
         // Registration persistence failed: never leave a live-but-unregistered
-        // (unfenced) child. Best-effort STOP the just-spawned process, then
-        // throw spawn failure so the caller retries cleanly. If the child
-        // already settled, it is already dead — no live child to stop and the
-        // outer result already resolved.
-        if (settled) return;
-        settled = true;
-        if (timer) clearTimeout(timer);
-        if (killTimer) clearTimeout(killTimer);
-        if (forceSettleTimer) clearTimeout(forceSettleTimer);
-        options.signal?.removeEventListener("abort", onAbort);
+        // (unfenced) child. The SIGKILL arrangement runs UNCONDITIONALLY first:
+        // output may already have force-settled (settled, result reported)
+        // while the child is still live (signal delivery failed), and the
+        // early settled return below must never skip the kill. Settle reports
+        // output; kill guarantees death; both happen. When the child already
+        // settled, its output stays reported and only the kill above runs.
         try {
           if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
           else child.kill("SIGKILL");
@@ -441,6 +437,12 @@ async function runChild(
         child.stdout?.destroy();
         child.stderr?.destroy();
         child.stdin?.destroy();
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        if (killTimer) clearTimeout(killTimer);
+        if (forceSettleTimer) clearTimeout(forceSettleTimer);
+        options.signal?.removeEventListener("abort", onAbort);
         reject(error);
       }
     );

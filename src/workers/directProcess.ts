@@ -71,13 +71,12 @@ export async function runDirectWorkerProcess(
           if (settled) void unregister();
         },
         (error) => {
-          // Same fail-loud contract as runChild (Luna-b): never leave a
-          // live-but-unregistered direct worker. Best-effort stop, then throw.
-          if (settled) return;
-          settled = true;
-          if (timer) clearTimeout(timer);
-          if (killTimer) clearTimeout(killTimer);
-          if (forceSettleTimer) clearTimeout(forceSettleTimer);
+          // Same fail-loud contract as runChild: never leave a
+          // live-but-unregistered direct worker. The SIGKILL arrangement runs
+          // UNCONDITIONALLY first: output may already have force-settled
+          // (settled, result reported) while the child is still live, and the
+          // early settled return below must never skip the kill. Settle
+          // reports output; kill guarantees death; both happen.
           try {
             if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
             else child.kill("SIGKILL");
@@ -85,6 +84,11 @@ export async function runDirectWorkerProcess(
           try { child.kill("SIGKILL"); } catch { /* already exited */ }
           child.stdout?.destroy();
           child.stderr?.destroy();
+          if (settled) return;
+          settled = true;
+          if (timer) clearTimeout(timer);
+          if (killTimer) clearTimeout(killTimer);
+          if (forceSettleTimer) clearTimeout(forceSettleTimer);
           reject(error);
         }
       );

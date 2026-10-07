@@ -136,6 +136,16 @@ export interface OperationControllerDeps {
    * failed, never signaled). Lets tests prove zero signals were sent.
    */
   terminateProcessGroup?: (pid: number) => Promise<void>;
+  /**
+   * Post-terminal-transition hook for cancellation handle cleanup
+   * (CLEAR-AFTER-FENCE-RACE). terminalizeOperation awaits it after a
+   * successful terminal transition (transitioned) and before the durable
+   * terminal reconciliation, which would otherwise observe the still-present
+   * handles through its unfenced managed-process terminator. Fires only on
+   * transition success: any transition throw skips it, preserving the
+   * handles for retry/rescan.
+   */
+  onTerminalTransition?: (terminal: OperationRecordV2) => Promise<unknown>;
 }
 
 interface OperationWorkspace {
@@ -969,16 +979,15 @@ export async function cancelOperation(
       });
       throw new Error(`AEH_CANCELLATION_RECONCILIATION_REQUIRED: unresolved action intents must be reconciled before cancellation can become terminal: ${unresolvedActions.map((intent) => intent.actionKey).join(", ")}.`);
     }
-    // Full-success handle cleanup (Luna-a): every fencing gate above passed
-    // (kill loop, agent/lease cleanup, reconciliation), so all targets were
-    // signaled-or-already-dead with no fencing. Only now is it safe to clear
-    // the handle directory; every fencing-required throw above preserves it
-    // for retry/rescan.
-    {
-      const preClear = await loadOperation(absoluteRoot, operationId);
-      assertCancellationFence(preClear, cancellationFence, "operation cancellation handle cleanup");
-      await clearManagedProcessHandles(absoluteRoot, operationId);
-    }
+    // Handle-dir clear happens ONLY after a successful terminal transition
+    // (CLEAR-AFTER-FENCE-RACE): terminalizeOperation re-checks controller
+    // ownership, so a takeover landing between a pre-clear fence reassert and
+    // terminalization would otherwise throw AFTER the durable handles were
+    // removed. The clear runs as terminalizeOperation's onTerminalTransition
+    // hook — after the transition succeeds but before the durable terminal
+    // reconciliation, whose unfenced managed-process terminator must never
+    // observe these handles. Every fencing throw — from any gate above or
+    // from terminalize itself — preserves the dir for retry/rescan.
     return await terminalizeOperation(
       absoluteRoot,
       operationId,
@@ -988,7 +997,12 @@ export async function cancelOperation(
         finishedAt: new Date().toISOString(),
         cleanupWarnings: cleanupWarnings.length ? cleanupWarnings : undefined
       },
-      deps,
+      {
+        ...deps,
+        onTerminalTransition: async () => {
+          await clearManagedProcessHandles(absoluteRoot, operationId);
+        }
+      },
       config
     );
   } finally {
@@ -1319,6 +1333,7 @@ export async function terminalizeOperation(
     }, evaluateEconomicBoundary);
   }
   const { record: terminal, transitioned } = transition;
+  if (transitioned) await deps.onTerminalTransition?.(terminal);
   if (terminal.status === "FAILED") {
     try {
       const forensic = await persistCandidateForensicsV1(root, terminal);

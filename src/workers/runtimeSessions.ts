@@ -23,11 +23,15 @@ export async function prepareOpenCodeSession(input: RuntimeSessionPreparation): 
   });
   let spawnError: Error | undefined;
   server.once("error", (error) => { spawnError = error; });
-  const unregister = server.pid ? await registerManagedProcessHandle(server.pid) : async () => undefined;
+  // Registration lives INSIDE the try so the finally below stops the spawned
+  // server when persistence fails: a live-but-unregistered server is an
+  // unfenced orphan the caller could never rescan.
+  let unregister: () => Promise<void> = async () => undefined;
   const diagnostics: string[] = [];
   server.stdout.on("data", (chunk: Buffer) => diagnostics.push(chunk.toString()));
   server.stderr.on("data", (chunk: Buffer) => diagnostics.push(chunk.toString()));
   try {
+    if (server.pid) unregister = await registerManagedProcessHandle(server.pid);
     const base = `http://127.0.0.1:${port}`;
     await waitForOpenCodeServer(server, base, input.timeoutMs, diagnostics, () => spawnError);
     const created = await requestJson(base, "/session", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "aeh-prepared-execution" }) });
@@ -57,7 +61,10 @@ export async function prepareCodexThread(input: RuntimeSessionPreparation & { mo
     for (const waiting of pending.values()) { clearTimeout(waiting.timer); waiting.reject(error); }
     pending.clear();
   });
-  const unregister = child.pid ? await registerManagedProcessHandle(child.pid) : async () => undefined;
+  // Registration lives INSIDE the try so the finally below stops the spawned
+  // app-server when persistence fails: a live-but-unregistered server is an
+  // unfenced orphan the caller could never rescan.
+  let unregister: () => Promise<void> = async () => undefined;
   const reader = readline.createInterface({ input: child.stdout });
   let nextId = 1;
   let stderr = "";
@@ -91,6 +98,7 @@ export async function prepareCodexThread(input: RuntimeSessionPreparation & { mo
     });
   };
   try {
+    if (child.pid) unregister = await registerManagedProcessHandle(child.pid);
     await request("initialize", { clientInfo: { name: "agentic-engineering-harness", title: "AEH session preparation", version: "2" }, capabilities: { experimentalApi: true } });
     child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "initialized", params: {} })}\n`);
     const started = await request("thread/start", {
