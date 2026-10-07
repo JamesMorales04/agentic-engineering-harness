@@ -436,7 +436,23 @@ export async function selectTripleBoundWorkspaces(
     }
     return [];
   }
-  const selected = selectOwnedWorkspaces(listed, binding, {
+  // ID-decisive: when the create recorded its CLI-returned workspace ID in the
+  // intent, only that exact ID is claimable. Title+slug remain as defense (the
+  // triple filter below still applies); a competing claimant with the same
+  // title/slug but a different ID never satisfies this gate.
+  const expectedId = intent.workspaceId;
+  const idScoped = expectedId ? listed.filter((workspace) => workspace.workspaceId === expectedId) : listed;
+  const idMismatched = expectedId ? listed.filter((workspace) => workspace.workspaceId !== expectedId && workspace.title === binding.title) : [];
+  if (idMismatched.length > 0) {
+    try {
+      await trace(root, "operation.workspace.discovery-ignored", {
+        operationId: record.id,
+        reason: "workspace ID does not match create-recorded intent workspace ID",
+        workspaceIds: idMismatched.map((workspace) => workspace.workspaceId)
+      });
+    } catch { /* observability only */ }
+  }
+  const selected = selectOwnedWorkspaces(idScoped, binding, {
     onIgnored: (workspace, missing) => { ignored.push({ workspaceId: workspace.workspaceId, missing }); }
   });
   if (ignored.length > 0) {
@@ -451,15 +467,22 @@ export async function selectTripleBoundWorkspaces(
   return selected;
 }
 
-/** Default unbounded workspace listing (`paseo workspace ls --json`); unfiltered, untrusted until title-matched. */
+/** Default unbounded workspace listing (`paseo workspace ls --json`); unfiltered, untrusted until title-matched. Fail-closed: any CLI transport failure, nonzero exit, empty output, or invalid JSON throws AEH_WORKSPACE_SWEEP_INCOMPLETE so callers can never mark current/complete without proving no workspace exists. Explicit empty-list success (`[]`) still returns []. */
 export function defaultListOwnedWorkspaces(run: typeof runShell): (root: string) => Promise<OwnedWorkspaceRecord[]> {
   return async (root) => {
     if (isDeterministicPaseoRuntimeEnabled()) return [];
-    const result = await run("paseo workspace ls --json", { cwd: root, timeoutMs: 60_000 }).catch(() => undefined);
-    if (!result || result.exitCode !== 0 || !result.stdout.trim()) return [];
+    let result: { exitCode: number; stdout: string; stderr: string } | undefined;
+    try {
+      result = await run("paseo workspace ls --json", { cwd: root, timeoutMs: 60_000 });
+    } catch (error) {
+      throw new Error(`AEH_WORKSPACE_SWEEP_INCOMPLETE: workspace listing transport failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (!result) throw new Error("AEH_WORKSPACE_SWEEP_INCOMPLETE: workspace listing produced no result.");
+    if (result.exitCode !== 0) throw new Error(`AEH_WORKSPACE_SWEEP_INCOMPLETE: workspace listing exited ${result.exitCode}: ${(result.stderr || result.stdout || "").slice(0, 500)}`);
+    if (!result.stdout.trim()) throw new Error("AEH_WORKSPACE_SWEEP_INCOMPLETE: workspace listing returned empty output; cannot prove no workspace exists.");
     let value: unknown;
     try { value = JSON.parse(result.stdout); }
-    catch { return []; }
+    catch { throw new Error("AEH_WORKSPACE_SWEEP_INCOMPLETE: workspace listing returned invalid JSON; cannot prove no workspace exists."); }
     const collected: OwnedWorkspaceRecord[] = [];
     collectWorkspaceRecords(value, collected);
     const deduped = new Map<string, OwnedWorkspaceRecord>();
@@ -866,9 +889,13 @@ export async function reconcileTerminalOperationResources(root: string, deps: Op
         // E-NEW-3: a crash between workspace create and durable registration
         // leaves zero local surface. Consult triple-bound discovery before
         // declaring the operation current so the orphaned worktree is swept.
-        // Without a pre-registered intent nothing is claimed (fail-closed).
+        // Without a pre-registered intent nothing is claimed (fail-closed), so
+        // the CLI is skipped. With an intent a listing failure throws
+        // AEH_WORKSPACE_SWEEP_INCOMPLETE into sweep.failures — never []/current.
+        const preIntent = await readOperationWorkspaceIntent(root, record.id).catch(() => undefined);
+        if (!preIntent && !deps.listOwnedWorkspaces) { sweep.terminalOperationsCurrent += 1; continue; }
         const listWorkspaces = deps.listOwnedWorkspaces ?? defaultListOwnedWorkspaces(deps.run ?? runShell);
-        const listed = await listWorkspaces(root).catch(() => [] as OwnedWorkspaceRecord[]);
+        const listed = await listWorkspaces(root);
         if ((await selectTripleBoundWorkspaces(root, record, listed, deps)).length === 0) { sweep.terminalOperationsCurrent += 1; continue; }
       }
       const result = await reconcileOperationResources(root, operationId, deps);
@@ -1449,19 +1476,32 @@ async function collectResourceCandidates(
   // claim what cannot be proven).
   let discoveredWorkspaceCount = 0;
   if (!isDeterministicPaseoRuntimeEnabled()) {
-    const listWorkspaces = deps.listOwnedWorkspaces ?? defaultListOwnedWorkspaces(deps.run ?? runShell);
-    const listed = await listWorkspaces(root).catch(() => [] as OwnedWorkspaceRecord[]);
-    for (const workspace of await selectTripleBoundWorkspaces(root, record, listed, deps)) {
-      discoveredWorkspaceCount += 1;
-      add({
-        kind: "paseo-workspace",
-        identity: workspace.workspaceId,
-        reclaim: "ARCHIVE_ON_TERMINAL",
-        ...(workspace.path ? { path: workspace.path } : {}),
-        label: "operation workspace (title discovery)",
-        owner: { ...ownerBase, source: "workspace-title-discovery" },
-        classification: "TERMINAL_ORPHAN"
-      });
+    // Fail-closed: without a pre-registered intent nothing is claimable, so the
+    // CLI is skipped entirely (no external proof needed). With an intent the
+    // listing failure throws AEH_WORKSPACE_SWEEP_INCOMPLETE and aborts
+    // reconciliation (blocking current/complete) — never silently [].
+    const preIntent = await readOperationWorkspaceIntent(root, record.id).catch(() => undefined);
+    const preBinding = operationWorkspaceBinding(record.kind, record.id, root);
+    // An explicitly injected lister is cheap/proven: always consult it so the
+    // discovery-ignored trace stays observable. The default CLI is consulted
+    // only when an intent makes a claim possible (avoids spurious CLI
+    // failures when the outcome is already predetermined []).
+    const needsListing = Boolean(deps.listOwnedWorkspaces) || Boolean(preIntent && preIntent.name === preBinding.name);
+    if (needsListing) {
+      const listWorkspaces = deps.listOwnedWorkspaces ?? defaultListOwnedWorkspaces(deps.run ?? runShell);
+      const listed = await listWorkspaces(root);
+      for (const workspace of await selectTripleBoundWorkspaces(root, record, listed, deps)) {
+        discoveredWorkspaceCount += 1;
+        add({
+          kind: "paseo-workspace",
+          identity: workspace.workspaceId,
+          reclaim: "ARCHIVE_ON_TERMINAL",
+          ...(workspace.path ? { path: workspace.path } : {}),
+          label: "operation workspace (title discovery)",
+          owner: { ...ownerBase, source: "workspace-title-discovery" },
+          classification: "TERMINAL_ORPHAN"
+        });
+      }
     }
   }
 

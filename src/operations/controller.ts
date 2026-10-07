@@ -1629,7 +1629,7 @@ async function executeIssueIntakeOperation(root: string, config: HarnessProjectC
   }, deps, config);
 }
 
-async function ensureOperationWorkspace(
+export async function ensureOperationWorkspace(
   root: string,
   record: OperationRecordV2,
   config: HarnessProjectConfig,
@@ -1676,14 +1676,18 @@ async function ensureOperationWorkspace(
     try {
       result = await gatedWorkspaceCreate({ root, record, run, command, timeoutMs: 60_000, payload: { isolation: "local", path: root, title } });
     } catch (error) {
-      // No workspace was proven created: leave no claimable intent behind.
-      await clearOperationWorkspaceIntent(root, record.id).catch(() => undefined);
+      // Uncertain effect: a thrown gate/transport does NOT prove no workspace
+      // was created, so the started intent is retained for ID-bound recovery.
+      // Intent is cleared only on proven no-create (explicit empty-list
+      // success) or when full registration supersedes it - never here.
       const warning = `Paseo audit workspace could not be created: ${String(error)}`;
       await trace(root, "workspace.cli.error", { operationId: record.id, error: warning });
       return { workspaceRoot: root, warning };
     }
     if (result.exitCode !== 0) {
-      await clearOperationWorkspaceIntent(root, record.id).catch(() => undefined);
+      // Nonzero does NOT prove no workspace was created (orphan possible), so
+      // retain the started intent for recovery. Clear only on proven absence,
+      // never on command failure/nonzero.
       const warning = `Paseo audit workspace could not be created: ${result.stderr || result.stdout || `exit ${result.exitCode}`}`;
       await trace(root, "workspace.cli.error", { operationId: record.id, error: warning });
       // AUDIT is read-only, so a local workspace failure does not create a
@@ -1714,8 +1718,8 @@ async function ensureOperationWorkspace(
   await trace(root, "workspace.cli.required", { operationId: record.id, kind: record.kind, reason: "mutating operations require isolated worktree execution", isolation: "worktree", branch, base });
   const result = await gatedWorkspaceCreate({ root, record, run, command, timeoutMs: 180_000, payload: { isolation: "worktree", path: root, title, branch, base, slug } });
   if (result.exitCode !== 0) {
-    // Paseo reported failure: leave no claimable intent behind.
-    await clearOperationWorkspaceIntent(root, record.id).catch(() => undefined);
+    // Nonzero does NOT prove no workspace was created: retain the started
+    // intent for ID-bound recovery. Clear only on proven no-create, never here.
     throw new Error(`AEH_OPERATION_WORKTREE_REQUIRED: unable to create isolated worktree for ${record.id}: ${result.stderr || result.stdout || `exit ${result.exitCode}`}`);
   }
   let workspaceId = extractWorkspaceId(result.stdout);
