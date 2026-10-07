@@ -308,6 +308,24 @@ export function isSafeRepairScopePath(value: string): boolean {
   return true;
 }
 
+/**
+ * DETERMINISTIC exact-file gate (C-NEW-2): scope-amendment and blocker paths
+ * must be exact files — glob metacharacters (`*?[]{}!()+@`) and trailing
+ * `/**` (including bare `**`) are rejected. Mirrors `isExplicitGlobScope`
+ * (architecture/workGraph.ts) inverted; kept local so the candidates layer
+ * does not depend on the architecture layer. `isSafeRepairScopePath` alone
+ * accepts `src/**`/`**` (it only rejects traversal/absolute/drive/NUL
+ * forms), so every amendment/blocker entry point must also pass this gate —
+ * otherwise one entry (`src/**`, `**`) exempts unlimited files and
+ * `filterForbiddenScopeForAmendment` strips subtree denies.
+ */
+export function isExactRepairScopeFilePath(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  if (trimmed === "**" || trimmed.endsWith("/**")) return false;
+  return !/[*?[\]{}!()+@]/.test(trimmed);
+}
+
 export function normalizeRepairScopePath(value: string): string {
   // DETERMINISTIC single scope-string identity (C4): posix separators, collapse
   // redundant `//`, `./`, and resolvable `../`, strip a single leading `./`,
@@ -381,9 +399,24 @@ export function parseRepairScopeBlockerFromSession(session: Pick<WorkerSession, 
     // Raw traversal gate BEFORE normalization so `src/../...` cannot hide
     // as a safe relative path; normalize only the raw-safe remainder.
     if (!isSafeRepairScopePath(rawPath)) return undefined;
+    // Exact-paths gate (C-NEW-2): globs are an explicit scope-expansion
+    // attempt, never a silently ignorable declaration — fail closed with a
+    // distinct diagnostic instead of returning undefined ("no blocker").
+    if (!isExactRepairScopeFilePath(rawPath)) {
+      throw new AehError(
+        "PARTICIPANT_PLAN_INVALID",
+        `REPAIR_SCOPE_BLOCKER_INVALID: blocker path '${rawPath}' is not an exact file path; scope amendments allow exact paths only (no wildcards).`,
+      );
+    }
     const filePath = normalizeRepairScopePath(rawPath);
     const reason = entry.reason.trim();
     if (!filePath || !reason || !isSafeRepairScopePath(filePath)) return undefined;
+    if (!isExactRepairScopeFilePath(filePath)) {
+      throw new AehError(
+        "PARTICIPANT_PLAN_INVALID",
+        `REPAIR_SCOPE_BLOCKER_INVALID: blocker path '${filePath}' is not an exact file path; scope amendments allow exact paths only (no wildcards).`,
+      );
+    }
     if (reason.length > 1_000) return undefined;
     normalized.push({ path: filePath, reason });
   }
@@ -409,6 +442,18 @@ export function createRepairScopeBlockerReceipt(input: {
   declaredAt?: string;
   filesNeededOutsideScope: RepairScopeNeededFileV1[];
 }): RepairScopeBlockerReceiptV1 {
+  // Exact-paths gate (C-NEW-2): reject globs fail-closed BEFORE the
+  // safe-path filter so a glob entry can never be silently filtered into an
+  // empty list (size error) or, worse, pass through as an exemptible path.
+  for (const entry of input.filesNeededOutsideScope) {
+    const raw = typeof entry?.path === "string" ? entry.path.trim() : "";
+    if (raw && isSafeRepairScopePath(raw) && !isExactRepairScopeFilePath(raw)) {
+      throw new AehError(
+        "PARTICIPANT_PLAN_INVALID",
+        `REPAIR_SCOPE_BLOCKER_INVALID: blocker path '${raw}' is not an exact file path; scope amendments allow exact paths only (no wildcards).`,
+      );
+    }
+  }
   const files = [...input.filesNeededOutsideScope]
     .filter((entry) => typeof entry?.path === "string" && isSafeRepairScopePath(entry.path.trim()))
     .map((entry) => ({ path: normalizeRepairScopePath(entry.path.trim()), reason: entry.reason.trim() }))
@@ -522,6 +567,12 @@ export function assertRepairScopeAmendment(value: unknown): asserts value is Rep
     if (typeof entry !== "string" || !isSafeRepairScopePath(entry)) {
       throw new AehError("PARTICIPANT_PLAN_INVALID", `Amendment exempted path '${String(entry)}' is not a safe repository-relative path.`);
     }
+    // Exact-paths gate (C-NEW-2): the product choice is over exact
+    // blocker-declared paths — a glob entry (e.g. `src/**`, `**`) would
+    // exempt unlimited files via filterForbiddenScopeForAmendment.
+    if (!isExactRepairScopeFilePath(entry) || !isExactRepairScopeFilePath(normalizeRepairScopePath(entry))) {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", `Amendment exempted path '${String(entry)}' is not an exact file path; scope amendments allow exact paths only (no wildcards).`);
+    }
     if (!isSafeRepairScopePath(normalizeRepairScopePath(entry))) {
       throw new AehError("PARTICIPANT_PLAN_INVALID", `Amendment exempted path '${String(entry)}' is not a safe repository-relative path.`);
     }
@@ -633,6 +684,12 @@ export async function applyRepairScopeAmendment(input: {
   for (const filePath of exemptedPaths) {
     if (!isSafeRepairScopePath(filePath)) {
       throw new AehError("PARTICIPANT_PLAN_INVALID", `Amendment path '${filePath}' is not a safe repository-relative path.`);
+    }
+    // Exact-paths defense-in-depth (C-NEW-2): exempted paths derive from the
+    // blocker receipt, which may have bypassed create/parse gates when forged
+    // directly — never widen on a glob here.
+    if (!isExactRepairScopeFilePath(filePath)) {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", `Amendment path '${filePath}' is not an exact file path; scope amendments allow exact paths only (no wildcards).`);
     }
   }
   // HARD-protection gate (never exemptible): even a ledger-approved decision
