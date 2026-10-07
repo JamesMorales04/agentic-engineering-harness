@@ -8,6 +8,7 @@ import { createCandidateRevisionV1, type CandidateRevisionV1 } from "../../src/o
 import {
   SAST_EVIDENCE_REQUIRED,
   SAST_EVIDENCE_STALE,
+  SAST_EVIDENCE_STATUS,
   SAST_EVIDENCE_TAMPERED,
   loadSastEvidenceV1,
   persistSastEvidenceV1,
@@ -58,6 +59,23 @@ describe("candidate-bound SAST evidence", () => {
     const { root, candidate } = await fixture();
     await expect(requireSastEvidenceV1(root, config, candidate, "missing-scan")).rejects.toThrow(SAST_EVIDENCE_REQUIRED);
     expect(await loadSastEvidenceV1(root, config, candidate, "missing-scan")).toBeUndefined();
+  });
+
+  it("rejects non-PASS SAST evidence at the require gate, not at integrity verify (D-NEW-1 sibling)", async () => {
+    for (const status of ["FAIL", "WARN"] as const) {
+      const { root, candidate } = await fixture();
+      const evidence = await persistSastEvidenceV1({
+        root, config, checkId: "sast-status", adapter: "trivy", candidate,
+        command: "trivy fs --format json .", tool: { name: "trivy", version: "0.70.0" },
+        status, findings: [], rawArtifactText: rawReport,
+        startedAt: new Date().toISOString(), finishedAt: new Date().toISOString()
+      });
+      // Authentic non-PASS evidence keeps an auditable trail: verify ok:true.
+      expect((await verifySastEvidenceV1(root, config, evidence, candidate)).ok).toBe(true);
+      // The PASS-claim gate must reject it (SAST findings are not partitioned
+      // by test selectors, so no partial-green tolerance applies here).
+      await expect(requireSastEvidenceV1(root, config, candidate, "sast-status")).rejects.toThrow(SAST_EVIDENCE_STATUS);
+    }
   });
 
   it("blocks evidence for a different candidate as stale", async () => {
