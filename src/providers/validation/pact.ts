@@ -44,7 +44,11 @@ export class PactContractTestingProvider implements ValidationProvider<ContractV
   async normalize(context: ValidationProviderContext, execution: ProviderExecution): Promise<ContractVerificationResult> {
     const report = typeof execution.plan.options?.report === "string" ? await readJson(path.resolve(execution.plan.cwd, execution.plan.options.report)) : undefined;
     const parsed = report ?? parseJson(execution.stdout); const failures = normalizePactOutput(parsed).map((finding) => ({ id: finding.rule, message: finding.message ?? "Pact interaction failed" }));
-    const summary = pactSummary(parsed, execution, failures.length); const passed = execution.exitCode === 0 && failures.length === 0;
+    const summary = pactSummary(parsed, execution, failures.length);
+    if (summary.total === 0) {
+      return { version: 1, provider: execution.plan.provider, capability: "contract-test", status: "FAIL", verifierCommand: execution.plan.command, pactFile: typeof execution.plan.options?.pactFile === "string" ? execution.plan.options.pactFile : undefined, providerUrl: providerUrl(execution.plan), summary, failures: [{ message: "EMPTY_TEST_EVIDENCE: the contract verifier exited successfully but produced no parseable interaction evidence (no interactions verified or output was empty); a silent zero-interaction run must never satisfy a requirement." }], requirements: requirementIds(context), rawArtifact: execution.rawArtifact };
+    }
+    const passed = execution.exitCode === 0 && failures.length === 0;
     return { version: 1, provider: execution.plan.provider, capability: "contract-test", status: passed ? "PASS" : "FAIL", verifierCommand: execution.plan.command, pactFile: typeof execution.plan.options?.pactFile === "string" ? execution.plan.options.pactFile : undefined, providerUrl: providerUrl(execution.plan), summary, failures, requirements: requirementIds(context), rawArtifact: execution.rawArtifact };
   }
 }
