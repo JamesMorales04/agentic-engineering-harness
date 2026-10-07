@@ -25,20 +25,26 @@ import { resolveOperationStateRoot } from "./state.js";
  *   WITHOUT recording and throw/return EXHAUSTED. Replay is safe because load
  *   refuses at count>=cap regardless of marker state. This bounds the map:
  *   saturation paths never append distinct hashes past cap.
- * 3. IDENTITY tuple (T2): well-formed markers use
- *   sha256(phase + attempt + claimedAt + raw); unparseable markers use
- *   sha256(path + raw). Bytes-only sha256(raw) collides for distinct
- *   generations with identical bytes (undercount). Proof: harness claim sites
- *   pass monotonically increasing 1-indexed attempt numbers per phase and
- *   writePendingAtomic stamps a fresh claimedAt per claim, so two distinct
- *   generations cannot share identical (phase, attempt, claimedAt, raw) —
- *   identical tuples ARE the same orphan (replay, QED). For unparseable
- *   markers (no parsed attempt/claimedAt to bind) the pending path binds the
- *   location: identical (path, raw) at the same pending file IS the same
- *   orphan bytes (legacy markers are one-time; new claims are always
- *   new-format), so replay skips correctly and cross-file same-bytes aliasing
- *   is impossible. Kept: fd-bound identity, grave/quarantine for mismatches,
- *   binding, evidence rule, CAS, post-increment backstops.
+ * 3. IDENTITY tuple (T2 + ru/ledger-nonce-17): well-formed markers use
+ *   sha256(phase + attempt + claimedAt + nonce + raw); pre-nonce/unparseable
+ *   markers use sha256(path + raw) via the legacy/grave path. Bytes-only
+ *   sha256(raw) collides for distinct generations with identical bytes
+ *   (undercount). PROOF (generation uniqueness): every marker carries a
+ *   `nonce: crypto.randomUUID()` stamped at claim time, so two distinct
+ *   generations differ cryptographically — never clock-dependent — even when
+ *   (phase, attempt, claimedAt) coincide (same-millisecond claim with a
+ *   reused attempt number: the spec-manager derives attempt from
+ *   persisted+retries+1 and clears on clean success). Identical tuples ARE
+ *   the same orphan (replay carries the same nonce, QED). Markers lacking a
+ *   nonce are pre-nonce format: they fail well-formedness and are NEVER
+ *   hashed into tuple space (where they could alias a real generation) —
+ *   they route through the legacy path below. For unparseable markers (no
+ *   parsed fields to bind) the pending path binds the location: identical
+ *   (path, raw) at the same pending file IS the same orphan bytes (legacy
+ *   markers are one-time; new claims are always new-format), so replay skips
+ *   correctly and cross-file same-bytes aliasing is impossible. Kept:
+ *   fd-bound identity, grave/quarantine, binding, evidence rule, CAS,
+ *   saturate-refusal, doctor surface.
  * Guarantees: replay same marker 3x → counted exactly once; reconcile at cap
  * → no increment + destroyed (no record) + EXHAUSTED; per-phase consumed
  * length <= cap always.
@@ -94,11 +100,12 @@ import { resolveOperationStateRoot } from "./state.js";
  *   under. The loader converts a stale well-formed marker into a durable +1 (the
  *   orphaned attempt is counted, never granted free) and clears it, then enforces
  *   the budget on the durable count. Fresh markers (a live attempt may still be
- *   running) refuse EXHAUSTED; malformed/unreadable markers (including legacy markers
- *   missing attempt/deadlineMs, which cannot prove staleness) refuse EXHAUSTED and
+  *   running) refuse EXHAUSTED; malformed/unreadable markers (including legacy markers
+  *   missing attempt/deadlineMs and pre-nonce markers missing nonce, which cannot
+  *   prove staleness) refuse EXHAUSTED and
  *   are never dropped (a corrupt marker cannot prove staleness, so fail closed).
- *   Concurrent loaders serialize the +1 under the ledger lock and re-check marker
- *   IDENTITY (attempt + claimedAt + deadlineMs + content hash) inside it — not mere
+  *   Concurrent loaders serialize the +1 under the ledger lock and re-check marker
+  *   IDENTITY (attempt + claimedAt + deadlineMs + nonce + content hash) inside it — not mere
  *   existence — so a replacement claim in between is never incremented+deleted: on
  *   mismatch the lock is released and the new marker is re-evaluated from scratch
  *   (no increment, no delete).
@@ -259,11 +266,16 @@ export interface StallRetryBudgetV1 {
   stalls: Record<StallRetryPhase, number>;
   updatedAt: string;
   /**
-   * BOUNDED tombstone (ru/ledger-tombstone-16, Luna round-17 T1+T2):
+   * BOUNDED tombstone (ru/ledger-tombstone-16, Luna round-17 T1+T2;
+   * ru/ledger-nonce-17):
    * consumed marker identities per phase. Well-formed markers use the identity
-   * tuple sha256(phase + attempt + claimedAt + raw); unparseable/legacy markers
-   * use sha256(pendingPath + raw) (see wellFormedMarkerIdentity /
-   * legacyMarkerIdentity + proofs). Every REAL orphan count (claim-stale,
+   * tuple sha256(phase + attempt + claimedAt + nonce + raw) — the per-generation
+   * nonce (crypto.randomUUID at claim time) separates distinct generations
+   * cryptographically even when (phase, attempt, claimedAt) coincide; replay
+   * re-presents identical bytes (same nonce → same hash → detected).
+   * Pre-nonce/unparseable/legacy markers use sha256(pendingPath + raw) via
+   * the legacy/grave path (see wellFormedMarkerIdentity / legacyMarkerIdentity
+   * + proofs) and are NEVER hashed into tuple space. Every REAL orphan count (claim-stale,
    * claim-legacy, loader-reconcile stale/legacy with count < cap pre-increment)
    * records its tuple hash here atomically under the same ledger lock as the
    * count write. Replay of an identical tuple skips the increment (already
@@ -305,6 +317,17 @@ export interface StallRetryPendingV1 {
   /** 1-indexed counted attempt number — ownership identity for clear/supersede binding (B1) and reconcile identity (B2). */
   attempt: number;
   claimedAt: string;
+  /**
+   * Per-generation nonce (ru/ledger-nonce-17): `crypto.randomUUID()` stamped
+   * at claim time. Distinct generations ALWAYS differ cryptographically, even
+   * when (phase, attempt, claimedAt, deadlineMs) coincide (same-millisecond
+   * claim with a reused attempt number after a clean-success clear). Replay
+   * preserves bytes (same nonce → same identity → detected); a fresh claim
+   * never reuses a nonce. Markers lacking a nonce are pre-nonce format and
+   * fail well-formedness (see isWellFormedPendingMarker) — they route through
+   * the legacy/grave identity path, never the tuple space.
+   */
+  nonce: string;
   /**
    * Effective provider-turn deadline (ms) the counted attempt runs under, recorded
    * at claim time. Staleness derives from this per-marker value, never a global
@@ -480,27 +503,37 @@ function assertValidBudgetShape(parsed: unknown, operationId: string): asserts p
 }
 
 /**
- * BOUNDED tombstone identity (ru/ledger-tombstone-16 T2).
+ * BOUNDED tombstone identity (ru/ledger-tombstone-16 T2, ru/ledger-nonce-17).
  * Bytes-only sha256(raw) collides: distinct generations with identical bytes
  * map to one entry (undercount). Tuple binding fixes the class:
- * - Well-formed: sha256(phase + attempt + claimedAt + raw). PROOF: harness
- *   claim sites pass monotonically increasing 1-indexed attempt numbers per
- *   phase and stamp a fresh claimedAt per claim (writePendingAtomic Date.now),
- *   so two distinct generations cannot share identical
- *   (phase, attempt, claimedAt, raw) — identical tuples ARE the same orphan
- *   (replay, QED). The raw already carries the fields; hashing them explicitly
- *   makes the binding auditable and prevents bytes-only aliasing.
- * - Unparseable/legacy: sha256(pendingPath + raw). PROOF: no parsed
- *   attempt/claimedAt exists to bind, so bind the location. Legacy markers are
- *   one-time (new claims are always new-format; migration drains stranded
- *   files), so identical (path, raw) at the same pending file IS the same
- *   orphan bytes — replay, QED — while same raw bytes at different pending
- *   paths (different operation/phase files) never alias the same consumed set
- *   entry. Null (\\0) separators make the tuple unambiguous.
+ * - Well-formed: sha256(phase + attempt + claimedAt + nonce + raw). PROOF
+ *   (generation uniqueness, ru/ledger-nonce-17 — replaces the old
+ *   monotonic-attempt proof, which Luna round-18 refuted: the spec-manager
+ *   computes attempt from persisted+retries+1 and clears on clean success,
+ *   so a reused attempt number claimed in the same millisecond stamps the
+ *   same claimedAt with otherwise identical fields): every marker carries a
+ *   `nonce: crypto.randomUUID()` stamped at claim time (writePendingAtomic),
+ *   so two distinct generations differ in the nonce with 128-bit
+ *   cryptographic probability — clock-independent — and their tuple hashes
+ *   differ. Replay re-presents IDENTICAL bytes (same nonce → same tuple hash
+ *   → detected, never recounted). Hence identical tuples ARE the same orphan
+ *   (replay, QED), and distinct generations can never share a tuple. The raw
+ *   already carries the fields; hashing them explicitly makes the binding
+ *   auditable and prevents bytes-only aliasing.
+ * - Pre-nonce / unparseable / legacy: sha256(pendingPath + raw). Markers
+ *   lacking a nonce fail well-formedness (isWellFormedPendingMarker) and are
+ *   NEVER hashed into the tuple space — where a pre-nonce tuple could alias
+ *   a real generation — but route through the existing legacy/grave identity
+ *   path. PROOF: legacy markers are one-time (new claims are always
+ *   new-format with a nonce; migration drains stranded files), so identical
+ *   (path, raw) at the same pending file IS the same orphan bytes — replay,
+ *   QED — while same raw bytes at different pending paths (different
+ *   operation/phase files) never alias the same consumed set entry. Null
+ *   (\0) separators make both tuples unambiguous.
  * MECHANISM: DETERMINISTIC (sha256, no model judgment).
  */
-function wellFormedMarkerIdentity(phase: StallRetryPhase, attempt: number, claimedAt: string, raw: string): string {
-  return crypto.createHash("sha256").update(`${phase}\0${attempt}\0${claimedAt}\0${raw}`, "utf8").digest("hex");
+function wellFormedMarkerIdentity(phase: StallRetryPhase, attempt: number, claimedAt: string, nonce: string, raw: string): string {
+  return crypto.createHash("sha256").update(`${phase}\0${attempt}\0${claimedAt}\0${nonce}\0${raw}`, "utf8").digest("hex");
 }
 
 function legacyMarkerIdentity(pendingPath: string, raw: string): string {
@@ -807,11 +840,12 @@ export async function claimStallRetryAttempt(
           //   then if post-count >= cap destroy WITHOUT the fresh claim and
           //   throw (backstop post-increment gate, kept); else replacement
           //   guard + fresh claim.
-          // Identity tuple = sha256(phase + attempt + claimedAt + raw):
-          // attempt monotonic per phase => identical tuples ARE the same orphan
-          // (replay, QED). MECHANISM: DETERMINISTIC (count + set under lock).
+          // Identity tuple = sha256(phase + attempt + claimedAt + nonce + raw):
+          // the per-generation nonce separates distinct generations
+          // cryptographically (identical tuples ARE the same orphan — replay,
+          // QED). MECHANISM: DETERMINISTIC (count + set under lock).
           const staleWellFormed = parsed as StallRetryPendingV1;
-          const staleHash = wellFormedMarkerIdentity(phase, staleWellFormed.attempt, staleWellFormed.claimedAt, snapshot.raw);
+          const staleHash = wellFormedMarkerIdentity(phase, staleWellFormed.attempt, staleWellFormed.claimedAt, staleWellFormed.nonce, snapshot.raw);
           const stalePrevious = await loadUnlocked(file, operationId, phase);
           const staleCurrent = Math.floor(stalePrevious.stalls[phase]);
           if (isMarkerConsumed(stalePrevious, phase, staleHash)) {
@@ -1195,7 +1229,7 @@ async function writeAtomic(file: string, budget: StallRetryBudgetV1): Promise<vo
 }
 
 async function writePendingAtomic(pending: string, operationId: string, phase: StallRetryPhase, attempt: number, deadlineMs: number): Promise<void> {
-  const marker: StallRetryPendingV1 = { version: 1, operationId, phase, attempt, claimedAt: new Date().toISOString(), deadlineMs };
+  const marker: StallRetryPendingV1 = { version: 1, operationId, phase, attempt, claimedAt: new Date().toISOString(), deadlineMs, nonce: crypto.randomUUID() };
   const temp = `${pending}.${process.pid}.${crypto.randomUUID()}.tmp`;
   await fs.writeFile(temp, `${JSON.stringify(marker, null, 2)}\n`);
   try { await fs.rename(temp, pending); }
@@ -1231,7 +1265,7 @@ async function readPendingMarker(pending: string, operationId: string, phase: St
   }
   if (!isWellFormedPendingMarker(parsed, operationId, phase)) return undefined;
   const wellFormed = parsed as StallRetryPendingV1;
-  return { raw, parsed: wellFormed, hash: wellFormedMarkerIdentity(phase, wellFormed.attempt, wellFormed.claimedAt, raw) };
+  return { raw, parsed: wellFormed, hash: wellFormedMarkerIdentity(phase, wellFormed.attempt, wellFormed.claimedAt, wellFormed.nonce, raw) };
 }
 
 /** Legacy helper: best-effort read of an existing marker's attempt number (same operation/phase only). */
@@ -1242,13 +1276,19 @@ async function readPendingAttempt(pending: string, operationId: string, phase: S
 
 function isWellFormedPendingMarker(marker: unknown, operationId: string, phase: StallRetryPhase): marker is StallRetryPendingV1 {
   if (!marker || typeof marker !== "object") return false;
-  const candidate = marker as { version?: unknown; operationId?: unknown; phase?: unknown; attempt?: unknown; claimedAt?: unknown; deadlineMs?: unknown };
+  const candidate = marker as { version?: unknown; operationId?: unknown; phase?: unknown; attempt?: unknown; claimedAt?: unknown; deadlineMs?: unknown; nonce?: unknown };
   if (candidate.version !== 1) return false;
   if (candidate.operationId !== operationId) return false;
   if (candidate.phase !== phase) return false;
   if (typeof candidate.attempt !== "number" || !Number.isInteger(candidate.attempt) || candidate.attempt <= 0) return false;
   if (typeof candidate.claimedAt !== "string" || !Number.isFinite(Date.parse(candidate.claimedAt))) return false;
   if (typeof candidate.deadlineMs !== "number" || !Number.isSafeInteger(candidate.deadlineMs) || candidate.deadlineMs < 1) return false;
+  // Per-generation nonce (ru/ledger-nonce-17, legacy routing): a marker
+  // lacking a nonce is pre-nonce format and is NOT well-formed — it routes
+  // through the existing legacy/grave identity path (path-bound hash, mtime
+  // bound, take+verify) and is NEVER hashed into the tuple space, where a
+  // pre-nonce tuple could alias a real generation.
+  if (typeof candidate.nonce !== "string" || candidate.nonce.length === 0) return false;
   return true;
 }
 
@@ -1486,8 +1526,8 @@ function isOldLegacyMarkerByMtime(mtimeMs: number, options?: StallRetryLoadOptio
  * malformed/unreadable marker, corrupt ledger, lock contention, write failure)
  * so the caller stays fail-closed EXHAUSTED.
  *
- * Identity rule (B2): the pre-lock snapshot captures (attempt + claimedAt +
- * deadlineMs + content hash). In-lock, reconcile ONLY if the identical marker is
+  * Identity rule (B2): the pre-lock snapshot captures (attempt + claimedAt +
+  * deadlineMs + nonce + content hash). In-lock, reconcile ONLY if the identical marker is
  * still present. If replaced → release the lock and re-evaluate from scratch (no
  * increment, no delete); a fresh replacement refuses, a stale replacement is
  * reconciled on the next iteration (bounded retries, then fail-closed). A missing
@@ -1541,14 +1581,15 @@ async function reconcileStalePendingClaim(
     }
     if (!preParseFailed && isStalePendingMarker(preParsed, operationId, phase)) {
       const wellFormed = preParsed as StallRetryPendingV1;
-      // Tuple identity (T2): sha256(phase + attempt + claimedAt + raw).
-      // Identical tuples ARE the same orphan (attempt monotonic per phase =>
-      // distinct generations cannot share the tuple; replay, QED).
+      // Tuple identity (T2 + nonce): sha256(phase + attempt + claimedAt +
+      // nonce + raw). Identical tuples ARE the same orphan (per-generation
+      // nonce => distinct generations cannot share the tuple; replay, QED).
       const preIdentity = {
         attempt: wellFormed.attempt,
         claimedAt: wellFormed.claimedAt,
         deadlineMs: wellFormed.deadlineMs,
-        hash: wellFormedMarkerIdentity(phase, wellFormed.attempt, wellFormed.claimedAt, preRaw),
+        nonce: wellFormed.nonce,
+        hash: wellFormedMarkerIdentity(phase, wellFormed.attempt, wellFormed.claimedAt, wellFormed.nonce, preRaw),
         raw: preRaw,
       };
       type LockOutcome =
@@ -1580,10 +1621,12 @@ async function reconcileStalePendingClaim(
             (curParsed as StallRetryPendingV1).attempt !== preIdentity.attempt ||
             (curParsed as StallRetryPendingV1).claimedAt !== preIdentity.claimedAt ||
             (curParsed as StallRetryPendingV1).deadlineMs !== preIdentity.deadlineMs ||
+            (curParsed as StallRetryPendingV1).nonce !== preIdentity.nonce ||
             wellFormedMarkerIdentity(
               phase,
               (curParsed as StallRetryPendingV1).attempt,
               (curParsed as StallRetryPendingV1).claimedAt,
+              (curParsed as StallRetryPendingV1).nonce,
               curRaw
             ) !== preIdentity.hash
           ) {

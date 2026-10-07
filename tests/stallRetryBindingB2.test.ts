@@ -29,7 +29,7 @@ describe("stall-retry binding B2: reconcile identical marker only", () => {
       await fs.mkdir(path.dirname(pending), { recursive: true });
       await fs.writeFile(
         pending,
-        `${JSON.stringify({ version: 1, operationId, phase: "discovery", attempt: 1, claimedAt: staleAt, deadlineMs: 30 * 60_000 }, null, 2)}\n`,
+        `${JSON.stringify({ version: 1, operationId, phase: "discovery", attempt: 1, claimedAt: staleAt, deadlineMs: 30 * 60_000, nonce: "nonce-b2-a" }, null, 2)}\n`,
       );
 
       // Simulate replacement after the pre-lock read: first marker read
@@ -45,7 +45,7 @@ describe("stall-retry binding B2: reconcile identical marker only", () => {
             const freshAt = new Date().toISOString();
             await fs.writeFile(
               String(target),
-              `${JSON.stringify({ version: 1, operationId, phase: "discovery", attempt: 2, claimedAt: freshAt, deadlineMs: 30 * 60_000 }, null, 2)}\n`,
+              `${JSON.stringify({ version: 1, operationId, phase: "discovery", attempt: 2, claimedAt: freshAt, deadlineMs: 30 * 60_000, nonce: "nonce-b2-b" }, null, 2)}\n`,
             );
             return rawA;
           }

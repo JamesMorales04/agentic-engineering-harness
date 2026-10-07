@@ -35,7 +35,7 @@ async function readLedgerCount(controlRoot: string, operationId: string): Promis
 
 function staleRaw(operationId: string, attempt: number): string {
   const staleAt = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
-  return `${JSON.stringify({ version: 1, operationId, phase: "discovery", attempt, claimedAt: staleAt, deadlineMs: 30 * 60_000 }, null, 2)}\n`;
+  return `${JSON.stringify({ version: 1, operationId, phase: "discovery", attempt, claimedAt: staleAt, deadlineMs: 30 * 60_000, nonce: `stale-nonce-${attempt}` }, null, 2)}\n`;
 }
 
 function legacyRaw(operationId: string): string {

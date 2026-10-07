@@ -22,7 +22,14 @@ import {
  *   assertion.
  * (T2) bytes-only identity collision: distinct generations with identical bytes
  *   map to one entry => undercount. Fixed rule: well-formed identity tuple =
- *   sha256(phase + attempt + claimedAt + raw); unparseable = sha256(path + raw).
+ *   sha256(phase + attempt + claimedAt + nonce + raw); pre-nonce/unparseable =
+ *   sha256(path + raw) via the legacy/grave path (ru/ledger-nonce-17: the nonce,
+ *   crypto.randomUUID at claim time, separates same-ms same-attempt distinct
+ *   generations cryptographically).
+ *
+ * T1 RED: N distinct at-cap orphans => consumed grows past cap on the old tip.
+ * T2 RED: consumed entry must equal the tuple/path-bound hash, not sha256(raw);
+ *   plus two same-bytes markers counted once (replay, QED by the nonce proof).
  *
  * T1 RED: N distinct at-cap orphans => consumed grows past cap on the old tip.
  * T2 RED: consumed entry must equal the tuple/path-bound hash, not sha256(raw);
@@ -38,8 +45,8 @@ async function readLedger(controlRoot: string, operationId: string): Promise<{ c
   return { count: parsed.stalls.discovery, consumed: parsed.consumed?.discovery ?? [] };
 }
 
-function staleRaw(operationId: string, attempt: number, claimedAt: string): string {
-  return `${JSON.stringify({ version: 1, operationId, phase: "discovery", attempt, claimedAt, deadlineMs: 30 * 60_000 }, null, 2)}\n`;
+function staleRaw(operationId: string, attempt: number, claimedAt: string, nonce = crypto.randomUUID()): string {
+  return `${JSON.stringify({ version: 1, operationId, phase: "discovery", attempt, claimedAt, deadlineMs: 30 * 60_000, nonce }, null, 2)}\n`;
 }
 
 function staleOldRaw(operationId: string, attempt: number): string {
@@ -113,27 +120,28 @@ describe("tombstone bounds (ru/ledger-tombstone-16 RED)", () => {
     }
   });
 
-  it("T2-wellformed: consumed identity is the (phase+attempt+claimedAt+raw) tuple; same-bytes replay counts once", async () => {
+  it("T2-wellformed: consumed identity is the (phase+attempt+claimedAt+nonce+raw) tuple; same-bytes replay counts once", async () => {
     const controlRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-tomb-tuple-"));
     const operationId = "TOMB-TUPLE";
     const pending = stallRetryPendingFile(controlRoot, operationId, "discovery");
     try {
       const claimedAt = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
-      const raw = staleRaw(operationId, 7, claimedAt);
+      const nonce = crypto.randomUUID();
+      const raw = staleRaw(operationId, 7, claimedAt, nonce);
       await fs.mkdir(path.dirname(pending), { recursive: true });
       await fs.writeFile(pending, raw);
       expect(await loadStallRetryStalls(controlRoot, operationId, "discovery")).toBe(1);
       const ledger = await readLedger(controlRoot, operationId);
       expect(ledger.count).toBe(1);
       expect(ledger.consumed.length).toBe(1);
-      // Tuple identity: sha256(phase + attempt + claimedAt + raw), NOT sha256(raw).
-      const tupleHash = sha(`discovery\x007\x00${claimedAt}\x00${raw}`);
+      // Tuple identity: sha256(phase + attempt + claimedAt + nonce + raw), NOT sha256(raw).
+      const tupleHash = sha(`discovery\x007\x00${claimedAt}\x00${nonce}\x00${raw}`);
       const rawHash = sha(raw);
       expect(tupleHash).not.toBe(rawHash);
       expect(ledger.consumed[0]).toBe(tupleHash);
-      // Replay identical bytes => counted exactly once (identical tuples ARE the
-      // same orphan: attempt monotonic per phase => distinct generations cannot
-      // share (phase, attempt, claimedAt, raw) — replay, QED).
+      // Replay identical bytes (same nonce) => counted exactly once (identical
+      // tuples ARE the same orphan: the per-generation nonce separates distinct
+      // generations cryptographically, so a shared tuple means replay, QED).
       await fs.writeFile(pending, raw);
       expect(await loadStallRetryStalls(controlRoot, operationId, "discovery")).toBe(1);
       const ledger2 = await readLedger(controlRoot, operationId);

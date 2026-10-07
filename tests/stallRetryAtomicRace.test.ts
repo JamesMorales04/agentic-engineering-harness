@@ -31,7 +31,7 @@ describe("stall-retry atomic clear race (Luna round-8 B1-race)", () => {
       const staleAt = new Date(Date.now() - 1000).toISOString();
       await fs.writeFile(
         pending,
-        `${JSON.stringify({ version: 1, operationId, phase: "discovery", attempt: 1, claimedAt: staleAt, deadlineMs: 30 * 60_000 }, null, 2)}\n`,
+        `${JSON.stringify({ version: 1, operationId, phase: "discovery", attempt: 1, claimedAt: staleAt, deadlineMs: 30 * 60_000, nonce: "nonce-atomic-a1" }, null, 2)}\n`,
       );
 
       const origReadFile = fs.readFile;
@@ -48,7 +48,7 @@ describe("stall-retry atomic clear race (Luna round-8 B1-race)", () => {
             const freshAt = new Date().toISOString();
             await (origWriteFile as (...a: unknown[]) => Promise<void>)(
               String(target),
-              `${JSON.stringify({ version: 1, operationId, phase: "discovery", attempt: 2, claimedAt: freshAt, deadlineMs: 30 * 60_000 }, null, 2)}\n`,
+              `${JSON.stringify({ version: 1, operationId, phase: "discovery", attempt: 2, claimedAt: freshAt, deadlineMs: 30 * 60_000, nonce: "nonce-atomic-b2" }, null, 2)}\n`,
             );
             return rawA;
           }
@@ -83,7 +83,7 @@ describe("stall-retry atomic clear race (Luna round-8 B1-race)", () => {
       const staleAt = new Date(Date.now() - 1000).toISOString();
       await fs.writeFile(
         pending,
-        `${JSON.stringify({ version: 1, operationId, phase: "discovery", attempt: 1, claimedAt: staleAt, deadlineMs: 30 * 60_000 }, null, 2)}\n`,
+        `${JSON.stringify({ version: 1, operationId, phase: "discovery", attempt: 1, claimedAt: staleAt, deadlineMs: 30 * 60_000, nonce: "nonce-atomic2-a1" }, null, 2)}\n`,
       );
 
       const origReadFile = fs.readFile;
@@ -99,7 +99,7 @@ describe("stall-retry atomic clear race (Luna round-8 B1-race)", () => {
             const freshAt = new Date().toISOString();
             await (origWriteFile as (...a: unknown[]) => Promise<void>)(
               String(target),
-              `${JSON.stringify({ version: 1, operationId, phase: "discovery", attempt: 2, claimedAt: freshAt, deadlineMs: 30 * 60_000 }, null, 2)}\n`,
+              `${JSON.stringify({ version: 1, operationId, phase: "discovery", attempt: 2, claimedAt: freshAt, deadlineMs: 30 * 60_000, nonce: "nonce-atomic2-b2" }, null, 2)}\n`,
             );
             return rawA;
           }

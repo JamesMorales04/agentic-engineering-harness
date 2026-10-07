@@ -41,7 +41,7 @@ describe("stale-claim cap gate (ru/ledger-staleclaim-cap-14)", () => {
       // Crash-orphaned stale marker from attempt 2 (never recorded): 2h old,
       // deadline 30min → stale (threshold 2*30min+5min=65min).
       const staleAt = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
-      const staleRaw = `${JSON.stringify({ version: 1, operationId, phase: "discovery", attempt: 2, claimedAt: staleAt, deadlineMs: 30 * 60_000 }, null, 2)}\n`;
+      const staleRaw = `${JSON.stringify({ version: 1, operationId, phase: "discovery", attempt: 2, claimedAt: staleAt, deadlineMs: 30 * 60_000, nonce: "nonce-staleclaim-cap" }, null, 2)}\n`;
       await fs.mkdir(path.dirname(pending), { recursive: true });
       await fs.writeFile(pending, staleRaw);
       // Attempt 3 claims: the stale reconcile +1 consumes the budget (→ cap),
@@ -68,7 +68,7 @@ describe("stale-claim cap gate (ru/ledger-staleclaim-cap-14)", () => {
     try {
       // No ledger yet (count 0): plant a crash-orphaned stale marker directly.
       const staleAt = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
-      const staleRaw = `${JSON.stringify({ version: 1, operationId, phase: "discovery", attempt: 1, claimedAt: staleAt, deadlineMs: 30 * 60_000 }, null, 2)}\n`;
+      const staleRaw = `${JSON.stringify({ version: 1, operationId, phase: "discovery", attempt: 1, claimedAt: staleAt, deadlineMs: 30 * 60_000, nonce: "nonce-staleclaim-below" }, null, 2)}\n`;
       await fs.mkdir(path.dirname(pending), { recursive: true });
       await fs.writeFile(pending, staleRaw);
       // Stale reconcile +1 → 1 < cap (2): fresh claim must succeed (launch).

@@ -80,7 +80,7 @@ describe("claim CAS atomic check-and-set (ru/ledger-claim-cas-13)", () => {
       await fs.mkdir(path.dirname(pending), { recursive: true });
       await fs.writeFile(
         pending,
-        `${JSON.stringify({ version: 1, operationId, phase: "discovery", attempt: 1, claimedAt: staleAt, deadlineMs: 30 * 60_000 }, null, 2)}\n`
+        `${JSON.stringify({ version: 1, operationId, phase: "discovery", attempt: 1, claimedAt: staleAt, deadlineMs: 30 * 60_000, nonce: "nonce-cas-stale" }, null, 2)}\n`
       );
       // New claim reconciles the stale orphan (+1) then writes fresh.
       await claimStallRetryAttempt(controlRoot, operationId, "discovery", 2, 30 * 60_000);

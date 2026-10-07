@@ -29,7 +29,7 @@ describe("stall-retry binding B3: staleness from configured deadline", () => {
       await fs.mkdir(path.dirname(pending), { recursive: true });
       await fs.writeFile(
         pending,
-        `${JSON.stringify({ version: 1, operationId, phase: "discovery", attempt: 1, claimedAt, deadlineMs: 90 * 60_000 }, null, 2)}\n`,
+        `${JSON.stringify({ version: 1, operationId, phase: "discovery", attempt: 1, claimedAt, deadlineMs: 90 * 60_000, nonce: "nonce-b3-live" }, null, 2)}\n`,
       );
       // Live (70 < 2*90+margin) → must refuse EXHAUSTED, never reconcile.
       await expect(loadStallRetryStalls(controlRoot, operationId, "discovery")).rejects.toThrow(
@@ -53,7 +53,7 @@ describe("stall-retry binding B3: staleness from configured deadline", () => {
       await fs.mkdir(path.dirname(pending), { recursive: true });
       await fs.writeFile(
         pending,
-        `${JSON.stringify({ version: 1, operationId, phase: "discovery", attempt: 1, claimedAt, deadlineMs: 90 * 60_000 }, null, 2)}\n`,
+        `${JSON.stringify({ version: 1, operationId, phase: "discovery", attempt: 1, claimedAt, deadlineMs: 90 * 60_000, nonce: "nonce-b3-stale" }, null, 2)}\n`,
       );
       // Stale (190 > 2*90+5 margin) → durable +1, cleared.
       expect(await loadStallRetryStalls(controlRoot, operationId, "discovery")).toBe(1);

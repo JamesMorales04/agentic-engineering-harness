@@ -35,7 +35,7 @@ async function writeMarker(
   await fs.mkdir(path.dirname(pending), { recursive: true });
   await fs.writeFile(
     pending,
-    `${JSON.stringify({ version: 1, operationId, phase, attempt: 1, claimedAt, deadlineMs: 30 * 60_000, ...extra }, null, 2)}\n`,
+    `${JSON.stringify({ version: 1, operationId, phase, attempt: 1, claimedAt, deadlineMs: 30 * 60_000, nonce: "nonce-stale-recovery", ...extra }, null, 2)}\n`,
   );
 }
 
