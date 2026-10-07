@@ -21,7 +21,7 @@ function deps() {
       materialize: vi.fn(async () => ({ id: "fast-agent", status: "idle" })),
       dispatch: vi.fn(), wait: vi.fn(),
       run: vi.fn(async () => ({ id: "fast-agent", status: "idle", lastMessage: "done" })),
-      probe: vi.fn(), inspect: vi.fn(), list: vi.fn()
+      probe: vi.fn(), inspect: vi.fn(), list: vi.fn(async () => []),
     }
   };
 }

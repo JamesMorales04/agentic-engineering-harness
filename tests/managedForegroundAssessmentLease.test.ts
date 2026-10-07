@@ -25,7 +25,7 @@ function fakeDeps() {
       run: vi.fn(async () => ({ id: "agent-1", status: "idle", lastMessage: '{"judgment":{"type":"ROUTE"}}' })),
       probe: vi.fn(),
       inspect: vi.fn(),
-      list: vi.fn()
+      list: vi.fn(async () => []),
     }
   } as never;
 }
