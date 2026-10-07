@@ -1992,10 +1992,36 @@ async function assertIssueIntakeTerminalEvidence(stateRoot: string, record: Oper
   const receipt = Object.values(record.participantReceipts ?? {}).find((item) => item.role === "Planner" && item.outcome === "SUCCEEDED");
   if (!receipt) throw new Error("ISSUE_INTAKE_RECEIPT_REQUIRED: a successful issue import requires the bounded Planner receipt.");
   const current = record.candidateRevision!;
-  const receiptCandidate = receipt.candidate;
-  if (!receiptCandidate) throw new Error("ISSUE_INTAKE_RECEIPT_REQUIRED: the Planner receipt carries no candidate binding.");
-  const lineageAccepted = receiptCandidate.identityDigest === current.identityDigest || (evidence.candidateAdvanced && receiptCandidate.revision + 1 === current.revision);
-  if (!lineageAccepted) throw new Error("ISSUE_INTAKE_CANDIDATE_STALE: the Planner receipt is not bound to the intake candidate lineage.");
+  // The bounded work observed either `candidate` or `candidateBinding`; an
+  // unset binding is never lineage evidence.
+  const bound = receipt.candidateBinding ?? receipt.candidate;
+  if (!bound) throw new Error("ISSUE_INTAKE_RECEIPT_REQUIRED: the Planner receipt carries no candidate binding.");
+  // A receipt (or binding) from another operation can never prove this
+  // operation's intake lineage, regardless of revision arithmetic.
+  if (receipt.operationId !== record.id || bound.operationId !== current.operationId) {
+    throw new Error("ISSUE_INTAKE_CANDIDATE_STALE: the Planner receipt is not bound to the intake candidate lineage.");
+  }
+  // Deterministic lineage: directly bound, or proven through the verified
+  // assembly-receipt chain. Revision arithmetic alone is not lineage proof, so
+  // the controller-advanced intake step additionally requires the exact
+  // recorded parent link (candidateId + single-revision step on this
+  // operation) rather than any same-numbered revision.
+  const assemblies = Object.values(record.candidateAssemblyReceipts ?? {});
+  const lineage = receipt.settled === true && receipt.outcome === "SUCCEEDED"
+    ? resolveCandidateLineageReceiptV1({ receipt, current, assemblies })
+    : undefined;
+  const parentAdvanced = evidence.candidateAdvanced
+    && receipt.settled === true
+    && bound.revision + 1 === current.revision
+    && current.parentCandidateId !== undefined
+    && bound.candidateId === current.parentCandidateId;
+  if (lineage === undefined && !parentAdvanced) {
+    throw new Error("ISSUE_INTAKE_CANDIDATE_STALE: the Planner receipt is not bound to the intake candidate lineage.");
+  }
+  // The receipt itself must still be valid completion evidence against the
+  // candidate the bounded work actually observed.
+  const gate = evaluateTerminalGate(receipt, { operationId: record.id, candidate: bound });
+  if (!gate.allowed) throw new Error(`ISSUE_INTAKE_RECEIPT_REQUIRED: the Planner receipt is not valid completion evidence (${gate.reasons.map((entry) => entry.code).join(",")}).`);
 }
 /**
  * Strict successful-terminal receipt decision for one participant. A receipt bound to the current
