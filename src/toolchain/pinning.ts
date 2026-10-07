@@ -180,10 +180,26 @@ export function parseMiseLockDetailed(content: string): DetailedMiseLockParse {
   let inOpaqueKnown = false;
   let opaqueDepth = 0;
   let opaqueOpener: string | undefined;
+  // TOML 1.1 multiline STRING state (DETERMINISTIC): a bracket-led
+  // continuation line inside `"""..."""` / `'''...'''` is string content,
+  // never a section header. Only multiline delimiters carry across lines;
+  // single-line `"` / `'` strings cannot span lines.
+  let inMultilineString: '"""' | "'''" | null = null;
   for (const raw of lines) {
+    if (inMultilineString !== null) {
+      // Continuation/closing line inside a multiline string: never
+      // structural and never separately counted — the opener line already
+      // carries the fail-closed accounting.
+      inMultilineString = scanMultilineStringState(raw, inMultilineString);
+      continue;
+    }
     const line = raw.trim();
     if (!line || line.startsWith("#")) continue;
-    if (inOpaqueKnown && line.startsWith("[")) {
+    const startsBracket = line.startsWith("[");
+    // Headers are structural and never open a string; only non-header lines
+    // can carry multiline state into the next line.
+    inMultilineString = startsBracket ? null : scanMultilineStringState(raw, null);
+    if (inOpaqueKnown && startsBracket) {
       // Section headers are structural: they cannot occur inside a valid
       // inline table, so a header line ends the opaque run and is processed
       // as a header normally. The table that opened the run never balanced
@@ -205,7 +221,7 @@ export function parseMiseLockDetailed(content: string): DetailedMiseLockParse {
       }
       continue;
     }
-    if (line.startsWith("[")) {
+    if (startsBracket) {
       const headerMatch = line.match(MISE_TOOLS_HEADER);
       if (headerMatch) {
         const key = unquoteTomlKey(headerMatch[1].trim());
@@ -285,6 +301,11 @@ export function parseMiseLockDetailed(content: string): DetailedMiseLockParse {
     if (/^(aube|uv|options)\./.test(line)) continue;
     unparsedInScope.push(raw);
   }
+  if (inMultilineString !== null) {
+    // Unclosed multiline string through EOF: truncated lock — the swallowed
+    // tail cannot be verified, so INCONCLUSIVE-fail (never false-comply).
+    unparsedInScope.push("<truncated multiline string at EOF>");
+  }
   if (inOpaqueKnown) {
     // Unbalanced opaque table through EOF: truncated lock — the swallowed
     // tail cannot be verified, so INCONCLUSIVE-fail (never false-comply).
@@ -337,6 +358,52 @@ function hasTrailingComment(value: string): boolean {
     else if (char === "#") return true;
   }
   return false;
+}
+
+/** Outgoing multiline-STRING state after scanning one raw line (DETERMINISTIC).
+ * Tracks TOML 1.1 `"""` (basic, `\`-escapes) and `'''` (literal, no escapes)
+ * delimiters; single-line `"` / `'` strings are skipped inline and never
+ * carry; `#` outside strings starts a comment. Headers never open strings —
+ * callers only carry state for non-header lines, and continuation lines are
+ * skipped before any structural test so `[`-leading string content is never
+ * misread as a section header. */
+function scanMultilineStringState(raw: string, incoming: '"""' | "'''" | null): '"""' | "'''" | null {
+  let state = incoming;
+  let i = 0;
+  while (i < raw.length) {
+    if (state === '"""') {
+      if (raw[i] === "\\") { i += 2; continue; }
+      if (raw.startsWith('"""', i)) { state = null; i += 3; continue; }
+      i++;
+      continue;
+    }
+    if (state === "'''") {
+      if (raw.startsWith("'''", i)) { state = null; i += 3; continue; }
+      i++;
+      continue;
+    }
+    const char = raw[i];
+    if (char === "#") break;
+    if (raw.startsWith('"""', i)) { state = '"""'; i += 3; continue; }
+    if (raw.startsWith("'''", i)) { state = "'''"; i += 3; continue; }
+    if (char === '"') {
+      i++;
+      while (i < raw.length) {
+        if (raw[i] === "\\") { i += 2; continue; }
+        if (raw[i] === '"') { i++; break; }
+        i++;
+      }
+      continue;
+    }
+    if (char === "'") {
+      i++;
+      while (i < raw.length && raw[i] !== "'") i++;
+      if (i < raw.length) i++;
+      continue;
+    }
+    i++;
+  }
+  return state;
 }
 
 function parseTomlString(value: string): string | undefined {

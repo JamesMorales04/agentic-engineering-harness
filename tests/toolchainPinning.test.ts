@@ -485,4 +485,15 @@ specifiers = ["6.3.1"]
       ])
     ).not.toThrow();
   });
+
+  it("bracket-led lines inside multiline basic strings are not headers (TOML 1.1)", async () => {
+    // RED for Luna Medium: header detection misfires on bracket-led
+    // continuation lines inside multiline STRING values. A `[`-leading line
+    // inside `"""..."""` must not end the entry section.
+    const { parseMiseLockDetailed } = await import("../src/toolchain/pinning.js");
+    const content = `lockfile_version = 2\n\n[[tools.node]]\nversion = "22.23.2"\nnotes = """\n[not a header]\n"""\nbackend = "core:node"\nspecifiers = ["22.23.2"]\n`;
+    const detailed = parseMiseLockDetailed(content);
+    expect(detailed.entries["node"]?.backend).toBe("core:node");
+    expect(detailed.entries["node"]?.specifiers).toEqual(["22.23.2"]);
+  });
 });
