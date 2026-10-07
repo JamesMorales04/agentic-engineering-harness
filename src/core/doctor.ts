@@ -8,12 +8,14 @@ import { resolveEndpoint } from "../telemetry/otlp.js";
 import { runToolchainDoctor } from "../toolchain/doctor.js";
 import { HeadroomCompressionProvider } from "../context/compression/headroom.js";
 import { SerenaSemanticProvider } from "../context/repository/serena.js";
+import { countStallRetryParkedFiles } from "../operations/stallRetryBudget.js";
 
 export interface DoctorResult { component: string; required: boolean; ok: boolean; message: string; }
 
 export async function runDoctor(root: string, config: HarnessProjectConfig): Promise<DoctorResult[]> {
   const results: DoctorResult[] = [];
   for (const command of ["git", "node"]) results.push({ component: command, required: true, ok: await commandExists(command, root), message: `${command} executable` });
+  results.push(await stallRetryQuarantineDoctor(root));
   if (config.toolchain) results.push(...await runToolchainDoctor(root, config));
   if (config.orchestration?.provider === "paseo") { const r = await new PaseoOrchestrationProvider().doctor(root); results.push({ component: "paseo", required: config.orchestration.required ?? false, ...r }); }
   else if (config.orchestration?.provider === "podman") { const executor = createWorkerExecutor(config); const r = await executor.doctor(root, config); results.push({ component: "podman-worker", required: config.orchestration.required ?? false, ...r }); }
@@ -39,6 +41,34 @@ export async function runDoctor(root: string, config: HarnessProjectConfig): Pro
   }
   if (config.provenance?.signing?.key || config.provenance?.signing?.required || config.provenance?.verification?.required) results.push({ component: "cosign", required: config.provenance.signing?.required === true || config.provenance.verification?.required === true, ok: await commandExists("cosign", root), message: "Cosign provenance signing" });
   return results;
+}
+
+/**
+ * Stall-retry quarantine surfacing (round-11 G2 discoverability): parked
+ * `.grave-<uuid>` / `.quarantine-<uuid>` siblings accumulate at most one per
+ * interrupted legacy migration and are never auto-deleted (fail closed on
+ * evidence). Non-required WARNING while any remain — renders as `!` in the
+ * `aeh doctor` output without failing the run. Recovery procedure lives in
+ * the stallRetryBudget module header (OPERATOR RECOVERY).
+ */
+async function stallRetryQuarantineDoctor(root: string): Promise<DoctorResult> {
+  let graves: string[] = [];
+  let quarantines: string[] = [];
+  try {
+    ({ graves, quarantines } = await countStallRetryParkedFiles(root));
+  } catch {
+    return { component: "stall-retry-quarantine", required: false, ok: true, message: "Parked stall-retry graves/quarantines could not be listed; assuming none." };
+  }
+  const total = graves.length + quarantines.length;
+  if (total === 0) {
+    return { component: "stall-retry-quarantine", required: false, ok: true, message: "No parked stall-retry graves/quarantines." };
+  }
+  return {
+    component: "stall-retry-quarantine",
+    required: false,
+    ok: false,
+    message: `WARNING: ${total} parked stall-retry file(s) need operator review (${quarantines.length} quarantine(s), ${graves.length} crash-orphan grave(s)) under .harness/operations (*.pending.grave-*, *.pending.quarantine-*); see the stallRetryBudget OPERATOR RECOVERY docs before deleting.`,
+  };
 }
 
 function validatorTool(spec: ValidatorSpec): string | undefined {

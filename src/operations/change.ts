@@ -60,7 +60,13 @@ import { drainOperationWriters } from "./control.js";
 import { ensureOperationSupervisor, maybeRotateOperationSupervisor, supervisorTurnTimedOutV1 } from "./supervisor.js";
 import {
   STALL_RETRY_MAX_ATTEMPTS_PER_PHASE,
-  transactStallRetrySpend,
+  claimStallRetryAttempt,
+  clearStallRetryClaim,
+  isCleanSuccessfulProviderTurn,
+  isStallKilledProviderTurn,
+  loadStallRetryStalls,
+  recordStallRetryStall,
+  stallRetryEffectiveDeadlineMs,
 } from "./stallRetryBudget.js";
 import { createSemanticAssessmentRuntimeV1, createSemanticRepositoryBindingV1 } from "../semantic/runtime.js";
 import { launchManagedPaseoAgent } from "../paseo/runtime.js";
@@ -718,29 +724,74 @@ export async function runDiscovery(
   // Frozen identical inputs across the bounded retry: the prompt is built once so the
   // fresh-session retry carries no hints and no prompt changes.
   const prompt = buildExplorerPrompt(operationId, payload, inputs, readRoots);
-  // Durable stall budget (fail-closed): every attempt — including the first —
-  // is spent upfront through a single locked transact BEFORE acting, so the
-  // persisted total stays bounded across controller takeover / watchdog
-  // re-wake / phase re-entry. A ledger failure throws fail-closed with zero
-  // attempts (never masks into an unbounded local retry).
+  // Durable stall budget (fail-closed, pre-claim protocol): the persisted
+  // stall-kill count survives controller takeover / watchdog re-wake / phase
+  // re-entry, so a fresh invocation must not restart the budget. UNKNOWN
+  // ledger (unreadable/corrupt, or an unreconciled pre-claim marker) throws
+  // the phase's EXHAUSTED-coded error; a marker-write failure throws coded
+  // with zero attempts (retry requires durable accounting, never an
+  // unbounded local retry). Every counted attempt is pre-claimed BEFORE it
+  // runs and reconciled on outcome (record on stall-kill, which supersedes
+  // the caller's own claim; clear on success/clean non-stall), so a crash
+  // after the attempt but before record leaves the durable marker instead of
+  // nothing. UNCERTAIN turns never fresh-session retry (twin-writer risk).
+  const persistedStalls = await loadStallRetryStalls(controlRoot, operationId, "discovery", { config });
+  if (persistedStalls >= STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
+    throw new Error(`EXPLORER_STALL_BUDGET_EXHAUSTED: discovery already consumed ${persistedStalls} delayed-kill attempt(s) for operation ${operationId}; max ${STALL_RETRY_MAX_ATTEMPTS_PER_PHASE} total across all drives.`);
+  }
+  // Effective provider-turn deadline for staleness binding: the counted
+  // attempt runs under the configured liveness deadline, recorded at claim time.
+  const discoveryDeadlineMs = stallRetryEffectiveDeadlineMs(config);
   let retries = 0;
   for (;;) {
-    const spentTotal = await transactStallRetrySpend(controlRoot, operationId, "discovery");
+    // Per-iteration ledger gate (ru/ledger-cap-12): re-load before each
+    // attempt; at cap exit with EXHAUSTED instead of claiming/attempting.
+    // The entry load above covers fresh invocations; this covers
+    // same-invocation budget consumed by an earlier iteration's record.
+    // MECHANISM: DETERMINISTIC (durable count comparison, no model judgment).
+    const freshStalls = await loadStallRetryStalls(controlRoot, operationId, "discovery", { config });
+    if (freshStalls >= STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
+      throw new Error(`EXPLORER_STALL_BUDGET_EXHAUSTED: discovery already consumed ${freshStalls} delayed-kill attempt(s) for operation ${operationId}; max ${STALL_RETRY_MAX_ATTEMPTS_PER_PHASE} total across all drives.`);
+    }
+    // Pre-claim BEFORE the counted attempt: a crash after the attempt but
+    // before record leaves the durable marker, so a fresh invocation refuses
+    // EXHAUSTED instead of regaining budget. Bound to (phase, attempt). A
+    // failed claim throws coded and the attempt never runs.
+    const discoveryAttempt = persistedStalls + retries + 1;
+    await claimStallRetryAttempt(controlRoot, operationId, "discovery", discoveryAttempt, discoveryDeadlineMs);
     let session: WorkerSession | undefined;
     try {
       // No resumeSessionId: every attempt (including the retry) launches a fresh session.
       session = await executeAgentPrompt(root, config, contract, selection, prompt, { outputContract: "explorer", phase: "discovery", operationKind: "change", requireExecutionAuthority: true });
-      return await requireDurableChangeHandoff(root, "EXPLORER", session, explorerOutputSchema, controlRoot, { operationId: operationId, contract: "explorer", phase: "discovery" });
+      const result = await requireDurableChangeHandoff(root, "EXPLORER", session, explorerOutputSchema, controlRoot, { operationId: operationId, contract: "explorer", phase: "discovery" });
+      await clearStallRetryClaim(controlRoot, operationId, "discovery", discoveryAttempt);
+      return result;
     } catch (error) {
       // UNCERTAIN first: the turn's stop is unverified (may still be RUNNING),
       // so no fresh session ever — same-session resume or fail-closed error.
-      // The attempt was already spent upfront (safe direction).
+      // The pre-claim marker is retained (safe direction: the unaccounted
+      // attempt fails the next load closed instead of granting budget).
       if (isUncertainProviderTurn(session, error)) {
         throw new Error(`PASEO_PROVIDER_LIFECYCLE_UNCERTAIN: discovery turn stop unverified for session '${session?.id ?? "unknown-session"}'; same-session resume is required, fresh-session retry refused (twin-writer risk). ${String(error instanceof Error ? error.message : error)}`);
       }
-      if (isDiscoveryPlanningStallKill(error, session) && retries < DISCOVERY_PLANNING_STALL_MAX_RETRIES && spentTotal < STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
-        retries += 1;
-        continue;
+      if (isDiscoveryPlanningStallKill(error, session)) {
+        await recordStallRetryStall(controlRoot, operationId, "discovery", discoveryAttempt, discoveryDeadlineMs);
+        if (retries < DISCOVERY_PLANNING_STALL_MAX_RETRIES && persistedStalls + retries + 1 < STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
+          retries += 1;
+          continue;
+        }
+        throw error;
+      }
+      // Non-stall terminal failure: fail-closed 3-way reconcile. STALL needs
+      // structured evidence (recorded, still retry-terminal); CLEAN needs
+      // affirmative clean-success evidence (cleared, consumes nothing);
+      // AMBIGUOUS (neither proof) COUNTS — never clear, never regain.
+      if (isStallKilledProviderTurn(session)) {
+        await recordStallRetryStall(controlRoot, operationId, "discovery", discoveryAttempt, discoveryDeadlineMs);
+      } else if (isCleanSuccessfulProviderTurn(session)) {
+        await clearStallRetryClaim(controlRoot, operationId, "discovery", discoveryAttempt);
+      } else {
+        await recordStallRetryStall(controlRoot, operationId, "discovery", discoveryAttempt, discoveryDeadlineMs);
       }
       throw error;
     }
@@ -783,25 +834,55 @@ export async function runPlanning(
   // Frozen identical inputs across the bounded retry: the prompt is built once so the
   // fresh-session retry carries no hints and no prompt changes.
   const prompt = buildPlannerPrompt(operationId, contract, payload, explorerEvidence, inputs);
-  // Durable stall budget (fail-closed): spend upfront through a single locked
-  // transact BEFORE acting; ledger failure throws with zero attempts.
+  // Durable stall budget (fail-closed, pre-claim protocol): same
+  // cross-invocation ledger as discovery. UNKNOWN ledger throws EXHAUSTED;
+  // marker-write failure throws coded with zero attempts.
+  const persistedStalls = await loadStallRetryStalls(controlRoot, operationId, "planning", { config });
+  if (persistedStalls >= STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
+    throw new Error(`PLANNER_STALL_BUDGET_EXHAUSTED: planning already consumed ${persistedStalls} delayed-kill attempt(s) for operation ${operationId}; max ${STALL_RETRY_MAX_ATTEMPTS_PER_PHASE} total across all drives.`);
+  }
+  const planningDeadlineMs = stallRetryEffectiveDeadlineMs(config);
   let retries = 0;
   for (;;) {
-    const spentTotal = await transactStallRetrySpend(controlRoot, operationId, "planning");
+    // Per-iteration ledger gate (ru/ledger-cap-12): same as discovery — the
+    // entry load covers fresh invocations, this covers same-invocation
+    // consumption by an earlier iteration's record.
+    const freshPlanningStalls = await loadStallRetryStalls(controlRoot, operationId, "planning", { config });
+    if (freshPlanningStalls >= STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
+      throw new Error(`PLANNER_STALL_BUDGET_EXHAUSTED: planning already consumed ${freshPlanningStalls} delayed-kill attempt(s) for operation ${operationId}; max ${STALL_RETRY_MAX_ATTEMPTS_PER_PHASE} total across all drives.`);
+    }
+    // Pre-claim BEFORE the counted attempt (same crash window as discovery).
+    const planningAttempt = persistedStalls + retries + 1;
+    await claimStallRetryAttempt(controlRoot, operationId, "planning", planningAttempt, planningDeadlineMs);
     let session: WorkerSession | undefined;
     try {
       // No resumeSessionId: every attempt (including the retry) launches a fresh session.
       session = await executeAgentPrompt(root, config, contract, selection, prompt, { outputContract: "planner", phase: "planning", operationKind: "change", requireExecutionAuthority: true });
-      return await requireDurableChangeHandoff(root, "PLANNER", session, plannerOutputSchema, controlRoot, { operationId, contract: "planner", phase: "planning" });
+      const result = await requireDurableChangeHandoff(root, "PLANNER", session, plannerOutputSchema, controlRoot, { operationId, contract: "planner", phase: "planning" });
+      await clearStallRetryClaim(controlRoot, operationId, "planning", planningAttempt);
+      return result;
     } catch (error) {
       // UNCERTAIN first: no fresh session ever — same-session resume or
-      // fail-closed error. The attempt was already spent upfront.
+      // fail-closed error. The pre-claim marker is retained (safe direction).
       if (isUncertainProviderTurn(session, error)) {
         throw new Error(`PASEO_PROVIDER_LIFECYCLE_UNCERTAIN: planning turn stop unverified for session '${session?.id ?? "unknown-session"}'; same-session resume is required, fresh-session retry refused (twin-writer risk). ${String(error instanceof Error ? error.message : error)}`);
       }
-      if (isDiscoveryPlanningStallKill(error, session) && retries < DISCOVERY_PLANNING_STALL_MAX_RETRIES && spentTotal < STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
-        retries += 1;
-        continue;
+      if (isDiscoveryPlanningStallKill(error, session)) {
+        await recordStallRetryStall(controlRoot, operationId, "planning", planningAttempt, planningDeadlineMs);
+        if (retries < DISCOVERY_PLANNING_STALL_MAX_RETRIES && persistedStalls + retries + 1 < STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
+          retries += 1;
+          continue;
+        }
+        throw error;
+      }
+      // Non-stall terminal: fail-closed 3-way reconcile (stall → record;
+      // clean → clear; ambiguous → record, never regain).
+      if (isStallKilledProviderTurn(session)) {
+        await recordStallRetryStall(controlRoot, operationId, "planning", planningAttempt, planningDeadlineMs);
+      } else if (isCleanSuccessfulProviderTurn(session)) {
+        await clearStallRetryClaim(controlRoot, operationId, "planning", planningAttempt);
+      } else {
+        await recordStallRetryStall(controlRoot, operationId, "planning", planningAttempt, planningDeadlineMs);
       }
       throw error;
     }
@@ -951,19 +1032,34 @@ export async function runSpecManagerUntilReady(input: {
   let incompleteRetries = 0;
   let contentRetries = 0;
   let stallRetries = 0;
-  // Fail-closed spend flags (B2): the first attempt and each stall retry are
-  // spent upfront through a single locked transact BEFORE acting. Content /
-  // mismatch / product-choice continuations are bounded by their own local
-  // budgets and human gates and do not spend stall budget (spending would
-  // conflate independent bounds); stall-driven attempts are the only
-  // unbounded-across-drives dimension this ledger closes.
-  let firstAttempt = true;
-  let stallSpendPending = false;
-  let spentTotal = 0;
+  // Durable stall budget (fail-closed, pre-claim protocol): content /
+  // mismatch / incomplete counters stay local (hinted prompt retries;
+  // follow-up), but stall kills share the cross-invocation ledger.
+  // UNKNOWN ledger throws EXHAUSTED; marker-write failure throws coded with
+  // zero attempts (retry requires durable accounting). UNCERTAIN turns never
+  // fresh-session retry (twin-writer risk).
+  const persistedStallKills = await loadStallRetryStalls(input.controlRoot, input.operationId, "spec-manager", { config: input.config });
+  if (persistedStallKills >= STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
+    throw new Error(`SPEC_MANAGER_STALL_BUDGET_EXHAUSTED: spec authoring already consumed ${persistedStallKills} delayed-kill attempt(s) for operation ${input.operationId}; max ${STALL_RETRY_MAX_ATTEMPTS_PER_PHASE} total across all drives.`);
+  }
+  const specManagerDeadlineMs = stallRetryEffectiveDeadlineMs(input.config);
   let mismatchRetryPending = false;
   let incompleteRetryPending = false;
   let contentRetryPending = false;
   for (;;) {
+    // Per-iteration ledger gate (ru/ledger-cap-12 Luna blocker): re-load
+    // before each attempt; at cap exit with EXHAUSTED instead of
+    // claiming/attempting. The entry load covers fresh invocations; this
+    // covers same-invocation consumption — the incomplete/content retry
+    // branches below (catch + validate paths) continue without calling
+    // record, so the choke point in recordStallRetryStall alone cannot stop
+    // them from launching another attempt after the ledger hits its limit.
+    // Every iteration — stall, mismatch, incomplete, content, or product-choice
+    // continuation — is ledger-gated here. MECHANISM: DETERMINISTIC.
+    const freshStallKills = await loadStallRetryStalls(input.controlRoot, input.operationId, "spec-manager", { config: input.config });
+    if (freshStallKills >= STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
+      throw new Error(`SPEC_MANAGER_STALL_BUDGET_EXHAUSTED: spec authoring already consumed ${freshStallKills} delayed-kill attempt(s) for operation ${input.operationId}; max ${STALL_RETRY_MAX_ATTEMPTS_PER_PHASE} total across all drives.`);
+    }
     await awaitChangeControlCheckpoint(input.controlRoot, input.operationId);
     const basePrompt = buildSpecManagerPrompt(input.payload, input.changeName, input.explorerEvidence, input.plannerEvidence, input.inputs, selectedChoice);
     const retryNotes = [
@@ -981,28 +1077,41 @@ export async function runSpecManagerUntilReady(input: {
     // The session is hoisted so structured diagnostics (exitCode/killReason/status/
     // activityCounts) reach the stall classifier; a stall retry sets no retry notes.
     let specSession: WorkerSession | undefined;
+    // Pre-claim BEFORE the counted attempt (same crash window as discovery).
+    const specManagerAttempt = persistedStallKills + stallRetries + 1;
+    await claimStallRetryAttempt(input.controlRoot, input.operationId, "spec-manager", specManagerAttempt, specManagerDeadlineMs);
     try {
-      if (firstAttempt || stallSpendPending) {
-        spentTotal = await transactStallRetrySpend(input.controlRoot, input.operationId, "spec-manager");
-        firstAttempt = false;
-        stallSpendPending = false;
-      }
       specSession = await executeAgentPrompt(
         input.root, input.config, input.bootstrapContract, input.selection,
         prompt,
         { outputContract: "spec-authoring", phase: "spec-authoring", operationKind: "change", requireExecutionAuthority: true }
       );
       evidence = await requireDurableChangeHandoff(input.root, "SPEC_MANAGER", specSession, specAuthoringOutputSchema, input.controlRoot, { operationId: input.operationId, contract: "spec-authoring", phase: "spec-authoring" });
+      // Non-stall outcome for this attempt: reconcile without consuming.
+      await clearStallRetryClaim(input.controlRoot, input.operationId, "spec-manager", specManagerAttempt);
     } catch (error) {
       // UNCERTAIN first: no fresh session ever — same-session resume or
-      // fail-closed error. The attempt was already spent upfront.
+      // fail-closed error. The pre-claim marker is retained (safe direction).
       if (isUncertainProviderTurn(specSession, error)) {
         throw new Error(`PASEO_PROVIDER_LIFECYCLE_UNCERTAIN: spec-manager turn stop unverified for session '${specSession?.id ?? "unknown-session"}'; same-session resume is required, fresh-session retry refused (twin-writer risk). ${String(error instanceof Error ? error.message : error)}`);
       }
-      if (isDiscoveryPlanningStallKill(error, specSession) && stallRetries < SPEC_MANAGER_STALL_MAX_RETRIES && spentTotal < STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
-        stallRetries += 1;
-        stallSpendPending = true;
-        continue;
+      if (isDiscoveryPlanningStallKill(error, specSession)) {
+        await recordStallRetryStall(input.controlRoot, input.operationId, "spec-manager", specManagerAttempt, specManagerDeadlineMs);
+        if (stallRetries < SPEC_MANAGER_STALL_MAX_RETRIES && persistedStallKills + stallRetries + 1 < STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
+          stallRetries += 1;
+          continue;
+        }
+        throw error;
+      }
+      // Non-stall agent failure: fail-closed 3-way reconcile (stall → record;
+      // clean → clear; ambiguous → record, never regain), before the
+      // hinted-retry branches below.
+      if (isStallKilledProviderTurn(specSession)) {
+        await recordStallRetryStall(input.controlRoot, input.operationId, "spec-manager", specManagerAttempt, specManagerDeadlineMs);
+      } else if (isCleanSuccessfulProviderTurn(specSession)) {
+        await clearStallRetryClaim(input.controlRoot, input.operationId, "spec-manager", specManagerAttempt);
+      } else {
+        await recordStallRetryStall(input.controlRoot, input.operationId, "spec-manager", specManagerAttempt, specManagerDeadlineMs);
       }
       if (shouldRetrySpecManagerIncomplete(error, incompleteRetries)) {
         incompleteRetries += 1;

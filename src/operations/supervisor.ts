@@ -15,7 +15,7 @@ import { persistOperationConsolidation, persistSupervisorCheckpoint } from "./ar
 import { supervisorEventSkills, type SupervisorSemanticEvent } from "./supervisorEventPolicy.js";
 import { compactDeterministicEvidence, supervisorCheckpointProjection, supervisorConsolidationProjection, supervisorHandoffProjection, supervisorInitializationProjection } from "./supervisorPrompt.js";
 import { activeOperationSupervisor, currentOperationContext, loadOperation, patchOperation, registerSupervisorGeneration, resolveOperationStateRoot, updateSupervisorGeneration, withOperationCoordinationLock, type OperationRecordV2 } from "./state.js";
-import { STALL_RETRY_MAX_ATTEMPTS_PER_PHASE, transactStallRetrySpend } from "./stallRetryBudget.js";
+import { STALL_RETRY_MAX_ATTEMPTS_PER_PHASE, claimStallRetryAttempt, clearStallRetryClaim, isCleanSuccessfulProviderTurn, isStallKilledProviderTurn, loadStallRetryStalls, recordStallRetryStall, stallRetryEffectiveDeadlineMs } from "./stallRetryBudget.js";
 
 /**
  * A supervisor generation's structured-result channel is bound to the candidate digest it was
@@ -290,16 +290,34 @@ export async function consolidateWithOperationSupervisor(root: string, config: H
   // same finding-set is idempotent; semantic content is never retried with hints (same inputs,
   // fresh turn).
   const rawIds = [...new Set(input.findings.map((finding) => finding.id))].sort();
-  // Durable stall budget (fail-closed): without an operation context there is
-  // no ledger key, so only the local budget applies. With a context, the
-  // first attempt and each stall retry are spent upfront through a single
-  // locked transact BEFORE acting; ledger failure throws with zero attempts.
+  // Durable stall budget (fail-closed, pre-claim protocol): the persisted
+  // stall-kill count survives controller takeover / watchdog re-wake, so a
+  // fresh consolidation must not restart the budget. UNKNOWN ledger
+  // (unreadable/corrupt, or an unreconciled pre-claim marker) throws
+  // EXHAUSTED; marker-write failure throws coded with zero attempts.
+  // Without an operation context there is no ledger key, so only the local
+  // budget applies. UNCERTAIN turns never fresh-generation retry.
   const consolidationOperationId = currentOperationContext().id;
+  const persistedStallKills = consolidationOperationId
+    ? await loadStallRetryStalls(stateRoot, consolidationOperationId, "consolidation", { config })
+    : 0;
+  if (consolidationOperationId && persistedStallKills >= STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
+    throw new Error(`AEH_OPERATION_SUPERVISOR_STALL_BUDGET_EXHAUSTED: consolidation already consumed ${persistedStallKills} delayed-kill attempt(s); max ${STALL_RETRY_MAX_ATTEMPTS_PER_PHASE} total across all drives.`);
+  }
   let stallRetries = 0;
-  let firstAttempt = true;
-  let stallSpendPending = false;
-  let spentTotal = 0;
   for (;;) {
+    // Per-iteration ledger gate (ru/ledger-cap-12): re-load before each
+    // consolidation attempt; at cap exit with EXHAUSTED instead of
+    // materializing/claiming/attempting. Entry load covers fresh
+    // invocations; this covers same-invocation consumption by an earlier
+    // iteration's record. No ledger key (no operation context) → local
+    // budget only. MECHANISM: DETERMINISTIC.
+    if (consolidationOperationId) {
+      const freshStallKills = await loadStallRetryStalls(stateRoot, consolidationOperationId, "consolidation", { config });
+      if (freshStallKills >= STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
+        throw new Error(`AEH_OPERATION_SUPERVISOR_STALL_BUDGET_EXHAUSTED: consolidation already consumed ${freshStallKills} delayed-kill attempt(s); max ${STALL_RETRY_MAX_ATTEMPTS_PER_PHASE} total across all drives.`);
+      }
+    }
     let supervisor = await ensureOperationSupervisor(root, config, contract, supervisorSelection, { required: true, forceMaterialize: true });
     if (!supervisor?.agentId) throw new Error("AEH_OPERATION_SUPERVISOR_UNAVAILABLE: semantic consolidation requires a materialized supervisor session.");
     let operation = await loadOperation(stateRoot, supervisor.operationId);
@@ -328,12 +346,16 @@ export async function consolidateWithOperationSupervisor(root: string, config: H
     // Stall-retry diagnostics: the last turn session is hoisted so structured diagnostics
     // (exitCode/killReason/status/activityCounts) reach the stall classifier.
     let lastTurnSession: SupervisorConsolidationStallSessionShape | undefined;
+    // Pre-claim BEFORE the counted consolidation attempt: a crash after the
+    // turn but before record leaves the durable marker, so a fresh
+    // consolidation refuses EXHAUSTED instead of regaining budget. Bound to
+    // (phase, attempt); the effective deadline is the consolidation turn
+    // timeout the attempt actually runs under. A failed claim throws coded
+    // and the attempt never runs.
+    const consolidationAttempt = persistedStallKills + stallRetries + 1;
+    const consolidationDeadlineMs = stallRetryEffectiveDeadlineMs(config, operationSupervisorTurnTimeoutSeconds(config) * 1000);
+    if (consolidationOperationId) await claimStallRetryAttempt(stateRoot, consolidationOperationId, "consolidation", consolidationAttempt, consolidationDeadlineMs);
     try {
-      if (consolidationOperationId && (firstAttempt || stallSpendPending)) {
-        spentTotal = await transactStallRetrySpend(stateRoot, consolidationOperationId, "consolidation");
-        firstAttempt = false;
-        stallSpendPending = false;
-      }
       const turn = await withBoundedSupervisorConsolidationCorrectionV1({
         expectedFindingIds: rawIds,
         initialPrompt: prompt,
@@ -386,6 +408,7 @@ export async function consolidateWithOperationSupervisor(root: string, config: H
       });
       const current = await loadOperation(stateRoot, supervisor.operationId);
       await patchOperation(stateRoot, supervisor.operationId, { supervision: { ...current.supervision, latestConsolidationRevision: current.revision + 1, latestConsolidationArtifact: artifact } });
+      if (consolidationOperationId) await clearStallRetryClaim(stateRoot, consolidationOperationId, "consolidation", consolidationAttempt);
       return { output: turn.output, artifact, session: turn.session };
     } catch (error) {
       // Bounded fresh-generation identical-inputs retry for STALL/timeout kill classes ONLY.
@@ -393,15 +416,36 @@ export async function consolidateWithOperationSupervisor(root: string, config: H
       // re-materializes a fresh generation with the same frozen finding-set and same inputs.
       // UNCERTAIN first: the turn's stop is unverified (may still be RUNNING),
       // so no fresh generation ever — same-session resume or fail-closed error.
+      // The pre-claim marker is retained (safe direction).
       // INVALID/schema/contract/provenance always terminal; second failure rethrows original.
+      // A stall kill is recorded in the durable ledger before the local
+      // decision so the cross-invocation total stays bounded even when this
+      // drive ends here; a ledger write failure throws coded and consumes no
+      // retry, and the pre-attempt claim marker is retained (no clear on the
+      // record path). A non-stall failure reconciles fail-closed 3-way
+      // (stall → record; clean → clear; ambiguous → record, never regain).
       if (isUncertainProviderTurn(lastTurnSession, error)) {
         throw new Error(`PASEO_PROVIDER_LIFECYCLE_UNCERTAIN: consolidation turn stop unverified for session '${(lastTurnSession as { id?: unknown } | undefined)?.id ?? supervisor.agentId ?? "unknown-session"}'; same-session resume is required, fresh-generation retry refused (twin-writer risk). ${String(error instanceof Error ? error.message : error)}`);
       }
-      if (isSupervisorConsolidationStallKill(error, lastTurnSession) && stallRetries < SUPERVISOR_CONSOLIDATION_STALL_MAX_RETRIES && (spentTotal < STALL_RETRY_MAX_ATTEMPTS_PER_PHASE || !consolidationOperationId)) {
-        stallRetries += 1;
-        stallSpendPending = true;
-        await recordPaseoTrace(stateRoot, "operation.supervisor.consolidation-stall-retry", { operationId: supervisor.operationId, generation: supervisor.generation, agentId: supervisor.agentId, attempt: stallRetries, maxAttempts: SUPERVISOR_CONSOLIDATION_STALL_MAX_ATTEMPTS, expectedFindingIds: rawIds }).catch(() => undefined);
-        continue;
+      if (isSupervisorConsolidationStallKill(error, lastTurnSession)) {
+        if (consolidationOperationId) await recordStallRetryStall(stateRoot, consolidationOperationId, "consolidation", consolidationAttempt, consolidationDeadlineMs);
+        if (stallRetries < SUPERVISOR_CONSOLIDATION_STALL_MAX_RETRIES && (persistedStallKills + stallRetries + 1 < STALL_RETRY_MAX_ATTEMPTS_PER_PHASE || !consolidationOperationId)) {
+          stallRetries += 1;
+          await recordPaseoTrace(stateRoot, "operation.supervisor.consolidation-stall-retry", { operationId: supervisor.operationId, generation: supervisor.generation, agentId: supervisor.agentId, attempt: stallRetries, maxAttempts: SUPERVISOR_CONSOLIDATION_STALL_MAX_ATTEMPTS, expectedFindingIds: rawIds }).catch(() => undefined);
+          continue;
+        }
+        throw error;
+      }
+      if (consolidationOperationId) {
+        // Fail-closed 3-way reconcile: stall → record; clean → clear;
+        // ambiguous (neither proof) → record, never regain.
+        if (isStallKilledProviderTurn(lastTurnSession)) {
+          await recordStallRetryStall(stateRoot, consolidationOperationId, "consolidation", consolidationAttempt, consolidationDeadlineMs);
+        } else if (isCleanSuccessfulProviderTurn(lastTurnSession)) {
+          await clearStallRetryClaim(stateRoot, consolidationOperationId, "consolidation", consolidationAttempt);
+        } else {
+          await recordStallRetryStall(stateRoot, consolidationOperationId, "consolidation", consolidationAttempt, consolidationDeadlineMs);
+        }
       }
       throw error;
     }
