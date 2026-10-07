@@ -796,10 +796,16 @@ export const MAX_PASEO_SDK_AGENT_LIST_PAGES_V1 = 50;
 /**
  * Honest result of SDK agent-listing pagination. `exhausted` is true ONLY
  * when the server cursor is genuinely exhausted (a page arrived with no fresh
- * continuation cursor). Hitting the 50-page safety cap or observing a
- * repeated cursor yields `exhausted: false` with the stop reason recorded, so
- * callers doing gone-proof work (e.g. ledger pruning) can fail closed instead
- * of treating a possibly-partial accumulation as complete.
+ * continuation cursor). Hitting the 50-page safety cap, observing a
+ * repeated cursor, or observing an empty page that still carries a
+ * continuation token yields `exhausted: false` with the stop reason recorded,
+ * so callers doing gone-proof work (e.g. ledger pruning) can fail closed
+ * instead of treating a possibly-partial accumulation as complete.
+ * An empty page with a token is ambiguous between provider-end and
+ * transient-empty: stopping avoids burning to the page cap while
+ * incomplete-marking preserves gone-proof soundness (the next sweep retries;
+ * best-effort is preserved). It must NOT report `exhausted: true`, which
+ * would risk an unsound prune on transient empties.
  * MECHANISM: DETERMINISTIC.
  */
 export interface PaseoSdkAgentListingV1 {
@@ -807,7 +813,7 @@ export interface PaseoSdkAgentListingV1 {
   exhausted: boolean;
   /** Pages consumed (bounded by MAX_PASEO_SDK_AGENT_LIST_PAGES_V1). */
   pages: number;
-  stopReason: "exhausted" | "page-cap" | "repeated-cursor";
+  stopReason: "exhausted" | "page-cap" | "repeated-cursor" | "empty-page";
 }
 
 export async function listPaseoSdkAgents(root: string, labels: Record<string, string> = {}): Promise<PaseoSdkAgentListingV1> {
@@ -818,7 +824,11 @@ export async function listPaseoSdkAgents(root: string, labels: Record<string, st
  * List agents matching `labels` across server pages (bounded loop; the cursor
  * is opaque pass-through). MECHANISM: DETERMINISTIC. The listing stops at the
  * first page without a fresh non-empty string cursor (`exhausted: true`); a
- * repeated cursor or the page cap stops early with `exhausted: false`.
+ * repeated cursor, the page cap, or an empty page that still carries a
+ * continuation token stops early with `exhausted: false`. An empty page with
+ * a token is ambiguous between provider-end and transient-empty, so it stops
+ * without burning to the cap but stays incomplete (`empty-page`) so the
+ * gone-proof prune refuses and the next sweep retries.
  */
 export async function listPaseoSdkAgentsWithClient(
   client: PaseoSdkClient,
@@ -842,6 +852,10 @@ export async function listPaseoSdkAgentsWithClient(
     const next = listContinuationCursor(response);
     if (!next) {
       stopReason = "exhausted";
+      break;
+    }
+    if (response.entries.length === 0) {
+      stopReason = "empty-page";
       break;
     }
     if (seenCursors.has(next)) {

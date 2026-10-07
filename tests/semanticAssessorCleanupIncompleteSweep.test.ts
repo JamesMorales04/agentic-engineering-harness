@@ -111,4 +111,43 @@ describe("P-NEW-3 round-4 RED: honest pagination + fail-closed prune", () => {
       await rmRoot(root);
     }
   });
+
+  it("R5: empty page WITH continuation token stops early with exhausted=false + empty-page", async () => {
+    const list = vi.fn(async (options?: Record<string, unknown>) => {
+      if ((options as { cursor?: string } | undefined)?.cursor === "page-2") {
+        // Transient-empty / provider-end ambiguity: must not burn to the cap
+        // and must NOT claim exhaustion (unsound prune on transient empties).
+        return { entries: [], nextCursor: "page-3" };
+      }
+      return { entries: [{ agent: sdkAgent("page1-a") }], nextCursor: "page-2" };
+    });
+    const client = { agents: { create: vi.fn(), ref: vi.fn(), list }, connect: vi.fn(), close: vi.fn() };
+    const listing = await listPaseoSdkAgentsWithClient(client as never, { "aeh.kind": "semantic-assessment" });
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(listing.agents.map((r) => r.id)).toEqual(["page1-a"]);
+    expect(listing.exhausted).toBe(false);
+    expect(listing.stopReason).toBe("empty-page");
+    expect(listing.pages).toBe(2);
+  });
+
+  it("R5b: gone-proof PRUNE REFUSES on an empty-page listing (fail closed, retry next sweep)", async () => {
+    const root = await mkRoot("aeh-pnew3r4-r5b-");
+    try {
+      await fs.writeFile(
+        path.join(root, ".harness", "semantic-assessor-cleanup-v1.json"),
+        JSON.stringify({ version: 1, attempts: { "live-but-unlisted": { attempts: 1, updatedAt: "2026-10-01T00:00:00.000Z" } } }),
+        "utf8"
+      );
+      // Empty page with a token is ambiguous (provider-end vs transient-empty):
+      // the sweep stops early but stays incomplete, so the prune must refuse.
+      const list = vi.fn(async () => ({ agents: [orphan("some-other-id")], exhausted: false as const, stopReason: "empty-page" as const, pages: 2 }));
+      const archiveAgent = vi.fn(async () => undefined);
+      await retryOrphanedAssessorCleanupV1(root, { list: list as never, archiveAgent });
+      expect(await ledgerIds(root)).toContain("live-but-unlisted");
+      const events = await telemetryEvents(root);
+      expect(events.filter((e) => e.name.endsWith("semantic.assessor.cleanup-incomplete-sweep")).length).toBeGreaterThanOrEqual(1);
+    } finally {
+      await rmRoot(root);
+    }
+  });
 });
