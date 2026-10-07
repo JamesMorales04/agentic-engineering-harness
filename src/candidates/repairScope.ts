@@ -49,6 +49,13 @@ import {
 export const REPAIR_SCOPE_BLOCKER_VERSION = 1 as const;
 export const MAX_REPAIR_SCOPE_BLOCKER_FILES_V1 = 8;
 export const MAX_REPAIR_SCOPE_AMENDMENTS_PER_TASK_V1 = 1;
+/**
+ * Bounded amendment-discovery window: the scan probes at most this many
+ * amendment candidates. Derived from existing bounds (per-task cap + blocker
+ * file cap); any unaccountable state beyond it fails closed.
+ */
+export const REPAIR_SCOPE_AMENDMENT_SCAN_CAP_V1 =
+  MAX_REPAIR_SCOPE_AMENDMENTS_PER_TASK_V1 + MAX_REPAIR_SCOPE_BLOCKER_FILES_V1;
 
 /**
  * Amendable scope denials: dependency manifests that a ledger-approved
@@ -539,17 +546,47 @@ export async function listRepairScopeAmendments(
   _config: HarnessProjectConfig,
   taskId: string,
 ): Promise<RepairScopeAmendmentV1[]> {
-  const found: RepairScopeAmendmentV1[] = [];
-  for (let index = 1; index <= MAX_REPAIR_SCOPE_AMENDMENTS_PER_TASK_V1 + 1; index += 1) {
-    const file = repairScopeAmendmentPath(root, taskId, index);
-    try {
-      const raw = JSON.parse(await fs.readFile(file, "utf8")) as RepairScopeAmendmentV1;
-      assertRepairScopeAmendment(raw);
-      found.push(raw);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") break;
-      throw error;
+  // Gap-tolerant discovery (DETERMINISTIC): amendment files are numbered
+  // densely by the write path, but a missing lower index (deleted or never
+  // written) must not hide a higher-numbered amendment and bypass the
+  // per-task limit. Discover candidates by directory listing instead of
+  // stopping at the first ENOENT. The probe count stays capped at
+  // REPAIR_SCOPE_AMENDMENT_SCAN_CAP_V1 and any unaccountable state (a
+  // non-numeric amendment-like file, or more candidates than the window
+  // holds) fails closed — admission never proceeds on a truncated scan.
+  const dir = path.join(root, ".harness", "seals");
+  let entries: string[];
+  try {
+    entries = await fs.readdir(dir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  const prefix = `${safe(taskId)}-scope-amendment-`;
+  const indices: number[] = [];
+  for (const entry of entries) {
+    if (!entry.startsWith(prefix) || !entry.endsWith(".json")) continue;
+    const numeral = entry.slice(prefix.length, -".json".length);
+    if (!/^[1-9]\d*$/.test(numeral)) {
+      throw new AehError(
+        "PARTICIPANT_PLAN_INVALID",
+        `REPAIR_SCOPE_AMENDMENT_SCAN_INVALID: unexpected scope amendment file '${entry}' is not a numbered amendment; failing closed — the BLOCKED outcome stands.`,
+      );
     }
+    indices.push(Number(numeral));
+  }
+  indices.sort((a, b) => a - b);
+  if (indices.length > REPAIR_SCOPE_AMENDMENT_SCAN_CAP_V1) {
+    throw new AehError(
+      "PARTICIPANT_PLAN_INVALID",
+      "REPAIR_SCOPE_AMENDMENT_SCAN_TRUNCATED: scope amendment candidates exceed the bounded scan window; failing closed — the BLOCKED outcome stands.",
+    );
+  }
+  const found: RepairScopeAmendmentV1[] = [];
+  for (const index of indices) {
+    const raw = JSON.parse(await fs.readFile(repairScopeAmendmentPath(root, taskId, index), "utf8")) as RepairScopeAmendmentV1;
+    assertRepairScopeAmendment(raw);
+    found.push(raw);
   }
   return found.sort((a, b) => a.amendmentPath.localeCompare(b.amendmentPath));
 }
