@@ -633,7 +633,7 @@ export async function retryOrphanedAssessorCleanupV1(
   // operation-owned sessions) with no pending workspace left. The filtered
   // orphan set must never serve as the gone-proof: a live working agent
   // without a workspace would otherwise lose its retry count. On an
-  // INCOMPLETE listing (page-cap or repeated-cursor stop) the prune REFUSES
+  // INCOMPLETE listing (page-cap, repeated-cursor, or empty-page stop) the prune REFUSES
   // to run (fail closed): absent ids may simply sit on unlisted pages, so the
   // entries are kept for the next sweep and an incomplete-sweep trace marks
   // the gap instead of silently treating partial data as complete. Listing
