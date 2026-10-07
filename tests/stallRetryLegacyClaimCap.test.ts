@@ -13,7 +13,8 @@ import {
 
 /**
  * Legacy-then-claim cap gate (ru/ledger-staleclaim-cap-14 sibling, Luna
- * round-15 same-class gap on tip 78421e4).
+ * round-15 same-class gap on tip 78421e4; tombstone hardened
+ * ru/ledger-saturate-15).
  *
  * Gap: claimStallRetryAttempt's legacy-marker path (grave-take path,
  * ~L749-757) reconciled-as-consumed (durable +1) then wrote a FRESH claim
@@ -24,7 +25,10 @@ import {
  * Required: after the legacy reconcile increment, if post-increment count >=
  * cap → do NOT write the fresh claim; throw phase EXHAUSTED (fail-closed;
  * the +1 consumed the budget). Fresh claim only when post-count < cap.
- * MECHANISM: DETERMINISTIC (durable count comparison under lock).
+ * UNIFIED (ru/ledger-saturate-15, Luna round-16): the counted orphan is
+ * TOMBSTONED atomically (grave destroyed + identity recorded in the ledger
+ * consumed set) so replay cannot double-count past cap.
+ * MECHANISM: DETERMINISTIC (durable count + set comparison under lock).
  */
 describe("legacy-claim cap gate (ru/ledger-staleclaim-cap-14 sibling)", () => {
   it("legacy reconcile at cap-1 refuses launch (no fresh claim, +1 consumed)", async () => {
@@ -49,14 +53,14 @@ describe("legacy-claim cap gate (ru/ledger-staleclaim-cap-14 sibling)", () => {
         claimStallRetryAttempt(controlRoot, operationId, "discovery", 2, 30 * 60_000),
       ).rejects.toThrow(/EXPLORER_STALL_BUDGET_EXHAUSTED/);
       // No fresh claim written: marker path empty (taken to grave), no live
-      // claim at the pending path, grave parks the consumed orphan.
+      // claim at the pending path; grave DESTROYED (tombstoned via the ledger
+      // consumed set, never parked for a counted orphan — unified rule).
       await expect(fs.stat(pending)).rejects.toMatchObject({ code: "ENOENT" });
       const entries = await fs.readdir(path.dirname(pending));
       const base = path.basename(pending);
-      const graves = entries.filter((e) => e.startsWith(`${base}.grave-`)).sort();
-      expect(graves).toHaveLength(1);
-      expect(await fs.readFile(path.join(path.dirname(pending), graves[0]), "utf8")).toBe(legacyRaw);
-      // The +1 consumed the budget: durable count is exactly cap.
+      expect(entries.filter((e) => e.startsWith(`${base}.grave-`))).toEqual([]);
+      expect(entries.filter((e) => e.startsWith(`${base}.quarantine-`))).toEqual([]);
+      // The +1 consumed the budget: durable count is exactly cap (never over).
       expect(await loadStallRetryStalls(controlRoot, operationId, "discovery")).toBe(
         STALL_RETRY_MAX_ATTEMPTS_PER_PHASE,
       );

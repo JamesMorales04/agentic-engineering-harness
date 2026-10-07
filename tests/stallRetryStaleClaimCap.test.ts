@@ -13,7 +13,7 @@ import {
 
 /**
  * Stale-claim cap gate (ru/ledger-staleclaim-cap-14, Luna round-15 gap on
- * ru/ledger-claim-cas-13 tip 5cbb878).
+ * ru/ledger-claim-cas-13 tip 5cbb878; tombstone hardened ru/ledger-saturate-15).
  *
  * Gap: claimStallRetryAttempt's stale-marker path reconciled-as-consumed
  * (durable +1, ~L642-648) then wrote a FRESH claim (~L669) without checking
@@ -23,7 +23,10 @@ import {
  * Required: after the stale reconcile increment, if post-increment count >=
  * cap → do NOT write the fresh claim; throw phase EXHAUSTED (fail-closed;
  * the +1 consumed the budget). Fresh claim only when post-count < cap.
- * MECHANISM: DETERMINISTIC (durable count comparison under lock).
+ * UNIFIED (ru/ledger-saturate-15, Luna round-16): the counted orphan is
+ * TOMBSTONED atomically (same lock; marker deleted + identity recorded in
+ * the ledger consumed set) so replay cannot double-count past cap.
+ * MECHANISM: DETERMINISTIC (durable count + set comparison under lock).
  */
 describe("stale-claim cap gate (ru/ledger-staleclaim-cap-14)", () => {
   it("stale reconcile at cap-1 refuses launch (no fresh claim, +1 consumed)", async () => {
@@ -46,10 +49,10 @@ describe("stale-claim cap gate (ru/ledger-staleclaim-cap-14)", () => {
       await expect(
         claimStallRetryAttempt(controlRoot, operationId, "discovery", 3, 30 * 60_000),
       ).rejects.toThrow(/EXPLORER_STALL_BUDGET_EXHAUSTED/);
-      // No fresh claim written: stale orphan bytes untouched (still attempt 2).
-      expect(await fs.readFile(pending, "utf8")).toBe(staleRaw);
-      // The +1 consumed the budget: clear the orphan, durable count is exactly cap.
-      await clearStallRetryClaim(controlRoot, operationId, "discovery", 2);
+      // No fresh claim written: orphan TOMBSTONED (unified saturate rule —
+      // marker deleted + identity recorded, never left live for replay).
+      await expect(fs.stat(pending)).rejects.toMatchObject({ code: "ENOENT" });
+      // The +1 consumed the budget: durable count is exactly cap (never over).
       expect(await loadStallRetryStalls(controlRoot, operationId, "discovery")).toBe(
         STALL_RETRY_MAX_ATTEMPTS_PER_PHASE,
       );
