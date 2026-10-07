@@ -306,6 +306,18 @@ export async function consolidateWithOperationSupervisor(root: string, config: H
   }
   let stallRetries = 0;
   for (;;) {
+    // Per-iteration ledger gate (ru/ledger-cap-12): re-load before each
+    // consolidation attempt; at cap exit with EXHAUSTED instead of
+    // materializing/claiming/attempting. Entry load covers fresh
+    // invocations; this covers same-invocation consumption by an earlier
+    // iteration's record. No ledger key (no operation context) → local
+    // budget only. MECHANISM: DETERMINISTIC.
+    if (consolidationOperationId) {
+      const freshStallKills = await loadStallRetryStalls(stateRoot, consolidationOperationId, "consolidation", { config });
+      if (freshStallKills >= STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
+        throw new Error(`AEH_OPERATION_SUPERVISOR_STALL_BUDGET_EXHAUSTED: consolidation already consumed ${freshStallKills} delayed-kill attempt(s); max ${STALL_RETRY_MAX_ATTEMPTS_PER_PHASE} total across all drives.`);
+      }
+    }
     let supervisor = await ensureOperationSupervisor(root, config, contract, supervisorSelection, { required: true, forceMaterialize: true });
     if (!supervisor?.agentId) throw new Error("AEH_OPERATION_SUPERVISOR_UNAVAILABLE: semantic consolidation requires a materialized supervisor session.");
     let operation = await loadOperation(stateRoot, supervisor.operationId);

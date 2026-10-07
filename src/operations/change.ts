@@ -744,6 +744,15 @@ export async function runDiscovery(
   const discoveryDeadlineMs = stallRetryEffectiveDeadlineMs(config);
   let retries = 0;
   for (;;) {
+    // Per-iteration ledger gate (ru/ledger-cap-12): re-load before each
+    // attempt; at cap exit with EXHAUSTED instead of claiming/attempting.
+    // The entry load above covers fresh invocations; this covers
+    // same-invocation budget consumed by an earlier iteration's record.
+    // MECHANISM: DETERMINISTIC (durable count comparison, no model judgment).
+    const freshStalls = await loadStallRetryStalls(controlRoot, operationId, "discovery", { config });
+    if (freshStalls >= STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
+      throw new Error(`EXPLORER_STALL_BUDGET_EXHAUSTED: discovery already consumed ${freshStalls} delayed-kill attempt(s) for operation ${operationId}; max ${STALL_RETRY_MAX_ATTEMPTS_PER_PHASE} total across all drives.`);
+    }
     // Pre-claim BEFORE the counted attempt: a crash after the attempt but
     // before record leaves the durable marker, so a fresh invocation refuses
     // EXHAUSTED instead of regaining budget. Bound to (phase, attempt). A
@@ -835,6 +844,13 @@ export async function runPlanning(
   const planningDeadlineMs = stallRetryEffectiveDeadlineMs(config);
   let retries = 0;
   for (;;) {
+    // Per-iteration ledger gate (ru/ledger-cap-12): same as discovery — the
+    // entry load covers fresh invocations, this covers same-invocation
+    // consumption by an earlier iteration's record.
+    const freshPlanningStalls = await loadStallRetryStalls(controlRoot, operationId, "planning", { config });
+    if (freshPlanningStalls >= STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
+      throw new Error(`PLANNER_STALL_BUDGET_EXHAUSTED: planning already consumed ${freshPlanningStalls} delayed-kill attempt(s) for operation ${operationId}; max ${STALL_RETRY_MAX_ATTEMPTS_PER_PHASE} total across all drives.`);
+    }
     // Pre-claim BEFORE the counted attempt (same crash window as discovery).
     const planningAttempt = persistedStalls + retries + 1;
     await claimStallRetryAttempt(controlRoot, operationId, "planning", planningAttempt, planningDeadlineMs);
@@ -1031,6 +1047,19 @@ export async function runSpecManagerUntilReady(input: {
   let incompleteRetryPending = false;
   let contentRetryPending = false;
   for (;;) {
+    // Per-iteration ledger gate (ru/ledger-cap-12 Luna blocker): re-load
+    // before each attempt; at cap exit with EXHAUSTED instead of
+    // claiming/attempting. The entry load covers fresh invocations; this
+    // covers same-invocation consumption — the incomplete/content retry
+    // branches below (catch + validate paths) continue without calling
+    // record, so the choke point in recordStallRetryStall alone cannot stop
+    // them from launching another attempt after the ledger hits its limit.
+    // Every iteration — stall, mismatch, incomplete, content, or product-choice
+    // continuation — is ledger-gated here. MECHANISM: DETERMINISTIC.
+    const freshStallKills = await loadStallRetryStalls(input.controlRoot, input.operationId, "spec-manager", { config: input.config });
+    if (freshStallKills >= STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
+      throw new Error(`SPEC_MANAGER_STALL_BUDGET_EXHAUSTED: spec authoring already consumed ${freshStallKills} delayed-kill attempt(s) for operation ${input.operationId}; max ${STALL_RETRY_MAX_ATTEMPTS_PER_PHASE} total across all drives.`);
+    }
     await awaitChangeControlCheckpoint(input.controlRoot, input.operationId);
     const basePrompt = buildSpecManagerPrompt(input.payload, input.changeName, input.explorerEvidence, input.plannerEvidence, input.inputs, selectedChoice);
     const retryNotes = [

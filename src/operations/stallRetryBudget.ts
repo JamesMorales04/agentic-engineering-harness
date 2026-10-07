@@ -509,16 +509,44 @@ export async function recordStallRetryStall(
       }
       // else: marker exists (ours or another attempt's) — leave it; do not freshen.
     });
-    const nextCount = await withLock(file, async () => {
-      const previous = await loadUnlocked(file, operationId, phase);
-      const next: StallRetryBudgetV1 = {
-        ...previous,
-        stalls: { ...previous.stalls, [phase]: Math.floor(previous.stalls[phase]) + 1 },
-        updatedAt: new Date().toISOString()
-      };
-      await writeAtomic(file, next);
-      return next.stalls[phase];
-    });
+    let nextCount: number;
+    try {
+      nextCount = await withLock(file, async () => {
+        const previous = await loadUnlocked(file, operationId, phase);
+        // Cap enforcement (ru/ledger-cap-12 choke point): the ledger count NEVER
+        // exceeds STALL_RETRY_MAX_ATTEMPTS_PER_PHASE. Load inside the same lock
+        // as the would-be increment; at/over cap throw the phase EXHAUSTED
+        // (fail-closed, no increment, no write). MECHANISM: DETERMINISTIC
+        // (durable count comparison under lock).
+        const current = Math.floor(previous.stalls[phase]);
+        if (current >= STALL_RETRY_MAX_ATTEMPTS_PER_PHASE) {
+          throw ledgerUnknownExhaustedError(
+            phase,
+            operationId,
+            `budget exhausted at cap (${current}/${STALL_RETRY_MAX_ATTEMPTS_PER_PHASE})`
+          );
+        }
+        const next: StallRetryBudgetV1 = {
+          ...previous,
+          stalls: { ...previous.stalls, [phase]: current + 1 },
+          updatedAt: new Date().toISOString()
+        };
+        await writeAtomic(file, next);
+        return next.stalls[phase];
+      });
+    } catch (error) {
+      // Cap refusal must not strand this attempt's own pre-claim marker: the
+      // durable count is already at cap so the next load refuses via the
+      // count comparison either way, but a stranded marker would force the
+      // marker-unreconciled refusal path and trip quarantine tooling. Supersede
+      // ONLY the caller's own claim (B1 binding); a mismatched marker belongs
+      // to another live attempt and is left alone. Best-effort, never masks
+      // the EXHAUSTED refusal.
+      if (error instanceof Error && error.message.startsWith(EXHAUSTED_CODE[phase])) {
+        await supersedeOwnPendingClaim(controlRoot, operationId, phase, callerAttempt);
+      }
+      throw error;
+    }
     // Supersede ONLY our own claim (B1): delete iff marker.attempt === caller.
     // Mismatched/malformed → leave alone (another live attempt owns it) + trace.
     await supersedeOwnPendingClaim(controlRoot, operationId, phase, callerAttempt);
