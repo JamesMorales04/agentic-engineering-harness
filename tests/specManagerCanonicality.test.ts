@@ -196,7 +196,7 @@ describe("SPEC_MANAGER_CONTENT_NOT_CANONICAL through the frozen controller path"
         knowledgeGaps: []
       }],
       supervisor: [{ summary: "Supervisor initialized.", consolidatedFindings: [], sourceFindingIds: [], conflicts: [], missingEvidence: [], unresolved: [], roadmap: [], finalizationSafety: "SAFE" }],
-      explorer: [{ summary: "Bounded fixture discovery.", relevantFiles: [], findings: [], moduleBoundaries: [], tests: [], dependencies: [], risks: [], openQuestions: [] }],
+      explorer: [{ summary: "Bounded fixture discovery.", relevantFiles: [{ path: "src/greeting.mjs", symbols: [], reason: "bounded fixture change target" }], findings: [], moduleBoundaries: [], tests: [], dependencies: [], risks: [], openQuestions: [] }],
       planner: [{
         workUnits: [{
           id: "WU-1",
@@ -281,9 +281,21 @@ describe("SPEC_MANAGER_CONTENT_NOT_CANONICAL through the frozen controller path"
     await writeScript(root, {
       "semantic-assessment:ROUTE": [routePayload()],
       supervisor: [{ summary: "Supervisor initialized.", consolidatedFindings: [], sourceFindingIds: [], conflicts: [], missingEvidence: [], unresolved: [], roadmap: [], finalizationSafety: "SAFE" }],
-      explorer: [{ summary: "Bounded fixture discovery.", relevantFiles: [], findings: [], moduleBoundaries: [], tests: [], dependencies: [], risks: [], openQuestions: [] }],
+      explorer: [{ summary: "Bounded fixture discovery.", relevantFiles: [{ path: "src/greeting.mjs", symbols: [], reason: "bounded fixture change target" }], findings: [], moduleBoundaries: [], tests: [], dependencies: [], risks: [], openQuestions: [] }],
       planner: [{
-        workUnits: [],
+        workUnits: [{
+          id: "WU-1",
+          objective: "Apply the bounded fixture change.",
+          scope: ["**"],
+          dependencies: [],
+          requirementRefs: ["AC-1"],
+          acceptanceRefs: ["AC-1"],
+          competencies: [],
+          riskTags: [],
+          changeKinds: ["source"],
+          risk: "low",
+          resourceClaims: []
+        }],
         affectedAreas: [],
         reviewDimensions: [],
         validationRequirements: [],
