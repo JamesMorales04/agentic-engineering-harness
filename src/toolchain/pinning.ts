@@ -459,7 +459,15 @@ function parseTomlString(value: string): string | undefined {
     try {
       return JSON.parse(trimmed);
     } catch {
-      return trimmed.slice(1, -1);
+      // Fail-closed: an unparseable double-quoted value (e.g. bad escape
+      // like `"aqua:bad\q"`) yields undefined so the caller records the
+      // line in unparsedInScope (INCONCLUSIVE). NEVER return raw contents:
+      // raw is a nonempty string that passes the present-backend check
+      // and evades INCONCLUSIVE. Single-quoted TOML literal strings carry
+      // no escapes (JSON cannot parse single quotes), so the inner content
+      // IS the parsed value — not a raw fallback.
+      if (trimmed.startsWith("'")) return trimmed.slice(1, -1);
+      return undefined;
     }
   }
   return undefined;

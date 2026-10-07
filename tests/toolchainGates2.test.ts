@@ -66,6 +66,26 @@ describe("RED T2 malformed lock passes", () => {
     expect(detailed.unparsedInScope.length).toBeGreaterThanOrEqual(1);
   });
 
+  it("malformed backend escape is unparsed fail-closed (INCONCLUSIVE, never raw-present)", async () => {
+    // parseTomlString blocker RED: `"aqua:bad\q"` is an unparseable TOML
+    // basic string (bad escape). It must yield undefined → unparsedInScope →
+    // INCONCLUSIVE, NEVER raw inner contents (raw is a nonempty string that
+    // passes the present-backend check and evades INCONCLUSIVE).
+    const { parseMiseLockDetailed: parse } = await import("../src/toolchain/pinning.js");
+    const content = `lockfile_version = 2\n\n[[tools.node]]\nversion = "22.23.2"\nbackend = "aqua:bad\\q"\nspecifiers = ["22.23.2"]\n`;
+    const detailed = (parse as typeof parseMiseLockDetailed)(content);
+    expect(detailed.entries["node"]?.backend).toBeUndefined();
+    expect(detailed.unparsedInScope.length).toBeGreaterThanOrEqual(1);
+    const aligned = checkToolchainLockConsistency(
+      { version: 1, manager: { provider: "mise" }, tools: { node: { kind: "mise", command: "node", source: "node", version: "22.23.2" } } },
+      { version: 1, generatedAt: new Date().toISOString(), profile: "auto", tools: { node: { command: "node", provisioning: "mise", source: "node", requestedVersion: "22.23.2", resolvedVersion: "22.23.2" } } },
+      parseMiseLock(content),
+      { miseLockUnparsedInScope: detailed.unparsedInScope }
+    );
+    expect(aligned.ok).toBe(false);
+    expect(aligned.divergences.join("\n")).toMatch(/INCONCLUSIVE/);
+  });
+
   it("mise entry without version is DRIFT (not silent ok)", () => {
     const parsed = parseMiseLock(`lockfile_version = 2\n\n[[tools.node]]\nbackend = "core:node"\nspecifiers = ["22.23.2"]\n`);
     const result = checkToolchainLockConsistency(
