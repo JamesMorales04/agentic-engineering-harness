@@ -49,6 +49,13 @@ import {
 export const REPAIR_SCOPE_BLOCKER_VERSION = 1 as const;
 export const MAX_REPAIR_SCOPE_BLOCKER_FILES_V1 = 8;
 export const MAX_REPAIR_SCOPE_AMENDMENTS_PER_TASK_V1 = 1;
+/**
+ * Bounded amendment-discovery window: the scan probes at most this many
+ * amendment candidates. Derived from existing bounds (per-task cap + blocker
+ * file cap); any unaccountable state beyond it fails closed.
+ */
+export const REPAIR_SCOPE_AMENDMENT_SCAN_CAP_V1 =
+  MAX_REPAIR_SCOPE_AMENDMENTS_PER_TASK_V1 + MAX_REPAIR_SCOPE_BLOCKER_FILES_V1;
 
 /**
  * Amendable scope denials: dependency manifests that a ledger-approved
@@ -308,6 +315,24 @@ export function isSafeRepairScopePath(value: string): boolean {
   return true;
 }
 
+/**
+ * DETERMINISTIC exact-file gate (C-NEW-2): scope-amendment and blocker paths
+ * must be exact files — glob metacharacters (`*?[]{}!()+@`) and trailing
+ * `/**` (including bare `**`) are rejected. Mirrors `isExplicitGlobScope`
+ * (architecture/workGraph.ts) inverted; kept local so the candidates layer
+ * does not depend on the architecture layer. `isSafeRepairScopePath` alone
+ * accepts `src/**`/`**` (it only rejects traversal/absolute/drive/NUL
+ * forms), so every amendment/blocker entry point must also pass this gate —
+ * otherwise one entry (`src/**`, `**`) exempts unlimited files and
+ * `filterForbiddenScopeForAmendment` strips subtree denies.
+ */
+export function isExactRepairScopeFilePath(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  if (trimmed === "**" || trimmed.endsWith("/**")) return false;
+  return !/[*?[\]{}!()+@]/.test(trimmed);
+}
+
 export function normalizeRepairScopePath(value: string): string {
   // DETERMINISTIC single scope-string identity (C4): posix separators, collapse
   // redundant `//`, `./`, and resolvable `../`, strip a single leading `./`,
@@ -381,9 +406,24 @@ export function parseRepairScopeBlockerFromSession(session: Pick<WorkerSession, 
     // Raw traversal gate BEFORE normalization so `src/../...` cannot hide
     // as a safe relative path; normalize only the raw-safe remainder.
     if (!isSafeRepairScopePath(rawPath)) return undefined;
+    // Exact-paths gate (C-NEW-2): globs are an explicit scope-expansion
+    // attempt, never a silently ignorable declaration — fail closed with a
+    // distinct diagnostic instead of returning undefined ("no blocker").
+    if (!isExactRepairScopeFilePath(rawPath)) {
+      throw new AehError(
+        "PARTICIPANT_PLAN_INVALID",
+        `REPAIR_SCOPE_BLOCKER_INVALID: blocker path '${rawPath}' is not an exact file path; scope amendments allow exact paths only (no wildcards).`,
+      );
+    }
     const filePath = normalizeRepairScopePath(rawPath);
     const reason = entry.reason.trim();
     if (!filePath || !reason || !isSafeRepairScopePath(filePath)) return undefined;
+    if (!isExactRepairScopeFilePath(filePath)) {
+      throw new AehError(
+        "PARTICIPANT_PLAN_INVALID",
+        `REPAIR_SCOPE_BLOCKER_INVALID: blocker path '${filePath}' is not an exact file path; scope amendments allow exact paths only (no wildcards).`,
+      );
+    }
     if (reason.length > 1_000) return undefined;
     normalized.push({ path: filePath, reason });
   }
@@ -409,6 +449,18 @@ export function createRepairScopeBlockerReceipt(input: {
   declaredAt?: string;
   filesNeededOutsideScope: RepairScopeNeededFileV1[];
 }): RepairScopeBlockerReceiptV1 {
+  // Exact-paths gate (C-NEW-2): reject globs fail-closed BEFORE the
+  // safe-path filter so a glob entry can never be silently filtered into an
+  // empty list (size error) or, worse, pass through as an exemptible path.
+  for (const entry of input.filesNeededOutsideScope) {
+    const raw = typeof entry?.path === "string" ? entry.path.trim() : "";
+    if (raw && isSafeRepairScopePath(raw) && !isExactRepairScopeFilePath(raw)) {
+      throw new AehError(
+        "PARTICIPANT_PLAN_INVALID",
+        `REPAIR_SCOPE_BLOCKER_INVALID: blocker path '${raw}' is not an exact file path; scope amendments allow exact paths only (no wildcards).`,
+      );
+    }
+  }
   const files = [...input.filesNeededOutsideScope]
     .filter((entry) => typeof entry?.path === "string" && isSafeRepairScopePath(entry.path.trim()))
     .map((entry) => ({ path: normalizeRepairScopePath(entry.path.trim()), reason: entry.reason.trim() }))
@@ -494,17 +546,47 @@ export async function listRepairScopeAmendments(
   _config: HarnessProjectConfig,
   taskId: string,
 ): Promise<RepairScopeAmendmentV1[]> {
-  const found: RepairScopeAmendmentV1[] = [];
-  for (let index = 1; index <= MAX_REPAIR_SCOPE_AMENDMENTS_PER_TASK_V1 + 1; index += 1) {
-    const file = repairScopeAmendmentPath(root, taskId, index);
-    try {
-      const raw = JSON.parse(await fs.readFile(file, "utf8")) as RepairScopeAmendmentV1;
-      assertRepairScopeAmendment(raw);
-      found.push(raw);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") break;
-      throw error;
+  // Gap-tolerant discovery (DETERMINISTIC): amendment files are numbered
+  // densely by the write path, but a missing lower index (deleted or never
+  // written) must not hide a higher-numbered amendment and bypass the
+  // per-task limit. Discover candidates by directory listing instead of
+  // stopping at the first ENOENT. The probe count stays capped at
+  // REPAIR_SCOPE_AMENDMENT_SCAN_CAP_V1 and any unaccountable state (a
+  // non-numeric amendment-like file, or more candidates than the window
+  // holds) fails closed — admission never proceeds on a truncated scan.
+  const dir = path.join(root, ".harness", "seals");
+  let entries: string[];
+  try {
+    entries = await fs.readdir(dir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  const prefix = `${safe(taskId)}-scope-amendment-`;
+  const indices: number[] = [];
+  for (const entry of entries) {
+    if (!entry.startsWith(prefix) || !entry.endsWith(".json")) continue;
+    const numeral = entry.slice(prefix.length, -".json".length);
+    if (!/^[1-9]\d*$/.test(numeral)) {
+      throw new AehError(
+        "PARTICIPANT_PLAN_INVALID",
+        `REPAIR_SCOPE_AMENDMENT_SCAN_INVALID: unexpected scope amendment file '${entry}' is not a numbered amendment; failing closed — the BLOCKED outcome stands.`,
+      );
     }
+    indices.push(Number(numeral));
+  }
+  indices.sort((a, b) => a - b);
+  if (indices.length > REPAIR_SCOPE_AMENDMENT_SCAN_CAP_V1) {
+    throw new AehError(
+      "PARTICIPANT_PLAN_INVALID",
+      "REPAIR_SCOPE_AMENDMENT_SCAN_TRUNCATED: scope amendment candidates exceed the bounded scan window; failing closed — the BLOCKED outcome stands.",
+    );
+  }
+  const found: RepairScopeAmendmentV1[] = [];
+  for (const index of indices) {
+    const raw = JSON.parse(await fs.readFile(repairScopeAmendmentPath(root, taskId, index), "utf8")) as RepairScopeAmendmentV1;
+    assertRepairScopeAmendment(raw);
+    found.push(raw);
   }
   return found.sort((a, b) => a.amendmentPath.localeCompare(b.amendmentPath));
 }
@@ -521,6 +603,12 @@ export function assertRepairScopeAmendment(value: unknown): asserts value is Rep
   for (const entry of record["exemptedPaths"] as unknown[]) {
     if (typeof entry !== "string" || !isSafeRepairScopePath(entry)) {
       throw new AehError("PARTICIPANT_PLAN_INVALID", `Amendment exempted path '${String(entry)}' is not a safe repository-relative path.`);
+    }
+    // Exact-paths gate (C-NEW-2): the product choice is over exact
+    // blocker-declared paths — a glob entry (e.g. `src/**`, `**`) would
+    // exempt unlimited files via filterForbiddenScopeForAmendment.
+    if (!isExactRepairScopeFilePath(entry) || !isExactRepairScopeFilePath(normalizeRepairScopePath(entry))) {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", `Amendment exempted path '${String(entry)}' is not an exact file path; scope amendments allow exact paths only (no wildcards).`);
     }
     if (!isSafeRepairScopePath(normalizeRepairScopePath(entry))) {
       throw new AehError("PARTICIPANT_PLAN_INVALID", `Amendment exempted path '${String(entry)}' is not a safe repository-relative path.`);
@@ -633,6 +721,12 @@ export async function applyRepairScopeAmendment(input: {
   for (const filePath of exemptedPaths) {
     if (!isSafeRepairScopePath(filePath)) {
       throw new AehError("PARTICIPANT_PLAN_INVALID", `Amendment path '${filePath}' is not a safe repository-relative path.`);
+    }
+    // Exact-paths defense-in-depth (C-NEW-2): exempted paths derive from the
+    // blocker receipt, which may have bypassed create/parse gates when forged
+    // directly — never widen on a glob here.
+    if (!isExactRepairScopeFilePath(filePath)) {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", `Amendment path '${filePath}' is not an exact file path; scope amendments allow exact paths only (no wildcards).`);
     }
   }
   // HARD-protection gate (never exemptible): even a ledger-approved decision
