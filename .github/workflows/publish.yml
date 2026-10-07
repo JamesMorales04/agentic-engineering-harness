@@ -83,13 +83,15 @@ jobs:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          # Narrow repair gate: refuse UNLESS exactly the published-but-unreleased state.
-          # Rationale: tag-at-R proves verify passed (tags are created post-verify only);
-          # npm-confirms-published proves publicity; SHA-binding (tag == HEAD == version
-          # commit) proves identity. Together they re-establish the full verified chain
-          # without re-running it. All other states refuse as before (no
+          # Narrow repair gate: pre-screen for exactly the published-but-unreleased
+          # state. A tag proves NOTHING about verification (manual or legacy tags
+          # predate tag-after-verify) — trust is established only by the
+          # verify-published job re-running verification for R in THIS run, which
+          # the repair-release job needs for success. SHA-binding (tag == HEAD ==
+          # version commit) proves identity; npm-confirms-published proves
+          # publicity. All other states refuse as before (no
           # verification-skipped Release, no rebuild/republish here — the
-          # repair-release job owns the SHA-bound Release creation).
+          # repair-release job owns the SHA-bound Release creation after verify).
           TAG="v${RELEASE_VERSION}"
           PACKAGE_NAME="$(node -p "require('./package.json').name")"
           if ! git ls-remote --tags origin | grep -q "refs/tags/${TAG}$"; then
@@ -123,12 +125,23 @@ jobs:
   verify-published:
     name: verify-published
     needs: publish
-    if: needs.publish.outputs.should_publish == 'true'
+    # Normal path (should_publish) AND repair path (manual dispatch bump=current
+    # with nothing to publish): a manually created or legacy tag at R proves
+    # nothing, so the repair leg must EXECUTE verification for R in this run —
+    # the repair Release job needs this job's success. No Release without it.
+    if: needs.publish.outputs.should_publish == 'true' || (needs.publish.outputs.should_publish != 'true' && github.event_name == 'workflow_dispatch' && inputs.bump == 'current')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        if: needs.publish.outputs.should_publish == 'true'
         with:
           ref: ${{ needs.publish.outputs.release_sha }}
+          fetch-depth: 0
+
+      - uses: actions/checkout@v6
+        if: needs.publish.outputs.should_publish != 'true'
+        with:
+          ref: main
           fetch-depth: 0
 
       - uses: actions/setup-node@v6
@@ -139,6 +152,7 @@ jobs:
       - run: npm ci
 
       - name: Confirm release commit
+        if: needs.publish.outputs.should_publish == 'true'
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.publish.outputs.version }}
@@ -150,6 +164,27 @@ jobs:
           git checkout --detach "$RELEASE_SHA"
           test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
           test "$(node -p "require('./package.json').version")" = "$RELEASE_VERSION"
+
+      - name: Confirm repair revision R (tag-bound, SHA-verified)
+        if: needs.publish.outputs.should_publish != 'true'
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Repair leg: resolve R as HEAD and bind it by SHA. The tag is NOT
+          # trusted as proof of verification — it is only an identity claim
+          # (tag == HEAD, version matches) checked BEFORE the verification steps
+          # below execute against these exact bits.
+          TAG="v${RELEASE_VERSION}"
+          git fetch origin "refs/tags/${TAG}:refs/tags/${TAG}"
+          TAG_SHA="$(git rev-list -n 1 "refs/tags/${TAG}")"
+          HEAD_SHA="$(git rev-parse HEAD)"
+          test -n "$TAG_SHA"
+          test "$TAG_SHA" = "$HEAD_SHA"
+          test "$(node -p "require('./package.json').version")" = "$RELEASE_VERSION"
+          test "$(git describe --tags --exact-match HEAD)" = "$TAG"
+          echo "Repair verification target R=$HEAD_SHA bound to ${TAG}."
 
       - name: Provision the required consumer toolchain provider
         shell: bash
@@ -364,7 +399,10 @@ jobs:
   repair-release:
     name: repair-release
     needs: [publish, verify-published]
-    if: always() && needs.publish.result == 'success' && needs.publish.outputs.should_publish != 'true' && github.event_name == 'workflow_dispatch' && inputs.bump == 'current'
+    # No always(): with verify-published SKIPPED this job is skipped by needs
+    # semantics, and the explicit success requirement chains the repair Release
+    # on verification evidence for R in THIS run — never on tag existence.
+    if: needs.publish.result == 'success' && needs['verify-published'].result == 'success' && needs.publish.outputs.should_publish != 'true' && github.event_name == 'workflow_dispatch' && inputs.bump == 'current'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -383,11 +421,12 @@ jobs:
           RELEASE_VERSION: ${{ needs.publish.outputs.version }}
         run: |
           set -euo pipefail
-          # Rationale: tag-at-R proves verify passed (tags are created post-verify only);
-          # npm-confirms-published proves publicity; SHA-binding (tag == HEAD, version
-          # matches) proves identity. Together they re-establish the full verified chain
-          # without re-running it. Proceed ONLY to SHA-bound Release creation (no
-          # rebuild/republish); all other states were already refused by the repair gate.
+          # Rationale: verification RE-RAN for R in verify-published this run
+          # (this job needs its success — a manual/legacy tag alone authorizes
+          # nothing). Tag == HEAD plus version match re-establishes identity;
+          # npm-confirms-published proves publicity. Proceed ONLY to SHA-bound
+          # Release creation (no rebuild/republish); all other states were
+          # already refused by the repair gate or failed verification.
           TAG="v${RELEASE_VERSION}"
           git fetch origin "refs/tags/${TAG}:refs/tags/${TAG}"
           TAG_SHA="$(git rev-list -n 1 "refs/tags/${TAG}")"
