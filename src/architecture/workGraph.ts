@@ -269,7 +269,10 @@ export function deterministicSchedulingConflicts(left: SchedulableWorkUnitV1, ri
  * Failure codes are distinct: ORDERING_BLOCKED for duplicate
  * ORDERED_SEQUENCE positions or ordering deadlocks, UNKNOWN_DEPENDENCY for
  * references outside the scheduled set, DEPENDENCY_CYCLE when every
- * remaining unit waits on another remaining unit.
+ * remaining unit waits on another remaining unit, INVALID_SCHEDULING_BOUND
+ * for a non-finite, negative, or out-of-range blueprintWaveIndex value
+ * (validated before scheduling; only finite bounds in [0, unitCount] ever
+ * reach the loop).
  */
 export function planWorkUnitWaves(
   units: readonly SchedulableWorkUnitV1[],
@@ -279,6 +282,21 @@ export function planWorkUnitWaves(
   const mutuallyExclusive = options?.areMutuallyExclusive
     ?? ((leftId: string, rightId: string) => deterministicSchedulingConflicts(byId.get(leftId)!, byId.get(rightId)!).length > 0);
   const blueprintWaveOf = options?.blueprintWaveIndex ?? (() => 0);
+  // Fail-closed bound on the exported callback surface (DETERMINISTIC):
+  // frozen blueprint waves always yield finite indices in [0, unitCount],
+  // so a non-finite, negative, or out-of-range (> unitCount) bound is a
+  // malformed caller. Without this gate, an Infinity bound stalls every
+  // unit at the eligibility check below while the empty-wave branch emits
+  // forever, and a huge finite bound pre-allocates that many empty waves.
+  // Validated once, up front, into a frozen snapshot: the loop below must
+  // observe fixed bounds, never a live callback.
+  const blueprintWaveBounds = new Map<string, number>(units.map((unit) => {
+    const bound = blueprintWaveOf(unit.id);
+    if (typeof bound !== "number" || !Number.isFinite(bound) || bound < 0 || bound > units.length) {
+      throw new Error(`Cannot schedule delegation plan [INVALID_SCHEDULING_BOUND]: '${unit.id}' declares invalid blueprint wave bound ${String(bound)} (expected a finite number in [0, ${units.length}]).`);
+    }
+    return [unit.id, bound] as [string, number];
+  }));
   const orderingViolations = resourceClaimOrderingViolations(units.map((unit) => ({ id: unit.id, resourceClaims: unit.resourceClaims ?? [] })));
   if (orderingViolations.length) throw new Error(`Cannot schedule delegation plan [ORDERING_BLOCKED]: ${orderingViolations.join(", ")}`);
   const orderedClaims = new Map<string, Array<{ resource: string; order?: number }>>(units.map((unit) => [unit.id, (unit.resourceClaims ?? []).filter((claim) => claim.mode === "ORDERED_SEQUENCE").map((claim) => ({ resource: claim.resource, order: claim.order }))]));
@@ -301,7 +319,7 @@ export function planWorkUnitWaves(
     for (const unit of remaining.values()) {
       if (!unit.dependencies.every((dependency) => completed.has(dependency))) continue;
       if (!orderedReadinessSatisfied(unit)) continue;
-      if (blueprintWaveOf(unit.id) > waves.length) continue;
+      if (blueprintWaveBounds.get(unit.id)! > waves.length) continue;
       if (wave.some((other) => mutuallyExclusive(unit.id, other.id))) continue;
       wave.push(unit);
     }
