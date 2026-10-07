@@ -1916,10 +1916,10 @@ async function listOperationIds(root: string): Promise<string[]> {
   return entries
     // Strict operation-id shape (mirrors the controller record scan): sidecar
     // files such as `<id>.workspace-intent.json` contain dots and never match.
+    // Full scan: every operation JSON is visited (no cap, oldest never skipped).
     .filter((entry) => entry !== "portfolio.json" && /^[A-Z][A-Za-z0-9_-]+\.json$/.test(entry))
     .map((entry) => entry.slice(0, -".json".length))
-    .sort()
-    .slice(0, 200);
+    .sort();
 }
 
 function toCandidate(resource: OperationResourceV1): ResourceCandidate {
