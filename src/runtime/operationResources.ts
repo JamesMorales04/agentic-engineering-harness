@@ -464,12 +464,22 @@ export async function selectTripleBoundWorkspaces(
         });
       } catch { /* observability only */ }
     }
-    // W2: proven absence clears the stale attempt sidecar. With no ID the only
-    // provable absence is zero title matches in the exhaustive listing; any
-    // title match stays UNKNOWN (possible orphan with unknown ID) so the
-    // intent is retained fail-closed and never cleared here.
+    // R3/R2: a no-ID attempt is ALWAYS UNKNOWN — never auto-clear here. An
+    // unknown-ID workspace may be renamed or title-less, so zero title
+    // matches do NOT prove absence. No operator-confirmed-absent vocabulary
+    // exists; the only affirmative positive that supersedes this sidecar is
+    // the successful create receipt path (intent upgrade + full registration
+    // clear in the controller). Retaining leaks at most one extra listing per
+    // future sweep (bounded leak); the discovery-ignored trace below keeps the
+    // leak sweep-visible. Never fallback-match here.
     if (titleMatches.length === 0) {
-      await clearOperationWorkspaceIntent(root, record.id).catch(() => undefined);
+      try {
+        await trace(root, "operation.workspace.discovery-ignored", {
+          operationId: record.id,
+          reason: "intent attempt without workspace ID retained UNKNOWN; zero title matches prove nothing (renamed/title-less orphan possible; bounded leak, superseded only by create receipt)",
+          workspaceIds: []
+        });
+      } catch { /* observability only */ }
     }
     return [];
   }
@@ -501,14 +511,25 @@ export async function selectTripleBoundWorkspaces(
       });
     } catch { /* observability only */ }
   }
-  // W2: successful exhaustive listing proving no match clears the stale intent
-  // sidecar. With an ID the absence of that exact ID in the exhaustive listing
-  // proves no orphan exists (competing same-title/different-ID workspaces are
-  // not ours by the ID-decisive gate above), so the attempt record is removed
-  // and future sweeps skip the CLI. Clearing is best-effort: a leftover intent
-  // only causes an extra listing, never a false claim.
+  // R3/R1: clear ONLY when the exact ID is absent from the exhaustive listing
+  // entirely. An ID-present workspace that fails the triple-binding selection
+  // (renamed title / moved path) is NOT proven absence — it is UNKNOWN/retry,
+  // so the intent is retained, never cleared, and never fallback-matched to a
+  // same-title/different-ID competitor. Clearing is best-effort: a leftover
+  // intent only causes an extra listing, never a false claim.
   if (selected.length === 0) {
-    await clearOperationWorkspaceIntent(root, record.id).catch(() => undefined);
+    const idPresent = listed.some((workspace) => workspace.workspaceId === expectedId);
+    if (!idPresent) {
+      await clearOperationWorkspaceIntent(root, record.id).catch(() => undefined);
+    } else {
+      try {
+        await trace(root, "operation.workspace.discovery-ignored", {
+          operationId: record.id,
+          reason: "workspace ID present but failed triple-binding ownership; intent retained UNKNOWN for retry (never clear, never fallback-match)",
+          workspaceIds: [expectedId]
+        });
+      } catch { /* observability only */ }
+    }
   }
   return selected;
 }

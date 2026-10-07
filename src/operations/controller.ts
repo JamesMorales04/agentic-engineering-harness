@@ -181,22 +181,26 @@ export async function startDetachedOperation(
   await materializeOverdueOperationDeadlines(absoluteRoot, config);
   // Restart recovery: any proven terminal operation in this control root with an
   // incomplete resource receipt is reconciled before new work starts.
-  // Fail-closed: preliminary reconciliation errors propagate — startup fails
-  // loudly with a coded error (AEH_WORKSPACE_SWEEP_INCOMPLETE vocabulary)
-  // rather than dispatching new work over unreconciled orphans or an
-  // unprovable sweep. Both a thrown reconciliation error and a sweep that
-  // reports per-operation failures block startup.
+  // Fail-closed ONLY for the workspace-listing proof
+  // (AEH_WORKSPACE_SWEEP_INCOMPLETE): an unprovable workspace sweep blocks
+  // startup rather than dispatching new work over unreconciled orphans. All
+  // other terminal-resource failures restore the pre-round-2 behavior —
+  // swallowed, never blocking startup. Both the thrown path and the
+  // per-operation sweep.failures path are narrowed identically.
   let preliminarySweep;
   try {
     preliminarySweep = await reconcileTerminalOperationResources(absoluteRoot);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (/AEH_[A-Z_]+/.test(message)) throw error;
-    throw new Error(`AEH_WORKSPACE_SWEEP_INCOMPLETE: preliminary terminal-resource reconciliation failed: ${message}`);
+    if (message.includes("AEH_WORKSPACE_SWEEP_INCOMPLETE")) throw error;
+    preliminarySweep = undefined;
   }
-  if (preliminarySweep.failures.length > 0) {
-    const detail = preliminarySweep.failures.map((failure) => `${failure.operationId}: ${failure.error}`).join("; ").slice(0, 2000);
-    throw new Error(`AEH_WORKSPACE_SWEEP_INCOMPLETE: preliminary terminal-resource reconciliation failed: ${detail}`);
+  if (preliminarySweep && preliminarySweep.failures.length > 0) {
+    const workspaceFailures = preliminarySweep.failures.filter((failure) => failure.error.includes("AEH_WORKSPACE_SWEEP_INCOMPLETE"));
+    if (workspaceFailures.length > 0) {
+      const detail = workspaceFailures.map((failure) => `${failure.operationId}: ${failure.error}`).join("; ").slice(0, 2000);
+      throw new Error(`AEH_WORKSPACE_SWEEP_INCOMPLETE: preliminary terminal-resource reconciliation failed: ${detail}`);
+    }
   }
   if (suppliedDecision) assertIntentDecisionForRoute(suppliedDecision, kind === "audit" ? "audit" : kind === "change" ? "change" : "run");
   if (leadInitiated) {
