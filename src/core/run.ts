@@ -39,7 +39,7 @@ import { createMemoryProvider } from "../providers/memory.js";
 import { buildAcceptedOperationCandidates } from "../memory/candidates.js";
 import { compileExecutionCatalog, type ExecutionCatalogV1 } from "../architecture/executionCatalog.js";
 import { assertCapabilityRegistryV1, discoverCapabilityRegistryV1, loadOperationCapabilityRegistryV1, persistOperationCapabilityRegistryV1, type CapabilityRegistryV1 } from "../capabilities/registry.js";
-import { assembleCandidateChangeSet, type CandidateImpactAssessmentRuntimeV1, type CandidateScopeEscapeV1 } from "../candidates/assembler.js";
+import type { CandidateImpactAssessmentRuntimeV1, CandidateScopeEscapeV1 } from "../candidates/assembler.js";
 import { executeIsolatedCandidateMutation } from "../candidates/direct.js";
 import { executeRepairerCandidateMutation, repairProtectedPaths } from "../candidates/repair.js";
 import {
@@ -49,7 +49,7 @@ import {
   repairScopeBlockerValidationCheck,
   resolveRepairScopeBlockerViaProductChoice,
 } from "../candidates/repairScope.js";
-import { bindAssembledCandidate } from "../candidates/binding.js";
+import { assembleAndBindCandidateChangeSet } from "../candidates/binding.js";
 import { createSemanticAssessmentRuntimeV1, createSemanticRepositoryBindingV1, type SemanticAssessmentRuntimeV1 } from "../semantic/runtime.js";
 import { recordPaseoTrace } from "../paseo/trace.js";
 import { discoverProjectStackProfile, type ProjectStackProfileV1 } from "../participants/stack.js";
@@ -481,12 +481,17 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
           .map((entry) => entry.trim())
           .filter((entry) => isSafeRepairScopePath(entry))
           .map((entry) => normalizeRepairScopePath(entry));
-        const assembled = await assembleCandidateChangeSet({
+        // Serialized under the per-operation coordination lock (re-validated
+        // inside): a concurrent assembly that advanced the candidate first
+        // turns this into a clean CANDIDATE_STALE instead of tearing the
+        // shared workspace.
+        const assembled = await assembleAndBindCandidateChangeSet({
           root: workspaceRoot,
+          stateRoot: controlRoot,
           operationId,
           projectId: currentCandidate.projectId,
           taskId: effectiveContract.task.id,
-          currentCandidate,
+          baseCandidate: currentCandidate,
           changeSet: isolated.changeSet,
           allowedScope: directAllowedScope,
           forbiddenScope: [...new Set(directForbiddenScope)].sort(),
@@ -496,7 +501,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
           semanticAssessment: impactAssessmentRuntime,
           onScopeEscape
         });
-        const boundCandidate = await bindAssembledCandidate({ root: workspaceRoot, stateRoot: controlRoot, operationId, baseCandidate: currentCandidate, candidate: assembled.candidate, changeSet: isolated.changeSet });
+        const boundCandidate = assembled.candidate;
         candidateImpact = assembled.impact;
         await recordEvent(controlRoot, effectiveConfig, "harness.candidate.assembled", {
           taskId: effectiveContract.task.id,

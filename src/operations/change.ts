@@ -28,10 +28,9 @@ import { requireDurableChangeHandoff, type DurableAgentEvidence } from "./change
 import { projectedAuthorizedReadRoots } from "../paseo/launchSpec.js";
 import { changeInputsPrompt, resolveChangeInputs, type ChangeInputReference } from "./changeInputs.js";
 import {
-  bindOperationCandidate,
+  bindOperationCandidateWithAssemblyReceipt,
   loadOperation,
   patchOperation,
-  recordCandidateAssemblyReceipt,
   bindOperationExecutionSemantics,
   isProvisionalOperationPolicyV1,
   bindProductChoiceExecutionSemantics,
@@ -51,6 +50,7 @@ import {
   suspendOperationForProductChoice,
   assertCurrentControllerOwner,
   currentOperationContext,
+  withOperationCoordinationLock,
   setOperationStage,
   type ChangeOperationPayload,
   type OperationRecordV2
@@ -480,11 +480,12 @@ export async function rebindEscalatedChangePolicy(input: {
  * candidate workspace after the candidate was frozen. Those controller-owned writes change the
  * workspace source digest, so the next participant launch (and the Planner's accepted result)
  * would be rejected `CANDIDATE_WORKSPACE_MISMATCH` against the stale binding. This advance binds
- * exactly one successor CandidateRevision for the authored transition, records the deterministic
- * ASSEMBLY lineage receipt for the authored change (the Spec Manager is the producing bounded
- * participant), and invalidates the frozen policy and participant execution bindings through the
- * canonical `bindOperationCandidate` path; the next launch recompiles the policy for the advanced
- * candidate. It is idempotent: an unchanged workspace digest never advances a revision.
+ * exactly one successor CandidateRevision for the authored transition and records the
+ * deterministic ASSEMBLY lineage receipt for the authored change (the Spec Manager is the
+ * producing bounded participant) in a SINGLE durable commit, and invalidates the frozen policy
+ * and participant execution bindings through the canonical atomic candidate-binding path; the
+ * next launch recompiles the policy for the advanced candidate. It is idempotent: an unchanged
+ * workspace digest never advances a revision.
  */
 export async function advanceCandidateForControllerAuthoring(input: {
   root: string;
@@ -497,6 +498,11 @@ export async function advanceCandidateForControllerAuthoring(input: {
   assurance: AssuranceLevel;
   contract?: TaskContract;
 }): Promise<{ advanced: boolean; revision: number; identityDigest: string }> {
+  // Serialized under the per-operation coordination lock: the worktree digest
+  // read, the atomic bind + assembly receipt, and the bootstrap policy
+  // re-bind observe one stable candidate, so a concurrent assembly cannot
+  // interleave a second advance or a torn workspace between them.
+  return withOperationCoordinationLock(input.controlRoot, input.operationId, async () => {
   const current = await loadOperation(input.controlRoot, input.operationId);
   const base = current.candidateRevision;
   if (!base) throw new Error("CANDIDATE_BINDING_REQUIRED: controller authoring cannot advance without a current CandidateRevision.");
@@ -514,16 +520,14 @@ export async function advanceCandidateForControllerAuthoring(input: {
     worktree: input.root,
     createdAt: new Date().toISOString()
   });
-  await bindOperationCandidate(input.controlRoot, input.operationId, advanced);
-  const rebound = await loadOperation(input.controlRoot, input.operationId);
-  await recordCandidateAssemblyReceipt(input.controlRoot, input.operationId, {
+  await bindOperationCandidateWithAssemblyReceipt(input.controlRoot, input.operationId, {
     baseCandidate: base,
     candidate: advanced,
     changeSet: {
       operationId: input.operationId,
       taskId: input.taskId,
       workUnitId: `authoring:${input.changeName}`,
-      participantId: controllerAuthoringParticipantId(rebound, input.operationId),
+      participantId: controllerAuthoringParticipantId(current, input.operationId),
       baseCandidateRevision: base.revision,
       baseCandidateDigest: base.identityDigest,
       patchDigest: await controllerAuthoringPatchDigest(input.root, input.changeName, input.taskId)
@@ -536,6 +540,7 @@ export async function advanceCandidateForControllerAuthoring(input: {
   // EXECUTION_POLICY_RECOMPILE_REQUIRED.
   await bindBootstrapOperationPolicy(input.controlRoot, input.config, await loadOperation(input.controlRoot, input.operationId), input.route, input.assurance, input.contract);
   return { advanced: true, revision: advanced.revision, identityDigest: advanced.identityDigest };
+  });
 }
 
 function controllerAuthoringParticipantId(operation: OperationRecordV2, operationId: string): string {

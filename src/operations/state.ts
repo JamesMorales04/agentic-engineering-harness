@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { IntentDecisionV1 } from "../audit/intentDecision.js";
 import type { ChangePreflightV1 } from "../core/triage.js";
-import { assertCurrentCandidateBinding, assertCandidateRevisionV1, createCandidateAssemblyReceiptV1, createCandidateRevisionV1, evaluateTerminalGate, candidateRevisionsEqual, resolveCandidateLineageReceiptV1, type CandidateAssemblyReceiptV1, type CandidateRevisionV1, type ParticipantReceiptV1 } from "./v2Contracts.js";
+import { assertCurrentCandidateBinding, assertCandidateRevisionV1, candidateAssemblyReceiptIdV1, createCandidateAssemblyReceiptV1, createCandidateRevisionV1, evaluateTerminalGate, candidateRevisionsEqual, resolveCandidateLineageReceiptV1, type CandidateAssemblyReceiptV1, type CandidateRevisionV1, type ParticipantReceiptV1 } from "./v2Contracts.js";
 import { objectiveParticipantAccountingV1 } from "./participantAccounting.js";
 import { canonicalSerialize, sha256Canonical, sha256Utf8 } from "../core/digest.js";
 import { computeWorktreeDigest } from "../core/git.js";
@@ -672,6 +672,99 @@ export async function bindOperationCandidate(root: string, operationId: string, 
     await assertWorkspaceMatchesCandidate(path.resolve(candidate.worktree ?? current.workspaceRoot ?? current.root), candidate);
     const participants = Object.fromEntries(Object.entries(current.participants).map(([id, participant]) => [id, { ...participant, executionBinding: undefined }]));
     return { ...current, candidateRevision: candidate, operationExecutionRevision: current.operationExecutionRevision! + 1, resolvedOperationPolicy: undefined, participants, revision, updatedAt: now, lastProgressAt: now };
+  }, true);
+}
+
+/**
+ * Bind an assembled candidate AND record its deterministic ASSEMBLING receipt
+ * in a single durable commit (DETERMINISTIC mechanism: one locked
+ * `mutateOperation` callback owns both the candidate transition and the
+ * receipt-map insert, so no crash window can leave a bound-but-unreceipted
+ * revision behind).
+ *
+ * The receipt is constructed from the same locked record the bind validates,
+ * so the recorded `operationExecutionRevision` (post-bind), controller epoch,
+ * and source-receipt selection exactly match the transition. Re-running with
+ * the same (base, candidate, changeSet) inputs after a crash is idempotent:
+ * when the candidate is already bound, the identical receipt is
+ * deterministically reconstructed and backfilled when missing instead of
+ * double-advancing the revision.
+ */
+export async function bindOperationCandidateWithAssemblyReceipt(
+  root: string,
+  operationId: string,
+  input: CandidateAssemblyReceiptInputV1
+): Promise<OperationRecordV2> {
+  assertCandidateRevisionV1(input.baseCandidate);
+  assertCandidateRevisionV1(input.candidate);
+  if (input.baseCandidate.operationId !== operationId || input.candidate.operationId !== operationId) throw new Error("V2_ASSEMBLY_RECEIPT_REJECTED: candidate belongs to a different operation.");
+  if (input.candidate.revision !== input.baseCandidate.revision + 1 || input.candidate.parentCandidateId !== input.baseCandidate.candidateId) throw new Error("V2_ASSEMBLY_RECEIPT_REJECTED: assembly must advance exactly one candidate from its bound parent.");
+  if (input.changeSet.operationId !== operationId || input.changeSet.baseCandidateRevision !== input.baseCandidate.revision || input.changeSet.baseCandidateDigest !== input.baseCandidate.identityDigest) throw new Error("V2_ASSEMBLY_RECEIPT_REJECTED: ChangeSet identity does not bind the assembly base.");
+  const derived = input.changeSet.derivation;
+  const sourceBaseRevision = derived?.originalBaseCandidateRevision ?? input.changeSet.baseCandidateRevision;
+  const sourceBaseIdentityDigest = derived?.originalBaseCandidateDigest ?? input.changeSet.baseCandidateDigest;
+  const effectiveChangeSetDigest = sha256Canonical(input.changeSet);
+  const sourceChangeSetDigest = derived?.originalChangeSetDigest ?? effectiveChangeSetDigest;
+  // Deterministic receipt identity: reused to keep the reconstruction
+  // byte-identical across crash-retries even when the candidate carries no
+  // `createdAt` (the stored receipt's instant is preferred over a fresh one).
+  const assemblyId = candidateAssemblyReceiptIdV1(operationId, input.candidate.candidateId);
+  return mutateOperation(root, operationId, {}, true, "operation.candidate.bound", async (current, revision, now) => {
+    const createdAt = input.candidate.createdAt ?? current.candidateAssemblyReceipts?.[assemblyId]?.createdAt ?? now;
+    const buildAssembly = (operationExecutionRevision: number) => {
+      const sourceReceipt = selectAssemblySourceReceipt(current, input.changeSet.participantId, sourceBaseRevision, sourceBaseIdentityDigest);
+      return createCandidateAssemblyReceiptV1({
+        operationId,
+        taskId: input.changeSet.taskId,
+        workUnitId: input.changeSet.workUnitId,
+        participantId: input.changeSet.participantId,
+        baseCandidateId: input.baseCandidate.candidateId,
+        baseRevision: input.baseCandidate.revision,
+        baseIdentityDigest: input.baseCandidate.identityDigest,
+        sourceBaseRevision,
+        sourceBaseIdentityDigest,
+        ...(sourceReceipt ? { sourceReceiptId: sourceReceipt.receiptId, sourceReceiptDigest: sha256Canonical(sourceReceipt) } : {}),
+        sourceChangeSetDigest,
+        candidateId: input.candidate.candidateId,
+        revision: input.candidate.revision,
+        identityDigest: input.candidate.identityDigest,
+        changeSetDigest: effectiveChangeSetDigest,
+        patchDigest: input.changeSet.patchDigest,
+        operationExecutionRevision,
+        controllerEpoch: currentControllerEpoch(current),
+        createdAt
+      });
+    };
+    if (current.candidateRevision && candidateRevisionsEqual(current.candidateRevision, input.candidate)) {
+      // The single commit already landed (bound ⟺ receipted) or a legacy
+      // two-step orphan is being retried: backfill the missing receipt
+      // idempotently instead of advancing the revision again.
+      const assembly = buildAssembly(current.operationExecutionRevision ?? 1);
+      if (assembly.assemblyId !== assemblyId) throw new Error("V2_ASSEMBLY_RECEIPT_REJECTED: assembly receipt identity does not match the bound candidate.");
+      const existing = current.candidateAssemblyReceipts?.[assembly.assemblyId];
+      if (existing) {
+        if (existing.digest !== assembly.digest) throw new Error("V2_ASSEMBLY_RECEIPT_REJECTED: a conflicting assembly receipt already exists for this candidate.");
+        return { ...current, revision, updatedAt: now, lastProgressAt: now };
+      }
+      return { ...current, revision, updatedAt: now, lastProgressAt: now, candidateAssemblyReceipts: { ...(current.candidateAssemblyReceipts ?? {}), [assembly.assemblyId]: assembly } };
+    }
+    if (!Number.isSafeInteger(current.operationExecutionRevision) || current.operationExecutionRevision! < 1) throw new Error("UNSUPPORTED_OPERATION_EXECUTION_REVISION: migrate this operation record before candidate assembly.");
+    if (isTerminal(current.status)) throw new Error("V2_CANDIDATE_BINDING_REJECTED: terminal operations cannot bind a new CandidateRevision.");
+    if (input.candidate.operationId !== current.id) throw new Error("V2_CANDIDATE_BINDING_REJECTED: candidate operation does not match the operation record.");
+    if (!current.candidateRevision) throw new Error("V2_ASSEMBLY_RECEIPT_REJECTED: an assembly requires a bound base CandidateRevision.");
+    assertCandidateRevisionV1(current.candidateRevision);
+    if (current.candidateRevision.operationId !== input.candidate.operationId) throw new Error("V2_CANDIDATE_BINDING_REJECTED: candidate operation does not match the current candidate.");
+    if (input.candidate.revision !== current.candidateRevision.revision + 1) throw new Error("V2_CANDIDATE_BINDING_REJECTED: candidate revision must advance by exactly one revision.");
+    if (input.candidate.parentCandidateId !== current.candidateRevision.candidateId) throw new Error("V2_CANDIDATE_BINDING_REJECTED: candidate parent must be the current CandidateRevision.");
+    if (input.candidate.projectId !== current.candidateRevision.projectId || input.candidate.taskId !== current.candidateRevision.taskId) throw new Error("V2_CANDIDATE_BINDING_REJECTED: candidate project and task identity must remain on the current lineage.");
+    if (!candidateRevisionsEqual(current.candidateRevision, input.baseCandidate)) throw new Error("V2_ASSEMBLY_RECEIPT_REJECTED: the assembly base is not the operation's current CandidateRevision.");
+    await assertWorkspaceMatchesCandidate(path.resolve(input.candidate.worktree ?? current.workspaceRoot ?? current.root), input.candidate);
+    const participants = Object.fromEntries(Object.entries(current.participants).map(([id, participant]) => [id, { ...participant, executionBinding: undefined }]));
+    const operationExecutionRevision = current.operationExecutionRevision! + 1;
+    const assembly = buildAssembly(operationExecutionRevision);
+    const conflicting = current.candidateAssemblyReceipts?.[assembly.assemblyId];
+    if (conflicting && conflicting.digest !== assembly.digest) throw new Error("V2_ASSEMBLY_RECEIPT_REJECTED: a conflicting assembly receipt already exists for this candidate.");
+    return { ...current, candidateRevision: input.candidate, operationExecutionRevision, resolvedOperationPolicy: undefined, participants, revision, updatedAt: now, lastProgressAt: now, candidateAssemblyReceipts: { ...(current.candidateAssemblyReceipts ?? {}), [assembly.assemblyId]: assembly } };
   }, true);
 }
 
