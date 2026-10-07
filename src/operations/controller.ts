@@ -28,9 +28,11 @@ import { recordPaseoTrace } from "../paseo/trace.js";
 import {
   clearManagedProcessHandles,
   listManagedProcessHandles,
+  listManagedProcessHandlePidsStrict,
   runShell,
   terminateManagedProcessGroup,
-  type ProcessResult
+  type ProcessResult,
+  verifyProcessGroupExit
 } from "../utils/process.js";
 import { delegatedCapsuleObjectiveV1, prepareChangeOperation, resolveChangePreflightV1, runChangeOperation, type PreparedChangeOperation } from "./change.js";
 import { prepareGithubIssueTask, type IssuePreparationResult } from "../issues/intake.js";
@@ -119,6 +121,37 @@ export interface OperationControllerDeps {
   inspectProviderSession?: (root: string, provider: string, sessionId: string) => Promise<{ status?: string } | undefined>;
   /** Deterministic seam for durable label-bound agent discovery during resource reconciliation. */
   listOperationAgents?: (root: string, operationId: string) => Promise<Array<{ id?: string; workspaceId?: string }>>;
+  /**
+   * Sibling-owned pid scan seam for cancellation fencing. Defaults to the
+   * durable operation-record scan (record/controller pids plus each
+   * sibling's persisted managed-process handle pids). A throwing scan must
+   * fail closed (callers never proceed with an unproven exclusion set).
+   */
+  listSiblingOwnedProcessIds?: (stateRoot: string, operationId: string) => Promise<Set<number>>;
+  /**
+   * Process-group termination seam for cancellation and the hard-deadline
+   * watchdog. Defaults to terminateManagedProcessGroup. Contract: resolve
+   * means signal delivery was confirmed; reject with a code-ESRCH error
+   * means the target was already dead (recorded as already-dead, never
+   * signaled); any other rejection means delivery failed (recorded as
+   * failed, never signaled). Lets tests prove zero signals were sent.
+   */
+  terminateProcessGroup?: (pid: number) => Promise<void>;
+  /**
+   * Post-terminal-transition hook for cancellation handle cleanup
+   * (CLEAR-AFTER-FENCE-RACE + Luna durable-handoff). terminalizeOperation
+   * awaits it after a successful terminal transition (transitioned) and
+   * before the durable terminal reconciliation, which would otherwise observe
+   * the still-present handles through its unfenced managed-process
+   * terminator. Fires only on transition success: any transition throw skips
+   * it, preserving the handles for retry/rescan. The hook MUST run on every
+   * cancel terminal path (CANCELLED and UNCERTAIN_EXTERNAL_EFFECTS): it
+   * clears the handle directory (failures propagate, never swallowed) and
+   * sets the durable processHandlesCleanupCompletedAt flag that recovery
+   * reconciliation uses to distinguish a clean handoff from a
+   * transition→hook crash window.
+   */
+  onTerminalTransition?: (terminal: OperationRecordV2) => Promise<unknown>;
 }
 
 interface OperationWorkspace {
@@ -638,6 +671,30 @@ export async function waitForOperation(
   }
 }
 
+/**
+ * Cancellation terminal hook (Luna durable-handoff).
+ *
+ * Clears the managed-process handle directory and then sets the durable
+ * processHandlesCleanupCompletedAt flag on the terminal record. Clear
+ * failures PROPAGATE (the helper throws): a swallowed clear would read as
+ * "no workers" while live workers exist. Flag-patch failures propagate too —
+ * the handles are already gone, so recovery trivially converges (no handles
+ * to fence), but the caller must observe the incomplete handoff.
+ * MECHANISM: DETERMINISTIC handoff. Recovery reconciliation checks the flag.
+ */
+async function clearCancelProcessHandles(
+  root: string,
+  operationId: string,
+  trace: typeof recordPaseoTrace
+): Promise<void> {
+  await clearManagedProcessHandles(root, operationId);
+  const completedAt = new Date().toISOString();
+  await patchOperation(root, operationId, { processHandlesCleanupCompletedAt: completedAt });
+  try {
+    await trace(root, "cleanup.handles.cleared", { operationId, completedAt });
+  } catch { /* observability only; the durable clear+flag above already propagated */ }
+}
+
 export async function cancelOperation(
   root: string,
   operationId: string,
@@ -684,23 +741,127 @@ export async function cancelOperation(
     const config = await loadProjectConfigIfPresent(absoluteRoot);
 
     const processHandles = await listManagedProcessHandles(absoluteRoot, operationId);
-    const descendantPids = record.pid ? await findDescendantProcessIds(record.pid, absoluteRoot) : [];
-    const processGroups = [...new Set(([
-      ...processHandles.map((handle) => handle.processGroupId),
-      ...processHandles.map((handle) => handle.pid),
-      ...descendantPids,
-      record.pid
-    ] as Array<number | undefined>).filter((pid): pid is number => typeof pid === "number" && Number.isInteger(pid) && pid > 0 && pid !== process.pid))];
+    // A-NEW-4: the /proc cwd heuristic may only confirm pids this operation
+    // durably owns (its managed-process handles). Any process that merely
+    // shares the control-root cwd — for example a sibling operation's
+    // controller/worker — must never be signaled through this path.
+    const managedPidSet = new Set<number>();
+    for (const handle of processHandles) {
+      if (Number.isInteger(handle.pid) && handle.pid > 0) managedPidSet.add(handle.pid);
+      if (Number.isInteger(handle.processGroupId) && handle.processGroupId > 0) managedPidSet.add(handle.processGroupId);
+    }
+    const descendantPids = record.pid ? await findDescendantProcessIds(record.pid, absoluteRoot, { allowedCwdPids: managedPidSet }) : [];
+    // Fail-closed sibling fencing: this scan is the check that prevents
+    // sibling signaling. An unproven (failed) scan aborts the cancellation
+    // before any signal is built or sent — never proceed with an empty
+    // exclusion set. MECHANISM: DETERMINISTIC gate.
+    const listSiblings = deps.listSiblingOwnedProcessIds ?? listSiblingOwnedProcessIds;
+    const siblingStateRoot = resolveOperationStateRoot(absoluteRoot);
+    let siblingOwnedPids: Set<number>;
+    try {
+      siblingOwnedPids = await listSiblings(siblingStateRoot, operationId);
+    } catch (error) {
+      const fencingMessage = `AEH_CANCELLATION_FENCING_REQUIRED: cancellation cannot proceed because sibling process ownership could not be proven; retry or operator intervention is required: ${String(error)}`;
+      try { await trace(absoluteRoot, "cleanup.sibling-scan.failed", { operationId, error: String(error) }); } catch { /* observability only */ }
+      try {
+        const fenced = await loadOperation(absoluteRoot, operationId);
+        assertCancellationFence(fenced, cancellationFence, "operation cancellation sibling fencing");
+        await patchOperation(absoluteRoot, operationId, {
+          phase: "cancellation-fencing-required",
+          error: fencingMessage,
+          cleanupWarnings: [fencingMessage]
+        });
+      } catch { /* fencing state is best-effort; the throw below is the fail-closed gate */ }
+      throw new Error(fencingMessage);
+    }
+    const processGroups = buildCancellationPidSet({
+      managedPids: processHandles.flatMap((handle) => [handle.processGroupId, handle.pid]),
+      descendantPids,
+      recordPid: record.pid,
+      siblingOwnedPids,
+      selfPid: process.pid
+    });
+    const terminateGroup = deps.terminateProcessGroup ?? terminateManagedProcessGroup;
+    // Fail-closed kill loop: a kill-time scan failure aborts the WHOLE
+    // cancellation (never skip-and-continue — signaling the remaining targets
+    // with an unproven exclusion set would be fail-open). Signal delivery is
+    // recorded honestly: only a confirmed delivery counts as signaled; a pid
+    // that died in the verify-to-signal race is already-dead (distinct
+    // status, goal already achieved); a pid whose signal could not be
+    // delivered is failed and named in the abort details. Pids already
+    // signaled are reported honestly in the abort error; no further signals
+    // are sent. MECHANISM: DETERMINISTIC gate.
+    const signaledPids: number[] = [];
+    const alreadyDeadPids: number[] = [];
+    const failedSignalPids: number[] = [];
     for (const pid of processGroups) {
       const latest = await loadOperation(absoluteRoot, operationId);
       assertCancellationFence(latest, cancellationFence, "operation cancellation process fencing");
-      try { await terminateManagedProcessGroup(pid); }
-      catch (error) { cleanupWarnings.push(`process group ${pid}: ${String(error)}`); }
-      if (!(await waitForProcessExit(pid, 1_000))) cleanupWarnings.push(`process group ${pid}: process remained live after termination signals`);
+      // Kill-time revalidation (PID-reuse TOCTOU): the scan-time snapshot can
+      // go stale before signaling (the OS may reuse a pid for a sibling after
+      // the scan), so each target is re-proven immediately before signaling.
+      let verdict: { signal: boolean; reason: string };
+      try {
+        verdict = await verifyPidBeforeSignal(pid, {
+          operationRoot: absoluteRoot,
+          recordPid: record.pid,
+          managedPidSet,
+          selfPid: process.pid,
+          stateRoot: siblingStateRoot,
+          operationId,
+          listSiblings
+        });
+      } catch (error) {
+        const abortMessage = `AEH_CANCELLATION_FENCING_REQUIRED: cancellation aborted at kill-time revalidation of process group ${pid} because sibling ownership could not be re-proven (${String(error)}); ${signaledPids.length} pid(s) with confirmed signal delivery before the failure [${signaledPids.join(", ")}], ${alreadyDeadPids.length} already-dead (no signal needed) [${alreadyDeadPids.join(", ")}], ${failedSignalPids.length} failed (no signal delivered) [${failedSignalPids.join(", ")}], and no further signals were sent; retry or operator intervention is required.`;
+        try { await trace(absoluteRoot, "cleanup.sibling-rescan.failed", { operationId, pid, signaledPids: [...signaledPids], alreadyDeadPids: [...alreadyDeadPids], failedSignalPids: [...failedSignalPids], error: String(error) }); } catch { /* observability only */ }
+        try {
+          const fenced = await loadOperation(absoluteRoot, operationId);
+          assertCancellationFence(fenced, cancellationFence, "operation cancellation kill-time fencing");
+          await patchOperation(absoluteRoot, operationId, {
+            phase: "cancellation-fencing-required",
+            error: abortMessage,
+            cleanupWarnings: [...cleanupWarnings, abortMessage]
+          });
+        } catch { /* fencing state is best-effort; the throw below is the fail-closed gate */ }
+        throw new Error(abortMessage);
+      }
+      if (!verdict.signal) {
+        // An already-exited pid needs no signal: the goal is achieved.
+        if (verdict.reason === "already-exited") continue;
+        cleanupWarnings.push(`process group ${pid}: not signaled (${verdict.reason})`);
+        continue;
+      }
+      try {
+        await terminateGroup(pid);
+        signaledPids.push(pid);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException)?.code === "ESRCH") {
+          // Died between revalidation and signaling: the goal is achieved, but
+          // no signal was delivered, so this is never counted as signaled.
+          alreadyDeadPids.push(pid);
+          try { await trace(absoluteRoot, "cleanup.process.already-dead", { operationId, pid }); } catch { /* observability only */ }
+          continue;
+        }
+        failedSignalPids.push(pid);
+        cleanupWarnings.push(`process group ${pid}: signal delivery failed (${String(error)})`);
+        continue;
+      }
+      // GROUP death (Luna B1): termination signals the whole group, so the
+      // bounded wait must prove the GROUP is gone — a leader-only probe
+      // passes when the leader exits while a descendant survives, clearing
+      // the durable handle for an unfenced live process. A surviving group
+      // carries the ORPHAN_UNKILLABLE vocabulary into the fail-closed
+      // fencing-required path below (handles preserved for retry/rescan).
+      if (!(await verifyProcessGroupExit(pid, 1_000))) cleanupWarnings.push(`AEH_ORPHAN_UNKILLABLE: process group ${pid} remains live after termination signals and bounded death verification; it is an unfenced orphan; operator intervention required.`);
     }
     const beforeHandleCleanup = await loadOperation(absoluteRoot, operationId);
     assertCancellationFence(beforeHandleCleanup, cancellationFence, "operation cancellation handle cleanup");
-    await clearManagedProcessHandles(absoluteRoot, operationId);
+    // EVIDENCE PRESERVATION (Luna-a): the handle directory is the durable
+    // truth a retry/rescan needs. It is cleared ONLY on the full-success path
+    // below (all targets signaled-or-already-dead and every later fencing
+    // check passed). Any failed signal, kill-loop warning, or later fencing
+    // state must leave it intact — clearing it here unconditionally destroyed
+    // the failed-PID evidence the fencing-required state cannot restore.
 
     let agentIds = [...new Set([
       ...(record.agents ?? []).map((agent) => agent.id),
@@ -826,7 +987,16 @@ export async function cancelOperation(
           result: { uncertainExternalEffects: receipt },
           cleanupWarnings
         },
-        deps,
+        {
+          ...deps,
+          // Luna durable-handoff: the uncertain-effects terminal path clears
+          // handles exactly like the normal CANCELLED path. Without this, the
+          // handles remain and the later unfenced reconciliation re-signals
+          // possibly-reused pids.
+          onTerminalTransition: async () => {
+            await clearCancelProcessHandles(absoluteRoot, operationId, trace);
+          }
+        },
         config
       );
     }
@@ -854,6 +1024,16 @@ export async function cancelOperation(
       });
       throw new Error(`AEH_CANCELLATION_RECONCILIATION_REQUIRED: unresolved action intents must be reconciled before cancellation can become terminal: ${unresolvedActions.map((intent) => intent.actionKey).join(", ")}.`);
     }
+    // Handle-dir clear happens ONLY after a successful terminal transition
+    // (CLEAR-AFTER-FENCE-RACE): terminalizeOperation re-checks controller
+    // ownership, so a takeover landing between a pre-clear fence reassert and
+    // terminalization would otherwise throw AFTER the durable handles were
+    // removed. The clear runs as terminalizeOperation's onTerminalTransition
+    // hook — after the transition succeeds but before the durable terminal
+    // reconciliation, whose unfenced managed-process terminator must never
+    // observe these handles. Every fencing throw — from any gate above or
+    // from terminalize itself — preserves the dir for retry/rescan. The hook
+    // also sets the durable cleanup flag read by recovery reconciliation.
     return await terminalizeOperation(
       absoluteRoot,
       operationId,
@@ -863,7 +1043,12 @@ export async function cancelOperation(
         finishedAt: new Date().toISOString(),
         cleanupWarnings: cleanupWarnings.length ? cleanupWarnings : undefined
       },
-      deps,
+      {
+        ...deps,
+        onTerminalTransition: async () => {
+          await clearCancelProcessHandles(absoluteRoot, operationId, trace);
+        }
+      },
       config
     );
   } finally {
@@ -1194,6 +1379,7 @@ export async function terminalizeOperation(
     }, evaluateEconomicBoundary);
   }
   const { record: terminal, transitioned } = transition;
+  if (transitioned) await deps.onTerminalTransition?.(terminal);
   if (terminal.status === "FAILED") {
     try {
       const forensic = await persistCandidateForensicsV1(root, terminal);
@@ -1272,7 +1458,85 @@ export async function expireOperationAtHardDeadline(root: string, operationId: s
   }
   if (config) await writeOperationEfficiencySummary(root, config, terminal).catch(() => undefined);
   if (config) await syncOperationPortfolio(root, config.project.name, terminal).catch(() => undefined);
-  if (terminal.pid && terminal.pid !== process.pid) await terminateManagedProcessGroup(terminal.pid).catch(() => undefined);
+  // Hard-deadline pid ownership check (pid-reuse cross-kill): terminal.pid is
+  // this operation's OWN recorded controller pid, but the record may be stale —
+  // the controller may have exited and the OS may have reused the number for a
+  // sibling operation's controller/worker before the fuse fires. Signaling is
+  // therefore gated on a minimal fresh proof: the pid is alive AND its /proc
+  // cwd matches this operation's expected root (the control root or the
+  // operation workspace root). Mismatch or death skips the signal with a
+  // warning trace and the fuse still fires (terminalization already happened
+  // above; only the signal is skipped — safe direction). MECHANISM:
+  // DETERMINISTIC gate. Residual: a pid reused by a stranger whose cwd happens
+  // to equal the same expected root is still signaled — pid-based signaling on
+  // Linux cannot close that without pidfds; the window is bounded to same-cwd
+  // reuse and explicitly acknowledged here.
+  if (terminal.pid && terminal.pid !== process.pid) {
+    const expectedRoots = [path.resolve(terminal.root ?? root), ...(terminal.workspaceRoot ? [terminal.workspaceRoot] : [])];
+    const listSiblings = deps.listSiblingOwnedProcessIds ?? listSiblingOwnedProcessIds;
+    const terminate = deps.terminateProcessGroup ?? terminateManagedProcessGroup;
+    const stateRoot = resolveOperationStateRoot(root);
+    // UNIFICATION (Luna-c): the watchdog kill uses the SAME exclusion builder
+    // (buildCancellationPidSet over the sibling-owned set) plus the shared
+    // verifyPidBeforeSignal, and RECORDS termination errors instead of
+    // swallowing them. A failed sibling scan maps to skip-with-warning: the
+    // fuse already fired above (terminalization), so only the signal is
+    // skipped — killing is what gets skipped, not terminalization.
+    let siblingOwned: Set<number>;
+    let initialScanFailed = false;
+    try {
+      siblingOwned = await listSiblings(stateRoot, operationId);
+    } catch (error) {
+      await trace(root, "operation.hard-deadline.pid-skipped", { operationId, pid: terminal.pid, reason: "sibling ownership could not be proven", error: String(error) }).catch(() => undefined);
+      siblingOwned = new Set<number>();
+      initialScanFailed = true;
+    }
+    if (initialScanFailed) {
+      // Skip-with-warning already traced; fuse already fired. No signal.
+    } else {
+    const candidates = buildCancellationPidSet({
+      managedPids: [terminal.pid],
+      descendantPids: [],
+      recordPid: terminal.pid,
+      siblingOwnedPids: siblingOwned,
+      selfPid: process.pid
+    });
+    if (!candidates.includes(terminal.pid)) {
+      await trace(root, "operation.hard-deadline.pid-skipped", { operationId, pid: terminal.pid, reason: "pid is currently owned as another operation's record/controller pid" }).catch(() => undefined);
+    } else {
+      let watchdogVerdict: { signal: boolean; reason: string };
+      try {
+        watchdogVerdict = await verifyPidBeforeSignal(terminal.pid, {
+          operationRoot: path.resolve(terminal.root ?? root),
+          recordPid: terminal.pid,
+          managedPidSet: new Set<number>([terminal.pid]),
+          selfPid: process.pid,
+          stateRoot,
+          operationId,
+          listSiblings,
+          expectedRoots
+        });
+      } catch (error) {
+        await trace(root, "operation.hard-deadline.pid-skipped", { operationId, pid: terminal.pid, reason: "sibling ownership could not be re-proven", error: String(error) }).catch(() => undefined);
+        watchdogVerdict = { signal: false, reason: "sibling ownership could not be re-proven" };
+      }
+      if (watchdogVerdict.signal) {
+        try {
+          await terminate(terminal.pid);
+          await trace(root, "operation.hard-deadline.pid-signaled", { operationId, pid: terminal.pid }).catch(() => undefined);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException)?.code === "ESRCH") {
+            await trace(root, "operation.hard-deadline.pid-skipped", { operationId, pid: terminal.pid, reason: "already-exited" }).catch(() => undefined);
+          } else {
+            await trace(root, "operation.hard-deadline.terminate-failed", { operationId, pid: terminal.pid, error: String(error) }).catch(() => undefined);
+          }
+        }
+      } else if (watchdogVerdict.reason !== "sibling ownership could not be re-proven") {
+        await trace(root, "operation.hard-deadline.pid-skipped", { operationId, pid: terminal.pid, reason: watchdogVerdict.reason }).catch(() => undefined);
+      }
+    }
+    }
+  }
   try {
     if (deps.notifyCompletion) await deps.notifyCompletion(root, terminal);
     else await notifyOperationCompletion(root, terminal, { trace });
@@ -1575,20 +1839,40 @@ function quote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-async function findDescendantProcessIds(rootPid: number, operationRoot: string): Promise<number[]> {
+export async function findDescendantProcessIds(
+  rootPid: number,
+  operationRoot: string,
+  options: {
+    /**
+     * Pids this operation durably owns (its managed-process handles). A
+     * process that merely shares the operation-root cwd is reported only when
+     * it is a member of this set. Defaults to empty (deny): the cwd heuristic
+     * never implicates an unregistered pid.
+     */
+    allowedCwdPids?: Set<number>;
+    /** Injectable /proc surface for unit tests; defaults to node:fs/promises. */
+    procfs?: {
+      readdir(dir: string): Promise<string[]>;
+      readFile(file: string, encoding: "utf8"): Promise<string>;
+      realpath(p: string): Promise<string>;
+    };
+  } = {}
+): Promise<number[]> {
   if (process.platform !== "linux" || !Number.isInteger(rootPid) || rootPid <= 0 || rootPid === process.pid) return [];
+  const procfs = options.procfs ?? fs;
+  const allowedCwdPids = options.allowedCwdPids ?? new Set<number>();
   try { process.kill(rootPid, 0); }
   catch { return []; }
 
   let entries: string[];
-  try { entries = await fs.readdir("/proc"); }
+  try { entries = await procfs.readdir("/proc"); }
   catch { return []; }
 
   const children = new Map<number, number[]>();
   await Promise.all(entries.filter((entry) => /^\d+$/.test(entry)).map(async (entry) => {
     const pid = Number(entry);
     try {
-      const stat = await fs.readFile(`/proc/${pid}/stat`, "utf8");
+      const stat = await procfs.readFile(`/proc/${pid}/stat`, "utf8");
       const closingParen = stat.lastIndexOf(")");
       if (closingParen < 0) return;
       const fields = stat.slice(closingParen + 2).trim().split(/\s+/);
@@ -1614,23 +1898,214 @@ async function findDescendantProcessIds(rootPid: number, operationRoot: string):
   const related = await Promise.all(entries.filter((entry) => /^\d+$/.test(entry)).map(async (entry) => {
     const pid = Number(entry);
     if (pid === process.pid || pid === rootPid || descendants.includes(pid)) return undefined;
+    // A-NEW-4: cwd equality alone proves nothing — the control root is shared
+    // by sibling operations. Only a pid registered in this operation's
+    // managed-process handles may be confirmed through this heuristic.
+    if (!allowedCwdPids.has(pid)) return undefined;
     try {
-      const cwd = await fs.realpath(`/proc/${pid}/cwd`);
+      const cwd = await procfs.realpath(`/proc/${pid}/cwd`);
       return cwd === operationRoot ? pid : undefined;
     } catch { return undefined; }
   }));
   return [...new Set([...descendants, ...related.filter((pid): pid is number => pid !== undefined)])];
 }
 
-async function waitForProcessExit(pid: number, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    try { process.kill(pid, 0); }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ESRCH") return true;
-      return false;
-    }
-    if (Date.now() >= deadline) return false;
-    await new Promise((resolve) => setTimeout(resolve, 25));
+/**
+ * Pure pid-set construction for operation cancellation (A-NEW-4).
+ * MECHANISM: DETERMINISTIC. Unions this operation's managed-handle pids, the
+ * scoped descendant scan, and the operation controller pid; drops anything
+ * that is not a positive integer, the cancelling process itself, or a pid
+ * currently owned as another operation's record/controller pid.
+ *
+ * The caller must only pass a proven sibling set: a failed scan is never
+ * represented as an empty set (cancel fails closed before this is built).
+ */
+export function buildCancellationPidSet(input: {
+  managedPids: Array<number | undefined>;
+  descendantPids: Array<number | undefined>;
+  recordPid?: number;
+  siblingOwnedPids?: Set<number>;
+  selfPid: number;
+}): number[] {
+  const siblingOwned = input.siblingOwnedPids ?? new Set<number>();
+  const selected: number[] = [];
+  const seen = new Set<number>();
+  for (const pid of [...input.managedPids, ...input.descendantPids, input.recordPid]) {
+    if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) continue;
+    if (pid === input.selfPid) continue;
+    if (siblingOwned.has(pid)) continue;
+    if (seen.has(pid)) continue;
+    seen.add(pid);
+    selected.push(pid);
   }
+  return selected;
+}
+
+/** Pids currently owned as another operation's record/controller pid or named by
+ * another operation's persisted managed-process handles.
+ *
+ * Fail-closed sibling scan: cancellation already loaded the target record, so
+ * a missing or unreadable operations directory cannot prove "no siblings" —
+ * it proves the scan failed. This returns empty ONLY after a proven listing;
+ * any listing or sibling-load failure throws AEH_CANCELLATION_FENCING_REQUIRED
+ * (never empty-success). Terminal operations' pids stay in the set: a dead
+ * pid number may be reused by a live sibling, and filtering terminals out
+ * would re-open cross-kill on reuse (see verifyPidBeforeSignal). The same
+ * reuse threat applies to persisted managed-process handles: cancellation
+ * authorizes signaling through this operation's own handle set, so a stale
+ * sibling handle pid reused by a live sibling worker must also exclude —
+ * every sibling's handle files are read at scan time, and any unreadable or
+ * unprovable sibling handle file throws (never skip-and-continue).
+ * MECHANISM: DETERMINISTIC gate.
+ */
+export async function listSiblingOwnedProcessIds(stateRoot: string, operationId: string): Promise<Set<number>> {
+  const directory = path.resolve(stateRoot, ".harness", "operations");
+  let entries: string[];
+  try {
+    entries = (await fs.readdir(directory))
+      .filter((name) => name !== "portfolio.json" && /^[A-Z][A-Za-z0-9_-]+\.json$/.test(name));
+  } catch (error) {
+    throw new Error(`AEH_CANCELLATION_FENCING_REQUIRED: sibling-ownership scan could not list ${directory} and therefore cannot prove no sibling owns a target pid: ${String(error)}`);
+  }
+  const owned = new Set<number>();
+  for (const entry of entries) {
+    const siblingId = entry.slice(0, -".json".length);
+    if (siblingId === operationId) continue;
+    let operation: OperationRecordV2;
+    try {
+      operation = await loadOperation(stateRoot, siblingId);
+    } catch (error) {
+      throw new Error(`AEH_CANCELLATION_FENCING_REQUIRED: sibling-ownership scan could not load sibling record ${siblingId} and therefore cannot prove no sibling owns a target pid: ${String(error)}`);
+    }
+    for (const pid of [operation.pid, operation.controller?.pid]) {
+      if (typeof pid === "number" && Number.isInteger(pid) && pid > 0 && pid !== process.pid) owned.add(pid);
+    }
+    let siblingHandlePids: number[];
+    try {
+      siblingHandlePids = await listManagedProcessHandlePidsStrict(stateRoot, siblingId);
+    } catch (error) {
+      throw new Error(`AEH_CANCELLATION_FENCING_REQUIRED: sibling-ownership scan could not read managed-process handles for sibling ${siblingId} and therefore cannot prove no sibling owns a target pid: ${String(error)}`);
+    }
+    for (const pid of siblingHandlePids) {
+      if (pid !== process.pid) owned.add(pid);
+    }
+  }
+  return owned;
+}
+
+/**
+ * Kill-time pid revalidation for cancellation signaling.
+ * MECHANISM: DETERMINISTIC. Re-proves immediately before signaling that a
+ * target pid is still cancellable: a fresh sibling-ownership scan (the
+ * scan-time snapshot is never trusted — the OS may have reused the pid for a
+ * sibling after the scan), liveness, and — for pids without durable ownership
+ * (not the record controller pid nor a managed handle) — a fresh cwd or
+ * descendant proof. Returns signal:false to skip without signaling.
+ *
+ * When expectedRoots is provided (hard-deadline watchdog path), durable
+ * ownership alone never authorizes signaling: after the sibling exclusion and
+ * liveness checks the pid's /proc cwd must realpath-match one of the expected
+ * roots (control root or operation workspace). A mismatch, death, or
+ * unprovable cwd returns signal:false so the caller skips without signaling.
+ *
+ * A failed fresh scan THROWS AEH_CANCELLATION_FENCING_REQUIRED (never
+ * skip-and-continue): the caller must abort the whole cancellation, because
+ * every remaining target would be signaled with an unproven exclusion set.
+ * (The watchdog catches this and maps it to skip-with-warning: its fuse —
+ * terminalization — still fires; only the signal is skipped.)
+ *
+ * Residual /proc race: between this recheck and process.kill the OS may still
+ * exit and reuse the pid. The window is narrowed from the whole scan-to-signal
+ * loop to microseconds per pid; sibling exclusion, managed-set scoping, and
+ * ESRCH-tolerant signaling bound the residual. Pid-based signaling on Linux
+ * cannot close this fully without pidfds; this documents that limit.
+ */
+async function verifyPidBeforeSignal(
+  pid: number,
+  input: {
+    operationRoot: string;
+    recordPid?: number;
+    managedPidSet: Set<number>;
+    selfPid: number;
+    stateRoot: string;
+    operationId: string;
+    listSiblings: (stateRoot: string, operationId: string) => Promise<Set<number>>;
+    /**
+     * Watchdog-only gate: when present, signaling additionally requires the
+     * pid's live /proc cwd to match one of these roots. Durable ownership
+     * (recordPid/managedPidSet) does not bypass this check.
+     */
+    expectedRoots?: string[];
+  }
+): Promise<{ signal: boolean; reason: string }> {
+  if (!Number.isInteger(pid) || pid <= 0 || pid === input.selfPid) return { signal: false, reason: "self-or-invalid" };
+  let fresh: Set<number>;
+  try {
+    fresh = await input.listSiblings(input.stateRoot, input.operationId);
+  } catch (error) {
+    throw new Error(`AEH_CANCELLATION_FENCING_REQUIRED: sibling ownership could not be re-proven at signal time for process group ${pid}: ${String(error)}`);
+  }
+  if (fresh.has(pid)) return { signal: false, reason: "pid is currently owned as another operation's record/controller pid" };
+  try { process.kill(pid, 0); }
+  catch (error) {
+    // Stale-pid safety: a dead pid (ESRCH) is SKIPPED, never signaled, and
+    // skipping is the safe direction. Signaling a possibly-reused pid risks
+    // cross-kill of a sibling that inherited the number; skipping a dead pid
+    // is harmless (the goal — that pid being gone — is already achieved); and
+    // skipping a pid reused by this operation's own child is at most a bounded
+    // leak (availability-only: the child keeps running until the reconciler or
+    // operator retries, never a safety violation). That is why terminal
+    // operations' pids stay in the sibling exclusion set — filtering them out
+    // would re-open cross-kill as soon as a dead number is reused.
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return { signal: false, reason: "already-exited" };
+    // EPERM and friends prove the pid exists; fall through to the proofs below.
+  }
+  if (input.expectedRoots) {
+    // Watchdog gate: durable ownership never bypasses the cwd proof. The pid
+    // must be live (proven above) AND rooted at one of the expected roots.
+    let cwd: string;
+    try {
+      cwd = await fs.realpath(`/proc/${pid}/cwd`);
+    } catch {
+      return { signal: false, reason: "pid cwd could not be proven at signal time" };
+    }
+    const canonical: string[] = [];
+    for (const expected of input.expectedRoots) {
+      try { canonical.push(await fs.realpath(expected)); }
+      catch { canonical.push(path.resolve(expected)); }
+    }
+    if (canonical.includes(cwd)) return { signal: true, reason: "fresh cwd proof against the operation's expected root" };
+    return { signal: false, reason: `pid cwd ${cwd} does not match the operation's expected root` };
+  }
+  if (pid === input.recordPid || input.managedPidSet.has(pid)) {
+    return { signal: true, reason: "durable ownership with fresh sibling exclusion" };
+  }
+  try {
+    const cwd = await fs.realpath(`/proc/${pid}/cwd`);
+    if (cwd === input.operationRoot) return { signal: true, reason: "fresh cwd proof" };
+  } catch { /* fall through to the descendant proof */ }
+  if (typeof input.recordPid === "number" && await isDescendantOfPid(pid, input.recordPid)) {
+    return { signal: true, reason: "fresh descendant proof" };
+  }
+  return { signal: false, reason: "heuristic pid ownership could not be re-proven at signal time" };
+}
+
+/** Walk the live /proc ppid chain to prove pid still descends from ancestor. */
+async function isDescendantOfPid(pid: number, ancestor: number): Promise<boolean> {
+  let current = pid;
+  const seen = new Set<number>([current]);
+  for (let depth = 0; depth < 1024; depth += 1) {
+    let stat: string;
+    try { stat = await fs.readFile(`/proc/${current}/stat`, "utf8"); }
+    catch { return false; }
+    const closing = stat.lastIndexOf(")");
+    if (closing < 0) return false;
+    const parentPid = Number(stat.slice(closing + 2).trim().split(/\s+/)[1]);
+    if (!Number.isInteger(parentPid) || parentPid <= 0) return false;
+    if (parentPid === ancestor) return true;
+    if (parentPid === 1 || seen.has(parentPid)) return false;
+    seen.add(parentPid);
+    current = parentPid;
+  }
+  return false;
 }

@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { HarnessProjectConfig } from "../core/types.js";
-import { registerManagedProcessHandle } from "../utils/process.js";
+import { orphanUnkillableError, registerManagedProcessHandle, verifyProcessGroupExit } from "../utils/process.js";
 
 const SAFE_RUNTIME_ENVIRONMENT = ["PATH", "NODE_PATH", "LANG", "LC_ALL", "CI", "TERM"] as const;
 
@@ -25,6 +25,18 @@ export interface DirectWorkerProcessResult {
   stdout: string;
   stderr: string;
   durationMs: number;
+}
+
+/**
+ * Best-effort SIGKILL of a direct worker group plus the direct child.
+ * Delivery success is decided ONLY by verifyProcessGroupExit, never here.
+ */
+function killDirectBestEffort(child: { pid?: number; kill: (signal: NodeJS.Signals) => unknown }): void {
+  try {
+    if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
+    else child.kill("SIGKILL");
+  } catch { /* already exited or undeliverable; verification decides */ }
+  try { child.kill("SIGKILL"); } catch { /* already exited or undeliverable */ }
 }
 
 /**
@@ -65,10 +77,35 @@ export async function runDirectWorkerProcess(
       let exitCode: number | null = null;
       let unregister: () => Promise<void> = async () => undefined;
       const registered = registerManagedProcessHandle(child.pid);
-      void registered.then((cleanup) => {
-        unregister = cleanup;
-        if (settled) void unregister();
-      });
+      // Reified registration outcome (same contract as runChild): finish() is
+      // the SOLE settler and awaits this, so a failed registration can never
+      // lose a race to a normal resolve. This callback only starts killing
+      // immediately; it never settles.
+      let resolveRegistrationOutcome: (outcome: { error?: unknown }) => void = () => undefined;
+      const registrationOutcome = new Promise<{ error?: unknown }>((resolve) => { resolveRegistrationOutcome = resolve; });
+      void registered.then(
+        (cleanup) => {
+          unregister = cleanup;
+          if (settled) void unregister();
+          resolveRegistrationOutcome({});
+        },
+        (error) => {
+          resolveRegistrationOutcome({ error });
+          // Same fail-loud contract as runChild: never leave a
+          // live-but-unregistered direct worker. Start the SIGKILL
+          // arrangement UNCONDITIONALLY and immediately; finish() performs
+          // the verified settle below.
+          // CONFIRMED KILL: delivery is best-effort — GROUP death is VERIFIED
+          // with a bounded poll there; a still-live group rejects as
+          // ORPHAN_UNKILLABLE, never a silent success.
+          void (async () => {
+            killDirectBestEffort(child);
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+            await verifyProcessGroupExit(child.pid, 500);
+          })().catch(() => undefined);
+        }
+      );
 
       const kill = (signal: NodeJS.Signals): void => {
         try {
@@ -125,11 +162,54 @@ export async function runDirectWorkerProcess(
         if (timer) clearTimeout(timer);
         if (killTimer) clearTimeout(killTimer);
         if (forceSettleTimer) clearTimeout(forceSettleTimer);
-        if (forced || !exited) {
-          child.stdout?.destroy();
-          child.stderr?.destroy();
-        }
-        void unregister().finally(() => resolve({ exitCode: outputLimit || timedOut ? 124 : code, stdout, stderr, durationMs: Date.now() - started }));
+        // Sole settler: the registration outcome is awaited first so a failed
+        // registration deterministically rejects instead of racing resolve.
+        void (async () => {
+          const outcome = await registrationOutcome;
+          if (outcome.error !== undefined) {
+            killDirectBestEffort(child);
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+            const dead = await verifyProcessGroupExit(child.pid, 500);
+            if (!dead) {
+              reject(orphanUnkillableError(
+                child.pid!,
+                "direct worker registration persistence failed and SIGKILL could not be verified",
+                outcome.error
+              ));
+              return;
+            }
+            reject(outcome.error);
+            return;
+          }
+          if (!exited) {
+            // CONFIRMED KILL (same contract as runChild): a possibly-live
+            // child is SIGKILLed best-effort and GROUP death is verified
+            // before the output is reported; a surviving group rejects as
+            // ORPHAN_UNKILLABLE.
+            killDirectBestEffort(child);
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+            const output = { exitCode: outputLimit || timedOut ? 124 : code, stdout, stderr, durationMs: Date.now() - started };
+            const dead = await verifyProcessGroupExit(child.pid, 500);
+            if (!dead) {
+              const orphan = orphanUnkillableError(
+                child.pid!,
+                `force-settled direct worker output could not prove child death (exit ${output.exitCode})`
+              );
+              Object.assign(orphan, { output });
+              reject(orphan);
+              return;
+            }
+            void unregister().finally(() => resolve(output));
+            return;
+          }
+          if (forced) {
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+          }
+          void unregister().finally(() => resolve({ exitCode: outputLimit || timedOut ? 124 : code, stdout, stderr, durationMs: Date.now() - started }));
+        })().catch(() => undefined);
       }
     });
   } finally {

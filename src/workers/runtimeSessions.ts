@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import net from "node:net";
 import readline from "node:readline";
 import type { DirectWorkerHome } from "./directProcess.js";
-import { registerManagedProcessHandle } from "../utils/process.js";
+import { orphanUnkillableError, registerManagedProcessHandle, verifyProcessGroupExit } from "../utils/process.js";
 
 export interface RuntimeSessionPreparation {
   cwd: string;
@@ -23,11 +23,15 @@ export async function prepareOpenCodeSession(input: RuntimeSessionPreparation): 
   });
   let spawnError: Error | undefined;
   server.once("error", (error) => { spawnError = error; });
-  const unregister = server.pid ? await registerManagedProcessHandle(server.pid) : async () => undefined;
+  // Registration lives INSIDE the try so the finally below stops the spawned
+  // server when persistence fails: a live-but-unregistered server is an
+  // unfenced orphan the caller could never rescan.
+  let unregister: () => Promise<void> = async () => undefined;
   const diagnostics: string[] = [];
   server.stdout.on("data", (chunk: Buffer) => diagnostics.push(chunk.toString()));
   server.stderr.on("data", (chunk: Buffer) => diagnostics.push(chunk.toString()));
   try {
+    if (server.pid) unregister = await registerManagedProcessHandle(server.pid);
     const base = `http://127.0.0.1:${port}`;
     await waitForOpenCodeServer(server, base, input.timeoutMs, diagnostics, () => spawnError);
     const created = await requestJson(base, "/session", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "aeh-prepared-execution" }) });
@@ -57,7 +61,10 @@ export async function prepareCodexThread(input: RuntimeSessionPreparation & { mo
     for (const waiting of pending.values()) { clearTimeout(waiting.timer); waiting.reject(error); }
     pending.clear();
   });
-  const unregister = child.pid ? await registerManagedProcessHandle(child.pid) : async () => undefined;
+  // Registration lives INSIDE the try so the finally below stops the spawned
+  // app-server when persistence fails: a live-but-unregistered server is an
+  // unfenced orphan the caller could never rescan.
+  let unregister: () => Promise<void> = async () => undefined;
   const reader = readline.createInterface({ input: child.stdout });
   let nextId = 1;
   let stderr = "";
@@ -91,6 +98,7 @@ export async function prepareCodexThread(input: RuntimeSessionPreparation & { mo
     });
   };
   try {
+    if (child.pid) unregister = await registerManagedProcessHandle(child.pid);
     await request("initialize", { clientInfo: { name: "agentic-engineering-harness", title: "AEH session preparation", version: "2" }, capabilities: { experimentalApi: true } });
     child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "initialized", params: {} })}\n`);
     const started = await request("thread/start", {
@@ -146,21 +154,47 @@ async function reserveLoopbackPort(): Promise<number> {
   return address.port;
 }
 
-async function stopProcess(child: ReturnType<typeof spawn>): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+export type RuntimeSessionStopEscalation = "already-exited" | "sigterm" | "sigkill";
+
+/**
+ * Stop a preparation server with CONFIRMED KILL (Luna confirmed-kill).
+ *
+ * The TERM→KILL escalation is unchanged; the fix adds GROUP exit
+ * verification plus force-escalation RESULT reporting: the resolved
+ * escalation names the signal level that ended the process GROUP, and a
+ * group that is still live after the bounded SIGKILL wait throws
+ * AEH_ORPHAN_UNKILLABLE (code + pid + reason) instead of succeeding
+ * silently. A dead group (ESRCH) reports already-exited, never failure.
+ * A leader that exits while a member survives never returns early: the live
+ * group escalates instead.
+ */
+export async function stopProcess(child: ReturnType<typeof spawn>): Promise<{ escalation: RuntimeSessionStopEscalation }> {
+  // GROUP death (Luna B2): every success path below proves the whole signaled
+  // group is gone, never just the leader. Without a known pid there is no
+  // group to prove, so the observed exit decides exactly as before.
+  const groupDead = async (budgetMs: number): Promise<boolean> =>
+    child.pid === undefined
+      ? child.exitCode !== null || child.signalCode !== null
+      : verifyProcessGroupExit(child.pid, budgetMs);
+  const exited = (): boolean => child.exitCode !== null || child.signalCode !== null;
+  if (await groupDead(0)) return { escalation: "already-exited" };
+  const exitEvent = new Promise<void>((resolve) => child.once("exit", () => resolve()));
   try {
     if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGTERM");
     else child.kill("SIGTERM");
   } catch { child.kill("SIGTERM"); }
-  await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, 500))]);
-  if (child.exitCode === null && child.signalCode === null) {
-    try {
-      if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
-      else child.kill("SIGKILL");
-    } catch { child.kill("SIGKILL"); }
-    await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, 500))]);
-  }
+  await Promise.race([exitEvent, new Promise<void>((resolve) => setTimeout(resolve, 500))]);
+  if (await groupDead(0)) return { escalation: exited() ? "sigterm" : "already-exited" };
+  try {
+    if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
+    else child.kill("SIGKILL");
+  } catch { child.kill("SIGKILL"); }
+  await Promise.race([exitEvent, new Promise<void>((resolve) => setTimeout(resolve, 500))]);
+  if (await groupDead(500)) return { escalation: exited() ? "sigkill" : "already-exited" };
+  throw orphanUnkillableError(
+    child.pid ?? -1,
+    "runtime session preparation server group survived SIGTERM→SIGKILL escalation and the bounded exit wait"
+  );
 }
 
 function recordString(value: unknown, key: string): string | undefined {
