@@ -2,9 +2,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import test from "node:test";
 
-// RED V2 (round-3): no fallible window before protection.
-// (a) abort handlers must be installed FIRST thing in isolation setup (before
-//     any fallible step: port discovery, daemon config/start, health wait).
+// RED V2 (round-3, round-6 redesign): no fallible window before protection.
+// (a) the central abort manager registration must happen FIRST thing in
+//     isolation setup (before any fallible step: port discovery, daemon
+//     config/start, health wait). Round-6 centralizes the per-handle listeners
+//     into ONE module-level manager refcounted via the live-handle registry;
+//     setup registers its handle at START, so the ordering gate now targets
+//     registerIsolationHandle(handle).
 // (b) each campaign must enter try/finally immediately when isolation setup
 //     returns — all subsequent fallible setup (staging mkdtemp, dist reads,
 //     candidate packing, fixture prep) inside the protected region.
@@ -18,17 +22,17 @@ function indexOfFirst(src, patterns) {
   return best;
 }
 
-test("RED V2a: abort handlers installed before any fallible isolation step", async () => {
+test("RED V2a: abort protection registered before any fallible isolation step", async () => {
   const src = await fs.readFile(new URL("./paseoIsolatedHome.mjs", import.meta.url), "utf8");
-  const installIdx = src.indexOf("installAbortHandlers(handle)");
-  assert.ok(installIdx !== -1, "setup must call installAbortHandlers(handle)");
-  // installAbortHandlers is also defined once; the SETUP call site must be the
+  const installIdx = src.indexOf("registerIsolationHandle(handle)");
+  assert.ok(installIdx !== -1, "setup must call registerIsolationHandle(handle) (central manager registration FIRST)");
+  // The manager installer is defined once; the SETUP call site must be the
   // first one. Find the setup function body and require ordering there.
   const setupIdx = src.indexOf("export async function setupIsolatedPaseoHome");
   assert.ok(setupIdx !== -1, "setupIsolatedPaseoHome must exist");
   const setupBody = src.slice(setupIdx);
-  const setupInstall = setupBody.indexOf("installAbortHandlers(handle)");
-  assert.ok(setupInstall !== -1, "setup body must install abort handlers");
+  const setupInstall = setupBody.indexOf("registerIsolationHandle(handle)");
+  assert.ok(setupInstall !== -1, "setup body must register the handle with the central abort manager");
   const firstFallible = indexOfFirst(setupBody, [
     "findFreePort(",
     'runPaseo(["daemon", "config"',
@@ -38,7 +42,7 @@ test("RED V2a: abort handlers installed before any fallible isolation step", asy
   assert.ok(firstFallible.idx !== -1, "setup must contain a fallible isolation step to order against");
   assert.ok(
     setupInstall < firstFallible.idx,
-    `abort handlers must be installed BEFORE any fallible step (install@${setupInstall} vs first fallible ${firstFallible.pat}@${firstFallible.idx})`
+    `central registry registration must happen BEFORE any fallible step (register@${setupInstall} vs first fallible ${firstFallible.pat}@${firstFallible.idx})`
   );
 });
 

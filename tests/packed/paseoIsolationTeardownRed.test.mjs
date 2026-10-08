@@ -39,8 +39,13 @@ process.exit(0);
 `;
 }
 
-test("RED B1: failed teardown must NOT mark cleaned and must keep abort handlers + retry", async () => {
-  const { teardownIsolatedPaseoHome } = await import("./paseoIsolatedHome.mjs");
+test("RED B1: failed teardown must NOT mark cleaned and must keep abort protection + retry", async () => {
+  const {
+    teardownIsolatedPaseoHome,
+    __registerIsolationHandleForTests,
+    __isIsolationHandleRegisteredForTests,
+    __resetIsolationAbortManagerForTests,
+  } = await import("./paseoIsolatedHome.mjs");
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-red-b1-"));
   const binDir = path.join(tmp, "bin");
   const stateDir = path.join(tmp, "state");
@@ -59,8 +64,23 @@ test("RED B1: failed teardown must NOT mark cleaned and must keep abort handlers
   // Isolate env pointers from the live daemon for the duration of the test.
   process.env.PASEO_HOME = home;
   process.env.PASEO_DAEMON_URL = "ws://127.0.0.1:16767/ws";
+  const listenerBaseline = {
+    SIGINT: process.listeners("SIGINT").slice(),
+    SIGTERM: process.listeners("SIGTERM").slice(),
+    uncaughtException: process.listeners("uncaughtException").slice(),
+    unhandledRejection: process.listeners("unhandledRejection").slice(),
+  };
+  const addedListeners = () => {
+    let total = 0;
+    for (const key of Object.keys(listenerBaseline)) {
+      const base = new Set(listenerBaseline[key]);
+      for (const l of process.listeners(key)) if (!base.has(l)) total += 1;
+    }
+    return total;
+  };
+  let handle;
   try {
-    const handle = {
+    handle = {
       home,
       host: "127.0.0.1",
       port: 16767,
@@ -68,24 +88,25 @@ test("RED B1: failed teardown must NOT mark cleaned and must keep abort handlers
       previous: { PASEO_HOME: undefined, PASEO_DAEMON_URL: undefined, PASEO_AGENT_ID: undefined, PASEO_SESSION_ID: undefined },
       cleaned: false,
       startedAt: new Date().toISOString(),
-      abortHandlers: {
-        sigint: () => {},
-        sigterm: () => {},
-        uncaught: () => {},
-        unhandled: () => {},
-      },
     };
+    // Round-6 central manager: the handle enters the live registry as a setup
+    // would register it, so the failed-teardown retention below exercises the
+    // real ownership proof (not the deleted per-handle abortHandlers field).
+    __registerIsolationHandleForTests(handle);
+    assert.equal(addedListeners(), 4, "central manager installs ONE listener set on registration");
     const accounting = await teardownIsolatedPaseoHome(handle);
 
     // Desired (post-fix) behavior: failure is NOT verified completion.
     assert.equal(handle.cleaned, false, "handle.cleaned must stay false after unverified teardown so a retry is possible");
-    assert.ok(handle.abortHandlers !== undefined, "abort handlers must stay installed until teardown COMPLETES successfully (signal-during-cleanup must still clean)");
+    assert.equal(__isIsolationHandleRegisteredForTests(handle), true, "handle must stay registered until teardown VERIFIES (signal-during-cleanup must still clean)");
+    assert.equal(addedListeners(), 4, "central manager must stay installed while the registry is non-empty");
 
     let stopCount = 0;
     try { stopCount = Number(await fs.readFile(path.join(stateDir, "daemon-stop-count"), "utf8")) || 0; } catch { stopCount = 0; }
     assert.ok(stopCount >= 2, `teardown must retry bounded times on failure before giving up (daemon stop attempts=${stopCount})`);
     assert.equal(accounting.daemonStopped, false, "accounting must report daemonStopped=false on failure");
   } finally {
+    try { __resetIsolationAbortManagerForTests(listenerBaseline); } catch { /* best-effort */ }
     process.env.PATH = savedPath;
     if (savedHome === undefined) delete process.env.PASEO_HOME;
     else process.env.PASEO_HOME = savedHome;

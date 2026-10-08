@@ -78,6 +78,10 @@ async function withFakePaseo(statusPayload, fn) {
 }
 
 function baseHandle(home) {
+  // NOTE round-6: no per-handle abortHandlers field. The central abort manager
+  // owns listeners module-level; async teardown needs no registration. The
+  // hand-built handle stays unregistered here by design (explicit teardown,
+  // not the abort path).
   return {
     home,
     host: "127.0.0.1",
@@ -86,7 +90,6 @@ function baseHandle(home) {
     previous: { PASEO_HOME: undefined, PASEO_DAEMON_URL: undefined, PASEO_AGENT_ID: undefined, PASEO_SESSION_ID: undefined },
     cleaned: false,
     startedAt: new Date().toISOString(),
-    abortHandlers: { sigint: () => {}, sigterm: () => {}, uncaught: () => {}, unhandled: () => {} },
   };
 }
 

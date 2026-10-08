@@ -24,10 +24,24 @@ import path from "node:path";
  * Teardown guarantee (B1 fix): campaign bodies enter `try { ... } finally { ... }`
  * immediately when isolation setup returns, so ALL subsequent fallible setup
  * (staging mkdtemp, dist reads, packing, fixture prep) is inside the protected
- * region. Abort handlers are installed FIRST in setup (before mkdtemp/port
- * discovery/daemon start) and stay installed until teardown VERIFIES completion
- * (positive stopped-proof `localDaemon === "stopped"` + home removed, both
- * probed, never assumed); `handle.cleaned` flips only on verified completion
+ * region. CENTRAL abort/fatal manager (P-NEW-4 round-6 redesign): ONE module-level
+ * listener set per process for SIGINT/SIGTERM/uncaughtException/unhandledRejection,
+ * installed ONCE and refcounted via the live-handle REGISTRY (never stacked
+ * duplicates). Setups register their handle at setup START (before any fallible
+ * step: mkdtemp/port discovery/daemon start); verified teardown/completion
+ * unregisters. Registry membership IS the ownership proof: the abort path cleans
+ * ONLY registered handles (unknown paths never touched) plus the live-home
+ * refusal as defence-in-depth. On signal the manager tears down ALL registered
+ * handles in reverse registration order (deterministic), removes its listeners,
+ * then re-raises via process.kill(process.pid, sig) so the signal default
+ * disposition terminates (no hang); the campaign runner owns exit codes. On
+ * uncaughtException/unhandledRejection the manager tears down ALL registered
+ * handles then process.exit(1) (the process is fatally compromised; no sibling
+ * skipped, no compromised continue). Setup-failure paths keep the handle
+ * registered until its teardown VERIFIES completion (positive stopped-proof
+ * `localDaemon === "stopped"` + home removed, both probed, never assumed) or
+ * the abort path claims it; success paths never orphan-register (unregister on
+ * verified completion). `handle.cleaned` flips only on verified completion
  * so a failed attempt remains retryable. Both async and sync teardown retry a
  * bounded number of times before giving up and trace persistently via
  * `console.error` (`PASEO_ISOLATION_TEARDOWN_FAILED` /
@@ -211,14 +225,149 @@ function restorePreviousEnv(handle) {
   } catch { /* best-effort: env restore must never throw past teardown */ }
 }
 
+// ---------------------------------------------------------------------------
+// Central abort/fatal manager (P-NEW-4 round-6): ONE listener set per process,
+// refcounted via the live-handle REGISTRY. Registry membership IS the ownership
+// proof. Supersedes the round-5 per-handle listeners (deleted: exit-in-handler
+// killed siblings; no-exit hung; identity gate only refused live-home).
+// ---------------------------------------------------------------------------
+
+const registeredIsolationHandles = new Set();
+let isolationAbortManagerInstalled = false;
+let isolationAbortManagerHandlers = null;
+
+function ensureIsolationAbortManagerInstalled() {
+  if (isolationAbortManagerInstalled) return;
+  const handlers = {
+    sigint: () => handleIsolationSignal("SIGINT"),
+    sigterm: () => handleIsolationSignal("SIGTERM"),
+    uncaught: (error) => handleIsolationFatal(error),
+    unhandled: (reason) => handleIsolationFatal(reason),
+  };
+  process.on("SIGINT", handlers.sigint);
+  process.on("SIGTERM", handlers.sigterm);
+  process.on("uncaughtException", handlers.uncaught);
+  process.on("unhandledRejection", handlers.unhandled);
+  isolationAbortManagerHandlers = handlers;
+  isolationAbortManagerInstalled = true;
+}
+
+function uninstallIsolationAbortManager() {
+  if (!isolationAbortManagerInstalled) return;
+  const handlers = isolationAbortManagerHandlers;
+  if (handlers) {
+    process.removeListener("SIGINT", handlers.sigint);
+    process.removeListener("SIGTERM", handlers.sigterm);
+    process.removeListener("uncaughtException", handlers.uncaught);
+    process.removeListener("unhandledRejection", handlers.unhandled);
+  }
+  isolationAbortManagerHandlers = null;
+  isolationAbortManagerInstalled = false;
+}
+
+function registerIsolationHandle(handle) {
+  registeredIsolationHandles.add(handle);
+  ensureIsolationAbortManagerInstalled();
+}
+
+function unregisterIsolationHandle(handle) {
+  registeredIsolationHandles.delete(handle);
+  if (registeredIsolationHandles.size === 0) uninstallIsolationAbortManager();
+}
+
+function teardownAllRegisteredIsolationHandlesSync() {
+  // Reverse registration order: deterministic LIFO, newest suite first.
+  const handles = [...registeredIsolationHandles].reverse();
+  for (const handle of handles) {
+    try {
+      syncTeardown(handle);
+    } catch { /* best-effort: abort cleanup must never throw past the manager */ }
+    // The abort path claims verified handles so a stubbed kill/exit in tests
+    // never orphan-registers; unverified handles stay registered for retry.
+    if (handle.cleaned) registeredIsolationHandles.delete(handle);
+  }
+}
+
+function handleIsolationSignal(sig) {
+  // Signal path: teardown ALL registered (reverse order), drop the single
+  // listener set, then re-raise via process.kill so the signal default
+  // disposition terminates (fixes hang; ordering deterministic). The campaign
+  // runner owns exit codes — never the abort manager.
+  try {
+    teardownAllRegisteredIsolationHandlesSync();
+  } catch { /* best-effort */ }
+  try {
+    uninstallIsolationAbortManager();
+  } catch { /* best-effort */ }
+  try {
+    process.kill(process.pid, sig);
+  } catch { /* best-effort: re-raise must never throw past the handler */ }
+}
+
+function handleIsolationFatal(error) {
+  // Fatal path: the process is fatally compromised. Tear down ALL registered
+  // (no sibling skipped — every handle already cleaned), then process.exit(1).
+  let attempts = 0;
+  try {
+    const before = registeredIsolationHandles.size;
+    teardownAllRegisteredIsolationHandlesSync();
+    attempts = before;
+  } catch { /* best-effort */ }
+  try {
+    console.error(`PASEO_ISOLATION_ABORT_TEARDOWN: fatal failure; isolated handles cleaned (registry claimed ${attempts} handle(s)). Original error: ${error?.stack ?? error}`);
+  } catch { /* best-effort */ }
+  try {
+    uninstallIsolationAbortManager();
+  } catch { /* best-effort */ }
+  process.exit(1);
+}
+
+/**
+ * Test-only helpers: simulate setup registration for ad-hoc handles and probe
+ * registry membership. Production code registers at setup START via
+ * registerIsolationHandle; tests covering failure paths with hand-built handles
+ * use __registerIsolationHandleForTests to put the handle under the manager.
+ */
+export function __registerIsolationHandleForTests(handle) {
+  registerIsolationHandle(handle);
+}
+
+export function __isIsolationHandleRegisteredForTests(handle) {
+  return registeredIsolationHandles.has(handle);
+}
+
+/**
+ * Test-only reset: clear the registry and drop the manager listeners.
+ * Accepts the optional pre-test listener baseline and detaches anything added
+ * since (idempotent with the per-test snapshot restore).
+ */
+export function __resetIsolationAbortManagerForTests(baseline) {  registeredIsolationHandles.clear();
+  try {
+    uninstallIsolationAbortManager();
+  } catch { /* best-effort */ }
+  if (baseline && typeof baseline === "object") {
+    for (const key of Object.keys(baseline)) {
+      const baseSet = new Set(baseline[key] ?? []);
+      for (const listener of process.listeners(key).slice()) {
+        if (!baseSet.has(listener)) {
+          try { process.removeListener(key, listener); } catch { /* best-effort */ }
+        }
+      }
+    }
+  }
+}
+
 export function syncTeardown(handle) {
   if (!handle || handle.cleaned) return { cleaned: false, reason: "already-cleaned" };
+  // Registry membership IS the ownership proof (P-NEW-4 round-6): the central
+  // abort manager cleans ONLY handles a setup registered. Unknown paths —
+  // foreign homes, ad-hoc handles, typos — are never touched.
+  if (!registeredIsolationHandles.has(handle)) {
+    return { cleaned: false, reason: "unregistered-handle", daemonStopped: false, homeRemoved: false, attempts: 0, verified: false };
+  }
   if (!handle.home) return { cleaned: false, reason: "no-home-yet", daemonStopped: false, homeRemoved: false, attempts: 0, verified: false };
-  // Own-home-only identity gate (P-NEW-4 round-5): a per-handle abort handler
-  // cleans SOLELY its own isolated home. Never touch the shared live daemon
-  // home (or anything else): skip anything that does not belong to this
-  // handle, so a stale handler firing after a later suite started cannot
-  // disturb that suite's resources.
+  // Live-home refusal (defence-in-depth behind the registry proof): never touch
+  // the shared live daemon home even if a registered handle somehow points at it.
   try {
     if (typeof handle.home !== "string" || path.resolve(handle.home) === path.resolve(livePaseoHome())) {
       return { cleaned: false, reason: "refuses-live-home", daemonStopped: false, homeRemoved: false, attempts: 0, verified: false };
@@ -281,63 +430,6 @@ export function syncTeardown(handle) {
   return accounting;
 }
 
-function installAbortHandlers(handle) {
-  // Non-interfering stacked abort handlers (P-NEW-4 round-5).
-  //
-  // NO process.exit() in any per-handle handler. Every setup installs one set
-  // of listeners and a failed setup keeps them (an unverified home still needs
-  // an abort path), so a process that runs N suites stacks N sets. A
-  // per-handle exit() would terminate the shared process inside the FIRST
-  // (stale) handler before the later suites' handlers run, leaking their
-  // homes. Instead all stacked listeners run in registration order, each
-  // cleaning (or no-op'ing) only its own handle's home; the signal default disposition
-  // then terminates the process after the listeners run. Exit codes, when needed:
-  // the campaign runner owns exit codes — never a per-handle abort handler.
-  //
-  // Each closure captures ONLY its own handle: syncTeardown scopes every probe
-  // to handle.home by home-path identity (no-home skip, live-home refusal)
-  // and is idempotent per handle (cleaned flag → re-fire is a no-op), so a
-  // stale handler firing after a subsequent suite started cannot disturb that
-  // suite.
-  const onSignal = () => {
-    try {
-      syncTeardown(handle);
-    } catch { /* best-effort: abort cleanup must never throw past the handler */ }
-  };
-  const onUncaught = (error) => {
-    try {
-      const result = syncTeardown(handle);
-      if (result?.verified) {
-        console.error(`PASEO_ISOLATION_ABORT_TEARDOWN: uncaught failure; isolated home ${handle.home} cleaned verified after ${result.attempts} attempt(s). Original error: ${error?.stack ?? error}`);
-      } else {
-        console.error(`PASEO_ISOLATION_ABORT_TEARDOWN: uncaught failure; isolated home ${handle.home} cleanup UNVERIFIED after ${result?.attempts ?? 1} attempt(s) (daemonStopped=${result?.daemonStopped ?? false} homeRemoved=${result?.homeRemoved ?? false}). Original error: ${error?.stack ?? error}`);
-      }
-    } catch { /* best-effort: abort cleanup must never throw past the handler */ }
-    // No process.exit / no rethrow: the campaign runner owns failure exit codes.
-  };
-  const handlers = {
-    sigint: () => onSignal(),
-    sigterm: () => onSignal(),
-    uncaught: (error) => onUncaught(error),
-    unhandled: (reason) => onUncaught(reason),
-  };
-  process.on("SIGINT", handlers.sigint);
-  process.on("SIGTERM", handlers.sigterm);
-  process.on("uncaughtException", handlers.uncaught);
-  process.on("unhandledRejection", handlers.unhandled);
-  handle.abortHandlers = handlers;
-}
-
-function removeAbortHandlers(handle) {
-  const handlers = handle.abortHandlers;
-  if (!handlers) return;
-  process.removeListener("SIGINT", handlers.sigint);
-  process.removeListener("SIGTERM", handlers.sigterm);
-  process.removeListener("uncaughtException", handlers.uncaught);
-  process.removeListener("unhandledRejection", handlers.unhandled);
-  handle.abortHandlers = undefined;
-}
-
 /**
  * Boot an isolated Paseo daemon home and redirect this process (plus every
  * child spawned via `laneEnvironment()`) at it. Throws
@@ -359,13 +451,18 @@ export async function setupIsolatedPaseoHome(options = {}) {
   // still cleans. The handle starts without a home; syncTeardown early-returns
   // until the home is assigned below.
   const handle = { home: undefined, host, port: undefined, daemonUrl: undefined, previous, cleaned: false, startedAt: new Date().toISOString() };
-  installAbortHandlers(handle);
+  // Central manager: register FIRST, before any fallible step (mkdtemp, port
+  // discovery, daemon config/start, health wait) so an abort during setup
+  // still cleans. The handle starts without a home; syncTeardown early-returns
+  // until the home is assigned below. The single manager set is installed ONCE
+  // here (refcounted via the registry; never stacked duplicates).
+  registerIsolationHandle(handle);
   let home;
   try {
     home = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
     handle.home = home;
   } catch (error) {
-    removeAbortHandlers(handle);
+    unregisterIsolationHandle(handle);
     throw error instanceof Error ? error : new Error(`PASEO_ISOLATION_UNAVAILABLE: ${String(error)}`);
   }
   let lastError;
@@ -424,8 +521,8 @@ export async function setupIsolatedPaseoHome(options = {}) {
       // PASEO_HOME/PASEO_DAEMON_URL flow through automatically. Drop the
       // foreign caller identity: it belongs to the live daemon and the isolated
       // daemon rejects it (`Caller agent ... not found`).
-      // Abort handlers were already installed FIRST (before any fallible step)
-      // and stay installed until verified teardown; do NOT reinstall here.
+      // Central manager: already registered FIRST (before any fallible step)
+      // and stays registered until verified teardown; do NOT re-register here.
       process.env.PASEO_HOME = home;
       process.env.PASEO_DAEMON_URL = handle.daemonUrl;
       delete process.env.PASEO_AGENT_ID;
@@ -445,15 +542,15 @@ export async function setupIsolatedPaseoHome(options = {}) {
       // Verified completion only: cleaned requires BOTH home-removed AND
       // positive stopped-proof (localDaemon === "stopped" via
       // isDaemonStoppedSync). Home-removal alone never verifies; daemon-unknown
-      // keeps cleaned=false and handlers installed with a loud trace.
+      // keeps cleaned=false and the handle registered with a loud trace.
       const daemonStopped = isDaemonStoppedSync(home);
       const homeRemoved = await isHomeRemoved(home);
       handle.cleaned = daemonStopped === true && homeRemoved === true;
-      // Setup failed with no handle to return: drop the early-installed abort
-      // handlers only on verified completion, otherwise keep them so an abort
-      // can still clean the leaked home.
-      if (handle.cleaned) removeAbortHandlers(handle);
-      else console.error(`PASEO_ISOLATION_UNAVAILABLE: setup cleanup UNVERIFIED for ${home} (daemonStopped=${daemonStopped} homeRemoved=${homeRemoved}); abort handlers stay installed for a later retry.`);
+      // Setup failed with no handle to return: unregister only on verified
+      // completion, otherwise keep the handle registered so the central abort
+      // path can still claim the leaked home.
+      if (handle.cleaned) unregisterIsolationHandle(handle);
+      else console.error(`PASEO_ISOLATION_UNAVAILABLE: setup cleanup UNVERIFIED for ${home} (daemonStopped=${daemonStopped} homeRemoved=${homeRemoved}); handle stays registered for abort-path retry.`);
       throw error instanceof Error ? error : new Error(`PASEO_ISOLATION_UNAVAILABLE: ${String(error)}`);
     }
   }
@@ -462,12 +559,12 @@ export async function setupIsolatedPaseoHome(options = {}) {
   } catch { /* best-effort */ }
   await fs.rm(home, { recursive: true, force: true }).catch(() => undefined);
   // Same verified gate as the catch path above: home-removal alone never
-  // verifies; daemon-unknown keeps cleaned=false with handlers installed.
+  // verifies; daemon-unknown keeps cleaned=false with the handle registered.
   const daemonStopped = isDaemonStoppedSync(home);
   const homeRemoved = await isHomeRemoved(home);
   handle.cleaned = daemonStopped === true && homeRemoved === true;
-  if (handle.cleaned) removeAbortHandlers(handle);
-  else console.error(`PASEO_ISOLATION_UNAVAILABLE: setup cleanup UNVERIFIED for ${home} (daemonStopped=${daemonStopped} homeRemoved=${homeRemoved}); abort handlers stay installed for a later retry.`);
+  if (handle.cleaned) unregisterIsolationHandle(handle);
+  else console.error(`PASEO_ISOLATION_UNAVAILABLE: setup cleanup UNVERIFIED for ${home} (daemonStopped=${daemonStopped} homeRemoved=${homeRemoved}); handle stays registered for abort-path retry.`);
   const detail = lastError instanceof Error ? lastError.message : String(lastError ?? "unknown");
   console.error(`PASEO_ISOLATION_UNAVAILABLE: isolated daemon setup gave up after ${maxPortAttempts} port attempts [${attemptedPorts.join(",")}]. Last: ${detail.slice(0, 500)} Residual: free-port discovery is availability-only; sustained collision fails closed and never falls back to live.`);
   throw lastError instanceof Error ? lastError : new Error(`PASEO_ISOLATION_UNAVAILABLE: isolated daemon setup failed after ${maxPortAttempts} port attempts [${attemptedPorts.join(",")}].`);
@@ -500,9 +597,10 @@ export function assertIsolatedPaseoEnv(handle) {
  * the isolated home (the home starts empty, so any remainder is this run's
  * orphan), stop the isolated daemon, remove the temp home, and restore the
  * previous environment. Idempotent; safe to call twice. Verified completion
- * only: `handle.cleaned` flips and abort handlers are removed solely after
- * daemon-stopped + home-removed both verify; otherwise handlers stay
- * installed and a later call retries. Bounded retries with persistent traces.
+ * only: `handle.cleaned` flips and the handle unregisters from the central
+ * registry (dropping the single manager set when the registry empties) solely
+ * after daemon-stopped + home-removed both verify; otherwise the handle stays
+ * registered and a later call retries. Bounded retries with persistent traces.
  */
 export async function teardownIsolatedPaseoHome(handle) {
   if (!handle || handle.cleaned) return { cleaned: false, reason: "already-cleaned-or-missing" };
@@ -561,19 +659,20 @@ export async function teardownIsolatedPaseoHome(handle) {
     accounting.verified = accounting.daemonStopped === true && accounting.homeRemoved === true;
     if (accounting.verified) {
       handle.cleaned = true;
-      removeAbortHandlers(handle);
+      unregisterIsolationHandle(handle);
       restorePreviousEnv(handle);
       return accounting;
     }
     if (attempt < ISOLATION_TEARDOWN_MAX_ATTEMPTS) {
-      console.error(`PASEO_ISOLATION_TEARDOWN_FAILED: async attempt ${attempt}/${ISOLATION_TEARDOWN_MAX_ATTEMPTS} unverified for ${handle.home} (daemonStopped=${accounting.daemonStopped} homeRemoved=${accounting.homeRemoved} remainingAgents=${remainingAgents.length} remainingWorkspaces=${remainingWorkspaces.length}); retrying with abort handlers still installed.`);
+      console.error(`PASEO_ISOLATION_TEARDOWN_FAILED: async attempt ${attempt}/${ISOLATION_TEARDOWN_MAX_ATTEMPTS} unverified for ${handle.home} (daemonStopped=${accounting.daemonStopped} homeRemoved=${accounting.homeRemoved} remainingAgents=${remainingAgents.length} remainingWorkspaces=${remainingWorkspaces.length}); retrying with the handle still registered.`);
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
   }
-  console.error(`PASEO_ISOLATION_TEARDOWN_FAILED: async teardown gave up after ${accounting.attempts} attempts for ${handle.home} (daemonStopped=${accounting.daemonStopped} homeRemoved=${accounting.homeRemoved} remainingAgents=${(accounting.remainingAgents ?? []).length} remainingWorkspaces=${(accounting.remainingWorkspaces ?? []).length}); abort handlers stay installed for a later retry; isolated resources may remain.`);
+  console.error(`PASEO_ISOLATION_TEARDOWN_FAILED: async teardown gave up after ${accounting.attempts} attempts for ${handle.home} (daemonStopped=${accounting.daemonStopped} homeRemoved=${accounting.homeRemoved} remainingAgents=${(accounting.remainingAgents ?? []).length} remainingWorkspaces=${(accounting.remainingWorkspaces ?? []).length}); handle stays registered for abort-path retry; isolated resources may remain.`);
   // Restore the caller's environment so no isolated pointer leaks past teardown
-  // even on unverified completion; the handle stays dirty (cleaned=false) so a
-  // later teardown or abort handler retries the verified path.
+  // even on unverified completion; the handle stays dirty (cleaned=false,
+  // still registered when it came from setup) so a later teardown or the
+  // central abort path retries the verified path.
   restorePreviousEnv(handle);
   return accounting;
 }
