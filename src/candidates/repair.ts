@@ -3,7 +3,9 @@ import { AehError } from "../core/errors.js";
 import type { HarnessProjectConfig, TaskContract, WorkerSession } from "../core/types.js";
 import type { AgentExecutionSelection } from "../agents/types.js";
 import type { ExecutionCatalogV1 } from "../architecture/executionCatalog.js";
-import { loadOperation } from "../operations/state.js";
+import { loadOperation, currentControllerEpoch, isTerminalOperation, resolveOperationStateRoot } from "../operations/state.js";
+import { HumanDecisionLedgerV2 } from "../security/humanDecision.js";
+import type { OwnerHardProtectionExemptionGrantV1 } from "../security/ownerExemption.js";
 import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import { deterministicParticipantId } from "../security/executionLease.js";
 import { recordEvent } from "../telemetry/events.js";
@@ -22,8 +24,8 @@ import {
   filterForbiddenScopeForAmendment,
   assertRepairScopeAmendment,
   repairHardProtectedPaths,
-  findRepairHardProtectedViolations,
   normalizeRepairScopePath,
+  verifyOwnerHardProtectionExemption,
   REPAIR_AMENDABLE_MANIFEST_PATHS,
   type RepairScopeAmendmentV1,
   type RepairScopeBlockerReceiptV1,
@@ -185,7 +187,13 @@ export async function executeRepairerCandidateMutation(input: {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "REPAIR_SCOPE_BLOCKER_CONFLICT: Repairer declared filesNeededOutsideScope while also producing a ChangeSet; the no-mutation blocker path requires no file changes.");
   }
 
-  const { allowedScope, forbiddenScope } = effectiveRepairScope(input.allowedScope, [...input.forbiddenScope, ...repairProtectedPaths(input.config, input.contract)], input.config, input.contract, input.scopeAmendment);
+  // Amendment-path exact carve-out for subtree denies (see assembler field
+  // docs): only the amendment-exempted exact files, only when they were just
+  // re-verified against the durable MAC grant in this same controller tick.
+  // Direct writes and non-amended retries pass nothing (behavior unchanged).
+  const ownerScope = await verifiedOwnerExemptionForRetry(input.stateRoot, operation, input.scopeAmendment);
+  const { allowedScope, forbiddenScope } = effectiveRepairScope(input.allowedScope, [...input.forbiddenScope, ...repairProtectedPaths(input.config, input.contract)], input.config, input.contract, input.scopeAmendment, ownerScope);
+  const exactScopeExemptions = ownerScope && input.scopeAmendment ? [...input.scopeAmendment.exemptedPaths] : undefined;
   // Serialized under the per-operation coordination lock (re-validated inside):
   // a concurrent assembly that advanced the candidate first turns this into a
   // clean CANDIDATE_STALE instead of tearing the shared workspace.
@@ -203,6 +211,7 @@ export async function executeRepairerCandidateMutation(input: {
     workspace: currentCandidate.workspace,
     worktree: input.root,
     semanticAssessment: input.semanticAssessment,
+    ...(exactScopeExemptions ? { exactScopeExemptions } : {}),
     ...(input.onScopeEscape ? { onScopeEscape: input.onScopeEscape } : {})
   });
   await recordEvent(input.stateRoot, input.config, "harness.candidate.repair-assembled", {
@@ -250,7 +259,9 @@ export async function rejectRepairCandidateChangeSet(input: {
     prepareWorkspace: input.prepareWorkspace
   });
   if (!inverse) throw new AehError("CANDIDATE_STALE", "Rejected repair has no reversible source changes.");
-  const rejectedScope = effectiveRepairScope(input.allowedScope, [...input.forbiddenScope, ...repairProtectedPaths(input.config, input.contract)], input.config, input.contract, input.scopeAmendment);
+  const rejectedOwnerScope = await verifiedOwnerExemptionForRetry(input.stateRoot, operation, input.scopeAmendment);
+  const rejectedScope = effectiveRepairScope(input.allowedScope, [...input.forbiddenScope, ...repairProtectedPaths(input.config, input.contract)], input.config, input.contract, input.scopeAmendment, rejectedOwnerScope);
+  const rejectedExactExemptions = rejectedOwnerScope && input.scopeAmendment ? [...input.scopeAmendment.exemptedPaths] : undefined;
   // Same per-operation serialization as the apply path above.
   const assembled = await assembleAndBindCandidateChangeSet({
     root: input.root,
@@ -266,6 +277,7 @@ export async function rejectRepairCandidateChangeSet(input: {
     workspace: currentCandidate.workspace,
     worktree: input.root,
     semanticAssessment: input.semanticAssessment,
+    ...(rejectedExactExemptions ? { exactScopeExemptions: rejectedExactExemptions } : {}),
     ...(input.onScopeEscape ? { onScopeEscape: input.onScopeEscape } : {})
   });
   await recordEvent(input.stateRoot, input.config, "harness.candidate.repair-rejected", {
@@ -278,7 +290,7 @@ export async function rejectRepairCandidateChangeSet(input: {
   return { candidate: assembled.candidate, impact: assembled.impact };
 }
 
-/** Files that define the frozen task, validation policy, or runtime policy cannot be changed by repair. */
+/** Files that define the frozen task, validation policy, or runtime policy cannot be changed by repair — except exact files covered by a verified owner-scoped hard-protection grant on the single amended retry. */
 export function repairProtectedPaths(config: HarnessProjectConfig, contract: TaskContract): string[] {
   // Canonical default-deny source: HARD-protected (never exemptible) plus the
   // amendable dependency-manifest denials. HARD is owned by repairScope.ts so
@@ -395,7 +407,8 @@ function partitionRepairScopeBlockerFiles(
  * contract must already allow every exempted path (persisted allowlist
  * amendment + reseal); otherwise the retry fails closed with no auto-allow.
  * HARD-protected paths (frozen TaskContract, seal, validators,
- * acceptance/spec, policy) are never exemptible even with an approval.
+ * acceptance/spec, policy) remain denied unless a verified owner-scoped
+ * hard-protection grant covers exactly the exempted paths.
  */
 function effectiveRepairScope(
   allowedScope: readonly string[],
@@ -403,6 +416,16 @@ function effectiveRepairScope(
   config: HarnessProjectConfig,
   contract: TaskContract,
   amendment: RepairScopeAmendmentV1 | undefined,
+  ownerScope?: {
+    grant: OwnerHardProtectionExemptionGrantV1;
+    operationId: string;
+    controllerEpoch: number;
+    candidateRevision: number;
+    candidateIdentityDigest: string;
+    policyDigest: string;
+    operationExecutionRevision: number;
+    terminal: boolean;
+  },
 ): { allowedScope: readonly string[]; forbiddenScope: readonly string[] } {
   if (!amendment) return { allowedScope, forbiddenScope };
   assertRepairScopeAmendment(amendment);
@@ -418,17 +441,72 @@ function effectiveRepairScope(
       );
     }
   }
-  // HARD-protection gate (never exemptible): an approved blocker cannot make
-  // frozen TaskContract/seal/validators/acceptance/spec/policy paths writable.
-  const hardViolations = findRepairHardProtectedViolations(amendment.exemptedPaths, config, contract);
-  if (hardViolations.length) {
-    throw new AehError(
-      "PARTICIPANT_PLAN_INVALID",
-      `REPAIR_SCOPE_AMENDMENT_NON_EXEMPTIBLE: exempted path(s) are never exemptible (frozen TaskContract, seal, validators, acceptance/spec, policy): ${hardViolations.join(", ")}.`,
-    );
-  }
+  // HARD-protection gate: frozen TaskContract/seal/validators/acceptance/spec/
+  // policy paths in the amendment stay denied and throw NON_EXEMPTIBLE —
+  // UNLESS a verified owner-scoped grant covers them. The single gate lives
+  // in filterForbiddenScopeForAmendment (no duplicated deny logic here); the
+  // verified ownerScope flows straight through.
   const hardProtected = repairHardProtectedPaths(config, contract);
-  return { allowedScope, forbiddenScope: filterForbiddenScopeForAmendment(forbiddenScope, amendment, hardProtected) };
+  return { allowedScope, forbiddenScope: filterForbiddenScopeForAmendment(forbiddenScope, amendment, hardProtected, ownerScope) };
+}
+
+/**
+ * DETERMINISTIC owner-exemption resolution for an amended retry (controller
+ * context only). Re-verifies the amendment-cited grant against durable state
+ * (MAC under the live token, operation/epoch/live-identity binding, expiry,
+ * ledger cross-check, exact coverage of everything the amendment exempts) and
+ * returns the verified scope context for the sync filter. Any failure yields
+ * undefined — the filter then throws NON_EXEMPTIBLE exactly as before (fail
+ * closed). The in-memory amendment is never trusted on its own: only a
+ * MAC-verified durable grant authorizes the projection.
+ */
+async function verifiedOwnerExemptionForRetry(
+  stateRoot: string,
+  operation: Awaited<ReturnType<typeof loadOperation>>,
+  amendment: RepairScopeAmendmentV1 | undefined,
+): Promise<
+  | {
+    grant: OwnerHardProtectionExemptionGrantV1;
+    operationId: string;
+    controllerEpoch: number;
+    candidateRevision: number;
+    candidateIdentityDigest: string;
+    policyDigest: string;
+    operationExecutionRevision: number;
+    terminal: boolean;
+  }
+  | undefined
+> {
+  const exemptionId = amendment?.ownerExemption?.exemptionId;
+  if (!amendment || !exemptionId) return undefined;
+  const grant = operation.ownerExemptions?.[exemptionId];
+  if (!grant) return undefined;
+  try {
+    const ledger = new HumanDecisionLedgerV2(path.join(resolveOperationStateRoot(stateRoot), ".harness", "security", "human-decisions.json"));
+    await verifyOwnerHardProtectionExemption({
+      operation,
+      neededPaths: [...amendment.exemptedPaths],
+      grant,
+      ledger,
+    });
+    const liveCandidate = operation.candidateRevision;
+    const livePolicyDigest = operation.resolvedOperationPolicy?.digest;
+    const liveExecutionRevision = operation.operationExecutionRevision;
+    if (!liveCandidate || typeof livePolicyDigest !== "string" || !Number.isSafeInteger(liveExecutionRevision)
+      || liveExecutionRevision === undefined) return undefined;
+    return {
+      grant,
+      operationId: operation.id,
+      controllerEpoch: currentControllerEpoch(operation),
+      candidateRevision: liveCandidate.revision,
+      candidateIdentityDigest: liveCandidate.identityDigest,
+      policyDigest: livePolicyDigest,
+      operationExecutionRevision: liveExecutionRevision as number,
+      terminal: isTerminalOperation(operation.status),
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 function matchesAnyRepairScope(file: string, patterns: readonly string[]): boolean {
