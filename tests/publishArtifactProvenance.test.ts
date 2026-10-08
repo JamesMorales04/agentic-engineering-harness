@@ -41,7 +41,9 @@ describe("artifact provenance binding (release_sha sidecar)", () => {
     expect(retainPath, "retain step has an explicit path list").toBeDefined();
     expect(retainPath, "retain uploads explicit files, not the directory").not.toMatch(/aeh-npm-retained\/?$/);
     expect(JSON.stringify(retain), "retain uploads sidecar explicitly").toMatch(/npm-provenance\.json/);
-    expect(JSON.stringify(retain), "retain uploads tarball explicitly").toMatch(/\.tgz/);
+    // Round-4 U1: EXACT verified filename via VERIFIED_TARBALL_BASENAME (no glob).
+    expect(JSON.stringify(retain), "retain never globs the tarball").not.toMatch(/\*\.tgz/);
+    expect(/\.tgz|VERIFIED_TARBALL/.test(JSON.stringify(retain)), "retain uploads tarball explicitly").toBe(true);
     expect(JSON.stringify(retain), "retain uploads digest explicitly").toMatch(/npm-identity\.digest/);
     // Sidecar filename convention present in workflow.
     expect(text).toMatch(/npm-provenance\.json|provenance\.json/i);

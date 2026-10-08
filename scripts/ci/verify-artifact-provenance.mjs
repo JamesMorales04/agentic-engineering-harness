@@ -42,6 +42,13 @@
 // `npm publish` and, on mismatch, fails LOUDLY + runs `npm deprecate` to
 // block installs — converting a runner-local swap from silent compromise to
 // detected-and-deprecated with bounded blast radius.
+//
+// Trust boundary (U3): post-publish/repair attestation trusts the npm
+// registry TLS channel — `npm view <name>@<version> dist.integrity` as served
+// over TLS is the ground truth for what installers receive. A registry
+// compromise or a valid-TLS MITM serving attacker bytes with matching
+// integrity is explicitly outside threat model (no client-side gate can
+// detect a lying registry).
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 

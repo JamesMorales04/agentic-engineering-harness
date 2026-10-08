@@ -45,7 +45,10 @@ describe("round-3 U1: upload scope binds the verified tarball (no sibling crossi
     expect(p, "must not upload the retained directory").not.toMatch(/aeh-npm-retained\/?$/);
     expect(p, "sidecar is explicit").toMatch(/npm-provenance\.json/);
     expect(p, "digest is explicit").toMatch(/npm-identity\.digest/);
-    expect(p, "tarball is explicit").toMatch(/\.tgz/);
+    // Round-4 U1: EXACT verified filename via VERIFIED_TARBALL_BASENAME (no glob);
+    // resolves to package-name-version.tgz at runtime (literal .tgz or env ref).
+    expect(p, "tarball is explicit (no glob)").not.toMatch(/\*\.tgz/);
+    expect(/\.tgz|VERIFIED_TARBALL/.test(p), "tarball is explicit").toBe(true);
   });
 
   it("pre-upload recheck enforces exactly ONE tarball (siblings fail closed)", async () => {

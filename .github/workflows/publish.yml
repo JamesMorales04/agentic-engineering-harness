@@ -420,15 +420,17 @@ jobs:
           # uploaded and compare to the sidecar digest (fail closed on
           # mismatch). The upload-artifact action is a separate step, so this
           # shell step runs immediately before it to narrow the window.
-          # U1 scope bind: EXACTLY ONE .tgz may cross the artifact boundary.
-          # The recheck verifies ONE selected tarball, so sibling tarballs
-          # would cross UNRECHECKED via a directory upload. Fail closed on
-          # 0 or >1 survivors; the upload step below lists EXPLICIT file
-          # paths (verified tarball via single-file glob + sidecar + digest),
-          # never the retained directory. Upload is not a trust boundary:
-          # any swap that slips through the cross-step gap is still caught by
-          # the pre-consume recheck before publish and by post-publish
-          # attestation after publish (detect-and-deprecate).
+          # U1 scope bind (round-4): EXACT verified filename crosses the artifact
+          # boundary — deterministic package-name-version.tgz, NO glob in the
+          # upload step. The guard below selects exactly ONE survivor (fail
+          # closed on 0 or >1: siblings fail closed here), rechecks its bytes,
+          # then pins its EXACT basename via GITHUB_ENV. The upload step consumes
+          # ${{ env.VERIFIED_TARBALL_BASENAME }} as an explicit file path, so a
+          # sibling landing between this guard and the upload action cannot
+          # escape (it is never named). Upload is not a trust boundary: any
+          # swap that slips through the cross-step gap is still caught by the
+          # pre-consume recheck before publish and by post-publish attestation
+          # after publish (detect-and-deprecate).
           RETAIN_DIR="${RUNNER_TEMP:-$PWD}/aeh-npm-retained"
           mapfile -t CANDIDATES < <(ls "$RETAIN_DIR"/*.tgz 2>/dev/null || true)
           if [ "${#CANDIDATES[@]}" -ne 1 ]; then
@@ -441,13 +443,24 @@ jobs:
           test -s "$RETAIN_DIR/npm-provenance.json"
           test -s "$RETAIN_DIR/npm-identity.digest"
           node scripts/ci/verify-artifact-provenance.mjs --recheck "$TARBALL" "$RETAIN_DIR/npm-provenance.json"
+          # Pin the EXACT verified filename for the upload step (no glob).
+          BASENAME="$(basename "$TARBALL")"
+          case "$BASENAME" in *.tgz) ;; *) echo "Refusing upload: verified file $BASENAME is not a .tgz (fail closed)." >&2; exit 1;; esac
+          if [ -n "${GITHUB_ENV:-}" ]; then
+            echo "VERIFIED_TARBALL_BASENAME=$BASENAME" >> "$GITHUB_ENV"
+          fi
+          echo "Verified exact tarball for upload: $BASENAME"
 
       - name: Retain release tarball for retry
         uses: actions/upload-artifact@v4
         with:
           name: aeh-npm-tarball
+          # U1 (round-4): EXACT verified file only, no glob. The recheck step
+          # pins VERIFIED_TARBALL_BASENAME (= deterministic
+          # package-name-version.tgz); a sibling landing between guard and
+          # upload is never named and cannot escape.
           path: |
-            ${{ runner.temp }}/aeh-npm-retained/*.tgz
+            ${{ runner.temp }}/aeh-npm-retained/${{ env.VERIFIED_TARBALL_BASENAME }}
             ${{ runner.temp }}/aeh-npm-retained/npm-provenance.json
             ${{ runner.temp }}/aeh-npm-retained/npm-identity.digest
           if-no-files-found: error
@@ -521,15 +534,36 @@ jobs:
               # POST-PUBLISH ATTESTATION (U2): query the registry ground truth
               # (`npm view <name>@<version> dist.integrity`) and compare to the
               # sidecar digest. Match -> proceed to Release; mismatch/UNKNOWN ->
-              # fail LOUDLY + `npm deprecate` to block installs + trace.
+              # fail LOUDLY + `npm deprecate` (bounded retry, never silent) + trace.
+              # Trust boundary (U3): attestation trusts the npm registry TLS
+              # channel — dist.integrity as served over TLS is the ground truth
+              # for what installers receive. A registry compromise or a valid-TLS
+              # MITM that serves attacker bytes with matching integrity is
+              # explicitly outside threat model (no client-side gate can
+              # detect a lying registry).
               SIDECAR_DIGEST="$(node -e "process.stdout.write(JSON.parse(require('node:fs').readFileSync(process.argv[1],'utf8')).tarball_sha512)" "$RETAIN_DIR/npm-provenance.json")"
               if node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --local-digest "$SIDECAR_DIGEST"; then
                 echo "Post-publish attestation verified: $PACKAGE_NAME@$RELEASE_VERSION registry integrity matches sidecar $SIDECAR_DIGEST."
               else
                 attest_code=$?
                 echo "Post-publish attestation FAILED for $PACKAGE_NAME@$RELEASE_VERSION: registry integrity != sidecar $SIDECAR_DIGEST (exit $attest_code; recheck→publish swap? failing LOUDLY and deprecating to block installs)." >&2
-                npm deprecate "$PACKAGE_NAME@$RELEASE_VERSION" "aeh: integrity mismatch (post-publish attestation failed; do not install)" || true
-                echo "Post-publish attestation trace: package=$PACKAGE_NAME version=$RELEASE_VERSION sidecar_digest=$SIDECAR_DIGEST result=FAILED-deprecated exit=$attest_code" >&2
+                DEPRECATE_MSG="aeh: integrity mismatch (post-publish attestation failed; do not install)"
+                DEPRECATE_OK=0
+                for attempt in 1 2 3; do
+                  if npm deprecate "$PACKAGE_NAME@$RELEASE_VERSION" "$DEPRECATE_MSG"; then
+                    DEPRECATE_OK=1
+                    break
+                  fi
+                  echo "Deprecate attempt $attempt/3 failed for $PACKAGE_NAME@$RELEASE_VERSION; retrying..." >&2
+                  sleep 5
+                done
+                if [ "$DEPRECATE_OK" -ne 1 ]; then
+                  echo "MANUAL-DEPRECATE REQUIRED: automatic deprecate failed after 3 attempts." >&2
+                  echo "  version: $PACKAGE_NAME@$RELEASE_VERSION" >&2
+                  echo "  reason: post-publish attestation mismatch (registry integrity != sidecar $SIDECAR_DIGEST); published bytes are UNTRUSTED, block installs immediately." >&2
+                  echo "  command: npm deprecate \"$PACKAGE_NAME@$RELEASE_VERSION\" \"$DEPRECATE_MSG\"" >&2
+                fi
+                echo "Post-publish attestation trace: package=$PACKAGE_NAME version=$RELEASE_VERSION sidecar_digest=$SIDECAR_DIGEST result=FAILED-deprecated exit=$attest_code deprecate_ok=$DEPRECATE_OK" >&2
                 exit 1
               fi
             elif [ "$code" -eq 3 ]; then
@@ -653,6 +687,7 @@ jobs:
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           # Rationale: verification RE-RAN for R in verify-published this run
@@ -735,7 +770,35 @@ jobs:
             echo "Refusing repair Release for $PACKAGE_NAME@$RELEASE_VERSION: tarball changed between verify and consume (TOCTOU recheck failed, fail closed)." >&2
             exit 1
           }
-          node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --tarball "$RETAIN_TARBALL"
+          # Repair attestation (U4): mismatch deprecates (retry, never silent) so the bad version is not left installable.
+          # Trust boundary (U3): attestation trusts npm registry TLS channel — dist.integrity over TLS is ground truth; registry compromise / valid-TLS MITM outside threat model.
+          if node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --tarball "$RETAIN_TARBALL"; then
+            echo "Repair identity verified: $PACKAGE_NAME@$RELEASE_VERSION registry matches retained bytes."
+          else
+            repair_code=$?
+            echo "Repair identity MISMATCH for $PACKAGE_NAME@$RELEASE_VERSION: registry tarball differs from retained bytes (exit $repair_code; failing LOUDLY and deprecating to block installs)." >&2
+            if [ -n "${NPM_TOKEN:-}" ]; then
+              export NODE_AUTH_TOKEN="$NPM_TOKEN"
+            fi
+            REPAIR_DEPRECATE_MSG="aeh: integrity mismatch (repair attestation failed; do not install)"
+            REPAIR_DEPRECATE_OK=0
+            for attempt in 1 2 3; do
+              if npm deprecate "$PACKAGE_NAME@$RELEASE_VERSION" "$REPAIR_DEPRECATE_MSG"; then
+                REPAIR_DEPRECATE_OK=1
+                break
+              fi
+              echo "Repair deprecate attempt $attempt/3 failed for $PACKAGE_NAME@$RELEASE_VERSION; retrying..." >&2
+              sleep 5
+            done
+            if [ "$REPAIR_DEPRECATE_OK" -ne 1 ]; then
+              echo "MANUAL-DEPRECATE REQUIRED: automatic deprecate failed after 3 attempts." >&2
+              echo "  version: $PACKAGE_NAME@$RELEASE_VERSION" >&2
+              echo "  reason: repair attestation mismatch (registry integrity != retained bytes); published bytes are UNTRUSTED, block installs immediately." >&2
+              echo "  command: npm deprecate \"$PACKAGE_NAME@$RELEASE_VERSION\" \"$REPAIR_DEPRECATE_MSG\"" >&2
+            fi
+            echo "Repair attestation trace: package=$PACKAGE_NAME version=$RELEASE_VERSION result=FAILED-deprecated exit=$repair_code deprecate_ok=$REPAIR_DEPRECATE_OK" >&2
+            exit 1
+          fi
 
       - name: Create GitHub Release
         env:
