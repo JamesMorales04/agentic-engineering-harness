@@ -17,6 +17,7 @@ import { listManagedPaseoAgents } from "./paseo/runtime.js";
 import { planSelfCheckoutRuntime, resolveStartProjectRoot } from "./runtime/invocation.js";
 import { VERSION } from "./version.js";
 import { createIntentDecision } from "./audit/intentDecision.js";
+import { findScopeDirectoryPatternWarnings, formatScopeDirectoryPatternWarning } from "./architecture/workGraph.js";
 
 const args = process.argv.slice(2);
 assertHarnessWorkflowEntryAllowed(args);
@@ -154,6 +155,22 @@ async function runOperationStart(argv: string[]): Promise<void> {
       profile: parsed.value("profile"),
       priority
     };
+  }
+
+  // LOUD fail-closed intake diagnostic: `--file` values that name an existing
+  // repository directory (no glob magic) match ZERO files via minimatch (no
+  // implicit `/**`). Warn only; matching semantics are untouched. Best-effort:
+  // a warning failure never blocks operation start. Covers both audit and
+  // change CLI intake; the detached change execution re-emits the same warning
+  // with a durable trace at capsule scope construction.
+  try {
+    const intakeFiles = kind === "audit" || kind === "change" ? parsed.values("file") : [];
+    if (intakeFiles.length) {
+      const warnings = await findScopeDirectoryPatternWarnings(root, intakeFiles);
+      for (const warning of warnings) console.warn(formatScopeDirectoryPatternWarning(warning));
+    }
+  } catch {
+    // Best-effort CLI diagnostic only.
   }
 
   const record = await startDetachedOperation(root, kind, payload, {
