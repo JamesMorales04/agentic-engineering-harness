@@ -4,7 +4,7 @@ import path from "node:path";
 import YAML from "yaml";
 import { z } from "zod";
 import { minimatch } from "minimatch";
-import { sha256Canonical } from "../core/digest.js";
+import { sha256Canonical, canonicalSerialize } from "../core/digest.js";
 import { AehError } from "../core/errors.js";
 import { sealTask } from "../core/seal.js";
 import { extractMarkedJson, StructuredOutputError } from "../agents/structuredOutput.js";
@@ -14,20 +14,29 @@ import { assertResolvedOperationPolicyV2 } from "../architecture/executionIdenti
 import {
   currentControllerEpoch,
   completeOperationProductChoice,
+  controllerTokenFromEnvironment,
+  isTerminalOperation,
   loadOperation,
   markOperationProductChoiceConsumed,
   resolveOperationStateRoot,
   resumeOperationProductChoice,
   suspendOperationForProductChoice,
+  type OperationRecordV2,
   type ProductChoiceRequestContentV1,
 } from "../operations/state.js";
 import { candidateRevisionsEqual } from "../operations/v2Contracts.js";
 import {
   HumanDecisionLedgerV2,
+  assertDecisionV2,
   type DecisionChoiceV1,
   type HumanDecisionBindingV2,
   type HumanDecisionV2,
 } from "../security/humanDecision.js";
+import {
+  assertOwnerHardProtectionExemptionGrant,
+  verifyOwnerExemptionMac,
+  type OwnerHardProtectionExemptionGrantV1,
+} from "../security/ownerExemption.js";
 
 /**
  * Out-of-scope-blocker → bounded-replan channel.
@@ -232,6 +241,19 @@ export interface RepairScopeAmendmentV1 {
   decisionId: string;
   requestId: string;
   decidedActor: string;
+  /**
+   * Owner-exemption provenance: present ONLY when a verified owner-scoped
+   * hard-protection grant authorized hard paths in this amendment. `requestId`
+   * then cites the exemption (`exemption:<uuid>`) instead of a suspend-created
+   * product-choice request. Every use of a grant is traced here (exemption id,
+   * ledger decision id + digest); the grant itself is operation-bound and dies
+   * with the operation terminal state.
+   */
+  ownerExemption?: {
+    exemptionId: string;
+    decisionId: string;
+    decisionDigest: string;
+  };
   amendedScope: string[];
   contractPath: string;
   sealPath: string;
@@ -621,8 +643,28 @@ export function assertRepairScopeAmendment(value: unknown): asserts value is Rep
   if (typeof record["decisionId"] !== "string" || !/^decision:[0-9a-f-]{36}$/i.test(record["decisionId"])) {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "Amendment decisionId must be the consumed HumanDecision id.");
   }
-  if (typeof record["requestId"] !== "string" || !record["requestId"].startsWith("request:")) {
-    throw new AehError("PARTICIPANT_PLAN_INVALID", "Amendment requestId must be the suspend-created product-choice request id.");
+  if (typeof record["requestId"] !== "string" || (!record["requestId"].startsWith("request:") && !record["requestId"].startsWith("exemption:"))) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "Amendment requestId must be the suspend-created product-choice request id or, for owner-exempted amendments, the exemption id.");
+  }
+  if (record["ownerExemption"] !== undefined) {
+    const provenance = record["ownerExemption"] as Record<string, unknown>;
+    if (!provenance || typeof provenance !== "object" || Array.isArray(provenance)) {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", "Amendment ownerExemption provenance must be an object.");
+    }
+    const provenanceKeys = Object.keys(provenance).sort();
+    if (provenanceKeys.join(",") !== "decisionDigest,decisionId,exemptionId") {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", "Amendment ownerExemption provenance must cite exactly exemptionId, decisionId, and decisionDigest.");
+    }
+    if (typeof provenance["exemptionId"] !== "string" || !/^exemption:[0-9a-f-]{36}$/i.test(provenance["exemptionId"])
+      || record["requestId"] !== provenance["exemptionId"]) {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", "Amendment ownerExemption exemptionId must be 'exemption:<uuid>' and match the amendment requestId.");
+    }
+    if (typeof provenance["decisionId"] !== "string" || provenance["decisionId"] !== record["decisionId"]) {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", "Amendment ownerExemption decisionId must match the amendment decisionId.");
+    }
+    if (typeof provenance["decisionDigest"] !== "string" || !/^[a-f0-9]{64}$/.test(provenance["decisionDigest"])) {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", "Amendment ownerExemption decisionDigest must be a lowercase SHA-256 digest.");
+    }
   }
   if (typeof record["decidedActor"] !== "string" || !record["decidedActor"].startsWith("human:")) {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "Amendment decidedActor must be the ledger human authority.");
@@ -776,6 +818,220 @@ export async function applyRepairScopeAmendment(input: {
   await fs.writeFile(amendmentPath, `${JSON.stringify(amendment, null, 2)}\n`);
   // Deterministic reseal against the amended contract; the seal trail (amendment
   // + seal) is the durable authority for the single retry.
+  await sealTask(root, config, amendedContract);
+  return { status: "AMENDED", contract: amendedContract, amendment };
+}
+
+/**
+ * DETERMINISTIC full verification of an owner-scoped hard-protection
+ * exemption for the exact needed paths (the authority gate; the sync filter
+ * re-checks the MAC tier only). Every check fails closed:
+ *
+ * 1. operation is non-terminal (exemptions die with terminal state);
+ * 2. grant operationId matches the live operation (no cross-operation replay);
+ * 3. grant controllerEpoch matches the live epoch (no reuse after takeover);
+ * 4. grant MAC verifies under the LIVE controller token (forgery-proof: only
+ *    the token-holding controller can mint; managed children never inherit it);
+ * 5. grant (and ledger decision) unexpired;
+ * 6. ledger cross-check: the cited APPROVE/HARD_PROTECTION_EXEMPTION decision
+ *    exists with identical exemptionId, exact paths, actor, and digest (a
+ *    model-minted or edited decision cannot match a MAC-bound digest);
+ * 7. every needed path is exactly covered by the grant (agent-declared need
+ *    can only narrow human-authorized scope, never widen it).
+ *
+ * Consumption semantics: operation-scoped MULTI-amendment (bounded by exact
+ * paths and the existing per-task amendment cap), non-transferable, never
+ * one-time-consumed on the ledger. Justification: repair loops legitimately
+ * need re-amendment (amend → retry → new blocker on another granted path);
+ * forcing a fresh human round-trip per amendment within the same
+ * operation+epoch+paths adds no security, while replay across operations is
+ * impossible (operationId MAC-bound + epoch-checked) and terminal state kills
+ * the grant. Every use is traced in the amendment artifact provenance.
+ */
+export async function verifyOwnerHardProtectionExemption(input: {
+  operation: OperationRecordV2;
+  neededPaths: readonly string[];
+  grant: OwnerHardProtectionExemptionGrantV1;
+  ledger: HumanDecisionLedgerV2;
+  now?: Date;
+}): Promise<OwnerHardProtectionExemptionGrantV1> {
+  const { operation, neededPaths, grant, ledger } = input;
+  const now = input.now ?? new Date();
+  try {
+    assertOwnerHardProtectionExemptionGrant(grant);
+  } catch (error) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", `OWNER_EXEMPTION_GRANT_INVALID: stored grant is malformed: ${error instanceof Error ? error.message : String(error)}.`);
+  }
+  if (isTerminalOperation(operation.status)) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_TERMINAL: hard-protection exemptions die with the operation terminal state.");
+  }
+  if (grant.operationId !== operation.id) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", `OWNER_EXEMPTION_CROSS_OPERATION: grant '${grant.exemptionId}' is bound to another operation and is non-transferable.`);
+  }
+  if (grant.controllerEpoch !== currentControllerEpoch(operation)) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_EPOCH_STALE: the grant does not match the current controller epoch (takeover invalidates prior grants).");
+  }
+  if (!verifyOwnerExemptionMac(controllerTokenFromEnvironment(), grant)) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_FORGED: grant MAC integrity check failed; the grant was not minted by the live controller.");
+  }
+  if (grant.expiresAt && new Date(grant.expiresAt).getTime() <= now.getTime()) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_EXPIRED: the hard-protection exemption has expired.");
+  }
+  const stored = await ledger.find(grant.decisionId);
+  if (!stored) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_DECISION_MISMATCH: the anchored ledger HumanDecision no longer exists.");
+  }
+  const decision = assertDecisionV2(stored);
+  if (decision.kind !== "APPROVE" || decision.purpose.kind !== "HARD_PROTECTION_EXEMPTION"
+    || decision.purpose.exemptionId !== grant.exemptionId
+    || canonicalSerialize(decision.purpose.paths) !== canonicalSerialize(grant.paths)
+    || decision.actorId !== grant.decidedActor
+    || decision.operationId !== operation.id
+    || sha256Canonical(decision) !== grant.decisionDigest) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_DECISION_MISMATCH: the ledger HumanDecision does not match the anchored exemption (purpose, paths, actor, operation, or digest).");
+  }
+  if (decision.expiresAt && new Date(decision.expiresAt).getTime() <= now.getTime()) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_EXPIRED: the anchored HumanDecision has expired.");
+  }
+  if (!neededPaths.length) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_NOT_COVERED: no needed paths were presented for exemption coverage.");
+  }
+  const uncovered = neededPaths
+    .map((filePath) => normalizeRepairScopePath(filePath.trim()))
+    .filter((filePath) => !grant.paths.includes(filePath));
+  if (uncovered.length) {
+    throw new AehError(
+      "PARTICIPANT_PLAN_INVALID",
+      `OWNER_EXEMPTION_NOT_COVERED: needed path(s) are outside the owner-exempted exact set: ${uncovered.join(", ")}.`,
+    );
+  }
+  return grant;
+}
+
+/**
+ * DETERMINISTIC covering-grant discovery: the first operation grant that
+ * fully verifies for ALL needed paths. Partial coverage never partially
+ * honors: a blocker needing any path outside every grant stays BLOCKED.
+ */
+export async function findCoveringOwnerHardProtectionExemption(input: {
+  operation: OperationRecordV2;
+  neededPaths: readonly string[];
+  ledger: HumanDecisionLedgerV2;
+  now?: Date;
+}): Promise<{ grant?: OwnerHardProtectionExemptionGrantV1; failures: string[] }> {
+  const failures: string[] = [];
+  for (const grant of Object.values(input.operation.ownerExemptions ?? {})) {
+    try {
+      const verified = await verifyOwnerHardProtectionExemption({ ...input, grant });
+      return { grant: verified, failures };
+    } catch (error) {
+      failures.push(`${grant?.exemptionId ?? "unknown"}: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300));
+    }
+  }
+  return { failures };
+}
+
+/**
+ * DETERMINISTIC owner-exempted amendment application (the single
+ * hard-path amendment path). Mirrors the persistence tail of
+ * applyRepairScopeAmendment (per-task cap, contract allowlist persist,
+ * durable artifact, deterministic reseal) but its authority is a fully
+ * verified owner grant instead of a consumed product-choice decision.
+ *
+ * Anti-laundering rule: the blocker must need at least one HARD-protected
+ * path. A blocker of only amendable manifests is refused here — those flow
+ * through the product-choice approve/deny channel (with its explicit deny
+ * option), never through the owner shortcut.
+ */
+export async function applyOwnerExemptedRepairScopeAmendment(input: {
+  root: string;
+  config: HarnessProjectConfig;
+  contract: TaskContract;
+  blocker: RepairScopeBlockerReceiptV1;
+  grant: OwnerHardProtectionExemptionGrantV1;
+  ledger: HumanDecisionLedgerV2;
+}): Promise<{ status: "AMENDED"; contract: TaskContract; amendment: RepairScopeAmendmentV1 }> {
+  const { root, config, contract, blocker, grant, ledger } = input;
+  assertRepairScopeBlockerReceipt(blocker);
+  if (blocker.taskId !== contract.task.id) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "Blocker task does not match the contract being amended.");
+  }
+  const operation = await loadOperation(root, blocker.operationId);
+  const verified = await verifyOwnerHardProtectionExemption({
+    operation,
+    neededPaths: blocker.filesNeededOutsideScope.map((entry) => entry.path),
+    grant,
+    ledger,
+  });
+  const exemptedPaths = [...new Set(blocker.filesNeededOutsideScope.map((entry) => normalizeRepairScopePath(entry.path)))].sort((a, b) =>
+    a.localeCompare(b),
+  );
+  if (!exemptedPaths.length || exemptedPaths.length > MAX_REPAIR_SCOPE_BLOCKER_FILES_V1) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "Amendment exempted paths are outside the bounded blocker size.");
+  }
+  for (const filePath of exemptedPaths) {
+    if (!isSafeRepairScopePath(filePath)) {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", `Amendment path '${filePath}' is not a safe repository-relative path.`);
+    }
+    if (!isExactRepairScopeFilePath(filePath)) {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", `Amendment path '${filePath}' is not an exact file path; scope amendments allow exact paths only (no wildcards).`);
+    }
+  }
+  const hardViolations = findRepairHardProtectedViolations(exemptedPaths, config, contract);
+  if (!hardViolations.length) {
+    throw new AehError(
+      "PARTICIPANT_PLAN_INVALID",
+      "OWNER_EXEMPTION_HARD_REQUIRED: the owner-exempted path authorizes hard-protected paths only; amendable manifests use the product-choice approve/deny channel.",
+    );
+  }
+  const existing = await listRepairScopeAmendments(root, config, contract.task.id);
+  if (existing.length >= MAX_REPAIR_SCOPE_AMENDMENTS_PER_TASK_V1) {
+    throw new AehError(
+      "PARTICIPANT_PLAN_BUDGET_EXCEEDED",
+      `Only ${MAX_REPAIR_SCOPE_AMENDMENTS_PER_TASK_V1} repair scope amendment(s) per task are permitted; the BLOCKED outcome stands.`,
+      { details: { taskId: contract.task.id, blockerDigest: blocker.digest } },
+    );
+  }
+  const currentAllowed = contract.scope?.allowed ?? ["**"];
+  const amendedScope = [...new Set([...currentAllowed, ...exemptedPaths])].sort((a, b) => a.localeCompare(b));
+  const amendedContract: TaskContract = {
+    ...contract,
+    scope: { ...(contract.scope ?? {}), allowed: amendedScope },
+  };
+  const contractsDir = config.sdd?.contractsDir ?? ".harness/contracts";
+  const contractPath = path.join(root, contractsDir, `${contract.task.id}.yaml`);
+  await fs.mkdir(path.dirname(contractPath), { recursive: true });
+  await fs.writeFile(contractPath, YAML.stringify(amendedContract));
+
+  const amendmentPath = repairScopeAmendmentPath(root, contract.task.id, existing.length + 1);
+  const sealPath = path.join(root, ".harness", "seals", `${contract.task.id}.json`);
+  const amendmentBody = {
+    version: 1 as const,
+    mechanism: "DETERMINISTIC" as const,
+    operationId: blocker.operationId,
+    taskId: contract.task.id,
+    blockerDigest: blocker.digest,
+    exemptedPaths,
+    decidedBy: "human" as const,
+    decisionReason: verified.decisionReason,
+    decidedAt: verified.createdAt,
+    decisionId: verified.decisionId,
+    requestId: verified.exemptionId,
+    decidedActor: verified.decidedActor,
+    ownerExemption: {
+      exemptionId: verified.exemptionId,
+      decisionId: verified.decisionId,
+      decisionDigest: verified.decisionDigest,
+    },
+    amendedScope,
+    contractPath: path.relative(root, contractPath).replaceAll("\\", "/"),
+    sealPath: path.relative(root, sealPath).replaceAll("\\", "/"),
+    amendmentPath: path.relative(root, amendmentPath).replaceAll("\\", "/"),
+  };
+  const amendment: RepairScopeAmendmentV1 = { ...amendmentBody, amendmentDigest: sha256Canonical(amendmentBody) };
+  assertRepairScopeAmendment(amendment);
+  await fs.mkdir(path.dirname(amendmentPath), { recursive: true });
+  await fs.writeFile(amendmentPath, `${JSON.stringify(amendment, null, 2)}\n`);
   await sealTask(root, config, amendedContract);
   return { status: "AMENDED", contract: amendedContract, amendment };
 }
@@ -1047,20 +1303,43 @@ export async function resolveRepairScopeBlockerViaProductChoice(input: {
   timeoutMs?: number;
   pollMs?: number;
 }): Promise<
-  | { status: "AMENDED"; contract: TaskContract; amendment: RepairScopeAmendmentV1; selection: RepairScopeChoiceSelectionV1 }
+  | { status: "AMENDED"; contract: TaskContract; amendment: RepairScopeAmendmentV1; selection?: RepairScopeChoiceSelectionV1; ownerExemption?: { exemptionId: string; decisionId: string; decisionDigest: string } }
   | { status: "BLOCKED"; blocker: RepairScopeBlockerReceiptV1; check: ValidationCheck; choiceId?: string }
 > {
   const { root, controlRoot, operationId, config, contract, blocker } = input;
   assertRepairScopeBlockerReceipt(blocker);
-  // HARD-protection gate (never exemptible): a blocker intersecting frozen
-  // TaskContract, seal, validators, acceptance/spec, or policy paths is
-  // rejected as BLOCKED citing non-exemptible with no suspend/approve path.
+  // HARD-protection gate (never exemptible WITHOUT a verified owner grant): a
+  // blocker intersecting frozen TaskContract, seal, validators,
+  // acceptance/spec, or policy paths is rejected as BLOCKED citing
+  // non-exemptible with no suspend/approve path — UNLESS a live owner-scoped
+  // exemption grant fully covers every needed path. The owner branch applies
+  // without suspension (the grant IS the human approval); otherwise BLOCKED.
   const hardViolations = findRepairHardProtectedViolations(
     blocker.filesNeededOutsideScope.map((entry) => entry.path),
     config,
     contract,
   );
   if (hardViolations.length) {
+    const operation = await loadOperation(controlRoot, operationId);
+    const ledger = repairScopeLedger(controlRoot);
+    const covering = await findCoveringOwnerHardProtectionExemption({
+      operation,
+      neededPaths: blocker.filesNeededOutsideScope.map((entry) => entry.path),
+      ledger,
+    });
+    if (covering.grant) {
+      const applied = await applyOwnerExemptedRepairScopeAmendment({ root, config, contract, blocker, grant: covering.grant, ledger });
+      return {
+        status: "AMENDED",
+        contract: applied.contract,
+        amendment: applied.amendment,
+        ownerExemption: {
+          exemptionId: covering.grant.exemptionId,
+          decisionId: covering.grant.decisionId,
+          decisionDigest: covering.grant.decisionDigest,
+        },
+      };
+    }
     return { status: "BLOCKED", blocker, check: repairScopeNonExemptibleValidationCheck(blocker, hardViolations) };
   }
   const preexisting = await listRepairScopeAmendments(root, config, contract.task.id);
@@ -1109,22 +1388,34 @@ export async function resolveRepairScopeBlockerViaProductChoice(input: {
  * remain denied and silent expansion still throws in the assembler.
  *
  * HARD-protection defense: when `hardProtected` is provided, any exempted
- * path intersecting it throws fail-closed (never exemptible). Callers with
- * config+contract should pass `repairHardProtectedPaths(config, contract)`;
- * the amendment-apply and blocker-resolve gates already enforce this before
- * filtering.
+ * path intersecting it throws fail-closed (never exemptible) — UNLESS a
+ * verified owner grant is presented via `ownerScope`. The filter tier
+ * re-verifies the MAC under the live controller token plus operation/epoch
+ * binding, expiry, terminal state, and exact coverage (all sync, no ledger
+ * I/O); the async authority gate (`verifyOwnerHardProtectionExemption`,
+ * incl. the ledger cross-check) already ran in the amendment-apply path and
+ * re-runs in the retry caller before this filter executes. A forged, stale,
+ * expired, terminal, or non-covering grant throws the same NON_EXEMPTIBLE as
+ * no exemption at all. Direct writes and general assembly scope NEVER honor
+ * exemptions — only this amendment-path projection.
  */
 export function filterForbiddenScopeForAmendment(
   forbiddenScope: readonly string[],
   amendment: RepairScopeAmendmentV1,
   hardProtected?: readonly string[],
+  ownerScope?: {
+    grant: OwnerHardProtectionExemptionGrantV1;
+    operationId: string;
+    controllerEpoch: number;
+    terminal: boolean;
+  },
 ): string[] {
   assertRepairScopeAmendment(amendment);
   if (hardProtected) {
     const violations = amendment.exemptedPaths.filter((filePath) =>
       matchesAnyHardProtectedPattern(normalizeRepairScopePath(filePath.trim()), hardProtected),
     );
-    if (violations.length) {
+    if (violations.length && !ownerExemptionCoversHardPaths(amendment, violations, ownerScope)) {
       throw new AehError(
         "PARTICIPANT_PLAN_INVALID",
         `REPAIR_SCOPE_AMENDMENT_NON_EXEMPTIBLE: exempted path(s) are never exemptible (frozen TaskContract, seal, validators, acceptance/spec, policy): ${violations.join(", ")}.`,
@@ -1142,6 +1433,35 @@ export function filterForbiddenScopeForAmendment(
     .map((entry) => ({ raw: entry, normalized: normalizeRepairScopePath(entry.trim()) }))
     .filter(({ normalized }) => !exempted.has(normalized))
     .map(({ raw }) => raw);
+}
+
+function ownerExemptionCoversHardPaths(
+  amendment: RepairScopeAmendmentV1,
+  hardViolations: string[],
+  ownerScope: {
+    grant: OwnerHardProtectionExemptionGrantV1;
+    operationId: string;
+    controllerEpoch: number;
+    terminal: boolean;
+  } | undefined,
+): boolean {
+  // No grant, or the amendment does not cite one: not covered (existing
+  // fail-closed behavior preserved bit-for-bit for all current callers).
+  if (!ownerScope || !amendment.ownerExemption) return false;
+  const { grant, operationId, controllerEpoch, terminal } = ownerScope;
+  try {
+    assertOwnerHardProtectionExemptionGrant(grant);
+  } catch {
+    return false;
+  }
+  if (terminal) return false;
+  if (grant.exemptionId !== amendment.ownerExemption.exemptionId) return false;
+  if (grant.operationId !== operationId || grant.controllerEpoch !== controllerEpoch) return false;
+  if (!verifyOwnerExemptionMac(controllerTokenFromEnvironment(), grant)) return false;
+  if (grant.expiresAt && new Date(grant.expiresAt).getTime() <= Date.now()) return false;
+  return hardViolations
+    .map((filePath) => normalizeRepairScopePath(filePath.trim()))
+    .every((filePath) => grant.paths.includes(filePath));
 }
 
 function extractMarkedRepairResult(stdout: string, stderr: string): unknown | undefined {

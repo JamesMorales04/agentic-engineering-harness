@@ -14,6 +14,7 @@ import { assertExecutionBindingV3, assertResolvedOperationPolicyV2, type Executi
 import { evaluateObjectiveCompletionV1, type ObjectiveCompletionInputV1 } from "../architecture/objectiveCompletion.js";
 import { currentObjectiveIdentityV1, loadCurrentAcceptanceOracleArtifactV1, type AcceptanceOracleDispositionV1 } from "../architecture/acceptanceOracle.js";
 import { HumanDecisionLedgerV2, assertContinuationRecordV1, assertDecisionRequestV1, type ContinuationRecordV1, type DecisionRequestV1, type HumanDecisionBindingV2, type HumanDecisionV2, type OperationControlCommandV1 } from "../security/humanDecision.js";
+import { assertOwnerHardProtectionExemptionGrant, type OwnerHardProtectionExemptionGrantV1 } from "../security/ownerExemption.js";
 import type { OwnerEconomicBoundaryRequirementV1, OwnerEconomicBoundarySignalV1, ParticipantExecutionLivenessV1, SupervisorRecoveryDecisionV1 } from "./executionLiveness.js";
 import { assertOperationOriginV1, type OperationOriginV1 } from "./operationProvenance.js";
 
@@ -185,6 +186,14 @@ export interface OperationRecordV2 {
   decisionRequest?: DecisionRequestV1;
   continuation?: ContinuationRecordV1;
   pause?: OperationPauseRecordV1;
+  /**
+   * Owner-scoped hard-protection exemption grants (DETERMINISTIC authority:
+   * each grant carries an HMAC over the live controller token binding
+   * operationId + controller epoch + exact paths + ledger decision digest).
+   * Written only through the controller-token-gated anchor path; stripped on
+   * every terminal transition so lifetime is bounded by terminal state.
+   */
+  ownerExemptions?: Record<string, OwnerHardProtectionExemptionGrantV1>;
   /** How the operation workspace is owned: operation-owned resources are terminal-reconciled, delivery workspaces are retained. */
   workspaceDisposition?: "OPERATION_OWNED" | "DELIVERY_REUSED";
   /**
@@ -445,7 +454,7 @@ export async function transitionOperationToTerminal(
     const now = new Date().toISOString(); const revision = current.revision + 1; const participants = settleParticipants(current.participants, effectivePatch.status, now); const supervision = settleSupervision(current.supervision, now);
     const stages = settleRunningStages(current.stages, effectivePatch.status, revision, now);
     stages.finished = { name: "finished", status: terminalStageStatus(effectivePatch.status), revision, startedAt: now, finishedAt: now };
-    const next = normalizeOperationRecord({ ...current, ...effectivePatch, version: 2, id: current.id, kind: current.kind, revision, updatedAt: now, lastProgressAt: now, finishedAt: effectivePatch.finishedAt ?? now, participants, progress: deriveProgress(participants), supervision, decisionRequest: undefined, continuation: undefined, pause: undefined, stages } as OperationRecordV2);
+    const next = normalizeOperationRecord({ ...current, ...effectivePatch, version: 2, id: current.id, kind: current.kind, revision, updatedAt: now, lastProgressAt: now, finishedAt: effectivePatch.finishedAt ?? now, participants, progress: deriveProgress(participants), supervision, decisionRequest: undefined, continuation: undefined, pause: undefined, ownerExemptions: undefined, stages } as OperationRecordV2);
     if (effectivePatch.status === "SUCCEEDED" && next.candidateRevision) await assertWorkspaceMatchesCandidate(candidateWorkspaceRoot(next, next.candidateRevision), next.candidateRevision);
     await commitOperationRecord(stateRoot, file, next, "operation.terminal", ["status", "phase", "ownerEconomicBoundary", "ownerContinuationBoundary", "participants", "progress", "supervision", "stages"]); return { record: next, transitioned: true };
   }));
@@ -477,6 +486,10 @@ export async function transitionOperationAtHardDeadlineV1(root: string, operatio
       status: "FAILED",
       phase: "HUMAN_REQUIRED",
       ownerContinuationBoundary,
+      // Owner hard-protection exemptions die with the operation: a terminal
+      // record carries no live grants (every verifier also refuses terminal
+      // records independently).
+      ownerExemptions: undefined,
       error: `HUMAN_REQUIRED: OPERATION_HARD_DEADLINE_REACHED: frozen owner deadline ${new Date(deadline).toISOString()} elapsed.`,
       revision,
       updatedAt: now,
@@ -1711,6 +1724,21 @@ export function normalizeOperationRecord(record: OperationRecord): OperationReco
     if (record.phase === "HUMAN_REQUIRED" && !record.ownerEconomicBoundary && !record.ownerContinuationBoundary && (!record.decisionRequest || !record.continuation || record.continuation.state !== "WAITING")) throw new Error("DECISION_CONTINUATION_STATE_INVALID: HUMAN_REQUIRED requires a current waiting decision, continuation, or typed Owner boundary.");
     if (record.ownerEconomicBoundary) assertOwnerEconomicBoundaryRequirementV1(record.ownerEconomicBoundary, record);
     if (record.ownerContinuationBoundary) assertOwnerContinuationBoundaryV1(record.ownerContinuationBoundary, record);
+    if (record.ownerExemptions !== undefined) {
+      if (!record.ownerExemptions || typeof record.ownerExemptions !== "object" || Array.isArray(record.ownerExemptions)) {
+        throw new Error("OWNER_EXEMPTION_GRANT_INVALID: ownerExemptions must be a record of exemption grants.");
+      }
+      for (const [key, grant] of Object.entries(record.ownerExemptions)) {
+        try {
+          assertOwnerHardProtectionExemptionGrant(grant);
+        } catch (error) {
+          throw new Error(`OWNER_EXEMPTION_GRANT_INVALID: stored grant '${key}' is malformed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        if (key !== (grant as OwnerHardProtectionExemptionGrantV1).exemptionId || (grant as OwnerHardProtectionExemptionGrantV1).operationId !== record.id) {
+          throw new Error(`OWNER_EXEMPTION_GRANT_INVALID: stored grant '${key}' is not bound to this operation.`);
+        }
+      }
+    }
     return { ...record, version: 2 as const, revision: Math.max(1, record.revision || 1), lastProgressAt: record.lastProgressAt || record.updatedAt, supervision: record.supervision ?? defaultSupervision(record.kind), stages: record.stages ?? {}, participants, progress: record.progress ?? deriveProgress(participants), notification: record.notification ?? defaultNotification(), controller: record.controller ?? { epoch: 0, ownerId: "controller:none", claimedAt: record.createdAt } };
   }
   const participants: Record<string, OperationParticipantRecord> = {};

@@ -273,6 +273,25 @@ export interface CandidateAssemblyInputV1 {
   workspace?: string;
   worktree?: string;
   /**
+   * Exact-file carve-out for the single repair-amendment retry (amendment
+   * path ONLY — never general assembly). Rationale: hard protection denies
+   * whole subtrees (`specs/**`, `tests/**`, `src/validators/**`), and under
+   * ANY-match glob semantics no finite forbidden-pattern list can express
+   * "deny the subtree except exactly file P". The amendment-path filter
+   * therefore cannot project exact exemptions through subtree denies; the
+   * verified exact files travel here instead, as caller-supplied scope data.
+   *
+   * Guardrails (all fail-closed, all enforced HERE, independent of the
+   * caller): every entry must be an exact file (glob metacharacters throw);
+   * every entry must ALSO be in `allowedScope` (the out-of-scope check runs
+   * unchanged, so a carve-out can only ever lift a forbidden deny, never
+   * grant allow); absent/empty behaves bit-identically to today. The
+   * assembler never reads grants, ledgers, tokens, or operations — authority
+   * stays wholly in the amendment path (verify + apply + retry derivation),
+   * which is the sole producer of this list.
+   */
+  exactScopeExemptions?: readonly string[];
+  /**
    * Best-effort forensic hook for a scope-escape rejection
    * (out-of-scope or forbidden ChangeSet paths). The production wiring
    * persists the same `candidate.scope.escape.rejected` trace shape family
@@ -327,8 +346,18 @@ export async function assembleCandidateChangeSet(input: CandidateAssemblyInputV1
   // worker off-patch filesystem writes are only observed through the captured
   // diff, never scope-checked live.
   await assertPatchSymlinksContained(input.root, changeSet.patch);
+  // Amendment-path exact carve-out (see field docs): exact files only, and
+  // the allowed-scope check below still applies to them unchanged.
+  const exactExempt = new Set<string>();
+  for (const entry of input.exactScopeExemptions ?? []) {
+    const file = normalizePath(String(entry ?? "").trim());
+    if (!file || file === "**" || file.endsWith("/**") || /[*?[\]{}!()+@]/.test(file)) {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", `REPAIR_SCOPE_AMENDMENT_INVALID: exact scope exemption '${String(entry)}' is not an exact file path.`);
+    }
+    exactExempt.add(file);
+  }
   const outOfScope = changedFiles.filter((file) => !matchesAny(file, input.allowedScope));
-  const forbidden = changedFiles.filter((file) => matchesAny(file, input.forbiddenScope ?? []));
+  const forbidden = changedFiles.filter((file) => matchesAny(file, input.forbiddenScope ?? []) && !exactExempt.has(file));
   if (outOfScope.length || forbidden.length) {
     // Observability-only enrichment (fail-closed preserved): attach the
     // bounded hard/amendable split to the error details and emit a
