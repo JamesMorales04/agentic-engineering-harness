@@ -17,6 +17,26 @@
 //   verify-artifact-provenance.mjs --write --tarball <tgz> --provenance <json>
 //     --release-sha <sha>
 // (name/version are read from ./package.json in write mode.)
+//
+// Recheck mode (TOCTOU bind: recompute sha512 of the exact bytes about to be
+// consumed and compare to the sidecar digest, fail closed on mismatch):
+//   verify-artifact-provenance.mjs --recheck <tarball> <sidecar>
+//   verify-artifact-provenance.mjs --recheck --tarball <tgz> --provenance <json>
+// Call this IN THE SAME shell step, immediately before EACH upload of the
+// tarball and EACH `npm publish` invocation (and before each identity-gate
+// consumption in confirm/repair steps). It reuses the comparison logic below
+// (single implementation: same hash, same digest regex, same fail-closed
+// semantics as verify mode, digest-only since release_sha/name/version were
+// already bound by the earlier full verify).
+//
+// Accepted residual: the recheck→exec window inside one shell step is
+// sub-millisecond (two adjacent lines, no network/IO between them). An
+// attacker must win that sub-ms race AND the swapped bytes must still match
+// the sidecar digest — a second swap needs a sha512 preimage, which is
+// computationally infeasible. Cross-step gaps (pack→upload-artifact action)
+// are narrowed to one immediately-preceding recheck shell step, and any swap
+// that slips through there is still caught by the pre-consume recheck before
+// publish/Release (defense in depth: upload is never a trust boundary).
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 
@@ -27,6 +47,8 @@ let releaseSha;
 let expectedName;
 let expectedVersion;
 let writeMode = false;
+let recheckMode = false;
+const positionals = [];
 for (let i = 0; i < argv.length; i += 1) {
   const a = argv[i];
   if (a === "--tarball") {
@@ -41,11 +63,17 @@ for (let i = 0; i < argv.length; i += 1) {
     expectedVersion = argv[(i += 1)];
   } else if (a === "--write") {
     writeMode = true;
-  } else {
+  } else if (a === "--recheck") {
+    recheckMode = true;
+  } else if (a.startsWith("--")) {
     console.error(
       `usage: verify-artifact-provenance.mjs --tarball <tgz> --provenance <json> --release-sha <sha> [--name <pkg> --version <ver>] [--write]`,
     );
+    console.error(`   or: verify-artifact-provenance.mjs --recheck <tarball> <sidecar>`);
+    console.error(`   or: verify-artifact-provenance.mjs --recheck --tarball <tgz> --provenance <json>`);
     process.exit(1);
+  } else {
+    positionals.push(a);
   }
 }
 
@@ -53,6 +81,74 @@ const fail = (msg) => {
   console.error(`artifact provenance REFUSED (fail closed, refusing publish and Release): ${msg}`);
   process.exit(1);
 };
+
+// Single implementation of the digest comparison (shared by verify + recheck).
+const DIGEST_RE = /^sha512-[A-Za-z0-9+/]+={0,2}$/;
+const computeTarballDigest = (tgzPath) =>
+  `sha512-${createHash("sha512").update(readFileSync(tgzPath)).digest("base64")}`;
+const readSidecarDigest = (sidecarPath) => {
+  if (!existsSync(sidecarPath)) {
+    fail(`provenance sidecar ${sidecarPath} is ABSENT; the tarball is UNVERIFIED. Refusing publish and Release.`);
+  }
+  let parsed;
+  try {
+    const raw = readFileSync(sidecarPath, "utf8");
+    if (!raw.trim()) fail(`provenance sidecar ${sidecarPath} is empty; refusing publish and Release.`);
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    fail(`provenance sidecar ${sidecarPath} is INVALID (${err?.message ?? err}); refusing publish and Release.`);
+  }
+  if (typeof parsed?.tarball_sha512 !== "string" || !parsed.tarball_sha512) {
+    fail(`provenance sidecar ${sidecarPath} is missing required field "tarball_sha512"; refusing publish and Release.`);
+  }
+  if (!DIGEST_RE.test(parsed.tarball_sha512)) {
+    fail(`provenance sidecar ${sidecarPath} has a malformed tarball_sha512 digest; refusing publish and Release.`);
+  }
+  return parsed.tarball_sha512;
+};
+const assertDigestMatch = (tgzPath, sidecarPath) => {
+  if (!existsSync(tgzPath) || statSync(tgzPath).size === 0) {
+    fail(`retained tarball ${tgzPath} is missing or empty; refusing to publish it.`);
+  }
+  const expected = readSidecarDigest(sidecarPath);
+  const actual = computeTarballDigest(tgzPath);
+  if (actual !== expected) {
+    fail(
+      `TOCTOU recheck MISMATCH: tarball ${tgzPath} content differs from the sidecar digest ` +
+        `(swapped between verify and consume? expected ${expected} got ${actual}). Refusing publish and Release.`,
+    );
+  }
+  return actual;
+};
+
+if (recheckMode) {
+  if (writeMode) {
+    console.error(`usage: --recheck is mutually exclusive with --write.`);
+    process.exit(1);
+  }
+  // Positional form: --recheck <tarball> <sidecar> (preferred in workflow steps).
+  if (!tarballPath && !provenancePath && positionals.length === 2) {
+    [tarballPath, provenancePath] = positionals;
+  } else if (positionals.length !== 0) {
+    console.error(`usage: verify-artifact-provenance.mjs --recheck <tarball> <sidecar>`);
+    console.error(`   or: verify-artifact-provenance.mjs --recheck --tarball <tgz> --provenance <json>`);
+    process.exit(1);
+  }
+  if (!tarballPath || !provenancePath) {
+    console.error(`usage: verify-artifact-provenance.mjs --recheck <tarball> <sidecar>`);
+    console.error(`   or: verify-artifact-provenance.mjs --recheck --tarball <tgz> --provenance <json>`);
+    process.exit(1);
+  }
+  const actual = assertDigestMatch(tarballPath, provenancePath);
+  console.log(`artifact provenance rechecked (TOCTOU bind): ${tarballPath} tarball_sha512=${actual}`);
+  process.exit(0);
+}
+if (positionals.length !== 0) {
+  console.error(
+    `usage: verify-artifact-provenance.mjs --tarball <tgz> --provenance <json> --release-sha <sha> [--name <pkg> --version <ver>] [--write]`,
+  );
+  process.exit(1);
+}
 
 if (!tarballPath || !provenancePath || !releaseSha) {
   console.error(
@@ -77,8 +173,7 @@ if (writeMode) {
   if (!pkg?.name || !pkg?.version) {
     fail(`cannot write provenance: ./package.json is missing name/version.`);
   }
-  const bytes = readFileSync(tarballPath);
-  const digest = `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
+  const digest = computeTarballDigest(tarballPath);
   const sidecar = { release_sha: releaseSha, tarball_sha512: digest, name: pkg.name, version: pkg.version };
   try {
     writeFileSync(provenancePath, `${JSON.stringify(sidecar, null, 2)}\n`, "utf8");
@@ -131,10 +226,10 @@ if (sidecar.name !== expectedName || sidecar.version !== expectedVersion) {
       `expected ${JSON.stringify(`${expectedName}@${expectedVersion}`)}. Refusing publish and Release.`,
   );
 }
-if (!/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(sidecar.tarball_sha512)) {
+if (!DIGEST_RE.test(sidecar.tarball_sha512)) {
   fail(`provenance sidecar ${provenancePath} has a malformed tarball_sha512 digest; refusing publish and Release.`);
 }
-const actual = `sha512-${createHash("sha512").update(readFileSync(tarballPath)).digest("base64")}`;
+const actual = computeTarballDigest(tarballPath);
 if (actual !== sidecar.tarball_sha512) {
   fail(
     `provenance digest MISMATCH for ${expectedName}@${expectedVersion} at release_sha=${releaseSha}: retained tarball ` +

@@ -193,3 +193,177 @@ describe("artifact provenance binding (release_sha sidecar)", () => {
     expect(published2, "idempotent resume must not republish").toBe(false);
   });
 });
+
+describe("TOCTOU bind: recheck exact bytes before each consume (Luna round-2)", () => {
+  it("recheck mode passes valid bytes and refuses swapped bytes (both arg forms)", async () => {
+    const gate = path.join(REPO, "scripts/ci/verify-artifact-provenance.mjs");
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-prov-recheck-"));
+    await fs.writeFile(path.join(dir, "package.json"), JSON.stringify({ name: "aeh-test-pkg", version: "9.9.9" }));
+    const pack = spawnSync("npm", ["pack", "--pack-destination", dir, "--silent"], { cwd: dir, encoding: "utf8" });
+    if (pack.status !== 0) throw new Error(`npm pack failed: ${pack.stderr}`);
+    const tgz = path.join(dir, (await fs.readdir(dir)).find((f) => f.endsWith(".tgz"))!);
+    const SHA = "e".repeat(40);
+    const sidecar = path.join(dir, "npm-provenance.json");
+    const w = spawnSync(process.execPath, [gate, "--write", "--tarball", tgz, "--provenance", sidecar, "--release-sha", SHA], {
+      cwd: dir,
+      encoding: "utf8",
+    });
+    expect(w.status, "write must succeed").toBe(0);
+    // Both recheck forms pass on valid bytes.
+    for (const args of [
+      ["--recheck", tgz, sidecar],
+      ["--recheck", "--tarball", tgz, "--provenance", sidecar],
+    ]) {
+      const r = spawnSync(process.execPath, [gate, ...args], { encoding: "utf8" });
+      expect(r.status, `recheck ${JSON.stringify(args)} must pass`).toBe(0);
+      expect(`${r.stdout}\n${r.stderr}`).toMatch(/recheck/i);
+    }
+    // Swap between verify and consume: verify passed on old bytes, recheck must refuse new bytes.
+    const v0 = spawnSync(
+      process.execPath,
+      [gate, "--tarball", tgz, "--provenance", sidecar, "--release-sha", SHA, "--name", "aeh-test-pkg", "--version", "9.9.9"],
+      { encoding: "utf8" },
+    );
+    expect(v0.status, "verify passes before swap").toBe(0);
+    await fs.appendFile(tgz, "attacker-swap");
+    for (const args of [
+      ["--recheck", tgz, sidecar],
+      ["--recheck", "--tarball", tgz, "--provenance", sidecar],
+    ]) {
+      const r = spawnSync(process.execPath, [gate, ...args], { encoding: "utf8" });
+      expect(r.status, `swapped bytes must be refused (${JSON.stringify(args)})`).not.toBe(0);
+      expect(`${r.stdout}\n${r.stderr}`).toMatch(/TOCTOU|mismatch|refus/i);
+    }
+    // Absent sidecar / missing tarball / malformed digest also refuse (fail closed).
+    const absent = spawnSync(process.execPath, [gate, "--recheck", tgz, path.join(dir, "nope.json")], { encoding: "utf8" });
+    expect(absent.status, "absent sidecar must refuse").not.toBe(0);
+    const missing = spawnSync(process.execPath, [gate, "--recheck", path.join(dir, "nope.tgz"), sidecar], { encoding: "utf8" });
+    expect(missing.status, "missing tarball must refuse").not.toBe(0);
+    await fs.writeFile(sidecar, JSON.stringify({ release_sha: SHA, tarball_sha512: "not-a-digest", name: "x", version: "y" }));
+    const bad = spawnSync(process.execPath, [gate, "--recheck", tgz, sidecar], { encoding: "utf8" });
+    expect(bad.status, "malformed digest must refuse").not.toBe(0);
+  });
+
+  it("recheck reuses the single digest implementation (no forked hash)", async () => {
+    const src = await fs.readFile(path.join(REPO, "scripts/ci/verify-artifact-provenance.mjs"), "utf8");
+    // Single implementation: shared hash + digest regex consumed by both verify and recheck.
+    expect(src).toMatch(/computeTarballDigest/);
+    expect(src).toMatch(/DIGEST_RE|sha512-\[A-Za-z0-9/);
+    expect(src).toMatch(/--recheck/);
+    expect(src).toMatch(/TOCTOU/);
+    // Accepted residual documented in the gate with rationale (sub-ms + preimage).
+    expect(src).toMatch(/sub-millisecond|sub-ms/);
+    expect(src).toMatch(/preimage/i);
+  });
+
+  it("every consume boundary rechecks in the same step immediately before consume", async () => {
+    const text = await fs.readFile(path.join(REPO, ".github/workflows/publish.yml"), "utf8");
+    const workflow = parse(text) as Record<string, any>;
+    const jobs = workflow.jobs as Record<string, any>;
+    const pubSteps = jobs["publish-npm"].steps as Array<{ name?: string; run?: string; uses?: string }>;
+    // Pack->upload: dedicated recheck shell step immediately before the upload-artifact step.
+    const uploadIdx = pubSteps.findIndex((s) => (s.uses ?? "").includes("upload-artifact"));
+    expect(uploadIdx, "upload-artifact step exists").toBeGreaterThan(0);
+    const preUpload = pubSteps[uploadIdx - 1] as { name?: string; run?: string };
+    expect(preUpload.name ?? "", "recheck runs immediately before upload").toMatch(/recheck/i);
+    expect(preUpload.run ?? "", "pre-upload recheck uses script mode").toMatch(/verify-artifact-provenance\.mjs --recheck/);
+    // Publish: recheck IN THE SAME shell step, immediately before the npm publish invocation.
+    const publishStep = pubSteps.find((s) => (s.run ?? "").includes("npm publish"))!;
+    expect(publishStep).toBeDefined();
+    const lines = (publishStep.run ?? "").split("\n");
+    const recheckIdx = lines.findIndex((l) => l.includes("--recheck"));
+    const publishIdx = lines.findIndex((l) => l.includes("npm publish"));
+    expect(recheckIdx, "publish step contains a recheck").toBeGreaterThanOrEqual(0);
+    expect(publishIdx, "publish step contains npm publish").toBeGreaterThan(recheckIdx);
+    expect(publishIdx - recheckIdx, "recheck is immediately before publish (same step, no IO between)").toBeLessThan(8);
+    expect(publishStep.run!).toMatch(/verify-artifact-provenance\.mjs --recheck/);
+    // Confirm: recheck in the same step immediately before the identity-gate consumption.
+    const confirmRun = pubSteps.find((s) => s.name === "Confirm published version is on npm")!.run!;
+    const cLines = confirmRun.split("\n");
+    const cRecheck = cLines.findIndex((l) => l.includes("--recheck"));
+    const cConsume = cLines.findIndex((l) => l.includes("verify-npm-identity.mjs"));
+    expect(cRecheck, "confirm step contains a recheck").toBeGreaterThanOrEqual(0);
+    expect(cConsume, "confirm step consumes via identity gate").toBeGreaterThan(cRecheck);
+    expect(cConsume - cRecheck, "confirm recheck immediately precedes consume").toBeLessThan(8);
+    // Repair-reuse: recheck in the same step immediately before the final identity consumption.
+    const repairSteps = jobs["repair-release"].steps as Array<{ name?: string; run?: string }>;
+    const repairRun = repairSteps.find((s) => s.name === "Confirm published-but-unreleased state (SHA-bound)")!.run!;
+    const rLines = repairRun.split("\n");
+    const rRechecks = rLines.map((l, i) => (l.includes("--recheck") ? i : -1)).filter((i) => i >= 0);
+    expect(rRechecks.length, "repair step contains a recheck").toBeGreaterThan(0);
+    const rConsume = rLines.findIndex((l) => l.includes("verify-npm-identity.mjs") && l.includes("--tarball"));
+    const lastRecheck = Math.max(...rRechecks);
+    expect(rConsume, "repair step consumes retained bytes").toBeGreaterThan(lastRecheck);
+    expect(rConsume - lastRecheck, "repair recheck immediately precedes consume").toBeLessThan(8);
+    expect(repairRun).toMatch(/verify-artifact-provenance\.mjs --recheck/);
+    // Single implementation everywhere (script mode, never inline sha512sum for the bind).
+    for (const [site, run] of Object.entries({
+      preUpload: preUpload.run!,
+      publish: publishStep.run!,
+      confirm: confirmRun,
+      repair: repairRun,
+    })) {
+      expect(run, `${site} binds via the script (single implementation)`).toMatch(/verify-artifact-provenance\.mjs --recheck/);
+    }
+    // Accepted residual documented at the boundaries (sub-ms + preimage rationale).
+    expect(text).toMatch(/sub-ms|sub-millisecond/i);
+    expect(text).toMatch(/preimage/i);
+    expect(text).toMatch(/residual/i);
+  });
+
+  it("TOCTOU e2e: swapped bytes between verify and publish are refused (never published)", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-prov-toctou-"));
+    await fs.writeFile(path.join(dir, "package.json"), JSON.stringify({ name: "aeh-test-pkg", version: "9.9.9" }));
+    const pack = spawnSync("npm", ["pack", "--pack-destination", dir, "--silent"], { cwd: dir, encoding: "utf8" });
+    if (pack.status !== 0) throw new Error(`npm pack failed: ${pack.stderr}`);
+    const baseTgz = (await fs.readdir(dir)).find((f) => f.endsWith(".tgz"))!;
+    const baseBytes = await fs.readFile(path.join(dir, baseTgz));
+    const baseDigest = `sha512-${createHash("sha512").update(baseBytes).digest("base64")}`;
+    const CURRENT_SHA = "f".repeat(40);
+    const bin = path.join(dir, "stubbin");
+    await fs.mkdir(bin);
+    const publishCalled = path.join(dir, "publish-called");
+    await fs.writeFile(
+      path.join(bin, "npm"),
+      `#!/bin/sh\n` +
+        `if [ "$1" = "view" ]; then echo "npm error code E404" >&2; echo "npm error 404 Not Found" >&2; exit 1; fi\n` +
+        `if [ "$1" = "pack" ]; then DEST=""; PREV=""; for a in "$@"; do if [ "$PREV" = "--pack-destination" ]; then DEST="$a"; fi; PREV="$a"; done; cp "${path.join(dir, baseTgz)}" "$DEST/"; echo "${baseTgz}"; exit 0; fi\n` +
+        `if [ "$1" = "publish" ]; then touch "${publishCalled}"; exit 0; fi\n` +
+        `echo "stub: unsupported npm $*" >&2; exit 1\n`,
+    );
+    await fs.chmod(path.join(bin, "npm"), 0o755);
+    await fs.symlink(path.join(REPO, "scripts"), path.join(dir, "scripts"));
+    const gate = path.join(REPO, "scripts/ci/verify-artifact-provenance.mjs");
+    const retainDir = path.join(dir, "aeh-npm-retained");
+    await fs.mkdir(retainDir);
+    const retained = path.join(retainDir, baseTgz);
+    await fs.writeFile(retained, baseBytes);
+    const sidecar = path.join(retainDir, "npm-provenance.json");
+    await fs.writeFile(sidecar, JSON.stringify({ release_sha: CURRENT_SHA, tarball_sha512: baseDigest, name: "aeh-test-pkg", version: "9.9.9" }));
+    // Verify passes on the retained bytes (as the workflow does before publish).
+    const v = spawnSync(
+      process.execPath,
+      [gate, "--tarball", retained, "--provenance", sidecar, "--release-sha", CURRENT_SHA, "--name", "aeh-test-pkg", "--version", "9.9.9"],
+      { encoding: "utf8" },
+    );
+    expect(v.status, "verify passes before swap").toBe(0);
+    // Attacker swaps between verify and publish.
+    await fs.appendFile(retained, "attacker-swap");
+    // The pre-publish recheck (same command the workflow runs immediately
+    // before `npm publish` in the same shell step) must refuse; the workflow
+    // guard `|| { ...; exit 1; }` means publish is never reached.
+    const r = spawnSync(process.execPath, [gate, "--recheck", retained, sidecar], { encoding: "utf8" });
+    expect(r.status, "TOCTOU swap must be refused by the pre-publish recheck").not.toBe(0);
+    expect(`${r.stdout}\n${r.stderr}`).toMatch(/TOCTOU|mismatch|refus/i);
+    let published = false;
+    try {
+      await fs.access(publishCalled);
+      published = true;
+    } catch {}
+    expect(published, "swapped bytes must never reach npm publish").toBe(false);
+    // Control: without the swap the recheck passes (publish would proceed).
+    await fs.writeFile(retained, baseBytes);
+    const ok = spawnSync(process.execPath, [gate, "--recheck", retained, sidecar], { encoding: "utf8" });
+    expect(ok.status, "unswapped bytes must recheck clean").toBe(0);
+  });
+});

@@ -412,6 +412,24 @@ jobs:
           test -s "$RETAIN_DIR/npm-identity.digest"
           echo "Retained $TARBALL + provenance sidecar + digest for retry."
 
+      - name: Recheck retained tarball before upload (TOCTOU bind)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # TOCTOU bind: recompute sha512 of the exact bytes about to be
+          # uploaded and compare to the sidecar digest (fail closed on
+          # mismatch). The upload-artifact action is a separate step, so this
+          # shell step runs immediately before it to narrow the window.
+          # Accepted residual: recheck->upload is a cross-step gap (ms); any
+          # swap that slips through is still caught by the pre-consume
+          # recheck before publish/Release (upload is never a trust boundary;
+          # second swap needs a sha512 preimage).
+          RETAIN_DIR="${RUNNER_TEMP:-$PWD}/aeh-npm-retained"
+          TARBALL="$(ls "$RETAIN_DIR"/*.tgz | head -n 1)"
+          test -s "$TARBALL"
+          test -s "$RETAIN_DIR/npm-provenance.json"
+          node scripts/ci/verify-artifact-provenance.mjs --recheck "$TARBALL" "$RETAIN_DIR/npm-provenance.json"
+
       - name: Retain release tarball for retry
         uses: actions/upload-artifact@v4
         with:
@@ -469,6 +487,16 @@ jobs:
               if [ -n "${NPM_TOKEN:-}" ]; then
                 export NODE_AUTH_TOKEN="$NPM_TOKEN"
               fi
+              # TOCTOU bind: recompute sha512 of the exact bytes about to be
+              # published IN THE SAME shell step, immediately before the
+              # publish invocation (fail closed on mismatch). Accepted
+              # residual: recheck->publish is sub-ms (adjacent lines, no
+              # network/IO between); attacker must win a sub-ms race AND match
+              # the digest (second swap needs a sha512 preimage).
+              node scripts/ci/verify-artifact-provenance.mjs --recheck "$TARBALL" "$RETAIN_DIR/npm-provenance.json" || {
+                echo "Refusing to publish $PACKAGE_NAME@$RELEASE_VERSION: tarball changed between verify and publish (TOCTOU recheck failed, fail closed)." >&2
+                exit 1
+              }
               npm publish "$TARBALL" --provenance
             elif [ "$code" -eq 3 ]; then
               echo "Refusing to publish $PACKAGE_NAME@$RELEASE_VERSION: registry lookup UNKNOWN (network/auth/parse, fail closed, never publish on UNKNOWN)." >&2
@@ -506,6 +534,14 @@ jobs:
           fi
           node scripts/ci/verify-artifact-provenance.mjs --tarball "$TARBALL" --provenance "$RETAIN_DIR/npm-provenance.json" --release-sha "$RELEASE_SHA" --name "$PACKAGE_NAME" --version "$RELEASE_VERSION" || {
             echo "Refusing Release for $PACKAGE_NAME@$RELEASE_VERSION: provenance verification failed for release_sha=$RELEASE_SHA (fail closed)." >&2
+            exit 1
+          }
+          # TOCTOU bind: recompute sha512 of the exact bytes about to be
+          # consumed by the identity gate IN THE SAME shell step, immediately
+          # before it (fail closed on mismatch). Accepted residual: sub-ms
+          # (adjacent lines; second swap needs a sha512 preimage).
+          node scripts/ci/verify-artifact-provenance.mjs --recheck "$TARBALL" "$RETAIN_DIR/npm-provenance.json" || {
+            echo "Refusing Release for $PACKAGE_NAME@$RELEASE_VERSION: tarball changed between verify and confirm (TOCTOU recheck failed, fail closed)." >&2
             exit 1
           }
           node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --tarball "$TARBALL"
@@ -649,6 +685,14 @@ jobs:
             fi
           fi
           test -s "$RETAIN_TARBALL"
+          # TOCTOU bind: recompute sha512 of the exact bytes about to be
+          # consumed by the identity gate IN THE SAME shell step, immediately
+          # before it (fail closed on mismatch). Accepted residual: sub-ms
+          # (adjacent lines; second swap needs a sha512 preimage).
+          node scripts/ci/verify-artifact-provenance.mjs --recheck "$RETAIN_TARBALL" "$RETAIN_DIR/npm-provenance.json" || {
+            echo "Refusing repair Release for $PACKAGE_NAME@$RELEASE_VERSION: tarball changed between verify and consume (TOCTOU recheck failed, fail closed)." >&2
+            exit 1
+          }
           node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --tarball "$RETAIN_TARBALL"
 
       - name: Create GitHub Release
