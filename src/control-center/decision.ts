@@ -4,7 +4,6 @@ import { loadOperation, currentControllerEpoch } from "../operations/state.js";
 import { candidateRevisionsEqual } from "../operations/v2Contracts.js";
 import { assertDecisionBindingMatchesRequest, assertDecisionRequestV1, HumanDecisionLedgerV2 } from "../security/humanDecision.js";
 import { runtimeProjectId } from "../runtime/index.js";
-import { requestOwnerHardProtectionExemption } from "../candidates/repairOwnerExemption.js";
 
 interface ProductChoiceSubmissionV1 {
   operationId: string;
@@ -18,22 +17,12 @@ export class ProductChoiceConflictError extends Error {
   constructor(message: string) { super(message); this.name = "ProductChoiceConflictError"; }
 }
 
-export interface ControlCenterExemptionSubmissionV1 {
-  operationId: string;
-  purpose: "HARD_PROTECTION_EXEMPTION";
-  paths: string[];
-  reason: string;
-  expiresAt?: string;
-}
-
 export async function recordControlCenterDecision(root: string, ledger: HumanDecisionLedgerV2, value: unknown, actorId: string): Promise<Record<string, unknown>> {
-  // Trusted-issuance routing (B2): HARD_PROTECTION_EXEMPTION purpose routes
-  // ONLY through the authenticated paired session to
-  // requestOwnerHardProtectionExemption, with actorId bound from the SESSION.
-  // Product-choice submissions follow the existing HUMAN_REQUIRED path.
-  if (isExemptionSubmission(value)) {
-    return recordControlCenterExemptionRequest(root, value, actorId);
-  }
+  // Hard-protected repair no longer has a standalone exemption endpoint:
+  // every HUMAN_REQUIRED approval is a bounded PRODUCT_CHOICE bound to its
+  // WAITING continuation (suspend/consume/resume). Stale
+  // HARD_PROTECTION_EXEMPTION submissions fail closed in the product-choice
+  // parser below (unsupported fields).
   const input = parseProductChoiceSubmission(value);
   const operation = await loadOperation(root, input.operationId);
   if (operation.root !== path.resolve(root)) throw new Error("product choice operation is bound to another project root.");
@@ -120,104 +109,3 @@ function parseProductChoiceSubmission(value: unknown): ProductChoiceSubmissionV1
   };
 }
 
-/**
- * Trusted-issuance detector (B2, DETERMINISTIC): an exemption submission is
- * an object whose `purpose` is the HARD_PROTECTION_EXEMPTION discriminator.
- * Anything else falls through to the product-choice parser (which rejects
- * unknown fields fail-closed, so exemption fields can never be mistaken for
- * a product choice).
- */
-function isExemptionSubmission(value: unknown): boolean {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const record = value as Record<string, unknown>;
-  const purpose = record["purpose"];
-  return purpose === "HARD_PROTECTION_EXEMPTION"
-    || (typeof purpose === "object" && purpose !== null && !Array.isArray(purpose)
-      && (purpose as Record<string, unknown>)["kind"] === "HARD_PROTECTION_EXEMPTION");
-}
-
-function parseExemptionSubmission(value: unknown): ControlCenterExemptionSubmissionV1 {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("exemption submission must be an object.");
-  const input = value as Record<string, unknown>;
-  // Session binding (never caller-supplied): any actor field in the body is a
-  // forgery attempt — the actor always comes from the paired session.
-  const forbiddenActorFields = ["actorId", "actor", "decidedActor", "decidedBy"];
-  for (const field of forbiddenActorFields) {
-    if (field in input) throw new Error("exemption submission must not carry a caller-supplied actor; the actor is bound from the paired Control Center session.");
-  }
-  const supported = new Set(["operationId", "purpose", "paths", "reason", "expiresAt"]);
-  const extra = Object.keys(input).filter((key) => !supported.has(key));
-  if (extra.length) throw new Error(`exemption submission contains unsupported fields: ${extra.join(", ")}.`);
-  const operationId = input["operationId"];
-  if (typeof operationId !== "string" || !operationId.trim()) throw new Error("exemption submission requires operationId.");
-  const purpose = input["purpose"];
-  const purposeOk = purpose === "HARD_PROTECTION_EXEMPTION"
-    || (typeof purpose === "object" && purpose !== null && !Array.isArray(purpose)
-      && (purpose as Record<string, unknown>)["kind"] === "HARD_PROTECTION_EXEMPTION"
-      && Object.keys(purpose as Record<string, unknown>).length === 1);
-  if (!purposeOk) throw new Error("exemption submission requires purpose 'HARD_PROTECTION_EXEMPTION'.");
-  const paths = input["paths"];
-  if (!Array.isArray(paths) || paths.length < 1 || paths.length > 8 || !paths.every((entry) => typeof entry === "string" && entry.trim())) {
-    throw new Error("exemption submission requires 1 to 8 exact file paths.");
-  }
-  const reason = input["reason"];
-  if (typeof reason !== "string" || !reason.trim() || reason.length > 2_000) throw new Error("exemption submission requires a non-empty reason no longer than 2000 characters.");
-  const expiresAt = input["expiresAt"];
-  if (expiresAt !== undefined && (typeof expiresAt !== "string" || Number.isNaN(Date.parse(expiresAt)))) {
-    throw new Error("exemption submission expiresAt must be a valid instant.");
-  }
-  return {
-    operationId: (operationId as string).trim(),
-    purpose: "HARD_PROTECTION_EXEMPTION",
-    paths: (paths as string[]).map((entry) => (entry as string).trim()),
-    reason: (reason as string),
-    ...(typeof expiresAt === "string" ? { expiresAt } : {}),
-  };
-}
-
-function requirePairedSessionActor(actorId: string): string {
-  // Paired Control Center sessions mint `human:control-center:<hash>` (see
-  // server.ts pair()). Only that prefix proves the request arrived over the
-  // authenticated paired session with secret-cookie + CSRF. Any other
-  // human:* (including human:owner:* or human:forged) via this path is a
-  // direct/unauthenticated call and is refused.
-  if (typeof actorId !== "string" || !actorId.startsWith("human:control-center:")) {
-    throw new Error("exemption issuance requires an authenticated paired Control Center session actor (human:control-center:*); direct or unauthenticated calls cannot create an exemption request.");
-  }
-  return actorId;
-}
-
-/**
- * Trusted issuance (B2, HUMAN + DETERMINISTIC): the ONLY production route to
- * an owner hard-protection exemption request. The actor is bound from the
- * authenticated paired session (server-derived `human:control-center:*`),
- * never from caller-supplied body fields. Routes to
- * requestOwnerHardProtectionExemption (intent); authority still requires the
- * controller-token-anchored MAC grant. Ledger `record` stays
- * non-authoritative and is never used here. No CLI exists for this path.
- */
-export async function recordControlCenterExemptionRequest(
-  root: string,
-  value: unknown,
-  sessionActorId: string,
-): Promise<Record<string, unknown>> {
-  const actorId = requirePairedSessionActor(sessionActorId);
-  const input = parseExemptionSubmission(value);
-  if (input.operationId && path.isAbsolute(input.operationId)) throw new Error("exemption submission operationId must not be absolute.");
-  const { decision, exemptionId, binding } = await requestOwnerHardProtectionExemption({
-    root,
-    operationId: input.operationId,
-    paths: input.paths,
-    reason: input.reason,
-    actorId,
-    ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
-  });
-  return {
-    version: 1,
-    accepted: true,
-    exemptionId,
-    decisionId: decision.decisionId,
-    operationId: decision.operationId,
-    candidateRevision: binding.candidate.revision,
-  };
-}

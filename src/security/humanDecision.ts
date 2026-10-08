@@ -13,8 +13,7 @@ export type OperationControlCommandV1 = "CANCEL" | "RETRY" | "ACKNOWLEDGE" | "PA
 export type HumanDecisionPurposeV2 =
   | { kind: "PRODUCT_CHOICE"; requestId: string; choiceId: string }
   | { kind: "ACTION_AUTHORIZATION"; action: ToolActionKindV1; effectDigest: string }
-  | { kind: "OPERATION_CONTROL"; command: OperationControlCommandV1 }
-  | { kind: "HARD_PROTECTION_EXEMPTION"; exemptionId: string; paths: string[] };
+  | { kind: "OPERATION_CONTROL"; command: OperationControlCommandV1 };
 
 export interface HumanDecisionV2 {
   version: 2;
@@ -246,17 +245,7 @@ function validatePurpose(kind: HumanDecisionKindV2, purpose: HumanDecisionPurpos
     if (purpose.command !== kind) throw new HumanDecisionError("operation-control purpose must match its decision kind.");
     return { kind: purpose.kind, command: purpose.command };
   }
-  if (purpose.kind === "HARD_PROTECTION_EXEMPTION") {
-    // Owner-scoped hard-protection exemption intent (DETERMINISTIC mechanism
-    // design): a human APPROVE decision naming the exact files (no globs) the
-    // owner exempts. This ledger record is INTENT EVIDENCE ONLY — it grants no
-    // authority by itself. Authority requires the controller-anchored MAC grant
-    // (see src/security/ownerExemption.ts): the ledger file is writable by any
-    // shell with state-root access and its `human:*` actorId is self-declared.
-    if (kind !== "APPROVE") throw new HumanDecisionError("hard-protection exemption requires an APPROVE decision.");
-    return { kind: purpose.kind, exemptionId: assertExemptionId(purpose.exemptionId), paths: assertCanonicalExemptionPaths(purpose.paths) };
-  }
-  throw new HumanDecisionError("unsupported HumanDecision purpose.");
+  throw new HumanDecisionError("unsupported HumanDecision purpose (HARD_PROTECTION_EXEMPTION was removed: hard-protected repair now suspends for a bounded PRODUCT_CHOICE approve/decline; stale exemption intents require migration).");
 }
 
 function assertBinding(binding: HumanDecisionBindingV2): HumanDecisionBindingV2 {
@@ -537,55 +526,7 @@ function normalizePurpose(purpose: HumanDecisionPurposeV2): HumanDecisionPurpose
     return { kind: purpose.kind, action: purpose.action, effectDigest: purpose.effectDigest };
   }
   if (purpose.kind === "OPERATION_CONTROL" && ["CANCEL", "RETRY", "ACKNOWLEDGE", "PAUSE", "RESUME"].includes(purpose.command)) return { kind: purpose.kind, command: purpose.command };
-  if (purpose.kind === "HARD_PROTECTION_EXEMPTION") {
-    const record = purpose as { exemptionId?: unknown; paths?: unknown };
-    return { kind: purpose.kind, exemptionId: assertExemptionId(record.exemptionId), paths: assertCanonicalExemptionPaths(record.paths) };
-  }
-  throw new HumanDecisionError("unsupported HumanDecision purpose.");
-}
-
-/**
- * Owner-exemption identity shape (`exemption:<uuid>`). Mirrors the
- * `decision:<uuid>` ledger convention without importing it.
- */
-function assertExemptionId(value: unknown): string {
-  if (typeof value !== "string" || !/^exemption:[0-9a-f-]{36}$/i.test(value.trim())) {
-    throw new HumanDecisionError("hard-protection exemptionId must be 'exemption:<uuid>'.");
-  }
-  return value.trim();
-}
-
-/**
- * Canonical exact-path set for an owner exemption. Structural shape only
- * (layering: the candidates layer owns scope normalization and the
- * hard-protection deny source; this gate only guarantees the purpose carries
- * a bounded, sorted, unique set of exact relative files with no glob,
- * traversal, or absolute form, so exact-match consumption is meaningful).
- * Callers must normalize through the candidates exact-file gate first;
- * non-normal forms are rejected fail-closed here.
- */
-export const MAX_HARD_PROTECTION_EXEMPTION_PATHS = 8;
-function assertCanonicalExemptionPaths(value: unknown): string[] {
-  if (!Array.isArray(value) || value.length < 1 || value.length > MAX_HARD_PROTECTION_EXEMPTION_PATHS) {
-    throw new HumanDecisionError(`hard-protection exemption paths must contain 1 to ${MAX_HARD_PROTECTION_EXEMPTION_PATHS} exact files.`);
-  }
-  const paths = value.map((entry) => {
-    if (typeof entry !== "string") throw new HumanDecisionError("hard-protection exemption paths must be strings.");
-    const candidate = entry.trim();
-    if (!candidate || candidate.length > 500) throw new HumanDecisionError("hard-protection exemption path is empty or exceeds 500 characters.");
-    if (candidate.includes("\0") || candidate.includes("\\")) throw new HumanDecisionError(`hard-protection exemption path '${candidate}' is not a portable relative path.`);
-    if (candidate.startsWith("/") || /^[A-Za-z]:/.test(candidate)) throw new HumanDecisionError(`hard-protection exemption path '${candidate}' must be repository-relative.`);
-    const segments = candidate.split("/");
-    if (segments.some((segment) => !segment || segment === "." || segment === "..")) throw new HumanDecisionError(`hard-protection exemption path '${candidate}' hides traversal or empty segments.`);
-    if (candidate === "**" || candidate.endsWith("/**") || /[*?[\]{}!()+@]/.test(candidate)) throw new HumanDecisionError(`hard-protection exemption path '${candidate}' is not an exact file path; globs are never exemptible by name.`);
-    if (path.posix.normalize(candidate) !== candidate) throw new HumanDecisionError(`hard-protection exemption path '${candidate}' is not in canonical normalized form.`);
-    return candidate;
-  });
-  const sorted = [...new Set(paths)].sort((a, b) => a.localeCompare(b));
-  if (sorted.length !== paths.length || sorted.some((entry, index) => entry !== paths[index])) {
-    throw new HumanDecisionError("hard-protection exemption paths must be sorted and unique (canonical exact-match form).");
-  }
-  return sorted;
+  throw new HumanDecisionError("unsupported HumanDecision purpose (HARD_PROTECTION_EXEMPTION was removed: hard-protected repair now suspends for a bounded PRODUCT_CHOICE approve/decline; stale exemption intents require migration).");
 }
 
 function sameBinding(decision: HumanDecisionBindingV2, binding: HumanDecisionBindingV2): boolean {

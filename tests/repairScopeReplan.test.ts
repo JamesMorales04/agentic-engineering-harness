@@ -634,7 +634,7 @@ describe("repair out-of-scope blocker → bounded replan channel", () => {
     expect(cleared.decisionRequest).toBeUndefined();
   });
 
-  it("hard-protected blocker paths are non-exemptible (no suspend/approve); manifests stay amendable", async () => {
+  it("hard-protected blocker suspends bounded approve/decline; timeout leaves BLOCKED with suspension remaining; manifests stay amendable", async () => {
     const root = await createRepo();
     const operationId = "CHANGE-REPAIR-HARD-1";
     const task = contract();
@@ -676,19 +676,22 @@ describe("repair out-of-scope blocker → bounded replan channel", () => {
     expect(findRepairHardProtectedViolations(["package-lock.json"], config, task)).toEqual([]);
     expect(repairHardProtectedPaths(config, task).some((p) => p === "package-lock.json")).toBe(false);
     expect(repairProtectedPaths(config, task).some((p) => p === "package-lock.json")).toBe(true);
-    // Resolver rejects without suspending: no HUMAN_REQUIRED, no amendment.
+    // Resolver suspends HUMAN_REQUIRED for hard paths with no covering grant;
+    // timeout with no decision leaves BLOCKED citing hard paths with the
+    // suspension remaining for a human decision within expiry (bounded).
     const resolved = await resolveRepairScopeBlockerViaProductChoice({
       root, controlRoot: root, operationId, config, contract: task,
       blocker: hardBlocker.scopeBlocker!, timeoutMs: 500, pollMs: 25,
     });
     expect(resolved.status).toBe("BLOCKED");
     if (resolved.status !== "BLOCKED") throw new Error("expected BLOCKED");
-    expect(resolved.check.message).toMatch(/non-exemptible/i);
+    expect(resolved.check.message).toMatch(/hard-protected/i);
     expect(resolved.check.message).toContain(sealPath);
     expect(await listRepairScopeAmendments(root, config, task.task.id)).toHaveLength(0);
     const after = await loadOperation(root, operationId);
-    expect(after.phase).not.toBe("HUMAN_REQUIRED");
-    expect(after.decisionRequest).toBeUndefined();
+    expect(after.phase).toBe("HUMAN_REQUIRED");
+    expect(after.decisionRequest?.requestId).toMatch(/^request:/);
+    expect(after.continuation?.state).toBe("WAITING");
     // Direct apply with a consumed ledger approval still throws (never exemptible).
     {
       const binding = syntheticBinding(hardBlocker.scopeBlocker!.operationId);

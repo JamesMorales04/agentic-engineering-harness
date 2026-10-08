@@ -272,8 +272,6 @@ export interface ControlCenterActionResultV1 {
   decisionId?: string;
   requestId?: string;
   choiceId?: string;
-  /** Owner-exemption provenance: present only for HARD_PROTECTION_EXEMPTION issuance via the paired session. */
-  exemptionId?: string;
 }
 
 export interface ControlCenterDecisionInputV1 {
@@ -281,15 +279,6 @@ export interface ControlCenterDecisionInputV1 {
   requestId: string;
   choiceId: string;
   reason?: string;
-}
-
-/** Paired-session owner-exemption request (trusted issuance only; actor always comes from the session). */
-export interface ControlCenterExemptionInputV1 {
-  operationId: string;
-  purpose: "HARD_PROTECTION_EXEMPTION";
-  paths: string[];
-  reason: string;
-  expiresAt?: string;
 }
 
 export interface ControlCenterSnapshotV1 {

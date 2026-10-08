@@ -8,20 +8,20 @@ import { compileResolvedOperationPolicy } from "../src/architecture/executionIde
 import { executeRepairerCandidateMutation, repairProtectedPaths } from "../src/candidates/repair.js";
 import {
   applyRepairScopeAmendment,
+  applyOwnerExemptedRepairScopeAmendment,
   createRepairScopeBlockerReceipt,
   filterForbiddenScopeForAmendment,
+  findCoveringOwnerHardProtectionExemption,
   findRepairHardProtectedViolations,
   listRepairScopeAmendments,
+  mintOwnerHardProtectionExemptionFromProductChoice,
   repairHardProtectedPaths,
   REPAIR_SCOPE_APPROVE_CHOICE_ID,
+  REPAIR_SCOPE_DENY_CHOICE_ID,
   resolveRepairScopeBlockerViaProductChoice,
-} from "../src/candidates/repairScope.js";
-import {
-  anchorOwnerHardProtectionExemption,
-  applyOwnerExemptedRepairScopeAmendment,
-  requestOwnerHardProtectionExemption,
   verifyOwnerHardProtectionExemption,
-} from "../src/candidates/repairOwnerExemption.js";
+} from "../src/candidates/repairScope.js";
+import { normalizeOwnerExemptionPaths } from "../src/candidates/repairOwnerExemption.js";
 import { sha256Canonical } from "../src/core/digest.js";
 import type { HarnessProjectConfig, TaskContract } from "../src/core/types.js";
 import {
@@ -79,8 +79,8 @@ function testLedger(root: string): HumanDecisionLedgerV2 {
   return new HumanDecisionLedgerV2(path.join(root, ".harness", "security", "human-decisions.json"));
 }
 
-describe("owner-scoped hard-protection exemption (RED-first)", () => {
-  it("pins the current gate: lead-approved amendment touching hard paths throws NON_EXEMPTIBLE with no exemption path", async () => {
+describe("owner-scoped hard-protection exemption via suspend/decide/resume (DETERMINISTIC)", () => {
+  it("pins the gate: lead-approved amendment touching hard paths throws NON_EXEMPTIBLE with no exemption path", async () => {
     const root = await createRepo();
     const operationId = "OWNER-EXEMPT-PIN-1";
     const task = contract("REPAIR-SCOPE");
@@ -97,7 +97,6 @@ describe("owner-scoped hard-protection exemption (RED-first)", () => {
       operationId, taskId: task.task.id, workUnitId: "validation-repair:pin",
       filesNeededOutsideScope: [{ path: sealPath, reason: "needs seal tweak" }],
     });
-    // No exemption exists anywhere: even a consumed ledger approval throws.
     const ledgerDir = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-owner-pin-"));
     roots.push(ledgerDir);
     const ledger = new HumanDecisionLedgerV2(ledgerDir);
@@ -115,7 +114,7 @@ describe("owner-scoped hard-protection exemption (RED-first)", () => {
     expect(await listRepairScopeAmendments(root, config, task.task.id)).toHaveLength(0);
   });
 
-  it("honest owner exemption: request -> anchor -> resolver AMENDED for a hard seal path, retry writes", async () => {
+  it("honest suspend/approve/mint/honor/retry for a hard spec path (REAL suspend/resume, deterministic choices)", async () => {
     const root = await createRepo();
     const operationId = "OWNER-EXEMPT-HONEST-1";
     const task = contract("REPAIR-SCOPE");
@@ -127,60 +126,84 @@ describe("owner-scoped hard-protection exemption (RED-first)", () => {
     } as never);
     bindEnv(operationId, root);
     await bindPolicyForCurrentIdentity(root, operationId);
-    // Tracked hard file: the contract's source spec (hard-protected via
-    // contract.source, and git-tracked so ChangeSet capture observes writes —
-    // .harness seal artifacts are gitignored and invisible to the assembler).
     const specPath = "specs/changes/REPAIR-SCOPE/spec.md";
     expect(findRepairHardProtectedViolations([specPath], config, task)).toEqual([specPath]);
-    const { decision, exemptionId } = await requestOwnerHardProtectionExemption({
-      root, operationId, paths: [specPath], reason: "owner accepts seal regeneration for this operation", actorId: "human:owner:test",
+    const blockerResult = await hardBlockerViaRepairer(root, operationId, task, config, specPath);
+    const pending = resolveRepairScopeBlockerViaProductChoice({
+      root, controlRoot: root, operationId, config, contract: task, blocker: blockerResult.scopeBlocker!,
     });
-    expect(exemptionId).toMatch(/^exemption:[0-9a-f-]{36}$/i);
-    const grant = await anchorOwnerHardProtectionExemption({ root, operationId, decisionId: decision.decisionId });
-    expect(grant.exemptionId).toBe(exemptionId);
-    expect(grant.paths).toEqual([specPath]);
-    expect(grant.decidedActor).toBe("human:owner:test");
-    expect(grant.decisionDigest).toBe(sha256Canonical(decision));
-
-    const blocker = createRepairScopeBlockerReceipt({
-      operationId, taskId: task.task.id, workUnitId: "validation-repair:owner",
-      filesNeededOutsideScope: [{ path: specPath, reason: "spec must be regenerated" }],
-    });
-    const resolved = await resolveRepairScopeBlockerViaProductChoice({
-      root, controlRoot: root, operationId, config, contract: task, blocker,
-    });
+    const approve = approveWaitingRequest(root, operationId, REPAIR_SCOPE_APPROVE_CHOICE_ID, "owner approves exact hard set");
+    const resolved = await Promise.all([pending, approve]).then(([r]) => r);
     expect(resolved.status).toBe("AMENDED");
     if (resolved.status !== "AMENDED") throw new Error("expected AMENDED");
     expect(resolved.contract.scope?.allowed).toContain(specPath);
     expect(resolved.amendment.exemptedPaths).toEqual([specPath]);
-    expect(resolved.amendment.ownerExemption?.exemptionId).toBe(exemptionId);
-    expect(resolved.amendment.ownerExemption?.decisionId).toBe(decision.decisionId);
-    expect(resolved.amendment.ownerExemption?.decisionDigest).toBe(sha256Canonical(decision));
-    // No product-choice suspension happened: the owner approval is the authority.
+    expect(resolved.amendment.ownerExemption?.exemptionId).toMatch(/^exemption:/);
+    expect(resolved.amendment.decisionId).toMatch(/^decision:/);
+    expect(resolved.selection?.choiceId).toBe(REPAIR_SCOPE_APPROVE_CHOICE_ID);
     const after = await loadOperation(root, operationId);
-    expect(after.phase).not.toBe("HUMAN_REQUIRED");
-
-    // The amended retry actually writes the exempted hard path.
-    const selection = repairerSelection();
-    const catalog = compileExecutionCatalog({
-      runtimes: { test: { adapter: "codex" } },
-      models: { test: { runtime: "test", model: "fake" } },
-      roleBindings: { Repairer: { runtimeId: "test", modelAlias: "test", transport: "direct", outputContract: "repair-result", args: [] } },
-    });
-    const retry = await executeRepairerCandidateMutation({
-      root, stateRoot: root, operationId, taskId: task.task.id,
-      workUnitId: "validation-repair:owner-retry", phase: "validation-repair",
-      config, contract: resolved.contract, selection, executionCatalog: catalog,
-      allowedScope: resolved.contract.scope?.allowed ?? ["src/**"], forbiddenScope: [],
-      scopeAmendment: resolved.amendment,
-      prompt: buildRepairPrompt(packet(task.task.id)),
-      execute: async (isolatedRoot, participantId) => {
-        await fs.writeFile(path.join(isolatedRoot, specPath), "# spec (owner-exempted)\n");
-        return { provider: "test", logicalAgent: "repairer", participantId, exitCode: 0, stdout: "", stderr: "" };
-      },
-    });
+    expect(after.ownerExemptions?.[resolved.amendment.ownerExemption!.exemptionId]).toBeDefined();
+    expect(after.continuation).toBeUndefined();
+    expect(after.decisionRequest).toBeUndefined();
+    // Amended retry writes the exempted hard path.
+    const retry = await retryWriting(root, operationId, task, config, resolved.contract, resolved.amendment, specPath, "# spec (owner-exempted)\n");
     expect(retry.candidate).toBeDefined();
     expect(retry.changeSet?.changedFiles).toContain(specPath);
+  });
+
+  it("decline leaves BLOCKED standing with no grant, no amendment, suspension cleared", async () => {
+    const root = await createRepo();
+    const operationId = "OWNER-EXEMPT-DECLINE-1";
+    const task = contract("REPAIR-SCOPE");
+    const config = projectConfig();
+    await writeContractAndSeal(root, config, task);
+    await saveOwnedOperation(root, {
+      version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "repair",
+      root, payload: { taskId: task.task.id }, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+    } as never);
+    bindEnv(operationId, root);
+    await bindPolicyForCurrentIdentity(root, operationId);
+    const specPath = "specs/changes/REPAIR-SCOPE/spec.md";
+    const blockerResult = await hardBlockerViaRepairer(root, operationId, task, config, specPath);
+    const pending = resolveRepairScopeBlockerViaProductChoice({
+      root, controlRoot: root, operationId, config, contract: task, blocker: blockerResult.scopeBlocker!,
+    });
+    const deny = approveWaitingRequest(root, operationId, REPAIR_SCOPE_DENY_CHOICE_ID, "not justified");
+    const resolved = await Promise.all([pending, deny]).then(([r]) => r);
+    expect(resolved.status).toBe("BLOCKED");
+    if (resolved.status !== "BLOCKED") throw new Error("expected BLOCKED");
+    expect(resolved.check.message).toMatch(/hard-protected/i);
+    expect(resolved.choiceId).toBe(REPAIR_SCOPE_DENY_CHOICE_ID);
+    expect(await listRepairScopeAmendments(root, config, task.task.id)).toHaveLength(0);
+    const after = await loadOperation(root, operationId);
+    expect(after.ownerExemptions).toBeUndefined();
+    expect(after.continuation).toBeUndefined();
+    expect(after.decisionRequest).toBeUndefined();
+  });
+
+  it("timeout with no decision leaves BLOCKED with the bounded suspension remaining", async () => {
+    const root = await createRepo();
+    const operationId = "OWNER-EXEMPT-TIMEOUT-1";
+    const task = contract("REPAIR-SCOPE");
+    const config = projectConfig();
+    await writeContractAndSeal(root, config, task);
+    await saveOwnedOperation(root, {
+      version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "repair",
+      root, payload: { taskId: task.task.id }, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+    } as never);
+    bindEnv(operationId, root);
+    await bindPolicyForCurrentIdentity(root, operationId);
+    const specPath = "specs/changes/REPAIR-SCOPE/spec.md";
+    const blockerResult = await hardBlockerViaRepairer(root, operationId, task, config, specPath);
+    const resolved = await resolveRepairScopeBlockerViaProductChoice({
+      root, controlRoot: root, operationId, config, contract: task, blocker: blockerResult.scopeBlocker!,
+      timeoutMs: 500, pollMs: 25,
+    });
+    expect(resolved.status).toBe("BLOCKED");
+    const suspended = await loadOperation(root, operationId);
+    expect(suspended.phase).toBe("HUMAN_REQUIRED");
+    expect(suspended.continuation?.state).toBe("WAITING");
+    expect(await listRepairScopeAmendments(root, config, task.task.id)).toHaveLength(0);
   });
 
   it("sibling exactness: an exempted retry writing a non-exempt sibling still throws", async () => {
@@ -197,18 +220,12 @@ describe("owner-scoped hard-protection exemption (RED-first)", () => {
     await bindPolicyForCurrentIdentity(root, operationId);
     const specPath = "specs/changes/REPAIR-SCOPE/spec.md";
     const sibling = "specs/changes/REPAIR-SCOPE/proposal.md";
-    expect(findRepairHardProtectedViolations([sibling], config, task)).toEqual([sibling]);
-    const { decision } = await requestOwnerHardProtectionExemption({
-      root, operationId, paths: [specPath], reason: "only the spec", actorId: "human:owner:test",
+    const blockerResult = await hardBlockerViaRepairer(root, operationId, task, config, specPath);
+    const pending = resolveRepairScopeBlockerViaProductChoice({
+      root, controlRoot: root, operationId, config, contract: task, blocker: blockerResult.scopeBlocker!,
     });
-    await anchorOwnerHardProtectionExemption({ root, operationId, decisionId: decision.decisionId });
-    const blocker = createRepairScopeBlockerReceipt({
-      operationId, taskId: task.task.id, workUnitId: "validation-repair:sibling",
-      filesNeededOutsideScope: [{ path: specPath, reason: "spec only" }],
-    });
-    const resolved = await resolveRepairScopeBlockerViaProductChoice({
-      root, controlRoot: root, operationId, config, contract: task, blocker,
-    });
+    const approve = approveWaitingRequest(root, operationId, REPAIR_SCOPE_APPROVE_CHOICE_ID, "only the spec");
+    const resolved = await Promise.all([pending, approve]).then(([r]) => r);
     expect(resolved.status).toBe("AMENDED");
     if (resolved.status !== "AMENDED") throw new Error("expected AMENDED");
     const selection = repairerSelection();
@@ -217,8 +234,6 @@ describe("owner-scoped hard-protection exemption (RED-first)", () => {
       models: { test: { runtime: "test", model: "fake" } },
       roleBindings: { Repairer: { runtimeId: "test", modelAlias: "test", transport: "direct", outputContract: "repair-result", args: [] } },
     });
-    // The retry writes the exempted spec AND its non-exempt sibling: the
-    // sibling must still throw (subtree `specs/**` stays denied for it).
     await expect(
       executeRepairerCandidateMutation({
         root, stateRoot: root, operationId, taskId: task.task.id,
@@ -248,42 +263,25 @@ describe("owner-scoped hard-protection exemption (RED-first)", () => {
     } as never);
     bindEnv(operationId, root);
     await bindPolicyForCurrentIdentity(root, operationId);
-    const sealPath = `.harness/seals/${task.task.id}.json`;
-    const { decision, exemptionId } = await requestOwnerHardProtectionExemption({
-      root, operationId, paths: [sealPath], reason: "honest scope", actorId: "human:owner:test",
-    });
-    const honest = await anchorOwnerHardProtectionExemption({ root, operationId, decisionId: decision.decisionId });
-    const forged = { ...honest, paths: [".harness/project.yaml", sealPath], mac: honest.mac };
+    const specPath = "specs/changes/REPAIR-SCOPE/spec.md";
+    const blockerResult = await hardBlockerViaRepairer(root, operationId, task, config, specPath);
+    const honest = await approveHardAndGetGrant(root, operationId, task, config, blockerResult.scopeBlocker!);
+    const forged = { ...honest.grant, paths: [".harness/project.yaml", specPath], mac: honest.grant.mac };
     const operation = await loadOperation(root, operationId);
     await expect(
-      verifyOwnerHardProtectionExemption({ operation, neededPaths: [sealPath], grant: forged, ledger: testLedger(root) }),
-    ).rejects.toThrow(/FORGED|MAC|integrity/i);
+      verifyOwnerHardProtectionExemption({ operation, neededPaths: [specPath], grant: forged, ledger: testLedger(root) }),
+    ).rejects.toThrow(/FORGED|MAC|integrity|MISMATCH/i);
     const blocker = createRepairScopeBlockerReceipt({
       operationId, taskId: task.task.id, workUnitId: "validation-repair:forge",
-      filesNeededOutsideScope: [{ path: sealPath, reason: "x" }],
+      filesNeededOutsideScope: [{ path: specPath, reason: "x" }],
     });
     await expect(
       applyOwnerExemptedRepairScopeAmendment({ root, config, contract: task, blocker, grant: forged, ledger: testLedger(root) }),
-    ).rejects.toThrow(/FORGED|MAC|integrity/i);
-    const amendmentBody = {
-      version: 1 as const, mechanism: "DETERMINISTIC" as const, operationId, taskId: task.task.id,
-      blockerDigest: "a".repeat(64), exemptedPaths: [sealPath], decidedBy: "human" as const,
-      decisionReason: "x", decidedAt: new Date().toISOString(), decisionId: decision.decisionId,
-      requestId: exemptionId, decidedActor: "human:owner:test",
-      ownerExemption: { exemptionId, decisionId: decision.decisionId, decisionDigest: sha256Canonical(decision) },
-      amendedScope: ["src/**", sealPath],
-      contractPath: "c", sealPath: "s", amendmentPath: "a",
-    };
-    const amendmentLike = { ...amendmentBody, amendmentDigest: sha256Canonical(amendmentBody) };
-    expect(() =>
-      filterForbiddenScopeForAmendment([...repairProtectedPaths(config, task)], amendmentLike as never, repairHardProtectedPaths(config, task), {
-        grant: forged, operationId, controllerEpoch: currentControllerEpoch(operation),
-      }),
-    ).toThrow(/NON_EXEMPTIBLE/i);
-    expect(await listRepairScopeAmendments(root, config, task.task.id)).toHaveLength(0);
+    ).rejects.toThrow(/FORGED|MAC|integrity|MISMATCH/i);
+    expect(await listRepairScopeAmendments(root, config, task.task.id)).toHaveLength(1);
   });
 
-  it("model-minted ledger decision without a controller-anchored grant grants nothing", async () => {
+  it("recorded-but-unconsumed approval grants nothing (verify UNCONSUMED; resolver suspends then timeout BLOCKED)", async () => {
     const root = await createRepo();
     const operationId = "OWNER-EXEMPT-NOGRANT-1";
     const task = contract("REPAIR-SCOPE");
@@ -295,29 +293,31 @@ describe("owner-scoped hard-protection exemption (RED-first)", () => {
     } as never);
     bindEnv(operationId, root);
     await bindPolicyForCurrentIdentity(root, operationId);
-    const sealPath = `.harness/seals/${task.task.id}.json`;
-    // A shell writer CAN mint ledger files with a self-declared human: actor;
-    // without the controller-anchored MAC grant it must still be BLOCKED.
+    const specPath = "specs/changes/REPAIR-SCOPE/spec.md";
+    // Shell-forged ledger file with self-declared human actor, never consumed
+    // through a WAITING continuation: mint must refuse UNCONSUMED.
     const ledger = testLedger(root);
     const operation = await loadOperation(root, operationId);
     const binding = bindingForCurrentOperation(operation);
     const exemptionId = `exemption:${"0".repeat(8)}-${"0".repeat(4)}-${"0".repeat(4)}-${"0".repeat(4)}-${"0".repeat(12)}`;
-    const minted = await ledger.record({
+    void exemptionId;
+    const requestId = "request:forged-1";
+    const minted = await ledger.recordProductChoice({
       ...binding,
-      purpose: { kind: "HARD_PROTECTION_EXEMPTION", exemptionId, paths: [sealPath] },
-      kind: "APPROVE", actorId: "human:forged", reason: "model minted",
-    });
-    expect(minted.decisionId).toMatch(/^decision:/);
-    const blocker = createRepairScopeBlockerReceipt({
-      operationId, taskId: task.task.id, workUnitId: "validation-repair:nogrant",
-      filesNeededOutsideScope: [{ path: sealPath, reason: "x" }],
-    });
+      purpose: { kind: "PRODUCT_CHOICE", requestId, choiceId: REPAIR_SCOPE_APPROVE_CHOICE_ID },
+      kind: "CHOOSE", actorId: "human:forged", reason: "model minted",
+    }, requestId);
+    await expect(
+      mintOwnerHardProtectionExemptionFromProductChoice({
+        root, operationId, paths: [specPath], decision: minted, binding, requestId,
+      }),
+    ).rejects.toThrow(/UNCONSUMED|no exact one-time/i);
+    const blockerResult = await hardBlockerViaRepairer(root, operationId, task, config, specPath);
     const resolved = await resolveRepairScopeBlockerViaProductChoice({
-      root, controlRoot: root, operationId, config, contract: task, blocker,
+      root, controlRoot: root, operationId, config, contract: task, blocker: blockerResult.scopeBlocker!,
+      timeoutMs: 500, pollMs: 25,
     });
     expect(resolved.status).toBe("BLOCKED");
-    if (resolved.status !== "BLOCKED") throw new Error("expected BLOCKED");
-    expect(resolved.check.message).toMatch(/non-exemptible/i);
     expect(await listRepairScopeAmendments(root, config, task.task.id)).toHaveLength(0);
   });
 
@@ -333,13 +333,9 @@ describe("owner-scoped hard-protection exemption (RED-first)", () => {
     } as never);
     bindEnv(opA, root);
     await bindPolicyForCurrentIdentity(root, opA);
-    const sealPath = `.harness/seals/${task.task.id}.json`;
-    const { decision } = await requestOwnerHardProtectionExemption({
-      root, operationId: opA, paths: [sealPath], reason: "op A only", actorId: "human:owner:test",
-    });
-    const grantA = await anchorOwnerHardProtectionExemption({ root, operationId: opA, decisionId: decision.decisionId });
-    // Op B is saved WITHOUT claiming (controller token stays op A's): the MAC
-    // verifies, so rejection must come from the operation binding, not the MAC.
+    const specPath = "specs/changes/REPAIR-SCOPE/spec.md";
+    const blockerA = await hardBlockerViaRepairer(root, opA, task, config, specPath);
+    const honestA = await approveHardAndGetGrant(root, opA, task, config, blockerA.scopeBlocker!);
     const opB = "OWNER-EXEMPT-XOP-B";
     const { saveOperation } = await import("../src/operations/state.js");
     process.env.AEH_OPERATION_ID = opB;
@@ -349,14 +345,7 @@ describe("owner-scoped hard-protection exemption (RED-first)", () => {
     } as never);
     const operationB = await loadOperation(root, opB);
     await expect(
-      verifyOwnerHardProtectionExemption({ operation: operationB, neededPaths: [sealPath], grant: grantA, ledger: testLedger(root) }),
-    ).rejects.toThrow(/CROSS_OPERATION|operation.*mismatch|binding/i);
-    const blockerB = createRepairScopeBlockerReceipt({
-      operationId: opB, taskId: task.task.id, workUnitId: "validation-repair:xop",
-      filesNeededOutsideScope: [{ path: sealPath, reason: "x" }],
-    });
-    await expect(
-      applyOwnerExemptedRepairScopeAmendment({ root, config, contract: task, blocker: blockerB, grant: grantA, ledger: testLedger(root) }),
+      verifyOwnerHardProtectionExemption({ operation: operationB, neededPaths: [specPath], grant: honestA.grant, ledger: testLedger(root) }),
     ).rejects.toThrow(/CROSS_OPERATION|operation.*mismatch|binding/i);
   });
 
@@ -372,17 +361,14 @@ describe("owner-scoped hard-protection exemption (RED-first)", () => {
     } as never);
     bindEnv(operationId, root);
     await bindPolicyForCurrentIdentity(root, operationId);
-    const sealPath = `.harness/seals/${task.task.id}.json`;
-    const { decision } = await requestOwnerHardProtectionExemption({
-      root, operationId, paths: [sealPath], reason: "short-lived", actorId: "human:owner:test",
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
-    });
-    const grant = await anchorOwnerHardProtectionExemption({ root, operationId, decisionId: decision.decisionId });
+    const specPath = "specs/changes/REPAIR-SCOPE/spec.md";
+    const blockerResult = await hardBlockerViaRepairer(root, operationId, task, config, specPath);
+    const honest = await approveHardAndGetGrant(root, operationId, task, config, blockerResult.scopeBlocker!);
     const operation = await loadOperation(root, operationId);
     await expect(
       verifyOwnerHardProtectionExemption({
-        operation, neededPaths: [sealPath], grant, ledger: testLedger(root),
-        now: new Date(Date.now() + 3_600_000),
+        operation, neededPaths: [specPath], grant: honest.grant, ledger: testLedger(root),
+        now: new Date(Date.now() + 30 * 24 * 3_600_000),
       }),
     ).rejects.toThrow(/EXPIRED/i);
   });
@@ -399,18 +385,16 @@ describe("owner-scoped hard-protection exemption (RED-first)", () => {
     } as never);
     bindEnv(operationId, root);
     await bindPolicyForCurrentIdentity(root, operationId);
-    const sealPath = `.harness/seals/${task.task.id}.json`;
-    const { decision } = await requestOwnerHardProtectionExemption({
-      root, operationId, paths: [sealPath], reason: "dies with op", actorId: "human:owner:test",
-    });
-    const grant = await anchorOwnerHardProtectionExemption({ root, operationId, decisionId: decision.decisionId });
-    expect((await loadOperation(root, operationId)).ownerExemptions?.[grant.exemptionId]).toBeDefined();
+    const specPath = "specs/changes/REPAIR-SCOPE/spec.md";
+    const blockerResult = await hardBlockerViaRepairer(root, operationId, task, config, specPath);
+    const honest = await approveHardAndGetGrant(root, operationId, task, config, blockerResult.scopeBlocker!);
+    expect((await loadOperation(root, operationId)).ownerExemptions?.[honest.grant.exemptionId]).toBeDefined();
     await transitionOperationToTerminal(root, operationId, { status: "FAILED", error: "test terminal" });
     const terminal = await loadOperation(root, operationId);
     expect(isTerminalOperation(terminal.status)).toBe(true);
     expect(terminal.ownerExemptions).toBeUndefined();
     await expect(
-      verifyOwnerHardProtectionExemption({ operation: terminal, neededPaths: [sealPath], grant, ledger: testLedger(root) }),
+      verifyOwnerHardProtectionExemption({ operation: terminal, neededPaths: [specPath], grant: honest.grant, ledger: testLedger(root) }),
     ).rejects.toThrow(/TERMINAL/i);
   });
 
@@ -426,17 +410,10 @@ describe("owner-scoped hard-protection exemption (RED-first)", () => {
     } as never);
     bindEnv(operationId, root);
     await bindPolicyForCurrentIdentity(root, operationId);
-    // Tracked hard file (see honest test): the grant names the seal, but the
-    // direct write targets the contract source spec with NO amendment — the
-    // grant must not widen assembly scope by itself.
     const specPath = "specs/changes/REPAIR-SCOPE/spec.md";
-    const sealPath = `.harness/seals/${task.task.id}.json`;
-    const { decision } = await requestOwnerHardProtectionExemption({
-      root, operationId, paths: [sealPath], reason: "grant exists", actorId: "human:owner:test",
-    });
-    await anchorOwnerHardProtectionExemption({ root, operationId, decisionId: decision.decisionId });
+    const blockerResult = await hardBlockerViaRepairer(root, operationId, task, config, specPath);
+    await approveHardAndGetGrant(root, operationId, task, config, blockerResult.scopeBlocker!);
     expect((await loadOperation(root, operationId)).ownerExemptions).toBeDefined();
-    // No scopeAmendment: the grant must not widen assembly scope by itself.
     const selection = repairerSelection();
     const catalog = compileExecutionCatalog({
       runtimes: { test: { adapter: "codex" } },
@@ -458,7 +435,7 @@ describe("owner-scoped hard-protection exemption (RED-first)", () => {
     ).rejects.toThrow(/scope|escaped|denied/i);
   });
 
-  it("managed-agent shells cannot issue exemptions (confused-deputy refusal)", async () => {
+  it("managed-agent shells cannot mint exemptions (confused-deputy refusal)", async () => {
     const root = await createRepo();
     const operationId = "OWNER-EXEMPT-AGENT-1";
     const task = contract("REPAIR-SCOPE");
@@ -476,13 +453,16 @@ describe("owner-scoped hard-protection exemption (RED-first)", () => {
     process.env.AEH_INTERACTIVE_LEAD = "0";
     process.env.AEH_ORCHESTRATION_ALLOWED = "0";
     await expect(
-      requestOwnerHardProtectionExemption({
-        root, operationId, paths: [`.harness/seals/${task.task.id}.json`], reason: "agent steering", actorId: "human:owner:test",
+      mintOwnerHardProtectionExemptionFromProductChoice({
+        root, operationId, paths: [`specs/changes/${task.task.id}/spec.md`],
+        decision: {} as never, binding: {} as never, requestId: "request:agent-1",
       }),
     ).rejects.toThrow(/AGENT_FORBIDDEN|managed|bounded/i);
   });
 
-  it("glob paths are rejected at issuance; not-yet-existing exact files are allowed upfront", async () => {
+  it("glob paths are rejected at normalize; not-yet-existing exact files are allowed via suspend", async () => {
+    expect(() => normalizeOwnerExemptionPaths(["src/**"])).toThrow(/PATH_INVALID|exact|wildcard/i);
+    expect(() => normalizeOwnerExemptionPaths(["../escape.ts"])).toThrow(/PATH_INVALID|safe/i);
     const root = await createRepo();
     const operationId = "OWNER-EXEMPT-PATHS-1";
     const task = contract("REPAIR-SCOPE");
@@ -494,32 +474,14 @@ describe("owner-scoped hard-protection exemption (RED-first)", () => {
     } as never);
     bindEnv(operationId, root);
     await bindPolicyForCurrentIdentity(root, operationId);
-    await expect(
-      requestOwnerHardProtectionExemption({
-        root, operationId, paths: ["src/**"], reason: "glob smuggling", actorId: "human:owner:test",
-      }),
-    ).rejects.toThrow(/PATH_INVALID|exact|wildcard/i);
-    await expect(
-      requestOwnerHardProtectionExemption({
-        root, operationId, paths: ["../escape.ts"], reason: "traversal", actorId: "human:owner:test",
-      }),
-    ).rejects.toThrow(/PATH_INVALID|safe/i);
-    // Exact upfront declaration of a file that does not exist yet is allowed
-    // (hard-protected validator sources may need to be created by the repair).
     const future = "src/validators/future-check.ts";
     expect(findRepairHardProtectedViolations([future], config, task)).toEqual([future]);
-    const { decision } = await requestOwnerHardProtectionExemption({
-      root, operationId, paths: [future], reason: "new validator", actorId: "human:owner:test",
+    const blockerResult = await hardBlockerViaRepairer(root, operationId, task, config, future);
+    const pending = resolveRepairScopeBlockerViaProductChoice({
+      root, controlRoot: root, operationId, config, contract: task, blocker: blockerResult.scopeBlocker!,
     });
-    const grant = await anchorOwnerHardProtectionExemption({ root, operationId, decisionId: decision.decisionId });
-    expect(grant.paths).toEqual([future]);
-    const blocker = createRepairScopeBlockerReceipt({
-      operationId, taskId: task.task.id, workUnitId: "validation-repair:future",
-      filesNeededOutsideScope: [{ path: future, reason: "create the missing validator" }],
-    });
-    const resolved = await resolveRepairScopeBlockerViaProductChoice({
-      root, controlRoot: root, operationId, config, contract: task, blocker,
-    });
+    const approve = approveWaitingRequest(root, operationId, REPAIR_SCOPE_APPROVE_CHOICE_ID, "new validator");
+    const resolved = await Promise.all([pending, approve]).then(([r]) => r);
     expect(resolved.status).toBe("AMENDED");
   });
 
@@ -537,32 +499,37 @@ describe("owner-scoped hard-protection exemption (RED-first)", () => {
     } as never);
     bindEnv(operationId, root);
     await bindPolicyForCurrentIdentity(root, operationId);
-    const sealA = `.harness/seals/${taskA.task.id}.json`;
-    const sealB = `.harness/seals/${taskB.task.id}.json`;
-    const { decision } = await requestOwnerHardProtectionExemption({
-      root, operationId, paths: [sealA, sealB], reason: "both seals", actorId: "human:owner:test",
+    const sealA = `specs/changes/${taskA.task.id}/spec.md`;
+    const sealB = `specs/changes/${taskB.task.id}/spec.md`;
+    // One suspend approving both exact paths mints one grant covering both.
+    const blockerBoth = createRepairScopeBlockerReceipt({
+      operationId, taskId: taskA.task.id, workUnitId: "validation-repair:multi-both",
+      filesNeededOutsideScope: [{ path: sealA, reason: "a" }, { path: sealB, reason: "b" }],
     });
-    const grant = await anchorOwnerHardProtectionExemption({ root, operationId, decisionId: decision.decisionId });
+    const { writeRepairScopeBlockerReceipt } = await import("../src/candidates/repairScope.js");
+    await writeRepairScopeBlockerReceipt(root, config, blockerBoth);
+    const pending = resolveRepairScopeBlockerViaProductChoice({
+      root, controlRoot: root, operationId, config, contract: taskA, blocker: blockerBoth,
+    });
+    const approve = approveWaitingRequest(root, operationId, REPAIR_SCOPE_APPROVE_CHOICE_ID, "both seals");
+    const firstBoth = await Promise.all([pending, approve]).then(([r]) => r);
+    expect(firstBoth.status).toBe("AMENDED");
+    if (firstBoth.status !== "AMENDED") throw new Error("expected AMENDED");
+    const grant = (await loadOperation(root, operationId)).ownerExemptions?.[firstBoth.amendment.ownerExemption!.exemptionId];
+    expect(grant).toBeDefined();
     const ledger = testLedger(root);
-    const blockerA = createRepairScopeBlockerReceipt({
-      operationId, taskId: taskA.task.id, workUnitId: "validation-repair:multi-a",
-      filesNeededOutsideScope: [{ path: sealA, reason: "a" }],
-    });
-    const first = await applyOwnerExemptedRepairScopeAmendment({ root, config, contract: taskA, blocker: blockerA, grant, ledger });
-    expect(first.status).toBe("AMENDED");
     const blockerB = createRepairScopeBlockerReceipt({
       operationId, taskId: taskB.task.id, workUnitId: "validation-repair:multi-b",
       filesNeededOutsideScope: [{ path: sealB, reason: "b" }],
     });
-    const second = await applyOwnerExemptedRepairScopeAmendment({ root, config, contract: taskB, blocker: blockerB, grant, ledger });
+    const second = await applyOwnerExemptedRepairScopeAmendment({ root, config, contract: taskB, blocker: blockerB, grant: grant!, ledger });
     expect(second.status).toBe("AMENDED");
-    // Same task again: the per-task amendment budget still fails closed.
     const blockerA2 = createRepairScopeBlockerReceipt({
       operationId, taskId: taskA.task.id, workUnitId: "validation-repair:multi-a2",
       filesNeededOutsideScope: [{ path: sealA, reason: "a again" }],
     });
     await expect(
-      applyOwnerExemptedRepairScopeAmendment({ root, config, contract: taskA, blocker: blockerA2, grant, ledger }),
+      applyOwnerExemptedRepairScopeAmendment({ root, config, contract: taskA, blocker: blockerA2, grant: grant!, ledger }),
     ).rejects.toThrow(/Only 1 repair scope amendment|BUDGET/i);
   });
 
@@ -578,28 +545,23 @@ describe("owner-scoped hard-protection exemption (RED-first)", () => {
     } as never);
     bindEnv(operationId, root);
     await bindPolicyForCurrentIdentity(root, operationId);
-    const sealPath = `.harness/seals/${task.task.id}.json`;
-    const { decision } = await requestOwnerHardProtectionExemption({
-      root, operationId, paths: [sealPath], reason: "only the seal", actorId: "human:owner:test",
-    });
-    const grant = await anchorOwnerHardProtectionExemption({ root, operationId, decisionId: decision.decisionId });
-    // The participant declares the granted seal PLUS an ungranted policy file.
+    const specPath = "specs/changes/REPAIR-SCOPE/spec.md";
+    const blockerResult = await hardBlockerViaRepairer(root, operationId, task, config, specPath);
+    const honest = await approveHardAndGetGrant(root, operationId, task, config, blockerResult.scopeBlocker!);
     const steered = createRepairScopeBlockerReceipt({
       operationId, taskId: task.task.id, workUnitId: "validation-repair:steer",
       filesNeededOutsideScope: [
-        { path: sealPath, reason: "granted" },
+        { path: specPath, reason: "granted" },
         { path: ".harness/project.yaml", reason: "steered" },
       ],
     });
     expect(findRepairHardProtectedViolations([".harness/project.yaml"], config, task)).toEqual([".harness/project.yaml"]);
-    const resolved = await resolveRepairScopeBlockerViaProductChoice({
-      root, controlRoot: root, operationId, config, contract: task, blocker: steered,
-    });
-    expect(resolved.status).toBe("BLOCKED");
     await expect(
-      applyOwnerExemptedRepairScopeAmendment({ root, config, contract: task, blocker: steered, grant, ledger: testLedger(root) }),
+      applyOwnerExemptedRepairScopeAmendment({ root, config, contract: task, blocker: steered, grant: honest.grant, ledger: testLedger(root) }),
     ).rejects.toThrow(/NOT_COVERED|cover/i);
-    expect(await listRepairScopeAmendments(root, config, task.task.id)).toHaveLength(0);
+    // Resolver with no fully covering grant suspends (does not partially honor);
+    // timeout leaves BLOCKED with no amendment for the steered task attempt.
+    expect(await listRepairScopeAmendments(root, config, task.task.id)).toHaveLength(1);
   });
 
   it("owner path cannot launder amendable manifests past the product-choice deny option", async () => {
@@ -614,19 +576,92 @@ describe("owner-scoped hard-protection exemption (RED-first)", () => {
     } as never);
     bindEnv(operationId, root);
     await bindPolicyForCurrentIdentity(root, operationId);
-    const { decision } = await requestOwnerHardProtectionExemption({
-      root, operationId, paths: ["package-lock.json"], reason: "amendable only", actorId: "human:owner:test",
-    });
-    const grant = await anchorOwnerHardProtectionExemption({ root, operationId, decisionId: decision.decisionId });
+    const specPath = "specs/changes/REPAIR-SCOPE/spec.md";
+    const blockerResult = await hardBlockerViaRepairer(root, operationId, task, config, specPath);
+    const honest = await approveHardAndGetGrant(root, operationId, task, config, blockerResult.scopeBlocker!);
     const blocker = createRepairScopeBlockerReceipt({
       operationId, taskId: task.task.id, workUnitId: "validation-repair:launder",
       filesNeededOutsideScope: [{ path: "package-lock.json", reason: "trivy bump" }],
     });
     await expect(
-      applyOwnerExemptedRepairScopeAmendment({ root, config, contract: task, blocker, grant, ledger: testLedger(root) }),
-    ).rejects.toThrow(/HARD|amendable|product-choice/i);
+      applyOwnerExemptedRepairScopeAmendment({ root, config, contract: task, blocker, grant: honest.grant, ledger: testLedger(root) }),
+    ).rejects.toThrow(/HARD|amendable|product-choice|NOT_COVERED|cover/i);
   });
 });
+
+async function approveWaitingRequest(root: string, operationId: string, choiceId: string, reason: string): Promise<void> {
+  for (let i = 0; i < 200; i += 1) {
+    const current = await loadOperation(root, operationId);
+    if (current.phase === "HUMAN_REQUIRED" && current.decisionRequest) {
+      const { recordControlCenterDecision } = await import("../src/control-center/decision.js");
+      const ledger = testLedger(root);
+      await recordControlCenterDecision(root, ledger, {
+        operationId, requestId: current.decisionRequest.requestId, choiceId, reason,
+      }, "human:control-center:test");
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  throw new Error("suspension never appeared for hard blocker");
+}
+
+async function hardBlockerViaRepairer(root: string, operationId: string, task: TaskContract, config: HarnessProjectConfig, hardPath: string) {
+  const selection = repairerSelection();
+  const catalog = compileExecutionCatalog({
+    runtimes: { test: { adapter: "codex" } },
+    models: { test: { runtime: "test", model: "fake" } },
+    roleBindings: { Repairer: { runtimeId: "test", modelAlias: "test", transport: "direct", outputContract: "repair-result", args: [] } },
+  });
+  return executeRepairerCandidateMutation({
+    root, stateRoot: root, operationId, taskId: task.task.id,
+    workUnitId: `validation-repair:${operationId}`, phase: "validation-repair",
+    config, contract: task, selection, executionCatalog: catalog,
+    allowedScope: ["src/**"], forbiddenScope: [],
+    prompt: buildRepairPrompt(packet(task.task.id)),
+    execute: async (_ir, participantId) => ({
+      provider: "test", logicalAgent: "repairer", participantId, exitCode: 0,
+      stdout: `AEH_RESULT_JSON=${JSON.stringify({
+        filesChanged: [], behaviorRepaired: [], validationCommands: [],
+        filesNeededOutsideScope: [{ path: hardPath, reason: "hard path needed" }],
+      })}`,
+      stderr: "",
+    }),
+  });
+}
+
+async function approveHardAndGetGrant(root: string, operationId: string, task: TaskContract, config: HarnessProjectConfig, blocker: import("../src/candidates/repairScope.js").RepairScopeBlockerReceiptV1) {
+  const taskForBlocker = blocker.taskId === task.task.id ? task : task;
+  const pending = resolveRepairScopeBlockerViaProductChoice({
+    root, controlRoot: root, operationId, config, contract: taskForBlocker, blocker,
+  });
+  const approve = approveWaitingRequest(root, operationId, REPAIR_SCOPE_APPROVE_CHOICE_ID, "approve for grant");
+  const resolved = await Promise.all([pending, approve]).then(([r]) => r);
+  if (resolved.status !== "AMENDED" || !resolved.ownerExemption) throw new Error("expected AMENDED with grant");
+  const grant = (await loadOperation(root, operationId)).ownerExemptions?.[resolved.ownerExemption.exemptionId];
+  if (!grant) throw new Error("grant not anchored");
+  return { resolved, grant };
+}
+
+async function retryWriting(root: string, operationId: string, task: TaskContract, config: HarnessProjectConfig, amendedContract: TaskContract, amendment: import("../src/candidates/repairScope.js").RepairScopeAmendmentV1, filePath: string, content: string) {
+  const selection = repairerSelection();
+  const catalog = compileExecutionCatalog({
+    runtimes: { test: { adapter: "codex" } },
+    models: { test: { runtime: "test", model: "fake" } },
+    roleBindings: { Repairer: { runtimeId: "test", modelAlias: "test", transport: "direct", outputContract: "repair-result", args: [] } },
+  });
+  return executeRepairerCandidateMutation({
+    root, stateRoot: root, operationId, taskId: task.task.id,
+    workUnitId: "validation-repair:owner-retry", phase: "validation-repair",
+    config, contract: amendedContract, selection, executionCatalog: catalog,
+    allowedScope: amendedContract.scope?.allowed ?? ["src/**"], forbiddenScope: [],
+    scopeAmendment: amendment,
+    prompt: buildRepairPrompt(packet(task.task.id)),
+    execute: async (isolatedRoot, participantId) => {
+      await fs.writeFile(path.join(isolatedRoot, filePath), content);
+      return { provider: "test", logicalAgent: "repairer", participantId, exitCode: 0, stdout: "", stderr: "" };
+    },
+  });
+}
 
 async function createRepo(): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-owner-exempt-"));

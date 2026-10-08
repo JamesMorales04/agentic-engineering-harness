@@ -32,8 +32,14 @@ import { canonicalSerialize } from "../core/digest.js";
  * controller process. If it leaks, ALL controller authority (not just this
  * exemption) is compromised — the exemption adds no new weakness. Ledger
  * files are intent evidence, never authority: every use re-verifies the MAC
- * against the live token plus operation binding, expiry, ledger cross-check,
+ * against the live token plus operation binding, expiry, ledger cross-check
+ * (consumed PRODUCT_CHOICE approval bound to its WAITING continuation),
  * and exact-path coverage.
+ *
+ * Issuance (DETERMINISTIC, no model judgment): grants are minted ONLY by the
+ * controller after a bounded suspend/decide/resume for hard-protected repair
+ * paths (approve-exact-set/decline generated deterministically from the
+ * declared blocker). Standalone ledger-scan issuance was deleted as unsound.
  *
  * Mechanism classification: DETERMINISTIC. HMAC verification, exact-match
  * path coverage, epoch/terminal/expiry gates. No model judgment anywhere.
@@ -60,7 +66,7 @@ export interface OwnerHardProtectionExemptionGrantV1 {
   operationExecutionRevision: number;
   /** Exact files only (sorted, unique, no globs); new-file paths allowed. */
   paths: string[];
-  /** Ledger provenance: the APPROVE/HARD_PROTECTION_EXEMPTION decision this grant anchors. */
+  /** Ledger provenance: the consumed CHOOSE/PRODUCT_CHOICE approval (bound to its WAITING continuation) this controller-minted grant anchors. */
   decisionId: string;
   decisionDigest: string;
   decidedActor: string;
