@@ -44,19 +44,34 @@ const laneFilter = (process.env.S13_CTXPERM_LANES ?? "").split(",").map((value) 
 const keepStaging = process.env.S13_CTXPERM_KEEP === "1";
 
 // P-NEW-4: hermetic isolation before any fixture/paseo work.
+// V2: protected region begins immediately — all fallible setup inside try so a
+// failure between isolation-return and try-entry cannot leak.
 const paseoIsolation = await setupIsolatedPaseoHome({ prefix: "aeh-s13-ctxperm-" });
-assertIsolatedPaseoEnv(paseoIsolation);
+let staging;
+let evidenceRoot;
+let laneRoot;
+let dist;
+let releaseId;
+let release;
+let buildIdentity;
+let harnessRevisions;
+let summary;
+let before;
+let candidate;
+let paseoCleanupResult;
+let laneNames;
+try {
+  assertIsolatedPaseoEnv(paseoIsolation);
+  staging = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-s13-ctxperm-"));
+  evidenceRoot = path.join(checkout, "docs", "evidence", "s13");
+  laneRoot = path.join(staging, "lanes");
+  await fs.mkdir(laneRoot, { recursive: true });
 
-const staging = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-s13-ctxperm-"));
-const evidenceRoot = path.join(checkout, "docs", "evidence", "s13");
-const laneRoot = path.join(staging, "lanes");
-await fs.mkdir(laneRoot, { recursive: true });
-
-const dist = path.join(checkout, "dist");
-const releaseId = (await fs.readFile(path.join(dist, "current"), "utf8")).trim();
-const release = path.join(dist, "releases", releaseId);
-const buildIdentity = (await import(pathToFileURL(path.join(release, "build", "identity.js")))).getBuildIdentity();
-const harnessRevisions = await harnessRevisionV1(fileURLToPath(import.meta.url));
+  dist = path.join(checkout, "dist");
+  releaseId = (await fs.readFile(path.join(dist, "current"), "utf8")).trim();
+  release = path.join(dist, "releases", releaseId);
+  buildIdentity = (await import(pathToFileURL(path.join(release, "build", "identity.js")))).getBuildIdentity();
+  harnessRevisions = await harnessRevisionV1(fileURLToPath(import.meta.url));
 
 /**
  * Round 21: the only observed round-20 blocker for both lanes is a provider-side MCP startup flake
@@ -394,17 +409,12 @@ async function permissionDelegationJourney() {
   return lane;
 }
 
-const summary = {
-  version: 1, slice: "S13", round, runId, campaign: "context-permission",
-  generatedAt: new Date().toISOString(), checkout, sourceCommit: run("git", ["rev-parse", "HEAD"]).stdout,
-  harnessRevisions, harnessBuildIdentity: buildIdentity, candidate: null, lanes: [], result: "UNKNOWN",
-  paseoIsolation: { hermetic: true, home: paseoIsolation.home, port: paseoIsolation.port, daemonUrl: paseoIsolation.daemonUrl, setupAt: paseoIsolation.startedAt }
-};
-let before;
-let candidate;
-let paseoCleanupResult;
-let laneNames;
-try {
+  summary = {
+    version: 1, slice: "S13", round, runId, campaign: "context-permission",
+    generatedAt: new Date().toISOString(), checkout, sourceCommit: run("git", ["rev-parse", "HEAD"]).stdout,
+    harnessRevisions, harnessBuildIdentity: buildIdentity, candidate: null, lanes: [], result: "UNKNOWN",
+    paseoIsolation: { hermetic: true, home: paseoIsolation.home, port: paseoIsolation.port, daemonUrl: paseoIsolation.daemonUrl, setupAt: paseoIsolation.startedAt }
+  };
   before = await trackedDigest();
   candidate = await packCandidate();
   summary.candidate = { artifact: candidate.filename, artifactDigest: candidate.artifactDigest };
@@ -433,7 +443,8 @@ try {
     summary.workspaceCleanupError = String(error);
   }
 } finally {
-  // B1: teardown guaranteed on every exit; handlers stay installed until verified completion.
+  // B1+V2: teardown guaranteed on every exit (including early setup failure);
+  // handlers stay installed until verified completion.
   try {
     paseoCleanupResult = await teardownIsolatedPaseoHome(paseoIsolation);
   } catch (error) {
@@ -441,6 +452,14 @@ try {
     paseoCleanupResult = { agentsDeleted: [], workspacesArchived: [], remainingAgents: [], remainingWorkspaces: [], orphanFree: false, daemonStopped: false, homeRemoved: false, attempts: 0, verified: false, error: String(error?.stack ?? error) };
   }
   const paseoCleanup = paseoCleanupResult;
+  if (!summary) {
+    summary = {
+      version: 1, slice: "S13", round, runId, campaign: "context-permission",
+      generatedAt: new Date().toISOString(), checkout, lanes: [], result: "SLICE_BLOCKED",
+      earlySetupFailure: true,
+      paseoIsolation: { hermetic: true, home: paseoIsolation.home, port: paseoIsolation.port, daemonUrl: paseoIsolation.daemonUrl, setupAt: paseoIsolation.startedAt }
+    };
+  }
   summary.paseoCleanup = {
     hermetic: true,
     agentsDeleted: paseoCleanup.agentsDeleted ?? [],
@@ -456,6 +475,15 @@ try {
   if (!summary.paseoCleanup.orphanFree) {
     for (const lane of summary.lanes) if (lane.result === "PASS") lane.result = "FAIL";
   }
+}
+// Early setup failure (before digest/evidence dirs): teardown already ran;
+// fail closed without touching undefined paths.
+if (!before || !evidenceRoot || !laneRoot || !laneNames) {
+  summary.result = "SLICE_BLOCKED";
+  summary.earlySetupFailure = true;
+  console.error(`PASEO_ISOLATION_SETUP_FAILED: context-permission campaign failed before lane execution; teardown verified=${paseoCleanupResult?.verified ?? false}`);
+  if (staging && !keepStaging) await fs.rm(staging, { recursive: true, force: true }).catch(() => undefined);
+  process.exit(1);
 }
 const after = await trackedDigest();
 summary.checkoutProof = {

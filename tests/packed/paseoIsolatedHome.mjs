@@ -21,16 +21,19 @@ import path from "node:path";
  * SIGINT/SIGTERM/uncaught failures. The helper NEVER falls back to the live
  * daemon: a failed setup throws `PASEO_ISOLATION_UNAVAILABLE`.
  *
- * Teardown guarantee (B1 fix): campaign bodies wrap all post-setup work in
- * `try { ... } finally { await teardownIsolatedPaseoHome(handle); }` so
- * cleanup runs on every exit path. Abort handlers stay installed until
- * teardown VERIFIES completion (daemon stopped + home removed, both probed,
- * never assumed); `handle.cleaned` flips only on verified completion so a
- * failed attempt remains retryable. Both async and sync teardown retry a
+ * Teardown guarantee (B1 fix): campaign bodies enter `try { ... } finally { ... }`
+ * immediately when isolation setup returns, so ALL subsequent fallible setup
+ * (staging mkdtemp, dist reads, packing, fixture prep) is inside the protected
+ * region. Abort handlers are installed FIRST in setup (before mkdtemp/port
+ * discovery/daemon start) and stay installed until teardown VERIFIES completion
+ * (positive stopped-proof `localDaemon === "stopped"` + home removed, both
+ * probed, never assumed); `handle.cleaned` flips only on verified completion
+ * so a failed attempt remains retryable. Both async and sync teardown retry a
  * bounded number of times before giving up and trace persistently via
  * `console.error` (`PASEO_ISOLATION_TEARDOWN_FAILED` /
  * `PASEO_ISOLATION_ABORT_TEARDOWN`) plus machine-readable accounting
- * (`attempts`, `daemonStopped`, `homeRemoved`, `verified`).
+ * (`attempts`, `daemonStopped`, `homeRemoved`, `verified`). Unknown/missing
+ * stopped vocabulary → UNVERIFIED → retry then fail, never verified.
  *
  * Port race (B2 fix): `findFreePort()` is availability-only (TOCTOU): the OS
  * frees the port on close and another process may bind it before
@@ -45,9 +48,9 @@ import path from "node:path";
  *
  *   import { setupIsolatedPaseoHome, teardownIsolatedPaseoHome, assertIsolatedPaseoEnv } from "./paseoIsolatedHome.mjs";
  *   const paseoIsolation = await setupIsolatedPaseoHome({ prefix: "aeh-s13-gov-" });
- *   assertIsolatedPaseoEnv(paseoIsolation);
  *   try {
- *     // ... lanes (laneEnvironment() already preserves PASEO_HOME/PASEO_DAEMON_URL) ...
+ *     assertIsolatedPaseoEnv(paseoIsolation);
+ *     // ... staging, lanes (laneEnvironment() already preserves PASEO_HOME/PASEO_DAEMON_URL) ...
  *   } finally {
  *     const cleanup = await teardownIsolatedPaseoHome(paseoIsolation);
  *     // ... record cleanup accounting in the summary, then process.exit ...
@@ -58,6 +61,16 @@ export const LIVE_PASEO_LISTEN_PORT = 6767;
 export const LIVE_PASEO_WS_URL = `ws://127.0.0.1:${LIVE_PASEO_LISTEN_PORT}/ws`;
 export const ISOLATION_SETUP_MAX_PORT_ATTEMPTS = 5;
 export const ISOLATION_TEARDOWN_MAX_ATTEMPTS = 3;
+
+// Positive stopped-proof vocabulary for `paseo daemon status --json`
+// `.localDaemon`. Source: @getpaseo/cli
+// `dist/commands/daemon/status.js` localStatus():
+//   let localDaemon = "stopped";
+//   if (instance) localDaemon = instance.listen ? "running" : "not_ready";
+// Only "stopped" (no instance file) proves the daemon is gone. "not_ready"
+// still has an instance record; missing/unknown values are UNVERIFIED and must
+// retry then fail, never verify.
+export const DAEMON_STOPPED_PROOF_VALUES = new Set(["stopped"]);
 
 export function livePaseoHome() {
   return path.join(os.homedir(), ".paseo");
@@ -155,10 +168,14 @@ function isHomeRemovedSync(home) {
 
 function isDaemonStoppedSync(home) {
   try {
+    if (!home) return false;
     const status = runPaseo(["daemon", "status", "--json"], home, 15_000);
     const parsed = parseDaemonStatus(status.stdout);
-    if (!parsed) return false;
-    return parsed.localDaemon !== "running";
+    if (!parsed || typeof parsed !== "object") return false;
+    // POSITIVE proof only: accept exactly the daemon's real stopped states.
+    // {} / missing localDaemon / unknown values → UNVERIFIED (false) so the
+    // caller retries then fails, never verifies.
+    return DAEMON_STOPPED_PROOF_VALUES.has(parsed.localDaemon);
   } catch {
     return false;
   }
@@ -196,6 +213,7 @@ function restorePreviousEnv(handle) {
 
 export function syncTeardown(handle) {
   if (!handle || handle.cleaned) return { cleaned: false, reason: "already-cleaned" };
+  if (!handle.home) return { cleaned: false, reason: "no-home-yet", daemonStopped: false, homeRemoved: false, attempts: 0, verified: false };
   const accounting = { agentsDeleted: [], agentsDeleteFailed: [], workspacesArchived: [], workspacesArchiveFailed: [], daemonStopped: false, homeRemoved: false, attempts: 0, verified: false };
   for (let attempt = 1; attempt <= ISOLATION_TEARDOWN_MAX_ATTEMPTS; attempt += 1) {
     accounting.attempts = attempt;
@@ -225,12 +243,14 @@ export function syncTeardown(handle) {
     } catch { /* best-effort, retried */ }
     try {
       const stopped = runPaseo(["daemon", "stop"], handle.home, 30_000);
+      // Positive proof only: isDaemonStoppedSync accepts exactly "stopped".
       accounting.daemonStopped = stopped.status === 0 && isDaemonStoppedSync(handle.home);
     } catch {
       accounting.daemonStopped = isDaemonStoppedSync(handle.home);
     }
     // Verify, don't assume: a zero exit from `daemon stop` alone is not
-    // completion; the status probe must confirm the daemon left running.
+    // completion; the status probe must return positive stopped-proof ("stopped").
+    // {} / missing / unknown → UNVERIFIED → retry then fail, never verified.
     if (!accounting.daemonStopped) accounting.daemonStopped = isDaemonStoppedSync(handle.home);
     try {
       rmSync(handle.home, { recursive: true, force: true });
@@ -311,8 +331,20 @@ export async function setupIsolatedPaseoHome(options = {}) {
     PASEO_AGENT_ID: process.env.PASEO_AGENT_ID,
     PASEO_SESSION_ID: process.env.PASEO_SESSION_ID,
   };
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  const handle = { home, host, port: undefined, daemonUrl: undefined, previous, cleaned: false, startedAt: new Date().toISOString() };
+  // V2: install abort handlers FIRST, before any fallible step (mkdtemp, port
+  // discovery, daemon config/start, health wait) so an abort during setup
+  // still cleans. The handle starts without a home; syncTeardown early-returns
+  // until the home is assigned below.
+  const handle = { home: undefined, host, port: undefined, daemonUrl: undefined, previous, cleaned: false, startedAt: new Date().toISOString() };
+  installAbortHandlers(handle);
+  let home;
+  try {
+    home = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+    handle.home = home;
+  } catch (error) {
+    removeAbortHandlers(handle);
+    throw error instanceof Error ? error : new Error(`PASEO_ISOLATION_UNAVAILABLE: ${String(error)}`);
+  }
   let lastError;
   const attemptedPorts = [];
   for (let attempt = 1; attempt <= maxPortAttempts; attempt += 1) {
@@ -369,11 +401,12 @@ export async function setupIsolatedPaseoHome(options = {}) {
       // PASEO_HOME/PASEO_DAEMON_URL flow through automatically. Drop the
       // foreign caller identity: it belongs to the live daemon and the isolated
       // daemon rejects it (`Caller agent ... not found`).
+      // Abort handlers were already installed FIRST (before any fallible step)
+      // and stay installed until verified teardown; do NOT reinstall here.
       process.env.PASEO_HOME = home;
       process.env.PASEO_DAEMON_URL = handle.daemonUrl;
       delete process.env.PASEO_AGENT_ID;
       delete process.env.PASEO_SESSION_ID;
-      installAbortHandlers(handle);
       return handle;
     } catch (error) {
       // Non-EADDRINUSE failures fail closed immediately; EADDRINUSE that
@@ -387,6 +420,10 @@ export async function setupIsolatedPaseoHome(options = {}) {
       } catch { /* best-effort */ }
       await fs.rm(home, { recursive: true, force: true }).catch(() => undefined);
       handle.cleaned = await isHomeRemoved(home);
+      // Setup failed with no handle to return: drop the early-installed abort
+      // handlers when nothing leaks (cleaned), otherwise keep them so an abort
+      // can still clean the leaked home.
+      if (handle.cleaned) removeAbortHandlers(handle);
       throw error instanceof Error ? error : new Error(`PASEO_ISOLATION_UNAVAILABLE: ${String(error)}`);
     }
   }
@@ -395,6 +432,7 @@ export async function setupIsolatedPaseoHome(options = {}) {
   } catch { /* best-effort */ }
   await fs.rm(home, { recursive: true, force: true }).catch(() => undefined);
   handle.cleaned = await isHomeRemoved(home);
+  if (handle.cleaned) removeAbortHandlers(handle);
   const detail = lastError instanceof Error ? lastError.message : String(lastError ?? "unknown");
   console.error(`PASEO_ISOLATION_UNAVAILABLE: isolated daemon setup gave up after ${maxPortAttempts} port attempts [${attemptedPorts.join(",")}]. Last: ${detail.slice(0, 500)} Residual: free-port discovery is availability-only; sustained collision fails closed and never falls back to live.`);
   throw lastError instanceof Error ? lastError : new Error(`PASEO_ISOLATION_UNAVAILABLE: isolated daemon setup failed after ${maxPortAttempts} port attempts [${attemptedPorts.join(",")}].`);
@@ -433,6 +471,7 @@ export function assertIsolatedPaseoEnv(handle) {
  */
 export async function teardownIsolatedPaseoHome(handle) {
   if (!handle || handle.cleaned) return { cleaned: false, reason: "already-cleaned-or-missing" };
+  if (!handle.home) return { cleaned: false, reason: "no-home-yet", daemonStopped: false, homeRemoved: false, attempts: 0, verified: false, orphanFree: false };
   const accounting = {
     home: handle.home,
     port: handle.port,
@@ -474,10 +513,12 @@ export async function teardownIsolatedPaseoHome(handle) {
     accounting.remainingWorkspaces = remainingWorkspaces;
     try {
       const stopped = runPaseo(["daemon", "stop"], handle.home, 30_000);
+      // Positive proof only: isDaemonStoppedSync accepts exactly "stopped".
       accounting.daemonStopped = stopped.status === 0 && isDaemonStoppedSync(handle.home);
     } catch {
       accounting.daemonStopped = isDaemonStoppedSync(handle.home);
     }
+    // {} / missing / unknown → UNVERIFIED → retry then fail, never verified.
     if (!accounting.daemonStopped) accounting.daemonStopped = isDaemonStoppedSync(handle.home);
     await fs.rm(handle.home, { recursive: true, force: true }).catch(() => undefined);
     accounting.homeRemoved = await isHomeRemoved(handle.home);

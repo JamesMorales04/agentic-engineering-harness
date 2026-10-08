@@ -37,18 +37,35 @@ const runId = (process.env.S13_RUN_ID ?? `run-${new Date().toISOString().replace
 if (!/^[A-Za-z0-9-]{1,80}$/.test(runId)) throw new Error("S13_RUN_ID must contain only letters, digits, and hyphens.");
 // P-NEW-4: hermetic isolation before any fixture/paseo work. Owner children
 // (`--owner`, handled above) inherit this environment and must not re-setup.
+// V2: protected region begins immediately — all fallible setup inside try so a
+// failure between isolation-return and try-entry cannot leak.
 const paseoIsolation = await setupIsolatedPaseoHome({ prefix: "aeh-s13-lifecycle-" });
-assertIsolatedPaseoEnv(paseoIsolation);
-const checkout = path.resolve(process.argv[2] ?? process.cwd());
-const staging = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-s13-lifecycle-"));
-const evidenceRoot = path.join(checkout, "docs", "evidence", "s13");
-const laneRoot = path.join(staging, "lanes");
-await fs.mkdir(laneRoot, { recursive: true });
-const dist = path.join(checkout, "dist");
-const releaseId = (await fs.readFile(path.join(dist, "current"), "utf8")).trim();
-const release = path.join(dist, "releases", releaseId);
-const certify = await import(pathToFileURL(path.join(release, "certification", "index.js")));
-const buildIdentity = (await import(pathToFileURL(path.join(release, "build", "identity.js")))).getBuildIdentity();
+let checkout;
+let staging;
+let evidenceRoot;
+let laneRoot;
+let dist;
+let releaseId;
+let release;
+let certify;
+let buildIdentity;
+let harnessRevisions;
+let summary;
+let before;
+let candidate;
+let paseoCleanupResult;
+try {
+  assertIsolatedPaseoEnv(paseoIsolation);
+  checkout = path.resolve(process.argv[2] ?? process.cwd());
+  staging = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-s13-lifecycle-"));
+  evidenceRoot = path.join(checkout, "docs", "evidence", "s13");
+  laneRoot = path.join(staging, "lanes");
+  await fs.mkdir(laneRoot, { recursive: true });
+  dist = path.join(checkout, "dist");
+  releaseId = (await fs.readFile(path.join(dist, "current"), "utf8")).trim();
+  release = path.join(dist, "releases", releaseId);
+  certify = await import(pathToFileURL(path.join(release, "certification", "index.js")));
+  buildIdentity = (await import(pathToFileURL(path.join(release, "build", "identity.js")))).getBuildIdentity();
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { encoding: "utf8", timeout: options.timeoutMs ?? 60_000, cwd: options.cwd ?? process.cwd(), env: options.env ?? process.env, maxBuffer: 32 * 1024 * 1024 });
@@ -210,19 +227,15 @@ function inspectAgentReceipt(agentId) {
 
 function stopAgent(agentId) { return run("paseo", ["agent", "delete", agentId], { timeoutMs: 60_000 }); }
 
-const harnessRevisions = await harnessRevisionV1(fileURLToPath(import.meta.url));
+  harnessRevisions = await harnessRevisionV1(fileURLToPath(import.meta.url));
 
-const summary = {
-  version: 1, slice: "S13", round, runId, campaign: "real-paseo-lifecycle",
-  generatedAt: new Date().toISOString(), checkout, sourceCommit: run("git", ["rev-parse", "HEAD"]).stdout,
-  harnessRevisions,
-  harnessBuildIdentity: buildIdentity, candidate: null, lanes: [], result: "UNKNOWN",
-  paseoIsolation: { hermetic: true, home: paseoIsolation.home, port: paseoIsolation.port, daemonUrl: paseoIsolation.daemonUrl, setupAt: paseoIsolation.startedAt }
-};
-let before;
-let candidate;
-let paseoCleanupResult;
-try {
+  summary = {
+    version: 1, slice: "S13", round, runId, campaign: "real-paseo-lifecycle",
+    generatedAt: new Date().toISOString(), checkout, sourceCommit: run("git", ["rev-parse", "HEAD"]).stdout,
+    harnessRevisions,
+    harnessBuildIdentity: buildIdentity, candidate: null, lanes: [], result: "UNKNOWN",
+    paseoIsolation: { hermetic: true, home: paseoIsolation.home, port: paseoIsolation.port, daemonUrl: paseoIsolation.daemonUrl, setupAt: paseoIsolation.startedAt }
+  };
   before = await trackedDigest();
   candidate = await packAndInstall();
   summary.candidate = { artifact: candidate.filename, artifactDigest: candidate.artifactDigest };
@@ -413,7 +426,7 @@ for (const journey of [cancelJourney, recoveryJourney]) {
   console.log(JSON.stringify(summary.lanes.at(-1)));
 }
 } finally {
-  // B1: teardown guaranteed on every exit; handlers stay installed until verified completion.
+  // B1+V2: teardown guaranteed on every exit (including early setup failure).
   try {
     paseoCleanupResult = await teardownIsolatedPaseoHome(paseoIsolation);
   } catch (error) {
@@ -421,6 +434,14 @@ for (const journey of [cancelJourney, recoveryJourney]) {
     paseoCleanupResult = { agentsDeleted: [], workspacesArchived: [], remainingAgents: [], remainingWorkspaces: [], orphanFree: false, daemonStopped: false, homeRemoved: false, attempts: 0, verified: false, error: String(error?.stack ?? error) };
   }
   const paseoCleanup = paseoCleanupResult;
+  if (!summary) {
+    summary = {
+      version: 1, slice: "S13", round, runId, campaign: "real-paseo-lifecycle",
+      generatedAt: new Date().toISOString(), checkout, lanes: [], result: "SLICE_BLOCKED",
+      earlySetupFailure: true,
+      paseoIsolation: { hermetic: true, home: paseoIsolation.home, port: paseoIsolation.port, daemonUrl: paseoIsolation.daemonUrl, setupAt: paseoIsolation.startedAt }
+    };
+  }
   summary.paseoCleanup = {
     hermetic: true,
     agentsDeleted: paseoCleanup.agentsDeleted ?? [],
@@ -436,6 +457,14 @@ for (const journey of [cancelJourney, recoveryJourney]) {
   if (!summary.paseoCleanup.orphanFree) {
     for (const lane of summary.lanes) if (lane.result === "PASS") lane.result = "FAIL";
   }
+}
+// Early setup failure (before digest/evidence dirs): teardown already ran;
+// fail closed without touching undefined paths.
+if (!before || !evidenceRoot || !laneRoot || !checkout) {
+  if (summary) summary.result = "SLICE_BLOCKED";
+  console.error(`PASEO_ISOLATION_SETUP_FAILED: real-paseo-lifecycle campaign failed before lane execution; teardown verified=${paseoCleanupResult?.verified ?? false}`);
+  if (staging) await fs.rm(staging, { recursive: true, force: true }).catch(() => undefined);
+  process.exit(1);
 }
 const after = await trackedDigest();
 summary.checkoutProof = { trackedDigestBefore: before.digest, trackedDigestAfter: after.digest, trackedFiles: before.files, checkoutUntouched: before.digest === after.digest, postRunTrackedDocEditWindow: { opensAfter: new Date().toISOString(), note: "R17-F8: tracked documentation/evidence writes after this timestamp are expected; compare source digests only within a run window." }, note: "Tracked digest captured before packing and after all real lifecycle journeys; all provider sessions run in the isolated Paseo home against disposable /tmp fixtures." };
