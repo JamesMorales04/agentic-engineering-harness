@@ -65,6 +65,25 @@ import path from "node:path";
  * registration thus gains an owner); last-suite-leak with no later setup is
  * covered by the abort path. Reconcile never fails setup and never hangs.
  *
+ * Lifecycle phases (P-NEW-4 round-8): the round-7 identity-only filter
+ * (h !== ownerHandle) could not distinguish an abandoned handle from a LIVE
+ * concurrent suite's handle — tearing down a live suite is a release blocker.
+ * The registry therefore records a phase per handle: 'setting-up' (stamped at
+ * register, before any fallible step) -> 'live' (stamped on setup success,
+ * just before return) -> 'failed' (stamped on every setup-throw path, before
+ * the verified-cleanup check). Verified teardown unregisters (any phase).
+ * Pre-flight reconciles ONLY 'failed' handles (provably ownerless: their setup
+ * threw and will never return to use them); 'live' handles are NEVER touched
+ * by pre-flight (concurrent suites safe by construction); 'setting-up' handles
+ * are NEVER touched (a concurrent setup in flight may still succeed). The
+ * signal/fatal abort paths still tear down ALL registered handles regardless
+ * of phase (a dying process owns everything it registered).
+ * Residual, stated honestly: the registry is per-process memory, so a
+ * SIGKILLed prior process's daemon/home is invisible to this process's
+ * pre-flight and is NOT reaped here. Follow-up (not this round): a
+ * stale-daemon janitor via owner-pid files, same pattern as the aeh-direct
+ * janitor. No cross-process reaping is implemented in this round.
+ *
  * Port race (B2 fix): `findFreePort()` is availability-only (TOCTOU): the OS
  * frees the port on close and another process may bind it before
  * `paseo daemon start` runs. Setup therefore spawns with bounded retry on
@@ -288,6 +307,16 @@ function uninstallIsolationAbortManager() {
 }
 
 function registerIsolationHandle(handle) {
+  // Lifecycle phase (P-NEW-4 round-8): stamp 'setting-up' at register, before
+  // any fallible step. A pre-set phase survives (test fixtures simulate
+  // 'failed' leaks); an unset phase defaults to 'setting-up' so ad-hoc
+  // registrations are never pre-flight-reaped (only 'failed' is). The abort
+  // paths still cover every phase.
+  if (handle && handle.phase === undefined) {
+    try {
+      handle.phase = "setting-up";
+    } catch { /* best-effort: a frozen handle keeps no phase and is skipped by pre-flight */ }
+  }
   registeredIsolationHandles.add(handle);
   ensureIsolationAbortManagerInstalled();
 }
@@ -341,10 +370,19 @@ function verifyIsolationHandleSync(handle) {
 }
 
 function reconcileLeftoverIsolationHandlesSync(ownerHandle) {
-  // Pre-flight reconciliation (P-NEW-4 round-7 F2): the next setup owns every
-  // leftover registration from prior failed setups. Bounded sync, best-effort,
-  // traced; unregistering on verified success. Never throws, never hangs.
-  const leftovers = [...registeredIsolationHandles].filter((h) => h !== ownerHandle);
+  // Pre-flight reconciliation (P-NEW-4 round-7 F2, phase-gated in round-8): the
+  // next setup owns ONLY leftover registrations from prior FAILED setups
+  // (phase === 'failed': their setup threw and will never return to use them —
+  // provably ownerless). 'live' handles (a concurrent suite's running daemon)
+  // and 'setting-up' handles (a concurrent setup in flight that may still
+  // succeed) are NEVER touched by pre-flight — concurrent suites are safe by
+  // construction. Bounded sync, best-effort, traced; unregistering on verified
+  // success. Never throws, never hangs.
+  // Per-process residual (documented, not reaped here): a SIGKILLed prior
+  // process's daemon/home never enters this registry, so pre-flight cannot see
+  // it. Follow-up: stale-daemon janitor via owner-pid files (aeh-direct
+  // janitor pattern); no cross-process reaping in this round.
+  const leftovers = [...registeredIsolationHandles].filter((h) => h !== ownerHandle && h?.phase === "failed");
   if (leftovers.length === 0) return { reconciled: 0, remaining: 0 };
   let reconciled = 0;
   for (const handle of leftovers.reverse()) {
@@ -446,6 +484,9 @@ function handleIsolationFatal(error) {
  * registry membership. Production code registers at setup START via
  * registerIsolationHandle; tests covering failure paths with hand-built handles
  * use __registerIsolationHandleForTests to put the handle under the manager.
+ * Phase seam (P-NEW-4 round-8): a pre-set handle.phase survives registration;
+ * an unset phase defaults to 'setting-up' (never pre-flight-reaped). Fixtures
+ * simulating a prior failed-setup leak must set phase: "failed".
  */
 export function __registerIsolationHandleForTests(handle) {
   registerIsolationHandle(handle);
@@ -569,17 +610,20 @@ export async function setupIsolatedPaseoHome(options = {}) {
   // discovery, daemon config/start, health wait) so an abort during setup
   // still cleans. The handle starts without a home; syncTeardown early-returns
   // until the home is assigned below.
-  const handle = { home: undefined, host, port: undefined, daemonUrl: undefined, previous, cleaned: false, startedAt: new Date().toISOString() };
+  const handle = { home: undefined, host, port: undefined, daemonUrl: undefined, previous, cleaned: false, phase: "setting-up", startedAt: new Date().toISOString() };
   // Central manager: register FIRST, before any fallible step (mkdtemp, port
   // discovery, daemon config/start, health wait) so an abort during setup
   // still cleans. The handle starts without a home; syncTeardown early-returns
   // until the home is assigned below. The single manager set is installed ONCE
   // here (refcounted via the registry; never stacked duplicates).
+  // Phase (P-NEW-4 round-8): 'setting-up' from here until setup either returns
+  // ('live') or throws ('failed'); pre-flight reconciles only 'failed'.
   registerIsolationHandle(handle);
-  // Pre-flight reconciliation (P-NEW-4 round-7 F2): FIRST, before any fallible
-  // step, attempt verified teardown (bounded, best-effort, traced) of leftover
-  // registered handles from prior failed setups (any handle not owned by the
-  // current setup), unregistering on verified success. Every leaked
+  // Pre-flight reconciliation (P-NEW-4 round-7 F2, phase-gated in round-8):
+  // FIRST, before any fallible step, attempt verified teardown (bounded,
+  // best-effort, traced) of leftover registered handles from prior FAILED
+  // setups only (phase === 'failed', provably ownerless). 'live' concurrent
+  // suites and in-flight 'setting-up' handles are never touched. Every failed
   // registration thus gains an owner (the next setup); last-suite-leak with no
   // later setup is covered by the abort path. Never fails setup, never hangs.
   try {
@@ -590,6 +634,9 @@ export async function setupIsolatedPaseoHome(options = {}) {
     home = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
     handle.home = home;
   } catch (error) {
+    try {
+      handle.phase = "failed";
+    } catch { /* best-effort */ }
     unregisterIsolationHandle(handle);
     throw error instanceof Error ? error : new Error(`PASEO_ISOLATION_UNAVAILABLE: ${String(error)}`);
   }
@@ -651,6 +698,11 @@ export async function setupIsolatedPaseoHome(options = {}) {
       // daemon rejects it (`Caller agent ... not found`).
       // Central manager: already registered FIRST (before any fallible step)
       // and stays registered until verified teardown; do NOT re-register here.
+      // Phase (P-NEW-4 round-8): setup succeeded — the handle is now 'live'
+      // (a concurrent suite's running daemon; pre-flight must never touch it).
+      try {
+        handle.phase = "live";
+      } catch { /* best-effort */ }
       process.env.PASEO_HOME = home;
       process.env.PASEO_DAEMON_URL = handle.daemonUrl;
       delete process.env.PASEO_AGENT_ID;
@@ -671,6 +723,11 @@ export async function setupIsolatedPaseoHome(options = {}) {
       // positive stopped-proof (localDaemon === "stopped" via
       // isDaemonStoppedSync). Home-removal alone never verifies; daemon-unknown
       // keeps cleaned=false and the handle registered with a loud trace.
+      // Phase (P-NEW-4 round-8): setup is throwing — the handle is 'failed'
+      // (provably ownerless; the next setup's pre-flight may claim it).
+      try {
+        handle.phase = "failed";
+      } catch { /* best-effort */ }
       const daemonStopped = isDaemonStoppedSync(home);
       const homeRemoved = await isHomeRemoved(home);
       handle.cleaned = daemonStopped === true && homeRemoved === true;
@@ -688,6 +745,11 @@ export async function setupIsolatedPaseoHome(options = {}) {
   await fs.rm(home, { recursive: true, force: true }).catch(() => undefined);
   // Same verified gate as the catch path above: home-removal alone never
   // verifies; daemon-unknown keeps cleaned=false with the handle registered.
+  // Phase (P-NEW-4 round-8): setup is throwing after exhausting port attempts —
+  // the handle is 'failed' (provably ownerless; pre-flight may claim it).
+  try {
+    handle.phase = "failed";
+  } catch { /* best-effort */ }
   const daemonStopped = isDaemonStoppedSync(home);
   const homeRemoved = await isHomeRemoved(home);
   handle.cleaned = daemonStopped === true && homeRemoved === true;

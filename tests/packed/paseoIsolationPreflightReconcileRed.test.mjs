@@ -123,9 +123,12 @@ test("RED F2 reconcile behavior: next setup claims a prior failed-setup leak wit
     mod = await import("./paseoIsolatedHome.mjs");
     if (typeof mod.__resetIsolationAbortManagerForTests === "function") mod.__resetIsolationAbortManagerForTests(before);
     // Simulate a prior failed setup leak: hand-built handle, registered, home present.
+    // Phase (P-NEW-4 round-8): a failed-setup leak is phase 'failed' (provably
+    // ownerless) — the only phase pre-flight reconciles. 'live'/'setting-up'
+    // handles are never touched (see paseoIsolationPhaseGateRed.test.mjs).
     leakedHome = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-red-reconcile-leak-"));
     await fs.writeFile(path.join(leakedHome, "probe.txt"), "leak");
-    const leaked = { home: leakedHome, host: "127.0.0.1", port: 19211, daemonUrl: "ws://127.0.0.1:19211/ws", previous: {}, cleaned: false };
+    const leaked = { home: leakedHome, host: "127.0.0.1", port: 19211, daemonUrl: "ws://127.0.0.1:19211/ws", previous: {}, cleaned: false, phase: "failed" };
     mod.__registerIsolationHandleForTests(leaked);
     assert.ok(mod.__isIsolationHandleRegisteredForTests(leaked), "leak precondition: handle registered");
     console.error = (...args) => { errors.push(args.map(String).join(" ")); };
