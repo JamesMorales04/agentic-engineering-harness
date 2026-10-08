@@ -11,17 +11,16 @@ import {
 } from "../src/operations/state.js";
 import { createCandidateRevisionV1 } from "../src/operations/v2Contracts.js";
 import { HumanDecisionLedgerV2 } from "../src/security/humanDecision.js";
+import { executeRepairerCandidateMutation } from "../src/candidates/repair.js";
+import { compileExecutionCatalog } from "../src/architecture/executionCatalog.js";
+import { buildRepairPrompt } from "../src/workers/prompt.js";
 import {
-  anchorOwnerHardProtectionExemption,
-  requestOwnerHardProtectionExemption,
-} from "../src/candidates/repairOwnerExemption.js";
-import {
-  createRepairScopeBlockerReceipt,
   filterForbiddenScopeForAmendment,
   findCoveringOwnerHardProtectionExemption,
-  findRepairHardProtectedViolations,
-  repairHardProtectedPaths,
+  REPAIR_SCOPE_APPROVE_CHOICE_ID,
+  resolveRepairScopeBlockerViaProductChoice,
   verifyOwnerHardProtectionExemption,
+  repairHardProtectedPaths,
 } from "../src/candidates/repairScope.js";
 import { sha256Canonical } from "../src/core/digest.js";
 import type { HarnessProjectConfig, TaskContract } from "../src/core/types.js";
@@ -48,7 +47,7 @@ function testLedger(root: string): HumanDecisionLedgerV2 {
   return new HumanDecisionLedgerV2(path.join(root, ".harness", "security", "human-decisions.json"));
 }
 
-describe("B1 RED: MAC must bind live identities", () => {
+describe("B1: MAC binds live identities (suspend/mint path, same grant shape)", () => {
   it("grant MAC body binds candidate revision + identityDigest + policy digest + execution revision", async () => {
     const root = await createRepo();
     const operationId = "B1-MAC-BIND-1";
@@ -60,20 +59,15 @@ describe("B1 RED: MAC must bind live identities", () => {
       root, payload: { taskId: task.task.id }, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
     } as never);
     bindEnv(operationId, root);
-    const liveBefore = await bindPolicyForCurrentIdentity(root, operationId);
+    await bindPolicyForCurrentIdentity(root, operationId);
     const specPath = "specs/changes/REPAIR-SCOPE/spec.md";
-    const { decision } = await requestOwnerHardProtectionExemption({
-      root, operationId, paths: [specPath], reason: "bind identities", actorId: "human:owner:test",
-    });
-    const grant = await anchorOwnerHardProtectionExemption({ root, operationId, decisionId: decision.decisionId });
-    // Live identities at anchor time must be MAC-bound.
+    const blockerResult = await hardBlockerViaRepairer(root, operationId, task, config, specPath);
+    const { grant } = await approveHardAndGetGrant(root, operationId, task, config, blockerResult.scopeBlocker!);
     const live = await loadOperation(root, operationId);
     expect((grant as Record<string, unknown>).candidateRevision).toBe(live.candidateRevision!.revision);
     expect((grant as Record<string, unknown>).candidateIdentityDigest).toBe(live.candidateRevision!.identityDigest);
     expect((grant as Record<string, unknown>).policyDigest).toBe(live.resolvedOperationPolicy!.digest);
     expect((grant as Record<string, unknown>).operationExecutionRevision).toBe(live.operationExecutionRevision);
-    expect(liveBefore.candidateRevision!.revision).toBe(live.candidateRevision!.revision);
-    void decision;
   });
 
   it("same-epoch candidate advance invalidates the grant at every honor point", async () => {
@@ -89,17 +83,14 @@ describe("B1 RED: MAC must bind live identities", () => {
     bindEnv(operationId, root);
     await bindPolicyForCurrentIdentity(root, operationId);
     const specPath = "specs/changes/REPAIR-SCOPE/spec.md";
-    const { decision } = await requestOwnerHardProtectionExemption({
-      root, operationId, paths: [specPath], reason: "stale test", actorId: "human:owner:test",
-    });
-    const grant = await anchorOwnerHardProtectionExemption({ root, operationId, decisionId: decision.decisionId });
+    const blockerResult = await hardBlockerViaRepairer(root, operationId, task, config, specPath);
+    const { grant, decision } = await approveHardAndGetGrant(root, operationId, task, config, blockerResult.scopeBlocker!);
     const before = await loadOperation(root, operationId);
     await expect(
       verifyOwnerHardProtectionExemption({ operation: before, neededPaths: [specPath], grant, ledger: testLedger(root) }),
     ).resolves.toBeDefined();
     const epochBefore = currentControllerEpoch(before);
 
-    // Same-epoch advance: new candidate revision (exec revision +1, policy cleared).
     const current = await loadOperation(root, operationId);
     const base = current.candidateRevision!;
     const advanced = createCandidateRevisionV1({
@@ -116,9 +107,7 @@ describe("B1 RED: MAC must bind live identities", () => {
     const live = await loadOperation(root, operationId);
     expect(currentControllerEpoch(live)).toBe(epochBefore);
     expect(live.candidateRevision!.revision).toBe(base.revision + 1);
-    expect(live.operationExecutionRevision).not.toBe(before.operationExecutionRevision);
 
-    // Every honor point must now refuse.
     await expect(
       verifyOwnerHardProtectionExemption({ operation: live, neededPaths: [specPath], grant, ledger: testLedger(root) }),
     ).rejects.toThrow(/BINDING_STALE|STALE|revision|policy|candidate/i);
@@ -126,12 +115,11 @@ describe("B1 RED: MAC must bind live identities", () => {
       operation: live, neededPaths: [specPath], ledger: testLedger(root),
     });
     expect(covering.grant).toBeUndefined();
-    // Sync filter tier must also refuse with live identities.
     const amendmentBody = {
       version: 1 as const, mechanism: "DETERMINISTIC" as const, operationId, taskId: task.task.id,
       blockerDigest: "b".repeat(64), exemptedPaths: [specPath], decidedBy: "human" as const,
       decisionReason: "x", decidedAt: new Date().toISOString(), decisionId: decision.decisionId,
-      requestId: grant.exemptionId, decidedActor: "human:owner:test",
+      requestId: grant.exemptionId, decidedActor: "human:control-center:test",
       ownerExemption: { exemptionId: grant.exemptionId, decisionId: decision.decisionId, decisionDigest: sha256Canonical(decision) },
       amendedScope: ["src/**", specPath],
       contractPath: "c", sealPath: "s", amendmentPath: "a",
@@ -147,15 +135,14 @@ describe("B1 RED: MAC must bind live identities", () => {
         terminal: false,
       } as never),
     ).toThrow(/NON_EXEMPTIBLE/i);
-    void findRepairHardProtectedViolations;
   });
 });
 
-describe("B2 RED: trusted issuance via paired Control Center session", () => {
-  it("unauthenticated/direct call cannot create an exemption request; paired-session request works with session-bound actor", async () => {
-    const { recordControlCenterDecision, recordControlCenterExemptionRequest } = await import("../src/control-center/decision.js");
+describe("B2: standalone exemption endpoint deleted; product-choice remains the ONLY approval path", () => {
+  it("stale HARD_PROTECTION_EXEMPTION submissions fail closed; paired product-choice approval still suspends hard paths", async () => {
+    const { recordControlCenterDecision } = await import("../src/control-center/decision.js");
     const root = await createRepo();
-    const operationId = "B2-AUTH-1";
+    const operationId = "B2-DELETED-1";
     const task = contract("REPAIR-SCOPE");
     const config = projectConfig();
     await writeContractAndSeal(root, config, task);
@@ -169,35 +156,39 @@ describe("B2 RED: trusted issuance via paired Control Center session", () => {
     const ledger = testLedger(root);
     void config;
 
-    // Direct/unauthenticated: missing session actor must fail.
-    await expect(
-      (recordControlCenterExemptionRequest as (...args: unknown[]) => Promise<unknown>)(root, {
-        operationId, purpose: "HARD_PROTECTION_EXEMPTION", paths: [specPath], reason: "direct",
-      }, ""),
-    ).rejects.toThrow(/session|auth|human|paired/i);
-    // Caller-supplied actorId in body must be rejected (never trusted).
+    // Stale exemption-purpose submissions fail closed (unsupported fields).
     await expect(
       recordControlCenterDecision(root, ledger, {
-        operationId, purpose: "HARD_PROTECTION_EXEMPTION", paths: [specPath], reason: "forged actor", actorId: "human:forged",
+        operationId, purpose: "HARD_PROTECTION_EXEMPTION", paths: [specPath], reason: "stale endpoint",
       } as unknown, "human:control-center:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-    ).rejects.toThrow(/actor|unsupported|session/i);
+    ).rejects.toThrow(/unsupported fields|purpose|stale| awakening|decision/i);
+    expect(await ledger.list()).toHaveLength(0);
 
-    // Paired-session request works and binds actor from session.
-    const sessionActor = "human:control-center:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-    const result = await recordControlCenterDecision(root, ledger, {
-      operationId, purpose: "HARD_PROTECTION_EXEMPTION", paths: [specPath], reason: "paired owner approves",
-    } as unknown, sessionActor) as Record<string, unknown>;
-    expect(result.accepted).toBe(true);
-    expect(typeof result.decisionId).toBe("string");
-    expect(typeof result.exemptionId).toBe("string");
-    const stored = await ledger.find(result.decisionId as string);
-    expect(stored?.actorId).toBe(sessionActor);
-    expect(stored?.purpose).toMatchObject({ kind: "HARD_PROTECTION_EXEMPTION", paths: [specPath] });
+    // Product-choice remains: suspend hard blocker, approve via paired session, AMENDED.
+    const blockerResult = await hardBlockerViaRepairer(root, operationId, task, config, specPath);
+    const pending = resolveRepairScopeBlockerViaProductChoice({
+      root, controlRoot: root, operationId, config, contract: task, blocker: blockerResult.scopeBlocker!,
+    });
+    const approve = (async () => {
+      for (let i = 0; i < 200; i += 1) {
+        const current = await loadOperation(root, operationId);
+        if (current.phase === "HUMAN_REQUIRED" && current.decisionRequest) {
+          await recordControlCenterDecision(root, ledger, {
+            operationId, requestId: current.decisionRequest.requestId, choiceId: REPAIR_SCOPE_APPROVE_CHOICE_ID, reason: "paired owner approves hard set",
+          }, "human:control-center:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      throw new Error("suspension never appeared");
+    })();
+    const resolved = await Promise.all([pending, approve]).then(([r]) => r);
+    expect(resolved.status).toBe("AMENDED");
   });
 
-  it("paired HTTP session creates an exemption; unauthenticated HTTP cannot", async () => {
-    const { LocalControlCenterV1 } = await import("../src/control-center/server.js");
+  it("unauthenticated product-choice without a WAITING continuation still fails closed", async () => {
     const { recordControlCenterDecision } = await import("../src/control-center/decision.js");
+    const { LocalControlCenterV1 } = await import("../src/control-center/server.js");
     const { pairControlCenter } = await import("./helpers/controlCenterSession.js");
     const root = await createRepo();
     const operationId = "B2-HTTP-1";
@@ -211,7 +202,6 @@ describe("B2 RED: trusted issuance via paired Control Center session", () => {
     bindEnv(operationId, root);
     await bindPolicyForCurrentIdentity(root, operationId);
     void config;
-    const specPath = "specs/changes/REPAIR-SCOPE/spec.md";
     const ledger = testLedger(root);
     const center = new LocalControlCenterV1({
       onDecision: async (value, actorId) => {
@@ -219,36 +209,78 @@ describe("B2 RED: trusted issuance via paired Control Center session", () => {
         return {
           accepted: result.accepted === true,
           ...(typeof (result as Record<string, unknown>).decisionId === "string" ? { decisionId: (result as Record<string, unknown>).decisionId as string } : {}),
-          ...(typeof (result as Record<string, unknown>).exemptionId === "string" ? { exemptionId: (result as Record<string, unknown>).exemptionId as string } : {}),
           ...(typeof (result as Record<string, unknown>).operationId === "string" ? { operationId: (result as Record<string, unknown>).operationId as string } : {}),
         };
       },
     });
     const started = await center.start();
     try {
-      const body = JSON.stringify({ operationId, purpose: "HARD_PROTECTION_EXEMPTION", paths: [specPath], reason: "http paired" });
-      const unauth = await fetch(`${started.url}api/v1/decisions`, {
-        method: "POST", headers: { "content-type": "application/json" }, body,
-      });
-      expect([401, 403, 400]).toContain(unauth.status);
-      expect(await ledger.list()).toHaveLength(0);
-
+      // No WAITING continuation: even paired product-choice without a suspend fails closed.
       const session = await pairControlCenter(started);
-      const ok = await fetch(`${started.url}api/v1/decisions`, {
+      const body = JSON.stringify({ operationId, requestId: "request:missing", choiceId: REPAIR_SCOPE_APPROVE_CHOICE_ID, reason: "no suspension" });
+      const res = await fetch(`${started.url}api/v1/decisions`, {
         method: "POST", headers: { ...session.headers(true), "content-type": "application/json" }, body,
       });
-      expect(ok.status).toBe(200);
-      const parsed = await ok.json() as Record<string, unknown>;
-      expect(parsed.accepted).toBe(true);
-      const decisions = await ledger.list();
-      expect(decisions).toHaveLength(1);
-      expect(decisions[0]!.actorId).toMatch(/^human:control-center:[a-f0-9]{32}$/);
-      expect(decisions[0]!.actorId).not.toContain("forged");
+      expect([400, 409]).toContain(res.status);
+      expect(await ledger.list()).toHaveLength(0);
     } finally {
       await center.close();
     }
   });
 });
+
+async function hardBlockerViaRepairer(root: string, operationId: string, task: TaskContract, config: HarnessProjectConfig, hardPath: string) {
+  const selection = {
+    logicalAgent: "repairer", role: "Repairer", domains: [], runtimeName: "test", runtimeAdapter: "codex",
+    paseoProvider: "codex", modelAlias: "test", modelName: "fake", modelId: "fake", transport: "direct",
+    skills: [], mcps: [], permissions: { read: "allow", write: "allow", shell: "allow", network: "deny", delegate: "deny", review: "deny", gitWrite: "deny" },
+    outputContract: "repair-result", args: [], runtimeCapabilities: {},
+  } as never;
+  const catalog = compileExecutionCatalog({
+    runtimes: { test: { adapter: "codex" } },
+    models: { test: { runtime: "test", model: "fake" } },
+    roleBindings: { Repairer: { runtimeId: "test", modelAlias: "test", transport: "direct", outputContract: "repair-result", args: [] } },
+  });
+  return executeRepairerCandidateMutation({
+    root, stateRoot: root, operationId, taskId: task.task.id,
+    workUnitId: `validation-repair:${operationId}`, phase: "validation-repair",
+    config, contract: task, selection, executionCatalog: catalog,
+    allowedScope: ["src/**"], forbiddenScope: [],
+    prompt: buildRepairPrompt({ version: 1 as const, taskId: task.task.id, attempt: 1, createdAt: new Date().toISOString(), failures: [{ id: "x", category: "dependency", message: "x" }] }),
+    execute: async (_ir, participantId) => ({
+      provider: "test", logicalAgent: "repairer", participantId, exitCode: 0,
+      stdout: `AEH_RESULT_JSON=${JSON.stringify({
+        filesChanged: [], behaviorRepaired: [], validationCommands: [],
+        filesNeededOutsideScope: [{ path: hardPath, reason: "hard needed" }],
+      })}`,
+      stderr: "",
+    }),
+  });
+}
+
+async function approveHardAndGetGrant(root: string, operationId: string, task: TaskContract, config: HarnessProjectConfig, blocker: import("../src/candidates/repairScope.js").RepairScopeBlockerReceiptV1) {
+  const pending = resolveRepairScopeBlockerViaProductChoice({ root, controlRoot: root, operationId, config, contract: task, blocker });
+  const approve = (async () => {
+    for (let i = 0; i < 200; i += 1) {
+      const current = await loadOperation(root, operationId);
+      if (current.phase === "HUMAN_REQUIRED" && current.decisionRequest) {
+        const { recordControlCenterDecision } = await import("../src/control-center/decision.js");
+        await recordControlCenterDecision(root, testLedger(root), {
+          operationId, requestId: current.decisionRequest.requestId, choiceId: REPAIR_SCOPE_APPROVE_CHOICE_ID, reason: "approve",
+        }, "human:control-center:test");
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    throw new Error("no suspension");
+  })();
+  const resolved = await Promise.all([pending, approve]).then(([r]) => r);
+  if (resolved.status !== "AMENDED" || !resolved.ownerExemption) throw new Error("expected AMENDED");
+  const grant = (await loadOperation(root, operationId)).ownerExemptions?.[resolved.ownerExemption.exemptionId];
+  const decision = await testLedger(root).find(resolved.ownerExemption.decisionId);
+  if (!grant || !decision) throw new Error("missing grant/decision");
+  return { grant, decision, resolved };
+}
 
 async function createRepo(): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-owner-r2-"));

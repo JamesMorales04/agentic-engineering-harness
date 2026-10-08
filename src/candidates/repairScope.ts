@@ -4,7 +4,7 @@ import path from "node:path";
 import YAML from "yaml";
 import { z } from "zod";
 import { minimatch } from "minimatch";
-import { sha256Canonical, canonicalSerialize } from "../core/digest.js";
+import { sha256Canonical } from "../core/digest.js";
 import { AehError } from "../core/errors.js";
 import { sealTask } from "../core/seal.js";
 import { extractMarkedJson, StructuredOutputError } from "../agents/structuredOutput.js";
@@ -21,9 +21,11 @@ import {
   resolveOperationStateRoot,
   resumeOperationProductChoice,
   suspendOperationForProductChoice,
+  updateOperationMetadata,
   type OperationRecordV2,
   type ProductChoiceRequestContentV1,
 } from "../operations/state.js";
+import { isManagedBoundedAgent } from "../operations/executionContext.js";
 import { candidateRevisionsEqual } from "../operations/v2Contracts.js";
 import {
   HumanDecisionLedgerV2,
@@ -34,6 +36,7 @@ import {
 } from "../security/humanDecision.js";
 import {
   assertOwnerHardProtectionExemptionGrant,
+  computeOwnerExemptionMac,
   verifyOwnerExemptionMac,
   type OwnerHardProtectionExemptionGrantV1,
 } from "../security/ownerExemption.js";
@@ -182,8 +185,9 @@ export function findRepairHardProtectedViolations(
 }
 
 /**
- * DETERMINISTIC BLOCKED check for non-exemptible paths. Cites the exact
- * hard-protected files and states there is no suspend/approve path.
+ * DETERMINISTIC BLOCKED check for hard-protected paths without an anchored
+ * owner grant (declined, expired, or timed-out suspend/decide/resume).
+ * Cites the exact hard-protected files; the BLOCKED outcome stands.
  */
 export function repairScopeNonExemptibleValidationCheck(
   blocker: RepairScopeBlockerReceiptV1,
@@ -195,7 +199,7 @@ export function repairScopeNonExemptibleValidationCheck(
     id: "repair.scope-blocker",
     category: "frozen-scope",
     status: "FAIL",
-    message: `Repair blocked: required fix needs non-exemptible protected file(s): ${files}. Frozen TaskContract, seal, validators, acceptance/spec, and policy paths can never be exempted; the BLOCKED outcome stands with no suspend/approve path.`,
+    message: `Repair blocked: required fix needs hard-protected file(s): ${files}. Frozen TaskContract, seal, validators, acceptance/spec, and policy paths require a bounded owner-approved suspension; with no anchored covering grant (declined, expired, or timed out) the BLOCKED outcome stands.`,
     details: {
       mechanism: "DETERMINISTIC",
       operationId: blocker.operationId,
@@ -880,9 +884,14 @@ export async function applyRepairScopeAmendment(input: {
  * 5. grant MAC verifies under the LIVE controller token (forgery-proof: only
  *    the token-holding controller can mint; managed children never inherit it);
  * 6. grant (and ledger decision) unexpired;
- * 7. ledger cross-check: the cited APPROVE/HARD_PROTECTION_EXEMPTION decision
- *    exists with identical exemptionId, exact paths, actor, and digest (a
- *    model-minted or edited decision cannot match a MAC-bound digest);
+ * 7. ledger cross-check: the cited consumed CHOOSE/PRODUCT_CHOICE
+ *    approve-exact-paths decision exists, is one-time consumed under its
+ *    exact binding+purpose+actor (approval binds its WAITING continuation;
+ *    stale/recorded-but-unconsumed approvals cannot verify), matches the
+ *    grant on decisionId/digest/actor/operation/binding, and carries the
+ *    suspend-created request that authorized this exact hard set (a
+ *    model-minted or edited decision cannot match a MAC-bound digest plus
+ *    its consumption receipt);
  * 8. every needed path is exactly covered by the grant (agent-declared need
  *    can only narrow human-authorized scope, never widen it).
  *
@@ -949,13 +958,33 @@ export async function verifyOwnerHardProtectionExemption(input: {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_DECISION_MISMATCH: the anchored ledger HumanDecision no longer exists.");
   }
   const decision = assertDecisionV2(stored);
-  if (decision.kind !== "APPROVE" || decision.purpose.kind !== "HARD_PROTECTION_EXEMPTION"
-    || decision.purpose.exemptionId !== grant.exemptionId
-    || canonicalSerialize(decision.purpose.paths) !== canonicalSerialize(grant.paths)
+  if (decision.decisionId !== grant.decisionId
+    || decision.kind !== "CHOOSE" || decision.purpose.kind !== "PRODUCT_CHOICE"
+    || decision.purpose.choiceId !== REPAIR_SCOPE_APPROVE_CHOICE_ID
     || decision.actorId !== grant.decidedActor
     || decision.operationId !== operation.id
+    || decision.operationId !== grant.operationId
+    || !candidateRevisionsEqual(decision.candidate, liveCandidate)
+    || decision.candidate.revision !== grant.candidateRevision
+    || decision.candidate.identityDigest !== grant.candidateIdentityDigest
+    || decision.policyDigest !== grant.policyDigest
+    || decision.operationExecutionRevision !== grant.operationExecutionRevision
+    || decision.controllerEpoch !== grant.controllerEpoch
     || sha256Canonical(decision) !== grant.decisionDigest) {
-    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_DECISION_MISMATCH: the ledger HumanDecision does not match the anchored exemption (purpose, paths, actor, operation, or digest).");
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_DECISION_MISMATCH: the ledger HumanDecision does not match the anchored exemption (consumed approve-exact-paths choice, actor, operation, live binding, or digest).");
+  }
+  // Approval binds continuation: the cited decision must have a one-time
+  // consumption receipt under its exact binding+purpose+actor. Recorded-but-
+  // unconsumed (or stale-binding) approvals verify nothing.
+  const decisionBinding: HumanDecisionBindingV2 = {
+    operationId: decision.operationId,
+    candidate: decision.candidate,
+    operationExecutionRevision: decision.operationExecutionRevision,
+    policyDigest: decision.policyDigest,
+    controllerEpoch: decision.controllerEpoch,
+  };
+  if (!await ledger.consumedExact(decisionBinding, decision.purpose, decision.decisionId, decision.actorId)) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_DECISION_UNCONSUMED: the anchored HumanDecision has no exact one-time consumption receipt; stale approvals cannot authorize hard paths.");
   }
   if (decision.expiresAt && new Date(decision.expiresAt).getTime() <= now.getTime()) {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_EXPIRED: the anchored HumanDecision has expired.");
@@ -1162,6 +1191,37 @@ export function repairScopeProductChoiceContent(
   };
 }
 
+/**
+ * DETERMINISTIC hard-path product-choice request content (suspend/decide/resume).
+ * Bounded choices are generated deterministically from the declared hard
+ * paths (approve-exact-set / decline via the shared approve-exact-paths /
+ * deny-scope-expansion IDs); no agent input influences choices or paths.
+ * The reason cites the blocker digest + hard paths; the blocker receipt
+ * artifact is the authoritative evidence. Reuses the Spec-Manager
+ * suspension/continuation/resume lifecycle (SPEC_AUTHORING / PRODUCT_CHOICE);
+ * no new lifecycle is invented and the existing CC UI renders it.
+ */
+export function repairScopeHardProductChoiceContent(
+  blocker: RepairScopeBlockerReceiptV1,
+  evidence: { artifact: string; sha256: string; description: string },
+  hardPaths: readonly string[],
+): ProductChoiceRequestContentV1 {
+  assertRepairScopeBlockerReceipt(blocker);
+  const files = blocker.filesNeededOutsideScope.map((entry) => entry.path).join(", ");
+  const hardList = [...new Set(hardPaths)].sort((a, b) => a.localeCompare(b)).join(", ");
+  return {
+    issue: `Repair for task '${blocker.taskId}' needs hard-protected file(s): ${files}. Hard paths [${hardList}] (blocker ${blocker.digest.slice(0, 12)}…) require owner approval. Approve a bounded owner-exempted amendment for exactly these blocker-declared files, or decline and leave BLOCKED standing.`.slice(0, 4000),
+    authoritativeEvidence: [evidence],
+    whatTried: [
+      `The canonical Repairer returned no changes and declared filesNeededOutsideScope for ${files} with per-file reasons (blocker ${blocker.digest}).`,
+      `The deterministic controller verified hard-protection violations for ${hardList} and persisted the BLOCKED receipt; no covering owner grant is anchored.`,
+    ],
+    whyUnresolvable: "Hard-protected paths (frozen TaskContract, seal, validators, acceptance/spec, policy) need owner approval via this bounded suspend/decide/resume; the Repairer cannot expand scope itself and silent expansion is rejected.".slice(0, 4000),
+    choices: repairScopeProductChoices(blocker),
+    workThatCanContinue: ["Read-only diagnosis can continue; no implementation may touch the needed files until a controller-minted owner grant anchors and reseals."],
+  };
+}
+
 function repairScopeLedger(controlRoot: string): HumanDecisionLedgerV2 {
   return new HumanDecisionLedgerV2(path.join(resolveOperationStateRoot(controlRoot), ".harness", "security", "human-decisions.json"));
 }
@@ -1265,6 +1325,51 @@ export async function suspendRepairScopeForProductChoice(input: {
   return { requestId, decisionRequest: suspended.decisionRequest };
 }
 
+/**
+ * Suspend for a HARD-protected repair blocker (suspend/decide/resume path).
+ * Mirrors `suspendRepairScopeForProductChoice` and the Spec-Manager
+ * suspension precedent (same suspendOperationForProductChoice lifecycle,
+ * same SPEC_AUTHORING/PRODUCT_CHOICE continuation, same bounded expiry):
+ * the exact blocker-declared hard paths + reasons become the bounded
+ * approve-exact-set/decline choices with the durable blocker receipt as
+ * authoritative evidence. No agent input influences choices/paths; no new
+ * lifecycle is invented and the existing CC UI renders the request.
+ */
+export async function suspendHardRepairScopeForProductChoice(input: {
+  controlRoot: string;
+  operationId: string;
+  config: HarnessProjectConfig;
+  blocker: RepairScopeBlockerReceiptV1;
+  hardPaths: readonly string[];
+}): Promise<RepairScopeSuspendedChoiceV1> {
+  const { controlRoot, operationId, config, blocker, hardPaths } = input;
+  assertRepairScopeBlockerReceipt(blocker);
+  if (!hardPaths.length) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "REPAIR_SCOPE_HARD_REQUIRED: hard-path suspension requires the declared hard-protected paths.");
+  }
+  const stateRoot = resolveOperationStateRoot(controlRoot);
+  const receiptFile = repairScopeBlockerReceiptPath(stateRoot, config, blocker.taskId);
+  const content = await fs.readFile(receiptFile, "utf8").catch(() => undefined);
+  if (!content) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "REPAIR_SCOPE_RECEIPT_MISSING: the durable blocker receipt must exist before a hard-path product-choice suspension.");
+  }
+  const sha256 = crypto.createHash("sha256").update(content, "utf8").digest("hex");
+  const artifact = artifactForEvidence(controlRoot, receiptFile);
+  const suspended = await suspendOperationForProductChoice(controlRoot, operationId, repairScopeHardProductChoiceContent(blocker, {
+    artifact,
+    sha256,
+    description: "Durable Repairer hard-blocker receipt declaring the exact needed hard-protected files with per-file reasons.",
+  }, hardPaths), {
+    kind: "repair-scope",
+    taskId: blocker.taskId,
+    blockerDigest: blocker.digest,
+    filesNeededOutsideScope: blocker.filesNeededOutsideScope,
+  });
+  const requestId = suspended.decisionRequest?.requestId;
+  if (!requestId) throw new AehError("PARTICIPANT_PLAN_INVALID", "REPAIR_SCOPE_SUSPEND_INVALID: suspension produced no decision request.");
+  return { requestId, decisionRequest: suspended.decisionRequest };
+}
+
 export interface RepairScopeChoiceSelectionV1 {
   requestId: string;
   decisionId: string;
@@ -1346,6 +1451,140 @@ export async function awaitRepairScopeProductChoice(input: {
 }
 
 /**
+ * DETERMINISTIC controller mint from a consumed hard-path product-choice
+ * approval (the ONLY grant-creation path; same accepted grant shape).
+ * The controller (token-holder) calls this AFTER `awaitRepairScopeProductChoice`
+ * returned an approve-exact-paths selection for the current WAITING
+ * continuation. Paths come ONLY from the controller-validated blocker
+ * (deterministic); the decision must be the consumed CHOOSE/PRODUCT_CHOICE
+ * approve for the suspend-created requestId with a one-time consumeExact
+ * receipt under the live binding (stale approvals cannot mint). MAC minted
+ * under the live controller token and anchored via controller-gated
+ * `updateOperationMetadata`.
+ */
+export async function mintOwnerHardProtectionExemptionFromProductChoice(input: {
+  root: string;
+  operationId: string;
+  paths: readonly string[];
+  decision: HumanDecisionV2;
+  binding: HumanDecisionBindingV2;
+  requestId: string;
+}): Promise<OwnerHardProtectionExemptionGrantV1> {
+  if (isManagedBoundedAgent()) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_AGENT_FORBIDDEN: Harness-spawned bounded agents cannot mint hard-protection exemptions; minting is controller-owned.");
+  }
+  const { decision, binding, requestId } = input;
+  if (!requestId.startsWith("request:")) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_REQUEST_INVALID: minting requires the suspend-created product-choice request id.");
+  }
+  if (decision.kind !== "CHOOSE" || decision.purpose.kind !== "PRODUCT_CHOICE") {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_PURPOSE_MISMATCH: minting requires a CHOOSE product-choice approval for the suspended hard-path request.");
+  }
+  if (decision.purpose.requestId !== requestId) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_REQUEST_MISMATCH: the approval does not answer this suspend-created request.");
+  }
+  if (decision.purpose.choiceId !== REPAIR_SCOPE_APPROVE_CHOICE_ID) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_CHOICE_MISMATCH: only the bounded approve-exact-paths choice authorizes a hard-protection grant.");
+  }
+  if (!decision.actorId.startsWith("human:")) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_NOT_HUMAN: only a ledger human authority may authorize a hard-protection grant.");
+  }
+  if (!decision.reason.trim()) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_REASON_REQUIRED: a hard-protection grant requires the approving reason.");
+  }
+  const operation = await loadOperation(input.root, input.operationId);
+  if (isTerminalOperation(operation.status)) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_TERMINAL: a terminal operation cannot mint a hard-protection exemption.");
+  }
+  const live = repairScopeDecisionBinding(operation as never);
+  const current = operation as Parameters<typeof currentControllerEpoch>[0];
+  const liveEpoch = currentControllerEpoch(current);
+  if (live.operationId !== binding.operationId || !candidateRevisionsEqual(live.candidate, binding.candidate)
+    || live.operationExecutionRevision !== binding.operationExecutionRevision
+    || live.policyDigest !== binding.policyDigest || live.controllerEpoch !== binding.controllerEpoch
+    || live.controllerEpoch !== liveEpoch) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_BINDING_STALE: minting binding does not match the live operation, candidate, execution revision, policy, or controller epoch.");
+  }
+  if (decision.operationId !== live.operationId || !candidateRevisionsEqual(decision.candidate, live.candidate)
+    || decision.operationExecutionRevision !== live.operationExecutionRevision
+    || decision.policyDigest !== live.policyDigest || decision.controllerEpoch !== live.controllerEpoch) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_DECISION_STALE: the approval does not match the current operation, candidate, execution revision, policy, or controller epoch.");
+  }
+  const now = new Date();
+  if (decision.expiresAt && new Date(decision.expiresAt).getTime() <= now.getTime()) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_EXPIRED: the hard-path approval expired before minting.");
+  }
+  const ledger = repairScopeLedger(input.root);
+  if (!await ledger.consumedExact(binding, decision.purpose, decision.decisionId, decision.actorId)) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_UNCONSUMED: the hard-path approval has no exact one-time consumption receipt; the BLOCKED outcome stands.");
+  }
+  const normalized: string[] = [];
+  if (!Array.isArray(input.paths) || input.paths.length < 1 || input.paths.length > 8) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_PATH_INVALID: an exemption requires 1 to 8 exact file paths.");
+  }
+  for (const entry of input.paths) {
+    const raw = typeof entry === "string" ? entry.trim() : "";
+    if (!raw || !isSafeRepairScopePath(raw) || !isExactRepairScopeFilePath(raw)) {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", `OWNER_EXEMPTION_PATH_INVALID: exemption path '${String(entry)}' is not an exact safe file path.`);
+    }
+    const filePath = normalizeRepairScopePath(raw);
+    if (!filePath || !isSafeRepairScopePath(filePath) || !isExactRepairScopeFilePath(filePath)) {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", `OWNER_EXEMPTION_PATH_INVALID: exemption path '${raw}' is not an exact safe file path.`);
+    }
+    normalized.push(filePath);
+  }
+  const paths = [...new Set(normalized)].sort((a, b) => a.localeCompare(b));
+  if (!paths.length || paths.length > 8) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_PATH_INVALID: an exemption requires 1 to 8 unique exact file paths.");
+  }
+  const token = controllerTokenFromEnvironment();
+  if (!token) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_UNANCHORED: minting requires the live controller token.");
+  }
+  const createdAt = now.toISOString();
+  const body = {
+    version: 1 as const,
+    kind: "OWNER_HARD_PROTECTION_EXEMPTION" as const,
+    mechanism: "DETERMINISTIC" as const,
+    exemptionId: `exemption:${crypto.randomUUID()}`,
+    operationId: live.operationId,
+    controllerEpoch: live.controllerEpoch,
+    candidateRevision: live.candidate.revision,
+    candidateIdentityDigest: live.candidate.identityDigest,
+    policyDigest: live.policyDigest,
+    operationExecutionRevision: live.operationExecutionRevision,
+    paths,
+    decisionId: decision.decisionId,
+    decisionDigest: sha256Canonical(decision),
+    decidedActor: decision.actorId,
+    decisionReason: decision.reason.trim(),
+    createdAt,
+    ...(decision.expiresAt ? { expiresAt: decision.expiresAt } : {}),
+  };
+  const grant: OwnerHardProtectionExemptionGrantV1 = { ...body, mac: computeOwnerExemptionMac(token, body) };
+  await updateOperationMetadata(input.root, input.operationId, (currentOp) => {
+    if (isTerminalOperation(currentOp.status)) {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_TERMINAL: the operation reached a terminal state before the exemption anchored.");
+    }
+    const currentBinding = repairScopeDecisionBinding(currentOp as never);
+    const cur = currentOp as Parameters<typeof currentControllerEpoch>[0];
+    if (currentBinding.operationId !== live.operationId || !candidateRevisionsEqual(currentBinding.candidate, live.candidate)
+      || currentBinding.operationExecutionRevision !== live.operationExecutionRevision
+      || currentBinding.policyDigest !== live.policyDigest || currentBinding.controllerEpoch !== live.controllerEpoch
+      || currentControllerEpoch(cur) !== live.controllerEpoch) {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_BINDING_STALE: operation identity changed before the exemption anchor committed.");
+    }
+    return { ownerExemptions: { ...(currentOp.ownerExemptions ?? {}), [grant.exemptionId]: grant } };
+  }, { touchRevision: true, eventType: "operation.owner-exemption.anchored" });
+  const anchored = await loadOperation(input.root, input.operationId);
+  const persisted = anchored.ownerExemptions?.[grant.exemptionId];
+  if (!persisted || persisted.mac !== grant.mac) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_UNANCHORED: the exemption grant did not persist; the operation may have reached a terminal state.");
+  }
+  return persisted;
+}
+
+/**
  * High-level repair-scope blocker resolution for the run.ts validation-repair
  * loop (the single production amendment path; max 1/task preserved).
  *
@@ -1375,12 +1614,18 @@ export async function resolveRepairScopeBlockerViaProductChoice(input: {
 > {
   const { root, controlRoot, operationId, config, contract, blocker } = input;
   assertRepairScopeBlockerReceipt(blocker);
-  // HARD-protection gate (never exemptible WITHOUT a verified owner grant): a
-  // blocker intersecting frozen TaskContract, seal, validators,
-  // acceptance/spec, or policy paths is rejected as BLOCKED citing
-  // non-exemptible with no suspend/approve path — UNLESS a live owner-scoped
-  // exemption grant fully covers every needed path. The owner branch applies
-  // without suspension (the grant IS the human approval); otherwise BLOCKED.
+  // HARD-protection gate (suspend/decide/resume, DETERMINISTIC, no model
+  // judgment): a blocker intersecting frozen TaskContract, seal, validators,
+  // acceptance/spec, or policy paths first honors an already-anchored
+  // covering owner grant (no suspension). With NO covering grant the
+  // controller suspends HUMAN_REQUIRED with bounded approve-exact-set/decline
+  // choices generated deterministically from the declared hard paths (reason
+  // cites the blocker) and awaits the session-authenticated product choice
+  // bound to the WAITING continuation (Spec-Manager suspension precedent;
+  // no new lifecycle; existing CC UI renders it). On approve the CONTROLLER
+  // mints the MAC grant (same accepted shape), anchors it, resumes, and
+  // retries with the grant; on decline/timeout BLOCKED stands. Suspend is
+  // bounded (expiry -> BLOCKED).
   const hardViolations = findRepairHardProtectedViolations(
     blocker.filesNeededOutsideScope.map((entry) => entry.path),
     config,
@@ -1407,7 +1652,73 @@ export async function resolveRepairScopeBlockerViaProductChoice(input: {
         },
       };
     }
-    return { status: "BLOCKED", blocker, check: repairScopeNonExemptibleValidationCheck(blocker, hardViolations) };
+    const preexistingHard = await listRepairScopeAmendments(root, config, contract.task.id);
+    if (preexistingHard.length >= MAX_REPAIR_SCOPE_AMENDMENTS_PER_TASK_V1) {
+      return { status: "BLOCKED", blocker, check: repairScopeNonExemptibleValidationCheck(blocker, hardViolations) };
+    }
+    const suspendedHard = await suspendHardRepairScopeForProductChoice({
+      controlRoot, operationId, config, blocker, hardPaths: hardViolations,
+    });
+    void suspendedHard;
+    let hardSelection: RepairScopeChoiceSelectionV1;
+    try {
+      hardSelection = await awaitRepairScopeProductChoice({ controlRoot, operationId, timeoutMs: input.timeoutMs, pollMs: input.pollMs });
+    } catch {
+      // Unanswered (timeout), expired, terminal, or stale: BLOCKED stands.
+      // When still WAITING the suspension remains for a human decision
+      // within expiry; no grant is minted, no amendment, no retry.
+      return { status: "BLOCKED", blocker, check: repairScopeNonExemptibleValidationCheck(blocker, hardViolations) };
+    }
+    if (hardSelection.choiceId === REPAIR_SCOPE_DENY_CHOICE_ID) {
+      await resumeOperationProductChoice(controlRoot, operationId).catch(() => undefined);
+      await completeOperationProductChoice(controlRoot, operationId).catch(() => undefined);
+      return { status: "BLOCKED", blocker, check: repairScopeNonExemptibleValidationCheck(blocker, hardViolations), choiceId: hardSelection.choiceId };
+    }
+    if (hardSelection.choiceId !== REPAIR_SCOPE_APPROVE_CHOICE_ID) {
+      await resumeOperationProductChoice(controlRoot, operationId).catch(() => undefined);
+      await completeOperationProductChoice(controlRoot, operationId).catch(() => undefined);
+      return { status: "BLOCKED", blocker, check: repairScopeNonExemptibleValidationCheck(blocker, hardViolations), choiceId: hardSelection.choiceId };
+    }
+    // Controller mints + anchors the grant from the consumed approval, then
+    // re-verifies everything via the owner-exempted apply (MAC, binding,
+    // expiry, ledger consumed-receipt cross-check, exact coverage) before
+    // resuming. Any mint/apply throw stays BLOCKED (fail closed); the
+    // suspension remains WAITING only when unanswered, otherwise it resumes.
+    let hardGrant: OwnerHardProtectionExemptionGrantV1;
+    try {
+      hardGrant = await mintOwnerHardProtectionExemptionFromProductChoice({
+        root: controlRoot,
+        operationId,
+        paths: blocker.filesNeededOutsideScope.map((entry) => entry.path),
+        decision: hardSelection.decision,
+        binding: hardSelection.binding,
+        requestId: hardSelection.requestId,
+      });
+    } catch {
+      return { status: "BLOCKED", blocker, check: repairScopeNonExemptibleValidationCheck(blocker, hardViolations), choiceId: hardSelection.choiceId };
+    }
+    const hardLedger = repairScopeLedger(controlRoot);
+    let hardApplied: Awaited<ReturnType<typeof applyOwnerExemptedRepairScopeAmendment>>;
+    try {
+      hardApplied = await applyOwnerExemptedRepairScopeAmendment({ root, config, contract, blocker, grant: hardGrant, ledger: hardLedger });
+    } catch {
+      await resumeOperationProductChoice(controlRoot, operationId).catch(() => undefined);
+      await completeOperationProductChoice(controlRoot, operationId).catch(() => undefined);
+      return { status: "BLOCKED", blocker, check: repairScopeNonExemptibleValidationCheck(blocker, hardViolations), choiceId: hardSelection.choiceId };
+    }
+    await resumeOperationProductChoice(controlRoot, operationId).catch(() => undefined);
+    await completeOperationProductChoice(controlRoot, operationId).catch(() => undefined);
+    return {
+      status: "AMENDED",
+      contract: hardApplied.contract,
+      amendment: hardApplied.amendment,
+      selection: hardSelection,
+      ownerExemption: {
+        exemptionId: hardGrant.exemptionId,
+        decisionId: hardGrant.decisionId,
+        decisionDigest: hardGrant.decisionDigest,
+      },
+    };
   }
   const preexisting = await listRepairScopeAmendments(root, config, contract.task.id);
   if (preexisting.length >= MAX_REPAIR_SCOPE_AMENDMENTS_PER_TASK_V1) {
