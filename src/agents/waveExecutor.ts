@@ -631,9 +631,9 @@ async function executeDelegation(input: { root: string; stateRoot: string; confi
             (correctionRemote.session as { killReason?: string }).killReason === "STALLED_FIRST_ACTIVITY" ||
             (correctionRemote.session as { killReason?: string }).killReason === "DEADLINE";
           const reviolations = correctionRemote.changedFiles.filter((file) => !matchesAny(file, input.task.scope));
-          if (correctionTimeout || reviolations.length || correctionRemote.session.exitCode !== 0) {
-            // Second escape, correction timeout, or correction worker failure
-            // → ORIGINAL terminal FAIL (exactly one correction).
+          if (correctionTimeout || correctionRemote.session.exitCode !== 0) {
+            // Correction timeout or correction worker failure → ORIGINAL
+            // terminal FAIL (exactly one correction).
             return {
               task: input.task,
               session: remote.session,
@@ -646,8 +646,12 @@ async function executeDelegation(input: { root: string; stateRoot: string; confi
               escapeCorrectionSessions: [correctionRemote.session],
             };
           }
-          // Round-2 B2: correction carries filesNeededOutsideScope → BLOCKED
-          // (same semantics as DIRECT/repair — FAIL with blocker, never PASS).
+          // Turn-3: declaration check FIRST — a correction carrying
+          // filesNeededOutsideScope routes to BLOCKED with scopeBlocker
+          // REGARDLESS of remaining violations (same semantics as
+          // DIRECT/repair — FAIL with blocker, never PASS-with-declaration).
+          // Vacuous (no genuinely-blocked) stays unblocked and falls through
+          // to the reviolations check below.
           const declaration = classifyWaveCorrectionDeclarationV1({
             session: correctionRemote.session,
             changedFiles: correctionRemote.changedFiles,
@@ -672,6 +676,20 @@ async function executeDelegation(input: { root: string; stateRoot: string; confi
               escapeCorrectionUsed: true,
               escapeCorrectionSessions: [remote.session],
               ...(declaration.blocker ? { scopeBlocker: declaration.blocker } : {}),
+            };
+          }
+          if (reviolations.length) {
+            // Second escape → ORIGINAL terminal FAIL (exactly one correction).
+            return {
+              task: input.task,
+              session: remote.session,
+              changedFiles: remote.changedFiles,
+              patch: "",
+              status: "FAIL",
+              distributed: true,
+              message: originalMessage,
+              escapeCorrectionUsed: true,
+              escapeCorrectionSessions: [correctionRemote.session],
             };
           }
           if (correctionRemote.status === "PASS" && correctionRemote.patch.trim()) {
@@ -853,6 +871,37 @@ async function executeDelegation(input: { root: string; stateRoot: string; confi
       const renames = await runExecutable("git", ["diff", "--name-only", "HEAD"], { cwd: worktree, timeoutMs: 30_000 });
       const rechangedFiles = renames.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
       const reviolations = rechangedFiles.filter((file) => !matchesAny(file, input.task.scope));
+      // Turn-3: declaration check FIRST — a correction carrying
+      // filesNeededOutsideScope routes to BLOCKED with scopeBlocker
+      // REGARDLESS of remaining violations (same semantics as DIRECT/repair —
+      // FAIL with blocker, never PASS-with-declaration). Vacuous
+      // (no genuinely-blocked) stays unblocked and falls through to the
+      // reviolations check below. Same order as the distributed path above.
+      const declaration = classifyWaveCorrectionDeclarationV1({
+        session: correctionSession,
+        changedFiles: rechangedFiles,
+        operationId: input.operationId,
+        taskId: input.contract.task.id,
+        workUnitId: input.task.id,
+        participantId,
+        taskScope: input.task.scope,
+        contract: input.contract,
+        config: input.config,
+      });
+      if (declaration.blocked) {
+        const files = declaration.blocker?.filesNeededOutsideScope.map((entry) => entry.path).join(", ") ?? "filesNeededOutsideScope";
+        return {
+          task: input.task,
+          session: correctionSession,
+          changedFiles: rechangedFiles,
+          patch: "",
+          status: "FAIL",
+          message: `WAVE_SCOPE_BLOCKER: correction declared out-of-scope file(s): ${files}. Declare via filesNeededOutsideScope; do not expand scope without a lead-approved amendment.`,
+          escapeCorrectionUsed: true,
+          escapeCorrectionSessions: [session],
+          ...(declaration.blocker ? { scopeBlocker: declaration.blocker } : {}),
+        };
+      }
       if (reviolations.length) {
         // Second escape → ORIGINAL terminal FAIL (exactly one correction).
         const rediff = await runExecutable("git", ["diff", "--binary", "--no-ext-diff", "HEAD"], { cwd: worktree, timeoutMs: 60_000 }).catch(() => undefined);
@@ -878,33 +927,6 @@ async function executeDelegation(input: { root: string; stateRoot: string; confi
           message: originalMessage,
           escapeCorrectionUsed: true,
           escapeCorrectionSessions: [correctionSession],
-        };
-      }
-      // Round-2 B2: no-change correction + outside-scope declaration → BLOCKED
-      // (same semantics as DIRECT/repair — FAIL with blocker, never PASS).
-      const declaration = classifyWaveCorrectionDeclarationV1({
-        session: correctionSession,
-        changedFiles: rechangedFiles,
-        operationId: input.operationId,
-        taskId: input.contract.task.id,
-        workUnitId: input.task.id,
-        participantId,
-        taskScope: input.task.scope,
-        contract: input.contract,
-        config: input.config,
-      });
-      if (declaration.blocked) {
-        const files = declaration.blocker?.filesNeededOutsideScope.map((entry) => entry.path).join(", ") ?? "filesNeededOutsideScope";
-        return {
-          task: input.task,
-          session: correctionSession,
-          changedFiles: rechangedFiles,
-          patch: "",
-          status: "FAIL",
-          message: `WAVE_SCOPE_BLOCKER: correction declared out-of-scope file(s): ${files}. Declare via filesNeededOutsideScope; do not expand scope without a lead-approved amendment.`,
-          escapeCorrectionUsed: true,
-          escapeCorrectionSessions: [session],
-          ...(declaration.blocker ? { scopeBlocker: declaration.blocker } : {}),
         };
       }
       return {
