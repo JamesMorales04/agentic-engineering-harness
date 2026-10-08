@@ -37,6 +37,31 @@ export async function materializeCandidateState(sourceRoot: string, targetRoot: 
 }
 
 /**
+ * Stale DIRECT staging janitor (P-NEW-7).
+ * MECHANISM: DETERMINISTIC.
+ * Removes `aeh-*` entries in the system tmpdir older than 24h (conservative;
+ * covers SIGKILL in the mkdtemp-to-register window). Never touches non-`aeh-*`
+ * or fresh entries. Best-effort: never throws.
+ */
+export const DIRECT_STAGING_TMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+export async function sweepStaleDirectStagingRoots(options: { tmpdir?: string; maxAgeMs?: number; now?: number } = {}): Promise<string[]> {
+  const dir = options.tmpdir ?? os.tmpdir();
+  const maxAgeMs = options.maxAgeMs ?? DIRECT_STAGING_TMP_MAX_AGE_MS;
+  const now = options.now ?? Date.now();
+  let entries: string[];
+  try { entries = await fs.readdir(dir); } catch { return []; }
+  const removed: string[] = [];
+  for (const entry of entries) {
+    if (!entry.startsWith("aeh-")) continue;
+    const full = path.join(dir, entry);
+    const stat = await fs.stat(full).catch(() => undefined);
+    if (!stat || now - stat.mtimeMs <= maxAgeMs) continue;
+    try { await fs.rm(full, { recursive: true, force: true }); removed.push(full); } catch { /* best-effort */ }
+  }
+  return removed;
+}
+
+/**
  * Run a single DIRECT participant against an isolated snapshot of the current
  * candidate and return its source diff. The caller owns assembly and binding.
  */
@@ -54,6 +79,7 @@ export async function executeIsolatedCandidateMutation(input: {
   if (input.candidate.operationId !== input.operationId) throw new AehError("CANDIDATE_STALE", "DIRECT execution candidate belongs to another operation.");
   if (input.candidate.taskId && input.candidate.taskId !== input.taskId) throw new AehError("CANDIDATE_STALE", "DIRECT execution candidate belongs to another task.");
   await assertWorkspaceMatchesCandidate(input.root, input.candidate);
+  await sweepStaleDirectStagingRoots().catch(() => undefined);
 
   const isolatedRoot = await fs.mkdtemp(path.join(os.tmpdir(), `aeh-direct-${safe(input.taskId)}-`));
   // Durable ownership of the temporary candidate staging root: if this process
