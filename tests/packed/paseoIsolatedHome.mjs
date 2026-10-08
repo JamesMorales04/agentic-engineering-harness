@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import fs from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
@@ -21,21 +21,50 @@ import path from "node:path";
  * SIGINT/SIGTERM/uncaught failures. The helper NEVER falls back to the live
  * daemon: a failed setup throws `PASEO_ISOLATION_UNAVAILABLE`.
  *
+ * Teardown guarantee (B1 fix): campaign bodies wrap all post-setup work in
+ * `try { ... } finally { await teardownIsolatedPaseoHome(handle); }` so
+ * cleanup runs on every exit path. Abort handlers stay installed until
+ * teardown VERIFIES completion (daemon stopped + home removed, both probed,
+ * never assumed); `handle.cleaned` flips only on verified completion so a
+ * failed attempt remains retryable. Both async and sync teardown retry a
+ * bounded number of times before giving up and trace persistently via
+ * `console.error` (`PASEO_ISOLATION_TEARDOWN_FAILED` /
+ * `PASEO_ISOLATION_ABORT_TEARDOWN`) plus machine-readable accounting
+ * (`attempts`, `daemonStopped`, `homeRemoved`, `verified`).
+ *
+ * Port race (B2 fix): `findFreePort()` is availability-only (TOCTOU): the OS
+ * frees the port on close and another process may bind it before
+ * `paseo daemon start` runs. Setup therefore spawns with bounded retry on
+ * `EADDRINUSE` (next free port each time, up to
+ * `ISOLATION_SETUP_MAX_PORT_ATTEMPTS` attempts) instead of single-shot.
+ * Residual: if every attempt collides (sustained port exhaustion or a
+ * hostile binder), setup fails closed with `PASEO_ISOLATION_UNAVAILABLE`
+ * and never falls back to the live daemon.
+ *
  * Usage (top of a packed campaign, before any lane runs):
  *
  *   import { setupIsolatedPaseoHome, teardownIsolatedPaseoHome, assertIsolatedPaseoEnv } from "./paseoIsolatedHome.mjs";
  *   const paseoIsolation = await setupIsolatedPaseoHome({ prefix: "aeh-s13-gov-" });
  *   assertIsolatedPaseoEnv(paseoIsolation);
- *   // ... lanes (laneEnvironment() already preserves PASEO_HOME/PASEO_DAEMON_URL) ...
- *   const cleanup = await teardownIsolatedPaseoHome(paseoIsolation);
- *   // ... record cleanup accounting in the summary, then process.exit ...
+ *   try {
+ *     // ... lanes (laneEnvironment() already preserves PASEO_HOME/PASEO_DAEMON_URL) ...
+ *   } finally {
+ *     const cleanup = await teardownIsolatedPaseoHome(paseoIsolation);
+ *     // ... record cleanup accounting in the summary, then process.exit ...
+ *   }
  */
 
 export const LIVE_PASEO_LISTEN_PORT = 6767;
 export const LIVE_PASEO_WS_URL = `ws://127.0.0.1:${LIVE_PASEO_LISTEN_PORT}/ws`;
+export const ISOLATION_SETUP_MAX_PORT_ATTEMPTS = 5;
+export const ISOLATION_TEARDOWN_MAX_ATTEMPTS = 3;
 
 export function livePaseoHome() {
   return path.join(os.homedir(), ".paseo");
+}
+
+export function isAddrInUseMessage(text) {
+  return /EADDRINUSE|address already in use/i.test(String(text ?? ""));
 }
 
 function scrubbedEnv(home) {
@@ -107,36 +136,116 @@ function workspaceIdOf(entry) {
   return entry?.workspaceId ?? undefined;
 }
 
-function syncTeardown(handle) {
+async function isHomeRemoved(home) {
+  try {
+    await fs.access(home);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+function isHomeRemovedSync(home) {
+  try {
+    return !existsSync(home);
+  } catch {
+    return false;
+  }
+}
+
+function isDaemonStoppedSync(home) {
+  try {
+    const status = runPaseo(["daemon", "status", "--json"], home, 15_000);
+    const parsed = parseDaemonStatus(status.stdout);
+    if (!parsed) return false;
+    return parsed.localDaemon !== "running";
+  } catch {
+    return false;
+  }
+}
+
+function readDaemonLogTail(home, maxChars = 4000) {
+  try {
+    const logPath = path.join(home, "daemon.log");
+    // Sync read: called from both sync and async paths right after a failed
+    // `daemon start`; async fs would add latency to the retry loop.
+    const raw = readFileSync(logPath, "utf8");
+    return String(raw ?? "").slice(-maxChars);
+  } catch {
+    return "";
+  }
+}
+
+function collectAddrInUseEvidence(parts) {
+  return parts.filter(Boolean).join("\n").slice(0, 8000);
+}
+
+function restorePreviousEnv(handle) {
+  try {
+    const previous = handle.previous ?? {};
+    if (previous.PASEO_HOME === undefined) delete process.env.PASEO_HOME;
+    else process.env.PASEO_HOME = previous.PASEO_HOME;
+    if (previous.PASEO_DAEMON_URL === undefined) delete process.env.PASEO_DAEMON_URL;
+    else process.env.PASEO_DAEMON_URL = previous.PASEO_DAEMON_URL;
+    if (previous.PASEO_AGENT_ID === undefined) delete process.env.PASEO_AGENT_ID;
+    else process.env.PASEO_AGENT_ID = previous.PASEO_AGENT_ID;
+    if (previous.PASEO_SESSION_ID === undefined) delete process.env.PASEO_SESSION_ID;
+    else process.env.PASEO_SESSION_ID = previous.PASEO_SESSION_ID;
+  } catch { /* best-effort: env restore must never throw past teardown */ }
+}
+
+export function syncTeardown(handle) {
   if (!handle || handle.cleaned) return { cleaned: false, reason: "already-cleaned" };
-  handle.cleaned = true;
-  const accounting = { agentsDeleted: [], agentsDeleteFailed: [], workspacesArchived: [], workspacesArchiveFailed: [], daemonStopped: false, homeRemoved: false };
-  try {
-    for (const entry of listJson(["agent", "ls", "--json"], handle.home)) {
-      const id = agentIdOf(entry);
-      if (!id) continue;
-      const deleted = runPaseo(["agent", "delete", id], handle.home, 60_000);
-      if (deleted.status === 0) accounting.agentsDeleted.push(id);
-      else accounting.agentsDeleteFailed.push({ agentId: id, exitCode: deleted.status });
+  const accounting = { agentsDeleted: [], agentsDeleteFailed: [], workspacesArchived: [], workspacesArchiveFailed: [], daemonStopped: false, homeRemoved: false, attempts: 0, verified: false };
+  for (let attempt = 1; attempt <= ISOLATION_TEARDOWN_MAX_ATTEMPTS; attempt += 1) {
+    accounting.attempts = attempt;
+    try {
+      for (const entry of listJson(["agent", "ls", "--json"], handle.home)) {
+        const id = agentIdOf(entry);
+        if (!id || accounting.agentsDeleted.includes(id)) continue;
+        const deleted = runPaseo(["agent", "delete", id], handle.home, 60_000);
+        if (deleted.status === 0) {
+          if (!accounting.agentsDeleted.includes(id)) accounting.agentsDeleted.push(id);
+        } else if (!accounting.agentsDeleteFailed.some((item) => item.agentId === id)) {
+          accounting.agentsDeleteFailed.push({ agentId: id, exitCode: deleted.status });
+        }
+      }
+    } catch { /* best-effort, retried */ }
+    try {
+      for (const entry of listJson(["workspace", "ls", "--json"], handle.home)) {
+        const id = workspaceIdOf(entry);
+        if (!id || accounting.workspacesArchived.includes(id)) continue;
+        const archived = runPaseo(["workspace", "archive", id], handle.home, 60_000);
+        if (archived.status === 0) {
+          if (!accounting.workspacesArchived.includes(id)) accounting.workspacesArchived.push(id);
+        } else if (!accounting.workspacesArchiveFailed.some((item) => item.workspaceId === id)) {
+          accounting.workspacesArchiveFailed.push({ workspaceId: id, exitCode: archived.status });
+        }
+      }
+    } catch { /* best-effort, retried */ }
+    try {
+      const stopped = runPaseo(["daemon", "stop"], handle.home, 30_000);
+      accounting.daemonStopped = stopped.status === 0 && isDaemonStoppedSync(handle.home);
+    } catch {
+      accounting.daemonStopped = isDaemonStoppedSync(handle.home);
     }
-  } catch { /* best-effort */ }
-  try {
-    for (const entry of listJson(["workspace", "ls", "--json"], handle.home)) {
-      const id = workspaceIdOf(entry);
-      if (!id) continue;
-      const archived = runPaseo(["workspace", "archive", id], handle.home, 60_000);
-      if (archived.status === 0) accounting.workspacesArchived.push(id);
-      else accounting.workspacesArchiveFailed.push({ workspaceId: id, exitCode: archived.status });
+    // Verify, don't assume: a zero exit from `daemon stop` alone is not
+    // completion; the status probe must confirm the daemon left running.
+    if (!accounting.daemonStopped) accounting.daemonStopped = isDaemonStoppedSync(handle.home);
+    try {
+      rmSync(handle.home, { recursive: true, force: true });
+    } catch { /* best-effort, verified below */ }
+    accounting.homeRemoved = isHomeRemovedSync(handle.home);
+    accounting.verified = accounting.daemonStopped === true && accounting.homeRemoved === true;
+    if (accounting.verified) {
+      handle.cleaned = true;
+      return accounting;
     }
-  } catch { /* best-effort */ }
-  try {
-    const stopped = runPaseo(["daemon", "stop"], handle.home, 30_000);
-    accounting.daemonStopped = stopped.status === 0;
-  } catch { /* best-effort */ }
-  try {
-    rmSync(handle.home, { recursive: true, force: true });
-    accounting.homeRemoved = true;
-  } catch { /* best-effort */ }
+    if (attempt < ISOLATION_TEARDOWN_MAX_ATTEMPTS) {
+      console.error(`PASEO_ISOLATION_TEARDOWN_FAILED: sync attempt ${attempt}/${ISOLATION_TEARDOWN_MAX_ATTEMPTS} unverified for ${handle.home} (daemonStopped=${accounting.daemonStopped} homeRemoved=${accounting.homeRemoved}); retrying.`);
+    }
+  }
+  console.error(`PASEO_ISOLATION_TEARDOWN_FAILED: sync teardown gave up after ${accounting.attempts} attempts for ${handle.home} (daemonStopped=${accounting.daemonStopped} homeRemoved=${accounting.homeRemoved}); isolated resources may remain.`);
   return accounting;
 }
 
@@ -152,7 +261,12 @@ function installAbortHandlers(handle) {
   };
   const onUncaught = (error) => {
     try {
-      syncTeardown(handle);
+      const result = syncTeardown(handle);
+      if (result?.verified) {
+        console.error(`PASEO_ISOLATION_ABORT_TEARDOWN: uncaught failure; isolated home ${handle.home} cleaned verified after ${result.attempts} attempt(s). Original error: ${error?.stack ?? error}`);
+      } else {
+        console.error(`PASEO_ISOLATION_ABORT_TEARDOWN: uncaught failure; isolated home ${handle.home} cleanup UNVERIFIED after ${result?.attempts ?? 1} attempt(s) (daemonStopped=${result?.daemonStopped ?? false} homeRemoved=${result?.homeRemoved ?? false}). Original error: ${error?.stack ?? error}`);
+      }
     } finally {
       console.error(`PASEO_ISOLATION_ABORT_TEARDOWN: uncaught failure; isolated home ${handle.home} cleaned best-effort. Original error: ${error?.stack ?? error}`);
       process.exit(1);
@@ -190,6 +304,7 @@ function removeAbortHandlers(handle) {
 export async function setupIsolatedPaseoHome(options = {}) {
   const prefix = options.prefix ?? "aeh-s13-iso-";
   const host = options.host ?? "127.0.0.1";
+  const maxPortAttempts = options.maxPortAttempts ?? ISOLATION_SETUP_MAX_PORT_ATTEMPTS;
   const previous = {
     PASEO_HOME: process.env.PASEO_HOME,
     PASEO_DAEMON_URL: process.env.PASEO_DAEMON_URL,
@@ -198,37 +313,91 @@ export async function setupIsolatedPaseoHome(options = {}) {
   };
   const home = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
   const handle = { home, host, port: undefined, daemonUrl: undefined, previous, cleaned: false, startedAt: new Date().toISOString() };
-  try {
-    // A second daemon cannot share the live listen port (EADDRINUSE); pick a
-    // free loopback port first, then pin the isolated home to it.
-    let port = await findFreePort(host);
-    if (port === LIVE_PASEO_LISTEN_PORT) port = await findFreePort(host);
-    handle.port = port;
-    const configured = runPaseo(["daemon", "config", "set", "daemon.listen", `${host}:${port}`], home, 30_000);
-    if (configured.status !== 0) throw new Error(`PASEO_ISOLATION_UNAVAILABLE: daemon config set failed: ${(configured.stderr || configured.stdout).slice(0, 500)}`);
-    const started = runPaseo(["daemon", "start"], home, 60_000);
-    if (started.status !== 0) throw new Error(`PASEO_ISOLATION_UNAVAILABLE: daemon start failed: ${(started.stderr || started.stdout).slice(0, 800)}`);
-    await waitForIsolatedDaemon(home, port, options.startTimeoutMs ?? 30_000);
-    handle.daemonUrl = `ws://${host}:${port}/ws`;
-    // Redirect this process and every lane child: laneEnvironment() spreads
-    // process.env and only strips AEH_*/PASEO_AGENT_ID/PASEO_SESSION_ID, so
-    // PASEO_HOME/PASEO_DAEMON_URL flow through automatically. Drop the
-    // foreign caller identity: it belongs to the live daemon and the isolated
-    // daemon rejects it (`Caller agent ... not found`).
-    process.env.PASEO_HOME = home;
-    process.env.PASEO_DAEMON_URL = handle.daemonUrl;
-    delete process.env.PASEO_AGENT_ID;
-    delete process.env.PASEO_SESSION_ID;
-    installAbortHandlers(handle);
-    return handle;
-  } catch (error) {
+  let lastError;
+  const attemptedPorts = [];
+  for (let attempt = 1; attempt <= maxPortAttempts; attempt += 1) {
     try {
-      runPaseo(["daemon", "stop"], home, 30_000);
-    } catch { /* best-effort */ }
-    await fs.rm(home, { recursive: true, force: true }).catch(() => undefined);
-    handle.cleaned = true;
-    throw error instanceof Error ? error : new Error(`PASEO_ISOLATION_UNAVAILABLE: ${String(error)}`);
+      // A second daemon cannot share the live listen port (EADDRINUSE); pick a
+      // free loopback port first, then pin the isolated home to it. The free
+      // port is availability-only (TOCTOU): retry on EADDRINUSE below.
+      let port = await findFreePort(host);
+      if (port === LIVE_PASEO_LISTEN_PORT) port = await findFreePort(host);
+      if (port === LIVE_PASEO_LISTEN_PORT) {
+        lastError = new Error(`PASEO_ISOLATION_UNAVAILABLE: free port discovery collided with the live daemon port ${LIVE_PASEO_LISTEN_PORT}; refusing live-daemon lanes.`);
+        continue;
+      }
+      handle.port = port;
+      attemptedPorts.push(port);
+      const configured = runPaseo(["daemon", "config", "set", "daemon.listen", `${host}:${port}`], home, 30_000);
+      if (configured.status !== 0) {
+        const evidence = collectAddrInUseEvidence([configured.stderr, configured.stdout, readDaemonLogTail(home)]);
+        if (isAddrInUseMessage(evidence) && attempt < maxPortAttempts) {
+          try { runPaseo(["daemon", "stop"], home, 15_000); } catch { /* best-effort before next port */ }
+          lastError = new Error(`PASEO_ISOLATION_UNAVAILABLE: daemon config set hit EADDRINUSE on port ${port} (attempt ${attempt}/${maxPortAttempts}); retrying with the next free port.`);
+          continue;
+        }
+        throw new Error(`PASEO_ISOLATION_UNAVAILABLE: daemon config set failed: ${(configured.stderr || configured.stdout).slice(0, 500)}`);
+      }
+      const started = runPaseo(["daemon", "start"], home, 60_000);
+      if (started.status !== 0) {
+        const evidence = collectAddrInUseEvidence([started.stderr, started.stdout, readDaemonLogTail(home)]);
+        if (isAddrInUseMessage(evidence) && attempt < maxPortAttempts) {
+          try { runPaseo(["daemon", "stop"], home, 15_000); } catch { /* best-effort before next port */ }
+          lastError = new Error(`PASEO_ISOLATION_UNAVAILABLE: daemon start hit EADDRINUSE on port ${port} (attempt ${attempt}/${maxPortAttempts}); retrying with the next free port. Evidence: ${evidence.slice(0, 300)}`);
+          console.error(`PASEO_ISOLATION_PORT_RETRY: ${lastError.message}`);
+          continue;
+        }
+        throw new Error(`PASEO_ISOLATION_UNAVAILABLE: daemon start failed: ${(started.stderr || started.stdout).slice(0, 800)}`);
+      }
+      try {
+        await waitForIsolatedDaemon(home, port, options.startTimeoutMs ?? 30_000);
+      } catch (waitError) {
+        const evidence = collectAddrInUseEvidence([String(waitError?.message ?? waitError), readDaemonLogTail(home)]);
+        if (isAddrInUseMessage(evidence) && attempt < maxPortAttempts) {
+          try { runPaseo(["daemon", "stop"], home, 15_000); } catch { /* best-effort before next port */ }
+          lastError = waitError instanceof Error ? waitError : new Error(String(waitError));
+          console.error(`PASEO_ISOLATION_PORT_RETRY: health check hit EADDRINUSE on port ${port} (attempt ${attempt}/${maxPortAttempts}); retrying with the next free port.`);
+          continue;
+        }
+        throw waitError;
+      }
+      handle.daemonUrl = `ws://${host}:${port}/ws`;
+      handle.portAttempts = attemptedPorts;
+      handle.setupAttempts = attempt;
+      // Redirect this process and every lane child: laneEnvironment() spreads
+      // process.env and only strips AEH_*/PASEO_AGENT_ID/PASEO_SESSION_ID, so
+      // PASEO_HOME/PASEO_DAEMON_URL flow through automatically. Drop the
+      // foreign caller identity: it belongs to the live daemon and the isolated
+      // daemon rejects it (`Caller agent ... not found`).
+      process.env.PASEO_HOME = home;
+      process.env.PASEO_DAEMON_URL = handle.daemonUrl;
+      delete process.env.PASEO_AGENT_ID;
+      delete process.env.PASEO_SESSION_ID;
+      installAbortHandlers(handle);
+      return handle;
+    } catch (error) {
+      // Non-EADDRINUSE failures fail closed immediately; EADDRINUSE that
+      // exhausted its attempts falls through to the fail-closed throw below.
+      if (error instanceof Error && /retrying with the next free port/.test(error.message)) {
+        lastError = error;
+        continue;
+      }
+      try {
+        runPaseo(["daemon", "stop"], home, 30_000);
+      } catch { /* best-effort */ }
+      await fs.rm(home, { recursive: true, force: true }).catch(() => undefined);
+      handle.cleaned = await isHomeRemoved(home);
+      throw error instanceof Error ? error : new Error(`PASEO_ISOLATION_UNAVAILABLE: ${String(error)}`);
+    }
   }
+  try {
+    runPaseo(["daemon", "stop"], home, 30_000);
+  } catch { /* best-effort */ }
+  await fs.rm(home, { recursive: true, force: true }).catch(() => undefined);
+  handle.cleaned = await isHomeRemoved(home);
+  const detail = lastError instanceof Error ? lastError.message : String(lastError ?? "unknown");
+  console.error(`PASEO_ISOLATION_UNAVAILABLE: isolated daemon setup gave up after ${maxPortAttempts} port attempts [${attemptedPorts.join(",")}]. Last: ${detail.slice(0, 500)} Residual: free-port discovery is availability-only; sustained collision fails closed and never falls back to live.`);
+  throw lastError instanceof Error ? lastError : new Error(`PASEO_ISOLATION_UNAVAILABLE: isolated daemon setup failed after ${maxPortAttempts} port attempts [${attemptedPorts.join(",")}].`);
 }
 
 /**
@@ -257,12 +426,13 @@ export function assertIsolatedPaseoEnv(handle) {
  * Mandatory teardown: delete every agent and archive every workspace left in
  * the isolated home (the home starts empty, so any remainder is this run's
  * orphan), stop the isolated daemon, remove the temp home, and restore the
- * previous environment. Idempotent; safe to call twice.
+ * previous environment. Idempotent; safe to call twice. Verified completion
+ * only: `handle.cleaned` flips and abort handlers are removed solely after
+ * daemon-stopped + home-removed both verify; otherwise handlers stay
+ * installed and a later call retries. Bounded retries with persistent traces.
  */
 export async function teardownIsolatedPaseoHome(handle) {
   if (!handle || handle.cleaned) return { cleaned: false, reason: "already-cleaned-or-missing" };
-  handle.cleaned = true;
-  removeAbortHandlers(handle);
   const accounting = {
     home: handle.home,
     port: handle.port,
@@ -272,43 +442,62 @@ export async function teardownIsolatedPaseoHome(handle) {
     workspacesArchiveFailed: [],
     daemonStopped: false,
     homeRemoved: false,
+    attempts: 0,
+    verified: false,
+    orphanFree: false,
   };
-  for (const entry of listJson(["agent", "ls", "--json"], handle.home)) {
-    const id = agentIdOf(entry);
-    if (!id) continue;
-    const deleted = runPaseo(["agent", "delete", id], handle.home, 60_000);
-    if (deleted.status === 0) accounting.agentsDeleted.push(id);
-    else accounting.agentsDeleteFailed.push({ agentId: id, exitCode: deleted.status, stderr: deleted.stderr.slice(0, 300) });
+  for (let attempt = 1; attempt <= ISOLATION_TEARDOWN_MAX_ATTEMPTS; attempt += 1) {
+    accounting.attempts = attempt;
+    for (const entry of listJson(["agent", "ls", "--json"], handle.home)) {
+      const id = agentIdOf(entry);
+      if (!id || accounting.agentsDeleted.includes(id)) continue;
+      const deleted = runPaseo(["agent", "delete", id], handle.home, 60_000);
+      if (deleted.status === 0) {
+        if (!accounting.agentsDeleted.includes(id)) accounting.agentsDeleted.push(id);
+      } else if (!accounting.agentsDeleteFailed.some((item) => item.agentId === id)) {
+        accounting.agentsDeleteFailed.push({ agentId: id, exitCode: deleted.status, stderr: deleted.stderr.slice(0, 300) });
+      }
+    }
+    for (const entry of listJson(["workspace", "ls", "--json"], handle.home)) {
+      const id = workspaceIdOf(entry);
+      if (!id || accounting.workspacesArchived.includes(id)) continue;
+      const archived = runPaseo(["workspace", "archive", id], handle.home, 60_000);
+      if (archived.status === 0) {
+        if (!accounting.workspacesArchived.includes(id)) accounting.workspacesArchived.push(id);
+      } else if (!accounting.workspacesArchiveFailed.some((item) => item.workspaceId === id)) {
+        accounting.workspacesArchiveFailed.push({ workspaceId: id, exitCode: archived.status, stderr: archived.stderr.slice(0, 300) });
+      }
+    }
+    const remainingAgents = listJson(["agent", "ls", "--json"], handle.home).map(agentIdOf).filter(Boolean);
+    const remainingWorkspaces = listJson(["workspace", "ls", "--json"], handle.home).map(workspaceIdOf).filter(Boolean);
+    accounting.remainingAgents = remainingAgents;
+    accounting.remainingWorkspaces = remainingWorkspaces;
+    try {
+      const stopped = runPaseo(["daemon", "stop"], handle.home, 30_000);
+      accounting.daemonStopped = stopped.status === 0 && isDaemonStoppedSync(handle.home);
+    } catch {
+      accounting.daemonStopped = isDaemonStoppedSync(handle.home);
+    }
+    if (!accounting.daemonStopped) accounting.daemonStopped = isDaemonStoppedSync(handle.home);
+    await fs.rm(handle.home, { recursive: true, force: true }).catch(() => undefined);
+    accounting.homeRemoved = await isHomeRemoved(handle.home);
+    accounting.orphanFree = remainingAgents.length === 0 && remainingWorkspaces.length === 0;
+    accounting.verified = accounting.daemonStopped === true && accounting.homeRemoved === true;
+    if (accounting.verified) {
+      handle.cleaned = true;
+      removeAbortHandlers(handle);
+      restorePreviousEnv(handle);
+      return accounting;
+    }
+    if (attempt < ISOLATION_TEARDOWN_MAX_ATTEMPTS) {
+      console.error(`PASEO_ISOLATION_TEARDOWN_FAILED: async attempt ${attempt}/${ISOLATION_TEARDOWN_MAX_ATTEMPTS} unverified for ${handle.home} (daemonStopped=${accounting.daemonStopped} homeRemoved=${accounting.homeRemoved} remainingAgents=${remainingAgents.length} remainingWorkspaces=${remainingWorkspaces.length}); retrying with abort handlers still installed.`);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
   }
-  for (const entry of listJson(["workspace", "ls", "--json"], handle.home)) {
-    const id = workspaceIdOf(entry);
-    if (!id) continue;
-    const archived = runPaseo(["workspace", "archive", id], handle.home, 60_000);
-    if (archived.status === 0) accounting.workspacesArchived.push(id);
-    else accounting.workspacesArchiveFailed.push({ workspaceId: id, exitCode: archived.status, stderr: archived.stderr.slice(0, 300) });
-  }
-  const remainingAgents = listJson(["agent", "ls", "--json"], handle.home).map(agentIdOf).filter(Boolean);
-  const remainingWorkspaces = listJson(["workspace", "ls", "--json"], handle.home).map(workspaceIdOf).filter(Boolean);
-  accounting.remainingAgents = remainingAgents;
-  accounting.remainingWorkspaces = remainingWorkspaces;
-  const stopped = runPaseo(["daemon", "stop"], handle.home, 30_000);
-  accounting.daemonStopped = stopped.status === 0;
-  await fs.rm(handle.home, { recursive: true, force: true }).catch(() => undefined);
-  try {
-    await fs.access(handle.home);
-  } catch {
-    accounting.homeRemoved = true;
-  }
-  // Restore the caller's environment so no isolated pointer leaks past teardown.
-  const previous = handle.previous ?? {};
-  if (previous.PASEO_HOME === undefined) delete process.env.PASEO_HOME;
-  else process.env.PASEO_HOME = previous.PASEO_HOME;
-  if (previous.PASEO_DAEMON_URL === undefined) delete process.env.PASEO_DAEMON_URL;
-  else process.env.PASEO_DAEMON_URL = previous.PASEO_DAEMON_URL;
-  if (previous.PASEO_AGENT_ID === undefined) delete process.env.PASEO_AGENT_ID;
-  else process.env.PASEO_AGENT_ID = previous.PASEO_AGENT_ID;
-  if (previous.PASEO_SESSION_ID === undefined) delete process.env.PASEO_SESSION_ID;
-  else process.env.PASEO_SESSION_ID = previous.PASEO_SESSION_ID;
-  accounting.orphanFree = remainingAgents.length === 0 && remainingWorkspaces.length === 0;
+  console.error(`PASEO_ISOLATION_TEARDOWN_FAILED: async teardown gave up after ${accounting.attempts} attempts for ${handle.home} (daemonStopped=${accounting.daemonStopped} homeRemoved=${accounting.homeRemoved} remainingAgents=${(accounting.remainingAgents ?? []).length} remainingWorkspaces=${(accounting.remainingWorkspaces ?? []).length}); abort handlers stay installed for a later retry; isolated resources may remain.`);
+  // Restore the caller's environment so no isolated pointer leaks past teardown
+  // even on unverified completion; the handle stays dirty (cleaned=false) so a
+  // later teardown or abort handler retries the verified path.
+  restorePreviousEnv(handle);
   return accounting;
 }

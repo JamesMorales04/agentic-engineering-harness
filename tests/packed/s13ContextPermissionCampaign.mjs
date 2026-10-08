@@ -400,46 +400,62 @@ const summary = {
   harnessRevisions, harnessBuildIdentity: buildIdentity, candidate: null, lanes: [], result: "UNKNOWN",
   paseoIsolation: { hermetic: true, home: paseoIsolation.home, port: paseoIsolation.port, daemonUrl: paseoIsolation.daemonUrl, setupAt: paseoIsolation.startedAt }
 };
-const before = await trackedDigest();
-const candidate = await packCandidate();
-summary.candidate = { artifact: candidate.filename, artifactDigest: candidate.artifactDigest };
-
-const laneNames = laneFilter.length ? laneFilter : ["context-handoff", "permission-delegation"];
-for (const name of laneNames) {
-  console.log(`S13 ctxperm lane: ${name}`);
-  const lane = name === "context-handoff" ? await contextHandoffJourney() : name === "permission-delegation" ? await permissionDelegationJourney() : { capability: name, result: "FAIL", error: "unknown lane" };
-  summary.lanes.push({ capability: lane.capability ?? name, result: lane.result, checks: lane.checks ?? null, rowResult: lane.rowResult ?? null, error: lane.error ?? null, artifact: `docs/evidence/s13/context-permission-lanes/round-${round}/${runId}/${name}.json` });
-}
-
+let before;
+let candidate;
+let paseoCleanupResult;
+let laneNames;
 try {
-  const { accountWorkspaceCleanupV1 } = await import("./s13GovernedCampaignPolicy.mjs");
-  const listed = run("paseo", ["workspace", "ls", "--json"]);
-  const inventory = (() => { try { return JSON.parse(listed.stdout); } catch { return []; } })().filter((workspace) => String(workspace.cwd ?? "").startsWith(staging));
-  const archived = [];
-  for (const workspace of inventory) {
-    const result = run("paseo", ["workspace", "archive", workspace.workspaceId], { timeoutMs: 60_000 });
-    archived.push({ workspaceId: workspace.workspaceId, cwd: workspace.cwd ?? null, exitCode: result.status });
+  before = await trackedDigest();
+  candidate = await packCandidate();
+  summary.candidate = { artifact: candidate.filename, artifactDigest: candidate.artifactDigest };
+
+  laneNames = laneFilter.length ? laneFilter : ["context-handoff", "permission-delegation"];
+  for (const name of laneNames) {
+    console.log(`S13 ctxperm lane: ${name}`);
+    const lane = name === "context-handoff" ? await contextHandoffJourney() : name === "permission-delegation" ? await permissionDelegationJourney() : { capability: name, result: "FAIL", error: "unknown lane" };
+    summary.lanes.push({ capability: lane.capability ?? name, result: lane.result, checks: lane.checks ?? null, rowResult: lane.rowResult ?? null, error: lane.error ?? null, artifact: `docs/evidence/s13/context-permission-lanes/round-${round}/${runId}/${name}.json` });
   }
-  const listedAfter = run("paseo", ["workspace", "ls", "--json"]);
-  const remainingAfter = (() => { try { return JSON.parse(listedAfter.stdout); } catch { return []; } })().filter((workspace) => String(workspace.cwd ?? "").startsWith(staging));
-  summary.workspaceInventory = inventory.map((workspace) => ({ workspaceId: workspace.workspaceId, cwd: workspace.cwd ?? null }));
-  summary.workspaceCleanup = { archived, remaining: remainingAfter.map((workspace) => workspace.workspaceId), accounting: accountWorkspaceCleanupV1(inventory, archived, remainingAfter) };
-} catch (error) {
-  summary.workspaceCleanupError = String(error);
-}
-const paseoCleanup = await teardownIsolatedPaseoHome(paseoIsolation);
-summary.paseoCleanup = {
-  hermetic: true,
-  agentsDeleted: paseoCleanup.agentsDeleted,
-  workspacesArchived: paseoCleanup.workspacesArchived,
-  remainingAgents: paseoCleanup.remainingAgents ?? [],
-  remainingWorkspaces: paseoCleanup.remainingWorkspaces ?? [],
-  orphanFree: paseoCleanup.orphanFree ?? false,
-  daemonStopped: paseoCleanup.daemonStopped,
-  homeRemoved: paseoCleanup.homeRemoved
-};
-if (!summary.paseoCleanup.orphanFree) {
-  for (const lane of summary.lanes) if (lane.result === "PASS") lane.result = "FAIL";
+
+  try {
+    const { accountWorkspaceCleanupV1 } = await import("./s13GovernedCampaignPolicy.mjs");
+    const listed = run("paseo", ["workspace", "ls", "--json"]);
+    const inventory = (() => { try { return JSON.parse(listed.stdout); } catch { return []; } })().filter((workspace) => String(workspace.cwd ?? "").startsWith(staging));
+    const archived = [];
+    for (const workspace of inventory) {
+      const result = run("paseo", ["workspace", "archive", workspace.workspaceId], { timeoutMs: 60_000 });
+      archived.push({ workspaceId: workspace.workspaceId, cwd: workspace.cwd ?? null, exitCode: result.status });
+    }
+    const listedAfter = run("paseo", ["workspace", "ls", "--json"]);
+    const remainingAfter = (() => { try { return JSON.parse(listedAfter.stdout); } catch { return []; } })().filter((workspace) => String(workspace.cwd ?? "").startsWith(staging));
+    summary.workspaceInventory = inventory.map((workspace) => ({ workspaceId: workspace.workspaceId, cwd: workspace.cwd ?? null }));
+    summary.workspaceCleanup = { archived, remaining: remainingAfter.map((workspace) => workspace.workspaceId), accounting: accountWorkspaceCleanupV1(inventory, archived, remainingAfter) };
+  } catch (error) {
+    summary.workspaceCleanupError = String(error);
+  }
+} finally {
+  // B1: teardown guaranteed on every exit; handlers stay installed until verified completion.
+  try {
+    paseoCleanupResult = await teardownIsolatedPaseoHome(paseoIsolation);
+  } catch (error) {
+    console.error(`PASEO_ISOLATION_TEARDOWN_FAILED: campaign finally teardown threw: ${error?.stack ?? error}`);
+    paseoCleanupResult = { agentsDeleted: [], workspacesArchived: [], remainingAgents: [], remainingWorkspaces: [], orphanFree: false, daemonStopped: false, homeRemoved: false, attempts: 0, verified: false, error: String(error?.stack ?? error) };
+  }
+  const paseoCleanup = paseoCleanupResult;
+  summary.paseoCleanup = {
+    hermetic: true,
+    agentsDeleted: paseoCleanup.agentsDeleted ?? [],
+    workspacesArchived: paseoCleanup.workspacesArchived ?? [],
+    remainingAgents: paseoCleanup.remainingAgents ?? [],
+    remainingWorkspaces: paseoCleanup.remainingWorkspaces ?? [],
+    orphanFree: paseoCleanup.orphanFree ?? false,
+    daemonStopped: paseoCleanup.daemonStopped ?? false,
+    homeRemoved: paseoCleanup.homeRemoved ?? false,
+    attempts: paseoCleanup.attempts ?? 0,
+    verified: paseoCleanup.verified ?? false
+  };
+  if (!summary.paseoCleanup.orphanFree) {
+    for (const lane of summary.lanes) if (lane.result === "PASS") lane.result = "FAIL";
+  }
 }
 const after = await trackedDigest();
 summary.checkoutProof = {
@@ -449,7 +465,7 @@ summary.checkoutProof = {
 };
 const roundLaneRoot = path.join(evidenceRoot, `context-permission-lanes/round-${round}`, runId);
 await fs.mkdir(roundLaneRoot, { recursive: true });
-for (const name of laneNames) {
+for (const name of laneNames ?? []) {
   await fs.copyFile(path.join(laneRoot, `${name}.json`), path.join(roundLaneRoot, `${name}.json`));
 }
 summary.result = summary.lanes.every((lane) => lane.result === "PASS") ? "PASS" : "SLICE_BLOCKED";

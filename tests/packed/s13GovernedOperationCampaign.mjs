@@ -1366,12 +1366,17 @@ const summary = {
   paseoIsolation: { hermetic: true, home: paseoIsolation.home, port: paseoIsolation.port, daemonUrl: paseoIsolation.daemonUrl, setupAt: paseoIsolation.startedAt }
 };
 
-const before = await trackedDigest();
-const gitStatusBefore = run("git", ["status", "--short"]).stdout;
-const candidate = await packCandidate();
-summary.candidate = { artifact: candidate.filename, artifactDigest: candidate.artifactDigest };
+let before;
+let gitStatusBefore;
+let candidate;
+let paseoCleanupResult;
+try {
+  before = await trackedDigest();
+  gitStatusBefore = run("git", ["status", "--short"]).stdout;
+  candidate = await packCandidate();
+  summary.candidate = { artifact: candidate.filename, artifactDigest: candidate.artifactDigest };
 
-const laneNames = laneFilter.length ? laneFilter : Object.keys(laneDefinitions);
+  const laneNames = laneFilter.length ? laneFilter : Object.keys(laneDefinitions);
 for (const name of laneNames) {
   const lane = laneDefinitions[name];
   if (!lane) { summary.lanes.push({ capability: name, result: "FAIL", error: "unknown lane" }); continue; }
@@ -1569,21 +1574,33 @@ for (const name of laneNames) {
   const workspaceAccounting = laneEvidence.workspaceCleanup?.postCampaignArchive?.accounting ?? laneEvidence.workspaceCleanup?.accounting ?? null;
   summary.lanes.push({ capability: name, result: laneEvidence.result, status: laneEvidence.operation?.status ?? null, terminal: laneEvidence.terminal ?? null, route: laneEvidence.operation?.intent?.route ?? null, sessions: laneEvidence.sessionReceipts?.length ?? 0, oracle: laneEvidence.result, acceptanceOracleDisposition: laneEvidence.operation?.result?.acceptanceOracle?.disposition ?? null, rows: laneEvidence.oracle?.rowResults ?? null, error: laneEvidence.error ?? null, durationMs: laneEvidence.durationMs, timeout: laneEvidence.timeout ?? false, lateTerminal: laneEvidence.lateTerminal ?? null, postCampaignOperationRead: laneEvidence.postCampaignOperationRead ?? null, checkoutUntouched: laneEvidence.checkoutProof?.checkoutUntouched ?? null, workspacesArchived: Array.isArray(archived) ? archived.length : null, workspacesRemaining: Array.isArray(remaining) ? remaining.length : null, workspaceAccounting, fixtureTopology: laneEvidence.fixtureTopology ?? null, artifact: `docs/evidence/s13/governed-lanes/round-${round}/${runId}/${name}.json` });
   console.log(JSON.stringify(summary.lanes.at(-1)));
-}
-
-const paseoCleanup = await teardownIsolatedPaseoHome(paseoIsolation);
-summary.paseoCleanup = {
-  hermetic: true,
-  agentsDeleted: paseoCleanup.agentsDeleted,
-  workspacesArchived: paseoCleanup.workspacesArchived,
-  remainingAgents: paseoCleanup.remainingAgents ?? [],
-  remainingWorkspaces: paseoCleanup.remainingWorkspaces ?? [],
-  orphanFree: paseoCleanup.orphanFree ?? false,
-  daemonStopped: paseoCleanup.daemonStopped,
-  homeRemoved: paseoCleanup.homeRemoved
-};
-if (!summary.paseoCleanup.orphanFree) {
-  for (const lane of summary.lanes) if (lane.result === "PASS") lane.result = "FAIL";
+  }
+} finally {
+  // B1: teardown guaranteed on every exit (success/failure/abort-signal via
+  // retained abort handlers). Abort handlers stay installed until verified
+  // completion inside teardownIsolatedPaseoHome; cleaned flips only there.
+  try {
+    paseoCleanupResult = await teardownIsolatedPaseoHome(paseoIsolation);
+  } catch (error) {
+    console.error(`PASEO_ISOLATION_TEARDOWN_FAILED: campaign finally teardown threw: ${error?.stack ?? error}`);
+    paseoCleanupResult = { agentsDeleted: [], workspacesArchived: [], remainingAgents: [], remainingWorkspaces: [], orphanFree: false, daemonStopped: false, homeRemoved: false, attempts: 0, verified: false, error: String(error?.stack ?? error) };
+  }
+  const paseoCleanup = paseoCleanupResult;
+  summary.paseoCleanup = {
+    hermetic: true,
+    agentsDeleted: paseoCleanup.agentsDeleted ?? [],
+    workspacesArchived: paseoCleanup.workspacesArchived ?? [],
+    remainingAgents: paseoCleanup.remainingAgents ?? [],
+    remainingWorkspaces: paseoCleanup.remainingWorkspaces ?? [],
+    orphanFree: paseoCleanup.orphanFree ?? false,
+    daemonStopped: paseoCleanup.daemonStopped ?? false,
+    homeRemoved: paseoCleanup.homeRemoved ?? false,
+    attempts: paseoCleanup.attempts ?? 0,
+    verified: paseoCleanup.verified ?? false
+  };
+  if (!summary.paseoCleanup.orphanFree) {
+    for (const lane of summary.lanes) if (lane.result === "PASS") lane.result = "FAIL";
+  }
 }
 const after = await trackedDigest();
 summary.checkoutProof = {

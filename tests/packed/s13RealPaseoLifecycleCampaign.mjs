@@ -219,9 +219,13 @@ const summary = {
   harnessBuildIdentity: buildIdentity, candidate: null, lanes: [], result: "UNKNOWN",
   paseoIsolation: { hermetic: true, home: paseoIsolation.home, port: paseoIsolation.port, daemonUrl: paseoIsolation.daemonUrl, setupAt: paseoIsolation.startedAt }
 };
-const before = await trackedDigest();
-const candidate = await packAndInstall();
-summary.candidate = { artifact: candidate.filename, artifactDigest: candidate.artifactDigest };
+let before;
+let candidate;
+let paseoCleanupResult;
+try {
+  before = await trackedDigest();
+  candidate = await packAndInstall();
+  summary.candidate = { artifact: candidate.filename, artifactDigest: candidate.artifactDigest };
 
 async function cancelJourney() {
   const lane = { version: 1, slice: "S13", round, runId, capability: "cancel", provider: "opencode/opencode-go/mimo-v2.6-flash", harnessRevisions, startedAt: new Date().toISOString(), checks: [] };
@@ -408,20 +412,30 @@ for (const journey of [cancelJourney, recoveryJourney]) {
   summary.lanes.push({ capability: lane.capability, result: lane.result, sessions: lane.leaseAcquired?.lifecycle?.sessionId ?? null, rowResult: lane.rowResult ?? null, error: lane.error ?? null, artifact: `docs/evidence/s13/lifecycle-lanes/round-${round}/${runId}/${lane.capability}.json` });
   console.log(JSON.stringify(summary.lanes.at(-1)));
 }
-
-const paseoCleanup = await teardownIsolatedPaseoHome(paseoIsolation);
-summary.paseoCleanup = {
-  hermetic: true,
-  agentsDeleted: paseoCleanup.agentsDeleted,
-  workspacesArchived: paseoCleanup.workspacesArchived,
-  remainingAgents: paseoCleanup.remainingAgents ?? [],
-  remainingWorkspaces: paseoCleanup.remainingWorkspaces ?? [],
-  orphanFree: paseoCleanup.orphanFree ?? false,
-  daemonStopped: paseoCleanup.daemonStopped,
-  homeRemoved: paseoCleanup.homeRemoved
-};
-if (!summary.paseoCleanup.orphanFree) {
-  for (const lane of summary.lanes) if (lane.result === "PASS") lane.result = "FAIL";
+} finally {
+  // B1: teardown guaranteed on every exit; handlers stay installed until verified completion.
+  try {
+    paseoCleanupResult = await teardownIsolatedPaseoHome(paseoIsolation);
+  } catch (error) {
+    console.error(`PASEO_ISOLATION_TEARDOWN_FAILED: campaign finally teardown threw: ${error?.stack ?? error}`);
+    paseoCleanupResult = { agentsDeleted: [], workspacesArchived: [], remainingAgents: [], remainingWorkspaces: [], orphanFree: false, daemonStopped: false, homeRemoved: false, attempts: 0, verified: false, error: String(error?.stack ?? error) };
+  }
+  const paseoCleanup = paseoCleanupResult;
+  summary.paseoCleanup = {
+    hermetic: true,
+    agentsDeleted: paseoCleanup.agentsDeleted ?? [],
+    workspacesArchived: paseoCleanup.workspacesArchived ?? [],
+    remainingAgents: paseoCleanup.remainingAgents ?? [],
+    remainingWorkspaces: paseoCleanup.remainingWorkspaces ?? [],
+    orphanFree: paseoCleanup.orphanFree ?? false,
+    daemonStopped: paseoCleanup.daemonStopped ?? false,
+    homeRemoved: paseoCleanup.homeRemoved ?? false,
+    attempts: paseoCleanup.attempts ?? 0,
+    verified: paseoCleanup.verified ?? false
+  };
+  if (!summary.paseoCleanup.orphanFree) {
+    for (const lane of summary.lanes) if (lane.result === "PASS") lane.result = "FAIL";
+  }
 }
 const after = await trackedDigest();
 summary.checkoutProof = { trackedDigestBefore: before.digest, trackedDigestAfter: after.digest, trackedFiles: before.files, checkoutUntouched: before.digest === after.digest, postRunTrackedDocEditWindow: { opensAfter: new Date().toISOString(), note: "R17-F8: tracked documentation/evidence writes after this timestamp are expected; compare source digests only within a run window." }, note: "Tracked digest captured before packing and after all real lifecycle journeys; all provider sessions run in the isolated Paseo home against disposable /tmp fixtures." };
