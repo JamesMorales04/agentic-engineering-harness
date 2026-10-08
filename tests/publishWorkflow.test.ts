@@ -1,4 +1,7 @@
 import fs from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import os from "node:os";
+import path from "node:path";
 import { parse } from "yaml";
 import { describe, expect, it } from "vitest";
 
@@ -166,5 +169,78 @@ describe("automatic publish workflow", () => {
     expect(pubSerialized).toMatch(/needs\.publish\.outputs\.release_sha/);
     expect(pubSerialized).toContain("git rev-parse HEAD");
     expect(pubSerialized).toContain("rev-list");
+  });
+
+  it("configures a stable bot git identity before every commit/tag write", async () => {
+    const text = await fs.readFile(new URL("../.github/workflows/publish.yml", import.meta.url), "utf8");
+    const workflow = parse(text) as Record<string, any>;
+    const jobs = workflow.jobs as Record<string, any>;
+    const BOT_NAME = "github-actions[bot]";
+    const BOT_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com";
+    // The bot identity must be present somewhere (no personal identity).
+    expect(text).toContain(BOT_NAME);
+    expect(text).toContain(BOT_EMAIL);
+    expect(text).not.toMatch(/jamesmoralesmoreno@gmail\.com/);
+    const hasIdentityConfig = (block: string): boolean =>
+      (block.includes("git config user.name") && block.includes("git config user.email")) ||
+      (block.includes("GIT_AUTHOR_NAME") && block.includes("GIT_AUTHOR_EMAIL")) ||
+      (block.includes("GIT_COMMITTER_NAME") && block.includes("GIT_COMMITTER_EMAIL"));
+    const writesGitIdentity = (run: string): boolean =>
+      /git commit\b/.test(run) || /git tag\b.*-[am]/.test(run) || /git tag -a/.test(run);
+    for (const [jobName, job] of Object.entries(jobs) as Array<[string, any]>) {
+      const steps = (job.steps ?? []) as Array<{ name?: string; run?: string; env?: Record<string, string> }>;
+      const jobEnv = JSON.stringify(job.env ?? {});
+      for (let i = 0; i < steps.length; i += 1) {
+        const run = steps[i].run ?? "";
+        if (!writesGitIdentity(run)) continue;
+        // Identity must be configured in the SAME run block, in a PRECEDING
+        // step of the same job, or via job/step-level env.
+        const sameBlock = hasIdentityConfig(run);
+        const preceding = steps.slice(0, i).some((s) => hasIdentityConfig(s.run ?? ""));
+        const stepEnv = JSON.stringify(steps[i].env ?? {});
+        const envCovered = hasIdentityConfig(`${jobEnv} ${stepEnv}`);
+        expect(
+          sameBlock || preceding || envCovered,
+          `job '${jobName}' step '${steps[i].name ?? i}' runs '${run.split("\n").find((l) => l.includes("git commit") || l.includes("git tag"))?.trim()}' without a preceding in-job git identity (git config user.* or GIT_AUTHOR_*/GIT_COMMITTER_* env)`,
+        ).toBe(true);
+      }
+    }
+    // At least both write sites must exist (commit in publish, annotated tag in publish-npm).
+    expect(JSON.stringify(jobs.publish)).toMatch(/git commit/);
+    expect(JSON.stringify(jobs["publish-npm"])).toMatch(/git tag -a/);
+  });
+
+  it("bot identity setup makes commit and annotated tag succeed with empty global config", async () => {
+    const text = await fs.readFile(new URL("../.github/workflows/publish.yml", import.meta.url), "utf8");
+    expect(text).toContain("github-actions[bot]");
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-ident-"));
+    const emptyGlobal = path.join(tmp, "empty-global-config");
+    await fs.writeFile(emptyGlobal, "");
+    const env: Record<string, string> = { ...process.env } as Record<string, string>;
+    env.GIT_CONFIG_GLOBAL = emptyGlobal;
+    env.GIT_CONFIG_SYSTEM = emptyGlobal;
+    delete env.GIT_AUTHOR_NAME;
+    delete env.GIT_AUTHOR_EMAIL;
+    delete env.GIT_COMMITTER_NAME;
+    delete env.GIT_COMMITTER_EMAIL;
+    const git = (args: string[], cwd = tmp): string =>
+      execFileSync("git", args, { cwd, encoding: "utf8", env });
+    git(["init", "-q"]);
+    git(["config", "--local", "--list"]);
+    await fs.writeFile(path.join(tmp, "probe.txt"), "identity\n");
+    git(["add", "probe.txt"]);
+    // Without identity, commit must fail (proves the gate is real).
+    expect(() => git(["commit", "-m", "probe"])).toThrow();
+    // Workflow's bot identity setup (mirrors publish.yml git config lines).
+    git(["config", "user.name", "github-actions[bot]"]);
+    git(["config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"]);
+    git(["commit", "-m", "probe"]);
+    expect(git(["log", "--format=%an <%ae>", "-1"]).trim()).toBe(
+      "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>",
+    );
+    // Annotated tags need the same tagger identity (fatal: empty ident name without it).
+    git(["tag", "-a", "v9.9.9-test", "-m", "v9.9.9-test"]);
+    expect(git(["tag", "-l", "v9.9.9-test"]).trim()).toBe("v9.9.9-test");
+    await fs.rm(tmp, { recursive: true, force: true });
   });
 });

@@ -24,6 +24,11 @@ jobs:
   publish:
     if: github.event_name == 'workflow_dispatch' || vars.AEH_AUTO_PUBLISH != 'false'
     runs-on: ubuntu-latest
+    env:
+      GIT_AUTHOR_NAME: github-actions[bot]
+      GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+      GIT_COMMITTER_NAME: github-actions[bot]
+      GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
     outputs:
       version: ${{ steps.version.outputs.version }}
       should_publish: ${{ steps.version.outputs.should_publish }}
@@ -294,6 +299,11 @@ jobs:
     needs: [publish, verify-published]
     if: needs.publish.outputs.should_publish == 'true'
     runs-on: ubuntu-latest
+    env:
+      GIT_AUTHOR_NAME: github-actions[bot]
+      GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+      GIT_COMMITTER_NAME: github-actions[bot]
+      GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
     steps:
       - uses: actions/checkout@v6
         with:
@@ -315,6 +325,8 @@ jobs:
           RELEASE_SHA: ${{ needs.publish.outputs.release_sha }}
         run: |
           set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           test -n "$RELEASE_SHA"
           test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
           TAG="v${RELEASE_VERSION}"
