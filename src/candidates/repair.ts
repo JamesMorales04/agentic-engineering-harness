@@ -7,6 +7,7 @@ import { loadOperation } from "../operations/state.js";
 import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import { deterministicParticipantId } from "../security/executionLease.js";
 import { recordEvent } from "../telemetry/events.js";
+import { recordPaseoTrace } from "../paseo/trace.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { minimatch } from "minimatch";
@@ -127,13 +128,41 @@ export async function executeRepairerCandidateMutation(input: {
     // BLOCKED receipt, never a throw and never a silent pass.
     const needed = parseRepairScopeBlockerFromSession(isolated.session);
     if (!needed) return { session: isolated.session };
-    assertBlockerFilesAreActuallyBlocked(needed.map((entry) => entry.path), input.allowedScope, [...input.forbiddenScope, ...repairProtectedPaths(input.config, input.contract)]);
+    const forbidden = [...input.forbiddenScope, ...repairProtectedPaths(input.config, input.contract)];
+    const partitioned = partitionRepairScopeBlockerFiles(needed, input.allowedScope, forbidden);
+    if (partitioned.stripped.length) {
+      // Best-effort diagnostic only (never authority): preserve the
+      // model-confusion signal for forensics. Failures are swallowed so the
+      // strip-and-proceed path is never masked by observability.
+      await recordPaseoTrace(input.stateRoot, "candidate.repair.blocker.stripped", {
+        operationId: input.operationId,
+        taskId: input.taskId,
+        workUnitId: input.workUnitId,
+        participantId,
+        mechanism: "DETERMINISTIC",
+        declared: partitioned.declared,
+        declaredCount: partitioned.declared.length,
+        stripped: partitioned.stripped,
+        strippedFiles: partitioned.stripped.map((entry) => entry.path),
+        strippedCount: partitioned.stripped.length,
+        genuinelyBlocked: partitioned.genuinelyBlocked,
+        genuinelyBlockedFiles: partitioned.genuinelyBlocked.map((entry) => entry.path),
+        genuinelyBlockedCount: partitioned.genuinelyBlocked.length,
+      }).catch(() => undefined);
+    }
+    if (!partitioned.genuinelyBlocked.length) {
+      // Vacuous declaration: every declared file was already writable, so
+      // there is no out-of-scope need to block on. Proceed without a blocker
+      // (no throw, no receipt, no amendment); the strip trace above preserves
+      // the model-confusion signal.
+      return { session: isolated.session };
+    }
     const blocker = createRepairScopeBlockerReceipt({
       operationId: input.operationId,
       taskId: input.taskId,
       workUnitId: input.workUnitId,
       participantId,
-      filesNeededOutsideScope: needed,
+      filesNeededOutsideScope: partitioned.genuinelyBlocked,
     });
     // Fail closed: the BLOCKED outcome is only valid with a durable receipt.
     // A receipt write failure throws (no suppression); write-then-verify reads
@@ -304,30 +333,59 @@ async function verifyRepairScopeBlockerReceipt(
 }
 
 /**
- * DETERMINISTIC guard: a blocker declaration is only valid when every
- * declared file is actually outside the frozen scope (not matched by
- * `allowedScope`) or explicitly denied (`forbiddenScope`, including the
- * default-deny protected paths). Declaring an already-writable file as a
- * blocker is rejected fail-closed so the channel cannot be abused to widen
- * scope. Model content, deterministic gate.
+ * DETERMINISTIC strip-and-trace partition for blocker declarations (H-NEW-7).
+ *
+ * A blocker declaration is only meaningful for files that are GENUINELY
+ * outside the frozen scope (not matched by `allowedScope`) or explicitly
+ * denied (`forbiddenScope`, including the default-deny protected paths).
+ * Declared files that are already writable (in-scope and not denied) carry
+ * no blocking force: they are stripped (filtered out) and traced as a
+ * diagnostic preserving the model-confusion signal, never terminal.
+ *
+ * Authority analysis (decision-mechanism invariant):
+ * - Stripping can never widen scope: every removed file was already writable
+ *   under the frozen `allowedScope`/`forbiddenScope`, so dropping it from the
+ *   blocker removes no deny and grants no write. The Repairer could already
+ *   edit it without any amendment.
+ * - The dangerous direction (adding files to the blocker, or widening the
+ *   allowlist) is untouched: the remainder still flows through the existing
+ *   blocker receipt → ledger-gated amendment path unchanged, and silent scope
+ *   expansion still throws in the assembler.
+ * - The abuse the old fail-closed gate guarded against (declaring a writable
+ *   file to coax an amendment that widens scope) is impossible via strip: a
+ *   stripped file never reaches the receipt, so it can never become an
+ *   exempted path. Model imprecision in the non-authority-expanding direction
+ *   must not kill the whole operation (cf. EMPTY_TEST_EVIDENCE refusal with
+ *   in-scope `src/providers/validation/pact.ts` cited as blocked).
+ *
+ * Mechanism: DETERMINISTIC. Model content (declared paths + reasons),
+ * deterministic gate (scope matching + trace).
  */
-function assertBlockerFilesAreActuallyBlocked(
-  files: readonly string[],
+function partitionRepairScopeBlockerFiles(
+  needed: readonly { path: string; reason: string }[],
   allowedScope: readonly string[],
   forbiddenScope: readonly string[],
-): void {
-  const invalid = files.filter((file) => {
-    const normalized = normalizeRepairScopePath(file);
+): {
+  declared: string[];
+  stripped: { path: string; reason: string }[];
+  genuinelyBlocked: { path: string; reason: string }[];
+} {
+  const declared = needed.map((entry) => normalizeRepairScopePath(entry.path));
+  const stripped: { path: string; reason: string }[] = [];
+  const genuinelyBlocked: { path: string; reason: string }[] = [];
+  for (const entry of needed) {
+    const normalized = normalizeRepairScopePath(entry.path);
     const outOfAllowed = !matchesAnyRepairScope(normalized, allowedScope);
     const denied = matchesAnyRepairScope(normalized, forbiddenScope);
-    return !outOfAllowed && !denied;
-  });
-  if (invalid.length) {
-    throw new AehError(
-      "PARTICIPANT_PLAN_INVALID",
-      `REPAIR_SCOPE_BLOCKER_NOT_BLOCKED: declared needed file(s) are already within the frozen scope: ${invalid.join(", ")}.`,
-    );
+    if (!outOfAllowed && !denied) {
+      stripped.push({ path: normalized, reason: entry.reason });
+    } else {
+      genuinelyBlocked.push({ path: normalized, reason: entry.reason });
+    }
   }
+  // Deterministic order: preserve the parser's locale-sorted declaration
+  // order (parseRepairScopeBlockerFromSession already sorts by path).
+  return { declared, stripped, genuinelyBlocked };
 }
 
 /**
