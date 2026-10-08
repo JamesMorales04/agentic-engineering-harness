@@ -830,13 +830,16 @@ export async function applyRepairScopeAmendment(input: {
  * 1. operation is non-terminal (exemptions die with terminal state);
  * 2. grant operationId matches the live operation (no cross-operation replay);
  * 3. grant controllerEpoch matches the live epoch (no reuse after takeover);
- * 4. grant MAC verifies under the LIVE controller token (forgery-proof: only
+ * 4. grant live identities (candidateRevision, candidateIdentityDigest,
+ *    policyDigest, operationExecutionRevision) match the LIVE operation state
+ *    (no reuse after a same-epoch candidate/policy/revision advance);
+ * 5. grant MAC verifies under the LIVE controller token (forgery-proof: only
  *    the token-holding controller can mint; managed children never inherit it);
- * 5. grant (and ledger decision) unexpired;
- * 6. ledger cross-check: the cited APPROVE/HARD_PROTECTION_EXEMPTION decision
+ * 6. grant (and ledger decision) unexpired;
+ * 7. ledger cross-check: the cited APPROVE/HARD_PROTECTION_EXEMPTION decision
  *    exists with identical exemptionId, exact paths, actor, and digest (a
  *    model-minted or edited decision cannot match a MAC-bound digest);
- * 7. every needed path is exactly covered by the grant (agent-declared need
+ * 8. every needed path is exactly covered by the grant (agent-declared need
  *    can only narrow human-authorized scope, never widen it).
  *
  * Consumption semantics: operation-scoped MULTI-amendment (bounded by exact
@@ -844,9 +847,10 @@ export async function applyRepairScopeAmendment(input: {
  * one-time-consumed on the ledger. Justification: repair loops legitimately
  * need re-amendment (amend → retry → new blocker on another granted path);
  * forcing a fresh human round-trip per amendment within the same
- * operation+epoch+paths adds no security, while replay across operations is
- * impossible (operationId MAC-bound + epoch-checked) and terminal state kills
- * the grant. Every use is traced in the amendment artifact provenance.
+ * operation+epoch+identities+paths adds no security, while replay across
+ * operations is impossible (operationId MAC-bound + epoch-checked),
+ * same-epoch advance invalidates (live-identity-checked), and terminal state
+ * kills the grant. Every use is traced in the amendment artifact provenance.
  */
 export async function verifyOwnerHardProtectionExemption(input: {
   operation: OperationRecordV2;
@@ -870,6 +874,25 @@ export async function verifyOwnerHardProtectionExemption(input: {
   }
   if (grant.controllerEpoch !== currentControllerEpoch(operation)) {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_EPOCH_STALE: the grant does not match the current controller epoch (takeover invalidates prior grants).");
+  }
+  // Live-identity binding (B1): the MAC body binds candidateRevision,
+  // candidateIdentityDigest, policyDigest, and operationExecutionRevision at
+  // anchor time. Every honor compares against LIVE operation state; any
+  // same-epoch advance (candidate advance, policy rebind, execution-revision
+  // increment) mismatches and refuses.
+  const liveCandidate = operation.candidateRevision;
+  const livePolicyDigest = operation.resolvedOperationPolicy?.digest;
+  const liveExecutionRevision = operation.operationExecutionRevision;
+  if (!liveCandidate || !Number.isSafeInteger(liveCandidate.revision) || !liveCandidate.identityDigest
+    || typeof livePolicyDigest !== "string" || !/^[a-f0-9]{64}$/.test(livePolicyDigest)
+    || !Number.isSafeInteger(liveExecutionRevision)) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_BINDING_STALE: the live operation candidate, policy, or execution revision is unavailable; the grant cannot be honored.");
+  }
+  if (grant.candidateRevision !== liveCandidate.revision
+    || grant.candidateIdentityDigest !== liveCandidate.identityDigest
+    || grant.policyDigest !== livePolicyDigest
+    || grant.operationExecutionRevision !== liveExecutionRevision) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_BINDING_STALE: the grant does not match the current candidate, policy digest, or execution revision (same-epoch advance invalidates prior grants).");
   }
   if (!verifyOwnerExemptionMac(controllerTokenFromEnvironment(), grant)) {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_FORGED: grant MAC integrity check failed; the grant was not minted by the live controller.");
@@ -1390,9 +1413,9 @@ export async function resolveRepairScopeBlockerViaProductChoice(input: {
  * HARD-protection defense: when `hardProtected` is provided, any exempted
  * path intersecting it throws fail-closed (never exemptible) — UNLESS a
  * verified owner grant is presented via `ownerScope`. The filter tier
- * re-verifies the MAC under the live controller token plus operation/epoch
- * binding, expiry, terminal state, and exact coverage (all sync, no ledger
- * I/O); the async authority gate (`verifyOwnerHardProtectionExemption`,
+ * re-verifies the MAC under the live controller token plus operation/epoch/
+ * live-identity binding, expiry, terminal state, and exact coverage (all sync,
+ * no ledger I/O); the async authority gate (`verifyOwnerHardProtectionExemption`,
  * incl. the ledger cross-check) already ran in the amendment-apply path and
  * re-runs in the retry caller before this filter executes. A forged, stale,
  * expired, terminal, or non-covering grant throws the same NON_EXEMPTIBLE as
@@ -1407,6 +1430,10 @@ export function filterForbiddenScopeForAmendment(
     grant: OwnerHardProtectionExemptionGrantV1;
     operationId: string;
     controllerEpoch: number;
+    candidateRevision: number;
+    candidateIdentityDigest: string;
+    policyDigest: string;
+    operationExecutionRevision: number;
     terminal: boolean;
   },
 ): string[] {
@@ -1442,13 +1469,17 @@ function ownerExemptionCoversHardPaths(
     grant: OwnerHardProtectionExemptionGrantV1;
     operationId: string;
     controllerEpoch: number;
+    candidateRevision: number;
+    candidateIdentityDigest: string;
+    policyDigest: string;
+    operationExecutionRevision: number;
     terminal: boolean;
   } | undefined,
 ): boolean {
   // No grant, or the amendment does not cite one: not covered (existing
   // fail-closed behavior preserved bit-for-bit for all current callers).
   if (!ownerScope || !amendment.ownerExemption) return false;
-  const { grant, operationId, controllerEpoch, terminal } = ownerScope;
+  const { grant, operationId, controllerEpoch, candidateRevision, candidateIdentityDigest, policyDigest, operationExecutionRevision, terminal } = ownerScope;
   try {
     assertOwnerHardProtectionExemptionGrant(grant);
   } catch {
@@ -1457,6 +1488,14 @@ function ownerExemptionCoversHardPaths(
   if (terminal) return false;
   if (grant.exemptionId !== amendment.ownerExemption.exemptionId) return false;
   if (grant.operationId !== operationId || grant.controllerEpoch !== controllerEpoch) return false;
+  // Live-identity binding (B1, sync tier): same-epoch advance invalidates even
+  // when operationId/epoch still match. Missing live fields fail closed.
+  if (!Number.isSafeInteger(candidateRevision) || typeof candidateIdentityDigest !== "string"
+    || typeof policyDigest !== "string" || !Number.isSafeInteger(operationExecutionRevision)) return false;
+  if (grant.candidateRevision !== candidateRevision
+    || grant.candidateIdentityDigest !== candidateIdentityDigest
+    || grant.policyDigest !== policyDigest
+    || grant.operationExecutionRevision !== operationExecutionRevision) return false;
   if (!verifyOwnerExemptionMac(controllerTokenFromEnvironment(), grant)) return false;
   if (grant.expiresAt && new Date(grant.expiresAt).getTime() <= Date.now()) return false;
   return hardViolations

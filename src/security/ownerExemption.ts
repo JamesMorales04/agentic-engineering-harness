@@ -19,11 +19,14 @@ import { canonicalSerialize } from "../core/digest.js";
  *   managed-child scrubbing removes AEH_CONTROLLER_TOKEN/EPOCH
  *   (utils/process.ts MANAGED_CHILD_ENV_SCRUB_KEYS). Only the live
  *   controller process holding the token can mint or verify a grant.
- * - The MAC body binds `operationId` + `controllerEpoch`: replay across
- *   operations, or reuse after a controller takeover (epoch increment), fails
- *   the MAC/binding check. Terminal operations strip their grants (and every
- *   verifier independently refuses terminal records), so lifetime is bounded
- *   by the operation's terminal state.
+ * - The MAC body binds `operationId` + `controllerEpoch` + live operation
+ *   identities (`candidateRevision`, `candidateIdentityDigest`, `policyDigest`,
+ *   `operationExecutionRevision`): replay across operations, reuse after a
+ *   controller takeover (epoch increment), or reuse after a same-epoch
+ *   candidate/policy/revision advance fails the MAC/binding check. Terminal
+ *   operations strip their grants (and every verifier independently refuses
+ *   terminal records), so lifetime is bounded by the operation's terminal
+ *   state.
  *
  * TRUST ASSUMPTION (explicit): the controller token stays secret to the
  * controller process. If it leaks, ALL controller authority (not just this
@@ -47,6 +50,14 @@ export interface OwnerHardProtectionExemptionGrantV1 {
   exemptionId: string;
   operationId: string;
   controllerEpoch: number;
+  /** Live candidate revision bound at anchor; same-epoch advance invalidates. */
+  candidateRevision: number;
+  /** Live candidate identityDigest bound at anchor; same-epoch advance invalidates. */
+  candidateIdentityDigest: string;
+  /** Live frozen policy digest bound at anchor; same-epoch advance invalidates. */
+  policyDigest: string;
+  /** Live operation execution revision bound at anchor; same-epoch advance invalidates. */
+  operationExecutionRevision: number;
   /** Exact files only (sorted, unique, no globs); new-file paths allowed. */
   paths: string[];
   /** Ledger provenance: the APPROVE/HARD_PROTECTION_EXEMPTION decision this grant anchors. */
@@ -109,7 +120,7 @@ function instant(value: unknown, name: string): string {
 export function assertOwnerHardProtectionExemptionGrant(value: unknown): asserts value is OwnerHardProtectionExemptionGrantV1 {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("OWNER_EXEMPTION_GRANT_INVALID: grant must be an object.");
   const record = value as Record<string, unknown>;
-  const allowed = ["version", "kind", "mechanism", "exemptionId", "operationId", "controllerEpoch", "paths", "decisionId", "decisionDigest", "decidedActor", "decisionReason", "createdAt", "expiresAt", "mac"];
+  const allowed = ["version", "kind", "mechanism", "exemptionId", "operationId", "controllerEpoch", "candidateRevision", "candidateIdentityDigest", "policyDigest", "operationExecutionRevision", "paths", "decisionId", "decisionDigest", "decidedActor", "decisionReason", "createdAt", "expiresAt", "mac"];
   const extra = Object.keys(record).filter((key) => !allowed.includes(key));
   if (extra.length) throw new Error(`OWNER_EXEMPTION_GRANT_INVALID: unsupported fields: ${extra.join(", ")}.`);
   const grant = value as OwnerHardProtectionExemptionGrantV1;
@@ -119,6 +130,10 @@ export function assertOwnerHardProtectionExemptionGrant(value: unknown): asserts
   if (!OWNER_EXEMPTION_ID_PATTERN.test(requiredText(grant.exemptionId, "exemptionId", 64))) throw new Error("OWNER_EXEMPTION_GRANT_INVALID: exemptionId must be 'exemption:<uuid>'.");
   requiredText(grant.operationId, "operationId", 200);
   if (!Number.isSafeInteger(grant.controllerEpoch) || grant.controllerEpoch < 0) throw new Error("OWNER_EXEMPTION_GRANT_INVALID: controllerEpoch must be a non-negative safe integer.");
+  if (!Number.isSafeInteger(grant.candidateRevision) || grant.candidateRevision < 1) throw new Error("OWNER_EXEMPTION_GRANT_INVALID: candidateRevision must be a positive safe integer.");
+  if (!/^[a-f0-9]{64}$/.test(grant.candidateIdentityDigest)) throw new Error("OWNER_EXEMPTION_GRANT_INVALID: candidateIdentityDigest must be a lowercase SHA-256 digest.");
+  if (!/^[a-f0-9]{64}$/.test(grant.policyDigest)) throw new Error("OWNER_EXEMPTION_GRANT_INVALID: policyDigest must be a lowercase SHA-256 digest.");
+  if (!Number.isSafeInteger(grant.operationExecutionRevision) || grant.operationExecutionRevision < 1) throw new Error("OWNER_EXEMPTION_GRANT_INVALID: operationExecutionRevision must be a positive safe integer.");
   if (!Array.isArray(grant.paths) || grant.paths.length < 1 || grant.paths.length > 8) throw new Error("OWNER_EXEMPTION_GRANT_INVALID: grant paths must contain 1 to 8 exact files.");
   for (const entry of grant.paths) requiredText(entry, "grant path", 500);
   const sorted = [...new Set(grant.paths)].sort((a, b) => a.localeCompare(b));

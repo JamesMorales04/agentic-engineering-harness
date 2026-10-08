@@ -420,6 +420,10 @@ function effectiveRepairScope(
     grant: OwnerHardProtectionExemptionGrantV1;
     operationId: string;
     controllerEpoch: number;
+    candidateRevision: number;
+    candidateIdentityDigest: string;
+    policyDigest: string;
+    operationExecutionRevision: number;
     terminal: boolean;
   },
 ): { allowedScope: readonly string[]; forbiddenScope: readonly string[] } {
@@ -449,8 +453,8 @@ function effectiveRepairScope(
 /**
  * DETERMINISTIC owner-exemption resolution for an amended retry (controller
  * context only). Re-verifies the amendment-cited grant against durable state
- * (MAC under the live token, operation/epoch binding, expiry, ledger
- * cross-check, exact coverage of everything the amendment exempts) and
+ * (MAC under the live token, operation/epoch/live-identity binding, expiry,
+ * ledger cross-check, exact coverage of everything the amendment exempts) and
  * returns the verified scope context for the sync filter. Any failure yields
  * undefined — the filter then throws NON_EXEMPTIBLE exactly as before (fail
  * closed). The in-memory amendment is never trusted on its own: only a
@@ -465,6 +469,10 @@ async function verifiedOwnerExemptionForRetry(
     grant: OwnerHardProtectionExemptionGrantV1;
     operationId: string;
     controllerEpoch: number;
+    candidateRevision: number;
+    candidateIdentityDigest: string;
+    policyDigest: string;
+    operationExecutionRevision: number;
     terminal: boolean;
   }
   | undefined
@@ -481,10 +489,19 @@ async function verifiedOwnerExemptionForRetry(
       grant,
       ledger,
     });
+    const liveCandidate = operation.candidateRevision;
+    const livePolicyDigest = operation.resolvedOperationPolicy?.digest;
+    const liveExecutionRevision = operation.operationExecutionRevision;
+    if (!liveCandidate || typeof livePolicyDigest !== "string" || !Number.isSafeInteger(liveExecutionRevision)
+      || liveExecutionRevision === undefined) return undefined;
     return {
       grant,
       operationId: operation.id,
       controllerEpoch: currentControllerEpoch(operation),
+      candidateRevision: liveCandidate.revision,
+      candidateIdentityDigest: liveCandidate.identityDigest,
+      policyDigest: livePolicyDigest,
+      operationExecutionRevision: liveExecutionRevision as number,
       terminal: isTerminalOperation(operation.status),
     };
   } catch {

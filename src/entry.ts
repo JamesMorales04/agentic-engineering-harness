@@ -174,7 +174,8 @@ async function runControlCenter(argv: string[]): Promise<void> {
         ...(typeof result.operationId === "string" ? { operationId: result.operationId } : {}),
         ...(typeof result.candidateRevision === "number" ? { candidateRevision: result.candidateRevision } : {}),
         ...(typeof result.requestId === "string" ? { requestId: result.requestId } : {}),
-        ...(typeof result.choiceId === "string" ? { choiceId: result.choiceId } : {})
+        ...(typeof result.choiceId === "string" ? { choiceId: result.choiceId } : {}),
+        ...(typeof (result as Record<string, unknown>).exemptionId === "string" ? { exemptionId: (result as Record<string, unknown>).exemptionId as string } : {})
       };
     } : undefined,
     onCancelOperation: root ? async (operationId, actorId): Promise<ControlCenterActionResultV1> => {
