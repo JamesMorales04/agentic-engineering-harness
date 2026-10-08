@@ -379,28 +379,72 @@ export function normalizeRepairScopePath(value: string): string {
 }
 
 /**
- * DETERMINISTIC parse of the Repairer `repair-result` no-mutation report.
+ * DETERMINISTIC parse of the Implementer / Repairer no-mutation report
+ * (H-NEW-1 canonical extractor, H-NEW-7 strip-and-trace preserved).
  * Returns the declared needed files when stdout/stderr carries a schema-valid
- * `repair-result` payload with a non-empty `filesNeededOutsideScope`, else
- * undefined. Throws REPAIR_SCOPE_BLOCKER_CONFLICT fail-closed when a
+ * `repair-result` OR `implementer` payload with a non-empty
+ * `filesNeededOutsideScope`, else undefined. The Implementer role declares via
+ * its own `implementer` output contract (filesChanged + behaviorImplemented +
+ * filesNeededOutsideScope); the Repairer declares via `repair-result`. Both
+ * share the same no-mutation invariant and normalization.
+ * Throws REPAIR_SCOPE_BLOCKER_CONFLICT fail-closed when a
  * schema-valid (or zod-flagged) payload declares needed files AND file changes
  * (the no-mutation invariant); conflict is never swallowed as undefined.
  * Throws REPAIR_SCOPE_BLOCKER_INVALID fail-closed when a marker is observed
  * but its payload is not valid JSON (MARKER_INVALID_JSON / NATIVE_JSON_INVALID
  * via the canonical extractor); truncation is never swallowed as undefined.
- * Returns undefined ONLY for absent markers (EMPTY_OUTPUT / NO_MARKER).
+ * Returns undefined ONLY for absent markers (EMPTY_OUTPUT / NO_MARKER) or for
+ * schema-valid payloads with no needed files.
  * Model content, deterministic validation.
  */
 export function parseRepairScopeBlockerFromSession(session: Pick<WorkerSession, "stdout" | "stderr">): RepairScopeNeededFileV1[] | undefined {
   const marker = extractMarkedRepairResult(session.stdout, session.stderr ?? "");
   if (!marker) return undefined;
-  const validation = validateAgentOutput("repair-result", marker);
-  if (!validation.ok) {
+  const repairValidation = validateAgentOutput("repair-result", marker);
+  if (repairValidation.ok) {
+    const value = repairValidation.value as { filesChanged?: string[]; filesNeededOutsideScope?: RepairScopeNeededFileV1[] };
+    const needed = value.filesNeededOutsideScope ?? [];
+    if (needed.length) {
+      // The output-contract schema already enforces no-mutation (filesChanged empty
+      // when needed files are declared); re-check here so a forged payload that
+      // bypassed schema registration cannot slip through. Fail closed with a
+      // distinct conflict diagnostic instead of undefined.
+      if ((value.filesChanged ?? []).length > 0) {
+        throw new AehError(
+          "PARTICIPANT_PLAN_INVALID",
+          "REPAIR_SCOPE_BLOCKER_CONFLICT: filesNeededOutsideScope is a no-mutation report path; filesChanged must be empty when needed files are declared.",
+        );
+      }
+      const parsed = normalizeBlockerEntries(needed);
+      if (parsed) return parsed;
+      // A repair-valid payload with invalid entries falls through to the
+      // implementer attempt only when it could be an implementer shape;
+      // otherwise its normalization outcome (undefined vs throw) stands.
+      // Repair-valid + needed non-empty + normalization undefined means
+      // invalid entries (traversal etc.) — return undefined to preserve
+      // H-NEW-1/H-NEW-7 behavior (traversal is ignored, globs throw inside).
+      return undefined;
+    }
+    // Repair-valid with no needed files: may still be an implementer-shaped
+    // payload that coincidentally validates as repair (generic fields only)?
+    // Fall through to the implementer attempt; a genuine implementer blocker
+    // carries behaviorImplemented and fails repair strict validation, so this
+    // path only matters for ambiguous payloads.
+  } else {
     // Distinct conflict diagnostic: zod already enforces no-mutation via
     // superRefine, so a REPAIR_SCOPE_BLOCKER_CONFLICT issue means the payload
     // is a forged/conflicting report, not an absent marker. Fail closed
     // instead of returning undefined (which callers treat as "no blocker").
-    if (validation.issues.some((issue) => issue.includes("REPAIR_SCOPE_BLOCKER_CONFLICT"))) {
+    if (repairValidation.issues.some((issue) => issue.includes("REPAIR_SCOPE_BLOCKER_CONFLICT"))) {
+      throw new AehError(
+        "PARTICIPANT_PLAN_INVALID",
+        "REPAIR_SCOPE_BLOCKER_CONFLICT: filesNeededOutsideScope is a no-mutation report path; filesChanged must be empty when needed files are declared.",
+      );
+    }
+  }
+  const implementerValidation = validateAgentOutput("implementer", marker);
+  if (!implementerValidation.ok) {
+    if (implementerValidation.issues.some((issue) => issue.includes("REPAIR_SCOPE_BLOCKER_CONFLICT"))) {
       throw new AehError(
         "PARTICIPANT_PLAN_INVALID",
         "REPAIR_SCOPE_BLOCKER_CONFLICT: filesNeededOutsideScope is a no-mutation report path; filesChanged must be empty when needed files are declared.",
@@ -408,19 +452,19 @@ export function parseRepairScopeBlockerFromSession(session: Pick<WorkerSession, 
     }
     return undefined;
   }
-  const value = validation.value as { filesChanged?: string[]; filesNeededOutsideScope?: RepairScopeNeededFileV1[] };
-  const needed = value.filesNeededOutsideScope ?? [];
-  if (!needed.length) return undefined;
-  // The output-contract schema already enforces no-mutation (filesChanged empty
-  // when needed files are declared); re-check here so a forged payload that
-  // bypassed schema registration cannot slip through. Fail closed with a
-  // distinct conflict diagnostic instead of undefined.
-  if ((value.filesChanged ?? []).length > 0) {
+  const implValue = implementerValidation.value as { filesChanged?: string[]; filesNeededOutsideScope?: RepairScopeNeededFileV1[] };
+  const implNeeded = implValue.filesNeededOutsideScope ?? [];
+  if (!implNeeded.length) return undefined;
+  if ((implValue.filesChanged ?? []).length > 0) {
     throw new AehError(
       "PARTICIPANT_PLAN_INVALID",
       "REPAIR_SCOPE_BLOCKER_CONFLICT: filesNeededOutsideScope is a no-mutation report path; filesChanged must be empty when needed files are declared.",
     );
   }
+  return normalizeBlockerEntries(implNeeded);
+}
+
+function normalizeBlockerEntries(needed: RepairScopeNeededFileV1[]): RepairScopeNeededFileV1[] | undefined {
   const normalized: RepairScopeNeededFileV1[] = [];
   for (const entry of needed) {
     if (typeof entry?.path !== "string" || typeof entry?.reason !== "string") return undefined;
