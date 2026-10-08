@@ -33,10 +33,16 @@ describe("artifact provenance binding (release_sha sidecar)", () => {
     expect(packStep.run!, "pack step writes sidecar").toMatch(/provenance/i);
     expect(packStep.run!, "sidecar binds release_sha").toMatch(/release_sha/i);
     expect(packStep.run!, "sidecar records tarball digest").toMatch(/sha512/i);
-    // Upload retains sidecar alongside tarball (directory upload or explicit file).
-    const retain = pubSteps.find((s) => JSON.stringify(s).includes("upload-artifact"))!;
+    // Upload retains sidecar alongside tarball via EXPLICIT file paths
+    // (round-3 U1: verified tarball + sidecar + digest, never the directory).
+    const retain = pubSteps.find((s) => ((s as any).uses ?? "").includes("upload-artifact"))!;
     expect(retain).toBeDefined();
-    expect(JSON.stringify(retain), "retain uploads sidecar dir").toMatch(/aeh-npm-retained/);
+    const retainPath = (retain.with as any)?.path as string;
+    expect(retainPath, "retain step has an explicit path list").toBeDefined();
+    expect(retainPath, "retain uploads explicit files, not the directory").not.toMatch(/aeh-npm-retained\/?$/);
+    expect(JSON.stringify(retain), "retain uploads sidecar explicitly").toMatch(/npm-provenance\.json/);
+    expect(JSON.stringify(retain), "retain uploads tarball explicitly").toMatch(/\.tgz/);
+    expect(JSON.stringify(retain), "retain uploads digest explicitly").toMatch(/npm-identity\.digest/);
     // Sidecar filename convention present in workflow.
     expect(text).toMatch(/npm-provenance\.json|provenance\.json/i);
   });
@@ -251,9 +257,15 @@ describe("TOCTOU bind: recheck exact bytes before each consume (Luna round-2)", 
     expect(src).toMatch(/DIGEST_RE|sha512-\[A-Za-z0-9/);
     expect(src).toMatch(/--recheck/);
     expect(src).toMatch(/TOCTOU/);
-    // Accepted residual documented in the gate with rationale (sub-ms + preimage).
-    expect(src).toMatch(/sub-millisecond|sub-ms/);
-    expect(src).toMatch(/preimage/i);
+    // Honest residual model (round-3): recheck narrows but cannot close a
+    // file-based handoff (swap needs NO preimage); post-publish attestation
+    // (registry ground truth + deprecate) is the closer. No sub-ms fable.
+    expect(src).toMatch(/workspace-write/i);
+    expect(src).toMatch(/NOT remotely/i);
+    expect(src).toMatch(/POST-PUBLISH ATTESTATION|attestation/i);
+    expect(src).toMatch(/npm deprecate/i);
+    expect(src, "no sub-ms race fable").not.toMatch(/sub-millisecond|sub-ms/i);
+    expect(src, "no preimage-required fable").not.toMatch(/needs a sha512 preimage/i);
   });
 
   it("every consume boundary rechecks in the same step immediately before consume", async () => {
@@ -272,11 +284,18 @@ describe("TOCTOU bind: recheck exact bytes before each consume (Luna round-2)", 
     expect(publishStep).toBeDefined();
     const lines = (publishStep.run ?? "").split("\n");
     const recheckIdx = lines.findIndex((l) => l.includes("--recheck"));
-    const publishIdx = lines.findIndex((l) => l.includes("npm publish"));
+    // Actual publish invocation (quoted tarball path), not a comment mentioning `npm publish`.
+    const publishIdx = lines.findIndex((l) => /npm publish ["']/.test(l));
     expect(recheckIdx, "publish step contains a recheck").toBeGreaterThanOrEqual(0);
     expect(publishIdx, "publish step contains npm publish").toBeGreaterThan(recheckIdx);
     expect(publishIdx - recheckIdx, "recheck is immediately before publish (same step, no IO between)").toBeLessThan(8);
     expect(publishStep.run!).toMatch(/verify-artifact-provenance\.mjs --recheck/);
+    // Post-publish attestation (round-3 U2): registry ground truth AFTER the
+    // publish invocation, with deprecate on mismatch (detect-and-deprecate).
+    const attestIdx = lines.findIndex((l, i) => i > publishIdx && l.includes("dist.integrity"));
+    expect(attestIdx, "publish step attests registry integrity after publish").toBeGreaterThan(publishIdx);
+    expect(publishStep.run!).toMatch(/npm deprecate/);
+    expect(publishStep.run!).toMatch(/attestation/i);
     // Confirm: recheck in the same step immediately before the identity-gate consumption.
     const confirmRun = pubSteps.find((s) => s.name === "Confirm published version is on npm")!.run!;
     const cLines = confirmRun.split("\n");
@@ -305,10 +324,17 @@ describe("TOCTOU bind: recheck exact bytes before each consume (Luna round-2)", 
     })) {
       expect(run, `${site} binds via the script (single implementation)`).toMatch(/verify-artifact-provenance\.mjs --recheck/);
     }
-    // Accepted residual documented at the boundaries (sub-ms + preimage rationale).
-    expect(text).toMatch(/sub-ms|sub-millisecond/i);
-    expect(text).toMatch(/preimage/i);
-    expect(text).toMatch(/residual/i);
+    // Honest residual model (round-3): no sub-ms/preimage fable. The recheck
+    // narrows a file-based handoff that needs NO preimage to exploit;
+    // runner-local threat (workspace-write, NOT remotely exploitable) is
+    // closed by post-publish attestation (detect-and-deprecate).
+    expect(text, "no sub-ms race fable").not.toMatch(/sub-ms|sub-millisecond/i);
+    expect(text, "no preimage-required fable").not.toMatch(/needs a sha512 preimage/i);
+    expect(text).toMatch(/workspace-write/i);
+    expect(text).toMatch(/NOT remotely/i);
+    expect(text).toMatch(/attestation/i);
+    expect(text).toMatch(/npm deprecate/i);
+    expect(text).toMatch(/residual|narrow/i);
   });
 
   it("TOCTOU e2e: swapped bytes between verify and publish are refused (never published)", async () => {

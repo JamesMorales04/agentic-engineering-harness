@@ -29,14 +29,19 @@
 // semantics as verify mode, digest-only since release_sha/name/version were
 // already bound by the earlier full verify).
 //
-// Accepted residual: the recheck→exec window inside one shell step is
-// sub-millisecond (two adjacent lines, no network/IO between them). An
-// attacker must win that sub-ms race AND the swapped bytes must still match
-// the sidecar digest — a second swap needs a sha512 preimage, which is
-// computationally infeasible. Cross-step gaps (pack→upload-artifact action)
-// are narrowed to one immediately-preceding recheck shell step, and any swap
-// that slips through there is still caught by the pre-consume recheck before
-// publish/Release (defense in depth: upload is never a trust boundary).
+// Honest residual model: the recheck NARROWS but cannot CLOSE a file-based
+// handoff to a separate process (`npm publish`, the upload-artifact action,
+// or the identity-gate consumer re-reading the file). A swap after the
+// recheck needs NO preimage — any bytes cross. Threat model: runner-local
+// swap only (requires workspace-write on this runner mid-step; NOT remotely
+// exploitable). Defense in depth: (1) pre-consume recheck before every
+// publish/Release consumption fails closed on swapped bytes; (2) the
+// single-tgz upload guard ensures only the verified file crosses the artifact
+// boundary; (3) POST-PUBLISH ATTESTATION queries the registry ground truth
+// (`npm view <name>@<version> dist.integrity` vs the sidecar digest) after
+// `npm publish` and, on mismatch, fails LOUDLY + runs `npm deprecate` to
+// block installs — converting a runner-local swap from silent compromise to
+// detected-and-deprecated with bounded blast radius.
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 

@@ -420,21 +420,36 @@ jobs:
           # uploaded and compare to the sidecar digest (fail closed on
           # mismatch). The upload-artifact action is a separate step, so this
           # shell step runs immediately before it to narrow the window.
-          # Accepted residual: recheck->upload is a cross-step gap (ms); any
-          # swap that slips through is still caught by the pre-consume
-          # recheck before publish/Release (upload is never a trust boundary;
-          # second swap needs a sha512 preimage).
+          # U1 scope bind: EXACTLY ONE .tgz may cross the artifact boundary.
+          # The recheck verifies ONE selected tarball, so sibling tarballs
+          # would cross UNRECHECKED via a directory upload. Fail closed on
+          # 0 or >1 survivors; the upload step below lists EXPLICIT file
+          # paths (verified tarball via single-file glob + sidecar + digest),
+          # never the retained directory. Upload is not a trust boundary:
+          # any swap that slips through the cross-step gap is still caught by
+          # the pre-consume recheck before publish and by post-publish
+          # attestation after publish (detect-and-deprecate).
           RETAIN_DIR="${RUNNER_TEMP:-$PWD}/aeh-npm-retained"
-          TARBALL="$(ls "$RETAIN_DIR"/*.tgz | head -n 1)"
+          mapfile -t CANDIDATES < <(ls "$RETAIN_DIR"/*.tgz 2>/dev/null || true)
+          if [ "${#CANDIDATES[@]}" -ne 1 ]; then
+            echo "Refusing upload: expected exactly ONE retained tarball in $RETAIN_DIR, found ${#CANDIDATES[@]} (sibling tarballs would cross unrechecked; fail closed)." >&2
+            ls -la "$RETAIN_DIR" >&2 || true
+            exit 1
+          fi
+          TARBALL="${CANDIDATES[0]}"
           test -s "$TARBALL"
           test -s "$RETAIN_DIR/npm-provenance.json"
+          test -s "$RETAIN_DIR/npm-identity.digest"
           node scripts/ci/verify-artifact-provenance.mjs --recheck "$TARBALL" "$RETAIN_DIR/npm-provenance.json"
 
       - name: Retain release tarball for retry
         uses: actions/upload-artifact@v4
         with:
           name: aeh-npm-tarball
-          path: ${{ runner.temp }}/aeh-npm-retained/
+          path: |
+            ${{ runner.temp }}/aeh-npm-retained/*.tgz
+            ${{ runner.temp }}/aeh-npm-retained/npm-provenance.json
+            ${{ runner.temp }}/aeh-npm-retained/npm-identity.digest
           if-no-files-found: error
           overwrite: true
 
@@ -489,15 +504,34 @@ jobs:
               fi
               # TOCTOU bind: recompute sha512 of the exact bytes about to be
               # published IN THE SAME shell step, immediately before the
-              # publish invocation (fail closed on mismatch). Accepted
-              # residual: recheck->publish is sub-ms (adjacent lines, no
-              # network/IO between); attacker must win a sub-ms race AND match
-              # the digest (second swap needs a sha512 preimage).
+              # publish invocation (fail closed on mismatch). This NARROWS the
+              # window but cannot CLOSE a file-based handoff to a separate
+              # `npm publish` process: a swap after the recheck needs NO
+              # preimage (any bytes publish). The gap is closed by
+              # POST-PUBLISH ATTESTATION below (registry ground truth +
+              # deprecate). Threat model: runner-local swap only (requires
+              # workspace-write on this runner mid-step; NOT remotely
+              # exploitable) — attestation converts silent compromise to
+              # detected-and-deprecated with bounded blast radius.
               node scripts/ci/verify-artifact-provenance.mjs --recheck "$TARBALL" "$RETAIN_DIR/npm-provenance.json" || {
                 echo "Refusing to publish $PACKAGE_NAME@$RELEASE_VERSION: tarball changed between verify and publish (TOCTOU recheck failed, fail closed)." >&2
                 exit 1
               }
               npm publish "$TARBALL" --provenance
+              # POST-PUBLISH ATTESTATION (U2): query the registry ground truth
+              # (`npm view <name>@<version> dist.integrity`) and compare to the
+              # sidecar digest. Match -> proceed to Release; mismatch/UNKNOWN ->
+              # fail LOUDLY + `npm deprecate` to block installs + trace.
+              SIDECAR_DIGEST="$(node -e "process.stdout.write(JSON.parse(require('node:fs').readFileSync(process.argv[1],'utf8')).tarball_sha512)" "$RETAIN_DIR/npm-provenance.json")"
+              if node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --local-digest "$SIDECAR_DIGEST"; then
+                echo "Post-publish attestation verified: $PACKAGE_NAME@$RELEASE_VERSION registry integrity matches sidecar $SIDECAR_DIGEST."
+              else
+                attest_code=$?
+                echo "Post-publish attestation FAILED for $PACKAGE_NAME@$RELEASE_VERSION: registry integrity != sidecar $SIDECAR_DIGEST (exit $attest_code; recheck→publish swap? failing LOUDLY and deprecating to block installs)." >&2
+                npm deprecate "$PACKAGE_NAME@$RELEASE_VERSION" "aeh: integrity mismatch (post-publish attestation failed; do not install)" || true
+                echo "Post-publish attestation trace: package=$PACKAGE_NAME version=$RELEASE_VERSION sidecar_digest=$SIDECAR_DIGEST result=FAILED-deprecated exit=$attest_code" >&2
+                exit 1
+              fi
             elif [ "$code" -eq 3 ]; then
               echo "Refusing to publish $PACKAGE_NAME@$RELEASE_VERSION: registry lookup UNKNOWN (network/auth/parse, fail closed, never publish on UNKNOWN)." >&2
               exit 1
@@ -538,8 +572,12 @@ jobs:
           }
           # TOCTOU bind: recompute sha512 of the exact bytes about to be
           # consumed by the identity gate IN THE SAME shell step, immediately
-          # before it (fail closed on mismatch). Accepted residual: sub-ms
-          # (adjacent lines; second swap needs a sha512 preimage).
+          # before it (fail closed on mismatch). This NARROWS the window but
+          # cannot CLOSE a file-based handoff: a swap after the recheck needs
+          # NO preimage. Threat model: runner-local swap only (requires
+          # workspace-write on this runner mid-step; NOT remotely
+          # exploitable); the identity gate hashes the consumed bytes, so a
+          # swapped file fails closed as a mismatch (never a silent Release).
           node scripts/ci/verify-artifact-provenance.mjs --recheck "$TARBALL" "$RETAIN_DIR/npm-provenance.json" || {
             echo "Refusing Release for $PACKAGE_NAME@$RELEASE_VERSION: tarball changed between verify and confirm (TOCTOU recheck failed, fail closed)." >&2
             exit 1
@@ -687,8 +725,12 @@ jobs:
           test -s "$RETAIN_TARBALL"
           # TOCTOU bind: recompute sha512 of the exact bytes about to be
           # consumed by the identity gate IN THE SAME shell step, immediately
-          # before it (fail closed on mismatch). Accepted residual: sub-ms
-          # (adjacent lines; second swap needs a sha512 preimage).
+          # before it (fail closed on mismatch). This NARROWS the window but
+          # cannot CLOSE a file-based handoff: a swap after the recheck needs
+          # NO preimage. Threat model: runner-local swap only (requires
+          # workspace-write on this runner mid-step; NOT remotely
+          # exploitable); the identity gate hashes the consumed bytes, so a
+          # swapped file fails closed as a mismatch (never a silent Release).
           node scripts/ci/verify-artifact-provenance.mjs --recheck "$RETAIN_TARBALL" "$RETAIN_DIR/npm-provenance.json" || {
             echo "Refusing repair Release for $PACKAGE_NAME@$RELEASE_VERSION: tarball changed between verify and consume (TOCTOU recheck failed, fail closed)." >&2
             exit 1

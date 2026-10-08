@@ -26,11 +26,17 @@ async function fixture(stub: { absent?: boolean; integrity?: string; registryErr
     `#!/bin/sh\n` +
       `if [ "$1" = "view" ]; then\n` +
       `  if [ -n "$STUB_REGISTRY_ERROR" ]; then echo "npm error code $STUB_REGISTRY_ERROR" >&2; echo "npm error network $STUB_REGISTRY_ERROR" >&2; exit 1; fi\n` +
-      `  if [ -n "$STUB_ABSENT" ]; then echo "npm error code E404" >&2; echo "npm error 404 Not Found" >&2; exit 1; fi\n` +
+      // Post-publish attestation: once `npm publish` has succeeded the version
+      // EXISTS on the registry with the just-published integrity, even when the
+      // fixture started absent (real registry semantics; stub is stateful via
+      // the publish-called marker). Without this the attestation query would
+      // see a stale E404 and fail a legitimate publish.
+      `  if [ -n "$STUB_ABSENT" ]; then if [ ! -f "${publishCalled}" ]; then echo "npm error code E404" >&2; echo "npm error 404 Not Found" >&2; exit 1; fi; fi\n` +
       `  case "$3" in version) echo "$STUB_VERSION";; dist.integrity) echo "$STUB_INTEGRITY";; dist.shasum) echo "$STUB_SHASUM";; *) exit 1;; esac\n` +
       `  exit 0\nfi\n` +
       `if [ "$1" = "pack" ]; then DEST=""; PREV=""; for a in "$@"; do if [ "$PREV" = "--pack-destination" ]; then DEST="$a"; fi; PREV="$a"; done; cp "${path.join(dir, tgz)}" "$DEST/"; echo "${tgz}"; exit 0; fi\n` +
       `if [ "$1" = "publish" ]; then touch "${publishCalled}"; echo "$@" > "${publishCalled}.args"; exit 0; fi\n` +
+      `if [ "$1" = "deprecate" ]; then touch "${publishCalled}.deprecated"; echo "$@" > "${publishCalled}.deprecated.args"; exit 0; fi\n` +
       `echo "stub: unsupported npm $*" >&2; exit 1\n`,
   );
   await fs.chmod(path.join(bin, "npm"), 0o755);
