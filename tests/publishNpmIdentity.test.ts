@@ -26,11 +26,17 @@ async function fixture(stub: { absent?: boolean; integrity?: string; registryErr
     `#!/bin/sh\n` +
       `if [ "$1" = "view" ]; then\n` +
       `  if [ -n "$STUB_REGISTRY_ERROR" ]; then echo "npm error code $STUB_REGISTRY_ERROR" >&2; echo "npm error network $STUB_REGISTRY_ERROR" >&2; exit 1; fi\n` +
-      `  if [ -n "$STUB_ABSENT" ]; then echo "npm error code E404" >&2; echo "npm error 404 Not Found" >&2; exit 1; fi\n` +
+      // Post-publish attestation: once `npm publish` has succeeded the version
+      // EXISTS on the registry with the just-published integrity, even when the
+      // fixture started absent (real registry semantics; stub is stateful via
+      // the publish-called marker). Without this the attestation query would
+      // see a stale E404 and fail a legitimate publish.
+      `  if [ -n "$STUB_ABSENT" ]; then if [ ! -f "${publishCalled}" ]; then echo "npm error code E404" >&2; echo "npm error 404 Not Found" >&2; exit 1; fi; fi\n` +
       `  case "$3" in version) echo "$STUB_VERSION";; dist.integrity) echo "$STUB_INTEGRITY";; dist.shasum) echo "$STUB_SHASUM";; *) exit 1;; esac\n` +
       `  exit 0\nfi\n` +
       `if [ "$1" = "pack" ]; then DEST=""; PREV=""; for a in "$@"; do if [ "$PREV" = "--pack-destination" ]; then DEST="$a"; fi; PREV="$a"; done; cp "${path.join(dir, tgz)}" "$DEST/"; echo "${tgz}"; exit 0; fi\n` +
       `if [ "$1" = "publish" ]; then touch "${publishCalled}"; echo "$@" > "${publishCalled}.args"; exit 0; fi\n` +
+      `if [ "$1" = "deprecate" ]; then touch "${publishCalled}.deprecated"; echo "$@" > "${publishCalled}.deprecated.args"; exit 0; fi\n` +
       `echo "stub: unsupported npm $*" >&2; exit 1\n`,
   );
   await fs.chmod(path.join(bin, "npm"), 0o755);
@@ -44,7 +50,16 @@ async function fixture(stub: { absent?: boolean; integrity?: string; registryErr
     env: {
       ...process.env,
       PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+      // Isolate the retained-artifact dir: the workflow resolves it as
+      // ${RUNNER_TEMP:-$PWD}/aeh-npm-retained, and CI always sets RUNNER_TEMP
+      // (shared across tests, so one fixture's tarball/sidecar would leak
+      // into another's provenance gate). Pin it to the fixture dir.
+      RUNNER_TEMP: dir,
       RELEASE_VERSION: "9.9.9",
+      // Provenance binding: the publish step requires RELEASE_SHA to write /
+      // verify the sidecar (absent/invalid/mismatch fails closed). Fixtures
+      // model the current run's SHA so fresh-pack writes a valid sidecar.
+      RELEASE_SHA: "a1b2c3d4e5a1b2c3d4e5a1b2c3d4e5a1b2c3d4e5",
       STUB_VERSION: "9.9.9",
       STUB_INTEGRITY: stub.integrity ?? localIntegrity,
       STUB_SHASUM: "",
@@ -290,7 +305,16 @@ describe("npm resume identity (fail closed on content mismatch)", () => {
       bin,
       publishCalled,
       localIntegrity,
-      env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}` } as NodeJS.ProcessEnv,
+      env: {
+        ...process.env,
+        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+        // Same RUNNER_TEMP isolation as fixture(): keep the retained-artifact
+        // dir fixture-local so the provenance gate cannot see another test's
+        // leftover tarball/sidecar.
+        RUNNER_TEMP: dir,
+        RELEASE_VERSION: "9.9.9",
+        RELEASE_SHA: "b2c3d4e5f6b2c3d4e5f6b2c3d4e5f6b2c3d4e5f6",
+      } as NodeJS.ProcessEnv,
     };
   }
 

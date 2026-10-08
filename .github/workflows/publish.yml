@@ -366,32 +366,116 @@ jobs:
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+          RELEASE_SHA: ${{ needs.publish.outputs.release_sha }}
         run: |
           set -euo pipefail
           # N1: single pack per attempt, retained for retry+publish+confirm.
           # Retry downloads THE SAME tarball above and skips repacking, so a
           # publish-then-fail-later retry never repacks differently (exit 1 forever).
+          # Provenance (Luna blocker fix): the retained tarball is bound to
+          # release_sha by a sidecar (npm-provenance.json: release_sha +
+          # tarball sha512 + name/version) written at fresh-pack time and
+          # uploaded ALONGSIDE the tarball. Reuse verifies the sidecar
+          # (release_sha match + digest recompute + name/version match);
+          # absent/invalid/mismatched sidecar fails closed (refuse publish AND
+          # Release). Fresh-pack fallback (missing artifact -> pack from the
+          # verified checkout) stays as-is.
+          test -n "${RELEASE_SHA:-}"
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
           RETAIN_DIR="${RUNNER_TEMP:-$PWD}/aeh-npm-retained"
           mkdir -p "$RETAIN_DIR"
           if ls "$RETAIN_DIR"/*.tgz >/dev/null 2>&1; then
-            echo "Reusing retained tarball (no repack; rebuild-nondeterminism safe): $(ls "$RETAIN_DIR"/*.tgz | head -n 1)"
+            TARBALL="$(ls "$RETAIN_DIR"/*.tgz | head -n 1)"
+            if [ ! -f "$RETAIN_DIR/npm-provenance.json" ]; then
+              echo "Refusing to reuse retained tarball $TARBALL: missing provenance sidecar npm-provenance.json for release_sha=$RELEASE_SHA (fail closed; stale/replaced artifact? refusing publish and Release)." >&2
+              exit 1
+            fi
+            node scripts/ci/verify-artifact-provenance.mjs --tarball "$TARBALL" --provenance "$RETAIN_DIR/npm-provenance.json" --release-sha "$RELEASE_SHA" --name "$PACKAGE_NAME" --version "$RELEASE_VERSION" || {
+              echo "Refusing to reuse retained tarball $TARBALL: provenance verification failed for release_sha=$RELEASE_SHA (fail closed; refusing publish and Release)." >&2
+              exit 1
+            }
+            echo "Reusing retained tarball (no repack; rebuild-nondeterminism safe; provenance verified): $TARBALL"
           else
             PACK_OUT="$(npm pack --pack-destination "$RETAIN_DIR" --silent)"
             echo "Packed first tarball for retain+reuse: $PACK_OUT"
+            TARBALL="$(ls "$RETAIN_DIR"/*.tgz | head -n 1)"
+            test -s "$TARBALL"
+            node scripts/ci/verify-artifact-provenance.mjs --write --tarball "$TARBALL" --provenance "$RETAIN_DIR/npm-provenance.json" --release-sha "$RELEASE_SHA"
+            test -s "$RETAIN_DIR/npm-provenance.json"
           fi
           TARBALL="$(ls "$RETAIN_DIR"/*.tgz | head -n 1)"
           test -s "$TARBALL"
+          test -s "$RETAIN_DIR/npm-provenance.json"
           # Digest-only fallback: record the first-pack digest; retry compares the
           # registry integrity against the RECORDED digest when tarball reuse is infeasible.
           node -e "const fs=require('node:fs'),crypto=require('node:crypto');const b=fs.readFileSync(process.argv[1]);process.stdout.write('sha512-'+crypto.createHash('sha512').update(b).digest('base64')+'\n')" "$TARBALL" > "$RETAIN_DIR/npm-identity.digest"
           test -s "$RETAIN_DIR/npm-identity.digest"
-          echo "Retained $TARBALL + digest for retry."
+          echo "Retained $TARBALL + provenance sidecar + digest for retry."
+
+      - name: Recheck retained tarball before upload (TOCTOU bind)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # TOCTOU bind: recompute sha512 of the exact bytes about to be
+          # uploaded and compare to the sidecar digest (fail closed on
+          # mismatch). The upload-artifact action is a separate step, so this
+          # shell step runs immediately before it to narrow the window.
+          # U1 scope bind (round-4): EXACT verified filename crosses the artifact
+          # boundary — deterministic package-name-version.tgz, NO glob in the
+          # upload step. The guard below selects exactly ONE survivor (fail
+          # closed on 0 or >1: siblings fail closed here), rechecks its bytes,
+          # then pins its EXACT basename via GITHUB_ENV. The upload step consumes
+          # ${{ env.VERIFIED_TARBALL_BASENAME }} as an explicit file path, so a
+          # sibling landing between this guard and the upload action cannot
+          # escape (it is never named). Upload is not a trust boundary: any
+          # swap that slips through the cross-step gap is still caught by the
+          # pre-consume recheck before publish and by post-publish attestation
+          # after publish (detect-and-deprecate).
+          RETAIN_DIR="${RUNNER_TEMP:-$PWD}/aeh-npm-retained"
+          mapfile -t CANDIDATES < <(ls "$RETAIN_DIR"/*.tgz 2>/dev/null || true)
+          if [ "${#CANDIDATES[@]}" -ne 1 ]; then
+            echo "Refusing upload: expected exactly ONE retained tarball in $RETAIN_DIR, found ${#CANDIDATES[@]} (sibling tarballs would cross unrechecked; fail closed)." >&2
+            ls -la "$RETAIN_DIR" >&2 || true
+            exit 1
+          fi
+          TARBALL="${CANDIDATES[0]}"
+          test -s "$TARBALL"
+          test -s "$RETAIN_DIR/npm-provenance.json"
+          test -s "$RETAIN_DIR/npm-identity.digest"
+          node scripts/ci/verify-artifact-provenance.mjs --recheck "$TARBALL" "$RETAIN_DIR/npm-provenance.json"
+          # Pin the EXACT verified filename for the upload step (no glob).
+          BASENAME="$(basename "$TARBALL")"
+          case "$BASENAME" in *.tgz) ;; *) echo "Refusing upload: verified file $BASENAME is not a .tgz (fail closed)." >&2; exit 1;; esac
+          if [ -z "${GITHUB_ENV:-}" ]; then
+            echo "Refusing upload: GITHUB_ENV is empty/unset; cannot pin VERIFIED_TARBALL_BASENAME=$BASENAME (fail closed)." >&2
+            exit 1
+          fi
+          echo "VERIFIED_TARBALL_BASENAME=$BASENAME" >> "$GITHUB_ENV"
+          echo "Verified exact tarball for upload: $BASENAME"
+
+      - name: Refuse empty verified basename before upload (fail closed)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Belt and suspenders: the upload path expands
+          # ${{ env.VERIFIED_TARBALL_BASENAME }} — if empty it becomes the
+          # retain DIRECTORY and siblings upload unrechecked. Refuse empty here.
+          [ -n "$VERIFIED_TARBALL_BASENAME" ] || exit 1
+          case "$VERIFIED_TARBALL_BASENAME" in *.tgz) ;; *) echo "Refusing upload: VERIFIED_TARBALL_BASENAME=$VERIFIED_TARBALL_BASENAME is not a .tgz (fail closed)." >&2; exit 1;; esac
+          echo "Verified basename present for upload: $VERIFIED_TARBALL_BASENAME"
 
       - name: Retain release tarball for retry
         uses: actions/upload-artifact@v4
         with:
           name: aeh-npm-tarball
-          path: ${{ runner.temp }}/aeh-npm-retained/
+          # U1 (round-4): EXACT verified file only, no glob. The recheck step
+          # pins VERIFIED_TARBALL_BASENAME (= deterministic
+          # package-name-version.tgz); a sibling landing between guard and
+          # upload is never named and cannot escape.
+          path: |
+            ${{ runner.temp }}/aeh-npm-retained/${{ env.VERIFIED_TARBALL_BASENAME }}
+            ${{ runner.temp }}/aeh-npm-retained/npm-provenance.json
+            ${{ runner.temp }}/aeh-npm-retained/npm-identity.digest
           if-no-files-found: error
           overwrite: true
 
@@ -400,16 +484,29 @@ jobs:
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+          RELEASE_SHA: ${{ needs.publish.outputs.release_sha }}
         run: |
           set -euo pipefail
           PACKAGE_NAME="$(node -p "require('./package.json').name")"
           # Reuse THE SAME retained tarball (no repack); pack fresh only when no
           # retained artifact exists (first attempt / offline). Never repack for compare.
+          # Provenance gate: reuse requires the sidecar (release_sha + digest +
+          # name/version) to verify; absent/invalid/mismatch fails closed
+          # (refuse publish AND Release). Fresh-pack writes a new sidecar.
+          test -n "${RELEASE_SHA:-}"
           RETAIN_DIR="${RUNNER_TEMP:-$PWD}/aeh-npm-retained"
           mkdir -p "$RETAIN_DIR"
           if ls "$RETAIN_DIR"/*.tgz >/dev/null 2>&1; then
             TARBALL="$(ls "$RETAIN_DIR"/*.tgz | head -n 1)"
-            echo "Reusing retained tarball $TARBALL (no repack)."
+            if [ ! -f "$RETAIN_DIR/npm-provenance.json" ]; then
+              echo "Refusing to publish $PACKAGE_NAME@$RELEASE_VERSION: missing provenance sidecar npm-provenance.json for release_sha=$RELEASE_SHA (fail closed; stale/replaced artifact? refusing publish and Release)." >&2
+              exit 1
+            fi
+            node scripts/ci/verify-artifact-provenance.mjs --tarball "$TARBALL" --provenance "$RETAIN_DIR/npm-provenance.json" --release-sha "$RELEASE_SHA" --name "$PACKAGE_NAME" --version "$RELEASE_VERSION" || {
+              echo "Refusing to publish $PACKAGE_NAME@$RELEASE_VERSION: provenance verification failed for release_sha=$RELEASE_SHA (fail closed; refusing publish and Release)." >&2
+              exit 1
+            }
+            echo "Reusing retained tarball $TARBALL (no repack; provenance verified)."
           else
             PACK_OUT="$(npm pack --pack-destination "$RETAIN_DIR" --silent)"
             if [ -n "${PACK_OUT:-}" ] && [ -f "$RETAIN_DIR/$PACK_OUT" ]; then
@@ -417,8 +514,9 @@ jobs:
             else
               TARBALL="$(ls "$RETAIN_DIR"/*.tgz | head -n 1)"
             fi
+            node scripts/ci/verify-artifact-provenance.mjs --write --tarball "$TARBALL" --provenance "$RETAIN_DIR/npm-provenance.json" --release-sha "$RELEASE_SHA"
             node -e "const fs=require('node:fs'),crypto=require('node:crypto');const b=fs.readFileSync(process.argv[1]);process.stdout.write('sha512-'+crypto.createHash('sha512').update(b).digest('base64')+'\n')" "$TARBALL" > "$RETAIN_DIR/npm-identity.digest" || true
-            echo "Packed $TARBALL (first pack retained for retry)."
+            echo "Packed $TARBALL (first pack retained for retry; provenance recorded)."
           fi
           test -s "$TARBALL"
           # Canonical identity gate against THE SAME bytes (mismatch fails closed).
@@ -430,7 +528,57 @@ jobs:
               if [ -n "${NPM_TOKEN:-}" ]; then
                 export NODE_AUTH_TOKEN="$NPM_TOKEN"
               fi
+              # TOCTOU bind: recompute sha512 of the exact bytes about to be
+              # published IN THE SAME shell step, immediately before the
+              # publish invocation (fail closed on mismatch). This NARROWS the
+              # window but cannot CLOSE a file-based handoff to a separate
+              # `npm publish` process: a swap after the recheck needs NO
+              # preimage (any bytes publish). The gap is closed by
+              # POST-PUBLISH ATTESTATION below (registry ground truth +
+              # deprecate). Threat model: runner-local swap only (requires
+              # workspace-write on this runner mid-step; NOT remotely
+              # exploitable) — attestation converts silent compromise to
+              # detected-and-deprecated with bounded blast radius.
+              node scripts/ci/verify-artifact-provenance.mjs --recheck "$TARBALL" "$RETAIN_DIR/npm-provenance.json" || {
+                echo "Refusing to publish $PACKAGE_NAME@$RELEASE_VERSION: tarball changed between verify and publish (TOCTOU recheck failed, fail closed)." >&2
+                exit 1
+              }
               npm publish "$TARBALL" --provenance
+              # POST-PUBLISH ATTESTATION (U2): query the registry ground truth
+              # (`npm view <name>@<version> dist.integrity`) and compare to the
+              # sidecar digest. Match -> proceed to Release; mismatch/UNKNOWN ->
+              # fail LOUDLY + `npm deprecate` (bounded retry, never silent) + trace.
+              # Trust boundary (U3): attestation trusts the npm registry TLS
+              # channel — dist.integrity as served over TLS is the ground truth
+              # for what installers receive. A registry compromise or a valid-TLS
+              # MITM that serves attacker bytes with matching integrity is
+              # explicitly outside threat model (no client-side gate can
+              # detect a lying registry).
+              SIDECAR_DIGEST="$(node -e "process.stdout.write(JSON.parse(require('node:fs').readFileSync(process.argv[1],'utf8')).tarball_sha512)" "$RETAIN_DIR/npm-provenance.json")"
+              if node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --local-digest "$SIDECAR_DIGEST"; then
+                echo "Post-publish attestation verified: $PACKAGE_NAME@$RELEASE_VERSION registry integrity matches sidecar $SIDECAR_DIGEST."
+              else
+                attest_code=$?
+                echo "Post-publish attestation FAILED for $PACKAGE_NAME@$RELEASE_VERSION: registry integrity != sidecar $SIDECAR_DIGEST (exit $attest_code; recheck→publish swap? failing LOUDLY and deprecating to block installs)." >&2
+                DEPRECATE_MSG="aeh: integrity mismatch (post-publish attestation failed; do not install)"
+                DEPRECATE_OK=0
+                for attempt in 1 2 3; do
+                  if npm deprecate "$PACKAGE_NAME@$RELEASE_VERSION" "$DEPRECATE_MSG"; then
+                    DEPRECATE_OK=1
+                    break
+                  fi
+                  echo "Deprecate attempt $attempt/3 failed for $PACKAGE_NAME@$RELEASE_VERSION; retrying..." >&2
+                  sleep 5
+                done
+                if [ "$DEPRECATE_OK" -ne 1 ]; then
+                  echo "MANUAL-DEPRECATE REQUIRED: automatic deprecate failed after 3 attempts." >&2
+                  echo "  version: $PACKAGE_NAME@$RELEASE_VERSION" >&2
+                  echo "  reason: post-publish attestation mismatch (registry integrity != sidecar $SIDECAR_DIGEST); published bytes are UNTRUSTED, block installs immediately." >&2
+                  echo "  command: npm deprecate \"$PACKAGE_NAME@$RELEASE_VERSION\" \"$DEPRECATE_MSG\"" >&2
+                fi
+                echo "Post-publish attestation trace: package=$PACKAGE_NAME version=$RELEASE_VERSION sidecar_digest=$SIDECAR_DIGEST result=FAILED-deprecated exit=$attest_code deprecate_ok=$DEPRECATE_OK" >&2
+                exit 1
+              fi
             elif [ "$code" -eq 3 ]; then
               echo "Refusing to publish $PACKAGE_NAME@$RELEASE_VERSION: registry lookup UNKNOWN (network/auth/parse, fail closed, never publish on UNKNOWN)." >&2
               exit 1
@@ -444,6 +592,7 @@ jobs:
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+          RELEASE_SHA: ${{ needs.publish.outputs.release_sha }}
         run: |
           set -euo pipefail
           PACKAGE_NAME="$(node -p "require('./package.json').name")"
@@ -451,12 +600,35 @@ jobs:
           test "$(npm view "$PACKAGE_NAME@$RELEASE_VERSION" version)" = "$RELEASE_VERSION"
           # Existence is not identity: fail closed unless the registry tarball
           # byte-matches THE SAME retained tarball (integrity mismatch).
+          # Provenance gate: the retained tarball must still bind to this run's
+          # release_sha (absent/invalid/mismatch refuses Release).
+          test -n "${RELEASE_SHA:-}"
           RETAIN_DIR="${RUNNER_TEMP:-$PWD}/aeh-npm-retained"
           TARBALL="$(ls "$RETAIN_DIR"/*.tgz 2>/dev/null | head -n 1 || true)"
           if [ -z "${TARBALL:-}" ]; then
             echo "Missing retained tarball for confirm (fail closed; refusing to repack)." >&2
             exit 1
           fi
+          if [ ! -f "$RETAIN_DIR/npm-provenance.json" ]; then
+            echo "Refusing Release for $PACKAGE_NAME@$RELEASE_VERSION: missing provenance sidecar npm-provenance.json for release_sha=$RELEASE_SHA (fail closed; stale/replaced artifact? refusing publish and Release)." >&2
+            exit 1
+          fi
+          node scripts/ci/verify-artifact-provenance.mjs --tarball "$TARBALL" --provenance "$RETAIN_DIR/npm-provenance.json" --release-sha "$RELEASE_SHA" --name "$PACKAGE_NAME" --version "$RELEASE_VERSION" || {
+            echo "Refusing Release for $PACKAGE_NAME@$RELEASE_VERSION: provenance verification failed for release_sha=$RELEASE_SHA (fail closed)." >&2
+            exit 1
+          }
+          # TOCTOU bind: recompute sha512 of the exact bytes about to be
+          # consumed by the identity gate IN THE SAME shell step, immediately
+          # before it (fail closed on mismatch). This NARROWS the window but
+          # cannot CLOSE a file-based handoff: a swap after the recheck needs
+          # NO preimage. Threat model: runner-local swap only (requires
+          # workspace-write on this runner mid-step; NOT remotely
+          # exploitable); the identity gate hashes the consumed bytes, so a
+          # swapped file fails closed as a mismatch (never a silent Release).
+          node scripts/ci/verify-artifact-provenance.mjs --recheck "$TARBALL" "$RETAIN_DIR/npm-provenance.json" || {
+            echo "Refusing Release for $PACKAGE_NAME@$RELEASE_VERSION: tarball changed between verify and confirm (TOCTOU recheck failed, fail closed)." >&2
+            exit 1
+          }
           node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --tarball "$TARBALL"
           # Digest-only fallback: registry integrity must also match the RECORDED first-pack digest.
           if [ -f "$RETAIN_DIR/npm-identity.digest" ]; then
@@ -528,6 +700,7 @@ jobs:
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           # Rationale: verification RE-RAN for R in verify-published this run
@@ -556,11 +729,25 @@ jobs:
           # forever; UNKNOWN exit 3 never releases). Fresh-pack residual is
           # rebuild-nondeterminism-exposed and only for diagnostic when nothing
           # is published (still refuses Release because not published).
+          # Provenance gate (Luna blocker fix): R is HEAD_SHA (tag == HEAD
+          # verified above); the retained tarball must carry a sidecar binding
+          # it to HEAD_SHA (release_sha match + digest recompute + name/version
+          # match). Absent/invalid/mismatched sidecar fails closed (refuse
+          # Release). Fresh-pack fallback (missing artifact -> probe + refuse)
+          # stays as-is.
           RETAIN_DIR="${RUNNER_TEMP:-$PWD}/aeh-npm-retained"
           mkdir -p "$RETAIN_DIR"
           if ls "$RETAIN_DIR"/*.tgz >/dev/null 2>&1; then
             RETAIN_TARBALL="$(ls "$RETAIN_DIR"/*.tgz | head -n 1)"
-            echo "Reusing retained tarball $RETAIN_TARBALL (no repack; rebuild-nondeterminism safe)."
+            if [ ! -f "$RETAIN_DIR/npm-provenance.json" ]; then
+              echo "Refusing repair Release for $PACKAGE_NAME@$RELEASE_VERSION: missing provenance sidecar npm-provenance.json for release_sha=$HEAD_SHA (fail closed; stale/replaced artifact? refusing publish and Release)." >&2
+              exit 1
+            fi
+            node scripts/ci/verify-artifact-provenance.mjs --tarball "$RETAIN_TARBALL" --provenance "$RETAIN_DIR/npm-provenance.json" --release-sha "$HEAD_SHA" --name "$PACKAGE_NAME" --version "$RELEASE_VERSION" || {
+              echo "Refusing repair Release for $PACKAGE_NAME@$RELEASE_VERSION: provenance verification failed for release_sha=$HEAD_SHA (fail closed)." >&2
+              exit 1
+            }
+            echo "Reusing retained tarball $RETAIN_TARBALL (no repack; rebuild-nondeterminism safe; provenance verified)."
           else
             echo "No retained tarball artifact; probing registry before any fresh pack (residual case)." >&2
             set +e
@@ -584,7 +771,47 @@ jobs:
             fi
           fi
           test -s "$RETAIN_TARBALL"
-          node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --tarball "$RETAIN_TARBALL"
+          # TOCTOU bind: recompute sha512 of the exact bytes about to be
+          # consumed by the identity gate IN THE SAME shell step, immediately
+          # before it (fail closed on mismatch). This NARROWS the window but
+          # cannot CLOSE a file-based handoff: a swap after the recheck needs
+          # NO preimage. Threat model: runner-local swap only (requires
+          # workspace-write on this runner mid-step; NOT remotely
+          # exploitable); the identity gate hashes the consumed bytes, so a
+          # swapped file fails closed as a mismatch (never a silent Release).
+          node scripts/ci/verify-artifact-provenance.mjs --recheck "$RETAIN_TARBALL" "$RETAIN_DIR/npm-provenance.json" || {
+            echo "Refusing repair Release for $PACKAGE_NAME@$RELEASE_VERSION: tarball changed between verify and consume (TOCTOU recheck failed, fail closed)." >&2
+            exit 1
+          }
+          # Repair attestation (U4): mismatch deprecates (retry, never silent) so the bad version is not left installable.
+          # Trust boundary (U3): attestation trusts npm registry TLS channel — dist.integrity over TLS is ground truth; registry compromise / valid-TLS MITM outside threat model.
+          if node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --tarball "$RETAIN_TARBALL"; then
+            echo "Repair identity verified: $PACKAGE_NAME@$RELEASE_VERSION registry matches retained bytes."
+          else
+            repair_code=$?
+            echo "Repair identity MISMATCH for $PACKAGE_NAME@$RELEASE_VERSION: registry tarball differs from retained bytes (exit $repair_code; failing LOUDLY and deprecating to block installs)." >&2
+            if [ -n "${NPM_TOKEN:-}" ]; then
+              export NODE_AUTH_TOKEN="$NPM_TOKEN"
+            fi
+            REPAIR_DEPRECATE_MSG="aeh: integrity mismatch (repair attestation failed; do not install)"
+            REPAIR_DEPRECATE_OK=0
+            for attempt in 1 2 3; do
+              if npm deprecate "$PACKAGE_NAME@$RELEASE_VERSION" "$REPAIR_DEPRECATE_MSG"; then
+                REPAIR_DEPRECATE_OK=1
+                break
+              fi
+              echo "Repair deprecate attempt $attempt/3 failed for $PACKAGE_NAME@$RELEASE_VERSION; retrying..." >&2
+              sleep 5
+            done
+            if [ "$REPAIR_DEPRECATE_OK" -ne 1 ]; then
+              echo "MANUAL-DEPRECATE REQUIRED: automatic deprecate failed after 3 attempts." >&2
+              echo "  version: $PACKAGE_NAME@$RELEASE_VERSION" >&2
+              echo "  reason: repair attestation mismatch (registry integrity != retained bytes); published bytes are UNTRUSTED, block installs immediately." >&2
+              echo "  command: npm deprecate \"$PACKAGE_NAME@$RELEASE_VERSION\" \"$REPAIR_DEPRECATE_MSG\"" >&2
+            fi
+            echo "Repair attestation trace: package=$PACKAGE_NAME version=$RELEASE_VERSION result=FAILED-deprecated exit=$repair_code deprecate_ok=$REPAIR_DEPRECATE_OK" >&2
+            exit 1
+          fi
 
       - name: Create GitHub Release
         env:

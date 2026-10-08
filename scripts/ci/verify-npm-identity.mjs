@@ -6,6 +6,12 @@
 // 3 = UNKNOWN (registry lookup failure: network/auth/parse; fail loudly and
 // NEVER take the publish path).
 //
+// Trust boundary (U3): this gate trusts the npm registry TLS channel —
+// `npm view <name>@<version> dist.integrity` as served over TLS is the ground
+// truth for what installers receive. A registry compromise or a valid-TLS MITM
+// serving attacker bytes with matching integrity is explicitly outside threat model
+// (no client-side gate can detect a lying registry).
+//
 // Retain+reuse (N1): pass --tarball <path> to compare THE SAME packed bytes
 // retained as a workflow artifact instead of repacking the checkout (repacks
 // can differ across retries: publish-then-fail-later + retry-repacks-differently
