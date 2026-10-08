@@ -181,10 +181,17 @@ describe("automatic publish workflow", () => {
     expect(text).toContain(BOT_NAME);
     expect(text).toContain(BOT_EMAIL);
     expect(text).not.toMatch(/jamesmoralesmoreno@gmail\.com/);
-    const hasIdentityConfig = (block: string): boolean =>
-      (block.includes("git config user.name") && block.includes("git config user.email")) ||
-      (block.includes("GIT_AUTHOR_NAME") && block.includes("GIT_AUTHOR_EMAIL")) ||
-      (block.includes("GIT_COMMITTER_NAME") && block.includes("GIT_COMMITTER_EMAIL"));
+    // COMPLETE identity only: `git commit` needs author + committer, and
+    // annotated tags need the tagger (same bot). Half-identity (author-pair
+    // OR committer-pair alone) is insufficient at runtime.
+    const hasConfigPair = (block: string): boolean =>
+      block.includes("git config user.name") && block.includes("git config user.email");
+    const hasAuthorEnv = (block: string): boolean =>
+      block.includes("GIT_AUTHOR_NAME") && block.includes("GIT_AUTHOR_EMAIL");
+    const hasCommitterEnv = (block: string): boolean =>
+      block.includes("GIT_COMMITTER_NAME") && block.includes("GIT_COMMITTER_EMAIL");
+    const hasCompleteIdentity = (block: string): boolean =>
+      hasConfigPair(block) || (hasAuthorEnv(block) && hasCommitterEnv(block));
     const writesGitIdentity = (run: string): boolean =>
       /git commit\b/.test(run) || /git tag\b.*-[am]/.test(run) || /git tag -a/.test(run);
     for (const [jobName, job] of Object.entries(jobs) as Array<[string, any]>) {
@@ -194,17 +201,48 @@ describe("automatic publish workflow", () => {
         const run = steps[i].run ?? "";
         if (!writesGitIdentity(run)) continue;
         // Identity must be configured in the SAME run block, in a PRECEDING
-        // step of the same job, or via job/step-level env.
-        const sameBlock = hasIdentityConfig(run);
-        const preceding = steps.slice(0, i).some((s) => hasIdentityConfig(s.run ?? ""));
+        // step of the same job, or via job/step-level env — and it must be
+        // COMPLETE (config pair OR all four GIT_* env vars).
+        const sameBlock = hasCompleteIdentity(run);
+        const preceding = steps.slice(0, i).some((s) => hasCompleteIdentity(s.run ?? ""));
         const stepEnv = JSON.stringify(steps[i].env ?? {});
-        const envCovered = hasIdentityConfig(`${jobEnv} ${stepEnv}`);
+        const envCovered = hasCompleteIdentity(`${jobEnv} ${stepEnv}`);
         expect(
           sameBlock || preceding || envCovered,
-          `job '${jobName}' step '${steps[i].name ?? i}' runs '${run.split("\n").find((l) => l.includes("git commit") || l.includes("git tag"))?.trim()}' without a preceding in-job git identity (git config user.* or GIT_AUTHOR_*/GIT_COMMITTER_* env)`,
+          `job '${jobName}' step '${steps[i].name ?? i}' runs '${run.split("\n").find((l) => l.includes("git commit") || l.includes("git tag"))?.trim()}' without COMPLETE git identity (git config user.name+email or all four GIT_AUTHOR_*/GIT_COMMITTER_* env vars)`,
         ).toBe(true);
       }
     }
+    // Negative controls (inline weakened fixtures, not a workflow change):
+    // half-identity env must NOT count as complete — this is the gap the
+    // previous author-pair-OR-committer-pair predicate missed.
+    const authorOnly =
+      "GIT_AUTHOR_NAME=github-actions[bot]\nGIT_AUTHOR_EMAIL=41898282+github-actions[bot]@users.noreply.github.com";
+    const committerOnly =
+      "GIT_COMMITTER_NAME=github-actions[bot]\nGIT_COMMITTER_EMAIL=41898282+github-actions[bot]@users.noreply.github.com";
+    const completeEnv = `${authorOnly}\n${committerOnly}`;
+    expect(hasCompleteIdentity(authorOnly)).toBe(false);
+    expect(hasCompleteIdentity(committerOnly)).toBe(false);
+    expect(hasCompleteIdentity(completeEnv)).toBe(true);
+    expect(
+      hasCompleteIdentity(
+        'git config user.name "github-actions[bot]"\ngit config user.email "41898282+github-actions[bot]@users.noreply.github.com"',
+      ),
+    ).toBe(true);
+    // Weakened job-env fixture (author pair only) must be rejected; full job env accepted.
+    expect(
+      hasCompleteIdentity(JSON.stringify({ GIT_AUTHOR_NAME: BOT_NAME, GIT_AUTHOR_EMAIL: BOT_EMAIL })),
+    ).toBe(false);
+    expect(
+      hasCompleteIdentity(
+        JSON.stringify({
+          GIT_AUTHOR_NAME: BOT_NAME,
+          GIT_AUTHOR_EMAIL: BOT_EMAIL,
+          GIT_COMMITTER_NAME: BOT_NAME,
+          GIT_COMMITTER_EMAIL: BOT_EMAIL,
+        }),
+      ),
+    ).toBe(true);
     // At least both write sites must exist (commit in publish, annotated tag in publish-npm).
     expect(JSON.stringify(jobs.publish)).toMatch(/git commit/);
     expect(JSON.stringify(jobs["publish-npm"])).toMatch(/git tag -a/);
@@ -213,34 +251,87 @@ describe("automatic publish workflow", () => {
   it("bot identity setup makes commit and annotated tag succeed with empty global config", async () => {
     const text = await fs.readFile(new URL("../.github/workflows/publish.yml", import.meta.url), "utf8");
     expect(text).toContain("github-actions[bot]");
+    const BOT_NAME = "github-actions[bot]";
+    const BOT_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com";
+    const BOT_IDENT = `${BOT_NAME} <${BOT_EMAIL}>`;
+    // Config path (mirrors publish.yml git config lines).
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-ident-"));
-    const emptyGlobal = path.join(tmp, "empty-global-config");
-    await fs.writeFile(emptyGlobal, "");
-    const env: Record<string, string> = { ...process.env } as Record<string, string>;
-    env.GIT_CONFIG_GLOBAL = emptyGlobal;
-    env.GIT_CONFIG_SYSTEM = emptyGlobal;
-    delete env.GIT_AUTHOR_NAME;
-    delete env.GIT_AUTHOR_EMAIL;
-    delete env.GIT_COMMITTER_NAME;
-    delete env.GIT_COMMITTER_EMAIL;
-    const git = (args: string[], cwd = tmp): string =>
-      execFileSync("git", args, { cwd, encoding: "utf8", env });
-    git(["init", "-q"]);
-    git(["config", "--local", "--list"]);
-    await fs.writeFile(path.join(tmp, "probe.txt"), "identity\n");
-    git(["add", "probe.txt"]);
-    // Without identity, commit must fail (proves the gate is real).
-    expect(() => git(["commit", "-m", "probe"])).toThrow();
-    // Workflow's bot identity setup (mirrors publish.yml git config lines).
-    git(["config", "user.name", "github-actions[bot]"]);
-    git(["config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"]);
-    git(["commit", "-m", "probe"]);
-    expect(git(["log", "--format=%an <%ae>", "-1"]).trim()).toBe(
-      "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>",
-    );
-    // Annotated tags need the same tagger identity (fatal: empty ident name without it).
-    git(["tag", "-a", "v9.9.9-test", "-m", "v9.9.9-test"]);
-    expect(git(["tag", "-l", "v9.9.9-test"]).trim()).toBe("v9.9.9-test");
-    await fs.rm(tmp, { recursive: true, force: true });
+    try {
+      const emptyGlobal = path.join(tmp, "empty-global-config");
+      await fs.writeFile(emptyGlobal, "");
+      const env: Record<string, string> = { ...process.env } as Record<string, string>;
+      env.GIT_CONFIG_GLOBAL = emptyGlobal;
+      env.GIT_CONFIG_SYSTEM = emptyGlobal;
+      delete env.GIT_AUTHOR_NAME;
+      delete env.GIT_AUTHOR_EMAIL;
+      delete env.GIT_COMMITTER_NAME;
+      delete env.GIT_COMMITTER_EMAIL;
+      const git = (args: string[], cwd = tmp): string =>
+        execFileSync("git", args, { cwd, encoding: "utf8", env });
+      git(["init", "-q"]);
+      git(["config", "--local", "--list"]);
+      await fs.writeFile(path.join(tmp, "probe.txt"), "identity\n");
+      git(["add", "probe.txt"]);
+      // Without identity, commit must fail (proves the gate is real).
+      expect(() => git(["commit", "-m", "probe"])).toThrow();
+      // Workflow's bot identity setup (mirrors publish.yml git config lines).
+      git(["config", "user.name", "github-actions[bot]"]);
+      git(["config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"]);
+      git(["commit", "-m", "probe"]);
+      expect(git(["log", "--format=%an <%ae>", "-1"]).trim()).toBe(
+        "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>",
+      );
+      // Annotated tags need the same tagger identity (fatal: empty ident name without it).
+      git(["tag", "-a", "v9.9.9-test", "-m", "v9.9.9-test"]);
+      expect(git(["tag", "-l", "v9.9.9-test"]).trim()).toBe("v9.9.9-test");
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+    // Env-only path: proves the job-level GIT_AUTHOR_*/GIT_COMMITTER_* env
+    // path (no local config, empty global/system config, ONLY the four env
+    // vars). Temp repo only, no push.
+    const tmpEnv = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-ident-env-"));
+    try {
+      const emptyGlobalEnv = path.join(tmpEnv, "empty-global-config");
+      await fs.writeFile(emptyGlobalEnv, "");
+      const baseEnv: Record<string, string> = { ...(process.env as Record<string, string>) };
+      baseEnv.GIT_CONFIG_GLOBAL = emptyGlobalEnv;
+      baseEnv.GIT_CONFIG_SYSTEM = emptyGlobalEnv;
+      delete baseEnv.GIT_AUTHOR_NAME;
+      delete baseEnv.GIT_AUTHOR_EMAIL;
+      delete baseEnv.GIT_COMMITTER_NAME;
+      delete baseEnv.GIT_COMMITTER_EMAIL;
+      const botEnv: Record<string, string> = {
+        ...baseEnv,
+        GIT_AUTHOR_NAME: BOT_NAME,
+        GIT_AUTHOR_EMAIL: BOT_EMAIL,
+        GIT_COMMITTER_NAME: BOT_NAME,
+        GIT_COMMITTER_EMAIL: BOT_EMAIL,
+      };
+      const gitBase = (args: string[]): string =>
+        execFileSync("git", args, { cwd: tmpEnv, encoding: "utf8", env: baseEnv });
+      const gitBot = (args: string[]): string =>
+        execFileSync("git", args, { cwd: tmpEnv, encoding: "utf8", env: botEnv });
+      gitBase(["init", "-q"]);
+      // No local identity configured (proves env-only, not config).
+      expect(gitBase(["config", "--local", "--list"])).not.toContain("user.name");
+      expect(gitBase(["config", "--local", "--list"])).not.toContain("user.email");
+      await fs.writeFile(path.join(tmpEnv, "probe.txt"), "identity-env\n");
+      gitBase(["add", "probe.txt"]);
+      // Without any identity, commit must fail.
+      expect(() => gitBase(["commit", "-m", "probe-env"])).toThrow();
+      // With ONLY the four env vars, commit + annotated tag succeed with bot identity.
+      gitBot(["commit", "-m", "probe-env"]);
+      expect(gitBot(["log", "--format=%an <%ae> %cn <%ce>", "-1"]).trim()).toBe(`${BOT_IDENT} ${BOT_IDENT}`);
+      // Still no local config — identity came from env alone.
+      expect(gitBase(["config", "--local", "--list"])).not.toContain("user.name");
+      gitBot(["tag", "-a", "v9.9.9-env-test", "-m", "v9.9.9-env-test"]);
+      expect(gitBot(["tag", "-l", "v9.9.9-env-test"]).trim()).toBe("v9.9.9-env-test");
+      expect(
+        gitBot(["for-each-ref", "--format=%(taggername) %(taggeremail)", "refs/tags/v9.9.9-env-test"]).trim(),
+      ).toBe(BOT_IDENT);
+    } finally {
+      await fs.rm(tmpEnv, { recursive: true, force: true });
+    }
   });
 });
