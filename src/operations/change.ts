@@ -18,6 +18,8 @@ import type { AgentExecutionSelection } from "../agents/types.js";
 import type { AssuranceLevel, ImplementationRoute, RouteEvidence } from "../architecture/contracts.js";
 import { createRouteEvidence } from "../architecture/contracts.js";
 import { createDelegatedFeatureCapsule, persistFeatureCapsule } from "../architecture/featureCapsule.js";
+import { findScopeDirectoryPatternWarnings, formatScopeDirectoryPatternWarning } from "../architecture/workGraph.js";
+import { recordPaseoTrace } from "../paseo/trace.js";
 import { defaultSkillSeed } from "../participants/skills.js";
 import { compileOpenSpecChange, persistOpenSpecAuthoringContentV1, preflightOpenSpec, prepareOpenSpecChange, validateOpenSpecAuthoringContentCanonicalityV1, validateOpenSpecTasksCanonicalityV1, type OpenSpecPreflightResult } from "../spec/openspec.js";
 import { recordEvent } from "../telemetry/events.js";
@@ -230,6 +232,10 @@ export async function runChangeOperation(
   if (route === "DELEGATED") delegatedCapsuleObjectiveV1(payload);
   const persisted = await loadOperation(controlRoot, operation.id);
   if (persisted.continuation) return resumeProductChoiceContinuation(root, controlRoot, config, persisted, payload, semanticRuntime);
+  // LOUD fail-closed diagnostic: bare-directory `--file` patterns (existing
+  // directory, no glob magic) match ZERO files via minimatch. Warn only;
+  // matching semantics are untouched. Trace + CLI-visible warning.
+  await warnChangeScopeDirectoryPatterns({ root, controlRoot, config, operationId: operation.id, taskId, allowed: payload.files ?? [] });
   let bootstrapContract = operationBootstrapContract(taskId, title, payload, route, triage.assurance, triage.routeEvidence);
   await createControlPlaneSnapshot(root, config, taskId);
 
@@ -1440,6 +1446,43 @@ function operationBootstrapContract(taskId: string, title: string, payload: Chan
     routing: { intent: "change", domains: payload.domains ?? [], risk: payload.risk ?? "low", profile: payload.profile, route, assurance, routeEvidence },
     constraints: { breakingApiChanges: false, newDependencies: false, schemaChanges: false }
   };
+}
+
+/**
+ * DETERMINISTIC warn-only intake diagnostic for bare-directory scope
+ * patterns. Emits a LOUD CLI-visible warning per pattern plus a durable
+ * trace; never broadens scope (matching semantics untouched, fail-closed
+ * preserved). Best-effort: filesystem/trace failures never block the change.
+ */
+async function warnChangeScopeDirectoryPatterns(input: {
+  root: string;
+  controlRoot: string;
+  config: HarnessProjectConfig;
+  operationId: string;
+  taskId: string;
+  allowed: readonly string[];
+}): Promise<void> {
+  let warnings: Awaited<ReturnType<typeof findScopeDirectoryPatternWarnings>>;
+  try {
+    warnings = await findScopeDirectoryPatternWarnings(input.root, input.allowed);
+  } catch {
+    return;
+  }
+  if (!warnings.length) return;
+  for (const warning of warnings) console.warn(formatScopeDirectoryPatternWarning(warning));
+  try {
+    await recordPaseoTrace(input.controlRoot, "change.scope.directory-pattern", {
+      operationId: input.operationId,
+      taskId: input.taskId,
+      warningCount: warnings.length,
+      patterns: warnings.map((warning) => warning.raw),
+      normalized: warnings.map((warning) => warning.normalized),
+      suggested: warnings.map((warning) => warning.suggested),
+      mechanism: "DETERMINISTIC",
+    });
+  } catch {
+    // Trace is observability only; a trace failure never blocks the change.
+  }
 }
 
 export function buildSpecManagerPrompt(

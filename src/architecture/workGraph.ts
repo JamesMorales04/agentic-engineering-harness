@@ -500,3 +500,75 @@ export async function assertNoBareDirectoryScopes(
     }
   }
 }
+
+/**
+ * Warn-only bare-directory detection for capsule/operation-intake scope
+ * construction (`--file` values becoming capsule `scope.allowed`).
+ *
+ * MECHANISM: DETERMINISTIC filesystem existence check (no model judgment).
+ * For every allowed pattern that (a) normalizes to an existing repository
+ * directory AND (b) contains no glob magic, returns a warning advising the
+ * explicit `<dir>/**` form. Matching semantics are NEVER broadened: this
+ * helper only observes and warns; minimatch still matches ZERO files for a
+ * bare directory (no implicit `/**`), so fail-closed narrowing is preserved
+ * until the caller passes the explicit glob. New-file patterns (missing on
+ * disk, not an existing directory) return no warning — they are legitimate
+ * future-file scope.
+ *
+ * Unsafe raw inputs (`..`, absolute, drive prefix), out-of-root candidates,
+ * and symlink escapes are skipped silently (no warning): they are rejected
+ * fail-closed elsewhere, and advising `/**` expansion for them would be
+ * wrong. Glob patterns (`**`, `<dir>/**`, `*?[]{}!()+@`) never warn.
+ */
+export interface ScopeDirectoryPatternWarningV1 {
+  raw: string;
+  normalized: string;
+  suggested: string;
+}
+
+export async function findScopeDirectoryPatternWarnings(
+  root: string,
+  allowed: readonly string[]
+): Promise<ScopeDirectoryPatternWarningV1[]> {
+  const rootResolved = path.resolve(root);
+  const resolvedRoot = await fs.realpath(rootResolved).catch(() => rootResolved);
+  const warnings: ScopeDirectoryPatternWarningV1[] = [];
+  for (const rawScope of allowed) {
+    if (typeof rawScope !== "string") continue;
+    const scope = rawScope.trim();
+    if (!scope) continue;
+    if (scope === "**") continue;
+    // Unsafe inputs fail closed elsewhere; never advise `/**` for them.
+    if (hasUnsafeRawScopeInput(scope)) continue;
+    // Explicit globs (including `<dir>/**`) already match; never warn.
+    if (scope.endsWith("/**") || isExplicitGlobScope(scope)) continue;
+    const normalized = normalizeScopeEntry(scope);
+    if (!normalized || normalized === "**") continue;
+    if (normalized.split("/").includes("..")) continue;
+    const candidate = path.join(resolvedRoot, normalized);
+    if (!isWithinRoot(resolvedRoot, candidate)) continue;
+    // Symlink escape: the resolved target leaves the root, so this is not a
+    // legitimate in-repo directory to advise `/**` for — skip silently.
+    const resolved = await realpathNearestExisting(candidate);
+    if (resolved && !isWithinRoot(resolvedRoot, resolved.realBase)) continue;
+    let stat: import("node:fs").Stats;
+    try {
+      stat = await fs.stat(candidate);
+    } catch {
+      // Missing on disk (e.g. legitimate new-file pattern): no warning.
+      continue;
+    }
+    if (!stat.isDirectory()) continue;
+    warnings.push({ raw: rawScope, normalized, suggested: `${normalized}/**` });
+  }
+  return warnings;
+}
+
+/** LOUD single-line CLI diagnostic for a bare-directory scope pattern. */
+export function formatScopeDirectoryPatternWarning(warning: ScopeDirectoryPatternWarningV1): string {
+  return (
+    `SCOPE_DIRECTORY_PATTERN_WARNING: scope pattern '${warning.raw}' normalizes to existing directory ` +
+    `'${warning.normalized}' but contains no glob magic, so minimatch matches ZERO files (no implicit '/**'). ` +
+    `Scope is NOT broadened (fail-closed preserved); use explicit '${warning.suggested}' to include directory contents.`
+  );
+}
