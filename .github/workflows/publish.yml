@@ -570,10 +570,23 @@ jobs:
               #   exit 0 (present + equal) -> PASS, proceed to Release;
               #   exit 1 (present + different) -> PROVEN mismatch -> fail LOUDLY
               #     + `npm deprecate` (bounded retry, never silent) + trace;
-              #   exit 2 (absent) / exit 3 (UNKNOWN) -> keep polling; past the
-              #     deadline fail LOUDLY as UNKNOWN WITHOUT deprecate (absence
-              #     is NEVER mismatch: nothing visible to deprecate; human
-              #     triage via the trace + runbook below).
+              #   exit 2 (authoritative-absent) -> repoll awaiting appearance
+              #     (propagation lag); past the deadline fail LOUDLY as UNKNOWN
+              #     WITHOUT deprecate (absence is NEVER mismatch: nothing visible
+              #     to deprecate; human triage via the trace + runbook below).
+              #   exit 3 VISIBLE_UNREADABLE (version visible, digests
+              #     missing/malformed — helper threads the machine-readable
+              #     VISIBLE_UNREADABLE prefix) -> repoll with a DIFFERENT triage
+              #     message (version visible, identity unreadable — suspicious,
+              #     bounded retries then loud fail + human runbook, still NO
+              #     auto-deprecate since mismatch unproven). Decision (round-2
+              #     B2): persistent visible-unreadable past the deadline must
+              #     NOT deprecate — deprecating would nuke a GOOD version on
+              #     unproven suspicion (mismatch requires exit 1 proven
+              #     inequality). Loud fail + runbook instead.
+              #   exit 3 generic / per-query timeout (exit 124) -> repoll as
+              #     UNKNOWN-retry; past the deadline loud UNKNOWN WITHOUT
+              #     deprecate.
               # Trust boundary (U3): attestation trusts the npm registry TLS
               # channel — dist.integrity as served over TLS is the ground truth
               # for what installers receive. A registry compromise or a valid-TLS
@@ -581,18 +594,80 @@ jobs:
               # explicitly outside threat model (no client-side gate can
               # detect a lying registry).
               SIDECAR_DIGEST="$(node -e "process.stdout.write(JSON.parse(require('node:fs').readFileSync(process.argv[1],'utf8')).tarball_sha512)" "$RETAIN_DIR/npm-provenance.json")"
-              ATTEST_DEADLINE_S="${AEH_ATTEST_DEADLINE_S:-300}"
-              ATTEST_INTERVAL_S="${AEH_ATTEST_INTERVAL_S:-10}"
-              case "$ATTEST_DEADLINE_S" in ''|*[!0-9]*) ATTEST_DEADLINE_S=300;; esac
-              case "$ATTEST_INTERVAL_S" in ''|*[!0-9]*) ATTEST_INTERVAL_S=10;; esac
-              if [ "$ATTEST_INTERVAL_S" -eq 0 ]; then ATTEST_INTERVAL_S=10; fi
-              ATTEST_ELAPSED=0
+              # Override validation (fail-closed, reject-invalid, round-2 B1):
+              # - unset -> defaults (deadline 300s/5min, interval 10s,
+              #   query-timeout 60s via `timeout 60s` per query).
+              # - set (even empty) but non-numeric or out-of-range -> LOUD FAIL
+              #   (explicit config error, never silently clamped/defaulted —
+              #   clamping would hide CI typos and let huge overrides extend
+              #   indefinitely). Ranges: deadline 1..1800s (<=30min), interval
+              #   5..120s, query-timeout 1..120s. Document: invalid override =
+              #   explicit config error -> fail loudly.
+              ATTEST_DEADLINE_RAW="${AEH_ATTEST_DEADLINE_S-__unset__}"
+              ATTEST_INTERVAL_RAW="${AEH_ATTEST_INTERVAL_S-__unset__}"
+              ATTEST_QTIMEOUT_RAW="${AEH_ATTEST_QUERY_TIMEOUT_S-__unset__}"
+              if [ "$ATTEST_DEADLINE_RAW" = "__unset__" ]; then ATTEST_DEADLINE_S=300; else ATTEST_DEADLINE_S="$ATTEST_DEADLINE_RAW"; fi
+              if [ "$ATTEST_INTERVAL_RAW" = "__unset__" ]; then ATTEST_INTERVAL_S=10; else ATTEST_INTERVAL_S="$ATTEST_INTERVAL_RAW"; fi
+              if [ "$ATTEST_QTIMEOUT_RAW" = "__unset__" ]; then ATTEST_QUERY_TIMEOUT_S=60; else ATTEST_QUERY_TIMEOUT_S="$ATTEST_QTIMEOUT_RAW"; fi
+              case "$ATTEST_DEADLINE_S" in ''|*[!0-9]*) echo "Refusing post-publish attestation: AEH_ATTEST_DEADLINE_S=${ATTEST_DEADLINE_RAW} invalid (must be integer 1..1800s, <=30min; unset for default 300). Explicit override rejected (fail-closed, not clamped)." >&2; exit 1;; esac
+              case "$ATTEST_INTERVAL_S" in ''|*[!0-9]*) echo "Refusing post-publish attestation: AEH_ATTEST_INTERVAL_S=${ATTEST_INTERVAL_RAW} invalid (must be integer 5..120s; unset for default 10). Explicit override rejected (fail-closed, not clamped)." >&2; exit 1;; esac
+              case "$ATTEST_QUERY_TIMEOUT_S" in ''|*[!0-9]*) echo "Refusing post-publish attestation: AEH_ATTEST_QUERY_TIMEOUT_S=${ATTEST_QTIMEOUT_RAW} invalid (must be integer 1..120s; unset for default 60). Explicit override rejected (fail-closed, not clamped)." >&2; exit 1;; esac
+              if [ "$ATTEST_DEADLINE_S" -lt 1 ] || [ "$ATTEST_DEADLINE_S" -gt 1800 ]; then echo "Refusing post-publish attestation: AEH_ATTEST_DEADLINE_S=${ATTEST_DEADLINE_S} invalid (must be integer 1..1800s, <=30min; unset for default 300). Explicit override rejected (fail-closed, not clamped)." >&2; exit 1; fi
+              if [ "$ATTEST_INTERVAL_S" -lt 5 ] || [ "$ATTEST_INTERVAL_S" -gt 120 ]; then echo "Refusing post-publish attestation: AEH_ATTEST_INTERVAL_S=${ATTEST_INTERVAL_S} invalid (must be integer 5..120s; unset for default 10). Explicit override rejected (fail-closed, not clamped)." >&2; exit 1; fi
+              if [ "$ATTEST_QUERY_TIMEOUT_S" -lt 1 ] || [ "$ATTEST_QUERY_TIMEOUT_S" -gt 120 ]; then echo "Refusing post-publish attestation: AEH_ATTEST_QUERY_TIMEOUT_S=${ATTEST_QUERY_TIMEOUT_S} invalid (must be integer 1..120s; unset for default 60). Explicit override rejected (fail-closed, not clamped)." >&2; exit 1; fi
+              # Wall-clock deadline (round-2 B1): END epoch computed ONCE from
+              # now + deadline; checked BEFORE each query (a hung query cannot
+              # extend past it without the per-query timeout below killing it)
+              # plus per-query timeout via `timeout 60s` (default;
+              # AEH_ATTEST_QUERY_TIMEOUT_S override for tests) — a timed-out
+              # query fails THAT attempt as UNKNOWN-retry, never dies silently.
+              ATTEST_START="$(date +%s)"
+              ATTEST_END=$((ATTEST_START + ATTEST_DEADLINE_S))
+              ATTEST_LAST_CODE=0
+              ATTEST_LAST_KIND="unknown"
+              ATTEST_LAST_OUT=""
+              attest_fail_deadline() {
+                ATTEST_FAIL_NOW="$(date +%s)"
+                ATTEST_FAIL_ELAPSED=$((ATTEST_FAIL_NOW - ATTEST_START))
+                if [ "$ATTEST_LAST_KIND" = "visible-unreadable" ]; then
+                  echo "Post-publish attestation UNKNOWN (VISIBLE_UNREADABLE) for $PACKAGE_NAME@$RELEASE_VERSION: version visible but identity unreadable ${ATTEST_DEADLINE_S}s after publish (last exit $ATTEST_LAST_CODE; suspicious — registry serves the version but digests are missing/malformed, mismatch UNPROVEN so NOTHING is deprecated; deprecating would nuke a good version)." >&2
+                  echo "HUMAN TRIAGE REQUIRED: version is VISIBLE with UNREADABLE identity — suspicious, inspect immediately (possible registry incident or metadata corruption; do NOT auto-deprecate on suspicion)." >&2
+                  echo "  version: $PACKAGE_NAME@$RELEASE_VERSION" >&2
+                  echo "  sidecar digest: $SIDECAR_DIGEST" >&2
+                  echo "  inspect: npm view \"$PACKAGE_NAME@$RELEASE_VERSION\" dist.integrity" >&2
+                  echo "  inspect: npm view \"$PACKAGE_NAME@$RELEASE_VERSION\" version" >&2
+                  echo "  if present + equal: Release may proceed on retry (propagation settled)." >&2
+                  echo "  if present + different: npm deprecate \"$PACKAGE_NAME@$RELEASE_VERSION\" \"aeh: integrity mismatch (post-publish attestation failed; do not install)\"" >&2
+                  echo "  decision: mismatch unproven -> cannot deprecate (would nuke a good version). Loud fail + runbook." >&2
+                  echo "Post-publish attestation trace: package=$PACKAGE_NAME version=$RELEASE_VERSION sidecar_digest=$SIDECAR_DIGEST result=UNKNOWN-no-deprecate reason=VISIBLE_UNREADABLE exit=$ATTEST_LAST_CODE elapsed_s=$ATTEST_FAIL_ELAPSED deadline_s=$ATTEST_DEADLINE_S" >&2
+                  exit 1
+                fi
+                echo "Post-publish attestation UNKNOWN for $PACKAGE_NAME@$RELEASE_VERSION: registry integrity still absent/unreadable ${ATTEST_DEADLINE_S}s after publish (last exit $ATTEST_LAST_CODE, last-kind $ATTEST_LAST_KIND; propagation lag or registry incident — absence is NEVER mismatch, so NOTHING is deprecated)." >&2
+                echo "HUMAN TRIAGE REQUIRED: do NOT deprecate blindly (the version may be absent or still propagating)." >&2
+                echo "  version: $PACKAGE_NAME@$RELEASE_VERSION" >&2
+                echo "  sidecar digest: $SIDECAR_DIGEST" >&2
+                echo "  inspect: npm view \"$PACKAGE_NAME@$RELEASE_VERSION\" dist.integrity" >&2
+                echo "  if present + equal: Release may proceed on retry (propagation settled)." >&2
+                echo "  if present + different: npm deprecate \"$PACKAGE_NAME@$RELEASE_VERSION\" \"aeh: integrity mismatch (post-publish attestation failed; do not install)\"" >&2
+                echo "Post-publish attestation trace: package=$PACKAGE_NAME version=$RELEASE_VERSION sidecar_digest=$SIDECAR_DIGEST result=UNKNOWN-no-deprecate reason=$ATTEST_LAST_KIND exit=$ATTEST_LAST_CODE elapsed_s=$ATTEST_FAIL_ELAPSED deadline_s=$ATTEST_DEADLINE_S" >&2
+                exit 1
+              }
               while true; do
-                if node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --local-digest "$SIDECAR_DIGEST"; then
+                ATTEST_NOW="$(date +%s)"
+                if [ "$ATTEST_NOW" -ge "$ATTEST_END" ]; then
+                  attest_fail_deadline
+                fi
+                ATTEST_TMP="$(mktemp)"
+                if timeout "${ATTEST_QUERY_TIMEOUT_S}s" node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --local-digest "$SIDECAR_DIGEST" >"$ATTEST_TMP" 2>&1; then
+                  cat "$ATTEST_TMP"
+                  rm -f "$ATTEST_TMP"
                   echo "Post-publish attestation verified: $PACKAGE_NAME@$RELEASE_VERSION registry integrity matches sidecar $SIDECAR_DIGEST."
                   break
                 else
                   attest_code=$?
+                  ATTEST_OUT="$(cat "$ATTEST_TMP" || true)"
+                  rm -f "$ATTEST_TMP"
+                  printf '%s\n' "$ATTEST_OUT" >&2
                   if [ "$attest_code" -eq 1 ]; then
                     echo "Post-publish attestation FAILED for $PACKAGE_NAME@$RELEASE_VERSION: registry integrity != sidecar $SIDECAR_DIGEST (PROVEN mismatch, exit 1; recheck→publish swap? failing LOUDLY and deprecating to block installs)." >&2
                     DEPRECATE_MSG="aeh: integrity mismatch (post-publish attestation failed; do not install)"
@@ -614,20 +689,39 @@ jobs:
                     echo "Post-publish attestation trace: package=$PACKAGE_NAME version=$RELEASE_VERSION sidecar_digest=$SIDECAR_DIGEST result=FAILED-deprecated exit=$attest_code deprecate_ok=$DEPRECATE_OK" >&2
                     exit 1
                   fi
-                  if [ "$ATTEST_ELAPSED" -ge "$ATTEST_DEADLINE_S" ]; then
-                    echo "Post-publish attestation UNKNOWN for $PACKAGE_NAME@$RELEASE_VERSION: registry integrity still absent/unreadable ${ATTEST_DEADLINE_S}s after publish (last exit $attest_code; propagation lag or registry incident — absence is NEVER mismatch, so NOTHING is deprecated)." >&2
-                    echo "HUMAN TRIAGE REQUIRED: do NOT deprecate blindly (the version may be absent or still propagating)." >&2
-                    echo "  version: $PACKAGE_NAME@$RELEASE_VERSION" >&2
-                    echo "  sidecar digest: $SIDECAR_DIGEST" >&2
-                    echo "  inspect: npm view \"$PACKAGE_NAME@$RELEASE_VERSION\" dist.integrity" >&2
-                    echo "  if present + equal: Release may proceed on retry (propagation settled)." >&2
-                    echo "  if present + different: npm deprecate \"$PACKAGE_NAME@$RELEASE_VERSION\" \"aeh: integrity mismatch (post-publish attestation failed; do not install)\"" >&2
-                    echo "Post-publish attestation trace: package=$PACKAGE_NAME version=$RELEASE_VERSION sidecar_digest=$SIDECAR_DIGEST result=UNKNOWN-no-deprecate exit=$attest_code elapsed_s=$ATTEST_ELAPSED" >&2
-                    exit 1
+                  if [ "$attest_code" -eq 124 ]; then
+                    ATTEST_LAST_CODE=124
+                    ATTEST_LAST_KIND="timeout"
+                    ATTEST_LAST_OUT="$ATTEST_OUT"
+                  elif [ "$attest_code" -eq 2 ]; then
+                    ATTEST_LAST_CODE=2
+                    ATTEST_LAST_KIND="absent"
+                    ATTEST_LAST_OUT="$ATTEST_OUT"
+                  elif printf '%s' "$ATTEST_OUT" | grep -q "VISIBLE_UNREADABLE"; then
+                    ATTEST_LAST_CODE="$attest_code"
+                    ATTEST_LAST_KIND="visible-unreadable"
+                    ATTEST_LAST_OUT="$ATTEST_OUT"
+                  else
+                    ATTEST_LAST_CODE="$attest_code"
+                    ATTEST_LAST_KIND="unknown"
+                    ATTEST_LAST_OUT="$ATTEST_OUT"
                   fi
-                  echo "Post-publish attestation pending for $PACKAGE_NAME@$RELEASE_VERSION (exit $attest_code; registry propagation lag? retrying in ${ATTEST_INTERVAL_S}s, elapsed ${ATTEST_ELAPSED}s/${ATTEST_DEADLINE_S}s)..." >&2
+                  ATTEST_AFTER="$(date +%s)"
+                  if [ "$ATTEST_AFTER" -ge "$ATTEST_END" ]; then
+                    attest_fail_deadline
+                  fi
+                  ATTEST_WALL_NOW="$(date +%s)"
+                  ATTEST_WALL_ELAPSED=$((ATTEST_WALL_NOW - ATTEST_START))
+                  if [ "$ATTEST_LAST_KIND" = "absent" ]; then
+                    echo "Post-publish attestation pending for $PACKAGE_NAME@$RELEASE_VERSION (exit 2, authoritative-absent: version not yet visible, awaiting appearance — propagation lag? retrying in ${ATTEST_INTERVAL_S}s, wall-clock ${ATTEST_WALL_ELAPSED}s/${ATTEST_DEADLINE_S}s)..." >&2
+                  elif [ "$ATTEST_LAST_KIND" = "visible-unreadable" ]; then
+                    echo "Post-publish attestation pending for $PACKAGE_NAME@$RELEASE_VERSION (exit $ATTEST_LAST_CODE VISIBLE_UNREADABLE: version visible but identity unreadable — suspicious, mismatch UNPROVEN so NOT auto-deprecating; bounded retries, retrying in ${ATTEST_INTERVAL_S}s, wall-clock ${ATTEST_WALL_ELAPSED}s/${ATTEST_DEADLINE_S}s)..." >&2
+                  elif [ "$ATTEST_LAST_KIND" = "timeout" ]; then
+                    echo "Post-publish attestation pending for $PACKAGE_NAME@$RELEASE_VERSION (per-query timeout after ${ATTEST_QUERY_TIMEOUT_S}s, UNKNOWN-retry, retrying in ${ATTEST_INTERVAL_S}s, wall-clock ${ATTEST_WALL_ELAPSED}s/${ATTEST_DEADLINE_S}s)..." >&2
+                  else
+                    echo "Post-publish attestation pending for $PACKAGE_NAME@$RELEASE_VERSION (exit $ATTEST_LAST_CODE, registry UNKNOWN-retry, retrying in ${ATTEST_INTERVAL_S}s, wall-clock ${ATTEST_WALL_ELAPSED}s/${ATTEST_DEADLINE_S}s)..." >&2
+                  fi
                   sleep "$ATTEST_INTERVAL_S"
-                  ATTEST_ELAPSED=$((ATTEST_ELAPSED + ATTEST_INTERVAL_S))
                 fi
               done
             elif [ "$code" -eq 3 ]; then

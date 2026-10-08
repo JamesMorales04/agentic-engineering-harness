@@ -115,7 +115,13 @@ if (rIntegrity.status === 0 && rIntegrity.out) {
     }
     if (rVersion.status === 0 && rVersion.out) {
       // Version exists but integrity is missing/unreadable: cannot prove identity.
-      console.error(`npm identity UNKNOWN for ${spec}: version is present but dist.integrity/dist.shasum is missing or unreadable (fail closed, never publish).`);
+      // Machine-readable VISIBLE_UNREADABLE reason (round-2 B2): the workflow
+      // matches this prefix to emit a DISTINCT triage message (version visible,
+      // identity unreadable — suspicious) instead of conflating with
+      // authoritative-absent (exit 2, awaiting appearance). Exit stays 3.
+      console.error(
+        `npm identity UNKNOWN (VISIBLE_UNREADABLE) for ${spec}: version is present but dist.integrity/dist.shasum is missing or unreadable (fail closed, never publish).`,
+      );
       process.exit(3);
     }
     console.error(
@@ -127,11 +133,28 @@ if (rIntegrity.status === 0 && rIntegrity.out) {
 }
 
 if (algo === "sha512" && !isValidSha512(expected)) {
-  console.error(`npm identity UNKNOWN for ${spec}: malformed dist.integrity from registry (fail closed, never publish).`);
+  // Malformed registry integrity: thread visibility (round-2 B2). A malformed
+  // digest with a visible version is present-but-unreadable (suspicious,
+  // VISIBLE_UNREADABLE); otherwise generic UNKNOWN. Exit stays 3.
+  const rMalV = view("version");
+  if (rMalV.status === 0 && rMalV.out && !isTransportFailure(`${rMalV.out}\n${rMalV.err}`)) {
+    console.error(
+      `npm identity UNKNOWN (VISIBLE_UNREADABLE) for ${spec}: version is present but dist.integrity is malformed/unreadable (fail closed, never publish).`,
+    );
+  } else {
+    console.error(`npm identity UNKNOWN for ${spec}: malformed dist.integrity from registry (fail closed, never publish).`);
+  }
   process.exit(3);
 }
 if (algo === "sha1" && !isValidSha1(expected)) {
-  console.error(`npm identity UNKNOWN for ${spec}: malformed dist.shasum from registry (fail closed, never publish).`);
+  const rMalV = view("version");
+  if (rMalV.status === 0 && rMalV.out && !isTransportFailure(`${rMalV.out}\n${rMalV.err}`)) {
+    console.error(
+      `npm identity UNKNOWN (VISIBLE_UNREADABLE) for ${spec}: version is present but dist.shasum is malformed/unreadable (fail closed, never publish).`,
+    );
+  } else {
+    console.error(`npm identity UNKNOWN for ${spec}: malformed dist.shasum from registry (fail closed, never publish).`);
+  }
   process.exit(3);
 }
 

@@ -117,9 +117,10 @@ async function attestationFixture(opts: StubOpts) {
     RELEASE_VERSION: "9.9.9",
     RELEASE_SHA: SHA,
     // Fast polling for the offline harness; production defaults (5 min / 10s)
-    // apply when these are unset.
+    // apply when these are unset. Values must satisfy the round-2 bounds
+    // (deadline 1..1800s, interval 5..120s) — invalid overrides fail loudly.
     AEH_ATTEST_DEADLINE_S: "15",
-    AEH_ATTEST_INTERVAL_S: "1",
+    AEH_ATTEST_INTERVAL_S: "5",
   } as NodeJS.ProcessEnv;
   const r = spawnSync("bash", [sh], { cwd: dir, env, encoding: "utf8" });
   const out = `${r.stdout ?? ""}\n${r.stderr ?? ""}`;
