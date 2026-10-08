@@ -192,6 +192,12 @@ describe("automatic publish workflow", () => {
       block.includes("GIT_COMMITTER_NAME") && block.includes("GIT_COMMITTER_EMAIL");
     const hasCompleteIdentity = (block: string): boolean =>
       hasConfigPair(block) || (hasAuthorEnv(block) && hasCommitterEnv(block));
+    // HISTORICAL negative control (pre-fix predicate, kept inline so the
+    // committed artifact self-proves discrimination): author-pair OR
+    // committer-pair alone counted as complete — i.e. half-identity
+    // would-have-accepted. New predicate requires BOTH pairs.
+    const hasCompleteIdentityHistorical = (block: string): boolean =>
+      hasConfigPair(block) || hasAuthorEnv(block) || hasCommitterEnv(block);
     const writesGitIdentity = (run: string): boolean =>
       /git commit\b/.test(run) || /git tag\b.*-[am]/.test(run) || /git tag -a/.test(run);
     for (const [jobName, job] of Object.entries(jobs) as Array<[string, any]>) {
@@ -223,6 +229,9 @@ describe("automatic publish workflow", () => {
     const completeEnv = `${authorOnly}\n${committerOnly}`;
     expect(hasCompleteIdentity(authorOnly)).toBe(false);
     expect(hasCompleteIdentity(committerOnly)).toBe(false);
+    // HISTORICAL would-have-accepted: old predicate accepted each half alone.
+    expect(hasCompleteIdentityHistorical(authorOnly)).toBe(true);
+    expect(hasCompleteIdentityHistorical(committerOnly)).toBe(true);
     expect(hasCompleteIdentity(completeEnv)).toBe(true);
     expect(
       hasCompleteIdentity(
@@ -230,6 +239,10 @@ describe("automatic publish workflow", () => {
       ),
     ).toBe(true);
     // Weakened job-env fixture (author pair only) must be rejected; full job env accepted.
+    // HISTORICAL would-have-accepted the weakened job-env fixture too.
+    expect(
+      hasCompleteIdentityHistorical(JSON.stringify({ GIT_AUTHOR_NAME: BOT_NAME, GIT_AUTHOR_EMAIL: BOT_EMAIL })),
+    ).toBe(true);
     expect(
       hasCompleteIdentity(JSON.stringify({ GIT_AUTHOR_NAME: BOT_NAME, GIT_AUTHOR_EMAIL: BOT_EMAIL })),
     ).toBe(false);
@@ -254,18 +267,31 @@ describe("automatic publish workflow", () => {
     const BOT_NAME = "github-actions[bot]";
     const BOT_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com";
     const BOT_IDENT = `${BOT_NAME} <${BOT_EMAIL}>`;
+    // GIT_* allowlist for spawned git: git reads MANY GIT_* vars
+    // (GIT_CONFIG_COUNT / GIT_CONFIG_KEY_* / GIT_CONFIG_VALUE_* /
+    // GIT_CONFIG_PARAMETERS, GIT_AUTHOR_* / GIT_COMMITTER_*, GIT_DIR,
+    // GIT_WORK_TREE, GIT_CEILING_DIRECTORIES, ...). Copying process.env
+    // while deleting only the 4 author/committer vars lets ambient
+    // GIT_CONFIG_COUNT injection (or any other GIT_* injection) supply
+    // identity and silently pass the no-identity control. Rule: strip
+    // EVERY key starting with `GIT_` first, then re-add ONLY the intended
+    // entries — GIT_CONFIG_GLOBAL/SYSTEM -> empty file (config isolation),
+    // plus (botEnv only) the 4 author/committer vars. All non-GIT_*
+    // (PATH, HOME, SYSTEMROOT, ...) pass through untouched.
+    const stripAllGitEnv = (env: Record<string, string>): void => {
+      for (const key of Object.keys(env)) {
+        if (key.startsWith("GIT_")) delete env[key];
+      }
+    };
     // Config path (mirrors publish.yml git config lines).
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-ident-"));
     try {
       const emptyGlobal = path.join(tmp, "empty-global-config");
       await fs.writeFile(emptyGlobal, "");
       const env: Record<string, string> = { ...process.env } as Record<string, string>;
+      stripAllGitEnv(env);
       env.GIT_CONFIG_GLOBAL = emptyGlobal;
       env.GIT_CONFIG_SYSTEM = emptyGlobal;
-      delete env.GIT_AUTHOR_NAME;
-      delete env.GIT_AUTHOR_EMAIL;
-      delete env.GIT_COMMITTER_NAME;
-      delete env.GIT_COMMITTER_EMAIL;
       const git = (args: string[], cwd = tmp): string =>
         execFileSync("git", args, { cwd, encoding: "utf8", env });
       git(["init", "-q"]);
@@ -295,12 +321,15 @@ describe("automatic publish workflow", () => {
       const emptyGlobalEnv = path.join(tmpEnv, "empty-global-config");
       await fs.writeFile(emptyGlobalEnv, "");
       const baseEnv: Record<string, string> = { ...(process.env as Record<string, string>) };
+      // Allowlist: strip EVERY ambient GIT_* (GIT_CONFIG_COUNT injection,
+      // GIT_DIR / GIT_WORK_TREE / GIT_CEILING_DIRECTORIES confusion, stale
+      // GIT_AUTHOR_*/GIT_COMMITTER_*, ...) so the no-identity control fails
+      // deterministically regardless of ambient env; re-add only the empty
+      // global/system isolation pointers. botEnv below adds back exactly the
+      // 4 intended author/committer vars — nothing else GIT_*.
+      stripAllGitEnv(baseEnv);
       baseEnv.GIT_CONFIG_GLOBAL = emptyGlobalEnv;
       baseEnv.GIT_CONFIG_SYSTEM = emptyGlobalEnv;
-      delete baseEnv.GIT_AUTHOR_NAME;
-      delete baseEnv.GIT_AUTHOR_EMAIL;
-      delete baseEnv.GIT_COMMITTER_NAME;
-      delete baseEnv.GIT_COMMITTER_EMAIL;
       const botEnv: Record<string, string> = {
         ...baseEnv,
         GIT_AUTHOR_NAME: BOT_NAME,
