@@ -1469,7 +1469,11 @@ async function warnChangeScopeDirectoryPatterns(input: {
     return;
   }
   if (!warnings.length) return;
-  for (const warning of warnings) console.warn(formatScopeDirectoryPatternWarning(warning));
+  try {
+    for (const warning of warnings) console.warn(formatScopeDirectoryPatternWarning(warning));
+  } catch {
+    // Best-effort CLI diagnostic only; a warning failure never blocks the change.
+  }
   try {
     await recordPaseoTrace(input.controlRoot, "change.scope.directory-pattern", {
       operationId: input.operationId,
