@@ -214,6 +214,18 @@ function restorePreviousEnv(handle) {
 export function syncTeardown(handle) {
   if (!handle || handle.cleaned) return { cleaned: false, reason: "already-cleaned" };
   if (!handle.home) return { cleaned: false, reason: "no-home-yet", daemonStopped: false, homeRemoved: false, attempts: 0, verified: false };
+  // Own-home-only identity gate (P-NEW-4 round-5): a per-handle abort handler
+  // cleans SOLELY its own isolated home. Never touch the shared live daemon
+  // home (or anything else): skip anything that does not belong to this
+  // handle, so a stale handler firing after a later suite started cannot
+  // disturb that suite's resources.
+  try {
+    if (typeof handle.home !== "string" || path.resolve(handle.home) === path.resolve(livePaseoHome())) {
+      return { cleaned: false, reason: "refuses-live-home", daemonStopped: false, homeRemoved: false, attempts: 0, verified: false };
+    }
+  } catch {
+    return { cleaned: false, reason: "refuses-live-home", daemonStopped: false, homeRemoved: false, attempts: 0, verified: false };
+  }
   const accounting = { agentsDeleted: [], agentsDeleteFailed: [], workspacesArchived: [], workspacesArchiveFailed: [], daemonStopped: false, homeRemoved: false, attempts: 0, verified: false };
   for (let attempt = 1; attempt <= ISOLATION_TEARDOWN_MAX_ATTEMPTS; attempt += 1) {
     accounting.attempts = attempt;
@@ -270,14 +282,27 @@ export function syncTeardown(handle) {
 }
 
 function installAbortHandlers(handle) {
-  const onSignal = (signal) => {
+  // Non-interfering stacked abort handlers (P-NEW-4 round-5).
+  //
+  // NO process.exit() in any per-handle handler. Every setup installs one set
+  // of listeners and a failed setup keeps them (an unverified home still needs
+  // an abort path), so a process that runs N suites stacks N sets. A
+  // per-handle exit() would terminate the shared process inside the FIRST
+  // (stale) handler before the later suites' handlers run, leaking their
+  // homes. Instead all stacked listeners run in registration order, each
+  // cleaning (or no-op'ing) only its own handle's home; the signal default disposition
+  // then terminates the process after the listeners run. Exit codes, when needed:
+  // the campaign runner owns exit codes — never a per-handle abort handler.
+  //
+  // Each closure captures ONLY its own handle: syncTeardown scopes every probe
+  // to handle.home by home-path identity (no-home skip, live-home refusal)
+  // and is idempotent per handle (cleaned flag → re-fire is a no-op), so a
+  // stale handler firing after a subsequent suite started cannot disturb that
+  // suite.
+  const onSignal = () => {
     try {
       syncTeardown(handle);
-    } finally {
-      // Re-raise with the conventional exit code after best-effort cleanup so
-      // no isolated orphan survives an operator abort.
-      process.exit(signal === "SIGINT" ? 130 : 143);
-    }
+    } catch { /* best-effort: abort cleanup must never throw past the handler */ }
   };
   const onUncaught = (error) => {
     try {
@@ -287,14 +312,12 @@ function installAbortHandlers(handle) {
       } else {
         console.error(`PASEO_ISOLATION_ABORT_TEARDOWN: uncaught failure; isolated home ${handle.home} cleanup UNVERIFIED after ${result?.attempts ?? 1} attempt(s) (daemonStopped=${result?.daemonStopped ?? false} homeRemoved=${result?.homeRemoved ?? false}). Original error: ${error?.stack ?? error}`);
       }
-    } finally {
-      console.error(`PASEO_ISOLATION_ABORT_TEARDOWN: uncaught failure; isolated home ${handle.home} cleaned best-effort. Original error: ${error?.stack ?? error}`);
-      process.exit(1);
-    }
+    } catch { /* best-effort: abort cleanup must never throw past the handler */ }
+    // No process.exit / no rethrow: the campaign runner owns failure exit codes.
   };
   const handlers = {
-    sigint: () => onSignal("SIGINT"),
-    sigterm: () => onSignal("SIGTERM"),
+    sigint: () => onSignal(),
+    sigterm: () => onSignal(),
     uncaught: (error) => onUncaught(error),
     unhandled: (reason) => onUncaught(reason),
   };
