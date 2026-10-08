@@ -275,12 +275,23 @@ describe("TOCTOU bind: recheck exact bytes before each consume (Luna round-2)", 
     const workflow = parse(text) as Record<string, any>;
     const jobs = workflow.jobs as Record<string, any>;
     const pubSteps = jobs["publish-npm"].steps as Array<{ name?: string; run?: string; uses?: string }>;
-    // Pack->upload: dedicated recheck shell step immediately before the upload-artifact step.
+    // Pack->upload: dedicated recheck shell step before the upload-artifact step,
+    // plus (round-5) the belt-and-suspenders empty-basename guard immediately
+    // before upload.
     const uploadIdx = pubSteps.findIndex((s) => (s.uses ?? "").includes("upload-artifact"));
     expect(uploadIdx, "upload-artifact step exists").toBeGreaterThan(0);
     const preUpload = pubSteps[uploadIdx - 1] as { name?: string; run?: string };
-    expect(preUpload.name ?? "", "recheck runs immediately before upload").toMatch(/recheck/i);
-    expect(preUpload.run ?? "", "pre-upload recheck uses script mode").toMatch(/verify-artifact-provenance\.mjs --recheck/);
+    expect(preUpload.run ?? "", "empty-basename guard runs immediately before upload").toContain(
+      '[ -n "$VERIFIED_TARBALL_BASENAME" ] || exit 1',
+    );
+    const recheckStep = [...pubSteps.slice(0, uploadIdx)]
+      .reverse()
+      .find((s) => (s.run ?? "").includes("GITHUB_ENV") && (s.run ?? "").includes("--recheck")) as
+      | { name?: string; run?: string }
+      | undefined;
+    expect(recheckStep, "recheck step exists before upload").toBeDefined();
+    expect(recheckStep!.name ?? "", "recheck runs before upload").toMatch(/recheck/i);
+    expect(recheckStep!.run ?? "", "pre-upload recheck uses script mode").toMatch(/verify-artifact-provenance\.mjs --recheck/);
     // Publish: recheck IN THE SAME shell step, immediately before the npm publish invocation.
     const publishStep = pubSteps.find((s) => (s.run ?? "").includes("npm publish"))!;
     expect(publishStep).toBeDefined();
@@ -319,7 +330,7 @@ describe("TOCTOU bind: recheck exact bytes before each consume (Luna round-2)", 
     expect(repairRun).toMatch(/verify-artifact-provenance\.mjs --recheck/);
     // Single implementation everywhere (script mode, never inline sha512sum for the bind).
     for (const [site, run] of Object.entries({
-      preUpload: preUpload.run!,
+      preUpload: recheckStep!.run!,
       publish: publishStep.run!,
       confirm: confirmRun,
       repair: repairRun,

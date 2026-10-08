@@ -56,8 +56,17 @@ describe("round-3 U1: upload scope binds the verified tarball (no sibling crossi
     const steps = publishNpmSteps(workflow);
     const idx = steps.findIndex((s) => (s.uses ?? "").includes("upload-artifact"));
     expect(idx, "upload-artifact step exists").toBeGreaterThan(0);
-    const pre = steps[idx - 1] as { name?: string; run?: string };
-    expect(pre.name ?? "", "recheck immediately precedes upload").toMatch(/recheck/i);
+    // Round-5: belt-and-suspenders empty-basename guard sits immediately before
+    // upload; the single-tgz recheck is the nearest prior GITHUB_ENV step.
+    const guard = steps[idx - 1] as { name?: string; run?: string };
+    expect(guard.run ?? "", "empty-basename guard immediately precedes upload").toContain(
+      '[ -n "$VERIFIED_TARBALL_BASENAME" ] || exit 1',
+    );
+    const pre = [...steps.slice(0, idx)]
+      .reverse()
+      .find((s) => (s.run ?? "").includes("GITHUB_ENV")) as { name?: string; run?: string } | undefined;
+    expect(pre, "recheck step exists before upload").toBeDefined();
+    expect(pre!.name ?? "", "recheck precedes upload (via empty-basename guard)").toMatch(/recheck/i);
     expect(pre.run ?? "", "single-tgz guard fails closed on siblings").toMatch(/exactly ONE/i);
     expect(pre.run ?? "", "guard reports sibling count").toMatch(/sibling/i);
     expect(pre.run ?? "", "guard uses the script bind").toMatch(/verify-artifact-provenance\.mjs --recheck/);
@@ -85,7 +94,12 @@ describe("round-3 U1: upload scope binds the verified tarball (no sibling crossi
     const { workflow } = await loadPublish();
     const steps = publishNpmSteps(workflow);
     const idx = steps.findIndex((s) => (s.uses ?? "").includes("upload-artifact"));
-    const preRun = (steps[idx - 1] as any).run as string;
+    // Round-5: the recheck exports via GITHUB_ENV (fail closed when unset); the
+    // immediate predecessor is the empty-basename guard. Exercise the recheck.
+    const recheck = [...steps.slice(0, idx)]
+      .reverse()
+      .find((s) => ((s as any).run ?? "").includes("GITHUB_ENV"))!;
+    const preRun = (recheck as any).run as string;
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-prov3-u1-"));
     await fs.writeFile(path.join(dir, "package.json"), JSON.stringify({ name: "aeh-test-pkg", version: "9.9.9" }));
     const pack = spawnSync("npm", ["pack", "--pack-destination", dir, "--silent"], { cwd: dir, encoding: "utf8" });
@@ -106,7 +120,11 @@ describe("round-3 U1: upload scope binds the verified tarball (no sibling crossi
     await fs.writeFile(path.join(retainDir, "npm-identity.digest"), `${baseDigest}\n`);
     const sh = path.join(dir, "pre-upload.sh");
     await fs.writeFile(sh, `set -euo pipefail\n${preRun}\n`);
-    const env = { ...process.env, RUNNER_TEMP: dir } as NodeJS.ProcessEnv;
+    // Round-5: the recheck pins via GITHUB_ENV (fail closed when unset); the
+    // offline harness provides it like CI does.
+    const githubEnv = path.join(dir, "github_env");
+    await fs.writeFile(githubEnv, "");
+    const env = { ...process.env, RUNNER_TEMP: dir, GITHUB_ENV: githubEnv } as NodeJS.ProcessEnv;
     // Control: single tarball passes the guard + recheck.
     const ok = spawnSync("bash", [sh], { cwd: dir, env, encoding: "utf8" });
     expect(ok.status, `single verified tarball must pass (out: ${ok.stdout}\n${ok.stderr})`).toBe(0);

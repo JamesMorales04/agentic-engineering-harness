@@ -70,9 +70,15 @@ describe("round-4 U1: upload binds the EXACT verified filename (no glob)", () =>
     const steps = publishNpmSteps(workflow);
     const idx = steps.findIndex((s) => (s.uses ?? "").includes("upload-artifact"));
     expect(idx).toBeGreaterThan(0);
-    const pre = steps[idx - 1] as { name?: string; run?: string };
-    expect(pre.run ?? "", "recheck pins the exact verified file").toMatch(/VERIFIED_TARBALL_BASENAME|VERIFIED_TARBALL/);
-    expect(pre.run ?? "", "exact basename is exported for the upload step").toMatch(/GITHUB_ENV/);
+    // Round-5: belt-and-suspenders empty-basename guard sits immediately before
+    // upload; the GITHUB_ENV-exporting recheck is the nearest prior step that
+    // mentions GITHUB_ENV.
+    const recheck = [...steps.slice(0, idx)]
+      .reverse()
+      .find((s) => (s.run ?? "").includes("GITHUB_ENV")) as { name?: string; run?: string } | undefined;
+    expect(recheck, "recheck step exporting via GITHUB_ENV exists before upload").toBeDefined();
+    expect(recheck!.run ?? "", "recheck pins the exact verified file").toMatch(/VERIFIED_TARBALL_BASENAME|VERIFIED_TARBALL/);
+    expect(recheck!.run ?? "", "exact basename is exported for the upload step").toMatch(/GITHUB_ENV/);
     const upload = steps[idx] as any;
     const uploadYaml = JSON.stringify(upload.with ?? {});
     expect(uploadYaml, "no glob anywhere in the upload step").not.toMatch(/\*\.tgz/);

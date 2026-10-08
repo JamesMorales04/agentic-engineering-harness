@@ -446,10 +446,23 @@ jobs:
           # Pin the EXACT verified filename for the upload step (no glob).
           BASENAME="$(basename "$TARBALL")"
           case "$BASENAME" in *.tgz) ;; *) echo "Refusing upload: verified file $BASENAME is not a .tgz (fail closed)." >&2; exit 1;; esac
-          if [ -n "${GITHUB_ENV:-}" ]; then
-            echo "VERIFIED_TARBALL_BASENAME=$BASENAME" >> "$GITHUB_ENV"
+          if [ -z "${GITHUB_ENV:-}" ]; then
+            echo "Refusing upload: GITHUB_ENV is empty/unset; cannot pin VERIFIED_TARBALL_BASENAME=$BASENAME (fail closed)." >&2
+            exit 1
           fi
+          echo "VERIFIED_TARBALL_BASENAME=$BASENAME" >> "$GITHUB_ENV"
           echo "Verified exact tarball for upload: $BASENAME"
+
+      - name: Refuse empty verified basename before upload (fail closed)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Belt and suspenders: the upload path expands
+          # ${{ env.VERIFIED_TARBALL_BASENAME }} — if empty it becomes the
+          # retain DIRECTORY and siblings upload unrechecked. Refuse empty here.
+          [ -n "$VERIFIED_TARBALL_BASENAME" ] || exit 1
+          case "$VERIFIED_TARBALL_BASENAME" in *.tgz) ;; *) echo "Refusing upload: VERIFIED_TARBALL_BASENAME=$VERIFIED_TARBALL_BASENAME is not a .tgz (fail closed)." >&2; exit 1;; esac
+          echo "Verified basename present for upload: $VERIFIED_TARBALL_BASENAME"
 
       - name: Retain release tarball for retry
         uses: actions/upload-artifact@v4
