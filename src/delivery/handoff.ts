@@ -13,6 +13,8 @@ import { currentOperationContext, controllerEpochFromEnvironment, loadOperation,
 import { controllerActorId, type ToolActionAuthorityEvidenceV1 } from "../security/toolActionGate.js";
 import { executeGatedAction } from "../security/gatedAction.js";
 import { reconcileToolAction } from "../security/actionReconciliation.js";
+import { registerOperationResource } from "../runtime/operationResources.js";
+import { recordPaseoTrace } from "../paseo/trace.js";
 import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
 
 export interface DeliveryRecord {
@@ -101,7 +103,7 @@ export async function handoffTask(root: string, config: HarnessProjectConfig, ta
         execute: async () => {
           workspace = remoteBranch
             ? await createCheckoutWorkspace(root, remoteBranch, slug, taskId, handoffAuthority!, record.github?.branchSha)
-            : await createBranchOffWorkspace(root, originatingBranch, localIssueBranch, slug, taskId);
+            : await createBranchOffWorkspace(root, originatingBranch, localIssueBranch, slug, taskId, handoffAuthority!.operationId);
           return { outcome: "SUCCEEDED" as const, evidence: { workspaceId: workspace.workspaceId, worktreePath: workspace.worktreePath, branch: workspacePayload.branch } };
         },
         reconcile: (intent) => reconcileToolAction(root, intent, { ...workspacePayload, ...(record.paseo?.workspaceId ? { workspaceId: record.paseo.workspaceId } : {}) })
@@ -204,12 +206,12 @@ async function createCheckoutWorkspace(root: string, branch: string, slug: strin
   } else {
     throw new Error(`HANDOFF_BRANCH_INSPECTION_FAILED: could not inspect local branch ${branch}: ${local.stderr || local.stdout}`);
   }
-  return runPaseoWorkspace(root, ["--mode", "checkout-branch", "--branch", branch], slug, title, branch);
+  return runPaseoWorkspace(root, ["--mode", "checkout-branch", "--branch", branch], slug, title, branch, authority.operationId);
 }
-async function createBranchOffWorkspace(root: string, base: string, branch: string, slug: string, title: string): Promise<{ workspaceId?: string; worktreePath?: string }> {
+async function createBranchOffWorkspace(root: string, base: string, branch: string, slug: string, title: string, operationId: string): Promise<{ workspaceId?: string; worktreePath?: string }> {
   assertGitBranchName(branch);
   assertGitBranchName(base);
-  return runPaseoWorkspace(root, ["--mode", "branch-off", "--new-branch", branch, "--base", base], slug, title, branch);
+  return runPaseoWorkspace(root, ["--mode", "branch-off", "--new-branch", branch, "--base", base], slug, title, branch, operationId);
 }
 
 interface HandoffAuthority {
@@ -248,11 +250,43 @@ async function findGithubIssueByMarker(apiBase: string, token: string, repositor
   const issues = await githubRequest<Array<GithubIssue>>(`${apiBase}`, token, `/repos/${repository}/issues?state=all&per_page=100`);
   return issues.find((issue) => issue.body?.includes(marker));
 }
-async function runPaseoWorkspace(root: string, mode: string[], slug: string, title: string, branch: string): Promise<{ workspaceId?: string; worktreePath?: string }> {
+async function runPaseoWorkspace(root: string, mode: string[], slug: string, title: string, branch: string, operationId: string): Promise<{ workspaceId?: string; worktreePath?: string }> {
   const create = await runExecutable("paseo", ["workspace", "create", "--isolation", "worktree", "--path", root, ...mode, "--worktree-slug", slug, "--title", title, "--json"], { cwd: root, timeoutMs: 180_000 }); if (create.exitCode !== 0) throw new Error(`Paseo workspace creation failed: ${create.stderr || create.stdout}`);
-  const direct = parseWorkspace(create.stdout, branch); if (direct.workspaceId && direct.worktreePath) return direct;
-  const list = await runExecutable("paseo", ["workspace", "ls", "--json"], { cwd: root, timeoutMs: 60_000 }); if (list.exitCode === 0) { const found = parseWorkspace(list.stdout, branch); if (found.workspaceId && found.worktreePath) return found; }
+  const direct = parseWorkspace(create.stdout, branch); if (direct.workspaceId && direct.worktreePath) { await trackHandoffWorkspace(root, operationId, direct, title); return direct; }
+  const list = await runExecutable("paseo", ["workspace", "ls", "--json"], { cwd: root, timeoutMs: 60_000 }); if (list.exitCode === 0) { const found = parseWorkspace(list.stdout, branch); if (found.workspaceId && found.worktreePath) { await trackHandoffWorkspace(root, operationId, found, title); return found; } }
   throw new Error(`Paseo created the workspace but its ID/path could not be resolved. Output: ${create.stdout}`);
+}
+async function trackHandoffWorkspace(root: string, operationId: string, workspace: { workspaceId?: string; worktreePath?: string }, title: string): Promise<void> {
+  if (!workspace.workspaceId) return;
+  // RETAIN_SHARED: handoff worktrees are delivery-owned, owner-managed outputs — not temp.
+  // Unbounded retention is an explicit delivery-lifecycle decision: recovery tracks the
+  // workspace without archiving, and the delivery owner (human/operator) owns its lifetime.
+  // Registration failure must never proceed unregistered (leak without record): best-effort
+  // cleanup of the just-created workspace first, then fail the handoff loudly.
+  try {
+    await registerOperationResource(root, operationId, { kind: "paseo-workspace", identity: workspace.workspaceId, reclaim: "RETAIN_SHARED", ...(workspace.worktreePath ? { path: workspace.worktreePath } : {}), label: `handoff ${title}` });
+  } catch (error) {
+    const registrationDetail = error instanceof Error ? error.message : String(error);
+    let archiveDetail: string;
+    try {
+      const archive = await runExecutable("paseo", ["workspace", "archive", workspace.workspaceId], { cwd: root, timeoutMs: 120_000 });
+      archiveDetail = archive.exitCode === 0
+        ? "succeeded (exit 0)"
+        : `FAILED exit ${archive.exitCode}: ${(archive.stderr || archive.stdout || "(empty)").slice(-1000)}`;
+    } catch (archiveError) {
+      archiveDetail = `FAILED to execute: ${archiveError instanceof Error ? archiveError.message : String(archiveError)}`.slice(0, 1000);
+    }
+    await recordPaseoTrace(root, "operation.resource.register-failed", {
+      operationId,
+      kind: "paseo-workspace",
+      identity: workspace.workspaceId,
+      error: registrationDetail,
+      archiveResult: archiveDetail,
+      ...(workspace.worktreePath ? { worktreePath: workspace.worktreePath } : {}),
+      label: `handoff ${title}`,
+    }).catch(() => undefined);
+    throw new Error(`HANDOFF_REGISTRATION_FAILED: handoff workspace ${workspace.workspaceId} was created but registration failed (workspace leaked without registry record); registration error: ${registrationDetail}; best-effort archive ${archiveDetail}; failing the handoff`, { cause: error });
+  }
 }
 function parseWorkspace(raw: string, branch: string): { workspaceId?: string; worktreePath?: string } { try { const value = JSON.parse(raw) as unknown; const candidates = flattenObjects(value); const found = candidates.find((item) => [item.branch, item.branchName, item.gitBranch].some((candidate) => candidate === branch)) ?? candidates.find((item) => typeof item.id === "string" || typeof item.workspaceId === "string"); return found ? { workspaceId: stringValue(found.workspaceId) ?? stringValue(found.id), worktreePath: stringValue(found.worktreePath) ?? stringValue(found.path) ?? stringValue(found.root) } : {}; } catch { return {}; } }
 function flattenObjects(value: unknown): Array<Record<string, unknown>> { if (Array.isArray(value)) return value.flatMap(flattenObjects); if (!value || typeof value !== "object") return []; const record = value as Record<string, unknown>; return [record, ...Object.values(record).flatMap(flattenObjects)]; }
