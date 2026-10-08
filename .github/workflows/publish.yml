@@ -556,10 +556,24 @@ jobs:
                 exit 1
               }
               npm publish "$TARBALL" --provenance
-              # POST-PUBLISH ATTESTATION (U2): query the registry ground truth
-              # (`npm view <name>@<version> dist.integrity`) and compare to the
-              # sidecar digest. Match -> proceed to Release; mismatch/UNKNOWN ->
-              # fail LOUDLY + `npm deprecate` (bounded retry, never silent) + trace.
+              # POST-PUBLISH ATTESTATION (U2, propagation-tolerant): query the
+              # registry ground truth (`npm view <name>@<version>
+              # dist.integrity` via the canonical identity gate) and compare to
+              # the sidecar digest. The registry may lag a successful `npm
+              # publish` by minutes (incident run 37762308471: `npm view` ~1s
+              # after publish saw absence, treated as MISMATCH, and attempted
+              # a nonsense deprecate — the integrity LATER matched the sidecar
+              # exactly). Poll with bounded backoff — up to 5 min at ~10s
+              # intervals by default (AEH_ATTEST_DEADLINE_S /
+              # AEH_ATTEST_INTERVAL_S override for tests) — awaiting EITHER
+              # present-integrity OR a stable answer:
+              #   exit 0 (present + equal) -> PASS, proceed to Release;
+              #   exit 1 (present + different) -> PROVEN mismatch -> fail LOUDLY
+              #     + `npm deprecate` (bounded retry, never silent) + trace;
+              #   exit 2 (absent) / exit 3 (UNKNOWN) -> keep polling; past the
+              #     deadline fail LOUDLY as UNKNOWN WITHOUT deprecate (absence
+              #     is NEVER mismatch: nothing visible to deprecate; human
+              #     triage via the trace + runbook below).
               # Trust boundary (U3): attestation trusts the npm registry TLS
               # channel — dist.integrity as served over TLS is the ground truth
               # for what installers receive. A registry compromise or a valid-TLS
@@ -567,30 +581,55 @@ jobs:
               # explicitly outside threat model (no client-side gate can
               # detect a lying registry).
               SIDECAR_DIGEST="$(node -e "process.stdout.write(JSON.parse(require('node:fs').readFileSync(process.argv[1],'utf8')).tarball_sha512)" "$RETAIN_DIR/npm-provenance.json")"
-              if node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --local-digest "$SIDECAR_DIGEST"; then
-                echo "Post-publish attestation verified: $PACKAGE_NAME@$RELEASE_VERSION registry integrity matches sidecar $SIDECAR_DIGEST."
-              else
-                attest_code=$?
-                echo "Post-publish attestation FAILED for $PACKAGE_NAME@$RELEASE_VERSION: registry integrity != sidecar $SIDECAR_DIGEST (exit $attest_code; recheck→publish swap? failing LOUDLY and deprecating to block installs)." >&2
-                DEPRECATE_MSG="aeh: integrity mismatch (post-publish attestation failed; do not install)"
-                DEPRECATE_OK=0
-                for attempt in 1 2 3; do
-                  if npm deprecate "$PACKAGE_NAME@$RELEASE_VERSION" "$DEPRECATE_MSG"; then
-                    DEPRECATE_OK=1
-                    break
+              ATTEST_DEADLINE_S="${AEH_ATTEST_DEADLINE_S:-300}"
+              ATTEST_INTERVAL_S="${AEH_ATTEST_INTERVAL_S:-10}"
+              case "$ATTEST_DEADLINE_S" in ''|*[!0-9]*) ATTEST_DEADLINE_S=300;; esac
+              case "$ATTEST_INTERVAL_S" in ''|*[!0-9]*) ATTEST_INTERVAL_S=10;; esac
+              if [ "$ATTEST_INTERVAL_S" -eq 0 ]; then ATTEST_INTERVAL_S=10; fi
+              ATTEST_ELAPSED=0
+              while true; do
+                if node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --local-digest "$SIDECAR_DIGEST"; then
+                  echo "Post-publish attestation verified: $PACKAGE_NAME@$RELEASE_VERSION registry integrity matches sidecar $SIDECAR_DIGEST."
+                  break
+                else
+                  attest_code=$?
+                  if [ "$attest_code" -eq 1 ]; then
+                    echo "Post-publish attestation FAILED for $PACKAGE_NAME@$RELEASE_VERSION: registry integrity != sidecar $SIDECAR_DIGEST (PROVEN mismatch, exit 1; recheck→publish swap? failing LOUDLY and deprecating to block installs)." >&2
+                    DEPRECATE_MSG="aeh: integrity mismatch (post-publish attestation failed; do not install)"
+                    DEPRECATE_OK=0
+                    for attempt in 1 2 3; do
+                      if npm deprecate "$PACKAGE_NAME@$RELEASE_VERSION" "$DEPRECATE_MSG"; then
+                        DEPRECATE_OK=1
+                        break
+                      fi
+                      echo "Deprecate attempt $attempt/3 failed for $PACKAGE_NAME@$RELEASE_VERSION; retrying..." >&2
+                      sleep 5
+                    done
+                    if [ "$DEPRECATE_OK" -ne 1 ]; then
+                      echo "MANUAL-DEPRECATE REQUIRED: automatic deprecate failed after 3 attempts." >&2
+                      echo "  version: $PACKAGE_NAME@$RELEASE_VERSION" >&2
+                      echo "  reason: post-publish attestation mismatch (registry integrity != sidecar $SIDECAR_DIGEST); published bytes are UNTRUSTED, block installs immediately." >&2
+                      echo "  command: npm deprecate \"$PACKAGE_NAME@$RELEASE_VERSION\" \"$DEPRECATE_MSG\"" >&2
+                    fi
+                    echo "Post-publish attestation trace: package=$PACKAGE_NAME version=$RELEASE_VERSION sidecar_digest=$SIDECAR_DIGEST result=FAILED-deprecated exit=$attest_code deprecate_ok=$DEPRECATE_OK" >&2
+                    exit 1
                   fi
-                  echo "Deprecate attempt $attempt/3 failed for $PACKAGE_NAME@$RELEASE_VERSION; retrying..." >&2
-                  sleep 5
-                done
-                if [ "$DEPRECATE_OK" -ne 1 ]; then
-                  echo "MANUAL-DEPRECATE REQUIRED: automatic deprecate failed after 3 attempts." >&2
-                  echo "  version: $PACKAGE_NAME@$RELEASE_VERSION" >&2
-                  echo "  reason: post-publish attestation mismatch (registry integrity != sidecar $SIDECAR_DIGEST); published bytes are UNTRUSTED, block installs immediately." >&2
-                  echo "  command: npm deprecate \"$PACKAGE_NAME@$RELEASE_VERSION\" \"$DEPRECATE_MSG\"" >&2
+                  if [ "$ATTEST_ELAPSED" -ge "$ATTEST_DEADLINE_S" ]; then
+                    echo "Post-publish attestation UNKNOWN for $PACKAGE_NAME@$RELEASE_VERSION: registry integrity still absent/unreadable ${ATTEST_DEADLINE_S}s after publish (last exit $attest_code; propagation lag or registry incident — absence is NEVER mismatch, so NOTHING is deprecated)." >&2
+                    echo "HUMAN TRIAGE REQUIRED: do NOT deprecate blindly (the version may be absent or still propagating)." >&2
+                    echo "  version: $PACKAGE_NAME@$RELEASE_VERSION" >&2
+                    echo "  sidecar digest: $SIDECAR_DIGEST" >&2
+                    echo "  inspect: npm view \"$PACKAGE_NAME@$RELEASE_VERSION\" dist.integrity" >&2
+                    echo "  if present + equal: Release may proceed on retry (propagation settled)." >&2
+                    echo "  if present + different: npm deprecate \"$PACKAGE_NAME@$RELEASE_VERSION\" \"aeh: integrity mismatch (post-publish attestation failed; do not install)\"" >&2
+                    echo "Post-publish attestation trace: package=$PACKAGE_NAME version=$RELEASE_VERSION sidecar_digest=$SIDECAR_DIGEST result=UNKNOWN-no-deprecate exit=$attest_code elapsed_s=$ATTEST_ELAPSED" >&2
+                    exit 1
+                  fi
+                  echo "Post-publish attestation pending for $PACKAGE_NAME@$RELEASE_VERSION (exit $attest_code; registry propagation lag? retrying in ${ATTEST_INTERVAL_S}s, elapsed ${ATTEST_ELAPSED}s/${ATTEST_DEADLINE_S}s)..." >&2
+                  sleep "$ATTEST_INTERVAL_S"
+                  ATTEST_ELAPSED=$((ATTEST_ELAPSED + ATTEST_INTERVAL_S))
                 fi
-                echo "Post-publish attestation trace: package=$PACKAGE_NAME version=$RELEASE_VERSION sidecar_digest=$SIDECAR_DIGEST result=FAILED-deprecated exit=$attest_code deprecate_ok=$DEPRECATE_OK" >&2
-                exit 1
-              fi
+              done
             elif [ "$code" -eq 3 ]; then
               echo "Refusing to publish $PACKAGE_NAME@$RELEASE_VERSION: registry lookup UNKNOWN (network/auth/parse, fail closed, never publish on UNKNOWN)." >&2
               exit 1
