@@ -310,6 +310,7 @@ describe("automatic publish workflow", () => {
       GIT_COMMITTER_EMAIL: "attacker@example.com",
       GIT_DIR: "/tmp/confused-git-dir",
       GIT_WORK_TREE: "/tmp/confused-work-tree",
+      GIT_CEILING_DIRECTORIES: "/tmp",
     };
     const HOSTILE_GIT_KEYS = Object.keys(HOSTILE_GIT_ENV);
     // Config path (mirrors publish.yml git config lines).
@@ -387,6 +388,7 @@ describe("automatic publish workflow", () => {
       expect(baseEnv.GIT_COMMITTER_EMAIL, "stale GIT_COMMITTER_EMAIL neutralized").toBeUndefined();
       expect(baseEnv.GIT_DIR, "confusion GIT_DIR neutralized").toBeUndefined();
       expect(baseEnv.GIT_WORK_TREE, "confusion GIT_WORK_TREE neutralized").toBeUndefined();
+      expect(baseEnv.GIT_CEILING_DIRECTORIES, "confusion GIT_CEILING_DIRECTORIES neutralized").toBeUndefined();
       baseEnv.GIT_CONFIG_GLOBAL = emptyGlobalEnv;
       baseEnv.GIT_CONFIG_SYSTEM = emptyGlobalEnv;
       const botEnv: Record<string, string> = {
