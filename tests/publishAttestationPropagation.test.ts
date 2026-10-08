@@ -17,9 +17,10 @@ import { describe, expect, it } from "vitest";
 // Required behavior (post-publish attestation ONLY; everything else accepted):
 //   (a) poll `npm view dist.integrity` with bounded backoff (up to ~10 min,
 //       ~20s intervals) awaiting present-integrity or a stable answer;
-//       Policy evidence (2026-10-08): the npm propagation tail exceeded the
-//       old 300s deadline twice — 0.16.9 lagged ~1-2min, 0.16.10 lagged
-//       >5min (both published fine, integrity later matched exactly) — so
+//       Policy evidence (2026-10-08): 0.16.10's npm propagation tail exceeded
+//       the old 300s deadline (>5min; 0.16.9 had failed the earlier immediate
+//       check on ~1-2min lag before polling existed) — both published fine,
+//       integrity later matched exactly — so
 //       the production default is 600s/20s (query count ~30, same as the
 //       old 300s/10s, CI cost sane).
 //   (b) present + equal -> PASS; present + different -> PROVEN mismatch ->

@@ -567,9 +567,10 @@ jobs:
               # intervals by default (AEH_ATTEST_DEADLINE_S /
               # AEH_ATTEST_INTERVAL_S override for tests) — awaiting EITHER
               # present-integrity OR a stable answer (policy evidence 2026-10-08:
-              # npm propagation tail exceeded the old 300s deadline TWICE —
-              # 0.16.9 lagged ~1-2min, 0.16.10 lagged >5min, both published
-              # fine with integrity later matching exactly — so the default is
+              # 0.16.10's npm propagation tail exceeded the old 300s deadline
+              # (>5min lag; 0.16.9 had failed the earlier immediate check on a
+              # ~1-2min lag before polling existed) — both published fine with
+              # integrity later matching exactly — so the default is
               # 600s, not 300s):
                #   exit 0 (present + equal) -> PASS, proceed to Release
                #     (post-deadline success is still ACCEPTED but traced
@@ -609,8 +610,9 @@ jobs:
               # Override validation (fail-closed, reject-invalid, round-2 B1):
               # - unset -> defaults (deadline 600s/10min, interval 20s,
               #   query-timeout 60s via `timeout 60s` per query).
-              #   Policy: deadline 300s->600s after the npm tail exceeded 300s
-              #   twice (0.16.9 ~1-2min, 0.16.10 >5min, observed 2026-10-08);
+              #   Policy: deadline 300s->600s after 0.16.10's npm tail exceeded 300s
+              #   (>5min, observed 2026-10-08; 0.16.9 had failed the earlier
+              #   immediate check on ~1-2min lag before polling existed);
               #   interval 10s->20s proportionally so the worst-case query count
               #   stays ~30 (600/20 == 300/10, CI cost sane). Per-query timeout
               #   UNCHANGED at 60s; wall-clock exactness + fail-closed semantics
