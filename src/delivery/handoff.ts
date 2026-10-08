@@ -14,6 +14,7 @@ import { controllerActorId, type ToolActionAuthorityEvidenceV1 } from "../securi
 import { executeGatedAction } from "../security/gatedAction.js";
 import { reconcileToolAction } from "../security/actionReconciliation.js";
 import { registerOperationResource } from "../runtime/operationResources.js";
+import { recordPaseoTrace } from "../paseo/trace.js";
 import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
 
 export interface DeliveryRecord {
@@ -265,8 +266,26 @@ async function trackHandoffWorkspace(root: string, operationId: string, workspac
   try {
     await registerOperationResource(root, operationId, { kind: "paseo-workspace", identity: workspace.workspaceId, reclaim: "RETAIN_SHARED", ...(workspace.worktreePath ? { path: workspace.worktreePath } : {}), label: `handoff ${title}` });
   } catch (error) {
-    await runExecutable("paseo", ["workspace", "archive", workspace.workspaceId], { cwd: root, timeoutMs: 120_000 }).catch(() => undefined);
-    throw new Error(`HANDOFF_REGISTRATION_FAILED: handoff workspace ${workspace.workspaceId} was created but registration failed; attempted best-effort archive and failing the handoff: ${error instanceof Error ? error.message : String(error)}`);
+    const registrationDetail = error instanceof Error ? error.message : String(error);
+    let archiveDetail: string;
+    try {
+      const archive = await runExecutable("paseo", ["workspace", "archive", workspace.workspaceId], { cwd: root, timeoutMs: 120_000 });
+      archiveDetail = archive.exitCode === 0
+        ? "succeeded (exit 0)"
+        : `FAILED exit ${archive.exitCode}: ${(archive.stderr || archive.stdout || "(empty)").slice(-1000)}`;
+    } catch (archiveError) {
+      archiveDetail = `FAILED to execute: ${archiveError instanceof Error ? archiveError.message : String(archiveError)}`.slice(0, 1000);
+    }
+    await recordPaseoTrace(root, "operation.resource.register-failed", {
+      operationId,
+      kind: "paseo-workspace",
+      identity: workspace.workspaceId,
+      error: registrationDetail,
+      archiveResult: archiveDetail,
+      ...(workspace.worktreePath ? { worktreePath: workspace.worktreePath } : {}),
+      label: `handoff ${title}`,
+    }).catch(() => undefined);
+    throw new Error(`HANDOFF_REGISTRATION_FAILED: handoff workspace ${workspace.workspaceId} was created but registration failed (workspace leaked without registry record); registration error: ${registrationDetail}; best-effort archive ${archiveDetail}; failing the handoff`, { cause: error });
   }
 }
 function parseWorkspace(raw: string, branch: string): { workspaceId?: string; worktreePath?: string } { try { const value = JSON.parse(raw) as unknown; const candidates = flattenObjects(value); const found = candidates.find((item) => [item.branch, item.branchName, item.gitBranch].some((candidate) => candidate === branch)) ?? candidates.find((item) => typeof item.id === "string" || typeof item.workspaceId === "string"); return found ? { workspaceId: stringValue(found.workspaceId) ?? stringValue(found.id), worktreePath: stringValue(found.worktreePath) ?? stringValue(found.path) ?? stringValue(found.root) } : {}; } catch { return {}; } }
