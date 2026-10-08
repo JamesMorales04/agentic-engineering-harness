@@ -5,6 +5,14 @@ import path from "node:path";
 import { parse } from "yaml";
 import { describe, expect, it } from "vitest";
 
+// REVIEWER SCOPE (ru/release-ident-4): test-only change vs parent
+// 95a0493bf278caade7578ea36112a15f27b2cb73 (ru/release-ident-3 tip).
+// The workflow fix (.github/workflows/publish.yml bot identity + job-level
+// GIT_* env, commit 26f8d390243e74d188b508faef61bd1b46ce0446) is the already-
+// accepted parent commit; this branch differs from origin/main ONLY in
+// tests/publishWorkflow.test.ts to prove hostile GIT_* neutralization with
+// explicit seeded inputs. No production/workflow change here.
+
 describe("automatic publish workflow", () => {
   it("publishes from main through one guarded OIDC-capable workflow", async () => {
     const text = await fs.readFile(new URL("../.github/workflows/publish.yml", import.meta.url), "utf8");
@@ -283,13 +291,38 @@ describe("automatic publish workflow", () => {
         if (key.startsWith("GIT_")) delete env[key];
       }
     };
+    // EXPLICIT hostile seeds as committed test inputs (Luna: allowlist SOUND
+    // but unproven — the suite stripped inherited env without ever seeding
+    // hostile values). Every vector git reads for identity/confusion is
+    // seeded here, then stripAllGitEnv must neutralize each BY NAME before
+    // the no-identity control runs. Seeding proves neutralization of SEEDED
+    // hostiles, not just whatever ambient env happened to be inherited.
+    const HOSTILE_GIT_ENV: Record<string, string> = {
+      GIT_CONFIG_COUNT: "2",
+      GIT_CONFIG_KEY_0: "user.name",
+      GIT_CONFIG_VALUE_0: "hacker",
+      GIT_CONFIG_KEY_1: "user.email",
+      GIT_CONFIG_VALUE_1: "hacker@example.com",
+      GIT_CONFIG_PARAMETERS: "'user.name=hacker' 'user.email=hacker@example.com'",
+      GIT_AUTHOR_NAME: "attacker",
+      GIT_AUTHOR_EMAIL: "attacker@example.com",
+      GIT_COMMITTER_NAME: "attacker",
+      GIT_COMMITTER_EMAIL: "attacker@example.com",
+      GIT_DIR: "/tmp/confused-git-dir",
+      GIT_WORK_TREE: "/tmp/confused-work-tree",
+    };
+    const HOSTILE_GIT_KEYS = Object.keys(HOSTILE_GIT_ENV);
     // Config path (mirrors publish.yml git config lines).
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-ident-"));
     try {
       const emptyGlobal = path.join(tmp, "empty-global-config");
       await fs.writeFile(emptyGlobal, "");
-      const env: Record<string, string> = { ...process.env } as Record<string, string>;
+      const env: Record<string, string> = { ...process.env, ...HOSTILE_GIT_ENV } as Record<string, string>;
       stripAllGitEnv(env);
+      // Every hostile vector asserted neutralized by name.
+      for (const key of HOSTILE_GIT_KEYS) {
+        expect(env[key], `hostile ${key} must be stripped`).toBeUndefined();
+      }
       env.GIT_CONFIG_GLOBAL = emptyGlobal;
       env.GIT_CONFIG_SYSTEM = emptyGlobal;
       const git = (args: string[], cwd = tmp): string =>
@@ -299,6 +332,9 @@ describe("automatic publish workflow", () => {
       await fs.writeFile(path.join(tmp, "probe.txt"), "identity\n");
       git(["add", "probe.txt"]);
       // Without identity, commit must fail (proves the gate is real).
+      // Seeded hostiles were stripped above, so this failure proves
+      // neutralization of SEEDED GIT_CONFIG_*/GIT_AUTHOR_*/GIT_COMMITTER_*
+      // hacker/attacker values — not just absent ambient env.
       expect(() => git(["commit", "-m", "probe"])).toThrow();
       // Workflow's bot identity setup (mirrors publish.yml git config lines).
       git(["config", "user.name", "github-actions[bot]"]);
@@ -307,6 +343,8 @@ describe("automatic publish workflow", () => {
       expect(git(["log", "--format=%an <%ae>", "-1"]).trim()).toBe(
         "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>",
       );
+      expect(git(["log", "--format=%an <%ae>", "-1"]).trim()).not.toContain("hacker");
+      expect(git(["log", "--format=%an <%ae>", "-1"]).trim()).not.toContain("attacker");
       // Annotated tags need the same tagger identity (fatal: empty ident name without it).
       git(["tag", "-a", "v9.9.9-test", "-m", "v9.9.9-test"]);
       expect(git(["tag", "-l", "v9.9.9-test"]).trim()).toBe("v9.9.9-test");
@@ -320,14 +358,35 @@ describe("automatic publish workflow", () => {
     try {
       const emptyGlobalEnv = path.join(tmpEnv, "empty-global-config");
       await fs.writeFile(emptyGlobalEnv, "");
-      const baseEnv: Record<string, string> = { ...(process.env as Record<string, string>) };
+      const baseEnv: Record<string, string> = {
+        ...(process.env as Record<string, string>),
+        ...HOSTILE_GIT_ENV,
+      };
       // Allowlist: strip EVERY ambient GIT_* (GIT_CONFIG_COUNT injection,
       // GIT_DIR / GIT_WORK_TREE / GIT_CEILING_DIRECTORIES confusion, stale
       // GIT_AUTHOR_*/GIT_COMMITTER_*, ...) so the no-identity control fails
       // deterministically regardless of ambient env; re-add only the empty
       // global/system isolation pointers. botEnv below adds back exactly the
       // 4 intended author/committer vars — nothing else GIT_*.
+      // Seeded hostiles above prove neutralization of EXPLICIT attacker
+      // inputs, not just whatever ambient env was inherited.
       stripAllGitEnv(baseEnv);
+      // Every hostile vector asserted neutralized by name (seeded -> stripped).
+      for (const key of HOSTILE_GIT_KEYS) {
+        expect(baseEnv[key], `hostile ${key} must be stripped`).toBeUndefined();
+      }
+      expect(baseEnv.GIT_CONFIG_COUNT, "hostile GIT_CONFIG_COUNT neutralized").toBeUndefined();
+      expect(baseEnv.GIT_CONFIG_KEY_0, "hostile GIT_CONFIG_KEY_0 neutralized").toBeUndefined();
+      expect(baseEnv.GIT_CONFIG_VALUE_0, "hostile GIT_CONFIG_VALUE_0 neutralized").toBeUndefined();
+      expect(baseEnv.GIT_CONFIG_KEY_1, "hostile GIT_CONFIG_KEY_1 neutralized").toBeUndefined();
+      expect(baseEnv.GIT_CONFIG_VALUE_1, "hostile GIT_CONFIG_VALUE_1 neutralized").toBeUndefined();
+      expect(baseEnv.GIT_CONFIG_PARAMETERS, "hostile GIT_CONFIG_PARAMETERS neutralized").toBeUndefined();
+      expect(baseEnv.GIT_AUTHOR_NAME, "stale GIT_AUTHOR_NAME neutralized").toBeUndefined();
+      expect(baseEnv.GIT_AUTHOR_EMAIL, "stale GIT_AUTHOR_EMAIL neutralized").toBeUndefined();
+      expect(baseEnv.GIT_COMMITTER_NAME, "stale GIT_COMMITTER_NAME neutralized").toBeUndefined();
+      expect(baseEnv.GIT_COMMITTER_EMAIL, "stale GIT_COMMITTER_EMAIL neutralized").toBeUndefined();
+      expect(baseEnv.GIT_DIR, "confusion GIT_DIR neutralized").toBeUndefined();
+      expect(baseEnv.GIT_WORK_TREE, "confusion GIT_WORK_TREE neutralized").toBeUndefined();
       baseEnv.GIT_CONFIG_GLOBAL = emptyGlobalEnv;
       baseEnv.GIT_CONFIG_SYSTEM = emptyGlobalEnv;
       const botEnv: Record<string, string> = {
@@ -337,6 +396,29 @@ describe("automatic publish workflow", () => {
         GIT_COMMITTER_NAME: BOT_NAME,
         GIT_COMMITTER_EMAIL: BOT_EMAIL,
       };
+      // botEnv carries ONLY the allowlisted GIT_* (2 isolation pointers + 4
+      // bot identity vars) despite seeded hostiles — no hacker/attacker residue.
+      expect(botEnv.GIT_CONFIG_COUNT, "botEnv must not carry GIT_CONFIG_COUNT").toBeUndefined();
+      expect(botEnv.GIT_CONFIG_KEY_0, "botEnv must not carry GIT_CONFIG_KEY_0").toBeUndefined();
+      expect(botEnv.GIT_CONFIG_VALUE_0, "botEnv must not carry GIT_CONFIG_VALUE_0").toBeUndefined();
+      expect(botEnv.GIT_CONFIG_KEY_1, "botEnv must not carry GIT_CONFIG_KEY_1").toBeUndefined();
+      expect(botEnv.GIT_CONFIG_VALUE_1, "botEnv must not carry GIT_CONFIG_VALUE_1").toBeUndefined();
+      expect(botEnv.GIT_CONFIG_PARAMETERS, "botEnv must not carry GIT_CONFIG_PARAMETERS").toBeUndefined();
+      expect(botEnv.GIT_DIR, "botEnv must not carry GIT_DIR").toBeUndefined();
+      expect(botEnv.GIT_WORK_TREE, "botEnv must not carry GIT_WORK_TREE").toBeUndefined();
+      expect(
+        Object.keys(botEnv).filter((k) => k.startsWith("GIT_")).sort(),
+        "botEnv allowlist is exactly isolation + 4 bot vars",
+      ).toEqual(
+        [
+          "GIT_AUTHOR_EMAIL",
+          "GIT_AUTHOR_NAME",
+          "GIT_COMMITTER_EMAIL",
+          "GIT_COMMITTER_NAME",
+          "GIT_CONFIG_GLOBAL",
+          "GIT_CONFIG_SYSTEM",
+        ].sort(),
+      );
       const gitBase = (args: string[]): string =>
         execFileSync("git", args, { cwd: tmpEnv, encoding: "utf8", env: baseEnv });
       const gitBot = (args: string[]): string =>
@@ -348,10 +430,16 @@ describe("automatic publish workflow", () => {
       await fs.writeFile(path.join(tmpEnv, "probe.txt"), "identity-env\n");
       gitBase(["add", "probe.txt"]);
       // Without any identity, commit must fail.
+      // Seeded hostiles were stripped above, so this failure proves
+      // neutralization of SEEDED hostiles — the control would have succeeded
+      // with hacker identity under a narrow strip (see RED demo).
       expect(() => gitBase(["commit", "-m", "probe-env"])).toThrow();
-      // With ONLY the four env vars, commit + annotated tag succeed with bot identity.
+      // With ONLY the four env vars, commit + annotated tag succeed with bot identity
+      // despite seeded hostiles (no hacker/attacker residue in botEnv).
       gitBot(["commit", "-m", "probe-env"]);
       expect(gitBot(["log", "--format=%an <%ae> %cn <%ce>", "-1"]).trim()).toBe(`${BOT_IDENT} ${BOT_IDENT}`);
+      expect(gitBot(["log", "--format=%an <%ae> %cn <%ce>", "-1"]).trim()).not.toContain("hacker");
+      expect(gitBot(["log", "--format=%an <%ae> %cn <%ce>", "-1"]).trim()).not.toContain("attacker");
       // Still no local config — identity came from env alone.
       expect(gitBase(["config", "--local", "--list"])).not.toContain("user.name");
       gitBot(["tag", "-a", "v9.9.9-env-test", "-m", "v9.9.9-env-test"]);
