@@ -130,7 +130,11 @@ interface PaseoSdkClient {
   readonly agents: {
     create(options: Record<string, unknown>): Promise<PaseoSdkAgentHandle>;
     ref(agentId: string): PaseoSdkAgentHandle;
-    list(options?: Record<string, unknown>): Promise<{ entries: Array<{ agent: Record<string, unknown> }> }>;
+    list(options?: Record<string, unknown>): Promise<{
+      entries: Array<{ agent: Record<string, unknown> }>;
+      nextCursor?: unknown;
+      nextPageToken?: unknown;
+    }>;
   };
   connect(): Promise<void>;
   close(): Promise<void>;
@@ -781,14 +785,95 @@ export async function probePaseoSdkAgent(root: string, agentId: string): Promise
   return Boolean(await inspectPaseoSdkAgent(root, agentId));
 }
 
-export async function listPaseoSdkAgents(root: string, labels: Record<string, string> = {}): Promise<PaseoSdkAgentRecord[]> {
-  return withPaseoClient(root, async (client) => {
-    const filter: Record<string, unknown> = { includeArchived: false };
-    if (Object.keys(labels).length) filter.labels = labels;
-    if (typeof client.agents.list !== "function") throw new PaseoSdkUnavailableError("The active @getpaseo/client does not expose agents.list().");
-    const page = await client.agents.list({ filter });
-    return page.entries.map((entry) => normalizeRecord(entry.agent)).filter((agent) => labelsMatch(agent.labels, labels));
-  });
+/**
+ * Safety bound for SDK agent-listing pagination. Pages are consumed until the
+ * server stops returning a continuation cursor; the cap only fires on a
+ * pathological server that mints fresh cursors forever (fail-closed, keep
+ * what was listed). Single-page servers behave exactly as before.
+ */
+export const MAX_PASEO_SDK_AGENT_LIST_PAGES_V1 = 50;
+
+/**
+ * Honest result of SDK agent-listing pagination. `exhausted` is true ONLY
+ * when the server cursor is genuinely exhausted (a page arrived with no fresh
+ * continuation cursor). Hitting the 50-page safety cap, observing a
+ * repeated cursor, or observing an empty page that still carries a
+ * continuation token yields `exhausted: false` with the stop reason recorded,
+ * so callers doing gone-proof work (e.g. ledger pruning) can fail closed
+ * instead of treating a possibly-partial accumulation as complete.
+ * An empty page with a token is ambiguous between provider-end and
+ * transient-empty: stopping avoids burning to the page cap while
+ * incomplete-marking preserves gone-proof soundness (the next sweep retries;
+ * best-effort is preserved). It must NOT report `exhausted: true`, which
+ * would risk an unsound prune on transient empties.
+ * MECHANISM: DETERMINISTIC.
+ */
+export interface PaseoSdkAgentListingV1 {
+  agents: PaseoSdkAgentRecord[];
+  exhausted: boolean;
+  /** Pages consumed (bounded by MAX_PASEO_SDK_AGENT_LIST_PAGES_V1). */
+  pages: number;
+  stopReason: "exhausted" | "page-cap" | "repeated-cursor" | "empty-page";
+}
+
+export async function listPaseoSdkAgents(root: string, labels: Record<string, string> = {}): Promise<PaseoSdkAgentListingV1> {
+  return withPaseoClient(root, (client) => listPaseoSdkAgentsWithClient(client, labels));
+}
+
+/**
+ * List agents matching `labels` across server pages (bounded loop; the cursor
+ * is opaque pass-through). MECHANISM: DETERMINISTIC. The listing stops at the
+ * first page without a fresh non-empty string cursor (`exhausted: true`); a
+ * repeated cursor, the page cap, or an empty page that still carries a
+ * continuation token stops early with `exhausted: false`. An empty page with
+ * a token is ambiguous between provider-end and transient-empty, so it stops
+ * without burning to the cap but stays incomplete (`empty-page`) so the
+ * gone-proof prune refuses and the next sweep retries.
+ */
+export async function listPaseoSdkAgentsWithClient(
+  client: PaseoSdkClient,
+  labels: Record<string, string> = {}
+): Promise<PaseoSdkAgentListingV1> {
+  const filter: Record<string, unknown> = { includeArchived: false };
+  if (Object.keys(labels).length) filter.labels = labels;
+  if (typeof client.agents.list !== "function") throw new PaseoSdkUnavailableError("The active @getpaseo/client does not expose agents.list().");
+  const out: PaseoSdkAgentRecord[] = [];
+  let cursor: string | undefined;
+  const seenCursors = new Set<string>();
+  let stopReason: PaseoSdkAgentListingV1["stopReason"] = "page-cap";
+  let pages = 0;
+  for (let page = 0; page < MAX_PASEO_SDK_AGENT_LIST_PAGES_V1; page += 1) {
+    const response = await client.agents.list(cursor ? { filter, cursor } : { filter });
+    pages += 1;
+    for (const entry of response.entries) {
+      const record = normalizeRecord(entry.agent);
+      if (labelsMatch(record.labels, labels)) out.push(record);
+    }
+    const next = listContinuationCursor(response);
+    if (!next) {
+      stopReason = "exhausted";
+      break;
+    }
+    if (response.entries.length === 0) {
+      stopReason = "empty-page";
+      break;
+    }
+    if (seenCursors.has(next)) {
+      stopReason = "repeated-cursor";
+      break;
+    }
+    seenCursors.add(next);
+    cursor = next;
+  }
+  return { agents: out, exhausted: stopReason === "exhausted", pages, stopReason };
+}
+
+function listContinuationCursor(response: { nextCursor?: unknown; nextPageToken?: unknown }): string | undefined {
+  for (const key of ["nextCursor", "nextPageToken"] as const) {
+    const value = response[key];
+    if (typeof value === "string" && value) return value;
+  }
+  return undefined;
 }
 
 async function withStructuredResultSink(root: string, options: PaseoSdkAgentOptions, activateInitialTurn: boolean): Promise<PaseoSdkAgentOptions> {

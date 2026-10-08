@@ -82,7 +82,10 @@ export interface PaseoRuntimeDeps {
     run: typeof runPaseoSdkAgent;
     probe: typeof probePaseoSdkAgent;
     inspect: typeof inspectPaseoSdkAgent;
-    list: typeof listPaseoSdkAgents;
+    // Array contract: callers here never do gone-proof pruning, so they
+    // consume the (bounded) accumulated agents; completion honesty is owned by
+    // the listing shape in sdk.ts and honored by the cleanup path.
+    list: (root: string, labels?: Record<string, string>) => Promise<PaseoSdkAgentRecord[]>;
   };
 }
 
@@ -105,7 +108,7 @@ const REAL_DEPS: PaseoRuntimeDeps = {
     run: runPaseoSdkAgent,
     probe: probePaseoSdkAgent,
     inspect: inspectPaseoSdkAgent,
-    list: listPaseoSdkAgents
+    list: (root, labels = {}) => listPaseoSdkAgents(root, labels).then((listing) => listing.agents)
   }
 };
 
