@@ -42,13 +42,17 @@ import { compileExecutionCatalog, type ExecutionCatalogV1 } from "../architectur
 import { assertCapabilityRegistryV1, discoverCapabilityRegistryV1, loadOperationCapabilityRegistryV1, persistOperationCapabilityRegistryV1, type CapabilityRegistryV1 } from "../capabilities/registry.js";
 import type { CandidateImpactAssessmentRuntimeV1, CandidateScopeEscapeV1 } from "../candidates/assembler.js";
 import { executeIsolatedCandidateMutation } from "../candidates/direct.js";
-import { executeRepairerCandidateMutation, repairProtectedPaths } from "../candidates/repair.js";
+import { executeRepairerCandidateMutation, partitionRepairScopeBlockerFiles, repairProtectedPaths } from "../candidates/repair.js";
 import {
+  assertRepairScopeBlockerReceipt,
+  createRepairScopeBlockerReceipt,
   isSafeRepairScopePath,
   listRepairScopeAmendments,
   normalizeRepairScopePath,
+  parseRepairScopeBlockerFromSession,
   repairScopeBlockerValidationCheck,
   resolveRepairScopeBlockerViaProductChoice,
+  writeRepairScopeBlockerReceipt,
 } from "../candidates/repairScope.js";
 import { assembleAndBindCandidateChangeSet } from "../candidates/binding.js";
 import { createSemanticAssessmentRuntimeV1, createSemanticRepositoryBindingV1, type SemanticAssessmentRuntimeV1 } from "../semantic/runtime.js";
@@ -465,6 +469,104 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
       });
       worker = isolated.session;
       executionSessions.push(worker);
+      let pendingImplementerBlockerCheck: import("./types.js").ValidationCheck | undefined;
+      if (!isolated.changeSet) {
+        // IMPLEMENTER out-of-scope blocker path (mirrors Repairer H-NEW-1/H-NEW-7):
+        // parsed via the canonical extractor (implementer + repair-result shapes),
+        // in-scope confusion stripped/traced, genuinely-blocked files route to the
+        // managed ledger-gated amendment handling (product choice + reseal).
+        // Silent expansion is still rejected in the assembler; a declaration never
+        // widens scope. On AMENDED the resealed contract is adopted and the run
+        // continues to validation (repair loop retries with amended scope); on
+        // BLOCKED the blocker check is merged into the report (fail closed).
+        // Throws fail-closed on conflict/invalid (never swallowed as undefined).
+        const needed = parseRepairScopeBlockerFromSession(worker);
+        if (needed?.length) {
+          const blockerAllowed = effectiveContract.scope?.allowed ?? ["**"];
+          const blockerForbidden = [
+            ...(effectiveContract.scope?.forbidden ?? []),
+            ...(effectiveContract.scope?.frozen ?? []),
+            ...(effectiveConfig.validation?.frozenPaths ?? []),
+            ...repairProtectedPaths(effectiveConfig, effectiveContract),
+          ];
+          const partitioned = partitionRepairScopeBlockerFiles(needed, blockerAllowed, blockerForbidden);
+          if (partitioned.stripped.length) {
+            await recordPaseoTrace(workspaceRoot, "candidate.repair.blocker.stripped", {
+              operationId,
+              taskId: effectiveContract.task.id,
+              workUnitId: `direct:${effectiveContract.task.id}`,
+              participantId: worker.participantId,
+              mechanism: "DETERMINISTIC",
+              declared: partitioned.declared,
+              declaredCount: partitioned.declared.length,
+              stripped: partitioned.stripped,
+              strippedFiles: partitioned.stripped.map((entry) => entry.path),
+              strippedCount: partitioned.stripped.length,
+              genuinelyBlocked: partitioned.genuinelyBlocked,
+              genuinelyBlockedFiles: partitioned.genuinelyBlocked.map((entry) => entry.path),
+              genuinelyBlockedCount: partitioned.genuinelyBlocked.length,
+            }).catch(() => undefined);
+          }
+          if (partitioned.genuinelyBlocked.length) {
+            const blocker = createRepairScopeBlockerReceipt({
+              operationId,
+              taskId: effectiveContract.task.id,
+              workUnitId: `direct:${effectiveContract.task.id}`,
+              ...(worker.participantId ? { participantId: worker.participantId } : {}),
+              filesNeededOutsideScope: partitioned.genuinelyBlocked,
+            });
+            const receiptFile = await writeRepairScopeBlockerReceipt(controlRoot, effectiveConfig, blocker);
+            // Write-then-verify: the BLOCKED/AMENDED outcome is only valid with a
+            // durable, digest-matching receipt (mirrors repair write-then-verify).
+            assertRepairScopeBlockerReceipt(JSON.parse(await fs.readFile(receiptFile, "utf8")));
+            await recordEvent(controlRoot, effectiveConfig, "harness.candidate.repair-scope-blocked", {
+              taskId: effectiveContract.task.id,
+              workUnitId: `direct:${effectiveContract.task.id}`,
+              participantId: worker.participantId,
+              role: selection?.role ?? "Implementer",
+              blockerDigest: blocker.digest,
+              filesNeededOutsideScope: blocker.filesNeededOutsideScope,
+            }).catch(() => undefined);
+            let resolution: Awaited<ReturnType<typeof resolveRepairScopeBlockerViaProductChoice>>;
+            try {
+              resolution = await resolveRepairScopeBlockerViaProductChoice({
+                root: workspaceRoot,
+                controlRoot,
+                operationId,
+                config: effectiveConfig,
+                contract: effectiveContract,
+                blocker,
+              });
+            } catch (error) {
+              const check = repairScopeBlockerValidationCheck(blocker);
+              await recordEvent(controlRoot, effectiveConfig, "harness.repair.scope-blocked", {
+                taskId: effectiveContract.task.id, attempt: 0, status: "BLOCKED",
+                blockerDigest: blocker.digest, filesNeededOutsideScope: blocker.filesNeededOutsideScope,
+                error: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
+              }).catch(() => undefined);
+              pendingImplementerBlockerCheck = check;
+              // Fall through to normal validation; the blocker check is merged below.
+              // The repair loop may still attempt a bounded Repairer turn.
+              resolution = { status: "BLOCKED", blocker, check } as typeof resolution;
+            }
+            if (resolution.status === "BLOCKED") {
+              await recordEvent(controlRoot, effectiveConfig, "harness.repair.scope-blocked", {
+                taskId: effectiveContract.task.id, attempt: 0, status: "BLOCKED",
+                blockerDigest: blocker.digest, filesNeededOutsideScope: blocker.filesNeededOutsideScope,
+                choiceId: (resolution as { choiceId?: string }).choiceId ?? "denied-or-timed-out",
+              }).catch(() => undefined);
+              pendingImplementerBlockerCheck = resolution.check;
+            } else {
+              effectiveContract = resolution.contract;
+              await recordEvent(controlRoot, effectiveConfig, "harness.repair.scope-amended", {
+                taskId: effectiveContract.task.id, attempt: 0, blockerDigest: blocker.digest,
+                exemptedPaths: resolution.amendment.exemptedPaths, decisionId: resolution.amendment.decisionId,
+                requestId: resolution.amendment.requestId, decidedActor: resolution.amendment.decidedActor,
+              }).catch(() => undefined);
+            }
+          }
+        }
+      }
       if (isolated.changeSet) {
         // C1 scope-gate coherence: the normal Implementer assembly must deny
         // the same default-deny protected set as repair
@@ -528,6 +630,9 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
       }
       await prepareValidationWorkspace();
       report = withWorkerExecutionCheck(await verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, selection), worker);
+      if (pendingImplementerBlockerCheck) {
+        report = mergeChecks(report, [pendingImplementerBlockerCheck]);
+      }
     }
   }
   if (operationId) await runStage(operationStateRoot, operationId, "implementation", planningFailure ? "SKIPPED" : report.status === "PASS" ? "COMPLETED" : "FAILED", planningFailure ? { message: "Implementation was skipped because pre-execution planning failed." } : report.status === "PASS" ? {} : { message: validationFailureDetail(report) });

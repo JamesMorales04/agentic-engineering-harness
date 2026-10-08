@@ -361,7 +361,7 @@ async function verifyRepairScopeBlockerReceipt(
  * Mechanism: DETERMINISTIC. Model content (declared paths + reasons),
  * deterministic gate (scope matching + trace).
  */
-function partitionRepairScopeBlockerFiles(
+export function partitionRepairScopeBlockerFiles(
   needed: readonly { path: string; reason: string }[],
   allowedScope: readonly string[],
   forbiddenScope: readonly string[],
