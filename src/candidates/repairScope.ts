@@ -185,6 +185,134 @@ export function findRepairHardProtectedViolations(
 }
 
 /**
+ * Warn-only protected-grant overlap detection for capsule/operation-intake
+ * scope construction (`--file` values becoming capsule `scope.allowed`).
+ *
+ * MECHANISM: DETERMINISTIC glob-overlap heuristic (no model judgment, no
+ * filesystem). A granted `allowed` pattern that COULD match HARD-protected
+ * content (frozen TaskContract, seal, validators, acceptance/spec, policy —
+ * see repairHardProtectedPaths) is accepted silently today but can NEVER take
+ * effect: forbidden wins over allowed at every assembly gate
+ * (partitionRepairScopeBlockerFiles denies + effectiveRepairScope keeps hard
+ * paths forbidden without a verified Owner exemption), so the grantor learns
+ * this only at terminal escape. Warn-only: matching/assembly semantics are
+ * untouched (fail-closed preserved); a grantor seeing the warning can fix
+ * scope or seek an Owner exemption BEFORE burning an op.
+ *
+ * Heuristic (conservative: warn on exact/parent/child/glob-overlap):
+ * - `**` on either side overlaps everything.
+ * - Exact equality of normalized patterns overlaps.
+ * - Literal-base parent/child overlaps: the glob-free prefix before the first
+ *   magic char (`*?[]{}!()+@`, same set as isExplicitGlobScope) is equal or
+ *   one side is a `/`-bounded prefix of the other (e.g. granted `src`
+ *   contains hard `src/validators`; granted `src/validators/foo.ts` lies
+ *   under hard `src/validators`). Empty bases (pattern starts with magic,
+ *   e.g. `*.json`, `**\/*.ts`) skip this check and rely on the probes below.
+ * - Glob overlap: representative concrete probes synthesized from each side
+ *   (the literal base itself plus `<base>/__aeh_probe__` with several
+ *   extensions, so extension-specific globs like `**\/*.ts` are caught) are
+ *   matched with minimatch (dot:true) against the other side's pattern in
+ *   BOTH directions. Any hit means some path could match both patterns.
+ *
+ * Unsafe raw inputs (`..`, absolute, drive prefix) are skipped silently (no
+ * warning): they are rejected fail-closed elsewhere, and overlap advice for
+ * them would be wrong. Mirrors the ScopeDirectoryPatternWarningV1 family.
+ */
+export interface ScopeProtectedGrantWarningV1 {
+  raw: string;
+  normalized: string;
+  matchedHardPaths: string[];
+}
+
+const SCOPE_PROTECTED_GRANT_PROBE_NAMES = [
+  "__aeh_probe__",
+  "__aeh_probe__.ts",
+  "__aeh_probe__.json",
+  "__aeh_probe__.txt",
+] as const;
+
+function literalScopeBase(pattern: string): string {
+  const index = pattern.search(/[*?[\]{}!()+@]/);
+  if (index === -1) return pattern;
+  return pattern.slice(0, index).replace(/\/+$/, "");
+}
+
+function concreteProbesForScopePattern(normalized: string, base: string): string[] {
+  if (normalized !== "**" && !/[*?[\]{}!()+@]/.test(normalized)) return [normalized];
+  if (!base) return [...SCOPE_PROTECTED_GRANT_PROBE_NAMES];
+  return [base, ...SCOPE_PROTECTED_GRANT_PROBE_NAMES.map((name) => `${base}/${name}`)];
+}
+
+/** DETERMINISTIC conservative overlap check between one granted pattern and one hard-protected pattern. */
+export function scopePatternOverlapsHardPattern(allowedPattern: string, hardPattern: string): boolean {
+  const allowed = normalizeRepairScopePath(allowedPattern.trim());
+  const hard = normalizeRepairScopePath(typeof hardPattern === "string" ? hardPattern.trim() : "");
+  if (!allowed || !hard) return false;
+  if (allowed === "**" || hard === "**") return true;
+  if (allowed === hard) return true;
+  const allowedBase = literalScopeBase(allowed);
+  const hardBase = literalScopeBase(hard);
+  if (allowedBase && hardBase) {
+    if (allowedBase === hardBase) return true;
+    if (allowedBase.startsWith(`${hardBase}/`) || hardBase.startsWith(`${allowedBase}/`)) return true;
+  }
+  try {
+    for (const probe of concreteProbesForScopePattern(allowed, allowedBase)) {
+      if (minimatch(probe, hard, { dot: true })) return true;
+    }
+    for (const probe of concreteProbesForScopePattern(hard, hardBase)) {
+      if (minimatch(probe, allowed, { dot: true })) return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+/**
+ * DETERMINISTIC warn-only scan: for every granted `allowed` pattern, collect
+ * the HARD-protected patterns it could match. Pure (no filesystem, no config
+ * beyond the caller-supplied hard list, typically from
+ * repairHardProtectedPaths); never throws for malformed entries (they are
+ * skipped so the warning can never block intake).
+ */
+export function findScopeProtectedGrantWarnings(
+  allowed: readonly string[],
+  hardProtected: readonly string[],
+): ScopeProtectedGrantWarningV1[] {
+  const hard = [...new Set(
+    hardProtected
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => normalizeRepairScopePath(entry.trim()))
+      .filter((entry) => entry && !path.isAbsolute(entry) && !entry.split("/").includes("..")),
+  )].sort();
+  if (!hard.length) return [];
+  const warnings: ScopeProtectedGrantWarningV1[] = [];
+  for (const raw of allowed) {
+    if (typeof raw !== "string") continue;
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    if (hasUnsafeRawRepairScopeInput(trimmed)) continue;
+    const normalized = normalizeRepairScopePath(trimmed);
+    if (!normalized || path.isAbsolute(normalized) || normalized.split("/").includes("..")) continue;
+    const matched = hard.filter((entry) => scopePatternOverlapsHardPattern(normalized, entry));
+    if (matched.length) warnings.push({ raw, normalized, matchedHardPaths: matched });
+  }
+  return warnings;
+}
+
+/** LOUD single-line CLI diagnostic for a HARD-protected scope grant. */
+export function formatScopeProtectedGrantWarning(warning: ScopeProtectedGrantWarningV1): string {
+  const shown = warning.matchedHardPaths.slice(0, 8).join(", ");
+  const extra = warning.matchedHardPaths.length > 8 ? ` (+${warning.matchedHardPaths.length - 8} more)` : "";
+  return (
+    `SCOPE_PROTECTED_GRANT_WARNING: scope pattern '${warning.raw}' (normalized '${warning.normalized}') could match HARD-protected path(s): ${shown}${extra}. ` +
+    `Forbidden wins over allowed at every assembly gate, so this grant can NEVER take effect without a bounded Owner exemption. ` +
+    `Fix scope or seek Owner exemption BEFORE burning an op. Scope is NOT broadened (fail-closed preserved).`
+  );
+}
+
+/**
  * DETERMINISTIC BLOCKED check for hard-protected paths without an anchored
  * owner grant (declined, expired, or timed-out suspend/decide/resume).
  * Cites the exact hard-protected files; the BLOCKED outcome stands.

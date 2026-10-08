@@ -18,6 +18,8 @@ import { planSelfCheckoutRuntime, resolveStartProjectRoot } from "./runtime/invo
 import { VERSION } from "./version.js";
 import { createIntentDecision } from "./audit/intentDecision.js";
 import { findScopeDirectoryPatternWarnings, formatScopeDirectoryPatternWarning } from "./architecture/workGraph.js";
+import { findScopeProtectedGrantWarnings, formatScopeProtectedGrantWarning, repairHardProtectedPaths } from "./candidates/repairScope.js";
+import type { TaskContract } from "./core/types.js";
 
 const args = process.argv.slice(2);
 assertHarnessWorkflowEntryAllowed(args);
@@ -127,7 +129,7 @@ async function runOperationStart(argv: string[]): Promise<void> {
   if (!subject) throw new Error(`aeh operation start ${kind} requires ${kind === "run" ? "<taskId>" : "<request>"}.`);
   if (parsed.positional.length > 2) throw new Error(`aeh operation start ${kind} accepts a subject and at most one project directory.`);
   const root = path.resolve(parsed.positional[1] ?? ".");
-  await loadProjectConfig(root);
+  const intakeConfig = await loadProjectConfig(root);
 
   const priority = parsePriority(parsed.value("priority"));
   let payload: AuditOperationPayload | RunOperationPayload | ChangeOperationPayload;
@@ -168,6 +170,37 @@ async function runOperationStart(argv: string[]): Promise<void> {
     if (intakeFiles.length) {
       const warnings = await findScopeDirectoryPatternWarnings(root, intakeFiles);
       for (const warning of warnings) console.warn(formatScopeDirectoryPatternWarning(warning));
+    }
+  } catch {
+    // Best-effort CLI diagnostic only.
+  }
+
+  // LOUD fail-closed intake diagnostic (change only): `--file` grants naming
+  // HARD-protected paths (validators, tests, policy, project.yaml, seals) are
+  // accepted silently but can NEVER take effect (forbidden wins over allowed
+  // at every assembly gate). Warn only; matching/assembly semantics are
+  // untouched. Best-effort: a warning failure never blocks operation start.
+  // The detached change execution re-emits the same warning with a durable
+  // trace at capsule scope construction. Audit intake is read-only (no repair
+  // assembly), so it is excluded. The task id is not yet assigned at intake,
+  // so task-specific hard entries (contract/seal paths) resolve against the
+  // requested `--task` value or an intake placeholder; static hard paths
+  // (validators, tests, policy) are unaffected.
+  try {
+    if (kind === "change") {
+      const changeFiles = parsed.values("file");
+      if (changeFiles.length) {
+        const intakeContract: TaskContract = {
+          version: 1,
+          task: { id: parsed.value("task")?.trim() || "intake-pending", title: "intake-pending" },
+          scope: { allowed: [...changeFiles], forbidden: [], frozen: [] },
+        };
+        const protectedWarnings = findScopeProtectedGrantWarnings(
+          changeFiles,
+          repairHardProtectedPaths(intakeConfig, intakeContract),
+        );
+        for (const warning of protectedWarnings) console.warn(formatScopeProtectedGrantWarning(warning));
+      }
     }
   } catch {
     // Best-effort CLI diagnostic only.

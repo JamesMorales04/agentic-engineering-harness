@@ -19,6 +19,7 @@ import type { AssuranceLevel, ImplementationRoute, RouteEvidence } from "../arch
 import { createRouteEvidence } from "../architecture/contracts.js";
 import { createDelegatedFeatureCapsule, persistFeatureCapsule } from "../architecture/featureCapsule.js";
 import { findScopeDirectoryPatternWarnings, formatScopeDirectoryPatternWarning } from "../architecture/workGraph.js";
+import { findScopeProtectedGrantWarnings, formatScopeProtectedGrantWarning, repairHardProtectedPaths } from "../candidates/repairScope.js";
 import { recordPaseoTrace } from "../paseo/trace.js";
 import { defaultSkillSeed } from "../participants/skills.js";
 import { compileOpenSpecChange, persistOpenSpecAuthoringContentV1, preflightOpenSpec, prepareOpenSpecChange, validateOpenSpecAuthoringContentCanonicalityV1, validateOpenSpecTasksCanonicalityV1, type OpenSpecPreflightResult } from "../spec/openspec.js";
@@ -236,6 +237,12 @@ export async function runChangeOperation(
   // directory, no glob magic) match ZERO files via minimatch. Warn only;
   // matching semantics are untouched. Trace + CLI-visible warning.
   await warnChangeScopeDirectoryPatterns({ root, controlRoot, config, operationId: operation.id, taskId, allowed: payload.files ?? [] });
+  // LOUD fail-closed diagnostic: `--file` grants naming HARD-protected paths
+  // (validators, tests, policy, project.yaml, seals — repairHardProtectedPaths)
+  // are accepted silently but can NEVER take effect (forbidden wins over
+  // allowed at every assembly gate). Warn only; matching/assembly semantics
+  // are untouched. Trace + CLI-visible warning.
+  await warnChangeScopeProtectedGrants({ controlRoot, config, operationId: operation.id, taskId, allowed: payload.files ?? [] });
   let bootstrapContract = operationBootstrapContract(taskId, title, payload, route, triage.assurance, triage.routeEvidence);
   await createControlPlaneSnapshot(root, config, taskId);
 
@@ -1482,6 +1489,58 @@ async function warnChangeScopeDirectoryPatterns(input: {
       patterns: warnings.map((warning) => warning.raw),
       normalized: warnings.map((warning) => warning.normalized),
       suggested: warnings.map((warning) => warning.suggested),
+      mechanism: "DETERMINISTIC",
+    });
+  } catch {
+    // Trace is observability only; a trace failure never blocks the change.
+  }
+}
+
+/**
+ * DETERMINISTIC warn-only intake diagnostic for HARD-protected scope grants.
+ * Emits a LOUD CLI-visible warning per granted pattern that COULD match
+ * hard-protected content (repairHardProtectedPaths: validators, tests,
+ * policy, project.yaml, seals) plus a durable trace; never broadens scope
+ * and never narrows it either (matching/assembly semantics untouched,
+ * fail-closed preserved). Best-effort: computation/trace failures never
+ * block the change. The hard list is computed from a minimal capsule-scope
+ * contract for the current task (same frozen shape as the bootstrap
+ * contract), so task-specific entries (contract/seal paths) resolve for this
+ * operation.
+ */
+async function warnChangeScopeProtectedGrants(input: {
+  controlRoot: string;
+  config: HarnessProjectConfig;
+  operationId: string;
+  taskId: string;
+  allowed: readonly string[];
+}): Promise<void> {
+  if (!input.allowed.length) return;
+  let warnings: Awaited<ReturnType<typeof findScopeProtectedGrantWarnings>>;
+  try {
+    const capsuleContract: TaskContract = {
+      version: 1,
+      task: { id: input.taskId, title: input.taskId },
+      scope: { allowed: [...input.allowed], forbidden: [], frozen: [] },
+    };
+    warnings = findScopeProtectedGrantWarnings(input.allowed, repairHardProtectedPaths(input.config, capsuleContract));
+  } catch {
+    return;
+  }
+  if (!warnings.length) return;
+  try {
+    for (const warning of warnings) console.warn(formatScopeProtectedGrantWarning(warning));
+  } catch {
+    // Best-effort CLI diagnostic only; a warning failure never blocks the change.
+  }
+  try {
+    await recordPaseoTrace(input.controlRoot, "change.scope.protected-grant", {
+      operationId: input.operationId,
+      taskId: input.taskId,
+      warningCount: warnings.length,
+      patterns: warnings.map((warning) => warning.raw),
+      normalized: warnings.map((warning) => warning.normalized),
+      matchedHardPaths: warnings.map((warning) => warning.matchedHardPaths),
       mechanism: "DETERMINISTIC",
     });
   } catch {
