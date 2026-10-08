@@ -590,9 +590,11 @@ jobs:
                #   exit 3 generic / per-query timeout (exit 124) -> repoll as
                #     UNKNOWN-retry; past the deadline loud UNKNOWN WITHOUT
                #     deprecate. The per-query timeout is min(configured query
-               #     timeout, remaining seconds), so no in-flight query runs
-               #     past END unbounded; with no remaining budget no further
-               #     query is issued at all.
+               #     timeout, remaining seconds) AND the retry sleep is
+               #     min(interval, remaining), so the only path that runs past
+               #     END is the final in-flight query bounded by min(); with no
+               #     remaining budget no further query is issued at all and no
+               #     sleep is taken (straight to deadline handling).
               # Trust boundary (U3): attestation trusts the npm registry TLS
               # channel — dist.integrity as served over TLS is the ground truth
               # for what installers receive. A registry compromise or a valid-TLS
@@ -621,19 +623,27 @@ jobs:
               if [ "$ATTEST_DEADLINE_S" -lt 1 ] || [ "$ATTEST_DEADLINE_S" -gt 1800 ]; then echo "Refusing post-publish attestation: AEH_ATTEST_DEADLINE_S=${ATTEST_DEADLINE_S} invalid (must be integer 1..1800s, <=30min; unset for default 300). Explicit override rejected (fail-closed, not clamped)." >&2; exit 1; fi
               if [ "$ATTEST_INTERVAL_S" -lt 5 ] || [ "$ATTEST_INTERVAL_S" -gt 120 ]; then echo "Refusing post-publish attestation: AEH_ATTEST_INTERVAL_S=${ATTEST_INTERVAL_S} invalid (must be integer 5..120s; unset for default 10). Explicit override rejected (fail-closed, not clamped)." >&2; exit 1; fi
               if [ "$ATTEST_QUERY_TIMEOUT_S" -lt 1 ] || [ "$ATTEST_QUERY_TIMEOUT_S" -gt 120 ]; then echo "Refusing post-publish attestation: AEH_ATTEST_QUERY_TIMEOUT_S=${ATTEST_QUERY_TIMEOUT_S} invalid (must be integer 1..120s; unset for default 60). Explicit override rejected (fail-closed, not clamped)." >&2; exit 1; fi
-              # Wall-clock deadline (round-2 B1 + round-3 exactness): END epoch
-              # computed ONCE from now + deadline. The deadline bounds CI STEP
-              # duration, not attestation truth, and is checked after EVERY
-              # query return (success and non-success alike):
-              #   - post-deadline SUCCESS is still a proven attestation:
-              #     ACCEPT it but TRACE deadline-exceeded (observability);
-              #   - post-deadline NON-success -> UNKNOWN fail (no more retries).
+              # Wall-clock deadline (round-2 B1 + round-3 exactness + round-4
+              # single-check-point): END epoch computed ONCE from now +
+              # deadline. The deadline bounds CI STEP duration, not attestation
+              # truth. Wall clock is checked ONCE immediately after EVERY
+              # query return (SINGLE check point — no return path bypasses it)
+              # and the exceeded flag is recorded BEFORE dispatch by exit code:
+              #   - success (exit 0) -> ACCEPT even post-deadline (proven
+              #     attestation) but TRACE deadline-exceeded (observability);
+              #   - mismatch (exit 1) -> PROVEN inequality -> deprecate+fail
+              #     even post-deadline (the deadline doesn't un-prove
+              #     inequality) but TRACE deadline-exceeded when exceeded;
+              #   - unknown (all other exits) -> post-deadline UNKNOWN fail (no
+              #     more retries), else bounded-retry.
               # Per-query timeout is bounded by the remaining budget (round-3
-              # D2): effective timeout = min(configured query timeout,
-              # remaining seconds); when remaining <= 0 (below the 1s floor)
-              # NO further query is issued — go directly to deadline-exceeded
-              # handling. No path runs past END except the final in-flight
-              # query bounded by min().
+              # D2 + round-4 C2): effective timeout = min(configured query
+              # timeout, remaining seconds); the retry sleep is likewise
+              # min(interval, remaining) and remaining <= 0 skips sleep
+              # straight to deadline handling. When remaining <= 0 (below the
+              # 1s floor) NO further query is issued — go directly to
+              # deadline-exceeded handling. The ONLY path that runs past END
+              # is the final in-flight query bounded by min().
               ATTEST_START="$(date +%s)"
               ATTEST_END=$((ATTEST_START + ATTEST_DEADLINE_S))
               ATTEST_LAST_CODE=0
@@ -677,44 +687,59 @@ jobs:
                   ATTEST_EFFECTIVE_TIMEOUT_S="$ATTEST_REMAINING"
                 fi
                 ATTEST_TMP="$(mktemp)"
-                if timeout "${ATTEST_EFFECTIVE_TIMEOUT_S}s" node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --local-digest "$SIDECAR_DIGEST" >"$ATTEST_TMP" 2>&1; then
-                  ATTEST_AFTER="$(date +%s)"
-                  ATTEST_AFTER_ELAPSED=$((ATTEST_AFTER - ATTEST_START))
-                  cat "$ATTEST_TMP"
-                  rm -f "$ATTEST_TMP"
-                  if [ "$ATTEST_AFTER" -ge "$ATTEST_END" ]; then
+                attest_code=0
+                timeout "${ATTEST_EFFECTIVE_TIMEOUT_S}s" node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --local-digest "$SIDECAR_DIGEST" >"$ATTEST_TMP" 2>&1 || attest_code=$?
+                # SINGLE check point (round-4 C1): wall clock ONCE immediately
+                # after EVERY query return — no return path bypasses this check.
+                # The exceeded flag is recorded BEFORE dispatch by exit code.
+                ATTEST_AFTER="$(date +%s)"
+                ATTEST_AFTER_ELAPSED=$((ATTEST_AFTER - ATTEST_START))
+                ATTEST_OUT="$(cat "$ATTEST_TMP" || true)"
+                rm -f "$ATTEST_TMP"
+                if [ "$ATTEST_AFTER" -ge "$ATTEST_END" ]; then
+                  ATTEST_EXCEEDED=1
+                else
+                  ATTEST_EXCEEDED=0
+                fi
+                if [ "$attest_code" -eq 0 ]; then
+                  printf '%s\n' "$ATTEST_OUT"
+                  if [ "$ATTEST_EXCEEDED" -eq 1 ]; then
                     echo "Post-publish attestation verified: $PACKAGE_NAME@$RELEASE_VERSION registry integrity matches sidecar $SIDECAR_DIGEST (deadline-exceeded: success returned ${ATTEST_AFTER_ELAPSED}s after publish against a ${ATTEST_DEADLINE_S}s deadline — the deadline bounds CI step duration, not attestation truth, so this proven attestation is ACCEPTED)."
                     echo "Post-publish attestation trace: package=$PACKAGE_NAME version=$RELEASE_VERSION sidecar_digest=$SIDECAR_DIGEST result=VERIFIED-deadline-exceeded elapsed_s=$ATTEST_AFTER_ELAPSED deadline_s=$ATTEST_DEADLINE_S"
                   else
                     echo "Post-publish attestation verified: $PACKAGE_NAME@$RELEASE_VERSION registry integrity matches sidecar $SIDECAR_DIGEST."
                   fi
                   break
-                else
-                  attest_code=$?
-                  ATTEST_OUT="$(cat "$ATTEST_TMP" || true)"
-                  rm -f "$ATTEST_TMP"
+                elif [ "$attest_code" -eq 1 ]; then
                   printf '%s\n' "$ATTEST_OUT" >&2
-                  if [ "$attest_code" -eq 1 ]; then
+                  if [ "$ATTEST_EXCEEDED" -eq 1 ]; then
+                    echo "Post-publish attestation FAILED for $PACKAGE_NAME@$RELEASE_VERSION: registry integrity != sidecar $SIDECAR_DIGEST (PROVEN mismatch, exit 1; deadline-exceeded: mismatch returned ${ATTEST_AFTER_ELAPSED}s after publish against a ${ATTEST_DEADLINE_S}s deadline — the deadline bounds CI step duration, not attestation truth, so this proven inequality still deprecates+FAILS)." >&2
+                  else
                     echo "Post-publish attestation FAILED for $PACKAGE_NAME@$RELEASE_VERSION: registry integrity != sidecar $SIDECAR_DIGEST (PROVEN mismatch, exit 1; recheck→publish swap? failing LOUDLY and deprecating to block installs)." >&2
-                    DEPRECATE_MSG="aeh: integrity mismatch (post-publish attestation failed; do not install)"
-                    DEPRECATE_OK=0
-                    for attempt in 1 2 3; do
-                      if npm deprecate "$PACKAGE_NAME@$RELEASE_VERSION" "$DEPRECATE_MSG"; then
-                        DEPRECATE_OK=1
-                        break
-                      fi
-                      echo "Deprecate attempt $attempt/3 failed for $PACKAGE_NAME@$RELEASE_VERSION; retrying..." >&2
-                      sleep 5
-                    done
-                    if [ "$DEPRECATE_OK" -ne 1 ]; then
-                      echo "MANUAL-DEPRECATE REQUIRED: automatic deprecate failed after 3 attempts." >&2
-                      echo "  version: $PACKAGE_NAME@$RELEASE_VERSION" >&2
-                      echo "  reason: post-publish attestation mismatch (registry integrity != sidecar $SIDECAR_DIGEST); published bytes are UNTRUSTED, block installs immediately." >&2
-                      echo "  command: npm deprecate \"$PACKAGE_NAME@$RELEASE_VERSION\" \"$DEPRECATE_MSG\"" >&2
-                    fi
-                    echo "Post-publish attestation trace: package=$PACKAGE_NAME version=$RELEASE_VERSION sidecar_digest=$SIDECAR_DIGEST result=FAILED-deprecated exit=$attest_code deprecate_ok=$DEPRECATE_OK" >&2
-                    exit 1
                   fi
+                  DEPRECATE_MSG="aeh: integrity mismatch (post-publish attestation failed; do not install)"
+                  DEPRECATE_OK=0
+                  for attempt in 1 2 3; do
+                    if npm deprecate "$PACKAGE_NAME@$RELEASE_VERSION" "$DEPRECATE_MSG"; then
+                      DEPRECATE_OK=1
+                      break
+                    fi
+                    echo "Deprecate attempt $attempt/3 failed for $PACKAGE_NAME@$RELEASE_VERSION; retrying..." >&2
+                    sleep 5
+                  done
+                  if [ "$DEPRECATE_OK" -ne 1 ]; then
+                    echo "MANUAL-DEPRECATE REQUIRED: automatic deprecate failed after 3 attempts." >&2
+                    echo "  version: $PACKAGE_NAME@$RELEASE_VERSION" >&2
+                    echo "  reason: post-publish attestation mismatch (registry integrity != sidecar $SIDECAR_DIGEST); published bytes are UNTRUSTED, block installs immediately." >&2
+                    echo "  command: npm deprecate \"$PACKAGE_NAME@$RELEASE_VERSION\" \"$DEPRECATE_MSG\"" >&2
+                  fi
+                  if [ "$ATTEST_EXCEEDED" -eq 1 ]; then
+                    echo "Post-publish attestation trace: package=$PACKAGE_NAME version=$RELEASE_VERSION sidecar_digest=$SIDECAR_DIGEST result=FAILED-deprecated-deadline-exceeded exit=$attest_code deprecate_ok=$DEPRECATE_OK elapsed_s=$ATTEST_AFTER_ELAPSED deadline_s=$ATTEST_DEADLINE_S" >&2
+                  else
+                    echo "Post-publish attestation trace: package=$PACKAGE_NAME version=$RELEASE_VERSION sidecar_digest=$SIDECAR_DIGEST result=FAILED-deprecated exit=$attest_code deprecate_ok=$DEPRECATE_OK elapsed_s=$ATTEST_AFTER_ELAPSED deadline_s=$ATTEST_DEADLINE_S" >&2
+                  fi
+                  exit 1
+                else
                   if [ "$attest_code" -eq 124 ]; then
                     ATTEST_LAST_CODE=124
                     ATTEST_LAST_KIND="timeout"
@@ -732,22 +757,33 @@ jobs:
                     ATTEST_LAST_KIND="unknown"
                     ATTEST_LAST_OUT="$ATTEST_OUT"
                   fi
-                  ATTEST_AFTER="$(date +%s)"
-                  if [ "$ATTEST_AFTER" -ge "$ATTEST_END" ]; then
+                  if [ "$ATTEST_EXCEEDED" -eq 1 ]; then
                     attest_fail_deadline
                   fi
-                  ATTEST_WALL_NOW="$(date +%s)"
-                  ATTEST_WALL_ELAPSED=$((ATTEST_WALL_NOW - ATTEST_START))
-                  if [ "$ATTEST_LAST_KIND" = "absent" ]; then
-                    echo "Post-publish attestation pending for $PACKAGE_NAME@$RELEASE_VERSION (exit 2, authoritative-absent: version not yet visible, awaiting appearance — propagation lag? retrying in ${ATTEST_INTERVAL_S}s, wall-clock ${ATTEST_WALL_ELAPSED}s/${ATTEST_DEADLINE_S}s)..." >&2
-                  elif [ "$ATTEST_LAST_KIND" = "visible-unreadable" ]; then
-                    echo "Post-publish attestation pending for $PACKAGE_NAME@$RELEASE_VERSION (exit $ATTEST_LAST_CODE VISIBLE_UNREADABLE: version visible but identity unreadable — suspicious, mismatch UNPROVEN so NOT auto-deprecating; bounded retries, retrying in ${ATTEST_INTERVAL_S}s, wall-clock ${ATTEST_WALL_ELAPSED}s/${ATTEST_DEADLINE_S}s)..." >&2
-                  elif [ "$ATTEST_LAST_KIND" = "timeout" ]; then
-                    echo "Post-publish attestation pending for $PACKAGE_NAME@$RELEASE_VERSION (per-query timeout after ${ATTEST_EFFECTIVE_TIMEOUT_S}s, UNKNOWN-retry, retrying in ${ATTEST_INTERVAL_S}s, wall-clock ${ATTEST_WALL_ELAPSED}s/${ATTEST_DEADLINE_S}s)..." >&2
-                  else
-                    echo "Post-publish attestation pending for $PACKAGE_NAME@$RELEASE_VERSION (exit $ATTEST_LAST_CODE, registry UNKNOWN-retry, retrying in ${ATTEST_INTERVAL_S}s, wall-clock ${ATTEST_WALL_ELAPSED}s/${ATTEST_DEADLINE_S}s)..." >&2
+                  # Bounded retry sleep (round-4 C2): sleep the minimum of the
+                  # configured interval and the remaining budget; with no
+                  # remaining budget skip sleep straight to deadline handling.
+                  ATTEST_SLEEP_NOW="$(date +%s)"
+                  ATTEST_SLEEP_REMAINING=$((ATTEST_END - ATTEST_SLEEP_NOW))
+                  if [ "$ATTEST_SLEEP_REMAINING" -le 0 ]; then
+                    attest_fail_deadline
                   fi
-                  sleep "$ATTEST_INTERVAL_S"
+                  if [ "$ATTEST_INTERVAL_S" -lt "$ATTEST_SLEEP_REMAINING" ]; then
+                    ATTEST_SLEEP_S="$ATTEST_INTERVAL_S"
+                  else
+                    ATTEST_SLEEP_S="$ATTEST_SLEEP_REMAINING"
+                  fi
+                  ATTEST_WALL_ELAPSED=$((ATTEST_SLEEP_NOW - ATTEST_START))
+                  if [ "$ATTEST_LAST_KIND" = "absent" ]; then
+                    echo "Post-publish attestation pending for $PACKAGE_NAME@$RELEASE_VERSION (exit 2, authoritative-absent: version not yet visible, awaiting appearance — propagation lag? retrying in ${ATTEST_SLEEP_S}s, wall-clock ${ATTEST_WALL_ELAPSED}s/${ATTEST_DEADLINE_S}s)..." >&2
+                  elif [ "$ATTEST_LAST_KIND" = "visible-unreadable" ]; then
+                    echo "Post-publish attestation pending for $PACKAGE_NAME@$RELEASE_VERSION (exit $ATTEST_LAST_CODE VISIBLE_UNREADABLE: version visible but identity unreadable — suspicious, mismatch UNPROVEN so NOT auto-deprecating; bounded retries, retrying in ${ATTEST_SLEEP_S}s, wall-clock ${ATTEST_WALL_ELAPSED}s/${ATTEST_DEADLINE_S}s)..." >&2
+                  elif [ "$ATTEST_LAST_KIND" = "timeout" ]; then
+                    echo "Post-publish attestation pending for $PACKAGE_NAME@$RELEASE_VERSION (per-query timeout after ${ATTEST_EFFECTIVE_TIMEOUT_S}s, UNKNOWN-retry, retrying in ${ATTEST_SLEEP_S}s, wall-clock ${ATTEST_WALL_ELAPSED}s/${ATTEST_DEADLINE_S}s)..." >&2
+                  else
+                    echo "Post-publish attestation pending for $PACKAGE_NAME@$RELEASE_VERSION (exit $ATTEST_LAST_CODE, registry UNKNOWN-retry, retrying in ${ATTEST_SLEEP_S}s, wall-clock ${ATTEST_WALL_ELAPSED}s/${ATTEST_DEADLINE_S}s)..." >&2
+                  fi
+                  sleep "$ATTEST_SLEEP_S"
                 fi
               done
             elif [ "$code" -eq 3 ]; then

@@ -6,19 +6,18 @@ import path from "node:path";
 import { parse } from "yaml";
 import { describe, expect, it } from "vitest";
 
-// Round-3 RED: Luna rejected ru/attestation-propagation-2 (tip 2231bcc) with
-// 2 points on deadline exactness (overrides/triage/exit-codes ACCEPTED).
-// D1: success path skips post-query deadline check (starts before, returns
-//     match after -> passes post-deadline). Required: check wall clock after
-//     EVERY query return. Semantics: the deadline bounds CI STEP duration,
-//     not attestation truth — a post-deadline SUCCESS is still a proven
-//     attestation: ACCEPT it but TRACE deadline-exceeded (observability);
-//     a post-deadline NON-success -> UNKNOWN fail (no more retries).
-// D2: query timeout independent of remaining budget (overrun up to 120s).
-//     Required: effective per-query timeout = min(configured query timeout,
-//     remaining seconds); if remaining <= 0 (below the 1s floor), do NOT
-//     issue another query — go directly to deadline-exceeded handling.
-// Everything else ACCEPTED — only the poll-loop timing + tests are touched.
+// Round-4 RED: Luna rejected ru/attestation-propagation-3 (tip 1c47659) with
+// 2 consistency points (late-accept semantics + min-timeout ACCEPTED).
+// C1: exit-1 mismatch path skips the post-return clock check while success
+//     and others check. Required: SINGLE check point — check wall clock ONCE
+//     immediately after every query return, record exceeded flag, THEN
+//     dispatch by exit code (success→accept[+trace if exceeded];
+//     mismatch→deprecate+fail[+trace if exceeded];
+//     unknown→UNKNOWN-fail-if-exceeded-else-retry).
+// C2: retry sleep uncapped by remaining (up to 120s past END). Required:
+//     sleep = min(INTERVAL, remaining); remaining<=0 → skip sleep, go
+//     straight to deadline handling.
+// Everything else ACCEPTED — only the poll-loop structure + tests are touched.
 const REPO = path.resolve(import.meta.dirname, "..");
 
 async function loadPublishStep() {
@@ -35,23 +34,26 @@ async function loadPublishStep() {
 type AttestOpts = {
   lagViews?: number;
   viewSleepS?: number;
-  /** Sleep only on integrity views after the first `sleepFrom` ones (0 = all). */
   sleepFrom?: number;
   deadlineS?: string;
   intervalS?: string;
   queryTimeoutS?: string;
-  /** Stub `timeout(1)` to ignore its bound (simulates a query that outlives its bound). */
   stubTimeout?: boolean;
+  /** Return a valid-but-different integrity so the gate exits 1 (PROVEN mismatch). */
+  mismatch?: boolean;
 };
 
 async function attestRun(opts: AttestOpts) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-attest-r3-"));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-attest-r4-"));
   await fs.writeFile(path.join(dir, "package.json"), JSON.stringify({ name: "aeh-test-pkg", version: "9.9.9" }));
   const pack = spawnSync("npm", ["pack", "--pack-destination", dir, "--silent"], { cwd: dir, encoding: "utf8" });
   if (pack.status !== 0) throw new Error(`npm pack failed: ${pack.stderr}`);
   const baseTgz = (await fs.readdir(dir)).find((f) => f.endsWith(".tgz"))!;
   const baseBytes = await fs.readFile(path.join(dir, baseTgz));
   const baseDigest = `sha512-${createHash("sha512").update(baseBytes).digest("base64")}`;
+  const registryDigest = opts.mismatch
+    ? `sha512-${createHash("sha512").update("aeh-mismatch-sentinel").digest("base64")}`
+    : baseDigest;
   const SHA = "c".repeat(40);
   const bin = path.join(dir, "stubbin");
   await fs.mkdir(bin);
@@ -68,7 +70,7 @@ async function attestRun(opts: AttestOpts) {
       `VIEW_COUNT="${viewCount}"\n` +
       `QUERY_LOG="${queryLog}"\n` +
       `LAG_VIEWS="${lagViews}"\n` +
-      `VISIBLE_INTEGRITY="${baseDigest}"\n` +
+      `VISIBLE_INTEGRITY="${registryDigest}"\n` +
       `VIEW_SLEEP="${sleepS}"\n` +
       `SLEEP_FROM="${sleepFrom}"\n` +
       `if [ "$1" = "view" ]; then\n` +
@@ -100,8 +102,6 @@ async function attestRun(opts: AttestOpts) {
   );
   await fs.chmod(path.join(bin, "npm"), 0o755);
   if (opts.stubTimeout) {
-    // Permissive timeout stub: drop the duration bound and exec directly, so a
-    // query can deterministically return AFTER the deadline (the race D1 covers).
     await fs.writeFile(path.join(bin, "timeout"), `#!/bin/sh\nDURATION="$1"; shift\nexec "$@"\n`);
     await fs.chmod(path.join(bin, "timeout"), 0o755);
   }
@@ -149,94 +149,94 @@ async function attestRun(opts: AttestOpts) {
   return { code: r.status ?? -1, out, published, deprecated, wallS, qlog, queryStarts };
 }
 
-describe("attestation round-3 (Luna deadline-exactness rejection of 2231bcc)", () => {
-  it("D1-static: wall clock is checked after EVERY query return (success and non-success)", async () => {
+describe("attestation round-4 (Luna consistency rejection of 1c47659)", () => {
+  it("C1-static: SINGLE post-return clock check, exceeded flag recorded BEFORE dispatch", async () => {
     const { run } = await loadPublishStep();
-    // Round-4 supersedes the per-branch duplicate checks with a SINGLE post-
-    // return check point (ATTEST_AFTER read once, ATTEST_EXCEEDED recorded
-    // BEFORE dispatch so no return path — including mismatch — bypasses it).
+    // Exactly ONE wall-clock read immediately after query return (no per-branch duplicates).
     const afterReads = run.match(/ATTEST_AFTER="\$\(date \+%s\)"/g) ?? [];
     expect(afterReads.length, "SINGLE check point: exactly one ATTEST_AFTER read after query return").toBe(1);
-    expect(run, "exceeded flag recorded before dispatch").toMatch(/ATTEST_EXCEEDED=1/);
-    // Post-deadline success is ACCEPTED (still breaks/passes) but traced.
-    expect(run, "post-deadline success accepted with deadline-exceeded trace").toMatch(/VERIFIED-deadline-exceeded/);
-  });
-
-  it("D2-static: effective per-query timeout is min(configured, remaining) with a no-budget floor", async () => {
-    const { run } = await loadPublishStep();
-    expect(run, "remaining budget computed from END").toMatch(/ATTEST_REMAINING/);
-    expect(run, "effective timeout takes the minimum").toMatch(/ATTEST_EFFECTIVE_TIMEOUT/);
-    expect(run, "remaining <= 0 issues no further query (floor)").toMatch(/ATTEST_REMAINING.*-le 0/);
-    expect(run, "the query runs under the EFFECTIVE timeout, not the configured one").toMatch(
-      /timeout "\$\{ATTEST_EFFECTIVE_TIMEOUT_S\}s"/,
+    // Exceeded flag is recorded...
+    expect(run, "exceeded flag is recorded").toMatch(/ATTEST_EXCEEDED=1/);
+    expect(run, "non-exceeded flag is recorded").toMatch(/ATTEST_EXCEEDED=0/);
+    // ...BEFORE dispatch by exit code (success / mismatch / unknown all see the flag).
+    const flagPos = run.indexOf("ATTEST_EXCEEDED=1");
+    const mismatchPos = run.indexOf('attest_code" -eq 1');
+    const successPos = run.indexOf('attest_code" -eq 0');
+    expect(flagPos, "flag recorded before dispatch").toBeGreaterThanOrEqual(0);
+    expect(mismatchPos, "mismatch dispatch exists").toBeGreaterThanOrEqual(0);
+    expect(successPos, "success dispatch exists").toBeGreaterThanOrEqual(0);
+    expect(flagPos, "exceeded flag recorded BEFORE mismatch/success dispatch (no path bypasses the check)").toBeLessThan(
+      Math.min(mismatchPos, successPos),
     );
   });
 
-  it(
-    "D1-dynamic: post-deadline SUCCESS is ACCEPTED but TRACED deadline-exceeded",
-    { timeout: 60000 },
-    async () => {
-      // Query starts before END and returns a match after END (timeout stubbed
-      // permissive to deterministically exercise the post-deadline race).
-      const r = await attestRun({ lagViews: 0, viewSleepS: 12, deadlineS: "10", intervalS: "5", stubTimeout: true });
-      expect(r.published, "publish still happens before attestation").toBe(true);
-      expect(r.code, `proven attestation is ACCEPTED even post-deadline (out: ${r.out})`).toBe(0);
-      expect(r.out, "attestation success is traced").toMatch(/attestation verified/i);
-      expect(r.out, "deadline-exceeded is marked for observability").toMatch(/deadline-exceeded/i);
-      expect(r.out, "machine-readable trace records the accept").toMatch(/result=VERIFIED-deadline-exceeded/);
-      expect(r.deprecated, "proven attestation never deprecates").toBe(false);
-    },
-  );
+  it("C1-static: mismatch path traces deadline-exceeded (deadline doesn't un-prove inequality)", async () => {
+    const { run } = await loadPublishStep();
+    // The mismatch trace must carry a deadline-exceeded mark for the post-deadline case.
+    expect(run, "mismatch deprecate+fail traces deadline-exceeded when exceeded").toMatch(
+      /FAILED-deprecated-deadline-exceeded/,
+    );
+  });
+
+  it("C2-static: retry sleep is min(INTERVAL, remaining); remaining<=0 skips sleep to deadline handling", async () => {
+    const { run } = await loadPublishStep();
+    expect(run, "bounded sleep variable computed from remaining").toMatch(/ATTEST_SLEEP_S/);
+    expect(run, "sleep bound takes the minimum of interval and remaining").toMatch(/ATTEST_SLEEP_REMAINING/);
+    expect(run, "remaining<=0 skips sleep and goes straight to deadline handling").toMatch(
+      /ATTEST_SLEEP_REMAINING.*-le 0/,
+    );
+    expect(run, "the retry sleeps the BOUNDED duration, not the raw interval").toMatch(/sleep "\$ATTEST_SLEEP_S"/);
+    expect(run, "no raw-interval sleep remains on the retry path").not.toMatch(/sleep "\$ATTEST_INTERVAL_S"/);
+  });
 
   it(
-    "D1-control: in-deadline success stays a plain verified pass (no deadline-exceeded mark)",
+    "C1-dynamic: post-deadline MISMATCH still deprecates+ fails BUT traces deadline-exceeded",
     { timeout: 60000 },
     async () => {
-      const r = await attestRun({ lagViews: 0, viewSleepS: 0, deadlineS: "15", intervalS: "5" });
-      expect(r.code, `in-deadline match must pass (out: ${r.out})`).toBe(0);
-      expect(r.out, "attestation success is traced").toMatch(/attestation verified/i);
-      expect(r.out, "in-deadline pass is NOT marked deadline-exceeded").not.toMatch(/deadline-exceeded/i);
-      expect(r.deprecated).toBe(false);
-    },
-  );
-
-  it(
-    "D2-dynamic: hung query is bounded by the remaining budget (no overrun past END)",
-    { timeout: 60000 },
-    async () => {
-      // Views hang 12s each; deadline 10s, configured query timeout 60s
-      // (default). Fixed code kills the in-flight query at ~remaining (10s);
-      // pre-fix code runs the full hang (24s+) past END.
-      const r = await attestRun({ lagViews: 999999, viewSleepS: 12, deadlineS: "10", intervalS: "5" });
-      expect(r.published, "publish still happens before attestation").toBe(true);
-      expect(r.code, "persistent absence must fail loudly (UNKNOWN)").not.toBe(0);
-      expect(r.out, "UNKNOWN failure is loud with triage").toMatch(/UNKNOWN|triage/i);
-      expect(r.deprecated, "absence is NEVER mismatch: nothing is deprecated").toBe(false);
-      expect(r.wallS, `in-flight query bounded by min() (wall ${r.wallS}s vs deadline 10s)`).toBeLessThan(20);
-      expect(r.queryStarts, "no further query is issued once the budget is exhausted").toBe(1);
-    },
-  );
-
-  it(
-    "D2-floor: second query with a small remaining budget is killed at the budget, then no more queries",
-    { timeout: 60000 },
-    async () => {
-      // First query fast-absent, then hung views; deadline 10s, interval 5s.
-      // The second query starts with ~5s remaining: fixed code bounds it by
-      // min(60, ~5) and the post-query check fails the deadline with no third
-      // query; pre-fix code runs the full 60s hang past END.
+      // Query starts before END, returns PROVEN inequality after END (timeout
+      // stubbed permissive to deterministically exercise the post-deadline race).
       const r = await attestRun({
-        lagViews: 999999,
-        viewSleepS: 30,
-        sleepFrom: 1,
+        lagViews: 0,
+        viewSleepS: 12,
         deadlineS: "10",
         intervalS: "5",
+        stubTimeout: true,
+        mismatch: true,
       });
-      expect(r.published).toBe(true);
-      expect(r.code, "must fail loudly (UNKNOWN)").not.toBe(0);
-      expect(r.deprecated, "absence never deprecates").toBe(false);
-      expect(r.wallS, `bounded by remaining budget (wall ${r.wallS}s vs deadline 10s)`).toBeLessThan(20);
-      expect(r.queryStarts, "exactly two queries: no query issued with no remaining budget").toBe(2);
+      expect(r.published, "publish still happens before attestation").toBe(true);
+      expect(r.code, `proven mismatch must fail LOUDLY even post-deadline (out: ${r.out})`).not.toBe(0);
+      expect(r.deprecated, "proven inequality still deprecates post-deadline (deadline doesn't un-prove it)").toBe(true);
+      expect(r.out, "mismatch failure is loud").toMatch(/FAILED|MISMATCH/i);
+      expect(r.out, "post-deadline mismatch is traced deadline-exceeded").toMatch(/deadline-exceeded/i);
+      expect(r.out, "machine-readable mismatch trace records the accept").toMatch(/FAILED-deprecated-deadline-exceeded/);
+    },
+  );
+
+  it(
+    "C1-control: in-deadline mismatch deprecates WITHOUT a deadline-exceeded mark",
+    { timeout: 60000 },
+    async () => {
+      const r = await attestRun({ lagViews: 0, viewSleepS: 0, deadlineS: "15", intervalS: "5", mismatch: true });
+      expect(r.code, `in-deadline mismatch must fail (out: ${r.out})`).not.toBe(0);
+      expect(r.deprecated, "proven inequality deprecates").toBe(true);
+      expect(r.out, "mismatch trace records the deprecate").toMatch(/FAILED-deprecated/);
+      expect(r.out, "in-deadline mismatch is NOT marked deadline-exceeded").not.toMatch(/deadline-exceeded/i);
+    },
+  );
+
+  it(
+    "C2-dynamic: retry sleep is capped by the remaining budget (no overrun past END)",
+    { timeout: 90000 },
+    async () => {
+      // First query fast-absent, then a 30s retry sleep against a 10s deadline.
+      // Fixed code sleeps min(30, ~10) and fails at ~10s; pre-fix code sleeps
+      // the full 30s interval past END.
+      const r = await attestRun({ lagViews: 999999, viewSleepS: 0, deadlineS: "10", intervalS: "30" });
+      expect(r.published, "publish still happens before attestation").toBe(true);
+      expect(r.code, "persistent absence must fail loudly (UNKNOWN)").not.toBe(0);
+      expect(r.deprecated, "absence is NEVER mismatch: nothing is deprecated").toBe(false);
+      expect(r.wallS, `retry sleep bounded by remaining (wall ${r.wallS}s vs deadline 10s + interval 30s)`).toBeLessThan(20);
+      expect(r.queryStarts, "no further query is issued once the budget is exhausted").toBe(1);
     },
   );
 });
