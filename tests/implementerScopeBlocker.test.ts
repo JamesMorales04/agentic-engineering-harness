@@ -128,8 +128,11 @@ describe("implementer out-of-scope blocker channel (RED-first)", () => {
     const runTs = await fs.readFile(new URL("../src/core/run.ts", import.meta.url), "utf8");
     expect(runTs).toContain("parseRepairScopeBlockerFromSession");
     expect(runTs).toContain("partitionRepairScopeBlockerFiles");
-    expect(runTs).toContain("pendingImplementerBlockerCheck");
+    expect(runTs).toContain("implementerScopeBlockedCheck");
     expect(runTs).toContain("resolveRepairScopeBlockerViaProductChoice");
+    // Suspend boundary: BLOCKED must STOP before validation/repair (no fallthrough).
+    expect(runTs).not.toContain("Fall through to normal validation");
+    expect(runTs).toContain("BEFORE validation/repair");
   });
 
   it("end-to-end: Repairer via implementer contract declaring implementer-shaped blocker routes to a BLOCKED receipt", async () => {

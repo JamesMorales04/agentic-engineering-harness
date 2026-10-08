@@ -391,6 +391,11 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
   let report: ValidationReport;
   let candidateImpact: CandidateImpactV1 | undefined;
   let assuranceEvaluation: CandidateAssuranceEvaluationV1 | undefined;
+  // Suspend boundary (owner-exemption-suspend): a BLOCKED scope resolution is
+  // terminal — no validation and no repair turns while suspended / waiting /
+  // declined / expired. Set when the DIRECT implementer blocker resolves to
+  // BLOCKED; the run builds a blocked report below and skips the repair loop.
+  let implementerScopeBlockedCheck: ValidationCheck | undefined;
   const executionCatalog = executionBoundary.executionCatalog;
   const capabilityRegistry = executionBoundary.capabilityRegistry;
   const planningEnabled = (implementationRoute === "DELEGATED" || implementationRoute === "FORMAL_SDD") && route && selection && executionCatalog && capabilityRegistry && effectiveConfig.workflow?.planning?.enabled !== false;
@@ -470,7 +475,6 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
       });
       worker = isolated.session;
       executionSessions.push(worker);
-      let pendingImplementerBlockerCheck: import("./types.js").ValidationCheck | undefined;
       if (!isolated.changeSet) {
         // IMPLEMENTER out-of-scope blocker path (mirrors Repairer H-NEW-1/H-NEW-7):
         // parsed via the canonical extractor (implementer + repair-result shapes),
@@ -479,8 +483,9 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
         // Silent expansion is still rejected in the assembler; a declaration never
         // widens scope. On AMENDED the resealed contract is adopted and the run
         // continues to validation (repair loop retries with amended scope); on
-        // BLOCKED the blocker check is merged into the report (fail closed).
-        // Throws fail-closed on conflict/invalid (never swallowed as undefined).
+        // BLOCKED the run STOPS — a blocked report is returned BEFORE
+        // validation/repair (no repair turns while suspended/waiting/declined/
+        // expired). Throws fail-closed on conflict/invalid (never swallowed as undefined).
         const needed = parseRepairScopeBlockerFromSession(worker);
         if (needed?.length) {
           const blockerAllowed = effectiveContract.scope?.allowed ?? ["**"];
@@ -552,9 +557,10 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
                 blockerDigest: blocker.digest, filesNeededOutsideScope: blocker.filesNeededOutsideScope,
                 error: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
               }).catch(() => undefined);
-              pendingImplementerBlockerCheck = check;
-              // Fall through to normal validation; the blocker check is merged below.
-              // The repair loop may still attempt a bounded Repairer turn.
+              // Suspend boundary: BLOCKED (throw Fail closed on suspend/apply/
+              // budget/expired-WAITING) STOPS — no fallthrough to validation or
+              // the repair loop. The blocked report is built below.
+              implementerScopeBlockedCheck = check;
               resolution = { status: "BLOCKED", blocker, check } as typeof resolution;
             }
             if (resolution.status === "BLOCKED") {
@@ -563,7 +569,10 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
                 blockerDigest: blocker.digest, filesNeededOutsideScope: blocker.filesNeededOutsideScope,
                 choiceId: (resolution as { choiceId?: string }).choiceId ?? "denied-or-timed-out",
               }).catch(() => undefined);
-              pendingImplementerBlockerCheck = resolution.check;
+              // Suspend boundary: BLOCKED (declined/timed-out/expired/unanswered
+              // WAITING) STOPS — return the blocked result BEFORE validation/
+              // repair (no repair turns while suspended/waiting/declined/expired).
+              implementerScopeBlockedCheck = resolution.check;
             } else {
               effectiveContract = resolution.contract;
               await recordEvent(controlRoot, effectiveConfig, "harness.repair.scope-amended", {
@@ -575,7 +584,27 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
           }
         }
       }
-      if (isolated.changeSet) {
+      if (implementerScopeBlockedCheck) {
+        // Suspend boundary terminal: BLOCKED (declined/timed-out/expired/
+        // unanswered WAITING) returns BEFORE validation/repair — no validation
+        // workspace prep, no verifyAfterWorker, no Repairer turns while
+        // suspended/waiting/declined/expired. The blocked check cites the exact
+        // needed files fail-closed; attempts stays 0 and the repair loop below
+        // is skipped via the same flag.
+        const blockedBase: ValidationReport = {
+          version: 1,
+          taskId: effectiveContract.task.id,
+          status: "FAIL",
+          startedAt,
+          finishedAt: new Date().toISOString(),
+          checks: [],
+          changedFiles: [],
+          candidate: currentCandidate,
+          metadata: { project: effectiveConfig.project.name, baseRef: effectiveConfig.validation?.baseRef ?? "main" },
+        };
+        report = withWorkerExecutionCheck(mergeChecks(blockedBase, [implementerScopeBlockedCheck]), worker);
+      } else {
+        if (isolated.changeSet) {
         // C1 scope-gate coherence: the normal Implementer assembly must deny
         // the same default-deny protected set as repair
         // (`repairProtectedPaths`: frozen TaskContract, seal, validators,
@@ -635,11 +664,9 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
           impactDigest: assembled.impact.digest,
           requiresIndependentReview: assembled.impact.requiresIndependentReview
         });
-      }
-      await prepareValidationWorkspace();
-      report = withWorkerExecutionCheck(await verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, selection), worker);
-      if (pendingImplementerBlockerCheck) {
-        report = mergeChecks(report, [pendingImplementerBlockerCheck]);
+        }
+        await prepareValidationWorkspace();
+        report = withWorkerExecutionCheck(await verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, selection), worker);
       }
     }
   }
@@ -671,7 +698,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     assuranceEvaluation = result.evaluation;
     return result.evaluation;
   };
-  if (!planningFailure) {
+  if (!planningFailure && !implementerScopeBlockedCheck) {
     assuranceEvaluation = await recompileAssuranceForReport(candidateImpact, report);
     report = mergeChecks(report, [...assuranceEvaluation.validationChecks, assuranceEvaluation.gateCheck]);
   }
@@ -679,7 +706,10 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
   const firstPassSuccess = report.status === "PASS";
   const maxRepairs = effectiveContract.repair?.maxAttempts ?? effectiveConfig.orchestration?.worker?.maxRepairAttempts ?? 2;
   let attempts = 0;
-  while (!planningFailure && report.status === "FAIL" && attempts < maxRepairs) {
+  // Suspend boundary: BLOCKED implementer resolution never enters the repair
+  // loop (no repair turns while suspended/waiting/declined/expired). The
+  // blocked report above is terminal with attempts=0.
+  while (!planningFailure && !implementerScopeBlockedCheck && report.status === "FAIL" && attempts < maxRepairs) {
     if (operationId && supervisorSelection) {
       await ensureOperationSupervisor(workspaceRoot, effectiveConfig, effectiveContract, supervisorSelection, { required: true, forceMaterialize: true });
       await runStage(operationStateRoot, operationId, "remediation", "RUNNING");
