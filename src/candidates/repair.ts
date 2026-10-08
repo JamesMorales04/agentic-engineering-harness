@@ -111,6 +111,15 @@ export async function executeRepairerCandidateMutation(input: {
    * rejection still throws; no blocker routing for silent expansion.
    */
   onScopeEscape?: (record: CandidateScopeEscapeV1) => Promise<void> | void;
+  /**
+   * DETERMINISTIC REMAINING repair-budget slots for the pre-offer correction
+   * gate (Luna round-3). When defined, `remaining >= 1` decides the offer
+   * (remaining < 1 → original escape throw immediately, no correction);
+   * when undefined, falls back to the static `maxAttempts >= 1` check.
+   * run.ts passes `maxRepairs - (attempts + escapeCorrectionsUsed)` computed
+   * AFTER incrementing attempts for the current repair turn.
+   */
+  escapeCorrectionRemainingBudget?: number;
 }): Promise<RepairCandidateMutationResultV1> {
   assertCompiledRepairer(input.selection, input.executionCatalog);
   const selection = input.selection;
@@ -263,7 +272,13 @@ export async function executeRepairerCandidateMutation(input: {
         ((input.config as { orchestration?: { worker?: { maxRepairAttempts?: unknown } } }).orchestration?.worker?.maxRepairAttempts as number) >= 0
         ? ((input.config as { orchestration?: { worker?: { maxRepairAttempts?: unknown } } }).orchestration?.worker?.maxRepairAttempts as number)
         : 2);
-  if (repairMaxAttempts < 1) {
+  // Luna round-3 REMAINING pre-offer gate (mirrors accepted wave tryReserve):
+  // when the caller supplies remaining slots, remaining < 1 → direct assembly
+  // with NO correction turn offered; otherwise the static max>=1 fallback.
+  const allowRepairCorrection = input.escapeCorrectionRemainingBudget !== undefined
+    ? input.escapeCorrectionRemainingBudget >= 1
+    : repairMaxAttempts >= 1;
+  if (!allowRepairCorrection) {
     const assembled = await assembleRepairChangeSet(initialChangeSet);
     await recordEvent(input.stateRoot, input.config, "harness.candidate.repair-assembled", {
       taskId: input.taskId,
@@ -350,6 +365,9 @@ export async function executeRepairerCandidateMutation(input: {
       return { session: correctionIsolated.session, changeSet: correctionIsolated.changeSet, candidate: assembled.candidate, impact: assembled.impact };
     },
     isTimeoutResult: (result) => isRepairCorrectionTimeoutSession(result.session),
+    ...(input.escapeCorrectionRemainingBudget !== undefined
+      ? { remainingBudget: input.escapeCorrectionRemainingBudget }
+      : {}),
   });
   const final = outcome.result;
   if (final.candidate && final.changeSet && final.impact) {
@@ -389,6 +407,13 @@ export async function rejectRepairCandidateChangeSet(input: {
   semanticAssessment?: CandidateImpactAssessmentRuntimeV1;
   scopeAmendment?: RepairScopeAmendmentV1;
   onScopeEscape?: (record: CandidateScopeEscapeV1) => Promise<void> | void;
+  /**
+   * DETERMINISTIC REMAINING repair-budget slots for the pre-offer correction
+   * gate (Luna round-3, same semantics as the apply path). When defined,
+   * `remaining >= 1` decides the offer; when undefined, falls back to the
+   * static `maxAttempts >= 1` check.
+   */
+  escapeCorrectionRemainingBudget?: number;
 }): Promise<{ candidate: CandidateRevisionV1; impact: import("./assembler.js").CandidateImpactV1 }> {
   const operation = await loadOperation(input.stateRoot, input.operationId);
   const currentCandidate = operation.candidateRevision;
@@ -450,14 +475,22 @@ export async function rejectRepairCandidateChangeSet(input: {
         ((input.config as { orchestration?: { worker?: { maxRepairAttempts?: unknown } } }).orchestration?.worker?.maxRepairAttempts as number) >= 0
         ? ((input.config as { orchestration?: { worker?: { maxRepairAttempts?: unknown } } }).orchestration?.worker?.maxRepairAttempts as number)
         : 2);
+  // Luna round-3 REMAINING pre-offer gate (same as apply path): remaining < 1
+  // → direct assembly with NO correction turn offered.
+  const allowRejectCorrection = input.escapeCorrectionRemainingBudget !== undefined
+    ? input.escapeCorrectionRemainingBudget >= 1
+    : rejectMaxAttempts >= 1;
   let assembled: Awaited<ReturnType<typeof assembleAndBindCandidateChangeSet>>;
-  if (rejectMaxAttempts < 1) {
+  if (!allowRejectCorrection) {
     assembled = await assembleRejectChangeSet();
   } else {
     const outcome = await withOneScopeEscapeCorrectionTurnV1<typeof assembled>({
       attempt: () => assembleRejectChangeSet(),
       buildCorrectionPrompt: (details) => buildScopeEscapeCorrectionPrompt(details),
       executeCorrection: async () => assembleRejectChangeSet(),
+      ...(input.escapeCorrectionRemainingBudget !== undefined
+        ? { remainingBudget: input.escapeCorrectionRemainingBudget }
+        : {}),
     });
     assembled = outcome.result;
   }

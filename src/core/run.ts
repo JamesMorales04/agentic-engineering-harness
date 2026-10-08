@@ -868,6 +868,13 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
       await runStage(operationStateRoot, operationId, "remediation", "RUNNING");
     }
     attempts += 1;
+    // Luna round-3 REMAINING pre-offer gate (no new budget): the loop bound
+    // above guarantees attempts+used < max on entry, but the increment
+    // consumes one slot — the correction inside the repair below must check
+    // REMAINING (max - (attempts + used)) BEFORE offering. Remaining < 1 →
+    // original escape throw immediately, no correction (1 repair + 1
+    // correction must never exceed max; e.g. max=1 → no correction).
+    const repairCorrectionRemaining = maxRepairs - (attempts + escapeCorrectionsUsed);
     const failureEvidence = { report, worker };
     const currentOperation = operationId ? await loadOperation(operationStateRoot, operationId) : undefined;
     const failureDecision = semanticRuntime && currentOperation?.candidateRevision
@@ -919,7 +926,8 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
         prepareWorkspace: controller ? async (isolatedRoot) => { await materializeControlPlaneSnapshot(controller!, isolatedRoot, effectiveConfig); } : undefined,
         execute: (isolatedRoot, participantId, prompt) => executeAgentPrompt(isolatedRoot, effectiveConfig, effectiveContract, repairerSelection, prompt, { outputContract: repairerSelection.outputContract ?? "implementer", phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true }),
         semanticAssessment: impactAssessmentRuntime,
-        onScopeEscape
+        onScopeEscape,
+        escapeCorrectionRemainingBudget: repairCorrectionRemaining
       }),
     });
     // Repair-scope blocker → bounded ledger-gated replan (the single production
@@ -1000,7 +1008,8 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
           prepareWorkspace: controller ? async (isolatedRoot) => { await materializeControlPlaneSnapshot(controller!, isolatedRoot, effectiveConfig); } : undefined,
           execute: (isolatedRoot, participantId, prompt) => executeAgentPrompt(isolatedRoot, effectiveConfig, effectiveContract, repairerSelection, prompt, { outputContract: repairerSelection.outputContract ?? "implementer", phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true }),
           semanticAssessment: impactAssessmentRuntime,
-          onScopeEscape
+          onScopeEscape,
+          escapeCorrectionRemainingBudget: maxRepairs - (attempts + escapeCorrectionsUsed)
         }),
       });
       worker = amendedRetry.session;
