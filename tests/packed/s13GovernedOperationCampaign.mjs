@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import YAML from "yaml";
 import { harnessRevisionV1 } from "./s13CampaignHarnessRevision.mjs";
 import { accountWorkspaceCleanupV1, workspaceArchiveDecision } from "./s13GovernedCampaignPolicy.mjs";
+import { assertIsolatedPaseoEnv, setupIsolatedPaseoHome, teardownIsolatedPaseoHome } from "./paseoIsolatedHome.mjs";
 
 /**
  * S13 packed governed-operation campaign.
@@ -15,6 +16,14 @@ import { accountWorkspaceCleanupV1, workspaceArchiveDecision } from "./s13Govern
  * fixture with REAL Paseo participants and a REAL local model (no AEH_DETERMINISTIC_PASEO_RUNTIME,
  * no scripted provider boundary). A deterministic oracle then verifies the durable operation record,
  * candidate revision, participant receipts, validation evidence and acceptance artifacts.
+ *
+ * P-NEW-4 hermetic isolation: every Paseo resource in this campaign (lead agents,
+ * participant sessions, operation workspaces) lives in a temporary isolated
+ * daemon home (fresh `PASEO_HOME` + free loopback port + `PASEO_DAEMON_URL`),
+ * never in the live daemon. Teardown deletes residual agents, archives residual
+ * workspaces, stops the isolated daemon and removes the temp home on
+ * success/failure/abort. Setup failure throws `PASEO_ISOLATION_UNAVAILABLE`
+ * and the run fails closed (never live).
  *
  * Usage: node tests/packed/s13GovernedOperationCampaign.mjs [checkout]
  * Optional: S13_GOV_LANES=audit,change-direct  S13_GOV_TIMEOUT_SECONDS=900  S13_GOV_KEEP=1
@@ -43,19 +52,42 @@ const archiveEvidence = process.env.S13_GOV_ARCHIVE_EVIDENCE === "1";
 const debug = process.env.S13_GOV_DEBUG === "1";
 const prepareOnly = process.env.S13_GOV_PREPARE_ONLY === "1";
 
-const dist = path.join(checkout, "dist");
-const releaseId = (await fs.readFile(path.join(dist, "current"), "utf8")).trim();
-const release = path.join(dist, "releases", releaseId);
-const certify = await import(pathToFileURL(path.join(release, "certification", "index.js")));
-const gitModule = await import(pathToFileURL(path.join(release, "core", "git.js")));
-const buildIdentity = (await import(pathToFileURL(path.join(release, "build", "identity.js")))).getBuildIdentity();
+// P-NEW-4: hermetic isolation before any fixture/paseo work. Lane children
+// inherit the isolated daemon via laneEnvironment().
+// V2: protected region begins immediately — all fallible setup inside try so a
+// failure between isolation-return and try-entry cannot leak.
+const paseoIsolation = await setupIsolatedPaseoHome({ prefix: "aeh-s13-gov-" });
+let dist;
+let releaseId;
+let release;
+let certify;
+let gitModule;
+let buildIdentity;
+let staging;
+let evidenceRoot;
+let laneRoot;
+let workRoot;
+let harnessRevisions;
+let summary;
+let before;
+let gitStatusBefore;
+let candidate;
+let paseoCleanupResult;
+try {
+  assertIsolatedPaseoEnv(paseoIsolation);
+  dist = path.join(checkout, "dist");
+  releaseId = (await fs.readFile(path.join(dist, "current"), "utf8")).trim();
+  release = path.join(dist, "releases", releaseId);
+  certify = await import(pathToFileURL(path.join(release, "certification", "index.js")));
+  gitModule = await import(pathToFileURL(path.join(release, "core", "git.js")));
+  buildIdentity = (await import(pathToFileURL(path.join(release, "build", "identity.js")))).getBuildIdentity();
 
-const staging = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-s13-gov-"));
-const evidenceRoot = path.join(checkout, "docs", "evidence", "s13");
-const laneRoot = path.join(staging, "lanes");
-const workRoot = path.join(staging, "work");
-await fs.mkdir(laneRoot, { recursive: true });
-await fs.mkdir(workRoot, { recursive: true });
+  staging = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-s13-gov-"));
+  evidenceRoot = path.join(checkout, "docs", "evidence", "s13");
+  laneRoot = path.join(staging, "lanes");
+  workRoot = path.join(staging, "work");
+  await fs.mkdir(laneRoot, { recursive: true });
+  await fs.mkdir(workRoot, { recursive: true });
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { encoding: "utf8", timeout: options.timeoutMs ?? 60_000, cwd: options.cwd ?? checkout, env: options.env ?? process.env, maxBuffer: 32 * 1024 * 1024 });
@@ -513,6 +545,9 @@ function laneEnvironment() {
   delete env.AEH_ALLOW_NESTED_OPERATION;
   delete env.PASEO_AGENT_ID;
   delete env.PASEO_SESSION_ID;
+  // P-NEW-4: PASEO_HOME/PASEO_DAEMON_URL are intentionally preserved so lane
+  // children inherit the isolated daemon; the guard above proves they point
+  // at the isolated home, never the live daemon.
   return env;
 }
 
@@ -1329,31 +1364,32 @@ async function startDistributedWorkerAfterStart(fixtureRoot, operationId) {
 // -------------------------------------------------------------------------------------------------
 // Campaign
 // -------------------------------------------------------------------------------------------------
-const harnessRevisions = await harnessRevisionV1(fileURLToPath(import.meta.url));
+  harnessRevisions = await harnessRevisionV1(fileURLToPath(import.meta.url));
 
-const summary = {
-  version: 1,
-  slice: "S13",
-  round,
-  runId,
-  roundLabel: `round-${round}/${runId} (attempt-specific summary and lane artifacts are immutable evidence)`,
-  campaign: "governed-operations",
-  generatedAt: new Date().toISOString(),
-  checkout,
-  sourceCommit: run("git", ["rev-parse", "HEAD"]).stdout,
-  harnessRevisions,
-  harnessBuildIdentity: buildIdentity,
-  candidate: null,
-  lanes: [],
-  result: "UNKNOWN"
-};
+  summary = {
+    version: 1,
+    slice: "S13",
+    round,
+    runId,
+    roundLabel: `round-${round}/${runId} (attempt-specific summary and lane artifacts are immutable evidence)`,
+    campaign: "governed-operations",
+    generatedAt: new Date().toISOString(),
+    checkout,
+    sourceCommit: run("git", ["rev-parse", "HEAD"]).stdout,
+    harnessRevisions,
+    harnessBuildIdentity: buildIdentity,
+    candidate: null,
+    lanes: [],
+    result: "UNKNOWN",
+    paseoIsolation: { hermetic: true, home: paseoIsolation.home, port: paseoIsolation.port, daemonUrl: paseoIsolation.daemonUrl, setupAt: paseoIsolation.startedAt }
+  };
 
-const before = await trackedDigest();
-const gitStatusBefore = run("git", ["status", "--short"]).stdout;
-const candidate = await packCandidate();
-summary.candidate = { artifact: candidate.filename, artifactDigest: candidate.artifactDigest };
+  before = await trackedDigest();
+  gitStatusBefore = run("git", ["status", "--short"]).stdout;
+  candidate = await packCandidate();
+  summary.candidate = { artifact: candidate.filename, artifactDigest: candidate.artifactDigest };
 
-const laneNames = laneFilter.length ? laneFilter : Object.keys(laneDefinitions);
+  const laneNames = laneFilter.length ? laneFilter : Object.keys(laneDefinitions);
 for (const name of laneNames) {
   const lane = laneDefinitions[name];
   if (!lane) { summary.lanes.push({ capability: name, result: "FAIL", error: "unknown lane" }); continue; }
@@ -1551,8 +1587,49 @@ for (const name of laneNames) {
   const workspaceAccounting = laneEvidence.workspaceCleanup?.postCampaignArchive?.accounting ?? laneEvidence.workspaceCleanup?.accounting ?? null;
   summary.lanes.push({ capability: name, result: laneEvidence.result, status: laneEvidence.operation?.status ?? null, terminal: laneEvidence.terminal ?? null, route: laneEvidence.operation?.intent?.route ?? null, sessions: laneEvidence.sessionReceipts?.length ?? 0, oracle: laneEvidence.result, acceptanceOracleDisposition: laneEvidence.operation?.result?.acceptanceOracle?.disposition ?? null, rows: laneEvidence.oracle?.rowResults ?? null, error: laneEvidence.error ?? null, durationMs: laneEvidence.durationMs, timeout: laneEvidence.timeout ?? false, lateTerminal: laneEvidence.lateTerminal ?? null, postCampaignOperationRead: laneEvidence.postCampaignOperationRead ?? null, checkoutUntouched: laneEvidence.checkoutProof?.checkoutUntouched ?? null, workspacesArchived: Array.isArray(archived) ? archived.length : null, workspacesRemaining: Array.isArray(remaining) ? remaining.length : null, workspaceAccounting, fixtureTopology: laneEvidence.fixtureTopology ?? null, artifact: `docs/evidence/s13/governed-lanes/round-${round}/${runId}/${name}.json` });
   console.log(JSON.stringify(summary.lanes.at(-1)));
+  }
+} finally {
+  // B1+V2: teardown guaranteed on every exit (including early setup failure;
+  // abort-signal via retained abort handlers). Abort handlers stay installed
+  // until verified completion inside teardownIsolatedPaseoHome.
+  try {
+    paseoCleanupResult = await teardownIsolatedPaseoHome(paseoIsolation);
+  } catch (error) {
+    console.error(`PASEO_ISOLATION_TEARDOWN_FAILED: campaign finally teardown threw: ${error?.stack ?? error}`);
+    paseoCleanupResult = { agentsDeleted: [], workspacesArchived: [], remainingAgents: [], remainingWorkspaces: [], orphanFree: false, daemonStopped: false, homeRemoved: false, attempts: 0, verified: false, error: String(error?.stack ?? error) };
+  }
+  const paseoCleanup = paseoCleanupResult;
+  if (!summary) {
+    summary = {
+      version: 1, slice: "S13", round, runId, campaign: "governed-operations",
+      generatedAt: new Date().toISOString(), checkout, lanes: [], result: "SLICE_BLOCKED",
+      earlySetupFailure: true,
+      paseoIsolation: { hermetic: true, home: paseoIsolation.home, port: paseoIsolation.port, daemonUrl: paseoIsolation.daemonUrl, setupAt: paseoIsolation.startedAt }
+    };
+  }
+  summary.paseoCleanup = {
+    hermetic: true,
+    agentsDeleted: paseoCleanup.agentsDeleted ?? [],
+    workspacesArchived: paseoCleanup.workspacesArchived ?? [],
+    remainingAgents: paseoCleanup.remainingAgents ?? [],
+    remainingWorkspaces: paseoCleanup.remainingWorkspaces ?? [],
+    orphanFree: paseoCleanup.orphanFree ?? false,
+    daemonStopped: paseoCleanup.daemonStopped ?? false,
+    homeRemoved: paseoCleanup.homeRemoved ?? false,
+    attempts: paseoCleanup.attempts ?? 0,
+    verified: paseoCleanup.verified ?? false
+  };
+  if (!summary.paseoCleanup.orphanFree) {
+    for (const lane of summary.lanes) if (lane.result === "PASS") lane.result = "FAIL";
+  }
 }
-
+// Early setup failure (before digest/evidence dirs): teardown already ran;
+// fail closed without touching undefined paths.
+if (!before || !evidenceRoot || !laneRoot || !summary) {
+  if (summary) summary.result = "SLICE_BLOCKED";
+  console.error(`PASEO_ISOLATION_SETUP_FAILED: governed-operations campaign failed before lane execution; teardown verified=${paseoCleanupResult?.verified ?? false}`);
+  process.exit(1);
+}
 const after = await trackedDigest();
 summary.checkoutProof = {
   trackedDigestBefore: before.digest,
@@ -1561,7 +1638,7 @@ summary.checkoutProof = {
   checkoutUntouched: before.digest === after.digest,
   gitStatusBefore,
   gitStatusAfter: run("git", ["status", "--short"]).stdout,
-  note: "Tracked-file digest captured before packing and after all governed lanes; candidates execute only inside disposable /tmp fixtures.",
+  note: "Tracked-file digest captured before packing and after all governed lanes; candidates execute only inside disposable /tmp fixtures with Paseo resources in the isolated daemon home.",
   // R11-F6: tracked documentation/evidence updates (S13 WorkGraph, STATUS, CONFORMANCE, LEDGER)
   // are written after the lanes finish; the recorded digest is the source-tree digest at run end.
   // A later repo-wide digest recomputation includes those documented edits and must be compared

@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import YAML from "yaml";
 import { harnessRevisionV1 } from "./s13CampaignHarnessRevision.mjs";
+import { assertIsolatedPaseoEnv, setupIsolatedPaseoHome, teardownIsolatedPaseoHome } from "./paseoIsolatedHome.mjs";
 
 /**
  * S13 round-19 P1-E lanes: `context-handoff` and `permission-delegation`.
@@ -14,6 +15,13 @@ import { harnessRevisionV1 } from "./s13CampaignHarnessRevision.mjs";
  * Both lanes materialize a REAL durable managed operation in a disposable packed fixture and drive
  * the production launch/authority/context APIs with a real Paseo provider session (no deterministic
  * Paseo runtime, no scripted provider boundary):
+ *
+ * P-NEW-4 hermetic isolation: every Paseo resource in this campaign lives in a
+ * temporary isolated daemon home (fresh `PASEO_HOME` + free loopback port +
+ * `PASEO_DAEMON_URL`), never in the live daemon. Teardown deletes residual
+ * agents, archives residual workspaces, stops the isolated daemon and removes
+ * the temp home on success/failure/abort. Setup failure throws
+ * `PASEO_ISOLATION_UNAVAILABLE` and the run fails closed (never live).
  *
  *   context-handoff      : launch a participant with a progressive ContextManifest that advertises
  *                          addressable refs -> the controller persists a ContextRefAuthorizationV1
@@ -35,16 +43,35 @@ if (!/^[A-Za-z0-9-]{1,80}$/.test(runId)) throw new Error("S13_RUN_ID must contai
 const laneFilter = (process.env.S13_CTXPERM_LANES ?? "").split(",").map((value) => value.trim()).filter(Boolean);
 const keepStaging = process.env.S13_CTXPERM_KEEP === "1";
 
-const staging = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-s13-ctxperm-"));
-const evidenceRoot = path.join(checkout, "docs", "evidence", "s13");
-const laneRoot = path.join(staging, "lanes");
-await fs.mkdir(laneRoot, { recursive: true });
+// P-NEW-4: hermetic isolation before any fixture/paseo work.
+// V2: protected region begins immediately — all fallible setup inside try so a
+// failure between isolation-return and try-entry cannot leak.
+const paseoIsolation = await setupIsolatedPaseoHome({ prefix: "aeh-s13-ctxperm-" });
+let staging;
+let evidenceRoot;
+let laneRoot;
+let dist;
+let releaseId;
+let release;
+let buildIdentity;
+let harnessRevisions;
+let summary;
+let before;
+let candidate;
+let paseoCleanupResult;
+let laneNames;
+try {
+  assertIsolatedPaseoEnv(paseoIsolation);
+  staging = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-s13-ctxperm-"));
+  evidenceRoot = path.join(checkout, "docs", "evidence", "s13");
+  laneRoot = path.join(staging, "lanes");
+  await fs.mkdir(laneRoot, { recursive: true });
 
-const dist = path.join(checkout, "dist");
-const releaseId = (await fs.readFile(path.join(dist, "current"), "utf8")).trim();
-const release = path.join(dist, "releases", releaseId);
-const buildIdentity = (await import(pathToFileURL(path.join(release, "build", "identity.js")))).getBuildIdentity();
-const harnessRevisions = await harnessRevisionV1(fileURLToPath(import.meta.url));
+  dist = path.join(checkout, "dist");
+  releaseId = (await fs.readFile(path.join(dist, "current"), "utf8")).trim();
+  release = path.join(dist, "releases", releaseId);
+  buildIdentity = (await import(pathToFileURL(path.join(release, "build", "identity.js")))).getBuildIdentity();
+  harnessRevisions = await harnessRevisionV1(fileURLToPath(import.meta.url));
 
 /**
  * Round 21: the only observed round-20 blocker for both lanes is a provider-side MCP startup flake
@@ -114,6 +141,9 @@ function laneEnvironment() {
   delete env.PASEO_AGENT_ID;
   delete env.PASEO_SESSION_ID;
   delete env.AEH_DETERMINISTIC_PASEO_RUNTIME;
+  // P-NEW-4: PASEO_HOME/PASEO_DAEMON_URL are intentionally preserved so lane
+  // children inherit the isolated daemon; the guard above proves they point
+  // at the isolated home, never the live daemon.
   return env;
 }
 function packedRelease(root) {
@@ -379,37 +409,81 @@ async function permissionDelegationJourney() {
   return lane;
 }
 
-const summary = {
-  version: 1, slice: "S13", round, runId, campaign: "context-permission",
-  generatedAt: new Date().toISOString(), checkout, sourceCommit: run("git", ["rev-parse", "HEAD"]).stdout,
-  harnessRevisions, harnessBuildIdentity: buildIdentity, candidate: null, lanes: [], result: "UNKNOWN"
-};
-const before = await trackedDigest();
-const candidate = await packCandidate();
-summary.candidate = { artifact: candidate.filename, artifactDigest: candidate.artifactDigest };
+  summary = {
+    version: 1, slice: "S13", round, runId, campaign: "context-permission",
+    generatedAt: new Date().toISOString(), checkout, sourceCommit: run("git", ["rev-parse", "HEAD"]).stdout,
+    harnessRevisions, harnessBuildIdentity: buildIdentity, candidate: null, lanes: [], result: "UNKNOWN",
+    paseoIsolation: { hermetic: true, home: paseoIsolation.home, port: paseoIsolation.port, daemonUrl: paseoIsolation.daemonUrl, setupAt: paseoIsolation.startedAt }
+  };
+  before = await trackedDigest();
+  candidate = await packCandidate();
+  summary.candidate = { artifact: candidate.filename, artifactDigest: candidate.artifactDigest };
 
-const laneNames = laneFilter.length ? laneFilter : ["context-handoff", "permission-delegation"];
-for (const name of laneNames) {
-  console.log(`S13 ctxperm lane: ${name}`);
-  const lane = name === "context-handoff" ? await contextHandoffJourney() : name === "permission-delegation" ? await permissionDelegationJourney() : { capability: name, result: "FAIL", error: "unknown lane" };
-  summary.lanes.push({ capability: lane.capability ?? name, result: lane.result, checks: lane.checks ?? null, rowResult: lane.rowResult ?? null, error: lane.error ?? null, artifact: `docs/evidence/s13/context-permission-lanes/round-${round}/${runId}/${name}.json` });
-}
-
-try {
-  const { accountWorkspaceCleanupV1 } = await import("./s13GovernedCampaignPolicy.mjs");
-  const listed = run("paseo", ["workspace", "ls", "--json"]);
-  const inventory = (() => { try { return JSON.parse(listed.stdout); } catch { return []; } })().filter((workspace) => String(workspace.cwd ?? "").startsWith(staging));
-  const archived = [];
-  for (const workspace of inventory) {
-    const result = run("paseo", ["workspace", "archive", workspace.workspaceId], { timeoutMs: 60_000 });
-    archived.push({ workspaceId: workspace.workspaceId, cwd: workspace.cwd ?? null, exitCode: result.status });
+  laneNames = laneFilter.length ? laneFilter : ["context-handoff", "permission-delegation"];
+  for (const name of laneNames) {
+    console.log(`S13 ctxperm lane: ${name}`);
+    const lane = name === "context-handoff" ? await contextHandoffJourney() : name === "permission-delegation" ? await permissionDelegationJourney() : { capability: name, result: "FAIL", error: "unknown lane" };
+    summary.lanes.push({ capability: lane.capability ?? name, result: lane.result, checks: lane.checks ?? null, rowResult: lane.rowResult ?? null, error: lane.error ?? null, artifact: `docs/evidence/s13/context-permission-lanes/round-${round}/${runId}/${name}.json` });
   }
-  const listedAfter = run("paseo", ["workspace", "ls", "--json"]);
-  const remainingAfter = (() => { try { return JSON.parse(listedAfter.stdout); } catch { return []; } })().filter((workspace) => String(workspace.cwd ?? "").startsWith(staging));
-  summary.workspaceInventory = inventory.map((workspace) => ({ workspaceId: workspace.workspaceId, cwd: workspace.cwd ?? null }));
-  summary.workspaceCleanup = { archived, remaining: remainingAfter.map((workspace) => workspace.workspaceId), accounting: accountWorkspaceCleanupV1(inventory, archived, remainingAfter) };
-} catch (error) {
-  summary.workspaceCleanupError = String(error);
+
+  try {
+    const { accountWorkspaceCleanupV1 } = await import("./s13GovernedCampaignPolicy.mjs");
+    const listed = run("paseo", ["workspace", "ls", "--json"]);
+    const inventory = (() => { try { return JSON.parse(listed.stdout); } catch { return []; } })().filter((workspace) => String(workspace.cwd ?? "").startsWith(staging));
+    const archived = [];
+    for (const workspace of inventory) {
+      const result = run("paseo", ["workspace", "archive", workspace.workspaceId], { timeoutMs: 60_000 });
+      archived.push({ workspaceId: workspace.workspaceId, cwd: workspace.cwd ?? null, exitCode: result.status });
+    }
+    const listedAfter = run("paseo", ["workspace", "ls", "--json"]);
+    const remainingAfter = (() => { try { return JSON.parse(listedAfter.stdout); } catch { return []; } })().filter((workspace) => String(workspace.cwd ?? "").startsWith(staging));
+    summary.workspaceInventory = inventory.map((workspace) => ({ workspaceId: workspace.workspaceId, cwd: workspace.cwd ?? null }));
+    summary.workspaceCleanup = { archived, remaining: remainingAfter.map((workspace) => workspace.workspaceId), accounting: accountWorkspaceCleanupV1(inventory, archived, remainingAfter) };
+  } catch (error) {
+    summary.workspaceCleanupError = String(error);
+  }
+} finally {
+  // B1+V2: teardown guaranteed on every exit (including early setup failure);
+  // handlers stay installed until verified completion.
+  try {
+    paseoCleanupResult = await teardownIsolatedPaseoHome(paseoIsolation);
+  } catch (error) {
+    console.error(`PASEO_ISOLATION_TEARDOWN_FAILED: campaign finally teardown threw: ${error?.stack ?? error}`);
+    paseoCleanupResult = { agentsDeleted: [], workspacesArchived: [], remainingAgents: [], remainingWorkspaces: [], orphanFree: false, daemonStopped: false, homeRemoved: false, attempts: 0, verified: false, error: String(error?.stack ?? error) };
+  }
+  const paseoCleanup = paseoCleanupResult;
+  if (!summary) {
+    summary = {
+      version: 1, slice: "S13", round, runId, campaign: "context-permission",
+      generatedAt: new Date().toISOString(), checkout, lanes: [], result: "SLICE_BLOCKED",
+      earlySetupFailure: true,
+      paseoIsolation: { hermetic: true, home: paseoIsolation.home, port: paseoIsolation.port, daemonUrl: paseoIsolation.daemonUrl, setupAt: paseoIsolation.startedAt }
+    };
+  }
+  summary.paseoCleanup = {
+    hermetic: true,
+    agentsDeleted: paseoCleanup.agentsDeleted ?? [],
+    workspacesArchived: paseoCleanup.workspacesArchived ?? [],
+    remainingAgents: paseoCleanup.remainingAgents ?? [],
+    remainingWorkspaces: paseoCleanup.remainingWorkspaces ?? [],
+    orphanFree: paseoCleanup.orphanFree ?? false,
+    daemonStopped: paseoCleanup.daemonStopped ?? false,
+    homeRemoved: paseoCleanup.homeRemoved ?? false,
+    attempts: paseoCleanup.attempts ?? 0,
+    verified: paseoCleanup.verified ?? false
+  };
+  if (!summary.paseoCleanup.orphanFree) {
+    for (const lane of summary.lanes) if (lane.result === "PASS") lane.result = "FAIL";
+  }
+}
+// Early setup failure (before digest/evidence dirs): teardown already ran;
+// fail closed without touching undefined paths.
+if (!before || !evidenceRoot || !laneRoot || !laneNames) {
+  summary.result = "SLICE_BLOCKED";
+  summary.earlySetupFailure = true;
+  console.error(`PASEO_ISOLATION_SETUP_FAILED: context-permission campaign failed before lane execution; teardown verified=${paseoCleanupResult?.verified ?? false}`);
+  if (staging && !keepStaging) await fs.rm(staging, { recursive: true, force: true }).catch(() => undefined);
+  process.exit(1);
 }
 const after = await trackedDigest();
 summary.checkoutProof = {
@@ -419,7 +493,7 @@ summary.checkoutProof = {
 };
 const roundLaneRoot = path.join(evidenceRoot, `context-permission-lanes/round-${round}`, runId);
 await fs.mkdir(roundLaneRoot, { recursive: true });
-for (const name of laneNames) {
+for (const name of laneNames ?? []) {
   await fs.copyFile(path.join(laneRoot, `${name}.json`), path.join(roundLaneRoot, `${name}.json`));
 }
 summary.result = summary.lanes.every((lane) => lane.result === "PASS") ? "PASS" : "SLICE_BLOCKED";

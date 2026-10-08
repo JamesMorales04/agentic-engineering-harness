@@ -31,7 +31,7 @@
     "ui:build": "npm run build --workspace=@aeh/control-center",
     "test": "npm run test:deterministic",
     "test:unit": "vitest run --exclude 'tests/system/**' --exclude 'tests/packed/*.test.mjs' --exclude 'tests/buildHygiene.test.ts' --exclude 'tests/specManagerCanonicality.test.ts' --exclude 'tests/changePlanRequirementTraceability.test.ts' --exclude 'tests/changeControllerOwnedDecision.test.ts'",
-    "test:deterministic": "npm run test:unit && node --test tests/packed/s13GovernedCampaignPolicy.test.mjs",
+    "test:deterministic": "npm run test:unit && node --test tests/packed/s13GovernedCampaignPolicy.test.mjs tests/packed/paseoIsolatedHome.test.mjs tests/packed/paseoIsolationTeardownRed.test.mjs tests/packed/paseoIsolationPortRetryRed.test.mjs",
     "test:watch": "vitest",
     "test:scenario": "npm run build && vitest run tests/system/aehScenarioMatrix.test.ts && AEH_RELIABILITY_SUITES=scenario tsx scripts/generate-reliability-report.ts",
     "test:adversarial": "npm run build && vitest run tests/system/aehAdversarialE2E.test.ts && AEH_RELIABILITY_SUITES=adversarial tsx scripts/generate-reliability-report.ts",
