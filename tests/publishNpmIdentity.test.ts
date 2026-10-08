@@ -50,6 +50,11 @@ async function fixture(stub: { absent?: boolean; integrity?: string; registryErr
     env: {
       ...process.env,
       PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+      // Isolate the retained-artifact dir: the workflow resolves it as
+      // ${RUNNER_TEMP:-$PWD}/aeh-npm-retained, and CI always sets RUNNER_TEMP
+      // (shared across tests, so one fixture's tarball/sidecar would leak
+      // into another's provenance gate). Pin it to the fixture dir.
+      RUNNER_TEMP: dir,
       RELEASE_VERSION: "9.9.9",
       // Provenance binding: the publish step requires RELEASE_SHA to write /
       // verify the sidecar (absent/invalid/mismatch fails closed). Fixtures
@@ -303,6 +308,10 @@ describe("npm resume identity (fail closed on content mismatch)", () => {
       env: {
         ...process.env,
         PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+        // Same RUNNER_TEMP isolation as fixture(): keep the retained-artifact
+        // dir fixture-local so the provenance gate cannot see another test's
+        // leftover tarball/sidecar.
+        RUNNER_TEMP: dir,
         RELEASE_VERSION: "9.9.9",
         RELEASE_SHA: "b2c3d4e5f6b2c3d4e5f6b2c3d4e5f6b2c3d4e5f6",
       } as NodeJS.ProcessEnv,

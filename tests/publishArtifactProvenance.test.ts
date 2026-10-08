@@ -170,6 +170,11 @@ describe("artifact provenance binding (release_sha sidecar)", () => {
     const env = {
       ...process.env,
       PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+      // Isolate the retained-artifact dir: the workflow resolves it as
+      // ${RUNNER_TEMP:-$PWD}/aeh-npm-retained, and CI always sets RUNNER_TEMP
+      // (shared across tests). Pin it to the fixture dir so the staged
+      // stale tarball/sidecar is what the step actually consumes.
+      RUNNER_TEMP: dir,
       RELEASE_VERSION: "9.9.9",
       RELEASE_SHA: CURRENT_SHA,
     } as NodeJS.ProcessEnv;
