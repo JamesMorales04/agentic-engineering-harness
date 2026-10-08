@@ -468,6 +468,28 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
       worker = waveResult.aggregateSession;
       if (!waveResult.report) await prepareValidationWorkspace();
       report = withWorkerExecutionCheck(waveResult.report ?? await verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, selection), worker);
+      // Round-2 B2: wave correction declaration → BLOCKED (same semantics as
+      // DIRECT/repair paths — merge FAIL check, never PASS-with-declaration).
+      // A no-change correction that declares filesNeededOutsideScope carries
+      // an in-memory scopeBlocker receipt (waveExecutor, no durable write to
+      // avoid parallel work-unit races). Merge its FAIL check here so the
+      // barrier cannot PASS with a declaration, and park the run as BLOCKED
+      // (skip repair turns while blocked, same flag as DIRECT BLOCKED).
+      const waveScopeBlockers = waveResult.waves
+        .flatMap((wave) => wave.results)
+        .map((result) => (result as { scopeBlocker?: Parameters<typeof repairScopeBlockerValidationCheck>[0] }).scopeBlocker)
+        .filter((blocker): blocker is Parameters<typeof repairScopeBlockerValidationCheck>[0] => Boolean(blocker));
+      if (waveScopeBlockers.length && !implementerScopeBlockedCheck) {
+        const waveBlocker = waveScopeBlockers[0]!;
+        const waveBlockerCheck = repairScopeBlockerValidationCheck(waveBlocker);
+        report = mergeChecks(report, [waveBlockerCheck]);
+        implementerScopeBlockedCheck = waveBlockerCheck;
+        await recordEvent(controlRoot, effectiveConfig, "harness.repair.scope-blocked", {
+          taskId: effectiveContract.task.id, attempt: 0, status: "BLOCKED",
+          blockerDigest: waveBlocker.digest, filesNeededOutsideScope: waveBlocker.filesNeededOutsideScope,
+          source: "wave-escape-correction",
+        }).catch(() => undefined);
+      }
     } else {
       const executor = createWorkerExecutor(effectiveConfig, selection);
       const health = await executor.doctor(workspaceRoot, effectiveConfig, selection);

@@ -29,6 +29,12 @@ import {
   buildScopeEscapeCorrectionPrompt,
   isScopeCorrectionTimeoutError,
 } from "../candidates/scopeEscapeCorrection.js";
+import {
+  createRepairScopeBlockerReceipt,
+  parseRepairScopeBlockerFromSession,
+  type RepairScopeBlockerReceiptV1,
+} from "../candidates/repairScope.js";
+import { partitionRepairScopeBlockerFiles, repairProtectedPaths } from "../candidates/repair.js";
 import { materializeCandidateState } from "../candidates/direct.js";
 import { createWaveBase, integrateWaveChangeSets, type WaveChangeSetSubmissionV1 } from "../candidates/wave.js";
 import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
@@ -58,9 +64,118 @@ import {
 import { frozenOperationHardDeadlineAt } from "../operations/state.js";
 import { isProviderRateLimited, parseProviderRateLimitDetail } from "../paseo/sdk.js";
 
-export interface DelegationExecutionResult { task: WorkUnitOutput; session: WorkerSession; changedFiles: string[]; patch: string; status: "PASS" | "FAIL"; message?: string; distributed?: boolean; candidate?: CandidateRevisionV1; impact?: CandidateImpactV1; changeSet?: ChangeSetV1; escapeCorrectionUsed?: boolean; escapeCorrectionSessions?: WorkerSession[]; }
+export interface DelegationExecutionResult { task: WorkUnitOutput; session: WorkerSession; changedFiles: string[]; patch: string; status: "PASS" | "FAIL"; message?: string; distributed?: boolean; candidate?: CandidateRevisionV1; impact?: CandidateImpactV1; changeSet?: ChangeSetV1; escapeCorrectionUsed?: boolean; escapeCorrectionSessions?: WorkerSession[]; scopeBlocker?: RepairScopeBlockerReceiptV1; }
 export interface WaveExecutionSummary { wave: number; taskIds: string[]; status: "PASS" | "FAIL"; results: DelegationExecutionResult[]; barrier?: ValidationReport; }
 export interface PlannerWaveResult { used: boolean; plan?: PlannerOutput; blueprint?: ExecutionBlueprint; schedule?: ParallelismPlan; waves: WaveExecutionSummary[]; sessions: WorkerSession[]; aggregateSession?: WorkerSession; report?: ValidationReport; preExecutionFailure?: boolean; correctionAttempts?: 0 | 1; escapeCorrections?: number; }
+
+/**
+ * Round-2 B1 (DETERMINISTIC): existing repair budget for scope-escape
+ * corrections. No new budget knob — reuses `repair.maxAttempts` (frozen
+ * contract) falling back to the configured worker max, then 2.
+ */
+export function escapeCorrectionBudgetV1(contract: TaskContract, config: HarnessProjectConfig): number {
+  const fromContract = (contract as { repair?: { maxAttempts?: unknown } }).repair?.maxAttempts;
+  if (typeof fromContract === "number" && Number.isSafeInteger(fromContract) && fromContract >= 0) return fromContract;
+  const fromConfig = (config as { orchestration?: { worker?: { maxRepairAttempts?: unknown } } }).orchestration?.worker?.maxRepairAttempts;
+  if (typeof fromConfig === "number" && Number.isSafeInteger(fromConfig) && fromConfig >= 0) return fromConfig;
+  return 2;
+}
+
+export interface EscapeCorrectionBudgetGateV1 {
+  readonly max: number;
+  readonly used: number;
+  /** Synchronous reserve-then-check: true reserves one slot, false means exhausted (no correction). */
+  tryReserve(): boolean;
+}
+
+/**
+ * Round-2 B1 (DETERMINISTIC): shared synchronous reservation gate.
+ * Check + increment happen synchronously (no await between), so parallel
+ * wave tasks cannot double-spend the remaining budget. Reserve BEFORE the
+ * async correction turn; exhausted → original FAIL immediately, no correction.
+ */
+export function createEscapeCorrectionBudgetGateV1(max: number, alreadyUsed = 0): EscapeCorrectionBudgetGateV1 {
+  const safeMax = Number.isSafeInteger(max) && max >= 0 ? max : 2;
+  let used = Number.isSafeInteger(alreadyUsed) && alreadyUsed >= 0 ? alreadyUsed : 0;
+  return {
+    get max() { return safeMax; },
+    get used() { return used; },
+    tryReserve() {
+      if (used >= safeMax) return false;
+      used += 1;
+      return true;
+    },
+  };
+}
+
+/**
+ * Round-2 B2 (DETERMINISTIC): classify a wave correction session for
+ * outside-scope declarations. Same no-mutation semantics as DIRECT/repair:
+ * - schema-valid `filesNeededOutsideScope` with no file changes → BLOCKED
+ *   when genuinely outside scope (partition strips in-scope confusion);
+ * - vacuous (all stripped) → not blocked;
+ * - conflicting (changes + declaration, or parse CONFLICT/INVALID throw) →
+ *   BLOCKED fail-closed, never PASS-with-declaration.
+ * Model content, deterministic gate. Never widens scope.
+ */
+export function classifyWaveCorrectionDeclarationV1(input: {
+  session: Pick<WorkerSession, "stdout" | "stderr">;
+  changedFiles: readonly string[];
+  operationId: string;
+  taskId: string;
+  workUnitId: string;
+  participantId?: string;
+  taskScope: readonly string[];
+  contract: TaskContract;
+  config: HarnessProjectConfig;
+}): { blocked: boolean; blocker?: RepairScopeBlockerReceiptV1; strippedCount: number } {
+  let needed: { path: string; reason: string }[] | undefined;
+  try {
+    needed = parseRepairScopeBlockerFromSession(input.session);
+  } catch {
+    // CONFLICT/INVALID declaration alongside a correction → BLOCKED
+    // fail-closed (never PASS-with-declaration). Synthesize a minimal
+    // blocker receipt citing the conflict so run.ts can merge a FAIL check.
+    const blocker = createRepairScopeBlockerReceipt({
+      operationId: input.operationId,
+      taskId: input.taskId,
+      workUnitId: input.workUnitId,
+      ...(input.participantId ? { participantId: input.participantId } : {}),
+      filesNeededOutsideScope: [{ path: "correction-conflict", reason: "correction declared filesNeededOutsideScope alongside file changes or an invalid blocker payload" }],
+    });
+    return { blocked: true, blocker, strippedCount: 0 };
+  }
+  if (!needed?.length) return { blocked: false, strippedCount: 0 };
+  // No-mutation invariant: declaration requires no file changes. A correction
+  // that both mutates and declares is contradictory → BLOCKED fail-closed.
+  if (input.changedFiles.length > 0) {
+    const blocker = createRepairScopeBlockerReceipt({
+      operationId: input.operationId,
+      taskId: input.taskId,
+      workUnitId: input.workUnitId,
+      ...(input.participantId ? { participantId: input.participantId } : {}),
+      filesNeededOutsideScope: [{ path: "correction-conflict", reason: "correction declared filesNeededOutsideScope while also producing file changes" }],
+    });
+    return { blocked: true, blocker, strippedCount: 0 };
+  }
+  const allowedScope = [...input.taskScope];
+  const forbiddenScope = [
+    ...(input.contract.scope?.forbidden ?? []),
+    ...(input.contract.scope?.frozen ?? []),
+    ...(input.config.validation?.frozenPaths ?? []),
+    ...repairProtectedPaths(input.config, input.contract),
+  ];
+  const partitioned = partitionRepairScopeBlockerFiles(needed, allowedScope, forbiddenScope);
+  if (!partitioned.genuinelyBlocked.length) return { blocked: false, strippedCount: partitioned.stripped.length };
+  const blocker = createRepairScopeBlockerReceipt({
+    operationId: input.operationId,
+    taskId: input.taskId,
+    workUnitId: input.workUnitId,
+    ...(input.participantId ? { participantId: input.participantId } : {}),
+    filesNeededOutsideScope: partitioned.genuinelyBlocked,
+  });
+  return { blocked: true, blocker, strippedCount: partitioned.stripped.length };
+}
 
 export async function executePlannerWaves(input: { root: string; stateRoot: string; config: HarnessProjectConfig; contract: TaskContract; plannerSelection?: AgentExecutionSelection; librarianSelection?: AgentExecutionSelection; implementationSelection: AgentExecutionSelection; executionCatalog: ExecutionCatalogV1; capabilityRegistry: CapabilityRegistryV1; controller?: ControlPlaneSnapshot; precomputedPlan?: PlannerOutput; semanticAssessment?: CandidateImpactAssessmentRuntimeV1; projectStack?: ProjectStackProfileV1; knowledgeMode?: KnowledgeModeV1; knowledgeCache?: KnowledgeCacheV1; knowledgeResolutions?: readonly KnowledgeResolutionV1[]; knowledgeLookup?: (gap: Parameters<NonNullable<Parameters<typeof resolveKnowledgeGate>[0]["lookup"]>>[0]) => Promise<KnowledgePackV1 | KnowledgeLookupResultV1>; revalidate: () => Promise<ValidationReport>; onScopeEscape?: (record: CandidateScopeEscapeV1) => Promise<void> | void }): Promise<PlannerWaveResult> {
   const planning = input.config.workflow?.planning;
@@ -144,7 +259,11 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
   // participant-attempt that used its single correction turn (success or
   // terminal second-escape/timeout). run.ts consumes this against the existing
   // repair budget (attempts + corrections < maxRepairs).
-  let escapeCorrections = 0;
+  // Round-2 B1: shared synchronous reservation gate — REMAINING budget is
+  // checked BEFORE offering each correction (no remaining → original FAIL,
+  // no correction); reservations happen synchronously so parallel tasks
+  // cannot double-spend. Post-hoc summing is removed (was overspend).
+  const escapeGate = createEscapeCorrectionBudgetGateV1(escapeCorrectionBudgetV1(input.contract, input.config));
   for (let index = 0; index < schedule.waves.length; index += 1) {
     if (index > 0 && graph && operation) {
       try {
@@ -155,13 +274,13 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
       } catch (error) {
         const summary: WaveExecutionSummary = { wave: index + 1, taskIds: schedule.waves[index]!, status: "FAIL", results: [] };
         waveSummaries.push(summary);
-        return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, ...(escapeCorrections ? { escapeCorrections } : {}), aggregateSession: aggregate(sessions, 1, `Next wave execution identity could not be recompiled: ${String(error)}`) };
+        return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, ...(escapeGate.used ? { escapeCorrections: escapeGate.used } : {}), aggregateSession: aggregate(sessions, 1, `Next wave execution identity could not be recompiled: ${String(error)}`) };
       }
     }
     const ids = schedule.waves[index]; const tasks = ids.map((id) => plan.workUnits.find((task) => task.id === id)!).filter(Boolean);
     const participantByWorkUnit = new Map<string, ParticipantAssignmentV1>();
     for (const assignment of blueprint.plan.assignments as ParticipantAssignmentV1[]) for (const workUnitId of assignment.workUnitIds) participantByWorkUnit.set(workUnitId, assignment);
-    if (!currentCandidate || !operation?.id) { const summary: WaveExecutionSummary = { wave: index + 1, taskIds: ids, status: "FAIL", results: [] }; waveSummaries.push(summary); return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, ...(escapeCorrections ? { escapeCorrections } : {}), aggregateSession: aggregate(sessions, 1, "Candidate assembly requires a managed operation candidate.") }; }
+    if (!currentCandidate || !operation?.id) { const summary: WaveExecutionSummary = { wave: index + 1, taskIds: ids, status: "FAIL", results: [] }; waveSummaries.push(summary); return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, ...(escapeGate.used ? { escapeCorrections: escapeGate.used } : {}), aggregateSession: aggregate(sessions, 1, "Candidate assembly requires a managed operation candidate.") }; }
     const waveOperationId = operation.id;
     const waveBlueprint = blueprint;
     const waveBase = createWaveBase({ operationId: waveOperationId, taskId: input.contract.task.id, waveIndex: index, candidate: currentCandidate });
@@ -223,7 +342,7 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
       };
       waveSummaries.push(summary);
       await recordEvent(input.stateRoot, input.config, "harness.wave.finish", { taskId: input.contract.task.id, wave: index + 1, status: "FAIL", tasks: ids });
-      return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, ...(escapeCorrections ? { escapeCorrections } : {}), aggregateSession: aggregate(sessions, 1, `Wave ${index + 1} provider capacity QUEUE exhausted.`) };
+      return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, ...(escapeGate.used ? { escapeCorrections: escapeGate.used } : {}), aggregateSession: aggregate(sessions, 1, `Wave ${index + 1} provider capacity QUEUE exhausted.`) };
     }
     // Per-workspace write-lease admission (Luna F2+F3: SHARED durable atomic
     // acquire, not wave-local check-then-proceed; non-throwing QUEUE, never
@@ -266,7 +385,7 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
             };
           }
           try {
-            const result = await executeDelegation({ ...input, operationId: waveOperationId, task, participantAssignment: participantByWorkUnit.get(task.id), executionBlueprint: waveBlueprint, waveBase: waveBase.candidate });
+            const result = await executeDelegation({ ...input, operationId: waveOperationId, task, participantAssignment: participantByWorkUnit.get(task.id), executionBlueprint: waveBlueprint, waveBase: waveBase.candidate, escapeCorrectionGate: escapeGate });
             // Residual backpressure surfaced as FAIL message QUEUES (not terminal FAIL):
             // throw to trigger WAIT+RETRY within budget; exhaustion rethrows as FAIL below.
             // shouldQueueWaveWork is the wave QUEUE gate (alias of isWaveBackpressureError).
@@ -300,11 +419,13 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
         throw error;
       });
     const results = await mapLimit(tasks, concurrency, executeWithQueue); sessions.push(...results.map((result) => result.session));
+    // Round-2 B1: reservations already counted synchronously in the gate;
+    // post-hoc summing removed (was parallel overspend). Still surface
+    // correction sessions for forensics.
     for (const result of results) {
-      if (result.escapeCorrectionUsed) escapeCorrections += 1;
       if (result.escapeCorrectionSessions?.length) sessions.push(...result.escapeCorrectionSessions);
     }
-    if (results.some((result) => result.status === "FAIL")) { const summary: WaveExecutionSummary = { wave: index + 1, taskIds: ids, status: "FAIL", results }; waveSummaries.push(summary); await recordEvent(input.stateRoot, input.config, "harness.wave.finish", { taskId: input.contract.task.id, wave: index + 1, status: "FAIL", tasks: ids }); return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, ...(escapeCorrections ? { escapeCorrections } : {}), aggregateSession: aggregate(sessions, 1, `Wave ${index + 1} failed.`) }; }
+    if (results.some((result) => result.status === "FAIL")) { const summary: WaveExecutionSummary = { wave: index + 1, taskIds: ids, status: "FAIL", results }; waveSummaries.push(summary); await recordEvent(input.stateRoot, input.config, "harness.wave.finish", { taskId: input.contract.task.id, wave: index + 1, status: "FAIL", tasks: ids }); return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, ...(escapeGate.used ? { escapeCorrections: escapeGate.used } : {}), aggregateSession: aggregate(sessions, 1, `Wave ${index + 1} failed.`) }; }
     const resultByWorkUnit = new Map(results.map((result) => [result.task.id, result] as const));
     const submissions: WaveChangeSetSubmissionV1[] = [];
     for (const result of results) {
@@ -344,10 +465,10 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
         }
       }
     }
-    if (results.some((result) => result.status === "FAIL")) { const summary: WaveExecutionSummary = { wave: index + 1, taskIds: ids, status: "FAIL", results }; waveSummaries.push(summary); await recordEvent(input.stateRoot, input.config, "harness.wave.finish", { taskId: input.contract.task.id, wave: index + 1, status: "FAIL", tasks: ids, reconciliationRequired: results.filter((result) => result.message?.startsWith("WAVE_RECONCILIATION_REQUIRED")).map((result) => result.task.id) }); return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, ...(escapeCorrections ? { escapeCorrections } : {}), aggregateSession: aggregate(sessions, 1, `Wave ${index + 1} candidate assembly failed.`) }; }
-    finalReport = planning?.barrierValidation === false ? undefined : await input.revalidate(); const status = finalReport?.status === "FAIL" ? "FAIL" : "PASS"; const summary: WaveExecutionSummary = { wave: index + 1, taskIds: ids, status, results, barrier: finalReport }; waveSummaries.push(summary); await recordEvent(input.stateRoot, input.config, "harness.wave.finish", { taskId: input.contract.task.id, wave: index + 1, status, tasks: ids, checks: finalReport?.checks.length }); if (status === "FAIL") return { used: true, plan, schedule, waves: waveSummaries, sessions, ...(escapeCorrections ? { escapeCorrections } : {}), aggregateSession: aggregate(sessions, 1, `Wave ${index + 1} deterministic barrier failed.`), report: finalReport };
+    if (results.some((result) => result.status === "FAIL")) { const summary: WaveExecutionSummary = { wave: index + 1, taskIds: ids, status: "FAIL", results }; waveSummaries.push(summary); await recordEvent(input.stateRoot, input.config, "harness.wave.finish", { taskId: input.contract.task.id, wave: index + 1, status: "FAIL", tasks: ids, reconciliationRequired: results.filter((result) => result.message?.startsWith("WAVE_RECONCILIATION_REQUIRED")).map((result) => result.task.id) }); return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, ...(escapeGate.used ? { escapeCorrections: escapeGate.used } : {}), aggregateSession: aggregate(sessions, 1, `Wave ${index + 1} candidate assembly failed.`) }; }
+    finalReport = planning?.barrierValidation === false ? undefined : await input.revalidate(); const status = finalReport?.status === "FAIL" ? "FAIL" : "PASS"; const summary: WaveExecutionSummary = { wave: index + 1, taskIds: ids, status, results, barrier: finalReport }; waveSummaries.push(summary); await recordEvent(input.stateRoot, input.config, "harness.wave.finish", { taskId: input.contract.task.id, wave: index + 1, status, tasks: ids, checks: finalReport?.checks.length }); if (status === "FAIL") return { used: true, plan, schedule, waves: waveSummaries, sessions, ...(escapeGate.used ? { escapeCorrections: escapeGate.used } : {}), aggregateSession: aggregate(sessions, 1, `Wave ${index + 1} deterministic barrier failed.`), report: finalReport };
   }
-  finalReport ??= await input.revalidate(); return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, ...(escapeCorrections ? { escapeCorrections } : {}), aggregateSession: aggregate(sessions, finalReport.status === "PASS" ? 0 : 1, `Executed ${plan.workUnits.length} work unit(s) across ${schedule.waves.length} wave(s).`), report: finalReport, correctionAttempts };
+  finalReport ??= await input.revalidate(); return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, ...(escapeGate.used ? { escapeCorrections: escapeGate.used } : {}), aggregateSession: aggregate(sessions, finalReport.status === "PASS" ? 0 : 1, `Executed ${plan.workUnits.length} work unit(s) across ${schedule.waves.length} wave(s).`), report: finalReport, correctionAttempts };
 }
 
 export async function resolvePlannerKnowledge(plan: PlannerOutput, input: Pick<Parameters<typeof executePlannerWaves>[0], "contract" | "root" | "config" | "librarianSelection" | "knowledgeMode" | "knowledgeCache" | "knowledgeResolutions" | "knowledgeLookup"> & Partial<Pick<Parameters<typeof executePlannerWaves>[0], "stateRoot">>): Promise<KnowledgeResolutionV1[]> {
@@ -451,7 +572,7 @@ function buildLibrarianPrompt(gap: { cacheKey: string; missingCompetencies: stri
   return `Resolve this deterministic knowledge gap as a read-only Librarian. Do not edit source, install anything, grant tools or change policy. ${gap.mode === "DOCS_ONLY" ? "Use official, version-matched documentation only; repository examples, public code, community pages and unknown sources are not acceptable." : gap.mode === "OFFLINE" ? "Do not perform external lookup; report the gap as unresolved." : "Use approved version-matched documentation or clearly identified repository/public-code evidence."} Preserve source provenance. Return exactly one AEH_RESULT_JSON object with {"pack":{"version":1,"cacheKey":${JSON.stringify(gap.cacheKey)},"topic":...,"claims":[{"id":...,"statement":...,"competency":...,"confidence":"high|medium|low"}],"sources":[{"uri":...,"kind":"official|repository|public-code|unknown","version":...}],"retrievedAt":"ISO-8601","packDigest":"sha256"},"skillCandidate":{"version":1,"id":"ephemeral:<competency>","competency":"<competency>","procedure":["<exact step text>"],"sourcePackDigest":"<pack digest>","procedureEvidence":[{"stepIndex":0,"claimIds":["<claim id supporting this exact step>"],"sourceUris":["<supporting source URI from pack.sources>"]}]}}. If returning a procedure, provide one procedureEvidence entry for every step, with at least one pack claim ID and allowed source URI that support that exact step; do not add trust or acceptance fields because SkillTrustGate makes that decision. The pack and any candidate must address only: ${gap.missingCompetencies.join(", ")}. Gap reason: ${gap.reason}.`;
 }
 
-async function executeDelegation(input: { root: string; stateRoot: string; config: HarnessProjectConfig; contract: TaskContract; implementationSelection: AgentExecutionSelection; executionCatalog: ExecutionCatalogV1; controller?: ControlPlaneSnapshot; operationId: string; task: WorkUnitOutput; participantAssignment?: ParticipantAssignmentV1; executionBlueprint: ExecutionBlueprint; waveBase: CandidateRevisionV1; }): Promise<DelegationExecutionResult> {
+async function executeDelegation(input: { root: string; stateRoot: string; config: HarnessProjectConfig; contract: TaskContract; implementationSelection: AgentExecutionSelection; executionCatalog: ExecutionCatalogV1; controller?: ControlPlaneSnapshot; operationId: string; task: WorkUnitOutput; participantAssignment?: ParticipantAssignmentV1; executionBlueprint: ExecutionBlueprint; waveBase: CandidateRevisionV1; escapeCorrectionGate?: EscapeCorrectionBudgetGateV1; }): Promise<DelegationExecutionResult> {
   if (!input.participantAssignment) return failed(input.task, input.implementationSelection, "EXECUTION_BLUEPRINT_INVALID: work unit has no frozen participant assignment.");
   const participantId = input.participantAssignment.participantId;
   let selection: AgentExecutionSelection;
@@ -474,6 +595,9 @@ async function executeDelegation(input: { root: string; stateRoot: string; confi
         // Distributed scope-escape ONE-correction turn (same bound/guard as
         // the local path above; re-dispatch once with the diagnostic prompt,
         // same waveBase/slot/timeout — no new budget knob).
+        // Round-2 B1: REMAINING budget checked BEFORE offering; exhausted →
+        // ORIGINAL FAIL immediately with no correction turn (no double-spend).
+        // Round-2 B2: declaration routing below (never PASS-with-declaration).
         const escapeDiff = assemblerScopeEscapeDiffV1(violations);
         const diagnostic = buildScopeEscapeCorrectionPrompt({
           escapedFiles: escapeDiff.escapedFiles,
@@ -486,6 +610,17 @@ async function executeDelegation(input: { root: string; stateRoot: string; confi
           taskId: input.contract.task.id,
         });
         const originalMessage = `Remote delegation escaped scope: ${violations.join(", ")}`;
+        if (input.escapeCorrectionGate && !input.escapeCorrectionGate.tryReserve()) {
+          return {
+            task: input.task,
+            session: remote.session,
+            changedFiles: remote.changedFiles,
+            patch: "",
+            status: "FAIL",
+            distributed: true,
+            message: `${originalMessage} (escape-correction budget exhausted; no correction turn offered)`,
+          };
+        }
         const correctionPrompt = `${prompt}\n\n${diagnostic}`;
         try {
           const correctionIdentity = await prepareAgentExecutionIdentity(input.root, input.config, input.contract, selection, correctionPrompt, { participantId, phase: "distributed", operationKind: currentOperationContext().kind, executionBlueprint: input.executionBlueprint, executionBlueprintDigest: input.executionBlueprint.digest, roleInvocationPolicy, skillManifest: input.participantAssignment.skillManifest });
@@ -509,6 +644,34 @@ async function executeDelegation(input: { root: string; stateRoot: string; confi
               message: originalMessage,
               escapeCorrectionUsed: true,
               escapeCorrectionSessions: [correctionRemote.session],
+            };
+          }
+          // Round-2 B2: correction carries filesNeededOutsideScope → BLOCKED
+          // (same semantics as DIRECT/repair — FAIL with blocker, never PASS).
+          const declaration = classifyWaveCorrectionDeclarationV1({
+            session: correctionRemote.session,
+            changedFiles: correctionRemote.changedFiles,
+            operationId: input.operationId,
+            taskId: input.contract.task.id,
+            workUnitId: input.task.id,
+            participantId,
+            taskScope: input.task.scope,
+            contract: input.contract,
+            config: input.config,
+          });
+          if (declaration.blocked) {
+            const files = declaration.blocker?.filesNeededOutsideScope.map((entry) => entry.path).join(", ") ?? "filesNeededOutsideScope";
+            return {
+              task: input.task,
+              session: correctionRemote.session,
+              changedFiles: correctionRemote.changedFiles,
+              patch: "",
+              status: "FAIL",
+              distributed: true,
+              message: `WAVE_SCOPE_BLOCKER: correction declared out-of-scope file(s): ${files}. Declare via filesNeededOutsideScope; do not expand scope without a lead-approved amendment.`,
+              escapeCorrectionUsed: true,
+              escapeCorrectionSessions: [remote.session],
+              ...(declaration.blocker ? { scopeBlocker: declaration.blocker } : {}),
             };
           }
           if (correctionRemote.status === "PASS" && correctionRemote.patch.trim()) {
@@ -598,6 +761,9 @@ async function executeDelegation(input: { root: string; stateRoot: string; confi
       // timeout → ORIGINAL FAIL (preserving original message/session). Reuses
       // the same wave slot/timeout (no new budget knob); both sessions are
       // counted and the flag consumes one repair slot in run.ts.
+      // Round-2 B1: REMAINING budget checked BEFORE offering (exhausted →
+      // ORIGINAL FAIL, no correction; synchronous reserve prevents parallel
+      // double-spend). Round-2 B2: declaration routing below.
       const escapeDiff = assemblerScopeEscapeDiffV1(violations);
       const diagnostic = buildScopeEscapeCorrectionPrompt({
         escapedFiles: escapeDiff.escapedFiles,
@@ -611,6 +777,16 @@ async function executeDelegation(input: { root: string; stateRoot: string; confi
       });
       const correctionPrompt = `${prompt}\n\n${diagnostic}`;
       const originalMessage = `Delegation escaped scope: ${violations.join(", ")}`;
+      if (input.escapeCorrectionGate && !input.escapeCorrectionGate.tryReserve()) {
+        return {
+          task: input.task,
+          session,
+          changedFiles,
+          patch: "",
+          status: "FAIL",
+          message: `${originalMessage} (escape-correction budget exhausted; no correction turn offered)`,
+        };
+      }
       const correctionOptions = {
         outputContract: input.participantAssignment.roleInvocationPolicy?.outputContract ?? selection.outputContract ?? "implementer",
         participantId,
@@ -702,6 +878,33 @@ async function executeDelegation(input: { root: string; stateRoot: string; confi
           message: originalMessage,
           escapeCorrectionUsed: true,
           escapeCorrectionSessions: [correctionSession],
+        };
+      }
+      // Round-2 B2: no-change correction + outside-scope declaration → BLOCKED
+      // (same semantics as DIRECT/repair — FAIL with blocker, never PASS).
+      const declaration = classifyWaveCorrectionDeclarationV1({
+        session: correctionSession,
+        changedFiles: rechangedFiles,
+        operationId: input.operationId,
+        taskId: input.contract.task.id,
+        workUnitId: input.task.id,
+        participantId,
+        taskScope: input.task.scope,
+        contract: input.contract,
+        config: input.config,
+      });
+      if (declaration.blocked) {
+        const files = declaration.blocker?.filesNeededOutsideScope.map((entry) => entry.path).join(", ") ?? "filesNeededOutsideScope";
+        return {
+          task: input.task,
+          session: correctionSession,
+          changedFiles: rechangedFiles,
+          patch: "",
+          status: "FAIL",
+          message: `WAVE_SCOPE_BLOCKER: correction declared out-of-scope file(s): ${files}. Declare via filesNeededOutsideScope; do not expand scope without a lead-approved amendment.`,
+          escapeCorrectionUsed: true,
+          escapeCorrectionSessions: [session],
+          ...(declaration.blocker ? { scopeBlocker: declaration.blocker } : {}),
         };
       }
       return {
