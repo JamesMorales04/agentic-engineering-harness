@@ -219,7 +219,7 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
       prompt: repairPrompt,
       prepareWorkspace: prepareRepairWorkspace,
       semanticAssessment: input.candidateImpactAssessment,
-      execute: (isolatedRoot, participantId) => executeAgentPrompt(isolatedRoot, config, contract, remediationSelection, repairPrompt, { outputContract: remediationSelection.outputContract ?? "implementer", phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true })
+      execute: (isolatedRoot, participantId, prompt) => executeAgentPrompt(isolatedRoot, config, contract, remediationSelection, prompt, { outputContract: remediationSelection.outputContract ?? "implementer", phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true })
     });
     const remediation = mutation.session;
     sessions.push(remediation);
