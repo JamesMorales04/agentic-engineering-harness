@@ -17,6 +17,7 @@ import { validateSddChange } from "./sdd.js";
 import { sealTask, verifyTaskSeal } from "./seal.js";
 import { verifyTask } from "./verify.js";
 import { createRepairPacket, writeRepairPacket } from "./repair.js";
+import { AehError } from "./errors.js";
 import { createWorkerExecutor } from "../workers/factory.js";
 import { executeAgentPrompt } from "../workers/agentPrompt.js";
 import { buildRepairPrompt } from "../workers/prompt.js";
@@ -518,7 +519,14 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
             const receiptFile = await writeRepairScopeBlockerReceipt(controlRoot, effectiveConfig, blocker);
             // Write-then-verify: the BLOCKED/AMENDED outcome is only valid with a
             // durable, digest-matching receipt (mirrors repair write-then-verify).
-            assertRepairScopeBlockerReceipt(JSON.parse(await fs.readFile(receiptFile, "utf8")));
+            const persistedBlocker: unknown = JSON.parse(await fs.readFile(receiptFile, "utf8"));
+            assertRepairScopeBlockerReceipt(persistedBlocker);
+            if (persistedBlocker.digest !== blocker.digest) {
+              throw new AehError(
+                "PARTICIPANT_PLAN_INVALID",
+                `REPAIR_SCOPE_RECEIPT_NOT_DURABLE: persisted blocker receipt digest does not match the declared blocker (${receiptFile}).`,
+              );
+            }
             await recordEvent(controlRoot, effectiveConfig, "harness.candidate.repair-scope-blocked", {
               taskId: effectiveContract.task.id,
               workUnitId: `direct:${effectiveContract.task.id}`,
