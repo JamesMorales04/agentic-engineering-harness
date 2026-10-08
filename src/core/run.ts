@@ -20,7 +20,14 @@ import { createRepairPacket, writeRepairPacket } from "./repair.js";
 import { AehError } from "./errors.js";
 import { createWorkerExecutor } from "../workers/factory.js";
 import { executeAgentPrompt } from "../workers/agentPrompt.js";
-import { buildRepairPrompt } from "../workers/prompt.js";
+import { buildRepairPrompt, buildWorkerPrompt } from "../workers/prompt.js";
+import { prepareExecutionAuthority } from "../security/executionLease.js";
+import {
+  buildScopeEscapeCorrectionPrompt,
+  getScopeEscapeDetails,
+  isScopeEscapeError,
+  withOneScopeEscapeCorrectionTurnV1,
+} from "../candidates/scopeEscapeCorrection.js";
 import { snapshotGraph } from "../validators/graphify.js";
 import { recordEvent } from "../telemetry/events.js";
 import { recordOperationTelemetry } from "../telemetry/metrics.js";
@@ -41,7 +48,7 @@ import { createMemoryProvider } from "../providers/memory.js";
 import { buildAcceptedOperationCandidates } from "../memory/candidates.js";
 import { compileExecutionCatalog, type ExecutionCatalogV1 } from "../architecture/executionCatalog.js";
 import { assertCapabilityRegistryV1, discoverCapabilityRegistryV1, loadOperationCapabilityRegistryV1, persistOperationCapabilityRegistryV1, type CapabilityRegistryV1 } from "../capabilities/registry.js";
-import type { CandidateImpactAssessmentRuntimeV1, CandidateScopeEscapeV1 } from "../candidates/assembler.js";
+import type { CandidateImpactAssessmentRuntimeV1, CandidateScopeEscapeV1, ChangeSetV1 } from "../candidates/assembler.js";
 import { executeIsolatedCandidateMutation } from "../candidates/direct.js";
 import { executeRepairerCandidateMutation, partitionRepairScopeBlockerFiles, repairProtectedPaths } from "../candidates/repair.js";
 import {
@@ -396,6 +403,13 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
   // declined / expired. Set when the DIRECT implementer blocker resolves to
   // BLOCKED; the run builds a blocked report below and skips the repair loop.
   let implementerScopeBlockedCheck: ValidationCheck | undefined;
+  // Scope-escape one-correction accounting (SECURITY-SENSITIVE repair):
+  // exactly ONE correction turn per participant-attempt, counted against the
+  // existing repair budget (no new budget knob). Set when the DIRECT assembly
+  // escape offers its single correction; wave corrections arrive via
+  // waveResult.escapeCorrections and are summed in the repair-loop bound
+  // below. See scopeEscapeCorrection.ts for (a)=FALSE guard.
+  let directEscapeCorrectionUsed = false;
   const executionCatalog = executionBoundary.executionCatalog;
   const capabilityRegistry = executionBoundary.capabilityRegistry;
   const planningEnabled = (implementationRoute === "DELEGATED" || implementationRoute === "FORMAL_SDD") && route && selection && executionCatalog && capabilityRegistry && effectiveConfig.workflow?.planning?.enabled !== false;
@@ -462,7 +476,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
       const operation = await loadOperation(operationStateRoot, operationId);
       const currentCandidate = operation.candidateRevision;
       if (!currentCandidate) throw new Error(`CANDIDATE_BINDING_REQUIRED: operation ${operationId} has no current candidate revision.`);
-      const isolated = await executeIsolatedCandidateMutation({
+      let isolated = await executeIsolatedCandidateMutation({
         root: workspaceRoot,
         operationId,
         taskId: effectiveContract.task.id,
@@ -637,33 +651,143 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
         // inside): a concurrent assembly that advanced the candidate first
         // turns this into a clean CANDIDATE_STALE instead of tearing the
         // shared workspace.
-        const assembled = await assembleAndBindCandidateChangeSet({
-          root: workspaceRoot,
-          stateRoot: controlRoot,
-          operationId,
-          projectId: currentCandidate.projectId,
-          taskId: effectiveContract.task.id,
-          baseCandidate: currentCandidate,
-          changeSet: isolated.changeSet,
-          allowedScope: directAllowedScope,
-          forbiddenScope: [...new Set(directForbiddenScope)].sort(),
-          candidateId: `candidate:${operationId}:r${currentCandidate.revision + 1}`,
-          workspace: currentCandidate.workspace,
-          worktree: workspaceRoot,
-          semanticAssessment: impactAssessmentRuntime,
-          onScopeEscape
-        });
-        const boundCandidate = assembled.candidate;
-        candidateImpact = assembled.impact;
-        await recordEvent(controlRoot, effectiveConfig, "harness.candidate.assembled", {
-          taskId: effectiveContract.task.id,
-          workUnitId: isolated.changeSet.workUnitId,
-          participantId: isolated.changeSet.participantId,
-          candidateRevision: boundCandidate.revision,
-          candidateDigest: boundCandidate.sourceDigest,
-          impactDigest: assembled.impact.digest,
-          requiresIndependentReview: assembled.impact.requiresIndependentReview
-        });
+        //
+        // Scope-escape ONE-correction turn (SECURITY-SENSITIVE, RED-first):
+        // assembler keeps throwing unchanged (fail-closed, nothing applied).
+        // FIRST scope escape per participant-attempt gets exactly ONE
+        // correction turn with a precise diagnostic (escaped + hard/amendable
+        // + declare-via-filesNeededOutsideScope + second-escape-terminal).
+        // NEVER echoes full allowed/forbidden patterns ((a)=FALSE guard in
+        // scopeEscapeCorrection.ts). Second escape or correction timeout →
+        // ORIGINAL terminal kill. Correction counts against the existing
+        // repair budget (no new budget knob): allowed only when budget
+        // remains; when used, the repair loop below allows one fewer repair.
+        // Assembly re-validates fully on re-attempt (never apply unapproved).
+        const directForbiddenSorted = [...new Set(directForbiddenScope)].sort();
+        const directMaxRepairsForCorrection =
+          effectiveContract.repair?.maxAttempts ??
+          effectiveConfig.orchestration?.worker?.maxRepairAttempts ??
+          2;
+        const allowDirectCorrection =
+          Boolean(selection) && directMaxRepairsForCorrection >= 1 && !directEscapeCorrectionUsed;
+        const assembleDirectChangeSet = (changeSet: ChangeSetV1) =>
+          assembleAndBindCandidateChangeSet({
+            root: workspaceRoot,
+            stateRoot: controlRoot,
+            operationId,
+            projectId: currentCandidate.projectId,
+            taskId: effectiveContract.task.id,
+            baseCandidate: currentCandidate,
+            changeSet,
+            allowedScope: directAllowedScope,
+            forbiddenScope: directForbiddenSorted,
+            candidateId: `candidate:${operationId}:r${currentCandidate.revision + 1}`,
+            workspace: currentCandidate.workspace,
+            worktree: workspaceRoot,
+            semanticAssessment: impactAssessmentRuntime,
+            onScopeEscape,
+          });
+        const initialChangeSet = isolated.changeSet;
+        if (!allowDirectCorrection) {
+          const assembled = await assembleDirectChangeSet(initialChangeSet);
+          const boundCandidate = assembled.candidate;
+          candidateImpact = assembled.impact;
+          await recordEvent(controlRoot, effectiveConfig, "harness.candidate.assembled", {
+            taskId: effectiveContract.task.id,
+            workUnitId: initialChangeSet.workUnitId,
+            participantId: initialChangeSet.participantId,
+            candidateRevision: boundCandidate.revision,
+            candidateDigest: boundCandidate.sourceDigest,
+            impactDigest: assembled.impact.digest,
+            requiresIndependentReview: assembled.impact.requiresIndependentReview,
+          });
+        } else {
+          type DirectCorrectionOutcome = {
+            session: WorkerSession;
+            changeSet?: ChangeSetV1;
+            assembled?: { candidate: CandidateRevisionV1; impact: CandidateImpactV1 };
+          };
+          const outcome = await withOneScopeEscapeCorrectionTurnV1<DirectCorrectionOutcome>({
+            attempt: async () => {
+              const assembled = await assembleDirectChangeSet(initialChangeSet);
+              return { session: worker, changeSet: initialChangeSet, assembled };
+            },
+            buildCorrectionPrompt: (details) => buildScopeEscapeCorrectionPrompt(details),
+            executeCorrection: async (diagnostic) => {
+              const correctionSelection = selection;
+              if (!correctionSelection) {
+                throw new Error("REPAIR_AUTHORITY_REQUIRED: direct escape-correction requires a frozen Implementer selection.");
+              }
+              const fullCorrectionPrompt = `${buildWorkerPrompt(effectiveContract, correctionSelection)}\n\n${diagnostic}`;
+              const correctionIsolated = await executeIsolatedCandidateMutation({
+                root: workspaceRoot,
+                operationId,
+                taskId: effectiveContract.task.id,
+                workUnitId: `direct:${effectiveContract.task.id}:escape-correction`,
+                candidate: currentCandidate,
+                config: effectiveConfig,
+                contract: effectiveContract,
+                execute: async (correctionRoot) => {
+                  const authority = await prepareExecutionAuthority(correctionRoot, correctionSelection, {
+                    phase: "implementation",
+                    required: true,
+                  });
+                  if (!authority) {
+                    throw new Error("V2_AUTHORITY_REQUIRED: direct escape-correction authority could not be prepared.");
+                  }
+                  return executeAgentPrompt(correctionRoot, effectiveConfig, effectiveContract, correctionSelection, fullCorrectionPrompt, {
+                    outputContract: correctionSelection.outputContract,
+                    phase: "implementation",
+                    participantId: authority.participantId,
+                    capabilityAuthority: authority,
+                    requireExecutionAuthority: true,
+                  });
+                },
+                prepareWorkspace: controller
+                  ? async (correctionRoot) => {
+                      await materializeControlPlaneSnapshot(controller!, correctionRoot, effectiveConfig);
+                    }
+                  : undefined,
+              });
+              if (isRepairStallKill(undefined, correctionIsolated.session)) {
+                throw new Error(
+                  `DIRECT_ESCAPE_CORRECTION_TIMEOUT: correction turn timed out after the single bounded attempt; ${correctionIsolated.session.exitCode}`,
+                );
+              }
+              if (!correctionIsolated.changeSet) {
+                return { session: correctionIsolated.session };
+              }
+              const assembled = await assembleDirectChangeSet(correctionIsolated.changeSet);
+              return { session: correctionIsolated.session, changeSet: correctionIsolated.changeSet, assembled };
+            },
+            isTimeoutResult: (result) => isRepairStallKill(undefined, result.session),
+          });
+          if (outcome.correctionUsed) {
+            directEscapeCorrectionUsed = true;
+            worker = outcome.result.session;
+            executionSessions.push(worker);
+            if (outcome.result.changeSet) {
+              isolated = { session: worker, changeSet: outcome.result.changeSet };
+            } else {
+              isolated = { session: worker };
+            }
+          }
+          const finalChangeSet = outcome.result.changeSet;
+          const finalAssembled = outcome.result.assembled;
+          if (finalChangeSet && finalAssembled) {
+            const boundCandidate = finalAssembled.candidate;
+            candidateImpact = finalAssembled.impact;
+            await recordEvent(controlRoot, effectiveConfig, "harness.candidate.assembled", {
+              taskId: effectiveContract.task.id,
+              workUnitId: finalChangeSet.workUnitId,
+              participantId: finalChangeSet.participantId,
+              candidateRevision: boundCandidate.revision,
+              candidateDigest: boundCandidate.sourceDigest,
+              impactDigest: finalAssembled.impact.digest,
+              requiresIndependentReview: finalAssembled.impact.requiresIndependentReview,
+            });
+          }
+        }
         }
         await prepareValidationWorkspace();
         report = withWorkerExecutionCheck(await verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, selection), worker);
@@ -709,7 +833,13 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
   // Suspend boundary: BLOCKED implementer resolution never enters the repair
   // loop (no repair turns while suspended/waiting/declined/expired). The
   // blocked report above is terminal with attempts=0.
-  while (!planningFailure && !implementerScopeBlockedCheck && report.status === "FAIL" && attempts < maxRepairs) {
+  // Scope-escape correction budget (no new budget): the single DIRECT
+  // correction above plus any wave escape corrections (waveResult) each
+  // consume one repair slot. The loop below therefore allows fewer repairs
+  // when corrections were used (fail-closed rate-limit for probing).
+  const waveEscapeCorrections = waveResult?.escapeCorrections ?? 0;
+  const escapeCorrectionsUsed = (directEscapeCorrectionUsed ? 1 : 0) + waveEscapeCorrections;
+  while (!planningFailure && !implementerScopeBlockedCheck && report.status === "FAIL" && attempts + escapeCorrectionsUsed < maxRepairs) {
     if (operationId && supervisorSelection) {
       await ensureOperationSupervisor(workspaceRoot, effectiveConfig, effectiveContract, supervisorSelection, { required: true, forceMaterialize: true });
       await runStage(operationStateRoot, operationId, "remediation", "RUNNING");
