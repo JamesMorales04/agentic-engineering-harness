@@ -49,6 +49,22 @@ import path from "node:path";
  * (`attempts`, `daemonStopped`, `homeRemoved`, `verified`). Unknown/missing
  * stopped vocabulary → UNVERIFIED → retry then fail, never verified.
  *
+ * Fatal verify-and-retry (P-NEW-4 round-7 F1): handleIsolationFatal runs a
+ * bounded sync sweep (up to ISOLATION_FATAL_MAX_ATTEMPTS rounds) of syncTeardown
+ * + positive verification (isDaemonStoppedSync + isHomeRemovedSync) per handle,
+ * retrying unverified handles without hanging. exit(1) happens ONLY after
+ * verified OR retries exhausted, and the outcome is LOUDLY recorded per handle
+ * (stderr PASEO_ISOLATION_ABORT_TEARDOWN with VERIFIED vs UNVERIFIED plus the
+ * handle home identity) plus a final summary. Never exits silently-unverified.
+ *
+ * Pre-flight reconciliation (P-NEW-4 round-7 F2): each new setupIsolatedPaseoHome
+ * FIRST attempts verified teardown (bounded, best-effort, traced via
+ * PASEO_ISOLATION_RECONCILE) of leftover registered handles from prior failed
+ * setups (any handle not owned by the current setup), unregistering on verified
+ * success. Ownership chain: failed setup -> next setup reconciles (every leaked
+ * registration thus gains an owner); last-suite-leak with no later setup is
+ * covered by the abort path. Reconcile never fails setup and never hangs.
+ *
  * Port race (B2 fix): `findFreePort()` is availability-only (TOCTOU): the OS
  * frees the port on close and another process may bind it before
  * `paseo daemon start` runs. Setup therefore spawns with bounded retry on
@@ -75,6 +91,12 @@ export const LIVE_PASEO_LISTEN_PORT = 6767;
 export const LIVE_PASEO_WS_URL = `ws://127.0.0.1:${LIVE_PASEO_LISTEN_PORT}/ws`;
 export const ISOLATION_SETUP_MAX_PORT_ATTEMPTS = 5;
 export const ISOLATION_TEARDOWN_MAX_ATTEMPTS = 3;
+// Fatal-path verify-and-retry bound (P-NEW-4 round-7 F1): handleIsolationFatal
+// runs sync teardown + positive verification (isDaemonStoppedSync +
+// isHomeRemovedSync) for every registered handle, retrying the sweep up to
+// this many rounds before giving up. Bounded sync only — never hangs — and
+// exit(1) happens ONLY after verified OR retries exhausted, loudly recorded.
+export const ISOLATION_FATAL_MAX_ATTEMPTS = 3;
 
 // Positive stopped-proof vocabulary for `paseo daemon status --json`
 // `.localDaemon`. Source: @getpaseo/cli
@@ -304,17 +326,114 @@ function handleIsolationSignal(sig) {
   } catch { /* best-effort: re-raise must never throw past the handler */ }
 }
 
-function handleIsolationFatal(error) {
-  // Fatal path: the process is fatally compromised. Tear down ALL registered
-  // (no sibling skipped — every handle already cleaned), then process.exit(1).
-  let attempts = 0;
+function verifyIsolationHandleSync(handle) {
+  // Positive verification only (P-NEW-4 round-7 F1): BOTH stopped-proof
+  // (isDaemonStoppedSync accepts exactly "stopped") AND home-removed. Never
+  // assumes from stop exit codes; unknown/missing is UNVERIFIED.
   try {
-    const before = registeredIsolationHandles.size;
-    teardownAllRegisteredIsolationHandlesSync();
-    attempts = before;
+    if (!handle || !handle.home) return { daemonStopped: false, homeRemoved: false, verified: false };
+    const daemonStopped = isDaemonStoppedSync(handle.home);
+    const homeRemoved = isHomeRemovedSync(handle.home);
+    return { daemonStopped, homeRemoved, verified: daemonStopped === true && homeRemoved === true };
+  } catch {
+    return { daemonStopped: false, homeRemoved: false, verified: false };
+  }
+}
+
+function reconcileLeftoverIsolationHandlesSync(ownerHandle) {
+  // Pre-flight reconciliation (P-NEW-4 round-7 F2): the next setup owns every
+  // leftover registration from prior failed setups. Bounded sync, best-effort,
+  // traced; unregistering on verified success. Never throws, never hangs.
+  const leftovers = [...registeredIsolationHandles].filter((h) => h !== ownerHandle);
+  if (leftovers.length === 0) return { reconciled: 0, remaining: 0 };
+  let reconciled = 0;
+  for (const handle of leftovers.reverse()) {
+    const id = handle?.home ?? "<no-home>";
+    try {
+      syncTeardown(handle);
+    } catch { /* best-effort: reconcile must never fail setup */ }
+    let proof;
+    try {
+      proof = verifyIsolationHandleSync(handle);
+    } catch {
+      proof = { daemonStopped: false, homeRemoved: false, verified: false };
+    }
+    if (proof.verified === true) {
+      try {
+        handle.cleaned = true;
+      } catch { /* best-effort */ }
+      try {
+        unregisterIsolationHandle(handle);
+      } catch {
+        try { registeredIsolationHandles.delete(handle); } catch { /* best-effort */ }
+      }
+      try {
+        console.error(`PASEO_ISOLATION_RECONCILE: pre-flight VERIFIED for leftover ${id} (daemonStopped=${proof.daemonStopped} homeRemoved=${proof.homeRemoved}); claimed by next setup.`);
+      } catch { /* best-effort */ }
+      reconciled += 1;
+    } else {
+      try {
+        console.error(`PASEO_ISOLATION_RECONCILE: pre-flight UNVERIFIED for leftover ${id} (daemonStopped=${proof.daemonStopped} homeRemoved=${proof.homeRemoved}); stays registered for abort-path retry.`);
+      } catch { /* best-effort */ }
+    }
+  }
+  return { reconciled, remaining: leftovers.length - reconciled };
+}
+
+function handleIsolationFatal(error) {
+  // Fatal path (P-NEW-4 round-7 F1): the process is fatally compromised. Tear
+  // down ALL registered (no sibling skipped) with bounded sync verify-and-retry:
+  // each round runs syncTeardown + positive verification (isDaemonStoppedSync +
+  // isHomeRemovedSync via verifyIsolationHandleSync), retrying unverified
+  // handles up to ISOLATION_FATAL_MAX_ATTEMPTS rounds. Sync only, bounded —
+  // never hangs. exit(1) happens ONLY after verified OR retries exhausted, with
+  // the outcome LOUDLY recorded per handle (VERIFIED vs UNVERIFIED + home
+  // identity) plus a final summary. Never exits silently-unverified.
+  let verifiedCount = 0;
+  try {
+    for (let round = 1; round <= ISOLATION_FATAL_MAX_ATTEMPTS; round += 1) {
+      const pending = [...registeredIsolationHandles].reverse();
+      if (pending.length === 0) break;
+      for (const handle of pending) {
+        const id = handle?.home ?? "<no-home>";
+        try {
+          syncTeardown(handle);
+        } catch { /* best-effort: fatal cleanup must never throw past the manager */ }
+        let proof;
+        try {
+          proof = verifyIsolationHandleSync(handle);
+        } catch {
+          proof = { daemonStopped: false, homeRemoved: false, verified: false };
+        }
+        // Positive verification only: isDaemonStoppedSync stopped-proof AND
+        // isHomeRemovedSync home-removed. handle.cleaned alone never verifies.
+        if (proof.verified === true) {
+          try {
+            handle.cleaned = true;
+          } catch { /* best-effort */ }
+          try {
+            registeredIsolationHandles.delete(handle);
+          } catch { /* best-effort */ }
+          verifiedCount += 1;
+          try {
+            console.error(`PASEO_ISOLATION_ABORT_TEARDOWN: fatal VERIFIED for ${id} (round ${round}/${ISOLATION_FATAL_MAX_ATTEMPTS} daemonStopped=${proof.daemonStopped} homeRemoved=${proof.homeRemoved}).`);
+          } catch { /* best-effort */ }
+        } else {
+          try {
+            console.error(`PASEO_ISOLATION_ABORT_TEARDOWN: fatal UNVERIFIED for ${id} (round ${round}/${ISOLATION_FATAL_MAX_ATTEMPTS} daemonStopped=${proof.daemonStopped} homeRemoved=${proof.homeRemoved}); ${round < ISOLATION_FATAL_MAX_ATTEMPTS ? "retrying" : "giving up"}.`);
+          } catch { /* best-effort */ }
+        }
+      }
+      if (registeredIsolationHandles.size === 0) break;
+    }
   } catch { /* best-effort */ }
   try {
-    console.error(`PASEO_ISOLATION_ABORT_TEARDOWN: fatal failure; isolated handles cleaned (registry claimed ${attempts} handle(s)). Original error: ${error?.stack ?? error}`);
+    const remaining = [...registeredIsolationHandles].map((h) => h?.home ?? "<no-home>");
+    if (remaining.length === 0) {
+      console.error(`PASEO_ISOLATION_ABORT_TEARDOWN: fatal VERIFIED — all isolated handles verified clean (${verifiedCount} handle(s)). Original error: ${error?.stack ?? error}`);
+    } else {
+      console.error(`PASEO_ISOLATION_ABORT_TEARDOWN: fatal UNVERIFIED — ${remaining.length} handle(s) remain unverified after ${ISOLATION_FATAL_MAX_ATTEMPTS} round(s) [${remaining.join(",")}]; isolated resources may remain. Verified this run: ${verifiedCount}. Original error: ${error?.stack ?? error}`);
+    }
   } catch { /* best-effort */ }
   try {
     uninstallIsolationAbortManager();
@@ -457,6 +576,15 @@ export async function setupIsolatedPaseoHome(options = {}) {
   // until the home is assigned below. The single manager set is installed ONCE
   // here (refcounted via the registry; never stacked duplicates).
   registerIsolationHandle(handle);
+  // Pre-flight reconciliation (P-NEW-4 round-7 F2): FIRST, before any fallible
+  // step, attempt verified teardown (bounded, best-effort, traced) of leftover
+  // registered handles from prior failed setups (any handle not owned by the
+  // current setup), unregistering on verified success. Every leaked
+  // registration thus gains an owner (the next setup); last-suite-leak with no
+  // later setup is covered by the abort path. Never fails setup, never hangs.
+  try {
+    reconcileLeftoverIsolationHandlesSync(handle);
+  } catch { /* best-effort: reconcile must never fail setup */ }
   let home;
   try {
     home = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
