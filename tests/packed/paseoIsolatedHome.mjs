@@ -110,6 +110,17 @@ export const LIVE_PASEO_LISTEN_PORT = 6767;
 export const LIVE_PASEO_WS_URL = `ws://127.0.0.1:${LIVE_PASEO_LISTEN_PORT}/ws`;
 export const ISOLATION_SETUP_MAX_PORT_ATTEMPTS = 5;
 export const ISOLATION_TEARDOWN_MAX_ATTEMPTS = 3;
+// Port-discovery bound (Luna round-8): `findFreePort()` binds a loopback
+// socket with no timeout/cancellation — typically single-digit ms locally,
+// but a never-settling discovery (wedged stack, exhausted fds) would hang
+// `setupIsolatedPaseoHome` in `setting-up` forever, never reconciled. Every
+// discovery is therefore raced via `findFreePortWithTimeout()` against this
+// bound (generous 30s: ~1000x the local p99, short enough to fail a wedged
+// setup into `failed` where the next setup's pre-flight reclaims it).
+// Timeout fails with `PASEO_ISOLATION_UNAVAILABLE` plus the distinguishable
+// `PASEO_ISOLATION_PORT_TIMEOUT` marker so traces separate it from bind,
+// config, start and health-wait failures.
+export const ISOLATION_PORT_DISCOVERY_TIMEOUT_MS = 30_000;
 // Fatal-path verify-and-retry bound (P-NEW-4 round-7 F1): handleIsolationFatal
 // runs sync teardown + positive verification (isDaemonStoppedSync +
 // isHomeRemovedSync) for every registered handle, retrying the sweep up to
@@ -161,6 +172,24 @@ export function findFreePort(host = "127.0.0.1") {
       });
     });
   });
+}
+
+// Bounded port discovery (Luna round-8): race the raw discovery against
+// ISOLATION_PORT_DISCOVERY_TIMEOUT_MS so a never-settling bind cannot hang
+// setup in `setting-up`. Timeout rejects with PASEO_ISOLATION_UNAVAILABLE +
+// PASEO_ISOLATION_PORT_TIMEOUT (setup's catch marks the handle `failed`,
+// making it pre-flight-reconcilable). The timer stays ref'd so the bound
+// fires even when nothing else holds the loop open; it is always cleared on
+// settle so it never outlives the operation.
+export function findFreePortWithTimeout(host = "127.0.0.1", timeoutMs = ISOLATION_PORT_DISCOVERY_TIMEOUT_MS) {
+  const discovery = findFreePort(host);
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`PASEO_ISOLATION_UNAVAILABLE: free port discovery timed out after ${timeoutMs}ms (PASEO_ISOLATION_PORT_TIMEOUT); refusing to hang setup in setting-up.`));
+    }, timeoutMs);
+  });
+  return Promise.race([discovery, timeout]).finally(() => clearTimeout(timer));
 }
 
 function parseDaemonStatus(stdout) {
@@ -600,6 +629,7 @@ export async function setupIsolatedPaseoHome(options = {}) {
   const prefix = options.prefix ?? "aeh-s13-iso-";
   const host = options.host ?? "127.0.0.1";
   const maxPortAttempts = options.maxPortAttempts ?? ISOLATION_SETUP_MAX_PORT_ATTEMPTS;
+  const portDiscoveryTimeoutMs = options.portDiscoveryTimeoutMs ?? ISOLATION_PORT_DISCOVERY_TIMEOUT_MS;
   const previous = {
     PASEO_HOME: process.env.PASEO_HOME,
     PASEO_DAEMON_URL: process.env.PASEO_DAEMON_URL,
@@ -647,8 +677,12 @@ export async function setupIsolatedPaseoHome(options = {}) {
       // A second daemon cannot share the live listen port (EADDRINUSE); pick a
       // free loopback port first, then pin the isolated home to it. The free
       // port is availability-only (TOCTOU): retry on EADDRINUSE below.
-      let port = await findFreePort(host);
-      if (port === LIVE_PASEO_LISTEN_PORT) port = await findFreePort(host);
+      // Bounded (Luna round-8): never-settling discovery must time out via
+      // findFreePortWithTimeout (PASEO_ISOLATION_UNAVAILABLE +
+      // PASEO_ISOLATION_PORT_TIMEOUT) so setup throws into `failed` instead
+      // of hanging in `setting-up`.
+      let port = await findFreePortWithTimeout(host, portDiscoveryTimeoutMs);
+      if (port === LIVE_PASEO_LISTEN_PORT) port = await findFreePortWithTimeout(host, portDiscoveryTimeoutMs);
       if (port === LIVE_PASEO_LISTEN_PORT) {
         lastError = new Error(`PASEO_ISOLATION_UNAVAILABLE: free port discovery collided with the live daemon port ${LIVE_PASEO_LISTEN_PORT}; refusing live-daemon lanes.`);
         continue;
