@@ -567,7 +567,10 @@ jobs:
               # intervals by default (AEH_ATTEST_DEADLINE_S /
               # AEH_ATTEST_INTERVAL_S override for tests) — awaiting EITHER
               # present-integrity OR a stable answer:
-              #   exit 0 (present + equal) -> PASS, proceed to Release;
+               #   exit 0 (present + equal) -> PASS, proceed to Release
+               #     (post-deadline success is still ACCEPTED but traced
+               #     deadline-exceeded: the deadline bounds CI step duration,
+               #     not attestation truth);
               #   exit 1 (present + different) -> PROVEN mismatch -> fail LOUDLY
               #     + `npm deprecate` (bounded retry, never silent) + trace;
               #   exit 2 (authoritative-absent) -> repoll awaiting appearance
@@ -584,9 +587,12 @@ jobs:
               #     NOT deprecate — deprecating would nuke a GOOD version on
               #     unproven suspicion (mismatch requires exit 1 proven
               #     inequality). Loud fail + runbook instead.
-              #   exit 3 generic / per-query timeout (exit 124) -> repoll as
-              #     UNKNOWN-retry; past the deadline loud UNKNOWN WITHOUT
-              #     deprecate.
+               #   exit 3 generic / per-query timeout (exit 124) -> repoll as
+               #     UNKNOWN-retry; past the deadline loud UNKNOWN WITHOUT
+               #     deprecate. The per-query timeout is min(configured query
+               #     timeout, remaining seconds), so no in-flight query runs
+               #     past END unbounded; with no remaining budget no further
+               #     query is issued at all.
               # Trust boundary (U3): attestation trusts the npm registry TLS
               # channel — dist.integrity as served over TLS is the ground truth
               # for what installers receive. A registry compromise or a valid-TLS
@@ -615,12 +621,19 @@ jobs:
               if [ "$ATTEST_DEADLINE_S" -lt 1 ] || [ "$ATTEST_DEADLINE_S" -gt 1800 ]; then echo "Refusing post-publish attestation: AEH_ATTEST_DEADLINE_S=${ATTEST_DEADLINE_S} invalid (must be integer 1..1800s, <=30min; unset for default 300). Explicit override rejected (fail-closed, not clamped)." >&2; exit 1; fi
               if [ "$ATTEST_INTERVAL_S" -lt 5 ] || [ "$ATTEST_INTERVAL_S" -gt 120 ]; then echo "Refusing post-publish attestation: AEH_ATTEST_INTERVAL_S=${ATTEST_INTERVAL_S} invalid (must be integer 5..120s; unset for default 10). Explicit override rejected (fail-closed, not clamped)." >&2; exit 1; fi
               if [ "$ATTEST_QUERY_TIMEOUT_S" -lt 1 ] || [ "$ATTEST_QUERY_TIMEOUT_S" -gt 120 ]; then echo "Refusing post-publish attestation: AEH_ATTEST_QUERY_TIMEOUT_S=${ATTEST_QUERY_TIMEOUT_S} invalid (must be integer 1..120s; unset for default 60). Explicit override rejected (fail-closed, not clamped)." >&2; exit 1; fi
-              # Wall-clock deadline (round-2 B1): END epoch computed ONCE from
-              # now + deadline; checked BEFORE each query (a hung query cannot
-              # extend past it without the per-query timeout below killing it)
-              # plus per-query timeout via `timeout 60s` (default;
-              # AEH_ATTEST_QUERY_TIMEOUT_S override for tests) — a timed-out
-              # query fails THAT attempt as UNKNOWN-retry, never dies silently.
+              # Wall-clock deadline (round-2 B1 + round-3 exactness): END epoch
+              # computed ONCE from now + deadline. The deadline bounds CI STEP
+              # duration, not attestation truth, and is checked after EVERY
+              # query return (success and non-success alike):
+              #   - post-deadline SUCCESS is still a proven attestation:
+              #     ACCEPT it but TRACE deadline-exceeded (observability);
+              #   - post-deadline NON-success -> UNKNOWN fail (no more retries).
+              # Per-query timeout is bounded by the remaining budget (round-3
+              # D2): effective timeout = min(configured query timeout,
+              # remaining seconds); when remaining <= 0 (below the 1s floor)
+              # NO further query is issued — go directly to deadline-exceeded
+              # handling. No path runs past END except the final in-flight
+              # query bounded by min().
               ATTEST_START="$(date +%s)"
               ATTEST_END=$((ATTEST_START + ATTEST_DEADLINE_S))
               ATTEST_LAST_CODE=0
@@ -654,14 +667,27 @@ jobs:
               }
               while true; do
                 ATTEST_NOW="$(date +%s)"
-                if [ "$ATTEST_NOW" -ge "$ATTEST_END" ]; then
+                ATTEST_REMAINING=$((ATTEST_END - ATTEST_NOW))
+                if [ "$ATTEST_REMAINING" -le 0 ]; then
                   attest_fail_deadline
                 fi
+                if [ "$ATTEST_QUERY_TIMEOUT_S" -lt "$ATTEST_REMAINING" ]; then
+                  ATTEST_EFFECTIVE_TIMEOUT_S="$ATTEST_QUERY_TIMEOUT_S"
+                else
+                  ATTEST_EFFECTIVE_TIMEOUT_S="$ATTEST_REMAINING"
+                fi
                 ATTEST_TMP="$(mktemp)"
-                if timeout "${ATTEST_QUERY_TIMEOUT_S}s" node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --local-digest "$SIDECAR_DIGEST" >"$ATTEST_TMP" 2>&1; then
+                if timeout "${ATTEST_EFFECTIVE_TIMEOUT_S}s" node scripts/ci/verify-npm-identity.mjs "$PACKAGE_NAME" "$RELEASE_VERSION" --local-digest "$SIDECAR_DIGEST" >"$ATTEST_TMP" 2>&1; then
+                  ATTEST_AFTER="$(date +%s)"
+                  ATTEST_AFTER_ELAPSED=$((ATTEST_AFTER - ATTEST_START))
                   cat "$ATTEST_TMP"
                   rm -f "$ATTEST_TMP"
-                  echo "Post-publish attestation verified: $PACKAGE_NAME@$RELEASE_VERSION registry integrity matches sidecar $SIDECAR_DIGEST."
+                  if [ "$ATTEST_AFTER" -ge "$ATTEST_END" ]; then
+                    echo "Post-publish attestation verified: $PACKAGE_NAME@$RELEASE_VERSION registry integrity matches sidecar $SIDECAR_DIGEST (deadline-exceeded: success returned ${ATTEST_AFTER_ELAPSED}s after publish against a ${ATTEST_DEADLINE_S}s deadline — the deadline bounds CI step duration, not attestation truth, so this proven attestation is ACCEPTED)."
+                    echo "Post-publish attestation trace: package=$PACKAGE_NAME version=$RELEASE_VERSION sidecar_digest=$SIDECAR_DIGEST result=VERIFIED-deadline-exceeded elapsed_s=$ATTEST_AFTER_ELAPSED deadline_s=$ATTEST_DEADLINE_S"
+                  else
+                    echo "Post-publish attestation verified: $PACKAGE_NAME@$RELEASE_VERSION registry integrity matches sidecar $SIDECAR_DIGEST."
+                  fi
                   break
                 else
                   attest_code=$?
@@ -717,7 +743,7 @@ jobs:
                   elif [ "$ATTEST_LAST_KIND" = "visible-unreadable" ]; then
                     echo "Post-publish attestation pending for $PACKAGE_NAME@$RELEASE_VERSION (exit $ATTEST_LAST_CODE VISIBLE_UNREADABLE: version visible but identity unreadable — suspicious, mismatch UNPROVEN so NOT auto-deprecating; bounded retries, retrying in ${ATTEST_INTERVAL_S}s, wall-clock ${ATTEST_WALL_ELAPSED}s/${ATTEST_DEADLINE_S}s)..." >&2
                   elif [ "$ATTEST_LAST_KIND" = "timeout" ]; then
-                    echo "Post-publish attestation pending for $PACKAGE_NAME@$RELEASE_VERSION (per-query timeout after ${ATTEST_QUERY_TIMEOUT_S}s, UNKNOWN-retry, retrying in ${ATTEST_INTERVAL_S}s, wall-clock ${ATTEST_WALL_ELAPSED}s/${ATTEST_DEADLINE_S}s)..." >&2
+                    echo "Post-publish attestation pending for $PACKAGE_NAME@$RELEASE_VERSION (per-query timeout after ${ATTEST_EFFECTIVE_TIMEOUT_S}s, UNKNOWN-retry, retrying in ${ATTEST_INTERVAL_S}s, wall-clock ${ATTEST_WALL_ELAPSED}s/${ATTEST_DEADLINE_S}s)..." >&2
                   else
                     echo "Post-publish attestation pending for $PACKAGE_NAME@$RELEASE_VERSION (exit $ATTEST_LAST_CODE, registry UNKNOWN-retry, retrying in ${ATTEST_INTERVAL_S}s, wall-clock ${ATTEST_WALL_ELAPSED}s/${ATTEST_DEADLINE_S}s)..." >&2
                   fi
