@@ -45,6 +45,10 @@ async function fixture(stub: { absent?: boolean; integrity?: string; registryErr
       ...process.env,
       PATH: `${bin}${path.delimiter}${process.env.PATH}`,
       RELEASE_VERSION: "9.9.9",
+      // Provenance binding: the publish step requires RELEASE_SHA to write /
+      // verify the sidecar (absent/invalid/mismatch fails closed). Fixtures
+      // model the current run's SHA so fresh-pack writes a valid sidecar.
+      RELEASE_SHA: "a1b2c3d4e5a1b2c3d4e5a1b2c3d4e5a1b2c3d4e5",
       STUB_VERSION: "9.9.9",
       STUB_INTEGRITY: stub.integrity ?? localIntegrity,
       STUB_SHASUM: "",
@@ -290,7 +294,12 @@ describe("npm resume identity (fail closed on content mismatch)", () => {
       bin,
       publishCalled,
       localIntegrity,
-      env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}` } as NodeJS.ProcessEnv,
+      env: {
+        ...process.env,
+        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+        RELEASE_VERSION: "9.9.9",
+        RELEASE_SHA: "b2c3d4e5f6b2c3d4e5f6b2c3d4e5f6b2c3d4e5f6",
+      } as NodeJS.ProcessEnv,
     };
   }
 
