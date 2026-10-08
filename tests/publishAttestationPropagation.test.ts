@@ -15,8 +15,14 @@ import { describe, expect, it } from "vitest";
 // sidecar exactly — pure false positive blocking the Release.
 //
 // Required behavior (post-publish attestation ONLY; everything else accepted):
-//   (a) poll `npm view dist.integrity` with bounded backoff (up to ~5 min,
-//       ~10s intervals) awaiting present-integrity or a stable answer;
+//   (a) poll `npm view dist.integrity` with bounded backoff (up to ~10 min,
+//       ~20s intervals) awaiting present-integrity or a stable answer;
+//       Policy evidence (2026-10-08): 0.16.10's npm propagation tail exceeded
+//       the old 300s deadline (>5min; 0.16.9 had failed the earlier immediate
+//       check on ~1-2min lag before polling existed) — both published fine,
+//       integrity later matched exactly — so
+//       the production default is 600s/20s (query count ~30, same as the
+//       old 300s/10s, CI cost sane).
 //   (b) present + equal -> PASS; present + different -> PROVEN mismatch ->
 //       deprecate (retry + runbook) + fail;
 //   (c) persistently absent past deadline -> loud UNKNOWN failure WITHOUT
@@ -116,7 +122,7 @@ async function attestationFixture(opts: StubOpts) {
     RUNNER_TEMP: dir,
     RELEASE_VERSION: "9.9.9",
     RELEASE_SHA: SHA,
-    // Fast polling for the offline harness; production defaults (5 min / 10s)
+    // Fast polling for the offline harness; production defaults (10 min / 20s)
     // apply when these are unset. Values must satisfy the round-2 bounds
     // (deadline 1..1800s, interval 5..120s) — invalid overrides fail loudly.
     AEH_ATTEST_DEADLINE_S: "15",
@@ -141,7 +147,7 @@ describe("post-publish attestation propagation tolerance (incident 37762308471)"
   it("static: attestation polls with bounded backoff and distinguishes absent from mismatch", async () => {
     const { text } = await loadPublishStep();
     expect(text, "polls the registry (bounded retries after publish)").toMatch(/ATTEST|poll|retry/i);
-    expect(text, "documents the bound (e.g. up to 5 min, ~10s intervals)").toMatch(/5 min|300|INTERVAL|interval/i);
+    expect(text, "documents the bound (e.g. up to 10 min, ~20s intervals)").toMatch(/10 min|600|INTERVAL|interval/i);
     expect(text, "distinguishes proven-mismatch deprecate from absent UNKNOWN").toMatch(/UNKNOWN/i);
   });
 

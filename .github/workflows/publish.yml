@@ -563,10 +563,15 @@ jobs:
               # publish` by minutes (incident run 37762308471: `npm view` ~1s
               # after publish saw absence, treated as MISMATCH, and attempted
               # a nonsense deprecate — the integrity LATER matched the sidecar
-              # exactly). Poll with bounded backoff — up to 5 min at ~10s
+              # exactly). Poll with bounded backoff — up to 10 min at ~20s
               # intervals by default (AEH_ATTEST_DEADLINE_S /
               # AEH_ATTEST_INTERVAL_S override for tests) — awaiting EITHER
-              # present-integrity OR a stable answer:
+              # present-integrity OR a stable answer (policy evidence 2026-10-08:
+              # 0.16.10's npm propagation tail exceeded the old 300s deadline
+              # (>5min lag; 0.16.9 had failed the earlier immediate check on a
+              # ~1-2min lag before polling existed) — both published fine with
+              # integrity later matching exactly — so the default is
+              # 600s, not 300s):
                #   exit 0 (present + equal) -> PASS, proceed to Release
                #     (post-deadline success is still ACCEPTED but traced
                #     deadline-exceeded: the deadline bounds CI step duration,
@@ -603,25 +608,34 @@ jobs:
               # detect a lying registry).
               SIDECAR_DIGEST="$(node -e "process.stdout.write(JSON.parse(require('node:fs').readFileSync(process.argv[1],'utf8')).tarball_sha512)" "$RETAIN_DIR/npm-provenance.json")"
               # Override validation (fail-closed, reject-invalid, round-2 B1):
-              # - unset -> defaults (deadline 300s/5min, interval 10s,
+              # - unset -> defaults (deadline 600s/10min, interval 20s,
               #   query-timeout 60s via `timeout 60s` per query).
+              #   Policy: deadline 300s->600s after 0.16.10's npm tail exceeded 300s
+              #   (>5min, observed 2026-10-08; 0.16.9 had failed the earlier
+              #   immediate check on ~1-2min lag before polling existed);
+              #   interval 10s->20s proportionally so the worst-case query count
+              #   stays ~30 (600/20 == 300/10, CI cost sane). Per-query timeout
+              #   UNCHANGED at 60s; wall-clock exactness + fail-closed semantics
+              #   UNCHANGED (pure policy-constant change, no mechanism change).
               # - set (even empty) but non-numeric or out-of-range -> LOUD FAIL
               #   (explicit config error, never silently clamped/defaulted —
               #   clamping would hide CI typos and let huge overrides extend
-              #   indefinitely). Ranges: deadline 1..1800s (<=30min), interval
-              #   5..120s, query-timeout 1..120s. Document: invalid override =
-              #   explicit config error -> fail loudly.
+              #   indefinitely). Ranges UNCHANGED: deadline 1..1800s (<=30min),
+              #   interval 5..120s, query-timeout 1..120s — new defaults (600s,
+              #   20s, 60s) remain interior, so no rescaling needed; the 1800s
+              #   cap still bounds the CI step duration. Document: invalid
+              #   override = explicit config error -> fail loudly.
               ATTEST_DEADLINE_RAW="${AEH_ATTEST_DEADLINE_S-__unset__}"
               ATTEST_INTERVAL_RAW="${AEH_ATTEST_INTERVAL_S-__unset__}"
               ATTEST_QTIMEOUT_RAW="${AEH_ATTEST_QUERY_TIMEOUT_S-__unset__}"
-              if [ "$ATTEST_DEADLINE_RAW" = "__unset__" ]; then ATTEST_DEADLINE_S=300; else ATTEST_DEADLINE_S="$ATTEST_DEADLINE_RAW"; fi
-              if [ "$ATTEST_INTERVAL_RAW" = "__unset__" ]; then ATTEST_INTERVAL_S=10; else ATTEST_INTERVAL_S="$ATTEST_INTERVAL_RAW"; fi
+              if [ "$ATTEST_DEADLINE_RAW" = "__unset__" ]; then ATTEST_DEADLINE_S=600; else ATTEST_DEADLINE_S="$ATTEST_DEADLINE_RAW"; fi
+              if [ "$ATTEST_INTERVAL_RAW" = "__unset__" ]; then ATTEST_INTERVAL_S=20; else ATTEST_INTERVAL_S="$ATTEST_INTERVAL_RAW"; fi
               if [ "$ATTEST_QTIMEOUT_RAW" = "__unset__" ]; then ATTEST_QUERY_TIMEOUT_S=60; else ATTEST_QUERY_TIMEOUT_S="$ATTEST_QTIMEOUT_RAW"; fi
-              case "$ATTEST_DEADLINE_S" in ''|*[!0-9]*) echo "Refusing post-publish attestation: AEH_ATTEST_DEADLINE_S=${ATTEST_DEADLINE_RAW} invalid (must be integer 1..1800s, <=30min; unset for default 300). Explicit override rejected (fail-closed, not clamped)." >&2; exit 1;; esac
-              case "$ATTEST_INTERVAL_S" in ''|*[!0-9]*) echo "Refusing post-publish attestation: AEH_ATTEST_INTERVAL_S=${ATTEST_INTERVAL_RAW} invalid (must be integer 5..120s; unset for default 10). Explicit override rejected (fail-closed, not clamped)." >&2; exit 1;; esac
+              case "$ATTEST_DEADLINE_S" in ''|*[!0-9]*) echo "Refusing post-publish attestation: AEH_ATTEST_DEADLINE_S=${ATTEST_DEADLINE_RAW} invalid (must be integer 1..1800s, <=30min; unset for default 600). Explicit override rejected (fail-closed, not clamped)." >&2; exit 1;; esac
+              case "$ATTEST_INTERVAL_S" in ''|*[!0-9]*) echo "Refusing post-publish attestation: AEH_ATTEST_INTERVAL_S=${ATTEST_INTERVAL_RAW} invalid (must be integer 5..120s; unset for default 20). Explicit override rejected (fail-closed, not clamped)." >&2; exit 1;; esac
               case "$ATTEST_QUERY_TIMEOUT_S" in ''|*[!0-9]*) echo "Refusing post-publish attestation: AEH_ATTEST_QUERY_TIMEOUT_S=${ATTEST_QTIMEOUT_RAW} invalid (must be integer 1..120s; unset for default 60). Explicit override rejected (fail-closed, not clamped)." >&2; exit 1;; esac
-              if [ "$ATTEST_DEADLINE_S" -lt 1 ] || [ "$ATTEST_DEADLINE_S" -gt 1800 ]; then echo "Refusing post-publish attestation: AEH_ATTEST_DEADLINE_S=${ATTEST_DEADLINE_S} invalid (must be integer 1..1800s, <=30min; unset for default 300). Explicit override rejected (fail-closed, not clamped)." >&2; exit 1; fi
-              if [ "$ATTEST_INTERVAL_S" -lt 5 ] || [ "$ATTEST_INTERVAL_S" -gt 120 ]; then echo "Refusing post-publish attestation: AEH_ATTEST_INTERVAL_S=${ATTEST_INTERVAL_S} invalid (must be integer 5..120s; unset for default 10). Explicit override rejected (fail-closed, not clamped)." >&2; exit 1; fi
+              if [ "$ATTEST_DEADLINE_S" -lt 1 ] || [ "$ATTEST_DEADLINE_S" -gt 1800 ]; then echo "Refusing post-publish attestation: AEH_ATTEST_DEADLINE_S=${ATTEST_DEADLINE_S} invalid (must be integer 1..1800s, <=30min; unset for default 600). Explicit override rejected (fail-closed, not clamped)." >&2; exit 1; fi
+              if [ "$ATTEST_INTERVAL_S" -lt 5 ] || [ "$ATTEST_INTERVAL_S" -gt 120 ]; then echo "Refusing post-publish attestation: AEH_ATTEST_INTERVAL_S=${ATTEST_INTERVAL_S} invalid (must be integer 5..120s; unset for default 20). Explicit override rejected (fail-closed, not clamped)." >&2; exit 1; fi
               if [ "$ATTEST_QUERY_TIMEOUT_S" -lt 1 ] || [ "$ATTEST_QUERY_TIMEOUT_S" -gt 120 ]; then echo "Refusing post-publish attestation: AEH_ATTEST_QUERY_TIMEOUT_S=${ATTEST_QUERY_TIMEOUT_S} invalid (must be integer 1..120s; unset for default 60). Explicit override rejected (fail-closed, not clamped)." >&2; exit 1; fi
               # Wall-clock deadline (round-2 B1 + round-3 exactness + round-4
               # single-check-point): END epoch computed ONCE from now +
