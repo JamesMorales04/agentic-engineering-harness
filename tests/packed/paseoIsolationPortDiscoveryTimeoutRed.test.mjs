@@ -9,6 +9,12 @@ import test from "node:test";
 // discovery with Promise.race + a documented timeout constant and fail with
 // PASEO_ISOLATION_UNAVAILABLE on timeout (throws -> phase `failed` ->
 // reconcilable). Port discovery is fast locally; the bound stays generous.
+// Luna round-9 C1 (ru/packed-isolation-10) SUPERSEDES the race: Promise.race
+// alone leaves the findFreePort server bound (keeps the process alive), so
+// findFreePortWithTimeout now OWNS its server lifecycle inline and CLOSES it
+// best-effort on timeout/error (see paseoIsolationPortTimeoutFixRed.test.mjs
+// C1 with a REAL pending server). The static check below therefore accepts
+// either the historic race marker or the cancellable close path.
 
 function installHangingCreateServer() {
   const original = net.createServer;
@@ -32,8 +38,8 @@ test("RED: port discovery is bounded by a documented timeout constant", async ()
     "module must export a documented ISOLATION_PORT_DISCOVERY_TIMEOUT_MS constant"
   );
   assert.ok(
-    src.includes("Promise.race"),
-    "port discovery must be bounded via Promise.race"
+    src.includes("Promise.race") || src.includes("server.close"),
+    "port discovery must be bounded and cancellable (Promise.race historic, server.close on timeout after round-9 C1)"
   );
   assert.match(
     src,

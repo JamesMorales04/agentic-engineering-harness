@@ -146,6 +146,10 @@ export function isAddrInUseMessage(text) {
   return /EADDRINUSE|address already in use/i.test(String(text ?? ""));
 }
 
+export function isPortTimeoutMessage(text) {
+  return /PASEO_ISOLATION_PORT_TIMEOUT/.test(String(text ?? ""));
+}
+
 function scrubbedEnv(home) {
   const env = { ...process.env, PASEO_HOME: home };
   delete env.PASEO_AGENT_ID;
@@ -181,15 +185,76 @@ export function findFreePort(host = "127.0.0.1") {
 // making it pre-flight-reconcilable). The timer stays ref'd so the bound
 // fires even when nothing else holds the loop open; it is always cleared on
 // settle so it never outlives the operation.
+//
+// Cancellable discovery (Luna round-9 C1): the timeout path CLOSES the pending
+// server handle (the pre-round-9 Promise.race left the findFreePort server
+// bound, keeping the process alive). findFreePortWithTimeout owns its server
+// lifecycle inline so the timer can close it best-effort on timeout/error.
+// Timeout validation (Luna round-9 C2): timeoutMs must be a finite positive
+// number, otherwise throw PASEO_ISOLATION_INVALID (fail fast, no side effect).
 export function findFreePortWithTimeout(host = "127.0.0.1", timeoutMs = ISOLATION_PORT_DISCOVERY_TIMEOUT_MS) {
-  const discovery = findFreePort(host);
-  let timer;
-  const timeout = new Promise((_, reject) => {
+  if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error(`PASEO_ISOLATION_INVALID: portDiscoveryTimeoutMs must be a finite positive number (got ${String(timeoutMs)}); refusing to start unbounded discovery.`);
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer;
+    let server;
+    try {
+      server = net.createServer();
+    } catch (error) {
+      reject(error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+    const clearTimer = () => {
+      if (timer !== undefined) {
+        try { clearTimeout(timer); } catch { /* best-effort */ }
+        timer = undefined;
+      }
+    };
+    const closeServerBestEffort = () => {
+      try {
+        server.close(() => {});
+      } catch { /* best-effort: timeout/error path must never throw past the reject */ }
+    };
     timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      closeServerBestEffort();
       reject(new Error(`PASEO_ISOLATION_UNAVAILABLE: free port discovery timed out after ${timeoutMs}ms (PASEO_ISOLATION_PORT_TIMEOUT); refusing to hang setup in setting-up.`));
     }, timeoutMs);
+    server.once("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimer();
+      closeServerBestEffort();
+      reject(error instanceof Error ? error : new Error(String(error)));
+    });
+    try {
+      server.listen(0, host, () => {
+        if (settled) {
+          closeServerBestEffort();
+          return;
+        }
+        const address = server.address();
+        const port = typeof address === "object" && address ? address.port : undefined;
+        server.close((error) => {
+          if (settled) return;
+          settled = true;
+          clearTimer();
+          if (error) reject(error);
+          else if (!port) reject(new Error("PASEO_ISOLATION_NO_PORT: free port discovery returned no port."));
+          else resolve(port);
+        });
+      });
+    } catch (error) {
+      if (settled) return;
+      settled = true;
+      clearTimer();
+      closeServerBestEffort();
+      reject(error instanceof Error ? error : new Error(String(error)));
+    }
   });
-  return Promise.race([discovery, timeout]).finally(() => clearTimeout(timer));
 }
 
 function parseDaemonStatus(stdout) {
@@ -630,6 +695,13 @@ export async function setupIsolatedPaseoHome(options = {}) {
   const host = options.host ?? "127.0.0.1";
   const maxPortAttempts = options.maxPortAttempts ?? ISOLATION_SETUP_MAX_PORT_ATTEMPTS;
   const portDiscoveryTimeoutMs = options.portDiscoveryTimeoutMs ?? ISOLATION_PORT_DISCOVERY_TIMEOUT_MS;
+  // Fail-fast validation (Luna round-9 C2): portDiscoveryTimeoutMs must be a
+  // finite positive number (0/negative would time out immediately, Infinity
+  // overflows the timer). Throw explicit PASEO_ISOLATION_INVALID BEFORE any
+  // side effect (no registry mutation, no mkdtemp, no env change).
+  if (typeof portDiscoveryTimeoutMs !== "number" || !Number.isFinite(portDiscoveryTimeoutMs) || portDiscoveryTimeoutMs <= 0) {
+    throw new Error(`PASEO_ISOLATION_INVALID: portDiscoveryTimeoutMs must be a finite positive number (got ${String(portDiscoveryTimeoutMs)}); refusing isolated setup before any side effect.`);
+  }
   const previous = {
     PASEO_HOME: process.env.PASEO_HOME,
     PASEO_DAEMON_URL: process.env.PASEO_DAEMON_URL,
@@ -677,10 +749,15 @@ export async function setupIsolatedPaseoHome(options = {}) {
       // A second daemon cannot share the live listen port (EADDRINUSE); pick a
       // free loopback port first, then pin the isolated home to it. The free
       // port is availability-only (TOCTOU): retry on EADDRINUSE below.
-      // Bounded (Luna round-8): never-settling discovery must time out via
+      // Bounded (Luna round-8): never-settling discovery times out via
       // findFreePortWithTimeout (PASEO_ISOLATION_UNAVAILABLE +
-      // PASEO_ISOLATION_PORT_TIMEOUT) so setup throws into `failed` instead
-      // of hanging in `setting-up`.
+      // PASEO_ISOLATION_PORT_TIMEOUT) instead of hanging in `setting-up`.
+      // Retry (Luna round-9 C3): a port-timeout is transient slowness and is
+      // retried in the same bounded setup loop (same maxPortAttempts budget as
+      // EADDRINUSE: each timeout consumes one attempt; exhaustion still throws
+      // PASEO_ISOLATION_UNAVAILABLE loudly via the give-up path below).
+      // Cancellable (Luna round-9 C1): the timeout path already closed the
+      // pending server, so retrying never leaks a bound handle.
       let port = await findFreePortWithTimeout(host, portDiscoveryTimeoutMs);
       if (port === LIVE_PASEO_LISTEN_PORT) port = await findFreePortWithTimeout(host, portDiscoveryTimeoutMs);
       if (port === LIVE_PASEO_LISTEN_PORT) {
@@ -743,11 +820,31 @@ export async function setupIsolatedPaseoHome(options = {}) {
       delete process.env.PASEO_SESSION_ID;
       return handle;
     } catch (error) {
-      // Non-EADDRINUSE failures fail closed immediately; EADDRINUSE that
-      // exhausted its attempts falls through to the fail-closed throw below.
+      // Non-EADDRINUSE/non-timeout failures fail closed immediately;
+      // EADDRINUSE that exhausted its attempts falls through to the fail-closed
+      // throw below.
       if (error instanceof Error && /retrying with the next free port/.test(error.message)) {
         lastError = error;
         continue;
+      }
+      // Port-timeout retry (Luna round-9 C3): transient discovery slowness
+      // self-heals within the same bounded budget (maxPortAttempts, shared
+      // with EADDRINUSE). Each timeout consumes one loop attempt; the final
+      // attempt falls through to the loud exhaustion throw below (still
+      // PASEO_ISOLATION_UNAVAILABLE, never a live-daemon fallback). The timed
+      // -out server was already closed by findFreePortWithTimeout (C1), so
+      // retrying leaks nothing.
+      {
+        const timeoutMsg = error instanceof Error ? error.message : String(error ?? "");
+        if (isPortTimeoutMessage(timeoutMsg)) {
+          lastError = error instanceof Error ? error : new Error(String(error));
+          if (attempt < maxPortAttempts) {
+            console.error(`PASEO_ISOLATION_PORT_RETRY: port discovery timed out (attempt ${attempt}/${maxPortAttempts}); retrying with the next discovery.`);
+          } else {
+            console.error(`PASEO_ISOLATION_PORT_RETRY: port discovery timed out (attempt ${attempt}/${maxPortAttempts}); budget exhausted, failing closed.`);
+          }
+          continue;
+        }
       }
       try {
         runPaseo(["daemon", "stop"], home, 30_000);
