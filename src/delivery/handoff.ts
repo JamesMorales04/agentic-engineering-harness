@@ -257,8 +257,17 @@ async function runPaseoWorkspace(root: string, mode: string[], slug: string, tit
 }
 async function trackHandoffWorkspace(root: string, operationId: string, workspace: { workspaceId?: string; worktreePath?: string }, title: string): Promise<void> {
   if (!workspace.workspaceId) return;
-  // RETAIN_SHARED: handoff worktrees are delivery-owned; recovery tracks without archiving.
-  await registerOperationResource(root, operationId, { kind: "paseo-workspace", identity: workspace.workspaceId, reclaim: "RETAIN_SHARED", ...(workspace.worktreePath ? { path: workspace.worktreePath } : {}), label: `handoff ${title}` }).catch(() => undefined);
+  // RETAIN_SHARED: handoff worktrees are delivery-owned, owner-managed outputs — not temp.
+  // Unbounded retention is an explicit delivery-lifecycle decision: recovery tracks the
+  // workspace without archiving, and the delivery owner (human/operator) owns its lifetime.
+  // Registration failure must never proceed unregistered (leak without record): best-effort
+  // cleanup of the just-created workspace first, then fail the handoff loudly.
+  try {
+    await registerOperationResource(root, operationId, { kind: "paseo-workspace", identity: workspace.workspaceId, reclaim: "RETAIN_SHARED", ...(workspace.worktreePath ? { path: workspace.worktreePath } : {}), label: `handoff ${title}` });
+  } catch (error) {
+    await runExecutable("paseo", ["workspace", "archive", workspace.workspaceId], { cwd: root, timeoutMs: 120_000 }).catch(() => undefined);
+    throw new Error(`HANDOFF_REGISTRATION_FAILED: handoff workspace ${workspace.workspaceId} was created but registration failed; attempted best-effort archive and failing the handoff: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 function parseWorkspace(raw: string, branch: string): { workspaceId?: string; worktreePath?: string } { try { const value = JSON.parse(raw) as unknown; const candidates = flattenObjects(value); const found = candidates.find((item) => [item.branch, item.branchName, item.gitBranch].some((candidate) => candidate === branch)) ?? candidates.find((item) => typeof item.id === "string" || typeof item.workspaceId === "string"); return found ? { workspaceId: stringValue(found.workspaceId) ?? stringValue(found.id), worktreePath: stringValue(found.worktreePath) ?? stringValue(found.path) ?? stringValue(found.root) } : {}; } catch { return {}; } }
 function flattenObjects(value: unknown): Array<Record<string, unknown>> { if (Array.isArray(value)) return value.flatMap(flattenObjects); if (!value || typeof value !== "object") return []; const record = value as Record<string, unknown>; return [record, ...Object.values(record).flatMap(flattenObjects)]; }

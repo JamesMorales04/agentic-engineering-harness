@@ -39,11 +39,72 @@ export async function materializeCandidateState(sourceRoot: string, targetRoot: 
 /**
  * Stale DIRECT staging janitor (P-NEW-7).
  * MECHANISM: DETERMINISTIC.
- * Removes `aeh-*` entries in the system tmpdir older than 24h (conservative;
- * covers SIGKILL in the mkdtemp-to-register window). Never touches non-`aeh-*`
- * or fresh entries. Best-effort: never throws.
+ *
+ * ABANDONMENT PROOF: DIRECT staging roots are named
+ * `aeh-direct-<safeTaskId>-<random>` — the name encodes no operation id or
+ * candidate binding, so the directory mtime alone can never prove abandonment
+ * (a live owner may simply not have modified the directory recently). Every
+ * root therefore carries an owner heartbeat marker
+ * (`.aeh-direct-heartbeat.json`) written at creation and refreshed on use.
+ * The janitor deletes ONLY a directory that (a) carries the `aeh-direct-`
+ * prefix, (b) is a directory, (c) contains a well-formed heartbeat with a
+ * non-empty operationId/taskId, AND (d) the heartbeat file itself is older
+ * than the threshold (stale heartbeat = no live owner has touched it).
+ * Missing, unreadable, or malformed heartbeats are preserved fail-closed
+ * (bounded leak, never a live-delete). Non-`aeh-direct-` entries are never
+ * touched. Best-effort: never throws.
  */
 export const DIRECT_STAGING_TMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+export const DIRECT_STAGING_HEARTBEAT_FILENAME = ".aeh-direct-heartbeat.json";
+/** Pathspec exclusions keeping the owner heartbeat out of every ChangeSet diff. */
+export function directStagingHeartbeatPathspecExcludes(): string[] {
+  return [`:(exclude)${DIRECT_STAGING_HEARTBEAT_FILENAME}`];
+}
+export interface DirectStagingHeartbeatV1 {
+  version: 1;
+  operationId: string;
+  taskId: string;
+  candidateDigest?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+export async function writeDirectStagingHeartbeat(
+  stagingRoot: string,
+  input: { operationId: string; taskId: string; candidateDigest?: string },
+  now: Date = new Date()
+): Promise<void> {
+  const heartbeat: DirectStagingHeartbeatV1 = {
+    version: 1,
+    operationId: input.operationId,
+    taskId: input.taskId,
+    ...(input.candidateDigest ? { candidateDigest: input.candidateDigest } : {}),
+    createdAt: now.toISOString(),
+    updatedAt: now.toISOString()
+  };
+  await fs.writeFile(path.join(stagingRoot, DIRECT_STAGING_HEARTBEAT_FILENAME), `${JSON.stringify(heartbeat)}\n`, "utf8");
+}
+export async function touchDirectStagingHeartbeat(stagingRoot: string, now: Date = new Date()): Promise<void> {
+  const file = path.join(stagingRoot, DIRECT_STAGING_HEARTBEAT_FILENAME);
+  const raw = await fs.readFile(file, "utf8").catch(() => undefined);
+  if (raw !== undefined) {
+    try {
+      const parsed = JSON.parse(raw) as Partial<DirectStagingHeartbeatV1>;
+      if (parsed && typeof parsed.operationId === "string" && typeof parsed.taskId === "string") {
+        await fs.writeFile(file, `${JSON.stringify({ ...parsed, version: 1, updatedAt: now.toISOString() })}\n`, "utf8").catch(() => undefined);
+      }
+    } catch { /* keep the existing bytes; utimes below still refreshes liveness */ }
+  }
+  await fs.utimes(file, now, now).catch(() => undefined);
+}
+function parseDirectStagingHeartbeat(raw: string): DirectStagingHeartbeatV1 | undefined {
+  try {
+    const parsed = JSON.parse(raw) as Partial<DirectStagingHeartbeatV1>;
+    if (parsed?.version !== 1) return undefined;
+    if (typeof parsed.operationId !== "string" || !parsed.operationId) return undefined;
+    if (typeof parsed.taskId !== "string" || !parsed.taskId) return undefined;
+    return parsed as DirectStagingHeartbeatV1;
+  } catch { return undefined; }
+}
 export async function sweepStaleDirectStagingRoots(options: { tmpdir?: string; maxAgeMs?: number; now?: number } = {}): Promise<string[]> {
   const dir = options.tmpdir ?? os.tmpdir();
   const maxAgeMs = options.maxAgeMs ?? DIRECT_STAGING_TMP_MAX_AGE_MS;
@@ -52,10 +113,15 @@ export async function sweepStaleDirectStagingRoots(options: { tmpdir?: string; m
   try { entries = await fs.readdir(dir); } catch { return []; }
   const removed: string[] = [];
   for (const entry of entries) {
-    if (!entry.startsWith("aeh-")) continue;
+    if (!entry.startsWith("aeh-direct-")) continue;
     const full = path.join(dir, entry);
     const stat = await fs.stat(full).catch(() => undefined);
-    if (!stat || now - stat.mtimeMs <= maxAgeMs) continue;
+    if (!stat?.isDirectory()) continue;
+    // Abandonment requires a stale owner heartbeat — never the directory mtime alone.
+    const heartbeatStat = await fs.stat(path.join(full, DIRECT_STAGING_HEARTBEAT_FILENAME)).catch(() => undefined);
+    if (!heartbeatStat || now - heartbeatStat.mtimeMs <= maxAgeMs) continue;
+    const raw = await fs.readFile(path.join(full, DIRECT_STAGING_HEARTBEAT_FILENAME), "utf8").catch(() => undefined);
+    if (raw === undefined || !parseDirectStagingHeartbeat(raw)) continue;
     try { await fs.rm(full, { recursive: true, force: true }); removed.push(full); } catch { /* best-effort */ }
   }
   return removed;
@@ -98,9 +164,21 @@ export async function executeIsolatedCandidateMutation(input: {
     if (add.exitCode !== 0) throw new AehError("CANDIDATE_STALE", `Unable to create isolated DIRECT workspace: ${add.stderr || add.stdout}`);
 
     await materializeCandidateState(input.root, isolatedRoot, input.candidate);
+    // Owner heartbeat for the P-NEW-7 janitor: written AFTER the worktree add
+    // (which requires an empty directory) and AFTER materialization (whose
+    // source-digest gates must not observe it), so only stale-heartbeat roots
+    // are provably abandoned. Best-effort: a missing heartbeat only leaks
+    // (the janitor preserves marker-less roots fail-closed). The baseline
+    // commit below absorbs the heartbeat, and the ChangeSet diffs exclude it,
+    // so post-baseline refreshes can never pollute the ChangeSet.
+    await writeDirectStagingHeartbeat(isolatedRoot, { operationId: input.operationId, taskId: input.taskId, candidateDigest: input.candidate.identityDigest }).catch(() => undefined);
     await copyTaskContext(input.root, isolatedRoot, input.config, input.contract);
     await input.prepareWorkspace?.(isolatedRoot);
     await assertContainedSourceSymlinks(isolatedRoot);
+
+    // Refresh the owner heartbeat on use so a live root keeps proving liveness
+    // to concurrent janitor sweeps (pre-baseline refresh; post-baseline below).
+    await touchDirectStagingHeartbeat(isolatedRoot).catch(() => undefined);
 
     const addBaseline = await runExecutable("git", ["add", "-A"], { cwd: isolatedRoot, timeoutMs: 30_000 });
     const commitBaseline = addBaseline.exitCode === 0 ? await runExecutable("git", ["-c", "user.name=aeh", "-c", "user.email=aeh@localhost", "commit", "--no-gpg-sign", "-m", "aeh direct baseline", "--allow-empty"], { cwd: isolatedRoot, timeoutMs: 60_000 }) : addBaseline;
@@ -109,14 +187,19 @@ export async function executeIsolatedCandidateMutation(input: {
     const baselineCommit = baseline.stdout.trim();
     if (!baselineCommit) throw new AehError("CANDIDATE_STALE", "Isolated DIRECT baseline commit was not created.");
 
+    // Post-baseline liveness refresh: the heartbeat is committed in the
+    // baseline and excluded from the ChangeSet diffs below, so this refresh
+    // proves liveness without polluting the ChangeSet.
+    await touchDirectStagingHeartbeat(isolatedRoot).catch(() => undefined);
+
     const session = await input.execute(isolatedRoot);
     if (session.exitCode !== 0) return { session };
 
     const intent = await runExecutable("git", ["add", "-N", "--all"], { cwd: isolatedRoot, timeoutMs: 30_000 });
     if (intent.exitCode !== 0) throw new AehError("CANDIDATE_STALE", `Unable to enumerate DIRECT changes: ${intent.stderr || intent.stdout}`);
     const [names, diff] = await Promise.all([
-      runExecutable("git", ["diff", "--name-only", "--no-renames", "-z", baselineCommit, "--", ...providerGeneratedPathspecExcludes()], { cwd: isolatedRoot, timeoutMs: 30_000 }),
-      runExecutable("git", ["diff", "--binary", "--no-ext-diff", baselineCommit, "--", ...providerGeneratedPathspecExcludes()], { cwd: isolatedRoot, timeoutMs: 60_000 })
+      runExecutable("git", ["diff", "--name-only", "--no-renames", "-z", baselineCommit, "--", ...providerGeneratedPathspecExcludes(), ...directStagingHeartbeatPathspecExcludes()], { cwd: isolatedRoot, timeoutMs: 30_000 }),
+      runExecutable("git", ["diff", "--binary", "--no-ext-diff", baselineCommit, "--", ...providerGeneratedPathspecExcludes(), ...directStagingHeartbeatPathspecExcludes()], { cwd: isolatedRoot, timeoutMs: 60_000 })
     ]);
     if (names.exitCode !== 0 || diff.exitCode !== 0) throw new AehError("CANDIDATE_STALE", `Unable to capture DIRECT ChangeSet: ${names.stderr || diff.stderr || names.stdout || diff.stdout}`);
     const changedFiles = [...new Set(names.stdout.split("\0").map((file) => file.trim()).filter(Boolean))].sort();
