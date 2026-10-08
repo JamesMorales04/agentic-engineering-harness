@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import YAML from "yaml";
 import { harnessRevisionV1 } from "./s13CampaignHarnessRevision.mjs";
 import { accountWorkspaceCleanupV1, workspaceArchiveDecision } from "./s13GovernedCampaignPolicy.mjs";
+import { assertIsolatedPaseoEnv, setupIsolatedPaseoHome, teardownIsolatedPaseoHome } from "./paseoIsolatedHome.mjs";
 
 /**
  * S13 packed governed-operation campaign.
@@ -15,6 +16,14 @@ import { accountWorkspaceCleanupV1, workspaceArchiveDecision } from "./s13Govern
  * fixture with REAL Paseo participants and a REAL local model (no AEH_DETERMINISTIC_PASEO_RUNTIME,
  * no scripted provider boundary). A deterministic oracle then verifies the durable operation record,
  * candidate revision, participant receipts, validation evidence and acceptance artifacts.
+ *
+ * P-NEW-4 hermetic isolation: every Paseo resource in this campaign (lead agents,
+ * participant sessions, operation workspaces) lives in a temporary isolated
+ * daemon home (fresh `PASEO_HOME` + free loopback port + `PASEO_DAEMON_URL`),
+ * never in the live daemon. Teardown deletes residual agents, archives residual
+ * workspaces, stops the isolated daemon and removes the temp home on
+ * success/failure/abort. Setup failure throws `PASEO_ISOLATION_UNAVAILABLE`
+ * and the run fails closed (never live).
  *
  * Usage: node tests/packed/s13GovernedOperationCampaign.mjs [checkout]
  * Optional: S13_GOV_LANES=audit,change-direct  S13_GOV_TIMEOUT_SECONDS=900  S13_GOV_KEEP=1
@@ -42,6 +51,11 @@ const keepStaging = process.env.S13_GOV_KEEP === "1";
 const archiveEvidence = process.env.S13_GOV_ARCHIVE_EVIDENCE === "1";
 const debug = process.env.S13_GOV_DEBUG === "1";
 const prepareOnly = process.env.S13_GOV_PREPARE_ONLY === "1";
+
+// P-NEW-4: hermetic isolation before any fixture/paseo work. Lane children
+// inherit the isolated daemon via laneEnvironment().
+const paseoIsolation = await setupIsolatedPaseoHome({ prefix: "aeh-s13-gov-" });
+assertIsolatedPaseoEnv(paseoIsolation);
 
 const dist = path.join(checkout, "dist");
 const releaseId = (await fs.readFile(path.join(dist, "current"), "utf8")).trim();
@@ -513,6 +527,9 @@ function laneEnvironment() {
   delete env.AEH_ALLOW_NESTED_OPERATION;
   delete env.PASEO_AGENT_ID;
   delete env.PASEO_SESSION_ID;
+  // P-NEW-4: PASEO_HOME/PASEO_DAEMON_URL are intentionally preserved so lane
+  // children inherit the isolated daemon; the guard above proves they point
+  // at the isolated home, never the live daemon.
   return env;
 }
 
@@ -1345,7 +1362,8 @@ const summary = {
   harnessBuildIdentity: buildIdentity,
   candidate: null,
   lanes: [],
-  result: "UNKNOWN"
+  result: "UNKNOWN",
+  paseoIsolation: { hermetic: true, home: paseoIsolation.home, port: paseoIsolation.port, daemonUrl: paseoIsolation.daemonUrl, setupAt: paseoIsolation.startedAt }
 };
 
 const before = await trackedDigest();
@@ -1553,6 +1571,20 @@ for (const name of laneNames) {
   console.log(JSON.stringify(summary.lanes.at(-1)));
 }
 
+const paseoCleanup = await teardownIsolatedPaseoHome(paseoIsolation);
+summary.paseoCleanup = {
+  hermetic: true,
+  agentsDeleted: paseoCleanup.agentsDeleted,
+  workspacesArchived: paseoCleanup.workspacesArchived,
+  remainingAgents: paseoCleanup.remainingAgents ?? [],
+  remainingWorkspaces: paseoCleanup.remainingWorkspaces ?? [],
+  orphanFree: paseoCleanup.orphanFree ?? false,
+  daemonStopped: paseoCleanup.daemonStopped,
+  homeRemoved: paseoCleanup.homeRemoved
+};
+if (!summary.paseoCleanup.orphanFree) {
+  for (const lane of summary.lanes) if (lane.result === "PASS") lane.result = "FAIL";
+}
 const after = await trackedDigest();
 summary.checkoutProof = {
   trackedDigestBefore: before.digest,
@@ -1561,7 +1593,7 @@ summary.checkoutProof = {
   checkoutUntouched: before.digest === after.digest,
   gitStatusBefore,
   gitStatusAfter: run("git", ["status", "--short"]).stdout,
-  note: "Tracked-file digest captured before packing and after all governed lanes; candidates execute only inside disposable /tmp fixtures.",
+  note: "Tracked-file digest captured before packing and after all governed lanes; candidates execute only inside disposable /tmp fixtures with Paseo resources in the isolated daemon home.",
   // R11-F6: tracked documentation/evidence updates (S13 WorkGraph, STATUS, CONFORMANCE, LEDGER)
   // are written after the lanes finish; the recorded digest is the source-tree digest at run end.
   // A later repo-wide digest recomputation includes those documented edits and must be compared

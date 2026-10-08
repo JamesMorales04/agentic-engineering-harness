@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { harnessRevisionV1 } from "./s13CampaignHarnessRevision.mjs";
+import { assertIsolatedPaseoEnv, setupIsolatedPaseoHome, teardownIsolatedPaseoHome } from "./paseoIsolatedHome.mjs";
 
 /**
  * S13 real Paseo session lifecycle campaign (cancel + recovery).
@@ -14,6 +15,13 @@ import { harnessRevisionV1 } from "./s13CampaignHarnessRevision.mjs";
  * scripted provider boundary are used: the lease owner materializes a real provider session,
  * the cancellation path observes and stops the exact real session, and restart takeover
  * inspects/stops the exact prior real session before resuming.
+ *
+ * P-NEW-4 hermetic isolation: every Paseo resource in this campaign lives in a
+ * temporary isolated daemon home (fresh `PASEO_HOME` + free loopback port +
+ * `PASEO_DAEMON_URL`), never in the live daemon. Teardown deletes residual
+ * agents, archives residual workspaces, stops the isolated daemon and removes
+ * the temp home on success/failure/abort. Setup failure throws
+ * `PASEO_ISOLATION_UNAVAILABLE` and the run fails closed (never live).
  *
  * Usage: node tests/packed/s13RealPaseoLifecycleCampaign.mjs [checkout]
  */
@@ -27,6 +35,10 @@ const round = Number(process.env.S13_ROUND ?? "0");
 if (!Number.isSafeInteger(round) || round < 1) throw new Error("S13_ROUND must be a positive integer.");
 const runId = (process.env.S13_RUN_ID ?? `run-${new Date().toISOString().replace(/[-:.TZ]/g, "")}-${crypto.randomBytes(3).toString("hex")}`).trim();
 if (!/^[A-Za-z0-9-]{1,80}$/.test(runId)) throw new Error("S13_RUN_ID must contain only letters, digits, and hyphens.");
+// P-NEW-4: hermetic isolation before any fixture/paseo work. Owner children
+// (`--owner`, handled above) inherit this environment and must not re-setup.
+const paseoIsolation = await setupIsolatedPaseoHome({ prefix: "aeh-s13-lifecycle-" });
+assertIsolatedPaseoEnv(paseoIsolation);
 const checkout = path.resolve(process.argv[2] ?? process.cwd());
 const staging = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-s13-lifecycle-"));
 const evidenceRoot = path.join(checkout, "docs", "evidence", "s13");
@@ -75,6 +87,9 @@ function parsePackFilename(stdout) {
 function laneEnvironment() {
   const env = { ...process.env };
   for (const key of ["AEH_DETERMINISTIC_PASEO_RUNTIME", "AEH_DETERMINISTIC_PASEO", "AEH_MANAGED_AGENT", "AEH_INTERACTIVE_LEAD", "AEH_ORCHESTRATION_ALLOWED", "AEH_OPERATION_ID", "AEH_OPERATION_KIND", "AEH_CONTROL_ROOT", "AEH_OPERATION_STATE_REDIRECT", "AEH_CONTROLLER_EPOCH", "AEH_CONTROLLER_TOKEN", "AEH_ALLOW_NESTED_OPERATION", "PASEO_AGENT_ID", "PASEO_SESSION_ID"]) delete env[key];
+  // P-NEW-4: PASEO_HOME/PASEO_DAEMON_URL are intentionally preserved so lane
+  // children inherit the isolated daemon; the guard above proves they point
+  // at the isolated home, never the live daemon.
   return env;
 }
 
@@ -201,7 +216,8 @@ const summary = {
   version: 1, slice: "S13", round, runId, campaign: "real-paseo-lifecycle",
   generatedAt: new Date().toISOString(), checkout, sourceCommit: run("git", ["rev-parse", "HEAD"]).stdout,
   harnessRevisions,
-  harnessBuildIdentity: buildIdentity, candidate: null, lanes: [], result: "UNKNOWN"
+  harnessBuildIdentity: buildIdentity, candidate: null, lanes: [], result: "UNKNOWN",
+  paseoIsolation: { hermetic: true, home: paseoIsolation.home, port: paseoIsolation.port, daemonUrl: paseoIsolation.daemonUrl, setupAt: paseoIsolation.startedAt }
 };
 const before = await trackedDigest();
 const candidate = await packAndInstall();
@@ -393,8 +409,22 @@ for (const journey of [cancelJourney, recoveryJourney]) {
   console.log(JSON.stringify(summary.lanes.at(-1)));
 }
 
+const paseoCleanup = await teardownIsolatedPaseoHome(paseoIsolation);
+summary.paseoCleanup = {
+  hermetic: true,
+  agentsDeleted: paseoCleanup.agentsDeleted,
+  workspacesArchived: paseoCleanup.workspacesArchived,
+  remainingAgents: paseoCleanup.remainingAgents ?? [],
+  remainingWorkspaces: paseoCleanup.remainingWorkspaces ?? [],
+  orphanFree: paseoCleanup.orphanFree ?? false,
+  daemonStopped: paseoCleanup.daemonStopped,
+  homeRemoved: paseoCleanup.homeRemoved
+};
+if (!summary.paseoCleanup.orphanFree) {
+  for (const lane of summary.lanes) if (lane.result === "PASS") lane.result = "FAIL";
+}
 const after = await trackedDigest();
-summary.checkoutProof = { trackedDigestBefore: before.digest, trackedDigestAfter: after.digest, trackedFiles: before.files, checkoutUntouched: before.digest === after.digest, postRunTrackedDocEditWindow: { opensAfter: new Date().toISOString(), note: "R17-F8: tracked documentation/evidence writes after this timestamp are expected; compare source digests only within a run window." }, note: "Tracked digest captured before packing and after all real lifecycle journeys; all provider sessions run against disposable /tmp fixtures." };
+summary.checkoutProof = { trackedDigestBefore: before.digest, trackedDigestAfter: after.digest, trackedFiles: before.files, checkoutUntouched: before.digest === after.digest, postRunTrackedDocEditWindow: { opensAfter: new Date().toISOString(), note: "R17-F8: tracked documentation/evidence writes after this timestamp are expected; compare source digests only within a run window." }, note: "Tracked digest captured before packing and after all real lifecycle journeys; all provider sessions run in the isolated Paseo home against disposable /tmp fixtures." };
 summary.result = summary.lanes.some((lane) => lane.result !== "PASS") ? "SLICE_BLOCKED" : "PASS";
 const roundLaneRoot = path.join(evidenceRoot, `lifecycle-lanes/round-${round}`, runId);
 await fs.mkdir(roundLaneRoot, { recursive: true });
