@@ -370,10 +370,21 @@ export class HumanDecisionLedgerV2 {
     const names = (await fs.readdir(this.directoryPath)).filter((name) => name.endsWith(".json") && !name.endsWith(".consumed.json")).sort();
     const decisions: HumanDecisionV2[] = [];
     for (const name of names) {
-      const parsed = JSON.parse(await fs.readFile(path.join(this.directoryPath, name), "utf8")) as unknown;
-      decisions.push(assertDecisionV2(parsed));
+      try {
+        const parsed = JSON.parse(await fs.readFile(path.join(this.directoryPath, name), "utf8")) as unknown;
+        decisions.push(assertDecisionV2(parsed));
+      } catch (error) {
+        this.traceSkippedDecisionFile(name, error);
+      }
     }
     return decisions;
+  }
+
+  private traceSkippedDecisionFile(name: string, error: unknown): void {
+    try {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.warn(`HumanDecisionLedgerV2: skipping unreadable decision file ${name}: ${detail}`);
+    } catch { /* best-effort trace never throws */ }
   }
 
   async active(bindingInput: HumanDecisionBindingV2, now = new Date()): Promise<HumanDecisionV2[]> {
