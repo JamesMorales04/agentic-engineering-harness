@@ -419,11 +419,18 @@ export async function setupIsolatedPaseoHome(options = {}) {
         runPaseo(["daemon", "stop"], home, 30_000);
       } catch { /* best-effort */ }
       await fs.rm(home, { recursive: true, force: true }).catch(() => undefined);
-      handle.cleaned = await isHomeRemoved(home);
+      // Verified completion only: cleaned requires BOTH home-removed AND
+      // positive stopped-proof (localDaemon === "stopped" via
+      // isDaemonStoppedSync). Home-removal alone never verifies; daemon-unknown
+      // keeps cleaned=false and handlers installed with a loud trace.
+      const daemonStopped = isDaemonStoppedSync(home);
+      const homeRemoved = await isHomeRemoved(home);
+      handle.cleaned = daemonStopped === true && homeRemoved === true;
       // Setup failed with no handle to return: drop the early-installed abort
-      // handlers when nothing leaks (cleaned), otherwise keep them so an abort
+      // handlers only on verified completion, otherwise keep them so an abort
       // can still clean the leaked home.
       if (handle.cleaned) removeAbortHandlers(handle);
+      else console.error(`PASEO_ISOLATION_UNAVAILABLE: setup cleanup UNVERIFIED for ${home} (daemonStopped=${daemonStopped} homeRemoved=${homeRemoved}); abort handlers stay installed for a later retry.`);
       throw error instanceof Error ? error : new Error(`PASEO_ISOLATION_UNAVAILABLE: ${String(error)}`);
     }
   }
@@ -431,8 +438,13 @@ export async function setupIsolatedPaseoHome(options = {}) {
     runPaseo(["daemon", "stop"], home, 30_000);
   } catch { /* best-effort */ }
   await fs.rm(home, { recursive: true, force: true }).catch(() => undefined);
-  handle.cleaned = await isHomeRemoved(home);
+  // Same verified gate as the catch path above: home-removal alone never
+  // verifies; daemon-unknown keeps cleaned=false with handlers installed.
+  const daemonStopped = isDaemonStoppedSync(home);
+  const homeRemoved = await isHomeRemoved(home);
+  handle.cleaned = daemonStopped === true && homeRemoved === true;
   if (handle.cleaned) removeAbortHandlers(handle);
+  else console.error(`PASEO_ISOLATION_UNAVAILABLE: setup cleanup UNVERIFIED for ${home} (daemonStopped=${daemonStopped} homeRemoved=${homeRemoved}); abort handlers stay installed for a later retry.`);
   const detail = lastError instanceof Error ? lastError.message : String(lastError ?? "unknown");
   console.error(`PASEO_ISOLATION_UNAVAILABLE: isolated daemon setup gave up after ${maxPortAttempts} port attempts [${attemptedPorts.join(",")}]. Last: ${detail.slice(0, 500)} Residual: free-port discovery is availability-only; sustained collision fails closed and never falls back to live.`);
   throw lastError instanceof Error ? lastError : new Error(`PASEO_ISOLATION_UNAVAILABLE: isolated daemon setup failed after ${maxPortAttempts} port attempts [${attemptedPorts.join(",")}].`);
