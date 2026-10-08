@@ -178,6 +178,21 @@ export function findFreePort(host = "127.0.0.1") {
   });
 }
 
+// Single shared validator (Luna round-10 micro-repair): validate the RAW
+// option FIRST. ONLY undefined (absent) resolves to the default; explicit
+// null (or any other non-number / non-finite / <=0 value: strings, NaN, 0,
+// negatives, Infinity) throws PASEO_ISOLATION_INVALID. Both
+// findFreePortWithTimeout and setupIsolatedPaseoHome use this so the two
+// entry points agree (pre-repair setup's `??` coerced explicit null to the
+// default BEFORE validation while the wrapper rejected null).
+export function resolvePortDiscoveryTimeoutMs(raw, refusal = "refusing to start unbounded discovery.") {
+  if (raw === undefined) return ISOLATION_PORT_DISCOVERY_TIMEOUT_MS;
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) {
+    throw new Error(`PASEO_ISOLATION_INVALID: portDiscoveryTimeoutMs must be a finite positive number (got ${String(raw)}); ${refusal}`);
+  }
+  return raw;
+}
+
 // Bounded port discovery (Luna round-8): race the raw discovery against
 // ISOLATION_PORT_DISCOVERY_TIMEOUT_MS so a never-settling bind cannot hang
 // setup in `setting-up`. Timeout rejects with PASEO_ISOLATION_UNAVAILABLE +
@@ -192,10 +207,8 @@ export function findFreePort(host = "127.0.0.1") {
 // lifecycle inline so the timer can close it best-effort on timeout/error.
 // Timeout validation (Luna round-9 C2): timeoutMs must be a finite positive
 // number, otherwise throw PASEO_ISOLATION_INVALID (fail fast, no side effect).
-export function findFreePortWithTimeout(host = "127.0.0.1", timeoutMs = ISOLATION_PORT_DISCOVERY_TIMEOUT_MS) {
-  if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    throw new Error(`PASEO_ISOLATION_INVALID: portDiscoveryTimeoutMs must be a finite positive number (got ${String(timeoutMs)}); refusing to start unbounded discovery.`);
-  }
+export function findFreePortWithTimeout(host = "127.0.0.1", timeoutMs = undefined) {
+  const timeout = resolvePortDiscoveryTimeoutMs(timeoutMs, "refusing to start unbounded discovery.");
   return new Promise((resolve, reject) => {
     let settled = false;
     let timer;
@@ -221,8 +234,8 @@ export function findFreePortWithTimeout(host = "127.0.0.1", timeoutMs = ISOLATIO
       if (settled) return;
       settled = true;
       closeServerBestEffort();
-      reject(new Error(`PASEO_ISOLATION_UNAVAILABLE: free port discovery timed out after ${timeoutMs}ms (PASEO_ISOLATION_PORT_TIMEOUT); refusing to hang setup in setting-up.`));
-    }, timeoutMs);
+      reject(new Error(`PASEO_ISOLATION_UNAVAILABLE: free port discovery timed out after ${timeout}ms (PASEO_ISOLATION_PORT_TIMEOUT); refusing to hang setup in setting-up.`));
+    }, timeout);
     server.once("error", (error) => {
       if (settled) return;
       settled = true;
@@ -694,14 +707,15 @@ export async function setupIsolatedPaseoHome(options = {}) {
   const prefix = options.prefix ?? "aeh-s13-iso-";
   const host = options.host ?? "127.0.0.1";
   const maxPortAttempts = options.maxPortAttempts ?? ISOLATION_SETUP_MAX_PORT_ATTEMPTS;
-  const portDiscoveryTimeoutMs = options.portDiscoveryTimeoutMs ?? ISOLATION_PORT_DISCOVERY_TIMEOUT_MS;
-  // Fail-fast validation (Luna round-9 C2): portDiscoveryTimeoutMs must be a
-  // finite positive number (0/negative would time out immediately, Infinity
-  // overflows the timer). Throw explicit PASEO_ISOLATION_INVALID BEFORE any
-  // side effect (no registry mutation, no mkdtemp, no env change).
-  if (typeof portDiscoveryTimeoutMs !== "number" || !Number.isFinite(portDiscoveryTimeoutMs) || portDiscoveryTimeoutMs <= 0) {
-    throw new Error(`PASEO_ISOLATION_INVALID: portDiscoveryTimeoutMs must be a finite positive number (got ${String(portDiscoveryTimeoutMs)}); refusing isolated setup before any side effect.`);
-  }
+  // Fail-fast validation (Luna round-9 C2, shared validator since round-10):
+  // validate the RAW option first — ONLY undefined (absent) resolves to the
+  // default; explicit null (or strings, NaN, <=0, non-finite) throws explicit
+  // PASEO_ISOLATION_INVALID BEFORE any side effect (no registry mutation, no
+  // mkdtemp, no env change).
+  const portDiscoveryTimeoutMs = resolvePortDiscoveryTimeoutMs(
+    options.portDiscoveryTimeoutMs,
+    "refusing isolated setup before any side effect."
+  );
   const previous = {
     PASEO_HOME: process.env.PASEO_HOME,
     PASEO_DAEMON_URL: process.env.PASEO_DAEMON_URL,

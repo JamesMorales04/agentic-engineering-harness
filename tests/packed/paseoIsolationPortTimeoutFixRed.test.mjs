@@ -110,7 +110,11 @@ test("C2: setup rejects invalid portDiscoveryTimeoutMs with INVALID before any s
     try { mod.__resetIsolationAbortManagerForTests(); } catch { /* best-effort */ }
   });
   try { mod.__resetIsolationAbortManagerForTests(); } catch { /* best-effort */ }
-  for (const bad of [0, -5, Infinity, -Infinity, NaN]) {
+  // Luna round-10: validate the RAW option first — explicit null (or any
+  // non-undefined invalid: strings, NaN, <=0, non-finite) must INVALID;
+  // ONLY undefined (absent) resolves to the default. Pre-repair setup's
+  // `??` coerced explicit null to the default BEFORE validation.
+  for (const bad of [0, -5, Infinity, -Infinity, NaN, null, "fast", "30000", ""]) {
     const before = new Set(await fs.readdir(os.tmpdir()).catch(() => []));
     const start = Date.now();
     await assert.rejects(
@@ -129,6 +133,40 @@ test("C2: setup rejects invalid portDiscoveryTimeoutMs with INVALID before any s
     }
     assert.equal(leaked.length, 0, `INVALID must not create a temp home (leaked: ${leaked.join(",")})`);
   }
+});
+
+test("C2b (round-10): raw-first validation — null/strings/NaN INVALID, ONLY undefined -> default", async () => {
+  const mod = await import("./paseoIsolatedHome.mjs");
+  assert.equal(typeof mod.resolvePortDiscoveryTimeoutMs, "function", "module must export the single shared resolvePortDiscoveryTimeoutMs validator");
+  // ONLY undefined (absent) resolves to the default.
+  assert.equal(
+    mod.resolvePortDiscoveryTimeoutMs(undefined),
+    mod.ISOLATION_PORT_DISCOVERY_TIMEOUT_MS,
+    "undefined must resolve to ISOLATION_PORT_DISCOVERY_TIMEOUT_MS"
+  );
+  // Explicit null (or any non-undefined invalid) throws INVALID via the
+  // shared validator — the same validator both entry points use.
+  for (const bad of [null, "fast", "30000", "", " ", true, NaN, 0, -1, Infinity]) {
+    assert.throws(
+      () => mod.resolvePortDiscoveryTimeoutMs(bad),
+      /PASEO_ISOLATION_INVALID/,
+      `resolvePortDiscoveryTimeoutMs(${String(bad)}) must throw PASEO_ISOLATION_INVALID`
+    );
+  }
+  // Wrapper agrees: explicit undefined takes the default (real discovery,
+  // resolves fast locally); explicit null throws INVALID.
+  const port = await mod.findFreePortWithTimeout("127.0.0.1", undefined);
+  assert.ok(Number.isInteger(port) && port > 0, `wrapper with undefined must discover a real port (got ${String(port)})`);
+  assert.throws(
+    () => mod.findFreePortWithTimeout("127.0.0.1", null),
+    /PASEO_ISOLATION_INVALID/,
+    "wrapper with explicit null must throw PASEO_ISOLATION_INVALID"
+  );
+  assert.throws(
+    () => mod.findFreePortWithTimeout("127.0.0.1", "fast"),
+    /PASEO_ISOLATION_INVALID/,
+    "wrapper with a string must throw PASEO_ISOLATION_INVALID"
+  );
 });
 
 // ---------------------------------------------------------------------------
