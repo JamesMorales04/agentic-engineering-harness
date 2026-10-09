@@ -58,7 +58,7 @@ test.beforeAll(async ({ browser }) => {
   page = await context.newPage();
   await page.goto(start.pairingUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
   await expect.poll(() => page.url().includes("pair="), { timeout: 30_000, message: "the UI must consume and clear the #pair fragment" }).toBe(false);
-  await expect(page.getByText("Paired loopback session")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText("Paired private session")).toBeVisible({ timeout: 30_000 });
   await expect(page.locator('header [aria-label="Status: connected"]')).toBeVisible({ timeout: 30_000 });
 });
 
