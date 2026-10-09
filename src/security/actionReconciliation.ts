@@ -119,6 +119,8 @@ export async function reconcileToolAction(
       return reconcileGithubBranchCreate(intent, payload, resolved);
     case "github.pull-request.create":
       return reconcileGithubPullRequestCreate(intent, payload, resolved);
+    case "github.pull-request.merge":
+      return reconcileGithubPullRequestMerge(intent, payload, resolved);
     case "github.issue.create":
       return reconcileGithubIssueCreate(intent, payload, resolved);
     case "paseo.workspace.create":
@@ -397,6 +399,68 @@ async function reconcileGithubPullRequestCreate(intent: ActionIntentV1, payload:
     return buildResult(intent, "FAILED", "open-pull-request-not-observed", { repository, head: headQualifier, base, apiBase, status: 200, matchCount: 0 }, dependencies.now);
   }
   return buildResult(intent, "UNKNOWN", "github-response-mismatch", { repository, head: headQualifier, base, apiBase, status: 200, returned: observed.body.length }, dependencies.now);
+}
+
+async function reconcileGithubPullRequestMerge(intent: ActionIntentV1, payload: unknown, dependencies: ResolvedDependenciesV1): Promise<ActionReconciliationResultV1> {
+  const record = asPayloadRecord(payload);
+  if (!record) return buildResult(intent, "UNKNOWN", "payload-missing-evidence", invalidPayloadEvidence(payload, ["payload"]), dependencies.now);
+  const invalid: string[] = [];
+  const repository = nonEmptyString(record.repository);
+  if (!repository || !GITHUB_REPOSITORY_PATTERN.test(repository)) invalid.push("repository");
+  const number = typeof record.number === "number" && Number.isSafeInteger(record.number) && record.number > 0 ? record.number : undefined;
+  if (!number) invalid.push("number");
+  const headSha = nonEmptyString(record.headSha);
+  if (!headSha || !GIT_COMMIT_PATTERN.test(headSha)) invalid.push("headSha");
+  const baseRef = nonEmptyString(record.baseRef);
+  if (!baseRef) invalid.push("baseRef");
+  if (invalid.length > 0 || !repository || !number || !headSha || !baseRef) {
+    return buildResult(intent, "UNKNOWN", "payload-missing-evidence", invalidPayloadEvidence(payload, invalid), dependencies.now);
+  }
+  const apiBase = normalizeApiBase(record.apiBase);
+  const token = dependencies.token;
+  if (!token) {
+    return buildResult(intent, "HUMAN_REQUIRED", "github-token-unavailable", { repository, number, headSha: headSha.toLowerCase(), baseRef, apiBase }, dependencies.now);
+  }
+  const url = `${apiBase}/repos/${encodeRepository(repository)}/pulls/${number}`;
+  const observed = await observeGithub(dependencies.fetchJson, url, token);
+  if (observed.kind === "error") {
+    return buildResult(intent, "UNKNOWN", "github-api-unavailable", { repository, number, headSha: headSha.toLowerCase(), baseRef, apiBase, error: observed.message }, dependencies.now);
+  }
+  if (observed.status === 404) {
+    return buildResult(intent, "FAILED", "pull-request-absent", { repository, number, headSha: headSha.toLowerCase(), baseRef, apiBase, status: 404 }, dependencies.now);
+  }
+  if (observed.status !== 200) {
+    return buildResult(intent, "UNKNOWN", "github-api-unexpected-status", { repository, number, headSha: headSha.toLowerCase(), baseRef, apiBase, status: observed.status }, dependencies.now);
+  }
+  const body = asPayloadRecord(observed.body);
+  if (!body) {
+    return buildResult(intent, "UNKNOWN", "github-response-uninterpretable", { repository, number, headSha: headSha.toLowerCase(), baseRef, apiBase, status: 200 }, dependencies.now);
+  }
+  const merged = body.merged === true;
+  const observedHead = asPayloadRecord(body.head)?.sha;
+  const observedBaseRef = asPayloadRecord(body.base)?.ref;
+  const mergeCommit = typeof body.merge_commit_sha === "string" ? body.merge_commit_sha : undefined;
+  const state = typeof body.state === "string" ? body.state : "unknown";
+  const evidence = {
+    repository, number, expectedHeadSha: headSha.toLowerCase(), expectedBaseRef: baseRef, apiBase, status: 200,
+    merged, state,
+    observedHeadSha: typeof observedHead === "string" ? observedHead.toLowerCase() : null,
+    observedBaseRef: typeof observedBaseRef === "string" ? observedBaseRef : null,
+    mergeCommitSha: typeof mergeCommit === "string" ? mergeCommit.toLowerCase() : null,
+  };
+  if (!merged) {
+    return buildResult(intent, "FAILED", state === "closed" ? "pull-request-closed-unmerged" : "pull-request-not-merged", evidence, dependencies.now);
+  }
+  if (typeof observedHead === "string" && observedHead.toLowerCase() !== headSha.toLowerCase()) {
+    return buildResult(intent, "FAILED", "pull-request-merged-unexpected-head", evidence, dependencies.now);
+  }
+  if (typeof observedBaseRef === "string" && observedBaseRef !== baseRef) {
+    return buildResult(intent, "FAILED", "pull-request-merged-unexpected-base", evidence, dependencies.now);
+  }
+  if (!mergeCommit || !GIT_COMMIT_PATTERN.test(mergeCommit)) {
+    return buildResult(intent, "UNKNOWN", "pull-request-merge-commit-unreadable", evidence, dependencies.now);
+  }
+  return buildResult(intent, "SUCCEEDED", "pull-request-merged", evidence, dependencies.now);
 }
 
 async function reconcileGithubIssueCreate(intent: ActionIntentV1, payload: unknown, dependencies: ResolvedDependenciesV1): Promise<ActionReconciliationResultV1> {

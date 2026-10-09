@@ -5,6 +5,7 @@ export const TOOL_ACTION_KINDS_V1 = [
   "github.issue.create",
   "github.branch.create",
   "github.pull-request.create",
+  "github.pull-request.merge",
   "paseo.workspace.create"
 ] as const;
 
@@ -17,7 +18,8 @@ export const GITHUB_DELIVERY_ACTIONS_V1 = [
   "git.push",
   "github.issue.create",
   "github.branch.create",
-  "github.pull-request.create"
+  "github.pull-request.create",
+  "github.pull-request.merge"
 ] as const satisfies readonly ToolActionKindV1[];
 
 export type GitHubDeliveryActionV1 = (typeof GITHUB_DELIVERY_ACTIONS_V1)[number];

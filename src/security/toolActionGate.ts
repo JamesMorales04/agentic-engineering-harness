@@ -87,6 +87,7 @@ const ACTION_IMPACTS: Readonly<Record<ToolActionKindV1, ToolActionImpactV1>> = {
   "github.issue.create": "EXTERNAL_NON_IDEMPOTENT",
   "github.branch.create": "EXTERNAL_RECONCILABLE",
   "github.pull-request.create": "EXTERNAL_RECONCILABLE",
+  "github.pull-request.merge": "EXTERNAL_PUBLICATION",
   "paseo.workspace.create": "LOCAL_RESOURCE_CREATION"
 };
 

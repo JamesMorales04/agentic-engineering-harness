@@ -13,11 +13,12 @@ export interface ConfiguredDeliveryPolicyV1 {
   repository?: string;
   pullRequestDraft: boolean;
   pullRequests: boolean;
+  mergeMode: "PR_ONLY" | "AUTO_MERGE" | "RISK_GATED";
 }
 
 /** Exact project-configured delivery actions and branch/PR settings. This grants no authority by itself. */
 export function configuredDeliveryPolicy(config: HarnessProjectConfig, kind: OperationKind): ConfiguredDeliveryPolicyV1 {
-  if (kind === "audit") return { githubEnabled: false, paseoEnabled: false, finalizeOnAcceptance: false, allowedActions: [], allowedExternalEffects: [], pullRequestDraft: true, pullRequests: false };
+  if (kind === "audit") return { githubEnabled: false, paseoEnabled: false, finalizeOnAcceptance: false, allowedActions: [], allowedExternalEffects: [], pullRequestDraft: true, pullRequests: false, mergeMode: "PR_ONLY" };
   const github = config.delivery?.github;
   if (github?.enabled !== true) return {
     githubEnabled: false,
@@ -28,15 +29,18 @@ export function configuredDeliveryPolicy(config: HarnessProjectConfig, kind: Ope
     branchPattern: github?.branchPattern,
     repository: github?.repository,
     pullRequestDraft: true,
-    pullRequests: false
+    pullRequests: false,
+    mergeMode: "PR_ONLY"
   };
   const configured = new Set(github.allowedActions ?? []);
-  const finalizationActions = new Set<ToolActionKindV1>(["git.commit", "git.push", "github.pull-request.create"]);
+  const finalizationActions = new Set<ToolActionKindV1>(["git.commit", "git.push", "github.pull-request.create", "github.pull-request.merge"]);
   const allowedActions = [...configured]
     .filter((action) => action !== "github.pull-request.create" || github.pullRequests !== false)
+    .filter((action) => action !== "github.pull-request.merge" || (github.pullRequests !== false && (github.mergeMode === "AUTO_MERGE" || github.mergeMode === "RISK_GATED")))
     .filter((action) => !finalizationActions.has(action) || github.finalizeOnAcceptance === true)
     .sort();
-  const external = new Set<ToolActionKindV1>(["git.push", "github.issue.create", "github.branch.create", "github.pull-request.create"]);
+  const external = new Set<ToolActionKindV1>(["git.push", "github.issue.create", "github.branch.create", "github.pull-request.create", "github.pull-request.merge"]);
+  const mergeMode = github.mergeMode === "AUTO_MERGE" || github.mergeMode === "RISK_GATED" ? github.mergeMode : "PR_ONLY";
   return {
     githubEnabled: true,
     paseoEnabled: config.delivery?.paseo?.enabled === true,
@@ -46,7 +50,8 @@ export function configuredDeliveryPolicy(config: HarnessProjectConfig, kind: Ope
     branchPattern: github.branchPattern,
     repository: github.repository,
     pullRequestDraft: github.pullRequestDraft ?? true,
-    pullRequests: github.pullRequests !== false
+    pullRequests: github.pullRequests !== false,
+    mergeMode
   };
 }
 
