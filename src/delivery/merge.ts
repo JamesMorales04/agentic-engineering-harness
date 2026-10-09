@@ -55,6 +55,17 @@ export interface LiveMergeStateV1 {
 }
 
 /**
+ * DETERMINISTIC: verify post-merge identity. After the merge, the observed
+ * head SHA must be present and exactly match the reviewed head; a missing or
+ * mismatched observation is a new delivery incident (never silent success).
+ */
+export function assertPostMergeIdentity(prNumber: number, reviewedHeadSha: string, observedHeadSha: unknown): void {
+  if (typeof observedHeadSha !== "string" || observedHeadSha.toLowerCase() !== reviewedHeadSha.toLowerCase()) {
+    throw new Error(`BLOCKED_EXTERNAL: post-merge reconciliation reports PR #${prNumber} merged an unexpected or unobserved head; treat as a new delivery incident.`);
+  }
+}
+
+/**
  * DETERMINISTIC: evaluate live merge state observed from GitHub against the
  * reviewed PR identity. Fails closed: observed head SHA, base SHA, and base
  * ref are all required and must exactly match the reviewed identity; only
@@ -275,9 +286,7 @@ export async function mergeAcceptedPullRequest(
   if (after.merged !== true) {
     throw new Error(`BLOCKED_EXTERNAL: post-merge reconciliation reports PR #${input.pr.number} is not merged; treat as a new delivery incident.`);
   }
-  if (typeof after.head?.sha === "string" && after.head.sha.toLowerCase() !== input.pr.headSha.toLowerCase()) {
-    throw new Error(`BLOCKED_EXTERNAL: post-merge reconciliation reports PR #${input.pr.number} merged an unexpected head; treat as a new delivery incident.`);
-  }
+  assertPostMergeIdentity(input.pr.number, input.pr.headSha, after.head?.sha);
   return {
     merged: true,
     mergeCommitSha: typeof after.merge_commit_sha === "string" ? after.merge_commit_sha : undefined,

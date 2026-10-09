@@ -12,7 +12,7 @@ import {
   resolveDeliveryMergeMode,
   verifyIndependentPrReviewDigest,
 } from "../src/delivery/prReview.js";
-import { evaluateLiveMergeState } from "../src/delivery/merge.js";
+import { evaluateLiveMergeState, assertPostMergeIdentity } from "../src/delivery/merge.js";
 import type { CandidateRevisionV1 } from "../src/operations/v2Contracts.js";
 
 function candidate(): CandidateRevisionV1 {
@@ -347,6 +347,12 @@ describe("IndependentPullRequestReview native gate", () => {
     expect(evaluateLiveMergeState(reviewed, noBase).length).toBeGreaterThan(0);
     const { baseRef: _r, ...noRef } = clean;
     expect(evaluateLiveMergeState(reviewed, noRef).length).toBeGreaterThan(0);
+  });
+
+  it("post-merge identity requires an observed matching head", () => {
+    expect(() => assertPostMergeIdentity(155, "a".repeat(40), "a".repeat(40))).not.toThrow();
+    expect(() => assertPostMergeIdentity(155, "a".repeat(40), undefined)).toThrow(/unexpected or unobserved head/);
+    expect(() => assertPostMergeIdentity(155, "a".repeat(40), "f".repeat(40))).toThrow(/unexpected or unobserved head/);
   });
 });
 
