@@ -856,17 +856,25 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
   // loop (no repair turns while suspended/waiting/declined/expired). The
   // blocked report above is terminal with attempts=0.
   // Scope-escape correction budget (no new budget): the single DIRECT
-  // correction above plus any wave escape corrections (waveResult) each
-  // consume one repair slot. The loop below therefore allows fewer repairs
-  // when corrections were used (fail-closed rate-limit for probing).
+  // correction above plus any wave escape corrections (waveResult) plus any
+  // repair-path corrections below each consume one repair slot. The loop
+  // therefore allows fewer repairs when corrections were used (fail-closed
+  // rate-limit for probing).
   const waveEscapeCorrections = waveResult?.escapeCorrections ?? 0;
-  const escapeCorrectionsUsed = (directEscapeCorrectionUsed ? 1 : 0) + waveEscapeCorrections;
+  let escapeCorrectionsUsed = (directEscapeCorrectionUsed ? 1 : 0) + waveEscapeCorrections;
   while (!planningFailure && !implementerScopeBlockedCheck && report.status === "FAIL" && attempts + escapeCorrectionsUsed < maxRepairs) {
     if (operationId && supervisorSelection) {
       await ensureOperationSupervisor(workspaceRoot, effectiveConfig, effectiveContract, supervisorSelection, { required: true, forceMaterialize: true });
       await runStage(operationStateRoot, operationId, "remediation", "RUNNING");
     }
     attempts += 1;
+    // Luna round-3 REMAINING pre-offer gate (no new budget): the loop bound
+    // above guarantees attempts+used < max on entry, but the increment
+    // consumes one slot — the correction inside the repair below must check
+    // REMAINING (max - (attempts + used)) BEFORE offering. Remaining < 1 →
+    // original escape throw immediately, no correction (1 repair + 1
+    // correction must never exceed max; e.g. max=1 → no correction).
+    const repairCorrectionRemaining = maxRepairs - (attempts + escapeCorrectionsUsed);
     const failureEvidence = { report, worker };
     const currentOperation = operationId ? await loadOperation(operationStateRoot, operationId) : undefined;
     const failureDecision = semanticRuntime && currentOperation?.candidateRevision
@@ -916,9 +924,10 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
         forbiddenScope: [...(effectiveContract.scope?.forbidden ?? []), ...(effectiveContract.scope?.frozen ?? []), ...(effectiveConfig.validation?.frozenPaths ?? [])],
         prompt: repairPrompt,
         prepareWorkspace: controller ? async (isolatedRoot) => { await materializeControlPlaneSnapshot(controller!, isolatedRoot, effectiveConfig); } : undefined,
-        execute: (isolatedRoot, participantId) => executeAgentPrompt(isolatedRoot, effectiveConfig, effectiveContract, repairerSelection, repairPrompt, { outputContract: repairerSelection.outputContract ?? "implementer", phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true }),
+        execute: (isolatedRoot, participantId, prompt) => executeAgentPrompt(isolatedRoot, effectiveConfig, effectiveContract, repairerSelection, prompt, { outputContract: repairerSelection.outputContract ?? "implementer", phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true }),
         semanticAssessment: impactAssessmentRuntime,
-        onScopeEscape
+        onScopeEscape,
+        escapeCorrectionRemainingBudget: repairCorrectionRemaining
       }),
     });
     // Repair-scope blocker → bounded ledger-gated replan (the single production
@@ -997,13 +1006,15 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
           scopeAmendment: amendment,
           prompt: repairPrompt,
           prepareWorkspace: controller ? async (isolatedRoot) => { await materializeControlPlaneSnapshot(controller!, isolatedRoot, effectiveConfig); } : undefined,
-          execute: (isolatedRoot, participantId) => executeAgentPrompt(isolatedRoot, effectiveConfig, effectiveContract, repairerSelection, repairPrompt, { outputContract: repairerSelection.outputContract ?? "implementer", phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true }),
+          execute: (isolatedRoot, participantId, prompt) => executeAgentPrompt(isolatedRoot, effectiveConfig, effectiveContract, repairerSelection, prompt, { outputContract: repairerSelection.outputContract ?? "implementer", phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true }),
           semanticAssessment: impactAssessmentRuntime,
-          onScopeEscape
+          onScopeEscape,
+          escapeCorrectionRemainingBudget: maxRepairs - (attempts + escapeCorrectionsUsed)
         }),
       });
       worker = amendedRetry.session;
       executionSessions.push(worker);
+      if (amendedRetry.correctionUsed) escapeCorrectionsUsed += 1;
       if (amendedRetry.scopeBlocker) {
         // A second blocker after the single amendment means the retry still
         // needs scope outside the amended allowlist: BLOCKED (no second
@@ -1030,6 +1041,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     }
     worker = repair.session;
     executionSessions.push(worker);
+    if (repair.correctionUsed) escapeCorrectionsUsed += 1;
     if (repair.candidate) candidateImpact = repair.impact;
     await prepareValidationWorkspace();
     report = withWorkerExecutionCheck(await verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, selection), worker);

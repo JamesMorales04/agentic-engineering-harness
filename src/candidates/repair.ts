@@ -17,6 +17,11 @@ import type { CandidateImpactAssessmentRuntimeV1, CandidateScopeEscapeV1, Change
 import { captureInverseCandidateChangeSet, executeIsolatedCandidateMutation } from "./direct.js";
 import { assembleAndBindCandidateChangeSet } from "./binding.js";
 import {
+  buildScopeEscapeCorrectionPrompt,
+  isScopeCorrectionTimeoutError,
+  withOneScopeEscapeCorrectionTurnV1,
+} from "./scopeEscapeCorrection.js";
+import {
   assertRepairScopeBlockerReceipt,
   createRepairScopeBlockerReceipt,
   parseRepairScopeBlockerFromSession,
@@ -44,6 +49,14 @@ export interface RepairCandidateMutationResultV1 {
    * Silent scope expansion still throws in the assembler.
    */
   scopeBlocker?: RepairScopeBlockerReceiptV1;
+  /**
+   * True when the single bounded scope-escape correction turn was used and
+   * succeeded (initial assembly escaped, correction re-validated and bound).
+   * Counts against the EXISTING repair budget (no new knob): run.ts consumes
+   * this against maxRepairs (attempts + corrections < max). Terminal
+   * second-escape/timeout throws the ORIGINAL (no flag, operation dead).
+   */
+  correctionUsed?: boolean;
 }
 
 export function assertCompiledRepairer(selection: AgentExecutionSelection | undefined, catalog: ExecutionCatalogV1 | undefined): asserts selection is AgentExecutionSelection {
@@ -80,7 +93,7 @@ export async function executeRepairerCandidateMutation(input: {
   allowedScope: readonly string[];
   forbiddenScope: readonly string[];
   prompt: string;
-  execute: (isolatedRoot: string, participantId: string) => Promise<WorkerSession>;
+  execute: (isolatedRoot: string, participantId: string, prompt: string) => Promise<WorkerSession>;
   prepareWorkspace?: (isolatedRoot: string) => Promise<void>;
   semanticAssessment?: CandidateImpactAssessmentRuntimeV1;
   /**
@@ -98,14 +111,24 @@ export async function executeRepairerCandidateMutation(input: {
    * rejection still throws; no blocker routing for silent expansion.
    */
   onScopeEscape?: (record: CandidateScopeEscapeV1) => Promise<void> | void;
+  /**
+   * DETERMINISTIC REMAINING repair-budget slots for the pre-offer correction
+   * gate (Luna round-3). When defined, `remaining >= 1` decides the offer
+   * (remaining < 1 → original escape throw immediately, no correction);
+   * when undefined, falls back to the static `maxAttempts >= 1` check.
+   * run.ts passes `maxRepairs - (attempts + escapeCorrectionsUsed)` computed
+   * AFTER incrementing attempts for the current repair turn.
+   */
+  escapeCorrectionRemainingBudget?: number;
 }): Promise<RepairCandidateMutationResultV1> {
   assertCompiledRepairer(input.selection, input.executionCatalog);
+  const selection = input.selection;
   const operation = await loadOperation(input.stateRoot, input.operationId);
   const currentCandidate = operation.candidateRevision;
   if (!currentCandidate) throw new AehError("CANDIDATE_STALE", `Operation ${input.operationId} has no current CandidateRevision for Repairer execution.`);
   if (currentCandidate.taskId && currentCandidate.taskId !== input.taskId) throw new AehError("CANDIDATE_STALE", "Repairer candidate belongs to another task.");
 
-  const participantId = deterministicParticipantId(input.operationId, input.selection.logicalAgent, `${input.phase}:${input.workUnitId}`);
+  const participantId = deterministicParticipantId(input.operationId, selection.logicalAgent, `${input.phase}:${input.workUnitId}`);
   const isolated = await executeIsolatedCandidateMutation({
     root: input.root,
     operationId: input.operationId,
@@ -114,7 +137,7 @@ export async function executeRepairerCandidateMutation(input: {
     candidate: currentCandidate,
     config: input.config,
     contract: input.contract,
-    execute: (isolatedRoot) => input.execute(isolatedRoot, participantId),
+    execute: (isolatedRoot) => input.execute(isolatedRoot, participantId, input.prompt),
     prepareWorkspace: input.prepareWorkspace
   });
   if (isolated.session.exitCode !== 0) {
@@ -175,7 +198,7 @@ export async function executeRepairerCandidateMutation(input: {
       taskId: input.taskId,
       workUnitId: input.workUnitId,
       participantId,
-      role: input.selection.role,
+      role: selection.role,
       blockerDigest: blocker.digest,
       filesNeededOutsideScope: blocker.filesNeededOutsideScope,
     }).catch(() => undefined);
@@ -186,6 +209,7 @@ export async function executeRepairerCandidateMutation(input: {
   if (parseRepairScopeBlockerFromSession(isolated.session)) {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "REPAIR_SCOPE_BLOCKER_CONFLICT: Repairer declared filesNeededOutsideScope while also producing a ChangeSet; the no-mutation blocker path requires no file changes.");
   }
+  const initialChangeSet: ChangeSetV1 = isolated.changeSet;
 
   // Amendment-path exact carve-out for subtree denies (see assembler field
   // docs): only the amendment-exempted exact files, only when they were just
@@ -197,33 +221,175 @@ export async function executeRepairerCandidateMutation(input: {
   // Serialized under the per-operation coordination lock (re-validated inside):
   // a concurrent assembly that advanced the candidate first turns this into a
   // clean CANDIDATE_STALE instead of tearing the shared workspace.
-  const assembled = await assembleAndBindCandidateChangeSet({
-    root: input.root,
-    stateRoot: input.stateRoot,
-    operationId: input.operationId,
-    projectId: currentCandidate.projectId,
-    taskId: input.taskId,
-    baseCandidate: currentCandidate,
-    changeSet: isolated.changeSet,
-    allowedScope,
-    forbiddenScope,
-    candidateId: `candidate:${input.operationId}:r${currentCandidate.revision + 1}`,
-    workspace: currentCandidate.workspace,
-    worktree: input.root,
-    semanticAssessment: input.semanticAssessment,
-    ...(exactScopeExemptions ? { exactScopeExemptions } : {}),
-    ...(input.onScopeEscape ? { onScopeEscape: input.onScopeEscape } : {})
+  //
+  // Scope-escape ONE-correction turn (IDENTICAL to DIRECT run.ts:732):
+  // assembler keeps throwing unchanged (fail-closed, nothing applied).
+  // FIRST scope escape per Repairer-attempt gets exactly ONE correction turn
+  // with a precise diagnostic (escaped + hard/amendable + declare-via-
+  // filesNeededOutsideScope + second-escape-terminal). NEVER echoes full
+  // allowed/forbidden patterns ((a)=FALSE guard). Second escape or correction
+  // timeout → ORIGINAL terminal kill. Correction counts against the EXISTING
+  // repair budget (no new knob): allowed only when maxRepairs>=1 (same source
+  // as DIRECT/wave: contract.repair.maxAttempts → config fallback → 2);
+  // when used, run.ts consumes correctionUsed against maxRepairs (attempts +
+  // corrections < max). Assembly re-validates fully on re-attempt (never apply
+  // unapproved). Symlink/empty/digest/stale stay terminal (no correction).
+  // Declaration-first BLOCKED routing preserved: correction declaring
+  // filesNeededOutsideScope with NO changes → BLOCKED receipt (never PASS);
+  // changes+declaration → CONFLICT fail-closed (correction error, not original).
+  type RepairAssemblyOutcome = {
+    session: WorkerSession;
+    changeSet?: ChangeSetV1;
+    candidate?: CandidateRevisionV1;
+    impact?: import("./assembler.js").CandidateImpactV1;
+    scopeBlocker?: RepairScopeBlockerReceiptV1;
+  };
+  const assembleRepairChangeSet = (changeSet: ChangeSetV1) =>
+    assembleAndBindCandidateChangeSet({
+      root: input.root,
+      stateRoot: input.stateRoot,
+      operationId: input.operationId,
+      projectId: currentCandidate.projectId,
+      taskId: input.taskId,
+      baseCandidate: currentCandidate,
+      changeSet,
+      allowedScope,
+      forbiddenScope,
+      candidateId: `candidate:${input.operationId}:r${currentCandidate.revision + 1}`,
+      workspace: currentCandidate.workspace,
+      worktree: input.root,
+      semanticAssessment: input.semanticAssessment,
+      ...(exactScopeExemptions ? { exactScopeExemptions } : {}),
+      ...(input.onScopeEscape ? { onScopeEscape: input.onScopeEscape } : {})
+    });
+  const repairMaxAttempts =
+    (typeof (input.contract as { repair?: { maxAttempts?: unknown } }).repair?.maxAttempts === "number" &&
+    Number.isSafeInteger((input.contract as { repair?: { maxAttempts?: unknown } }).repair?.maxAttempts) &&
+    ((input.contract as { repair?: { maxAttempts?: unknown } }).repair?.maxAttempts as number) >= 0
+      ? ((input.contract as { repair?: { maxAttempts?: unknown } }).repair?.maxAttempts as number)
+      : typeof (input.config as { orchestration?: { worker?: { maxRepairAttempts?: unknown } } }).orchestration?.worker?.maxRepairAttempts === "number" &&
+        Number.isSafeInteger((input.config as { orchestration?: { worker?: { maxRepairAttempts?: unknown } } }).orchestration?.worker?.maxRepairAttempts) &&
+        ((input.config as { orchestration?: { worker?: { maxRepairAttempts?: unknown } } }).orchestration?.worker?.maxRepairAttempts as number) >= 0
+        ? ((input.config as { orchestration?: { worker?: { maxRepairAttempts?: unknown } } }).orchestration?.worker?.maxRepairAttempts as number)
+        : 2);
+  // Luna round-3 REMAINING pre-offer gate (mirrors accepted wave tryReserve):
+  // when the caller supplies remaining slots, remaining < 1 → direct assembly
+  // with NO correction turn offered; otherwise the static max>=1 fallback.
+  const allowRepairCorrection = input.escapeCorrectionRemainingBudget !== undefined
+    ? input.escapeCorrectionRemainingBudget >= 1
+    : repairMaxAttempts >= 1;
+  if (!allowRepairCorrection) {
+    const assembled = await assembleRepairChangeSet(initialChangeSet);
+    await recordEvent(input.stateRoot, input.config, "harness.candidate.repair-assembled", {
+      taskId: input.taskId,
+      workUnitId: initialChangeSet.workUnitId,
+      participantId: initialChangeSet.participantId,
+      role: selection.role,
+      candidateRevision: assembled.candidate.revision,
+      candidateDigest: assembled.candidate.sourceDigest,
+      impactDigest: assembled.impact.digest
+    });
+    return { session: isolated.session, changeSet: initialChangeSet, candidate: assembled.candidate, impact: assembled.impact };
+  }
+  const outcome = await withOneScopeEscapeCorrectionTurnV1<RepairAssemblyOutcome>({
+    attempt: async () => {
+      const assembled = await assembleRepairChangeSet(initialChangeSet);
+      return { session: isolated.session, changeSet: initialChangeSet, candidate: assembled.candidate, impact: assembled.impact };
+    },
+    buildCorrectionPrompt: (details) => buildScopeEscapeCorrectionPrompt(details),
+    executeCorrection: async (diagnostic) => {
+      const correctionWorkUnitId = `${input.workUnitId}:escape-correction`;
+      const correctionParticipantId = deterministicParticipantId(input.operationId, selection.logicalAgent, `${input.phase}:${correctionWorkUnitId}`);
+      const fullCorrectionPrompt = `${input.prompt}\n\n${diagnostic}`;
+      const correctionIsolated = await executeIsolatedCandidateMutation({
+        root: input.root,
+        operationId: input.operationId,
+        taskId: input.taskId,
+        workUnitId: correctionWorkUnitId,
+        candidate: currentCandidate,
+        config: input.config,
+        contract: input.contract,
+        execute: (correctionRoot) => input.execute(correctionRoot, correctionParticipantId, fullCorrectionPrompt),
+        prepareWorkspace: input.prepareWorkspace
+      });
+      if (!correctionIsolated.changeSet) {
+        // Declaration-first BLOCKED routing (same as initial no-mutation path):
+        // schema-valid filesNeededOutsideScope with NO changes → BLOCKED when
+        // genuinely outside scope; vacuous → session only; conflict/invalid
+        // throws fail-closed (correction error, not original).
+        const needed = parseRepairScopeBlockerFromSession(correctionIsolated.session);
+        if (!needed) return { session: correctionIsolated.session };
+        const forbidden = [...input.forbiddenScope, ...repairProtectedPaths(input.config, input.contract)];
+        const partitioned = partitionRepairScopeBlockerFiles(needed, input.allowedScope, forbidden);
+        if (partitioned.stripped.length) {
+          await recordPaseoTrace(input.stateRoot, "candidate.repair.blocker.stripped", {
+            operationId: input.operationId,
+            taskId: input.taskId,
+            workUnitId: correctionWorkUnitId,
+            participantId: correctionParticipantId,
+            mechanism: "DETERMINISTIC",
+            declared: partitioned.declared,
+            declaredCount: partitioned.declared.length,
+            stripped: partitioned.stripped,
+            strippedFiles: partitioned.stripped.map((entry) => entry.path),
+            strippedCount: partitioned.stripped.length,
+            genuinelyBlocked: partitioned.genuinelyBlocked,
+            genuinelyBlockedFiles: partitioned.genuinelyBlocked.map((entry) => entry.path),
+            genuinelyBlockedCount: partitioned.genuinelyBlocked.length,
+          }).catch(() => undefined);
+        }
+        if (!partitioned.genuinelyBlocked.length) return { session: correctionIsolated.session };
+        const blocker = createRepairScopeBlockerReceipt({
+          operationId: input.operationId,
+          taskId: input.taskId,
+          workUnitId: correctionWorkUnitId,
+          participantId: correctionParticipantId,
+          filesNeededOutsideScope: partitioned.genuinelyBlocked,
+        });
+        const receiptFile = await writeRepairScopeBlockerReceipt(input.stateRoot, input.config, blocker);
+        await verifyRepairScopeBlockerReceipt(receiptFile, blocker);
+        await recordEvent(input.stateRoot, input.config, "harness.candidate.repair-scope-blocked", {
+          taskId: input.taskId,
+          workUnitId: correctionWorkUnitId,
+          participantId: correctionParticipantId,
+          role: selection.role,
+          blockerDigest: blocker.digest,
+          filesNeededOutsideScope: blocker.filesNeededOutsideScope,
+        }).catch(() => undefined);
+        return { session: correctionIsolated.session, scopeBlocker: blocker };
+      }
+      if (parseRepairScopeBlockerFromSession(correctionIsolated.session)) {
+        throw new AehError("PARTICIPANT_PLAN_INVALID", "REPAIR_SCOPE_BLOCKER_CONFLICT: Repairer declared filesNeededOutsideScope while also producing a ChangeSet; the no-mutation blocker path requires no file changes.");
+      }
+      const assembled = await assembleRepairChangeSet(correctionIsolated.changeSet);
+      return { session: correctionIsolated.session, changeSet: correctionIsolated.changeSet, candidate: assembled.candidate, impact: assembled.impact };
+    },
+    isTimeoutResult: (result) => isRepairCorrectionTimeoutSession(result.session),
+    ...(input.escapeCorrectionRemainingBudget !== undefined
+      ? { remainingBudget: input.escapeCorrectionRemainingBudget }
+      : {}),
   });
-  await recordEvent(input.stateRoot, input.config, "harness.candidate.repair-assembled", {
-    taskId: input.taskId,
-    workUnitId: isolated.changeSet.workUnitId,
-    participantId: isolated.changeSet.participantId,
-    role: input.selection.role,
-    candidateRevision: assembled.candidate.revision,
-    candidateDigest: assembled.candidate.sourceDigest,
-    impactDigest: assembled.impact.digest
-  });
-  return { session: isolated.session, changeSet: isolated.changeSet, candidate: assembled.candidate, impact: assembled.impact };
+  const final = outcome.result;
+  if (final.candidate && final.changeSet && final.impact) {
+    await recordEvent(input.stateRoot, input.config, "harness.candidate.repair-assembled", {
+      taskId: input.taskId,
+      workUnitId: final.changeSet.workUnitId,
+      participantId: final.changeSet.participantId,
+      role: selection.role,
+      candidateRevision: final.candidate.revision,
+      candidateDigest: final.candidate.sourceDigest,
+      impactDigest: final.impact.digest
+    });
+  }
+  if (outcome.correctionUsed) {
+    await recordEvent(input.stateRoot, input.config, "harness.candidate.repair-escape-corrected", {
+      taskId: input.taskId,
+      workUnitId: input.workUnitId,
+      participantId,
+      role: selection.role,
+    }).catch(() => undefined);
+  }
+  return { ...final, ...(outcome.correctionUsed ? { correctionUsed: true as const } : {}) };
 }
 
 export async function rejectRepairCandidateChangeSet(input: {
@@ -241,6 +407,13 @@ export async function rejectRepairCandidateChangeSet(input: {
   semanticAssessment?: CandidateImpactAssessmentRuntimeV1;
   scopeAmendment?: RepairScopeAmendmentV1;
   onScopeEscape?: (record: CandidateScopeEscapeV1) => Promise<void> | void;
+  /**
+   * DETERMINISTIC REMAINING repair-budget slots for the pre-offer correction
+   * gate (Luna round-3, same semantics as the apply path). When defined,
+   * `remaining >= 1` decides the offer; when undefined, falls back to the
+   * static `maxAttempts >= 1` check.
+   */
+  escapeCorrectionRemainingBudget?: number;
 }): Promise<{ candidate: CandidateRevisionV1; impact: import("./assembler.js").CandidateImpactV1 }> {
   const operation = await loadOperation(input.stateRoot, input.operationId);
   const currentCandidate = operation.candidateRevision;
@@ -263,23 +436,64 @@ export async function rejectRepairCandidateChangeSet(input: {
   const rejectedScope = effectiveRepairScope(input.allowedScope, [...input.forbiddenScope, ...repairProtectedPaths(input.config, input.contract)], input.config, input.contract, input.scopeAmendment, rejectedOwnerScope);
   const rejectedExactExemptions = rejectedOwnerScope && input.scopeAmendment ? [...input.scopeAmendment.exemptedPaths] : undefined;
   // Same per-operation serialization as the apply path above.
-  const assembled = await assembleAndBindCandidateChangeSet({
-    root: input.root,
-    stateRoot: input.stateRoot,
-    operationId: input.operationId,
-    projectId: currentCandidate.projectId,
-    taskId: input.taskId,
-    baseCandidate: currentCandidate,
-    changeSet: inverse,
-    allowedScope: rejectedScope.allowedScope,
-    forbiddenScope: rejectedScope.forbiddenScope,
-    candidateId: `candidate:${input.operationId}:r${currentCandidate.revision + 1}`,
-    workspace: currentCandidate.workspace,
-    worktree: input.root,
-    semanticAssessment: input.semanticAssessment,
-    ...(rejectedExactExemptions ? { exactScopeExemptions: rejectedExactExemptions } : {}),
-    ...(input.onScopeEscape ? { onScopeEscape: input.onScopeEscape } : {})
-  });
+  //
+  // Scope-escape ONE-correction turn (IDENTICAL helper, deterministic
+  // rollback path): the inverse is a deterministic reverse (no MODEL worker
+  // to re-invoke), so the single correction is a full re-validation
+  // re-assembly of the SAME inverse. A scope escape is deterministic for a
+  // frozen scope, so the correction re-escapes → ORIGINAL terminal kill
+  // (second escape terminal, forensics preserved). Non-escapes (symlink/
+  // empty/digest/stale) rethrow immediately with NO correction (helper
+  // gate). Budget gating uses the SAME existing repair budget source as the
+  // apply path (no new knob); when exhausted the assembly runs direct with
+  // no correction turn offered.
+  const assembleRejectChangeSet = () =>
+    assembleAndBindCandidateChangeSet({
+      root: input.root,
+      stateRoot: input.stateRoot,
+      operationId: input.operationId,
+      projectId: currentCandidate.projectId,
+      taskId: input.taskId,
+      baseCandidate: currentCandidate,
+      changeSet: inverse,
+      allowedScope: rejectedScope.allowedScope,
+      forbiddenScope: rejectedScope.forbiddenScope,
+      candidateId: `candidate:${input.operationId}:r${currentCandidate.revision + 1}`,
+      workspace: currentCandidate.workspace,
+      worktree: input.root,
+      semanticAssessment: input.semanticAssessment,
+      ...(rejectedExactExemptions ? { exactScopeExemptions: rejectedExactExemptions } : {}),
+      ...(input.onScopeEscape ? { onScopeEscape: input.onScopeEscape } : {})
+    });
+  const rejectMaxAttempts =
+    (typeof (input.contract as { repair?: { maxAttempts?: unknown } }).repair?.maxAttempts === "number" &&
+    Number.isSafeInteger((input.contract as { repair?: { maxAttempts?: unknown } }).repair?.maxAttempts) &&
+    ((input.contract as { repair?: { maxAttempts?: unknown } }).repair?.maxAttempts as number) >= 0
+      ? ((input.contract as { repair?: { maxAttempts?: unknown } }).repair?.maxAttempts as number)
+      : typeof (input.config as { orchestration?: { worker?: { maxRepairAttempts?: unknown } } }).orchestration?.worker?.maxRepairAttempts === "number" &&
+        Number.isSafeInteger((input.config as { orchestration?: { worker?: { maxRepairAttempts?: unknown } } }).orchestration?.worker?.maxRepairAttempts) &&
+        ((input.config as { orchestration?: { worker?: { maxRepairAttempts?: unknown } } }).orchestration?.worker?.maxRepairAttempts as number) >= 0
+        ? ((input.config as { orchestration?: { worker?: { maxRepairAttempts?: unknown } } }).orchestration?.worker?.maxRepairAttempts as number)
+        : 2);
+  // Luna round-3 REMAINING pre-offer gate (same as apply path): remaining < 1
+  // → direct assembly with NO correction turn offered.
+  const allowRejectCorrection = input.escapeCorrectionRemainingBudget !== undefined
+    ? input.escapeCorrectionRemainingBudget >= 1
+    : rejectMaxAttempts >= 1;
+  let assembled: Awaited<ReturnType<typeof assembleAndBindCandidateChangeSet>>;
+  if (!allowRejectCorrection) {
+    assembled = await assembleRejectChangeSet();
+  } else {
+    const outcome = await withOneScopeEscapeCorrectionTurnV1<typeof assembled>({
+      attempt: () => assembleRejectChangeSet(),
+      buildCorrectionPrompt: (details) => buildScopeEscapeCorrectionPrompt(details),
+      executeCorrection: async () => assembleRejectChangeSet(),
+      ...(input.escapeCorrectionRemainingBudget !== undefined
+        ? { remainingBudget: input.escapeCorrectionRemainingBudget }
+        : {}),
+    });
+    assembled = outcome.result;
+  }
   await recordEvent(input.stateRoot, input.config, "harness.candidate.repair-rejected", {
     taskId: input.taskId,
     workUnitId: input.workUnitId,
@@ -518,4 +732,26 @@ function matchesAnyRepairScope(file: string, patterns: readonly string[]): boole
     if (!normalizedFile) return false;
     return minimatch(normalizedFile, pattern, { dot: true });
   });
+}
+
+/**
+ * DETERMINISTIC timeout detector for repair correction turns (return-path).
+ * Mirrors waveExecutor local-path checks + scopeEscapeCorrection throw-path
+ * patterns: exit 124, timeout status, STALLED_FIRST_ACTIVITY/DEADLINE, or
+ * timeout text in session output. A timeout correction maps to ORIGINAL
+ * terminal kill (helper rethrows first escape); non-timeout worker failure
+ * returns the session (no candidate, fail-closed through normal accounting).
+ */
+function isRepairCorrectionTimeoutSession(session: WorkerSession): boolean {
+  if (session.exitCode === 124) return true;
+  const status = (session as { status?: string }).status;
+  if (status === "timeout") return true;
+  const killReason = (session as { killReason?: string }).killReason;
+  if (killReason === "STALLED_FIRST_ACTIVITY" || killReason === "DEADLINE") return true;
+  try {
+    if (isScopeCorrectionTimeoutError(new Error(`${session.stderr ?? ""} ${session.stdout ?? ""}`))) return true;
+  } catch {
+    // Malformed session text is not a timeout.
+  }
+  return false;
 }

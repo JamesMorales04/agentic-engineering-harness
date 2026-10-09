@@ -188,6 +188,15 @@ export async function withOneScopeEscapeCorrectionTurnV1<T>(input: {
   buildCorrectionPrompt: (details: ScopeEscapeDetailsV1) => string;
   executeCorrection: (prompt: string) => Promise<T>;
   isTimeoutResult?: (result: T) => boolean;
+  /**
+   * DETERMINISTIC REMAINING budget gate (Luna round-3, no new budget knob).
+   * When defined, the REMAINING repair slots are checked BEFORE offering each
+   * correction: remaining < 1 → rethrow the ORIGINAL escape immediately with
+   * NO correction turn offered. Mirrors the Luna-accepted wave
+   * `tryReserve()` pre-offer pattern (exhausted → original, no correction).
+   * Undefined preserves the legacy offer path (callers without loop tracking).
+   */
+  remainingBudget?: number;
 }): Promise<{ result: T; correctionUsed: boolean }> {
   let firstEscape: unknown;
   let firstDetails: ScopeEscapeDetailsV1 | undefined;
@@ -206,6 +215,9 @@ export async function withOneScopeEscapeCorrectionTurnV1<T>(input: {
     firstDetails = getScopeEscapeDetails(error);
     if (!firstDetails) throw error;
   }
+  // Luna round-3 REMAINING pre-offer gate: no remaining budget → ORIGINAL
+  // terminal kill immediately, NO correction turn offered (no double-spend).
+  if (input.remainingBudget !== undefined && input.remainingBudget < 1) throw firstEscape;
   // Exactly ONE correction turn (bound enforced here; no loop, no counter).
   const prompt = input.buildCorrectionPrompt(firstDetails!);
   let corrected: T;
