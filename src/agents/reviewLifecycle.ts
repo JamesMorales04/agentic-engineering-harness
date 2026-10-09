@@ -11,7 +11,7 @@ import { detectHumanException, detectRuntimeExternalException, diagnosisToExcept
 import type { HarnessProjectConfig, ReviewEscalationStage, TaskContract, ValidationCheck, ValidationReport, WorkerSession } from "../core/types.js";
 import { executeAgentPrompt } from "../workers/agentPrompt.js";
 import { executeRepairerCandidateMutation, rejectRepairCandidateChangeSet } from "../candidates/repair.js";
-import { repairScopeBlockerValidationCheck } from "../candidates/repairScope.js";
+import { applyAnchoredCoveringGrantForBlocker, repairScopeBlockerValidationCheck } from "../candidates/repairScope.js";
 import { executeIsolatedCandidateMutation } from "../candidates/direct.js";
 import { assertWorkspaceMatchesCandidate, type CandidateWorkspaceIdentityEvidenceV1 } from "../candidates/identity.js";
 import type { ExecutionCatalogV1 } from "../architecture/executionCatalog.js";
@@ -58,8 +58,11 @@ export interface ReviewLifecycleResult {
   exception?: ExceptionDecision;
 }
 
-export async function runReviewLifecycle(input: { root: string; stateRoot?: string; config: HarnessProjectConfig; contract: TaskContract; route: ResolvedRoute; reviewerSelections: Readonly<Record<string, AgentExecutionSelection>>; leadSelection?: AgentExecutionSelection; repairerSelection?: AgentExecutionSelection; executionCatalog?: ExecutionCatalogV1; prepareRepairWorkspace?: (isolatedRoot: string) => Promise<void>; stageSelections?: Readonly<Record<string, AgentExecutionSelection | undefined>>; supervisorSelection?: AgentExecutionSelection; implementationSelection: AgentExecutionSelection; report: ValidationReport; candidateImpact?: CandidateImpactV1; candidateImpactAssessment?: CandidateImpactAssessmentRuntimeV1; candidateAssurance?: CandidateAssuranceCompilationV1; assuranceGateCheck?: ValidationCheck; recompileCandidateAssurance?: (impact: CandidateImpactV1 | undefined, report: ValidationReport) => Promise<{ compilation?: CandidateAssuranceCompilationV1; validationChecks: ValidationCheck[]; gateCheck: ValidationCheck }>; revalidate: () => Promise<ValidationReport>; }): Promise<ReviewLifecycleResult> {
-  const { root, config, contract, route, reviewerSelections, leadSelection, repairerSelection, executionCatalog, prepareRepairWorkspace, stageSelections, supervisorSelection, implementationSelection } = input;
+export async function runReviewLifecycle(input: { root: string; stateRoot?: string; config: HarnessProjectConfig; contract: TaskContract; route: ResolvedRoute; reviewerSelections: Readonly<Record<string, AgentExecutionSelection>>; leadSelection?: AgentExecutionSelection; repairerSelection?: AgentExecutionSelection; executionCatalog?: ExecutionCatalogV1; prepareRepairWorkspace?: (isolatedRoot: string) => Promise<void>; stageSelections?: Readonly<Record<string, AgentExecutionSelection | undefined>>; supervisorSelection?: AgentExecutionSelection; implementationSelection: AgentExecutionSelection; report: ValidationReport; candidateImpact?: CandidateImpactV1; candidateImpactAssessment?: CandidateImpactAssessmentRuntimeV1; candidateAssurance?: CandidateAssuranceCompilationV1; assuranceGateCheck?: ValidationCheck; recompileCandidateAssurance?: (impact: CandidateImpactV1 | undefined, report: ValidationReport) => Promise<{ compilation?: CandidateAssuranceCompilationV1; validationChecks: ValidationCheck[]; gateCheck: ValidationCheck }>; revalidate: () => Promise<ValidationReport>; onAmendedContract?: (contract: TaskContract) => void; }): Promise<ReviewLifecycleResult> {
+  const { root, config, route, reviewerSelections, leadSelection, repairerSelection, executionCatalog, prepareRepairWorkspace, stageSelections, supervisorSelection, implementationSelection, onAmendedContract } = input;
+  // H-NEW-14: mutable so a consult-only honored owner grant can adopt the
+  // amended contract for the single bounded remediation retry below.
+  let contract = input.contract;
   const stateRoot = input.stateRoot ?? root;
   let report = input.report;
   const sessions: WorkerSession[] = [];
@@ -203,7 +206,7 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
     const operationId = currentOperationContext().id;
     if (!operationId) throw new Error("REPAIR_AUTHORITY_REQUIRED: quality remediation requires a managed operation.");
     const repairPrompt = `${buildRemediationPrompt(contract, stage, state, deduped.findings, replanContext)}\n\nYou are the canonical Repairer. Change implementation only within the frozen task scope. Do not change requirements, acceptance, validators, policy, or review outcomes. You cannot approve or accept the candidate. Out-of-scope blocker path (report, don't expand): if the fix needs files outside scope, return no changes and declare them via AEH_RESULT_JSON filesNeededOutsideScope[{path, reason}].`;
-    const mutation = await executeRepairerCandidateMutation({
+    let mutation = await executeRepairerCandidateMutation({
       root,
       stateRoot,
       operationId,
@@ -221,37 +224,89 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
       semanticAssessment: input.candidateImpactAssessment,
       execute: (isolatedRoot, participantId, prompt) => executeAgentPrompt(isolatedRoot, config, contract, remediationSelection, prompt, { outputContract: remediationSelection.outputContract ?? "implementer", phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true })
     });
-    const remediation = mutation.session;
+    let remediation = mutation.session;
     sessions.push(remediation);
-    // Review-remediation scopeBlocker: explicitly scoped OUT of amendment
-    // ownership (tested rationale). The bounded ledger-gated amendment
-    // (suspend + approve/deny product choice + reseal + single retry, max
-    // 1/task) is owned solely by the run.ts validation-repair loop. A second
-    // amendment path here would risk dual suspensions, budget overruns, and
-    // stage confusion. This path therefore propagates BLOCKED fail-closed
-    // citing the exact blocker (no amendment, no retry, no silent ignore) so
-    // the canonical channel remains the sole writer.
+    // Review-remediation scopeBlocker: the bounded ledger-gated amendment
+    // (suspend + approve/deny product choice + reseal, max 1/task) stays owned
+    // solely by the run.ts validation-repair loop — this path NEVER suspends
+    // (no dual suspensions, no budget overruns, no stage confusion). H-NEW-14
+    // grant-consumption coverage (consult-only honor, never grant-creation):
+    // an already-anchored covering owner grant is applied/reused here via the
+    // amendment/apply path with exactly one bounded remediation retry; with
+    // no covering grant this path still propagates BLOCKED fail-closed citing
+    // the exact blocker (no amendment, no silent ignore) so the canonical
+    // channel remains the sole suspension writer.
     if (mutation.scopeBlocker) {
-      const blockerCheck = repairScopeBlockerValidationCheck(mutation.scopeBlocker);
-      checks.push(blockerCheck);
-      await recordEvent(stateRoot, config, "harness.quality.repair-scope-blocked", {
-        taskId: contract.task.id,
-        round: remediationRounds,
-        blockerDigest: mutation.scopeBlocker.digest,
-        filesNeededOutsideScope: mutation.scopeBlocker.filesNeededOutsideScope,
-      }).catch(() => undefined);
-      return {
-        status: "FAIL",
-        finalState: "REQUIRES_PRODUCT_DECISION",
-        humanRequired: true,
-        rounds: remediationRounds,
-        report,
-        findings: deduped,
-        checks,
-        sessions,
-        qualityHistory,
-        leadAccepted: false,
-      };
+      let honored: Awaited<ReturnType<typeof applyAnchoredCoveringGrantForBlocker>> | undefined;
+      try {
+        honored = await applyAnchoredCoveringGrantForBlocker({
+          root,
+          controlRoot: stateRoot,
+          config,
+          contract,
+          blocker: mutation.scopeBlocker,
+        });
+      } catch {
+        honored = undefined;
+      }
+      if (honored?.status === "AMENDED") {
+        contract = honored.contract;
+        onAmendedContract?.(honored.contract);
+        await recordEvent(stateRoot, config, "harness.quality.repair-scope-amended", {
+          taskId: contract.task.id,
+          round: remediationRounds,
+          blockerDigest: mutation.scopeBlocker.digest,
+          exemptedPaths: honored.amendment.exemptedPaths,
+          decisionId: honored.amendment.decisionId,
+          requestId: honored.amendment.requestId,
+          decidedActor: honored.amendment.decidedActor,
+          reused: honored.reused,
+        }).catch(() => undefined);
+        const retryPrompt = `${buildRemediationPrompt(contract, stage, state, deduped.findings, replanContext)}\n\nYou are the canonical Repairer. Change implementation only within the frozen task scope. Do not change requirements, acceptance, validators, policy, or review outcomes. You cannot approve or accept the candidate. Out-of-scope blocker path (report, don't expand): if the fix needs files outside scope, return no changes and declare them via AEH_RESULT_JSON filesNeededOutsideScope[{path, reason}].`;
+        mutation = await executeRepairerCandidateMutation({
+          root,
+          stateRoot,
+          operationId,
+          taskId: contract.task.id,
+          workUnitId: `quality-repair:${contract.task.id}:${remediationRounds}:scope-amended-retry`,
+          phase: "review-remediation",
+          config,
+          contract,
+          selection: remediationSelection,
+          executionCatalog,
+          allowedScope: contract.scope?.allowed ?? ["**"],
+          forbiddenScope: [...(contract.scope?.forbidden ?? []), ...(contract.scope?.frozen ?? []), ...(config.validation?.frozenPaths ?? [])],
+          prompt: retryPrompt,
+          prepareWorkspace: prepareRepairWorkspace,
+          semanticAssessment: input.candidateImpactAssessment,
+          scopeAmendment: honored.amendment,
+          execute: (isolatedRoot, participantId, prompt) => executeAgentPrompt(isolatedRoot, config, contract, remediationSelection, prompt, { outputContract: remediationSelection.outputContract ?? "implementer", phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true })
+        });
+        remediation = mutation.session;
+        sessions.push(remediation);
+      }
+      if (mutation.scopeBlocker) {
+        const blockerCheck = repairScopeBlockerValidationCheck(mutation.scopeBlocker);
+        checks.push(blockerCheck);
+        await recordEvent(stateRoot, config, "harness.quality.repair-scope-blocked", {
+          taskId: contract.task.id,
+          round: remediationRounds,
+          blockerDigest: mutation.scopeBlocker.digest,
+          filesNeededOutsideScope: mutation.scopeBlocker.filesNeededOutsideScope,
+        }).catch(() => undefined);
+        return {
+          status: "FAIL",
+          finalState: "REQUIRES_PRODUCT_DECISION",
+          humanRequired: true,
+          rounds: remediationRounds,
+          report,
+          findings: deduped,
+          checks,
+          sessions,
+          qualityHistory,
+          leadAccepted: false,
+        };
+      }
     }
     const rejectMutation = async (reason: string): Promise<void> => {
       let restoredImpact = candidateImpact;
