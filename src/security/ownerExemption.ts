@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { canonicalSerialize, sha256Canonical } from "../core/digest.js";
 import {
   assertCandidateAssemblyReceiptV1,
+  candidateAssemblyReceiptIdV1,
   type CandidateAssemblyReceiptV1,
 } from "../operations/v2Contracts.js";
 import type { ResolvedOperationPolicyV2 } from "../architecture/executionIdentity.js";
@@ -209,13 +210,14 @@ export function ownerExemptionStablePolicyDigest(policy: ResolvedOperationPolicy
 }
 
 /**
- * DETERMINISTIC lineage-descendant check (H-NEW-12 authority gate).
+ * DETERMINISTIC lineage-descendant check (H-NEW-12 authority gate, H-NEW-12 R2
+ * provenance binding).
  *
  * Returns true iff the LIVE candidate IS the anchored revision (exact
  * `candidateId` + `revision` + `identityDigest`) OR descends from it via the
- * durable `parentCandidateId` + `candidateAssemblyReceipts` chain. Verified
- * via the revision CHAIN (candidateId + revision + digest at every hop),
- * never by revision numbers alone:
+ * CONTROLLER-DURABLE `candidateAssemblyReceipts` chain. Verified via the
+ * revision CHAIN (candidateId + revision + digest at every hop), never by
+ * revision numbers alone:
  *
  * - same-revision siblings (same parent, different child, same revision
  *   number, different digest, same deterministic `candidateId:rN`) fail the
@@ -226,25 +228,90 @@ export function ownerExemptionStablePolicyDigest(policy: ResolvedOperationPolicy
  *   anchored digest) and never reach the anchored revision;
  * - cross-op candidates fail via the lineage root
  *   (`candidate:<otherOp>:rN` never equals `candidate:<thisOp>:rN`) plus the
- *   caller's explicit `operationId` check.
+ *   required `expectedOperationId` binding (every hop's `operationId` must
+ *   equal it; hops from another operation are never usable evidence).
  *
- * Assembly receipts are digest-validated (`assertCandidateAssemblyReceiptV1`);
- * invalid entries are never usable evidence. Plain candidate binds without an
- * assembly receipt cannot prove their parent digest (the live candidate
- * stores only `parentCandidateId`, not the parent digest, and `candidateId`
- * collides across same-revision siblings), so they fail closed unless they
- * ARE the anchored revision. Repair advances always record receipts via
- * `bindOperationCandidateWithAssemblyReceipt`, so liveness is preserved while
- * forgery fails closed.
+ * DURABLE-HISTORY SOURCE MAP (H-NEW-12 R2, controller-written only):
+ * - `.harness/operations/<opId>.json` fields `candidateRevision` (CURRENT
+ *   candidate only) + `candidateAssemblyReceipts` (map assemblyId -> receipt,
+ *   ONE receipt per successful candidate transition) are the SOLE sufficient
+ *   durable candidate-history. Each transition is persisted atomically in
+ *   `bindOperationCandidateWithAssemblyReceipt`
+ *   (`src/operations/state.ts:725-780`) via a single locked `mutateOperation`
+ *   commit that owns BOTH the `candidateRevision` advance AND the receipt-map
+ *   insert (no crash window can leave a bound-but-unreceipted revision;
+ *   crash-retry backfills the identical receipt idempotently instead of
+ *   double-advancing; a conflicting digest for the same assemblyId throws).
+ *   The bind lifecycle validates parent==previous candidateId, revision+1,
+ *   same operation/project/task lineage, and workspace match under the
+ *   controller lock before the commit lands.
+ * - `.harness/operations/<opId>/events.ndjson` carries per-mutation revision
+ *   ordering (`operation.candidate.bound` events) but NO candidate digests
+ *   (`changed`/`details` never carry identity digests) — INSUFFICIENT for
+ *   lineage (revision numbers alone collide across siblings). NEVER usable as
+ *   lineage evidence.
+ * - `.harness/operations/<opId>/forensics/candidate-*.json` is a SINGLE
+ *   failed-candidate diagnostic snapshot (current id/revision/digest +
+ *   workspace diff), written at terminal cleanup with NO chain — NOT lineage
+ *   authority. NEVER usable as lineage evidence.
+ * - There is NO separate candidate-history ledger, NO revision log carrying
+ *   candidate digests, and NO per-revision candidate object archive. The
+ *   receipts map above is the complete chain of truth; this is stated
+ *   explicitly because the walk cannot consult history that does not exist.
+ * - Plain `bindOperationCandidate` (no receipt) advances WITHOUT recording a
+ *   receipt and leaves a lineage GAP: descendants past the gap fail closed
+ *   (no receipt proves the parent digest) unless they ARE the anchored
+ *   revision. The repair flow always advances via
+ *   `bindOperationCandidateWithAssemblyReceipt`, so liveness is preserved
+ *   while forgery fails closed.
+ *
+ * PROVENANCE RULE (H-NEW-12 R2): `assemblies` is the CONTROLLER-DURABLE chain
+ * of truth and MUST be `operation.candidateAssemblyReceipts` from a
+ * controller-loaded record (`loadOperation` under the operation lock in the
+ * same controller tick as the honor check). A supplied receipt object alone
+ * is NEVER authority: `hintAssemblies` (optional, untrusted supplied hints)
+ * may only CONFIRM durable state — every structurally valid, op-bound hint
+ * whose `assemblyId` exists in durable state must match it EXACTLY (same
+ * `digest` + same base/candidate identity), otherwise the walk refuses. The
+ * walk traverses DURABLE receipts only; hints are never traversed. A forged
+ * self-consistent receipt (valid self-hash naming the live candidate as child
+ * of the anchored base) that is absent from durable state, or present with a
+ * mismatched digest, refuses. Hops are additionally bound per transition:
+ * `operationId` == `expectedOperationId`, `assemblyId` ==
+ * `assembly:<op>:<candidateId>`, `revision` == `baseRevision + 1`, cursor
+ * revision decreases by exactly one per hop, cursor digests match receipt
+ * fields exactly, and — when the live candidate carries `parentCandidateId`
+ * (durable `candidateRevision` always does) — the FIRST hop's
+ * `baseCandidateId` must equal it, binding the walk to the operation's
+ * current candidate ancestry available controller-side (the bind lifecycle
+ * validated that parent link at commit time). What anchors trust, exactly:
+ * the grant's MAC-bound anchor (operationId + anchoredCandidateId/revision/
+ * digest, unforgeable without the live controller token) + the
+ * controller-written durable operation record (candidate + receipts map,
+ * written atomically under lock, isolated from managed children) + the
+ * ledger-consumed approval cross-checked at honor time (see
+ * `verifyOwnerHardProtectionExemption`). Assembly receipts are
+ * digest-validated (`assertCandidateAssemblyReceiptV1`); invalid, cross-op,
+ * or assemblyId-mismatched entries are never usable evidence.
  */
 export function isOwnerExemptionLineageDescendant(input: {
-  liveCandidate: { candidateId: string; revision: number; identityDigest: string };
+  liveCandidate: { candidateId: string; revision: number; identityDigest: string; parentCandidateId?: string };
   anchoredCandidateId: string;
   anchoredRevision: number;
   anchoredIdentityDigest: string;
+  /** Operation the lineage must belong to (grant.operationId == operation.id). Every hop must carry it. */
+  expectedOperationId: string;
+  /** CONTROLLER-DURABLE truth: operation.candidateAssemblyReceipts from a controller-loaded record. */
   assemblies?: Record<string, CandidateAssemblyReceiptV1> | readonly CandidateAssemblyReceiptV1[];
+  /** Optional UNTRUSTED supplied hints: each must confirm against durable state (mismatch → refuse). Never traversed. */
+  hintAssemblies?: Record<string, CandidateAssemblyReceiptV1> | readonly CandidateAssemblyReceiptV1[];
 }): boolean {
-  const { liveCandidate, anchoredCandidateId, anchoredRevision, anchoredIdentityDigest } = input;
+  const { liveCandidate, anchoredCandidateId, anchoredRevision, anchoredIdentityDigest, expectedOperationId } = input;
+  if (!expectedOperationId || !expectedOperationId.trim()) return false;
+  const expected = expectedOperationId.trim();
+  // Lineage roots are op-scoped: `candidate:<operationId>:r<revision>`.
+  if (anchoredCandidateId !== `candidate:${expected}:r${anchoredRevision}`) return false;
+  if (liveCandidate.candidateId !== `candidate:${expected}:r${liveCandidate.revision}`) return false;
   if (
     liveCandidate.candidateId === anchoredCandidateId
     && liveCandidate.revision === anchoredRevision
@@ -252,15 +319,55 @@ export function isOwnerExemptionLineageDescendant(input: {
   ) return true;
   if (!Number.isSafeInteger(liveCandidate.revision) || liveCandidate.revision < anchoredRevision) return false;
   if (liveCandidate.revision === anchoredRevision) return false;
-  const raw: readonly CandidateAssemblyReceiptV1[] = Array.isArray(input.assemblies)
+  const rawDurable: readonly CandidateAssemblyReceiptV1[] = Array.isArray(input.assemblies)
     ? input.assemblies
     : Object.values(input.assemblies ?? {});
-  const valid: CandidateAssemblyReceiptV1[] = [];
-  for (const entry of raw) {
+  const durable: CandidateAssemblyReceiptV1[] = [];
+  for (const entry of rawDurable) {
     try {
       assertCandidateAssemblyReceiptV1(entry);
-      valid.push(entry);
-    } catch { /* invalid lineage entries are never usable evidence */ }
+    } catch { /* invalid lineage entries are never usable evidence */ continue; }
+    // Per-hop operation binding + validated-transition identity: hops from
+    // another operation, or with a mismatched deterministic assemblyId, are
+    // never usable evidence even when self-hash-valid.
+    if (entry.operationId !== expected) continue;
+    if (entry.assemblyId !== candidateAssemblyReceiptIdV1(expected, entry.candidateId)) continue;
+    durable.push(entry);
+  }
+  const durableById = new Map<string, CandidateAssemblyReceiptV1>();
+  for (const entry of durable) {
+    const prior = durableById.get(entry.assemblyId);
+    // Duplicate assemblyIds with conflicting digests mean a forged durable
+    // map: fail closed rather than picking one.
+    if (prior && prior.digest !== entry.digest) return false;
+    if (!prior) durableById.set(entry.assemblyId, entry);
+  }
+  // Supplied hints confirm against durable state only: every structurally
+  // valid, op-bound hint whose assemblyId exists in durable state must match
+  // it EXACTLY (digest + base/candidate identity). A mismatch refuses; hints
+  // absent from durable state are ignored here (the durable walk below still
+  // refuses forged lives that lack a durable hop), but a hint that SHADOWS a
+  // durable hop with a different digest refuses immediately.
+  if (input.hintAssemblies !== undefined) {
+    const rawHints: readonly CandidateAssemblyReceiptV1[] = Array.isArray(input.hintAssemblies)
+      ? input.hintAssemblies
+      : Object.values(input.hintAssemblies ?? {});
+    for (const hint of rawHints) {
+      try {
+        assertCandidateAssemblyReceiptV1(hint);
+      } catch { continue; }
+      if (hint.operationId !== expected) continue;
+      if (hint.assemblyId !== candidateAssemblyReceiptIdV1(expected, hint.candidateId)) continue;
+      const truth = durableById.get(hint.assemblyId);
+      if (!truth) continue;
+      if (truth.digest !== hint.digest
+        || truth.baseCandidateId !== hint.baseCandidateId
+        || truth.baseRevision !== hint.baseRevision
+        || truth.baseIdentityDigest !== hint.baseIdentityDigest
+        || truth.candidateId !== hint.candidateId
+        || truth.revision !== hint.revision
+        || truth.identityDigest !== hint.identityDigest) return false;
+    }
   }
   let cursor = {
     candidateId: liveCandidate.candidateId,
@@ -271,19 +378,33 @@ export function isOwnerExemptionLineageDescendant(input: {
   // (assembly receipts advance exactly one revision), so at most
   // `liveRevision - anchoredRevision + 1` hops can reach the anchor.
   const maxHops = liveCandidate.revision - anchoredRevision + 1;
-  for (let hop = 0; hop <= maxHops + valid.length; hop += 1) {
+  let firstHop = true;
+  for (let hop = 0; hop <= maxHops + durable.length; hop += 1) {
     if (
       cursor.candidateId === anchoredCandidateId
       && cursor.revision === anchoredRevision
       && cursor.identityDigest === anchoredIdentityDigest
     ) return true;
     if (cursor.revision <= anchoredRevision) return false;
-    const assembly = valid.find((entry) =>
+    const assembly = durable.find((entry) =>
       entry.candidateId === cursor.candidateId
       && entry.revision === cursor.revision
       && entry.identityDigest === cursor.identityDigest
     );
     if (!assembly) return false;
+    // Validated-transition re-check per hop (defense in depth beyond the
+    // structure assert): exact single-revision step, op-bound, digest-matched.
+    if (assembly.operationId !== expected) return false;
+    if (assembly.revision !== assembly.baseRevision + 1) return false;
+    if (assembly.revision !== cursor.revision) return false;
+    if (cursor.revision !== assembly.baseRevision + 1) return false;
+    // Parent-link binding to the operation's current candidate ancestry
+    // available controller-side: the live candidate's durable parent link
+    // (validated at bind time) must equal the first hop's recorded base.
+    if (firstHop && typeof liveCandidate.parentCandidateId === "string" && liveCandidate.parentCandidateId) {
+      if (assembly.baseCandidateId !== liveCandidate.parentCandidateId) return false;
+    }
+    firstHop = false;
     cursor = {
       candidateId: assembly.baseCandidateId,
       revision: assembly.baseRevision,

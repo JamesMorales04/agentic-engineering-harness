@@ -637,8 +637,10 @@ function effectiveRepairScope(
     candidateRevision: number;
     candidateIdentityDigest: string;
     candidateId: string;
+    candidateParentCandidateId?: string;
     policyStableDigest: string;
     assemblies?: Record<string, import("../operations/v2Contracts.js").CandidateAssemblyReceiptV1> | readonly import("../operations/v2Contracts.js").CandidateAssemblyReceiptV1[];
+    hintAssemblies?: Record<string, import("../operations/v2Contracts.js").CandidateAssemblyReceiptV1> | readonly import("../operations/v2Contracts.js").CandidateAssemblyReceiptV1[];
     policyDigest?: string;
     operationExecutionRevision?: number;
     terminal: boolean;
@@ -689,6 +691,7 @@ async function verifiedOwnerExemptionForRetry(
     candidateRevision: number;
     candidateIdentityDigest: string;
     candidateId: string;
+    candidateParentCandidateId?: string;
     policyStableDigest: string;
     assemblies?: Record<string, import("../operations/v2Contracts.js").CandidateAssemblyReceiptV1> | readonly import("../operations/v2Contracts.js").CandidateAssemblyReceiptV1[];
     policyDigest?: string;
@@ -725,6 +728,7 @@ async function verifiedOwnerExemptionForRetry(
       candidateRevision: liveCandidate.revision,
       candidateIdentityDigest: liveCandidate.identityDigest,
       candidateId: liveCandidate.candidateId,
+      ...(liveCandidate.parentCandidateId ? { candidateParentCandidateId: liveCandidate.parentCandidateId } : {}),
       policyStableDigest: liveStableDigest,
       assemblies: operation.candidateAssemblyReceipts,
       terminal: isTerminalOperation(operation.status),

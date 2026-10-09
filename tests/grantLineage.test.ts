@@ -71,12 +71,13 @@ describe("H-NEW-12 GREEN: lineage binding threat model", () => {
     await advanceWithReceiptAndRebind(root, operationId, task.task.id);
     const live = await loadOperation(root, operationId);
     expect(live.candidateRevision!.revision).toBe(3);
-    // Pure helper proves chain (not revision arithmetic).
+    // Pure helper proves chain (not revision arithmetic) via controller-durable truth.
     expect(isOwnerExemptionLineageDescendant({
       liveCandidate: live.candidateRevision!,
       anchoredCandidateId: grant.anchoredCandidateId,
       anchoredRevision: grant.candidateRevision,
       anchoredIdentityDigest: grant.candidateIdentityDigest,
+      expectedOperationId: operationId,
       assemblies: live.candidateAssemblyReceipts,
     })).toBe(true);
     await expect(
@@ -129,6 +130,7 @@ describe("H-NEW-12 GREEN: lineage binding threat model", () => {
       anchoredCandidateId: grant.anchoredCandidateId,
       anchoredRevision: grant.candidateRevision,
       anchoredIdentityDigest: grant.candidateIdentityDigest,
+      expectedOperationId: operationId,
       assemblies: anchoredOp.candidateAssemblyReceipts,
     })).toBe(false);
     const liveSiblingOp = { ...(await loadOperation(root, operationId)), candidateRevision: sibling };
@@ -311,7 +313,7 @@ describe("H-NEW-12 GREEN: lineage binding threat model", () => {
     const live = await loadOperation(root, operationId);
     const { repairHardProtectedPaths } = await import("../src/candidates/repairScope.js");
     const hardProtected = repairHardProtectedPaths(config, task);
-    // Descendant: sync gate covers.
+    // Descendant: sync gate covers (provenance-bound: durable + parent-linked).
     const descendantScope = {
       grant,
       operationId: live.id,
@@ -319,6 +321,7 @@ describe("H-NEW-12 GREEN: lineage binding threat model", () => {
       candidateRevision: live.candidateRevision!.revision,
       candidateIdentityDigest: live.candidateRevision!.identityDigest,
       candidateId: live.candidateRevision!.candidateId,
+      candidateParentCandidateId: live.candidateRevision!.parentCandidateId,
       policyStableDigest: ownerExemptionStablePolicyDigest(live.resolvedOperationPolicy!),
       assemblies: live.candidateAssemblyReceipts,
       terminal: false,

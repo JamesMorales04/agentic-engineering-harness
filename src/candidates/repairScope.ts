@@ -1127,11 +1127,19 @@ export async function verifyOwnerHardProtectionExemption(input: {
   } catch {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_BINDING_STALE: the live operation policy is invalid; the grant cannot be honored.");
   }
+  // Provenance-bound lineage (H-NEW-12 R2): the walk uses the
+  // CONTROLLER-DURABLE receipts map from the controller-loaded operation
+  // record as the chain of truth (see isOwnerExemptionLineageDescendant
+  // source map). `operation` MUST be freshly loaded via `loadOperation` in
+  // the same controller tick — a supplied receipt object alone is never
+  // authority. Every hop is op-bound to `operation.id` and parent-linked to
+  // the durable live candidate ancestry.
   if (!isOwnerExemptionLineageDescendant({
     liveCandidate,
     anchoredCandidateId: grant.anchoredCandidateId,
     anchoredRevision: grant.candidateRevision,
     anchoredIdentityDigest: grant.candidateIdentityDigest,
+    expectedOperationId: operation.id,
     assemblies: operation.candidateAssemblyReceipts,
   })) {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_BINDING_STALE: the live candidate is not the anchored revision nor its lineage descendant (same-epoch off-lineage advance invalidates prior grants; siblings excluded).");
@@ -2011,8 +2019,13 @@ export function filterForbiddenScopeForAmendment(
     candidateRevision: number;
     candidateIdentityDigest: string;
     candidateId: string;
+    /** Durable live parent link (controller-loaded candidateRevision.parentCandidateId) for parent-linked walk. */
+    candidateParentCandidateId?: string;
     policyStableDigest: string;
+    /** CONTROLLER-DURABLE truth (operation.candidateAssemblyReceipts from a controller-loaded record). */
     assemblies?: Record<string, import("../operations/v2Contracts.js").CandidateAssemblyReceiptV1> | readonly import("../operations/v2Contracts.js").CandidateAssemblyReceiptV1[];
+    /** Optional UNTRUSTED supplied hints: each must confirm against durable (mismatch → refuse). */
+    hintAssemblies?: Record<string, import("../operations/v2Contracts.js").CandidateAssemblyReceiptV1> | readonly import("../operations/v2Contracts.js").CandidateAssemblyReceiptV1[];
     policyDigest?: string;
     operationExecutionRevision?: number;
     terminal: boolean;
@@ -2053,8 +2066,10 @@ function ownerExemptionCoversHardPaths(
     candidateRevision: number;
     candidateIdentityDigest: string;
     candidateId: string;
+    candidateParentCandidateId?: string;
     policyStableDigest: string;
     assemblies?: Record<string, import("../operations/v2Contracts.js").CandidateAssemblyReceiptV1> | readonly import("../operations/v2Contracts.js").CandidateAssemblyReceiptV1[];
+    hintAssemblies?: Record<string, import("../operations/v2Contracts.js").CandidateAssemblyReceiptV1> | readonly import("../operations/v2Contracts.js").CandidateAssemblyReceiptV1[];
     policyDigest?: string;
     operationExecutionRevision?: number;
     terminal: boolean;
@@ -2063,7 +2078,7 @@ function ownerExemptionCoversHardPaths(
   // No grant, or the amendment does not cite one: not covered (existing
   // fail-closed behavior preserved bit-for-bit for all current callers).
   if (!ownerScope || !amendment.ownerExemption) return false;
-  const { grant, operationId, controllerEpoch, candidateRevision, candidateIdentityDigest, candidateId, policyStableDigest, assemblies, terminal } = ownerScope;
+  const { grant, operationId, controllerEpoch, candidateRevision, candidateIdentityDigest, candidateId, candidateParentCandidateId, policyStableDigest, assemblies, hintAssemblies, terminal } = ownerScope;
   try {
     assertOwnerHardProtectionExemptionGrant(grant);
   } catch {
@@ -2072,22 +2087,26 @@ function ownerExemptionCoversHardPaths(
   if (terminal) return false;
   if (grant.exemptionId !== amendment.ownerExemption.exemptionId) return false;
   if (grant.operationId !== operationId || grant.controllerEpoch !== controllerEpoch) return false;
-  // Live-identity binding (H-NEW-12 LINEAGE + STABLE, sync tier):
-  // LIVE must BE the anchored revision or descend from it via the
-  // parentCandidateId + assembly-receipts chain (never revision numbers
-  // alone — siblings excluded), and LIVE stable policy digest must equal the
-  // grant's stable digest. Live-exact `policyDigest` /
+  // Live-identity binding (H-NEW-12 LINEAGE + STABLE, sync tier, H-NEW-12 R2
+  // provenance-bound): LIVE must BE the anchored revision or descend from it
+  // via the CONTROLLER-DURABLE assembly-receipts chain (never revision numbers
+  // alone — siblings excluded), op-bound to `operationId` and parent-linked
+  // to the durable live parent when available. `assemblies` MUST be the
+  // controller-loaded durable map; `hintAssemblies` (when present) must each
+  // confirm against it. Live-exact `policyDigest` /
   // `operationExecutionRevision` matching is DROPPED (covered by lineage +
   // epoch + expiry + terminal; see verify). Missing live fields fail closed.
   if (!Number.isSafeInteger(candidateRevision) || typeof candidateIdentityDigest !== "string"
     || typeof candidateId !== "string" || !candidateId
     || typeof policyStableDigest !== "string" || !/^[a-f0-9]{64}$/.test(policyStableDigest)) return false;
   if (!isOwnerExemptionLineageDescendant({
-    liveCandidate: { candidateId, revision: candidateRevision, identityDigest: candidateIdentityDigest },
+    liveCandidate: { candidateId, revision: candidateRevision, identityDigest: candidateIdentityDigest, ...(candidateParentCandidateId ? { parentCandidateId: candidateParentCandidateId } : {}) },
     anchoredCandidateId: grant.anchoredCandidateId,
     anchoredRevision: grant.candidateRevision,
     anchoredIdentityDigest: grant.candidateIdentityDigest,
+    expectedOperationId: operationId,
     assemblies,
+    ...(hintAssemblies !== undefined ? { hintAssemblies } : {}),
   })) return false;
   if (policyStableDigest !== grant.policyStableDigest) return false;
   if (!verifyOwnerExemptionMac(controllerTokenFromEnvironment(), grant)) return false;
