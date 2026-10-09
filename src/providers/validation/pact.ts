@@ -29,7 +29,7 @@ export class PactContractTestingProvider implements ValidationProvider<ContractV
 
   async plan(context: ValidationProviderContext, detection?: ProviderDetection): Promise<ProviderPlan> {
     const selected = detection ?? await this.detect(context); const configured = await configuredCommand(context);
-    if (configured.command && context.spec?.command) return { provider: selected?.provider ?? configured.provider, capability: "contract-test", command: renderCommand(configured.command, context), cwd: resolveCwd(context), runtime: selected?.runtime ?? configured.runtime, options: { timeoutMs: (context.spec.timeoutSeconds ?? 900) * 1000 } };
+    if (configured.command && context.spec?.command) return { provider: selected?.provider ?? configured.provider, capability: "contract-test", command: withContractJsonEvidence(renderCommand(configured.command, context)), cwd: resolveCwd(context), runtime: selected?.runtime ?? configured.runtime, options: { timeoutMs: (context.spec.timeoutSeconds ?? 900) * 1000 } };
     const pactFile = optionString(context, "pactFile"); if (!pactFile) throw new Error("Pact provider requires options.pactFile.");
     const report = path.resolve(context.root, context.rawArtifactDirectory, `${context.spec?.id ?? "pact"}.report.json`); const host = optionString(context, "hostname") ?? "127.0.0.1"; const port = optionNumber(context, "port") ?? 8080;
     const command = selected?.provider === "pact-verifier-cli" ? `pact_verifier_cli -f ${quote(path.resolve(context.root, pactFile))} -h ${quote(host)} -p ${port} -j ${quote(report)}` : `pact verifier --file ${quote(path.resolve(context.root, pactFile))} --hostname ${quote(host)} --port ${port} --json ${quote(report)}`;
@@ -63,6 +63,22 @@ function optionString(context: ValidationProviderContext, key: string): string |
 function requirementIds(context: ValidationProviderContext): string[] { return (context.contract.requirements ?? []).filter((item) => item.capabilities?.includes("contract-test") || !item.capabilities?.length).map((item) => item.id); }
 function optionNumber(context: ValidationProviderContext, key: string): number | undefined { const value = context.spec?.options?.[key] ?? context.providerSpec?.options?.[key]; return typeof value === "number" ? value : undefined; }
 function renderCommand(command: string, context: ValidationProviderContext): string { return command.replaceAll("{taskId}", context.contract.task.id).replaceAll("{baseRef}", context.baseRef ?? "HEAD"); }
+
+/**
+ * Adapter default (Mechanism=DETERMINISTIC): the approved public-api contract
+ * validator emits human text by default, which carries zero parseable
+ * interactions and fail-closes with EMPTY_TEST_EVIDENCE. Request its versioned
+ * `--json` interaction evidence when the configured command is exactly the
+ * canonical validator invocation from .harness/project.yaml (which stays
+ * unchanged). Ad-hoc invocations with explicit args (for example an absolute
+ * script path plus a root) are left untouched so text-only probes still fail
+ * closed instead of being silently upgraded.
+ */
+const PUBLIC_API_CONTRACT_COMMAND = "node scripts/publicApiContract.mjs";
+function withContractJsonEvidence(command: string): string {
+  if (command.trim() === PUBLIC_API_CONTRACT_COMMAND) return `${PUBLIC_API_CONTRACT_COMMAND} --json`;
+  return command;
+}
 function quote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }
 async function readJson(file: string): Promise<unknown> { try { return JSON.parse(await fs.readFile(file, "utf8")); } catch { return undefined; } }
 function pactSummary(value: unknown, execution: ProviderExecution, failureCount: number): ContractVerificationResult["summary"] { const record = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : {}; const results = Array.isArray(record.interactionResults) ? record.interactionResults : []; const interactionCount = results.length || (Array.isArray(record.interactions) ? record.interactions.length : 0); const resultFailures = results.filter((item: unknown) => !["ok", "passed", "success", "verified"].includes(String((item as Record<string, unknown>)?.result ?? "").toLowerCase())).length; const total = Number(record.total ?? record.summary?.total ?? 0) || interactionCount || failureCount; const failed = Number(record.failed ?? record.summary?.failed ?? 0) || resultFailures || failureCount; return { total: Math.max(total, failed), passed: Math.max(0, total - failed), failed, durationMs: execution.durationMs }; }

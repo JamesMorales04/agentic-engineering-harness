@@ -70,6 +70,11 @@ export function normalizePlaywrightOutput(value: unknown): NormalizedFinding[] {
 }
 
 export function normalizePactOutput(value: unknown): NormalizedFinding[] {
+  // Additive Track F branch: the approved public-api contract validator emits
+  // a versioned interaction array via `node scripts/publicApiContract.mjs
+  // --json`. It is accepted exactly (marker + version 1 + well-formed
+  // interactions); every other shape below stays byte-identical and strict.
+  if (hasPublicApiContractMarker(value)) return normalizePublicApiContractOutput(value);
   const root = record(value); const candidates = [...(Array.isArray(root.interactions) ? root.interactions : []), ...(Array.isArray(root.interactionResults) ? root.interactionResults : []), ...(Array.isArray(root.tests) ? root.tests : []), ...(Array.isArray(root.failures) ? root.failures : []), ...(Array.isArray(root.errors) ? root.errors : [])];
   return candidates.flatMap((item) => {
     const result = record(item); const status = stringValue(result.status ?? result.result); const message = stringValue(result.error ?? result.message ?? result.failure); if ((!status && !message) || (status && ["ok", "passed", "success", "verified", "true"].includes(status.toLocaleLowerCase()))) return [];
@@ -82,6 +87,70 @@ export function parseToolEvidence(adapter: string, stdout: string): NormalizedFi
   return parseToolEvidenceResult(adapter, stdout).findings;
 }
 
+/**
+ * Structured evidence envelope emitted by `node
+ * scripts/publicApiContract.mjs --json`: `{ version: 1, tool:
+ * "aeh-public-api-contract", interactions: [{ id, name, status: "pass"|"fail",
+ * evidence }], summary }`. Acceptance is exact: marker + version 1 +
+ * non-empty well-formed interactions + a summary that agrees with them
+ * (totals are derived from the interactions, never trusted). Anything else
+ * with the marker present fail-closes (explicit finding, never a silent
+ * zero-finding PASS), and payloads without the marker never reach this branch.
+ */
+export const PUBLIC_API_CONTRACT_EVIDENCE_TOOL = "aeh-public-api-contract" as const;
+export const PUBLIC_API_CONTRACT_EVIDENCE_VERSION = 1 as const;
+
+export function hasPublicApiContractMarker(value: unknown): boolean {
+  return record(value).tool === PUBLIC_API_CONTRACT_EVIDENCE_TOOL;
+}
+
+export function isPublicApiContractEvidence(value: unknown): boolean {
+  const root = record(value);
+  if (root.tool !== PUBLIC_API_CONTRACT_EVIDENCE_TOOL || root.version !== PUBLIC_API_CONTRACT_EVIDENCE_VERSION) return false;
+  if (!Array.isArray(root.interactions) || root.interactions.length === 0) return false;
+  if (!root.interactions.every((item) => {
+    const check = record(item);
+    return typeof check.id === "string" && check.id.length > 0
+      && typeof check.name === "string"
+      && (check.status === "pass" || check.status === "fail")
+      && typeof check.evidence === "string";
+  })) return false;
+  // Totals are derived from the validated interactions, never trusted from
+  // the envelope: a summary that disagrees with its own interactions fails
+  // closed (a lying or stale summary must never mint a PASS).
+  return publicApiContractSummaryAgrees(root);
+}
+
+function publicApiContractSummaryAgrees(root: Record<string, unknown>): boolean {
+  const summary = root.summary;
+  if (!summary || typeof summary !== "object" || Array.isArray(summary)) return false;
+  const total = (summary as Record<string, unknown>).total;
+  const passed = (summary as Record<string, unknown>).passed;
+  const failed = (summary as Record<string, unknown>).failed;
+  if (!Number.isSafeInteger(total) || !Number.isSafeInteger(passed) || !Number.isSafeInteger(failed)) return false;
+  const interactions = root.interactions as unknown[];
+  const failedCount = interactions.filter((item) => record(item).status === "fail").length;
+  return total === interactions.length && failed === failedCount && passed === interactions.length - failedCount;
+}
+
+export function normalizePublicApiContractOutput(value: unknown): NormalizedFinding[] {
+  const root = record(value);
+  if (root.version !== PUBLIC_API_CONTRACT_EVIDENCE_VERSION) {
+    const finding: Omit<NormalizedFinding, "fingerprint"> = { tool: "pact", kind: "contract-failure", rule: "PUBLIC-API-CONTRACT-EVIDENCE", message: `unsupported public-api contract evidence version ${String(root.version ?? "missing")}: this harness accepts version ${PUBLIC_API_CONTRACT_EVIDENCE_VERSION} only; refresh the validator instead of accepting stale evidence.`, status: "failed" };
+    return [{ ...finding, fingerprint: findingFingerprint(finding) }];
+  }
+  if (!isPublicApiContractEvidence(value)) {
+    const finding: Omit<NormalizedFinding, "fingerprint"> = { tool: "pact", kind: "contract-failure", rule: "PUBLIC-API-CONTRACT-EVIDENCE", message: "malformed public-api contract evidence: the versioned interaction array is missing or not well-formed; a silent zero-interaction run must never satisfy a requirement.", status: "failed" };
+    return [{ ...finding, fingerprint: findingFingerprint(finding) }];
+  }
+  return (root.interactions as unknown[]).flatMap((item) => {
+    const check = record(item);
+    if (check.status === "pass") return [];
+    const finding: Omit<NormalizedFinding, "fingerprint"> = { tool: "pact", kind: "contract-failure", rule: stringValue(check.id), message: stringValue(check.evidence) ?? stringValue(check.name) ?? "Public API contract check failed.", status: "failed", details: { check: check.id, name: check.name } };
+    return [{ ...finding, fingerprint: findingFingerprint(finding) }];
+  });
+}
+
 export function parseToolEvidenceResult(adapter: string, stdout: string): ToolEvidenceParseResult {
   let value: unknown;
   try { value = JSON.parse(stdout); }
@@ -92,7 +161,13 @@ export function parseToolEvidenceResult(adapter: string, stdout: string): ToolEv
   if (adapter === "opengrep") return { findings: normalizeOpengrepOutput(value), valid: hasArrayField(value, "results") };
   if (adapter === "trivy") return parseTrivyEvidence(value);
   if (adapter === "playwright") return { findings: normalizePlaywrightOutput(value), valid: hasArrayField(value, "suites") };
-  if (adapter === "pact") return { findings: normalizePactOutput(value), valid: hasAnyArrayField(value, ["interactions", "interactionResults", "tests", "failures", "errors"]) };
+  if (adapter === "pact") {
+    // Versioned public-api contract evidence is valid only when it conforms
+    // exactly; a present-but-malformed (or version-drifted) payload is invalid
+    // and still yields fail-closed findings via normalizePactOutput above.
+    if (hasPublicApiContractMarker(value)) return { findings: normalizePublicApiContractOutput(value), valid: isPublicApiContractEvidence(value) };
+    return { findings: normalizePactOutput(value), valid: hasAnyArrayField(value, ["interactions", "interactionResults", "tests", "failures", "errors"]) };
+  }
   return { findings: [], valid: true };
 }
 
