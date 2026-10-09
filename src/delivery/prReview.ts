@@ -52,7 +52,16 @@ export interface IndependentPullRequestReviewV1 {
   reviewerRole: string;
   readOnly: boolean;
   policyDigest: string;
+  /**
+   * Opaque provenance binding to the PR evidence bundle the reviewer
+   * inspected (final diff, check runs, validation/review evidence digests).
+   * Format-verified here; content is verified by the reviewer plus the
+   * deterministic CI/freshness/authority gates. Callers must supply the
+   * digest of the actual evidence bundle, not a placeholder.
+   */
   evidenceDigest: string;
+  /** Assurance tier of this review. HIGH is required for high-risk changes. */
+  assuranceTier: "STANDARD" | "HIGH";
   findings: PullRequestReviewFindingV1[];
   disposition: PullRequestReviewDispositionV1;
   reviewedAt: string;
@@ -77,6 +86,10 @@ export interface MergeEligibilityInputV1 {
   mergeAllowedByPolicy: boolean;
   mergeMode: DeliveryMergeModeV1;
   risk: "low" | "medium" | "high";
+  /** When true, reviewerProvider must be a qualified high-assurance provider. */
+  requireHighAssurance?: boolean;
+  /** Case-insensitive qualified providers for HIGH reviews. Defaults to Luna/Codex family. */
+  qualifiedProviders?: string[];
 }
 
 export interface MergeEligibilityV1 {
@@ -169,6 +182,7 @@ export function bindIndependentPrReview(input: {
   implementerIdentity: string;
   policyDigest: string;
   evidenceDigest: string;
+  assuranceTier?: "STANDARD" | "HIGH";
   findings: PullRequestReviewFindingV1[];
   disposition: PullRequestReviewDispositionV1;
   reviewedAt?: string;
@@ -211,6 +225,10 @@ export function bindIndependentPrReview(input: {
   }
   const reviewedAt = input.reviewedAt ?? new Date().toISOString();
   if (!Number.isFinite(Date.parse(reviewedAt))) reject("PR_REVIEW_REJECTED: reviewedAt must be a valid timestamp.");
+  const assuranceTier = input.assuranceTier ?? "STANDARD";
+  if (assuranceTier !== "STANDARD" && assuranceTier !== "HIGH") {
+    reject("PR_REVIEW_REJECTED: assuranceTier must be STANDARD or HIGH.");
+  }
   const body = {
     version: PR_REVIEW_VERSION,
     pr: {
@@ -227,6 +245,7 @@ export function bindIndependentPrReview(input: {
     readOnly: true,
     policyDigest: input.policyDigest,
     evidenceDigest: input.evidenceDigest,
+    assuranceTier,
     findings: [...input.findings].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
     disposition: input.disposition,
     reviewedAt,
@@ -250,17 +269,45 @@ export function verifyIndependentPrReviewDigest(review: IndependentPullRequestRe
 /**
  * DETERMINISTIC: resolve the frozen delivery merge mode. The selected
  * delivery authority is frozen and bound to the operation; an agent cannot
- * change its own merge policy. Unknown or absent mode fails closed to
- * PR_ONLY (create an accepted PR and stop before merge).
+ * change its own merge policy. Absent mode fails closed to PR_ONLY (create an
+ * accepted PR and stop before merge). Unknown modes always throw, even when
+ * merge is not allowed, so misconfiguration is never silently masked.
  */
 export function resolveDeliveryMergeMode(input: {
   mode?: unknown;
   mergeAllowedByPolicy: boolean;
 }): DeliveryMergeModeV1 {
+  if (input.mode !== undefined && input.mode !== "PR_ONLY" && input.mode !== "AUTO_MERGE" && input.mode !== "RISK_GATED") {
+    reject(`DELIVERY_MERGE_MODE_INVALID: merge mode '${String(input.mode)}' is not PR_ONLY, AUTO_MERGE, or RISK_GATED.`);
+  }
   if (input.mergeAllowedByPolicy !== true) return "PR_ONLY";
   if (input.mode === undefined) return "PR_ONLY";
-  if (input.mode === "PR_ONLY" || input.mode === "AUTO_MERGE" || input.mode === "RISK_GATED") return input.mode;
-  reject(`DELIVERY_MERGE_MODE_INVALID: merge mode '${String(input.mode)}' is not PR_ONLY, AUTO_MERGE, or RISK_GATED.`);
+  return input.mode;
+}
+
+/** Default qualified high-assurance reviewer providers (Luna/Codex family), matched case-insensitively. */
+export const HIGH_ASSURANCE_PROVIDERS_DEFAULT = ["luna", "codex", "codex/luna", "gpt-6-luna", "gpt-6-luna-codex"] as const;
+
+function isQualifiedHighAssuranceProvider(provider: unknown, qualified: readonly string[]): boolean {
+  if (typeof provider !== "string") return false;
+  const normalized = provider.trim().toLowerCase();
+  return qualified.some((q) => q.toLowerCase() === normalized || normalized.includes(q.toLowerCase()));
+}
+
+/**
+ * DETERMINISTIC: bound the repair-review loop. The PR review repair loop
+ * (REPAIR_REQUIRED → implementer fix → regression tests → renewed review)
+ * must be bounded by the caller (operation controller). Rounds are 1-indexed;
+ * anything past PR_REVIEW_MAX_ROUNDS is rejected so retries cannot loop
+ * unbounded. Callers persist the round with the review chain.
+ */
+export function assertReviewRound(round: number): void {
+  if (!Number.isSafeInteger(round) || round < 1) {
+    reject("PR_REVIEW_REJECTED: review round must be a positive integer.");
+  }
+  if (round > PR_REVIEW_MAX_ROUNDS) {
+    reject(`PR_REVIEW_ROUNDS_EXHAUSTED: independent PR review rounds are bounded to ${PR_REVIEW_MAX_ROUNDS}; escalate instead of retrying.`);
+  }
 }
 
 /**
@@ -288,8 +335,33 @@ export function evaluateMergeEligibility(input: MergeEligibilityInputV1): MergeE
   if (blockingFinding) {
     blockers.push("MERGE_BLOCKED: unresolved blocking review finding remains.");
   }
-  if (input.review?.reviewerIdentity === input.implementerIdentity) {
+  // Re-validate independence on the bound artifact itself: a forged review
+  // object with a valid digest but Implementer role, writable authority, or
+  // empty provider must not pass eligibility even if it was minted outside
+  // bindIndependentPrReview.
+  const reviewerIdentity = typeof input.review?.reviewerIdentity === "string" ? input.review.reviewerIdentity.trim() : "";
+  const implementerIdentity = typeof input.implementerIdentity === "string" ? input.implementerIdentity.trim() : "";
+  if (!reviewerIdentity || !implementerIdentity) {
+    blockers.push("MERGE_BLOCKED: reviewer and implementer identities must be non-empty.");
+  } else if (reviewerIdentity === implementerIdentity) {
     blockers.push("MERGE_BLOCKED: reviewer is not independent of the implementer.");
+  }
+  if (input.review?.reviewerRole !== "Reviewer") {
+    blockers.push("MERGE_BLOCKED: independent PR reviewer must hold the Reviewer role.");
+  }
+  if (input.review?.readOnly !== true) {
+    blockers.push("MERGE_BLOCKED: independent PR reviewer must hold read-only authority.");
+  }
+  if (typeof input.review?.reviewerProvider !== "string" || !input.review.reviewerProvider.trim()) {
+    blockers.push("MERGE_BLOCKED: independent PR reviewer provider must be a non-empty string.");
+  }
+  if (input.requireHighAssurance === true) {
+    const qualified = input.qualifiedProviders ?? [...HIGH_ASSURANCE_PROVIDERS_DEFAULT];
+    if (!isQualifiedHighAssuranceProvider(input.review?.reviewerProvider, qualified)) {
+      blockers.push("MERGE_BLOCKED: high-risk changes require a qualified high-assurance reviewer (Luna/Codex family).");
+    } else if (input.review?.assuranceTier !== "HIGH") {
+      blockers.push("MERGE_BLOCKED: high-assurance review tier is required for this change.");
+    }
   }
   if (input.review?.pr?.number !== input.expectedPr?.number
     || input.review?.pr?.repository !== input.expectedPr?.repository

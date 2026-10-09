@@ -10,6 +10,7 @@ import { controllerActorId, type ToolActionAuthorityEvidenceV1 } from "../securi
 import { githubRequest, inferGithubRepository, resolveGithubToken } from "./handoff.js";
 import {
   assertMergeEligible,
+  compilePullRequestReviewRequirement,
   evaluateMergeEligibility,
   resolveDeliveryMergeMode,
   type DeliveryMergeModeV1,
@@ -23,10 +24,11 @@ export interface MergeAcceptedPullRequestInput {
   candidate: CandidateRevisionV1;
   policyDigest: string;
   implementerIdentity: string;
-  ciGreen: boolean;
-  baseFresh: boolean;
   mergeMethod?: "merge" | "squash" | "rebase";
   risk?: "low" | "medium" | "high";
+  /** When true, a qualified high-assurance reviewer is required. Defaults from risk (high → true). */
+  requireHighAssurance?: boolean;
+  qualifiedProviders?: string[];
 }
 
 export interface MergeAcceptedPullRequestResult {
@@ -80,7 +82,9 @@ export async function mergeAcceptedPullRequest(
     ? policyDelivery.allowedActions.filter((a): a is string => typeof a === "string")
     : [];
   const mergeAllowedByPolicy = allowedActions.includes("github.pull-request.merge");
-  const rawMode = typeof policyDelivery.mergeMode === "string" ? policyDelivery.mergeMode : config.delivery?.github?.mergeMode;
+  // Frozen policy only: live project config must never widen merge authority
+  // beyond the frozen operation policy. Absent frozen mode fails closed to PR_ONLY.
+  const rawMode = typeof policyDelivery.mergeMode === "string" ? policyDelivery.mergeMode : undefined;
   const mode = resolveDeliveryMergeMode({ mode: rawMode, mergeAllowedByPolicy });
   if (!mergeAllowedByPolicy) {
     throw new Error("MERGE_BLOCKED: frozen delivery policy does not authorize merge.");
@@ -89,37 +93,6 @@ export async function mergeAcceptedPullRequest(
   if (!externalEffects.includes("github.pull-request.merge")) {
     throw new Error("DELIVERY_POLICY_STALE: frozen allowed delivery actions and external effects disagree on merge.");
   }
-
-  const risk = input.risk ?? "medium";
-  const eligibility = evaluateMergeEligibility({
-    review: input.review,
-    expectedPr: input.pr,
-    expectedCandidate: boundCandidate,
-    expectedPolicyDigest: input.policyDigest,
-    implementerIdentity: input.implementerIdentity,
-    ciGreen: input.ciGreen,
-    baseFresh: input.baseFresh,
-    authoritySatisfied: true,
-    mergeAllowedByPolicy,
-    mergeMode: mode,
-    risk,
-  });
-  if (!eligibility.eligible) {
-    throw new Error(eligibility.blockers[0] ?? "MERGE_BLOCKED: merge eligibility failed.");
-  }
-  assertMergeEligible({
-    review: input.review,
-    expectedPr: input.pr,
-    expectedCandidate: boundCandidate,
-    expectedPolicyDigest: input.policyDigest,
-    implementerIdentity: input.implementerIdentity,
-    ciGreen: input.ciGreen,
-    baseFresh: input.baseFresh,
-    authoritySatisfied: true,
-    mergeAllowedByPolicy,
-    mergeMode: mode,
-    risk,
-  });
 
   const github = config.delivery?.github;
   const repository = (typeof policyDelivery.repository === "string" ? policyDelivery.repository : undefined)
@@ -136,10 +109,13 @@ export async function mergeAcceptedPullRequest(
   const token = resolveGithubToken(github?.tokenEnv);
   const mergeMethod = input.mergeMethod ?? "squash";
 
-  // Revalidate immediately before the merge: fetch the live PR and confirm the
-  // exact reviewed head is still current, the PR is open, and mergeable state
-  // does not report a conflict. Branch protection itself is enforced by GitHub;
-  // we never attempt to override it.
+  // Revalidate immediately before the merge from live evidence (never from
+  // caller-asserted booleans): fetch the live PR and the combined commit
+  // status. Confirm the exact reviewed head is still current, the live base
+  // SHA still matches the reviewed base, the PR is open and mergeable, and
+  // required checks are green. Branch protection itself is enforced by GitHub;
+  // we never attempt to override it. A protection failure surfaces as a merge
+  // failure, not a silent override.
   const live = await githubRequest<{ head?: { sha?: string }; base?: { ref?: string; sha?: string }; state?: string; mergeable?: boolean | null; mergeable_state?: string; html_url?: string }>(
     apiBase, token, `/repos/${repository}/pulls/${input.pr.number}`,
   );
@@ -147,9 +123,50 @@ export async function mergeAcceptedPullRequest(
   if (typeof live.head?.sha === "string" && live.head.sha.toLowerCase() !== input.pr.headSha.toLowerCase()) {
     throw new Error("MERGE_BLOCKED: live PR head no longer matches the reviewed head; renewed independent review is required.");
   }
+  if (typeof live.base?.sha === "string" && live.base.sha.toLowerCase() !== input.pr.baseSha.toLowerCase()) {
+    throw new Error("MERGE_BLOCKED: live PR base no longer matches the reviewed base; renewed independent review is required.");
+  }
   if (live.mergeable === false || live.mergeable_state === "dirty") {
     throw new Error("MERGE_BLOCKED: pull request reports a merge conflict; repair and renewed review are required.");
   }
+  if (live.mergeable_state === "blocked") {
+    throw new Error("MERGE_BLOCKED: pull request is blocked by branch protection (failing checks or missing reviews).");
+  }
+  const baseFresh = live.mergeable_state !== "behind" && live.mergeable_state !== "dirty";
+  if (!baseFresh) {
+    throw new Error(`MERGE_BLOCKED: target branch freshness/integration requirement is not satisfied (mergeable_state=${String(live.mergeable_state)}).`);
+  }
+  const status = await githubRequest<{ state?: string; statuses?: unknown[] }>(
+    apiBase, token, `/repos/${repository}/commits/${input.pr.headSha}/status`,
+  );
+  const ciGreen = status.state === "success";
+  if (!ciGreen) {
+    throw new Error(`MERGE_BLOCKED: required GitHub checks are not green (combined state=${String(status.state)}).`);
+  }
+
+  const risk = input.risk ?? "medium";
+  const requirement = compilePullRequestReviewRequirement({ risk, requiresHighAssurance: input.requireHighAssurance });
+  const authoritySatisfied = operation.status === "RUNNING";
+  const eligibilityInput = {
+    review: input.review,
+    expectedPr: input.pr,
+    expectedCandidate: boundCandidate,
+    expectedPolicyDigest: input.policyDigest,
+    implementerIdentity: input.implementerIdentity,
+    ciGreen,
+    baseFresh,
+    authoritySatisfied,
+    mergeAllowedByPolicy,
+    mergeMode: mode,
+    risk,
+    requireHighAssurance: requirement.requireHighAssurance,
+    ...(input.qualifiedProviders ? { qualifiedProviders: input.qualifiedProviders } : {}),
+  };
+  const eligibility = evaluateMergeEligibility(eligibilityInput);
+  if (!eligibility.eligible) {
+    throw new Error(eligibility.blockers[0] ?? "MERGE_BLOCKED: merge eligibility failed.");
+  }
+  assertMergeEligible(eligibilityInput);
 
   const authority: ToolActionAuthorityEvidenceV1 = { kind: "controller-authority", operationId, controllerEpoch };
   const actor = controllerActorId(operationId);

@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { sha256Canonical } from "../src/core/digest.js";
+import { createCandidateRevisionV1 } from "../src/operations/v2Contracts.js";
+import { classifyToolActionImpact } from "../src/security/toolActionGate.js";
+import { reconcileToolAction } from "../src/security/actionReconciliation.js";
 import {
   assertIndependentPrReviewer,
+  assertReviewRound,
   bindIndependentPrReview,
   compilePullRequestReviewRequirement,
   evaluateMergeEligibility,
@@ -200,9 +204,14 @@ describe("IndependentPullRequestReview native gate", () => {
     expect(result.blockers.join("\n")).toMatch("RISK_GATED");
   });
 
-  it("fails closed to PR_ONLY on unknown mode", () => {
+  it("fails closed to PR_ONLY on absent mode and throws on unknown mode", () => {
     expect(resolveDeliveryMergeMode({ mode: undefined, mergeAllowedByPolicy: true })).toBe("PR_ONLY");
+    expect(resolveDeliveryMergeMode({ mode: undefined, mergeAllowedByPolicy: false })).toBe("PR_ONLY");
     expect(() => resolveDeliveryMergeMode({ mode: "YOLO", mergeAllowedByPolicy: true })).toThrow(
+      "DELIVERY_MERGE_MODE_INVALID",
+    );
+    // Unknown modes are never silently masked, even when merge is not allowed.
+    expect(() => resolveDeliveryMergeMode({ mode: "YOLO", mergeAllowedByPolicy: false })).toThrow(
       "DELIVERY_MERGE_MODE_INVALID",
     );
   });
@@ -235,5 +244,113 @@ describe("IndependentPullRequestReview native gate", () => {
     expect(a.digest).toMatch(/^[a-f0-9]{64}$/);
     const { digest, ...body } = a;
     expect(sha256Canonical(body)).toBe(digest);
+  });
+
+  it("forged reviews (wrong role, writable, empty provider) are denied at eligibility", () => {
+    const base = {
+      expectedPr: pr(),
+      expectedCandidate: candidate(),
+      expectedPolicyDigest: "c".repeat(64),
+      implementerIdentity: "implementer-1",
+      ciGreen: true,
+      baseFresh: true,
+      authoritySatisfied: true,
+      mergeAllowedByPolicy: true,
+      mergeMode: "AUTO_MERGE" as const,
+      risk: "low" as const,
+    };
+    const good = reviewFor();
+    const forgedRole = { ...good, reviewerRole: "Implementer" } as typeof good;
+    // Re-mint the digest so the tamper check passes but role enforcement must still deny.
+    const { digest: _d1, ...body1 } = forgedRole;
+    const mintedRole = { ...body1, digest: sha256Canonical(body1) } as typeof good;
+    expect(evaluateMergeEligibility({ ...base, review: mintedRole }).eligible).toBe(false);
+    expect(evaluateMergeEligibility({ ...base, review: mintedRole }).blockers.join("\n")).toMatch("Reviewer role");
+
+    const forgedWrite = { ...good, readOnly: false } as unknown as typeof good;
+    const { digest: _d2, ...body2 } = forgedWrite;
+    const mintedWrite = { ...body2, digest: sha256Canonical(body2) } as typeof good;
+    expect(evaluateMergeEligibility({ ...base, review: mintedWrite }).eligible).toBe(false);
+    expect(evaluateMergeEligibility({ ...base, review: mintedWrite }).blockers.join("\n")).toMatch("read-only");
+
+    const forgedProvider = { ...good, reviewerProvider: "  " } as unknown as typeof good;
+    const { digest: _d3, ...body3 } = forgedProvider;
+    const mintedProvider = { ...body3, digest: sha256Canonical(body3) } as typeof good;
+    expect(evaluateMergeEligibility({ ...base, review: mintedProvider }).eligible).toBe(false);
+  });
+
+  it("high-assurance requirement blocks unqualified providers and allows Luna", () => {
+    const base = {
+      expectedPr: pr(),
+      expectedCandidate: candidate(),
+      expectedPolicyDigest: "c".repeat(64),
+      implementerIdentity: "implementer-1",
+      ciGreen: true,
+      baseFresh: true,
+      authoritySatisfied: true,
+      mergeAllowedByPolicy: true,
+      mergeMode: "AUTO_MERGE" as const,
+      risk: "high" as const,
+      requireHighAssurance: true,
+    };
+    const standard = reviewFor();
+    const blocked = evaluateMergeEligibility({ ...base, review: standard });
+    expect(blocked.eligible).toBe(false);
+    expect(blocked.blockers.join("\n")).toMatch("high-assurance");
+    const luna = reviewFor({ reviewerProvider: "codex/gpt-6-luna", assuranceTier: "HIGH" });
+    expect(evaluateMergeEligibility({ ...base, review: luna }).eligible).toBe(true);
+  });
+
+  it("bounds the repair-review loop to three rounds", () => {
+    expect(() => assertReviewRound(1)).not.toThrow();
+    expect(() => assertReviewRound(3)).not.toThrow();
+    expect(() => assertReviewRound(4)).toThrow("PR_REVIEW_ROUNDS_EXHAUSTED");
+    expect(() => assertReviewRound(0)).toThrow("positive integer");
+  });
+});
+
+describe("github.pull-request.merge reconciliation", () => {
+  const payload = { repository: "owner/repo", number: 155, headSha: "a".repeat(40), baseRef: "main", apiBase: "https://api.github.com" };
+  function intent() {
+    return {
+      version: 2 as const,
+      intentId: "action-intent:github-pull-request-merge",
+      actionKey: "delivery:merge-pr-155",
+      operationId: "RUN-RECONCILE-1",
+      participantId: "participant:lead",
+      role: "Lead/Director" as const,
+      candidate: createCandidateRevisionV1({ operationId: "RUN-RECONCILE-1", candidateId: "candidate:reconcile", projectId: "project-test", taskId: "T-1", revision: 1, sourceDigest: "a".repeat(64), createdAt: "2026-03-04T05:06:07.000Z" }),
+      operationExecutionRevision: 1,
+      policyDigest: "d".repeat(64),
+      action: "github.pull-request.merge" as const,
+      impact: classifyToolActionImpact("github.pull-request.merge"),
+      controllerEpoch: 1,
+      payloadDigest: sha256Canonical(payload),
+      authorityBindingDigest: "b".repeat(64),
+      requestDigest: "c".repeat(64),
+      createdAt: "2026-03-04T05:06:07.000Z",
+    };
+  }
+  it("reports SUCCEEDED when the PR is merged at the expected head/base", async () => {
+    const result = await reconcileToolAction("/tmp", intent(), payload, {
+      fetchJson: async () => ({ status: 200, body: { merged: true, state: "closed", head: { sha: "a".repeat(40) }, base: { ref: "main" }, merge_commit_sha: "f".repeat(40) } }),
+      token: "test-token",
+    });
+    expect(result.outcome).toBe("SUCCEEDED");
+  });
+  it("reports FAILED when merged at an unexpected head", async () => {
+    const result = await reconcileToolAction("/tmp", intent(), payload, {
+      fetchJson: async () => ({ status: 200, body: { merged: true, state: "closed", head: { sha: "b".repeat(40) }, base: { ref: "main" }, merge_commit_sha: "f".repeat(40) } }),
+      token: "test-token",
+    });
+    expect(result.outcome).toBe("FAILED");
+    expect(result.detail).toBe("pull-request-merged-unexpected-head");
+  });
+  it("reports FAILED when closed without merge", async () => {
+    const result = await reconcileToolAction("/tmp", intent(), payload, {
+      fetchJson: async () => ({ status: 200, body: { merged: false, state: "closed", head: { sha: "a".repeat(40) }, base: { ref: "main" } } }),
+      token: "test-token",
+    });
+    expect(result.outcome).toBe("FAILED");
   });
 });
