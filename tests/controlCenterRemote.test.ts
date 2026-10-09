@@ -26,6 +26,36 @@ function rawRequest(url: string, options: { method?: string; headers?: Record<st
   });
 }
 
+function readLiveSseHead(url: string, headers: Record<string, string>): Promise<{ status: number; contentType: string; head: string }> {
+  const target = new URL(url);
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { hostname: target.hostname, port: Number(target.port), path: "/api/v1/events", method: "GET", headers },
+      (res) => {
+        const contentType = Array.isArray(res.headers["content-type"]) ? res.headers["content-type"][0] ?? "" : String(res.headers["content-type"] ?? "");
+        const status = res.statusCode ?? 0;
+        if (status !== 200) {
+          const chunks: Buffer[] = [];
+          res.on("data", (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
+          res.on("end", () => resolve({ status, contentType, head: Buffer.concat(chunks).toString("utf8") }));
+          return;
+        }
+        const timer = setTimeout(() => { res.destroy(); reject(new Error("SSE live head timeout")); }, 5_000);
+        res.once("data", (c) => {
+          clearTimeout(timer);
+          const head = Buffer.isBuffer(c) ? c.toString("utf8") : String(c);
+          res.destroy();
+          resolve({ status, contentType, head });
+        });
+        res.once("error", (error) => { clearTimeout(timer); reject(error); });
+      },
+    );
+    req.on("error", reject);
+    req.setTimeout(5_000, () => req.destroy(new Error("SSE request timeout")));
+    req.end();
+  });
+}
+
 describe("Control Center trusted-proxy remote access", () => {
   it("keeps default loopback behavior unchanged", async () => {
     const center = new LocalControlCenterV1();
@@ -163,6 +193,9 @@ describe("Control Center trusted-proxy remote access", () => {
     const center = new LocalControlCenterV1({ remote: remoteOptions() });
     const started = await center.start();
     try {
+      // Live SSE requires session (auth parity with history): unauthenticated fails.
+      const unauthStream = await rawRequest(`${started.url}api/v1/events`, { headers: { Host: REMOTE_HOST, "X-Forwarded-Proto": "https" } });
+      expect(unauthStream.status).toBe(401);
       const nonce = new URL(started.pairingUrl).hash.slice("#pair=".length);
       const pair = await rawRequest(`${started.url}api/v1/pair`, {
         method: "POST",
@@ -173,6 +206,11 @@ describe("Control Center trusted-proxy remote access", () => {
       const cookie = (Array.isArray(pair.headers["set-cookie"]) ? pair.headers["set-cookie"].join(";") : String(pair.headers["set-cookie"] ?? "")).split(";", 1)[0]!;
       const events = await rawRequest(`${started.url}api/v1/events/history`, { headers: { Host: REMOTE_HOST, "X-Forwarded-Proto": "https", Cookie: cookie } });
       expect(events.status).toBe(200);
+      // Live framed stream (not just history) serves over the private connection.
+      const live = await readLiveSseHead(started.url, { Host: REMOTE_HOST, "X-Forwarded-Proto": "https", Cookie: cookie });
+      expect(live.status).toBe(200);
+      expect(live.contentType).toContain("text/event-stream");
+      expect(live.head).toContain(": connected");
     } finally {
       await center.close();
     }

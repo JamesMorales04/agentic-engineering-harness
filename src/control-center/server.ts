@@ -211,7 +211,16 @@ export class LocalControlCenterV1 {
       if (!session) return this.json(response, 401, { error: "Control Center session authentication required." });
       if (request.method === "GET" && url.pathname === "/api/v1/session") return this.json(response, 200, { version: CONTROL_CENTER_CONTRACT_VERSION, csrfToken: session.csrfToken });
       if (request.method === "GET" && url.pathname === "/api/v1/overview") return this.json(response, 200, await this.overview());
-      if (request.method === "GET" && url.pathname === "/api/v1/events") return this.eventsStream(request, response);
+      if (request.method === "GET" && url.pathname === "/api/v1/events") {
+        // Fail-closed cursor validation: decodeEventCursor throws synchronously
+        // before eventsStream()'s first await, and a bare `return
+        // this.eventsStream(...)` would let that rejection escape this
+        // try/catch (a bare return adopts without routing to catch — only
+        // `return await` does), hanging the response with an unhandled
+        // rejection. Validating here routes malformed cursors to the 400 path.
+        decodeEventCursor(request.headers["last-event-id"]);
+        return this.eventsStream(request, response);
+      }
       if (request.method === "GET" && url.pathname === "/api/v1/events/history") return this.json(response, 200, this.collection("event", await this.durableEvents()));
       if (request.method === "GET" && url.pathname === "/api/v1/projects") return this.json(response, 200, this.collection("project", (await this.snapshot()).projects));
       if (request.method === "GET" && url.pathname === "/api/v1/operations") return this.json(response, 200, this.collection("operation", (await this.snapshot()).operations.map(({ participants: _participants, payloadSummary: _payloadSummary, ...operation }) => operation)));

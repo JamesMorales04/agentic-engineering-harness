@@ -36,6 +36,7 @@ import { extractUsageMetrics } from "../metrics/usage.js";
 import { buildRunMetrics, countHumanInterventions } from "../metrics/runMetrics.js";
 import { deliveryWorkspacePath } from "../delivery/handoff.js";
 import { deliveryFinalizationFailure, finalizeAcceptedIssue, type DeliveryFinalizationResult } from "../delivery/finalize.js";
+import { isMergePendingBlockedDelivery, scheduleIndependentPrReviewAndMerge } from "../delivery/prReviewScheduling.js";
 import { verifyGithubIssueDrift } from "../issues/intake.js";
 import { createControlPlaneSnapshot, detectControlPlaneDrift, materializeControlPlaneSnapshot, type ControlPlaneSnapshot } from "./controlPlane.js";
 import { resolveOrganizationPolicyBundles, withOrganizationPolicies } from "../policy/bundles.js";
@@ -1289,6 +1290,41 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
       if (operationId) await requireOwnerEconomicBoundaryBeforeExternalEffectV1(controlRoot, await loadOperation(operationStateRoot, operationId));
       deliverySummary = await finalizeAcceptedIssue(workspaceRoot, effectiveConfig, effectiveContract, { candidate: report.candidate });
       if (deliverySummary.status !== "SKIPPED") await recordEvent(controlRoot, effectiveConfig, "harness.delivery.finalize", { taskId: effectiveContract.task.id, status: deliverySummary.status, commitSha: deliverySummary.commitSha, pullRequest: deliverySummary.pullRequest });
+      // Track B delivery-stage seam: when the frozen merge mode requested
+      // autonomous merge, finalize stops merge-pending BLOCKED after PR
+      // creation (no prReview supplied). Schedule the independent Reviewer
+      // turn through the AEH participant infrastructure and re-invoke
+      // finalize with the bound review. Reviewer failure / REPAIR_REQUIRED
+      // stays BLOCKED (never success); only a merged finalize FINALIZES.
+      // Prerequisites are fail-closed: without the current candidate, the
+      // genuine evidence-bundle digest, or an implementer identity,
+      // scheduling is skipped and the merge-pending BLOCKED result stands.
+      if (isMergePendingBlockedDelivery(deliverySummary) && report.candidate && evidenceBundle) {
+        const implementerIdentity = selection?.logicalAgent ?? worker.logicalAgent ?? "";
+        if (implementerIdentity.trim()) {
+          const scheduled = await scheduleIndependentPrReviewAndMerge(
+            {
+              root: workspaceRoot,
+              config: effectiveConfig,
+              contract: effectiveContract,
+              candidate: report.candidate,
+              blocked: deliverySummary,
+              evidenceDigest: evidenceBundle.digest,
+              implementerIdentity,
+              reviewerSelections: executionBoundary.reviewerSelections ?? {},
+              risk: effectiveContract.routing?.risk ?? "high",
+            },
+          );
+          deliverySummary = scheduled.delivery;
+          await recordEvent(controlRoot, effectiveConfig, "harness.delivery.pr-review", {
+            taskId: effectiveContract.task.id,
+            status: scheduled.delivery.status,
+            roundsAttempted: scheduled.roundsAttempted,
+            ...(scheduled.review ? { reviewDigest: scheduled.review.digest, disposition: scheduled.review.disposition } : {}),
+            pullRequest: scheduled.delivery.pullRequest,
+          });
+        }
+      }
       if (operationId) await runStage(operationStateRoot, operationId, "delivery", "COMPLETED");
     } catch (error) {
       deliverySummary = { ...deliveryFinalizationFailure(error), candidate: report.candidate };
