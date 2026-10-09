@@ -90,7 +90,7 @@ const projectSchema = z.object({
   }).optional(),
   delivery: z.object({
     stateDir: z.string().optional(),
-    github: z.object({ enabled: z.boolean().optional(), allowedActions: z.array(z.enum(GITHUB_DELIVERY_ACTIONS_V1)).optional(), tokenEnv: z.string().min(1).optional(), repository: z.string().regex(/^[^/]+\/[^/]+$/).optional(), apiBaseUrl: z.string().url().optional(), assignTokenOwner: z.boolean().optional(), labels: z.array(z.string()).optional(), branchPattern: z.string().min(1).optional(), finalizeOnAcceptance: z.boolean().optional(), pullRequestDraft: z.boolean().optional(), pullRequests: z.boolean().optional() }).optional().superRefine((value, ctx) => {
+    github: z.object({ enabled: z.boolean().optional(), allowedActions: z.array(z.enum(GITHUB_DELIVERY_ACTIONS_V1)).optional(), tokenEnv: z.string().min(1).optional(), repository: z.string().regex(/^[^/]+\/[^/]+$/).optional(), apiBaseUrl: z.string().url().optional(), assignTokenOwner: z.boolean().optional(), labels: z.array(z.string()).optional(), branchPattern: z.string().min(1).optional(), finalizeOnAcceptance: z.boolean().optional(), pullRequestDraft: z.boolean().optional(), pullRequests: z.boolean().optional(), mergeMode: z.enum(["PR_ONLY", "AUTO_MERGE", "RISK_GATED"]).optional() }).optional().superRefine((value, ctx) => {
       if (value?.enabled === true && !value.allowedActions) ctx.addIssue({ code: "custom", path: ["allowedActions"], message: "delivery.github.allowedActions is required when GitHub delivery is enabled; list the exact permitted delivery actions" });
     }),
     paseo: z.object({ enabled: z.boolean().optional(), createWorkspace: z.boolean().optional(), autoUseWorkspace: z.boolean().optional(), worktreeSlugPattern: z.string().min(1).optional() }).optional()

@@ -139,6 +139,14 @@ export interface HarnessProjectConfig {
       finalizeOnAcceptance?: boolean;
       pullRequestDraft?: boolean;
       pullRequests?: boolean;
+      /**
+       * Governed merge mode. Default PR_ONLY creates an accepted PR and stops
+       * before merge. AUTO_MERGE merges autonomously after all mandatory
+       * gates pass. RISK_GATED merges automatically only for explicitly
+       * delegated risk classes (never high-risk). Frozen and bound to the
+       * operation; an agent cannot change its own merge policy.
+       */
+      mergeMode?: "PR_ONLY" | "AUTO_MERGE" | "RISK_GATED";
     };
     paseo?: {
       enabled?: boolean;

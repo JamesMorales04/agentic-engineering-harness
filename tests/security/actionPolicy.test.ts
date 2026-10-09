@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { HarnessProjectConfig } from "../../src/core/types.js";
-import { GITHUB_DELIVERY_ACTIONS_V1, type ToolActionKindV1 } from "../../src/security/actionKinds.js";
+import { GITHUB_DELIVERY_ACTIONS_V1, type GitHubDeliveryActionV1, type ToolActionKindV1 } from "../../src/security/actionKinds.js";
 import { configuredDeliveryActions, configuredDeliveryPolicy, configuredExternalEffects, requiredHumanActionAuthorizations } from "../../src/security/actionPolicy.js";
 
 function project(github?: NonNullable<HarnessProjectConfig["delivery"]>["github"]): HarnessProjectConfig {
   return { version: 1, project: { name: "action-policy-matrix" }, delivery: { github, paseo: { enabled: false } } };
 }
 
-const CHANGE_DELIVERY_ACTIONS: ToolActionKindV1[] = ["git.branch.create", "git.commit", "git.push", "github.pull-request.create"];
+const CHANGE_DELIVERY_ACTIONS: GitHubDeliveryActionV1[] = ["git.branch.create", "git.commit", "git.push", "github.pull-request.create"];
 const CHANGE_EXTERNAL_EFFECTS: ToolActionKindV1[] = ["git.push", "github.pull-request.create"];
 const CHANGE_HUMAN_REQUIREMENTS = [
   { kind: "ACTION_AUTHORIZATION" as const, action: "git.push" as const },
@@ -56,11 +56,27 @@ describe("frozen GitHub delivery action policy", () => {
     expect(configuredExternalEffects(config, "change")).toEqual([]);
   });
 
-  it("does not allow merge, force-push, deletion, or credential mutation actions", () => {
-    const unsupported = ["github.pull-request.merge", "git.push.force", "git.branch.delete", "github.repository.delete", "github.credentials.update"];
+  it("does not allow force-push, deletion, or credential mutation actions", () => {
+    const unsupported = ["git.push.force", "git.branch.delete", "github.repository.delete", "github.credentials.update"];
     for (const action of unsupported) {
       expect(GITHUB_DELIVERY_ACTIONS_V1).not.toContain(action);
     }
+    // Governed autonomous merge is supported only through the native
+    // IndependentPullRequestReview gate with an explicit mergeMode.
+    expect(GITHUB_DELIVERY_ACTIONS_V1).toContain("github.pull-request.merge");
+  });
+
+  it("keeps merge disabled by default and enables it only for explicit merge modes", () => {
+    const base: NonNullable<NonNullable<HarnessProjectConfig["delivery"]>["github"]> = { enabled: true, allowedActions: [...CHANGE_DELIVERY_ACTIONS, "github.pull-request.merge"], finalizeOnAcceptance: true, pullRequests: true };
+    expect(configuredDeliveryPolicy(project({ ...base }), "change").mergeMode).toBe("PR_ONLY");
+    expect(configuredDeliveryActions(project({ ...base }), "change")).not.toContain("github.pull-request.merge");
+    const auto = project({ ...base, mergeMode: "AUTO_MERGE" });
+    expect(configuredDeliveryPolicy(auto, "change").mergeMode).toBe("AUTO_MERGE");
+    expect(configuredDeliveryActions(auto, "change")).toContain("github.pull-request.merge");
+    const gated = project({ ...base, mergeMode: "RISK_GATED" });
+    expect(configuredDeliveryPolicy(gated, "change").mergeMode).toBe("RISK_GATED");
+    // Merge never mints human authorization by itself; eligibility replaces the human gate when delegated.
+    expect(requiredHumanActionAuthorizations(configuredExternalEffects(auto, "change"))).not.toContainEqual({ kind: "ACTION_AUTHORIZATION", action: "github.pull-request.merge" });
   });
 
   it("deduplicates and sorts configured actions deterministically", () => {
