@@ -95,30 +95,61 @@ export function repairHardProtectedPaths(
   config: HarnessProjectConfig,
   contract: TaskContract,
 ): string[] {
-  const paths = new Set<string>([
-    `${config.sdd?.contractsDir ?? ".harness/contracts"}/${contract.task.id}.yaml`,
-    `.harness/seals/${contract.task.id}.json`,
-    ".harness/project.yaml",
-    "tests",
-    "test",
-    "specs",
-    "acceptance",
-    "features",
-    "src/validators",
-    ...(contract.scope?.frozen ?? []),
-    ...(config.validation?.frozenPaths ?? []),
-    ...configuredValidatorSourcePathsForScope(config, contract),
-    ...Object.values(contract.source ?? {}).filter((value): value is string => Boolean(value)),
-    ...(contract.issue?.snapshotPath ? [contract.issue.snapshotPath] : []),
-    ...(config.agents?.configPath ? [config.agents.configPath] : []),
-    ...(config.agents?.generatedPath ? [config.agents.generatedPath] : []),
-    ...(config.toolchain?.configPath ? [config.toolchain.configPath] : []),
-    ...(config.toolchain?.lockPath ? [config.toolchain.lockPath] : []),
-    ...(config.validation?.opa?.policyDirs ?? []),
-    ...(config.organization?.policyBundles?.cacheDir ? [config.organization.policyBundles.cacheDir] : []),
-    ...(config.controlPlane?.include ?? []),
-  ]);
-  return expandRepairScopePatterns(paths);
+  return expandRepairScopePatterns(rawRepairHardProtectedSources(config, contract));
+}
+
+/**
+ * DETERMINISTIC raw hard-source enumeration shared by the full gate and the
+ * H-NEW-13 frozen-forward-wins tier (single enumeration, no duplication).
+ * When `excludeBroadTestsDir` is set, the broad `tests` dir rule is omitted
+ * but every other source — including an explicit `tests`/`tests/**`/file
+ * entry via contract.scope.frozen, validation.frozenPaths, validator
+ * sources, agents/toolchain configs, seals/contracts dirs, policy dirs,
+ * specs/acceptance/features patterns — is still included, so an explicit
+ * listing survives the exclusion and keeps the path HARD.
+ */
+function rawRepairHardProtectedSources(
+  config: HarnessProjectConfig,
+  contract: TaskContract,
+  options?: { excludeBroadTestsDir?: boolean },
+): Set<string> {
+  const paths = new Set<string>();
+  if (!options?.excludeBroadTestsDir) paths.add("tests");
+  paths.add(`${config.sdd?.contractsDir ?? ".harness/contracts"}/${contract.task.id}.yaml`);
+  paths.add(`.harness/seals/${contract.task.id}.json`);
+  paths.add(".harness/project.yaml");
+  paths.add("test");
+  paths.add("specs");
+  paths.add("acceptance");
+  paths.add("features");
+  paths.add("src/validators");
+  for (const entry of contract.scope?.frozen ?? []) paths.add(entry);
+  for (const entry of config.validation?.frozenPaths ?? []) paths.add(entry);
+  for (const entry of configuredValidatorSourcePathsForScope(config, contract)) paths.add(entry);
+  for (const value of Object.values(contract.source ?? {}).filter((value): value is string => Boolean(value))) paths.add(value);
+  if (contract.issue?.snapshotPath) paths.add(contract.issue.snapshotPath);
+  if (config.agents?.configPath) paths.add(config.agents.configPath);
+  if (config.agents?.generatedPath) paths.add(config.agents.generatedPath);
+  if (config.toolchain?.configPath) paths.add(config.toolchain.configPath);
+  if (config.toolchain?.lockPath) paths.add(config.toolchain.lockPath);
+  for (const entry of config.validation?.opa?.policyDirs ?? []) paths.add(entry);
+  if (config.organization?.policyBundles?.cacheDir) paths.add(config.organization.policyBundles.cacheDir);
+  for (const entry of config.controlPlane?.include ?? []) paths.add(entry);
+  return paths;
+}
+
+/**
+ * DETERMINISTIC H-NEW-13 frozen-forward-wins source: every hard-protected
+ * pattern EXCEPT the broad `tests` dir rule. Shares
+ * rawRepairHardProtectedSources (no duplicated enumeration). A `tests/`
+ * candidate that matches anything here is hard-protected for a reason
+ * beyond the broad dir rule and must stay HARD.
+ */
+function repairHardProtectedPathsExcludingBroadTestsDir(
+  config: HarnessProjectConfig,
+  contract: TaskContract,
+): string[] {
+  return expandRepairScopePatterns(rawRepairHardProtectedSources(config, contract, { excludeBroadTestsDir: true }));
 }
 
 function expandRepairScopePatterns(paths: Set<string> | Iterable<string>): string[] {
@@ -184,6 +215,99 @@ export function findRepairHardProtectedViolations(
   return paths
     .map((filePath) => normalizeRepairScopePath(filePath.trim()))
     .filter((filePath) => filePath && matchesAnyHardProtectedPattern(filePath, hard));
+}
+
+/**
+ * DETERMINISTIC pure shape check for the H-NEW-13 risk-tiered new-test
+ * creation tier: true ONLY for exact safe file paths strictly under `tests/`
+ * (`tests/<name>`, never the bare `tests` directory entry, never globs).
+ * Every other hard class — `test/`, `specs/`, `acceptance/`, `features/`,
+ * `src/validators/`, seals, contracts, `project.yaml`, policy, frozen paths —
+ * returns false even for non-existent paths (new files elsewhere stay hard).
+ * No filesystem: existence is checked by the async partition below.
+ */
+export function isNewTestCreationTierPath(value: string): boolean {
+  if (typeof value !== "string") return false;
+  const normalized = normalizeRepairScopePath(value.trim());
+  if (!normalized || !normalized.startsWith("tests/") || normalized === "tests/") return false;
+  if (!isSafeRepairScopePath(normalized) || !isExactRepairScopeFilePath(normalized)) return false;
+  return true;
+}
+
+/**
+ * DETERMINISTIC H-NEW-13 risk-tiered partition of hard violations into
+ * create-vs-modify tiers (the single amendment-evaluation tiering point).
+ *
+ * - For paths under `tests/` (AND ONLY `tests/`) that do NOT exist at
+ *   evaluation time under `root` AND are hard-protected SOLELY via the broad
+ *   `tests` dir rule, the violation is demoted to the amendable
+ *   tier (`newTestCreations`): a lead-approved amendment suffices via the
+ *   regular product-choice channel with no hard suspend/grant round-trip.
+ * - Frozen-forward-wins: a `tests/` path that matches ANY other hard source
+ *   — contract.scope.frozen, validation.frozenPaths, configured validator
+ *   sources, agents/toolchain configs, seals/contracts dirs, policy dirs,
+ *   specs/acceptance/features patterns, or any other entry in
+ *   repairHardProtectedPathsExcludingBroadTestsDir — stays HARD even when
+ *   non-existent. An explicit listing is a stronger protection signal than
+ *   the broad dir rule and is never demoted to lead-amendable.
+ * - Paths under `tests/` that EXIST stay hard (`hard`, suspend as today).
+ * - Every other hard class is unchanged, including new files elsewhere: a
+ *   non-existent `specs/`, `src/validators/`, seal, contract, `project.yaml`
+ *   or policy path stays hard.
+ *
+ * Threat rationale (owner-approved): creating a new test file cannot weaken
+ * EXISTING acceptance (nothing overwritten); worst case is noise/vacuous
+ * coverage (visible in CI + reviewable). The lead amendment itself is a
+ * logged, traced, bounded decision (amendment artifact + reseal + per-task
+ * cap); leads already approve all non-hard amendments.
+ *
+ * Race honesty: the existence check is point-in-time. A concurrent creation
+ * between this check and assembly is SAFE (not fail-closed) because the
+ * amended scope includes the path either way post-approval: the amendment
+ * persists the exact path into the contract allowlist + reseal, and assembly
+ * re-validates against that amended scope (allowlist membership + exact
+ * forbidden carve-out), never against existence. The retry path therefore
+ * trusts the amendment-time tier and never re-stats (re-stating would turn
+ * the legitimate race into a false hard refusal). Conversely a concurrent
+ * deletion can only narrow what the retry writes. Fail-closed direction is
+ * preserved: stat errors other than ENOENT (permission, I/O) classify as
+ * hard, and unsafe/non-exact inputs never tier.
+ *
+ * MECHANISM: DETERMINISTIC (filesystem stat as evidence, no model judgment).
+ */
+export async function partitionHardViolationsByNewTestTier(
+  paths: readonly string[],
+  config: HarnessProjectConfig,
+  contract: TaskContract,
+  root: string,
+): Promise<{ hard: string[]; newTestCreations: string[] }> {
+  const violations = findRepairHardProtectedViolations(paths, config, contract);
+  // Frozen-forward-wins source (H-NEW-13 R2): shares rawRepairHardProtectedSources
+  // with repairHardProtectedPaths (no duplicated enumeration); reuses
+  // matchesAnyHardProtectedPattern for per-source verification.
+  const nonTestsHard = repairHardProtectedPathsExcludingBroadTestsDir(config, contract);
+  const hard: string[] = [];
+  const newTestCreations: string[] = [];
+  for (const violation of violations) {
+    if (!isNewTestCreationTierPath(violation)) {
+      hard.push(violation);
+      continue;
+    }
+    if (matchesAnyHardProtectedPattern(violation, nonTestsHard)) {
+      hard.push(violation);
+      continue;
+    }
+    let exists = true;
+    try {
+      await fs.stat(path.join(root, violation));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") exists = false;
+      else exists = true;
+    }
+    if (exists) hard.push(violation);
+    else newTestCreations.push(violation);
+  }
+  return { hard, newTestCreations };
 }
 
 /**
@@ -970,12 +1094,15 @@ export async function applyRepairScopeAmendment(input: {
   }
   // HARD-protection gate (never exemptible): even a ledger-approved decision
   // cannot widen frozen TaskContract, seal, validators, acceptance/spec, or
-  // policy paths. Fail closed before any persistence.
-  const hardViolations = findRepairHardProtectedViolations(exemptedPaths, config, contract);
-  if (hardViolations.length) {
+  // policy paths. H-NEW-13 tier: non-existent paths strictly under `tests/`
+  // are amendable tier (lead-approved amendment, no grant); existing tests/
+  // paths and every other hard class (including new files elsewhere) stay
+  // hard. Fail closed before any persistence.
+  const tiered = await partitionHardViolationsByNewTestTier(exemptedPaths, config, contract, root);
+  if (tiered.hard.length) {
     throw new AehError(
       "PARTICIPANT_PLAN_INVALID",
-      `REPAIR_SCOPE_AMENDMENT_NON_EXEMPTIBLE: exempted path(s) are never exemptible (frozen TaskContract, seal, validators, acceptance/spec, policy): ${hardViolations.join(", ")}.`,
+      `REPAIR_SCOPE_AMENDMENT_NON_EXEMPTIBLE: exempted path(s) are never exemptible (frozen TaskContract, seal, validators, acceptance/spec, policy): ${tiered.hard.join(", ")}.`,
     );
   }
   const currentAllowed = contract.scope?.allowed ?? ["**"];
@@ -1285,11 +1412,11 @@ export async function applyOwnerExemptedRepairScopeAmendment(input: {
       throw new AehError("PARTICIPANT_PLAN_INVALID", `Amendment path '${filePath}' is not an exact file path; scope amendments allow exact paths only (no wildcards).`);
     }
   }
-  const hardViolations = findRepairHardProtectedViolations(exemptedPaths, config, contract);
-  if (!hardViolations.length) {
+  const tieredOwner = await partitionHardViolationsByNewTestTier(exemptedPaths, config, contract, root);
+  if (!tieredOwner.hard.length) {
     throw new AehError(
       "PARTICIPANT_PLAN_INVALID",
-      "OWNER_EXEMPTION_HARD_REQUIRED: the owner-exempted path authorizes hard-protected paths only; amendable manifests use the product-choice approve/deny channel.",
+      "OWNER_EXEMPTION_HARD_REQUIRED: the owner-exempted path authorizes hard-protected paths only; amendable manifests and new tests/ creations use the product-choice approve/deny channel.",
     );
   }
   const existing = await listRepairScopeAmendments(root, config, contract.task.id);
@@ -1495,6 +1622,14 @@ export async function suspendRepairScopeForProductChoice(input: {
   config: HarnessProjectConfig;
   blocker: RepairScopeBlockerReceiptV1;
   contract?: TaskContract;
+  /**
+   * H-NEW-13 workspace root for the create-vs-modify existence check. When
+   * provided, non-existent paths strictly under `tests/` are amendable tier
+   * and do not trip this defense; existing tests/ paths and every other hard
+   * class still throw. When absent, the pure hard list applies fail-closed
+   * (existing behavior preserved bit-for-bit for direct callers).
+   */
+  workspaceRoot?: string;
 }): Promise<RepairScopeSuspendedChoiceV1> {
   const { controlRoot, operationId, config, blocker } = input;
   assertRepairScopeBlockerReceipt(blocker);
@@ -1502,15 +1637,14 @@ export async function suspendRepairScopeForProductChoice(input: {
   // when called directly (the resolver already returns BLOCKED without
   // suspending). Requires the contract for contract-specific paths.
   if (input.contract) {
-    const hardViolations = findRepairHardProtectedViolations(
-      blocker.filesNeededOutsideScope.map((entry) => entry.path),
-      config,
-      input.contract,
-    );
-    if (hardViolations.length) {
+    const declared = blocker.filesNeededOutsideScope.map((entry) => entry.path);
+    const effectiveHard = input.workspaceRoot
+      ? (await partitionHardViolationsByNewTestTier(declared, config, input.contract, input.workspaceRoot)).hard
+      : findRepairHardProtectedViolations(declared, config, input.contract);
+    if (effectiveHard.length) {
       throw new AehError(
         "PARTICIPANT_PLAN_INVALID",
-        `REPAIR_SCOPE_AMENDMENT_NON_EXEMPTIBLE: blocker path(s) are never exemptible (frozen TaskContract, seal, validators, acceptance/spec, policy): ${hardViolations.join(", ")}.`,
+        `REPAIR_SCOPE_AMENDMENT_NON_EXEMPTIBLE: blocker path(s) are never exemptible (frozen TaskContract, seal, validators, acceptance/spec, policy): ${effectiveHard.join(", ")}.`,
       );
     }
   }
@@ -1856,11 +1990,17 @@ export async function resolveRepairScopeBlockerViaProductChoice(input: {
   // mints the MAC grant (same accepted shape), anchors it, resumes, and
   // retries with the grant; on decline/timeout BLOCKED stands. Suspend is
   // bounded (expiry -> BLOCKED).
-  const hardViolations = findRepairHardProtectedViolations(
+  // H-NEW-13 tier: non-existent paths strictly under `tests/` are amendable
+  // tier and take the regular (non-hard) branch below with no owner grant;
+  // existing tests/ paths and every other hard class (including new files
+  // elsewhere) take this hard branch unchanged.
+  const tiered = await partitionHardViolationsByNewTestTier(
     blocker.filesNeededOutsideScope.map((entry) => entry.path),
     config,
     contract,
+    root,
   );
+  const hardViolations = tiered.hard;
   if (hardViolations.length) {
     const operation = await loadOperation(controlRoot, operationId);
     const ledger = repairScopeLedger(controlRoot);
@@ -1954,7 +2094,7 @@ export async function resolveRepairScopeBlockerViaProductChoice(input: {
   if (preexisting.length >= MAX_REPAIR_SCOPE_AMENDMENTS_PER_TASK_V1) {
     return { status: "BLOCKED", blocker, check: repairScopeBlockerValidationCheck(blocker) };
   }
-  const suspended = await suspendRepairScopeForProductChoice({ controlRoot, operationId, config, blocker });
+  const suspended = await suspendRepairScopeForProductChoice({ controlRoot, operationId, config, blocker, workspaceRoot: root });
   void suspended;
   let selection: RepairScopeChoiceSelectionV1;
   try {
@@ -1997,7 +2137,9 @@ export async function resolveRepairScopeBlockerViaProductChoice(input: {
  *
  * HARD-protection defense: when `hardProtected` is provided, any exempted
  * path intersecting it throws fail-closed (never exemptible) — UNLESS a
- * verified owner grant is presented via `ownerScope`. The filter tier
+ * verified owner grant is presented via `ownerScope`, OR the path is an
+ * H-NEW-13 lead-amendable new-test creation listed in `leadAmendablePaths`.
+ * The filter tier
  * re-verifies the MAC under the live controller token plus operation/epoch/
  * LINEAGE + STABLE binding, expiry, terminal state, and exact coverage (all
  * sync, no ledger I/O); the async authority gate
@@ -2005,6 +2147,14 @@ export async function resolveRepairScopeBlockerViaProductChoice(input: {
  * already ran in the amendment-apply path and re-runs in the retry caller
  * before this filter executes. A forged, stale, expired, terminal, or
  * non-covering grant throws the same NON_EXEMPTIBLE as no exemption at all.
+ * Lead-amendable entries are fail-closed too: each must be an exact safe
+ * path strictly under `tests/`, must be listed in the amendment's own
+ * exemptedPaths (no widening beyond the recorded amendment), and is trusted
+ * ONLY because the amendment-apply gate verified non-existence at
+ * amendment time (the retry never re-stats, so the legitimate check-to-
+ * assembly race resolves via the amended scope either way; forging such an
+ * entry requires controller-level filesystem writes, outside the threat
+ * model — workers cannot write seals/amendments through assembly denies).
  * Direct writes and general assembly scope NEVER honor exemptions — only
  * this amendment-path projection.
  */
@@ -2030,12 +2180,40 @@ export function filterForbiddenScopeForAmendment(
     operationExecutionRevision?: number;
     terminal: boolean;
   },
+  leadAmendablePaths?: readonly string[],
 ): string[] {
   assertRepairScopeAmendment(amendment);
+  // H-NEW-13 defense-in-depth: lead-amendable entries are never honored from
+  // an owner amendment (repair.ts already guards this; the filter re-checks
+  // so a direct caller cannot launder a hard path without a grant).
+  if ((leadAmendablePaths?.length ?? 0) > 0 && amendment.ownerExemption) {
+    throw new AehError(
+      "PARTICIPANT_PLAN_INVALID",
+      "REPAIR_SCOPE_AMENDMENT_NON_EXEMPTIBLE: lead-amendable paths are never taken from an owner amendment (owner path requires a verified grant).",
+    );
+  }
+  const leadAmendable = new Set<string>();
+  for (const entry of leadAmendablePaths ?? []) {
+    const normalized = normalizeRepairScopePath(String(entry ?? "").trim());
+    if (!normalized || !isNewTestCreationTierPath(normalized)) {
+      throw new AehError(
+        "PARTICIPANT_PLAN_INVALID",
+        `REPAIR_SCOPE_AMENDMENT_NON_EXEMPTIBLE: lead-amendable path '${String(entry)}' is not an exact safe path under tests/.`,
+      );
+    }
+    const recorded = amendment.exemptedPaths.map((filePath) => normalizeRepairScopePath(filePath.trim()));
+    if (!recorded.includes(normalized)) {
+      throw new AehError(
+        "PARTICIPANT_PLAN_INVALID",
+        `REPAIR_SCOPE_AMENDMENT_NON_EXEMPTIBLE: lead-amendable path '${normalized}' is not in the recorded amendment exemptedPaths.`,
+      );
+    }
+    leadAmendable.add(normalized);
+  }
   if (hardProtected) {
     const violations = amendment.exemptedPaths.filter((filePath) =>
       matchesAnyHardProtectedPattern(normalizeRepairScopePath(filePath.trim()), hardProtected),
-    );
+    ).filter((filePath) => !leadAmendable.has(normalizeRepairScopePath(filePath.trim())));
     if (violations.length && !ownerExemptionCoversHardPaths(amendment, violations, ownerScope)) {
       throw new AehError(
         "PARTICIPANT_PLAN_INVALID",
