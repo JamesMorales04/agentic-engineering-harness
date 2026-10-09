@@ -425,14 +425,19 @@ function main() {
         durationMs: Date.now() - startedAt
       }
     };
-    console.log(JSON.stringify(payload));
-    process.exit(failures.length ? 1 : 0);
+    // Drain-safe output: assign exitCode instead of calling process.exit()
+    // immediately, so piped stdout is never truncated (console.log +
+    // immediate exit can drop the write under pipe backpressure).
+    process.stdout.write(`${JSON.stringify(payload)}\n`);
+    process.exitCode = failures.length ? 1 : 0;
+    return;
   }
   if (failures.length) {
     console.error(`PUBLIC_API_CONTRACT_FAILED: ${failures.map((check) => `${check.id}: ${check.message}`).join("; ")}`);
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
-  console.log(`PUBLIC_API_CONTRACT_PASS ${checks.length} checks (tool=node ${nodeVersion}, ruleset=${RULESET}).`);
+  process.stdout.write(`PUBLIC_API_CONTRACT_PASS ${checks.length} checks (tool=node ${nodeVersion}, ruleset=${RULESET}).\n`);
 }
 
 main();

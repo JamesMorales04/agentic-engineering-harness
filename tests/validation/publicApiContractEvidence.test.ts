@@ -78,6 +78,44 @@ describe("public-api contract structured evidence (Track F)", () => {
     expect(() => JSON.parse(run.stdout)).toThrow();
   });
 
+  it("never truncates piped JSON output (drain-safe exit)", () => {
+    // Regression: console.log + immediate process.exit can drop piped stdout
+    // (spawnSync returning exit 0 with empty stdout). The script must assign
+    // exitCode so Node drains stdout before exiting.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const run = runScript(["--json"]);
+      expect(run.status).toBe(0);
+      expect(run.stdout.length).toBeGreaterThan(0);
+      const payload = JSON.parse(run.stdout) as { interactions: unknown[] };
+      expect(payload.interactions.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("fail-closes empty or summary-disagreeing interaction envelopes", () => {
+    // Empty interactions can never satisfy a requirement (every([]) trap).
+    const empty = parseToolEvidenceResult("pact", JSON.stringify({
+      version: 1, tool: "aeh-public-api-contract", interactions: [],
+      summary: { total: 0, passed: 0, failed: 0 },
+    }));
+    expect(empty.valid).toBe(false);
+    expect(empty.findings.length).toBeGreaterThan(0);
+    // A summary that disagrees with its own interactions is untrusted: totals
+    // are derived from interactions, so a lying envelope fails closed.
+    const lying = parseToolEvidenceResult("pact", JSON.stringify({
+      version: 1, tool: "aeh-public-api-contract", interactions: [],
+      summary: { total: 10, passed: 10, failed: 0 },
+    }));
+    expect(lying.valid).toBe(false);
+    expect(lying.findings.length).toBeGreaterThan(0);
+    const miscounted = parseToolEvidenceResult("pact", JSON.stringify({
+      version: 1, tool: "aeh-public-api-contract",
+      interactions: [{ id: "A", name: "A", status: "pass", evidence: "ok" }],
+      summary: { total: 1, passed: 0, failed: 1 },
+    }));
+    expect(miscounted.valid).toBe(false);
+    expect(miscounted.findings.length).toBeGreaterThan(0);
+  });
+
   it("wires the canonical lane command to --json and normalizes to PASS with total>0", async () => {
     const provider = new PactContractTestingProvider();
     const context = providerContext(await rawDir(), CANONICAL_COMMAND);

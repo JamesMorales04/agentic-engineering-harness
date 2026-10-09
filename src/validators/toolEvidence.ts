@@ -92,9 +92,10 @@ export function parseToolEvidence(adapter: string, stdout: string): NormalizedFi
  * scripts/publicApiContract.mjs --json`: `{ version: 1, tool:
  * "aeh-public-api-contract", interactions: [{ id, name, status: "pass"|"fail",
  * evidence }], summary }`. Acceptance is exact: marker + version 1 +
- * well-formed interactions. Anything else with the marker present fail-closes
- * (explicit finding, never a silent zero-finding PASS), and payloads without
- * the marker never reach this branch.
+ * non-empty well-formed interactions + a summary that agrees with them
+ * (totals are derived from the interactions, never trusted). Anything else
+ * with the marker present fail-closes (explicit finding, never a silent
+ * zero-finding PASS), and payloads without the marker never reach this branch.
  */
 export const PUBLIC_API_CONTRACT_EVIDENCE_TOOL = "aeh-public-api-contract" as const;
 export const PUBLIC_API_CONTRACT_EVIDENCE_VERSION = 1 as const;
@@ -106,14 +107,30 @@ export function hasPublicApiContractMarker(value: unknown): boolean {
 export function isPublicApiContractEvidence(value: unknown): boolean {
   const root = record(value);
   if (root.tool !== PUBLIC_API_CONTRACT_EVIDENCE_TOOL || root.version !== PUBLIC_API_CONTRACT_EVIDENCE_VERSION) return false;
-  if (!Array.isArray(root.interactions)) return false;
-  return root.interactions.every((item) => {
+  if (!Array.isArray(root.interactions) || root.interactions.length === 0) return false;
+  if (!root.interactions.every((item) => {
     const check = record(item);
     return typeof check.id === "string" && check.id.length > 0
       && typeof check.name === "string"
       && (check.status === "pass" || check.status === "fail")
       && typeof check.evidence === "string";
-  });
+  })) return false;
+  // Totals are derived from the validated interactions, never trusted from
+  // the envelope: a summary that disagrees with its own interactions fails
+  // closed (a lying or stale summary must never mint a PASS).
+  return publicApiContractSummaryAgrees(root);
+}
+
+function publicApiContractSummaryAgrees(root: Record<string, unknown>): boolean {
+  const summary = root.summary;
+  if (!summary || typeof summary !== "object" || Array.isArray(summary)) return false;
+  const total = (summary as Record<string, unknown>).total;
+  const passed = (summary as Record<string, unknown>).passed;
+  const failed = (summary as Record<string, unknown>).failed;
+  if (!Number.isSafeInteger(total) || !Number.isSafeInteger(passed) || !Number.isSafeInteger(failed)) return false;
+  const interactions = root.interactions as unknown[];
+  const failedCount = interactions.filter((item) => record(item).status === "fail").length;
+  return total === interactions.length && failed === failedCount && passed === interactions.length - failedCount;
 }
 
 export function normalizePublicApiContractOutput(value: unknown): NormalizedFinding[] {
