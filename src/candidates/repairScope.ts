@@ -95,30 +95,61 @@ export function repairHardProtectedPaths(
   config: HarnessProjectConfig,
   contract: TaskContract,
 ): string[] {
-  const paths = new Set<string>([
-    `${config.sdd?.contractsDir ?? ".harness/contracts"}/${contract.task.id}.yaml`,
-    `.harness/seals/${contract.task.id}.json`,
-    ".harness/project.yaml",
-    "tests",
-    "test",
-    "specs",
-    "acceptance",
-    "features",
-    "src/validators",
-    ...(contract.scope?.frozen ?? []),
-    ...(config.validation?.frozenPaths ?? []),
-    ...configuredValidatorSourcePathsForScope(config, contract),
-    ...Object.values(contract.source ?? {}).filter((value): value is string => Boolean(value)),
-    ...(contract.issue?.snapshotPath ? [contract.issue.snapshotPath] : []),
-    ...(config.agents?.configPath ? [config.agents.configPath] : []),
-    ...(config.agents?.generatedPath ? [config.agents.generatedPath] : []),
-    ...(config.toolchain?.configPath ? [config.toolchain.configPath] : []),
-    ...(config.toolchain?.lockPath ? [config.toolchain.lockPath] : []),
-    ...(config.validation?.opa?.policyDirs ?? []),
-    ...(config.organization?.policyBundles?.cacheDir ? [config.organization.policyBundles.cacheDir] : []),
-    ...(config.controlPlane?.include ?? []),
-  ]);
-  return expandRepairScopePatterns(paths);
+  return expandRepairScopePatterns(rawRepairHardProtectedSources(config, contract));
+}
+
+/**
+ * DETERMINISTIC raw hard-source enumeration shared by the full gate and the
+ * H-NEW-13 frozen-forward-wins tier (single enumeration, no duplication).
+ * When `excludeBroadTestsDir` is set, the broad `tests` dir rule is omitted
+ * but every other source — including an explicit `tests`/`tests/**`/file
+ * entry via contract.scope.frozen, validation.frozenPaths, validator
+ * sources, agents/toolchain configs, seals/contracts dirs, policy dirs,
+ * specs/acceptance/features patterns — is still included, so an explicit
+ * listing survives the exclusion and keeps the path HARD.
+ */
+function rawRepairHardProtectedSources(
+  config: HarnessProjectConfig,
+  contract: TaskContract,
+  options?: { excludeBroadTestsDir?: boolean },
+): Set<string> {
+  const paths = new Set<string>();
+  if (!options?.excludeBroadTestsDir) paths.add("tests");
+  paths.add(`${config.sdd?.contractsDir ?? ".harness/contracts"}/${contract.task.id}.yaml`);
+  paths.add(`.harness/seals/${contract.task.id}.json`);
+  paths.add(".harness/project.yaml");
+  paths.add("test");
+  paths.add("specs");
+  paths.add("acceptance");
+  paths.add("features");
+  paths.add("src/validators");
+  for (const entry of contract.scope?.frozen ?? []) paths.add(entry);
+  for (const entry of config.validation?.frozenPaths ?? []) paths.add(entry);
+  for (const entry of configuredValidatorSourcePathsForScope(config, contract)) paths.add(entry);
+  for (const value of Object.values(contract.source ?? {}).filter((value): value is string => Boolean(value))) paths.add(value);
+  if (contract.issue?.snapshotPath) paths.add(contract.issue.snapshotPath);
+  if (config.agents?.configPath) paths.add(config.agents.configPath);
+  if (config.agents?.generatedPath) paths.add(config.agents.generatedPath);
+  if (config.toolchain?.configPath) paths.add(config.toolchain.configPath);
+  if (config.toolchain?.lockPath) paths.add(config.toolchain.lockPath);
+  for (const entry of config.validation?.opa?.policyDirs ?? []) paths.add(entry);
+  if (config.organization?.policyBundles?.cacheDir) paths.add(config.organization.policyBundles.cacheDir);
+  for (const entry of config.controlPlane?.include ?? []) paths.add(entry);
+  return paths;
+}
+
+/**
+ * DETERMINISTIC H-NEW-13 frozen-forward-wins source: every hard-protected
+ * pattern EXCEPT the broad `tests` dir rule. Shares
+ * rawRepairHardProtectedSources (no duplicated enumeration). A `tests/`
+ * candidate that matches anything here is hard-protected for a reason
+ * beyond the broad dir rule and must stay HARD.
+ */
+function repairHardProtectedPathsExcludingBroadTestsDir(
+  config: HarnessProjectConfig,
+  contract: TaskContract,
+): string[] {
+  return expandRepairScopePatterns(rawRepairHardProtectedSources(config, contract, { excludeBroadTestsDir: true }));
 }
 
 function expandRepairScopePatterns(paths: Set<string> | Iterable<string>): string[] {
@@ -208,9 +239,17 @@ export function isNewTestCreationTierPath(value: string): boolean {
  * create-vs-modify tiers (the single amendment-evaluation tiering point).
  *
  * - For paths under `tests/` (AND ONLY `tests/`) that do NOT exist at
- *   evaluation time under `root`, the violation is demoted to the amendable
+ *   evaluation time under `root` AND are hard-protected SOLELY via the broad
+ *   `tests` dir rule, the violation is demoted to the amendable
  *   tier (`newTestCreations`): a lead-approved amendment suffices via the
  *   regular product-choice channel with no hard suspend/grant round-trip.
+ * - Frozen-forward-wins: a `tests/` path that matches ANY other hard source
+ *   — contract.scope.frozen, validation.frozenPaths, configured validator
+ *   sources, agents/toolchain configs, seals/contracts dirs, policy dirs,
+ *   specs/acceptance/features patterns, or any other entry in
+ *   repairHardProtectedPathsExcludingBroadTestsDir — stays HARD even when
+ *   non-existent. An explicit listing is a stronger protection signal than
+ *   the broad dir rule and is never demoted to lead-amendable.
  * - Paths under `tests/` that EXIST stay hard (`hard`, suspend as today).
  * - Every other hard class is unchanged, including new files elsewhere: a
  *   non-existent `specs/`, `src/validators/`, seal, contract, `project.yaml`
@@ -243,10 +282,18 @@ export async function partitionHardViolationsByNewTestTier(
   root: string,
 ): Promise<{ hard: string[]; newTestCreations: string[] }> {
   const violations = findRepairHardProtectedViolations(paths, config, contract);
+  // Frozen-forward-wins source (H-NEW-13 R2): shares rawRepairHardProtectedSources
+  // with repairHardProtectedPaths (no duplicated enumeration); reuses
+  // matchesAnyHardProtectedPattern for per-source verification.
+  const nonTestsHard = repairHardProtectedPathsExcludingBroadTestsDir(config, contract);
   const hard: string[] = [];
   const newTestCreations: string[] = [];
   for (const violation of violations) {
     if (!isNewTestCreationTierPath(violation)) {
+      hard.push(violation);
+      continue;
+    }
+    if (matchesAnyHardProtectedPattern(violation, nonTestsHard)) {
       hard.push(violation);
       continue;
     }

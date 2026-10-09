@@ -295,6 +295,148 @@ describe("H-NEW-13 risk-tiered hard protection: create vs modify for tests/", ()
   });
 });
 
+describe("H-NEW-13 R2 frozen-forward-wins: explicit hard sources beat the broad tests/ rule", () => {
+  it("frozen-listed nonexistent tests/ path stays hard (contract.scope.frozen)", async () => {
+    const root = await createRepo();
+    const frozen = "tests/tier-frozen-r2.test.ts";
+    const task = { ...contract("TIER-R2-FROZEN"), scope: { allowed: ["src/**"], forbidden: [], frozen: [frozen] } };
+    const config = projectConfig();
+    const split = await partitionHardViolationsByNewTestTier([frozen], config, task, root);
+    expect(split.newTestCreations).toEqual([]);
+    expect(split.hard).toEqual([frozen]);
+  });
+
+  it("explicit frozen 'tests' dir keeps every new tests/ file hard", async () => {
+    const root = await createRepo();
+    const fresh = "tests/tier-fresh-r2.test.ts";
+    const task = { ...contract("TIER-R2-FROZEN-DIR"), scope: { allowed: ["src/**"], forbidden: [], frozen: ["tests"] } };
+    const config = projectConfig();
+    const split = await partitionHardViolationsByNewTestTier([fresh], config, task, root);
+    expect(split.newTestCreations).toEqual([]);
+    expect(split.hard).toEqual([fresh]);
+  });
+
+  it("validation.frozenPaths-listed tests/ path stays hard", async () => {
+    const root = await createRepo();
+    const frozen = "tests/tier-validation-frozen-r2.test.ts";
+    const task = contract("TIER-R2-VALID-FROZEN");
+    const config: HarnessProjectConfig = {
+      ...projectConfig(),
+      validation: { baseRef: "HEAD", requireSeal: false, commands: [], validators: [], opa: { enabled: false }, frozenPaths: [frozen] },
+    };
+    const split = await partitionHardViolationsByNewTestTier([frozen], config, task, root);
+    expect(split.newTestCreations).toEqual([]);
+    expect(split.hard).toEqual([frozen]);
+  });
+
+  it("validator-source tests/ path stays hard (configured validator reference)", async () => {
+    const root = await createRepo();
+    const validatorFile = "tests/tier-validator-r2.test.ts";
+    const task = contract("TIER-R2-VALIDATOR");
+    const config: HarnessProjectConfig = {
+      ...projectConfig(),
+      validation: {
+        baseRef: "HEAD", requireSeal: false, commands: [{ command: `node ${validatorFile}` }], validators: [], opa: { enabled: false },
+      },
+    };
+    const split = await partitionHardViolationsByNewTestTier([validatorFile], config, task, root);
+    expect(split.newTestCreations).toEqual([]);
+    expect(split.hard).toEqual([validatorFile]);
+  });
+
+  it("agents/toolchain/contract-source/policy/contract-dir tests/ paths stay hard", async () => {
+    const root = await createRepo();
+    const taskBase = contract("TIER-R2-OVERLAP");
+    // Each candidate is hard-protected via a distinct non-broad-tests source
+    // even though it also sits under tests/ (shape alone would tier it).
+    const cases: { file: string; config: HarnessProjectConfig; task: TaskContract }[] = [
+      {
+        file: "tests/tier-agents-config-r2.yaml",
+        config: { ...projectConfig(), agents: { configPath: "tests/tier-agents-config-r2.yaml" } as never },
+        task: taskBase,
+      },
+      {
+        file: "tests/tier-toolchain-r2.json",
+        config: { ...projectConfig(), toolchain: { configPath: "tests/tier-toolchain-r2.json" } as never },
+        task: taskBase,
+      },
+      {
+        file: "tests/tier-source-r2.md",
+        config: projectConfig(),
+        task: { ...taskBase, source: { proposal: "tests/tier-source-r2.md", spec: `specs/changes/${taskBase.task.id}/spec.md` } },
+      },
+      {
+        file: "tests/policy-r2/check.rego",
+        config: {
+          ...projectConfig(),
+          validation: { baseRef: "HEAD", requireSeal: false, commands: [], validators: [], opa: { enabled: true, policyDirs: ["tests/policy-r2"] } },
+        },
+        task: taskBase,
+      },
+      {
+        // seals/contracts dir relocated under tests/: the contract path itself
+        // overlaps the broad tests/ rule and must stay hard.
+        file: "tests/contracts-r2/TIER-R2-OVERLAP.yaml",
+        config: { ...projectConfig(), sdd: { contractsDir: "tests/contracts-r2" } },
+        task: taskBase,
+      },
+    ];
+    for (const entry of cases) {
+      const split = await partitionHardViolationsByNewTestTier([entry.file], entry.config, entry.task, root);
+      expect(split.newTestCreations).toEqual([]);
+      expect(split.hard).toEqual([entry.file]);
+    }
+  });
+
+  it("solely-broad-rule fresh tests/ file still tiers amendable (no regression)", async () => {
+    const root = await createRepo();
+    const fresh = "tests/tier-fresh-r2-only.test.ts";
+    const task = contract("TIER-R2-ONLY");
+    const config = projectConfig();
+    const split = await partitionHardViolationsByNewTestTier([fresh], config, task, root);
+    expect(split.hard).toEqual([]);
+    expect(split.newTestCreations).toEqual([fresh]);
+  });
+
+  it("apply refuses a frozen-listed new tests/ file (NON_EXEMPTIBLE)", async () => {
+    const root = await createRepo();
+    const operationId = "TIER-R2-APPLY-FROZEN";
+    const frozen = "tests/tier-frozen-apply-r2.test.ts";
+    const task: TaskContract = {
+      ...contract("TIER-R2-APPLY-FROZEN"),
+      scope: { allowed: ["src/**"], forbidden: [], frozen: [frozen] },
+    };
+    const config = projectConfig();
+    await writeContractAndSeal(root, config, task);
+    await saveOwnedOperation(root, {
+      version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "repair",
+      root, payload: { taskId: task.task.id }, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+    } as never);
+    bindEnv(operationId, root);
+    const blocker = createRepairScopeBlockerReceipt({
+      operationId, taskId: task.task.id, workUnitId: "validation-repair:tier-frozen",
+      filesNeededOutsideScope: [{ path: frozen, reason: "frozen-listed new test" }],
+    });
+    const ledgerDir = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-tier-r2-ledger-"));
+    roots.push(ledgerDir);
+    const ledger = new HumanDecisionLedgerV2(ledgerDir);
+    const binding = syntheticBinding(operationId);
+    const requestId = "request:tier-r2-frozen-1";
+    const decision = await ledger.recordProductChoice({
+      ...binding,
+      purpose: { kind: "PRODUCT_CHOICE", requestId, choiceId: REPAIR_SCOPE_APPROVE_CHOICE_ID },
+      kind: "CHOOSE", actorId: "human:control-center:test", reason: "attempt frozen test",
+    }, requestId);
+    await ledger.consumeExact(binding, decision.purpose, decision.decisionId, decision.actorId);
+    await expect(
+      applyRepairScopeAmendment({
+        root, config, contract: task, blocker,
+        authorization: { decision, binding, requestId }, ledger,
+      }),
+    ).rejects.toThrow(/NON_EXEMPTIBLE/i);
+  });
+});
+
 async function approveWaitingRequest(root: string, operationId: string, choiceId: string, reason: string): Promise<void> {
   for (let i = 0; i < 200; i += 1) {
     const current = await loadOperation(root, operationId);
