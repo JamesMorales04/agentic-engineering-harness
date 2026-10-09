@@ -48,6 +48,7 @@ export interface LiveMergeStateV1 {
   state?: string;
   headSha?: string;
   baseSha?: string;
+  baseRef?: string;
   mergeable?: boolean | null;
   mergeableState?: string;
   combinedStatus?: string;
@@ -55,18 +56,23 @@ export interface LiveMergeStateV1 {
 
 /**
  * DETERMINISTIC: evaluate live merge state observed from GitHub against the
- * reviewed PR identity. Fails closed: only mergeable_state clean passes;
- * unknown/unstable/behind/blocked/dirty all block. Returns blockers so
- * callers record machine-readable denial evidence.
+ * reviewed PR identity. Fails closed: observed head SHA, base SHA, and base
+ * ref are all required and must exactly match the reviewed identity; only
+ * mergeable_state clean passes; unknown/unstable/behind/blocked/dirty all
+ * block. A malformed or incomplete GitHub response never passes. Returns
+ * blockers so callers record machine-readable denial evidence.
  */
 export function evaluateLiveMergeState(reviewed: PullRequestIdentityV1, live: LiveMergeStateV1): string[] {
   const blockers: string[] = [];
   if (live.state !== "open") blockers.push(`MERGE_BLOCKED: pull request #${reviewed.number} is not open (state=${String(live.state)}).`);
-  if (typeof live.headSha === "string" && live.headSha.toLowerCase() !== reviewed.headSha.toLowerCase()) {
-    blockers.push("MERGE_BLOCKED: live PR head no longer matches the reviewed head; renewed independent review is required.");
+  if (typeof live.headSha !== "string" || live.headSha.toLowerCase() !== reviewed.headSha.toLowerCase()) {
+    blockers.push("MERGE_BLOCKED: live PR head is unobserved or no longer matches the reviewed head; renewed independent review is required.");
   }
-  if (typeof live.baseSha === "string" && live.baseSha.toLowerCase() !== reviewed.baseSha.toLowerCase()) {
-    blockers.push("MERGE_BLOCKED: live PR base no longer matches the reviewed base; renewed independent review is required.");
+  if (typeof live.baseSha !== "string" || live.baseSha.toLowerCase() !== reviewed.baseSha.toLowerCase()) {
+    blockers.push("MERGE_BLOCKED: live PR base is unobserved or no longer matches the reviewed base; renewed independent review is required.");
+  }
+  if (typeof live.baseRef !== "string" || live.baseRef !== reviewed.baseRef) {
+    blockers.push("MERGE_BLOCKED: live PR base ref is unobserved or no longer matches the reviewed base ref; renewed independent review is required.");
   }
   if (live.mergeable === false) blockers.push("MERGE_BLOCKED: pull request reports unmergeable state; repair and renewed review are required.");
   if (live.mergeableState !== "clean") {
@@ -172,6 +178,7 @@ export async function mergeAcceptedPullRequest(
     state: live.state,
     headSha: live.head?.sha,
     baseSha: live.base?.sha,
+    baseRef: live.base?.ref,
     mergeable: live.mergeable,
     mergeableState: live.mergeable_state,
     combinedStatus: status.state,
@@ -258,14 +265,18 @@ export async function mergeAcceptedPullRequest(
     throw new Error(`BLOCKED_EXTERNAL: autonomous merge failed for PR #${input.pr.number}: ${gate.detail}`);
   }
 
-  // Post-merge reconciliation: confirm the merged state and capture the
-  // resulting merge commit for the operation ledger. A post-merge failure is
-  // a new incident; it does not retroactively validate the pre-merge review.
-  const after = await githubRequest<{ merged?: boolean; merge_commit_sha?: string; html_url?: string }>(
+  // Post-merge reconciliation: confirm the merged state, the merged head
+  // identity, and capture the resulting merge commit for the operation
+  // ledger. A post-merge failure is a new incident; it does not retroactively
+  // validate the pre-merge review.
+  const after = await githubRequest<{ merged?: boolean; merge_commit_sha?: string; html_url?: string; head?: { sha?: string } }>(
     apiBase, token, `/repos/${repository}/pulls/${input.pr.number}`,
   );
   if (after.merged !== true) {
     throw new Error(`BLOCKED_EXTERNAL: post-merge reconciliation reports PR #${input.pr.number} is not merged; treat as a new delivery incident.`);
+  }
+  if (typeof after.head?.sha === "string" && after.head.sha.toLowerCase() !== input.pr.headSha.toLowerCase()) {
+    throw new Error(`BLOCKED_EXTERNAL: post-merge reconciliation reports PR #${input.pr.number} merged an unexpected head; treat as a new delivery incident.`);
   }
   return {
     merged: true,

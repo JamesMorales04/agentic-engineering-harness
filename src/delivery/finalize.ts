@@ -11,6 +11,8 @@ import { executeGatedAction, type GatedActionResultV1 } from "../security/gatedA
 import { controllerActorId, type ToolActionAuthorityEvidenceV1 } from "../security/toolActionGate.js";
 import { assertWorkspaceMatchesCandidate } from "../candidates/identity.js";
 import { requireAcceptedCurrentOracleV1 } from "../architecture/acceptanceOracle.js";
+import { mergeAcceptedPullRequest } from "./merge.js";
+import { resolveDeliveryMergeMode, type IndependentPullRequestReviewV1 } from "./prReview.js";
 
 export type DeliveryFinalizationStatus = "SKIPPED" | "HANDOFF_ONLY" | "NO_CHANGES" | "FINALIZED" | "BLOCKED_EXTERNAL" | "BLOCKED_SUPPLY_CHAIN" | "SYSTEM_FAILURE";
 export interface DeliveryFinalizationResult {
@@ -25,7 +27,99 @@ export interface DeliveryFinalizationResult {
 }
 interface GithubPullRequest { number: number; html_url: string; draft?: boolean; }
 
-export async function finalizeAcceptedIssue(root: string, config: HarnessProjectConfig, contract: TaskContract, options: { candidate?: CandidateRevisionV1 } = {}): Promise<DeliveryFinalizationResult> {
+/**
+ * Optional governed-merge inputs. When the frozen delivery policy requests
+ * autonomous merge (AUTO_MERGE/RISK_GATED), finalization completes the merge
+ * inline only when a valid independent ACCEPTED PR review for the exact
+ * created PR is supplied; otherwise it reports merge-pending BLOCKED rather
+ * than silently completing delivery without the merge.
+ */
+export interface DeliveryMergeAfterReviewOptions {
+  prReview?: IndependentPullRequestReviewV1;
+  implementerIdentity?: string;
+  reviewRisk?: "low" | "medium" | "high";
+  requireHighAssuranceReview?: boolean;
+  reviewRound?: number;
+  mergeMethod?: "merge" | "squash" | "rebase";
+}
+
+export type FinalizeOptions = { candidate?: CandidateRevisionV1 } & DeliveryMergeAfterReviewOptions;
+
+interface FrozenMergeDirective {
+  mode: "AUTO_MERGE" | "RISK_GATED";
+  policyDigest: string;
+}
+
+/**
+ * DETERMINISTIC: read the frozen merge directive from the operation's frozen
+ * policy only. Live project config must never widen merge authority beyond
+ * the frozen policy. Returns null for PR_ONLY (create the PR and stop).
+ * Unknown modes throw fail-closed, even when merge is not allowed.
+ */
+function frozenMergeDirective(operation: { resolvedOperationPolicy?: unknown }): FrozenMergeDirective | null {
+  const policy = operation.resolvedOperationPolicy as { digest?: unknown; deliveryPolicy?: unknown } | undefined;
+  const delivery = policy?.deliveryPolicy as Record<string, unknown> | undefined;
+  const allowedActions = Array.isArray(delivery?.allowedActions)
+    ? (delivery.allowedActions as unknown[]).filter((a): a is string => typeof a === "string")
+    : [];
+  const mode = resolveDeliveryMergeMode({
+    mode: typeof delivery?.mergeMode === "string" ? delivery.mergeMode : undefined,
+    mergeAllowedByPolicy: allowedActions.includes("github.pull-request.merge"),
+  });
+  if (mode === "PR_ONLY") return null;
+  if (typeof policy?.digest !== "string" || !/^[a-f0-9]{64}$/.test(policy.digest)) {
+    throw new Error("DELIVERY_POLICY_REQUIRED: frozen operation policy has no anchor digest for autonomous merge.");
+  }
+  return { mode, policyDigest: policy.digest };
+}
+
+/**
+ * Governed autonomous merge after PR creation. When the frozen policy keeps
+ * PR_ONLY, this is a no-op and delivery completes at PR creation. When the
+ * frozen policy requests AUTO_MERGE/RISK_GATED, the merge runs inline through
+ * independent PR review, deterministic eligibility, the gated merge, and
+ * reconciliation — or reports merge-pending BLOCKED (never silent completion)
+ * when no valid independent review was supplied.
+ */
+async function maybeAutonomousMerge(
+  root: string,
+  config: HarnessProjectConfig,
+  contract: TaskContract,
+  operation: { resolvedOperationPolicy?: unknown },
+  boundCandidate: CandidateRevisionV1,
+  options: FinalizeOptions,
+  identities: { repository: string; base: string; baseSha: string; headSha: string; prNumber: number },
+): Promise<{ blocked?: string; mergeCommitSha?: string }> {
+  const directive = frozenMergeDirective(operation);
+  if (!directive) return {};
+  const review = options.prReview;
+  const implementer = typeof options.implementerIdentity === "string" ? options.implementerIdentity.trim() : "";
+  if (!review || !implementer) {
+    return {
+      blocked: `Pull request #${identities.prNumber} created; autonomous merge (${directive.mode}) requires an independent ACCEPTED PR review for the exact PR head. Supply options.prReview and options.implementerIdentity, then re-run delivery.`,
+    };
+  }
+  const merged = await mergeAcceptedPullRequest(root, config, contract, {
+    pr: {
+      repository: identities.repository,
+      number: identities.prNumber,
+      headSha: identities.headSha.toLowerCase(),
+      baseSha: identities.baseSha.toLowerCase(),
+      baseRef: identities.base,
+    },
+    review,
+    candidate: boundCandidate,
+    policyDigest: directive.policyDigest,
+    implementerIdentity: implementer,
+    mergeMethod: options.mergeMethod,
+    risk: options.reviewRisk,
+    requireHighAssurance: options.requireHighAssuranceReview,
+    reviewRound: options.reviewRound,
+  });
+  return { mergeCommitSha: merged.mergeCommitSha };
+}
+
+export async function finalizeAcceptedIssue(root: string, config: HarnessProjectConfig, contract: TaskContract, options: FinalizeOptions = {}): Promise<DeliveryFinalizationResult> {
   const candidate = options.candidate;
   const github = config.delivery?.github;
   if (!contract.issue) return finalizeAcceptedChange(root, config, contract, options);
@@ -154,11 +248,19 @@ export async function finalizeAcceptedIssue(root: string, config: HarnessProject
   }
   if (!pr) throw new Error("BLOCKED_EXTERNAL: a pull request receipt exists but no open pull request could be observed.");
 
-  return { status: "FINALIZED", humanRequired: false, committed, commitSha, pushed: true, candidate, pullRequest: { number: pr.number, url: pr.html_url, draft: pr.draft ?? (github.pullRequestDraft ?? true) }, message: `Accepted issue task finalized on ${branch}; pull request #${pr.number}.` };
+  const pullRequest = { number: pr.number, url: pr.html_url, draft: pr.draft ?? (github.pullRequestDraft ?? true) };
+  if (!commitSha) throw new Error("SYSTEM_FAILURE: cannot establish the delivered head SHA for merge review binding.");
+  const merged = await maybeAutonomousMerge(root, config, contract, operation, boundCandidate, options, {
+    repository, base, baseSha: baseCommit, headSha: commitSha, prNumber: pr.number,
+  });
+  if (merged.blocked) {
+    return { status: "BLOCKED_EXTERNAL", humanRequired: false, committed, commitSha, pushed: true, candidate, pullRequest, message: merged.blocked };
+  }
+  return { status: "FINALIZED", humanRequired: false, committed, commitSha, pushed: true, candidate, pullRequest, message: `Accepted issue task finalized on ${branch}; pull request #${pr.number}${merged.mergeCommitSha ? ` merged (${merged.mergeCommitSha})` : ""}.` };
 }
 
 /** Generic no-Issue CHANGE delivery. Every delivery action runs after current acceptance through ToolActionGate. */
-export async function finalizeAcceptedChange(root: string, config: HarnessProjectConfig, contract: TaskContract, options: { candidate?: CandidateRevisionV1 } = {}): Promise<DeliveryFinalizationResult> {
+export async function finalizeAcceptedChange(root: string, config: HarnessProjectConfig, contract: TaskContract, options: FinalizeOptions = {}): Promise<DeliveryFinalizationResult> {
   const candidate = options.candidate;
   const github = config.delivery?.github;
   if (currentOperationContext().kind !== "change") return skipped("Generic GitHub delivery is limited to managed CHANGE operations.", candidate);
@@ -330,6 +432,30 @@ export async function finalizeAcceptedChange(root: string, config: HarnessProjec
     pullRequest = { number: observed.number, url: observed.html_url, draft: observed.draft ?? draft };
   }
 
+  let mergeCommitSha: string | undefined;
+  if (pullRequest && frozenMergeDirective(operation)) {
+    const baseSha = await revParse(root, `${base}^{commit}`);
+    const merged = await maybeAutonomousMerge(root, config, contract, operation, boundCandidate, options, {
+      repository, base, baseSha, headSha: commitSha, prNumber: pullRequest.number,
+    });
+    if (merged.blocked) {
+      record.status = "ready";
+      record.updatedAt = new Date().toISOString();
+      await saveDeliveryRecord(stateRoot, config, record);
+      return {
+        status: "BLOCKED_EXTERNAL",
+        humanRequired: false,
+        committed: commitGate.receipt?.outcome === "SUCCEEDED",
+        commitSha,
+        pushed: pushGate.receipt?.outcome === "SUCCEEDED",
+        pullRequest,
+        candidate: boundCandidate,
+        message: merged.blocked,
+      };
+    }
+    mergeCommitSha = merged.mergeCommitSha;
+  }
+
   record.status = "ready";
   record.updatedAt = new Date().toISOString();
   await saveDeliveryRecord(stateRoot, config, record);
@@ -341,7 +467,7 @@ export async function finalizeAcceptedChange(root: string, config: HarnessProjec
     pushed: pushGate.receipt?.outcome === "SUCCEEDED",
     ...(pullRequest ? { pullRequest } : {}),
     candidate: boundCandidate,
-    message: pullRequest ? `Accepted CHANGE finalized on ${branch}; pull request #${pullRequest.number}.` : `Accepted CHANGE finalized on ${branch} with push-only policy.`
+    message: pullRequest ? `Accepted CHANGE finalized on ${branch}; pull request #${pullRequest.number}${mergeCommitSha ? ` merged (${mergeCommitSha})` : ""}.` : `Accepted CHANGE finalized on ${branch} with push-only policy.`
   };
 }
 

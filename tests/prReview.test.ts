@@ -332,7 +332,7 @@ describe("IndependentPullRequestReview native gate", () => {
 
   it("live merge state fails closed except clean + green", () => {
     const reviewed = pr();
-    const clean = { state: "open", headSha: reviewed.headSha, baseSha: reviewed.baseSha, mergeable: true as const, mergeableState: "clean", combinedStatus: "success" };
+    const clean = { state: "open", headSha: reviewed.headSha, baseSha: reviewed.baseSha, baseRef: reviewed.baseRef, mergeable: true as const, mergeableState: "clean", combinedStatus: "success" };
     expect(evaluateLiveMergeState(reviewed, clean)).toEqual([]);
     expect(evaluateLiveMergeState(reviewed, { ...clean, mergeableState: "unknown" }).length).toBeGreaterThan(0);
     expect(evaluateLiveMergeState(reviewed, { ...clean, mergeableState: "unstable" }).length).toBeGreaterThan(0);
@@ -340,6 +340,13 @@ describe("IndependentPullRequestReview native gate", () => {
     expect(evaluateLiveMergeState(reviewed, { ...clean, mergeableState: "blocked" }).length).toBeGreaterThan(0);
     expect(evaluateLiveMergeState(reviewed, { ...clean, combinedStatus: "failure" }).length).toBeGreaterThan(0);
     expect(evaluateLiveMergeState(reviewed, { ...clean, headSha: "f".repeat(40) }).join("\n")).toMatch("head");
+    // Unobserved identity never passes, even when everything else is clean.
+    const { headSha: _h, ...noHead } = clean;
+    expect(evaluateLiveMergeState(reviewed, noHead).length).toBeGreaterThan(0);
+    const { baseSha: _b, ...noBase } = clean;
+    expect(evaluateLiveMergeState(reviewed, noBase).length).toBeGreaterThan(0);
+    const { baseRef: _r, ...noRef } = clean;
+    expect(evaluateLiveMergeState(reviewed, noRef).length).toBeGreaterThan(0);
   });
 });
 
@@ -386,5 +393,13 @@ describe("github.pull-request.merge reconciliation", () => {
       token: "test-token",
     });
     expect(result.outcome).toBe("FAILED");
+  });
+  it("reports UNKNOWN when merged but head/base identity is unobserved", async () => {
+    const result = await reconcileToolAction("/tmp", intent(), payload, {
+      fetchJson: async () => ({ status: 200, body: { merged: true, state: "closed", merge_commit_sha: "f".repeat(40) } }),
+      token: "test-token",
+    });
+    expect(result.outcome).toBe("UNKNOWN");
+    expect(result.detail).toBe("pull-request-merge-identity-unobserved");
   });
 });

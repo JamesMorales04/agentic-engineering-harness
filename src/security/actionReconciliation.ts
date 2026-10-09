@@ -451,10 +451,17 @@ async function reconcileGithubPullRequestMerge(intent: ActionIntentV1, payload: 
   if (!merged) {
     return buildResult(intent, "FAILED", state === "closed" ? "pull-request-closed-unmerged" : "pull-request-not-merged", evidence, dependencies.now);
   }
-  if (typeof observedHead === "string" && observedHead.toLowerCase() !== headSha.toLowerCase()) {
+  // A merge without observable head/base identity is not proof that the
+  // intended head was merged. Missing identity fails closed as UNKNOWN so the
+  // intent stays unresolved and a later observation can still change the
+  // conclusion; present-but-mismatched identity is a conclusive FAILED.
+  if (typeof observedHead !== "string" || typeof observedBaseRef !== "string") {
+    return buildResult(intent, "UNKNOWN", "pull-request-merge-identity-unobserved", evidence, dependencies.now);
+  }
+  if (observedHead.toLowerCase() !== headSha.toLowerCase()) {
     return buildResult(intent, "FAILED", "pull-request-merged-unexpected-head", evidence, dependencies.now);
   }
-  if (typeof observedBaseRef === "string" && observedBaseRef !== baseRef) {
+  if (observedBaseRef !== baseRef) {
     return buildResult(intent, "FAILED", "pull-request-merged-unexpected-base", evidence, dependencies.now);
   }
   if (!mergeCommit || !GIT_COMMIT_PATTERN.test(mergeCommit)) {

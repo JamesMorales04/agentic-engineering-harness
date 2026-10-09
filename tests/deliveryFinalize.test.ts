@@ -125,6 +125,24 @@ describe("accepted issue delivery finalization", () => {
     await expect(finalizeAcceptedIssue(context.repo, context.config, context.contract, { candidate: context.candidate })).rejects.toThrow("DELIVERY_AUTHORITY_REQUIRED");
   });
 
+  it("reports merge-pending BLOCKED instead of silently completing when AUTO_MERGE has no independent review", async () => {
+    const context = await createFinalizeFixture({ mergeMode: "AUTO_MERGE" });
+    await expect(finalizeAcceptedIssue(context.repo, context.config, context.contract, { candidate: context.candidate }))
+      .rejects.toThrow("TOOL_ACTION_HUMAN_DECISION_REQUIRED");
+    const commitSha = await git(context.repo, "rev-parse", "HEAD");
+    await recordActionAuthorization(context, "git.push", { remote: "origin", ref: "feature/gh-5-update-readme", expectedCommit: commitSha });
+    await recordActionAuthorization(context, "github.pull-request.create", { repository: "owner/repo", head: "feature/gh-5-update-readme", base: "main", apiBase: "https://api.github.com" });
+    const result = await finalizeAcceptedIssue(context.repo, context.config, context.contract, { candidate: context.candidate });
+    // The accepted PR exists, but delivery must not report FINALIZED when the
+    // frozen policy requested autonomous merge without a review.
+    expect(result.status).toBe("BLOCKED_EXTERNAL");
+    expect(result.humanRequired).toBe(false);
+    expect(result.pullRequest?.number).toBe(9);
+    expect(result.message).toMatch(/independent ACCEPTED PR review/i);
+    // The merge was never attempted: no PUT /merge request was issued.
+    expect(context.requests.some((request) => request.method === "PUT" && request.url.includes("/merge"))).toBe(false);
+  });
+
   it("refuses delivery when the Candidate object is correct but the workspace tree has drifted", async () => {
     const context = await createFinalizeFixture();
     await fs.writeFile(path.join(context.repo, "README.md"), "unbound workspace change\n");
@@ -376,7 +394,7 @@ interface FinalizeFixture {
   requests: Array<{ url: string; method: string; body?: string }>;
 }
 
-async function createFinalizeFixture(options: { managed?: boolean; acceptanceOracle?: boolean; candidateBranch?: string; pullRequests?: boolean; taskId?: string; issueDerived?: boolean } = {}): Promise<FinalizeFixture> {
+async function createFinalizeFixture(options: { managed?: boolean; acceptanceOracle?: boolean; candidateBranch?: string; pullRequests?: boolean; taskId?: string; issueDerived?: boolean; mergeMode?: "AUTO_MERGE" | "RISK_GATED" } = {}): Promise<FinalizeFixture> {
   const managed = options.managed !== false;
   const taskId = options.taskId ?? "GH-5";
   const issueDerived = options.issueDerived !== false;
@@ -393,8 +411,8 @@ async function createFinalizeFixture(options: { managed?: boolean; acceptanceOra
   await fs.mkdir(path.join(repo, ".harness", "delivery"), { recursive: true });
   if (issueDerived) await fs.writeFile(path.join(repo, ".harness", "delivery", `${taskId}.json`), JSON.stringify({ version: 1, taskId, status: "ready", createdAt: "2026-08-11T00:00:00Z", updatedAt: "2026-08-11T00:00:00Z", originatingBranch: "main", github: { repository: "owner/repo", issueNumber: 5, issueUrl: "https://github.com/owner/repo/issues/5", branch: "feature/gh-5-update-readme" } }));
 
-  const allowedActions: Array<"git.branch.create" | "git.commit" | "git.push" | "github.issue.create" | "github.branch.create" | "github.pull-request.create"> = ["git.branch.create", "git.commit", "git.push", ...(issueDerived ? ["github.issue.create", "github.branch.create"] as const : []), ...(options.pullRequests === false ? [] : ["github.pull-request.create" as const])];
-  const config: HarnessProjectConfig = { version: 1, project: { name: "finalize-test" }, validation: { baseRef: "main" }, delivery: { stateDir: ".harness/delivery", github: { enabled: true, allowedActions, repository: "owner/repo", tokenEnv: "GH_TOKEN", finalizeOnAcceptance: true, pullRequestDraft: true, ...(options.pullRequests === false ? { pullRequests: false } : {}) } } };
+  const allowedActions: Array<"git.branch.create" | "git.commit" | "git.push" | "github.issue.create" | "github.branch.create" | "github.pull-request.create" | "github.pull-request.merge"> = ["git.branch.create", "git.commit", "git.push", ...(issueDerived ? ["github.issue.create", "github.branch.create"] as const : []), ...(options.pullRequests === false ? [] : ["github.pull-request.create" as const]), ...(options.mergeMode ? ["github.pull-request.merge" as const] : [])];
+  const config: HarnessProjectConfig = { version: 1, project: { name: "finalize-test" }, validation: { baseRef: "main" }, delivery: { stateDir: ".harness/delivery", github: { enabled: true, allowedActions, repository: "owner/repo", tokenEnv: "GH_TOKEN", finalizeOnAcceptance: true, pullRequestDraft: true, ...(options.pullRequests === false ? { pullRequests: false } : {}), ...(options.mergeMode ? { mergeMode: options.mergeMode } : {}) } } };
   const contract: TaskContract = { version: 1, task: { id: taskId, title: issueDerived ? "Update README" : "Redesign Home" }, ...(issueDerived ? { issue: { provider: "github" as const, repository: "owner/repo", number: 5, url: "https://github.com/owner/repo/issues/5", state: "open", fetchedAt: "2026-08-11T00:00:00Z", updatedAt: "2026-08-11T00:00:00Z", contentSha256: "a".repeat(64), snapshotPath: ".harness/issues/GH-5.json" } } : {}), git: { baseRef: "main", originatingBranch: "main" }, routing: { route: "DIRECT", assurance: "STANDARD" } };
   const operationId = `RUN-FINALIZE-${taskId}`;
   let candidate: CandidateRevisionV1;
@@ -408,13 +426,14 @@ async function createFinalizeFixture(options: { managed?: boolean; acceptanceOra
     process.env.AEH_OPERATION_STATE_REDIRECT = "1";
     process.env.AEH_CONTROLLER_EPOCH = "1";
     const operation = await loadOperation(repo, operationId);
-    const allowedExternalEffects: Array<"github.issue.create" | "github.branch.create" | "git.push" | "github.pull-request.create"> = [
+    const allowedExternalEffects: Array<"github.issue.create" | "github.branch.create" | "git.push" | "github.pull-request.create" | "github.pull-request.merge"> = [
       ...(issueDerived ? ["github.issue.create", "github.branch.create"] as const : []),
       "git.push",
-      ...(options.pullRequests === false ? [] : ["github.pull-request.create" as const])
+      ...(options.pullRequests === false ? [] : ["github.pull-request.create" as const]),
+      ...(options.mergeMode ? ["github.pull-request.merge" as const] : [])
     ];
     const humanDecisionRequirements = allowedExternalEffects.filter((action) => action !== "github.branch.create").map((action) => ({ kind: "ACTION_AUTHORIZATION" as const, action }));
-    const deliveryPolicy = { githubEnabled: true, allowedActions, allowedExternalEffects };
+    const deliveryPolicy = { githubEnabled: true, allowedActions, allowedExternalEffects, ...(options.mergeMode ? { mergeMode: options.mergeMode } : {}) };
     const policy = compileResolvedOperationPolicy({ projectId: candidate.projectId!, operationId, operationExecutionRevision: operation.operationExecutionRevision!, candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch: currentControllerEpoch(operation), intent: "delivery finalization test", route: "DIRECT", minimumAssurance: "STANDARD", policyVersions: {}, policyDigests: { delivery: sha256Canonical({ ...deliveryPolicy, humanDecisionRequirements }) }, validationPolicy: {}, reviewPolicy: { leadAcceptance: true, leadAcceptanceDirect: false, independentReviewRequired: false }, deliveryPolicy, knowledgePolicy: {}, contextPolicy: {}, allowedExternalEffects, humanDecisionRequirements });
     await bindResolvedOperationPolicy(repo, operationId, policy);
     if (options.acceptanceOracle !== false) await persistFixtureAcceptanceOracle(repo, await loadOperation(repo, operationId));
