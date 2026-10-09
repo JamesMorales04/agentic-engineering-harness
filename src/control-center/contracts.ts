@@ -207,9 +207,11 @@ export interface ControlCenterCertificationProjectionV1 {
 
 export interface ControlCenterSecurityProjectionV1 {
   version: typeof CONTROL_CENTER_CONTRACT_VERSION;
-  loopbackOnly: true;
+  loopbackOnly: boolean;
   authenticated: true;
   csrfForMutations: true;
+  remoteMode: "disabled" | "trusted-proxy";
+  allowedHosts?: string[];
 }
 
 export interface ControlCenterEventDataV1 {
