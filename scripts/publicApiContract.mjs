@@ -31,13 +31,52 @@
  * - the resolver fallback coverage (package.json contract/test:contract scripts
  *   the resolution order falls back to).
  *
- * Usage: `node scripts/publicApiContract.mjs [root]` (root defaults to cwd).
+ * Usage: `node scripts/publicApiContract.mjs [--json] [root]` (root defaults to cwd).
  * Prints PUBLIC_API_CONTRACT_PASS on success, PUBLIC_API_CONTRACT_FAILED otherwise.
+ *
+ * Structured evidence: `--json` prints a versioned interaction array to stdout
+ * (`{ version: 1, tool: "aeh-public-api-contract", interactions: [...], summary }`,
+ * one interaction per check with `id`, `name`, `status` ("pass"|"fail") and
+ * `evidence` detail) for the contract-test lane normalizer. The default text
+ * format and exit codes are unchanged with or without the flag.
  */
 import fs from "node:fs";
 import path from "node:path";
 
 const RULESET = "aeh-public-api-contract-v1";
+
+// Versioned structured-evidence envelope consumed by the contract-test lane
+// normalizer (src/validators/toolEvidence.ts). The normalizer accepts exactly
+// this schema (tool + version 1 + interactions array); anything else still
+// fail-closes, so these markers must stay stable.
+const EVIDENCE_TOOL = "aeh-public-api-contract";
+const EVIDENCE_SCHEMA_VERSION = 1;
+
+const CHECK_NAMES = {
+  "PUBLIC-API-EXPORT-SURFACE": "control-center export surface",
+  "PUBLIC-API-PROJECTION-SURFACE": "operation projection surface",
+  "PUBLIC-API-CONTRACT-VERSION": "contract version pin",
+  "PUBLIC-API-RESOURCE-KINDS": "resource-kind vocabulary",
+  "PUBLIC-API-OVERVIEW-SHAPE": "overview shape",
+  "PUBLIC-API-SERVER-ROUTES": "server route inventory",
+  "PUBLIC-API-UI-CONTRACT": "UI contract enforcement",
+  "PUBLIC-API-PROJECTION-BINDING": "operation projection binding",
+  "PUBLIC-API-DIMENSION-MAPPING": "dimension mapping stability",
+  "PUBLIC-API-FALLBACK-COVERAGE": "resolver fallback coverage"
+};
+
+const CHECK_PASS_EVIDENCE = {
+  "PUBLIC-API-EXPORT-SURFACE": "contracts.ts exports CONTROL_CENTER_CONTRACT_VERSION = 1, controlCenterResourceId and the Overview/Operation/Participant/Candidate projection interfaces",
+  "PUBLIC-API-PROJECTION-SURFACE": "operationProjection.ts exports projectOperationRecordV1",
+  "PUBLIC-API-CONTRACT-VERSION": "contracts.ts, server.ts and ui/control-center/src/api.ts agree on contract version 1",
+  "PUBLIC-API-RESOURCE-KINDS": "contracts/server/ui/projection agree on the 10 resource kinds in stable order with the exact UI route inventory",
+  "PUBLIC-API-OVERVIEW-SHAPE": "ui overview() requires every overview field, the Overview/Snapshot interfaces declare them, and server stamps version/generatedAt/buildIdentity",
+  "PUBLIC-API-SERVER-ROUTES": "server exposes every resource route plus the cancel/pause/resume/select actions",
+  "PUBLIC-API-UI-CONTRACT": "ui api.ts keeps every required-field list, buildIdentity digest check and decisionRequest binding guard",
+  "PUBLIC-API-PROJECTION-BINDING": "operation projection binds CONTROL_CENTER_CONTRACT_VERSION and controlCenterResourceId with pause/resume/cancel gated on live status",
+  "PUBLIC-API-DIMENSION-MAPPING": "candidateAssurance.ts keeps the public API -> contract-test/ELEVATED mapping",
+  "PUBLIC-API-FALLBACK-COVERAGE": "package.json declares the contract and test:contract fallback scripts"
+};
 
 function fail(checks, id, message) {
   checks.push({ id, ok: false, message });
@@ -348,7 +387,11 @@ function checkFallbackCoverage(checks, root) {
 }
 
 function main() {
-  const root = path.resolve(process.argv[2] ?? process.cwd());
+  const args = process.argv.slice(2);
+  const json = args.includes("--json");
+  const positional = args.filter((arg) => !arg.startsWith("--"));
+  const root = path.resolve(positional[0] ?? process.cwd());
+  const startedAt = Date.now();
   const checks = [];
   checkExportSurface(checks, root);
   checkContractVersion(checks, root);
@@ -361,6 +404,30 @@ function main() {
   checkFallbackCoverage(checks, root);
   const failures = checks.filter((check) => !check.ok);
   const nodeVersion = process.version;
+  if (json) {
+    const interactions = checks.map((check) => ({
+      id: check.id,
+      name: CHECK_NAMES[check.id] ?? check.id,
+      status: check.ok ? "pass" : "fail",
+      evidence: check.ok ? (CHECK_PASS_EVIDENCE[check.id] ?? "ok") : (check.message ?? "check failed")
+    }));
+    const payload = {
+      version: EVIDENCE_SCHEMA_VERSION,
+      tool: EVIDENCE_TOOL,
+      ruleset: RULESET,
+      root,
+      node: nodeVersion,
+      interactions,
+      summary: {
+        total: checks.length,
+        passed: checks.length - failures.length,
+        failed: failures.length,
+        durationMs: Date.now() - startedAt
+      }
+    };
+    console.log(JSON.stringify(payload));
+    process.exit(failures.length ? 1 : 0);
+  }
   if (failures.length) {
     console.error(`PUBLIC_API_CONTRACT_FAILED: ${failures.map((check) => `${check.id}: ${check.message}`).join("; ")}`);
     process.exit(1);
