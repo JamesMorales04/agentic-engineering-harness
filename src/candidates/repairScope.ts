@@ -719,7 +719,15 @@ export function repairScopeBlockerValidationCheck(blocker: RepairScopeBlockerRec
 }
 
 export function repairScopeBlockerReceiptPath(root: string, config: HarnessProjectConfig, taskId: string): string {
-  const dir = path.join(root, config.sdd?.repairsDir ?? ".harness/repairs");
+  // SINGLE canonical durable root (RECEIPT_MISSING fix): cross-phase repair
+  // artifacts must resolve IDENTICALLY at write and read. The correction-turn
+  // write passes runTask controlRoot (= executionRoot/isolated worktree) while
+  // the suspend read resolves via resolveOperationStateRoot(controlRoot) (=
+  // durable AEH_CONTROL_ROOT when AEH_OPERATION_STATE_REDIRECT=1). Resolving
+  // here converges both sites to the durable root; without a redirect the
+  // resolve is the identity, so behavior is unchanged when roots agree.
+  const stateRoot = resolveOperationStateRoot(root);
+  const dir = path.join(stateRoot, config.sdd?.repairsDir ?? ".harness/repairs");
   return path.join(dir, `${safe(taskId)}-scope-blocker.json`);
 }
 
