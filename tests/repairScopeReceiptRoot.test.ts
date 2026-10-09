@@ -56,10 +56,10 @@ describe("repair scope blocker receipt canonical durable root", () => {
       const receiptFile = await writeRepairScopeBlockerReceipt(writeRoot, config, blocker);
 
       // (b) suspend read site: stateRoot = resolveOperationStateRoot(controlRoot),
-      // receiptFile = repairScopeBlockerReceiptPath(stateRoot, config, blocker.taskId).
+      // receiptFile = repairScopeBlockerReceiptPath(stateRoot, config, blocker.taskId, blocker.workUnitId).
       const controlRoot = path.resolve(executionRoot);
       const readStateRoot = resolveOperationStateRoot(controlRoot);
-      const readFile = repairScopeBlockerReceiptPath(readStateRoot, config, blocker.taskId);
+      const readFile = repairScopeBlockerReceiptPath(readStateRoot, config, blocker.taskId, blocker.workUnitId);
 
       // The SINGLE canonical durable root: write and read must agree.
       expect(readFile).toBe(receiptFile);
@@ -86,8 +86,46 @@ describe("repair scope blocker receipt canonical durable root", () => {
         filesNeededOutsideScope: [{ path: "src/outside/other.ts", reason: "out of scope" }],
       });
       const receiptFile = await writeRepairScopeBlockerReceipt(root, config, blocker);
-      expect(receiptFile).toBe(repairScopeBlockerReceiptPath(root, config, blocker.taskId));
-      expect(receiptFile).toBe(path.join(root, ".harness", "repairs", "TASK-AGREE-scope-blocker.json"));
+      expect(receiptFile).toBe(repairScopeBlockerReceiptPath(root, config, blocker.taskId, blocker.workUnitId));
+      expect(receiptFile).toBe(path.join(root, ".harness", "repairs", "TASK-AGREE-scope-blocker-repair-TASK-AGREE-1.json"));
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("planner and repairer receipts for the same task do not collide (namespaced by workUnitId)", async () => {
+    delete process.env.AEH_OPERATION_STATE_REDIRECT;
+    delete process.env.AEH_OPERATION_ID;
+    delete process.env.AEH_CONTROL_ROOT;
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-collide-"));
+    try {
+      const config = { project: { name: "receipt-collide" } } as any;
+      const plannerBlocker = createRepairScopeBlockerReceipt({
+        operationId: "OP-COLLIDE",
+        taskId: "TASK-COLLIDE",
+        workUnitId: "planner:TASK-COLLIDE",
+        filesNeededOutsideScope: [{ path: "package-lock.json", reason: "planner needs manifest" }],
+      });
+      const repairerBlocker = createRepairScopeBlockerReceipt({
+        operationId: "OP-COLLIDE",
+        taskId: "TASK-COLLIDE",
+        workUnitId: "wu-1",
+        filesNeededOutsideScope: [{ path: "package.json", reason: "repairer needs manifest" }],
+      });
+      const plannerFile = repairScopeBlockerReceiptPath(root, config, plannerBlocker.taskId, plannerBlocker.workUnitId);
+      const repairerFile = repairScopeBlockerReceiptPath(root, config, repairerBlocker.taskId, repairerBlocker.workUnitId);
+      expect(plannerFile).not.toBe(repairerFile);
+      const writtenPlanner = await writeRepairScopeBlockerReceipt(root, config, plannerBlocker);
+      const writtenRepairer = await writeRepairScopeBlockerReceipt(root, config, repairerBlocker);
+      expect(writtenPlanner).toBe(plannerFile);
+      expect(writtenRepairer).toBe(repairerFile);
+      // Both receipts survive — the second write must not overwrite the first.
+      const persistedPlanner = JSON.parse(await fs.readFile(plannerFile, "utf8"));
+      const persistedRepairer = JSON.parse(await fs.readFile(repairerFile, "utf8"));
+      expect(persistedPlanner.digest).toBe(plannerBlocker.digest);
+      expect(persistedPlanner.workUnitId).toBe("planner:TASK-COLLIDE");
+      expect(persistedRepairer.digest).toBe(repairerBlocker.digest);
+      expect(persistedRepairer.workUnitId).toBe("wu-1");
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

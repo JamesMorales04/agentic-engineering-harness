@@ -153,16 +153,51 @@ describe("H-NEW-11 planner plan-level filesNeededOutsideScope", () => {
     expect(validatePlannerWavePlan(contract(), plan([["src/a.ts"]]), config())).toEqual([]);
   });
 
-  it("glob scope intersecting hard protection requires declaration; exact hard file within satisfies", () => {
+  it("STRICT: glob scope intersecting hard protection is REJECTED outright even with an exact declaration", () => {
     const rejected = validatePlannerWavePlan(contract(), plan([["src/validators/**"]]), config());
     expect(rejected).toHaveLength(1);
     expect(rejected[0]).toContain("PLANNER_PROTECTED_SCOPE_UNDECLARED");
-    const accepted = validatePlannerWavePlan(
+    // One exact declaration CANNOT satisfy a broad glob: unbounded glob match
+    // = unprovable coverage (the glob could match other.ts, future files,
+    // siblings). The planner must enumerate exact protected files instead.
+    const stillRejected = validatePlannerWavePlan(
       contract(),
       plan([["src/validators/**"]], [{ path: "src/validators/rules.ts", reason: "validator must change" }]),
       config(),
     );
-    expect(accepted).toEqual([]);
+    expect(stillRejected.some((issue) => issue.includes("PLANNER_PROTECTED_SCOPE_UNDECLARED"))).toBe(true);
+    expect(stillRejected.join("\n")).toContain("Glob scopes cannot be satisfied by declaration");
+  });
+
+  it("STRICT: exact-file scopes require an exact declaration each", () => {
+    // One exact scope + matching exact declaration passes.
+    expect(validatePlannerWavePlan(
+      contract(),
+      plan([["src/validators/rules.ts"]], [{ path: "src/validators/rules.ts", reason: "validator must change" }]),
+      config(),
+    )).toEqual([]);
+    // Two exact protected scopes with only one declaration: the undeclared file fails.
+    const partial = validatePlannerWavePlan(
+      contract(),
+      plan(
+        [["src/validators/rules.ts"], ["src/validators/other.ts"]],
+        [{ path: "src/validators/rules.ts", reason: "validator must change" }],
+      ),
+      config(),
+    );
+    expect(partial.some((issue) => issue.includes("PLANNER_PROTECTED_SCOPE_UNDECLARED") && issue.includes("other.ts"))).toBe(true);
+    // Both declared: passes.
+    expect(validatePlannerWavePlan(
+      contract(),
+      plan(
+        [["src/validators/rules.ts"], ["src/validators/other.ts"]],
+        [
+          { path: "src/validators/rules.ts", reason: "validator must change" },
+          { path: "src/validators/other.ts", reason: "second validator must change" },
+        ],
+      ),
+      config(),
+    )).toEqual([]);
   });
 
   it("rejects malformed declarations fail-closed at compile (glob/traversal)", () => {

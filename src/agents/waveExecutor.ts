@@ -1013,9 +1013,18 @@ export function validatePlannerWavePlan(contract: TaskContract, plan: PlannerOut
 /**
  * H-NEW-11 plan-level declaration check (DETERMINISTIC, pure, no I/O).
  * Extracted so the compile gate above and plan-routing diagnostics share one
- * definition of "declared". A violating scope is satisfied only by a
- * declaration that names an exact hard-protected file within that scope;
- * malformed declarations (glob/traversal/empty) are rejected fail-closed so
+ * definition of "declared". STRICT rule (R2):
+ * (a) exact-file scopes require an exact declaration of that same file;
+ * (b) GLOB scopes intersecting ANY protected pattern are REJECTED outright —
+ *     no declaration can satisfy them; the planner must enumerate the exact
+ *     protected files it needs (one exact scope + one exact declaration per
+ *     file). Globs covering only non-protected paths remain free.
+ * Why: an unbounded glob match is unprovable coverage — one exact declaration
+ * (e.g. `src/validators/rules.ts`) cannot prove it covers every protected
+ * file a broad scope (e.g. `src/validators/**`) could match
+ * (`other.ts`, future files, `specs/**` siblings). Accepting it would let a
+ * single declaration launder a broad protected expansion.
+ * Malformed declarations (glob/traversal/empty) are rejected fail-closed so
  * they can never satisfy the gate or reach the receipt.
  */
 export function validatePlannerHardProtectionDeclarations(contract: TaskContract, plan: PlannerOutput, config: HarnessProjectConfig): string[] {
@@ -1038,10 +1047,20 @@ export function validatePlannerHardProtectionDeclarations(contract: TaskContract
       const directlyViolated = findRepairHardProtectedViolations([rawScope], config, contract);
       const overlapped = hardProtected.filter((hard) => scopePatternOverlapsHardPattern(rawScope, hard));
       if (!directlyViolated.length && !overlapped.length) continue;
-      const matched = [...declared.keys()].some((candidate) =>
-        withinContractScope(candidate, [rawScope]) && findRepairHardProtectedViolations([candidate], config, contract).length > 0);
-      if (matched) continue;
       const cited = [...new Set([...directlyViolated, ...overlapped])].sort((a, b) => a.localeCompare(b)).slice(0, 8).join(", ");
+      // (b) GLOB scopes intersecting ANY protected pattern are REJECTED
+      // outright — unbounded glob match = unprovable coverage. A single exact
+      // declaration cannot prove coverage of every protected file the glob
+      // could match, so no declaration satisfies this scope. The planner must
+      // replace the glob with enumerated exact protected file scopes, each
+      // with its own exact declaration per (a).
+      if (!isExactRepairScopeFilePath(rawScope)) {
+        issues.push(`PLANNER_PROTECTED_SCOPE_UNDECLARED: work unit '${unit.id}' scope '${rawScope}' is a glob intersecting hard-protected path(s): ${cited}. Glob scopes cannot be satisfied by declaration (unbounded match = unprovable coverage: one exact declaration cannot cover every protected file the glob could match). Replace the glob with enumerated exact protected file scopes and declare each exact file via plan-level filesNeededOutsideScope[{path, reason}].`);
+        continue;
+      }
+      // (a) exact-file scopes require the exact declaration of that same file.
+      const normalizedScope = normalizeRepairScopePath(rawScope);
+      if (declared.has(normalizedScope)) continue;
       issues.push(`PLANNER_PROTECTED_SCOPE_UNDECLARED: work unit '${unit.id}' scope '${rawScope}' intersects hard-protected path(s): ${cited}. Declare the exact file(s) via plan-level filesNeededOutsideScope[{path, reason}] (max 8, exact file paths with per-file reasons); hard-protected paths the planned work needs (validators, tests, policy, .harness/project.yaml, seals) flow to Owner-approved amendment only through this declaration channel. Glob scopes touching hard-protected paths must first be narrowed to exact file paths.`);
     }
   }
