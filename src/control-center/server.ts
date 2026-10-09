@@ -44,6 +44,12 @@ export type ProjectRuntimeHealthStatusV1 = ControlCenterProjectHealthProjectionV
 export type ProjectSelectionV1 = ControlCenterProjectSelectionV1;
 export type ProjectHealthProbeV1 = ControlCenterProjectHealthProjectionV1;
 
+export interface ControlCenterRemoteOptionsV1 {
+  mode: "trusted-proxy";
+  allowedOrigins: string[];
+  allowedHosts: string[];
+}
+
 export interface LocalControlCenterOptionsV1 {
   host?: "127.0.0.1" | "localhost";
   port?: number;
@@ -57,6 +63,13 @@ export interface LocalControlCenterOptionsV1 {
   paseo?: { root: string; leadId?: string; resolveLeadId?: () => Promise<string | undefined>; participantLabels?: Record<string, string>; provider?: string; model?: string };
   uiRoot?: string;
   operationRoots?: () => Promise<readonly string[]> | readonly string[];
+  /**
+   * Optional explicit remote access. Default is loopback-only. When present,
+   * the server still binds to loopback; a trusted local proxy (for example
+   * `tailscale serve --bg http://127.0.0.1:<port>`) terminates Tailnet TLS
+   * and dials loopback. Never set host to 0.0.0.0 to enable remote access.
+   */
+  remote?: ControlCenterRemoteOptionsV1;
 }
 
 export interface StartedControlCenterV1 {
@@ -120,6 +133,8 @@ export class LocalControlCenterV1 {
   private uiRoot?: string;
   private readonly uiRootExplicit: boolean;
   private readonly operationRootsProvider?: LocalControlCenterOptionsV1["operationRoots"];
+  private readonly remoteOrigins: readonly string[];
+  private readonly remoteHosts: readonly string[];
   private readonly subscribers = new Map<ServerResponse, EventCursorV1>();
   private eventPollTimer?: NodeJS.Timeout;
   private eventPoll?: Promise<void>;
@@ -139,6 +154,9 @@ export class LocalControlCenterV1 {
     if (!Number.isInteger(this.healthProbeTimeoutMs) || this.healthProbeTimeoutMs < 1 || this.healthProbeTimeoutMs > 30_000) {
       throw new Error("Control Center health probe timeout must be an integer between 1 and 30000 milliseconds.");
     }
+    const validated = validateRemoteOptions(options.remote);
+    this.remoteOrigins = validated.origins;
+    this.remoteHosts = validated.hosts;
     this.projectHome = options.projectHome;
     this.paseoGateway = options.paseoGateway;
     this.paseo = options.paseo;
@@ -146,6 +164,11 @@ export class LocalControlCenterV1 {
     this.uiRoot = options.uiRoot ?? findBundledControlCenterUiRoot();
     this.operationRootsProvider = options.operationRoots;
     this.server = createServer((request, response) => void this.handle(request, response));
+  }
+
+  /** DETERMINISTIC: whether explicit trusted-proxy remote access is enabled. Default is disabled (loopback-only). */
+  isRemoteEnabled(): boolean {
+    return this.remoteHosts.length > 0;
   }
 
   async start(): Promise<StartedControlCenterV1> {
@@ -178,7 +201,7 @@ export class LocalControlCenterV1 {
 
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     try {
-      this.assertLoopbackRequest(request);
+      this.assertTransport(request);
       const url = new URL(request.url ?? "/", `http://${request.headers.host ?? `${this.host}:${this.requestedPort}`}`);
       if (request.method === "GET" && url.pathname === "/health") return this.json(response, 200, { status: "ok", version: 1 });
       if (request.method === "GET" && !url.pathname.startsWith("/api/")) return this.frontend(response, url.pathname, request.headers.accept);
@@ -268,6 +291,7 @@ export class LocalControlCenterV1 {
   private async overview(): Promise<ControlCenterOverviewV1> {
     const snapshot = await this.snapshot();
     const home = this.projectHome ? await this.projectOverview() : {};
+    const remote = this.isRemoteEnabled();
     return {
       version: CONTROL_CENTER_CONTRACT_VERSION,
       generatedAt: new Date().toISOString(),
@@ -275,7 +299,14 @@ export class LocalControlCenterV1 {
       ...snapshot,
       agents: snapshot.participants,
       permissions: snapshot.authority.leases,
-      security: { version: CONTROL_CENTER_CONTRACT_VERSION, loopbackOnly: true, authenticated: true, csrfForMutations: true },
+      security: {
+        version: CONTROL_CENTER_CONTRACT_VERSION,
+        loopbackOnly: !remote,
+        authenticated: true,
+        csrfForMutations: true,
+        remoteMode: remote ? "trusted-proxy" : "disabled",
+        ...(remote ? { allowedHosts: [...this.remoteHosts] } : {}),
+      },
       pairing: { mode: "single-use-pairing-session", host: this.host },
       ...home
     };
@@ -411,6 +442,60 @@ export class LocalControlCenterV1 {
     if (host && host !== this.host && host !== "127.0.0.1" && host !== "localhost") throw new ControlCenterSecurityError("Control Center accepts loopback hosts only.");
   }
 
+  /**
+   * DETERMINISTIC transport gate. Default is byte-identical loopback-only
+   * behavior. In explicit trusted-proxy mode the server still binds to
+   * loopback; a trusted local proxy (Tailscale Serve) terminates Tailnet TLS
+   * and dials loopback. The gate distinguishes a genuinely trusted local
+   * proxy (loopback TCP peer + allowlisted Host) from arbitrary forwarded
+   * requests and fails closed on proxy misconfiguration.
+   */
+  private assertTransport(request: IncomingMessage): void {
+    if (!this.isRemoteEnabled()) {
+      this.assertLoopbackRequest(request);
+      return;
+    }
+    // No trust in arbitrary client-supplied forwarded or identity headers.
+    // Only X-Forwarded-For / X-Forwarded-Proto from the loopback peer are
+    // tolerated (and never used for auth); any other proxy header fails closed.
+    if (request.headers.forwarded !== undefined) {
+      throw new ControlCenterSecurityError("proxy forwarding headers are not accepted.");
+    }
+    for (const header of ["x-forwarded-host", "x-real-ip", "forwarded"]) {
+      if (request.headers[header] !== undefined) {
+        throw new ControlCenterSecurityError("proxy forwarding headers are not accepted.");
+      }
+    }
+    const peer = (request.socket?.remoteAddress ?? "").toLowerCase();
+    if (!isLoopbackPeer(peer)) {
+      throw new ControlCenterSecurityError("remote Control Center accepts only the trusted local proxy.");
+    }
+    const host = (request.headers.host ?? "").split(":")[0].replace(/\[|\]/g, "").toLowerCase();
+    const isLoopbackHost = !host || host === this.host || host === "127.0.0.1" || host === "localhost";
+    const isRemoteHost = host !== "" && (this.remoteHosts as readonly string[]).includes(host);
+    if (!isLoopbackHost && !isRemoteHost) {
+      throw new ControlCenterSecurityError("Control Center Host is not allowlisted.");
+    }
+    if (isRemoteHost && !isLoopbackHost) {
+      // Proxy misconfiguration fails closed: a remote Host without an
+      // explicit single-hop https forwarding marker is rejected. The marker
+      // itself grants no authority; pairing/session/CSRF remain required.
+      const proto = request.headers["x-forwarded-proto"];
+      if (typeof proto !== "string" || proto.toLowerCase() !== "https") {
+        throw new ControlCenterSecurityError("remote access requires the trusted proxy https forwarding marker.");
+      }
+      const forwardedFor = request.headers["x-forwarded-for"];
+      if (typeof forwardedFor === "string" && forwardedFor.includes(",")) {
+        throw new ControlCenterSecurityError("multi-hop proxy chains are not accepted.");
+      }
+    } else {
+      // Loopback requests keep the historical strict rule: no forwarding at all.
+      if (request.headers["x-forwarded-for"] !== undefined || request.headers["x-forwarded-proto"] !== undefined) {
+        throw new ControlCenterSecurityError("forwarded requests are not accepted by the loopback Control Center.");
+      }
+    }
+  }
+
   private sessionFor(request: IncomingMessage): ControlSessionV1 | undefined {
     const cookie = request.headers.cookie?.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${CONTROL_SESSION_COOKIE}=`));
     const sessionId = cookie?.slice(CONTROL_SESSION_COOKIE.length + 1);
@@ -427,7 +512,10 @@ export class LocalControlCenterV1 {
   private assertSameOrigin(request: IncomingMessage): void {
     const origin = request.headers.origin;
     const expectedOrigin = this.started ? new URL(this.started.url).origin : undefined;
-    if (!origin || !expectedOrigin || origin !== expectedOrigin) throw new ControlCenterSecurityError("Control Center mutations require the current loopback Origin.");
+    if (origin === expectedOrigin && origin !== undefined) return;
+    if (this.isRemoteEnabled() && typeof origin === "string" && (this.remoteOrigins as readonly string[]).includes(origin)) return;
+    if (!this.isRemoteEnabled()) throw new ControlCenterSecurityError("Control Center mutations require the current loopback Origin.");
+    throw new ControlCenterSecurityError("Control Center mutations require an allowlisted Origin.");
   }
 
   private assertCsrf(request: IncomingMessage): ControlSessionV1 {
@@ -450,7 +538,11 @@ export class LocalControlCenterV1 {
     const csrfToken = randomBytes(32).toString("base64url");
     const actorId = `human:control-center:${sha256Utf8(sessionId).slice(0, 32)}`;
     this.sessions.set(sessionId, { csrfToken, actorId, expiresAt: Date.now() + CONTROL_SESSION_TTL_SECONDS * 1_000 });
-    response.setHeader("Set-Cookie", `${CONTROL_SESSION_COOKIE}=${sessionId}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${CONTROL_SESSION_TTL_SECONDS}`);
+    // Loopback uses plain HTTP (no Secure flag). Remote mode terminates TLS at
+    // the trusted proxy, so the session cookie must carry Secure. SameSite
+    // stays Strict in both modes; SameSite=None is never introduced.
+    const secure = this.isRemoteEnabled() ? "; Secure" : "";
+    response.setHeader("Set-Cookie", `${CONTROL_SESSION_COOKIE}=${sessionId}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${CONTROL_SESSION_TTL_SECONDS}${secure}`);
     this.json(response, 200, { version: CONTROL_CENTER_CONTRACT_VERSION, csrfToken });
   }
 
@@ -801,4 +893,76 @@ async function safeStaticFile(filePath: string, realRoot: string): Promise<"ok" 
 function isLoopbackHealthHost(hostname: string): boolean {
   const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
   return host === "localhost" || host === "::1" || (isIP(host) === 4 && host.startsWith("127."));
+}
+
+function isLoopbackPeer(remoteAddress: string): boolean {
+  const peer = remoteAddress.replace(/^\[|\]$/g, "").toLowerCase();
+  if (!peer) return false;
+  if (peer === "::1" || peer === "::ffff:127.0.0.1") return true;
+  if (peer.startsWith("::ffff:")) {
+    const v4 = peer.slice("::ffff:".length);
+    return isIP(v4) === 4 && v4.startsWith("127.");
+  }
+  return isIP(peer) === 4 && peer.startsWith("127.") || isIP(peer) === 6 && peer === "::1";
+}
+
+const REMOTE_HOST_PATTERN = /^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*$/;
+
+function validateRemoteOptions(remote: ControlCenterRemoteOptionsV1 | undefined): { origins: readonly string[]; hosts: readonly string[] } {
+  if (remote === undefined) return { origins: [], hosts: [] };
+  if (!remote || typeof remote !== "object" || remote.mode !== "trusted-proxy") {
+    throw new Error("Control Center remote access must use mode trusted-proxy or remain disabled (loopback-only).");
+  }
+  if (!Array.isArray(remote.allowedOrigins) || !Array.isArray(remote.allowedHosts)) {
+    throw new Error("Control Center remote access requires non-empty allowedOrigins and allowedHosts.");
+  }
+  const hosts = [...new Set(remote.allowedHosts.map((h) => (typeof h === "string" ? h.trim().toLowerCase().replace(/\[|\]/g, "") : "")))];
+  if (!hosts.length) throw new Error("Control Center remote access requires at least one allowedHost.");
+  for (const host of hosts) {
+    if (!REMOTE_HOST_PATTERN.test(host) || host === "localhost" || host.startsWith("127.") || host === "::1") {
+      throw new Error(`Control Center allowedHost '${host}' is not a valid non-loopback DNS hostname.`);
+    }
+  }
+  const hostSet = new Set(hosts);
+  const origins = [...new Set(remote.allowedOrigins.map((o) => (typeof o === "string" ? o.trim() : "")))];
+  if (!origins.length) throw new Error("Control Center remote access requires at least one allowedOrigin.");
+  for (const origin of origins) {
+    let url: URL;
+    try {
+      url = new URL(origin);
+    } catch {
+      throw new Error(`Control Center allowedOrigin '${origin}' is not a valid URL.`);
+    }
+    if (url.protocol !== "https:") {
+      throw new Error(`Control Center allowedOrigin '${origin}' must use https.`);
+    }
+    if (url.username || url.password || url.search || url.hash || url.pathname !== "/") {
+      throw new Error(`Control Center allowedOrigin '${origin}' must be a bare https origin without path, query, fragment, or credentials.`);
+    }
+    if (!hostSet.has(url.hostname.toLowerCase())) {
+      throw new Error(`Control Center allowedOrigin '${origin}' host is not in allowedHosts.`);
+    }
+    if (!REMOTE_HOST_PATTERN.test(url.hostname.toLowerCase())) {
+      throw new Error(`Control Center allowedOrigin '${origin}' host is invalid.`);
+    }
+  }
+  return { origins, hosts };
+}
+
+/**
+ * DETERMINISTIC: explicit opt-in remote configuration from the environment.
+ * Returns undefined (loopback-only) unless AEH_CONTROL_CENTER_REMOTE_MODE is
+ * exactly trusted-proxy with valid allowlists. Installing software, joining a
+ * Tailnet, and changing network-wide settings remain genuine Owner setup and
+ * consent; this helper only reads explicit configuration and fails closed.
+ */
+export function remoteOptionsFromEnvironment(env: NodeJS.ProcessEnv = process.env): ControlCenterRemoteOptionsV1 | undefined {
+  const mode = (env.AEH_CONTROL_CENTER_REMOTE_MODE ?? "").trim();
+  if (!mode) return undefined;
+  if (mode !== "trusted-proxy") {
+    throw new Error("AEH_CONTROL_CENTER_REMOTE_MODE must be trusted-proxy or unset (loopback-only).");
+  }
+  const origins = (env.AEH_CONTROL_CENTER_ALLOWED_ORIGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  const hosts = (env.AEH_CONTROL_CENTER_ALLOWED_HOSTS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  return { mode: "trusted-proxy", allowedOrigins: origins, allowedHosts: hosts };
 }

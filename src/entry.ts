@@ -29,7 +29,7 @@ import { VERSION } from "./version.js";
 import { retrieveAuthorizedContext } from "./context/authorizationV2.js";
 import { serveContextRetrievalMcp } from "./context/retrieval/server.js";
 import { createIntentDecision, type IntentDecisionV1 } from "./audit/intentDecision.js";
-import { LocalControlCenterV1, createProjectHome } from "./control-center/index.js";
+import { LocalControlCenterV1, createProjectHome, remoteOptionsFromEnvironment } from "./control-center/index.js";
 import { createProjectRegistry } from "./projects/index.js";
 import { cancelOperation } from "./operations/controller.js";
 import { loadOperationPortfolio } from "./operations/portfolio.js";
@@ -110,13 +110,15 @@ async function runStart(argv: string[]): Promise<void> {
 }
 
 async function runHome(argv: string[]): Promise<void> {
-  const parsed = parseGeneric(argv, new Set(["port", "registry"]), new Set(["once", "no-open"]));
+  const parsed = parseGeneric(argv, new Set(["port", "registry", "remote-mode", "allowed-origin", "allowed-host"]), new Set(["once", "no-open"]));
   if (parsed.positional.length > 1) throw new Error("aeh home accepts at most one registry directory.");
   const registry = createProjectRegistry({ statePath: parsed.value("registry") ?? parsed.positional[0] });
-  const center = await createProjectHome({ registry, port: parsed.value("port") ? Number(parsed.value("port")) : 0 });
+  const remote = resolveControlCenterRemote(parsed);
+  const center = await createProjectHome({ registry, port: parsed.value("port") ? Number(parsed.value("port")) : 0, ...(remote ? { remote } : {}) });
   const started = await center.start();
   console.log(`AEH Home ready at ${started.url}`);
   console.log(`controlCenterPairing=${started.pairingUrl}`);
+  logControlCenterRemote(remote, started.port);
   if (parsed.flag("once")) { await center.close(); return; }
   await new Promise<void>((resolve) => {
     const shutdown = () => { void center.close().finally(resolve); };
@@ -126,7 +128,7 @@ async function runHome(argv: string[]): Promise<void> {
 }
 
 async function runControlCenter(argv: string[]): Promise<void> {
-  const parsed = parseGeneric(argv, new Set(["port", "ready-file"]), new Set(["once", "no-open"]));
+  const parsed = parseGeneric(argv, new Set(["port", "ready-file", "remote-mode", "allowed-origin", "allowed-host"]), new Set(["once", "no-open"]));
   if (parsed.positional.length > 1) throw new Error("aeh control-center accepts at most one project directory.");
   const root = parsed.positional[0] ? path.resolve(parsed.positional[0]) : undefined;
   const config = root ? await loadProjectConfig(root) : undefined;
@@ -136,8 +138,10 @@ async function runControlCenter(argv: string[]): Promise<void> {
   const leadBinding = root ? await resolveControlCenterLeadBinding(root, expectedStartLeadId || undefined) : undefined;
   const runtime = root ? await createManagedRuntime({ root, projectId: runtimeProjectId(root), ownerId: `control-center:${process.pid}` }) : undefined;
   const decisionLedger = root ? new HumanDecisionLedgerV2(path.join(root, ".harness", "security", "human-decisions.json")) : undefined;
+  const remote = resolveControlCenterRemote(parsed);
   const center = new LocalControlCenterV1({
     port: parsed.value("port") ? Number(parsed.value("port")) : 0,
+    ...(remote ? { remote } : {}),
     operationRoots: () => root ? [root] : [],
     snapshot: async () => {
       if (!root || !config) return {};
@@ -207,6 +211,7 @@ async function runControlCenter(argv: string[]): Promise<void> {
     if (readyFile) await fs.writeFile(path.resolve(readyFile), `${JSON.stringify({ version: 1, url: started.url, pairingUrl: started.pairingUrl, pid: process.pid })}\n`, { encoding: "utf8", mode: 0o600 });
     console.log(`AEH Project Control Center ready at ${started.url}`);
     console.log(`controlCenterPairing=${started.pairingUrl}`);
+    logControlCenterRemote(remote, started.port);
     if (parsed.flag("once")) return;
     await new Promise<void>((resolve) => {
       const shutdown = () => { process.off("SIGINT", shutdown); process.off("SIGTERM", shutdown); resolve(); };
@@ -473,6 +478,29 @@ async function runMcpBenchmark(argv: string[]): Promise<void> { const parsed = p
 async function runStatisticalEval(argv: string[]): Promise<void> { const sub = argv[0]; const parsed = parseGeneric(argv.slice(1), new Set(["variant", "runs"]), new Set()); const caseId = parsed.positional[0]; if (!caseId) throw new Error(`aeh eval ${sub} requires <caseId>.`); const root = path.resolve(parsed.positional[1] ?? "."); const config = await loadProjectConfig(root); if (sub === "repeat") { const runs = parsed.value("runs") ? Number(parsed.value("runs")) : undefined; console.log(JSON.stringify(await runRepeatedEval(root, config, caseId, parsed.value("variant"), runs), null, 2)); return; } console.log(JSON.stringify(await buildEvalDashboard(root, config, caseId), null, 2)); }
 
 function parseRisk(value?: string): TaskRisk { if (!value) return "low"; if (value === "low" || value === "medium" || value === "high") return value; throw new Error(`Invalid risk '${value}'. Use low, medium or high.`); }
+
+function resolveControlCenterRemote(parsed: { value(name: string): string | undefined; values(name: string): string[] }): import("./control-center/index.js").ControlCenterRemoteOptionsV1 | undefined {
+  const flagMode = parsed.value("remote-mode")?.trim();
+  const flagOrigins = parsed.values("allowed-origin").map((s) => s.trim()).filter(Boolean);
+  const flagHosts = parsed.values("allowed-host").map((s) => s.trim()).filter(Boolean);
+  if (flagMode !== undefined || flagOrigins.length > 0 || flagHosts.length > 0) {
+    if (flagMode !== "trusted-proxy") throw new Error("--remote-mode must be trusted-proxy or omitted (loopback-only).");
+    if (!flagOrigins.length || !flagHosts.length) throw new Error("remote access requires --allowed-origin https://<tailnet-host> and --allowed-host <tailnet-host>.");
+    return { mode: "trusted-proxy", allowedOrigins: flagOrigins, allowedHosts: flagHosts };
+  }
+  return remoteOptionsFromEnvironment();
+}
+
+function logControlCenterRemote(remote: import("./control-center/index.js").ControlCenterRemoteOptionsV1 | undefined, port: number): void {
+  if (!remote) {
+    console.log("controlCenterRemote=disabled (loopback-only)");
+    return;
+  }
+  console.log(`controlCenterRemote=trusted-proxy origins=${remote.allowedOrigins.join(",")}`);
+  console.log(`To expose over your private Tailnet (no public internet): tailscale serve --bg http://127.0.0.1:${port}`);
+  console.log(`Then open the Tailnet origin in a mobile browser and append the pairing fragment from controlCenterPairing (single-use, never share the nonce in logs or screenshots).`);
+  console.log("Disable at any time by restarting without --remote-mode (revokes the external entry point; loopback remains).");
+}
 function parse(argv: string[]): { directory: string; flag(name: string): boolean; value(name: string): string | undefined } { const parsed = parseGeneric(argv, new Set(["profile"]), new Set(["dry-run", "update-lock", "skip-project-deps", "prefer-containers"])); if (parsed.positional.length > 1) throw new Error(`Expected at most one project directory, received: ${parsed.positional.join(", ")}`); return { directory: parsed.positional[0] ?? ".", flag: parsed.flag, value: parsed.value }; }
 function parseGeneric(argv: string[], valueFlags: Set<string>, booleanFlags: Set<string>): { positional: string[]; flag(name: string): boolean; value(name: string): string | undefined; values(name: string): string[] } {
   const flags = new Map<string, Array<string | true>>(); const positional: string[] = [];
