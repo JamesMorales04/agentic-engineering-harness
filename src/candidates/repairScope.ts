@@ -1367,6 +1367,140 @@ export async function findCoveringOwnerHardProtectionExemption(input: {
 }
 
 /**
+ * DETERMINISTIC reusable-amendment discovery for anchored-grant consumption
+ * (H-NEW-14 grant-consumption coverage, consult-only).
+ *
+ * A second blocker on already-granted paths (post-resume work, wave-barrier
+ * declarations, review remediation, fresh repair turns after the single
+ * amendment) must NOT suspend again and must NOT throw the per-task cap:
+ * when a durable owner amendment already exempts every needed path AND its
+ * cited grant still fully verifies (MAC, lineage, stable policy, epoch,
+ * expiry, ledger consumed-receipt cross-check, exact coverage), the existing
+ * amendment is returned for a cap-stable retry. No new artifact is written,
+ * no grant is minted, no ledger receipt is consumed, no suspension is opened.
+ * Anything else yields undefined and the caller stays BLOCKED fail-closed.
+ *
+ * Mechanism: DETERMINISTIC (durable reads + cryptographic/binding gates).
+ */
+async function findReusableOwnerAmendmentForBlocker(input: {
+  root: string;
+  config: HarnessProjectConfig;
+  operation: OperationRecordV2;
+  ledger: HumanDecisionLedgerV2;
+  contract: TaskContract;
+  blocker: RepairScopeBlockerReceiptV1;
+}): Promise<{ amendment: RepairScopeAmendmentV1; grant: OwnerHardProtectionExemptionGrantV1 } | undefined> {
+  const { root, config, operation, ledger, contract, blocker } = input;
+  if (blocker.taskId !== contract.task.id) return undefined;
+  if (blocker.operationId !== operation.id) return undefined;
+  const needed = [...new Set(blocker.filesNeededOutsideScope.map((entry) => normalizeRepairScopePath(entry.path.trim())))].sort((a, b) =>
+    a.localeCompare(b),
+  );
+  if (!needed.length || needed.some((entry) => !entry)) return undefined;
+  let existing: RepairScopeAmendmentV1[];
+  try {
+    existing = await listRepairScopeAmendments(root, config, contract.task.id);
+  } catch {
+    return undefined;
+  }
+  for (const amendment of existing) {
+    try {
+      assertRepairScopeAmendment(amendment);
+    } catch {
+      continue;
+    }
+    if (amendment.operationId !== blocker.operationId) continue;
+    if (amendment.taskId !== contract.task.id) continue;
+    // Owner amendments only: a lead (non-owner) amendment never authorizes
+    // hard paths, and re-projecting one here would bypass the product-choice
+    // approve/deny channel that owns non-hard amendments.
+    if (!amendment.ownerExemption) continue;
+    const exempted = new Set(amendment.exemptedPaths.map((entry) => normalizeRepairScopePath(String(entry).trim())));
+    if (!needed.every((entry) => exempted.has(entry))) continue;
+    const cited = operation.ownerExemptions?.[amendment.ownerExemption.exemptionId];
+    if (!cited) continue;
+    try {
+      await verifyOwnerHardProtectionExemption({
+        operation,
+        neededPaths: blocker.filesNeededOutsideScope.map((entry) => entry.path),
+        grant: cited,
+        ledger,
+      });
+    } catch {
+      continue;
+    }
+    return { amendment, grant: cited };
+  }
+  return undefined;
+}
+
+/**
+ * DETERMINISTIC consult-only honor of an already-anchored covering owner
+ * grant for a scope blocker (H-NEW-14 grant-consumption coverage).
+ *
+ * Every scope-enforcement point that is NOT the suspend/mint path (wave
+ * barrier, post-amendment second blocker, review remediation, fresh repair
+ * turns under cap) must consult anchored covering grants before going
+ * validation-BLOCKED: on match proceed via the amendment/apply path (reuse
+ * the durable owner amendment when it already covers, else apply a new
+ * owner-exempted amendment), never a silent pass and never a terminal kill
+ * when a valid grant covers.
+ *
+ * Consult-only invariant (grant-awareness must never become grant-creation):
+ * this helper NEVER suspends for a product choice, NEVER mints a grant, and
+ * NEVER consumes a ledger receipt. Minting stays controller-on-approval
+ * (mintOwnerHardProtectionExemptionFromProductChoice after a consumed
+ * approve-exact-paths decision). All BLOCKED-domain outcomes are returned as
+ * data (NO_COVERING_GRANT / APPLY_FAILED); only malformed input throws.
+ *
+ * Mechanism: DETERMINISTIC (covering-grant discovery + durable-amendment
+ * reuse + owner-exempted apply, each fully verified before use).
+ */
+export type AnchoredGrantBlockerResolutionV1 =
+  | { status: "AMENDED"; contract: TaskContract; amendment: RepairScopeAmendmentV1; reused: boolean; grant: OwnerHardProtectionExemptionGrantV1 }
+  | { status: "NO_COVERING_GRANT"; failures: string[] }
+  | { status: "APPLY_FAILED"; error: string; failures: string[] };
+
+export async function applyAnchoredCoveringGrantForBlocker(input: {
+  root: string;
+  controlRoot: string;
+  config: HarnessProjectConfig;
+  contract: TaskContract;
+  blocker: RepairScopeBlockerReceiptV1;
+}): Promise<AnchoredGrantBlockerResolutionV1> {
+  const { root, controlRoot, config, contract, blocker } = input;
+  assertRepairScopeBlockerReceipt(blocker);
+  let operation: OperationRecordV2;
+  try {
+    operation = await loadOperation(controlRoot, blocker.operationId);
+  } catch (error) {
+    return {
+      status: "APPLY_FAILED",
+      error: `OWNER_EXEMPTION_LOAD_FAILED: the live operation could not be loaded for grant honor: ${error instanceof Error ? error.message : String(error)}`.slice(0, 500),
+      failures: [],
+    };
+  }
+  const ledger = repairScopeLedger(controlRoot);
+  const neededPaths = blocker.filesNeededOutsideScope.map((entry) => entry.path);
+  const covering = await findCoveringOwnerHardProtectionExemption({ operation, neededPaths, ledger });
+  if (!covering.grant) return { status: "NO_COVERING_GRANT", failures: covering.failures };
+  const reusable = await findReusableOwnerAmendmentForBlocker({ root, config, operation, ledger, contract, blocker });
+  if (reusable) {
+    return { status: "AMENDED", contract, amendment: reusable.amendment, reused: true, grant: reusable.grant };
+  }
+  try {
+    const applied = await applyOwnerExemptedRepairScopeAmendment({ root, config, contract, blocker, grant: covering.grant, ledger });
+    return { status: "AMENDED", contract: applied.contract, amendment: applied.amendment, reused: false, grant: covering.grant };
+  } catch (error) {
+    return {
+      status: "APPLY_FAILED",
+      error: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
+      failures: covering.failures,
+    };
+  }
+}
+
+/**
  * DETERMINISTIC owner-exempted amendment application (the single
  * hard-path amendment path). Mirrors the persistence tail of
  * applyRepairScopeAmendment (per-task cap, contract allowlist persist,
@@ -2010,6 +2144,24 @@ export async function resolveRepairScopeBlockerViaProductChoice(input: {
       ledger,
     });
     if (covering.grant) {
+      // H-NEW-14 grant-consumption coverage: a second blocker on
+      // already-granted paths reuses the durable owner amendment (cap-stable,
+      // no second suspension, no new artifact) instead of throwing the
+      // per-task cap. The cited grant re-verifies fully before reuse.
+      const reusable = await findReusableOwnerAmendmentForBlocker({ root, config, operation, ledger, contract, blocker });
+      if (reusable && reusable.amendment.ownerExemption) {
+        const provenance = reusable.amendment.ownerExemption;
+        return {
+          status: "AMENDED",
+          contract,
+          amendment: reusable.amendment,
+          ownerExemption: {
+            exemptionId: provenance.exemptionId,
+            decisionId: provenance.decisionId,
+            decisionDigest: provenance.decisionDigest,
+          },
+        };
+      }
       const applied = await applyOwnerExemptedRepairScopeAmendment({ root, config, contract, blocker, grant: covering.grant, ledger });
       return {
         status: "AMENDED",
