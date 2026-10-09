@@ -114,7 +114,10 @@ describe("H-NEW-7: blocker strip-and-trace", () => {
     const raw = await fs.readFile(traceFile, "utf8").catch(() => "");
     expect(raw).toContain("candidate.repair.blocker.stripped");
     expect(raw).toContain("src/value.ts");
-    const receiptExists = await fs.stat(path.join(root, ".harness/repairs", `${task.task.id}-scope-blocker.json`)).then(() => true).catch(() => false);
+    // Namespaced receipt (task + workUnit) must not exist for the vacuous path.
+    const { repairScopeBlockerReceiptPath } = await import("../src/candidates/repairScope.js");
+    const namespaced = repairScopeBlockerReceiptPath(root, projectConfig(), task.task.id, "validation-repair:vacuous");
+    const receiptExists = await fs.stat(namespaced).then(() => true).catch(() => false);
     expect(receiptExists).toBe(false);
   });
 

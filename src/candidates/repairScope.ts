@@ -718,7 +718,7 @@ export function repairScopeBlockerValidationCheck(blocker: RepairScopeBlockerRec
   };
 }
 
-export function repairScopeBlockerReceiptPath(root: string, config: HarnessProjectConfig, taskId: string): string {
+export function repairScopeBlockerReceiptPath(root: string, config: HarnessProjectConfig, taskId: string, workUnitId: string): string {
   // SINGLE canonical durable root (RECEIPT_MISSING fix): cross-phase repair
   // artifacts must resolve IDENTICALLY at write and read. The correction-turn
   // write passes runTask controlRoot (= executionRoot/isolated worktree) while
@@ -726,9 +726,20 @@ export function repairScopeBlockerReceiptPath(root: string, config: HarnessProje
   // durable AEH_CONTROL_ROOT when AEH_OPERATION_STATE_REDIRECT=1). Resolving
   // here converges both sites to the durable root; without a redirect the
   // resolve is the identity, so behavior is unchanged when roots agree.
+  // NAMESPACED by workUnitId (H-NEW-11 R1): planner (`planner:<taskId>`) and
+  // repairer (`wu-*`, `direct:*`, `*:escape-correction`) receipts for the same
+  // task MUST NOT share one taskId-derived file — the second write overwrites
+  // the first and suspend reads the wrong digest. Filename is
+  // `<safe(taskId)>-scope-blocker-<safe(workUnitId)>.json`. EVERY producer
+  // (write) and consumer (suspend reads) derives via this single function —
+  // no duplication, no backward-compat dual-read (repo invariant: update all
+  // sites + tests, stale single-file paths fail with RECEIPT_MISSING).
+  if (!taskId.trim() || !workUnitId.trim()) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "Repair scope blocker receipt requires task and work-unit identity for namespaced derivation.");
+  }
   const stateRoot = resolveOperationStateRoot(root);
   const dir = path.join(stateRoot, config.sdd?.repairsDir ?? ".harness/repairs");
-  return path.join(dir, `${safe(taskId)}-scope-blocker.json`);
+  return path.join(dir, `${safe(taskId)}-scope-blocker-${safe(workUnitId)}.json`);
 }
 
 export async function writeRepairScopeBlockerReceipt(
@@ -737,7 +748,7 @@ export async function writeRepairScopeBlockerReceipt(
   blocker: RepairScopeBlockerReceiptV1,
 ): Promise<string> {
   assertRepairScopeBlockerReceipt(blocker);
-  const file = repairScopeBlockerReceiptPath(root, config, blocker.taskId);
+  const file = repairScopeBlockerReceiptPath(root, config, blocker.taskId, blocker.workUnitId);
   await fs.mkdir(path.dirname(file), { recursive: true });
   await fs.writeFile(file, `${JSON.stringify(blocker, null, 2)}\n`);
   return file;
@@ -1439,7 +1450,7 @@ export async function suspendRepairScopeForProductChoice(input: {
     }
   }
   const stateRoot = resolveOperationStateRoot(controlRoot);
-  const receiptFile = repairScopeBlockerReceiptPath(stateRoot, config, blocker.taskId);
+  const receiptFile = repairScopeBlockerReceiptPath(stateRoot, config, blocker.taskId, blocker.workUnitId);
   const content = await fs.readFile(receiptFile, "utf8").catch(() => undefined);
   if (!content) {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "REPAIR_SCOPE_RECEIPT_MISSING: the durable blocker receipt must exist before a product-choice suspension.");
@@ -1484,7 +1495,7 @@ export async function suspendHardRepairScopeForProductChoice(input: {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "REPAIR_SCOPE_HARD_REQUIRED: hard-path suspension requires the declared hard-protected paths.");
   }
   const stateRoot = resolveOperationStateRoot(controlRoot);
-  const receiptFile = repairScopeBlockerReceiptPath(stateRoot, config, blocker.taskId);
+  const receiptFile = repairScopeBlockerReceiptPath(stateRoot, config, blocker.taskId, blocker.workUnitId);
   const content = await fs.readFile(receiptFile, "utf8").catch(() => undefined);
   if (!content) {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "REPAIR_SCOPE_RECEIPT_MISSING: the durable blocker receipt must exist before a hard-path product-choice suspension.");
