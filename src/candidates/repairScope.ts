@@ -37,6 +37,8 @@ import {
 import {
   assertOwnerHardProtectionExemptionGrant,
   computeOwnerExemptionMac,
+  isOwnerExemptionLineageDescendant,
+  ownerExemptionStablePolicyDigest,
   verifyOwnerExemptionMac,
   type OwnerHardProtectionExemptionGrantV1,
 } from "../security/ownerExemption.js";
@@ -1023,23 +1025,45 @@ export async function applyRepairScopeAmendment(input: {
  * re-checks the MAC tier only). Every check fails closed:
  *
  * 1. operation is non-terminal (exemptions die with terminal state);
- * 2. grant operationId matches the live operation (no cross-operation replay);
- * 3. grant controllerEpoch matches the live epoch (no reuse after takeover);
- * 4. grant live identities (candidateRevision, candidateIdentityDigest,
- *    policyDigest, operationExecutionRevision) match the LIVE operation state
- *    (no reuse after a same-epoch candidate/policy/revision advance);
- * 5. grant MAC verifies under the LIVE controller token (forgery-proof: only
+ * 2. grant operationId matches the live operation (no cross-operation replay;
+ *    lineage root `candidate:<operationId>:rN` additionally never matches
+ *    another operation);
+ * 3. grant controllerEpoch matches the live epoch (no reuse after takeover;
+ *    retained exact — post-epoch reuse refused);
+ * 4. LINEAGE binding (H-NEW-12): the LIVE candidate IS the anchored revision
+ *    or descends from it via the durable `parentCandidateId` +
+ *    `candidateAssemblyReceipts` chain (`isOwnerExemptionLineageDescendant`),
+ *    verified via the revision CHAIN, never by revision numbers alone
+ *    (siblings sharing the parent but branching to a different child are NOT
+ *    descendants and are refused);
+ * 5. STABLE policy binding (H-NEW-12): `ownerExemptionStablePolicyDigest`
+ *    of the LIVE policy equals the grant's `policyStableDigest`. Exact
+ *    `policyDigest` matching is deleted because it can never survive normal
+ *    progress — `operationExecutionRevision` (+ `candidateRevision`,
+ *    `candidateDigest`, `controllerEpoch`) is compiled INTO the exact digest
+ *    (`compileResolvedOperationPolicy`, executionIdentity.ts:206-225) and
+ *    every candidate bind increments the execution revision and clears the
+ *    policy (state.ts:687,776,780), forcing a recompile → new exact digest.
+ *    Stable-config changes still kill the grant fail-closed;
+ * 6. live-exact `operationExecutionRevision` matching is DROPPED (H-NEW-12):
+ *    the anchored value stays MAC-bound for provenance + ledger-decision
+ *    cross-check, but honor never compares it to LIVE. Safe because lineage
+ *    roots scope to one op lineage, epoch kills takeovers, expiry bounds
+ *    lifetime, and terminal kills the grant;
+ * 7. grant MAC verifies under the LIVE controller token (forgery-proof: only
  *    the token-holding controller can mint; managed children never inherit it);
- * 6. grant (and ledger decision) unexpired;
- * 7. ledger cross-check: the cited consumed CHOOSE/PRODUCT_CHOICE
+ * 8. grant (and ledger decision) unexpired;
+ * 9. ledger cross-check: the cited consumed CHOOSE/PRODUCT_CHOICE
  *    approve-exact-paths decision exists, is one-time consumed under its
- *    exact binding+purpose+actor (approval binds its WAITING continuation;
+ *    exact ANCHORED binding+purpose+actor (approval binds its WAITING
+ *    continuation at anchor time; the decision's candidate/policy/execution
+ *    binding must equal the grant's ANCHORED identities, not LIVE —
  *    stale/recorded-but-unconsumed approvals cannot verify), matches the
- *    grant on decisionId/digest/actor/operation/binding, and carries the
- *    suspend-created request that authorized this exact hard set (a
+ *    grant on decisionId/digest/actor/operation/anchored binding, and carries
+ *    the suspend-created request that authorized this exact hard set (a
  *    model-minted or edited decision cannot match a MAC-bound digest plus
  *    its consumption receipt);
- * 8. every needed path is exactly covered by the grant (agent-declared need
+ * 10. every needed path is exactly covered by the grant (agent-declared need
  *    can only narrow human-authorized scope, never widen it).
  *
  * Consumption semantics: operation-scoped MULTI-amendment (bounded by exact
@@ -1047,10 +1071,12 @@ export async function applyRepairScopeAmendment(input: {
  * one-time-consumed on the ledger. Justification: repair loops legitimately
  * need re-amendment (amend → retry → new blocker on another granted path);
  * forcing a fresh human round-trip per amendment within the same
- * operation+epoch+identities+paths adds no security, while replay across
- * operations is impossible (operationId MAC-bound + epoch-checked),
- * same-epoch advance invalidates (live-identity-checked), and terminal state
- * kills the grant. Every use is traced in the amendment artifact provenance.
+ * operation+epoch+lineage+stable-policy+paths adds no security, while replay
+ * across operations is impossible (operationId MAC-bound + lineage-root-checked),
+ * takeover invalidates (epoch-checked), expiry bounds lifetime, stable-config
+ * drift invalidates (stable-digest-checked), off-lineage candidates are
+ * refused (lineage-checked), and terminal state kills the grant. Every use is
+ * traced in the amendment artifact provenance.
  */
 export async function verifyOwnerHardProtectionExemption(input: {
   operation: OperationRecordV2;
@@ -1075,24 +1101,49 @@ export async function verifyOwnerHardProtectionExemption(input: {
   if (grant.controllerEpoch !== currentControllerEpoch(operation)) {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_EPOCH_STALE: the grant does not match the current controller epoch (takeover invalidates prior grants).");
   }
-  // Live-identity binding (B1): the MAC body binds candidateRevision,
-  // candidateIdentityDigest, policyDigest, and operationExecutionRevision at
-  // anchor time. Every honor compares against LIVE operation state; any
-  // same-epoch advance (candidate advance, policy rebind, execution-revision
-  // increment) mismatches and refuses.
+  // Live-identity binding (H-NEW-12 LINEAGE + STABLE): the MAC body binds
+  // the ANCHORED identities (`anchoredCandidateId` + `candidateRevision` +
+  // `candidateIdentityDigest` + anchored exact `policyDigest` +
+  // `operationExecutionRevision`) plus `policyStableDigest`. Honor requires:
+  // (a) LIVE candidate IS the anchored revision or descends from it via the
+  // parentCandidateId + assembly-receipts chain (never revision numbers
+  // alone — siblings excluded); (b) LIVE stable policy digest equals the
+  // grant's stable digest (exact digest matching deleted: operationExecution-
+  // Revision + candidateRevision/Digest + controllerEpoch are compiled INTO
+  // the exact digest per compileResolvedOperationPolicy, and every candidate
+  // bind increments the execution revision and clears the policy, so exact
+  // matching can never survive normal progress); (c) live-exact
+  // operationExecutionRevision matching DROPPED (covered by lineage + epoch +
+  // expiry + terminal; anchored value stays MAC-bound for provenance).
   const liveCandidate = operation.candidateRevision;
-  const livePolicyDigest = operation.resolvedOperationPolicy?.digest;
-  const liveExecutionRevision = operation.operationExecutionRevision;
+  const livePolicy = operation.resolvedOperationPolicy;
   if (!liveCandidate || !Number.isSafeInteger(liveCandidate.revision) || !liveCandidate.identityDigest
-    || typeof livePolicyDigest !== "string" || !/^[a-f0-9]{64}$/.test(livePolicyDigest)
-    || !Number.isSafeInteger(liveExecutionRevision)) {
-    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_BINDING_STALE: the live operation candidate, policy, or execution revision is unavailable; the grant cannot be honored.");
+    || !liveCandidate.candidateId || !livePolicy || typeof livePolicy.digest !== "string"
+    || !/^[a-f0-9]{64}$/.test(livePolicy.digest)) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_BINDING_STALE: the live operation candidate or policy is unavailable; the grant cannot be honored.");
   }
-  if (grant.candidateRevision !== liveCandidate.revision
-    || grant.candidateIdentityDigest !== liveCandidate.identityDigest
-    || grant.policyDigest !== livePolicyDigest
-    || grant.operationExecutionRevision !== liveExecutionRevision) {
-    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_BINDING_STALE: the grant does not match the current candidate, policy digest, or execution revision (same-epoch advance invalidates prior grants).");
+  try {
+    assertResolvedOperationPolicyV2(livePolicy);
+  } catch {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_BINDING_STALE: the live operation policy is invalid; the grant cannot be honored.");
+  }
+  if (!isOwnerExemptionLineageDescendant({
+    liveCandidate,
+    anchoredCandidateId: grant.anchoredCandidateId,
+    anchoredRevision: grant.candidateRevision,
+    anchoredIdentityDigest: grant.candidateIdentityDigest,
+    assemblies: operation.candidateAssemblyReceipts,
+  })) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_BINDING_STALE: the live candidate is not the anchored revision nor its lineage descendant (same-epoch off-lineage advance invalidates prior grants; siblings excluded).");
+  }
+  let liveStableDigest: string;
+  try {
+    liveStableDigest = ownerExemptionStablePolicyDigest(livePolicy);
+  } catch {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_BINDING_STALE: the live stable policy digest is unavailable; the grant cannot be honored.");
+  }
+  if (liveStableDigest !== grant.policyStableDigest) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_BINDING_STALE: the live stable policy does not match the anchored grant (stable-config drift invalidates prior grants).");
   }
   if (!verifyOwnerExemptionMac(controllerTokenFromEnvironment(), grant)) {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_FORGED: grant MAC integrity check failed; the grant was not minted by the live controller.");
@@ -1105,20 +1156,26 @@ export async function verifyOwnerHardProtectionExemption(input: {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_DECISION_MISMATCH: the anchored ledger HumanDecision no longer exists.");
   }
   const decision = assertDecisionV2(stored);
+  // Ledger-decision cross-check (H-NEW-12): the decision must equal the
+  // ANCHORED identities (not LIVE — LIVE already proved descendant + stable
+  // above). The decision was minted at suspend time with the anchored
+  // candidate + exact policy digest + execution revision; its one-time
+  // consumption receipt below is looked up under that exact ANCHORED binding.
   if (decision.decisionId !== grant.decisionId
     || decision.kind !== "CHOOSE" || decision.purpose.kind !== "PRODUCT_CHOICE"
     || decision.purpose.choiceId !== REPAIR_SCOPE_APPROVE_CHOICE_ID
     || decision.actorId !== grant.decidedActor
     || decision.operationId !== operation.id
     || decision.operationId !== grant.operationId
-    || !candidateRevisionsEqual(decision.candidate, liveCandidate)
+    || decision.candidate.operationId !== grant.operationId
+    || decision.candidate.candidateId !== grant.anchoredCandidateId
     || decision.candidate.revision !== grant.candidateRevision
     || decision.candidate.identityDigest !== grant.candidateIdentityDigest
     || decision.policyDigest !== grant.policyDigest
     || decision.operationExecutionRevision !== grant.operationExecutionRevision
     || decision.controllerEpoch !== grant.controllerEpoch
     || sha256Canonical(decision) !== grant.decisionDigest) {
-    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_DECISION_MISMATCH: the ledger HumanDecision does not match the anchored exemption (consumed approve-exact-paths choice, actor, operation, live binding, or digest).");
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_DECISION_MISMATCH: the ledger HumanDecision does not match the anchored exemption (consumed approve-exact-paths choice, actor, operation, anchored binding, or digest).");
   }
   // Approval binds continuation: the cited decision must have a one-time
   // consumption receipt under its exact binding+purpose+actor. Recorded-but-
@@ -1688,6 +1745,22 @@ export async function mintOwnerHardProtectionExemptionFromProductChoice(input: {
   if (!token) {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_UNANCHORED: minting requires the live controller token.");
   }
+  // H-NEW-12 LINEAGE + STABLE anchor: the grant roots lineage at the live
+  // `candidateId` and binds the stable policy digest (not just the exact
+  // digest). The exact `policyDigest` + `operationExecutionRevision` stay
+  // MAC-bound as ANCHORED provenance for the ledger-decision cross-check;
+  // live honor uses lineage + stable (see verify).
+  const anchorPolicy = operation.resolvedOperationPolicy;
+  if (!anchorPolicy) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_BINDING_STALE: minting requires the live frozen policy to anchor the stable digest.");
+  }
+  let anchorStableDigest: string;
+  try {
+    assertResolvedOperationPolicyV2(anchorPolicy);
+    anchorStableDigest = ownerExemptionStablePolicyDigest(anchorPolicy);
+  } catch {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_BINDING_STALE: minting requires a valid live frozen policy to anchor the stable digest.");
+  }
   const createdAt = now.toISOString();
   const body = {
     version: 1 as const,
@@ -1696,9 +1769,11 @@ export async function mintOwnerHardProtectionExemptionFromProductChoice(input: {
     exemptionId: `exemption:${crypto.randomUUID()}`,
     operationId: live.operationId,
     controllerEpoch: live.controllerEpoch,
+    anchoredCandidateId: live.candidate.candidateId,
     candidateRevision: live.candidate.revision,
     candidateIdentityDigest: live.candidate.identityDigest,
     policyDigest: live.policyDigest,
+    policyStableDigest: anchorStableDigest,
     operationExecutionRevision: live.operationExecutionRevision,
     paths,
     decisionId: decision.decisionId,
@@ -1916,13 +1991,14 @@ export async function resolveRepairScopeBlockerViaProductChoice(input: {
  * path intersecting it throws fail-closed (never exemptible) — UNLESS a
  * verified owner grant is presented via `ownerScope`. The filter tier
  * re-verifies the MAC under the live controller token plus operation/epoch/
- * live-identity binding, expiry, terminal state, and exact coverage (all sync,
- * no ledger I/O); the async authority gate (`verifyOwnerHardProtectionExemption`,
- * incl. the ledger cross-check) already ran in the amendment-apply path and
- * re-runs in the retry caller before this filter executes. A forged, stale,
- * expired, terminal, or non-covering grant throws the same NON_EXEMPTIBLE as
- * no exemption at all. Direct writes and general assembly scope NEVER honor
- * exemptions — only this amendment-path projection.
+ * LINEAGE + STABLE binding, expiry, terminal state, and exact coverage (all
+ * sync, no ledger I/O); the async authority gate
+ * (`verifyOwnerHardProtectionExemption`, incl. the ledger cross-check)
+ * already ran in the amendment-apply path and re-runs in the retry caller
+ * before this filter executes. A forged, stale, expired, terminal, or
+ * non-covering grant throws the same NON_EXEMPTIBLE as no exemption at all.
+ * Direct writes and general assembly scope NEVER honor exemptions — only
+ * this amendment-path projection.
  */
 export function filterForbiddenScopeForAmendment(
   forbiddenScope: readonly string[],
@@ -1934,8 +2010,11 @@ export function filterForbiddenScopeForAmendment(
     controllerEpoch: number;
     candidateRevision: number;
     candidateIdentityDigest: string;
-    policyDigest: string;
-    operationExecutionRevision: number;
+    candidateId: string;
+    policyStableDigest: string;
+    assemblies?: Record<string, import("../operations/v2Contracts.js").CandidateAssemblyReceiptV1> | readonly import("../operations/v2Contracts.js").CandidateAssemblyReceiptV1[];
+    policyDigest?: string;
+    operationExecutionRevision?: number;
     terminal: boolean;
   },
 ): string[] {
@@ -1973,15 +2052,18 @@ function ownerExemptionCoversHardPaths(
     controllerEpoch: number;
     candidateRevision: number;
     candidateIdentityDigest: string;
-    policyDigest: string;
-    operationExecutionRevision: number;
+    candidateId: string;
+    policyStableDigest: string;
+    assemblies?: Record<string, import("../operations/v2Contracts.js").CandidateAssemblyReceiptV1> | readonly import("../operations/v2Contracts.js").CandidateAssemblyReceiptV1[];
+    policyDigest?: string;
+    operationExecutionRevision?: number;
     terminal: boolean;
   } | undefined,
 ): boolean {
   // No grant, or the amendment does not cite one: not covered (existing
   // fail-closed behavior preserved bit-for-bit for all current callers).
   if (!ownerScope || !amendment.ownerExemption) return false;
-  const { grant, operationId, controllerEpoch, candidateRevision, candidateIdentityDigest, policyDigest, operationExecutionRevision, terminal } = ownerScope;
+  const { grant, operationId, controllerEpoch, candidateRevision, candidateIdentityDigest, candidateId, policyStableDigest, assemblies, terminal } = ownerScope;
   try {
     assertOwnerHardProtectionExemptionGrant(grant);
   } catch {
@@ -1990,14 +2072,24 @@ function ownerExemptionCoversHardPaths(
   if (terminal) return false;
   if (grant.exemptionId !== amendment.ownerExemption.exemptionId) return false;
   if (grant.operationId !== operationId || grant.controllerEpoch !== controllerEpoch) return false;
-  // Live-identity binding (B1, sync tier): same-epoch advance invalidates even
-  // when operationId/epoch still match. Missing live fields fail closed.
+  // Live-identity binding (H-NEW-12 LINEAGE + STABLE, sync tier):
+  // LIVE must BE the anchored revision or descend from it via the
+  // parentCandidateId + assembly-receipts chain (never revision numbers
+  // alone — siblings excluded), and LIVE stable policy digest must equal the
+  // grant's stable digest. Live-exact `policyDigest` /
+  // `operationExecutionRevision` matching is DROPPED (covered by lineage +
+  // epoch + expiry + terminal; see verify). Missing live fields fail closed.
   if (!Number.isSafeInteger(candidateRevision) || typeof candidateIdentityDigest !== "string"
-    || typeof policyDigest !== "string" || !Number.isSafeInteger(operationExecutionRevision)) return false;
-  if (grant.candidateRevision !== candidateRevision
-    || grant.candidateIdentityDigest !== candidateIdentityDigest
-    || grant.policyDigest !== policyDigest
-    || grant.operationExecutionRevision !== operationExecutionRevision) return false;
+    || typeof candidateId !== "string" || !candidateId
+    || typeof policyStableDigest !== "string" || !/^[a-f0-9]{64}$/.test(policyStableDigest)) return false;
+  if (!isOwnerExemptionLineageDescendant({
+    liveCandidate: { candidateId, revision: candidateRevision, identityDigest: candidateIdentityDigest },
+    anchoredCandidateId: grant.anchoredCandidateId,
+    anchoredRevision: grant.candidateRevision,
+    anchoredIdentityDigest: grant.candidateIdentityDigest,
+    assemblies,
+  })) return false;
+  if (policyStableDigest !== grant.policyStableDigest) return false;
   if (!verifyOwnerExemptionMac(controllerTokenFromEnvironment(), grant)) return false;
   if (grant.expiresAt && new Date(grant.expiresAt).getTime() <= Date.now()) return false;
   return hardViolations

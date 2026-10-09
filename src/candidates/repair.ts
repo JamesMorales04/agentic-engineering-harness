@@ -5,7 +5,7 @@ import type { AgentExecutionSelection } from "../agents/types.js";
 import type { ExecutionCatalogV1 } from "../architecture/executionCatalog.js";
 import { loadOperation, currentControllerEpoch, isTerminalOperation, resolveOperationStateRoot } from "../operations/state.js";
 import { HumanDecisionLedgerV2 } from "../security/humanDecision.js";
-import type { OwnerHardProtectionExemptionGrantV1 } from "../security/ownerExemption.js";
+import { ownerExemptionStablePolicyDigest, type OwnerHardProtectionExemptionGrantV1 } from "../security/ownerExemption.js";
 import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import { deterministicParticipantId } from "../security/executionLease.js";
 import { recordEvent } from "../telemetry/events.js";
@@ -636,8 +636,11 @@ function effectiveRepairScope(
     controllerEpoch: number;
     candidateRevision: number;
     candidateIdentityDigest: string;
-    policyDigest: string;
-    operationExecutionRevision: number;
+    candidateId: string;
+    policyStableDigest: string;
+    assemblies?: Record<string, import("../operations/v2Contracts.js").CandidateAssemblyReceiptV1> | readonly import("../operations/v2Contracts.js").CandidateAssemblyReceiptV1[];
+    policyDigest?: string;
+    operationExecutionRevision?: number;
     terminal: boolean;
   },
 ): { allowedScope: readonly string[]; forbiddenScope: readonly string[] } {
@@ -667,12 +670,12 @@ function effectiveRepairScope(
 /**
  * DETERMINISTIC owner-exemption resolution for an amended retry (controller
  * context only). Re-verifies the amendment-cited grant against durable state
- * (MAC under the live token, operation/epoch/live-identity binding, expiry,
- * ledger cross-check, exact coverage of everything the amendment exempts) and
- * returns the verified scope context for the sync filter. Any failure yields
- * undefined — the filter then throws NON_EXEMPTIBLE exactly as before (fail
- * closed). The in-memory amendment is never trusted on its own: only a
- * MAC-verified durable grant authorizes the projection.
+ * (MAC under the live token, operation/epoch/LINEAGE + STABLE binding,
+ * expiry, ledger cross-check, exact coverage of everything the amendment
+ * exempts) and returns the verified scope context for the sync filter. Any
+ * failure yields undefined — the filter then throws NON_EXEMPTIBLE exactly
+ * as before (fail closed). The in-memory amendment is never trusted on its
+ * own: only a MAC-verified durable grant authorizes the projection.
  */
 async function verifiedOwnerExemptionForRetry(
   stateRoot: string,
@@ -685,8 +688,11 @@ async function verifiedOwnerExemptionForRetry(
     controllerEpoch: number;
     candidateRevision: number;
     candidateIdentityDigest: string;
-    policyDigest: string;
-    operationExecutionRevision: number;
+    candidateId: string;
+    policyStableDigest: string;
+    assemblies?: Record<string, import("../operations/v2Contracts.js").CandidateAssemblyReceiptV1> | readonly import("../operations/v2Contracts.js").CandidateAssemblyReceiptV1[];
+    policyDigest?: string;
+    operationExecutionRevision?: number;
     terminal: boolean;
   }
   | undefined
@@ -704,18 +710,23 @@ async function verifiedOwnerExemptionForRetry(
       ledger,
     });
     const liveCandidate = operation.candidateRevision;
-    const livePolicyDigest = operation.resolvedOperationPolicy?.digest;
-    const liveExecutionRevision = operation.operationExecutionRevision;
-    if (!liveCandidate || typeof livePolicyDigest !== "string" || !Number.isSafeInteger(liveExecutionRevision)
-      || liveExecutionRevision === undefined) return undefined;
+    const livePolicy = operation.resolvedOperationPolicy;
+    if (!liveCandidate || !liveCandidate.candidateId || !livePolicy) return undefined;
+    let liveStableDigest: string;
+    try {
+      liveStableDigest = ownerExemptionStablePolicyDigest(livePolicy);
+    } catch {
+      return undefined;
+    }
     return {
       grant,
       operationId: operation.id,
       controllerEpoch: currentControllerEpoch(operation),
       candidateRevision: liveCandidate.revision,
       candidateIdentityDigest: liveCandidate.identityDigest,
-      policyDigest: livePolicyDigest,
-      operationExecutionRevision: liveExecutionRevision as number,
+      candidateId: liveCandidate.candidateId,
+      policyStableDigest: liveStableDigest,
+      assemblies: operation.candidateAssemblyReceipts,
       terminal: isTerminalOperation(operation.status),
     };
   } catch {
